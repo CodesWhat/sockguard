@@ -196,7 +196,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	initialVersion := versioner.Update(buildInitialPolicySnapshot(deps, cfg, rules, compatActive, bundleResult))
 
 	runtime.metrics.SetPolicyVersion(initialVersion)
-	handler, chainTeardown := buildServeHandlerChainWithRuntime(serveHandlerBuild{
+	handler, chainTeardown, limiterStateActive := buildServeHandlerChainWithRuntime(serveHandlerBuild{
 		Cfg:         cfg,
 		Logger:      logger,
 		AuditLogger: auditLogger,
@@ -207,17 +207,18 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	})
 	swappable := reload.NewSwappableHandler(handler)
 	coordinator := newReloadCoordinator(reloadCoordinatorParams{
-		RootCtx:         cmd.Context(),
-		Cfg:             cfg,
-		CfgFile:         cfgFile,
-		Swappable:       swappable,
-		InitialTeardown: chainTeardown,
-		Logger:          logger,
-		AuditLogger:     auditLogger,
-		Deps:            deps,
-		Runtime:         runtime,
-		Versioner:       versioner,
-		BundleVerifier:  bundleVerifier,
+		RootCtx:                   cmd.Context(),
+		Cfg:                       cfg,
+		CfgFile:                   cfgFile,
+		Swappable:                 swappable,
+		InitialTeardown:           chainTeardown,
+		InitialLimiterStateActive: limiterStateActive,
+		Logger:                    logger,
+		AuditLogger:               auditLogger,
+		Deps:                      deps,
+		Runtime:                   runtime,
+		Versioner:                 versioner,
+		BundleVerifier:            bundleVerifier,
 		// Same overrides startup applied above, replayed on every reload
 		// candidate. cmd's flags are parsed before RunE and never mutated
 		// afterwards, so the reloader goroutine only reads frozen state.
@@ -519,21 +520,26 @@ type serveHandlerBuild struct {
 // Tests that don't care about teardown should continue calling
 // buildServeHandler which discards it — the goroutines die with the test
 // process anyway.
-func buildServeHandlerChainWithRuntime(b serveHandlerBuild) (http.Handler, func()) {
+//
+// The third return value reports whether the built chain holds discardable
+// limiter state (a token bucket or a concurrency tracker), not merely whether
+// the rate-limit middleware is installed; see
+// buildServeHandlerLayersWithRuntime.
+func buildServeHandlerChainWithRuntime(b serveHandlerBuild) (http.Handler, func(), bool) {
 	resolver := runtimeResolver(b.Runtime, b.Cfg)
 	clientProfiles, err := buildServeClientProfiles(b.Cfg, resolver)
 	if err != nil {
 		b.Logger.Error("invalid client profile config", "error", err)
-		return invalidClientProfileHandler(), func() {}
+		return invalidClientProfileHandler(), func() {}, false
 	}
 
 	handler := newServeUpstreamHandler(b.Cfg, resolver, b.Logger)
 	b.ClientProfiles = clientProfiles
-	layers, teardown := buildServeHandlerLayersWithRuntime(b)
+	layers, teardown, limiterStateActive := buildServeHandlerLayersWithRuntime(b)
 	for _, layer := range layers {
 		handler = layer.with(handler)
 	}
-	return handler, teardown
+	return handler, teardown, limiterStateActive
 }
 
 // serveRuntime holds process-scoped objects whose lifetime spans the whole
@@ -722,7 +728,15 @@ func upstreamRequestTimeoutLogValue(cfg *config.Config) string {
 	return cfg.Upstream.RequestTimeout
 }
 
-func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLayer, func()) {
+// The third return value reports whether this chain holds discardable
+// limiter state — at least one token bucket or one concurrency tracker,
+// per-profile or global. It is NOT "the rate-limit middleware is
+// installed": a profile carrying only limits.priority installs the
+// middleware but compiles no bucket and no tracker, so there is nothing
+// for a chain swap to throw away. Callers that swap chains on hot reload
+// use this to decide whether a discard is worth telling the operator
+// about.
+func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLayer, func(), bool) {
 	cfg, logger, auditLogger := b.Cfg, b.Logger, b.AuditLogger
 	runtime, versioner := b.Runtime, b.Versioner
 	rules, clientProfiles := b.Rules, b.ClientProfiles
@@ -781,8 +795,10 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 	// eviction goroutines bound to this chain — callers must invoke it when
 	// the chain is replaced (hot reload) or torn down at shutdown.
 	teardown := func() {}
-	if rlMiddleware, stop := buildRateLimitMiddleware(cfg, logger, runtime); rlMiddleware != nil {
+	limiterStateActive := false
+	if rlMiddleware, stop, hasLimiterState := buildRateLimitMiddleware(cfg, logger, runtime); rlMiddleware != nil {
 		teardown = stop
+		limiterStateActive = hasLimiterState
 		layers = append(layers, namedServeHandlerLayer("withRateLimit", rlMiddleware))
 	}
 
@@ -816,20 +832,34 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 	if cfg.Log.AccessLog {
 		layers = append(layers, namedServeHandlerLayer("withAccessLog", withAccessLog(logger)))
 	}
-	return layers, teardown
+	return layers, teardown, limiterStateActive
 }
 
 // buildRateLimitMiddleware constructs the per-profile rate-limit+concurrency
-// middleware and its audit sampler. Returns (nil, nil) when no profile has
-// limits and no global concurrency cap is configured. The second return value
-// is a stop function that halts the sampler eviction goroutine and every
+// middleware and its audit sampler. Returns (nil, nil, false) when no profile
+// has limits and no global concurrency cap is configured. The second return
+// value is a stop function that halts the sampler eviction goroutine and every
 // per-profile Limiter eviction goroutine; callers must call it on shutdown.
-func buildRateLimitMiddleware(cfg *config.Config, logger *slog.Logger, runtime *serveRuntime) (func(http.Handler) http.Handler, func()) {
+//
+// The third return value reports whether the middleware actually owns
+// discardable counters: a token bucket (limits.rate), a per-profile inflight
+// tracker (limits.concurrency), or the global inflight tracker
+// (clients.global_concurrency). A profile carrying only limits.priority puts
+// the middleware in the chain — ratelimit.compileProfile keeps it so the
+// profile's tier is known to the global gate — but compiles neither a bucket
+// nor a tracker, so a chain swap that replaces it throws nothing away. Keep
+// this derived from the same predicates compileProfile uses; middleware
+// presence alone is not the same question.
+func buildRateLimitMiddleware(cfg *config.Config, logger *slog.Logger, runtime *serveRuntime) (func(http.Handler) http.Handler, func(), bool) {
+	limiterState := false
 	profiles := make(map[string]ratelimit.ProfileOptions)
 	for _, profile := range cfg.Clients.Profiles {
 		opts := configLimitsToRateLimitOptions(profile.Name, profile.Limits, logger)
 		if opts.Rate != nil || opts.Concurrency != nil || opts.Priority != ratelimit.PriorityNormal {
 			profiles[profile.Name] = opts
+		}
+		if opts.Rate != nil || opts.Concurrency != nil {
+			limiterState = true
 		}
 	}
 
@@ -838,10 +868,11 @@ func buildRateLimitMiddleware(cfg *config.Config, logger *slog.Logger, runtime *
 		globalConc = &ratelimit.GlobalConcurrencyOptions{
 			MaxInflight: cfg.Clients.GlobalConcurrency.MaxInflight,
 		}
+		limiterState = true
 	}
 
 	if len(profiles) == 0 && globalConc == nil {
-		return nil, nil
+		return nil, nil, false
 	}
 
 	warnAssignedProfilesWithoutLimits(cfg, profiles, logger)
@@ -856,7 +887,7 @@ func buildRateLimitMiddleware(cfg *config.Config, logger *slog.Logger, runtime *
 		stopLimiters()
 		stopSampler()
 	}
-	return mw, stop
+	return mw, stop, limiterState
 }
 
 func namedServeHandlerLayer(name string, with func(http.Handler) http.Handler) serveHandlerLayer {

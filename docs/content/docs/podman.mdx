@@ -178,6 +178,16 @@ same way they cover Docker-compat:
   volumes, secrets — is owner-filtered and visibility-filtered, so switching
   a client from Docker-compat to libpod-native paths is not a way around
   isolation configured on the Docker-compat side.
+- `GET /libpod/system/df` is the one read that cannot be filtered, and it is
+  refused with a `403` instead whenever owner isolation or a visibility policy
+  is active. Podman's native disk-usage report is not the Docker-compat body
+  under another path: its image, container and volume entries carry no labels
+  at all, so no owner label and no visibility selector has a field to match.
+  Refusing keeps it from being a way around isolation the way filtering does
+  for every other libpod read; see
+  [Security](/security#layer-6-owner-label-isolation) for the full field list
+  and why an emptied report was the wrong answer. The Docker-compat
+  `GET /system/df` that Podman also serves is filtered normally.
 - Resource names that happen to equal an API action word remain protected.
   Owner matching reserves keywords only for the exact method and collection
   path, while `GET` and `HEAD` visibility treats write-only keywords as normal
