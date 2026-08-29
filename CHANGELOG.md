@@ -29,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The admin API reference describes `bundle_source` as the basename of `policy_bundle.signature_path` rather than the configured path. The code strips the directory on purpose so the response cannot leak the host's filesystem layout, and the old wording invited operators to expect a full path.
 - The migration guide's link into the configuration reference points at `#request-body-policy-reference`, which exists. It pointed at `#request-body-inspection`, which does not, so the anchor silently dropped readers at the top of the page.
 
+### Build
+
+- **The nightly deep fuzz matrix is capped at 12 concurrent jobs, which is what was actually killing it.** The org is on the Free plan's 20-concurrent-job ceiling; this matrix is 22 targets on its own and portwing's Deep Fuzz shares the same `30 9 * * *` minute with 7 more, so 29 jobs contended for 20 slots. Jobs admitted over the ceiling flatlined at `execs 0/sec` and were then reclaimed with "The runner has received a shutdown signal" and exit 143, which reads as a fuzz failure but writes no crasher and no `--- FAIL`. That took 8, 2, 7 and 4 jobs on the nights of 2026-08-24 through 08-27; the single 22/22 night, 08-28, was the one GitHub deferred to 20:56 UTC, clear of the collision. The cap and the reasoning are now written next to the setting, and a test holds it at or below 13 while the matrix stays wider than the cap.
+
 ### Dependencies
 
 - `github.com/google/go-containerregistry` moves from v0.21.8 to v0.21.9. It is reached only from the opt-in `image_trust` registry-fetch path, never the core proxy path, and `govulncheck` reports zero reachable vulnerabilities either side of the bump.
