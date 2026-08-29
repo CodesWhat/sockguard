@@ -60,6 +60,15 @@ func isLibpodNetworkDisconnectPath(normalizedPath string) bool {
 	return isNetworkActionPathUnder(libpodPathPrefix+"networks/", normalizedPath, "disconnect")
 }
 
+// isLibpodNetworkUpdatePath matches POST /libpod/networks/{name}/update,
+// Podman's netavark-only network-update endpoint. Docker's Engine API has no
+// /networks/{id}/update route at any version, so this matcher has no
+// Docker-compat counterpart to stay exclusive from — the prefix guard is
+// still what keeps it from firing on anything else.
+func isLibpodNetworkUpdatePath(normalizedPath string) bool {
+	return isNetworkActionPathUnder(libpodPathPrefix+"networks/", normalizedPath, "update")
+}
+
 // isLibpodExecCreatePath matches POST /libpod/containers/{id}/exec, the
 // libpod equivalent of isExecCreatePath's /containers/{id}/exec.
 func isLibpodExecCreatePath(normalizedPath string) bool {

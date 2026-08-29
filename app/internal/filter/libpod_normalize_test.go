@@ -44,6 +44,7 @@ func TestLibpodPerResourceMatchers(t *testing.T) {
 		{"isLibpodImagePullPath", isLibpodImagePullPath},
 		{"isLibpodNetworkConnectPath", isLibpodNetworkConnectPath},
 		{"isLibpodNetworkDisconnectPath", isLibpodNetworkDisconnectPath},
+		{"isLibpodNetworkUpdatePath", isLibpodNetworkUpdatePath},
 	}
 
 	positives := map[string]string{
@@ -56,6 +57,7 @@ func TestLibpodPerResourceMatchers(t *testing.T) {
 		"isLibpodImagePullPath":         "/libpod/images/pull",
 		"isLibpodNetworkConnectPath":    "/libpod/networks/abc123/connect",
 		"isLibpodNetworkDisconnectPath": "/libpod/networks/abc123/disconnect",
+		"isLibpodNetworkUpdatePath":     "/libpod/networks/abc123/update",
 	}
 
 	// Cross-cutting near-misses every matcher must reject.
@@ -134,6 +136,7 @@ func TestLibpodMatchersNeverMatchDockerPathsAndViceVersa(t *testing.T) {
 		{"isLibpodImagePullPath", isLibpodImagePullPath},
 		{"isLibpodNetworkConnectPath", isLibpodNetworkConnectPath},
 		{"isLibpodNetworkDisconnectPath", isLibpodNetworkDisconnectPath},
+		{"isLibpodNetworkUpdatePath", isLibpodNetworkUpdatePath},
 	}
 	for _, dp := range dockerPaths {
 		for _, m := range libpodMatchers {
@@ -153,6 +156,7 @@ func TestLibpodMatchersNeverMatchDockerPathsAndViceVersa(t *testing.T) {
 		"/libpod/images/pull",
 		"/libpod/networks/abc123/connect",
 		"/libpod/networks/abc123/disconnect",
+		"/libpod/networks/abc123/update",
 	}
 	dockerMatchers := []struct {
 		name    string

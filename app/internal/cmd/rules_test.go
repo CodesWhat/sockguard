@@ -190,7 +190,7 @@ func TestBodySensitiveWriteCatalogTreatsLibpodImagePullAsInspected(t *testing.T)
 // recognized as covered by request_body.libpod_network so allowing them does
 // not spuriously demand insecure_allow_body_blind_writes.
 func TestBodySensitiveWriteCatalogTreatsLibpodNetworkAttachAsInspected(t *testing.T) {
-	for _, path := range []string{"/libpod/networks/sockguard-test/connect", "/libpod/networks/sockguard-test/disconnect"} {
+	for _, path := range []string{"/libpod/networks/sockguard-test/connect", "/libpod/networks/sockguard-test/disconnect", "/libpod/networks/sockguard-test/update"} {
 		t.Run(path, func(t *testing.T) {
 			var endpoint bodySensitiveWriteEndpoint
 			found := false
@@ -216,6 +216,7 @@ func TestValidateAndCompileRulesAllowsLibpodNetworkAttachWithRequestBodyInspecti
 	cfg.Rules = []config.RuleConfig{
 		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/networks/*/connect"}, Action: "allow"},
 		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/networks/*/disconnect"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/networks/*/update"}, Action: "allow"},
 		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
 	}
 

@@ -61,6 +61,17 @@ type NetworkOptions struct {
 	// AllowDisableIPv4 permits POST /networks/create with EnableIPv4
 	// explicitly false (Engine API 1.48+). Default false.
 	AllowDisableIPv4 bool
+	// AllowDNSServers permits a request to set or remove a network's own DNS
+	// resolvers: `network_dns_servers` on POST /libpod/networks/create and
+	// both `adddnsservers` and `removednsservers` on
+	// POST /libpod/networks/{name}/update. Libpod-only — Docker networks have
+	// no per-network resolver concept and no update endpoint at all, so the
+	// Docker-compat inspector never consults this. Default false, because
+	// pointing an existing network's resolver at a host the caller controls
+	// changes what names resolve to inside every container already attached
+	// to it, including containers the caller does not own. See
+	// networkPolicy.inspectLibpodUpdate.
+	AllowDNSServers bool
 }
 
 type networkPolicy struct {
@@ -78,6 +89,7 @@ type networkPolicy struct {
 	endpointConfig         EndpointConfigOptions
 	allowDisconnectForce   bool
 	allowDisableIPv4       bool
+	allowDNSServers        bool
 }
 
 type networkCreateRequest struct {
@@ -154,6 +166,7 @@ func newNetworkPolicy(opts NetworkOptions) networkPolicy {
 		endpointConfig:         opts.EndpointConfig,
 		allowDisconnectForce:   opts.AllowDisconnectForce,
 		allowDisableIPv4:       opts.AllowDisableIPv4,
+		allowDNSServers:        opts.AllowDNSServers,
 	}
 }
 

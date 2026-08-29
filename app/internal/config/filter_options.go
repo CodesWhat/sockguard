@@ -245,6 +245,7 @@ func (c NetworkRequestBodyConfig) ToFilterOptions() filter.NetworkOptions {
 		EndpointConfig:         c.EndpointConfig.ToFilterOptions(),
 		AllowDisconnectForce:   c.AllowDisconnectForce,
 		AllowDisableIPv4:       c.AllowDisableIPv4,
+		AllowDNSServers:        c.AllowDNSServers,
 	}
 }
 

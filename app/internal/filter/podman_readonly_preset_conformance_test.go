@@ -124,6 +124,7 @@ func TestPodmanReadonlyPresetConformance(t *testing.T) {
 		{"libpod-network-create-denied", http.MethodPost, "/libpod/networks/create", "", false},
 		{"libpod-network-connect-denied", http.MethodPost, "/libpod/networks/abc/connect", `{"container":"abc","static_ips":["10.9.9.9"]}`, false},
 		{"libpod-network-disconnect-denied", http.MethodPost, "/libpod/networks/abc/disconnect", `{"Container":"abc","Force":true}`, false},
+		{"libpod-network-update-denied", http.MethodPost, "/libpod/networks/abc/update", `{"adddnsservers":["10.6.6.6"]}`, false},
 		{"libpod-secret-create-denied", http.MethodPost, "/libpod/secrets/create", "", false},
 		{"libpod-play-kube-denied", http.MethodPost, "/libpod/play/kube", "", false},
 		{"libpod-kube-apply-denied", http.MethodPost, "/libpod/kube/apply", "", false},

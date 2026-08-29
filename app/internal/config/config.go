@@ -761,6 +761,18 @@ type NetworkRequestBodyConfig struct {
 	// an unusual and rarely-intended posture, so it requires this opt-in.
 	// Default false.
 	AllowDisableIPv4 bool `mapstructure:"allow_disable_ipv4"`
+	// AllowDNSServers permits a request to set or remove a network's own DNS
+	// resolvers: `network_dns_servers` on POST /libpod/networks/create and
+	// the `adddnsservers`/`removednsservers` pair on
+	// POST /libpod/networks/{name}/update. This is the mirror image of the
+	// Docker-only fields above — Docker networks have no per-network resolver
+	// concept and the Engine API has no network-update route at all, so the
+	// Docker-compat inspector never consults it and it is meaningful only
+	// under the libpod_network key. Default false: repointing an existing
+	// network's resolver changes what names resolve to inside every container
+	// already attached to it. See filter/libpod_network.go's
+	// inspectLibpodUpdate.
+	AllowDNSServers bool `mapstructure:"allow_dns_servers"`
 }
 
 // EndpointConfigRequestBodyConfig configures granular per-field admission for

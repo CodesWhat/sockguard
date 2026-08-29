@@ -31,12 +31,50 @@ const maxLibpodNetworkBodyBytes = 1 << 20 // 1 MiB
 // against unrelated fields. allow_endpoint_config, endpoint_config and
 // allow_disconnect_force are not consulted by THIS inspector either, but
 // they are not unused: they gate the libpod connect/disconnect endpoints —
-// see inspectLibpodConnect and inspectLibpodDisconnect.
+// see inspectLibpodConnect and inspectLibpodDisconnect. allow_dns_servers
+// runs the other way: it has no DOCKER analog and is consulted here (for
+// network_dns_servers) and by inspectLibpodUpdate.
 type libpodNetworkCreateRequest struct {
 	Driver      string            `json:"driver"`
 	Options     map[string]string `json:"options"`
 	IPAMOptions map[string]string `json:"ipam_options"`
 	Subnets     []json.RawMessage `json:"subnets"`
+	// NetworkDNSServers is types.Network's `network_dns_servers`: the
+	// resolvers every container attached to this network will use. Gated by
+	// the same allow_dns_servers knob as the update endpoint's add/remove
+	// pair, so the knob covers the whole per-network resolver surface rather
+	// than half of it — see networkPolicy.inspectLibpodUpdate. Note the
+	// spelling differs from update's: create carries the snake_case tag from
+	// go.podman.io/common's types.Network, update carries the run-together
+	// tag from Podman's own entities.NetworkUpdateOptions.
+	NetworkDNSServers []string `json:"network_dns_servers"`
+}
+
+// libpodNetworkUpdateRequest mirrors Podman's entities.NetworkUpdateOptions
+// (pkg/domain/entities/network.go:57 at v5.8.1), the body
+// POST /libpod/networks/{name}/update decodes.
+//
+// The JSON tags are the whole reason this is a separate struct and the one
+// thing a fix here can get wrong. There are TWO NetworkUpdateOptions types in
+// the Podman tree with DIFFERENT tags, and only one of them ever touches the
+// wire:
+//
+//   - entities.NetworkUpdateOptions — `adddnsservers` / `removednsservers`,
+//     run together, no underscores. This is what libpod.UpdateNetwork
+//     json.Decodes straight off r.Body, so this is the wire shape.
+//   - libnetwork/types.NetworkUpdateOptions — `add_dns_servers` /
+//     `remove_dns_servers`. Internal only: abi.ContainerEngine.NetworkUpdate
+//     copies field-to-field into it AFTER decoding, so those tags are never
+//     parsed from a request.
+//
+// encoding/json's fallback is case-insensitive but not separator-insensitive,
+// so a struct tagged with the snake_case spelling would decode nothing and
+// allow every DNS change. Case variants of the run-together spelling
+// (`AddDNSServers`, `ADDDNSSERVERS`) do decode on Podman's side and therefore
+// decode here too, at no extra cost.
+type libpodNetworkUpdateRequest struct {
+	AddDNSServers    []string `json:"adddnsservers"`
+	RemoveDNSServers []string `json:"removednsservers"`
 }
 
 // libpodNetworkConnectRequest mirrors Podman's
@@ -136,6 +174,8 @@ func (p networkPolicy) inspectLibpod(logger *slog.Logger, r *http.Request, norma
 		return p.inspectLibpodConnect(logger, r, normalizedPath)
 	case isLibpodNetworkDisconnectPath(normalizedPath):
 		return p.inspectLibpodDisconnect(logger, r, normalizedPath)
+	case isLibpodNetworkUpdatePath(normalizedPath):
+		return p.inspectLibpodUpdate(logger, r, normalizedPath)
 	default:
 		return "", nil
 	}
@@ -147,7 +187,8 @@ func (p networkPolicy) inspectLibpod(logger *slog.Logger, r *http.Request, norma
 func isLibpodNetworkWritePath(normalizedPath string) bool {
 	return normalizedPath == libpodPathPrefix+"networks/create" ||
 		isLibpodNetworkConnectPath(normalizedPath) ||
-		isLibpodNetworkDisconnectPath(normalizedPath)
+		isLibpodNetworkDisconnectPath(normalizedPath) ||
+		isLibpodNetworkUpdatePath(normalizedPath)
 }
 
 // inspectLibpodConnect gates POST /libpod/networks/{name}/connect on the same
@@ -192,6 +233,58 @@ func (p networkPolicy) inspectLibpodDisconnect(logger *slog.Logger, r *http.Requ
 	}
 
 	return p.denyDisconnectReason(req, "libpod network disconnect"), nil
+}
+
+// inspectLibpodUpdate gates POST /libpod/networks/{name}/update on
+// allow_dns_servers. The endpoint has no Docker analog at all — the Engine
+// API has no network-update route at any version — so this is not a
+// Docker/libpod parity fix like connect and disconnect were, but a surface
+// that had no inspector on either side because only one side has it.
+//
+// It is inspected rather than documented-and-acknowledged for three reasons.
+// The primitive is retroactive: ic.NetworkUpdate rewrites the resolver list
+// on an EXISTING network, so every container already attached to it starts
+// resolving names through whatever the caller supplied, including containers
+// the caller does not own and did not create. That is strictly more
+// far-reaching than anything allow_endpoint_config gates, which only ever
+// affects the one endpoint being attached. The body is also two string
+// arrays, so the "sockguard cannot model this shape" argument that puts
+// play/kube behind insecure_allow_body_blind_writes simply does not apply —
+// an acknowledgment where a decode struct suffices is the weaker control.
+// And there is no legitimate caller to break: no Docker-compat client can
+// reach the route, and none of the tools sockguard ships presets for issues
+// it. It is a `podman network update` admin operation, so a fail-closed
+// default costs nothing operationally.
+//
+// RemoveDNSServers is gated alongside AddDNSServers rather than treated as
+// the benign direction. Dropping a resolver is a change to shared state that
+// affects containers the caller does not own just as adding one does, and it
+// can redirect by omission — removing the entry that was answering a name
+// falls resolution through to whatever is next in the list. A body carrying
+// neither field is allowed: Podman applies two nil slices and the network is
+// left exactly as it was, so there is nothing to gate.
+func (p networkPolicy) inspectLibpodUpdate(logger *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
+	body, err := p.readLibpodNetworkBody(r, normalizedPath, isLibpodNetworkUpdatePath, "libpod network update")
+	if err != nil || len(body) == 0 {
+		return "", err
+	}
+
+	var req libpodNetworkUpdateRequest
+	if err := decodePolicySubsetJSON(body, &req); err != nil {
+		logRequestError(logger, r, slog.LevelDebug, "libpod network update request body could not be decoded for Sockguard policy inspection; deferring to Podman validation", err)
+		return "libpod network update denied: request body could not be inspected", nil
+	}
+
+	if p.allowDNSServers {
+		return "", nil
+	}
+	if len(req.AddDNSServers) > 0 {
+		return "libpod network update denied: setting custom DNS servers is not allowed", nil
+	}
+	if len(req.RemoveDNSServers) > 0 {
+		return "libpod network update denied: removing custom DNS servers is not allowed", nil
+	}
+	return "", nil
 }
 
 // readLibpodNetworkBody applies the shared method/path/body guard and the
@@ -253,6 +346,9 @@ func (p networkPolicy) inspectLibpodCreate(logger *slog.Logger, r *http.Request,
 	}
 	if !p.allowIPAMOptions && len(req.IPAMOptions) > 0 {
 		return "libpod network create denied: IPAM options are not allowed", nil
+	}
+	if !p.allowDNSServers && len(req.NetworkDNSServers) > 0 {
+		return "libpod network create denied: custom DNS servers are not allowed", nil
 	}
 
 	return "", nil
