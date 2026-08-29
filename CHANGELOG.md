@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The marketing site and docs site record acquisition attribution.** `save_campaign_params` and `save_referrer` are enabled, and the `before_send` allowlist forwards the five `utm_*` values plus `$referring_domain` on `$pageview` and `$pageleave`. The referrer is transmitted at hostname granularity only: `$referrer` is never copied onto the outgoing envelope, because a full referrer URL can carry a path from a private page. A `$referring_domain` that is not a bare hostname is dropped rather than trimmed, and the `gclid`/`fbclid`/`msclkid` click identifiers that `save_campaign_params` collects are excluded. Neither option uses browser storage, so the cookieless posture is unchanged and no consent banner is required.
+
 ### Fixed
 
 - **The sitemap and the pkg.go.dev badge no longer point at the wrong thing.** `/docs/podman` and `/docs/roadmap` are live and linked from the docs navigation but appeared in none of the sitemap's `<loc>` entries, because the docs slug list is hand-maintained while the comparison slugs are derived. The list now mirrors `docs/content/docs/meta.json` and a test fails when the two drift apart. The Go Reference badge built its pkg.go.dev URL from the GitHub-cased repository slug, which 404s there because pkg.go.dev keys on the case-sensitive `go.mod` module path; it still rendered a valid-looking badge, so the dead link was invisible until clicked.

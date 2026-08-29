@@ -46,8 +46,11 @@ test("PostHog options pin the privacy posture and cookieless web vitals", () => 
       persistence: "memory",
       disable_persistence: true,
       respect_dnt: true,
-      save_referrer: false,
-      save_campaign_params: false,
+      // Acquisition attribution. save_referrer is what populates
+      // $referring_domain; the sanitizer forwards only that hostname and
+      // never $referrer, so the full URL stays in the browser.
+      save_referrer: true,
+      save_campaign_params: true,
       disable_capture_url_hashes: true,
       disable_scroll_properties: true,
       mask_all_element_attributes: true,
