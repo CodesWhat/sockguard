@@ -22,6 +22,36 @@ func TestCompatNoEnvVars(t *testing.T) {
 	}
 }
 
+// TestCompatActivationLogNamesMatchedVars asserts that the "tecnativa
+// compatibility mode active" log record names the specific env vars (and
+// their values) that armed it, rather than just a generic note. Without a
+// thread to pull, an operator debugging an unexpectedly permissive proxy
+// in a shared compose environment has no way to tell which of the many
+// generic Tecnativa names (POST, CONTAINERS, ...) actually fired.
+func TestCompatActivationLogNamesMatchedVars(t *testing.T) {
+	cfg := Defaults()
+	t.Setenv("CONTAINERS", "1")
+	t.Setenv("POST", "true")
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	if !ApplyCompat(&cfg, logger) {
+		t.Fatal("expected compat to activate")
+	}
+
+	out := logBuf.String()
+	if !strings.Contains(out, "tecnativa compatibility mode active") {
+		t.Fatalf("expected activation log line, got: %s", out)
+	}
+	if !strings.Contains(out, "CONTAINERS=1") {
+		t.Fatalf("expected activation log to name CONTAINERS=1, got: %s", out)
+	}
+	if !strings.Contains(out, "POST=true") {
+		t.Fatalf("expected activation log to name POST=true, got: %s", out)
+	}
+}
+
 func TestCompatCustomRulesNoOp(t *testing.T) {
 	cfg := Defaults()
 	cfg.Rules = []RuleConfig{

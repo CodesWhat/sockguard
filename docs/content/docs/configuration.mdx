@@ -702,6 +702,20 @@ configured without `limits.priority` or without any `limits` block default to
 configuration. `priority` is only honored when `clients.global_concurrency` is
 set; otherwise it has no effect.
 
+### Reload resets limiter state
+
+A [hot reload](#hot-reload) rebuilds the rate-limit and concurrency machinery
+from scratch, even when the change had nothing to do with `limits` or
+`global_concurrency`. Every client's consumed token-bucket quota and every
+in-flight concurrency count reset to zero on the swap: a bucket that was
+nearly drained comes back full, and a profile sitting at its `max_inflight`
+cap opens back up. State is not carried across the old and new chains, and
+there is no way to preserve it, since a profile can change shape between
+reloads and there is no principled way to remap old counters onto a
+different limit. Sockguard logs a warning when a reload replaces a chain
+that had an active limiter, so this shows up as an expected reload side
+effect rather than an unexplained gap in your throttling data.
+
 ### Validation
 
 Sockguard fails at startup with a clear error if any of these invariants are

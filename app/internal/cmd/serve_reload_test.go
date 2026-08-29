@@ -567,3 +567,83 @@ func TestNewReloadCoordinatorPreservesNonNilInitialTeardown(t *testing.T) {
 		t.Fatal("non-nil initialTeardown was not invoked by stop() — mutant `initialTeardown != nil` replaces a real teardown with the stub")
 	}
 }
+
+// TestReloadCoordinatorLogsRateLimitStateDiscarded pins the fix for a hot
+// reload silently zeroing every client's consumed rate-limit quota and
+// in-flight concurrency count: buildRateLimitMiddleware builds a brand-new
+// sampler and Limiter set on every chain build, so a reload that replaces a
+// chain which already had an active rate limiter throws that state away.
+// The coordinator must say so.
+func TestReloadCoordinatorLogsRateLimitStateDiscarded(t *testing.T) {
+	initial := config.Defaults()
+	initial.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: "GET", Path: "/x"}, Action: "allow"},
+	}
+	f := newReloadCoordinatorFixture(t, &initial)
+	// Simulate the chain built at startup having had an active rate-limit
+	// middleware (e.g. a profile with a concurrency cap), the way serve.go
+	// would set InitialRateLimitActive from buildServeHandlerChainWithRuntime.
+	f.coordinator.rateLimitActive = true
+
+	clone := initial
+	f.loadCfg = &clone
+	f.coordinator.reload()
+
+	if got, ok := f.reloadCount("ok"); !ok || got != 1 {
+		t.Fatalf("reload did not succeed: ok=%d found=%v", got, ok)
+	}
+	if !strings.Contains(f.logBuf.String(), "config reload discarded rate limit and concurrency counters") {
+		t.Fatalf("expected rate-limit-state-discarded log line, got: %s", f.logBuf.String())
+	}
+}
+
+// TestReloadCoordinatorNoRateLimitDiscardLogWhenNoneWasActive verifies the
+// discard log stays silent when the chain being replaced never had a rate
+// limiter to begin with — there is nothing to discard, so nothing to say.
+func TestReloadCoordinatorNoRateLimitDiscardLogWhenNoneWasActive(t *testing.T) {
+	initial := config.Defaults()
+	initial.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: "GET", Path: "/x"}, Action: "allow"},
+	}
+	f := newReloadCoordinatorFixture(t, &initial)
+	// f.coordinator.rateLimitActive defaults to false: no profile limits,
+	// no global concurrency cap on the fixture's initial config.
+
+	clone := initial
+	f.loadCfg = &clone
+	f.coordinator.reload()
+
+	if got, ok := f.reloadCount("ok"); !ok || got != 1 {
+		t.Fatalf("reload did not succeed: ok=%d found=%v", got, ok)
+	}
+	if strings.Contains(f.logBuf.String(), "discarded rate limit") {
+		t.Fatalf("did not expect a rate-limit-state-discarded log line when no limiter was active: %s", f.logBuf.String())
+	}
+}
+
+// TestReloadCoordinatorRateLimitDiscardLogDoesNotFireAtStartup asserts the
+// discard log never fires from constructing a coordinator alone — only
+// reload() may emit it. At process startup there is no previous chain to
+// discard, so logging there would be a false alarm on the very first request.
+// Unlike the other two tests here, this constructs the coordinator directly
+// (the way serve.go does at startup) with InitialRateLimitActive: true set
+// through reloadCoordinatorParams, rather than poking the unexported field
+// after the fact — so it also pins that newReloadCoordinator itself must
+// stay silent, not just that some later mutation doesn't retroactively log.
+func TestReloadCoordinatorRateLimitDiscardLogDoesNotFireAtStartup(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	_ = newReloadCoordinator(reloadCoordinatorParams{
+		RootCtx:                context.Background(),
+		Cfg:                    &config.Config{},
+		CfgFile:                "unused",
+		InitialTeardown:        func() {},
+		InitialRateLimitActive: true,
+		Logger:                 logger,
+	})
+
+	if strings.Contains(logBuf.String(), "discarded rate limit") {
+		t.Fatalf("did not expect a rate-limit-state-discarded log line at startup (before any reload): %s", logBuf.String())
+	}
+}

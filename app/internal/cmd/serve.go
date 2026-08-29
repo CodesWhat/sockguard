@@ -196,7 +196,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	initialVersion := versioner.Update(buildInitialPolicySnapshot(deps, cfg, rules, compatActive, bundleResult))
 
 	runtime.metrics.SetPolicyVersion(initialVersion)
-	handler, chainTeardown := buildServeHandlerChainWithRuntime(serveHandlerBuild{
+	handler, chainTeardown, rateLimitActive := buildServeHandlerChainWithRuntime(serveHandlerBuild{
 		Cfg:         cfg,
 		Logger:      logger,
 		AuditLogger: auditLogger,
@@ -207,17 +207,18 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	})
 	swappable := reload.NewSwappableHandler(handler)
 	coordinator := newReloadCoordinator(reloadCoordinatorParams{
-		RootCtx:         cmd.Context(),
-		Cfg:             cfg,
-		CfgFile:         cfgFile,
-		Swappable:       swappable,
-		InitialTeardown: chainTeardown,
-		Logger:          logger,
-		AuditLogger:     auditLogger,
-		Deps:            deps,
-		Runtime:         runtime,
-		Versioner:       versioner,
-		BundleVerifier:  bundleVerifier,
+		RootCtx:                cmd.Context(),
+		Cfg:                    cfg,
+		CfgFile:                cfgFile,
+		Swappable:              swappable,
+		InitialTeardown:        chainTeardown,
+		InitialRateLimitActive: rateLimitActive,
+		Logger:                 logger,
+		AuditLogger:            auditLogger,
+		Deps:                   deps,
+		Runtime:                runtime,
+		Versioner:              versioner,
+		BundleVerifier:         bundleVerifier,
 	})
 	defer coordinator.stop()
 
@@ -513,21 +514,24 @@ type serveHandlerBuild struct {
 // Tests that don't care about teardown should continue calling
 // buildServeHandler which discards it — the goroutines die with the test
 // process anyway.
-func buildServeHandlerChainWithRuntime(b serveHandlerBuild) (http.Handler, func()) {
+//
+// The third return value reports whether the built chain includes an
+// active rate-limit middleware; see buildServeHandlerLayersWithRuntime.
+func buildServeHandlerChainWithRuntime(b serveHandlerBuild) (http.Handler, func(), bool) {
 	resolver := runtimeResolver(b.Runtime, b.Cfg)
 	clientProfiles, err := buildServeClientProfiles(b.Cfg, resolver)
 	if err != nil {
 		b.Logger.Error("invalid client profile config", "error", err)
-		return invalidClientProfileHandler(), func() {}
+		return invalidClientProfileHandler(), func() {}, false
 	}
 
 	handler := newServeUpstreamHandler(b.Cfg, resolver, b.Logger)
 	b.ClientProfiles = clientProfiles
-	layers, teardown := buildServeHandlerLayersWithRuntime(b)
+	layers, teardown, rateLimitActive := buildServeHandlerLayersWithRuntime(b)
 	for _, layer := range layers {
 		handler = layer.with(handler)
 	}
-	return handler, teardown
+	return handler, teardown, rateLimitActive
 }
 
 // serveRuntime holds process-scoped objects whose lifetime spans the whole
@@ -712,7 +716,11 @@ func upstreamRequestTimeoutLogValue(cfg *config.Config) string {
 	return cfg.Upstream.RequestTimeout
 }
 
-func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLayer, func()) {
+// The third return value reports whether this chain includes an active
+// rate-limit middleware (profiles with limits, or a global concurrency
+// cap configured) — callers that swap chains on hot reload use it to
+// detect when in-flight quota state is about to be discarded.
+func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLayer, func(), bool) {
 	cfg, logger, auditLogger := b.Cfg, b.Logger, b.AuditLogger
 	runtime, versioner := b.Runtime, b.Versioner
 	rules, clientProfiles := b.Rules, b.ClientProfiles
@@ -771,8 +779,10 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 	// eviction goroutines bound to this chain — callers must invoke it when
 	// the chain is replaced (hot reload) or torn down at shutdown.
 	teardown := func() {}
+	rateLimitActive := false
 	if rlMiddleware, stop := buildRateLimitMiddleware(cfg, logger, runtime); rlMiddleware != nil {
 		teardown = stop
+		rateLimitActive = true
 		layers = append(layers, namedServeHandlerLayer("withRateLimit", rlMiddleware))
 	}
 
@@ -806,7 +816,7 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 	if cfg.Log.AccessLog {
 		layers = append(layers, namedServeHandlerLayer("withAccessLog", withAccessLog(logger)))
 	}
-	return layers, teardown
+	return layers, teardown, rateLimitActive
 }
 
 // buildRateLimitMiddleware constructs the per-profile rate-limit+concurrency
