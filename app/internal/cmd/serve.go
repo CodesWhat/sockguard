@@ -733,7 +733,7 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 		// relative order doesn't affect correctness, only which one a
 		// reader sees "closer to the wire" in this slice.
 		namedServeHandlerLayer("withBuildkitMediator", withBuildkitMediator(cfg, resolver, logger)),
-		namedServeHandlerLayer("withHijack", withHijack(resolver, logger)),
+		namedServeHandlerLayer("withHijack", withHijack(cfg, resolver, logger)),
 		// #152: inserted between hijack and ownership in APPEND order. Later
 		// appends wrap (execute before) earlier ones, so this yields runtime
 		// order ...filter -> visibility -> ownership -> resource-limit guard
@@ -859,13 +859,27 @@ func namedServeHandlerLayer(name string, with func(http.Handler) http.Handler) s
 	return serveHandlerLayer{name: name, with: with}
 }
 
-func withHijack(res *upstream.Resolver, logger *slog.Logger) func(http.Handler) http.Handler {
+func withHijack(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		// Hijack handler: intercepts attach/exec endpoints for native bidirectional
 		// streaming with optimized buffers and TCP half-close signaling. Dials the
 		// same active upstream endpoint as the rest of the proxy.
-		return proxy.HijackHandlerWithDialer(res, logger, next)
+		return proxy.HijackHandlerWithDialer(res, effectiveHijackInactivityTimeout(cfg), logger, next)
 	}
+}
+
+// effectiveHijackInactivityTimeout resolves cfg.Upstream.HijackInactivityTimeout
+// to the time.Duration proxy.HijackHandlerWithDialer consumes, mirroring
+// effectiveUpstreamRequestTimeout. Unlike request_timeout there is no "off"
+// spelling here — hijack_inactivity_timeout is validated at config load to
+// always be a positive duration, so a parse failure degrades to the package
+// default (10m) rather than disabling the deadline outright.
+func effectiveHijackInactivityTimeout(cfg *config.Config) time.Duration {
+	d, err := time.ParseDuration(cfg.Upstream.HijackInactivityTimeout)
+	if err != nil || d <= 0 {
+		return 10 * time.Minute
+	}
+	return d
 }
 
 // withBuildkitMediator intercepts POST /session and POST /grpc once

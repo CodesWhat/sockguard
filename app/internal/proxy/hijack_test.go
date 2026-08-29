@@ -624,7 +624,7 @@ func TestHijackHandlerWithDialer_FullUpgrade(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("next handler should not be called for hijack endpoint")
 	})
-	handler := HijackHandlerWithDialer(unixSocketDialer{socketPath: socketPath}, logger, next)
+	handler := HijackHandlerWithDialer(unixSocketDialer{socketPath: socketPath}, hijackInactivityTimeout, logger, next)
 
 	clientLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1583,7 +1583,7 @@ func TestProxyHijackStreamsClosesConnections(t *testing.T) {
 		upstreamBuf:  bufio.NewReader(strings.NewReader("")),
 		clientConn:   clientConn,
 		clientBuf:    bufio.NewReadWriter(bufio.NewReader(strings.NewReader("")), bufio.NewWriter(io.Discard)),
-	}, logger)
+	}, hijackInactivityTimeout, logger)
 
 	if got := copyCalls.Load(); got != 2 {
 		t.Fatalf("copyHijackBuffer calls = %d, want 2", got)
@@ -1618,7 +1618,7 @@ func TestProxyHijackStreamsWrapperClosesConnections(t *testing.T) {
 		upstreamBuf:  bufio.NewReader(strings.NewReader("")),
 		clientConn:   clientConn,
 		clientBuf:    bufio.NewReadWriter(bufio.NewReader(strings.NewReader("")), bufio.NewWriter(io.Discard)),
-	}, logger)
+	}, hijackInactivityTimeout, logger)
 
 	if clientConn.closeWriteCalls == 0 || upstreamConn.closeWriteCalls == 0 {
 		t.Fatal("expected proxyHijackStreams wrapper to half-close both sides")
@@ -1650,7 +1650,7 @@ func TestProxyHijackStreamsHalfClosesOnCopyPanic(t *testing.T) {
 			upstreamBuf:  bufio.NewReader(strings.NewReader("")),
 			clientConn:   clientConn,
 			clientBuf:    bufio.NewReadWriter(bufio.NewReader(strings.NewReader("")), bufio.NewWriter(io.Discard)),
-		}, logger)
+		}, hijackInactivityTimeout, logger)
 		close(done)
 	}()
 
@@ -1671,6 +1671,123 @@ func TestProxyHijackStreamsHalfClosesOnCopyPanic(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), `msg="hijack: copy panic" direction=client→upstream`) {
 		t.Fatalf("expected client→upstream panic log, got %q", logs.String())
+	}
+}
+
+// TestProxyHijackStreamsTornDownAfterConfiguredInactivityTimeout proves the
+// configurable inactivity timeout (upstream.hijack_inactivity_timeout,
+// threaded into proxyHijackStreams as an explicit parameter rather than the
+// hijackInactivityTimeout package default) actually tears an idle hijacked
+// connection down, at a scaled-down duration instead of the 10m default.
+// The client→upstream direction is given an already-exhausted (EOF) source
+// so the test's timing is driven entirely by the upstream→client direction,
+// which reads from a real net.Pipe conn nobody writes to.
+func TestProxyHijackStreamsTornDownAfterConfiguredInactivityTimeout(t *testing.T) {
+	restoreHijackHooks(t)
+	const timeout = 60 * time.Millisecond
+
+	upstreamConn, upstreamPeer := net.Pipe()
+	defer upstreamPeer.Close()
+	clientConn := &funcConn{}
+
+	var logs safeBuffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	done := make(chan struct{})
+	go func() {
+		proxyHijackStreams(&hijackSession{
+			path:         "/containers/abc/attach",
+			upstreamConn: upstreamConn,
+			upstreamBuf:  bufio.NewReader(upstreamConn),
+			clientConn:   clientConn,
+			clientBuf:    bufio.NewReadWriter(bufio.NewReader(strings.NewReader("")), bufio.NewWriter(io.Discard)),
+		}, timeout, logger)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected an idle hijacked connection to be torn down once the configured inactivity timeout elapsed")
+	}
+
+	if !strings.Contains(logs.String(), "hijack: idle connection closed after inactivity timeout") {
+		t.Fatalf("expected an idle-timeout warn log, got %q", logs.String())
+	}
+	if !strings.Contains(logs.String(), "direction=upstream→client") {
+		t.Fatalf("expected the idle direction named in the log, got %q", logs.String())
+	}
+}
+
+// TestProxyHijackStreamsNotTornDownWhileActive is the twin of
+// TestProxyHijackStreamsTornDownAfterConfiguredInactivityTimeout: an
+// upstream→client stream that keeps receiving data faster than the
+// inactivity timeout must survive well past that timeout, proving the
+// per-Read deadline refresh (not just the initial deadline) is what keeps an
+// active `docker attach`/`exec` session alive.
+func TestProxyHijackStreamsNotTornDownWhileActive(t *testing.T) {
+	restoreHijackHooks(t)
+	const timeout = 150 * time.Millisecond
+	const writeInterval = 10 * time.Millisecond // well under timeout/4's refresh window
+
+	upstreamConn, upstreamPeer := net.Pipe()
+	clientConn := &funcConn{}
+
+	var logs safeBuffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	stopWriter := make(chan struct{})
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		ticker := time.NewTicker(writeInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopWriter:
+				return
+			case <-ticker.C:
+				if _, err := upstreamPeer.Write([]byte{0}); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		proxyHijackStreams(&hijackSession{
+			path:         "/containers/abc/attach",
+			upstreamConn: upstreamConn,
+			upstreamBuf:  bufio.NewReader(upstreamConn),
+			clientConn:   clientConn,
+			clientBuf:    bufio.NewReadWriter(bufio.NewReader(strings.NewReader("")), bufio.NewWriter(io.Discard)),
+		}, timeout, logger)
+		close(done)
+	}()
+
+	// Several multiples of the idle timeout: an idle connection at this
+	// timeout would have been torn down long before this window closes, so
+	// still being open at the end proves activity refreshed the deadline.
+	select {
+	case <-done:
+		t.Fatalf("proxyHijackStreams returned early on an active connection; logs = %q", logs.String())
+	case <-time.After(timeout * 5):
+	}
+
+	close(stopWriter)
+	<-writerDone
+	if err := upstreamPeer.Close(); err != nil {
+		t.Fatalf("close upstream peer: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxyHijackStreams did not return after activity stopped")
+	}
+	if strings.Contains(logs.String(), "hijack: idle connection closed after inactivity timeout") {
+		t.Fatalf("did not expect an idle-timeout warn log while the connection was active, got %q", logs.String())
 	}
 }
 

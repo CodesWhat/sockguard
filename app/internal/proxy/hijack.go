@@ -27,6 +27,14 @@ const hijackBufSize = 64 * 1024
 
 const hijackDialTimeout = 5 * time.Second
 const hijackHandshakeTimeout = 30 * time.Second
+
+// hijackInactivityTimeout is the default per-direction inactivity deadline
+// for hijacked (attach/exec-start) connections, used by HijackHandler (the
+// socket-only entry point, not wired into the production serve chain) and as
+// upstream.hijack_inactivity_timeout's default. HijackHandlerWithDialer — the
+// entry point production wiring uses — takes the effective timeout as an
+// explicit parameter instead, so a configured override never touches this
+// constant.
 const hijackInactivityTimeout = 10 * time.Minute
 
 type bytePool interface {
@@ -119,13 +127,19 @@ func HijackHandler(upstreamSocket string, logger *slog.Logger, next http.Handler
 // HijackHandlerWithDialer is HijackHandler over an upstream.Dialer (typically an
 // *upstream.Resolver), so the hijack path dials the same active endpoint — local
 // socket or remote TCP+TLS — and fails over together with the rest of the proxy.
-func HijackHandlerWithDialer(dialer upstream.Dialer, logger *slog.Logger, next http.Handler) http.Handler {
+//
+// inactivityTimeout bounds how long a hijacked connection may sit idle in
+// either direction before it is torn down (see withReadInactivityDeadline /
+// withWriteInactivityDeadline); it is the caller-resolved value of
+// upstream.hijack_inactivity_timeout, not a package constant, so a configured
+// override reaches every connection this handler upgrades.
+func HijackHandlerWithDialer(dialer upstream.Dialer, inactivityTimeout time.Duration, logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !isHijackRequest(w, r) {
 			next.ServeHTTP(w, r)
 			return
 		}
-		handleHijackDialer(w, r, dialer, logger)
+		handleHijackDialer(w, r, dialer, inactivityTimeout, logger)
 	})
 }
 
@@ -175,16 +189,16 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 		return
 	}
 
-	proxyHijackStreams(session, logger)
+	proxyHijackStreams(session, hijackInactivityTimeout, logger)
 }
 
-func handleHijackDialer(w http.ResponseWriter, r *http.Request, dialer upstream.Dialer, logger *slog.Logger) {
+func handleHijackDialer(w http.ResponseWriter, r *http.Request, dialer upstream.Dialer, inactivityTimeout time.Duration, logger *slog.Logger) {
 	session, ok := upgradeHijackConnectionDialer(w, r, dialer, logger)
 	if !ok {
 		return
 	}
 
-	proxyHijackStreams(session, logger)
+	proxyHijackStreams(session, inactivityTimeout, logger)
 }
 
 func upgradeHijackConnection(w http.ResponseWriter, r *http.Request, upstreamSocket string, logger *slog.Logger) (*hijackSession, bool) {
@@ -253,7 +267,7 @@ func finishHijackUpgrade(w http.ResponseWriter, r *http.Request, upstreamConn ne
 	return session, ok
 }
 
-func proxyHijackStreams(session *hijackSession, logger *slog.Logger) {
+func proxyHijackStreams(session *hijackSession, inactivityTimeout time.Duration, logger *slog.Logger) {
 	// Bidirectional copy with proper half-close signaling.
 	// When one direction reaches EOF, we signal the other side via CloseWrite
 	// so it knows no more data is coming (critical for stdin EOF → container stop).
@@ -266,6 +280,7 @@ func proxyHijackStreams(session *hijackSession, logger *slog.Logger) {
 		&wg,
 		logger,
 		reqPath,
+		inactivityTimeout,
 		hijackCopyStream{
 			direction:      "upstream→client",
 			src:            session.upstreamBuf,
@@ -279,6 +294,7 @@ func proxyHijackStreams(session *hijackSession, logger *slog.Logger) {
 		&wg,
 		logger,
 		reqPath,
+		inactivityTimeout,
 		hijackCopyStream{
 			direction:      "client→upstream",
 			src:            session.clientBuf,
@@ -461,6 +477,7 @@ func startHijackCopy(
 	wg *sync.WaitGroup,
 	logger *slog.Logger,
 	reqPath string,
+	inactivityTimeout time.Duration,
 	stream hijackCopyStream,
 ) {
 	go func() {
@@ -478,12 +495,34 @@ func startHijackCopy(
 			}
 		}()
 
-		reader := withReadInactivityDeadline(stream.src, stream.readConn, hijackInactivityTimeout)
-		writer := withWriteInactivityDeadline(stream.dst, stream.writeConn, hijackInactivityTimeout)
+		reader := withReadInactivityDeadline(stream.src, stream.readConn, inactivityTimeout)
+		writer := withWriteInactivityDeadline(stream.dst, stream.writeConn, inactivityTimeout)
 		if _, err := copyBufferHook(writer, reader, buf); err != nil {
-			logger.Debug("hijack: copy ended", "direction", logging.SafeString(stream.direction), "error", logging.SafeString(err.Error()), "path", logging.SafeString(reqPath))
+			if isInactivityTimeout(err) {
+				// Debug alone hid every idle teardown from an operator running
+				// at the default "info" level (#see hijack idle-timeout issue):
+				// a dropped `docker attach`/`exec` shell left no trace unless
+				// they happened to be running at -v debug. Warn matches the
+				// level buildkitproxy already uses for its own mid-stream
+				// tunnel teardowns (bridge.go: "terminating tunnel").
+				logger.Warn("hijack: idle connection closed after inactivity timeout", "direction", logging.SafeString(stream.direction), "timeout", inactivityTimeout.String(), "path", logging.SafeString(reqPath))
+			} else {
+				logger.Debug("hijack: copy ended", "direction", logging.SafeString(stream.direction), "error", logging.SafeString(err.Error()), "path", logging.SafeString(reqPath))
+			}
 		}
 	}()
+}
+
+// isInactivityTimeout reports whether err is a deadline-exceeded error from
+// the inactivity read/write deadlines set above, as opposed to any other
+// copy-ending condition (peer close, reset, EOF-adjacent I/O error). Every
+// deadline this package sets on a hijacked connection during the copy phase
+// is the inactivity deadline (the handshake deadlines are cleared before
+// proxyHijackStreams starts), so a timeout error here always means the
+// connection went idle past hijackInactivityTimeout/inactivityTimeout.
+func isInactivityTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func newUpstreamHijackRequest(r *http.Request, path string) *http.Request {
