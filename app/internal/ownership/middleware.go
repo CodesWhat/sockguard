@@ -49,8 +49,9 @@ const (
 	// verdictAllow means the request targets a labeled resource that matches
 	// the configured owner.
 	verdictAllow
-	// verdictDeny means the request targets a labeled resource that belongs
-	// to a different owner identity.
+	// verdictDeny means the request targets a resource that ownership policy
+	// cannot authorize because it is missing or its labels do not satisfy the
+	// active owner policy.
 	verdictDeny
 )
 
@@ -73,9 +74,9 @@ type Options struct {
 	// AllowCrossOwnerNamespaceSharing restores the pre-v1.5 pass-through
 	// behavior for POST /containers/create: by default (false), every
 	// HostConfig.NetworkMode/PidMode/IpcMode/UTSMode/UsernsMode "container:<ref>"
-	// namespace-sharing target is resolved and the request is denied if the
-	// referenced container belongs to a different owner. Set true to
-	// restore the old unchecked behavior.
+	// namespace-sharing target is looked up and the request is denied if the
+	// referenced container is missing or does not belong to the configured
+	// owner. Set true to restore the old unchecked behavior.
 	AllowCrossOwnerNamespaceSharing bool
 }
 
@@ -290,7 +291,7 @@ func allowPathOwnershipRequest(
 			return verdictPassThrough, "", err
 		}
 		if !found {
-			return verdictPassThrough, "", nil
+			return verdictDeny, "owner policy denied access to exec session", nil
 		}
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindContainer, containerID, opts, false)
 	}
@@ -340,7 +341,7 @@ func allowPathOwnershipRequest(
 			return verdictPassThrough, "", err
 		}
 		if !found {
-			return verdictPassThrough, "", nil
+			return verdictDeny, "owner policy denied access to exec session", nil
 		}
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindContainer, containerID, opts, false)
 	}
@@ -403,7 +404,7 @@ func checkOwnedResource(ctx context.Context, inspectResource func(context.Contex
 		return verdictPassThrough, "", err
 	}
 	if !found {
-		return verdictPassThrough, "", nil
+		return verdictDeny, fmt.Sprintf("owner policy denied access to %s", singularResource(kind)), nil
 	}
 	if ownerMatches(labels, opts.LabelKey, opts.Owner, allowUnowned) {
 		return verdictAllow, "", nil
@@ -412,14 +413,12 @@ func checkOwnedResource(ctx context.Context, inspectResource func(context.Contex
 }
 
 // checkContainerNamespaceSharingRefs denies POST /containers/create when any
-// namespace-sharing container: target belongs to a different owner than
+// namespace-sharing container: target is missing or does not belong to
 // opts.Owner. allowUnowned is false for each check — same as every other
 // container-targeting ownership check — so an unlabeled target is treated
 // as a cross-owner risk rather than implicitly trusted. Returns the first
-// cross-owner denial encountered; otherwise the strictest verdict across
-// all refs (verdictAllow if at least one ref resolved to an owned
-// container, verdictPassThrough if every ref resolved to nothing sockguard
-// could inspect).
+// denial encountered; otherwise verdictAllow when at least one target was
+// checked, or verdictPassThrough when there are no targets.
 func checkContainerNamespaceSharingRefs(
 	ctx context.Context,
 	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),

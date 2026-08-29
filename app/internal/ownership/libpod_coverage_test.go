@@ -1,7 +1,6 @@
 package ownership
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -403,13 +402,6 @@ func TestLibpodUnscopeableReadsWereNotCoveredByTheExistingIdentifiers(t *testing
 			}
 			if libpodNeedsOwnerFilter(tt.path) {
 				t.Fatalf("libpodNeedsOwnerFilter(%q) = true; the endpoint accepts no filters query parameter", tt.path)
-			}
-			if !ok {
-				return
-			}
-			labels, found, err := fakeInspector{}.inspectResource(context.Background(), dockerresource.KindContainer, identifier)
-			if err != nil || found || labels != nil {
-				t.Fatalf("inspect of a container named %q = %v, %v, %v; want not-found, which is why the inspect alone would pass the request through", identifier, labels, found, err)
 			}
 		})
 	}
