@@ -350,13 +350,18 @@ and the acknowledgment itself.
 
 Optimized for [Homarr](https://homarr.dev) dashboard with container management.
 
-**Use for:** Homarr with start/stop/restart controls enabled.
+**Use for:** Homarr with start/stop/restart/remove controls enabled.
 
 ```yaml
-# Allows: container read (list, inspect, stats), start, stop, restart
-# Allows: image read
-# Denies: exec, create, network/volume writes
+# Allows: GET container list + inspect + stats + logs
+# Allows: POST start/stop/restart and DELETE container
+# Denies: every other Docker API route, including all image routes
 ```
+
+Homarr v1.76.2 uses container logs, so this preset still sets
+`insecure_allow_read_exfiltration: true`. Logs are the only exfiltration route
+it allows; container archive, export and attach routes and image tarball routes
+stay denied.
 
 ## Diun (`diun.yaml`)
 
