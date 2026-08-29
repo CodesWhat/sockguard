@@ -96,10 +96,10 @@ rules:
   - match: { method: GET, path: "/events" }
     action: allow
 
-  # Container reads — list, inspect, stats, top, changes, and logs.
+  # Container reads — list, inspect, stats, changes, and logs.
   # /containers/*/logs is required by Portwing's GetContainerLogs().
-  # /containers/*/archive, /containers/*/export, and /containers/*/attach
-  # are intentionally omitted — bulk-data exfiltration paths Portwing does not use.
+  # /containers/*/top, /containers/*/archive, /containers/*/export, and
+  # /containers/*/attach are intentionally omitted because Portwing does not use them.
   - match: { method: GET, path: "/containers/json" }
     action: allow
   - match: { method: GET, path: "/containers/*/json" }
@@ -107,8 +107,6 @@ rules:
   - match: { method: GET, path: "/containers/*/logs" }
     action: allow
   - match: { method: GET, path: "/containers/*/stats" }
-    action: allow
-  - match: { method: GET, path: "/containers/*/top" }
     action: allow
   - match: { method: GET, path: "/containers/*/changes" }
     action: allow

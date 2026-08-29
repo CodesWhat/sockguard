@@ -260,7 +260,7 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			hardDeny := false
 			reasonCode := ruleDecisionReasonCode(action, reason)
 			stampDecisionOnMeta(meta, action, ruleIndex, reasonCode, reason, normPath)
-			if action == ActionAllow && !opts.AllowReadExfiltration && isContainerTopRead(r.Method, normPath) {
+			if !opts.AllowReadExfiltration && isContainerTopRead(r.Method, normPath) {
 				action = ActionDeny
 				hardDeny = true
 				reasonCode = reasonCodeReadExfiltrationAckRequired

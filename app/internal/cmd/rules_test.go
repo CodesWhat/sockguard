@@ -990,6 +990,11 @@ func TestContainerTopAffectedConfigsChooseLeastPrivilege(t *testing.T) {
 		{path: filepath.Join("..", "..", "configs", "drydock-with-selfupdate.yaml")},
 		{path: filepath.Join("..", "..", "configs", "drydock.yaml")},
 		{path: filepath.Join("..", "..", "configs", "multi-listener.yaml")},
+		{path: filepath.Join("..", "..", "configs", "portwing-with-build.yaml"), wantReadExfilAck: true},
+		{path: filepath.Join("..", "..", "configs", "portwing-with-compose.yaml"), wantReadExfilAck: true},
+		{path: filepath.Join("..", "..", "configs", "portwing-with-exec.yaml"), wantReadExfilAck: true},
+		{path: filepath.Join("..", "..", "configs", "portwing-with-mediated-build.yaml"), wantReadExfilAck: true},
+		{path: filepath.Join("..", "..", "configs", "portwing.yaml"), wantReadExfilAck: true},
 		{
 			path:             filepath.Join("..", "..", "configs", "podman-readonly.yaml"),
 			wantTopRule:      true,
@@ -998,6 +1003,9 @@ func TestContainerTopAffectedConfigsChooseLeastPrivilege(t *testing.T) {
 		{path: filepath.Join("..", "..", "..", "examples", "compose", "cis-docker-benchmark", "sockguard.yaml")},
 		{path: filepath.Join("..", "..", "..", "examples", "compose", "drydock", "sockguard.yaml")},
 		{path: filepath.Join("..", "..", "..", "examples", "compose", "multi-host", "sockguard.yaml")},
+		{path: filepath.Join("..", "..", "..", "examples", "compose", "portwing", "sockguard.yaml"), wantReadExfilAck: true},
+		{path: filepath.Join("..", "..", "..", "examples", "compose", "tri-tool", "sockguard-with-exec.yaml"), wantReadExfilAck: true},
+		{path: filepath.Join("..", "..", "..", "examples", "compose", "tri-tool", "sockguard.yaml"), wantReadExfilAck: true},
 	}
 
 	for _, tt := range tests {

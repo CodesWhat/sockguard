@@ -44,7 +44,10 @@ func newGitLabPresetHandler(t *testing.T, socketPath string) http.Handler {
 		t,
 		socketPath,
 		cfg.Rules,
-		filter.Options{PolicyConfig: policyConfig},
+		filter.Options{
+			PolicyConfig:          policyConfig,
+			AllowReadExfiltration: cfg.InsecureAllowReadExfiltration,
+		},
 		ownership.Options{},
 	)
 }

@@ -56,6 +56,7 @@ func TestPortwingPresetConformance(t *testing.T) {
 		{"container-remove", http.MethodDelete, "/containers/abc", "", true},
 		{"container-logs-follow", http.MethodGet, "/containers/abc/logs?follow=1", "", true},
 		{"container-stats", http.MethodGet, "/containers/abc/stats?stream=false&one-shot=true", "", true},
+		{"container-top-denied", http.MethodGet, "/containers/abc/top", "", false},
 
 		// Default-deny surface: bulk-data exfiltration streams, build, secrets
 		// — none are in either preset.

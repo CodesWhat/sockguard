@@ -850,8 +850,10 @@ you are confident the deny rate is correct, then flip to `enforce`.
 
 > Pre-auth admission gates — `clients.allowed_cidrs` CIDR checks and
 > identity-lookup failures — stay `enforce` regardless of the profile's mode.
-> Those are unsafe to relax through rollout mode because they fire before a
-> profile is even resolved.
+> Unacknowledged Docker-compatible and native libpod container process-list
+> reads also stay `enforce`; `warn` and `audit` cannot replace the global
+> `insecure_allow_read_exfiltration: true` acknowledgment. These gates are
+> unsafe to relax through rollout mode.
 
 ```yaml filename="sockguard.yaml"
 clients:

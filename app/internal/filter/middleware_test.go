@@ -358,6 +358,49 @@ func TestMiddlewareContainerTopRequiresReadExfiltrationAcknowledgmentForEveryRul
 	}
 }
 
+func TestMiddlewareContainerTopAcknowledgmentCannotBeRelaxedByRolloutMode(t *testing.T) {
+	denyAll, err := CompileRule(Rule{
+		Methods: []string{"*"},
+		Pattern: "/**",
+		Action:  ActionDeny,
+		Index:   0,
+	})
+	if err != nil {
+		t.Fatalf("CompileRule: %v", err)
+	}
+
+	for _, mode := range []string{"warn", "audit"} {
+		for _, requestPath := range []string{
+			"/v1.53/containers/payments/top",
+			"/v5.0.0/libpod/containers/payments/top",
+		} {
+			t.Run(mode+" "+requestPath, func(t *testing.T) {
+				reached := false
+				handler := MiddlewareWithOptions([]*CompiledRule{denyAll}, testLogger(), Options{})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					reached = true
+					w.WriteHeader(http.StatusNoContent)
+				}))
+
+				meta := &logging.RequestMeta{RolloutMode: mode}
+				req := httptest.NewRequest(http.MethodGet, requestPath, nil)
+				req = req.WithContext(logging.WithMeta(req.Context(), meta))
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+
+				if reached {
+					t.Fatal("container top reached upstream without insecure_allow_read_exfiltration acknowledgment")
+				}
+				if rec.Code != http.StatusForbidden {
+					t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+				}
+				if meta.ReasonCode != reasonCodeReadExfiltrationAckRequired {
+					t.Fatalf("reason code = %q, want %q", meta.ReasonCode, reasonCodeReadExfiltrationAckRequired)
+				}
+			})
+		}
+	}
+}
+
 func TestMiddlewareRejectsOversizedBoundedRequestBodiesWith413(t *testing.T) {
 	tests := []struct {
 		name       string
