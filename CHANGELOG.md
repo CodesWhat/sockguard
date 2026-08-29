@@ -29,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The admin API reference describes `bundle_source` as the basename of `policy_bundle.signature_path` rather than the configured path. The code strips the directory on purpose so the response cannot leak the host's filesystem layout, and the old wording invited operators to expect a full path.
 - The migration guide's link into the configuration reference points at `#request-body-policy-reference`, which exists. It pointed at `#request-body-inspection`, which does not, so the anchor silently dropped readers at the top of the page.
 
+### Build
+
+- **GoReleaser moves from v2.15.3 to v2.18.0, which fixes every `brew style` offence in the generated cask.** The older template emitted `on_intel` before `on_arm`, `url` before `sha256` inside each block, and a blank line between `on_macos` and `on_linux`, for 13 `Cask/StanzaOrder` and `Cask/StanzaGrouping` violations in `Casks/sockguard.rb`. The file is marked DO NOT EDIT and is overwritten on every release, so the tap could never fix it; the pin was the only lever. A test now holds the floor at v2.18.0.
+
 ### Dependencies
 
 - `github.com/google/go-containerregistry` moves from v0.21.8 to v0.21.9. It is reached only from the opt-in `image_trust` registry-fetch path, never the core proxy path, and `govulncheck` reports zero reachable vulnerabilities either side of the bump.

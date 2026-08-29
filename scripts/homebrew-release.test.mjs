@@ -79,3 +79,19 @@ test("public and maintainer docs describe the Homebrew release path", () => {
   assert.match(releasing, /verify-homebrew/);
   assert.match(changelog, /^- \*\*Homebrew distribution/m);
 });
+
+test("the pinned GoReleaser emits a cask that passes brew style", () => {
+  // GoReleaser < 2.16 emitted `on_intel` before `on_arm` and `url` before
+  // `sha256` inside each block, plus a blank line between `on_macos` and
+  // `on_linux`. That is 13 Cask/StanzaOrder and Cask/StanzaGrouping offences
+  // on a file every release overwrites, so it can only be fixed here.
+  // Downgrading past 2.18.0 reintroduces all of them.
+  const workflow = read(".github/workflows/release-from-tag.yml");
+  const pin = workflow.match(/^ {2}GORELEASER_VERSION: v(\d+)\.(\d+)\.(\d+)$/m);
+
+  assert.ok(pin, "release-from-tag.yml must pin GORELEASER_VERSION to an exact version");
+
+  const [major, minor] = pin.slice(1).map(Number);
+  assert.equal(major, 2, "GoReleaser v2 is the supported major");
+  assert.ok(minor >= 18, `GORELEASER_VERSION must be at least v2.18.0, got ${pin[0].trim()}`);
+});
