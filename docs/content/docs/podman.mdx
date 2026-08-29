@@ -152,6 +152,10 @@ same way they cover Docker-compat:
   ordinary per-image requests. Percent-encoded slashes, tags, and digests are
   decoded once. A comma is not a list separator in the handlers Podman
   actually runs, so clients must repeat the query key for multiple images.
+  Podman's case-insensitive query decoder also accepts `References` and
+  `Images`; Sockguard combines every casing in arrival order before checking,
+  deduplicates decoded identifiers for lookup, and refuses more than 256
+  selected values before deduplication.
   A foreign, unlabeled, missing, or lookup-failed member prevents the daemon
   from seeing any part of the batch.
 - `GET /libpod/events` is owner-filtered but is only partly expressible as a

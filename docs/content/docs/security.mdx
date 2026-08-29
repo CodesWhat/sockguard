@@ -232,7 +232,11 @@ unlabeled, missing, or lookup-failed member stops the whole request, and the
 original query is forwarded byte-for-byte only after all checks pass. Values
 are percent-decoded once and repeated keys form the list. Commas remain part
 of one value because neither Moby nor Podman's string-slice decoder splits
-them.
+them. Podman's `References` and `Images` key spellings are case-insensitive;
+Sockguard combines every casing in arrival order, deduplicates decoded
+identifiers for ownership lookup, and refuses more than 256 selected values
+before deduplication so one action cannot amplify into unbounded daemon
+inspect work.
 
 Two collection-expanding forms are refused instead of guessed at. Podman's
 batch remove treats an empty `images` list as a request to enumerate and remove

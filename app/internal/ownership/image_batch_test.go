@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/codeswhat/sockguard/app/internal/dockerresource"
@@ -43,6 +44,16 @@ func TestImageBatchOwnershipPreflightsEveryNamedImage(t *testing.T) {
 			},
 		},
 		{
+			name:   "libpod export folds every reference key variant in arrival order",
+			method: http.MethodGet,
+			target: "/libpod/images/export?References=mine%3A1&REFERENCES=theirs%3A1&references=ours%3A1",
+			wantIDs: []string{
+				"mine:1",
+				"theirs:1",
+				"ours:1",
+			},
+		},
+		{
 			name:    "libpod export bare reference resolves one image",
 			method:  http.MethodGet,
 			target:  "/libpod/images/export?references=alpine",
@@ -55,6 +66,16 @@ func TestImageBatchOwnershipPreflightsEveryNamedImage(t *testing.T) {
 			wantIDs: []string{
 				"registry.example/team/app:1",
 				"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+			},
+		},
+		{
+			name:   "libpod remove folds every image key variant in arrival order",
+			method: http.MethodDelete,
+			target: "/libpod/images/remove?Images=mine%3A1&IMAGES=theirs%3A1&images=ours%3A1",
+			wantIDs: []string{
+				"mine:1",
+				"theirs:1",
+				"ours:1",
 			},
 		},
 		{
@@ -114,6 +135,90 @@ func TestImageBatchOwnershipPreflightsEveryNamedImage(t *testing.T) {
 				t.Fatalf("inspected images = %#v, want %#v", gotIDs, tt.wantIDs)
 			}
 		})
+	}
+}
+
+func TestImageBatchOwnershipDeduplicatesUpstreamLookups(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		target string
+	}{
+		{
+			name:   "compat repeated names",
+			method: http.MethodGet,
+			target: "/images/get?names=mine%3A1&names=mine%3A1",
+		},
+		{
+			name:   "libpod export repeated case variants",
+			method: http.MethodGet,
+			target: "/libpod/images/export?references=mine%3A1&References=mine%3A1&REFERENCES=mine%3A1",
+		},
+		{
+			name:   "libpod remove repeated case variants",
+			method: http.MethodDelete,
+			target: "/libpod/images/remove?images=mine%3A1&Images=mine%3A1&IMAGES=mine%3A1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inspector := &recordingInspector{resources: map[string]map[string]inspectResult{
+				string(dockerresource.KindImage): {
+					"mine:1": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+				},
+			}}
+			handler := middlewareWithDeps(
+				testLogger(),
+				Options{Owner: "job-123", LabelKey: "com.sockguard.owner"},
+				inspector.inspectResource,
+				inspector.inspectExec,
+			)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(tt.method, tt.target, nil))
+
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
+			}
+			if len(inspector.calls) != 1 || inspector.calls[0].id != "mine:1" {
+				t.Fatalf("inspect calls = %#v, want one lookup for mine:1", inspector.calls)
+			}
+		})
+	}
+}
+
+func TestImageBatchOwnershipRejectsTooManySelectedReferencesBeforeLookup(t *testing.T) {
+	const maxSelectedReferences = 256
+
+	inspector := &recordingInspector{resources: map[string]map[string]inspectResult{
+		string(dockerresource.KindImage): {
+			"mine:1": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+		},
+	}}
+	handler := middlewareWithDeps(
+		testLogger(),
+		Options{Owner: "job-123", LabelKey: "com.sockguard.owner"},
+		inspector.inspectResource,
+		inspector.inspectExec,
+	)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("oversized image batch reached the upstream")
+	}))
+
+	target := "/libpod/images/export?" + strings.Repeat("References=mine%3A1&", maxSelectedReferences+1)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "exceeds 256 image reference limit") {
+		t.Fatalf("body = %q, want image reference limit", rec.Body.String())
+	}
+	if len(inspector.calls) != 0 {
+		t.Fatalf("inspect calls = %#v, want none", inspector.calls)
 	}
 }
 

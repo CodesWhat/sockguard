@@ -16,38 +16,73 @@ type imageBatchOwnershipReferences struct {
 	denialReason string
 }
 
+// maxImageBatchReferences bounds the internal inspect fan-out caused by one
+// client action. The limit applies before deduplication so a duplicate-only
+// query cannot bypass the request-work bound.
+const maxImageBatchReferences = 256
+
+type imageBatchQueryValue struct {
+	key   string
+	value string
+}
+
 func isImageBatchOwnershipPath(method, normPath string) bool {
 	return method == http.MethodGet && (normPath == "/images/get" || normPath == libpodPrefix+"images/export") ||
 		method == http.MethodDelete && normPath == libpodPrefix+"images/remove"
 }
 
 func parseImageBatchOwnershipReferences(r *http.Request, normPath string) (*imageBatchOwnershipReferences, error) {
-	query, err := url.ParseQuery(r.URL.RawQuery)
+	query, err := parseImageBatchQuery(r.URL.RawQuery)
 	if err != nil {
 		return nil, fmt.Errorf("invalid image batch query: %w", err)
 	}
 
 	key := "names"
+	foldKeys := false
 	switch normPath {
 	case libpodPrefix + "images/export":
 		key = "references"
+		foldKeys = true
 	case libpodPrefix + "images/remove":
 		key = "images"
-		allValues := query["all"]
-		if len(allValues) > 0 {
-			_, err := strconv.ParseBool(allValues[len(allValues)-1])
-			if err != nil {
+		foldKeys = true
+		var lastAllValue string
+		hasAllValue := false
+		for _, field := range query {
+			if field.key == "all" {
+				lastAllValue = field.value
+				hasAllValue = true
+			}
+		}
+		if hasAllValue {
+			if _, err := strconv.ParseBool(lastAllValue); err != nil {
 				return nil, fmt.Errorf("invalid image batch query: all: %w", err)
 			}
 		}
 	}
 
-	identifiers := query[key]
+	identifiers := make([]string, 0)
+	for _, field := range query {
+		if field.key == key || foldKeys && strings.EqualFold(field.key, key) {
+			identifiers = append(identifiers, field.value)
+		}
+	}
+	if len(identifiers) > maxImageBatchReferences {
+		return nil, fmt.Errorf("invalid image batch query: selected images exceeds %d image reference limit", maxImageBatchReferences)
+	}
+	uniqueIdentifiers := make([]string, 0, len(identifiers))
+	seen := make(map[string]struct{}, len(identifiers))
 	for _, identifier := range identifiers {
 		if identifier == "" {
 			return nil, fmt.Errorf("invalid image batch query: %s contains an empty image reference", key)
 		}
+		if _, duplicate := seen[identifier]; duplicate {
+			continue
+		}
+		seen[identifier] = struct{}{}
+		uniqueIdentifiers = append(uniqueIdentifiers, identifier)
 	}
+	identifiers = uniqueIdentifiers
 
 	if normPath == libpodPrefix+"images/remove" && len(identifiers) == 0 {
 		return &imageBatchOwnershipReferences{denialReason: "owner policy denied unscoped image batch removal"}, nil
@@ -61,6 +96,41 @@ func parseImageBatchOwnershipReferences(r *http.Request, normPath string) (*imag
 	}
 
 	return &imageBatchOwnershipReferences{identifiers: identifiers}, nil
+}
+
+// parseImageBatchQuery follows net/url.ParseQuery's decoding and validation
+// rules while retaining the client's field order. That order keeps repeated
+// ownership lookups deterministic after libpod's case-insensitive query-key
+// matching combines differently-cased spellings into one conservative set.
+func parseImageBatchQuery(rawQuery string) ([]imageBatchQueryValue, error) {
+	values := make([]imageBatchQueryValue, 0)
+	for rawQuery != "" {
+		field := rawQuery
+		if before, after, found := strings.Cut(rawQuery, "&"); found {
+			field = before
+			rawQuery = after
+		} else {
+			rawQuery = ""
+		}
+		if strings.Contains(field, ";") {
+			return nil, fmt.Errorf("invalid semicolon separator in query")
+		}
+		if field == "" {
+			continue
+		}
+
+		rawKey, rawValue, _ := strings.Cut(field, "=")
+		key, err := url.QueryUnescape(rawKey)
+		if err != nil {
+			return nil, err
+		}
+		value, err := url.QueryUnescape(rawValue)
+		if err != nil {
+			return nil, err
+		}
+		values = append(values, imageBatchQueryValue{key: key, value: value})
+	}
+	return values, nil
 }
 
 func compatImageExportNamesOneImage(identifier string) bool {
