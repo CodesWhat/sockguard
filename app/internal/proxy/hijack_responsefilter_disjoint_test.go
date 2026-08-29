@@ -85,6 +85,7 @@ func TestHijackCandidatePathsAreNotRedactableShapes(t *testing.T) {
 			}
 
 			resp := jsonResponse(t, path, redactableBody)
+			defer func() { _ = resp.Body.Close() }()
 			if err := allRedactionsEnabled().ModifyResponse(resp); err != nil {
 				t.Fatalf("ModifyResponse(%q) = %v, want nil", path, err)
 			}
@@ -104,6 +105,7 @@ func TestHijackCandidatePathsAreNotRedactableShapes(t *testing.T) {
 // subtest would trivially compare equal and the invariant would go unguarded.
 func TestRedactableBodyFixtureIsActuallyRedacted(t *testing.T) {
 	resp := jsonResponse(t, "/containers/c1/json", redactableBody)
+	defer func() { _ = resp.Body.Close() }()
 	resp.Request.Method = http.MethodGet
 
 	if err := allRedactionsEnabled().ModifyResponse(resp); err != nil {

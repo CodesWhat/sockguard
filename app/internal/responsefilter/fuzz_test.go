@@ -2,6 +2,7 @@ package responsefilter
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/url"
@@ -67,4 +68,62 @@ func truncateResponseFuzzBytes(body []byte, max int) []byte {
 		return body[:max]
 	}
 	return body
+}
+
+// FuzzFilterSystemDataUsage exercises the /system/df body rewriter against
+// arbitrary input. The property that matters is not "no error": a body the
+// filter cannot prove safe must fail, and the caller turns that into a 502.
+// What must hold on every accepted input is that the result is still valid
+// JSON, is never larger in section count than what went in, and carries no
+// top-level key outside the allowlist. That last one is the invariant the
+// leak this filter closes was a violation of, so a fuzzer that only checked
+// for panics would not have caught it.
+func FuzzFilterSystemDataUsage(f *testing.F) {
+	f.Add([]byte(`{"ImageUsage":{"ActiveCount":1,"TotalCount":2,"Reclaimable":3,"TotalSize":4,"Items":[{"Id":"a","Labels":{"o":"mine"}}]}}`))
+	f.Add([]byte(`{"LayersSize":9,"Containers":[{"Id":"c","Labels":{"o":"mine"}}],"Images":[],"Volumes":null,"BuildCache":[{"ID":"bc"}]}`))
+	f.Add([]byte(`{"ContainerUsage":{"Items":[]},"ImageUsage":{"Items":[]},"VolumeUsage":{"Items":[]},"BuildCacheUsage":{"Items":[]}}`))
+	f.Add([]byte(`{"PluginUsage":{"Items":[{"Id":"p"}]},"CheckpointUsage":[{"Id":"cp"}],"BuilderSize":777}`))
+	f.Add([]byte(`{"ContainerUsage":"nope"}`))
+	f.Add([]byte(`{"ContainerUsage":{"Items":{}}}`))
+	f.Add([]byte(`{"Containers":{}}`))
+	f.Add([]byte(`[]`))
+	f.Add([]byte(`not json`))
+	f.Add([]byte(``))
+
+	// Deterministic so a crasher replays identically: keep every item whose
+	// raw bytes contain "mine", which exercises both the keep and the drop
+	// arms without depending on the fuzzer's input shape.
+	keep := func(_ SystemDataUsageSection, item json.RawMessage) (bool, error) {
+		return bytes.Contains(item, []byte("mine")), nil
+	}
+
+	f.Fuzz(func(t *testing.T, body []byte) {
+		body = truncateResponseFuzzBytes(body, maxResponseFuzzBytes)
+
+		out, dropped, err := FilterSystemDataUsage(body, keep)
+		if err != nil {
+			if out != nil || dropped != nil {
+				t.Fatalf("FilterSystemDataUsage returned err=%v with out=%q dropped=%v; a failure must yield nothing for the caller to forward", err, out, dropped)
+			}
+			return
+		}
+
+		var payload map[string]json.RawMessage
+		if uerr := json.Unmarshal(out, &payload); uerr != nil {
+			t.Fatalf("filtered body is not a JSON object: %v (out=%q, in=%q)", uerr, out, body)
+		}
+		for key := range payload {
+			if _, known := knownSystemDataUsageKeys[key]; !known {
+				t.Fatalf("unclassifiable top-level key %q survived filtering: out=%q, in=%q", key, out, body)
+			}
+		}
+		for _, name := range dropped {
+			if _, known := knownSystemDataUsageKeys[name]; known {
+				t.Fatalf("known key %q reported as dropped: dropped=%v, in=%q", name, dropped, body)
+			}
+			if _, still := payload[name]; still {
+				t.Fatalf("key %q reported as dropped but is still in the body: out=%q", name, out)
+			}
+		}
+	})
 }
