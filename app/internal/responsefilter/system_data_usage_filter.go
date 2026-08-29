@@ -15,6 +15,69 @@ import (
 // GET /system/df endpoint.
 const SystemDataUsagePath = "/system/df"
 
+// LibpodSystemDataUsagePath is the normalized path of Podman's NATIVE
+// GET /libpod/system/df endpoint. It is not a spelling of
+// SystemDataUsagePath: Podman registers the two on separate handlers that
+// return different bodies (pkg/api/server/register_system.go at v5.8.1 wires
+// /system/df to compat.GetDiskUsage and /libpod/system/df to
+// libpod.DiskUsage), and NormalizePath strips the API version prefix but not
+// the /libpod segment, so the two never collapse onto one another.
+//
+// The version-prefixed spelling a real client sends normalizes to exactly
+// this constant. Podman reports its own release string as the libpod API
+// version — version.APIVersion[Libpod][CurrentAPI] is version.Version, which
+// is rawversion.RawVersion, "5.8.1" at that tag — and only the versioned
+// route is registered for the native endpoint, so bindings issue
+// /v5.8.1/libpod/system/df. stripVersionPrefix accepts the three-part semver
+// Podman uses as well as any other /vN[.N[.N]]/ form the route regex
+// (/v{version:[0-9][0-9A-Za-z.-]*}) admits, so /v5.0.0/libpod/system/df
+// normalizes here too.
+const LibpodSystemDataUsagePath = "/libpod" + SystemDataUsagePath
+
+// LibpodSystemDataUsageDenyReason is the operator-facing reason the ownership
+// and visibility middlewares report when they refuse GET /libpod/system/df.
+// Both share this string so the two layers cannot drift into explaining the
+// same refusal differently.
+//
+// The refusal exists because the native endpoint's body cannot be classified
+// at all, not because filtering it was merely unimplemented. libpod.DiskUsage
+// serializes entities.SystemDfReport verbatim, and at Podman v5.8.1
+// (pkg/domain/entities/types/system.go) that report is:
+//
+//	SystemDfReport          {ImagesSize, Images, Containers, Volumes}
+//	SystemDfImageReport     {Repository, Tag, ImageID, Created, Size,
+//	                         SharedSize, UniqueSize, Containers}
+//	SystemDfContainerReport {ContainerID, Image, Command, LocalVolumes, Size,
+//	                         RWSize, Created, Status, Names}
+//	SystemDfVolumeReport    {VolumeName, Links, Size, ReclaimableSize}
+//
+// None of the three item structs carries a Labels field, and none of them
+// carries a json tag either, so those Go field names are the wire names.
+// Owner isolation and visibility policy both decide per item by reading a
+// label off that item, which is why FilterSystemDataUsage can scope the
+// Docker-compat shape: its Images/Containers/Volumes entries are
+// ImageSummary/ContainerSummary/Volume objects, all of which have Labels.
+// Nothing in the native report identifies a tenant, so every item in it is
+// unclassifiable in exactly the sense a build-cache record is — and this
+// package's answer to unclassifiable is already "hidden, never forwarded".
+//
+// Refusing is the honest form of that here rather than emptying the report.
+// A rewritten body would report zero images, zero containers and zero volumes
+// to `podman system df`, which is indistinguishable from an idle host and
+// invites the operator to believe an isolation guarantee the shape cannot
+// support. A refusal says which endpoint could not be scoped and why.
+//
+// Correlating the report against the label-filtered libpod list endpoints
+// (/libpod/containers/json and friends) to recover an owned-ID set is the
+// only mechanism that could isolate this shape. It is deliberately not what
+// this does: it turns one client request into several upstream ones, it makes
+// the result depend on ID-spelling agreement between two different Podman
+// report types, and every aggregate in the response would still have to be
+// zeroed. That is a different feature, not a completion of this one.
+const LibpodSystemDataUsageDenyReason = "libpod system data usage denied: " +
+	"/libpod/system/df returns Podman's native disk-usage report, whose image, container and volume " +
+	"entries carry no labels, so it cannot be scoped to one caller"
+
 // SystemDataUsageSection names the resource section of a /system/df response
 // that an item was decoded from, so a caller's keep predicate can apply the
 // right policy without re-deriving the item's kind from its fields.

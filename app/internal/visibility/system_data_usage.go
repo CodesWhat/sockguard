@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/codeswhat/sockguard/app/internal/httpjson"
 	"github.com/codeswhat/sockguard/app/internal/logging"
 	"github.com/codeswhat/sockguard/app/internal/responsefilter"
 )
@@ -35,6 +36,21 @@ func handleVisibilitySystemDataUsageRequest(logger *slog.Logger, next http.Handl
 		}
 		return err
 	})
+}
+
+// denyLibpodSystemDataUsage refuses GET /libpod/system/df with a 403 without
+// contacting the upstream, so the host inventory is never buffered.
+//
+// The status is 403 rather than the 404 handleVisibilityInspectRequest returns
+// for a hidden resource. 404 exists there to deny an existence oracle for a
+// caller-named resource; /libpod/system/df is a fixed endpoint of the Podman
+// API whose existence is public, and pretending it is absent would send an
+// operator debugging their rules in the wrong direction. Like every other
+// response-side control in this package it applies regardless of rollout mode.
+func denyLibpodSystemDataUsage(w http.ResponseWriter, r *http.Request) {
+	reason := responsefilter.LibpodSystemDataUsageDenyReason
+	logging.SetDeniedWithCode(w, r, reasonCodeVisibilityLibpodDataUsage, reason, nil)
+	_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: reason})
 }
 
 // flushSystemDataUsage filters the buffered /system/df object response item by
