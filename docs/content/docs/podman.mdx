@@ -167,8 +167,10 @@ same way they cover Docker-compat:
   platform can differ from the default platform returned by an ordinary image
   inspect. Sockguard cannot prove every exported platform's owner through that
   inspect shape, so it fails closed instead of treating the selector as one
-  image. An omitted `names` list is still forwarded to Docker's own
-  no-reference error.
+  image. Podman's compatibility decoder also accepts case-folded spellings such
+  as `Names`, so Sockguard folds that key; this is only more conservative on
+  dockerd, which requires exact lowercase `names`. An omitted `names` list is
+  still forwarded to the daemon's own no-reference error.
 - `GET /libpod/events` is owner-filtered but is only partly expressible as a
   visibility policy, and that asymmetry is deliberate. Podman evaluates
   several values under one event filter key disjunctively, so a `label=` value

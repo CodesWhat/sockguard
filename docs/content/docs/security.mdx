@@ -257,8 +257,11 @@ the full index, and an explicit platform can differ from the default platform
 whose config the ordinary image inspect returns. Sockguard cannot enumerate
 and authorize every exported config through that inspect shape, so every named
 compatibility export fails closed rather than relying on the classic image
-store's narrower behavior. An omitted `names` list is still forwarded to the
-daemon's own no-reference error.
+store's narrower behavior. Podman's Docker-compatible decoder accepts
+case-folded spellings such as `Names`, so Sockguard folds the key too. Dockerd
+requires exact lowercase `names`; applying the fold there is conservative and
+cannot admit an export dockerd would otherwise reject. An omitted `names` list
+is still forwarded to the daemon's own no-reference error.
 
 These native checks are preflights, not a daemon transaction. An image tag can
 still be rebound between inspect and action, and a later daemon-side failure

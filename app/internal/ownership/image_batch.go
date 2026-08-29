@@ -43,15 +43,16 @@ func parseImageBatchOwnershipReferences(r *http.Request, normPath string) (*imag
 	}
 
 	key := "names"
-	foldKeys := false
+	// Podman's native and Docker-compatible handlers both use Gorilla/schema,
+	// which matches query keys case-insensitively. Dockerd requires exact
+	// lowercase "names", so folding here is only more conservative there: every
+	// named compatibility export is refused under ownership either way.
 	denialReason := ""
 	switch normPath {
 	case libpodPrefix + "images/export":
 		key = "references"
-		foldKeys = true
 	case libpodPrefix + "images/remove":
 		key = "images"
-		foldKeys = true
 		if _, err := parseImageBatchBoolPossibilities(query, "all"); err != nil {
 			return nil, fmt.Errorf("invalid image batch query: %w", err)
 		}
@@ -80,7 +81,7 @@ func parseImageBatchOwnershipReferences(r *http.Request, normPath string) (*imag
 
 	identifiers := make([]string, 0)
 	for _, field := range query {
-		if field.key == key || foldKeys && strings.EqualFold(field.key, key) {
+		if strings.EqualFold(field.key, key) {
 			identifiers = append(identifiers, field.value)
 		}
 	}

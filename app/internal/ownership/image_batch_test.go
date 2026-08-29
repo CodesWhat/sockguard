@@ -221,8 +221,18 @@ func TestImageBatchOwnershipRefusesCompatExportWhosePlatformEffectsCannotBeFully
 		id     string
 	}{
 		{
-			name:   "tag with implicit full index",
+			name:   "dockerd exact names remain conservatively denied",
 			target: "/images/get?names=registry.example%2Fteam%2Fapp%3A1",
+			id:     "registry.example/team/app:1",
+		},
+		{
+			name:   "Podman compat ASCII case-folded names",
+			target: "/images/get?Names=registry.example%2Fteam%2Fapp%3A1",
+			id:     "registry.example/team/app:1",
+		},
+		{
+			name:   "Podman compat Unicode case-folded names",
+			target: "/images/get?name%C5%BF=registry.example%2Fteam%2Fapp%3A1",
 			id:     "registry.example/team/app:1",
 		},
 		{
