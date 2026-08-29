@@ -707,7 +707,7 @@ func (f *Filter) redactTaskPayload(payload map[string]any) error {
 // Spec.Data is the Docker Engine's swarm secret payload. SecretData is
 // Podman's, and it is NOT a nested field: entities.SecretInfoReport
 // (pkg/domain/entities/types/secrets.go at v5.8.1) declares
-// `SecretData string \`json:"SecretData,omitempty"\`` at the top level, while
+// `SecretData string \`json:"SecretData,omitempty"\“ at the top level, while
 // its Spec is {Name, Driver{Name,Options}, Labels} with no Data field at all.
 // abi.SecretInspect fills SecretData from SecretsManager.LookupSecretData
 // whenever the request carries ?showsecret=true.
