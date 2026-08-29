@@ -673,6 +673,33 @@ func TestCompatWithoutGrpcOrSessionDoesNotAckBuildkitTunnel(t *testing.T) {
 	}
 }
 
+// TestCompatDoesNotAckReadExfiltration pins the deliberate asymmetry between
+// the two acknowledgments ApplyCompat could reach for. GRPC=1 / SESSION=1
+// auto-set InsecureAcceptOpaqueBuildkitTunnels (the three tests above), because
+// the tunnel is the only way those vars can mean anything at all. Broad section
+// reads are different: CONTAINERS=1 has a useful meaning without the raw
+// archive/export and log/attach surface, so compat must leave
+// InsecureAllowReadExfiltration false and let startup validation refuse,
+// pushing the operator to either tighten the rules or acknowledge the risk
+// explicitly. The refusal itself is asserted end-to-end by
+// TestValidateRefusesCompatReadsWithoutExfiltrationAck in the cmd package.
+func TestCompatDoesNotAckReadExfiltration(t *testing.T) {
+	for _, envKey := range []string{"CONTAINERS", "IMAGES", "SERVICES", "TASKS"} {
+		t.Run(envKey, func(t *testing.T) {
+			cfg := Defaults()
+			t.Setenv(envKey, "1")
+			t.Setenv("POST", "0")
+
+			if !ApplyCompat(&cfg, discardLogger) {
+				t.Fatalf("expected compat to activate for %s=1", envKey)
+			}
+			if cfg.InsecureAllowReadExfiltration {
+				t.Fatalf("%s=1 auto-set InsecureAllowReadExfiltration; compat must not acknowledge the read-exfiltration surface on the operator's behalf", envKey)
+			}
+		})
+	}
+}
+
 func TestCompatGrpcEnvDoesNotOverrideExplicitAck(t *testing.T) {
 	cfg := Defaults()
 	cfg.InsecureAcceptOpaqueBuildkitTunnels = true
