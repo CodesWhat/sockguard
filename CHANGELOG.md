@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Podman guide no longer describes its Kubernetes-YAML scope boundary in terms of v1.6.
 - The roadmap records the Go module major-version path as a v2.1 track. `go.mod` has no `/v2` suffix, so the Go module proxy rejects every v2 tag and still resolves `@latest` to v1.7.5.
 
+### Dependencies
+
+- `github.com/google/go-containerregistry` moves from v0.21.8 to v0.21.9. It is reached only from the opt-in `image_trust` registry-fetch path, never the core proxy path, and `govulncheck` reports zero reachable vulnerabilities either side of the bump.
+
 ## [2.0.0] - 2026-08-28
 
 v2.0.0 promotes `2.0.0-rc.4` after the exact candidate passed the four-hour
