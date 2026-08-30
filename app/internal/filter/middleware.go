@@ -437,6 +437,13 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		{http.MethodPost, matchesLibpodVolumeInspection, inspectSeverityMedium, newVolumePolicy(cfg.LibpodVolume).inspectLibpod, "failed to inspect libpod volume create request body", "unable to inspect libpod volume create request body"},
 		{http.MethodPost, matchesLibpodNetworkInspection, inspectSeverityHigh, newNetworkPolicy(cfg.LibpodNetwork).inspectLibpodCreate, "failed to inspect libpod network create request body", "unable to inspect libpod network create request body"},
 		{http.MethodPost, matchesLibpodSecretInspection, inspectSeverityMedium, newLibpodSecretPolicy(cfg.LibpodSecret).inspect, "failed to inspect libpod secret create request", "unable to inspect libpod secret create request"},
+		// libpod image pull shares cfg.ImagePull with the Docker-compat
+		// entry above — one registry allowlist governs both surfaces, so an
+		// operator cannot configure one and silently leave the other open.
+		// It is a separate entry because libpod's query shape differs
+		// (`reference`, case-folded and repeatable, no `fromSrc`); see
+		// imagePullPolicy.inspectLibpod.
+		{http.MethodPost, matchesLibpodImagePullInspection, inspectSeverityHigh, newImagePullPolicy(cfg.ImagePull).inspectLibpod, "failed to inspect libpod image pull request", "unable to inspect libpod image pull request"},
 		// #185 phase 1: deny-only guard for the opaque BuildKit tunnel
 		// endpoints when request_body.buildkit is configured — see
 		// buildkit.go's buildkitPolicy.inspect doc comment. Never reads the
@@ -538,6 +545,10 @@ func matchesLibpodNetworkInspection(normalizedPath string) bool {
 
 func matchesLibpodSecretInspection(normalizedPath string) bool {
 	return normalizedPath == libpodPathPrefix+"secrets/create"
+}
+
+func matchesLibpodImagePullInspection(normalizedPath string) bool {
+	return isLibpodImagePullPath(normalizedPath)
 }
 
 // inspectBucketCapacity bounds how many policies of a single severity may

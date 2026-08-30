@@ -57,7 +57,18 @@ def shape_path:
          else . + [$s]
          end)
     ) as $collapsed
-  | "/" + ($collapsed | join("/"));
+  # Image and distribution references use the presets' `**` shape even when
+  # the concrete reference has only one segment (for example `busybox:1.37`).
+  # In the policy grammar `**` means one-or-more segments, so emitting `*` for
+  # that case would manufacture a route shape the reviewed manifest can never
+  # contain even though the request matched the reviewed `images/**` rule.
+  | (if ($collapsed | length) > 1
+        and ($collapsed[0] == "images" or $collapsed[0] == "distribution")
+        and $collapsed[1] == "*"
+     then ($collapsed | .[1] = "**")
+     else $collapsed
+     end) as $policy_shaped
+  | "/" + ($policy_shaped | join("/"));
 
 [
   inputs

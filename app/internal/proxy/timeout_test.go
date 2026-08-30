@@ -1,6 +1,10 @@
 package proxy
 
 import (
+	"bufio"
+	"context"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -57,6 +61,18 @@ func TestIsLongLivedUpstreamRequest(t *testing.T) {
 		{"plugin pull", http.MethodPost, "/plugins/pull", true},
 		{"plugin push", http.MethodPost, "/plugins/myplugin/push", true},
 		{"plugin upgrade", http.MethodPost, "/plugins/myplugin/upgrade", true},
+		{"service logs follow", http.MethodGet, "/services/abc/logs?follow=1", true},
+		{"service logs follow versioned", http.MethodGet, "/v1.43/services/abc/logs?follow=true", true},
+		{"libpod service logs follow", http.MethodGet, "/libpod/services/abc/logs?follow=1", true},
+		{"task logs follow", http.MethodGet, "/tasks/abc/logs?follow=1", true},
+		{"libpod task logs follow", http.MethodGet, "/libpod/tasks/abc/logs?follow=1", true},
+		{"images export", http.MethodGet, "/images/export?names=redis", true},
+		{"libpod images export", http.MethodGet, "/libpod/images/export?names=redis", true},
+		{"libpod images pull", http.MethodPost, "/libpod/images/pull?reference=redis", true},
+		{"images pull", http.MethodPost, "/images/pull?fromImage=redis", true},
+		{"buildkit session", http.MethodPost, "/session", true},
+		{"buildkit grpc", http.MethodPost, "/grpc", true},
+		{"buildkit session versioned", http.MethodPost, "/v1.43/session", true},
 		// Finite requests that must be bounded by the deadline.
 		{"containers list", http.MethodGet, "/containers/json", false},
 		{"container inspect", http.MethodGet, "/containers/abc/json", false},
@@ -66,6 +82,10 @@ func TestIsLongLivedUpstreamRequest(t *testing.T) {
 		{"plugin create", http.MethodPost, "/plugins/create", true},
 		{"version", http.MethodGet, "/version", false},
 		{"info", http.MethodGet, "/info", false},
+		{"service logs no follow", http.MethodGet, "/services/abc/logs", false},
+		{"service inspect not exempt", http.MethodGet, "/services/abc", false},
+		{"services list not exempt", http.MethodGet, "/services", false},
+		{"tasks list not exempt", http.MethodGet, "/tasks", false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -280,5 +300,205 @@ func TestWithRequestTimeout_HungUpstreamReturnsGatewayTimeout(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusGatewayTimeout {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusGatewayTimeout)
+	}
+}
+
+// streamingRoundTripper is a mock upstream transport that answers every
+// request with a 200 whose body emits one newline-delimited chunk every
+// interval, up to chunks total, honoring the request's context so a deadline
+// attached upstream (by WithRequestTimeout) cuts the stream exactly like a
+// real dockerd connection would.
+type streamingRoundTripper struct {
+	interval time.Duration
+	chunks   int
+}
+
+func (rt *streamingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+		Header:     make(http.Header),
+		Body:       &streamingBody{ctx: req.Context(), interval: rt.interval, remaining: rt.chunks},
+		Request:    req,
+	}, nil
+}
+
+type streamingBody struct {
+	ctx       context.Context
+	interval  time.Duration
+	remaining int
+}
+
+func (b *streamingBody) Read(p []byte) (int, error) {
+	if b.remaining <= 0 {
+		return 0, io.EOF
+	}
+	select {
+	case <-b.ctx.Done():
+		return 0, b.ctx.Err()
+	case <-time.After(b.interval):
+	}
+	b.remaining--
+	return copy(p, "tick\n"), nil
+}
+
+func (b *streamingBody) Close() error { return nil }
+
+// hangingRoundTripper never returns a response until the request's context
+// is done, modeling a daemon that accepts the connection but never answers.
+type hangingRoundTripper struct{}
+
+func (hangingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	<-req.Context().Done()
+	return nil, req.Context().Err()
+}
+
+// TestWithRequestTimeout_DoesNotSeverLiveStream drives real HTTP requests
+// through WithRequestTimeout wrapping a live proxy.NewWithTransport, backed
+// by a mock upstream that streams a chunk every 50ms. Unlike
+// TestWithRequestTimeout_SkipsDeadlineForLongLivedRequest (which only proves
+// isLongLivedUpstreamRequest classifies the path correctly, using a stub
+// handler and a recorder), this proves the stream actually survives the
+// deadline window in behavior: each exempt path must still be receiving
+// chunks well past when a 200ms deadline would have fired.
+func TestWithRequestTimeout_DoesNotSeverLiveStream(t *testing.T) {
+	t.Parallel()
+
+	const (
+		streamInterval = 50 * time.Millisecond
+		totalChunks    = 20
+		requestTimeout = 200 * time.Millisecond
+		minChunks      = 8 // 8*streamInterval = 400ms, well past requestTimeout
+	)
+
+	exempt := []struct {
+		name   string
+		method string
+		target string
+	}{
+		{"service logs follow", http.MethodGet, "/services/abc/logs?follow=1"},
+		{"task logs follow", http.MethodGet, "/tasks/abc/logs?follow=1"},
+		{"libpod images pull", http.MethodPost, "/libpod/images/pull?reference=redis"},
+		{"images export", http.MethodGet, "/images/export?names=redis"},
+		{"buildkit session", http.MethodPost, "/session"},
+		{"buildkit grpc", http.MethodPost, "/grpc"},
+	}
+
+	for _, tc := range exempt {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			rt := &streamingRoundTripper{interval: streamInterval, chunks: totalChunks}
+			rp := NewWithTransport(rt, testLogger(), Options{})
+			handler := WithRequestTimeout(rp, requestTimeout)
+			srv := httptest.NewServer(handler)
+			t.Cleanup(srv.Close)
+
+			req, err := http.NewRequest(tc.method, srv.URL+tc.target, nil)
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("do: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+			}
+
+			scanner := bufio.NewScanner(resp.Body)
+			count := 0
+			for count < minChunks && scanner.Scan() {
+				count++
+			}
+			if count < minChunks {
+				t.Fatalf("received %d chunks before the stream ended (err: %v), want at least %d — the request deadline likely severed it",
+					count, scanner.Err(), minChunks)
+			}
+		})
+	}
+
+	// Control: a known-finite path whose upstream never answers still gets
+	// bounded by the deadline and returns 504, proving the exemptions above
+	// aren't just a blanket "never time out" change.
+	t.Run("finite path with hung upstream still returns 504", func(t *testing.T) {
+		t.Parallel()
+
+		rp := NewWithTransport(hangingRoundTripper{}, testLogger(), Options{})
+		handler := WithRequestTimeout(rp, 100*time.Millisecond)
+		srv := httptest.NewServer(handler)
+		t.Cleanup(srv.Close)
+
+		resp, err := http.Get(srv.URL + "/containers/json")
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusGatewayTimeout {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusGatewayTimeout)
+		}
+	})
+}
+
+// The deadline's 504 is a PRE-HEADER outcome only. Once the daemon has
+// committed response headers, Go's ReverseProxy cannot replace the status: a
+// read error during copyResponse is not routed to ErrorHandler, so the client
+// keeps the already-sent status and sees a truncated body. The deadline still
+// does its real job here — it aborts the hung upstream connection instead of
+// pinning the request — but it does not, and cannot, surface as 504.
+//
+// This is the exact case WithRequestTimeout exists for (headers arrive
+// promptly, body hangs), so the distinction was easy to state backwards, and
+// was: both this function's doc comment and configuration.mdx claimed a 504
+// here until 2026-08-29.
+func TestWithRequestTimeout_BodyPhaseTruncatesRatherThanReturning504(t *testing.T) {
+	t.Parallel()
+	socketPath := tempSocketPath(t, "bodyphase")
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	release := make(chan struct{})
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		fmt.Fprint(w, `{"partial":`)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-release // hang the body well past the deadline
+	})}
+	go srv.Serve(ln)
+	t.Cleanup(func() {
+		close(release)
+		srv.Close()
+	})
+
+	wrapped := WithRequestTimeout(NewWithOptions(socketPath, testLogger(), Options{}), 75*time.Millisecond)
+	front := httptest.NewServer(wrapped)
+	t.Cleanup(front.Close)
+
+	resp, err := http.Get(front.URL + "/containers/json")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d (headers were already committed)", resp.StatusCode, http.StatusOK)
+	}
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr == nil {
+		t.Fatalf("body read succeeded (%q), want a truncation error", string(body))
+	}
+	if string(body) != `{"partial":` {
+		t.Fatalf("body = %q, want the partial prefix written before the hang", string(body))
 	}
 }
