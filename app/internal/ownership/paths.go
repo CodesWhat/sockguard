@@ -98,14 +98,14 @@ func imageIdentifier(method, normPath string) (string, bool) {
 	// "/get" exports a single image as a tarball (GET /images/{name}/get) — a
 	// data-exfiltration path that must be owner-checked against {name}. Without
 	// it here, imageIdentifier would return "{name}/get", the ownership inspect
-	// would 404, and the request would pass through unfiltered, letting a client
-	// export another owner's image.
+	// would 404, and the fail-closed lookup would deny even an owned image instead
+	// of authorizing the actual target.
 	//
 	// "/attestations" (GET /images/{name}/attestations, Engine API 1.53+) lists
 	// an image's signer/predicate metadata and must be owner-checked against
 	// {name} for the same reason: without it, imageIdentifier would return
 	// "{name}/attestations", the ownership inspect would 404, and the request
-	// would pass through unfiltered.
+	// would be denied even when the caller owns the actual image.
 	for _, suffix := range []string{"/json", "/history", "/push", "/tag", "/get", "/attestations"} {
 		if strings.HasSuffix(rest, suffix) {
 			return strings.TrimSuffix(rest, suffix), true
