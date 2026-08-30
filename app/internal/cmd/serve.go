@@ -542,7 +542,7 @@ func buildServeHandlerChainWithRuntime(b serveHandlerBuild) (http.Handler, func(
 		return invalidClientProfileHandler(), func() {}, false
 	}
 
-	handler := newServeUpstreamHandler(b.Cfg, resolver, b.Logger)
+	handler := newServeUpstreamHandler(b.Cfg, resolver, b.Logger, b.Runtime)
 	b.ClientProfiles = clientProfiles
 	layers, teardown, limiterStateActive := buildServeHandlerLayersWithRuntime(b)
 	for _, layer := range layers {
@@ -700,7 +700,7 @@ func attachRuntimeInspectors(cfg *config.Config, res *upstream.Resolver, policy 
 	return policy
 }
 
-func newServeUpstreamHandler(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger) http.Handler {
+func newServeUpstreamHandler(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, runtime *serveRuntime) http.Handler {
 	rp := proxy.NewWithTransport(upstreamResolverFor(res, cfg), logger, proxy.Options{
 		ModifyResponse: responsefilter.New(serveResponseFilterOptions(cfg)).ModifyResponse,
 	})
@@ -708,7 +708,15 @@ func newServeUpstreamHandler(cfg *config.Config, res *upstream.Resolver, logger 
 	// Wrapping the proxy itself (rather than adding a chain layer) keeps the
 	// deadline off the hijack path: HijackHandler short-circuits before this
 	// handler runs.
-	return proxy.WithRequestTimeout(rp, effectiveUpstreamRequestTimeout(cfg))
+	return withUpstreamRequestTimeout(cfg, runtime, rp)
+}
+
+func withUpstreamRequestTimeout(cfg *config.Config, runtime *serveRuntime, next http.Handler) http.Handler {
+	return proxy.WithRequestTimeoutForFlavor(
+		next,
+		effectiveUpstreamRequestTimeout(cfg),
+		runtimeUpstreamFlavor(runtime) == upstreamflavor.Podman,
+	)
 }
 
 // effectiveUpstreamRequestTimeout resolves cfg.Upstream.RequestTimeout to the
