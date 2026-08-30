@@ -433,11 +433,11 @@ func SpecsFromDockerEnv(lookupEnv func(string) (string, bool)) (EndpointSpec, bo
 			spec.CertFile = certFile
 			spec.KeyFile = keyFile
 		} else if certPresent {
-			if _, err := os.ReadFile(certFile); err != nil {
+			if _, err := os.ReadFile(certFile); err != nil { // #nosec G304 -- the Docker client certificate directory is explicit operator configuration.
 				return EndpointSpec{}, false, fmt.Errorf("reading Docker client certificate: %w", err)
 			}
 		} else if keyPresent {
-			if _, err := os.ReadFile(keyFile); err != nil {
+			if _, err := os.ReadFile(keyFile); err != nil { // #nosec G304 -- the Docker client certificate directory is explicit operator configuration.
 				return EndpointSpec{}, false, fmt.Errorf("reading Docker client key: %w", err)
 			}
 		}
