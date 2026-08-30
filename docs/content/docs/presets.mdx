@@ -294,7 +294,8 @@ this preset's classic-builder sibling gets for `/build`.
 
 Minimal read-only access for Traefik reverse proxy.
 
-**Use for:** Traefik, nginx-proxy, or any reverse proxy with Docker provider.
+**Use for:** Traefik's Docker provider. The allowlist is source-verified against
+Traefik v3.7.12; other reverse proxies need their own call-surface review.
 
 ```yaml
 # Allows: GET container list + inspect, network/service/task lists, node inspect

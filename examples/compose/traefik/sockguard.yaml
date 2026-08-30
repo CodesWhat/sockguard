@@ -56,4 +56,4 @@ rules:
 
   - match: { method: "*", path: "/**" }
     action: deny
-    reason: "not allowed by traefik strict preset"
+    reason: "not allowed by traefik preset — read-only access only"
