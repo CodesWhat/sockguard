@@ -1098,16 +1098,16 @@ func TestGlobToRegexSpecialSequences(t *testing.T) {
 		{
 			name:        "trailing slash double-star matches bare prefix",
 			pattern:     "/containers/**",
-			match:       []string{"/containers", "/containers/", "/containers/json", "/containers/a/b/c"},
+			match:       []string{"/containers", "/containers/", "/containers/json", "/containers/a/b/c", "/containers/a\nb"},
 			dontMatch:   []string{"/containerstuff", "/images/json"},
-			regexSuffix: "(/.*)?",
+			regexSuffix: "(?s:.*)",
 		},
 		{
 			name:        "bare double-star matches everything",
 			pattern:     "/**",
-			match:       []string{"", "/", "/x", "/x/y/z"},
+			match:       []string{"", "/", "/x", "/x/y/z", "/x\ny"},
 			dontMatch:   nil,
-			regexSuffix: "(/.*)?",
+			regexSuffix: "(?s:.*)",
 		},
 		{
 			// Single * compiles to [^/]* — does not cross slash boundaries.
@@ -1122,7 +1122,8 @@ func TestGlobToRegexSpecialSequences(t *testing.T) {
 			regexSuffix: "[^/]*",
 		},
 		{
-			// Non-trailing /**/ compiles to (/.*)? — the slash + anything
+			// Non-trailing /**/ compiles to an optional slash + dot-all group,
+			// so the slash + anything
 			// group is optional, so the pattern also matches when there is
 			// no middle path at all (`/containers/json`). This is the
 			// established behavior; the test exists to lock it in.

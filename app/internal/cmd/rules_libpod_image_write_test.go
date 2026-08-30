@@ -299,6 +299,15 @@ func TestValidateAndCompileRulesUsesGlobLanguageForLibpodImageScpShadowing(t *te
 			{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
 		}
 
+		compiled, err := compileConfiguredRules(cfg.Rules)
+		if err != nil {
+			t.Fatalf("compileConfiguredRules() error = %v", err)
+		}
+		request := &http.Request{Method: http.MethodPost, URL: &url.URL{Path: "/libpod/images/scp/alpine-\n"}}
+		if action, _, _ := filter.Evaluate(compiled, request); action != filter.ActionDeny {
+			t.Fatalf("Evaluate(encoded-control witness) action = %q, want %q from the earlier deep-glob deny", action, filter.ActionDeny)
+		}
+
 		if _, err := validateAndCompileRules(&cfg); err != nil {
 			t.Fatalf("validateAndCompileRules() error = %v, want the fully shadowed allow ignored", err)
 		}
@@ -524,6 +533,44 @@ func TestValidateAndCompileRulesRejectsSlashBearingLibpodImagePush(t *testing.T)
 			t.Fatalf("error = %q, want the still-reachable non-SCP image push to require the read-exfiltration acknowledgment", err)
 		}
 	})
+}
+
+func TestValidateAndCompileRulesExcludesLibpodImageActionsFromScp(t *testing.T) {
+	tests := []struct {
+		path     string
+		wantRead bool
+	}{
+		{path: "/libpod/images/scp/push", wantRead: true},
+		{path: "/libpod/images/scp/tag"},
+		{path: "/libpod/images/scp/untag"},
+		{path: "/libpod/images/scp/team/push", wantRead: true},
+		{path: "/libpod/images/scp/team/tag"},
+		{path: "/libpod/images/scp/team/untag"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Rules = []config.RuleConfig{
+				{Match: config.MatchConfig{Method: http.MethodPost, Path: tt.path}, Action: "allow"},
+				{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+			}
+
+			_, err := validateAndCompileRules(&cfg)
+			if tt.wantRead {
+				if err == nil || !strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
+					t.Fatalf("error = %v, want image-push read-exfiltration acknowledgment", err)
+				}
+				if strings.Contains(err.Error(), "insecure_allow_body_blind_writes=true") {
+					t.Fatalf("error = %v, action route was misclassified as image SCP", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("validateAndCompileRules() error = %v, want action route excluded from image SCP", err)
+			}
+		})
+	}
 }
 
 // TestServePolicyConfigWiresImageLoadBlindWriteAck pins the wiring half of

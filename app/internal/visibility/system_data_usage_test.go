@@ -535,6 +535,40 @@ func TestLibpodSystemDataUsageRefusedUnderVisibilityPolicy(t *testing.T) {
 	}
 }
 
+func TestLibpodShowMountedRefusedUnderVisibilityPolicy(t *testing.T) {
+	t.Parallel()
+	for _, path := range []string{
+		"/libpod/containers/showmounted",
+		"/v5.8.1/libpod/containers/showmounted",
+	} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			reached := false
+			handler := libpodSystemDFHandlerForTest(t,
+				Options{VisibleResourceLabels: []string{"tier=prod"}},
+				`{"dev-id":"/var/lib/containers/storage/overlay/dev/merged"}`,
+				&reached,
+			)
+
+			rec, meta := getLibpodPathForTest(t, handler, http.MethodGet, path)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403; body: %s", rec.Code, rec.Body.String())
+			}
+			if reached {
+				t.Fatal("the daemon was queried for mount paths that cannot be visibility-scoped")
+			}
+			if meta.ReasonCode != "visibility_libpod_showmounted_unscopeable" {
+				t.Fatalf("meta.ReasonCode = %q, want visibility_libpod_showmounted_unscopeable", meta.ReasonCode)
+			}
+			for _, leaked := range []string{"dev-id", "/var/lib/containers"} {
+				if strings.Contains(rec.Body.String(), leaked) {
+					t.Fatalf("mount inventory %q reached the client: %s", leaked, rec.Body.String())
+				}
+			}
+		})
+	}
+}
+
 // TestLibpodSystemDataUsageInertWithoutVisibilityPolicy proves the refusal
 // costs nothing to a deployment with no visibility policy: there is no
 // boundary to enforce, so the rule engine stays the only control.

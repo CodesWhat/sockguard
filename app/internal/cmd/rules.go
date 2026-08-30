@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"slices"
+	"sort"
 	"strings"
 
 	"github.com/codeswhat/sockguard/app/internal/config"
@@ -21,13 +21,22 @@ var (
 )
 
 type bodySensitiveWriteEndpoint struct {
-	method string
-	path   string
+	method          string
+	path            string
+	identifierShape catalogIdentifierShape
+	exclusions      []catalogPathExclusion
 }
 
 type sensitiveExfilEndpoint struct {
-	method string
-	path   string
+	method          string
+	path            string
+	identifierShape catalogIdentifierShape
+	exclusions      []catalogPathExclusion
+}
+
+type catalogPathExclusion struct {
+	path            string
+	identifierShape catalogIdentifierShape
 }
 
 var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
@@ -54,7 +63,7 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	{method: http.MethodPost, path: "/nodes/sockguard-test/update"},
 	{method: http.MethodPost, path: "/plugins/pull"},
 	{method: http.MethodPost, path: "/plugins/sockguard-test/upgrade"},
-	{method: http.MethodPost, path: "/plugins/sockguard-test/set"},
+	{method: http.MethodPost, path: "/plugins/sockguard-test/set", identifierShape: catalogIdentifierPath},
 	{method: http.MethodPost, path: "/plugins/create"},
 	// libpod native surface (#148 PR2). POST /libpod/containers/create always
 	// runs through an inspector with fail-closed defaults exactly like its
@@ -109,7 +118,44 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	// falls back to a literal "ssh://"+name rather than being rejected). It
 	// is also an egress channel, so it appears in sensitiveExfilEndpoints
 	// too — admitting it takes both acknowledgments, one per direction.
-	{method: http.MethodPost, path: "/libpod/images/scp/sockguard-test"},
+	{
+		method:          http.MethodPost,
+		path:            "/libpod/images/scp/sockguard-test",
+		identifierShape: catalogIdentifierPath,
+		exclusions: []catalogPathExclusion{
+			{path: "/libpod/images/scp/push"},
+			{path: "/libpod/images/scp/tag"},
+			{path: "/libpod/images/scp/untag"},
+			{path: "/libpod/images/scp/sockguard-test/push", identifierShape: catalogIdentifierPath},
+			{path: "/libpod/images/scp/sockguard-test/tag", identifierShape: catalogIdentifierPath},
+			{path: "/libpod/images/scp/sockguard-test/untag", identifierShape: catalogIdentifierPath},
+		},
+	},
+	// Podman's native copy-into-container and container-update writes. Both
+	// were absent from this catalog and from compileRuntimePolicy's
+	// inspection table while their Docker-compat twins above were in both,
+	// so an allow rule opened them with no inspection and no startup
+	// warning. Both are inspected now (see
+	// bodyInspectionConfiguredForEndpoint), archive by the very same
+	// containerArchivePolicy — Podman routes PUT /containers/{name}/archive
+	// and PUT /libpod/containers/{name}/archive to one compat.Archive
+	// handler — and update by containerUpdatePolicy.inspectLibpod, which
+	// reads libpod's own body and query shape against the same
+	// request_body.container_update gates.
+	{method: http.MethodPut, path: "/libpod/containers/sockguard-test/archive"},
+	{method: http.MethodPost, path: "/libpod/containers/sockguard-test/update"},
+	// POST /libpod/containers/{name}/restore has NO request-body inspector,
+	// so it deliberately gets no case in bodyInspectionConfiguredForEndpoint
+	// and always requires insecure_allow_body_blind_writes. With ?import=1
+	// Podman reads the entire request body as a CRIU checkpoint archive
+	// (libpod.Restore -> compat.SaveFromBody in Podman v5.8.1's
+	// pkg/api/handlers/libpod/containers.go) and CREATES A CONTAINER from
+	// it, bypassing every containers/create gate on both surfaces — the
+	// container's spec lives inside a gzipped tar as spec.dump, not in any
+	// JSON sockguard can read. Treat it with the caution play/kube gets: the
+	// ?pod and ?publishPorts parameters mean one restore can also join a pod
+	// and bind host ports.
+	{method: http.MethodPost, path: "/libpod/containers/sockguard-test/restore"},
 	// play/kube, its "kube/play" alias (Podman registers both spellings on
 	// the identical libpod.PlayKube/KubePlay handlers), kube/apply, and
 	// manifest-list writes have NO request-body inspector at all (#148
@@ -125,8 +171,20 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	{method: http.MethodPost, path: "/libpod/kube/play"},
 	{method: http.MethodPost, path: "/libpod/kube/apply"},
 	{method: http.MethodPost, path: "/libpod/manifests/create"},
-	{method: http.MethodPost, path: "/libpod/manifests/sockguard-test"},
-	{method: http.MethodPut, path: "/libpod/manifests/sockguard-test"},
+	{
+		method:          http.MethodPost,
+		path:            "/libpod/manifests/sockguard-test",
+		identifierShape: catalogIdentifierPath,
+		// Podman registers the v4 registry-push route before the generic
+		// manifest-create route. Subtract that route language so a push does
+		// not falsely demand the body-blind acknowledgment in addition to its
+		// read-exfiltration acknowledgment.
+		exclusions: []catalogPathExclusion{{
+			path:            "/libpod/manifests/sockguard-test/registry/sockguard-test",
+			identifierShape: catalogIdentifierPath,
+		}},
+	},
+	{method: http.MethodPut, path: "/libpod/manifests/sockguard-test", identifierShape: catalogIdentifierPath},
 }
 
 type buildkitTunnelEndpoint struct {
@@ -165,12 +223,12 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 	{method: http.MethodGet, path: "/tasks/sockguard-test/logs"},
 	{method: http.MethodPost, path: "/containers/sockguard-test/attach"},
 	{method: http.MethodGet, path: "/images/get"},
-	{method: http.MethodGet, path: "/images/sockguard-test/get"},
+	{method: http.MethodGet, path: "/images/sockguard-test/get", identifierShape: catalogIdentifierPath},
 	// Registry pushes are writes at the Docker API layer, but they read local
 	// artifact content and transmit it to a caller-selected registry. Treat
 	// them as exfiltration surfaces alongside archive/export downloads.
-	{method: http.MethodPost, path: "/images/sockguard-test/push"},
-	{method: http.MethodPost, path: "/plugins/sockguard-test/push"},
+	{method: http.MethodPost, path: "/images/sockguard-test/push", identifierShape: catalogIdentifierPath},
+	{method: http.MethodPost, path: "/plugins/sockguard-test/push", identifierShape: catalogIdentifierPath},
 	// libpod read/export surface (#148). Confirmed against Podman v5.8.1's
 	// own route table (pkg/api/server/register_archive.go,
 	// register_containers.go, register_images.go) rather than assumed from
@@ -188,13 +246,10 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 	{method: http.MethodGet, path: "/libpod/containers/sockguard-test/export"},
 	{method: http.MethodGet, path: "/libpod/containers/sockguard-test/logs"},
 	{method: http.MethodPost, path: "/libpod/containers/sockguard-test/attach"},
+	{method: http.MethodGet, path: "/libpod/containers/showmounted"},
 	{method: http.MethodGet, path: "/libpod/images/export"},
-	{method: http.MethodGet, path: "/libpod/images/sockguard-test/get"},
-	{method: http.MethodPost, path: "/libpod/images/sockguard-test/push"},
-	// Podman's image-name matcher accepts slashes. This second representative
-	// catches constrained rules under the literal "scp" name prefix that route
-	// to image push before the later /images/scp/{name:.*} handler.
-	{method: http.MethodPost, path: "/libpod/images/scp/sockguard-test/push"},
+	{method: http.MethodGet, path: "/libpod/images/sockguard-test/get", identifierShape: catalogIdentifierPath},
+	{method: http.MethodPost, path: "/libpod/images/sockguard-test/push", identifierShape: catalogIdentifierPath},
 	// Image SCP transfers a local image to another HOST over SSH, with the
 	// destination named by the caller in the `destination` query parameter
 	// (Podman v5.8.1 pkg/api/server/register_images.go routes
@@ -204,8 +259,41 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 	// their one mitigation: there is no registry to allowlist, and an
 	// unrecognized connection name is turned into "ssh://"+name instead of
 	// being refused, so the destination is an arbitrary SSH endpoint.
-	{method: http.MethodPost, path: "/libpod/images/scp/sockguard-test"},
+	{
+		method:          http.MethodPost,
+		path:            "/libpod/images/scp/sockguard-test",
+		identifierShape: catalogIdentifierPath,
+		exclusions: []catalogPathExclusion{
+			{path: "/libpod/images/scp/push"},
+			{path: "/libpod/images/scp/tag"},
+			{path: "/libpod/images/scp/untag"},
+			{path: "/libpod/images/scp/sockguard-test/push", identifierShape: catalogIdentifierPath},
+			{path: "/libpod/images/scp/sockguard-test/tag", identifierShape: catalogIdentifierPath},
+			{path: "/libpod/images/scp/sockguard-test/untag", identifierShape: catalogIdentifierPath},
+		},
+	},
 	{method: http.MethodGet, path: "/libpod/generate/kube"},
+	// Two libpod-only POSTs whose risk is entirely in the RESPONSE, which is
+	// why neither gets a request-body inspector: verified against Podman
+	// v5.8.1's pkg/api/handlers/libpod/containers.go, Checkpoint reads only
+	// the query and MountContainer reads nothing at all, so there is no
+	// request content for an inspector to evaluate and one would degenerate
+	// into an unconditional verdict.
+	//
+	// POST /libpod/containers/*/checkpoint with ?export=1 streams a
+	// tar.gz of the container's CRIU checkpoint back to the caller — the
+	// process memory dump plus root-filesystem changes, so every secret the
+	// container had in memory. That is the same exfiltration shape as
+	// /libpod/containers/*/export above, with more in it.
+	//
+	// POST /libpod/containers/*/mount returns the container root
+	// filesystem's path on the DAEMON host and mounts it there. The response
+	// discloses the storage driver's layout and the container-id-to-path
+	// mapping; it does not return file contents, so it sits here on the
+	// strength of the disclosure rather than being described as a read of
+	// the container's files.
+	{method: http.MethodPost, path: "/libpod/containers/sockguard-test/checkpoint"},
+	{method: http.MethodPost, path: "/libpod/containers/sockguard-test/mount"},
 	// Manifest-list push routes read local manifest content and transmit it
 	// to a caller-selected registry — a write at the Docker API layer but an
 	// exfiltration surface just like the image/plugin push entries above.
@@ -213,7 +301,7 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 	// POST .../push is kept for backward compat (deprecated since v4.0.0 but
 	// still routable). Both are registered in Podman v5.8.1's
 	// pkg/api/server/register_manifest.go.
-	{method: http.MethodPost, path: "/libpod/manifests/sockguard-test/registry/sockguard-test"},
+	{method: http.MethodPost, path: "/libpod/manifests/sockguard-test/registry/sockguard-test", identifierShape: catalogIdentifierPath},
 	{method: http.MethodPost, path: "/libpod/manifests/sockguard-test/push"},
 }
 
@@ -292,11 +380,11 @@ func splitMethods(methods string) []string {
 }
 
 func validateBodyBlindWriteRules(cfg *config.Config, compiled []*filter.CompiledRule) error {
-	return validateBodyBlindWriteRulesForPolicy("", cfg.InsecureAllowBodyBlindWrites, cfg.RequestBody, compiled, cfg.Rules)
+	return validateBodyBlindWriteRulesForPolicy("", cfg.InsecureAllowBodyBlindWrites, cfg.RequestBody, cfg.Rules, compiled)
 }
 
 func validateReadExfiltrationRules(cfg *config.Config, compiled []*filter.CompiledRule) error {
-	return validateReadExfiltrationRulesForPolicy("", cfg.InsecureAllowReadExfiltration, compiled, cfg.Rules)
+	return validateReadExfiltrationRulesForPolicy("", cfg.InsecureAllowReadExfiltration, cfg.Rules, compiled)
 }
 
 func validateBuildkitTunnelRules(cfg *config.Config, compiled []*filter.CompiledRule) error {
@@ -304,12 +392,12 @@ func validateBuildkitTunnelRules(cfg *config.Config, compiled []*filter.Compiled
 	return validateBuildkitTunnelRulesForPolicy("", cfg.InsecureAcceptOpaqueBuildkitTunnels, cfg.RequestBody.Buildkit.ToPolicy(cfg.RequestBody.Build).Configured(), compiled)
 }
 
-func validateBodyBlindWriteRulesForPolicy(scope string, insecure bool, requestBody config.RequestBodyConfig, compiled []*filter.CompiledRule, configuredRules []config.RuleConfig) error {
+func validateBodyBlindWriteRulesForPolicy(scope string, insecure bool, requestBody config.RequestBodyConfig, configured []config.RuleConfig, compiled []*filter.CompiledRule) error {
 	if insecure {
 		return nil
 	}
 
-	exposed := allowedBodySensitiveWriteEndpoints(requestBody, compiled, configuredRules)
+	exposed := allowedBodySensitiveWriteEndpoints(requestBody, configured, compiled)
 	if len(exposed) == 0 {
 		return nil
 	}
@@ -328,20 +416,20 @@ func validateBodyBlindWriteRulesForPolicy(scope string, insecure bool, requestBo
 	)
 }
 
-func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, compiled []*filter.CompiledRule, configuredRules []config.RuleConfig) error {
+func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, configured []config.RuleConfig, compiled []*filter.CompiledRule) error {
 	if insecure {
 		return nil
 	}
 
-	exposed := allowedSensitiveExfilEndpoints(compiled, configuredRules)
+	exposed := allowedSensitiveExfilEndpoints(configured, compiled)
 	if len(exposed) == 0 {
 		return nil
 	}
 
 	if scope == "" {
 		return fmt.Errorf(
-			"rules allow raw archive/export, log/attach streaming, or registry push endpoints "+
-				"(these can exfiltrate container files, images, plugins, environment variables, and secrets); "+
+			"rules allow raw archive/export, log/attach streaming, checkpoint export, container rootfs mount, or registry push endpoints "+
+				"(these can exfiltrate container files, container memory, images, plugins, environment variables, secrets, and daemon-host filesystem paths); "+
 				"either tighten the allow rules to omit these paths or set "+
 				"insecure_allow_read_exfiltration: true to acknowledge the risk. "+
 				"Exposed endpoints: %s",
@@ -350,8 +438,8 @@ func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, compile
 	}
 
 	return fmt.Errorf(
-		"client profile %q allows raw archive/export, log/attach streaming, or registry push endpoints "+
-			"(these can exfiltrate container files, images, plugins, environment variables, and secrets); "+
+		"client profile %q allows raw archive/export, log/attach streaming, checkpoint export, container rootfs mount, or registry push endpoints "+
+			"(these can exfiltrate container files, container memory, images, plugins, environment variables, secrets, and daemon-host filesystem paths); "+
 			"either tighten the profile's allow rules to omit these paths or set the "+
 			"top-level insecure_allow_read_exfiltration: true to acknowledge the risk "+
 			"(it is a global setting, not per-profile). "+
@@ -431,520 +519,63 @@ func allowedBuildkitTunnelEndpoints(compiled []*filter.CompiledRule) []string {
 	return allowed
 }
 
-func allowedBodySensitiveWriteEndpoints(requestBody config.RequestBodyConfig, compiled []*filter.CompiledRule, configuredRules []config.RuleConfig) []string {
-	endpoints := appendExactLibpodImageScpBodyEndpoints(bodySensitiveWriteEndpoints, configuredRules)
-	allowed := make([]string, 0, len(endpoints))
-	for _, endpoint := range endpoints {
+func allowedBodySensitiveWriteEndpoints(requestBody config.RequestBodyConfig, configured []config.RuleConfig, compiled []*filter.CompiledRule) []string {
+	allowed := make([]string, 0, len(bodySensitiveWriteEndpoints))
+	for _, endpoint := range bodySensitiveWriteEndpoints {
 		if bodyInspectionConfiguredForEndpoint(requestBody, endpoint) {
 			continue
 		}
-		req := &http.Request{Method: endpoint.method, URL: &url.URL{Path: endpoint.path}}
-		action, _, _ := filter.Evaluate(compiled, req)
-		if action != filter.ActionAllow {
-			continue
+		for _, path := range allowedCatalogPaths(endpoint.method, endpoint.path, endpoint.identifierShape, endpoint.exclusions, configured, compiled) {
+			allowed = append(allowed, endpoint.method+" "+path)
 		}
-		allowed = append(allowed, endpoint.method+" "+endpoint.path)
-	}
-	if path, ok := configuredLibpodImageScpAllow(configuredRules); ok && !slices.Contains(allowed, http.MethodPost+" "+path) {
-		allowed = append(allowed, http.MethodPost+" "+path)
 	}
 	return allowed
 }
 
-func allowedSensitiveExfilEndpoints(compiled []*filter.CompiledRule, configuredRules []config.RuleConfig) []string {
-	endpoints := appendExactLibpodImageScpExfilEndpoints(sensitiveExfilEndpoints, configuredRules)
-	allowed := make([]string, 0, len(endpoints))
-	for _, endpoint := range endpoints {
-		req := &http.Request{Method: endpoint.method, URL: &url.URL{Path: endpoint.path}}
-		action, _, _ := filter.Evaluate(compiled, req)
-		if action != filter.ActionAllow {
-			continue
+func allowedCatalogPaths(method, catalogPath string, identifierShape catalogIdentifierShape, exclusions []catalogPathExclusion, sourceRules []config.RuleConfig, compiledRules []*filter.CompiledRule) []string {
+	// Preserve the stable catalog spelling when its representative route is
+	// itself exposed. Exact reachability is only needed when ordered rules
+	// shadow that representative but may leave another identifier reachable.
+	if policyAllowsPath(method, catalogPath, compiledRules) {
+		return []string{catalogPath}
+	}
+
+	witness, result := firstAllowedCatalogPath(method, catalogPath, identifierShape, exclusions, sourceRules)
+	switch result {
+	case catalogReachable:
+		// Verify the automaton witness through the production evaluator. Any
+		// future matcher-dialect drift fails closed instead of hiding exposure.
+		if policyAllowsPath(method, witness, compiledRules) {
+			return []string{witness}
 		}
-		allowed = append(allowed, endpoint.method+" "+endpoint.path)
+		return []string{catalogPath}
+	case catalogReachabilityIndeterminate:
+		return []string{catalogPath}
+	default:
+		return nil
 	}
-	if path, ok := configuredLibpodImageScpAllow(configuredRules); ok && !slices.Contains(allowed, http.MethodPost+" "+path) {
-		allowed = append(allowed, http.MethodPost+" "+path)
-	}
-	if path, ok := configuredLibpodSlashBearingImagePushAllow(configuredRules); ok && !slices.Contains(allowed, http.MethodPost+" "+path) {
-		allowed = append(allowed, http.MethodPost+" "+path)
+}
+
+func policyAllowsPath(method, path string, compiledRules []*filter.CompiledRule) bool {
+	req := &http.Request{Method: method, URL: &url.URL{Path: path}}
+	action, _, _ := filter.Evaluate(compiledRules, req)
+	return action == filter.ActionAllow
+}
+
+func allowedSensitiveExfilEndpoints(configured []config.RuleConfig, compiled []*filter.CompiledRule) []string {
+	allowed := make([]string, 0, len(sensitiveExfilEndpoints))
+	for _, endpoint := range sensitiveExfilEndpoints {
+		for _, path := range allowedCatalogPaths(endpoint.method, endpoint.path, endpoint.identifierShape, endpoint.exclusions, configured, compiled) {
+			allowed = append(allowed, endpoint.method+" "+path)
+		}
 	}
 	return allowed
-}
-
-// configuredLibpodImageScpAllow audits the source rules instead of relying on
-// one representative request. A deny for that representative must not hide a
-// later wildcard allow that still opens every other caller-selected image
-// name. Exact paths retain their own spelling in the validation error; broad
-// patterns report the route family they expose.
-func configuredLibpodImageScpAllow(rules []config.RuleConfig) (string, bool) {
-	const prefix = "/libpod/images/scp/"
-	for index, rule := range rules {
-		if rule.Action != "allow" || !methodListIncludes(rule.Match.Method, http.MethodPost) {
-			continue
-		}
-		pattern := rule.Match.Path
-		if !strings.Contains(pattern, "*") {
-			// Exact paths are already added as probes and evaluated against the
-			// complete first-match rule set by the caller.
-			continue
-		}
-		if libpodImagePathIsHandledBeforeScp(pattern) {
-			continue
-		}
-		if globCanMatchNonemptyPathBelow(pattern, prefix) && !libpodImageScpAllowDefinitelyShadowed(pattern, rules[:index]) {
-			return prefix + "*", true
-		}
-	}
-	return "", false
-}
-
-func libpodImagePathIsHandledBeforeScp(path string) bool {
-	for _, suffix := range []string{"/push", "/tag", "/untag"} {
-		if strings.HasSuffix(path, suffix) {
-			return true
-		}
-	}
-	return false
-}
-
-type reachabilityGlobKind uint8
-
-const (
-	reachabilityGlobLiteral reachabilityGlobKind = iota
-	reachabilityGlobSegmentStar
-	reachabilityGlobAnyStar
-	reachabilityGlobOptionalDeep
-)
-
-type reachabilityGlobPart struct {
-	kind    reachabilityGlobKind
-	literal rune
-}
-
-type reachabilityGlobState struct {
-	part int
-	deep bool
-}
-
-// globCanMatchNonemptyPathBelow decides whether a path glob intersects the
-// dynamic route family prefix+<nonempty name>. It models the repository's
-// complete glob dialect as a small epsilon-NFA, so startup validation does not
-// depend on any finite set of representative image names.
-func globCanMatchNonemptyPathBelow(pattern, prefix string) bool {
-	return globHasMatchOutsideCovers(pattern, prefix, nil)
-}
-
-func parseReachabilityGlob(pattern string) []reachabilityGlobPart {
-	// filter.CompileRule handles patterns without ** as segment globs. Its
-	// matchGlobSegments strips one leading slash from the normalized request
-	// path and splitGlobSegments strips one from the pattern, so a relative
-	// segment glob beginning with * has the same language as its absolute
-	// spelling. Other relative segment globs are unreachable because the
-	// compiled matcher's nonempty literal-prefix fast path still compares
-	// them against the request's leading slash. Preserve both behaviors here
-	// instead of broadening every relative glob.
-	if strings.HasPrefix(pattern, "*") && !strings.Contains(pattern, "**") {
-		pattern = "/" + pattern
-	}
-	runes := []rune(pattern)
-	parts := make([]reachabilityGlobPart, 0, len(runes))
-	for index := 0; index < len(runes); {
-		switch {
-		case index+2 < len(runes) && runes[index] == '/' && runes[index+1] == '*' && runes[index+2] == '*':
-			parts = append(parts, reachabilityGlobPart{kind: reachabilityGlobOptionalDeep})
-			index += 3
-		case index+1 < len(runes) && runes[index] == '*' && runes[index+1] == '*':
-			parts = append(parts, reachabilityGlobPart{kind: reachabilityGlobAnyStar})
-			index += 2
-		case runes[index] == '*':
-			parts = append(parts, reachabilityGlobPart{kind: reachabilityGlobSegmentStar})
-			index++
-		default:
-			parts = append(parts, reachabilityGlobPart{kind: reachabilityGlobLiteral, literal: runes[index]})
-			index++
-		}
-	}
-	return parts
-}
-
-func reachabilityGlobClosure(parts []reachabilityGlobPart, states map[reachabilityGlobState]struct{}) map[reachabilityGlobState]struct{} {
-	queue := make([]reachabilityGlobState, 0, len(states))
-	for state := range states {
-		queue = append(queue, state)
-	}
-	for len(queue) > 0 {
-		state := queue[0]
-		queue = queue[1:]
-		if state.deep {
-			next := reachabilityGlobState{part: state.part + 1}
-			if _, ok := states[next]; !ok {
-				states[next] = struct{}{}
-				queue = append(queue, next)
-			}
-			continue
-		}
-		if state.part >= len(parts) {
-			continue
-		}
-		switch parts[state.part].kind {
-		case reachabilityGlobSegmentStar, reachabilityGlobAnyStar, reachabilityGlobOptionalDeep:
-			next := reachabilityGlobState{part: state.part + 1}
-			if _, ok := states[next]; !ok {
-				states[next] = struct{}{}
-				queue = append(queue, next)
-			}
-		}
-	}
-	return states
-}
-
-func reachabilityGlobStep(parts []reachabilityGlobPart, states map[reachabilityGlobState]struct{}, value rune) map[reachabilityGlobState]struct{} {
-	next := make(map[reachabilityGlobState]struct{})
-	for state := range reachabilityGlobClosure(parts, states) {
-		if state.deep {
-			next[state] = struct{}{}
-			continue
-		}
-		if state.part >= len(parts) {
-			continue
-		}
-		part := parts[state.part]
-		switch part.kind {
-		case reachabilityGlobLiteral:
-			if value == part.literal {
-				next[reachabilityGlobState{part: state.part + 1}] = struct{}{}
-			}
-		case reachabilityGlobSegmentStar:
-			if value != '/' {
-				next[state] = struct{}{}
-			}
-		case reachabilityGlobAnyStar:
-			next[state] = struct{}{}
-		case reachabilityGlobOptionalDeep:
-			if value == '/' {
-				next[reachabilityGlobState{part: state.part, deep: true}] = struct{}{}
-			}
-		}
-	}
-	return reachabilityGlobClosure(parts, next)
-}
-
-func libpodImageScpAllowDefinitelyShadowed(pattern string, earlier []config.RuleConfig) bool {
-	return globAllowDefinitelyShadowed(pattern, "/libpod/images/scp/", earlier)
-}
-
-func configuredLibpodSlashBearingImagePushAllow(rules []config.RuleConfig) (string, bool) {
-	const prefix = "/libpod/images/"
-	const suffix = "/push"
-	for index, rule := range rules {
-		if rule.Action != "allow" || !methodListIncludes(rule.Match.Method, http.MethodPost) {
-			continue
-		}
-		pattern := rule.Match.Path
-		if !strings.Contains(pattern, "*") {
-			continue
-		}
-		covers := methodCompatibleRulePatterns(rules[:index], http.MethodPost)
-		if globHasMatchOutsideCoversEndingWith(pattern, prefix, suffix, covers) {
-			return prefix + "*/push", true
-		}
-	}
-	return "", false
-}
-
-func globAllowDefinitelyShadowed(pattern, prefix string, earlier []config.RuleConfig) bool {
-	covers := methodCompatibleRulePatterns(earlier, http.MethodPost)
-	return !globHasMatchOutsideCovers(pattern, prefix, covers)
-}
-
-func methodCompatibleRulePatterns(rules []config.RuleConfig, method string) []string {
-	patterns := make([]string, 0, len(rules))
-	for _, rule := range rules {
-		if methodListIncludes(rule.Match.Method, method) {
-			patterns = append(patterns, rule.Match.Path)
-		}
-	}
-	return patterns
-}
-
-type reachabilityGlobLanguageState struct {
-	candidate map[reachabilityGlobState]struct{}
-	covers    []map[reachabilityGlobState]struct{}
-}
-
-// globHasMatchOutsideCovers decides exact language reachability for a rule at
-// its ordered position: it finds a nonempty suffix below prefix accepted by
-// pattern and by none of the earlier method-compatible cover patterns.
-func globHasMatchOutsideCovers(pattern, prefix string, covers []string) bool {
-	candidateParts := parseReachabilityGlob(pattern)
-	coverParts := make([][]reachabilityGlobPart, len(covers))
-	state := reachabilityGlobLanguageState{
-		candidate: reachabilityGlobClosure(candidateParts, map[reachabilityGlobState]struct{}{{}: {}}),
-		covers:    make([]map[reachabilityGlobState]struct{}, len(covers)),
-	}
-	for index, cover := range covers {
-		coverParts[index] = parseReachabilityGlob(cover)
-		state.covers[index] = reachabilityGlobClosure(coverParts[index], map[reachabilityGlobState]struct{}{{}: {}})
-	}
-	for _, value := range prefix {
-		state.candidate = reachabilityGlobStep(candidateParts, state.candidate, value)
-		for index := range state.covers {
-			state.covers[index] = reachabilityGlobStep(coverParts[index], state.covers[index], value)
-		}
-		if len(state.candidate) == 0 {
-			return false
-		}
-	}
-
-	alphabet := reachabilityGlobAlphabet(candidateParts, coverParts)
-	queue := []reachabilityGlobLanguageState{state}
-	seen := map[string]struct{}{reachabilityGlobLanguageStateKey(state): {}}
-	for len(queue) > 0 {
-		current := queue[0]
-		queue = queue[1:]
-		for _, value := range alphabet {
-			next := reachabilityGlobLanguageState{
-				candidate: reachabilityGlobStep(candidateParts, current.candidate, value),
-				covers:    make([]map[reachabilityGlobState]struct{}, len(current.covers)),
-			}
-			if len(next.candidate) == 0 {
-				continue
-			}
-			covered := false
-			for index := range current.covers {
-				next.covers[index] = reachabilityGlobStep(coverParts[index], current.covers[index], value)
-				covered = covered || reachabilityGlobAccepts(coverParts[index], next.covers[index])
-			}
-			if reachabilityGlobAccepts(candidateParts, next.candidate) && !covered {
-				return true
-			}
-			key := reachabilityGlobLanguageStateKey(next)
-			if _, ok := seen[key]; !ok {
-				seen[key] = struct{}{}
-				queue = append(queue, next)
-			}
-		}
-	}
-	return false
-}
-
-type reachabilityGlobEndingLanguageState struct {
-	language    reachabilityGlobLanguageState
-	suffixMatch int
-	consumed    int
-}
-
-// globHasMatchOutsideCoversEndingWith decides whether an ordered allow rule
-// reaches prefix+<nonempty name>+suffix outside every earlier method-compatible
-// rule. The suffix matcher is part of the same finite-state search as the path
-// globs, so patterns need not spell the route suffix literally.
-func globHasMatchOutsideCoversEndingWith(pattern, prefix, suffix string, covers []string) bool {
-	candidateParts := parseReachabilityGlob(pattern)
-	coverParts := make([][]reachabilityGlobPart, len(covers))
-	state := reachabilityGlobEndingLanguageState{
-		language: reachabilityGlobLanguageState{
-			candidate: reachabilityGlobClosure(candidateParts, map[reachabilityGlobState]struct{}{{}: {}}),
-			covers:    make([]map[reachabilityGlobState]struct{}, len(covers)),
-		},
-	}
-	for index, cover := range covers {
-		coverParts[index] = parseReachabilityGlob(cover)
-		state.language.covers[index] = reachabilityGlobClosure(coverParts[index], map[reachabilityGlobState]struct{}{{}: {}})
-	}
-	for _, value := range prefix {
-		state.language.candidate = reachabilityGlobStep(candidateParts, state.language.candidate, value)
-		for index := range state.language.covers {
-			state.language.covers[index] = reachabilityGlobStep(coverParts[index], state.language.covers[index], value)
-		}
-		if len(state.language.candidate) == 0 {
-			return false
-		}
-	}
-
-	suffixRunes := []rune(suffix)
-	alphabetParts := append([][]reachabilityGlobPart(nil), coverParts...)
-	alphabetParts = append(alphabetParts, parseReachabilityGlob(suffix))
-	alphabet := reachabilityGlobAlphabet(candidateParts, alphabetParts)
-	queue := []reachabilityGlobEndingLanguageState{state}
-	seen := map[string]struct{}{reachabilityGlobEndingLanguageStateKey(state): {}}
-	for len(queue) > 0 {
-		current := queue[0]
-		queue = queue[1:]
-		for _, value := range alphabet {
-			next := reachabilityGlobEndingLanguageState{
-				language: reachabilityGlobLanguageState{
-					candidate: reachabilityGlobStep(candidateParts, current.language.candidate, value),
-					covers:    make([]map[reachabilityGlobState]struct{}, len(current.language.covers)),
-				},
-				suffixMatch: literalSuffixMatchStep(suffixRunes, current.suffixMatch, value),
-				consumed:    min(current.consumed+1, len(suffixRunes)+1),
-			}
-			if len(next.language.candidate) == 0 {
-				continue
-			}
-			covered := false
-			for index := range current.language.covers {
-				next.language.covers[index] = reachabilityGlobStep(coverParts[index], current.language.covers[index], value)
-				covered = covered || reachabilityGlobAccepts(coverParts[index], next.language.covers[index])
-			}
-			if next.consumed > len(suffixRunes) && next.suffixMatch == len(suffixRunes) && reachabilityGlobAccepts(candidateParts, next.language.candidate) && !covered {
-				return true
-			}
-			key := reachabilityGlobEndingLanguageStateKey(next)
-			if _, ok := seen[key]; !ok {
-				seen[key] = struct{}{}
-				queue = append(queue, next)
-			}
-		}
-	}
-	return false
-}
-
-func literalSuffixMatchStep(suffix []rune, matched int, value rune) int {
-	candidate := append(append([]rune(nil), suffix[:matched]...), value)
-	for length := min(len(candidate), len(suffix)); length > 0; length-- {
-		if slices.Equal(candidate[len(candidate)-length:], suffix[:length]) {
-			return length
-		}
-	}
-	return 0
-}
-
-func reachabilityGlobEndingLanguageStateKey(state reachabilityGlobEndingLanguageState) string {
-	return fmt.Sprintf("%s;%d;%d", reachabilityGlobLanguageStateKey(state.language), state.suffixMatch, state.consumed)
-}
-
-func reachabilityGlobAlphabet(candidate []reachabilityGlobPart, covers [][]reachabilityGlobPart) []rune {
-	literals := make(map[rune]struct{})
-	add := func(parts []reachabilityGlobPart) {
-		for _, part := range parts {
-			if part.kind == reachabilityGlobLiteral {
-				literals[part.literal] = struct{}{}
-			}
-		}
-	}
-	add(candidate)
-	for _, parts := range covers {
-		add(parts)
-	}
-	alphabet := make([]rune, 0, len(literals)+2)
-	alphabet = append(alphabet, '/')
-	for literal := range literals {
-		if literal != '/' {
-			alphabet = append(alphabet, literal)
-		}
-	}
-	other := rune('a')
-	for other == '/' {
-		other++
-	}
-	for {
-		if _, exists := literals[other]; !exists {
-			break
-		}
-		other++
-	}
-	alphabet = append(alphabet, other)
-	return alphabet
-}
-
-func reachabilityGlobAccepts(parts []reachabilityGlobPart, states map[reachabilityGlobState]struct{}) bool {
-	_, ok := states[reachabilityGlobState{part: len(parts)}]
-	return ok
-}
-
-func reachabilityGlobLanguageStateKey(state reachabilityGlobLanguageState) string {
-	var builder strings.Builder
-	builder.WriteString(reachabilityGlobStatesKey(state.candidate))
-	for _, cover := range state.covers {
-		builder.WriteByte('|')
-		builder.WriteString(reachabilityGlobStatesKey(cover))
-	}
-	return builder.String()
-}
-
-func reachabilityGlobStatesKey(states map[reachabilityGlobState]struct{}) string {
-	values := make([]int, 0, len(states))
-	for state := range states {
-		value := state.part * 2
-		if state.deep {
-			value++
-		}
-		values = append(values, value)
-	}
-	slices.Sort(values)
-	return fmt.Sprint(values)
-}
-
-func methodListIncludes(methods, want string) bool {
-	for _, method := range splitMethods(methods) {
-		if method == "*" || strings.EqualFold(method, want) {
-			return true
-		}
-	}
-	return false
-}
-
-func appendExactLibpodImageScpBodyEndpoints(base []bodySensitiveWriteEndpoint, rules []config.RuleConfig) []bodySensitiveWriteEndpoint {
-	paths := exactLibpodImageScpPaths(rules)
-	endpoints := make([]bodySensitiveWriteEndpoint, 0, len(base)+len(paths))
-	endpoints = append(endpoints, base...)
-	for _, path := range paths {
-		endpoints = append(endpoints, bodySensitiveWriteEndpoint{method: http.MethodPost, path: path})
-	}
-	return endpoints
-}
-
-func appendExactLibpodImageScpExfilEndpoints(base []sensitiveExfilEndpoint, rules []config.RuleConfig) []sensitiveExfilEndpoint {
-	paths := append(exactLibpodImageScpPaths(rules), exactLibpodImagePushPaths(rules)...)
-	endpoints := make([]sensitiveExfilEndpoint, 0, len(base)+len(paths))
-	endpoints = append(endpoints, base...)
-	for _, path := range paths {
-		if slices.ContainsFunc(endpoints, func(endpoint sensitiveExfilEndpoint) bool {
-			return endpoint.method == http.MethodPost && endpoint.path == path
-		}) {
-			continue
-		}
-		endpoints = append(endpoints, sensitiveExfilEndpoint{method: http.MethodPost, path: path})
-	}
-	return endpoints
-}
-
-func exactLibpodImagePushPaths(rules []config.RuleConfig) []string {
-	const prefix = "/libpod/images/"
-	const suffix = "/push"
-	paths := make([]string, 0)
-	for _, rule := range rules {
-		path := rule.Match.Path
-		if strings.Contains(path, "*") || !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) || len(path) <= len(prefix)+len(suffix) || slices.Contains(paths, path) {
-			continue
-		}
-		paths = append(paths, path)
-	}
-	return paths
-}
-
-// The static catalog probes one representative dynamic path, which catches
-// wildcard rules but cannot catch an allow rule naming a different SCP image
-// exactly. Add every literal SCP path from the source rules as another probe.
-// Patterns containing * remain covered by the representative catalog entry.
-func exactLibpodImageScpPaths(rules []config.RuleConfig) []string {
-	const prefix = "/libpod/images/scp/"
-	const representative = prefix + "sockguard-test"
-	paths := make([]string, 0)
-	for _, rule := range rules {
-		path := rule.Match.Path
-		if path == representative || strings.Contains(path, "*") || !strings.HasPrefix(path, prefix) || len(path) == len(prefix) || libpodImagePathIsHandledBeforeScp(path) || slices.Contains(paths, path) {
-			continue
-		}
-		paths = append(paths, path)
-	}
-	return paths
 }
 
 // allowedSensitiveExfilEndpointsByProfile probes each named client profile's
-// own rule set for the endpoints allowedSensitiveExfilEndpoints checks,
-// returning "<profile>: <METHOD> <path>" entries.
+// configured and compiled rule sets for the endpoints
+// allowedSensitiveExfilEndpoints checks, returning
+// "<profile>: <METHOD> <path>" entries.
 //
 // The acknowledgment is global but profile rules are evaluated in place of the
 // top-level set, so a profile can be the only reason
@@ -952,23 +583,24 @@ func exactLibpodImageScpPaths(rules []config.RuleConfig) []string {
 // validateReadExfiltrationRulesForPolicy never fires once the acknowledgment
 // is present, which leaves the profile's exposure unreported everywhere else.
 //
-// Profile names come from a map, so they are sorted before the walk. The result
-// is therefore stable across runs, which a log field has to be.
-func allowedSensitiveExfilEndpointsByProfile(profiles map[string]filter.Policy, configuredProfiles []config.ClientProfileConfig) []string {
-	configuredRules := make(map[string][]config.RuleConfig, len(configuredProfiles))
-	for _, profile := range configuredProfiles {
-		configuredRules[profile.Name] = profile.Rules
+// Profile names come from a map, so they are sorted before the walk; within a
+// profile the entries keep sensitiveExfilEndpoints' declaration order. The
+// result is therefore stable across runs, which a log field has to be.
+func allowedSensitiveExfilEndpointsByProfile(configured []config.ClientProfileConfig, profiles map[string]filter.Policy) []string {
+	configuredByName := make(map[string][]config.RuleConfig, len(configured))
+	for _, profile := range configured {
+		configuredByName[profile.Name] = profile.Rules
 	}
 
 	names := make([]string, 0, len(profiles))
 	for name := range profiles {
 		names = append(names, name)
 	}
-	slices.Sort(names)
+	sort.Strings(names)
 
 	exposed := make([]string, 0, len(names))
 	for _, name := range names {
-		for _, endpoint := range allowedSensitiveExfilEndpoints(profiles[name].Rules, configuredRules[name]) {
+		for _, endpoint := range allowedSensitiveExfilEndpoints(configuredByName[name], profiles[name].Rules) {
 			exposed = append(exposed, name+": "+endpoint)
 		}
 	}
@@ -997,6 +629,16 @@ func bodyInspectionConfiguredForEndpoint(requestBody config.RequestBodyConfig, e
 		return true
 	case "/libpod/containers/create":
 		return true
+	case "/libpod/containers/sockguard-test/archive", "/libpod/containers/sockguard-test/update":
+		// Both share their Docker-compat twin's config block and its
+		// fail-closed defaults, so they are covered on exactly the terms the
+		// "/containers/sockguard-test/update", "/containers/sockguard-test/archive"
+		// case above is covered on: container_archive's target-path,
+		// setuid, device-node and escaping-link checks apply verbatim
+		// (Podman runs one compat.Archive handler for both spellings), and
+		// container_update's allow_* gates are enforced against libpod's own
+		// body and query shape by containerUpdatePolicy.inspectLibpod.
+		return true
 	case "/libpod/pods/create", "/libpod/volumes/create", "/libpod/networks/create", "/libpod/secrets/create", "/libpod/images/pull", "/libpod/images/load", "/libpod/images/import":
 		// libpod_pod_create/libpod_volume/libpod_network/libpod_secret gates
 		// are all plain booleans/allowlists with real fail-closed defaults —
@@ -1016,12 +658,11 @@ func bodyInspectionConfiguredForEndpoint(requestBody config.RequestBodyConfig, e
 		return true
 	// /libpod/play/kube, /libpod/kube/play, /libpod/kube/apply,
 	// /libpod/manifests/*, /libpod/local/build, /libpod/local/images/load,
-	// and /libpod/images/scp/* deliberately have NO case here: they have no
-	// request-body inspector at all (#148 design doc decision C2 for the
-	// kube/manifest set; for the rest, the input is a daemon-host path or an
-	// SSH destination that never crosses the socket), so they fall through
-	// to `default: false` below and always require
-	// insecure_allow_body_blind_writes to admit.
+	// /libpod/images/scp/*, and /libpod/containers/*/restore deliberately have
+	// NO case here. The kube/manifest set is deferred by #148 design decision
+	// C2; the rest accepts a daemon-host path, an SSH destination, or an opaque
+	// CRIU checkpoint archive that sockguard cannot inspect. They fall through
+	// to `default: false` and require insecure_allow_body_blind_writes.
 	default:
 		return false
 	}
@@ -1034,10 +675,10 @@ func compileClientProfiles(cfg *config.Config) (map[string]filter.Policy, error)
 		if err != nil {
 			return nil, fmt.Errorf("client profile %q: %w", profile.Name, err)
 		}
-		if err := validateBodyBlindWriteRulesForPolicy(profile.Name, cfg.InsecureAllowBodyBlindWrites, profile.RequestBody, compiledRules, profile.Rules); err != nil {
+		if err := validateBodyBlindWriteRulesForPolicy(profile.Name, cfg.InsecureAllowBodyBlindWrites, profile.RequestBody, profile.Rules, compiledRules); err != nil {
 			return nil, err
 		}
-		if err := validateReadExfiltrationRulesForPolicy(profile.Name, cfg.InsecureAllowReadExfiltration, compiledRules, profile.Rules); err != nil {
+		if err := validateReadExfiltrationRulesForPolicy(profile.Name, cfg.InsecureAllowReadExfiltration, profile.Rules, compiledRules); err != nil {
 			return nil, err
 		}
 		//nolint:staticcheck // SA1019: deprecated flag still needs validating for as long as it stays functional

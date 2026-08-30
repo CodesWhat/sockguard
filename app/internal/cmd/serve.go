@@ -568,7 +568,7 @@ func newServeRuntime(cfg *config.Config, logger *slog.Logger, deps *serveDeps) (
 		runtime.metrics = metrics.NewRegistry()
 	}
 
-	resolver, legacy, err := buildUpstreamResolver(cfg, logger, os.Getenv)
+	resolver, legacy, err := buildUpstreamResolver(cfg, logger, os.LookupEnv)
 	if err != nil {
 		return nil, err
 	}
@@ -686,6 +686,7 @@ func attachRuntimeInspectors(cfg *config.Config, res *upstream.Resolver, policy 
 	// POST /libpod/local/images/load names its archive by daemon-host path,
 	// so there is no body to inspect and only the acknowledgment admits it.
 	policy.ImageLoad.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
+	policy.ContainerUpdate.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
 	return policy
 }
 
@@ -1129,10 +1130,10 @@ func warnReadExfiltrationOnce(cfg *config.Config, rules []*filter.CompiledRule, 
 	if !cfg.InsecureAllowReadExfiltration {
 		return
 	}
-	exposed := allowedSensitiveExfilEndpoints(rules, cfg.Rules)
-	profileExposed := allowedSensitiveExfilEndpointsByProfile(clientProfiles, cfg.Clients.Profiles)
+	exposed := allowedSensitiveExfilEndpoints(cfg.Rules, rules)
+	profileExposed := allowedSensitiveExfilEndpointsByProfile(cfg.Clients.Profiles, clientProfiles)
 	once.Do(func() {
-		logger.Warn("insecure_allow_read_exfiltration is enabled: rules matching raw archive/export, log/attach streaming, or registry push endpoints are admitted instead of refused at startup. A caller allowed those paths can read container files, images, plugins, environment variables, and secrets, or push local artifacts to a registry it chooses",
+		logger.Warn("insecure_allow_read_exfiltration is enabled: rules matching raw archive/export, log/attach streaming, checkpoint export, container rootfs mount, or registry push endpoints are admitted instead of refused at startup. A caller allowed those paths can read container files, container memory, images, plugins, environment variables, secrets, and daemon-host filesystem paths, or push local artifacts to a registry it chooses",
 			"exposed_endpoints", exposed,
 			"exposed_profile_endpoints", profileExposed,
 		)

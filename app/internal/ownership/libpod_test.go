@@ -470,6 +470,12 @@ func TestMiddlewareLibpodReadPathOwnershipDispatch(t *testing.T) {
 	}
 }
 
+func TestLibpodContainerIdentifierReservesShowMountedCollection(t *testing.T) {
+	if identifier, ok := libpodContainerIdentifier(http.MethodGet, "/libpod/containers/showmounted"); ok {
+		t.Fatalf("libpodContainerIdentifier(showmounted) = %q, true; want collection route, false", identifier)
+	}
+}
+
 func TestMiddlewareLibpodChecksKeywordNamedResourcesOutsideCollectionActions(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

@@ -541,6 +541,37 @@ func TestLibpodSystemDataUsageRefusedUnderOwnership(t *testing.T) {
 	}
 }
 
+func TestLibpodShowMountedRefusedUnderOwnership(t *testing.T) {
+	t.Parallel()
+	for _, path := range []string{
+		"/libpod/containers/showmounted",
+		"/v5.8.1/libpod/containers/showmounted",
+	} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			reached := false
+			handler := middlewareWithDeps(testLogger(), Options{Owner: "team-a"},
+				fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(countingUpstream(`{"other-id":"/var/lib/containers/storage/overlay/other/merged"}`, &reached))
+
+			rec, meta := getPathForTest(t, handler, http.MethodGet, path)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403; body: %s", rec.Code, rec.Body.String())
+			}
+			if reached {
+				t.Fatal("the daemon was queried for mount paths that cannot be owner-scoped")
+			}
+			if meta.ReasonCode != "owner_libpod_showmounted_unscopeable" {
+				t.Fatalf("meta.ReasonCode = %q, want owner_libpod_showmounted_unscopeable", meta.ReasonCode)
+			}
+			for _, leaked := range []string{"other-id", "/var/lib/containers"} {
+				if strings.Contains(rec.Body.String(), leaked) {
+					t.Fatalf("mount inventory %q reached the client: %s", leaked, rec.Body.String())
+				}
+			}
+		})
+	}
+}
+
 // TestLibpodSystemDataUsageInertWithoutOwnership proves the refusal costs
 // nothing to a single-tenant Podman deployment: with no owner configured there
 // is no tenant boundary to enforce, so the rule engine stays the only control

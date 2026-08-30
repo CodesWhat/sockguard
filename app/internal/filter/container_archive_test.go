@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -51,6 +52,199 @@ func TestContainerArchiveAllowsAbsoluteContainerTargetPath(t *testing.T) {
 	}
 	if reason != "" {
 		t.Fatalf("reason = %q, want empty", reason)
+	}
+}
+
+func TestContainerArchiveTargetQueryMatchesPodmanSemantics(t *testing.T) {
+	payload := mustContainerArchiveTar(t, containerArchiveTestEntry{name: "file.txt", body: "ok"})
+	tests := []struct {
+		name       string
+		query      string
+		wantDeny   bool
+		wantReason string
+	}{
+		{
+			name:       "missing target",
+			wantDeny:   true,
+			wantReason: "target path is required",
+		},
+		{
+			name:       "empty target",
+			query:      "?path=",
+			wantDeny:   true,
+			wantReason: "target path is required",
+		},
+		{
+			name:       "case folded unallowlisted target",
+			query:      "?Path=/etc",
+			wantDeny:   true,
+			wantReason: "is not allowlisted",
+		},
+		{
+			name:       "repeated target is ambiguous even when last is unallowlisted",
+			query:      "?path=/app&path=/etc",
+			wantDeny:   true,
+			wantReason: "ambiguous path query",
+		},
+		{
+			name:       "relative target cannot be resolved against an allowlist",
+			query:      "?path=app",
+			wantDeny:   true,
+			wantReason: "is not allowlisted",
+		},
+		{
+			name:       "case variant target keys are ambiguous",
+			query:      "?path=/app&Path=/app",
+			wantDeny:   true,
+			wantReason: "ambiguous path query",
+		},
+		{
+			name:       "trailing space remains part of the target",
+			query:      "?path=/app%20",
+			wantDeny:   true,
+			wantReason: "is not allowlisted",
+		},
+		{
+			name:       "trailing tab remains part of the target",
+			query:      "?path=/app%09",
+			wantDeny:   true,
+			wantReason: "is not allowlisted",
+		},
+		{
+			name:  "exact target is accepted",
+			query: "?path=/app",
+		},
+		{
+			name:  "single case folded target is accepted",
+			query: "?Path=/app",
+		},
+		{
+			name:       "repeated target is ambiguous even when last is allowlisted",
+			query:      "?path=/etc&path=/app",
+			wantDeny:   true,
+			wantReason: "ambiguous path query",
+		},
+	}
+
+	for _, surface := range []struct {
+		name string
+		path string
+	}{
+		{name: "docker", path: "/containers/abc/archive"},
+		{name: "versioned docker", path: "/v1.45/containers/abc/archive"},
+		{name: "libpod", path: "/libpod/containers/abc/archive"},
+		{name: "versioned libpod", path: "/v5.0.0/libpod/containers/abc/archive"},
+	} {
+		for _, tt := range tests {
+			t.Run(surface.name+"/"+tt.name, func(t *testing.T) {
+				req := httptest.NewRequest(http.MethodPut, surface.path+tt.query, bytes.NewReader(payload))
+				reason, err := newContainerArchivePolicy(ContainerArchiveOptions{AllowedPaths: []string{"/app"}}).inspect(nil, req, NormalizePath(req.URL.Path))
+				if err != nil {
+					t.Fatalf("inspect() error = %v", err)
+				}
+				if tt.wantDeny {
+					if !strings.Contains(reason, tt.wantReason) {
+						t.Fatalf("reason = %q, want it to mention %q", reason, tt.wantReason)
+					}
+					return
+				}
+				if reason != "" {
+					t.Fatalf("reason = %q, want allow", reason)
+				}
+				forwarded, err := io.ReadAll(req.Body)
+				if err != nil {
+					t.Fatalf("read replayed body: %v", err)
+				}
+				if err := req.Body.Close(); err != nil {
+					t.Fatalf("close replayed body: %v", err)
+				}
+				if !bytes.Equal(forwarded, payload) {
+					t.Fatal("forwarded body changed after archive inspection")
+				}
+			})
+		}
+	}
+}
+
+func TestContainerArchiveRenameQueryFailsClosed(t *testing.T) {
+	payload := mustContainerArchiveTar(t, containerArchiveTestEntry{
+		name: "dir/link",
+		link: "../file",
+		typ:  tar.TypeSymlink,
+	})
+	tests := []struct {
+		name     string
+		rawQuery string
+		wantDeny bool
+	}{
+		{
+			name:     "effective rename moves a safe link outside the target subtree",
+			rawQuery: "path=/app&rename=" + url.QueryEscape(`{"dir/link":"link"}`),
+			wantDeny: true,
+		},
+		{
+			name:     "case folded effective rename is denied",
+			rawQuery: "path=/app&Rename=" + url.QueryEscape(`{"dir/link":"link"}`),
+			wantDeny: true,
+		},
+		{
+			name:     "repeated rename is ambiguous when last is nonempty",
+			rawQuery: "path=/app&rename=&rename=" + url.QueryEscape(`{"dir/link":"link"}`),
+			wantDeny: true,
+		},
+		{
+			name:     "case variant rename keys are ambiguous",
+			rawQuery: "path=/app&rename=&Rename=",
+			wantDeny: true,
+		},
+		{
+			name:     "repeated rename is ambiguous even when last is empty",
+			rawQuery: "path=/app&rename=" + url.QueryEscape(`{"dir/link":"link"}`) + "&rename=",
+			wantDeny: true,
+		},
+		{
+			name:     "single empty rename is a no-op",
+			rawQuery: "path=/app&rename=",
+		},
+	}
+
+	for _, surface := range []struct {
+		name string
+		path string
+	}{
+		{name: "docker", path: "/containers/abc/archive"},
+		{name: "versioned docker", path: "/v1.45/containers/abc/archive"},
+		{name: "libpod", path: "/libpod/containers/abc/archive"},
+		{name: "versioned libpod", path: "/v5.0.0/libpod/containers/abc/archive"},
+	} {
+		for _, tt := range tests {
+			t.Run(surface.name+"/"+tt.name, func(t *testing.T) {
+				req := httptest.NewRequest(http.MethodPut, surface.path+"?"+tt.rawQuery, bytes.NewReader(payload))
+				reason, err := newContainerArchivePolicy(ContainerArchiveOptions{AllowedPaths: []string{"/app"}}).inspect(nil, req, NormalizePath(req.URL.Path))
+				if err != nil {
+					t.Fatalf("inspect() error = %v", err)
+				}
+				if tt.wantDeny {
+					if !strings.Contains(reason, "rename query is not allowed") {
+						t.Fatalf("reason = %q, want rename denial", reason)
+					}
+					return
+				}
+				if reason != "" {
+					t.Fatalf("reason = %q, want allow", reason)
+				}
+				forwarded, err := io.ReadAll(req.Body)
+				if err != nil {
+					t.Fatalf("read replayed body: %v", err)
+				}
+				if err := req.Body.Close(); err != nil {
+					t.Fatalf("close replayed body: %v", err)
+				}
+				if !bytes.Equal(forwarded, payload) {
+					t.Fatal("forwarded body changed after empty effective rename")
+				}
+			})
+		}
 	}
 }
 
@@ -263,8 +457,8 @@ func TestContainerArchivePathHelpersCoverEdgeCases(t *testing.T) {
 		t.Fatal("isContainerArchivePath() = true for non-container path")
 	}
 
-	if got, ok := normalizeContainerArchiveTargetPath("  "); !ok || got != "" {
-		t.Fatalf("normalizeContainerArchiveTargetPath(blank) = %q, %v; want empty, true", got, ok)
+	if got, ok := normalizeContainerArchiveTargetPath("  "); !ok || got != "  " {
+		t.Fatalf("normalizeContainerArchiveTargetPath(blank) = %q, %v; want spaces preserved, true", got, ok)
 	}
 	if got, ok := normalizeContainerArchiveTargetPath("/"); !ok || got != "." {
 		t.Fatalf("normalizeContainerArchiveTargetPath(/) = %q, %v; want ., true", got, ok)

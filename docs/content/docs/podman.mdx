@@ -52,6 +52,8 @@ on.
 | `POST /libpod/pods/create` | `request_body.libpod_pod_create` | Pods have no Docker-compat equivalent. Covers pod-level host network (`allow_host_network`), shared PID namespace (`allow_shared_pid_namespace`), and the infra image's registry (`allowed_infra_image_registries`). |
 | `POST /libpod/build` | `request_body.build`, shared with Docker `POST /build` | Covers primary remote contexts, URL/image `additionalbuildcontexts`, `networkmode=host`, and Dockerfiles containing `RUN`. Host/local/multipart and resource-usage host-file controls require the global blind-write acknowledgment. Direct and version-prefixed requests use the same tar/gzip bounds and body-sensitive startup validation as Docker's classic builder. |
 | `POST /libpod/containers/{name}/exec`, `POST /libpod/exec/{id}/start` | `request_body.exec` — **shared with Docker-compat** | libpod exec bodies use Docker's own field names on the wire, so there is deliberately no separate `libpod_exec` block. One `allowed_commands`/`allow_privileged`/`allow_root_user`/env-var policy governs exec on both surfaces, so nothing can be configured for one path family and forgotten for the other. |
+| `PUT /libpod/containers/{name}/archive` | `request_body.container_archive` — **shared with Docker-compat** | Podman routes this and Docker's `PUT /containers/{name}/archive` to a single `compat.Archive` handler, so one matcher covers both spellings. The inspector requires one nonempty, unambiguous `path`, matches Podman's case-insensitive field name, refuses relative targets when `allowed_paths` is configured because Podman resolves them against the container WorkingDir, and refuses a nonempty or ambiguous `rename` because Podman applies that transformation after reading the tar headers. `allowed_paths`, `allow_setid`, `allow_device_nodes` and `allow_escaping_links` otherwise apply identically on either path. |
+| `POST /libpod/containers/{name}/update` | `request_body.container_update` — **shared with Docker-compat** | The same `allow_*` gates as the Docker-compat update, read against libpod's own shape rather than Docker's. The body is `UpdateEntities`, whose embedded OCI `specs.LinuxResources` flattens to root-level `memory`/`cpu`/`pids`/`blockIO`/`devices`/`unified` instead of Docker's PascalCase, there is no `HostConfig`/`Resources` nesting, and the restart policy arrives in the `restartPolicy`/`restartRetries` **query string** rather than the body — so `allow_restart_policy` is enforced against the query here, with the key folded and every repeated value checked, because Podman decodes it with gorilla/schema. `devices` rides `allow_all_devices`; the OCI resource keys, the per-device IO throttles (`DeviceReadBPs` and friends) and `r_limits` ride `allow_resource_updates`; `health_on_failure`, `no_healthcheck` and `health_startup_retries` ride `allow_restart_policy`, since all three configure what the daemon does to the container on its own initiative. `allow_privileged` and `allow_capabilities` are inert on this path: `UpdateEntities` has no field for either, so a container cannot be made privileged through it. `health_cmd` and `health_startup_cmd`, `Env`/`UnsetEnv`, and `health_log_destination` are refused outright. Health timing and log-retention fields can create high-frequency checks or infinite daemon logs, so they require the global `insecure_allow_body_blind_writes: true` acknowledgment; the outright denials stay in force even with that acknowledgment. The opt-in `require_memory_limit`, `require_cpu_limit`, `require_cpu_limit_hard`, and `require_pids_limit` ratchets also cover this native path after ownership, applying Podman's partial lowercase resource overlay and explicit-zero clears to the inspected current state. |
 | `POST /libpod/volumes/create` | `request_body.libpod_volume` | Reuses the `volume` config shape, decoded against libpod's wire format (driver options live under `Options`, not `DriverOpts`). |
 | `POST /libpod/networks/create` | `request_body.libpod_network` | Reuses the `network` config shape, decoded against libpod's wire format (snake_case fields, no swarm/ingress/attachable/config-only concepts — libpod predates and is independent of Docker's swarm mode). |
 | `POST /libpod/images/pull` | `request_body.image_pull` — **shared with Docker-compat** | Podman's native image pull, the counterpart of Docker's `POST /images/create`. One registry allowlist (`allowed_registries`/`allow_official`/`allow_all_registries`) governs both surfaces, so nothing can be configured for one API family and forgotten for the other. The reference arrives in `reference` (not Docker's `fromImage`/`tag`), the key is case-insensitive, one repeated spelling uses its last value, and a `docker://` transport prefix is accepted. Sockguard checks every supplied value and strips the prefix before matching the host. A pull carrying no usable `reference` is denied unless `allow_all_registries: true`. `allow_imports` does not apply here; libpod imports are a separate route (`POST /libpod/images/import`). |
@@ -129,10 +131,20 @@ listed in **both** acknowledgment catalogs, so opening it needs
 `insecure_allow_read_exfiltration: true`, one per direction. There is no
 narrower policy for it; see Known Limitations.
 
+`POST /libpod/containers/{name}/restore` belongs in the blind-write category
+too. With `?import=1` Podman reads the whole request body as a CRIU checkpoint
+archive and **creates a container from it**, so one allowed call provisions a
+container whose spec — privileged, mounts, capabilities, devices — travels
+inside a gzipped tar as `spec.dump` and never passes through `containers/create`
+on either surface. The `?pod` parameter also joins the restored container to a
+pod and `?publishPorts` binds host ports. Nothing in Sockguard reads that
+archive, so an allow rule for the path requires
+`insecure_allow_body_blind_writes: true`, exactly like `play/kube`.
+
 ## Read-Exfiltration Additions
 
 `insecure_allow_read_exfiltration` is extended with libpod's equivalent of
-every Docker-compat exfiltration surface, plus one libpod-only entry:
+every Docker-compat exfiltration surface, plus the libpod-only entries below:
 
 - `GET /libpod/containers/*/archive`, `GET /libpod/containers/*/export`,
   `GET /libpod/containers/*/logs`, `POST /libpod/containers/*/attach`
@@ -151,6 +163,21 @@ every Docker-compat exfiltration surface, plus one libpod-only entry:
   definition to YAML, which can include environment variables and other
   resource data. It is a read/export surface, not a write, so it lives in
   this catalog rather than the blind-write one above.
+- `POST /libpod/containers/*/checkpoint` — a `POST`, but with `?export=1`
+  the response body is a tar.gz of the container's CRIU checkpoint: the
+  process memory dump plus root-filesystem changes, so every secret the
+  container held in memory. Its handler reads only the query string and
+  never a request body, so there is nothing for a request-body inspector to
+  check and it is gated here instead.
+- `POST /libpod/containers/*/mount` — mounts the container's root filesystem
+  on the daemon host and returns that path. It reads neither a query nor a
+  body. The response does not carry file contents, so this is not an
+  equivalent of `GET .../archive`; it is gated on the disclosure of the
+  storage driver's layout and the container-id-to-path mapping.
+- `GET /libpod/containers/showmounted` — returns that mapping for every
+  mounted container in one response, keyed by container ID. Under owner
+  isolation or visibility policy it is refused before Podman is queried,
+  because the response carries neither labels nor names to scope safely.
 
 A broad `GET /libpod/**`-shaped allow rule catches every path above and
 fails startup validation unless you explicitly opt in. Narrow, explicit
@@ -178,16 +205,19 @@ same way they cover Docker-compat:
   volumes, secrets — is owner-filtered and visibility-filtered, so switching
   a client from Docker-compat to libpod-native paths is not a way around
   isolation configured on the Docker-compat side.
-- `GET /libpod/system/df` is the one read that cannot be filtered, and it is
-  refused with a `403` instead whenever owner isolation or a visibility policy
-  is active. Podman's native disk-usage report is not the Docker-compat body
-  under another path: its image, container and volume entries carry no labels
-  at all, so no owner label and no visibility selector has a field to match.
+- `GET /libpod/system/df` and `GET /libpod/containers/showmounted` cannot be
+  filtered, and are refused with a `403` instead whenever owner isolation or a
+  visibility policy is active. Podman's native disk-usage report is not the
+  Docker-compat body under another path: its image, container and volume
+  entries carry no labels at all, so no owner label and no visibility selector
+  has a field to match.
   Refusing keeps it from being a way around isolation the way filtering does
   for every other libpod read; see
   [Security](/security#layer-6-owner-label-isolation) for the full field list
   and why an emptied report was the wrong answer. The Docker-compat
-  `GET /system/df` that Podman also serves is filtered normally.
+  `GET /system/df` that Podman also serves is filtered normally. The
+  `showmounted` response is only a map from container IDs to daemon-host mount
+  paths, so it likewise has no labels or names to classify.
 - Resource names that happen to equal an API action word remain protected.
   Owner matching reserves keywords only for the exact method and collection
   path, while `GET` and `HEAD` visibility treats write-only keywords as normal
@@ -260,7 +290,8 @@ preset ships a read-only monitoring posture covering both surfaces in one
 file — list/inspect/stats/top/changes for containers, list/inspect for pods
 (libpod only), images, networks, volumes, and secrets, plus health/version/
 info/events. It deliberately excludes every exfiltration-gated endpoint
-(archive, export, logs, attach, image/manifest push, `generate/kube`) on
+(archive, export, logs, attach, mounted-container inventory,
+image/manifest push, `generate/kube`) on
 both surfaces, so it validates clean without setting
 `insecure_allow_read_exfiltration`, and it allows no writes at all, so it
 never needs `insecure_allow_body_blind_writes` either. See
@@ -284,6 +315,21 @@ land):
   policy over host paths and SSH destinations, which is a different kind of
   rule than anything `request_body.*` expresses today; no shipped preset
   allows any of them.
+- Body modeling for `POST /libpod/containers/*/restore` — the CRIU
+  checkpoint archive it accepts under `?import=1` is a gzipped tar carrying
+  the container's OCI spec, and inspecting it means unpacking that archive
+  and running `spec.dump` through the create gates. It stays behind the
+  blind-write acknowledgment instead.
+- Query-parameter policy for `POST /libpod/containers/*/checkpoint` and
+  `POST /libpod/containers/*/mount` — both are gated wholesale by
+  `insecure_allow_read_exfiltration` rather than by a narrower control, such
+  as admitting a checkpoint only when `export` is unset. Neither reads a
+  request body, so a request-body inspector is not the shape of that fix.
+- Healthcheck command updates on `POST /libpod/containers/*/update` are
+  refused outright rather than checked against
+  `request_body.exec.allowed_commands`. Routing them through the exec
+  allowlist is the better long-run answer; refusing is the fail-closed
+  placeholder until it exists.
 - Manifest-list write inspection — expected to land alongside future
   image-trust work, since manifest lists are a registry-content concern.
 - Full read-side coverage of the broader `/libpod/generate/*` family beyond

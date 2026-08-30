@@ -161,3 +161,54 @@ func isContainerAttachPath(normalizedPath string) bool {
 	_, tail, ok := strings.Cut(rest, "/")
 	return ok && tail == "attach"
 }
+
+// containerSubresourcePath reports whether normalizedPath addresses the
+// per-container subresource named by subresource on either of Podman's two
+// spellings of the same route family — Docker-compat
+// "/containers/{id}/<subresource>" and libpod-native
+// "/libpod/containers/{id}/<subresource>" — and, when it does, which of the
+// two spellings it matched.
+//
+// It exists so a per-container matcher is written once against both spellings
+// instead of twice against one each. A predicate hand-written on the bare
+// "/containers/" prefix stops matching the moment a client speaks libpod to
+// the same Podman socket, which is exactly how
+// PUT /libpod/containers/{name}/archive and
+// POST /libpod/containers/{name}/update went uninspected: the drift between
+// two hand-maintained path lists IS the bug, so a second list is not the fix.
+//
+// The tail comparison deliberately does not require a non-empty {id}, which
+// preserves the behavior isContainerArchivePath and isContainerUpdatePath had
+// before they were rebuilt on this helper — narrowing it would move a path
+// out of inspection, not into it.
+//
+// normalizedPath must already have gone through NormalizePath, for the reason
+// isLibpodPath's doc comment gives.
+func containerSubresourcePath(normalizedPath string, subresource string) (libpod bool, ok bool) {
+	rest, found := strings.CutPrefix(normalizedPath, libpodPathPrefix+"containers/")
+	if found {
+		libpod = true
+	} else {
+		rest, found = strings.CutPrefix(normalizedPath, "/containers/")
+		if !found {
+			return false, false
+		}
+	}
+	_, tail, hasTail := strings.Cut(rest, "/")
+	return libpod, hasTail && tail == subresource
+}
+
+// isLibpodContainerUpdatePath matches POST /libpod/containers/{name}/update,
+// registered on libpod.UpdateContainer in Podman v5.8.1's
+// pkg/api/server/register_containers.go. It is deliberately NOT folded into
+// isContainerUpdatePath the way archive is: the two endpoints share a name
+// and nothing else. Docker's update body is a flat container.UpdateConfig,
+// libpod's is handlers.UpdateEntities (an embedded OCI specs.LinuxResources
+// plus healthcheck and device-limit blocks), and libpod takes the restart
+// policy from the query string rather than the body — so the two need
+// separate readers even though they share one ContainerUpdateOptions. See
+// containerUpdatePolicy.inspectLibpod.
+func isLibpodContainerUpdatePath(normalizedPath string) bool {
+	libpod, ok := containerSubresourcePath(normalizedPath, "update")
+	return ok && libpod
+}
