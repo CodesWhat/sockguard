@@ -863,10 +863,19 @@ func validateRequestBody(cfg *Config) []string {
 func validateNetworkEndpointConfig(cfg *Config) []string {
 	var errs []string
 	if cfg.RequestBody.Network.AllowEndpointConfig && cfg.explicitNetworkEndpointConfig {
-		errs = append(errs, endpointConfigMutualExclusionError("network"))
+		errs = append(errs, endpointConfigMutualExclusionError("request_body", "network"))
 	}
 	if cfg.RequestBody.LibpodNetwork.AllowEndpointConfig && cfg.explicitLibpodNetworkEndpointConfig {
-		errs = append(errs, endpointConfigMutualExclusionError("libpod_network"))
+		errs = append(errs, endpointConfigMutualExclusionError("request_body", "libpod_network"))
+	}
+	for i, profile := range cfg.Clients.Profiles {
+		prefix := fmt.Sprintf("clients.profiles[%d].request_body", i)
+		if profile.RequestBody.Network.AllowEndpointConfig && profile.explicitNetworkEndpointConfig {
+			errs = append(errs, endpointConfigMutualExclusionError(prefix, "network"))
+		}
+		if profile.RequestBody.LibpodNetwork.AllowEndpointConfig && profile.explicitLibpodNetworkEndpointConfig {
+			errs = append(errs, endpointConfigMutualExclusionError(prefix, "libpod_network"))
+		}
 	}
 	return errs
 }
@@ -874,8 +883,8 @@ func validateNetworkEndpointConfig(cfg *Config) []string {
 // endpointConfigMutualExclusionError renders the #186 mutual-exclusion
 // message for one request_body group. One template, so the two groups cannot
 // drift into differently-worded advice for the identical mistake.
-func endpointConfigMutualExclusionError(group string) string {
-	return fmt.Sprintf("request_body.%s.allow_endpoint_config and request_body.%s.endpoint_config are mutually exclusive: allow_endpoint_config: true already admits every EndpointSettings field, so remove the endpoint_config block or set allow_endpoint_config: false and use the granular fields instead", group, group)
+func endpointConfigMutualExclusionError(prefix, group string) string {
+	return fmt.Sprintf("%s.%s.allow_endpoint_config and %s.%s.endpoint_config are mutually exclusive: allow_endpoint_config: true already admits every EndpointSettings field, so remove the endpoint_config block or set allow_endpoint_config: false and use the granular fields instead", prefix, group, prefix, group)
 }
 
 // validateBuildkitAckMutualExclusion rejects

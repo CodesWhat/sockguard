@@ -1224,6 +1224,13 @@ type ClientProfileConfig struct {
 	RequestBody RequestBodyConfig           `mapstructure:"request_body"`
 	Rules       []RuleConfig                `mapstructure:"rules"`
 	Limits      LimitsConfig                `mapstructure:"limits"`
+
+	// Profile request-body blocks live inside a slice, so Viper does not apply
+	// Config's reflected leaf defaults or root-level endpoint_config provenance
+	// tracking to them. Load/LoadBytes fill these two flags from a defaults-free
+	// decode of the raw profile list before validation.
+	explicitNetworkEndpointConfig       bool
+	explicitLibpodNetworkEndpointConfig bool
 }
 
 // LimitsConfig groups per-profile rate-limit and concurrency-cap settings.

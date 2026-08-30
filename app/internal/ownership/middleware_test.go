@@ -1374,19 +1374,78 @@ func TestMiddlewareDeniesCrossOwnerNetworkMembershipChanges(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
-			fi := &recordingInspector{
-				resources: map[string]map[string]inspectResult{
-					"networks": {
-						"team-net": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
-					},
-					"containers": {
-						"foreign-container": {labels: map[string]string{"com.sockguard.owner": "job-999"}, found: true},
-					},
-				},
+			for _, foreign := range []dockerresource.Kind{dockerresource.KindNetwork, dockerresource.KindContainer} {
+				t.Run("foreign "+string(foreign), func(t *testing.T) {
+					t.Parallel()
+					ownerFor := func(kind dockerresource.Kind) string {
+						if kind == foreign {
+							return "job-999"
+						}
+						return "job-123"
+					}
+					opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+					fi := &recordingInspector{
+						resources: map[string]map[string]inspectResult{
+							"networks": {
+								"team-net": {labels: map[string]string{"com.sockguard.owner": ownerFor(dockerresource.KindNetwork)}, found: true},
+							},
+							"containers": {
+								"foreign-container": {labels: map[string]string{"com.sockguard.owner": ownerFor(dockerresource.KindContainer)}, found: true},
+							},
+						},
+					}
+					forwarded := false
+					handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						forwarded = true
+						w.WriteHeader(http.StatusNoContent)
+					}))
+
+					rec := httptest.NewRecorder()
+					req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+					handler.ServeHTTP(rec, req)
+
+					if forwarded {
+						t.Fatal("cross-owner network membership change was forwarded")
+					}
+					if rec.Code != http.StatusForbidden {
+						t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+					}
+					wantCall := resourceInspectCall{kind: foreign, id: "foreign-container"}
+					if foreign == dockerresource.KindNetwork {
+						wantCall.id = "team-net"
+					}
+					if !slices.Contains(fi.calls, wantCall) {
+						t.Fatalf("inspect calls = %#v, want %#v", fi.calls, wantCall)
+					}
+				})
 			}
+		})
+	}
+}
+
+func TestMiddlewareFailsClosedWhenNetworkMembershipContainerIsUnresolved(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		path string
+		body string
+	}{
+		{name: "Docker-compatible connect", path: "/networks/team-net/connect", body: `{"Container":"missing-container"}`},
+		{name: "Docker-compatible disconnect", path: "/networks/team-net/disconnect", body: `{"Container":"missing-container"}`},
+		{name: "native libpod connect", path: "/libpod/networks/team-net/connect", body: `{"container":"missing-container"}`},
+		{name: "native libpod disconnect", path: "/libpod/networks/team-net/disconnect", body: `{"Container":"missing-container"}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fi := &recordingInspector{resources: map[string]map[string]inspectResult{
+				"networks": {
+					"team-net": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+				},
+			}}
 			forwarded := false
-			handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			handler := middlewareWithDeps(testLogger(), Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				forwarded = true
 				w.WriteHeader(http.StatusNoContent)
 			}))
@@ -1396,14 +1455,13 @@ func TestMiddlewareDeniesCrossOwnerNetworkMembershipChanges(t *testing.T) {
 			handler.ServeHTTP(rec, req)
 
 			if forwarded {
-				t.Fatal("cross-owner network membership change was forwarded")
+				t.Fatal("unresolved network membership change was forwarded")
 			}
 			if rec.Code != http.StatusForbidden {
 				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
 			}
-			wantCall := resourceInspectCall{kind: dockerresource.KindContainer, id: "foreign-container"}
-			if !slices.Contains(fi.calls, wantCall) {
-				t.Fatalf("inspect calls = %#v, want %#v", fi.calls, wantCall)
+			if !strings.Contains(rec.Body.String(), "could not resolve") {
+				t.Fatalf("deny body = %q, want unresolved-resource reason", rec.Body.String())
 			}
 		})
 	}

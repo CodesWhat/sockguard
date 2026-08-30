@@ -71,7 +71,7 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	cfg.explicitLegacyListen = explicitLegacyListenFile(configPath)
-	cfg.explicitNetworkEndpointConfig, cfg.explicitLibpodNetworkEndpointConfig = explicitEndpointConfigFile(configPath)
+	applyEndpointConfigProvenance(&cfg, explicitEndpointConfigFile(configPath))
 
 	return &cfg, nil
 }
@@ -176,13 +176,41 @@ var (
 	libpodNetworkEndpointConfigKeys = endpointConfigKeysUnder("libpod_network")
 )
 
+type clientProfileEndpointConfigProvenance struct {
+	network                   bool
+	libpodNetwork             bool
+	networkAllowAliases       bool
+	libpodNetworkAllowAliases bool
+}
+
+type endpointConfigProvenance struct {
+	network       bool
+	libpodNetwork bool
+	profiles      []clientProfileEndpointConfigProvenance
+}
+
+type endpointConfigPresenceBlock struct {
+	EndpointConfig map[string]any `mapstructure:"endpoint_config"`
+}
+
+type endpointConfigPresenceDocument struct {
+	Clients struct {
+		Profiles []struct {
+			RequestBody struct {
+				Network       endpointConfigPresenceBlock `mapstructure:"network"`
+				LibpodNetwork endpointConfigPresenceBlock `mapstructure:"libpod_network"`
+			} `mapstructure:"request_body"`
+		} `mapstructure:"profiles"`
+	} `mapstructure:"clients"`
+}
+
 // explicitEndpointConfigFile is explicitLegacyListenFile's #186 counterpart:
 // reports, for each endpoint_config group, whether any of its keys was set
 // via the YAML file at configPath or a matching SOCKGUARD_* environment
 // variable, using a second, defaults-free Viper instance so registerDefaults'
 // leaf registrations cannot mask the answer. Both groups are answered from
 // one pass so the file is read once.
-func explicitEndpointConfigFile(configPath string) (network bool, libpodNetwork bool) {
+func explicitEndpointConfigFile(configPath string) endpointConfigProvenance {
 	pv := viper.New()
 	if configPath != "" {
 		if data, err := ReadFile(configPath); err == nil {
@@ -193,21 +221,83 @@ func explicitEndpointConfigFile(configPath string) (network bool, libpodNetwork 
 	pv.SetEnvPrefix("SOCKGUARD")
 	pv.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	pv.AutomaticEnv()
-	return explicitKeysSet(pv, networkEndpointConfigKeys), explicitKeysSet(pv, libpodNetworkEndpointConfigKeys)
+	return endpointConfigProvenanceFor(pv)
 }
 
 // explicitEndpointConfigBytes is explicitEndpointConfigFile's LoadBytes
 // counterpart: no environment overlay, matching LoadBytes' own contract (env
 // vars never affect a candidate/signed YAML body).
-func explicitEndpointConfigBytes(data []byte) (network bool, libpodNetwork bool) {
+func explicitEndpointConfigBytes(data []byte) endpointConfigProvenance {
 	pv := viper.New()
 	pv.SetConfigType("yaml")
 	if len(data) > 0 {
 		if err := pv.ReadConfig(bytes.NewReader(data)); err != nil {
-			return false, false
+			return endpointConfigProvenance{}
 		}
 	}
-	return explicitKeysSet(pv, networkEndpointConfigKeys), explicitKeysSet(pv, libpodNetworkEndpointConfigKeys)
+	return endpointConfigProvenanceFor(pv)
+}
+
+func endpointConfigProvenanceFor(pv *viper.Viper) endpointConfigProvenance {
+	provenance := endpointConfigProvenance{
+		network:       explicitKeysSet(pv, networkEndpointConfigKeys),
+		libpodNetwork: explicitKeysSet(pv, libpodNetworkEndpointConfigKeys),
+	}
+
+	var presence endpointConfigPresenceDocument
+	if err := pv.Unmarshal(&presence); err != nil {
+		return provenance
+	}
+	provenance.profiles = make([]clientProfileEndpointConfigProvenance, len(presence.Clients.Profiles))
+	for i, profile := range presence.Clients.Profiles {
+		network := profile.RequestBody.Network.EndpointConfig
+		libpodNetwork := profile.RequestBody.LibpodNetwork.EndpointConfig
+		provenance.profiles[i] = clientProfileEndpointConfigProvenance{
+			network:                   endpointConfigMapExplicit(network),
+			libpodNetwork:             endpointConfigMapExplicit(libpodNetwork),
+			networkAllowAliases:       endpointConfigMapHas(network, "allow_aliases"),
+			libpodNetworkAllowAliases: endpointConfigMapHas(libpodNetwork, "allow_aliases"),
+		}
+	}
+	return provenance
+}
+
+func endpointConfigMapExplicit(values map[string]any) bool {
+	for _, leaf := range endpointConfigLeafKeys {
+		if endpointConfigMapHas(values, leaf) {
+			return true
+		}
+	}
+	return false
+}
+
+func endpointConfigMapHas(values map[string]any, leaf string) bool {
+	for key := range values {
+		if strings.EqualFold(key, leaf) {
+			return true
+		}
+	}
+	return false
+}
+
+func applyEndpointConfigProvenance(cfg *Config, provenance endpointConfigProvenance) {
+	cfg.explicitNetworkEndpointConfig = provenance.network
+	cfg.explicitLibpodNetworkEndpointConfig = provenance.libpodNetwork
+	for i := range cfg.Clients.Profiles {
+		profile := &cfg.Clients.Profiles[i]
+		var raw clientProfileEndpointConfigProvenance
+		if i < len(provenance.profiles) {
+			raw = provenance.profiles[i]
+		}
+		profile.explicitNetworkEndpointConfig = raw.network
+		profile.explicitLibpodNetworkEndpointConfig = raw.libpodNetwork
+		if !raw.networkAllowAliases {
+			profile.RequestBody.Network.EndpointConfig.AllowAliases = true
+		}
+		if !raw.libpodNetworkAllowAliases {
+			profile.RequestBody.LibpodNetwork.EndpointConfig.AllowAliases = true
+		}
+	}
 }
 
 // explicitKeysSet reports whether any of keys is set on pv — shared by the
@@ -373,7 +463,7 @@ func LoadBytes(data []byte) (*Config, error) {
 	}
 
 	cfg.explicitLegacyListen = explicitLegacyListenBytes(data)
-	cfg.explicitNetworkEndpointConfig, cfg.explicitLibpodNetworkEndpointConfig = explicitEndpointConfigBytes(data)
+	applyEndpointConfigProvenance(&cfg, explicitEndpointConfigBytes(data))
 
 	return &cfg, nil
 }

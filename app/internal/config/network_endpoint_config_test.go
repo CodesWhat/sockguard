@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"fmt"
+	"strings"
+	"testing"
+)
 
 // network_endpoint_config_test.go covers #186's granular
 // request_body.network.endpoint_config block: defaults, env-var mapping,
@@ -394,5 +398,83 @@ rules:
 	}
 	if cfg.ExplicitLibpodNetworkEndpointConfig() {
 		t.Fatal("ExplicitLibpodNetworkEndpointConfig() = true, want false — the Docker block must not mark the libpod one explicit")
+	}
+}
+
+func TestLoadDefaultsEndpointConfigAliasesInsideProfiles(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+clients:
+  profiles:
+    - name: omitted
+      rules:
+        - match: { method: GET, path: /_ping }
+          action: allow
+    - name: explicit-false
+      request_body:
+        network:
+          endpoint_config:
+            allow_aliases: false
+        libpod_network:
+          endpoint_config:
+            allow_aliases: false
+      rules:
+        - match: { method: GET, path: /_ping }
+          action: allow
+`))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if got := len(cfg.Clients.Profiles); got != 2 {
+		t.Fatalf("profiles = %d, want 2", got)
+	}
+
+	omitted := cfg.Clients.Profiles[0].RequestBody
+	if !omitted.Network.EndpointConfig.AllowAliases {
+		t.Error("omitted profile network.endpoint_config.allow_aliases = false, want default true")
+	}
+	if !omitted.LibpodNetwork.EndpointConfig.AllowAliases {
+		t.Error("omitted profile libpod_network.endpoint_config.allow_aliases = false, want default true")
+	}
+
+	explicitFalse := cfg.Clients.Profiles[1].RequestBody
+	if explicitFalse.Network.EndpointConfig.AllowAliases {
+		t.Error("explicit profile network.endpoint_config.allow_aliases = true, want preserved false")
+	}
+	if explicitFalse.LibpodNetwork.EndpointConfig.AllowAliases {
+		t.Error("explicit profile libpod_network.endpoint_config.allow_aliases = true, want preserved false")
+	}
+}
+
+func TestValidateRejectsProfileAllowEndpointConfigWithExplicitGranularBlock(t *testing.T) {
+	for _, group := range []string{"network", "libpod_network"} {
+		t.Run(group, func(t *testing.T) {
+			cfg, err := LoadBytes([]byte(fmt.Sprintf(`
+clients:
+  profiles:
+    - name: writer
+      request_body:
+        %s:
+          allow_endpoint_config: true
+          endpoint_config:
+            allow_mac_pinning: false
+      rules:
+        - match: { method: POST, path: /libpod/networks/*/connect }
+          action: allow
+        - match: { method: "*", path: "/**" }
+          action: deny
+`, group)))
+			if err != nil {
+				t.Fatalf("LoadBytes: %v", err)
+			}
+
+			err = Validate(cfg)
+			if err == nil {
+				t.Fatal("Validate() = nil, want endpoint_config mutual-exclusion error")
+			}
+			want := fmt.Sprintf("clients.profiles[0].request_body.%s.allow_endpoint_config and clients.profiles[0].request_body.%s.endpoint_config are mutually exclusive", group, group)
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("Validate() = %v, want %q", err, want)
+			}
+		})
 	}
 }

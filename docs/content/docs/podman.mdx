@@ -140,6 +140,11 @@ same way they cover Docker-compat:
   volumes, secrets — is owner-filtered and visibility-filtered, so switching
   a client from Docker-compat to libpod-native paths is not a way around
   isolation configured on the Docker-compat side.
+- Native `POST /libpod/networks/{name}/connect` and `disconnect` authorize both
+  the network named by the URL and the body `Container` reference. A foreign
+  network or container is denied, and an unresolved body container fails
+  closed before Podman receives the request. Docker-compatible network
+  membership routes use the same two-resource ownership check.
 - `GET /libpod/system/df` is the one read that cannot be filtered, and it is
   refused with a `403` instead whenever owner isolation or a visibility policy
   is active. Podman's native disk-usage report is not the Docker-compat body
