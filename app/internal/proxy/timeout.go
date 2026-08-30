@@ -29,11 +29,19 @@ import (
 // (attach, exec start) never reach this handler: HijackHandler short-circuits
 // them earlier in the chain.
 func WithRequestTimeout(next http.Handler, timeout time.Duration) http.Handler {
+	return WithRequestTimeoutForFlavor(next, timeout, false)
+}
+
+// WithRequestTimeoutForFlavor is WithRequestTimeout with an explicit upstream
+// engine classification. podmanUpstream must be true only when the upstream
+// has been resolved as Podman; Docker-compatible top can stream on Podman but
+// is always finite on Docker.
+func WithRequestTimeoutForFlavor(next http.Handler, timeout time.Duration, podmanUpstream bool) http.Handler {
 	if timeout <= 0 {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isLongLivedUpstreamRequest(w, r) {
+		if isLongLivedUpstreamRequestForFlavor(w, r, podmanUpstream) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -48,6 +56,10 @@ func WithRequestTimeout(next http.Handler, timeout time.Duration) http.Handler {
 // per-request upstream deadline. Docker API version prefixes (/v1.XX/) are
 // stripped before matching.
 func isLongLivedUpstreamRequest(w http.ResponseWriter, r *http.Request) bool {
+	return isLongLivedUpstreamRequestForFlavor(w, r, false)
+}
+
+func isLongLivedUpstreamRequestForFlavor(w http.ResponseWriter, r *http.Request, podmanUpstream bool) bool {
 	if r == nil {
 		return false
 	}
@@ -64,6 +76,8 @@ func isLongLivedUpstreamRequest(w http.ResponseWriter, r *http.Request) bool {
 			return true
 		case nativeLibpod && (matchContainerAction(path, "top") || matchPodAction(path, "top")):
 			return podmanBoolValue(r, "stream")
+		case podmanUpstream && matchContainerAction(path, "top"):
+			return podmanCompatBoolValue(r, "stream")
 		case matchContainerAction(path, "logs"):
 			return dockerBoolValue(r, "follow")
 		case matchContainerAction(path, "stats"):
@@ -138,16 +152,41 @@ func matchPodAction(path, action string) bool {
 // and the exact lowercase value "on" are accepted, while omitted or invalid
 // values are false here (and invalid values are rejected by Podman itself).
 func podmanBoolValue(r *http.Request, key string) bool {
-	values := r.URL.Query()[key]
-	if len(values) == 0 {
+	value, ok := podmanQueryLastValue(r, key)
+	if !ok {
 		return false
 	}
-	value := values[len(values)-1]
 	if value == "on" {
 		return true
 	}
 	parsed, err := strconv.ParseBool(value)
 	return err == nil && parsed
+}
+
+func podmanCompatBoolValue(r *http.Request, key string) bool {
+	value, ok := podmanQueryLastValue(r, key)
+	if !ok {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "0", "no", "false", "none":
+		return false
+	default:
+		return true
+	}
+}
+
+func podmanQueryLastValue(r *http.Request, key string) (string, bool) {
+	for queryKey, values := range r.URL.Query() {
+		if !strings.EqualFold(queryKey, key) {
+			continue
+		}
+		if len(values) == 0 {
+			return "", true
+		}
+		return values[len(values)-1], true
+	}
+	return "", false
 }
 
 // dockerBoolValue mirrors the daemon's api/server/httputils.BoolValue: a query

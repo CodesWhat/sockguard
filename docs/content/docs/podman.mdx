@@ -93,11 +93,13 @@ below) ever allows these paths.
 
 ## Read-Exfiltration Additions
 
-`insecure_allow_read_exfiltration` is extended with libpod's equivalent of
-every Docker-compat exfiltration surface, plus one libpod-only entry:
+`insecure_allow_read_exfiltration` covers libpod's native exfiltration
+surfaces as well as the Docker-compatible routes:
 
 - `GET /libpod/containers/*/archive`, `GET /libpod/containers/*/export`,
-  `GET /libpod/containers/*/logs`, `POST /libpod/containers/*/attach`
+  `GET /libpod/containers/*/logs`, `GET /libpod/containers/*/top`,
+  `POST /libpod/containers/*/attach`
+- `GET /libpod/pods/*/top`
 - `GET /libpod/images/export`, `GET /libpod/images/*/get`,
   `POST /libpod/images/*/push`
 - `POST /libpod/manifests/*/registry/*` and the deprecated backward-compat
@@ -112,8 +114,10 @@ every Docker-compat exfiltration surface, plus one libpod-only entry:
 
 A broad `GET /libpod/**`-shaped allow rule catches every path above and
 fails startup validation unless you explicitly opt in. Narrow, explicit
-allowlists (see `podman-readonly.yaml` below) avoid needing the
-acknowledgment at all.
+allowlists that omit every path above avoid needing the acknowledgment.
+The `podman-readonly.yaml` preset below intentionally retains container top
+for process monitoring, so it carries the acknowledgment while leaving native
+pod top and every other exfiltration-gated route denied.
 
 ## Ownership and Visibility Coverage
 
