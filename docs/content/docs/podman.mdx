@@ -197,12 +197,13 @@ handler runs. Where they don't, the libpod field names are pinned separately:
 |---|---|---|
 | `GET /libpod/containers/{id}/json` | `redact_container_env`, `redact_mount_paths`, `redact_network_topology` | `Config.Env`, `Mounts[].Source`, `HostConfig.Binds`, `HostConfig.NetworkMode`, the `NetworkSettings` address block and each `Networks` entry — the same json tags Docker uses, plus libpod's own `AdditionalMACAddresses` list, which has no compat counterpart |
 | `GET /libpod/volumes/json`, `GET /libpod/volumes/{name}/json` | `redact_mount_paths` | `Mountpoint`. The list body is a bare array, not Docker's `{"Volumes": [...]}` envelope |
-| `GET /libpod/networks/json`, `GET /libpod/networks/{id}/json`, `GET /libpod/networks/{id}` | `redact_network_topology` | `subnets`, `routes`, `network_dns_servers`, `network_interface`, and inspect's `containers` map of attached containers with their addresses and MACs |
+| `GET /libpod/networks/json`, `GET /libpod/networks/{id}/json`, `GET /libpod/networks/{id}` | `redact_network_topology` | Podman v4 and later: `subnets`, `routes`, `network_dns_servers`, `network_interface`, and inspect's `containers` map. Podman v2.2.1-v3.4.4: the raw CNI plugin's host `bridge` plus its IPAM `routes` and `ranges`; list's top-level and per-plugin `Bytes` fields are removed because they are base64 copies of the complete raw conflist/plugin and would retain the same topology |
 | `GET /libpod/secrets/json`, `GET /libpod/secrets/{name}/json` | `redact_sensitive_data` | `SecretData`, the plaintext Podman returns for `?showsecret=true`. It is a top-level field, not the `Spec.Data` Docker uses — Podman's `Spec` has no `Data` at all |
 
-Two things are deliberately left alone. `ipam_options` on a network maps onto
+Two things are deliberately left alone. Modern `ipam_options` and legacy
+`plugins[].ipam.type` name the allocator, not an address; the former maps onto
 Docker's `IPAM.Driver` and `IPAM.Options`, which `redact_network_topology`
-also keeps; it names the allocator, not an address. And on container inspect,
+also keeps. And on container inspect,
 `HostConfig.Mounts`, `MaskedPaths` and `ReadonlyPaths` simply do not exist on
 the libpod shape — Podman folds every mount into `Binds` — so those rewrites
 have nothing to act on rather than being skipped.
@@ -215,6 +216,15 @@ the handler wrote its whole report slice, making the response `[{...}]`; from
 v3.1.0 onward it writes a bare object. Sockguard redacts either and re-emits
 the shape it was given, so the client's decoder sees what its own daemon
 sends.
+
+The object inside those envelopes also changed. Podman v2.2.1 through v3.4.4
+returns its raw lowercase CNI conflist on inspect. Its list report embeds
+`libcni.NetworkConfigList`, so that route instead exposes capitalized
+`Plugins` entries and base64 `Bytes` copies at both the list and plugin level.
+Podman v4.0 switches both routes to the modern network type. Sockguard detects
+the fields on the wire rather than trusting the requested version prefix, so
+an intermediary or compatibility server cannot make the wrong schema bypass
+redaction. A malformed plugin, IPAM, ranges, or `Bytes` field fails closed.
 
 ## Version-Prefix Handling
 
