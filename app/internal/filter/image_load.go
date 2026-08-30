@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -378,6 +379,14 @@ func (io_ ioDeps) recordImageLoadOCIBlob(controls *imageLoadArchiveControlFiles,
 }
 
 func parseImageLoadArchiveControlFiles(controls imageLoadArchiveControlFiles, preferOCI bool) (imageLoadArchiveInspection, error) {
+	// The daemon extracts the complete outer tar before deciding which image
+	// format it contains. A link can synthesize or replace OCI controls through
+	// an aliased parent even when this streaming parser never saw those controls
+	// at their final spelling, so no format fallback is safe once extraction
+	// equivalence is uncertain.
+	if controls.ociContentErr != nil {
+		return imageLoadArchiveInspection{}, controls.ociContentErr
+	}
 	hasOCIControl := controls.seenOCIIndex || controls.seenOCILayout
 	if !hasOCIControl {
 		if controls.seenDocker {
@@ -409,7 +418,24 @@ func parseImageLoadArchiveControlFiles(controls imageLoadArchiveControlFiles, pr
 		return imageLoadArchiveInspection{}, ociErr
 	}
 	if controls.seenDocker {
-		return parseDockerImageLoadManifest(controls.dockerManifest)
+		dockerArchive, err := parseDockerImageLoadManifest(controls.dockerManifest)
+		if err != nil {
+			return imageLoadArchiveInspection{}, err
+		}
+		// The compatibility route does not identify the upstream daemon:
+		// Docker and Podman can make different choices for a mixed archive,
+		// and Podman's compatibility handler uses its OCI-first native loader.
+		// When both formats are valid, require both policy-relevant reference
+		// sets to pass so the inspected choice cannot differ from the loaded
+		// choice. A genuinely malformed OCI candidate still falls through to
+		// the valid Docker archive below, matching Podman's loader fallback.
+		if ociArchive, ociErr := parseOCIImageLoadManifest(controls); ociErr == nil {
+			dockerArchive.references = append(dockerArchive.references, ociArchive.references...)
+			dockerArchive.hasUntagged = dockerArchive.hasUntagged || ociArchive.hasUntagged
+		} else if errors.Is(ociErr, errImageLoadOCIUninspectable) {
+			return imageLoadArchiveInspection{}, ociErr
+		}
+		return dockerArchive, nil
 	}
 	return parseOCIImageLoadManifest(controls)
 }
@@ -462,9 +488,6 @@ func parseOCIImageLoadManifest(controls imageLoadArchiveControlFiles) (imageLoad
 	}
 	if len(index.Manifests) != 1 {
 		return imageLoadArchiveInspection{}, fmt.Errorf("decode index.json: Podman requires exactly one image when no OCI reference is selected, got %d", len(index.Manifests))
-	}
-	if controls.ociContentErr != nil {
-		return imageLoadArchiveInspection{}, controls.ociContentErr
 	}
 	referenced, err := validateImageLoadOCIManifestGraphReferences(index.Manifests[0], controls.ociBlobs)
 	if err != nil {
@@ -589,6 +612,14 @@ func validatedImageLoadOCIReferencedBlob(descriptor imageLoadOCIIndexDescriptor,
 func validatedImageLoadOCIBlob(descriptor imageLoadOCIIndexDescriptor, blobs map[string]imageLoadOCIBlob, requireBody bool) ([]byte, error) {
 	const prefix = "sha256:"
 	if !strings.HasPrefix(descriptor.Digest, prefix) || len(descriptor.Digest) != len(prefix)+sha256.Size*2 {
+		const sha512Prefix = "sha512:"
+		if strings.HasPrefix(descriptor.Digest, sha512Prefix) && len(descriptor.Digest) == len(sha512Prefix)+sha512.Size*2 && isLowerHex(descriptor.Digest[len(sha512Prefix):]) {
+			// SHA-512 is registered by OCI's digest implementation and accepted
+			// by the daemon's OCI layout reader. This parser does not retain or
+			// hash those blob paths yet, so treating the descriptor like malformed
+			// OCI would incorrectly permit Docker fallback while Podman loads OCI.
+			return nil, fmt.Errorf("%w: unsupported digest %q", errImageLoadOCIUninspectable, descriptor.Digest)
+		}
 		return nil, fmt.Errorf("unsupported or malformed digest %q", descriptor.Digest)
 	}
 	blob, ok := blobs["blobs/sha256/"+strings.TrimPrefix(descriptor.Digest, prefix)]
@@ -605,6 +636,15 @@ func validatedImageLoadOCIBlob(descriptor imageLoadOCIIndexDescriptor, blobs map
 		return nil, fmt.Errorf("%w: referenced manifest %q exceeds the inspectable metadata limit", errImageLoadOCIUninspectable, descriptor.Digest)
 	}
 	return blob.body, nil
+}
+
+func isLowerHex(value string) bool {
+	for index := range len(value) {
+		if (value[index] < '0' || value[index] > '9') && (value[index] < 'a' || value[index] > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // This compatibility helper keeps the focused parser tests and mutation tests

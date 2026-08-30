@@ -256,6 +256,40 @@ func TestValidateAndCompileRulesUsesGlobLanguageForLibpodImageScpShadowing(t *te
 	})
 }
 
+func TestValidateAndCompileRulesRejectsSlashBearingLibpodImagePush(t *testing.T) {
+	for _, path := range []string{
+		"/libpod/images/scp/acme/app/push",
+		"/libpod/images/scp/**/push",
+	} {
+		t.Run(path, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Rules = []config.RuleConfig{
+				{Match: config.MatchConfig{Method: http.MethodPost, Path: path}, Action: "allow"},
+				{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+			}
+
+			err := errorFromValidate(t, &cfg)
+			if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
+				t.Fatalf("error = %q, want the slash-bearing image push to require the read-exfiltration acknowledgment", err)
+			}
+		})
+	}
+
+	t.Run("wildcard remains reachable after its representative is denied", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.Rules = []config.RuleConfig{
+			{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/scp/sockguard-test/push"}, Action: "deny"},
+			{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/scp/**/push"}, Action: "allow"},
+			{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+		}
+
+		err := errorFromValidate(t, &cfg)
+		if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
+			t.Fatalf("error = %q, want the still-reachable slash-bearing image push to require the read-exfiltration acknowledgment", err)
+		}
+	})
+}
+
 // TestServePolicyConfigWiresImageLoadBlindWriteAck pins the wiring half of
 // the local-image-load guard. insecure_allow_body_blind_writes is a
 // top-level flag, not part of a request_body block, so it reaches

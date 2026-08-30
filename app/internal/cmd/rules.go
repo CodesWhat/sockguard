@@ -191,6 +191,10 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 	{method: http.MethodGet, path: "/libpod/images/export"},
 	{method: http.MethodGet, path: "/libpod/images/sockguard-test/get"},
 	{method: http.MethodPost, path: "/libpod/images/sockguard-test/push"},
+	// Podman's image-name matcher accepts slashes. This second representative
+	// catches constrained rules under the literal "scp" name prefix that route
+	// to image push before the later /images/scp/{name:.*} handler.
+	{method: http.MethodPost, path: "/libpod/images/scp/sockguard-test/push"},
 	// Image SCP transfers a local image to another HOST over SSH, with the
 	// destination named by the caller in the `destination` query parameter
 	// (Podman v5.8.1 pkg/api/server/register_images.go routes
@@ -461,6 +465,9 @@ func allowedSensitiveExfilEndpoints(compiled []*filter.CompiledRule, configuredR
 	if path, ok := configuredLibpodImageScpAllow(configuredRules); ok && !slices.Contains(allowed, http.MethodPost+" "+path) {
 		allowed = append(allowed, http.MethodPost+" "+path)
 	}
+	if path, ok := configuredLibpodSlashBearingImagePushAllow(configuredRules); ok && !slices.Contains(allowed, http.MethodPost+" "+path) {
+		allowed = append(allowed, http.MethodPost+" "+path)
+	}
 	return allowed
 }
 
@@ -612,6 +619,27 @@ func reachabilityGlobStep(parts []reachabilityGlobPart, states map[reachabilityG
 }
 
 func libpodImageScpAllowDefinitelyShadowed(pattern string, earlier []config.RuleConfig) bool {
+	return globAllowDefinitelyShadowed(pattern, "/libpod/images/scp/", earlier)
+}
+
+func configuredLibpodSlashBearingImagePushAllow(rules []config.RuleConfig) (string, bool) {
+	const prefix = "/libpod/images/scp/"
+	for index, rule := range rules {
+		if rule.Action != "allow" || !methodListIncludes(rule.Match.Method, http.MethodPost) {
+			continue
+		}
+		pattern := strings.TrimSpace(rule.Match.Path)
+		if !strings.Contains(pattern, "*") || !strings.HasSuffix(pattern, "/push") {
+			continue
+		}
+		if globCanMatchNonemptyPathBelow(pattern, prefix) && !globAllowDefinitelyShadowed(pattern, prefix, rules[:index]) {
+			return prefix + "*/push", true
+		}
+	}
+	return "", false
+}
+
+func globAllowDefinitelyShadowed(pattern, prefix string, earlier []config.RuleConfig) bool {
 	covers := make([]string, 0, len(earlier))
 	for _, rule := range earlier {
 		if !methodListIncludes(rule.Match.Method, http.MethodPost) {
@@ -619,7 +647,7 @@ func libpodImageScpAllowDefinitelyShadowed(pattern string, earlier []config.Rule
 		}
 		covers = append(covers, strings.TrimSpace(rule.Match.Path))
 	}
-	return !globHasMatchOutsideCovers(pattern, "/libpod/images/scp/", covers)
+	return !globHasMatchOutsideCovers(pattern, prefix, covers)
 }
 
 type reachabilityGlobLanguageState struct {
@@ -765,13 +793,27 @@ func appendExactLibpodImageScpBodyEndpoints(base []bodySensitiveWriteEndpoint, r
 }
 
 func appendExactLibpodImageScpExfilEndpoints(base []sensitiveExfilEndpoint, rules []config.RuleConfig) []sensitiveExfilEndpoint {
-	paths := exactLibpodImageScpPaths(rules)
+	paths := append(exactLibpodImageScpPaths(rules), exactLibpodImagePushPaths(rules)...)
 	endpoints := make([]sensitiveExfilEndpoint, 0, len(base)+len(paths))
 	endpoints = append(endpoints, base...)
 	for _, path := range paths {
 		endpoints = append(endpoints, sensitiveExfilEndpoint{method: http.MethodPost, path: path})
 	}
 	return endpoints
+}
+
+func exactLibpodImagePushPaths(rules []config.RuleConfig) []string {
+	const prefix = "/libpod/images/"
+	const suffix = "/push"
+	paths := make([]string, 0)
+	for _, rule := range rules {
+		path := strings.TrimSpace(rule.Match.Path)
+		if strings.Contains(path, "*") || !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) || len(path) <= len(prefix)+len(suffix) || slices.Contains(paths, path) {
+			continue
+		}
+		paths = append(paths, path)
+	}
+	return paths
 }
 
 // The static catalog probes one representative dynamic path, which catches
