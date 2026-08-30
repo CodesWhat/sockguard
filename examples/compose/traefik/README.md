@@ -12,7 +12,7 @@
 | No raw socket in Traefik container | Yes — named volume unix socket |
 | GET-only (no write access) | Yes |
 | Raw log/archive/export streams denied | Yes — no `insecure_allow_read_exfiltration` |
-| Tighter than bundled preset | Yes — enumerates specific paths, not broad globs |
+| Matches bundled preset | Yes — same narrowly enumerated paths |
 
 ## Usage
 
