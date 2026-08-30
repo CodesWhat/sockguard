@@ -284,6 +284,9 @@ func (io_ ioDeps) extractImageLoadArchiveFromTar(tr *tar.Reader, preferOCI bool)
 			return imageLoadArchiveInspection{}, fmt.Errorf("read tar entry: %w", err)
 		}
 		name := normalizeImageLoadArchivePath(header.Name)
+		if name == ".." || strings.HasPrefix(name, "../") {
+			return imageLoadArchiveInspection{}, fmt.Errorf("image archive entry %q escapes archive root", header.Name)
+		}
 		if header.Typeflag == tar.TypeSymlink || header.Typeflag == tar.TypeLink {
 			if name == "manifest.json" {
 				return imageLoadArchiveInspection{}, fmt.Errorf("image archive control file %s is not a regular file", name)

@@ -482,7 +482,7 @@ func configuredLibpodImageScpAllow(rules []config.RuleConfig) (string, bool) {
 		if rule.Action != "allow" || !methodListIncludes(rule.Match.Method, http.MethodPost) {
 			continue
 		}
-		pattern := strings.TrimSpace(rule.Match.Path)
+		pattern := rule.Match.Path
 		if !strings.Contains(pattern, "*") {
 			// Exact paths are already added as probes and evaluated against the
 			// complete first-match rule set by the caller.
@@ -629,7 +629,7 @@ func configuredLibpodSlashBearingImagePushAllow(rules []config.RuleConfig) (stri
 		if rule.Action != "allow" || !methodListIncludes(rule.Match.Method, http.MethodPost) {
 			continue
 		}
-		pattern := strings.TrimSpace(rule.Match.Path)
+		pattern := rule.Match.Path
 		if !strings.Contains(pattern, "*") {
 			continue
 		}
@@ -650,7 +650,7 @@ func methodCompatibleRulePatterns(rules []config.RuleConfig, method string) []st
 	patterns := make([]string, 0, len(rules))
 	for _, rule := range rules {
 		if methodListIncludes(rule.Match.Method, method) {
-			patterns = append(patterns, strings.TrimSpace(rule.Match.Path))
+			patterns = append(patterns, rule.Match.Path)
 		}
 	}
 	return patterns
@@ -899,7 +899,7 @@ func exactLibpodImagePushPaths(rules []config.RuleConfig) []string {
 	const suffix = "/push"
 	paths := make([]string, 0)
 	for _, rule := range rules {
-		path := strings.TrimSpace(rule.Match.Path)
+		path := rule.Match.Path
 		if strings.Contains(path, "*") || !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) || len(path) <= len(prefix)+len(suffix) || slices.Contains(paths, path) {
 			continue
 		}
@@ -917,7 +917,7 @@ func exactLibpodImageScpPaths(rules []config.RuleConfig) []string {
 	const representative = prefix + "sockguard-test"
 	paths := make([]string, 0)
 	for _, rule := range rules {
-		path := strings.TrimSpace(rule.Match.Path)
+		path := rule.Match.Path
 		if path == representative || strings.Contains(path, "*") || !strings.HasPrefix(path, prefix) || len(path) == len(prefix) || libpodImagePathIsHandledBeforeScp(path) || slices.Contains(paths, path) {
 			continue
 		}

@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/app/internal/filter"
 )
 
 func findBodySensitiveWriteEndpoint(t *testing.T, method, path string) bodySensitiveWriteEndpoint {
@@ -167,6 +169,38 @@ func TestValidateAndCompileRulesRejectsExactLibpodImageScpTwice(t *testing.T) {
 	}
 }
 
+func TestValidateAndCompileRulesPreservesExactLibpodImageScpPathBytes(t *testing.T) {
+	const exactPath = "/libpod/images/scp/alpine "
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: exactPath}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	err := errorFromValidate(t, &cfg)
+	if !strings.Contains(err.Error(), "POST "+exactPath) ||
+		!strings.Contains(err.Error(), "insecure_allow_body_blind_writes=true") {
+		t.Fatalf("error = %q, want the byte-exact SCP path to demand the uninspected-write acknowledgment", err)
+	}
+
+	cfg.InsecureAllowBodyBlindWrites = true
+	err = errorFromValidate(t, &cfg)
+	if !strings.Contains(err.Error(), "POST "+exactPath) ||
+		!strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
+		t.Fatalf("error = %q, want the byte-exact SCP path to demand the exfiltration acknowledgment", err)
+	}
+
+	cfg.InsecureAllowReadExfiltration = true
+	compiled, err := validateAndCompileRules(&cfg)
+	if err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v once both are acknowledged, want nil", err)
+	}
+	request := &http.Request{Method: http.MethodPost, URL: &url.URL{Path: exactPath}}
+	if action, _, _ := filter.Evaluate(compiled, request); action != filter.ActionAllow {
+		t.Fatalf("Evaluate(%q) action = %q, want %q", exactPath, action, filter.ActionAllow)
+	}
+}
+
 func TestValidateAndCompileRulesRejectsLibpodImageScpWhenSentinelIsShadowed(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Rules = []config.RuleConfig{
@@ -252,6 +286,66 @@ func TestValidateAndCompileRulesUsesGlobLanguageForLibpodImageScpShadowing(t *te
 		err := errorFromValidate(t, &cfg)
 		if !strings.Contains(err.Error(), "insecure_allow_body_blind_writes=true") {
 			t.Fatalf("error = %q, want the POST SCP allow acknowledged", err)
+		}
+	})
+}
+
+func TestValidateAndCompileRulesPreservesOrderedWildcardPathBytes(t *testing.T) {
+	t.Run("SCP deny with trailing whitespace does not shadow", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.Rules = []config.RuleConfig{
+			{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/scp/sockguard-test"}, Action: "deny"},
+			{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/scp/sockguard-test/push"}, Action: "deny"},
+			{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/scp/** "}, Action: "deny"},
+			{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/scp/**"}, Action: "allow"},
+			{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+		}
+
+		err := errorFromValidate(t, &cfg)
+		if !strings.Contains(err.Error(), "insecure_allow_body_blind_writes=true") {
+			t.Fatalf("error = %q, want the reachable SCP wildcard to demand the uninspected-write acknowledgment", err)
+		}
+
+		cfg.InsecureAllowBodyBlindWrites = true
+		err = errorFromValidate(t, &cfg)
+		if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
+			t.Fatalf("error = %q, want the reachable SCP wildcard to demand the exfiltration acknowledgment", err)
+		}
+
+		cfg.InsecureAllowReadExfiltration = true
+		compiled, err := validateAndCompileRules(&cfg)
+		if err != nil {
+			t.Fatalf("validateAndCompileRules() error = %v once both are acknowledged, want nil", err)
+		}
+		const path = "/libpod/images/scp/alpine"
+		request := &http.Request{Method: http.MethodPost, URL: &url.URL{Path: path}}
+		if action, _, _ := filter.Evaluate(compiled, request); action != filter.ActionAllow {
+			t.Fatalf("Evaluate(%q) action = %q, want %q", path, action, filter.ActionAllow)
+		}
+	})
+
+	t.Run("slash-push deny with trailing whitespace does not shadow", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.Rules = []config.RuleConfig{
+			{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/**/push "}, Action: "deny"},
+			{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/team/**"}, Action: "allow"},
+			{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+		}
+
+		err := errorFromValidate(t, &cfg)
+		if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
+			t.Fatalf("error = %q, want the reachable slash-bearing push to demand the exfiltration acknowledgment", err)
+		}
+
+		cfg.InsecureAllowReadExfiltration = true
+		compiled, err := validateAndCompileRules(&cfg)
+		if err != nil {
+			t.Fatalf("validateAndCompileRules() error = %v once acknowledged, want nil", err)
+		}
+		const path = "/libpod/images/team/acme/app/push"
+		request := &http.Request{Method: http.MethodPost, URL: &url.URL{Path: path}}
+		if action, _, _ := filter.Evaluate(compiled, request); action != filter.ActionAllow {
+			t.Fatalf("Evaluate(%q) action = %q, want %q", path, action, filter.ActionAllow)
 		}
 	})
 }

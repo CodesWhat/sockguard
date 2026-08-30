@@ -321,6 +321,28 @@ func TestNormalizeImageLoadArchivePath(t *testing.T) {
 	}
 }
 
+func TestExtractImageLoadArchiveRejectsEscapingEntries(t *testing.T) {
+	tests := []struct {
+		name  string
+		entry containerArchiveTestEntry
+	}{
+		{name: "regular parent", entry: containerArchiveTestEntry{name: "../ignored", body: "data"}},
+		{name: "regular parent after clean", entry: containerArchiveTestEntry{name: "a/../..", body: "data"}},
+		{name: "directory parent", entry: containerArchiveTestEntry{name: "../ignored-dir", typ: tar.TypeDir}},
+		{name: "directory parent after clean", entry: containerArchiveTestEntry{name: "a/../../ignored-dir", typ: tar.TypeDir}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := mustContainerArchiveTar(t, tt.entry)
+			_, err := defaultIODeps().extractImageLoadArchiveFromTar(tar.NewReader(bytes.NewReader(payload)), true)
+			if err == nil || !strings.Contains(err.Error(), "escapes archive root") {
+				t.Fatalf("extractImageLoadArchiveFromTar() error = %v, want archive-root escape error", err)
+			}
+		})
+	}
+}
+
 func mustImageLoadTar(t *testing.T, manifest string) []byte {
 	t.Helper()
 
