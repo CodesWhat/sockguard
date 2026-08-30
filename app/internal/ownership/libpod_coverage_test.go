@@ -306,8 +306,20 @@ func TestLibpodImageScpOwnershipIsInertWithoutOwner(t *testing.T) {
 
 func TestLibpodImageScpPreservesPostActionRouteCollisions(t *testing.T) {
 	t.Parallel()
-	for _, action := range []string{"push", "tag", "untag"} {
-		t.Run(action, func(t *testing.T) {
+	tests := []struct {
+		name           string
+		path           string
+		wantIdentifier string
+	}{
+		{name: "push with no extra segment", path: "/libpod/images/scp/push", wantIdentifier: "scp"},
+		{name: "tag with no extra segment", path: "/libpod/images/scp/tag", wantIdentifier: "scp"},
+		{name: "untag with no extra segment", path: "/libpod/images/scp/untag", wantIdentifier: "scp"},
+		{name: "nested push", path: "/libpod/images/scp/builder::app/push", wantIdentifier: "scp/builder::app"},
+		{name: "nested tag", path: "/libpod/images/scp/builder::app/tag", wantIdentifier: "scp/builder::app"},
+		{name: "nested untag", path: "/libpod/images/scp/builder::app/untag", wantIdentifier: "scp/builder::app"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			var gotIdentifier string
 			handler := middlewareWithDeps(testLogger(), Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}, func(_ context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
@@ -321,13 +333,134 @@ func TestLibpodImageScpPreservesPostActionRouteCollisions(t *testing.T) {
 			}))
 
 			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/libpod/images/scp/builder::app/"+action, nil))
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, tt.path, nil))
 
 			if rec.Code != http.StatusNoContent {
 				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
 			}
-			if gotIdentifier != "scp/builder::app" {
-				t.Fatalf("inspect identifier = %q, want %q", gotIdentifier, "scp/builder::app")
+			if gotIdentifier != tt.wantIdentifier {
+				t.Fatalf("inspect identifier = %q, want %q", gotIdentifier, tt.wantIdentifier)
+			}
+		})
+	}
+}
+
+func TestLibpodImageScpUsesPodmansEncodedRouteShape(t *testing.T) {
+	t.Parallel()
+	t.Run("encoded slash remains part of the local SCP source", func(t *testing.T) {
+		t.Parallel()
+		var gotIdentifier string
+		handler := middlewareWithDeps(
+			testLogger(),
+			Options{Owner: "job-123", LabelKey: "com.sockguard.owner"},
+			func(_ context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
+				if kind != dockerresource.KindImage {
+					t.Fatalf("inspect kind = %s, want %s", kind, dockerresource.KindImage)
+				}
+				gotIdentifier = identifier
+				return map[string]string{"com.sockguard.owner": "other-job"}, true, nil
+			},
+			fakeInspector{}.inspectExec,
+		)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Fatal("foreign encoded-slash SCP source reached upstream")
+		}))
+
+		req := httptest.NewRequest(http.MethodPost, "/libpod/images/scp/foreign%2Fpush", nil)
+		if req.URL.Path != "/libpod/images/scp/foreign/push" || req.URL.RawPath != "/libpod/images/scp/foreign%2Fpush" {
+			t.Fatalf("request path = %q raw path = %q, want decoded and encoded route views", req.URL.Path, req.URL.RawPath)
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+		}
+		if gotIdentifier != "foreign/push" {
+			t.Fatalf("inspect identifier = %q, want %q", gotIdentifier, "foreign/push")
+		}
+	})
+
+	t.Run("encoded slash cannot disguise a true remote source", func(t *testing.T) {
+		t.Parallel()
+		handler := middlewareWithDeps(
+			testLogger(),
+			Options{Owner: "job-123", LabelKey: "com.sockguard.owner"},
+			func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
+				t.Fatal("true remote encoded-slash SCP source performed a local inspect")
+				return nil, false, nil
+			},
+			fakeInspector{}.inspectExec,
+		)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Fatal("true remote encoded-slash SCP source reached upstream")
+		}))
+
+		req := httptest.NewRequest(http.MethodPost, "/libpod/images/scp/builder::foreign%2Fpush", nil)
+		if req.URL.Path != "/libpod/images/scp/builder::foreign/push" || req.URL.RawPath != "/libpod/images/scp/builder::foreign%2Fpush" {
+			t.Fatalf("request path = %q raw path = %q, want decoded and encoded route views", req.URL.Path, req.URL.RawPath)
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "remote image source") {
+			t.Fatalf("body = %q, want remote-source denial", rec.Body.String())
+		}
+	})
+}
+
+func TestPodmanVersionGrammarCannotBypassOwnerIsolationBehindCatchall(t *testing.T) {
+	t.Parallel()
+	allowAll, err := filter.CompileRule(filter.Rule{Methods: []string{"*"}, Pattern: "/**", Action: filter.ActionAllow})
+	if err != nil {
+		t.Fatalf("compile catch-all allow rule: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		method     string
+		path       string
+		inspect    bool
+		identifier string
+	}{
+		{name: "prerelease manifest inspect", method: http.MethodGet, path: "/v5.8.1-dev/libpod/manifests/app/json"},
+		{name: "four-component manifest exists", method: http.MethodGet, path: "/v5.8.1.2/libpod/manifests/app/exists"},
+		{name: "prerelease SCP", method: http.MethodPost, path: "/v5.8.1-dev/libpod/images/scp/app", inspect: true, identifier: "app"},
+		{name: "four-component SCP", method: http.MethodPost, path: "/v5.8.1.2/libpod/images/scp/app", inspect: true, identifier: "app"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			inspectCalls := 0
+			ownerHandler := middlewareWithDeps(
+				testLogger(),
+				Options{Owner: "job-123", LabelKey: "com.sockguard.owner"},
+				func(_ context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
+					inspectCalls++
+					if !tt.inspect || kind != dockerresource.KindImage || identifier != tt.identifier {
+						t.Fatalf("inspect = %s/%q, want image/%q", kind, identifier, tt.identifier)
+					}
+					return map[string]string{"com.sockguard.owner": "other-job"}, true, nil
+				},
+				fakeInspector{}.inspectExec,
+			)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("Podman-versioned isolation target reached upstream")
+			}))
+			handler := filter.MiddlewareWithOptions([]*filter.CompiledRule{allowAll}, testLogger(), filter.Options{})(ownerHandler)
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(tt.method, tt.path, nil))
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			wantInspectCalls := 0
+			if tt.inspect {
+				wantInspectCalls = 1
+			}
+			if inspectCalls != wantInspectCalls {
+				t.Fatalf("inspect calls = %d, want %d", inspectCalls, wantInspectCalls)
 			}
 		})
 	}

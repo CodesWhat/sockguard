@@ -2,6 +2,7 @@ package ownership
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -131,10 +132,18 @@ func libpodContainerIdentifier(method, normPath string) (string, bool) {
 // allowed by any shipped preset, and both are covered in the Podman guide's
 // Known Limitations.
 func libpodImageIdentifier(method, normPath string) (string, bool) {
+	return libpodImageIdentifierForRoute(method, normPath, normPath)
+}
+
+// libpodImageIdentifierForRoute classifies the resource from normPath while
+// resolving route collisions against routePath. They differ when the client
+// percent-encodes a slash: net/http decodes URL.Path, but Podman's gorilla/mux
+// router uses URL.EscapedPath and therefore keeps that slash inside {name}.
+func libpodImageIdentifierForRoute(method, normPath, routePath string) (string, bool) {
 	if !strings.HasPrefix(normPath, libpodPrefix+"images/") {
 		return "", false
 	}
-	if identifier, remote, ok := libpodImageScpSource(method, normPath); ok {
+	if identifier, remote, ok := libpodImageScpSource(method, routePath); ok {
 		if remote || identifier == "" {
 			return "", false
 		}
@@ -181,18 +190,27 @@ func libpodImageIdentifier(method, normPath string) (string, bool) {
 // are registered before /images/scp/{name:.*}, so a path such as
 // /images/scp/app/push pushes the local image named "scp/app" rather than
 // invoking image SCP.
-func libpodImageScpSource(method, normPath string) (identifier string, remote, ok bool) {
+//
+// routePath is normalized from URL.EscapedPath, matching Podman's
+// mux.Router.UseEncodedPath. Once the route is known to be SCP, its variable is
+// unescaped exactly once, matching handlers/utils.GetName. This keeps an
+// encoded slash inside the source instead of mistaking it for an action-route
+// separator.
+func libpodImageScpSource(method, routePath string) (identifier string, remote, ok bool) {
 	if method != http.MethodPost {
 		return "", false, false
 	}
-	rest, ok := strings.CutPrefix(normPath, libpodPrefix+"images/scp/")
+	rest, ok := strings.CutPrefix(routePath, libpodPrefix+"images/scp/")
 	if !ok || rest == "" {
 		return "", false, false
 	}
-	for _, suffix := range []string{"/push", "/tag", "/untag"} {
-		if name := strings.TrimSuffix(rest, suffix); name != rest && name != "" {
+	for _, action := range []string{"push", "tag", "untag"} {
+		if rest == action || strings.HasSuffix(rest, "/"+action) {
 			return "", false, false
 		}
+	}
+	if decoded, err := url.PathUnescape(rest); err == nil {
+		rest = decoded
 	}
 	if strings.Contains(rest, "@localhost::") {
 		return strings.Split(rest, "::")[1], false, true

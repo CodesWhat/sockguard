@@ -13,11 +13,9 @@ import (
 //
 // Axes covered here:
 //
-//   - Pathological Docker API version prefixes (`v0`, bare `v`, three-part
-//     `v1.45.99`, four-part `v1.45.99.1`) — version-prefix regex was tested
-//     against `v1`, `v1.45`, and double-zero forms; these poke at the
-//     boundary. Three-part now strips (#148: Podman's libpod bindings send
-//     full daemon semver); four-part still does not.
+//   - Pathological daemon API version prefixes (`v0`, bare `v`, three-part
+//     `v1.45.99`, four-part `v1.45.99.1`) — these pin Podman's VersionedPath
+//     grammar rather than assuming every accepted segment is release-shaped.
 //   - Repeated slashes beyond two in a row, and a leading single-dot
 //     segment — extra normalization shapes path.Clean must handle.
 //   - Encoded whitespace in path segments (space, tab, LF, CR) — the
@@ -44,15 +42,14 @@ func TestPathDifferentialExtendedEvasionAxes(t *testing.T) {
 		wantAllowed bool
 	}{
 		// --- pathological version prefixes ---
-		// The version-strip regex accepts /vN, /vN.N, or /vN.N.N (#148: a
-		// three-part semver prefix, as Podman's libpod bindings send). Bare
-		// 'v' and four-or-more-part versions are not Docker version
-		// prefixes; they remain literal path segments that do not match the
-		// allow rule.
+		// Podman's VersionedPath accepts a leading digit followed by ASCII
+		// letters, digits, dots, or hyphens. Bare v remains literal, while a
+		// four-component spelling is routed and must normalize like the usual
+		// release-shaped versions.
 		{"version zero is a valid prefix", http.MethodGet, "/v0/containers/json", true},
 		{"bare v is not a version prefix", http.MethodGet, "/v/containers/json", false},
 		{"three-part version is a valid prefix", http.MethodGet, "/v1.45.99/containers/json", true},
-		{"four-part version is not a version prefix", http.MethodGet, "/v1.45.99.1/containers/json", false},
+		{"four-part version follows Podman route grammar", http.MethodGet, "/v1.45.99.1/containers/json", true},
 
 		// --- repeated slashes and leading-dot segment ---
 		// path.Clean collapses any run of slashes to one and drops a

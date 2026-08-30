@@ -158,8 +158,11 @@ same way they cover Docker-compat:
   modes forward it as `would_deny` with the same code and reason. A malformed
   local-user source fails closed with that reason code instead of issuing an
   empty inspect. With no owner configured, all SCP forms pass through
-  untouched. Podman's earlier per-image POST routes remain distinct: a path
-  ending in `/push`, `/tag`, or `/untag` checks the local image whose name
+  untouched. Route classification follows Podman's encoded-path router, so a
+  percent-encoded slash remains inside the SCP source before the source is
+  decoded once for inspection. Podman's earlier per-image POST routes remain
+  distinct: `/libpod/images/scp/push`, `/tag`, and `/untag` check the image
+  named exactly `scp`, while a longer action path checks the image whose name
   begins with `scp/`; only an actual SCP route strips that segment.
 - `GET /libpod/events` is owner-filtered but is only partly expressible as a
   visibility policy, and that asymmetry is deliberate. Podman evaluates
@@ -229,6 +232,11 @@ same way they cover Docker-compat:
   refusals in enforce, warn, and audit modes because forwarding cannot produce
   a scoped response. With neither isolation policy configured, the reads pass
   through unchanged.
+- Version normalization follows Podman's `VersionedPath` route grammar, not
+  only release-shaped `vN.N.N` strings. Prerelease and four-component strings
+  that Podman accepts are normalized before rules, ownership, and visibility
+  evaluate the path, so a broad catch-all rule does not bypass the isolation
+  checks by changing only the version segment.
 - Resource names that happen to equal an API action word remain protected.
   Owner matching reserves keywords only for the exact method and collection
   path, while `GET` and `HEAD` visibility treats write-only keywords as normal

@@ -1069,6 +1069,38 @@ func TestLibpodUnscopeableReadsAreRefusedUnderVisibilityPolicy(t *testing.T) {
 	}
 }
 
+func TestPodmanVersionGrammarCannotBypassManifestVisibilityBehindCatchall(t *testing.T) {
+	t.Parallel()
+	allowAll, err := filter.CompileRule(filter.Rule{Methods: []string{http.MethodGet}, Pattern: "/**", Action: filter.ActionAllow})
+	if err != nil {
+		t.Fatalf("compile catch-all allow rule: %v", err)
+	}
+
+	for _, path := range []string{
+		"/v5.8.1-dev/libpod/manifests/app/json",
+		"/v5.8.1.2/libpod/manifests/app/exists",
+	} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			visibilityHandler := middlewareWithDeps(
+				testVisibilityLogger(),
+				Options{VisibleResourceLabels: []string{"com.sockguard.visible=true"}},
+				visibilityDeps{},
+			)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("Podman-versioned manifest read reached upstream")
+			}))
+			handler := filter.MiddlewareWithOptions([]*filter.CompiledRule{allowAll}, testVisibilityLogger(), filter.Options{})(visibilityHandler)
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+		})
+	}
+}
+
 // TestLibpodUnscopeableReadsAreInertWithoutVisibilityPolicy proves the
 // refusals cost nothing to a deployment with no visibility policy.
 func TestLibpodUnscopeableReadsAreInertWithoutVisibilityPolicy(t *testing.T) {

@@ -6,11 +6,10 @@ import (
 	"testing"
 )
 
-// legacyVersionPrefix allows up to two optional ".N" groups — vN, vN.N, or
-// vN.N.N — matching stripVersionPrefix's production behavior (#148: a
-// second optional group is required so Podman's three-part libpod semver
-// prefixes, e.g. /v5.0.0/, strip identically to Docker's vN.N).
-var legacyVersionPrefix = regexp.MustCompile(`^/v\d+(\.\d+){0,2}/`)
+// podmanVersionPrefix mirrors VersionedPath's v5.8.1 route grammar. Podman
+// accepts any version beginning with a digit followed by digits, ASCII letters,
+// dots, or hyphens, including prerelease and four-component spellings.
+var podmanVersionPrefix = regexp.MustCompile(`^/v[0-9][0-9A-Za-z.-]*/`)
 
 // referenceNormalizePath is an independent re-implementation of NormalizePath
 // used by FuzzNormalizePath as a differential oracle. Like NormalizePath it
@@ -21,7 +20,7 @@ func referenceNormalizePath(p string) string {
 	if p == "" {
 		return ""
 	}
-	return legacyVersionPrefix.ReplaceAllString(pathpkg.Clean(p), "/")
+	return podmanVersionPrefix.ReplaceAllString(pathpkg.Clean(p), "/")
 }
 
 // FuzzPathMatch fuzzes the full path-matching pipeline: NormalizePath + compiled
@@ -57,6 +56,8 @@ func FuzzPathMatch(f *testing.F) {
 		{"POST", "/session"},
 		{"POST", "/grpc"},
 		{"GET", "/v5.0.0/libpod/containers/json"},
+		{"GET", "/v5.8.1-dev/libpod/manifests/app/json"},
+		{"POST", "/v5.8.1.2/libpod/images/scp/app"},
 		{"POST", "/v5.0.0/libpod/pods/create"},
 		{"POST", "/v5.0.0/libpod/play/kube"},
 		{"GET", "/v5.0.0/libpod/generate/kube"},
@@ -182,7 +183,7 @@ func FuzzNormalizePath(f *testing.F) {
 		"/v1.45",                // version prefix with no trailing path
 		"/v1.45/",               // version prefix with just trailing slash
 		"/version",              // starts with /v but not a version prefix
-		"/v1./containers",       // malformed version
+		"/v1./containers",       // accepted by Podman's route grammar
 		"/v.1/containers",       // malformed version
 		"/containers/../images", // path traversal
 		"/../../etc/passwd",     // escape attempt
@@ -205,8 +206,10 @@ func FuzzNormalizePath(f *testing.F) {
 		"/v5.0.0/libpod/containers/json",
 		"/v5.0.0/",    // three-part prefix with just trailing slash
 		"/v5.0.0",     // three-part prefix with no trailing path
-		"/v5.0./x",    // malformed three-part (missing patch digits)
-		"/v1.2.3.4/x", // four-part is not a version prefix
+		"/v5.0./x",    // Podman's route grammar accepts a trailing dot
+		"/v1.2.3.4/x", // Podman's route grammar accepts four components
+		"/v5.8.1-dev/libpod/manifests/app/json",
+		"/v5.8.1_rc/libpod/manifests/app/json", // underscore is not accepted
 		"/v99999999999999999999.99999999999999999999.99999999999999999999/x", // adversarial digit runs
 	}
 	for _, s := range seeds {

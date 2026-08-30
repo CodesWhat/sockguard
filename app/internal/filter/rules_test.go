@@ -49,11 +49,11 @@ func TestStripVersionPrefix(t *testing.T) {
 		{name: "valid major version", path: "/v1/containers/json", want: "/containers/json"},
 		{name: "valid major minor version", path: "/v1.45/containers/json", want: "/containers/json"},
 		{name: "invalid missing digits after v", path: "/v/x", want: "/v/x"},
-		{name: "invalid missing minor digits", path: "/v1./x", want: "/v1./x"},
+		{name: "Podman accepts trailing dot", path: "/v1./x", want: "/x"},
 		{name: "invalid no trailing slash", path: "/v1.45", want: "/v1.45"},
 		{name: "version root path", path: "/v1.45/", want: "/"},
 		{name: "double prefix strips only first", path: "/v1.45/v1.46/containers/json", want: "/v1.46/containers/json"},
-		{name: "invalid prefix without slash after digits", path: "/v1x/containers/json", want: "/v1x/containers/json"},
+		{name: "Podman accepts alphabetic suffix", path: "/v1x/containers/json", want: "/containers/json"},
 		{name: "uppercase V is not a version prefix", path: "/V1.45/containers/json", want: "/V1.45/containers/json"},
 		{name: "uppercase V major only is not a version prefix", path: "/V1/containers/json", want: "/V1/containers/json"},
 		// Three-part semver -- Podman's libpod bindings send the full daemon
@@ -61,9 +61,11 @@ func TestStripVersionPrefix(t *testing.T) {
 		{name: "three-part semver version prefix", path: "/v5.0.0/libpod/containers/json", want: "/libpod/containers/json"},
 		{name: "three-part semver with larger components", path: "/v4.9.3/libpod/containers/json", want: "/libpod/containers/json"},
 		{name: "three-part semver root path", path: "/v5.0.0/", want: "/"},
-		{name: "three-part semver missing patch digits", path: "/v5.0./x", want: "/v5.0./x"},
+		{name: "Podman accepts prerelease suffix", path: "/v5.8.1-dev/libpod/containers/json", want: "/libpod/containers/json"},
+		{name: "Podman accepts trailing patch dot", path: "/v5.0./x", want: "/x"},
 		{name: "three-part semver no trailing slash", path: "/v5.0.0", want: "/v5.0.0"},
-		{name: "four-part version is not stripped", path: "/v1.2.3.4/x", want: "/v1.2.3.4/x"},
+		{name: "Podman accepts four-part version", path: "/v1.2.3.4/x", want: "/x"},
+		{name: "invalid version character is not stripped", path: "/v5.8.1_rc/libpod/containers/json", want: "/v5.8.1_rc/libpod/containers/json"},
 		// Adversarial digit runs.
 		{name: "long digit run in major", path: "/v99999999999999999999/x", want: "/x"},
 		{name: "long digit run in minor", path: "/v1.99999999999999999999/x", want: "/x"},
@@ -80,8 +82,8 @@ func TestStripVersionPrefix(t *testing.T) {
 	}
 }
 
-func TestStripVersionPrefixMatchesLegacyRegex(t *testing.T) {
-	legacyVersionPrefix := regexp.MustCompile(`^/v\d+(\.\d+){0,2}/`)
+func TestStripVersionPrefixMatchesPodmanRouteGrammar(t *testing.T) {
+	podmanVersionPrefix := regexp.MustCompile(`^/v[0-9][0-9A-Za-z.-]*/`)
 	paths := []string{
 		"",
 		"/",
@@ -112,14 +114,16 @@ func TestStripVersionPrefixMatchesLegacyRegex(t *testing.T) {
 		"/v1.2.3/",
 		"/v1.2./x",
 		"/v1.2.3.4/x",
+		"/v5.8.1-dev/libpod/manifests/app/json",
+		"/v5.8.1_rc/libpod/manifests/app/json",
 	}
 
 	for _, path := range paths {
 		t.Run(path, func(t *testing.T) {
-			want := legacyVersionPrefix.ReplaceAllString(path, "/")
+			want := podmanVersionPrefix.ReplaceAllString(path, "/")
 			got := stripVersionPrefix(path)
 			if got != want {
-				t.Errorf("stripVersionPrefix(%q) = %q, want legacy regex result %q", path, got, want)
+				t.Errorf("stripVersionPrefix(%q) = %q, want Podman route result %q", path, got, want)
 			}
 		})
 	}

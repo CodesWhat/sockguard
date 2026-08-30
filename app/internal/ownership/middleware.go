@@ -165,7 +165,11 @@ func middlewareWithDeps(
 				return
 			}
 
-			verdict, reason, err := allowOwnershipRequest(r.Context(), r.Method, normPath, opts, inspectResource, inspectExec, refs)
+			routePath := normPath
+			if r.Method == http.MethodPost && strings.HasPrefix(normPath, libpodPrefix+"images/scp/") {
+				routePath = filter.NormalizePath(r.URL.EscapedPath())
+			}
+			verdict, reason, err := allowOwnershipRequestWithRoutePath(r.Context(), r.Method, normPath, routePath, opts, inspectResource, inspectExec, refs)
 			if err != nil {
 				logger.ErrorContext(r.Context(), "owner policy lookup failed", "error", logging.SafeString(err.Error()), "method", logging.SafeString(r.Method), "path", logging.SafeString(r.URL.Path))
 				logging.SetDeniedWithCode(w, r, reasonCodeOwnerPolicyLookupFailed, "owner policy lookup failed", nil)
@@ -250,7 +254,20 @@ func allowOwnershipRequest(
 	inspectExec func(context.Context, string) (string, bool, error),
 	refs *ownershipRequestReferences,
 ) (ownershipVerdict, string, error) {
-	verdict, reason, err := allowOwnershipRequestUnprefixed(ctx, method, normPath, opts, inspectResource, inspectExec, refs)
+	return allowOwnershipRequestWithRoutePath(ctx, method, normPath, normPath, opts, inspectResource, inspectExec, refs)
+}
+
+func allowOwnershipRequestWithRoutePath(
+	ctx context.Context,
+	method string,
+	normPath string,
+	routePath string,
+	opts Options,
+	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
+	inspectExec func(context.Context, string) (string, bool, error),
+	refs *ownershipRequestReferences,
+) (ownershipVerdict, string, error) {
+	verdict, reason, err := allowOwnershipRequestUnprefixed(ctx, method, normPath, routePath, opts, inspectResource, inspectExec, refs)
 	if verdict == verdictDeny && isLibpodOwnershipPath(normPath) {
 		reason = "libpod " + reason
 	}
@@ -261,6 +278,7 @@ func allowOwnershipRequestUnprefixed(
 	ctx context.Context,
 	method string,
 	normPath string,
+	routePath string,
 	opts Options,
 	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
 	inspectExec func(context.Context, string) (string, bool, error),
@@ -287,7 +305,7 @@ func allowOwnershipRequestUnprefixed(
 		}
 	}
 
-	verdict, reason, err := allowPathOwnershipRequest(ctx, method, normPath, opts, inspectResource, inspectExec)
+	verdict, reason, err := allowPathOwnershipRequest(ctx, method, normPath, routePath, opts, inspectResource, inspectExec)
 	if err != nil || verdict == verdictDeny {
 		return verdict, reason, err
 	}
@@ -301,6 +319,7 @@ func allowPathOwnershipRequest(
 	ctx context.Context,
 	method string,
 	normPath string,
+	routePath string,
 	opts Options,
 	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
 	inspectExec func(context.Context, string) (string, bool, error),
@@ -377,7 +396,7 @@ func allowPathOwnershipRequest(
 	if identifier, ok := libpodVolumeIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindVolume, identifier, opts, false)
 	}
-	if identifier, remote, ok := libpodImageScpSource(method, normPath); ok {
+	if identifier, remote, ok := libpodImageScpSource(method, routePath); ok {
 		switch {
 		case remote:
 			return verdictDeny, "owner policy denied access to remote image source", nil
@@ -387,7 +406,7 @@ func allowPathOwnershipRequest(
 			return checkOwnedResource(ctx, inspectResource, dockerresource.KindImage, identifier, opts, opts.AllowUnownedImages)
 		}
 	}
-	if identifier, ok := libpodImageIdentifier(method, normPath); ok {
+	if identifier, ok := libpodImageIdentifierForRoute(method, normPath, routePath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindImage, identifier, opts, opts.AllowUnownedImages)
 	}
 	if identifier, ok := libpodSecretIdentifier(method, normPath); ok {

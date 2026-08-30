@@ -172,58 +172,34 @@ func pathSegmentNeedsClean(p string, start, end int, absolutePath, hasNormalSegm
 	return false, true
 }
 
-// stripVersionPrefix removes a leading /vN.N.N/, /vN.N/, or /vN/ prefix,
-// returning the path from the first slash after the version. Uses a
-// hand-rolled check so the common case (no prefix) avoids regexp overhead
-// entirely.
+// stripVersionPrefix removes the leading version segment accepted by Podman's
+// VersionedPath router: /v followed by a digit, then zero or more ASCII
+// letters, digits, dots, or hyphens, and a trailing slash. That includes the
+// usual Docker vN.N and Podman vN.N.N forms plus prerelease and four-component
+// spellings that a hostile API client can send and Podman still routes.
 //
-// Docker's own API version prefix is always /vN or /vN.N (a single optional
-// minor component). Podman's libpod bindings send the full three-part semver
-// of the daemon, e.g. /v5.0.0/libpod/containers/json — a second optional .N
-// component is required or every libpod rule pattern silently never matches
-// a versioned Podman client (#148).
+// The hand-rolled check keeps the common no-prefix path free of regexp work.
 func stripVersionPrefix(p string) string {
-	// Minimum version prefix is /vN/ (4 chars). Docker uses lowercase 'v' only.
-	if len(p) < 4 || p[0] != '/' || p[1] != 'v' {
+	// Minimum version prefix is /vN/ (4 chars). Both daemons use lowercase v.
+	if len(p) < 4 || p[0] != '/' || p[1] != 'v' || p[2] < '0' || p[2] > '9' {
 		return p
 	}
-	i := 2
-	// Consume digits.
-	for i < len(p) && p[i] >= '0' && p[i] <= '9' {
-		i++
+	i := 3
+	for i < len(p) {
+		c := p[i]
+		if c >= '0' && c <= '9' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c == '.' || c == '-' {
+			i++
+			continue
+		}
+		break
 	}
-	if i == 2 {
-		return p // no digits after /v
-	}
-	// Optional .N (minor).
-	i = consumeOptionalDotDigits(p, i)
-	// Optional .N (patch) — three-part semver, e.g. the "0" in v5.0.0.
-	i = consumeOptionalDotDigits(p, i)
-	// Must end with /
 	if i >= len(p) || p[i] != '/' {
 		return p
 	}
 	return p[i:]
 }
 
-// consumeOptionalDotDigits advances i past a single ".N" component starting
-// at p[i], where N is one or more ASCII digits. It returns i unchanged when
-// p[i] is not '.' or the '.' is not followed by at least one digit.
-func consumeOptionalDotDigits(p string, i int) int {
-	if i >= len(p) || p[i] != '.' {
-		return i
-	}
-	j := i + 1
-	for j < len(p) && p[j] >= '0' && p[j] <= '9' {
-		j++
-	}
-	if j > i+1 {
-		return j
-	}
-	return i
-}
-
-// HasVersionPrefix reports whether p begins with a Docker API version prefix
+// HasVersionPrefix reports whether p begins with a daemon API version prefix
 // (e.g. "/v1.45/") that NormalizePath strips before rule matching. A rule
 // pattern carrying such a prefix can never match real traffic — the request
 // path is normalized first — so it is almost always an authoring mistake worth
