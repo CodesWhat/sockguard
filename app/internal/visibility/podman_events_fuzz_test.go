@@ -43,13 +43,14 @@ func FuzzPodmanEventLabelFilter(f *testing.F) {
 		query.Set("filters", filters)
 		req.URL.RawQuery = query.Encode()
 
-		if err := setPodmanEventLabelFilter(req, selector); err != nil {
+		forwarded, err := setPodmanEventLabelFilter(req, selector)
+		if err != nil {
 			// A rejected filter is answered with a 400 and never forwarded,
 			// so there is nothing left to assert about it.
 			return
 		}
 
-		decoded, err := dockerfilters.Decode(req.URL.Query().Get("filters"))
+		decoded, err := dockerfilters.Decode(forwarded.URL.Query().Get("filters"))
 		if err != nil {
 			t.Fatalf("rewritten filters did not decode: %v (input %q)", err, filters)
 		}
@@ -70,11 +71,12 @@ func TestPodmanEventLabelFilterIgnoresCapitalFiltersParameter(t *testing.T) {
 	req := httptest.NewRequest("GET", `/events?Filters={"label":["app=theirs"]}`, nil)
 	selector := compiledSelector{key: "com.sockguard.visible", value: "true", hasValue: true}
 
-	if err := setPodmanEventLabelFilter(req, selector); err != nil {
+	forwarded, err := setPodmanEventLabelFilter(req, selector)
+	if err != nil {
 		t.Fatalf("setPodmanEventLabelFilter() error = %v", err)
 	}
 
-	query := req.URL.Query()
+	query := forwarded.URL.Query()
 	if _, ok := query["filters"]; !ok {
 		t.Fatalf("rewritten query = %q, want a lowercase filters parameter that takes precedence", req.URL.RawQuery)
 	}

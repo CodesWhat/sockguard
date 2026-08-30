@@ -23,10 +23,13 @@ import (
 const DefaultLabelKey = "com.sockguard.owner"
 
 const (
-	reasonCodeOwnerRequestInvalid     = "owner_request_invalid"
-	reasonCodeOwnerPolicyLookupFailed = "owner_policy_lookup_failed"
-	reasonCodeOwnerPolicyDeniedAccess = "owner_policy_denied_access"
+	reasonCodeOwnerRequestInvalid                    = "owner_request_invalid"
+	reasonCodeOwnerPolicyLookupFailed                = "owner_policy_lookup_failed"
+	reasonCodeOwnerPolicyDeniedAccess                = "owner_policy_denied_access"
+	reasonCodeOwnerVisibilityPodmanEventsUnscopeable = "owner_visibility_podman_events_unscopeable"
 )
+
+const ownerVisibilityPodmanEventsDenyReason = "events denied: this upstream is Podman, whose GET /events filters labels disjunctively, so owner isolation and visibility label selectors cannot be enforced together"
 
 // maxOwnershipBodyBytes caps the request body the ownership middleware will
 // read when it mutates a container/network/volume create body or a build
@@ -132,6 +135,14 @@ func middlewareWithDeps(
 				normPath = meta.NormPath
 			} else {
 				normPath = filter.NormalizePath(r.URL.Path)
+			}
+
+			ownerFilterApplies := needsOwnerFilter(r.Method, normPath) ||
+				(r.Method == http.MethodGet || r.Method == http.MethodHead) && libpodNeedsOwnerFilter(normPath)
+			if ownerFilterApplies && dockerfilters.RequiresSoleValue(r, ownerFilterKey(normPath)) {
+				logging.SetDeniedWithCode(w, r, reasonCodeOwnerVisibilityPodmanEventsUnscopeable, ownerVisibilityPodmanEventsDenyReason, nil)
+				_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: ownerVisibilityPodmanEventsDenyReason})
+				return
 			}
 
 			refs, err := mutateOwnershipRequest(r, normPath, opts)

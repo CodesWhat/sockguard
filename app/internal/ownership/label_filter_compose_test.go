@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/upstreamflavor"
 	"github.com/codeswhat/sockguard/app/internal/visibility"
 )
 
@@ -198,5 +200,73 @@ func TestListLabelFilterDeduplicatesOwnerLabelAgainstInjectedSelector(t *testing
 	)
 	if values := got["label"]; len(values) != 1 || values[0] != "owner=team-a" {
 		t.Fatalf("label filter = %v, want exactly [owner=team-a]", values)
+	}
+}
+
+// Podman's event handler ORs repeated label-filter values, so owner isolation
+// and even one visibility selector cannot be represented together on
+// GET /events. Forwarding either constraint alone widens the configured scope;
+// forwarding both widens it further. The exact production middleware nesting
+// must refuse the request before it reaches Podman.
+func TestPodmanEventsRejectsOwnerVisibilityComposition(t *testing.T) {
+	t.Parallel()
+
+	const wantReason = "events denied: this upstream is Podman, whose GET /events filters labels disjunctively, so owner isolation and visibility label selectors cannot be enforced together"
+	tests := []struct {
+		name   string
+		target string
+		vis    visibility.Options
+	}{
+		{
+			name:   "default policy on versioned path",
+			target: "/v1.53/events",
+			vis: visibility.Options{
+				VisibleResourceLabels: []string{"tier=prod"},
+				UpstreamFlavor:        upstreamflavor.Podman,
+			},
+		},
+		{
+			name:   "profile policy on normalized path",
+			target: "/v1.53/containers/../events",
+			vis: visibility.Options{
+				Profiles: map[string]visibility.Policy{
+					"watchtower": {VisibleResourceLabels: []string{"tier=prod"}},
+				},
+				ResolveProfile: func(*http.Request) (string, bool) { return "watchtower", true },
+				UpstreamFlavor: upstreamflavor.Podman,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			reached := false
+			upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				reached = true
+				w.WriteHeader(http.StatusNoContent)
+			})
+			inner := middlewareWithDeps(testLogger(), Options{Owner: "team-a"}, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(upstream)
+			handler := visibility.Middleware("", testLogger(), tc.vis)(inner)
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, tc.target, nil)
+			meta := &logging.RequestMeta{}
+			req = req.WithContext(logging.WithMeta(req.Context(), meta))
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("GET %s: status = %d, want 403; body: %s", tc.target, rec.Code, rec.Body.String())
+			}
+			if reached {
+				t.Fatal("combined owner and visibility policy reached Podman's disjunctive event filter")
+			}
+			if !strings.Contains(rec.Body.String(), wantReason) {
+				t.Fatalf("body = %q, want stable denial reason %q", rec.Body.String(), wantReason)
+			}
+			if meta.ReasonCode != reasonCodeOwnerVisibilityPodmanEventsUnscopeable {
+				t.Fatalf("reason code = %q, want %q", meta.ReasonCode, reasonCodeOwnerVisibilityPodmanEventsUnscopeable)
+			}
+		})
 	}
 }
