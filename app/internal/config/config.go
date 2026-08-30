@@ -267,6 +267,22 @@ type UpstreamConfig struct {
 	// values bypass Viper's env-emptiness gate. Prefer "off" in both
 	// channels.
 	RequestTimeout string `mapstructure:"request_timeout"`
+	// HijackInactivityTimeout bounds how long a hijacked connection (docker
+	// attach, exec start) may sit idle in either direction — no bytes read
+	// or written — before sockguard tears it down, as a Go duration string
+	// (e.g. "10m"). It refreshes on activity, so it never caps the total
+	// session length of an active `docker exec`/`attach`, only how long a
+	// forgotten one is left open. Unlike RequestTimeout, hijacked connections
+	// are exempt from request_timeout entirely (see its doc comment) — this
+	// is their only deadline.
+	//
+	// Default is "10m", unchanged from the hardcoded value hijack.go used
+	// before this field existed. Unlike RequestTimeout there is no "off"
+	// spelling: 0 and negative durations are validation errors, same as
+	// RequestTimeout, but there is also no legacy empty-string disable path
+	// to preserve, so an empty value is rejected too. Any other value must
+	// parse as a positive Go duration.
+	HijackInactivityTimeout string `mapstructure:"hijack_inactivity_timeout"`
 	// Endpoints is an ordered failover set. The first entry is the preferred
 	// primary; later entries are tried when earlier ones fail their health
 	// probe. Every endpoint MUST address the same logical daemon/swarm —
@@ -1551,6 +1567,9 @@ func Defaults() Config {
 			// "off" (or the legacy "") to disable. See RequestTimeout's doc
 			// comment for the full migration story.
 			RequestTimeout: "60s",
+			// 10m matches hijack.go's pre-existing hardcoded default; see
+			// HijackInactivityTimeout's doc comment.
+			HijackInactivityTimeout: "10m",
 		},
 		Log: LogConfig{
 			Level:     "info",

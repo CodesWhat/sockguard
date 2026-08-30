@@ -44,3 +44,30 @@ func TestPresetConfigsValidate(t *testing.T) {
 		})
 	}
 }
+
+func TestDiscoveryPresetUsesDedicatedSocket(t *testing.T) {
+	cfg, err := Load(filepath.Join("..", "..", "configs", "discovery.yaml"))
+	if err != nil {
+		t.Fatalf("Load(discovery.yaml) error: %v", err)
+	}
+
+	if len(cfg.Listeners) != 1 {
+		t.Fatalf("listeners = %d, want one dedicated discovery listener", len(cfg.Listeners))
+	}
+	listener := cfg.Listeners[0]
+	if listener.Name != "discovery" {
+		t.Fatalf("listeners[0].name = %q, want discovery", listener.Name)
+	}
+	if listener.Socket != "/var/run/sockguard-discovery.sock" {
+		t.Fatalf("listeners[0].socket = %q, want dedicated discovery socket", listener.Socket)
+	}
+	if listener.SocketMode != "0600" {
+		t.Fatalf("listeners[0].socket_mode = %q, want owner-only mode", listener.SocketMode)
+	}
+	if listener.Address != "" {
+		t.Fatalf("listeners[0].address = %q, want no TCP discovery listener", listener.Address)
+	}
+	if len(listener.AllowedProfiles) != 1 || listener.AllowedProfiles[0] != "discovery" {
+		t.Fatalf("listeners[0].allowed_profiles = %v, want [discovery]", listener.AllowedProfiles)
+	}
+}
