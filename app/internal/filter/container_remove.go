@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-// ContainerRemoveOptions configures query inspection for
-// DELETE /containers/{id}.
+// ContainerRemoveOptions configures query inspection for container removal,
+// including slash-bearing names used by Docker's legacy link-removal route.
 type ContainerRemoveOptions struct {
 	AllowForce         bool
 	AllowRemoveVolumes bool

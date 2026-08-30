@@ -2,9 +2,9 @@
 #
 # Minimal read-only access for Traefik's Docker provider.
 #
-# Allows exactly the endpoints Traefik calls: container list + inspect, network
-# list + inspect, service and task list + inspect and node inspect (Swarm
-# mode), the event stream, and ping/version/info. Verified against traefik
+# Allows exactly the endpoints Traefik calls: container list + inspect, network,
+# service and task lists, node inspect (Swarm mode), the event stream, and
+# ping/version/info. Verified against traefik
 # v3.7.12 pkg/provider/docker — pdocker.go (ServerVersion, Events,
 # ContainerList), shared.go (ContainerInspect), pswarm.go (ServiceList,
 # NetworkList, TaskList, NodeInspect).
@@ -50,20 +50,14 @@ rules:
   - match: { method: GET, path: "/containers/*/json" }
     action: allow
 
-  # Network reads — list + inspect
+  # Network reads — list only
   - match: { method: GET, path: "/networks" }
     action: allow
-  - match: { method: GET, path: "/networks/*" }
-    action: allow
 
-  # Swarm reads — service and task list + inspect
+  # Swarm reads — service and task list only
   - match: { method: GET, path: "/services" }
     action: allow
-  - match: { method: GET, path: "/services/*" }
-    action: allow
   - match: { method: GET, path: "/tasks" }
-    action: allow
-  - match: { method: GET, path: "/tasks/*" }
     action: allow
 
   # Swarm node inspect. traefik v3.7.12 pswarm.go parseTasks calls

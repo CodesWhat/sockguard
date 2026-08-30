@@ -37,6 +37,17 @@ func TestCompatAllowDeleteWiresContainerRemoveQueryControls(t *testing.T) {
 				t.Errorf("DELETE query %q status = %d, want %d; body: %s", query, rec.Code, http.StatusNoContent, rec.Body.String())
 			}
 		}
+
+		t.Run("legacy link name may span path segments", func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodDelete, "/containers/client/alias?link=1", nil)
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("DELETE slash-bearing link status = %d, want %d; body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
+			}
+		})
 	})
 
 	t.Run("user-authored rule keeps native defaults", func(t *testing.T) {

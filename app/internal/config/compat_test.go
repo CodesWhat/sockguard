@@ -576,7 +576,7 @@ func TestCompatAllowPruneDeleteKillGeneratedRules(t *testing.T) {
 			name:   "ALLOW_DELETE",
 			envKey: "ALLOW_DELETE",
 			wantRules: []struct{ method, path string }{
-				{"DELETE", "/containers/*"},
+				{"DELETE", "/containers/**"},
 			},
 		},
 		{

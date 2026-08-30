@@ -297,12 +297,12 @@ Minimal read-only access for Traefik reverse proxy.
 **Use for:** Traefik, nginx-proxy, or any reverse proxy with Docker provider.
 
 ```yaml
-# Allows: GET container list + inspect, network list + inspect, service and
-#         task list + inspect (Swarm), events, ping, version, info
+# Allows: GET container list + inspect, network/service/task lists, node inspect
+#         (Swarm), events, ping, version, info
 # Denies: everything else, including container archive/export/logs/attach
 ```
 
-Every allowed path is a named list or inspect endpoint rather than a
+Every allowed path is a named list or required inspect endpoint rather than a
 `/containers/**` glob, so this preset does **not** set
 `insecure_allow_read_exfiltration: true`. A client that genuinely needs
 `GET /containers/*/logs` or `GET /containers/*/archive` has to add that rule
@@ -358,8 +358,8 @@ Read-only access for the [Homepage](https://gethomepage.dev) dashboard.
 **Use for:** Homepage, or any dashboard that only reads container state and stats.
 
 ```yaml
-# Allows: GET container list + inspect + stats, image list, service list +
-#         inspect and task list + inspect (Swarm), events, ping, version, info
+# Allows: GET container list + inspect + stats, service list + inspect and task
+#         list (Swarm), events, ping, version, info
 # Denies: all write operations, plus container archive/export/logs/attach and
 #         the image-tarball paths GET /images/get and GET /images/*/get
 ```

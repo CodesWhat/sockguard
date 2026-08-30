@@ -54,7 +54,7 @@ var compatGranularPostRules = []struct {
 	path    string
 }{
 	{envKeys: []string{"ALLOW_CREATE"}, method: "POST", path: "/containers/create"},
-	{envKeys: []string{"ALLOW_DELETE"}, method: "DELETE", path: "/containers/*"},
+	{envKeys: []string{"ALLOW_DELETE"}, method: "DELETE", path: "/containers/**"},
 	{envKeys: []string{"ALLOW_EXEC"}, method: "POST", path: "/containers/*/exec"},
 	{envKeys: []string{"ALLOW_KILL", "ALLOW_RESTARTS", "ALLOW_RESTART"}, method: "POST", path: "/containers/*/kill"},
 	{envKeys: []string{"ALLOW_PAUSE"}, method: "POST", path: "/containers/*/pause"},

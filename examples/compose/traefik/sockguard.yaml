@@ -36,20 +36,14 @@ rules:
   - match: { method: GET, path: "/containers/*/json" }
     action: allow
 
-  # Network reads — list + inspect
+  # Network reads — list only
   - match: { method: GET, path: "/networks" }
     action: allow
-  - match: { method: GET, path: "/networks/*" }
-    action: allow
 
-  # Service and task reads (for Swarm-mode Traefik)
+  # Service and task lists (for Swarm-mode Traefik)
   - match: { method: GET, path: "/services" }
     action: allow
-  - match: { method: GET, path: "/services/*" }
-    action: allow
   - match: { method: GET, path: "/tasks" }
-    action: allow
-  - match: { method: GET, path: "/tasks/*" }
     action: allow
 
   # Swarm node inspect. traefik v3.7.12 pswarm.go parseTasks calls
