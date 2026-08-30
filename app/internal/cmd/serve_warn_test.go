@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -235,6 +236,36 @@ func TestWarnReadExfiltrationOnce(t *testing.T) {
 	// reorders between runs and this test flakes instead of failing.
 	if alpha, zeta := strings.Index(buf.String(), "alpha-reader"), strings.Index(buf.String(), "zeta-reader"); alpha > zeta {
 		t.Fatalf("profile endpoints are not sorted by profile name; log: %q", buf.String())
+	}
+}
+
+func TestWarnReadExfiltrationOnceDescribesRequestTimeOnlyProcessListRule(t *testing.T) {
+	t.Parallel()
+
+	exact, err := compileConfiguredRules([]config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/containers/payments/top"}, Action: "allow"},
+	})
+	if err != nil {
+		t.Fatalf("compileConfiguredRules: %v", err)
+	}
+
+	enabled := config.Defaults()
+	enabled.InsecureAllowReadExfiltration = true
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	var once sync.Once
+	warnReadExfiltrationOnce(&enabled, exact, nil, logger, &once)
+	logOutput := buf.String()
+
+	if !strings.Contains(logOutput, "process-list reads allowed by policy are admitted instead of denied at request time") {
+		t.Fatalf("warning does not describe request-time process-list enforcement; log: %q", logOutput)
+	}
+	if !strings.Contains(logOutput, "exposed endpoint fields report representative startup-validation probes, not every request-time process-list path") {
+		t.Fatalf("warning does not qualify the representative endpoint fields; log: %q", logOutput)
+	}
+	if !strings.Contains(logOutput, "exposed_endpoints=[]") {
+		t.Fatalf("exact-name process-list rule unexpectedly appeared in representative startup probes; log: %q", logOutput)
 	}
 }
 

@@ -1116,10 +1116,11 @@ var readExfiltrationWarnOnce sync.Once
 // insecure_allow_read_exfiltration: true at chain-build time (startup or
 // hot-reload), the read-side counterpart of warnIfBodyBlindWritesEnabled. The
 // startup validator (validateReadExfiltrationRulesForPolicy in rules.go)
-// already refuses to start without this acknowledgment when an
-// exfiltration-capable endpoint is reachable; this is the loud runtime echo of
-// that same acknowledgment, visible in the running process's logs rather than
-// only at validate time. It matters more here than for the write-side flag,
+// refuses common exfiltration-capable rule shapes without this acknowledgment,
+// while the process-list hard gate also enforces it against exact-name and
+// ordered rule shapes at request time. This is the loud runtime echo of that
+// acknowledgment, visible in the running process's logs rather than only at
+// validate time. It matters more here than for the write-side flag,
 // because the README quick start and the Tecnativa migration path both ship
 // the acknowledgment set, so the documented happy path had no ongoing signal
 // at all.
@@ -1132,19 +1133,21 @@ func warnIfReadExfiltrationEnabled(cfg *config.Config, rules []*filter.CompiledR
 // the enable-check and the once-per-process gating without racing other tests
 // for the package-level guard.
 //
-// Both endpoint lists come from allowedSensitiveExfilEndpoints, the same probe
-// the startup validator uses to build its refusal message, so the warning names
-// exactly what the acknowledgment is currently buying rather than restating the
-// whole catalog. Named client profiles are reported separately because their
+// Both endpoint lists come from allowedSensitiveExfilEndpoints, the same
+// representative probe the startup validator uses to build its refusal message.
+// Exact-name process-list paths and ordered rules that deny the representative
+// path can be enforced only by the request-time hard gate, so the warning text
+// calls out that the fields are not exhaustive for that class. Named client
+// profiles are reported separately because their
 // rules are evaluated in place of the top-level set: the acknowledgment is
 // global, so a profile can be the only reason it has to be set, and the
 // per-profile refusal that would otherwise name it never fires once it is.
 // Both fields are stable across runs (see allowedSensitiveExfilEndpointsByProfile
 // for the sort that makes the profile half so).
 //
-// Two empty lists are still worth logging: that means the acknowledgment is set
-// while no rule needs it, which is a standing permission the operator can
-// remove.
+// Two empty lists are still worth logging: they mean no representative startup
+// probe is admitted, but the acknowledgment can still govern an exact-name or
+// ordered process-list rule at request time.
 func warnReadExfiltrationOnce(cfg *config.Config, rules []*filter.CompiledRule, clientProfiles map[string]filter.Policy, logger *slog.Logger, once *sync.Once) {
 	if !cfg.InsecureAllowReadExfiltration {
 		return
@@ -1152,7 +1155,7 @@ func warnReadExfiltrationOnce(cfg *config.Config, rules []*filter.CompiledRule, 
 	exposed := allowedSensitiveExfilEndpoints(rules)
 	profileExposed := allowedSensitiveExfilEndpointsByProfile(clientProfiles)
 	once.Do(func() {
-		logger.Warn("insecure_allow_read_exfiltration is enabled: rules matching process-list reads, raw archive/export, log/attach streaming, or registry push endpoints are admitted instead of refused at startup. A caller allowed those paths can read container files, images, plugins, process arguments, environment variables, and secrets, or push local artifacts to a registry it chooses",
+		logger.Warn("insecure_allow_read_exfiltration is enabled: rules matching raw archive/export, log/attach streaming, or registry push endpoints are admitted instead of refused at startup, and process-list reads allowed by policy are admitted instead of denied at request time. The exposed endpoint fields report representative startup-validation probes, not every request-time process-list path. A caller allowed those paths can read container files, images, plugins, process arguments, environment variables, and secrets, or push local artifacts to a registry it chooses",
 			"exposed_endpoints", exposed,
 			"exposed_profile_endpoints", profileExposed,
 		)
