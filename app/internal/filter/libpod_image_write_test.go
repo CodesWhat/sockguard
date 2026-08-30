@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"archive/tar"
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
@@ -421,6 +422,218 @@ func TestLibpodImageLoadFollowsPodmanArchiveFormatPrecedence(t *testing.T) {
 	})
 }
 
+func TestDockerImageLoadRetainsDockerArchivePrecedence(t *testing.T) {
+	payload := mustOCIImageLoadTarWithDockerManifest(t, []string{"evil.example.com/acme/oci:v1"}, `[{"RepoTags":["ghcr.io/acme/docker:v1"]}]`)
+	req := httptest.NewRequest(http.MethodPost, "/images/load", bytes.NewReader(payload))
+
+	reason, err := newImageLoadPolicy(libpodImageLoadAllowlist()).inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil || reason != "" {
+		t.Fatalf("inspect() = (%q, %v), want Docker-compatible manifest precedence allowed", reason, err)
+	}
+	if err := req.Body.Close(); err != nil {
+		t.Fatalf("close forwarded body: %v", err)
+	}
+}
+
+func TestLibpodImageLoadRetainsDockerFallbackForMalformedOCIWithLinks(t *testing.T) {
+	payload := mustContainerArchiveTar(t,
+		containerArchiveTestEntry{name: "oci-layout", body: `{"imageLayoutVersion":"1.0.0"}`},
+		containerArchiveTestEntry{name: "index.json", body: `{`},
+		containerArchiveTestEntry{name: "shadow", typ: tar.TypeSymlink, link: "."},
+		containerArchiveTestEntry{name: "manifest.json", body: `[{"RepoTags":["ghcr.io/acme/docker:v1"]}]`},
+	)
+	req := httptest.NewRequest(http.MethodPost, "/libpod/images/load", bytes.NewReader(payload))
+
+	reason, err := newImageLoadPolicy(libpodImageLoadAllowlist()).inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil || reason != "" {
+		t.Fatalf("inspect() = (%q, %v), want malformed OCI to retain Docker fallback", reason, err)
+	}
+	if err := req.Body.Close(); err != nil {
+		t.Fatalf("close forwarded body: %v", err)
+	}
+}
+
+func TestLibpodImageLoadDoesNotFallbackWhenOCIInspectionIsUnprovable(t *testing.T) {
+	const allowedReference = "ghcr.io/acme/app:v1"
+	config := []byte(`{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]},"config":{}}`)
+	configDigest := sha256.Sum256(config)
+
+	tests := []struct {
+		name    string
+		archive func(*testing.T) []byte
+	}{
+		{
+			name: "unreferenced extra blob",
+			archive: func(t *testing.T) []byte {
+				manifest := []byte(fmt.Sprintf(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:%x","size":%d},"layers":[]}`, configDigest, len(config)))
+				manifestDigest := sha256.Sum256(manifest)
+				index := fmt.Sprintf(`{"schemaVersion":2,"manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:%x","size":%d,"annotations":{"org.opencontainers.image.ref.name":%q}}]}`, manifestDigest, len(manifest), allowedReference)
+				extra := []byte("unreferenced")
+				extraDigest := sha256.Sum256(extra)
+				return mustMixedOCIImageLoadTar(t, index,
+					containerArchiveTestEntry{name: fmt.Sprintf("blobs/sha256/%x", configDigest), body: string(config)},
+					containerArchiveTestEntry{name: fmt.Sprintf("blobs/sha256/%x", manifestDigest), body: string(manifest)},
+					containerArchiveTestEntry{name: fmt.Sprintf("blobs/sha256/%x", extraDigest), body: string(extra)},
+				)
+			},
+		},
+		{
+			name: "duplicate unreferenced blob",
+			archive: func(t *testing.T) []byte {
+				manifest := []byte(fmt.Sprintf(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:%x","size":%d},"layers":[]}`, configDigest, len(config)))
+				manifestDigest := sha256.Sum256(manifest)
+				index := fmt.Sprintf(`{"schemaVersion":2,"manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:%x","size":%d,"annotations":{"org.opencontainers.image.ref.name":%q}}]}`, manifestDigest, len(manifest), allowedReference)
+				extraDigest := sha256.Sum256([]byte("first"))
+				return mustMixedOCIImageLoadTar(t, index,
+					containerArchiveTestEntry{name: fmt.Sprintf("blobs/sha256/%x", configDigest), body: string(config)},
+					containerArchiveTestEntry{name: fmt.Sprintf("blobs/sha256/%x", manifestDigest), body: string(manifest)},
+					containerArchiveTestEntry{name: fmt.Sprintf("blobs/sha256/%x", extraDigest), body: "first"},
+					containerArchiveTestEntry{name: fmt.Sprintf("blobs/sha256/%x", extraDigest), body: "second"},
+				)
+			},
+		},
+		{
+			name: "invalid non-selected index member",
+			archive: func(t *testing.T) []byte {
+				manifest := []byte(fmt.Sprintf(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:%x","size":%d},"layers":[]}`, configDigest, len(config)))
+				manifestDigest := sha256.Sum256(manifest)
+				missingDigest := strings.Repeat("a", 64)
+				nested := []byte(fmt.Sprintf(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:%x","size":%d,"platform":{"architecture":"amd64","os":"linux"}},{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:%s","size":1,"platform":{"architecture":"arm64","os":"linux"}}]}`, manifestDigest, len(manifest), missingDigest))
+				nestedDigest := sha256.Sum256(nested)
+				index := fmt.Sprintf(`{"schemaVersion":2,"manifests":[{"mediaType":"application/vnd.oci.image.index.v1+json","digest":"sha256:%x","size":%d,"annotations":{"org.opencontainers.image.ref.name":%q}}]}`, nestedDigest, len(nested), allowedReference)
+				return mustMixedOCIImageLoadTar(t, index,
+					containerArchiveTestEntry{name: fmt.Sprintf("blobs/sha256/%x", configDigest), body: string(config)},
+					containerArchiveTestEntry{name: fmt.Sprintf("blobs/sha256/%x", manifestDigest), body: string(manifest)},
+					containerArchiveTestEntry{name: fmt.Sprintf("blobs/sha256/%x", nestedDigest), body: string(nested)},
+				)
+			},
+		},
+		{
+			name: "external layer URL",
+			archive: func(t *testing.T) []byte {
+				layer := []byte("layer")
+				layerDigest := sha256.Sum256(layer)
+				manifest := []byte(fmt.Sprintf(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:%x","size":%d},"layers":[{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"sha256:%x","size":%d,"urls":["https://example.com/layer"]}]}`, configDigest, len(config), layerDigest, len(layer)))
+				manifestDigest := sha256.Sum256(manifest)
+				index := fmt.Sprintf(`{"schemaVersion":2,"manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:%x","size":%d,"annotations":{"org.opencontainers.image.ref.name":%q}}]}`, manifestDigest, len(manifest), allowedReference)
+				return mustMixedOCIImageLoadTar(t, index,
+					containerArchiveTestEntry{name: fmt.Sprintf("blobs/sha256/%x", configDigest), body: string(config)},
+					containerArchiveTestEntry{name: fmt.Sprintf("blobs/sha256/%x", manifestDigest), body: string(manifest)},
+					containerArchiveTestEntry{name: fmt.Sprintf("blobs/sha256/%x", layerDigest), body: string(layer)},
+				)
+			},
+		},
+		{
+			name: "external manifest URL",
+			archive: func(t *testing.T) []byte {
+				manifest := []byte(fmt.Sprintf(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:%x","size":%d},"layers":[]}`, configDigest, len(config)))
+				manifestDigest := sha256.Sum256(manifest)
+				index := fmt.Sprintf(`{"schemaVersion":2,"manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:%x","size":%d,"urls":["https://example.com/manifest"],"annotations":{"org.opencontainers.image.ref.name":%q}}]}`, manifestDigest, len(manifest), allowedReference)
+				return mustMixedOCIImageLoadTar(t, index,
+					containerArchiveTestEntry{name: fmt.Sprintf("blobs/sha256/%x", configDigest), body: string(config)},
+					containerArchiveTestEntry{name: fmt.Sprintf("blobs/sha256/%x", manifestDigest), body: string(manifest)},
+				)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/libpod/images/load", bytes.NewReader(tt.archive(t)))
+			reason, err := newImageLoadPolicy(libpodImageLoadAllowlist()).inspect(nil, req, NormalizePath(req.URL.Path))
+			if err != nil {
+				t.Fatalf("inspect() error = %v, want a policy denial", err)
+			}
+			if reason == "" {
+				t.Fatal("inspect() allowed an OCI archive whose contents cannot be fully verified")
+			}
+		})
+	}
+}
+
+func TestLibpodImageLoadRejectsArchiveLinkAliases(t *testing.T) {
+	tests := []struct {
+		name    string
+		entries func(*testing.T) []containerArchiveTestEntry
+	}{
+		{
+			name: "symlink parent aliases the inspected control path",
+			entries: func(t *testing.T) []containerArchiveTestEntry {
+				allowed := mustOCIImageLoadEntries(t, "ghcr.io/acme/app:v1")
+				evil := mustOCIImageLoadEntries(t, "evil.example.com/acme/app:v1")
+				return append(allowed,
+					containerArchiveTestEntry{name: "shadow", typ: tar.TypeSymlink, link: "."},
+					containerArchiveTestEntry{name: "shadow/index.json", body: evil[1].body},
+				)
+			},
+		},
+		{
+			name: "hardlink aliases an inspected blob path",
+			entries: func(t *testing.T) []containerArchiveTestEntry {
+				allowed := mustOCIImageLoadEntries(t, "ghcr.io/acme/app:v1")
+				return append(allowed,
+					containerArchiveTestEntry{name: "shadow", typ: tar.TypeDir},
+					containerArchiveTestEntry{name: "shadow/manifest", typ: tar.TypeLink, link: allowed[3].name},
+					containerArchiveTestEntry{name: "shadow/manifest", body: "replacement"},
+				)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/libpod/images/load", bytes.NewReader(mustContainerArchiveTar(t, tt.entries(t)...)))
+			reason, err := newImageLoadPolicy(libpodImageLoadAllowlist()).inspect(nil, req, NormalizePath(req.URL.Path))
+			if err != nil {
+				t.Fatalf("inspect() error = %v, want a policy denial", err)
+			}
+			if reason == "" {
+				t.Fatal("inspect() allowed an archive containing an outer link alias")
+			}
+		})
+	}
+}
+
+func TestOCIManifestGraphBoundsRepeatedDescriptorVisits(t *testing.T) {
+	repeatedGraph := func(depth int) (imageLoadOCIIndexDescriptor, map[string]imageLoadOCIBlob) {
+		config := []byte(`{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]},"config":{}}`)
+		configDigest := sha256.Sum256(config)
+		blobs := map[string]imageLoadOCIBlob{
+			fmt.Sprintf("blobs/sha256/%x", configDigest): {size: int64(len(config)), digestMatch: true, body: config},
+		}
+		manifest := []byte(fmt.Sprintf(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:%x","size":%d},"layers":[]}`, configDigest, len(config)))
+		manifestDigest := sha256.Sum256(manifest)
+		blobs[fmt.Sprintf("blobs/sha256/%x", manifestDigest)] = imageLoadOCIBlob{size: int64(len(manifest)), digestMatch: true, body: manifest}
+		descriptor := imageLoadOCIIndexDescriptor{MediaType: "application/vnd.oci.image.manifest.v1+json", Digest: fmt.Sprintf("sha256:%x", manifestDigest), Size: int64(len(manifest))}
+
+		for range depth {
+			index, err := json.Marshal(imageLoadOCIIndex{SchemaVersion: 2, Manifests: []imageLoadOCIIndexDescriptor{descriptor, descriptor}})
+			if err != nil {
+				t.Fatalf("marshal repeated OCI index: %v", err)
+			}
+			digest := sha256.Sum256(index)
+			blobs[fmt.Sprintf("blobs/sha256/%x", digest)] = imageLoadOCIBlob{size: int64(len(index)), digestMatch: true, body: index}
+			descriptor = imageLoadOCIIndexDescriptor{MediaType: "application/vnd.oci.image.index.v1+json", Digest: fmt.Sprintf("sha256:%x", digest), Size: int64(len(index))}
+		}
+		return descriptor, blobs
+	}
+
+	t.Run("a small repeated-child DAG remains valid", func(t *testing.T) {
+		descriptor, blobs := repeatedGraph(4)
+		if err := validateImageLoadOCIManifestGraph(descriptor, blobs); err != nil {
+			t.Fatalf("validateImageLoadOCIManifestGraph() error = %v, want valid repeated-child DAG", err)
+		}
+	})
+
+	t.Run("a large repeated-child DAG stops at the visit budget", func(t *testing.T) {
+		descriptor, blobs := repeatedGraph(13)
+		err := validateImageLoadOCIManifestGraph(descriptor, blobs)
+		if err == nil || !strings.Contains(err.Error(), "descriptor visit limit") {
+			t.Fatalf("validateImageLoadOCIManifestGraph() error = %v, want descriptor visit limit", err)
+		}
+	})
+}
+
 func TestLibpodImageLoadRejectsCanonicalControlFileOverwrites(t *testing.T) {
 	allowedIndex := `{"schemaVersion":2,"manifests":[{"annotations":{"org.opencontainers.image.ref.name":"ghcr.io/acme/app:v1"}}]}`
 	evilIndex := `{"schemaVersion":2,"manifests":[{"annotations":{"org.opencontainers.image.ref.name":"evil.example.com/acme/app:v1"}}]}`
@@ -739,6 +952,34 @@ func mustOCIImageLoadTar(t *testing.T, references []string) []byte {
 	t.Helper()
 
 	return mustOCIImageLoadTarWithDockerManifest(t, references, "")
+}
+
+func mustOCIImageLoadEntries(t *testing.T, reference string) []containerArchiveTestEntry {
+	t.Helper()
+
+	config := []byte(`{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]},"config":{}}`)
+	configDigest := sha256.Sum256(config)
+	manifest := []byte(fmt.Sprintf(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:%x","size":%d},"layers":[]}`, configDigest, len(config)))
+	manifestDigest := sha256.Sum256(manifest)
+	index := fmt.Sprintf(`{"schemaVersion":2,"manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:%x","size":%d,"annotations":{"org.opencontainers.image.ref.name":%q}}]}`, manifestDigest, len(manifest), reference)
+	return []containerArchiveTestEntry{
+		{name: "oci-layout", body: `{"imageLayoutVersion":"1.0.0"}`},
+		{name: "index.json", body: index},
+		{name: fmt.Sprintf("blobs/sha256/%x", configDigest), body: string(config)},
+		{name: fmt.Sprintf("blobs/sha256/%x", manifestDigest), body: string(manifest)},
+	}
+}
+
+func mustMixedOCIImageLoadTar(t *testing.T, index string, blobs ...containerArchiveTestEntry) []byte {
+	t.Helper()
+
+	entries := []containerArchiveTestEntry{
+		{name: "oci-layout", body: `{"imageLayoutVersion":"1.0.0"}`},
+		{name: "index.json", body: index},
+	}
+	entries = append(entries, blobs...)
+	entries = append(entries, containerArchiveTestEntry{name: "manifest.json", body: `[{"RepoTags":["ghcr.io/acme/fallback:v1"]}]`})
+	return mustContainerArchiveTar(t, entries...)
 }
 
 func mustOCIImageLoadTarWithDockerManifest(t *testing.T, references []string, dockerManifest string) []byte {

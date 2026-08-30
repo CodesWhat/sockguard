@@ -213,6 +213,49 @@ func TestValidateAndCompileRulesIgnoresUnreachableLibpodImageScpAllow(t *testing
 	}
 }
 
+func TestValidateAndCompileRulesUsesGlobLanguageForLibpodImageScpShadowing(t *testing.T) {
+	t.Run("earlier deep-glob deny fully shadows the later allow", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.Rules = []config.RuleConfig{
+			{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/**/scp/**"}, Action: "deny"},
+			{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/scp/alpine-*"}, Action: "allow"},
+			{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+		}
+
+		if _, err := validateAndCompileRules(&cfg); err != nil {
+			t.Fatalf("validateAndCompileRules() error = %v, want the fully shadowed allow ignored", err)
+		}
+	})
+
+	t.Run("partial earlier glob does not hide a reachable SCP allow", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.Rules = []config.RuleConfig{
+			{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/**/scp/*/push"}, Action: "deny"},
+			{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/scp/alpine-*"}, Action: "allow"},
+			{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+		}
+
+		err := errorFromValidate(t, &cfg)
+		if !strings.Contains(err.Error(), "insecure_allow_body_blind_writes=true") {
+			t.Fatalf("error = %q, want the reachable SCP allow acknowledged", err)
+		}
+	})
+
+	t.Run("a different method does not shadow POST", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.Rules = []config.RuleConfig{
+			{Match: config.MatchConfig{Method: http.MethodGet, Path: "/libpod/**/scp/**"}, Action: "deny"},
+			{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/scp/alpine-*"}, Action: "allow"},
+			{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+		}
+
+		err := errorFromValidate(t, &cfg)
+		if !strings.Contains(err.Error(), "insecure_allow_body_blind_writes=true") {
+			t.Fatalf("error = %q, want the POST SCP allow acknowledged", err)
+		}
+	})
+}
+
 // TestServePolicyConfigWiresImageLoadBlindWriteAck pins the wiring half of
 // the local-image-load guard. insecure_allow_body_blind_writes is a
 // top-level flag, not part of a request_body block, so it reaches

@@ -524,46 +524,7 @@ type reachabilityGlobState struct {
 // complete glob dialect as a small epsilon-NFA, so startup validation does not
 // depend on any finite set of representative image names.
 func globCanMatchNonemptyPathBelow(pattern, prefix string) bool {
-	parts := parseReachabilityGlob(pattern)
-	states := reachabilityGlobClosure(parts, map[reachabilityGlobState]struct{}{{}: {}})
-	for _, value := range prefix {
-		states = reachabilityGlobStep(parts, states, value)
-		if len(states) == 0 {
-			return false
-		}
-	}
-
-	alphabet := []rune{'/', 'a'}
-	for _, part := range parts {
-		if part.kind == reachabilityGlobLiteral && !slices.Contains(alphabet, part.literal) {
-			alphabet = append(alphabet, part.literal)
-		}
-	}
-	queue := make([]reachabilityGlobState, 0, len(states))
-	for state := range states {
-		queue = append(queue, state)
-	}
-	seen := make(map[reachabilityGlobState]struct{}, len(queue))
-	for len(queue) > 0 {
-		state := queue[0]
-		queue = queue[1:]
-		if _, ok := seen[state]; ok {
-			continue
-		}
-		seen[state] = struct{}{}
-		for _, value := range alphabet {
-			next := reachabilityGlobStep(parts, map[reachabilityGlobState]struct{}{state: {}}, value)
-			for candidate := range next {
-				if candidate.part == len(parts) && !candidate.deep {
-					return true
-				}
-				if _, ok := seen[candidate]; !ok {
-					queue = append(queue, candidate)
-				}
-			}
-		}
-	}
-	return false
+	return globHasMatchOutsideCovers(pattern, prefix, nil)
 }
 
 func parseReachabilityGlob(pattern string) []reachabilityGlobPart {
@@ -651,22 +612,137 @@ func reachabilityGlobStep(parts []reachabilityGlobPart, states map[reachabilityG
 }
 
 func libpodImageScpAllowDefinitelyShadowed(pattern string, earlier []config.RuleConfig) bool {
+	covers := make([]string, 0, len(earlier))
 	for _, rule := range earlier {
 		if !methodListIncludes(rule.Match.Method, http.MethodPost) {
 			continue
 		}
-		cover := strings.TrimSpace(rule.Match.Path)
-		if cover == pattern || cover == "/**" {
-			return true
+		covers = append(covers, strings.TrimSpace(rule.Match.Path))
+	}
+	return !globHasMatchOutsideCovers(pattern, "/libpod/images/scp/", covers)
+}
+
+type reachabilityGlobLanguageState struct {
+	candidate map[reachabilityGlobState]struct{}
+	covers    []map[reachabilityGlobState]struct{}
+}
+
+// globHasMatchOutsideCovers decides exact language reachability for a rule at
+// its ordered position: it finds a nonempty suffix below prefix accepted by
+// pattern and by none of the earlier method-compatible cover patterns.
+func globHasMatchOutsideCovers(pattern, prefix string, covers []string) bool {
+	candidateParts := parseReachabilityGlob(pattern)
+	coverParts := make([][]reachabilityGlobPart, len(covers))
+	state := reachabilityGlobLanguageState{
+		candidate: reachabilityGlobClosure(candidateParts, map[reachabilityGlobState]struct{}{{}: {}}),
+		covers:    make([]map[reachabilityGlobState]struct{}, len(covers)),
+	}
+	for index, cover := range covers {
+		coverParts[index] = parseReachabilityGlob(cover)
+		state.covers[index] = reachabilityGlobClosure(coverParts[index], map[reachabilityGlobState]struct{}{{}: {}})
+	}
+	for _, value := range prefix {
+		state.candidate = reachabilityGlobStep(candidateParts, state.candidate, value)
+		for index := range state.covers {
+			state.covers[index] = reachabilityGlobStep(coverParts[index], state.covers[index], value)
 		}
-		if strings.HasSuffix(cover, "/**") {
-			prefix := strings.TrimSuffix(cover, "/**")
-			if pattern == prefix || strings.HasPrefix(pattern, prefix+"/") {
+		if len(state.candidate) == 0 {
+			return false
+		}
+	}
+
+	alphabet := reachabilityGlobAlphabet(candidateParts, coverParts)
+	queue := []reachabilityGlobLanguageState{state}
+	seen := map[string]struct{}{reachabilityGlobLanguageStateKey(state): {}}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		for _, value := range alphabet {
+			next := reachabilityGlobLanguageState{
+				candidate: reachabilityGlobStep(candidateParts, current.candidate, value),
+				covers:    make([]map[reachabilityGlobState]struct{}, len(current.covers)),
+			}
+			if len(next.candidate) == 0 {
+				continue
+			}
+			covered := false
+			for index := range current.covers {
+				next.covers[index] = reachabilityGlobStep(coverParts[index], current.covers[index], value)
+				covered = covered || reachabilityGlobAccepts(coverParts[index], next.covers[index])
+			}
+			if reachabilityGlobAccepts(candidateParts, next.candidate) && !covered {
 				return true
+			}
+			key := reachabilityGlobLanguageStateKey(next)
+			if _, ok := seen[key]; !ok {
+				seen[key] = struct{}{}
+				queue = append(queue, next)
 			}
 		}
 	}
 	return false
+}
+
+func reachabilityGlobAlphabet(candidate []reachabilityGlobPart, covers [][]reachabilityGlobPart) []rune {
+	literals := make(map[rune]struct{})
+	add := func(parts []reachabilityGlobPart) {
+		for _, part := range parts {
+			if part.kind == reachabilityGlobLiteral {
+				literals[part.literal] = struct{}{}
+			}
+		}
+	}
+	add(candidate)
+	for _, parts := range covers {
+		add(parts)
+	}
+	alphabet := make([]rune, 0, len(literals)+2)
+	alphabet = append(alphabet, '/')
+	for literal := range literals {
+		if literal != '/' {
+			alphabet = append(alphabet, literal)
+		}
+	}
+	other := rune('a')
+	for other == '/' {
+		other++
+	}
+	for {
+		if _, exists := literals[other]; !exists {
+			break
+		}
+		other++
+	}
+	alphabet = append(alphabet, other)
+	return alphabet
+}
+
+func reachabilityGlobAccepts(parts []reachabilityGlobPart, states map[reachabilityGlobState]struct{}) bool {
+	_, ok := states[reachabilityGlobState{part: len(parts)}]
+	return ok
+}
+
+func reachabilityGlobLanguageStateKey(state reachabilityGlobLanguageState) string {
+	var builder strings.Builder
+	builder.WriteString(reachabilityGlobStatesKey(state.candidate))
+	for _, cover := range state.covers {
+		builder.WriteByte('|')
+		builder.WriteString(reachabilityGlobStatesKey(cover))
+	}
+	return builder.String()
+}
+
+func reachabilityGlobStatesKey(states map[reachabilityGlobState]struct{}) string {
+	values := make([]int, 0, len(states))
+	for state := range states {
+		value := state.part * 2
+		if state.deep {
+			value++
+		}
+		values = append(values, value)
+	}
+	slices.Sort(values)
+	return fmt.Sprint(values)
 }
 
 func methodListIncludes(methods, want string) bool {
