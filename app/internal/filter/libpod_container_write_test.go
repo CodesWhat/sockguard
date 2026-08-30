@@ -489,6 +489,16 @@ func TestLibpodContainerUpdateInspect(t *testing.T) {
 			wantReasonC: "restart policy changes are not allowed",
 		},
 		{
+			// U+017F LATIN SMALL LETTER LONG S is in the same Unicode simple-
+			// fold orbit as ASCII s. gorilla/schema therefore decodes this
+			// percent-encoded spelling into RestartPolicy too.
+			name:        "denies the Unicode simple-fold restartPolicy spelling Podman accepts",
+			rawQuery:    "re%C5%BFtartPolicy=always",
+			body:        `{}`,
+			wantDeny:    true,
+			wantReasonC: "restart policy changes are not allowed",
+		},
+		{
 			// gorilla/schema takes the LAST value for a scalar; a proxy
 			// reading only the first would allow this.
 			name:        "denies a repeated restartPolicy whose last value is set",

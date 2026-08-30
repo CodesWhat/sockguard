@@ -120,8 +120,8 @@ func (p containerUpdatePolicy) inspectLibpod(logger *slog.Logger, r *http.Reques
 // matches a struct tag with strings.EqualFold and, for a scalar, takes the
 // LAST value when a key repeats. net/url's Values.Get does neither, so
 // `?RestartPolicy=always` and `?restartPolicy=no&restartPolicy=always` would
-// both slip past a plain Get. Keys are folded and every value is checked, the
-// same treatment the libpod build and image-pull controls get.
+// both slip past a plain Get. Raw keys are matched with the same EqualFold
+// semantics and every value is checked.
 //
 // restartRetries counts as a restart-policy change even though Podman rejects
 // it unless restartPolicy is also set to on-failure: it is only ever honored
@@ -130,11 +130,15 @@ func (p containerUpdatePolicy) inspectLibpod(logger *slog.Logger, r *http.Reques
 // because gorilla/schema fails to parse "" into the handler's uint and Podman
 // 400s the request before any update happens.
 func libpodContainerUpdateRestartQueryField(query url.Values) (string, bool) {
-	folded := foldQueryKeys(query)
 	for _, name := range []string{"restartpolicy", "restartretries"} {
-		for _, value := range folded[name] {
-			if strings.TrimSpace(value) != "" {
-				return name, true
+		for key, values := range query {
+			if !strings.EqualFold(key, name) {
+				continue
+			}
+			for _, value := range values {
+				if strings.TrimSpace(value) != "" {
+					return name, true
+				}
 			}
 		}
 	}
