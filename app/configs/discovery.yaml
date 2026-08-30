@@ -1,0 +1,65 @@
+# Sockguard — Discovery Preset
+#
+# A deny-everything policy running in `mode: audit`, for the "I don't know
+# what this client actually needs" workflow: point sockguard at a real
+# client with this preset, run normal traffic through it, harvest the
+# would_deny audit events, and write the real allowlist from what actually
+# came back. See "Policy Discovery Workflow" in
+# docs/content/docs/configuration.mdx for the full loop, and "Rollout
+# Modes" for how `mode: audit` works.
+#
+# THIS IS A DISCOVERY AID, NOT A PRODUCTION POLICY. `mode: audit` forwards
+# requests denied by the resolved profile and logs what it would have blocked;
+# pre-auth admission gates such as allowed CIDRs and identity lookup still
+# enforce. Leaving this preset running grants every client that can reach its
+# listener full, unfiltered access to the Docker socket.
+
+upstream:
+  socket: /var/run/docker.sock
+
+# Keep discovery off every shared or production listener. Mount this dedicated,
+# owner-only socket into the one client being observed, then remove it when the
+# policy has been harvested.
+listeners:
+  - name: discovery
+    socket: /var/run/sockguard-discovery.sock
+    socket_mode: "0600"
+    allowed_profiles: [discovery]
+
+log:
+  level: info
+  format: json
+  access_log: true
+  # Access and audit records both carry would_deny and normalized_path. The
+  # dedicated audit stream is used here so discovery events can be harvested
+  # without mixing them with the operational access log.
+  audit:
+    enabled: true
+    format: json
+    output: stdout
+
+health:
+  enabled: true
+  path: /health
+
+# default_profile applies the discovery profile to every caller of the
+# dedicated socket above. Never mount that socket into unrelated clients or
+# copy this block onto a shared listener.
+clients:
+  default_profile: discovery
+  profiles:
+    - name: discovery
+      mode: audit
+      rules:
+        - match: { method: "*", path: "/**" }
+          action: deny
+          reason: "discovery preset — logged only, not enforced"
+
+# Top-level default policy, used only if a listener's allowed_profiles
+# excludes "discovery" and default_profile does not apply there. Kept
+# deny-all so this preset can never fall back to an unintentionally
+# permissive policy.
+rules:
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by discovery preset"
