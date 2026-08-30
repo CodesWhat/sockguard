@@ -802,6 +802,9 @@ func requestVisibleWithPolicy(ctx context.Context, normPath string, policy *comp
 	if identifier, ok := containerReadIdentifier(normPath); ok {
 		return resourceVisibleWithPolicy(ctx, deps, dockerresource.KindContainer, identifier, policy)
 	}
+	if identifier, ok := libpodContainerReadIdentifier(normPath); ok {
+		return resourceVisibleWithPolicy(ctx, deps, dockerresource.KindContainer, identifier, policy)
+	}
 	if identifier, ok := imageReadIdentifier(normPath); ok {
 		return resourceVisibleWithPolicy(ctx, deps, dockerresource.KindImage, identifier, policy)
 	}
@@ -859,9 +862,6 @@ func requestVisibleWithPolicy(ctx context.Context, normPath string, policy *comp
 	// GET /libpod/networks/{id}/json differs in label-key casing and (per
 	// design doc C6) may return a single-element array-wrapped response,
 	// pods because they have no Docker-compat equivalent at all.
-	if identifier, ok := libpodContainerReadIdentifier(normPath); ok {
-		return resourceVisible(ctx, deps, dockerresource.KindContainer, identifier, policy.selectors)
-	}
 	if identifier, ok := libpodImageReadIdentifier(normPath); ok {
 		return resourceVisible(ctx, deps, dockerresource.KindImage, identifier, policy.selectors)
 	}

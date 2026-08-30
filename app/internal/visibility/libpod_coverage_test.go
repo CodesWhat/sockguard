@@ -514,6 +514,116 @@ func TestLibpodReadSubresourcesHideHiddenResource(t *testing.T) {
 	}
 }
 
+func TestVisibilityLibpodContainerReadsApplyNamePatternPolicy(t *testing.T) {
+	t.Parallel()
+	paths := []string{
+		"/libpod/containers/c1/json",
+		"/libpod/containers/c1/logs",
+		"/libpod/containers/c1/stats",
+		"/libpod/containers/c1/top",
+		"/libpod/containers/c1/changes",
+		"/libpod/containers/c1/export",
+		"/libpod/containers/c1/archive?path=/etc",
+		"/libpod/containers/c1/exists",
+		"/libpod/containers/c1/healthcheck",
+	}
+	tests := []struct {
+		name       string
+		opts       Options
+		labels     map[string]string
+		nameMeta   string
+		wantStatus int
+		wantReach  bool
+	}{
+		{
+			name:       "patterns only denies nonmatching name",
+			opts:       Options{NamePatterns: []string{"allowed-*"}},
+			nameMeta:   "/hidden",
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "patterns only allows matching name",
+			opts:       Options{NamePatterns: []string{"allowed-*"}},
+			nameMeta:   "/allowed-app",
+			wantStatus: http.StatusNoContent,
+			wantReach:  true,
+		},
+		{
+			name: "matching selector does not override nonmatching name",
+			opts: Options{
+				VisibleResourceLabels: []string{"tenant=allowed"},
+				NamePatterns:          []string{"allowed-*"},
+			},
+			labels:     map[string]string{"tenant": "allowed"},
+			nameMeta:   "/hidden",
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name: "matching name does not override nonmatching selector",
+			opts: Options{
+				VisibleResourceLabels: []string{"tenant=allowed"},
+				NamePatterns:          []string{"allowed-*"},
+			},
+			labels:     map[string]string{"tenant": "hidden"},
+			nameMeta:   "/allowed-app",
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name: "matching selector and name are forwarded",
+			opts: Options{
+				VisibleResourceLabels: []string{"tenant=allowed"},
+				NamePatterns:          []string{"allowed-*"},
+			},
+			labels:     map[string]string{"tenant": "allowed"},
+			nameMeta:   "/allowed-app",
+			wantStatus: http.StatusNoContent,
+			wantReach:  true,
+		},
+	}
+
+	for _, path := range paths {
+		for _, tt := range tests {
+			t.Run(path+"/"+tt.name, func(t *testing.T) {
+				t.Parallel()
+				assertInspectTarget := func(kind dockerresource.Kind, id string) {
+					t.Helper()
+					if kind != dockerresource.KindContainer || id != "c1" {
+						t.Fatalf("inspect = %s/%q, want %s/c1", kind, id, dockerresource.KindContainer)
+					}
+				}
+				reached := false
+				handler := middlewareWithDeps(testVisibilityLogger(), tt.opts, visibilityDeps{
+					inspectResource: func(_ context.Context, kind dockerresource.Kind, id string) (map[string]string, bool, error) {
+						assertInspectTarget(kind, id)
+						return tt.labels, true, nil
+					},
+					inspectResourceMeta: func(_ context.Context, kind dockerresource.Kind, id string) (*resourceMeta, bool, error) {
+						assertInspectTarget(kind, id)
+						return &resourceMeta{names: []string{tt.nameMeta}}, true, nil
+					},
+					inspectResourceDetails: func(_ context.Context, kind dockerresource.Kind, id string) (*resourceDetails, bool, error) {
+						assertInspectTarget(kind, id)
+						return &resourceDetails{
+							labels: tt.labels,
+							meta:   &resourceMeta{names: []string{tt.nameMeta}},
+						}, true, nil
+					},
+				})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					reached = true
+					w.WriteHeader(http.StatusNoContent)
+				}))
+
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+
+				if rec.Code != tt.wantStatus || reached != tt.wantReach {
+					t.Fatalf("status = %d reached = %v, want %d and %v; body: %s", rec.Code, reached, tt.wantStatus, tt.wantReach, rec.Body.String())
+				}
+			})
+		}
+	}
+}
+
 // TestLibpodListRoutesAreNotSingleResourceIdentifiers guards the one hazard
 // the broadened network matcher introduces: singleSegmentIdentifier was
 // written for the Docker-compat API, where "json" is only ever a write-side
