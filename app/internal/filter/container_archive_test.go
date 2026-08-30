@@ -99,6 +99,22 @@ func TestContainerArchiveTargetQueryMatchesPodmanSemantics(t *testing.T) {
 			wantReason: "ambiguous path query",
 		},
 		{
+			name:       "trailing space remains part of the target",
+			query:      "?path=/app%20",
+			wantDeny:   true,
+			wantReason: "is not allowlisted",
+		},
+		{
+			name:       "trailing tab remains part of the target",
+			query:      "?path=/app%09",
+			wantDeny:   true,
+			wantReason: "is not allowlisted",
+		},
+		{
+			name:  "exact target is accepted",
+			query: "?path=/app",
+		},
+		{
 			name:  "single case folded target is accepted",
 			query: "?Path=/app",
 		},
@@ -441,8 +457,8 @@ func TestContainerArchivePathHelpersCoverEdgeCases(t *testing.T) {
 		t.Fatal("isContainerArchivePath() = true for non-container path")
 	}
 
-	if got, ok := normalizeContainerArchiveTargetPath("  "); !ok || got != "" {
-		t.Fatalf("normalizeContainerArchiveTargetPath(blank) = %q, %v; want empty, true", got, ok)
+	if got, ok := normalizeContainerArchiveTargetPath("  "); !ok || got != "  " {
+		t.Fatalf("normalizeContainerArchiveTargetPath(blank) = %q, %v; want spaces preserved, true", got, ok)
 	}
 	if got, ok := normalizeContainerArchiveTargetPath("/"); !ok || got != "." {
 		t.Fatalf("normalizeContainerArchiveTargetPath(/) = %q, %v; want ., true", got, ok)

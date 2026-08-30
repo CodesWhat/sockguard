@@ -1684,6 +1684,56 @@ func TestValidateAndCompileRulesRejectsSelectiveWildcardCatalogShadows(t *testin
 	}
 }
 
+func TestValidateAndCompileRulesRejectsNoLeadingSlashCatalogGlobs(t *testing.T) {
+	tests := []struct {
+		operation string
+		ack       string
+	}{
+		{operation: "checkpoint", ack: "insecure_allow_read_exfiltration"},
+		{operation: "mount", ack: "insecure_allow_read_exfiltration"},
+		{operation: "restore", ack: "insecure_allow_body_blind_writes"},
+	}
+
+	for _, scope := range []string{"default policy", "named client profile"} {
+		for _, tt := range tests {
+			t.Run(scope+" "+tt.operation, func(t *testing.T) {
+				rules := []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/sockguard-test/" + tt.operation}, Action: "deny"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "*/containers/*/" + tt.operation}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+				cfg := config.Defaults()
+				if scope == "named client profile" {
+					cfg.Rules = []config.RuleConfig{
+						{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+					}
+					cfg.Clients.Profiles = []config.ClientProfileConfig{{
+						Name:  "backup-agent",
+						Rules: rules,
+					}}
+				} else {
+					cfg.Rules = rules
+				}
+
+				_, err := validateAndCompileRules(&cfg)
+				if err == nil {
+					t.Fatal("validateAndCompileRules() = nil, want an acknowledgment error for the reachable real-id route")
+				}
+				if !strings.Contains(err.Error(), tt.ack) {
+					t.Fatalf("error = %q, want it to mention %q", err.Error(), tt.ack)
+				}
+				wantWitness := "POST /libpod/containers/a/" + tt.operation
+				if !strings.Contains(err.Error(), wantWitness) {
+					t.Fatalf("error = %q, want it to identify reachable route %q", err.Error(), wantWitness)
+				}
+				if scope == "named client profile" && !strings.Contains(err.Error(), "backup-agent") {
+					t.Fatalf("error = %q, want it to mention the client profile", err.Error())
+				}
+			})
+		}
+	}
+}
+
 func TestValidateAndCompileRulesAllowsFullyShadowedCatalogRoutes(t *testing.T) {
 	for _, scope := range []string{"default policy", "named client profile"} {
 		for _, operation := range []string{"checkpoint", "mount", "restore"} {

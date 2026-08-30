@@ -163,11 +163,10 @@ func isContainerArchivePath(normalizedPath string) bool {
 }
 
 func normalizeContainerArchiveTargetPath(value string) (string, bool) {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
+	if value == "" {
 		return "", true
 	}
-	cleaned := path.Clean(strings.TrimLeft(trimmed, "/"))
+	cleaned := path.Clean(strings.TrimLeft(value, "/"))
 	if cleaned == "." || cleaned == "" {
 		return ".", true
 	}
