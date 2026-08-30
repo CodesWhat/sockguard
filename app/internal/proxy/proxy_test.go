@@ -113,7 +113,6 @@ func TestReverseProxyBasePathKeepsOriginalRouteForResponsePolicy(t *testing.T) {
 		body       string
 		filterOpts responsefilter.Options
 		wantStatus int
-		wantSecret bool
 	}{
 		{
 			name:       "container inspect redaction",

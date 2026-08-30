@@ -389,6 +389,8 @@ func parseDockerTCPAddress(address string) (string, error) {
 	if port == "" {
 		port = dockerDefaultPort
 	}
+	// Keep Docker's exact numeric-port check: zero and out-of-range numeric
+	// values are accepted here and rejected only when the client dials.
 	if parsedPort, err := strconv.Atoi(port); err != nil && parsedPort == 0 {
 		return "", fmt.Errorf("invalid TCP port %q", port)
 	}

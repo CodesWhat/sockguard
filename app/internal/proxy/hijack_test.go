@@ -562,6 +562,75 @@ type unixSocketDialer struct {
 	rawBasePath string
 }
 
+type cancelProbeDialer struct {
+	started chan struct{}
+	result  chan error
+	release chan struct{}
+}
+
+func (d *cancelProbeDialer) DialContext(context.Context, string, string) (net.Conn, error) {
+	return nil, errors.New("unexpected DialContext call")
+}
+
+func (d *cancelProbeDialer) DialRequest(ctx context.Context, _ *http.Request) (net.Conn, *http.Request, error) {
+	close(d.started)
+	select {
+	case <-ctx.Done():
+		d.result <- ctx.Err()
+		return nil, nil, ctx.Err()
+	case <-d.release:
+		err := errors.New("dial released without request cancellation")
+		d.result <- err
+		return nil, nil, err
+	}
+}
+
+func TestUpgradeHijackConnectionDialerPropagatesRequestCancellation(t *testing.T) {
+	t.Parallel()
+	dialer := &cancelProbeDialer{
+		started: make(chan struct{}),
+		result:  make(chan error, 1),
+		release: make(chan struct{}),
+	}
+	released := false
+	releaseDial := func() {
+		if !released {
+			close(dialer.release)
+			released = true
+		}
+	}
+	defer releaseDial()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "http://client/v1.53/containers/abc/attach", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	upgraded := make(chan bool, 1)
+	go func() {
+		_, ok := upgradeHijackConnectionDialer(rec, req, dialer, testLogger())
+		upgraded <- ok
+	}()
+
+	<-dialer.started
+	cancel()
+
+	select {
+	case err := <-dialer.result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("DialRequest context error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		releaseDial()
+		<-upgraded
+		t.Fatal("request cancellation did not reach DialRequest")
+	}
+	if ok := <-upgraded; ok {
+		t.Fatal("upgrade succeeded after request cancellation")
+	}
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+}
+
 func (d unixSocketDialer) DialContext(ctx context.Context, _, _ string) (net.Conn, error) {
 	return (&net.Dialer{}).DialContext(ctx, "unix", d.socketPath)
 }

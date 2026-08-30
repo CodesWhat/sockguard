@@ -139,25 +139,30 @@ func TestSpecsFromDockerEnv_ReportsUnreadableIncompleteClientFile(t *testing.T) 
 }
 
 func TestSpecsFromDockerEnv_TLSRequiresDockerCA(t *testing.T) {
-	for _, tlsEnv := range []map[string]string{
-		{"DOCKER_TLS": "1"},
-		{"DOCKER_TLS_VERIFY": "1"},
-	} {
-		certDir := t.TempDir()
-		env := map[string]string{
-			"DOCKER_HOST":   "tcp://daemon.internal:2376",
-			"DOCKER_CONFIG": certDir,
-		}
-		for key, value := range tlsEnv {
-			env[key] = value
-		}
-		spec := dockerEnvSpecForTest(t, env)
-		if spec.CAFile != filepath.Join(certDir, "ca.pem") {
-			t.Fatalf("CAFile = %q, want required Docker CA path", spec.CAFile)
-		}
-		if _, err := BuildEndpoint(spec); err == nil {
-			t.Fatal("BuildEndpoint accepted TLS without ca.pem")
-		}
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{name: "DOCKER_TLS", key: "DOCKER_TLS"},
+		{name: "DOCKER_TLS_VERIFY", key: "DOCKER_TLS_VERIFY"},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			certDir := t.TempDir()
+			env := map[string]string{
+				"DOCKER_HOST":   "tcp://daemon.internal:2376",
+				"DOCKER_CONFIG": certDir,
+				tt.key:          "1",
+			}
+			spec := dockerEnvSpecForTest(t, env)
+			if spec.CAFile != filepath.Join(certDir, "ca.pem") {
+				t.Fatalf("CAFile = %q, want required Docker CA path", spec.CAFile)
+			}
+			if _, err := BuildEndpoint(spec); err == nil {
+				t.Fatal("BuildEndpoint accepted TLS without ca.pem")
+			}
+		})
 	}
 }
 
@@ -196,17 +201,20 @@ func TestSpecsFromDockerEnv_TLSDisabledIgnoresCertificateDirectories(t *testing.
 func TestSpecsFromDockerEnv_PortlessTCPUses2375WithTLS(t *testing.T) {
 	certDir := t.TempDir()
 	installDockerCertificateFiles(t, certDir, true, false, false)
-	for tlsEnv, value := range map[string]string{
-		"DOCKER_TLS":        "1",
-		"DOCKER_TLS_VERIFY": "1",
-	} {
-		tlsEnv := tlsEnv
-		value := value
-		t.Run(tlsEnv, func(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{name: "DOCKER_TLS", key: "DOCKER_TLS"},
+		{name: "DOCKER_TLS_VERIFY", key: "DOCKER_TLS_VERIFY"},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
 			env := map[string]string{
 				"DOCKER_HOST":      "tcp://daemon.internal",
 				"DOCKER_CERT_PATH": certDir,
-				tlsEnv:             value,
+				tt.key:             "1",
 			}
 			spec := dockerEnvSpecForTest(t, env)
 			if spec.Address != "tcp://daemon.internal:2375" {

@@ -1113,6 +1113,10 @@ func TestSpecsFromDockerEnv_DockerHostGrammar(t *testing.T) {
 		{name: "TCP host with empty port", host: "tcp://daemon.internal:", wantAddress: "tcp://daemon.internal:2375"},
 		{name: "TCP default host", host: "tcp://", wantAddress: "tcp://localhost:2375"},
 		{name: "TCP default host with port", host: "tcp://:4243", wantAddress: "tcp://localhost:4243"},
+		// Docker's address parser validates only that an explicit port is
+		// numeric. Range errors are deferred until the connection attempt.
+		{name: "TCP numeric zero port", host: "tcp://daemon.internal:0", wantAddress: "tcp://daemon.internal:0"},
+		{name: "TCP numeric out-of-range port", host: "tcp://daemon.internal:99999", wantAddress: "tcp://daemon.internal:99999"},
 		{name: "IPv6 host without port", host: "[::1]:", wantAddress: "tcp://[::1]:2375"},
 		{name: "IPv6 host without port and base path", host: "tcp://[::1]/gateway", wantAddress: "tcp://[::1]:2375/gateway"},
 		{name: "absolute Unix socket", host: "unix:///tmp/docker.sock", wantAddress: "unix:///tmp/docker.sock"},
@@ -1358,7 +1362,7 @@ func TestResolverDialRequestBindsPrefixToDialedEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DialRequest: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if conn.RemoteAddr().String() != standbyListener.Addr().String() {
 		t.Fatalf("dialed %q, want standby %q", conn.RemoteAddr(), standbyListener.Addr())
 	}
@@ -1372,6 +1376,33 @@ func TestResolverDialRequestBindsPrefixToDialedEndpoint(t *testing.T) {
 	}
 	if req.URL.EscapedPath() != "/v1.47/containers/a%2Fb/attach" {
 		t.Fatalf("DialRequest mutated input URL: %q", req.URL.EscapedPath())
+	}
+}
+
+func TestResolverDialRequestCancellationDoesNotDemote(t *testing.T) {
+	t.Parallel()
+	r, err := New([]Endpoint{
+		{Name: "primary", Network: "unix", Address: "/tmp/canceled-primary.sock"},
+		{Name: "standby", Network: "unix", Address: "/tmp/canceled-standby.sock"},
+	}, Options{Probe: probeAlways(nil), Interval: -1})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.CheckReachable(context.Background()); err != nil {
+		t.Fatalf("CheckReachable: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req, err := http.NewRequest(http.MethodPost, "http://docker/v1.53/containers/abc/attach", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	if _, _, err := r.DialRequest(ctx, req); !errors.Is(err, context.Canceled) {
+		t.Fatalf("DialRequest error = %v, want context.Canceled", err)
+	}
+	if !r.states[0].healthy.Load() {
+		t.Fatal("DialRequest demoted the active endpoint after request cancellation")
 	}
 }
 

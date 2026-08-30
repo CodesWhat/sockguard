@@ -266,7 +266,7 @@ func upgradeHijackConnection(w http.ResponseWriter, r *http.Request, upstreamSoc
 func upgradeHijackConnectionDialer(w http.ResponseWriter, r *http.Request, dialer upstream.RequestDialer, logger *slog.Logger) (*hijackSession, bool) {
 	reqPath := r.URL.Path
 
-	ctx, cancel := context.WithTimeout(context.Background(), hijackDialTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), hijackDialTimeout)
 	defer cancel()
 	upstreamReq := newUpstreamHijackRequest(r, r.URL.Path)
 	upstreamConn, upstreamReq, err := dialer.DialRequest(ctx, upstreamReq)
