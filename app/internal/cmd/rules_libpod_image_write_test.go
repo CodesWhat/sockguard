@@ -169,6 +169,49 @@ func TestValidateAndCompileRulesRejectsExactLibpodImageScpTwice(t *testing.T) {
 	}
 }
 
+func TestValidateAndCompileRulesReportsExactLibpodImagePushRepresentativeOnce(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		profile string
+	}{
+		{
+			name: "top-level representative",
+			path: "/libpod/images/sockguard-test/push",
+		},
+		{
+			name:    "named-profile scp-prefix representative",
+			path:    "/libpod/images/scp/sockguard-test/push",
+			profile: "publisher",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rules := []config.RuleConfig{
+				{Match: config.MatchConfig{Method: http.MethodPost, Path: tt.path}, Action: "allow"},
+				{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+			}
+			cfg := config.Defaults()
+			if tt.profile == "" {
+				cfg.Rules = rules
+			} else {
+				cfg.Rules = []config.RuleConfig{{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"}}
+				cfg.Clients.Profiles = []config.ClientProfileConfig{{Name: tt.profile, Rules: rules}}
+			}
+
+			err := errorFromValidate(t, &cfg)
+			endpoint := http.MethodPost + " " + tt.path
+			if got := strings.Count(err.Error(), endpoint); got != 1 {
+				t.Fatalf("startup refusal count for %q = %d, want 1; error: %v", endpoint, got, err)
+			}
+			if tt.profile != "" && !strings.Contains(err.Error(), tt.profile) {
+				t.Fatalf("startup refusal omitted profile %q: %v", tt.profile, err)
+			}
+		})
+	}
+}
+
 func TestValidateAndCompileRulesPreservesExactLibpodImageScpPathBytes(t *testing.T) {
 	const exactPath = "/libpod/images/scp/alpine "
 	cfg := config.Defaults()

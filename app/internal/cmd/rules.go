@@ -900,6 +900,11 @@ func appendExactLibpodImageScpExfilEndpoints(base []sensitiveExfilEndpoint, rule
 	endpoints := make([]sensitiveExfilEndpoint, 0, len(base)+len(paths))
 	endpoints = append(endpoints, base...)
 	for _, path := range paths {
+		if slices.ContainsFunc(endpoints, func(endpoint sensitiveExfilEndpoint) bool {
+			return endpoint.method == http.MethodPost && endpoint.path == path
+		}) {
+			continue
+		}
 		endpoints = append(endpoints, sensitiveExfilEndpoint{method: http.MethodPost, path: path})
 	}
 	return endpoints
