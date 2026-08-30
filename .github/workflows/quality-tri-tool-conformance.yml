@@ -74,9 +74,9 @@ jobs:
         with:
           persist-credentials: false
 
-      # No Docker needed for this leg -- it only proves the route
-      # normalizer and known-routes.json diff logic are correct before
-      # trusting them in the live matrix rows below. Also covered by
+      # No Docker needed for this leg. It proves the route normalizer and
+      # known-routes.json diff logic, plus the fail-closed setup-artifact
+      # path, before trusting them in the live matrix rows below. Also covered by
       # `npm test` (scripts/tri-tool-conformance-run-matrix.test.mjs) on
       # every push; re-run here too so a red matrix row and a broken
       # tripwire are never conflated in this workflow's own results.
@@ -141,18 +141,19 @@ jobs:
           fi
           scripts/tri-tool-conformance/run-matrix.sh "${args[@]}"
 
-      # Always uploaded, pass or fail — run-matrix.sh writes the artifact
-      # unconditionally (design doc "Artifacts" acceptance criterion) so a
-      # failed row's per-assertion detail survives past the job's own log
-      # retention for later review.
+      # Always uploaded, pass or fail. The JSON carries the machine-readable
+      # verdict; the per-container logs preserve enough evidence to distinguish
+      # a controller rejection from an agent or harness startup failure.
       - name: Upload conformance artifact
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: conformance-${{ matrix.row }}
-          path: conformance-${{ matrix.row }}.json
+          path: |
+            conformance-${{ matrix.row }}.json
+            conformance-${{ matrix.row }}-logs/
           retention-days: 90
-          if-no-files-found: warn
+          if-no-files-found: error
 
   summary:
     name: "Summary"
@@ -202,7 +203,7 @@ jobs:
             exit 1
           fi
           if [ "$artifact_count" -ne "$EXPECTED_ROW_COUNT" ]; then
-            echo "::error::found ${artifact_count} conformance-*.json artifact(s), expected ${EXPECTED_ROW_COUNT} (one per matrix row) -- at least one row died before write_artifact ran and its failure is otherwise invisible to this gate"
+            echo "::error::found ${artifact_count} conformance-*.json artifact(s), expected ${EXPECTED_ROW_COUNT} (one per matrix row) -- a row violated the harness's fail-closed artifact contract"
             exit 1
           fi
 
@@ -229,7 +230,7 @@ jobs:
           done
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Per-row detail (all ten #150 design-doc assertions plus the route-drift tripwire) is in each row's uploaded \`conformance-<row>.json\` artifact." >> "$GITHUB_STEP_SUMMARY"
+          echo "Per-row assertion detail is in each uploaded \`conformance-<row>.json\`; compose, identity-agent/controller, and response-header-observer logs are stored beside it." >> "$GITHUB_STEP_SUMMARY"
 
           fail_count="$(jq -s '[.[] | select(.overall=="FAIL")] | length' artifacts/*.json)"
           if [ "$fail_count" -gt 0 ]; then
