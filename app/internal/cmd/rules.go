@@ -20,13 +20,22 @@ var (
 )
 
 type bodySensitiveWriteEndpoint struct {
-	method string
-	path   string
+	method          string
+	path            string
+	identifierShape catalogIdentifierShape
+	exclusions      []catalogPathExclusion
 }
 
 type sensitiveExfilEndpoint struct {
-	method string
-	path   string
+	method          string
+	path            string
+	identifierShape catalogIdentifierShape
+	exclusions      []catalogPathExclusion
+}
+
+type catalogPathExclusion struct {
+	path            string
+	identifierShape catalogIdentifierShape
 }
 
 var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
@@ -53,7 +62,7 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	{method: http.MethodPost, path: "/nodes/sockguard-test/update"},
 	{method: http.MethodPost, path: "/plugins/pull"},
 	{method: http.MethodPost, path: "/plugins/sockguard-test/upgrade"},
-	{method: http.MethodPost, path: "/plugins/sockguard-test/set"},
+	{method: http.MethodPost, path: "/plugins/sockguard-test/set", identifierShape: catalogIdentifierPath},
 	{method: http.MethodPost, path: "/plugins/create"},
 	// libpod native surface (#148 PR2). POST /libpod/containers/create always
 	// runs through an inspector with fail-closed defaults exactly like its
@@ -124,8 +133,20 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	{method: http.MethodPost, path: "/libpod/kube/play"},
 	{method: http.MethodPost, path: "/libpod/kube/apply"},
 	{method: http.MethodPost, path: "/libpod/manifests/create"},
-	{method: http.MethodPost, path: "/libpod/manifests/sockguard-test"},
-	{method: http.MethodPut, path: "/libpod/manifests/sockguard-test"},
+	{
+		method:          http.MethodPost,
+		path:            "/libpod/manifests/sockguard-test",
+		identifierShape: catalogIdentifierPath,
+		// Podman registers the v4 registry-push route before the generic
+		// manifest-create route. Subtract that route language so a push does
+		// not falsely demand the body-blind acknowledgment in addition to its
+		// read-exfiltration acknowledgment.
+		exclusions: []catalogPathExclusion{{
+			path:            "/libpod/manifests/sockguard-test/registry/sockguard-test",
+			identifierShape: catalogIdentifierPath,
+		}},
+	},
+	{method: http.MethodPut, path: "/libpod/manifests/sockguard-test", identifierShape: catalogIdentifierPath},
 }
 
 type buildkitTunnelEndpoint struct {
@@ -164,12 +185,12 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 	{method: http.MethodGet, path: "/tasks/sockguard-test/logs"},
 	{method: http.MethodPost, path: "/containers/sockguard-test/attach"},
 	{method: http.MethodGet, path: "/images/get"},
-	{method: http.MethodGet, path: "/images/sockguard-test/get"},
+	{method: http.MethodGet, path: "/images/sockguard-test/get", identifierShape: catalogIdentifierPath},
 	// Registry pushes are writes at the Docker API layer, but they read local
 	// artifact content and transmit it to a caller-selected registry. Treat
 	// them as exfiltration surfaces alongside archive/export downloads.
-	{method: http.MethodPost, path: "/images/sockguard-test/push"},
-	{method: http.MethodPost, path: "/plugins/sockguard-test/push"},
+	{method: http.MethodPost, path: "/images/sockguard-test/push", identifierShape: catalogIdentifierPath},
+	{method: http.MethodPost, path: "/plugins/sockguard-test/push", identifierShape: catalogIdentifierPath},
 	// libpod read/export surface (#148). Confirmed against Podman v5.8.1's
 	// own route table (pkg/api/server/register_archive.go,
 	// register_containers.go, register_images.go) rather than assumed from
@@ -188,8 +209,8 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 	{method: http.MethodGet, path: "/libpod/containers/sockguard-test/logs"},
 	{method: http.MethodPost, path: "/libpod/containers/sockguard-test/attach"},
 	{method: http.MethodGet, path: "/libpod/images/export"},
-	{method: http.MethodGet, path: "/libpod/images/sockguard-test/get"},
-	{method: http.MethodPost, path: "/libpod/images/sockguard-test/push"},
+	{method: http.MethodGet, path: "/libpod/images/sockguard-test/get", identifierShape: catalogIdentifierPath},
+	{method: http.MethodPost, path: "/libpod/images/sockguard-test/push", identifierShape: catalogIdentifierPath},
 	{method: http.MethodGet, path: "/libpod/generate/kube"},
 	// Two libpod-only POSTs whose risk is entirely in the RESPONSE, which is
 	// why neither gets a request-body inspector: verified against Podman
@@ -219,7 +240,7 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 	// POST .../push is kept for backward compat (deprecated since v4.0.0 but
 	// still routable). Both are registered in Podman v5.8.1's
 	// pkg/api/server/register_manifest.go.
-	{method: http.MethodPost, path: "/libpod/manifests/sockguard-test/registry/sockguard-test"},
+	{method: http.MethodPost, path: "/libpod/manifests/sockguard-test/registry/sockguard-test", identifierShape: catalogIdentifierPath},
 	{method: http.MethodPost, path: "/libpod/manifests/sockguard-test/push"},
 }
 
@@ -443,14 +464,14 @@ func allowedBodySensitiveWriteEndpoints(requestBody config.RequestBodyConfig, co
 		if bodyInspectionConfiguredForEndpoint(requestBody, endpoint) {
 			continue
 		}
-		for _, path := range allowedCatalogPaths(endpoint.method, endpoint.path, configured, compiled) {
+		for _, path := range allowedCatalogPaths(endpoint.method, endpoint.path, endpoint.identifierShape, endpoint.exclusions, configured, compiled) {
 			allowed = append(allowed, endpoint.method+" "+path)
 		}
 	}
 	return allowed
 }
 
-func allowedCatalogPaths(method, catalogPath string, sourceRules []config.RuleConfig, compiledRules []*filter.CompiledRule) []string {
+func allowedCatalogPaths(method, catalogPath string, identifierShape catalogIdentifierShape, exclusions []catalogPathExclusion, sourceRules []config.RuleConfig, compiledRules []*filter.CompiledRule) []string {
 	// Preserve the stable catalog spelling when its representative route is
 	// itself exposed. Exact reachability is only needed when ordered rules
 	// shadow that representative but may leave another identifier reachable.
@@ -458,7 +479,7 @@ func allowedCatalogPaths(method, catalogPath string, sourceRules []config.RuleCo
 		return []string{catalogPath}
 	}
 
-	witness, result := firstAllowedCatalogPath(method, catalogPath, sourceRules)
+	witness, result := firstAllowedCatalogPath(method, catalogPath, identifierShape, exclusions, sourceRules)
 	switch result {
 	case catalogReachable:
 		// Verify the automaton witness through the production evaluator. Any
@@ -483,7 +504,7 @@ func policyAllowsPath(method, path string, compiledRules []*filter.CompiledRule)
 func allowedSensitiveExfilEndpoints(configured []config.RuleConfig, compiled []*filter.CompiledRule) []string {
 	allowed := make([]string, 0, len(sensitiveExfilEndpoints))
 	for _, endpoint := range sensitiveExfilEndpoints {
-		for _, path := range allowedCatalogPaths(endpoint.method, endpoint.path, configured, compiled) {
+		for _, path := range allowedCatalogPaths(endpoint.method, endpoint.path, endpoint.identifierShape, endpoint.exclusions, configured, compiled) {
 			allowed = append(allowed, endpoint.method+" "+path)
 		}
 	}

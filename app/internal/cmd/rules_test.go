@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -496,6 +497,7 @@ func TestValidateAndCompileRulesRejectsRegistryPushWithoutExfiltrationOptIn(t *t
 		name     string
 		path     string
 		endpoint string
+		ackBlind bool
 	}{
 		{
 			name:     "image push",
@@ -516,6 +518,11 @@ func TestValidateAndCompileRulesRejectsRegistryPushWithoutExfiltrationOptIn(t *t
 			name:     "libpod manifest push (backward-compat)",
 			path:     "/libpod/manifests/*/push",
 			endpoint: "POST /libpod/manifests/sockguard-test/push",
+			// The normalized rule also reaches v4's body-bearing generic
+			// manifest-create route for a manifest literally named "*/push".
+			// Acknowledge that independent risk so this case can isolate the
+			// v3 registry-push response gate it is asserting.
+			ackBlind: true,
 		},
 	}
 
@@ -523,6 +530,7 @@ func TestValidateAndCompileRulesRejectsRegistryPushWithoutExfiltrationOptIn(t *t
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := config.Defaults()
+			cfg.InsecureAllowBodyBlindWrites = tt.ackBlind
 			cfg.Rules = []config.RuleConfig{
 				{Match: config.MatchConfig{Method: http.MethodPost, Path: tt.path}, Action: "allow"},
 				{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
@@ -1703,5 +1711,190 @@ func TestValidateAndCompileRulesAllowsFullyShadowedCatalogRoutes(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestValidateAndCompileRulesRejectsSlashBearingCatalogRoutes(t *testing.T) {
+	tests := []struct {
+		name         string
+		method       string
+		denyPattern  string
+		allowPattern string
+		wantAck      string
+		wantWitness  string
+		ackBlind     bool
+	}{
+		{
+			name:         "docker image export",
+			method:       http.MethodGet,
+			denyPattern:  "/images/*/get",
+			allowPattern: "/images/*/*/get",
+			wantAck:      "insecure_allow_read_exfiltration",
+			wantWitness:  "GET /images/a/a/get",
+		},
+		{
+			name:         "docker image push",
+			method:       http.MethodPost,
+			denyPattern:  "/images/*/push",
+			allowPattern: "/images/*/*/push",
+			wantAck:      "insecure_allow_read_exfiltration",
+			wantWitness:  "POST /images/a/a/push",
+		},
+		{
+			name:         "libpod image export",
+			method:       http.MethodGet,
+			denyPattern:  "/libpod/images/*/get",
+			allowPattern: "/libpod/images/*/*/get",
+			wantAck:      "insecure_allow_read_exfiltration",
+			wantWitness:  "GET /libpod/images/a/a/get",
+		},
+		{
+			name:         "libpod image push",
+			method:       http.MethodPost,
+			denyPattern:  "/libpod/images/*/push",
+			allowPattern: "/libpod/images/*/*/push",
+			wantAck:      "insecure_allow_read_exfiltration",
+			wantWitness:  "POST /libpod/images/a/a/push",
+		},
+		{
+			name:         "plugin push",
+			method:       http.MethodPost,
+			denyPattern:  "/plugins/*/push",
+			allowPattern: "/plugins/*/*/push",
+			wantAck:      "insecure_allow_read_exfiltration",
+			wantWitness:  "POST /plugins/a/a/push",
+		},
+		{
+			name:         "plugin set",
+			method:       http.MethodPost,
+			denyPattern:  "/plugins/*/set",
+			allowPattern: "/plugins/*/*/set",
+			wantAck:      "insecure_allow_body_blind_writes",
+			wantWitness:  "POST /plugins/a/a/set",
+		},
+		{
+			name:         "libpod manifest create",
+			method:       http.MethodPost,
+			denyPattern:  "/libpod/manifests/*",
+			allowPattern: "/libpod/manifests/a/a",
+			wantAck:      "insecure_allow_body_blind_writes",
+			wantWitness:  "POST /libpod/manifests/a/a",
+		},
+		{
+			name:         "libpod manifest modify",
+			method:       http.MethodPut,
+			denyPattern:  "/libpod/manifests/*",
+			allowPattern: "/libpod/manifests/a/a",
+			wantAck:      "insecure_allow_body_blind_writes",
+			wantWitness:  "PUT /libpod/manifests/a/a",
+		},
+		{
+			name:         "libpod manifest registry push",
+			method:       http.MethodPost,
+			denyPattern:  "/libpod/manifests/*/registry/*",
+			allowPattern: "/libpod/manifests/*/registry/*/*",
+			wantAck:      "insecure_allow_read_exfiltration",
+			wantWitness:  "POST /libpod/manifests/a/registry/a/a",
+			ackBlind:     true,
+		},
+	}
+
+	for _, scope := range []string{"default policy", "named client profile"} {
+		for _, tt := range tests {
+			t.Run(scope+" "+tt.name, func(t *testing.T) {
+				rules := []config.RuleConfig{
+					{Match: config.MatchConfig{Method: tt.method, Path: tt.denyPattern}, Action: "deny"},
+					{Match: config.MatchConfig{Method: tt.method, Path: tt.allowPattern}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+				cfg := config.Defaults()
+				cfg.InsecureAllowBodyBlindWrites = tt.ackBlind
+				if scope == "named client profile" {
+					cfg.Rules = []config.RuleConfig{
+						{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+					}
+					cfg.Clients.Profiles = []config.ClientProfileConfig{{
+						Name:  "slash-bearing",
+						Rules: rules,
+					}}
+				} else {
+					cfg.Rules = rules
+				}
+
+				_, err := validateAndCompileRules(&cfg)
+				if err == nil {
+					t.Fatalf("validateAndCompileRules() = nil, want %s error for reachable slash-bearing route", tt.wantAck)
+				}
+				for _, want := range []string{tt.wantAck, tt.wantWitness} {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("error = %q, want it to mention %q", err.Error(), want)
+					}
+				}
+				if scope == "named client profile" && !strings.Contains(err.Error(), "slash-bearing") {
+					t.Fatalf("error = %q, want it to mention the client profile", err.Error())
+				}
+			})
+		}
+	}
+}
+
+func TestValidateAndCompileRulesAllowsFullyShadowedSlashBearingCatalogRoutes(t *testing.T) {
+	for _, scope := range []string{"default policy", "named client profile"} {
+		for _, endpoint := range []struct {
+			method       string
+			allowPattern string
+		}{
+			{method: http.MethodGet, allowPattern: "/libpod/images/*/*/get"},
+			{method: http.MethodPost, allowPattern: "/libpod/images/*/*/push"},
+		} {
+			t.Run(scope+" "+endpoint.method, func(t *testing.T) {
+				rules := []config.RuleConfig{
+					{Match: config.MatchConfig{Method: endpoint.method, Path: "/libpod/images/**"}, Action: "deny"},
+					{Match: config.MatchConfig{Method: endpoint.method, Path: endpoint.allowPattern}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+				cfg := config.Defaults()
+				if scope == "named client profile" {
+					cfg.Rules = []config.RuleConfig{
+						{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+					}
+					cfg.Clients.Profiles = []config.ClientProfileConfig{{
+						Name:  "fully-shadowed",
+						Rules: rules,
+					}}
+				} else {
+					cfg.Rules = rules
+				}
+
+				if _, err := validateAndCompileRules(&cfg); err != nil {
+					t.Fatalf("validateAndCompileRules() error = %v, want nil for a fully shadowed slash-bearing allow", err)
+				}
+			})
+		}
+	}
+}
+
+func TestFirstAllowedCatalogPathInstructionBudgetFailsClosed(t *testing.T) {
+	rules := make([]config.RuleConfig, 0, 129)
+	for i := 0; i < 128; i++ {
+		rules = append(rules, config.RuleConfig{
+			Match: config.MatchConfig{
+				Method: http.MethodPost,
+				Path:   fmt.Sprintf("/unrelated/%03d/%s", i, strings.Repeat("x", 32)),
+			},
+			Action: "deny",
+		})
+	}
+	rules = append(rules, config.RuleConfig{
+		Match:  config.MatchConfig{Method: http.MethodPost, Path: "/libpod/manifests/**"},
+		Action: "allow",
+	})
+
+	witness, result := firstAllowedCatalogPath(http.MethodPost, "/libpod/manifests/sockguard-test", catalogIdentifierPath, nil, rules)
+	if result != catalogReachabilityIndeterminate {
+		t.Fatalf("firstAllowedCatalogPath() result = %v, want indeterminate after instruction-budget exhaustion", result)
+	}
+	if witness != "/libpod/manifests/sockguard-test" {
+		t.Fatalf("firstAllowedCatalogPath() witness = %q, want stable fail-closed catalog path", witness)
 	}
 }

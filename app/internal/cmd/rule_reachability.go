@@ -26,6 +26,13 @@ const (
 	catalogReachabilityIndeterminate
 )
 
+type catalogIdentifierShape uint8
+
+const (
+	catalogIdentifierSegment catalogIdentifierShape = iota
+	catalogIdentifierPath
+)
+
 type catalogRuleMachine struct {
 	program *syntax.Prog
 	action  string
@@ -38,20 +45,34 @@ type catalogReachabilityBudget struct {
 
 // firstAllowedCatalogPath returns a concrete route in the catalog shape whose
 // first matching rule allows it. Catalog occurrences of "sockguard-test" are
-// non-empty resource-identifier segments. The search operates on the exact
-// regular languages accepted by Sockguard's glob dialect instead of guessing
-// a finite list of identifiers.
+// either one non-empty resource-identifier segment or a non-empty sequence of
+// clean segments, according to identifierShape. The latter mirrors upstream
+// `{name:.*}` route variables used for registry-qualified image, plugin, and
+// manifest names. The search operates on the exact regular languages accepted
+// by Sockguard's glob dialect instead of guessing a finite list of identifiers.
 //
 // The DFA product of several regular languages can be exponential in the
 // number of rules. Startup work is therefore capped. Exhausting a cap returns
 // indeterminate, which callers treat as exposed and fail closed rather than
 // letting an unproved allow rule bypass an acknowledgment.
-func firstAllowedCatalogPath(method, catalogPath string, rules []config.RuleConfig) (string, catalogReachability) {
-	catalog, err := compileCatalogMachine(catalogPath)
+func firstAllowedCatalogPath(method, catalogPath string, identifierShape catalogIdentifierShape, exclusions []catalogPathExclusion, rules []config.RuleConfig) (string, catalogReachability) {
+	catalog, err := compileCatalogMachine(catalogPath, identifierShape)
 	if err != nil {
 		return catalogPath, catalogReachabilityIndeterminate
 	}
 	totalInstructions := len(catalog.program.Inst)
+	catalogMachines := []catalogRuleMachine{catalog}
+	for _, exclusion := range exclusions {
+		machine, err := compileCatalogMachine(exclusion.path, exclusion.identifierShape)
+		if err != nil {
+			return catalogPath, catalogReachabilityIndeterminate
+		}
+		totalInstructions += len(machine.program.Inst)
+		if totalInstructions > maxCatalogReachabilityInstructions {
+			return catalogPath, catalogReachabilityIndeterminate
+		}
+		catalogMachines = append(catalogMachines, machine)
+	}
 
 	lastAllow := -1
 	for i := range rules {
@@ -84,8 +105,8 @@ func firstAllowedCatalogPath(method, catalogPath string, rules []config.RuleConf
 		if applicable[i].action != "allow" {
 			continue
 		}
-		machines := make([]catalogRuleMachine, 0, i+2)
-		machines = append(machines, catalog)
+		machines := make([]catalogRuleMachine, 0, len(catalogMachines)+i+1)
+		machines = append(machines, catalogMachines...)
 		machines = append(machines, applicable[:i]...)
 		machines = append(machines, applicable[i])
 		witness, result := catalogAllowWitness(machines, &budget)
@@ -106,8 +127,12 @@ func configuredRuleMatchesMethod(configured, method string) bool {
 	return false
 }
 
-func compileCatalogMachine(catalogPath string) (catalogRuleMachine, error) {
-	const identifier = `(?:[^/.][^/]*|\.[^/.][^/]*|\.\.[^/]+)`
+func compileCatalogMachine(catalogPath string, identifierShape catalogIdentifierShape) (catalogRuleMachine, error) {
+	const segment = `(?:[^/.][^/]*|\.[^/.][^/]*|\.\.[^/]+)`
+	identifier := segment
+	if identifierShape == catalogIdentifierPath {
+		identifier = segment + `(?:/` + segment + `)*`
+	}
 	parts := strings.Split(catalogPath, "sockguard-test")
 	var expression strings.Builder
 	for i, part := range parts {
@@ -151,10 +176,11 @@ type reachabilityState struct {
 	witness  string
 }
 
-// catalogAllowWitness receives catalog first, every rule earlier than the
-// target allow next, and the target allow last. It finds a string accepted by
-// the catalog and target but by none of the earlier rules, which is precisely
-// first-match reachability for that allow.
+// catalogAllowWitness receives the positive catalog first, catalog exclusions
+// and every rule earlier than the target allow next, and the target allow last.
+// It finds a string accepted by the catalog and target but by none of the
+// exclusions or earlier rules, which is precisely first-match reachability for
+// that allow on the upstream route language.
 func catalogAllowWitness(machines []catalogRuleMachine, budget *catalogReachabilityBudget) (string, catalogReachability) {
 	start := reachabilityState{machines: make([][]uint64, len(machines))}
 	for i := range machines {
