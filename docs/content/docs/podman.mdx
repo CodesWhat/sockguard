@@ -197,7 +197,7 @@ handler runs. Where they don't, the libpod field names are pinned separately:
 |---|---|---|
 | `GET /libpod/containers/{id}/json` | `redact_container_env`, `redact_mount_paths`, `redact_network_topology` | `Config.Env`, `Mounts[].Source`, `HostConfig.Binds`, `HostConfig.NetworkMode`, the `NetworkSettings` address block and each `Networks` entry — the same json tags Docker uses, plus libpod's own `AdditionalMACAddresses` list, which has no compat counterpart |
 | `GET /libpod/volumes/json`, `GET /libpod/volumes/{name}/json` | `redact_mount_paths` | `Mountpoint`. The list body is a bare array, not Docker's `{"Volumes": [...]}` envelope |
-| `GET /libpod/networks/json`, `GET /libpod/networks/{id}/json`, `GET /libpod/networks/{id}` | `redact_network_topology` | Podman v4 and later: `subnets`, `routes`, `network_dns_servers`, `network_interface`, and inspect's `containers` map. Podman v2.2.1-v3.4.4: the raw CNI plugin's host `bridge` plus its IPAM `routes` and `ranges`; list's top-level and per-plugin `Bytes` fields are removed because they are base64 copies of the complete raw conflist/plugin and would retain the same topology |
+| `GET /libpod/networks/json`, `GET /libpod/networks/{id}/json`, `GET /libpod/networks/{id}` | `redact_network_topology` | Podman v4 and later: `subnets`, `routes`, `network_dns_servers`, `network_interface`, and inspect's `containers` map. Podman v2.2.1-v3.4.4: the raw CNI plugin's host `bridge` or macvlan `master` plus its IPAM `routes`, `ranges`, and backward-compatible flat `subnet`, `gateway`, `rangeStart`, and `rangeEnd`; list's top-level and per-plugin `Bytes` fields are removed because they are base64 copies of the complete raw conflist/plugin and would retain the same topology |
 | `GET /libpod/secrets/json`, `GET /libpod/secrets/{name}/json` | `redact_sensitive_data` | `SecretData`, the plaintext Podman returns for `?showsecret=true`. It is a top-level field, not the `Spec.Data` Docker uses — Podman's `Spec` has no `Data` at all |
 
 Two things are deliberately left alone. Modern `ipam_options` and legacy
@@ -224,7 +224,8 @@ returns its raw lowercase CNI conflist on inspect. Its list report embeds
 Podman v4.0 switches both routes to the modern network type. Sockguard detects
 the fields on the wire rather than trusting the requested version prefix, so
 an intermediary or compatibility server cannot make the wrong schema bypass
-redaction. A malformed plugin, IPAM, ranges, or `Bytes` field fails closed.
+redaction. A malformed plugin, interface name, IPAM topology field, range, or
+`Bytes` field fails closed.
 
 ## Version-Prefix Handling
 

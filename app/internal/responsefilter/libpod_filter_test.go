@@ -81,6 +81,47 @@ func assertPresent(t *testing.T, label, body string, wanted ...string) {
 	}
 }
 
+func libpodLegacyCNIPluginsForTest(t *testing.T, body string) []map[string]any {
+	t.Helper()
+
+	var decoded any
+	if err := json.Unmarshal([]byte(body), &decoded); err != nil {
+		t.Fatalf("decode legacy CNI response: %v", err)
+	}
+	var network map[string]any
+	switch value := decoded.(type) {
+	case map[string]any:
+		network = value
+	case []any:
+		if len(value) != 1 {
+			t.Fatalf("legacy CNI response has %d array elements, want 1", len(value))
+		}
+		var ok bool
+		network, ok = value[0].(map[string]any)
+		if !ok {
+			t.Fatalf("legacy CNI array element has type %T, want object", value[0])
+		}
+	default:
+		t.Fatalf("legacy CNI response has type %T, want object or array", decoded)
+	}
+	values, ok := network["plugins"].([]any)
+	if !ok {
+		t.Fatalf("legacy CNI plugins has type %T, want array", network["plugins"])
+	}
+	plugins := make([]map[string]any, 0, len(values))
+	for i, value := range values {
+		plugin, ok := value.(map[string]any)
+		if !ok {
+			t.Fatalf("legacy CNI plugin %d has type %T, want object", i, value)
+		}
+		plugins = append(plugins, plugin)
+	}
+	if len(plugins) == 0 {
+		t.Fatal("legacy CNI response has no plugins")
+	}
+	return plugins
+}
+
 func addStaleRepresentationMetadata(resp *http.Response) {
 	for _, name := range []string{
 		"Accept-Ranges",
@@ -422,6 +463,45 @@ const libpodLegacyCNIInspectUpstream = `{
   "labels": {"owner": "team-a", "purpose": "monitoring"}
 }`
 
+// Podman v2.2.1 through v3.4.4 writes the selected host parent interface to a
+// macvlan plugin's master field. Native inspect returns that raw field.
+const libpodLegacyCNIMacVLANInspectUpstream = `{
+  "cniVersion": "0.4.0",
+  "name": "team-a-macvlan",
+  "plugins": [
+    {
+      "type": "macvlan",
+      "master": "enp3s0",
+      "mode": "bridge",
+      "ipam": {"type": "dhcp"}
+    }
+  ],
+  "labels": {"owner": "team-a"}
+}`
+
+// host-local kept this flat form for backward compatibility after ranges was
+// added. Podman returns a hand-authored valid conflist byte-for-byte on inspect,
+// so both representations can reach the response filter.
+const libpodLegacyCNIFlatIPAMInspectUpstream = `{
+  "cniVersion": "0.4.0",
+  "name": "team-a-flat-ipam",
+  "plugins": [
+    {
+      "type": "bridge",
+      "bridge": "cni-podman9",
+      "ipam": {
+        "type": "host-local",
+        "subnet": "10.77.0.0/24",
+        "rangeStart": "10.77.0.10",
+        "rangeEnd": "10.77.0.200",
+        "gateway": "10.77.0.1",
+        "customAllocatorMetadata": "keep-me"
+      }
+    }
+  ],
+  "labels": {"owner": "team-a"}
+}`
+
 // Podman v2/v3 list reports embed libcni.NetworkConfigList. encoding/json
 // therefore exposes the Go field names Plugins and Bytes, and each plugin is
 // another NetworkConfig with its own Bytes copy. Those byte slices are base64
@@ -601,7 +681,7 @@ func TestLibpodLegacyCNINetworkTopologyIsRedacted(t *testing.T) {
 		})
 	}
 
-	for _, path := range []string{"/v2.2.1/libpod/networks/json", "/v3.4.4/libpod/networks/json"} {
+	for _, path := range []string{"/libpod/networks/json", "/v2.2.1/libpod/networks/json", "/v3.4.4/libpod/networks/json"} {
 		t.Run("legacy list "+path, func(t *testing.T) {
 			t.Parallel()
 			upstream, conflistBytes, bridgeBytes := libpodLegacyCNIListUpstream(t)
@@ -635,6 +715,85 @@ func TestLibpodLegacyCNINetworkTopologyIsRedacted(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestLibpodLegacyCNIMacVLANMasterIsRedacted(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name, path, upstream string
+	}{
+		{
+			name:     "v2 array on versioned suffixed path",
+			path:     "/v2.2.1/libpod/networks/team-a-macvlan/json",
+			upstream: "[" + libpodLegacyCNIMacVLANInspectUpstream + "]",
+		},
+		{
+			name:     "v3 object on unversioned action-named bare path",
+			path:     "/libpod/networks/create",
+			upstream: libpodLegacyCNIMacVLANInspectUpstream,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			body := libpodBodyForTest(t, allRedactions, tc.path, tc.upstream)
+			assertAbsent(t, tc.name, body, "enp3s0")
+			assertPresent(t, tc.name, body,
+				`"mode":"bridge"`,
+				`"type":"macvlan"`,
+				`"type":"dhcp"`,
+				`"owner":"team-a"`,
+			)
+			plugins := libpodLegacyCNIPluginsForTest(t, body)
+			if got := plugins[0]["master"]; got != redactedValue {
+				t.Errorf("master = %#v, want %q", got, redactedValue)
+			}
+		})
+	}
+}
+
+func TestLibpodLegacyCNIFlatHostLocalTopologyIsRedacted(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name, path, upstream string
+	}{
+		{
+			name:     "v2 array on versioned suffixed path",
+			path:     "/v2.2.1/libpod/networks/team-a-flat-ipam/json",
+			upstream: "[" + libpodLegacyCNIFlatIPAMInspectUpstream + "]",
+		},
+		{
+			name:     "v3 object on versioned action-named bare path",
+			path:     "/v3.4.4/libpod/networks/prune",
+			upstream: libpodLegacyCNIFlatIPAMInspectUpstream,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			body := libpodBodyForTest(t, allRedactions, tc.path, tc.upstream)
+			assertAbsent(t, tc.name, body, "10.77.0.0/24", "10.77.0.10", "10.77.0.200", "10.77.0.1")
+			assertPresent(t, tc.name, body,
+				`"type":"bridge"`,
+				`"type":"host-local"`,
+				`"customAllocatorMetadata":"keep-me"`,
+				`"owner":"team-a"`,
+			)
+
+			plugins := libpodLegacyCNIPluginsForTest(t, body)
+			ipam, ok := plugins[0]["ipam"].(map[string]any)
+			if !ok {
+				t.Fatalf("ipam has type %T, want object", plugins[0]["ipam"])
+			}
+			for _, key := range []string{"subnet", "gateway", "rangeStart", "rangeEnd"} {
+				if got := ipam[key]; got != redactedValue {
+					t.Errorf("ipam.%s = %#v, want %q", key, got, redactedValue)
+				}
+			}
+		})
+	}
 }
 
 // TestLibpodNetworkShapeHasNoCompatKeys pins the finding the separate
@@ -944,8 +1103,18 @@ func TestLibpodMalformedBodiesFailClosed(t *testing.T) {
 		{"legacy network plugins null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":null}`},
 		{"legacy network plugin wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":["bridge"]}`},
 		{"legacy network plugin null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[null]}`},
+		{"legacy network macvlan master wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"macvlan","master":42}]}`},
+		{"legacy network macvlan master null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"macvlan","master":null}]}`},
 		{"legacy network ipam wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":"host-local"}]}`},
 		{"legacy network ipam null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":null}]}`},
+		{"legacy network flat ipam subnet wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"subnet":42}}]}`},
+		{"legacy network flat ipam subnet null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"subnet":null}}]}`},
+		{"legacy network flat ipam gateway wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"gateway":42}}]}`},
+		{"legacy network flat ipam gateway null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"gateway":null}}]}`},
+		{"legacy network flat ipam rangeStart wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"rangeStart":42}}]}`},
+		{"legacy network flat ipam rangeStart null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"rangeStart":null}}]}`},
+		{"legacy network flat ipam rangeEnd wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"rangeEnd":42}}]}`},
+		{"legacy network flat ipam rangeEnd null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"rangeEnd":null}}]}`},
 		{"legacy network routes wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"routes":{}}}]}`},
 		{"legacy network route wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"routes":["0.0.0.0/0"]}}]}`},
 		{"legacy network ranges wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"ranges":{}}}]}`},

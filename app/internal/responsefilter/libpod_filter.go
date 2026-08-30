@@ -294,12 +294,15 @@ func (f *Filter) modifyLibpodNetworkInspect(resp *http.Response) error {
 //     redactContainerNetworkTopology already redacts on container inspect.
 //
 // In the legacy CNI shape, inspect exposes the raw lowercase plugins array.
-// Its bridge name and the routes/ranges inside each plugin's ipam object are
-// topology. List embeds libcni.NetworkConfigList instead, whose capitalized
-// Plugins entries and the top-level object each carry a Bytes field. Those
-// []byte values become base64 strings containing the complete raw plugin or
-// conflist, so leaving either copy would undo all structured redaction. The
-// Bytes fields are removed after their wire type is validated.
+// Its bridge or macvlan master interface and the routes/ranges inside each
+// plugin's ipam object are topology. Host-local IPAM also accepts a
+// backward-compatible flat subnet/gateway/rangeStart/rangeEnd form, so those
+// fields are redacted independently of the newer ranges array. List embeds
+// libcni.NetworkConfigList instead, whose capitalized Plugins entries and the
+// top-level object each carry a Bytes field. Those []byte values become base64
+// strings containing the complete raw plugin or conflist, so leaving either
+// copy would undo all structured redaction. The Bytes fields are removed after
+// their wire type is validated.
 //
 // ipam_options on the modern shape and ipam.type on the legacy one are left
 // alone. They name the allocator (host-local, dhcp), not an address.
@@ -381,6 +384,9 @@ func redactLegacyCNIPluginConfig(plugin map[string]any) error {
 		}
 		plugin["bridge"] = redactedValue
 	}
+	if err := redactLegacyCNIStringTopologyField(plugin, "master", "plugin"); err != nil {
+		return err
+	}
 
 	value, ok := plugin["ipam"]
 	if !ok {
@@ -390,12 +396,29 @@ func redactLegacyCNIPluginConfig(plugin map[string]any) error {
 	if !ok {
 		return fmt.Errorf("plugin ipam has unexpected type %T", value)
 	}
+	for _, key := range []string{"subnet", "gateway", "rangeStart", "rangeEnd"} {
+		if err := redactLegacyCNIStringTopologyField(ipam, key, "plugin ipam"); err != nil {
+			return err
+		}
+	}
 	if err := redactCNIObjectArray(ipam, "routes"); err != nil {
 		return err
 	}
 	if err := redactCNIRanges(ipam); err != nil {
 		return err
 	}
+	return nil
+}
+
+func redactLegacyCNIStringTopologyField(payload map[string]any, key, context string) error {
+	value, ok := payload[key]
+	if !ok {
+		return nil
+	}
+	if _, ok := value.(string); !ok {
+		return fmt.Errorf("%s %s has unexpected type %T", context, key, value)
+	}
+	payload[key] = redactedValue
 	return nil
 }
 
