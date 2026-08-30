@@ -219,8 +219,12 @@ Sockguard therefore writes a visibility policy's single
 whatever the client sent, and refuses the request with a `403` and reason code
 `visibility_podman_events_unscopeable` when the policy carries two or more
 selectors, because two injected values would stream every event matching
-*either* one. A patterns-only policy is forwarded untouched, as it is on
-Docker. On a Docker upstream nothing about `/events` changes. See
+*either* one. Owner isolation plus even one visibility selector has the same
+problem: the owner label and visibility label are two constraints under that
+disjunctive key, so Sockguard refuses the request with `403` and reason code
+`owner_visibility_podman_events_unscopeable` rather than forwarding an
+owner-only or OR-widened stream. A patterns-only policy is forwarded untouched,
+as it is on Docker. On a Docker upstream nothing about `/events` changes. See
 [Security](/security) for the operator-facing version of this.
 
 Denial reasons for libpod-family requests carry a `libpod ` prefix, matching
