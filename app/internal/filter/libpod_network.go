@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 )
@@ -81,13 +82,13 @@ type libpodNetworkUpdateRequest struct {
 // entities.NetworkConnectOptions (pkg/domain/entities/types/network.go at
 // v5.8.1), the body POST /libpod/networks/{name}/connect decodes. That type
 // is `Container string` plus an EMBEDDED, untagged
-// go.podman.io/common/libnetwork/types.PerNetworkOptions, so the endpoint
+// github.com/containers/common/libnetwork/types.PerNetworkOptions, so the endpoint
 // fields sit at the top level of the JSON object under snake_case names —
 // nothing like Docker's nested {"Container","EndpointConfig":{...}}. Reading
 // the Docker spelling here would find nothing and allow every connect, which
 // is precisely the failure this struct exists to prevent. PerNetworkOptions
-// was read at go.podman.io/common v0.67.0, the version Podman v5.8.1's
-// go.mod pins (containers/container-libs, common/v0.67.0).
+// was read at github.com/containers/common v0.62.2, the version Podman
+// v5.8.1's go.mod pins.
 //
 // The five fields are decoded as the loosest type that still detects
 // presence, because presence is all the gates below need and a looser type
@@ -97,17 +98,17 @@ type libpodNetworkUpdateRequest struct {
 //     UnmarshalText, so encoding/json only ever accepts a JSON string for an
 //     element, and []string sees exactly the same set of accepted documents.
 //   - static_mac is types.HardwareAddr, whose UnmarshalJSON first tries
-//     net.ParseMAC on the string and then FALLS BACK to a plain []byte
-//     decode — so a base64 blob like "qrvM3e7/" sets a static MAC just as
-//     "aa:bb:cc:dd:ee:ff" does. Decoding to string catches both, since the
-//     only question asked is whether anything non-empty was sent.
+//     net.ParseMAC on a string and then FALLS BACK to a plain []byte decode.
+//     That admits canonical strings, base64 strings, and JSON byte arrays;
+//     libpodHardwareAddr mirrors all three so the policy never accepts fewer
+//     wire shapes than Podman does.
 //   - options is Podman's per-container driver-option map, the libpod
 //     analog of Docker EndpointSettings.DriverOpts.
 //
-// A body Podman itself would reject (a non-string static_ips element, a
-// non-string static_mac) fails to decode here too and is denied as
-// uninspectable rather than forwarded, so the loose typing never widens what
-// gets through.
+// A body Podman itself would reject (a non-string static_ips element, or a
+// malformed/out-of-range static_mac representation) fails to decode here too
+// and is denied as uninspectable rather than forwarded, so the loose typing
+// never widens what gets through.
 //
 // interface_name is decoded but deliberately not gated: it names the
 // interface inside the container's own network namespace, has no Docker
@@ -117,11 +118,43 @@ type libpodNetworkUpdateRequest struct {
 // somewhere to attach, following the same "only gate what has an analog"
 // rule libpodNetworkCreateRequest documents.
 type libpodNetworkConnectRequest struct {
-	StaticIPs     []string          `json:"static_ips"`
-	Aliases       []string          `json:"aliases"`
-	StaticMAC     string            `json:"static_mac"`
-	InterfaceName string            `json:"interface_name"`
-	Options       map[string]string `json:"options"`
+	StaticIPs     []string           `json:"static_ips"`
+	Aliases       []string           `json:"aliases"`
+	StaticMAC     libpodHardwareAddr `json:"static_mac"`
+	InterfaceName string             `json:"interface_name"`
+	Options       map[string]string  `json:"options"`
+}
+
+// libpodHardwareAddr mirrors containers/common v0.62.2's
+// types.HardwareAddr.UnmarshalJSON without importing Podman's dependency tree
+// into the request hot path. Sockguard needs only presence after validation,
+// but it must accept exactly the wire shapes Podman accepts: a parseable MAC
+// string, a base64 string accepted by encoding/json's []byte decoder, a JSON
+// byte array, or null. Invalid strings, objects, and byte values outside
+// 0..255 return an error and therefore fail closed in inspectLibpodConnect.
+type libpodHardwareAddr []byte
+
+func (h *libpodHardwareAddr) UnmarshalJSON(data []byte) error {
+	if len(data) == 0 {
+		*h = nil
+		return nil
+	}
+	if data[0] == '"' {
+		var value string
+		if err := json.Unmarshal(data, &value); err == nil {
+			if parsed, err := net.ParseMAC(value); err == nil {
+				*h = libpodHardwareAddr(parsed)
+				return nil
+			}
+		}
+	}
+
+	value := make([]byte, 0, 6)
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	*h = libpodHardwareAddr(value)
+	return nil
 }
 
 // toEndpointConfig projects the libpod connect body onto Docker's
@@ -142,8 +175,13 @@ type libpodNetworkConnectRequest struct {
 // than lowering it, so it is unreachable from either spelling.
 func (req libpodNetworkConnectRequest) toEndpointConfig() networkEndpointConfig {
 	endpoint := networkEndpointConfig{
-		Aliases:    req.Aliases,
-		MacAddress: req.StaticMAC,
+		Aliases: req.Aliases,
+	}
+	if len(req.StaticMAC) > 0 {
+		// denyEndpointConfigReason needs presence, not the caller's binary
+		// representation. A stable non-empty sentinel gives every accepted
+		// HardwareAddr wire shape the same policy decision.
+		endpoint.MacAddress = "configured"
 	}
 	for _, staticIP := range req.StaticIPs {
 		if strings.TrimSpace(staticIP) != "" {

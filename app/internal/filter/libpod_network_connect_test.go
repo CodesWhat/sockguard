@@ -74,6 +74,59 @@ func TestLibpodNetworkConnectInspect(t *testing.T) {
 			body: `{"container":"abc123","static_mac":"aa:bb:cc:dd:ee:ff"}`,
 		},
 		{
+			// common/types.HardwareAddr.UnmarshalJSON accepts the legacy
+			// byte-array representation as well as strings. Both wire shapes
+			// set the same policy field and must receive the same verdict.
+			name:        "denies a static MAC byte array by default",
+			opts:        libpodConnectDefaults(),
+			body:        `{"container":"abc123","static_mac":[82,84,0,28,46,70]}`,
+			wantDeny:    true,
+			wantReasonC: "MAC address",
+		},
+		{
+			name: "allows a static MAC byte array when MAC pinning is configured",
+			opts: NetworkOptions{EndpointConfig: EndpointConfigOptions{AllowMACPinning: true}},
+			body: `{"container":"abc123","static_mac":[82,84,0,28,46,70]}`,
+		},
+		{
+			name: "allows a static MAC byte array under allow_endpoint_config",
+			opts: NetworkOptions{AllowEndpointConfig: true},
+			body: `{"container":"abc123","static_mac":[82,84,0,28,46,70]}`,
+		},
+		{
+			name: "allows an empty static MAC byte array",
+			opts: libpodConnectDefaults(),
+			body: `{"container":"abc123","static_mac":[]}`,
+		},
+		{
+			name:        "denies an out-of-range static MAC byte array as uninspectable",
+			opts:        NetworkOptions{AllowEndpointConfig: true},
+			body:        `{"container":"abc123","static_mac":[82,84,0,28,46,256]}`,
+			wantDeny:    true,
+			wantReasonC: "could not be inspected",
+		},
+		{
+			name:        "denies a negative static MAC byte as uninspectable",
+			opts:        NetworkOptions{AllowEndpointConfig: true},
+			body:        `{"container":"abc123","static_mac":[82,84,0,28,46,-1]}`,
+			wantDeny:    true,
+			wantReasonC: "could not be inspected",
+		},
+		{
+			name:        "denies an object static MAC as uninspectable",
+			opts:        NetworkOptions{AllowEndpointConfig: true},
+			body:        `{"container":"abc123","static_mac":{}}`,
+			wantDeny:    true,
+			wantReasonC: "could not be inspected",
+		},
+		{
+			name:        "denies an invalid static MAC string as uninspectable",
+			opts:        NetworkOptions{AllowEndpointConfig: true},
+			body:        `{"container":"abc123","static_mac":"not-a-mac"}`,
+			wantDeny:    true,
+			wantReasonC: "could not be inspected",
+		},
+		{
 			// PerNetworkOptions.Options is the libpod analog of Docker
 			// EndpointSettings.DriverOpts, which is fail-closed under the
 			// granular form: only allow_endpoint_config can admit it. It is
