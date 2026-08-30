@@ -75,6 +75,27 @@ test("metrics docs distinguish UNKNOWN and OTHER method fallbacks", () => {
   );
 });
 
+test("read-exfiltration warning docs describe representative endpoint probes", () => {
+  const documents = [
+    ["configuration reference", read("docs/content/docs/configuration.mdx")],
+    ["changelog", read("CHANGELOG.md")],
+  ];
+
+  for (const [name, document] of documents) {
+    const normalized = document.replaceAll(/\s+/gu, " ");
+    assert.match(
+      normalized,
+      /endpoint fields use representative startup-validation probes and are not exhaustive/u,
+      `${name} must qualify the warning's endpoint fields`,
+    );
+    assert.match(
+      normalized,
+      /Empty endpoint lists can still mean an exact-name or ordered process-list rule needs the acknowledgment/u,
+      `${name} must explain why empty endpoint fields can still need the acknowledgment`,
+    );
+  }
+});
+
 test("release docs distinguish candidate and stable source branches", () => {
   const releasing = read("RELEASING.md").replaceAll(/\s+/gu, " ");
 
