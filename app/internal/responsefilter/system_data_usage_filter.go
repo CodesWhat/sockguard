@@ -388,8 +388,8 @@ func isJSONNull(raw json.RawMessage) bool {
 }
 
 // ClearUpstreamRepresentationHeaders strips the upstream response's
-// representation metadata from header. A middleware that abandons a buffered
-// upstream body and substitutes its own error payload must call this first,
+// representation metadata from header. Any path that abandons an upstream
+// body and substitutes a rewritten or error payload must call this first,
 // otherwise the client receives the daemon's Content-Encoding / ETag /
 // Content-Range describing a body it will never see.
 func ClearUpstreamRepresentationHeaders(header http.Header) {

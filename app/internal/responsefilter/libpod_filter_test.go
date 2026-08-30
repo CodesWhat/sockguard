@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -76,6 +77,61 @@ func assertPresent(t *testing.T, label, body string, wanted ...string) {
 		if !strings.Contains(body, want) {
 			t.Errorf("%s: %q was removed but should survive; got %s", label, want, body)
 		}
+	}
+}
+
+func addStaleRepresentationMetadata(resp *http.Response) {
+	for _, name := range []string{
+		"Accept-Ranges",
+		"Content-Digest",
+		"Content-Encoding",
+		"Content-Language",
+		"Content-Length",
+		"Content-Location",
+		"Content-Range",
+		"Digest",
+		"ETag",
+		"Last-Modified",
+		"Repr-Digest",
+		"Transfer-Encoding",
+	} {
+		resp.Header.Set(name, "stale-upstream-value")
+	}
+	resp.Header.Set("Content-Type", "application/json; charset=utf-8")
+	resp.Header.Set("X-Upstream-Metadata", "keep-me")
+	resp.TransferEncoding = []string{"chunked"}
+}
+
+func assertRewrittenRepresentationMetadata(t *testing.T, resp *http.Response) {
+	t.Helper()
+	for _, name := range []string{
+		"Accept-Ranges",
+		"Content-Digest",
+		"Content-Encoding",
+		"Content-Language",
+		"Content-Location",
+		"Content-Range",
+		"Digest",
+		"ETag",
+		"Last-Modified",
+		"Repr-Digest",
+		"Transfer-Encoding",
+	} {
+		if got := resp.Header.Values(name); len(got) != 0 {
+			t.Errorf("%s = %#v, want cleared after body rewrite", name, got)
+		}
+	}
+	if got, want := resp.Header.Get("Content-Length"), strconv.FormatInt(resp.ContentLength, 10); got != want {
+		t.Errorf("Content-Length = %q, want rewritten length %q", got, want)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "application/json; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want preserved JSON type", got)
+	}
+	if got := resp.Header.Get("X-Upstream-Metadata"); got != "keep-me" {
+		t.Errorf("X-Upstream-Metadata = %q, want unrelated metadata preserved", got)
+	}
+	if resp.TransferEncoding != nil {
+		t.Errorf("TransferEncoding = %#v, want fixed-length rewritten response", resp.TransferEncoding)
 	}
 }
 
@@ -176,6 +232,18 @@ func TestLibpodContainerInspectIsRedacted(t *testing.T) {
 	})
 }
 
+func TestLibpodObjectRewriteClearsStaleRepresentationMetadata(t *testing.T) {
+	t.Parallel()
+	resp := newResponseForTest(t, http.MethodGet, "/v5.8.1/libpod/containers/ctr-a/json", libpodContainerInspectUpstream)
+	addStaleRepresentationMetadata(resp)
+
+	if err := New(allRedactions).ModifyResponse(resp); err != nil {
+		t.Fatalf("ModifyResponse() error = %v, want nil", err)
+	}
+
+	assertRewrittenRepresentationMetadata(t, resp)
+}
+
 // libpodContainerListUpstream is a GET /libpod/containers/json body:
 // []entities.ListContainer at v5.8.1. Mounts is a []string, not the array of
 // objects Docker's ContainerSummary carries, and pkg/ps/ps.go fills it from
@@ -268,6 +336,18 @@ func TestLibpodVolumeMountpointIsRedacted(t *testing.T) {
 		listBody := libpodBodyForTest(t, allRedactions, "/v1.51/volumes", compatList)
 		assertAbsent(t, "compat volume list", listBody, "/var/lib/docker/volumes/vol-a/_data")
 	})
+}
+
+func TestLibpodStreamingListRewriteClearsStaleRepresentationMetadata(t *testing.T) {
+	t.Parallel()
+	resp := newResponseForTest(t, http.MethodGet, "/v5.8.1/libpod/volumes/json", libpodVolumeListUpstream)
+	addStaleRepresentationMetadata(resp)
+
+	if err := New(allRedactions).ModifyResponse(resp); err != nil {
+		t.Fatalf("ModifyResponse() error = %v, want nil", err)
+	}
+
+	assertRewrittenRepresentationMetadata(t, resp)
 }
 
 // ---------------------------------------------------------------------------

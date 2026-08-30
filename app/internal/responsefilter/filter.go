@@ -623,6 +623,7 @@ func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error)
 	if resp.Header == nil {
 		resp.Header = make(http.Header)
 	}
+	ClearUpstreamRepresentationHeaders(resp.Header)
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	resp.ContentLength = int64(len(body))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
@@ -1236,6 +1237,7 @@ func writeResponseBody(resp *http.Response, payload any) error {
 	if resp.Header == nil {
 		resp.Header = make(http.Header)
 	}
+	ClearUpstreamRepresentationHeaders(resp.Header)
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	resp.ContentLength = int64(len(body))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
