@@ -653,7 +653,15 @@ func TestResolveUpstreamSpecs(t *testing.T) {
 			{Address: "tcp://host1:2376"},
 			{Address: "tcp://host2:2376"},
 		}
-		specs, legacy := resolveUpstreamSpecs(&cfg, func(string) string { return "" }, discardLogger)
+		specs, legacy, err := resolveUpstreamSpecs(&cfg, func(key string) (string, bool) {
+			if key == "DOCKER_HOST" {
+				return "https://ignored.invalid:2376", true
+			}
+			return "", false
+		}, discardLogger)
+		if err != nil {
+			t.Fatalf("resolveUpstreamSpecs: %v", err)
+		}
 		if legacy {
 			t.Error("expected legacy=false for explicit endpoints")
 		}
@@ -668,7 +676,10 @@ func TestResolveUpstreamSpecs(t *testing.T) {
 	t.Run("falls back to socket when no endpoints and no DOCKER_HOST", func(t *testing.T) {
 		cfg := config.Defaults()
 		cfg.Upstream.Socket = "/var/run/docker.sock"
-		specs, legacy := resolveUpstreamSpecs(&cfg, func(string) string { return "" }, discardLogger)
+		specs, legacy, err := resolveUpstreamSpecs(&cfg, func(string) (string, bool) { return "", false }, discardLogger)
+		if err != nil {
+			t.Fatalf("resolveUpstreamSpecs: %v", err)
+		}
 		if !legacy {
 			t.Error("expected legacy=true for socket fallback")
 		}

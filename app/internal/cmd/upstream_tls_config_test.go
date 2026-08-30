@@ -56,7 +56,7 @@ upstream:
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	resolver, legacy, err := buildUpstreamResolver(cfg, nil, func(string) string { return "" })
+	resolver, legacy, err := buildUpstreamResolver(cfg, nil, func(string) (string, bool) { return "", false })
 	if err != nil {
 		t.Fatalf("buildUpstreamResolver: %v", err)
 	}
@@ -89,6 +89,38 @@ upstream:
 	}
 	if got, want := string(body), "peer_certs=1"; got != want {
 		t.Fatalf("daemon response = %q, want %q", got, want)
+	}
+}
+
+func TestNewServeRuntimeRejectsInvalidDockerHost(t *testing.T) {
+	t.Setenv("DOCKER_HOST", "https://daemon.internal:2376")
+	t.Setenv("DOCKER_TLS", "")
+	t.Setenv("DOCKER_TLS_VERIFY", "")
+	t.Setenv("DOCKER_CERT_PATH", "")
+
+	cfg := config.Defaults()
+	_, err := newServeRuntime(&cfg, newDiscardLogger(), newServeTestDeps())
+	if err == nil {
+		t.Fatal("newServeRuntime accepted an explicit https:// DOCKER_HOST")
+	}
+	if !strings.Contains(err.Error(), "DOCKER_HOST") {
+		t.Fatalf("newServeRuntime error = %q, want DOCKER_HOST context", err)
+	}
+}
+
+func TestNewServeRuntimeRejectsEmptyExplicitDockerHost(t *testing.T) {
+	t.Setenv("DOCKER_HOST", "   ")
+	t.Setenv("DOCKER_TLS", "")
+	t.Setenv("DOCKER_TLS_VERIFY", "")
+	t.Setenv("DOCKER_CERT_PATH", "")
+
+	cfg := config.Defaults()
+	_, err := newServeRuntime(&cfg, newDiscardLogger(), newServeTestDeps())
+	if err == nil {
+		t.Fatal("newServeRuntime silently fell back for an explicit empty DOCKER_HOST")
+	}
+	if !strings.Contains(err.Error(), "DOCKER_HOST") {
+		t.Fatalf("newServeRuntime error = %q, want DOCKER_HOST context", err)
 	}
 }
 

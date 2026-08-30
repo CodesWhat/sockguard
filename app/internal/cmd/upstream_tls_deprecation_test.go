@@ -7,11 +7,17 @@ import (
 	"testing"
 
 	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/app/internal/testcert"
 	"github.com/codeswhat/sockguard/app/internal/testhelp"
 	"github.com/codeswhat/sockguard/app/internal/upstream"
 )
 
 func TestResolveUpstreamSpecsWarnsAccuratelyAboutInsecureTransportSettings(t *testing.T) {
+	dockerTLSBundle, err := testcert.WriteMutualTLSBundle(t.TempDir(), "daemon.internal")
+	if err != nil {
+		t.Fatalf("write Docker TLS bundle: %v", err)
+	}
+	dockerCertPath := filepath.Dir(dockerTLSBundle.CAFile)
 	tests := []struct {
 		name                            string
 		yaml                            string
@@ -44,8 +50,9 @@ upstream:
 		{
 			name: "Docker TLS environment fallback",
 			env: map[string]string{
-				"DOCKER_HOST": "tcp://daemon.internal:2376",
-				"DOCKER_TLS":  "1",
+				"DOCKER_HOST":      "tcp://daemon.internal:2376",
+				"DOCKER_TLS":       "1",
+				"DOCKER_CERT_PATH": dockerCertPath,
 			},
 			wantDeprecation:           true,
 			wantSource:                "DOCKER_HOST environment",
@@ -57,8 +64,9 @@ upstream:
 		{
 			name: "Docker TLS zero is still enabled and deprecated",
 			env: map[string]string{
-				"DOCKER_HOST": "tcp://daemon.internal:2376",
-				"DOCKER_TLS":  "0",
+				"DOCKER_HOST":      "tcp://daemon.internal:2376",
+				"DOCKER_TLS":       "0",
+				"DOCKER_CERT_PATH": dockerCertPath,
 			},
 			wantDeprecation:           true,
 			wantSource:                "DOCKER_HOST environment",
@@ -196,8 +204,14 @@ upstream:
 			}
 
 			collector := &testhelp.CollectingHandler{}
-			getenv := func(key string) string { return tt.env[key] }
-			specs, legacy := resolveUpstreamSpecs(&cfg, getenv, collector.Logger())
+			lookupEnv := func(key string) (string, bool) {
+				value, present := tt.env[key]
+				return value, present
+			}
+			specs, legacy, err := resolveUpstreamSpecs(&cfg, lookupEnv, collector.Logger())
+			if err != nil {
+				t.Fatalf("resolveUpstreamSpecs: %v", err)
+			}
 			if legacy {
 				t.Fatal("resolveUpstreamSpecs used the legacy socket, want remote endpoint")
 			}

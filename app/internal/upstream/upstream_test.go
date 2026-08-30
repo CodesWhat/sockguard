@@ -74,6 +74,7 @@ func TestParseAddress(t *testing.T) {
 		{name: "bare absolute path", input: "/var/run/docker.sock", wantNetwork: "unix", wantAddress: "/var/run/docker.sock"},
 		{name: "bare dot-relative path", input: "./docker.sock", wantNetwork: "unix", wantAddress: "./docker.sock"},
 		{name: "bare dot-dot path", input: "../docker.sock", wantNetwork: "unix", wantAddress: "../docker.sock"},
+		{name: "relative unix url", input: "unix://relative.sock/path", wantNetwork: "unix", wantAddress: "relative.sock/path"},
 		// valid tcp-family
 		{name: "tcp url", input: "tcp://host:2376", wantNetwork: "tcp", wantAddress: "host:2376"},
 		{name: "http url", input: "http://host:2375", wantNetwork: "tcp", wantAddress: "host:2375"},
@@ -82,7 +83,6 @@ func TestParseAddress(t *testing.T) {
 		{name: "empty", input: "", wantErr: true},
 		{name: "whitespace only", input: "   ", wantErr: true},
 		{name: "scheme-less non-path", input: "notapath", wantErr: true},
-		{name: "unix with host", input: "unix://relative.sock/path", wantErr: true},
 		{name: "unix missing path", input: "unix://", wantErr: true},
 		{name: "tcp missing port", input: "tcp://myhost", wantErr: true},
 		{name: "bad scheme", input: "ftp://host:21", wantErr: true},
@@ -143,6 +143,11 @@ func TestValidateSpec(t *testing.T) {
 		{
 			name:    "unix with KeyFile",
 			spec:    EndpointSpec{Address: "/run/docker.sock", KeyFile: "/tmp/key.pem"},
+			wantErr: true,
+		},
+		{
+			name:    "unix with ServerName",
+			spec:    EndpointSpec{Address: "/run/docker.sock", ServerName: "daemon.internal"},
 			wantErr: true,
 		},
 		// tcp — valid TLS combos
@@ -224,6 +229,14 @@ func TestBuildEndpoint_UnixWithTLS_Rejected(t *testing.T) {
 	_, err := BuildEndpoint(EndpointSpec{Address: "/run/docker.sock", CAFile: "/tmp/ca.pem"})
 	if err == nil {
 		t.Fatal("expected error for unix+TLS, got nil")
+	}
+}
+
+func TestBuildEndpoint_UnixWithServerName_Rejected(t *testing.T) {
+	t.Parallel()
+	_, err := BuildEndpoint(EndpointSpec{Address: "/run/docker.sock", ServerName: "daemon.internal"})
+	if err == nil {
+		t.Fatal("expected error for unix+tls.server_name, got nil")
 	}
 }
 
@@ -807,10 +820,15 @@ func TestActiveState_Precedence(t *testing.T) {
 
 func TestSpecsFromDockerEnv(t *testing.T) {
 	t.Parallel()
+	mutualTLSDir := t.TempDir()
+	installDockerCertificateFiles(t, mutualTLSDir, true, true, true)
+	caOnlyDir := t.TempDir()
+	installDockerCertificateFiles(t, caOnlyDir, true, false, false)
 	cases := []struct {
 		name     string
 		env      map[string]string
 		wantOK   bool
+		wantErr  bool
 		wantSpec EndpointSpec
 	}{
 		{
@@ -826,12 +844,15 @@ func TestSpecsFromDockerEnv(t *testing.T) {
 				"DOCKER_TLS_VERIFY": "1",
 				"DOCKER_CERT_PATH":  "/certs",
 			},
-			wantOK: false,
+			wantOK: true,
+			wantSpec: EndpointSpec{
+				Address: "unix:///var/run/docker.sock",
+			},
 		},
 		{
-			name:   "DOCKER_HOST whitespace only",
-			env:    map[string]string{"DOCKER_HOST": "   "},
-			wantOK: false,
+			name:    "DOCKER_HOST whitespace only",
+			env:     map[string]string{"DOCKER_HOST": "   "},
+			wantErr: true,
 		},
 		{
 			name:   "tcp plain no TLS verify no cert path",
@@ -870,36 +891,42 @@ func TestSpecsFromDockerEnv(t *testing.T) {
 		{
 			name: "DOCKER_TLS value zero enables unverified TLS",
 			env: map[string]string{
-				"DOCKER_HOST": "tcp://host:2376",
-				"DOCKER_TLS":  "0",
+				"DOCKER_HOST":      "tcp://host:2376",
+				"DOCKER_TLS":       "0",
+				"DOCKER_CERT_PATH": caOnlyDir,
 			},
 			wantOK: true,
 			wantSpec: EndpointSpec{
 				Address:               "tcp://host:2376",
+				CAFile:                filepath.Join(caOnlyDir, "ca.pem"),
 				InsecureSkipTLSVerify: true,
 			},
 		},
 		{
 			name: "DOCKER_TLS value one enables unverified TLS",
 			env: map[string]string{
-				"DOCKER_HOST": "tcp://host:2376",
-				"DOCKER_TLS":  "1",
+				"DOCKER_HOST":      "tcp://host:2376",
+				"DOCKER_TLS":       "1",
+				"DOCKER_CERT_PATH": caOnlyDir,
 			},
 			wantOK: true,
 			wantSpec: EndpointSpec{
 				Address:               "tcp://host:2376",
+				CAFile:                filepath.Join(caOnlyDir, "ca.pem"),
 				InsecureSkipTLSVerify: true,
 			},
 		},
 		{
 			name: "any other non-empty DOCKER_TLS value enables unverified TLS",
 			env: map[string]string{
-				"DOCKER_HOST": "tcp://host:2376",
-				"DOCKER_TLS":  "false",
+				"DOCKER_HOST":      "tcp://host:2376",
+				"DOCKER_TLS":       "false",
+				"DOCKER_CERT_PATH": caOnlyDir,
 			},
 			wantOK: true,
 			wantSpec: EndpointSpec{
 				Address:               "tcp://host:2376",
+				CAFile:                filepath.Join(caOnlyDir, "ca.pem"),
 				InsecureSkipTLSVerify: true,
 			},
 		},
@@ -908,14 +935,14 @@ func TestSpecsFromDockerEnv(t *testing.T) {
 			env: map[string]string{
 				"DOCKER_HOST":      "tcp://host:2376",
 				"DOCKER_TLS":       "1",
-				"DOCKER_CERT_PATH": "/certs",
+				"DOCKER_CERT_PATH": mutualTLSDir,
 			},
 			wantOK: true,
 			wantSpec: EndpointSpec{
 				Address:               "tcp://host:2376",
-				CAFile:                "/certs/ca.pem",
-				CertFile:              "/certs/cert.pem",
-				KeyFile:               "/certs/key.pem",
+				CAFile:                filepath.Join(mutualTLSDir, "ca.pem"),
+				CertFile:              filepath.Join(mutualTLSDir, "cert.pem"),
+				KeyFile:               filepath.Join(mutualTLSDir, "key.pem"),
 				InsecureSkipTLSVerify: true,
 			},
 		},
@@ -924,14 +951,14 @@ func TestSpecsFromDockerEnv(t *testing.T) {
 			env: map[string]string{
 				"DOCKER_HOST":       "tcp://host:2376",
 				"DOCKER_TLS_VERIFY": "1",
-				"DOCKER_CERT_PATH":  "/certs",
+				"DOCKER_CERT_PATH":  mutualTLSDir,
 			},
 			wantOK: true,
 			wantSpec: EndpointSpec{
 				Address:  "tcp://host:2376",
-				CAFile:   "/certs/ca.pem",
-				CertFile: "/certs/cert.pem",
-				KeyFile:  "/certs/key.pem",
+				CAFile:   filepath.Join(mutualTLSDir, "ca.pem"),
+				CertFile: filepath.Join(mutualTLSDir, "cert.pem"),
+				KeyFile:  filepath.Join(mutualTLSDir, "key.pem"),
 			},
 		},
 		{
@@ -940,14 +967,14 @@ func TestSpecsFromDockerEnv(t *testing.T) {
 				"DOCKER_HOST":       "tcp://host:2376",
 				"DOCKER_TLS":        "1",
 				"DOCKER_TLS_VERIFY": "false",
-				"DOCKER_CERT_PATH":  "/certs",
+				"DOCKER_CERT_PATH":  mutualTLSDir,
 			},
 			wantOK: true,
 			wantSpec: EndpointSpec{
 				Address:  "tcp://host:2376",
-				CAFile:   "/certs/ca.pem",
-				CertFile: "/certs/cert.pem",
-				KeyFile:  "/certs/key.pem",
+				CAFile:   filepath.Join(mutualTLSDir, "ca.pem"),
+				CertFile: filepath.Join(mutualTLSDir, "cert.pem"),
+				KeyFile:  filepath.Join(mutualTLSDir, "key.pem"),
 			},
 		},
 		{
@@ -955,12 +982,12 @@ func TestSpecsFromDockerEnv(t *testing.T) {
 			env: map[string]string{
 				"DOCKER_HOST":       "tcp://host:2376",
 				"DOCKER_TLS_VERIFY": "1",
+				"DOCKER_CONFIG":     caOnlyDir,
 			},
 			wantOK: true,
 			wantSpec: EndpointSpec{
 				Address: "tcp://host:2376",
-				// no CA/cert/key — verify against the host's system root CAs.
-				TLSSystemRoots: true,
+				CAFile:  filepath.Join(caOnlyDir, "ca.pem"),
 			},
 		},
 		{
@@ -968,11 +995,12 @@ func TestSpecsFromDockerEnv(t *testing.T) {
 			env: map[string]string{
 				"DOCKER_HOST":       "tcp://host:2376",
 				"DOCKER_TLS_VERIFY": "0",
+				"DOCKER_CONFIG":     caOnlyDir,
 			},
 			wantOK: true,
 			wantSpec: EndpointSpec{
-				Address:        "tcp://host:2376",
-				TLSSystemRoots: true,
+				Address: "tcp://host:2376",
+				CAFile:  filepath.Join(caOnlyDir, "ca.pem"),
 			},
 		},
 	}
@@ -980,8 +1008,20 @@ func TestSpecsFromDockerEnv(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			getenv := func(key string) string { return tc.env[key] }
-			spec, ok := SpecsFromDockerEnv(getenv)
+			lookupEnv := func(key string) (string, bool) {
+				value, present := tc.env[key]
+				return value, present
+			}
+			spec, ok, err := SpecsFromDockerEnv(lookupEnv)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("SpecsFromDockerEnv returned no error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SpecsFromDockerEnv: %v", err)
+			}
 			if ok != tc.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
 			}
@@ -1006,47 +1046,92 @@ func TestSpecsFromDockerEnv(t *testing.T) {
 			if spec.InsecureSkipTLSVerify != tc.wantSpec.InsecureSkipTLSVerify {
 				t.Errorf("InsecureSkipTLSVerify = %v, want %v", spec.InsecureSkipTLSVerify, tc.wantSpec.InsecureSkipTLSVerify)
 			}
-			if spec.TLSSystemRoots != tc.wantSpec.TLSSystemRoots {
-				t.Errorf("TLSSystemRoots = %v, want %v", spec.TLSSystemRoots, tc.wantSpec.TLSSystemRoots)
+		})
+	}
+}
+
+func TestSpecsFromDockerEnv_DockerHostGrammar(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		host        string
+		wantAddress string
+		wantErr     bool
+	}{
+		{name: "bare host", host: "daemon.internal", wantAddress: "tcp://daemon.internal:2375"},
+		{name: "bare host with port", host: "daemon.internal:4243", wantAddress: "tcp://daemon.internal:4243"},
+		{name: "TCP host without port", host: "tcp://daemon.internal", wantAddress: "tcp://daemon.internal:2375"},
+		{name: "TCP host with empty port", host: "tcp://daemon.internal:", wantAddress: "tcp://daemon.internal:2375"},
+		{name: "TCP default host", host: "tcp://", wantAddress: "tcp://localhost:2375"},
+		{name: "TCP default host with port", host: "tcp://:4243", wantAddress: "tcp://localhost:4243"},
+		{name: "IPv6 host without port", host: "[::1]:", wantAddress: "tcp://[::1]:2375"},
+		{name: "absolute Unix socket", host: "unix:///tmp/docker.sock", wantAddress: "unix:///tmp/docker.sock"},
+		{name: "relative Unix socket", host: "unix://relative.sock", wantAddress: "unix://relative.sock"},
+		{name: "HTTP scheme", host: "http://daemon.internal:2375", wantErr: true},
+		{name: "HTTPS scheme", host: "https://daemon.internal:2376", wantErr: true},
+		{name: "unsupported SSH transport", host: "ssh://daemon.internal", wantErr: true},
+		{name: "unsupported file descriptor transport", host: "fd://3", wantErr: true},
+		{name: "unsupported named pipe transport", host: "npipe:////./pipe/docker_engine", wantErr: true},
+		{name: "invalid port", host: "tcp://daemon.internal:not-a-port", wantErr: true},
+		{name: "embedded spaces", host: "something with spaces", wantErr: true},
+		{name: "TCP base path", host: "tcp://daemon.internal:2375/api", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			spec, ok, err := SpecsFromDockerEnv(func(key string) (string, bool) {
+				if key == "DOCKER_HOST" {
+					return tt.host, true
+				}
+				return "", false
+			})
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("SpecsFromDockerEnv(DOCKER_HOST=%q) returned no error", tt.host)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SpecsFromDockerEnv(DOCKER_HOST=%q): %v", tt.host, err)
+			}
+			if !ok {
+				t.Fatalf("SpecsFromDockerEnv(DOCKER_HOST=%q) was inactive", tt.host)
+			}
+			if spec.Address != tt.wantAddress {
+				t.Fatalf("Address = %q, want %q", spec.Address, tt.wantAddress)
 			}
 		})
 	}
 }
 
-// TestBuildEndpoint_TLSSystemRoots covers the DOCKER_TLS_VERIFY-without-cert-path
-// path end to end: a spec carrying only TLSSystemRoots must build a valid TLS
-// endpoint that verifies against the host's system roots (RootCAs nil) and
-// presents no client certificate, rather than being rejected as plain TCP.
-func TestBuildEndpoint_TLSSystemRoots(t *testing.T) {
+func TestSpecsFromDockerEnv_CustomUnixSocketBuilds(t *testing.T) {
 	t.Parallel()
-	ep, err := BuildEndpoint(EndpointSpec{Address: "tcp://dockerd.internal:2376", TLSSystemRoots: true})
-	if err != nil {
-		t.Fatalf("BuildEndpoint: %v", err)
-	}
-	if !ep.IsTLS() {
-		t.Fatal("endpoint is not TLS, want TLS with system roots")
-	}
-	if ep.TLSConfig.RootCAs != nil {
-		t.Error("RootCAs is non-nil, want nil (use system roots)")
-	}
-	if len(ep.TLSConfig.Certificates) != 0 {
-		t.Error("client certificate present, want none (server-auth only)")
-	}
-	if ep.TLSConfig.InsecureSkipVerify {
-		t.Error("InsecureSkipVerify is true, want false (system roots must verify)")
-	}
-	if ep.TLSConfig.ServerName != "dockerd.internal" {
-		t.Errorf("ServerName = %q, want %q", ep.TLSConfig.ServerName, "dockerd.internal")
-	}
-}
-
-// TestValidateSpec_TLSSystemRoots confirms the file-free validator accepts the
-// system-roots spec (so admin/validate does not reject a DOCKER_TLS_VERIFY env
-// drop-in on a host without cert files).
-func TestValidateSpec_TLSSystemRoots(t *testing.T) {
-	t.Parallel()
-	if err := ValidateSpec(EndpointSpec{Address: "tcp://dockerd.internal:2376", TLSSystemRoots: true}); err != nil {
-		t.Fatalf("ValidateSpec: %v", err)
+	for _, host := range []string{"unix:///tmp/custom-docker.sock", "unix://relative.sock"} {
+		host := host
+		t.Run(host, func(t *testing.T) {
+			t.Parallel()
+			spec, ok, err := SpecsFromDockerEnv(func(key string) (string, bool) {
+				if key == "DOCKER_HOST" {
+					return host, true
+				}
+				return "", false
+			})
+			if err != nil {
+				t.Fatalf("SpecsFromDockerEnv: %v", err)
+			}
+			if !ok {
+				t.Fatal("custom Unix DOCKER_HOST was inactive")
+			}
+			endpoint, err := BuildEndpoint(spec)
+			if err != nil {
+				t.Fatalf("BuildEndpoint: %v", err)
+			}
+			if endpoint.Network != "unix" {
+				t.Fatalf("Network = %q, want unix", endpoint.Network)
+			}
+		})
 	}
 }
 

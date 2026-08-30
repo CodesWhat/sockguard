@@ -17,8 +17,8 @@ const upstreamReachableTimeout = 10 * time.Second
 // resolveUpstreamSpecs determines the ordered endpoint specs for the upstream
 // and whether this is the legacy single-local-socket case (which keeps the
 // original fail-fast reachability check and log/banner wording). Precedence:
-// explicit upstream.endpoints > DOCKER_HOST (tcp) env > upstream.socket.
-func resolveUpstreamSpecs(cfg *config.Config, getenv func(string) string, logger *slog.Logger) (specs []upstream.EndpointSpec, legacySocket bool) {
+// explicit upstream.endpoints > DOCKER_HOST env > upstream.socket.
+func resolveUpstreamSpecs(cfg *config.Config, lookupEnv func(string) (string, bool), logger *slog.Logger) (specs []upstream.EndpointSpec, legacySocket bool, err error) {
 	if len(cfg.Upstream.Endpoints) > 0 {
 		specs = make([]upstream.EndpointSpec, len(cfg.Upstream.Endpoints))
 		for i, ep := range cfg.Upstream.Endpoints {
@@ -34,14 +34,18 @@ func resolveUpstreamSpecs(cfg *config.Config, getenv func(string) string, logger
 			}
 		}
 		warnInsecureUpstreamSpecs(logger, specs, "upstream.endpoints config")
-		return specs, false
+		return specs, false, nil
 	}
-	if spec, ok := upstream.SpecsFromDockerEnv(getenv); ok {
+	spec, ok, err := upstream.SpecsFromDockerEnv(lookupEnv)
+	if err != nil {
+		return nil, false, err
+	}
+	if ok {
 		logger.Info("using remote upstream from DOCKER_HOST environment", "address", spec.Address)
 		warnInsecureUpstreamSpecs(logger, []upstream.EndpointSpec{spec}, "DOCKER_HOST environment")
-		return []upstream.EndpointSpec{spec}, false
+		return []upstream.EndpointSpec{spec}, false, nil
 	}
-	return []upstream.EndpointSpec{{Address: cfg.Upstream.Socket}}, true
+	return []upstream.EndpointSpec{{Address: cfg.Upstream.Socket}}, true, nil
 }
 
 // warnInsecureUpstreamSpecs logs startup warnings for insecure endpoint
@@ -106,15 +110,18 @@ func upstreamSpecUsesUnixTransport(spec upstream.EndpointSpec) bool {
 // upstream.BuildEndpoint without loading certificate files.
 func upstreamSpecSelectsTLS(spec upstream.EndpointSpec) bool {
 	return spec.CAFile != "" || spec.CertFile != "" || spec.KeyFile != "" ||
-		spec.InsecureSkipTLSVerify || spec.TLSSystemRoots
+		spec.InsecureSkipTLSVerify
 }
 
 // buildUpstreamResolver constructs the shared upstream resolver from config,
 // loading any per-endpoint TLS material. It returns the resolver, whether the
 // legacy single-socket path was taken, and an error for any unbuildable
 // endpoint (bad address, missing/invalid TLS files).
-func buildUpstreamResolver(cfg *config.Config, logger *slog.Logger, getenv func(string) string) (*upstream.Resolver, bool, error) {
-	specs, legacy := resolveUpstreamSpecs(cfg, getenv, logger)
+func buildUpstreamResolver(cfg *config.Config, logger *slog.Logger, lookupEnv func(string) (string, bool)) (*upstream.Resolver, bool, error) {
+	specs, legacy, err := resolveUpstreamSpecs(cfg, lookupEnv, logger)
+	if err != nil {
+		return nil, false, err
+	}
 	endpoints := make([]upstream.Endpoint, 0, len(specs))
 	for _, spec := range specs {
 		ep, err := upstream.BuildEndpoint(spec)

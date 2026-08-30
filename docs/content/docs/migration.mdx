@@ -201,7 +201,7 @@ Replace the flag with the CA that issued the daemon certificate:
 -      insecure_skip_tls_verify: true
 ```
 
-The Docker environment fallback follows the same schedule. A non-empty `DOCKER_TLS` with `DOCKER_TLS_VERIFY` empty or unset selects unverified TLS; set `DOCKER_TLS_VERIFY=1` before v3.0.0. Any non-empty verification value, including `0` or `false`, enables verification and takes precedence over `DOCKER_TLS`, matching the Docker CLI's environment semantics. With `DOCKER_CERT_PATH` set, sockguard verifies against `ca.pem` from that directory and presents its `cert.pem` / `key.pem`; the path alone only locates TLS material and does not enable TLS. A server-auth-only deployment without client certificates can set `DOCKER_TLS_VERIFY=1` with no `DOCKER_CERT_PATH` and use the host's system roots.
+The Docker environment fallback follows the same schedule. A non-empty `DOCKER_TLS` with `DOCKER_TLS_VERIFY` empty or unset selects unverified TLS; set `DOCKER_TLS_VERIFY=1` before v3.0.0. Any non-empty verification value, including `0` or `false`, enables verification and takes precedence over `DOCKER_TLS`, matching the Docker CLI's environment semantics. When TLS is enabled, sockguard requires `ca.pem` from `DOCKER_CERT_PATH`, otherwise `DOCKER_CONFIG`, otherwise `~/.docker`; it presents `cert.pem` / `key.pem` only when both exist. `DOCKER_CERT_PATH` alone only locates material and does not enable TLS. Bare and portless TCP hosts default to port `2375`, custom Unix sockets are honored, and an invalid explicit `DOCKER_HOST` now fails startup instead of falling through to `upstream.socket`.
 
 ## From Tecnativa/docker-socket-proxy
 

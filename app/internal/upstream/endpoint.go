@@ -20,9 +20,11 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -83,13 +85,6 @@ type EndpointSpec struct {
 	// certificate. Useful for self-signed homelab daemons; dangerous in
 	// production because it defeats authentication of the upstream.
 	InsecureSkipTLSVerify bool
-	// TLSSystemRoots requests verified TLS using the host's system root CA pool
-	// and no client certificate — the server-authentication-only case produced
-	// by DOCKER_TLS_VERIFY with no DOCKER_CERT_PATH. It makes a tcp:// endpoint
-	// valid without any explicit CA/cert/key material (the CA defaults to the
-	// system roots). Not exposed as a YAML knob; it only originates from the
-	// DOCKER_* environment drop-in.
-	TLSSystemRoots bool
 }
 
 // BuildEndpoint parses spec.Address, loads any TLS material, and returns a
@@ -105,6 +100,9 @@ func BuildEndpoint(spec EndpointSpec) (Endpoint, error) {
 	case "unix":
 		// TLS material on a unix endpoint is meaningless and almost always a
 		// copy-paste mistake — reject it rather than silently ignore.
+		if spec.ServerName != "" {
+			return Endpoint{}, fmt.Errorf("upstream endpoint %q: tls.server_name is not valid for a unix socket", spec.Address)
+		}
 		if spec.CertFile != "" || spec.KeyFile != "" || spec.CAFile != "" {
 			return Endpoint{}, fmt.Errorf("upstream endpoint %q: TLS settings are not valid for a unix socket", spec.Address)
 		}
@@ -133,6 +131,9 @@ func ValidateSpec(spec EndpointSpec) error {
 	}
 	switch network {
 	case "unix":
+		if spec.ServerName != "" {
+			return fmt.Errorf("upstream endpoint %q: tls.server_name is not valid for a unix socket", spec.Address)
+		}
 		if spec.CertFile != "" || spec.KeyFile != "" || spec.CAFile != "" {
 			return fmt.Errorf("upstream endpoint %q: TLS settings are not valid for a unix socket", spec.Address)
 		}
@@ -141,7 +142,7 @@ func ValidateSpec(spec EndpointSpec) error {
 		if (spec.CertFile == "") != (spec.KeyFile == "") {
 			return fmt.Errorf("upstream endpoint %q: tls.cert_file and tls.key_file must be set together", spec.Address)
 		}
-		hasAnyTLS := spec.CertFile != "" || spec.KeyFile != "" || spec.CAFile != "" || spec.InsecureSkipTLSVerify || spec.TLSSystemRoots
+		hasAnyTLS := spec.CertFile != "" || spec.KeyFile != "" || spec.CAFile != "" || spec.InsecureSkipTLSVerify
 		if !hasAnyTLS && !spec.InsecureAllowPlainTCP {
 			return fmt.Errorf("upstream endpoint %q: TCP requires TLS (set tls.ca_file/cert_file/key_file) or insecure_allow_plain_tcp: true", spec.Address)
 		}
@@ -176,15 +177,17 @@ func parseAddress(raw string) (network, address string, err error) {
 
 	switch u.Scheme {
 	case "unix":
-		// unix:///var/run/docker.sock → Path carries the socket path. A
-		// host-form unix://relative.sock is rejected as ambiguous.
-		if u.Host != "" {
-			return "", "", fmt.Errorf("upstream endpoint %q: unix sockets use an absolute path (unix:///var/run/docker.sock)", raw)
+		if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return "", "", fmt.Errorf("upstream endpoint %q: invalid unix socket address", raw)
 		}
-		if u.Path == "" {
+		address := u.Path
+		if u.Host != "" {
+			address = u.Host + u.Path
+		}
+		if address == "" {
 			return "", "", fmt.Errorf("upstream endpoint %q: missing socket path", raw)
 		}
-		return "unix", u.Path, nil
+		return "unix", address, nil
 	case "tcp", "http", "https":
 		if u.Host == "" {
 			return "", "", fmt.Errorf("upstream endpoint %q: missing host:port", raw)
@@ -203,7 +206,7 @@ func parseAddress(raw string) (network, address string, err error) {
 // returns nil only when plaintext TCP is explicitly acknowledged.
 func buildClientTLS(spec EndpointSpec, address string) (*tls.Config, error) {
 	hasCert := spec.CertFile != "" || spec.KeyFile != ""
-	hasAnyTLS := hasCert || spec.CAFile != "" || spec.InsecureSkipTLSVerify || spec.TLSSystemRoots
+	hasAnyTLS := hasCert || spec.CAFile != "" || spec.InsecureSkipTLSVerify
 
 	if !hasAnyTLS {
 		if spec.InsecureAllowPlainTCP {
@@ -270,51 +273,153 @@ func splitHostPort(hostport string) (host, port string, ok bool) {
 	return host, port, port != ""
 }
 
-// SpecsFromDockerEnv reads the standard Docker client environment variables
-// (DOCKER_HOST, DOCKER_TLS, DOCKER_TLS_VERIFY, DOCKER_CERT_PATH) and returns a single
-// EndpointSpec when DOCKER_HOST names a TCP daemon, so an operator with a
-// working `docker -H tcp://…` setup can point sockguard at it with no YAML.
-// It returns ok=false when DOCKER_HOST is unset or names a unix socket (the
-// local-socket default already covers that case).
-func SpecsFromDockerEnv(getenv func(string) string) (EndpointSpec, bool) {
-	host := strings.TrimSpace(getenv("DOCKER_HOST"))
+const (
+	dockerDefaultHost = "localhost"
+	dockerDefaultPort = "2375"
+)
+
+func parseDockerHost(raw string) (normalized, network string, err error) {
+	host := strings.TrimSpace(raw)
 	if host == "" {
-		return EndpointSpec{}, false
-	}
-	network, _, err := parseAddress(host)
-	if err != nil || network != "tcp" {
-		return EndpointSpec{}, false
+		return "", "", fmt.Errorf("DOCKER_HOST is empty")
 	}
 
-	spec := EndpointSpec{Address: host}
-	tlsEnabled := getenv("DOCKER_TLS") != ""
-	tlsVerify := getenv("DOCKER_TLS_VERIFY") != ""
-	certPath := strings.TrimSpace(getenv("DOCKER_CERT_PATH"))
-	if (tlsEnabled || tlsVerify) && certPath != "" {
-		spec.CAFile = filepath.Join(certPath, "ca.pem")
-		spec.CertFile = filepath.Join(certPath, "cert.pem")
-		spec.KeyFile = filepath.Join(certPath, "key.pem")
+	protocol, address, hasProtocol := strings.Cut(host, "://")
+	if !hasProtocol {
+		address = protocol
+		protocol = "tcp"
 	}
-	switch {
-	case tlsVerify:
-		if certPath == "" {
-			// DOCKER_TLS_VERIFY with no DOCKER_CERT_PATH: verify the daemon against
-			// the system root CAs and present no client cert (server-auth only).
-			// Without this signal the spec would carry no TLS material and be
-			// rejected as plain TCP, breaking the documented env drop-in.
-			spec.TLSSystemRoots = true
+
+	switch protocol {
+	case "tcp":
+		address, err = parseDockerTCPAddress(address)
+		if err != nil {
+			return "", "", fmt.Errorf("DOCKER_HOST %q: %w", host, err)
 		}
-	case tlsEnabled:
+		return "tcp://" + address, "tcp", nil
+	case "unix":
+		if strings.Contains(address, "://") {
+			return "", "", fmt.Errorf("DOCKER_HOST %q: invalid Unix socket address", host)
+		}
+		if address == "" {
+			address = "/var/run/docker.sock"
+		}
+		return "unix://" + address, "unix", nil
+	default:
+		return "", "", fmt.Errorf("DOCKER_HOST %q: unsupported transport %q (use unix:// or tcp://)", host, protocol)
+	}
+}
+
+func parseDockerTCPAddress(address string) (string, error) {
+	if address == "" {
+		return net.JoinHostPort(dockerDefaultHost, dockerDefaultPort), nil
+	}
+	if strings.Contains(address, "://") {
+		return "", fmt.Errorf("invalid TCP address")
+	}
+	if strings.HasSuffix(address, "]:") {
+		address += dockerDefaultPort
+	}
+
+	u, err := url.Parse("tcp://" + address)
+	if err != nil {
+		return "", fmt.Errorf("invalid TCP address: %w", err)
+	}
+	if u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("TCP base paths and URL components are not supported")
+	}
+	host, port, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		host, port, err = net.SplitHostPort(net.JoinHostPort(u.Host, dockerDefaultPort))
+	}
+	if err != nil {
+		return "", fmt.Errorf("invalid TCP address")
+	}
+	if host == "" {
+		host = dockerDefaultHost
+	}
+	if port == "" {
+		port = dockerDefaultPort
+	}
+	if parsedPort, err := strconv.Atoi(port); err != nil && parsedPort == 0 {
+		return "", fmt.Errorf("invalid TCP port %q", port)
+	}
+	return net.JoinHostPort(host, port), nil
+}
+
+// SpecsFromDockerEnv reads the standard Docker client environment variables
+// and returns one normalized TCP or Unix EndpointSpec. It returns ok=false only
+// when DOCKER_HOST is absent; a present invalid or unsupported value is an
+// error so startup cannot silently route to a different daemon.
+func SpecsFromDockerEnv(lookupEnv func(string) (string, bool)) (EndpointSpec, bool, error) {
+	rawHost, present := lookupEnv("DOCKER_HOST")
+	if !present {
+		return EndpointSpec{}, false, nil
+	}
+	normalizedHost, network, err := parseDockerHost(rawHost)
+	if err != nil {
+		return EndpointSpec{}, false, err
+	}
+	if network == "unix" {
+		return EndpointSpec{Address: normalizedHost}, true, nil
+	}
+
+	spec := EndpointSpec{Address: normalizedHost}
+	tlsValue, _ := lookupEnv("DOCKER_TLS")
+	tlsVerifyValue, _ := lookupEnv("DOCKER_TLS_VERIFY")
+	tlsEnabled := tlsValue != ""
+	tlsVerify := tlsVerifyValue != ""
+	if tlsEnabled || tlsVerify {
+		certPath, err := dockerCertificateDirectory(lookupEnv)
+		if err != nil {
+			return EndpointSpec{}, false, err
+		}
+		spec.CAFile = filepath.Join(certPath, "ca.pem")
+		certFile := filepath.Join(certPath, "cert.pem")
+		keyFile := filepath.Join(certPath, "key.pem")
+		certPresent := dockerOptionalFilePresent(certFile)
+		keyPresent := dockerOptionalFilePresent(keyFile)
+		if certPresent && keyPresent {
+			spec.CertFile = certFile
+			spec.KeyFile = keyFile
+		} else if certPresent {
+			if _, err := os.ReadFile(certFile); err != nil {
+				return EndpointSpec{}, false, fmt.Errorf("reading Docker client certificate: %w", err)
+			}
+		} else if keyPresent {
+			if _, err := os.ReadFile(keyFile); err != nil {
+				return EndpointSpec{}, false, fmt.Errorf("reading Docker client key: %w", err)
+			}
+		}
+	}
+	if tlsEnabled && !tlsVerify {
 		// Like Docker CLI's --tls flag, any non-empty DOCKER_TLS value enables
 		// encrypted transport without server verification. DOCKER_TLS_VERIFY
-		// takes precedence above and enables verification when both are set.
+		// takes precedence and enables verification when both are set.
 		spec.InsecureSkipTLSVerify = true
-	case !tlsVerify:
+	} else if !tlsVerify {
 		// DOCKER_CERT_PATH only locates TLS material; it does not enable TLS.
 		// With neither TLS signal present the Docker CLI uses plaintext TCP.
 		spec.InsecureAllowPlainTCP = true
 	}
-	// tlsVerify && certPath != "" → verified mTLS loaded from the cert files,
-	// no insecure flag needed.
-	return spec, true
+	return spec, true, nil
+}
+
+func dockerCertificateDirectory(lookupEnv func(string) (string, bool)) (string, error) {
+	if certPath, _ := lookupEnv("DOCKER_CERT_PATH"); certPath != "" {
+		return certPath, nil
+	}
+	if configDir, _ := lookupEnv("DOCKER_CONFIG"); configDir != "" {
+		return configDir, nil
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve Docker client config directory: %w", err)
+	}
+	return filepath.Join(homeDir, ".docker"), nil
+}
+
+func dockerOptionalFilePresent(path string) bool {
+	_, err := os.Stat(path)
+	return !os.IsNotExist(err)
 }

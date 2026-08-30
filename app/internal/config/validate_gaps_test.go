@@ -39,6 +39,26 @@ func TestEndpointSpecMapping(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsUpstreamServerNameOnUnix(t *testing.T) {
+	cfg := Defaults()
+	cfg.Upstream.Endpoints = []UpstreamEndpoint{{
+		Address: "unix:///run/docker.sock",
+		TLS: UpstreamTLSConfig{
+			ServerName: "daemon.internal",
+		},
+	}}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("Validate accepted upstream.endpoints[0].tls.server_name on Unix")
+	}
+	for _, field := range []string{"upstream.endpoints[0]", "tls.server_name"} {
+		if !strings.Contains(err.Error(), field) {
+			t.Fatalf("Validate error = %q, want field %q", err, field)
+		}
+	}
+}
+
 // TestValidateUpstreamRequestTimeout exercises the validateUpstream branches
 // for upstream.request_timeout that are not covered by existing tests.
 func TestValidateUpstreamRequestTimeout(t *testing.T) {

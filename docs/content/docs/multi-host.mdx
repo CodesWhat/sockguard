@@ -127,19 +127,21 @@ If you have a working `docker -H tcp://…` setup with the standard Docker clien
 
 | Environment variable | Effect |
 |---|---|
-| `DOCKER_HOST=tcp://host:port` | Routes to that TCP address |
+| `DOCKER_HOST=tcp://host:port`, `host[:port]`, or `unix:///path` | Routes to that TCP or Unix endpoint; portless TCP defaults to `2375` |
 | `DOCKER_TLS=<non-empty>` | Enables TLS without server verification; deprecated for removal in v3.0.0 |
 | `DOCKER_TLS_VERIFY=<non-empty>` | Enables TLS verification and takes precedence over `DOCKER_TLS` |
 | `DOCKER_CERT_PATH=/path` | Locates `ca.pem`, `cert.pem`, and `key.pem` when TLS is enabled; does not enable TLS by itself |
+| `DOCKER_CONFIG=/path` | Supplies the certificate directory when `DOCKER_CERT_PATH` is empty; otherwise the Docker default is `~/.docker` |
 
-Precedence: `upstream.endpoints` (YAML) > `DOCKER_HOST` (env) > `upstream.socket` (YAML/default). The env path only activates when `DOCKER_HOST` names a `tcp://` daemon; a `unix://` (or unset) `DOCKER_HOST` falls through to the local-socket default.
+Precedence: `upstream.endpoints` (YAML) > `DOCKER_HOST` (env) > `upstream.socket` (YAML/default). A valid custom `unix://` value is used directly. Only an absent `DOCKER_HOST` falls through to `upstream.socket`; a present empty, malformed, `http://`/`https://`, or unsupported transport value fails startup instead of silently selecting another daemon.
 
 Sockguard follows the Docker CLI's presence semantics: an empty or unset TLS variable is disabled, while every non-empty value, including `0` and `false`, is enabled. `DOCKER_TLS_VERIFY` wins when both TLS variables are non-empty, so no YAML acknowledgment is needed for the env drop-in:
 
-- **`DOCKER_TLS_VERIFY` non-empty + `DOCKER_CERT_PATH`** → verified mTLS using `ca.pem` / `cert.pem` / `key.pem` from the cert directory.
-- **`DOCKER_TLS_VERIFY` non-empty + no `DOCKER_CERT_PATH`** → verified, server-auth-only TLS: the daemon's certificate is checked against the host's **system root CAs** and sockguard presents no client certificate. Use this when the daemon's cert chains to a public/enterprise CA already in the system trust store and the daemon doesn't require client auth.
-- **`DOCKER_TLS` non-empty + `DOCKER_TLS_VERIFY` empty or unset** → encrypted, but the daemon's server certificate is *not* verified. `DOCKER_CERT_PATH`, when present, supplies the client certificate and key. This mode logs a source-specific deprecation warning and will be removed in v3.0.0. Set `DOCKER_TLS_VERIFY=1` before upgrading.
+- **`DOCKER_TLS_VERIFY` non-empty** → verified TLS using `ca.pem` from the Docker certificate directory. If both `cert.pem` and `key.pem` exist, sockguard also presents them for mutual TLS; if either is absent, it uses server-auth-only TLS.
+- **`DOCKER_TLS` non-empty + `DOCKER_TLS_VERIFY` empty or unset** → encrypted, but the daemon's server certificate is *not* verified. Docker still requires a readable, valid `ca.pem`; the optional client pair is resolved the same way. This mode logs a source-specific deprecation warning and will be removed in v3.0.0. Set `DOCKER_TLS_VERIFY=1` before upgrading.
 - **Both TLS variables empty or unset** → plaintext TCP (equivalent to `insecure_allow_plain_tcp`), regardless of `DOCKER_CERT_PATH`. The acknowledgment is implicit because the Docker CLI also treats the certificate path as a locator rather than a TLS enablement signal.
+
+When TLS is enabled, the certificate directory is `DOCKER_CERT_PATH` when non-empty, otherwise `DOCKER_CONFIG` when non-empty, otherwise `~/.docker`. `ca.pem` is required and replaces the system root pool. `cert.pem` and `key.pem` are optional as a pair. This is the same lookup the Docker CLI applies, including when no explicit certificate path is set.
 
 This means an existing Docker CLI setup works with zero YAML changes — just point sockguard at the same env vars your client uses. To override any of these, set `upstream.endpoints` in YAML, which takes precedence over the environment.
 
