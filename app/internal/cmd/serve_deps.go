@@ -24,6 +24,7 @@ import (
 	"github.com/codeswhat/sockguard/app/internal/imagetrust"
 	"github.com/codeswhat/sockguard/app/internal/logging"
 	"github.com/codeswhat/sockguard/app/internal/policybundle"
+	"github.com/codeswhat/sockguard/app/internal/upstreamflavor"
 )
 
 type serveDeps struct {
@@ -49,47 +50,55 @@ type serveDeps struct {
 	// found at bind time (EADDRINUSE). Only an error matching ECONNREFUSED is
 	// proof that the socket is stale; nil means live and every other error is
 	// ambiguous and must preserve the path (#149).
-	probeUnixSocket     func(string) error
-	chown               func(string, int, int) error
-	buildBundleVerifier func(config.PolicyBundleConfig) (policybundle.Verifier, error)
-	loadBundleEntity    func(string) (verify.SignedEntity, error)
-	notifySignals       func(chan<- os.Signal, ...os.Signal)
-	startServing        func(*http.Server, net.Listener, chan<- error)
-	shutdownServer      func(*http.Server, context.Context) error
-	removePath          func(string) error
-	now                 func() time.Time
-	shutdownGracePeriod time.Duration
-	umask               func(int) int
-	umaskMu             *sync.Mutex
+	probeUnixSocket func(string) error
+	// detectUpstreamFlavor classifies the engine behind the upstream from its
+	// GET /version response. Seam of the same shape as dialUpstream and
+	// probeUnixSocket above: production binds upstreamflavor.Detect (pinned by
+	// TestServeDepsBindTheRealUpstreamFlavorProbe), and tests that only care
+	// about listener lifecycle stub it rather than standing up a fake daemon.
+	// It runs only when upstream.flavor is "auto".
+	detectUpstreamFlavor func(context.Context, *http.Client) (upstreamflavor.Flavor, error)
+	chown                func(string, int, int) error
+	buildBundleVerifier  func(config.PolicyBundleConfig) (policybundle.Verifier, error)
+	loadBundleEntity     func(string) (verify.SignedEntity, error)
+	notifySignals        func(chan<- os.Signal, ...os.Signal)
+	startServing         func(*http.Server, net.Listener, chan<- error)
+	shutdownServer       func(*http.Server, context.Context) error
+	removePath           func(string) error
+	now                  func() time.Time
+	shutdownGracePeriod  time.Duration
+	umask                func(int) int
+	umaskMu              *sync.Mutex
 }
 
 var processUmaskMu sync.Mutex
 
 func newServeDeps() *serveDeps {
 	deps := &serveDeps{
-		loadConfig:          config.Load,
-		loadConfigBytes:     config.LoadBytes,
-		readConfigBytes:     config.ReadFile,
-		newLogger:           logging.New,
-		newAuditLogger:      logging.NewAudit,
-		validateRules:       validateAndCompileRules,
-		dialUpstream:        net.DialTimeout,
-		listenNetwork:       net.Listen,
-		lstatPath:           os.Lstat,
-		statPath:            os.Stat,
-		isAddrInUse:         isAddrInUse,
-		probeUnixSocket:     defaultProbeUnixSocket,
-		chown:               os.Chown,
-		buildBundleVerifier: defaultBuildBundleVerifier,
-		loadBundleEntity:    policybundle.LoadBundle,
-		notifySignals:       signal.Notify,
-		startServing:        defaultServeStart,
-		shutdownServer:      defaultServeShutdown,
-		removePath:          os.Remove,
-		now:                 time.Now,
-		shutdownGracePeriod: 30 * time.Second,
-		umask:               syscall.Umask,
-		umaskMu:             &processUmaskMu,
+		loadConfig:           config.Load,
+		loadConfigBytes:      config.LoadBytes,
+		readConfigBytes:      config.ReadFile,
+		newLogger:            logging.New,
+		newAuditLogger:       logging.NewAudit,
+		validateRules:        validateAndCompileRules,
+		dialUpstream:         net.DialTimeout,
+		listenNetwork:        net.Listen,
+		lstatPath:            os.Lstat,
+		statPath:             os.Stat,
+		isAddrInUse:          isAddrInUse,
+		probeUnixSocket:      defaultProbeUnixSocket,
+		detectUpstreamFlavor: upstreamflavor.Detect,
+		chown:                os.Chown,
+		buildBundleVerifier:  defaultBuildBundleVerifier,
+		loadBundleEntity:     policybundle.LoadBundle,
+		notifySignals:        signal.Notify,
+		startServing:         defaultServeStart,
+		shutdownServer:       defaultServeShutdown,
+		removePath:           os.Remove,
+		now:                  time.Now,
+		shutdownGracePeriod:  30 * time.Second,
+		umask:                syscall.Umask,
+		umaskMu:              &processUmaskMu,
 	}
 	deps.createServeListener = deps.createListener
 	deps.createAdminListener = deps.createAdminListenerImpl

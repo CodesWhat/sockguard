@@ -23,6 +23,7 @@ import (
 	"github.com/codeswhat/sockguard/app/internal/inspectcache"
 	"github.com/codeswhat/sockguard/app/internal/logging"
 	"github.com/codeswhat/sockguard/app/internal/responsefilter"
+	"github.com/codeswhat/sockguard/app/internal/upstreamflavor"
 )
 
 // patternBufferPool pools bytes.Buffer instances so the pattern-filter writer
@@ -57,6 +58,7 @@ const (
 	reasonCodeVisibilityPolicyLookupFailed  = "visibility_policy_lookup_failed"
 	reasonCodeVisibilityPolicyHidResource   = "visibility_policy_hid_resource"
 	reasonCodeVisibilityResponseTooLarge    = "visibility_response_too_large"
+	reasonCodeVisibilityPodmanEvents        = "visibility_podman_events_unscopeable"
 	reasonCodeVisibilityLibpodDataUsage     = "visibility_libpod_data_usage_unscopeable"
 	reasonCodeVisibilityLibpodEvents        = "visibility_libpod_events_unscopeable"
 )
@@ -74,6 +76,19 @@ type Options struct {
 	ImagePatterns  []string
 	Profiles       map[string]Policy
 	ResolveProfile func(*http.Request) (string, bool)
+	// UpstreamFlavor is the engine behind the upstream socket, resolved at
+	// startup from upstream.flavor (see internal/upstreamflavor). It changes
+	// exactly one thing: how GET /events is handled, because Podman evaluates
+	// several values under one event filter key disjunctively where dockerd
+	// ANDs them, so the append-style injection every other list endpoint uses
+	// widens that stream on Podman instead of narrowing it.
+	//
+	// The zero value means Docker — the semantics every construction site had
+	// before this field existed. `auto` never resolves to the zero value:
+	// resolveUpstreamFlavor fails startup rather than leaving it empty, so
+	// production always sets it explicitly and
+	// TestServeChainPassesResolvedFlavorToVisibility pins that wiring.
+	UpstreamFlavor upstreamflavor.Flavor
 }
 
 // Policy defines per-profile visibility overrides.
@@ -157,6 +172,12 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 		return func(next http.Handler) http.Handler { return next }
 	}
 
+	// Hoisted out of the request closure: the flavor is fixed for the life of
+	// the process (upstream.flavor is reload-immutable and the chain is
+	// rebuilt on reload anyway), so the request path compares a bool rather
+	// than a string.
+	podmanUpstream := opts.UpstreamFlavor == upstreamflavor.Podman
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			effectivePolicy, ok := resolveEffectivePolicy(opts, mergedProfilePolicies, defaultPolicy, w, r)
@@ -179,6 +200,17 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 			// endpoint does not define would be meaningless at best.
 			if r.Method == http.MethodGet && normPath == responsefilter.SystemDataUsagePath {
 				handleVisibilitySystemDataUsageRequest(logger, next, w, r, &effectivePolicy)
+				return
+			}
+			// On a Podman upstream the Docker-compat GET /events is the same
+			// handler Podman serves /libpod/events from, and it evaluates
+			// several values under one filter key disjunctively. The
+			// append-style injection below would widen that stream rather
+			// than narrow it, so it gets a single-selector replacement and a
+			// refusal when the policy carries more. Docker upstreams take the
+			// ordinary list path here, unchanged. See podmanEventsDenyReason.
+			if podmanUpstream && normPath == compatEventsPath {
+				handlePodmanCompatEventsRequest(next, w, r, &effectivePolicy)
 				return
 			}
 			// Podman's native GET /libpod/system/df has the same
@@ -252,7 +284,7 @@ func compileVisibilityPolicies(logger *slog.Logger, opts Options) (compiledPolic
 			return compiledPolicy{}, nil, false
 		}
 		mergedPolicy := compiledPolicy{
-			selectors:     append(slices.Clone(defaultPolicy.selectors), compiled.selectors...),
+			selectors:     appendUniqueSelectors(slices.Clone(defaultPolicy.selectors), compiled.selectors...),
 			namePatterns:  append(slices.Clone(defaultPolicy.namePatterns), compiled.namePatterns...),
 			imagePatterns: append(slices.Clone(defaultPolicy.imagePatterns), compiled.imagePatterns...),
 		}
@@ -703,7 +735,7 @@ func compilePolicy(labels []string, nameGlobs []string, imageGlobs []string) (co
 		if err != nil {
 			return compiled, err
 		}
-		compiled.selectors = append(compiled.selectors, selector)
+		compiled.selectors = appendUniqueSelectors(compiled.selectors, selector)
 	}
 	var err error
 	compiled.namePatterns, err = compilePatterns(nameGlobs)
@@ -715,6 +747,15 @@ func compilePolicy(labels []string, nameGlobs []string, imageGlobs []string) (co
 		return compiledPolicy{}, fmt.Errorf("image_patterns: %w", err)
 	}
 	return compiled, nil
+}
+
+func appendUniqueSelectors(dst []compiledSelector, selectors ...compiledSelector) []compiledSelector {
+	for _, selector := range selectors {
+		if !slices.Contains(dst, selector) {
+			dst = append(dst, selector)
+		}
+	}
+	return dst
 }
 
 func parseSelector(raw string) (compiledSelector, error) {

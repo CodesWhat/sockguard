@@ -15,6 +15,7 @@ import (
 	"github.com/codeswhat/sockguard/app/internal/glob"
 	"github.com/codeswhat/sockguard/app/internal/pkipin"
 	"github.com/codeswhat/sockguard/app/internal/upstream"
+	"github.com/codeswhat/sockguard/app/internal/upstreamflavor"
 	"github.com/google/go-containerregistry/pkg/name"
 )
 
@@ -450,6 +451,12 @@ func validateUpstream(cfg *Config) []string {
 		if err != nil || timeout <= 0 {
 			errs = append(errs, fmt.Sprintf(`upstream.request_timeout must be a positive duration or "off" to disable, got %q`, cfg.Upstream.RequestTimeout))
 		}
+	}
+	if _, ok := upstreamflavor.Configured(cfg.Upstream.Flavor); !ok {
+		errs = append(errs, fmt.Sprintf(
+			"upstream.flavor must be %q, %q or %q, got %q",
+			upstreamflavor.Auto, upstreamflavor.Docker, upstreamflavor.Podman, cfg.Upstream.Flavor,
+		))
 	}
 	if d := cfg.Upstream.Failover.HealthInterval; d != "" {
 		// Zero is ambiguous: durationOrZero maps it to the resolver default (5s),
