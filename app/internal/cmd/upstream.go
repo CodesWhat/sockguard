@@ -44,20 +44,25 @@ func resolveUpstreamSpecs(cfg *config.Config, getenv func(string) string, logger
 	return []upstream.EndpointSpec{{Address: cfg.Upstream.Socket}}, true
 }
 
-// warnInsecureUpstreamSpecs logs a startup warning for each endpoint that
-// transports Docker API traffic without proper TLS — plaintext TCP, or TLS with
-// certificate verification disabled. Both leave exec streams, secrets, and
-// container data exposed (unencrypted, or encrypted but MITM-susceptible), so an
-// operator who reaches them via a DOCKER_HOST drop-in (not just explicit config)
-// gets a visible breadcrumb rather than a silent downgrade.
+// warnInsecureUpstreamSpecs logs startup warnings for insecure endpoint
+// settings. InsecureAllowPlainTCP selects plaintext only when no TLS-enabling
+// setting is present; when TLS is selected, warn about the redundant permission
+// without claiming that traffic is plaintext. InsecureSkipTLSVerify always
+// selects TLS, but leaves the encrypted connection susceptible to a
+// man-in-the-middle.
 func warnInsecureUpstreamSpecs(logger *slog.Logger, specs []upstream.EndpointSpec, source string) {
 	if logger == nil {
 		return
 	}
 	for _, spec := range specs {
 		if spec.InsecureAllowPlainTCP {
-			logger.Warn("upstream Docker endpoint uses plaintext TCP with no TLS; "+
-				"Docker API traffic (exec streams, secrets, container data) is unencrypted and unauthenticated on the wire",
+			message := "upstream Docker endpoint uses plaintext TCP with no TLS; " +
+				"Docker API traffic (exec streams, secrets, container data) is unencrypted and unauthenticated on the wire"
+			if upstreamSpecSelectsTLS(spec) {
+				message = "upstream Docker endpoint has insecure_allow_plain_tcp enabled, but TLS is selected; " +
+					"remove insecure_allow_plain_tcp because it has no effect while TLS is configured"
+			}
+			logger.Warn(message,
 				"address", spec.Address, "source", source)
 		}
 		if spec.InsecureSkipTLSVerify {
@@ -81,6 +86,13 @@ func warnInsecureUpstreamSpecs(logger *slog.Logger, specs []upstream.EndpointSpe
 			)
 		}
 	}
+}
+
+// upstreamSpecSelectsTLS mirrors the transport selection in
+// upstream.BuildEndpoint without loading certificate files.
+func upstreamSpecSelectsTLS(spec upstream.EndpointSpec) bool {
+	return spec.CAFile != "" || spec.CertFile != "" || spec.KeyFile != "" ||
+		spec.InsecureSkipTLSVerify || spec.TLSSystemRoots
 }
 
 // buildUpstreamResolver constructs the shared upstream resolver from config,
