@@ -925,7 +925,7 @@ carries `decision: "would_deny"`, plus the request's `method` and
 `normalized_path`. A denied `POST /v1.51/containers/create` looks like:
 
 ```json
-{"event_type":"http_request","timestamp":"2026-08-29T14:32:07.118453Z","request_id":"a1b2c3d4e5f67890","client_request_id":"","method":"POST","raw_path":"/v1.51/containers/create","normalized_path":"/containers/create","decision":"would_deny","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","matched_rule":0,"selected_profile":"discovery","rollout_mode":"audit","status":201,"actor_remote_addr":"172.20.0.4:51322","actor_source_ip":"172.20.0.4","transport_listener":"tcp","transport_scheme":"http","transport_protocol":"HTTP/1.1","listener_name":"default","ownership":{"enabled":false,"owner":"","label_key":""}}
+{"event_type":"http_request","timestamp":"2026-08-29T14:32:07.118453Z","request_id":"a1b2c3d4e5f67890","client_request_id":"","method":"POST","raw_path":"/v1.51/containers/create","normalized_path":"/containers/create","decision":"would_deny","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","matched_rule":0,"selected_profile":"discovery","rollout_mode":"audit","status":201,"actor_remote_addr":"@","actor_source_ip":"","transport_listener":"unix","transport_scheme":"http","transport_protocol":"HTTP/1.1","listener_name":"discovery","ownership":{"enabled":false,"owner":"","label_key":""}}
 ```
 
 `status: 201` is the daemon's real response — the request was actually
