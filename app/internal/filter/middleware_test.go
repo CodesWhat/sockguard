@@ -395,32 +395,55 @@ func TestMiddlewareProcessListAcknowledgmentAllowsNativePodTop(t *testing.T) {
 	}
 }
 
-func TestMiddlewareProcessListAcknowledgmentCannotBeRelaxedByRolloutMode(t *testing.T) {
-	denyAll, err := CompileRule(Rule{
-		Methods: []string{"*"},
-		Pattern: "/**",
+func TestMiddlewareProcessListHardGatePreservesPolicyDenialsInEveryRolloutMode(t *testing.T) {
+	matchedDeny, err := CompileRule(Rule{
+		Methods: []string{http.MethodGet},
+		Pattern: "/containers/*/top",
 		Action:  ActionDeny,
+		Reason:  "process lists are disabled by policy",
 		Index:   0,
 	})
 	if err != nil {
 		t.Fatalf("CompileRule: %v", err)
 	}
 
-	for _, mode := range []string{"warn", "audit"} {
-		for _, requestPath := range []string{
-			"/v1.53/containers/payments/top",
-			"/v5.0.0/libpod/containers/payments/top",
-			"/v5.0.0/libpod/pods/payments/top",
-		} {
-			t.Run(mode+" "+requestPath, func(t *testing.T) {
+	policies := []struct {
+		name           string
+		rules          []*CompiledRule
+		wantRule       int
+		wantReason     string
+		wantReasonCode string
+	}{
+		{
+			name:           "default deny",
+			wantRule:       -1,
+			wantReason:     ReasonNoMatchingAllowRule,
+			wantReasonCode: reasonCodeNoMatchingAllowRule,
+		},
+		{
+			name:           "matched deny",
+			rules:          []*CompiledRule{matchedDeny},
+			wantRule:       0,
+			wantReason:     "process lists are disabled by policy",
+			wantReasonCode: reasonCodeMatchedDenyRule,
+		},
+	}
+
+	for _, policy := range policies {
+		for _, mode := range []string{"", "warn", "audit"} {
+			modeName := mode
+			if modeName == "" {
+				modeName = "default"
+			}
+			t.Run(policy.name+"/"+modeName, func(t *testing.T) {
 				reached := false
-				handler := MiddlewareWithOptions([]*CompiledRule{denyAll}, testLogger(), Options{})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				handler := MiddlewareWithOptions(policy.rules, testLogger(), Options{})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					reached = true
 					w.WriteHeader(http.StatusNoContent)
 				}))
 
 				meta := &logging.RequestMeta{RolloutMode: mode}
-				req := httptest.NewRequest(http.MethodGet, requestPath, nil)
+				req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/payments/top", nil)
 				req = req.WithContext(logging.WithMeta(req.Context(), meta))
 				rec := httptest.NewRecorder()
 				handler.ServeHTTP(rec, req)
@@ -431,8 +454,17 @@ func TestMiddlewareProcessListAcknowledgmentCannotBeRelaxedByRolloutMode(t *test
 				if rec.Code != http.StatusForbidden {
 					t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
 				}
-				if meta.ReasonCode != reasonCodeReadExfiltrationAckRequired {
-					t.Fatalf("reason code = %q, want %q", meta.ReasonCode, reasonCodeReadExfiltrationAckRequired)
+				if meta.Decision != string(ActionDeny) {
+					t.Fatalf("decision = %q, want %q", meta.Decision, ActionDeny)
+				}
+				if meta.Rule != policy.wantRule {
+					t.Fatalf("rule = %d, want %d", meta.Rule, policy.wantRule)
+				}
+				if meta.Reason != policy.wantReason {
+					t.Fatalf("reason = %q, want %q", meta.Reason, policy.wantReason)
+				}
+				if meta.ReasonCode != policy.wantReasonCode {
+					t.Fatalf("reason code = %q, want %q", meta.ReasonCode, policy.wantReasonCode)
 				}
 			})
 		}

@@ -125,7 +125,9 @@ func runMatch(cmd *cobra.Command, args []string) error {
 	)
 	if hardDeny {
 		decision = gatedDecision
-		reason = acknowledgmentReason
+		if acknowledgmentReason != "" {
+			reason = acknowledgmentReason
+		}
 	}
 
 	result := matchResult{

@@ -260,7 +260,7 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			reasonCode := ruleDecisionReasonCode(action, reason)
 			stampDecisionOnMeta(meta, action, ruleIndex, reasonCode, reason, normPath)
 			action, acknowledgmentReason, hardDeny := EnforceReadExfiltrationAcknowledgment(action, r.Method, normPath, opts.AllowReadExfiltration)
-			if hardDeny {
+			if acknowledgmentReason != "" {
 				reasonCode = reasonCodeReadExfiltrationAckRequired
 				reason = acknowledgmentReason
 				stampDecisionOnMeta(meta, action, ruleIndex, reasonCode, reason, normPath)
@@ -302,10 +302,14 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 
 // EnforceReadExfiltrationAcknowledgment applies the hard process-list gate
 // shared by the runtime middleware and offline rule matcher. normalizedPath
-// must already be canonicalized with NormalizePath.
+// must already be canonicalized with NormalizePath. The returned reason is
+// non-empty only when the gate replaces an allow decision.
 func EnforceReadExfiltrationAcknowledgment(action Action, method, normalizedPath string, acknowledged bool) (Action, string, bool) {
 	if acknowledged || !isProcessListRead(method, normalizedPath) {
 		return action, "", false
+	}
+	if action == ActionDeny {
+		return action, "", true
 	}
 	return ActionDeny, "process-list reads require insecure_allow_read_exfiltration: true", true
 }

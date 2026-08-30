@@ -186,6 +186,85 @@ upstream:
 	}
 }
 
+func TestExecuteMatchCommandPreservesProcessListPolicyDenials(t *testing.T) {
+	tests := []struct {
+		name              string
+		rules             string
+		wantReason        string
+		wantMatchedAction string
+	}{
+		{
+			name: "default deny",
+			rules: `
+  - match: { method: GET, path: "/_ping" }
+    action: allow`,
+			wantReason: "no matching allow rule",
+		},
+		{
+			name: "matched deny",
+			rules: `
+  - match: { method: GET, path: "/containers/*/top" }
+    action: deny
+    reason: process lists are disabled by policy`,
+			wantReason:        "process lists are disabled by policy",
+			wantMatchedAction: "deny",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, "sockguard.yaml")
+			yaml := `
+upstream:
+  socket: /var/run/docker.sock
+rules:` + tt.rules + "\n"
+			if err := os.WriteFile(cfgPath, []byte(yaml), 0o644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+
+			stdout, stderr, err := executeRootCommand(t,
+				"-c", cfgPath,
+				"match",
+				"--method", "GET",
+				"--path", "/v1.53/containers/payments/top",
+				"-o", "json",
+			)
+			if err != nil {
+				t.Fatalf("Execute() error = %v\nstderr:\n%s", err, stderr)
+			}
+
+			var got struct {
+				Decision    string `json:"decision"`
+				Reason      string `json:"reason"`
+				MatchedRule *struct {
+					Action string `json:"action"`
+				} `json:"matched_rule"`
+			}
+			if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v\nstdout:\n%s", err, stdout)
+			}
+
+			if got.Decision != "deny" {
+				t.Fatalf("decision = %q, want deny", got.Decision)
+			}
+			if got.Reason != tt.wantReason {
+				t.Fatalf("reason = %q, want %q", got.Reason, tt.wantReason)
+			}
+			if tt.wantMatchedAction == "" {
+				if got.MatchedRule != nil {
+					t.Fatalf("matched_rule = %#v, want nil", got.MatchedRule)
+				}
+			} else if got.MatchedRule == nil || got.MatchedRule.Action != tt.wantMatchedAction {
+				t.Fatalf("matched_rule = %#v, want matched %s rule", got.MatchedRule, tt.wantMatchedAction)
+			}
+			if stderr != "" {
+				t.Fatalf("expected no stderr output, got:\n%s", stderr)
+			}
+		})
+	}
+}
+
 func TestExecuteMatchCommandReportsDefaultDenyWhenNoRuleMatches(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "sockguard.yaml")
