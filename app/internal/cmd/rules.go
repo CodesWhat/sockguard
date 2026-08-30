@@ -623,7 +623,7 @@ func libpodImageScpAllowDefinitelyShadowed(pattern string, earlier []config.Rule
 }
 
 func configuredLibpodSlashBearingImagePushAllow(rules []config.RuleConfig) (string, bool) {
-	const prefix = "/libpod/images/scp/"
+	const prefix = "/libpod/images/"
 	for index, rule := range rules {
 		if rule.Action != "allow" || !methodListIncludes(rule.Match.Method, http.MethodPost) {
 			continue

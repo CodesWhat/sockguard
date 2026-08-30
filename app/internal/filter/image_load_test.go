@@ -309,7 +309,7 @@ func TestNormalizeImageLoadArchivePath(t *testing.T) {
 		value string
 		want  string
 	}{
-		{value: "  ", want: ""},
+		{value: "  ", want: "  "},
 		{value: "/", want: ""},
 		{value: "/manifest.json", want: "manifest.json"},
 	}

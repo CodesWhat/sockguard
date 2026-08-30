@@ -260,6 +260,7 @@ func TestValidateAndCompileRulesRejectsSlashBearingLibpodImagePush(t *testing.T)
 	for _, path := range []string{
 		"/libpod/images/scp/acme/app/push",
 		"/libpod/images/scp/**/push",
+		"/libpod/images/team/**/push",
 	} {
 		t.Run(path, func(t *testing.T) {
 			cfg := config.Defaults()
@@ -286,6 +287,20 @@ func TestValidateAndCompileRulesRejectsSlashBearingLibpodImagePush(t *testing.T)
 		err := errorFromValidate(t, &cfg)
 		if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
 			t.Fatalf("error = %q, want the still-reachable slash-bearing image push to require the read-exfiltration acknowledgment", err)
+		}
+	})
+
+	t.Run("non-scp wildcard remains reachable after the generic representative is denied", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.Rules = []config.RuleConfig{
+			{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/sockguard-test/push"}, Action: "deny"},
+			{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/team/**/push"}, Action: "allow"},
+			{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+		}
+
+		err := errorFromValidate(t, &cfg)
+		if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
+			t.Fatalf("error = %q, want the still-reachable non-SCP image push to require the read-exfiltration acknowledgment", err)
 		}
 	})
 }
