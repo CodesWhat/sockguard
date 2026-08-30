@@ -269,17 +269,18 @@ func compileVisibilityPolicies(logger *slog.Logger, opts Options) (compiledPolic
 
 // warnPatternsWithoutSelectors logs once at construction when a visibility
 // policy carries name/image patterns but no label selector. Pattern response
-// filtering only covers /containers/json and /images/json (see
-// needsPatternResponseFilter); every other visibility-aware list endpoint —
-// /events in particular — is constrained solely by the label selectors injected
-// into the upstream filter. So a patterns-only policy silently leaves /events
-// (and /networks, /volumes, /services, …) unrestricted.
+// filtering only covers /containers/json, /libpod/containers/json and
+// /images/json (see needsPatternResponseFilter); every other visibility-aware
+// list endpoint — /events in particular — is constrained solely by the label
+// selectors injected into the upstream filter. So a patterns-only policy
+// silently leaves /events (and /networks, /volumes, /services, …)
+// unrestricted.
 func warnPatternsWithoutSelectors(logger *slog.Logger, scope string, policy compiledPolicy) {
 	if logger == nil || !policy.hasPatternAxes() || len(policy.selectors) > 0 {
 		return
 	}
 	logger.Warn("visibility name/image patterns are set without any visible_resource_labels selector; "+
-		"pattern filtering only applies to containers and images (/containers/json, /images/json, and the "+
+		"pattern filtering only applies to containers and images (/containers/json, /libpod/containers/json, /images/json, and the "+
 		"matching sections of /system/df), so /events and the other list endpoints stay unrestricted. "+
 		"Add a label selector to constrain them",
 		"scope", scope)
@@ -408,7 +409,7 @@ func handleVisibilityInspectRequest(logger *slog.Logger, next http.Handler, deps
 // needsPatternResponseFilter reports whether the given normalized path is a
 // list endpoint for which we support response-body pattern filtering.
 func needsPatternResponseFilter(normPath string) bool {
-	return normPath == "/containers/json" || normPath == "/images/json"
+	return normPath == "/containers/json" || normPath == libpodPrefix+"containers/json" || normPath == "/images/json"
 }
 
 // patternFilterWriter is a response-intercepting http.ResponseWriter that
@@ -561,7 +562,7 @@ func (p *patternFilterWriter) flushFiltered(normPath string, policy *compiledPol
 // axes. Returns true if the item passes all configured axes.
 func itemVisibleByPatterns(raw json.RawMessage, normPath string, policy *compiledPolicy) (bool, error) {
 	switch normPath {
-	case "/containers/json":
+	case "/containers/json", libpodPrefix + "containers/json":
 		return containerItemVisibleByPatterns(raw, policy)
 	case "/images/json":
 		return imageItemVisibleByPatterns(raw, policy)
