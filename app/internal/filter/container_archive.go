@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"path"
 	"strings"
 )
@@ -48,9 +49,36 @@ func (p containerArchivePolicy) inspect(_ *slog.Logger, r *http.Request, normali
 		p.io = defaultIODeps()
 	}
 
-	targetPath, ok := normalizeContainerArchiveTargetPath(r.URL.Query().Get("path"))
+	query := r.URL.Query()
+	targetValue, targetFound, targetAmbiguous := foldedScalarQueryValue(query, "path")
+	switch {
+	case targetAmbiguous:
+		return "container archive denied: ambiguous path query", nil
+	case !targetFound || targetValue == "":
+		return "container archive denied: target path is required", nil
+	}
+
+	renameValue, _, renameAmbiguous := foldedScalarQueryValue(query, "rename")
+	if renameAmbiguous || renameValue != "" {
+		// Podman passes rename through to Buildah, which rewrites tar header
+		// names after this inspector would otherwise validate them. A rename
+		// can therefore change a safe relative symlink into one that escapes
+		// the approved target subtree. Refuse the transformation rather than
+		// claiming the original-header inspection covers it.
+		return "container archive denied: rename query is not allowed", nil
+	}
+
+	targetPath, ok := normalizeContainerArchiveTargetPath(targetValue)
 	if !ok {
 		return "container archive denied: target path must stay within the container path", nil
+	}
+	if len(p.allowedPaths) > 0 && !strings.HasPrefix(targetValue, "/") {
+		// Podman resolves a relative archive target against the container's
+		// configured WorkingDir, not against the container root. Without a
+		// daemon lookup there is no sound way to compare that effective path
+		// with a root-relative allowed_paths entry, so treat it as
+		// unallowlisted. Normalize first so traversal keeps its sharper denial.
+		return fmt.Sprintf("container archive denied: target path %q is not allowlisted", targetPath), nil
 	}
 	if !p.targetPathAllowed(targetPath) {
 		return fmt.Sprintf("container archive denied: target path %q is not allowlisted", targetPath), nil
@@ -87,6 +115,34 @@ func (p containerArchivePolicy) inspect(_ *slog.Logger, r *http.Request, normali
 	r.Body = spool.requestBody()
 	r.ContentLength = size
 	return "", nil
+}
+
+// foldedScalarQueryValue recognizes the query behavior Podman's archive
+// handler gets from gorilla/schema: field aliases are case-insensitive. It
+// rejects repeated values because the supported daemons disagree about which
+// scalar wins (Moby reads the first while Podman reads the last), and rejects
+// two case-variant spellings because gorilla/schema's winner then depends on
+// url.Values map iteration order.
+func foldedScalarQueryValue(query url.Values, field string) (value string, found, ambiguous bool) {
+	var spelling string
+	for key, values := range query {
+		if !strings.EqualFold(key, field) {
+			continue
+		}
+		if found && key != spelling {
+			return "", true, true
+		}
+		if len(values) > 1 {
+			return "", true, true
+		}
+		found = true
+		spelling = key
+		value = ""
+		if len(values) > 0 {
+			value = values[len(values)-1]
+		}
+	}
+	return value, found, false
 }
 
 // isContainerArchivePath matches the copy-into-container route on BOTH of
