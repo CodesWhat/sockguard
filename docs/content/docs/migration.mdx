@@ -184,6 +184,25 @@ signed policy so the Service and probes can reach the pod.
   `method="OTHER"`; unknown path families appear as `route="unknown"`. Update
   dashboards that previously expected raw custom values.
 
+## From Sockguard v2.0 to v2.1
+
+`upstream.endpoints[].insecure_skip_tls_verify` is deprecated in v2.1 and will be removed in v3.0.0. It remains accepted in v2.1 and its wire behavior has not changed, so upgrading does not break an existing endpoint. Startup now logs the removal version and replacement metadata.
+
+Replace the flag with the CA that issued the daemon certificate:
+
+```diff
+ upstream:
+   endpoints:
+     - address: tcp://dockerd.internal:2376
+       tls:
++        ca_file: /certs/ca.pem
+         cert_file: /certs/cert.pem
+         key_file: /certs/key.pem
+-      insecure_skip_tls_verify: true
+```
+
+The Docker environment fallback follows the same schedule. A non-empty `DOCKER_TLS` with `DOCKER_TLS_VERIFY` empty or unset selects unverified TLS; set `DOCKER_TLS_VERIFY=1` before v3.0.0. Any non-empty verification value, including `0` or `false`, enables verification and takes precedence over `DOCKER_TLS`, matching the Docker CLI's environment semantics. When TLS is enabled, sockguard requires `ca.pem` from `DOCKER_CERT_PATH`, otherwise `DOCKER_CONFIG`, otherwise `~/.docker`; it presents `cert.pem` / `key.pem` only when both exist. `DOCKER_CERT_PATH` alone only locates material and does not enable TLS. Bare and portless TCP hosts default to port `2375`; a TCP URL path is preserved as the API prefix across proxy, inspection, readiness, attach/exec, BuildKit, and failover traffic; and valid custom Unix socket names retain their literal bytes after Docker-compatible URL validation. Absolute Unix paths preserve percent escapes and raw `?` or `#`, while relative host-form escapes such as `%2F` and `%3F` are invalid. An invalid explicit `DOCKER_HOST` fails startup instead of falling through to `upstream.socket`.
+
 ## From Tecnativa/docker-socket-proxy
 
 Sockguard accepts the current Tecnativa environment-variable surface, including section vars, `ALLOW_RESTARTS`, `SOCKET_PATH`, and `LOG_LEVEL`. Replace the image:
@@ -195,12 +214,15 @@ Sockguard accepts the current Tecnativa environment-variable surface, including 
 +    image: codeswhat/sockguard
      volumes:
        - /var/run/docker.sock:/var/run/docker.sock:ro
-    environment:
-      - CONTAINERS=1
-      - POST=0
+     environment:
++      - SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true
+       - CONTAINERS=1
+       - POST=0
 ```
 
-That gets you current Tecnativa env-surface compatibility. If you intentionally want section-wide raw archive/export or log/attach streaming parity from `CONTAINERS=1` or `IMAGES=1`, also set `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true`; otherwise move to YAML and allow only the list/inspect endpoints you actually need.
+The acknowledgement is required, not optional. `CONTAINERS=1` generates `allow GET,HEAD /containers/**`, and that admits `GET /containers/*/archive`, `/export`, `/logs`, and `/attach/ws`, so without `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true` Sockguard exits 1 at startup with an error naming those four endpoints. `IMAGES=1`, `SERVICES=1`, and `TASKS=1` open the same class of surface. Unlike `GRPC=1`/`SESSION=1`, which auto-set their own acknowledgement, compatibility mode never sets this one for you: the whole point is that a section-wide read grant should be a decision you made. Drop the acknowledgement once you move to YAML and allow only the list/inspect endpoints you actually need.
+
+One other difference from Tecnativa in that diff: Sockguard binds loopback `127.0.0.1:2375` by default rather than all interfaces, so a proxy other Compose services talk to over TCP also needs `SOCKGUARD_LISTEN_ADDRESS` plus both plaintext-TCP acknowledgements, or `SOCKGUARD_LISTEN_SOCKET` and a shared socket volume. See [Getting Started](/getting-started) for either block in full.
 
 Tecnativa compatibility mode and signed-policy mode are separate migration
 stages. Rule-generating compatibility variables are unsigned process state, so
@@ -321,4 +343,4 @@ Key differences:
 - Sockguard auto-strips Docker API version prefixes (`/v1.45/…`) before matching, so patterns never account for them
 - Glob patterns (`*`, `**`) with auto-anchoring instead of regex
 - CetusGuard filters on method + path only; Sockguard adds request-body inspection, named per-client profiles, owner isolation, read-side visibility/redaction, rate limits, and metrics on top
-- Both tools support remote daemon upstreams; Sockguard uses `upstream.endpoints` (YAML) or the `DOCKER_HOST`/`DOCKER_TLS_VERIFY`/`DOCKER_CERT_PATH` drop-in — see [Remote Upstreams & Failover](/multi-host) for the full guide.
+- Both tools support remote daemon upstreams; Sockguard uses `upstream.endpoints` (YAML) or the `DOCKER_HOST`/`DOCKER_TLS`/`DOCKER_TLS_VERIFY`/`DOCKER_CERT_PATH` drop-in — see [Remote Upstreams & Failover](/multi-host) for the full guide.

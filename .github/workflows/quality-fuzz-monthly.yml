@@ -89,6 +89,7 @@ jobs:
           - { name: FuzzLoadBytesEndpointConfig,   pkg: ./internal/config/ }
           - { name: FuzzEffectiveListenerValidation, pkg: ./internal/config/ }
           - { name: FuzzLoadYAMLBuildkit,          pkg: ./internal/config/ }
+          - { name: FuzzValidateUpstreamHijackInactivityTimeout, pkg: ./internal/config/ }
           - { name: FuzzProxyHeadersAndBody,       pkg: ./internal/proxy/ }
           - { name: FuzzHijackHeadersAndBody,      pkg: ./internal/proxy/ }
           - { name: FuzzHijackBidirectionalStream, pkg: ./internal/proxy/ }

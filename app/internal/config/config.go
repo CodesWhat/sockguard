@@ -269,6 +269,22 @@ type UpstreamConfig struct {
 	// values bypass Viper's env-emptiness gate. Prefer "off" in both
 	// channels.
 	RequestTimeout string `mapstructure:"request_timeout"`
+	// HijackInactivityTimeout bounds how long a hijacked connection (docker
+	// attach, exec start) may sit idle in either direction — no bytes read
+	// or written — before sockguard tears it down, as a Go duration string
+	// (e.g. "10m"). It refreshes on activity, so it never caps the total
+	// session length of an active `docker exec`/`attach`, only how long a
+	// forgotten one is left open. Unlike RequestTimeout, hijacked connections
+	// are exempt from request_timeout entirely (see its doc comment) — this
+	// is their only deadline.
+	//
+	// Default is "10m", unchanged from the hardcoded value hijack.go used
+	// before this field existed. Unlike RequestTimeout there is no "off"
+	// spelling: 0 and negative durations are validation errors, same as
+	// RequestTimeout, but there is also no legacy empty-string disable path
+	// to preserve, so an empty value is rejected too. Any other value must
+	// parse as a positive Go duration.
+	HijackInactivityTimeout string `mapstructure:"hijack_inactivity_timeout"`
 	// Flavor names the container engine behind the upstream: "auto" (the
 	// default), "docker", or "podman".
 	//
@@ -332,6 +348,10 @@ type UpstreamEndpoint struct {
 	// InsecureSkipTLSVerify disables verification of the remote daemon's server
 	// certificate (self-signed homelab daemons). Dangerous in production: it
 	// defeats authentication of the upstream.
+	//
+	// Deprecated: configure tls.ca_file with the daemon's issuing CA instead.
+	// This field remains accepted with unchanged behavior in v2.1 and will be
+	// removed in v3.0.0.
 	InsecureSkipTLSVerify bool `mapstructure:"insecure_skip_tls_verify"`
 }
 
@@ -1415,11 +1435,13 @@ func (cfg AdminListenConfig) Configured() bool {
 //
 // When Enabled, sockguard watches the config file via fsnotify and reloads
 // on SIGHUP. A reload that mutates any immutable field — listen.*,
-// upstream.socket, upstream.endpoints, upstream.failover, log.*, health.*,
-// metrics.*, admin.* — is rejected; the running config is preserved and the
-// operator must restart sockguard to pick the new values up. (upstream.endpoints
-// and upstream.failover are pinned because the long-lived Resolver and its
-// health loop are built once at startup; upstream.request_timeout stays mutable.)
+// upstream.socket, upstream.endpoints, upstream.failover, upstream.flavor,
+// log.*, health.*, metrics.*, admin.* — is rejected; the running config is
+// preserved and the operator must restart sockguard to pick the new values up.
+// (The endpoint set, failover policy, and flavor are pinned because the
+// long-lived Resolver and engine-specific handler chain are built once at
+// startup; upstream.request_timeout and upstream.hijack_inactivity_timeout stay
+// mutable.)
 //
 // Debounce collapses bursts of filesystem events (editors commonly emit
 // chmod + write + rename + create per save) into a single reload trigger.
@@ -1564,6 +1586,9 @@ func Defaults() Config {
 			// "off" (or the legacy "") to disable. See RequestTimeout's doc
 			// comment for the full migration story.
 			RequestTimeout: "60s",
+			// 10m matches hijack.go's pre-existing hardcoded default; see
+			// HijackInactivityTimeout's doc comment.
+			HijackInactivityTimeout: "10m",
 			// "auto" probes GET /version once at startup. See Flavor's doc
 			// comment for why the default is a probe rather than "docker".
 			Flavor: string(upstreamflavor.Auto),

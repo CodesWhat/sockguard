@@ -3,6 +3,8 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"io"
 	"log/slog"
@@ -21,6 +23,7 @@ import (
 
 	"github.com/codeswhat/sockguard/app/internal/config"
 	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/testcert"
 	"github.com/codeswhat/sockguard/app/internal/testhelp"
 	"github.com/codeswhat/sockguard/app/internal/upstreamflavor"
 )
@@ -147,6 +150,75 @@ func TestResolveUpstreamFlavorAutoProbes(t *testing.T) {
 				t.Fatalf("no resolution log line; records: %#v", collector.Records())
 			}
 		})
+	}
+}
+
+func TestResolveUpstreamFlavorAutoUsesMutualTLSAndBasePath(t *testing.T) {
+	dir := t.TempDir()
+	bundle, err := testcert.WriteMutualTLSBundle(dir, "127.0.0.1")
+	if err != nil {
+		t.Fatalf("write mutual TLS bundle: %v", err)
+	}
+	serverCert, err := tls.LoadX509KeyPair(bundle.ServerCertFile, bundle.ServerKeyFile)
+	if err != nil {
+		t.Fatalf("load server keypair: %v", err)
+	}
+	caPEM, err := os.ReadFile(bundle.CAFile)
+	if err != nil {
+		t.Fatalf("read CA file: %v", err)
+	}
+	clientCAs := x509.NewCertPool()
+	if !clientCAs.AppendCertsFromPEM(caPEM) {
+		t.Fatal("CA file contains no PEM certificates")
+	}
+
+	var probedPath string
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		probedPath = r.URL.EscapedPath()
+		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+			t.Error("flavor probe reached daemon without a verified client certificate")
+		}
+		_, _ = io.WriteString(w, `{"Components":[{"Name":"Podman Engine","Version":"5.8.1"}],"Version":"5.8.1"}`)
+	}))
+	srv.TLS = &tls.Config{
+		Certificates: []tls.Certificate{serverCert},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    clientCAs,
+		MinVersion:   tls.VersionTLS12,
+	}
+	srv.StartTLS()
+	defer srv.Close()
+
+	cfg := config.Defaults()
+	cfg.Upstream.Flavor = string(upstreamflavor.Auto)
+	cfg.Upstream.Endpoints = []config.UpstreamEndpoint{{
+		Address: "tcp://" + strings.TrimPrefix(srv.URL, "https://") + "/engine%2Fgateway",
+		TLS: config.UpstreamTLSConfig{
+			CAFile:     bundle.CAFile,
+			CertFile:   bundle.ClientCertFile,
+			KeyFile:    bundle.ClientKeyFile,
+			ServerName: "127.0.0.1",
+		},
+	}}
+	cfg.Upstream.Failover.HealthInterval = "-1s"
+
+	resolver, legacy, err := buildUpstreamResolver(&cfg, nil, func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatalf("buildUpstreamResolver: %v", err)
+	}
+	if legacy {
+		t.Fatal("buildUpstreamResolver used the legacy socket, want configured endpoint")
+	}
+	logger, _ := flavorTestLogger()
+	got, err := resolveUpstreamFlavor(t.Context(), newServeDeps(), &cfg, resolver, logger)
+	if err != nil {
+		t.Fatalf("resolveUpstreamFlavor: %v", err)
+	}
+	if got != upstreamflavor.Podman {
+		t.Fatalf("resolved flavor = %q, want %q", got, upstreamflavor.Podman)
+	}
+	if probedPath != "/engine%2Fgateway/version" {
+		t.Fatalf("probed path = %q, want %q", probedPath, "/engine%2Fgateway/version")
 	}
 }
 
