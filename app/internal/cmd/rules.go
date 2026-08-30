@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/codeswhat/sockguard/app/internal/config"
@@ -510,6 +511,41 @@ func allowedSensitiveExfilEndpoints(configured []config.RuleConfig, compiled []*
 		}
 	}
 	return allowed
+}
+
+// allowedSensitiveExfilEndpointsByProfile probes each named client profile's
+// configured and compiled rule sets for the endpoints
+// allowedSensitiveExfilEndpoints checks, returning
+// "<profile>: <METHOD> <path>" entries.
+//
+// The acknowledgment is global but profile rules are evaluated in place of the
+// top-level set, so a profile can be the only reason
+// insecure_allow_read_exfiltration has to be set. The per-profile refusal in
+// validateReadExfiltrationRulesForPolicy never fires once the acknowledgment
+// is present, which leaves the profile's exposure unreported everywhere else.
+//
+// Profile names come from a map, so they are sorted before the walk; within a
+// profile the entries keep sensitiveExfilEndpoints' declaration order. The
+// result is therefore stable across runs, which a log field has to be.
+func allowedSensitiveExfilEndpointsByProfile(configured []config.ClientProfileConfig, profiles map[string]filter.Policy) []string {
+	configuredByName := make(map[string][]config.RuleConfig, len(configured))
+	for _, profile := range configured {
+		configuredByName[profile.Name] = profile.Rules
+	}
+
+	names := make([]string, 0, len(profiles))
+	for name := range profiles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	exposed := make([]string, 0, len(names))
+	for _, name := range names {
+		for _, endpoint := range allowedSensitiveExfilEndpoints(configuredByName[name], profiles[name].Rules) {
+			exposed = append(exposed, name+": "+endpoint)
+		}
+	}
+	return exposed
 }
 
 func bodyInspectionConfiguredForEndpoint(requestBody config.RequestBodyConfig, endpoint bodySensitiveWriteEndpoint) bool {
