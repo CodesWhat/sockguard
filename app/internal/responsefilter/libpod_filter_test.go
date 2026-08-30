@@ -162,6 +162,7 @@ func addStaleRepresentationMetadata(resp *http.Response) {
 		"Content-Language",
 		"Content-Length",
 		"Content-Location",
+		"Content-MD5",
 		"Content-Range",
 		"Digest",
 		"ETag",
@@ -189,6 +190,7 @@ func assertRewrittenRepresentationMetadata(t *testing.T, resp *http.Response) {
 		"Content-Encoding",
 		"Content-Language",
 		"Content-Location",
+		"Content-MD5",
 		"Content-Range",
 		"Digest",
 		"ETag",
@@ -236,6 +238,15 @@ func assertRewrittenRepresentationMetadata(t *testing.T, resp *http.Response) {
 const libpodContainerInspectUpstream = `{
   "Id": "ctr-a",
   "Name": "team-a-web",
+  "Path": "/usr/bin/sleep",
+  "Rootfs": "/var/lib/containers/storage/overlay/ctr-a/merged",
+  "ResolvConfPath": "/run/user/1000/containers/ctr-a/resolv.conf",
+  "HostnamePath": "/run/user/1000/containers/ctr-a/hostname",
+  "HostsPath": "/run/user/1000/containers/ctr-a/hosts",
+  "StaticDir": "/home/alice/.local/share/containers/storage/overlay-containers/ctr-a/userdata",
+  "OCIConfigPath": "/run/user/1000/containers/ctr-a/config.json",
+  "ConmonPidFile": "/run/user/1000/containers/ctr-a/conmon.pid",
+  "PidFile": "/run/user/1000/containers/ctr-a/container.pid",
   "Config": {"Env": ["PATH=/usr/bin", "DB_PASSWORD=libpod-env-secret"], "Labels": {"owner": "team-a"}},
   "Mounts": [{"Type": "bind", "Source": "/host/team-a-secrets", "Destination": "/run/secrets"}],
   "HostConfig": {
@@ -275,6 +286,23 @@ const libpodCompatContainerInspectUpstream = `{
   "HostConfig": {"Binds": ["/host/compat-binds:/data:rw"], "NetworkMode": "container:other"},
   "NetworkSettings": {"Bridge": "docker0", "IPAddress": "172.17.0.4", "Networks": {"bridge": {"NetworkID": "compat-net", "IPAddress": "172.17.0.4"}}}
 }`
+
+func TestLibpodContainerInspectRedactsRuntimeHostPaths(t *testing.T) {
+	t.Parallel()
+
+	body := libpodBodyForTest(t, Options{RedactMountPaths: true}, "/v5.8.1/libpod/containers/ctr-a/json", libpodContainerInspectUpstream)
+	assertAbsent(t, "libpod container inspect runtime paths", body,
+		"/var/lib/containers/storage/overlay/ctr-a/merged",
+		"/run/user/1000/containers/ctr-a/resolv.conf",
+		"/run/user/1000/containers/ctr-a/hostname",
+		"/run/user/1000/containers/ctr-a/hosts",
+		"/home/alice/.local/share/containers/storage/overlay-containers/ctr-a/userdata",
+		"/run/user/1000/containers/ctr-a/config.json",
+		"/run/user/1000/containers/ctr-a/conmon.pid",
+		"/run/user/1000/containers/ctr-a/container.pid",
+	)
+	assertPresent(t, "libpod container inspect runtime paths", body, `"Path":"/usr/bin/sleep"`, `"Id":"ctr-a"`)
+}
 
 func TestLibpodContainerInspectIsRedacted(t *testing.T) {
 	t.Parallel()

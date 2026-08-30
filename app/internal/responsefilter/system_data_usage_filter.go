@@ -400,6 +400,7 @@ func ClearUpstreamRepresentationHeaders(header http.Header) {
 		"Content-Language",
 		"Content-Length",
 		"Content-Location",
+		"Content-MD5",
 		"Content-Range",
 		"Digest",
 		"ETag",
