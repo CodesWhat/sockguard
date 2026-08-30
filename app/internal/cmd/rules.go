@@ -73,6 +73,17 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	{method: http.MethodPost, path: "/libpod/volumes/create"},
 	{method: http.MethodPost, path: "/libpod/networks/create"},
 	{method: http.MethodPost, path: "/libpod/secrets/create"},
+	// Podman's native image pull, the libpod counterpart of
+	// POST /images/create. It runs through the SAME request_body.image_pull
+	// registry allowlist (filter.imagePullPolicy.inspectLibpod), so it is
+	// recognized as inspected below rather than requiring the blind-write
+	// acknowledgment — it is listed here so an operator auditing the
+	// body-sensitive write surface sees it alongside the rest of it.
+	{method: http.MethodPost, path: "/libpod/images/pull"},
+	// Native image load and import have no request-body inspector, so allowing
+	// either requires the blind-write acknowledgment.
+	{method: http.MethodPost, path: "/libpod/images/load"},
+	{method: http.MethodPost, path: "/libpod/images/import"},
 	// play/kube, its "kube/play" alias (Podman registers both spellings on
 	// the identical libpod.PlayKube/KubePlay handlers), kube/apply, and
 	// manifest-list writes have NO request-body inspector at all (#148
@@ -431,13 +442,17 @@ func bodyInspectionConfiguredForEndpoint(requestBody config.RequestBodyConfig, e
 		return true
 	case "/libpod/containers/create":
 		return true
-	case "/libpod/pods/create", "/libpod/volumes/create", "/libpod/networks/create", "/libpod/secrets/create":
+	case "/libpod/pods/create", "/libpod/volumes/create", "/libpod/networks/create", "/libpod/secrets/create", "/libpod/images/pull":
 		// libpod_pod_create/libpod_volume/libpod_network/libpod_secret gates
 		// are all plain booleans/allowlists with real fail-closed defaults —
 		// none of them read insecure_allow_body_blind_writes the way exec
 		// does — so, like the Docker-compat entries above, the built-in
 		// inspector always provides real protection independent of whether
-		// the operator has customized it. #148.
+		// the operator has customized it. #148. POST /libpod/images/pull
+		// joins them on the same terms: it reuses request_body.image_pull,
+		// whose allow_official-only default already denies a pull from any
+		// non-Docker-Hub-official registry, exactly as it does for the
+		// Docker-compat /images/create entry above.
 		return true
 	// /libpod/play/kube, /libpod/kube/play, /libpod/kube/apply, and
 	// /libpod/manifests/* deliberately have NO case here: they have no

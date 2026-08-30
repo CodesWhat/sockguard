@@ -57,6 +57,7 @@ const (
 	reasonCodeVisibilityPolicyLookupFailed  = "visibility_policy_lookup_failed"
 	reasonCodeVisibilityPolicyHidResource   = "visibility_policy_hid_resource"
 	reasonCodeVisibilityResponseTooLarge    = "visibility_response_too_large"
+	reasonCodeVisibilityLibpodDataUsage     = "visibility_libpod_data_usage_unscopeable"
 )
 
 // Options configures label-based visibility control on Docker read endpoints.
@@ -177,6 +178,17 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 			// endpoint does not define would be meaningless at best.
 			if r.Method == http.MethodGet && normPath == responsefilter.SystemDataUsagePath {
 				handleVisibilitySystemDataUsageRequest(logger, next, w, r, &effectivePolicy)
+				return
+			}
+			// Podman's native GET /libpod/system/df has the same
+			// no-`filters`-parameter problem and no response the policy can be
+			// applied to either: its image, container and volume entries carry
+			// no labels, so neither the selector axes nor the name/image
+			// pattern axes have a field to read. It is refused rather than
+			// filtered — see
+			// responsefilter.LibpodSystemDataUsageDenyReason.
+			if r.Method == http.MethodGet && normPath == responsefilter.LibpodSystemDataUsagePath {
+				denyLibpodSystemDataUsage(w, r)
 				return
 			}
 			if needsVisibilityLabelFilter(normPath) {
