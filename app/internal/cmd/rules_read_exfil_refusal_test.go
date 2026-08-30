@@ -33,7 +33,9 @@ func isolateReadExfilEnv(t *testing.T) {
 			continue
 		}
 		t.Setenv(key, value)
-		os.Unsetenv(key)
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatalf("Unsetenv(%q): %v", key, err)
+		}
 	}
 }
 
