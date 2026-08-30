@@ -1775,6 +1775,80 @@ func TestValidateAndCompileRulesRejectsNoLeadingSlashCatalogGlobs(t *testing.T) 
 	}
 }
 
+func TestValidateAndCompileRulesRejectsRelativeSingleStarCatalogGlobs(t *testing.T) {
+	tests := []struct {
+		operation string
+		ack       string
+	}{
+		{operation: "checkpoint", ack: "insecure_allow_read_exfiltration"},
+		{operation: "restore", ack: "insecure_allow_body_blind_writes"},
+	}
+
+	for _, scope := range []string{"default policy", "named client profile"} {
+		for _, tt := range tests {
+			t.Run(scope+" "+tt.operation, func(t *testing.T) {
+				rules := []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/sockguard-test/" + tt.operation}, Action: "deny"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "libpod/containers/*/" + tt.operation}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+				cfg := config.Defaults()
+				if scope == "named client profile" {
+					cfg.Rules = []config.RuleConfig{
+						{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+					}
+					cfg.Clients.Profiles = []config.ClientProfileConfig{{
+						Name:  "backup-agent",
+						Rules: rules,
+					}}
+				} else {
+					cfg.Rules = rules
+				}
+
+				_, err := validateAndCompileRules(&cfg)
+				if err == nil {
+					t.Fatal("validateAndCompileRules() = nil, want an acknowledgment error for the reachable real-id route")
+				}
+				for _, want := range []string{tt.ack, "POST /libpod/containers/a/" + tt.operation} {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("error = %q, want it to mention %q", err.Error(), want)
+					}
+				}
+				if scope == "named client profile" && !strings.Contains(err.Error(), "backup-agent") {
+					t.Fatalf("error = %q, want it to mention the client profile", err.Error())
+				}
+
+				if tt.operation == "restore" {
+					cfg.InsecureAllowBodyBlindWrites = true
+				} else {
+					cfg.InsecureAllowReadExfiltration = true
+				}
+				if _, err := validateAndCompileRules(&cfg); err != nil {
+					t.Fatalf("validateAndCompileRules() with acknowledgment error = %v", err)
+				}
+
+				compiled, err := compileConfiguredRules(rules)
+				if err != nil {
+					t.Fatalf("compileConfiguredRules() error = %v", err)
+				}
+				for _, request := range []struct {
+					path string
+					want filter.Action
+				}{
+					{path: "/libpod/containers/sockguard-test/" + tt.operation, want: filter.ActionDeny},
+					{path: "/libpod/containers/real-id/" + tt.operation, want: filter.ActionAllow},
+				} {
+					req := httptest.NewRequest(http.MethodPost, request.path, nil)
+					action, _, _ := filter.Evaluate(compiled, req)
+					if action != request.want {
+						t.Errorf("POST %s action = %q, want %q", request.path, action, request.want)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestValidateAndCompileRulesAllowsFullyShadowedCatalogRoutes(t *testing.T) {
 	for _, scope := range []string{"default policy", "named client profile"} {
 		for _, operation := range []string{"checkpoint", "mount", "restore"} {

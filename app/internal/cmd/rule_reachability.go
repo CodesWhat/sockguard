@@ -158,7 +158,7 @@ func compileCatalogRuleMachine(pattern, action string) (catalogRuleMachine, erro
 		// and its byte-unrestricted descendant suffix.
 		prefix := strings.TrimSuffix(pattern, "/**")
 		expression = regexp.QuoteMeta(prefix) + `(?:/(?s:.*))?`
-	case !strings.Contains(pattern, "**") && (strings.HasPrefix(pattern, "/") || strings.HasPrefix(pattern, "*")):
+	case !strings.Contains(pattern, "**"):
 		// filter.pathMatcherSegmentGlob strips one optional leading slash from
 		// both the pattern and request path. Preserve the catalog's leading slash
 		// while compiling the remaining segment glob so the automata agree.
