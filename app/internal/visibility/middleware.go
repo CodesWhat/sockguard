@@ -301,18 +301,18 @@ func compileVisibilityPolicies(logger *slog.Logger, opts Options) (compiledPolic
 
 // warnPatternsWithoutSelectors logs once at construction when a visibility
 // policy carries name/image patterns but no label selector. Pattern response
-// filtering only covers /containers/json, /libpod/containers/json and
-// /images/json (see needsPatternResponseFilter); every other visibility-aware
-// list endpoint — /events in particular — is constrained solely by the label
-// selectors injected into the upstream filter. So a patterns-only policy
-// silently leaves /events (and /networks, /volumes, /services, …)
-// unrestricted.
+// filtering only covers /containers/json, /libpod/containers/json,
+// /images/json and /libpod/images/json (see needsPatternResponseFilter); every
+// other visibility-aware list endpoint — /events in particular — is
+// constrained solely by the label selectors injected into the upstream
+// filter. So a patterns-only policy silently leaves /events (and /networks,
+// /volumes, /services, …) unrestricted.
 func warnPatternsWithoutSelectors(logger *slog.Logger, scope string, policy compiledPolicy) {
 	if logger == nil || !policy.hasPatternAxes() || len(policy.selectors) > 0 {
 		return
 	}
 	logger.Warn("visibility name/image patterns are set without any visible_resource_labels selector; "+
-		"pattern filtering only applies to containers and images (/containers/json, /libpod/containers/json, /images/json, and the "+
+		"pattern filtering only applies to containers and images (/containers/json, /libpod/containers/json, /images/json, /libpod/images/json, and the "+
 		"matching sections of /system/df), so /events and the other list endpoints stay unrestricted. "+
 		"Add a label selector to constrain them",
 		"scope", scope)

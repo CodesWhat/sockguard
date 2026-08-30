@@ -56,9 +56,10 @@ const podmanEventsDenyReason = "events denied: this upstream is Podman, whose GE
 //
 //   - No selectors (a patterns-only policy): forwarded untouched, exactly as
 //     it is on a Docker upstream. Pattern axes do not reach this endpoint on
-//     either engine — needsPatternResponseFilter covers two list endpoints and
-//     nothing else — and compileVisibilityPolicies already warns at startup
-//     that a patterns-only policy leaves the event stream unrestricted.
+//     either engine — needsPatternResponseFilter covers the four
+//     container/image list endpoints and nothing else — and
+//     compileVisibilityPolicies already warns at startup that a patterns-only
+//     policy leaves the event stream unrestricted.
 //   - One selector: written as the sole `label` filter value.
 //   - Two or more: refused, without contacting the upstream, so no event
 //     belonging to another tenant is ever read.

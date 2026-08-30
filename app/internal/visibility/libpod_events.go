@@ -69,9 +69,10 @@ const libpodEventsDenyReason = "libpod events denied: " +
 //
 //   - No selectors (a patterns-only policy): forwarded untouched, exactly as
 //     the Docker-compat /events is. Pattern axes reach neither endpoint —
-//     needsPatternResponseFilter covers two Docker-compat list endpoints and
-//     nothing else — and compileVisibilityPolicies already warns at startup
-//     that a patterns-only policy leaves the event stream unrestricted.
+//     needsPatternResponseFilter covers the four container/image list
+//     endpoints and nothing else — and compileVisibilityPolicies already warns
+//     at startup that a patterns-only policy leaves the event stream
+//     unrestricted.
 //   - One selector: injected as the sole `label` filter value.
 //   - Two or more: refused. See libpodEventsDenyReason.
 //
