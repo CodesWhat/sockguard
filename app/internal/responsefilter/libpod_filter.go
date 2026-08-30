@@ -404,12 +404,49 @@ func redactLegacyCNIPluginConfig(plugin map[string]any) error {
 			return err
 		}
 	}
+	if err := redactCNIAddresses(ipam); err != nil {
+		return err
+	}
+	if err := redactLegacyCNIDNS(ipam); err != nil {
+		return fmt.Errorf("plugin ipam: %w", err)
+	}
 	if err := redactCNIObjectArray(ipam, "routes"); err != nil {
 		return err
 	}
 	if err := redactCNIRanges(ipam); err != nil {
 		return err
 	}
+	return nil
+}
+
+func redactCNIAddresses(ipam map[string]any) error {
+	value, ok := ipam["addresses"]
+	if !ok {
+		return nil
+	}
+	addresses, ok := value.([]any)
+	if !ok {
+		return fmt.Errorf("plugin ipam addresses has unexpected type %T", value)
+	}
+	for i, value := range addresses {
+		address, ok := value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("plugin ipam addresses entry %d has unexpected type %T", i, value)
+		}
+		addressValue, ok := address["address"]
+		if !ok {
+			return fmt.Errorf("plugin ipam addresses entry %d is missing address", i)
+		}
+		if _, ok := addressValue.(string); !ok {
+			return fmt.Errorf("plugin ipam addresses entry %d address has unexpected type %T", i, addressValue)
+		}
+		if gateway, ok := address["gateway"]; ok {
+			if _, ok := gateway.(string); !ok {
+				return fmt.Errorf("plugin ipam addresses entry %d gateway has unexpected type %T", i, gateway)
+			}
+		}
+	}
+	ipam["addresses"] = []any{}
 	return nil
 }
 

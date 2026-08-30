@@ -197,17 +197,18 @@ handler runs. Where they don't, the libpod field names are pinned separately:
 |---|---|---|
 | `GET /libpod/containers/{id}/json` | `redact_container_env`, `redact_mount_paths`, `redact_network_topology` | `Config.Env`, `Mounts[].Source`, `HostConfig.Binds`, `HostConfig.NetworkMode`, the `NetworkSettings` address block and each `Networks` entry — the same json tags Docker uses, plus libpod's own `AdditionalMACAddresses` list, which has no compat counterpart |
 | `GET /libpod/volumes/json`, `GET /libpod/volumes/{name}/json` | `redact_mount_paths` | `Mountpoint`. The list body is a bare array, not Docker's `{"Volumes": [...]}` envelope |
-| `GET /libpod/networks/json`, `GET /libpod/networks/{id}/json`, `GET /libpod/networks/{id}` | `redact_network_topology` | Podman v4 and later: `subnets`, `routes`, `network_dns_servers`, `network_interface`, and inspect's `containers` map. Podman v2.2.1-v3.4.4: the raw CNI plugin's host `bridge` or macvlan `master`, `dns.nameservers`, `dns.domain`, `dns.search`, plus its IPAM `routes`, `ranges`, and backward-compatible flat `subnet`, `gateway`, `rangeStart`, and `rangeEnd`; list's top-level and per-plugin `Bytes` fields are removed because they are base64 copies of the complete raw conflist/plugin and would retain the same topology |
+| `GET /libpod/networks/json`, `GET /libpod/networks/{id}/json`, `GET /libpod/networks/{id}` | `redact_network_topology` | Podman v4 and later: `subnets`, `routes`, `network_dns_servers`, `network_interface`, and inspect's `containers` map. Podman v2.2.1-v3.4.4: the raw CNI plugin's host `bridge` or macvlan `master`; plugin-level and IPAM-nested `dns.nameservers`, `dns.domain`, and `dns.search`; plus IPAM `routes`, `ranges`, static `addresses`, and backward-compatible flat `subnet`, `gateway`, `rangeStart`, and `rangeEnd`. List's top-level and per-plugin `Bytes` fields are removed because they are base64 copies of the complete raw conflist/plugin and would retain the same topology |
 | `GET /libpod/secrets/json`, `GET /libpod/secrets/{name}/json` | `redact_sensitive_data` | `SecretData`, the plaintext Podman returns for `?showsecret=true`. It is a top-level field, not the `Spec.Data` Docker uses — Podman's `Spec` has no `Data` at all |
 
 Three things are deliberately left alone. Modern `ipam_options` and legacy
 `plugins[].ipam.type` name the allocator, not an address; the former maps onto
 Docker's `IPAM.Driver` and `IPAM.Options`, which `redact_network_topology`
-also keeps. Legacy `plugins[].dns.options` controls resolver behavior rather
-than naming internal resolvers or domains, so it is the only DNS subfield
-retained; `nameservers` and `search` are emptied, `domain` is redacted, and
-unknown DNS keys are removed. This matches the modern contract's selective
-treatment of `network_dns_servers`. And on container inspect,
+also keeps. Legacy `plugins[].dns.options` and
+`plugins[].ipam.dns.options` control resolver behavior rather than naming
+internal resolvers or domains, so they are the only DNS subfields retained;
+`nameservers` and `search` are emptied, `domain` is redacted, and unknown DNS
+keys are removed at either nesting level. This matches the modern contract's
+selective treatment of `network_dns_servers`. And on container inspect,
 `HostConfig.Mounts`, `MaskedPaths` and `ReadonlyPaths` simply do not exist on
 the libpod shape — Podman folds every mount into `Binds` — so those rewrites
 have nothing to act on rather than being skipped.
