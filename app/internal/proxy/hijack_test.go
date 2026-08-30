@@ -554,17 +554,105 @@ func TestHijackHandler_FullUpgrade(t *testing.T) {
 	serverWg.Wait()
 }
 
-// unixSocketDialer adapts a unix socket path to the upstream.Dialer seam so the
+// unixSocketDialer adapts a unix socket path to the upstream.RequestDialer seam so the
 // HijackHandlerWithDialer path can be exercised against an in-test mock daemon.
-type unixSocketDialer struct{ socketPath string }
+type unixSocketDialer struct {
+	socketPath  string
+	basePath    string
+	rawBasePath string
+}
+
+type cancelProbeDialer struct {
+	started chan struct{}
+	result  chan error
+	release chan struct{}
+}
+
+func (d *cancelProbeDialer) DialContext(context.Context, string, string) (net.Conn, error) {
+	return nil, errors.New("unexpected DialContext call")
+}
+
+func (d *cancelProbeDialer) DialRequest(ctx context.Context, _ *http.Request) (net.Conn, *http.Request, error) {
+	close(d.started)
+	select {
+	case <-ctx.Done():
+		d.result <- ctx.Err()
+		return nil, nil, ctx.Err()
+	case <-d.release:
+		err := errors.New("dial released without request cancellation")
+		d.result <- err
+		return nil, nil, err
+	}
+}
+
+func TestUpgradeHijackConnectionDialerPropagatesRequestCancellation(t *testing.T) {
+	t.Parallel()
+	dialer := &cancelProbeDialer{
+		started: make(chan struct{}),
+		result:  make(chan error, 1),
+		release: make(chan struct{}),
+	}
+	released := false
+	releaseDial := func() {
+		if !released {
+			close(dialer.release)
+			released = true
+		}
+	}
+	defer releaseDial()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "http://client/v1.53/containers/abc/attach", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	upgraded := make(chan bool, 1)
+	go func() {
+		_, ok := upgradeHijackConnectionDialer(rec, req, dialer, testLogger())
+		upgraded <- ok
+	}()
+
+	<-dialer.started
+	cancel()
+
+	select {
+	case err := <-dialer.result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("DialRequest context error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		releaseDial()
+		<-upgraded
+		t.Fatal("request cancellation did not reach DialRequest")
+	}
+	if ok := <-upgraded; ok {
+		t.Fatal("upgrade succeeded after request cancellation")
+	}
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+}
 
 func (d unixSocketDialer) DialContext(ctx context.Context, _, _ string) (net.Conn, error) {
 	return (&net.Dialer{}).DialContext(ctx, "unix", d.socketPath)
 }
 
+func (d unixSocketDialer) DialRequest(ctx context.Context, req *http.Request) (net.Conn, *http.Request, error) {
+	conn, err := d.DialContext(ctx, "", "")
+	if err != nil {
+		return nil, nil, err
+	}
+	clone := req.Clone(req.Context())
+	urlCopy := *req.URL
+	clone.URL = &urlCopy
+	clone.URL.Path = d.basePath + req.URL.Path
+	if d.rawBasePath != "" || req.URL.RawPath != "" {
+		clone.URL.RawPath = d.rawBasePath + req.URL.EscapedPath()
+	}
+	return conn, clone, nil
+}
+
 // TestHijackHandlerWithDialer_FullUpgrade mirrors TestHijackHandler_FullUpgrade
 // for the multi-host dialer path: the hijack must dial the active endpoint via
-// the upstream.Dialer, complete the 101 upgrade, and proxy bytes bidirectionally.
+// the upstream.RequestDialer, complete the 101 upgrade, and proxy bytes bidirectionally.
 func TestHijackHandlerWithDialer_FullUpgrade(t *testing.T) {
 	baseline := runtime.NumGoroutine()
 
@@ -594,6 +682,9 @@ func TestHijackHandlerWithDialer_FullUpgrade(t *testing.T) {
 			return
 		}
 		req.Body.Close()
+		if req.RequestURI != "/proxy%2Fapi/containers/abc/attach?stream=1" {
+			t.Errorf("mock: RequestURI = %q, want prefixed escaped path", req.RequestURI)
+		}
 
 		resp := &http.Response{
 			StatusCode: http.StatusSwitchingProtocols,
@@ -621,7 +712,11 @@ func TestHijackHandlerWithDialer_FullUpgrade(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("next handler should not be called for hijack endpoint")
 	})
-	handler := HijackHandlerWithDialer(unixSocketDialer{socketPath: socketPath}, hijackInactivityTimeout, logger, next)
+	handler := HijackHandlerWithDialer(unixSocketDialer{
+		socketPath:  socketPath,
+		basePath:    "/proxy/api",
+		rawBasePath: "/proxy%2Fapi",
+	}, hijackInactivityTimeout, logger, next)
 
 	clientLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

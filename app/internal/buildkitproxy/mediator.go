@@ -23,7 +23,7 @@ import (
 // the caller-supplied SessionKey — see its doc comment) to stay the
 // dependency-light leaf package registry.go's doc comment describes.
 type Dialer interface {
-	DialContext(ctx context.Context, network, address string) (net.Conn, error)
+	DialRequest(ctx context.Context, req *http.Request) (net.Conn, *http.Request, error)
 }
 
 // Mediator terminates and bridges the two opaque BuildKit HTTP tunnels
