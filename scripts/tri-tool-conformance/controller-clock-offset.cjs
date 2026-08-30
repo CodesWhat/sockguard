@@ -8,8 +8,12 @@ if (!offsetPath) {
 const hostNow = Date.now.bind(Date);
 
 Date.now = () => {
-  const offsetSeconds = Number.parseInt(fs.readFileSync(offsetPath, "utf8").trim(), 10);
-  if (!Number.isFinite(offsetSeconds)) {
+  const rawOffset = fs.readFileSync(offsetPath, "utf8").trim();
+  if (!/^[+-]?\d+$/.test(rawOffset)) {
+    throw new Error(`invalid clock offset in ${offsetPath}`);
+  }
+  const offsetSeconds = Number(rawOffset);
+  if (!Number.isSafeInteger(offsetSeconds)) {
     throw new Error(`invalid clock offset in ${offsetPath}`);
   }
   return hostNow() + offsetSeconds * 1000;

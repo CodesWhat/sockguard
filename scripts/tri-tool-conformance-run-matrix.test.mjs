@@ -10,7 +10,15 @@
 // verify-published-release.sh's --dry-run does.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
@@ -73,7 +81,9 @@ describe("tri-tool-conformance/run-matrix.sh --self-test", () => {
       "identity-sighup-reload",
       "identity-clock-skew-recovery",
     ]) {
-      assert.match(script, new RegExp(`record_result \\"?\\$\\{?name\\}?.*|${assertion}`));
+      const assertionPattern = new RegExp(`record_result "${assertion}"`);
+      assert.doesNotMatch('record_result "$name" "PASS"', assertionPattern);
+      assert.match(script, assertionPattern);
     }
     assert.match(script, /assert_identity_acceptance/);
     assert.match(script, /X-Portwing-Reason.*timestamp-skew|timestamp-skew.*X-Portwing-Reason/s);
@@ -130,7 +140,12 @@ describe("tri-tool-conformance/run-matrix.sh --self-test", () => {
   it("can remove credentials after assigning them to container UIDs", () => {
     const script = readFileSync(scriptPath, "utf8");
 
-    assert.match(script, /sudo rm -f -- "\$\{BUNDLE_DIR\}\/portwing_token\.txt"/);
+    assert.match(script, /SECRETS_PROVISIONED=0/);
+    assert.match(script, /SECRETS_PROVISIONED=1\n+sudo rm -f --/);
+    assert.match(
+      script,
+      /if \[ "\$SECRETS_PROVISIONED" -eq 1 \]; then\n+\s+sudo -n rm -f -- "\$\{BUNDLE_DIR\}\/portwing_token\.txt"/,
+    );
   });
 
   it("matches the published Portwing JSON authentication reason", () => {
@@ -183,12 +198,16 @@ describe("tri-tool-conformance/run-matrix.sh --self-test", () => {
     const fixtureDir = mkdtempSync(join(tmpdir(), "tri-tool-setup-failure-"));
     const binDir = join(fixtureDir, "bin");
     const dockerPath = join(binDir, "docker");
+    const sudoPath = join(binDir, "sudo");
+    const sudoMarker = join(fixtureDir, "sudo-called");
     const outputDir = join(fixtureDir, "output");
     const missingSocket = join(fixtureDir, "missing-docker.sock");
     mkdirSync(binDir, { recursive: true });
     mkdirSync(outputDir, { recursive: true });
     writeFileSync(dockerPath, '#!/bin/sh\necho "docker unavailable" >&2\nexit 69\n');
     chmodSync(dockerPath, 0o755);
+    writeFileSync(sudoPath, '#!/bin/sh\nprintf "called\\n" > "$TT_SUDO_MARKER"\nexit 70\n');
+    chmodSync(sudoPath, 0o755);
 
     try {
       const result = spawnSync(
@@ -212,6 +231,7 @@ describe("tri-tool-conformance/run-matrix.sh --self-test", () => {
             PATH: `${binDir}:${process.env.PATH}`,
             TT_CONFORMANCE_OUTPUT_DIR: outputDir,
             TT_DOCKER_SOCKET_PATH: missingSocket,
+            TT_SUDO_MARKER: sudoMarker,
           },
         },
       );
@@ -232,6 +252,7 @@ describe("tri-tool-conformance/run-matrix.sh --self-test", () => {
       );
       assert.match(diagnostics, /exit_status=69/);
       assert.match(diagnostics, /Docker socket is unavailable/);
+      assert.equal(existsSync(sudoMarker), false, "Docker-free cleanup must not invoke sudo");
     } finally {
       rmSync(fixtureDir, { recursive: true, force: true });
     }
@@ -379,6 +400,30 @@ describe("tri-tool-conformance/run-matrix.sh --self-test", () => {
       const { skewed, recovered } = JSON.parse(result.stdout);
       assert.ok(recovered - skewed >= 119_000, `${recovered} - ${skewed} should reflect recovery`);
       assert.ok(Math.abs(Date.now() - recovered) < 5_000, "recovered clock should match the host");
+    } finally {
+      rmSync(fixtureDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects partial and fractional controller clock offsets", () => {
+    const fixtureDir = mkdtempSync(join(tmpdir(), "tri-tool-clock-invalid-"));
+    const offsetPath = join(fixtureDir, "offset");
+
+    try {
+      for (const invalidOffset of ["-120junk", "1.5"]) {
+        writeFileSync(offsetPath, `${invalidOffset}\n`);
+        const result = spawnSync(
+          process.execPath,
+          ["--require", clockPreloadPath, "-e", "Date.now()"],
+          {
+            encoding: "utf8",
+            env: { ...process.env, TT_CLOCK_OFFSET_FILE: offsetPath },
+          },
+        );
+
+        assert.notEqual(result.status, 0, `${invalidOffset} must be rejected`);
+        assert.match(result.stderr, /invalid clock offset/);
+      }
     } finally {
       rmSync(fixtureDir, { recursive: true, force: true });
     }

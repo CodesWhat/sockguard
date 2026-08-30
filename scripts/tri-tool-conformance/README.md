@@ -186,7 +186,7 @@ every allow rule in `app/configs/portwing.yaml` and
 `app/configs/portwing-with-exec.yaml` (the union of both, since
 `legacy-floor`/`current-standard` run the plain preset and `current-edge`
 runs the exec preset) plus the two deliberate-denial probe shapes assertion
-9 sends (`POST /build`, `GET /containers/*/export`) so those expected
+10 sends (`POST /build`, `GET /containers/*/export`) so those expected
 denials don't themselves trip the tripwire.
 
 **Any route observed that isn't in the manifest fails the job** with:

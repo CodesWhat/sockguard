@@ -193,10 +193,10 @@ run_self_test() {
   }
 
   # The fixture (testdata/access-log-fixture.jsonl) has 11 lines: 7 real
-  # access-log lines (6 allowed + 1 denied that IS in known-routes.json),
-  # 1 deliberately-unknown denied route (GET /containers/*/attach, which is
-  # NOT in known-routes.json -- attach is never allowed by any preset and
-  # was never added as an expected-denial-probe shape either), 1
+  # access-log lines (5 allowed + 2 denied -- POST /build IS in
+  # known-routes.json, while GET /containers/*/attach deliberately is NOT:
+  # attach is never allowed by any preset and was never added as an
+  # expected-denial-probe shape either), 1
   # access-log-shaped line with normalized_path missing entirely, 1
   # non-access-log line (msg=startup), 1 bare-string JSON value (valid JSON,
   # not an object), and 1 line that isn't JSON at all. The three malformed/
@@ -517,6 +517,7 @@ ENGINE_API_VERSION="unknown"
 IDENTITY_CONTAINERS=()
 IDENTITY_EVIDENCE_JSON='{"status":"not-run"}'
 ROW_SERVICES_STARTED=0
+SECRETS_PROVISIONED=0
 CONFORMANCE_OUTPUT_DIR="${TT_CONFORMANCE_OUTPUT_DIR:-$REPO_ROOT}"
 CONFORMANCE_LOG_DIR="${CONFORMANCE_OUTPUT_DIR}/conformance-${ROW}-logs"
 CONFORMANCE_ARTIFACT="${CONFORMANCE_OUTPUT_DIR}/conformance-${ROW}.json"
@@ -616,7 +617,9 @@ cleanup() {
   if [ "$ROW_SERVICES_STARTED" -eq 1 ]; then
     compose down -v --remove-orphans >/dev/null 2>&1 || true
   fi
-  sudo rm -f -- "${BUNDLE_DIR}/portwing_token.txt" "${BUNDLE_DIR}/portwing_ed25519.pem" "${BUNDLE_DIR}/portwing_authorized_keys" >/dev/null 2>&1 || true
+  if [ "$SECRETS_PROVISIONED" -eq 1 ]; then
+    sudo -n rm -f -- "${BUNDLE_DIR}/portwing_token.txt" "${BUNDLE_DIR}/portwing_ed25519.pem" "${BUNDLE_DIR}/portwing_authorized_keys" >/dev/null 2>&1 || true
+  fi
   rm -rf -- "$SCRATCH_DIR"
 }
 
@@ -693,6 +696,7 @@ echo "   sockguard=${SOCKGUARD_IMAGE_RESOLVED} portwing=${PORTWING_IMAGE_RESOLVE
 # A killed local run can leave these files owned by the container UID. Clear
 # only the three fixed harness paths before recreating them so a retry cannot
 # inherit credentials or fail its first redirect with EACCES.
+SECRETS_PROVISIONED=1
 sudo rm -f -- "${BUNDLE_DIR}/portwing_token.txt" "${BUNDLE_DIR}/portwing_ed25519.pem" "${BUNDLE_DIR}/portwing_authorized_keys"
 
 if [ "$MODE" = "standard" ]; then
