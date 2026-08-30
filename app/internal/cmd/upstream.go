@@ -45,20 +45,21 @@ func resolveUpstreamSpecs(cfg *config.Config, getenv func(string) string, logger
 }
 
 // warnInsecureUpstreamSpecs logs startup warnings for insecure endpoint
-// settings. InsecureAllowPlainTCP selects plaintext only when no TLS-enabling
-// setting is present; when TLS is selected, warn about the redundant permission
-// without claiming that traffic is plaintext. InsecureSkipTLSVerify always
-// selects TLS, but leaves the encrypted connection susceptible to a
-// man-in-the-middle.
+// settings. TCP warnings follow the transport selected by BuildEndpoint. Unix
+// endpoints instead warn that TCP-only insecure settings have no effect.
 func warnInsecureUpstreamSpecs(logger *slog.Logger, specs []upstream.EndpointSpec, source string) {
 	if logger == nil {
 		return
 	}
 	for _, spec := range specs {
+		unixEndpoint := upstreamSpecUsesUnixTransport(spec)
 		if spec.InsecureAllowPlainTCP {
 			message := "upstream Docker endpoint uses plaintext TCP with no TLS; " +
 				"Docker API traffic (exec streams, secrets, container data) is unencrypted and unauthenticated on the wire"
-			if upstreamSpecSelectsTLS(spec) {
+			if unixEndpoint {
+				message = "upstream Docker endpoint uses a Unix socket; " +
+					"insecure_allow_plain_tcp only applies to TCP endpoints and has no effect"
+			} else if upstreamSpecSelectsTLS(spec) {
 				message = "upstream Docker endpoint has insecure_allow_plain_tcp enabled, but TLS is selected; " +
 					"remove insecure_allow_plain_tcp because it has no effect while TLS is configured"
 			}
@@ -77,6 +78,11 @@ func warnInsecureUpstreamSpecs(logger *slog.Logger, specs []upstream.EndpointSpe
 				message = "upstream Docker endpoint skips TLS certificate verification because DOCKER_CERT_PATH is set without DOCKER_TLS_VERIFY; " +
 					"this Docker environment fallback is deprecated and will be removed in v3.0.0; set DOCKER_TLS_VERIFY=1 to verify the daemon"
 			}
+			if unixEndpoint {
+				message = "upstream Docker endpoint uses a Unix socket; " +
+					"insecure_skip_tls_verify only applies to TCP endpoints and has no effect; " +
+					deprecatedSetting + " is deprecated and will be removed in v3.0.0; configure " + replacement + " for TCP endpoints"
+			}
 			logger.Warn(message,
 				"address", spec.Address,
 				"source", source,
@@ -86,6 +92,14 @@ func warnInsecureUpstreamSpecs(logger *slog.Logger, specs []upstream.EndpointSpe
 			)
 		}
 	}
+}
+
+// upstreamSpecUsesUnixTransport asks the endpoint builder to classify only the
+// address, avoiding TLS file loads while keeping warning behavior aligned with
+// the actual transport parser.
+func upstreamSpecUsesUnixTransport(spec upstream.EndpointSpec) bool {
+	endpoint, err := upstream.BuildEndpoint(upstream.EndpointSpec{Address: spec.Address})
+	return err == nil && endpoint.Network == "unix"
 }
 
 // upstreamSpecSelectsTLS mirrors the transport selection in

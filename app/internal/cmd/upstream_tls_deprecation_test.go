@@ -23,6 +23,9 @@ func TestResolveUpstreamSpecsWarnsAccuratelyAboutInsecureTransportSettings(t *te
 		wantDeprecatedSetting           string
 		wantReplacement                 string
 		wantUnverifiedTLS               bool
+		wantSkipVerificationClaim       bool
+		wantUnixEndpoint                bool
+		wantUnixInapplicableSettings    []string
 	}{
 		{
 			name: "explicit YAML",
@@ -32,10 +35,11 @@ upstream:
     - address: tcp://daemon.internal:2376
       insecure_skip_tls_verify: true
 `,
-			wantDeprecation:       true,
-			wantSource:            "upstream.endpoints config",
-			wantDeprecatedSetting: "upstream.endpoints[].insecure_skip_tls_verify",
-			wantReplacement:       "upstream.endpoints[].tls.ca_file",
+			wantDeprecation:           true,
+			wantSource:                "upstream.endpoints config",
+			wantDeprecatedSetting:     "upstream.endpoints[].insecure_skip_tls_verify",
+			wantReplacement:           "upstream.endpoints[].tls.ca_file",
+			wantSkipVerificationClaim: true,
 		},
 		{
 			name: "Docker environment fallback",
@@ -43,10 +47,11 @@ upstream:
 				"DOCKER_HOST":      "tcp://daemon.internal:2376",
 				"DOCKER_CERT_PATH": "/certs",
 			},
-			wantDeprecation:       true,
-			wantSource:            "DOCKER_HOST environment",
-			wantDeprecatedSetting: "DOCKER_CERT_PATH without DOCKER_TLS_VERIFY",
-			wantReplacement:       "DOCKER_TLS_VERIFY=1",
+			wantDeprecation:           true,
+			wantSource:                "DOCKER_HOST environment",
+			wantDeprecatedSetting:     "DOCKER_CERT_PATH without DOCKER_TLS_VERIFY",
+			wantReplacement:           "DOCKER_TLS_VERIFY=1",
+			wantSkipVerificationClaim: true,
 		},
 		{
 			name: "both insecure flags",
@@ -63,6 +68,7 @@ upstream:
 			wantDeprecatedSetting:           "upstream.endpoints[].insecure_skip_tls_verify",
 			wantReplacement:                 "upstream.endpoints[].tls.ca_file",
 			wantUnverifiedTLS:               true,
+			wantSkipVerificationClaim:       true,
 		},
 		{
 			name: "verified TLS with redundant plain TCP permission",
@@ -85,6 +91,49 @@ upstream:
       insecure_allow_plain_tcp: true
 `,
 			wantPlaintextClaim: true,
+		},
+		{
+			name: "Unix endpoint with plain TCP permission",
+			yaml: `
+upstream:
+  endpoints:
+    - address: unix:///var/run/docker.sock
+      insecure_allow_plain_tcp: true
+`,
+			wantSource:                   "upstream.endpoints config",
+			wantUnixEndpoint:             true,
+			wantUnixInapplicableSettings: []string{"insecure_allow_plain_tcp"},
+		},
+		{
+			name: "Unix endpoint with skip verification",
+			yaml: `
+upstream:
+  endpoints:
+    - address: unix:///var/run/docker.sock
+      insecure_skip_tls_verify: true
+`,
+			wantDeprecation:              true,
+			wantSource:                   "upstream.endpoints config",
+			wantDeprecatedSetting:        "upstream.endpoints[].insecure_skip_tls_verify",
+			wantReplacement:              "upstream.endpoints[].tls.ca_file",
+			wantUnixEndpoint:             true,
+			wantUnixInapplicableSettings: []string{"insecure_skip_tls_verify"},
+		},
+		{
+			name: "Unix endpoint with both insecure flags",
+			yaml: `
+upstream:
+  endpoints:
+    - address: unix:///var/run/docker.sock
+      insecure_allow_plain_tcp: true
+      insecure_skip_tls_verify: true
+`,
+			wantDeprecation:              true,
+			wantSource:                   "upstream.endpoints config",
+			wantDeprecatedSetting:        "upstream.endpoints[].insecure_skip_tls_verify",
+			wantReplacement:              "upstream.endpoints[].tls.ca_file",
+			wantUnixEndpoint:             true,
+			wantUnixInapplicableSettings: []string{"insecure_allow_plain_tcp", "insecure_skip_tls_verify"},
 		},
 		{
 			name: "secure endpoint",
@@ -136,8 +185,23 @@ upstream:
 					t.Error("endpoint with both insecure flags must skip TLS verification")
 				}
 			}
+			if tt.wantUnixEndpoint {
+				if len(specs) != 1 {
+					t.Fatalf("resolved specs = %d, want 1", len(specs))
+				}
+				endpoint, err := upstream.BuildEndpoint(specs[0])
+				if err != nil {
+					t.Fatalf("BuildEndpoint: %v", err)
+				}
+				if endpoint.Network != "unix" {
+					t.Errorf("endpoint network = %q, want unix", endpoint.Network)
+				}
+				if endpoint.IsTLS() {
+					t.Error("Unix endpoint must not use TLS when TCP-only insecure settings are configured")
+				}
+			}
 
-			var deprecationRecords, plaintextClaimRecords, redundantPlainTCPPermissionRecords []testhelp.LogRecord
+			var deprecationRecords, plaintextClaimRecords, tlsSelectedClaimRecords, skipVerificationClaimRecords, redundantPlainTCPPermissionRecords []testhelp.LogRecord
 			for _, record := range collector.Records() {
 				if strings.Contains(record.Message, "deprecated") && strings.Contains(record.Message, "v3.0.0") {
 					deprecationRecords = append(deprecationRecords, record)
@@ -145,7 +209,13 @@ upstream:
 				if strings.Contains(record.Message, "uses plaintext TCP with no TLS") {
 					plaintextClaimRecords = append(plaintextClaimRecords, record)
 				}
-				if strings.Contains(record.Message, "insecure_allow_plain_tcp") {
+				if strings.Contains(record.Message, "TLS is selected") {
+					tlsSelectedClaimRecords = append(tlsSelectedClaimRecords, record)
+				}
+				if strings.Contains(record.Message, "skips TLS certificate verification") {
+					skipVerificationClaimRecords = append(skipVerificationClaimRecords, record)
+				}
+				if strings.Contains(record.Message, "insecure_allow_plain_tcp enabled, but TLS is selected") {
 					redundantPlainTCPPermissionRecords = append(redundantPlainTCPPermissionRecords, record)
 				}
 			}
@@ -158,6 +228,29 @@ upstream:
 			}
 			if got := len(redundantPlainTCPPermissionRecords); got != warningCount(tt.wantRedundantPlainTCPPermission) {
 				t.Errorf("redundant plain-TCP permission warning count = %d, want %d; records: %#v", got, warningCount(tt.wantRedundantPlainTCPPermission), collector.Records())
+			}
+			if got := len(tlsSelectedClaimRecords); got != warningCount(tt.wantRedundantPlainTCPPermission) {
+				t.Errorf("TLS-selected claim count = %d, want %d; records: %#v", got, warningCount(tt.wantRedundantPlainTCPPermission), collector.Records())
+			}
+			if got := len(skipVerificationClaimRecords); got != warningCount(tt.wantSkipVerificationClaim) {
+				t.Errorf("skipped-verification claim count = %d, want %d; records: %#v", got, warningCount(tt.wantSkipVerificationClaim), collector.Records())
+			}
+			for _, setting := range tt.wantUnixInapplicableSettings {
+				found := false
+				for _, record := range collector.Records() {
+					if strings.Contains(record.Message, setting) && strings.Contains(record.Message, "only applies to TCP endpoints") {
+						found = true
+						if got := record.Attrs["address"]; got != specs[0].Address {
+							t.Errorf("%s Unix warning address = %v, want %q; record: %#v", setting, got, specs[0].Address, record)
+						}
+						if got := record.Attrs["source"]; got != tt.wantSource {
+							t.Errorf("%s Unix warning source = %v, want %q; record: %#v", setting, got, tt.wantSource, record)
+						}
+					}
+				}
+				if !found {
+					t.Errorf("no warning says %s only applies to TCP endpoints; records: %#v", setting, collector.Records())
+				}
 			}
 			if !tt.wantDeprecation {
 				return
