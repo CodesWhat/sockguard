@@ -8,10 +8,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/codeswhat/sockguard/app/internal/dockerclient"
+	"github.com/codeswhat/sockguard/app/internal/upstream"
 )
 
 func startUnixUpstream(t *testing.T, handler http.Handler) string {
@@ -113,6 +115,37 @@ func TestNewReadinessMonitorProbesAPIEndToEnd(t *testing.T) {
 		_, _ = w.Write([]byte("[]"))
 	}))
 	m := NewReadinessMonitor(sock, time.Now(), testLogger(), time.Second)
+	rec := httptest.NewRecorder()
+	m.Handler()(rec, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestReadinessMonitorPreservesUpstreamBasePath(t *testing.T) {
+	t.Parallel()
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.RequestURI != "/gateway%2Fdocker/containers/json?limit=1" {
+			t.Errorf("RequestURI = %q, want prefixed readiness path", r.RequestURI)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("[]"))
+	}))
+	t.Cleanup(daemon.Close)
+	ep, err := upstream.BuildEndpoint(upstream.EndpointSpec{
+		Address:               "tcp://" + strings.TrimPrefix(daemon.URL, "http://") + "/gateway%2Fdocker",
+		InsecureAllowPlainTCP: true,
+	})
+	if err != nil {
+		t.Fatalf("BuildEndpoint: %v", err)
+	}
+	resolver, err := upstream.New([]upstream.Endpoint{ep}, upstream.Options{Interval: -1})
+	if err != nil {
+		t.Fatalf("upstream.New: %v", err)
+	}
+	m := NewReadinessMonitorWithRoundTripper(ep.String(), resolver, time.Now(), testLogger(), time.Second)
 	rec := httptest.NewRecorder()
 	m.Handler()(rec, httptest.NewRequest(http.MethodGet, "/ready", nil))
 	if rec.Code != http.StatusOK {

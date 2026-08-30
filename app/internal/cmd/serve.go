@@ -568,7 +568,7 @@ func newServeRuntime(cfg *config.Config, logger *slog.Logger, deps *serveDeps) (
 		runtime.metrics = metrics.NewRegistry()
 	}
 
-	resolver, legacy, err := buildUpstreamResolver(cfg, logger, os.Getenv)
+	resolver, legacy, err := buildUpstreamResolver(cfg, logger, os.LookupEnv)
 	if err != nil {
 		return nil, err
 	}
