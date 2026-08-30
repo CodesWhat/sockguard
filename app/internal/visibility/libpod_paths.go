@@ -71,10 +71,10 @@ func suffixedIdentifierAny(normPath, prefix string, suffixes ...string) (string,
 // package's 404-on-hidden behavior exists to deny. libpod has no /attach/ws:
 // Podman registers container attach as a POST.
 //
-// Name/image pattern axes do not apply here — see needsPatternResponseFilter's
-// doc comment, which already documents that pattern filtering is scoped to
-// exactly two Docker-compat list endpoints; this does not regress that, it
-// just does not extend pattern filtering to a third route family.
+// Name/image pattern axes use the same Docker-compatible container inspect
+// metadata as the corresponding /containers/{name}/... reads. This matcher
+// only classifies the target; requestVisibleWithPolicy applies every configured
+// axis before forwarding the native read.
 func libpodContainerReadIdentifier(normPath string) (string, bool) {
 	return readSubresourceIdentifier(normPath, libpodPrefix+"containers/",
 		"json", "logs", "stats", "top", "changes", "export", "archive", "exists", "healthcheck")

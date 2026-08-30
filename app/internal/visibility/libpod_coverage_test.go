@@ -3,6 +3,7 @@ package visibility
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -129,6 +130,117 @@ func eventsUpstreamForTest(t *testing.T, items []labeledItemForTest) http.Handle
 			}
 		}
 	})
+}
+
+type libpodContainerListItemForTest struct {
+	raw    string
+	labels map[string]string
+}
+
+func libpodContainerListUpstreamForTest(t *testing.T, items []libpodContainerListItemForTest) http.Handler {
+	t.Helper()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		values := labelFilterValuesForTest(t, r)
+		kept := make([]string, 0, len(items))
+		for _, item := range items {
+			if conjunctiveLabelMatchForTest(item.labels, values) {
+				kept = append(kept, item.raw)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("[" + strings.Join(kept, ",") + "]"))
+	})
+}
+
+func TestLibpodContainerListAppliesPatternAxes(t *testing.T) {
+	t.Parallel()
+	items := []libpodContainerListItemForTest{
+		{
+			raw:    `{"Id":"keep-first","Names":["allowed-api"],"Image":"quay.io/team/api:v1","Labels":{"tenant":"visible"},"Command":["serve","api"],"Pod":"pod-a","State":"running"}`,
+			labels: map[string]string{"tenant": "visible"},
+		},
+		{
+			raw:    `{"Id":"drop-name","Names":["hidden-db"],"Image":"quay.io/team/db:v1","Labels":{"tenant":"visible"},"Command":["serve","db"],"Pod":"pod-b","State":"running"}`,
+			labels: map[string]string{"tenant": "visible"},
+		},
+		{
+			raw:    `{"Id":"selector-hidden","Names":["allowed-worker"],"Image":"quay.io/team/worker:v1","Labels":{"tenant":"hidden"},"Command":["serve","worker"],"Pod":"pod-c","State":"paused"}`,
+			labels: map[string]string{"tenant": "hidden"},
+		},
+		{
+			raw:    `{"Id":"keep-second","Names":["allowed-web"],"Image":"quay.io/team/web:v1","Labels":{"tenant":"visible"},"Command":["serve","web"],"Pod":"pod-d","State":"running","Extra":{"keep":true}}`,
+			labels: map[string]string{"tenant": "visible"},
+		},
+	}
+
+	tests := []struct {
+		name string
+		opts Options
+		want []int
+	}{
+		{
+			name: "patterns only",
+			opts: Options{NamePatterns: []string{"allowed-*"}},
+			want: []int{0, 2, 3},
+		},
+		{
+			name: "selector and name pattern",
+			opts: Options{
+				VisibleResourceLabels: []string{"tenant=visible"},
+				NamePatterns:          []string{"allowed-*"},
+			},
+			want: []int{0, 3},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			handler := middlewareWithDeps(testVisibilityLogger(), tt.opts, visibilityDeps{})(libpodContainerListUpstreamForTest(t, items))
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v5.8.1/libpod/containers/json", nil))
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			wantItems := make([]string, 0, len(tt.want))
+			for _, index := range tt.want {
+				wantItems = append(wantItems, items[index].raw)
+			}
+			wantBody := "[" + strings.Join(wantItems, ",") + "]"
+			if got := rec.Body.String(); got != wantBody {
+				t.Fatalf("body = %s, want retained native items in original order: %s", got, wantBody)
+			}
+			if got := rec.Header().Get("Content-Length"); got != fmt.Sprintf("%d", len(wantBody)) {
+				t.Fatalf("Content-Length = %q, want %d", got, len(wantBody))
+			}
+		})
+	}
+}
+
+func TestLibpodContainerListPatternFilterCapsOversizedResponse(t *testing.T) {
+	t.Parallel()
+	chunk := `{"Id":"c","Names":["allowed-c"],"Image":"alpine"},`
+	huge := "[" + strings.Repeat(chunk, (filter.MaxResponseBodyBytes/len(chunk))+5000) +
+		`{"Id":"c","Names":["allowed-c"],"Image":"alpine"}]`
+
+	handler := middlewareWithDeps(testVisibilityLogger(), Options{
+		NamePatterns: []string{"allowed-*"},
+	}, visibilityDeps{})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(huge))
+	}))
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v5.8.1/libpod/containers/json", nil))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d for oversized native list; body bytes: %d", rec.Code, http.StatusBadGateway, rec.Body.Len())
+	}
+	if !strings.Contains(rec.Body.String(), "too large") {
+		t.Fatalf("body = %q, want too-large message", rec.Body.String())
+	}
 }
 
 // --- gap 1: the images route family ---------------------------------------
@@ -522,6 +634,116 @@ func TestLibpodReadSubresourcesHideHiddenResource(t *testing.T) {
 				t.Fatalf("inspect = %s/%q, want %s/%q", gotKind, gotIdentifier, tt.kind, tt.id)
 			}
 		})
+	}
+}
+
+func TestVisibilityLibpodContainerReadsApplyNamePatternPolicy(t *testing.T) {
+	t.Parallel()
+	paths := []string{
+		"/libpod/containers/c1/json",
+		"/libpod/containers/c1/logs",
+		"/libpod/containers/c1/stats",
+		"/libpod/containers/c1/top",
+		"/libpod/containers/c1/changes",
+		"/libpod/containers/c1/export",
+		"/libpod/containers/c1/archive?path=/etc",
+		"/libpod/containers/c1/exists",
+		"/libpod/containers/c1/healthcheck",
+	}
+	tests := []struct {
+		name       string
+		opts       Options
+		labels     map[string]string
+		nameMeta   string
+		wantStatus int
+		wantReach  bool
+	}{
+		{
+			name:       "patterns only denies nonmatching name",
+			opts:       Options{NamePatterns: []string{"allowed-*"}},
+			nameMeta:   "/hidden",
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "patterns only allows matching name",
+			opts:       Options{NamePatterns: []string{"allowed-*"}},
+			nameMeta:   "/allowed-app",
+			wantStatus: http.StatusNoContent,
+			wantReach:  true,
+		},
+		{
+			name: "matching selector does not override nonmatching name",
+			opts: Options{
+				VisibleResourceLabels: []string{"tenant=allowed"},
+				NamePatterns:          []string{"allowed-*"},
+			},
+			labels:     map[string]string{"tenant": "allowed"},
+			nameMeta:   "/hidden",
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name: "matching name does not override nonmatching selector",
+			opts: Options{
+				VisibleResourceLabels: []string{"tenant=allowed"},
+				NamePatterns:          []string{"allowed-*"},
+			},
+			labels:     map[string]string{"tenant": "hidden"},
+			nameMeta:   "/allowed-app",
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name: "matching selector and name are forwarded",
+			opts: Options{
+				VisibleResourceLabels: []string{"tenant=allowed"},
+				NamePatterns:          []string{"allowed-*"},
+			},
+			labels:     map[string]string{"tenant": "allowed"},
+			nameMeta:   "/allowed-app",
+			wantStatus: http.StatusNoContent,
+			wantReach:  true,
+		},
+	}
+
+	for _, path := range paths {
+		for _, tt := range tests {
+			t.Run(path+"/"+tt.name, func(t *testing.T) {
+				t.Parallel()
+				assertInspectTarget := func(kind dockerresource.Kind, id string) {
+					t.Helper()
+					if kind != dockerresource.KindContainer || id != "c1" {
+						t.Fatalf("inspect = %s/%q, want %s/c1", kind, id, dockerresource.KindContainer)
+					}
+				}
+				reached := false
+				handler := middlewareWithDeps(testVisibilityLogger(), tt.opts, visibilityDeps{
+					inspectResource: func(_ context.Context, kind dockerresource.Kind, id string) (map[string]string, bool, error) {
+						assertInspectTarget(kind, id)
+						return tt.labels, true, nil
+					},
+					inspectResourceMeta: func(_ context.Context, kind dockerresource.Kind, id string) (*resourceMeta, bool, error) {
+						assertInspectTarget(kind, id)
+						return &resourceMeta{names: []string{tt.nameMeta}}, true, nil
+					},
+					inspectResourceDetails: func(_ context.Context, kind dockerresource.Kind, id string) (*resourceDetails, bool, error) {
+						assertInspectTarget(kind, id)
+						return &resourceDetails{
+							labels: tt.labels,
+							meta:   &resourceMeta{names: []string{tt.nameMeta}},
+						}, true, nil
+					},
+				})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					reached = true
+					w.WriteHeader(http.StatusNoContent)
+				}))
+
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+
+				if rec.Code != tt.wantStatus || reached != tt.wantReach {
+					t.Fatalf("status = %d reached = %v, want %d and %v; body: %s", rec.Code, reached, tt.wantStatus, tt.wantReach, rec.Body.String())
+				}
+			})
+		}
 	}
 }
 

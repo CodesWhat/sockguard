@@ -115,8 +115,8 @@ func TestSystemDataUsageOwnerIsolationHidesOtherOwners(t *testing.T) {
 
 // TestSystemDataUsageOwnerIsolationDropsUnlabeledImages pins the consistency
 // rule: GET /images/json under ownership lists only images carrying the owner
-// label (addOwnerLabelFilter replaces the label filter unconditionally), so an
-// unlabeled image must not appear in /system/df either.
+// label (addOwnerLabelFilter always sends it upstream), so an unlabeled image
+// must not appear in /system/df either.
 func TestSystemDataUsageOwnerIsolationDropsUnlabeledImages(t *testing.T) {
 	t.Parallel()
 	for _, allowUnowned := range []bool{false, true} {

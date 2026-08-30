@@ -249,6 +249,20 @@ same way they cover Docker-compat:
   `{"nsmode":"container","value":"<ref>"}` namespace object and
   `pod`/`infra_image` fields.
 
+One endpoint is the exception, and it needs `upstream.flavor: podman` set (or
+left on `auto`, which probes for it) to be handled correctly. Podman registers
+`GET /events` and `GET /libpod/events` on a single handler, so the
+Docker-compat spelling carries Podman's filter semantics, and Podman evaluates
+several values under one filter key disjunctively where dockerd ANDs them.
+Sockguard therefore writes a visibility policy's single
+`visible_resource_labels` selector as the sole `label` filter value, replacing
+whatever the client sent, and refuses the request with a `403` and reason code
+`visibility_podman_events_unscopeable` when the policy carries two or more
+selectors, because two injected values would stream every event matching
+*either* one. A patterns-only policy is forwarded untouched, as it is on
+Docker. On a Docker upstream nothing about `/events` changes. See
+[Security](/security) for the operator-facing version of this.
+
 Denial reasons for libpod-family requests carry a `libpod ` prefix, matching
 the convention the libpod body inspectors use, so a `reason` grep separates
 libpod-originated denials from their Docker-compat counterparts without a
@@ -395,13 +409,3 @@ land):
   These checks do not make the daemon action transactional. A tag can be
   rebound after its preflight inspect, and Podman can still partially apply an
   authorized multi-image delete if a later daemon-side operation fails.
-- A **visibility** policy with more than one `visible_resource_labels` selector
-  is enforceable on `GET /libpod/events` but not on the Docker-compat
-  `GET /events` that Podman also serves, because they are the same handler with
-  the same disjunctive label filter and sockguard cannot tell a Podman upstream
-  from dockerd. The libpod spelling is refused; the compat spelling still gets
-  the append-style injection that is correct against dockerd, so on a Podman
-  upstream a multi-selector policy is a `label` OR rather than an AND there.
-  Owner isolation is unaffected on both spellings — it replaces the key rather
-  than appending to it. Configure a single selector, or deny `GET /events` in
-  your rules, if you need the guarantee on a Podman upstream.
