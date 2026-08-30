@@ -1497,3 +1497,135 @@ func TestValidateAndCompileRulesLibpodContainerWriteGates(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateAndCompileRulesRejectsExactLibpodContainerReadExfiltration(t *testing.T) {
+	for _, scope := range []string{"default policy", "named client profile"} {
+		for _, operation := range []string{"checkpoint", "mount"} {
+			t.Run(scope+" "+operation, func(t *testing.T) {
+				path := "/libpod/containers/real-id/" + operation
+				rules := []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: path}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+				cfg := config.Defaults()
+				if scope == "named client profile" {
+					cfg.Rules = []config.RuleConfig{
+						{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+					}
+					cfg.Clients.Profiles = []config.ClientProfileConfig{{
+						Name:  "backup-agent",
+						Rules: rules,
+					}}
+				} else {
+					cfg.Rules = rules
+				}
+
+				_, err := validateAndCompileRules(&cfg)
+				if err == nil {
+					t.Fatal("validateAndCompileRules() = nil, want an error")
+				}
+				for _, want := range []string{"insecure_allow_read_exfiltration", "POST " + path} {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("error = %q, want it to mention %q", err.Error(), want)
+					}
+				}
+				if scope == "named client profile" && !strings.Contains(err.Error(), "backup-agent") {
+					t.Fatalf("error = %q, want it to mention the client profile", err.Error())
+				}
+			})
+		}
+	}
+}
+
+func TestValidateAndCompileRulesEvaluatesOrderedLibpodReadExfiltrationRules(t *testing.T) {
+	tests := []struct {
+		name      string
+		operation string
+		rules     func(operation string) []config.RuleConfig
+		wantErr   bool
+	}{
+		{
+			name:      "broader allow still exposes another identifier after exact sentinel deny",
+			operation: "checkpoint",
+			rules: func(operation string) []config.RuleConfig {
+				return []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/sockguard-test/" + operation}, Action: "deny"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/" + operation}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+			wantErr: true,
+		},
+		{
+			name:      "broader allow still exposes another identifier after exact sentinel deny",
+			operation: "mount",
+			rules: func(operation string) []config.RuleConfig {
+				return []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/sockguard-test/" + operation}, Action: "deny"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/" + operation}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+			wantErr: true,
+		},
+		{
+			name:      "earlier wildcard deny shadows later exact allow",
+			operation: "checkpoint",
+			rules: func(operation string) []config.RuleConfig {
+				return []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/" + operation}, Action: "deny"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/real-id/" + operation}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+		},
+		{
+			name:      "earlier wildcard deny shadows later exact allow",
+			operation: "mount",
+			rules: func(operation string) []config.RuleConfig {
+				return []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/" + operation}, Action: "deny"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/real-id/" + operation}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+		},
+	}
+
+	for _, scope := range []string{"default policy", "named client profile"} {
+		for _, tt := range tests {
+			t.Run(scope+" "+tt.operation+" "+tt.name, func(t *testing.T) {
+				rules := tt.rules(tt.operation)
+				cfg := config.Defaults()
+				if scope == "named client profile" {
+					cfg.Rules = []config.RuleConfig{
+						{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+					}
+					cfg.Clients.Profiles = []config.ClientProfileConfig{{
+						Name:  "backup-agent",
+						Rules: rules,
+					}}
+				} else {
+					cfg.Rules = rules
+				}
+
+				_, err := validateAndCompileRules(&cfg)
+				if !tt.wantErr {
+					if err != nil {
+						t.Fatalf("validateAndCompileRules() error = %v, want nil", err)
+					}
+					return
+				}
+				if err == nil {
+					t.Fatal("validateAndCompileRules() = nil, want an error")
+				}
+				if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration") {
+					t.Fatalf("error = %q, want the read-exfiltration acknowledgment", err.Error())
+				}
+				if scope == "named client profile" && !strings.Contains(err.Error(), "backup-agent") {
+					t.Fatalf("error = %q, want it to mention the client profile", err.Error())
+				}
+			})
+		}
+	}
+}

@@ -302,7 +302,7 @@ func validateBodyBlindWriteRules(cfg *config.Config, compiled []*filter.Compiled
 }
 
 func validateReadExfiltrationRules(cfg *config.Config, compiled []*filter.CompiledRule) error {
-	return validateReadExfiltrationRulesForPolicy("", cfg.InsecureAllowReadExfiltration, compiled)
+	return validateReadExfiltrationRulesForPolicy("", cfg.InsecureAllowReadExfiltration, cfg.Rules, compiled)
 }
 
 func validateBuildkitTunnelRules(cfg *config.Config, compiled []*filter.CompiledRule) error {
@@ -334,12 +334,12 @@ func validateBodyBlindWriteRulesForPolicy(scope string, insecure bool, requestBo
 	)
 }
 
-func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, compiled []*filter.CompiledRule) error {
+func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, configured []config.RuleConfig, compiled []*filter.CompiledRule) error {
 	if insecure {
 		return nil
 	}
 
-	exposed := allowedSensitiveExfilEndpoints(compiled)
+	exposed := allowedSensitiveExfilEndpoints(configured, compiled)
 	if len(exposed) == 0 {
 		return nil
 	}
@@ -438,52 +438,78 @@ func allowedBuildkitTunnelEndpoints(compiled []*filter.CompiledRule) []string {
 }
 
 func allowedBodySensitiveWriteEndpoints(requestBody config.RequestBodyConfig, configured []config.RuleConfig, compiled []*filter.CompiledRule) []string {
-	type probe struct {
-		catalog bodySensitiveWriteEndpoint
-		path    string
-	}
-
-	probes := make([]probe, 0, len(bodySensitiveWriteEndpoints)+len(configured))
+	allowed := make([]string, 0, len(bodySensitiveWriteEndpoints))
 	for _, endpoint := range bodySensitiveWriteEndpoints {
-		probes = append(probes, probe{catalog: endpoint, path: endpoint.path})
-	}
-	// The catalog uses sockguard-test as a resource-identifier placeholder.
-	// A literal allow rule for a different identifier does not match that
-	// synthetic probe, so add the operator's exact path when it has the same
-	// route shape. Evaluation still runs against the complete ordered rule set.
-	for _, rule := range configured {
-		if strings.Contains(rule.Match.Path, "*") {
+		if bodyInspectionConfiguredForEndpoint(requestBody, endpoint) {
 			continue
 		}
-		for _, endpoint := range bodySensitiveWriteEndpoints {
-			if sameBodySensitiveEndpointShape(rule.Match.Path, endpoint.path) {
-				probes = append(probes, probe{catalog: endpoint, path: rule.Match.Path})
-			}
+		for _, path := range allowedCatalogPaths(endpoint.method, endpoint.path, configured, compiled) {
+			allowed = append(allowed, endpoint.method+" "+path)
 		}
-	}
-
-	allowed := make([]string, 0, len(probes))
-	seen := make(map[string]struct{}, len(probes))
-	for _, candidate := range probes {
-		if bodyInspectionConfiguredForEndpoint(requestBody, candidate.catalog) {
-			continue
-		}
-		req := &http.Request{Method: candidate.catalog.method, URL: &url.URL{Path: candidate.path}}
-		action, _, _ := filter.Evaluate(compiled, req)
-		if action != filter.ActionAllow {
-			continue
-		}
-		entry := candidate.catalog.method + " " + candidate.path
-		if _, ok := seen[entry]; ok {
-			continue
-		}
-		seen[entry] = struct{}{}
-		allowed = append(allowed, entry)
 	}
 	return allowed
 }
 
-func sameBodySensitiveEndpointShape(actual, catalog string) bool {
+func allowedCatalogPaths(method, catalogPath string, sourceRules []config.RuleConfig, compiledRules []*filter.CompiledRule) []string {
+	probePaths := []string{catalogPath}
+	configuredLiteralPaths := make(map[string]struct{}, len(sourceRules))
+	for _, rule := range sourceRules {
+		if strings.Contains(rule.Match.Path, "*") {
+			continue
+		}
+
+		normalized := filter.NormalizePath(rule.Match.Path)
+		configuredLiteralPaths[normalized] = struct{}{}
+		if sameCatalogPathShape(normalized, catalogPath) {
+			probePaths = append(probePaths, rule.Match.Path)
+		}
+	}
+
+	allowed := make([]string, 0, len(probePaths))
+	seen := make(map[string]struct{}, len(probePaths))
+	for _, path := range probePaths {
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		if policyAllowsPath(method, path, compiledRules) {
+			allowed = append(allowed, path)
+		}
+	}
+	if len(allowed) > 0 || !strings.Contains(catalogPath, "sockguard-test") {
+		return allowed
+	}
+
+	// Exact denies for synthetic identifiers must not shadow a later wildcard
+	// allow. Pick an identifier absent from every configured literal path, then
+	// let the compiled first-match evaluator decide whether it is reachable.
+	reachabilityPath := collisionFreeCatalogPath(catalogPath, configuredLiteralPaths)
+	if policyAllowsPath(method, reachabilityPath, compiledRules) {
+		return []string{reachabilityPath}
+	}
+	return nil
+}
+
+func policyAllowsPath(method, path string, compiledRules []*filter.CompiledRule) bool {
+	req := &http.Request{Method: method, URL: &url.URL{Path: path}}
+	action, _, _ := filter.Evaluate(compiledRules, req)
+	return action == filter.ActionAllow
+}
+
+func collisionFreeCatalogPath(catalogPath string, configuredLiteralPaths map[string]struct{}) string {
+	for suffix := 0; ; suffix++ {
+		identifier := "sockguard-reachability"
+		if suffix > 0 {
+			identifier = fmt.Sprintf("sockguard-reachability-%d", suffix)
+		}
+		path := strings.ReplaceAll(catalogPath, "sockguard-test", identifier)
+		if _, exists := configuredLiteralPaths[filter.NormalizePath(path)]; !exists {
+			return path
+		}
+	}
+}
+
+func sameCatalogPathShape(actual, catalog string) bool {
 	actualParts := strings.Split(strings.Trim(actual, "/"), "/")
 	catalogParts := strings.Split(strings.Trim(catalog, "/"), "/")
 	if len(actualParts) != len(catalogParts) {
@@ -503,15 +529,12 @@ func sameBodySensitiveEndpointShape(actual, catalog string) bool {
 	return true
 }
 
-func allowedSensitiveExfilEndpoints(compiled []*filter.CompiledRule) []string {
+func allowedSensitiveExfilEndpoints(configured []config.RuleConfig, compiled []*filter.CompiledRule) []string {
 	allowed := make([]string, 0, len(sensitiveExfilEndpoints))
 	for _, endpoint := range sensitiveExfilEndpoints {
-		req := &http.Request{Method: endpoint.method, URL: &url.URL{Path: endpoint.path}}
-		action, _, _ := filter.Evaluate(compiled, req)
-		if action != filter.ActionAllow {
-			continue
+		for _, path := range allowedCatalogPaths(endpoint.method, endpoint.path, configured, compiled) {
+			allowed = append(allowed, endpoint.method+" "+path)
 		}
-		allowed = append(allowed, endpoint.method+" "+endpoint.path)
 	}
 	return allowed
 }
@@ -581,7 +604,7 @@ func compileClientProfiles(cfg *config.Config) (map[string]filter.Policy, error)
 		if err := validateBodyBlindWriteRulesForPolicy(profile.Name, cfg.InsecureAllowBodyBlindWrites, profile.RequestBody, profile.Rules, compiledRules); err != nil {
 			return nil, err
 		}
-		if err := validateReadExfiltrationRulesForPolicy(profile.Name, cfg.InsecureAllowReadExfiltration, compiledRules); err != nil {
+		if err := validateReadExfiltrationRulesForPolicy(profile.Name, cfg.InsecureAllowReadExfiltration, profile.Rules, compiledRules); err != nil {
 			return nil, err
 		}
 		//nolint:staticcheck // SA1019: deprecated flag still needs validating for as long as it stays functional
