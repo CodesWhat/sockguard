@@ -93,6 +93,7 @@ func addStaleRepresentationMetadata(resp *http.Response) {
 		"ETag",
 		"Last-Modified",
 		"Repr-Digest",
+		"Trailer",
 		"Transfer-Encoding",
 	} {
 		resp.Header.Set(name, "stale-upstream-value")
@@ -100,6 +101,10 @@ func addStaleRepresentationMetadata(resp *http.Response) {
 	resp.Header.Set("Content-Type", "application/json; charset=utf-8")
 	resp.Header.Set("X-Upstream-Metadata", "keep-me")
 	resp.TransferEncoding = []string{"chunked"}
+	resp.Trailer = http.Header{
+		"Digest":             []string{"sha-256=:stale-upstream-trailer:"},
+		"X-Upstream-Trailer": []string{"must-not-reach-client"},
+	}
 }
 
 func assertRewrittenRepresentationMetadata(t *testing.T, resp *http.Response) {
@@ -115,6 +120,7 @@ func assertRewrittenRepresentationMetadata(t *testing.T, resp *http.Response) {
 		"ETag",
 		"Last-Modified",
 		"Repr-Digest",
+		"Trailer",
 		"Transfer-Encoding",
 	} {
 		if got := resp.Header.Values(name); len(got) != 0 {
@@ -132,6 +138,9 @@ func assertRewrittenRepresentationMetadata(t *testing.T, resp *http.Response) {
 	}
 	if resp.TransferEncoding != nil {
 		t.Errorf("TransferEncoding = %#v, want fixed-length rewritten response", resp.TransferEncoding)
+	}
+	if len(resp.Trailer) != 0 {
+		t.Errorf("Trailer = %#v, want cleared after body rewrite", resp.Trailer)
 	}
 }
 

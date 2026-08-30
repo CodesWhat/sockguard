@@ -391,7 +391,7 @@ func isJSONNull(raw json.RawMessage) bool {
 // representation metadata from header. Any path that abandons an upstream
 // body and substitutes a rewritten or error payload must call this first,
 // otherwise the client receives the daemon's Content-Encoding / ETag /
-// Content-Range describing a body it will never see.
+// Content-Range or Trailer announcement describing a body it will never see.
 func ClearUpstreamRepresentationHeaders(header http.Header) {
 	for _, name := range [...]string{
 		"Accept-Ranges",
@@ -405,6 +405,7 @@ func ClearUpstreamRepresentationHeaders(header http.Header) {
 		"ETag",
 		"Last-Modified",
 		"Repr-Digest",
+		"Trailer",
 		"Transfer-Encoding",
 	} {
 		header.Del(name)

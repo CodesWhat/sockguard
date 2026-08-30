@@ -393,7 +393,7 @@ func TestFirstSightSystemDataUsageSectionsReportsEachSectionOnce(t *testing.T) {
 func TestClearUpstreamRepresentationHeaders(t *testing.T) {
 	t.Parallel()
 	header := http.Header{}
-	for _, name := range []string{"Content-Encoding", "Content-Length", "Content-Range", "ETag", "Last-Modified", "Transfer-Encoding"} {
+	for _, name := range []string{"Content-Encoding", "Content-Length", "Content-Range", "ETag", "Last-Modified", "Trailer", "Transfer-Encoding"} {
 		header.Set(name, "upstream")
 	}
 	header.Set("Content-Type", "application/json")
