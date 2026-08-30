@@ -2,7 +2,9 @@ package filter
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,12 +12,15 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path"
 	"strings"
 )
 
 const maxImageLoadBodyBytes = 512 << 20       // 512 MiB
 const maxImageLoadManifestBytes = 1 << 20     // 1 MiB
 const maxImageLoadDecompressedBytes = 2 << 30 // 2 GiB (gzip-bomb guard)
+const maxImageLoadOCITrackedBlobs = 4096
+const maxImageLoadOCIMetadataBytes = 16 << 20 // 16 MiB
 
 // errImageLoadDecompressedTooLarge is the loud sentinel returned when a
 // gzip-compressed image archive expands past maxImageLoadDecompressedBytes.
@@ -97,7 +102,7 @@ func (p imageLoadPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath
 		return "", nil
 	}
 
-	archive, err := p.io.extractImageLoadArchive(spool.file)
+	archive, err := p.io.extractImageLoadArchive(spool.file, isLibpodImageLoadPath(normalizedPath))
 	if err != nil {
 		spool.closeAndRemove()
 		if errors.Is(err, errImageLoadDecompressedTooLarge) {
@@ -166,6 +171,7 @@ const (
 )
 
 const ociImageRefNameAnnotation = "org.opencontainers.image.ref.name"
+const containerdImageNameAnnotation = "io.containerd.image.name"
 
 type imageLoadArchiveInspection struct {
 	format      imageLoadArchiveFormat
@@ -179,7 +185,16 @@ type imageLoadOCIIndex struct {
 }
 
 type imageLoadOCIIndexDescriptor struct {
+	MediaType   string            `json:"mediaType"`
+	Digest      string            `json:"digest"`
+	Size        int64             `json:"size"`
 	Annotations map[string]string `json:"annotations"`
+}
+
+type imageLoadOCIManifest struct {
+	SchemaVersion int                           `json:"schemaVersion"`
+	Config        imageLoadOCIIndexDescriptor   `json:"config"`
+	Layers        []imageLoadOCIIndexDescriptor `json:"layers"`
 }
 
 type imageLoadOCILayout struct {
@@ -193,27 +208,36 @@ type imageLoadArchiveControlFiles struct {
 	seenDocker     bool
 	seenOCIIndex   bool
 	seenOCILayout  bool
+	ociBlobs       map[string]imageLoadOCIBlob
+	ociMetadata    int64
+	ociBlobErr     error
+}
+
+type imageLoadOCIBlob struct {
+	size        int64
+	digestMatch bool
+	body        []byte
 }
 
 // extractImageLoadArchive classifies and reads policy-relevant references
 // from Docker and OCI archives. Docker's /images/load accepts both a raw tar
 // and a gzip-compressed tar, so probe gzip first and fall back to a plain tar
 // walk only when the body is not gzip-compressed.
-func (io_ ioDeps) extractImageLoadArchive(file *os.File) (imageLoadArchiveInspection, error) {
-	if archive, compressed, err := io_.extractImageLoadArchiveFromGzip(file); compressed || err != nil {
+func (io_ ioDeps) extractImageLoadArchive(file *os.File, preferOCI bool) (imageLoadArchiveInspection, error) {
+	if archive, compressed, err := io_.extractImageLoadArchiveFromGzip(file, preferOCI); compressed || err != nil {
 		return archive, err
 	}
 	if err := io_.SeekToStart(file); err != nil {
 		return imageLoadArchiveInspection{}, fmt.Errorf("rewind image load body: %w", err)
 	}
-	return io_.extractImageLoadArchiveFromTar(tar.NewReader(file))
+	return io_.extractImageLoadArchiveFromTar(tar.NewReader(file), preferOCI)
 }
 
 // extractImageLoadArchiveFromGzip decompresses a gzip-wrapped tar through a
 // loud, decompressed-byte-bounded reader (gzip-bomb guard) and walks its
 // format control files. A non-gzip header returns compressed=false so the
 // caller rewinds and reads the body as a plain tar.
-func (io_ ioDeps) extractImageLoadArchiveFromGzip(file *os.File) (imageLoadArchiveInspection, bool, error) {
+func (io_ ioDeps) extractImageLoadArchiveFromGzip(file *os.File, preferOCI bool) (imageLoadArchiveInspection, bool, error) {
 	gzr, err := gzip.NewReader(file)
 	if err != nil {
 		if errors.Is(err, gzip.ErrHeader) {
@@ -223,7 +247,7 @@ func (io_ ioDeps) extractImageLoadArchiveFromGzip(file *os.File) (imageLoadArchi
 	}
 
 	limited := &limitedReader{r: gzr, remaining: maxImageLoadDecompressedBytes, tooLarge: errImageLoadDecompressedTooLarge}
-	archive, err := io_.extractImageLoadArchiveFromTar(tar.NewReader(limited))
+	archive, err := io_.extractImageLoadArchiveFromTar(tar.NewReader(limited), preferOCI)
 	if err == nil {
 		if drainErr := io_.DrainReader(limited); drainErr != nil {
 			err = fmt.Errorf("drain gzip stream: %w", drainErr)
@@ -240,19 +264,25 @@ func (io_ ioDeps) extractImageLoadArchiveFromGzip(file *os.File) (imageLoadArchi
 	return archive, true, err
 }
 
-func (io_ ioDeps) extractImageLoadArchiveFromTar(tr *tar.Reader) (imageLoadArchiveInspection, error) {
+func (io_ ioDeps) extractImageLoadArchiveFromTar(tr *tar.Reader, preferOCI bool) (imageLoadArchiveInspection, error) {
 	var controls imageLoadArchiveControlFiles
 
 	for {
 		header, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			return parseImageLoadArchiveControlFiles(controls)
+			return parseImageLoadArchiveControlFiles(controls, preferOCI)
 		}
 		if err != nil {
 			return imageLoadArchiveInspection{}, fmt.Errorf("read tar entry: %w", err)
 		}
 
 		name := normalizeImageLoadArchivePath(header.Name)
+		if strings.HasPrefix(name, "blobs/sha256/") {
+			if controls.ociBlobErr == nil {
+				controls.ociBlobErr = io_.recordImageLoadOCIBlob(&controls, name, header, tr)
+			}
+			continue
+		}
 		if name != "manifest.json" && name != "index.json" && name != "oci-layout" {
 			continue
 		}
@@ -291,26 +321,100 @@ func (io_ ioDeps) extractImageLoadArchiveFromTar(tr *tar.Reader) (imageLoadArchi
 	}
 }
 
-func parseImageLoadArchiveControlFiles(controls imageLoadArchiveControlFiles) (imageLoadArchiveInspection, error) {
+func (io_ ioDeps) recordImageLoadOCIBlob(controls *imageLoadArchiveControlFiles, name string, header *tar.Header, reader io.Reader) error {
+	if header.Typeflag != tar.TypeReg {
+		return fmt.Errorf("OCI image archive blob %s is not a regular file", name)
+	}
+	if controls.ociBlobs == nil {
+		controls.ociBlobs = make(map[string]imageLoadOCIBlob)
+	}
+	if _, exists := controls.ociBlobs[name]; exists {
+		return fmt.Errorf("OCI image archive contains duplicate blob path %s", name)
+	}
+	if len(controls.ociBlobs) >= maxImageLoadOCITrackedBlobs {
+		return fmt.Errorf("OCI image archive exceeds %d tracked blob limit", maxImageLoadOCITrackedBlobs)
+	}
+
+	hasher := sha256.New()
+	var body bytes.Buffer
+	writer := io.Writer(hasher)
+	retainBody := header.Size >= 0 && header.Size <= maxImageLoadManifestBytes && controls.ociMetadata+header.Size <= maxImageLoadOCIMetadataBytes
+	if retainBody {
+		writer = io.MultiWriter(hasher, &body)
+	}
+	size, err := io.Copy(writer, reader)
+	if err != nil {
+		return fmt.Errorf("read OCI image archive blob %s: %w", name, err)
+	}
+	digestHex := strings.TrimPrefix(name, "blobs/sha256/")
+	blob := imageLoadOCIBlob{
+		size:        size,
+		digestMatch: len(digestHex) == sha256.Size*2 && fmt.Sprintf("%x", hasher.Sum(nil)) == digestHex,
+	}
+	if retainBody {
+		blob.body = body.Bytes()
+		controls.ociMetadata += int64(len(blob.body))
+	}
+	controls.ociBlobs[name] = blob
+	return nil
+}
+
+func parseImageLoadArchiveControlFiles(controls imageLoadArchiveControlFiles, preferOCI bool) (imageLoadArchiveInspection, error) {
 	hasOCIControl := controls.seenOCIIndex || controls.seenOCILayout
-	if controls.seenDocker && hasOCIControl {
-		return imageLoadArchiveInspection{}, errors.New("ambiguous image archive contains both Docker and OCI control files")
+	if !hasOCIControl {
+		if controls.seenDocker {
+			return parseDockerImageLoadManifest(controls.dockerManifest)
+		}
+		return imageLoadArchiveInspection{format: imageLoadArchiveUnknown}, nil
+	}
+
+	// Podman's native load tries OCI archive before Docker archive. Docker's
+	// compatibility endpoint retains Docker-manifest precedence. A mixed
+	// archive is therefore not inherently ambiguous: inspect the format the
+	// selected daemon route will actually load, and use the other format only
+	// when the preferred control metadata is invalid.
+	if preferOCI {
+		archive, ociErr := parseOCIImageLoadManifest(controls)
+		if ociErr == nil {
+			return archive, nil
+		}
+		if controls.seenDocker {
+			if dockerArchive, dockerErr := parseDockerImageLoadManifest(controls.dockerManifest); dockerErr == nil {
+				return dockerArchive, nil
+			} else {
+				return imageLoadArchiveInspection{}, fmt.Errorf("OCI archive invalid (%w) and Docker archive invalid: %w", ociErr, dockerErr)
+			}
+		}
+		return imageLoadArchiveInspection{}, ociErr
 	}
 	if controls.seenDocker {
-		var manifest []imageLoadManifestEntry
-		if err := json.Unmarshal(controls.dockerManifest, &manifest); err != nil {
-			return imageLoadArchiveInspection{}, fmt.Errorf("decode manifest.json: %w", err)
-		}
-
-		archive := imageLoadArchiveInspection{format: imageLoadArchiveDocker}
-		for _, entry := range manifest {
-			archive.references = append(archive.references, entry.RepoTags...)
-		}
-		archive.hasUntagged = len(archive.references) == 0
-		return archive, nil
+		return parseDockerImageLoadManifest(controls.dockerManifest)
 	}
-	if !hasOCIControl {
-		return imageLoadArchiveInspection{format: imageLoadArchiveUnknown}, nil
+	return parseOCIImageLoadManifest(controls)
+}
+
+func parseDockerImageLoadManifest(body []byte) (imageLoadArchiveInspection, error) {
+	var manifest []imageLoadManifestEntry
+	if err := json.Unmarshal(body, &manifest); err != nil {
+		return imageLoadArchiveInspection{}, fmt.Errorf("decode manifest.json: %w", err)
+	}
+
+	archive := imageLoadArchiveInspection{format: imageLoadArchiveDocker}
+	for _, entry := range manifest {
+		if len(entry.RepoTags) == 0 {
+			archive.hasUntagged = true
+		}
+		archive.references = append(archive.references, entry.RepoTags...)
+	}
+	if len(manifest) == 0 {
+		archive.hasUntagged = true
+	}
+	return archive, nil
+}
+
+func parseOCIImageLoadManifest(controls imageLoadArchiveControlFiles) (imageLoadArchiveInspection, error) {
+	if controls.ociBlobErr != nil {
+		return imageLoadArchiveInspection{}, controls.ociBlobErr
 	}
 	if !controls.seenOCIIndex || !controls.seenOCILayout {
 		return imageLoadArchiveInspection{}, errors.New("malformed OCI image archive requires both index.json and oci-layout")
@@ -338,10 +442,24 @@ func parseImageLoadArchiveControlFiles(controls imageLoadArchiveControlFiles) (i
 	if index.SchemaVersion != 2 {
 		return imageLoadArchiveInspection{}, fmt.Errorf("decode index.json: unsupported schemaVersion %d", index.SchemaVersion)
 	}
+	if len(index.Manifests) != 1 {
+		return imageLoadArchiveInspection{}, fmt.Errorf("decode index.json: Podman requires exactly one image when no OCI reference is selected, got %d", len(index.Manifests))
+	}
+	if err := validateImageLoadOCIManifestGraph(index.Manifests[0], controls.ociBlobs); err != nil {
+		return imageLoadArchiveInspection{}, err
+	}
 
 	archive := imageLoadArchiveInspection{format: imageLoadArchiveOCI}
 	for _, descriptor := range index.Manifests {
-		reference := strings.TrimSpace(descriptor.Annotations[ociImageRefNameAnnotation])
+		// Podman names an OCI-archive load from the containerd annotation
+		// first and only falls back to the OCI ref-name annotation when it is
+		// absent. The policy must inspect that same effective name or a second,
+		// lower-priority annotation can disguise the registry Podman records.
+		reference := descriptor.Annotations[containerdImageNameAnnotation]
+		if reference == "" {
+			reference = descriptor.Annotations[ociImageRefNameAnnotation]
+		}
+		reference = strings.TrimSpace(reference)
 		if reference == "" {
 			archive.hasUntagged = true
 			continue
@@ -354,11 +472,97 @@ func parseImageLoadArchiveControlFiles(controls imageLoadArchiveControlFiles) (i
 	return archive, nil
 }
 
+func validateImageLoadOCIManifestGraph(descriptor imageLoadOCIIndexDescriptor, blobs map[string]imageLoadOCIBlob) error {
+	const ociManifestMediaType = "application/vnd.oci.image.manifest.v1+json"
+	const ociIndexMediaType = "application/vnd.oci.image.index.v1+json"
+	const dockerManifestMediaType = "application/vnd.docker.distribution.manifest.v2+json"
+	const dockerIndexMediaType = "application/vnd.docker.distribution.manifest.list.v2+json"
+	return validateImageLoadOCIDescriptor(descriptor, blobs, map[string]struct{}{}, 0, ociManifestMediaType, ociIndexMediaType, dockerManifestMediaType, dockerIndexMediaType)
+}
+
+func validateImageLoadOCIDescriptor(descriptor imageLoadOCIIndexDescriptor, blobs map[string]imageLoadOCIBlob, ancestors map[string]struct{}, depth int, ociManifestMediaType, ociIndexMediaType, dockerManifestMediaType, dockerIndexMediaType string) error {
+	if depth > 16 {
+		return errors.New("OCI archive manifest graph exceeds 16 levels")
+	}
+	if _, exists := ancestors[descriptor.Digest]; exists {
+		return fmt.Errorf("OCI archive manifest graph contains a cycle at %q", descriptor.Digest)
+	}
+	ancestors[descriptor.Digest] = struct{}{}
+	defer delete(ancestors, descriptor.Digest)
+
+	switch descriptor.MediaType {
+	case ociIndexMediaType, dockerIndexMediaType:
+		body, err := validatedImageLoadOCIBlob(descriptor, blobs, true)
+		if err != nil {
+			return fmt.Errorf("validate OCI image index: %w", err)
+		}
+		var index imageLoadOCIIndex
+		if err := json.Unmarshal(body, &index); err != nil {
+			return fmt.Errorf("decode OCI image index: %w", err)
+		}
+		if index.SchemaVersion != 2 || len(index.Manifests) == 0 {
+			return fmt.Errorf("decode OCI image index: schemaVersion=%d manifests=%d", index.SchemaVersion, len(index.Manifests))
+		}
+		for i, child := range index.Manifests {
+			if err := validateImageLoadOCIDescriptor(child, blobs, ancestors, depth+1, ociManifestMediaType, ociIndexMediaType, dockerManifestMediaType, dockerIndexMediaType); err != nil {
+				return fmt.Errorf("validate OCI image index member %d: %w", i, err)
+			}
+		}
+		return nil
+	case ociManifestMediaType, dockerManifestMediaType:
+		// Continue below with the image-manifest-specific graph.
+	default:
+		return fmt.Errorf("OCI archive top-level mediaType %q is not a supported image manifest", descriptor.MediaType)
+	}
+	body, err := validatedImageLoadOCIBlob(descriptor, blobs, true)
+	if err != nil {
+		return fmt.Errorf("validate OCI image manifest: %w", err)
+	}
+
+	var manifest imageLoadOCIManifest
+	if err := json.Unmarshal(body, &manifest); err != nil {
+		return fmt.Errorf("decode OCI image manifest: %w", err)
+	}
+	if manifest.SchemaVersion != 2 {
+		return fmt.Errorf("decode OCI image manifest: unsupported schemaVersion %d", manifest.SchemaVersion)
+	}
+	if _, err := validatedImageLoadOCIBlob(manifest.Config, blobs, false); err != nil {
+		return fmt.Errorf("validate OCI image config: %w", err)
+	}
+	for i, layer := range manifest.Layers {
+		if _, err := validatedImageLoadOCIBlob(layer, blobs, false); err != nil {
+			return fmt.Errorf("validate OCI image layer %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func validatedImageLoadOCIBlob(descriptor imageLoadOCIIndexDescriptor, blobs map[string]imageLoadOCIBlob, requireBody bool) ([]byte, error) {
+	const prefix = "sha256:"
+	if !strings.HasPrefix(descriptor.Digest, prefix) || len(descriptor.Digest) != len(prefix)+sha256.Size*2 {
+		return nil, fmt.Errorf("unsupported or malformed digest %q", descriptor.Digest)
+	}
+	blob, ok := blobs["blobs/sha256/"+strings.TrimPrefix(descriptor.Digest, prefix)]
+	if !ok {
+		return nil, fmt.Errorf("referenced blob %q is missing", descriptor.Digest)
+	}
+	if !blob.digestMatch {
+		return nil, fmt.Errorf("referenced blob %q does not match its digest", descriptor.Digest)
+	}
+	if descriptor.Size < 0 || blob.size != descriptor.Size {
+		return nil, fmt.Errorf("referenced blob %q has size %d, want %d", descriptor.Digest, blob.size, descriptor.Size)
+	}
+	if requireBody && blob.body == nil {
+		return nil, fmt.Errorf("referenced manifest %q exceeds the inspectable metadata limit", descriptor.Digest)
+	}
+	return blob.body, nil
+}
+
 // This compatibility helper keeps the focused parser tests and mutation tests
 // expressed in terms of Docker manifest RepoTags while production uses the
 // format-aware archive result above.
 func (io_ ioDeps) extractImageLoadRepoTagsFromTar(tr *tar.Reader) ([]string, bool, error) {
-	archive, err := io_.extractImageLoadArchiveFromTar(tr)
+	archive, err := io_.extractImageLoadArchiveFromTar(tr, false)
 	return archive.references, archive.format == imageLoadArchiveDocker, err
 }
 
@@ -376,8 +580,14 @@ func normalizeImageLoadArchivePath(value string) string {
 	if trimmed == "" {
 		return ""
 	}
-	cleaned := strings.TrimPrefix(trimmed, "/")
-	if cleaned == "" {
+	// Podman's OCI archive extraction runs filepath.Clean over every tar
+	// header before writing it. Use slash-path Clean here because tar names
+	// are slash-separated on every platform, so spellings such as
+	// ./index.json and metadata/../index.json collide exactly as they do in
+	// the daemon instead of letting a later control file replace the one we
+	// inspected.
+	cleaned := strings.TrimPrefix(path.Clean(trimmed), "/")
+	if cleaned == "" || cleaned == "." {
 		return ""
 	}
 	return cleaned

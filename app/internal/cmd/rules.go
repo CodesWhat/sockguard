@@ -441,6 +441,9 @@ func allowedBodySensitiveWriteEndpoints(requestBody config.RequestBodyConfig, co
 		}
 		allowed = append(allowed, endpoint.method+" "+endpoint.path)
 	}
+	if path, ok := configuredLibpodImageScpAllow(configuredRules); ok && !slices.Contains(allowed, http.MethodPost+" "+path) {
+		allowed = append(allowed, http.MethodPost+" "+path)
+	}
 	return allowed
 }
 
@@ -455,7 +458,224 @@ func allowedSensitiveExfilEndpoints(compiled []*filter.CompiledRule, configuredR
 		}
 		allowed = append(allowed, endpoint.method+" "+endpoint.path)
 	}
+	if path, ok := configuredLibpodImageScpAllow(configuredRules); ok && !slices.Contains(allowed, http.MethodPost+" "+path) {
+		allowed = append(allowed, http.MethodPost+" "+path)
+	}
 	return allowed
+}
+
+// configuredLibpodImageScpAllow audits the source rules instead of relying on
+// one representative request. A deny for that representative must not hide a
+// later wildcard allow that still opens every other caller-selected image
+// name. Exact paths retain their own spelling in the validation error; broad
+// patterns report the route family they expose.
+func configuredLibpodImageScpAllow(rules []config.RuleConfig) (string, bool) {
+	const prefix = "/libpod/images/scp/"
+	for index, rule := range rules {
+		if rule.Action != "allow" || !methodListIncludes(rule.Match.Method, http.MethodPost) {
+			continue
+		}
+		pattern := strings.TrimSpace(rule.Match.Path)
+		if !strings.Contains(pattern, "*") {
+			// Exact paths are already added as probes and evaluated against the
+			// complete first-match rule set by the caller.
+			continue
+		}
+		if libpodImagePathIsHandledBeforeScp(pattern) {
+			continue
+		}
+		if globCanMatchNonemptyPathBelow(pattern, prefix) && !libpodImageScpAllowDefinitelyShadowed(pattern, rules[:index]) {
+			return prefix + "*", true
+		}
+	}
+	return "", false
+}
+
+func libpodImagePathIsHandledBeforeScp(path string) bool {
+	for _, suffix := range []string{"/push", "/tag", "/untag"} {
+		if strings.HasSuffix(path, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+type reachabilityGlobKind uint8
+
+const (
+	reachabilityGlobLiteral reachabilityGlobKind = iota
+	reachabilityGlobSegmentStar
+	reachabilityGlobAnyStar
+	reachabilityGlobOptionalDeep
+)
+
+type reachabilityGlobPart struct {
+	kind    reachabilityGlobKind
+	literal rune
+}
+
+type reachabilityGlobState struct {
+	part int
+	deep bool
+}
+
+// globCanMatchNonemptyPathBelow decides whether a path glob intersects the
+// dynamic route family prefix+<nonempty name>. It models the repository's
+// complete glob dialect as a small epsilon-NFA, so startup validation does not
+// depend on any finite set of representative image names.
+func globCanMatchNonemptyPathBelow(pattern, prefix string) bool {
+	parts := parseReachabilityGlob(pattern)
+	states := reachabilityGlobClosure(parts, map[reachabilityGlobState]struct{}{{}: {}})
+	for _, value := range prefix {
+		states = reachabilityGlobStep(parts, states, value)
+		if len(states) == 0 {
+			return false
+		}
+	}
+
+	alphabet := []rune{'/', 'a'}
+	for _, part := range parts {
+		if part.kind == reachabilityGlobLiteral && !slices.Contains(alphabet, part.literal) {
+			alphabet = append(alphabet, part.literal)
+		}
+	}
+	queue := make([]reachabilityGlobState, 0, len(states))
+	for state := range states {
+		queue = append(queue, state)
+	}
+	seen := make(map[reachabilityGlobState]struct{}, len(queue))
+	for len(queue) > 0 {
+		state := queue[0]
+		queue = queue[1:]
+		if _, ok := seen[state]; ok {
+			continue
+		}
+		seen[state] = struct{}{}
+		for _, value := range alphabet {
+			next := reachabilityGlobStep(parts, map[reachabilityGlobState]struct{}{state: {}}, value)
+			for candidate := range next {
+				if candidate.part == len(parts) && !candidate.deep {
+					return true
+				}
+				if _, ok := seen[candidate]; !ok {
+					queue = append(queue, candidate)
+				}
+			}
+		}
+	}
+	return false
+}
+
+func parseReachabilityGlob(pattern string) []reachabilityGlobPart {
+	runes := []rune(pattern)
+	parts := make([]reachabilityGlobPart, 0, len(runes))
+	for index := 0; index < len(runes); {
+		switch {
+		case index+2 < len(runes) && runes[index] == '/' && runes[index+1] == '*' && runes[index+2] == '*':
+			parts = append(parts, reachabilityGlobPart{kind: reachabilityGlobOptionalDeep})
+			index += 3
+		case index+1 < len(runes) && runes[index] == '*' && runes[index+1] == '*':
+			parts = append(parts, reachabilityGlobPart{kind: reachabilityGlobAnyStar})
+			index += 2
+		case runes[index] == '*':
+			parts = append(parts, reachabilityGlobPart{kind: reachabilityGlobSegmentStar})
+			index++
+		default:
+			parts = append(parts, reachabilityGlobPart{kind: reachabilityGlobLiteral, literal: runes[index]})
+			index++
+		}
+	}
+	return parts
+}
+
+func reachabilityGlobClosure(parts []reachabilityGlobPart, states map[reachabilityGlobState]struct{}) map[reachabilityGlobState]struct{} {
+	queue := make([]reachabilityGlobState, 0, len(states))
+	for state := range states {
+		queue = append(queue, state)
+	}
+	for len(queue) > 0 {
+		state := queue[0]
+		queue = queue[1:]
+		if state.deep {
+			next := reachabilityGlobState{part: state.part + 1}
+			if _, ok := states[next]; !ok {
+				states[next] = struct{}{}
+				queue = append(queue, next)
+			}
+			continue
+		}
+		if state.part >= len(parts) {
+			continue
+		}
+		switch parts[state.part].kind {
+		case reachabilityGlobSegmentStar, reachabilityGlobAnyStar, reachabilityGlobOptionalDeep:
+			next := reachabilityGlobState{part: state.part + 1}
+			if _, ok := states[next]; !ok {
+				states[next] = struct{}{}
+				queue = append(queue, next)
+			}
+		}
+	}
+	return states
+}
+
+func reachabilityGlobStep(parts []reachabilityGlobPart, states map[reachabilityGlobState]struct{}, value rune) map[reachabilityGlobState]struct{} {
+	next := make(map[reachabilityGlobState]struct{})
+	for state := range reachabilityGlobClosure(parts, states) {
+		if state.deep {
+			next[state] = struct{}{}
+			continue
+		}
+		if state.part >= len(parts) {
+			continue
+		}
+		part := parts[state.part]
+		switch part.kind {
+		case reachabilityGlobLiteral:
+			if value == part.literal {
+				next[reachabilityGlobState{part: state.part + 1}] = struct{}{}
+			}
+		case reachabilityGlobSegmentStar:
+			if value != '/' {
+				next[state] = struct{}{}
+			}
+		case reachabilityGlobAnyStar:
+			next[state] = struct{}{}
+		case reachabilityGlobOptionalDeep:
+			if value == '/' {
+				next[reachabilityGlobState{part: state.part, deep: true}] = struct{}{}
+			}
+		}
+	}
+	return reachabilityGlobClosure(parts, next)
+}
+
+func libpodImageScpAllowDefinitelyShadowed(pattern string, earlier []config.RuleConfig) bool {
+	for _, rule := range earlier {
+		if !methodListIncludes(rule.Match.Method, http.MethodPost) {
+			continue
+		}
+		cover := strings.TrimSpace(rule.Match.Path)
+		if cover == pattern || cover == "/**" {
+			return true
+		}
+		if strings.HasSuffix(cover, "/**") {
+			prefix := strings.TrimSuffix(cover, "/**")
+			if pattern == prefix || strings.HasPrefix(pattern, prefix+"/") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func methodListIncludes(methods, want string) bool {
+	for _, method := range splitMethods(methods) {
+		if method == "*" || strings.EqualFold(method, want) {
+			return true
+		}
+	}
+	return false
 }
 
 func appendExactLibpodImageScpBodyEndpoints(base []bodySensitiveWriteEndpoint, rules []config.RuleConfig) []bodySensitiveWriteEndpoint {
@@ -488,7 +708,7 @@ func exactLibpodImageScpPaths(rules []config.RuleConfig) []string {
 	paths := make([]string, 0)
 	for _, rule := range rules {
 		path := strings.TrimSpace(rule.Match.Path)
-		if path == representative || strings.Contains(path, "*") || !strings.HasPrefix(path, prefix) || len(path) == len(prefix) || slices.Contains(paths, path) {
+		if path == representative || strings.Contains(path, "*") || !strings.HasPrefix(path, prefix) || len(path) == len(prefix) || libpodImagePathIsHandledBeforeScp(path) || slices.Contains(paths, path) {
 			continue
 		}
 		paths = append(paths, path)

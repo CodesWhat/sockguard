@@ -167,6 +167,52 @@ func TestValidateAndCompileRulesRejectsExactLibpodImageScpTwice(t *testing.T) {
 	}
 }
 
+func TestValidateAndCompileRulesRejectsLibpodImageScpWhenSentinelIsShadowed(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/scp/sockguard-test"}, Action: "deny"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/scp/**"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	err := errorFromValidate(t, &cfg)
+	if !strings.Contains(err.Error(), "insecure_allow_body_blind_writes=true") {
+		t.Fatalf("error = %q, want the reachable wildcard SCP route to demand the blind-write acknowledgment", err)
+	}
+
+	cfg.InsecureAllowBodyBlindWrites = true
+	err = errorFromValidate(t, &cfg)
+	if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
+		t.Fatalf("error = %q, want the reachable wildcard SCP route to demand the exfiltration acknowledgment", err)
+	}
+}
+
+func TestValidateAndCompileRulesRejectsConstrainedLibpodImageScpWildcard(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/scp/alpine-*"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	err := errorFromValidate(t, &cfg)
+	if !strings.Contains(err.Error(), "insecure_allow_body_blind_writes=true") {
+		t.Fatalf("error = %q, want the constrained wildcard SCP route to demand the blind-write acknowledgment", err)
+	}
+}
+
+func TestValidateAndCompileRulesIgnoresUnreachableLibpodImageScpAllow(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/scp/**"}, Action: "deny"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/scp/**"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	if _, err := validateAndCompileRules(&cfg); err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v, want the fully shadowed allow ignored", err)
+	}
+}
+
 // TestServePolicyConfigWiresImageLoadBlindWriteAck pins the wiring half of
 // the local-image-load guard. insecure_allow_body_blind_writes is a
 // top-level flag, not part of a request_body block, so it reaches
