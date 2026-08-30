@@ -290,10 +290,12 @@ Minimal read-only access for Traefik reverse proxy.
 
 ```yaml
 # Allows: GET container list + inspect, network list + inspect, service and
-#         task list + inspect (Swarm), events, ping, version, info
+#         task list + inspect, GET /nodes/* (Swarm node inspect), events,
+#         ping, version, info
 # Denies: everything else, including container archive/export/logs/attach
 ```
 
+In Swarm mode, task discovery includes node inspection at `GET /nodes/*`.
 Every allowed path is a named list or inspect endpoint rather than a
 `/containers/**` glob, so this preset does **not** set
 `insecure_allow_read_exfiltration: true`. A client that genuinely needs
@@ -365,8 +367,8 @@ Minimal read-only access for [Diun](https://github.com/crazy-max/diun) (Docker I
 **Use for:** Diun, or any tool that only needs to discover running containers and inspect images.
 
 ```yaml
-# Allows: GET container list, image inspect, ping, version
-# Denies: everything else — Diun checks registries directly. Container
+# Allows: GET container list, image inspect, GET /images/json, ping, version
+# Denies: all other routes. Diun checks registries directly. Container
 #         inspect is denied too; Diun's Docker provider never calls it
 ```
 
@@ -377,6 +379,9 @@ spans slashes, so a registry-qualified image arrives as
 pattern narrow: `GET /images/get`, `GET /images/{name}/get` and
 `GET /images/{name}/history` do not end in `/json` and stay denied. That is
 why this preset does **not** set `insecure_allow_read_exfiltration: true`.
+Because `**` can match zero segments, the rule also allows the image metadata
+list at `GET /images/json`; Diun does not call it, but it is not a
+read-exfiltration endpoint.
 
 ## Autoheal (`autoheal.yaml`)
 

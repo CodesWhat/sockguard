@@ -2,11 +2,41 @@ package filter_test
 
 import (
 	"net/http"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/codeswhat/sockguard/app/internal/config"
 )
+
+func presetDocsSection(t *testing.T, heading, nextHeading string) string {
+	t.Helper()
+
+	contents, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "content", "docs", "presets.mdx"))
+	if err != nil {
+		t.Fatalf("read preset documentation: %v", err)
+	}
+
+	document := string(contents)
+	start := strings.Index(document, heading)
+	if start < 0 {
+		t.Fatalf("preset documentation is missing heading %q", heading)
+	}
+	end := strings.Index(document[start+len(heading):], nextHeading)
+	if end < 0 {
+		t.Fatalf("preset documentation section %q is missing following heading %q", heading, nextHeading)
+	}
+
+	return document[start : start+len(heading)+end]
+}
+
+func TestTraefikPresetDocumentationIncludesNodeInspect(t *testing.T) {
+	section := presetDocsSection(t, "## Traefik (`traefik.yaml`)", "## Portainer (`portainer.yaml`)")
+	if !strings.Contains(section, "`GET /nodes/*`") {
+		t.Fatal("Traefik preset documentation must disclose the allowed node-inspect route GET /nodes/*")
+	}
+}
 
 // exfilDenialCases is the read-exfiltration surface that a "/containers/**"
 // or "/images/**" allow glob silently swallows. Every entry here must
