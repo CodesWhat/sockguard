@@ -169,7 +169,7 @@ func HijackHandler(upstreamSocket string, logger *slog.Logger, next http.Handler
 	})
 }
 
-// HijackHandlerWithDialer is HijackHandler over an upstream.Dialer (typically an
+// HijackHandlerWithDialer is HijackHandler over an upstream.RequestDialer (typically an
 // *upstream.Resolver), so the hijack path dials the same active endpoint — local
 // socket or remote TCP+TLS — and fails over together with the rest of the proxy.
 //
@@ -177,7 +177,7 @@ func HijackHandler(upstreamSocket string, logger *slog.Logger, next http.Handler
 // in either direction before it is torn down; it is the caller-resolved value of
 // upstream.hijack_inactivity_timeout, not a package constant, so a configured
 // override reaches every connection this handler upgrades.
-func HijackHandlerWithDialer(dialer upstream.Dialer, inactivityTimeout time.Duration, logger *slog.Logger, next http.Handler) http.Handler {
+func HijackHandlerWithDialer(dialer upstream.RequestDialer, inactivityTimeout time.Duration, logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !isHijackRequest(w, r) {
 			next.ServeHTTP(w, r)
@@ -236,7 +236,7 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 	proxyHijackStreams(session, hijackInactivityTimeout, logger)
 }
 
-func handleHijackDialer(w http.ResponseWriter, r *http.Request, dialer upstream.Dialer, inactivityTimeout time.Duration, logger *slog.Logger) {
+func handleHijackDialer(w http.ResponseWriter, r *http.Request, dialer upstream.RequestDialer, inactivityTimeout time.Duration, logger *slog.Logger) {
 	session, ok := upgradeHijackConnectionDialer(w, r, dialer, logger)
 	if !ok {
 		return
@@ -256,34 +256,36 @@ func upgradeHijackConnection(w http.ResponseWriter, r *http.Request, upstreamSoc
 		return nil, false
 	}
 
-	return finishHijackUpgrade(w, r, upstreamConn, logger)
+	return finishHijackUpgrade(w, r, upstreamConn, newUpstreamHijackRequest(r, r.URL.Path), logger)
 }
 
 // upgradeHijackConnectionDialer is upgradeHijackConnection over an
-// upstream.Dialer: it dials the active endpoint (local or remote TCP+TLS) with
-// the same bounded dial timeout, then shares the post-dial upgrade logic.
-func upgradeHijackConnectionDialer(w http.ResponseWriter, r *http.Request, dialer upstream.Dialer, logger *slog.Logger) (*hijackSession, bool) {
+// upstream.RequestDialer: it atomically dials the active endpoint and rewrites
+// the request with that same endpoint's base path, then shares the post-dial
+// upgrade logic.
+func upgradeHijackConnectionDialer(w http.ResponseWriter, r *http.Request, dialer upstream.RequestDialer, logger *slog.Logger) (*hijackSession, bool) {
 	reqPath := r.URL.Path
 
 	ctx, cancel := context.WithTimeout(context.Background(), hijackDialTimeout)
 	defer cancel()
-	upstreamConn, err := dialer.DialContext(ctx, "", "")
+	upstreamReq := newUpstreamHijackRequest(r, r.URL.Path)
+	upstreamConn, upstreamReq, err := dialer.DialRequest(ctx, upstreamReq)
 	if err != nil {
 		logger.Error("hijack: upstream dial failed", "error", logging.SafeString(err.Error()), "path", logging.SafeString(reqPath))
 		writeHijackBadGateway(w, logger, reqPath, "upstream Docker socket unreachable")
 		return nil, false
 	}
 
-	return finishHijackUpgrade(w, r, upstreamConn, logger)
+	return finishHijackUpgrade(w, r, upstreamConn, upstreamReq, logger)
 }
 
 // finishHijackUpgrade performs the request write, response read, and 101-upgrade
 // finalization shared by the socket and dialer hijack paths once the upstream
 // connection is established.
-func finishHijackUpgrade(w http.ResponseWriter, r *http.Request, upstreamConn net.Conn, logger *slog.Logger) (*hijackSession, bool) {
+func finishHijackUpgrade(w http.ResponseWriter, r *http.Request, upstreamConn net.Conn, upstreamReq *http.Request, logger *slog.Logger) (*hijackSession, bool) {
 	reqPath := r.URL.Path
 
-	if !writeHijackUpstreamRequest(upstreamConn, w, r, logger) {
+	if !writePreparedHijackUpstreamRequest(upstreamConn, w, r, upstreamReq, logger) {
 		return nil, false
 	}
 
@@ -397,8 +399,11 @@ func writeHijackUpstreamRequest(upstreamConn net.Conn, w http.ResponseWriter, r 
 	// _ping, while dockerd accepts a versioned path too, so preserving it
 	// doesn't regress docker-compat. logPath stays the normalized form used
 	// everywhere else in the proxy for endpoint matching and logging.
+	return writePreparedHijackUpstreamRequest(upstreamConn, w, r, newUpstreamHijackRequest(r, r.URL.Path), logger)
+}
+
+func writePreparedHijackUpstreamRequest(upstreamConn net.Conn, w http.ResponseWriter, r, upstreamReq *http.Request, logger *slog.Logger) bool {
 	logPath := requestHijackPath(w, r)
-	upstreamReq := newUpstreamHijackRequest(r, r.URL.Path)
 
 	clientController := http.NewResponseController(w)
 	clientDeadlineSet := false

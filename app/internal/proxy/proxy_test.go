@@ -20,6 +20,7 @@ import (
 	"github.com/codeswhat/sockguard/app/internal/httpjson"
 	"github.com/codeswhat/sockguard/app/internal/logging"
 	"github.com/codeswhat/sockguard/app/internal/responsefilter"
+	"github.com/codeswhat/sockguard/app/internal/upstream"
 )
 
 func testLogger() *slog.Logger {
@@ -70,6 +71,37 @@ func TestNew_ErrorHandler(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), socketPath) {
 		t.Fatalf("response leaked upstream socket path: %q", rec.Body.String())
+	}
+}
+
+func TestReverseProxyPreservesUpstreamBasePath(t *testing.T) {
+	t.Parallel()
+	requestURI := make(chan string, 1)
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestURI <- r.RequestURI
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(daemon.Close)
+	ep, err := upstream.BuildEndpoint(upstream.EndpointSpec{
+		Address:               "tcp://" + strings.TrimPrefix(daemon.URL, "http://") + "/gateway%2Fdocker/",
+		InsecureAllowPlainTCP: true,
+	})
+	if err != nil {
+		t.Fatalf("BuildEndpoint: %v", err)
+	}
+	resolver, err := upstream.New([]upstream.Endpoint{ep}, upstream.Options{Interval: -1})
+	if err != nil {
+		t.Fatalf("upstream.New: %v", err)
+	}
+	rp := NewWithTransport(resolver, testLogger(), Options{})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://client/v1.52/containers/a%2Fb/json?all=1", nil)
+	rp.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if got := <-requestURI; got != "/gateway%2Fdocker/v1.52/containers/a%2Fb/json?all=1" {
+		t.Fatalf("daemon RequestURI = %q, want prefixed escaped path", got)
 	}
 }
 

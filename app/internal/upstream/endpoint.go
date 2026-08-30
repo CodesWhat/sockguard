@@ -40,6 +40,12 @@ type Endpoint struct {
 	// Address is the unix socket path or the TCP host:port. It is the second
 	// argument to net.Dial.
 	Address string
+	// BasePath is prepended to every Docker API request sent through this
+	// endpoint. RawBasePath preserves the configured percent-encoding when it
+	// differs from BasePath's default escaping. Both are empty for endpoints
+	// without a URL path prefix.
+	BasePath    string
+	RawBasePath string
 	// TLSConfig is non-nil only for TCP endpoints that negotiate TLS. It is nil
 	// for unix sockets and for plain-TCP endpoints (which require an explicit
 	// insecure acknowledgement to construct).
@@ -56,7 +62,7 @@ func (e Endpoint) String() string {
 	if e.IsTLS() {
 		scheme += "+tls"
 	}
-	return scheme + "://" + e.Address
+	return scheme + "://" + e.Address + e.escapedBasePath()
 }
 
 // EndpointSpec is the parsed, validated configuration for one endpoint before
@@ -91,12 +97,12 @@ type EndpointSpec struct {
 // dialable Endpoint. It returns a descriptive error for every malformed or
 // inconsistent spec so config validation can surface the exact problem.
 func BuildEndpoint(spec EndpointSpec) (Endpoint, error) {
-	network, address, err := parseAddress(spec.Address)
+	parsed, err := parseEndpointAddress(spec.Address)
 	if err != nil {
 		return Endpoint{}, err
 	}
 
-	switch network {
+	switch parsed.network {
 	case "unix":
 		// TLS material on a unix endpoint is meaningless and almost always a
 		// copy-paste mistake — reject it rather than silently ignore.
@@ -106,15 +112,23 @@ func BuildEndpoint(spec EndpointSpec) (Endpoint, error) {
 		if spec.CertFile != "" || spec.KeyFile != "" || spec.CAFile != "" {
 			return Endpoint{}, fmt.Errorf("upstream endpoint %q: TLS settings are not valid for a unix socket", spec.Address)
 		}
-		return Endpoint{Name: address, Network: "unix", Address: address}, nil
+		return Endpoint{Name: parsed.address, Network: "unix", Address: parsed.address}, nil
 	case "tcp":
-		tlsConfig, err := buildClientTLS(spec, address)
+		tlsConfig, err := buildClientTLS(spec, parsed.address)
 		if err != nil {
 			return Endpoint{}, err
 		}
-		return Endpoint{Name: address, Network: "tcp", Address: address, TLSConfig: tlsConfig}, nil
+		name := parsed.address + parsed.escapedBasePath()
+		return Endpoint{
+			Name:        name,
+			Network:     "tcp",
+			Address:     parsed.address,
+			BasePath:    parsed.basePath,
+			RawBasePath: parsed.rawBasePath,
+			TLSConfig:   tlsConfig,
+		}, nil
 	default:
-		return Endpoint{}, fmt.Errorf("upstream endpoint %q: unsupported scheme %q (use unix:// or tcp://)", spec.Address, network)
+		return Endpoint{}, fmt.Errorf("upstream endpoint %q: unsupported scheme %q (use unix:// or tcp://)", spec.Address, parsed.network)
 	}
 }
 
@@ -125,11 +139,11 @@ func BuildEndpoint(spec EndpointSpec) (Endpoint, error) {
 // BuildEndpoint performs the same structural checks and additionally loads the
 // referenced files.
 func ValidateSpec(spec EndpointSpec) error {
-	network, address, err := parseAddress(spec.Address)
+	parsed, err := parseEndpointAddress(spec.Address)
 	if err != nil {
 		return err
 	}
-	switch network {
+	switch parsed.network {
 	case "unix":
 		if spec.ServerName != "" {
 			return fmt.Errorf("upstream endpoint %q: tls.server_name is not valid for a unix socket", spec.Address)
@@ -146,59 +160,94 @@ func ValidateSpec(spec EndpointSpec) error {
 		if !hasAnyTLS && !spec.InsecureAllowPlainTCP {
 			return fmt.Errorf("upstream endpoint %q: TCP requires TLS (set tls.ca_file/cert_file/key_file) or insecure_allow_plain_tcp: true", spec.Address)
 		}
-		_ = address
 		return nil
 	default:
-		return fmt.Errorf("upstream endpoint %q: unsupported scheme %q (use unix:// or tcp://)", spec.Address, network)
+		return fmt.Errorf("upstream endpoint %q: unsupported scheme %q (use unix:// or tcp://)", spec.Address, parsed.network)
 	}
+}
+
+type parsedEndpointAddress struct {
+	network     string
+	address     string
+	basePath    string
+	rawBasePath string
+}
+
+func (a parsedEndpointAddress) escapedBasePath() string {
+	return (&url.URL{Path: a.basePath, RawPath: a.rawBasePath}).EscapedPath()
+}
+
+func (e Endpoint) escapedBasePath() string {
+	return (&url.URL{Path: e.BasePath, RawPath: e.RawBasePath}).EscapedPath()
 }
 
 // parseAddress splits a Docker-style upstream address into a (network, address)
 // pair. A bare path with no scheme is treated as a unix socket for backward
 // compatibility with the legacy upstream.socket field.
 func parseAddress(raw string) (network, address string, err error) {
+	parsed, err := parseEndpointAddress(raw)
+	if err != nil {
+		return "", "", err
+	}
+	return parsed.network, parsed.address, nil
+}
+
+func parseEndpointAddress(raw string) (parsedEndpointAddress, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return "", "", fmt.Errorf("upstream endpoint address is empty")
+		return parsedEndpointAddress{}, fmt.Errorf("upstream endpoint address is empty")
 	}
 
 	// Bare absolute or relative path with no scheme → unix socket.
 	if !strings.Contains(raw, "://") {
 		if strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "./") || strings.HasPrefix(raw, "../") {
-			return "unix", raw, nil
+			return parsedEndpointAddress{network: "unix", address: raw}, nil
 		}
-		return "", "", fmt.Errorf("upstream endpoint %q: address must be a unix path or a unix://, tcp:// URL", raw)
+		return parsedEndpointAddress{}, fmt.Errorf("upstream endpoint %q: address must be a unix path or a unix://, tcp:// URL", raw)
+	}
+
+	// Docker treats everything after unix:// as literal socket-name bytes.
+	// URL parsing would decode %2F and reinterpret ?/# as query/fragment
+	// delimiters, selecting a different socket from the one the client named.
+	if strings.HasPrefix(raw, "unix://") {
+		address := strings.TrimPrefix(raw, "unix://")
+		if address == "" {
+			return parsedEndpointAddress{}, fmt.Errorf("upstream endpoint %q: missing socket path", raw)
+		}
+		if strings.Contains(address, "://") {
+			return parsedEndpointAddress{}, fmt.Errorf("upstream endpoint %q: invalid unix socket address", raw)
+		}
+		if _, err := url.PathUnescape(address); err != nil {
+			return parsedEndpointAddress{}, fmt.Errorf("upstream endpoint %q: invalid unix socket address: %w", raw, err)
+		}
+		return parsedEndpointAddress{network: "unix", address: address}, nil
 	}
 
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "", "", fmt.Errorf("upstream endpoint %q: %w", raw, err)
+		return parsedEndpointAddress{}, fmt.Errorf("upstream endpoint %q: %w", raw, err)
 	}
 
 	switch u.Scheme {
-	case "unix":
-		if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-			return "", "", fmt.Errorf("upstream endpoint %q: invalid unix socket address", raw)
-		}
-		address := u.Path
-		if u.Host != "" {
-			address = u.Host + u.Path
-		}
-		if address == "" {
-			return "", "", fmt.Errorf("upstream endpoint %q: missing socket path", raw)
-		}
-		return "unix", address, nil
 	case "tcp", "http", "https":
 		if u.Host == "" {
-			return "", "", fmt.Errorf("upstream endpoint %q: missing host:port", raw)
+			return parsedEndpointAddress{}, fmt.Errorf("upstream endpoint %q: missing host:port", raw)
+		}
+		if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return parsedEndpointAddress{}, fmt.Errorf("upstream endpoint %q: TCP query, fragment, and userinfo components are not supported", raw)
 		}
 		host := u.Host
 		if u.Port() == "" {
-			return "", "", fmt.Errorf("upstream endpoint %q: TCP address must include a port (e.g. tcp://host:2376)", raw)
+			return parsedEndpointAddress{}, fmt.Errorf("upstream endpoint %q: TCP address must include a port (e.g. tcp://host:2376)", raw)
 		}
-		return "tcp", host, nil
+		return parsedEndpointAddress{
+			network:     "tcp",
+			address:     host,
+			basePath:    u.Path,
+			rawBasePath: u.RawPath,
+		}, nil
 	default:
-		return "", "", fmt.Errorf("upstream endpoint %q: unsupported scheme %q (use unix:// or tcp://)", raw, u.Scheme)
+		return parsedEndpointAddress{}, fmt.Errorf("upstream endpoint %q: unsupported scheme %q (use unix:// or tcp://)", raw, u.Scheme)
 	}
 }
 
@@ -325,16 +374,10 @@ func parseDockerTCPAddress(address string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid TCP address: %w", err)
 	}
-	if u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
-		return "", fmt.Errorf("TCP base paths and URL components are not supported")
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("TCP query, fragment, and userinfo components are not supported")
 	}
-	host, port, err := net.SplitHostPort(u.Host)
-	if err != nil {
-		host, port, err = net.SplitHostPort(net.JoinHostPort(u.Host, dockerDefaultPort))
-	}
-	if err != nil {
-		return "", fmt.Errorf("invalid TCP address")
-	}
+	host, port := u.Hostname(), u.Port()
 	if host == "" {
 		host = dockerDefaultHost
 	}
@@ -344,7 +387,7 @@ func parseDockerTCPAddress(address string) (string, error) {
 	if parsedPort, err := strconv.Atoi(port); err != nil && parsedPort == 0 {
 		return "", fmt.Errorf("invalid TCP port %q", port)
 	}
-	return net.JoinHostPort(host, port), nil
+	return net.JoinHostPort(host, port) + u.EscapedPath(), nil
 }
 
 // SpecsFromDockerEnv reads the standard Docker client environment variables

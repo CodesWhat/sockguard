@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,10 +19,17 @@ import (
 // endpoints. Config validation prevents this in practice.
 var ErrNoEndpoints = errors.New("upstream: no endpoints configured")
 
-// Dialer is the raw-connection seam used by the hijack path, which bypasses the
-// pooled HTTP transport and takes a net.Conn directly. *Resolver implements it.
+// Dialer is the connect-only seam used by liveness checks. *Resolver implements
+// it without applying an HTTP base path because these probes exchange no HTTP.
 type Dialer interface {
 	DialContext(ctx context.Context, network, address string) (net.Conn, error)
+}
+
+// RequestDialer is the raw HTTP connection seam used by upgrade paths. It
+// returns a connection and a cloned request rewritten for the same endpoint,
+// binding endpoint selection and its URL prefix into one race-free operation.
+type RequestDialer interface {
+	DialRequest(ctx context.Context, req *http.Request) (net.Conn, *http.Request, error)
 }
 
 const (
@@ -109,9 +117,10 @@ type Options struct {
 // always routes to that endpoint; failover logic is inert.
 //
 // It implements http.RoundTripper for the reverse proxy and HTTP side channels,
-// and exposes DialContext for the raw-conn hijack path. Both demote the active
-// endpoint on a connection-level failure so the next request routes elsewhere;
-// neither retries the in-flight request, because Docker writes are not idempotent.
+// exposes DialRequest for raw HTTP upgrade paths, and keeps DialContext for
+// connect-only probes. Request failures demote the selected endpoint so the next
+// request routes elsewhere; requests are never retried because Docker writes are
+// not idempotent.
 type Resolver struct {
 	states   []*endpointState
 	interval time.Duration
@@ -257,16 +266,88 @@ func (r *Resolver) RoundTrip(req *http.Request) (*http.Response, error) {
 	if s == nil {
 		return nil, ErrNoEndpoints
 	}
-	resp, err := s.transport.RoundTrip(req)
+	resp, err := s.transport.RoundTrip(s.ep.requestWithBasePath(req))
 	if err != nil && !isRequestScopedError(err) {
 		r.demote(s)
 	}
 	return resp, err
 }
 
+// DialRequest selects and dials one active endpoint, and returns a cloned
+// request with that exact endpoint's base path applied. Raw HTTP upgrade
+// callers must use the returned request rather than consulting Active after
+// the dial, because a concurrent health transition can select another endpoint
+// with a different prefix.
+func (r *Resolver) DialRequest(ctx context.Context, req *http.Request) (net.Conn, *http.Request, error) {
+	if req == nil || req.URL == nil {
+		return nil, nil, errors.New("upstream: request URL is nil")
+	}
+	s := r.activeState()
+	if s == nil {
+		return nil, nil, ErrNoEndpoints
+	}
+	upstreamReq := s.ep.requestWithBasePath(req)
+	conn, err := s.ep.dial(ctx)
+	if err != nil {
+		if !errors.Is(err, context.Canceled) {
+			r.demote(s)
+		}
+		return nil, nil, err
+	}
+	return conn, upstreamReq, nil
+}
+
+func (e Endpoint) requestWithBasePath(req *http.Request) *http.Request {
+	if req == nil || req.URL == nil || (e.BasePath == "" && e.RawBasePath == "") {
+		return req
+	}
+	clone := new(http.Request)
+	*clone = *req
+	urlCopy := *req.URL
+	clone.URL = &urlCopy
+
+	base := &url.URL{Path: e.BasePath, RawPath: e.RawBasePath}
+	clone.URL.Path, clone.URL.RawPath = joinURLPath(base, req.URL)
+	return clone
+}
+
+// joinURLPath is slash-boundary concatenation, not path.Join: Docker request
+// paths and their percent-encoding must reach the daemon without cleaning dot
+// segments or decoding escaped separators.
+func joinURLPath(base, request *url.URL) (string, string) {
+	if base.RawPath == "" && request.RawPath == "" {
+		return joinPath(base.Path, request.Path), ""
+	}
+	baseEscaped := base.EscapedPath()
+	requestEscaped := request.EscapedPath()
+	baseSlash := strings.HasSuffix(base.Path, "/")
+	requestSlash := strings.HasPrefix(request.Path, "/")
+	switch {
+	case baseSlash && requestSlash:
+		return base.Path + request.Path[1:], baseEscaped + requestEscaped[1:]
+	case !baseSlash && !requestSlash:
+		return base.Path + "/" + request.Path, baseEscaped + "/" + requestEscaped
+	default:
+		return base.Path + request.Path, baseEscaped + requestEscaped
+	}
+}
+
+func joinPath(base, request string) string {
+	baseSlash := strings.HasSuffix(base, "/")
+	requestSlash := strings.HasPrefix(request, "/")
+	switch {
+	case baseSlash && requestSlash:
+		return base + request[1:]
+	case !baseSlash && !requestSlash:
+		return base + "/" + request
+	default:
+		return base + request
+	}
+}
+
 // DialContext dials the active endpoint, returning a raw (TLS-wrapped where
-// applicable) net.Conn for the hijack path. The network/address arguments are
-// ignored; the endpoint is chosen by health. A dial that exceeds the caller's
+// applicable) net.Conn for connect-only consumers. The network/address
+// arguments are ignored; the endpoint is chosen by health. A dial that exceeds the caller's
 // dial deadline DOES demote (a slow/dead endpoint is a reachability signal),
 // but an explicit cancellation (context.Canceled) does not.
 func (r *Resolver) DialContext(ctx context.Context, _, _ string) (net.Conn, error) {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -685,6 +686,30 @@ func TestResolveUpstreamSpecs(t *testing.T) {
 		}
 		if len(specs) != 1 || specs[0].Address != "/var/run/docker.sock" {
 			t.Fatalf("specs = %v, want [{Address: /var/run/docker.sock}]", specs)
+		}
+	})
+
+	t.Run("Docker environment log is transport neutral for Unix sockets", func(t *testing.T) {
+		cfg := config.Defaults()
+		var logs bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&logs, nil))
+		_, legacy, err := resolveUpstreamSpecs(&cfg, func(key string) (string, bool) {
+			if key == "DOCKER_HOST" {
+				return "unix:///tmp/custom-docker.sock", true
+			}
+			return "", false
+		}, logger)
+		if err != nil {
+			t.Fatalf("resolveUpstreamSpecs: %v", err)
+		}
+		if legacy {
+			t.Fatal("legacy = true, want false for DOCKER_HOST")
+		}
+		if strings.Contains(logs.String(), "remote upstream") {
+			t.Fatalf("Unix DOCKER_HOST log calls a local socket remote: %s", logs.String())
+		}
+		if !strings.Contains(logs.String(), "using upstream from DOCKER_HOST environment") {
+			t.Fatalf("log = %q, want transport-neutral message", logs.String())
 		}
 	})
 }

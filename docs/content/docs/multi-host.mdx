@@ -127,13 +127,15 @@ If you have a working `docker -H tcp://…` setup with the standard Docker clien
 
 | Environment variable | Effect |
 |---|---|
-| `DOCKER_HOST=tcp://host:port`, `host[:port]`, or `unix:///path` | Routes to that TCP or Unix endpoint; portless TCP defaults to `2375` |
+| `DOCKER_HOST=tcp://host:port[/base/path]`, `host[:port][/base/path]`, or `unix:///path` | Routes to that TCP or Unix endpoint; portless TCP defaults to `2375`, and a TCP path is prepended to every Docker API request |
 | `DOCKER_TLS=<non-empty>` | Enables TLS without server verification; deprecated for removal in v3.0.0 |
 | `DOCKER_TLS_VERIFY=<non-empty>` | Enables TLS verification and takes precedence over `DOCKER_TLS` |
 | `DOCKER_CERT_PATH=/path` | Locates `ca.pem`, `cert.pem`, and `key.pem` when TLS is enabled; does not enable TLS by itself |
 | `DOCKER_CONFIG=/path` | Supplies the certificate directory when `DOCKER_CERT_PATH` is empty; otherwise the Docker default is `~/.docker` |
 
-Precedence: `upstream.endpoints` (YAML) > `DOCKER_HOST` (env) > `upstream.socket` (YAML/default). A valid custom `unix://` value is used directly. Only an absent `DOCKER_HOST` falls through to `upstream.socket`; a present empty, malformed, `http://`/`https://`, or unsupported transport value fails startup instead of silently selecting another daemon.
+Precedence: `upstream.endpoints` (YAML) > `DOCKER_HOST` (env) > `upstream.socket` (YAML/default). A valid custom `unix://` value is used as a literal socket name, including valid percent escapes and `?` or `#` bytes; Sockguard does not URL-decode it into a different path. Only an absent `DOCKER_HOST` falls through to `upstream.socket`; a present empty, malformed, `http://`/`https://`, or unsupported transport value fails startup instead of silently selecting another daemon.
+
+A TCP URL path is an API prefix, matching the Docker CLI. For example, `DOCKER_HOST=tcp://gateway.internal:2375/docker` sends the client's `/v1.52/containers/json` request to `/docker/v1.52/containers/json`. The prefix follows the endpoint selected for that request, including failover, readiness and inspection requests, and the initial attach, exec, and mediated BuildKit upgrade. Percent-encoded separators and dot segments are kept as configured rather than cleaned or decoded while the prefix and client path are joined.
 
 Sockguard follows the Docker CLI's presence semantics: an empty or unset TLS variable is disabled, while every non-empty value, including `0` and `false`, is enabled. `DOCKER_TLS_VERIFY` wins when both TLS variables are non-empty, so no YAML acknowledgment is needed for the env drop-in:
 

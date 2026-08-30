@@ -554,17 +554,36 @@ func TestHijackHandler_FullUpgrade(t *testing.T) {
 	serverWg.Wait()
 }
 
-// unixSocketDialer adapts a unix socket path to the upstream.Dialer seam so the
+// unixSocketDialer adapts a unix socket path to the upstream.RequestDialer seam so the
 // HijackHandlerWithDialer path can be exercised against an in-test mock daemon.
-type unixSocketDialer struct{ socketPath string }
+type unixSocketDialer struct {
+	socketPath  string
+	basePath    string
+	rawBasePath string
+}
 
 func (d unixSocketDialer) DialContext(ctx context.Context, _, _ string) (net.Conn, error) {
 	return (&net.Dialer{}).DialContext(ctx, "unix", d.socketPath)
 }
 
+func (d unixSocketDialer) DialRequest(ctx context.Context, req *http.Request) (net.Conn, *http.Request, error) {
+	conn, err := d.DialContext(ctx, "", "")
+	if err != nil {
+		return nil, nil, err
+	}
+	clone := req.Clone(req.Context())
+	urlCopy := *req.URL
+	clone.URL = &urlCopy
+	clone.URL.Path = d.basePath + req.URL.Path
+	if d.rawBasePath != "" || req.URL.RawPath != "" {
+		clone.URL.RawPath = d.rawBasePath + req.URL.EscapedPath()
+	}
+	return conn, clone, nil
+}
+
 // TestHijackHandlerWithDialer_FullUpgrade mirrors TestHijackHandler_FullUpgrade
 // for the multi-host dialer path: the hijack must dial the active endpoint via
-// the upstream.Dialer, complete the 101 upgrade, and proxy bytes bidirectionally.
+// the upstream.RequestDialer, complete the 101 upgrade, and proxy bytes bidirectionally.
 func TestHijackHandlerWithDialer_FullUpgrade(t *testing.T) {
 	baseline := runtime.NumGoroutine()
 
@@ -594,6 +613,9 @@ func TestHijackHandlerWithDialer_FullUpgrade(t *testing.T) {
 			return
 		}
 		req.Body.Close()
+		if req.RequestURI != "/proxy%2Fapi/containers/abc/attach?stream=1" {
+			t.Errorf("mock: RequestURI = %q, want prefixed escaped path", req.RequestURI)
+		}
 
 		resp := &http.Response{
 			StatusCode: http.StatusSwitchingProtocols,
@@ -621,7 +643,11 @@ func TestHijackHandlerWithDialer_FullUpgrade(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("next handler should not be called for hijack endpoint")
 	})
-	handler := HijackHandlerWithDialer(unixSocketDialer{socketPath: socketPath}, hijackInactivityTimeout, logger, next)
+	handler := HijackHandlerWithDialer(unixSocketDialer{
+		socketPath:  socketPath,
+		basePath:    "/proxy/api",
+		rawBasePath: "/proxy%2Fapi",
+	}, hijackInactivityTimeout, logger, next)
 
 	clientLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

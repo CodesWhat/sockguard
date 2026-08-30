@@ -41,7 +41,7 @@ func resolveUpstreamSpecs(cfg *config.Config, lookupEnv func(string) (string, bo
 		return nil, false, err
 	}
 	if ok {
-		logger.Info("using remote upstream from DOCKER_HOST environment", "address", spec.Address)
+		logger.Info("using upstream from DOCKER_HOST environment", "address", spec.Address)
 		warnInsecureUpstreamSpecs(logger, []upstream.EndpointSpec{spec}, "DOCKER_HOST environment")
 		return []upstream.EndpointSpec{spec}, false, nil
 	}
