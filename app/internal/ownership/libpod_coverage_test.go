@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -173,6 +174,74 @@ func TestLibpodImageActionsAreOwnerChecked(t *testing.T) {
 	}
 }
 
+func TestLibpodImageScpRemoteSourceIsRefusedWithoutLocalInspect(t *testing.T) {
+	t.Parallel()
+	for _, allowUnowned := range []bool{false, true} {
+		t.Run("allow_unowned_images="+strconv.FormatBool(allowUnowned), func(t *testing.T) {
+			t.Parallel()
+			inspectCalls := 0
+			upstreamCalls := 0
+			handler := middlewareWithDeps(
+				testLogger(),
+				Options{Owner: "job-123", LabelKey: "com.sockguard.owner", AllowUnownedImages: allowUnowned},
+				func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
+					inspectCalls++
+					return nil, false, nil
+				},
+				fakeInspector{}.inspectExec,
+			)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				upstreamCalls++
+			}))
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v5.8.1/libpod/images/scp/builder::registry.io/team/app", nil))
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			if inspectCalls != 0 {
+				t.Fatalf("local image inspect calls = %d, want 0 for a remote source", inspectCalls)
+			}
+			if upstreamCalls != 0 {
+				t.Fatalf("upstream calls = %d, want 0", upstreamCalls)
+			}
+			if !strings.Contains(rec.Body.String(), "remote image source") {
+				t.Fatalf("body = %s, want remote-source denial", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestLibpodImageScpLocalSourceStillChecksImageOwner(t *testing.T) {
+	t.Parallel()
+	var gotKind dockerresource.Kind
+	var gotIdentifier string
+	upstreamCalls := 0
+	handler := middlewareWithDeps(
+		testLogger(),
+		Options{Owner: "job-123", LabelKey: "com.sockguard.owner"},
+		func(_ context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
+			gotKind = kind
+			gotIdentifier = identifier
+			return map[string]string{"com.sockguard.owner": "job-123"}, true, nil
+		},
+		fakeInspector{}.inspectExec,
+	)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/libpod/images/scp/registry.io/team/app", nil))
+
+	if rec.Code != http.StatusNoContent || upstreamCalls != 1 {
+		t.Fatalf("status = %d upstream calls = %d, want %d and 1; body: %s", rec.Code, upstreamCalls, http.StatusNoContent, rec.Body.String())
+	}
+	if gotKind != dockerresource.KindImage || gotIdentifier != "registry.io/team/app" {
+		t.Fatalf("inspect = %s/%q, want %s/%q", gotKind, gotIdentifier, dockerresource.KindImage, "registry.io/team/app")
+	}
+}
+
 // TestLibpodImageIdentifier pins the classification itself, which the
 // end-to-end tests above cannot: a collection route misread as an image named
 // after its keyword costs an upstream inspect per request and, once an image
@@ -289,6 +358,8 @@ var wantOwnerUnscopeableReasonCodes = map[string]string{
 	filter.LibpodShowMountedPath:    "owner_libpod_show_mounted_unscopeable",
 	filter.LibpodContainerStatsPath: "owner_libpod_container_stats_unscopeable",
 	filter.LibpodPodStatsPath:       "owner_libpod_pod_stats_unscopeable",
+	filter.LibpodManifestExistsPath: "owner_libpod_manifest_exists_unscopeable",
+	filter.LibpodManifestJSONPath:   "owner_libpod_manifest_json_unscopeable",
 }
 
 // TestLibpodUnscopeableReadsAreRefusedUnderOwnerIsolation covers every libpod
@@ -452,6 +523,9 @@ func TestLibpodUnscopeableReadsAreInertWithoutOwner(t *testing.T) {
 // verdictPassThrough, so the host inventory was forwarded intact.
 // libpodPodIdentifier deliberately reserves "stats", so /libpod/pods/stats was
 // never classified at all and reached the upstream without any check running.
+// The manifest reads likewise have no ownership identifier: manifest-list
+// responses carry no owner labels, and the image identifier only covers the
+// distinct /libpod/images route family.
 func TestLibpodUnscopeableReadsWereNotCoveredByTheExistingIdentifiers(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -463,6 +537,8 @@ func TestLibpodUnscopeableReadsWereNotCoveredByTheExistingIdentifiers(t *testing
 		{path: filter.LibpodShowMountedPath, classify: libpodContainerIdentifier, wantIdentifier: "showmounted", wantOK: true},
 		{path: filter.LibpodContainerStatsPath, classify: libpodContainerIdentifier, wantIdentifier: "stats", wantOK: true},
 		{path: filter.LibpodPodStatsPath, classify: libpodPodIdentifier, wantIdentifier: "", wantOK: false},
+		{path: filter.LibpodManifestExistsPath, classify: libpodImageIdentifier, wantIdentifier: "", wantOK: false},
+		{path: filter.LibpodManifestJSONPath, classify: libpodImageIdentifier, wantIdentifier: "", wantOK: false},
 	}
 	if len(tests) != len(filter.LibpodUnscopeableReads()) {
 		t.Fatalf("%d cases for %d unscopeable reads; a new one needs its own answer here", len(tests), len(filter.LibpodUnscopeableReads()))

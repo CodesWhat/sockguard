@@ -1005,6 +1005,8 @@ var wantVisibilityUnscopeableReasonCodes = map[string]string{
 	filter.LibpodShowMountedPath:    "visibility_libpod_show_mounted_unscopeable",
 	filter.LibpodContainerStatsPath: "visibility_libpod_container_stats_unscopeable",
 	filter.LibpodPodStatsPath:       "visibility_libpod_pod_stats_unscopeable",
+	filter.LibpodManifestExistsPath: "visibility_libpod_manifest_exists_unscopeable",
+	filter.LibpodManifestJSONPath:   "visibility_libpod_manifest_json_unscopeable",
 }
 
 // TestLibpodUnscopeableReadsAreRefusedUnderVisibilityPolicy covers every
@@ -1094,13 +1096,14 @@ func TestLibpodUnscopeableReadsAreInertWithoutVisibilityPolicy(t *testing.T) {
 
 // TestLibpodUnscopeableReadsAreNotCoveredByAnyVisibilityIdentifier pins why
 // each refusal has to be its own branch. Every libpod read identifier in this
-// package needs an "/id/suffix" shape, and all three paths are a bare word
-// after the prefix, so none of them matched: before the refusals the requests
-// fell through to the default-visible tail of requestVisibleWithPolicy and
-// were forwarded with the host inventory intact.
+// package is scoped to a concrete resource family. The three collection paths
+// are bare words after their prefixes, while manifest lists have no visibility
+// identifier or label-bearing inspect contract. Before the refusals all five
+// requests fell through to requestVisibleWithPolicy's default-visible tail.
 //
 // This is the one real difference from the ownership side, where
-// libpodContainerIdentifier does classify two of the three as containers.
+// libpodContainerIdentifier does classify two of the collection paths as
+// containers.
 func TestLibpodUnscopeableReadsAreNotCoveredByAnyVisibilityIdentifier(t *testing.T) {
 	t.Parallel()
 	identifiers := map[string]func(string) (string, bool){

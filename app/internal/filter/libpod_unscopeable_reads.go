@@ -16,7 +16,10 @@ package filter
 // layers cannot drift into explaining the same refusal differently, the same
 // way they share responsefilter.LibpodSystemDataUsageDenyReason.
 
-import "slices"
+import (
+	"slices"
+	"strings"
+)
 
 // LibpodUnscopeableRead describes one refused endpoint.
 type LibpodUnscopeableRead struct {
@@ -86,6 +89,16 @@ const LibpodContainerStatsPath = "/libpod/containers/stats"
 // reserves "stats" alongside "json": the only spelling of a pod stats read is
 // the collection one.
 const LibpodPodStatsPath = "/libpod/pods/stats"
+
+// LibpodManifestExistsPath and LibpodManifestJSONPath are representative
+// normalized paths for Podman's two dynamic manifest-read route families.
+// Podman routes both with `{name:.*}`, so LookupLibpodUnscopeableRead matches
+// every non-empty name, including namespaced references, while these stable
+// values name the families in the shared catalog and its policy tests.
+const (
+	LibpodManifestExistsPath = "/libpod/manifests/sockguard-test/exists"
+	LibpodManifestJSONPath   = "/libpod/manifests/sockguard-test/json"
+)
 
 // LibpodShowMountedDenyReason is reported when either middleware refuses
 // GET /libpod/containers/showmounted.
@@ -165,10 +178,39 @@ const LibpodPodStatsDenyReason = "libpod pod stats denied: " +
 	"GET /libpod/pods/stats reports resource usage for every running pod on the host by default, carries no " +
 	"labels, and accepts no filters, so it cannot be scoped to one caller"
 
+// LibpodManifestExistsDenyReason is reported when either middleware refuses
+// GET /libpod/manifests/{name}/exists. The endpoint reveals whether a manifest
+// list exists in local storage but exposes no label or owner metadata and
+// accepts no filter that could constrain the lookup.
+const LibpodManifestExistsDenyReason = "libpod manifest exists denied: " +
+	"GET /libpod/manifests/{name}/exists reveals whether a manifest list exists in local storage, carries no " +
+	"labels, and accepts no filters, so it cannot be scoped to one caller"
+
+// LibpodManifestJSONDenyReason is reported when either middleware refuses
+// GET /libpod/manifests/{name}/json. Podman inspects a local manifest list when
+// one exists, but falls back to fetching the caller-named reference from a
+// registry when it does not. Neither response carries policy labels and the
+// endpoint accepts no filter, so there is no narrower truthful response the
+// ownership or visibility middleware can produce.
+const LibpodManifestJSONDenyReason = "libpod manifest inspect denied: " +
+	"GET /libpod/manifests/{name}/json returns local manifest content or fetches a caller-named remote " +
+	"manifest, carries no labels, and accepts no filters, so it cannot be scoped to one caller"
+
+var (
+	libpodManifestExistsRead = LibpodUnscopeableRead{
+		Path: LibpodManifestExistsPath, ReasonCodeStem: "manifest_exists", Reason: LibpodManifestExistsDenyReason,
+	}
+	libpodManifestJSONRead = LibpodUnscopeableRead{
+		Path: LibpodManifestJSONPath, ReasonCodeStem: "manifest_json", Reason: LibpodManifestJSONDenyReason,
+	}
+)
+
 var libpodUnscopeableReads = []LibpodUnscopeableRead{
 	{Path: LibpodShowMountedPath, ReasonCodeStem: "show_mounted", Reason: LibpodShowMountedDenyReason},
 	{Path: LibpodContainerStatsPath, ReasonCodeStem: "container_stats", Reason: LibpodContainerStatsDenyReason},
 	{Path: LibpodPodStatsPath, ReasonCodeStem: "pod_stats", Reason: LibpodPodStatsDenyReason},
+	libpodManifestExistsRead,
+	libpodManifestJSONRead,
 }
 
 var libpodUnscopeableReadsByPath = func() map[string]LibpodUnscopeableRead {
@@ -184,8 +226,21 @@ var libpodUnscopeableReadsByPath = func() map[string]LibpodUnscopeableRead {
 // GET: every entry is a GET-only route, and refusing another method here would
 // answer 403 where the daemon answers 405.
 func LookupLibpodUnscopeableRead(normPath string) (LibpodUnscopeableRead, bool) {
-	read, ok := libpodUnscopeableReadsByPath[normPath]
-	return read, ok
+	if read, ok := libpodUnscopeableReadsByPath[normPath]; ok {
+		return read, true
+	}
+
+	rest, ok := strings.CutPrefix(normPath, "/libpod/manifests/")
+	if !ok {
+		return LibpodUnscopeableRead{}, false
+	}
+	if name := strings.TrimSuffix(rest, "/exists"); name != rest && name != "" {
+		return libpodManifestExistsRead, true
+	}
+	if name := strings.TrimSuffix(rest, "/json"); name != rest && name != "" {
+		return libpodManifestJSONRead, true
+	}
+	return LibpodUnscopeableRead{}, false
 }
 
 // LibpodUnscopeableReads returns the whole set, for tests that need to assert

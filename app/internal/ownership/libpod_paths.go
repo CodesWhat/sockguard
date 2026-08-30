@@ -158,6 +158,32 @@ func libpodImageIdentifier(method, normPath string) (string, bool) {
 	return rest, true
 }
 
+// libpodRemoteImageScpSource reports whether normPath is Podman's native
+// image-SCP route with a remote source. Podman's ParseImageSCPArg treats any
+// source containing "::" as remote, except its special `user@localhost::`
+// user-transfer spelling. A remote source names an image in another daemon's
+// store, so the local image inspect used by ownership cannot classify it.
+//
+// The push/tag/untag exclusions preserve Podman's route order: those handlers
+// are registered before /images/scp/{name:.*}, so a path such as
+// /images/scp/app/push pushes the local image named "scp/app" rather than
+// invoking image SCP.
+func libpodRemoteImageScpSource(method, normPath string) bool {
+	if method != http.MethodPost {
+		return false
+	}
+	rest, ok := strings.CutPrefix(normPath, libpodPrefix+"images/scp/")
+	if !ok || rest == "" {
+		return false
+	}
+	for _, suffix := range []string{"/push", "/tag", "/untag"} {
+		if name := strings.TrimSuffix(rest, suffix); name != rest && name != "" {
+			return false
+		}
+	}
+	return strings.Contains(rest, "::") && !strings.Contains(rest, "@localhost::")
+}
+
 // libpodExecIdentifier matches /libpod/exec/{id}/..., the libpod
 // counterpart of execIdentifier. Podman's exec-session store is shared
 // between the Docker-compat and libpod route families (both are a view onto
