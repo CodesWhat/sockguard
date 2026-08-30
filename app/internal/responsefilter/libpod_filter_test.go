@@ -122,6 +122,38 @@ func libpodLegacyCNIPluginsForTest(t *testing.T, body string) []map[string]any {
 	return plugins
 }
 
+func libpodLegacyCNIListNetworksForTest(t *testing.T, body string) []map[string]any {
+	t.Helper()
+
+	var reports []map[string]any
+	if err := json.Unmarshal([]byte(body), &reports); err != nil {
+		t.Fatalf("decode legacy CNI list response: %v", err)
+	}
+	if len(reports) != 1 {
+		t.Fatalf("legacy CNI list response has %d reports, want 1", len(reports))
+	}
+	values, ok := reports[0]["Plugins"].([]any)
+	if !ok {
+		t.Fatalf("legacy CNI list Plugins has type %T, want array", reports[0]["Plugins"])
+	}
+	networks := make([]map[string]any, 0, len(values))
+	for i, value := range values {
+		plugin, ok := value.(map[string]any)
+		if !ok {
+			t.Fatalf("legacy CNI list plugin %d has type %T, want object", i, value)
+		}
+		network, ok := plugin["Network"].(map[string]any)
+		if !ok {
+			t.Fatalf("legacy CNI list plugin %d Network has type %T, want object", i, plugin["Network"])
+		}
+		networks = append(networks, network)
+	}
+	if len(networks) == 0 {
+		t.Fatal("legacy CNI list response has no plugin networks")
+	}
+	return networks
+}
+
 func addStaleRepresentationMetadata(resp *http.Response) {
 	for _, name := range []string{
 		"Accept-Ranges",
@@ -502,6 +534,28 @@ const libpodLegacyCNIFlatIPAMInspectUpstream = `{
   "labels": {"owner": "team-a"}
 }`
 
+// The CNI DNS type used by Podman v2.2.1-v3.4.4 exposes resolver addresses and
+// internal naming topology in nameservers, domain, and search. Resolver
+// options describe behavior rather than topology and remain available,
+// matching the modern contract's selective removal of network_dns_servers.
+const libpodLegacyCNIDNSInspectUpstream = `{
+  "cniVersion": "0.4.0",
+  "name": "team-a-dns",
+  "plugins": [
+    {
+      "type": "bridge",
+      "dns": {
+        "nameservers": ["10.77.0.53", "fd00:77::53"],
+        "domain": "team-a.internal",
+        "search": ["svc.team-a.internal", "corp.internal"],
+        "options": ["ndots:2"],
+        "extension": "remove-me"
+      }
+    }
+  ],
+  "labels": {"owner": "team-a"}
+}`
+
 // Podman v2/v3 list reports embed libcni.NetworkConfigList. encoding/json
 // therefore exposes the Go field names Plugins and Bytes, and each plugin is
 // another NetworkConfig with its own Bytes copy. Those byte slices are base64
@@ -524,7 +578,13 @@ func libpodLegacyCNIListUpstream(t *testing.T) (string, string, string) {
 					"name":       "team-a-net",
 					"type":       "bridge",
 					"ipam":       map[string]any{"type": "host-local"},
-					"dns":        map[string]any{},
+					"dns": map[string]any{
+						"nameservers": []any{"10.88.0.53", "fd00:88::53"},
+						"domain":      "team-a.internal",
+						"search":      []any{"svc.team-a.internal", "corp.internal"},
+						"options":     []any{"ndots:2"},
+						"extension":   "remove-me",
+					},
 				},
 				"Bytes": bridgeBytes,
 			},
@@ -791,6 +851,103 @@ func TestLibpodLegacyCNIFlatHostLocalTopologyIsRedacted(t *testing.T) {
 				if got := ipam[key]; got != redactedValue {
 					t.Errorf("ipam.%s = %#v, want %q", key, got, redactedValue)
 				}
+			}
+		})
+	}
+}
+
+func TestLibpodLegacyCNIDNSTopologyIsRedacted(t *testing.T) {
+	t.Parallel()
+
+	inspectCases := []struct {
+		name, path, upstream string
+	}{
+		{
+			name:     "v2 array on versioned suffixed path",
+			path:     "/v2.2.1/libpod/networks/team-a-dns/json",
+			upstream: "[" + libpodLegacyCNIDNSInspectUpstream + "]",
+		},
+		{
+			name:     "v3 array on unversioned action-named bare path",
+			path:     "/libpod/networks/create",
+			upstream: "[" + libpodLegacyCNIDNSInspectUpstream + "]",
+		},
+		{
+			name:     "v3 object on unversioned suffixed path",
+			path:     "/libpod/networks/team-a-dns/json",
+			upstream: libpodLegacyCNIDNSInspectUpstream,
+		},
+		{
+			name:     "v3 object on versioned action-named bare path",
+			path:     "/v3.4.4/libpod/networks/prune",
+			upstream: libpodLegacyCNIDNSInspectUpstream,
+		},
+	}
+	for _, tc := range inspectCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			body := libpodBodyForTest(t, allRedactions, tc.path, tc.upstream)
+			assertAbsent(t, tc.name, body,
+				"10.77.0.53",
+				"fd00:77::53",
+				"team-a.internal",
+				"svc.team-a.internal",
+				"corp.internal",
+				"remove-me",
+			)
+			assertPresent(t, tc.name, body, `"name":"team-a-dns"`, `"options":["ndots:2"]`, `"owner":"team-a"`)
+
+			plugins := libpodLegacyCNIPluginsForTest(t, body)
+			dns, ok := plugins[0]["dns"].(map[string]any)
+			if !ok {
+				t.Fatalf("dns has type %T, want object", plugins[0]["dns"])
+			}
+			if got, ok := dns["nameservers"].([]any); !ok || len(got) != 0 {
+				t.Errorf("dns.nameservers = %#v, want empty array", dns["nameservers"])
+			}
+			if got := dns["domain"]; got != redactedValue {
+				t.Errorf("dns.domain = %#v, want %q", got, redactedValue)
+			}
+			if got, ok := dns["search"].([]any); !ok || len(got) != 0 {
+				t.Errorf("dns.search = %#v, want empty array", dns["search"])
+			}
+			if _, ok := dns["extension"]; ok {
+				t.Errorf("unknown dns extension survived: %#v", dns["extension"])
+			}
+		})
+	}
+
+	for _, path := range []string{"/libpod/networks/json", "/v3.4.4/libpod/networks/json"} {
+		t.Run("capitalized list wrapper "+path, func(t *testing.T) {
+			t.Parallel()
+			upstream, _, _ := libpodLegacyCNIListUpstream(t)
+			body := libpodBodyForTest(t, allRedactions, path, upstream)
+			assertAbsent(t, path, body,
+				"10.88.0.53",
+				"fd00:88::53",
+				"team-a.internal",
+				"svc.team-a.internal",
+				"corp.internal",
+				"remove-me",
+			)
+			assertPresent(t, path, body, `"options":["ndots:2"]`, `"Name":"team-a-net"`)
+
+			networks := libpodLegacyCNIListNetworksForTest(t, body)
+			dns, ok := networks[0]["dns"].(map[string]any)
+			if !ok {
+				t.Fatalf("Network.dns has type %T, want object", networks[0]["dns"])
+			}
+			if got, ok := dns["nameservers"].([]any); !ok || len(got) != 0 {
+				t.Errorf("Network.dns.nameservers = %#v, want empty array", dns["nameservers"])
+			}
+			if got := dns["domain"]; got != redactedValue {
+				t.Errorf("Network.dns.domain = %#v, want %q", got, redactedValue)
+			}
+			if got, ok := dns["search"].([]any); !ok || len(got) != 0 {
+				t.Errorf("Network.dns.search = %#v, want empty array", dns["search"])
+			}
+			if _, ok := dns["extension"]; ok {
+				t.Errorf("unknown Network.dns extension survived: %#v", dns["extension"])
 			}
 		})
 	}
@@ -1115,6 +1272,19 @@ func TestLibpodMalformedBodiesFailClosed(t *testing.T) {
 		{"legacy network flat ipam rangeStart null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"rangeStart":null}}]}`},
 		{"legacy network flat ipam rangeEnd wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"rangeEnd":42}}]}`},
 		{"legacy network flat ipam rangeEnd null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"rangeEnd":null}}]}`},
+		{"legacy network dns wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","dns":"10.77.0.53"}]}`},
+		{"legacy network dns null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","dns":null}]}`},
+		{"legacy network dns nameservers wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","dns":{"nameservers":"10.77.0.53"}}]}`},
+		{"legacy network dns nameservers null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","dns":{"nameservers":null}}]}`},
+		{"legacy network dns nameserver wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","dns":{"nameservers":["10.77.0.53",42]}}]}`},
+		{"legacy network dns domain wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","dns":{"domain":42}}]}`},
+		{"legacy network dns domain null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","dns":{"domain":null}}]}`},
+		{"legacy network dns search wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","dns":{"search":"team-a.internal"}}]}`},
+		{"legacy network dns search null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","dns":{"search":null}}]}`},
+		{"legacy network dns search entry wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","dns":{"search":["team-a.internal",42]}}]}`},
+		{"legacy network dns options wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","dns":{"options":"ndots:2"}}]}`},
+		{"legacy network dns options null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","dns":{"options":null}}]}`},
+		{"legacy network dns option wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","dns":{"options":["ndots:2",42]}}]}`},
 		{"legacy network routes wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"routes":{}}}]}`},
 		{"legacy network route wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"routes":["0.0.0.0/0"]}}]}`},
 		{"legacy network ranges wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"ranges":{}}}]}`},
@@ -1127,6 +1297,18 @@ func TestLibpodMalformedBodiesFailClosed(t *testing.T) {
 		{"legacy list top-level Bytes null", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[],"Bytes":null}]`},
 		{"legacy list nested Bytes wrong type", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":{"type":"bridge"},"Bytes":42}],"Bytes":"e30="}]`},
 		{"legacy list Network wrong type", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":"bridge","Bytes":"e30="}],"Bytes":"e30="}]`},
+		{"legacy list Network dns wrong type", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":{"type":"bridge","dns":[]},"Bytes":"e30="}],"Bytes":"e30="}]`},
+		{"legacy list Network dns null", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":{"type":"bridge","dns":null},"Bytes":"e30="}],"Bytes":"e30="}]`},
+		{"legacy list Network dns nameservers wrong type", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":{"type":"bridge","dns":{"nameservers":{}}},"Bytes":"e30="}],"Bytes":"e30="}]`},
+		{"legacy list Network dns nameserver null", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":{"type":"bridge","dns":{"nameservers":[null]}},"Bytes":"e30="}],"Bytes":"e30="}]`},
+		{"legacy list Network dns domain wrong type", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":{"type":"bridge","dns":{"domain":[]}},"Bytes":"e30="}],"Bytes":"e30="}]`},
+		{"legacy list Network dns domain null", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":{"type":"bridge","dns":{"domain":null}},"Bytes":"e30="}],"Bytes":"e30="}]`},
+		{"legacy list Network dns search wrong type", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":{"type":"bridge","dns":{"search":{}}},"Bytes":"e30="}],"Bytes":"e30="}]`},
+		{"legacy list Network dns search null", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":{"type":"bridge","dns":{"search":null}},"Bytes":"e30="}],"Bytes":"e30="}]`},
+		{"legacy list Network dns search entry wrong type", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":{"type":"bridge","dns":{"search":["team-a.internal",null]}},"Bytes":"e30="}],"Bytes":"e30="}]`},
+		{"legacy list Network dns options wrong type", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":{"type":"bridge","dns":{"options":42}},"Bytes":"e30="}],"Bytes":"e30="}]`},
+		{"legacy list Network dns options null", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":{"type":"bridge","dns":{"options":null}},"Bytes":"e30="}],"Bytes":"e30="}]`},
+		{"legacy list Network dns option wrong type", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":{"type":"bridge","dns":{"options":["ndots:2",false]}},"Bytes":"e30="}],"Bytes":"e30="}]`},
 		{"volume list is not an array", "/v5.8.1/libpod/volumes/json", `{"Volumes":[]}`},
 		{"secret list is not an array", "/v5.8.1/libpod/secrets/json", `{"ID":"sec-a"}`},
 	}

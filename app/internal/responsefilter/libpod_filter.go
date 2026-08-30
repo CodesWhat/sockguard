@@ -387,6 +387,9 @@ func redactLegacyCNIPluginConfig(plugin map[string]any) error {
 	if err := redactLegacyCNIStringTopologyField(plugin, "master", "plugin"); err != nil {
 		return err
 	}
+	if err := redactLegacyCNIDNS(plugin); err != nil {
+		return err
+	}
 
 	value, ok := plugin["ipam"]
 	if !ok {
@@ -408,6 +411,65 @@ func redactLegacyCNIPluginConfig(plugin map[string]any) error {
 		return err
 	}
 	return nil
+}
+
+func redactLegacyCNIDNS(plugin map[string]any) error {
+	value, ok := plugin["dns"]
+	if !ok {
+		return nil
+	}
+	dns, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf("plugin dns has unexpected type %T", value)
+	}
+
+	_, hasNameservers, err := legacyCNIDNSStringArray(dns, "nameservers")
+	if err != nil {
+		return err
+	}
+	_, hasSearch, err := legacyCNIDNSStringArray(dns, "search")
+	if err != nil {
+		return err
+	}
+	options, hasOptions, err := legacyCNIDNSStringArray(dns, "options")
+	if err != nil {
+		return err
+	}
+	sanitized := make(map[string]any, 4)
+	if hasNameservers {
+		sanitized["nameservers"] = []any{}
+	}
+	if value, ok := dns["domain"]; ok {
+		if _, ok := value.(string); !ok {
+			return fmt.Errorf("plugin dns domain has unexpected type %T", value)
+		}
+		sanitized["domain"] = redactedValue
+	}
+	if hasSearch {
+		sanitized["search"] = []any{}
+	}
+	if hasOptions {
+		sanitized["options"] = options
+	}
+	plugin["dns"] = sanitized
+	return nil
+}
+
+func legacyCNIDNSStringArray(dns map[string]any, key string) ([]any, bool, error) {
+	value, ok := dns[key]
+	if !ok {
+		return nil, false, nil
+	}
+	items, ok := value.([]any)
+	if !ok {
+		return nil, false, fmt.Errorf("plugin dns %s has unexpected type %T", key, value)
+	}
+	for i, value := range items {
+		if _, ok := value.(string); !ok {
+			return nil, false, fmt.Errorf("plugin dns %s entry %d has unexpected type %T", key, i, value)
+		}
+	}
+	return items, true, nil
 }
 
 func redactLegacyCNIStringTopologyField(payload map[string]any, key, context string) error {
