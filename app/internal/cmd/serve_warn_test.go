@@ -160,6 +160,11 @@ func TestWarnReadExfiltrationOnce(t *testing.T) {
 	if got := strings.Count(buf.String(), marker); got != 1 {
 		t.Fatalf("warning count after first enabled build = %d, want 1; log: %q", got, buf.String())
 	}
+	for _, want := range []string{"process-list", "process arguments"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Fatalf("warning does not describe %q exposure; log: %q", want, buf.String())
+		}
+	}
 	// The warning names what the acknowledgment is currently buying, sourced
 	// from the same probe the startup validator uses for its refusal message.
 	for _, want := range []string{

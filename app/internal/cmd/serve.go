@@ -1152,7 +1152,7 @@ func warnReadExfiltrationOnce(cfg *config.Config, rules []*filter.CompiledRule, 
 	exposed := allowedSensitiveExfilEndpoints(rules)
 	profileExposed := allowedSensitiveExfilEndpointsByProfile(clientProfiles)
 	once.Do(func() {
-		logger.Warn("insecure_allow_read_exfiltration is enabled: rules matching raw archive/export, log/attach streaming, or registry push endpoints are admitted instead of refused at startup. A caller allowed those paths can read container files, images, plugins, environment variables, and secrets, or push local artifacts to a registry it chooses",
+		logger.Warn("insecure_allow_read_exfiltration is enabled: rules matching process-list reads, raw archive/export, log/attach streaming, or registry push endpoints are admitted instead of refused at startup. A caller allowed those paths can read container files, images, plugins, process arguments, environment variables, and secrets, or push local artifacts to a registry it chooses",
 			"exposed_endpoints", exposed,
 			"exposed_profile_endpoints", profileExposed,
 		)
