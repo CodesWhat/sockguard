@@ -819,8 +819,13 @@ func TestSpecsFromDockerEnv(t *testing.T) {
 			wantOK: false,
 		},
 		{
-			name:   "DOCKER_HOST is unix socket",
-			env:    map[string]string{"DOCKER_HOST": "unix:///var/run/docker.sock"},
+			name: "DOCKER_HOST is unix socket regardless of TLS environment",
+			env: map[string]string{
+				"DOCKER_HOST":       "unix:///var/run/docker.sock",
+				"DOCKER_TLS":        "1",
+				"DOCKER_TLS_VERIFY": "1",
+				"DOCKER_CERT_PATH":  "/certs",
+			},
 			wantOK: false,
 		},
 		{
@@ -835,6 +840,83 @@ func TestSpecsFromDockerEnv(t *testing.T) {
 			wantSpec: EndpointSpec{
 				Address:               "tcp://host:2376",
 				InsecureAllowPlainTCP: true,
+			},
+		},
+		{
+			name: "empty TLS environment values leave TCP plaintext",
+			env: map[string]string{
+				"DOCKER_HOST":       "tcp://host:2376",
+				"DOCKER_TLS":        "",
+				"DOCKER_TLS_VERIFY": "",
+			},
+			wantOK: true,
+			wantSpec: EndpointSpec{
+				Address:               "tcp://host:2376",
+				InsecureAllowPlainTCP: true,
+			},
+		},
+		{
+			name: "cert path alone does not enable TLS",
+			env: map[string]string{
+				"DOCKER_HOST":      "tcp://host:2376",
+				"DOCKER_CERT_PATH": "/certs",
+			},
+			wantOK: true,
+			wantSpec: EndpointSpec{
+				Address:               "tcp://host:2376",
+				InsecureAllowPlainTCP: true,
+			},
+		},
+		{
+			name: "DOCKER_TLS value zero enables unverified TLS",
+			env: map[string]string{
+				"DOCKER_HOST": "tcp://host:2376",
+				"DOCKER_TLS":  "0",
+			},
+			wantOK: true,
+			wantSpec: EndpointSpec{
+				Address:               "tcp://host:2376",
+				InsecureSkipTLSVerify: true,
+			},
+		},
+		{
+			name: "DOCKER_TLS value one enables unverified TLS",
+			env: map[string]string{
+				"DOCKER_HOST": "tcp://host:2376",
+				"DOCKER_TLS":  "1",
+			},
+			wantOK: true,
+			wantSpec: EndpointSpec{
+				Address:               "tcp://host:2376",
+				InsecureSkipTLSVerify: true,
+			},
+		},
+		{
+			name: "any other non-empty DOCKER_TLS value enables unverified TLS",
+			env: map[string]string{
+				"DOCKER_HOST": "tcp://host:2376",
+				"DOCKER_TLS":  "false",
+			},
+			wantOK: true,
+			wantSpec: EndpointSpec{
+				Address:               "tcp://host:2376",
+				InsecureSkipTLSVerify: true,
+			},
+		},
+		{
+			name: "DOCKER_TLS with cert path enables unverified mutual TLS",
+			env: map[string]string{
+				"DOCKER_HOST":      "tcp://host:2376",
+				"DOCKER_TLS":       "1",
+				"DOCKER_CERT_PATH": "/certs",
+			},
+			wantOK: true,
+			wantSpec: EndpointSpec{
+				Address:               "tcp://host:2376",
+				CAFile:                "/certs/ca.pem",
+				CertFile:              "/certs/cert.pem",
+				KeyFile:               "/certs/key.pem",
+				InsecureSkipTLSVerify: true,
 			},
 		},
 		{
@@ -853,18 +935,19 @@ func TestSpecsFromDockerEnv(t *testing.T) {
 			},
 		},
 		{
-			name: "tcp without TLS_VERIFY but with cert path — insecure skip",
+			name: "non-empty TLS_VERIFY takes precedence over DOCKER_TLS",
 			env: map[string]string{
-				"DOCKER_HOST":      "tcp://host:2376",
-				"DOCKER_CERT_PATH": "/certs",
+				"DOCKER_HOST":       "tcp://host:2376",
+				"DOCKER_TLS":        "1",
+				"DOCKER_TLS_VERIFY": "false",
+				"DOCKER_CERT_PATH":  "/certs",
 			},
 			wantOK: true,
 			wantSpec: EndpointSpec{
-				Address:               "tcp://host:2376",
-				CAFile:                "/certs/ca.pem",
-				CertFile:              "/certs/cert.pem",
-				KeyFile:               "/certs/key.pem",
-				InsecureSkipTLSVerify: true,
+				Address:  "tcp://host:2376",
+				CAFile:   "/certs/ca.pem",
+				CertFile: "/certs/cert.pem",
+				KeyFile:  "/certs/key.pem",
 			},
 		},
 		{
@@ -877,6 +960,18 @@ func TestSpecsFromDockerEnv(t *testing.T) {
 			wantSpec: EndpointSpec{
 				Address: "tcp://host:2376",
 				// no CA/cert/key — verify against the host's system root CAs.
+				TLSSystemRoots: true,
+			},
+		},
+		{
+			name: "TLS_VERIFY value zero still enables verified TLS",
+			env: map[string]string{
+				"DOCKER_HOST":       "tcp://host:2376",
+				"DOCKER_TLS_VERIFY": "0",
+			},
+			wantOK: true,
+			wantSpec: EndpointSpec{
+				Address:        "tcp://host:2376",
 				TLSSystemRoots: true,
 			},
 		},

@@ -271,7 +271,7 @@ func splitHostPort(hostport string) (host, port string, ok bool) {
 }
 
 // SpecsFromDockerEnv reads the standard Docker client environment variables
-// (DOCKER_HOST, DOCKER_TLS_VERIFY, DOCKER_CERT_PATH) and returns a single
+// (DOCKER_HOST, DOCKER_TLS, DOCKER_TLS_VERIFY, DOCKER_CERT_PATH) and returns a single
 // EndpointSpec when DOCKER_HOST names a TCP daemon, so an operator with a
 // working `docker -H tcp://…` setup can point sockguard at it with no YAML.
 // It returns ok=false when DOCKER_HOST is unset or names a unix socket (the
@@ -287,27 +287,32 @@ func SpecsFromDockerEnv(getenv func(string) string) (EndpointSpec, bool) {
 	}
 
 	spec := EndpointSpec{Address: host}
+	tlsEnabled := getenv("DOCKER_TLS") != ""
 	tlsVerify := getenv("DOCKER_TLS_VERIFY") != ""
 	certPath := strings.TrimSpace(getenv("DOCKER_CERT_PATH"))
-	if certPath != "" {
+	if (tlsEnabled || tlsVerify) && certPath != "" {
 		spec.CAFile = filepath.Join(certPath, "ca.pem")
 		spec.CertFile = filepath.Join(certPath, "cert.pem")
 		spec.KeyFile = filepath.Join(certPath, "key.pem")
 	}
 	switch {
-	case tlsVerify && certPath == "":
-		// DOCKER_TLS_VERIFY with no DOCKER_CERT_PATH: verify the daemon against
-		// the system root CAs and present no client cert (server-auth only).
-		// Without this signal the spec would carry no TLS material and be
-		// rejected as plain TCP, breaking the documented env drop-in.
-		spec.TLSSystemRoots = true
-	case !tlsVerify && certPath == "":
-		// No verification and no cert material → plaintext TCP, matching the
-		// docker CLI when neither TLS env var is set.
-		spec.InsecureAllowPlainTCP = true
-	case !tlsVerify && certPath != "":
-		// Cert material present but verification off → encrypted, unverified.
+	case tlsVerify:
+		if certPath == "" {
+			// DOCKER_TLS_VERIFY with no DOCKER_CERT_PATH: verify the daemon against
+			// the system root CAs and present no client cert (server-auth only).
+			// Without this signal the spec would carry no TLS material and be
+			// rejected as plain TCP, breaking the documented env drop-in.
+			spec.TLSSystemRoots = true
+		}
+	case tlsEnabled:
+		// Like Docker CLI's --tls flag, any non-empty DOCKER_TLS value enables
+		// encrypted transport without server verification. DOCKER_TLS_VERIFY
+		// takes precedence above and enables verification when both are set.
 		spec.InsecureSkipTLSVerify = true
+	case !tlsVerify:
+		// DOCKER_CERT_PATH only locates TLS material; it does not enable TLS.
+		// With neither TLS signal present the Docker CLI uses plaintext TCP.
+		spec.InsecureAllowPlainTCP = true
 	}
 	// tlsVerify && certPath != "" → verified mTLS loaded from the cert files,
 	// no insecure flag needed.

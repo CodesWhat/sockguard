@@ -42,16 +42,46 @@ upstream:
 			wantSkipVerificationClaim: true,
 		},
 		{
-			name: "Docker environment fallback",
+			name: "Docker TLS environment fallback",
+			env: map[string]string{
+				"DOCKER_HOST": "tcp://daemon.internal:2376",
+				"DOCKER_TLS":  "1",
+			},
+			wantDeprecation:           true,
+			wantSource:                "DOCKER_HOST environment",
+			wantDeprecatedSetting:     "DOCKER_TLS without DOCKER_TLS_VERIFY",
+			wantReplacement:           "DOCKER_TLS_VERIFY=1",
+			wantUnverifiedTLS:         true,
+			wantSkipVerificationClaim: true,
+		},
+		{
+			name: "Docker TLS zero is still enabled and deprecated",
+			env: map[string]string{
+				"DOCKER_HOST": "tcp://daemon.internal:2376",
+				"DOCKER_TLS":  "0",
+			},
+			wantDeprecation:           true,
+			wantSource:                "DOCKER_HOST environment",
+			wantDeprecatedSetting:     "DOCKER_TLS without DOCKER_TLS_VERIFY",
+			wantReplacement:           "DOCKER_TLS_VERIFY=1",
+			wantUnverifiedTLS:         true,
+			wantSkipVerificationClaim: true,
+		},
+		{
+			name: "cert path alone remains plaintext and is not deprecated TLS",
 			env: map[string]string{
 				"DOCKER_HOST":      "tcp://daemon.internal:2376",
 				"DOCKER_CERT_PATH": "/certs",
 			},
-			wantDeprecation:           true,
-			wantSource:                "DOCKER_HOST environment",
-			wantDeprecatedSetting:     "DOCKER_CERT_PATH without DOCKER_TLS_VERIFY",
-			wantReplacement:           "DOCKER_TLS_VERIFY=1",
-			wantSkipVerificationClaim: true,
+			wantPlaintextClaim: true,
+		},
+		{
+			name: "non-empty Docker TLS verify wins over Docker TLS",
+			env: map[string]string{
+				"DOCKER_HOST":       "tcp://daemon.internal:2376",
+				"DOCKER_TLS":        "1",
+				"DOCKER_TLS_VERIFY": "0",
+			},
 		},
 		{
 			name: "both insecure flags",
@@ -180,7 +210,7 @@ upstream:
 					t.Fatalf("BuildEndpoint: %v", err)
 				}
 				if !endpoint.IsTLS() {
-					t.Error("endpoint with both insecure flags must use TLS")
+					t.Error("endpoint expected to use unverified TLS")
 				} else if !endpoint.TLSConfig.InsecureSkipVerify {
 					t.Error("endpoint with both insecure flags must skip TLS verification")
 				}

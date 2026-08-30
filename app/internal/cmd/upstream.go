@@ -73,9 +73,9 @@ func warnInsecureUpstreamSpecs(logger *slog.Logger, specs []upstream.EndpointSpe
 				"upstream.endpoints[].insecure_skip_tls_verify is deprecated and will be removed in v3.0.0; " +
 				"configure upstream.endpoints[].tls.ca_file to verify the daemon"
 			if source == "DOCKER_HOST environment" {
-				deprecatedSetting = "DOCKER_CERT_PATH without DOCKER_TLS_VERIFY"
+				deprecatedSetting = "DOCKER_TLS without DOCKER_TLS_VERIFY"
 				replacement = "DOCKER_TLS_VERIFY=1"
-				message = "upstream Docker endpoint skips TLS certificate verification because DOCKER_CERT_PATH is set without DOCKER_TLS_VERIFY; " +
+				message = "upstream Docker endpoint skips TLS certificate verification because DOCKER_TLS is set without DOCKER_TLS_VERIFY; " +
 					"this Docker environment fallback is deprecated and will be removed in v3.0.0; set DOCKER_TLS_VERIFY=1 to verify the daemon"
 			}
 			if unixEndpoint {

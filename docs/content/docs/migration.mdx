@@ -201,7 +201,7 @@ Replace the flag with the CA that issued the daemon certificate:
 -      insecure_skip_tls_verify: true
 ```
 
-The Docker environment fallback follows the same schedule. If `DOCKER_CERT_PATH` is set without `DOCKER_TLS_VERIFY`, add `DOCKER_TLS_VERIFY=1`; sockguard then verifies the daemon against `ca.pem` from that directory. A server-auth-only deployment without client certificates can set `DOCKER_TLS_VERIFY=1` with no `DOCKER_CERT_PATH` and use the host's system roots.
+The Docker environment fallback follows the same schedule. A non-empty `DOCKER_TLS` with `DOCKER_TLS_VERIFY` empty or unset selects unverified TLS; set `DOCKER_TLS_VERIFY=1` before v3.0.0. Any non-empty verification value, including `0` or `false`, enables verification and takes precedence over `DOCKER_TLS`, matching the Docker CLI's environment semantics. With `DOCKER_CERT_PATH` set, sockguard verifies against `ca.pem` from that directory and presents its `cert.pem` / `key.pem`; the path alone only locates TLS material and does not enable TLS. A server-auth-only deployment without client certificates can set `DOCKER_TLS_VERIFY=1` with no `DOCKER_CERT_PATH` and use the host's system roots.
 
 ## From Tecnativa/docker-socket-proxy
 
@@ -343,4 +343,4 @@ Key differences:
 - Sockguard auto-strips Docker API version prefixes (`/v1.45/…`) before matching, so patterns never account for them
 - Glob patterns (`*`, `**`) with auto-anchoring instead of regex
 - CetusGuard filters on method + path only; Sockguard adds request-body inspection, named per-client profiles, owner isolation, read-side visibility/redaction, rate limits, and metrics on top
-- Both tools support remote daemon upstreams; Sockguard uses `upstream.endpoints` (YAML) or the `DOCKER_HOST`/`DOCKER_TLS_VERIFY`/`DOCKER_CERT_PATH` drop-in — see [Remote Upstreams & Failover](/multi-host) for the full guide.
+- Both tools support remote daemon upstreams; Sockguard uses `upstream.endpoints` (YAML) or the `DOCKER_HOST`/`DOCKER_TLS`/`DOCKER_TLS_VERIFY`/`DOCKER_CERT_PATH` drop-in — see [Remote Upstreams & Failover](/multi-host) for the full guide.
