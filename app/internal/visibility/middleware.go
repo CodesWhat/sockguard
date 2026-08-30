@@ -219,6 +219,9 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 				handleLibpodVisibilityEventsRequest(next, w, r, &effectivePolicy)
 				return
 			}
+			if handleVisibilityImageExportRequest(logger, next, deps, w, r, normPath, &effectivePolicy) {
+				return
+			}
 			if needsVisibilityLabelFilter(normPath) {
 				handleVisibilityListRequest(logger, next, w, r, normPath, &effectivePolicy, hasSelectors, hasPatterns)
 				return
@@ -883,50 +886,64 @@ func requestVisibleWithPolicy(ctx context.Context, normPath string, policy *comp
 // resourceVisibleWithPolicy checks both label selectors and name/image pattern
 // axes for a single container or image resource.
 func resourceVisibleWithPolicy(ctx context.Context, deps visibilityDeps, kind dockerresource.Kind, identifier string, policy *compiledPolicy) (bool, error) {
+	visible, found, err := lookupResourceVisibilityWithPolicy(ctx, deps, kind, identifier, policy)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return true, nil
+	}
+	return visible, nil
+}
+
+// lookupResourceVisibilityWithPolicy reports visibility and existence
+// separately so callers can choose whether a missing resource is safe to pass
+// through or must fail closed.
+func lookupResourceVisibilityWithPolicy(ctx context.Context, deps visibilityDeps, kind dockerresource.Kind, identifier string, policy *compiledPolicy) (visible, found bool, err error) {
 	if len(policy.selectors) > 0 && policy.hasPatternAxes() && deps.inspectResourceDetails != nil {
 		details, found, err := deps.inspectResourceDetails(ctx, kind, identifier)
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		if !found {
-			return true, nil
+			return false, false, nil
 		}
 		if !matchesSelectors(details.labels, policy.selectors) {
-			return false, nil
+			return false, true, nil
 		}
-		return resourceMetaMatchesPatterns(details.meta, kind, policy), nil
+		return resourceMetaMatchesPatterns(details.meta, kind, policy), true, nil
 	}
 	// Check label selectors first (uses the cached inspect path).
 	if len(policy.selectors) > 0 {
 		labels, found, err := deps.inspectResource(ctx, kind, identifier)
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		if !found {
-			return true, nil
+			return false, false, nil
 		}
 		if !matchesSelectors(labels, policy.selectors) {
-			return false, nil
+			return false, true, nil
 		}
 	}
 	// Check pattern axes if configured.
 	if policy.hasPatternAxes() {
 		if deps.inspectResourceMeta == nil {
 			// No meta inspector configured (e.g. in tests without pattern deps).
-			return true, nil
+			return true, true, nil
 		}
 		meta, found, err := deps.inspectResourceMeta(ctx, kind, identifier)
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		if !found {
-			return true, nil
+			return false, false, nil
 		}
 		if !resourceMetaMatchesPatterns(meta, kind, policy) {
-			return false, nil
+			return false, true, nil
 		}
 	}
-	return true, nil
+	return true, true, nil
 }
 
 // resourceMetaMatchesPatterns checks a resource's name/image metadata against

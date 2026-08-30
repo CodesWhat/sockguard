@@ -175,13 +175,14 @@ func TestLibpodImageListAppliesVisibilityLabelFilter(t *testing.T) {
 func TestLibpodImageReadHidesHiddenImage(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name string
-		path string
-		want string // identifier the visibility inspect must resolve
+		name                string
+		path                string
+		want                string // identifier the visibility inspect must resolve
+		refuseBeforeInspect bool
 	}{
 		{name: "compat inspect", path: "/images/app/json", want: "app"},
 		{name: "compat history", path: "/images/app/history", want: "app"},
-		{name: "compat export", path: "/images/app/get", want: "app"},
+		{name: "compat export", path: "/images/app/get", refuseBeforeInspect: true},
 		{name: "libpod inspect", path: "/libpod/images/app/json", want: "app"},
 		{name: "libpod history", path: "/libpod/images/app/history", want: "app"},
 		{name: "libpod export", path: "/libpod/images/app/get", want: "app"},
@@ -209,11 +210,21 @@ func TestLibpodImageReadHidesHiddenImage(t *testing.T) {
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tt.path, nil))
 
-			if rec.Code != http.StatusNotFound {
-				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
+			wantStatus := http.StatusNotFound
+			if tt.refuseBeforeInspect {
+				wantStatus = http.StatusForbidden
+			}
+			if rec.Code != wantStatus {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, wantStatus, rec.Body.String())
 			}
 			if strings.Contains(rec.Body.String(), "s3cr3t") || strings.Contains(rec.Body.String(), "sha256:hidden") {
 				t.Fatalf("body = %s, want the hidden image's data absent", rec.Body.String())
+			}
+			if tt.refuseBeforeInspect {
+				if gotKind != "" || gotIdentifier != "" {
+					t.Fatalf("inspect = %s/%q, want none before refusing Docker-compatible export", gotKind, gotIdentifier)
+				}
+				return
 			}
 			if gotKind != dockerresource.KindImage || gotIdentifier != tt.want {
 				t.Fatalf("inspect = %s/%q, want %s/%q", gotKind, gotIdentifier, dockerresource.KindImage, tt.want)

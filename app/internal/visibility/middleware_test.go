@@ -154,20 +154,22 @@ func TestMiddlewareHidesContainerReadSubresources(t *testing.T) {
 	}
 }
 
-// TestMiddlewareHidesImageReadSubresources is the image-side counterpart:
-// history, single-image export, and attestation listing of a hidden image
-// must 404, not leak. Attestations (Engine API 1.53+) is the regression case:
-// before imageReadIdentifier recognized the suffix, this path fell through to
-// the unconditional "visible" default and reached upstream unfiltered.
-func TestMiddlewareHidesImageReadSubresources(t *testing.T) {
+// TestMiddlewareProtectsImageReadSubresources is the image-side counterpart.
+// Ordinary hidden-image reads return 404. Docker-compatible exports are
+// refused before lookup because their platform effects cannot be enumerated.
+func TestMiddlewareProtectsImageReadSubresources(t *testing.T) {
 	t.Parallel()
-	for _, path := range []string{
-		"/v1.53/images/secretimg/history",
-		"/v1.53/images/secretimg/get",
-		"/v1.53/images/registry.io/team/app/get",
-		"/v1.53/images/secretimg/attestations",
-	} {
-		t.Run(path, func(t *testing.T) {
+	tests := []struct {
+		path       string
+		wantStatus int
+	}{
+		{path: "/v1.53/images/secretimg/history", wantStatus: http.StatusNotFound},
+		{path: "/v1.53/images/secretimg/get", wantStatus: http.StatusForbidden},
+		{path: "/v1.53/images/registry.io/team/app/get", wantStatus: http.StatusForbidden},
+		{path: "/v1.53/images/secretimg/attestations", wantStatus: http.StatusNotFound},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
 			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 			nextCalled := false
 			handler := middlewareWithDeps(logger, Options{
@@ -181,15 +183,15 @@ func TestMiddlewareHidesImageReadSubresources(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			}))
 
-			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 
 			if nextCalled {
-				t.Fatalf("%s: hidden image sub-resource reached upstream", path)
+				t.Fatalf("%s: hidden image sub-resource reached upstream", tt.path)
 			}
-			if rec.Code != http.StatusNotFound {
-				t.Fatalf("%s: status = %d, want 404; body: %s", path, rec.Code, rec.Body.String())
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("%s: status = %d, want %d; body: %s", tt.path, rec.Code, tt.wantStatus, rec.Body.String())
 			}
 		})
 	}

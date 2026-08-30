@@ -2363,14 +2363,15 @@ func TestIdentifierHelpers(t *testing.T) {
 	}
 }
 
-func TestMiddlewareChecksKeywordNamedResourcesOutsideCollectionActions(t *testing.T) {
+func TestMiddlewareChecksOrRefusesKeywordNamedResourcesOutsideCollectionActions(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name       string
-		method     string
-		target     string
-		kind       dockerresource.Kind
-		identifier string
+		name                string
+		method              string
+		target              string
+		kind                dockerresource.Kind
+		identifier          string
+		refuseBeforeInspect bool
 	}{
 		{name: "container create action", method: http.MethodPost, target: "/containers/create/start", kind: dockerresource.KindContainer, identifier: "create"},
 		{name: "container json action", method: http.MethodPost, target: "/containers/json/start", kind: dockerresource.KindContainer, identifier: "json"},
@@ -2379,12 +2380,12 @@ func TestMiddlewareChecksKeywordNamedResourcesOutsideCollectionActions(t *testin
 		{name: "network prune inspect", method: http.MethodHead, target: "/networks/prune", kind: dockerresource.KindNetwork, identifier: "prune"},
 		{name: "volume create inspect", method: http.MethodGet, target: "/volumes/create", kind: dockerresource.KindVolume, identifier: "create"},
 		{name: "volume prune inspect", method: http.MethodHead, target: "/volumes/prune", kind: dockerresource.KindVolume, identifier: "prune"},
-		{name: "image json delete", method: http.MethodDelete, target: "/images/json", kind: dockerresource.KindImage, identifier: "json"},
-		{name: "image create delete", method: http.MethodDelete, target: "/images/create", kind: dockerresource.KindImage, identifier: "create"},
-		{name: "image search delete", method: http.MethodDelete, target: "/images/search", kind: dockerresource.KindImage, identifier: "search"},
-		{name: "image get delete", method: http.MethodDelete, target: "/images/get", kind: dockerresource.KindImage, identifier: "get"},
-		{name: "image load delete", method: http.MethodDelete, target: "/images/load", kind: dockerresource.KindImage, identifier: "load"},
-		{name: "image prune delete", method: http.MethodDelete, target: "/images/prune", kind: dockerresource.KindImage, identifier: "prune"},
+		{name: "image json delete", method: http.MethodDelete, target: "/images/json", refuseBeforeInspect: true},
+		{name: "image create delete", method: http.MethodDelete, target: "/images/create", refuseBeforeInspect: true},
+		{name: "image search delete", method: http.MethodDelete, target: "/images/search", refuseBeforeInspect: true},
+		{name: "image get delete", method: http.MethodDelete, target: "/images/get", refuseBeforeInspect: true},
+		{name: "image load delete", method: http.MethodDelete, target: "/images/load", refuseBeforeInspect: true},
+		{name: "image prune delete", method: http.MethodDelete, target: "/images/prune", refuseBeforeInspect: true},
 		{name: "service create inspect", method: http.MethodGet, target: "/services/create", kind: dockerresource.KindService, identifier: "create"},
 		{name: "secret create inspect", method: http.MethodHead, target: "/secrets/create", kind: dockerresource.KindSecret, identifier: "create"},
 		{name: "config create inspect", method: http.MethodGet, target: "/configs/create", kind: dockerresource.KindConfig, identifier: "create"},
@@ -2417,6 +2418,12 @@ func TestMiddlewareChecksKeywordNamedResourcesOutsideCollectionActions(t *testin
 			}
 			if rec.Code != http.StatusForbidden {
 				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			if tt.refuseBeforeInspect {
+				if gotKind != "" || gotIdentifier != "" {
+					t.Fatalf("inspect = %s/%q, want none before refusing image removal effects", gotKind, gotIdentifier)
+				}
+				return
 			}
 			if gotKind != tt.kind || gotIdentifier != tt.identifier {
 				t.Fatalf("inspect = %s/%q, want %s/%q", gotKind, gotIdentifier, tt.kind, tt.identifier)

@@ -297,6 +297,9 @@ func allowPathOwnershipRequest(
 	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
 	inspectExec func(context.Context, string) (string, bool, error),
 ) (ownershipVerdict, string, error) {
+	if reason, deny := imageEffectDenial(method, normPath); deny {
+		return verdictDeny, reason, nil
+	}
 	if identifier, ok := containerIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindContainer, identifier, opts, false)
 	}

@@ -336,6 +336,12 @@ func TestImageBatchOwnershipRejectsEffectExpandingLibpodRemoveOptions(t *testing
 			wantReason: "manifest-list image batch removal",
 		},
 		{
+			name:       "manifest lookup Unicode case variant",
+			target:     "/libpod/images/remove?images=mine%3A1&noprune=true&lookupManifest=false&lookupManife%C5%BFt=true",
+			wantStatus: http.StatusForbidden,
+			wantReason: "manifest-list image batch removal",
+		},
+		{
 			name:       "malformed case variant scalar",
 			target:     "/libpod/images/remove?images=mine%3A1&noprune=true&Force=invalid",
 			wantStatus: http.StatusBadRequest,

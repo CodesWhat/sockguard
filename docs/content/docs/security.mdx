@@ -227,15 +227,18 @@ later member fails. In `enforce` mode, Sockguard resolves every repeated
 `references` value on `GET /libpod/images/export` and every repeated `images`
 value on `DELETE /libpod/images/remove` before the daemon sees the action.
 Every member must carry the caller's owner label; `allow_unowned_images` does
-not admit an unlabeled batch member. A foreign, unlabeled, missing, or
-lookup-failed member stops the whole request, and the original query is
-forwarded byte-for-byte only after all checks pass. Values are percent-decoded
-once and repeated keys form the list. Commas remain part of one value because
-Podman's string-slice decoder does not split them. Podman's `References` and
-`Images` key spellings are case-insensitive; Sockguard combines every casing in
-arrival order, deduplicates decoded identifiers for ownership lookup, and
-refuses more than 256 selected values before deduplication so one action cannot
-amplify into unbounded daemon inspect work.
+not admit an unlabeled batch member. A visibility-only policy uses the same
+bounded selector decoder for native export and requires every member to satisfy
+the active label and name/image-pattern axes. A foreign, unlabeled, missing,
+hidden, or lookup-failed member stops the whole request, and the original query
+is forwarded byte-for-byte only after all checks pass. Visibility-only export
+treats a missing member as hidden rather than relying on Podman's later lookup.
+Values are percent-decoded once and repeated keys form the list. Commas remain
+part of one value because Podman's string-slice decoder does not split them.
+Podman's `References` and `Images` key spellings are matched with Unicode case
+folding. Sockguard combines every spelling in arrival order, deduplicates exact
+decoded identifiers for lookup, and refuses more than 256 selected values before
+deduplication so one action cannot amplify into unbounded daemon inspect work.
 
 Native batch removal is admitted only when its complete effect remains inside
 that named-image set. An empty `images` list enters Podman's collection-removal
@@ -263,6 +266,24 @@ requires exact lowercase `names`; applying the fold there is conservative and
 cannot admit an export dockerd would otherwise reject. An omitted `names` list
 is still forwarded to the daemon's own no-reference error.
 
+The same refusal covers `GET /images/{name}/get`. Moby registers the batch and
+per-image spellings on the same handler, so moving the selector into the path
+does not narrow the exported platforms. Both Docker-compatible spellings are
+also refused when a visibility policy is active, before an image lookup or
+upstream request.
+
+Per-image removal is not a safe substitute for the bounded native batch.
+Docker-compatible `DELETE /images/{name}` can prune uninspected ancestor images
+by default; on the containerd image store the selected name can represent a
+whole index, and the `platforms` query can retarget deletion to configurations
+the ordinary inspect did not authorize. Native
+`DELETE /libpod/images/{name}` has no `noprune` parameter at all, so it always
+permits recursive dangling-parent cleanup, while `force` can remove containers
+and `lookupManifest` retargets the operation to a manifest object. Ownership
+therefore refuses both per-image removal routes before lookup. Use native batch
+removal with explicit `noprune=true`, `force=false`, and
+`lookupManifest=false` when owner-scoped image removal is required.
+
 These native checks are preflights, not a daemon transaction. An image tag can
 still be rebound between inspect and action, and a later daemon-side failure
 can still leave a multi-image removal partially applied. The ownership gate
@@ -278,6 +299,7 @@ Together with request-side visibility and exfiltration guardrails, the read-side
 - Inject label visibility selectors into `GET /services`, `GET /tasks`, `GET /secrets`, `GET /configs`, and `GET /nodes`
 - Filter `GET /system/df` items on the response, since that endpoint takes no `filters` parameter; selectors apply to all three sections and name/image patterns to containers and images, matching `GET /containers/json` and `GET /images/json`
 - Refuse `GET /libpod/system/df` with a `403`, since Podman's native disk-usage report carries no labels for any policy axis to read (see Layer 6 above)
+- Preflight every selected image on `GET /libpod/images/export`, and refuse both Docker-compatible image-export spellings because their platform effects cannot be enumerated from one inspect
 - Return `404` for hidden targets on inspect/log-style reads such as `GET /containers/*/json`, `GET /images/*/json`, `GET /networks/*`, `GET /volumes/*`, `GET /exec/*/json`, `GET /services/*`, `GET /services/*/logs`, `GET /tasks/*`, `GET /tasks/*/logs`, `GET /secrets/*`, `GET /configs/*`, `GET /nodes/*`, and `GET /swarm`
 - Fail startup unless raw archive/export and stream-style reads are explicitly acknowledged via `insecure_allow_read_exfiltration: true`
 - Redact `Config.Env` on `GET /containers/*/json`

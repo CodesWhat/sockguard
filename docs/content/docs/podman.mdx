@@ -143,34 +143,46 @@ same way they cover Docker-compat:
   registers on the same `InspectNetwork` handler as `/libpod/networks/{id}/json`.
   `POST /libpod/images/scp/{name}` copies an image to another host, so it is
   owner-checked against `{name}` like a push.
-- Query-selected native image batches are owner-checked too. Sockguard decodes
-  every repeated `references` value on `GET /libpod/images/export` and every
-  repeated `images` value on `DELETE /libpod/images/remove`, then resolves all
-  of them before forwarding the original request. Each image must carry the
-  caller's owner label even when `allow_unowned_images` permits unlabeled
-  images on ordinary per-image requests. Percent-encoded slashes, tags, and
-  digests are decoded once. A comma is not a list separator in Podman's real
-  handlers, so clients must repeat the query key for multiple images. Podman's
-  case-insensitive decoder also accepts `References` and `Images`; Sockguard
-  combines every casing in arrival order before checking, deduplicates decoded
+- Query-selected native image batches are checked too. Sockguard decodes every
+  repeated `references` value on `GET /libpod/images/export` and every repeated
+  `images` value on `DELETE /libpod/images/remove`, then resolves all of them
+  before forwarding the original request. Ownership requires every member to
+  carry the caller's owner label even when `allow_unowned_images` permits
+  unlabeled images on ordinary per-image requests. A visibility-only policy
+  applies its label and name/image-pattern axes to every native export member.
+  Percent-encoded slashes, tags, and digests are decoded once. A comma is not a
+  list separator in Podman's real handlers, so clients must repeat the query
+  key for multiple images. Podman's case-insensitive decoder also accepts
+  `References`, `Images`, and Unicode-equivalent spellings; Sockguard combines
+  every spelling in arrival order before checking, deduplicates exact decoded
   identifiers for lookup, and refuses more than 256 selected values before
-  deduplication. Native removal also requires `noprune=true`; `force=true` and
-  `lookupManifest=true` are refused because they can act on containers, parent
-  images, or a manifest object outside the named-image preflight. Different
-  case spellings and repetitions are evaluated conservatively using Podman's
-  scalar decoder semantics. A foreign, unlabeled, missing, lookup-failed, or
-  effect-expanding member prevents the daemon from seeing any part of the
-  batch.
-- Docker-compatible `GET /images/get?names=…` is refused when ownership is
-  active and at least one name is supplied. Moby's containerd image store can
-  export a full multi-platform index for one tag, digest, or ID, and a requested
-  platform can differ from the default platform returned by an ordinary image
-  inspect. Sockguard cannot prove every exported platform's owner through that
+  deduplication. Native batch removal also requires `noprune=true`;
+  `force=true` and `lookupManifest=true` are refused because they can act on
+  containers, parent images, or a manifest object outside the named-image
+  preflight. Different case spellings and repetitions are evaluated
+  conservatively using Podman's scalar decoder semantics. A foreign, unlabeled,
+  hidden, missing, lookup-failed, or effect-expanding member prevents the daemon
+  from seeing any part of the batch. Visibility-only export also treats a
+  missing member as hidden instead of passing it through to Podman.
+- Docker-compatible image export is refused when ownership or visibility is
+  active and a name is supplied, under both `GET /images/get?names=…` and
+  `GET /images/{name}/get`. Moby registers both on the same handler, and its
+  containerd image store can export a full multi-platform index for one tag,
+  digest, or ID. A requested platform can also differ from the default platform
+  returned by an ordinary image inspect. Sockguard cannot prove every exported
+  platform's owner through that
   inspect shape, so it fails closed instead of treating the selector as one
   image. Podman's compatibility decoder also accepts case-folded spellings such
   as `Names`, so Sockguard folds that key; this is only more conservative on
   dockerd, which requires exact lowercase `names`. An omitted `names` list is
   still forwarded to the daemon's own no-reference error.
+- Per-image deletion is refused under ownership on both API families.
+  Docker-compatible `DELETE /images/{name}` can prune uninspected parents and,
+  on Moby's containerd store, remove an entire index or caller-selected
+  platforms. Native `DELETE /libpod/images/{name}` has no `noprune` control,
+  always permits recursive dangling-parent cleanup, and can use `force` or
+  `lookupManifest` to expand or retarget the action. Native batch removal with
+  explicit safe controls is the supported owner-scoped form.
 - `GET /libpod/events` is owner-filtered but is only partly expressible as a
   visibility policy, and that asymmetry is deliberate. Podman evaluates
   several values under one event filter key disjunctively, so a `label=` value
@@ -370,11 +382,16 @@ land):
   shape. With at least one image, Sockguard still requires `noprune=true` and
   refuses `force=true` or `lookupManifest=true`; those controls can remove
   unnamed parents, containers, or a manifest object that the named-image
-  preflight did not authorize. Podman's native `GET /libpod/images/export`
-  resolves a name-only reference to one image and remains supported.
-  Docker-compatible `GET /images/get` cannot get the same treatment. One tag,
-  digest, or ID may be a multi-platform index in Moby's containerd image store,
-  so every named compatibility export is refused while ownership is active.
+  preflight did not authorize. Podman's native per-image and batch exports
+  resolve their named references individually and remain supported after
+  ownership or visibility checks. Docker-compatible export cannot get the same
+  treatment. Both export routes reach the same Moby handler, and one tag,
+  digest, or ID may be a multi-platform index in its containerd image store, so
+  every named compatibility export is refused while either isolation layer is
+  active. Per-image deletion is also unavailable under ownership because
+  neither API family exposes a form whose recursive and platform/manifest
+  effects can all be authorized. Use native batch removal with the safe
+  controls above.
   These checks do not make the daemon action transactional. A tag can be
   rebound after its preflight inspect, and Podman can still partially apply an
   authorized multi-image delete if a later daemon-side operation fails.
