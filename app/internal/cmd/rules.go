@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/codeswhat/sockguard/app/internal/config"
@@ -287,11 +288,11 @@ func splitMethods(methods string) []string {
 }
 
 func validateBodyBlindWriteRules(cfg *config.Config, compiled []*filter.CompiledRule) error {
-	return validateBodyBlindWriteRulesForPolicy("", cfg.InsecureAllowBodyBlindWrites, cfg.RequestBody, compiled)
+	return validateBodyBlindWriteRulesForPolicy("", cfg.InsecureAllowBodyBlindWrites, cfg.RequestBody, compiled, cfg.Rules)
 }
 
 func validateReadExfiltrationRules(cfg *config.Config, compiled []*filter.CompiledRule) error {
-	return validateReadExfiltrationRulesForPolicy("", cfg.InsecureAllowReadExfiltration, compiled)
+	return validateReadExfiltrationRulesForPolicy("", cfg.InsecureAllowReadExfiltration, compiled, cfg.Rules)
 }
 
 func validateBuildkitTunnelRules(cfg *config.Config, compiled []*filter.CompiledRule) error {
@@ -299,12 +300,12 @@ func validateBuildkitTunnelRules(cfg *config.Config, compiled []*filter.Compiled
 	return validateBuildkitTunnelRulesForPolicy("", cfg.InsecureAcceptOpaqueBuildkitTunnels, cfg.RequestBody.Buildkit.ToPolicy(cfg.RequestBody.Build).Configured(), compiled)
 }
 
-func validateBodyBlindWriteRulesForPolicy(scope string, insecure bool, requestBody config.RequestBodyConfig, compiled []*filter.CompiledRule) error {
+func validateBodyBlindWriteRulesForPolicy(scope string, insecure bool, requestBody config.RequestBodyConfig, compiled []*filter.CompiledRule, configuredRules []config.RuleConfig) error {
 	if insecure {
 		return nil
 	}
 
-	exposed := allowedBodySensitiveWriteEndpoints(requestBody, compiled)
+	exposed := allowedBodySensitiveWriteEndpoints(requestBody, compiled, configuredRules)
 	if len(exposed) == 0 {
 		return nil
 	}
@@ -323,12 +324,12 @@ func validateBodyBlindWriteRulesForPolicy(scope string, insecure bool, requestBo
 	)
 }
 
-func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, compiled []*filter.CompiledRule) error {
+func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, compiled []*filter.CompiledRule, configuredRules []config.RuleConfig) error {
 	if insecure {
 		return nil
 	}
 
-	exposed := allowedSensitiveExfilEndpoints(compiled)
+	exposed := allowedSensitiveExfilEndpoints(compiled, configuredRules)
 	if len(exposed) == 0 {
 		return nil
 	}
@@ -426,9 +427,10 @@ func allowedBuildkitTunnelEndpoints(compiled []*filter.CompiledRule) []string {
 	return allowed
 }
 
-func allowedBodySensitiveWriteEndpoints(requestBody config.RequestBodyConfig, compiled []*filter.CompiledRule) []string {
-	allowed := make([]string, 0, len(bodySensitiveWriteEndpoints))
-	for _, endpoint := range bodySensitiveWriteEndpoints {
+func allowedBodySensitiveWriteEndpoints(requestBody config.RequestBodyConfig, compiled []*filter.CompiledRule, configuredRules []config.RuleConfig) []string {
+	endpoints := appendExactLibpodImageScpBodyEndpoints(bodySensitiveWriteEndpoints, configuredRules)
+	allowed := make([]string, 0, len(endpoints))
+	for _, endpoint := range endpoints {
 		if bodyInspectionConfiguredForEndpoint(requestBody, endpoint) {
 			continue
 		}
@@ -442,9 +444,10 @@ func allowedBodySensitiveWriteEndpoints(requestBody config.RequestBodyConfig, co
 	return allowed
 }
 
-func allowedSensitiveExfilEndpoints(compiled []*filter.CompiledRule) []string {
-	allowed := make([]string, 0, len(sensitiveExfilEndpoints))
-	for _, endpoint := range sensitiveExfilEndpoints {
+func allowedSensitiveExfilEndpoints(compiled []*filter.CompiledRule, configuredRules []config.RuleConfig) []string {
+	endpoints := appendExactLibpodImageScpExfilEndpoints(sensitiveExfilEndpoints, configuredRules)
+	allowed := make([]string, 0, len(endpoints))
+	for _, endpoint := range endpoints {
 		req := &http.Request{Method: endpoint.method, URL: &url.URL{Path: endpoint.path}}
 		action, _, _ := filter.Evaluate(compiled, req)
 		if action != filter.ActionAllow {
@@ -453,6 +456,44 @@ func allowedSensitiveExfilEndpoints(compiled []*filter.CompiledRule) []string {
 		allowed = append(allowed, endpoint.method+" "+endpoint.path)
 	}
 	return allowed
+}
+
+func appendExactLibpodImageScpBodyEndpoints(base []bodySensitiveWriteEndpoint, rules []config.RuleConfig) []bodySensitiveWriteEndpoint {
+	paths := exactLibpodImageScpPaths(rules)
+	endpoints := make([]bodySensitiveWriteEndpoint, 0, len(base)+len(paths))
+	endpoints = append(endpoints, base...)
+	for _, path := range paths {
+		endpoints = append(endpoints, bodySensitiveWriteEndpoint{method: http.MethodPost, path: path})
+	}
+	return endpoints
+}
+
+func appendExactLibpodImageScpExfilEndpoints(base []sensitiveExfilEndpoint, rules []config.RuleConfig) []sensitiveExfilEndpoint {
+	paths := exactLibpodImageScpPaths(rules)
+	endpoints := make([]sensitiveExfilEndpoint, 0, len(base)+len(paths))
+	endpoints = append(endpoints, base...)
+	for _, path := range paths {
+		endpoints = append(endpoints, sensitiveExfilEndpoint{method: http.MethodPost, path: path})
+	}
+	return endpoints
+}
+
+// The static catalog probes one representative dynamic path, which catches
+// wildcard rules but cannot catch an allow rule naming a different SCP image
+// exactly. Add every literal SCP path from the source rules as another probe.
+// Patterns containing * remain covered by the representative catalog entry.
+func exactLibpodImageScpPaths(rules []config.RuleConfig) []string {
+	const prefix = "/libpod/images/scp/"
+	const representative = prefix + "sockguard-test"
+	paths := make([]string, 0)
+	for _, rule := range rules {
+		path := strings.TrimSpace(rule.Match.Path)
+		if path == representative || strings.Contains(path, "*") || !strings.HasPrefix(path, prefix) || len(path) == len(prefix) || slices.Contains(paths, path) {
+			continue
+		}
+		paths = append(paths, path)
+	}
+	return paths
 }
 
 func bodyInspectionConfiguredForEndpoint(requestBody config.RequestBodyConfig, endpoint bodySensitiveWriteEndpoint) bool {
@@ -514,10 +555,10 @@ func compileClientProfiles(cfg *config.Config) (map[string]filter.Policy, error)
 		if err != nil {
 			return nil, fmt.Errorf("client profile %q: %w", profile.Name, err)
 		}
-		if err := validateBodyBlindWriteRulesForPolicy(profile.Name, cfg.InsecureAllowBodyBlindWrites, profile.RequestBody, compiledRules); err != nil {
+		if err := validateBodyBlindWriteRulesForPolicy(profile.Name, cfg.InsecureAllowBodyBlindWrites, profile.RequestBody, compiledRules, profile.Rules); err != nil {
 			return nil, err
 		}
-		if err := validateReadExfiltrationRulesForPolicy(profile.Name, cfg.InsecureAllowReadExfiltration, compiledRules); err != nil {
+		if err := validateReadExfiltrationRulesForPolicy(profile.Name, cfg.InsecureAllowReadExfiltration, compiledRules, profile.Rules); err != nil {
 			return nil, err
 		}
 		//nolint:staticcheck // SA1019: deprecated flag still needs validating for as long as it stays functional

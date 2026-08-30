@@ -140,6 +140,33 @@ func TestValidateAndCompileRulesRejectsLibpodImageScpTwice(t *testing.T) {
 	}
 }
 
+func TestValidateAndCompileRulesRejectsExactLibpodImageScpTwice(t *testing.T) {
+	const exactPath = "/libpod/images/scp/alpine"
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: exactPath}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	err := errorFromValidate(t, &cfg)
+	if !strings.Contains(err.Error(), "POST "+exactPath) ||
+		!strings.Contains(err.Error(), "insecure_allow_body_blind_writes=true") {
+		t.Fatalf("error = %q, want the exact path to demand the uninspected-write acknowledgment", err)
+	}
+
+	cfg.InsecureAllowBodyBlindWrites = true
+	err = errorFromValidate(t, &cfg)
+	if !strings.Contains(err.Error(), "POST "+exactPath) ||
+		!strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
+		t.Fatalf("error = %q, want the exact path to demand the exfiltration acknowledgment", err)
+	}
+
+	cfg.InsecureAllowReadExfiltration = true
+	if _, err := validateAndCompileRules(&cfg); err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v once both are acknowledged, want nil", err)
+	}
+}
+
 // TestServePolicyConfigWiresImageLoadBlindWriteAck pins the wiring half of
 // the local-image-load guard. insecure_allow_body_blind_writes is a
 // top-level flag, not part of a request_body block, so it reaches

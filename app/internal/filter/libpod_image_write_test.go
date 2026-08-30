@@ -1,8 +1,10 @@
 package filter
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -110,6 +112,174 @@ func TestLibpodImageLoadSharesTheDockerCompatInspector(t *testing.T) {
 	}
 }
 
+func TestLibpodImageLoadEnforcesOCIArchiveRegistryPolicy(t *testing.T) {
+	tests := []struct {
+		name        string
+		opts        ImageLoadOptions
+		reference   string
+		gzip        bool
+		wantDeny    bool
+		wantReasonC string
+	}{
+		{
+			name:        "denies an OCI ref-name outside the allowlist",
+			opts:        libpodImageLoadAllowlist(),
+			reference:   "evil.example.com/acme/app:latest",
+			wantDeny:    true,
+			wantReasonC: "evil.example.com",
+		},
+		{
+			name:      "allows an OCI ref-name inside the allowlist",
+			opts:      libpodImageLoadAllowlist(),
+			reference: "ghcr.io/acme/app:v1.2.3",
+		},
+		{
+			name:      "allows a gzipped OCI archive inside the allowlist",
+			opts:      libpodImageLoadAllowlist(),
+			reference: "ghcr.io/acme/app:gzip",
+			gzip:      true,
+		},
+		{
+			name:        "allow_untagged never bypasses a tagged OCI archive",
+			opts:        ImageLoadOptions{AllowedRegistries: []string{"ghcr.io"}, AllowUntagged: true},
+			reference:   "evil.example.com/acme/app:latest",
+			wantDeny:    true,
+			wantReasonC: "evil.example.com",
+		},
+		{
+			name:        "a bare OCI ref-name is the localhost name Podman loads",
+			opts:        ImageLoadOptions{AllowOfficial: true, AllowUntagged: true},
+			reference:   "busybox:latest",
+			wantDeny:    true,
+			wantReasonC: "localhost",
+		},
+		{
+			name:      "a bare OCI ref-name is allowed when localhost is allowlisted",
+			opts:      ImageLoadOptions{AllowedRegistries: []string{"localhost"}},
+			reference: "busybox:latest",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := mustOCIImageLoadTar(t, []string{tt.reference})
+			if tt.gzip {
+				payload = mustGzip(t, payload)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/libpod/images/load", bytes.NewReader(payload))
+
+			reason, err := newImageLoadPolicy(tt.opts).inspect(nil, req, NormalizePath(req.URL.Path))
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if tt.wantDeny {
+				if !strings.Contains(reason, tt.wantReasonC) {
+					t.Fatalf("reason = %q, want it to mention %q", reason, tt.wantReasonC)
+				}
+				return
+			}
+			if reason != "" {
+				t.Fatalf("inspect() denied with %q, want allow", reason)
+			}
+			forwarded, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatalf("read forwarded body: %v", err)
+			}
+			if !bytes.Equal(forwarded, payload) {
+				t.Fatal("forwarded OCI archive body changed")
+			}
+			if err := req.Body.Close(); err != nil {
+				t.Fatalf("close forwarded body: %v", err)
+			}
+			if req.ContentLength != int64(len(payload)) {
+				t.Fatalf("content length = %d, want %d", req.ContentLength, len(payload))
+			}
+		})
+	}
+}
+
+func TestLibpodImageLoadUsesPodmanNamesForDockerArchiveTags(t *testing.T) {
+	payload := mustImageLoadTar(t, `[{"RepoTags":["busybox:latest"]}]`)
+	tests := []struct {
+		name        string
+		path        string
+		opts        ImageLoadOptions
+		wantDeny    bool
+		wantReasonC string
+	}{
+		{
+			name:        "native load does not mistake Podman localhost for Docker Hub official",
+			path:        "/libpod/images/load",
+			opts:        ImageLoadOptions{AllowOfficial: true},
+			wantDeny:    true,
+			wantReasonC: "localhost",
+		},
+		{
+			name: "Docker-compat load retains Docker Hub official semantics",
+			path: "/images/load",
+			opts: ImageLoadOptions{AllowOfficial: true},
+		},
+		{
+			name: "native load allows the Podman name when localhost is allowlisted",
+			path: "/libpod/images/load",
+			opts: ImageLoadOptions{AllowedRegistries: []string{"localhost"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, tt.path, bytes.NewReader(payload))
+			reason, err := newImageLoadPolicy(tt.opts).inspect(nil, req, NormalizePath(req.URL.Path))
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if tt.wantDeny {
+				if !strings.Contains(reason, tt.wantReasonC) {
+					t.Fatalf("reason = %q, want it to mention %q", reason, tt.wantReasonC)
+				}
+				return
+			}
+			if reason != "" {
+				t.Fatalf("reason = %q, want allow", reason)
+			}
+			if err := req.Body.Close(); err != nil {
+				t.Fatalf("close forwarded body: %v", err)
+			}
+		})
+	}
+}
+
+func TestLibpodImageLoadFailsClosedOnAmbiguousOrMalformedOCIArchive(t *testing.T) {
+	t.Run("OCI and Docker control files are ambiguous", func(t *testing.T) {
+		payload := mustOCIImageLoadTarWithDockerManifest(t, []string{"ghcr.io/acme/oci:v1"}, `[{"RepoTags":["ghcr.io/acme/docker:v1"]}]`)
+		req := httptest.NewRequest(http.MethodPost, "/libpod/images/load", bytes.NewReader(payload))
+
+		reason, err := newImageLoadPolicy(libpodImageLoadAllowlist()).inspect(nil, req, NormalizePath(req.URL.Path))
+		if reason != "" {
+			t.Fatalf("reason = %q, want an inspection error", reason)
+		}
+		if err == nil || !strings.Contains(err.Error(), "ambiguous") {
+			t.Fatalf("inspect() error = %v, want ambiguous archive error", err)
+		}
+	})
+
+	t.Run("malformed OCI index cannot become untagged", func(t *testing.T) {
+		payload := mustContainerArchiveTar(t,
+			containerArchiveTestEntry{name: "oci-layout", body: `{"imageLayoutVersion":"1.0.0"}`},
+			containerArchiveTestEntry{name: "index.json", body: `{`},
+		)
+		req := httptest.NewRequest(http.MethodPost, "/libpod/images/load", bytes.NewReader(payload))
+
+		reason, err := newImageLoadPolicy(ImageLoadOptions{AllowUntagged: true}).inspect(nil, req, NormalizePath(req.URL.Path))
+		if reason != "" {
+			t.Fatalf("reason = %q, want an inspection error", reason)
+		}
+		if err == nil || !strings.Contains(err.Error(), "index.json") {
+			t.Fatalf("inspect() error = %v, want OCI index error", err)
+		}
+	})
+}
+
 // TestLibpodLocalImageLoadRequiresBlindWriteAck pins the load half of the
 // "local API" pair. POST /libpod/local/images/load never sends the archive:
 // it names one by absolute path on the daemon host in a required `path`
@@ -177,9 +347,9 @@ func TestLibpodLocalImageLoadRequiresBlindWriteAck(t *testing.T) {
 // Verified against Podman v5.8.1's pkg/api/handlers/libpod/images.go
 // ImagesImport: every request to the path is an import, taking the tarball
 // from a caller-supplied `URL` when one is present and from the request body
-// otherwise, so the flag alone decides and no query spelling can steer the
-// verdict. The URL cases exist to pin that the denial names the source, not
-// that the source changes the answer.
+// otherwise. The flag gates both forms; allowed body imports additionally go
+// through the bounded spool. The URL cases also pin the source named by a
+// denial.
 func TestLibpodImageImportInspect(t *testing.T) {
 	const path = "/libpod/images/import"
 
@@ -214,10 +384,10 @@ func TestLibpodImageImportInspect(t *testing.T) {
 			wantReasonC: "http://evil.example.com/x.tar",
 		},
 		{
-			// Podman's scalar decode takes the LAST value of a repeated key.
+			// Podman's scalar decode takes the LAST value of one repeated key.
 			name:        "names the last value of a repeated url the way Podman reads it",
 			opts:        ImagePullOptions{},
-			rawQuery:    "url=http%3A%2F%2Ffirst.example.com%2Fx.tar&URL=http%3A%2F%2Flast.example.com%2Fx.tar",
+			rawQuery:    "URL=http%3A%2F%2Ffirst.example.com%2Fx.tar&URL=http%3A%2F%2Flast.example.com%2Fx.tar",
 			wantDeny:    true,
 			wantReasonC: "http://last.example.com/x.tar",
 		},
@@ -276,6 +446,152 @@ func TestLibpodImageImportInspect(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLibpodImageImportBoundsBodyButNotURLImports(t *testing.T) {
+	const maxImportBodyBytes = int64(512 << 20)
+
+	t.Run("oversized body import returns 413", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/libpod/images/import", nil)
+		req.Body = &readErrorReadCloser{readErr: io.ErrUnexpectedEOF}
+		req.ContentLength = maxImportBodyBytes + 1
+
+		reason, err := newImagePullPolicy(ImagePullOptions{AllowImports: true}).inspectLibpodImport(nil, req, NormalizePath(req.URL.Path))
+		if reason != "" {
+			t.Fatalf("reason = %q, want request rejection", reason)
+		}
+		rejection, ok := requestRejectionFromError(err)
+		if !ok {
+			t.Fatalf("inspectLibpodImport() error = %v, want request rejection", err)
+		}
+		if rejection.status != http.StatusRequestEntityTooLarge {
+			t.Fatalf("status = %d, want %d", rejection.status, http.StatusRequestEntityTooLarge)
+		}
+		if !strings.Contains(rejection.reason, "request body exceeds") {
+			t.Fatalf("reason = %q, want deterministic body-size denial", rejection.reason)
+		}
+	})
+
+	t.Run("small body import is replayed unchanged", func(t *testing.T) {
+		payload := []byte("rootfs archive bytes")
+		req := httptest.NewRequest(http.MethodPost, "/libpod/images/import", bytes.NewReader(payload))
+
+		reason, err := newImagePullPolicy(ImagePullOptions{AllowImports: true}).inspectLibpodImport(nil, req, NormalizePath(req.URL.Path))
+		if err != nil || reason != "" {
+			t.Fatalf("inspectLibpodImport() = (%q, %v), want allow", reason, err)
+		}
+		forwarded, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("read forwarded body: %v", err)
+		}
+		if !bytes.Equal(forwarded, payload) {
+			t.Fatalf("forwarded body = %q, want %q", forwarded, payload)
+		}
+		if err := req.Body.Close(); err != nil {
+			t.Fatalf("close forwarded body: %v", err)
+		}
+		if req.ContentLength != int64(len(payload)) {
+			t.Fatalf("content length = %d, want %d", req.ContentLength, len(payload))
+		}
+	})
+
+	t.Run("empty body import is forwarded as an empty readable body", func(t *testing.T) {
+		original := &trackingReadCloser{reader: bytes.NewReader(nil)}
+		req := httptest.NewRequest(http.MethodPost, "/libpod/images/import", nil)
+		req.Body = original
+
+		reason, err := newImagePullPolicy(ImagePullOptions{AllowImports: true}).inspectLibpodImport(nil, req, NormalizePath(req.URL.Path))
+		if err != nil || reason != "" {
+			t.Fatalf("inspectLibpodImport() = (%q, %v), want allow", reason, err)
+		}
+		if !original.closed {
+			t.Fatal("original empty body was not closed")
+		}
+		if req.Body == original {
+			t.Fatal("forwarded request kept the closed original body")
+		}
+		forwarded, err := io.ReadAll(req.Body)
+		if err != nil || len(forwarded) != 0 {
+			t.Fatalf("read forwarded body = (%q, %v), want empty", forwarded, err)
+		}
+	})
+
+	t.Run("URL import retains the coarse allow_imports gate without a body cap", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/libpod/images/import?URL=https%3A%2F%2Fexample.com%2Frootfs.tar", nil)
+		req.Body = &readErrorReadCloser{readErr: io.ErrUnexpectedEOF}
+		req.ContentLength = maxImportBodyBytes + 1
+
+		reason, err := newImagePullPolicy(ImagePullOptions{AllowImports: true}).inspectLibpodImport(nil, req, NormalizePath(req.URL.Path))
+		if err != nil || reason != "" {
+			t.Fatalf("inspectLibpodImport() = (%q, %v), want URL import allowed without reading the body", reason, err)
+		}
+	})
+
+	t.Run("a nonempty whitespace URL remains the URL form Podman selects", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/libpod/images/import?URL=%20", nil)
+		req.Body = &readErrorReadCloser{readErr: io.ErrUnexpectedEOF}
+		req.ContentLength = maxImportBodyBytes + 1
+
+		reason, err := newImagePullPolicy(ImagePullOptions{AllowImports: true}).inspectLibpodImport(nil, req, NormalizePath(req.URL.Path))
+		if err != nil || reason != "" {
+			t.Fatalf("inspectLibpodImport() = (%q, %v), want Podman's nonempty URL form", reason, err)
+		}
+	})
+
+	t.Run("the last repeated URL value decides whether Podman reads the body", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/libpod/images/import?URL=https%3A%2F%2Fexample.com%2Frootfs.tar&URL=", nil)
+		req.Body = &readErrorReadCloser{readErr: io.ErrUnexpectedEOF}
+		req.ContentLength = maxImportBodyBytes + 1
+
+		_, err := newImagePullPolicy(ImagePullOptions{AllowImports: true}).inspectLibpodImport(nil, req, NormalizePath(req.URL.Path))
+		rejection, ok := requestRejectionFromError(err)
+		if !ok || rejection.status != http.StatusRequestEntityTooLarge {
+			t.Fatalf("inspectLibpodImport() error = %v, want 413 for effective body import", err)
+		}
+	})
+}
+
+func mustOCIImageLoadTar(t *testing.T, references []string) []byte {
+	t.Helper()
+
+	return mustOCIImageLoadTarWithDockerManifest(t, references, "")
+}
+
+func mustOCIImageLoadTarWithDockerManifest(t *testing.T, references []string, dockerManifest string) []byte {
+	t.Helper()
+
+	config := []byte(`{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]},"config":{}}`)
+	configDigest := sha256.Sum256(config)
+	manifest := []byte(fmt.Sprintf(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:%x","size":%d},"layers":[]}`, configDigest, len(config)))
+	manifestDigest := sha256.Sum256(manifest)
+
+	descriptors := make([]map[string]any, 0, len(references))
+	for _, reference := range references {
+		descriptor := map[string]any{
+			"mediaType": "application/vnd.oci.image.manifest.v1+json",
+			"digest":    fmt.Sprintf("sha256:%x", manifestDigest),
+			"size":      len(manifest),
+		}
+		if reference != "" {
+			descriptor["annotations"] = map[string]string{"org.opencontainers.image.ref.name": reference}
+		}
+		descriptors = append(descriptors, descriptor)
+	}
+	index, err := json.Marshal(map[string]any{"schemaVersion": 2, "manifests": descriptors})
+	if err != nil {
+		t.Fatalf("marshal OCI index: %v", err)
+	}
+
+	entries := []containerArchiveTestEntry{
+		{name: "oci-layout", body: `{"imageLayoutVersion":"1.0.0"}`},
+		{name: "index.json", body: string(index)},
+		{name: fmt.Sprintf("blobs/sha256/%x", configDigest), body: string(config)},
+		{name: fmt.Sprintf("blobs/sha256/%x", manifestDigest), body: string(manifest)},
+	}
+	if dockerManifest != "" {
+		entries = append(entries, containerArchiveTestEntry{name: "manifest.json", body: dockerManifest})
+	}
+	return mustContainerArchiveTar(t, entries...)
 }
 
 // TestLibpodImageImportInspectIsPathExclusive asserts the import inspector is

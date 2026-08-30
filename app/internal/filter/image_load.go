@@ -97,7 +97,7 @@ func (p imageLoadPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath
 		return "", nil
 	}
 
-	tags, foundManifest, err := p.io.extractImageLoadRepoTags(spool.file)
+	archive, err := p.io.extractImageLoadArchive(spool.file)
 	if err != nil {
 		spool.closeAndRemove()
 		if errors.Is(err, errImageLoadDecompressedTooLarge) {
@@ -105,17 +105,20 @@ func (p imageLoadPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath
 		}
 		return "", fmt.Errorf("inspect image load manifest: %w", err)
 	}
-	if !foundManifest {
+	if archive.format == imageLoadArchiveUnknown {
 		if !p.allowUntagged {
 			spool.closeAndRemove()
 			return "image load denied: image manifest is not inspectable", nil
 		}
 	} else {
-		if len(tags) == 0 && !p.allowUntagged {
+		if archive.hasUntagged && !p.allowUntagged {
 			spool.closeAndRemove()
 			return "image load denied: untagged images are not allowed", nil
 		}
-		for _, tag := range tags {
+		for _, tag := range archive.references {
+			if isLibpodImageLoadPath(normalizedPath) {
+				tag = normalizeLibpodImageLoadReference(tag)
+			}
 			if denyReason := p.denyReasonForTag(tag); denyReason != "" {
 				spool.closeAndRemove()
 				return denyReason, nil
@@ -154,37 +157,73 @@ type imageLoadManifestEntry struct {
 	RepoTags []string `json:"RepoTags"`
 }
 
-// extractImageLoadRepoTags reads manifest.json's RepoTags from a docker-save
-// archive. Docker's /images/load accepts both a raw tar and a
-// gzip-compressed tar (e.g. `docker save img | gzip | docker load`), so probe
-// gzip first and fall back to a plain tar walk on a non-gzip header — otherwise
-// a legitimate, policy-compliant gzipped archive would be falsely denied as
-// "image manifest is not inspectable".
-func (io_ ioDeps) extractImageLoadRepoTags(file *os.File) ([]string, bool, error) {
-	if tags, found, err := io_.extractImageLoadRepoTagsFromGzip(file); found || err != nil {
-		return tags, found, err
-	}
-	if err := io_.SeekToStart(file); err != nil {
-		return nil, false, fmt.Errorf("rewind image load body: %w", err)
-	}
-	return io_.extractImageLoadRepoTagsFromTar(tar.NewReader(file))
+type imageLoadArchiveFormat uint8
+
+const (
+	imageLoadArchiveUnknown imageLoadArchiveFormat = iota
+	imageLoadArchiveDocker
+	imageLoadArchiveOCI
+)
+
+const ociImageRefNameAnnotation = "org.opencontainers.image.ref.name"
+
+type imageLoadArchiveInspection struct {
+	format      imageLoadArchiveFormat
+	references  []string
+	hasUntagged bool
 }
 
-// extractImageLoadRepoTagsFromGzip decompresses a gzip-wrapped tar through a
-// loud, decompressed-byte-bounded reader (gzip-bomb guard) and walks it for
-// manifest.json. A non-gzip header returns (nil,false,nil) so the caller
-// rewinds and reads the body as a plain tar.
-func (io_ ioDeps) extractImageLoadRepoTagsFromGzip(file *os.File) ([]string, bool, error) {
+type imageLoadOCIIndex struct {
+	SchemaVersion int                           `json:"schemaVersion"`
+	Manifests     []imageLoadOCIIndexDescriptor `json:"manifests"`
+}
+
+type imageLoadOCIIndexDescriptor struct {
+	Annotations map[string]string `json:"annotations"`
+}
+
+type imageLoadOCILayout struct {
+	ImageLayoutVersion string `json:"imageLayoutVersion"`
+}
+
+type imageLoadArchiveControlFiles struct {
+	dockerManifest []byte
+	ociIndex       []byte
+	ociLayout      []byte
+	seenDocker     bool
+	seenOCIIndex   bool
+	seenOCILayout  bool
+}
+
+// extractImageLoadArchive classifies and reads policy-relevant references
+// from Docker and OCI archives. Docker's /images/load accepts both a raw tar
+// and a gzip-compressed tar, so probe gzip first and fall back to a plain tar
+// walk only when the body is not gzip-compressed.
+func (io_ ioDeps) extractImageLoadArchive(file *os.File) (imageLoadArchiveInspection, error) {
+	if archive, compressed, err := io_.extractImageLoadArchiveFromGzip(file); compressed || err != nil {
+		return archive, err
+	}
+	if err := io_.SeekToStart(file); err != nil {
+		return imageLoadArchiveInspection{}, fmt.Errorf("rewind image load body: %w", err)
+	}
+	return io_.extractImageLoadArchiveFromTar(tar.NewReader(file))
+}
+
+// extractImageLoadArchiveFromGzip decompresses a gzip-wrapped tar through a
+// loud, decompressed-byte-bounded reader (gzip-bomb guard) and walks its
+// format control files. A non-gzip header returns compressed=false so the
+// caller rewinds and reads the body as a plain tar.
+func (io_ ioDeps) extractImageLoadArchiveFromGzip(file *os.File) (imageLoadArchiveInspection, bool, error) {
 	gzr, err := gzip.NewReader(file)
 	if err != nil {
 		if errors.Is(err, gzip.ErrHeader) {
-			return nil, false, nil
+			return imageLoadArchiveInspection{}, false, nil
 		}
-		return nil, false, fmt.Errorf("create gzip reader: %w", err)
+		return imageLoadArchiveInspection{}, false, fmt.Errorf("create gzip reader: %w", err)
 	}
 
 	limited := &limitedReader{r: gzr, remaining: maxImageLoadDecompressedBytes, tooLarge: errImageLoadDecompressedTooLarge}
-	tags, found, err := io_.extractImageLoadRepoTagsFromTar(tar.NewReader(limited))
+	archive, err := io_.extractImageLoadArchiveFromTar(tar.NewReader(limited))
 	if err == nil {
 		if drainErr := io_.DrainReader(limited); drainErr != nil {
 			err = fmt.Errorf("drain gzip stream: %w", drainErr)
@@ -196,44 +235,140 @@ func (io_ ioDeps) extractImageLoadRepoTagsFromGzip(file *os.File) ([]string, boo
 	if errors.Is(err, errImageLoadDecompressedTooLarge) {
 		// Surface the sentinel unwrapped so inspect maps it to a clean 403 deny
 		// rather than a 500.
-		return nil, false, errImageLoadDecompressedTooLarge
+		return imageLoadArchiveInspection{}, true, errImageLoadDecompressedTooLarge
 	}
-	return tags, found, err
+	return archive, true, err
 }
 
-func (io_ ioDeps) extractImageLoadRepoTagsFromTar(tr *tar.Reader) ([]string, bool, error) {
-	var tags []string
-	found := false
+func (io_ ioDeps) extractImageLoadArchiveFromTar(tr *tar.Reader) (imageLoadArchiveInspection, error) {
+	var controls imageLoadArchiveControlFiles
 
 	for {
 		header, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			return tags, found, nil
+			return parseImageLoadArchiveControlFiles(controls)
 		}
 		if err != nil {
-			return nil, false, fmt.Errorf("read tar entry: %w", err)
+			return imageLoadArchiveInspection{}, fmt.Errorf("read tar entry: %w", err)
 		}
-		if header.Typeflag != tar.TypeReg || normalizeImageLoadArchivePath(header.Name) != "manifest.json" {
+
+		name := normalizeImageLoadArchivePath(header.Name)
+		if name != "manifest.json" && name != "index.json" && name != "oci-layout" {
 			continue
+		}
+		if header.Typeflag != tar.TypeReg {
+			return imageLoadArchiveInspection{}, fmt.Errorf("image archive control file %s is not a regular file", name)
 		}
 
 		body, err := io_.ReadAllLimited(tr, maxImageLoadManifestBytes+1)
 		if err != nil {
-			return nil, false, fmt.Errorf("read manifest.json: %w", err)
+			return imageLoadArchiveInspection{}, fmt.Errorf("read %s: %w", name, err)
 		}
 		if len(body) > maxImageLoadManifestBytes {
-			return nil, false, fmt.Errorf("manifest.json exceeds %d byte limit", maxImageLoadManifestBytes)
+			return imageLoadArchiveInspection{}, fmt.Errorf("%s exceeds %d byte limit", name, maxImageLoadManifestBytes)
 		}
 
-		var manifest []imageLoadManifestEntry
-		if err := json.Unmarshal(body, &manifest); err != nil {
-			return nil, false, fmt.Errorf("decode manifest.json: %w", err)
-		}
-		found = true
-		for _, entry := range manifest {
-			tags = append(tags, entry.RepoTags...)
+		switch name {
+		case "manifest.json":
+			if controls.seenDocker {
+				return imageLoadArchiveInspection{}, errors.New("image archive contains duplicate manifest.json control files")
+			}
+			controls.seenDocker = true
+			controls.dockerManifest = body
+		case "index.json":
+			if controls.seenOCIIndex {
+				return imageLoadArchiveInspection{}, errors.New("image archive contains duplicate index.json control files")
+			}
+			controls.seenOCIIndex = true
+			controls.ociIndex = body
+		case "oci-layout":
+			if controls.seenOCILayout {
+				return imageLoadArchiveInspection{}, errors.New("image archive contains duplicate oci-layout control files")
+			}
+			controls.seenOCILayout = true
+			controls.ociLayout = body
 		}
 	}
+}
+
+func parseImageLoadArchiveControlFiles(controls imageLoadArchiveControlFiles) (imageLoadArchiveInspection, error) {
+	hasOCIControl := controls.seenOCIIndex || controls.seenOCILayout
+	if controls.seenDocker && hasOCIControl {
+		return imageLoadArchiveInspection{}, errors.New("ambiguous image archive contains both Docker and OCI control files")
+	}
+	if controls.seenDocker {
+		var manifest []imageLoadManifestEntry
+		if err := json.Unmarshal(controls.dockerManifest, &manifest); err != nil {
+			return imageLoadArchiveInspection{}, fmt.Errorf("decode manifest.json: %w", err)
+		}
+
+		archive := imageLoadArchiveInspection{format: imageLoadArchiveDocker}
+		for _, entry := range manifest {
+			archive.references = append(archive.references, entry.RepoTags...)
+		}
+		archive.hasUntagged = len(archive.references) == 0
+		return archive, nil
+	}
+	if !hasOCIControl {
+		return imageLoadArchiveInspection{format: imageLoadArchiveUnknown}, nil
+	}
+	if !controls.seenOCIIndex || !controls.seenOCILayout {
+		return imageLoadArchiveInspection{}, errors.New("malformed OCI image archive requires both index.json and oci-layout")
+	}
+
+	var layout imageLoadOCILayout
+	if err := json.Unmarshal(controls.ociLayout, &layout); err != nil {
+		return imageLoadArchiveInspection{}, fmt.Errorf("decode oci-layout: %w", err)
+	}
+	if layout.ImageLayoutVersion != "1.0.0" {
+		return imageLoadArchiveInspection{}, fmt.Errorf("unsupported OCI image layout version %q", layout.ImageLayoutVersion)
+	}
+
+	var rawIndex map[string]json.RawMessage
+	if err := json.Unmarshal(controls.ociIndex, &rawIndex); err != nil {
+		return imageLoadArchiveInspection{}, fmt.Errorf("decode index.json: %w", err)
+	}
+	if _, ok := rawIndex["manifests"]; !ok || string(rawIndex["manifests"]) == "null" {
+		return imageLoadArchiveInspection{}, errors.New("decode index.json: manifests must be an array")
+	}
+	var index imageLoadOCIIndex
+	if err := json.Unmarshal(controls.ociIndex, &index); err != nil {
+		return imageLoadArchiveInspection{}, fmt.Errorf("decode index.json: %w", err)
+	}
+	if index.SchemaVersion != 2 {
+		return imageLoadArchiveInspection{}, fmt.Errorf("decode index.json: unsupported schemaVersion %d", index.SchemaVersion)
+	}
+
+	archive := imageLoadArchiveInspection{format: imageLoadArchiveOCI}
+	for _, descriptor := range index.Manifests {
+		reference := strings.TrimSpace(descriptor.Annotations[ociImageRefNameAnnotation])
+		if reference == "" {
+			archive.hasUntagged = true
+			continue
+		}
+		archive.references = append(archive.references, reference)
+	}
+	if len(index.Manifests) == 0 {
+		archive.hasUntagged = true
+	}
+	return archive, nil
+}
+
+// This compatibility helper keeps the focused parser tests and mutation tests
+// expressed in terms of Docker manifest RepoTags while production uses the
+// format-aware archive result above.
+func (io_ ioDeps) extractImageLoadRepoTagsFromTar(tr *tar.Reader) ([]string, bool, error) {
+	archive, err := io_.extractImageLoadArchiveFromTar(tr)
+	return archive.references, archive.format == imageLoadArchiveDocker, err
+}
+
+func normalizeLibpodImageLoadReference(value string) string {
+	reference := strings.TrimSpace(value)
+	first, _, hasSlash := strings.Cut(reference, "/")
+	if !hasSlash || !looksLikeRegistryComponent(first) {
+		return "localhost/" + reference
+	}
+	return reference
 }
 
 func normalizeImageLoadArchivePath(value string) string {

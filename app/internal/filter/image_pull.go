@@ -21,6 +21,7 @@ type imagePullPolicy struct {
 	allowAllRegistries bool
 	allowOfficial      bool
 	allowedRegistries  []string
+	io                 ioDeps
 }
 
 func newImagePullPolicy(opts ImagePullOptions) imagePullPolicy {
@@ -38,6 +39,7 @@ func newImagePullPolicy(opts ImagePullOptions) imagePullPolicy {
 		allowAllRegistries: opts.AllowAllRegistries,
 		allowOfficial:      opts.AllowOfficial,
 		allowedRegistries:  allowed,
+		io:                 defaultIODeps(),
 	}
 }
 
@@ -140,6 +142,7 @@ func (p imagePullPolicy) inspectLibpod(_ *slog.Logger, r *http.Request, normaliz
 
 // libpodImageImportSubject prefixes libpod-family import denial reasons.
 const libpodImageImportSubject = "libpod image import"
+const maxLibpodImageImportBodyBytes = 512 << 20 // 512 MiB
 
 // inspectLibpodImport applies request_body.image_pull.allow_imports to
 // Podman's native POST /libpod/images/import — the libpod counterpart of the
@@ -148,36 +151,88 @@ const libpodImageImportSubject = "libpod image import"
 // reason inspectLibpod does: one allow_imports flag has to govern both
 // surfaces or an operator configures one and leaves the other open.
 //
-// Unlike the pull inspectors, this one does not need to read the query to
-// reach its decision, and deliberately does not. Verified against Podman
-// v5.8.1's pkg/api/handlers/libpod/images.go ImagesImport: EVERY request to
-// this path is an import. When `URL` is set the daemon fetches the tarball
-// from a caller-chosen URL; when it is empty the daemon reads the tarball out
-// of the request body. Both end at imageEngine.Import with a Source the
-// caller picked, so allow_imports alone decides, and the decision cannot be
-// steered by a parameter name Podman might rename or a key-folding quirk in
-// gorilla/schema. The `URL` value is read only to name the source in the
-// denial reason, taking the last of a repeated key the way Podman's decoder
-// would, and an unreadable query costs nothing because the answer is already
-// deny.
+// Verified against Podman v5.8.1's pkg/api/handlers/libpod/images.go
+// ImagesImport: EVERY request to this path is an import. When `URL` is set
+// the daemon fetches the tarball from a caller-chosen URL; when it is empty
+// the daemon copies the request body to disk without an upstream size cap.
+// allow_imports remains the coarse capability gate for both forms. Body-form
+// imports are additionally spooled through Sockguard's bounded request-body
+// path, while URL imports stay body-independent. Each original case variant
+// uses its last value, matching gorilla/schema's scalar decode. If conflicting
+// variants make the selected form map-order-dependent, the body form wins so
+// the upstream copy cannot become unbounded.
 func (p imagePullPolicy) inspectLibpodImport(_ *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
 	if r == nil || r.Method != http.MethodPost || !isLibpodImageImportPath(normalizedPath) {
 		return "", nil
 	}
-	if p.allowImports {
+
+	source, bodyImport := classifyLibpodImageImportSource(r.URL.Query())
+	if !p.allowImports {
+		if source == "" {
+			return libpodImageImportSubject + " denied: importing images is not allowed", nil
+		}
+		return fmt.Sprintf("%s denied: importing images from %q is not allowed", libpodImageImportSubject, source), nil
+	}
+	if !bodyImport || r.Body == nil {
 		return "", nil
 	}
+	if p.io.CreateTempFile == nil {
+		p.io = defaultIODeps()
+	}
 
-	source := ""
-	for _, raw := range foldQueryKeys(r.URL.Query())["url"] {
-		if trimmed := strings.TrimSpace(raw); trimmed != "" {
-			source = trimmed
+	spool, size, err := p.io.spoolRequestBodyForInspection(r, "sockguard-image-import-", maxLibpodImageImportBodyBytes)
+	if err != nil {
+		if isBodyTooLargeError(err) {
+			return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("%s denied: request body exceeds %d byte limit", libpodImageImportSubject, maxLibpodImageImportBodyBytes))
+		}
+		return "", err
+	}
+	if spool == nil {
+		return "", nil
+	}
+	if size == 0 {
+		spool.closeAndRemove()
+		r.Body = http.NoBody
+		r.ContentLength = 0
+		return "", nil
+	}
+	if err := p.io.SeekToStart(spool.file); err != nil {
+		spool.closeAndRemove()
+		return "", fmt.Errorf("rewind libpod image import body: %w", err)
+	}
+	r.Body = spool.requestBody()
+	r.ContentLength = size
+	return "", nil
+}
+
+func classifyLibpodImageImportSource(query map[string][]string) (source string, bodyImport bool) {
+	keys := make([]string, 0, len(query))
+	for key := range query {
+		if strings.EqualFold(key, "URL") {
+			keys = append(keys, key)
 		}
 	}
-	if source == "" {
-		return libpodImageImportSubject + " denied: importing images is not allowed", nil
+	slices.Sort(keys)
+	if len(keys) == 0 {
+		return "", true
 	}
-	return fmt.Sprintf("%s denied: importing images from %q is not allowed", libpodImageImportSubject, source), nil
+
+	for _, key := range keys {
+		values := query[key]
+		if len(values) == 0 {
+			bodyImport = true
+			continue
+		}
+		effective := values[len(values)-1]
+		if effective == "" {
+			bodyImport = true
+			continue
+		}
+		if source == "" {
+			source = effective
+		}
+	}
+	return source, bodyImport
 }
 
 func (p imagePullPolicy) denyReasonForReference(fromImage, subject string) string {
