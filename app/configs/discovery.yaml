@@ -8,21 +8,31 @@
 # docs/content/docs/configuration.mdx for the full loop, and "Rollout
 # Modes" for how `mode: audit` works.
 #
-# THIS IS A DISCOVERY AID, NOT A PRODUCTION POLICY — `mode: audit` never
-# blocks a request, it only logs what it would have blocked, so leaving
-# this preset running grants the client full, unfiltered access to the
-# Docker socket.
+# THIS IS A DISCOVERY AID, NOT A PRODUCTION POLICY. `mode: audit` forwards
+# requests denied by the resolved profile and logs what it would have blocked;
+# pre-auth admission gates such as allowed CIDRs and identity lookup still
+# enforce. Leaving this preset running grants every client that can reach its
+# listener full, unfiltered access to the Docker socket.
 
 upstream:
   socket: /var/run/docker.sock
+
+# Keep discovery off every shared or production listener. Mount this dedicated,
+# owner-only socket into the one client being observed, then remove it when the
+# policy has been harvested.
+listeners:
+  - name: discovery
+    socket: /var/run/sockguard-discovery.sock
+    socket_mode: "0600"
+    allowed_profiles: [discovery]
 
 log:
   level: info
   format: json
   access_log: true
-  # Discovery depends on the audit stream: would_deny verdicts (and the
-  # normalized_path/method pairs the workflow harvests) only exist there,
-  # not in the access log. See "Logging And Audit" in configuration.mdx.
+  # Access and audit records both carry would_deny and normalized_path. The
+  # dedicated audit stream is used here so discovery events can be harvested
+  # without mixing them with the operational access log.
   audit:
     enabled: true
     format: json
@@ -32,10 +42,9 @@ health:
   enabled: true
   path: /health
 
-# default_profile applies the discovery profile to every client on every
-# listener with no client-cert/source-IP/unix-peer selector required — the
-# point of this preset is "log what everything asks for," not per-client
-# policy.
+# default_profile applies the discovery profile to every caller of the
+# dedicated socket above. Never mount that socket into unrelated clients or
+# copy this block onto a shared listener.
 clients:
   default_profile: discovery
   profiles:

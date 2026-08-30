@@ -882,19 +882,21 @@ sum by (mode) (rate(sockguard_http_denied_requests_total[5m]))
 `mode: audit` has a second use beyond staging a tighter rule on an existing
 profile: bootstrapping a policy for a client you don't already have rules
 for. Point a deny-everything profile at the real client, run its normal
-traffic through it, and every request it would have made comes back as a
-`would_deny` audit event carrying the exact method and normalized path — the
-answer to "what does this thing actually call" without reading its source or
-guessing from vendor docs.
+traffic through it, and every profile denial comes back as a `would_deny`
+record carrying the exact method and normalized path — the answer to "what
+does this thing actually call" without reading its source or guessing from
+vendor docs. Pre-auth admission failures, including allowed-CIDR and identity
+lookup failures, remain enforced and are not converted to `would_deny`.
 
-**1. Prerequisites.** The audit log is off by default (`log.audit.enabled`
-defaults to `false` — see [Logging And Audit](#logging-and-audit)), and this
-workflow reads nothing else, so it has to be on. The `discovery.yaml` preset
-in `app/configs/` turns it on for you: a `discovery` profile in `mode:
-audit` with a single deny-all rule, applied to every client via
-`clients.default_profile`, with `log.audit.enabled: true` and the audit
-stream on `stdout` (separate from the operational log, which stays on its
-`stderr` default) so it's trivial to capture on its own.
+**1. Prerequisites.** Access and audit records both carry `would_deny` and
+`normalized_path`, but the dedicated audit log is off by default
+(`log.audit.enabled` defaults to `false` — see [Logging And
+Audit](#logging-and-audit)). The `discovery.yaml` preset in `app/configs/`
+turns it on for you: a `discovery` profile in `mode: audit` with a single
+deny-all rule, applied to every caller of a dedicated owner-only unix socket
+via `clients.default_profile`, with the audit stream on `stdout` (separate
+from the operational log, which stays on its `stderr` default) so it's
+trivial to capture on its own.
 
 **2. Start with the discovery preset.**
 
@@ -902,16 +904,21 @@ stream on `stdout` (separate from the operational log, which stays on its
 sockguard serve --config app/configs/discovery.yaml
 ```
 
-Point the client at this sockguard instance exactly as it would run in
-production — same socket path, same TLS/unix-peer setup — just with the
-discovery preset in place of its real policy.
+The preset binds `/var/run/sockguard-discovery.sock` with mode `0600` instead
+of relying on Sockguard's default TCP listener. Mount that dedicated socket
+only into the client being observed. If the client must use authenticated TCP
+or unix-peer identity instead, copy the production listener settings into a
+private discovery config and keep that listener equally isolated; do not put
+the discovery profile on a shared listener.
 
 **3. Exercise the client normally.** Let it run through its actual startup
 and steady-state behavior: list, inspect, create, whatever it does on a
-normal day. Nothing is blocked — `mode: audit` forwards every request to the
-daemon regardless of the deny rule, so this is safe to run against a live
-client, not just a sandbox. The only difference from running with no proxy
-at all is that every would-be-denied request is now logged.
+normal day. `mode: audit` forwards requests denied by the resolved profile;
+pre-auth admission gates still enforce. The observed client therefore has
+unfiltered Docker API access through the dedicated discovery listener while
+the preset is active, so give that socket only to a client you already trust
+with the daemon. Every profile denial that was forwarded is logged as
+`would_deny`.
 
 **4. Harvest the events.** Every audit event the client's traffic produced
 carries `decision: "would_deny"`, plus the request's `method` and
