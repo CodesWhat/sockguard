@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -1338,6 +1339,157 @@ func TestMiddlewareDeniesCrossOwnerContainerAccess(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "owner policy denied access") {
 		t.Fatalf("deny body = %q, want owner policy denial", rec.Body.String())
+	}
+}
+
+func TestMiddlewareDeniesCrossOwnerNetworkMembershipChanges(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		path string
+		body string
+	}{
+		{
+			name: "Docker-compatible connect",
+			path: "/networks/team-net/connect",
+			body: `{"Container":"foreign-container","EndpointConfig":{"Aliases":["keep-me"]}}`,
+		},
+		{
+			name: "Docker-compatible disconnect",
+			path: "/networks/team-net/disconnect",
+			body: `{"Container":"foreign-container","Force":true}`,
+		},
+		{
+			name: "native libpod connect",
+			path: "/libpod/networks/team-net/connect",
+			body: `{"container":"foreign-container","aliases":["keep-me"],"static_ips":["10.89.0.42"]}`,
+		},
+		{
+			name: "native libpod disconnect",
+			path: "/libpod/networks/team-net/disconnect",
+			body: `{"Container":"foreign-container","Force":true}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+			fi := &recordingInspector{
+				resources: map[string]map[string]inspectResult{
+					"networks": {
+						"team-net": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+					},
+					"containers": {
+						"foreign-container": {labels: map[string]string{"com.sockguard.owner": "job-999"}, found: true},
+					},
+				},
+			}
+			forwarded := false
+			handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				forwarded = true
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+			handler.ServeHTTP(rec, req)
+
+			if forwarded {
+				t.Fatal("cross-owner network membership change was forwarded")
+			}
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			wantCall := resourceInspectCall{kind: dockerresource.KindContainer, id: "foreign-container"}
+			if !slices.Contains(fi.calls, wantCall) {
+				t.Fatalf("inspect calls = %#v, want %#v", fi.calls, wantCall)
+			}
+		})
+	}
+}
+
+func TestMiddlewareAuthorizesBothNetworkMembershipResourcesAndPreservesBody(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		path      string
+		body      string
+		preserved string
+		wantValue any
+	}{
+		{
+			name:      "Docker-compatible connect endpoint options",
+			path:      "/networks/team-net/connect",
+			body:      `{"Container":"owned-container","EndpointConfig":{"Aliases":["keep-me"]}}`,
+			preserved: "EndpointConfig",
+			wantValue: map[string]any{"Aliases": []any{"keep-me"}},
+		},
+		{
+			name:      "Docker-compatible disconnect force",
+			path:      "/networks/team-net/disconnect",
+			body:      `{"Container":"owned-container","Force":true}`,
+			preserved: "Force",
+			wantValue: true,
+		},
+		{
+			name:      "native libpod connect endpoint options",
+			path:      "/libpod/networks/team-net/connect",
+			body:      `{"container":"owned-container","aliases":["keep-me"],"static_ips":["10.89.0.42"]}`,
+			preserved: "static_ips",
+			wantValue: []any{"10.89.0.42"},
+		},
+		{
+			name:      "native libpod disconnect force",
+			path:      "/libpod/networks/team-net/disconnect",
+			body:      `{"Container":"owned-container","Force":true}`,
+			preserved: "Force",
+			wantValue: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+			fi := &recordingInspector{
+				resources: map[string]map[string]inspectResult{
+					"networks": {
+						"team-net": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+					},
+					"containers": {
+						"owned-container": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+					},
+				},
+			}
+			handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatalf("decode forwarded body: %v", err)
+				}
+				if got := body[tt.preserved]; !reflect.DeepEqual(got, tt.wantValue) {
+					t.Fatalf("forwarded %s = %#v, want %#v", tt.preserved, got, tt.wantValue)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
+			}
+			wantCalls := []resourceInspectCall{
+				{kind: dockerresource.KindContainer, id: "owned-container"},
+				{kind: dockerresource.KindNetwork, id: "team-net"},
+			}
+			for _, want := range wantCalls {
+				if !slices.Contains(fi.calls, want) {
+					t.Fatalf("inspect calls = %#v, missing %#v", fi.calls, want)
+				}
+			}
+		})
 	}
 }
 
