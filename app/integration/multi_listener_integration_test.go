@@ -65,6 +65,7 @@ func TestMultiListenerUnixProfileIsolation(t *testing.T) {
 	configPath := filepath.Join(workDir, "sockguard.yaml")
 	configYAML := fmt.Sprintf(`upstream:
   socket: %q
+  flavor: docker
 log:
   level: error
   format: json

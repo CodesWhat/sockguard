@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codeswhat/sockguard/app/internal/dockerfilters"
 	"github.com/codeswhat/sockguard/app/internal/dockerresource"
 	"github.com/codeswhat/sockguard/app/internal/logging"
 )
@@ -1345,15 +1346,21 @@ func TestAddVisibilityLabelFiltersLeavesQueryUntouchedWhenSelectorsAlreadyPresen
 	)
 	originalRawQuery := req.URL.RawQuery
 
-	err := addVisibilityLabelFilters(req, "/containers/json", []compiledSelector{
+	forwarded, err := addVisibilityLabelFilters(req, "/containers/json", []compiledSelector{
 		{key: "com.sockguard.visible", value: "true", hasValue: true},
 		{key: "com.sockguard.client", value: "watchtower", hasValue: true},
 	})
 	if err != nil {
 		t.Fatalf("addVisibilityLabelFilters() error = %v, want nil", err)
 	}
-	if req.URL.RawQuery != originalRawQuery {
-		t.Fatalf("RawQuery = %q, want unchanged %q", req.URL.RawQuery, originalRawQuery)
+	if forwarded.URL.RawQuery != originalRawQuery {
+		t.Fatalf("RawQuery = %q, want unchanged %q", forwarded.URL.RawQuery, originalRawQuery)
+	}
+	// A selector the client already sent is still policy-enforced, so it must
+	// be recorded as proxy-injected even though the query needed no rewrite —
+	// otherwise ownership's client-value drop would strip it downstream.
+	if got := dockerfilters.InjectedSelectors(forwarded, "label"); len(got) != 2 {
+		t.Fatalf("InjectedSelectors = %v, want both selectors recorded", got)
 	}
 }
 

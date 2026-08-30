@@ -3,6 +3,8 @@ package config
 import (
 	"os"
 	"regexp"
+
+	"github.com/codeswhat/sockguard/app/internal/upstreamflavor"
 )
 
 // HardenedListenSocketMode is the only supported unix-socket permission mode
@@ -267,6 +269,28 @@ type UpstreamConfig struct {
 	// values bypass Viper's env-emptiness gate. Prefer "off" in both
 	// channels.
 	RequestTimeout string `mapstructure:"request_timeout"`
+	// Flavor names the container engine behind the upstream: "auto" (the
+	// default), "docker", or "podman".
+	//
+	// It exists because Podman's Docker-compat GET /events does not evaluate
+	// the `filters` parameter the way dockerd does. Podman serves /events and
+	// /libpod/events from one handler and ORs several values under a single
+	// filter key, so the label selectors a visibility policy injects to narrow
+	// the stream widen it instead. Sockguard has to know which engine it is
+	// talking to before it writes that filter; see internal/upstreamflavor.
+	//
+	// "auto" probes the daemon's GET /version once at startup, before the
+	// listener binds. An explicit "docker" or "podman" is taken as given and
+	// no probe runs — nothing on the network can move an operator's stated
+	// answer. A probe that fails, times out, or reports an engine sockguard
+	// does not recognize fails startup with a message naming this field,
+	// because both possible guesses are wrong in opposite directions and
+	// neither is safe to make silently.
+	//
+	// Reload-immutable, like upstream.socket and upstream.endpoints: it
+	// describes the same daemon those name, and the resolved value is bound
+	// into the handler chain at startup.
+	Flavor string `mapstructure:"flavor"`
 	// Endpoints is an ordered failover set. The first entry is the preferred
 	// primary; later entries are tried when earlier ones fail their health
 	// probe. Every endpoint MUST address the same logical daemon/swarm —
@@ -1540,6 +1564,9 @@ func Defaults() Config {
 			// "off" (or the legacy "") to disable. See RequestTimeout's doc
 			// comment for the full migration story.
 			RequestTimeout: "60s",
+			// "auto" probes GET /version once at startup. See Flavor's doc
+			// comment for why the default is a probe rather than "docker".
+			Flavor: string(upstreamflavor.Auto),
 		},
 		Log: LogConfig{
 			Level:     "info",
