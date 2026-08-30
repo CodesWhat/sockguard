@@ -16,23 +16,55 @@ import (
 )
 
 const (
-	reasonCodeOwnerResponseTooLarge   = "owner_response_too_large"
-	reasonCodeOwnerResponseFilterFail = "owner_response_filter_failed"
+	reasonCodeOwnerResponseTooLarge        = "owner_response_too_large"
+	reasonCodeOwnerResponseFilterFail      = "owner_response_filter_failed"
+	reasonCodeOwnerLibpodDataUsageUnscoped = "owner_libpod_data_usage_unscopeable"
 )
 
 // serveOwnershipAllowed forwards a request the ownership policy did not deny.
 //
-// Almost everything goes straight to next. GET /system/df is the exception: it
-// enumerates every container, volume and image on the host and accepts no
-// `filters` query parameter, so addOwnerLabelFilter — the mechanism that
-// isolates /containers/json, /volumes and /images/json — has nothing to attach
-// to. Owner isolation for it has to happen on the response.
+// Almost everything goes straight to next. The two disk-usage endpoints are
+// the exception: each enumerates every container, volume and image on the host
+// and accepts no `filters` query parameter, so addOwnerLabelFilter — the
+// mechanism that isolates /containers/json, /volumes and /images/json — has
+// nothing to attach to. Owner isolation for them has to happen on the
+// response, and only one of the two has a response it can happen on.
+//
+// GET /system/df returns Docker-shaped summaries that carry Labels, so it is
+// filtered item by item. GET /libpod/system/df returns Podman's own report
+// shape, whose entries carry no labels at all, so there is nothing to filter
+// on and it is refused instead — see
+// responsefilter.LibpodSystemDataUsageDenyReason for the shape and the
+// reasoning.
 func serveOwnershipAllowed(logger *slog.Logger, next http.Handler, w http.ResponseWriter, r *http.Request, normPath string, opts Options) {
-	if r.Method == http.MethodGet && normPath == responsefilter.SystemDataUsagePath {
-		filterSystemDataUsageResponse(logger, next, w, r, opts)
-		return
+	if r.Method == http.MethodGet {
+		switch normPath {
+		case responsefilter.SystemDataUsagePath:
+			filterSystemDataUsageResponse(logger, next, w, r, opts)
+			return
+		case responsefilter.LibpodSystemDataUsagePath:
+			denyLibpodSystemDataUsage(w, r)
+			return
+		}
 	}
 	next.ServeHTTP(w, r)
+}
+
+// denyLibpodSystemDataUsage refuses GET /libpod/system/df with a 403 and never
+// contacts the upstream, so no byte of the host inventory is buffered, let
+// alone relayed.
+//
+// It deliberately does not honor RequestMeta.AllowsPassThrough the way the
+// request-side owner verdict does. Everything else in this file — the
+// oversized-body 502, the filter-failure 502, the item filtering itself —
+// is likewise unconditional: response-side isolation is not a policy verdict
+// the operator is staging, it is the layer that decides what leaves the
+// proxy, and a warn-mode deployment forwarding a full host inventory is the
+// exact disclosure this closes.
+func denyLibpodSystemDataUsage(w http.ResponseWriter, r *http.Request) {
+	reason := responsefilter.LibpodSystemDataUsageDenyReason
+	logging.SetDeniedWithCode(w, r, reasonCodeOwnerLibpodDataUsageUnscoped, reason, nil)
+	_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: reason})
 }
 
 // filterSystemDataUsageResponse buffers the upstream /system/df response,

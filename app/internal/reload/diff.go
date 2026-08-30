@@ -24,6 +24,13 @@ var ImmutableFields = []string{
 	"upstream.socket",
 	"upstream.endpoints",
 	"upstream.failover",
+	// upstream.flavor joins the three above because it describes the same
+	// daemon they address, and because the resolved value is bound into the
+	// handler chain at startup (the "auto" probe runs once, before the
+	// listener binds). Leaving it mutable would let a reload edit the field
+	// and change nothing, which is the silently-ignored-config failure the
+	// immutable gate exists to turn into a loud "restart required".
+	"upstream.flavor",
 	"log",
 	"health",
 	"metrics",
@@ -78,6 +85,9 @@ func ImmutableDiff(oldCfg, newCfg *config.Config) []string {
 	}
 	if !reflect.DeepEqual(oldCfg.Upstream.Failover, newCfg.Upstream.Failover) {
 		changed = append(changed, "upstream.failover")
+	}
+	if oldCfg.Upstream.Flavor != newCfg.Upstream.Flavor {
+		changed = append(changed, "upstream.flavor")
 	}
 	if !reflect.DeepEqual(oldCfg.Log, newCfg.Log) {
 		changed = append(changed, "log")

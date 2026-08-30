@@ -29,6 +29,12 @@
 
 upstream:
   socket: /run/podman/podman.sock
+  # Declared rather than left at the "auto" default, so startup needs no
+  # GET /version round trip to the daemon. It matters wherever a visibility
+  # policy is added on top of this preset: Podman filters GET /events
+  # disjunctively, so sockguard writes that filter differently there. See
+  # https://getsockguard.com/docs/configuration for upstream.flavor.
+  flavor: podman
 
 log:
   level: info

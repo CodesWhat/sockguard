@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/logging"
 	"github.com/codeswhat/sockguard/app/internal/responsefilter"
 	"github.com/codeswhat/sockguard/app/internal/visibility"
 )
@@ -431,5 +432,162 @@ func TestSystemDataUsageOwnershipAndVisibilityCompose(t *testing.T) {
 	}
 	if strings.Contains(body, "c-theirs-prod") {
 		t.Fatalf("owner isolation did not apply: %s", body)
+	}
+}
+
+// libpodSystemDFUpstream is a GET /libpod/system/df body in Podman's own
+// report shape (entities.SystemDfReport at v5.8.1), holding one image,
+// container and volume for each of two owners.
+//
+// It carries no labels anywhere, because that shape has no Labels field on any
+// of its three item types — see
+// responsefilter.LibpodSystemDataUsageDenyReason. The team-a/team-b split
+// below lives entirely in free-text Repository/Image/Names/VolumeName values,
+// which is exactly why owner isolation cannot be applied to it.
+const libpodSystemDFUpstream = `{
+  "ImagesSize": 1092588,
+  "Images": [
+    {"Repository":"docker.io/team-a/app","Tag":"1","ImageID":"aaaa111122223333","Size":5000,"SharedSize":1000,"UniqueSize":4000,"Containers":1},
+    {"Repository":"docker.io/team-b/app","Tag":"1","ImageID":"bbbb444455556666","Size":6000,"SharedSize":1000,"UniqueSize":5000,"Containers":1}
+  ],
+  "Containers": [
+    {"ContainerID":"c-a","Image":"docker.io/team-a/app:1","Command":["sleep","infinity"],"LocalVolumes":1,"Size":100,"RWSize":50,"Status":"running","Names":"team-a-web"},
+    {"ContainerID":"c-b","Image":"docker.io/team-b/app:1","Command":["sleep","infinity"],"LocalVolumes":1,"Size":200,"RWSize":60,"Status":"running","Names":"team-b-web"}
+  ],
+  "Volumes": [
+    {"VolumeName":"vol-a","Links":1,"Size":300,"ReclaimableSize":300},
+    {"VolumeName":"vol-b","Links":1,"Size":400,"ReclaimableSize":400}
+  ]
+}`
+
+// countingUpstream serves body and records whether it was ever reached, so a
+// test can assert that a refusal happened in front of the daemon rather than
+// after buffering its answer.
+func countingUpstream(body string, reached *bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		*reached = true
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, body)
+	})
+}
+
+func getPathForTest(t *testing.T, handler http.Handler, method, path string) (*httptest.ResponseRecorder, *logging.RequestMeta) {
+	t.Helper()
+	meta := &logging.RequestMeta{}
+	req := httptest.NewRequest(method, path, nil)
+	req = req.WithContext(logging.WithMeta(req.Context(), meta))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec, meta
+}
+
+// TestLibpodSystemDataUsageRefusedUnderOwnership is the regression test for
+// the sibling of the /system/df enumeration bypass: NormalizePath strips the
+// API version prefix but not "/libpod", so GET /libpod/system/df matched
+// neither the compat filter's predicate nor any owner-label injection, and a
+// caller scoped to team-a that had been allowed the path received Podman's
+// full host inventory.
+//
+// It cannot be filtered into shape, so it is refused. The upstream must not be
+// reached at all: a body this proxy cannot scope must not be buffered, and
+// there is no upstream answer — well-formed, malformed or oversized — that
+// changes the outcome.
+func TestLibpodSystemDataUsageRefusedUnderOwnership(t *testing.T) {
+	t.Parallel()
+	// The undecodable row is the fail-closed case: whatever the daemon would
+	// have said, the client gets this proxy's refusal and none of its bytes.
+	// There is no oversized row because there is nothing to be oversized —
+	// asserting the upstream is never reached generalizes over every body it
+	// could have sent.
+	tests := []struct {
+		name     string
+		path     string
+		upstream string
+	}{
+		{name: "bare libpod path", path: "/libpod/system/df", upstream: libpodSystemDFUpstream},
+		{name: "podman v5.8.1 client spelling", path: "/v5.8.1/libpod/system/df", upstream: libpodSystemDFUpstream},
+		{name: "libpod minimum api version", path: "/v4.0.0/libpod/system/df", upstream: libpodSystemDFUpstream},
+		{name: "two-part version prefix", path: "/v5.0/libpod/system/df", upstream: libpodSystemDFUpstream},
+		{name: "undecodable upstream body", path: "/v5.8.1/libpod/system/df", upstream: `{"Containers":[{"ContainerID":"c-b","Names":"team-b-web"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			reached := false
+			handler := middlewareWithDeps(testLogger(), Options{Owner: "team-a"},
+				fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(countingUpstream(tt.upstream, &reached))
+
+			rec, meta := getPathForTest(t, handler, http.MethodGet, tt.path)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403; body: %s", rec.Code, rec.Body.String())
+			}
+			if reached {
+				t.Error("the daemon was queried for a report that cannot be scoped")
+			}
+			if meta.ReasonCode != reasonCodeOwnerLibpodDataUsageUnscoped {
+				t.Errorf("meta.ReasonCode = %q, want %q", meta.ReasonCode, reasonCodeOwnerLibpodDataUsageUnscoped)
+			}
+			body := rec.Body.String()
+			for _, leaked := range []string{"team-b", "c-b", "vol-b", "bbbb444455556666", "1092588"} {
+				if strings.Contains(body, leaked) {
+					t.Errorf("host inventory %q reached the client: %s", leaked, body)
+				}
+			}
+			if !strings.Contains(body, "carry no labels") {
+				t.Errorf("refusal does not say why it happened: %s", body)
+			}
+		})
+	}
+}
+
+// TestLibpodSystemDataUsageInertWithoutOwnership proves the refusal costs
+// nothing to a single-tenant Podman deployment: with no owner configured there
+// is no tenant boundary to enforce, so the rule engine stays the only control
+// and the report is forwarded byte for byte.
+func TestLibpodSystemDataUsageInertWithoutOwnership(t *testing.T) {
+	t.Parallel()
+	reached := false
+	handler := middlewareWithDeps(testLogger(), Options{},
+		fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(countingUpstream(libpodSystemDFUpstream, &reached))
+
+	rec, _ := getPathForTest(t, handler, http.MethodGet, "/v5.8.1/libpod/system/df")
+	if !reached {
+		t.Fatal("upstream was not reached with no owner configured")
+	}
+	if got := rec.Body.String(); got != libpodSystemDFUpstream {
+		t.Fatalf("body was rewritten with no owner configured:\n got: %s\nwant: %s", got, libpodSystemDFUpstream)
+	}
+}
+
+// TestLibpodSystemDataUsageRefusalIsExact keeps the refusal from widening into
+// the rest of the libpod surface. Everything here is either a different
+// endpoint or a different method, and every one of them still reaches the
+// daemon.
+func TestLibpodSystemDataUsageRefusalIsExact(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{name: "compat disk usage is filtered, not refused", method: http.MethodGet, path: "/v1.53/system/df"},
+		{name: "libpod container list", method: http.MethodGet, path: "/v5.8.1/libpod/containers/json"},
+		{name: "longer libpod system path", method: http.MethodGet, path: "/v5.8.1/libpod/system/dfstats"},
+		{name: "parent libpod system path", method: http.MethodGet, path: "/v5.8.1/libpod/system"},
+		{name: "non-GET method", method: http.MethodPost, path: "/v5.8.1/libpod/system/df"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			reached := false
+			handler := middlewareWithDeps(testLogger(), Options{Owner: "team-a"},
+				fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(countingUpstream(`{}`, &reached))
+
+			rec, _ := getPathForTest(t, handler, tt.method, tt.path)
+			if !reached {
+				t.Fatalf("the refusal swallowed %s %s; status = %d, body: %s", tt.method, tt.path, rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
