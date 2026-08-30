@@ -133,6 +133,12 @@ func TestUpstreamMutualTLS_RoundTripThroughResolver(t *testing.T) {
 			if err != nil {
 				t.Fatalf("BuildEndpoint: %v", err)
 			}
+			if ep.TLSConfig == nil {
+				t.Fatal("BuildEndpoint returned no TLS configuration")
+			}
+			if got, want := ep.TLSConfig.MinVersion, uint16(tls.VersionTLS12); got != want {
+				t.Fatalf("TLS minimum = %x, want %x", got, want)
+			}
 			r, err := New([]Endpoint{ep}, Options{Interval: -1})
 			if err != nil {
 				t.Fatalf("New: %v", err)
