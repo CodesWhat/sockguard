@@ -2,6 +2,7 @@ package ownership
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -342,6 +343,74 @@ func TestLibpodUnscopeableReadsAreRefusedUnderOwnerIsolation(t *testing.T) {
 					t.Fatalf("body = %s, want the deny reason %q", rec.Body.String(), read.Reason)
 				}
 			})
+		}
+	}
+}
+
+// TestLibpodUnscopeableContainerReadsDenyBeforeInspect pins the ordering of
+// the refusal relative to ordinary per-container ownership checks. The two
+// collection paths happen to look like containers named "stats" and
+// "showmounted" to libpodContainerIdentifier. No daemon state for either
+// name may affect the refusal, and warn/audit rollout must not turn a foreign
+// container verdict into pass-through before the collection denial runs.
+func TestLibpodUnscopeableContainerReadsDenyBeforeInspect(t *testing.T) {
+	t.Parallel()
+
+	states := []struct {
+		name   string
+		labels map[string]string
+		found  bool
+		err    error
+	}{
+		{name: "not found"},
+		{name: "owned", labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+		{name: "foreign", labels: map[string]string{"com.sockguard.owner": "other-job"}, found: true},
+		{name: "unowned", labels: map[string]string{}, found: true},
+		{name: "inspect error", err: errors.New("inspect failed")},
+	}
+	paths := []string{filter.LibpodShowMountedPath, filter.LibpodContainerStatsPath}
+	rolloutModes := []string{"enforce", "warn", "audit"}
+
+	for _, path := range paths {
+		for _, state := range states {
+			for _, rolloutMode := range rolloutModes {
+				t.Run(path+"/"+state.name+"/"+rolloutMode, func(t *testing.T) {
+					t.Parallel()
+					inspectCalls := 0
+					upstreamCalls := 0
+					inspectResource := func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
+						inspectCalls++
+						return state.labels, state.found, state.err
+					}
+					handler := middlewareWithDeps(
+						testLogger(),
+						Options{Owner: "job-123", LabelKey: "com.sockguard.owner"},
+						inspectResource,
+						fakeInspector{}.inspectExec,
+					)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+						upstreamCalls++
+					}))
+
+					meta := &logging.RequestMeta{RolloutMode: rolloutMode}
+					req := httptest.NewRequest(http.MethodGet, path, nil)
+					req = req.WithContext(logging.WithMeta(req.Context(), meta))
+					rec := httptest.NewRecorder()
+					handler.ServeHTTP(rec, req)
+
+					if rec.Code != http.StatusForbidden {
+						t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+					}
+					if inspectCalls != 0 {
+						t.Fatalf("inspect calls = %d, want 0", inspectCalls)
+					}
+					if upstreamCalls != 0 {
+						t.Fatalf("upstream calls = %d, want 0", upstreamCalls)
+					}
+					if meta.ReasonCode != wantOwnerUnscopeableReasonCodes[path] {
+						t.Fatalf("reason code = %q, want %q", meta.ReasonCode, wantOwnerUnscopeableReasonCodes[path])
+					}
+				})
+			}
 		}
 	}
 }

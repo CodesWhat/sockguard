@@ -280,6 +280,71 @@ func TestLibpodImageListAppliesVisibilityLabelFilter(t *testing.T) {
 	}
 }
 
+func TestLibpodImageListAppliesPatternAxes(t *testing.T) {
+	t.Parallel()
+	items := []libpodContainerListItemForTest{
+		{
+			raw:    `{"Id":"keep","RepoTags":["registry.example.com/team/allowed-app:v1"],"Labels":{"tenant":"visible"},"Extra":{"keep":true}}`,
+			labels: map[string]string{"tenant": "visible"},
+		},
+		{
+			raw:    `{"Id":"drop-pattern","RepoTags":["registry.example.com/other/hidden:v1"],"Labels":{"tenant":"visible"}}`,
+			labels: map[string]string{"tenant": "visible"},
+		},
+		{
+			raw:    `{"Id":"selector-hidden","RepoTags":["registry.example.com/team/allowed-worker:v1"],"Labels":{"tenant":"hidden"}}`,
+			labels: map[string]string{"tenant": "hidden"},
+		},
+	}
+	tests := []struct {
+		name string
+		opts Options
+		want []int
+	}{
+		{
+			name: "patterns only",
+			opts: Options{
+				NamePatterns:  []string{"allowed-*"},
+				ImagePatterns: []string{"registry.example.com/team/**"},
+			},
+			want: []int{0, 2},
+		},
+		{
+			name: "selector and patterns",
+			opts: Options{
+				VisibleResourceLabels: []string{"tenant=visible"},
+				NamePatterns:          []string{"allowed-*"},
+				ImagePatterns:         []string{"registry.example.com/team/**"},
+			},
+			want: []int{0},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			handler := middlewareWithDeps(testVisibilityLogger(), tt.opts, visibilityDeps{})(libpodContainerListUpstreamForTest(t, items))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v5.8.1/libpod/images/json", nil))
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			wantItems := make([]string, 0, len(tt.want))
+			for _, index := range tt.want {
+				wantItems = append(wantItems, items[index].raw)
+			}
+			wantBody := "[" + strings.Join(wantItems, ",") + "]"
+			if got := rec.Body.String(); got != wantBody {
+				t.Fatalf("body = %s, want retained native images in original order: %s", got, wantBody)
+			}
+			if got := rec.Header().Get("Content-Length"); got != fmt.Sprintf("%d", len(wantBody)) {
+				t.Fatalf("Content-Length = %q, want %d", got, len(wantBody))
+			}
+		})
+	}
+}
+
 // TestLibpodImageReadHidesHiddenImage covers the inspect half: no libpod image
 // identifier existed in requestVisibleWithPolicy at all, so every per-image
 // libpod read fell through to its default-visible tail with no upstream
@@ -331,6 +396,81 @@ func TestLibpodImageReadHidesHiddenImage(t *testing.T) {
 				t.Fatalf("inspect = %s/%q, want %s/%q", gotKind, gotIdentifier, dockerresource.KindImage, tt.want)
 			}
 		})
+	}
+}
+
+func TestLibpodImageReadsApplyPatternAxes(t *testing.T) {
+	t.Parallel()
+	paths := []string{
+		"/libpod/images/hidden/json",
+		"/libpod/images/hidden/history",
+		"/libpod/images/hidden/tree",
+		"/libpod/images/hidden/changes",
+		"/libpod/images/hidden/exists",
+		"/libpod/images/hidden/get",
+	}
+	tests := []struct {
+		name string
+		opts Options
+	}{
+		{
+			name: "patterns only",
+			opts: Options{
+				NamePatterns:  []string{"allowed-*"},
+				ImagePatterns: []string{"registry.example.com/team/**"},
+			},
+		},
+		{
+			name: "matching selector and hidden patterns",
+			opts: Options{
+				VisibleResourceLabels: []string{"tenant=visible"},
+				NamePatterns:          []string{"allowed-*"},
+				ImagePatterns:         []string{"registry.example.com/team/**"},
+			},
+		},
+	}
+
+	for _, path := range paths {
+		for _, tt := range tests {
+			t.Run(path+"/"+tt.name, func(t *testing.T) {
+				t.Parallel()
+				assertTarget := func(kind dockerresource.Kind, identifier string) {
+					t.Helper()
+					if kind != dockerresource.KindImage || identifier != "hidden" {
+						t.Fatalf("inspect = %s/%q, want %s/hidden", kind, identifier, dockerresource.KindImage)
+					}
+				}
+				meta := &resourceMeta{repoTags: []string{"registry.example.com/other/hidden:v1"}}
+				reached := false
+				handler := middlewareWithDeps(testVisibilityLogger(), tt.opts, visibilityDeps{
+					inspectResource: func(_ context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
+						assertTarget(kind, identifier)
+						return map[string]string{"tenant": "visible"}, true, nil
+					},
+					inspectResourceMeta: func(_ context.Context, kind dockerresource.Kind, identifier string) (*resourceMeta, bool, error) {
+						assertTarget(kind, identifier)
+						return meta, true, nil
+					},
+					inspectResourceDetails: func(_ context.Context, kind dockerresource.Kind, identifier string) (*resourceDetails, bool, error) {
+						assertTarget(kind, identifier)
+						return &resourceDetails{labels: map[string]string{"tenant": "visible"}, meta: meta}, true, nil
+					},
+				})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					reached = true
+					w.WriteHeader(http.StatusNoContent)
+				}))
+
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+
+				if reached {
+					t.Fatal("native image with nonmatching patterns reached upstream")
+				}
+				if rec.Code != http.StatusNotFound {
+					t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
+				}
+			})
+		}
 	}
 }
 

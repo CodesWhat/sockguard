@@ -38,11 +38,10 @@ const (
 // reasoning.
 //
 // Three more libpod reads have that same no-labels, no-`filters` shape and are
-// refused the same way rather than filtered: showmounted, container stats and
-// pod stats. They are not enumerated here because the set is
-// filter.LibpodUnscopeableReads() — one table both isolation layers read, so
-// neither can be taught about an endpoint the other still forwards. Each
-// entry's doc comment carries the shape evidence.
+// refused before ordinary ownership evaluation: showmounted, container stats
+// and pod stats. They cannot wait until this allowed-response path because two
+// of their collection words also classify as container names, and rollout
+// handling for a foreign container verdict can pass through directly.
 func serveOwnershipAllowed(logger *slog.Logger, next http.Handler, w http.ResponseWriter, r *http.Request, normPath string, opts Options) {
 	if r.Method == http.MethodGet {
 		switch normPath {
@@ -53,20 +52,16 @@ func serveOwnershipAllowed(logger *slog.Logger, next http.Handler, w http.Respon
 			denyLibpodSystemDataUsage(w, r)
 			return
 		}
-		if read, ok := filter.LookupLibpodUnscopeableRead(normPath); ok {
-			denyUnscopeableLibpodRead(w, r, read)
-			return
-		}
 	}
 	next.ServeHTTP(w, r)
 }
 
 // denyUnscopeableLibpodRead refuses one of filter.LibpodUnscopeableReads() with
-// a 403 and never contacts the upstream, so the host inventory, the daemon
-// host's mount paths and the cross-owner ID sets in those bodies are never
-// read, let alone relayed. Like denyLibpodSystemDataUsage it is unconditional:
-// a warn-mode deployment forwarding the body is the exact disclosure this
-// closes.
+// a 403 before any resource inspect or proxied request, so the host inventory,
+// the daemon host's mount paths and the cross-owner ID sets in those bodies
+// are never read, let alone relayed. Like denyLibpodSystemDataUsage it is
+// unconditional: a warn-mode deployment forwarding the body is the exact
+// disclosure this closes.
 //
 // The reason code is assembled from the entry's stem rather than switched on,
 // so an endpoint added to that table cannot land here without one.

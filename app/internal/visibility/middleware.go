@@ -445,7 +445,8 @@ func handleVisibilityInspectRequest(logger *slog.Logger, next http.Handler, deps
 // needsPatternResponseFilter reports whether the given normalized path is a
 // list endpoint for which we support response-body pattern filtering.
 func needsPatternResponseFilter(normPath string) bool {
-	return normPath == "/containers/json" || normPath == libpodPrefix+"containers/json" || normPath == "/images/json"
+	return normPath == "/containers/json" || normPath == libpodPrefix+"containers/json" ||
+		normPath == "/images/json" || normPath == libpodPrefix+"images/json"
 }
 
 // patternFilterWriter is a response-intercepting http.ResponseWriter that
@@ -600,7 +601,7 @@ func itemVisibleByPatterns(raw json.RawMessage, normPath string, policy *compile
 	switch normPath {
 	case "/containers/json", libpodPrefix + "containers/json":
 		return containerItemVisibleByPatterns(raw, policy)
-	case "/images/json":
+	case "/images/json", libpodPrefix + "images/json":
 		return imageItemVisibleByPatterns(raw, policy)
 	default:
 		return true, nil
@@ -867,6 +868,9 @@ func requestVisibleWithPolicy(ctx context.Context, normPath string, policy *comp
 	if identifier, ok := imageReadIdentifier(normPath); ok {
 		return resourceVisibleWithPolicy(ctx, deps, dockerresource.KindImage, identifier, policy)
 	}
+	if identifier, ok := libpodImageReadIdentifier(normPath); ok {
+		return resourceVisibleWithPolicy(ctx, deps, dockerresource.KindImage, identifier, policy)
+	}
 	// Pattern axes only apply to containers and images. All other resource
 	// kinds use label-selector checks only.
 	if !hasSelectors {
@@ -921,9 +925,6 @@ func requestVisibleWithPolicy(ctx context.Context, normPath string, policy *comp
 	// GET /libpod/networks/{id}/json differs in label-key casing and (per
 	// design doc C6) may return a single-element array-wrapped response,
 	// pods because they have no Docker-compat equivalent at all.
-	if identifier, ok := libpodImageReadIdentifier(normPath); ok {
-		return resourceVisible(ctx, deps, dockerresource.KindImage, identifier, policy.selectors)
-	}
 	if identifier, ok := libpodPodReadIdentifier(normPath); ok {
 		return resourceVisible(ctx, deps, dockerresource.KindLibpodPod, identifier, policy.selectors)
 	}

@@ -84,12 +84,13 @@ func handleLibpodVisibilityEventsRequest(next http.Handler, w http.ResponseWrite
 	case 0:
 		next.ServeHTTP(w, r)
 	case 1:
-		if err := setLibpodEventsLabelFilter(r, policy.selectors[0]); err != nil {
+		forwarded, err := setLibpodEventsLabelFilter(r, policy.selectors[0])
+		if err != nil {
 			logging.SetDeniedWithCode(w, r, reasonCodeVisibilityFilterInvalid, err.Error(), nil)
 			_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: err.Error()})
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, forwarded)
 	default:
 		denyLibpodEvents(w, r)
 	}
@@ -127,22 +128,28 @@ func denyLibpodEvents(w http.ResponseWriter, r *http.Request) {
 // also accepts Docker's legacy map[string]map[string]bool spelling, so leaving
 // the raw query untouched would forward a client-authored encoding of it
 // carrying extra label values that the decode had already seen.
-func setLibpodEventsLabelFilter(r *http.Request, selector compiledSelector) error {
+func setLibpodEventsLabelFilter(r *http.Request, selector compiledSelector) (*http.Request, error) {
 	query := r.URL.Query()
 	filters, err := dockerfilters.Decode(query.Get("filters"))
 	if err != nil {
-		return err
+		return r, err
 	}
 	value := selector.key
 	if selector.hasValue {
 		value += "=" + selector.value
 	}
-	filters[visibilityLabelFilterKey(LibpodEventsPath)] = []string{value}
+	filterKey := visibilityLabelFilterKey(LibpodEventsPath)
+	filters[filterKey] = []string{value}
 	encoded, err := json.Marshal(filters)
 	if err != nil {
-		return fmt.Errorf("encode filters: %w", err)
+		return r, fmt.Errorf("encode filters: %w", err)
 	}
 	query.Set("filters", string(encoded))
 	r.URL.RawQuery = query.Encode()
-	return nil
+	// Podman's event handler ORs repeated values under one key, so this
+	// selector has to remain the sole label value. A later owner-isolation
+	// layer sees the marker and refuses the impossible conjunction rather
+	// than replacing this visibility constraint or widening it with an owner
+	// value.
+	return dockerfilters.RecordSoleValueFilter(r, filterKey), nil
 }

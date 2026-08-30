@@ -133,11 +133,15 @@ same way they cover Docker-compat:
 - Pods have no Docker-compat equivalent, so they get a dedicated
   `KindLibpodPod` resource kind with its own list/inspect owner-filtering
   and visibility coverage.
-- Every libpod list and inspect/action path — containers, images, pods,
-  networks, volumes, secrets — is owner-filtered and visibility-filtered, so
-  switching a client from Docker-compat to libpod-native paths is not a way
-  around isolation configured on the Docker-compat side. Read coverage follows
-  the routes Podman actually serves rather than the `/json` inspect alone:
+- Every filter-capable libpod list and every path-targeted read for containers,
+  images, pods, networks, volumes, and secrets is owner-filtered and
+  visibility-filtered, so switching a client from Docker-compat to a native
+  spelling is not a way around the same scope. Path-targeted write actions are
+  owner-checked too. Native image lists and per-image reads apply the policy's
+  name and image patterns as well as its label selectors. Query-targeted batch
+  image operations are the exception recorded under Known Limitations. Read
+  coverage follows the routes Podman actually serves rather than the `/json`
+  inspect alone:
   `/exists`, `/top`, `/healthcheck`, `/archive`, `/tree`, `/changes`, volume
   `/export`, and the bare `GET /libpod/networks/{id}` spelling Podman
   registers on the same `InspectNetwork` handler as `/libpod/networks/{id}/json`.
@@ -147,23 +151,27 @@ same way they cover Docker-compat:
   visibility policy, and that asymmetry is deliberate. Podman evaluates
   several values under one event filter key disjunctively, so a `label=` value
   injected beside a client-supplied one ORs with it instead of narrowing.
-  Owner isolation replaces the `label` key outright and so leaves exactly one
-  value, for which disjunctive and conjunctive evaluation are the same thing.
+  Owner isolation by itself replaces the `label` key outright and so leaves
+  exactly one value, for which disjunctive and conjunctive evaluation are the
+  same thing.
   A visibility policy's selectors are ANDed by definition and the endpoint has
   no second filter key to hold the extra one, so sockguard injects a single
   selector where the policy has one and refuses the endpoint with a `403` and
-  `visibility_libpod_events_unscopeable` where it has more. Reporting a subset
-  was rejected for the same reason an emptied `/libpod/system/df` was: a client
-  watching an event stream cannot tell a quiet host from a filter that stopped
-  applying. The refusal is independent of rollout mode, and a deployment with
-  no visibility policy is unaffected.
-- `GET /libpod/system/df` is the one read that cannot be filtered, and it is
-  refused with a `403` instead whenever owner isolation or a visibility policy
-  is active. Podman's native disk-usage report is not the Docker-compat body
+  `visibility_libpod_events_unscopeable` where it has more. Owner isolation
+  plus even one visibility selector is also an inexpressible conjunction, so
+  that combination is refused with `owner_visibility_podman_events_unscopeable`
+  rather than dropping either constraint. Reporting a subset was rejected for
+  the same reason an emptied `/libpod/system/df` was: a client watching an
+  event stream cannot tell a quiet host from a filter that stopped applying.
+  The refusals are independent of rollout mode, and a deployment with no
+  visibility policy is unaffected.
+- `GET /libpod/system/df` is one fixed-path read that cannot be filtered, and
+  it is refused with a `403` instead whenever owner isolation or a visibility
+  policy is active. Podman's native disk-usage report is not the Docker-compat body
   under another path: its image, container and volume entries carry no labels
   at all, so no owner label and no visibility selector has a field to match.
   Refusing keeps it from being a way around isolation the way filtering does
-  for every other libpod read; see
+  for scopeable libpod reads; see
   [Security](/security#layer-6-owner-label-isolation) for the full field list
   and why an emptied report was the wrong answer. The Docker-compat
   `GET /system/df` that Podman also serves is filtered normally.
@@ -353,8 +361,10 @@ land):
   so a client written for the streaming shape gets a status line and a normal
   error body rather than a half-read record.
 - Two libpod image endpoints name their images in the query string rather than
-  the path, so owner isolation has nothing to check and they pass through
-  unchecked when a rule allows them: `DELETE /libpod/images/remove?images=…`
+  the path, so owner isolation has no path target to check. The read-side batch
+  export likewise falls outside visibility's path classifier, and both pass
+  through unchecked when a rule allows them:
+  `DELETE /libpod/images/remove?images=…`
   (batch delete, which with `all=true` names nothing at all) and
   `GET /libpod/images/export?references=…` (batch export).
   Neither is allowed by any shipped preset, batch export additionally needs
@@ -362,13 +372,3 @@ land):
   `GET /images/get?names=…` is unchecked for the same reason. Per-image
   spellings of both actions (`DELETE /libpod/images/{name}`,
   `GET /libpod/images/{name}/get`) are checked normally.
-- A **visibility** policy with more than one `visible_resource_labels` selector
-  is enforceable on `GET /libpod/events` but not on the Docker-compat
-  `GET /events` that Podman also serves, because they are the same handler with
-  the same disjunctive label filter and sockguard cannot tell a Podman upstream
-  from dockerd. The libpod spelling is refused; the compat spelling still gets
-  the append-style injection that is correct against dockerd, so on a Podman
-  upstream a multi-selector policy is a `label` OR rather than an AND there.
-  Owner isolation is unaffected on both spellings — it replaces the key rather
-  than appending to it. Configure a single selector, or deny `GET /events` in
-  your rules, if you need the guarantee on a Podman upstream.

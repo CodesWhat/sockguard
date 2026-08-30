@@ -137,6 +137,19 @@ func middlewareWithDeps(
 				normPath = filter.NormalizePath(r.URL.Path)
 			}
 
+			// Refuse host-wide libpod reads before ordinary resource-path
+			// classification. Two collection words ("showmounted" and
+			// "stats") are otherwise indistinguishable here from container
+			// names, which would trigger an inspect and let a foreign-resource
+			// denial pass through under warn/audit rollout before the
+			// unconditional collection refusal got a chance to run.
+			if r.Method == http.MethodGet {
+				if read, ok := filter.LookupLibpodUnscopeableRead(normPath); ok {
+					denyUnscopeableLibpodRead(w, r, read)
+					return
+				}
+			}
+
 			ownerFilterApplies := needsOwnerFilter(r.Method, normPath) ||
 				(r.Method == http.MethodGet || r.Method == http.MethodHead) && libpodNeedsOwnerFilter(normPath)
 			if ownerFilterApplies && dockerfilters.RequiresSoleValue(r, ownerFilterKey(normPath)) {
