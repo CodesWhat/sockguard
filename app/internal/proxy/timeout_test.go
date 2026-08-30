@@ -153,6 +153,66 @@ func TestWithRequestTimeout_DockerCompatibleTopUsesUpstreamFlavor(t *testing.T) 
 	}
 }
 
+func TestIsLongLivedUpstreamRequestPodmanTopMixedCaseDuplicateStreamKeys(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name           string
+		podmanUpstream bool
+		target         string
+		want           bool
+	}{
+		{
+			name:   "native truthy second case-folded group",
+			target: "/libpod/containers/abc/top?stream=false&Stream=true",
+			want:   true,
+		},
+		{
+			name:   "native truthy first case-folded group",
+			target: "/libpod/pods/abc/top?stream=true&Stream=false",
+			want:   true,
+		},
+		{
+			name:   "native identical-key last true",
+			target: "/libpod/containers/abc/top?stream=false&stream=true&Stream=false",
+			want:   true,
+		},
+		{
+			name:   "native identical-key last false in every group",
+			target: "/libpod/pods/abc/top?stream=true&stream=false&Stream=0&STREAM=F",
+			want:   false,
+		},
+		{
+			name:           "Podman-compatible truthy second case-folded group",
+			podmanUpstream: true,
+			target:         "/containers/abc/top?stream=false&Stream=yes",
+			want:           true,
+		},
+		{
+			name:           "Podman-compatible false in every group",
+			podmanUpstream: true,
+			target:         "/containers/abc/top?stream=true&stream=false&Stream=no&STREAM=none",
+			want:           false,
+		},
+		{
+			name:   "Docker-compatible remains finite",
+			target: "/containers/abc/top?stream=false&Stream=true",
+			want:   false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for i := 0; i < 256; i++ {
+				req := httptest.NewRequest(http.MethodGet, tc.target, nil)
+				if got := isLongLivedUpstreamRequestForFlavor(httptest.NewRecorder(), req, tc.podmanUpstream); got != tc.want {
+					t.Fatalf("iteration %d: isLongLivedUpstreamRequestForFlavor(GET %s, podman=%v) = %v, want %v", i, tc.target, tc.podmanUpstream, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
 func TestWithRequestTimeout_AppliesDeadlineToFiniteRequest(t *testing.T) {
 	t.Parallel()
 	var hasDeadline bool

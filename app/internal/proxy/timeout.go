@@ -148,45 +148,44 @@ func matchPodAction(path, action string) bool {
 }
 
 // podmanBoolValue mirrors the gorilla/schema bool conversion used by Podman's
-// libpod handlers. The last repeated value wins; strconv.ParseBool spellings
-// and the exact lowercase value "on" are accepted, while omitted or invalid
-// values are false here (and invalid values are rejected by Podman itself).
+// libpod handlers. Query keys are case-insensitive and the last repeated value
+// within each identically-cased key group wins. gorilla/schema visits distinct
+// case-folded groups in map order, so any truthy group is treated as streaming
+// to avoid applying a deadline to a response Podman may stream. strconv.ParseBool
+// spellings and the exact lowercase value "on" are accepted; omitted, invalid,
+// and false-only groups remain finite.
 func podmanBoolValue(r *http.Request, key string) bool {
-	value, ok := podmanQueryLastValue(r, key)
-	if !ok {
-		return false
+	for queryKey, values := range r.URL.Query() {
+		if !strings.EqualFold(queryKey, key) || len(values) == 0 {
+			continue
+		}
+		value := values[len(values)-1]
+		if value == "on" {
+			return true
+		}
+		parsed, err := strconv.ParseBool(value)
+		if err == nil && parsed {
+			return true
+		}
 	}
-	if value == "on" {
-		return true
-	}
-	parsed, err := strconv.ParseBool(value)
-	return err == nil && parsed
+	return false
 }
 
 func podmanCompatBoolValue(r *http.Request, key string) bool {
-	value, ok := podmanQueryLastValue(r, key)
-	if !ok {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "0", "no", "false", "none":
-		return false
-	default:
-		return true
-	}
-}
-
-func podmanQueryLastValue(r *http.Request, key string) (string, bool) {
+	// Podman's compatibility decoder uses the Docker falsy set, but retains
+	// gorilla/schema's case-insensitive field lookup and per-key last value.
 	for queryKey, values := range r.URL.Query() {
-		if !strings.EqualFold(queryKey, key) {
+		if !strings.EqualFold(queryKey, key) || len(values) == 0 {
 			continue
 		}
-		if len(values) == 0 {
-			return "", true
+		switch strings.ToLower(strings.TrimSpace(values[len(values)-1])) {
+		case "", "0", "no", "false", "none":
+			continue
+		default:
+			return true
 		}
-		return values[len(values)-1], true
 	}
-	return "", false
+	return false
 }
 
 // dockerBoolValue mirrors the daemon's api/server/httputils.BoolValue: a query
