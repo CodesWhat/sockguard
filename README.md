@@ -358,6 +358,11 @@ LOG_LEVEL=warning
 
 Compat env vars only generate rules when no explicit `rules:` are configured. If you provide `rules:` in YAML, those rules win even when they happen to match the built-in defaults exactly. Broad compat reads (`CONTAINERS=1`, `IMAGES=1`, `POST=0`) that pull in raw archive/export and log/attach streaming also need `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true`; see the [configuration reference](https://getsockguard.com/docs/configuration) for the full env-var surface. Signed-policy mode does not permit rule generation after signature verification, so any section, `POST`, `GRPC`/`SESSION`, or `ALLOW_*` compatibility variable causes startup to fail. Translate those grants into the signed YAML first.
 
+`CONTAINERS=1` with `POST=1`, or `ALLOW_DELETE=1` independently, preserves
+the compatibility proxy's full container-removal surface: force removal,
+anonymous-volume removal, and legacy link removal. Use YAML plus
+`request_body.container_remove` to narrow those controls.
+
 ### YAML Config (recommended)
 
 ```yaml

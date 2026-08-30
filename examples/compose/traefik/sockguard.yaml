@@ -25,8 +25,6 @@ rules:
     action: allow
   - match: { method: GET, path: "/version" }
     action: allow
-  - match: { method: GET, path: "/info" }
-    action: allow
   - match: { method: GET, path: "/events" }
     action: allow
 

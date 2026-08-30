@@ -95,10 +95,12 @@ func ApplyCompat(cfg *Config, logger *slog.Logger) bool {
 
 	cfg.Rules = rules
 
-	// ALLOW_DELETE predates Sockguard's query inspector and admits the full
-	// Tecnativa container-remove call surface. Preserve that compatibility
-	// behavior without changing native defaults or user-authored rules.
-	if compatEnvEnabled("ALLOW_DELETE", false) {
+	// ALLOW_DELETE and the broader CONTAINERS=1 + POST=1 section grant both
+	// predate Sockguard's query inspector and admit the full Tecnativa
+	// container-remove call surface. Preserve that compatibility behavior
+	// without changing native defaults or user-authored rules.
+	if compatEnvEnabled("ALLOW_DELETE", false) ||
+		(compatEnvEnabled("CONTAINERS", false) && compatEnvEnabled("POST", false)) {
 		cfg.RequestBody.ContainerRemove.AllowForce = true
 		cfg.RequestBody.ContainerRemove.AllowRemoveVolumes = true
 		cfg.RequestBody.ContainerRemove.AllowRemoveLinks = true

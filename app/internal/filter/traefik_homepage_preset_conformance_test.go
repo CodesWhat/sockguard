@@ -77,7 +77,7 @@ func TestTraefikPresetConformance(t *testing.T) {
 		{"ping-head", http.MethodHead, "/_ping", "", true},
 		{"ping-get", http.MethodGet, "/_ping", "", true},
 		{"version", http.MethodGet, "/version", "", true},
-		{"info", http.MethodGet, "/info", "", true},
+		{"info-denied", http.MethodGet, "/info", "", false},
 		{"events", http.MethodGet, "/events", "", true},
 
 		// Docker-mode provider.
@@ -153,12 +153,12 @@ func TestHomepagePresetConformance(t *testing.T) {
 	handler := buildDrydockPresetHandler(t, "homepage.yaml")
 
 	cases := []presetCase{
-		// Health + metadata.
-		{"ping-get", http.MethodGet, "/_ping", "", true},
-		{"ping-head", http.MethodHead, "/_ping", "", true},
-		{"version", http.MethodGet, "/version", "", true},
-		{"info", http.MethodGet, "/info", "", true},
-		{"events", http.MethodGet, "/events", "", true},
+		// Homepage does not use Docker health or metadata endpoints.
+		{"ping-get-denied", http.MethodGet, "/_ping", "", false},
+		{"ping-head-denied", http.MethodHead, "/_ping", "", false},
+		{"version-denied", http.MethodGet, "/version", "", false},
+		{"info-denied", http.MethodGet, "/info", "", false},
+		{"events-denied", http.MethodGet, "/events", "", false},
 
 		// Container reads: list, inspect, stats.
 		{"containers-list", http.MethodGet, "/containers/json", "", true},

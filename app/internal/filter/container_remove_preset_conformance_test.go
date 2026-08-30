@@ -7,10 +7,10 @@ import (
 
 // TestContainerRemovePresetConformance pins the destructive query controls
 // each shipped client actually uses. Drydock's recovery path and Portwing's
-// force option require force removal; Compose teardown, Watchtower cleanup,
-// and GitLab Runner additionally remove anonymous volumes. actions/runner's
-// `docker rm --force` needs only force. None of these clients removes legacy
-// links through the container-remove endpoint.
+// force option require force removal; Compose teardown, Portainer,
+// Watchtower cleanup, and GitLab Runner additionally remove anonymous
+// volumes. actions/runner's `docker rm --force` needs only force. None of
+// these clients removes legacy links through the container-remove endpoint.
 func TestContainerRemovePresetConformance(t *testing.T) {
 	tests := []struct {
 		preset             string
@@ -26,6 +26,7 @@ func TestContainerRemovePresetConformance(t *testing.T) {
 		{preset: "portwing-with-compose.yaml", allowRemoveVolumes: true},
 		{preset: "portwing-with-exec.yaml"},
 		{preset: "portwing-with-mediated-build.yaml", allowRemoveVolumes: true},
+		{preset: "portainer.yaml", allowRemoveVolumes: true},
 		{preset: "watchtower.yaml", allowRemoveVolumes: true},
 		{preset: "github-actions-runner.yaml"},
 		{preset: "gitlab-runner.yaml", allowRemoveVolumes: true},

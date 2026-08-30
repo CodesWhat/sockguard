@@ -71,6 +71,41 @@ func TestCompatAllowDeleteWiresContainerRemoveQueryControls(t *testing.T) {
 	})
 }
 
+func TestCompatContainersPostWiresContainerRemoveQueryControls(t *testing.T) {
+	clearCompatEnvironment(t)
+	t.Setenv("CONTAINERS", "1")
+	t.Setenv("POST", "1")
+
+	cfg := Defaults()
+	if !ApplyCompat(&cfg, discardLogger) {
+		t.Fatal("ApplyCompat() = false, want true")
+	}
+
+	handler := compatContainerRemoveHandler(t, cfg)
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "force removal", path: "/containers/abc?force=1"},
+		{name: "anonymous volume removal", path: "/containers/abc?v=1"},
+		{name: "legacy link removal", path: "/containers/abc?link=1"},
+		{name: "slash-bearing legacy link removal", path: "/containers/client/alias?link=1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodDelete, tt.path, nil)
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("DELETE %s status = %d, want %d; body: %s", tt.path, rec.Code, http.StatusNoContent, rec.Body.String())
+			}
+		})
+	}
+}
+
 func compatContainerRemoveHandler(t *testing.T, cfg Config) http.Handler {
 	t.Helper()
 

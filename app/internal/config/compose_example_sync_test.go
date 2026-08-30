@@ -52,6 +52,11 @@ func TestComposeExamplesInSyncWithCanonicalPresets(t *testing.T) {
 			example:   filepath.Join("..", "..", "..", "examples", "compose", "watchtower", "sockguard.yaml"),
 		},
 		{
+			name:      "portainer",
+			canonical: filepath.Join("..", "..", "configs", "portainer.yaml"),
+			example:   filepath.Join("..", "..", "..", "examples", "compose", "portainer", "sockguard.yaml"),
+		},
+		{
 			name:      "github-actions-runner",
 			canonical: filepath.Join("..", "..", "configs", "github-actions-runner.yaml"),
 			example:   filepath.Join("..", "..", "..", "examples", "compose", "github-actions-runner", "sockguard.yaml"),

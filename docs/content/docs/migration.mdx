@@ -202,7 +202,8 @@ Sockguard accepts the current Tecnativa environment-variable surface, including 
 
 That gets you current Tecnativa env-surface compatibility. If you intentionally want section-wide raw archive/export or log/attach streaming parity from `CONTAINERS=1` or `IMAGES=1`, also set `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true`; otherwise move to YAML and allow only the list/inspect endpoints you actually need.
 
-`ALLOW_DELETE=1` keeps Tecnativa's full container-delete behavior, including
+`CONTAINERS=1` with `POST=1`, or `ALLOW_DELETE=1` independently, keeps
+Tecnativa's full container-delete behavior, including
 force removal, anonymous-volume removal, and slash-bearing legacy link names
 such as `client/alias`. To allow bare deletes while denying any of those query
 controls, migrate the delete rule to YAML and leave its matching

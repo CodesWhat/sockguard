@@ -1624,6 +1624,11 @@ Compat env vars only generate rules when no explicit `rules:` are configured. If
 
 Broad compat reads such as `CONTAINERS=1`, `IMAGES=1`, or `POST=0` with section-wide `GET` access require `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true` if you intentionally want raw archive/export or log/attach streaming parity. Safer YAML configs should allow only the list/inspect endpoints a client needs.
 
+`CONTAINERS=1` with `POST=1` preserves the compatibility proxy's full
+container-write surface, including force removal, anonymous-volume removal,
+and slash-bearing legacy link removal. Move the delete rule to YAML and
+configure `request_body.container_remove` to narrow those controls.
+
 Signed-policy mode cannot safely apply unsigned rule generation after verifying
 the candidate. When `--policy-bundle-trust-config` is set, the presence of any
 section variable, `POST`, `GRPC`/`SESSION`, or granular `ALLOW_*` variable is a
@@ -1645,7 +1650,7 @@ ALLOW_DELETE=0     # Deny DELETE /containers/{id} (default)
 ```
 
 Sockguard also accepts the legacy singular `ALLOW_RESTART=1` alias, but `ALLOW_RESTARTS` is the upstream Tecnativa/LinuxServer name.
-`ALLOW_DELETE=1` preserves the compatibility surface's historical behavior by
+`ALLOW_DELETE=1` independently preserves the same historical behavior by
 allowing force removal, anonymous-volume removal, and slash-bearing legacy link
 removal as well as a bare delete. Move the rule to YAML and configure
 `request_body.container_remove` when you want those three controls separated.

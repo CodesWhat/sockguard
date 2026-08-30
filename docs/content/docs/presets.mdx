@@ -298,7 +298,7 @@ Minimal read-only access for Traefik reverse proxy.
 
 ```yaml
 # Allows: GET container list + inspect, network/service/task lists, node inspect
-#         (Swarm), events, ping, version, info
+#         (Swarm), events, ping, version
 # Denies: everything else, including container archive/export/logs/attach
 ```
 
@@ -320,6 +320,9 @@ Full Docker API access for Portainer management UI.
 # Container, image, build, network, swarm, node, and plugin writes are inspected, but
 # Portainer's arbitrary exec/plugin-setting behavior may still require the unsafe opt-in
 ```
+
+Portainer's cleanup path uses force removal and anonymous-volume removal, so
+both controls are enabled. Docker's legacy link-removal mode stays denied.
 
 ## Watchtower (`watchtower.yaml`)
 
@@ -359,7 +362,7 @@ Read-only access for the [Homepage](https://gethomepage.dev) dashboard.
 
 ```yaml
 # Allows: GET container list + inspect + stats, service list + inspect and task
-#         list (Swarm), events, ping, version, info
+#         list (Swarm)
 # Denies: all write operations, plus container archive/export/logs/attach and
 #         the image-tarball paths GET /images/get and GET /images/*/get
 ```
@@ -406,8 +409,10 @@ because Docker registers the route as `/images/{name:.*}/json` and `{name:.*}`
 spans slashes, so a registry-qualified image arrives as
 `GET /images/ghcr.io/org/app:tag/json`. The literal `/json` suffix keeps the
 pattern narrow: `GET /images/get`, `GET /images/{name}/get` and
-`GET /images/{name}/history` do not end in `/json` and stay denied. That is
-why this preset does **not** set `insecure_allow_read_exfiltration: true`.
+`GET /images/{name}/history` do not end in `/json` and stay denied. Because
+`/**` can match zero segments, an earlier `GET /images/json` deny also keeps
+the unused image-list call out of the surface. That is why this preset does
+**not** set `insecure_allow_read_exfiltration: true`.
 
 ## Autoheal (`autoheal.yaml`)
 
