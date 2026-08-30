@@ -82,13 +82,13 @@ type libpodNetworkUpdateRequest struct {
 // entities.NetworkConnectOptions (pkg/domain/entities/types/network.go at
 // v5.8.1), the body POST /libpod/networks/{name}/connect decodes. That type
 // is `Container string` plus an EMBEDDED, untagged
-// github.com/containers/common/libnetwork/types.PerNetworkOptions, so the endpoint
+// go.podman.io/common/libnetwork/types.PerNetworkOptions, so the endpoint
 // fields sit at the top level of the JSON object under snake_case names —
 // nothing like Docker's nested {"Container","EndpointConfig":{...}}. Reading
 // the Docker spelling here would find nothing and allow every connect, which
 // is precisely the failure this struct exists to prevent. PerNetworkOptions
-// was read at github.com/containers/common v0.62.2, the version Podman
-// v5.8.1's go.mod pins.
+// was read at go.podman.io/common v0.67.0, the version Podman v5.8.1's
+// go.mod pins directly.
 //
 // The five fields are decoded as the loosest type that still detects
 // presence, because presence is all the gates below need and a looser type
@@ -125,7 +125,7 @@ type libpodNetworkConnectRequest struct {
 	Options       map[string]string  `json:"options"`
 }
 
-// libpodHardwareAddr mirrors containers/common v0.62.2's
+// libpodHardwareAddr mirrors go.podman.io/common v0.67.0's
 // types.HardwareAddr.UnmarshalJSON without importing Podman's dependency tree
 // into the request hot path. Sockguard needs only presence after validation,
 // but it must accept exactly the wire shapes Podman accepts: a parseable MAC
