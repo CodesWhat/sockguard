@@ -1430,6 +1430,14 @@ func TestLibpodImageWriteMiddlewareRouting(t *testing.T) {
 			wantReason: "evil.example.com",
 		},
 		{
+			name:       "libpod image load denies behind a Podman prerelease prefix",
+			policy:     PolicyConfig{ImageLoad: libpodImageLoadAllowlist()},
+			target:     "/v5.8.1-dev/libpod/images/load",
+			body:       loadArchive,
+			wantStatus: http.StatusForbidden,
+			wantReason: "evil.example.com",
+		},
+		{
 			name:       "libpod image load allows an allowlisted archive",
 			policy:     PolicyConfig{ImageLoad: libpodImageLoadAllowlist()},
 			target:     "/libpod/images/load",
@@ -1471,6 +1479,12 @@ func TestLibpodImageWriteMiddlewareRouting(t *testing.T) {
 			wantReason: "evil.example.com",
 		},
 		{
+			name:       "libpod image import denies behind a four-component Podman prefix",
+			target:     "/v5.8.1.2/libpod/images/import?URL=http%3A%2F%2Fevil.example.com%2Fx.tar",
+			wantStatus: http.StatusForbidden,
+			wantReason: "evil.example.com",
+		},
+		{
 			name:       "libpod image import allows once allow_imports is set",
 			policy:     PolicyConfig{ImagePull: ImagePullOptions{AllowImports: true}},
 			target:     "/libpod/images/import?URL=http%3A%2F%2Fexample.com%2Fx.tar",
@@ -1503,6 +1517,13 @@ func TestLibpodImageWriteMiddlewareRouting(t *testing.T) {
 			wantReason: "insecure_allow_body_blind_writes",
 		},
 		{
+			name:       "libpod local image load denies behind a four-component Podman prefix",
+			policy:     PolicyConfig{ImageLoad: ImageLoadOptions{AllowAllRegistries: true}},
+			target:     "/v5.8.1.2/libpod/local/images/load?path=%2Fetc",
+			wantStatus: http.StatusForbidden,
+			wantReason: "insecure_allow_body_blind_writes",
+		},
+		{
 			name:       "libpod local image load allows once acknowledged",
 			policy:     PolicyConfig{ImageLoad: ImageLoadOptions{AllowBlindWrites: true}},
 			target:     "/libpod/local/images/load?path=%2Fetc",
@@ -1517,6 +1538,12 @@ func TestLibpodImageWriteMiddlewareRouting(t *testing.T) {
 		{
 			name:       "libpod local build denies behind a Podman version prefix",
 			target:     "/v5.0/libpod/local/build?localcontextdir=%2Fetc",
+			wantStatus: http.StatusForbidden,
+			wantReason: "insecure_allow_body_blind_writes",
+		},
+		{
+			name:       "libpod local build denies behind a Podman prerelease prefix",
+			target:     "/v5.8.1-dev/libpod/local/build?localcontextdir=%2Fetc",
 			wantStatus: http.StatusForbidden,
 			wantReason: "insecure_allow_body_blind_writes",
 		},

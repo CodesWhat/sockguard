@@ -1931,6 +1931,82 @@ func TestResolveNormalizedPathUsesCachedMeta(t *testing.T) {
 	if got != "/containers/json" {
 		t.Errorf("resolveNormalizedPath(meta without NormPath) = %q, want %q", got, "/containers/json")
 	}
+
+	// Podman's router uses EscapedPath for libpod routes. A cached decoded
+	// path must not turn an encoded SCP source suffix into the earlier image
+	// push route.
+	scpReq := httptest.NewRequest(http.MethodPost, "/v5.8.1-dev/libpod/images/scp/foreign%2Fpush", nil)
+	scpMeta := &logging.RequestMeta{NormPath: "/v5.8.1-dev/libpod/images/scp/foreign/push"}
+	got = resolveNormalizedPath(scpMeta, scpReq)
+	if got != "/libpod/images/scp/foreign%2Fpush" {
+		t.Errorf("resolveNormalizedPath(encoded SCP) = %q, want %q", got, "/libpod/images/scp/foreign%2Fpush")
+	}
+}
+
+func TestImageScpDualViewDenialMetadataUsesTheRejectingPolicyView(t *testing.T) {
+	tests := []struct {
+		name         string
+		rawPath      string
+		rules        []Rule
+		wantRule     int
+		wantReason   string
+		wantNormPath string
+	}{
+		{
+			name:    "canonical deny",
+			rawPath: "/libpod/images/scp/foreign%2Fsecret",
+			rules: []Rule{
+				{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/foreign/secret", Action: ActionDeny, Reason: "canonical source denied", Index: 4},
+				{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/**", Action: ActionAllow, Index: 5},
+			},
+			wantRule:     4,
+			wantReason:   "canonical source denied",
+			wantNormPath: "/libpod/images/scp/foreign/secret",
+		},
+		{
+			name:    "encoded route deny",
+			rawPath: "/libpod/images/scp/foreign%2Fsecret",
+			rules: []Rule{
+				{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/foreign/secret", Action: ActionAllow, Index: 6},
+				{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/**", Action: ActionDeny, Reason: "encoded route denied", Index: 7},
+			},
+			wantRule:     7,
+			wantReason:   "encoded route denied",
+			wantNormPath: "/libpod/images/scp/foreign%2Fsecret",
+		},
+		{
+			name:    "trailing slash route deny",
+			rawPath: "/v5.8.1/libpod/images/scp/foreign/push/",
+			rules: []Rule{
+				{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/foreign/push", Action: ActionAllow, Index: 8},
+				{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "SCP route denied", Index: 9},
+			},
+			wantRule:     9,
+			wantReason:   "SCP route denied",
+			wantNormPath: "/libpod/images/scp/foreign/push/",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			meta := &logging.RequestMeta{}
+			req := httptest.NewRequest(http.MethodPost, tt.rawPath, nil)
+			req = req.WithContext(logging.WithMeta(req.Context(), meta))
+			handler := MiddlewareWithOptions(compileRulesForTest(t, tt.rules), testLogger(), Options{})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("encoded SCP request reached upstream")
+			}))
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+			}
+			if meta.Rule != tt.wantRule || meta.Reason != tt.wantReason || meta.NormPath != tt.wantNormPath {
+				t.Fatalf("metadata = rule %d reason %q path %q, want rule %d reason %q path %q", meta.Rule, meta.Reason, meta.NormPath, tt.wantRule, tt.wantReason, tt.wantNormPath)
+			}
+		})
+	}
 }
 
 // TestRunAllowedInspectionReturnsEmptyForPassThrough exercises the happy path

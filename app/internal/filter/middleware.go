@@ -249,7 +249,7 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			}
 
 			normPath := resolveNormalizedPath(meta, r)
-			action, ruleIndex, reason := evaluateNormalized(activePolicy.rules, r.Method, normPath)
+			action, ruleIndex, reason, normPath := evaluateRequestPolicy(activePolicy.rules, r, normPath)
 			denyStatus := http.StatusForbidden
 			reasonCode := ruleDecisionReasonCode(action, reason)
 			stampDecisionOnMeta(meta, action, ruleIndex, reasonCode, reason, normPath)
@@ -314,6 +314,9 @@ func resolveActivePolicy(opts Options, profilePolicies map[string]runtimePolicy,
 // already produced it; otherwise it normalizes once and lets the meta carry
 // the value forward to downstream layers.
 func resolveNormalizedPath(meta *logging.RequestMeta, r *http.Request) string {
+	if routePath, ok := normalizedLibpodImageScpRoutePath(r); ok {
+		return routePath
+	}
 	if meta != nil && meta.NormPath != "" {
 		return meta.NormPath
 	}

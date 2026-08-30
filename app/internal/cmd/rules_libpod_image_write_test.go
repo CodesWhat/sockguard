@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -213,10 +214,14 @@ func TestValidateAndCompileRulesReportsExactLibpodImagePushRepresentativeOnce(t 
 }
 
 func TestValidateAndCompileRulesPreservesExactLibpodImageScpPathBytes(t *testing.T) {
-	const exactPath = "/libpod/images/scp/alpine "
+	const (
+		exactPath = "/libpod/images/scp/alpine "
+		routePath = "/libpod/images/scp/alpine%20"
+	)
 	cfg := config.Defaults()
 	cfg.Rules = []config.RuleConfig{
 		{Match: config.MatchConfig{Method: http.MethodPost, Path: exactPath}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: routePath}, Action: "allow"},
 		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
 	}
 
@@ -238,9 +243,22 @@ func TestValidateAndCompileRulesPreservesExactLibpodImageScpPathBytes(t *testing
 	if err != nil {
 		t.Fatalf("validateAndCompileRules() error = %v once both are acknowledged, want nil", err)
 	}
-	request := &http.Request{Method: http.MethodPost, URL: &url.URL{Path: exactPath}}
+	request := httptest.NewRequest(http.MethodPost, routePath, nil)
 	if action, _, _ := filter.Evaluate(compiled, request); action != filter.ActionAllow {
-		t.Fatalf("Evaluate(%q) action = %q, want %q", exactPath, action, filter.ActionAllow)
+		t.Fatalf("Evaluate(%q) action = %q, want %q", routePath, action, filter.ActionAllow)
+	}
+
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: exactPath}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+	compiled, err = validateAndCompileRules(&cfg)
+	if err != nil {
+		t.Fatalf("validateAndCompileRules() decoded-only error = %v with acknowledgments, want nil", err)
+	}
+	request = httptest.NewRequest(http.MethodPost, routePath, nil)
+	if action, _, _ := filter.Evaluate(compiled, request); action != filter.ActionDeny {
+		t.Fatalf("Evaluate(%q) with only decoded allow = %q, want %q", routePath, action, filter.ActionDeny)
 	}
 }
 
@@ -568,6 +586,90 @@ func TestValidateAndCompileRulesExcludesLibpodImageActionsFromScp(t *testing.T) 
 			}
 			if err != nil {
 				t.Fatalf("validateAndCompileRules() error = %v, want action route excluded from image SCP", err)
+			}
+		})
+	}
+}
+
+func TestValidateAndCompileRulesMatchesEncodedImageScpRuntimeRoute(t *testing.T) {
+	t.Run("an exact push rule cannot admit an encoded SCP source", func(t *testing.T) {
+		const decodedPath = "/libpod/images/scp/foreign/push"
+		cfg := config.Defaults()
+		cfg.InsecureAllowReadExfiltration = true
+		cfg.Rules = []config.RuleConfig{
+			{Match: config.MatchConfig{Method: http.MethodPost, Path: decodedPath}, Action: "allow"},
+			{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+		}
+
+		compiled, err := validateAndCompileRules(&cfg)
+		if err != nil {
+			t.Fatalf("validateAndCompileRules() error = %v, want the image-push rule accepted", err)
+		}
+		request := httptest.NewRequest(http.MethodPost, "/libpod/images/scp/foreign%2Fpush", nil)
+		if action, _, _ := filter.Evaluate(compiled, request); action != filter.ActionDeny {
+			t.Fatalf("Evaluate(encoded SCP) action = %q, want %q", action, filter.ActionDeny)
+		}
+	})
+
+	t.Run("a broad SCP rule needs both acknowledgments and admits the encoded source", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.Rules = []config.RuleConfig{
+			{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/scp/**"}, Action: "allow"},
+			{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+		}
+
+		err := errorFromValidate(t, &cfg)
+		if !strings.Contains(err.Error(), "insecure_allow_body_blind_writes=true") {
+			t.Fatalf("error = %q, want the blind-write acknowledgment", err)
+		}
+		cfg.InsecureAllowBodyBlindWrites = true
+		err = errorFromValidate(t, &cfg)
+		if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
+			t.Fatalf("error = %q, want the read-exfiltration acknowledgment", err)
+		}
+		cfg.InsecureAllowReadExfiltration = true
+		compiled, err := validateAndCompileRules(&cfg)
+		if err != nil {
+			t.Fatalf("validateAndCompileRules() error = %v once both are acknowledged, want nil", err)
+		}
+		for _, path := range []string{
+			"/v5.8.1-dev/libpod/images/scp/foreign%2Fpush",
+			"/v5.8.1/libpod/images/scp/foreign/push/",
+		} {
+			request := httptest.NewRequest(http.MethodPost, path, nil)
+			if action, _, _ := filter.Evaluate(compiled, request); action != filter.ActionAllow {
+				t.Fatalf("Evaluate(%q) action = %q, want %q", path, action, filter.ActionAllow)
+			}
+		}
+	})
+}
+
+func TestValidateAndCompileRulesCannotMissPodmanVersionWildcardWrites(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: "POST,PUT", Path: "/v*/libpod/**"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	compiled, err := validateAndCompileRules(&cfg)
+	if err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v, want the normalized-unreachable rule accepted", err)
+	}
+	for _, tt := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodPost, path: "/v5.8.1-dev/libpod/images/load"},
+		{method: http.MethodPost, path: "/v5.8.1.2/libpod/images/import"},
+		{method: http.MethodPost, path: "/v5.8.1-dev/libpod/local/images/load"},
+		{method: http.MethodPost, path: "/v5.8.1.2/libpod/local/build"},
+		{method: http.MethodPut, path: "/v5.8.1-dev/libpod/containers/app/archive"},
+		{method: http.MethodPost, path: "/v5.8.1.2/libpod/containers/app/update"},
+	} {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			request := httptest.NewRequest(tt.method, tt.path, nil)
+			if action, _, _ := filter.Evaluate(compiled, request); action != filter.ActionDeny {
+				t.Fatalf("Evaluate(%q) action = %q, want %q after version normalization", tt.path, action, filter.ActionDeny)
 			}
 		})
 	}
