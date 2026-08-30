@@ -451,82 +451,33 @@ func allowedBodySensitiveWriteEndpoints(requestBody config.RequestBodyConfig, co
 }
 
 func allowedCatalogPaths(method, catalogPath string, sourceRules []config.RuleConfig, compiledRules []*filter.CompiledRule) []string {
-	probePaths := []string{catalogPath}
-	configuredLiteralPaths := make(map[string]struct{}, len(sourceRules))
-	for _, rule := range sourceRules {
-		if strings.Contains(rule.Match.Path, "*") {
-			continue
-		}
-
-		normalized := filter.NormalizePath(rule.Match.Path)
-		configuredLiteralPaths[normalized] = struct{}{}
-		if sameCatalogPathShape(normalized, catalogPath) {
-			probePaths = append(probePaths, rule.Match.Path)
-		}
+	// Preserve the stable catalog spelling when its representative route is
+	// itself exposed. Exact reachability is only needed when ordered rules
+	// shadow that representative but may leave another identifier reachable.
+	if policyAllowsPath(method, catalogPath, compiledRules) {
+		return []string{catalogPath}
 	}
 
-	allowed := make([]string, 0, len(probePaths))
-	seen := make(map[string]struct{}, len(probePaths))
-	for _, path := range probePaths {
-		if _, ok := seen[path]; ok {
-			continue
+	witness, result := firstAllowedCatalogPath(method, catalogPath, sourceRules)
+	switch result {
+	case catalogReachable:
+		// Verify the automaton witness through the production evaluator. Any
+		// future matcher-dialect drift fails closed instead of hiding exposure.
+		if policyAllowsPath(method, witness, compiledRules) {
+			return []string{witness}
 		}
-		seen[path] = struct{}{}
-		if policyAllowsPath(method, path, compiledRules) {
-			allowed = append(allowed, path)
-		}
+		return []string{catalogPath}
+	case catalogReachabilityIndeterminate:
+		return []string{catalogPath}
+	default:
+		return nil
 	}
-	if len(allowed) > 0 || !strings.Contains(catalogPath, "sockguard-test") {
-		return allowed
-	}
-
-	// Exact denies for synthetic identifiers must not shadow a later wildcard
-	// allow. Pick an identifier absent from every configured literal path, then
-	// let the compiled first-match evaluator decide whether it is reachable.
-	reachabilityPath := collisionFreeCatalogPath(catalogPath, configuredLiteralPaths)
-	if policyAllowsPath(method, reachabilityPath, compiledRules) {
-		return []string{reachabilityPath}
-	}
-	return nil
 }
 
 func policyAllowsPath(method, path string, compiledRules []*filter.CompiledRule) bool {
 	req := &http.Request{Method: method, URL: &url.URL{Path: path}}
 	action, _, _ := filter.Evaluate(compiledRules, req)
 	return action == filter.ActionAllow
-}
-
-func collisionFreeCatalogPath(catalogPath string, configuredLiteralPaths map[string]struct{}) string {
-	for suffix := 0; ; suffix++ {
-		identifier := "sockguard-reachability"
-		if suffix > 0 {
-			identifier = fmt.Sprintf("sockguard-reachability-%d", suffix)
-		}
-		path := strings.ReplaceAll(catalogPath, "sockguard-test", identifier)
-		if _, exists := configuredLiteralPaths[filter.NormalizePath(path)]; !exists {
-			return path
-		}
-	}
-}
-
-func sameCatalogPathShape(actual, catalog string) bool {
-	actualParts := strings.Split(strings.Trim(actual, "/"), "/")
-	catalogParts := strings.Split(strings.Trim(catalog, "/"), "/")
-	if len(actualParts) != len(catalogParts) {
-		return false
-	}
-	for i := range catalogParts {
-		if catalogParts[i] == "sockguard-test" {
-			if actualParts[i] == "" {
-				return false
-			}
-			continue
-		}
-		if actualParts[i] != catalogParts[i] {
-			return false
-		}
-	}
-	return true
 }
 
 func allowedSensitiveExfilEndpoints(configured []config.RuleConfig, compiled []*filter.CompiledRule) []string {
