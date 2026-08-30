@@ -682,6 +682,7 @@ func attachRuntimeInspectors(cfg *config.Config, res *upstream.Resolver, policy 
 	// runs for both the default policy and every named profile.
 	policy.Exec.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
 	policy.Build.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
+	policy.ContainerUpdate.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
 	return policy
 }
 

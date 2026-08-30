@@ -1389,6 +1389,36 @@ func TestValidateAndCompileRulesLibpodContainerWriteGates(t *testing.T) {
 			},
 		},
 		{
+			name: "allows an exact libpod container update on the shared container_update inspector",
+			configure: func(cfg *config.Config) {
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/real-id/update"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+		},
+		{
+			name: "rejects an exact libpod container restore without the blind-write acknowledgment",
+			configure: func(cfg *config.Config) {
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/real-id/restore"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+			wantErr:         true,
+			wantErrContains: []string{"insecure_allow_body_blind_writes=true", "POST /libpod/containers/real-id/restore"},
+		},
+		{
+			name: "allows an exact libpod container restore once the blind-write acknowledgment is set",
+			configure: func(cfg *config.Config) {
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/real-id/restore"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+				cfg.InsecureAllowBodyBlindWrites = true
+			},
+		},
+		{
 			name: "rejects libpod container restore without the blind-write acknowledgment",
 			configure: func(cfg *config.Config) {
 				cfg.Rules = []config.RuleConfig{

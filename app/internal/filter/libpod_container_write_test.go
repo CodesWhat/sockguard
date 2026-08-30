@@ -27,6 +27,7 @@ func libpodUpdateAllGatesOpen() ContainerUpdateOptions {
 		AllowCapabilities:    true,
 		AllowRestartPolicy:   true,
 		AllowResourceUpdates: true,
+		AllowBlindWrites:     true,
 	}
 }
 
@@ -413,10 +414,63 @@ func TestLibpodContainerUpdateInspect(t *testing.T) {
 			body: `{"health_on_failure":"restart","no_healthcheck":false,"health_startup_retries":1}`,
 		},
 		{
-			// Timing and log-rotation tuning changes when an
-			// already-approved command runs, not what runs.
-			name: "allows healthcheck timing tuning with the default policy",
-			body: `{"health_interval":"30s","health_retries":3,"health_timeout":"5s","health_start_period":"10s","health_startup_interval":"2s","health_startup_timeout":"3s","health_startup_success":1,"health_max_log_size":0,"health_max_log_count":10}`,
+			name:        "denies health interval without blind-write acknowledgement",
+			body:        `{"health_interval":"1ns"}`,
+			wantDeny:    true,
+			wantReasonC: "insecure_allow_body_blind_writes",
+		},
+		{
+			name:        "denies health retries without blind-write acknowledgement",
+			body:        `{"health_retries":3}`,
+			wantDeny:    true,
+			wantReasonC: "insecure_allow_body_blind_writes",
+		},
+		{
+			name:        "denies health timeout without blind-write acknowledgement",
+			body:        `{"health_timeout":"5s"}`,
+			wantDeny:    true,
+			wantReasonC: "insecure_allow_body_blind_writes",
+		},
+		{
+			name:        "denies health start period without blind-write acknowledgement",
+			body:        `{"health_start_period":"10s"}`,
+			wantDeny:    true,
+			wantReasonC: "insecure_allow_body_blind_writes",
+		},
+		{
+			name:        "denies startup interval without blind-write acknowledgement",
+			body:        `{"health_startup_interval":"1ns"}`,
+			wantDeny:    true,
+			wantReasonC: "insecure_allow_body_blind_writes",
+		},
+		{
+			name:        "denies startup timeout without blind-write acknowledgement",
+			body:        `{"health_startup_timeout":"3s"}`,
+			wantDeny:    true,
+			wantReasonC: "insecure_allow_body_blind_writes",
+		},
+		{
+			name:        "denies startup success threshold without blind-write acknowledgement",
+			body:        `{"health_startup_success":1}`,
+			wantDeny:    true,
+			wantReasonC: "insecure_allow_body_blind_writes",
+		},
+		{
+			name:        "denies infinite health log size without blind-write acknowledgement",
+			body:        `{"health_max_log_size":0}`,
+			wantDeny:    true,
+			wantReasonC: "insecure_allow_body_blind_writes",
+		},
+		{
+			name:        "denies infinite health log count without blind-write acknowledgement",
+			body:        `{"health_max_log_count":0}`,
+			wantDeny:    true,
+			wantReasonC: "insecure_allow_body_blind_writes",
+		},
+		{
+			name: "allows health timing and retention under blind-write acknowledgement",
+			opts: ContainerUpdateOptions{AllowBlindWrites: true},
+			body: `{"health_interval":"30s","health_retries":3,"health_timeout":"5s","health_start_period":"10s","health_startup_interval":"2s","health_startup_timeout":"3s","health_startup_success":1,"health_max_log_size":0,"health_max_log_count":0}`,
 		},
 		{
 			name:        "denies the restartPolicy query parameter by default",
@@ -593,9 +647,17 @@ func TestLibpodContainerUpdateMiddlewareInspects(t *testing.T) {
 			wantReason: "restart policy changes are not allowed",
 		},
 		{
-			name:       "allows healthcheck timing tuning on the libpod path",
+			name:       "denies healthcheck timing tuning without blind-write acknowledgement",
+			target:     "/libpod/containers/abc/update",
+			body:       `{"health_interval":"1ns"}`,
+			wantStatus: http.StatusForbidden,
+			wantReason: "insecure_allow_body_blind_writes",
+		},
+		{
+			name:       "allows healthcheck timing tuning under blind-write acknowledgement",
 			target:     "/libpod/containers/abc/update",
 			body:       `{"health_interval":"30s"}`,
+			policy:     ContainerUpdateOptions{AllowBlindWrites: true},
 			wantStatus: http.StatusCreated,
 		},
 		{

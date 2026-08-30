@@ -97,6 +97,9 @@ func (p containerUpdatePolicy) inspectLibpod(logger *slog.Logger, r *http.Reques
 	if reason, ok := libpodContainerUpdateUngovernedDenyReason(objects); ok {
 		return fmt.Sprintf("%s denied: %s", libpodContainerUpdateSubject, reason), nil
 	}
+	if !p.allowBlindWrites && containerUpdateHasAnyField(objects, libpodContainerUpdateBlindWriteFields...) {
+		return libpodContainerUpdateSubject + " denied: healthcheck timing and log-retention changes require insecure_allow_body_blind_writes: true", nil
+	}
 	if !p.allowAllDevices && containerUpdateHasAnyField(objects, libpodContainerUpdateDeviceFields...) {
 		return libpodContainerUpdateSubject + " denied: device changes are not allowed", nil
 	}
@@ -181,14 +184,32 @@ type libpodContainerUpdateUngovernedField struct {
 //
 // Everything else in define.UpdateHealthCheckConfig either rides
 // AllowRestartPolicy as a lifecycle change (see
-// libpodContainerUpdateLifecycleFields) or is timing and log-rotation tuning
-// that passes, field by field, in that list's doc comment.
+// libpodContainerUpdateLifecycleFields) or requires the global body-blind
+// write acknowledgment (see libpodContainerUpdateBlindWriteFields).
 var libpodContainerUpdateUngoverned = []libpodContainerUpdateUngovernedField{
 	{"health_cmd", "healthcheck command changes are not allowed (a healthcheck command is executed inside the container; grant exec through request_body.exec and the exec endpoints instead)"},
 	{"health_startup_cmd", "startup healthcheck command changes are not allowed (a healthcheck command is executed inside the container; grant exec through request_body.exec and the exec endpoints instead)"},
 	{"health_log_destination", "healthcheck log destination changes are not allowed (it names a directory on the daemon host)"},
 	{"Env", "environment changes are not allowed"},
 	{"UnsetEnv", "environment changes are not allowed"},
+}
+
+// libpodContainerUpdateBlindWriteFields can make an already-approved
+// healthcheck execute at high frequency or retain unbounded daemon logs. None
+// has a structured ContainerUpdateOptions policy, so they fail closed unless
+// the operator explicitly enables insecure_allow_body_blind_writes. Command,
+// environment, and daemon-host log-destination fields remain unconditionally
+// denied above even under that acknowledgment.
+var libpodContainerUpdateBlindWriteFields = []string{
+	"health_interval",
+	"health_retries",
+	"health_timeout",
+	"health_start_period",
+	"health_startup_interval",
+	"health_startup_timeout",
+	"health_startup_success",
+	"health_max_log_size",
+	"health_max_log_count",
 }
 
 // libpodContainerUpdateDeviceFields is specs.LinuxResources.Devices, the OCI
@@ -209,12 +230,8 @@ var libpodContainerUpdateDeviceFields = []string{
 // AllowRestartPolicy alongside the restartPolicy query parameter rather than
 // getting a gate of their own.
 //
-// The rest of define.UpdateHealthCheckConfig is timing and log-rotation
-// tuning and passes: health_interval, health_retries, health_timeout,
-// health_start_period, health_startup_interval, health_startup_timeout,
-// health_startup_success, health_max_log_size and health_max_log_count all
-// change WHEN an already-approved command runs or how its output is kept,
-// never what runs and never what the daemon does to the container.
+// Timing and log-retention fields are kept separate because they use the
+// global body-blind-write acknowledgment rather than this lifecycle gate.
 var libpodContainerUpdateLifecycleFields = []string{
 	"health_on_failure",
 	"no_healthcheck",

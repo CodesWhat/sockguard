@@ -298,7 +298,7 @@ func splitMethods(methods string) []string {
 }
 
 func validateBodyBlindWriteRules(cfg *config.Config, compiled []*filter.CompiledRule) error {
-	return validateBodyBlindWriteRulesForPolicy("", cfg.InsecureAllowBodyBlindWrites, cfg.RequestBody, compiled)
+	return validateBodyBlindWriteRulesForPolicy("", cfg.InsecureAllowBodyBlindWrites, cfg.RequestBody, cfg.Rules, compiled)
 }
 
 func validateReadExfiltrationRules(cfg *config.Config, compiled []*filter.CompiledRule) error {
@@ -310,12 +310,12 @@ func validateBuildkitTunnelRules(cfg *config.Config, compiled []*filter.Compiled
 	return validateBuildkitTunnelRulesForPolicy("", cfg.InsecureAcceptOpaqueBuildkitTunnels, cfg.RequestBody.Buildkit.ToPolicy(cfg.RequestBody.Build).Configured(), compiled)
 }
 
-func validateBodyBlindWriteRulesForPolicy(scope string, insecure bool, requestBody config.RequestBodyConfig, compiled []*filter.CompiledRule) error {
+func validateBodyBlindWriteRulesForPolicy(scope string, insecure bool, requestBody config.RequestBodyConfig, configured []config.RuleConfig, compiled []*filter.CompiledRule) error {
 	if insecure {
 		return nil
 	}
 
-	exposed := allowedBodySensitiveWriteEndpoints(requestBody, compiled)
+	exposed := allowedBodySensitiveWriteEndpoints(requestBody, configured, compiled)
 	if len(exposed) == 0 {
 		return nil
 	}
@@ -437,20 +437,70 @@ func allowedBuildkitTunnelEndpoints(compiled []*filter.CompiledRule) []string {
 	return allowed
 }
 
-func allowedBodySensitiveWriteEndpoints(requestBody config.RequestBodyConfig, compiled []*filter.CompiledRule) []string {
-	allowed := make([]string, 0, len(bodySensitiveWriteEndpoints))
+func allowedBodySensitiveWriteEndpoints(requestBody config.RequestBodyConfig, configured []config.RuleConfig, compiled []*filter.CompiledRule) []string {
+	type probe struct {
+		catalog bodySensitiveWriteEndpoint
+		path    string
+	}
+
+	probes := make([]probe, 0, len(bodySensitiveWriteEndpoints)+len(configured))
 	for _, endpoint := range bodySensitiveWriteEndpoints {
-		if bodyInspectionConfiguredForEndpoint(requestBody, endpoint) {
+		probes = append(probes, probe{catalog: endpoint, path: endpoint.path})
+	}
+	// The catalog uses sockguard-test as a resource-identifier placeholder.
+	// A literal allow rule for a different identifier does not match that
+	// synthetic probe, so add the operator's exact path when it has the same
+	// route shape. Evaluation still runs against the complete ordered rule set.
+	for _, rule := range configured {
+		if strings.Contains(rule.Match.Path, "*") {
 			continue
 		}
-		req := &http.Request{Method: endpoint.method, URL: &url.URL{Path: endpoint.path}}
+		for _, endpoint := range bodySensitiveWriteEndpoints {
+			if sameBodySensitiveEndpointShape(rule.Match.Path, endpoint.path) {
+				probes = append(probes, probe{catalog: endpoint, path: rule.Match.Path})
+			}
+		}
+	}
+
+	allowed := make([]string, 0, len(probes))
+	seen := make(map[string]struct{}, len(probes))
+	for _, candidate := range probes {
+		if bodyInspectionConfiguredForEndpoint(requestBody, candidate.catalog) {
+			continue
+		}
+		req := &http.Request{Method: candidate.catalog.method, URL: &url.URL{Path: candidate.path}}
 		action, _, _ := filter.Evaluate(compiled, req)
 		if action != filter.ActionAllow {
 			continue
 		}
-		allowed = append(allowed, endpoint.method+" "+endpoint.path)
+		entry := candidate.catalog.method + " " + candidate.path
+		if _, ok := seen[entry]; ok {
+			continue
+		}
+		seen[entry] = struct{}{}
+		allowed = append(allowed, entry)
 	}
 	return allowed
+}
+
+func sameBodySensitiveEndpointShape(actual, catalog string) bool {
+	actualParts := strings.Split(strings.Trim(actual, "/"), "/")
+	catalogParts := strings.Split(strings.Trim(catalog, "/"), "/")
+	if len(actualParts) != len(catalogParts) {
+		return false
+	}
+	for i := range catalogParts {
+		if catalogParts[i] == "sockguard-test" {
+			if actualParts[i] == "" {
+				return false
+			}
+			continue
+		}
+		if actualParts[i] != catalogParts[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func allowedSensitiveExfilEndpoints(compiled []*filter.CompiledRule) []string {
@@ -528,7 +578,7 @@ func compileClientProfiles(cfg *config.Config) (map[string]filter.Policy, error)
 		if err != nil {
 			return nil, fmt.Errorf("client profile %q: %w", profile.Name, err)
 		}
-		if err := validateBodyBlindWriteRulesForPolicy(profile.Name, cfg.InsecureAllowBodyBlindWrites, profile.RequestBody, compiledRules); err != nil {
+		if err := validateBodyBlindWriteRulesForPolicy(profile.Name, cfg.InsecureAllowBodyBlindWrites, profile.RequestBody, profile.Rules, compiledRules); err != nil {
 			return nil, err
 		}
 		if err := validateReadExfiltrationRulesForPolicy(profile.Name, cfg.InsecureAllowReadExfiltration, compiledRules); err != nil {

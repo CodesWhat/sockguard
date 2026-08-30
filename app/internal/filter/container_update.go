@@ -19,6 +19,10 @@ type ContainerUpdateOptions struct {
 	AllowCapabilities    bool
 	AllowRestartPolicy   bool
 	AllowResourceUpdates bool
+	// AllowBlindWrites acknowledges native libpod update fields that cannot
+	// be constrained by the structured container-update gates. Runtime wiring
+	// supplies it from the global insecure_allow_body_blind_writes setting.
+	AllowBlindWrites bool
 
 	// RequireMemoryLimit/RequireCPULimit/RequireCPULimitHard/RequirePidsLimit
 	// are enforced by ResourceLimitGuard (resource_limit_guard.go), not by
@@ -40,6 +44,7 @@ type containerUpdatePolicy struct {
 	allowCapabilities    bool
 	allowRestartPolicy   bool
 	allowResourceUpdates bool
+	allowBlindWrites     bool
 }
 
 func newContainerUpdatePolicy(opts ContainerUpdateOptions) containerUpdatePolicy {
@@ -49,6 +54,7 @@ func newContainerUpdatePolicy(opts ContainerUpdateOptions) containerUpdatePolicy
 		allowCapabilities:    opts.AllowCapabilities,
 		allowRestartPolicy:   opts.AllowRestartPolicy,
 		allowResourceUpdates: opts.AllowResourceUpdates,
+		allowBlindWrites:     opts.AllowBlindWrites,
 	}
 }
 
