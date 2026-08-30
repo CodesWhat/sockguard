@@ -350,6 +350,90 @@ func TestValidateAndCompileRulesPreservesOrderedWildcardPathBytes(t *testing.T) 
 	})
 }
 
+func TestValidateAndCompileRulesMatchesRelativeSegmentGlobsLikeRuntime(t *testing.T) {
+	for _, profile := range []bool{false, true} {
+		name := "default policy"
+		if profile {
+			name = "named profile"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Run("slash-bearing image push", func(t *testing.T) {
+				const pattern = "*/images/team/*/push"
+				const requestPath = "/libpod/images/team/acme/push"
+				rules := []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: pattern}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+				cfg := config.Defaults()
+				if profile {
+					cfg.Rules = []config.RuleConfig{{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"}}
+					cfg.Clients.Profiles = []config.ClientProfileConfig{{Name: "publisher", Rules: rules}}
+				} else {
+					cfg.Rules = rules
+				}
+
+				err := errorFromValidate(t, &cfg)
+				if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
+					t.Fatalf("error = %q, want the relative segment glob to demand the exfiltration acknowledgment", err)
+				}
+
+				cfg.InsecureAllowReadExfiltration = true
+				if _, err := validateAndCompileRules(&cfg); err != nil {
+					t.Fatalf("validateAndCompileRules() error = %v once acknowledged, want nil", err)
+				}
+				compiled, err := compileConfiguredRules(rules)
+				if err != nil {
+					t.Fatalf("compileConfiguredRules() error = %v", err)
+				}
+				request := &http.Request{Method: http.MethodPost, URL: &url.URL{Path: requestPath}}
+				if action, _, _ := filter.Evaluate(compiled, request); action != filter.ActionAllow {
+					t.Fatalf("Evaluate(%q) action = %q, want %q for pattern %q", requestPath, action, filter.ActionAllow, pattern)
+				}
+			})
+
+			t.Run("image SCP", func(t *testing.T) {
+				const pattern = "*libpod/images/scp/team/*"
+				const requestPath = "/libpod/images/scp/team/alpine"
+				rules := []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: pattern}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+				cfg := config.Defaults()
+				if profile {
+					cfg.Rules = []config.RuleConfig{{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"}}
+					cfg.Clients.Profiles = []config.ClientProfileConfig{{Name: "transfer", Rules: rules}}
+				} else {
+					cfg.Rules = rules
+				}
+
+				err := errorFromValidate(t, &cfg)
+				if !strings.Contains(err.Error(), "insecure_allow_body_blind_writes=true") {
+					t.Fatalf("error = %q, want the relative segment glob to demand the blind-write acknowledgment", err)
+				}
+
+				cfg.InsecureAllowBodyBlindWrites = true
+				err = errorFromValidate(t, &cfg)
+				if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
+					t.Fatalf("error = %q, want the relative segment glob to demand the exfiltration acknowledgment", err)
+				}
+
+				cfg.InsecureAllowReadExfiltration = true
+				if _, err := validateAndCompileRules(&cfg); err != nil {
+					t.Fatalf("validateAndCompileRules() error = %v once acknowledged, want nil", err)
+				}
+				compiled, err := compileConfiguredRules(rules)
+				if err != nil {
+					t.Fatalf("compileConfiguredRules() error = %v", err)
+				}
+				request := &http.Request{Method: http.MethodPost, URL: &url.URL{Path: requestPath}}
+				if action, _, _ := filter.Evaluate(compiled, request); action != filter.ActionAllow {
+					t.Fatalf("Evaluate(%q) action = %q, want %q for pattern %q", requestPath, action, filter.ActionAllow, pattern)
+				}
+			})
+		})
+	}
+}
+
 func TestValidateAndCompileRulesRejectsSlashBearingLibpodImagePush(t *testing.T) {
 	for _, path := range []string{
 		"/libpod/images/scp/acme/app/push",

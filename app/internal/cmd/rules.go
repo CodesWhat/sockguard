@@ -535,6 +535,17 @@ func globCanMatchNonemptyPathBelow(pattern, prefix string) bool {
 }
 
 func parseReachabilityGlob(pattern string) []reachabilityGlobPart {
+	// filter.CompileRule handles patterns without ** as segment globs. Its
+	// matchGlobSegments strips one leading slash from the normalized request
+	// path and splitGlobSegments strips one from the pattern, so a relative
+	// segment glob beginning with * has the same language as its absolute
+	// spelling. Other relative segment globs are unreachable because the
+	// compiled matcher's nonempty literal-prefix fast path still compares
+	// them against the request's leading slash. Preserve both behaviors here
+	// instead of broadening every relative glob.
+	if strings.HasPrefix(pattern, "*") && !strings.Contains(pattern, "**") {
+		pattern = "/" + pattern
+	}
 	runes := []rune(pattern)
 	parts := make([]reachabilityGlobPart, 0, len(runes))
 	for index := 0; index < len(runes); {
