@@ -542,6 +542,59 @@ func TestValidateAndCompileRulesRejectsRegistryPushWithoutExfiltrationOptIn(t *t
 	}
 }
 
+func TestValidateAndCompileRulesRejectsSlashBearingLibpodImagePushReachability(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		profile bool
+	}{
+		{
+			name:    "deep allow does not end in push",
+			pattern: "/libpod/images/team/**",
+		},
+		{
+			name:    "partial push suffix does not end in push",
+			pattern: "/libpod/images/team/*/p*",
+		},
+		{
+			name:    "named profile deep allow does not end in push",
+			pattern: "/libpod/images/team/**",
+			profile: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			rules := []config.RuleConfig{
+				{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/sockguard-test/push"}, Action: "deny"},
+				{Match: config.MatchConfig{Method: http.MethodPost, Path: tt.pattern}, Action: "allow"},
+				{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+			}
+			if tt.profile {
+				cfg.Rules = []config.RuleConfig{{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"}}
+				cfg.Clients.Profiles = []config.ClientProfileConfig{{Name: "publisher", Rules: rules}}
+			} else {
+				cfg.Rules = rules
+			}
+
+			_, err := validateAndCompileRules(&cfg)
+			if err == nil {
+				t.Fatal("expected slash-bearing image push exfiltration validation to fail")
+			}
+			if !strings.Contains(err.Error(), "POST /libpod/images/*/push") {
+				t.Fatalf("expected slash-bearing image push route in error, got: %v", err)
+			}
+			if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
+				t.Fatalf("expected explicit read exfiltration opt-in hint, got: %v", err)
+			}
+			if tt.profile && !strings.Contains(err.Error(), "publisher") {
+				t.Fatalf("expected profile name in error, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateAndCompileRulesAllowsNamedClientProfilesWithBodyInspection(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Rules = []config.RuleConfig{

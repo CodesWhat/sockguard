@@ -624,15 +624,17 @@ func libpodImageScpAllowDefinitelyShadowed(pattern string, earlier []config.Rule
 
 func configuredLibpodSlashBearingImagePushAllow(rules []config.RuleConfig) (string, bool) {
 	const prefix = "/libpod/images/"
+	const suffix = "/push"
 	for index, rule := range rules {
 		if rule.Action != "allow" || !methodListIncludes(rule.Match.Method, http.MethodPost) {
 			continue
 		}
 		pattern := strings.TrimSpace(rule.Match.Path)
-		if !strings.Contains(pattern, "*") || !strings.HasSuffix(pattern, "/push") {
+		if !strings.Contains(pattern, "*") {
 			continue
 		}
-		if globCanMatchNonemptyPathBelow(pattern, prefix) && !globAllowDefinitelyShadowed(pattern, prefix, rules[:index]) {
+		covers := methodCompatibleRulePatterns(rules[:index], http.MethodPost)
+		if globHasMatchOutsideCoversEndingWith(pattern, prefix, suffix, covers) {
 			return prefix + "*/push", true
 		}
 	}
@@ -640,14 +642,18 @@ func configuredLibpodSlashBearingImagePushAllow(rules []config.RuleConfig) (stri
 }
 
 func globAllowDefinitelyShadowed(pattern, prefix string, earlier []config.RuleConfig) bool {
-	covers := make([]string, 0, len(earlier))
-	for _, rule := range earlier {
-		if !methodListIncludes(rule.Match.Method, http.MethodPost) {
-			continue
-		}
-		covers = append(covers, strings.TrimSpace(rule.Match.Path))
-	}
+	covers := methodCompatibleRulePatterns(earlier, http.MethodPost)
 	return !globHasMatchOutsideCovers(pattern, prefix, covers)
+}
+
+func methodCompatibleRulePatterns(rules []config.RuleConfig, method string) []string {
+	patterns := make([]string, 0, len(rules))
+	for _, rule := range rules {
+		if methodListIncludes(rule.Match.Method, method) {
+			patterns = append(patterns, strings.TrimSpace(rule.Match.Path))
+		}
+	}
+	return patterns
 }
 
 type reachabilityGlobLanguageState struct {
@@ -709,6 +715,92 @@ func globHasMatchOutsideCovers(pattern, prefix string, covers []string) bool {
 		}
 	}
 	return false
+}
+
+type reachabilityGlobEndingLanguageState struct {
+	language    reachabilityGlobLanguageState
+	suffixMatch int
+	consumed    int
+}
+
+// globHasMatchOutsideCoversEndingWith decides whether an ordered allow rule
+// reaches prefix+<nonempty name>+suffix outside every earlier method-compatible
+// rule. The suffix matcher is part of the same finite-state search as the path
+// globs, so patterns need not spell the route suffix literally.
+func globHasMatchOutsideCoversEndingWith(pattern, prefix, suffix string, covers []string) bool {
+	candidateParts := parseReachabilityGlob(pattern)
+	coverParts := make([][]reachabilityGlobPart, len(covers))
+	state := reachabilityGlobEndingLanguageState{
+		language: reachabilityGlobLanguageState{
+			candidate: reachabilityGlobClosure(candidateParts, map[reachabilityGlobState]struct{}{{}: {}}),
+			covers:    make([]map[reachabilityGlobState]struct{}, len(covers)),
+		},
+	}
+	for index, cover := range covers {
+		coverParts[index] = parseReachabilityGlob(cover)
+		state.language.covers[index] = reachabilityGlobClosure(coverParts[index], map[reachabilityGlobState]struct{}{{}: {}})
+	}
+	for _, value := range prefix {
+		state.language.candidate = reachabilityGlobStep(candidateParts, state.language.candidate, value)
+		for index := range state.language.covers {
+			state.language.covers[index] = reachabilityGlobStep(coverParts[index], state.language.covers[index], value)
+		}
+		if len(state.language.candidate) == 0 {
+			return false
+		}
+	}
+
+	suffixRunes := []rune(suffix)
+	alphabetParts := append([][]reachabilityGlobPart(nil), coverParts...)
+	alphabetParts = append(alphabetParts, parseReachabilityGlob(suffix))
+	alphabet := reachabilityGlobAlphabet(candidateParts, alphabetParts)
+	queue := []reachabilityGlobEndingLanguageState{state}
+	seen := map[string]struct{}{reachabilityGlobEndingLanguageStateKey(state): {}}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		for _, value := range alphabet {
+			next := reachabilityGlobEndingLanguageState{
+				language: reachabilityGlobLanguageState{
+					candidate: reachabilityGlobStep(candidateParts, current.language.candidate, value),
+					covers:    make([]map[reachabilityGlobState]struct{}, len(current.language.covers)),
+				},
+				suffixMatch: literalSuffixMatchStep(suffixRunes, current.suffixMatch, value),
+				consumed:    min(current.consumed+1, len(suffixRunes)+1),
+			}
+			if len(next.language.candidate) == 0 {
+				continue
+			}
+			covered := false
+			for index := range current.language.covers {
+				next.language.covers[index] = reachabilityGlobStep(coverParts[index], current.language.covers[index], value)
+				covered = covered || reachabilityGlobAccepts(coverParts[index], next.language.covers[index])
+			}
+			if next.consumed > len(suffixRunes) && next.suffixMatch == len(suffixRunes) && reachabilityGlobAccepts(candidateParts, next.language.candidate) && !covered {
+				return true
+			}
+			key := reachabilityGlobEndingLanguageStateKey(next)
+			if _, ok := seen[key]; !ok {
+				seen[key] = struct{}{}
+				queue = append(queue, next)
+			}
+		}
+	}
+	return false
+}
+
+func literalSuffixMatchStep(suffix []rune, matched int, value rune) int {
+	candidate := append(append([]rune(nil), suffix[:matched]...), value)
+	for length := min(len(candidate), len(suffix)); length > 0; length-- {
+		if slices.Equal(candidate[len(candidate)-length:], suffix[:length]) {
+			return length
+		}
+	}
+	return 0
+}
+
+func reachabilityGlobEndingLanguageStateKey(state reachabilityGlobEndingLanguageState) string {
+	return fmt.Sprintf("%s;%d;%d", reachabilityGlobLanguageStateKey(state.language), state.suffixMatch, state.consumed)
 }
 
 func reachabilityGlobAlphabet(candidate []reachabilityGlobPart, covers [][]reachabilityGlobPart) []rune {

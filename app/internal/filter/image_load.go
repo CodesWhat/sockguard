@@ -420,50 +420,35 @@ func parseImageLoadArchiveControlFiles(controls imageLoadArchiveControlFiles, pr
 		return imageLoadArchiveInspection{format: imageLoadArchiveUnknown}, nil
 	}
 
-	// Podman's native load tries OCI archive before Docker archive. Docker's
-	// compatibility endpoint retains Docker-manifest precedence. A mixed
-	// archive is therefore not inherently ambiguous: inspect the format the
-	// selected daemon route will actually load, and use the other format only
-	// when the preferred candidate is one Podman itself cannot load.
-	if preferOCI {
-		archive, ociErr := parseOCIImageLoadManifest(controls)
-		if ociErr == nil {
-			return archive, nil
-		}
+	if !controls.seenDocker {
+		return parseOCIImageLoadManifest(controls)
+	}
+
+	// Podman tries OCI before Docker but can abandon an OCI candidate after
+	// metadata inspection, while parsing its config or applying a layer. The
+	// proxy cannot prove those later import steps will succeed. A mixed archive
+	// is therefore safe only when both complete reference sets are inspectable
+	// and satisfy policy, regardless of endpoint format preference.
+	ociArchive, ociErr := parseOCIImageLoadManifest(controls)
+	if ociErr != nil {
 		if errors.Is(ociErr, errImageLoadOCIUninspectable) {
 			return imageLoadArchiveInspection{}, ociErr
 		}
-		if controls.seenDocker {
-			if dockerArchive, dockerErr := parseDockerImageLoadManifest(controls.dockerManifest); dockerErr == nil {
-				return dockerArchive, nil
-			} else {
-				return imageLoadArchiveInspection{}, fmt.Errorf("OCI archive invalid (%w) and Docker archive invalid: %w", ociErr, dockerErr)
-			}
-		}
-		return imageLoadArchiveInspection{}, ociErr
+		return imageLoadArchiveInspection{}, fmt.Errorf("mixed image archive OCI archive invalid: %w", ociErr)
 	}
-	if controls.seenDocker {
-		dockerArchive, err := parseDockerImageLoadManifest(controls.dockerManifest)
-		if err != nil {
-			return imageLoadArchiveInspection{}, err
-		}
-		// The compatibility route does not identify the upstream daemon:
-		// Docker and Podman can make different choices for a mixed archive,
-		// and Podman's compatibility handler uses its OCI-first native loader.
-		// When both formats are valid, require both policy-relevant reference
-		// sets to pass so the inspected choice cannot differ from the loaded
-		// choice. A candidate Podman's permissive OCI reader accepts remains OCI
-		// even when it omits advisory layout metadata; only a daemon-rejected OCI
-		// candidate falls through to the valid Docker archive below.
-		if ociArchive, ociErr := parseOCIImageLoadManifest(controls); ociErr == nil {
-			dockerArchive.references = append(dockerArchive.references, ociArchive.references...)
-			dockerArchive.hasUntagged = dockerArchive.hasUntagged || ociArchive.hasUntagged
-		} else if errors.Is(ociErr, errImageLoadOCIUninspectable) {
-			return imageLoadArchiveInspection{}, ociErr
-		}
-		return dockerArchive, nil
+	dockerArchive, dockerErr := parseDockerImageLoadManifest(controls.dockerManifest)
+	if dockerErr != nil {
+		return imageLoadArchiveInspection{}, fmt.Errorf("mixed image archive Docker archive invalid: %w", dockerErr)
 	}
-	return parseOCIImageLoadManifest(controls)
+
+	archive := dockerArchive
+	other := ociArchive
+	if preferOCI {
+		archive, other = ociArchive, dockerArchive
+	}
+	archive.references = append(archive.references, other.references...)
+	archive.hasUntagged = archive.hasUntagged || other.hasUntagged
+	return archive, nil
 }
 
 func parseDockerImageLoadManifest(body []byte) (imageLoadArchiveInspection, error) {

@@ -343,17 +343,17 @@ func TestImageLoadRejectsAnyUntaggedDockerManifestEntry(t *testing.T) {
 	}
 }
 
-func TestLibpodImageLoadFollowsPodmanArchiveFormatPrecedence(t *testing.T) {
-	t.Run("valid OCI wins over an off-policy Docker manifest", func(t *testing.T) {
+func TestLibpodImageLoadInspectsEveryMixedArchiveFormat(t *testing.T) {
+	t.Run("valid OCI cannot hide an off-policy Docker fallback", func(t *testing.T) {
 		payload := mustOCIImageLoadTarWithDockerManifest(t, []string{"ghcr.io/acme/oci:v1"}, `[{"RepoTags":["evil.example.com/acme/docker:v1"]}]`)
 		req := httptest.NewRequest(http.MethodPost, "/libpod/images/load", bytes.NewReader(payload))
 
 		reason, err := newImageLoadPolicy(libpodImageLoadAllowlist()).inspect(nil, req, NormalizePath(req.URL.Path))
-		if err != nil || reason != "" {
-			t.Fatalf("inspect() = (%q, %v), want Podman's OCI-first format allowed", reason, err)
+		if err != nil {
+			t.Fatalf("inspect() error = %v", err)
 		}
-		if err := req.Body.Close(); err != nil {
-			t.Fatalf("close forwarded body: %v", err)
+		if !strings.Contains(reason, "evil.example.com") {
+			t.Fatalf("reason = %q, want the reachable Docker fallback denied", reason)
 		}
 	})
 
@@ -370,7 +370,7 @@ func TestLibpodImageLoadFollowsPodmanArchiveFormatPrecedence(t *testing.T) {
 		}
 	})
 
-	t.Run("malformed OCI falls back to a valid Docker archive", func(t *testing.T) {
+	t.Run("malformed OCI beside a valid Docker archive fails closed", func(t *testing.T) {
 		payload := mustContainerArchiveTar(t,
 			containerArchiveTestEntry{name: "oci-layout", body: `{"imageLayoutVersion":"1.0.0"}`},
 			containerArchiveTestEntry{name: "index.json", body: `{`},
@@ -379,32 +379,22 @@ func TestLibpodImageLoadFollowsPodmanArchiveFormatPrecedence(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/libpod/images/load", bytes.NewReader(payload))
 
 		reason, err := newImageLoadPolicy(libpodImageLoadAllowlist()).inspect(nil, req, NormalizePath(req.URL.Path))
-		if err != nil || reason != "" {
-			t.Fatalf("inspect() = (%q, %v), want Docker fallback allowed", reason, err)
-		}
-		if err := req.Body.Close(); err != nil {
-			t.Fatalf("close forwarded body: %v", err)
+		if reason != "" || err == nil || !strings.Contains(err.Error(), "OCI archive invalid") {
+			t.Fatalf("inspect() = (%q, %v), want the uninspectable OCI candidate to fail closed", reason, err)
 		}
 	})
 
-	t.Run("malformed OCI fallback still enforces the Docker registry", func(t *testing.T) {
-		payload := mustContainerArchiveTar(t,
-			containerArchiveTestEntry{name: "oci-layout", body: `{"imageLayoutVersion":"1.0.0"}`},
-			containerArchiveTestEntry{name: "index.json", body: `{`},
-			containerArchiveTestEntry{name: "manifest.json", body: `[{"RepoTags":["evil.example.com/acme/docker:v1"]}]`},
-		)
+	t.Run("malformed Docker beside a valid OCI archive fails closed", func(t *testing.T) {
+		payload := mustOCIImageLoadTarWithDockerManifest(t, []string{"ghcr.io/acme/oci:v1"}, `{`)
 		req := httptest.NewRequest(http.MethodPost, "/libpod/images/load", bytes.NewReader(payload))
 
 		reason, err := newImageLoadPolicy(libpodImageLoadAllowlist()).inspect(nil, req, NormalizePath(req.URL.Path))
-		if err != nil {
-			t.Fatalf("inspect() error = %v", err)
-		}
-		if !strings.Contains(reason, "evil.example.com") {
-			t.Fatalf("reason = %q, want the Docker fallback registry denied", reason)
+		if reason != "" || err == nil || !strings.Contains(err.Error(), "Docker archive invalid") {
+			t.Fatalf("inspect() = (%q, %v), want the uninspectable Docker candidate to fail closed", reason, err)
 		}
 	})
 
-	t.Run("OCI controls without their referenced blobs fall back to Docker", func(t *testing.T) {
+	t.Run("OCI controls without their referenced blobs fail closed beside Docker", func(t *testing.T) {
 		missingDigest := strings.Repeat("a", 64)
 		payload := mustContainerArchiveTar(t,
 			containerArchiveTestEntry{name: "oci-layout", body: `{"imageLayoutVersion":"1.0.0"}`},
@@ -414,13 +404,44 @@ func TestLibpodImageLoadFollowsPodmanArchiveFormatPrecedence(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/libpod/images/load", bytes.NewReader(payload))
 
 		reason, err := newImageLoadPolicy(libpodImageLoadAllowlist()).inspect(nil, req, NormalizePath(req.URL.Path))
-		if err != nil {
-			t.Fatalf("inspect() error = %v", err)
-		}
-		if !strings.Contains(reason, "evil.example.com") {
-			t.Fatalf("reason = %q, want the load-effective Docker fallback denied", reason)
+		if reason != "" || err == nil || !strings.Contains(err.Error(), "OCI archive invalid") {
+			t.Fatalf("inspect() = (%q, %v), want the uninspectable OCI candidate to fail closed", reason, err)
 		}
 	})
+}
+
+func TestLibpodImageLoadEnforcesDockerFallbackAfterLateOCIFailure(t *testing.T) {
+	tests := []struct {
+		name   string
+		config []byte
+		layer  []byte
+	}{
+		{
+			name:   "malformed OCI config",
+			config: []byte(`{`),
+		},
+		{
+			name:   "unusable OCI layer",
+			config: []byte(`{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]},"config":{}}`),
+			layer:  []byte("not a layer tar stream"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			entries := mustOCIImageLoadEntriesWithPayloads(t, "ghcr.io/acme/decoy:v1", tt.config, tt.layer)
+			entries = append(entries, daemonValidDockerImageLoadEntries(t, "evil.example.com/acme/fallback:v1")...)
+			req := httptest.NewRequest(http.MethodPost, "/libpod/images/load", bytes.NewReader(mustContainerArchiveTar(t, entries...)))
+
+			reason, err := newImageLoadPolicy(libpodImageLoadAllowlist()).inspect(nil, req, NormalizePath(req.URL.Path))
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if !strings.Contains(reason, "evil.example.com") {
+				t.Fatalf("reason = %q, want the reachable Docker fallback denied", reason)
+			}
+		})
+	}
 }
 
 func TestLibpodImageLoadDoesNotTrimArchiveControlPaths(t *testing.T) {
@@ -439,16 +460,13 @@ func TestLibpodImageLoadDoesNotTrimArchiveControlPaths(t *testing.T) {
 	}
 }
 
-func TestLibpodImageLoadDoesNotTrimOCIImageNames(t *testing.T) {
+func TestLibpodImageLoadFailsClosedOnInvalidOCINameBesideDocker(t *testing.T) {
 	entries := append(mustOCIImageLoadEntries(t, " ghcr.io/acme/oci:v1"), daemonValidDockerImageLoadEntries(t, "evil.example.com/acme/docker:v1")...)
 	req := httptest.NewRequest(http.MethodPost, "/libpod/images/load", bytes.NewReader(mustContainerArchiveTar(t, entries...)))
 
 	reason, err := newImageLoadPolicy(libpodImageLoadAllowlist()).inspect(nil, req, NormalizePath(req.URL.Path))
-	if err != nil {
-		t.Fatalf("inspect() error = %v", err)
-	}
-	if !strings.Contains(reason, "evil.example.com") {
-		t.Fatalf("reason = %q, want Podman's Docker fallback registry denied", reason)
+	if reason != "" || err == nil || !strings.Contains(err.Error(), "OCI archive invalid") {
+		t.Fatalf("inspect() = (%q, %v), want the invalid OCI name to fail closed", reason, err)
 	}
 }
 
@@ -1112,16 +1130,31 @@ func mustOCIImageLoadEntries(t *testing.T, reference string) []containerArchiveT
 	t.Helper()
 
 	config := []byte(`{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]},"config":{}}`)
+	return mustOCIImageLoadEntriesWithPayloads(t, reference, config, nil)
+}
+
+func mustOCIImageLoadEntriesWithPayloads(t *testing.T, reference string, config, layer []byte) []containerArchiveTestEntry {
+	t.Helper()
+
 	configDigest := sha256.Sum256(config)
-	manifest := []byte(fmt.Sprintf(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:%x","size":%d},"layers":[]}`, configDigest, len(config)))
+	layers := ""
+	entries := []containerArchiveTestEntry{
+		{name: "oci-layout", body: `{"imageLayoutVersion":"1.0.0"}`},
+	}
+	if layer != nil {
+		layerDigest := sha256.Sum256(layer)
+		layers = fmt.Sprintf(`{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"sha256:%x","size":%d}`, layerDigest, len(layer))
+		entries = append(entries, containerArchiveTestEntry{name: fmt.Sprintf("blobs/sha256/%x", layerDigest), body: string(layer)})
+	}
+	manifest := []byte(fmt.Sprintf(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:%x","size":%d},"layers":[%s]}`, configDigest, len(config), layers))
 	manifestDigest := sha256.Sum256(manifest)
 	index := fmt.Sprintf(`{"schemaVersion":2,"manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:%x","size":%d,"annotations":{"org.opencontainers.image.ref.name":%q}}]}`, manifestDigest, len(manifest), reference)
-	return []containerArchiveTestEntry{
-		{name: "oci-layout", body: `{"imageLayoutVersion":"1.0.0"}`},
-		{name: "index.json", body: index},
-		{name: fmt.Sprintf("blobs/sha256/%x", configDigest), body: string(config)},
-		{name: fmt.Sprintf("blobs/sha256/%x", manifestDigest), body: string(manifest)},
-	}
+	entries = append(entries,
+		containerArchiveTestEntry{name: "index.json", body: index},
+		containerArchiveTestEntry{name: fmt.Sprintf("blobs/sha256/%x", configDigest), body: string(config)},
+		containerArchiveTestEntry{name: fmt.Sprintf("blobs/sha256/%x", manifestDigest), body: string(manifest)},
+	)
+	return entries
 }
 
 func daemonValidDockerImageLoadEntries(t *testing.T, reference string) []containerArchiveTestEntry {
