@@ -21,7 +21,7 @@ func TestAddVisibilityLabelFiltersAcceptsLegacyEncoding(t *testing.T) {
 	legacy := `{"label":{"env=prod":true},"status":{"running":true}}`
 	req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/json?filters="+url.QueryEscape(legacy), nil)
 
-	err := addVisibilityLabelFilters(req, "/containers/json", []compiledSelector{
+	forwarded, err := addVisibilityLabelFilters(req, "/containers/json", []compiledSelector{
 		{key: "com.sockguard.visible", value: "true", hasValue: true},
 	})
 	if err != nil {
@@ -29,7 +29,7 @@ func TestAddVisibilityLabelFiltersAcceptsLegacyEncoding(t *testing.T) {
 	}
 
 	var filters map[string][]string
-	if err := json.Unmarshal([]byte(req.URL.Query().Get("filters")), &filters); err != nil {
+	if err := json.Unmarshal([]byte(forwarded.URL.Query().Get("filters")), &filters); err != nil {
 		t.Fatalf("rewritten filters are not modern array form: %v", err)
 	}
 	if got := filters["label"]; len(got) != 2 || got[0] != "env=prod" || got[1] != "com.sockguard.visible=true" {

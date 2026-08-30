@@ -523,7 +523,7 @@ func validateResponse(cfg *Config) []string {
 	default:
 		errs = append(errs, enumValueError("response.deny_verbosity", cfg.Response.DenyVerbosity, "minimal", "verbose"))
 	}
-	errs = append(errs, validateVisibleResourceLabels("response.visible_resource_labels", cfg.Response.VisibleResourceLabels)...)
+	errs = append(errs, validateVisibleResourceLabels("response.visible_resource_labels", cfg.Response.VisibleResourceLabels, ownerReservedLabelKey(cfg))...)
 	return errs
 }
 
@@ -1272,7 +1272,7 @@ func validateClientsConfig(cfg *Config) []string {
 
 	profilesByName := make(map[string]struct{}, len(cfg.Clients.Profiles))
 	for i, profile := range cfg.Clients.Profiles {
-		errs = append(errs, validateClientProfile(i, profile, profilesByName)...)
+		errs = append(errs, validateClientProfile(i, profile, profilesByName, ownerReservedLabelKey(cfg))...)
 	}
 
 	errs = append(errs, validateClientsGlobalConcurrency(cfg)...)
@@ -1491,7 +1491,7 @@ func validateClientsUnixPeerProfiles(cfg *Config, profilesByName map[string]stru
 	return errs
 }
 
-func validateClientProfile(index int, profile ClientProfileConfig, profilesByName map[string]struct{}) []string {
+func validateClientProfile(index int, profile ClientProfileConfig, profilesByName map[string]struct{}, reservedLabelKey string) []string {
 	var errs []string
 
 	prefix := fmt.Sprintf("clients.profiles[%d]", index)
@@ -1519,7 +1519,7 @@ func validateClientProfile(index int, profile ClientProfileConfig, profilesByNam
 		errs = append(errs, fmt.Sprintf("%s.mode must be one of enforce|warn|audit, got %q", prefix, profile.Mode))
 	}
 
-	errs = append(errs, validateVisibleResourceLabels(prefix+".response.visible_resource_labels", profile.Response.VisibleResourceLabels)...)
+	errs = append(errs, validateVisibleResourceLabels(prefix+".response.visible_resource_labels", profile.Response.VisibleResourceLabels, reservedLabelKey)...)
 	errs = append(errs, validateRequestBodyConfig(prefix+".request_body", profile.RequestBody)...)
 	errs = append(errs, validateRuleConfigs(profile.Rules, prefix+".rules")...)
 	errs = append(errs, validateLimitsConfig(prefix+".limits", profile.Limits)...)
@@ -2023,7 +2023,29 @@ func validateLogOutputField(fieldPath, output string) error {
 	return nil
 }
 
-func validateVisibleResourceLabels(prefix string, values []string) []string {
+// ownerReservedLabelKey returns the label key ownership stamps and filters on,
+// or "" when owner scoping is off. Read as-is rather than re-deriving the
+// Defaults() fallback, matching validateMutationInjectLabels: an empty
+// LabelKey alongside a configured owner is its own error, reported separately.
+func ownerReservedLabelKey(cfg *Config) string {
+	if cfg.Ownership.Owner == "" {
+		return ""
+	}
+	return cfg.Ownership.LabelKey
+}
+
+// validateVisibleResourceLabels checks one visible_resource_labels list.
+//
+// reservedLabelKey is the ownership label key (empty when owner scoping is
+// off). A visibility selector may not claim it. Both layers write the same
+// `label` filter key upstream and the values are ANDed, so selecting on the
+// owner key either restates what ownership already enforces or asks for a
+// label to hold two values at once. Docker's Swarm control-plane lists resolve
+// that second case by folding `label` into a map[string]string over a
+// randomly-ordered Args.Get (daemon/cluster/filters.go), so one of the two
+// values wins nondeterministically and the visibility scope can silently
+// disappear. Keeping each layer's keys disjoint removes the case.
+func validateVisibleResourceLabels(prefix string, values []string, reservedLabelKey string) []string {
 	var errs []string
 	for _, raw := range values {
 		value := strings.TrimSpace(raw)
@@ -2036,8 +2058,13 @@ func validateVisibleResourceLabels(prefix string, values []string) []string {
 			continue
 		}
 		key, selected, hasValue := strings.Cut(value, "=")
-		if strings.TrimSpace(key) == "" {
+		key = strings.TrimSpace(key)
+		if key == "" {
 			errs = append(errs, fmt.Sprintf("%s entries must include a label key, got %q", prefix, raw))
+			continue
+		}
+		if reservedLabelKey != "" && key == reservedLabelKey {
+			errs = append(errs, fmt.Sprintf("%s entries must not select on the reserved owner label key %q (ownership.owner is configured; that key is proxy-enforced)", prefix, key))
 			continue
 		}
 		if hasValue && strings.TrimSpace(selected) == "" {

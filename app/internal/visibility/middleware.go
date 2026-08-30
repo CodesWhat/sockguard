@@ -351,11 +351,15 @@ func resolveEffectivePolicy(opts Options, profiles map[string]compiledPolicy, de
 // and (where supported) pattern-based response filtering for list endpoints.
 func handleVisibilityListRequest(logger *slog.Logger, next http.Handler, w http.ResponseWriter, r *http.Request, normPath string, policy *compiledPolicy, hasSelectors, hasPatterns bool) {
 	if hasSelectors {
-		if err := addVisibilityLabelFilters(r, normPath, policy.selectors); err != nil {
+		forwarded, err := addVisibilityLabelFilters(r, normPath, policy.selectors)
+		if err != nil {
 			logging.SetDeniedWithCode(w, r, reasonCodeVisibilityFilterInvalid, err.Error(), nil)
 			_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: err.Error()})
 			return
 		}
+		// Forward the returned request: it carries the record of which label
+		// values this layer injected, which ownership reads downstream.
+		r = forwarded
 	}
 	if hasPatterns && needsPatternResponseFilter(normPath) {
 		filterResponseThroughWriter(logger, next, w, r, "visibility pattern list filter failed", func(fw *patternFilterWriter) error {
@@ -794,34 +798,47 @@ func needsVisibilityLabelFilter(normPath string) bool {
 	}
 }
 
-func addVisibilityLabelFilters(r *http.Request, normPath string, selectors []compiledSelector) error {
+// addVisibilityLabelFilters merges the policy's selectors into the request's
+// label filter and returns the request to forward. The returned request may be
+// a context-derived copy: the selectors are recorded on it as proxy-injected
+// (dockerfilters.RecordInjectedSelectors) so the ownership middleware, which
+// runs after this one and drops client-supplied values from the same filter
+// key, keeps them. Callers must forward the returned request, not the argument.
+func addVisibilityLabelFilters(r *http.Request, normPath string, selectors []compiledSelector) (*http.Request, error) {
 	query := r.URL.Query()
 	filters, err := dockerfilters.Decode(query.Get("filters"))
 	if err != nil {
-		return err
+		return r, err
 	}
 	filterKey := visibilityLabelFilterKey(normPath)
+	injected := make([]string, 0, len(selectors))
 	changed := false
 	for _, selector := range selectors {
 		value := selector.key
 		if selector.hasValue {
 			value += "=" + selector.value
 		}
+		injected = append(injected, value)
 		if !slices.Contains(filters[filterKey], value) {
 			filters[filterKey] = append(filters[filterKey], value)
 			changed = true
 		}
 	}
+	// Recorded unconditionally, including the selectors already present
+	// because the client happened to send them: they are policy-enforced
+	// either way, and a later layer that drops client-supplied values would
+	// otherwise strip exactly the ones this loop did not have to write.
+	r = dockerfilters.RecordInjectedSelectors(r, filterKey, injected)
 	if !changed {
-		return nil
+		return r, nil
 	}
 	encoded, err := json.Marshal(filters)
 	if err != nil {
-		return fmt.Errorf("encode filters: %w", err)
+		return r, fmt.Errorf("encode filters: %w", err)
 	}
 	query.Set("filters", string(encoded))
 	r.URL.RawQuery = query.Encode()
-	return nil
+	return r, nil
 }
 
 func visibilityLabelFilterKey(normPath string) string {
