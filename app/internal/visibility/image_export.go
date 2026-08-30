@@ -77,6 +77,7 @@ func handleVisibilityLibpodImageExport(logger *slog.Logger, next http.Handler, d
 		writeInvalidImageExportQuery(w, r, err)
 		return true
 	}
+	hidden := false
 	for _, reference := range references {
 		visible, found, err := lookupResourceVisibilityWithPolicy(r.Context(), deps, dockerresource.KindImage, reference, policy)
 		if err != nil {
@@ -85,11 +86,23 @@ func handleVisibilityLibpodImageExport(logger *slog.Logger, next http.Handler, d
 			_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "visibility policy lookup failed"})
 			return true
 		}
-		if !found || !visible {
+		if !found {
 			logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyHidResource, "libpod visibility policy hid resource", nil)
 			_ = httpjson.Write(w, http.StatusNotFound, httpjson.ErrorResponse{Message: "resource not found"})
 			return true
 		}
+		hidden = hidden || !visible
+	}
+	if hidden {
+		reason := "libpod visibility policy hid resource"
+		if meta := logging.MetaForRequest(w, r); meta.AllowsPassThrough() {
+			logging.SetWouldDenyWithCode(w, r, reasonCodeVisibilityPolicyHidResource, reason, nil)
+			next.ServeHTTP(w, r)
+			return true
+		}
+		logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyHidResource, reason, nil)
+		_ = httpjson.Write(w, http.StatusNotFound, httpjson.ErrorResponse{Message: "resource not found"})
+		return true
 	}
 	next.ServeHTTP(w, r)
 	return true

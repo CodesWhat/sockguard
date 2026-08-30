@@ -82,6 +82,12 @@ func TestImageBatchOwnershipPreflightsEveryNamedImage(t *testing.T) {
 			wantIDs: []string{"mine:1"},
 		},
 		{
+			name:    "libpod named remove accepts Gorilla on for safe scalar values",
+			method:  http.MethodDelete,
+			target:  "/libpod/images/remove?all=on&force=false&noprune=on&lookupManifest=false&images=mine%3A1",
+			wantIDs: []string{"mine:1"},
+		},
+		{
 			name:    "libpod empty scalar case variant does not clear a true setter",
 			method:  http.MethodDelete,
 			target:  "/libpod/images/remove?NoPrune=true&noprune=&images=mine%3A1",
@@ -300,6 +306,12 @@ func TestImageBatchOwnershipRejectsEffectExpandingLibpodRemoveOptions(t *testing
 			wantReason: "force image batch removal",
 		},
 		{
+			name:       "Gorilla on force removes containers",
+			target:     "/libpod/images/remove?images=mine%3A1&noprune=on&force=on",
+			wantStatus: http.StatusForbidden,
+			wantReason: "force image batch removal",
+		},
+		{
 			name:       "force case variants have competing final values",
 			target:     "/libpod/images/remove?images=mine%3A1&noprune=true&Force=false&FORCE=true",
 			wantStatus: http.StatusForbidden,
@@ -326,6 +338,12 @@ func TestImageBatchOwnershipRejectsEffectExpandingLibpodRemoveOptions(t *testing
 		{
 			name:       "manifest lookup retargets removal",
 			target:     "/libpod/images/remove?images=mine%3A1&noprune=true&lookupManifest=true",
+			wantStatus: http.StatusForbidden,
+			wantReason: "manifest-list image batch removal",
+		},
+		{
+			name:       "Gorilla on manifest lookup retargets removal",
+			target:     "/libpod/images/remove?images=mine%3A1&noprune=on&lookupManifest=on",
 			wantStatus: http.StatusForbidden,
 			wantReason: "manifest-list image batch removal",
 		},

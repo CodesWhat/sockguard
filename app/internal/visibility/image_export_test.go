@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/codeswhat/sockguard/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 func TestVisibilityImageExportRouteClassification(t *testing.T) {
@@ -76,6 +77,109 @@ func TestVisibilityRefusesDockerImageExportsWithUnenumerablePlatformEffects(t *t
 	}
 }
 
+func TestVisibilityLibpodImageReadsApplyPatternPolicy(t *testing.T) {
+	for _, path := range []string{
+		"/libpod/images/app/json",
+		"/libpod/images/app/history",
+		"/libpod/images/app/get",
+		"/libpod/images/app/tree",
+		"/libpod/images/app/changes",
+		"/libpod/images/app/exists",
+	} {
+		t.Run(path, func(t *testing.T) {
+			reached := false
+			var inspected string
+			handler := middlewareWithDeps(testVisibilityLogger(), Options{
+				ImagePatterns: []string{"registry.allowed/**"},
+			}, visibilityDeps{
+				inspectResourceMeta: func(_ context.Context, kind dockerresource.Kind, id string) (*resourceMeta, bool, error) {
+					if kind != dockerresource.KindImage {
+						t.Fatalf("inspect kind = %q, want %q", kind, dockerresource.KindImage)
+					}
+					inspected = id
+					return &resourceMeta{repoTags: []string{"registry.denied/team/app:1"}}, true, nil
+				},
+			})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				reached = true
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+
+			if rec.Code != http.StatusNotFound || reached {
+				t.Fatalf("status = %d reached = %v, want %d and false; body: %s", rec.Code, reached, http.StatusNotFound, rec.Body.String())
+			}
+			if inspected != "app" {
+				t.Fatalf("inspected image = %q, want app", inspected)
+			}
+		})
+	}
+}
+
+func TestVisibilityLibpodPerImageExportRequiresSelectorAndPatternConjunction(t *testing.T) {
+	tests := []struct {
+		name       string
+		labels     map[string]string
+		repoTags   []string
+		wantStatus int
+		wantReach  bool
+	}{
+		{
+			name:       "selector matches but pattern does not",
+			labels:     map[string]string{"com.sockguard.visible": "true"},
+			repoTags:   []string{"registry.denied/team/app:1"},
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "pattern matches but selector does not",
+			labels:     map[string]string{"com.sockguard.visible": "false"},
+			repoTags:   []string{"registry.allowed/team/app:1"},
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "selector and pattern both match",
+			labels:     map[string]string{"com.sockguard.visible": "true"},
+			repoTags:   []string{"registry.allowed/team/app:1"},
+			wantStatus: http.StatusNoContent,
+			wantReach:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reached := false
+			handler := middlewareWithDeps(testVisibilityLogger(), Options{
+				VisibleResourceLabels: []string{"com.sockguard.visible=true"},
+				ImagePatterns:         []string{"registry.allowed/**"},
+			}, visibilityDeps{
+				inspectResource: func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
+					return tt.labels, true, nil
+				},
+				inspectResourceDetails: func(_ context.Context, kind dockerresource.Kind, id string) (*resourceDetails, bool, error) {
+					if kind != dockerresource.KindImage || id != "app" {
+						t.Fatalf("inspect = %s/%q, want %s/app", kind, id, dockerresource.KindImage)
+					}
+					return &resourceDetails{
+						labels: tt.labels,
+						meta:   &resourceMeta{repoTags: tt.repoTags},
+					}, true, nil
+				},
+			})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				reached = true
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/libpod/images/app/get", nil))
+
+			if rec.Code != tt.wantStatus || reached != tt.wantReach {
+				t.Fatalf("status = %d reached = %v, want %d and %v; body: %s", rec.Code, reached, tt.wantStatus, tt.wantReach, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestVisibilityPreflightsEveryLibpodBatchExportReference(t *testing.T) {
 	var gotIDs []string
 	reached := false
@@ -126,6 +230,90 @@ func TestVisibilityDeniesWholeLibpodBatchExportWhenAnyReferenceIsHidden(t *testi
 
 	if rec.Code != http.StatusNotFound || reached {
 		t.Fatalf("status = %d reached = %v, want %d and false; body: %s", rec.Code, reached, http.StatusNotFound, rec.Body.String())
+	}
+}
+
+func TestVisibilityLibpodBatchExportHiddenReferenceHonorsRollout(t *testing.T) {
+	for _, mode := range []string{"warn", "audit"} {
+		t.Run(mode, func(t *testing.T) {
+			reached := false
+			handler := middlewareWithDeps(testVisibilityLogger(), Options{
+				VisibleResourceLabels: []string{"com.sockguard.visible=true"},
+			}, visibilityDeps{
+				inspectResource: func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
+					return map[string]string{"com.sockguard.visible": "false"}, true, nil
+				},
+			})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				reached = true
+				if r.URL.RawQuery != "references=hidden%3A1" {
+					t.Fatalf("forwarded query = %q, want original query", r.URL.RawQuery)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			meta := &logging.RequestMeta{RolloutMode: mode}
+			req := httptest.NewRequest(http.MethodGet, "/libpod/images/export?references=hidden%3A1", nil)
+			req = req.WithContext(logging.WithMeta(req.Context(), meta))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNoContent || !reached {
+				t.Fatalf("status = %d reached = %v, want %d and true; body: %s", rec.Code, reached, http.StatusNoContent, rec.Body.String())
+			}
+			if meta.Decision != logging.DecisionWouldDeny {
+				t.Fatalf("decision = %q, want %q", meta.Decision, logging.DecisionWouldDeny)
+			}
+			if meta.ReasonCode != reasonCodeVisibilityPolicyHidResource {
+				t.Fatalf("reason code = %q, want %q", meta.ReasonCode, reasonCodeVisibilityPolicyHidResource)
+			}
+		})
+	}
+}
+
+func TestVisibilityLibpodBatchExportHardFailuresIgnoreRollout(t *testing.T) {
+	tests := []struct {
+		name        string
+		mode        string
+		rawQuery    string
+		lookupErr   error
+		hiddenFirst bool
+		wantStatus  int
+	}{
+		{name: "malformed query in warn", mode: "warn", rawQuery: "references=%zz", wantStatus: http.StatusBadRequest},
+		{name: "lookup failure in audit", mode: "audit", rawQuery: "references=broken%3A1", lookupErr: errors.New("inspect failed"), wantStatus: http.StatusBadGateway},
+		{name: "hidden member does not mask later lookup failure in warn", mode: "warn", rawQuery: "references=hidden%3A1&references=broken%3A1", lookupErr: errors.New("inspect failed"), hiddenFirst: true, wantStatus: http.StatusBadGateway},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reached := false
+			handler := middlewareWithDeps(testVisibilityLogger(), Options{
+				VisibleResourceLabels: []string{"com.sockguard.visible=true"},
+			}, visibilityDeps{
+				inspectResource: func(_ context.Context, _ dockerresource.Kind, id string) (map[string]string, bool, error) {
+					if tt.hiddenFirst && id == "hidden:1" {
+						return map[string]string{"com.sockguard.visible": "false"}, true, nil
+					}
+					return nil, false, tt.lookupErr
+				},
+			})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				reached = true
+			}))
+
+			meta := &logging.RequestMeta{RolloutMode: tt.mode}
+			req := httptest.NewRequest(http.MethodGet, "/libpod/images/export", nil)
+			req.URL.RawQuery = tt.rawQuery
+			req = req.WithContext(logging.WithMeta(req.Context(), meta))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus || reached {
+				t.Fatalf("status = %d reached = %v, want %d and false; body: %s", rec.Code, reached, tt.wantStatus, rec.Body.String())
+			}
+			if meta.Decision == logging.DecisionWouldDeny {
+				t.Fatalf("decision = %q, want hard denial", meta.Decision)
+			}
+		})
 	}
 }
 

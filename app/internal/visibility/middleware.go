@@ -808,6 +808,9 @@ func requestVisibleWithPolicy(ctx context.Context, normPath string, policy *comp
 	if identifier, ok := imageReadIdentifier(normPath); ok {
 		return resourceVisibleWithPolicy(ctx, deps, dockerresource.KindImage, identifier, policy)
 	}
+	if identifier, ok := libpodImageReadIdentifier(normPath); ok {
+		return resourceVisibleWithPolicy(ctx, deps, dockerresource.KindImage, identifier, policy)
+	}
 	// Pattern axes only apply to containers and images. All other resource
 	// kinds use label-selector checks only.
 	if !hasSelectors {
@@ -864,9 +867,6 @@ func requestVisibleWithPolicy(ctx context.Context, normPath string, policy *comp
 	// pods because they have no Docker-compat equivalent at all.
 	if identifier, ok := libpodContainerReadIdentifier(normPath); ok {
 		return resourceVisible(ctx, deps, dockerresource.KindContainer, identifier, policy.selectors)
-	}
-	if identifier, ok := libpodImageReadIdentifier(normPath); ok {
-		return resourceVisible(ctx, deps, dockerresource.KindImage, identifier, policy.selectors)
 	}
 	if identifier, ok := libpodPodReadIdentifier(normPath); ok {
 		return resourceVisible(ctx, deps, dockerresource.KindLibpodPod, identifier, policy.selectors)

@@ -116,9 +116,13 @@ func parseImageBatchBoolPossibilities(query imageselector.Query, key string) (im
 		if value == "" {
 			continue
 		}
-		parsed, err := strconv.ParseBool(value)
-		if err != nil {
-			return imageBatchBoolPossibilities{}, fmt.Errorf("%s: %w", key, err)
+		parsed := value == "on"
+		if !parsed {
+			var err error
+			parsed, err = strconv.ParseBool(value)
+			if err != nil {
+				return imageBatchBoolPossibilities{}, fmt.Errorf("%s: %w", key, err)
+			}
 		}
 		hasSetter = true
 		if parsed {
