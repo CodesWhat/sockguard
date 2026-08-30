@@ -1144,8 +1144,9 @@ func TestMiddlewareInjectsOwnerFilterIntoContainerList(t *testing.T) {
 		for _, value := range values {
 			got = append(got, value.(string))
 		}
-		// The proxy replaces the entire label filter with only the owner label;
-		// any client-supplied label values are discarded to prevent OR-bypass.
+		// Client-supplied label values are discarded: Swarm's control-plane
+		// lists fold `label` into a map keyed by label name, so a client value
+		// repeating the owner key could displace the proxy-enforced one.
 		if len(got) != 1 || got[0] != "com.sockguard.owner=job-123" {
 			t.Fatalf("label filters = %#v, want exactly [com.sockguard.owner=job-123]", got)
 		}
@@ -1164,9 +1165,10 @@ func TestMiddlewareInjectsOwnerFilterIntoContainerList(t *testing.T) {
 func TestMiddlewareOwnerLabelFilterOverwritesClientSuppliedOwnerLabel(t *testing.T) {
 	t.Parallel()
 	// Attack: client sends filters={"label":["com.sockguard.owner=victim"]} to
-	// list another tenant's containers. The proxy must replace — not append —
-	// the label filter so the upstream request contains only the proxy-enforced
-	// owner label, not an OR-union of victim and attacker labels.
+	// list another tenant's containers. The proxy must drop it rather than
+	// forward it alongside the enforced label: Docker's Swarm list endpoints
+	// collapse `label` into a map[string]string over a randomly-ordered
+	// Args.Get, so the victim value could win the key.
 	opts := Options{Owner: "attacker", LabelKey: "com.sockguard.owner"}
 	handler := middlewareWithDeps(testLogger(), opts, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		filtersJSON := r.URL.Query().Get("filters")
@@ -2849,13 +2851,22 @@ func startUnixHTTPServer(t *testing.T, handler http.Handler) string {
 	t.Helper()
 
 	// Unix-domain socket paths are short on several platforms (104 bytes on
-	// macOS), so do not embed the full test name here.
-	socketPath := filepath.Join("/tmp", fmt.Sprintf("sg-owner-%d.sock", time.Now().UnixNano()))
-	_ = os.Remove(socketPath)
-
-	ln, err := net.Listen("unix", socketPath)
+	// macOS), so do not embed the full test name here. t.TempDir() is also out:
+	// it derives the path from the test name and nests, which overruns that
+	// limit. A UnixNano stamp is not unique enough on its own — two parallel
+	// subtests collided on it during a full-suite run on 2026-08-29 and failed
+	// with "bind: address already in use" — so take a kernel-unique directory
+	// and use a fixed short name inside it.
+	dir, err := os.MkdirTemp("/tmp", "sg-own")
 	if err != nil {
-		t.Fatalf("listen unix: %v", err)
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socketPath := filepath.Join(dir, "s.sock")
+
+	ln, listenErr := net.Listen("unix", socketPath)
+	if listenErr != nil {
+		t.Fatalf("listen unix: %v", listenErr)
 	}
 
 	srv := &http.Server{Handler: handler}

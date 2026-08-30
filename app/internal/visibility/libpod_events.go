@@ -1,11 +1,8 @@
 package visibility
 
 import (
-	"encoding/json"
-	"fmt"
 	"net/http"
 
-	"github.com/codeswhat/sockguard/app/internal/dockerfilters"
 	"github.com/codeswhat/sockguard/app/internal/httpjson"
 	"github.com/codeswhat/sockguard/app/internal/logging"
 )
@@ -84,7 +81,7 @@ func handleLibpodVisibilityEventsRequest(next http.Handler, w http.ResponseWrite
 	case 0:
 		next.ServeHTTP(w, r)
 	case 1:
-		if err := setLibpodEventsLabelFilter(r, policy.selectors[0]); err != nil {
+		if err := setPodmanEventLabelFilter(r, policy.selectors[0]); err != nil {
 			logging.SetDeniedWithCode(w, r, reasonCodeVisibilityFilterInvalid, err.Error(), nil)
 			_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: err.Error()})
 			return
@@ -106,43 +103,4 @@ func handleLibpodVisibilityEventsRequest(next http.Handler, w http.ResponseWrite
 func denyLibpodEvents(w http.ResponseWriter, r *http.Request) {
 	logging.SetDeniedWithCode(w, r, reasonCodeVisibilityLibpodEvents, libpodEventsDenyReason, nil)
 	_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: libpodEventsDenyReason})
-}
-
-// setLibpodEventsLabelFilter REPLACES the `label` filter key with the policy's
-// single selector, rather than appending to it the way
-// addVisibilityLabelFilters does for every other list endpoint.
-//
-// Appending is safe on a conjunctive filter — dockerd's own event filter ANDs
-// label pairs via filters.Args.MatchKVList, and so do Podman's list endpoints,
-// which run label filters through filters.MatchLabelFilters (containers,
-// volumes, networks) or libimage's applyFilters (images), both of which
-// require every value to match. Podman's EVENT filter is the one that does
-// not. A client-supplied `label` value would sit beside the injected selector
-// under the same disjunctive key, so a caller could name any label a hidden
-// container carries and receive its events. Unconditional replacement is the
-// same defense addOwnerLabelFilter already applies for the same reason.
-//
-// The query is re-encoded on every request, never short-circuited when the
-// selector already appears. That matters beyond tidiness: dockerfilters.Decode
-// also accepts Docker's legacy map[string]map[string]bool spelling, so leaving
-// the raw query untouched would forward a client-authored encoding of it
-// carrying extra label values that the decode had already seen.
-func setLibpodEventsLabelFilter(r *http.Request, selector compiledSelector) error {
-	query := r.URL.Query()
-	filters, err := dockerfilters.Decode(query.Get("filters"))
-	if err != nil {
-		return err
-	}
-	value := selector.key
-	if selector.hasValue {
-		value += "=" + selector.value
-	}
-	filters[visibilityLabelFilterKey(LibpodEventsPath)] = []string{value}
-	encoded, err := json.Marshal(filters)
-	if err != nil {
-		return fmt.Errorf("encode filters: %w", err)
-	}
-	query.Set("filters", string(encoded))
-	r.URL.RawQuery = query.Encode()
-	return nil
 }
