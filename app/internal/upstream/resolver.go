@@ -270,6 +270,12 @@ func (r *Resolver) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil && !isRequestScopedError(err) {
 		r.demote(s)
 	}
+	if err == nil && resp != nil {
+		// Response-side policy classifies the client-visible Docker route. The
+		// endpoint prefix is a transport detail and must not make redaction or
+		// query-sensitive attestation gates fall through.
+		resp.Request = req
+	}
 	return resp, err
 }
 

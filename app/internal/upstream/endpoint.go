@@ -217,7 +217,12 @@ func parseEndpointAddress(raw string) (parsedEndpointAddress, error) {
 		if strings.Contains(address, "://") {
 			return parsedEndpointAddress{}, fmt.Errorf("upstream endpoint %q: invalid unix socket address", raw)
 		}
-		if _, err := url.PathUnescape(address); err != nil {
+		// Validate the URL grammar before discarding the parsed form. In
+		// particular, Go's host parser rejects escapes such as %2F and %3F in
+		// unix://relative%2Fsock while accepting them in the absolute path form.
+		// Docker performs the same validation but still dials the original,
+		// literal address bytes after it succeeds.
+		if _, err := url.Parse(raw); err != nil {
 			return parsedEndpointAddress{}, fmt.Errorf("upstream endpoint %q: invalid unix socket address: %w", raw, err)
 		}
 		return parsedEndpointAddress{network: "unix", address: address}, nil

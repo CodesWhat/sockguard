@@ -82,7 +82,9 @@ func TestParseAddress(t *testing.T) {
 		{name: "unix encoded hash is literal", input: "unix:///tmp/docker%23sock", wantNetwork: "unix", wantAddress: "/tmp/docker%23sock"},
 		{name: "unix encoded percent is literal", input: "unix:///tmp/docker%25sock", wantNetwork: "unix", wantAddress: "/tmp/docker%25sock"},
 		{name: "unix raw question and hash are literal", input: "unix:///tmp/docker?sock#one", wantNetwork: "unix", wantAddress: "/tmp/docker?sock#one"},
-		{name: "relative unix raw URL punctuation is literal", input: "unix://relative%2Fsock?one#two", wantNetwork: "unix", wantAddress: "relative%2Fsock?one#two"},
+		{name: "relative unix raw URL punctuation is literal", input: "unix://relative.sock?one#two", wantNetwork: "unix", wantAddress: "relative.sock?one#two"},
+		{name: "relative unix encoded percent is literal", input: "unix://relative%25sock", wantNetwork: "unix", wantAddress: "relative%25sock"},
+		{name: "absolute unix escaped path and punctuation are literal", input: "unix:///tmp/relative%2Fsock?one#two", wantNetwork: "unix", wantAddress: "/tmp/relative%2Fsock?one#two"},
 		// valid tcp-family
 		{name: "tcp url", input: "tcp://host:2376", wantNetwork: "tcp", wantAddress: "host:2376"},
 		{name: "http url", input: "http://host:2375", wantNetwork: "tcp", wantAddress: "host:2375"},
@@ -95,6 +97,9 @@ func TestParseAddress(t *testing.T) {
 		{name: "tcp missing port", input: "tcp://myhost", wantErr: true},
 		{name: "bad scheme", input: "ftp://host:21", wantErr: true},
 		{name: "unix malformed escape", input: "unix:///tmp/docker%zzsock", wantErr: true},
+		{name: "relative unix encoded slash is invalid host grammar", input: "unix://relative%2Fsock", wantErr: true},
+		{name: "relative unix encoded question is invalid host grammar", input: "unix://relative%3Fsock", wantErr: true},
+		{name: "relative unix encoded hash is invalid host grammar", input: "unix://relative%23sock", wantErr: true},
 		{name: "unix nested scheme", input: "unix:///tmp/docker://sock", wantErr: true},
 	}
 	for _, tc := range cases {
@@ -1168,7 +1173,9 @@ func TestSpecsFromDockerEnv_CustomUnixSocketBuilds(t *testing.T) {
 		{host: "unix:///tmp/docker%23sock", wantAddress: "/tmp/docker%23sock"},
 		{host: "unix:///tmp/docker%25sock", wantAddress: "/tmp/docker%25sock"},
 		{host: "unix:///tmp/docker?sock#one", wantAddress: "/tmp/docker?sock#one"},
-		{host: "unix://relative%2Fsock?one#two", wantAddress: "relative%2Fsock?one#two"},
+		{host: "unix://relative.sock?one#two", wantAddress: "relative.sock?one#two"},
+		{host: "unix://relative%25sock", wantAddress: "relative%25sock"},
+		{host: "unix:///tmp/relative%2Fsock?one#two", wantAddress: "/tmp/relative%2Fsock?one#two"},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -1195,6 +1202,32 @@ func TestSpecsFromDockerEnv_CustomUnixSocketBuilds(t *testing.T) {
 			}
 			if endpoint.Address != tt.wantAddress {
 				t.Fatalf("Address = %q, want %q", endpoint.Address, tt.wantAddress)
+			}
+		})
+	}
+}
+
+func TestSpecsFromDockerEnv_RelativeUnixHostEscapesFailBuild(t *testing.T) {
+	t.Parallel()
+	for _, host := range []string{
+		"unix://relative%2Fsock",
+		"unix://relative%3Fsock",
+		"unix://relative%23sock",
+	} {
+		host := host
+		t.Run(host, func(t *testing.T) {
+			t.Parallel()
+			spec, ok, err := SpecsFromDockerEnv(func(key string) (string, bool) {
+				if key == "DOCKER_HOST" {
+					return host, true
+				}
+				return "", false
+			})
+			if err != nil || !ok {
+				t.Fatalf("SpecsFromDockerEnv = (%v, %v), want active spec deferred to endpoint validation", ok, err)
+			}
+			if _, err := BuildEndpoint(spec); err == nil {
+				t.Fatal("BuildEndpoint accepted an escaped relative Unix host")
 			}
 		})
 	}
