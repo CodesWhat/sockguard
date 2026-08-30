@@ -88,17 +88,6 @@ func isLibpodInspectPath(normPath, collection string) bool {
 	return ok && identifier != "" && tail == libpodInspectSuffix
 }
 
-// libpodNetworkCollectionSegments are the single-segment names under
-// /libpod/networks/ that address the collection rather than one network:
-// "json" is the list route, "create" and "prune" are the two collection-level
-// POSTs. internal/ownership's libpodNetworkIdentifier reserves the same three
-// words in the same position, for the same reason.
-var libpodNetworkCollectionSegments = map[string]struct{}{
-	libpodInspectSuffix: {},
-	"create":            {},
-	"prune":             {},
-}
-
 // isLibpodNetworkInspectPath reports whether normPath is one of the TWO routes
 // Podman serves libpod.InspectNetwork on. register_networks.go at v5.8.1
 // registers both spellings against that one handler on consecutive lines:
@@ -133,8 +122,11 @@ func isLibpodNetworkInspectPath(method, normPath string) bool {
 	if segment == "" || strings.Contains(segment, "/") {
 		return false
 	}
-	_, reserved := libpodNetworkCollectionSegments[segment]
-	return !reserved
+	// Only json is a GET collection route. create and prune are collection
+	// actions on POST, but on GET those same segments are valid network names
+	// handled by InspectNetwork. The method guard above already keeps the POST
+	// actions out of this response path.
+	return segment != libpodInspectSuffix
 }
 
 // modifyLibpodResponse dispatches one normalized /libpod/ path to its

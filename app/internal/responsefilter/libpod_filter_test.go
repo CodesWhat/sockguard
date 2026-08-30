@@ -451,6 +451,21 @@ func TestLibpodNetworkTopologyIsRedacted(t *testing.T) {
 		assertPresent(t, "libpod network inspect (bare path)", body, `"team-a-net"`, `"net-team-a"`, "host-local")
 	})
 
+	// create and prune are collection actions only on POST. Podman's GET
+	// /libpod/networks/{name} route still inspects networks with either name,
+	// so method-independent keyword reservation would leak their topology.
+	t.Run("libpod inspect, bare path with action-shaped network name", func(t *testing.T) {
+		t.Parallel()
+		for _, path := range []string{
+			"/libpod/networks/create",
+			"/v5.8.1/libpod/networks/prune",
+		} {
+			body := libpodBodyForTest(t, allRedactions, path, libpodNetworkInspectUpstream)
+			assertAbsent(t, path, body, libpodNetworkTopologySentinels...)
+			assertPresent(t, path, body, `"team-a-net"`, `"net-team-a"`, "host-local")
+		}
+	})
+
 	t.Run("libpod list", func(t *testing.T) {
 		t.Parallel()
 		body := libpodBodyForTest(t, allRedactions, "/v5.8.1/libpod/networks/json", libpodNetworkListUpstream)
@@ -655,8 +670,8 @@ func TestLibpodPathPredicates(t *testing.T) {
 		{http.MethodGet, "/libpod/networks/net-a/json", true},
 		{http.MethodGet, "/libpod/networks/net-a", true},
 		{http.MethodGet, "/libpod/networks/json", false},
-		{http.MethodGet, "/libpod/networks/create", false},
-		{http.MethodGet, "/libpod/networks/prune", false},
+		{http.MethodGet, "/libpod/networks/create", true},
+		{http.MethodGet, "/libpod/networks/prune", true},
 		{http.MethodGet, "/libpod/networks/net-a/exists", false},
 		{http.MethodGet, "/libpod/networks/", false},
 		{http.MethodGet, "/libpod/networksfoo", false},
