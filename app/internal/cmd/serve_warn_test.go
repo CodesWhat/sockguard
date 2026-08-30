@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/app/internal/filter"
 	"github.com/codeswhat/sockguard/app/internal/upstream"
 )
 
@@ -123,6 +124,211 @@ func TestWarnBodyBlindWritesOnce(t *testing.T) {
 	warnBodyBlindWritesOnce(&enabled, logger, &fresh)
 	if got := strings.Count(buf.String(), "insecure_allow_body_blind_writes is enabled"); got != 1 {
 		t.Fatalf("warning count with fresh Once = %d, want 1; log: %q", got, buf.String())
+	}
+}
+
+// warnReadExfiltrationOnce must fire only when
+// insecure_allow_read_exfiltration is enabled, only once per Once across
+// reload chain rebuilds, and must name the exfiltration endpoints the current
+// rule set actually admits — mirroring TestWarnBodyBlindWritesOnce for the
+// read-side acknowledgment.
+func TestWarnReadExfiltrationOnce(t *testing.T) {
+	t.Parallel()
+
+	const marker = "insecure_allow_read_exfiltration is enabled"
+
+	broad, err := compileConfiguredRules([]config.RuleConfig{
+		{Match: config.MatchConfig{Method: "GET", Path: "/containers/**"}, Action: "allow"},
+	})
+	if err != nil {
+		t.Fatalf("compileConfiguredRules: %v", err)
+	}
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	var once sync.Once
+
+	disabled := config.Defaults()
+	warnReadExfiltrationOnce(&disabled, broad, nil, logger, &once)
+	if buf.Len() != 0 {
+		t.Fatalf("disabled config logged: %q", buf.String())
+	}
+
+	enabled := config.Defaults()
+	enabled.InsecureAllowReadExfiltration = true
+	warnReadExfiltrationOnce(&enabled, broad, nil, logger, &once)
+	if got := strings.Count(buf.String(), marker); got != 1 {
+		t.Fatalf("warning count after first enabled build = %d, want 1; log: %q", got, buf.String())
+	}
+	// The warning names what the acknowledgment is currently buying, sourced
+	// from the same probe the startup validator uses for its refusal message.
+	for _, want := range []string{
+		"GET /containers/sockguard-test/archive",
+		"GET /containers/sockguard-test/export",
+		"GET /containers/sockguard-test/logs",
+		"GET /containers/sockguard-test/attach/ws",
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Fatalf("warning does not name %q; log: %q", want, buf.String())
+		}
+	}
+
+	// Simulate the chain rebuild a hot-reload performs: same process, same
+	// Once, enabled again — must NOT log a second time.
+	warnReadExfiltrationOnce(&enabled, broad, nil, logger, &once)
+	if got := strings.Count(buf.String(), marker); got != 1 {
+		t.Fatalf("warning count after reload rebuild = %d, want still 1; log: %q", got, buf.String())
+	}
+
+	// A fresh Once (fresh process) with the feature enabled warns again.
+	var fresh sync.Once
+	buf.Reset()
+	warnReadExfiltrationOnce(&enabled, broad, nil, logger, &fresh)
+	if got := strings.Count(buf.String(), marker); got != 1 {
+		t.Fatalf("warning count with fresh Once = %d, want 1; log: %q", got, buf.String())
+	}
+
+	// The acknowledgment set while no rule needs it still warns, with an empty
+	// endpoint list — that combination is a standing permission worth removing.
+	narrow, err := compileConfiguredRules([]config.RuleConfig{
+		{Match: config.MatchConfig{Method: "GET", Path: "/containers/json"}, Action: "allow"},
+	})
+	if err != nil {
+		t.Fatalf("compileConfiguredRules: %v", err)
+	}
+	var narrowOnce sync.Once
+	buf.Reset()
+	warnReadExfiltrationOnce(&enabled, narrow, nil, logger, &narrowOnce)
+	if got := strings.Count(buf.String(), marker); got != 1 {
+		t.Fatalf("warning count for narrow rules = %d, want 1; log: %q", got, buf.String())
+	}
+	if strings.Contains(buf.String(), "sockguard-test") {
+		t.Fatalf("narrow rules named an exposed endpoint; log: %q", buf.String())
+	}
+
+	// The acknowledgment is global, so a named client profile can be the only
+	// reason it is set. Profile rules are evaluated in place of the top-level
+	// set and the per-profile startup refusal never fires once the
+	// acknowledgment is present, so a top-level-only report would show an
+	// empty list for a config that is genuinely exposed.
+	profiles := map[string]filter.Policy{"zeta-reader": {Rules: broad}, "alpha-reader": {Rules: broad}}
+	var profileOnce sync.Once
+	buf.Reset()
+	warnReadExfiltrationOnce(&enabled, narrow, profiles, logger, &profileOnce)
+	if got := strings.Count(buf.String(), marker); got != 1 {
+		t.Fatalf("warning count for profile rules = %d, want 1; log: %q", got, buf.String())
+	}
+	for _, want := range []string{
+		"alpha-reader: GET /containers/sockguard-test/archive",
+		"zeta-reader: GET /containers/sockguard-test/logs",
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Fatalf("warning does not name %q; log: %q", want, buf.String())
+		}
+	}
+	// Profile names come out of a map, so the field has to be sorted or it
+	// reorders between runs and this test flakes instead of failing.
+	if alpha, zeta := strings.Index(buf.String(), "alpha-reader"), strings.Index(buf.String(), "zeta-reader"); alpha > zeta {
+		t.Fatalf("profile endpoints are not sorted by profile name; log: %q", buf.String())
+	}
+}
+
+func TestWarnReadExfiltrationRetainsShadowedTopLevelRoute(t *testing.T) {
+	t.Parallel()
+
+	configured := []config.RuleConfig{
+		{Match: config.MatchConfig{Method: "POST", Path: "/libpod/images/sockguard-test/push"}, Action: "deny"},
+		{Match: config.MatchConfig{Method: "POST", Path: "/libpod/images/team/**"}, Action: "allow"},
+	}
+	rules, err := compileConfiguredRules(configured)
+	if err != nil {
+		t.Fatalf("compileConfiguredRules: %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.InsecureAllowReadExfiltration = true
+	cfg.Rules = configured
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	var once sync.Once
+	warnReadExfiltrationOnce(&cfg, rules, nil, logger, &once)
+
+	if !strings.Contains(buf.String(), "POST /libpod/images/*/push") {
+		t.Fatalf("warning lost reachable push route behind a denied representative; log: %q", buf.String())
+	}
+}
+
+func TestWarnReadExfiltrationRetainsShadowedProfileRoute(t *testing.T) {
+	t.Parallel()
+
+	configured := []config.RuleConfig{
+		{Match: config.MatchConfig{Method: "POST", Path: "/libpod/images/sockguard-test/push"}, Action: "deny"},
+		{Match: config.MatchConfig{Method: "POST", Path: "*/images/team/*/push"}, Action: "allow"},
+	}
+	rules, err := compileConfiguredRules(configured)
+	if err != nil {
+		t.Fatalf("compileConfiguredRules: %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.InsecureAllowReadExfiltration = true
+	cfg.Clients.Profiles = []config.ClientProfileConfig{{Name: "publisher", Rules: configured}}
+	profiles := map[string]filter.Policy{"publisher": {Rules: rules}}
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	var once sync.Once
+	warnReadExfiltrationOnce(&cfg, nil, profiles, logger, &once)
+
+	if !strings.Contains(buf.String(), "publisher: POST /libpod/images/*/push") {
+		t.Fatalf("warning lost reachable profile push route behind a denied representative; log: %q", buf.String())
+	}
+}
+
+// withFilter must actually call warnIfReadExfiltrationEnabled. Every other
+// assertion about this warning drives warnReadExfiltrationOnce directly with
+// an injected Once, so the chain-build call site is the one part of the
+// feature no test touches: deleting that line leaves the whole suite green
+// while the running proxy emits nothing. This test is deliberately not
+// parallel and resets the package-level Once, which is safe because no other
+// test in this package builds a filter chain with the acknowledgment set.
+func TestWithFilterWarnsReadExfiltration(t *testing.T) {
+	readExfiltrationWarnOnce = sync.Once{}
+	t.Cleanup(func() { readExfiltrationWarnOnce = sync.Once{} })
+
+	rules, err := compileConfiguredRules([]config.RuleConfig{
+		{Match: config.MatchConfig{Method: "GET", Path: "/containers/**"}, Action: "allow"},
+	})
+	if err != nil {
+		t.Fatalf("compileConfiguredRules: %v", err)
+	}
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	cfg := config.Defaults()
+	cfg.InsecureAllowReadExfiltration = true
+	withFilter(&cfg, nil, logger, rules, map[string]filter.Policy{"broad-reader": {Rules: rules}})
+
+	if got := strings.Count(buf.String(), "insecure_allow_read_exfiltration is enabled"); got != 1 {
+		t.Fatalf("chain build warning count = %d, want 1; log: %q", got, buf.String())
+	}
+	if !strings.Contains(buf.String(), "GET /containers/sockguard-test/archive") {
+		t.Fatalf("chain build warning does not name the exposed endpoint; log: %q", buf.String())
+	}
+	// withFilter must hand its clientProfiles map to the warning, not just its
+	// top-level rules.
+	if !strings.Contains(buf.String(), "broad-reader: GET /containers/sockguard-test/archive") {
+		t.Fatalf("chain build warning does not name the exposed profile endpoint; log: %q", buf.String())
+	}
+
+	// A chain rebuilt without the acknowledgment must stay silent, so the
+	// call site is gated by the flag rather than logging unconditionally.
+	buf.Reset()
+	readExfiltrationWarnOnce = sync.Once{}
+	clean := config.Defaults()
+	withFilter(&clean, nil, logger, rules, map[string]filter.Policy{"broad-reader": {Rules: rules}})
+	if strings.Contains(buf.String(), "insecure_allow_read_exfiltration is enabled") {
+		t.Fatalf("chain build without the acknowledgment logged: %q", buf.String())
 	}
 }
 

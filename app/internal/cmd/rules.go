@@ -937,6 +937,39 @@ func exactLibpodImageScpPaths(rules []config.RuleConfig) []string {
 	return paths
 }
 
+// allowedSensitiveExfilEndpointsByProfile probes each named client profile's
+// own rule set for the endpoints allowedSensitiveExfilEndpoints checks,
+// returning "<profile>: <METHOD> <path>" entries.
+//
+// The acknowledgment is global but profile rules are evaluated in place of the
+// top-level set, so a profile can be the only reason
+// insecure_allow_read_exfiltration has to be set. The per-profile refusal in
+// validateReadExfiltrationRulesForPolicy never fires once the acknowledgment
+// is present, which leaves the profile's exposure unreported everywhere else.
+//
+// Profile names come from a map, so they are sorted before the walk. The result
+// is therefore stable across runs, which a log field has to be.
+func allowedSensitiveExfilEndpointsByProfile(profiles map[string]filter.Policy, configuredProfiles []config.ClientProfileConfig) []string {
+	configuredRules := make(map[string][]config.RuleConfig, len(configuredProfiles))
+	for _, profile := range configuredProfiles {
+		configuredRules[profile.Name] = profile.Rules
+	}
+
+	names := make([]string, 0, len(profiles))
+	for name := range profiles {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+
+	exposed := make([]string, 0, len(names))
+	for _, name := range names {
+		for _, endpoint := range allowedSensitiveExfilEndpoints(profiles[name].Rules, configuredRules[name]) {
+			exposed = append(exposed, name+": "+endpoint)
+		}
+	}
+	return exposed
+}
+
 func bodyInspectionConfiguredForEndpoint(requestBody config.RequestBodyConfig, endpoint bodySensitiveWriteEndpoint) bool {
 	switch endpoint.path {
 	case "/containers/sockguard-test/exec", "/exec/sockguard-test/start",

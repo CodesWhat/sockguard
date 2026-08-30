@@ -195,12 +195,15 @@ Sockguard accepts the current Tecnativa environment-variable surface, including 
 +    image: codeswhat/sockguard
      volumes:
        - /var/run/docker.sock:/var/run/docker.sock:ro
-    environment:
-      - CONTAINERS=1
-      - POST=0
+     environment:
++      - SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true
+       - CONTAINERS=1
+       - POST=0
 ```
 
-That gets you current Tecnativa env-surface compatibility. If you intentionally want section-wide raw archive/export or log/attach streaming parity from `CONTAINERS=1` or `IMAGES=1`, also set `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true`; otherwise move to YAML and allow only the list/inspect endpoints you actually need.
+The acknowledgement is required, not optional. `CONTAINERS=1` generates `allow GET,HEAD /containers/**`, and that admits `GET /containers/*/archive`, `/export`, `/logs`, and `/attach/ws`, so without `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true` Sockguard exits 1 at startup with an error naming those four endpoints. `IMAGES=1`, `SERVICES=1`, and `TASKS=1` open the same class of surface. Unlike `GRPC=1`/`SESSION=1`, which auto-set their own acknowledgement, compatibility mode never sets this one for you: the whole point is that a section-wide read grant should be a decision you made. Drop the acknowledgement once you move to YAML and allow only the list/inspect endpoints you actually need.
+
+One other difference from Tecnativa in that diff: Sockguard binds loopback `127.0.0.1:2375` by default rather than all interfaces, so a proxy other Compose services talk to over TCP also needs `SOCKGUARD_LISTEN_ADDRESS` plus both plaintext-TCP acknowledgements, or `SOCKGUARD_LISTEN_SOCKET` and a shared socket volume. See [Getting Started](/getting-started) for either block in full.
 
 Tecnativa compatibility mode and signed-policy mode are separate migration
 stages. Rule-generating compatibility variables are unsigned process state, so
