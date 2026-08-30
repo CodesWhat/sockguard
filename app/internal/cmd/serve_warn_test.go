@@ -289,6 +289,43 @@ func TestWarnReadExfiltrationOncePreservesShadowedRouteDetection(t *testing.T) {
 	}
 }
 
+func TestWarnReadExfiltrationOnceDescribesCheckpointAndMountRisks(t *testing.T) {
+	t.Parallel()
+
+	rules := []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/checkpoint"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+	compiled, err := compileConfiguredRules(rules)
+	if err != nil {
+		t.Fatalf("compile rules: %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.InsecureAllowReadExfiltration = true
+	cfg.Rules = rules
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	var once sync.Once
+	warnReadExfiltrationOnce(&cfg, compiled, nil, logger, &once)
+
+	for _, want := range []string{
+		"raw archive/export",
+		"log/attach streaming",
+		"checkpoint export",
+		"container rootfs mount",
+		"registry push",
+		"container memory",
+		"daemon-host filesystem paths",
+		"POST /libpod/containers/sockguard-test/checkpoint",
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Fatalf("warning does not describe %q; log: %q", want, buf.String())
+		}
+	}
+}
+
 // withFilter must actually call warnIfReadExfiltrationEnabled. Every other
 // assertion about this warning drives warnReadExfiltrationOnce directly with
 // an injected Once, so the chain-build call site is the one part of the
