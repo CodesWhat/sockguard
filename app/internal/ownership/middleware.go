@@ -377,8 +377,15 @@ func allowPathOwnershipRequest(
 	if identifier, ok := libpodVolumeIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindVolume, identifier, opts, false)
 	}
-	if libpodRemoteImageScpSource(method, normPath) {
-		return verdictDeny, "owner policy denied access to remote image source", nil
+	if identifier, remote, ok := libpodImageScpSource(method, normPath); ok {
+		switch {
+		case remote:
+			return verdictDeny, "owner policy denied access to remote image source", nil
+		case identifier == "":
+			return verdictDeny, "owner policy could not resolve local image source", nil
+		default:
+			return checkOwnedResource(ctx, inspectResource, dockerresource.KindImage, identifier, opts, opts.AllowUnownedImages)
+		}
 	}
 	if identifier, ok := libpodImageIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindImage, identifier, opts, opts.AllowUnownedImages)

@@ -145,8 +145,22 @@ same way they cover Docker-compat:
   `/exists`, `/top`, `/healthcheck`, `/archive`, `/tree`, `/changes`, volume
   `/export`, and the bare `GET /libpod/networks/{id}` spelling Podman
   registers on the same `InspectNetwork` handler as `/libpod/networks/{id}/json`.
-  `POST /libpod/images/scp/{name}` copies an image to another host, so it is
-  owner-checked against `{name}` like a push.
+  Native image SCP follows Podman's source grammar. A bare
+  `POST /libpod/images/scp/{image}` source and the special
+  `user@localhost::{image}` form name a local image, so owner isolation
+  inspects the exact image portion before forwarding. An owned image passes;
+  an unowned image follows `allow_unowned_images`; a foreign image is denied;
+  and a local inspect that returns not found passes through so Podman can
+  return its real error. A `connection::{image}` source belongs to another
+  daemon and cannot be classified by a local inspect, so enforce mode denies
+  it with `reason_code=owner_policy_denied_access` and reason
+  `libpod owner policy denied access to remote image source`. Warn and audit
+  modes forward it as `would_deny` with the same code and reason. A malformed
+  local-user source fails closed with that reason code instead of issuing an
+  empty inspect. With no owner configured, all SCP forms pass through
+  untouched. Podman's earlier per-image POST routes remain distinct: a path
+  ending in `/push`, `/tag`, or `/untag` checks the local image whose name
+  begins with `scp/`; only an actual SCP route strips that segment.
 - `GET /libpod/events` is owner-filtered but is only partly expressible as a
   visibility policy, and that asymmetry is deliberate. Podman evaluates
   several values under one event filter key disjunctively, so a `label=` value
@@ -201,6 +215,20 @@ same way they cover Docker-compat:
   `GET /libpod/pods/stats` before v2.1 and no longer does; see Known
   Limitations below for what that costs a deployment that runs neither
   isolation layer.
+- `GET /libpod/manifests/{name}/exists` and
+  `GET /libpod/manifests/{name}/json` are refused whenever owner isolation or
+  a visibility policy is active. Manifest lists carry no owner or policy
+  labels and neither endpoint accepts a filter. The `/json` route also falls
+  back to fetching the caller-named reference from a registry when no local
+  list exists, so treating local lookup failure as safe would expose remote
+  content. Owner refusals use
+  `owner_libpod_manifest_exists_unscopeable` and
+  `owner_libpod_manifest_json_unscopeable`; visibility refusals use
+  `visibility_libpod_manifest_exists_unscopeable` and
+  `visibility_libpod_manifest_json_unscopeable`. These are hard `403`
+  refusals in enforce, warn, and audit modes because forwarding cannot produce
+  a scoped response. With neither isolation policy configured, the reads pass
+  through unchanged.
 - Resource names that happen to equal an API action word remain protected.
   Owner matching reserves keywords only for the exact method and collection
   path, while `GET` and `HEAD` visibility treats write-only keywords as normal
