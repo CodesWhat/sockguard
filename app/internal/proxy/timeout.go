@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,7 +23,8 @@ import (
 // unchanged. Long-lived endpoints (event streams, follow/stream reads, image
 // pull/build/push, plugin create/pull/push/upgrade, container export/get, container
 // archive i.e. docker cp, websocket attach, and the blocking container wait)
-// are exempt, because a deadline would sever a legitimately long response.
+// and streaming native Podman container/pod top are exempt, because a deadline
+// would sever a legitimately long response.
 // Hijacked endpoints
 // (attach, exec start) never reach this handler: HijackHandler short-circuits
 // them earlier in the chain.
@@ -50,14 +52,18 @@ func isLongLivedUpstreamRequest(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	path := requestNormalizedPath(w, r)
+	nativeLibpod := false
 	if nativePath, ok := strings.CutPrefix(path, "/libpod"); ok {
 		path = nativePath
+		nativeLibpod = true
 	}
 	switch r.Method {
 	case http.MethodGet:
 		switch {
 		case path == "/events":
 			return true
+		case nativeLibpod && (matchContainerAction(path, "top") || matchPodAction(path, "top")):
+			return podmanBoolValue(r, "stream")
 		case matchContainerAction(path, "logs"):
 			return dockerBoolValue(r, "follow")
 		case matchContainerAction(path, "stats"):
@@ -112,6 +118,36 @@ func matchContainerAction(path, action string) bool {
 		return false
 	}
 	return act == action
+}
+
+// matchPodAction reports whether path is exactly /pods/{id}/{action}.
+func matchPodAction(path, action string) bool {
+	rest, ok := strings.CutPrefix(path, "/pods/")
+	if !ok {
+		return false
+	}
+	id, act, ok := strings.Cut(rest, "/")
+	if !ok || id == "" {
+		return false
+	}
+	return act == action
+}
+
+// podmanBoolValue mirrors the gorilla/schema bool conversion used by Podman's
+// libpod handlers. The last repeated value wins; strconv.ParseBool spellings
+// and the exact lowercase value "on" are accepted, while omitted or invalid
+// values are false here (and invalid values are rejected by Podman itself).
+func podmanBoolValue(r *http.Request, key string) bool {
+	values := r.URL.Query()[key]
+	if len(values) == 0 {
+		return false
+	}
+	value := values[len(values)-1]
+	if value == "on" {
+		return true
+	}
+	parsed, err := strconv.ParseBool(value)
+	return err == nil && parsed
 }
 
 // dockerBoolValue mirrors the daemon's api/server/httputils.BoolValue: a query
