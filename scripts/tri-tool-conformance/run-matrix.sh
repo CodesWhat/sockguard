@@ -17,11 +17,12 @@
 #                 [--portwing-version <ver>] [--drydock-version <ver>]
 #   run-matrix.sh --self-test
 #
-# --self-test exercises the route normalizer (normalize-routes.jq) and the
-# known-routes.json diff logic against testdata/access-log-fixture.jsonl.
-# It needs jq and awk only -- no Docker, no network -- and is wired into `npm test`
-# via scripts/tri-tool-conformance-run-matrix.test.mjs (see that file's
-# header for why it lives one directory up).
+# --self-test exercises fail-closed setup artifacts plus the route normalizer
+# (normalize-routes.jq) and known-routes.json diff logic against
+# testdata/access-log-fixture.jsonl. It needs jq and awk only -- no Docker, no
+# network -- and is wired into `npm test` via
+# scripts/tri-tool-conformance-run-matrix.test.mjs (see that file's header for
+# why it lives one directory up).
 #
 # See README.md in this directory for the full assertion list, the known
 # gaps in what could be verified without live published images, and how to
@@ -46,7 +47,7 @@ source "${SCRIPT_DIR}/lib.sh"
 SCRATCH_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tri-tool-conformance.XXXXXX")"
 trap 'rm -rf "${SCRATCH_DIR}"' EXIT
 
-# busybox pins for the events/logs/lifecycle sentinels and the assertion-8
+# busybox pins for the events/logs/lifecycle sentinels and the assertion-9
 # (remote update trigger) store-sync sentinel. Only NEW_BUSYBOX_REF matches
 # app/integration/helpers_test.go's busyboxPinnedRef -- reusing the same pin
 # that repo's OWN integration suite already trusts and pre-pulls in its own
@@ -167,13 +168,14 @@ resolve_latest_sockguard_version() {
 }
 
 # ---------------------------------------------------------------------------
-# --self-test: no Docker, no network. Proves the normalizer + diff logic
-# that assertion 10 depends on actually work before trusting them in a live
-# run, and gives lefthook/CI something to check on every push.
+# --self-test: no Docker, no network. Proves the fail-closed setup-artifact
+# path and the normalizer + diff logic that assertion 11 depends on before
+# trusting them in a live run, and gives lefthook/CI something to check on
+# every push.
 # ---------------------------------------------------------------------------
 
 run_self_test() {
-  echo "== run-matrix.sh --self-test: route normalizer + tripwire diff logic =="
+  echo "== run-matrix.sh --self-test: artifact failure control + route tripwire =="
   local fixture="${SCRIPT_DIR}/testdata/access-log-fixture.jsonl"
   local known="${SCRIPT_DIR}/known-routes.json"
   local failed=0
@@ -190,16 +192,18 @@ run_self_test() {
     return 1
   }
 
-  # The fixture (testdata/access-log-fixture.jsonl) has 10 lines: 6 real
-  # access-log lines (5 allowed + 1 denied that IS in known-routes.json),
-  # 1 deliberately-unknown denied route (GET /containers/*/attach, which is
-  # NOT in known-routes.json -- attach is never allowed by any preset and
-  # was never added as an expected-denial-probe shape either), 1
+  # The fixture (testdata/access-log-fixture.jsonl) has 11 lines: 7 real
+  # access-log lines (5 allowed + 2 denied -- POST /build IS in
+  # known-routes.json, while GET /containers/*/attach deliberately is NOT:
+  # attach is never allowed by any preset and was never added as an
+  # expected-denial-probe shape either), 1
   # access-log-shaped line with normalized_path missing entirely, 1
   # non-access-log line (msg=startup), 1 bare-string JSON value (valid JSON,
   # not an object), and 1 line that isn't JSON at all. The three malformed/
   # partial lines prove tolerance (see below); a correct normalizer still
-  # yields exactly 6 unique {method,path} shapes from the 6 real lines.
+  # yields exactly 6 unique {method,path} shapes from the 7 real lines. The
+  # single- and multi-segment image references deliberately collapse to the
+  # same /images/**/json policy shape.
   local got_count
   got_count="$(jq 'length' <<<"$observed")"
   if [ "$got_count" != "6" ]; then
@@ -398,6 +402,35 @@ run_self_test() {
   unset -f docker
   unset -f git
 
+  # A valid row must preserve its original setup exit while still leaving the
+  # same machine-readable verdict and diagnostics that a fully-started row
+  # uploads. Point the child at a guaranteed-missing socket so this negative
+  # control cannot contact Docker or a registry.
+  local setup_failure_dir="${SCRATCH_DIR}/setup-failure-control"
+  local setup_failure_socket="${setup_failure_dir}/missing.sock"
+  local setup_failure_log="${setup_failure_dir}/child.log"
+  local setup_failure_rc=0
+  mkdir -p "$setup_failure_dir"
+  if TT_CONFORMANCE_OUTPUT_DIR="$setup_failure_dir" \
+      TT_DOCKER_SOCKET_PATH="$setup_failure_socket" \
+      bash "$0" --row current-edge \
+        --sockguard-image codeswhat/sockguard:self-test \
+        --portwing-version self-test \
+        --drydock-version self-test >"$setup_failure_log" 2>&1; then
+    setup_failure_rc=0
+  else
+    setup_failure_rc=$?
+  fi
+  if [ "$setup_failure_rc" -eq 69 ] \
+      && jq -e '.overall == "FAIL" and .assertions[0].name == "setup" and .assertions[0].status == "FAIL"' \
+        "${setup_failure_dir}/conformance-current-edge.json" >/dev/null 2>&1 \
+      && grep -q '^exit_status=69$' "${setup_failure_dir}/conformance-current-edge-logs/setup-failure.log"; then
+    echo "PASS: setup failure preserves its exit status and writes JSON plus diagnostics"
+  else
+    echo "FAIL: setup-failure control rc=${setup_failure_rc}; expected rc 69 plus a failed JSON verdict and diagnostics: $(cat "$setup_failure_log")" >&2
+    failed=1
+  fi
+
   if [ "$failed" -eq 0 ]; then
     echo "== self-test OK =="
     return 0
@@ -465,6 +498,144 @@ case "$ROW" in
     ;;
 esac
 
+# Arm failure artifacts as soon as a row is valid. Image resolution, Docker
+# socket discovery, credential preparation, and fixture pulls all happen after
+# this point, so none of those setup failures may exit without a JSON verdict
+# and diagnostics bundle.
+PROJECT="ttconf-${ROW}-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-$$}"
+PRIMARY_SENTINEL_ID=""
+SENTINEL_IDS=()
+OBSERVED_ROUTES_JSON="[]"
+SOCKGUARD_IMAGE_RESOLVED="${SOCKGUARD_IMAGE_INPUT:-unresolved}"
+PORTWING_IMAGE_RESOLVED="ghcr.io/codeswhat/portwing:${PORTWING_VERSION}"
+DRYDOCK_IMAGE_RESOLVED="codeswhat/drydock:${DRYDOCK_VERSION}"
+SOCKGUARD_DIGEST="unknown"
+PORTWING_DIGEST="unknown"
+DRYDOCK_DIGEST="unknown"
+ENGINE_VERSION="unknown"
+ENGINE_API_VERSION="unknown"
+IDENTITY_CONTAINERS=()
+IDENTITY_EVIDENCE_JSON='{"status":"not-run"}'
+ROW_SERVICES_STARTED=0
+SECRETS_PROVISIONED=0
+CONFORMANCE_OUTPUT_DIR="${TT_CONFORMANCE_OUTPUT_DIR:-$REPO_ROOT}"
+CONFORMANCE_LOG_DIR="${CONFORMANCE_OUTPUT_DIR}/conformance-${ROW}-logs"
+CONFORMANCE_ARTIFACT="${CONFORMANCE_OUTPUT_DIR}/conformance-${ROW}.json"
+DOCKER_SOCKET_PATH="${TT_DOCKER_SOCKET_PATH:-/var/run/docker.sock}"
+SETUP_FAILURE_DETAIL=""
+ARTIFACT_WRITTEN=0
+ARTIFACT_ARMED=1
+
+capture_conformance_logs() {
+  local container
+  if [ -d "$CONFORMANCE_LOG_DIR" ]; then
+    find "$CONFORMANCE_LOG_DIR" -type f -delete
+  fi
+  mkdir -p "$CONFORMANCE_LOG_DIR"
+  if [ "$ROW_SERVICES_STARTED" -eq 1 ]; then
+    compose logs --no-color > "${CONFORMANCE_LOG_DIR}/compose.log" 2>&1 || true
+  fi
+  for container in ${IDENTITY_CONTAINERS[@]+"${IDENTITY_CONTAINERS[@]}"}; do
+    docker logs "$container" > "${CONFORMANCE_LOG_DIR}/${container}.log" 2>&1 || true
+  done
+}
+
+write_artifact() {
+  local tmp_artifact="${CONFORMANCE_ARTIFACT}.tmp.$$"
+  if ! jq -n \
+      --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      --arg row "$ROW" \
+      --arg sockguard_ref "$SOCKGUARD_IMAGE_RESOLVED" \
+      --arg sockguard_digest "$SOCKGUARD_DIGEST" \
+      --arg portwing_ref "$PORTWING_IMAGE_RESOLVED" \
+      --arg portwing_digest "$PORTWING_DIGEST" \
+      --arg drydock_ref "$DRYDOCK_IMAGE_RESOLVED" \
+      --arg drydock_digest "$DRYDOCK_DIGEST" \
+      --arg engine_version "$ENGINE_VERSION" \
+      --arg engine_api_version "$ENGINE_API_VERSION" \
+      --arg preset "$PRESET_FILE" \
+      --arg mode "$MODE" \
+      --argjson identity "$IDENTITY_EVIDENCE_JSON" \
+      --argjson assertions "$ASSERTIONS_JSON" \
+      --argjson observed_routes "$OBSERVED_ROUTES_JSON" \
+      '{
+        timestamp: $timestamp,
+        row: $row,
+        images: {
+          sockguard: {ref: $sockguard_ref, digest: $sockguard_digest},
+          portwing: {ref: $portwing_ref, digest: $portwing_digest},
+          drydock: {ref: $drydock_ref, digest: $drydock_digest}
+        },
+        docker_engine: {version: $engine_version, api_version: $engine_api_version},
+        sockguard_preset: $preset,
+        portwing_mode: $mode,
+        identity: $identity,
+        observed_routes: $observed_routes,
+        assertions: $assertions,
+        overall: (if ([$assertions[] | select(.status=="FAIL")] | length) > 0 then "FAIL" else "PASS" end)
+      }' > "$tmp_artifact"; then
+    rm -f -- "$tmp_artifact"
+    return 1
+  fi
+  if ! mv -f -- "$tmp_artifact" "$CONFORMANCE_ARTIFACT"; then
+    rm -f -- "$tmp_artifact"
+    return 1
+  fi
+  ARTIFACT_WRITTEN=1
+  echo "Wrote ${CONFORMANCE_ARTIFACT}"
+}
+
+# shellcheck disable=SC2317,SC2329 # invoked indirectly by the EXIT-trap finalizer
+emit_setup_failure_artifacts() {
+  local exit_status="$1"
+  local detail="${SETUP_FAILURE_DETAIL:-row exited before the conformance artifact was written}"
+  record_result "setup" FAIL "$detail"
+  capture_conformance_logs
+  printf 'exit_status=%s\ndetail=%s\n' "$exit_status" "$detail" > "${CONFORMANCE_LOG_DIR}/setup-failure.log"
+  if ! write_artifact; then
+    echo "FATAL: could not write ${CONFORMANCE_ARTIFACT} while preserving setup failure exit ${exit_status}" >&2
+  fi
+}
+
+fatal_setup() {
+  local exit_status="$1"
+  shift
+  SETUP_FAILURE_DETAIL="$*"
+  echo "FATAL: ${SETUP_FAILURE_DETAIL}" >&2
+  exit "$exit_status"
+}
+
+# shellcheck disable=SC2317,SC2329 # invoked indirectly via the EXIT trap
+cleanup() {
+  local id container
+  for id in "${SENTINEL_IDS[@]:-}"; do
+    if [ -n "$id" ]; then docker rm -f "$id" >/dev/null 2>&1 || true; fi
+  done
+  for container in ${IDENTITY_CONTAINERS[@]+"${IDENTITY_CONTAINERS[@]}"}; do
+    docker rm -f "$container" >/dev/null 2>&1 || true
+  done
+  if [ "$ROW_SERVICES_STARTED" -eq 1 ]; then
+    compose down -v --remove-orphans >/dev/null 2>&1 || true
+  fi
+  if [ "$SECRETS_PROVISIONED" -eq 1 ]; then
+    sudo -n rm -f -- "${BUNDLE_DIR}/portwing_token.txt" "${BUNDLE_DIR}/portwing_ed25519.pem" "${BUNDLE_DIR}/portwing_authorized_keys" >/dev/null 2>&1 || true
+  fi
+  rm -rf -- "$SCRATCH_DIR"
+}
+
+# shellcheck disable=SC2317,SC2329 # invoked indirectly via the EXIT trap
+finalize_exit() {
+  local original_status=$?
+  trap - EXIT
+  set +e
+  if [ "$ARTIFACT_ARMED" -eq 1 ] && [ "$original_status" -ne 0 ] && [ "$ARTIFACT_WRITTEN" -eq 0 ]; then
+    emit_setup_failure_artifacts "$original_status"
+  fi
+  cleanup
+  exit "$original_status"
+}
+trap finalize_exit EXIT
+
 # An explicit --sockguard-image/sockguard_image always wins outright, for
 # every row, unconditionally -- RELEASING.md's pre-GA gate depends on this
 # to test a specific release-candidate ref rather than whatever a row would
@@ -486,11 +657,11 @@ else
   # script, so the failure must be caught explicitly here or a resolver
   # FATAL would silently fall through to an empty version string instead
   # of stopping the row.
-  SOCKGUARD_VERSION_RESOLVED="$(resolve_latest_sockguard_version)" || exit 1
+  if ! SOCKGUARD_VERSION_RESOLVED="$(resolve_latest_sockguard_version)"; then
+    fatal_setup 1 "could not resolve a published stable Sockguard image; see resolver diagnostics above"
+  fi
   SOCKGUARD_IMAGE_RESOLVED="codeswhat/sockguard:${SOCKGUARD_VERSION_RESOLVED}"
 fi
-PORTWING_IMAGE_RESOLVED="ghcr.io/codeswhat/portwing:${PORTWING_VERSION}"
-DRYDOCK_IMAGE_RESOLVED="codeswhat/drydock:${DRYDOCK_VERSION}"
 
 # Defense in depth: the workflow that drives this script has no
 # pull_request trigger (it's workflow_dispatch/schedule only, so
@@ -501,43 +672,32 @@ DRYDOCK_IMAGE_RESOLVED="codeswhat/drydock:${DRYDOCK_VERSION}"
 # unchecked.
 SOCKGUARD_IMAGE_ALLOWLIST_RE='^(ghcr\.io/codeswhat/sockguard|docker\.io/codeswhat/sockguard|quay\.io/codeswhat/sockguard|codeswhat/sockguard)(:[A-Za-z0-9._-]+)?(@sha256:[0-9a-f]{64})?$'
 if [[ ! "$SOCKGUARD_IMAGE_RESOLVED" =~ $SOCKGUARD_IMAGE_ALLOWLIST_RE ]]; then
-  echo "run-matrix.sh: --sockguard-image '${SOCKGUARD_IMAGE_RESOLVED}' does not match an allowlisted sockguard image reference (ghcr.io|docker.io|quay.io/codeswhat/sockguard or codeswhat/sockguard, optionally :tag and/or @sha256:<digest>)" >&2
-  exit 2
+  fatal_setup 2 "--sockguard-image '${SOCKGUARD_IMAGE_RESOLVED}' does not match an allowlisted sockguard image reference (ghcr.io|docker.io|quay.io/codeswhat/sockguard or codeswhat/sockguard, optionally :tag and/or @sha256:<digest>)"
 fi
 
 export SOCKGUARD_IMAGE="$SOCKGUARD_IMAGE_RESOLVED"
 export PORTWING_VERSION
 export DRYDOCK_VERSION
 export DOCKER_SOCK_GID
-DOCKER_SOCK_GID="$(stat -c '%g' /var/run/docker.sock 2>/dev/null || stat -f '%g' /var/run/docker.sock)"
-
-PROJECT="ttconf-${ROW}-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-$$}"
-PRIMARY_SENTINEL_ID=""
-SENTINEL_IDS=()
-OBSERVED_ROUTES_JSON="[]"
-SOCKGUARD_DIGEST="unknown"
-PORTWING_DIGEST="unknown"
-DRYDOCK_DIGEST="unknown"
-ENGINE_VERSION="unknown"
-ENGINE_API_VERSION="unknown"
+if [ ! -S "$DOCKER_SOCKET_PATH" ]; then
+  fatal_setup 69 "Docker socket is unavailable at ${DOCKER_SOCKET_PATH}"
+fi
+if ! DOCKER_SOCK_GID="$(stat -c '%g' "$DOCKER_SOCKET_PATH" 2>/dev/null || stat -f '%g' "$DOCKER_SOCKET_PATH")"; then
+  fatal_setup 1 "could not resolve the Docker socket group at ${DOCKER_SOCKET_PATH}"
+fi
 
 echo "== #150 tri-tool conformance: row=${ROW} mode=${MODE} preset=${PRESET_FILE} project=${PROJECT} =="
 echo "   sockguard=${SOCKGUARD_IMAGE_RESOLVED} portwing=${PORTWING_IMAGE_RESOLVED} drydock=${DRYDOCK_IMAGE_RESOLVED}"
 
-# shellcheck disable=SC2317,SC2329 # invoked indirectly via `trap cleanup EXIT` below (SC2317 is the pre-0.10 code for SC2329)
-cleanup() {
-  local id
-  for id in "${SENTINEL_IDS[@]:-}"; do
-    if [ -n "$id" ]; then docker rm -f "$id" >/dev/null 2>&1 || true; fi
-  done
-  compose down -v --remove-orphans >/dev/null 2>&1 || true
-  rm -f "${BUNDLE_DIR}/portwing_token.txt" "${BUNDLE_DIR}/portwing_ed25519.pem" "${BUNDLE_DIR}/portwing_authorized_keys"
-}
-trap cleanup EXIT
-
 # ---------------------------------------------------------------------------
 # Fresh secrets every run (design doc assertion 1: "fresh secrets every run")
 # ---------------------------------------------------------------------------
+
+# A killed local run can leave these files owned by the container UID. Clear
+# only the three fixed harness paths before recreating them so a retry cannot
+# inherit credentials or fail its first redirect with EACCES.
+SECRETS_PROVISIONED=1
+sudo rm -f -- "${BUNDLE_DIR}/portwing_token.txt" "${BUNDLE_DIR}/portwing_ed25519.pem" "${BUNDLE_DIR}/portwing_authorized_keys"
 
 if [ "$MODE" = "standard" ]; then
   openssl rand -hex 32 > "${BUNDLE_DIR}/portwing_token.txt"
@@ -552,18 +712,15 @@ if [ "$MODE" = "standard" ]; then
   # explicitly rather than just `&&`-chaining: a setup failure needs to read
   # as exactly that, not surface later as a misleading handshake failure.
   if ! sudo chown 65532:1000 "${BUNDLE_DIR}/portwing_token.txt"; then
-    echo "FATAL: could not chown portwing_token.txt to 65532:1000 (portwing's UID, drydock's node GID) -- setup error, not a conformance failure" >&2
-    exit 1
+    fatal_setup 1 "could not chown portwing_token.txt to 65532:1000 (portwing's UID, drydock's node GID) -- setup error, not a conformance failure"
   fi
   if ! sudo chmod 0440 "${BUNDLE_DIR}/portwing_token.txt"; then
-    echo "FATAL: could not chmod portwing_token.txt to 0440 -- setup error, not a conformance failure" >&2
-    exit 1
+    fatal_setup 1 "could not chmod portwing_token.txt to 0440 -- setup error, not a conformance failure"
   fi
 else
   if ! docker run --rm "$PORTWING_IMAGE_RESOLVED" keygen -comment "tri-tool-conformance-${ROW}" \
       > "${BUNDLE_DIR}/portwing_ed25519.pem" 2>"${SCRATCH_DIR}/keygen.err"; then
-    echo "FATAL: could not generate Portwing Ed25519 keypair from ${PORTWING_IMAGE_RESOLVED}: $(cat "${SCRATCH_DIR}/keygen.err")" >&2
-    exit 1
+    fatal_setup 1 "could not generate Portwing Ed25519 keypair from ${PORTWING_IMAGE_RESOLVED}: $(cat "${SCRATCH_DIR}/keygen.err")"
   fi
   # Lock the private key down BEFORE deriving the public key: the shell
   # redirect above writes the pem with the runner's default umask (0644),
@@ -576,26 +733,21 @@ else
   # setup-error message instead of surfacing later as a confusing
   # auth-handshake failure.
   if ! sudo chown 65532:65532 "${BUNDLE_DIR}/portwing_ed25519.pem"; then
-    echo "FATAL: could not chown portwing_ed25519.pem to 65532:65532 (the UID portwing runs as) -- setup error, not a conformance failure" >&2
-    exit 1
+    fatal_setup 1 "could not chown portwing_ed25519.pem to 65532:65532 (the UID portwing runs as) -- setup error, not a conformance failure"
   fi
   if ! sudo chmod 0400 "${BUNDLE_DIR}/portwing_ed25519.pem"; then
-    echo "FATAL: could not chmod portwing_ed25519.pem to 0400 -- setup error, not a conformance failure" >&2
-    exit 1
+    fatal_setup 1 "could not chmod portwing_ed25519.pem to 0400 -- setup error, not a conformance failure"
   fi
   if ! docker run --rm -v "${BUNDLE_DIR}/portwing_ed25519.pem:/key.pem:ro" "$PORTWING_IMAGE_RESOLVED" \
       keygen -pub-from /key.pem -comment "tri-tool-conformance-${ROW}" \
       > "${BUNDLE_DIR}/portwing_authorized_keys" 2>"${SCRATCH_DIR}/keygen-pub.err"; then
-    echo "FATAL: could not derive the authorized_keys line: $(cat "${SCRATCH_DIR}/keygen-pub.err")" >&2
-    exit 1
+    fatal_setup 1 "could not derive the authorized_keys line: $(cat "${SCRATCH_DIR}/keygen-pub.err")"
   fi
   if ! sudo chown 1000:1000 "${BUNDLE_DIR}/portwing_authorized_keys"; then
-    echo "FATAL: could not chown portwing_authorized_keys to 1000:1000 (the UID drydock runs as) -- setup error, not a conformance failure" >&2
-    exit 1
+    fatal_setup 1 "could not chown portwing_authorized_keys to 1000:1000 (the UID drydock runs as) -- setup error, not a conformance failure"
   fi
   if ! sudo chmod 0600 "${BUNDLE_DIR}/portwing_authorized_keys"; then
-    echo "FATAL: could not chmod portwing_authorized_keys to 0600 -- setup error, not a conformance failure" >&2
-    exit 1
+    fatal_setup 1 "could not chmod portwing_authorized_keys to 0600 -- setup error, not a conformance failure"
   fi
 fi
 
@@ -612,8 +764,7 @@ fi
 
 for busybox_ref in "$OLD_BUSYBOX_REF" "$NEW_BUSYBOX_REF"; do
   if ! docker pull "$busybox_ref" >"${SCRATCH_DIR}/busybox-pull.log" 2>&1; then
-    echo "FATAL: could not pre-pull ${busybox_ref}: $(tail -c 2000 "${SCRATCH_DIR}/busybox-pull.log")" >&2
-    exit 1
+    fatal_setup 1 "could not pre-pull ${busybox_ref}: $(tail -c 2000 "${SCRATCH_DIR}/busybox-pull.log")"
   fi
 done
 
@@ -646,6 +797,7 @@ sentinel_state_matches() {
 
 assert_pristine_boot() {
   local name="pristine-boot"
+  ROW_SERVICES_STARTED=1
   compose down -v --remove-orphans >/dev/null 2>&1 || true
 
   if ! compose up -d sockguard portwing drydock probe >"${SCRATCH_DIR}/compose-up.log" 2>&1; then
@@ -825,7 +977,395 @@ assert_auth_handshake() {
 }
 
 # ---------------------------------------------------------------------------
-# Assertion 3: inventory & inspect (passive -- see README "Verification
+# Tagged-artifact identity acceptance (current-standard only)
+#
+# This is a second, isolated Standard-mode Portwing + drydock pairing on the
+# row's real compose network and sockguard socket. It runs the exact published
+# Portwing and drydock images resolved for the row. The harness only provisions
+# credentials and edits the operator-owned authorized_keys file; every
+# authenticated request and retry comes from a real drydock controller.
+# ---------------------------------------------------------------------------
+
+IDENTITY_AGENT=""
+IDENTITY_HEADER_PROXY=""
+IDENTITY_DIR=""
+IDENTITY_AGENT_DIR=""
+IDENTITY_CONTROLLER_DIR=""
+
+# shellcheck disable=SC2317,SC2329 # invoked indirectly via wait_until
+identity_agent_ready() {
+  docker exec "$IDENTITY_AGENT" wget -q --spider http://127.0.0.1:4100/health >/dev/null 2>&1
+}
+
+identity_generate_key() {
+  local label="$1" private_file="$2" public_file="$3" raw_file
+  raw_file="${private_file}.raw"
+  if ! (umask 077; docker run --rm "$PORTWING_IMAGE_RESOLVED" keygen -comment "$label" > "$raw_file" 2>"${raw_file}.err"); then
+    rm -f -- "$raw_file" "${raw_file}.err" "$private_file" "$public_file"
+    return 1
+  fi
+  if ! (umask 077; sed -n '/-----BEGIN PRIVATE KEY-----/,/-----END PRIVATE KEY-----/p' "$raw_file" > "$private_file") \
+      || [ ! -s "$private_file" ]; then
+    rm -f -- "$raw_file" "${raw_file}.err" "$private_file" "$public_file"
+    return 1
+  fi
+  if ! sudo chown 65532:65532 "$private_file" || ! sudo chmod 0400 "$private_file"; then
+    rm -f -- "$raw_file" "${raw_file}.err" "$private_file" "$public_file"
+    return 1
+  fi
+  if ! docker run --rm -v "${private_file}:/key.pem:ro" "$PORTWING_IMAGE_RESOLVED" \
+      keygen -pub-from /key.pem -comment "$label" > "$public_file" 2>"${public_file}.err"; then
+    rm -f -- "$raw_file" "${raw_file}.err" "$private_file" "$public_file" "${public_file}.err"
+    return 1
+  fi
+  rm -f -- "$raw_file" "${raw_file}.err" "${public_file}.err"
+  # drydock drops to UID 1000 before it resolves SIGNINGKEY__FILE.
+  if ! sudo chown 1000:1000 "$private_file" || ! sudo chmod 0400 "$private_file"; then
+    return 1
+  fi
+  return 0
+}
+
+identity_key_id() {
+  local public_file="$1" encoded
+  encoded="$(awk 'NF >= 2 && $1 == "ed25519" { print $2; exit }' "$public_file")"
+  if [ -z "$encoded" ]; then
+    return 1
+  fi
+  printf '%s' "$encoded" \
+    | openssl base64 -d -A \
+    | openssl dgst -sha256 -binary \
+    | od -An -tx1 \
+    | tr -d ' \n' \
+    | cut -c1-16
+}
+
+identity_enroll() {
+  local secret="$1" public_file="$2" request response rc=0
+  IDENTITY_ENROLL_STATUS="transport-error"
+  IDENTITY_ENROLL_BODY="enrollment request did not complete"
+  request="$(jq -n --arg secret "$secret" --arg public_key "$(awk 'NF >= 2 && $1 == "ed25519" { print $2; exit }' "$public_file")" \
+    '{enrollment_token:$secret,public_key:$public_key}')"
+  response="$(compose exec -T probe curl --silent --show-error --max-time 10 \
+    -X POST -H 'Content-Type: application/json' -d "$request" \
+    --write-out '\n%{http_code}' "http://${IDENTITY_AGENT}:4100/api/portwing/enroll" 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    IDENTITY_ENROLL_BODY="enrollment transport failed (compose/curl exit ${rc}): ${response:-no diagnostic output}"
+    return 1
+  fi
+  IDENTITY_ENROLL_STATUS="$(tail -n 1 <<<"$response")"
+  IDENTITY_ENROLL_BODY="$(sed '$d' <<<"$response")"
+}
+
+identity_replace_registry() {
+  local source_public_file="$1"
+  rm -f -- "${IDENTITY_AGENT_DIR}/authorized_keys.next"
+  cp "$source_public_file" "${IDENTITY_AGENT_DIR}/authorized_keys.next"
+  sudo chown "65532:${IDENTITY_RUNNER_GID}" "${IDENTITY_AGENT_DIR}/authorized_keys.next" || return 1
+  sudo chmod 0640 "${IDENTITY_AGENT_DIR}/authorized_keys.next" || return 1
+  mv -f -- "${IDENTITY_AGENT_DIR}/authorized_keys.next" "${IDENTITY_AGENT_DIR}/authorized_keys"
+}
+
+identity_append_registry() {
+  local public_file="$1"
+  rm -f -- "${IDENTITY_AGENT_DIR}/authorized_keys.next"
+  cp "${IDENTITY_AGENT_DIR}/authorized_keys" "${IDENTITY_AGENT_DIR}/authorized_keys.next"
+  sed -n '1p' "$public_file" >> "${IDENTITY_AGENT_DIR}/authorized_keys.next"
+  sudo chown "65532:${IDENTITY_RUNNER_GID}" "${IDENTITY_AGENT_DIR}/authorized_keys.next" || return 1
+  sudo chmod 0640 "${IDENTITY_AGENT_DIR}/authorized_keys.next" || return 1
+  mv -f -- "${IDENTITY_AGENT_DIR}/authorized_keys.next" "${IDENTITY_AGENT_DIR}/authorized_keys"
+}
+
+identity_start_controller() {
+  local container="$1" key_id="$2" private_file="$3" offset_file="${4:-}"
+  local -a args=(run -d --name "$container" --network "$IDENTITY_NETWORK"
+    -v "${private_file}:/run/secrets/identity_key:ro"
+    -e DD_LOCAL_WATCHER=false
+    -e DD_ANONYMOUS_AUTH_CONFIRM=true
+    -e DD_AGENT_IDENTITY_HOST="$IDENTITY_HEADER_PROXY"
+    -e DD_AGENT_IDENTITY_PORT=4100
+    -e DD_AGENT_IDENTITY_AUTHMODE=ed25519
+    -e DD_AGENT_IDENTITY_SIGNINGKEYID="$key_id"
+    -e DD_AGENT_IDENTITY_SIGNINGKEY__FILE=/run/secrets/identity_key)
+  if [ -n "$offset_file" ]; then
+    args+=(-v "${SCRIPT_DIR}/controller-clock-offset.cjs:/opt/tri-tool/controller-clock-offset.cjs:ro")
+    args+=(-v "${offset_file}:/run/tri-tool/clock-offset:ro")
+    args+=(-e NODE_OPTIONS=--require=/opt/tri-tool/controller-clock-offset.cjs)
+    args+=(-e TT_CLOCK_OFFSET_FILE=/run/tri-tool/clock-offset)
+  fi
+  args+=("$DRYDOCK_IMAGE_RESOLVED")
+  if ! docker "${args[@]}" >"${SCRATCH_DIR}/${container}.cid" 2>"${SCRATCH_DIR}/${container}.err"; then
+    return 1
+  fi
+  IDENTITY_CONTAINERS+=("$container")
+}
+
+identity_start_header_proxy() {
+  if ! docker run -d --name "$IDENTITY_HEADER_PROXY" --network "$IDENTITY_NETWORK" \
+      --user 1000:1000 \
+      --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
+      --entrypoint node \
+      -v "${SCRIPT_DIR}/controller-header-proxy.cjs:/opt/tri-tool/controller-header-proxy.cjs:ro" \
+      -e TT_PROXY_UPSTREAM_HOST="$IDENTITY_AGENT" \
+      -e TT_PROXY_UPSTREAM_PORT=4100 \
+      -e TT_PROXY_LISTEN_PORT=4100 \
+      "$DRYDOCK_IMAGE_RESOLVED" /opt/tri-tool/controller-header-proxy.cjs \
+      >"${SCRATCH_DIR}/identity-header-proxy.cid" 2>"${SCRATCH_DIR}/identity-header-proxy.err"; then
+    return 1
+  fi
+  IDENTITY_CONTAINERS+=("$IDENTITY_HEADER_PROXY")
+  wait_for_container_log_count "$IDENTITY_HEADER_PROXY" '"event":"identity-header-proxy-listening"' 1 30
+}
+
+identity_reason_count() {
+  local reason="$1"
+  docker logs "$IDENTITY_AGENT" 2>&1 | grep -Fic "\"reason\":\"${reason}\"" || true
+}
+
+identity_header_reason_count() {
+  local reason="$1"
+  docker logs "$IDENTITY_HEADER_PROXY" 2>&1 \
+    | grep -Fic "{\"event\":\"portwing-response\",\"status\":401,\"reason\":\"${reason}\"}" || true
+}
+
+wait_for_identity_header_reason() {
+  local reason="$1" minimum="$2" timeout="${3:-30}"
+  local waited=0 count
+  while (( waited < timeout )); do
+    count="$(identity_header_reason_count "$reason")"
+    if [ "$count" -ge "$minimum" ]; then
+      return 0
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  return 1
+}
+
+assert_identity_acceptance() {
+  local skip_detail="the five-operation identity gate runs once against the current published Standard-mode pair"
+  if [ "$ROW" != "current-standard" ]; then
+    record_result "identity-enrollment" SKIP "$skip_detail"
+    record_result "identity-overlapping-key-rotation" SKIP "$skip_detail"
+    record_result "identity-revocation" SKIP "$skip_detail"
+    record_result "identity-sighup-reload" SKIP "$skip_detail"
+    record_result "identity-clock-skew-recovery" SKIP "$skip_detail"
+    return 0
+  fi
+
+  local old_private old_public new_private new_public rejected_public
+  local old_key_id new_key_id enrollment_secret wrong_secret
+  local old_controller new_controller skew_controller
+  local old_handshakes new_handshakes reloads_before reloads_after
+  local unknown_before unknown_after skew_before skew_after
+  local unknown_header_before unknown_header_after skew_header_before skew_header_after
+  local old_restart_count new_restart_count skew_restart_count
+
+  IDENTITY_DIR="${SCRATCH_DIR}/identity"
+  IDENTITY_AGENT_DIR="${IDENTITY_DIR}/agent"
+  IDENTITY_CONTROLLER_DIR="${IDENTITY_DIR}/controller"
+  mkdir -p "$IDENTITY_AGENT_DIR" "$IDENTITY_CONTROLLER_DIR"
+  old_private="${IDENTITY_CONTROLLER_DIR}/old.pem"
+  old_public="${IDENTITY_CONTROLLER_DIR}/old.pub"
+  new_private="${IDENTITY_CONTROLLER_DIR}/new.pem"
+  new_public="${IDENTITY_CONTROLLER_DIR}/new.pub"
+  rejected_public="$new_public"
+  old_controller="${PROJECT}-identity-old"
+  new_controller="${PROJECT}-identity-new"
+  skew_controller="${PROJECT}-identity-skew"
+  IDENTITY_AGENT="${PROJECT}-identity-agent"
+  IDENTITY_HEADER_PROXY="${PROJECT}-identity-header-proxy"
+  IDENTITY_CONTAINERS+=("$IDENTITY_AGENT")
+  IDENTITY_NETWORK="$(docker network ls --filter "label=com.docker.compose.project=${PROJECT}" --format '{{.Name}}' | head -1)"
+  IDENTITY_SOCKET_VOLUME="$(docker volume ls --filter "label=com.docker.compose.project=${PROJECT}" --format '{{.Name}}' | grep 'sockguard-socket$' | head -1)"
+
+  if [ -z "$IDENTITY_NETWORK" ] || [ -z "$IDENTITY_SOCKET_VOLUME" ]; then
+    record_result "identity-enrollment" FAIL "could not resolve the row's compose network or sockguard socket volume"
+    skip_detail="identity setup failed before the published controller could enroll"
+    for identity_name in identity-overlapping-key-rotation identity-revocation identity-sighup-reload identity-clock-skew-recovery; do
+      record_result "$identity_name" SKIP "$skip_detail"
+    done
+    return 1
+  fi
+
+  if ! identity_generate_key "tri-tool-controller-old" "$old_private" "$old_public" \
+      || ! identity_generate_key "tri-tool-controller-new" "$new_private" "$new_public"; then
+    record_result "identity-enrollment" FAIL "published Portwing keygen could not prepare the controller credentials"
+    skip_detail="identity key generation failed"
+    for identity_name in identity-overlapping-key-rotation identity-revocation identity-sighup-reload identity-clock-skew-recovery; do
+      record_result "$identity_name" SKIP "$skip_detail"
+    done
+    return 1
+  fi
+
+  old_key_id="$(identity_key_id "$old_public")"
+  new_key_id="$(identity_key_id "$new_public")"
+  IDENTITY_RUNNER_GID="$(id -g)"
+  enrollment_secret="$(openssl rand -hex 32)"
+  wrong_secret="$(openssl rand -hex 32)"
+  : > "${IDENTITY_AGENT_DIR}/authorized_keys"
+  printf '%s\n' "$enrollment_secret" > "${IDENTITY_AGENT_DIR}/enrollment_secret"
+  sudo chown "65532:${IDENTITY_RUNNER_GID}" "${IDENTITY_AGENT_DIR}/authorized_keys"
+  sudo chown 65532:65532 "${IDENTITY_AGENT_DIR}/enrollment_secret"
+  sudo chmod 0640 "${IDENTITY_AGENT_DIR}/authorized_keys"
+  sudo chmod 0400 "${IDENTITY_AGENT_DIR}/enrollment_secret"
+
+  if ! docker run -d --name "$IDENTITY_AGENT" --network "$IDENTITY_NETWORK" \
+      --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
+      -v "${IDENTITY_SOCKET_VOLUME}:/var/run/sockguard:ro" \
+      -v "${IDENTITY_AGENT_DIR}:/run/identity" \
+      -e DOCKER_SOCKET=/var/run/sockguard/sockguard.sock \
+      -e PORT=4100 \
+      -e AGENT_NAME=tri-tool-identity-agent \
+      -e AUTHORIZED_KEYS=/run/identity/authorized_keys \
+      -e ENROLLMENT_TOKEN_FILE=/run/identity/enrollment_secret \
+      "$PORTWING_IMAGE_RESOLVED" >"${SCRATCH_DIR}/identity-agent.cid" 2>"${SCRATCH_DIR}/identity-agent.err"; then
+    record_result "identity-enrollment" FAIL "could not start the published Portwing identity agent: $(cat "${SCRATCH_DIR}/identity-agent.err")"
+    skip_detail="identity agent startup failed"
+    for identity_name in identity-overlapping-key-rotation identity-revocation identity-sighup-reload identity-clock-skew-recovery; do
+      record_result "$identity_name" SKIP "$skip_detail"
+    done
+    return 1
+  fi
+  if ! wait_until 30 2 identity_agent_ready; then
+    record_result "identity-enrollment" FAIL "published Portwing identity agent never became healthy"
+    skip_detail="identity agent health check failed"
+    for identity_name in identity-overlapping-key-rotation identity-revocation identity-sighup-reload identity-clock-skew-recovery; do
+      record_result "$identity_name" SKIP "$skip_detail"
+    done
+    return 1
+  fi
+  if ! identity_start_header_proxy; then
+    record_result "identity-enrollment" FAIL "could not start the response-header observer in the published drydock image: $(cat "${SCRATCH_DIR}/identity-header-proxy.err")"
+    skip_detail="identity response-header observer startup failed"
+    for identity_name in identity-overlapping-key-rotation identity-revocation identity-sighup-reload identity-clock-skew-recovery; do
+      record_result "$identity_name" SKIP "$skip_detail"
+    done
+    return 1
+  fi
+
+  # Negative control 1: a wrong enrollment credential returns 401 but does not
+  # burn the single-use credential. The correct enrollment immediately after it
+  # must succeed, and its key id must match the published keygen output.
+  identity_enroll "$wrong_secret" "$rejected_public" || true
+  local wrong_status="$IDENTITY_ENROLL_STATUS" wrong_body="$IDENTITY_ENROLL_BODY"
+  identity_enroll "$enrollment_secret" "$old_public" || true
+  local enrolled_status="$IDENTITY_ENROLL_STATUS" enrolled_body="$IDENTITY_ENROLL_BODY"
+  local enrolled_key_id
+  enrolled_key_id="$(jq -r '.key_id // empty' <<<"$enrolled_body" 2>/dev/null)"
+  identity_enroll "$enrollment_secret" "$rejected_public" || true
+  local reused_status="$IDENTITY_ENROLL_STATUS" reused_body="$IDENTITY_ENROLL_BODY"
+
+  if [ "$wrong_status" != "401" ] || [ "$enrolled_status" != "200" ] \
+      || [ "$enrolled_key_id" != "$old_key_id" ] || [ "$reused_status" != "401" ] \
+      || ! grep -Eiq 'already used' <<<"$reused_body"; then
+    record_result "identity-enrollment" FAIL "enrollment controls failed: wrong=${wrong_status} (${wrong_body}), correct=${enrolled_status} (${enrolled_body}), reuse=${reused_status} (${reused_body})"
+    skip_detail="one-shot enrollment did not pass its positive and negative controls"
+    for identity_name in identity-overlapping-key-rotation identity-revocation identity-sighup-reload identity-clock-skew-recovery; do
+      record_result "$identity_name" SKIP "$skip_detail"
+    done
+    return 1
+  fi
+  if ! identity_start_controller "$old_controller" "$old_key_id" "$old_private" \
+      || ! wait_for_container_log_count "$old_controller" 'Handshake successful' 1 90; then
+    record_result "identity-enrollment" FAIL "the real published drydock controller did not authenticate with the freshly enrolled key"
+    skip_detail="the enrolled controller never completed a signed handshake"
+    for identity_name in identity-overlapping-key-rotation identity-revocation identity-sighup-reload identity-clock-skew-recovery; do
+      record_result "$identity_name" SKIP "$skip_detail"
+    done
+    return 1
+  fi
+  record_result "identity-enrollment" PASS "wrong credential denied 401 without burning enrollment; the enrolled key authenticated a published drydock controller; reuse denied 401 as already used"
+
+  # Add the replacement key, signal the live Portwing process, then prove both
+  # old and new published controllers can complete fresh handshakes during the
+  # overlap. Fresh handshake counts prevent pre-reload logs from passing.
+  reloads_before="$(docker logs "$IDENTITY_AGENT" 2>&1 | grep -Ec 'SIGHUP: authorized_keys reloaded' || true)"
+  old_handshakes="$(docker logs "$old_controller" 2>&1 | grep -Ec 'Handshake successful' || true)"
+  if ! identity_append_registry "$new_public" \
+      || ! docker kill --signal HUP "$IDENTITY_AGENT" >/dev/null \
+      || ! wait_for_container_log_count "$IDENTITY_AGENT" 'SIGHUP: authorized_keys reloaded' "$((reloads_before + 1))" 30 \
+      || ! identity_start_controller "$new_controller" "$new_key_id" "$new_private" \
+      || ! wait_for_container_log_count "$new_controller" 'Handshake successful' 1 90 \
+      || ! docker restart "$old_controller" >/dev/null \
+      || ! wait_for_container_log_count "$old_controller" 'Handshake successful' "$((old_handshakes + 1))" 90; then
+    record_result "identity-overlapping-key-rotation" FAIL "both controller keys did not authenticate after the additive SIGHUP reload"
+  else
+    record_result "identity-overlapping-key-rotation" PASS "old and new published drydock controllers each completed a fresh signed handshake after the additive reload"
+  fi
+
+  # Revoke the old key with a second atomic file replacement + SIGHUP. The old
+  # controller must fail with the same `unknown-key` reason Portwing returns in
+  # X-Portwing-Reason, while a fresh new-key handshake must still succeed.
+  reloads_before="$(docker logs "$IDENTITY_AGENT" 2>&1 | grep -Ec 'SIGHUP: authorized_keys reloaded' || true)"
+  unknown_before="$(identity_reason_count unknown-key)"
+  unknown_header_before="$(identity_header_reason_count unknown-key)"
+  new_handshakes="$(docker logs "$new_controller" 2>&1 | grep -Ec 'Handshake successful' || true)"
+  if ! identity_replace_registry "$new_public" \
+      || ! docker kill --signal HUP "$IDENTITY_AGENT" >/dev/null \
+      || ! wait_for_container_log_count "$IDENTITY_AGENT" 'SIGHUP: authorized_keys reloaded' "$((reloads_before + 1))" 30 \
+      || ! docker restart "$old_controller" >/dev/null \
+      || ! wait_for_container_log_count "$IDENTITY_AGENT" '"reason":"unknown-key"' "$((unknown_before + 1))" 60 \
+      || ! wait_for_identity_header_reason unknown-key "$((unknown_header_before + 1))" 60 \
+      || ! docker restart "$new_controller" >/dev/null \
+      || ! wait_for_container_log_count "$new_controller" 'Handshake successful' "$((new_handshakes + 1))" 90; then
+    record_result "identity-revocation" FAIL "the revoked controller was not rejected as unknown-key while the retained controller stayed healthy"
+  else
+    record_result "identity-revocation" PASS "old-key controller rejected with X-Portwing-Reason=unknown-key; retained new-key controller completed a fresh handshake"
+  fi
+
+  reloads_after="$(docker logs "$IDENTITY_AGENT" 2>&1 | grep -Ec 'SIGHUP: authorized_keys reloaded' || true)"
+  old_restart_count="$(docker inspect --format '{{.RestartCount}}' "$IDENTITY_AGENT" 2>/dev/null || echo unknown)"
+  if [ "$reloads_after" -ge 2 ] && [ "$old_restart_count" = "0" ]; then
+    record_result "identity-sighup-reload" PASS "two key-registry reloads completed in the original Portwing process (restart count 0)"
+  else
+    record_result "identity-sighup-reload" FAIL "reload count=${reloads_after}, Portwing restart count=${old_restart_count}; want at least two reloads without restart"
+  fi
+
+  # Fault injection stays inside the real published drydock controller: the
+  # preload changes only Date.now(), which v1.6.0's signer uses for
+  # X-Portwing-Timestamp. The same live process must first be rejected with
+  # X-Portwing-Reason=timestamp-skew, then recover after the offset file returns
+  # to zero. No handcrafted signed request bypasses the controller.
+  printf '%s\n' -120 > "${IDENTITY_CONTROLLER_DIR}/clock-offset"
+  chmod 0444 "${IDENTITY_CONTROLLER_DIR}/clock-offset"
+  skew_before="$(identity_reason_count timestamp-skew)"
+  skew_header_before="$(identity_header_reason_count timestamp-skew)"
+  if ! identity_start_controller "$skew_controller" "$new_key_id" "$new_private" "${IDENTITY_CONTROLLER_DIR}/clock-offset" \
+      || ! wait_for_container_log_count "$IDENTITY_AGENT" '"reason":"timestamp-skew"' "$((skew_before + 1))" 60 \
+      || ! wait_for_identity_header_reason timestamp-skew "$((skew_header_before + 1))" 60; then
+    record_result "identity-clock-skew-recovery" FAIL "the clock-faulted published controller was not rejected with timestamp-skew"
+  else
+    chmod 0644 "${IDENTITY_CONTROLLER_DIR}/clock-offset"
+    printf '%s\n' 0 > "${IDENTITY_CONTROLLER_DIR}/clock-offset"
+    if wait_for_container_log_count "$skew_controller" 'Handshake successful' 1 120; then
+      skew_restart_count="$(docker inspect --format '{{.RestartCount}}' "$skew_controller" 2>/dev/null || echo unknown)"
+      if [ "$skew_restart_count" = "0" ]; then
+        record_result "identity-clock-skew-recovery" PASS "same published controller rejected with X-Portwing-Reason=timestamp-skew, then completed a handshake after its clock recovered (restart count 0)"
+      else
+        record_result "identity-clock-skew-recovery" FAIL "controller recovered only after restart count changed to ${skew_restart_count}"
+      fi
+    else
+      record_result "identity-clock-skew-recovery" FAIL "same controller stayed unauthenticated for 120s after its injected clock offset returned to zero"
+    fi
+  fi
+
+  unknown_after="$(identity_reason_count unknown-key)"
+  skew_after="$(identity_reason_count timestamp-skew)"
+  unknown_header_after="$(identity_header_reason_count unknown-key)"
+  skew_header_after="$(identity_header_reason_count timestamp-skew)"
+  new_restart_count="$(docker inspect --format '{{.RestartCount}}' "$new_controller" 2>/dev/null || echo unknown)"
+  IDENTITY_EVIDENCE_JSON="$(jq -n \
+    --arg old_key_id "$old_key_id" --arg new_key_id "$new_key_id" \
+    --argjson reloads "$reloads_after" --argjson unknown_key_rejections "$unknown_after" \
+    --argjson timestamp_skew_rejections "$skew_after" --arg retained_controller_restarts "$new_restart_count" \
+    --argjson unknown_key_header_observations "$unknown_header_after" \
+    --argjson timestamp_skew_header_observations "$skew_header_after" \
+    '{status:"exercised",old_key_id:$old_key_id,new_key_id:$new_key_id,sighup_reloads:$reloads,unknown_key_rejections:$unknown_key_rejections,timestamp_skew_rejections:$timestamp_skew_rejections,unknown_key_header_observations:$unknown_key_header_observations,timestamp_skew_header_observations:$timestamp_skew_header_observations,retained_controller_restarts:$retained_controller_restarts}')"
+}
+
+# ---------------------------------------------------------------------------
+# Assertion 4: inventory & inspect (passive -- see README "Verification
 # strategy" for why this and the assertions below key on sockguard's own
 # access log rather than guessing at Portwing/drydock's private API shapes)
 # ---------------------------------------------------------------------------
@@ -851,7 +1391,7 @@ assert_inventory_inspect() {
 }
 
 # ---------------------------------------------------------------------------
-# Assertion 4: events -- create/remove a sentinel via the proxied socket
+# Assertion 5: events -- create/remove a sentinel via the proxied socket
 # ---------------------------------------------------------------------------
 
 assert_events() {
@@ -891,7 +1431,7 @@ assert_events() {
 }
 
 # ---------------------------------------------------------------------------
-# Assertion 5: logs -- fetch logs for a running container through the
+# Assertion 6: logs -- fetch logs for a running container through the
 # proxied socket (the sockguard-owned half of the log-streaming contract;
 # see README for what this does and doesn't prove about drydock's own
 # SSE/WS wrapping)
@@ -925,7 +1465,7 @@ assert_logs() {
 }
 
 # ---------------------------------------------------------------------------
-# Assertion 6: lifecycle -- stop/start/restart, verify state converges
+# Assertion 7: lifecycle -- stop/start/restart, verify state converges
 # ---------------------------------------------------------------------------
 
 assert_lifecycle() {
@@ -960,7 +1500,7 @@ assert_lifecycle() {
 }
 
 # ---------------------------------------------------------------------------
-# Assertion 7: configured exec (current-edge only)
+# Assertion 8: configured exec (current-edge only)
 # ---------------------------------------------------------------------------
 
 assert_exec() {
@@ -1009,7 +1549,7 @@ assert_exec() {
 }
 
 # ---------------------------------------------------------------------------
-# Assertion 8: remote update trigger -- store sync through sockguard plus the
+# Assertion 9: remote update trigger -- store sync through sockguard plus the
 # documented unconfigured-trigger refusal, identical on every row
 # ---------------------------------------------------------------------------
 
@@ -1215,7 +1755,7 @@ assert_remote_update_trigger() {
 }
 
 # ---------------------------------------------------------------------------
-# Assertion 9: expected denials
+# Assertion 10: expected denials
 # ---------------------------------------------------------------------------
 
 assert_expected_denials() {
@@ -1253,7 +1793,7 @@ assert_expected_denials() {
 }
 
 # ---------------------------------------------------------------------------
-# Assertion 10: route-drift tripwire
+# Assertion 11: route-drift tripwire
 # ---------------------------------------------------------------------------
 
 assert_route_drift() {
@@ -1288,41 +1828,6 @@ resolve_metadata() {
   ENGINE_API_VERSION="$(jq -r '.ApiVersion // "unknown"' <<<"$version_resp" 2>/dev/null || echo unknown)"
 }
 
-write_artifact() {
-  local outfile="${REPO_ROOT}/conformance-${ROW}.json"
-  jq -n \
-    --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    --arg row "$ROW" \
-    --arg sockguard_ref "$SOCKGUARD_IMAGE_RESOLVED" \
-    --arg sockguard_digest "$SOCKGUARD_DIGEST" \
-    --arg portwing_ref "$PORTWING_IMAGE_RESOLVED" \
-    --arg portwing_digest "$PORTWING_DIGEST" \
-    --arg drydock_ref "$DRYDOCK_IMAGE_RESOLVED" \
-    --arg drydock_digest "$DRYDOCK_DIGEST" \
-    --arg engine_version "$ENGINE_VERSION" \
-    --arg engine_api_version "$ENGINE_API_VERSION" \
-    --arg preset "$PRESET_FILE" \
-    --arg mode "$MODE" \
-    --argjson assertions "$ASSERTIONS_JSON" \
-    --argjson observed_routes "$OBSERVED_ROUTES_JSON" \
-    '{
-      timestamp: $timestamp,
-      row: $row,
-      images: {
-        sockguard: {ref: $sockguard_ref, digest: $sockguard_digest},
-        portwing: {ref: $portwing_ref, digest: $portwing_digest},
-        drydock: {ref: $drydock_ref, digest: $drydock_digest}
-      },
-      docker_engine: {version: $engine_version, api_version: $engine_api_version},
-      sockguard_preset: $preset,
-      portwing_mode: $mode,
-      observed_routes: $observed_routes,
-      assertions: $assertions,
-      overall: (if ([$assertions[] | select(.status=="FAIL")] | length) > 0 then "FAIL" else "PASS" end)
-    }' > "$outfile"
-  echo "Wrote ${outfile}"
-}
-
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -1334,6 +1839,7 @@ if assert_pristine_boot; then
 fi
 
 if [ "$ROW_FAILED" -eq 0 ]; then
+  assert_identity_acceptance
   assert_inventory_inspect
   assert_events
   assert_logs
@@ -1353,6 +1859,10 @@ else
   if [ "$PRISTINE_BOOT_OK" -ne 0 ]; then
     record_result "auth-handshake" SKIP "row aborted -- pristine boot failed before auth handshake could be attempted"
   fi
+
+  for skipped in identity-enrollment identity-overlapping-key-rotation identity-revocation identity-sighup-reload identity-clock-skew-recovery; do
+    record_result "$skipped" SKIP "row aborted after pristine-boot/auth-handshake failure"
+  done
 
   # Names below must match exactly what the success path records (see each
   # assert_* function) so a skipped row's artifact has the same assertion
@@ -1379,8 +1889,11 @@ fi
 # traffic did reach sockguard still needs to be checked against the
 # manifest, and the artifact is written unconditionally either way.
 assert_route_drift
+capture_conformance_logs
 resolve_metadata
-write_artifact
+if ! write_artifact; then
+  fatal_setup 1 "could not write ${CONFORMANCE_ARTIFACT}"
+fi
 
 echo "== #150 tri-tool conformance: row=${ROW} $( [ "$ROW_FAILED" -eq 0 ] && echo PASS || echo FAIL ) =="
 exit "$ROW_FAILED"
