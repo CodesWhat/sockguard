@@ -19,23 +19,25 @@ const (
 	reasonCodeOwnerResponseTooLarge        = "owner_response_too_large"
 	reasonCodeOwnerResponseFilterFail      = "owner_response_filter_failed"
 	reasonCodeOwnerLibpodDataUsageUnscoped = "owner_libpod_data_usage_unscopeable"
+	reasonCodeOwnerLibpodShowMounted       = "owner_libpod_showmounted_unscopeable"
 )
 
 // serveOwnershipAllowed forwards a request the ownership policy did not deny.
 //
-// Almost everything goes straight to next. The two disk-usage endpoints are
-// the exception: each enumerates every container, volume and image on the host
-// and accepts no `filters` query parameter, so addOwnerLabelFilter — the
+// Almost everything goes straight to next. Host-wide inventory endpoints are
+// the exception: they enumerate resources across the daemon and accept no
+// `filters` query parameter, so addOwnerLabelFilter — the
 // mechanism that isolates /containers/json, /volumes and /images/json — has
-// nothing to attach to. Owner isolation for them has to happen on the
-// response, and only one of the two has a response it can happen on.
+// nothing to attach to. Owner isolation for them has to happen on the response
+// when the response carries labels, or fail closed when it does not.
 //
 // GET /system/df returns Docker-shaped summaries that carry Labels, so it is
 // filtered item by item. GET /libpod/system/df returns Podman's own report
 // shape, whose entries carry no labels at all, so there is nothing to filter
 // on and it is refused instead — see
 // responsefilter.LibpodSystemDataUsageDenyReason for the shape and the
-// reasoning.
+// reasoning. GET /libpod/containers/showmounted returns only container IDs and
+// daemon-host mount paths, so it is likewise refused.
 func serveOwnershipAllowed(logger *slog.Logger, next http.Handler, w http.ResponseWriter, r *http.Request, normPath string, opts Options) {
 	if r.Method == http.MethodGet {
 		switch normPath {
@@ -45,9 +47,18 @@ func serveOwnershipAllowed(logger *slog.Logger, next http.Handler, w http.Respon
 		case responsefilter.LibpodSystemDataUsagePath:
 			denyLibpodSystemDataUsage(w, r)
 			return
+		case responsefilter.LibpodShowMountedPath:
+			denyLibpodShowMounted(w, r)
+			return
 		}
 	}
 	next.ServeHTTP(w, r)
+}
+
+func denyLibpodShowMounted(w http.ResponseWriter, r *http.Request) {
+	reason := responsefilter.LibpodShowMountedDenyReason
+	logging.SetDeniedWithCode(w, r, reasonCodeOwnerLibpodShowMounted, reason, nil)
+	_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: reason})
 }
 
 // denyLibpodSystemDataUsage refuses GET /libpod/system/df with a 403 and never

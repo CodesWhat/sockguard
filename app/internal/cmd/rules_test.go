@@ -1506,6 +1506,47 @@ func TestValidateAndCompileRulesLibpodContainerWriteGates(t *testing.T) {
 	}
 }
 
+func TestValidateAndCompileRulesRequiresReadExfiltrationAckForLibpodShowMounted(t *testing.T) {
+	for _, scope := range []string{"default policy", "named client profile"} {
+		for _, rulePath := range []string{
+			"/libpod/containers/showmounted",
+			"*/containers/showmounted",
+		} {
+			t.Run(scope+" "+rulePath, func(t *testing.T) {
+				rules := []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodGet, Path: rulePath}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+				cfg := config.Defaults()
+				if scope == "named client profile" {
+					cfg.Rules = []config.RuleConfig{{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"}}
+					cfg.Clients.Profiles = []config.ClientProfileConfig{{Name: "storage-reader", Rules: rules}}
+				} else {
+					cfg.Rules = rules
+				}
+
+				_, err := validateAndCompileRules(&cfg)
+				if err == nil {
+					t.Fatal("validateAndCompileRules() = nil, want read-exfiltration acknowledgment error")
+				}
+				for _, want := range []string{"insecure_allow_read_exfiltration", "GET /libpod/containers/showmounted"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("error = %q, want it to mention %q", err.Error(), want)
+					}
+				}
+				if scope == "named client profile" && !strings.Contains(err.Error(), "storage-reader") {
+					t.Fatalf("error = %q, want it to mention the client profile", err.Error())
+				}
+
+				cfg.InsecureAllowReadExfiltration = true
+				if _, err := validateAndCompileRules(&cfg); err != nil {
+					t.Fatalf("validateAndCompileRules() with acknowledgment error = %v", err)
+				}
+			})
+		}
+	}
+}
+
 func TestValidateAndCompileRulesRejectsExactLibpodContainerReadExfiltration(t *testing.T) {
 	for _, scope := range []string{"default policy", "named client profile"} {
 		for _, operation := range []string{"checkpoint", "mount"} {

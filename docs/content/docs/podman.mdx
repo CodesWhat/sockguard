@@ -107,7 +107,7 @@ archive, so an allow rule for the path requires
 ## Read-Exfiltration Additions
 
 `insecure_allow_read_exfiltration` is extended with libpod's equivalent of
-every Docker-compat exfiltration surface, plus three libpod-only entries:
+every Docker-compat exfiltration surface, plus four libpod-only entries:
 
 - `GET /libpod/containers/*/archive`, `GET /libpod/containers/*/export`,
   `GET /libpod/containers/*/logs`, `POST /libpod/containers/*/attach`
@@ -133,6 +133,10 @@ every Docker-compat exfiltration surface, plus three libpod-only entries:
   body. The response does not carry file contents, so this is not an
   equivalent of `GET .../archive`; it is gated on the disclosure of the
   storage driver's layout and the container-id-to-path mapping.
+- `GET /libpod/containers/showmounted` — returns that mapping for every
+  mounted container in one response, keyed by container ID. Under owner
+  isolation or visibility policy it is refused before Podman is queried,
+  because the response carries neither labels nor names to scope safely.
 
 A broad `GET /libpod/**`-shaped allow rule catches every path above and
 fails startup validation unless you explicitly opt in. Narrow, explicit
@@ -160,16 +164,19 @@ same way they cover Docker-compat:
   volumes, secrets — is owner-filtered and visibility-filtered, so switching
   a client from Docker-compat to libpod-native paths is not a way around
   isolation configured on the Docker-compat side.
-- `GET /libpod/system/df` is the one read that cannot be filtered, and it is
-  refused with a `403` instead whenever owner isolation or a visibility policy
-  is active. Podman's native disk-usage report is not the Docker-compat body
-  under another path: its image, container and volume entries carry no labels
-  at all, so no owner label and no visibility selector has a field to match.
+- `GET /libpod/system/df` and `GET /libpod/containers/showmounted` cannot be
+  filtered, and are refused with a `403` instead whenever owner isolation or a
+  visibility policy is active. Podman's native disk-usage report is not the
+  Docker-compat body under another path: its image, container and volume
+  entries carry no labels at all, so no owner label and no visibility selector
+  has a field to match.
   Refusing keeps it from being a way around isolation the way filtering does
   for every other libpod read; see
   [Security](/security#layer-6-owner-label-isolation) for the full field list
   and why an emptied report was the wrong answer. The Docker-compat
-  `GET /system/df` that Podman also serves is filtered normally.
+  `GET /system/df` that Podman also serves is filtered normally. The
+  `showmounted` response is only a map from container IDs to daemon-host mount
+  paths, so it likewise has no labels or names to classify.
 - Resource names that happen to equal an API action word remain protected.
   Owner matching reserves keywords only for the exact method and collection
   path, while `GET` and `HEAD` visibility treats write-only keywords as normal
@@ -242,7 +249,8 @@ preset ships a read-only monitoring posture covering both surfaces in one
 file — list/inspect/stats/top/changes for containers, list/inspect for pods
 (libpod only), images, networks, volumes, and secrets, plus health/version/
 info/events. It deliberately excludes every exfiltration-gated endpoint
-(archive, export, logs, attach, image/manifest push, `generate/kube`) on
+(archive, export, logs, attach, mounted-container inventory,
+image/manifest push, `generate/kube`) on
 both surfaces, so it validates clean without setting
 `insecure_allow_read_exfiltration`, and it allows no writes at all, so it
 never needs `insecure_allow_body_blind_writes` either. See

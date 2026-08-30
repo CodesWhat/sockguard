@@ -58,6 +58,7 @@ const (
 	reasonCodeVisibilityPolicyHidResource   = "visibility_policy_hid_resource"
 	reasonCodeVisibilityResponseTooLarge    = "visibility_response_too_large"
 	reasonCodeVisibilityLibpodDataUsage     = "visibility_libpod_data_usage_unscopeable"
+	reasonCodeVisibilityLibpodShowMounted   = "visibility_libpod_showmounted_unscopeable"
 )
 
 // Options configures label-based visibility control on Docker read endpoints.
@@ -189,6 +190,12 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 			// responsefilter.LibpodSystemDataUsageDenyReason.
 			if r.Method == http.MethodGet && normPath == responsefilter.LibpodSystemDataUsagePath {
 				denyLibpodSystemDataUsage(w, r)
+				return
+			}
+			// Podman's mounted-container inventory likewise carries no labels
+			// or names, only container IDs and daemon-host mount paths.
+			if r.Method == http.MethodGet && normPath == responsefilter.LibpodShowMountedPath {
+				denyLibpodShowMounted(w, r)
 				return
 			}
 			if needsVisibilityLabelFilter(normPath) {
