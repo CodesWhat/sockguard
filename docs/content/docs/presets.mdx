@@ -296,7 +296,7 @@ Minimal read-only access for Traefik reverse proxy.
 ```
 
 In Swarm mode, task discovery includes node inspection at `GET /nodes/*`.
-Every allowed path is a named list or inspect endpoint rather than a
+Every resource path is an explicit list or inspect endpoint rather than a
 `/containers/**` glob, so this preset does **not** set
 `insecure_allow_read_exfiltration: true`. A client that genuinely needs
 `GET /containers/*/logs` or `GET /containers/*/archive` has to add that rule
