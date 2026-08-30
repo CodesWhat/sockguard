@@ -99,9 +99,9 @@ func denyPodmanCompatEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 // setPodmanEventLabelFilter REPLACES the `label` filter key with the policy's
-// single selector, rather than appending to it the way
-// addVisibilityLabelFilters does on every other list endpoint and on this one
-// against a Docker upstream.
+// single selector on both Podman event spellings, rather than appending to it
+// the way addVisibilityLabelFilters does on every other list endpoint and on
+// Docker's /events endpoint.
 //
 // Appending is safe on a conjunctive filter: dockerd ANDs event label pairs
 // through filters.Args.MatchKVList, and so do Podman's own LIST endpoints,

@@ -358,13 +358,3 @@ land):
   `GET /images/get?names=…` is unchecked for the same reason. Per-image
   spellings of both actions (`DELETE /libpod/images/{name}`,
   `GET /libpod/images/{name}/get`) are checked normally.
-- A **visibility** policy with more than one `visible_resource_labels` selector
-  is enforceable on `GET /libpod/events` but not on the Docker-compat
-  `GET /events` that Podman also serves, because they are the same handler with
-  the same disjunctive label filter and sockguard cannot tell a Podman upstream
-  from dockerd. The libpod spelling is refused; the compat spelling still gets
-  the append-style injection that is correct against dockerd, so on a Podman
-  upstream a multi-selector policy is a `label` OR rather than an AND there.
-  Owner isolation is unaffected on both spellings — it replaces the key rather
-  than appending to it. Configure a single selector, or deny `GET /events` in
-  your rules, if you need the guarantee on a Podman upstream.
