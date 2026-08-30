@@ -35,6 +35,14 @@ func isLibpodPodCreatePath(normalizedPath string) bool {
 	return normalizedPath == libpodPathPrefix+"pods/create"
 }
 
+// isLibpodImagePullPath matches POST /libpod/images/pull, Podman's native
+// image-pull endpoint and the libpod equivalent of Docker's
+// POST /images/create. The two are path-exclusive, and their query shapes are
+// not interchangeable — see imagePullPolicy.inspectLibpod.
+func isLibpodImagePullPath(normalizedPath string) bool {
+	return normalizedPath == libpodPathPrefix+"images/pull"
+}
+
 // isLibpodExecCreatePath matches POST /libpod/containers/{id}/exec, the
 // libpod equivalent of isExecCreatePath's /containers/{id}/exec.
 func isLibpodExecCreatePath(normalizedPath string) bool {
