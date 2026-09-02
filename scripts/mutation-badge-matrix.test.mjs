@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, it } from "node:test";
 
@@ -7,26 +8,67 @@ const repoRoot = resolve(import.meta.dirname, "..");
 const workflowPath = ".github/workflows/quality-mutation-monthly.yml";
 
 describe("quality mutation workflow", () => {
-  it("publishes a badge only when every matrix package reported", () => {
+  it("derives the matrix and the expected report count from one discover step", () => {
     const source = readFileSync(resolve(repoRoot, workflowPath), "utf8");
 
-    // The aggregation step hardcodes how many reports a complete run produces.
-    // If someone adds or drops a package from the matrix without updating it,
+    // The matrix and the badge's expected-report count both come from the
+    // discover job. If either side is hardcoded again they can drift, and
     // the badge either never publishes or publishes a partial score.
-    const declared = source.match(/^\s*expected_reports=(\d+)$/mu);
-    assert.ok(declared, "expected_reports assignment not found");
-
-    const matrixStart = source.indexOf("      matrix:");
-    assert.notEqual(matrixStart, -1, "mutation matrix not found");
-    const steps = source.indexOf("\n    steps:", matrixStart);
-    assert.notEqual(steps, -1, "end of matrix block not found");
-    const packages = source.slice(matrixStart, steps).match(/^\s+- name: /gmu) ?? [];
-
-    assert.equal(
-      Number(declared[1]),
-      packages.length,
-      `expected_reports=${declared[1]} does not match the ${packages.length} packages in the mutation matrix`,
+    assert.match(
+      source,
+      /^\s+matrix: \$\{\{ fromJSON\(needs\.discover\.outputs\.matrix\) \}\}$/mu,
+      "gremlins matrix is not read from the discover job",
     );
+    assert.match(
+      source,
+      /^\s+EXPECTED_REPORTS: \$\{\{ needs\.discover\.outputs\.count \}\}$/mu,
+      "expected report count is not read from the discover job",
+    );
+    assert.match(
+      source,
+      /^\s+expected_reports=\$\{EXPECTED_REPORTS\}$/mu,
+      "expected_reports is not assigned from EXPECTED_REPORTS",
+    );
+    assert.match(
+      source,
+      /bash scripts\/ci\/mutation-matrix\.sh/u,
+      "discover job does not run scripts/ci/mutation-matrix.sh",
+    );
+  });
+
+  it("lists every tested app/internal package exactly once", () => {
+    const out = execFileSync("bash", [resolve(repoRoot, "scripts/ci/mutation-matrix.sh")], {
+      encoding: "utf8",
+    });
+    const { include, count } = JSON.parse(out);
+
+    assert.equal(count, include.length, "count does not match the include list");
+    const names = include.map((entry) => entry.name);
+    assert.equal(new Set(names).size, names.length, "a package is listed twice");
+
+    // The six packages the badge has always covered can never fall out.
+    for (const name of ["filter", "proxy", "config", "httpjson", "logging", "cmd"]) {
+      assert.ok(names.includes(name), `${name} missing from the mutation matrix`);
+    }
+
+    for (const { name, package: pkg } of include) {
+      assert.equal(pkg, `./internal/${name}`, `${name} has an unexpected package path`);
+      const dir = resolve(repoRoot, "app", "internal", name);
+      const files = readdirSync(dir).filter((f) => f.endsWith(".go"));
+      assert.ok(
+        files.some((f) => f.endsWith("_test.go")),
+        `${name} is in the matrix but has no test file`,
+      );
+      assert.ok(
+        files.some((f) => !f.endsWith("_test.go")),
+        `${name} is in the matrix but has no source file`,
+      );
+    }
+
+    // Fixture-only packages support other packages' tests; mutating them is noise.
+    for (const name of ["testcert", "testhelp"]) {
+      assert.ok(!names.includes(name), `${name} is a test fixture and must not be in the matrix`);
+    }
   });
 
   it("reports the parsed count when the report set is incomplete", () => {

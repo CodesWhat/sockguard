@@ -2,15 +2,29 @@ name: "Quality: Mutation Testing"
 run-name: >-
   ${{
     github.event_name == 'schedule' && 'Quality: Mutation Testing — Monthly schedule' ||
+    github.event_name == 'push' && format('Quality: Mutation Testing — Branch {0}', github.ref_name) ||
     format('Quality: Mutation Testing — Manual by {0}', github.actor)
   }}
 
 # Monthly/manual quality signal using Gremlins (Go mutation tester).
 # Finds weak assertions, dead code, and refactor candidates.
+#
+# The matrix is every package under app/internal with both source and
+# tests, computed by scripts/ci/mutation-matrix.sh at run time, so a new
+# package is covered the month it lands and the badge's expected-report
+# count can never drift from the matrix.
 on:
   workflow_dispatch:
   schedule:
     - cron: '30 6 1 * *'  # Monthly on day 1 at 06:30 UTC
+  # workflow_dispatch only sees the workflow file on the default branch,
+  # so a matrix change on a dev branch could not be exercised before it
+  # was promoted. Pushing any `mutation/*` branch runs this file as it is
+  # on that branch. The badge commit below is gated to the default branch,
+  # so a branch run only reports its score in the job summary.
+  push:
+    branches:
+      - 'mutation/**'
 
 permissions:
   contents: read
@@ -19,31 +33,57 @@ env:
   GREMLINS_VERSION: v0.6.0
 
 concurrency:
-  group: mutation-testing-${{ github.workflow }}
+  group: mutation-testing-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  discover:
+    name: "Discover mutation matrix"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      count: ${{ steps.matrix.outputs.count }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+          disable-sudo: true
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compute matrix
+        id: matrix
+        run: |
+          set -euo pipefail
+          matrix=$(bash scripts/ci/mutation-matrix.sh)
+          count=$(printf '%s' "$matrix" | jq -r '.count')
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+          echo "count=${count}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Mutation matrix"
+            echo "- ${count} packages: $(printf '%s' "$matrix" | jq -r '[.include[].name] | join(", ")')"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   gremlins:
     name: "Quality: Gremlins (${{ matrix.name }})"
+    needs: discover
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     continue-on-error: true  # advisory — review results, don't block
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - name: filter
-            package: ./internal/filter
-          - name: proxy
-            package: ./internal/proxy
-          - name: config
-            package: ./internal/config
-          - name: httpjson
-            package: ./internal/httpjson
-          - name: logging
-            package: ./internal/logging
-          - name: cmd
-            package: ./internal/cmd
+      # Same ceiling as quality-fuzz-nightly.yml: keeps the matrix inside
+      # the runner concurrency limit so a leg is never cancelled for lack
+      # of a runner, which would silently shrink the report set.
+      max-parallel: 12
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
 
     steps:
       # Stage 1 of the harden-runner egress rollout: pure Go build plus
@@ -85,19 +125,23 @@ jobs:
         # report tee's exit code and mask a failing mutation run.
         shell: bash
         run: |
-          gremlins unleash --tags="" ${{ matrix.package }} 2>&1 | tee mutation-report.txt
+          gremlins unleash --tags="" "${PACKAGE}" 2>&1 | tee mutation-report.txt
         env:
           GOFLAGS: ""
+          PACKAGE: ${{ matrix.package }}
 
       - name: Summarize
         if: always()
+        env:
+          NAME: ${{ matrix.name }}
+          PACKAGE: ${{ matrix.package }}
         run: |
           {
-            echo "### Mutation Testing: ${{ matrix.name }}"
+            echo "### Mutation Testing: ${NAME}"
             echo "- Tool: Gremlins (Go mutation tester)"
             echo "- Version: ${GREMLINS_VERSION}"
             echo "- Mode: ADVISORY (non-blocking)"
-            echo "- Package: ${{ matrix.package }}"
+            echo "- Package: ${PACKAGE}"
             echo ""
             if [ -f app/mutation-report.txt ]; then
               echo '```'
@@ -117,7 +161,7 @@ jobs:
 
   update-badge:
     name: "Update mutation score badge"
-    needs: gremlins
+    needs: [discover, gremlins]
     # gremlins sets job-level continue-on-error, so a failed package leg
     # still lets this job run — badge-plumbing only, never blocking.
     if: always()
@@ -160,6 +204,8 @@ jobs:
       # can't be drowned out by five small ones.
       - name: Compute weighted mutation score
         id: score
+        env:
+          EXPECTED_REPORTS: ${{ needs.discover.outputs.count }}
         run: |
           set -uo pipefail
           shopt -s nullglob
@@ -169,21 +215,44 @@ jobs:
           reports_found=0
           # One report per entry in the mutation job's matrix. A partial set
           # would publish a score weighted toward whichever packages happened
-          # to survive, so it is treated as no result at all.
-          # Kept in sync by scripts/mutation-badge-matrix.test.mjs.
-          expected_reports=6
+          # to survive, so it is treated as no result at all. The count comes
+          # from the same discover job that produced the matrix, so the two
+          # cannot disagree; scripts/mutation-badge-matrix.test.mjs checks
+          # that wiring.
+          expected_reports=${EXPECTED_REPORTS}
+
+          # Per-package table so the lived mutants can be chased package by
+          # package instead of from one aggregate number.
+          {
+            echo "### Mutation score by package"
+            echo
+            echo "| Package | Killed | Lived | Efficacy |"
+            echo "|---|---:|---:|---:|"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
           for f in reports/*/mutation-report.txt; do
+            pkg=$(basename "$(dirname "$f")")
+            pkg=${pkg#mutation-report-}
+            pkg=${pkg%-*}
             killed=$(grep -oE 'Killed: [0-9]+' "$f" | head -1 | grep -oE '[0-9]+')
             lived=$(grep -oE 'Lived: [0-9]+' "$f" | head -1 | grep -oE '[0-9]+')
             if [ -z "$killed" ] || [ -z "$lived" ]; then
               echo "::warning::could not parse Killed/Lived out of $f, skipping it"
+              echo "| ${pkg} | ? | ? | unparseable |" >> "${GITHUB_STEP_SUMMARY}"
               continue
             fi
+            pkg_total=$((killed + lived))
+            if [ "$pkg_total" -eq 0 ]; then
+              pkg_pct="n/a"
+            else
+              pkg_pct=$(awk -v k="$killed" -v t="$pkg_total" 'BEGIN { printf "%.1f%%", (k / t) * 100 }')
+            fi
+            echo "| ${pkg} | ${killed} | ${lived} | ${pkg_pct} |" >> "${GITHUB_STEP_SUMMARY}"
             total_killed=$((total_killed + killed))
             total_lived=$((total_lived + lived))
             reports_found=$((reports_found + 1))
           done
+          echo >> "${GITHUB_STEP_SUMMARY}"
 
           if [ "$reports_found" -ne "$expected_reports" ]; then
             echo "reports_found=${reports_found}" >> "$GITHUB_OUTPUT"
@@ -221,8 +290,10 @@ jobs:
             echo "skip=false"
           } >> "$GITHUB_OUTPUT"
 
+      # Badge commits land only on the default branch. A `mutation/*`
+      # branch run still computes and summarizes the score above.
       - name: Write badge JSON
-        if: steps.score.outputs.skip != 'true'
+        if: steps.score.outputs.skip != 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         env:
           PCT: ${{ steps.score.outputs.pct }}
           COLOR: ${{ steps.score.outputs.color }}
@@ -234,7 +305,7 @@ jobs:
             > .github/badges/mutation-score.json
 
       - name: Commit badge JSON
-        if: steps.score.outputs.skip != 'true'
+        if: steps.score.outputs.skip != 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
         env:
           PCT: ${{ steps.score.outputs.pct }}
           KILLED: ${{ steps.score.outputs.killed }}
