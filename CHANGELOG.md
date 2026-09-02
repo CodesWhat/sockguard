@@ -76,7 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Dependencies
 
-- `google.golang.org/grpc` moves from v1.82.1 to v1.83.2, clearing GHSA-vp52-pcj8-j9qc (heap exhaustion from HTTP/2 DATA frame fragmentation, fixed upstream in 1.83.1). It is an indirect requirement reached only through `sigstore-go`'s Rekor client on the opt-in `image_trust` path, never the core proxy path, and `govulncheck` reports zero reachable vulnerabilities either side of the bump. Grype flags it regardless, because it matches on module version rather than reachability, and that match failed both the `Security: Grype & Govulncheck` job and `CI: Verify`'s Docker Build on every branch until this bump.
+- `google.golang.org/grpc` moves from v1.82.1 to v1.83.2, clearing GHSA-vp52-pcj8-j9qc (heap exhaustion from HTTP/2 DATA frame fragmentation, fixed upstream in 1.83.1). It is an indirect requirement reached only through `sigstore-go`'s Rekor client on the opt-in `image_trust` and `policy_bundle` paths, never the core proxy path, and `govulncheck` reports zero reachable vulnerabilities either side of the bump. Grype flags it regardless, because it matches on module version rather than reachability, and that match failed both the `Security: Grype & Govulncheck` job and `CI: Verify`'s Docker Build on every branch until this bump.
 - `github.com/google/go-containerregistry` moves from v0.21.8 to v0.21.9. It is reached only from the opt-in `image_trust` registry-fetch path, never the core proxy path, and `govulncheck` reports zero reachable vulnerabilities either side of the bump.
 
 ## [2.0.0] - 2026-08-28
