@@ -291,7 +291,7 @@ rules:
 The default listener is loopback TCP `127.0.0.1:2375`, which keeps the Docker API proxy off the network unless you explicitly choose otherwise.
 
 - For the safest deployment, use `listen.socket` and share a unix socket.
-- Sockguard hardens the unix socket to `0600` owner-only permissions. The published image and fresh named-volume directory use UID/GID `65532`, so a non-root consumer must use UID `65532` too; root can also connect. For another consumer UID, run Sockguard under that matching UID with a pre-owned bind mount, or use authenticated TCP. `listen.socket_mode` must stay `0600`; broader modes are rejected at startup.
+- Sockguard hardens the unix socket to `0600` owner-only permissions by default. The published image and fresh named-volume directory use UID/GID `65532`, so a non-root consumer must use UID `65532` too; root can also connect. For another consumer UID, run Sockguard under that matching UID with a pre-owned bind mount, or use authenticated TCP. `listen.socket_mode` accepts one other value: `0660`, group-readable, which also requires `listen.socket_gid` (the group ID that should own the socket). `listen.socket_uid` optionally sets the socket's owning UID for either mode. Any mode other than `0600` or `0660` (with `socket_gid` set) is rejected at startup.
 - For remote or container-network TCP, configure `listen.tls` so Sockguard requires mutual TLS. Sockguard's mTLS server minimum is TLS 1.3, so callers must support TLS 1.3. (The TLS 1.3 floor applies to the *listener* — the side your clients connect to. The upstream client side, where Sockguard dials a remote Docker daemon, floors at TLS 1.2 for daemon compatibility; see [Remote Upstreams & Failover](/multi-host).)
 - `listen.tls.client_ca_file` still defines the issuing trust root. To avoid trusting every cert that CA can mint, optionally narrow the accepted verified client leaf with the selectors described under [mTLS Client Selectors](#mtls-client-selectors) below. Different selector fields are ANDed, while entries inside one field are ORed.
 - Plaintext non-loopback TCP is rejected unless you set **both** `listen.insecure_allow_plain_tcp: true` and `listen.insecure_allow_unauthenticated_clients: true`. Both acknowledgments are required — one without the other is rejected — so a single fat-fingered flag cannot expose the listener. That mode is only for legacy compatibility on a private, trusted network.
@@ -329,7 +329,7 @@ The default listener is loopback TCP `127.0.0.1:2375`, which keeps the Docker AP
 - `POST /images/load` is inspected by default. Sockguard denies image archive imports unless their `manifest.json` repo tags satisfy `request_body.image_load.*` registry policy, or untagged imports are explicitly allowed.
 - `POST /swarm/unlock` and `POST /nodes/*/update` are inspected by default. Swarm unlock is denied unless `request_body.swarm.allow_unlock: true`; node updates block role, availability, name, and unapproved label mutations unless allowed under `request_body.node.*`.
 - `POST /plugins/pull`, `POST /plugins/*/upgrade`, `POST /plugins/*/set`, and `POST /plugins/create` are inspected by default. Sockguard constrains plugin registries, privileges, assignment prefixes, local tar `config.json`, host mounts, device exposure, and capabilities unless you explicitly allow them under `request_body.plugin.*`. `POST /plugins/create` is inspected whether the upload arrives as a raw tar body or a `multipart/form-data` envelope — the multipart stream is parsed and the embedded `config.json` is extracted before policy evaluation.
-- `POST /images/create` (pull), `POST /libpod/images/pull`, and `POST /images/*/push` also decode the base64 `X-Registry-Auth` header (standard, URL-safe, and unpadded variants all accepted) under the same 8 KiB bound as other inspectors; an oversized, non-base64, or non-JSON header is denied fail-closed, and when `image_pull.allowed_registries` is configured the decoded `serveraddress` must canonicalize to an allowlisted host. `POST /build` decodes the analogous `X-Registry-Config` multi-registry header the same bounded way but does not cross-check hosts against a build-time allowlist. Decoded credential fields (username/password/identity token) are never inspected, logged, or reflected in a deny reason.
+- `POST /images/create` (pull), `POST /libpod/images/pull`, and `POST /images/*/push` all decode the base64 `X-Registry-Auth` header (standard, URL-safe, and unpadded variants all accepted) under the same 8 KiB bound as other inspectors; an oversized, non-base64, or non-JSON header is denied fail-closed. The `image_pull.allowed_registries` cross-check against the decoded `serveraddress` applies to the two pull paths only — `POST /images/*/push` is not inspected against it, so a client with push access can push to any registry its own credentials reach, gated only by `insecure_allow_read_exfiltration`. `POST /build` decodes the analogous `X-Registry-Config` multi-registry header the same bounded way but does not cross-check hosts against a build-time allowlist. Decoded credential fields (username/password/identity token) are never inspected, logged, or reflected in a deny reason.
 - `POST /libpod/pods/create` (Podman's libpod-native pod creation) is inspected by default under `request_body.libpod_pod_create`. Sockguard denies a pod-level host network namespace (`netns: {nsmode: "host"}`) unless `allow_host_network: true`, denies a shared PID namespace (`"pid"` present in `shared_namespaces`) unless `allow_shared_pid_namespace: true`, and denies an infra image whose registry isn't in `allowed_infra_image_registries` — reusing the same registry-allowlist shape as `image_pull.allowed_registries` — whenever `infra_image` is set explicitly. When `ownership.owner` is configured, cross-owner pod membership is also denied on both sides of the relationship (#148): `POST /libpod/pods/create` joining another owner's host namespaces, and `POST /libpod/containers/create` targeting another owner's pod — reusing the same `container:<ref>` namespace-sharing checks `POST /containers/create` already applies. See [Owner Label Isolation](#owner-label-isolation) below for the full picture.
 - `POST /libpod/volumes/create`, `POST /libpod/networks/create`, and `POST /libpod/secrets/create` (Podman's libpod-native equivalents of `POST /volumes/create`/`POST /networks/create`/`POST /secrets/create`) are inspected by default under `request_body.libpod_volume`, `request_body.libpod_network`, and `request_body.libpod_secret` respectively — these reuse the **same** `volume`/`network`/`secret` config fields documented above rather than introducing separate knobs, since the policy question (custom drivers? driver options? custom IPAM/subnets?) is identical even though libpod's wire shapes differ from the Docker-compat API: volume driver options live under a top-level `Options` key (not `DriverOpts`), network options are snake_case (`ipam_options`, `subnets`) with no swarm/ingress/attachable/config-only fields (libpod has no swarm mode), and secret creation reads `driver` from the query string rather than a JSON body, so the libpod secret inspector never touches `r.Body` at all.
 - `POST /libpod/images/load`, `POST /libpod/images/import`, `POST /libpod/play/kube` (and its identically-handled `POST /libpod/kube/play` alias), `POST /libpod/kube/apply`, and `POST`/`PUT /libpod/manifests/*` have **no** request-body inspector. Admitting any of them requires `insecure_allow_body_blind_writes: true` exactly like uninspected exec. Treat `play/kube` with particular care: a single request can carry a multi-container (or multi-pod) Kubernetes manifest, so one allowed call can provision an arbitrary number of privileged containers from a document sockguard never parses, a materially larger blast radius than the single-container blind writes this flag otherwise covers.
@@ -341,6 +341,31 @@ The default listener is loopback TCP `127.0.0.1:2375`, which keeps the Docker AP
 - `response.allow_attestation_statements` stays `false` by default. A truthy `statement` query returns the full in-toto attestation payload, which may have been generated by a different and less-trusted pipeline than the image itself, so it is denied unless explicitly allowed. Empty, `0`, `no`, `false`, and `none` are false after trimming and case-folding; every other non-empty value is true. A request without a truthy statement value still lists available attestation manifests.
 - `response.redact_container_env`, `response.redact_mount_paths`, `response.redact_network_topology`, and `response.redact_sensitive_data` default to `true`. Sockguard redacts workload env arrays across container/service/task/plugin reads, redacts host-path-bearing mount and device metadata across container/volume/task/service/plugin/system-usage reads, strips container/network/swarm/node topology from container/network/service/task/node/swarm/info/system-usage responses, and redacts higher-risk payload material such as config `Spec.Data`, service secret/config references, swarm join/unlock material, and swarm/node TLS metadata. Disable them only for trusted admin clients that truly need Docker's raw metadata.
 - `response.redact_host_topology` defaults to `false` (opt-in): when enabled, Sockguard redacts container-runtime plumbing fields on `GET /info` — `Containerd` (socket path and namespace layout), `FirewallBackend`, `DiscoveredDevices`, and `NRI` — independent of Swarm mode (the redaction runs whether or not the daemon has a `Swarm` section in its response). Enable it when `/info` reads are exposed to a caller that should be able to confirm the daemon is reachable without learning host build details.
+
+## Multiple Listeners
+
+`listeners:` runs more than one main (Docker-API) listener from a single Sockguard process, each with its own bind target and its own admission scope, instead of requiring one process per audience.
+
+```yaml
+listeners:
+  - name: ci
+    socket: /var/run/sockguard-ci.sock
+    socket_mode: "0600"
+    allowed_profiles: [ci]
+
+  - name: ops
+    socket: /var/run/sockguard-ops.sock
+    socket_mode: "0600"
+    allowed_profiles: [ops]
+```
+
+- `listeners:` and the legacy top-level `listen:` block are mutually exclusive — set one or the other, never both. Migrating means moving the `listen:` block's fields into a single-entry `listeners:` list.
+- Each entry's `name` identifies the listener for logs, metrics, health, audit, and reload diagnostics. It must be unique within `listeners`, match the listener-name pattern, and cannot be `admin` (reserved for the admin listener).
+- `allowed_profiles` scopes a listener to a subset of `clients.profiles` and is required and non-empty on every explicit entry. A client that resolves (via mTLS cert, unix peer UID, or source IP) to a profile outside a listener's `allowed_profiles` is denied with `listener_profile_not_allowed`, even if the base policy would otherwise allow it — the listener boundary is evaluated after normal profile resolution and never falls back to a weaker selector. The single-element list `["*"]` preserves legacy behavior: every resolved profile, plus the unprofiled/default-policy path, is admitted.
+- Each entry otherwise takes the same fields as the top-level `listen:` block (`socket`/`address`, `socket_mode`, `tls`, and so on) — see the listener bullets above for what each field does. Unlike the legacy `listen:` block, an explicit `listeners[*]` unix-socket entry does not default `socket_mode`; set it explicitly on every entry.
+- `admin.mount_on` names the single listener that carries `/admin/*` traffic when in-band admin (`admin.enabled: true` with no dedicated `admin.listen`) runs alongside two or more effective listeners. It is required in that case — startup validation rejects a config with 2+ listeners, in-band admin enabled, and no `admin.mount_on` — and the admin endpoints are unreachable from any other listener. Configuring a dedicated `admin.listen` instead sidesteps `mount_on` entirely.
+
+See [`configs/multi-listener.yaml`](https://github.com/CodesWhat/sockguard/blob/main/app/configs/multi-listener.yaml) for a complete working example, including a TCP+mTLS variant and disjoint per-listener client profiles.
 
 ## Request Body Policy Reference
 
@@ -928,8 +953,10 @@ carries `decision: "would_deny"`, plus the request's `method` and
 `normalized_path`. A denied `POST /v1.51/containers/create` looks like:
 
 ```json
-{"event_type":"http_request","timestamp":"2026-08-29T14:32:07.118453Z","request_id":"a1b2c3d4e5f67890","client_request_id":"","method":"POST","raw_path":"/v1.51/containers/create","normalized_path":"/containers/create","decision":"would_deny","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","matched_rule":0,"selected_profile":"discovery","rollout_mode":"audit","status":201,"actor_remote_addr":"@","actor_source_ip":"","transport_listener":"unix","transport_scheme":"http","transport_protocol":"HTTP/1.1","listener_name":"discovery","ownership":{"enabled":false,"owner":"","label_key":""}}
+{"event_type":"http_request","timestamp":"2026-08-29T14:32:07.118453Z","request_id":"a1b2c3d4e5f67890","client_request_id":"","trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","trace_parent_id":"00f067aa0ba902b7","trace_span_id":"7f1a3c9e2b6d4f80","trace_sampled":true,"method":"POST","raw_path":"/v1.51/containers/create","normalized_path":"/containers/create","decision":"would_deny","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","matched_rule":0,"selected_profile":"discovery","rollout_mode":"audit","status":201,"actor_remote_addr":"@","actor_source_ip":"","transport_listener":"unix","transport_scheme":"http","transport_protocol":"HTTP/1.1","listener_name":"discovery","ownership":{"enabled":false,"owner":"","label_key":""}}
 ```
+
+`trace_id`, `trace_span_id`, `trace_parent_id`, and `trace_sampled` ride every audit event (and every access log line and upstream-error log — see [Logging And Audit](#logging-and-audit)) with no `omitempty`, so a real event always carries all four; `trace_sampled` renders `false` rather than vanishing when the incoming request carried no sampled trace context.
 
 `status: 201` is the daemon's real response — the request was actually
 forwarded and actually succeeded; `would_deny` only describes what the
@@ -1633,6 +1660,11 @@ ALLOW_STOP=1       # Allow POST /containers/{id}/stop
 ALLOW_RESTARTS=1   # Allow POST /containers/{id}/stop|restart|kill
 ALLOW_CREATE=0     # Deny POST /containers/create (default)
 ALLOW_EXEC=0       # Deny POST /containers/{id}/exec (default)
+ALLOW_PAUSE=0      # Deny POST /containers/{id}/pause (default)
+ALLOW_UNPAUSE=0    # Deny POST /containers/{id}/unpause (default)
+ALLOW_KILL=0       # Deny POST /containers/{id}/kill (default; ALLOW_RESTARTS also grants it)
+ALLOW_DELETE=0     # Deny DELETE /containers/{id} (default)
+ALLOW_PRUNE=0      # Deny POST /containers/prune (default)
 ```
 
 Sockguard also accepts the legacy singular `ALLOW_RESTART=1` alias, but `ALLOW_RESTARTS` is the upstream Tecnativa/LinuxServer name.
@@ -1640,3 +1672,15 @@ Sockguard also accepts the legacy singular `ALLOW_RESTART=1` alias, but `ALLOW_R
 ## Precedence
 
 CLI flags > environment variables > config file > defaults
+
+`sockguard serve` also registers five flags that override specific config keys directly, independent of the `SOCKGUARD_*` env var precedence above:
+
+| Flag | Overrides |
+|------|-----------|
+| `--listen-socket` | `listen.socket` |
+| `--upstream-socket` | `upstream.socket` |
+| `--log-level` | `log.level` |
+| `--log-format` | `log.format` |
+| `--deny-verbosity` | `response.deny_verbosity` (`verbose` or `minimal`) |
+
+Each only takes effect when explicitly set on the command line; an unset flag leaves the config-file/env-var value in place.

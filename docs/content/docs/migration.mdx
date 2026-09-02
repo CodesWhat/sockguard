@@ -14,7 +14,7 @@ v1.5 keeps the v1.x YAML, CLI, environment-variable, admin API, and Prometheus m
 
 The other v1.5 policy additions are opt-in: `restrict_namespace_sharing`, `allowed_namespace_sharing_containers`, `deny_namespace_path_mode`, `require_cpu_limit_hard`, and exec `allowed_env_vars`/`denied_env_vars`/`allowed_env_values`. See [Configuration](/configuration) for their exact semantics and defaults. The bundled Drydock self-update preset now value-pins its loopback finalize callback at port 3000; if Drydock uses a different server port, update that exact preset value before deployment.
 
-Before switching the image tag, validate the current configuration with `sockguard validate --config /etc/sockguard/config.yaml` or the admin listener's `POST /admin/validate`. Deployments using macvlan/static-IP recreation should pay particular attention to `allow_endpoint_config`; the bundled drydock presets document that compatibility case inline.
+Before switching the image tag, validate the current configuration with `sockguard validate --config /etc/sockguard/sockguard.yaml` or the admin listener's `POST /admin/validate`. Deployments using macvlan/static-IP recreation should pay particular attention to the granular endpoint-config gates — `endpoint_config.allow_static_addressing`, `allow_link_local_ips`, `allow_mac_pinning`, and `allow_gw_priority` — which cover recreation's actual needs individually; `allow_endpoint_config` remains the whole-object escape hatch for DriverOpts/Links recreation, which have no granular gate of their own. The bundled drydock presets document that compatibility case inline.
 
 ## From Sockguard v1.6 to v1.7
 
@@ -224,6 +224,8 @@ The acknowledgement is required, not optional. `CONTAINERS=1` generates `allow G
 
 One other difference from Tecnativa in that diff: Sockguard binds loopback `127.0.0.1:2375` by default rather than all interfaces, so a proxy other Compose services talk to over TCP also needs `SOCKGUARD_LISTEN_ADDRESS` plus both plaintext-TCP acknowledgements, or `SOCKGUARD_LISTEN_SOCKET` and a shared socket volume. See [Getting Started](/getting-started) for either block in full.
 
+A third difference is a real permission change, not just a behavior parity gap: Sockguard's granular `ALLOW_*` vars (`ALLOW_START`, `ALLOW_STOP`, `ALLOW_RESTARTS`, and the rest) are honored independently of `POST`. Real Tecnativa's `haproxy.cfg` denies any non-GET request before it ever reaches the `ALLOW_*` rules, so `ALLOW_RESTARTS=1 POST=0` on Tecnativa grants nothing. The same combination on Sockguard grants working restart access. Audit your `ALLOW_*` settings before cutover if you were relying on `POST=0` to blanket-deny them.
+
 Tecnativa compatibility mode and signed-policy mode are separate migration
 stages. Rule-generating compatibility variables are unsigned process state, so
 Sockguard rejects them whenever `--policy-bundle-trust-config` is active.
@@ -331,10 +333,11 @@ CetusGuard is the closest in spirit to Sockguard — a zero-dependency, default-
 
 | CetusGuard | Sockguard |
 |------------|-----------|
-| `-frontend-addr` / `CETUSGUARD_FRONTEND_ADDR` | `listen.address` (TCP) or `listen.socket` (unix) |
+| `-frontend-addr` / `CETUSGUARD_FRONTEND_ADDR` | `listen.address` (TCP) or `listen.socket` (unix) — repeat the flag for multiple frontends and it maps to Sockguard's `listeners:` array (see [Multiple Listeners](/configuration#multiple-listeners)), not the singular `listen:` block |
 | `-backend-addr` / `CETUSGUARD_BACKEND_ADDR` | `upstream.socket` |
 | `-frontend-tls-cert` / `-frontend-tls-key` | `listen.tls.cert_file` / `listen.tls.key_file` |
 | `-frontend-tls-cacert` | `listen.tls.client_ca_file` (enables mTLS) |
+| `-backend-tls-cacert` / `-backend-tls-cert` / `-backend-tls-key` | `upstream.endpoints[].tls.ca_file` / `cert_file` / `key_file` |
 | `-rules` / `-rules-file` / `CETUSGUARD_RULES*` | The YAML `rules:` block |
 | `-log-level` / `CETUSGUARD_LOG_LEVEL` | `log.level` |
 | builtin `/_ping`, `/info`, `/version` rules | Allow them explicitly — Sockguard has no implicit allows |
@@ -344,3 +347,4 @@ Key differences:
 - Glob patterns (`*`, `**`) with auto-anchoring instead of regex
 - CetusGuard filters on method + path only; Sockguard adds request-body inspection, named per-client profiles, owner isolation, read-side visibility/redaction, rate limits, and metrics on top
 - Both tools support remote daemon upstreams; Sockguard uses `upstream.endpoints` (YAML) or the `DOCKER_HOST`/`DOCKER_TLS`/`DOCKER_TLS_VERIFY`/`DOCKER_CERT_PATH` drop-in — see [Remote Upstreams & Failover](/multi-host) for the full guide.
+- Sockguard's listener enforces a TLS 1.3 floor with no override; CetusGuard's frontend and backend both floor at TLS 1.2. Reused mTLS keypairs still work, but a client that never negotiates above TLS 1.2 needs upgrading before cutover, or the handshake fails.
