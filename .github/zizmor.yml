@@ -20,9 +20,14 @@ rules:
     #
     # Revisit when actionlint ships `$/` support: drop this block, run
     # `zizmor --fix`, and confirm `actionlint .github/workflows/` is clean.
+    #
+    # Scoped to the two `uses:` lines, not the whole files, so a future
+    # workspace-relative `./` reference anywhere else in either workflow is
+    # still caught. If either line moves, the audit fires again; that is the
+    # intended failure mode, and the fix is to re-point the line number here.
     ignore:
-      - release-cut.yml
-      - release-from-tag.yml
+      - release-cut.yml:61
+      - release-from-tag.yml:155
 
   cache-poisoning:
     # zizmor flags any setup-go/setup-node caching step in a workflow that
