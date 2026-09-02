@@ -3,6 +3,7 @@ package ownership
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codeswhat/sockguard/app/internal/filter"
 	"github.com/codeswhat/sockguard/app/internal/logging"
@@ -656,15 +658,24 @@ func TestOwnerFilterWriterFlushOwnedForwardsMultipleChoicesVerbatim(t *testing.T
 // ---------------------------------------------------------------------------
 
 // TestFilterSystemDataUsageResponseLogsOnFirstUnclassifiableSection uses a
-// top-level /system/df key unique to this test (never used by another test
-// in this package, since FirstSightSystemDataUsageSections tracks reported
-// sections process-wide) to prove the warning fires on first sight.
+// top-level /system/df key unique to this *run* of the test to prove the
+// warning fires on first sight.
+//
+// FirstSightSystemDataUsageSections (responsefilter package) dedupes through
+// an unexported, package-level sync.Map with no reset hook this package can
+// reach, so a fixed key would only fire once per test binary process: a
+// second pass (go test -count=2, or any other test in this process that
+// probes the same key) would find it already marked seen and the warning
+// would never log, failing this test nondeterministically depending on run
+// order. Mixing in the test name and a nanosecond timestamp keeps the key
+// fresh on every invocation without needing to touch that map at all.
 func TestFilterSystemDataUsageResponseLogsOnFirstUnclassifiableSection(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	probeSection := fmt.Sprintf("ZZZOwnershipMutationBoundaryProbe_%s_%d", t.Name(), time.Now().UnixNano())
 	upstream := `{"ImageUsage":{"TotalCount":1,"Items":[{"Id":"sha256:mine","Labels":{"` + ownerLabelForTest + `":"team-a"}}]},` +
-		`"ZZZOwnershipMutationBoundaryProbe":{"TotalCount":1,"Items":[{"Id":"x1"}]}}`
+		`"` + probeSection + `":{"TotalCount":1,"Items":[{"Id":"x1"}]}}`
 	handler := middlewareWithDeps(logger, Options{Owner: "team-a"},
 		fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(systemDFUpstreamHandler(upstream))
 
@@ -673,8 +684,8 @@ func TestFilterSystemDataUsageResponseLogsOnFirstUnclassifiableSection(t *testin
 	if !strings.Contains(buf.String(), "dropped unclassifiable response sections") {
 		t.Fatalf("log = %q, want a warning naming the unclassifiable section", buf.String())
 	}
-	if !strings.Contains(buf.String(), "ZZZOwnershipMutationBoundaryProbe") {
-		t.Fatalf("log = %q, want it to name ZZZOwnershipMutationBoundaryProbe", buf.String())
+	if !strings.Contains(buf.String(), probeSection) {
+		t.Fatalf("log = %q, want it to name %s", buf.String(), probeSection)
 	}
 }
 
