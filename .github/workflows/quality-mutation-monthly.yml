@@ -63,7 +63,7 @@ jobs:
         run: |
           set -euo pipefail
           matrix=$(bash scripts/ci/mutation-matrix.sh)
-          count=$(printf '%s' "$matrix" | jq -r '.count')
+          count=$(printf '%s' "$matrix" | jq -r '.include | length')
           echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
           echo "count=${count}" >> "$GITHUB_OUTPUT"
           {

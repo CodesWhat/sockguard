@@ -12,8 +12,10 @@
 # a new package is mutation-tested the month it lands, and the badge's
 # expected-report count can never drift from the matrix.
 #
-# Output (single line):
-#   {"include":[{"name":"admin","package":"./internal/admin"},...],"count":N}
+# Output (single line), shaped for `strategy.matrix: ${{ fromJSON(...) }}`.
+# Only the `include` key: GitHub reads any other top-level key as a
+# matrix dimension, and a scalar there makes the job fail to expand.
+#   {"include":[{"name":"admin","package":"./internal/admin"},...]}
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -59,4 +61,4 @@ for name in "${names[@]}"; do
   fi
 done
 
-printf '{"include":[%s],"count":%d}\n' "${include}" "${#names[@]}"
+printf '{"include":[%s]}\n' "${include}"

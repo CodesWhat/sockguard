@@ -40,9 +40,18 @@ describe("quality mutation workflow", () => {
     const out = execFileSync("bash", [resolve(repoRoot, "scripts/ci/mutation-matrix.sh")], {
       encoding: "utf8",
     });
-    const { include, count } = JSON.parse(out);
+    const parsed = JSON.parse(out);
 
-    assert.equal(count, include.length, "count does not match the include list");
+    // fromJSON() feeds this straight into strategy.matrix, where any key
+    // other than include/exclude is read as a matrix dimension. A stray
+    // scalar key made the whole gremlins job fail to expand once already.
+    assert.deepEqual(
+      Object.keys(parsed),
+      ["include"],
+      "matrix JSON must carry only an include key",
+    );
+    const { include } = parsed;
+    assert.ok(include.length > 0, "matrix is empty");
     const names = include.map((entry) => entry.name);
     assert.equal(new Set(names).size, names.length, "a package is listed twice");
 
