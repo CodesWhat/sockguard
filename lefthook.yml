@@ -208,6 +208,12 @@ pre-push:
           echo "zizmor is required; install it (e.g. 'brew install zizmor' or 'cargo install zizmor') and re-run" >&2
           exit 1
         fi
-        zizmor .github/workflows/
+        # --config is explicit on purpose. zizmor's auto-discovery resolves
+        # the config relative to the *repository root*, and in a linked
+        # worktree that resolves to the main checkout, so a push from
+        # .claude/worktrees/<name> audits the branch's workflows against the
+        # main checkout's .github/zizmor.yml. Editing the config on a branch
+        # then had no effect on that branch's own pre-push run.
+        zizmor --config .github/zizmor.yml .github/workflows/
       priority: 13
       timeout: 30s
