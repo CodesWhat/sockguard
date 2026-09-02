@@ -697,6 +697,108 @@ func withRolloutMode(r *http.Request, mode string) *http.Request {
 }
 
 // ---------------------------------------------------------------------------
+// Construction fast path: every profile compiles to nil and there is no
+// global concurrency gate → Middleware must return the literal noop wrapper,
+// not a throttleHandler-backed closure that merely behaves the same for a
+// single request. markerHandler is a pointer type (not a func value) so the
+// two http.Handler interface values can be compared directly with !=.
+// ---------------------------------------------------------------------------
+
+type markerHandler struct{}
+
+func (*markerHandler) ServeHTTP(http.ResponseWriter, *http.Request) {}
+
+func TestMiddleware_AllProfilesNilNoGlobalConcurrency_IsPassthroughNoop(t *testing.T) {
+	t.Parallel()
+	opts := MiddlewareOptions{
+		Profiles: map[string]ProfileOptions{
+			// Zero-value ProfileOptions compiles to nil: no Rate, no
+			// Concurrency, and PriorityNormal (the zero value) — so hasAny
+			// never flips true and globalMax stays 0.
+			"ci": {},
+		},
+	}
+	mw := mustMiddleware(t, newTestLogger(), nil, nil, opts)
+
+	next := &markerHandler{}
+	wrapped := mw(next)
+	if wrapped != http.Handler(next) {
+		t.Fatal("expected the literal no-op fast path (identical handler returned) when every profile compiles to nil and no global concurrency gate is configured")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// checkRateLimit reuses an already-normalized path from request meta instead
+// of recomputing from the raw URL. A prior middleware in the chain (e.g.
+// clientacl) may have already stamped meta.NormPath; re-normalizing here
+// would be redundant and, per the doc comment on serve(), NormalizePath is
+// otherwise the only per-request string scan most requests do.
+// ---------------------------------------------------------------------------
+
+func TestMiddleware_CachedNormPathReusedOverRawPath(t *testing.T) {
+	t.Parallel()
+	reg := metrics.NewRegistry()
+	clk := newFixedClock(time.Unix(0, 0))
+
+	opts := MiddlewareOptions{
+		Profiles: map[string]ProfileOptions{
+			"ci": {
+				Rate: &RateOptions{
+					TokensPerSecond: 100,
+					Burst:           1,
+					EndpointCosts: []EndpointCost{
+						{PathGlob: "/build", Cost: 5},
+					},
+				},
+			},
+		},
+		ResolveProfile: resolveProfileFn("ci"),
+		Now:            clk.Now,
+	}
+	h := mustMiddleware(t, newTestLogger(), reg, nil, opts)(okHandler)
+
+	// The raw request path ("/other") does not match the /build cost rule,
+	// but meta.NormPath is pre-stamped to "/build" as if an earlier
+	// middleware already normalized it. If checkRateLimit recomputes from
+	// the raw path instead of reusing the cached value, cost falls back to
+	// 1 and the request is admitted against burst=1. Reusing the cached
+	// value applies cost=5, which immediately exceeds burst=1.
+	meta := &logging.RequestMeta{NormPath: "/build"}
+	req := httptest.NewRequest(http.MethodGet, "/other", nil)
+	req = req.WithContext(metaContext(req, meta))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 (cached NormPath=/build → cost=5 > burst=1), got %d", rec.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// rolloutModeOf: nil meta and an empty RolloutMode both normalize to
+// "enforce"; a non-empty RolloutMode passes through unchanged.
+// ---------------------------------------------------------------------------
+
+func TestRolloutModeOf(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		meta *logging.RequestMeta
+		want string
+	}{
+		{"nil meta", nil, "enforce"},
+		{"empty rollout mode", &logging.RequestMeta{RolloutMode: ""}, "enforce"},
+		{"explicit enforce", &logging.RequestMeta{RolloutMode: "enforce"}, "enforce"},
+		{"warn", &logging.RequestMeta{RolloutMode: "warn"}, "warn"},
+		{"audit", &logging.RequestMeta{RolloutMode: "audit"}, "audit"},
+	}
+	for _, tc := range cases {
+		if got := rolloutModeOf(tc.meta); got != tc.want {
+			t.Errorf("%s: rolloutModeOf() = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Global inflight gauge counts warn / audit pass-throughs.
 // ---------------------------------------------------------------------------
 
