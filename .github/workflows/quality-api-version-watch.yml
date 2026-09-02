@@ -81,12 +81,15 @@ jobs:
           HTML="$(curl -fsSL --retry 3 --retry-delay 5 "${URL}")"
 
           # The version-history page lists a "v1.NN API changes" heading (and
-          # matching anchor) for every documented minor. Extract every v1.NN
-          # token, strip the leading "v", and take the numerically highest
-          # minor — grep for the pattern rather than parsing the page as
-          # structured HTML, since Docker's docs markup is not a stable
-          # contract but the "v1.NN" version token itself is.
+          # matching anchor) for every documented minor. Anchor the match to
+          # that heading wording rather than taking any bare "v1.NN" token:
+          # the page inlines SVG icons whose `<path d="...">` coordinate data
+          # contains literals like "v1.875" and "v1.125", and those outsort
+          # every real version. That is what made this job report Engine API
+          # "1.875" on 2026-09-01 and demand a ceiling bump that Docker had
+          # never shipped.
           LATEST="$(printf '%s\n' "${HTML}" \
+            | grep -oE '(v1\.[0-9]+ API|API v1\.[0-9]+)' \
             | grep -oE 'v1\.[0-9]+' \
             | sed 's/^v//' \
             | sort -t. -k2 -n -u \
@@ -94,6 +97,15 @@ jobs:
 
           if [ -z "${LATEST}" ]; then
             echo "::error::could not extract any v1.NN version token from ${URL} — page layout may have changed"
+            exit 1
+          fi
+
+          # Sanity ceiling. Docker's Engine API minor has been in the double
+          # digits for a decade; a three-digit minor means the scrape matched
+          # markup again rather than a real version. Fail loudly here instead
+          # of laundering it into a bogus "new API version" alert downstream.
+          if [ "${LATEST#1.}" -gt 200 ]; then
+            echo "::error::extracted implausible Engine API version '${LATEST}' from ${URL} — the scrape is matching page markup, not a version heading"
             exit 1
           fi
 
