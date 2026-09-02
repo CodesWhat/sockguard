@@ -66,16 +66,17 @@ if [ "${#names[@]}" -eq 0 ]; then
   exit 1
 fi
 
-include=""
+# Built with jq, not printf string concatenation: a directory name holding
+# a `"` or `{` would otherwise land unescaped in the JSON and could inject
+# extra `include` entries. jq -n --arg quotes each field safely; jq -s then
+# wraps the one-entry-per-line stream into the single {"include": [...]}
+# object GitHub reads as the matrix.
+entries=""
 for entry_spec in "${names[@]}"; do
   name="${entry_spec%%:*}"
   rel="${entry_spec#*:}"
-  entry=$(printf '{"name":"%s","package":"./app/internal/%s"}' "${name}" "${rel}")
-  if [ -n "${include}" ]; then
-    include="${include},${entry}"
-  else
-    include="${entry}"
-  fi
+  entry=$(jq -n --arg name "${name}" --arg package "./app/internal/${rel}" '{name: $name, package: $package}')
+  entries="${entries}${entry}"$'\n'
 done
 
-printf '{"include":[%s]}\n' "${include}"
+printf '%s' "${entries}" | jq -c -s '{include: .}'

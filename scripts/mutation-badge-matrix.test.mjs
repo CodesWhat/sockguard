@@ -84,6 +84,14 @@ describe("quality mutation workflow", () => {
     };
     walk("");
 
+    assert.equal(
+      include.length,
+      eligible.length,
+      "matrix entry count differs from the eligible set",
+    );
+    const packages = include.map((entry) => entry.package);
+    assert.equal(new Set(packages).size, packages.length, "a package path is listed twice");
+
     const byPackage = new Map(include.map((entry) => [entry.package, entry.name]));
     assert.deepEqual(
       [...byPackage.keys()].sort(),
@@ -101,23 +109,55 @@ describe("quality mutation workflow", () => {
 
   it("keeps the write credential out of every job a branch run can reach", () => {
     const source = readFileSync(resolve(repoRoot, workflowPath), "utf8");
-    const badgeJob = source.indexOf("\n  update-badge:\n");
-    assert.notEqual(badgeJob, -1, "update-badge job not found");
+    const jobsStart = source.indexOf("\njobs:\n");
+    assert.notEqual(jobsStart, -1, "jobs: block not found");
+    const jobsSource = source.slice(jobsStart);
+
+    // A job header is a two-space-indented key under `jobs:` (`  discover:`,
+    // `  update-badge:`, ...). Slicing the file into job bodies this way,
+    // rather than searching the whole file, means a marker string anywhere
+    // outside `update-badge` -- including in a comment or in another job's
+    // `on:`-block lookalike -- is caught instead of only checked by position.
+    const headerRe = /^ {2}([a-z-]+):$/gmu;
+    const headers = [...jobsSource.matchAll(headerRe)];
+    assert.ok(headers.length > 0, "no job headers found under jobs:");
+    assert.ok(
+      headers.some((m) => m[1] === "update-badge"),
+      "update-badge job not found",
+    );
+
+    const sections = headers.map((m, i) => {
+      const end = i + 1 < headers.length ? headers[i + 1].index : jobsSource.length;
+      return { name: m[1], body: jobsSource.slice(m.index, end) };
+    });
 
     // `mutation/*` branch pushes run this file as authored on the branch.
     // Only the badge job may hold contents: write or a persisted
     // credential, and it must be gated off non-default branches at job
     // level so it is never scheduled for such a run.
-    for (const marker of ["contents: write", "persist-credentials: true"]) {
-      const first = source.indexOf(marker);
-      assert.ok(first > badgeJob, `${marker} appears before the update-badge job`);
+    for (const { name, body } of sections) {
+      for (const marker of ["contents: write", "persist-credentials: true"]) {
+        const present = body.includes(marker);
+        if (name === "update-badge") {
+          assert.ok(present, `update-badge section is missing ${marker}`);
+        } else {
+          assert.ok(!present, `${marker} found in the ${name} job, not just update-badge`);
+        }
+      }
     }
-    const jobIf = source.slice(badgeJob).match(/^\s{4}if: (.+)$/mu);
+
+    const badgeSection = sections.find((s) => s.name === "update-badge").body;
+    const jobIf = badgeSection.match(/^\s{4}if: (.+)$/mu);
     assert.ok(jobIf, "update-badge has no job-level if");
     assert.match(
       jobIf[1],
       /github\.event\.repository\.default_branch/u,
       "update-badge is not gated to the default branch",
+    );
+    assert.match(
+      jobIf[1],
+      /github\.ref\s*==\s*format\('refs\/heads\/\{0\}',\s*github\.event\.repository\.default_branch\)/u,
+      "update-badge if does not compare github.ref against the default branch",
     );
   });
 

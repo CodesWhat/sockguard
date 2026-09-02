@@ -17,11 +17,13 @@ on:
   workflow_dispatch:
   schedule:
     - cron: '30 6 1 * *'  # Monthly on day 1 at 06:30 UTC
-  # workflow_dispatch only sees the workflow file on the default branch,
-  # so a matrix change on a dev branch could not be exercised before it
-  # was promoted. Pushing any `mutation/*` branch runs this file as it is
-  # on that branch. The badge commit below is gated to the default branch,
-  # so a branch run only reports its score in the job summary.
+  # workflow_dispatch still requires a manual click per run, so exercising
+  # a matrix change under active development would mean re-dispatching by
+  # hand after every push. Pushing any `mutation/*` branch runs the full
+  # matrix on that branch's copy of this file automatically instead, which
+  # is how the widened matrix itself was iterated. The badge commit below
+  # is gated to the default branch, so a branch run only reports its score
+  # in the job summary.
   push:
     branches:
       - 'mutation/**'
@@ -143,10 +145,15 @@ jobs:
             done
           ) &
           monitor=$!
-          # EXIT trap, not a trailing kill: with -e a failing gremlins run
-          # would skip the kill and the orphaned loop would hold the step's
-          # stdout open until the job timeout.
-          trap 'kill "${monitor}" 2>/dev/null || true' EXIT
+          # INT/TERM as well as EXIT: with -e a failing gremlins run would
+          # skip a bare EXIT-only trap on some shells, and a cancelled run
+          # delivers SIGTERM straight to the step without ever reaching
+          # EXIT, either way leaving the orphaned loop to hold the step's
+          # stdout open until the job timeout. Killing the monitor subshell
+          # alone is not enough: it is blocked inside `sleep 60`, which is
+          # its own process and does not die with its parent, so the sleep
+          # child is killed explicitly too.
+          trap 'pkill -P "${monitor}" 2>/dev/null || true; kill "${monitor}" 2>/dev/null || true; wait "${monitor}" 2>/dev/null || true' INT TERM EXIT
           gremlins unleash --tags="" "${PACKAGE}" 2>&1 | tee mutation-report.txt
         env:
           GOFLAGS: ""
@@ -247,6 +254,24 @@ jobs:
           # that wiring.
           expected_reports=${EXPECTED_REPORTS}
 
+          # `if: always()` runs this job even when discover failed and never
+          # produced a count, in which case EXPECTED_REPORTS arrives empty.
+          # Without this check the `-ne` comparison below errors under `-u`,
+          # `bash -e {0}` treats that error as pass-through, and the job
+          # falls through to the success path with pct=0.0 -- a false 0.0%
+          # badge committed straight from a discover failure. Fail closed
+          # before any of that runs.
+          if ! [[ "${expected_reports}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "discover job produced no leg count; not publishing"
+            {
+              echo "### Mutation badge not updated"
+              echo
+              echo "discover job produced no leg count; not publishing"
+            } >> "${GITHUB_STEP_SUMMARY}"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           # Per-package table so the lived mutants can be chased package by
           # package instead of from one aggregate number.
           {
@@ -271,13 +296,25 @@ jobs:
             #      enough that grep is still writing when head exits, grep dies
             #      141 and pipefail returns it, failing a pipeline that had
             #      already parsed the value correctly.
-            killed=$(grep -oE 'Killed: [0-9]+' "$f" | head -1 | grep -oE '[0-9]+' || true)
-            lived=$(grep -oE 'Lived: [0-9]+' "$f" | head -1 | grep -oE '[0-9]+' || true)
+            # Anchored to Gremlins' own summary line (`Killed: N, Lived: N,
+            # Not covered: N`), not the first `Killed:` anywhere in the file:
+            # a package's mutated source can itself contain the word inside a
+            # log line or a mutant description, and matching that instead of
+            # the summary would silently parse the wrong number.
+            summary_line=$(grep -E '^Killed: [0-9]+, Lived: [0-9]+, Not covered: [0-9]+' "$f" | head -1 || true)
+            killed=""
+            lived=""
+            if [ -n "$summary_line" ]; then
+              killed=$(printf '%s' "$summary_line" | grep -oE 'Killed: [0-9]+' | grep -oE '[0-9]+' || true)
+              lived=$(printf '%s' "$summary_line" | grep -oE 'Lived: [0-9]+' | grep -oE '[0-9]+' || true)
+            fi
             # A package whose tests cover no mutable line makes Gremlins print
             # "No results to report." instead of a Killed/Lived line. That is
             # a complete report of zero, not a broken one: counting it keeps
-            # the report set whole so the badge can still publish.
-            if [ -z "$killed" ] && grep -q '^No results to report' "$f"; then
+            # the report set whole so the badge can still publish. Only fills
+            # when no summary line was found at all, so it can never
+            # overwrite counts already parsed above.
+            if [ -z "$summary_line" ] && grep -q '^No results to report' "$f"; then
               killed=0
               lived=0
             fi
