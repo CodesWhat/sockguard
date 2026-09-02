@@ -36,7 +36,7 @@ describe("quality mutation workflow", () => {
     );
   });
 
-  it("lists every tested app/internal package exactly once", () => {
+  it("lists every tested app/internal package at any depth exactly once", () => {
     const out = execFileSync("bash", [resolve(repoRoot, "scripts/ci/mutation-matrix.sh")], {
       encoding: "utf8",
     });
@@ -60,24 +60,65 @@ describe("quality mutation workflow", () => {
       assert.ok(names.includes(name), `${name} missing from the mutation matrix`);
     }
 
-    for (const { name, package: pkg } of include) {
-      assert.equal(pkg, `./app/internal/${name}`, `${name} has an unexpected package path`);
-      const dir = resolve(repoRoot, "app", "internal", name);
-      const files = readdirSync(dir).filter((f) => f.endsWith(".go"));
-      assert.ok(
-        files.some((f) => f.endsWith("_test.go")),
-        `${name} is in the matrix but has no test file`,
-      );
-      assert.ok(
-        files.some((f) => !f.endsWith("_test.go")),
-        `${name} is in the matrix but has no source file`,
-      );
-    }
+    // Independent derivation of the eligible set: every directory under
+    // app/internal, at any depth, with a source file and a test file,
+    // skipping testdata trees and the two test-fixture packages.
+    const fixtures = new Set(["testcert", "testhelp"]);
+    const eligible = [];
+    const walk = (rel) => {
+      const dir = resolve(repoRoot, "app", "internal", rel);
+      const entries = readdirSync(dir, { withFileTypes: true });
+      const files = entries.filter((e) => e.isFile() && e.name.endsWith(".go")).map((e) => e.name);
+      if (
+        rel !== "" &&
+        !fixtures.has(rel) &&
+        files.some((f) => f.endsWith("_test.go")) &&
+        files.some((f) => !f.endsWith("_test.go"))
+      ) {
+        eligible.push(rel);
+      }
+      for (const e of entries) {
+        if (!e.isDirectory() || e.name === "testdata") continue;
+        walk(rel === "" ? e.name : `${rel}/${e.name}`);
+      }
+    };
+    walk("");
 
-    // Fixture-only packages support other packages' tests; mutating them is noise.
-    for (const name of ["testcert", "testhelp"]) {
-      assert.ok(!names.includes(name), `${name} is a test fixture and must not be in the matrix`);
+    const byPackage = new Map(include.map((entry) => [entry.package, entry.name]));
+    assert.deepEqual(
+      [...byPackage.keys()].sort(),
+      eligible.map((rel) => `./app/internal/${rel}`).sort(),
+      "matrix packages differ from the recursively derived eligible set",
+    );
+    for (const rel of eligible) {
+      assert.equal(
+        byPackage.get(`./app/internal/${rel}`),
+        rel.replaceAll("/", "-"),
+        `${rel} has an unexpected matrix name`,
+      );
     }
+  });
+
+  it("keeps the write credential out of every job a branch run can reach", () => {
+    const source = readFileSync(resolve(repoRoot, workflowPath), "utf8");
+    const badgeJob = source.indexOf("\n  update-badge:\n");
+    assert.notEqual(badgeJob, -1, "update-badge job not found");
+
+    // `mutation/*` branch pushes run this file as authored on the branch.
+    // Only the badge job may hold contents: write or a persisted
+    // credential, and it must be gated off non-default branches at job
+    // level so it is never scheduled for such a run.
+    for (const marker of ["contents: write", "persist-credentials: true"]) {
+      const first = source.indexOf(marker);
+      assert.ok(first > badgeJob, `${marker} appears before the update-badge job`);
+    }
+    const jobIf = source.slice(badgeJob).match(/^\s{4}if: (.+)$/mu);
+    assert.ok(jobIf, "update-badge has no job-level if");
+    assert.match(
+      jobIf[1],
+      /github\.event\.repository\.default_branch/u,
+      "update-badge is not gated to the default branch",
+    );
   });
 
   it("reports the parsed count when the report set is incomplete", () => {

@@ -2,8 +2,8 @@
 # Emit the Gremlins mutation-testing matrix as JSON for
 # .github/workflows/quality-mutation-monthly.yml.
 #
-# Every package under app/internal that has both product code (a non-test
-# .go file) and a test file is a matrix leg. Packages with no tests have
+# Every package under app/internal, at any depth, that has both product
+# code (a non-test .go file) and a test file is a matrix leg. Packages with no tests have
 # no covered lines, so Gremlins would report 0 mutants and only pad the
 # report count. Test-fixture packages are excluded by name below: they
 # exist to support other packages' tests, so mutating them is noise.
@@ -29,17 +29,27 @@ cd "${repo_root}/app"
 fixture_packages="testcert testhelp"
 
 names=()
-for dir in internal/*/; do
-  name="${dir#internal/}"
-  name="${name%/}"
+# Recursive: a package can sit at any depth under internal/ (buildkitproto
+# has ten generated sub-packages today). testdata trees are never packages.
+# `find -print0 | sort -z` keeps the order deterministic across filesystems;
+# the read loop avoids mapfile, which macOS's bash 3.2 lacks.
+while IFS= read -r -d '' dir; do
+  rel="${dir#internal/}"
+  case "${rel}" in
+    */testdata|*/testdata/*|testdata|testdata/*) continue ;;
+  esac
+  # Matrix name: the path with / turned into -, so admin stays admin and
+  # buildkitproto/pb becomes buildkitproto-pb. The badge job strips the
+  # artifact prefix and run id and never re-derives the path from it.
+  name="${rel//\//-}"
 
   case " ${fixture_packages} " in
-    *" ${name} "*) continue ;;
+    *" ${rel} "*) continue ;;
   esac
 
   has_src=0
   has_test=0
-  for f in "${dir}"*.go; do
+  for f in "${dir}"/*.go; do
     [ -e "${f}" ] || continue
     case "${f}" in
       *_test.go) has_test=1 ;;
@@ -47,9 +57,9 @@ for dir in internal/*/; do
     esac
   done
   if [ "${has_src}" -eq 1 ] && [ "${has_test}" -eq 1 ]; then
-    names+=("${name}")
+    names+=("${name}:${rel}")
   fi
-done
+done < <(find internal -mindepth 1 -type d -print0 | sort -z)
 
 if [ "${#names[@]}" -eq 0 ]; then
   echo "::error::mutation matrix is empty -- no package under app/internal has both source and tests" >&2
@@ -57,8 +67,10 @@ if [ "${#names[@]}" -eq 0 ]; then
 fi
 
 include=""
-for name in "${names[@]}"; do
-  entry=$(printf '{"name":"%s","package":"./app/internal/%s"}' "${name}" "${name}")
+for entry_spec in "${names[@]}"; do
+  name="${entry_spec%%:*}"
+  rel="${entry_spec#*:}"
+  entry=$(printf '{"name":"%s","package":"./app/internal/%s"}' "${name}" "${rel}")
   if [ -n "${include}" ]; then
     include="${include},${entry}"
   else
