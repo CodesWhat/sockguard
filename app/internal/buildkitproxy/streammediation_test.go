@@ -366,6 +366,16 @@ func TestRawByteCapValidatorTripsCumulativeCap(t *testing.T) {
 	}
 }
 
+// TestRawByteCapValidatorAdmitsExactlyAtCap pins the cap's own boundary:
+// total landing exactly ON maxTotalBytes must admit, only strictly
+// exceeding it (TestRawByteCapValidatorTripsCumulativeCap above) denies.
+func TestRawByteCapValidatorAdmitsExactlyAtCap(t *testing.T) {
+	v := &rawByteCapValidator{maxTotalBytes: 5}
+	if d := v.validate([]byte("abcde")); d != nil {
+		t.Fatalf("validate() with total exactly at maxTotalBytes = %+v, want nil", d)
+	}
+}
+
 func TestRawByteCapValidatorZeroCapDisablesLimit(t *testing.T) {
 	v := &rawByteCapValidator{}
 	if d := v.validate(bytes.Repeat([]byte("x"), 10000)); d != nil {

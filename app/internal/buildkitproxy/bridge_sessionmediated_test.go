@@ -191,7 +191,15 @@ func TestBridgeSessionMediatedAuth(t *testing.T) {
 	})
 
 	t.Run("GetTokenAuthority admitted", func(t *testing.T) {
-		tb := newTestBridge(t, EndpointSession, sessionAuthPolicy, DefaultLimits(), echoDaemonHandler())
+		// Also asserts registry_host is actually logged from req.GetHost():
+		// forwardAuthMediated's per-method switch only assigns host inside
+		// an `if req != nil` guard, one per RPC, so a case whose req/host
+		// assignment silently no-ops (host stays "") would still admit
+		// (the switch's outcome doesn't depend on host) but would audit an
+		// empty registry_host instead of the real one.
+		logs := &syncLogBuffer{}
+		logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		tb := newTestBridgeWithLogger(t, EndpointSession, sessionAuthPolicy, DefaultLimits(), echoDaemonHandler(), logger)
 		req := &auth.GetTokenAuthorityRequest{Host: "registry-1.docker.io", Salt: []byte("s")}
 		resp, err := tb.driver.RoundTrip(newFramedGRPCRequest(t, "/moby.filesync.v1.Auth/GetTokenAuthority", req))
 		if err != nil {
@@ -199,6 +207,11 @@ func TestBridgeSessionMediatedAuth(t *testing.T) {
 		}
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if !strings.Contains(logs.String(), "registry_host=registry-1.docker.io") {
+			t.Fatalf("audit log missing registry_host attr:\n%s", logs.String())
 		}
 	})
 
@@ -234,7 +247,11 @@ func TestBridgeSessionMediatedAuth(t *testing.T) {
 	})
 
 	t.Run("VerifyTokenAuthority admitted", func(t *testing.T) {
-		tb := newTestBridge(t, EndpointSession, sessionAuthPolicy, DefaultLimits(), echoDaemonHandler())
+		// Also asserts registry_host is logged from req.GetHost() — see the
+		// GetTokenAuthority admitted case's comment above for why.
+		logs := &syncLogBuffer{}
+		logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		tb := newTestBridgeWithLogger(t, EndpointSession, sessionAuthPolicy, DefaultLimits(), echoDaemonHandler(), logger)
 		req := &auth.VerifyTokenAuthorityRequest{Host: "registry-1.docker.io", Payload: []byte("p"), Salt: []byte("s")}
 		resp, err := tb.driver.RoundTrip(newFramedGRPCRequest(t, "/moby.filesync.v1.Auth/VerifyTokenAuthority", req))
 		if err != nil {
@@ -243,10 +260,19 @@ func TestBridgeSessionMediatedAuth(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("status = %d, want 200", resp.StatusCode)
 		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if !strings.Contains(logs.String(), "registry_host=registry-1.docker.io") {
+			t.Fatalf("audit log missing registry_host attr:\n%s", logs.String())
+		}
 	})
 
 	t.Run("FetchToken admitted", func(t *testing.T) {
-		tb := newTestBridge(t, EndpointSession, sessionAuthPolicy, DefaultLimits(), echoDaemonHandler())
+		// Also asserts registry_host is logged from req.GetHost() — see the
+		// GetTokenAuthority admitted case's comment above for why.
+		logs := &syncLogBuffer{}
+		logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		tb := newTestBridgeWithLogger(t, EndpointSession, sessionAuthPolicy, DefaultLimits(), echoDaemonHandler(), logger)
 		req := &auth.FetchTokenRequest{
 			Host: "registry-1.docker.io", Realm: "https://auth.docker.io/token",
 			Scopes: []string{"repository:library/alpine:pull"},
@@ -257,6 +283,11 @@ func TestBridgeSessionMediatedAuth(t *testing.T) {
 		}
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if !strings.Contains(logs.String(), "registry_host=registry-1.docker.io") {
+			t.Fatalf("audit log missing registry_host attr:\n%s", logs.String())
 		}
 	})
 }
@@ -491,12 +522,17 @@ func TestBridgeCredentialCallQuota(t *testing.T) {
 		return resp
 	}
 
-	// First call consumes the quota (admitted: ID is on the allowlist).
+	// First call consumes the quota (admitted: ID is on the allowlist). It
+	// must land the quota's own boundary — the Nth call, exactly at
+	// MaxCredentialCallsPerSession — as an admission, not a trip: only a
+	// gRPC-status check catches that, since a quota trip and a policy
+	// admission both come back as HTTP 200 (gRPC's Trailers-Only errors are
+	// HTTP-200-with-a-header, not a distinct status code).
 	resp1 := checkAgent()
-	if _, _ = io.Copy(io.Discard, resp1.Body); resp1.StatusCode != http.StatusOK {
-		t.Fatalf("first CheckAgent status = %d, want 200", resp1.StatusCode)
+	code1, _ := grpcStatusOf(t, resp1)
+	if code1 != 0 {
+		t.Fatalf("first CheckAgent Grpc-Status = %d, want 0 (OK) — exactly MaxCredentialCallsPerSession calls must admit, not trip the quota", code1)
 	}
-	_ = resp1.Body.Close()
 
 	// Next several calls trip the quota, not the policy — RESOURCE_EXHAUSTED
 	// with the dedicated reason, repeatedly, without the tunnel closing even

@@ -18,6 +18,7 @@ func TestDefaultLimitsAreSane(t *testing.T) {
 		{"DeniedStreamBudget is positive (Phase 2 must not ship with the abuse guard disabled)", l.DeniedStreamBudget > 0},
 		{"DeniedStreamWindow is positive", l.DeniedStreamWindow > 0},
 		{"IdleTimeout is positive", l.IdleTimeout > 0},
+		{"ReadIdleTimeout is exactly 30s", l.ReadIdleTimeout == 30*time.Second},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

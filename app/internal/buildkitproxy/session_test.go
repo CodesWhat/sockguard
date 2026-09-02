@@ -2,6 +2,7 @@ package buildkitproxy
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -61,6 +62,27 @@ func TestSessionRegistryOpenGetClose(t *testing.T) {
 	// Closing an already-closed (or never-opened) ID must be a harmless no-op.
 	reg.Close(s.ID)
 	reg.Close(999999)
+}
+
+// TestSessionRegistryOpenAssignsSequentialIDs pins Open's own ID
+// bookkeeping directly: r.nextID must count UP by one per Open, starting at
+// 1 on a fresh registry — TestSessionRegistryOpenGetClose above already
+// asserts ID != 0 for the first Open, which the zero value would fail on
+// its own regardless of counting direction. TestSessionRegistryDistinctSessionsNeverCollide
+// below only proves two Opens produce DIFFERENT IDs, which a counter going
+// the wrong direction would still satisfy.
+func TestSessionRegistryOpenAssignsSequentialIDs(t *testing.T) {
+	reg := NewSessionRegistry()
+	key := SessionKey{ClientIdentity: "c", Profile: "p"}
+
+	s1 := reg.Open(key, EndpointGRPC, "")
+	if s1.ID != 1 {
+		t.Fatalf("first Open() on a fresh registry = ID %d, want 1", s1.ID)
+	}
+	s2 := reg.Open(key, EndpointGRPC, "")
+	if s2.ID != 2 {
+		t.Fatalf("second Open() = ID %d, want 2", s2.ID)
+	}
 }
 
 // TestSessionRegistryDistinctSessionsNeverCollide tables the registry's two
@@ -540,5 +562,132 @@ func TestSessionRegistryConsumeUploadKeyRace(t *testing.T) {
 		if successCount != 1 {
 			t.Fatalf("iteration %d: %d concurrent ConsumeUploadKey calls succeeded, want exactly 1 — one-use must hold under a race", i, successCount)
 		}
+	}
+}
+
+// TestCanonicalBuildkitSessionIDBoundaries tables canonicalBuildkitSessionID's
+// character-class edges directly: each accepted run (a-z, A-Z, 0-9, -, _, .)
+// must admit its own boundary characters and reject the byte immediately
+// outside that run, so a CONDITIONALS_BOUNDARY shift at any one comparison
+// (e.g. c <= 'z' narrowed to c < 'z') can't silently reject a valid ID ending
+// in 'z' or 'Z'.
+func TestCanonicalBuildkitSessionIDBoundaries(t *testing.T) {
+	cases := []struct {
+		name string
+		id   string
+		ok   bool
+	}{
+		{"lowercase lower boundary a", "a", true},
+		{"lowercase upper boundary z", "z", true},
+		{"one past z ({ is 0x7B) rejected", "{", false},
+		{"uppercase lower boundary A", "A", true},
+		{"uppercase upper boundary Z", "Z", true},
+		{"one before A ('@' is 0x40) rejected", "@", false},
+		{"one past Z ('[' is 0x5B) rejected", "[", false},
+		{"digit lower boundary 0", "0", true},
+		{"digit upper boundary 9", "9", true},
+		{"hyphen", "a-b", true},
+		{"underscore", "a_b", true},
+		{"dot", "a.b", true},
+		{"space rejected", "a b", false},
+		{"empty rejected", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := canonicalBuildkitSessionID(tc.id)
+			if ok != tc.ok {
+				t.Fatalf("canonicalBuildkitSessionID(%q) ok = %v, want %v", tc.id, ok, tc.ok)
+			}
+			if ok && got != tc.id {
+				t.Fatalf("canonicalBuildkitSessionID(%q) = %q, want it echoed back unchanged", tc.id, got)
+			}
+		})
+	}
+}
+
+// TestSessionRegistryCloseDecrementsSharedSolveSession pins Close's
+// solveSessions refcount decrement directly, for a buildkitSessionID two
+// sessions under the SAME SessionKey both admitted — the shape refOwners'
+// own per-ref refcount (line 293's `owners[ref] <= 1`) already has to
+// handle, and solveSessions must handle identically:
+//   - closing one of two sessions must DECREMENT the shared count, not
+//     delete the entry outright (a CONDITIONALS_NEGATION flip here would
+//     delete on the very first Close, losing the second session's own
+//     still-open admission — HasAdmittedSolve would go false too early).
+//   - closing the LAST session sharing it must delete the map entry
+//     entirely, not merely decrement it to zero and leave an orphaned key
+//     behind (a CONDITIONALS_BOUNDARY flip here decrements to 0 instead of
+//     deleting — HasAdmittedSolve still reads false either way, so the
+//     leaked entry is checked directly).
+func TestSessionRegistryCloseDecrementsSharedSolveSession(t *testing.T) {
+	reg := NewSessionRegistry()
+	key := SessionKey{ClientIdentity: "c", Profile: "p"}
+	s1 := reg.Open(key, EndpointGRPC, "")
+	s2 := reg.Open(key, EndpointGRPC, "")
+
+	if got := reg.admitSolve(s1, testBuildkitSessionID, "ref-1", nil, 0, 0); got != solveAdmissionSucceeded {
+		t.Fatalf("s1 admitSolve() = %v, want solveAdmissionSucceeded", got)
+	}
+	if got := reg.admitSolve(s2, testBuildkitSessionID, "ref-2", nil, 0, 0); got != solveAdmissionSucceeded {
+		t.Fatalf("s2 admitSolve() = %v, want solveAdmissionSucceeded", got)
+	}
+
+	scope := buildkitSessionKey{Principal: key, ID: testBuildkitSessionID}
+	if got := reg.solveSessions[scope]; got != 2 {
+		t.Fatalf("solveSessions[scope] = %d after both admissions, want 2", got)
+	}
+
+	reg.Close(s1.ID)
+	if !reg.HasAdmittedSolve(key, testBuildkitSessionID) {
+		t.Fatal("HasAdmittedSolve() = false after closing only ONE of two sessions sharing the buildkit session ID, want true")
+	}
+	if got := reg.solveSessions[scope]; got != 1 {
+		t.Fatalf("solveSessions[scope] = %d after closing one of two sessions, want 1 (decremented, not deleted)", got)
+	}
+
+	reg.Close(s2.ID)
+	if reg.HasAdmittedSolve(key, testBuildkitSessionID) {
+		t.Fatal("HasAdmittedSolve() = true after closing every session sharing the buildkit session ID, want false")
+	}
+	if _, ok := reg.solveSessions[scope]; ok {
+		t.Fatal("solveSessions still holds an entry for a scope with no remaining sessions — orphaned entry")
+	}
+}
+
+// TestSessionRegistryAdmitSolveRefLengthBoundary pins admitSolve's ref
+// length cap boundary: a ref of EXACTLY maxBuildkitRefBytes must admit, only
+// one byte longer must be rejected as solveAdmissionRefInvalid.
+func TestSessionRegistryAdmitSolveRefLengthBoundary(t *testing.T) {
+	reg := NewSessionRegistry()
+	key := SessionKey{ClientIdentity: "c", Profile: "p"}
+
+	s1 := reg.Open(key, EndpointGRPC, "")
+	refAtLimit := strings.Repeat("a", maxBuildkitRefBytes)
+	if got := reg.admitSolve(s1, testBuildkitSessionID, refAtLimit, nil, 0, 0); got != solveAdmissionSucceeded {
+		t.Fatalf("admitSolve() with a ref exactly at maxBuildkitRefBytes = %v, want solveAdmissionSucceeded", got)
+	}
+
+	s2 := reg.Open(key, EndpointGRPC, "")
+	refOverLimit := strings.Repeat("a", maxBuildkitRefBytes+1)
+	if got := reg.admitSolve(s2, testBuildkitSessionID, refOverLimit, nil, 0, 0); got != solveAdmissionRefInvalid {
+		t.Fatalf("admitSolve() with a ref one byte over maxBuildkitRefBytes = %v, want solveAdmissionRefInvalid", got)
+	}
+}
+
+// TestSessionRegistryAdmitSolveNoUploadIDsLeavesUploadKeysNil pins the
+// len(newUploadIDs) > 0 guard around admitSolve's upload-key bookkeeping: a
+// Solve admitted with no upload ids at all must never touch r.uploadKeys,
+// which stays nil (never lazily allocated) exactly as it does before any
+// Solve ever admits an upload id.
+func TestSessionRegistryAdmitSolveNoUploadIDsLeavesUploadKeysNil(t *testing.T) {
+	reg := NewSessionRegistry()
+	key := SessionKey{ClientIdentity: "c", Profile: "p"}
+	s := reg.Open(key, EndpointGRPC, "")
+
+	if got := reg.admitSolve(s, testBuildkitSessionID, "ref-1", nil, 0, 0); got != solveAdmissionSucceeded {
+		t.Fatalf("admitSolve() = %v, want solveAdmissionSucceeded", got)
+	}
+	if reg.uploadKeys != nil {
+		t.Fatalf("uploadKeys = %v after a Solve with no upload ids, want nil (never allocated)", reg.uploadKeys)
 	}
 }

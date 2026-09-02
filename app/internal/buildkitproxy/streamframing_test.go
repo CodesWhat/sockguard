@@ -100,6 +100,23 @@ func TestReadGRPCFrame(t *testing.T) {
 	}
 }
 
+// TestReadGRPCFrameEmptyReaderIsNotAlsoAProtocolError pins the n == 0 half
+// of readGRPCFrame's EOF-vs-protocol-error branch directly: a clean EOF at a
+// frame boundary must return the bare io.EOF sentinel, never a
+// errStreamFrameProtocolError wrapping it. errors.Is(err, io.EOF) alone
+// can't tell these apart — Go's multi-%w wrapping means a wrapped error
+// satisfies errors.Is for EVERY error it wraps, including io.EOF, so a
+// protocol-error-wrapping-EOF still passes an io.EOF check
+// (TestReadGRPCFrame's "empty reader" case above uses exactly that check).
+// Only asserting the ABSENCE of errStreamFrameProtocolError distinguishes
+// the two.
+func TestReadGRPCFrameEmptyReaderIsNotAlsoAProtocolError(t *testing.T) {
+	_, _, err := readGRPCFrame(bytes.NewReader(nil), 0)
+	if errors.Is(err, errStreamFrameProtocolError) {
+		t.Fatalf("err = %v, a clean EOF must not also satisfy errors.Is(err, errStreamFrameProtocolError)", err)
+	}
+}
+
 func TestReadGRPCFramePayloadSharesFrameAllocation(t *testing.T) {
 	frame, payload, err := readGRPCFrame(bytes.NewReader(grpcFrame([]byte("payload"))), 0)
 	if err != nil {
