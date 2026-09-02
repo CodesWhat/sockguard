@@ -119,7 +119,11 @@ jobs:
         run: go install "github.com/go-gremlins/gremlins/cmd/gremlins@${GREMLINS_VERSION}"
 
       - name: Run Gremlins mutation testing
-        working-directory: app
+        # No working-directory: the Go module root is the repo root, and
+        # `gremlins unleash` resolves the module from the current directory
+        # instead of walking up for go.mod the way `go build` does. Running
+        # it from app/ is what made every shard die in ~1s with "not in a Go
+        # module" once the module moved to the root.
         # shell: bash (rather than the default `bash -e {0}`) is required here:
         # GitHub's default bash has -e but not -o pipefail, so `| tee` would
         # report tee's exit code and mask a failing mutation run.
@@ -143,9 +147,9 @@ jobs:
             echo "- Mode: ADVISORY (non-blocking)"
             echo "- Package: ${PACKAGE}"
             echo ""
-            if [ -f app/mutation-report.txt ]; then
+            if [ -f mutation-report.txt ]; then
               echo '```'
-              tail -20 app/mutation-report.txt
+              tail -20 mutation-report.txt
               echo '```'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
@@ -155,7 +159,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: mutation-report-${{ matrix.name }}-${{ github.run_id }}
-          path: app/mutation-report.txt
+          path: mutation-report.txt
           if-no-files-found: warn
           retention-days: 30
 
@@ -234,8 +238,19 @@ jobs:
             pkg=$(basename "$(dirname "$f")")
             pkg=${pkg#mutation-report-}
             pkg=${pkg%-*}
-            killed=$(grep -oE 'Killed: [0-9]+' "$f" | head -1 | grep -oE '[0-9]+')
-            lived=$(grep -oE 'Lived: [0-9]+' "$f" | head -1 | grep -oE '[0-9]+')
+            # `|| true` on both, for two separate reasons, and the skip/warn
+            # branch below is what is supposed to handle either:
+            #   1. This step runs under GitHub's default `bash -e {0}`, and
+            #      `set -uo pipefail` above adds -u and pipefail without
+            #      clearing the inherited -e. An unparseable report makes the
+            #      first grep exit 1, which aborted the whole step before it
+            #      could reach the warn-and-continue path it already has.
+            #   2. pipefail plus `head -1` is a SIGPIPE trap: on a report long
+            #      enough that grep is still writing when head exits, grep dies
+            #      141 and pipefail returns it, failing a pipeline that had
+            #      already parsed the value correctly.
+            killed=$(grep -oE 'Killed: [0-9]+' "$f" | head -1 | grep -oE '[0-9]+' || true)
+            lived=$(grep -oE 'Lived: [0-9]+' "$f" | head -1 | grep -oE '[0-9]+' || true)
             if [ -z "$killed" ] || [ -z "$lived" ]; then
               echo "::warning::could not parse Killed/Lived out of $f, skipping it"
               echo "| ${pkg} | ? | ? | unparseable |" >> "${GITHUB_STEP_SUMMARY}"

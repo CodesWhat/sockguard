@@ -61,7 +61,7 @@ describe("quality mutation workflow", () => {
     }
 
     for (const { name, package: pkg } of include) {
-      assert.equal(pkg, `./internal/${name}`, `${name} has an unexpected package path`);
+      assert.equal(pkg, `./app/internal/${name}`, `${name} has an unexpected package path`);
       const dir = resolve(repoRoot, "app", "internal", name);
       const files = readdirSync(dir).filter((f) => f.endsWith(".go"));
       assert.ok(
