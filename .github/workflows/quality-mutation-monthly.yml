@@ -129,6 +129,24 @@ jobs:
         # report tee's exit code and mask a failing mutation run.
         shell: bash
         run: |
+          # The filter leg has died twice at ~18 minutes with "runner has
+          # received a shutdown signal" and no other output, which is what
+          # a runner looks like when it runs out of disk or memory. Sample
+          # both once a minute alongside the run so the last lines before a
+          # death say which one it was.
+          (
+            while sleep 60; do
+              printf '[resources] %s disk_free=%s mem_avail=%s\n' \
+                "$(date -u +%H:%M:%S)" \
+                "$(df -Pk / | awk 'NR==2 {printf "%dM", $4/1024}')" \
+                "$(free -m | awk '/^Mem:/ {print $7 "M"}')"
+            done
+          ) &
+          monitor=$!
+          # EXIT trap, not a trailing kill: with -e a failing gremlins run
+          # would skip the kill and the orphaned loop would hold the step's
+          # stdout open until the job timeout.
+          trap 'kill "${monitor}" 2>/dev/null || true' EXIT
           gremlins unleash --tags="" "${PACKAGE}" 2>&1 | tee mutation-report.txt
         env:
           GOFLAGS: ""
