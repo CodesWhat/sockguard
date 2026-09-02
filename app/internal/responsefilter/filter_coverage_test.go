@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	requestfilter "github.com/codeswhat/sockguard/app/internal/filter"
 )
 
 // ─── Enabled ────────────────────────────────────────────────────────────────
@@ -161,6 +163,32 @@ func TestModifyResponse_SkipsNoBodySuccessStatuses(t *testing.T) {
 			}
 			if err := f.ModifyResponse(resp); err != nil {
 				t.Fatalf("ModifyResponse() error = %v, want nil", err)
+			}
+		})
+	}
+}
+
+// ─── isSuccessfulBodyResponse ────────────────────────────────────────────────
+
+func TestIsSuccessfulBodyResponse(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		status int
+		want   bool
+	}{
+		{"199 below range", 199, false},
+		{"200 lower bound", http.StatusOK, true},
+		{"204 no content", http.StatusNoContent, false},
+		{"205 reset content", http.StatusResetContent, false},
+		{"299 upper bound", 299, true},
+		{"300 at exclusive boundary", http.StatusMultipleChoices, false},
+		{"301 above range", http.StatusMovedPermanently, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isSuccessfulBodyResponse(tt.status); got != tt.want {
+				t.Errorf("isSuccessfulBodyResponse(%d) = %v, want %v", tt.status, got, tt.want)
 			}
 		})
 	}
@@ -771,6 +799,10 @@ func TestSplitBindSpec(t *testing.T) {
 		{"windows absolute forward slash", "C:/data:/mnt/data", "C:/data", ":/mnt/data"},
 		{"windows absolute no target", `C:\data`, `C:\data`, ""},
 		{"windows lowercase drive", `c:\data:/mnt`, `c:\data`, ":/mnt"},
+		// Non-Windows-absolute branch: the colon is the very first byte, so
+		// IndexByte returns 0. Pins the idx >= 0 boundary distinctly from
+		// "not found" (idx == -1, covered by "unix absolute no colon" above).
+		{"colon is first byte", ":foo", "", ":foo"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -832,6 +864,16 @@ func TestIsWindowsAbsolutePath(t *testing.T) {
 		{"non-letter drive", `1:\data`, false},
 		{"no colon after drive", `CC\data`, false},
 		{"drive colon no sep", "C:data", false},
+		// len(value) == 3 is the minimum valid length (drive + colon +
+		// separator); pins the len(value) < 3 boundary distinctly from the
+		// "too short" (len 2) case above.
+		{"minimal valid length", `C:\`, true},
+		// Drive-letter range boundaries: 'a', 'z', 'A', 'Z' are each valid
+		// drive letters at the very edge of their ASCII range.
+		{"lowercase drive boundary a", `a:\`, true},
+		{"lowercase drive boundary z", `z:\`, true},
+		{"uppercase drive boundary A", `A:\`, true},
+		{"uppercase drive boundary Z", `Z:\`, true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -943,6 +985,41 @@ func TestReadResponseBody_NilBody(t *testing.T) {
 	if err == nil {
 		t.Fatal("want error for nil body, got nil")
 	}
+}
+
+// TestReadResponseBody_SizeLimitBoundary pins the exact byte at which
+// readResponseBody stops accepting a body: the underlying LimitedReader is
+// sized to MaxResponseBodyBytes+1 so a body of exactly the cap is read in
+// full, while one byte more is rejected.
+func TestReadResponseBody_SizeLimitBoundary(t *testing.T) {
+	t.Parallel()
+	max := requestfilter.MaxResponseBodyBytes
+
+	t.Run("exactly at cap succeeds", func(t *testing.T) {
+		t.Parallel()
+		body := strings.Repeat("A", max)
+		resp := &http.Response{Body: io.NopCloser(strings.NewReader(body))}
+		got, err := readResponseBody(resp)
+		if err != nil {
+			t.Fatalf("readResponseBody() error = %v, want nil for a body exactly at the %d byte cap", err, max)
+		}
+		if len(got) != max {
+			t.Fatalf("len(body) = %d, want %d", len(got), max)
+		}
+	})
+
+	t.Run("one byte over cap is rejected", func(t *testing.T) {
+		t.Parallel()
+		body := strings.Repeat("A", max+1)
+		resp := &http.Response{Body: io.NopCloser(strings.NewReader(body))}
+		_, err := readResponseBody(resp)
+		if err == nil {
+			t.Fatal("readResponseBody() error = nil, want rejection for a body one byte over the cap")
+		}
+		if !strings.Contains(err.Error(), "response body exceeds") {
+			t.Fatalf("readResponseBody() error = %v, want size-limit context", err)
+		}
+	})
 }
 
 // ─── writeResponseBody – nil header ─────────────────────────────────────────
@@ -2728,5 +2805,26 @@ func TestRedactTaskNetworkAttachments_WithIPAMOptions(t *testing.T) {
 	ipam := network["IPAMOptions"].(map[string]any)
 	if cfg, _ := ipam["Configs"].([]any); len(cfg) != 0 {
 		t.Fatalf("IPAMOptions.Configs = %v, want empty", cfg)
+	}
+}
+
+// ─── trailingJSONError ────────────────────────────────────────────────────────
+
+// TestTrailingJSONError_OffsetZeroBoundary pins the offset < 0 guard at
+// offset == 0: that offset is a legitimate "nothing consumed yet" position,
+// not an out-of-range one, so it must still scan body[0:] for a rejectable
+// non-whitespace character rather than being waved through as if the offset
+// were invalid.
+func TestTrailingJSONError_OffsetZeroBoundary(t *testing.T) {
+	t.Parallel()
+
+	if err := trailingJSONError([]byte("X"), 0); err == nil {
+		t.Fatal("trailingJSONError([]byte(\"X\"), 0) error = nil, want the non-whitespace byte to be rejected")
+	} else if want := `invalid character 'X' after top-level value`; err.Error() != want {
+		t.Fatalf("trailingJSONError error = %q, want %q", err, want)
+	}
+
+	if err := trailingJSONError([]byte(" "), 0); err != nil {
+		t.Fatalf("trailingJSONError([]byte(\" \"), 0) error = %v, want nil (whitespace-only remainder)", err)
 	}
 }
