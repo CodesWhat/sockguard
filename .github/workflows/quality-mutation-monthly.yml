@@ -77,7 +77,10 @@ jobs:
     name: "Quality: Gremlins (${{ matrix.name }})"
     needs: discover
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    # The full filter leg is estimated at 60 to 90 minutes: 1122 mutants,
+    # and the 756 after image_load.go each pay the gzip-bomb test under
+    # -failfast. 120 left too little headroom on a slow runner.
+    timeout-minutes: 180
     continue-on-error: true  # advisory — review results, don't block
     strategy:
       fail-fast: false
@@ -88,23 +91,18 @@ jobs:
       matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
 
     steps:
-      # Stage 1 of the harden-runner egress rollout: pure Go build plus
-      # `go install` of gremlins from its module path, no Docker. Same
-      # endpoint set as quality-fuzz-nightly.yml — see that file's comment
-      # for the reasoning on each host.
+      # The filter leg died at 17 to 20 minutes under egress-policy: block,
+      # three for three, with 79 GB of disk and 13.7 GB of memory free
+      # seconds before the kill, so it is not resource exhaustion. The same
+      # leg ran 47 minutes green under audit on 2026-08-01 (run 30692172568),
+      # quality-fuzz-monthly.yml already runs audit for its 61-minute legs,
+      # and no job in this repo has survived past 16.5 minutes under block.
+      # This job holds contents: read and no persisted credential; the
+      # write-capable update-badge job stays on block.
       - name: Harden Runner
         uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
-          egress-policy: block
-          allowed-endpoints: >
-            github.com:443
-            raw.githubusercontent.com:443
-            objects.githubusercontent.com:443
-            release-assets.githubusercontent.com:443
-            proxy.golang.org:443
-            storage.googleapis.com:443
-            sum.golang.org:443
-            *.actions.githubusercontent.com:443
+          egress-policy: audit
           disable-sudo: true
 
       - name: Checkout
@@ -131,11 +129,13 @@ jobs:
         # report tee's exit code and mask a failing mutation run.
         shell: bash
         run: |
-          # The filter leg has died twice at ~18 minutes with "runner has
-          # received a shutdown signal" and no other output, which is what
-          # a runner looks like when it runs out of disk or memory. Sample
-          # both once a minute alongside the run so the last lines before a
-          # death say which one it was.
+          # The filter leg has died three times at ~18 minutes with "runner
+          # has received a shutdown signal" and no other output, which is
+          # what a runner looks like when it runs out of disk or memory.
+          # Sample both once a minute alongside the run so the last lines
+          # before a death say which one it was. The sampler stays for one
+          # more run to confirm the leg completes under audit, then comes
+          # out.
           (
             while sleep 60; do
               printf '[resources] %s disk_free=%s mem_avail=%s\n' \
