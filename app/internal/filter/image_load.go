@@ -34,6 +34,17 @@ var errImageLoadDecompressedTooLarge = errors.New("decompressed image archive ex
 // reject before falling back to Docker archive import.
 var errImageLoadOCIUninspectable = errors.New("OCI image archive cannot be fully inspected")
 
+// errImageLoadOCIPreNameFailure marks the OCI-archive failures the daemon
+// reaches before it can choose any image name from index.json: a missing or
+// undecodable index, and an index that does not hold exactly one manifest.
+// Podman's libimage tries oci-archive before docker-archive and moves on to
+// the next transport when one fails (podman v5.8.1
+// pkg/domain/infra/abi/images.go -> libimage load.go), and containers/image
+// returns ErrMoreThanOneImage from oci/layout before it reads a descriptor's
+// annotations, so no OCI name can reach the image store in these cases and
+// the Docker half is the only reference set the load can produce.
+var errImageLoadOCIPreNameFailure = errors.New("OCI image archive cannot name an image")
+
 // ImageLoadOptions configures request-body inspection for POST /images/load
 // and its libpod counterpart POST /libpod/images/load.
 type ImageLoadOptions struct {
@@ -437,7 +448,20 @@ func parseImageLoadArchiveControlFiles(controls imageLoadArchiveControlFiles, pr
 		if errors.Is(ociErr, errImageLoadOCIUninspectable) {
 			return imageLoadArchiveInspection{}, ociErr
 		}
-		return imageLoadArchiveInspection{}, fmt.Errorf("mixed image archive OCI archive invalid: %w", ociErr)
+		if !errors.Is(ociErr, errImageLoadOCIPreNameFailure) {
+			return imageLoadArchiveInspection{}, fmt.Errorf("mixed image archive OCI archive invalid: %w", ociErr)
+		}
+		// The OCI half failed where the daemon fails it too, before any OCI
+		// name exists, so the archive loads through its Docker half alone.
+		// `docker save a:1 b:2` on Docker 25+'s containerd store writes exactly
+		// this shape: a two-manifest index.json beside the compatibility
+		// manifest.json. Denying it would refuse an ordinary multi-image save
+		// that every supported daemon imports from manifest.json.
+		dockerFallback, dockerErr := parseDockerImageLoadManifest(controls.dockerManifest)
+		if dockerErr != nil {
+			return imageLoadArchiveInspection{}, fmt.Errorf("mixed image archive Docker archive invalid: %w", dockerErr)
+		}
+		return dockerFallback, nil
 	}
 	dockerArchive, dockerErr := parseDockerImageLoadManifest(controls.dockerManifest)
 	if dockerErr != nil {
@@ -475,22 +499,22 @@ func parseDockerImageLoadManifest(body []byte) (imageLoadArchiveInspection, erro
 
 func parseOCIImageLoadManifest(controls imageLoadArchiveControlFiles) (imageLoadArchiveInspection, error) {
 	if !controls.seenOCIIndex {
-		return imageLoadArchiveInspection{}, errors.New("malformed OCI image archive requires index.json")
+		return imageLoadArchiveInspection{}, fmt.Errorf("%w: malformed OCI image archive requires index.json", errImageLoadOCIPreNameFailure)
 	}
 
 	var rawIndex map[string]json.RawMessage
 	if err := json.Unmarshal(controls.ociIndex, &rawIndex); err != nil {
-		return imageLoadArchiveInspection{}, fmt.Errorf("decode index.json: %w", err)
+		return imageLoadArchiveInspection{}, fmt.Errorf("%w: decode index.json: %w", errImageLoadOCIPreNameFailure, err)
 	}
 	if _, ok := rawIndex["manifests"]; !ok || string(rawIndex["manifests"]) == "null" {
-		return imageLoadArchiveInspection{}, errors.New("decode index.json: manifests must be an array")
+		return imageLoadArchiveInspection{}, fmt.Errorf("%w: decode index.json: manifests must be an array", errImageLoadOCIPreNameFailure)
 	}
 	var index imageLoadOCIIndex
 	if err := json.Unmarshal(controls.ociIndex, &index); err != nil {
-		return imageLoadArchiveInspection{}, fmt.Errorf("decode index.json: %w", err)
+		return imageLoadArchiveInspection{}, fmt.Errorf("%w: decode index.json: %w", errImageLoadOCIPreNameFailure, err)
 	}
 	if len(index.Manifests) != 1 {
-		return imageLoadArchiveInspection{}, fmt.Errorf("decode index.json: Podman requires exactly one image when no OCI reference is selected, got %d", len(index.Manifests))
+		return imageLoadArchiveInspection{}, fmt.Errorf("%w: decode index.json: Podman requires exactly one image when no OCI reference is selected, got %d", errImageLoadOCIPreNameFailure, len(index.Manifests))
 	}
 	referenced, err := validateImageLoadOCIManifestGraphReferences(index.Manifests[0], controls.ociBlobs)
 	if err != nil {

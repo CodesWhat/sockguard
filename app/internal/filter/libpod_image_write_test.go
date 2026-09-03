@@ -370,17 +370,20 @@ func TestLibpodImageLoadInspectsEveryMixedArchiveFormat(t *testing.T) {
 		}
 	})
 
-	t.Run("malformed OCI beside a valid Docker archive fails closed", func(t *testing.T) {
+	t.Run("an undecodable OCI index beside a Docker archive is judged on the Docker set", func(t *testing.T) {
 		payload := mustContainerArchiveTar(t,
 			containerArchiveTestEntry{name: "oci-layout", body: `{"imageLayoutVersion":"1.0.0"}`},
 			containerArchiveTestEntry{name: "index.json", body: `{`},
-			containerArchiveTestEntry{name: "manifest.json", body: `[{"RepoTags":["ghcr.io/acme/docker:v1"]}]`},
+			containerArchiveTestEntry{name: "manifest.json", body: `[{"RepoTags":["evil.example.com/acme/docker:v1"]}]`},
 		)
 		req := httptest.NewRequest(http.MethodPost, "/libpod/images/load", bytes.NewReader(payload))
 
 		reason, err := newImageLoadPolicy(libpodImageLoadAllowlist()).inspect(nil, req, NormalizePath(req.URL.Path))
-		if reason != "" || err == nil || !strings.Contains(err.Error(), "OCI archive invalid") {
-			t.Fatalf("inspect() = (%q, %v), want the uninspectable OCI candidate to fail closed", reason, err)
+		if err != nil {
+			t.Fatalf("inspect() error = %v", err)
+		}
+		if !strings.Contains(reason, "evil.example.com") {
+			t.Fatalf("reason = %q, want the Docker fallback Podman actually loads denied", reason)
 		}
 	})
 
@@ -408,6 +411,60 @@ func TestLibpodImageLoadInspectsEveryMixedArchiveFormat(t *testing.T) {
 			t.Fatalf("inspect() = (%q, %v), want the uninspectable OCI candidate to fail closed", reason, err)
 		}
 	})
+}
+
+// TestImageLoadInspectsMultiImageArchivesThroughTheDockerManifest covers the
+// archive `docker save a:1 b:2` produces on Docker 25+'s containerd image
+// store: index.json holds two manifests and manifest.json holds both images.
+// No daemon can name an image from that index — containers/image's oci/layout
+// returns ErrMoreThanOneImage before it reads a single annotation, and Podman
+// then falls through to its docker-archive transport — so the load is judged
+// on the Docker reference set alone instead of being refused for having an
+// OCI half that cannot be reconciled.
+func TestImageLoadInspectsMultiImageArchivesThroughTheDockerManifest(t *testing.T) {
+	for _, endpoint := range []string{"/images/load", "/libpod/images/load"} {
+		t.Run("allows the Docker reference set on "+endpoint, func(t *testing.T) {
+			payload := mustContainerdStoreImageLoadTar(t,
+				[]string{"evil.example.com/acme/a:1", "evil.example.com/acme/b:2"},
+				[]string{"ghcr.io/acme/a:1", "ghcr.io/acme/b:2"},
+			)
+			req := httptest.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
+
+			reason, err := newImageLoadPolicy(libpodImageLoadAllowlist()).inspect(nil, req, NormalizePath(req.URL.Path))
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != "" {
+				t.Fatalf("reason = %q, want the multi-image archive judged on manifest.json alone", reason)
+			}
+			forwarded, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Fatalf("read forwarded body: %v", err)
+			}
+			if !bytes.Equal(forwarded, payload) {
+				t.Fatal("forwarded multi-image archive body changed")
+			}
+			if err := req.Body.Close(); err != nil {
+				t.Fatalf("close forwarded body: %v", err)
+			}
+		})
+
+		t.Run("denies an off-allowlist Docker reference set on "+endpoint, func(t *testing.T) {
+			payload := mustContainerdStoreImageLoadTar(t,
+				[]string{"ghcr.io/acme/a:1", "ghcr.io/acme/b:2"},
+				[]string{"ghcr.io/acme/a:1", "evil.example.com/acme/b:2"},
+			)
+			req := httptest.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
+
+			reason, err := newImageLoadPolicy(libpodImageLoadAllowlist()).inspect(nil, req, NormalizePath(req.URL.Path))
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if !strings.Contains(reason, "evil.example.com") {
+				t.Fatalf("reason = %q, want the second Docker manifest entry denied", reason)
+			}
+		})
+	}
 }
 
 func TestLibpodImageLoadEnforcesDockerFallbackAfterLateOCIFailure(t *testing.T) {
@@ -1218,6 +1275,53 @@ func mustOCIImageLoadTarWithDockerManifest(t *testing.T, references []string, do
 		entries = append(entries, containerArchiveTestEntry{name: "manifest.json", body: dockerManifest})
 	}
 	return mustContainerArchiveTar(t, entries...)
+}
+
+// mustContainerdStoreImageLoadTar builds the archive `docker save a:1 b:2`
+// writes on Docker 25+ with the containerd image store: an OCI index naming
+// every saved image beside the compatibility manifest.json Docker keeps
+// writing. Its index holds more than one manifest, which is the shape
+// mustOCIImageLoadTarWithDockerManifest's single-descriptor helpers cannot
+// express against a matching multi-entry Docker manifest.
+func mustContainerdStoreImageLoadTar(t *testing.T, ociNames, repoTags []string) []byte {
+	t.Helper()
+
+	config := []byte(`{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]},"config":{}}`)
+	configDigest := sha256.Sum256(config)
+	manifest := []byte(fmt.Sprintf(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:%x","size":%d},"layers":[]}`, configDigest, len(config)))
+	manifestDigest := sha256.Sum256(manifest)
+
+	descriptors := make([]map[string]any, 0, len(ociNames))
+	for _, name := range ociNames {
+		descriptors = append(descriptors, map[string]any{
+			"mediaType":   "application/vnd.oci.image.manifest.v1+json",
+			"digest":      fmt.Sprintf("sha256:%x", manifestDigest),
+			"size":        len(manifest),
+			"annotations": map[string]string{containerdImageNameAnnotation: name},
+		})
+	}
+	index, err := json.Marshal(map[string]any{"schemaVersion": 2, "manifests": descriptors})
+	if err != nil {
+		t.Fatalf("marshal OCI index: %v", err)
+	}
+
+	entries := make([]map[string]any, 0, len(repoTags))
+	for _, tag := range repoTags {
+		entries = append(entries, map[string]any{"Config": "docker-config.json", "RepoTags": []string{tag}, "Layers": []string{}})
+	}
+	dockerManifest, err := json.Marshal(entries)
+	if err != nil {
+		t.Fatalf("marshal Docker manifest: %v", err)
+	}
+
+	return mustContainerArchiveTar(t,
+		containerArchiveTestEntry{name: "oci-layout", body: `{"imageLayoutVersion":"1.0.0"}`},
+		containerArchiveTestEntry{name: "index.json", body: string(index)},
+		containerArchiveTestEntry{name: fmt.Sprintf("blobs/sha256/%x", configDigest), body: string(config)},
+		containerArchiveTestEntry{name: fmt.Sprintf("blobs/sha256/%x", manifestDigest), body: string(manifest)},
+		containerArchiveTestEntry{name: "docker-config.json", body: string(config)},
+		containerArchiveTestEntry{name: "manifest.json", body: string(dockerManifest)},
+	)
 }
 
 func mustOCIImageLoadTarWithDescriptorAnnotations(t *testing.T, annotations map[string]string) []byte {
