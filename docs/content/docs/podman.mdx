@@ -255,9 +255,12 @@ same way they cover Docker-compat:
   `force=true` and `lookupManifest=true` are refused because they can act on
   containers, parent images, or a manifest object outside the named-image
   preflight. Different case spellings and repetitions are evaluated
-  conservatively using Podman's scalar decoder semantics. A foreign, unlabeled,
-  hidden, missing, lookup-failed, or effect-expanding member prevents the daemon
-  from seeing any part of the batch. Visibility-only export also treats a
+  conservatively using Podman's scalar decoder semantics. In `enforce` mode a
+  foreign, unlabeled, hidden, missing, or effect-expanding member prevents the
+  daemon from seeing any part of the batch; each of those is a verdict, so a
+  `warn` or `audit` profile records the would-be denial and forwards the batch
+  instead. A lookup failure is not a verdict and is refused in every mode, as
+  is a malformed or oversized selector. Visibility-only export also treats a
   missing member as hidden instead of passing it through to Podman.
 - Docker-compatible image export is refused when ownership or visibility is
   active and a name is supplied, under both `GET /images/get?names=…` and
@@ -270,14 +273,23 @@ same way they cover Docker-compat:
   image. Podman's compatibility decoder also accepts case-folded spellings such
   as `Names`, so Sockguard folds that key; this is only more conservative on
   dockerd, which requires exact lowercase `names`. An omitted `names` list is
-  still forwarded to the daemon's own no-reference error.
+  still forwarded, and the two daemons disagree about what it means: Podman
+  answers `400 no images to download`, while Moby's `getImagesGet` has no
+  empty-list check at all and answers `200` with an empty `application/x-tar`
+  archive. Sockguard does not substitute an error for either. The refusal
+  itself follows the profile's rollout mode on both layers: `403` under
+  `enforce`, a `would_deny` record and a forwarded request under `warn` and
+  `audit`.
 - Per-image deletion is refused under ownership on both API families.
   Docker-compatible `DELETE /images/{name}` can prune uninspected parents and,
   on Moby's containerd store, remove an entire index or caller-selected
   platforms. Native `DELETE /libpod/images/{name}` has no `noprune` control,
   always permits recursive dangling-parent cleanup, and can use `force` or
   `lookupManifest` to expand or retarget the action. Native batch removal with
-  explicit safe controls is the supported owner-scoped form.
+  explicit safe controls is the supported owner-scoped form, and it is a Podman
+  answer only: dockerd serves no `/libpod/images/remove`, so on a Docker
+  upstream owner isolation leaves owner-filtered `POST /images/prune` as the
+  only image removal it admits and no way to delete a named image.
 - Response redaction covers every libpod read whose Docker-compat counterpart
   is redacted, so the same switch is not a way around redaction either. That
   is a separate layer from the two above, and it needed its own libpod field

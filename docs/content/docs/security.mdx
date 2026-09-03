@@ -237,10 +237,14 @@ value on `DELETE /libpod/images/remove` before the daemon sees the action.
 Every member must carry the caller's owner label; `allow_unowned_images` does
 not admit an unlabeled batch member. A visibility-only policy uses the same
 bounded selector decoder for native export and requires every member to satisfy
-the active label and name/image-pattern axes. A foreign, unlabeled, missing,
-hidden, or lookup-failed member stops the whole request, and the original query
+the active label and name/image-pattern axes. A foreign, unlabeled, missing, or
+hidden member stops the whole request in `enforce` mode, and the original query
 is forwarded byte-for-byte only after all checks pass. Visibility-only export
 treats a missing member as hidden rather than relying on Podman's later lookup.
+Those are verdicts, so a `warn` or `audit` profile records the would-be denial
+and forwards instead. A lookup failure is not a verdict and is not staged: it
+stays a `502` in every rollout mode, alongside a malformed or oversized
+selector's `400`.
 Values are percent-decoded once and repeated keys form the list. Commas remain
 part of one value because Podman's string-slice decoder does not split them.
 Podman's `References` and `Images` key spellings are matched with Unicode case
@@ -272,13 +276,17 @@ store's narrower behavior. Podman's Docker-compatible decoder accepts
 case-folded spellings such as `Names`, so Sockguard folds the key too. Dockerd
 requires exact lowercase `names`; applying the fold there is conservative and
 cannot admit an export dockerd would otherwise reject. An omitted `names` list
-is still forwarded to the daemon's own no-reference error.
+is still forwarded, and the two daemons answer it differently: Podman's
+compatibility handler returns `400 no images to download`, while Moby's
+`getImagesGet` has no empty-list check at all and answers `200` with an empty
+`application/x-tar` archive. Sockguard does not substitute an error for either.
 
 The same refusal covers `GET /images/{name}/get`. Moby registers the batch and
 per-image spellings on the same handler, so moving the selector into the path
 does not narrow the exported platforms. Both Docker-compatible spellings are
 also refused when a visibility policy is active, before an image lookup or
-upstream request.
+upstream request. Both layers refuse them the same way: `403` in `enforce`,
+and a `would_deny` record with the request forwarded under `warn` and `audit`.
 
 Per-image removal is not a safe substitute for the bounded native batch.
 Docker-compatible `DELETE /images/{name}` can prune uninspected ancestor images
@@ -290,13 +298,18 @@ permits recursive dangling-parent cleanup, while `force` can remove containers
 and `lookupManifest` retargets the operation to a manifest object. Ownership
 therefore refuses both per-image removal routes before lookup. Use native batch
 removal with explicit `noprune=true`, `force=false`, and
-`lookupManifest=false` when owner-scoped image removal is required.
+`lookupManifest=false` when owner-scoped image removal is required. That form
+exists only on Podman. `DELETE /libpod/images/remove` is not a route dockerd
+serves, so on a Docker upstream owner isolation leaves owner-filtered
+`POST /images/prune` as the only image removal it admits, and no way to delete
+a named image at all.
 
 These native checks are preflights, not a daemon transaction. An image tag can
 still be rebound between inspect and action, and a later daemon-side failure
 can still leave a multi-image removal partially applied. The ownership gate
 guarantees that no initially unauthorized native batch is forwarded; it cannot
 make the upstream API atomic.
+
 ### Layer 7: Visibility-Controlled Reads
 Sockguard's response filter applies to known protected Docker JSON response shapes on successful body-bearing 2xx responses across request methods, not only `GET 200`. If a protected successful response cannot be parsed or sanitized safely, Sockguard fails closed with a generic `502` instead of forwarding unsanitized data. Non-success responses, `HEAD` responses, no-body statuses, non-protected paths, and streaming endpoints (logs, attach, events) pass through unmodified — those are protected by request-side rules and the read-side exfiltration guardrail, not by response rewriting.
 
