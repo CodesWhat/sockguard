@@ -527,6 +527,58 @@ func TestAuditLogCloserNilLoggerOutputError(t *testing.T) {
 	}
 }
 
+// TestAuditLogCloserActuallyClosesWrappedLogger asserts the observable side
+// effect of audit.go:80's "if c.logger != nil" guard: when a real logger is
+// present, Close() must drain and close it. AuditLogger.Close() always
+// returns nil, so the guard is invisible in auditLogCloser's return value
+// (see the sibling tests above) and only detectable by checking that the
+// wrapped logger's done channel actually closed.
+func TestAuditLogCloserActuallyClosesWrappedLogger(t *testing.T) {
+	var buf bytes.Buffer
+	realLogger := NewAuditLogger(&buf)
+	c := auditLogCloser{logger: realLogger}
+
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close() = %v, want nil", err)
+	}
+	select {
+	case <-realLogger.done:
+	default:
+		t.Fatal("auditLogCloser.Close() did not close the wrapped AuditLogger")
+	}
+}
+
+// TestAuditLoggerRecordDropRateLimitsByLastWarnTimestamp covers
+// recordDrop's rate-limit condition at audit.go:313. It uses lastWarn
+// offsets of an hour, far larger than auditDropWarningInterval (a minute),
+// so the outcome is deterministic regardless of how much real wall-clock
+// time elapses between the Store and the recordDrop call -- only the exact
+// boundary (now-last == interval) needs real-time precision, and that case
+// is not covered here (untestable deterministically).
+func TestAuditLoggerRecordDropRateLimitsByLastWarnTimestamp(t *testing.T) {
+	var buf bytes.Buffer
+	logger := NewAuditLogger(&buf)
+	t.Cleanup(func() { logger.Close() })
+
+	// lastWarn in the future: now-last is deeply negative, well under the
+	// interval, so recordDrop must suppress and leave lastWarn untouched.
+	future := time.Now().Add(time.Hour).UnixNano()
+	logger.lastWarn.Store(future)
+	logger.recordDrop()
+	if got := logger.lastWarn.Load(); got != future {
+		t.Fatalf("lastWarn = %d, want unchanged %d: recordDrop should have suppressed the warning", got, future)
+	}
+
+	// lastWarn in the deep past: now-last is deeply positive and over the
+	// interval, so recordDrop must CAS lastWarn forward.
+	past := time.Now().Add(-time.Hour).UnixNano()
+	logger.lastWarn.Store(past)
+	logger.recordDrop()
+	if got := logger.lastWarn.Load(); got == past {
+		t.Fatalf("lastWarn = %d, want updated after the interval elapsed", got)
+	}
+}
+
 func TestAuditLogMiddlewareDoesNotBlockOnSlowSink(t *testing.T) {
 	writer := newBlockingAuditWriter()
 	t.Cleanup(writer.releaseWrites)

@@ -68,7 +68,7 @@ layers|Rollout Modes|Sockguard's per-profile rollout modes (enforce / warn / aud
   ),
   migrationTitle: "Coming from CetusGuard?",
   migrationDescription:
-    "Your regex path rules translate directly to Sockguard YAML rule blocks, and your mTLS certificates work unchanged. Sockguard exposes the same TCP listener — swap the image and enable body inspection and per-client profiles at your own pace.",
+    "Your regex path rules translate directly to Sockguard YAML rule blocks, and your mTLS keypairs carry over. Sockguard's listener requires TLS 1.3 where CetusGuard accepted TLS 1.2, so upgrade any client that can't negotiate 1.3 before cutover. Then swap the image and enable body inspection and per-client profiles at your own pace.",
   jsonLdName: "CetusGuard vs Sockguard — Docker Socket Proxy Comparison",
   jsonLdDescription: "Compare CetusGuard and Sockguard for Docker socket filtering.",
 } satisfies ComparisonRouteRawConfig;
