@@ -129,31 +129,6 @@ jobs:
         # report tee's exit code and mask a failing mutation run.
         shell: bash
         run: |
-          # The filter leg has died three times at ~18 minutes with "runner
-          # has received a shutdown signal" and no other output, which is
-          # what a runner looks like when it runs out of disk or memory.
-          # Sample both once a minute alongside the run so the last lines
-          # before a death say which one it was. The sampler stays for one
-          # more run to confirm the leg completes under audit, then comes
-          # out.
-          (
-            while sleep 60; do
-              printf '[resources] %s disk_free=%s mem_avail=%s\n' \
-                "$(date -u +%H:%M:%S)" \
-                "$(df -Pk / | awk 'NR==2 {printf "%dM", $4/1024}')" \
-                "$(free -m | awk '/^Mem:/ {print $7 "M"}')"
-            done
-          ) &
-          monitor=$!
-          # INT/TERM as well as EXIT: with -e a failing gremlins run would
-          # skip a bare EXIT-only trap on some shells, and a cancelled run
-          # delivers SIGTERM straight to the step without ever reaching
-          # EXIT, either way leaving the orphaned loop to hold the step's
-          # stdout open until the job timeout. Killing the monitor subshell
-          # alone is not enough: it is blocked inside `sleep 60`, which is
-          # its own process and does not die with its parent, so the sleep
-          # child is killed explicitly too.
-          trap 'pkill -P "${monitor}" 2>/dev/null || true; kill "${monitor}" 2>/dev/null || true; wait "${monitor}" 2>/dev/null || true' INT TERM EXIT
           gremlins unleash --tags="" "${PACKAGE}" 2>&1 | tee mutation-report.txt
         env:
           GOFLAGS: ""
