@@ -50,7 +50,7 @@ func (p containerArchivePolicy) inspect(_ *slog.Logger, r *http.Request, normali
 	}
 
 	query := r.URL.Query()
-	targetValue, targetFound, targetAmbiguous := foldedScalarQueryValue(query, "path")
+	targetValue, targetFound, targetAmbiguous := FoldedScalarQueryValue(query, "path")
 	switch {
 	case targetAmbiguous:
 		return "container archive denied: ambiguous path query", nil
@@ -58,7 +58,7 @@ func (p containerArchivePolicy) inspect(_ *slog.Logger, r *http.Request, normali
 		return "container archive denied: target path is required", nil
 	}
 
-	renameValue, _, renameAmbiguous := foldedScalarQueryValue(query, "rename")
+	renameValue, _, renameAmbiguous := FoldedScalarQueryValue(query, "rename")
 	if renameAmbiguous || renameValue != "" {
 		// Podman passes rename through to Buildah, which rewrites tar header
 		// names after this inspector would otherwise validate them. A rename
@@ -117,13 +117,18 @@ func (p containerArchivePolicy) inspect(_ *slog.Logger, r *http.Request, normali
 	return "", nil
 }
 
-// foldedScalarQueryValue recognizes the query behavior Podman's archive
-// handler gets from gorilla/schema: field aliases are case-insensitive. It
-// rejects repeated values because the supported daemons disagree about which
-// scalar wins (Moby reads the first while Podman reads the last), and rejects
-// two case-variant spellings because gorilla/schema's winner then depends on
-// url.Values map iteration order.
-func foldedScalarQueryValue(query url.Values, field string) (value string, found, ambiguous bool) {
+// FoldedScalarQueryValue recognizes the query behavior Podman's handlers get
+// from gorilla/schema: field aliases are case-insensitive. It rejects repeated
+// values because the supported daemons disagree about which scalar wins (Moby
+// reads the first while Podman reads the last), and rejects two case-variant
+// spellings because gorilla/schema's winner then depends on url.Values map
+// iteration order.
+//
+// It is exported because the same ambiguity governs any single-valued query
+// parameter a policy layer has to agree with the daemon about — the archive
+// policy below reads `path` and `rename` with it, and internal/ownership reads
+// the `container` parameter of POST /commit with it.
+func FoldedScalarQueryValue(query url.Values, field string) (value string, found, ambiguous bool) {
 	var spelling string
 	for key, values := range query {
 		if !strings.EqualFold(key, field) {
