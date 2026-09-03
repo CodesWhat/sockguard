@@ -223,9 +223,19 @@ func middlewareWithDeps(
 				return
 			}
 
+			// The SCP route view is filter.NormalizePodmanRoutePath, not
+			// filter.NormalizePath. Podman's router matches on the escaped
+			// path INCLUDING a trailing slash, and that slash decides the
+			// route: /libpod/images/scp/victim/push/ misses the anchored
+			// per-image /push handler registered earlier and falls through to
+			// the /libpod/images/scp/{name:.*} catch-all, so the daemon SCPs
+			// the local image "victim/push/". NormalizePath's path.Clean drops
+			// the slash, which read the same request as a push of an image
+			// named "scp/victim", a name no daemon has, so the inspect came
+			// back not-found and ownership passed the transfer through.
 			routePath := normPath
 			if r.Method == http.MethodPost && strings.HasPrefix(normPath, libpodPrefix+"images/scp/") {
-				routePath = filter.NormalizePath(r.URL.EscapedPath())
+				routePath = filter.NormalizePodmanRoutePath(r.URL.EscapedPath())
 			}
 			verdict, reason, err := allowOwnershipRequestWithRoutePath(r.Context(), r.Method, normPath, routePath, opts, inspectResource, inspectExec, refs)
 			if err != nil {

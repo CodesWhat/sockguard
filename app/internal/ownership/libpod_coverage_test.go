@@ -641,6 +641,7 @@ var wantOwnerUnscopeableReasonCodes = map[string]string{
 	filter.LibpodPodStatsPath:       "owner_libpod_pod_stats_unscopeable",
 	filter.LibpodManifestExistsPath: "owner_libpod_manifest_exists_unscopeable",
 	filter.LibpodManifestJSONPath:   "owner_libpod_manifest_json_unscopeable",
+	filter.LibpodSecretListPath:     "owner_libpod_secret_list_unscopeable",
 }
 
 // TestLibpodUnscopeableReadsAreRefusedUnderOwnerIsolation covers every libpod
@@ -802,7 +803,10 @@ func TestLibpodUnscopeableReadsAreInertWithoutOwner(t *testing.T) {
 // refusal branch remains necessary to keep their host-wide data unavailable.
 // The manifest reads likewise have no ownership identifier: manifest-list
 // responses carry no owner labels, and the image identifier only covers the
-// distinct /libpod/images route family.
+// distinct /libpod/images route family. /libpod/secrets/json is the third
+// shape: libpodSecretIdentifier already reserves "json" as a GET/HEAD
+// collection word, so it was never classified either, and what forwarded it
+// was libpodNeedsOwnerFilter, which is exactly what the refusal replaces.
 func TestLibpodUnscopeableReadsWereNotCoveredByTheExistingIdentifiers(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -816,6 +820,7 @@ func TestLibpodUnscopeableReadsWereNotCoveredByTheExistingIdentifiers(t *testing
 		{path: filter.LibpodPodStatsPath, classify: libpodPodIdentifier, wantIdentifier: "", wantOK: false},
 		{path: filter.LibpodManifestExistsPath, classify: libpodImageIdentifier, wantIdentifier: "", wantOK: false},
 		{path: filter.LibpodManifestJSONPath, classify: libpodImageIdentifier, wantIdentifier: "", wantOK: false},
+		{path: filter.LibpodSecretListPath, classify: libpodSecretIdentifier, wantIdentifier: "", wantOK: false},
 	}
 	if len(tests) != len(filter.LibpodUnscopeableReads()) {
 		t.Fatalf("%d cases for %d unscopeable reads; a new one needs its own answer here", len(tests), len(filter.LibpodUnscopeableReads()))
@@ -1071,5 +1076,157 @@ func TestLibpodPodPruneIsNotSilentlyOwnerFiltered(t *testing.T) {
 	t.Parallel()
 	if libpodNeedsOwnerFilter(http.MethodPost, filter.LibpodPodPrunePath) {
 		t.Fatalf("libpodNeedsOwnerFilter(POST, %q) = true; the endpoint reads no filters parameter, so injecting one would forward an unscoped host-wide delete looking scoped", filter.LibpodPodPrunePath)
+	}
+}
+
+// --- libpod secret list ----------------------------------------------------
+
+// TestLibpodSecretListIsRefusedRatherThanOwnerFiltered is the ownership half of
+// internal/visibility's test of the same name. addOwnerLabelFilter used to
+// inject a `label` key here; Podman's utils.IfPassesSecretsFilter accepts only
+// "name" and "id" and compat.ListSecrets turns its error into a 500, so the
+// injection broke the endpoint rather than scoping it, and dropping the
+// injection alone would have forwarded every secret ID and name on the host.
+func TestLibpodSecretListIsRefusedRatherThanOwnerFiltered(t *testing.T) {
+	t.Parallel()
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		if libpodNeedsOwnerFilter(method, filter.LibpodSecretListPath) {
+			t.Fatalf("libpodNeedsOwnerFilter(%s, %q) = true; Podman answers 500 for a label key on this endpoint", method, filter.LibpodSecretListPath)
+		}
+		for _, path := range []string{filter.LibpodSecretListPath, "/v5.8.1" + filter.LibpodSecretListPath} {
+			t.Run(method+" "+path, func(t *testing.T) {
+				t.Parallel()
+				handler := middlewareWithDeps(
+					testLogger(),
+					Options{Owner: "job-123", LabelKey: "com.sockguard.owner"},
+					fakeInspector{}.inspectResource,
+					fakeInspector{}.inspectExec,
+				)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+					t.Fatal("refused secret list reached the upstream")
+				}))
+
+				meta := &logging.RequestMeta{RolloutMode: "warn"}
+				req := httptest.NewRequest(method, path, nil)
+				req = req.WithContext(logging.WithMeta(req.Context(), meta))
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+
+				if rec.Code != http.StatusForbidden {
+					t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+				}
+				if meta.ReasonCode != "owner_libpod_secret_list_unscopeable" {
+					t.Fatalf("meta.ReasonCode = %q, want %q", meta.ReasonCode, "owner_libpod_secret_list_unscopeable")
+				}
+			})
+		}
+	}
+}
+
+// --- the image-SCP route view ----------------------------------------------
+
+// TestLibpodImageScpRouteViewKeepsTheTrailingSlash pins the one thing that
+// makes POST /libpod/images/scp/{name:.*} classifiable at all: the route view
+// has to be the view gorilla/mux matches on, and a trailing slash is part of
+// it.
+//
+// Podman registers the per-image action routes (/push, /tag, /untag) before
+// /libpod/images/scp/{name:.*}, so /libpod/images/scp/victim/push is a push of
+// an image named "scp/victim". Add one slash and the anchored ".../push"
+// pattern no longer matches, so the daemon falls through to the SCP catch-all
+// and copies the local image named "victim/push/" to another host. The
+// middleware recomputed its route view with filter.NormalizePath, whose
+// path.Clean strips that slash, so it read the request the way the daemon
+// would NOT: as a push whose image nothing owns, which inspects to not-found
+// and passes ownership through.
+//
+// The two legs differ in what the filter middleware stamped on the request
+// meta, because the two views disagree by exactly this slash and ownership
+// prefers the stamped one. Both have to reach the same verdict.
+func TestLibpodImageScpRouteViewKeepsTheTrailingSlash(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		// stampedNormPath is what filter.resolveNormalizedPath puts on the
+		// request meta. Empty means no filter middleware ran, so ownership
+		// normalizes the path itself.
+		stampedNormPath string
+	}{
+		{name: "no filter middleware ran"},
+		{name: "filter stamped the route view", stampedNormPath: "/libpod/images/scp/victim/push/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var gotIdentifiers []string
+			upstreamCalls := 0
+			handler := middlewareWithDeps(
+				testLogger(),
+				Options{Owner: "job-123", LabelKey: "com.sockguard.owner"},
+				func(_ context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
+					if kind != dockerresource.KindImage {
+						t.Fatalf("inspect kind = %s, want %s", kind, dockerresource.KindImage)
+					}
+					gotIdentifiers = append(gotIdentifiers, identifier)
+					// Only the image the daemon would actually route to
+					// exists. Every other classification inspects a name no
+					// daemon has, comes back not-found, and is forwarded: the
+					// bug this test exists for.
+					if identifier != "victim/push/" {
+						return nil, false, nil
+					}
+					return map[string]string{"com.sockguard.owner": "other-job"}, true, nil
+				},
+				fakeInspector{}.inspectExec,
+			)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				upstreamCalls++
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			meta := &logging.RequestMeta{NormPath: tt.stampedNormPath}
+			req := httptest.NewRequest(http.MethodPost, "/libpod/images/scp/victim/push/", nil)
+			req = req.WithContext(logging.WithMeta(req.Context(), meta))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if len(gotIdentifiers) != 1 || gotIdentifiers[0] != "victim/push/" {
+				t.Fatalf("image inspects = %#v, want exactly [\"victim/push/\"]; the request was not classified as an image SCP", gotIdentifiers)
+			}
+			if rec.Code != http.StatusForbidden || upstreamCalls != 0 {
+				t.Fatalf("status = %d upstream calls = %d, want %d and 0; body: %s", rec.Code, upstreamCalls, http.StatusForbidden, rec.Body.String())
+			}
+			if meta.Reason != "libpod owner policy denied access to image" {
+				t.Fatalf("meta.Reason = %q, want %q", meta.Reason, "libpod owner policy denied access to image")
+			}
+		})
+	}
+}
+
+// TestLibpodImageScpWithoutATrailingSlashStaysAPush is the control for the
+// test above: without the slash gorilla/mux does match the earlier /push
+// route, so the same fixture has to stay a push of the image named
+// "scp/victim" rather than becoming an SCP of "victim".
+func TestLibpodImageScpWithoutATrailingSlashStaysAPush(t *testing.T) {
+	t.Parallel()
+	var gotIdentifiers []string
+	handler := middlewareWithDeps(
+		testLogger(),
+		Options{Owner: "job-123", LabelKey: "com.sockguard.owner"},
+		func(_ context.Context, _ dockerresource.Kind, identifier string) (map[string]string, bool, error) {
+			gotIdentifiers = append(gotIdentifiers, identifier)
+			return map[string]string{"com.sockguard.owner": "job-123"}, true, nil
+		},
+		fakeInspector{}.inspectExec,
+	)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/libpod/images/scp/victim/push", nil))
+
+	if len(gotIdentifiers) != 1 || gotIdentifiers[0] != "scp/victim" {
+		t.Fatalf("image inspects = %#v, want exactly [\"scp/victim\"]", gotIdentifiers)
+	}
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
 	}
 }

@@ -24,14 +24,20 @@ const libpodPrefix = "/libpod/"
 // so the append-style injection addVisibilityLabelFilters performs would
 // widen the response rather than narrow it. It is handled by
 // libpod_events.go instead — see libpodEventsDenyReason.
+//
+// GET /libpod/secrets/json is absent for a harder reason: Podman's secret
+// filter grammar (utils.IfPassesSecretsFilter at v5.8.1) accepts only "name"
+// and "id" and errors on any other key, which compat.ListSecrets turns into a
+// 500, so injecting a `label` selector here broke the endpoint rather than
+// scoping it. It is refused as filter.LibpodSecretListPath instead; see
+// filter.LibpodSecretListDenyReason.
 func needsLibpodVisibilityLabelFilter(normPath string) bool {
 	switch normPath {
 	case libpodPrefix + "containers/json",
 		libpodPrefix + "images/json",
 		libpodPrefix + "pods/json",
 		libpodPrefix + "networks/json",
-		libpodPrefix + "volumes/json",
-		libpodPrefix + "secrets/json":
+		libpodPrefix + "volumes/json":
 		return true
 	default:
 		return false
@@ -151,6 +157,31 @@ func libpodNetworkInspectIdentifier(normPath string) (string, bool) {
 // container export.
 func libpodVolumeInspectIdentifier(normPath string) (string, bool) {
 	return suffixedIdentifierAny(normPath, libpodPrefix+"volumes/", "json", "exists", "export")
+}
+
+// libpodExecInspectIdentifier matches GET /libpod/exec/{id}/json, Podman's
+// native spelling of the Docker-compat GET /exec/{id}/json that
+// execInspectIdentifier covers. Podman registers both on ONE handler
+// (pkg/api/server/register_exec.go at v5.8.1 wires /exec/{id}/json at line 179
+// and /libpod/exec/{id}/json at line 350, both to compat.ExecInspectHandler),
+// so the two return the identical InspectExecSession: ContainerID,
+// ProcessConfig and Pid for the container the session belongs to. Forwarding
+// the native spelling for a container the policy hides discloses all three,
+// which is why requestVisibleWithPolicy routes this matcher into the same
+// deps.inspectExec branch rather than letting it fall through to the closing
+// "no matcher claimed this path" pass-through.
+//
+// Only the VersionedPath spelling of the libpod route is registered, so a
+// Podman binding issues /v5.8.1/libpod/exec/{id}/json; NormalizePath strips
+// the version prefix but not the /libpod segment, so that spelling normalizes
+// here. suffixedIdentifier is the faithful shape because Podman routes the
+// session with a gorilla/mux {id} variable, which never spans a "/".
+//
+// Ownership's counterpart is libpodExecIdentifier, which is broader on purpose
+// (every /libpod/exec/{id}/... action, not just the inspect) because a write
+// to another owner's session has to be denied as well as a read of it.
+func libpodExecInspectIdentifier(normPath string) (string, bool) {
+	return suffixedIdentifier(normPath, libpodPrefix+"exec/", "json")
 }
 
 // libpodSecretInspectIdentifier matches GET /libpod/secrets/{id}/json and its
