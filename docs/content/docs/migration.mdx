@@ -14,7 +14,7 @@ v1.5 keeps the v1.x YAML, CLI, environment-variable, admin API, and Prometheus m
 
 The other v1.5 policy additions are opt-in: `restrict_namespace_sharing`, `allowed_namespace_sharing_containers`, `deny_namespace_path_mode`, `require_cpu_limit_hard`, and exec `allowed_env_vars`/`denied_env_vars`/`allowed_env_values`. See [Configuration](/configuration) for their exact semantics and defaults. The bundled Drydock self-update preset now value-pins its loopback finalize callback at port 3000; if Drydock uses a different server port, update that exact preset value before deployment.
 
-Before switching the image tag, validate the current configuration with `sockguard validate --config /etc/sockguard/sockguard.yaml` or the admin listener's `POST /admin/validate`. Deployments using macvlan/static-IP recreation should pay particular attention to the granular endpoint-config gates — `endpoint_config.allow_static_addressing`, `allow_link_local_ips`, `allow_mac_pinning`, and `allow_gw_priority` — which cover recreation's actual needs individually; `allow_endpoint_config` remains the whole-object escape hatch for DriverOpts/Links recreation, which have no granular gate of their own. The bundled drydock presets document that compatibility case inline.
+Before switching the image tag, validate the current configuration with `sockguard validate --config /etc/sockguard/sockguard.yaml` or the admin listener's `POST /admin/validate`. Deployments using macvlan/static-IP recreation should pay particular attention to the granular endpoint-config gates — `endpoint_config.allow_static_addressing`, `allow_link_local_ips`, `allow_mac_pinning`, and `allow_gw_priority` — which cover recreation's actual needs individually; `request_body.network.allow_endpoint_config` remains the whole-object escape hatch for DriverOpts/Links recreation, which have no granular gate of their own. The bundled drydock presets document that compatibility case inline.
 
 ## From Sockguard v1.6 to v1.7
 
@@ -333,7 +333,7 @@ CetusGuard is the closest in spirit to Sockguard — a zero-dependency, default-
 
 | CetusGuard | Sockguard |
 |------------|-----------|
-| `-frontend-addr` / `CETUSGUARD_FRONTEND_ADDR` | `listen.address` (TCP) or `listen.socket` (unix) — repeat the flag for multiple frontends and it maps to Sockguard's `listeners:` array (see [Multiple Listeners](/configuration#multiple-listeners)), not the singular `listen:` block |
+| `-frontend-addr` / `CETUSGUARD_FRONTEND_ADDR` | `listen.address` (TCP) or `listen.socket` (unix) — repeat the flag for multiple frontends and it maps to Sockguard's `listeners:` array, where each entry also needs a unique `name` and a non-empty `allowed_profiles` (see [Multiple Listeners](/configuration#multiple-listeners)), not the singular `listen:` block |
 | `-backend-addr` / `CETUSGUARD_BACKEND_ADDR` | `upstream.socket` |
 | `-frontend-tls-cert` / `-frontend-tls-key` | `listen.tls.cert_file` / `listen.tls.key_file` |
 | `-frontend-tls-cacert` | `listen.tls.client_ca_file` (enables mTLS) |
