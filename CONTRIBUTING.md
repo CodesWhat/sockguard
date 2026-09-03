@@ -13,7 +13,7 @@ Questions or ideas? Start a [GitHub Discussion](https://github.com/CodesWhat/soc
    go version  # should be 1.26+
    ```
 
-3. **Install Node.js 24** (the version CI uses, required for website/docs):
+3. **Install Node.js 24** for the website and docs workspaces. It is the version CI uses and the one `.nvmrc` selects; the root `package.json` accepts Node 22 or newer, but only 24 is exercised in CI:
 
    ```bash
    nvm use || nvm install

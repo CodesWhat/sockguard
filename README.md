@@ -199,7 +199,7 @@ volumes:
   sockguard-socket:
 ```
 
-Sockguard defaults its unix socket to `0600` owner-only permissions. Mode `0660` grants the owner and the group selected by `listen.socket_gid` read/write access to the socket, so members of that group can send requests through the proxy. Any `socket_mode` value other than `0600` or `0660` is rejected at startup.
+Sockguard defaults its unix socket to `0600` owner-only permissions. Mode `0660` requires an explicitly configured `listen.socket_gid` and grants the owner and that group read/write access to the socket, so members of that group can send requests through the proxy. Any `socket_mode` value other than `0600` or `0660` is rejected at startup.
 
 The named-volume quick start creates that socket and its parent directory as UID/GID `65532`. A non-root consumer must therefore run as UID `65532` (as the Portwing examples do); a root consumer can also connect. If an application must keep another UID, run Sockguard with that same UID against a pre-owned bind-mounted directory, or use an authenticated TCP listener instead. Do not broaden the socket mode.
 
