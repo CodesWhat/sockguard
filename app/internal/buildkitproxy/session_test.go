@@ -577,16 +577,21 @@ func TestCanonicalBuildkitSessionIDBoundaries(t *testing.T) {
 		id   string
 		ok   bool
 	}{
+		{"one before a (backtick is 0x60) rejected", "`", false},
 		{"lowercase lower boundary a", "a", true},
 		{"lowercase upper boundary z", "z", true},
 		{"one past z ({ is 0x7B) rejected", "{", false},
+		{"one before A ('@' is 0x40) rejected", "@", false},
 		{"uppercase lower boundary A", "A", true},
 		{"uppercase upper boundary Z", "Z", true},
-		{"one before A ('@' is 0x40) rejected", "@", false},
 		{"one past Z ('[' is 0x5B) rejected", "[", false},
+		{"one before 0 ('/' is 0x2F) rejected", "/", false},
 		{"digit lower boundary 0", "0", true},
 		{"digit upper boundary 9", "9", true},
+		{"one past 9 (':' is 0x3A) rejected", ":", false},
+		{"one before hyphen (',' is 0x2C) rejected", ",", false},
 		{"hyphen", "a-b", true},
+		{"one before underscore ('^' is 0x5E) rejected", "^", false},
 		{"underscore", "a_b", true},
 		{"dot", "a.b", true},
 		{"space rejected", "a b", false},

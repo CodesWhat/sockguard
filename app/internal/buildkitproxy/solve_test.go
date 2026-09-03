@@ -951,29 +951,22 @@ func TestDeny(t *testing.T) {
 	}
 }
 
-// TestDefinitionIsExecFreeZeroDepthAllowsShallowOp pins definitionIsExecFree's
-// maxDepth < 0 guard at its own boundary: maxDepth == 0 must NOT be treated
-// as "too deep" — it still evaluates the ops at this level normally, only a
-// maxDepth that has gone NEGATIVE (one level past the caller's budget) bails
-// out early. A def with no ExecOp/BuildOp at depth 0 must therefore still
-// come back exec-free.
-func TestDefinitionIsExecFreeZeroDepthAllowsShallowOp(t *testing.T) {
-	def := &pb.Definition{
-		Def: [][]byte{mustMarshal(t, &pb.Op{Op: &pb.Op_Source{Source: &pb.SourceOp{Identifier: "docker-image://busybox"}}})},
-	}
-	if !definitionIsExecFree(def, 0) {
-		t.Fatal("definitionIsExecFree(def, 0) = false for a depth-0 def with no Exec/Build op, want true")
-	}
-}
-
-// TestDefinitionIsExecFreeDepthLimitDeniesDeepNesting pins the maxDepth-1
-// recursion arithmetic directly: nesting nested BuildOps deeper than maxDepth
-// allows — even when NONE of them carry an ExecOp — must come back
-// NOT exec-free ("an unevaluable signal must not pass", per this function's
-// own doc comment). A budget that increments instead of decrementing each
-// level would never hit the maxDepth < 0 cutoff and would instead correctly
-// walk all the way to the bottom, wrongly calling this exec-free.
-func TestDefinitionIsExecFreeDepthLimitDeniesDeepNesting(t *testing.T) {
+// TestDefinitionIsExecFreeDepthBoundaries tables definitionIsExecFree's
+// maxDepth handling at both ends:
+//
+//   - zero depth: pins the maxDepth < 0 guard at its own boundary. maxDepth
+//     == 0 must NOT be treated as "too deep" — it still evaluates the ops at
+//     this level normally, only a maxDepth that has gone NEGATIVE (one level
+//     past the caller's budget) bails out early. A def with no
+//     ExecOp/BuildOp at depth 0 must therefore still come back exec-free.
+//   - excessive nesting: pins the maxDepth-1 recursion arithmetic directly.
+//     Nesting BuildOps deeper than maxDepth allows — even when NONE of them
+//     carry an ExecOp — must come back NOT exec-free ("an unevaluable
+//     signal must not pass", per this function's own doc comment). A budget
+//     that increments instead of decrementing each level would never hit
+//     the maxDepth < 0 cutoff and would instead correctly walk all the way
+//     to the bottom, wrongly calling this exec-free.
+func TestDefinitionIsExecFreeDepthBoundaries(t *testing.T) {
 	// A leaf def with a single, definitely-not-Exec op.
 	leaf := &pb.Definition{
 		Def: [][]byte{mustMarshal(t, &pb.Op{Op: &pb.Op_Source{Source: &pb.SourceOp{Identifier: "docker-image://busybox"}}})},
@@ -987,7 +980,30 @@ func TestDefinitionIsExecFreeDepthLimitDeniesDeepNesting(t *testing.T) {
 		}
 	}
 
-	if definitionIsExecFree(nested, 2) {
-		t.Fatal("definitionIsExecFree() = true for nesting deeper than maxDepth, want false (unevaluable-depth must not pass)")
+	cases := []struct {
+		name     string
+		def      *pb.Definition
+		maxDepth int
+		want     bool
+	}{
+		{
+			name:     "zero depth allows a shallow op",
+			def:      leaf,
+			maxDepth: 0,
+			want:     true,
+		},
+		{
+			name:     "nesting deeper than maxDepth is rejected",
+			def:      nested,
+			maxDepth: 2,
+			want:     false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := definitionIsExecFree(tc.def, tc.maxDepth); got != tc.want {
+				t.Fatalf("definitionIsExecFree() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

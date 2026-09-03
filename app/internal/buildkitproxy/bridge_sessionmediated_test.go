@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"google.golang.org/protobuf/proto"
+
 	"github.com/codeswhat/sockguard/app/internal/buildkitproto/auth"
 	"github.com/codeswhat/sockguard/app/internal/buildkitproto/secrets"
 	"github.com/codeswhat/sockguard/app/internal/buildkitproto/sshforward"
@@ -190,28 +192,55 @@ func TestBridgeSessionMediatedAuth(t *testing.T) {
 		}
 	})
 
-	t.Run("GetTokenAuthority admitted", func(t *testing.T) {
+	t.Run("admitted auth RPCs log the normalized registry host", func(t *testing.T) {
 		// Also asserts registry_host is actually logged from req.GetHost():
 		// forwardAuthMediated's per-method switch only assigns host inside
 		// an `if req != nil` guard, one per RPC, so a case whose req/host
 		// assignment silently no-ops (host stays "") would still admit
 		// (the switch's outcome doesn't depend on host) but would audit an
 		// empty registry_host instead of the real one.
-		logs := &syncLogBuffer{}
-		logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-		tb := newTestBridgeWithLogger(t, EndpointSession, sessionAuthPolicy, DefaultLimits(), echoDaemonHandler(), logger)
-		req := &auth.GetTokenAuthorityRequest{Host: "registry-1.docker.io", Salt: []byte("s")}
-		resp, err := tb.driver.RoundTrip(newFramedGRPCRequest(t, "/moby.filesync.v1.Auth/GetTokenAuthority", req))
-		if err != nil {
-			t.Fatalf("RoundTrip: %v", err)
+		cases := []struct {
+			name string
+			path string
+			req  proto.Message
+		}{
+			{
+				name: "GetTokenAuthority",
+				path: "/moby.filesync.v1.Auth/GetTokenAuthority",
+				req:  &auth.GetTokenAuthorityRequest{Host: "registry-1.docker.io", Salt: []byte("s")},
+			},
+			{
+				name: "VerifyTokenAuthority",
+				path: "/moby.filesync.v1.Auth/VerifyTokenAuthority",
+				req:  &auth.VerifyTokenAuthorityRequest{Host: "registry-1.docker.io", Payload: []byte("p"), Salt: []byte("s")},
+			},
+			{
+				name: "FetchToken",
+				path: "/moby.filesync.v1.Auth/FetchToken",
+				req: &auth.FetchTokenRequest{
+					Host: "registry-1.docker.io", Realm: "https://auth.docker.io/token",
+					Scopes: []string{"repository:library/alpine:pull"},
+				},
+			},
 		}
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("status = %d, want 200", resp.StatusCode)
-		}
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-		if !strings.Contains(logs.String(), "registry_host=registry-1.docker.io") {
-			t.Fatalf("audit log missing registry_host attr:\n%s", logs.String())
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				logs := &syncLogBuffer{}
+				logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+				tb := newTestBridgeWithLogger(t, EndpointSession, sessionAuthPolicy, DefaultLimits(), echoDaemonHandler(), logger)
+				resp, err := tb.driver.RoundTrip(newFramedGRPCRequest(t, tc.path, tc.req))
+				if err != nil {
+					t.Fatalf("RoundTrip: %v", err)
+				}
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("status = %d, want 200", resp.StatusCode)
+				}
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+				if !strings.Contains(logs.String(), "registry_host=registry-1.docker.io") {
+					t.Fatalf("audit log missing registry_host attr:\n%s", logs.String())
+				}
+			})
 		}
 	})
 
@@ -246,50 +275,6 @@ func TestBridgeSessionMediatedAuth(t *testing.T) {
 		}
 	})
 
-	t.Run("VerifyTokenAuthority admitted", func(t *testing.T) {
-		// Also asserts registry_host is logged from req.GetHost() — see the
-		// GetTokenAuthority admitted case's comment above for why.
-		logs := &syncLogBuffer{}
-		logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-		tb := newTestBridgeWithLogger(t, EndpointSession, sessionAuthPolicy, DefaultLimits(), echoDaemonHandler(), logger)
-		req := &auth.VerifyTokenAuthorityRequest{Host: "registry-1.docker.io", Payload: []byte("p"), Salt: []byte("s")}
-		resp, err := tb.driver.RoundTrip(newFramedGRPCRequest(t, "/moby.filesync.v1.Auth/VerifyTokenAuthority", req))
-		if err != nil {
-			t.Fatalf("RoundTrip: %v", err)
-		}
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("status = %d, want 200", resp.StatusCode)
-		}
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-		if !strings.Contains(logs.String(), "registry_host=registry-1.docker.io") {
-			t.Fatalf("audit log missing registry_host attr:\n%s", logs.String())
-		}
-	})
-
-	t.Run("FetchToken admitted", func(t *testing.T) {
-		// Also asserts registry_host is logged from req.GetHost() — see the
-		// GetTokenAuthority admitted case's comment above for why.
-		logs := &syncLogBuffer{}
-		logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-		tb := newTestBridgeWithLogger(t, EndpointSession, sessionAuthPolicy, DefaultLimits(), echoDaemonHandler(), logger)
-		req := &auth.FetchTokenRequest{
-			Host: "registry-1.docker.io", Realm: "https://auth.docker.io/token",
-			Scopes: []string{"repository:library/alpine:pull"},
-		}
-		resp, err := tb.driver.RoundTrip(newFramedGRPCRequest(t, "/moby.filesync.v1.Auth/FetchToken", req))
-		if err != nil {
-			t.Fatalf("RoundTrip: %v", err)
-		}
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("status = %d, want 200", resp.StatusCode)
-		}
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-		if !strings.Contains(logs.String(), "registry_host=registry-1.docker.io") {
-			t.Fatalf("audit log missing registry_host attr:\n%s", logs.String())
-		}
-	})
 }
 
 // TestBridgeSessionMediatedSecrets covers forwardSecretsMediated end to end:
