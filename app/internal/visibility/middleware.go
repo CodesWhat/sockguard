@@ -58,6 +58,7 @@ const (
 	reasonCodeVisibilityPolicyHidResource   = "visibility_policy_hid_resource"
 	reasonCodeVisibilityResponseTooLarge    = "visibility_response_too_large"
 	reasonCodeVisibilityLibpodDataUsage     = "visibility_libpod_data_usage_unscopeable"
+	reasonCodeVisibilityLibpodShowMounted   = "visibility_libpod_showmounted_unscopeable"
 )
 
 // Options configures label-based visibility control on Docker read endpoints.
@@ -186,9 +187,19 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 			// no labels, so neither the selector axes nor the name/image
 			// pattern axes have a field to read. It is refused rather than
 			// filtered — see
-			// responsefilter.LibpodSystemDataUsageDenyReason.
-			if r.Method == http.MethodGet && normPath == responsefilter.LibpodSystemDataUsagePath {
+			// responsefilter.LibpodSystemDataUsageDenyReason. The refusal
+			// covers HEAD too: falling through to needsVisibilityLabelFilter
+			// or the inspect path below would forward it to the daemon
+			// instead of refusing it.
+			if (r.Method == http.MethodGet || r.Method == http.MethodHead) && normPath == responsefilter.LibpodSystemDataUsagePath {
 				denyLibpodSystemDataUsage(w, r)
+				return
+			}
+			// Podman's mounted-container inventory likewise carries no labels
+			// or names, only container IDs and daemon-host mount paths. Same
+			// HEAD coverage as the refusal above, for the same reason.
+			if (r.Method == http.MethodGet || r.Method == http.MethodHead) && normPath == responsefilter.LibpodShowMountedPath {
+				denyLibpodShowMounted(w, r)
 				return
 			}
 			if needsVisibilityLabelFilter(normPath) {
