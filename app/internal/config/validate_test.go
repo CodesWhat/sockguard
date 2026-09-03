@@ -51,6 +51,31 @@ func TestValidateRejectsBadReadinessConfig(t *testing.T) {
 			mutate: func(c *Config) { c.Health.Readiness.Path = c.Health.Path },
 			want:   "health.readiness.path must not equal health.path",
 		},
+		{
+			name: "non-positive timeout",
+			mutate: func(c *Config) {
+				// A valid duration string, but exactly zero — the boundary of
+				// "timeout <= 0", distinct from the unparseable-string case above.
+				c.Health.Readiness.Timeout = "0s"
+			},
+			want: "health.readiness.timeout must be a positive duration",
+		},
+		{
+			name: "path collides with metrics.path",
+			mutate: func(c *Config) {
+				c.Metrics.Enabled = true
+				c.Health.Readiness.Path = c.Metrics.Path
+			},
+			want: "health.readiness.path must not equal metrics.path",
+		},
+		{
+			name: "path collides with admin.path",
+			mutate: func(c *Config) {
+				c.Admin.Enabled = true
+				c.Health.Readiness.Path = c.Admin.Path
+			},
+			want: "health.readiness.path must not equal admin.path",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -144,6 +169,24 @@ func TestValidateRejectsLiteralPercentInRulePath(t *testing.T) {
 	err := Validate(&cfg)
 	if err == nil || !strings.Contains(err.Error(), "literal '%'") {
 		t.Fatalf("Validate() = %v, want literal-percent rejection", err)
+	}
+}
+
+// TestValidateLiteralPercentRuleErrorUsesOneBasedRuleNumber pins the rule
+// number reported alongside a literal '%' rejection to the 1-based position
+// of the offending rule (i+1), not i or i-1: a rule at slice index 1 (the
+// second rule) must be reported as "rule 2", matching the 1-based numbering
+// every other rule-index error in this function uses.
+func TestValidateLiteralPercentRuleErrorUsesOneBasedRuleNumber(t *testing.T) {
+	cfg := Defaults()
+	cfg.Rules = []RuleConfig{
+		{Match: MatchConfig{Method: "GET", Path: "/_ping"}, Action: "allow"},
+		{Match: MatchConfig{Method: "GET", Path: "/containers/%2F/json"}, Action: "allow"},
+	}
+
+	err := Validate(&cfg)
+	if err == nil || !strings.Contains(err.Error(), "rule 2: match.path") {
+		t.Fatalf("Validate() = %v, want error reporting the second rule as \"rule 2\"", err)
 	}
 }
 
@@ -1510,6 +1553,33 @@ func TestMutantKills(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "must contain at least one client certificate identity selector") {
 			t.Fatalf("expected selector-required error, got: %v", err)
+		}
+	})
+
+	// ── CONDITIONALS_BOUNDARY validate.go:1254:8 ───────────────────────────────
+	// `r < 0x20` — the C0 control-character upper bound. Space (0x20) is the
+	// first non-control byte, so it must NOT be flagged; 0x1f must be.
+	t.Run("containsControlOrNUL_boundary_at_0x20", func(t *testing.T) {
+		if containsControlOrNUL(" ") {
+			t.Fatal("containsControlOrNUL(space, 0x20) = true, want false: space is not a control character")
+		}
+		if !containsControlOrNUL("\x1f") {
+			t.Fatal("containsControlOrNUL(0x1f) = false, want true: 0x1f is the last C0 control character")
+		}
+	})
+
+	// ── ARITHMETIC_BASE validate.go:1781:141 ───────────────────────────────────
+	// i+1 in the allowed_env_values entry-number error message — a rejected
+	// second entry must be reported as "entry 2", not "entry 0" (i-1).
+	t.Run("exec_allowed_env_values_index_arithmetic", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.RequestBody.Exec.AllowedEnvValues = []string{
+			"CALLBACK_URL=http://127.0.0.1:3000/callback",
+			"NOT_A_VALID_ENTRY",
+		}
+		err := Validate(&cfg)
+		if err == nil || !strings.Contains(err.Error(), "allowed_env_values entry 2") {
+			t.Fatalf("Validate() = %v, want error reporting the second entry as \"entry 2\"", err)
 		}
 	})
 }

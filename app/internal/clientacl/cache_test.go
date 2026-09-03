@@ -639,3 +639,176 @@ func TestContainerOwnsAddrFailsClosedOnTransportError(t *testing.T) {
 		t.Fatal("containerOwnsAddr() = true with an unreachable daemon, want false")
 	}
 }
+
+// TestClientCacheTTLBoundaryTreatsExactAgeAsExpired pins the strict
+// freshness comparison in Lookup: now.Sub(entry.at) < ttl, not <=. An entry
+// whose age exactly equals the TTL must be treated as stale (re-resolve),
+// not served as a fresh hit.
+func TestClientCacheTTLBoundaryTreatsExactAgeAsExpired(t *testing.T) {
+	baseNow := time.Unix(1_700_000_000, 0)
+	var nowOffset atomic.Int64
+	var calls atomic.Int32
+	resolver := func(_ context.Context, _ netip.Addr) (resolvedClient, bool, error) {
+		calls.Add(1)
+		return resolvedClient{ID: "fresh"}, true, nil
+	}
+
+	const ttl = 10 * time.Second
+	cache := newClientCache(
+		ttl,
+		4,
+		func() time.Time { return baseNow.Add(time.Duration(nowOffset.Load())) },
+		resolver,
+	)
+	ip := mustAddr(t, "10.0.2.1")
+	seedCacheEntry(cache, ip, resolvedClient{ID: "stale"}, baseNow)
+
+	// Age is exactly the TTL — must be treated as expired, not as a fresh hit.
+	nowOffset.Store(int64(ttl))
+	client, found, err := cache.Lookup(context.Background(), ip)
+	if err != nil || !found {
+		t.Fatalf("Lookup() = (%+v, found=%v, err=%v)", client, found, err)
+	}
+	if client.ID != "fresh" {
+		t.Fatalf("Lookup() at age==ttl served %q, want a fresh re-resolve (boundary entry treated as still fresh)", client.ID)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("resolver calls at age==ttl = %d, want 1 (boundary must re-resolve)", got)
+	}
+}
+
+// TestClientCacheAppliesAugmentOnSuccessfulResolve pins the augment-gating
+// contract in resolveAndStoreLocked: augment only runs when the resolve
+// succeeded (err == nil). A resolver that returns err == nil and found ==
+// true with augment configured must have augment applied to the result.
+func TestClientCacheAppliesAugmentOnSuccessfulResolve(t *testing.T) {
+	resolver := func(_ context.Context, addr netip.Addr) (resolvedClient, bool, error) {
+		return resolvedClient{ID: "c-" + addr.String()}, true, nil
+	}
+
+	cache := newClientCache(10*time.Second, 4, time.Now, resolver)
+	var augmentCalls atomic.Int32
+	cache.augment = func(c resolvedClient) resolvedClient {
+		augmentCalls.Add(1)
+		c.Name = "augmented"
+		return c
+	}
+
+	ip := mustAddr(t, "10.0.1.1")
+	client, found, err := cache.Lookup(context.Background(), ip)
+	if err != nil || !found {
+		t.Fatalf("Lookup() = (%+v, found=%v, err=%v)", client, found, err)
+	}
+	if client.Name != "augmented" {
+		t.Fatalf("Lookup() Name = %q, want %q (augment hook was skipped on a successful resolve)", client.Name, "augmented")
+	}
+	if got := augmentCalls.Load(); got != 1 {
+		t.Fatalf("augment calls = %d, want 1", got)
+	}
+}
+
+// TestStoreLocked_DrainScansPastFirstFreshEntry pins the "scan the whole
+// list, not just what capacity needs" contract of the TTL-scrub pass in
+// storeLocked: multiple stale entries anywhere in the list get pruned in one
+// pass, not just however many the plain capacity-eviction loop happens to
+// need to make room for the new entry.
+func TestStoreLocked_DrainScansPastFirstFreshEntry(t *testing.T) {
+	baseNow := time.Unix(1_700_000_000, 0)
+	const ttl = 5 * time.Second
+
+	cache := newClientCache(
+		ttl,
+		3,
+		func() time.Time { return baseNow },
+		func(_ context.Context, _ netip.Addr) (resolvedClient, bool, error) {
+			return resolvedClient{}, false, errors.New("resolver should not be called")
+		},
+	)
+
+	a := mustAddr(t, "10.0.3.1")
+	b := mustAddr(t, "10.0.3.2")
+	c := mustAddr(t, "10.0.3.3")
+	d := mustAddr(t, "10.0.3.4")
+
+	// a and b are both well past ttl by the time d is inserted; c is
+	// inserted fresh, at the same moment as d.
+	seedCacheEntry(cache, a, resolvedClient{ID: "a"}, baseNow)
+	seedCacheEntry(cache, b, resolvedClient{ID: "b"}, baseNow)
+	seedCacheEntry(cache, c, resolvedClient{ID: "c"}, baseNow.Add(ttl+time.Millisecond))
+	seedCacheEntry(cache, d, resolvedClient{ID: "d"}, baseNow.Add(ttl+time.Millisecond))
+
+	cache.mu.Lock()
+	_, bStillPresent := cache.entries[b]
+	n := len(cache.entries)
+	cache.mu.Unlock()
+
+	if bStillPresent {
+		t.Fatal("expected the stale non-tail entry b to be scrubbed by the TTL drain, but it is still cached")
+	}
+	if n != 2 {
+		t.Fatalf("cache size after insert = %d, want 2 (c and d only; a and b scrubbed as stale)", n)
+	}
+}
+
+// TestStoreLocked_DrainRemovesEntryExactlyAtTTLBoundary pins the >= boundary
+// on the TTL-scrub comparison (at.Sub(entry.at) >= ttl, not >). Two entries
+// whose age is exactly equal to the TTL must both be scrubbed by the drain
+// pass, not left for the plain capacity-eviction loop (which only removes as
+// many entries as needed to get under cap, and would leave one of them
+// stranded in the cache).
+func TestStoreLocked_DrainRemovesEntryExactlyAtTTLBoundary(t *testing.T) {
+	baseNow := time.Unix(1_700_000_000, 0)
+	const ttl = 5 * time.Second
+
+	cache := newClientCache(
+		ttl,
+		3,
+		func() time.Time { return baseNow },
+		func(_ context.Context, _ netip.Addr) (resolvedClient, bool, error) {
+			return resolvedClient{}, false, errors.New("resolver should not be called")
+		},
+	)
+
+	a := mustAddr(t, "10.0.3.11")
+	b := mustAddr(t, "10.0.3.12")
+	c := mustAddr(t, "10.0.3.13")
+	d := mustAddr(t, "10.0.3.14")
+
+	// a and b are inserted at baseNow; c and d are both inserted exactly ttl
+	// later, so at the moment d is stored, a and b's age is exactly ttl.
+	seedCacheEntry(cache, a, resolvedClient{ID: "a"}, baseNow)
+	seedCacheEntry(cache, b, resolvedClient{ID: "b"}, baseNow)
+	seedCacheEntry(cache, c, resolvedClient{ID: "c"}, baseNow.Add(ttl))
+	seedCacheEntry(cache, d, resolvedClient{ID: "d"}, baseNow.Add(ttl))
+
+	cache.mu.Lock()
+	_, bStillPresent := cache.entries[b]
+	n := len(cache.entries)
+	cache.mu.Unlock()
+
+	if bStillPresent {
+		t.Fatal("expected the entry at exactly age==ttl to be scrubbed by the TTL drain, but it is still cached")
+	}
+	if n != 2 {
+		t.Fatalf("cache size after insert = %d, want 2 (c and d only; a and b at exactly age==ttl scrubbed)", n)
+	}
+}
+
+// TestStoreLocked_ZeroMaxSizeSkipsEmptyEvictionLoop pins the order.Len() > 0
+// guard on the fallback capacity-eviction loop: with maxSize == 0 the order
+// list is always empty, so the loop must never attempt to pop a tail
+// element — doing so on an empty list would dereference a nil element.
+func TestStoreLocked_ZeroMaxSizeSkipsEmptyEvictionLoop(t *testing.T) {
+	cache := newClientCache(
+		10*time.Second,
+		0,
+		time.Now,
+		func(_ context.Context, _ netip.Addr) (resolvedClient, bool, error) {
+			return resolvedClient{ID: "x"}, true, nil
+		},
+	)
+
+	if _, _, err := cache.Lookup(context.Background(), mustAddr(t, "10.0.4.1")); err != nil {
+		t.Fatalf("Lookup() with maxSize=0 must not fail: %v", err)
+	}
+}

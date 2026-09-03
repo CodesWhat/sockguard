@@ -218,6 +218,110 @@ func TestHealthCachesUpstreamStatusWithinTTL(t *testing.T) {
 	}
 }
 
+func TestHealthCacheExpiresPreciselyAtTTLBoundary(t *testing.T) {
+	t.Parallel()
+	baseNow := time.Unix(1_700_000_000, 0)
+	var nowOffset atomic.Int64
+	var dialCalls atomic.Int32
+
+	checker := newUpstreamHealthChecker(
+		2*time.Second,
+		3*time.Second,
+		func() time.Time {
+			return baseNow.Add(time.Duration(nowOffset.Load()))
+		},
+		func(context.Context, string, string) (net.Conn, error) {
+			dialCalls.Add(1)
+			return noopConn{}, nil
+		},
+	)
+
+	status, err := checker.check(context.Background(), "/tmp/upstream.sock")
+	if status != "connected" || err != nil {
+		t.Fatalf("first check = (%q, %v), want connected with nil error", status, err)
+	}
+
+	// Exactly at the TTL boundary: now.Sub(cachedAt) == cacheTTL. The cache
+	// window is a strict "<", so this must already count as expired and
+	// trigger a fresh dial; a mutant turning "<" into "<=" would treat the
+	// entry as still fresh and skip the dial.
+	nowOffset.Store(int64(2 * time.Second))
+	status, err = checker.check(context.Background(), "/tmp/upstream.sock")
+	if status != "connected" || err != nil {
+		t.Fatalf("boundary check = (%q, %v), want connected with nil error", status, err)
+	}
+	if dialCalls.Load() != 2 {
+		t.Fatalf("dial calls exactly at TTL boundary = %d, want 2 (cache must expire at the boundary)", dialCalls.Load())
+	}
+}
+
+func TestHealthCheckerZeroTTLNeverCachesEvenWithBackwardClockDrift(t *testing.T) {
+	t.Parallel()
+	baseNow := time.Unix(1_700_000_000, 0)
+	var nowOffset atomic.Int64
+	var dialCalls atomic.Int32
+
+	checker := newUpstreamHealthChecker(
+		0, // ttl == 0: the cache branch must be a no-op regardless of clock drift
+		3*time.Second,
+		func() time.Time {
+			return baseNow.Add(time.Duration(nowOffset.Load()))
+		},
+		func(context.Context, string, string) (net.Conn, error) {
+			dialCalls.Add(1)
+			return noopConn{}, nil
+		},
+	)
+
+	status, err := checker.check(context.Background(), "/tmp/upstream.sock")
+	if status != "connected" || err != nil {
+		t.Fatalf("first check = (%q, %v), want connected with nil error", status, err)
+	}
+
+	// Move the clock backward relative to cachedAt (an NTP-style correction).
+	// With ttl == 0 the cache must never be consulted no matter the sign of
+	// now.Sub(cachedAt); only a mutant turning "cacheTTL > 0" into ">= 0"
+	// lets a negative diff satisfy "diff < cacheTTL" and serve a stale value.
+	nowOffset.Store(int64(-100 * time.Millisecond))
+	status, err = checker.check(context.Background(), "/tmp/upstream.sock")
+	if status != "connected" || err != nil {
+		t.Fatalf("second check = (%q, %v), want connected with nil error", status, err)
+	}
+	if dialCalls.Load() != 2 {
+		t.Fatalf("dial calls with ttl=0 despite backward clock drift = %d, want 2 (cache must never be used when ttl==0)", dialCalls.Load())
+	}
+}
+
+func TestHealthCheckerFailureTTLZeroNeverCachesFailure(t *testing.T) {
+	t.Parallel()
+	checker := newUpstreamHealthChecker(
+		2*time.Second,
+		3*time.Second,
+		time.Now,
+		func(context.Context, string, string) (net.Conn, error) {
+			return nil, errors.New("upstream down")
+		},
+	)
+	checker.failureTTL = 0
+
+	status, err := checker.check(context.Background(), "/tmp/upstream.sock")
+	if status != "unreachable" || err == nil {
+		t.Fatalf("check = (%q, %v), want unreachable with error", status, err)
+	}
+
+	// With failureTTL == 0 the failure branch must never populate the cache,
+	// even though the caller's context was neither canceled nor past its
+	// deadline. A mutant turning "failureTTL > 0" into ">= 0" would cache
+	// the failure here instead of falling through to the reset branch.
+	checker.mu.Lock()
+	cacheReady := checker.cacheReady
+	cachedErr := checker.cachedErr
+	checker.mu.Unlock()
+	if cacheReady || cachedErr != nil {
+		t.Fatalf("checker state after zero-failureTTL failure = (cacheReady=%v, cachedErr=%v), want (false, nil)", cacheReady, cachedErr)
+	}
+}
+
 func TestHealthDoesNotCacheUnhealthyStatusWithinTTL(t *testing.T) {
 	t.Parallel()
 	baseNow := time.Unix(1_700_000_000, 0)
@@ -718,5 +822,79 @@ func TestHealthHandlerUnhealthyEncodeFailure(t *testing.T) {
 
 	if writer.status != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", writer.status, http.StatusServiceUnavailable)
+	}
+}
+
+// healthMonitorWithLogger builds a Monitor with a pre-seeded watchdog state
+// and listener snapshot, wired to logger, without dialing anything. It lets
+// the three response branches in Handler (upstream-unhealthy,
+// listener-not-serving, healthy) be exercised individually so an encode
+// failure on each branch can be attributed to the right log call site.
+func healthMonitorWithLogger(state WatchdogState, listeners []ListenerStatus, logger *slog.Logger) *Monitor {
+	m := newMonitorWithChecker("docker", time.Now(), logger, newUpstreamHealthChecker(0, time.Second, time.Now, nil))
+	m.mu.Lock()
+	m.last = state
+	m.hasState = true
+	m.mu.Unlock()
+	if listeners != nil {
+		m.ListenersFunc = func() []ListenerStatus { return append([]ListenerStatus(nil), listeners...) }
+	}
+	return m
+}
+
+func TestHealthHandlerLogsEncodeFailureOnUnhealthyUpstreamPath(t *testing.T) {
+	t.Parallel()
+	collector := &testhelp.CollectingHandler{}
+	m := healthMonitorWithLogger(WatchdogState{Status: "unreachable", Err: errors.New("dial failed")}, nil, collector.Logger())
+	writer := &failingWriter{}
+
+	m.Handler()(writer, httptest.NewRequest(http.MethodGet, "/health", nil))
+
+	if writer.status != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", writer.status, http.StatusServiceUnavailable)
+	}
+	// A mutant turning "encErr != nil" into "== nil" would log on the
+	// (impossible here) success case instead of this write failure, so the
+	// WARN record would never appear.
+	if len(collector.FindMessage("failed to encode unhealthy response")) == 0 {
+		t.Fatalf("expected a \"failed to encode unhealthy response\" WARN record when the write fails; got %#v", collector.Records())
+	}
+}
+
+func TestHealthHandlerLogsEncodeFailureOnListenerNotServingPath(t *testing.T) {
+	t.Parallel()
+	collector := &testhelp.CollectingHandler{}
+	listeners := []ListenerStatus{{Name: "ci", Role: "main", Network: "unix", State: ListenerStateFailed}}
+	m := healthMonitorWithLogger(WatchdogState{Status: "connected", Up: true}, listeners, collector.Logger())
+	writer := &failingWriter{}
+
+	m.Handler()(writer, httptest.NewRequest(http.MethodGet, "/health", nil))
+
+	if writer.status != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", writer.status, http.StatusServiceUnavailable)
+	}
+	// A mutant turning "encErr != nil" into "== nil" on this branch's write
+	// check would suppress the WARN record on this write failure.
+	if len(collector.FindMessage("failed to encode unhealthy response")) == 0 {
+		t.Fatalf("expected a \"failed to encode unhealthy response\" WARN record when the write fails; got %#v", collector.Records())
+	}
+}
+
+func TestHealthHandlerLogsEncodeFailureOnHealthyPath(t *testing.T) {
+	t.Parallel()
+	collector := &testhelp.CollectingHandler{}
+	listeners := []ListenerStatus{{Name: "ci", Role: "main", Network: "unix", State: ListenerStateServing}}
+	m := healthMonitorWithLogger(WatchdogState{Status: "connected", Up: true}, listeners, collector.Logger())
+	writer := &failingWriter{}
+
+	m.Handler()(writer, httptest.NewRequest(http.MethodGet, "/health", nil))
+
+	if writer.status != http.StatusOK {
+		t.Fatalf("status = %d, want %d", writer.status, http.StatusOK)
+	}
+	// A mutant turning "encErr != nil" into "== nil" on the healthy branch
+	// would suppress the WARN record on this write failure.
+	if len(collector.FindMessage("failed to encode healthy response")) == 0 {
+		t.Fatalf("expected a \"failed to encode healthy response\" WARN record when the write fails; got %#v", collector.Records())
 	}
 }

@@ -14,7 +14,7 @@ v1.5 keeps the v1.x YAML, CLI, environment-variable, admin API, and Prometheus m
 
 The other v1.5 policy additions are opt-in: `restrict_namespace_sharing`, `allowed_namespace_sharing_containers`, `deny_namespace_path_mode`, `require_cpu_limit_hard`, and exec `allowed_env_vars`/`denied_env_vars`/`allowed_env_values`. See [Configuration](/configuration) for their exact semantics and defaults. The bundled Drydock self-update preset now value-pins its loopback finalize callback at port 3000; if Drydock uses a different server port, update that exact preset value before deployment.
 
-Before switching the image tag, validate the current configuration with `sockguard validate --config /etc/sockguard/config.yaml` or the admin listener's `POST /admin/validate`. Deployments using macvlan/static-IP recreation should pay particular attention to `allow_endpoint_config`; the bundled drydock presets document that compatibility case inline.
+Before switching the image tag, validate the current configuration with `sockguard validate --config /etc/sockguard/sockguard.yaml` or the admin listener's `POST /admin/validate`. Deployments using macvlan/static-IP recreation should pay particular attention to the granular endpoint-config gates — `endpoint_config.allow_static_addressing`, `allow_link_local_ips`, `allow_mac_pinning`, and `allow_gw_priority` — which cover recreation's actual needs individually; `request_body.network.allow_endpoint_config` remains the whole-object escape hatch for DriverOpts/Links recreation, which have no granular gate of their own. The bundled drydock presets document that compatibility case inline.
 
 ## From Sockguard v1.6 to v1.7
 
@@ -184,6 +184,25 @@ signed policy so the Service and probes can reach the pod.
   `method="OTHER"`; unknown path families appear as `route="unknown"`. Update
   dashboards that previously expected raw custom values.
 
+## From Sockguard v2.0 to v2.1
+
+`upstream.endpoints[].insecure_skip_tls_verify` is deprecated in v2.1 and will be removed in v3.0.0. It remains accepted in v2.1 and its wire behavior has not changed, so upgrading does not break an existing endpoint. Startup now logs the removal version and replacement metadata.
+
+Replace the flag with the CA that issued the daemon certificate:
+
+```diff
+ upstream:
+   endpoints:
+     - address: tcp://dockerd.internal:2376
+       tls:
++        ca_file: /certs/ca.pem
+         cert_file: /certs/cert.pem
+         key_file: /certs/key.pem
+-      insecure_skip_tls_verify: true
+```
+
+The Docker environment fallback follows the same schedule. A non-empty `DOCKER_TLS` with `DOCKER_TLS_VERIFY` empty or unset selects unverified TLS; set `DOCKER_TLS_VERIFY=1` before v3.0.0. Any non-empty verification value, including `0` or `false`, enables verification and takes precedence over `DOCKER_TLS`, matching the Docker CLI's environment semantics. When TLS is enabled, sockguard requires `ca.pem` from `DOCKER_CERT_PATH`, otherwise `DOCKER_CONFIG`, otherwise `~/.docker`; it presents `cert.pem` / `key.pem` only when both exist. `DOCKER_CERT_PATH` alone only locates material and does not enable TLS. Bare and portless TCP hosts default to port `2375`; a TCP URL path is preserved as the API prefix across proxy, inspection, readiness, attach/exec, BuildKit, and failover traffic; and valid custom Unix socket names retain their literal bytes after Docker-compatible URL validation. Absolute Unix paths preserve percent escapes and raw `?` or `#`, while relative host-form escapes such as `%2F` and `%3F` are invalid. An invalid explicit `DOCKER_HOST` fails startup instead of falling through to `upstream.socket`.
+
 ## From Tecnativa/docker-socket-proxy
 
 Sockguard accepts the current Tecnativa environment-variable surface, including section vars, `ALLOW_RESTARTS`, `SOCKET_PATH`, and `LOG_LEVEL`. Replace the image:
@@ -204,6 +223,8 @@ Sockguard accepts the current Tecnativa environment-variable surface, including 
 The acknowledgement is required, not optional. `CONTAINERS=1` generates `allow GET,HEAD /containers/**`, and that admits `GET /containers/*/archive`, `/export`, `/logs`, and `/attach/ws`, so without `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true` Sockguard exits 1 at startup with an error naming those four endpoints. `IMAGES=1`, `SERVICES=1`, and `TASKS=1` open the same class of surface. Unlike `GRPC=1`/`SESSION=1`, which auto-set their own acknowledgement, compatibility mode never sets this one for you: the whole point is that a section-wide read grant should be a decision you made. Drop the acknowledgement once you move to YAML and allow only the list/inspect endpoints you actually need.
 
 One other difference from Tecnativa in that diff: Sockguard binds loopback `127.0.0.1:2375` by default rather than all interfaces, so a proxy other Compose services talk to over TCP also needs `SOCKGUARD_LISTEN_ADDRESS` plus both plaintext-TCP acknowledgements, or `SOCKGUARD_LISTEN_SOCKET` and a shared socket volume. See [Getting Started](/getting-started) for either block in full.
+
+A third difference is a real permission change, not just a behavior parity gap: Sockguard's granular `ALLOW_*` vars (`ALLOW_START`, `ALLOW_STOP`, `ALLOW_RESTARTS`, and the rest) are honored independently of `POST`. Real Tecnativa's `haproxy.cfg` denies any non-GET request before it ever reaches the `ALLOW_*` rules, so `ALLOW_RESTARTS=1 POST=0` on Tecnativa grants nothing. The same combination on Sockguard grants working restart access. Audit your `ALLOW_*` settings before cutover if you were relying on `POST=0` to blanket-deny them.
 
 Tecnativa compatibility mode and signed-policy mode are separate migration
 stages. Rule-generating compatibility variables are unsigned process state, so
@@ -262,11 +283,12 @@ Key differences:
 
 ## From 11notes/docker-socket-proxy
 
-`11notes/docker-socket-proxy` is a fixed read-only proxy — it allows every Docker API `GET` except seven exfiltration-prone endpoints and blocks every write. There is no rule syntax to translate; the equivalent in Sockguard is a default-deny config that allows reads broadly while denying those same endpoints first (first-match-wins):
+`11notes/docker-socket-proxy` is a fixed read-only proxy: it allows every Docker API `GET` except seven targeted exfiltration-prone endpoints and blocks every write. Its own regex for the image-get endpoint (`images/get(/|)$`) doesn't match the real `ImageGet`/`ImageGetAll` request shapes, so only six of the seven are reliably blocked. Separately, 11notes issue #12 documents that same style of pattern misfiring on the image-inspect endpoint ([11notes #12](https://github.com/11notes/docker-socket-proxy/issues/12)). There is no rule syntax to translate; the equivalent in Sockguard is a default-deny config that allows reads broadly while denying those same endpoints first (first-match-wins):
 
 ```yaml filename="sockguard.yaml"
 rules:
-  # Deny the seven exfiltration-prone reads 11notes blocks
+  # Deny the seven exfiltration-prone reads 11notes targets
+  # (11notes' own regex only reliably blocks six of these)
   - match: { method: GET, path: "/containers/*/attach/ws" }
     action: deny
   - match: { method: GET, path: "/containers/*/export" }
@@ -279,9 +301,10 @@ rules:
     action: deny
   - match: { method: GET, path: "/swarm/unlockkey" }
     action: deny
-  - match: { method: GET, path: "/images/*/get" }
+  # ** covers both single-segment and nested (registry-qualified) image names
+  - match: { method: GET, path: "/images/**/get" }
     action: deny
-  # Allow everything else read-only — writes fall through to default-deny
+  # Allow everything else read-only, writes fall through to default-deny
   - match: { method: GET, path: "/**" }
     action: allow
 ```
@@ -292,7 +315,7 @@ The 11notes environment variables configure the process, not the policy, so they
 |-----------------|----------------------|
 | `SOCKET_PROXY_DOCKER_SOCKET` | `upstream.socket` (env: `SOCKGUARD_UPSTREAM_SOCKET`) |
 | `SOCKET_PROXY_VOLUME` | `listen.socket` (env: `SOCKGUARD_LISTEN_SOCKET`) |
-| `SOCKET_PROXY_HTTP_LISTEN_IP` | `listen.address` — mTLS is required for any non-loopback bind |
+| `SOCKET_PROXY_HTTP_LISTEN_IP` | `listen.address`. mTLS is required by default for any non-loopback bind; a legacy plaintext escape hatch exists behind two explicit acknowledgments, `listen.insecure_allow_plain_tcp: true` and `listen.insecure_allow_unauthenticated_clients: true` (one without the other is rejected). 11notes defaults this to `0.0.0.0` unauthenticated on its TCP listener; a default change to `127.0.0.1` ([`a9f6073`](https://github.com/11notes/docker-socket-proxy/commit/a9f6073)) was reverted the next day after user complaints ([`79f6afb`](https://github.com/11notes/docker-socket-proxy/commit/79f6afb)), and the maintainer flagged that reachable-by-default as the wrong call in [issue #17](https://github.com/11notes/docker-socket-proxy/issues/17) |
 | `SOCKET_PROXY_UID` / `SOCKET_PROXY_GID` | Sockguard's image already runs as UID 65532; set container runtime `user:` / `group_add` only when you need to match the host Docker socket's numeric UID/GID |
 | `DEBUG` | `log.level: debug` (env: `SOCKGUARD_LOG_LEVEL`) |
 
@@ -312,10 +335,11 @@ CetusGuard is the closest in spirit to Sockguard — a zero-dependency, default-
 
 | CetusGuard | Sockguard |
 |------------|-----------|
-| `-frontend-addr` / `CETUSGUARD_FRONTEND_ADDR` | `listen.address` (TCP) or `listen.socket` (unix) |
+| `-frontend-addr` / `CETUSGUARD_FRONTEND_ADDR` | `listen.address` (TCP) or `listen.socket` (unix) — repeat the flag for multiple frontends and it maps to Sockguard's `listeners:` array, where each entry also needs a unique `name` and a non-empty `allowed_profiles` (see [Multiple Listeners](/configuration#multiple-listeners)), not the singular `listen:` block |
 | `-backend-addr` / `CETUSGUARD_BACKEND_ADDR` | `upstream.socket` |
 | `-frontend-tls-cert` / `-frontend-tls-key` | `listen.tls.cert_file` / `listen.tls.key_file` |
 | `-frontend-tls-cacert` | `listen.tls.client_ca_file` (enables mTLS) |
+| `-backend-tls-cacert` / `-backend-tls-cert` / `-backend-tls-key` | `upstream.endpoints[].tls.ca_file` / `cert_file` / `key_file` |
 | `-rules` / `-rules-file` / `CETUSGUARD_RULES*` | The YAML `rules:` block |
 | `-log-level` / `CETUSGUARD_LOG_LEVEL` | `log.level` |
 | builtin `/_ping`, `/info`, `/version` rules | Allow them explicitly — Sockguard has no implicit allows |
@@ -324,4 +348,5 @@ Key differences:
 - Sockguard auto-strips Docker API version prefixes (`/v1.45/…`) before matching, so patterns never account for them
 - Glob patterns (`*`, `**`) with auto-anchoring instead of regex
 - CetusGuard filters on method + path only; Sockguard adds request-body inspection, named per-client profiles, owner isolation, read-side visibility/redaction, rate limits, and metrics on top
-- Both tools support remote daemon upstreams; Sockguard uses `upstream.endpoints` (YAML) or the `DOCKER_HOST`/`DOCKER_TLS_VERIFY`/`DOCKER_CERT_PATH` drop-in — see [Remote Upstreams & Failover](/multi-host) for the full guide.
+- Both tools support remote daemon upstreams; Sockguard uses `upstream.endpoints` (YAML) or the `DOCKER_HOST`/`DOCKER_TLS`/`DOCKER_TLS_VERIFY`/`DOCKER_CERT_PATH` drop-in — see [Remote Upstreams & Failover](/multi-host) for the full guide.
+- Sockguard's listener enforces a TLS 1.3 floor with no override; CetusGuard's frontend and backend both floor at TLS 1.2. Reused mTLS keypairs still work, but a client that never negotiates above TLS 1.2 needs upgrading before cutover, or the handshake fails.

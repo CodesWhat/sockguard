@@ -20,6 +20,7 @@ import (
 	"github.com/codeswhat/sockguard/app/internal/httpjson"
 	"github.com/codeswhat/sockguard/app/internal/logging"
 	"github.com/codeswhat/sockguard/app/internal/responsefilter"
+	"github.com/codeswhat/sockguard/app/internal/upstream"
 )
 
 func testLogger() *slog.Logger {
@@ -70,6 +71,110 @@ func TestNew_ErrorHandler(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), socketPath) {
 		t.Fatalf("response leaked upstream socket path: %q", rec.Body.String())
+	}
+}
+
+func TestReverseProxyPreservesUpstreamBasePath(t *testing.T) {
+	t.Parallel()
+	requestURI := make(chan string, 1)
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestURI <- r.RequestURI
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(daemon.Close)
+	ep, err := upstream.BuildEndpoint(upstream.EndpointSpec{
+		Address:               "tcp://" + strings.TrimPrefix(daemon.URL, "http://") + "/gateway%2Fdocker/",
+		InsecureAllowPlainTCP: true,
+	})
+	if err != nil {
+		t.Fatalf("BuildEndpoint: %v", err)
+	}
+	resolver, err := upstream.New([]upstream.Endpoint{ep}, upstream.Options{Interval: -1})
+	if err != nil {
+		t.Fatalf("upstream.New: %v", err)
+	}
+	rp := NewWithTransport(resolver, testLogger(), Options{})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://client/v1.52/containers/a%2Fb/json?all=1", nil)
+	rp.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if got := <-requestURI; got != "/gateway%2Fdocker/v1.52/containers/a%2Fb/json?all=1" {
+		t.Fatalf("daemon RequestURI = %q, want prefixed escaped path", got)
+	}
+}
+
+func TestReverseProxyBasePathKeepsOriginalRouteForResponsePolicy(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		target     string
+		body       string
+		filterOpts responsefilter.Options
+		wantStatus int
+	}{
+		{
+			name:       "container inspect redaction",
+			target:     "/v1.53/containers/abc/json?size=1",
+			body:       `{"Config":{"Env":["SECRET=value"]}}`,
+			filterOpts: responsefilter.Options{RedactContainerEnv: true},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "attestation statement fails closed",
+			target:     "/v1.53/images/alpine/attestations?statement=true&platform=linux",
+			body:       `{"statement":"SECRET=value"}`,
+			wantStatus: http.StatusBadGateway,
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			requestURI := make(chan string, 1)
+			daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requestURI <- r.RequestURI
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			t.Cleanup(daemon.Close)
+			ep, err := upstream.BuildEndpoint(upstream.EndpointSpec{
+				Address:               "tcp://" + strings.TrimPrefix(daemon.URL, "http://") + "/gateway",
+				InsecureAllowPlainTCP: true,
+			})
+			if err != nil {
+				t.Fatalf("BuildEndpoint: %v", err)
+			}
+			resolver, err := upstream.New([]upstream.Endpoint{ep}, upstream.Options{Interval: -1})
+			if err != nil {
+				t.Fatalf("upstream.New: %v", err)
+			}
+			responsePolicy := responsefilter.New(tt.filterOpts)
+			var policyPath, policyQuery string
+			rp := NewWithTransport(resolver, testLogger(), Options{
+				ModifyResponse: func(resp *http.Response) error {
+					policyPath = resp.Request.URL.Path
+					policyQuery = resp.Request.URL.RawQuery
+					return responsePolicy.ModifyResponse(resp)
+				},
+			})
+			rec := httptest.NewRecorder()
+			rp.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://client"+tt.target, nil))
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			wantPath, wantQuery, _ := strings.Cut(tt.target, "?")
+			if policyPath != wantPath || policyQuery != wantQuery {
+				t.Fatalf("ModifyResponse classified Path=%q Query=%q, want %q %q", policyPath, policyQuery, wantPath, wantQuery)
+			}
+			if got := <-requestURI; got != "/gateway"+tt.target {
+				t.Fatalf("daemon RequestURI = %q, want %q", got, "/gateway"+tt.target)
+			}
+			if strings.Contains(rec.Body.String(), "SECRET=value") {
+				t.Fatalf("sensitive response was not redacted or rejected: %s", rec.Body.String())
+			}
+		})
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -653,7 +654,15 @@ func TestResolveUpstreamSpecs(t *testing.T) {
 			{Address: "tcp://host1:2376"},
 			{Address: "tcp://host2:2376"},
 		}
-		specs, legacy := resolveUpstreamSpecs(&cfg, func(string) string { return "" }, discardLogger)
+		specs, legacy, err := resolveUpstreamSpecs(&cfg, func(key string) (string, bool) {
+			if key == "DOCKER_HOST" {
+				return "https://ignored.invalid:2376", true
+			}
+			return "", false
+		}, discardLogger)
+		if err != nil {
+			t.Fatalf("resolveUpstreamSpecs: %v", err)
+		}
 		if legacy {
 			t.Error("expected legacy=false for explicit endpoints")
 		}
@@ -668,12 +677,39 @@ func TestResolveUpstreamSpecs(t *testing.T) {
 	t.Run("falls back to socket when no endpoints and no DOCKER_HOST", func(t *testing.T) {
 		cfg := config.Defaults()
 		cfg.Upstream.Socket = "/var/run/docker.sock"
-		specs, legacy := resolveUpstreamSpecs(&cfg, func(string) string { return "" }, discardLogger)
+		specs, legacy, err := resolveUpstreamSpecs(&cfg, func(string) (string, bool) { return "", false }, discardLogger)
+		if err != nil {
+			t.Fatalf("resolveUpstreamSpecs: %v", err)
+		}
 		if !legacy {
 			t.Error("expected legacy=true for socket fallback")
 		}
 		if len(specs) != 1 || specs[0].Address != "/var/run/docker.sock" {
 			t.Fatalf("specs = %v, want [{Address: /var/run/docker.sock}]", specs)
+		}
+	})
+
+	t.Run("Docker environment log is transport neutral for Unix sockets", func(t *testing.T) {
+		cfg := config.Defaults()
+		var logs bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&logs, nil))
+		_, legacy, err := resolveUpstreamSpecs(&cfg, func(key string) (string, bool) {
+			if key == "DOCKER_HOST" {
+				return "unix:///tmp/custom-docker.sock", true
+			}
+			return "", false
+		}, logger)
+		if err != nil {
+			t.Fatalf("resolveUpstreamSpecs: %v", err)
+		}
+		if legacy {
+			t.Fatal("legacy = true, want false for DOCKER_HOST")
+		}
+		if strings.Contains(logs.String(), "remote upstream") {
+			t.Fatalf("Unix DOCKER_HOST log calls a local socket remote: %s", logs.String())
+		}
+		if !strings.Contains(logs.String(), "using upstream from DOCKER_HOST environment") {
+			t.Fatalf("log = %q, want transport-neutral message", logs.String())
 		}
 	})
 }
