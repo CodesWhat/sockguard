@@ -1007,6 +1007,7 @@ var wantVisibilityUnscopeableReasonCodes = map[string]string{
 	filter.LibpodPodStatsPath:       "visibility_libpod_pod_stats_unscopeable",
 	filter.LibpodManifestExistsPath: "visibility_libpod_manifest_exists_unscopeable",
 	filter.LibpodManifestJSONPath:   "visibility_libpod_manifest_json_unscopeable",
+	filter.LibpodSecretListPath:     "visibility_libpod_secret_list_unscopeable",
 }
 
 // TestLibpodUnscopeableReadsAreRefusedUnderVisibilityPolicy covers every
@@ -1246,5 +1247,79 @@ func TestLibpodExecInspectIsScopedLikeTheCompatSpelling(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// --- libpod secret list ----------------------------------------------------
+
+// TestLibpodSecretListIsRefusedRatherThanLabelFiltered pins the one entry in
+// filter.LibpodUnscopeableReads() that used to be in the label-filter set.
+//
+// Podman filters this endpoint with utils.IfPassesSecretsFilter, whose switch
+// accepts only "name" and "id" and errors on any other key, and
+// compat.ListSecrets turns that error into a 500. So the injected `label`
+// selector did not narrow the list, it broke it — and removing the injection
+// without refusing the path would have handed over every secret ID and name on
+// the host instead.
+func TestLibpodSecretListIsRefusedRatherThanLabelFiltered(t *testing.T) {
+	t.Parallel()
+	if needsLibpodVisibilityLabelFilter(filter.LibpodSecretListPath) {
+		t.Fatalf("needsLibpodVisibilityLabelFilter(%q) = true; Podman answers 500 for a label key on this endpoint", filter.LibpodSecretListPath)
+	}
+	if needsVisibilityLabelFilter(filter.LibpodSecretListPath) {
+		t.Fatalf("needsVisibilityLabelFilter(%q) = true; Podman answers 500 for a label key on this endpoint", filter.LibpodSecretListPath)
+	}
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		for _, path := range []string{filter.LibpodSecretListPath, "/v5.8.1" + filter.LibpodSecretListPath} {
+			t.Run(method+" "+path, func(t *testing.T) {
+				t.Parallel()
+				handler := middlewareWithDeps(testVisibilityLogger(), Options{
+					VisibleResourceLabels: []string{"com.sockguard.visible=true"},
+				}, visibilityDeps{})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+					t.Fatal("refused secret list reached the upstream")
+				}))
+
+				meta := &logging.RequestMeta{RolloutMode: "warn"}
+				req := httptest.NewRequest(method, path, nil)
+				req = req.WithContext(logging.WithMeta(req.Context(), meta))
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+
+				if rec.Code != http.StatusForbidden {
+					t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+				}
+				if meta.ReasonCode != "visibility_libpod_secret_list_unscopeable" {
+					t.Fatalf("meta.ReasonCode = %q, want %q", meta.ReasonCode, "visibility_libpod_secret_list_unscopeable")
+				}
+			})
+		}
+	}
+}
+
+// TestLibpodSecretInspectSurvivesTheListRefusal proves the refusal is scoped to
+// the collection route. GET /libpod/secrets/{name}/json names one secret, so
+// the visibility policy resolves it through KindSecret the way it always has.
+func TestLibpodSecretInspectSurvivesTheListRefusal(t *testing.T) {
+	t.Parallel()
+	reached := false
+	handler := middlewareWithDeps(testVisibilityLogger(), Options{
+		VisibleResourceLabels: []string{"com.sockguard.visible=true"},
+	}, visibilityDeps{
+		inspectResource: func(_ context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
+			if kind != dockerresource.KindSecret || identifier != "sec-1" {
+				t.Fatalf("inspectResource = %s/%q, want %s/sec-1", kind, identifier, dockerresource.KindSecret)
+			}
+			return map[string]string{"com.sockguard.visible": "true"}, true, nil
+		},
+	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v5.8.1/libpod/secrets/sec-1/json", nil))
+
+	if !reached || rec.Code != http.StatusNoContent {
+		t.Fatalf("reached = %v status = %d, want true and %d; body: %s", reached, rec.Code, http.StatusNoContent, rec.Body.String())
 	}
 }

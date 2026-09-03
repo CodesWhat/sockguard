@@ -24,14 +24,20 @@ const libpodPrefix = "/libpod/"
 // so the append-style injection addVisibilityLabelFilters performs would
 // widen the response rather than narrow it. It is handled by
 // libpod_events.go instead — see libpodEventsDenyReason.
+//
+// GET /libpod/secrets/json is absent for a harder reason: Podman's secret
+// filter grammar (utils.IfPassesSecretsFilter at v5.8.1) accepts only "name"
+// and "id" and errors on any other key, which compat.ListSecrets turns into a
+// 500, so injecting a `label` selector here broke the endpoint rather than
+// scoping it. It is refused as filter.LibpodSecretListPath instead — see
+// filter.LibpodSecretListDenyReason.
 func needsLibpodVisibilityLabelFilter(normPath string) bool {
 	switch normPath {
 	case libpodPrefix + "containers/json",
 		libpodPrefix + "images/json",
 		libpodPrefix + "pods/json",
 		libpodPrefix + "networks/json",
-		libpodPrefix + "volumes/json",
-		libpodPrefix + "secrets/json":
+		libpodPrefix + "volumes/json":
 		return true
 	default:
 		return false

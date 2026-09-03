@@ -625,6 +625,7 @@ var wantOwnerUnscopeableReasonCodes = map[string]string{
 	filter.LibpodPodStatsPath:       "owner_libpod_pod_stats_unscopeable",
 	filter.LibpodManifestExistsPath: "owner_libpod_manifest_exists_unscopeable",
 	filter.LibpodManifestJSONPath:   "owner_libpod_manifest_json_unscopeable",
+	filter.LibpodSecretListPath:     "owner_libpod_secret_list_unscopeable",
 }
 
 // TestLibpodUnscopeableReadsAreRefusedUnderOwnerIsolation covers every libpod
@@ -790,7 +791,10 @@ func TestLibpodUnscopeableReadsAreInertWithoutOwner(t *testing.T) {
 // never classified at all and reached the upstream without any check running.
 // The manifest reads likewise have no ownership identifier: manifest-list
 // responses carry no owner labels, and the image identifier only covers the
-// distinct /libpod/images route family.
+// distinct /libpod/images route family. /libpod/secrets/json is the third
+// shape: libpodSecretIdentifier already reserves "json" as a GET/HEAD
+// collection word, so it was never classified either, and what forwarded it
+// was libpodNeedsOwnerFilter — which is exactly what the refusal replaces.
 func TestLibpodUnscopeableReadsWereNotCoveredByTheExistingIdentifiers(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -808,6 +812,7 @@ func TestLibpodUnscopeableReadsWereNotCoveredByTheExistingIdentifiers(t *testing
 		{path: filter.LibpodPodStatsPath, classify: libpodPodIdentifier, wantIdentifier: "", wantOK: false},
 		{path: filter.LibpodManifestExistsPath, classify: libpodImageIdentifier, wantIdentifier: "", wantOK: false},
 		{path: filter.LibpodManifestJSONPath, classify: libpodImageIdentifier, wantIdentifier: "", wantOK: false},
+		{path: filter.LibpodSecretListPath, classify: libpodSecretIdentifier, wantIdentifier: "", wantOK: false},
 	}
 	if len(tests) != len(filter.LibpodUnscopeableReads()) {
 		t.Fatalf("%d cases for %d unscopeable reads; a new one needs its own answer here", len(tests), len(filter.LibpodUnscopeableReads()))
@@ -820,7 +825,7 @@ func TestLibpodUnscopeableReadsWereNotCoveredByTheExistingIdentifiers(t *testing
 				t.Fatalf("classify(GET, %q) = %q, %v; want %q, %v — if this changes, the refusal branch is the only thing covering the endpoint", tt.path, identifier, ok, tt.wantIdentifier, tt.wantOK)
 			}
 			if libpodNeedsOwnerFilter(tt.path) {
-				t.Fatalf("libpodNeedsOwnerFilter(%q) = true; the endpoint accepts no filters query parameter", tt.path)
+				t.Fatalf("libpodNeedsOwnerFilter(%q) = true; the endpoint has no filters parameter an owner label can be attached to", tt.path)
 			}
 			if !ok {
 				return
@@ -881,4 +886,47 @@ func TestLibpodContainerStatsIsRefusedEvenWhenTheCallerOwnsAContainerNamedStats(
 			t.Fatalf("reached = %v status = %d, want true and %d; body: %s", reached, rec.Code, http.StatusOK, rec.Body.String())
 		}
 	})
+}
+
+// --- libpod secret list ----------------------------------------------------
+
+// TestLibpodSecretListIsRefusedRatherThanOwnerFiltered is the ownership half of
+// internal/visibility's test of the same name. addOwnerLabelFilter used to
+// inject a `label` key here; Podman's utils.IfPassesSecretsFilter accepts only
+// "name" and "id" and compat.ListSecrets turns its error into a 500, so the
+// injection broke the endpoint rather than scoping it, and dropping the
+// injection alone would have forwarded every secret ID and name on the host.
+func TestLibpodSecretListIsRefusedRatherThanOwnerFiltered(t *testing.T) {
+	t.Parallel()
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		if libpodNeedsOwnerFilter(filter.LibpodSecretListPath) {
+			t.Fatalf("libpodNeedsOwnerFilter(%q) = true; Podman answers 500 for a label key on this endpoint", filter.LibpodSecretListPath)
+		}
+		for _, path := range []string{filter.LibpodSecretListPath, "/v5.8.1" + filter.LibpodSecretListPath} {
+			t.Run(method+" "+path, func(t *testing.T) {
+				t.Parallel()
+				handler := middlewareWithDeps(
+					testLogger(),
+					Options{Owner: "job-123", LabelKey: "com.sockguard.owner"},
+					fakeInspector{}.inspectResource,
+					fakeInspector{}.inspectExec,
+				)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+					t.Fatal("refused secret list reached the upstream")
+				}))
+
+				meta := &logging.RequestMeta{RolloutMode: "warn"}
+				req := httptest.NewRequest(method, path, nil)
+				req = req.WithContext(logging.WithMeta(req.Context(), meta))
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+
+				if rec.Code != http.StatusForbidden {
+					t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+				}
+				if meta.ReasonCode != "owner_libpod_secret_list_unscopeable" {
+					t.Fatalf("meta.ReasonCode = %q, want %q", meta.ReasonCode, "owner_libpod_secret_list_unscopeable")
+				}
+			})
+		}
+	}
 }

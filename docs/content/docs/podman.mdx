@@ -306,6 +306,20 @@ same way they cover Docker-compat:
   `GET /libpod/pods/stats` before v2.1 and no longer does; see Known
   Limitations below for what that costs a deployment that runs neither
   isolation layer.
+- `GET /libpod/secrets/json` is refused under owner isolation or a visibility
+  policy, new in v2.1, and it is the one refusal that is not about a missing
+  field. Both layers used to inject a `label` filter into it the way they do
+  for every other libpod list. Podman evaluates this endpoint's filters with
+  `utils.IfPassesSecretsFilter`, whose switch accepts `name` and `id` and
+  returns `invalid filter` for anything else, and `compat.ListSecrets` turns
+  that into a `500` — so the injected label did not narrow the list, it broke
+  every request. Dropping the injection alone would have forwarded the whole
+  host's secret inventory instead, so the path is refused, audited as
+  `owner_libpod_secret_list_unscopeable` and
+  `visibility_libpod_secret_list_unscopeable`. The items do carry
+  `Spec.Labels`, so unlike the stats reads a response-side filter could scope
+  this one; none exists today, which is what would move it back off this list.
+  `GET /libpod/secrets/{name}/json` names one secret and is unaffected.
 - `GET /libpod/manifests/{name}/exists` and
   `GET /libpod/manifests/{name}/json` are refused whenever owner isolation or
   a visibility policy is active. Manifest lists carry no owner or policy
@@ -381,7 +395,7 @@ handler runs. Where they don't, the libpod field names are pinned separately:
 | `GET /libpod/containers/{id}/json` | `redact_container_env`, `redact_mount_paths`, `redact_network_topology` | `Config.Env`; `Mounts[].Source`, `HostConfig.Binds`, and the native host paths `Rootfs`, `ResolvConfPath`, `HostnamePath`, `HostsPath`, `StaticDir`, `OCIConfigPath`, `ConmonPidFile`, and `PidFile`; `HostConfig.NetworkMode`, the `NetworkSettings` address block and each `Networks` entry — the remaining fields use Docker's json tags, plus libpod's own `AdditionalMACAddresses` list, which has no compat counterpart |
 | `GET /libpod/volumes/json`, `GET /libpod/volumes/{name}/json` | `redact_mount_paths` | `Mountpoint`. The list body is a bare array, not Docker's `{"Volumes": [...]}` envelope |
 | `GET /libpod/networks/json`, `GET /libpod/networks/{id}/json`, `GET /libpod/networks/{id}` | `redact_network_topology` | Podman v4 and later: `subnets`, `routes`, `network_dns_servers`, `network_interface`, and inspect's `containers` map. Podman v2.2.1-v3.4.4: the raw CNI plugin's host `bridge` or macvlan `master`; plugin-level and IPAM-nested `dns.nameservers`, `dns.domain`, and `dns.search`; plus IPAM `routes`, `ranges`, static `addresses`, and backward-compatible flat `subnet`, `gateway`, `rangeStart`, and `rangeEnd`. List's top-level and per-plugin `Bytes` fields are removed because they are base64 copies of the complete raw conflist/plugin and would retain the same topology |
-| `GET /libpod/secrets/json`, `GET /libpod/secrets/{name}/json` | `redact_sensitive_data` | `SecretData`, the plaintext Podman returns for `?showsecret=true`. It is a top-level field, not the `Spec.Data` Docker uses — Podman's `Spec` has no `Data` at all |
+| `GET /libpod/secrets/json`, `GET /libpod/secrets/{name}/json` | `redact_sensitive_data` | `SecretData`, the plaintext Podman returns for `?showsecret=true`. It is a top-level field, not the `Spec.Data` Docker uses — Podman's `Spec` has no `Data` at all. The redactor still covers the list route, but owner isolation and visibility refuse that route before a response exists to rewrite; the redaction is what a deployment running neither layer gets |
 
 Three things are deliberately left alone. Modern `ipam_options` and legacy
 `plugins[].ipam.type` name the allocator, not an address; the former maps onto
@@ -467,8 +481,8 @@ or vice versa; the setting name is the same, the ceiling it grants is not.
 The [`podman-readonly.yaml`](https://github.com/CodesWhat/sockguard/blob/main/app/configs/podman-readonly.yaml)
 preset ships a read-only monitoring posture covering both surfaces in one
 file — list/inspect/stats/top/changes for containers, list/inspect for pods
-(libpod only), images, networks, volumes, and secrets, plus health/version/
-info/events. It deliberately excludes every exfiltration-gated endpoint:
+(libpod only), images, networks and volumes, per-secret inspect, plus
+health/version/info/events. It deliberately excludes every exfiltration-gated endpoint:
 archive, export, logs, attach, image `get`, and image push on both
 surfaces, plus the libpod-only exfiltration surfaces alongside them —
 mounted-container inventory (`showmounted`), `generate/kube`, and manifest
@@ -477,11 +491,15 @@ clean without setting `insecure_allow_read_exfiltration`, and it allows no
 writes at all, so it never needs `insecure_allow_body_blind_writes` either.
 See [Presets](/presets) for how to mount a preset as your config file.
 
-One rule left the preset in v2.1: `GET /libpod/pods/stats`, which both
-isolation layers now refuse (above). A preset that advertises owner isolation
-cannot also serve a read that has no owner-scoped form, and the rule could
-only ever have ended in a `403` for anyone running a layer. Add it back to your
-own config if you run single-tenant with neither isolation layer on.
+Two rules left the preset in v2.1: `GET /libpod/pods/stats` and
+`GET /libpod/secrets/json`, both of which the isolation layers now refuse
+(above). A preset that advertises owner isolation cannot also serve a read
+that has no owner-scoped form, and either rule could only ever have ended in a
+`403` for anyone running a layer. The secrets one was worse than inert before
+that: the label filter both layers injected made Podman answer `500`, so the
+preset's own secret list did not work under isolation at all. Add either rule
+back to your own config if you run single-tenant with neither isolation layer
+on.
 
 ## Known Limitations
 
@@ -575,6 +593,17 @@ land):
   otherwise reasonably expect `redact_container_env` and `redact_mount_paths`
   to cover them. The list route `GET /libpod/images/json` is not affected —
   `ImageSummary` has neither field.
+- **`GET /libpod/secrets/json` has no scoped form under either isolation
+  layer.** Podman's secret filter grammar accepts only `name` and `id` and
+  answers `500` for any other key, so the label filter that scopes every other
+  libpod list cannot be pushed upstream, and both layers refuse the path. The
+  gap is narrower than the stats one: the report items carry `Spec.Labels`, so
+  a response-side filter over that field could scope this list the way
+  `GET /system/df` is scoped, and building it is what would lift the refusal.
+  Until then, `GET /libpod/secrets/{name}/json` is the scoped read — it names
+  one secret and both layers resolve it normally — and a deployment that wants
+  the whole list has to run without owner isolation and without a visibility
+  policy. The rule left `podman-readonly.yaml` in v2.1 for that reason.
 - Tecnativa-style env-var compatibility for the libpod surface — the
   existing `CONTAINERS=1`/`POST=0`-style compat env vars only ever generate
   rules against literal Docker-compat paths (`/containers/**`, and similar),
