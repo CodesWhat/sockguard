@@ -21,6 +21,7 @@ turns every one of them on at once.
 ```bash
 docker run -d \
   --name sockguard \
+  --group-add <docker-socket-gid> \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v sockguard-socket:/var/run/sockguard \
   -e SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock \
@@ -39,6 +40,11 @@ The preset carries no `listen:` block either, so on its own it listens on the
 default `127.0.0.1:2375` and never creates a socket file.
 `SOCKGUARD_LISTEN_SOCKET` is what puts it on the Unix socket the verification
 steps below use.
+
+Sockguard runs as UID 65532 inside the container, so replace
+`<docker-socket-gid>` with the numeric group owner of the host socket
+(`stat -c '%g' /var/run/docker.sock` on Linux, `stat -f '%g'` on macOS).
+Without it the container can't open a stock `0660 root:docker` socket.
 
 A workload that violates any of the mapped controls gets a `403` with
 the deny reason naming the specific knob:
