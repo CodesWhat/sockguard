@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/codeswhat/sockguard/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 func TestImageBatchOwnershipPreflightsEveryNamedImage(t *testing.T) {
@@ -574,6 +575,56 @@ func TestImageBatchOwnershipForwardsOmittedNoEffectExportLists(t *testing.T) {
 				t.Fatalf("status = %d reached = %v, want %d and true; body: %s", rec.Code, reached, http.StatusNoContent, rec.Body.String())
 			}
 		})
+	}
+}
+
+// TestImageBatchOwnershipCompatExportRefusalHonorsRollout records the contract
+// the visibility layer's refusal of the same two routes is held to. Both
+// layers see GET /images/get?names= and GET /images/{name}/get, the chain runs
+// visibility before ownership, and a warn-mode request has to reach the daemon
+// through both of them or through neither.
+func TestImageBatchOwnershipCompatExportRefusalHonorsRollout(t *testing.T) {
+	targets := []string{"/v1.53/images/get?names=mine%3A1", "/v1.53/images/mine%3A1/get"}
+
+	for _, target := range targets {
+		for _, mode := range []string{"warn", "audit"} {
+			t.Run(target+" in "+mode, func(t *testing.T) {
+				inspector := &recordingInspector{resources: map[string]map[string]inspectResult{
+					string(dockerresource.KindImage): {
+						"mine:1": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+					},
+				}}
+				reached := false
+				handler := middlewareWithDeps(
+					testLogger(),
+					Options{Owner: "job-123", LabelKey: "com.sockguard.owner"},
+					inspector.inspectResource,
+					inspector.inspectExec,
+				)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					reached = true
+					w.WriteHeader(http.StatusNoContent)
+				}))
+
+				meta := &logging.RequestMeta{RolloutMode: mode}
+				req := httptest.NewRequest(http.MethodGet, target, nil)
+				req = req.WithContext(logging.WithMeta(req.Context(), meta))
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+
+				if rec.Code != http.StatusNoContent || !reached {
+					t.Fatalf("status = %d reached = %v, want %d and true; body: %s", rec.Code, reached, http.StatusNoContent, rec.Body.String())
+				}
+				if meta.Decision != logging.DecisionWouldDeny {
+					t.Fatalf("decision = %q, want %q", meta.Decision, logging.DecisionWouldDeny)
+				}
+				if meta.ReasonCode != reasonCodeOwnerPolicyDeniedAccess {
+					t.Fatalf("reason code = %q, want %q", meta.ReasonCode, reasonCodeOwnerPolicyDeniedAccess)
+				}
+				if len(inspector.calls) != 0 {
+					t.Fatalf("inspect calls = %#v, want none even when the verdict passes through", inspector.calls)
+				}
+			})
+		}
 	}
 }
 

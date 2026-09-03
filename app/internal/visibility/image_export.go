@@ -27,7 +27,7 @@ func handleVisibilityImageExportRequest(logger *slog.Logger, next http.Handler, 
 	case imageExportRouteNone:
 		return false
 	case imageExportRouteDockerSingle:
-		denyUnscopeableDockerImageExport(w, r)
+		denyUnscopeableDockerImageExport(next, w, r)
 		return true
 	case imageExportRouteDockerBatch:
 		references, err := selectedImageExportReferences(r.URL.RawQuery, "names")
@@ -36,7 +36,7 @@ func handleVisibilityImageExportRequest(logger *slog.Logger, next http.Handler, 
 			return true
 		}
 		if len(references) > 0 {
-			denyUnscopeableDockerImageExport(w, r)
+			denyUnscopeableDockerImageExport(next, w, r)
 			return true
 		}
 		return false
@@ -128,8 +128,24 @@ func handleVisibilityLibpodImageExport(logger *slog.Logger, next http.Handler, d
 	return true
 }
 
-func denyUnscopeableDockerImageExport(w http.ResponseWriter, r *http.Request) {
+// denyUnscopeableDockerImageExport refuses a named Docker-compatible export
+// before any image lookup or upstream request.
+//
+// It honors the rollout mode because ownership's refusal of the same two
+// routes does: that one is an ordinary verdict returned from
+// imageEffectDenial / parseImageBatchOwnershipReferences and passes through
+// the shared warn/audit branch in the ownership middleware. The chain runs
+// filter, then visibility, then ownership, so a visibility layer that refused
+// unconditionally would decide a warn-mode request before ownership could
+// record its own would_deny, and the same request would behave differently
+// depending on which of the two layers an operator had configured.
+func denyUnscopeableDockerImageExport(next http.Handler, w http.ResponseWriter, r *http.Request) {
 	reason := "Docker-compatible image export denied: selected platform effects cannot be fully authorized"
+	if meta := logging.MetaForRequest(w, r); meta.AllowsPassThrough() {
+		logging.SetWouldDenyWithCode(w, r, reasonCodeVisibilityImageExport, reason, nil)
+		next.ServeHTTP(w, r)
+		return
+	}
 	logging.SetDeniedWithCode(w, r, reasonCodeVisibilityImageExport, reason, nil)
 	_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: reason})
 }
