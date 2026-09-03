@@ -119,7 +119,7 @@ func TestValidateClientProfileEmptyName(t *testing.T) {
 	errs := validateClientProfile(0, ClientProfileConfig{
 		Name:  "  ",
 		Rules: []RuleConfig{{Match: MatchConfig{Method: "GET", Path: "/_ping"}, Action: "allow"}},
-	}, map[string]struct{}{})
+	}, map[string]struct{}{}, "")
 	found := false
 	for _, e := range errs {
 		if strings.Contains(e, "name") && strings.Contains(e, "required") {
@@ -354,6 +354,32 @@ func TestValidateRequestBodyUnixPeerProfileRejectsPIDOnly(t *testing.T) {
 	}
 }
 
+// TestValidateRequestBodyUnixPeerProfileNoSelectorsAtAll covers the
+// all-empty case for both the "at least one selector" requirement and the
+// "not by pid alone" check: with uids, gids, and pids all empty, only the
+// former must fire. A uid/gid/pid-recycling boundary mutation on either
+// check's condition would either silence the former or spuriously trigger
+// the latter for this exact input.
+func TestValidateRequestBodyUnixPeerProfileNoSelectorsAtAll(t *testing.T) {
+	cfg := Defaults()
+	cfg.Listen.Socket = "/tmp/sockguard.sock"
+	cfg.Listen.Address = ""
+	cfg.Clients.Profiles = []ClientProfileConfig{
+		{Name: "ro", Rules: []RuleConfig{{Match: MatchConfig{Method: "GET", Path: "/_ping"}, Action: "allow"}}},
+	}
+	cfg.Clients.UnixPeerProfiles = []ClientUnixPeerProfileAssignmentConfig{
+		{Profile: "ro"},
+	}
+
+	errs := validateRequestBody(&cfg)
+	if !containsSubstring(errs, "must contain at least one unix peer credential selector") {
+		t.Fatalf("expected selector-required rejection, got %v", errs)
+	}
+	if containsSubstring(errs, "must not select by pid alone") {
+		t.Fatalf("pid-alone rejection must not fire when pids is also empty, got %v", errs)
+	}
+}
+
 func TestValidateRequestBodyClientCertProfilesOnUnixSocket(t *testing.T) {
 	cfg := Defaults()
 	cfg.Listen.Socket = "/tmp/sockguard.sock"
@@ -399,7 +425,7 @@ func TestValidateRequestBodySourceIPProfilesOnUnixSocket(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestValidateVisibleResourceLabelsKeyWithEmptyValue(t *testing.T) {
-	errs := validateVisibleResourceLabels("test", []string{"key="})
+	errs := validateVisibleResourceLabels("test", []string{"key="}, "")
 	if len(errs) == 0 {
 		t.Fatal("expected error for key= with empty value")
 	}
@@ -409,7 +435,7 @@ func TestValidateVisibleResourceLabelsKeyWithEmptyValue(t *testing.T) {
 }
 
 func TestValidateVisibleResourceLabelsEmptyKey(t *testing.T) {
-	errs := validateVisibleResourceLabels("test", []string{"  =value"})
+	errs := validateVisibleResourceLabels("test", []string{"  =value"}, "")
 	if len(errs) == 0 {
 		t.Fatal("expected error for empty key")
 	}

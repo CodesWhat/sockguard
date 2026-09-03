@@ -20,6 +20,8 @@ response:
   redact_network_topology: false
 
 request_body:
+  container_remove:
+    allow_force: true
   container_create:
     allowed_bind_mounts: []
     # Mirror app/configs/drydock.yaml: drydock recreates from the inspect spec,

@@ -235,6 +235,30 @@ func TestVerifyWithMode_Warn_AllowsOnFailure(t *testing.T) {
 	}
 }
 
+// TestVerifyWithMode_Warn_NilLoggerDoesNotPanic ensures that VerifyWithMode's
+// warn-mode logging is guarded on a nil logger: it must not attempt to call
+// through it just because a failure needs to be recorded. This mirrors the
+// mode=off construction path (New(...) passes through whatever *slog.Logger
+// the caller wired up, which callers may leave nil).
+func TestVerifyWithMode_Warn_NilLoggerDoesNotPanic(t *testing.T) {
+	t.Parallel()
+	pemStr, _ := generateECDSAKey(t)
+	cfg, err := BuildConfig(RawConfig{
+		Mode:               ModeWarn,
+		AllowedSigningKeys: []SigningKeyConfig{{PEM: pemStr}},
+	})
+	if err != nil {
+		t.Fatalf("BuildConfig: %v", err)
+	}
+	outcome := VerifyWithMode(context.Background(), &alwaysFailVerifier{}, cfg, nil, "img:latest", "abc", nil)
+	if !outcome.Allowed {
+		t.Fatal("mode=warn must allow even when verification fails, with a nil logger")
+	}
+	if outcome.Verifier != "warn-bypass" {
+		t.Fatalf("outcome.Verifier = %q, want warn-bypass", outcome.Verifier)
+	}
+}
+
 // --- mode=enforce ---
 
 // TestVerifyWithMode_Enforce_DeniesOnFailure ensures that a verification
@@ -660,6 +684,83 @@ func TestVerify_AllVerifiersFail_CompositeError(t *testing.T) {
 	for _, fingerprint := range []string{"wrongkey1", "wrongkey2"} {
 		if !strings.Contains(verifyErr.Error(), fingerprint) {
 			t.Fatalf("error should identify attempted key %q, got: %v", fingerprint, verifyErr)
+		}
+	}
+}
+
+// TestVerify_ZeroVerifyTimeoutDoesNotShortCircuitFallback pins the boundary
+// at cfg.VerifyTimeout == 0: sigstoreVerifier.Verify only wraps ctx with a
+// deadline when VerifyTimeout is strictly positive ("a caller-supplied
+// deadline wins; otherwise apply ours only if configured positive"). At
+// exactly zero, no deadline should be added, so an unrelated ctx.Background()
+// stays live through the whole keyed→keyless fallback chain.
+//
+// If the boundary check is ever loosened to include zero (>= instead of >),
+// Verify would wrap ctx in a context.WithTimeout(ctx, 0) — a deadline that
+// has already elapsed — and every subsequent verifyKeyed/verifyKeyless call
+// would observe ctx.Err() != nil immediately after its first failure and
+// return early instead of falling through to the next candidate. That
+// collapses the composite "keyed: ...; keyless: ..." error into just the
+// first keyed attempt's canceled-verification error, and it does so
+// regardless of whether the check point was widened by a boundary shift or
+// inverted outright — so this single assertion covers both mutations of
+// that comparison.
+func TestVerify_ZeroVerifyTimeoutDoesNotShortCircuitFallback(t *testing.T) {
+	t.Parallel()
+	artifact := []byte("zero verify-timeout artifact payload")
+	digestHex := artDigest(artifact)
+
+	_, privA := generateECDSAKey(t)
+	verifierA, err := sigsig.LoadECDSAVerifier(&privA.PublicKey, crypto.SHA256)
+	if err != nil {
+		t.Fatalf("LoadECDSAVerifier: %v", err)
+	}
+
+	vs, err := ca.NewVirtualSigstore()
+	if err != nil {
+		t.Fatalf("NewVirtualSigstore: %v", err)
+	}
+	entity, err := vs.Sign("ci-bot@example.com", "https://github.com/login/oauth", artifact)
+	if err != nil {
+		t.Fatalf("vs.Sign: %v", err)
+	}
+
+	cfg := Config{
+		Mode: ModeEnforce,
+		// Both keys are wrong, so the keyed leg must exhaust both entries
+		// before falling through to the (also failing) keyless leg.
+		AllowedSigningKeys: []KeyedVerifier{
+			{verifier: verifierA, fingerprint: "wrongkey1"},
+			{verifier: verifierA, fingerprint: "wrongkey2"},
+		},
+		AllowedKeyless: []KeylessIdentity{
+			{
+				IssuerExact:    "https://accounts.google.com",
+				SubjectPattern: regexp.MustCompile(`.*`),
+			},
+		},
+		TrustedMaterial:       vs,
+		RequireRekorInclusion: true,
+		VerifyTimeout:         0, // boundary under test
+	}
+
+	sv := &sigstoreVerifier{cfg: cfg}
+	verifyErr := sv.Verify(context.Background(), "example.com/img@sha256:"+digestHex, digestHex, entity)
+	if verifyErr == nil {
+		t.Fatal("expected both verifiers to fail, got nil error")
+	}
+	if strings.Contains(verifyErr.Error(), "canceled") {
+		t.Fatalf("VerifyTimeout=0 must not inject an already-elapsed deadline, got: %v", verifyErr)
+	}
+	if !strings.Contains(verifyErr.Error(), "keyed:") {
+		t.Fatalf("error should contain 'keyed:' substring (both keys attempted), got: %v", verifyErr)
+	}
+	if !strings.Contains(verifyErr.Error(), "keyless:") {
+		t.Fatalf("error should contain 'keyless:' substring (fallback reached keyless), got: %v", verifyErr)
+	}
+	for _, fingerprint := range []string{"wrongkey1", "wrongkey2"} {
+		if !strings.Contains(verifyErr.Error(), fingerprint) {
+			t.Fatalf("error should identify attempted key %q (no short-circuit after the first), got: %v", fingerprint, verifyErr)
 		}
 	}
 }

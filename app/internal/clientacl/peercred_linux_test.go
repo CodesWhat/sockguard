@@ -37,6 +37,19 @@ func (f fakeSyscallConner) SyscallConn() (syscall.RawConn, error) {
 	return f.raw, nil
 }
 
+// TestSocketFDFromRawConnAcceptsMaxIntBoundary pins the `fd > uintptr(math.MaxInt)`
+// boundary: a file descriptor value exactly equal to math.MaxInt is in
+// range and must convert cleanly, not be rejected.
+func TestSocketFDFromRawConnAcceptsMaxIntBoundary(t *testing.T) {
+	fd, ok := socketFDFromRawConn(uintptr(math.MaxInt))
+	if !ok {
+		t.Fatalf("socketFDFromRawConn(math.MaxInt) ok = false, want true")
+	}
+	if fd != math.MaxInt {
+		t.Fatalf("socketFDFromRawConn(math.MaxInt) fd = %d, want %d", fd, math.MaxInt)
+	}
+}
+
 func TestPeerCredentialsFromSyscallerRejectsFDOverflow(t *testing.T) {
 	_, err := peerCredentialsFromSyscaller(fakeSyscallConner{
 		raw: fakeRawConn{fd: uintptr(math.MaxInt) + 1},

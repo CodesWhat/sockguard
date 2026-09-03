@@ -51,6 +51,11 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 			AllowResourceUpdates: true,
 			AllowRestartPolicy:   true,
 		},
+		ContainerRemove: ContainerRemoveRequestBodyConfig{
+			AllowForce:         true,
+			AllowRemoveVolumes: true,
+			AllowRemoveLinks:   true,
+		},
 		ContainerArchive: ContainerArchiveRequestBodyConfig{
 			AllowedPaths:       []string{"/tmp/uploads", "/var/lib/app"},
 			AllowSetID:         true,
@@ -208,6 +213,11 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 			AllowCapabilities:    true,
 			AllowResourceUpdates: true,
 			AllowRestartPolicy:   true,
+		},
+		ContainerRemove: filter.ContainerRemoveOptions{
+			AllowForce:         true,
+			AllowRemoveVolumes: true,
+			AllowRemoveLinks:   true,
 		},
 		ContainerArchive: filter.ContainerArchiveOptions{
 			AllowedPaths:       []string{"/tmp/uploads", "/var/lib/app"},
@@ -372,6 +382,79 @@ func TestRequestBodyConfigToFilterOptionsWiresNetworkEndpointConfigIntoContainer
 	if !reflect.DeepEqual(got.ContainerCreate.EndpointConfig, want) {
 		t.Errorf("ContainerCreate.EndpointConfig = %#v, want %#v (cross-wired from Network)", got.ContainerCreate.EndpointConfig, want)
 	}
+}
+
+func TestRequestBodyConfigToFilterOptionsMapsLibpodNetworkPolicy(t *testing.T) {
+	t.Run("maps every native field independently from Docker policy", func(t *testing.T) {
+		got := (RequestBodyConfig{
+			Network: NetworkRequestBodyConfig{
+				AllowSwarmScope: true,
+			},
+			LibpodNetwork: NetworkRequestBodyConfig{
+				AllowCustomDrivers:    true,
+				AllowAttachable:       true,
+				AllowCustomIPAMConfig: true,
+				AllowIPAMOptions:      true,
+				AllowDriverOptions:    true,
+				AllowEndpointConfig:   true,
+				AllowDisconnectForce:  true,
+				AllowDisableIPv4:      true,
+				AllowDNSServers:       true,
+			},
+		}).ToFilterOptions()
+
+		want := filter.NetworkOptions{
+			AllowCustomDrivers:    true,
+			AllowAttachable:       true,
+			AllowCustomIPAMConfig: true,
+			AllowIPAMOptions:      true,
+			AllowDriverOptions:    true,
+			AllowEndpointConfig:   true,
+			EndpointConfig: filter.EndpointConfigOptions{
+				DenyAliases: true,
+			},
+			AllowDisconnectForce: true,
+			AllowDisableIPv4:     true,
+			AllowDNSServers:      true,
+		}
+		if !reflect.DeepEqual(got.LibpodNetwork, want) {
+			t.Fatalf("LibpodNetwork = %#v, want %#v", got.LibpodNetwork, want)
+		}
+		if !got.Network.AllowSwarmScope {
+			t.Fatal("Network.AllowSwarmScope = false, want Docker policy preserved independently")
+		}
+		if got.LibpodNetwork.AllowSwarmScope {
+			t.Fatal("LibpodNetwork.AllowSwarmScope = true, want no cross-wire from Docker policy")
+		}
+	})
+
+	t.Run("maps granular endpoint config and inverts aliases", func(t *testing.T) {
+		got := (RequestBodyConfig{
+			LibpodNetwork: NetworkRequestBodyConfig{
+				EndpointConfig: EndpointConfigRequestBodyConfig{
+					AllowStaticAddressing: true,
+					AllowLinkLocalIPs:     true,
+					AllowMACPinning:       true,
+					AllowGwPriority:       true,
+					AllowAliases:          false,
+				},
+			},
+		}).ToFilterOptions()
+
+		want := filter.EndpointConfigOptions{
+			AllowStaticAddressing: true,
+			AllowLinkLocalIPs:     true,
+			AllowMACPinning:       true,
+			AllowGwPriority:       true,
+			DenyAliases:           true,
+		}
+		if !reflect.DeepEqual(got.LibpodNetwork.EndpointConfig, want) {
+			t.Fatalf("LibpodNetwork.EndpointConfig = %#v, want %#v", got.LibpodNetwork.EndpointConfig, want)
+		}
+		if reflect.DeepEqual(got.Network.EndpointConfig, want) {
+			t.Fatal("Network.EndpointConfig inherited the libpod-native policy")
+		}
+	})
 }
 
 func TestContainerCreateRequestBodyConfigToFilterOptionsMapsSelinuxAndSystemPaths(t *testing.T) {

@@ -88,17 +88,6 @@ func isLibpodInspectPath(normPath, collection string) bool {
 	return ok && identifier != "" && tail == libpodInspectSuffix
 }
 
-// libpodNetworkCollectionSegments are the single-segment names under
-// /libpod/networks/ that address the collection rather than one network:
-// "json" is the list route, "create" and "prune" are the two collection-level
-// POSTs. internal/ownership's libpodNetworkIdentifier reserves the same three
-// words in the same position, for the same reason.
-var libpodNetworkCollectionSegments = map[string]struct{}{
-	libpodInspectSuffix: {},
-	"create":            {},
-	"prune":             {},
-}
-
 // isLibpodNetworkInspectPath reports whether normPath is one of the TWO routes
 // Podman serves libpod.InspectNetwork on. register_networks.go at v5.8.1
 // registers both spellings against that one handler on consecutive lines:
@@ -133,8 +122,11 @@ func isLibpodNetworkInspectPath(method, normPath string) bool {
 	if segment == "" || strings.Contains(segment, "/") {
 		return false
 	}
-	_, reserved := libpodNetworkCollectionSegments[segment]
-	return !reserved
+	// Only json is a GET collection route. create and prune are collection
+	// actions on POST, but on GET those same segments are valid network names
+	// handled by InspectNetwork. The method guard above already keeps the POST
+	// actions out of this response path.
+	return segment != libpodInspectSuffix
 }
 
 // modifyLibpodResponse dispatches one normalized /libpod/ path to its
@@ -213,8 +205,11 @@ func (f *Filter) modifyLibpodVolumeList(resp *http.Response) error {
 	})
 }
 
-// modifyLibpodNetworkList rewrites GET /libpod/networks/json, a bare array of
-// go.podman.io/common libnetwork types.Network objects.
+// modifyLibpodNetworkList rewrites GET /libpod/networks/json. Podman v4 and
+// later return a bare array of go.podman.io/common libnetwork types.Network
+// objects. Podman v2.2.1 through v3.4 return embedded libcni
+// NetworkConfigList objects instead; redactLibpodNetworkTopology handles both
+// generations independently.
 func (f *Filter) modifyLibpodNetworkList(resp *http.Response) error {
 	if !f.opts.RedactNetworkTopology {
 		return nil
@@ -277,10 +272,10 @@ func (f *Filter) modifyLibpodNetworkInspect(resp *http.Response) error {
 }
 
 // redactLibpodNetworkTopology empties the host network topology from one
-// Podman-native network object. It shares no key with redactNetworkTopology,
-// which is the whole point of it existing: the Docker-compat body's IPAM,
-// Status, Containers and Peers are absent from types.Network, and every field
-// that carries the same information is spelled differently.
+// Podman-native network object. It supports the two incompatible native
+// shapes Podman has put on these routes: the raw CNI/libcni structures used
+// from v2.2.1 through v3.4, and types.Network used from v4 onward. Neither
+// shares its topology keys with Docker's IPAM/Status/Containers/Peers body.
 //
 // What is emptied, and the Docker-compat field it corresponds to:
 //
@@ -298,9 +293,19 @@ func (f *Filter) modifyLibpodNetworkInspect(resp *http.Response) error {
 //     the same class of value as the NetworkSettings.Bridge that
 //     redactContainerNetworkTopology already redacts on container inspect.
 //
-// ipam_options is deliberately left alone. It maps onto Docker's IPAM.Driver
-// and IPAM.Options, which redactNetworkTopology also leaves alone; it names
-// the allocator (host-local, dhcp), not an address.
+// In the legacy CNI shape, inspect exposes the raw lowercase plugins array.
+// Its bridge or macvlan master interface and the routes/ranges inside each
+// plugin's ipam object are topology. Host-local IPAM also accepts a
+// backward-compatible flat subnet/gateway/rangeStart/rangeEnd form, so those
+// fields are redacted independently of the newer ranges array. List embeds
+// libcni.NetworkConfigList instead, whose capitalized Plugins entries and the
+// top-level object each carry a Bytes field. Those []byte values become base64
+// strings containing the complete raw plugin or conflist, so leaving either
+// copy would undo all structured redaction. The Bytes fields are removed after
+// their wire type is validated.
+//
+// ipam_options on the modern shape and ipam.type on the legacy one are left
+// alone. They name the allocator (host-local, dhcp), not an address.
 func redactLibpodNetworkTopology(payload map[string]any) error {
 	for _, key := range libpodNetworkTopologyArrayKeys {
 		value, ok := payload[key]
@@ -321,6 +326,252 @@ func redactLibpodNetworkTopology(payload map[string]any) error {
 	}
 
 	redactStringField(payload, "network_interface")
+	return redactLegacyCNINetworkTopology(payload)
+}
+
+func redactLegacyCNINetworkTopology(payload map[string]any) error {
+	if err := removeCNIBytes(payload, "libpod CNI network"); err != nil {
+		return err
+	}
+
+	for _, key := range []string{"plugins", "Plugins"} {
+		value, ok := payload[key]
+		if !ok {
+			continue
+		}
+		plugins, ok := value.([]any)
+		if !ok {
+			return fmt.Errorf("libpod CNI network %s has unexpected type %T", key, value)
+		}
+		for i, value := range plugins {
+			plugin, ok := value.(map[string]any)
+			if !ok {
+				return fmt.Errorf("libpod CNI network %s entry %d has unexpected type %T", key, i, value)
+			}
+			if err := redactLegacyCNIPlugin(plugin); err != nil {
+				return fmt.Errorf("libpod CNI network %s entry %d: %w", key, i, err)
+			}
+		}
+	}
+	return nil
+}
+
+func redactLegacyCNIPlugin(plugin map[string]any) error {
+	if err := removeCNIBytes(plugin, "plugin"); err != nil {
+		return err
+	}
+
+	// A libcni list entry wraps its common fields in Network. A raw inspect
+	// plugin has those fields directly. Accept both representations, but never
+	// accept a present Network field with a shape that cannot be inspected.
+	if value, ok := plugin["Network"]; ok {
+		network, ok := value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("plugin Network has unexpected type %T", value)
+		}
+		if err := redactLegacyCNIPluginConfig(network); err != nil {
+			return fmt.Errorf("plugin Network: %w", err)
+		}
+	}
+
+	return redactLegacyCNIPluginConfig(plugin)
+}
+
+func redactLegacyCNIPluginConfig(plugin map[string]any) error {
+	if value, ok := plugin["bridge"]; ok && value != nil {
+		if _, ok := value.(string); !ok {
+			return fmt.Errorf("plugin bridge has unexpected type %T", value)
+		}
+		plugin["bridge"] = redactedValue
+	}
+	if err := redactLegacyCNIStringTopologyField(plugin, "master", "plugin"); err != nil {
+		return err
+	}
+	if err := redactLegacyCNIDNS(plugin); err != nil {
+		return err
+	}
+
+	value, ok := plugin["ipam"]
+	if !ok {
+		return nil
+	}
+	ipam, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf("plugin ipam has unexpected type %T", value)
+	}
+	for _, key := range []string{"subnet", "gateway", "rangeStart", "rangeEnd"} {
+		if err := redactLegacyCNIStringTopologyField(ipam, key, "plugin ipam"); err != nil {
+			return err
+		}
+	}
+	if err := redactCNIAddresses(ipam); err != nil {
+		return err
+	}
+	if err := redactLegacyCNIDNS(ipam); err != nil {
+		return fmt.Errorf("plugin ipam: %w", err)
+	}
+	if err := redactCNIObjectArray(ipam, "routes"); err != nil {
+		return err
+	}
+	if err := redactCNIRanges(ipam); err != nil {
+		return err
+	}
+	return nil
+}
+
+func redactCNIAddresses(ipam map[string]any) error {
+	value, ok := ipam["addresses"]
+	if !ok {
+		return nil
+	}
+	addresses, ok := value.([]any)
+	if !ok {
+		return fmt.Errorf("plugin ipam addresses has unexpected type %T", value)
+	}
+	for i, value := range addresses {
+		address, ok := value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("plugin ipam addresses entry %d has unexpected type %T", i, value)
+		}
+		addressValue, ok := address["address"]
+		if !ok {
+			return fmt.Errorf("plugin ipam addresses entry %d is missing address", i)
+		}
+		if _, ok := addressValue.(string); !ok {
+			return fmt.Errorf("plugin ipam addresses entry %d address has unexpected type %T", i, addressValue)
+		}
+		if gateway, ok := address["gateway"]; ok {
+			if _, ok := gateway.(string); !ok {
+				return fmt.Errorf("plugin ipam addresses entry %d gateway has unexpected type %T", i, gateway)
+			}
+		}
+	}
+	ipam["addresses"] = []any{}
+	return nil
+}
+
+func redactLegacyCNIDNS(plugin map[string]any) error {
+	value, ok := plugin["dns"]
+	if !ok {
+		return nil
+	}
+	dns, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf("plugin dns has unexpected type %T", value)
+	}
+
+	_, hasNameservers, err := legacyCNIDNSStringArray(dns, "nameservers")
+	if err != nil {
+		return err
+	}
+	_, hasSearch, err := legacyCNIDNSStringArray(dns, "search")
+	if err != nil {
+		return err
+	}
+	options, hasOptions, err := legacyCNIDNSStringArray(dns, "options")
+	if err != nil {
+		return err
+	}
+	sanitized := make(map[string]any, 4)
+	if hasNameservers {
+		sanitized["nameservers"] = []any{}
+	}
+	if value, ok := dns["domain"]; ok {
+		if _, ok := value.(string); !ok {
+			return fmt.Errorf("plugin dns domain has unexpected type %T", value)
+		}
+		sanitized["domain"] = redactedValue
+	}
+	if hasSearch {
+		sanitized["search"] = []any{}
+	}
+	if hasOptions {
+		sanitized["options"] = options
+	}
+	plugin["dns"] = sanitized
+	return nil
+}
+
+func legacyCNIDNSStringArray(dns map[string]any, key string) ([]any, bool, error) {
+	value, ok := dns[key]
+	if !ok {
+		return nil, false, nil
+	}
+	items, ok := value.([]any)
+	if !ok {
+		return nil, false, fmt.Errorf("plugin dns %s has unexpected type %T", key, value)
+	}
+	for i, value := range items {
+		if _, ok := value.(string); !ok {
+			return nil, false, fmt.Errorf("plugin dns %s entry %d has unexpected type %T", key, i, value)
+		}
+	}
+	return items, true, nil
+}
+
+func redactLegacyCNIStringTopologyField(payload map[string]any, key, context string) error {
+	value, ok := payload[key]
+	if !ok {
+		return nil
+	}
+	if _, ok := value.(string); !ok {
+		return fmt.Errorf("%s %s has unexpected type %T", context, key, value)
+	}
+	payload[key] = redactedValue
+	return nil
+}
+
+func redactCNIObjectArray(payload map[string]any, key string) error {
+	value, ok := payload[key]
+	if !ok {
+		return nil
+	}
+	items, ok := value.([]any)
+	if !ok {
+		return fmt.Errorf("plugin ipam %s has unexpected type %T", key, value)
+	}
+	for i, value := range items {
+		if _, ok := value.(map[string]any); !ok {
+			return fmt.Errorf("plugin ipam %s entry %d has unexpected type %T", key, i, value)
+		}
+	}
+	payload[key] = []any{}
+	return nil
+}
+
+func redactCNIRanges(ipam map[string]any) error {
+	value, ok := ipam["ranges"]
+	if !ok {
+		return nil
+	}
+	rangeSets, ok := value.([]any)
+	if !ok {
+		return fmt.Errorf("plugin ipam ranges has unexpected type %T", value)
+	}
+	for i, value := range rangeSets {
+		ranges, ok := value.([]any)
+		if !ok {
+			return fmt.Errorf("plugin ipam ranges set %d has unexpected type %T", i, value)
+		}
+		for j, value := range ranges {
+			if _, ok := value.(map[string]any); !ok {
+				return fmt.Errorf("plugin ipam ranges set %d entry %d has unexpected type %T", i, j, value)
+			}
+		}
+	}
+	ipam["ranges"] = []any{}
+	return nil
+}
+
+func removeCNIBytes(payload map[string]any, context string) error {
+	value, ok := payload["Bytes"]
+	if !ok {
+		return nil
+	}
+	if _, ok := value.(string); !ok {
+		return fmt.Errorf("%s Bytes has unexpected type %T", context, value)
+	}
+	delete(payload, "Bytes")
 	return nil
 }
 

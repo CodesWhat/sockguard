@@ -1,10 +1,12 @@
 package responsefilter
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -79,6 +81,145 @@ func assertPresent(t *testing.T, label, body string, wanted ...string) {
 	}
 }
 
+func libpodLegacyCNIPluginsForTest(t *testing.T, body string) []map[string]any {
+	t.Helper()
+
+	var decoded any
+	if err := json.Unmarshal([]byte(body), &decoded); err != nil {
+		t.Fatalf("decode legacy CNI response: %v", err)
+	}
+	var network map[string]any
+	switch value := decoded.(type) {
+	case map[string]any:
+		network = value
+	case []any:
+		if len(value) != 1 {
+			t.Fatalf("legacy CNI response has %d array elements, want 1", len(value))
+		}
+		var ok bool
+		network, ok = value[0].(map[string]any)
+		if !ok {
+			t.Fatalf("legacy CNI array element has type %T, want object", value[0])
+		}
+	default:
+		t.Fatalf("legacy CNI response has type %T, want object or array", decoded)
+	}
+	values, ok := network["plugins"].([]any)
+	if !ok {
+		t.Fatalf("legacy CNI plugins has type %T, want array", network["plugins"])
+	}
+	plugins := make([]map[string]any, 0, len(values))
+	for i, value := range values {
+		plugin, ok := value.(map[string]any)
+		if !ok {
+			t.Fatalf("legacy CNI plugin %d has type %T, want object", i, value)
+		}
+		plugins = append(plugins, plugin)
+	}
+	if len(plugins) == 0 {
+		t.Fatal("legacy CNI response has no plugins")
+	}
+	return plugins
+}
+
+func libpodLegacyCNIListNetworksForTest(t *testing.T, body string) []map[string]any {
+	t.Helper()
+
+	var reports []map[string]any
+	if err := json.Unmarshal([]byte(body), &reports); err != nil {
+		t.Fatalf("decode legacy CNI list response: %v", err)
+	}
+	if len(reports) != 1 {
+		t.Fatalf("legacy CNI list response has %d reports, want 1", len(reports))
+	}
+	values, ok := reports[0]["Plugins"].([]any)
+	if !ok {
+		t.Fatalf("legacy CNI list Plugins has type %T, want array", reports[0]["Plugins"])
+	}
+	networks := make([]map[string]any, 0, len(values))
+	for i, value := range values {
+		plugin, ok := value.(map[string]any)
+		if !ok {
+			t.Fatalf("legacy CNI list plugin %d has type %T, want object", i, value)
+		}
+		network, ok := plugin["Network"].(map[string]any)
+		if !ok {
+			t.Fatalf("legacy CNI list plugin %d Network has type %T, want object", i, plugin["Network"])
+		}
+		networks = append(networks, network)
+	}
+	if len(networks) == 0 {
+		t.Fatal("legacy CNI list response has no plugin networks")
+	}
+	return networks
+}
+
+func addStaleRepresentationMetadata(resp *http.Response) {
+	for _, name := range []string{
+		"Accept-Ranges",
+		"Content-Digest",
+		"Content-Encoding",
+		"Content-Language",
+		"Content-Length",
+		"Content-Location",
+		"Content-MD5",
+		"Content-Range",
+		"Digest",
+		"ETag",
+		"Last-Modified",
+		"Repr-Digest",
+		"Trailer",
+		"Transfer-Encoding",
+	} {
+		resp.Header.Set(name, "stale-upstream-value")
+	}
+	resp.Header.Set("Content-Type", "application/json; charset=utf-8")
+	resp.Header.Set("X-Upstream-Metadata", "keep-me")
+	resp.TransferEncoding = []string{"chunked"}
+	resp.Trailer = http.Header{
+		"Digest":             []string{"sha-256=:stale-upstream-trailer:"},
+		"X-Upstream-Trailer": []string{"must-not-reach-client"},
+	}
+}
+
+func assertRewrittenRepresentationMetadata(t *testing.T, resp *http.Response) {
+	t.Helper()
+	for _, name := range []string{
+		"Accept-Ranges",
+		"Content-Digest",
+		"Content-Encoding",
+		"Content-Language",
+		"Content-Location",
+		"Content-MD5",
+		"Content-Range",
+		"Digest",
+		"ETag",
+		"Last-Modified",
+		"Repr-Digest",
+		"Trailer",
+		"Transfer-Encoding",
+	} {
+		if got := resp.Header.Values(name); len(got) != 0 {
+			t.Errorf("%s = %#v, want cleared after body rewrite", name, got)
+		}
+	}
+	if got, want := resp.Header.Get("Content-Length"), strconv.FormatInt(resp.ContentLength, 10); got != want {
+		t.Errorf("Content-Length = %q, want rewritten length %q", got, want)
+	}
+	if got := resp.Header.Get("Content-Type"); got != "application/json; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want preserved JSON type", got)
+	}
+	if got := resp.Header.Get("X-Upstream-Metadata"); got != "keep-me" {
+		t.Errorf("X-Upstream-Metadata = %q, want unrelated metadata preserved", got)
+	}
+	if resp.TransferEncoding != nil {
+		t.Errorf("TransferEncoding = %#v, want fixed-length rewritten response", resp.TransferEncoding)
+	}
+	if len(resp.Trailer) != 0 {
+		t.Errorf("Trailer = %#v, want cleared after body rewrite", resp.Trailer)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Containers
 // ---------------------------------------------------------------------------
@@ -97,6 +238,15 @@ func assertPresent(t *testing.T, label, body string, wanted ...string) {
 const libpodContainerInspectUpstream = `{
   "Id": "ctr-a",
   "Name": "team-a-web",
+  "Path": "/usr/bin/sleep",
+  "Rootfs": "/var/lib/containers/storage/overlay/ctr-a/merged",
+  "ResolvConfPath": "/run/user/1000/containers/ctr-a/resolv.conf",
+  "HostnamePath": "/run/user/1000/containers/ctr-a/hostname",
+  "HostsPath": "/run/user/1000/containers/ctr-a/hosts",
+  "StaticDir": "/home/alice/.local/share/containers/storage/overlay-containers/ctr-a/userdata",
+  "OCIConfigPath": "/run/user/1000/containers/ctr-a/config.json",
+  "ConmonPidFile": "/run/user/1000/containers/ctr-a/conmon.pid",
+  "PidFile": "/run/user/1000/containers/ctr-a/container.pid",
   "Config": {"Env": ["PATH=/usr/bin", "DB_PASSWORD=libpod-env-secret"], "Labels": {"owner": "team-a"}},
   "Mounts": [{"Type": "bind", "Source": "/host/team-a-secrets", "Destination": "/run/secrets"}],
   "HostConfig": {
@@ -137,6 +287,23 @@ const libpodCompatContainerInspectUpstream = `{
   "NetworkSettings": {"Bridge": "docker0", "IPAddress": "172.17.0.4", "Networks": {"bridge": {"NetworkID": "compat-net", "IPAddress": "172.17.0.4"}}}
 }`
 
+func TestLibpodContainerInspectRedactsRuntimeHostPaths(t *testing.T) {
+	t.Parallel()
+
+	body := libpodBodyForTest(t, Options{RedactMountPaths: true}, "/v5.8.1/libpod/containers/ctr-a/json", libpodContainerInspectUpstream)
+	assertAbsent(t, "libpod container inspect runtime paths", body,
+		"/var/lib/containers/storage/overlay/ctr-a/merged",
+		"/run/user/1000/containers/ctr-a/resolv.conf",
+		"/run/user/1000/containers/ctr-a/hostname",
+		"/run/user/1000/containers/ctr-a/hosts",
+		"/home/alice/.local/share/containers/storage/overlay-containers/ctr-a/userdata",
+		"/run/user/1000/containers/ctr-a/config.json",
+		"/run/user/1000/containers/ctr-a/conmon.pid",
+		"/run/user/1000/containers/ctr-a/container.pid",
+	)
+	assertPresent(t, "libpod container inspect runtime paths", body, `"Path":"/usr/bin/sleep"`, `"Id":"ctr-a"`)
+}
+
 func TestLibpodContainerInspectIsRedacted(t *testing.T) {
 	t.Parallel()
 
@@ -174,6 +341,18 @@ func TestLibpodContainerInspectIsRedacted(t *testing.T) {
 			"container:other", "docker0", "172.17.0.4", "compat-net",
 		)
 	})
+}
+
+func TestLibpodObjectRewriteClearsStaleRepresentationMetadata(t *testing.T) {
+	t.Parallel()
+	resp := newResponseForTest(t, http.MethodGet, "/v5.8.1/libpod/containers/ctr-a/json", libpodContainerInspectUpstream)
+	addStaleRepresentationMetadata(resp)
+
+	if err := New(allRedactions).ModifyResponse(resp); err != nil {
+		t.Fatalf("ModifyResponse() error = %v, want nil", err)
+	}
+
+	assertRewrittenRepresentationMetadata(t, resp)
 }
 
 // libpodContainerListUpstream is a GET /libpod/containers/json body:
@@ -270,6 +449,18 @@ func TestLibpodVolumeMountpointIsRedacted(t *testing.T) {
 	})
 }
 
+func TestLibpodStreamingListRewriteClearsStaleRepresentationMetadata(t *testing.T) {
+	t.Parallel()
+	resp := newResponseForTest(t, http.MethodGet, "/v5.8.1/libpod/volumes/json", libpodVolumeListUpstream)
+	addStaleRepresentationMetadata(resp)
+
+	if err := New(allRedactions).ModifyResponse(resp); err != nil {
+		t.Fatalf("ModifyResponse() error = %v, want nil", err)
+	}
+
+	assertRewrittenRepresentationMetadata(t, resp)
+}
+
 // ---------------------------------------------------------------------------
 // Networks
 // ---------------------------------------------------------------------------
@@ -304,6 +495,170 @@ const libpodNetworkInspectUpstream = `{
 // of types.Network, with no containers map.
 const libpodNetworkListUpstream = `[{"name":"team-a-net","id":"net-team-a","network_interface":"podman1",` +
 	`"subnets":[{"subnet":"10.89.0.0/24","gateway":"10.89.0.1"}],"network_dns_servers":["10.89.0.53"],"labels":{"owner":"team-a"}}]`
+
+// libpodLegacyCNIInspectUpstream is the raw CNI conflist returned by network
+// inspect from Podman v2.2.1 through v3.4.4. The bridge fixture and its
+// topology values come from v3.4.4's cni/87-podman-bridge.conflist; labels and
+// the resource name are the non-topology metadata that callers still need.
+const libpodLegacyCNIInspectUpstream = `{
+  "cniVersion": "0.4.0",
+  "name": "team-a-net",
+  "plugins": [
+    {
+      "type": "bridge",
+      "bridge": "cni-podman0",
+      "isGateway": true,
+      "ipMasq": true,
+      "hairpinMode": true,
+      "ipam": {
+        "type": "host-local",
+        "routes": [{"dst": "0.0.0.0/0"}],
+        "ranges": [[{"subnet": "10.88.0.0/16", "gateway": "10.88.0.1"}]]
+      }
+    },
+    {"type": "portmap", "capabilities": {"portMappings": true}},
+    {"type": "firewall"},
+    {"type": "tuning"}
+  ],
+  "labels": {"owner": "team-a", "purpose": "monitoring"}
+}`
+
+// Podman v2.2.1 through v3.4.4 writes the selected host parent interface to a
+// macvlan plugin's master field. Native inspect returns that raw field.
+const libpodLegacyCNIMacVLANInspectUpstream = `{
+  "cniVersion": "0.4.0",
+  "name": "team-a-macvlan",
+  "plugins": [
+    {
+      "type": "macvlan",
+      "master": "enp3s0",
+      "mode": "bridge",
+      "ipam": {"type": "dhcp"}
+    }
+  ],
+  "labels": {"owner": "team-a"}
+}`
+
+// host-local kept this flat form for backward compatibility after ranges was
+// added. Podman returns a hand-authored valid conflist byte-for-byte on inspect,
+// so both representations can reach the response filter.
+const libpodLegacyCNIFlatIPAMInspectUpstream = `{
+  "cniVersion": "0.4.0",
+  "name": "team-a-flat-ipam",
+  "plugins": [
+    {
+      "type": "bridge",
+      "bridge": "cni-podman9",
+      "ipam": {
+        "type": "host-local",
+        "subnet": "10.77.0.0/24",
+        "rangeStart": "10.77.0.10",
+        "rangeEnd": "10.77.0.200",
+        "gateway": "10.77.0.1",
+        "customAllocatorMetadata": "keep-me"
+      }
+    }
+  ],
+  "labels": {"owner": "team-a"}
+}`
+
+// The static IPAM plugin shipped with the CNI versions used by Podman
+// v2.2.1-v3.4.4 accepts address/gateway pairs and its own nested DNS block.
+// Both sit below ipam rather than on the network plugin itself.
+const libpodLegacyCNIStaticIPAMInspectUpstream = `{
+  "cniVersion": "0.4.0",
+  "name": "team-a-static-ipam",
+  "plugins": [
+    {
+      "type": "bridge",
+      "isGateway": true,
+      "ipam": {
+        "type": "static",
+        "addresses": [
+          {"address": "10.66.0.25/24", "gateway": "10.66.0.1"},
+          {"address": "fd00:66::25/64", "gateway": "fd00:66::1"}
+        ],
+        "dns": {
+          "nameservers": ["10.66.0.53", "fd00:66::53"],
+          "domain": "team-a.static.internal",
+          "search": ["svc.team-a.static.internal"],
+          "options": ["ndots:2"],
+          "extension": "remove-me-too"
+        }
+      }
+    }
+  ],
+  "labels": {"owner": "team-a"}
+}`
+
+// The CNI DNS type used by Podman v2.2.1-v3.4.4 exposes resolver addresses and
+// internal naming topology in nameservers, domain, and search. Resolver
+// options describe behavior rather than topology and remain available,
+// matching the modern contract's selective removal of network_dns_servers.
+const libpodLegacyCNIDNSInspectUpstream = `{
+  "cniVersion": "0.4.0",
+  "name": "team-a-dns",
+  "plugins": [
+    {
+      "type": "bridge",
+      "dns": {
+        "nameservers": ["10.77.0.53", "fd00:77::53"],
+        "domain": "team-a.internal",
+        "search": ["svc.team-a.internal", "corp.internal"],
+        "options": ["ndots:2"],
+        "extension": "remove-me"
+      }
+    }
+  ],
+  "labels": {"owner": "team-a"}
+}`
+
+// Podman v2/v3 list reports embed libcni.NetworkConfigList. encoding/json
+// therefore exposes the Go field names Plugins and Bytes, and each plugin is
+// another NetworkConfig with its own Bytes copy. Those byte slices are base64
+// representations of the complete raw CNI documents, including every value
+// removed from the structured inspect form.
+const libpodLegacyCNIBridgeBytes = `{"type":"bridge","bridge":"cni-podman0","isGateway":true,"ipMasq":true,"hairpinMode":true,"ipam":{"type":"host-local","routes":[{"dst":"0.0.0.0/0"}],"ranges":[[{"subnet":"10.88.0.0/16","gateway":"10.88.0.1"}]]}}`
+
+func libpodLegacyCNIListUpstream(t *testing.T) (string, string, string) {
+	t.Helper()
+	conflistBytes := base64.StdEncoding.EncodeToString([]byte(libpodLegacyCNIInspectUpstream))
+	bridgeBytes := base64.StdEncoding.EncodeToString([]byte(libpodLegacyCNIBridgeBytes))
+	payload := []map[string]any{{
+		"Name":         "team-a-net",
+		"CNIVersion":   "0.4.0",
+		"DisableCheck": false,
+		"Plugins": []any{
+			map[string]any{
+				"Network": map[string]any{
+					"cniVersion": "0.4.0",
+					"name":       "team-a-net",
+					"type":       "bridge",
+					"ipam":       map[string]any{"type": "host-local"},
+					"dns": map[string]any{
+						"nameservers": []any{"10.88.0.53", "fd00:88::53"},
+						"domain":      "team-a.internal",
+						"search":      []any{"svc.team-a.internal", "corp.internal"},
+						"options":     []any{"ndots:2"},
+						"extension":   "remove-me",
+					},
+				},
+				"Bytes": bridgeBytes,
+			},
+			map[string]any{
+				"Network": map[string]any{"type": "portmap", "capabilities": map[string]any{"portMappings": true}, "dns": map[string]any{}},
+				"Bytes":   base64.StdEncoding.EncodeToString([]byte(`{"type":"portmap","capabilities":{"portMappings":true}}`)),
+			},
+		},
+		"Bytes":  conflistBytes,
+		"Labels": map[string]any{"owner": "team-a", "purpose": "monitoring"},
+	}}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal legacy CNI list fixture: %v", err)
+	}
+	return string(body), conflistBytes, bridgeBytes
+}
 
 // libpodNetworkTopologySentinels are the values that must not survive on
 // either libpod network route.
@@ -362,6 +717,21 @@ func TestLibpodNetworkTopologyIsRedacted(t *testing.T) {
 		assertPresent(t, "libpod network inspect (bare path)", body, `"team-a-net"`, `"net-team-a"`, "host-local")
 	})
 
+	// create and prune are collection actions only on POST. Podman's GET
+	// /libpod/networks/{name} route still inspects networks with either name,
+	// so method-independent keyword reservation would leak their topology.
+	t.Run("libpod inspect, bare path with action-shaped network name", func(t *testing.T) {
+		t.Parallel()
+		for _, path := range []string{
+			"/libpod/networks/create",
+			"/v5.8.1/libpod/networks/prune",
+		} {
+			body := libpodBodyForTest(t, allRedactions, path, libpodNetworkInspectUpstream)
+			assertAbsent(t, path, body, libpodNetworkTopologySentinels...)
+			assertPresent(t, path, body, `"team-a-net"`, `"net-team-a"`, "host-local")
+		}
+	})
+
 	t.Run("libpod list", func(t *testing.T) {
 		t.Parallel()
 		body := libpodBodyForTest(t, allRedactions, "/v5.8.1/libpod/networks/json", libpodNetworkListUpstream)
@@ -397,6 +767,374 @@ func TestLibpodNetworkTopologyIsRedacted(t *testing.T) {
 		body := libpodBodyForTest(t, allRedactions, "/v1.51/networks/compat-net", compatInspect)
 		assertAbsent(t, "compat network inspect", body, "172.17.0.0/16", "172.17.0.1", "compat-web", "172.17.0.4/16", "node-1", "10.0.0.1")
 	})
+}
+
+func TestLibpodLegacyCNINetworkTopologyIsRedacted(t *testing.T) {
+	t.Parallel()
+
+	legacySentinels := []string{"cni-podman0", "0.0.0.0/0", "10.88.0.0/16", "10.88.0.1"}
+
+	// v2.2.1 and v3.0.0 wrote the complete reports slice. v3.1.0 through
+	// v3.4.4 wrote reports[0]. Exercise both envelopes, both inspect aliases,
+	// versioned and unversioned routing, and action-shaped network names.
+	inspectCases := []struct {
+		name, path, upstream string
+		wantArray            bool
+	}{
+		{"v2.2 array, versioned suffixed path", "/v2.2.1/libpod/networks/team-a-net/json", "[" + libpodLegacyCNIInspectUpstream + "]", true},
+		{"v3.0 array, bare create-named GET", "/libpod/networks/create", "[" + libpodLegacyCNIInspectUpstream + "]", true},
+		{"v3.1 object, unversioned suffixed path", "/libpod/networks/team-a-net/json", libpodLegacyCNIInspectUpstream, false},
+		{"v3.4 object, versioned prune-named GET", "/v3.4.4/libpod/networks/prune", libpodLegacyCNIInspectUpstream, false},
+	}
+	for _, tc := range inspectCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			body := libpodBodyForTest(t, allRedactions, tc.path, tc.upstream)
+			assertAbsent(t, tc.name, body, legacySentinels...)
+			assertPresent(t, tc.name, body, `"team-a-net"`, `"team-a"`, `"monitoring"`, `"host-local"`, `"portmap"`, `"hairpinMode":true`)
+			if got := strings.HasPrefix(strings.TrimSpace(body), "["); got != tc.wantArray {
+				t.Errorf("array envelope = %v, want %v; body: %s", got, tc.wantArray, body)
+			}
+		})
+	}
+
+	for _, path := range []string{"/libpod/networks/json", "/v2.2.1/libpod/networks/json", "/v3.4.4/libpod/networks/json"} {
+		t.Run("legacy list "+path, func(t *testing.T) {
+			t.Parallel()
+			upstream, conflistBytes, bridgeBytes := libpodLegacyCNIListUpstream(t)
+			body := libpodBodyForTest(t, allRedactions, path, upstream)
+			assertAbsent(t, path, body, append(legacySentinels, conflistBytes, bridgeBytes, `"Bytes"`)...)
+			assertPresent(t, path, body, `"team-a-net"`, `"team-a"`, `"monitoring"`, `"host-local"`, `"portmap"`, `"portMappings":true`)
+		})
+	}
+
+	// Podman 4.0 switched these routes to types.Network; keep the modern leg
+	// explicit so adding CNI handling cannot narrow the v4/v5 behavior.
+	t.Run("v4 modern object", func(t *testing.T) {
+		t.Parallel()
+		body := libpodBodyForTest(t, allRedactions, "/v4.0.0/libpod/networks/net-team-a/json", libpodNetworkInspectUpstream)
+		assertAbsent(t, "v4 modern inspect", body, libpodNetworkTopologySentinels...)
+		assertPresent(t, "v4 modern inspect", body, `"team-a-net"`, `"team-a"`, `"host-local"`)
+	})
+
+	// Collection writes and removal reports are not reads, even when their
+	// response happens to contain a legacy CNI object.
+	t.Run("legacy write responses pass through", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct{ method, path string }{
+			{http.MethodPost, "/v3.4.4/libpod/networks/create"},
+			{http.MethodPost, "/libpod/networks/prune"},
+			{http.MethodDelete, "/v3.4.4/libpod/networks/team-a-net"},
+		} {
+			body := libpodBodyForMethodTest(t, allRedactions, tc.method, tc.path, libpodLegacyCNIInspectUpstream)
+			if body != libpodLegacyCNIInspectUpstream {
+				t.Errorf("%s %s was rewritten:\n got: %s\nwant: %s", tc.method, tc.path, body, libpodLegacyCNIInspectUpstream)
+			}
+		}
+	})
+}
+
+func TestLibpodLegacyCNIMacVLANMasterIsRedacted(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name, path, upstream string
+	}{
+		{
+			name:     "v2 array on versioned suffixed path",
+			path:     "/v2.2.1/libpod/networks/team-a-macvlan/json",
+			upstream: "[" + libpodLegacyCNIMacVLANInspectUpstream + "]",
+		},
+		{
+			name:     "v3 object on unversioned action-named bare path",
+			path:     "/libpod/networks/create",
+			upstream: libpodLegacyCNIMacVLANInspectUpstream,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			body := libpodBodyForTest(t, allRedactions, tc.path, tc.upstream)
+			assertAbsent(t, tc.name, body, "enp3s0")
+			assertPresent(t, tc.name, body,
+				`"mode":"bridge"`,
+				`"type":"macvlan"`,
+				`"type":"dhcp"`,
+				`"owner":"team-a"`,
+			)
+			plugins := libpodLegacyCNIPluginsForTest(t, body)
+			if got := plugins[0]["master"]; got != redactedValue {
+				t.Errorf("master = %#v, want %q", got, redactedValue)
+			}
+		})
+	}
+}
+
+func TestLibpodLegacyCNIFlatHostLocalTopologyIsRedacted(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name, path, upstream string
+	}{
+		{
+			name:     "v2 array on versioned suffixed path",
+			path:     "/v2.2.1/libpod/networks/team-a-flat-ipam/json",
+			upstream: "[" + libpodLegacyCNIFlatIPAMInspectUpstream + "]",
+		},
+		{
+			name:     "v3 object on versioned action-named bare path",
+			path:     "/v3.4.4/libpod/networks/prune",
+			upstream: libpodLegacyCNIFlatIPAMInspectUpstream,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			body := libpodBodyForTest(t, allRedactions, tc.path, tc.upstream)
+			assertAbsent(t, tc.name, body, "10.77.0.0/24", "10.77.0.10", "10.77.0.200", "10.77.0.1")
+			assertPresent(t, tc.name, body,
+				`"type":"bridge"`,
+				`"type":"host-local"`,
+				`"customAllocatorMetadata":"keep-me"`,
+				`"owner":"team-a"`,
+			)
+
+			plugins := libpodLegacyCNIPluginsForTest(t, body)
+			ipam, ok := plugins[0]["ipam"].(map[string]any)
+			if !ok {
+				t.Fatalf("ipam has type %T, want object", plugins[0]["ipam"])
+			}
+			for _, key := range []string{"subnet", "gateway", "rangeStart", "rangeEnd"} {
+				if got := ipam[key]; got != redactedValue {
+					t.Errorf("ipam.%s = %#v, want %q", key, got, redactedValue)
+				}
+			}
+		})
+	}
+}
+
+func TestLibpodLegacyCNIStaticIPAMTopologyIsRedacted(t *testing.T) {
+	t.Parallel()
+
+	inspectCases := []struct {
+		name, path, upstream string
+	}{
+		{
+			name:     "v2.2 array on versioned suffixed path",
+			path:     "/v2.2.1/libpod/networks/team-a-static-ipam/json",
+			upstream: "[" + libpodLegacyCNIStaticIPAMInspectUpstream + "]",
+		},
+		{
+			name:     "v3.4 object on versioned suffixed path",
+			path:     "/v3.4.4/libpod/networks/team-a-static-ipam/json",
+			upstream: libpodLegacyCNIStaticIPAMInspectUpstream,
+		},
+		{
+			name:     "v3 object on unversioned create-named bare path",
+			path:     "/libpod/networks/create",
+			upstream: libpodLegacyCNIStaticIPAMInspectUpstream,
+		},
+		{
+			name:     "v3 object on versioned prune-named bare path",
+			path:     "/v3.4.4/libpod/networks/prune",
+			upstream: libpodLegacyCNIStaticIPAMInspectUpstream,
+		},
+	}
+	for _, tc := range inspectCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			body := libpodBodyForTest(t, allRedactions, tc.path, tc.upstream)
+			assertAbsent(t, tc.name, body,
+				"10.66.0.25/24",
+				"10.66.0.1",
+				"fd00:66::25/64",
+				"fd00:66::1",
+				"10.66.0.53",
+				"fd00:66::53",
+				"team-a.static.internal",
+				"svc.team-a.static.internal",
+				"remove-me-too",
+			)
+			assertPresent(t, tc.name, body,
+				`"type":"static"`,
+				`"options":["ndots:2"]`,
+				`"isGateway":true`,
+				`"owner":"team-a"`,
+			)
+
+			plugins := libpodLegacyCNIPluginsForTest(t, body)
+			ipam, ok := plugins[0]["ipam"].(map[string]any)
+			if !ok {
+				t.Fatalf("ipam has type %T, want object", plugins[0]["ipam"])
+			}
+			if got := ipam["type"]; got != "static" {
+				t.Errorf("ipam.type = %#v, want static", got)
+			}
+			if got, ok := ipam["addresses"].([]any); !ok || len(got) != 0 {
+				t.Errorf("ipam.addresses = %#v, want empty array", ipam["addresses"])
+			}
+			dns, ok := ipam["dns"].(map[string]any)
+			if !ok {
+				t.Fatalf("ipam.dns has type %T, want object", ipam["dns"])
+			}
+			if got, ok := dns["nameservers"].([]any); !ok || len(got) != 0 {
+				t.Errorf("ipam.dns.nameservers = %#v, want empty array", dns["nameservers"])
+			}
+			if got := dns["domain"]; got != redactedValue {
+				t.Errorf("ipam.dns.domain = %#v, want %q", got, redactedValue)
+			}
+			if got, ok := dns["search"].([]any); !ok || len(got) != 0 {
+				t.Errorf("ipam.dns.search = %#v, want empty array", dns["search"])
+			}
+			if _, ok := dns["extension"]; ok {
+				t.Errorf("unknown ipam.dns extension survived: %#v", dns["extension"])
+			}
+		})
+	}
+
+	validCases := []struct {
+		name, path, upstream string
+	}{
+		{
+			name: "empty addresses and dns",
+			path: "/v2.2.1/libpod/networks/empty-static/json",
+			upstream: `[{
+  "cniVersion":"0.4.0",
+  "name":"empty-static",
+  "plugins":[{"type":"bridge","ipam":{"type":"static","addresses":[],"dns":{}}}]
+}]`,
+		},
+		{
+			name: "options-only nested dns",
+			path: "/v3.4.4/libpod/networks/create",
+			upstream: `{
+  "cniVersion":"0.4.0",
+  "name":"options-static",
+  "plugins":[{"type":"bridge","ipam":{"type":"static","dns":{"options":["ndots:1"]}}}]
+}`,
+		},
+	}
+	for _, tc := range validCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			body := libpodBodyForTest(t, allRedactions, tc.path, tc.upstream)
+			assertPresent(t, tc.name, body, `"type":"static"`)
+			if strings.Contains(tc.upstream, "ndots:1") {
+				assertPresent(t, tc.name, body, `"options":["ndots:1"]`)
+			}
+		})
+	}
+
+	t.Run("write and delete responses pass through", func(t *testing.T) {
+		t.Parallel()
+		for _, tc := range []struct{ method, path string }{
+			{http.MethodPost, "/v3.4.4/libpod/networks/create"},
+			{http.MethodPost, "/libpod/networks/prune"},
+			{http.MethodDelete, "/v3.4.4/libpod/networks/team-a-static-ipam"},
+		} {
+			body := libpodBodyForMethodTest(t, allRedactions, tc.method, tc.path, libpodLegacyCNIStaticIPAMInspectUpstream)
+			if body != libpodLegacyCNIStaticIPAMInspectUpstream {
+				t.Errorf("%s %s was rewritten:\n got: %s\nwant: %s", tc.method, tc.path, body, libpodLegacyCNIStaticIPAMInspectUpstream)
+			}
+		}
+	})
+}
+
+func TestLibpodLegacyCNIDNSTopologyIsRedacted(t *testing.T) {
+	t.Parallel()
+
+	inspectCases := []struct {
+		name, path, upstream string
+	}{
+		{
+			name:     "v2 array on versioned suffixed path",
+			path:     "/v2.2.1/libpod/networks/team-a-dns/json",
+			upstream: "[" + libpodLegacyCNIDNSInspectUpstream + "]",
+		},
+		{
+			name:     "v3 array on unversioned action-named bare path",
+			path:     "/libpod/networks/create",
+			upstream: "[" + libpodLegacyCNIDNSInspectUpstream + "]",
+		},
+		{
+			name:     "v3 object on unversioned suffixed path",
+			path:     "/libpod/networks/team-a-dns/json",
+			upstream: libpodLegacyCNIDNSInspectUpstream,
+		},
+		{
+			name:     "v3 object on versioned action-named bare path",
+			path:     "/v3.4.4/libpod/networks/prune",
+			upstream: libpodLegacyCNIDNSInspectUpstream,
+		},
+	}
+	for _, tc := range inspectCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			body := libpodBodyForTest(t, allRedactions, tc.path, tc.upstream)
+			assertAbsent(t, tc.name, body,
+				"10.77.0.53",
+				"fd00:77::53",
+				"team-a.internal",
+				"svc.team-a.internal",
+				"corp.internal",
+				"remove-me",
+			)
+			assertPresent(t, tc.name, body, `"name":"team-a-dns"`, `"options":["ndots:2"]`, `"owner":"team-a"`)
+
+			plugins := libpodLegacyCNIPluginsForTest(t, body)
+			dns, ok := plugins[0]["dns"].(map[string]any)
+			if !ok {
+				t.Fatalf("dns has type %T, want object", plugins[0]["dns"])
+			}
+			if got, ok := dns["nameservers"].([]any); !ok || len(got) != 0 {
+				t.Errorf("dns.nameservers = %#v, want empty array", dns["nameservers"])
+			}
+			if got := dns["domain"]; got != redactedValue {
+				t.Errorf("dns.domain = %#v, want %q", got, redactedValue)
+			}
+			if got, ok := dns["search"].([]any); !ok || len(got) != 0 {
+				t.Errorf("dns.search = %#v, want empty array", dns["search"])
+			}
+			if _, ok := dns["extension"]; ok {
+				t.Errorf("unknown dns extension survived: %#v", dns["extension"])
+			}
+		})
+	}
+
+	for _, path := range []string{"/libpod/networks/json", "/v3.4.4/libpod/networks/json"} {
+		t.Run("capitalized list wrapper "+path, func(t *testing.T) {
+			t.Parallel()
+			upstream, _, _ := libpodLegacyCNIListUpstream(t)
+			body := libpodBodyForTest(t, allRedactions, path, upstream)
+			assertAbsent(t, path, body,
+				"10.88.0.53",
+				"fd00:88::53",
+				"team-a.internal",
+				"svc.team-a.internal",
+				"corp.internal",
+				"remove-me",
+			)
+			assertPresent(t, path, body, `"options":["ndots:2"]`, `"Name":"team-a-net"`)
+
+			networks := libpodLegacyCNIListNetworksForTest(t, body)
+			dns, ok := networks[0]["dns"].(map[string]any)
+			if !ok {
+				t.Fatalf("Network.dns has type %T, want object", networks[0]["dns"])
+			}
+			if got, ok := dns["nameservers"].([]any); !ok || len(got) != 0 {
+				t.Errorf("Network.dns.nameservers = %#v, want empty array", dns["nameservers"])
+			}
+			if got := dns["domain"]; got != redactedValue {
+				t.Errorf("Network.dns.domain = %#v, want %q", got, redactedValue)
+			}
+			if got, ok := dns["search"].([]any); !ok || len(got) != 0 {
+				t.Errorf("Network.dns.search = %#v, want empty array", dns["search"])
+			}
+			if _, ok := dns["extension"]; ok {
+				t.Errorf("unknown Network.dns extension survived: %#v", dns["extension"])
+			}
+		})
+	}
 }
 
 // TestLibpodNetworkShapeHasNoCompatKeys pins the finding the separate
@@ -566,8 +1304,8 @@ func TestLibpodPathPredicates(t *testing.T) {
 		{http.MethodGet, "/libpod/networks/net-a/json", true},
 		{http.MethodGet, "/libpod/networks/net-a", true},
 		{http.MethodGet, "/libpod/networks/json", false},
-		{http.MethodGet, "/libpod/networks/create", false},
-		{http.MethodGet, "/libpod/networks/prune", false},
+		{http.MethodGet, "/libpod/networks/create", true},
+		{http.MethodGet, "/libpod/networks/prune", true},
 		{http.MethodGet, "/libpod/networks/net-a/exists", false},
 		{http.MethodGet, "/libpod/networks/", false},
 		{http.MethodGet, "/libpod/networksfoo", false},
@@ -702,6 +1440,82 @@ func TestLibpodMalformedBodiesFailClosed(t *testing.T) {
 		{"network inspect array trailing document", "/v5.8.1/libpod/networks/net-a/json", `[{"name":"net-a"}][{"name":"net-b"}]`},
 		{"network subnets wrong type", "/v5.8.1/libpod/networks/net-a/json", `{"name":"net-a","subnets":{"subnet":"10.89.0.0/24"}}`},
 		{"network containers wrong type", "/v5.8.1/libpod/networks/net-a/json", `{"name":"net-a","containers":["ctr-a"]}`},
+		{"legacy network plugins wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":{"type":"bridge"}}`},
+		{"legacy network plugins null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":null}`},
+		{"legacy network plugin wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":["bridge"]}`},
+		{"legacy network plugin null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[null]}`},
+		{"legacy network macvlan master wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"macvlan","master":42}]}`},
+		{"legacy network macvlan master null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"macvlan","master":null}]}`},
+		{"legacy network ipam wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":"host-local"}]}`},
+		{"legacy network ipam null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":null}]}`},
+		{"legacy network flat ipam subnet wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"subnet":42}}]}`},
+		{"legacy network flat ipam subnet null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"subnet":null}}]}`},
+		{"legacy network flat ipam gateway wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"gateway":42}}]}`},
+		{"legacy network flat ipam gateway null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"gateway":null}}]}`},
+		{"legacy network flat ipam rangeStart wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"rangeStart":42}}]}`},
+		{"legacy network flat ipam rangeStart null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"rangeStart":null}}]}`},
+		{"legacy network flat ipam rangeEnd wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"rangeEnd":42}}]}`},
+		{"legacy network flat ipam rangeEnd null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"rangeEnd":null}}]}`},
+		{"legacy network ipam addresses wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"type":"static","addresses":{}}}]}`},
+		{"legacy network ipam addresses null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"type":"static","addresses":null}}]}`},
+		{"legacy network ipam address wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"type":"static","addresses":["10.66.0.25/24"]}}]}`},
+		{"legacy network ipam address null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"type":"static","addresses":[null]}}]}`},
+		{"legacy network ipam address array", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"type":"static","addresses":[[]]}}]}`},
+		{"legacy network ipam address field missing", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"type":"static","addresses":[{"gateway":"10.66.0.1"}]}}]}`},
+		{"legacy network ipam address field wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"type":"static","addresses":[{"address":42}]}}]}`},
+		{"legacy network ipam address field null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"type":"static","addresses":[{"address":null}]}}]}`},
+		{"legacy network ipam address gateway wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"type":"static","addresses":[{"address":"10.66.0.25/24","gateway":42}]}}]}`},
+		{"legacy network ipam address gateway null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"type":"static","addresses":[{"address":"10.66.0.25/24","gateway":null}]}}]}`},
+		{"legacy network ipam dns wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"type":"static","dns":"10.66.0.53"}}]}`},
+		{"legacy network ipam dns null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"type":"static","dns":null}}]}`},
+		{"legacy network ipam dns nameservers wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"type":"static","dns":{"nameservers":"10.66.0.53"}}}]}`},
+		{"legacy network ipam dns nameservers null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"type":"static","dns":{"nameservers":null}}}]}`},
+		{"legacy network ipam dns nameserver wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"type":"static","dns":{"nameservers":["10.66.0.53",42]}}}]}`},
+		{"legacy network ipam dns domain wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"type":"static","dns":{"domain":42}}}]}`},
+		{"legacy network ipam dns domain null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"type":"static","dns":{"domain":null}}}]}`},
+		{"legacy network ipam dns search wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"type":"static","dns":{"search":"team-a.internal"}}}]}`},
+		{"legacy network ipam dns search null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"type":"static","dns":{"search":null}}}]}`},
+		{"legacy network ipam dns search entry wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"type":"static","dns":{"search":["team-a.internal",42]}}}]}`},
+		{"legacy network ipam dns options wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"type":"static","dns":{"options":"ndots:2"}}}]}`},
+		{"legacy network ipam dns options null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"type":"static","dns":{"options":null}}}]}`},
+		{"legacy network ipam dns option wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"type":"static","dns":{"options":["ndots:2",42]}}}]}`},
+		{"legacy network dns wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","dns":"10.77.0.53"}]}`},
+		{"legacy network dns null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","dns":null}]}`},
+		{"legacy network dns nameservers wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","dns":{"nameservers":"10.77.0.53"}}]}`},
+		{"legacy network dns nameservers null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","dns":{"nameservers":null}}]}`},
+		{"legacy network dns nameserver wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","dns":{"nameservers":["10.77.0.53",42]}}]}`},
+		{"legacy network dns domain wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","dns":{"domain":42}}]}`},
+		{"legacy network dns domain null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","dns":{"domain":null}}]}`},
+		{"legacy network dns search wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","dns":{"search":"team-a.internal"}}]}`},
+		{"legacy network dns search null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","dns":{"search":null}}]}`},
+		{"legacy network dns search entry wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","dns":{"search":["team-a.internal",42]}}]}`},
+		{"legacy network dns options wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","dns":{"options":"ndots:2"}}]}`},
+		{"legacy network dns options null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","dns":{"options":null}}]}`},
+		{"legacy network dns option wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","dns":{"options":["ndots:2",42]}}]}`},
+		{"legacy network routes wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"routes":{}}}]}`},
+		{"legacy network route wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"routes":["0.0.0.0/0"]}}]}`},
+		{"legacy network ranges wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"ranges":{}}}]}`},
+		{"legacy network ranges null", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"ranges":null}}]}`},
+		{"legacy network range set wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"ranges":[{"subnet":"10.88.0.0/16"}]}}]}`},
+		{"legacy network range wrong type", "/v3.4.4/libpod/networks/net-a/json", `{"name":"net-a","plugins":[{"type":"bridge","ipam":{"ranges":[["10.88.0.0/16"]]}}]}`},
+		{"legacy list Plugins wrong type", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":{}}]`},
+		{"legacy list plugin wrong type", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":["bridge"]}]`},
+		{"legacy list top-level Bytes wrong type", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[],"Bytes":42}]`},
+		{"legacy list top-level Bytes null", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[],"Bytes":null}]`},
+		{"legacy list nested Bytes wrong type", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":{"type":"bridge"},"Bytes":42}],"Bytes":"e30="}]`},
+		{"legacy list Network wrong type", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":"bridge","Bytes":"e30="}],"Bytes":"e30="}]`},
+		{"legacy list Network dns wrong type", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":{"type":"bridge","dns":[]},"Bytes":"e30="}],"Bytes":"e30="}]`},
+		{"legacy list Network dns null", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":{"type":"bridge","dns":null},"Bytes":"e30="}],"Bytes":"e30="}]`},
+		{"legacy list Network dns nameservers wrong type", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":{"type":"bridge","dns":{"nameservers":{}}},"Bytes":"e30="}],"Bytes":"e30="}]`},
+		{"legacy list Network dns nameserver null", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":{"type":"bridge","dns":{"nameservers":[null]}},"Bytes":"e30="}],"Bytes":"e30="}]`},
+		{"legacy list Network dns domain wrong type", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":{"type":"bridge","dns":{"domain":[]}},"Bytes":"e30="}],"Bytes":"e30="}]`},
+		{"legacy list Network dns domain null", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":{"type":"bridge","dns":{"domain":null}},"Bytes":"e30="}],"Bytes":"e30="}]`},
+		{"legacy list Network dns search wrong type", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":{"type":"bridge","dns":{"search":{}}},"Bytes":"e30="}],"Bytes":"e30="}]`},
+		{"legacy list Network dns search null", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":{"type":"bridge","dns":{"search":null}},"Bytes":"e30="}],"Bytes":"e30="}]`},
+		{"legacy list Network dns search entry wrong type", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":{"type":"bridge","dns":{"search":["team-a.internal",null]}},"Bytes":"e30="}],"Bytes":"e30="}]`},
+		{"legacy list Network dns options wrong type", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":{"type":"bridge","dns":{"options":42}},"Bytes":"e30="}],"Bytes":"e30="}]`},
+		{"legacy list Network dns options null", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":{"type":"bridge","dns":{"options":null}},"Bytes":"e30="}],"Bytes":"e30="}]`},
+		{"legacy list Network dns option wrong type", "/v3.4.4/libpod/networks/json", `[{"Name":"net-a","Plugins":[{"Network":{"type":"bridge","dns":{"options":["ndots:2",false]}},"Bytes":"e30="}],"Bytes":"e30="}]`},
 		{"volume list is not an array", "/v5.8.1/libpod/volumes/json", `{"Volumes":[]}`},
 		{"secret list is not an array", "/v5.8.1/libpod/secrets/json", `{"ID":"sec-a"}`},
 	}

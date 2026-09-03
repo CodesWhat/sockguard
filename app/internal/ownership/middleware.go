@@ -23,14 +23,17 @@ import (
 const DefaultLabelKey = "com.sockguard.owner"
 
 const (
-	reasonCodeOwnerRequestInvalid     = "owner_request_invalid"
-	reasonCodeOwnerPolicyLookupFailed = "owner_policy_lookup_failed"
-	reasonCodeOwnerPolicyDeniedAccess = "owner_policy_denied_access"
+	reasonCodeOwnerRequestInvalid                    = "owner_request_invalid"
+	reasonCodeOwnerPolicyLookupFailed                = "owner_policy_lookup_failed"
+	reasonCodeOwnerPolicyDeniedAccess                = "owner_policy_denied_access"
+	reasonCodeOwnerVisibilityPodmanEventsUnscopeable = "owner_visibility_podman_events_unscopeable"
 )
 
+const ownerVisibilityPodmanEventsDenyReason = "events denied: this upstream is Podman, whose GET /events filters labels disjunctively, so owner isolation and visibility label selectors cannot be enforced together"
+
 // maxOwnershipBodyBytes caps the request body the ownership middleware will
-// read when it mutates a container/network/volume create body or a build
-// query to inject the owner label. Docker's own create payloads are at most
+// read when it mutates a create body, extracts network-membership references,
+// or injects an owner label into a build query. Docker's own payloads are at most
 // a few KiB, so 1 MiB is generous while preventing an allowlisted client
 // from OOMing the proxy with an unbounded JSON body.
 const maxOwnershipBodyBytes = 1 << 20 // 1 MiB
@@ -49,8 +52,9 @@ const (
 	// verdictAllow means the request targets a labeled resource that matches
 	// the configured owner.
 	verdictAllow
-	// verdictDeny means the request targets a labeled resource that belongs
-	// to a different owner identity.
+	// verdictDeny means the request targets a resource that ownership policy
+	// cannot authorize because it is missing or its labels do not satisfy the
+	// active owner policy.
 	verdictDeny
 )
 
@@ -73,9 +77,9 @@ type Options struct {
 	// AllowCrossOwnerNamespaceSharing restores the pre-v1.5 pass-through
 	// behavior for POST /containers/create: by default (false), every
 	// HostConfig.NetworkMode/PidMode/IpcMode/UTSMode/UsernsMode "container:<ref>"
-	// namespace-sharing target is resolved and the request is denied if the
-	// referenced container belongs to a different owner. Set true to
-	// restore the old unchecked behavior.
+	// namespace-sharing target is looked up and the request is denied if the
+	// referenced container is missing or does not belong to the configured
+	// owner. Set true to restore the old unchecked behavior.
 	AllowCrossOwnerNamespaceSharing bool
 }
 
@@ -134,6 +138,32 @@ func middlewareWithDeps(
 				normPath = filter.NormalizePath(r.URL.Path)
 			}
 
+			// Refuse host-wide libpod reads before ordinary resource-path
+			// classification. Two collection words ("showmounted" and
+			// "stats") are otherwise indistinguishable here from container
+			// names, which would trigger an inspect and let a foreign-resource
+			// denial pass through under warn/audit rollout before the
+			// unconditional collection refusal got a chance to run.
+			//
+			// HEAD is refused alongside GET for the reason
+			// serveOwnershipAllowed gives for the two disk-usage reads:
+			// nothing here has a body-filtering step HEAD could legitimately
+			// need, so gating on GET alone would forward it to the daemon.
+			if r.Method == http.MethodGet || r.Method == http.MethodHead {
+				if read, ok := filter.LookupLibpodUnscopeableRead(normPath); ok {
+					denyUnscopeableLibpodRead(w, r, read)
+					return
+				}
+			}
+
+			ownerFilterApplies := needsOwnerFilter(r.Method, normPath) ||
+				(r.Method == http.MethodGet || r.Method == http.MethodHead) && libpodNeedsOwnerFilter(normPath)
+			if ownerFilterApplies && dockerfilters.RequiresSoleValue(r, ownerFilterKey(normPath)) {
+				logging.SetDeniedWithCode(w, r, reasonCodeOwnerVisibilityPodmanEventsUnscopeable, ownerVisibilityPodmanEventsDenyReason, nil)
+				_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: ownerVisibilityPodmanEventsDenyReason})
+				return
+			}
+
 			refs, err := mutateOwnershipRequest(r, normPath, opts)
 			if err != nil {
 				logging.SetDeniedWithCode(w, r, reasonCodeOwnerRequestInvalid, err.Error(), nil)
@@ -141,7 +171,11 @@ func middlewareWithDeps(
 				return
 			}
 
-			verdict, reason, err := allowOwnershipRequest(r.Context(), r.Method, normPath, opts, inspectResource, inspectExec, refs)
+			routePath := normPath
+			if r.Method == http.MethodPost && strings.HasPrefix(normPath, libpodPrefix+"images/scp/") {
+				routePath = filter.NormalizePath(r.URL.EscapedPath())
+			}
+			verdict, reason, err := allowOwnershipRequestWithRoutePath(r.Context(), r.Method, normPath, routePath, opts, inspectResource, inspectExec, refs)
 			if err != nil {
 				logger.ErrorContext(r.Context(), "owner policy lookup failed", "error", logging.SafeString(err.Error()), "method", logging.SafeString(r.Method), "path", logging.SafeString(r.URL.Path))
 				logging.SetDeniedWithCode(w, r, reasonCodeOwnerPolicyLookupFailed, "owner policy lookup failed", nil)
@@ -173,14 +207,16 @@ func (o Options) normalized() Options {
 }
 
 // mutateOwnershipRequest injects the owner label and extracts every resource
-// identifier embedded in container/service create or update bodies during the
-// same bounded decode pass. Authorization must cover those identifiers as well
-// as the resource named by the URL; otherwise an owner-stamped workload could
-// still consume another owner's image, volume, network, secret, or config.
+// identifier embedded in container/service create or update and network
+// membership bodies during the same bounded decode pass. Authorization must
+// cover those identifiers as well as the resource named by the URL; otherwise
+// a permitted request could still consume or modify another owner's resource.
 func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ownershipRequestReferences, error) {
 	switch {
 	case r.Method == http.MethodPost && normPath == "/containers/create":
 		return mutateContainerCreateOwnershipBody(r, opts.LabelKey, opts.Owner)
+	case r.Method == http.MethodPost && isNetworkMembershipChangePath(normPath):
+		return extractNetworkMembershipOwnershipReferences(r)
 	case r.Method == http.MethodPost && (normPath == "/networks/create" || normPath == "/volumes/create" || normPath == "/secrets/create" || normPath == "/configs/create"):
 		return nil, addOwnerLabelToBody(r, opts.LabelKey, opts.Owner)
 	case r.Method == http.MethodPost && (normPath == "/services/create" || isServiceUpdatePath(normPath)):
@@ -211,6 +247,20 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 	}
 }
 
+func extractNetworkMembershipOwnershipReferences(r *http.Request) (*ownershipRequestReferences, error) {
+	refs := &ownershipRequestReferences{}
+	err := mutateJSONBody(r, func(decoded map[string]any) error {
+		for _, identifier := range filter.FoldedStrings(decoded, "Container") {
+			appendEmbeddedOwnershipReference(&refs.embeddedResources, dockerresource.KindContainer, identifier, "network membership Container")
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return refs, nil
+}
+
 // allowOwnershipRequest is allowOwnershipRequestUnprefixed with the "libpod "
 // deny-reason prefix convention (#148 design doc item 5, matching the
 // human-readable-reason style internal/filter's libpod_*.go inspectors
@@ -226,7 +276,20 @@ func allowOwnershipRequest(
 	inspectExec func(context.Context, string) (string, bool, error),
 	refs *ownershipRequestReferences,
 ) (ownershipVerdict, string, error) {
-	verdict, reason, err := allowOwnershipRequestUnprefixed(ctx, method, normPath, opts, inspectResource, inspectExec, refs)
+	return allowOwnershipRequestWithRoutePath(ctx, method, normPath, normPath, opts, inspectResource, inspectExec, refs)
+}
+
+func allowOwnershipRequestWithRoutePath(
+	ctx context.Context,
+	method string,
+	normPath string,
+	routePath string,
+	opts Options,
+	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
+	inspectExec func(context.Context, string) (string, bool, error),
+	refs *ownershipRequestReferences,
+) (ownershipVerdict, string, error) {
+	verdict, reason, err := allowOwnershipRequestUnprefixed(ctx, method, normPath, routePath, opts, inspectResource, inspectExec, refs)
 	if verdict == verdictDeny && isLibpodOwnershipPath(normPath) {
 		reason = "libpod " + reason
 	}
@@ -237,6 +300,7 @@ func allowOwnershipRequestUnprefixed(
 	ctx context.Context,
 	method string,
 	normPath string,
+	routePath string,
 	opts Options,
 	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
 	inspectExec func(context.Context, string) (string, bool, error),
@@ -263,7 +327,7 @@ func allowOwnershipRequestUnprefixed(
 		}
 	}
 
-	verdict, reason, err := allowPathOwnershipRequest(ctx, method, normPath, opts, inspectResource, inspectExec)
+	verdict, reason, err := allowPathOwnershipRequest(ctx, method, normPath, routePath, opts, inspectResource, inspectExec)
 	if err != nil || verdict == verdictDeny {
 		return verdict, reason, err
 	}
@@ -277,6 +341,7 @@ func allowPathOwnershipRequest(
 	ctx context.Context,
 	method string,
 	normPath string,
+	routePath string,
 	opts Options,
 	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
 	inspectExec func(context.Context, string) (string, bool, error),
@@ -290,7 +355,7 @@ func allowPathOwnershipRequest(
 			return verdictPassThrough, "", err
 		}
 		if !found {
-			return verdictPassThrough, "", nil
+			return verdictDeny, "owner policy denied access to exec session", nil
 		}
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindContainer, containerID, opts, false)
 	}
@@ -325,11 +390,12 @@ func allowPathOwnershipRequest(
 	// above resource-for-resource so a client cannot evade ownership
 	// enforcement by switching from the Docker-compat API to Podman's
 	// native one for actions on an already-existing resource. Containers,
-	// networks, volumes, and secrets are checked against their Docker-compat
-	// inspect path (dockerresource.KindContainer/KindNetwork/KindVolume/
-	// KindSecret) since Podman's compat API is a translation layer over the
-	// same underlying resource store for those kinds; pods have no
-	// Docker-compat equivalent and use dockerresource.KindLibpodPod.
+	// networks, volumes, images and secrets are checked against their
+	// Docker-compat inspect path (dockerresource.KindContainer/KindNetwork/
+	// KindVolume/KindImage/KindSecret) since Podman's compat API is a
+	// translation layer over the same underlying resource store for those
+	// kinds; pods have no Docker-compat equivalent and use
+	// dockerresource.KindLibpodPod.
 	if identifier, ok := libpodContainerIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindContainer, identifier, opts, false)
 	}
@@ -339,7 +405,7 @@ func allowPathOwnershipRequest(
 			return verdictPassThrough, "", err
 		}
 		if !found {
-			return verdictPassThrough, "", nil
+			return verdictDeny, "owner policy denied access to exec session", nil
 		}
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindContainer, containerID, opts, false)
 	}
@@ -351,6 +417,19 @@ func allowPathOwnershipRequest(
 	}
 	if identifier, ok := libpodVolumeIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindVolume, identifier, opts, false)
+	}
+	if identifier, remote, ok := libpodImageScpSource(method, routePath); ok {
+		switch {
+		case remote:
+			return verdictDeny, "owner policy denied access to remote image source", nil
+		case identifier == "":
+			return verdictDeny, "owner policy could not resolve local image source", nil
+		default:
+			return checkOwnedResource(ctx, inspectResource, dockerresource.KindImage, identifier, opts, opts.AllowUnownedImages)
+		}
+	}
+	if identifier, ok := libpodImageIdentifierForRoute(method, normPath, routePath); ok {
+		return checkOwnedResource(ctx, inspectResource, dockerresource.KindImage, identifier, opts, opts.AllowUnownedImages)
 	}
 	if identifier, ok := libpodSecretIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindSecret, identifier, opts, false)
@@ -399,7 +478,7 @@ func checkOwnedResource(ctx context.Context, inspectResource func(context.Contex
 		return verdictPassThrough, "", err
 	}
 	if !found {
-		return verdictPassThrough, "", nil
+		return verdictDeny, fmt.Sprintf("owner policy denied access to %s", singularResource(kind)), nil
 	}
 	if ownerMatches(labels, opts.LabelKey, opts.Owner, allowUnowned) {
 		return verdictAllow, "", nil
@@ -408,14 +487,12 @@ func checkOwnedResource(ctx context.Context, inspectResource func(context.Contex
 }
 
 // checkContainerNamespaceSharingRefs denies POST /containers/create when any
-// namespace-sharing container: target belongs to a different owner than
+// namespace-sharing container: target is missing or does not belong to
 // opts.Owner. allowUnowned is false for each check — same as every other
 // container-targeting ownership check — so an unlabeled target is treated
 // as a cross-owner risk rather than implicitly trusted. Returns the first
-// cross-owner denial encountered; otherwise the strictest verdict across
-// all refs (verdictAllow if at least one ref resolved to an owned
-// container, verdictPassThrough if every ref resolved to nothing sockguard
-// could inspect).
+// denial encountered; otherwise verdictAllow when at least one target was
+// checked, or verdictPassThrough when there are no targets.
 func checkContainerNamespaceSharingRefs(
 	ctx context.Context,
 	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
@@ -774,9 +851,26 @@ func addOwnerLabelFilter(r *http.Request, labelKey, owner string) error {
 	}
 	filterKey := ownerFilterKey(filter.NormalizePath(r.URL.Path))
 	label := labelKey + "=" + owner
-	// Unconditional replacement ensures a client-supplied owner label cannot
-	// coexist with the proxy-enforced label, preventing OR-semantics bypass.
-	filters[filterKey] = []string{label}
+	// Client-supplied values under this key are dropped: Swarm's control-plane
+	// lists fold `label` into a map[string]string over a randomly-ordered
+	// Args.Get, so a client value repeating the owner key can displace the
+	// proxy-enforced one.
+	//
+	// Selectors sockguard itself injected earlier in the chain survive that
+	// drop. The visibility middleware runs first and writes the same key, and
+	// replacing its selectors left the request owner-scoped but not
+	// visibility-scoped. Both sets go upstream together, and both engines AND
+	// the values under `label` — see internal/dockerfilters/injected.go for the
+	// daemon-side matchers that make that true.
+	injected := dockerfilters.InjectedSelectors(r, filterKey)
+	values := make([]string, 0, len(injected)+1)
+	values = append(values, label)
+	for _, selector := range injected {
+		if !slices.Contains(values, selector) {
+			values = append(values, selector)
+		}
+	}
+	filters[filterKey] = values
 	encoded, err := json.Marshal(filters)
 	if err != nil {
 		return fmt.Errorf("encode filters: %w", err)

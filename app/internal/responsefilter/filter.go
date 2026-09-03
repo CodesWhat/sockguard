@@ -171,6 +171,24 @@ func (f *Filter) modifyContainerInspect(resp *http.Response) error {
 		}
 	}
 	if f.opts.RedactMountPaths {
+		// Docker and Podman both expose the host-side files bind-mounted over
+		// resolv.conf, hostname and hosts. Podman's native inspect shape also
+		// publishes the container rootfs, persistent metadata directory, OCI
+		// config and PID-file locations at the top level. They are host paths,
+		// so leaving them intact would bypass the same option that redacts
+		// Mounts[].Source and HostConfig.Binds below.
+		for _, key := range [...]string{
+			"Rootfs",
+			"ResolvConfPath",
+			"HostnamePath",
+			"HostsPath",
+			"StaticDir",
+			"OCIConfigPath",
+			"ConmonPidFile",
+			"PidFile",
+		} {
+			redactStringField(payload, key)
+		}
 		if err := redactMountObjects(payload, "Mounts"); err != nil {
 			return rejectResponse(err)
 		}
@@ -622,6 +640,8 @@ func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error)
 	if resp.Header == nil {
 		resp.Header = make(http.Header)
 	}
+	ClearUpstreamRepresentationHeaders(resp.Header)
+	resp.Trailer = nil
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	resp.ContentLength = int64(len(body))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
@@ -1244,6 +1264,8 @@ func writeResponseBody(resp *http.Response, payload any) error {
 	if resp.Header == nil {
 		resp.Header = make(http.Header)
 	}
+	ClearUpstreamRepresentationHeaders(resp.Header)
+	resp.Trailer = nil
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	resp.ContentLength = int64(len(body))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))

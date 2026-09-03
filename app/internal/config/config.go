@@ -3,6 +3,8 @@ package config
 import (
 	"os"
 	"regexp"
+
+	"github.com/codeswhat/sockguard/app/internal/upstreamflavor"
 )
 
 // HardenedListenSocketMode is the only supported unix-socket permission mode
@@ -128,6 +130,15 @@ type Config struct {
 	// round-trips through mapstructure/YAML/JSON.
 	explicitNetworkEndpointConfig bool
 
+	// explicitLibpodNetworkEndpointConfig is explicitNetworkEndpointConfig's
+	// counterpart for request_body.libpod_network.endpoint_config, which
+	// gates POST /libpod/networks/{name}/connect. Both groups carry the same
+	// block and the same mutual-exclusion rule, so both need the same
+	// provenance signal; tracking only the Docker one meant an operator who
+	// wrote both keys under libpod_network got silence where the Docker
+	// spelling gave them an error.
+	explicitLibpodNetworkEndpointConfig bool
+
 	// InsecureAcceptOpaqueBuildkitTunnels acknowledges opening POST /session,
 	// POST /grpc, or a direct BuildKit Control-service method path. Both
 	// endpoints are unversioned opaque hijacked streams: dockerd's embedded
@@ -174,6 +185,13 @@ func (c *Config) ExplicitLegacyListen() bool {
 // check — see validateNetworkEndpointConfig).
 func (c *Config) ExplicitNetworkEndpointConfig() bool {
 	return c.explicitNetworkEndpointConfig
+}
+
+// ExplicitLibpodNetworkEndpointConfig reports whether
+// request_body.libpod_network.endpoint_config was set explicitly, for tests
+// and validation — the libpod half of the same mutual-exclusion check.
+func (c *Config) ExplicitLibpodNetworkEndpointConfig() bool {
+	return c.explicitLibpodNetworkEndpointConfig
 }
 
 // ListenConfig configures a single proxy listener (unix socket or TCP).
@@ -267,6 +285,44 @@ type UpstreamConfig struct {
 	// values bypass Viper's env-emptiness gate. Prefer "off" in both
 	// channels.
 	RequestTimeout string `mapstructure:"request_timeout"`
+	// HijackInactivityTimeout bounds how long a hijacked connection (docker
+	// attach, exec start) may sit idle in either direction — no bytes read
+	// or written — before sockguard tears it down, as a Go duration string
+	// (e.g. "10m"). It refreshes on activity, so it never caps the total
+	// session length of an active `docker exec`/`attach`, only how long a
+	// forgotten one is left open. Unlike RequestTimeout, hijacked connections
+	// are exempt from request_timeout entirely (see its doc comment) — this
+	// is their only deadline.
+	//
+	// Default is "10m", unchanged from the hardcoded value hijack.go used
+	// before this field existed. Unlike RequestTimeout there is no "off"
+	// spelling: 0 and negative durations are validation errors, same as
+	// RequestTimeout, but there is also no legacy empty-string disable path
+	// to preserve, so an empty value is rejected too. Any other value must
+	// parse as a positive Go duration.
+	HijackInactivityTimeout string `mapstructure:"hijack_inactivity_timeout"`
+	// Flavor names the container engine behind the upstream: "auto" (the
+	// default), "docker", or "podman".
+	//
+	// It exists because Podman's Docker-compat GET /events does not evaluate
+	// the `filters` parameter the way dockerd does. Podman serves /events and
+	// /libpod/events from one handler and ORs several values under a single
+	// filter key, so the label selectors a visibility policy injects to narrow
+	// the stream widen it instead. Sockguard has to know which engine it is
+	// talking to before it writes that filter; see internal/upstreamflavor.
+	//
+	// "auto" probes the daemon's GET /version once at startup, before the
+	// listener binds. An explicit "docker" or "podman" is taken as given and
+	// no probe runs — nothing on the network can move an operator's stated
+	// answer. A probe that fails, times out, or reports an engine sockguard
+	// does not recognize fails startup with a message naming this field,
+	// because both possible guesses are wrong in opposite directions and
+	// neither is safe to make silently.
+	//
+	// Reload-immutable, like upstream.socket and upstream.endpoints: it
+	// describes the same daemon those name, and the resolved value is bound
+	// into the handler chain at startup.
+	Flavor string `mapstructure:"flavor"`
 	// Endpoints is an ordered failover set. The first entry is the preferred
 	// primary; later entries are tried when earlier ones fail their health
 	// probe. Every endpoint MUST address the same logical daemon/swarm —
@@ -308,6 +364,10 @@ type UpstreamEndpoint struct {
 	// InsecureSkipTLSVerify disables verification of the remote daemon's server
 	// certificate (self-signed homelab daemons). Dangerous in production: it
 	// defeats authentication of the upstream.
+	//
+	// Deprecated: configure tls.ca_file with the daemon's issuing CA instead.
+	// This field remains accepted with unchanged behavior in v2.1 and will be
+	// removed in v3.0.0.
 	InsecureSkipTLSVerify bool `mapstructure:"insecure_skip_tls_verify"`
 }
 
@@ -401,6 +461,7 @@ type RequestBodyConfig struct {
 	ImagePull        ImagePullRequestBodyConfig        `mapstructure:"image_pull"`
 	Build            BuildRequestBodyConfig            `mapstructure:"build"`
 	ContainerUpdate  ContainerUpdateRequestBodyConfig  `mapstructure:"container_update"`
+	ContainerRemove  ContainerRemoveRequestBodyConfig  `mapstructure:"container_remove"`
 	ContainerArchive ContainerArchiveRequestBodyConfig `mapstructure:"container_archive"`
 	ImageLoad        ImageLoadRequestBodyConfig        `mapstructure:"image_load"`
 	Volume           VolumeRequestBodyConfig           `mapstructure:"volume"`
@@ -437,6 +498,16 @@ type RequestBodyConfig struct {
 	LibpodVolume  VolumeRequestBodyConfig  `mapstructure:"libpod_volume"`
 	LibpodNetwork NetworkRequestBodyConfig `mapstructure:"libpod_network"`
 	LibpodSecret  SecretRequestBodyConfig  `mapstructure:"libpod_secret"`
+}
+
+// ContainerRemoveRequestBodyConfig configures query inspection for
+// DELETE /containers/{id}. Docker treats any force, v, or link value other
+// than an empty string, 0, no, false, or none as true, so each destructive
+// behavior requires its own explicit opt-in. All controls default to false.
+type ContainerRemoveRequestBodyConfig struct {
+	AllowForce         bool `mapstructure:"allow_force"`
+	AllowRemoveVolumes bool `mapstructure:"allow_remove_volumes"`
+	AllowRemoveLinks   bool `mapstructure:"allow_remove_links"`
 }
 
 // LibpodPodCreateRequestBodyConfig configures body inspection for
@@ -751,8 +822,12 @@ type NetworkRequestBodyConfig struct {
 	// gates (#186) — see EndpointConfigRequestBodyConfig's doc comment for
 	// the field mapping and precedence rules. Only consulted when
 	// allow_endpoint_config is false/unset; setting both is a config
-	// validation error (validateNetworkEndpointConfig). Has no libpod analog
-	// — never consulted by the libpod_network inspector, see libpod_network.go.
+	// validation error (validateNetworkEndpointConfig), under the
+	// libpod_network key as well as this one. Consulted by both inspector
+	// families: the Docker one for POST /networks/*/connect and
+	// container-create's EndpointsConfig, the libpod one for
+	// POST /libpod/networks/{name}/connect, whose top-level snake_case fields
+	// are projected onto EndpointSettings — see filter/libpod_network.go.
 	EndpointConfig       EndpointConfigRequestBodyConfig `mapstructure:"endpoint_config"`
 	AllowDisconnectForce bool                            `mapstructure:"allow_disconnect_force"`
 	// AllowDisableIPv4 permits POST /networks/create with EnableIPv4 explicitly
@@ -761,6 +836,18 @@ type NetworkRequestBodyConfig struct {
 	// an unusual and rarely-intended posture, so it requires this opt-in.
 	// Default false.
 	AllowDisableIPv4 bool `mapstructure:"allow_disable_ipv4"`
+	// AllowDNSServers permits a request to set or remove a network's own DNS
+	// resolvers: `network_dns_servers` on POST /libpod/networks/create and
+	// the `adddnsservers`/`removednsservers` pair on
+	// POST /libpod/networks/{name}/update. This is the mirror image of the
+	// Docker-only fields above — Docker networks have no per-network resolver
+	// concept and the Engine API has no network-update route at all, so the
+	// Docker-compat inspector never consults it and it is meaningful only
+	// under the libpod_network key. Default false: repointing an existing
+	// network's resolver changes what names resolve to inside every container
+	// already attached to it. See filter/libpod_network.go's
+	// inspectLibpodUpdate.
+	AllowDNSServers bool `mapstructure:"allow_dns_servers"`
 }
 
 // EndpointConfigRequestBodyConfig configures granular per-field admission for
@@ -1192,6 +1279,13 @@ type ClientProfileConfig struct {
 	RequestBody RequestBodyConfig           `mapstructure:"request_body"`
 	Rules       []RuleConfig                `mapstructure:"rules"`
 	Limits      LimitsConfig                `mapstructure:"limits"`
+
+	// Profile request-body blocks live inside a slice, so Viper does not apply
+	// Config's reflected leaf defaults or root-level endpoint_config provenance
+	// tracking to them. Load/LoadBytes fill these two flags from a defaults-free
+	// decode of the raw profile list before validation.
+	explicitNetworkEndpointConfig       bool
+	explicitLibpodNetworkEndpointConfig bool
 }
 
 // LimitsConfig groups per-profile rate-limit and concurrency-cap settings.
@@ -1391,11 +1485,13 @@ func (cfg AdminListenConfig) Configured() bool {
 //
 // When Enabled, sockguard watches the config file via fsnotify and reloads
 // on SIGHUP. A reload that mutates any immutable field — listen.*,
-// upstream.socket, upstream.endpoints, upstream.failover, log.*, health.*,
-// metrics.*, admin.* — is rejected; the running config is preserved and the
-// operator must restart sockguard to pick the new values up. (upstream.endpoints
-// and upstream.failover are pinned because the long-lived Resolver and its
-// health loop are built once at startup; upstream.request_timeout stays mutable.)
+// upstream.socket, upstream.endpoints, upstream.failover, upstream.flavor,
+// log.*, health.*, metrics.*, admin.* — is rejected; the running config is
+// preserved and the operator must restart sockguard to pick the new values up.
+// (The endpoint set, failover policy, and flavor are pinned because the
+// long-lived Resolver and engine-specific handler chain are built once at
+// startup; upstream.request_timeout and upstream.hijack_inactivity_timeout stay
+// mutable.)
 //
 // Debounce collapses bursts of filesystem events (editors commonly emit
 // chmod + write + rename + create per save) into a single reload trigger.
@@ -1540,6 +1636,12 @@ func Defaults() Config {
 			// "off" (or the legacy "") to disable. See RequestTimeout's doc
 			// comment for the full migration story.
 			RequestTimeout: "60s",
+			// 10m matches hijack.go's pre-existing hardcoded default; see
+			// HijackInactivityTimeout's doc comment.
+			HijackInactivityTimeout: "10m",
+			// "auto" probes GET /version once at startup. See Flavor's doc
+			// comment for why the default is a probe rather than "docker".
+			Flavor: string(upstreamflavor.Auto),
 		},
 		Log: LogConfig{
 			Level:     "info",
@@ -1593,10 +1695,11 @@ func Defaults() Config {
 			// form's default reproduces allow_endpoint_config's long-standing
 			// unconditional-allow behavior for Aliases exactly (#186) — see
 			// EndpointConfigRequestBodyConfig's doc comment. LibpodNetwork
-			// reuses the same struct type and gets the identical default for
-			// posture consistency, even though it has no libpod-native network
-			// connect endpoint to gate and never consults EndpointConfig at all
-			// — see libpod_network.go.
+			// reuses the same struct type and gets the identical default
+			// because it gates the same thing on the other API family:
+			// POST /libpod/networks/{name}/connect carries Podman's own
+			// `aliases` field, which filter.libpodNetworkConnectRequest
+			// projects onto Docker's Aliases for the shared gate.
 			Network: NetworkRequestBodyConfig{
 				EndpointConfig: EndpointConfigRequestBodyConfig{
 					AllowAliases: true,

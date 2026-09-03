@@ -576,7 +576,7 @@ func TestCompatAllowPruneDeleteKillGeneratedRules(t *testing.T) {
 			name:   "ALLOW_DELETE",
 			envKey: "ALLOW_DELETE",
 			wantRules: []struct{ method, path string }{
-				{"DELETE", "/containers/*"},
+				{"DELETE", "/containers/**"},
 			},
 		},
 		{
@@ -700,6 +700,33 @@ func TestCompatWithoutGrpcOrSessionDoesNotAckBuildkitTunnel(t *testing.T) {
 	}
 	if strings.Contains(logBuf.String(), "GRPC/SESSION compat env vars open the opaque BuildKit tunnel") {
 		t.Fatalf("expected no buildkit tunnel warning without GRPC/SESSION, got logs: %s", logBuf.String())
+	}
+}
+
+// TestCompatDoesNotAckReadExfiltration pins the deliberate asymmetry between
+// the two acknowledgments ApplyCompat could reach for. GRPC=1 / SESSION=1
+// auto-set InsecureAcceptOpaqueBuildkitTunnels (the three tests above), because
+// the tunnel is the only way those vars can mean anything at all. Broad section
+// reads are different: CONTAINERS=1 has a useful meaning without the raw
+// archive/export and log/attach surface, so compat must leave
+// InsecureAllowReadExfiltration false and let startup validation refuse,
+// pushing the operator to either tighten the rules or acknowledge the risk
+// explicitly. The refusal itself is asserted end-to-end by
+// TestValidateRefusesCompatReadsWithoutExfiltrationAck in the cmd package.
+func TestCompatDoesNotAckReadExfiltration(t *testing.T) {
+	for _, envKey := range []string{"CONTAINERS", "IMAGES", "SERVICES", "TASKS"} {
+		t.Run(envKey, func(t *testing.T) {
+			cfg := Defaults()
+			t.Setenv(envKey, "1")
+			t.Setenv("POST", "0")
+
+			if !ApplyCompat(&cfg, discardLogger) {
+				t.Fatalf("expected compat to activate for %s=1", envKey)
+			}
+			if cfg.InsecureAllowReadExfiltration {
+				t.Fatalf("%s=1 auto-set InsecureAllowReadExfiltration; compat must not acknowledge the read-exfiltration surface on the operator's behalf", envKey)
+			}
+		})
 	}
 }
 

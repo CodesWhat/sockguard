@@ -250,6 +250,52 @@ func TestVerify_KeylessHappyPath(t *testing.T) {
 	}
 }
 
+// TestVerify_KeylessOrdinaryFailureFallsThroughToSecond ensures that when a
+// keyless identity fails verification for an ordinary (non-canceled) reason,
+// the fallback loop continues on to the next configured identity rather than
+// treating the failure as a context cancellation and aborting the chain.
+func TestVerify_KeylessOrdinaryFailureFallsThroughToSecond(t *testing.T) {
+	t.Parallel()
+	vs, err := ca.NewVirtualSigstore()
+	if err != nil {
+		t.Fatalf("NewVirtualSigstore: %v", err)
+	}
+	const issuer = "https://github.com/login/oauth"
+	const subject = "ops@example.com"
+	yaml := []byte("rules: []\n")
+
+	entity, err := vs.Sign(subject, issuer, yaml)
+	if err != nil {
+		t.Fatalf("vs.Sign: %v", err)
+	}
+
+	cfg := Config{
+		Enabled:               true,
+		TrustedMaterial:       vs,
+		RequireRekorInclusion: true,
+		VerifyTimeout:         VerifyTimeout,
+		AllowedKeyless: []KeylessIdentity{
+			// Wrong issuer — must fail without aborting the fallback.
+			{IssuerExact: "https://accounts.google.com", SubjectPattern: regexp.MustCompile(`.*`)},
+			// Correct identity — must still be reached.
+			{IssuerExact: issuer, SubjectPattern: regexp.MustCompile(`^ops@example\.com$`)},
+		},
+	}
+	v, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := v.Verify(context.Background(), yaml, entity)
+	if err != nil {
+		t.Fatalf("expected fallback to the second keyless identity to succeed, got: %v", err)
+	}
+	wantSigner := "keyless:" + issuer + ":" + subject
+	if res.Signer != wantSigner {
+		t.Fatalf("Signer = %q, want %q", res.Signer, wantSigner)
+	}
+}
+
 func TestVerify_RejectsCanceledContext(t *testing.T) {
 	t.Parallel()
 	vs, err := ca.NewVirtualSigstore()

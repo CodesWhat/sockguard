@@ -52,7 +52,7 @@ wait_until() {
 }
 
 # ---------------------------------------------------------------------------
-# Route-drift tripwire decision logic (assertion 10) -- pure jq, no Docker
+# Route-drift tripwire decision logic (assertion 11) -- pure jq, no Docker
 # dependency, so it can be exercised by --self-test as well as a live row.
 # ---------------------------------------------------------------------------
 
@@ -212,6 +212,24 @@ wait_for_container_log_line() {
   local waited=0
   while (( waited < timeout )); do
     if docker logs "$container" 2>&1 | grep -Eiq "$pattern"; then
+      return 0
+    fi
+    sleep 2
+    waited=$(( waited + 2 ))
+  done
+  return 1
+}
+
+# Wait until a plain docker-run container has emitted a matching log line at
+# least min_count times. Counting from the container's full log keeps reload
+# and recovery checks honest: an earlier successful handshake cannot satisfy a
+# later post-rotation handshake assertion.
+wait_for_container_log_count() {
+  local container="$1" pattern="$2" min_count="$3" timeout="${4:-30}"
+  local waited=0 count
+  while (( waited < timeout )); do
+    count="$(docker logs "$container" 2>&1 | grep -Eic "$pattern" || true)"
+    if [ "$count" -ge "$min_count" ]; then
       return 0
     fi
     sleep 2

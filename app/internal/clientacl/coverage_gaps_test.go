@@ -1,6 +1,7 @@
 package clientacl
 
 import (
+	"container/list"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -11,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -600,6 +602,251 @@ func TestMiddlewareWithDeps_CompileOptionsError(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+}
+
+// ---- hasProfileSelection: no selection configured -------------------------
+
+// TestHasProfileSelection_AllEmpty pins hasProfileSelection's all-empty
+// false case. Each of its four OR clauses uses a strict comparison
+// (!= "" / > 0); since len() is never negative, a boundary-shifted >= 0
+// on any of the three length checks would make that clause always true,
+// so this single empty-input case catches all three at once.
+func TestHasProfileSelection_AllEmpty(t *testing.T) {
+	var compiled compiledOptions
+	if compiled.hasProfileSelection() {
+		t.Fatal("hasProfileSelection() = true for a compiledOptions with no profiles configured, want false")
+	}
+}
+
+// TestHasProfileSelection_DefaultProfileOnly pins the != "" clause
+// specifically: a bare default profile with no profile lists must still
+// report a selection.
+func TestHasProfileSelection_DefaultProfileOnly(t *testing.T) {
+	compiled := compiledOptions{defaultProfile: "readonly"}
+	if !compiled.hasProfileSelection() {
+		t.Fatal("hasProfileSelection() = false with a defaultProfile set, want true")
+	}
+}
+
+// ---- resolvedLabelPrefix: explicit prefix wins over the default ----------
+
+func TestResolvedLabelPrefix_CustomPrefix(t *testing.T) {
+	got := resolvedLabelPrefix(Options{
+		ContainerLabels: ContainerLabelOptions{Enabled: true, LabelPrefix: "custom.prefix."},
+	})
+	if got != "custom.prefix." {
+		t.Fatalf("resolvedLabelPrefix() = %q, want %q", got, "custom.prefix.")
+	}
+}
+
+// ---- newACLResolveClientForClient: augment only wired when labelPrefix != "" ----
+
+// TestNewACLResolveClientForClient_AugmentAppliedWhenLabelPrefixSet pins the
+// `if labelPrefix != ""` gate: a non-empty label prefix must pre-compile the
+// resolved client's label ACL rules via the cache's augment hook.
+func TestNewACLResolveClientForClient_AugmentAppliedWhenLabelPrefixSet(t *testing.T) {
+	list := `[{"Id":"c1","Names":["/c1"],"Labels":{"com.sockguard.allow.get":"/containers/**"},` +
+		`"NetworkSettings":{"Networks":{"appnet":{"IPAddress":"10.0.5.1"}}}}]`
+
+	client := fakeDockerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/containers/json":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(list))
+		case "/containers/c1/json":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"Id":"c1"}`))
+		default:
+			t.Errorf("unexpected daemon path %q", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+
+	lookup := newACLResolveClientForClient(client, "com.sockguard.allow.")
+	got, found, err := lookup(context.Background(), mustAddr(t, "10.0.5.1"))
+	if err != nil || !found {
+		t.Fatalf("lookup() = (%+v, found=%v, err=%v)", got, found, err)
+	}
+	if !got.hasLabelACLRules || len(got.labelACLRules) == 0 {
+		t.Fatalf("lookup() with a non-empty labelPrefix did not pre-compile label ACL rules: %+v", got)
+	}
+}
+
+// TestNewACLResolveClientForClient_NoAugmentWhenLabelPrefixEmpty is the
+// complementary case: an empty label prefix must not wire up augment at
+// all, so the resolved client's label ACL rules stay uncompiled.
+func TestNewACLResolveClientForClient_NoAugmentWhenLabelPrefixEmpty(t *testing.T) {
+	list := `[{"Id":"c1","Names":["/c1"],"Labels":{"team":"x"},` +
+		`"NetworkSettings":{"Networks":{"appnet":{"IPAddress":"10.0.5.2"}}}}]`
+
+	client := fakeDockerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/containers/json":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(list))
+		case "/containers/c1/json":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"Id":"c1"}`))
+		default:
+			t.Errorf("unexpected daemon path %q", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+
+	lookup := newACLResolveClientForClient(client, "")
+	got, found, err := lookup(context.Background(), mustAddr(t, "10.0.5.2"))
+	if err != nil || !found {
+		t.Fatalf("lookup() = (%+v, found=%v, err=%v)", got, found, err)
+	}
+	if got.hasLabelACLRules {
+		t.Fatalf("lookup() with an empty labelPrefix pre-compiled label ACL rules, want none: %+v", got)
+	}
+}
+
+// ---- withCompiledLabelRules: the "skip compiling" short-circuit ----------
+
+// TestWithCompiledLabelRules_EmptyPrefixSkipsCompile pins the
+// `labelPrefix == ""` clause: with no prefix configured, a client's labels
+// must pass through untouched, even though every label would otherwise
+// match an empty-string HasPrefix check and fail to compile as ACL rules.
+func TestWithCompiledLabelRules_EmptyPrefixSkipsCompile(t *testing.T) {
+	client := resolvedClient{ID: "c1", Labels: map[string]string{"team": "x-owner"}}
+	got := withCompiledLabelRules(client, "")
+	if got.hasLabelACLRules || got.labelACLRules != nil || got.labelACLErr != nil {
+		t.Fatalf("withCompiledLabelRules(\"\") = %+v, want the client passed through unmodified", got)
+	}
+}
+
+// TestWithCompiledLabelRules_NonEmptyLabelsCompile pins the
+// `len(client.Labels) == 0` clause: with a non-empty prefix and non-empty
+// labels, the function must actually compile rules rather than skip.
+func TestWithCompiledLabelRules_NonEmptyLabelsCompile(t *testing.T) {
+	client := resolvedClient{
+		ID:     "c1",
+		Labels: map[string]string{"com.sockguard.allow.get": "/containers/**"},
+	}
+	got := withCompiledLabelRules(client, "com.sockguard.allow.")
+	if !got.hasLabelACLRules || len(got.labelACLRules) == 0 {
+		t.Fatalf("withCompiledLabelRules() with non-empty labels did not compile rules: %+v", got)
+	}
+}
+
+// ---- compileOptions: profile lookup indexes only built when needed -------
+
+// TestCompileOptions_NoSourceIPProfilesLeavesIndexNil pins the
+// `len(sourceIPProfiles) > 0` guard: with no source-IP profiles configured,
+// the LRU lookup index must stay nil (it is allocated lazily).
+func TestCompileOptions_NoSourceIPProfilesLeavesIndexNil(t *testing.T) {
+	compiled, err := compileOptions(Options{})
+	if err != nil {
+		t.Fatalf("compileOptions: %v", err)
+	}
+	if compiled.sourceIPProfileIndex != nil {
+		t.Fatalf("sourceIPProfileIndex = %+v, want nil with no source-IP profiles configured", compiled.sourceIPProfileIndex)
+	}
+}
+
+// TestCompileOptions_NoClientCertProfilesLeavesIndexNil is the client-cert
+// analog of TestCompileOptions_NoSourceIPProfilesLeavesIndexNil.
+func TestCompileOptions_NoClientCertProfilesLeavesIndexNil(t *testing.T) {
+	compiled, err := compileOptions(Options{})
+	if err != nil {
+		t.Fatalf("compileOptions: %v", err)
+	}
+	if compiled.clientCertProfileIndex != nil {
+		t.Fatalf("clientCertProfileIndex = %+v, want nil with no client-cert profiles configured", compiled.clientCertProfileIndex)
+	}
+}
+
+// ---- normalizedRemoteHost: DNS-hostname validation boundaries ------------
+
+// TestNormalizedRemoteHost_MaxLengthHostAccepted pins the
+// `len(host) > 253` boundary: a hostname exactly 253 characters long is
+// valid DNS and must be accepted, not rejected.
+func TestNormalizedRemoteHost_MaxLengthHostAccepted(t *testing.T) {
+	// Four labels of 63, 63, 63, 61 chars plus 3 dots = 253 total.
+	label63 := strings.Repeat("a", 63)
+	label61 := strings.Repeat("a", 61)
+	host253 := label63 + "." + label63 + "." + label63 + "." + label61
+	if len(host253) != 253 {
+		t.Fatalf("test setup: constructed host length = %d, want 253", len(host253))
+	}
+
+	got, ok := normalizedRemoteHost(host253 + ":8080")
+	if !ok {
+		t.Fatalf("normalizedRemoteHost(253-char host) ok = false, want true")
+	}
+	if got != host253 {
+		t.Fatalf("normalizedRemoteHost(253-char host) = %q, want %q", got, host253)
+	}
+}
+
+// TestNormalizedRemoteHost_MaxLengthLabelAccepted pins the
+// `len(label) > 63` boundary: a single DNS label exactly 63 characters long
+// is valid and must be accepted.
+func TestNormalizedRemoteHost_MaxLengthLabelAccepted(t *testing.T) {
+	label63 := strings.Repeat("a", 63)
+	got, ok := normalizedRemoteHost(label63 + ".example:8080")
+	if !ok {
+		t.Fatalf("normalizedRemoteHost(63-char label) ok = false, want true")
+	}
+	want := label63 + ".example"
+	if got != want {
+		t.Fatalf("normalizedRemoteHost(63-char label) = %q, want %q", got, want)
+	}
+}
+
+// TestNormalizedRemoteHost_CharacterClassBoundaries pins the three
+// character-class boundaries in the label-character loop: 'z' is the top of
+// the lowercase-letter range, and '0'/'9' are the ends of the digit range.
+// A boundary-shifted comparison on any of the three would wrongly reject a
+// label containing that exact character.
+func TestNormalizedRemoteHost_CharacterClassBoundaries(t *testing.T) {
+	got, ok := normalizedRemoteHost("z09.example:8080")
+	if !ok {
+		t.Fatalf("normalizedRemoteHost(\"z09.example\") ok = false, want true")
+	}
+	if got != "z09.example" {
+		t.Fatalf("normalizedRemoteHost(\"z09.example\") = %q, want %q", got, "z09.example")
+	}
+}
+
+// ---- clientCertificateLeaf: non-empty VerifiedChains with an empty first chain ----
+
+// TestClientCertificateLeaf_NonEmptyChainsEmptyFirstChain pins the second
+// half of the `len(VerifiedChains) > 0 && len(VerifiedChains[0]) > 0` guard:
+// a non-nil VerifiedChains slice whose first chain is empty must still
+// return nil, not index into an empty inner slice.
+func TestClientCertificateLeaf_NonEmptyChainsEmptyFirstChain(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.TLS = &tls.ConnectionState{
+		VerifiedChains: [][]*x509.Certificate{{}},
+	}
+	if leaf := clientCertificateLeaf(req); leaf != nil {
+		t.Fatalf("clientCertificateLeaf() = %+v, want nil for a non-empty chains slice with an empty first chain", leaf)
+	}
+}
+
+// ---- profileLRU.store: capacity guard must not evict while under cap -----
+
+// TestProfileLRU_StoreDoesNotEvictUnderCap pins the
+// `i.order.Len() >= profileIndexMaxSize` gate: storing a second, distinct
+// key while nowhere near capacity must not evict the first.
+func TestProfileLRU_StoreDoesNotEvictUnderCap(t *testing.T) {
+	idx := &profileLRU[string]{
+		entries: make(map[string]*list.Element),
+		order:   list.New(),
+	}
+
+	idx.store("a", profileLookupResult{profile: "p-a", ok: true})
+	idx.store("b", profileLookupResult{profile: "p-b", ok: true})
+
+	if _, found := idx.lookup("a"); !found {
+		t.Fatal("expected key \"a\" to survive storing a second key well under capacity, but it was evicted")
+	}
+	if _, found := idx.lookup("b"); !found {
+		t.Fatal("expected key \"b\" to be present after storing it")
 	}
 }
 

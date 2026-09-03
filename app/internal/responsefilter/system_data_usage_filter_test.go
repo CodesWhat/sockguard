@@ -379,6 +379,11 @@ func TestFilterSystemDataUsageDropsEveryUnknownShape(t *testing.T) {
 func TestFirstSightSystemDataUsageSectionsReportsEachSectionOnce(t *testing.T) {
 	// Not parallel: it mutates the package-level seen set.
 	unique := "SectionForFirstSightTest"
+	// LoadOrStore only ever adds to unreportedSystemDataUsageKeys; it never
+	// removes. Without this cleanup, a second run in the same process (e.g.
+	// go test -count=2) would find the key already marked seen and fail the
+	// first-sight assertion below.
+	t.Cleanup(func() { unreportedSystemDataUsageKeys.Delete(unique) })
 	if got := FirstSightSystemDataUsageSections([]string{unique}); !reflect.DeepEqual(got, []string{unique}) {
 		t.Fatalf("first sight = %v, want [%s]", got, unique)
 	}
@@ -393,7 +398,7 @@ func TestFirstSightSystemDataUsageSectionsReportsEachSectionOnce(t *testing.T) {
 func TestClearUpstreamRepresentationHeaders(t *testing.T) {
 	t.Parallel()
 	header := http.Header{}
-	for _, name := range []string{"Content-Encoding", "Content-Length", "Content-Range", "ETag", "Last-Modified", "Transfer-Encoding"} {
+	for _, name := range []string{"Content-Encoding", "Content-Length", "Content-MD5", "Content-Range", "ETag", "Last-Modified", "Trailer", "Transfer-Encoding"} {
 		header.Set(name, "upstream")
 	}
 	header.Set("Content-Type", "application/json")

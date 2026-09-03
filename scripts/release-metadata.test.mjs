@@ -75,6 +75,63 @@ test("metrics docs distinguish UNKNOWN and OTHER method fallbacks", () => {
   );
 });
 
+test("libpod container risk catalogs name every guarded endpoint", () => {
+  const configuration = read("docs/content/docs/configuration.mdx").replaceAll(/\s+/gu, " ");
+  const security = read("docs/content/docs/security.mdx").replaceAll(/\s+/gu, " ");
+  const podman = read("docs/content/docs/podman.mdx").replaceAll(/\s+/gu, " ");
+
+  const section = (document, start, end) => {
+    const startIndex = document.indexOf(start);
+    const endIndex = document.indexOf(end, startIndex + start.length);
+    assert.notEqual(startIndex, -1, `missing catalog start: ${start}`);
+    assert.notEqual(endIndex, -1, `missing catalog end: ${end}`);
+    return document.slice(startIndex, endIndex);
+  };
+  const configurationBlindCatalog = section(
+    configuration,
+    "`insecure_allow_body_blind_writes` is now reserved",
+    "`insecure_allow_read_exfiltration` stays",
+  );
+  const configurationReadCatalog = section(
+    configuration,
+    "`insecure_allow_read_exfiltration` stays",
+    "`insecure_accept_opaque_buildkit_tunnels` stays",
+  );
+  const securityReadCatalog = section(
+    security,
+    "Sockguard now applies the same honesty rule",
+    "#### Compose / BuildKit Transport",
+  );
+
+  assert.ok(
+    configurationBlindCatalog.includes("`POST /libpod/containers/*/restore`"),
+    "configuration blind-write catalog must name native container restore",
+  );
+  for (const endpoint of [
+    "POST /libpod/containers/*/checkpoint",
+    "POST /libpod/containers/*/mount",
+    "GET /libpod/containers/showmounted",
+  ]) {
+    assert.ok(
+      configurationReadCatalog.includes(`\`${endpoint}\``),
+      `configuration read-exfiltration catalog must name ${endpoint}`,
+    );
+    assert.ok(
+      securityReadCatalog.includes(`\`${endpoint}\``),
+      `security read-exfiltration catalog must name ${endpoint}`,
+    );
+  }
+  assert.match(
+    configuration,
+    /SOCKGUARD_REQUEST_BODY_CONTAINER_ARCHIVE_ALLOWED_PATHS[^|]+\|[^|]+\|[^|]+\|[^|]+`PUT \/containers\/\*\/archive` and `PUT \/libpod\/containers\/\*\/archive`/u,
+  );
+  assert.match(
+    security,
+    /`POST \/containers\/\*\/update`, `POST \/libpod\/containers\/\*\/update`, `PUT \/containers\/\*\/archive`, and `PUT \/libpod\/containers\/\*\/archive` are inspected by default/u,
+  );
+  assert.match(podman, /plus the libpod-only entries below:/u);
+});
+
 test("release docs distinguish candidate and stable source branches", () => {
   const releasing = read("RELEASING.md").replaceAll(/\s+/gu, " ");
 
