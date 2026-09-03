@@ -2,6 +2,7 @@ package visibility
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codeswhat/sockguard/app/internal/filter"
 	"github.com/codeswhat/sockguard/app/internal/logging"
@@ -578,5 +580,85 @@ func TestLibpodSystemDataUsageVisibilityRefusalIsExact(t *testing.T) {
 				t.Fatalf("the refusal swallowed %s %s; status = %d, body: %s", tt.method, tt.path, rec.Code, rec.Body.String())
 			}
 		})
+	}
+}
+
+// TestSystemDataUsageNoUnknownSectionsNeverWarns is the boundary regression
+// for `len(fresh) > 0` in handleVisibilitySystemDataUsageRequest: a
+// /system/df response with no unrecognized top-level sections must produce
+// zero dropped-section warnings. A `>=` in place of `>` makes this clause
+// true even when fresh is empty (len(nil) >= 0), logging a warning about
+// sections that were never actually dropped.
+func TestSystemDataUsageNoUnknownSectionsNeverWarns(t *testing.T) {
+	t.Parallel()
+	logger, buf := warnCapturingLogger()
+
+	handler := middlewareWithDeps(logger, Options{VisibleResourceLabels: []string{"tier=prod"}}, visibilityDeps{})(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, modernSystemDFForTest)
+		}),
+	)
+
+	rec := getSystemDFForTest(t, handler)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(buf.String(), "dropped unclassifiable response sections") {
+		t.Fatalf("log output = %q, want no dropped-sections warning for an all-known response", buf.String())
+	}
+}
+
+// TestSystemDataUsageFreshUnknownSectionWarnsOnce is the negation regression
+// for the same clause: a /system/df response carrying a section this build
+// does not recognize must warn, naming the section — exactly once, even when
+// the same section keeps showing up on later requests. A `<=` in place of `>`
+// flips the clause so it is only true when fresh is empty, silencing the
+// warning exactly when there is something to report; that mutant would also
+// pass a test that only checked "warns at least once", so this sends the same
+// unknown section on two requests and asserts the warning fires on the first
+// and is suppressed on the second, which is the actual "WarnsOnce" contract
+// this test is named for.
+//
+// Dropped-section state lives in responsefilter's package-level
+// unreportedSystemDataUsageKeys sync.Map (see FirstSightSystemDataUsageSections),
+// which persists for the life of the process — including across a `go test
+// -count>1` rerun of this same binary. visibility has no way to reach into
+// that map to reset it between runs, so a fixed section key would be marked
+// seen by the first run and silently stop warning on the second, making this
+// test's assertion fail with no code change. Deriving the key from the test
+// name and the current time keeps every run's key unique.
+func TestSystemDataUsageFreshUnknownSectionWarnsOnce(t *testing.T) {
+	t.Parallel()
+	logger, buf := warnCapturingLogger()
+
+	unknownSectionKey := fmt.Sprintf("ZZZVisibilityUnknownSection_%s_%d", t.Name(), time.Now().UnixNano())
+	body := `{"ContainerUsage":{"Items":[]},"ImageUsage":{"Items":[]},"VolumeUsage":{"Items":[]},"` +
+		unknownSectionKey + `":{"anything":true}}`
+
+	handler := middlewareWithDeps(logger, Options{VisibleResourceLabels: []string{"tier=prod"}}, visibilityDeps{})(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, body)
+		}),
+	)
+
+	rec := getSystemDFForTest(t, handler)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	rec2 := getSystemDFForTest(t, handler)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("second request status = %d, want 200; body: %s", rec2.Code, rec2.Body.String())
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "dropped unclassifiable response sections") {
+		t.Fatalf("log output = %q, want a dropped-sections warning", got)
+	}
+	if warnings := strings.Count(got, unknownSectionKey); warnings != 1 {
+		t.Fatalf("log output = %q, want exactly one dropped-sections warning naming %q, got %d", got, unknownSectionKey, warnings)
 	}
 }

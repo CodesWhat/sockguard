@@ -164,6 +164,63 @@ func TestFilterWriterWriteCapsBufferAtLimit(t *testing.T) {
 	}
 }
 
+// TestFilterWriterWriteAtExactLimitDoesNotOverflow is the boundary regression
+// for `int64(p.body.Len())+int64(len(b)) > filter.MaxResponseBodyBytes` in
+// patternFilterWriter.Write: a write that lands EXACTLY on the limit must be
+// buffered in full, not treated as oversized. A `>=` in place of `>` would
+// flag it as overflow one write early.
+func TestFilterWriterWriteAtExactLimitDoesNotOverflow(t *testing.T) {
+	t.Parallel()
+	rec := httptest.NewRecorder()
+	fw := newPatternFilterWriter(rec)
+	t.Cleanup(fw.release)
+
+	exact := make([]byte, filter.MaxResponseBodyBytes)
+	n, err := fw.Write(exact)
+	if err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
+	if n != len(exact) {
+		t.Fatalf("Write() n = %d, want %d", n, len(exact))
+	}
+	if fw.overflow {
+		t.Fatal("overflow set for a write landing exactly on the limit")
+	}
+	if fw.body.Len() != filter.MaxResponseBodyBytes {
+		t.Fatalf("buffer len = %d, want %d", fw.body.Len(), filter.MaxResponseBodyBytes)
+	}
+}
+
+// TestFilterWriterCommitIfUnfilterablePassesThroughExactBoundaryStatus is the
+// boundary regression for `p.statusCode >= http.StatusMultipleChoices` in
+// commitIfUnfilterable: 300 itself is the first non-2xx status and must be
+// passed through untouched. A `>` in place of `>=` would leave exactly 300
+// inside the "filter as 2xx JSON" range instead.
+func TestFilterWriterCommitIfUnfilterablePassesThroughExactBoundaryStatus(t *testing.T) {
+	t.Parallel()
+	rec := httptest.NewRecorder()
+	fw := newPatternFilterWriter(rec)
+	t.Cleanup(fw.release)
+
+	const body = "not a json array"
+	fw.WriteHeader(http.StatusMultipleChoices)
+	_, _ = fw.Write([]byte(body))
+
+	committed, err := fw.commitIfUnfilterable()
+	if err != nil {
+		t.Fatalf("commitIfUnfilterable() error = %v", err)
+	}
+	if !committed {
+		t.Fatal("commitIfUnfilterable() = false, want true (300 must pass through unfiltered)")
+	}
+	if rec.Code != http.StatusMultipleChoices {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusMultipleChoices)
+	}
+	if rec.Body.String() != body {
+		t.Fatalf("body = %q, want %q unchanged", rec.Body.String(), body)
+	}
+}
+
 // TestFilterWriterCapsOversizedResponse drives the middleware end-to-end with a
 // containers/json response larger than the 8 MiB cap and asserts the client
 // gets a 502 rather than the proxy buffering the whole body (OOM DoS guard).
