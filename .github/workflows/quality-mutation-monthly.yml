@@ -2,15 +2,31 @@ name: "Quality: Mutation Testing"
 run-name: >-
   ${{
     github.event_name == 'schedule' && 'Quality: Mutation Testing — Monthly schedule' ||
+    github.event_name == 'push' && format('Quality: Mutation Testing — Branch {0}', github.ref_name) ||
     format('Quality: Mutation Testing — Manual by {0}', github.actor)
   }}
 
 # Monthly/manual quality signal using Gremlins (Go mutation tester).
 # Finds weak assertions, dead code, and refactor candidates.
+#
+# The matrix is every package under app/internal with both source and
+# tests, computed by scripts/ci/mutation-matrix.sh at run time, so a new
+# package is covered the month it lands and the badge's expected-report
+# count can never drift from the matrix.
 on:
   workflow_dispatch:
   schedule:
     - cron: '30 6 1 * *'  # Monthly on day 1 at 06:30 UTC
+  # workflow_dispatch still requires a manual click per run, so exercising
+  # a matrix change under active development would mean re-dispatching by
+  # hand after every push. Pushing any `mutation/*` branch runs the full
+  # matrix on that branch's copy of this file automatically instead, which
+  # is how the widened matrix itself was iterated. The badge commit below
+  # is gated to the default branch, so a branch run only reports its score
+  # in the job summary.
+  push:
+    branches:
+      - 'mutation/**'
 
 permissions:
   contents: read
@@ -19,50 +35,74 @@ env:
   GREMLINS_VERSION: v0.6.0
 
 concurrency:
-  group: mutation-testing-${{ github.workflow }}
+  group: mutation-testing-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  gremlins:
-    name: "Quality: Gremlins (${{ matrix.name }})"
+  discover:
+    name: "Discover mutation matrix"
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    continue-on-error: true  # advisory — review results, don't block
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: filter
-            package: ./internal/filter
-          - name: proxy
-            package: ./internal/proxy
-          - name: config
-            package: ./internal/config
-          - name: httpjson
-            package: ./internal/httpjson
-          - name: logging
-            package: ./internal/logging
-          - name: cmd
-            package: ./internal/cmd
-
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      count: ${{ steps.matrix.outputs.count }}
     steps:
-      # Stage 1 of the harden-runner egress rollout: pure Go build plus
-      # `go install` of gremlins from its module path, no Docker. Same
-      # endpoint set as quality-fuzz-nightly.yml — see that file's comment
-      # for the reasoning on each host.
       - name: Harden Runner
         uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
           egress-policy: block
           allowed-endpoints: >
             github.com:443
-            raw.githubusercontent.com:443
-            objects.githubusercontent.com:443
-            release-assets.githubusercontent.com:443
-            proxy.golang.org:443
-            storage.googleapis.com:443
-            sum.golang.org:443
-            *.actions.githubusercontent.com:443
+          disable-sudo: true
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compute matrix
+        id: matrix
+        run: |
+          set -euo pipefail
+          matrix=$(bash scripts/ci/mutation-matrix.sh)
+          count=$(printf '%s' "$matrix" | jq -r '.include | length')
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+          echo "count=${count}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Mutation matrix"
+            echo "- ${count} packages: $(printf '%s' "$matrix" | jq -r '[.include[].name] | join(", ")')"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  gremlins:
+    name: "Quality: Gremlins (${{ matrix.name }})"
+    needs: discover
+    runs-on: ubuntu-24.04
+    # The full filter leg is estimated at 60 to 90 minutes: 1122 mutants,
+    # and the 756 after image_load.go each pay the gzip-bomb test under
+    # -failfast. 120 left too little headroom on a slow runner.
+    timeout-minutes: 180
+    continue-on-error: true  # advisory — review results, don't block
+    strategy:
+      fail-fast: false
+      # Same ceiling as quality-fuzz-nightly.yml: keeps the matrix inside
+      # the runner concurrency limit so a leg is never cancelled for lack
+      # of a runner, which would silently shrink the report set.
+      max-parallel: 12
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+
+    steps:
+      # The filter leg died at 17 to 20 minutes under egress-policy: block,
+      # three for three, with 79 GB of disk and 13.7 GB of memory free
+      # seconds before the kill, so it is not resource exhaustion. The same
+      # leg ran 47 minutes green under audit on 2026-08-01 (run 30692172568),
+      # quality-fuzz-monthly.yml already runs audit for its 61-minute legs,
+      # and no job in this repo has survived past 16.5 minutes under block.
+      # This job holds contents: read and no persisted credential; the
+      # write-capable update-badge job stays on block.
+      - name: Harden Runner
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
+        with:
+          egress-policy: audit
           disable-sudo: true
 
       - name: Checkout
@@ -79,29 +119,37 @@ jobs:
         run: go install "github.com/go-gremlins/gremlins/cmd/gremlins@${GREMLINS_VERSION}"
 
       - name: Run Gremlins mutation testing
-        working-directory: app
+        # No working-directory: the Go module root is the repo root, and
+        # `gremlins unleash` resolves the module from the current directory
+        # instead of walking up for go.mod the way `go build` does. Running
+        # it from app/ is what made every shard die in ~1s with "not in a Go
+        # module" once the module moved to the root.
         # shell: bash (rather than the default `bash -e {0}`) is required here:
         # GitHub's default bash has -e but not -o pipefail, so `| tee` would
         # report tee's exit code and mask a failing mutation run.
         shell: bash
         run: |
-          gremlins unleash --tags="" ${{ matrix.package }} 2>&1 | tee mutation-report.txt
+          gremlins unleash --tags="" "${PACKAGE}" 2>&1 | tee mutation-report.txt
         env:
           GOFLAGS: ""
+          PACKAGE: ${{ matrix.package }}
 
       - name: Summarize
         if: always()
+        env:
+          NAME: ${{ matrix.name }}
+          PACKAGE: ${{ matrix.package }}
         run: |
           {
-            echo "### Mutation Testing: ${{ matrix.name }}"
+            echo "### Mutation Testing: ${NAME}"
             echo "- Tool: Gremlins (Go mutation tester)"
             echo "- Version: ${GREMLINS_VERSION}"
             echo "- Mode: ADVISORY (non-blocking)"
-            echo "- Package: ${{ matrix.package }}"
+            echo "- Package: ${PACKAGE}"
             echo ""
-            if [ -f app/mutation-report.txt ]; then
+            if [ -f mutation-report.txt ]; then
               echo '```'
-              tail -20 app/mutation-report.txt
+              tail -20 mutation-report.txt
               echo '```'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
@@ -111,24 +159,33 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: mutation-report-${{ matrix.name }}-${{ github.run_id }}
-          path: app/mutation-report.txt
+          path: mutation-report.txt
           if-no-files-found: warn
           retention-days: 30
 
-  update-badge:
-    name: "Update mutation score badge"
-    needs: gremlins
+  # Read-only: aggregates the reports and publishes the per-package table
+  # on every run, including `mutation/*` branch runs. It holds no write
+  # credential, so workflow code pushed to a branch never executes with
+  # one. The badge commit is a separate job below, gated to the default
+  # branch at job level.
+  score:
+    name: "Aggregate mutation score"
+    needs: [discover, gremlins]
     # gremlins sets job-level continue-on-error, so a failed package leg
-    # still lets this job run — badge-plumbing only, never blocking.
+    # still lets this job run — reporting only, never blocking.
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    permissions:
-      contents: write  # commit the badge JSON back with GITHUB_TOKEN
+    outputs:
+      skip: ${{ steps.score.outputs.skip }}
+      pct: ${{ steps.score.outputs.pct }}
+      color: ${{ steps.score.outputs.color }}
+      killed: ${{ steps.score.outputs.killed }}
+      lived: ${{ steps.score.outputs.lived }}
+      reports_found: ${{ steps.score.outputs.reports_found }}
     steps:
       # Stage 1 of the harden-runner egress rollout: only downloads
-      # artifacts and pushes a commit back to origin — all GitHub-internal
-      # traffic.
+      # artifacts — all GitHub-internal traffic.
       - name: Harden Runner
         uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
@@ -138,11 +195,6 @@ jobs:
             api.github.com:443
             *.actions.githubusercontent.com:443
           disable-sudo: true
-
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: true
 
       - name: Download all package reports
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
@@ -160,6 +212,8 @@ jobs:
       # can't be drowned out by five small ones.
       - name: Compute weighted mutation score
         id: score
+        env:
+          EXPECTED_REPORTS: ${{ needs.discover.outputs.count }}
         run: |
           set -uo pipefail
           shopt -s nullglob
@@ -169,21 +223,99 @@ jobs:
           reports_found=0
           # One report per entry in the mutation job's matrix. A partial set
           # would publish a score weighted toward whichever packages happened
-          # to survive, so it is treated as no result at all.
-          # Kept in sync by scripts/mutation-badge-matrix.test.mjs.
-          expected_reports=6
+          # to survive, so it is treated as no result at all. The count comes
+          # from the same discover job that produced the matrix, so the two
+          # cannot disagree; scripts/mutation-badge-matrix.test.mjs checks
+          # that wiring.
+          expected_reports=${EXPECTED_REPORTS}
+
+          # `if: always()` runs this job even when discover failed and never
+          # produced a count, in which case EXPECTED_REPORTS arrives empty.
+          # Without this check the `-ne` comparison below errors under `-u`,
+          # `bash -e {0}` treats that error as pass-through, and the job
+          # falls through to the success path with pct=0.0 -- a false 0.0%
+          # badge committed straight from a discover failure. Fail closed
+          # before any of that runs.
+          if ! [[ "${expected_reports}" =~ ^[1-9][0-9]*$ ]]; then
+            skip_reason="discover job produced no leg count; not publishing"
+            echo "${skip_reason}"
+            {
+              echo "### Mutation badge not updated"
+              echo
+              echo "${skip_reason}"
+            } >> "${GITHUB_STEP_SUMMARY}"
+            # `Summary` runs under `if: always()` and reads only this step's
+            # outputs, so the reason has to travel as an output too. Without
+            # it this path surfaced as "Incomplete report set:  of", which
+            # named the wrong failure with two blanks in it.
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=${skip_reason}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Per-package table so the lived mutants can be chased package by
+          # package instead of from one aggregate number.
+          {
+            echo "### Mutation score by package"
+            echo
+            echo "| Package | Killed | Lived | Efficacy |"
+            echo "|---|---:|---:|---:|"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
           for f in reports/*/mutation-report.txt; do
-            killed=$(grep -oE 'Killed: [0-9]+' "$f" | head -1 | grep -oE '[0-9]+')
-            lived=$(grep -oE 'Lived: [0-9]+' "$f" | head -1 | grep -oE '[0-9]+')
+            pkg=$(basename "$(dirname "$f")")
+            pkg=${pkg#mutation-report-}
+            pkg=${pkg%-*}
+            # `|| true` on both, for two separate reasons, and the skip/warn
+            # branch below is what is supposed to handle either:
+            #   1. This step runs under GitHub's default `bash -e {0}`, and
+            #      `set -uo pipefail` above adds -u and pipefail without
+            #      clearing the inherited -e. An unparseable report makes the
+            #      first grep exit 1, which aborted the whole step before it
+            #      could reach the warn-and-continue path it already has.
+            #   2. pipefail plus `head -1` is a SIGPIPE trap: on a report long
+            #      enough that grep is still writing when head exits, grep dies
+            #      141 and pipefail returns it, failing a pipeline that had
+            #      already parsed the value correctly.
+            # Anchored to Gremlins' own summary line (`Killed: N, Lived: N,
+            # Not covered: N`), not the first `Killed:` anywhere in the file:
+            # a package's mutated source can itself contain the word inside a
+            # log line or a mutant description, and matching that instead of
+            # the summary would silently parse the wrong number.
+            summary_line=$(grep -E '^Killed: [0-9]+, Lived: [0-9]+, Not covered: [0-9]+' "$f" | head -1 || true)
+            killed=""
+            lived=""
+            if [ -n "$summary_line" ]; then
+              killed=$(printf '%s' "$summary_line" | grep -oE 'Killed: [0-9]+' | grep -oE '[0-9]+' || true)
+              lived=$(printf '%s' "$summary_line" | grep -oE 'Lived: [0-9]+' | grep -oE '[0-9]+' || true)
+            fi
+            # A package whose tests cover no mutable line makes Gremlins print
+            # "No results to report." instead of a Killed/Lived line. That is
+            # a complete report of zero, not a broken one: counting it keeps
+            # the report set whole so the badge can still publish. Only fills
+            # when no summary line was found at all, so it can never
+            # overwrite counts already parsed above.
+            if [ -z "$summary_line" ] && grep -q '^No results to report' "$f"; then
+              killed=0
+              lived=0
+            fi
             if [ -z "$killed" ] || [ -z "$lived" ]; then
               echo "::warning::could not parse Killed/Lived out of $f, skipping it"
+              echo "| ${pkg} | ? | ? | unparseable |" >> "${GITHUB_STEP_SUMMARY}"
               continue
             fi
+            pkg_total=$((killed + lived))
+            if [ "$pkg_total" -eq 0 ]; then
+              pkg_pct="n/a"
+            else
+              pkg_pct=$(awk -v k="$killed" -v t="$pkg_total" 'BEGIN { printf "%.1f%%", (k / t) * 100 }')
+            fi
+            echo "| ${pkg} | ${killed} | ${lived} | ${pkg_pct} |" >> "${GITHUB_STEP_SUMMARY}"
             total_killed=$((total_killed + killed))
             total_lived=$((total_lived + lived))
             reports_found=$((reports_found + 1))
           done
+          echo >> "${GITHUB_STEP_SUMMARY}"
 
           if [ "$reports_found" -ne "$expected_reports" ]; then
             echo "reports_found=${reports_found}" >> "$GITHUB_OUTPUT"
@@ -221,11 +353,59 @@ jobs:
             echo "skip=false"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Write badge JSON
-        if: steps.score.outputs.skip != 'true'
+      - name: Summary
+        if: always()
         env:
           PCT: ${{ steps.score.outputs.pct }}
-          COLOR: ${{ steps.score.outputs.color }}
+          REPORTS_FOUND: ${{ steps.score.outputs.reports_found }}
+          EXPECTED_REPORTS: ${{ steps.score.outputs.expected_reports }}
+          SKIP: ${{ steps.score.outputs.skip }}
+          SKIP_REASON: ${{ steps.score.outputs.skip_reason }}
+        run: |
+          {
+            echo "### Mutation score badge"
+            if [ "$SKIP" = "true" ] && [ -n "$SKIP_REASON" ]; then
+              # The discovery-failure skip has no report counts to format;
+              # `score` names the cause in skip_reason instead.
+              echo "- ${SKIP_REASON}; badge left unchanged."
+            elif [ "$SKIP" = "true" ]; then
+              echo "- Incomplete report set: ${REPORTS_FOUND} of ${EXPECTED_REPORTS}; badge left unchanged."
+            else
+              echo "- Weighted test efficacy (killed / (killed + lived)) across ${REPORTS_FOUND} package report(s): **${PCT}%**"
+              echo "- Mode: ADVISORY (non-blocking) -- this only refreshes \`.github/badges/mutation-score.json\`, no gate."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # The only job with a write credential. Job-level `if` means it is
+  # never scheduled for a `mutation/*` branch run, so branch-authored
+  # workflow code never runs with the write permission or a persisted credential.
+  update-badge:
+    name: "Update mutation score badge"
+    needs: score
+    if: needs.score.outputs.skip != 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write  # commit the badge JSON back with GITHUB_TOKEN
+    steps:
+      # Pushes one commit back to origin — GitHub-internal traffic only.
+      - name: Harden Runner
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+          disable-sudo: true
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: true
+
+      - name: Write badge JSON
+        env:
+          PCT: ${{ needs.score.outputs.pct }}
+          COLOR: ${{ needs.score.outputs.color }}
         run: |
           set -euo pipefail
           mkdir -p .github/badges
@@ -234,12 +414,11 @@ jobs:
             > .github/badges/mutation-score.json
 
       - name: Commit badge JSON
-        if: steps.score.outputs.skip != 'true'
         env:
-          PCT: ${{ steps.score.outputs.pct }}
-          KILLED: ${{ steps.score.outputs.killed }}
-          LIVED: ${{ steps.score.outputs.lived }}
-          REPORTS_FOUND: ${{ steps.score.outputs.reports_found }}
+          PCT: ${{ needs.score.outputs.pct }}
+          KILLED: ${{ needs.score.outputs.killed }}
+          LIVED: ${{ needs.score.outputs.lived }}
+          REPORTS_FOUND: ${{ needs.score.outputs.reports_found }}
           TARGET_REF: ${{ github.ref_name }}
         run: |
           set -euo pipefail
@@ -252,21 +431,3 @@ jobs:
           fi
           git commit -m "chore(badges): update mutation score to ${PCT}% (killed ${KILLED}, lived ${LIVED}, ${REPORTS_FOUND} package reports)"
           git push origin "HEAD:${TARGET_REF}"
-
-      - name: Summary
-        if: always()
-        env:
-          PCT: ${{ steps.score.outputs.pct }}
-          REPORTS_FOUND: ${{ steps.score.outputs.reports_found }}
-          EXPECTED_REPORTS: ${{ steps.score.outputs.expected_reports }}
-          SKIP: ${{ steps.score.outputs.skip }}
-        run: |
-          {
-            echo "### Mutation score badge"
-            if [ "$SKIP" = "true" ]; then
-              echo "- Incomplete report set: ${REPORTS_FOUND} of ${EXPECTED_REPORTS}; badge left unchanged."
-            else
-              echo "- Weighted test efficacy (killed / (killed + lived)) across ${REPORTS_FOUND} package report(s): **${PCT}%**"
-              echo "- Mode: ADVISORY (non-blocking) -- this only refreshes \`.github/badges/mutation-score.json\`, no gate."
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"

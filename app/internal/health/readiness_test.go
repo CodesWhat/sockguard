@@ -76,6 +76,62 @@ func TestProbeUpstreamAPI(t *testing.T) {
 			t.Fatalf("got (%q, %v), want (unreachable, non-nil err)", status, err)
 		}
 	})
+
+	t.Run("300 boundary is unreachable", func(t *testing.T) {
+		t.Parallel()
+		// 300 is the first non-2xx status; the range check is "< 200 || >=
+		// 300", so this must fail closed. A mutant turning ">= 300" into
+		// "> 300" would treat exactly 300 as ready.
+		sock := startUnixUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusMultipleChoices)
+		}))
+		status, err := probeUpstreamAPI(context.Background(), dockerclient.New(sock))
+		if err == nil || status != "unreachable" {
+			t.Fatalf("got (%q, %v), want (unreachable, non-nil err) for status 300", status, err)
+		}
+	})
+}
+
+func TestNewReadinessMonitorTimeoutFallback(t *testing.T) {
+	t.Parallel()
+
+	t.Run("non-positive timeout falls back to the default dial timeout", func(t *testing.T) {
+		t.Parallel()
+		m := NewReadinessMonitor("/tmp/upstream.sock", time.Now(), testLogger(), 0)
+		if got := m.checker.timeout; got != healthDialTimeout {
+			t.Fatalf("checker timeout = %v, want fallback %v", got, healthDialTimeout)
+		}
+	})
+
+	t.Run("positive timeout passes through unchanged", func(t *testing.T) {
+		t.Parallel()
+		want := 5 * time.Second
+		m := NewReadinessMonitor("/tmp/upstream.sock", time.Now(), testLogger(), want)
+		if got := m.checker.timeout; got != want {
+			t.Fatalf("checker timeout = %v, want %v (no fallback)", got, want)
+		}
+	})
+}
+
+func TestNewReadinessMonitorWithRoundTripperTimeoutFallback(t *testing.T) {
+	t.Parallel()
+
+	t.Run("non-positive timeout falls back to the default dial timeout", func(t *testing.T) {
+		t.Parallel()
+		m := NewReadinessMonitorWithRoundTripper("label", http.DefaultTransport, time.Now(), testLogger(), 0)
+		if got := m.checker.timeout; got != healthDialTimeout {
+			t.Fatalf("checker timeout = %v, want fallback %v", got, healthDialTimeout)
+		}
+	})
+
+	t.Run("positive timeout passes through unchanged", func(t *testing.T) {
+		t.Parallel()
+		want := 5 * time.Second
+		m := NewReadinessMonitorWithRoundTripper("label", http.DefaultTransport, time.Now(), testLogger(), want)
+		if got := m.checker.timeout; got != want {
+			t.Fatalf("checker timeout = %v, want %v (no fallback)", got, want)
+		}
+	})
 }
 
 func TestReadinessMonitorHandler(t *testing.T) {
