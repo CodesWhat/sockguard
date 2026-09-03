@@ -373,8 +373,7 @@ func filterSystemDataUsageArray(raw json.RawMessage, label string, keepItem func
 // reason.
 func marshalJSONPreservingEscapes(value any) (json.RawMessage, error) {
 	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
+	enc := newJSONEncoder(&buf)
 	if err := enc.Encode(value); err != nil {
 		return nil, err
 	}

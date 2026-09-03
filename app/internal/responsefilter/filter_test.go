@@ -400,6 +400,51 @@ func TestStreamArrayResponseClosesOriginalUpstreamBody(t *testing.T) {
 	}
 }
 
+func TestResponseWritersUseCanonicalJSONEncoding(t *testing.T) {
+	t.Parallel()
+
+	const value = "<>&"
+	objectResp := &http.Response{Header: make(http.Header)}
+	if err := writeResponseBody(objectResp, map[string]any{"Value": value}); err != nil {
+		t.Fatalf("writeResponseBody() error = %v, want nil", err)
+	}
+	arrayResp := newResponseForTest(t, http.MethodGet, "/containers/json", `[{"Value":"<>&"}]`)
+	if err := streamArrayResponse(arrayResp, func(map[string]any) error { return nil }); err != nil {
+		t.Fatalf("streamArrayResponse() error = %v, want nil", err)
+	}
+
+	objectBody, err := io.ReadAll(objectResp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll(object response): %v", err)
+	}
+	arrayBody, err := io.ReadAll(arrayResp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll(array response): %v", err)
+	}
+	arrayElement := arrayBody[1 : len(arrayBody)-1]
+	if !bytes.Equal(objectBody, arrayElement) {
+		t.Fatalf("response encodings diverged\nobject: %s\n array: %s", objectBody, arrayBody)
+	}
+	if got, want := string(objectBody), `{"Value":"<>&"}`; got != want {
+		t.Fatalf("canonical object encoding = %s, want %s", got, want)
+	}
+
+	var objectDecoded map[string]string
+	if err := json.Unmarshal(objectBody, &objectDecoded); err != nil {
+		t.Fatalf("json.Unmarshal(object response): %v", err)
+	}
+	var arrayDecoded []map[string]string
+	if err := json.Unmarshal(arrayBody, &arrayDecoded); err != nil {
+		t.Fatalf("json.Unmarshal(array response): %v", err)
+	}
+	if got := objectDecoded["Value"]; got != value {
+		t.Fatalf("decoded object value = %q, want %q", got, value)
+	}
+	if got := arrayDecoded[0]["Value"]; got != value {
+		t.Fatalf("decoded array value = %q, want %q", got, value)
+	}
+}
+
 // TestStreamArrayResponseSizeLimitBoundary pins the exact byte at which the
 // streaming array path stops accepting a response: the LimitedReader is
 // sized to MaxResponseBodyBytes+1 so a body of exactly the cap decodes
