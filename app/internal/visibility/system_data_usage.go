@@ -53,6 +53,12 @@ func denyLibpodSystemDataUsage(w http.ResponseWriter, r *http.Request) {
 	_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: reason})
 }
 
+func denyLibpodShowMounted(w http.ResponseWriter, r *http.Request) {
+	reason := responsefilter.LibpodShowMountedDenyReason
+	logging.SetDeniedWithCode(w, r, reasonCodeVisibilityLibpodShowMounted, reason, nil)
+	_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: reason})
+}
+
 // flushSystemDataUsage filters the buffered /system/df object response item by
 // item and writes the result to the underlying ResponseWriter.
 //

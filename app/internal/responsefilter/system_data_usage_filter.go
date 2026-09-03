@@ -32,7 +32,17 @@ const SystemDataUsagePath = "/system/df"
 // Podman uses as well as any other /vN[.N[.N]]/ form the route regex
 // (/v{version:[0-9][0-9A-Za-z.-]*}) admits, so /v5.0.0/libpod/system/df
 // normalizes here too.
-const LibpodSystemDataUsagePath = "/libpod" + SystemDataUsagePath
+const LibpodSystemDataUsagePath = LibpodPathPrefix + SystemDataUsagePath
+
+// LibpodShowMountedPath is the normalized path of Podman's native collection
+// endpoint that returns every mounted container ID and daemon-host mount path.
+const LibpodShowMountedPath = "/libpod/containers/showmounted"
+
+// LibpodShowMountedDenyReason is shared by ownership and visibility when they
+// refuse an inventory whose entries carry no labels or names those policies
+// can use to scope the response safely.
+const LibpodShowMountedDenyReason = "libpod mounted-container inventory denied: " +
+	"/libpod/containers/showmounted returns every mounted container ID and daemon-host mount path, so it cannot be scoped to one caller"
 
 // LibpodSystemDataUsageDenyReason is the operator-facing reason the ownership
 // and visibility middlewares report when they refuse GET /libpod/system/df.
@@ -388,10 +398,10 @@ func isJSONNull(raw json.RawMessage) bool {
 }
 
 // ClearUpstreamRepresentationHeaders strips the upstream response's
-// representation metadata from header. A middleware that abandons a buffered
-// upstream body and substitutes its own error payload must call this first,
+// representation metadata from header. Any path that abandons an upstream
+// body and substitutes a rewritten or error payload must call this first,
 // otherwise the client receives the daemon's Content-Encoding / ETag /
-// Content-Range describing a body it will never see.
+// Content-Range or Trailer announcement describing a body it will never see.
 func ClearUpstreamRepresentationHeaders(header http.Header) {
 	for _, name := range [...]string{
 		"Accept-Ranges",
@@ -400,11 +410,13 @@ func ClearUpstreamRepresentationHeaders(header http.Header) {
 		"Content-Language",
 		"Content-Length",
 		"Content-Location",
+		"Content-MD5",
 		"Content-Range",
 		"Digest",
 		"ETag",
 		"Last-Modified",
 		"Repr-Digest",
+		"Trailer",
 		"Transfer-Encoding",
 	} {
 		header.Del(name)

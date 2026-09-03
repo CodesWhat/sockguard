@@ -23,10 +23,13 @@ import (
 const DefaultLabelKey = "com.sockguard.owner"
 
 const (
-	reasonCodeOwnerRequestInvalid     = "owner_request_invalid"
-	reasonCodeOwnerPolicyLookupFailed = "owner_policy_lookup_failed"
-	reasonCodeOwnerPolicyDeniedAccess = "owner_policy_denied_access"
+	reasonCodeOwnerRequestInvalid                    = "owner_request_invalid"
+	reasonCodeOwnerPolicyLookupFailed                = "owner_policy_lookup_failed"
+	reasonCodeOwnerPolicyDeniedAccess                = "owner_policy_denied_access"
+	reasonCodeOwnerVisibilityPodmanEventsUnscopeable = "owner_visibility_podman_events_unscopeable"
 )
+
+const ownerVisibilityPodmanEventsDenyReason = "events denied: this upstream is Podman, whose GET /events filters labels disjunctively, so owner isolation and visibility label selectors cannot be enforced together"
 
 // maxOwnershipBodyBytes caps the request body the ownership middleware will
 // read when it mutates a create body, extracts network-membership references,
@@ -132,6 +135,14 @@ func middlewareWithDeps(
 				normPath = meta.NormPath
 			} else {
 				normPath = filter.NormalizePath(r.URL.Path)
+			}
+
+			ownerFilterApplies := needsOwnerFilter(r.Method, normPath) ||
+				(r.Method == http.MethodGet || r.Method == http.MethodHead) && libpodNeedsOwnerFilter(normPath)
+			if ownerFilterApplies && dockerfilters.RequiresSoleValue(r, ownerFilterKey(normPath)) {
+				logging.SetDeniedWithCode(w, r, reasonCodeOwnerVisibilityPodmanEventsUnscopeable, ownerVisibilityPodmanEventsDenyReason, nil)
+				_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: ownerVisibilityPodmanEventsDenyReason})
+				return
 			}
 
 			refs, err := mutateOwnershipRequest(r, normPath, opts)
@@ -790,9 +801,26 @@ func addOwnerLabelFilter(r *http.Request, labelKey, owner string) error {
 	}
 	filterKey := ownerFilterKey(filter.NormalizePath(r.URL.Path))
 	label := labelKey + "=" + owner
-	// Unconditional replacement ensures a client-supplied owner label cannot
-	// coexist with the proxy-enforced label, preventing OR-semantics bypass.
-	filters[filterKey] = []string{label}
+	// Client-supplied values under this key are dropped: Swarm's control-plane
+	// lists fold `label` into a map[string]string over a randomly-ordered
+	// Args.Get, so a client value repeating the owner key can displace the
+	// proxy-enforced one.
+	//
+	// Selectors sockguard itself injected earlier in the chain survive that
+	// drop. The visibility middleware runs first and writes the same key, and
+	// replacing its selectors left the request owner-scoped but not
+	// visibility-scoped. Both sets go upstream together, and both engines AND
+	// the values under `label` — see internal/dockerfilters/injected.go for the
+	// daemon-side matchers that make that true.
+	injected := dockerfilters.InjectedSelectors(r, filterKey)
+	values := make([]string, 0, len(injected)+1)
+	values = append(values, label)
+	for _, selector := range injected {
+		if !slices.Contains(values, selector) {
+			values = append(values, selector)
+		}
+	}
+	filters[filterKey] = values
 	encoded, err := json.Marshal(filters)
 	if err != nil {
 		return fmt.Errorf("encode filters: %w", err)

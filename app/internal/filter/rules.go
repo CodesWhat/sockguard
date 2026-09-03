@@ -312,7 +312,7 @@ func (cr *CompiledRule) matchesNormalizedUpperWithBit(upperMethod string, method
 	case pathMatcherTrailingDeep:
 		return matchTrailingDoubleStar(cr.trailingPrefix, normalizedPath)
 	case pathMatcherSegmentGlob:
-		if cr.literalPrefix != "" && !strings.HasPrefix(normalizedPath, cr.literalPrefix) {
+		if cr.literalPrefix != "" && !strings.HasPrefix(strings.TrimPrefix(normalizedPath, "/"), strings.TrimPrefix(cr.literalPrefix, "/")) {
 			return false
 		}
 		return matchGlobSegments(cr.segmentPatterns, normalizedPath)

@@ -379,6 +379,10 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		{http.MethodPost, matchesImagePullInspection, inspectSeverityHigh, newImagePullPolicy(cfg.ImagePull).inspect, "failed to inspect image pull request", "unable to inspect image pull request"},
 		{http.MethodPost, matchesBuildInspection, inspectSeverityCritical, newBuildPolicy(cfg.Build).inspect, "failed to inspect build request", "unable to inspect build request"},
 		{http.MethodPost, matchesContainerUpdateInspection, inspectSeverityHigh, newContainerUpdatePolicy(cfg.ContainerUpdate).inspect, "failed to inspect container update request body", "unable to inspect container update request body"},
+		// matchesContainerArchiveInspection covers the Docker-compat AND the
+		// libpod spelling from one predicate. Podman registers both on the
+		// identical compat.Archive handler, so one policy over one wire
+		// format is the whole story here — see isContainerArchivePath.
 		{http.MethodPut, matchesContainerArchiveInspection, inspectSeverityHigh, newContainerArchivePolicy(cfg.ContainerArchive).inspect, "failed to inspect container archive request body", "unable to inspect container archive request body"},
 		{http.MethodPost, matchesImageLoadInspection, inspectSeverityHigh, newImageLoadPolicy(cfg.ImageLoad).inspect, "failed to inspect image load request body", "unable to inspect image load request body"},
 		{http.MethodPost, matchesVolumeInspection, inspectSeverityMedium, newVolumePolicy(cfg.Volume).inspect, "failed to inspect volume create request body", "unable to inspect volume create request body"},
@@ -405,6 +409,13 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		// (`reference`, case-folded and repeatable, no `fromSrc`); see
 		// imagePullPolicy.inspectLibpod.
 		{http.MethodPost, matchesLibpodImagePullInspection, inspectSeverityHigh, newImagePullPolicy(cfg.ImagePull).inspectLibpod, "failed to inspect libpod image pull request", "unable to inspect libpod image pull request"},
+		// libpod container update shares cfg.ContainerUpdate with the
+		// Docker-compat entry above — one set of allow_* gates governs both
+		// surfaces. It is a separate entry because libpod's body is
+		// handlers.UpdateEntities (flattened OCI resources plus healthcheck
+		// blocks) and its restart policy lives in the query string, not the
+		// body; see containerUpdatePolicy.inspectLibpod.
+		{http.MethodPost, matchesLibpodContainerUpdateInspection, inspectSeverityHigh, newContainerUpdatePolicy(cfg.ContainerUpdate).inspectLibpod, "failed to inspect libpod container update request body", "unable to inspect libpod container update request body"},
 		// #185 phase 1: deny-only guard for the opaque BuildKit tunnel
 		// endpoints when request_body.buildkit is configured — see
 		// buildkit.go's buildkitPolicy.inspect doc comment. Never reads the
@@ -514,6 +525,10 @@ func matchesLibpodSecretInspection(normalizedPath string) bool {
 
 func matchesLibpodImagePullInspection(normalizedPath string) bool {
 	return isLibpodImagePullPath(normalizedPath)
+}
+
+func matchesLibpodContainerUpdateInspection(normalizedPath string) bool {
+	return isLibpodContainerUpdatePath(normalizedPath)
 }
 
 // inspectBucketCapacity bounds how many policies of a single severity may

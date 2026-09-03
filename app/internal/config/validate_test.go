@@ -1238,6 +1238,61 @@ func TestValidateRejectsInvalidVisibleResourceLabels(t *testing.T) {
 	}
 }
 
+// TestValidateRejectsVisibleResourceLabelOnOwnerKey pins the invariant that
+// keeps the ownership and visibility layers' label keys disjoint. Both write
+// the same `label` filter upstream and the daemon ANDs the values, so a
+// visibility selector on the owner key either restates ownership or asks one
+// label to hold two values — and Docker's Swarm control-plane lists resolve
+// that by collapsing the key nondeterministically, which silently drops the
+// visibility scope.
+func TestValidateRejectsVisibleResourceLabelOnOwnerKey(t *testing.T) {
+	cfg := Defaults()
+	cfg.Ownership.Owner = "team-a"
+	// The key is trimmed before the comparison, matching parseSelector in
+	// internal/visibility, so padding around the "=" is not a way past the
+	// guard: that selector still compiles to the owner key at runtime.
+	cfg.Response.VisibleResourceLabels = []string{cfg.Ownership.LabelKey + " =team-b"}
+	cfg.Clients.Profiles = []ClientProfileConfig{
+		{
+			Name: "readonly",
+			Response: ClientProfileResponseConfig{
+				VisibleResourceLabels: []string{cfg.Ownership.LabelKey},
+			},
+			Rules: []RuleConfig{
+				{Match: MatchConfig{Method: http.MethodGet, Path: "/_ping"}, Action: "allow"},
+				{Match: MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+			},
+		},
+	}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for a visibility selector on the owner label key")
+	}
+	// Counted rather than matched by substring: the per-profile message
+	// contains the root message's text verbatim, so a Contains check for the
+	// root one passes off the profile one and hides a missed root selector.
+	const reserved = "entries must not select on the reserved owner label key"
+	if got := strings.Count(err.Error(), reserved); got != 2 {
+		t.Fatalf("reserved owner label key errors = %d, want 2 (root and profile); got: %v", got, err)
+	}
+	if !strings.Contains(err.Error(), "clients.profiles[0].response.visible_resource_labels "+reserved) {
+		t.Fatalf("expected per-profile reserved owner label key error, got: %v", err)
+	}
+}
+
+// The same selector is fine when owner scoping is off: nothing else writes
+// that key, so there is no collision to guard against.
+func TestValidateAllowsVisibleResourceLabelOnOwnerKeyWithoutOwnership(t *testing.T) {
+	cfg := Defaults()
+	cfg.Ownership.Owner = ""
+	cfg.Response.VisibleResourceLabels = []string{cfg.Ownership.LabelKey + "=team-b"}
+
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("Validate() error = %v, want nil without ownership.owner", err)
+	}
+}
+
 // TestMutantKills contains targeted tests that kill surviving mutation testing
 // survivors. Each subtest name references the mutant it targets.
 func TestMutantKills(t *testing.T) {
@@ -2050,7 +2105,7 @@ func TestValidateClientProfile_Mode(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			profile := ClientProfileConfig{Name: "p", Mode: tt.mode, Rules: rules}
-			errs := validateClientProfile(0, profile, map[string]struct{}{})
+			errs := validateClientProfile(0, profile, map[string]struct{}{}, "")
 			matched := false
 			for _, e := range errs {
 				if tt.wantSubstr != "" && strings.Contains(e, tt.wantSubstr) {

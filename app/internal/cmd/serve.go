@@ -38,6 +38,7 @@ import (
 	"github.com/codeswhat/sockguard/app/internal/reload"
 	"github.com/codeswhat/sockguard/app/internal/responsefilter"
 	"github.com/codeswhat/sockguard/app/internal/upstream"
+	"github.com/codeswhat/sockguard/app/internal/upstreamflavor"
 	"github.com/codeswhat/sockguard/app/internal/version"
 	"github.com/codeswhat/sockguard/app/internal/visibility"
 )
@@ -174,6 +175,14 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		return fmt.Errorf("upstream: %w", err)
 	}
 	if err := verifyUpstreamReachableForRuntime(cmd.Context(), deps, runtime, cfg, logger); err != nil {
+		return err
+	}
+	// Resolve which engine the upstream is before the chain is built, so the
+	// visibility middleware knows how the daemon will read the label filter
+	// it injects into GET /events. Ordered after the reachability check on
+	// purpose: an unreachable upstream should report itself as unreachable,
+	// not as an ambiguous flavor probe.
+	if err := resolveUpstreamFlavorForRuntime(cmd.Context(), deps, runtime, cfg, logger); err != nil {
 		return err
 	}
 
@@ -560,6 +569,12 @@ type serveRuntime struct {
 	// (no endpoints, no DOCKER_HOST), so startup keeps the original fail-fast
 	// reachability check.
 	legacyUpstreamSocket bool
+	// upstreamFlavor is the engine behind the upstream, resolved once at
+	// startup by resolveUpstreamFlavorForRuntime. It is process-scoped for
+	// the same reason the resolver is: upstream.socket, upstream.endpoints
+	// and upstream.flavor are all reload-immutable, so no reload can point
+	// sockguard at a different daemon or restate which engine this one is.
+	upstreamFlavor upstreamflavor.Flavor
 }
 
 func newServeRuntime(cfg *config.Config, logger *slog.Logger, deps *serveDeps) (*serveRuntime, error) {
@@ -682,6 +697,7 @@ func attachRuntimeInspectors(cfg *config.Config, res *upstream.Resolver, policy 
 	// runs for both the default policy and every named profile.
 	policy.Exec.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
 	policy.Build.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
+	policy.ContainerUpdate.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
 	return policy
 }
 
@@ -756,7 +772,7 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 		// request ownership allowed.
 		namedServeHandlerLayer("withResourceLimitGuard", withResourceLimitGuard(cfg, resolver, logger, clientProfiles)),
 		namedServeHandlerLayer("withOwnership", withOwnership(cfg, resolver, logger)),
-		namedServeHandlerLayer("withVisibility", withVisibility(cfg, resolver, logger)),
+		namedServeHandlerLayer("withVisibility", withVisibility(cfg, resolver, logger, runtimeUpstreamFlavor(runtime))),
 		namedServeHandlerLayer("withFilter", withFilter(cfg, resolver, logger, rules, clientProfiles)),
 	}
 
@@ -1021,13 +1037,14 @@ func withOwnership(cfg *config.Config, res *upstream.Resolver, logger *slog.Logg
 	})
 }
 
-func withVisibility(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger) func(http.Handler) http.Handler {
+func withVisibility(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, flavor upstreamflavor.Flavor) func(http.Handler) http.Handler {
 	return visibility.MiddlewareWithRoundTripper(res, logger, visibility.Options{
 		VisibleResourceLabels: cfg.Response.VisibleResourceLabels,
 		NamePatterns:          cfg.Response.NamePatterns,
 		ImagePatterns:         cfg.Response.ImagePatterns,
 		Profiles:              clientVisibilityProfiles(cfg.Clients.Profiles),
 		ResolveProfile:        clientacl.RequestProfile,
+		UpstreamFlavor:        flavor,
 	})
 }
 
@@ -1125,10 +1142,10 @@ func warnReadExfiltrationOnce(cfg *config.Config, rules []*filter.CompiledRule, 
 	if !cfg.InsecureAllowReadExfiltration {
 		return
 	}
-	exposed := allowedSensitiveExfilEndpoints(rules)
-	profileExposed := allowedSensitiveExfilEndpointsByProfile(clientProfiles)
+	exposed := allowedSensitiveExfilEndpoints(cfg.Rules, rules)
+	profileExposed := allowedSensitiveExfilEndpointsByProfile(cfg.Clients.Profiles, clientProfiles)
 	once.Do(func() {
-		logger.Warn("insecure_allow_read_exfiltration is enabled: rules matching raw archive/export, log/attach streaming, or registry push endpoints are admitted instead of refused at startup. A caller allowed those paths can read container files, images, plugins, environment variables, and secrets, or push local artifacts to a registry it chooses",
+		logger.Warn("insecure_allow_read_exfiltration is enabled: rules matching raw archive/export, log/attach streaming, checkpoint export, container rootfs mount, or registry push endpoints are admitted instead of refused at startup. A caller allowed those paths can read container files, container memory, images, plugins, environment variables, secrets, and daemon-host filesystem paths, or push local artifacts to a registry it chooses",
 			"exposed_endpoints", exposed,
 			"exposed_profile_endpoints", profileExposed,
 		)

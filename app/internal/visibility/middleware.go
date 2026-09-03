@@ -23,6 +23,7 @@ import (
 	"github.com/codeswhat/sockguard/app/internal/inspectcache"
 	"github.com/codeswhat/sockguard/app/internal/logging"
 	"github.com/codeswhat/sockguard/app/internal/responsefilter"
+	"github.com/codeswhat/sockguard/app/internal/upstreamflavor"
 )
 
 // patternBufferPool pools bytes.Buffer instances so the pattern-filter writer
@@ -57,7 +58,9 @@ const (
 	reasonCodeVisibilityPolicyLookupFailed  = "visibility_policy_lookup_failed"
 	reasonCodeVisibilityPolicyHidResource   = "visibility_policy_hid_resource"
 	reasonCodeVisibilityResponseTooLarge    = "visibility_response_too_large"
+	reasonCodeVisibilityPodmanEvents        = "visibility_podman_events_unscopeable"
 	reasonCodeVisibilityLibpodDataUsage     = "visibility_libpod_data_usage_unscopeable"
+	reasonCodeVisibilityLibpodShowMounted   = "visibility_libpod_showmounted_unscopeable"
 )
 
 // Options configures label-based visibility control on Docker read endpoints.
@@ -73,6 +76,19 @@ type Options struct {
 	ImagePatterns  []string
 	Profiles       map[string]Policy
 	ResolveProfile func(*http.Request) (string, bool)
+	// UpstreamFlavor is the engine behind the upstream socket, resolved at
+	// startup from upstream.flavor (see internal/upstreamflavor). It changes
+	// exactly one thing: how GET /events is handled, because Podman evaluates
+	// several values under one event filter key disjunctively where dockerd
+	// ANDs them, so the append-style injection every other list endpoint uses
+	// widens that stream on Podman instead of narrowing it.
+	//
+	// The zero value means Docker — the semantics every construction site had
+	// before this field existed. `auto` never resolves to the zero value:
+	// resolveUpstreamFlavor fails startup rather than leaving it empty, so
+	// production always sets it explicitly and
+	// TestServeChainPassesResolvedFlavorToVisibility pins that wiring.
+	UpstreamFlavor upstreamflavor.Flavor
 }
 
 // Policy defines per-profile visibility overrides.
@@ -156,6 +172,12 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 		return func(next http.Handler) http.Handler { return next }
 	}
 
+	// Hoisted out of the request closure: the flavor is fixed for the life of
+	// the process (upstream.flavor is reload-immutable and the chain is
+	// rebuilt on reload anyway), so the request path compares a bool rather
+	// than a string.
+	podmanUpstream := opts.UpstreamFlavor == upstreamflavor.Podman
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			effectivePolicy, ok := resolveEffectivePolicy(opts, mergedProfilePolicies, defaultPolicy, w, r)
@@ -180,15 +202,36 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 				handleVisibilitySystemDataUsageRequest(logger, next, w, r, &effectivePolicy)
 				return
 			}
+			// On a Podman upstream the Docker-compat GET /events is the same
+			// handler Podman serves /libpod/events from, and it evaluates
+			// several values under one filter key disjunctively. The
+			// append-style injection below would widen that stream rather
+			// than narrow it, so it gets a single-selector replacement and a
+			// refusal when the policy carries more. Docker upstreams take the
+			// ordinary list path here, unchanged. See podmanEventsDenyReason.
+			if podmanUpstream && normPath == compatEventsPath {
+				handlePodmanCompatEventsRequest(next, w, r, &effectivePolicy)
+				return
+			}
 			// Podman's native GET /libpod/system/df has the same
 			// no-`filters`-parameter problem and no response the policy can be
 			// applied to either: its image, container and volume entries carry
 			// no labels, so neither the selector axes nor the name/image
 			// pattern axes have a field to read. It is refused rather than
 			// filtered — see
-			// responsefilter.LibpodSystemDataUsageDenyReason.
-			if r.Method == http.MethodGet && normPath == responsefilter.LibpodSystemDataUsagePath {
+			// responsefilter.LibpodSystemDataUsageDenyReason. The refusal
+			// covers HEAD too: falling through to needsVisibilityLabelFilter
+			// or the inspect path below would forward it to the daemon
+			// instead of refusing it.
+			if (r.Method == http.MethodGet || r.Method == http.MethodHead) && normPath == responsefilter.LibpodSystemDataUsagePath {
 				denyLibpodSystemDataUsage(w, r)
+				return
+			}
+			// Podman's mounted-container inventory likewise carries no labels
+			// or names, only container IDs and daemon-host mount paths. Same
+			// HEAD coverage as the refusal above, for the same reason.
+			if (r.Method == http.MethodGet || r.Method == http.MethodHead) && normPath == responsefilter.LibpodShowMountedPath {
+				denyLibpodShowMounted(w, r)
 				return
 			}
 			if needsVisibilityLabelFilter(normPath) {
@@ -224,7 +267,7 @@ func compileVisibilityPolicies(logger *slog.Logger, opts Options) (compiledPolic
 			return compiledPolicy{}, nil, false
 		}
 		mergedPolicy := compiledPolicy{
-			selectors:     append(slices.Clone(defaultPolicy.selectors), compiled.selectors...),
+			selectors:     appendUniqueSelectors(slices.Clone(defaultPolicy.selectors), compiled.selectors...),
 			namePatterns:  append(slices.Clone(defaultPolicy.namePatterns), compiled.namePatterns...),
 			imagePatterns: append(slices.Clone(defaultPolicy.imagePatterns), compiled.imagePatterns...),
 		}
@@ -290,11 +333,15 @@ func resolveEffectivePolicy(opts Options, profiles map[string]compiledPolicy, de
 // and (where supported) pattern-based response filtering for list endpoints.
 func handleVisibilityListRequest(logger *slog.Logger, next http.Handler, w http.ResponseWriter, r *http.Request, normPath string, policy *compiledPolicy, hasSelectors, hasPatterns bool) {
 	if hasSelectors {
-		if err := addVisibilityLabelFilters(r, normPath, policy.selectors); err != nil {
+		forwarded, err := addVisibilityLabelFilters(r, normPath, policy.selectors)
+		if err != nil {
 			logging.SetDeniedWithCode(w, r, reasonCodeVisibilityFilterInvalid, err.Error(), nil)
 			_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: err.Error()})
 			return
 		}
+		// Forward the returned request: it carries the record of which label
+		// values this layer injected, which ownership reads downstream.
+		r = forwarded
 	}
 	if hasPatterns && needsPatternResponseFilter(normPath) {
 		filterResponseThroughWriter(logger, next, w, r, "visibility pattern list filter failed", func(fw *patternFilterWriter) error {
@@ -674,7 +721,7 @@ func compilePolicy(labels []string, nameGlobs []string, imageGlobs []string) (co
 		if err != nil {
 			return compiled, err
 		}
-		compiled.selectors = append(compiled.selectors, selector)
+		compiled.selectors = appendUniqueSelectors(compiled.selectors, selector)
 	}
 	var err error
 	compiled.namePatterns, err = compilePatterns(nameGlobs)
@@ -686,6 +733,15 @@ func compilePolicy(labels []string, nameGlobs []string, imageGlobs []string) (co
 		return compiledPolicy{}, fmt.Errorf("image_patterns: %w", err)
 	}
 	return compiled, nil
+}
+
+func appendUniqueSelectors(dst []compiledSelector, selectors ...compiledSelector) []compiledSelector {
+	for _, selector := range selectors {
+		if !slices.Contains(dst, selector) {
+			dst = append(dst, selector)
+		}
+	}
+	return dst
 }
 
 func parseSelector(raw string) (compiledSelector, error) {
@@ -724,34 +780,47 @@ func needsVisibilityLabelFilter(normPath string) bool {
 	}
 }
 
-func addVisibilityLabelFilters(r *http.Request, normPath string, selectors []compiledSelector) error {
+// addVisibilityLabelFilters merges the policy's selectors into the request's
+// label filter and returns the request to forward. The returned request may be
+// a context-derived copy: the selectors are recorded on it as proxy-injected
+// (dockerfilters.RecordInjectedSelectors) so the ownership middleware, which
+// runs after this one and drops client-supplied values from the same filter
+// key, keeps them. Callers must forward the returned request, not the argument.
+func addVisibilityLabelFilters(r *http.Request, normPath string, selectors []compiledSelector) (*http.Request, error) {
 	query := r.URL.Query()
 	filters, err := dockerfilters.Decode(query.Get("filters"))
 	if err != nil {
-		return err
+		return r, err
 	}
 	filterKey := visibilityLabelFilterKey(normPath)
+	injected := make([]string, 0, len(selectors))
 	changed := false
 	for _, selector := range selectors {
 		value := selector.key
 		if selector.hasValue {
 			value += "=" + selector.value
 		}
+		injected = append(injected, value)
 		if !slices.Contains(filters[filterKey], value) {
 			filters[filterKey] = append(filters[filterKey], value)
 			changed = true
 		}
 	}
+	// Recorded unconditionally, including the selectors already present
+	// because the client happened to send them: they are policy-enforced
+	// either way, and a later layer that drops client-supplied values would
+	// otherwise strip exactly the ones this loop did not have to write.
+	r = dockerfilters.RecordInjectedSelectors(r, filterKey, injected)
 	if !changed {
-		return nil
+		return r, nil
 	}
 	encoded, err := json.Marshal(filters)
 	if err != nil {
-		return fmt.Errorf("encode filters: %w", err)
+		return r, fmt.Errorf("encode filters: %w", err)
 	}
 	query.Set("filters", string(encoded))
 	r.URL.RawQuery = query.Encode()
-	return nil
+	return r, nil
 }
 
 func visibilityLabelFilterKey(normPath string) string {

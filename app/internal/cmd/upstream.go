@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/app/internal/dockerclient"
 	"github.com/codeswhat/sockguard/app/internal/upstream"
+	"github.com/codeswhat/sockguard/app/internal/upstreamflavor"
 )
 
 // upstreamReachableTimeout bounds the startup reachability probe across all
@@ -186,6 +189,92 @@ func verifyUpstreamReachableForRuntime(ctx context.Context, deps *serveDeps, run
 	probeCtx, cancel := context.WithTimeout(ctx, upstreamReachableTimeout)
 	defer cancel()
 	return runtime.resolver.CheckReachable(probeCtx)
+}
+
+// resolveUpstreamFlavor determines which engine the upstream is, from
+// upstream.flavor and — for "auto" — a single GET /version probe.
+//
+// Three properties, in the order they matter:
+//
+//   - An explicit "docker" or "podman" short-circuits before any client is
+//     built, so nothing on the network can move an operator's stated answer
+//     and no request leaves the process. The test for this asserts zero HTTP
+//     requests, not merely the right return value.
+//   - An "auto" probe that fails for ANY reason returns an error, which the
+//     caller turns into a startup failure. There is no fallback flavor. The
+//     two candidate fallbacks are wrong in opposite directions — "docker"
+//     silently reopens the Podman /events disclosure, "podman" silently
+//     refuses /events for a Docker deployment that was working — and a probe
+//     result cached for the process lifetime means a single transient failure
+//     at boot would carry the wrong answer until the next restart. Failing
+//     startup is the only outcome that is both safe and visible, and its
+//     remedy is one config line, named in the message.
+//   - The result is logged either way, with `probed` recording which path
+//     produced it, so an operator reading the startup log can tell a detected
+//     flavor from a declared one without diffing the config.
+//
+// The probe runs once per process. A daemon does not change engines at
+// runtime, upstream.socket and upstream.endpoints are reload-immutable so a
+// reload cannot repoint sockguard at a different daemon, and upstream.flavor
+// is immutable alongside them — a reload that edits it is rejected with
+// "restart required" rather than silently ignored.
+func resolveUpstreamFlavor(ctx context.Context, deps *serveDeps, cfg *config.Config, rt http.RoundTripper, logger *slog.Logger) (upstreamflavor.Flavor, error) {
+	configured, ok := upstreamflavor.Configured(cfg.Upstream.Flavor)
+	if !ok {
+		// Unreachable through `sockguard serve`, which validates the config
+		// first; kept so a future caller that skips validation still fails
+		// closed instead of probing on a nonsense value.
+		return "", fmt.Errorf("upstream.flavor must be %q, %q or %q, got %q",
+			upstreamflavor.Auto, upstreamflavor.Docker, upstreamflavor.Podman, cfg.Upstream.Flavor)
+	}
+	if configured != upstreamflavor.Auto {
+		logger.Info("upstream flavor resolved", "flavor", string(configured), "probed", false)
+		return configured, nil
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, upstreamflavor.DetectTimeout)
+	defer cancel()
+	detected, err := deps.detectUpstreamFlavor(probeCtx, dockerclient.NewWithRoundTripper(rt))
+	if err != nil {
+		logger.Error("upstream flavor probe failed", "error", err, "timeout", upstreamflavor.DetectTimeout.String())
+		return "", fmt.Errorf(
+			"%w; sockguard cannot tell whether this daemon filters GET /events conjunctively (Docker) or disjunctively (Podman), and guessing either way is unsafe — set upstream.flavor to %q or %q explicitly",
+			err, upstreamflavor.Docker, upstreamflavor.Podman)
+	}
+	logger.Info("upstream flavor resolved", "flavor", string(detected), "probed", true)
+	return detected, nil
+}
+
+// resolveUpstreamFlavorForRuntime resolves the flavor against the runtime's
+// shared resolver — the same transport the proxy and every other side channel
+// use, so the probe follows the active endpoint under failover — and records
+// it on the runtime for the handler chain to read.
+func resolveUpstreamFlavorForRuntime(ctx context.Context, deps *serveDeps, runtime *serveRuntime, cfg *config.Config, logger *slog.Logger) error {
+	flavor, err := resolveUpstreamFlavor(ctx, deps, cfg, runtimeResolver(runtime, cfg), logger)
+	if err != nil {
+		return err
+	}
+	if runtime != nil {
+		runtime.upstreamFlavor = flavor
+	}
+	return nil
+}
+
+// runtimeUpstreamFlavor reads the resolved flavor back out for the chain
+// builders.
+//
+// An absent runtime, or one whose flavor was never resolved, reports Docker:
+// that is the behavior every construction site had before this package
+// existed, and it keeps a test that builds a bare serveRuntime from silently
+// acquiring Podman semantics. It is not a production path —
+// resolveUpstreamFlavorForRuntime runs before the chain is built and fails
+// startup rather than leaving the field empty — and
+// TestServeChainPassesResolvedFlavorToVisibility pins that.
+func runtimeUpstreamFlavor(runtime *serveRuntime) upstreamflavor.Flavor {
+	if runtime == nil || runtime.upstreamFlavor == "" {
+		return upstreamflavor.Docker
+	}
+	return runtime.upstreamFlavor
 }
 
 // upstreamDisplayFromConfig renders the upstream for human-facing output (the

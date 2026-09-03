@@ -119,7 +119,7 @@ func TestValidateClientProfileEmptyName(t *testing.T) {
 	errs := validateClientProfile(0, ClientProfileConfig{
 		Name:  "  ",
 		Rules: []RuleConfig{{Match: MatchConfig{Method: "GET", Path: "/_ping"}, Action: "allow"}},
-	}, map[string]struct{}{})
+	}, map[string]struct{}{}, "")
 	found := false
 	for _, e := range errs {
 		if strings.Contains(e, "name") && strings.Contains(e, "required") {
@@ -425,7 +425,7 @@ func TestValidateRequestBodySourceIPProfilesOnUnixSocket(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestValidateVisibleResourceLabelsKeyWithEmptyValue(t *testing.T) {
-	errs := validateVisibleResourceLabels("test", []string{"key="})
+	errs := validateVisibleResourceLabels("test", []string{"key="}, "")
 	if len(errs) == 0 {
 		t.Fatal("expected error for key= with empty value")
 	}
@@ -435,7 +435,7 @@ func TestValidateVisibleResourceLabelsKeyWithEmptyValue(t *testing.T) {
 }
 
 func TestValidateVisibleResourceLabelsEmptyKey(t *testing.T) {
-	errs := validateVisibleResourceLabels("test", []string{"  =value"})
+	errs := validateVisibleResourceLabels("test", []string{"  =value"}, "")
 	if len(errs) == 0 {
 		t.Fatal("expected error for empty key")
 	}

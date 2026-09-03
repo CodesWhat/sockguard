@@ -128,7 +128,8 @@ export const features: Feature[] = [
     title: "Minimal Attack Surface",
     color: "text-rose-500 dark:text-rose-400",
     bg: "bg-rose-100 dark:bg-rose-900/50",
-    description: "We ship a Wolfi-based image, cosign-signed with SBOM and build provenance.",
+    description:
+      "We ship a distroless image (Chainguard's `static` base, no shell, no package manager, runs as UID 65532), cosign-signed with SBOM and build provenance.",
     category: "security",
   },
   {
