@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -137,9 +138,10 @@ func TestWarnReadExfiltrationOnce(t *testing.T) {
 
 	const marker = "insecure_allow_read_exfiltration is enabled"
 
-	broad, err := compileConfiguredRules([]config.RuleConfig{
+	broadRules := []config.RuleConfig{
 		{Match: config.MatchConfig{Method: "GET", Path: "/containers/**"}, Action: "allow"},
-	})
+	}
+	broad, err := compileConfiguredRules(broadRules)
 	if err != nil {
 		t.Fatalf("compileConfiguredRules: %v", err)
 	}
@@ -149,6 +151,7 @@ func TestWarnReadExfiltrationOnce(t *testing.T) {
 	var once sync.Once
 
 	disabled := config.Defaults()
+	disabled.Rules = broadRules
 	warnReadExfiltrationOnce(&disabled, broad, nil, logger, &once)
 	if buf.Len() != 0 {
 		t.Fatalf("disabled config logged: %q", buf.String())
@@ -156,6 +159,7 @@ func TestWarnReadExfiltrationOnce(t *testing.T) {
 
 	enabled := config.Defaults()
 	enabled.InsecureAllowReadExfiltration = true
+	enabled.Rules = broadRules
 	warnReadExfiltrationOnce(&enabled, broad, nil, logger, &once)
 	if got := strings.Count(buf.String(), marker); got != 1 {
 		t.Fatalf("warning count after first enabled build = %d, want 1; log: %q", got, buf.String())
@@ -190,15 +194,18 @@ func TestWarnReadExfiltrationOnce(t *testing.T) {
 
 	// The acknowledgment set while no rule needs it still warns, with an empty
 	// endpoint list — that combination is a standing permission worth removing.
-	narrow, err := compileConfiguredRules([]config.RuleConfig{
+	narrowRules := []config.RuleConfig{
 		{Match: config.MatchConfig{Method: "GET", Path: "/containers/json"}, Action: "allow"},
-	})
+	}
+	narrow, err := compileConfiguredRules(narrowRules)
 	if err != nil {
 		t.Fatalf("compileConfiguredRules: %v", err)
 	}
 	var narrowOnce sync.Once
 	buf.Reset()
-	warnReadExfiltrationOnce(&enabled, narrow, nil, logger, &narrowOnce)
+	narrowCfg := enabled
+	narrowCfg.Rules = narrowRules
+	warnReadExfiltrationOnce(&narrowCfg, narrow, nil, logger, &narrowOnce)
 	if got := strings.Count(buf.String(), marker); got != 1 {
 		t.Fatalf("warning count for narrow rules = %d, want 1; log: %q", got, buf.String())
 	}
@@ -212,9 +219,14 @@ func TestWarnReadExfiltrationOnce(t *testing.T) {
 	// acknowledgment is present, so a top-level-only report would show an
 	// empty list for a config that is genuinely exposed.
 	profiles := map[string]filter.Policy{"zeta-reader": {Rules: broad}, "alpha-reader": {Rules: broad}}
+	profileCfg := narrowCfg
+	profileCfg.Clients.Profiles = []config.ClientProfileConfig{
+		{Name: "zeta-reader", Rules: broadRules},
+		{Name: "alpha-reader", Rules: broadRules},
+	}
 	var profileOnce sync.Once
 	buf.Reset()
-	warnReadExfiltrationOnce(&enabled, narrow, profiles, logger, &profileOnce)
+	warnReadExfiltrationOnce(&profileCfg, narrow, profiles, logger, &profileOnce)
 	if got := strings.Count(buf.String(), marker); got != 1 {
 		t.Fatalf("warning count for profile rules = %d, want 1; log: %q", got, buf.String())
 	}
@@ -230,6 +242,87 @@ func TestWarnReadExfiltrationOnce(t *testing.T) {
 	// reorders between runs and this test flakes instead of failing.
 	if alpha, zeta := strings.Index(buf.String(), "alpha-reader"), strings.Index(buf.String(), "zeta-reader"); alpha > zeta {
 		t.Fatalf("profile endpoints are not sorted by profile name; log: %q", buf.String())
+	}
+}
+
+func TestWarnReadExfiltrationOncePreservesShadowedRouteDetection(t *testing.T) {
+	t.Parallel()
+
+	topLevelRules := []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/containers/sockguard-test/archive"}, Action: "deny"},
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/containers/*/archive"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+	topLevelCompiled, err := compileConfiguredRules(topLevelRules)
+	if err != nil {
+		t.Fatalf("compile top-level rules: %v", err)
+	}
+	profileRules := []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/sockguard-test/checkpoint"}, Action: "deny"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/checkpoint"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+	profileCompiled, err := compileConfiguredRules(profileRules)
+	if err != nil {
+		t.Fatalf("compile profile rules: %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.InsecureAllowReadExfiltration = true
+	cfg.Rules = topLevelRules
+	cfg.Clients.Profiles = []config.ClientProfileConfig{{Name: "backup-reader", Rules: profileRules}}
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	var once sync.Once
+	warnReadExfiltrationOnce(&cfg, topLevelCompiled, map[string]filter.Policy{
+		"backup-reader": {Rules: profileCompiled},
+	}, logger, &once)
+
+	for _, want := range []string{
+		"GET /containers/a/archive",
+		"backup-reader: POST /libpod/containers/a/checkpoint",
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Fatalf("warning does not name reachable route %q after representative shadow; log: %q", want, buf.String())
+		}
+	}
+}
+
+func TestWarnReadExfiltrationOnceDescribesCheckpointAndMountRisks(t *testing.T) {
+	t.Parallel()
+
+	rules := []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/checkpoint"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+	compiled, err := compileConfiguredRules(rules)
+	if err != nil {
+		t.Fatalf("compile rules: %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.InsecureAllowReadExfiltration = true
+	cfg.Rules = rules
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	var once sync.Once
+	warnReadExfiltrationOnce(&cfg, compiled, nil, logger, &once)
+
+	for _, want := range []string{
+		"raw archive/export",
+		"log/attach streaming",
+		"checkpoint export",
+		"container rootfs mount",
+		"registry push",
+		"container memory",
+		"daemon-host filesystem paths",
+		"POST /libpod/containers/sockguard-test/checkpoint",
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Fatalf("warning does not describe %q; log: %q", want, buf.String())
+		}
 	}
 }
 
@@ -256,6 +349,10 @@ func TestWithFilterWarnsReadExfiltration(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.InsecureAllowReadExfiltration = true
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: "GET", Path: "/containers/**"}, Action: "allow"},
+	}
+	cfg.Clients.Profiles = []config.ClientProfileConfig{{Name: "broad-reader", Rules: cfg.Rules}}
 	withFilter(&cfg, nil, logger, rules, map[string]filter.Policy{"broad-reader": {Rules: rules}})
 
 	if got := strings.Count(buf.String(), "insecure_allow_read_exfiltration is enabled"); got != 1 {

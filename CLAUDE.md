@@ -111,7 +111,7 @@ Runs piped (sequential, fail-fast): go-lint → go-test → biome → build.
 ## Key Constraints
 
 - No third-party code executes on the proxy's request hot path — filtering, proxying, logging. This is about what runs, not what links: `internal/filter` also holds the image-trust and signed-policy-bundle verification code, so `internal/proxy`'s dependency graph pulls in sigstore/sigstore-go, go-containerregistry, and their transitive deps (grpc, protobuf, and the rest) at the package level even though none of it executes unless the opt-in `image_trust` path is configured. The binary's direct external dependencies are Cobra+Viper (+go-viper/mapstructure for config decoding), fsnotify (config hot-reload), golang.org/x/net + google.golang.org/protobuf (buildkitproxy's HTTP/2 and protobuf handling for Docker build proxying), sigstore/sigstore + sigstore/sigstore-go + sigstore/protobuf-specs + theupdateframework/go-tuf (image-trust and signed-policy-bundle verification), and go-containerregistry (OCI registry fetch for image-trust signatures — only on the opt-in `image_trust` path, never the core proxy path).
-- Container image is **Wolfi-based** (Chainguard) for near-zero CVEs and built-in SBOM/provenance.
+- Container image is **Chainguard's distroless `static` base** (built from Wolfi packages, no shell, no package manager) for near-zero CVEs and built-in SBOM/provenance.
 - Biome is a direct devDependency in the root workspace for TS/JS linting.
 - `.planning/` is gitignored — local-only working notes; never reference its contents in committed files.
 - CHANGELOG and README updates should be atomic with each logical change.

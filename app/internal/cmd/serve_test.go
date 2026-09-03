@@ -118,15 +118,15 @@ func TestServePolicyConfigWiresInsecureAllowBodyBlindWrites(t *testing.T) {
 	off := config.Defaults()
 	off.Upstream.Socket = "/tmp/docker.sock"
 	off.InsecureAllowBodyBlindWrites = false
-	if got := servePolicyConfig(&off, nil); got.Exec.AllowBlindWrites || got.Build.AllowBlindWrites {
-		t.Fatalf("blind-write runtime options = exec:%v build:%v, want both false when insecure_allow_body_blind_writes is unset", got.Exec.AllowBlindWrites, got.Build.AllowBlindWrites)
+	if got := servePolicyConfig(&off, nil); got.Exec.AllowBlindWrites || got.Build.AllowBlindWrites || got.ContainerUpdate.AllowBlindWrites {
+		t.Fatalf("blind-write runtime options = exec:%v build:%v container_update:%v, want all false when insecure_allow_body_blind_writes is unset", got.Exec.AllowBlindWrites, got.Build.AllowBlindWrites, got.ContainerUpdate.AllowBlindWrites)
 	}
 
 	on := config.Defaults()
 	on.Upstream.Socket = "/tmp/docker.sock"
 	on.InsecureAllowBodyBlindWrites = true
-	if got := servePolicyConfig(&on, nil); !got.Exec.AllowBlindWrites || !got.Build.AllowBlindWrites {
-		t.Fatalf("blind-write runtime options = exec:%v build:%v, want both true when insecure_allow_body_blind_writes is set", got.Exec.AllowBlindWrites, got.Build.AllowBlindWrites)
+	if got := servePolicyConfig(&on, nil); !got.Exec.AllowBlindWrites || !got.Build.AllowBlindWrites || !got.ContainerUpdate.AllowBlindWrites {
+		t.Fatalf("blind-write runtime options = exec:%v build:%v container_update:%v, want all true when insecure_allow_body_blind_writes is set", got.Exec.AllowBlindWrites, got.Build.AllowBlindWrites, got.ContainerUpdate.AllowBlindWrites)
 	}
 }
 
@@ -199,8 +199,8 @@ func TestBuildServeClientProfilesHonorsGlobalBlindWriteOptIn(t *testing.T) {
 		t.Fatalf("buildServeClientProfiles() error: %v", err)
 	}
 	profile := profiles["portwing-exec"]
-	if !profile.Exec.AllowBlindWrites || !profile.Build.AllowBlindWrites {
-		t.Fatalf("named profile blind-write runtime options = exec:%v build:%v, want both true", profile.Exec.AllowBlindWrites, profile.Build.AllowBlindWrites)
+	if !profile.Exec.AllowBlindWrites || !profile.Build.AllowBlindWrites || !profile.ContainerUpdate.AllowBlindWrites {
+		t.Fatalf("named profile blind-write runtime options = exec:%v build:%v container_update:%v, want all true", profile.Exec.AllowBlindWrites, profile.Build.AllowBlindWrites, profile.ContainerUpdate.AllowBlindWrites)
 	}
 }
 
