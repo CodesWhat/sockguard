@@ -21,8 +21,9 @@ import (
 // Nothing classified it before, because every other ownership check starts
 // from a path identifier and `/commit` has none: allowPathOwnershipRequest
 // only ever matched `/containers/`-prefixed paths, so a client with the
-// `POST /commit` rule that portainer.yaml ships (and that Tecnativa's
-// COMMIT=1 generates) could commit ANOTHER owner's container into a new
+// `POST /commit` rule that portainer.yaml ships (or that Tecnativa's
+// COMMIT=1 opens once POST=1 widens the section from GET,HEAD to every
+// method) could commit ANOTHER owner's container into a new
 // image, and the image came out unlabeled — invisible to the owner-filtered
 // image list and outside every later ownership check.
 //
