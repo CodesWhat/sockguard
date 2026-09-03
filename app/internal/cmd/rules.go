@@ -102,10 +102,47 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	// acknowledgment — it is listed here so an operator auditing the
 	// body-sensitive write surface sees it alongside the rest of it.
 	{method: http.MethodPost, path: "/libpod/images/pull"},
-	// Native image load and import have no request-body inspector, so allowing
-	// either requires the blind-write acknowledgment.
+	// Podman's native image load and import. Both run through the SAME
+	// config an operator already sets for the Docker-compat spellings —
+	// request_body.image_load for the archive, request_body.image_pull's
+	// allow_imports for the import — so both are recognized as inspected
+	// below rather than requiring the blind-write acknowledgment.
 	{method: http.MethodPost, path: "/libpod/images/load"},
 	{method: http.MethodPost, path: "/libpod/images/import"},
+	// The two libpod "local API" routes have no Docker analog and, unlike
+	// every other entry in this catalog, take their input from a path on the
+	// DAEMON HOST rather than from the request: /libpod/local/build's
+	// required `localcontextdir` and /libpod/local/images/load's required
+	// `path` are absolute server-side paths that Podman v5.8.1 validates
+	// only as absolute-and-exists (internal/localapi's
+	// ValidatePathForLocalAPI — no sandbox root). Nothing crosses the socket
+	// for sockguard to read, so they deliberately have no case in
+	// bodyInspectionConfiguredForEndpoint and always require
+	// insecure_allow_body_blind_writes, which is also exactly what the
+	// runtime inspectors demand (filter.buildPolicy.inspectLibpodBuildControls
+	// and filter.imageLoadPolicy.inspect).
+	{method: http.MethodPost, path: "/libpod/local/build"},
+	{method: http.MethodPost, path: "/libpod/local/images/load"},
+	// Image SCP creates a local image from an archive fetched over SSH from
+	// a host the CALLER names, so it is an uninspectable image-ingest path
+	// that bypasses request_body.image_pull's registry allowlist entirely
+	// (Podman v5.8.1 pkg/domain/utils/scp.go: an unknown connection name
+	// falls back to a literal "ssh://"+name rather than being rejected). It
+	// is also an egress channel, so it appears in sensitiveExfilEndpoints
+	// too — admitting it takes both acknowledgments, one per direction.
+	{
+		method:          http.MethodPost,
+		path:            "/libpod/images/scp/sockguard-test",
+		identifierShape: catalogIdentifierPath,
+		exclusions: []catalogPathExclusion{
+			{path: "/libpod/images/scp/push"},
+			{path: "/libpod/images/scp/tag"},
+			{path: "/libpod/images/scp/untag"},
+			{path: "/libpod/images/scp/sockguard-test/push", identifierShape: catalogIdentifierPath},
+			{path: "/libpod/images/scp/sockguard-test/tag", identifierShape: catalogIdentifierPath},
+			{path: "/libpod/images/scp/sockguard-test/untag", identifierShape: catalogIdentifierPath},
+		},
+	},
 	// Podman's native copy-into-container and container-update writes. Both
 	// were absent from this catalog and from compileRuntimePolicy's
 	// inspection table while their Docker-compat twins above were in both,
@@ -226,6 +263,28 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 	{method: http.MethodGet, path: "/libpod/images/export"},
 	{method: http.MethodGet, path: "/libpod/images/sockguard-test/get", identifierShape: catalogIdentifierPath},
 	{method: http.MethodPost, path: "/libpod/images/sockguard-test/push", identifierShape: catalogIdentifierPath},
+	// Image SCP transfers a local image to another HOST over SSH, with the
+	// destination named by the caller in the `destination` query parameter
+	// (Podman v5.8.1 pkg/api/server/register_images.go routes
+	// POST /libpod/images/scp/{name:.*} to libpod.ImageScp, which parses
+	// source from the path and destination from the query and hands both to
+	// domainUtils.ExecuteTransfer). It is the push entries' problem without
+	// their one mitigation: there is no registry to allowlist, and an
+	// unrecognized connection name is turned into "ssh://"+name instead of
+	// being refused, so the destination is an arbitrary SSH endpoint.
+	{
+		method:          http.MethodPost,
+		path:            "/libpod/images/scp/sockguard-test",
+		identifierShape: catalogIdentifierPath,
+		exclusions: []catalogPathExclusion{
+			{path: "/libpod/images/scp/push"},
+			{path: "/libpod/images/scp/tag"},
+			{path: "/libpod/images/scp/untag"},
+			{path: "/libpod/images/scp/sockguard-test/push", identifierShape: catalogIdentifierPath},
+			{path: "/libpod/images/scp/sockguard-test/tag", identifierShape: catalogIdentifierPath},
+			{path: "/libpod/images/scp/sockguard-test/untag", identifierShape: catalogIdentifierPath},
+		},
+	},
 	{method: http.MethodGet, path: "/libpod/generate/kube"},
 	// Two libpod-only POSTs whose risk is entirely in the RESPONSE, which is
 	// why neither gets a request-body inspector: verified against Podman
@@ -593,7 +652,7 @@ func bodyInspectionConfiguredForEndpoint(requestBody config.RequestBodyConfig, e
 		// container_update's allow_* gates are enforced against libpod's own
 		// body and query shape by containerUpdatePolicy.inspectLibpod.
 		return true
-	case "/libpod/pods/create", "/libpod/volumes/create", "/libpod/networks/create", "/libpod/networks/sockguard-test/connect", "/libpod/networks/sockguard-test/disconnect", "/libpod/networks/sockguard-test/update", "/libpod/secrets/create", "/libpod/images/pull":
+	case "/libpod/pods/create", "/libpod/volumes/create", "/libpod/networks/create", "/libpod/networks/sockguard-test/connect", "/libpod/networks/sockguard-test/disconnect", "/libpod/networks/sockguard-test/update", "/libpod/secrets/create", "/libpod/images/pull", "/libpod/images/load", "/libpod/images/import":
 		// libpod_pod_create/libpod_volume/libpod_network/libpod_secret gates
 		// are all plain booleans/allowlists with real fail-closed defaults —
 		// none of them read insecure_allow_body_blind_writes the way exec
@@ -603,21 +662,28 @@ func bodyInspectionConfiguredForEndpoint(requestBody config.RequestBodyConfig, e
 		// joins them on the same terms: it reuses request_body.image_pull,
 		// whose allow_official-only default already denies a pull from any
 		// non-Docker-Hub-official registry, exactly as it does for the
-		// Docker-compat /images/create entry above. The libpod network
-		// connect/disconnect entries reuse request_body.libpod_network,
-		// whose allow_endpoint_config and allow_disconnect_force both
-		// default false, matching the Docker-compat /networks/*/connect and
-		// /networks/*/disconnect entries above. /libpod/networks/*/update
-		// joins them on the same terms via allow_dns_servers, also default
-		// false; it has no Docker-compat entry to match because the Engine
-		// API has no network-update route.
+		// Docker-compat /images/create entry above. So do
+		// POST /libpod/images/load, which carries the same archive body the
+		// /images/load entry above is inspected on and is read by the same
+		// imageLoadPolicy, and POST /libpod/images/import, which is gated by
+		// request_body.image_pull.allow_imports — false by default, and the
+		// same flag that already gates the Docker-compat fromSrc import. The
+		// libpod network connect/disconnect entries reuse
+		// request_body.libpod_network, whose allow_endpoint_config and
+		// allow_disconnect_force both default false, matching the
+		// Docker-compat /networks/*/connect and /networks/*/disconnect
+		// entries above. /libpod/networks/*/update joins them on the same
+		// terms via allow_dns_servers, also default false; it has no
+		// Docker-compat entry to match because the Engine API has no
+		// network-update route.
 		return true
 	// /libpod/play/kube, /libpod/kube/play, /libpod/kube/apply,
-	// /libpod/manifests/*, and /libpod/containers/*/restore deliberately have
-	// NO case here: they have no request-body inspector at all (#148 design
-	// doc decision C2 for the first four; the opaque CRIU checkpoint archive
-	// for restore), so they fall through to `default: false` below and
-	// always require insecure_allow_body_blind_writes to admit.
+	// /libpod/manifests/*, /libpod/local/build, /libpod/local/images/load,
+	// /libpod/images/scp/*, and /libpod/containers/*/restore deliberately have
+	// NO case here. The kube/manifest set is deferred by #148 design decision
+	// C2; the rest accepts a daemon-host path, an SSH destination, or an opaque
+	// CRIU checkpoint archive that sockguard cannot inspect. They fall through
+	// to `default: false` and require insecure_allow_body_blind_writes.
 	default:
 		return false
 	}

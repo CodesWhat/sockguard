@@ -639,7 +639,7 @@ func validateRules(cfg *Config) []string {
 		}
 		if r.Match.Path == "" {
 			errs = append(errs, fmt.Sprintf("rule %d: match.path is required", i+1))
-		} else if strings.Contains(r.Match.Path, "%") {
+		} else if strings.Contains(r.Match.Path, "%") && !validEscapedLibpodImageScpRule(r.Match) {
 			errs = append(errs, literalPercentRuleError(fmt.Sprintf("rule %d", i+1), r.Match.Path))
 		} else if filter.HasVersionPrefix(r.Match.Path) {
 			errs = append(errs, versionPrefixRuleError(fmt.Sprintf("rule %d", i+1), r.Match.Path))
@@ -651,6 +651,31 @@ func validateRules(cfg *Config) []string {
 		}
 	}
 	return errs
+}
+
+// validEscapedLibpodImageScpRule recognizes the one route family whose exact
+// policy view legitimately contains percent escapes. Podman's gorilla/mux
+// router uses EscapedPath for POST /libpod/images/scp/{name:.*}; dual-view
+// evaluation then requires the decoded and encoded route spellings to allow.
+// Keep this exception narrower than the earlier push/tag/untag routes: a
+// multi-method rule, glob, or raw action suffix can otherwise match a
+// double-encoded request that Podman routes somewhere other than image SCP.
+func validEscapedLibpodImageScpRule(match MatchConfig) bool {
+	if !strings.EqualFold(strings.TrimSpace(match.Method), "POST") || strings.Contains(match.Method, ",") {
+		return false
+	}
+	const prefix = "/libpod/images/scp/"
+	rest, ok := strings.CutPrefix(match.Path, prefix)
+	if !ok || rest == "" || strings.Contains(match.Path, "*") {
+		return false
+	}
+	for _, action := range []string{"push", "tag", "untag"} {
+		if rest == action || strings.HasSuffix(rest, "/"+action) {
+			return false
+		}
+	}
+	_, err := url.PathUnescape(match.Path)
+	return err == nil
 }
 
 // versionPrefixRuleError reports a rule path pattern that itself begins with
@@ -671,9 +696,9 @@ func versionPrefixRuleError(label, pattern string) string {
 }
 
 // literalPercentRuleError reports a rule path pattern that contains a literal
-// '%'. sockguard matches the request path as the daemon routes it — decoded
-// exactly once by the HTTP layer — so a '%XX' in a pattern only ever matches a
-// doubly-encoded request, never normal traffic. The rule the author meant is
+// '%' outside Podman's encoded image-SCP route. Other policy paths are decoded
+// exactly once by the HTTP layer, so a '%XX' in their pattern only ever matches
+// a doubly-encoded request, never normal traffic. The rule the author meant is
 // therefore silently dead, a security-intent gap, so it fails config
 // validation rather than logging a warning.
 func literalPercentRuleError(label, pattern string) string {
@@ -1904,7 +1929,7 @@ func validateRuleConfigs(rules []RuleConfig, prefix string) []string {
 		}
 		if r.Match.Path == "" {
 			errs = append(errs, rulePrefix+".match.path is required")
-		} else if strings.Contains(r.Match.Path, "%") {
+		} else if strings.Contains(r.Match.Path, "%") && !validEscapedLibpodImageScpRule(r.Match) {
 			errs = append(errs, literalPercentRuleError(rulePrefix, r.Match.Path))
 		} else if filter.HasVersionPrefix(r.Match.Path) {
 			errs = append(errs, versionPrefixRuleError(rulePrefix, r.Match.Path))

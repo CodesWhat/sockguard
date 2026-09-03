@@ -697,6 +697,10 @@ func attachRuntimeInspectors(cfg *config.Config, res *upstream.Resolver, policy 
 	// runs for both the default policy and every named profile.
 	policy.Exec.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
 	policy.Build.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
+	// Image load needs it for the same reason build does: Podman's
+	// POST /libpod/local/images/load names its archive by daemon-host path,
+	// so there is no body to inspect and only the acknowledgment admits it.
+	policy.ImageLoad.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
 	policy.ContainerUpdate.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
 	return policy
 }

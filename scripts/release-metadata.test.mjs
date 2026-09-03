@@ -129,7 +129,7 @@ test("libpod container risk catalogs name every guarded endpoint", () => {
     security,
     /`POST \/containers\/\*\/update`, `POST \/libpod\/containers\/\*\/update`, `PUT \/containers\/\*\/archive`, and `PUT \/libpod\/containers\/\*\/archive` are inspected by default/u,
   );
-  assert.match(podman, /plus five libpod-only entries:/u);
+  assert.match(podman, /plus the libpod-only entries below:/u);
 });
 
 test("release docs distinguish candidate and stable source branches", () => {

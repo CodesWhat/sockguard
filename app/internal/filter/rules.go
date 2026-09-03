@@ -86,7 +86,8 @@ type CompiledRule struct {
 
 // NormalizePath canonicalizes a request path into the form policy rules are
 // matched against: it resolves "." and ".." segments and collapses redundant
-// slashes (path.Clean), then strips a leading Docker API version prefix.
+// slashes (path.Clean), then strips a leading Docker or Podman API version
+// prefix.
 //
 // It deliberately does NOT percent-decode. The path it receives is r.URL.Path,
 // which net/http's request parser has already decoded exactly once — the same
@@ -95,8 +96,8 @@ type CompiledRule struct {
 // double-encoded "%252e", for instance, would become a "." segment that
 // path.Clean collapses for sockguard while the daemon still routes it as a
 // real path segment, so the two would disagree on which endpoint the request
-// targets. Matching the daemon's single decode keeps sockguard's policy view
-// byte-identical to the daemon's routing view.
+// targets. evaluateRequestPolicy handles Podman's UseEncodedPath exception for
+// the image-SCP route before policy matching.
 func NormalizePath(p string) string {
 	if p == "" {
 		return ""
@@ -218,7 +219,7 @@ func stripVersionPrefix(p string) string {
 	return p[i:]
 }
 
-// HasVersionPrefix reports whether p begins with a Docker API version prefix
+// HasVersionPrefix reports whether p begins with a daemon API version prefix
 // (e.g. "/v1.45/") that NormalizePath strips before rule matching. A rule
 // pattern carrying such a prefix can never match real traffic — the request
 // path is normalized first — so it is almost always an authoring mistake worth
@@ -329,7 +330,71 @@ func (cr *CompiledRule) matchesNormalizedUpperWithBit(upperMethod string, method
 // Evaluate evaluates a request against an ordered list of compiled rules.
 // Returns the action and the matched rule index. If no rule matches, returns deny.
 func Evaluate(rules []*CompiledRule, r *http.Request) (Action, int, string) {
-	return evaluateNormalized(rules, r.Method, NormalizePath(r.URL.Path))
+	action, index, reason, _ := evaluateRequestPolicy(rules, r, NormalizePath(r.URL.Path))
+	return action, index, reason
+}
+
+// evaluateRequestPolicy evaluates the decoded canonical path used by policy
+// rules and, for an encoded libpod image-SCP route, the EscapedPath view used
+// by Podman's gorilla/mux router. Both views must allow the request. This keeps
+// an encoded action suffix from borrowing an earlier push/tag/untag allow while
+// also preventing an encoded alias from bypassing a canonical decoded deny.
+// The rejecting view owns denial metadata; when both allow, the encoded route
+// view owns metadata and the path handed to request inspectors.
+func evaluateRequestPolicy(rules []*CompiledRule, r *http.Request, normalizedPath string) (Action, int, string, string) {
+	routePath, encodedScp := normalizedLibpodImageScpRoutePath(r)
+	if !encodedScp {
+		action, index, reason := evaluateNormalized(rules, r.Method, normalizedPath)
+		return action, index, reason, normalizedPath
+	}
+
+	decodedPath := NormalizePath(r.URL.Path)
+	action, index, reason := evaluateNormalized(rules, r.Method, decodedPath)
+	if action != ActionAllow {
+		return action, index, reason, decodedPath
+	}
+
+	action, index, reason = evaluateNormalized(rules, r.Method, routePath)
+	return action, index, reason, routePath
+}
+
+func normalizedLibpodImageScpRoutePath(r *http.Request) (string, bool) {
+	if r == nil || r.URL == nil || r.Method != http.MethodPost {
+		return "", false
+	}
+	decodedPath := NormalizePath(r.URL.Path)
+	routePath := normalizePodmanRoutePath(r.URL.EscapedPath())
+	if routePath == decodedPath || !isLibpodImageScpRoutePath(routePath) {
+		return "", false
+	}
+	return routePath, true
+}
+
+// normalizePodmanRoutePath keeps the trailing slash that gorilla/mux includes
+// in route matching while applying the same API-version and clean-path rules
+// used for policy paths. A trailing slash is security-significant for Podman's
+// anchored push/tag/untag routes: .../push/ misses the earlier action route and
+// falls through to the later image-SCP catch-all.
+func normalizePodmanRoutePath(p string) string {
+	hasTrailingSlash := len(p) > 1 && strings.HasSuffix(p, "/")
+	normalized := NormalizePath(p)
+	if hasTrailingSlash && normalized != "/" && !strings.HasSuffix(normalized, "/") {
+		normalized += "/"
+	}
+	return normalized
+}
+
+func isLibpodImageScpRoutePath(routePath string) bool {
+	rest, ok := strings.CutPrefix(routePath, libpodPathPrefix+"images/scp/")
+	if !ok || rest == "" {
+		return false
+	}
+	for _, action := range []string{"push", "tag", "untag"} {
+		if rest == action || strings.HasSuffix(rest, "/"+action) {
+			return false
+		}
+	}
+	return true
 }
 
 func evaluateNormalized(rules []*CompiledRule, method, normalizedPath string) (Action, int, string) {

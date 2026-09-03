@@ -52,26 +52,28 @@ on.
 | `POST /libpod/pods/create` | `request_body.libpod_pod_create` | Pods have no Docker-compat equivalent. Covers pod-level host network (`allow_host_network`), shared PID namespace (`allow_shared_pid_namespace`), and the infra image's registry (`allowed_infra_image_registries`). |
 | `POST /libpod/build` | `request_body.build`, shared with Docker `POST /build` | Covers primary remote contexts, URL/image `additionalbuildcontexts`, `networkmode=host`, and Dockerfiles containing `RUN`. Host/local/multipart and resource-usage host-file controls require the global blind-write acknowledgment. Direct and version-prefixed requests use the same tar/gzip bounds and body-sensitive startup validation as Docker's classic builder. |
 | `POST /libpod/containers/{name}/exec`, `POST /libpod/exec/{id}/start` | `request_body.exec` — **shared with Docker-compat** | libpod exec bodies use Docker's own field names on the wire, so there is deliberately no separate `libpod_exec` block. One `allowed_commands`/`allow_privileged`/`allow_root_user`/env-var policy governs exec on both surfaces, so nothing can be configured for one path family and forgotten for the other. |
+| `PUT /libpod/containers/{name}/archive` | `request_body.container_archive` — **shared with Docker-compat** | Podman routes this and Docker's `PUT /containers/{name}/archive` to a single `compat.Archive` handler, so one matcher covers both spellings. The inspector requires one nonempty, unambiguous `path`, matches Podman's case-insensitive field name, refuses relative targets when `allowed_paths` is configured because Podman resolves them against the container WorkingDir, and refuses a nonempty or ambiguous `rename` because Podman applies that transformation after reading the tar headers. `allowed_paths`, `allow_setid`, `allow_device_nodes` and `allow_escaping_links` otherwise apply identically on either path. |
+| `POST /libpod/containers/{name}/update` | `request_body.container_update` — **shared with Docker-compat** | The same `allow_*` gates as the Docker-compat update, read against libpod's own shape rather than Docker's. The body is `UpdateEntities`, whose embedded OCI `specs.LinuxResources` flattens to root-level `memory`/`cpu`/`pids`/`blockIO`/`devices`/`unified` instead of Docker's PascalCase, there is no `HostConfig`/`Resources` nesting, and the restart policy arrives in the `restartPolicy`/`restartRetries` **query string** rather than the body — so `allow_restart_policy` is enforced against the query here, with the key folded and every repeated value checked, because Podman decodes it with gorilla/schema. `devices` rides `allow_all_devices`; the OCI resource keys, the per-device IO throttles (`DeviceReadBPs` and friends) and `r_limits` ride `allow_resource_updates`; `health_on_failure`, `no_healthcheck` and `health_startup_retries` ride `allow_restart_policy`, since all three configure what the daemon does to the container on its own initiative. `allow_privileged` and `allow_capabilities` are inert on this path: `UpdateEntities` has no field for either, so a container cannot be made privileged through it. `health_cmd` and `health_startup_cmd`, `Env`/`UnsetEnv`, and `health_log_destination` are refused outright. Health timing and log-retention fields can create high-frequency checks or infinite daemon logs, so they require the global `insecure_allow_body_blind_writes: true` acknowledgment; the outright denials stay in force even with that acknowledgment. The opt-in `require_memory_limit`, `require_cpu_limit`, `require_cpu_limit_hard`, and `require_pids_limit` ratchets also cover this native path after ownership, applying Podman's partial lowercase resource overlay and explicit-zero clears to the inspected current state. |
 | `POST /libpod/volumes/create` | `request_body.libpod_volume` | Reuses the `volume` config shape, decoded against libpod's wire format (driver options live under `Options`, not `DriverOpts`). |
 | `POST /libpod/networks/create` | `request_body.libpod_network` | Reuses the `network` config shape, decoded against libpod's wire format (snake_case fields, no swarm/ingress/attachable/config-only concepts — libpod predates and is independent of Docker's swarm mode). |
 | `POST /libpod/networks/{name}/connect` | `request_body.libpod_network` — same `allow_endpoint_config`/`endpoint_config` gates as `network` | Podman's `libpod.Connect` handler decodes `entities.NetworkConnectOptions`, which is `container` plus an *embedded, untagged* `PerNetworkOptions` — so the endpoint fields are top-level and snake_case (`static_ips`, `static_mac`, `aliases`, `options`) and Docker's `{"EndpointConfig":{...}}` never appears. Sockguard reads that shape and runs it through the same gate as `POST /networks/{id}/connect`: `static_ips` is governed by `allow_static_addressing`, `static_mac` by `allow_mac_pinning`, `aliases` by `allow_aliases`, and `options` (the libpod analog of `DriverOpts`) is fail-closed under anything but `allow_endpoint_config: true`. `static_mac` is decoded exactly like Podman's `HardwareAddr.UnmarshalJSON`: a conventional MAC string, a base64 string, and a JSON byte array such as `[82,84,0,28,46,70]` all set the same policy field, while malformed or out-of-range forms fail closed. `interface_name` is not gated — it names an interface inside the container's own netns and has no Docker analog. `allow_link_local_ips` and `allow_gw_priority` have no libpod analog and never fire here. |
 | `POST /libpod/networks/{name}/disconnect` | `request_body.libpod_network.allow_disconnect_force` | The one libpod network route Podman registers straight onto the Docker-compat handler (`compat.Disconnect`), so the body really is Docker's `{"Container","Force"}` and the same gate applies unchanged. |
 | `POST /libpod/networks/{name}/update` | `request_body.libpod_network.allow_dns_servers` | Netavark-only, with no Docker analog at any Engine API version: it rewrites an existing network's DNS resolvers, so every container **already attached** starts resolving names through whatever the caller supplied. Default deny. Both directions are gated — adding a resolver redirects, removing one can redirect by omission — and a body that changes no resolver passes. The same knob gates `network_dns_servers` on `POST /libpod/networks/create`, so it governs the whole per-network resolver surface rather than half of it. Note the two spellings are different on the wire: update decodes `entities.NetworkUpdateOptions` (`adddnsservers`/`removednsservers`, run together), create decodes `types.Network` (`network_dns_servers`, snake_case). The snake_case `add_dns_servers` belongs to an internal type Podman never parses from a request. |
-| `PUT /libpod/containers/{name}/archive` | `request_body.container_archive` — **shared with Docker-compat** | Podman routes this and Docker's `PUT /containers/{name}/archive` to a single `compat.Archive` handler, so one matcher covers both spellings. The inspector requires one nonempty, unambiguous `path`, matches Podman's case-insensitive field name, refuses relative targets when `allowed_paths` is configured because Podman resolves them against the container WorkingDir, and refuses a nonempty or ambiguous `rename` because Podman applies that transformation after reading the tar headers. `allowed_paths`, `allow_setid`, `allow_device_nodes` and `allow_escaping_links` otherwise apply identically on either path. |
-| `POST /libpod/containers/{name}/update` | `request_body.container_update` — **shared with Docker-compat** | The same `allow_*` gates as the Docker-compat update, read against libpod's own shape rather than Docker's. The body is `UpdateEntities`, whose embedded OCI `specs.LinuxResources` flattens to root-level `memory`/`cpu`/`pids`/`blockIO`/`devices`/`unified` instead of Docker's PascalCase, there is no `HostConfig`/`Resources` nesting, and the restart policy arrives in the `restartPolicy`/`restartRetries` **query string** rather than the body — so `allow_restart_policy` is enforced against the query here, with the key folded and every repeated value checked, because Podman decodes it with gorilla/schema. `devices` rides `allow_all_devices`; the OCI resource keys, the per-device IO throttles (`DeviceReadBPs` and friends) and `r_limits` ride `allow_resource_updates`; `health_on_failure`, `no_healthcheck` and `health_startup_retries` ride `allow_restart_policy`, since all three configure what the daemon does to the container on its own initiative. `allow_privileged` and `allow_capabilities` are inert on this path: `UpdateEntities` has no field for either, so a container cannot be made privileged through it. `health_cmd` and `health_startup_cmd`, `Env`/`UnsetEnv`, and `health_log_destination` are refused outright. Health timing and log-retention fields can create high-frequency checks or infinite daemon logs, so they require the global `insecure_allow_body_blind_writes: true` acknowledgment; the outright denials stay in force even with that acknowledgment. The opt-in `require_memory_limit`, `require_cpu_limit`, `require_cpu_limit_hard`, and `require_pids_limit` ratchets also cover this native path after ownership, applying Podman's partial lowercase resource overlay and explicit-zero clears to the inspected current state. |
-| `POST /libpod/images/pull` | `request_body.image_pull` (shared with Docker-compat) | Podman's native image pull, the counterpart of Docker's `POST /images/create`. One registry allowlist (`allowed_registries`/`allow_official`/`allow_all_registries`) governs both surfaces, so nothing can be configured for one API family and forgotten for the other. The query shape is libpod's own and is read as such: the reference arrives in `reference` (not `fromImage`/`tag`), Podman matches that key case-insensitively and honors the last of a repeated pair, and it accepts a `docker://` transport prefix, so sockguard folds the key, checks every repeated value, and strips the prefix before matching the host. A pull carrying no usable `reference` is denied unless `allow_all_registries: true`. `allow_imports` does not apply to native libpod image operations. `POST /libpod/images/load` and `POST /libpod/images/import` are separate, uninspected routes and require the global blind-write acknowledgment. |
+| `POST /libpod/images/pull` | `request_body.image_pull` — **shared with Docker-compat** | Podman's native image pull, the counterpart of Docker's `POST /images/create`. One registry allowlist (`allowed_registries`/`allow_official`/`allow_all_registries`) governs both surfaces, so nothing can be configured for one API family and forgotten for the other. The reference arrives in `reference` (not Docker's `fromImage`/`tag`), the key is case-insensitive, one repeated spelling uses its last value, and a `docker://` transport prefix is accepted. Sockguard checks every supplied value and strips the prefix before matching the host. A pull carrying no usable `reference` is denied unless `allow_all_registries: true`. `allow_imports` does not apply here; libpod imports are a separate route (`POST /libpod/images/import`). |
+| `POST /libpod/images/load` | `request_body.image_load` — **shared with Docker-compat** | Podman's native image load. Verified against Podman v5.8.1: the route takes no query parameters and the whole request body is the archive. Docker `manifest.json` `RepoTags` and byte-exact OCI `index.json` effective names are checked against the same registry allowlist; `io.containerd.image.name` takes precedence over `org.opencontainers.image.ref.name`, matching Podman. Bare names are treated as `localhost/...`, and SHA-256, SHA-384, and SHA-512 OCI graphs are inspected. Sockguard mirrors Podman's permissive OCI metadata reader: advisory `oci-layout`, top-level schema-version, and descriptor media-type omissions do not disguise a loadable OCI image. If both OCI and Docker controls are present, both reference sets must be inspectable and pass policy because Podman can reject malformed config or layer content after metadata inspection and then fall back from OCI to Docker. An `index.json` that names no single image is the exception: Podman's oci-archive transport gives up before it reads any name and falls back to the Docker archive. A multi-manifest index is still checked for the names its annotations carry, because a containerd-store dockerd imports each descriptor and records them on the Docker-compat route; a missing or undecodable index carries none, so those loads are judged on `manifest.json` alone. Canonically duplicate controls, malformed mixed-format controls, and outer archive symlink or hardlink entries fail closed. `allow_untagged` applies only to genuinely untagged entries. Not to be confused with `POST /libpod/local/images/load`, below. |
+| `POST /libpod/images/import` | `request_body.image_pull.allow_imports` — **shared with Docker-compat** | The libpod counterpart of the import that rides on Docker's `POST /images/create?fromSrc=`, gated by the same `allow_imports` flag, which is `false` by default. Every request to the path is an import: with an effective `URL` query parameter the daemon fetches the tarball from an address the caller chose, and without one it reads the tarball from the request body. Body-form imports are spooled through a 512 MiB cap and return `413 Payload Too Large` before Podman sees an oversized stream. URL imports retain the coarse flag and do not read or spool a request body. |
 | `POST /libpod/secrets/create` | `request_body.libpod_secret` | Reuses the `secret` config shape. libpod reads `driver` from the query string, not a JSON body, so this inspector never reads `r.Body` — only the query-param path is exercised. |
 
 See the [Configuration Reference](/configuration#request-body-policy-reference)
 for the complete field-by-field mapping and environment-variable names for
 every key above.
 
-## The Uninspected Blind-Write Surface
+## The Uninspected Blind-Write Surface: `play/kube` and Manifests
 
-`POST /libpod/images/load`, `POST /libpod/images/import`, `POST /libpod/play/kube`
-(and its identically-handled `/libpod/kube/play` alias), `POST /libpod/kube/apply`,
-and `POST`/`PUT /libpod/manifests/*` have **no** request-body inspector in this
-release. Admitting any of them requires the same
+`POST /libpod/play/kube` (and its identically-handled `/libpod/kube/play`
+alias), `POST /libpod/kube/apply`, and `POST`/`PUT /libpod/manifests/*` have
+**no** request-body inspector in this release — full Kubernetes-YAML/PodSpec
+modeling is out of scope for this release. Admitting any of them requires the same
 `insecure_allow_body_blind_writes: true` acknowledgment that covers
 uninspected exec, exactly like every other body-bearing write sockguard
 cannot yet constrain.
@@ -97,19 +99,54 @@ radius than the single-container blind writes the acknowledgment flag
 otherwise covers, and no shipped preset (including `podman-readonly.yaml`
 below) ever allows these paths.
 
-`POST /libpod/containers/{name}/restore` belongs in the same category. With
-`?import=1` Podman reads the whole request body as a CRIU checkpoint archive
-and **creates a container from it**, so one allowed call provisions a
+## The Daemon-Host Surface: the `local` API and image SCP
+
+Three libpod routes have no Docker analog and, unlike every other write
+sockguard inspects, take their input from somewhere the request never
+travels. There is nothing on the wire to read, so each is refused rather
+than inspected.
+
+`POST /libpod/local/build` and `POST /libpod/local/images/load` are Podman's
+"local API": the build context (`localcontextdir`) and the image archive
+(`path`) are **absolute paths on the daemon host**, both required, and
+Podman v5.8.1 validates them only as absolute-and-exists — there is no
+sandbox root. A client that can call either one reads the daemon's
+filesystem through a directory it names itself. `request_body.build`'s
+`RUN`-instruction scan and `request_body.image_load`'s `RepoTags` check both
+work on the request body, so on these two routes they have nothing to read
+and would pass a request through as though it had been inspected. Both are
+therefore denied unless `insecure_allow_body_blind_writes: true`, at the
+proxy and again at config-validation time, and `allow_run_instructions` does
+not substitute for it. `POST /libpod/build` is unaffected: it still ships its
+context as a tar and is still inspected.
+
+`POST /libpod/images/scp/{name}` copies an image between hosts over SSH.
+The source is the path segment, the destination is the `destination` query
+parameter, and there is no request body at all. It runs in both directions
+and each one crosses a boundary sockguard otherwise holds: outbound it moves
+a local image to a host the caller names, which is an image push without a
+registry to allowlist, and inbound it materializes a local image from a
+remote one, which `request_body.image_pull`'s registry allowlist never sees.
+An unrecognized connection name is not refused — Podman turns it into a
+literal `ssh://<name>` — so the destination really is arbitrary. It is
+listed in **both** acknowledgment catalogs, so opening it needs
+`insecure_allow_body_blind_writes: true` *and*
+`insecure_allow_read_exfiltration: true`, one per direction. There is no
+narrower policy for it; see Known Limitations.
+
+`POST /libpod/containers/{name}/restore` belongs in the blind-write category
+too. With `?import=1` Podman reads the whole request body as a CRIU checkpoint
+archive and **creates a container from it**, so one allowed call provisions a
 container whose spec — privileged, mounts, capabilities, devices — travels
 inside a gzipped tar as `spec.dump` and never passes through `containers/create`
 on either surface. The `?pod` parameter also joins the restored container to a
-pod. Nothing in sockguard reads that archive, so an allow rule for the path
+pod. Nothing in Sockguard reads that archive, so an allow rule for the path
 requires `insecure_allow_body_blind_writes: true`, exactly like `play/kube`.
 
 ## Read-Exfiltration Additions
 
 `insecure_allow_read_exfiltration` is extended with libpod's equivalent of
-every Docker-compat exfiltration surface, plus five libpod-only entries:
+every Docker-compat exfiltration surface, plus the libpod-only entries below:
 
 - `GET /libpod/containers/*/archive`, `GET /libpod/containers/*/export`,
   `GET /libpod/containers/*/logs`, `POST /libpod/containers/*/attach`
@@ -119,6 +156,10 @@ every Docker-compat exfiltration surface, plus five libpod-only entries:
   `POST /libpod/manifests/*/push` — writes at the API layer, but they push
   local manifest content to a caller-selected registry, the same
   exfiltration shape as an image push
+- `POST /libpod/images/scp/*` — transfers a local image to another host
+  over SSH, to a destination the caller picks. It is also in the blind-write
+  catalog because the same call can pull an image *in* from a remote host;
+  see the section above
 - `GET /libpod/generate/kube` — despite the "generate" name, Podman
   registers this as a `GET` that dumps an existing pod's or container's
   definition to YAML, which can include environment variables and other
@@ -359,6 +400,14 @@ land):
   inspector. (`generate/kube` is not part of this list: it is a `GET`
   read-exfiltration endpoint and remains gated by
   `insecure_allow_read_exfiltration`, as described earlier.)
+- Narrower policy for `POST /libpod/local/build`,
+  `POST /libpod/local/images/load`, and `POST /libpod/images/scp/*` — all
+  three name their input outside the request (a daemon-host path, or an SSH
+  destination), so there is no body for an inspector to model and they stay
+  behind the acknowledgments described above. Constraining them would mean
+  policy over host paths and SSH destinations, which is a different kind of
+  rule than anything `request_body.*` expresses today; no shipped preset
+  allows any of them.
 - Body modeling for `POST /libpod/containers/*/restore` — the CRIU
   checkpoint archive it accepts under `?import=1` is a gzipped tar carrying
   the container's OCI spec, and inspecting it means unpacking that archive

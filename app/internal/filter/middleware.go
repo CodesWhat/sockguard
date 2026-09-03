@@ -255,7 +255,7 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			}
 
 			normPath := resolveNormalizedPath(meta, r)
-			action, ruleIndex, reason := evaluateNormalized(activePolicy.rules, r.Method, normPath)
+			action, ruleIndex, reason, normPath := evaluateRequestPolicy(activePolicy.rules, r, normPath)
 			denyStatus := http.StatusForbidden
 			reasonCode := ruleDecisionReasonCode(action, reason)
 			stampDecisionOnMeta(meta, action, ruleIndex, reasonCode, reason, normPath)
@@ -320,6 +320,9 @@ func resolveActivePolicy(opts Options, profilePolicies map[string]runtimePolicy,
 // already produced it; otherwise it normalizes once and lets the meta carry
 // the value forward to downstream layers.
 func resolveNormalizedPath(meta *logging.RequestMeta, r *http.Request) string {
+	if routePath, ok := normalizedLibpodImageScpRoutePath(r); ok {
+		return routePath
+	}
 	if meta != nil && meta.NormPath != "" {
 		return meta.NormPath
 	}
@@ -413,6 +416,13 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		// (`reference`, case-folded and repeatable, no `fromSrc`); see
 		// imagePullPolicy.inspectLibpod.
 		{http.MethodPost, matchesLibpodImagePullInspection, inspectSeverityHigh, newImagePullPolicy(cfg.ImagePull).inspectLibpod, "failed to inspect libpod image pull request", "unable to inspect libpod image pull request"},
+		// libpod image import is the counterpart of the Docker-compat
+		// fromSrc import that the entry above already gates, so it reads the
+		// same request_body.image_pull.allow_imports flag rather than a
+		// second one. Separate entry because the two live on different
+		// paths in Podman's route table — see
+		// imagePullPolicy.inspectLibpodImport.
+		{http.MethodPost, matchesLibpodImageImportInspection, inspectSeverityHigh, newImagePullPolicy(cfg.ImagePull).inspectLibpodImport, "failed to inspect libpod image import request", "unable to inspect libpod image import request"},
 		// libpod container update shares cfg.ContainerUpdate with the
 		// Docker-compat entry above — one set of allow_* gates governs both
 		// surfaces. It is a separate entry because libpod's body is
@@ -455,7 +465,14 @@ func matchesImagePullInspection(normalizedPath string) bool {
 }
 
 func matchesBuildInspection(normalizedPath string) bool {
-	return normalizedPath == "/build" || normalizedPath == "/libpod/build"
+	// isLibpodBuildPath covers POST /libpod/local/build alongside
+	// POST /libpod/build. The local spelling cannot actually be inspected —
+	// its context is a daemon-host path, not a body — so buildPolicy denies
+	// it outright unless the blind-write acknowledgment is set. It is routed
+	// here anyway so that denial happens in the one place that already owns
+	// the build surface, instead of the endpoint sitting outside every
+	// matcher and being forwarded unexamined.
+	return normalizedPath == "/build" || isLibpodBuildPath(normalizedPath)
 }
 
 func matchesContainerUpdateInspection(normalizedPath string) bool {
@@ -471,7 +488,12 @@ func matchesContainerArchiveInspection(normalizedPath string) bool {
 }
 
 func matchesImageLoadInspection(normalizedPath string) bool {
-	return normalizedPath == "/images/load"
+	// POST /libpod/images/load takes the identical archive body with no
+	// query parameters, so the same policy reads the same manifest.json off
+	// it. POST /libpod/local/images/load is here for the same reason
+	// /libpod/local/build is in matchesBuildInspection: it has no body to
+	// read, so it is denied rather than inspected.
+	return normalizedPath == "/images/load" || isLibpodImageLoadPath(normalizedPath) || isLibpodLocalImageLoadPath(normalizedPath)
 }
 
 func matchesVolumeInspection(normalizedPath string) bool {
@@ -533,6 +555,10 @@ func matchesLibpodSecretInspection(normalizedPath string) bool {
 
 func matchesLibpodImagePullInspection(normalizedPath string) bool {
 	return isLibpodImagePullPath(normalizedPath)
+}
+
+func matchesLibpodImageImportInspection(normalizedPath string) bool {
+	return isLibpodImageImportPath(normalizedPath)
 }
 
 func matchesLibpodContainerUpdateInspection(normalizedPath string) bool {

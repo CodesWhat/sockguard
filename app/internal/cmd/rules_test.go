@@ -595,6 +595,63 @@ func TestValidateAndCompileRulesRejectsRegistryPushWithoutExfiltrationOptIn(t *t
 	}
 }
 
+func TestValidateAndCompileRulesRejectsSlashBearingLibpodImagePushReachability(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		witness string
+		profile bool
+	}{
+		{
+			name:    "deep allow does not end in push",
+			pattern: "/libpod/images/team/**",
+			witness: "/libpod/images/team/push",
+		},
+		{
+			name:    "partial push suffix does not end in push",
+			pattern: "/libpod/images/team/*/p*",
+			witness: "/libpod/images/team/a/push",
+		},
+		{
+			name:    "named profile deep allow does not end in push",
+			pattern: "/libpod/images/team/**",
+			witness: "/libpod/images/team/push",
+			profile: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			rules := []config.RuleConfig{
+				{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/sockguard-test/push"}, Action: "deny"},
+				{Match: config.MatchConfig{Method: http.MethodPost, Path: tt.pattern}, Action: "allow"},
+				{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+			}
+			if tt.profile {
+				cfg.Rules = []config.RuleConfig{{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"}}
+				cfg.Clients.Profiles = []config.ClientProfileConfig{{Name: "publisher", Rules: rules}}
+			} else {
+				cfg.Rules = rules
+			}
+
+			_, err := validateAndCompileRules(&cfg)
+			if err == nil {
+				t.Fatal("expected slash-bearing image push exfiltration validation to fail")
+			}
+			if !strings.Contains(err.Error(), "POST "+tt.witness) {
+				t.Fatalf("expected slash-bearing image push route in error, got: %v", err)
+			}
+			if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
+				t.Fatalf("expected explicit read exfiltration opt-in hint, got: %v", err)
+			}
+			if tt.profile && !strings.Contains(err.Error(), "publisher") {
+				t.Fatalf("expected profile name in error, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateAndCompileRulesAllowsNamedClientProfilesWithBodyInspection(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Rules = []config.RuleConfig{
@@ -1219,54 +1276,6 @@ func TestValidateAndCompileRulesLibpodGates(t *testing.T) {
 			}
 			if len(compiled) != len(cfg.Rules) {
 				t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
-			}
-		})
-	}
-}
-
-func TestValidateAndCompileRulesLibpodImageLoadAndImportRequireBlindWriteAck(t *testing.T) {
-	for _, endpoint := range []string{"/libpod/images/load", "/libpod/images/import"} {
-		t.Run(endpoint, func(t *testing.T) {
-			for _, tt := range []struct {
-				name         string
-				acknowledged bool
-				wantErr      bool
-			}{
-				{name: "without acknowledgment", wantErr: true},
-				{name: "with acknowledgment", acknowledged: true},
-			} {
-				t.Run(tt.name, func(t *testing.T) {
-					cfg := config.Defaults()
-					cfg.InsecureAllowBodyBlindWrites = tt.acknowledged
-					cfg.Rules = []config.RuleConfig{
-						{Match: config.MatchConfig{Method: http.MethodPost, Path: endpoint}, Action: "allow"},
-						{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
-					}
-
-					compiled, err := validateAndCompileRules(&cfg)
-					if tt.wantErr {
-						if err == nil {
-							t.Fatal("expected validateAndCompileRules() to reject an unacknowledged body-blind image write")
-						}
-						for _, want := range []string{"insecure_allow_body_blind_writes=true", "POST " + endpoint} {
-							if !strings.Contains(err.Error(), want) {
-								t.Fatalf("expected %q in error, got: %v", want, err)
-							}
-						}
-						return
-					}
-
-					if err != nil {
-						t.Fatalf("validateAndCompileRules() error = %v", err)
-					}
-					for _, requestPath := range []string{endpoint, "/v5.0.0" + endpoint} {
-						req := httptest.NewRequest(http.MethodPost, requestPath, nil)
-						action, _, _ := filter.Evaluate(compiled, req)
-						if action != filter.ActionAllow {
-							t.Errorf("POST %s action = %q, want %q", requestPath, action, filter.ActionAllow)
-						}
-					}
-				})
 			}
 		})
 	}

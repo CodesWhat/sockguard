@@ -223,6 +223,13 @@ func TestLibpodContainerArchiveMiddlewareInspects(t *testing.T) {
 			wantReason: "sets setuid/setgid bits",
 		},
 		{
+			name:       "denies a setuid tar behind a Podman prerelease prefix",
+			target:     "/v5.8.1-dev/libpod/containers/abc/archive?path=/app",
+			body:       setuid,
+			wantStatus: http.StatusForbidden,
+			wantReason: "sets setuid/setgid bits",
+		},
+		{
 			name:       "denies an off-allowlist target on the libpod path",
 			target:     "/libpod/containers/abc/archive?path=/etc",
 			body:       safe,
@@ -637,6 +644,13 @@ func TestLibpodContainerUpdateMiddlewareInspects(t *testing.T) {
 		{
 			name:       "denies an OCI memory limit behind a Podman version prefix",
 			target:     "/v5.0.0/libpod/containers/abc/update",
+			body:       `{"memory":{"limit":1}}`,
+			wantStatus: http.StatusForbidden,
+			wantReason: "resource control changes are not allowed",
+		},
+		{
+			name:       "denies an OCI memory limit behind a four-component Podman prefix",
+			target:     "/v5.8.1.2/libpod/containers/abc/update",
 			body:       `{"memory":{"limit":1}}`,
 			wantStatus: http.StatusForbidden,
 			wantReason: "resource control changes are not allowed",

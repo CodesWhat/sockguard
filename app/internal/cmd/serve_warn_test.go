@@ -208,6 +208,97 @@ func TestWarnReadExfiltrationOnce(t *testing.T) {
 	}
 }
 
+func TestWarnReadExfiltrationRetainsShadowedTopLevelRoute(t *testing.T) {
+	t.Parallel()
+
+	configured := []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/sockguard-test/push"}, Action: "deny"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/team/**"}, Action: "allow"},
+	}
+	rules, err := compileConfiguredRules(configured)
+	if err != nil {
+		t.Fatalf("compileConfiguredRules: %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.InsecureAllowReadExfiltration = true
+	cfg.Rules = configured
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	var once sync.Once
+	warnReadExfiltrationOnce(&cfg, rules, nil, logger, &once)
+
+	if !strings.Contains(buf.String(), "POST /libpod/images/team/push") {
+		t.Fatalf("warning lost reachable push route behind a denied representative; log: %q", buf.String())
+	}
+}
+
+func TestWarnReadExfiltrationRetainsShadowedProfileRoute(t *testing.T) {
+	t.Parallel()
+
+	configured := []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/sockguard-test/push"}, Action: "deny"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "*/images/team/*/push"}, Action: "allow"},
+	}
+	rules, err := compileConfiguredRules(configured)
+	if err != nil {
+		t.Fatalf("compileConfiguredRules: %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.InsecureAllowReadExfiltration = true
+	cfg.Clients.Profiles = []config.ClientProfileConfig{{Name: "publisher", Rules: configured}}
+	profiles := map[string]filter.Policy{"publisher": {Rules: rules}}
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	var once sync.Once
+	warnReadExfiltrationOnce(&cfg, nil, profiles, logger, &once)
+
+	if !strings.Contains(buf.String(), "publisher: POST /libpod/images/team/a/push") {
+		t.Fatalf("warning lost reachable profile push route behind a denied representative; log: %q", buf.String())
+	}
+}
+
+func TestWarnReadExfiltrationReportsExactLibpodImagePushRepresentativeOnce(t *testing.T) {
+	t.Parallel()
+
+	topLevelRules := []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/sockguard-test/push"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+	compiledTopLevel, err := compileConfiguredRules(topLevelRules)
+	if err != nil {
+		t.Fatalf("compileConfiguredRules(top-level): %v", err)
+	}
+	profileRules := []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/scp/sockguard-test/push"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+	compiledProfile, err := compileConfiguredRules(profileRules)
+	if err != nil {
+		t.Fatalf("compileConfiguredRules(profile): %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.InsecureAllowReadExfiltration = true
+	cfg.Rules = topLevelRules
+	cfg.Clients.Profiles = []config.ClientProfileConfig{{Name: "publisher", Rules: profileRules}}
+	profiles := map[string]filter.Policy{"publisher": {Rules: compiledProfile}}
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	var once sync.Once
+	warnReadExfiltrationOnce(&cfg, compiledTopLevel, profiles, logger, &once)
+
+	for _, endpoint := range []string{
+		"POST /libpod/images/sockguard-test/push",
+		"publisher: POST /libpod/images/scp/sockguard-test/push",
+	} {
+		if got := strings.Count(buf.String(), endpoint); got != 1 {
+			t.Fatalf("warning count for %q = %d, want 1; log: %q", endpoint, got, buf.String())
+		}
+	}
+}
+
 func TestWarnReadExfiltrationOncePreservesShadowedRouteDetection(t *testing.T) {
 	t.Parallel()
 
