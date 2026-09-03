@@ -56,6 +56,8 @@ func FuzzPathMatch(f *testing.F) {
 		{"POST", "/session"},
 		{"POST", "/grpc"},
 		{"GET", "/v5.0.0/libpod/containers/json"},
+		{"GET", "/v5.8.1-dev/libpod/manifests/app/json"},
+		{"POST", "/v5.8.1.2/libpod/images/scp/app"},
 		{"GET", "/v5.8.1-dev/libpod/images/load"},
 		{"POST", "/v5.8.1.2/libpod/images/import"},
 		{"POST", "/v5.0.0/libpod/pods/create"},
@@ -211,6 +213,8 @@ func FuzzNormalizePath(f *testing.F) {
 		"/v1.2.3.4/x", // Podman's class has no part-count limit -- strips
 		"/v5.8.1-dev/libpod/images/load",
 		"/v5.8.1_rc/libpod/images/load", // underscore is not accepted
+		"/v5.8.1-dev/libpod/manifests/app/json",
+		"/v5.8.1_rc/libpod/manifests/app/json", // underscore is not accepted
 		"/v99999999999999999999.99999999999999999999.99999999999999999999/x", // adversarial digit runs
 		// Podman prerelease / dev builds (this fix): VersionedPath is
 		// [0-9][0-9A-Za-z.-]*, admitting "-dev", "-rc1", trailing '.'/'-',

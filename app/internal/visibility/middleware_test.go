@@ -92,6 +92,27 @@ func TestMiddlewareInjectsVisibilityLabelsIntoContainerListAndEvents(t *testing.
 	}
 }
 
+func TestPatternsWithoutSelectorsWarningNamesEveryFilteredListPath(t *testing.T) {
+	t.Parallel()
+
+	var logs strings.Builder
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	middlewareWithDeps(logger, Options{
+		NamePatterns: []string{"allowed-*"},
+	}, visibilityDeps{})
+
+	for _, path := range []string{
+		"/containers/json",
+		"/libpod/containers/json",
+		"/images/json",
+		"/libpod/images/json",
+	} {
+		if !strings.Contains(logs.String(), path) {
+			t.Errorf("startup warning = %q, want filtered list path %q", logs.String(), path)
+		}
+	}
+}
+
 func TestMiddlewareReturnsNotFoundForInvisibleContainerInspect(t *testing.T) {
 	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))

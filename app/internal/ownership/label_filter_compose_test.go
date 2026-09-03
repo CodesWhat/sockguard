@@ -236,6 +236,22 @@ func TestPodmanEventsRejectsOwnerVisibilityComposition(t *testing.T) {
 				UpstreamFlavor: upstreamflavor.Podman,
 			},
 		},
+		{
+			name:   "native libpod events",
+			target: "/libpod/events",
+			vis: visibility.Options{
+				VisibleResourceLabels: []string{"tier=prod"},
+				UpstreamFlavor:        upstreamflavor.Podman,
+			},
+		},
+		{
+			name:   "versioned native libpod events",
+			target: "/v5.8.1/libpod/events",
+			vis: visibility.Options{
+				VisibleResourceLabels: []string{"tier=prod"},
+				UpstreamFlavor:        upstreamflavor.Podman,
+			},
+		},
 	}
 
 	for _, tc := range tests {

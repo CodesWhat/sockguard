@@ -137,6 +137,24 @@ func middlewareWithDeps(
 				normPath = filter.NormalizePath(r.URL.Path)
 			}
 
+			// Refuse host-wide libpod reads before ordinary resource-path
+			// classification. Two collection words ("showmounted" and
+			// "stats") are otherwise indistinguishable here from container
+			// names, which would trigger an inspect and let a foreign-resource
+			// denial pass through under warn/audit rollout before the
+			// unconditional collection refusal got a chance to run.
+			//
+			// HEAD is refused alongside GET for the reason
+			// serveOwnershipAllowed gives for the two disk-usage reads:
+			// nothing here has a body-filtering step HEAD could legitimately
+			// need, so gating on GET alone would forward it to the daemon.
+			if r.Method == http.MethodGet || r.Method == http.MethodHead {
+				if read, ok := filter.LookupLibpodUnscopeableRead(normPath); ok {
+					denyUnscopeableLibpodRead(w, r, read)
+					return
+				}
+			}
+
 			ownerFilterApplies := needsOwnerFilter(r.Method, normPath) ||
 				(r.Method == http.MethodGet || r.Method == http.MethodHead) && libpodNeedsOwnerFilter(normPath)
 			if ownerFilterApplies && dockerfilters.RequiresSoleValue(r, ownerFilterKey(normPath)) {
@@ -152,7 +170,21 @@ func middlewareWithDeps(
 				return
 			}
 
-			verdict, reason, err := allowOwnershipRequest(r.Context(), r.Method, normPath, opts, inspectResource, inspectExec, refs)
+			// The SCP route view is filter.NormalizePodmanRoutePath, not
+			// filter.NormalizePath. Podman's router matches on the escaped
+			// path INCLUDING a trailing slash, and that slash decides the
+			// route: /libpod/images/scp/victim/push/ misses the anchored
+			// per-image /push handler registered earlier and falls through to
+			// the /libpod/images/scp/{name:.*} catch-all, so the daemon SCPs
+			// the local image "victim/push/". NormalizePath's path.Clean drops
+			// the slash, which read the same request as a push of an image
+			// named "scp/victim", a name no daemon has, so the inspect came
+			// back not-found and ownership passed the transfer through.
+			routePath := normPath
+			if r.Method == http.MethodPost && strings.HasPrefix(normPath, libpodPrefix+"images/scp/") {
+				routePath = filter.NormalizePodmanRoutePath(r.URL.EscapedPath())
+			}
+			verdict, reason, err := allowOwnershipRequestWithRoutePath(r.Context(), r.Method, normPath, routePath, opts, inspectResource, inspectExec, refs)
 			if err != nil {
 				logger.ErrorContext(r.Context(), "owner policy lookup failed", "error", logging.SafeString(err.Error()), "method", logging.SafeString(r.Method), "path", logging.SafeString(r.URL.Path))
 				logging.SetDeniedWithCode(w, r, reasonCodeOwnerPolicyLookupFailed, "owner policy lookup failed", nil)
@@ -253,7 +285,20 @@ func allowOwnershipRequest(
 	inspectExec func(context.Context, string) (string, bool, error),
 	refs *ownershipRequestReferences,
 ) (ownershipVerdict, string, error) {
-	verdict, reason, err := allowOwnershipRequestUnprefixed(ctx, method, normPath, opts, inspectResource, inspectExec, refs)
+	return allowOwnershipRequestWithRoutePath(ctx, method, normPath, normPath, opts, inspectResource, inspectExec, refs)
+}
+
+func allowOwnershipRequestWithRoutePath(
+	ctx context.Context,
+	method string,
+	normPath string,
+	routePath string,
+	opts Options,
+	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
+	inspectExec func(context.Context, string) (string, bool, error),
+	refs *ownershipRequestReferences,
+) (ownershipVerdict, string, error) {
+	verdict, reason, err := allowOwnershipRequestUnprefixed(ctx, method, normPath, routePath, opts, inspectResource, inspectExec, refs)
 	if verdict == verdictDeny && isLibpodOwnershipPath(normPath) {
 		reason = "libpod " + reason
 	}
@@ -264,6 +309,7 @@ func allowOwnershipRequestUnprefixed(
 	ctx context.Context,
 	method string,
 	normPath string,
+	routePath string,
 	opts Options,
 	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
 	inspectExec func(context.Context, string) (string, bool, error),
@@ -290,7 +336,7 @@ func allowOwnershipRequestUnprefixed(
 		}
 	}
 
-	verdict, reason, err := allowPathOwnershipRequest(ctx, method, normPath, opts, inspectResource, inspectExec)
+	verdict, reason, err := allowPathOwnershipRequest(ctx, method, normPath, routePath, opts, inspectResource, inspectExec)
 	if err != nil || verdict == verdictDeny {
 		return verdict, reason, err
 	}
@@ -304,6 +350,7 @@ func allowPathOwnershipRequest(
 	ctx context.Context,
 	method string,
 	normPath string,
+	routePath string,
 	opts Options,
 	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
 	inspectExec func(context.Context, string) (string, bool, error),
@@ -352,11 +399,12 @@ func allowPathOwnershipRequest(
 	// above resource-for-resource so a client cannot evade ownership
 	// enforcement by switching from the Docker-compat API to Podman's
 	// native one for actions on an already-existing resource. Containers,
-	// networks, volumes, and secrets are checked against their Docker-compat
-	// inspect path (dockerresource.KindContainer/KindNetwork/KindVolume/
-	// KindSecret) since Podman's compat API is a translation layer over the
-	// same underlying resource store for those kinds; pods have no
-	// Docker-compat equivalent and use dockerresource.KindLibpodPod.
+	// networks, volumes, images and secrets are checked against their
+	// Docker-compat inspect path (dockerresource.KindContainer/KindNetwork/
+	// KindVolume/KindImage/KindSecret) since Podman's compat API is a
+	// translation layer over the same underlying resource store for those
+	// kinds; pods have no Docker-compat equivalent and use
+	// dockerresource.KindLibpodPod.
 	if identifier, ok := libpodContainerIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindContainer, identifier, opts, false)
 	}
@@ -378,6 +426,19 @@ func allowPathOwnershipRequest(
 	}
 	if identifier, ok := libpodVolumeIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindVolume, identifier, opts, false)
+	}
+	if identifier, remote, ok := libpodImageScpSource(method, routePath); ok {
+		switch {
+		case remote:
+			return verdictDeny, "owner policy denied access to remote image source", nil
+		case identifier == "":
+			return verdictDeny, "owner policy could not resolve local image source", nil
+		default:
+			return checkOwnedResource(ctx, inspectResource, dockerresource.KindImage, identifier, opts, opts.AllowUnownedImages)
+		}
+	}
+	if identifier, ok := libpodImageIdentifierForRoute(method, normPath, routePath); ok {
+		return checkOwnedResource(ctx, inspectResource, dockerresource.KindImage, identifier, opts, opts.AllowUnownedImages)
 	}
 	if identifier, ok := libpodSecretIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindSecret, identifier, opts, false)

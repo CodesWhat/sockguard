@@ -177,9 +177,16 @@ every Docker-compat exfiltration surface, plus the libpod-only entries below:
   equivalent of `GET .../archive`; it is gated on the disclosure of the
   storage driver's layout and the container-id-to-path mapping.
 - `GET /libpod/containers/showmounted` — returns that mapping for every
-  mounted container in one response, keyed by container ID. Under owner
-  isolation or visibility policy it is refused before Podman is queried,
-  because the response carries neither labels nor names to scope safely.
+  mounted container in one response, keyed by container ID. Two behaviours,
+  and which one you get depends entirely on what else is configured. With
+  owner isolation or a visibility policy active, the proxy answers `403`
+  before Podman is queried, because the response carries neither labels nor
+  names to scope safely. With neither policy active, an allow rule reaching
+  this path forwards Podman's map unredacted: every mounted container's ID
+  paired with its host mountpoint. The path is in the read-exfiltration
+  catalog, so that rule fails startup validation unless you also set
+  `insecure_allow_read_exfiltration: true`; the acknowledgment is what makes
+  the unredacted forward an explicit choice rather than an accident.
 
 A broad `GET /libpod/**`-shaped allow rule catches every path above and
 fails startup validation unless you explicitly opt in. Narrow, explicit
@@ -203,10 +210,37 @@ same way they cover Docker-compat:
 - Pods have no Docker-compat equivalent, so they get a dedicated
   `KindLibpodPod` resource kind with its own list/inspect owner-filtering
   and visibility coverage.
-- Every libpod list and inspect/action path — containers, pods, networks,
-  volumes, secrets — is owner-filtered and visibility-filtered, so switching
-  a client from Docker-compat to libpod-native paths is not a way around
-  isolation configured on the Docker-compat side.
+- Every filter-capable libpod list and every path-targeted read for containers,
+  images, pods, networks, volumes, and secrets is owner-filtered and
+  visibility-filtered, so switching a client from Docker-compat to a native
+  spelling is not a way around the same scope. Path-targeted write actions are
+  owner-checked too. Native image lists and per-image reads apply the policy's
+  name and image patterns as well as its label selectors. Query-targeted batch
+  image operations are the exception recorded under Known Limitations. Read
+  coverage follows the routes Podman actually serves rather than the `/json`
+  inspect alone:
+  `/exists`, `/top`, `/healthcheck`, `/archive`, `/tree`, `/changes`, volume
+  `/export`, and the bare `GET /libpod/networks/{id}` spelling Podman
+  registers on the same `InspectNetwork` handler as `/libpod/networks/{id}/json`.
+  Native image SCP follows Podman's source grammar. A bare
+  `POST /libpod/images/scp/{image}` source and the special
+  `user@localhost::{image}` form name a local image, so owner isolation
+  inspects the exact image portion before forwarding. An owned image passes;
+  an unowned image follows `allow_unowned_images`; a foreign image is denied;
+  and a local inspect that returns not found passes through so Podman can
+  return its real error. A `connection::{image}` source belongs to another
+  daemon and cannot be classified by a local inspect, so enforce mode denies
+  it with `reason_code=owner_policy_denied_access` and reason
+  `libpod owner policy denied access to remote image source`. Warn and audit
+  modes forward it as `would_deny` with the same code and reason. A malformed
+  local-user source fails closed with that reason code instead of issuing an
+  empty inspect. With no owner configured, all SCP forms pass through
+  untouched. Route classification follows Podman's encoded-path router, so a
+  percent-encoded slash remains inside the SCP source before the source is
+  decoded once for inspection. Podman's earlier per-image POST routes remain
+  distinct: `/libpod/images/scp/push`, `/tag`, and `/untag` check the image
+  named exactly `scp`, while a longer action path checks the image whose name
+  begins with `scp/`; only an actual SCP route strips that segment.
 - Response redaction covers every libpod read whose Docker-compat counterpart
   is redacted, so the same switch is not a way around redaction either. That
   is a separate layer from the two above, and it needed its own libpod field
@@ -225,19 +259,97 @@ same way they cover Docker-compat:
   network or container is denied, and an unresolved body container fails
   closed before Podman receives the request. Docker-compatible network
   membership routes use the same two-resource ownership check.
-- `GET /libpod/system/df` and `GET /libpod/containers/showmounted` cannot be
-  filtered, and are refused with a `403` instead whenever owner isolation or a
-  visibility policy is active. Podman's native disk-usage report is not the
-  Docker-compat body under another path: its image, container and volume
-  entries carry no labels at all, so no owner label and no visibility selector
-  has a field to match.
+- `GET /libpod/events` is owner-filtered but is only partly expressible as a
+  visibility policy, and that asymmetry is deliberate. Podman evaluates
+  several values under one event filter key disjunctively, so a `label=` value
+  injected beside a client-supplied one ORs with it instead of narrowing.
+  Owner isolation by itself replaces the `label` key outright and so leaves
+  exactly one value, for which disjunctive and conjunctive evaluation are the
+  same thing.
+  A visibility policy's selectors are ANDed by definition and the endpoint has
+  no second filter key to hold the extra one, so sockguard injects a single
+  selector where the policy has one and refuses the endpoint with a `403` and
+  `visibility_libpod_events_unscopeable` where it has more. Owner isolation
+  plus even one visibility selector is also an inexpressible conjunction, so
+  that combination is refused with `owner_visibility_podman_events_unscopeable`
+  rather than dropping either constraint. Reporting a subset was rejected for
+  the same reason an emptied `/libpod/system/df` was: a client watching an
+  event stream cannot tell a quiet host from a filter that stopped applying.
+  The refusals are independent of rollout mode, and a deployment with no
+  visibility policy is unaffected.
+- `GET /libpod/system/df` is one fixed-path read that cannot be filtered, and
+  it is refused with a `403` instead whenever owner isolation or a visibility
+  policy is active. Podman's native disk-usage report is not the Docker-compat body
+  under another path: its image, container and volume entries carry no labels
+  at all, so no owner label and no visibility selector has a field to match.
   Refusing keeps it from being a way around isolation the way filtering does
-  for every other libpod read; see
+  for scopeable libpod reads; see
   [Security](/security#layer-6-owner-label-isolation) for the full field list
   and why an emptied report was the wrong answer. The Docker-compat
-  `GET /system/df` that Podman also serves is filtered normally. The
-  `showmounted` response is only a map from container IDs to daemon-host mount
-  paths, so it likewise has no labels or names to classify.
+  `GET /system/df` that Podman also serves is filtered normally.
+- `GET /libpod/containers/showmounted` is refused the same way and for the
+  same reason. Podman answers it with a bare map of container ID to the daemon
+  host's mount path for that container, built from every container on the
+  host, so one body is both a host-filesystem disclosure and a cross-owner
+  enumeration. It carries no labels, has no Docker-compat counterpart, and
+  accepts no query parameters, so redacting the paths would still hand over
+  the enumeration and there is no field left to decide an entry by. It is not
+  in `podman-readonly.yaml`, and it **is** in the read-exfiltration catalog, so
+  a rule reaching it, including a broad one such as
+  `GET /libpod/containers/*`, fails startup validation unless
+  `insecure_allow_read_exfiltration: true` is set. With that acknowledgment in
+  place and neither an owner nor a visibility policy configured, the proxy
+  forwards Podman's unredacted container-ID-to-host-mountpoint map. The
+  acknowledgment gates the rule; the isolation layers are what turn the read
+  into a `403`.
+- `GET /libpod/containers/stats` and `GET /libpod/pods/stats` are refused the
+  same way, new in v2.1. Both are collection endpoints rather than per-resource
+  ones: a request that names nothing reports every running container or pod on
+  the host, by design rather than by omission — Podman's own
+  `ValidatePodStatsOptions` sets `all` when nothing is given, "if nothing's
+  specified get all running pods". Neither accepts a `filters` parameter, so a
+  label filter has nothing to attach to, and their records carry container and
+  pod IDs and names but no labels, so neither an owner label nor a visibility
+  selector has a field to match. Both layers answer `403` before the upstream
+  is contacted, audited as `owner_libpod_container_stats_unscopeable` and
+  `owner_libpod_pod_stats_unscopeable` (and their `visibility_` counterparts),
+  regardless of rollout mode. `podman-readonly.yaml` allowed
+  `GET /libpod/pods/stats` before v2.1 and no longer does; see Known
+  Limitations below for what that costs a deployment that runs neither
+  isolation layer.
+- `GET /libpod/secrets/json` is refused under owner isolation or a visibility
+  policy, new in v2.1, and it is the one refusal that is not about a missing
+  field. Both layers used to inject a `label` filter into it the way they do
+  for every other libpod list. Podman evaluates this endpoint's filters with
+  `utils.IfPassesSecretsFilter`, whose switch accepts `name` and `id` and
+  returns `invalid filter` for anything else, and `compat.ListSecrets` turns
+  that into a `500`, so the injected label did not narrow the list, it broke
+  every request. Dropping the injection alone would have forwarded the whole
+  host's secret inventory instead, so the path is refused, audited as
+  `owner_libpod_secret_list_unscopeable` and
+  `visibility_libpod_secret_list_unscopeable`. The items do carry
+  `Spec.Labels`, so unlike the stats reads a response-side filter could scope
+  this one; none exists today, which is what would move it back off this list.
+  `GET /libpod/secrets/{name}/json` names one secret and is unaffected.
+- `GET /libpod/manifests/{name}/exists` and
+  `GET /libpod/manifests/{name}/json` are refused whenever owner isolation or
+  a visibility policy is active. Manifest lists carry no owner or policy
+  labels and neither endpoint accepts a filter. The `/json` route also falls
+  back to fetching the caller-named reference from a registry when no local
+  list exists, so treating local lookup failure as safe would expose remote
+  content. Owner refusals use
+  `owner_libpod_manifest_exists_unscopeable` and
+  `owner_libpod_manifest_json_unscopeable`; visibility refusals use
+  `visibility_libpod_manifest_exists_unscopeable` and
+  `visibility_libpod_manifest_json_unscopeable`. These are hard `403`
+  refusals in enforce, warn, and audit modes because forwarding cannot produce
+  a scoped response. With neither isolation policy configured, the reads pass
+  through unchanged.
+- Version normalization follows Podman's `VersionedPath` route grammar, not
+  only release-shaped `vN.N.N` strings. Prerelease and four-component strings
+  that Podman accepts are normalized before rules, ownership, and visibility
+  evaluate the path, so a broad catch-all rule does not bypass the isolation
+  checks by changing only the version segment.
 - Resource names that happen to equal an API action word remain protected.
   Owner matching reserves keywords only for the exact method and collection
   path, while `GET` and `HEAD` visibility treats write-only keywords as normal
@@ -294,7 +406,7 @@ handler runs. Where they don't, the libpod field names are pinned separately:
 | `GET /libpod/containers/{id}/json` | `redact_container_env`, `redact_mount_paths`, `redact_network_topology` | `Config.Env`; `Mounts[].Source`, `HostConfig.Binds`, and the native host paths `Rootfs`, `ResolvConfPath`, `HostnamePath`, `HostsPath`, `StaticDir`, `OCIConfigPath`, `ConmonPidFile`, and `PidFile`; `HostConfig.NetworkMode`, the `NetworkSettings` address block and each `Networks` entry — the remaining fields use Docker's json tags, plus libpod's own `AdditionalMACAddresses` list, which has no compat counterpart |
 | `GET /libpod/volumes/json`, `GET /libpod/volumes/{name}/json` | `redact_mount_paths` | `Mountpoint`. The list body is a bare array, not Docker's `{"Volumes": [...]}` envelope |
 | `GET /libpod/networks/json`, `GET /libpod/networks/{id}/json`, `GET /libpod/networks/{id}` | `redact_network_topology` | Podman v4 and later: `subnets`, `routes`, `network_dns_servers`, `network_interface`, and inspect's `containers` map. Podman v2.2.1-v3.4.4: the raw CNI plugin's host `bridge` or macvlan `master`; plugin-level and IPAM-nested `dns.nameservers`, `dns.domain`, and `dns.search`; plus IPAM `routes`, `ranges`, static `addresses`, and backward-compatible flat `subnet`, `gateway`, `rangeStart`, and `rangeEnd`. List's top-level and per-plugin `Bytes` fields are removed because they are base64 copies of the complete raw conflist/plugin and would retain the same topology |
-| `GET /libpod/secrets/json`, `GET /libpod/secrets/{name}/json` | `redact_sensitive_data` | `SecretData`, the plaintext Podman returns for `?showsecret=true`. It is a top-level field, not the `Spec.Data` Docker uses — Podman's `Spec` has no `Data` at all |
+| `GET /libpod/secrets/json`, `GET /libpod/secrets/{name}/json` | `redact_sensitive_data` | `SecretData`, the plaintext Podman returns for `?showsecret=true`. It is a top-level field, not the `Spec.Data` Docker uses — Podman's `Spec` has no `Data` at all. The redactor still covers the list route, but owner isolation and visibility refuse that route before a response exists to rewrite; the redaction is what a deployment running neither layer gets |
 
 Three things are deliberately left alone. Modern `ipam_options` and legacy
 `plugins[].ipam.type` name the allocator, not an address; the former maps onto
@@ -380,8 +492,8 @@ or vice versa; the setting name is the same, the ceiling it grants is not.
 The [`podman-readonly.yaml`](https://github.com/CodesWhat/sockguard/blob/main/app/configs/podman-readonly.yaml)
 preset ships a read-only monitoring posture covering both surfaces in one
 file — list/inspect/stats/top/changes for containers, list/inspect for pods
-(libpod only), images, networks, volumes, and secrets, plus health/version/
-info/events. It deliberately excludes every exfiltration-gated endpoint:
+(libpod only), images, networks and volumes, per-secret inspect, plus
+health/version/info/events. It deliberately excludes every exfiltration-gated endpoint:
 archive, export, logs, attach, image `get`, and image push on both
 surfaces, plus the libpod-only exfiltration surfaces alongside them —
 mounted-container inventory (`showmounted`), `generate/kube`, and manifest
@@ -389,6 +501,16 @@ pushes, none of which have a Docker-compat counterpart. So it validates
 clean without setting `insecure_allow_read_exfiltration`, and it allows no
 writes at all, so it never needs `insecure_allow_body_blind_writes` either.
 See [Presets](/presets) for how to mount a preset as your config file.
+
+Two rules left the preset in v2.1: `GET /libpod/pods/stats` and
+`GET /libpod/secrets/json`, both of which the isolation layers now refuse
+(above). A preset that advertises owner isolation cannot also serve a read
+that has no owner-scoped form, and either rule could only ever have ended in a
+`403` for anyone running a layer. The secrets one was worse than inert before
+that: the label filter both layers injected made Podman answer `500`, so the
+preset's own secret list did not work under isolation at all. Add either rule
+back to your own config if you run single-tenant with neither isolation layer
+on.
 
 ## Known Limitations
 
@@ -471,8 +593,14 @@ land):
   values alone would leave the enumeration, which makes it the same problem
   `GET /libpod/system/df` has and points at the same answer — a refusal decided
   by the ownership and visibility layer, not a rewrite in the response filter.
-  Neither is wired today. The endpoint is not in `podman-readonly.yaml` and no
-  default rule admits it; a `GET /libpod/**` allow rule does.
+  The refusal is wired as of v2.1; the response-side rewrite is not, and is not
+  planned, because a redacted map is still an enumeration. So the two
+  behaviours are: `403` before Podman is queried with either isolation layer
+  active, and Podman's unredacted map forwarded with neither. The endpoint is
+  not in `podman-readonly.yaml` and no default rule admits it. A rule that does
+  (`GET /libpod/**` reaches it) needs
+  `insecure_allow_read_exfiltration: true` to pass startup validation, because
+  the path is in the read-exfiltration catalog.
 - Response redaction for `GET /libpod/images/{name}/json`. Image inspect
   returns the image's own `Config.Env` and `GraphDriver.Data`'s host storage
   paths, and neither is rewritten. This one is **not** a libpod-specific gap:
@@ -482,6 +610,17 @@ land):
   otherwise reasonably expect `redact_container_env` and `redact_mount_paths`
   to cover them. The list route `GET /libpod/images/json` is not affected —
   `ImageSummary` has neither field.
+- **`GET /libpod/secrets/json` has no scoped form under either isolation
+  layer.** Podman's secret filter grammar accepts only `name` and `id` and
+  answers `500` for any other key, so the label filter that scopes every other
+  libpod list cannot be pushed upstream, and both layers refuse the path. The
+  gap is narrower than the stats one: the report items carry `Spec.Labels`, so
+  a response-side filter over that field could scope this list the way
+  `GET /system/df` is scoped, and building it is what would lift the refusal.
+  Until then, `GET /libpod/secrets/{name}/json` is the scoped read, since it
+  names one secret and both layers resolve it normally, and a deployment that wants
+  the whole list has to run without owner isolation and without a visibility
+  policy. The rule left `podman-readonly.yaml` in v2.1 for that reason.
 - Tecnativa-style env-var compatibility for the libpod surface — the
   existing `CONTAINERS=1`/`POST=0`-style compat env vars only ever generate
   rules against literal Docker-compat paths (`/containers/**`, and similar),
@@ -493,6 +632,46 @@ land):
 - `AllowedRuntimes` has no libpod equivalent — `request_body.container_create.allowed_runtimes`
   gates the Docker-compat `HostConfig.Runtime` field, but
   `libpod_container_create` has no matching hook today.
+- **There is no owner-scoped form of the collection stats reads to offer you.**
+  `GET /libpod/containers/stats` and `GET /libpod/pods/stats` are refused
+  outright under owner isolation or a visibility policy, so a single-tenant
+  deployment that legitimately wants host-wide stats has to run without either
+  layer, or allow the paths and accept that they answer `403` while a layer is
+  on. Filtering them was not an option: neither takes a `filters` parameter and
+  neither report carries labels, so there is nothing to attach a filter to and
+  nothing to decide an entry by. Correlating them against the label-filtered
+  list endpoints would work, but that is the same multi-request mechanism
+  refused for `/libpod/system/df`.
+
+  Per-container stats survive: `GET /libpod/containers/{name}/stats` is a
+  different route, `{name}` is an identifier both layers already check, and it
+  stays allowed. Podman's own API docs mark it "DEPRECATED. This endpoint will
+  be removed with the next major release. Please use `/libpod/containers/stats`
+  instead", so the only scopeable spelling is the one upstream intends to
+  delete — worth knowing before you build a dashboard on it. Pods have no
+  equivalent at all: Podman registers no per-pod stats route, so pod stats is
+  all-or-nothing.
+
+  The refusal is a plain `403` rather than a truncated stream, which matters
+  because the two endpoints have different default shapes.
+  `GET /libpod/containers/stats` streams unless the caller sends
+  `stream=false` (one NDJSON record per five-second tick);
+  `GET /libpod/pods/stats` returns a single JSON body unless the caller asks
+  for a stream. Sockguard answers before the upstream is contacted either way,
+  so a client written for the streaming shape gets a status line and a normal
+  error body rather than a half-read record.
+- Two libpod image endpoints name their images in the query string rather than
+  the path, so owner isolation has no path target to check. The read-side batch
+  export likewise falls outside visibility's path classifier, and both pass
+  through unchecked when a rule allows them:
+  `DELETE /libpod/images/remove?images=…`
+  (batch delete, which with `all=true` names nothing at all) and
+  `GET /libpod/images/export?references=…` (batch export).
+  Neither is allowed by any shipped preset, batch export additionally needs
+  `insecure_allow_read_exfiltration`, and the Docker-compat
+  `GET /images/get?names=…` is unchecked for the same reason. Per-image
+  spellings of both actions (`DELETE /libpod/images/{name}`,
+  `GET /libpod/images/{name}/get`) are checked normally.
 - Not every field of a libpod network body has a gate. `POST /libpod/networks/create`
   passes `dns_enabled`, `internal`, `ipv6_enabled` and `routes` through
   uninspected, and `POST /libpod/networks/{name}/connect` passes

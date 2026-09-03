@@ -132,6 +132,8 @@ func TestStripVersionPrefixMatchesPodmanRouteGrammar(t *testing.T) {
 		"/v1.2.3/",
 		"/v1.2./x",
 		"/v1.2.3.4/x",
+		"/v5.8.1-dev/libpod/manifests/app/json",
+		"/v5.8.1_rc/libpod/manifests/app/json",
 		"/v5.8.1-dev/libpod/images/load",
 		"/v5.8.1_rc/libpod/images/load",
 		// Podman prerelease / dev builds (this fix).

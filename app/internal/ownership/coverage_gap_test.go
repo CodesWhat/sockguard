@@ -247,7 +247,7 @@ func TestAllowOwnershipRequestUnprefixedNamespaceSharingAllowPropagates(t *testi
 	}
 	refs := &ownershipRequestReferences{namespaceContainers: []string{"target"}}
 
-	verdict, _, err := allowOwnershipRequestUnprefixed(context.Background(), http.MethodPost, "/containers/create", opts, fi.inspectResource, fi.inspectExec, refs)
+	verdict, _, err := allowOwnershipRequestUnprefixed(context.Background(), http.MethodPost, "/containers/create", "/containers/create", opts, fi.inspectResource, fi.inspectExec, refs)
 	if err != nil {
 		t.Fatalf("allowOwnershipRequestUnprefixed() error = %v", err)
 	}
@@ -276,7 +276,7 @@ func TestAllowOwnershipRequestUnprefixedEmbeddedAllowPropagates(t *testing.T) {
 		},
 	}
 
-	verdict, _, err := allowOwnershipRequestUnprefixed(context.Background(), http.MethodPost, "/containers/create", opts, fi.inspectResource, fi.inspectExec, refs)
+	verdict, _, err := allowOwnershipRequestUnprefixed(context.Background(), http.MethodPost, "/containers/create", "/containers/create", opts, fi.inspectResource, fi.inspectExec, refs)
 	if err != nil {
 		t.Fatalf("allowOwnershipRequestUnprefixed() error = %v", err)
 	}
@@ -313,7 +313,7 @@ func TestAllowOwnershipRequestUnprefixedPathCheckNotBypassedByEmbeddedAllow(t *t
 		},
 	}
 
-	verdict, reason, err := allowOwnershipRequestUnprefixed(context.Background(), http.MethodPost, "/containers/other-owners-container/start", opts, fi.inspectResource, fi.inspectExec, refs)
+	verdict, reason, err := allowOwnershipRequestUnprefixed(context.Background(), http.MethodPost, "/containers/other-owners-container/start", "/containers/other-owners-container/start", opts, fi.inspectResource, fi.inspectExec, refs)
 	if err != nil {
 		t.Fatalf("allowOwnershipRequestUnprefixed() error = %v", err)
 	}
