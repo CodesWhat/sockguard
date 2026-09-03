@@ -116,8 +116,9 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	// it, bypassing every containers/create gate on both surfaces — the
 	// container's spec lives inside a gzipped tar as spec.dump, not in any
 	// JSON sockguard can read. Treat it with the caution play/kube gets: the
-	// ?pod and ?publishPorts parameters mean one restore can also join a pod
-	// and bind host ports.
+	// ?pod parameter means one restore can also join a pod. (Podman's own
+	// swagger doc for this route lists no publishPorts parameter — that
+	// belongs to play/kube, not restore.)
 	{method: http.MethodPost, path: "/libpod/containers/sockguard-test/restore"},
 	// play/kube, its "kube/play" alias (Podman registers both spellings on
 	// the identical libpod.PlayKube/KubePlay handlers), kube/apply, and

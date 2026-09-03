@@ -100,9 +100,8 @@ and **creates a container from it**, so one allowed call provisions a
 container whose spec — privileged, mounts, capabilities, devices — travels
 inside a gzipped tar as `spec.dump` and never passes through `containers/create`
 on either surface. The `?pod` parameter also joins the restored container to a
-pod and `?publishPorts` binds host ports. Nothing in sockguard reads that
-archive, so an allow rule for the path requires
-`insecure_allow_body_blind_writes: true`, exactly like `play/kube`.
+pod. Nothing in sockguard reads that archive, so an allow rule for the path
+requires `insecure_allow_body_blind_writes: true`, exactly like `play/kube`.
 
 ## Read-Exfiltration Additions
 
@@ -248,13 +247,14 @@ The [`podman-readonly.yaml`](https://github.com/CodesWhat/sockguard/blob/main/ap
 preset ships a read-only monitoring posture covering both surfaces in one
 file — list/inspect/stats/top/changes for containers, list/inspect for pods
 (libpod only), images, networks, volumes, and secrets, plus health/version/
-info/events. It deliberately excludes every exfiltration-gated endpoint
-(archive, export, logs, attach, mounted-container inventory,
-image/manifest push, `generate/kube`) on
-both surfaces, so it validates clean without setting
-`insecure_allow_read_exfiltration`, and it allows no writes at all, so it
-never needs `insecure_allow_body_blind_writes` either. See
-[Presets](/presets) for how to mount a preset as your config file.
+info/events. It deliberately excludes every exfiltration-gated endpoint:
+archive, export, logs, attach, image `get`, and image push on both
+surfaces, plus the libpod-only exfiltration surfaces alongside them —
+mounted-container inventory (`showmounted`), `generate/kube`, and manifest
+pushes, none of which have a Docker-compat counterpart. So it validates
+clean without setting `insecure_allow_read_exfiltration`, and it allows no
+writes at all, so it never needs `insecure_allow_body_blind_writes` either.
+See [Presets](/presets) for how to mount a preset as your config file.
 
 ## Known Limitations
 
