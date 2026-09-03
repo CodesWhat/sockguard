@@ -71,6 +71,31 @@ func selectedImageExportReferences(rawQuery, key string) ([]string, error) {
 	return query.References(key)
 }
 
+// handleVisibilityLibpodImageExport preflights every selected reference on
+// GET /libpod/images/export before the daemon sees the batch.
+//
+// A member splits three ways, and only one of the three is a hard failure:
+//
+//   - A lookup error is not a verdict. Nothing is known about the member, so
+//     there is no "would deny" to record and the request fails closed with a
+//     502 in every rollout mode. The same goes for a malformed query, which is
+//     rejected by the caller before any lookup runs.
+//   - A member the policy resolves but hides is a verdict.
+//   - A member the policy cannot resolve at all is also a verdict: unlike the
+//     single-resource inspect path, where resourceVisibleWithPolicy passes a
+//     missing resource through and lets the daemon answer its own 404, a batch
+//     member the proxy cannot resolve may still resolve upstream, and the
+//     answer is a tar of image content rather than a not-found. Ownership
+//     refuses an unresolvable batch member for the same reason.
+//
+// Both verdicts are deferred to one decision after the loop rather than
+// returned on the spot. That keeps them from masking a later member's lookup
+// failure, and it makes them honor the rollout mode the way every other
+// request-side verdict does: warn and audit record would_deny and forward, so
+// an operator staging the policy sees the log entry without the refusal. The
+// unconditional refusals in this package (the two event streams, the libpod
+// disk-usage and showmounted reads) are response-side controls where
+// forwarding IS the disclosure; a preflight verdict on a request is not.
 func handleVisibilityLibpodImageExport(logger *slog.Logger, next http.Handler, deps visibilityDeps, w http.ResponseWriter, r *http.Request, policy *compiledPolicy) bool {
 	references, err := selectedImageExportReferences(r.URL.RawQuery, "references")
 	if err != nil {
@@ -86,12 +111,7 @@ func handleVisibilityLibpodImageExport(logger *slog.Logger, next http.Handler, d
 			_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "visibility policy lookup failed"})
 			return true
 		}
-		if !found {
-			logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyHidResource, "libpod visibility policy hid resource", nil)
-			_ = httpjson.Write(w, http.StatusNotFound, httpjson.ErrorResponse{Message: "resource not found"})
-			return true
-		}
-		hidden = hidden || !visible
+		hidden = hidden || !found || !visible
 	}
 	if hidden {
 		reason := "libpod visibility policy hid resource"

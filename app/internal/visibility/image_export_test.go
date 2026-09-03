@@ -233,55 +233,75 @@ func TestVisibilityDeniesWholeLibpodBatchExportWhenAnyReferenceIsHidden(t *testi
 	}
 }
 
-func TestVisibilityLibpodBatchExportHiddenReferenceHonorsRollout(t *testing.T) {
-	for _, mode := range []string{"warn", "audit"} {
-		t.Run(mode, func(t *testing.T) {
-			reached := false
-			handler := middlewareWithDeps(testVisibilityLogger(), Options{
-				VisibleResourceLabels: []string{"com.sockguard.visible=true"},
-			}, visibilityDeps{
-				inspectResource: func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
-					return map[string]string{"com.sockguard.visible": "false"}, true, nil
-				},
-			})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				reached = true
-				if r.URL.RawQuery != "references=hidden%3A1" {
-					t.Fatalf("forwarded query = %q, want original query", r.URL.RawQuery)
+// TestVisibilityLibpodBatchExportUnauthorizedReferenceHonorsRollout pins the
+// two verdicts the native batch preflight can reach — a member the policy
+// resolves and hides, and a member it cannot resolve at all — to the same
+// rollout contract. Both are answers about the request rather than failures of
+// the lookup, so warn and audit record would_deny and forward. Refusing the
+// unresolvable one unconditionally while forwarding the definitely-hidden one
+// would make warn mode block a request enforce mode would block, which is the
+// one thing warn mode exists not to do.
+func TestVisibilityLibpodBatchExportUnauthorizedReferenceHonorsRollout(t *testing.T) {
+	tests := []struct {
+		name     string
+		rawQuery string
+		labels   map[string]string
+		found    bool
+	}{
+		{name: "hidden member", rawQuery: "references=hidden%3A1", labels: map[string]string{"com.sockguard.visible": "false"}, found: true},
+		{name: "missing member", rawQuery: "references=missing%3A1"},
+	}
+
+	for _, tt := range tests {
+		for _, mode := range []string{"warn", "audit"} {
+			t.Run(tt.name+" in "+mode, func(t *testing.T) {
+				reached := false
+				handler := middlewareWithDeps(testVisibilityLogger(), Options{
+					VisibleResourceLabels: []string{"com.sockguard.visible=true"},
+				}, visibilityDeps{
+					inspectResource: func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
+						return tt.labels, tt.found, nil
+					},
+				})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					reached = true
+					if r.URL.RawQuery != tt.rawQuery {
+						t.Fatalf("forwarded query = %q, want original query %q", r.URL.RawQuery, tt.rawQuery)
+					}
+					w.WriteHeader(http.StatusNoContent)
+				}))
+
+				meta := &logging.RequestMeta{RolloutMode: mode}
+				req := httptest.NewRequest(http.MethodGet, "/libpod/images/export?"+tt.rawQuery, nil)
+				req = req.WithContext(logging.WithMeta(req.Context(), meta))
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+
+				if rec.Code != http.StatusNoContent || !reached {
+					t.Fatalf("status = %d reached = %v, want %d and true; body: %s", rec.Code, reached, http.StatusNoContent, rec.Body.String())
 				}
-				w.WriteHeader(http.StatusNoContent)
-			}))
-
-			meta := &logging.RequestMeta{RolloutMode: mode}
-			req := httptest.NewRequest(http.MethodGet, "/libpod/images/export?references=hidden%3A1", nil)
-			req = req.WithContext(logging.WithMeta(req.Context(), meta))
-			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, req)
-
-			if rec.Code != http.StatusNoContent || !reached {
-				t.Fatalf("status = %d reached = %v, want %d and true; body: %s", rec.Code, reached, http.StatusNoContent, rec.Body.String())
-			}
-			if meta.Decision != logging.DecisionWouldDeny {
-				t.Fatalf("decision = %q, want %q", meta.Decision, logging.DecisionWouldDeny)
-			}
-			if meta.ReasonCode != reasonCodeVisibilityPolicyHidResource {
-				t.Fatalf("reason code = %q, want %q", meta.ReasonCode, reasonCodeVisibilityPolicyHidResource)
-			}
-		})
+				if meta.Decision != logging.DecisionWouldDeny {
+					t.Fatalf("decision = %q, want %q", meta.Decision, logging.DecisionWouldDeny)
+				}
+				if meta.ReasonCode != reasonCodeVisibilityPolicyHidResource {
+					t.Fatalf("reason code = %q, want %q", meta.ReasonCode, reasonCodeVisibilityPolicyHidResource)
+				}
+			})
+		}
 	}
 }
 
 func TestVisibilityLibpodBatchExportHardFailuresIgnoreRollout(t *testing.T) {
 	tests := []struct {
-		name        string
-		mode        string
-		rawQuery    string
-		lookupErr   error
-		hiddenFirst bool
-		wantStatus  int
+		name       string
+		mode       string
+		rawQuery   string
+		lookupErr  error
+		wantStatus int
 	}{
 		{name: "malformed query in warn", mode: "warn", rawQuery: "references=%zz", wantStatus: http.StatusBadRequest},
 		{name: "lookup failure in audit", mode: "audit", rawQuery: "references=broken%3A1", lookupErr: errors.New("inspect failed"), wantStatus: http.StatusBadGateway},
-		{name: "hidden member does not mask later lookup failure in warn", mode: "warn", rawQuery: "references=hidden%3A1&references=broken%3A1", lookupErr: errors.New("inspect failed"), hiddenFirst: true, wantStatus: http.StatusBadGateway},
+		{name: "hidden member does not mask later lookup failure in warn", mode: "warn", rawQuery: "references=hidden%3A1&references=broken%3A1", lookupErr: errors.New("inspect failed"), wantStatus: http.StatusBadGateway},
+		{name: "missing member does not mask later lookup failure in warn", mode: "warn", rawQuery: "references=missing%3A1&references=broken%3A1", lookupErr: errors.New("inspect failed"), wantStatus: http.StatusBadGateway},
 	}
 
 	for _, tt := range tests {
@@ -291,8 +311,11 @@ func TestVisibilityLibpodBatchExportHardFailuresIgnoreRollout(t *testing.T) {
 				VisibleResourceLabels: []string{"com.sockguard.visible=true"},
 			}, visibilityDeps{
 				inspectResource: func(_ context.Context, _ dockerresource.Kind, id string) (map[string]string, bool, error) {
-					if tt.hiddenFirst && id == "hidden:1" {
+					switch id {
+					case "hidden:1":
 						return map[string]string{"com.sockguard.visible": "false"}, true, nil
+					case "missing:1":
+						return nil, false, nil
 					}
 					return nil, false, tt.lookupErr
 				},
