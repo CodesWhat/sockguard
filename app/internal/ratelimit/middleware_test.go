@@ -745,9 +745,10 @@ func TestMiddleware_CachedNormPathReusedOverRawPath(t *testing.T) {
 			"ci": {
 				Rate: &RateOptions{
 					TokensPerSecond: 100,
-					Burst:           1,
+					Burst:           2,
 					EndpointCosts: []EndpointCost{
-						{PathGlob: "/build", Cost: 5},
+						{PathGlob: "/build", Cost: 2},
+						{PathGlob: "/drain", Cost: 1},
 					},
 				},
 			},
@@ -757,19 +758,29 @@ func TestMiddleware_CachedNormPathReusedOverRawPath(t *testing.T) {
 	}
 	h := mustMiddleware(t, newTestLogger(), reg, nil, opts)(okHandler)
 
+	// Drain one token from the shared bucket (burst=2, cost=1) so it holds
+	// exactly 1 token when the cached-path request below arrives. The clock
+	// is fixed, so nothing refills between the two requests.
+	drainReq := httptest.NewRequest(http.MethodGet, "/drain", nil)
+	drainRec := httptest.NewRecorder()
+	h.ServeHTTP(drainRec, drainReq)
+	if drainRec.Code != http.StatusOK {
+		t.Fatalf("setup: expected /drain to be admitted, got %d", drainRec.Code)
+	}
+
 	// The raw request path ("/other") does not match the /build cost rule,
 	// but meta.NormPath is pre-stamped to "/build" as if an earlier
 	// middleware already normalized it. If checkRateLimit recomputes from
 	// the raw path instead of reusing the cached value, cost falls back to
-	// 1 and the request is admitted against burst=1. Reusing the cached
-	// value applies cost=5, which immediately exceeds burst=1.
+	// 1 and the request is admitted against the 1 remaining token. Reusing
+	// the cached value applies cost=2, which exceeds the 1 remaining token.
 	meta := &logging.RequestMeta{NormPath: "/build"}
 	req := httptest.NewRequest(http.MethodGet, "/other", nil)
 	req = req.WithContext(metaContext(req, meta))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("expected 429 (cached NormPath=/build → cost=5 > burst=1), got %d", rec.Code)
+		t.Fatalf("expected 429 (cached NormPath=/build → cost=2 > 1 remaining token), got %d", rec.Code)
 	}
 }
 
