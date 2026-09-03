@@ -12,9 +12,10 @@ Optimized for the [drydock](https://github.com/CodesWhat/drydock) container upda
 **Use for:** drydock, or any container updater that needs lifecycle control + image pull.
 
 ```yaml
-# Allows: container read, start, stop, restart, remove, create
-# Allows: image read, pull
-# Allows: network read, volume read, distribution, Swarm service reads
+# Allows: container read
+# Allows: container lifecycle (start, stop, restart, kill, rename, update, wait, create, remove)
+# Allows: image read, pull, remove
+# Allows: network read + connect, volume read, distribution, Swarm service reads
 # Denies: exec, build, swarm writes, secrets, plugins, raw archive/export/logs/attach streams
 # container-create bodies are inspected by default — add host bind-mount sources to
 # request_body.container_create.allowed_bind_mounts if your updates require them.
