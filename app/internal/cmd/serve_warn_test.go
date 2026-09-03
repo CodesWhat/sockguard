@@ -51,43 +51,6 @@ func TestWarnLabelACLOnce(t *testing.T) {
 	}
 }
 
-// warnRulesVersionPrefixOnce must fire only when a rule pattern carries a Docker
-// API version prefix, and only once per Once across reload chain rebuilds.
-func TestWarnRulesVersionPrefixOnce(t *testing.T) {
-	t.Parallel()
-
-	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, nil))
-	var once sync.Once
-
-	clean := config.Defaults()
-	clean.Rules = []config.RuleConfig{
-		{Match: config.MatchConfig{Method: "GET", Path: "/containers/json"}, Action: "allow"},
-	}
-	warnRulesVersionPrefixOnce(&clean, logger, &once)
-	if buf.Len() != 0 {
-		t.Fatalf("clean rules logged: %q", buf.String())
-	}
-
-	prefixed := config.Defaults()
-	prefixed.Rules = []config.RuleConfig{
-		{Match: config.MatchConfig{Method: "GET", Path: "/v1.45/containers/json"}, Action: "allow"},
-	}
-	warnRulesVersionPrefixOnce(&prefixed, logger, &once)
-	if got := strings.Count(buf.String(), "Docker API version prefix"); got != 1 {
-		t.Fatalf("warning count after first prefixed build = %d, want 1; log: %q", got, buf.String())
-	}
-	if !strings.Contains(buf.String(), "/v1.45/containers/json") {
-		t.Fatalf("warning omitted the offending pattern; log: %q", buf.String())
-	}
-
-	// Reload chain rebuild with the same Once must not warn again.
-	warnRulesVersionPrefixOnce(&prefixed, logger, &once)
-	if got := strings.Count(buf.String(), "Docker API version prefix"); got != 1 {
-		t.Fatalf("warning count after reload rebuild = %d, want still 1; log: %q", got, buf.String())
-	}
-}
-
 // warnBodyBlindWritesOnce must fire only when insecure_allow_body_blind_writes
 // is enabled, and only once per Once across reload chain rebuilds — mirroring
 // TestWarnLabelACLOnce for the analogous startup-acknowledgment warning.

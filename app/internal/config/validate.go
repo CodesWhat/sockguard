@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codeswhat/sockguard/app/internal/filter"
 	"github.com/codeswhat/sockguard/app/internal/glob"
 	"github.com/codeswhat/sockguard/app/internal/pkipin"
 	"github.com/codeswhat/sockguard/app/internal/upstream"
@@ -633,6 +634,8 @@ func validateRules(cfg *Config) []string {
 			errs = append(errs, fmt.Sprintf("rule %d: match.path is required", i+1))
 		} else if strings.Contains(r.Match.Path, "%") {
 			errs = append(errs, literalPercentRuleError(fmt.Sprintf("rule %d", i+1), r.Match.Path))
+		} else if filter.HasVersionPrefix(r.Match.Path) {
+			errs = append(errs, versionPrefixRuleError(fmt.Sprintf("rule %d", i+1), r.Match.Path))
 		}
 		switch r.Action {
 		case "allow", "deny":
@@ -641,6 +644,23 @@ func validateRules(cfg *Config) []string {
 		}
 	}
 	return errs
+}
+
+// versionPrefixRuleError reports a rule path pattern that itself begins with
+// a Docker/Podman API version prefix (e.g. "/v1.45/..." or
+// "/v5.8.1-dev/..."). NormalizePath strips exactly that prefix from the
+// request path before rule matching runs, using the same predicate
+// (filter.HasVersionPrefix, built on filter's stripVersionPrefix) this check
+// calls — so a pattern that still carries the prefix can never match real
+// traffic and is silently dead rather than doing what its author intended.
+// Failing closed at validation time beats the startup warning this replaces:
+// a rule an operator believed was denying (or allowing) versioned traffic
+// that in fact never fires is a security-relevant gap, not a style nit.
+func versionPrefixRuleError(label, pattern string) string {
+	return fmt.Sprintf(
+		"%s: match.path %q begins with an API version prefix; sockguard strips version prefixes before matching, so this pattern never matches real traffic — write the pattern without the /vN... prefix",
+		label, pattern,
+	)
 }
 
 // literalPercentRuleError reports a rule path pattern that contains a literal
@@ -1879,6 +1899,8 @@ func validateRuleConfigs(rules []RuleConfig, prefix string) []string {
 			errs = append(errs, rulePrefix+".match.path is required")
 		} else if strings.Contains(r.Match.Path, "%") {
 			errs = append(errs, literalPercentRuleError(rulePrefix, r.Match.Path))
+		} else if filter.HasVersionPrefix(r.Match.Path) {
+			errs = append(errs, versionPrefixRuleError(rulePrefix, r.Match.Path))
 		}
 		switch r.Action {
 		case "allow", "deny":
