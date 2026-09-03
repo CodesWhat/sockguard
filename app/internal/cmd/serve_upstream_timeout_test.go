@@ -1,11 +1,42 @@
 package cmd
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/app/internal/upstreamflavor"
 )
+
+func TestWithUpstreamRequestTimeoutUsesResolvedFlavor(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		flavor       upstreamflavor.Flavor
+		wantDeadline bool
+	}{
+		{name: "docker compat top stays finite", flavor: upstreamflavor.Docker, wantDeadline: true},
+		{name: "podman compat top stream is unbounded", flavor: upstreamflavor.Podman, wantDeadline: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.Defaults()
+			cfg.Upstream.RequestTimeout = "50ms"
+			var gotDeadline bool
+			next := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				_, gotDeadline = r.Context().Deadline()
+			})
+			handler := withUpstreamRequestTimeout(&cfg, &serveRuntime{upstreamFlavor: tt.flavor}, next)
+			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/containers/abc/top?stream=true", nil))
+			if gotDeadline != tt.wantDeadline {
+				t.Fatalf("request context has deadline = %v, want %v for upstream flavor %q", gotDeadline, tt.wantDeadline, tt.flavor)
+			}
+		})
+	}
+}
 
 // TestEffectiveUpstreamRequestTimeout exercises the config.Upstream.RequestTimeout
 // -> time.Duration resolution used by newServeUpstreamHandler, including the

@@ -16,6 +16,7 @@ admin:
   path: /admin/validate                # POST endpoint; must start with /
   policy_version_path: /admin/policy/version  # GET endpoint; must start with /
   max_request_bytes: 524288            # 512 KiB hard cap on validate request bodies
+  # mount_on: edge                     # names the listener carrying /admin/*; required with 2+ listeners
 ```
 
 Both endpoints share the `admin.enabled` gate. When disabled, Sockguard never
@@ -31,9 +32,18 @@ forwards traffic to Docker. This is convenient for single-socket deployments but
 means any container with socket access can reach the admin API alongside the
 Docker API.
 
-A dedicated admin listener separates the two planes completely. Admin traffic
-never traverses the Docker-API filter, rate-limit, or client-ACL chain, and
-Docker-API callers never see the admin surface at all.
+That default only holds while there is one listener to be default about. With
+two or more effective listeners and no dedicated `admin.listen`,
+`admin.mount_on` is required and must name the one listener that carries
+`/admin/*`; startup fails without it, and the admin endpoints are unreachable
+from every other listener.
+
+A dedicated admin listener separates the two planes. Admin traffic never
+traverses the Docker-API filter or the rate limiter, and Docker-API callers
+never see the admin surface at all. One gate carries over: a TCP admin listener
+still enforces `clients.allowed_cidrs`, since CIDRs are the only admission
+control the admin surface has when TLS isn't configured. Unix-socket admin
+listeners carry no meaningful client IP, so the guard is TCP-only.
 
 ```yaml filename="sockguard.yaml"
 admin:
@@ -58,11 +68,21 @@ admin:
 The dedicated listener supports the same posture as `listen.*`: unix socket
 (hardened `0600` mode), loopback or TLS-protected TCP (with
 `admin.listen.tls.cert_file` / `key_file` / `client_ca_file` plus the same CN /
-DNS / IP / URI / SPIFFE / SHA-256 SPKI client-identity selectors as the main
-listener), or non-loopback plaintext TCP behind the two-flag insecure opt-in
-(`admin.listen.insecure_allow_plain_tcp: true` plus
-`admin.listen.insecure_allow_unauthenticated_clients: true` — one without the
-other is rejected).
+DNS / IP / URI / SHA-256 SPKI client-identity selectors as the main listener),
+or non-loopback plaintext TCP behind the insecure opt-in flags. SPIFFE IDs are
+not a listener selector on either `listen.tls` or `admin.listen.tls`;
+`spiffe_ids` lives on `clients.certificate_profiles[*]`, which maps a client
+certificate to a named profile rather than gating the listener.
+
+Plaintext TCP beyond loopback takes two flags,
+`admin.listen.insecure_allow_plain_tcp: true` and
+`admin.listen.insecure_allow_unauthenticated_clients: true`, and one without
+the other is rejected. A third flag,
+`admin.listen.insecure_allow_wide_open: true`, becomes mandatory when
+`clients.allowed_cidrs` is empty as well: with no TLS and no CIDR allowlist the
+admin endpoints would take candidate YAML from any source IP with nothing
+checking who sent it, so that combination is a startup error rather than a
+warning.
 
 > **Recommended posture:** configure `admin.listen.socket` at a path whose
 > parent directory is only writable by the operator UID, e.g.
@@ -113,9 +133,10 @@ Body is limited to `admin.max_request_bytes` (default 512 KiB) via
 | Status | Meaning |
 |--------|---------|
 | `200 OK` | YAML is valid; response body contains the parsed policy summary |
+| `400 Bad Request` | Request body could not be read |
 | `405 Method Not Allowed` | Non-POST method; `Allow: POST` header is set |
 | `413 Payload Too Large` | Body exceeded `admin.max_request_bytes` |
-| `422 Unprocessable Entity` | YAML parsed but failed validation; errors listed |
+| `422 Unprocessable Entity` | YAML failed to parse or failed validation; errors listed |
 
 ### Response body
 
@@ -123,38 +144,45 @@ Body is limited to `admin.max_request_bytes` (default 512 KiB) via
 {
   "ok": true,
   "rules": 6,
-  "profiles": 2,
-  "compat_active": false,
-  "errors": null
+  "profiles": 2
 }
 ```
+
+Every field except `ok` is `omitempty`, so a zero or empty value is absent
+rather than reported as `0` or `null`. `compat_active` shows up only when
+Tecnativa env aliases injected rules, and `errors` only on a failure.
 
 On a failing candidate (`422`):
 
 ```json
 {
   "ok": false,
-  "rules": 0,
-  "profiles": 0,
-  "compat_active": false,
   "errors": [
-    "profile 'ci': limits.rate.tokens_per_second must be > 0",
-    "profile 'ci': limits.rate.burst must be >= tokens_per_second"
+    "clients.profiles[0].limits.rate.tokens_per_second must be > 0, got 0",
+    "clients.profiles[1].limits.rate.burst must be >= tokens_per_second (5) or 0 (default), got 2"
   ]
 }
 ```
 
+Error strings are the validator's own output. Most name the config path that
+failed, often with a list index and the offending value on the end, but not all:
+a missing-dependency check reads `clients.container_labels.label_prefix is
+required when clients.container_labels.enabled is true`, with no index and no
+value. A parse failure returns a single `parse: ...` entry instead.
+
 ### CI gate usage
 
 ```bash
-curl --silent --fail \
+curl --silent --fail-with-body \
   --data-binary @candidate.yaml \
   http://sockguard:2375/admin/validate | jq .
 ```
 
-Exit code is non-zero on HTTP errors (`--fail`). A `422` response with
-validation errors will also cause `--fail` to exit non-zero, so the pattern
-works as a pre-promote gate in CI without extra scripting.
+Exit code is non-zero on HTTP errors, so the pattern works as a pre-promote gate
+in CI without extra scripting. Use `--fail-with-body` (curl 7.76 or later) and
+not plain `--fail`: `--fail` throws the response body away on any status at or
+above 400, which is exactly the `422` case the gate exists for, so the job would
+fail without ever printing which validation error caused it.
 
 ## GET /admin/policy/version
 

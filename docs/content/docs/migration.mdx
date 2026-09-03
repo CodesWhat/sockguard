@@ -205,13 +205,21 @@ The Docker environment fallback follows the same schedule. A non-empty `DOCKER_T
 
 ## From Tecnativa/docker-socket-proxy
 
-Sockguard accepts the current Tecnativa environment-variable surface, including section vars, `ALLOW_RESTARTS`, `SOCKET_PATH`, and `LOG_LEVEL`. Replace the image:
+Sockguard accepts the current Tecnativa environment-variable surface, including section vars, `ALLOW_RESTARTS`, `SOCKET_PATH`, and `LOG_LEVEL`. `DISABLE_IPV6` is the exception: it has no Sockguard equivalent and is ignored, so pick the bind with `listen.address` instead.
+
+Compatibility mode only generates rules while the effective ruleset is still the built-in default. The check is on the rules themselves, not on whether you supplied a config file, so an explicit `rules:` block that happens to be byte-identical to the default still activates it. That's why a drop-in works untouched: the config the image ships at `/etc/sockguard/sockguard.yaml` is literally the default. Write a ruleset that differs from it and every section var and `ALLOW_*` stops generating anything at all, with no error; `SOCKET_PATH` and `LOG_LEVEL` keep applying either way.
+
+Values parse as `1`, `true`, or `yes`, and `0`, `false`, or `no`, case-insensitively. Anything else logs `ignoring compat env var with unparseable boolean value` and reads as off. That bites hardest on `PING`, `VERSION`, and `EVENTS`, which are on by default whenever compatibility mode is active: `PING=on` is not `PING=1`, it drops the `/_ping` allow rule and startup still succeeds.
+
+Replace the image, and add the socket's group. Sockguard runs as UID 65532, so it can't open a stock `0660 root:docker` socket without one:
 
 ```diff
  services:
    socket-proxy:
 -    image: tecnativa/docker-socket-proxy
 +    image: codeswhat/sockguard
++    group_add:
++      - "${DOCKER_SOCK_GID:?set to the GID of /var/run/docker.sock}"
      volumes:
        - /var/run/docker.sock:/var/run/docker.sock:ro
      environment:
@@ -220,7 +228,7 @@ Sockguard accepts the current Tecnativa environment-variable surface, including 
        - POST=0
 ```
 
-The acknowledgement is required, not optional. `CONTAINERS=1` generates `allow GET,HEAD /containers/**`, and that admits `GET /containers/*/archive`, `/export`, `/logs`, and `/attach/ws`, so without `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true` Sockguard exits 1 at startup with an error naming those four endpoints. `IMAGES=1`, `SERVICES=1`, and `TASKS=1` open the same class of surface. Unlike `GRPC=1`/`SESSION=1`, which auto-set their own acknowledgement, compatibility mode never sets this one for you: the whole point is that a section-wide read grant should be a decision you made. Drop the acknowledgement once you move to YAML and allow only the list/inspect endpoints you actually need.
+The acknowledgement is required, not optional. `CONTAINERS=1` generates `allow GET,HEAD /containers/**`, and that admits `GET /containers/*/top`, `/archive`, `/export`, `/logs`, and `/attach/ws`, so without `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true` Sockguard exits 1 at startup with an error naming those endpoints. `IMAGES=1`, `SERVICES=1`, and `TASKS=1` open the same class of surface. Unlike `GRPC=1`/`SESSION=1`, which auto-set their own acknowledgement, compatibility mode never sets this one for you: the whole point is that a section-wide read grant should be a decision you made. Drop the acknowledgement once you move to YAML and allow only the list/inspect endpoints you actually need.
 
 One other difference from Tecnativa in that diff: Sockguard binds loopback `127.0.0.1:2375` by default rather than all interfaces, so a proxy other Compose services talk to over TCP also needs `SOCKGUARD_LISTEN_ADDRESS` plus both plaintext-TCP acknowledgements, or `SOCKGUARD_LISTEN_SOCKET` and a shared socket volume. See [Getting Started](/getting-started) for either block in full.
 
@@ -232,6 +240,8 @@ force removal, anonymous-volume removal, and slash-bearing legacy link names
 such as `client/alias`. To allow bare deletes while denying any of those query
 controls, migrate the delete rule to YAML and leave its matching
 `request_body.container_remove` field disabled.
+
+Adding `POST=1` needs a second acknowledgement whenever the widened section rule reaches a body-sensitive write endpoint. `CONTAINERS=1 POST=1` generates `allow POST /containers/**`, which admits `POST /containers/*/exec` with no command allowlist, so Sockguard exits 1 with `set insecure_allow_body_blind_writes=true to acknowledge this risk` until `SOCKGUARD_INSECURE_ALLOW_BODY_BLIND_WRITES=true` is set too. `EXEC=1`, `SWARM=1`, and `PLUGINS=1` with `POST=1` hit the same gate, and so does `ALLOW_EXEC=1` on its own. Sections whose widened rule reaches nothing body-sensitive don't: `PING=1`, `VERSION=1`, `EVENTS=1`, `INFO=1`, `NETWORKS=1`, and `VOLUMES=1` with `POST=1` all validate clean, as do `POST=1` by itself and `ALLOW_DELETE=1`, `ALLOW_START=1`, and `ALLOW_STOP=1`.
 
 Tecnativa compatibility mode and signed-policy mode are separate migration
 stages. Rule-generating compatibility variables are unsigned process state, so
@@ -258,13 +268,22 @@ rules:
 
 ## From LinuxServer/socket-proxy
 
-Same process as Tecnativa. Additionally, granular operation env vars are supported:
+Same process as Tecnativa. Sockguard reads ten granular operation env vars:
 
 ```bash
+ALLOW_CREATE=1
+ALLOW_DELETE=1
+ALLOW_EXEC=1
+ALLOW_KILL=1
+ALLOW_PAUSE=1
+ALLOW_PRUNE=1
+ALLOW_RESTARTS=1  # or the legacy singular ALLOW_RESTART=1; both map to the same rules
 ALLOW_START=1
 ALLOW_STOP=1
-ALLOW_RESTARTS=1  # or the legacy singular ALLOW_RESTART=1; both map to the same rules
+ALLOW_UNPAUSE=1
 ```
+
+[Granular Operations](/configuration#granular-operations-linuxserver-compatible) lists the rule each one generates. `ALLOW_RESTARTS` covers more than one endpoint, generating the kill, restart, and stop rules together, and the legacy singular `ALLOW_RESTART` maps to exactly the same three. Every other var maps to one rule.
 
 ## From wollomatic/socket-proxy
 
@@ -277,7 +296,7 @@ wollomatic already does more than a basic path gate: regex allowlists per method
 | `-allowPOST "^/(v[0-9.]+/)?containers/[a-z0-9]+/start$"` | `{ method: POST, path: "/containers/*/start" }` |
 | `-allowfrom=172.18.0.0/16` | `clients.allowed_cidrs: ["172.18.0.0/16"]` |
 | `-allowfrom=traefik` (hostname admission) | `clients.allowed_cidrs` with the caller's IP, or `clients.container_labels` for name-based resolution. For cryptographic caller identity, `clients.client_certificate_profiles` (mTLS) or `clients.unix_peer_profiles` are a stronger upgrade. |
-| `socket-proxy.allow.get=.*` | `clients.container_labels.label_prefix: socket-proxy.allow.` |
+| `socket-proxy.allow.get=.*` | `clients.container_labels: { enabled: true, label_prefix: "socket-proxy.allow." }`. The prefix has a default; `enabled` does not, and label ACLs stay off until you set it. |
 | `-allowbindmountfrom=/srv/data,/var/log` | `request_body.container_create.allowed_bind_mounts: ["/srv/data", "/var/log"]` |
 | `-proxysocketendpoint=/tmp/filtered.sock` | `listen.socket: /tmp/filtered.sock` |
 
@@ -293,6 +312,8 @@ Key differences:
 `11notes/docker-socket-proxy` is a fixed read-only proxy: it allows every Docker API `GET` except seven targeted exfiltration-prone endpoints and blocks every write. Its own regex for the image-get endpoint (`images/get(/|)$`) doesn't match the real `ImageGet`/`ImageGetAll` request shapes, so only six of the seven are reliably blocked. Separately, 11notes issue #12 documents that same style of pattern misfiring on the image-inspect endpoint ([11notes #12](https://github.com/11notes/docker-socket-proxy/issues/12)). There is no rule syntax to translate; the equivalent in Sockguard is a default-deny config that allows reads broadly while denying those same endpoints first (first-match-wins):
 
 ```yaml filename="sockguard.yaml"
+insecure_allow_read_exfiltration: true
+
 rules:
   # Deny the seven exfiltration-prone reads 11notes targets
   # (11notes' own regex only reliably blocks six of these)
@@ -302,9 +323,11 @@ rules:
     action: deny
   - match: { method: GET, path: "/containers/*/archive" }
     action: deny
-  - match: { method: GET, path: "/secrets" }
+  # ** so the inspect endpoints are covered too; a bare /secrets is a literal
+  # match that leaves GET /secrets/{id} to the catch-all allow below
+  - match: { method: GET, path: "/secrets/**" }
     action: deny
-  - match: { method: GET, path: "/configs" }
+  - match: { method: GET, path: "/configs/**" }
     action: deny
   - match: { method: GET, path: "/swarm/unlockkey" }
     action: deny
@@ -315,6 +338,8 @@ rules:
   - match: { method: GET, path: "/**" }
     action: allow
 ```
+
+The acknowledgement at the top isn't optional. `GET /**` also admits container, service, and task logs, `/libpod/**` archive and export, and `GET /libpod/generate/kube`, so without `insecure_allow_read_exfiltration: true` Sockguard exits 1 at startup and names every one of them. It's the price of translating a proxy whose whole model is "allow all reads"; narrow the `GET /**` allow to the endpoints your client actually calls and you can drop the acknowledgement.
 
 The 11notes environment variables configure the process, not the policy, so they map to Sockguard's listener and upstream settings rather than to rules:
 

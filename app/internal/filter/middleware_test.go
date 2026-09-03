@@ -296,6 +296,189 @@ func TestMiddlewareDeniedMinimalVerbosity(t *testing.T) {
 	}
 }
 
+func TestMiddlewareProcessListRequiresReadExfiltrationAcknowledgmentForEveryRuleShape(t *testing.T) {
+	tests := []struct {
+		name  string
+		path  string
+		rules []Rule
+	}{
+		{
+			name: "exact container name",
+			path: "/containers/payments/top",
+			rules: []Rule{
+				{Methods: []string{http.MethodGet}, Pattern: "/containers/payments/top", Action: ActionAllow, Index: 0},
+				{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Index: 1},
+			},
+		},
+		{
+			name: "synthetic name deny shadowing broad allow",
+			path: "/containers/payments/top",
+			rules: []Rule{
+				{Methods: []string{http.MethodGet}, Pattern: "/containers/sockguard-test/top", Action: ActionDeny, Index: 0},
+				{Methods: []string{http.MethodGet}, Pattern: "/containers/**", Action: ActionAllow, Index: 1},
+				{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Index: 2},
+			},
+		},
+		{
+			name: "multi-segment container name",
+			path: "/containers/team/payments/top",
+			rules: []Rule{
+				{Methods: []string{http.MethodGet}, Pattern: "/containers/*/*/top", Action: ActionAllow, Index: 0},
+				{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Index: 1},
+			},
+		},
+		{
+			name: "exact libpod container name",
+			path: "/v5.0.0/libpod/containers/payments/top",
+			rules: []Rule{
+				{Methods: []string{http.MethodGet}, Pattern: "/libpod/containers/payments/top", Action: ActionAllow, Index: 0},
+				{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Index: 1},
+			},
+		},
+		{
+			name: "exact libpod pod name",
+			path: "/v5.0.0/libpod/pods/payments/top",
+			rules: []Rule{
+				{Methods: []string{http.MethodGet}, Pattern: "/libpod/pods/payments/top", Action: ActionAllow, Index: 0},
+				{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Index: 1},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			compiled := make([]*CompiledRule, 0, len(tt.rules))
+			for _, rule := range tt.rules {
+				compiledRule, err := CompileRule(rule)
+				if err != nil {
+					t.Fatalf("CompileRule(%q): %v", rule.Pattern, err)
+				}
+				compiled = append(compiled, compiledRule)
+			}
+
+			reached := false
+			handler := MiddlewareWithOptions(compiled, testLogger(), Options{})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				reached = true
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tt.path, nil))
+
+			if reached {
+				t.Fatal("process-list read reached upstream without insecure_allow_read_exfiltration acknowledgment")
+			}
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+			}
+		})
+	}
+}
+
+func TestMiddlewareProcessListAcknowledgmentAllowsNativePodTop(t *testing.T) {
+	allow, err := CompileRule(Rule{
+		Methods: []string{http.MethodGet},
+		Pattern: "/libpod/pods/payments/top",
+		Action:  ActionAllow,
+		Index:   0,
+	})
+	if err != nil {
+		t.Fatalf("CompileRule: %v", err)
+	}
+
+	reached := false
+	handler := MiddlewareWithOptions([]*CompiledRule{allow}, testLogger(), Options{
+		AllowReadExfiltration: true,
+	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v5.0.0/libpod/pods/payments/top", nil))
+
+	if !reached {
+		t.Fatal("acknowledged native pod top did not reach upstream")
+	}
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
+func TestMiddlewareProcessListHardGatePreservesPolicyDenialsInEveryRolloutMode(t *testing.T) {
+	matchedDeny, err := CompileRule(Rule{
+		Methods: []string{http.MethodGet},
+		Pattern: "/containers/*/top",
+		Action:  ActionDeny,
+		Reason:  "process lists are disabled by policy",
+		Index:   0,
+	})
+	if err != nil {
+		t.Fatalf("CompileRule: %v", err)
+	}
+
+	policies := []struct {
+		name           string
+		rules          []*CompiledRule
+		wantRule       int
+		wantReason     string
+		wantReasonCode string
+	}{
+		{
+			name:           "default deny",
+			wantRule:       -1,
+			wantReason:     ReasonNoMatchingAllowRule,
+			wantReasonCode: reasonCodeNoMatchingAllowRule,
+		},
+		{
+			name:           "matched deny",
+			rules:          []*CompiledRule{matchedDeny},
+			wantRule:       0,
+			wantReason:     "process lists are disabled by policy",
+			wantReasonCode: reasonCodeMatchedDenyRule,
+		},
+	}
+
+	for _, policy := range policies {
+		for _, mode := range []string{"", "warn", "audit"} {
+			modeName := mode
+			if modeName == "" {
+				modeName = "default"
+			}
+			t.Run(policy.name+"/"+modeName, func(t *testing.T) {
+				reached := false
+				handler := MiddlewareWithOptions(policy.rules, testLogger(), Options{})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					reached = true
+					w.WriteHeader(http.StatusNoContent)
+				}))
+
+				meta := &logging.RequestMeta{RolloutMode: mode}
+				req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/payments/top", nil)
+				req = req.WithContext(logging.WithMeta(req.Context(), meta))
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+
+				if reached {
+					t.Fatal("process-list read reached upstream without insecure_allow_read_exfiltration acknowledgment")
+				}
+				if rec.Code != http.StatusForbidden {
+					t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+				}
+				if meta.Decision != string(ActionDeny) {
+					t.Fatalf("decision = %q, want %q", meta.Decision, ActionDeny)
+				}
+				if meta.Rule != policy.wantRule {
+					t.Fatalf("rule = %d, want %d", meta.Rule, policy.wantRule)
+				}
+				if meta.Reason != policy.wantReason {
+					t.Fatalf("reason = %q, want %q", meta.Reason, policy.wantReason)
+				}
+				if meta.ReasonCode != policy.wantReasonCode {
+					t.Fatalf("reason code = %q, want %q", meta.ReasonCode, policy.wantReasonCode)
+				}
+			})
+		}
+	}
+}
+
 func TestMiddlewareRejectsOversizedBoundedRequestBodiesWith413(t *testing.T) {
 	tests := []struct {
 		name       string
