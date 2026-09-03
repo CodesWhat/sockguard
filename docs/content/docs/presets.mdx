@@ -28,8 +28,9 @@ Optimized for the [drydock](https://github.com/CodesWhat/drydock) container upda
 # the stock "runc" runtime is allowlisted (request_body.container_create.allowed_runtimes)
 # because drydock recreates containers from their inspect spec, which usually carries an
 # explicit HostConfig.Runtime — without it every update would 403 at /containers/create
-# Response redactions are all off (redact_mount_paths, redact_container_env and
-# redact_network_topology are false). Drydock recreates a container from its own
+# Three response redactions are off: redact_mount_paths, redact_container_env
+# and redact_network_topology. redact_sensitive_data stays on, at its default.
+# Drydock recreates a container from its own
 # inspect payload, so a "<redacted>" placeholder would be forwarded straight into
 # POST /containers/create and dockerd would reject it. The four drydock-with-*
 # presets inherit this; re-enable them only if the consumer never replays inspect
@@ -389,8 +390,9 @@ while legacy link removal stays denied. It keeps
 `insecure_allow_body_blind_writes: true` for arbitrary lifecycle hooks and
 allows an empty exec user because Watchtower uses the container's configured
 user, but it no longer needs `insecure_allow_read_exfiltration: true`. Like the
-drydock presets it also disables all three response redactions, because
-Watchtower recreates containers from the inspect payload it just read.
+drydock presets it also turns off the mount-path, container-env and
+network-topology redactions, because Watchtower recreates containers from the
+inspect payload it just read; `redact_sensitive_data` stays on.
 
 ## Homepage (`homepage.yaml`)
 
