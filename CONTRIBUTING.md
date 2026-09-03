@@ -13,7 +13,7 @@ Questions or ideas? Start a [GitHub Discussion](https://github.com/CodesWhat/soc
    go version  # should be 1.26+
    ```
 
-3. **Install Node.js 22+** (required for website/docs):
+3. **Install Node.js 24** (the version CI uses, required for website/docs):
 
    ```bash
    nvm use || nvm install
