@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/http"
+	"strings"
 	"time"
 
 	"github.com/codeswhat/sockguard/app/internal/config"
@@ -192,33 +192,44 @@ func verifyUpstreamReachableForRuntime(ctx context.Context, deps *serveDeps, run
 }
 
 // resolveUpstreamFlavor determines which engine the upstream is, from
-// upstream.flavor and — for "auto" — a single GET /version probe.
+// upstream.flavor and — for "auto" — a GET /version probe of every
+// configured endpoint.
 //
-// Three properties, in the order they matter:
+// Four properties, in the order they matter:
 //
 //   - An explicit "docker" or "podman" short-circuits before any client is
 //     built, so nothing on the network can move an operator's stated answer
 //     and no request leaves the process. The test for this asserts zero HTTP
 //     requests, not merely the right return value.
-//   - An "auto" probe that fails for ANY reason returns an error, which the
-//     caller turns into a startup failure. There is no fallback flavor. The
-//     two candidate fallbacks are wrong in opposite directions — "docker"
+//   - "auto" probes EVERY endpoint in res, not just the active one. A
+//     Docker-primary/Podman-secondary failover pair would otherwise cache
+//     whichever engine happened to answer the startup probe — usually the
+//     primary — and keep applying that engine's filter semantics after a
+//     failover moved traffic to the other one. Podman's disjunctive /events
+//     filter evaluated against Docker's semantics widens the stream instead
+//     of narrowing it, so a wrong cached flavor is not a benign guess.
+//   - A probe that fails for ANY endpoint, or that succeeds but disagrees
+//     with another endpoint's answer, returns an error, which the caller
+//     turns into a startup failure. There is no fallback flavor. The two
+//     candidate fallbacks are wrong in opposite directions — "docker"
 //     silently reopens the Podman /events disclosure, "podman" silently
 //     refuses /events for a Docker deployment that was working — and a probe
-//     result cached for the process lifetime means a single transient failure
-//     at boot would carry the wrong answer until the next restart. Failing
-//     startup is the only outcome that is both safe and visible, and its
-//     remedy is one config line, named in the message.
+//     result cached for the process lifetime means a single transient
+//     failure or mismatch at boot would carry the wrong answer until the
+//     next restart. Failing startup is the only outcome that is both safe
+//     and visible, and its remedy is one config line, named in the message.
 //   - The result is logged either way, with `probed` recording which path
-//     produced it, so an operator reading the startup log can tell a detected
-//     flavor from a declared one without diffing the config.
+//     produced it and `endpoints` recording how many were involved, so an
+//     operator reading the startup log can tell a detected flavor from a
+//     declared one without diffing the config.
 //
-// The probe runs once per process. A daemon does not change engines at
-// runtime, upstream.socket and upstream.endpoints are reload-immutable so a
-// reload cannot repoint sockguard at a different daemon, and upstream.flavor
-// is immutable alongside them — a reload that edits it is rejected with
-// "restart required" rather than silently ignored.
-func resolveUpstreamFlavor(ctx context.Context, deps *serveDeps, cfg *config.Config, rt http.RoundTripper, logger *slog.Logger) (upstreamflavor.Flavor, error) {
+// The probe runs once per process, against every endpoint at that moment.
+// A daemon does not change engines at runtime, upstream.socket and
+// upstream.endpoints are reload-immutable so a reload cannot repoint
+// sockguard at a different daemon, and upstream.flavor is immutable
+// alongside them — a reload that edits it is rejected with "restart
+// required" rather than silently ignored.
+func resolveUpstreamFlavor(ctx context.Context, deps *serveDeps, cfg *config.Config, res *upstream.Resolver, logger *slog.Logger) (upstreamflavor.Flavor, error) {
 	configured, ok := upstreamflavor.Configured(cfg.Upstream.Flavor)
 	if !ok {
 		// Unreachable through `sockguard serve`, which validates the config
@@ -232,17 +243,52 @@ func resolveUpstreamFlavor(ctx context.Context, deps *serveDeps, cfg *config.Con
 		return configured, nil
 	}
 
-	probeCtx, cancel := context.WithTimeout(ctx, upstreamflavor.DetectTimeout)
-	defer cancel()
-	detected, err := deps.detectUpstreamFlavor(probeCtx, dockerclient.NewWithRoundTripper(rt))
-	if err != nil {
-		logger.Error("upstream flavor probe failed", "error", err, "timeout", upstreamflavor.DetectTimeout.String())
-		return "", fmt.Errorf(
-			"%w; sockguard cannot tell whether this daemon filters GET /events conjunctively (Docker) or disjunctively (Podman), and guessing either way is unsafe — set upstream.flavor to %q or %q explicitly",
-			err, upstreamflavor.Docker, upstreamflavor.Podman)
+	endpoints := res.Endpoints()
+	if len(endpoints) == 0 {
+		return "", fmt.Errorf("upstream flavor: %w", upstream.ErrNoEndpoints)
 	}
-	logger.Info("upstream flavor resolved", "flavor", string(detected), "probed", true)
-	return detected, nil
+	detected := make([]upstreamflavor.Flavor, len(endpoints))
+	for i, ep := range endpoints {
+		rt, err := res.EndpointRoundTripper(i)
+		if err != nil {
+			// Unreachable: i comes from ranging over res.Endpoints(), which
+			// is built from the same states EndpointRoundTripper indexes.
+			return "", fmt.Errorf("upstream flavor: %w", err)
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, upstreamflavor.DetectTimeout)
+		flavor, err := deps.detectUpstreamFlavor(probeCtx, dockerclient.NewWithRoundTripper(rt))
+		cancel()
+		if err != nil {
+			logger.Error("upstream flavor probe failed", "error", err, "endpoint", ep.String(), "timeout", upstreamflavor.DetectTimeout.String())
+			return "", fmt.Errorf(
+				"%w; sockguard cannot tell whether upstream endpoint %s filters GET /events conjunctively (Docker) or disjunctively (Podman), and guessing either way is unsafe — set upstream.flavor to %q or %q explicitly",
+				err, ep.String(), upstreamflavor.Docker, upstreamflavor.Podman)
+		}
+		detected[i] = flavor
+	}
+
+	for i := 1; i < len(detected); i++ {
+		if detected[i] != detected[0] {
+			return "", fmt.Errorf(
+				"upstream endpoints disagree on engine flavor (%s); sockguard cannot apply a single GET /events filter semantics across a failover set that mixes engines — set upstream.flavor to %q or %q explicitly",
+				describeEndpointFlavors(endpoints, detected), upstreamflavor.Docker, upstreamflavor.Podman)
+		}
+	}
+
+	logger.Info("upstream flavor resolved", "flavor", string(detected[0]), "probed", true, "endpoints", len(endpoints))
+	return detected[0], nil
+}
+
+// describeEndpointFlavors renders each endpoint's address alongside its
+// detected flavor, in probe order, for the mismatch error message — so an
+// operator sees exactly which endpoint reported which engine rather than
+// just "they disagree".
+func describeEndpointFlavors(endpoints []upstream.Endpoint, flavors []upstreamflavor.Flavor) string {
+	parts := make([]string, len(endpoints))
+	for i, ep := range endpoints {
+		parts[i] = fmt.Sprintf("%s=%s", ep.String(), flavors[i])
+	}
+	return strings.Join(parts, ", ")
 }
 
 // resolveUpstreamFlavorForRuntime resolves the flavor against the runtime's

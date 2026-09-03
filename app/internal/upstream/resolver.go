@@ -199,6 +199,30 @@ func (r *Resolver) Endpoints() []Endpoint {
 	return out
 }
 
+// EndpointRoundTripper returns an http.RoundTripper that reaches the
+// endpoint at index i specifically, bypassing health-based selection. It
+// reuses that endpoint's pooled transport and base-path rewriting — the same
+// machinery RoundTrip uses for the active endpoint — so a caller that must
+// probe every configured endpoint individually (upstream flavor detection is
+// the only one today) gets identical TLS and unix-socket dialing behavior
+// without duplicating it. It returns an error when i is out of range.
+func (r *Resolver) EndpointRoundTripper(i int) (http.RoundTripper, error) {
+	if i < 0 || i >= len(r.states) {
+		return nil, fmt.Errorf("upstream: endpoint index %d out of range (%d endpoints)", i, len(r.states))
+	}
+	return endpointRoundTripper{state: r.states[i]}, nil
+}
+
+// endpointRoundTripper routes to one specific endpoint's pooled transport,
+// unlike Resolver.RoundTrip which selects the active endpoint by health.
+type endpointRoundTripper struct {
+	state *endpointState
+}
+
+func (rt endpointRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return rt.state.transport.RoundTrip(rt.state.ep.requestWithBasePath(req))
+}
+
 // CheckReachable probes every endpoint once, seeding their health state, and
 // returns nil when at least one endpoint answers. When all endpoints fail it
 // returns an aggregated error naming each unreachable endpoint. This lets a
