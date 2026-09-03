@@ -6,13 +6,10 @@ import (
 	"testing"
 )
 
-// legacyVersionPrefix mirrors stripVersionPrefix's production character
-// class: a leading digit followed by any run of Podman's VersionedPath set
-// [0-9A-Za-z.-]. Docker's own router only ever emits vN / vN.N; Podman's API
-// server registers routes with this wider regex, which also admits
-// prerelease/build suffixes like "-dev" and "-rc1" (#148, and this fix's
-// widening from digits-and-dots-only to Podman's full class).
-var legacyVersionPrefix = regexp.MustCompile(`^/v[0-9][0-9A-Za-z.-]*/`)
+// podmanVersionPrefix mirrors VersionedPath's v5.8.1 route grammar. Podman
+// accepts any version beginning with a digit followed by digits, ASCII letters,
+// dots, or hyphens, including prerelease and four-component spellings.
+var podmanVersionPrefix = regexp.MustCompile(`^/v[0-9][0-9A-Za-z.-]*/`)
 
 // referenceNormalizePath is an independent re-implementation of NormalizePath
 // used by FuzzNormalizePath as a differential oracle. Like NormalizePath it
@@ -23,7 +20,7 @@ func referenceNormalizePath(p string) string {
 	if p == "" {
 		return ""
 	}
-	return legacyVersionPrefix.ReplaceAllString(pathpkg.Clean(p), "/")
+	return podmanVersionPrefix.ReplaceAllString(pathpkg.Clean(p), "/")
 }
 
 // FuzzPathMatch fuzzes the full path-matching pipeline: NormalizePath + compiled
@@ -59,6 +56,10 @@ func FuzzPathMatch(f *testing.F) {
 		{"POST", "/session"},
 		{"POST", "/grpc"},
 		{"GET", "/v5.0.0/libpod/containers/json"},
+		{"GET", "/v5.8.1-dev/libpod/manifests/app/json"},
+		{"POST", "/v5.8.1.2/libpod/images/scp/app"},
+		{"GET", "/v5.8.1-dev/libpod/images/load"},
+		{"POST", "/v5.8.1.2/libpod/images/import"},
 		{"POST", "/v5.0.0/libpod/pods/create"},
 		{"POST", "/v5.0.0/libpod/play/kube"},
 		{"GET", "/v5.0.0/libpod/generate/kube"},
@@ -210,6 +211,10 @@ func FuzzNormalizePath(f *testing.F) {
 		"/v5.0.0",     // three-part prefix with no trailing path
 		"/v5.0./x",    // trailing dot is in Podman's class -- strips
 		"/v1.2.3.4/x", // Podman's class has no part-count limit -- strips
+		"/v5.8.1-dev/libpod/images/load",
+		"/v5.8.1_rc/libpod/images/load", // underscore is not accepted
+		"/v5.8.1-dev/libpod/manifests/app/json",
+		"/v5.8.1_rc/libpod/manifests/app/json", // underscore is not accepted
 		"/v99999999999999999999.99999999999999999999.99999999999999999999/x", // adversarial digit runs
 		// Podman prerelease / dev builds (this fix): VersionedPath is
 		// [0-9][0-9A-Za-z.-]*, admitting "-dev", "-rc1", trailing '.'/'-',

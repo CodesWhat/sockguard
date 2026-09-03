@@ -129,7 +129,33 @@ test("libpod container risk catalogs name every guarded endpoint", () => {
     security,
     /`POST \/containers\/\*\/update`, `POST \/libpod\/containers\/\*\/update`, `PUT \/containers\/\*\/archive`, and `PUT \/libpod\/containers\/\*\/archive` are inspected by default/u,
   );
-  assert.match(podman, /plus five libpod-only entries:/u);
+  assert.match(podman, /plus the libpod-only entries below:/u);
+});
+
+test("read-exfiltration docs credit the load-time audit, not the request-time gate", () => {
+  const documents = [
+    ["configuration reference", read("docs/content/docs/configuration.mdx")],
+    ["changelog", read("CHANGELOG.md")],
+  ];
+
+  for (const [name, document] of documents) {
+    const normalized = document.replaceAll(/\s+/gu, " ");
+    assert.match(
+      normalized,
+      /Startup validation audits the authored rule literals/u,
+      `${name} must attribute the exact-name and ordered refusal to startup validation`,
+    );
+    assert.match(
+      normalized,
+      /the warning names the concrete reachable path/u,
+      `${name} must say what the warning reports once the acknowledgment is set`,
+    );
+    assert.doesNotMatch(
+      normalized,
+      /can be visible only to the request-time hard gate|Empty endpoint lists can still mean an exact-name or ordered process-list rule needs the acknowledgment/u,
+      `${name} must not claim exact-name or ordered process-list rules escape startup validation`,
+    );
+  }
 });
 
 test("release docs distinguish candidate and stable source branches", () => {

@@ -119,6 +119,7 @@ func TestDrydockPresetConformance(t *testing.T) {
 		{"containers-list", http.MethodGet, "/containers/json", "", true},
 		{"container-inspect", http.MethodGet, "/containers/abc/json", "", true},
 		{"container-stats", http.MethodGet, "/containers/abc/stats", "", true},
+		{"container-top-denied", http.MethodGet, "/containers/abc/top", "", false},
 
 		// Container lifecycle drydock's update flow drives.
 		{"start", http.MethodPost, "/containers/abc/start", "", true},
@@ -334,7 +335,10 @@ func drydockPresetHandlerFromConfig(t *testing.T, cfg *config.Config, configureP
 	for _, configure := range configurePolicy {
 		configure(&policy)
 	}
-	opts := filter.Options{PolicyConfig: policy}
+	opts := filter.Options{
+		PolicyConfig:          policy,
+		AllowReadExfiltration: cfg.InsecureAllowReadExfiltration,
+	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

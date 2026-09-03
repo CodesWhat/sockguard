@@ -49,6 +49,7 @@ const (
 	reasonCodeRequestBodyPolicyDenied       = "request_body_policy_denied"
 	reasonCodeRequestBodyTooLarge           = "request_body_too_large"
 	reasonCodeRequestBodyInspectionFailed   = "request_body_inspection_failed"
+	reasonCodeReadExfiltrationAckRequired   = "read_exfiltration_acknowledgment_required"
 )
 
 // PolicyConfig configures deny-response behavior plus request-body inspection
@@ -123,6 +124,11 @@ type PolicyConfig struct {
 // Options configures filter middleware behavior.
 type Options struct {
 	PolicyConfig
+	// AllowReadExfiltration carries the global
+	// insecure_allow_read_exfiltration acknowledgment into request-time
+	// enforcement. It is intentionally not part of PolicyConfig because named
+	// client profiles cannot weaken or override this top-level setting.
+	AllowReadExfiltration bool
 	// Profiles defines named per-client policy overrides selected at request time.
 	Profiles map[string]Policy
 	// ResolveProfile returns the named policy to apply for the request.
@@ -255,10 +261,16 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			}
 
 			normPath := resolveNormalizedPath(meta, r)
-			action, ruleIndex, reason := evaluateNormalized(activePolicy.rules, r.Method, normPath)
+			action, ruleIndex, reason, normPath := evaluateRequestPolicy(activePolicy.rules, r, normPath)
 			denyStatus := http.StatusForbidden
 			reasonCode := ruleDecisionReasonCode(action, reason)
 			stampDecisionOnMeta(meta, action, ruleIndex, reasonCode, reason, normPath)
+			action, acknowledgmentReason, hardDeny := EnforceReadExfiltrationAcknowledgment(action, r.Method, normPath, opts.AllowReadExfiltration)
+			if acknowledgmentReason != "" {
+				reasonCode = reasonCodeReadExfiltrationAckRequired
+				reason = acknowledgmentReason
+				stampDecisionOnMeta(meta, action, ruleIndex, reasonCode, reason, normPath)
+			}
 
 			if action == ActionAllow {
 				denyReason, denyReasonCode, status := runAllowedInspection(activePolicy, logger, w, r, normPath)
@@ -278,7 +290,7 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			}
 
 			if action == ActionDeny {
-				if meta.AllowsPassThrough() {
+				if !hardDeny && meta.AllowsPassThrough() {
 					meta.Decision = logging.DecisionWouldDeny
 					next.ServeHTTP(w, r)
 					return
@@ -292,6 +304,47 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// EnforceReadExfiltrationAcknowledgment applies the hard process-list gate
+// shared by the runtime middleware and offline rule matcher. normalizedPath
+// must already be canonicalized with NormalizePath. The returned reason is
+// non-empty only when the gate replaces an allow decision.
+func EnforceReadExfiltrationAcknowledgment(action Action, method, normalizedPath string, acknowledged bool) (Action, string, bool) {
+	if acknowledged || !isProcessListRead(method, normalizedPath) {
+		return action, "", false
+	}
+	if action == ActionDeny {
+		return action, "", true
+	}
+	return ActionDeny, "process-list reads require insecure_allow_read_exfiltration: true", true
+}
+
+// isProcessListRead reports whether normPath is one of the three process-list
+// routes. The identifier is everything before a trailing "/top" rather than a
+// single leading segment: Docker registers the compat route as
+// /containers/{name:.*}/top, so a rule like GET /containers/*/*/top admits a
+// slash-bearing name that a first-segment split would walk straight past.
+// Podman's {name} is single-segment on both libpod routes, so the extra
+// breadth there matches nothing the daemon would route anyway.
+func isProcessListRead(method, normPath string) bool {
+	if upperHTTPMethodASCII(method) != http.MethodGet {
+		return false
+	}
+
+	rest, ok := strings.CutPrefix(normPath, "/containers/")
+	if !ok {
+		rest, ok = strings.CutPrefix(normPath, "/libpod/containers/")
+	}
+	if !ok {
+		rest, ok = strings.CutPrefix(normPath, "/libpod/pods/")
+	}
+	if !ok {
+		return false
+	}
+
+	name, ok := strings.CutSuffix(rest, "/top")
+	return ok && name != ""
 }
 
 // resolveActivePolicy picks the per-request runtimePolicy based on the
@@ -320,6 +373,9 @@ func resolveActivePolicy(opts Options, profilePolicies map[string]runtimePolicy,
 // already produced it; otherwise it normalizes once and lets the meta carry
 // the value forward to downstream layers.
 func resolveNormalizedPath(meta *logging.RequestMeta, r *http.Request) string {
+	if routePath, ok := normalizedLibpodImageScpRoutePath(r); ok {
+		return routePath
+	}
 	if meta != nil && meta.NormPath != "" {
 		return meta.NormPath
 	}
@@ -413,6 +469,13 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		// (`reference`, case-folded and repeatable, no `fromSrc`); see
 		// imagePullPolicy.inspectLibpod.
 		{http.MethodPost, matchesLibpodImagePullInspection, inspectSeverityHigh, newImagePullPolicy(cfg.ImagePull).inspectLibpod, "failed to inspect libpod image pull request", "unable to inspect libpod image pull request"},
+		// libpod image import is the counterpart of the Docker-compat
+		// fromSrc import that the entry above already gates, so it reads the
+		// same request_body.image_pull.allow_imports flag rather than a
+		// second one. Separate entry because the two live on different
+		// paths in Podman's route table — see
+		// imagePullPolicy.inspectLibpodImport.
+		{http.MethodPost, matchesLibpodImageImportInspection, inspectSeverityHigh, newImagePullPolicy(cfg.ImagePull).inspectLibpodImport, "failed to inspect libpod image import request", "unable to inspect libpod image import request"},
 		// libpod container update shares cfg.ContainerUpdate with the
 		// Docker-compat entry above — one set of allow_* gates governs both
 		// surfaces. It is a separate entry because libpod's body is
@@ -455,7 +518,14 @@ func matchesImagePullInspection(normalizedPath string) bool {
 }
 
 func matchesBuildInspection(normalizedPath string) bool {
-	return normalizedPath == "/build" || normalizedPath == "/libpod/build"
+	// isLibpodBuildPath covers POST /libpod/local/build alongside
+	// POST /libpod/build. The local spelling cannot actually be inspected —
+	// its context is a daemon-host path, not a body — so buildPolicy denies
+	// it outright unless the blind-write acknowledgment is set. It is routed
+	// here anyway so that denial happens in the one place that already owns
+	// the build surface, instead of the endpoint sitting outside every
+	// matcher and being forwarded unexamined.
+	return normalizedPath == "/build" || isLibpodBuildPath(normalizedPath)
 }
 
 func matchesContainerUpdateInspection(normalizedPath string) bool {
@@ -471,7 +541,12 @@ func matchesContainerArchiveInspection(normalizedPath string) bool {
 }
 
 func matchesImageLoadInspection(normalizedPath string) bool {
-	return normalizedPath == "/images/load"
+	// POST /libpod/images/load takes the identical archive body with no
+	// query parameters, so the same policy reads the same manifest.json off
+	// it. POST /libpod/local/images/load is here for the same reason
+	// /libpod/local/build is in matchesBuildInspection: it has no body to
+	// read, so it is denied rather than inspected.
+	return normalizedPath == "/images/load" || isLibpodImageLoadPath(normalizedPath) || isLibpodLocalImageLoadPath(normalizedPath)
 }
 
 func matchesVolumeInspection(normalizedPath string) bool {
@@ -533,6 +608,10 @@ func matchesLibpodSecretInspection(normalizedPath string) bool {
 
 func matchesLibpodImagePullInspection(normalizedPath string) bool {
 	return isLibpodImagePullPath(normalizedPath)
+}
+
+func matchesLibpodImageImportInspection(normalizedPath string) bool {
+	return isLibpodImageImportPath(normalizedPath)
 }
 
 func matchesLibpodContainerUpdateInspection(normalizedPath string) bool {

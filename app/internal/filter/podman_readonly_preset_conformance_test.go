@@ -19,11 +19,11 @@ import (
 //     reads (container/pod/image/network/volume/secret list + inspect,
 //     health + version + info + events), so operators get one preset for a
 //     Podman host regardless of which API family their monitoring tool uses.
-//   - Every path in the exfiltration-gated catalogs
-//     (sensitiveExfilEndpoints in internal/cmd/rules.go — archive, export,
-//     logs, attach, images/get, images/push, generate/kube, manifest
-//     registry pushes, on both surfaces) stays denied, proving the preset
-//     never needed insecure_allow_read_exfiltration: true.
+//   - Container top stays admitted on both surfaces as part of this preset's
+//     process-monitoring contract. Both routes require the preset's explicit
+//     insecure_allow_read_exfiltration acknowledgment; every other cataloged
+//     archive, export, logs, attach, images/get, images/push, generate/kube,
+//     and manifest registry-push path stays denied.
 //   - No write reaches upstream on either surface — including libpod-only
 //     writes with no Docker-compat analog, like pod create and play/kube.
 func TestPodmanReadonlyPresetConformance(t *testing.T) {
@@ -89,7 +89,19 @@ func TestPodmanReadonlyPresetConformance(t *testing.T) {
 		// --- libpod: pod reads (no Docker-compat equivalent) ---
 		{"libpod-pods-list", http.MethodGet, "/libpod/pods/json", "", true},
 		{"libpod-pod-inspect", http.MethodGet, "/libpod/pods/abc/json", "", true},
-		{"libpod-pods-stats", http.MethodGet, "/libpod/pods/stats", "", true},
+		// The three unscopeable libpod reads. None of them can be scoped to
+		// one caller — no labels on the entries, no `filters` parameter to
+		// attach anything to — so the ownership and visibility middlewares
+		// refuse all three outright. /libpod/pods/stats was allowed here until
+		// v2.1; the rule was removed because a preset cannot both promise
+		// isolation and serve a host-wide read. See
+		// filter.LibpodUnscopeableReads() and, for the machine-checked version
+		// of this across every shipped preset,
+		// TestNoShippedPresetAdmitsAnUnscopeableLibpodRead.
+		{"libpod-pods-stats", http.MethodGet, "/libpod/pods/stats", "", false},
+		{"libpod-containers-stats", http.MethodGet, "/libpod/containers/stats", "", false},
+		{"libpod-containers-showmounted", http.MethodGet, "/libpod/containers/showmounted", "", false},
+		{"libpod-pod-top-denied", http.MethodGet, "/libpod/pods/abc/top", "", false},
 
 		// --- libpod: image reads ---
 		{"libpod-images-list", http.MethodGet, "/libpod/images/json", "", true},
@@ -100,7 +112,11 @@ func TestPodmanReadonlyPresetConformance(t *testing.T) {
 		{"libpod-network-inspect", http.MethodGet, "/libpod/networks/abc/json", "", true},
 		{"libpod-volumes-list", http.MethodGet, "/libpod/volumes/json", "", true},
 		{"libpod-volume-inspect", http.MethodGet, "/libpod/volumes/abc/json", "", true},
-		{"libpod-secrets-list", http.MethodGet, "/libpod/secrets/json", "", true},
+		// GET /libpod/secrets/json joined filter.LibpodUnscopeableReads() in
+		// v2.1: Podman's secret filter grammar rejects the label key both
+		// isolation layers depend on, so neither can scope the list. A preset
+		// that promises those layers can be put behind it must not allow it.
+		{"libpod-secrets-list", http.MethodGet, "/libpod/secrets/json", "", false},
 		{"libpod-secret-inspect", http.MethodGet, "/libpod/secrets/abc/json", "", true},
 
 		// --- libpod: denied exfiltration surface ---
@@ -128,11 +144,21 @@ func TestPodmanReadonlyPresetConformance(t *testing.T) {
 		{"libpod-secret-create-denied", http.MethodPost, "/libpod/secrets/create", "", false},
 		{"libpod-play-kube-denied", http.MethodPost, "/libpod/play/kube", "", false},
 		{"libpod-kube-apply-denied", http.MethodPost, "/libpod/kube/apply", "", false},
+		// The libpod image-write surface, including the two "local API"
+		// routes that read a daemon-host path and the SSH image transfer.
+		// None has a Docker analog reachable through this preset's rules;
+		// the preset's trailing deny-all is what keeps them shut.
+		{"libpod-image-load-denied", http.MethodPost, "/libpod/images/load", "", false},
+		{"libpod-image-import-denied", http.MethodPost, "/libpod/images/import", "", false},
+		{"libpod-local-image-load-denied", http.MethodPost, "/libpod/local/images/load?path=%2Fetc", "", false},
+		{"libpod-local-build-denied", http.MethodPost, "/libpod/local/build?localcontextdir=%2Fetc", "", false},
+		{"libpod-image-scp-denied", http.MethodPost, "/libpod/images/scp/user@host::img", "", false},
 
 		// --- version-prefixed variants: the same verdicts must hold after
 		// stripVersionPrefix normalization, for Docker's two-part prefixes
 		// and Podman's three-part semver prefixes alike ---
 		{"v-prefixed-containers-list", http.MethodGet, "/v1.45/containers/json", "", true},
+		{"v-prefixed-container-top", http.MethodGet, "/v1.45/containers/abc/top", "", true},
 		{"v-prefixed-container-create-denied", http.MethodPost, "/v1.45/containers/create", "", false},
 		{"v-prefixed-logs-denied", http.MethodGet, "/v1.45/containers/abc/logs", "", false},
 		{"v-prefixed-libpod-containers-list", http.MethodGet, "/v5.0.0/libpod/containers/json", "", true},

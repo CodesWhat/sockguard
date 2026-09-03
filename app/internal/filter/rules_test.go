@@ -65,11 +65,13 @@ func TestStripVersionPrefix(t *testing.T) {
 		{name: "three-part semver version prefix", path: "/v5.0.0/libpod/containers/json", want: "/libpod/containers/json"},
 		{name: "three-part semver with larger components", path: "/v4.9.3/libpod/containers/json", want: "/libpod/containers/json"},
 		{name: "three-part semver root path", path: "/v5.0.0/", want: "/"},
+		{name: "Podman accepts prerelease suffix", path: "/v5.8.1-dev/libpod/containers/json", want: "/libpod/containers/json"},
 		{name: "three-part semver trailing dot still strips", path: "/v5.0./x", want: "/x"},
 		{name: "three-part semver no trailing slash", path: "/v5.0.0", want: "/v5.0.0"},
 		// Podman's VersionedPath regex has no part-count limit, so a
 		// four-part run strips just like three-part.
 		{name: "four-part version strips too", path: "/v1.2.3.4/x", want: "/x"},
+		{name: "invalid version character is not stripped", path: "/v5.8.1_rc/libpod/containers/json", want: "/v5.8.1_rc/libpod/containers/json"},
 		// Adversarial digit runs.
 		{name: "long digit run in major", path: "/v99999999999999999999/x", want: "/x"},
 		{name: "long digit run in minor", path: "/v1.99999999999999999999/x", want: "/x"},
@@ -98,15 +100,8 @@ func TestStripVersionPrefix(t *testing.T) {
 	}
 }
 
-// TestStripVersionPrefixMatchesLegacyRegex checks stripVersionPrefix against
-// an independent regex re-implementation of Podman's VersionedPath class
-// ([0-9][0-9A-Za-z.-]*), the character class this fix widened
-// stripVersionPrefix to (see the function's doc comment). It is no longer
-// "legacy" in the sense of the pre-#148 Docker-only vN/vN.N regex — that
-// narrower form would diverge on paths like "/v1x/..." or "/v1./..." that
-// are valid under Podman's class — but the name is kept for history.
-func TestStripVersionPrefixMatchesLegacyRegex(t *testing.T) {
-	legacyVersionPrefix := regexp.MustCompile(`^/v[0-9][0-9A-Za-z.-]*/`)
+func TestStripVersionPrefixMatchesPodmanRouteGrammar(t *testing.T) {
+	podmanVersionPrefix := regexp.MustCompile(`^/v[0-9][0-9A-Za-z.-]*/`)
 	paths := []string{
 		"",
 		"/",
@@ -137,6 +132,10 @@ func TestStripVersionPrefixMatchesLegacyRegex(t *testing.T) {
 		"/v1.2.3/",
 		"/v1.2./x",
 		"/v1.2.3.4/x",
+		"/v5.8.1-dev/libpod/manifests/app/json",
+		"/v5.8.1_rc/libpod/manifests/app/json",
+		"/v5.8.1-dev/libpod/images/load",
+		"/v5.8.1_rc/libpod/images/load",
 		// Podman prerelease / dev builds (this fix).
 		"/v5.8.1-dev/libpod/networks/x/connect",
 		"/v5.8.1-rc1/libpod/containers/json",
@@ -150,10 +149,10 @@ func TestStripVersionPrefixMatchesLegacyRegex(t *testing.T) {
 
 	for _, path := range paths {
 		t.Run(path, func(t *testing.T) {
-			want := legacyVersionPrefix.ReplaceAllString(path, "/")
+			want := podmanVersionPrefix.ReplaceAllString(path, "/")
 			got := stripVersionPrefix(path)
 			if got != want {
-				t.Errorf("stripVersionPrefix(%q) = %q, want legacy regex result %q", path, got, want)
+				t.Errorf("stripVersionPrefix(%q) = %q, want Podman route result %q", path, got, want)
 			}
 		})
 	}
@@ -1143,16 +1142,16 @@ func TestGlobToRegexSpecialSequences(t *testing.T) {
 		{
 			name:        "trailing slash double-star matches bare prefix",
 			pattern:     "/containers/**",
-			match:       []string{"/containers", "/containers/", "/containers/json", "/containers/a/b/c"},
+			match:       []string{"/containers", "/containers/", "/containers/json", "/containers/a/b/c", "/containers/a\nb"},
 			dontMatch:   []string{"/containerstuff", "/images/json"},
-			regexSuffix: "(/.*)?",
+			regexSuffix: "(?s:.*)",
 		},
 		{
 			name:        "bare double-star matches everything",
 			pattern:     "/**",
-			match:       []string{"", "/", "/x", "/x/y/z"},
+			match:       []string{"", "/", "/x", "/x/y/z", "/x\ny"},
 			dontMatch:   nil,
-			regexSuffix: "(/.*)?",
+			regexSuffix: "(?s:.*)",
 		},
 		{
 			// Single * compiles to [^/]* — does not cross slash boundaries.
@@ -1167,7 +1166,8 @@ func TestGlobToRegexSpecialSequences(t *testing.T) {
 			regexSuffix: "[^/]*",
 		},
 		{
-			// Non-trailing /**/ compiles to (/.*)? — the slash + anything
+			// Non-trailing /**/ compiles to an optional slash + dot-all group,
+			// so the slash + anything
 			// group is optional, so the pattern also matches when there is
 			// no middle path at all (`/containers/json`). This is the
 			// established behavior; the test exists to lock it in.

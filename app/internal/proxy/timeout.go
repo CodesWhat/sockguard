@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,20 +36,29 @@ import (
 //
 // A non-positive timeout disables the wrapper entirely — next is returned
 // unchanged. Long-lived endpoints (event streams, follow/stream reads
-// including service and task logs, image pull/create/export/build/push,
-// plugin create/pull/push/upgrade, container export/get, container archive
-// i.e. docker cp, websocket attach, the BuildKit tunnel endpoints
-// POST /session and POST /grpc, and the blocking container wait) are
-// exempt, because a deadline would sever a legitimately long response.
+// including service and task logs, streaming native Podman container/pod top,
+// image pull/create/export/build/push, plugin create/pull/push/upgrade,
+// container export/get, container archive i.e. docker cp, websocket attach,
+// the BuildKit tunnel endpoints POST /session and POST /grpc, and the blocking
+// container wait) are exempt, because a deadline would sever a legitimately
+// long response.
 // Hijacked endpoints
 // (attach, exec start) never reach this handler: HijackHandler short-circuits
 // them earlier in the chain.
 func WithRequestTimeout(next http.Handler, timeout time.Duration) http.Handler {
+	return WithRequestTimeoutForFlavor(next, timeout, false)
+}
+
+// WithRequestTimeoutForFlavor is WithRequestTimeout with an explicit upstream
+// engine classification. podmanUpstream must be true only when the upstream
+// has been resolved as Podman; Docker-compatible top can stream on Podman but
+// is always finite on Docker.
+func WithRequestTimeoutForFlavor(next http.Handler, timeout time.Duration, podmanUpstream bool) http.Handler {
 	if timeout <= 0 {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isLongLivedUpstreamRequest(w, r) {
+		if isLongLivedUpstreamRequestForFlavor(w, r, podmanUpstream) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -63,18 +73,28 @@ func WithRequestTimeout(next http.Handler, timeout time.Duration) http.Handler {
 // per-request upstream deadline. Docker API version prefixes (/v1.XX/) are
 // stripped before matching.
 func isLongLivedUpstreamRequest(w http.ResponseWriter, r *http.Request) bool {
+	return isLongLivedUpstreamRequestForFlavor(w, r, false)
+}
+
+func isLongLivedUpstreamRequestForFlavor(w http.ResponseWriter, r *http.Request, podmanUpstream bool) bool {
 	if r == nil {
 		return false
 	}
 	path := requestNormalizedPath(w, r)
+	nativeLibpod := false
 	if nativePath, ok := strings.CutPrefix(path, "/libpod"); ok {
 		path = nativePath
+		nativeLibpod = true
 	}
 	switch r.Method {
 	case http.MethodGet:
 		switch {
 		case path == "/events":
 			return true
+		case nativeLibpod && (matchContainerAction(path, "top") || matchPodAction(path, "top")):
+			return podmanBoolValue(r, "stream")
+		case podmanUpstream && matchContainerAction(path, "top"):
+			return podmanCompatBoolValue(r, "stream")
 		case matchContainerAction(path, "logs"):
 			return dockerBoolValue(r, "follow")
 		case matchResourceAction(path, "services", "logs"):
@@ -161,6 +181,60 @@ func matchResourceAction(path, resource, action string) bool {
 		return false
 	}
 	return act == action
+}
+
+// matchPodAction reports whether path is exactly /pods/{id}/{action}.
+func matchPodAction(path, action string) bool {
+	rest, ok := strings.CutPrefix(path, "/pods/")
+	if !ok {
+		return false
+	}
+	id, act, ok := strings.Cut(rest, "/")
+	if !ok || id == "" {
+		return false
+	}
+	return act == action
+}
+
+// podmanBoolValue mirrors the gorilla/schema bool conversion used by Podman's
+// libpod handlers. Query keys are case-insensitive and the last repeated value
+// within each identically-cased key group wins. gorilla/schema visits distinct
+// case-folded groups in map order, so any truthy group is treated as streaming
+// to avoid applying a deadline to a response Podman may stream. strconv.ParseBool
+// spellings and the exact lowercase value "on" are accepted; omitted, invalid,
+// and false-only groups remain finite.
+func podmanBoolValue(r *http.Request, key string) bool {
+	for queryKey, values := range r.URL.Query() {
+		if !strings.EqualFold(queryKey, key) || len(values) == 0 {
+			continue
+		}
+		value := values[len(values)-1]
+		if value == "on" {
+			return true
+		}
+		parsed, err := strconv.ParseBool(value)
+		if err == nil && parsed {
+			return true
+		}
+	}
+	return false
+}
+
+func podmanCompatBoolValue(r *http.Request, key string) bool {
+	// Podman's compatibility decoder uses the Docker falsy set, but retains
+	// gorilla/schema's case-insensitive field lookup and per-key last value.
+	for queryKey, values := range r.URL.Query() {
+		if !strings.EqualFold(queryKey, key) || len(values) == 0 {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(values[len(values)-1])) {
+		case "", "0", "no", "false", "none":
+			continue
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 // dockerBoolValue mirrors the daemon's api/server/httputils.BoolValue: a query

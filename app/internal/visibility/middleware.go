@@ -60,7 +60,7 @@ const (
 	reasonCodeVisibilityResponseTooLarge    = "visibility_response_too_large"
 	reasonCodeVisibilityPodmanEvents        = "visibility_podman_events_unscopeable"
 	reasonCodeVisibilityLibpodDataUsage     = "visibility_libpod_data_usage_unscopeable"
-	reasonCodeVisibilityLibpodShowMounted   = "visibility_libpod_showmounted_unscopeable"
+	reasonCodeVisibilityLibpodEvents        = "visibility_libpod_events_unscopeable"
 )
 
 // Options configures label-based visibility control on Docker read endpoints.
@@ -227,11 +227,36 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 				denyLibpodSystemDataUsage(w, r)
 				return
 			}
-			// Podman's mounted-container inventory likewise carries no labels
-			// or names, only container IDs and daemon-host mount paths. Same
-			// HEAD coverage as the refusal above, for the same reason.
-			if (r.Method == http.MethodGet || r.Method == http.MethodHead) && normPath == responsefilter.LibpodShowMountedPath {
-				denyLibpodShowMounted(w, r)
+			// Three more libpod reads have that same shape — showmounted,
+			// container stats and pod stats — each enumerating the host with
+			// no labels for the selector axes, no name or image field for the
+			// pattern axes, and no `filters` parameter to attach anything to.
+			// They are refused rather than filtered. The set is
+			// filter.LibpodUnscopeableReads(), shared with the ownership
+			// middleware so the two layers cannot disagree about which
+			// endpoints are refusable; each entry's doc comment carries its
+			// shape evidence. HEAD is refused alongside GET: there is no
+			// body-filtering step it could legitimately need, so gating on GET
+			// alone would forward it to the daemon.
+			if r.Method == http.MethodGet || r.Method == http.MethodHead {
+				if read, ok := filter.LookupLibpodUnscopeableRead(normPath); ok {
+					denyUnscopeableLibpodRead(w, r, read)
+					return
+				}
+			}
+			// Podman's native GET /libpod/events accepts the same `filters`
+			// query parameter the Docker-compat /events does — it is literally
+			// the same handler — but evaluates several values under one filter
+			// key disjunctively, so the append-style injection every other list
+			// endpoint uses would widen the stream instead of narrowing it. It
+			// gets its own single-selector injection, and a refusal when the
+			// policy has more selectors than the shape can express. See
+			// libpodEventsDenyReason.
+			if r.Method == http.MethodGet && normPath == LibpodEventsPath {
+				handleLibpodVisibilityEventsRequest(next, w, r, &effectivePolicy)
+				return
+			}
+			if handleVisibilityImageExportRequest(logger, next, deps, w, r, normPath, &effectivePolicy) {
 				return
 			}
 			if needsVisibilityLabelFilter(normPath) {
@@ -284,17 +309,18 @@ func compileVisibilityPolicies(logger *slog.Logger, opts Options) (compiledPolic
 
 // warnPatternsWithoutSelectors logs once at construction when a visibility
 // policy carries name/image patterns but no label selector. Pattern response
-// filtering only covers /containers/json and /images/json (see
-// needsPatternResponseFilter); every other visibility-aware list endpoint —
-// /events in particular — is constrained solely by the label selectors injected
-// into the upstream filter. So a patterns-only policy silently leaves /events
-// (and /networks, /volumes, /services, …) unrestricted.
+// filtering only covers /containers/json, /libpod/containers/json,
+// /images/json and /libpod/images/json (see needsPatternResponseFilter); every
+// other visibility-aware list endpoint — /events in particular — is
+// constrained solely by the label selectors injected into the upstream
+// filter. So a patterns-only policy silently leaves /events (and /networks,
+// /volumes, /services, …) unrestricted.
 func warnPatternsWithoutSelectors(logger *slog.Logger, scope string, policy compiledPolicy) {
 	if logger == nil || !policy.hasPatternAxes() || len(policy.selectors) > 0 {
 		return
 	}
 	logger.Warn("visibility name/image patterns are set without any visible_resource_labels selector; "+
-		"pattern filtering only applies to containers and images (/containers/json, /images/json, and the "+
+		"pattern filtering only applies to containers and images (/containers/json, /libpod/containers/json, /images/json, /libpod/images/json, and the "+
 		"matching sections of /system/df), so /events and the other list endpoints stay unrestricted. "+
 		"Add a label selector to constrain them",
 		"scope", scope)
@@ -427,7 +453,8 @@ func handleVisibilityInspectRequest(logger *slog.Logger, next http.Handler, deps
 // needsPatternResponseFilter reports whether the given normalized path is a
 // list endpoint for which we support response-body pattern filtering.
 func needsPatternResponseFilter(normPath string) bool {
-	return normPath == "/containers/json" || normPath == "/images/json"
+	return normPath == "/containers/json" || normPath == libpodPrefix+"containers/json" ||
+		normPath == "/images/json" || normPath == libpodPrefix+"images/json"
 }
 
 // patternFilterWriter is a response-intercepting http.ResponseWriter that
@@ -580,9 +607,9 @@ func (p *patternFilterWriter) flushFiltered(normPath string, policy *compiledPol
 // axes. Returns true if the item passes all configured axes.
 func itemVisibleByPatterns(raw json.RawMessage, normPath string, policy *compiledPolicy) (bool, error) {
 	switch normPath {
-	case "/containers/json":
+	case "/containers/json", libpodPrefix + "containers/json":
 		return containerItemVisibleByPatterns(raw, policy)
-	case "/images/json":
+	case "/images/json", libpodPrefix + "images/json":
 		return imageItemVisibleByPatterns(raw, policy)
 	default:
 		return true, nil
@@ -843,7 +870,13 @@ func requestVisibleWithPolicy(ctx context.Context, normPath string, policy *comp
 	if identifier, ok := containerReadIdentifier(normPath); ok {
 		return resourceVisibleWithPolicy(ctx, deps, dockerresource.KindContainer, identifier, policy)
 	}
+	if identifier, ok := libpodContainerReadIdentifier(normPath); ok {
+		return resourceVisibleWithPolicy(ctx, deps, dockerresource.KindContainer, identifier, policy)
+	}
 	if identifier, ok := imageReadIdentifier(normPath); ok {
+		return resourceVisibleWithPolicy(ctx, deps, dockerresource.KindImage, identifier, policy)
+	}
+	if identifier, ok := libpodImageReadIdentifier(normPath); ok {
 		return resourceVisibleWithPolicy(ctx, deps, dockerresource.KindImage, identifier, policy)
 	}
 	// Pattern axes only apply to containers and images. All other resource
@@ -882,7 +915,15 @@ func requestVisibleWithPolicy(ctx context.Context, normPath string, policy *comp
 	if isSwarmInspectPath(normPath) {
 		return resourceVisible(ctx, deps, dockerresource.KindSwarm, "", policy.selectors)
 	}
-	if execID, ok := execInspectIdentifier(normPath); ok {
+	// Both exec-inspect spellings resolve through the same upstream inspector:
+	// Podman serves GET /exec/{id}/json and GET /libpod/exec/{id}/json from one
+	// handler over one exec-session store, so the Docker-compat inspect answers
+	// for a session created either way.
+	execID, isExecInspect := execInspectIdentifier(normPath)
+	if !isExecInspect {
+		execID, isExecInspect = libpodExecInspectIdentifier(normPath)
+	}
+	if isExecInspect {
 		containerID, found, err := deps.inspectExec(ctx, execID)
 		if err != nil {
 			return false, err
@@ -892,17 +933,14 @@ func requestVisibleWithPolicy(ctx context.Context, normPath string, policy *comp
 		}
 		return resourceVisible(ctx, deps, dockerresource.KindContainer, containerID, policy.selectors)
 	}
-	// libpod route family (#148 PR5): containers/volumes/secrets are checked
-	// against their Docker-compat inspect path (Podman's compat API is a
-	// translation layer over the same underlying resource store for those
-	// kinds); networks and pods use their libpod-native inspect path via
+	// libpod route family (#148 PR5): containers, images, volumes and secrets
+	// are checked against their Docker-compat inspect path (Podman's compat
+	// API is a translation layer over the same underlying resource store for
+	// those kinds); networks and pods use their libpod-native inspect path via
 	// dockerresource.KindLibpodNetwork/KindLibpodPod — networks because
 	// GET /libpod/networks/{id}/json differs in label-key casing and (per
 	// design doc C6) may return a single-element array-wrapped response,
 	// pods because they have no Docker-compat equivalent at all.
-	if identifier, ok := libpodContainerReadIdentifier(normPath); ok {
-		return resourceVisible(ctx, deps, dockerresource.KindContainer, identifier, policy.selectors)
-	}
 	if identifier, ok := libpodPodReadIdentifier(normPath); ok {
 		return resourceVisible(ctx, deps, dockerresource.KindLibpodPod, identifier, policy.selectors)
 	}
@@ -921,50 +959,64 @@ func requestVisibleWithPolicy(ctx context.Context, normPath string, policy *comp
 // resourceVisibleWithPolicy checks both label selectors and name/image pattern
 // axes for a single container or image resource.
 func resourceVisibleWithPolicy(ctx context.Context, deps visibilityDeps, kind dockerresource.Kind, identifier string, policy *compiledPolicy) (bool, error) {
+	visible, found, err := lookupResourceVisibilityWithPolicy(ctx, deps, kind, identifier, policy)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return true, nil
+	}
+	return visible, nil
+}
+
+// lookupResourceVisibilityWithPolicy reports visibility and existence
+// separately so callers can choose whether a missing resource is safe to pass
+// through or must fail closed.
+func lookupResourceVisibilityWithPolicy(ctx context.Context, deps visibilityDeps, kind dockerresource.Kind, identifier string, policy *compiledPolicy) (visible, found bool, err error) {
 	if len(policy.selectors) > 0 && policy.hasPatternAxes() && deps.inspectResourceDetails != nil {
 		details, found, err := deps.inspectResourceDetails(ctx, kind, identifier)
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		if !found {
-			return true, nil
+			return false, false, nil
 		}
 		if !matchesSelectors(details.labels, policy.selectors) {
-			return false, nil
+			return false, true, nil
 		}
-		return resourceMetaMatchesPatterns(details.meta, kind, policy), nil
+		return resourceMetaMatchesPatterns(details.meta, kind, policy), true, nil
 	}
 	// Check label selectors first (uses the cached inspect path).
 	if len(policy.selectors) > 0 {
 		labels, found, err := deps.inspectResource(ctx, kind, identifier)
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		if !found {
-			return true, nil
+			return false, false, nil
 		}
 		if !matchesSelectors(labels, policy.selectors) {
-			return false, nil
+			return false, true, nil
 		}
 	}
 	// Check pattern axes if configured.
 	if policy.hasPatternAxes() {
 		if deps.inspectResourceMeta == nil {
 			// No meta inspector configured (e.g. in tests without pattern deps).
-			return true, nil
+			return true, true, nil
 		}
 		meta, found, err := deps.inspectResourceMeta(ctx, kind, identifier)
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		if !found {
-			return true, nil
+			return false, false, nil
 		}
 		if !resourceMetaMatchesPatterns(meta, kind, policy) {
-			return false, nil
+			return false, true, nil
 		}
 	}
-	return true, nil
+	return true, true, nil
 }
 
 // resourceMetaMatchesPatterns checks a resource's name/image metadata against

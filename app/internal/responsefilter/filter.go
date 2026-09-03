@@ -569,8 +569,7 @@ func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error)
 	out.Reset()
 	defer streamArrayBufferPool.Put(out)
 
-	enc := json.NewEncoder(out)
-	enc.SetEscapeHTML(false) // preserve original character set; Docker never needs HTML-safe JSON
+	enc := newJSONEncoder(out)
 
 	out.WriteByte('[')
 	first := true
@@ -1203,6 +1202,15 @@ func newJSONDecoder(r io.Reader) *json.Decoder {
 	return dec
 }
 
+// newJSONEncoder returns the one json.Encoder configuration this package uses
+// for rewritten response bodies. Docker API JSON is not embedded in HTML, so
+// preserve <, >, and & instead of emitting their HTML-safe escape sequences.
+func newJSONEncoder(w io.Writer) *json.Encoder {
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	return enc
+}
+
 // decodeJSONObject decodes body into a JSON object map through newJSONDecoder,
 // so integers that don't fit in a float64 (e.g. LayersSize above 2^53)
 // round-trip through the filter as json.Number instead of losing precision to
@@ -1248,7 +1256,7 @@ func trailingJSONError(body []byte, offset int64) error {
 }
 
 func writeResponseBody(resp *http.Response, payload any) error {
-	body, err := json.Marshal(payload)
+	body, err := marshalJSONPreservingEscapes(payload)
 	if err != nil {
 		return err
 	}

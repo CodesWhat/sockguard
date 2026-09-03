@@ -287,7 +287,12 @@ func TestMiddlewareNormalizesSingleVariantServiceLabels(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
-			handler := middlewareWithDeps(testLogger(), opts, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fi := fakeInspector{resources: map[string]map[string]inspectResult{
+				string(dockerresource.KindService): {
+					"web": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+				},
+			}}
+			handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				raw, err := io.ReadAll(r.Body)
 				if err != nil {
 					t.Fatalf("read body: %v", err)
@@ -792,8 +797,11 @@ func TestMiddlewareDeniesUnresolvedEmbeddedResources(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(tt.body))
 			handler.ServeHTTP(rec, req)
 
-			if rec.Code != http.StatusForbidden {
-				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			// 404, not 403: the reference named nothing the daemon could
+			// resolve, and ownership reports an unresolvable target the same
+			// way whether it is named by the URL or embedded in the body.
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
 			}
 			if !slices.Contains(fi.calls, resourceInspectCall{kind: tt.kind, id: tt.id}) {
 				t.Fatalf("inspect calls = %#v, want %s %q", fi.calls, tt.kind, tt.id)
@@ -949,10 +957,12 @@ func TestMiddlewareContainerCreateNamespaceSharingLookupMisses(t *testing.T) {
 		reached bool
 		code    int
 	}{
-		// A target that resolves to nothing sockguard can inspect passes
-		// through — the daemon rejects a create that joins a nonexistent
-		// container anyway.
-		{name: "not found passes through", result: inspectResult{found: false}, reached: true, code: http.StatusNoContent},
+		// A target that resolves to nothing sockguard can inspect fails closed:
+		// the daemon must not get a chance to resolve a name that ownership
+		// policy could not authorize.
+		// 404 rather than 403 because nothing resolved; the request is still
+		// refused without the daemon seeing it.
+		{name: "not found fails closed", result: inspectResult{found: false}, reached: false, code: http.StatusNotFound},
 		// An inspect *error* fails closed with 502, matching every other
 		// ownership check: allowOwnershipRequest propagates the error and the
 		// middleware maps it to reasonCodeOwnerPolicyLookupFailed. A lookup
@@ -1459,8 +1469,8 @@ func TestMiddlewareFailsClosedWhenNetworkMembershipContainerIsUnresolved(t *test
 			if forwarded {
 				t.Fatal("unresolved network membership change was forwarded")
 			}
-			if rec.Code != http.StatusForbidden {
-				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
 			}
 			if !strings.Contains(rec.Body.String(), "could not resolve") {
 				t.Fatalf("deny body = %q, want unresolved-resource reason", rec.Body.String())
@@ -1811,14 +1821,66 @@ func TestMiddlewareAllowsUnownedImageAccessByDefault(t *testing.T) {
 	}
 }
 
-// TestMiddlewareDeniesImageAttestationsForCrossOwnerImage is the regression
-// test for the /images/{name}/attestations owner-isolation bypass: before the
-// imageIdentifier fix, the composite "{name}/attestations" identifier never
-// matches the fakeInspector's resources keyed on the bare image name, so the
-// inspect reports not-found, checkOwnedResource passes the request through,
-// and this test's next handler (which fails the test) runs. After the fix,
-// the identifier resolves to the bare name, the owner mismatch is detected,
-// and the request is denied before reaching next.
+func TestMiddlewareAllowUnownedImagesDoesNotAllowMissingImage(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		path        string
+		wantMessage string
+	}{
+		{
+			name:        "docker compat",
+			path:        "/images/missing:latest/json",
+			wantMessage: "owner policy could not resolve image",
+		},
+		{
+			name:        "libpod",
+			path:        "/libpod/images/missing:latest/json",
+			wantMessage: "libpod owner policy could not resolve image",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner", AllowUnownedImages: true}
+			fi := fakeInspector{
+				resources: map[string]map[string]inspectResult{
+					"images": {
+						"missing:latest": {found: false},
+					},
+				},
+			}
+			handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("missing image reached upstream through allow_unowned_images")
+			}))
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			handler.ServeHTTP(rec, req)
+
+			// An image allow_unowned_images cannot rescue because it does not
+			// exist is 404, the same answer any other unresolvable target
+			// gets; the option only ever covered a resolved image with no
+			// owner label.
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
+			}
+			var response struct {
+				Message string `json:"message"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+				t.Fatalf("decode deny body: %v", err)
+			}
+			if response.Message != tt.wantMessage {
+				t.Fatalf("deny message = %q, want %q", response.Message, tt.wantMessage)
+			}
+		})
+	}
+}
+
+// TestMiddlewareDeniesImageAttestationsForCrossOwnerImage pins that the
+// attestation path enforces its image's owner.
 func TestMiddlewareDeniesImageAttestationsForCrossOwnerImage(t *testing.T) {
 	t.Parallel()
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
@@ -1868,26 +1930,225 @@ func TestMiddlewareDeniesExecAccessForCrossOwnerContainer(t *testing.T) {
 	}
 }
 
-func TestMiddlewarePassesThroughWhenResourceMissing(t *testing.T) {
+// TestMiddlewareDeniesWhenResourceMissing pins the two statuses ownership
+// answers with, on the same fixture, so the pair cannot drift apart: a
+// resource the daemon cannot resolve is a 404 and a resource that resolves to
+// another owner is a 403. Both are refusals — neither reaches the upstream —
+// and the difference exists so an idempotent client deleting something that
+// is already gone gets the status it expects instead of a permissions error,
+// and so a hidden resource reads the same as it does through the visibility
+// layer.
+func TestMiddlewareDeniesWhenResourceMissing(t *testing.T) {
 	t.Parallel()
-	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
-	fi := fakeInspector{
-		resources: map[string]map[string]inspectResult{
-			"containers": {
-				"missing": {found: false},
-			},
+	tests := []struct {
+		name       string
+		method     string
+		path       string
+		wantStatus int
+		wantReason string
+	}{
+		{
+			name:       "inspect of an unknown id",
+			method:     http.MethodGet,
+			path:       "/containers/missing/json",
+			wantStatus: http.StatusNotFound,
+			wantReason: "owner policy could not resolve container",
+		},
+		{
+			name:       "delete of an unknown id",
+			method:     http.MethodDelete,
+			path:       "/containers/missing",
+			wantStatus: http.StatusNotFound,
+			wantReason: "owner policy could not resolve container",
+		},
+		{
+			name:       "inspect of a foreign container",
+			method:     http.MethodGet,
+			path:       "/containers/foreign/json",
+			wantStatus: http.StatusForbidden,
+			wantReason: "owner policy denied access to container",
+		},
+		{
+			name:       "delete of a foreign container",
+			method:     http.MethodDelete,
+			path:       "/containers/foreign",
+			wantStatus: http.StatusForbidden,
+			wantReason: "owner policy denied access to container",
 		},
 	}
-	handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	}))
 
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/containers/missing/json", nil)
-	handler.ServeHTTP(rec, req)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+			fi := fakeInspector{
+				resources: map[string]map[string]inspectResult{
+					"containers": {
+						"missing": {found: false},
+						"foreign": {labels: map[string]string{"com.sockguard.owner": "job-999"}, found: true},
+					},
+				},
+			}
+			handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("unauthorized resource reached upstream")
+			}))
 
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(tt.method, tt.path, nil))
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			var response struct {
+				Message string `json:"message"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+				t.Fatalf("decode deny body: %v", err)
+			}
+			if response.Message != tt.wantReason {
+				t.Fatalf("deny message = %q, want %q", response.Message, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestMiddlewareDeniesWhenExecSessionMissing(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name             string
+		path             string
+		wantLibpodPrefix bool
+	}{
+		{name: "docker compat", path: "/exec/missing/start"},
+		{name: "libpod", path: "/libpod/exec/missing/start", wantLibpodPrefix: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+			fi := fakeInspector{
+				execs: map[string]execResult{
+					"missing": {found: false},
+				},
+			}
+			handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("missing exec session reached upstream")
+			}))
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, tt.path, nil)
+			handler.ServeHTTP(rec, req)
+
+			// An exec session that does not resolve is an unresolvable target
+			// like any other, so it answers 404 and never reaches the daemon.
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
+			}
+			var response struct {
+				Message string `json:"message"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+				t.Fatalf("decode deny body: %v", err)
+			}
+			if !strings.Contains(response.Message, "could not resolve exec session") {
+				t.Fatalf("deny message = %q, want an unresolved exec session reason", response.Message)
+			}
+			if got := strings.HasPrefix(response.Message, "libpod owner policy "); got != tt.wantLibpodPrefix {
+				t.Fatalf("deny message = %q, want libpod owner-policy prefix = %v", response.Message, tt.wantLibpodPrefix)
+			}
+		})
+	}
+}
+
+func TestMiddlewareRolloutModesPassMissingTargetDenialsThrough(t *testing.T) {
+	t.Parallel()
+	targets := []struct {
+		name       string
+		method     string
+		path       string
+		resource   bool
+		wantReason string
+	}{
+		{
+			name:       "docker resource",
+			method:     http.MethodGet,
+			path:       "/containers/missing/json",
+			resource:   true,
+			wantReason: "owner policy could not resolve container",
+		},
+		{
+			name:       "libpod resource",
+			method:     http.MethodGet,
+			path:       "/libpod/containers/missing/json",
+			resource:   true,
+			wantReason: "libpod owner policy could not resolve container",
+		},
+		{
+			name:       "docker exec",
+			method:     http.MethodPost,
+			path:       "/exec/missing/start",
+			wantReason: "owner policy could not resolve exec session",
+		},
+		{
+			name:       "libpod exec",
+			method:     http.MethodPost,
+			path:       "/libpod/exec/missing/start",
+			wantReason: "libpod owner policy could not resolve exec session",
+		},
+	}
+
+	for _, mode := range []string{"warn", "audit"} {
+		for _, target := range targets {
+			t.Run(mode+"/"+target.name, func(t *testing.T) {
+				t.Parallel()
+				fi := fakeInspector{}
+				if target.resource {
+					fi.resources = map[string]map[string]inspectResult{
+						"containers": {
+							"missing": {found: false},
+						},
+					}
+				} else {
+					fi.execs = map[string]execResult{
+						"missing": {found: false},
+					}
+				}
+
+				reached := false
+				handler := middlewareWithDeps(
+					testLogger(),
+					Options{Owner: "job-123", LabelKey: "com.sockguard.owner"},
+					fi.inspectResource,
+					fi.inspectExec,
+				)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					reached = true
+					w.WriteHeader(http.StatusNoContent)
+				}))
+
+				meta := &logging.RequestMeta{RolloutMode: mode}
+				req := httptest.NewRequest(target.method, target.path, nil)
+				req = req.WithContext(logging.WithMeta(req.Context(), meta))
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+
+				if !reached {
+					t.Fatalf("missing target did not reach upstream under mode=%s", mode)
+				}
+				if rec.Code != http.StatusNoContent {
+					t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+				}
+				if meta.Decision != logging.DecisionWouldDeny {
+					t.Fatalf("decision = %q, want %q", meta.Decision, logging.DecisionWouldDeny)
+				}
+				if meta.ReasonCode != reasonCodeOwnerPolicyDeniedAccess {
+					t.Fatalf("reason code = %q, want %q", meta.ReasonCode, reasonCodeOwnerPolicyDeniedAccess)
+				}
+				if meta.Reason != target.wantReason {
+					t.Fatalf("reason = %q, want %q", meta.Reason, target.wantReason)
+				}
+			})
+		}
 	}
 }
 
@@ -2345,8 +2606,23 @@ func TestAllowOwnershipRequest(t *testing.T) {
 	execfi := fakeInspector{
 		execs: map[string]execResult{"missing": {found: false}},
 	}
-	if verdict, reason, err := allowOwnershipRequest(context.Background(), http.MethodPost, "/exec/missing/start", opts, execfi.inspectResource, execfi.inspectExec, nil); err != nil || verdict != verdictPassThrough || reason != "" {
-		t.Fatalf("allowOwnershipRequest(exec missing) = (%v, %q, %v), want verdictPassThrough/\"\"/nil", verdict, reason, err)
+	for _, tt := range []struct {
+		name             string
+		path             string
+		wantLibpodPrefix bool
+	}{
+		{name: "docker compat exec missing", path: "/exec/missing/start"},
+		{name: "libpod exec missing", path: "/libpod/exec/missing/start", wantLibpodPrefix: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			verdict, reason, err := allowOwnershipRequest(context.Background(), http.MethodPost, tt.path, opts, execfi.inspectResource, execfi.inspectExec, nil)
+			if err != nil || verdict != verdictDenyMissing || reason == "" {
+				t.Fatalf("allowOwnershipRequest(exec missing) = (%v, %q, %v), want verdictDenyMissing/non-empty reason/nil", verdict, reason, err)
+			}
+			if got := strings.HasPrefix(reason, "libpod owner policy "); got != tt.wantLibpodPrefix {
+				t.Fatalf("reason = %q, want libpod owner-policy prefix = %v", reason, tt.wantLibpodPrefix)
+			}
+		})
 	}
 	if verdict, _, err := allowOwnershipRequest(context.Background(), http.MethodGet, "/info", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictPassThrough {
 		t.Fatalf("allowOwnershipRequest(no match) = (%v, %v), want verdictPassThrough/nil", verdict, err)
@@ -2457,8 +2733,8 @@ func TestIdentifierHelpers(t *testing.T) {
 	// Attestation listing (Engine API 1.53+) must resolve to {name} so the
 	// owner-isolation check applies to the referenced image. Without the
 	// "/attestations" suffix, imageIdentifier returns the whole
-	// "{name}/attestations" remainder, the ownership inspect 404s, and the
-	// request passes through unfiltered.
+	// "{name}/attestations" remainder and denies even an owned image because
+	// that composite identifier cannot be resolved.
 	if id, ok := imageIdentifier(http.MethodGet, "/images/busybox:latest/attestations"); !ok || id != "busybox:latest" {
 		t.Fatalf("imageIdentifier(attestations) = (%q, %v), want (busybox:latest, true)", id, ok)
 	}
@@ -2517,14 +2793,15 @@ func TestIdentifierHelpers(t *testing.T) {
 	}
 }
 
-func TestMiddlewareChecksKeywordNamedResourcesOutsideCollectionActions(t *testing.T) {
+func TestMiddlewareChecksOrRefusesKeywordNamedResourcesOutsideCollectionActions(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name       string
-		method     string
-		target     string
-		kind       dockerresource.Kind
-		identifier string
+		name                string
+		method              string
+		target              string
+		kind                dockerresource.Kind
+		identifier          string
+		refuseBeforeInspect bool
 	}{
 		{name: "container create action", method: http.MethodPost, target: "/containers/create/start", kind: dockerresource.KindContainer, identifier: "create"},
 		{name: "container json action", method: http.MethodPost, target: "/containers/json/start", kind: dockerresource.KindContainer, identifier: "json"},
@@ -2533,12 +2810,12 @@ func TestMiddlewareChecksKeywordNamedResourcesOutsideCollectionActions(t *testin
 		{name: "network prune inspect", method: http.MethodHead, target: "/networks/prune", kind: dockerresource.KindNetwork, identifier: "prune"},
 		{name: "volume create inspect", method: http.MethodGet, target: "/volumes/create", kind: dockerresource.KindVolume, identifier: "create"},
 		{name: "volume prune inspect", method: http.MethodHead, target: "/volumes/prune", kind: dockerresource.KindVolume, identifier: "prune"},
-		{name: "image json delete", method: http.MethodDelete, target: "/images/json", kind: dockerresource.KindImage, identifier: "json"},
-		{name: "image create delete", method: http.MethodDelete, target: "/images/create", kind: dockerresource.KindImage, identifier: "create"},
-		{name: "image search delete", method: http.MethodDelete, target: "/images/search", kind: dockerresource.KindImage, identifier: "search"},
-		{name: "image get delete", method: http.MethodDelete, target: "/images/get", kind: dockerresource.KindImage, identifier: "get"},
-		{name: "image load delete", method: http.MethodDelete, target: "/images/load", kind: dockerresource.KindImage, identifier: "load"},
-		{name: "image prune delete", method: http.MethodDelete, target: "/images/prune", kind: dockerresource.KindImage, identifier: "prune"},
+		{name: "image json delete", method: http.MethodDelete, target: "/images/json", refuseBeforeInspect: true},
+		{name: "image create delete", method: http.MethodDelete, target: "/images/create", refuseBeforeInspect: true},
+		{name: "image search delete", method: http.MethodDelete, target: "/images/search", refuseBeforeInspect: true},
+		{name: "image get delete", method: http.MethodDelete, target: "/images/get", refuseBeforeInspect: true},
+		{name: "image load delete", method: http.MethodDelete, target: "/images/load", refuseBeforeInspect: true},
+		{name: "image prune delete", method: http.MethodDelete, target: "/images/prune", refuseBeforeInspect: true},
 		{name: "service create inspect", method: http.MethodGet, target: "/services/create", kind: dockerresource.KindService, identifier: "create"},
 		{name: "secret create inspect", method: http.MethodHead, target: "/secrets/create", kind: dockerresource.KindSecret, identifier: "create"},
 		{name: "config create inspect", method: http.MethodGet, target: "/configs/create", kind: dockerresource.KindConfig, identifier: "create"},
@@ -2571,6 +2848,12 @@ func TestMiddlewareChecksKeywordNamedResourcesOutsideCollectionActions(t *testin
 			}
 			if rec.Code != http.StatusForbidden {
 				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			if tt.refuseBeforeInspect {
+				if gotKind != "" || gotIdentifier != "" {
+					t.Fatalf("inspect = %s/%q, want none before refusing image removal effects", gotKind, gotIdentifier)
+				}
+				return
 			}
 			if gotKind != tt.kind || gotIdentifier != tt.identifier {
 				t.Fatalf("inspect = %s/%q, want %s/%q", gotKind, gotIdentifier, tt.kind, tt.identifier)
