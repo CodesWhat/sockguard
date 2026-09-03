@@ -160,17 +160,17 @@ Optimized for the [Portwing](https://github.com/CodesWhat/portwing) Docker agent
 any remote Docker agent that needs lifecycle control, image pull, and event streaming.
 
 ```yaml
-# Allows: container read (list, inspect, stats, changes, logs)
+# Allows: container read (list, inspect, stats, top, changes, logs)
 # Allows: container lifecycle (start, stop, restart, kill, rename, update, wait, create, remove)
 # Container removal permits Portwing's force option; anonymous-volume and
 # legacy-link deletion stay denied
 # Allows: image read, pull, remove
 # Allows: network read, volume read, distribution, Swarm service reads
-# Denies: exec, build, swarm writes, secrets, plugins, process-list top,
-#         raw archive/export/attach streams
-# insecure_allow_read_exfiltration=true — required because GET /containers/*/logs is allowed
-# (Portwing's GetContainerLogs()); container logs can carry secrets. Drop the logs rule and this
-# flag to harden. /containers/*/top, /archive, /export, /attach stay denied.
+# Denies: exec, build, swarm writes, secrets, plugins, raw archive/export/attach streams
+# insecure_allow_read_exfiltration=true — required because GET /containers/*/logs and
+# GET /containers/*/top are allowed (Portwing's GetContainerLogs() and process view); logs can
+# carry secrets and top returns process command lines. Drop those rules and this
+# flag to harden. /containers/*/archive, /export, /attach stay denied (bulk-exfil paths).
 # Response redactions disabled (redact_mount_paths=false, redact_container_env=false,
 # redact_network_topology=false) — required for drydock passthrough topology so
 # inspect data forwarded to drydock is not corrupted by "<redacted>" placeholders
