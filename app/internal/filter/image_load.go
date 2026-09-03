@@ -143,7 +143,12 @@ func (p imageLoadPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath
 			return "image load denied: untagged images are not allowed", nil
 		}
 		for _, tag := range archive.references {
-			if isLibpodImageLoadPath(normalizedPath) {
+			// The untagged spellings are checked before Podman's localhost
+			// normalization, not after: "<none>:<none>" would otherwise become
+			// "localhost/<none>:<none>", which reads as an ordinary reference,
+			// so allow_untagged would never apply on the libpod route and the
+			// deny reason would name a registry instead of the real cause.
+			if isLibpodImageLoadPath(normalizedPath) && !isUntaggedImageLoadReference(tag) {
 				tag = normalizeLibpodImageLoadReference(tag)
 			}
 			if denyReason := p.denyReasonForTag(tag); denyReason != "" {
@@ -168,7 +173,7 @@ func (p imageLoadPolicy) allowsAnyImageLoad() bool {
 
 func (p imageLoadPolicy) denyReasonForTag(tag string) string {
 	trimmed := strings.TrimSpace(tag)
-	if trimmed == "" || trimmed == "<none>:<none>" {
+	if isUntaggedImageLoadReference(trimmed) {
 		if p.allowUntagged {
 			return ""
 		}
@@ -744,6 +749,14 @@ func isLowerHex(value string) bool {
 func (io_ ioDeps) extractImageLoadRepoTagsFromTar(tr *tar.Reader) ([]string, bool, error) {
 	archive, err := io_.extractImageLoadArchiveFromTar(tr, false)
 	return archive.references, archive.format == imageLoadArchiveDocker, err
+}
+
+// isUntaggedImageLoadReference reports the two spellings a Docker archive
+// manifest uses for an image entry that carries no usable repo tag: an empty
+// value and Docker's "<none>:<none>" placeholder.
+func isUntaggedImageLoadReference(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	return trimmed == "" || trimmed == "<none>:<none>"
 }
 
 func normalizeLibpodImageLoadReference(value string) string {

@@ -323,6 +323,46 @@ func TestLibpodImageLoadUsesPodmanNamesForDockerArchiveTags(t *testing.T) {
 	}
 }
 
+// TestLibpodImageLoadReadsUntaggedEntriesBeforeLocalhostNormalization pins the
+// order of the two rewrites the libpod route applies to a Docker manifest
+// entry. Podman's bare-name normalization turns "<none>:<none>" into
+// "localhost/<none>:<none>" and an empty tag into "localhost/", both of which
+// read as ordinary references, so running it first made allow_untagged
+// unreachable on POST /libpod/images/load and denied the archive for the wrong
+// reason when the flag was off.
+func TestLibpodImageLoadReadsUntaggedEntriesBeforeLocalhostNormalization(t *testing.T) {
+	for _, manifest := range []string{`[{"RepoTags":["<none>:<none>"]}]`, `[{"RepoTags":[""]}]`} {
+		t.Run("allow_untagged admits "+manifest, func(t *testing.T) {
+			opts := libpodImageLoadAllowlist()
+			opts.AllowUntagged = true
+			req := httptest.NewRequest(http.MethodPost, "/libpod/images/load", bytes.NewReader(mustImageLoadTar(t, manifest)))
+
+			reason, err := newImageLoadPolicy(opts).inspect(nil, req, NormalizePath(req.URL.Path))
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != "" {
+				t.Fatalf("reason = %q, want allow_untagged to admit the untagged entry", reason)
+			}
+			if err := req.Body.Close(); err != nil {
+				t.Fatalf("close forwarded body: %v", err)
+			}
+		})
+
+		t.Run("the default posture denies "+manifest+" as untagged", func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/libpod/images/load", bytes.NewReader(mustImageLoadTar(t, manifest)))
+
+			reason, err := newImageLoadPolicy(libpodImageLoadAllowlist()).inspect(nil, req, NormalizePath(req.URL.Path))
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if !strings.Contains(reason, "untagged images are not allowed") {
+				t.Fatalf("reason = %q, want the untagged entry denied as untagged", reason)
+			}
+		})
+	}
+}
+
 func TestImageLoadRejectsAnyUntaggedDockerManifestEntry(t *testing.T) {
 	payload := mustImageLoadTar(t, `[
 		{"RepoTags":["ghcr.io/acme/named:v1"]},
