@@ -28,6 +28,12 @@ Optimized for the [drydock](https://github.com/CodesWhat/drydock) container upda
 # the stock "runc" runtime is allowlisted (request_body.container_create.allowed_runtimes)
 # because drydock recreates containers from their inspect spec, which usually carries an
 # explicit HostConfig.Runtime — without it every update would 403 at /containers/create
+# Response redactions are all off (redact_mount_paths, redact_container_env and
+# redact_network_topology are false). Drydock recreates a container from its own
+# inspect payload, so a "<redacted>" placeholder would be forwarded straight into
+# POST /containers/create and dockerd would reject it. The four drydock-with-*
+# presets inherit this; re-enable them only if the consumer never replays inspect
+# output back into a create body.
 ```
 
 ## Drydock with Self-Update (`drydock-with-selfupdate.yaml`)
@@ -42,12 +48,20 @@ path and you need the finalize callback to complete cleanly.
 ```yaml
 # Extends drydock.yaml with:
 # Allows: POST /containers/{id}/exec, POST /exec/{id}/start, GET /exec/{id}/json
+# Allows: container-create bodies that bind-mount /var/run/docker.sock
+#         (request_body.container_create.allowed_bind_mounts, which drydock.yaml
+#         leaves empty). The socket-mode recreate needs it; set it back to [] if
+#         drydock reaches the daemon over TCP. This is the largest security
+#         difference between the two presets.
 # Exec body inspection: allow_privileged=false, allow_root_user=true
 # (drydock's exec create sets no User field, and sockguard treats an empty
 # User as root, so allow_root_user must be true or the finalize exec is
 # denied before allowed_commands is ever checked)
 # allowed_commands pins exec to the single finalize entrypoint argv, so the
 # root-user allowance is safe: only that exact command can run
+# allowed_env_vars pins exec Env to the six DD_SELF_UPDATE_* names. Without it
+# the argv pin is not enough on its own: NODE_OPTIONS could --require arbitrary
+# code under the pinned node command
 # allowed_env_values pins the finalize callback to Drydock's loopback URL at
 # port 3000; update the exact value if you configure a different server port
 ```
@@ -175,6 +189,9 @@ any remote Docker agent that needs lifecycle control, image pull, and event stre
 # redact_network_topology=false) — required for drydock passthrough topology so
 # inspect data forwarded to drydock is not corrupted by "<redacted>" placeholders
 # Standalone operators not paired with drydock can re-enable all three redactions
+# deny_verbosity: verbose returns detailed denial reasons to the caller.
+# That is safe here because the consumer is the trusted Portwing agent or drydock
+# controller. The runner and CIS presets use deny_verbosity: minimal instead.
 ```
 
 ## Portwing with Exec (`portwing-with-exec.yaml`)
@@ -326,7 +343,13 @@ Full Docker API access for Portainer management UI.
 # Allows: containers, images, networks, volumes, exec, build, swarm, plugins (full R/W)
 # WARNING: This grants near-full Docker socket access
 # Container, image, build, network, swarm, node, and plugin writes are inspected, but
-# Portainer's arbitrary exec/plugin-setting behavior may still require the unsafe opt-in
+# the preset sets insecure_allow_body_blind_writes: true and
+# insecure_allow_read_exfiltration: true unconditionally, because Portainer runs
+# arbitrary exec and proxies every read endpoint
+# request_body.build is fully widened as well (allow_remote_context,
+# allow_host_network and allow_run_instructions are all true), so POST /build is
+# admitted without the RUN-instruction or remote-context checks the drydock and
+# portwing build presets keep, and image_pull.allow_all_registries is true
 ```
 
 Portainer's cleanup path uses force removal and anonymous-volume removal, so
@@ -365,7 +388,9 @@ permits Watchtower's force-removal path and optional anonymous-volume cleanup,
 while legacy link removal stays denied. It keeps
 `insecure_allow_body_blind_writes: true` for arbitrary lifecycle hooks and
 allows an empty exec user because Watchtower uses the container's configured
-user, but it no longer needs `insecure_allow_read_exfiltration: true`.
+user, but it no longer needs `insecure_allow_read_exfiltration: true`. Like the
+drydock presets it also disables all three response redactions, because
+Watchtower recreates containers from the inspect payload it just read.
 
 ## Homepage (`homepage.yaml`)
 
@@ -434,7 +459,9 @@ Minimal access for [docker-autoheal](https://github.com/willfarrell/docker-autoh
 **Use for:** Autoheal, or any health-check-based restart tool.
 
 ```yaml
-# Allows: GET /containers/json (list unhealthy), POST /containers/*/restart
+# Allows: GET /containers/json and GET /containers/*/json (autoheal reads health
+#         status from inspect, not from the list), POST /containers/*/restart
+# Allows: /_ping (GET and HEAD), GET /version, GET /events (a live stream)
 # Denies: everything else — the most restrictive write preset
 ```
 
@@ -475,10 +502,12 @@ to inject job steps.
 
 ```yaml
 # Allows: container lifecycle, exec, attach, log streaming (GET /containers/*/logs),
-#         image pull, per-job networks, named volumes
+#         image pull and image remove (DELETE /images/**, for the runner's
+#         post-pipeline cleanup, so a job can delete any image on the host daemon),
+#         per-job networks, named volumes
 # Denies: privileged containers (even if config.toml asks for them), privileged exec,
-#         host namespace sharing, bind mounts, build, swarm, secrets,
-#         plugins, raw tarball export (/containers/*/export, /images/*/get)
+#         host namespace sharing, bind mounts, capability additions, build, swarm,
+#         secrets, plugins, raw tarball export (/containers/*/export, /images/*/get)
 # insecure_allow_body_blind_writes=true — exec argv is not command-pinned; the runner injects
 # arbitrary job-step commands. insecure_allow_read_exfiltration=true — job trace output streams
 # via the logs and attach APIs. Gate the proxy socket to the runner via clients.unix_peer_profiles
@@ -566,12 +595,25 @@ Mount the preset as your config file:
 services:
   sockguard:
     image: codeswhat/sockguard:latest
+    group_add:
+      - "${DOCKER_SOCK_GID:?set to the GID of /var/run/docker.sock}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - sockguard-socket:/var/run/sockguard
+    environment:
+      - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
     command: ["serve", "-c", "/etc/sockguard/drydock.yaml"]
 ```
 
-All preset configs are bundled in the image at `/etc/sockguard/`.
+Neither addition is optional. No preset sets `listen.socket` and the default is
+`listen.address: "127.0.0.1:2375"`, so without `SOCKGUARD_LISTEN_SOCKET` sockguard
+binds container-local TCP and never writes into the volume the example mounts.
+Sockguard also runs as UID 65532, so it can't open a stock `0660 root:docker`
+socket without `group_add`.
+
+All preset configs are bundled in the image at `/etc/sockguard/`. Three of the 25
+files there aren't workload presets: `sockguard.yaml` is the default config the
+container loads when no `-c` is given, and `discovery.yaml` and
+`multi-listener.yaml` are covered in [Configuration](/configuration).
 
 Presets that keep broad container/image read compatibility also carry explicit `insecure_allow_read_exfiltration: true` acknowledgements so they continue to validate honestly under the read-side export guardrail.
