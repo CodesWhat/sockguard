@@ -22,14 +22,23 @@ turns every one of them on at once.
 docker run -d \
   --name sockguard \
   -v /var/run/docker.sock:/var/run/docker.sock \
-  -v /etc/sockguard/cis-docker-benchmark.yaml:/etc/sockguard/config.yaml:ro \
-  -v sockguard-sock:/run/sockguard \
-  ghcr.io/codeswhat/sockguard:latest
+  -v sockguard-socket:/var/run/sockguard \
+  -e SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock \
+  ghcr.io/codeswhat/sockguard:latest \
+  serve -c /etc/sockguard/cis-docker-benchmark.yaml
 ```
 
 The preset is bundled in the container image at
-`/etc/sockguard/cis-docker-benchmark.yaml`. Mount it as `config.yaml`
-to activate.
+`/etc/sockguard/cis-docker-benchmark.yaml`, so there's nothing to mount from
+the host. Point `serve` at it with `-c`: the `--config` default is
+`/etc/sockguard/sockguard.yaml` and there is no search path behind it, so a
+config mounted under any other name is ignored and the container comes up on
+the bundled deny-all default instead.
+
+The preset carries no `listen:` block either, so on its own it listens on the
+default `127.0.0.1:2375` and never creates a socket file.
+`SOCKGUARD_LISTEN_SOCKET` is what puts it on the Unix socket the verification
+steps below use.
 
 A workload that violates any of the mapped controls gets a `403` with
 the deny reason naming the specific knob:
@@ -50,19 +59,21 @@ the violating field; the structured access log in
 |---|---|---|
 | **5.3** | Linux kernel capabilities restricted | `allowed_capabilities: []` + `require_drop_all_capabilities: true` — `CapAdd` must be empty, `CapDrop` must include `ALL` |
 | **5.4** | Privileged containers not used | `allow_privileged: false` — rejects `HostConfig.Privileged: true` |
-| **5.5** | Sensitive host directories not mounted | `allowed_bind_mounts: []` — every host-path bind must be on the allowlist; default-empty rejects all binds |
+| **5.5** | Sensitive host directories not mounted | `allowed_bind_mounts: []` — every host-path bind must be on the allowlist; default-empty rejects all host-path binds. Named and anonymous volumes aren't host paths and pass regardless |
 | **5.9** | Host network namespace not shared | `allow_host_network: false` — rejects `NetworkMode: "host"` |
 | **5.10** | Memory usage limited | `require_memory_limit: true` — `HostConfig.Memory` must be non-zero |
-| **5.11** | CPU priority set | `require_cpu_limit: true` — at least one of `CPUShares`, `CPUQuota`, `NanoCpus` must be set |
+| **5.11** | CPU priority set | `require_cpu_limit: true` — at least one of `NanoCpus`, `CpuQuota`, `CpuPeriod`, `CpuShares` must be set |
 | **5.12** | Container root filesystem mounted read-only | `require_readonly_rootfs: true` — `HostConfig.ReadonlyRootfs` must be `true` |
 | **5.15** | Host PID namespace not shared | `allow_host_pid: false` — rejects `PidMode: "host"` |
 | **5.16** | Host IPC namespace not shared | `allow_host_ipc: false` — rejects `IpcMode: "host"` |
 | **5.17** | Host devices not directly exposed | `allowed_devices: []`, `allow_all_devices: false` — `HostConfig.Devices` must be empty (allowlist host paths for genuine GPU/HW use) |
+| **5.20** | Host UTS namespace not shared | Always on, no knob — `HostConfig.UTSMode: "host"` is rejected structurally |
 | **5.21** | Default seccomp profile not disabled | `deny_unconfined_seccomp: true` — rejects `SecurityOpt: ["seccomp=unconfined"]` |
 | **5.22** | Docker exec without `--privileged` | `request_body.exec.allow_privileged: false` (when exec is allowed by rule) |
 | **5.23** | Docker exec without `--user=root` | `request_body.exec.allow_root_user: false` (when exec is allowed by rule) |
+| **5.24** | Cgroup usage confirmed | Always on, no knob — a non-empty `HostConfig.CgroupParent` is rejected structurally |
 | **5.25** | Acquiring additional privileges restricted | `require_no_new_privileges: true` — `HostConfig.SecurityOpt` must include `no-new-privileges:true` |
-| **5.28** | PIDs cgroup limit used | `require_pids_limit: true` — `HostConfig.PidsLimit` must be non-zero |
+| **5.28** | PIDs cgroup limit used | `require_pids_limit: true` — `HostConfig.PidsLimit` must be a positive value; Docker's `-1` (unlimited) is non-zero but still rejected |
 | **5.30** | Host user namespace not shared | `allow_host_userns: false` — rejects `UsernsMode: "host"` |
 | **5.31** | Docker socket not mounted inside containers | Satisfied **structurally** by deploying sockguard — workloads see the proxy socket, not the real `/var/run/docker.sock` |
 
@@ -103,7 +114,7 @@ recommended companion tool.
 | **2.x — Daemon configuration** | live-restore, default logging driver, default ulimit, registry trust | `dockerd` flags + `docker-bench-security` |
 | **3.x — Daemon config files** | file permissions on `/etc/docker/daemon.json`, key/cert ownership | filesystem audit |
 | **4.x — Container images** | base image scanning, `HEALTHCHECK`, image freshness (4.6, 4.7) | Trivy or Grype on the image, registry-side controls |
-| **5.x runtime — uninspectable** | 5.6 SSH not running in container (image-level), 5.7/5.8 ports (network-level), 5.13 traffic binding, 5.14 restart policy, 5.18 ulimit override, 5.19 mount propagation, 5.20 UTS namespace, 5.24 cgroup usage, 5.26 healthcheck at runtime, 5.27 updated image, 5.29 default bridge | image scanner + dockerd flags + container-runtime audit |
+| **5.x runtime — uninspectable** | 5.6 SSH not running in container (image-level), 5.7/5.8 ports (network-level), 5.13 traffic binding, 5.14 restart policy, 5.18 ulimit override, 5.19 mount propagation, 5.26 healthcheck at runtime, 5.27 updated image, 5.29 default bridge | image scanner + dockerd flags + container-runtime audit |
 | **6.x — Security operations** | image lifecycle policy | registry-side governance |
 
 For a complete CIS posture, run the preset above plus
@@ -120,7 +131,7 @@ A two-step verification per workload:
    sockguard. It must come back `403`:
 
    ```bash
-   curl -X POST --unix-socket /run/sockguard/sockguard.sock \
+   curl -X POST --unix-socket /var/run/sockguard/sockguard.sock \
      -H 'Content-Type: application/json' \
      -d '{"Image":"alpine","HostConfig":{"Privileged":true}}' \
      http://localhost/containers/create
@@ -131,7 +142,7 @@ A two-step verification per workload:
    the usual `201`:
 
    ```bash
-   curl -X POST --unix-socket /run/sockguard/sockguard.sock \
+   curl -X POST --unix-socket /var/run/sockguard/sockguard.sock \
      -H 'Content-Type: application/json' \
      -d '{
            "Image":"alpine",
