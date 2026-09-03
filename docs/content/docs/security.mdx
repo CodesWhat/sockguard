@@ -95,7 +95,7 @@ Named client profiles sit on top of that admission layer. Sockguard can now sele
 Block entire HTTP methods. Most consumers only need `GET` (read-only mode).
 
 ### Layer 4: Path Filtering
-Allow or deny specific Docker API endpoint paths using glob patterns. Before matching, Sockguard strips Docker API version prefixes (`/v1.45/`), percent-decodes the path (including double-encoded separators and mixed-case escapes such as `%2F`, `%2E`, and `%252F`), and resolves `.` / `..` segments via `path.Clean`. That means `/v1.45/containers/%2e%2e/images/json` canonicalizes to `/images/json` before the glob matcher sees it, so adversarial path shapes cannot slip past a literal allowlist or skip a request-body inspector.
+Allow or deny specific Docker API endpoint paths using glob patterns. Before matching, Sockguard strips Docker API version prefixes (`/v1.45/`) and resolves `.` / `..` segments via `path.Clean`. It works on the path net/http has already percent-decoded exactly once, and it never decodes a second time, so a double-encoded `%252F` stays the literal text `%2F`. That single decode is the point: it's the same one dockerd's request parser applies, which keeps Sockguard's policy view of a path byte-identical to the daemon's routing view. `/v1.45/containers/%2e%2e/images/json` still canonicalizes to `/images/json` before the glob matcher sees it, so adversarial path shapes cannot slip past a literal allowlist or skip a request-body inspector.
 
 ### Layer 5: Request Body Inspection
 `POST /containers/create` bodies are parsed on every request and denied when they contain dangerous configuration:
@@ -193,7 +193,7 @@ Modern `docker build` and `docker compose build` no longer speak the classic `PO
 | Classic builder | `POST /build` | Yes — remote context, host network, `RUN` instructions | Allowed by an explicit `POST /build` rule; `request_body.build` denies remote context, host network, and `RUN` by default (see the `*-with-build.yaml` presets) |
 | Mediated BuildKit session/gRPC | `POST /session`, `POST /grpc` | Yes — per-message policy on `Control/Solve`/`Status` and session `Auth`/`Secrets`/`SSH`/`FileSync`/`FileSend`/`Upload` | Allowed when `request_body.buildkit` is configured (see the `*-with-mediated-build.yaml` presets) |
 | Opaque BuildKit tunnel (deprecated) | `POST /session`, `POST /grpc` | No — whole tunnel admitted with zero inspection | Denied; requires the deprecated `insecure_accept_opaque_buildkit_tunnels: true` |
-| Native gRPC-over-h2c | `moby.buildkit.v1.Control/*` | No — same control plane, bare HTTP/1.1 transport | Denied unconditionally — sockguard's listener has no h2c support outside the two hijack-capable tunnel endpoints, so nothing can dial this path end-to-end |
+| Native gRPC-over-h2c | `moby.buildkit.v1.Control/*` | No — same control plane, untunneled h2c transport | Denied unconditionally — sockguard's listener has no h2c support outside the two hijack-capable tunnel endpoints, so nothing can dial this path end-to-end |
 
 `request_body.buildkit.control.solve` gates the `Solve` RPC: `security.insecure` is always denied with no enabling knob, `network.host` requires `request_body.build.allow_host_network`, and cache import/export types, cache registries, exporter types, and exporter-push registries each have their own allowlist (empty means deny, the standard `request_body.*` convention). The frontend check pairs with `request_body.build.allow_run_instructions`: a Dockerfile synced over the session's `FileSync` stream gets the identical RUN-instruction hold-and-inspect scan the classic `/build` path already applies, unless it arrives via a genuinely remote context, which requires `request_body.build.allow_remote_context` for the same reason classic `/build` does. `control.allow_status` gates the `Status` RPC, admitted only for a ref this same trusted principal, selected profile, and BuildKit session actually `Solve`d, so one tenant or simultaneous build cannot poll another's state. The principal comes from the verified mTLS certificate, Unix peer credentials, or normalized remote host instead of a source port or caller-controlled session header. Ref ownership and upload IDs are committed atomically only after every limit check passes. Session, ref, and upload identifiers are rejected before persistence when they exceed 256 bytes; one control tunnel can retain at most 256 distinct BuildKit session IDs; and an unconsumed upload grant expires after one hour while remaining valid across a normal control-tunnel close. Session `auth`, `secrets`, `ssh`, `file_sync`, `file_send`, and `upload` calls each stay denied until their own policy allows them, and a registry method classified for mediation but missing a dispatcher fails closed rather than becoming raw passthrough. See [Configuration](/configuration) for the full field reference.
 
@@ -249,12 +249,12 @@ buffered visibility rewrite must generate its own `502`, Sockguard removes
 stale upstream representation headers before writing the replacement JSON so
 clients do not see a mismatched length or encoding.
 
-These controls are on by default where they are pure redaction because runtime env vars routinely carry credentials and Docker read APIs expose raw host mount paths plus internal network layout.
+These controls are on by default where they are pure redaction, because runtime env vars routinely carry credentials and Docker read APIs expose raw host mount paths plus internal network layout. Four toggles carry that default: `response.redact_container_env`, `redact_mount_paths`, `redact_network_topology`, and `redact_sensitive_data`. Two more are pure redaction but default off. `response.redact_host_topology` strips `Containerd`, `FirewallBackend`, `DiscoveredDevices`, and `NRI` from `GET /info`, and the hardened presets enable it. `response.allow_attestation_statements` holds back the full in-toto statement content from `GET /images/*/attestations`.
 
 ### Layer 8: Structured Access And Audit Logging
 Every request is stamped with a proxy-generated canonical `X-Request-Id` and logged with method, raw `path`, `normalized_path`, decision, matched rule index, selected client profile when present, latency, request ID, trace context, and client metadata. If the caller supplied its own request ID, Sockguard preserves it separately as `client_request_id` in logs instead of trusting it as the canonical correlation key.
 
-`path` is the client-controlled URL path exactly as received and is retained for forensic replay. Detection logic, SIEM grouping, and policy analysis should use `normalized_path`, which is the canonical path after Sockguard strips Docker API version prefixes, decodes escaped separators, and resolves dot segments before rule evaluation.
+`path` is the client-controlled URL path exactly as received and is retained for forensic replay. Detection logic, SIEM grouping, and policy analysis should use `normalized_path`, which is the canonical path after Sockguard strips Docker API version prefixes and resolves dot segments with `path.Clean`, on the path net/http already decoded once, before rule evaluation.
 
 When `log.audit.enabled` is true, Sockguard also emits a dedicated JSON audit event with a stable schema: request ID, client request ID, trace ID, trace parent/span IDs, sampled flag, raw and normalized path, decision, machine-readable `reason_code`, human-readable reason, matched rule, selected profile, flattened actor and transport identity fields, ownership context, and final HTTP status. Upstream reverse-proxy errors overwrite the audit reason code with bounded values such as `upstream_socket_unreachable` or `upstream_response_rejected_by_policy`, so the terminal result remains explicit even after an allow decision has already been made.
 
@@ -312,8 +312,9 @@ stack. They are documented here for honest operator awareness rather than as
 open bugs.
 
 **IP-based client identity is soft isolation.** When
-`clients.container_labels.enabled` is true, or any `clients.profiles[*].match`
-rule keys on `source_cidrs`, Sockguard resolves the calling container by
+`clients.container_labels.enabled` is true, or any
+`clients.source_ip_profiles[*].cidrs` entry assigns a profile by source CIDR,
+Sockguard resolves the calling container by
 source IP through the Docker API. This is *soft isolation* — adequate against
 configuration drift and friendly-fire mistakes, but **not a hard boundary**
 against an attacker who can influence which container a given bridge IP
@@ -342,8 +343,9 @@ client profile assignments conservative for clients that do not need
 interactive command execution.
 
 **Exec Env allowlisting is create-time only.** `request_body.exec.allowed_env_vars`,
-`denied_env_vars`, and `allowed_env_values` are enforced on `POST /containers/*/exec`, not on the
-`POST /exec/*/start` re-check. This isn't a gap in the re-check logic —
+`denied_env_vars`, and `allowed_env_values` are enforced at exec create (`POST /containers/*/exec`
+and `POST /libpod/containers/*/exec`), not on the exec-start re-check (`POST /exec/*/start` or
+`POST /libpod/exec/*/start`). This isn't a gap in the re-check logic —
 `GET /exec/{id}/json` (the metadata the start-time re-check reads) never
 exposes the original `Env`, and exec instances are immutable once created, so
 there is no later point at which the environment could change. Once an exec
@@ -352,8 +354,8 @@ the exec instance.
 
 **Hijacked-stream redaction limits.** Sockguard's response filter — including
 the `response.redact_container_env`, `response.redact_mount_paths`,
-`response.redact_network_topology`, and `response.redact_sensitive_data`
-toggles — operates only on structured JSON responses with known shapes. Raw
+`response.redact_network_topology`, `response.redact_host_topology`, and
+`response.redact_sensitive_data` toggles — operates only on structured JSON responses with known shapes. Raw
 streaming endpoints — `GET /containers/*/logs`, `POST /containers/*/attach`,
 `GET /services/*/logs`, `GET /events`, exec attach, and image-build progress
 output — switch the connection to a raw byte stream (or a non-JSON
