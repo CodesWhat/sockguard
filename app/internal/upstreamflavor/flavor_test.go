@@ -73,10 +73,18 @@ func TestDetectClassifiesVersionResponses(t *testing.T) {
 			want:   Docker,
 		},
 		{
-			name:   "podman wins a response naming both, whatever the order",
-			status: http.StatusOK,
-			body:   `{"Components":[{"Name":"Engine"},{"Name":"Podman Engine"}]}`,
-			want:   Podman,
+			name:      "ambiguous when both engines are named, engine first",
+			status:    http.StatusOK,
+			body:      `{"Components":[{"Name":"Engine"},{"Name":"Podman Engine"}]}`,
+			wantErr:   true,
+			wantErrIs: ErrAmbiguous,
+		},
+		{
+			name:      "ambiguous when both engines are named, podman first",
+			status:    http.StatusOK,
+			body:      `{"Components":[{"Name":"Podman Engine"},{"Name":"Engine"}]}`,
+			wantErr:   true,
+			wantErrIs: ErrAmbiguous,
 		},
 		{
 			name:      "unrecognized engine",
