@@ -409,33 +409,42 @@ func TestImageBatchOwnershipRejectsEffectExpandingLibpodRemoveOptions(t *testing
 }
 
 func TestImageBatchOwnershipDeniesTheWholeRequestWhenAnyImageIsUnauthorized(t *testing.T) {
+	// wantStatus differs per case because the two denial verdicts answer with
+	// different statuses: a member that resolves to another owner is a 403,
+	// and one the daemon cannot resolve at all is a 404. Both refuse the whole
+	// batch before the upstream is contacted, which is what the handler below
+	// asserts.
 	tests := []struct {
-		name   string
-		method string
-		target string
-		badID  string
-		result inspectResult
+		name       string
+		method     string
+		target     string
+		badID      string
+		result     inspectResult
+		wantStatus int
 	}{
 		{
-			name:   "libpod export mixed owner batch",
-			method: http.MethodGet,
-			target: "/libpod/images/export?references=mine%3A1&references=theirs%3A1",
-			badID:  "theirs:1",
-			result: inspectResult{labels: map[string]string{"com.sockguard.owner": "other-job"}, found: true},
+			name:       "libpod export mixed owner batch",
+			method:     http.MethodGet,
+			target:     "/libpod/images/export?references=mine%3A1&references=theirs%3A1",
+			badID:      "theirs:1",
+			result:     inspectResult{labels: map[string]string{"com.sockguard.owner": "other-job"}, found: true},
+			wantStatus: http.StatusForbidden,
 		},
 		{
-			name:   "libpod export unresolved image",
-			method: http.MethodGet,
-			target: "/libpod/images/export?references=mine%3A1&references=missing%3A1",
-			badID:  "missing:1",
-			result: inspectResult{found: false},
+			name:       "libpod export unresolved image",
+			method:     http.MethodGet,
+			target:     "/libpod/images/export?references=mine%3A1&references=missing%3A1",
+			badID:      "missing:1",
+			result:     inspectResult{found: false},
+			wantStatus: http.StatusNotFound,
 		},
 		{
-			name:   "libpod remove requires owner label despite allow unowned",
-			method: http.MethodDelete,
-			target: "/libpod/images/remove?noprune=true&images=mine%3A1&images=unlabeled%3A1",
-			badID:  "unlabeled:1",
-			result: inspectResult{labels: map[string]string{}, found: true},
+			name:       "libpod remove requires owner label despite allow unowned",
+			method:     http.MethodDelete,
+			target:     "/libpod/images/remove?noprune=true&images=mine%3A1&images=unlabeled%3A1",
+			badID:      "unlabeled:1",
+			result:     inspectResult{labels: map[string]string{}, found: true},
+			wantStatus: http.StatusForbidden,
 		},
 	}
 
@@ -459,8 +468,8 @@ func TestImageBatchOwnershipDeniesTheWholeRequestWhenAnyImageIsUnauthorized(t *t
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, httptest.NewRequest(tt.method, tt.target, nil))
 
-			if rec.Code != http.StatusForbidden {
-				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, tt.wantStatus, rec.Body.String())
 			}
 		})
 	}

@@ -915,7 +915,15 @@ func requestVisibleWithPolicy(ctx context.Context, normPath string, policy *comp
 	if isSwarmInspectPath(normPath) {
 		return resourceVisible(ctx, deps, dockerresource.KindSwarm, "", policy.selectors)
 	}
-	if execID, ok := execInspectIdentifier(normPath); ok {
+	// Both exec-inspect spellings resolve through the same upstream inspector:
+	// Podman serves GET /exec/{id}/json and GET /libpod/exec/{id}/json from one
+	// handler over one exec-session store, so the Docker-compat inspect answers
+	// for a session created either way.
+	execID, isExecInspect := execInspectIdentifier(normPath)
+	if !isExecInspect {
+		execID, isExecInspect = libpodExecInspectIdentifier(normPath)
+	}
+	if isExecInspect {
 		containerID, found, err := deps.inspectExec(ctx, execID)
 		if err != nil {
 			return false, err

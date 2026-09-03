@@ -287,12 +287,13 @@ func TestPortwingPresetConformance(t *testing.T) {
 			{http.MethodGet, "/events?until=0", true},
 
 			// Container reads Portwing's docker client uses, including logs
-			// (insecure_allow_read_exfiltration: true acknowledges the tradeoff).
+			// and process-list top (insecure_allow_read_exfiltration: true
+			// acknowledges the tradeoff for both).
 			{http.MethodGet, "/containers/json", true},
 			{http.MethodGet, "/containers/abc/json", true},
 			{http.MethodGet, "/containers/abc/logs?follow=1", true},
 			{http.MethodGet, "/containers/abc/stats?stream=false&one-shot=true", true},
-			{http.MethodGet, "/containers/abc/top", false},
+			{http.MethodGet, "/containers/abc/top", true},
 			{http.MethodGet, "/containers/abc/changes", true},
 
 			// Container lifecycle + create.

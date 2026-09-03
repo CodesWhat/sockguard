@@ -320,6 +320,14 @@ func TestMiddlewareProcessListRequiresReadExfiltrationAcknowledgmentForEveryRule
 			},
 		},
 		{
+			name: "multi-segment container name",
+			path: "/containers/team/payments/top",
+			rules: []Rule{
+				{Methods: []string{http.MethodGet}, Pattern: "/containers/*/*/top", Action: ActionAllow, Index: 0},
+				{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Index: 1},
+			},
+		},
+		{
 			name: "exact libpod container name",
 			path: "/v5.0.0/libpod/containers/payments/top",
 			rules: []Rule{

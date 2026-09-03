@@ -1121,11 +1121,14 @@ var readExfiltrationWarnOnce sync.Once
 // insecure_allow_read_exfiltration: true at chain-build time (startup or
 // hot-reload), the read-side counterpart of warnIfBodyBlindWritesEnabled. The
 // startup validator (validateReadExfiltrationRulesForPolicy in rules.go)
-// refuses common exfiltration-capable rule shapes without this acknowledgment,
-// while the process-list hard gate also enforces it against exact-name and
-// ordered rule shapes at request time. This is the loud runtime echo of that
-// acknowledgment, visible in the running process's logs rather than only at
-// validate time. It matters more here than for the write-side flag,
+// already refuses to start without this acknowledgment when a cataloged
+// endpoint is reachable, exact-name and ordered deny/allow shapes included,
+// because the audit runs over the catalog's whole route language rather than
+// one literal probe. The process-list hard gate is narrower: it keeps a
+// warn/audit profile from passing a process-list denial through. This is the
+// loud runtime echo of that acknowledgment, visible in the running process's
+// logs rather than only at validate time. It matters more here than for the
+// write-side flag,
 // because the README quick start and the Tecnativa migration path both ship
 // the acknowledgment set, so the documented happy path had no ongoing signal
 // at all.
@@ -1138,11 +1141,13 @@ func warnIfReadExfiltrationEnabled(cfg *config.Config, rules []*filter.CompiledR
 // the enable-check and the once-per-process gating without racing other tests
 // for the package-level guard.
 //
-// Both endpoint lists come from allowedSensitiveExfilEndpoints, the same
-// representative probe the startup validator uses to build its refusal message.
-// Exact-name process-list paths and ordered rules that deny the representative
-// path can be enforced only by the request-time hard gate, so the warning text
-// calls out that the fields are not exhaustive for that class. Named client
+// Both endpoint lists come from allowedSensitiveExfilEndpoints, the same audit
+// the startup validator uses to build its refusal message. It searches the
+// catalog's route language against the authored rule literals, so an
+// exact-name path or one left reachable below an ordered deny is reported as
+// the concrete path rather than the catalog spelling. It stops at the first
+// reachable path per cataloged endpoint, which is what the warning text means
+// by not naming every path the rules admit. Named client
 // profiles are reported separately because their
 // rules are evaluated in place of the top-level set: the acknowledgment is
 // global, so a profile can be the only reason it has to be set, and the
@@ -1150,9 +1155,9 @@ func warnIfReadExfiltrationEnabled(cfg *config.Config, rules []*filter.CompiledR
 // Both fields are stable across runs (see allowedSensitiveExfilEndpointsByProfile
 // for the sort that makes the profile half so).
 //
-// Two empty lists are still worth logging: they mean no representative startup
-// probe is admitted, but the acknowledgment can still govern an exact-name or
-// ordered process-list rule at request time.
+// Two empty lists are still worth logging: no cataloged endpoint is reachable
+// under the current rules, so the acknowledgment is a standing permission the
+// operator can remove.
 func warnReadExfiltrationOnce(cfg *config.Config, rules []*filter.CompiledRule, clientProfiles map[string]filter.Policy, logger *slog.Logger, once *sync.Once) {
 	if !cfg.InsecureAllowReadExfiltration {
 		return
@@ -1160,7 +1165,7 @@ func warnReadExfiltrationOnce(cfg *config.Config, rules []*filter.CompiledRule, 
 	exposed := allowedSensitiveExfilEndpoints(cfg.Rules, rules)
 	profileExposed := allowedSensitiveExfilEndpointsByProfile(cfg.Clients.Profiles, clientProfiles)
 	once.Do(func() {
-		logger.Warn("insecure_allow_read_exfiltration is enabled: rules matching raw archive/export, log/attach streaming, checkpoint export, container rootfs mount, or registry push endpoints are admitted instead of refused at startup, and process-list reads allowed by policy are admitted instead of denied at request time. The exposed endpoint fields report representative startup-validation probes, not every request-time process-list path. A caller allowed those paths can read container files, container memory, images, plugins, process arguments, environment variables, secrets, and daemon-host filesystem paths, or push local artifacts to a registry it chooses",
+		logger.Warn("insecure_allow_read_exfiltration is enabled: rules matching raw archive/export, log/attach streaming, checkpoint export, container rootfs mount, or registry push endpoints are admitted instead of refused at startup, and process-list reads allowed by policy are admitted instead of denied at request time. The exposed endpoint fields name one reachable path per cataloged endpoint, not every path the rules admit. A caller allowed those paths can read container files, container memory, images, plugins, process arguments, environment variables, secrets, and daemon-host filesystem paths, or push local artifacts to a registry it chooses",
 			"exposed_endpoints", exposed,
 			"exposed_profile_endpoints", profileExposed,
 		)

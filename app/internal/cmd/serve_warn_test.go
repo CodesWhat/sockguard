@@ -385,33 +385,39 @@ func TestWarnReadExfiltrationOnceDescribesCheckpointAndMountRisks(t *testing.T) 
 	}
 }
 
-func TestWarnReadExfiltrationOnceDescribesRequestTimeOnlyProcessListRule(t *testing.T) {
+// TestWarnReadExfiltrationOnceNamesExactNameProcessListRule pins the audit
+// that actually runs: allowedSensitiveExfilEndpoints searches the catalog's
+// route language against the authored rule literals, so an exact container
+// name is found and reported rather than left to the request-time gate. The
+// configured and compiled rule sets have to be the same policy for the
+// assertion to mean anything — feeding config.Defaults() alongside a disjoint
+// compiled set makes an empty endpoint list vacuous.
+func TestWarnReadExfiltrationOnceNamesExactNameProcessListRule(t *testing.T) {
 	t.Parallel()
 
-	exact, err := compileConfiguredRules([]config.RuleConfig{
+	rules := []config.RuleConfig{
 		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/containers/payments/top"}, Action: "allow"},
-	})
+	}
+	compiled, err := compileConfiguredRules(rules)
 	if err != nil {
 		t.Fatalf("compileConfiguredRules: %v", err)
 	}
 
 	enabled := config.Defaults()
 	enabled.InsecureAllowReadExfiltration = true
+	enabled.Rules = rules
 
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 	var once sync.Once
-	warnReadExfiltrationOnce(&enabled, exact, nil, logger, &once)
+	warnReadExfiltrationOnce(&enabled, compiled, nil, logger, &once)
 	logOutput := buf.String()
 
 	if !strings.Contains(logOutput, "process-list reads allowed by policy are admitted instead of denied at request time") {
 		t.Fatalf("warning does not describe request-time process-list enforcement; log: %q", logOutput)
 	}
-	if !strings.Contains(logOutput, "exposed endpoint fields report representative startup-validation probes, not every request-time process-list path") {
-		t.Fatalf("warning does not qualify the representative endpoint fields; log: %q", logOutput)
-	}
-	if !strings.Contains(logOutput, "exposed_endpoints=[]") {
-		t.Fatalf("exact-name process-list rule unexpectedly appeared in representative startup probes; log: %q", logOutput)
+	if !strings.Contains(logOutput, "GET /containers/payments/top") {
+		t.Fatalf("warning does not name the exact-name process-list rule the literal audit reaches; log: %q", logOutput)
 	}
 }
 

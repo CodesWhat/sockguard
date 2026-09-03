@@ -12,6 +12,15 @@ package filter
 // one. An endpoint that fails only the last two is filtered on the response
 // instead, the way GET /system/df is.
 //
+// LibpodSecretListPath is the one entry that does not meet the first
+// condition, and it is the only one allowed not to. Its items carry
+// Spec.Labels, so a response-side filter of the /system/df kind could scope
+// it; none exists, and the alternative to refusing it is forwarding the whole
+// host's secret inventory. That reasoning is written out in its own deny
+// reason and has to be for any future entry claiming the same exemption:
+// naming the response filter that would replace the refusal is the bar,
+// because "unimplemented" is otherwise a license to add anything here.
+//
 // The reason strings live here rather than in either middleware so the two
 // layers cannot drift into explaining the same refusal differently, the same
 // way they share responsefilter.LibpodSystemDataUsageDenyReason.
@@ -89,6 +98,15 @@ const LibpodContainerStatsPath = "/libpod/containers/stats"
 // reserves "stats" alongside "json": the only spelling of a pod stats read is
 // the collection one.
 const LibpodPodStatsPath = "/libpod/pods/stats"
+
+// LibpodSecretListPath is the normalized path of Podman's native
+// GET /libpod/secrets/json endpoint. Registered at
+// pkg/api/server/register_secrets.go:72 (v5.8.1) as
+// VersionedPath("/libpod/secrets/json") -> compat.ListSecrets, versioned
+// spelling only.
+//
+//nolint:gosec // G101: a URL path, not a credential; "secrets" is Podman's route segment.
+const LibpodSecretListPath = "/libpod/secrets/json"
 
 // LibpodManifestExistsPath and LibpodManifestJSONPath are representative
 // normalized paths for Podman's two dynamic manifest-read route families.
@@ -196,6 +214,38 @@ const LibpodManifestJSONDenyReason = "libpod manifest inspect denied: " +
 	"GET /libpod/manifests/{name}/json returns local manifest content or fetches a caller-named remote " +
 	"manifest, carries no labels, and accepts no filters, so it cannot be scoped to one caller"
 
+// LibpodSecretListDenyReason is reported when either middleware refuses
+// GET /libpod/secrets/json.
+//
+// This entry is the exception the membership note at the top of this file
+// names, and it is worth being precise about why. The report items are
+// entities.SecretInfoReport (pkg/domain/entities/types/secrets.go at v5.8.1:
+// ID, CreatedAt, UpdatedAt, Spec, SecretData), and Spec is a SecretSpec that
+// DOES carry a Labels map. So unlike showmounted or either stats collection,
+// a selector has a field it could read here, and a response-side filter of the
+// GET /system/df kind could in principle scope this list.
+//
+// What it cannot be is scoped UPSTREAM, which is what both isolation layers do
+// for every other libpod list. Podman evaluates this endpoint's filters with
+// utils.IfPassesSecretsFilter (pkg/domain/utils/secrets_filters.go at v5.8.1),
+// whose switch accepts "name" and "id" and returns
+// fmt.Errorf("invalid filter %q", key) on anything else. compat.ListSecrets
+// turns that error into utils.InternalServerError, so the injected `label`
+// key that scopes GET /libpod/containers/json does not merely fail to narrow
+// this list, it turns every request into a 500. Injecting it was the behavior
+// this refusal replaces.
+//
+// That leaves forward-unfiltered or refuse, and forwarding is a cross-owner
+// enumeration of every secret ID and name on the host. Refusing is the honest
+// shape until a response-side filter over Spec.Labels exists, the same call
+// LibpodContainerStatsDenyReason makes about the `containers=` spelling: half
+// a check is worse than none. Implementing that filter is what would move this
+// entry back out of the table.
+const LibpodSecretListDenyReason = "libpod secret list denied: " +
+	"GET /libpod/secrets/json accepts only name and id filters and answers 500 for any other key, so the label " +
+	"filter that scopes every other libpod list cannot be pushed upstream, and no response-side owner filter " +
+	"exists for its shape, so it cannot be scoped to one caller"
+
 var (
 	libpodManifestExistsRead = LibpodUnscopeableRead{
 		Path: LibpodManifestExistsPath, ReasonCodeStem: "manifest_exists", Reason: LibpodManifestExistsDenyReason,
@@ -209,6 +259,7 @@ var libpodUnscopeableReads = []LibpodUnscopeableRead{
 	{Path: LibpodShowMountedPath, ReasonCodeStem: "show_mounted", Reason: LibpodShowMountedDenyReason},
 	{Path: LibpodContainerStatsPath, ReasonCodeStem: "container_stats", Reason: LibpodContainerStatsDenyReason},
 	{Path: LibpodPodStatsPath, ReasonCodeStem: "pod_stats", Reason: LibpodPodStatsDenyReason},
+	{Path: LibpodSecretListPath, ReasonCodeStem: "secret_list", Reason: LibpodSecretListDenyReason},
 	libpodManifestExistsRead,
 	libpodManifestJSONRead,
 }

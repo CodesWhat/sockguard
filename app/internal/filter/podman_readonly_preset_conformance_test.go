@@ -112,7 +112,11 @@ func TestPodmanReadonlyPresetConformance(t *testing.T) {
 		{"libpod-network-inspect", http.MethodGet, "/libpod/networks/abc/json", "", true},
 		{"libpod-volumes-list", http.MethodGet, "/libpod/volumes/json", "", true},
 		{"libpod-volume-inspect", http.MethodGet, "/libpod/volumes/abc/json", "", true},
-		{"libpod-secrets-list", http.MethodGet, "/libpod/secrets/json", "", true},
+		// GET /libpod/secrets/json joined filter.LibpodUnscopeableReads() in
+		// v2.1: Podman's secret filter grammar rejects the label key both
+		// isolation layers depend on, so neither can scope the list. A preset
+		// that promises those layers can be put behind it must not allow it.
+		{"libpod-secrets-list", http.MethodGet, "/libpod/secrets/json", "", false},
 		{"libpod-secret-inspect", http.MethodGet, "/libpod/secrets/abc/json", "", true},
 
 		// --- libpod: denied exfiltration surface ---

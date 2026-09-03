@@ -320,6 +320,13 @@ func EnforceReadExfiltrationAcknowledgment(action Action, method, normalizedPath
 	return ActionDeny, "process-list reads require insecure_allow_read_exfiltration: true", true
 }
 
+// isProcessListRead reports whether normPath is one of the three process-list
+// routes. The identifier is everything before a trailing "/top" rather than a
+// single leading segment: Docker registers the compat route as
+// /containers/{name:.*}/top, so a rule like GET /containers/*/*/top admits a
+// slash-bearing name that a first-segment split would walk straight past.
+// Podman's {name} is single-segment on both libpod routes, so the extra
+// breadth there matches nothing the daemon would route anyway.
 func isProcessListRead(method, normPath string) bool {
 	if upperHTTPMethodASCII(method) != http.MethodGet {
 		return false
@@ -336,8 +343,8 @@ func isProcessListRead(method, normPath string) bool {
 		return false
 	}
 
-	name, action, ok := strings.Cut(rest, "/")
-	return ok && name != "" && action == "top"
+	name, ok := strings.CutSuffix(rest, "/top")
+	return ok && name != ""
 }
 
 // resolveActivePolicy picks the per-request runtimePolicy based on the

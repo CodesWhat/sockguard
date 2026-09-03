@@ -166,7 +166,7 @@ func checkImageBatchOwnershipReferences(
 	strictest := verdictPassThrough
 	for _, identifier := range batch.identifiers {
 		verdict, reason, err := checkOwnedResource(ctx, inspectResource, dockerresource.KindImage, identifier, opts, false)
-		if err != nil || verdict == verdictDeny {
+		if err != nil || verdict.denied() {
 			return verdict, reason, err
 		}
 		strictest = verdictAllow
