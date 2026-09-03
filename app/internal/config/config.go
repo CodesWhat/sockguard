@@ -130,6 +130,15 @@ type Config struct {
 	// round-trips through mapstructure/YAML/JSON.
 	explicitNetworkEndpointConfig bool
 
+	// explicitLibpodNetworkEndpointConfig is explicitNetworkEndpointConfig's
+	// counterpart for request_body.libpod_network.endpoint_config, which
+	// gates POST /libpod/networks/{name}/connect. Both groups carry the same
+	// block and the same mutual-exclusion rule, so both need the same
+	// provenance signal; tracking only the Docker one meant an operator who
+	// wrote both keys under libpod_network got silence where the Docker
+	// spelling gave them an error.
+	explicitLibpodNetworkEndpointConfig bool
+
 	// InsecureAcceptOpaqueBuildkitTunnels acknowledges opening POST /session,
 	// POST /grpc, or a direct BuildKit Control-service method path. Both
 	// endpoints are unversioned opaque hijacked streams: dockerd's embedded
@@ -176,6 +185,13 @@ func (c *Config) ExplicitLegacyListen() bool {
 // check — see validateNetworkEndpointConfig).
 func (c *Config) ExplicitNetworkEndpointConfig() bool {
 	return c.explicitNetworkEndpointConfig
+}
+
+// ExplicitLibpodNetworkEndpointConfig reports whether
+// request_body.libpod_network.endpoint_config was set explicitly, for tests
+// and validation — the libpod half of the same mutual-exclusion check.
+func (c *Config) ExplicitLibpodNetworkEndpointConfig() bool {
+	return c.explicitLibpodNetworkEndpointConfig
 }
 
 // ListenConfig configures a single proxy listener (unix socket or TCP).
@@ -795,8 +811,12 @@ type NetworkRequestBodyConfig struct {
 	// gates (#186) — see EndpointConfigRequestBodyConfig's doc comment for
 	// the field mapping and precedence rules. Only consulted when
 	// allow_endpoint_config is false/unset; setting both is a config
-	// validation error (validateNetworkEndpointConfig). Has no libpod analog
-	// — never consulted by the libpod_network inspector, see libpod_network.go.
+	// validation error (validateNetworkEndpointConfig), under the
+	// libpod_network key as well as this one. Consulted by both inspector
+	// families: the Docker one for POST /networks/*/connect and
+	// container-create's EndpointsConfig, the libpod one for
+	// POST /libpod/networks/{name}/connect, whose top-level snake_case fields
+	// are projected onto EndpointSettings — see filter/libpod_network.go.
 	EndpointConfig       EndpointConfigRequestBodyConfig `mapstructure:"endpoint_config"`
 	AllowDisconnectForce bool                            `mapstructure:"allow_disconnect_force"`
 	// AllowDisableIPv4 permits POST /networks/create with EnableIPv4 explicitly
@@ -805,6 +825,18 @@ type NetworkRequestBodyConfig struct {
 	// an unusual and rarely-intended posture, so it requires this opt-in.
 	// Default false.
 	AllowDisableIPv4 bool `mapstructure:"allow_disable_ipv4"`
+	// AllowDNSServers permits a request to set or remove a network's own DNS
+	// resolvers: `network_dns_servers` on POST /libpod/networks/create and
+	// the `adddnsservers`/`removednsservers` pair on
+	// POST /libpod/networks/{name}/update. This is the mirror image of the
+	// Docker-only fields above — Docker networks have no per-network resolver
+	// concept and the Engine API has no network-update route at all, so the
+	// Docker-compat inspector never consults it and it is meaningful only
+	// under the libpod_network key. Default false: repointing an existing
+	// network's resolver changes what names resolve to inside every container
+	// already attached to it. See filter/libpod_network.go's
+	// inspectLibpodUpdate.
+	AllowDNSServers bool `mapstructure:"allow_dns_servers"`
 }
 
 // EndpointConfigRequestBodyConfig configures granular per-field admission for
@@ -1236,6 +1268,13 @@ type ClientProfileConfig struct {
 	RequestBody RequestBodyConfig           `mapstructure:"request_body"`
 	Rules       []RuleConfig                `mapstructure:"rules"`
 	Limits      LimitsConfig                `mapstructure:"limits"`
+
+	// Profile request-body blocks live inside a slice, so Viper does not apply
+	// Config's reflected leaf defaults or root-level endpoint_config provenance
+	// tracking to them. Load/LoadBytes fill these two flags from a defaults-free
+	// decode of the raw profile list before validation.
+	explicitNetworkEndpointConfig       bool
+	explicitLibpodNetworkEndpointConfig bool
 }
 
 // LimitsConfig groups per-profile rate-limit and concurrency-cap settings.
@@ -1645,10 +1684,11 @@ func Defaults() Config {
 			// form's default reproduces allow_endpoint_config's long-standing
 			// unconditional-allow behavior for Aliases exactly (#186) — see
 			// EndpointConfigRequestBodyConfig's doc comment. LibpodNetwork
-			// reuses the same struct type and gets the identical default for
-			// posture consistency, even though it has no libpod-native network
-			// connect endpoint to gate and never consults EndpointConfig at all
-			// — see libpod_network.go.
+			// reuses the same struct type and gets the identical default
+			// because it gates the same thing on the other API family:
+			// POST /libpod/networks/{name}/connect carries Podman's own
+			// `aliases` field, which filter.libpodNetworkConnectRequest
+			// projects onto Docker's Aliases for the shared gate.
 			Network: NetworkRequestBodyConfig{
 				EndpointConfig: EndpointConfigRequestBodyConfig{
 					AllowAliases: true,

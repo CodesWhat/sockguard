@@ -415,7 +415,11 @@ func TestRouteCategoryCoversDockerRouteFamiliesAndPathEdges(t *testing.T) {
 		// here so a future refactor can't silently reintroduce the filter
 		// package's bug on this side.
 		{name: "three-part version prefix stripped", path: "/v5.0.0/containers/json", want: "/containers/json"},
-		{name: "invalid version prefix kept", path: "/v1x/containers/json", want: "unknown"},
+		// Podman prerelease/dev builds (this fix): the version segment class
+		// is [0-9][0-9A-Za-z.-]*, so a trailing letter run like "1x" strips
+		// just like a digit-only segment.
+		{name: "letter suffix in version segment stripped", path: "/v1x/containers/json", want: "/containers/json"},
+		{name: "no digit after v is not a version segment", path: "/vx/containers/json", want: "unknown"},
 		{name: "container collection", path: "/containers", want: "/containers"},
 		{name: "system known tail", path: "/system/df", want: "/system/df"},
 		{name: "system unknown path", path: "/system/foo/bar", want: "/system/{action}"},

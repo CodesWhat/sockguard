@@ -474,6 +474,7 @@ func TestLibpodSystemDataUsageRefusedUnderVisibilityPolicy(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name     string
+		method   string
 		opts     Options
 		path     string
 		upstream string
@@ -510,6 +511,16 @@ func TestLibpodSystemDataUsageRefusedUnderVisibilityPolicy(t *testing.T) {
 			path:     "/v5.8.1/libpod/system/df",
 			upstream: `{"Containers":[{"ContainerID":"c-dev","Names":"dev-web"`,
 		},
+		{
+			// HEAD must be refused the same as GET: this refusal used to gate
+			// on GET alone, so a HEAD request fell through needsVisibilityLabelFilter
+			// into the inspect path and reached the daemon.
+			name:     "HEAD request",
+			method:   http.MethodHead,
+			opts:     Options{VisibleResourceLabels: []string{"tier=prod"}},
+			path:     "/v5.8.1/libpod/system/df",
+			upstream: libpodSystemDFForTest,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -517,7 +528,11 @@ func TestLibpodSystemDataUsageRefusedUnderVisibilityPolicy(t *testing.T) {
 			reached := false
 			handler := libpodSystemDFHandlerForTest(t, tt.opts, tt.upstream, &reached)
 
-			rec, meta := getLibpodPathForTest(t, handler, http.MethodGet, tt.path)
+			method := tt.method
+			if method == "" {
+				method = http.MethodGet
+			}
+			rec, meta := getLibpodPathForTest(t, handler, method, tt.path)
 			if rec.Code != http.StatusForbidden {
 				t.Fatalf("status = %d, want 403; body: %s", rec.Code, rec.Body.String())
 			}
@@ -531,6 +546,46 @@ func TestLibpodSystemDataUsageRefusedUnderVisibilityPolicy(t *testing.T) {
 			for _, leaked := range []string{"dev-web", "c-dev", "vol-dev", "bbbb444455556666", "1092588"} {
 				if strings.Contains(body, leaked) {
 					t.Errorf("host inventory %q reached the client: %s", leaked, body)
+				}
+			}
+		})
+	}
+}
+
+func TestLibpodShowMountedRefusedUnderVisibilityPolicy(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodGet, path: "/libpod/containers/showmounted"},
+		{method: http.MethodGet, path: "/v5.8.1/libpod/containers/showmounted"},
+		// HEAD must be refused the same as GET; see the equivalent case in
+		// TestLibpodSystemDataUsageRefusedUnderVisibilityPolicy for why.
+		{method: http.MethodHead, path: "/v5.8.1/libpod/containers/showmounted"},
+	} {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			t.Parallel()
+			reached := false
+			handler := libpodSystemDFHandlerForTest(t,
+				Options{VisibleResourceLabels: []string{"tier=prod"}},
+				`{"dev-id":"/var/lib/containers/storage/overlay/dev/merged"}`,
+				&reached,
+			)
+
+			rec, meta := getLibpodPathForTest(t, handler, tt.method, tt.path)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403; body: %s", rec.Code, rec.Body.String())
+			}
+			if reached {
+				t.Fatal("the daemon was queried for mount paths that cannot be visibility-scoped")
+			}
+			if meta.ReasonCode != "visibility_libpod_showmounted_unscopeable" {
+				t.Fatalf("meta.ReasonCode = %q, want visibility_libpod_showmounted_unscopeable", meta.ReasonCode)
+			}
+			for _, leaked := range []string{"dev-id", "/var/lib/containers"} {
+				if strings.Contains(rec.Body.String(), leaked) {
+					t.Fatalf("mount inventory %q reached the client: %s", leaked, rec.Body.String())
 				}
 			}
 		})

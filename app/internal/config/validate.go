@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codeswhat/sockguard/app/internal/filter"
 	"github.com/codeswhat/sockguard/app/internal/glob"
 	"github.com/codeswhat/sockguard/app/internal/pkipin"
 	"github.com/codeswhat/sockguard/app/internal/upstream"
@@ -530,7 +531,7 @@ func validateResponse(cfg *Config) []string {
 	default:
 		errs = append(errs, enumValueError("response.deny_verbosity", cfg.Response.DenyVerbosity, "minimal", "verbose"))
 	}
-	errs = append(errs, validateVisibleResourceLabels("response.visible_resource_labels", cfg.Response.VisibleResourceLabels)...)
+	errs = append(errs, validateVisibleResourceLabels("response.visible_resource_labels", cfg.Response.VisibleResourceLabels, ownerReservedLabelKey(cfg))...)
 	return errs
 }
 
@@ -640,6 +641,8 @@ func validateRules(cfg *Config) []string {
 			errs = append(errs, fmt.Sprintf("rule %d: match.path is required", i+1))
 		} else if strings.Contains(r.Match.Path, "%") {
 			errs = append(errs, literalPercentRuleError(fmt.Sprintf("rule %d", i+1), r.Match.Path))
+		} else if filter.HasVersionPrefix(r.Match.Path) {
+			errs = append(errs, versionPrefixRuleError(fmt.Sprintf("rule %d", i+1), r.Match.Path))
 		}
 		switch r.Action {
 		case "allow", "deny":
@@ -648,6 +651,23 @@ func validateRules(cfg *Config) []string {
 		}
 	}
 	return errs
+}
+
+// versionPrefixRuleError reports a rule path pattern that itself begins with
+// a Docker/Podman API version prefix (e.g. "/v1.45/..." or
+// "/v5.8.1-dev/..."). NormalizePath strips exactly that prefix from the
+// request path before rule matching runs, using the same predicate
+// (filter.HasVersionPrefix, built on filter's stripVersionPrefix) this check
+// calls — so a pattern that still carries the prefix can never match real
+// traffic and is silently dead rather than doing what its author intended.
+// Failing closed at validation time beats the startup warning this replaces:
+// a rule an operator believed was denying (or allowing) versioned traffic
+// that in fact never fires is a security-relevant gap, not a style nit.
+func versionPrefixRuleError(label, pattern string) string {
+	return fmt.Sprintf(
+		"%s: match.path %q begins with an API version prefix; sockguard strips version prefixes before matching, so this pattern never matches real traffic — write the pattern without the /vN... prefix",
+		label, pattern,
+	)
 }
 
 // literalPercentRuleError reports a rule path pattern that contains a literal
@@ -855,25 +875,50 @@ func validateRequestBody(cfg *Config) []string {
 	return errs
 }
 
-// validateNetworkEndpointConfig rejects
-// request_body.network.allow_endpoint_config: true combined with an
-// explicitly configured request_body.network.endpoint_config block (#186):
+// validateNetworkEndpointConfig rejects allow_endpoint_config: true combined
+// with an explicitly configured endpoint_config block (#186):
 // allow_endpoint_config already admits every EndpointSettings field
 // unchanged, so a simultaneous granular block is ambiguous — which one an
 // operator actually intends to govern the request is not something sockguard
-// should guess at silently. Detected via cfg.explicitNetworkEndpointConfig
-// (a provenance-only Viper pass; see explicitNetworkEndpointConfigFile/Bytes
-// in load.go) rather than comparing cfg.RequestBody.Network.EndpointConfig
-// against its Go zero value, because EndpointConfigRequestBodyConfig.AllowAliases
-// defaults to true (config.Defaults()), so the merged struct is never the
-// zero value even when the operator never wrote the block at all.
+// should guess at silently. Detected via the cfg.explicit*EndpointConfig
+// provenance flags (a provenance-only Viper pass; see
+// explicitEndpointConfigFile/Bytes in load.go) rather than comparing the
+// merged EndpointConfig against its Go zero value, because
+// EndpointConfigRequestBodyConfig.AllowAliases defaults to true
+// (config.Defaults()), so the merged struct is never the zero value even
+// when the operator never wrote the block at all.
+//
+// Both groups that carry the block are checked. request_body.libpod_network
+// was originally exempt on the belief that libpod had no network-connect
+// endpoint to gate; it does (POST /libpod/networks/{name}/connect), so an
+// operator writing both keys there used to get silence where the Docker
+// spelling gave them an error — a config that quietly means something other
+// than what it says.
 func validateNetworkEndpointConfig(cfg *Config) []string {
+	var errs []string
 	if cfg.RequestBody.Network.AllowEndpointConfig && cfg.explicitNetworkEndpointConfig {
-		return []string{
-			"request_body.network.allow_endpoint_config and request_body.network.endpoint_config are mutually exclusive: allow_endpoint_config: true already admits every EndpointSettings field, so remove the endpoint_config block or set allow_endpoint_config: false and use the granular fields instead",
+		errs = append(errs, endpointConfigMutualExclusionError("request_body", "network"))
+	}
+	if cfg.RequestBody.LibpodNetwork.AllowEndpointConfig && cfg.explicitLibpodNetworkEndpointConfig {
+		errs = append(errs, endpointConfigMutualExclusionError("request_body", "libpod_network"))
+	}
+	for i, profile := range cfg.Clients.Profiles {
+		prefix := fmt.Sprintf("clients.profiles[%d].request_body", i)
+		if profile.RequestBody.Network.AllowEndpointConfig && profile.explicitNetworkEndpointConfig {
+			errs = append(errs, endpointConfigMutualExclusionError(prefix, "network"))
+		}
+		if profile.RequestBody.LibpodNetwork.AllowEndpointConfig && profile.explicitLibpodNetworkEndpointConfig {
+			errs = append(errs, endpointConfigMutualExclusionError(prefix, "libpod_network"))
 		}
 	}
-	return nil
+	return errs
+}
+
+// endpointConfigMutualExclusionError renders the #186 mutual-exclusion
+// message for one request_body group. One template, so the two groups cannot
+// drift into differently-worded advice for the identical mistake.
+func endpointConfigMutualExclusionError(prefix, group string) string {
+	return fmt.Sprintf("%s.%s.allow_endpoint_config and %s.%s.endpoint_config are mutually exclusive: allow_endpoint_config: true already admits every EndpointSettings field, so remove the endpoint_config block or set allow_endpoint_config: false and use the granular fields instead", prefix, group, prefix, group)
 }
 
 // validateBuildkitAckMutualExclusion rejects
@@ -1279,7 +1324,7 @@ func validateClientsConfig(cfg *Config) []string {
 
 	profilesByName := make(map[string]struct{}, len(cfg.Clients.Profiles))
 	for i, profile := range cfg.Clients.Profiles {
-		errs = append(errs, validateClientProfile(i, profile, profilesByName)...)
+		errs = append(errs, validateClientProfile(i, profile, profilesByName, ownerReservedLabelKey(cfg))...)
 	}
 
 	errs = append(errs, validateClientsGlobalConcurrency(cfg)...)
@@ -1498,7 +1543,7 @@ func validateClientsUnixPeerProfiles(cfg *Config, profilesByName map[string]stru
 	return errs
 }
 
-func validateClientProfile(index int, profile ClientProfileConfig, profilesByName map[string]struct{}) []string {
+func validateClientProfile(index int, profile ClientProfileConfig, profilesByName map[string]struct{}, reservedLabelKey string) []string {
 	var errs []string
 
 	prefix := fmt.Sprintf("clients.profiles[%d]", index)
@@ -1526,7 +1571,7 @@ func validateClientProfile(index int, profile ClientProfileConfig, profilesByNam
 		errs = append(errs, fmt.Sprintf("%s.mode must be one of enforce|warn|audit, got %q", prefix, profile.Mode))
 	}
 
-	errs = append(errs, validateVisibleResourceLabels(prefix+".response.visible_resource_labels", profile.Response.VisibleResourceLabels)...)
+	errs = append(errs, validateVisibleResourceLabels(prefix+".response.visible_resource_labels", profile.Response.VisibleResourceLabels, reservedLabelKey)...)
 	errs = append(errs, validateRequestBodyConfig(prefix+".request_body", profile.RequestBody)...)
 	errs = append(errs, validateRuleConfigs(profile.Rules, prefix+".rules")...)
 	errs = append(errs, validateLimitsConfig(prefix+".limits", profile.Limits)...)
@@ -1861,6 +1906,8 @@ func validateRuleConfigs(rules []RuleConfig, prefix string) []string {
 			errs = append(errs, rulePrefix+".match.path is required")
 		} else if strings.Contains(r.Match.Path, "%") {
 			errs = append(errs, literalPercentRuleError(rulePrefix, r.Match.Path))
+		} else if filter.HasVersionPrefix(r.Match.Path) {
+			errs = append(errs, versionPrefixRuleError(rulePrefix, r.Match.Path))
 		}
 		switch r.Action {
 		case "allow", "deny":
@@ -2030,7 +2077,29 @@ func validateLogOutputField(fieldPath, output string) error {
 	return nil
 }
 
-func validateVisibleResourceLabels(prefix string, values []string) []string {
+// ownerReservedLabelKey returns the label key ownership stamps and filters on,
+// or "" when owner scoping is off. Read as-is rather than re-deriving the
+// Defaults() fallback, matching validateMutationInjectLabels: an empty
+// LabelKey alongside a configured owner is its own error, reported separately.
+func ownerReservedLabelKey(cfg *Config) string {
+	if cfg.Ownership.Owner == "" {
+		return ""
+	}
+	return cfg.Ownership.LabelKey
+}
+
+// validateVisibleResourceLabels checks one visible_resource_labels list.
+//
+// reservedLabelKey is the ownership label key (empty when owner scoping is
+// off). A visibility selector may not claim it. Both layers write the same
+// `label` filter key upstream and the values are ANDed, so selecting on the
+// owner key either restates what ownership already enforces or asks for a
+// label to hold two values at once. Docker's Swarm control-plane lists resolve
+// that second case by folding `label` into a map[string]string over a
+// randomly-ordered Args.Get (daemon/cluster/filters.go), so one of the two
+// values wins nondeterministically and the visibility scope can silently
+// disappear. Keeping each layer's keys disjoint removes the case.
+func validateVisibleResourceLabels(prefix string, values []string, reservedLabelKey string) []string {
 	var errs []string
 	for _, raw := range values {
 		value := strings.TrimSpace(raw)
@@ -2043,8 +2112,13 @@ func validateVisibleResourceLabels(prefix string, values []string) []string {
 			continue
 		}
 		key, selected, hasValue := strings.Cut(value, "=")
-		if strings.TrimSpace(key) == "" {
+		key = strings.TrimSpace(key)
+		if key == "" {
 			errs = append(errs, fmt.Sprintf("%s entries must include a label key, got %q", prefix, raw))
+			continue
+		}
+		if reservedLabelKey != "" && key == reservedLabelKey {
+			errs = append(errs, fmt.Sprintf("%s entries must not select on the reserved owner label key %q (ownership.owner is configured; that key is proxy-enforced)", prefix, key))
 			continue
 		}
 		if hasValue && strings.TrimSpace(selected) == "" {

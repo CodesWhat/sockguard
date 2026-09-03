@@ -51,9 +51,12 @@ const (
 // Model assumptions, each validated against a real dockerd by the integration
 // tier:
 //   - The daemon strips an API-version prefix /v{version}/ where version is
-//     [0-9.]+ (see stripDaemonVersionPrefix) — broader than sockguard's own
-//     stripVersionPrefix (which accepts vN, vN.N, or vN.N.N; see #148), by
-//     design: the oracle must mirror the daemon.
+//     [0-9.]+ (see stripDaemonVersionPrefix). sockguard's own
+//     stripVersionPrefix now accepts the wider /v<digit>[0-9A-Za-z.-]*/
+//     class (see #148 — chosen to match Podman's libpod VersionedPath
+//     routing, a superset of dockerd's [0-9.]+), but this oracle still
+//     mirrors dockerd only: the daemon is what the differential suite
+//     checks sockguard's policy view against.
 //   - The daemon's router resolves dot-segments and collapses duplicate
 //     slashes (path.Clean) before matching. This is the pessimistic choice:
 //     it assumes the daemon *will* route a path like //containers//create to
@@ -113,12 +116,13 @@ func ClassifyDockerRoute(method, rawPath string) RouteCategory {
 }
 
 // stripDaemonVersionPrefix models the daemon's API-version prefix handling:
-// dockerd routes /v{version}/... where version matches [0-9.]+. This is
-// intentionally broader than sockguard's stripVersionPrefix (which accepts
-// vN, vN.N, or vN.N.N — see #148 — but not four or more dot-separated
-// components) — the oracle mirrors the daemon, not sockguard. The prefix
-// must be terminated by a slash, so /v1.45 (no trailing slash) is not a
-// version prefix.
+// dockerd routes /v{version}/... where version matches [0-9.]+. sockguard's
+// own stripVersionPrefix now accepts the wider /v<digit>[0-9A-Za-z.-]*/
+// class — a superset of this, chosen to match Podman's libpod VersionedPath
+// routing (see #148) — but this function mirrors dockerd only, never
+// sockguard: the oracle exists to check sockguard's view against the
+// daemon's. The prefix must be terminated by a slash, so /v1.45 (no
+// trailing slash) is not a version prefix.
 func stripDaemonVersionPrefix(p string) string {
 	if !strings.HasPrefix(p, "/v") {
 		return p

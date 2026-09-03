@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -1139,8 +1140,9 @@ func TestMiddlewareInjectsOwnerFilterIntoContainerList(t *testing.T) {
 		for _, value := range values {
 			got = append(got, value.(string))
 		}
-		// The proxy replaces the entire label filter with only the owner label;
-		// any client-supplied label values are discarded to prevent OR-bypass.
+		// Client-supplied label values are discarded: Swarm's control-plane
+		// lists fold `label` into a map keyed by label name, so a client value
+		// repeating the owner key could displace the proxy-enforced one.
 		if len(got) != 1 || got[0] != "com.sockguard.owner=job-123" {
 			t.Fatalf("label filters = %#v, want exactly [com.sockguard.owner=job-123]", got)
 		}
@@ -1159,9 +1161,10 @@ func TestMiddlewareInjectsOwnerFilterIntoContainerList(t *testing.T) {
 func TestMiddlewareOwnerLabelFilterOverwritesClientSuppliedOwnerLabel(t *testing.T) {
 	t.Parallel()
 	// Attack: client sends filters={"label":["com.sockguard.owner=victim"]} to
-	// list another tenant's containers. The proxy must replace — not append —
-	// the label filter so the upstream request contains only the proxy-enforced
-	// owner label, not an OR-union of victim and attacker labels.
+	// list another tenant's containers. The proxy must drop it rather than
+	// forward it alongside the enforced label: Docker's Swarm list endpoints
+	// collapse `label` into a map[string]string over a randomly-ordered
+	// Args.Get, so the victim value could win the key.
 	opts := Options{Owner: "attacker", LabelKey: "com.sockguard.owner"}
 	handler := middlewareWithDeps(testLogger(), opts, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		filtersJSON := r.URL.Query().Get("filters")
@@ -1338,6 +1341,215 @@ func TestMiddlewareDeniesCrossOwnerContainerAccess(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "owner policy denied access") {
 		t.Fatalf("deny body = %q, want owner policy denial", rec.Body.String())
+	}
+}
+
+func TestMiddlewareDeniesCrossOwnerNetworkMembershipChanges(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		path string
+		body string
+	}{
+		{
+			name: "Docker-compatible connect",
+			path: "/networks/team-net/connect",
+			body: `{"Container":"foreign-container","EndpointConfig":{"Aliases":["keep-me"]}}`,
+		},
+		{
+			name: "Docker-compatible disconnect",
+			path: "/networks/team-net/disconnect",
+			body: `{"Container":"foreign-container","Force":true}`,
+		},
+		{
+			name: "native libpod connect",
+			path: "/libpod/networks/team-net/connect",
+			body: `{"container":"foreign-container","aliases":["keep-me"],"static_ips":["10.89.0.42"]}`,
+		},
+		{
+			name: "native libpod disconnect",
+			path: "/libpod/networks/team-net/disconnect",
+			body: `{"Container":"foreign-container","Force":true}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			for _, foreign := range []dockerresource.Kind{dockerresource.KindNetwork, dockerresource.KindContainer} {
+				t.Run("foreign "+string(foreign), func(t *testing.T) {
+					t.Parallel()
+					ownerFor := func(kind dockerresource.Kind) string {
+						if kind == foreign {
+							return "job-999"
+						}
+						return "job-123"
+					}
+					opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+					fi := &recordingInspector{
+						resources: map[string]map[string]inspectResult{
+							"networks": {
+								"team-net": {labels: map[string]string{"com.sockguard.owner": ownerFor(dockerresource.KindNetwork)}, found: true},
+							},
+							"containers": {
+								"foreign-container": {labels: map[string]string{"com.sockguard.owner": ownerFor(dockerresource.KindContainer)}, found: true},
+							},
+						},
+					}
+					forwarded := false
+					handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						forwarded = true
+						w.WriteHeader(http.StatusNoContent)
+					}))
+
+					rec := httptest.NewRecorder()
+					req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+					handler.ServeHTTP(rec, req)
+
+					if forwarded {
+						t.Fatal("cross-owner network membership change was forwarded")
+					}
+					if rec.Code != http.StatusForbidden {
+						t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+					}
+					wantCall := resourceInspectCall{kind: foreign, id: "foreign-container"}
+					if foreign == dockerresource.KindNetwork {
+						wantCall.id = "team-net"
+					}
+					if !slices.Contains(fi.calls, wantCall) {
+						t.Fatalf("inspect calls = %#v, want %#v", fi.calls, wantCall)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestMiddlewareFailsClosedWhenNetworkMembershipContainerIsUnresolved(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		path string
+		body string
+	}{
+		{name: "Docker-compatible connect", path: "/networks/team-net/connect", body: `{"Container":"missing-container"}`},
+		{name: "Docker-compatible disconnect", path: "/networks/team-net/disconnect", body: `{"Container":"missing-container"}`},
+		{name: "native libpod connect", path: "/libpod/networks/team-net/connect", body: `{"container":"missing-container"}`},
+		{name: "native libpod disconnect", path: "/libpod/networks/team-net/disconnect", body: `{"Container":"missing-container"}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fi := &recordingInspector{resources: map[string]map[string]inspectResult{
+				"networks": {
+					"team-net": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+				},
+			}}
+			forwarded := false
+			handler := middlewareWithDeps(testLogger(), Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				forwarded = true
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+			handler.ServeHTTP(rec, req)
+
+			if forwarded {
+				t.Fatal("unresolved network membership change was forwarded")
+			}
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "could not resolve") {
+				t.Fatalf("deny body = %q, want unresolved-resource reason", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestMiddlewareAuthorizesBothNetworkMembershipResourcesAndPreservesBody(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		path      string
+		body      string
+		preserved string
+		wantValue any
+	}{
+		{
+			name:      "Docker-compatible connect endpoint options",
+			path:      "/networks/team-net/connect",
+			body:      `{"Container":"owned-container","EndpointConfig":{"Aliases":["keep-me"]}}`,
+			preserved: "EndpointConfig",
+			wantValue: map[string]any{"Aliases": []any{"keep-me"}},
+		},
+		{
+			name:      "Docker-compatible disconnect force",
+			path:      "/networks/team-net/disconnect",
+			body:      `{"Container":"owned-container","Force":true}`,
+			preserved: "Force",
+			wantValue: true,
+		},
+		{
+			name:      "native libpod connect endpoint options",
+			path:      "/libpod/networks/team-net/connect",
+			body:      `{"container":"owned-container","aliases":["keep-me"],"static_ips":["10.89.0.42"]}`,
+			preserved: "static_ips",
+			wantValue: []any{"10.89.0.42"},
+		},
+		{
+			name:      "native libpod disconnect force",
+			path:      "/libpod/networks/team-net/disconnect",
+			body:      `{"Container":"owned-container","Force":true}`,
+			preserved: "Force",
+			wantValue: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+			fi := &recordingInspector{
+				resources: map[string]map[string]inspectResult{
+					"networks": {
+						"team-net": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+					},
+					"containers": {
+						"owned-container": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+					},
+				},
+			}
+			handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatalf("decode forwarded body: %v", err)
+				}
+				if got := body[tt.preserved]; !reflect.DeepEqual(got, tt.wantValue) {
+					t.Fatalf("forwarded %s = %#v, want %#v", tt.preserved, got, tt.wantValue)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
+			}
+			wantCalls := []resourceInspectCall{
+				{kind: dockerresource.KindContainer, id: "owned-container"},
+				{kind: dockerresource.KindNetwork, id: "team-net"},
+			}
+			for _, want := range wantCalls {
+				if !slices.Contains(fi.calls, want) {
+					t.Fatalf("inspect calls = %#v, missing %#v", fi.calls, want)
+				}
+			}
+		})
 	}
 }
 
@@ -2791,13 +3003,22 @@ func startUnixHTTPServer(t *testing.T, handler http.Handler) string {
 	t.Helper()
 
 	// Unix-domain socket paths are short on several platforms (104 bytes on
-	// macOS), so do not embed the full test name here.
-	socketPath := filepath.Join("/tmp", fmt.Sprintf("sg-owner-%d.sock", time.Now().UnixNano()))
-	_ = os.Remove(socketPath)
-
-	ln, err := net.Listen("unix", socketPath)
+	// macOS), so do not embed the full test name here. t.TempDir() is also out:
+	// it derives the path from the test name and nests, which overruns that
+	// limit. A UnixNano stamp is not unique enough on its own — two parallel
+	// subtests collided on it during a full-suite run on 2026-08-29 and failed
+	// with "bind: address already in use" — so take a kernel-unique directory
+	// and use a fixed short name inside it.
+	dir, err := os.MkdirTemp("/tmp", "sg-own")
 	if err != nil {
-		t.Fatalf("listen unix: %v", err)
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socketPath := filepath.Join(dir, "s.sock")
+
+	ln, listenErr := net.Listen("unix", socketPath)
+	if listenErr != nil {
+		t.Fatalf("listen unix: %v", listenErr)
 	}
 
 	srv := &http.Server{Handler: handler}

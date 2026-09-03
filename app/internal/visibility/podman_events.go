@@ -76,12 +76,13 @@ func handlePodmanCompatEventsRequest(next http.Handler, w http.ResponseWriter, r
 	case 0:
 		next.ServeHTTP(w, r)
 	case 1:
-		if err := setPodmanEventLabelFilter(r, policy.selectors[0]); err != nil {
+		forwarded, err := setPodmanEventLabelFilter(r, policy.selectors[0])
+		if err != nil {
 			logging.SetDeniedWithCode(w, r, reasonCodeVisibilityFilterInvalid, err.Error(), nil)
 			_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: err.Error()})
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, forwarded)
 	default:
 		denyPodmanCompatEvents(w, r)
 	}
@@ -119,22 +120,27 @@ func denyPodmanCompatEvents(w http.ResponseWriter, r *http.Request) {
 // dockerfilters.Decode also accepts Docker's legacy map[string]map[string]bool
 // spelling, so leaving the raw query untouched would forward a client-authored
 // encoding of it carrying extra label values the decode had already seen.
-func setPodmanEventLabelFilter(r *http.Request, selector compiledSelector) error {
+func setPodmanEventLabelFilter(r *http.Request, selector compiledSelector) (*http.Request, error) {
 	query := r.URL.Query()
 	filters, err := dockerfilters.Decode(query.Get("filters"))
 	if err != nil {
-		return err
+		return r, err
 	}
 	value := selector.key
 	if selector.hasValue {
 		value += "=" + selector.value
 	}
-	filters[visibilityLabelFilterKey(compatEventsPath)] = []string{value}
+	filterKey := visibilityLabelFilterKey(compatEventsPath)
+	filters[filterKey] = []string{value}
 	encoded, err := json.Marshal(filters)
 	if err != nil {
-		return fmt.Errorf("encode filters: %w", err)
+		return r, fmt.Errorf("encode filters: %w", err)
 	}
 	query.Set("filters", string(encoded))
 	r.URL.RawQuery = query.Encode()
-	return nil
+	// Podman's event handler ORs repeated values under one key, so this
+	// selector has to remain the sole label value. A later owner-isolation
+	// layer sees the marker and refuses the request rather than dropping this
+	// visibility constraint or appending an owner value that would widen it.
+	return dockerfilters.RecordSoleValueFilter(r, filterKey), nil
 }
