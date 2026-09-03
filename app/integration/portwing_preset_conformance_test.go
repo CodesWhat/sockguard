@@ -48,7 +48,10 @@ func newPortwingPresetHandler(t *testing.T, socketPath, presetFile string) http.
 		t,
 		socketPath,
 		cfg.Rules,
-		filter.Options{PolicyConfig: policyConfig},
+		filter.Options{
+			PolicyConfig:          policyConfig,
+			AllowReadExfiltration: cfg.InsecureAllowReadExfiltration,
+		},
 		ownership.Options{},
 	)
 }
@@ -289,7 +292,7 @@ func TestPortwingPresetConformance(t *testing.T) {
 			{http.MethodGet, "/containers/abc/json", true},
 			{http.MethodGet, "/containers/abc/logs?follow=1", true},
 			{http.MethodGet, "/containers/abc/stats?stream=false&one-shot=true", true},
-			{http.MethodGet, "/containers/abc/top", true},
+			{http.MethodGet, "/containers/abc/top", false},
 			{http.MethodGet, "/containers/abc/changes", true},
 
 			// Container lifecycle + create.

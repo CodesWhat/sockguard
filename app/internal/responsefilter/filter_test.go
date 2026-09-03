@@ -400,6 +400,230 @@ func TestStreamArrayResponseClosesOriginalUpstreamBody(t *testing.T) {
 	}
 }
 
+func TestResponseWritersUseCanonicalJSONEncoding(t *testing.T) {
+	t.Parallel()
+
+	const value = "<>&"
+	objectResp := &http.Response{Header: make(http.Header)}
+	if err := writeResponseBody(objectResp, map[string]any{"Value": value}); err != nil {
+		t.Fatalf("writeResponseBody() error = %v, want nil", err)
+	}
+	arrayResp := newResponseForTest(t, http.MethodGet, "/containers/json", `[{"Value":"<>&"}]`)
+	if err := streamArrayResponse(arrayResp, func(map[string]any) error { return nil }); err != nil {
+		t.Fatalf("streamArrayResponse() error = %v, want nil", err)
+	}
+
+	objectBody, err := io.ReadAll(objectResp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll(object response): %v", err)
+	}
+	arrayBody, err := io.ReadAll(arrayResp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll(array response): %v", err)
+	}
+	arrayElement := arrayBody[1 : len(arrayBody)-1]
+	if !bytes.Equal(objectBody, arrayElement) {
+		t.Fatalf("response encodings diverged\nobject: %s\n array: %s", objectBody, arrayBody)
+	}
+	if got, want := string(objectBody), `{"Value":"<>&"}`; got != want {
+		t.Fatalf("canonical object encoding = %s, want %s", got, want)
+	}
+
+	var objectDecoded map[string]string
+	if err := json.Unmarshal(objectBody, &objectDecoded); err != nil {
+		t.Fatalf("json.Unmarshal(object response): %v", err)
+	}
+	var arrayDecoded []map[string]string
+	if err := json.Unmarshal(arrayBody, &arrayDecoded); err != nil {
+		t.Fatalf("json.Unmarshal(array response): %v", err)
+	}
+	if got := objectDecoded["Value"]; got != value {
+		t.Fatalf("decoded object value = %q, want %q", got, value)
+	}
+	if got := arrayDecoded[0]["Value"]; got != value {
+		t.Fatalf("decoded array value = %q, want %q", got, value)
+	}
+}
+
+// TestStreamArrayResponseSizeLimitBoundary pins the exact byte at which the
+// streaming array path stops accepting a response: the LimitedReader is
+// sized to MaxResponseBodyBytes+1 so a body of exactly the cap decodes
+// cleanly, while one byte more trips the explicit post-loop size check.
+func TestStreamArrayResponseSizeLimitBoundary(t *testing.T) {
+	t.Parallel()
+	max := requestfilter.MaxResponseBodyBytes
+	// overhead is the exact byte count of `[{"p":""}]` (the array/object
+	// punctuation around the single padded field), computed via len() so a
+	// change in the literal below can't silently desync the pad length.
+	overhead := len(`[{"p":""}]`)
+
+	buildBody := func(totalLen int) string {
+		pad := strings.Repeat("A", totalLen-overhead)
+		return `[{"p":"` + pad + `"}]`
+	}
+
+	t.Run("exactly at cap succeeds", func(t *testing.T) {
+		t.Parallel()
+		body := buildBody(max)
+		resp := &http.Response{Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}
+		if err := streamArrayResponse(resp, func(map[string]any) error { return nil }); err != nil {
+			t.Fatalf("streamArrayResponse() error = %v, want nil for a body exactly at the %d byte cap", err, max)
+		}
+	})
+
+	t.Run("one byte over cap is rejected", func(t *testing.T) {
+		t.Parallel()
+		body := buildBody(max + 1)
+		resp := &http.Response{Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}
+		err := streamArrayResponse(resp, func(map[string]any) error { return nil })
+		if err == nil {
+			t.Fatal("streamArrayResponse() error = nil, want rejection for a body one byte over the cap")
+		}
+		if !errors.Is(err, ErrResponseRejected) {
+			t.Fatalf("streamArrayResponse() error = %v, want errors.Is(..., ErrResponseRejected)", err)
+		}
+		if !strings.Contains(err.Error(), "response body exceeds") {
+			t.Fatalf("streamArrayResponse() error = %v, want size-limit context", err)
+		}
+	})
+}
+
+// smallChunkReader caps every Read call the JSON decoder makes to at most
+// smallChunkReaderSize bytes, regardless of how large a buffer refill
+// requests. This gives byte-exact control over where the LimitedReader's
+// budget runs out relative to JSON element boundaries, which a plain
+// strings.Reader does not: its Read calls are typically satisfied in large
+// (megabyte-scale) chunks, so the decoder ends up with far more already
+// buffered than the size cap should allow before the budget is ever checked
+// mid-array. Capping reads still lands the LimitedReader's cutoff on the
+// exact byte the test constructs for, because io.LimitedReader always caps
+// the bytes it returns to its remaining budget regardless of how many bytes
+// are requested or how many Read calls it takes to get there; a small chunk
+// just keeps the decoder from ever reading past that budget in one shot. A
+// single byte per call would prove the same point but costs ~8.4 million
+// Read calls for an 8 MiB body, which is needlessly slow under -race.
+const smallChunkReaderSize = 8192
+
+type smallChunkReader struct {
+	r io.Reader
+}
+
+func (s *smallChunkReader) Read(p []byte) (int, error) {
+	if len(p) > smallChunkReaderSize {
+		p = p[:smallChunkReaderSize]
+	}
+	return s.r.Read(p)
+}
+
+// TestStreamArrayResponseSizeLimitMidLoopBoundary pins the mid-loop size
+// check that runs before decoding each element after the first. A two
+// element array is sized so the budget is exhausted exactly at the point
+// dec.More() confirms a second element is coming (having already buffered
+// its opening brace), but before that element's body is decoded: the
+// mid-loop check must fire there with the size-limit message rather than
+// letting the decode attempt fail with a raw "unexpected EOF".
+func TestStreamArrayResponseSizeLimitMidLoopBoundary(t *testing.T) {
+	t.Parallel()
+	max := requestfilter.MaxResponseBodyBytes
+	fixedPrefixPart1 := `[{"a":"`
+	fixedPrefixPart2 := `"},{`
+	overhead := len(fixedPrefixPart1) + len(fixedPrefixPart2)
+	padLen := (max + 1) - overhead
+	prefix := fixedPrefixPart1 + strings.Repeat("A", padLen) + fixedPrefixPart2
+	body := prefix + `"b":"z"}]`
+
+	resp := &http.Response{Body: io.NopCloser(&smallChunkReader{r: strings.NewReader(body)}), Header: make(http.Header)}
+	err := streamArrayResponse(resp, func(map[string]any) error { return nil })
+	if err == nil {
+		t.Fatal("streamArrayResponse() error = nil, want rejection for an over-budget multi-element array")
+	}
+	if !errors.Is(err, ErrResponseRejected) {
+		t.Fatalf("streamArrayResponse() error = %v, want errors.Is(..., ErrResponseRejected)", err)
+	}
+	if !strings.Contains(err.Error(), "response body exceeds") {
+		t.Fatalf("streamArrayResponse() error = %v, want the mid-loop size-limit message, not a raw decode error", err)
+	}
+}
+
+// TestStreamArrayResponseHandlesNilPooledBuffer pins the "out == nil"
+// fallback: when the pool has nothing to give, streamArrayResponse must
+// allocate its own buffer rather than dereferencing a nil one.
+//
+// This can't be tested by priming streamArrayBufferPool with a real buffer
+// and checking whether the same object comes back out (a Put-then-Get
+// round trip), because under -race, sync/pool.go's Put has a built-in 1-in-4
+// chance of silently discarding whatever it's given ("Randomly drop x on
+// floor") specifically to catch code that wrongly assumes Put/Get is
+// reliable — no amount of GOMAXPROCS pinning, GC disabling, or pool
+// isolation changes that. Get has no such randomness, so swapping New to
+// deterministically return nil forces the exact branch under test without
+// ever calling Put. streamArrayBufferPool itself can't be reassigned wholesale
+// (sync.Pool embeds a noCopy lock), so only its New field is swapped; whatever
+// this process's other tests already left resident in the pool is drained
+// first so the swapped-in New actually gets reached.
+func TestStreamArrayResponseHandlesNilPooledBuffer(t *testing.T) {
+	origNew := streamArrayBufferPool.New
+	defer func() { streamArrayBufferPool.New = origNew }()
+
+	for range 8192 {
+		streamArrayBufferPool.Get()
+	}
+	streamArrayBufferPool.New = func() any { return nil }
+
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(`[{"a":1}]`)), Header: make(http.Header)}
+	if err := streamArrayResponse(resp, func(map[string]any) error { return nil }); err != nil {
+		t.Fatalf("streamArrayResponse() error = %v, want nil", err)
+	}
+
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if want := `[{"a":1}]`; string(got) != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
+// TestStreamArrayResponseTrimsExactlyOneTrailingNewline pins that the
+// newline json.Encoder appends after every element is trimmed, so the
+// rewritten array is byte-for-byte compact JSON with no embedded newlines
+// between elements or before the closing bracket.
+func TestStreamArrayResponseTrimsExactlyOneTrailingNewline(t *testing.T) {
+	t.Parallel()
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(`[{"a":1},{"b":2}]`)), Header: make(http.Header)}
+	if err := streamArrayResponse(resp, func(map[string]any) error { return nil }); err != nil {
+		t.Fatalf("streamArrayResponse() error = %v, want nil", err)
+	}
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	want := `[{"a":1},{"b":2}]`
+	if string(got) != want {
+		t.Fatalf("body = %q, want %q (no embedded newline left over from json.Encoder)", got, want)
+	}
+}
+
+// TestStreamArrayResponseInitializesNilHeader pins that a response with a
+// nil Header (never touched before reaching this filter) gets one
+// allocated rather than panicking on the subsequent Header.Set call.
+func TestStreamArrayResponseInitializesNilHeader(t *testing.T) {
+	t.Parallel()
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(`[{"a":1}]`))}
+	if resp.Header != nil {
+		t.Fatal("test setup invariant broken: resp.Header must start nil")
+	}
+	if err := streamArrayResponse(resp, func(map[string]any) error { return nil }); err != nil {
+		t.Fatalf("streamArrayResponse() error = %v, want nil", err)
+	}
+	if resp.Header == nil {
+		t.Fatal("resp.Header = nil, want an allocated Header after streamArrayResponse")
+	}
+	if got := resp.Header.Get("Content-Length"); got == "" {
+		t.Fatal("Content-Length header = empty, want it set on the newly allocated Header")
+	}
+}
+
 func TestFilterRejectsMidStreamReadFailure(t *testing.T) {
 	t.Parallel()
 	filter := New(Options{
@@ -909,6 +1133,127 @@ func TestFilterModifyResponse_PreservesLargeIntegerPrecision(t *testing.T) {
 	}
 }
 
+// TestFilterModifyResponse_PreservesLargeIntegerPrecisionOnListPaths is the
+// array-shaped counterpart of the test above, and it exists because the two
+// were not equivalent. Consolidating the whole-body decode sites onto
+// decodeJSONObject left streamArrayResponse constructing its own decoder
+// without UseNumber, so every list endpoint kept coercing JSON numbers to
+// float64 while every inspect endpoint stopped. Both now share
+// newJSONDecoder.
+//
+// The assertion is on the exact bytes rather than on the digits appearing
+// somewhere: the element's keys are already in the sorted order the re-encode
+// emits, so the only intended difference between input and output is the
+// redacted mount source.
+func TestFilterModifyResponse_PreservesLargeIntegerPrecisionOnListPaths(t *testing.T) {
+	t.Parallel()
+
+	// 2^53 + 1. Decoded as a float64 it becomes 9007199254740992 and is
+	// re-encoded with a different final digit.
+	const beyondFloat64 = "9007199254740993"
+
+	// Every list endpoint reaches the client through streamArrayResponse, so
+	// one per dispatch route: the bespoke container-list case, the bespoke
+	// network-list case, a responseTable entry, and the libpod arrays this
+	// branch added.
+	cases := []struct {
+		name     string
+		opts     Options
+		path     string
+		upstream string
+		want     string
+	}{
+		{
+			name:     "containers list",
+			opts:     Options{RedactMountPaths: true},
+			path:     "/v1.51/containers/json",
+			upstream: `[{"Id":"c-a","Mounts":[{"Source":"/host/x"}],"SizeRootFs":` + beyondFloat64 + `}]`,
+			want:     `[{"Id":"c-a","Mounts":[{"Source":"<redacted>"}],"SizeRootFs":` + beyondFloat64 + `}]`,
+		},
+		{
+			name:     "nodes list",
+			opts:     Options{RedactNetworkTopology: true},
+			path:     "/v1.51/nodes",
+			upstream: `[{"ID":"n-a","MemoryBytes":` + beyondFloat64 + `,"Status":{"Addr":"10.0.0.1"}}]`,
+			want:     `[{"ID":"n-a","MemoryBytes":` + beyondFloat64 + `,"Status":{"Addr":"<redacted>"}}]`,
+		},
+		{
+			name:     "libpod volumes list",
+			opts:     Options{RedactMountPaths: true},
+			path:     "/v5.8.1/libpod/volumes/json",
+			upstream: `[{"Mountpoint":"/var/lib/containers/storage/volumes/v/_data","Name":"v","Size":` + beyondFloat64 + `}]`,
+			want:     `[{"Mountpoint":"<redacted>","Name":"v","Size":` + beyondFloat64 + `}]`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			resp := newResponseForTest(t, http.MethodGet, tc.path, tc.upstream)
+			if err := New(tc.opts).ModifyResponse(resp); err != nil {
+				t.Fatalf("ModifyResponse(%s): %v", tc.path, err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("ReadAll: %v", err)
+			}
+			if string(body) != tc.want {
+				t.Fatalf("%s body mismatch\n got: %s\nwant: %s", tc.path, body, tc.want)
+			}
+		})
+	}
+}
+
+// TestFilterModifyResponse_ListPathRejectsTrailingContent pins the second half
+// of the decode asymmetry. json.Decoder stops at the end of the first value,
+// so streamArrayResponse used to decode the array, ignore everything after the
+// closing bracket, and forward the truncated result with no error — a filter
+// silently deciding the client sees less than the daemon sent. decodeJSONObject
+// has rejected the equivalent since the whole-body sites were consolidated.
+func TestFilterModifyResponse_ListPathRejectsTrailingContent(t *testing.T) {
+	t.Parallel()
+
+	rejected := []struct{ name, upstream string }{
+		{"second array", `[{"Id":"c-a"}][{"Id":"c-b"}]`},
+		{"second object", `[{"Id":"c-a"}]{"Id":"c-b"}`},
+		{"bare null", `[{"Id":"c-a"}]null`},
+		{"stray byte", `[{"Id":"c-a"}] x`},
+		{"unbalanced close", `[{"Id":"c-a"}}`},
+		// Truncation already failed closed before the trailing guard existed
+		// (dec.More reports true and the next Decode returns the EOF). Kept
+		// here so the guard cannot be "fixed" in a way that swallows these.
+		{"truncated mid array", `[{"Id":"c-a"},{"Id":"c-b"}`},
+		{"truncated mid object", `[{"Id":"c-a"`},
+		{"open bracket only", `[`},
+	}
+
+	for _, tc := range rejected {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			resp := newResponseForTest(t, http.MethodGet, "/v1.51/containers/json", tc.upstream)
+			if err := New(Options{RedactMountPaths: true}).ModifyResponse(resp); err == nil {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("expected rejection for %q, got nil and body %s", tc.upstream, body)
+			}
+		})
+	}
+
+	t.Run("trailing whitespace is still accepted", func(t *testing.T) {
+		t.Parallel()
+		resp := newResponseForTest(t, http.MethodGet, "/v1.51/containers/json", "[{\"Id\":\"c-a\"}]  \n\t")
+		if err := New(Options{RedactMountPaths: true}).ModifyResponse(resp); err != nil {
+			t.Fatalf("ModifyResponse: %v", err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		if string(body) != `[{"Id":"c-a"}]` {
+			t.Fatalf("body = %s, want [{\"Id\":\"c-a\"}]", body)
+		}
+	})
+}
+
 func TestFilterModifyResponse_RedactsHostTopology(t *testing.T) {
 	t.Parallel()
 	filter := New(Options{RedactHostTopology: true})
@@ -1042,6 +1387,10 @@ func TestIsImageAttestationsPath(t *testing.T) {
 		{"/images/attestations", false}, // no identifier before the segment
 		{"/images/alpine/attestations/extra", false},
 		{"/containers/alpine/attestations", false},
+		// rest == "/attestations" after TrimPrefix: idx == 0 (the slash is
+		// the first byte, not "not found"), so the identifier is still
+		// empty. Pins the idx <= 0 boundary distinctly from idx == -1.
+		{"/images//attestations", false},
 	}
 	for _, tt := range tests {
 		if got := isImageAttestationsPath(tt.path); got != tt.want {

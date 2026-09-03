@@ -1,6 +1,7 @@
 package visibility
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,7 +9,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -18,6 +21,14 @@ import (
 	"github.com/codeswhat/sockguard/app/internal/dockerresource"
 	"github.com/codeswhat/sockguard/app/internal/logging"
 )
+
+// warnCapturingLogger returns a *slog.Logger backed by a bytes.Buffer of
+// slog's text output, so tests can assert on which Warn calls fired (and with
+// which attributes) without depending on internal logging package plumbing.
+func warnCapturingLogger() (*slog.Logger, *bytes.Buffer) {
+	var buf bytes.Buffer
+	return slog.New(slog.NewTextHandler(&buf, nil)), &buf
+}
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
@@ -78,6 +89,27 @@ func TestMiddlewareInjectsVisibilityLabelsIntoContainerListAndEvents(t *testing.
 	}
 	if !strings.Contains(gotPaths[1], "type") || !strings.Contains(gotPaths[1], "com.sockguard.visible%3Dtrue") {
 		t.Fatalf("events query = %q, want preserved filters plus visibility labels", gotPaths[1])
+	}
+}
+
+func TestPatternsWithoutSelectorsWarningNamesEveryFilteredListPath(t *testing.T) {
+	t.Parallel()
+
+	var logs strings.Builder
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	middlewareWithDeps(logger, Options{
+		NamePatterns: []string{"allowed-*"},
+	}, visibilityDeps{})
+
+	for _, path := range []string{
+		"/containers/json",
+		"/libpod/containers/json",
+		"/images/json",
+		"/libpod/images/json",
+	} {
+		if !strings.Contains(logs.String(), path) {
+			t.Errorf("startup warning = %q, want filtered list path %q", logs.String(), path)
+		}
 	}
 }
 
@@ -512,6 +544,45 @@ func TestMiddlewarePassesThroughWhenNoSelectors(t *testing.T) {
 	}
 }
 
+// TestMiddlewareEmptyEffectivePolicySkipsFilterInjection is the boundary
+// regression for hasSelectors := len(effectivePolicy.selectors) > 0: when the
+// resolved policy has zero selectors, hasSelectors must be false so the
+// middleware takes the "nothing configured" fast path and never calls
+// addVisibilityLabelFilters. A `>=` in place of `>` would make hasSelectors
+// true for a genuinely empty selector slice (0 >= 0), driving the request
+// into addVisibilityLabelFilters anyway — observable here because that
+// function decodes the existing `filters` query parameter, and a malformed
+// one would then produce a 400 instead of passing straight through.
+func TestMiddlewareEmptyEffectivePolicySkipsFilterInjection(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	nextCalled := false
+	mw := middlewareWithDeps(logger, Options{
+		// A non-empty Profiles map keeps compileVisibilityPolicies from
+		// installing the fully-empty pass-through middleware, while
+		// ResolveProfile falling back to the (empty) default policy for this
+		// request makes effectivePolicy.selectors genuinely empty.
+		Profiles: map[string]Policy{
+			"restricted": {VisibleResourceLabels: []string{"env=prod"}},
+		},
+		ResolveProfile: func(*http.Request) (string, bool) { return "", false },
+	}, visibilityDeps{})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/json?filters=not-json", nil)
+	rec := httptest.NewRecorder()
+	mw.ServeHTTP(rec, req)
+
+	if !nextCalled {
+		t.Fatal("empty effective policy should pass straight through, even with a malformed filters query")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestMiddlewareNoOpWhenBothDefaultAndProfilesEmpty(t *testing.T) {
 	t.Parallel()
 	// Both VisibleResourceLabels empty and no Profiles → early-return no-op middleware.
@@ -527,6 +598,80 @@ func TestMiddlewareNoOpWhenBothDefaultAndProfilesEmpty(t *testing.T) {
 	mw.ServeHTTP(rec, req)
 	if !nextCalled {
 		t.Fatal("no-op middleware should pass through to next handler")
+	}
+}
+
+// TestWarnPatternsWithoutSelectorsNilLoggerNeverWarns is the negation
+// regression for `logger == nil` in warnPatternsWithoutSelectors: with a nil
+// logger there is nothing to warn to, so the guard must return before
+// reaching logger.Warn. A `!=` in place of `==` would skip the early return
+// for a genuinely nil logger and call Warn on it, a nil pointer panic.
+func TestWarnPatternsWithoutSelectorsNilLoggerNeverWarns(t *testing.T) {
+	t.Parallel()
+	// Must not panic.
+	_ = middlewareWithDeps(nil, Options{NamePatterns: []string{"prod-*"}}, visibilityDeps{})
+}
+
+// TestWarnPatternsWithoutSelectorsWarnsWhenPatternsHaveNoSelector is the
+// boundary regression for `len(policy.selectors) > 0` in
+// warnPatternsWithoutSelectors: a patterns-only default policy (zero
+// selectors) must log the warning. A `>=` in place of `>` makes that clause
+// true for a genuinely empty selector slice (0 >= 0), short-circuiting the
+// whole OR to true and skipping the warning unconditionally.
+func TestWarnPatternsWithoutSelectorsWarnsWhenPatternsHaveNoSelector(t *testing.T) {
+	t.Parallel()
+	logger, buf := warnCapturingLogger()
+
+	_ = middlewareWithDeps(logger, Options{NamePatterns: []string{"prod-*"}}, visibilityDeps{})
+
+	if !strings.Contains(buf.String(), "visibility name/image patterns are set without any visible_resource_labels selector") {
+		t.Fatalf("log output = %q, want the patterns-without-selector warning", buf.String())
+	}
+}
+
+// TestWarnPatternsWithoutSelectorsSilentWhenSelectorPresent is the negation
+// regression for the same `len(policy.selectors) > 0` clause: a policy that
+// pairs patterns with a label selector must NOT warn. A `<=` in place of `>`
+// flips this clause to true only when selectors are empty, so a genuinely
+// non-empty selector slice makes the whole OR false and the warning fires
+// anyway.
+func TestWarnPatternsWithoutSelectorsSilentWhenSelectorPresent(t *testing.T) {
+	t.Parallel()
+	logger, buf := warnCapturingLogger()
+
+	_ = middlewareWithDeps(logger, Options{
+		VisibleResourceLabels: []string{"env=prod"},
+		NamePatterns:          []string{"prod-*"},
+	}, visibilityDeps{})
+
+	if strings.Contains(buf.String(), "visibility name/image patterns are set without any visible_resource_labels selector") {
+		t.Fatalf("log output = %q, want no patterns-without-selector warning when a selector is configured", buf.String())
+	}
+}
+
+// TestDefaultWarnedSuppressesRepeatedProfileWarning is the negation
+// regression for `len(defaultPolicy.selectors) == 0` inside defaultWarned:
+// when the default policy already triggered the patterns-without-selector
+// warning, every profile that inherits the same empty-selector patterns must
+// NOT warn again. A `!=` in place of `==` computes defaultWarned as false in
+// exactly this case, so the per-profile warning fires a second time.
+func TestDefaultWarnedSuppressesRepeatedProfileWarning(t *testing.T) {
+	t.Parallel()
+	logger, buf := warnCapturingLogger()
+
+	_ = middlewareWithDeps(logger, Options{
+		NamePatterns: []string{"prod-*"},
+		Profiles: map[string]Policy{
+			"restricted": {},
+		},
+	}, visibilityDeps{})
+
+	got := buf.String()
+	if !strings.Contains(got, "scope=default") {
+		t.Fatalf("log output = %q, want the default-scope warning", got)
+	}
+	if strings.Contains(got, "profile restricted") {
+		t.Fatalf("log output = %q, want the profile warning suppressed once the default already warned", got)
 	}
 }
 
@@ -1181,6 +1326,31 @@ func TestRequestVisibleUnknownPathPassesThrough(t *testing.T) {
 	}
 }
 
+// TestRequestVisibleWithPolicyEmptyPolicySkipsInspect is the boundary
+// regression for hasSelectors := len(policy.selectors) > 0 inside
+// requestVisibleWithPolicy: a genuinely empty policy (no selectors, no
+// patterns) must return visible=true without ever calling the inspector. A
+// `>=` in place of `>` would make hasSelectors true for an empty slice
+// (0 >= 0), so the function would fall through to the network-inspect branch
+// and actually call deps.inspectResource — observable here because the stub
+// always errors.
+func TestRequestVisibleWithPolicyEmptyPolicySkipsInspect(t *testing.T) {
+	t.Parallel()
+	deps := visibilityDeps{
+		inspectResource: func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
+			return nil, false, errors.New("inspect must not be called for an empty policy")
+		},
+	}
+
+	visible, err := requestVisibleWithPolicy(context.Background(), "/networks/abc", &compiledPolicy{}, deps)
+	if err != nil {
+		t.Fatalf("requestVisibleWithPolicy() error = %v, want nil", err)
+	}
+	if !visible {
+		t.Fatal("requestVisibleWithPolicy() = false, want true for an empty policy")
+	}
+}
+
 func TestRequestVisibleServiceLogs(t *testing.T) {
 	t.Parallel()
 	selectors := []compiledSelector{{key: "svc", hasValue: false}}
@@ -1363,6 +1533,52 @@ func TestAddVisibilityLabelFiltersLeavesQueryUntouchedWhenSelectorsAlreadyPresen
 	// otherwise ownership's client-value drop would strip it downstream.
 	if got := dockerfilters.InjectedSelectors(forwarded, "label"); len(got) != 2 {
 		t.Fatalf("InjectedSelectors = %v, want both selectors recorded", got)
+	}
+}
+
+// TestMiddlewareRejectsFalseValuedLegacyFilterBypass exercises the full
+// middleware, filters query and all, against a fake upstream: a client that
+// sends the policy's own selector spelled with Docker's legacy object
+// encoding and a `false` value must still get the selector forwarded.
+// dockerd and Podman only install a legacy-object filter entry whose value is
+// true, so a false-valued entry is not a filter at all; a decoder that kept
+// the key regardless of the boolean let this exact query make the
+// "selector already present" check in addVisibilityLabelFilters believe the
+// selector was already there, forwarding the request unfiltered and — on a
+// Podman upstream with no other filter — returning hidden resources.
+func TestMiddlewareRejectsFalseValuedLegacyFilterBypass(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	var gotRawQuery string
+
+	handler := middlewareWithDeps(logger, Options{
+		VisibleResourceLabels: []string{"com.sockguard.visible=true"},
+	}, visibilityDeps{})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotRawQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	query := url.Values{
+		"filters": {`{"label":{"com.sockguard.visible=true":false}}`},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/json?"+query.Encode(), nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+
+	forwardedFilters, err := url.ParseQuery(gotRawQuery)
+	if err != nil {
+		t.Fatalf("ParseQuery(%q) error = %v", gotRawQuery, err)
+	}
+	filters, err := dockerfilters.Decode(forwardedFilters.Get("filters"))
+	if err != nil {
+		t.Fatalf("Decode(%q) error = %v", forwardedFilters.Get("filters"), err)
+	}
+	if !slices.Contains(filters["label"], "com.sockguard.visible=true") {
+		t.Fatalf("forwarded label filters = %#v, want com.sockguard.visible=true present", filters["label"])
 	}
 }
 
@@ -1579,6 +1795,35 @@ func mustCompilePatterns(t *testing.T, patterns ...string) []compiledPattern {
 		t.Fatalf("compilePatterns() error = %v", err)
 	}
 	return compiled
+}
+
+// TestResourceVisibleWithPolicyEmptySelectorsSkipsCombinedPath is the
+// boundary regression for len(policy.selectors) > 0 in the combined-path
+// gate of resourceVisibleWithPolicy: a patterns-only policy (zero selectors)
+// must use the separate inspectResourceMeta path, not the combined
+// inspectResourceDetails path meant for selectors+patterns together. A `>=`
+// in place of `>` would take the combined path anyway (0 >= 0) — observable
+// here because inspectResourceDetails is wired to always error while
+// inspectResourceMeta returns a matching name.
+func TestResourceVisibleWithPolicyEmptySelectorsSkipsCombinedPath(t *testing.T) {
+	t.Parallel()
+	policy := &compiledPolicy{namePatterns: mustCompilePatterns(t, "web-*")}
+	deps := visibilityDeps{
+		inspectResourceMeta: func(context.Context, dockerresource.Kind, string) (*resourceMeta, bool, error) {
+			return &resourceMeta{names: []string{"/web-1"}}, true, nil
+		},
+		inspectResourceDetails: func(context.Context, dockerresource.Kind, string) (*resourceDetails, bool, error) {
+			return nil, false, errors.New("combined inspect must not be used when there are no label selectors")
+		},
+	}
+
+	visible, err := resourceVisibleWithPolicy(context.Background(), deps, dockerresource.KindContainer, "abc", policy)
+	if err != nil {
+		t.Fatalf("resourceVisibleWithPolicy() error = %v, want nil", err)
+	}
+	if !visible {
+		t.Fatal("resourceVisibleWithPolicy() = false, want true (name matches web-*)")
+	}
 }
 
 // ---- name_patterns and image_patterns: container list filtering ----
@@ -2173,6 +2418,17 @@ func TestImageShortNameWithRegistry(t *testing.T) {
 	}
 }
 
+// TestImageShortNameLeadingSlashBoundary is the boundary regression for
+// `idx >= 0` in imageShortName: a `>` in its place would treat idx==0 (a
+// leading "/") as "no separator found" and return the reference unchanged
+// instead of stripping the empty prefix.
+func TestImageShortNameLeadingSlashBoundary(t *testing.T) {
+	t.Parallel()
+	if got := imageShortName("/traefik:v2"); got != "traefik:v2" {
+		t.Fatalf("got %q, want traefik:v2", got)
+	}
+}
+
 func TestFilterWriterWriteHeaderCapturesCode(t *testing.T) {
 	t.Parallel()
 	// Drive patternFilterWriter via a fake upstream that returns 404 with a
@@ -2261,6 +2517,158 @@ func TestAcquireReleasePatternBuffer(t *testing.T) {
 	releasePatternBuffer(nil)
 }
 
+// TestAcquirePatternBufferGuardsAgainstNilFromPool pins the `buf == nil`
+// guard at middleware.go:39. sync.Pool.Get does not reliably return an entry
+// that was just Put — Get may skip it, and under -race Put drops roughly a
+// quarter of its objects — so seeding the pool with a manual Put and reading
+// it straight back is not a deterministic way to exercise this path. Instead
+// this overrides the pool's New func to return a typed nil *bytes.Buffer,
+// then calls acquirePatternBuffer many times without releasing any of them:
+// each Get first drains whatever real entries other tests left in the pool,
+// and once those run out every subsequent Get falls through to New, which now
+// returns nil deterministically. The original code must allocate a fresh
+// buffer on that path (asserted non-nil and usable on every iteration);
+// CONDITIONALS_NEGATION turning == into != would instead try to Reset() the
+// nil entry and panic.
+//
+// Deliberately not t.Parallel(): every other test in this file is, and the Go
+// test runner runs all non-parallel tests to completion (in the order
+// declared) before any parallel test's body resumes past its t.Parallel()
+// call, so this test's override of the shared package-level
+// patternBufferPool's New func is isolated from them.
+func TestAcquirePatternBufferGuardsAgainstNilFromPool(t *testing.T) {
+	originalNew := patternBufferPool.New
+	patternBufferPool.New = func() any { return (*bytes.Buffer)(nil) }
+	t.Cleanup(func() { patternBufferPool.New = originalNew })
+
+	for i := 0; i < 1024; i++ {
+		buf := acquirePatternBuffer()
+		if buf == nil {
+			t.Fatalf("iteration %d: acquirePatternBuffer() returned nil", i)
+		}
+		buf.WriteString("ok")
+		if got := buf.String(); got != "ok" {
+			t.Fatalf("iteration %d: buffer not usable after guard: got %q", i, got)
+		}
+	}
+}
+
+// TestReleasePatternBufferNilIsNoop pins the `buf == nil` guard at
+// middleware.go:47: releasing nil must return before reaching Put, or it
+// poisons the pool with a nil entry a later acquirePatternBuffer would have
+// to catch. CONDITIONALS_NEGATION turning == into != would skip the early
+// return and call patternBufferPool.Put on the nil argument instead.
+//
+// Detecting that can't depend on Pool.Get returning the exact entry a paired
+// Put just added — sync.Pool makes no such promise (see
+// TestAcquirePatternBufferGuardsAgainstNilFromPool). Instead this overrides
+// New to a counting sentinel, calls releasePatternBuffer(nil) many times,
+// then draws from the pool many times and checks every draw: under the real
+// guard releasePatternBuffer never calls Put, so every draw is either a
+// pre-existing valid entry or a fresh one from New, never nil. Under the
+// mutant, releasePatternBuffer(nil) seeds the pool with nil entries that a
+// draw of this size is overwhelmingly likely to surface before it can be
+// explained away as bad luck.
+//
+// Deliberately not t.Parallel(), for the same reason as
+// TestAcquirePatternBufferGuardsAgainstNilFromPool.
+func TestReleasePatternBufferNilIsNoop(t *testing.T) {
+	originalNew := patternBufferPool.New
+	var newCalls int
+	patternBufferPool.New = func() any {
+		newCalls++
+		return new(bytes.Buffer)
+	}
+	t.Cleanup(func() { patternBufferPool.New = originalNew })
+
+	for i := 0; i < 1024; i++ {
+		releasePatternBuffer(nil) // must not panic, must not Put
+	}
+
+	for i := 0; i < 2048; i++ {
+		got := patternBufferPool.Get()
+		buf, ok := got.(*bytes.Buffer)
+		if !ok || buf == nil {
+			t.Fatalf("draw %d: pool yielded %#v, want a valid *bytes.Buffer (releasePatternBuffer(nil) must not Put a nil entry)", i, got)
+		}
+	}
+	if newCalls == 0 {
+		t.Fatal("New was never invoked; this draw did not actually exercise the pool")
+	}
+}
+
+// TestContainerItemVisibleByPatternsEmptyPatternsAlwaysVisible documents why
+// middleware.go:553 and :559 in containerItemVisibleByPatterns are genuinely
+// equivalent mutants (a `>=` in place of `>` on either gate does not change
+// observable behavior): both blocks call matchesAnyPattern directly on a
+// single string (item's container name or Image field), and
+// matchesAnyPattern's own empty-pattern-list guard returns true
+// unconditionally, regardless of what value it's given — including missing,
+// null, or empty Names/Image. This is not a mutant-kill test; it pins the
+// production contract these two lines actually implement.
+func TestContainerItemVisibleByPatternsEmptyPatternsAlwaysVisible(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "Names and Image missing", raw: `{}`},
+		{name: "Names explicit null, Image empty", raw: `{"Names":null,"Image":""}`},
+		{name: "Names empty slice, Image empty", raw: `{"Names":[],"Image":""}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			visible, err := containerItemVisibleByPatterns(json.RawMessage(tt.raw), &compiledPolicy{})
+			if err != nil {
+				t.Fatalf("containerItemVisibleByPatterns(%s) error = %v", tt.raw, err)
+			}
+			if !visible {
+				t.Fatalf("containerItemVisibleByPatterns(%s) = false, want true when no pattern axis is configured", tt.raw)
+			}
+		})
+	}
+}
+
+// TestImageItemVisibleByPatternsEmptyPatternsWithNoRepoTagsStillVisible is
+// the boundary regression for middleware.go:574 and :586 in
+// imageItemVisibleByPatterns. These are NOT equivalent mutants, unlike their
+// containerItemVisibleByPatterns twins at :553/:559 above: both blocks here
+// loop over item.RepoTags via matchesAnyPattern per-iteration, so an image
+// whose RepoTags is missing, JSON null, or an empty array never reaches
+// matchesAnyPattern at all — its own "empty patterns always match" guard
+// never gets a chance to run. With the real `> 0` gate, an empty pattern list
+// skips the loop and the block entirely, so the item stays visible. A `>=`
+// mutant enters the block anyway (0 >= 0), the loop runs zero times,
+// `matched` stays false, and the item is wrongly rejected. A single test case
+// per RepoTags shape (with both namePatterns and imagePatterns empty) is
+// enough to kill each mutant independently: whichever gate is mutated, the
+// other one's real code still skips its own block, so the mutated block is
+// the one that decides the (wrong) result.
+func TestImageItemVisibleByPatternsEmptyPatternsWithNoRepoTagsStillVisible(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{name: "RepoTags key missing", raw: `{}`},
+		{name: "RepoTags is JSON null", raw: `{"RepoTags":null}`},
+		{name: "RepoTags is an empty array", raw: `{"RepoTags":[]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			visible, err := imageItemVisibleByPatterns(json.RawMessage(tt.raw), &compiledPolicy{})
+			if err != nil {
+				t.Fatalf("imageItemVisibleByPatterns(%s) error = %v", tt.raw, err)
+			}
+			if !visible {
+				t.Fatalf("imageItemVisibleByPatterns(%s) = false, want true when no pattern axis is configured", tt.raw)
+			}
+		})
+	}
+}
+
 // TestResourceMetaMatchesPatternsUnknownKind covers the default branch that
 // returns true for any kind that is neither KindContainer nor KindImage.
 func TestResourceMetaMatchesPatternsUnknownKind(t *testing.T) {
@@ -2276,6 +2684,50 @@ func TestResourceMetaMatchesPatternsUnknownKind(t *testing.T) {
 	// A volume or service kind should always return true (no name/image meta).
 	if !resourceMetaMatchesPatterns(meta, dockerresource.KindVolume, policy) {
 		t.Error("expected true for unknown kind, got false")
+	}
+}
+
+// TestContainerMetaMatchesPatternsNoAxesNeverTouchesMeta pins the guard's
+// contract at middleware.go:916/:921 in containerMetaMatchesPatterns against
+// a nil meta. These two gates are genuinely equivalent: a `>=` mutant enters
+// the block for an empty pattern list, but the block calls matchesAnyPattern
+// directly on a single string (not through a RepoTags-style loop), and
+// matchesAnyPattern's own empty-list guard makes it return true regardless of
+// the value being matched — so with any non-nil meta, mutant and original
+// return the same result (see TestImageMetaMatchesPatternsEmptyRepoTags...
+// below for why the image twin does NOT share this equivalence). The only
+// way this test distinguishes the mutant at all is that meta is nil here, so
+// the mutant's field read (containerNameFromNames(meta.names) / meta.image)
+// panics on a nil pointer dereference; production never constructs a nil
+// *resourceMeta, so this pins a defensive contract rather than covering a
+// reachable boundary.
+func TestContainerMetaMatchesPatternsNoAxesNeverTouchesMeta(t *testing.T) {
+	t.Parallel()
+	if !containerMetaMatchesPatterns(nil, &compiledPolicy{}) {
+		t.Fatal("containerMetaMatchesPatterns() = false, want true when no pattern axis is configured")
+	}
+}
+
+// TestImageMetaMatchesPatternsEmptyRepoTagsWithNoAxesStillVisible is the
+// boundary regression for the namePatterns/imagePatterns length gates at
+// middleware.go:930 and :933 in imageMetaMatchesPatterns. Unlike its
+// containerMetaMatchesPatterns twin above, these two gates are NOT
+// equivalent: both feed anyRepoTagMatches, which loops over meta.repoTags and
+// only calls matchesAnyPattern per iteration, so a resource with a nil or
+// empty repoTags list never reaches matchesAnyPattern at all — its own
+// "empty patterns always match" guard never gets a chance to run;
+// anyRepoTagMatches instead returns false outright for an empty repoTags
+// list, regardless of how many patterns are configured. With the real `> 0`
+// gate, an empty pattern list skips the block entirely and the resource
+// stays visible. A `>=` mutant enters the block anyway (0 >= 0),
+// anyRepoTagMatches returns false, and the resource is wrongly hidden — this
+// is observable with an ordinary non-nil, empty resourceMeta, no nil
+// dereference required.
+func TestImageMetaMatchesPatternsEmptyRepoTagsWithNoAxesStillVisible(t *testing.T) {
+	t.Parallel()
+	meta := &resourceMeta{}
+	if !imageMetaMatchesPatterns(meta, &compiledPolicy{}) {
+		t.Fatal("imageMetaMatchesPatterns() = false, want true when repoTags is empty and no pattern axis is configured")
 	}
 }
 

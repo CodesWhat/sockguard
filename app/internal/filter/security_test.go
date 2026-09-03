@@ -183,6 +183,127 @@ func TestEvaluateEncodedPathBypassResistance(t *testing.T) {
 	}
 }
 
+func TestEvaluateUsesPodmanEncodedRoutePathForImageScp(t *testing.T) {
+	rules := compileRulesForTest(t, []Rule{
+		{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/foreign/push", Action: ActionAllow, Index: 0},
+		{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/foreign/tag", Action: ActionAllow, Index: 1},
+		{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/foreign/untag", Action: ActionAllow, Index: 2},
+		{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/**", Action: ActionAllow, Index: 3},
+		{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "default deny", Index: 4},
+	})
+
+	tests := []struct {
+		name      string
+		rawPath   string
+		wantIndex int
+	}{
+		{name: "unescaped slash reaches the earlier image push route", rawPath: "/libpod/images/scp/foreign/push", wantIndex: 0},
+		{name: "unescaped slash reaches the earlier image tag route", rawPath: "/libpod/images/scp/foreign/tag", wantIndex: 1},
+		{name: "unescaped slash reaches the earlier image untag route", rawPath: "/libpod/images/scp/foreign/untag", wantIndex: 2},
+		{name: "encoded slash remains inside the SCP source ending in push", rawPath: "/libpod/images/scp/foreign%2Fpush", wantIndex: 3},
+		{name: "encoded slash remains inside the SCP source ending in tag", rawPath: "/libpod/images/scp/foreign%2Ftag", wantIndex: 3},
+		{name: "encoded slash remains inside the SCP source ending in untag", rawPath: "/libpod/images/scp/foreign%2Funtag", wantIndex: 3},
+		{name: "versioned encoded slash remains inside the SCP source", rawPath: "/v5.8.1-dev/libpod/images/scp/foreign%2Fpush", wantIndex: 3},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := newParsedRequest(t, http.MethodPost, tt.rawPath)
+			action, index, _ := Evaluate(rules, req)
+			if action != ActionAllow || index != tt.wantIndex {
+				t.Fatalf("Evaluate(%q) = (%q, %d), want (%q, %d)", tt.rawPath, action, index, ActionAllow, tt.wantIndex)
+			}
+		})
+	}
+}
+
+func TestEvaluateRequiresBothPolicyViewsForEncodedImageScp(t *testing.T) {
+	tests := []struct {
+		name             string
+		rawPath          string
+		rules            []Rule
+		wantIndex        int
+		wantReason       string
+		wantEmptyRawPath bool
+	}{
+		{
+			name:    "uppercase escaped slash cannot bypass canonical deny",
+			rawPath: "/libpod/images/scp/foreign%2Fsecret",
+			rules: []Rule{
+				{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/foreign/secret", Action: ActionDeny, Reason: "canonical source denied", Index: 0},
+				{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/**", Action: ActionAllow, Index: 1},
+			},
+			wantIndex:  0,
+			wantReason: "canonical source denied",
+		},
+		{
+			name:    "lowercase escaped slash cannot bypass canonical deny",
+			rawPath: "/libpod/images/scp/foreign%2fsecret",
+			rules: []Rule{
+				{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/foreign/secret", Action: ActionDeny, Reason: "canonical source denied", Index: 3},
+				{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/**", Action: ActionAllow, Index: 4},
+			},
+			wantIndex:  3,
+			wantReason: "canonical source denied",
+		},
+		{
+			name:    "escaped unreserved byte cannot bypass canonical deny",
+			rawPath: "/libpod/images/scp/foreign%2Dsecret",
+			rules: []Rule{
+				{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/foreign-secret", Action: ActionDeny, Reason: "canonical source denied", Index: 5},
+				{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/**", Action: ActionAllow, Index: 6},
+			},
+			wantIndex:  5,
+			wantReason: "canonical source denied",
+		},
+		{
+			name:    "encoded route view must also allow",
+			rawPath: "/libpod/images/scp/foreign%2Fsecret",
+			rules: []Rule{
+				{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/foreign/secret", Action: ActionAllow, Index: 7},
+				{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/**", Action: ActionDeny, Reason: "encoded route denied", Index: 8},
+			},
+			wantIndex:  8,
+			wantReason: "encoded route denied",
+		},
+		{
+			name:    "canonical space escape is checked with empty RawPath",
+			rawPath: "/libpod/images/scp/foreign%20secret",
+			rules: []Rule{
+				{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/foreign%20secret", Action: ActionDeny, Reason: "encoded route denied", Index: 9},
+				{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/**", Action: ActionAllow, Index: 10},
+			},
+			wantIndex:        9,
+			wantReason:       "encoded route denied",
+			wantEmptyRawPath: true,
+		},
+		{
+			name:    "trailing slash cannot borrow the earlier push allow",
+			rawPath: "/v5.8.1/libpod/images/scp/foreign/push/",
+			rules: []Rule{
+				{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/foreign/push", Action: ActionAllow, Index: 11},
+				{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "SCP route denied", Index: 12},
+			},
+			wantIndex:        12,
+			wantReason:       "SCP route denied",
+			wantEmptyRawPath: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := newParsedRequest(t, http.MethodPost, tt.rawPath)
+			if tt.wantEmptyRawPath && req.URL.RawPath != "" {
+				t.Fatalf("test setup: RawPath = %q, want empty for canonical escape", req.URL.RawPath)
+			}
+			action, index, reason := Evaluate(compileRulesForTest(t, tt.rules), req)
+			if action != ActionDeny || index != tt.wantIndex || reason != tt.wantReason {
+				t.Fatalf("Evaluate(%q) = (%q, %d, %q), want (%q, %d, %q)", tt.rawPath, action, index, reason, ActionDeny, tt.wantIndex, tt.wantReason)
+			}
+		})
+	}
+}
+
 // TestContainerCreateDoubleEncodedPathIsNotACreateRequest verifies that a
 // double-encoded path cannot smuggle a privileged container-create past the
 // body inspector. A double-encoded "/containers%252Fcreate" decodes once at

@@ -87,6 +87,9 @@ response:
 # HostConfig.Runtime — without it every recreation is rejected at
 # POST /containers/create with 403 "runtime \"runc\" is not allowlisted".
 request_body:
+  container_remove:
+    allow_force: true
+    allow_remove_volumes: true
   container_create:
     allowed_bind_mounts: []
     allowed_runtimes:
@@ -129,12 +132,12 @@ rules:
   - match: { method: GET, path: "/events" }
     action: allow
 
-  # Container reads — list, inspect, stats, top, changes, and logs.
+  # Container reads — list, inspect, stats, changes, and logs.
   # /containers/*/logs is required by Portwing's GetContainerLogs() call.
-  # /containers/*/archive, /containers/*/export, and /containers/*/attach
-  # are intentionally omitted — those are bulk-data exfiltration paths that
-  # Portwing does not use. insecure_allow_read_exfiltration: true (set above)
-  # satisfies sockguard's startup validator for the logs path.
+  # /containers/*/top, /containers/*/archive, /containers/*/export, and
+  # /containers/*/attach are intentionally omitted because Portwing does not
+  # use them. insecure_allow_read_exfiltration: true (set above) satisfies
+  # sockguard's startup validator for the logs path.
   - match: { method: GET, path: "/containers/json" }
     action: allow
   - match: { method: GET, path: "/containers/*/json" }
@@ -142,8 +145,6 @@ rules:
   - match: { method: GET, path: "/containers/*/logs" }
     action: allow
   - match: { method: GET, path: "/containers/*/stats" }
-    action: allow
-  - match: { method: GET, path: "/containers/*/top" }
     action: allow
   - match: { method: GET, path: "/containers/*/changes" }
     action: allow

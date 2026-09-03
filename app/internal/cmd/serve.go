@@ -542,7 +542,7 @@ func buildServeHandlerChainWithRuntime(b serveHandlerBuild) (http.Handler, func(
 		return invalidClientProfileHandler(), func() {}, false
 	}
 
-	handler := newServeUpstreamHandler(b.Cfg, resolver, b.Logger)
+	handler := newServeUpstreamHandler(b.Cfg, resolver, b.Logger, b.Runtime)
 	b.ClientProfiles = clientProfiles
 	layers, teardown, limiterStateActive := buildServeHandlerLayersWithRuntime(b)
 	for _, layer := range layers {
@@ -583,7 +583,7 @@ func newServeRuntime(cfg *config.Config, logger *slog.Logger, deps *serveDeps) (
 		runtime.metrics = metrics.NewRegistry()
 	}
 
-	resolver, legacy, err := buildUpstreamResolver(cfg, logger, os.Getenv)
+	resolver, legacy, err := buildUpstreamResolver(cfg, logger, os.LookupEnv)
 	if err != nil {
 		return nil, err
 	}
@@ -697,10 +697,15 @@ func attachRuntimeInspectors(cfg *config.Config, res *upstream.Resolver, policy 
 	// runs for both the default policy and every named profile.
 	policy.Exec.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
 	policy.Build.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
+	// Image load needs it for the same reason build does: Podman's
+	// POST /libpod/local/images/load names its archive by daemon-host path,
+	// so there is no body to inspect and only the acknowledgment admits it.
+	policy.ImageLoad.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
+	policy.ContainerUpdate.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
 	return policy
 }
 
-func newServeUpstreamHandler(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger) http.Handler {
+func newServeUpstreamHandler(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, runtime *serveRuntime) http.Handler {
 	rp := proxy.NewWithTransport(upstreamResolverFor(res, cfg), logger, proxy.Options{
 		ModifyResponse: responsefilter.New(serveResponseFilterOptions(cfg)).ModifyResponse,
 	})
@@ -708,7 +713,15 @@ func newServeUpstreamHandler(cfg *config.Config, res *upstream.Resolver, logger 
 	// Wrapping the proxy itself (rather than adding a chain layer) keeps the
 	// deadline off the hijack path: HijackHandler short-circuits before this
 	// handler runs.
-	return proxy.WithRequestTimeout(rp, effectiveUpstreamRequestTimeout(cfg))
+	return withUpstreamRequestTimeout(cfg, runtime, rp)
+}
+
+func withUpstreamRequestTimeout(cfg *config.Config, runtime *serveRuntime, next http.Handler) http.Handler {
+	return proxy.WithRequestTimeoutForFlavor(
+		next,
+		effectiveUpstreamRequestTimeout(cfg),
+		runtimeUpstreamFlavor(runtime) == upstreamflavor.Podman,
+	)
 }
 
 // effectiveUpstreamRequestTimeout resolves cfg.Upstream.RequestTimeout to the
@@ -762,7 +775,7 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 		// relative order doesn't affect correctness, only which one a
 		// reader sees "closer to the wire" in this slice.
 		namedServeHandlerLayer("withBuildkitMediator", withBuildkitMediator(cfg, resolver, logger)),
-		namedServeHandlerLayer("withHijack", withHijack(resolver, logger)),
+		namedServeHandlerLayer("withHijack", withHijack(cfg, resolver, logger)),
 		// #152: inserted between hijack and ownership in APPEND order. Later
 		// appends wrap (execute before) earlier ones, so this yields runtime
 		// order ...filter -> visibility -> ownership -> resource-limit guard
@@ -905,13 +918,27 @@ func namedServeHandlerLayer(name string, with func(http.Handler) http.Handler) s
 	return serveHandlerLayer{name: name, with: with}
 }
 
-func withHijack(res *upstream.Resolver, logger *slog.Logger) func(http.Handler) http.Handler {
+func withHijack(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		// Hijack handler: intercepts attach/exec endpoints for native bidirectional
 		// streaming with optimized buffers and TCP half-close signaling. Dials the
 		// same active upstream endpoint as the rest of the proxy.
-		return proxy.HijackHandlerWithDialer(res, logger, next)
+		return proxy.HijackHandlerWithDialer(res, effectiveHijackInactivityTimeout(cfg), logger, next)
 	}
+}
+
+// effectiveHijackInactivityTimeout resolves cfg.Upstream.HijackInactivityTimeout
+// to the time.Duration proxy.HijackHandlerWithDialer consumes, mirroring
+// effectiveUpstreamRequestTimeout. Unlike request_timeout there is no "off"
+// spelling here — hijack_inactivity_timeout is validated at config load to
+// always be a positive duration, so a parse failure degrades to the package
+// default (10m) rather than disabling the deadline outright.
+func effectiveHijackInactivityTimeout(cfg *config.Config) time.Duration {
+	d, err := time.ParseDuration(cfg.Upstream.HijackInactivityTimeout)
+	if err != nil || d <= 0 {
+		return 10 * time.Minute
+	}
+	return d
 }
 
 // withBuildkitMediator intercepts POST /session and POST /grpc once
@@ -1035,6 +1062,7 @@ func withVisibility(cfg *config.Config, res *upstream.Resolver, logger *slog.Log
 
 func withFilter(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, rules []*filter.CompiledRule, clientProfiles map[string]filter.Policy) func(http.Handler) http.Handler {
 	warnIfBodyBlindWritesEnabled(cfg, logger)
+	warnIfReadExfiltrationEnabled(cfg, rules, clientProfiles, logger)
 	return filter.MiddlewareWithOptions(rules, logger, serveFilterOptions(cfg, res, clientProfiles))
 }
 
@@ -1083,6 +1111,62 @@ func warnBodyBlindWritesOnce(cfg *config.Config, logger *slog.Logger, once *sync
 	})
 }
 
+// readExfiltrationWarnOnce gates warnIfReadExfiltrationEnabled to a single
+// emission per process, like bodyBlindWritesWarnOnce — the handler chain is
+// rebuilt on every config hot-reload, so an unguarded warning at the
+// chain-build site would repeat on each reload.
+var readExfiltrationWarnOnce sync.Once
+
+// warnIfReadExfiltrationEnabled surfaces the runtime consequence of
+// insecure_allow_read_exfiltration: true at chain-build time (startup or
+// hot-reload), the read-side counterpart of warnIfBodyBlindWritesEnabled. The
+// startup validator (validateReadExfiltrationRulesForPolicy in rules.go)
+// refuses common exfiltration-capable rule shapes without this acknowledgment,
+// while the process-list hard gate also enforces it against exact-name and
+// ordered rule shapes at request time. This is the loud runtime echo of that
+// acknowledgment, visible in the running process's logs rather than only at
+// validate time. It matters more here than for the write-side flag,
+// because the README quick start and the Tecnativa migration path both ship
+// the acknowledgment set, so the documented happy path had no ongoing signal
+// at all.
+func warnIfReadExfiltrationEnabled(cfg *config.Config, rules []*filter.CompiledRule, clientProfiles map[string]filter.Policy, logger *slog.Logger) {
+	warnReadExfiltrationOnce(cfg, rules, clientProfiles, logger, &readExfiltrationWarnOnce)
+}
+
+// warnReadExfiltrationOnce is the testable core of
+// warnIfReadExfiltrationEnabled: the Once is injected so tests can verify both
+// the enable-check and the once-per-process gating without racing other tests
+// for the package-level guard.
+//
+// Both endpoint lists come from allowedSensitiveExfilEndpoints, the same
+// representative probe the startup validator uses to build its refusal message.
+// Exact-name process-list paths and ordered rules that deny the representative
+// path can be enforced only by the request-time hard gate, so the warning text
+// calls out that the fields are not exhaustive for that class. Named client
+// profiles are reported separately because their
+// rules are evaluated in place of the top-level set: the acknowledgment is
+// global, so a profile can be the only reason it has to be set, and the
+// per-profile refusal that would otherwise name it never fires once it is.
+// Both fields are stable across runs (see allowedSensitiveExfilEndpointsByProfile
+// for the sort that makes the profile half so).
+//
+// Two empty lists are still worth logging: they mean no representative startup
+// probe is admitted, but the acknowledgment can still govern an exact-name or
+// ordered process-list rule at request time.
+func warnReadExfiltrationOnce(cfg *config.Config, rules []*filter.CompiledRule, clientProfiles map[string]filter.Policy, logger *slog.Logger, once *sync.Once) {
+	if !cfg.InsecureAllowReadExfiltration {
+		return
+	}
+	exposed := allowedSensitiveExfilEndpoints(cfg.Rules, rules)
+	profileExposed := allowedSensitiveExfilEndpointsByProfile(cfg.Clients.Profiles, clientProfiles)
+	once.Do(func() {
+		logger.Warn("insecure_allow_read_exfiltration is enabled: rules matching raw archive/export, log/attach streaming, checkpoint export, container rootfs mount, or registry push endpoints are admitted instead of refused at startup, and process-list reads allowed by policy are admitted instead of denied at request time. The exposed endpoint fields report representative startup-validation probes, not every request-time process-list path. A caller allowed those paths can read container files, container memory, images, plugins, process arguments, environment variables, secrets, and daemon-host filesystem paths, or push local artifacts to a registry it chooses",
+			"exposed_endpoints", exposed,
+			"exposed_profile_endpoints", profileExposed,
+		)
+	})
+}
+
 // withHealth wires the /health endpoint onto the runtime monitor.
 //
 // Precondition: cfg.Health.Enabled is true, so newServeRuntime has already
@@ -1119,42 +1203,17 @@ func withMetrics(registry *metrics.Registry) func(http.Handler) http.Handler {
 
 func withClientACL(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger) func(http.Handler) http.Handler {
 	warnIfLabelACLEnabled(cfg, logger)
-	warnIfRulesHaveVersionPrefix(cfg, logger)
 	return clientacl.MiddlewareWithRoundTripper(upstreamResolverFor(res, cfg), logger, serveClientACLOptions(cfg))
 }
 
-// rulesVersionPrefixWarnOnce gates warnIfRulesHaveVersionPrefix to a single
-// emission per process, like labelACLWarnOnce. The guard before once.Do means
-// the Once is only consumed when there is actually a prefixed rule to warn
-// about, so a hot reload that introduces one still warns.
-var rulesVersionPrefixWarnOnce sync.Once
-
-// warnIfRulesHaveVersionPrefix flags rule patterns that begin with a Docker API
-// version prefix (e.g. "/v1.45/..."). NormalizePath strips version prefixes from
-// the request path before matching, so such a pattern can never match real
-// traffic — the rule is silently dead, an intent gap worth surfacing.
-func warnIfRulesHaveVersionPrefix(cfg *config.Config, logger *slog.Logger) {
-	warnRulesVersionPrefixOnce(cfg, logger, &rulesVersionPrefixWarnOnce)
-}
-
-func warnRulesVersionPrefixOnce(cfg *config.Config, logger *slog.Logger, once *sync.Once) {
-	var prefixed []string
-	for _, r := range cfg.Rules {
-		if filter.HasVersionPrefix(r.Match.Path) {
-			prefixed = append(prefixed, r.Match.Path)
-		}
-	}
-	if len(prefixed) == 0 {
-		return
-	}
-	once.Do(func() {
-		logger.Warn("one or more rule patterns begin with a Docker API version prefix (e.g. /v1.45/...); "+
-			"sockguard strips version prefixes before matching, so these patterns never match real traffic — write the unversioned path",
-			"patterns", prefixed,
-		)
-	})
-}
-
+// A version-prefixed rule pattern (e.g. "/v1.45/...") used to only draw a
+// startup warning here — see warnIfRulesHaveVersionPrefix, removed. It is now
+// a hard config.Validate error (config/validate.go's versionPrefixRuleError),
+// and validateAndCompileRules always runs before this chain is ever built
+// (startup and every hot reload alike — see warnIfOpaqueBuildkitTunnelDeprecated's
+// doc comment for the same guarantee applied to another chain-build-time
+// check), so a version-prefixed pattern can no longer reach this point at all.
+//
 // labelACLWarnOnce gates warnIfLabelACLEnabled to a single emission per
 // process. The handler chain is rebuilt on every config hot-reload, so an
 // unguarded warning at the chain-build site would repeat on each reload.
@@ -1495,10 +1554,11 @@ func serveResponseFilterOptions(cfg *config.Config) responsefilter.Options {
 
 func serveFilterOptions(cfg *config.Config, res *upstream.Resolver, clientProfiles map[string]filter.Policy) filter.Options {
 	return filter.Options{
-		PolicyConfig:   servePolicyConfig(cfg, res),
-		Profiles:       clientProfiles,
-		ResolveProfile: clientacl.RequestProfile,
-		Mutation:       cfg.Mutations.ToFilterOptions(),
+		PolicyConfig:          servePolicyConfig(cfg, res),
+		AllowReadExfiltration: cfg.InsecureAllowReadExfiltration,
+		Profiles:              clientProfiles,
+		ResolveProfile:        clientacl.RequestProfile,
+		Mutation:              cfg.Mutations.ToFilterOptions(),
 	}
 }
 

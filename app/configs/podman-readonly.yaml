@@ -9,13 +9,14 @@
 # or a rootless `$XDG_RUNTIME_DIR/podman/podman.sock` — the rule set itself
 # does not change; only `upstream.socket` does.
 #
-# Unlike `readonly.yaml`, this preset does NOT set
-# insecure_allow_read_exfiltration: true. Every rule below is a narrow
-# list/inspect/metadata read; raw archive/export/logs/attach streams and
-# image/manifest pushes are deliberately left off the allowlist on both
-# surfaces, so this preset validates clean without acknowledging that
-# guardrail. Widen the allowlist yourself (and add the acknowledgment) if
-# your monitoring tool genuinely needs log streaming.
+# This preset intentionally keeps container process monitoring on both API
+# surfaces. Docker-compatible GET /containers/{id}/top forwards caller-selected
+# ps_args to the daemon's host `ps`, and native GET
+# /libpod/containers/{id}/top exposes the same process-list class. Both return
+# process command lines outside response redaction, so
+# insecure_allow_read_exfiltration: true below acknowledges that exposure. Raw
+# archive/export/logs/attach streams, native pod top, and image/manifest pushes
+# remain off the allowlist on both surfaces.
 #
 # No write operations are allowed on either surface. This includes native
 # POST /libpod/build. If you add that path later, it uses request_body.build
@@ -45,6 +46,8 @@ health:
   enabled: true
   path: /health
 
+insecure_allow_read_exfiltration: true
+
 rules:
   # --- Docker-compat surface: health + metadata ---
   - match: { method: GET, path: "/_ping" }
@@ -59,8 +62,8 @@ rules:
     action: allow
 
   # --- Docker-compat surface: container reads ---
-  # Logs / archive / attach / export deliberately omitted — they are gated
-  # by insecure_allow_read_exfiltration, which this preset does not set.
+  # Process monitoring is intentionally admitted and acknowledged above.
+  # Logs / archive / attach / export remain deliberately omitted.
   - match: { method: GET, path: "/containers/json" }
     action: allow
   - match: { method: GET, path: "/containers/*/json" }

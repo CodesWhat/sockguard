@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -1348,6 +1349,215 @@ func TestMiddlewareDeniesCrossOwnerContainerAccess(t *testing.T) {
 	}
 }
 
+func TestMiddlewareDeniesCrossOwnerNetworkMembershipChanges(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		path string
+		body string
+	}{
+		{
+			name: "Docker-compatible connect",
+			path: "/networks/team-net/connect",
+			body: `{"Container":"foreign-container","EndpointConfig":{"Aliases":["keep-me"]}}`,
+		},
+		{
+			name: "Docker-compatible disconnect",
+			path: "/networks/team-net/disconnect",
+			body: `{"Container":"foreign-container","Force":true}`,
+		},
+		{
+			name: "native libpod connect",
+			path: "/libpod/networks/team-net/connect",
+			body: `{"container":"foreign-container","aliases":["keep-me"],"static_ips":["10.89.0.42"]}`,
+		},
+		{
+			name: "native libpod disconnect",
+			path: "/libpod/networks/team-net/disconnect",
+			body: `{"Container":"foreign-container","Force":true}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			for _, foreign := range []dockerresource.Kind{dockerresource.KindNetwork, dockerresource.KindContainer} {
+				t.Run("foreign "+string(foreign), func(t *testing.T) {
+					t.Parallel()
+					ownerFor := func(kind dockerresource.Kind) string {
+						if kind == foreign {
+							return "job-999"
+						}
+						return "job-123"
+					}
+					opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+					fi := &recordingInspector{
+						resources: map[string]map[string]inspectResult{
+							"networks": {
+								"team-net": {labels: map[string]string{"com.sockguard.owner": ownerFor(dockerresource.KindNetwork)}, found: true},
+							},
+							"containers": {
+								"foreign-container": {labels: map[string]string{"com.sockguard.owner": ownerFor(dockerresource.KindContainer)}, found: true},
+							},
+						},
+					}
+					forwarded := false
+					handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						forwarded = true
+						w.WriteHeader(http.StatusNoContent)
+					}))
+
+					rec := httptest.NewRecorder()
+					req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+					handler.ServeHTTP(rec, req)
+
+					if forwarded {
+						t.Fatal("cross-owner network membership change was forwarded")
+					}
+					if rec.Code != http.StatusForbidden {
+						t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+					}
+					wantCall := resourceInspectCall{kind: foreign, id: "foreign-container"}
+					if foreign == dockerresource.KindNetwork {
+						wantCall.id = "team-net"
+					}
+					if !slices.Contains(fi.calls, wantCall) {
+						t.Fatalf("inspect calls = %#v, want %#v", fi.calls, wantCall)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestMiddlewareFailsClosedWhenNetworkMembershipContainerIsUnresolved(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		path string
+		body string
+	}{
+		{name: "Docker-compatible connect", path: "/networks/team-net/connect", body: `{"Container":"missing-container"}`},
+		{name: "Docker-compatible disconnect", path: "/networks/team-net/disconnect", body: `{"Container":"missing-container"}`},
+		{name: "native libpod connect", path: "/libpod/networks/team-net/connect", body: `{"container":"missing-container"}`},
+		{name: "native libpod disconnect", path: "/libpod/networks/team-net/disconnect", body: `{"Container":"missing-container"}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fi := &recordingInspector{resources: map[string]map[string]inspectResult{
+				"networks": {
+					"team-net": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+				},
+			}}
+			forwarded := false
+			handler := middlewareWithDeps(testLogger(), Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				forwarded = true
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+			handler.ServeHTTP(rec, req)
+
+			if forwarded {
+				t.Fatal("unresolved network membership change was forwarded")
+			}
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "could not resolve") {
+				t.Fatalf("deny body = %q, want unresolved-resource reason", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestMiddlewareAuthorizesBothNetworkMembershipResourcesAndPreservesBody(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		path      string
+		body      string
+		preserved string
+		wantValue any
+	}{
+		{
+			name:      "Docker-compatible connect endpoint options",
+			path:      "/networks/team-net/connect",
+			body:      `{"Container":"owned-container","EndpointConfig":{"Aliases":["keep-me"]}}`,
+			preserved: "EndpointConfig",
+			wantValue: map[string]any{"Aliases": []any{"keep-me"}},
+		},
+		{
+			name:      "Docker-compatible disconnect force",
+			path:      "/networks/team-net/disconnect",
+			body:      `{"Container":"owned-container","Force":true}`,
+			preserved: "Force",
+			wantValue: true,
+		},
+		{
+			name:      "native libpod connect endpoint options",
+			path:      "/libpod/networks/team-net/connect",
+			body:      `{"container":"owned-container","aliases":["keep-me"],"static_ips":["10.89.0.42"]}`,
+			preserved: "static_ips",
+			wantValue: []any{"10.89.0.42"},
+		},
+		{
+			name:      "native libpod disconnect force",
+			path:      "/libpod/networks/team-net/disconnect",
+			body:      `{"Container":"owned-container","Force":true}`,
+			preserved: "Force",
+			wantValue: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+			fi := &recordingInspector{
+				resources: map[string]map[string]inspectResult{
+					"networks": {
+						"team-net": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+					},
+					"containers": {
+						"owned-container": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+					},
+				},
+			}
+			handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatalf("decode forwarded body: %v", err)
+				}
+				if got := body[tt.preserved]; !reflect.DeepEqual(got, tt.wantValue) {
+					t.Fatalf("forwarded %s = %#v, want %#v", tt.preserved, got, tt.wantValue)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
+			}
+			wantCalls := []resourceInspectCall{
+				{kind: dockerresource.KindContainer, id: "owned-container"},
+				{kind: dockerresource.KindNetwork, id: "team-net"},
+			}
+			for _, want := range wantCalls {
+				if !slices.Contains(fi.calls, want) {
+					t.Fatalf("inspect calls = %#v, missing %#v", fi.calls, want)
+				}
+			}
+		})
+	}
+}
+
 func TestMiddlewareRolloutModePassesOwnershipDenyThrough(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{"warn", "audit"} {
@@ -1606,6 +1816,60 @@ func TestMiddlewareAllowsUnownedImageAccessByDefault(t *testing.T) {
 	}
 }
 
+func TestMiddlewareAllowUnownedImagesDoesNotAllowMissingImage(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		path        string
+		wantMessage string
+	}{
+		{
+			name:        "docker compat",
+			path:        "/images/missing:latest/json",
+			wantMessage: "owner policy denied access to image",
+		},
+		{
+			name:        "libpod",
+			path:        "/libpod/images/missing:latest/json",
+			wantMessage: "libpod owner policy denied access to image",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner", AllowUnownedImages: true}
+			fi := fakeInspector{
+				resources: map[string]map[string]inspectResult{
+					"images": {
+						"missing:latest": {found: false},
+					},
+				},
+			}
+			handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("missing image reached upstream through allow_unowned_images")
+			}))
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			var response struct {
+				Message string `json:"message"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+				t.Fatalf("decode deny body: %v", err)
+			}
+			if response.Message != tt.wantMessage {
+				t.Fatalf("deny message = %q, want %q", response.Message, tt.wantMessage)
+			}
+		})
+	}
+}
+
 // TestMiddlewareDeniesImageAttestationsForCrossOwnerImage pins that the
 // attestation path enforces its image's owner.
 func TestMiddlewareDeniesImageAttestationsForCrossOwnerImage(t *testing.T) {
@@ -1721,6 +1985,97 @@ func TestMiddlewareDeniesWhenExecSessionMissing(t *testing.T) {
 				t.Fatalf("deny message = %q, want libpod owner-policy prefix = %v", response.Message, tt.wantLibpodPrefix)
 			}
 		})
+	}
+}
+
+func TestMiddlewareRolloutModesPassMissingTargetDenialsThrough(t *testing.T) {
+	t.Parallel()
+	targets := []struct {
+		name       string
+		method     string
+		path       string
+		resource   bool
+		wantReason string
+	}{
+		{
+			name:       "docker resource",
+			method:     http.MethodGet,
+			path:       "/containers/missing/json",
+			resource:   true,
+			wantReason: "owner policy denied access to container",
+		},
+		{
+			name:       "libpod resource",
+			method:     http.MethodGet,
+			path:       "/libpod/containers/missing/json",
+			resource:   true,
+			wantReason: "libpod owner policy denied access to container",
+		},
+		{
+			name:       "docker exec",
+			method:     http.MethodPost,
+			path:       "/exec/missing/start",
+			wantReason: "owner policy denied access to exec session",
+		},
+		{
+			name:       "libpod exec",
+			method:     http.MethodPost,
+			path:       "/libpod/exec/missing/start",
+			wantReason: "libpod owner policy denied access to exec session",
+		},
+	}
+
+	for _, mode := range []string{"warn", "audit"} {
+		for _, target := range targets {
+			t.Run(mode+"/"+target.name, func(t *testing.T) {
+				t.Parallel()
+				fi := fakeInspector{}
+				if target.resource {
+					fi.resources = map[string]map[string]inspectResult{
+						"containers": {
+							"missing": {found: false},
+						},
+					}
+				} else {
+					fi.execs = map[string]execResult{
+						"missing": {found: false},
+					}
+				}
+
+				reached := false
+				handler := middlewareWithDeps(
+					testLogger(),
+					Options{Owner: "job-123", LabelKey: "com.sockguard.owner"},
+					fi.inspectResource,
+					fi.inspectExec,
+				)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					reached = true
+					w.WriteHeader(http.StatusNoContent)
+				}))
+
+				meta := &logging.RequestMeta{RolloutMode: mode}
+				req := httptest.NewRequest(target.method, target.path, nil)
+				req = req.WithContext(logging.WithMeta(req.Context(), meta))
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+
+				if !reached {
+					t.Fatalf("missing target did not reach upstream under mode=%s", mode)
+				}
+				if rec.Code != http.StatusNoContent {
+					t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+				}
+				if meta.Decision != logging.DecisionWouldDeny {
+					t.Fatalf("decision = %q, want %q", meta.Decision, logging.DecisionWouldDeny)
+				}
+				if meta.ReasonCode != reasonCodeOwnerPolicyDeniedAccess {
+					t.Fatalf("reason code = %q, want %q", meta.ReasonCode, reasonCodeOwnerPolicyDeniedAccess)
+				}
+				if meta.Reason != target.wantReason {
+					t.Fatalf("reason = %q, want %q", meta.Reason, target.wantReason)
+				}
+			})
+		}
 	}
 }
 

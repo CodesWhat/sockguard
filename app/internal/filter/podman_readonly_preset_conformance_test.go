@@ -19,11 +19,11 @@ import (
 //     reads (container/pod/image/network/volume/secret list + inspect,
 //     health + version + info + events), so operators get one preset for a
 //     Podman host regardless of which API family their monitoring tool uses.
-//   - Every path in the exfiltration-gated catalogs
-//     (sensitiveExfilEndpoints in internal/cmd/rules.go — archive, export,
-//     logs, attach, images/get, images/push, generate/kube, manifest
-//     registry pushes, on both surfaces) stays denied, proving the preset
-//     never needed insecure_allow_read_exfiltration: true.
+//   - Container top stays admitted on both surfaces as part of this preset's
+//     process-monitoring contract. Both routes require the preset's explicit
+//     insecure_allow_read_exfiltration acknowledgment; every other cataloged
+//     archive, export, logs, attach, images/get, images/push, generate/kube,
+//     and manifest registry-push path stays denied.
 //   - No write reaches upstream on either surface — including libpod-only
 //     writes with no Docker-compat analog, like pod create and play/kube.
 func TestPodmanReadonlyPresetConformance(t *testing.T) {
@@ -101,6 +101,7 @@ func TestPodmanReadonlyPresetConformance(t *testing.T) {
 		{"libpod-pods-stats", http.MethodGet, "/libpod/pods/stats", "", false},
 		{"libpod-containers-stats", http.MethodGet, "/libpod/containers/stats", "", false},
 		{"libpod-containers-showmounted", http.MethodGet, "/libpod/containers/showmounted", "", false},
+		{"libpod-pod-top-denied", http.MethodGet, "/libpod/pods/abc/top", "", false},
 
 		// --- libpod: image reads ---
 		{"libpod-images-list", http.MethodGet, "/libpod/images/json", "", true},
@@ -133,14 +134,27 @@ func TestPodmanReadonlyPresetConformance(t *testing.T) {
 		{"libpod-exec-start-denied", http.MethodPost, "/libpod/exec/abc/start", "", false},
 		{"libpod-volume-create-denied", http.MethodPost, "/libpod/volumes/create", "", false},
 		{"libpod-network-create-denied", http.MethodPost, "/libpod/networks/create", "", false},
+		{"libpod-network-connect-denied", http.MethodPost, "/libpod/networks/abc/connect", `{"container":"abc","static_ips":["10.9.9.9"]}`, false},
+		{"libpod-network-disconnect-denied", http.MethodPost, "/libpod/networks/abc/disconnect", `{"Container":"abc","Force":true}`, false},
+		{"libpod-network-update-denied", http.MethodPost, "/libpod/networks/abc/update", `{"adddnsservers":["10.6.6.6"]}`, false},
 		{"libpod-secret-create-denied", http.MethodPost, "/libpod/secrets/create", "", false},
 		{"libpod-play-kube-denied", http.MethodPost, "/libpod/play/kube", "", false},
 		{"libpod-kube-apply-denied", http.MethodPost, "/libpod/kube/apply", "", false},
+		// The libpod image-write surface, including the two "local API"
+		// routes that read a daemon-host path and the SSH image transfer.
+		// None has a Docker analog reachable through this preset's rules;
+		// the preset's trailing deny-all is what keeps them shut.
+		{"libpod-image-load-denied", http.MethodPost, "/libpod/images/load", "", false},
+		{"libpod-image-import-denied", http.MethodPost, "/libpod/images/import", "", false},
+		{"libpod-local-image-load-denied", http.MethodPost, "/libpod/local/images/load?path=%2Fetc", "", false},
+		{"libpod-local-build-denied", http.MethodPost, "/libpod/local/build?localcontextdir=%2Fetc", "", false},
+		{"libpod-image-scp-denied", http.MethodPost, "/libpod/images/scp/user@host::img", "", false},
 
 		// --- version-prefixed variants: the same verdicts must hold after
 		// stripVersionPrefix normalization, for Docker's two-part prefixes
 		// and Podman's three-part semver prefixes alike ---
 		{"v-prefixed-containers-list", http.MethodGet, "/v1.45/containers/json", "", true},
+		{"v-prefixed-container-top", http.MethodGet, "/v1.45/containers/abc/top", "", true},
 		{"v-prefixed-container-create-denied", http.MethodPost, "/v1.45/containers/create", "", false},
 		{"v-prefixed-logs-denied", http.MethodGet, "/v1.45/containers/abc/logs", "", false},
 		{"v-prefixed-libpod-containers-list", http.MethodGet, "/v5.0.0/libpod/containers/json", "", true},

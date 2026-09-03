@@ -20,17 +20,24 @@
 # network/volume create policies default to denying custom drivers and driver
 # opts unless explicitly widened here, and this preset does not widen them.
 #
-# Still denied: /build, /session, /grpc. `docker compose build` / `up --build`
-# with DEFAULT settings never calls POST /build at all — it drives dockerd's
-# embedded BuildKit over the hijacked, unversioned POST /session and
-# POST /grpc streams instead, both denied here. Use
+# Still denied: /build, /session, /grpc, and exec. `docker compose build` /
+# `up --build` with DEFAULT settings never calls POST /build at all — it
+# drives dockerd's embedded BuildKit over the hijacked, unversioned
+# POST /session and POST /grpc streams instead, both denied here. Use
 # drydock-with-mediated-build.yaml if you need `--build` support with
 # BuildKit's default (no env var) transport — it layers a
 # request_body.buildkit mediation policy (issue #185) on top of everything in
 # this preset, inspecting Solve/Status and the Dockerfile/context FileSync
 # stream instead of hijacking the tunnel unmediated. Use drydock-with-build.yaml
 # instead if you specifically want the CLASSIC builder (POST /build only,
-# requires DOCKER_BUILDKIT=0 in the client environment).
+# requires DOCKER_BUILDKIT=0 in the client environment). Exec is denied by
+# the catch-all too: a service whose compose.yaml declares a Compose-Spec
+# post_start hook drives it through exec (POST /containers/{id}/exec,
+# POST /exec/{id}/start, GET /exec/{id}/json), and drydock's
+# PostStartExecutor throws rather than skipping the hook, so a stack with a
+# post_start hook fails loudly on deploy rather than silently. If you need
+# post_start support, add a pinned allowed_commands entry modeled on
+# drydock-with-selfupdate.yaml rather than a blanket exec allow.
 #
 # Self-update: same caveat as drydock.yaml — the finalize exec
 # (runFinalizeCallbackInContainer) is still denied here. Use
@@ -70,6 +77,9 @@ response:
 # too; restart-policy/resource-control/device/capability changes stay denied
 # unless you explicitly allow them under request_body.container_update.
 request_body:
+  container_remove:
+    allow_force: true
+    allow_remove_volumes: true
   container_create:
     allowed_bind_mounts: []
     # Drydock recreates a container from its own inspect spec, which on most
@@ -105,8 +115,6 @@ rules:
   - match: { method: GET, path: "/containers/*/json" }
     action: allow
   - match: { method: GET, path: "/containers/*/stats" }
-    action: allow
-  - match: { method: GET, path: "/containers/*/top" }
     action: allow
   - match: { method: GET, path: "/containers/*/changes" }
     action: allow

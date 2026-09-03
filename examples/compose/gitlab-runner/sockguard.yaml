@@ -34,6 +34,11 @@ response:
   deny_verbosity: minimal
 
 request_body:
+  # GitLab Runner force-removes job containers and, unless volume_keep is
+  # enabled, removes their anonymous volumes in the same request.
+  container_remove:
+    allow_force: true
+    allow_remove_volumes: true
   container_create:
     # Privileged containers are rejected unconditionally — see security note
     # above. Remove this line only after reading that note carefully.

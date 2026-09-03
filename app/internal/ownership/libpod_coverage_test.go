@@ -1,8 +1,11 @@
 package ownership
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -171,6 +174,336 @@ func TestLibpodImageActionsAreOwnerChecked(t *testing.T) {
 	}
 }
 
+func TestLibpodImageScpOwnershipMatrix(t *testing.T) {
+	t.Parallel()
+	states := []struct {
+		name           string
+		source         string
+		wantIdentifier string
+		labels         map[string]string
+		found          bool
+		remote         bool
+	}{
+		{name: "owned", source: "registry.io/team/json", wantIdentifier: "registry.io/team/json", labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+		{name: "localhost user owned", source: "alice@localhost::registry.io/team/json", wantIdentifier: "registry.io/team/json", labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+		{name: "foreign", source: "registry.io/team/json", wantIdentifier: "registry.io/team/json", labels: map[string]string{"com.sockguard.owner": "other-job"}, found: true},
+		{name: "localhost user foreign", source: "alice@localhost::registry.io/team/json", wantIdentifier: "registry.io/team/json", labels: map[string]string{"com.sockguard.owner": "other-job"}, found: true},
+		{name: "unowned", source: "registry.io/team/json", wantIdentifier: "registry.io/team/json", labels: map[string]string{}, found: true},
+		{name: "localhost user unowned", source: "alice@localhost::registry.io/team/json", wantIdentifier: "registry.io/team/json", labels: map[string]string{}, found: true},
+		{name: "not found", source: "registry.io/team/json", wantIdentifier: "registry.io/team/json"},
+		{name: "localhost user not found", source: "alice@localhost::registry.io/team/json", wantIdentifier: "registry.io/team/json"},
+		{name: "remote", source: "builder::registry.io/team/json", remote: true},
+	}
+	versions := []struct {
+		name   string
+		prefix string
+	}{
+		{name: "unversioned"},
+		{name: "versioned", prefix: "/v5.8.1"},
+	}
+
+	for _, state := range states {
+		for _, allowUnowned := range []bool{false, true} {
+			for _, version := range versions {
+				for _, rolloutMode := range []string{"enforce", "warn", "audit"} {
+					name := state.name + "/allow_unowned=" + strconv.FormatBool(allowUnowned) + "/" + version.name + "/" + rolloutMode
+					t.Run(name, func(t *testing.T) {
+						t.Parallel()
+						inspectCalls := 0
+						upstreamCalls := 0
+						handler := middlewareWithDeps(
+							testLogger(),
+							Options{Owner: "job-123", LabelKey: "com.sockguard.owner", AllowUnownedImages: allowUnowned},
+							func(_ context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
+								inspectCalls++
+								if kind != dockerresource.KindImage || identifier != state.wantIdentifier {
+									t.Fatalf("inspect = %s/%q, want %s/%q", kind, identifier, dockerresource.KindImage, state.wantIdentifier)
+								}
+								return state.labels, state.found, nil
+							},
+							fakeInspector{}.inspectExec,
+						)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+							upstreamCalls++
+							w.WriteHeader(http.StatusNoContent)
+						}))
+
+						meta := &logging.RequestMeta{RolloutMode: rolloutMode}
+						req := httptest.NewRequest(http.MethodPost, version.prefix+"/libpod/images/scp/"+state.source, nil)
+						req = req.WithContext(logging.WithMeta(req.Context(), meta))
+						rec := httptest.NewRecorder()
+						handler.ServeHTTP(rec, req)
+
+						// A source the daemon cannot resolve denies too: owner
+						// isolation fails closed on an unresolved target, so
+						// not-found is a denial rather than the pass-through it
+						// used to be. AllowUnownedImages does not rescue it —
+						// that option covers an image that exists and carries no
+						// owner label, not one that does not exist.
+						wantDenied := state.remote || !state.found ||
+							state.labels["com.sockguard.owner"] != "job-123" && (!allowUnowned || len(state.labels) > 0)
+						wantForwarded := !wantDenied || rolloutMode != "enforce"
+						wantStatus := http.StatusForbidden
+						if wantForwarded {
+							wantStatus = http.StatusNoContent
+						}
+						wantUpstreamCalls := 0
+						if wantForwarded {
+							wantUpstreamCalls = 1
+						}
+						if rec.Code != wantStatus || upstreamCalls != wantUpstreamCalls {
+							t.Fatalf("status = %d upstream calls = %d, want %d and %d; body: %s", rec.Code, upstreamCalls, wantStatus, wantUpstreamCalls, rec.Body.String())
+						}
+						wantInspectCalls := 1
+						if state.remote {
+							wantInspectCalls = 0
+						}
+						if inspectCalls != wantInspectCalls {
+							t.Fatalf("local image inspect calls = %d, want %d", inspectCalls, wantInspectCalls)
+						}
+						if !wantDenied {
+							if meta.Decision != "" || meta.ReasonCode != "" || meta.Reason != "" {
+								t.Fatalf("allowed meta = decision %q code %q reason %q, want no ownership denial", meta.Decision, meta.ReasonCode, meta.Reason)
+							}
+							return
+						}
+						wantDecision := logging.DecisionDeny
+						if rolloutMode != "enforce" {
+							wantDecision = logging.DecisionWouldDeny
+						}
+						if meta.Decision != wantDecision || meta.ReasonCode != reasonCodeOwnerPolicyDeniedAccess {
+							t.Fatalf("meta = decision %q code %q, want %q and %q", meta.Decision, meta.ReasonCode, wantDecision, reasonCodeOwnerPolicyDeniedAccess)
+						}
+						wantReason := "libpod owner policy denied access to image"
+						if state.remote {
+							wantReason = "libpod owner policy denied access to remote image source"
+						}
+						if meta.Reason != wantReason {
+							t.Fatalf("meta reason = %q, want %q", meta.Reason, wantReason)
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+func TestLibpodImageScpOwnershipIsInertWithoutOwner(t *testing.T) {
+	t.Parallel()
+	for _, source := range []string{"registry.io/team/json", "builder::registry.io/team/json", "alice@localhost::registry.io/team/json"} {
+		t.Run(source, func(t *testing.T) {
+			t.Parallel()
+			upstreamCalls := 0
+			handler := middlewareWithDeps(testLogger(), Options{}, func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
+				t.Fatal("ownership-disabled request performed an image inspect")
+				return nil, false, nil
+			}, fakeInspector{}.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				upstreamCalls++
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/libpod/images/scp/"+source, nil))
+
+			if rec.Code != http.StatusNoContent || upstreamCalls != 1 {
+				t.Fatalf("status = %d upstream calls = %d, want %d and 1", rec.Code, upstreamCalls, http.StatusNoContent)
+			}
+		})
+	}
+}
+
+func TestLibpodImageScpPreservesPostActionRouteCollisions(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name           string
+		path           string
+		wantIdentifier string
+	}{
+		{name: "push with no extra segment", path: "/libpod/images/scp/push", wantIdentifier: "scp"},
+		{name: "tag with no extra segment", path: "/libpod/images/scp/tag", wantIdentifier: "scp"},
+		{name: "untag with no extra segment", path: "/libpod/images/scp/untag", wantIdentifier: "scp"},
+		{name: "nested push", path: "/libpod/images/scp/builder::app/push", wantIdentifier: "scp/builder::app"},
+		{name: "nested tag", path: "/libpod/images/scp/builder::app/tag", wantIdentifier: "scp/builder::app"},
+		{name: "nested untag", path: "/libpod/images/scp/builder::app/untag", wantIdentifier: "scp/builder::app"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var gotIdentifier string
+			handler := middlewareWithDeps(testLogger(), Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}, func(_ context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
+				if kind != dockerresource.KindImage {
+					t.Fatalf("inspect kind = %s, want %s", kind, dockerresource.KindImage)
+				}
+				gotIdentifier = identifier
+				return map[string]string{"com.sockguard.owner": "job-123"}, true, nil
+			}, fakeInspector{}.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, tt.path, nil))
+
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
+			}
+			if gotIdentifier != tt.wantIdentifier {
+				t.Fatalf("inspect identifier = %q, want %q", gotIdentifier, tt.wantIdentifier)
+			}
+		})
+	}
+}
+
+func TestLibpodImageScpUsesPodmansEncodedRouteShape(t *testing.T) {
+	t.Parallel()
+	t.Run("encoded slash remains part of the local SCP source", func(t *testing.T) {
+		t.Parallel()
+		var gotIdentifier string
+		handler := middlewareWithDeps(
+			testLogger(),
+			Options{Owner: "job-123", LabelKey: "com.sockguard.owner"},
+			func(_ context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
+				if kind != dockerresource.KindImage {
+					t.Fatalf("inspect kind = %s, want %s", kind, dockerresource.KindImage)
+				}
+				gotIdentifier = identifier
+				return map[string]string{"com.sockguard.owner": "other-job"}, true, nil
+			},
+			fakeInspector{}.inspectExec,
+		)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Fatal("foreign encoded-slash SCP source reached upstream")
+		}))
+
+		req := httptest.NewRequest(http.MethodPost, "/libpod/images/scp/foreign%2Fpush", nil)
+		if req.URL.Path != "/libpod/images/scp/foreign/push" || req.URL.RawPath != "/libpod/images/scp/foreign%2Fpush" {
+			t.Fatalf("request path = %q raw path = %q, want decoded and encoded route views", req.URL.Path, req.URL.RawPath)
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+		}
+		if gotIdentifier != "foreign/push" {
+			t.Fatalf("inspect identifier = %q, want %q", gotIdentifier, "foreign/push")
+		}
+	})
+
+	t.Run("encoded slash cannot disguise a true remote source", func(t *testing.T) {
+		t.Parallel()
+		handler := middlewareWithDeps(
+			testLogger(),
+			Options{Owner: "job-123", LabelKey: "com.sockguard.owner"},
+			func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
+				t.Fatal("true remote encoded-slash SCP source performed a local inspect")
+				return nil, false, nil
+			},
+			fakeInspector{}.inspectExec,
+		)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Fatal("true remote encoded-slash SCP source reached upstream")
+		}))
+
+		req := httptest.NewRequest(http.MethodPost, "/libpod/images/scp/builder::foreign%2Fpush", nil)
+		if req.URL.Path != "/libpod/images/scp/builder::foreign/push" || req.URL.RawPath != "/libpod/images/scp/builder::foreign%2Fpush" {
+			t.Fatalf("request path = %q raw path = %q, want decoded and encoded route views", req.URL.Path, req.URL.RawPath)
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "remote image source") {
+			t.Fatalf("body = %q, want remote-source denial", rec.Body.String())
+		}
+	})
+}
+
+func TestPodmanVersionGrammarCannotBypassOwnerIsolationBehindCatchall(t *testing.T) {
+	t.Parallel()
+	allowAll, err := filter.CompileRule(filter.Rule{Methods: []string{"*"}, Pattern: "/**", Action: filter.ActionAllow})
+	if err != nil {
+		t.Fatalf("compile catch-all allow rule: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		method     string
+		path       string
+		inspect    bool
+		identifier string
+	}{
+		{name: "prerelease manifest inspect", method: http.MethodGet, path: "/v5.8.1-dev/libpod/manifests/app/json"},
+		{name: "four-component manifest exists", method: http.MethodGet, path: "/v5.8.1.2/libpod/manifests/app/exists"},
+		{name: "prerelease SCP", method: http.MethodPost, path: "/v5.8.1-dev/libpod/images/scp/app", inspect: true, identifier: "app"},
+		{name: "four-component SCP", method: http.MethodPost, path: "/v5.8.1.2/libpod/images/scp/app", inspect: true, identifier: "app"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			inspectCalls := 0
+			ownerHandler := middlewareWithDeps(
+				testLogger(),
+				Options{Owner: "job-123", LabelKey: "com.sockguard.owner"},
+				func(_ context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
+					inspectCalls++
+					if !tt.inspect || kind != dockerresource.KindImage || identifier != tt.identifier {
+						t.Fatalf("inspect = %s/%q, want image/%q", kind, identifier, tt.identifier)
+					}
+					return map[string]string{"com.sockguard.owner": "other-job"}, true, nil
+				},
+				fakeInspector{}.inspectExec,
+			)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("Podman-versioned isolation target reached upstream")
+			}))
+			handler := filter.MiddlewareWithOptions([]*filter.CompiledRule{allowAll}, testLogger(), filter.Options{})(ownerHandler)
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(tt.method, tt.path, nil))
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			wantInspectCalls := 0
+			if tt.inspect {
+				wantInspectCalls = 1
+			}
+			if inspectCalls != wantInspectCalls {
+				t.Fatalf("inspect calls = %d, want %d", inspectCalls, wantInspectCalls)
+			}
+		})
+	}
+}
+
+func TestLibpodImageScpMalformedLocalSourceIsDenied(t *testing.T) {
+	t.Parallel()
+	handler := middlewareWithDeps(
+		testLogger(),
+		Options{Owner: "job-123", LabelKey: "com.sockguard.owner"},
+		func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
+			t.Fatal("malformed local image source performed an image inspect")
+			return nil, false, nil
+		},
+		fakeInspector{}.inspectExec,
+	)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("malformed local image source reached upstream")
+	}))
+
+	meta := &logging.RequestMeta{RolloutMode: "enforce"}
+	req := httptest.NewRequest(http.MethodPost, "/libpod/images/scp/alice@localhost::", nil)
+	req = req.WithContext(logging.WithMeta(req.Context(), meta))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "could not resolve local image source") {
+		t.Fatalf("body = %q, want local-source resolution denial", rec.Body.String())
+	}
+	if meta.Decision != logging.DecisionDeny || meta.ReasonCode != reasonCodeOwnerPolicyDeniedAccess {
+		t.Fatalf("meta = decision %q code %q, want %q and %q", meta.Decision, meta.ReasonCode, logging.DecisionDeny, reasonCodeOwnerPolicyDeniedAccess)
+	}
+}
+
 // TestLibpodImageIdentifier pins the classification itself, which the
 // end-to-end tests above cannot: a collection route misread as an image named
 // after its keyword costs an upstream inspect per request and, once an image
@@ -211,10 +544,20 @@ func TestLibpodImageIdentifier(t *testing.T) {
 		// string, so the segment is stripped and the reference checked.
 		{name: "scp", method: http.MethodPost, path: "/libpod/images/scp/app", want: "app", wantOK: true},
 		{name: "scp namespaced", method: http.MethodPost, path: "/libpod/images/scp/registry.io/team/app", want: "registry.io/team/app", wantOK: true},
+		{name: "scp source ending in json", method: http.MethodPost, path: "/libpod/images/scp/registry.io/team/json", want: "registry.io/team/json", wantOK: true},
+		{name: "scp source ending in history", method: http.MethodPost, path: "/libpod/images/scp/registry.io/team/history", want: "registry.io/team/history", wantOK: true},
+		{name: "scp source ending in exists", method: http.MethodPost, path: "/libpod/images/scp/registry.io/team/exists", want: "registry.io/team/exists", wantOK: true},
+		{name: "scp remote source is not a local identifier", method: http.MethodPost, path: "/libpod/images/scp/builder::registry.io/team/json"},
+		{name: "scp localhost user source extracts image", method: http.MethodPost, path: "/libpod/images/scp/alice@localhost::registry.io/team/json", want: "registry.io/team/json", wantOK: true},
+		{name: "scp malformed localhost user source is not a local identifier", method: http.MethodPost, path: "/libpod/images/scp/alice@localhost::"},
+		{name: "post does not trim a get-only suffix", method: http.MethodPost, path: "/libpod/images/app/json", want: "app/json", wantOK: true},
+		{name: "get does not trim a post-only suffix", method: http.MethodGet, path: "/libpod/images/app/push", want: "app/push", wantOK: true},
 		// gorilla/mux resolves the per-image action routes first because
 		// Podman registers them earlier, so this is an image named "scp/app"
 		// being pushed, not an scp of "app".
 		{name: "image named scp/app pushed", method: http.MethodPost, path: "/libpod/images/scp/app/push", want: "scp/app", wantOK: true},
+		{name: "image named scp/app tagged", method: http.MethodPost, path: "/libpod/images/scp/app/tag", want: "scp/app", wantOK: true},
+		{name: "image named scp/app untagged", method: http.MethodPost, path: "/libpod/images/scp/app/untag", want: "scp/app", wantOK: true},
 		{name: "scp on a method that does not route it", method: http.MethodDelete, path: "/libpod/images/scp/app", want: "scp/app", wantOK: true},
 		// Docker-compat paths must never satisfy a libpod matcher.
 		{name: "compat inspect", method: http.MethodGet, path: "/images/app/json"},
@@ -287,6 +630,8 @@ var wantOwnerUnscopeableReasonCodes = map[string]string{
 	filter.LibpodShowMountedPath:    "owner_libpod_show_mounted_unscopeable",
 	filter.LibpodContainerStatsPath: "owner_libpod_container_stats_unscopeable",
 	filter.LibpodPodStatsPath:       "owner_libpod_pod_stats_unscopeable",
+	filter.LibpodManifestExistsPath: "owner_libpod_manifest_exists_unscopeable",
+	filter.LibpodManifestJSONPath:   "owner_libpod_manifest_json_unscopeable",
 }
 
 // TestLibpodUnscopeableReadsAreRefusedUnderOwnerIsolation covers every libpod
@@ -345,6 +690,74 @@ func TestLibpodUnscopeableReadsAreRefusedUnderOwnerIsolation(t *testing.T) {
 	}
 }
 
+// TestLibpodUnscopeableContainerReadsDenyBeforeInspect pins the ordering of
+// the refusal relative to ordinary per-container ownership checks. The two
+// collection paths happen to look like containers named "stats" and
+// "showmounted" to libpodContainerIdentifier. No daemon state for either
+// name may affect the refusal, and warn/audit rollout must not turn a foreign
+// container verdict into pass-through before the collection denial runs.
+func TestLibpodUnscopeableContainerReadsDenyBeforeInspect(t *testing.T) {
+	t.Parallel()
+
+	states := []struct {
+		name   string
+		labels map[string]string
+		found  bool
+		err    error
+	}{
+		{name: "not found"},
+		{name: "owned", labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+		{name: "foreign", labels: map[string]string{"com.sockguard.owner": "other-job"}, found: true},
+		{name: "unowned", labels: map[string]string{}, found: true},
+		{name: "inspect error", err: errors.New("inspect failed")},
+	}
+	paths := []string{filter.LibpodShowMountedPath, filter.LibpodContainerStatsPath}
+	rolloutModes := []string{"enforce", "warn", "audit"}
+
+	for _, path := range paths {
+		for _, state := range states {
+			for _, rolloutMode := range rolloutModes {
+				t.Run(path+"/"+state.name+"/"+rolloutMode, func(t *testing.T) {
+					t.Parallel()
+					inspectCalls := 0
+					upstreamCalls := 0
+					inspectResource := func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
+						inspectCalls++
+						return state.labels, state.found, state.err
+					}
+					handler := middlewareWithDeps(
+						testLogger(),
+						Options{Owner: "job-123", LabelKey: "com.sockguard.owner"},
+						inspectResource,
+						fakeInspector{}.inspectExec,
+					)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+						upstreamCalls++
+					}))
+
+					meta := &logging.RequestMeta{RolloutMode: rolloutMode}
+					req := httptest.NewRequest(http.MethodGet, path, nil)
+					req = req.WithContext(logging.WithMeta(req.Context(), meta))
+					rec := httptest.NewRecorder()
+					handler.ServeHTTP(rec, req)
+
+					if rec.Code != http.StatusForbidden {
+						t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+					}
+					if inspectCalls != 0 {
+						t.Fatalf("inspect calls = %d, want 0", inspectCalls)
+					}
+					if upstreamCalls != 0 {
+						t.Fatalf("upstream calls = %d, want 0", upstreamCalls)
+					}
+					if meta.ReasonCode != wantOwnerUnscopeableReasonCodes[path] {
+						t.Fatalf("reason code = %q, want %q", meta.ReasonCode, wantOwnerUnscopeableReasonCodes[path])
+					}
+				})
+			}
+		}
+	}
+}
+
 // TestLibpodUnscopeableReadsAreInertWithoutOwner proves the refusals cost
 // nothing to a deployment that configured no owner: there is no boundary to
 // enforce, so the rule engine stays the only control.
@@ -378,6 +791,9 @@ func TestLibpodUnscopeableReadsAreInertWithoutOwner(t *testing.T) {
 // The identifier helpers deliberately reserve all three collection paths, so
 // they reach the upstream without any resource ownership check running. The
 // refusal branch remains necessary to keep their host-wide data unavailable.
+// The manifest reads likewise have no ownership identifier: manifest-list
+// responses carry no owner labels, and the image identifier only covers the
+// distinct /libpod/images route family.
 func TestLibpodUnscopeableReadsWereNotCoveredByTheExistingIdentifiers(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -389,6 +805,8 @@ func TestLibpodUnscopeableReadsWereNotCoveredByTheExistingIdentifiers(t *testing
 		{path: filter.LibpodShowMountedPath, classify: libpodContainerIdentifier, wantIdentifier: "", wantOK: false},
 		{path: filter.LibpodContainerStatsPath, classify: libpodContainerIdentifier, wantIdentifier: "", wantOK: false},
 		{path: filter.LibpodPodStatsPath, classify: libpodPodIdentifier, wantIdentifier: "", wantOK: false},
+		{path: filter.LibpodManifestExistsPath, classify: libpodImageIdentifier, wantIdentifier: "", wantOK: false},
+		{path: filter.LibpodManifestJSONPath, classify: libpodImageIdentifier, wantIdentifier: "", wantOK: false},
 	}
 	if len(tests) != len(filter.LibpodUnscopeableReads()) {
 		t.Fatalf("%d cases for %d unscopeable reads; a new one needs its own answer here", len(tests), len(filter.LibpodUnscopeableReads()))

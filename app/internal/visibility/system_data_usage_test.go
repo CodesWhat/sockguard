@@ -2,6 +2,7 @@ package visibility
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codeswhat/sockguard/app/internal/filter"
 	"github.com/codeswhat/sockguard/app/internal/logging"
@@ -472,6 +474,7 @@ func TestLibpodSystemDataUsageRefusedUnderVisibilityPolicy(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name     string
+		method   string
 		opts     Options
 		path     string
 		upstream string
@@ -508,6 +511,16 @@ func TestLibpodSystemDataUsageRefusedUnderVisibilityPolicy(t *testing.T) {
 			path:     "/v5.8.1/libpod/system/df",
 			upstream: `{"Containers":[{"ContainerID":"c-dev","Names":"dev-web"`,
 		},
+		{
+			// HEAD must be refused the same as GET: this refusal used to gate
+			// on GET alone, so a HEAD request fell through needsVisibilityLabelFilter
+			// into the inspect path and reached the daemon.
+			name:     "HEAD request",
+			method:   http.MethodHead,
+			opts:     Options{VisibleResourceLabels: []string{"tier=prod"}},
+			path:     "/v5.8.1/libpod/system/df",
+			upstream: libpodSystemDFForTest,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -515,7 +528,11 @@ func TestLibpodSystemDataUsageRefusedUnderVisibilityPolicy(t *testing.T) {
 			reached := false
 			handler := libpodSystemDFHandlerForTest(t, tt.opts, tt.upstream, &reached)
 
-			rec, meta := getLibpodPathForTest(t, handler, http.MethodGet, tt.path)
+			method := tt.method
+			if method == "" {
+				method = http.MethodGet
+			}
+			rec, meta := getLibpodPathForTest(t, handler, method, tt.path)
 			if rec.Code != http.StatusForbidden {
 				t.Fatalf("status = %d, want 403; body: %s", rec.Code, rec.Body.String())
 			}
@@ -529,6 +546,46 @@ func TestLibpodSystemDataUsageRefusedUnderVisibilityPolicy(t *testing.T) {
 			for _, leaked := range []string{"dev-web", "c-dev", "vol-dev", "bbbb444455556666", "1092588"} {
 				if strings.Contains(body, leaked) {
 					t.Errorf("host inventory %q reached the client: %s", leaked, body)
+				}
+			}
+		})
+	}
+}
+
+func TestLibpodShowMountedRefusedUnderVisibilityPolicy(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodGet, path: "/libpod/containers/showmounted"},
+		{method: http.MethodGet, path: "/v5.8.1/libpod/containers/showmounted"},
+		// HEAD must be refused the same as GET; see the equivalent case in
+		// TestLibpodSystemDataUsageRefusedUnderVisibilityPolicy for why.
+		{method: http.MethodHead, path: "/v5.8.1/libpod/containers/showmounted"},
+	} {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			t.Parallel()
+			reached := false
+			handler := libpodSystemDFHandlerForTest(t,
+				Options{VisibleResourceLabels: []string{"tier=prod"}},
+				`{"dev-id":"/var/lib/containers/storage/overlay/dev/merged"}`,
+				&reached,
+			)
+
+			rec, meta := getLibpodPathForTest(t, handler, tt.method, tt.path)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403; body: %s", rec.Code, rec.Body.String())
+			}
+			if reached {
+				t.Fatal("the daemon was queried for mount paths that cannot be visibility-scoped")
+			}
+			if meta.ReasonCode != "visibility_libpod_show_mounted_unscopeable" {
+				t.Fatalf("meta.ReasonCode = %q, want visibility_libpod_show_mounted_unscopeable", meta.ReasonCode)
+			}
+			for _, leaked := range []string{"dev-id", "/var/lib/containers"} {
+				if strings.Contains(rec.Body.String(), leaked) {
+					t.Fatalf("mount inventory %q reached the client: %s", leaked, rec.Body.String())
 				}
 			}
 		})
@@ -578,5 +635,85 @@ func TestLibpodSystemDataUsageVisibilityRefusalIsExact(t *testing.T) {
 				t.Fatalf("the refusal swallowed %s %s; status = %d, body: %s", tt.method, tt.path, rec.Code, rec.Body.String())
 			}
 		})
+	}
+}
+
+// TestSystemDataUsageNoUnknownSectionsNeverWarns is the boundary regression
+// for `len(fresh) > 0` in handleVisibilitySystemDataUsageRequest: a
+// /system/df response with no unrecognized top-level sections must produce
+// zero dropped-section warnings. A `>=` in place of `>` makes this clause
+// true even when fresh is empty (len(nil) >= 0), logging a warning about
+// sections that were never actually dropped.
+func TestSystemDataUsageNoUnknownSectionsNeverWarns(t *testing.T) {
+	t.Parallel()
+	logger, buf := warnCapturingLogger()
+
+	handler := middlewareWithDeps(logger, Options{VisibleResourceLabels: []string{"tier=prod"}}, visibilityDeps{})(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, modernSystemDFForTest)
+		}),
+	)
+
+	rec := getSystemDFForTest(t, handler)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(buf.String(), "dropped unclassifiable response sections") {
+		t.Fatalf("log output = %q, want no dropped-sections warning for an all-known response", buf.String())
+	}
+}
+
+// TestSystemDataUsageFreshUnknownSectionWarnsOnce is the negation regression
+// for the same clause: a /system/df response carrying a section this build
+// does not recognize must warn, naming the section — exactly once, even when
+// the same section keeps showing up on later requests. A `<=` in place of `>`
+// flips the clause so it is only true when fresh is empty, silencing the
+// warning exactly when there is something to report; that mutant would also
+// pass a test that only checked "warns at least once", so this sends the same
+// unknown section on two requests and asserts the warning fires on the first
+// and is suppressed on the second, which is the actual "WarnsOnce" contract
+// this test is named for.
+//
+// Dropped-section state lives in responsefilter's package-level
+// unreportedSystemDataUsageKeys sync.Map (see FirstSightSystemDataUsageSections),
+// which persists for the life of the process — including across a `go test
+// -count>1` rerun of this same binary. visibility has no way to reach into
+// that map to reset it between runs, so a fixed section key would be marked
+// seen by the first run and silently stop warning on the second, making this
+// test's assertion fail with no code change. Deriving the key from the test
+// name and the current time keeps every run's key unique.
+func TestSystemDataUsageFreshUnknownSectionWarnsOnce(t *testing.T) {
+	t.Parallel()
+	logger, buf := warnCapturingLogger()
+
+	unknownSectionKey := fmt.Sprintf("ZZZVisibilityUnknownSection_%s_%d", t.Name(), time.Now().UnixNano())
+	body := `{"ContainerUsage":{"Items":[]},"ImageUsage":{"Items":[]},"VolumeUsage":{"Items":[]},"` +
+		unknownSectionKey + `":{"anything":true}}`
+
+	handler := middlewareWithDeps(logger, Options{VisibleResourceLabels: []string{"tier=prod"}}, visibilityDeps{})(
+		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, body)
+		}),
+	)
+
+	rec := getSystemDFForTest(t, handler)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	rec2 := getSystemDFForTest(t, handler)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("second request status = %d, want 200; body: %s", rec2.Code, rec2.Body.String())
+	}
+
+	got := buf.String()
+	if !strings.Contains(got, "dropped unclassifiable response sections") {
+		t.Fatalf("log output = %q, want a dropped-sections warning", got)
+	}
+	if warnings := strings.Count(got, unknownSectionKey); warnings != 1 {
+		t.Fatalf("log output = %q, want exactly one dropped-sections warning naming %q, got %d", got, unknownSectionKey, warnings)
 	}
 }
