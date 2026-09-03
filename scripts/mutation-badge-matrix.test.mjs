@@ -197,4 +197,35 @@ describe("quality mutation workflow", () => {
       "summary does not distinguish an incomplete report set from an empty one",
     );
   });
+
+  it("names the discovery failure in the summary instead of formatting blank counts", () => {
+    const source = readFileSync(resolve(repoRoot, workflowPath), "utf8");
+    const discoveryStart = source.indexOf(
+      '          if ! [[ "${expected_reports}" =~ ^[1-9][0-9]*$ ]]; then',
+    );
+    assert.notEqual(discoveryStart, -1, "discovery-failure branch not found");
+    const discoveryEnd = source.indexOf("          fi", discoveryStart);
+    const discoveryBranch = source.slice(discoveryStart, discoveryEnd);
+    const exitIndex = discoveryBranch.indexOf("            exit 0");
+    assert.notEqual(exitIndex, -1, "discovery-failure exit not found");
+    const reasonIndex = discoveryBranch.indexOf(
+      '            echo "skip_reason=${skip_reason}" >> "$GITHUB_OUTPUT"',
+    );
+    assert.ok(
+      reasonIndex !== -1 && reasonIndex < exitIndex,
+      "skip_reason is not exported before the discovery-failure exit",
+    );
+
+    const summary = source.slice(source.indexOf("      - name: Summary\n"));
+    assert.match(
+      summary,
+      /SKIP_REASON: \$\{\{ steps\.score\.outputs\.skip_reason \}\}/u,
+      "summary does not consume skip_reason",
+    );
+    assert.match(
+      summary,
+      /if \[ "\$SKIP" = "true" \] && \[ -n "\$SKIP_REASON" \]; then\n\s+(#.*\n\s+)*echo "- \$\{SKIP_REASON\}; badge left unchanged\."/u,
+      "summary does not print the discovery failure reason on the reason-bearing skip path",
+    );
+  });
 });

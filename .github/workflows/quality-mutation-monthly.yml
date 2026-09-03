@@ -237,13 +237,19 @@ jobs:
           # badge committed straight from a discover failure. Fail closed
           # before any of that runs.
           if ! [[ "${expected_reports}" =~ ^[1-9][0-9]*$ ]]; then
-            echo "discover job produced no leg count; not publishing"
+            skip_reason="discover job produced no leg count; not publishing"
+            echo "${skip_reason}"
             {
               echo "### Mutation badge not updated"
               echo
-              echo "discover job produced no leg count; not publishing"
+              echo "${skip_reason}"
             } >> "${GITHUB_STEP_SUMMARY}"
+            # `Summary` runs under `if: always()` and reads only this step's
+            # outputs, so the reason has to travel as an output too. Without
+            # it this path surfaced as "Incomplete report set:  of", which
+            # named the wrong failure with two blanks in it.
             echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=${skip_reason}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -354,10 +360,15 @@ jobs:
           REPORTS_FOUND: ${{ steps.score.outputs.reports_found }}
           EXPECTED_REPORTS: ${{ steps.score.outputs.expected_reports }}
           SKIP: ${{ steps.score.outputs.skip }}
+          SKIP_REASON: ${{ steps.score.outputs.skip_reason }}
         run: |
           {
             echo "### Mutation score badge"
-            if [ "$SKIP" = "true" ]; then
+            if [ "$SKIP" = "true" ] && [ -n "$SKIP_REASON" ]; then
+              # The discovery-failure skip has no report counts to format;
+              # `score` names the cause in skip_reason instead.
+              echo "- ${SKIP_REASON}; badge left unchanged."
+            elif [ "$SKIP" = "true" ]; then
               echo "- Incomplete report set: ${REPORTS_FOUND} of ${EXPECTED_REPORTS}; badge left unchanged."
             else
               echo "- Weighted test efficacy (killed / (killed + lived)) across ${REPORTS_FOUND} package report(s): **${PCT}%**"
