@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codeswhat/sockguard/app/internal/filter"
 	"github.com/codeswhat/sockguard/app/internal/glob"
 	"github.com/codeswhat/sockguard/app/internal/pkipin"
 	"github.com/codeswhat/sockguard/app/internal/upstream"
@@ -638,8 +639,10 @@ func validateRules(cfg *Config) []string {
 		}
 		if r.Match.Path == "" {
 			errs = append(errs, fmt.Sprintf("rule %d: match.path is required", i+1))
-		} else if strings.Contains(r.Match.Path, "%") {
+		} else if strings.Contains(r.Match.Path, "%") && !validEscapedLibpodImageScpRule(r.Match) {
 			errs = append(errs, literalPercentRuleError(fmt.Sprintf("rule %d", i+1), r.Match.Path))
+		} else if filter.HasVersionPrefix(r.Match.Path) {
+			errs = append(errs, versionPrefixRuleError(fmt.Sprintf("rule %d", i+1), r.Match.Path))
 		}
 		switch r.Action {
 		case "allow", "deny":
@@ -650,10 +653,52 @@ func validateRules(cfg *Config) []string {
 	return errs
 }
 
+// validEscapedLibpodImageScpRule recognizes the one route family whose exact
+// policy view legitimately contains percent escapes. Podman's gorilla/mux
+// router uses EscapedPath for POST /libpod/images/scp/{name:.*}; dual-view
+// evaluation then requires the decoded and encoded route spellings to allow.
+// Keep this exception narrower than the earlier push/tag/untag routes: a
+// multi-method rule, glob, or raw action suffix can otherwise match a
+// double-encoded request that Podman routes somewhere other than image SCP.
+func validEscapedLibpodImageScpRule(match MatchConfig) bool {
+	if !strings.EqualFold(strings.TrimSpace(match.Method), "POST") || strings.Contains(match.Method, ",") {
+		return false
+	}
+	const prefix = "/libpod/images/scp/"
+	rest, ok := strings.CutPrefix(match.Path, prefix)
+	if !ok || rest == "" || strings.Contains(match.Path, "*") {
+		return false
+	}
+	for _, action := range []string{"push", "tag", "untag"} {
+		if rest == action || strings.HasSuffix(rest, "/"+action) {
+			return false
+		}
+	}
+	_, err := url.PathUnescape(match.Path)
+	return err == nil
+}
+
+// versionPrefixRuleError reports a rule path pattern that itself begins with
+// a Docker/Podman API version prefix (e.g. "/v1.45/..." or
+// "/v5.8.1-dev/..."). NormalizePath strips exactly that prefix from the
+// request path before rule matching runs, using the same predicate
+// (filter.HasVersionPrefix, built on filter's stripVersionPrefix) this check
+// calls — so a pattern that still carries the prefix can never match real
+// traffic and is silently dead rather than doing what its author intended.
+// Failing closed at validation time beats the startup warning this replaces:
+// a rule an operator believed was denying (or allowing) versioned traffic
+// that in fact never fires is a security-relevant gap, not a style nit.
+func versionPrefixRuleError(label, pattern string) string {
+	return fmt.Sprintf(
+		"%s: match.path %q begins with an API version prefix; sockguard strips version prefixes before matching, so this pattern never matches real traffic — write the pattern without the /vN... prefix",
+		label, pattern,
+	)
+}
+
 // literalPercentRuleError reports a rule path pattern that contains a literal
-// '%'. sockguard matches the request path as the daemon routes it — decoded
-// exactly once by the HTTP layer — so a '%XX' in a pattern only ever matches a
-// doubly-encoded request, never normal traffic. The rule the author meant is
+// '%' outside Podman's encoded image-SCP route. Other policy paths are decoded
+// exactly once by the HTTP layer, so a '%XX' in their pattern only ever matches
+// a doubly-encoded request, never normal traffic. The rule the author meant is
 // therefore silently dead, a security-intent gap, so it fails config
 // validation rather than logging a warning.
 func literalPercentRuleError(label, pattern string) string {
@@ -855,25 +900,50 @@ func validateRequestBody(cfg *Config) []string {
 	return errs
 }
 
-// validateNetworkEndpointConfig rejects
-// request_body.network.allow_endpoint_config: true combined with an
-// explicitly configured request_body.network.endpoint_config block (#186):
+// validateNetworkEndpointConfig rejects allow_endpoint_config: true combined
+// with an explicitly configured endpoint_config block (#186):
 // allow_endpoint_config already admits every EndpointSettings field
 // unchanged, so a simultaneous granular block is ambiguous — which one an
 // operator actually intends to govern the request is not something sockguard
-// should guess at silently. Detected via cfg.explicitNetworkEndpointConfig
-// (a provenance-only Viper pass; see explicitNetworkEndpointConfigFile/Bytes
-// in load.go) rather than comparing cfg.RequestBody.Network.EndpointConfig
-// against its Go zero value, because EndpointConfigRequestBodyConfig.AllowAliases
-// defaults to true (config.Defaults()), so the merged struct is never the
-// zero value even when the operator never wrote the block at all.
+// should guess at silently. Detected via the cfg.explicit*EndpointConfig
+// provenance flags (a provenance-only Viper pass; see
+// explicitEndpointConfigFile/Bytes in load.go) rather than comparing the
+// merged EndpointConfig against its Go zero value, because
+// EndpointConfigRequestBodyConfig.AllowAliases defaults to true
+// (config.Defaults()), so the merged struct is never the zero value even
+// when the operator never wrote the block at all.
+//
+// Both groups that carry the block are checked. request_body.libpod_network
+// was originally exempt on the belief that libpod had no network-connect
+// endpoint to gate; it does (POST /libpod/networks/{name}/connect), so an
+// operator writing both keys there used to get silence where the Docker
+// spelling gave them an error — a config that quietly means something other
+// than what it says.
 func validateNetworkEndpointConfig(cfg *Config) []string {
+	var errs []string
 	if cfg.RequestBody.Network.AllowEndpointConfig && cfg.explicitNetworkEndpointConfig {
-		return []string{
-			"request_body.network.allow_endpoint_config and request_body.network.endpoint_config are mutually exclusive: allow_endpoint_config: true already admits every EndpointSettings field, so remove the endpoint_config block or set allow_endpoint_config: false and use the granular fields instead",
+		errs = append(errs, endpointConfigMutualExclusionError("request_body", "network"))
+	}
+	if cfg.RequestBody.LibpodNetwork.AllowEndpointConfig && cfg.explicitLibpodNetworkEndpointConfig {
+		errs = append(errs, endpointConfigMutualExclusionError("request_body", "libpod_network"))
+	}
+	for i, profile := range cfg.Clients.Profiles {
+		prefix := fmt.Sprintf("clients.profiles[%d].request_body", i)
+		if profile.RequestBody.Network.AllowEndpointConfig && profile.explicitNetworkEndpointConfig {
+			errs = append(errs, endpointConfigMutualExclusionError(prefix, "network"))
+		}
+		if profile.RequestBody.LibpodNetwork.AllowEndpointConfig && profile.explicitLibpodNetworkEndpointConfig {
+			errs = append(errs, endpointConfigMutualExclusionError(prefix, "libpod_network"))
 		}
 	}
-	return nil
+	return errs
+}
+
+// endpointConfigMutualExclusionError renders the #186 mutual-exclusion
+// message for one request_body group. One template, so the two groups cannot
+// drift into differently-worded advice for the identical mistake.
+func endpointConfigMutualExclusionError(prefix, group string) string {
+	return fmt.Sprintf("%s.%s.allow_endpoint_config and %s.%s.endpoint_config are mutually exclusive: allow_endpoint_config: true already admits every EndpointSettings field, so remove the endpoint_config block or set allow_endpoint_config: false and use the granular fields instead", prefix, group, prefix, group)
 }
 
 // validateBuildkitAckMutualExclusion rejects
@@ -1859,8 +1929,10 @@ func validateRuleConfigs(rules []RuleConfig, prefix string) []string {
 		}
 		if r.Match.Path == "" {
 			errs = append(errs, rulePrefix+".match.path is required")
-		} else if strings.Contains(r.Match.Path, "%") {
+		} else if strings.Contains(r.Match.Path, "%") && !validEscapedLibpodImageScpRule(r.Match) {
 			errs = append(errs, literalPercentRuleError(rulePrefix, r.Match.Path))
+		} else if filter.HasVersionPrefix(r.Match.Path) {
+			errs = append(errs, versionPrefixRuleError(rulePrefix, r.Match.Path))
 		}
 		switch r.Action {
 		case "allow", "deny":

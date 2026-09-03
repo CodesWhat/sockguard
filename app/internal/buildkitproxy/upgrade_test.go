@@ -287,7 +287,7 @@ func TestDialDaemonH2CSuccess(t *testing.T) {
 	daemonSide, dialerSide := net.Pipe()
 	defer func() { _ = daemonSide.Close() }()
 
-	var gotUpgrade, gotConnection, gotSessionUUID string
+	var gotUpgrade, gotConnection, gotSessionUUID, gotRequestURI string
 	requestRead := make(chan struct{})
 	go func() {
 		defer close(requestRead)
@@ -298,13 +298,18 @@ func TestDialDaemonH2CSuccess(t *testing.T) {
 		gotUpgrade = req.Header.Get("Upgrade")
 		gotConnection = req.Header.Get("Connection")
 		gotSessionUUID = req.Header.Get(sessionUUIDHeader)
+		gotRequestURI = req.RequestURI
 		_ = req.Body.Close()
 		_, _ = daemonSide.Write([]byte("HTTP/1.1 101 UPGRADED\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n"))
 	}()
 
 	hdr := http.Header{}
 	hdr.Set(sessionUUIDHeader, "abc-123")
-	conn, resp, err := dialDaemonH2C(context.Background(), &fakeDialer{conn: dialerSide}, "/session", hdr)
+	conn, resp, err := dialDaemonH2C(context.Background(), &fakeDialer{
+		conn:        dialerSide,
+		basePath:    "/proxy/api",
+		rawBasePath: "/proxy%2Fapi",
+	}, "/session", hdr)
 	if err != nil {
 		t.Fatalf("dialDaemonH2C() error = %v", err)
 	}
@@ -322,6 +327,44 @@ func TestDialDaemonH2CSuccess(t *testing.T) {
 	}
 	if gotSessionUUID != "abc-123" {
 		t.Errorf("daemon saw %s = %q, want %q (caller-supplied headers must be forwarded)", sessionUUIDHeader, gotSessionUUID, "abc-123")
+	}
+	if gotRequestURI != "/proxy%2Fapi/session" {
+		t.Errorf("daemon saw RequestURI = %q, want endpoint base path", gotRequestURI)
+	}
+}
+
+func TestDialDaemonH2CPreservesBasePathForBothDockerUpgradeEndpoints(t *testing.T) {
+	for _, path := range []string{"/session", "/grpc"} {
+		path := path
+		t.Run(path, func(t *testing.T) {
+			daemonSide, dialerSide := net.Pipe()
+			defer func() { _ = daemonSide.Close() }()
+			requestURI := make(chan string, 1)
+			go func() {
+				req, err := http.ReadRequest(bufio.NewReader(daemonSide))
+				if err != nil {
+					requestURI <- "read error: " + err.Error()
+					return
+				}
+				requestURI <- req.RequestURI
+				_ = req.Body.Close()
+				_, _ = daemonSide.Write([]byte("HTTP/1.1 101 UPGRADED\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n"))
+			}()
+
+			conn, resp, err := dialDaemonH2C(context.Background(), &fakeDialer{
+				conn:        dialerSide,
+				basePath:    "/gateway/docker",
+				rawBasePath: "/gateway%2Fdocker",
+			}, path, http.Header{})
+			if err != nil {
+				t.Fatalf("dialDaemonH2C: %v", err)
+			}
+			_ = resp.Body.Close()
+			_ = conn.Close()
+			if got := <-requestURI; got != "/gateway%2Fdocker"+path {
+				t.Fatalf("RequestURI = %q, want %q", got, "/gateway%2Fdocker"+path)
+			}
+		})
 	}
 }
 

@@ -58,6 +58,8 @@ func FuzzPathMatch(f *testing.F) {
 		{"GET", "/v5.0.0/libpod/containers/json"},
 		{"GET", "/v5.8.1-dev/libpod/manifests/app/json"},
 		{"POST", "/v5.8.1.2/libpod/images/scp/app"},
+		{"GET", "/v5.8.1-dev/libpod/images/load"},
+		{"POST", "/v5.8.1.2/libpod/images/import"},
 		{"POST", "/v5.0.0/libpod/pods/create"},
 		{"POST", "/v5.0.0/libpod/play/kube"},
 		{"GET", "/v5.0.0/libpod/generate/kube"},
@@ -180,11 +182,12 @@ func FuzzNormalizePath(f *testing.F) {
 		"",
 		"/",
 		"/v/containers/json",    // "/v" alone is not a version prefix
+		"/vX/containers/json",   // first char after v must be a digit
 		"/v1.45",                // version prefix with no trailing path
 		"/v1.45/",               // version prefix with just trailing slash
 		"/version",              // starts with /v but not a version prefix
-		"/v1./containers",       // accepted by Podman's route grammar
-		"/v.1/containers",       // malformed version
+		"/v1./containers",       // trailing dot is in Podman's class -- strips
+		"/v.1/containers",       // no digit right after v -- not a prefix
 		"/containers/../images", // path traversal
 		"/../../etc/passwd",     // escape attempt
 		"//containers///json",   // redundant slashes
@@ -206,11 +209,24 @@ func FuzzNormalizePath(f *testing.F) {
 		"/v5.0.0/libpod/containers/json",
 		"/v5.0.0/",    // three-part prefix with just trailing slash
 		"/v5.0.0",     // three-part prefix with no trailing path
-		"/v5.0./x",    // Podman's route grammar accepts a trailing dot
-		"/v1.2.3.4/x", // Podman's route grammar accepts four components
+		"/v5.0./x",    // trailing dot is in Podman's class -- strips
+		"/v1.2.3.4/x", // Podman's class has no part-count limit -- strips
+		"/v5.8.1-dev/libpod/images/load",
+		"/v5.8.1_rc/libpod/images/load", // underscore is not accepted
 		"/v5.8.1-dev/libpod/manifests/app/json",
 		"/v5.8.1_rc/libpod/manifests/app/json", // underscore is not accepted
 		"/v99999999999999999999.99999999999999999999.99999999999999999999/x", // adversarial digit runs
+		// Podman prerelease / dev builds (this fix): VersionedPath is
+		// [0-9][0-9A-Za-z.-]*, admitting "-dev", "-rc1", trailing '.'/'-',
+		// but not '+' (semver build metadata) or '_'.
+		"/v5.8.1-dev/libpod/networks/x/connect",
+		"/v5.8.1-rc1/libpod/containers/json",
+		"/v5.8.1+build.7/libpod/containers/json", // '+' not in class -- unchanged
+		"/v1.45./containers/json",                // trailing dot
+		"/v1.45-/containers/json",                // trailing dash
+		"/v1.45-foo/../containers/create",        // prerelease suffix + traversal
+		"/v5.8.1-dev",                            // no trailing slash
+		"/v5.8.1-dev/",                           // root path after prefix
 	}
 	for _, s := range seeds {
 		f.Add(s)

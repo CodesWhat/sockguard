@@ -133,9 +133,21 @@ func TestPodmanReadonlyPresetConformance(t *testing.T) {
 		{"libpod-exec-start-denied", http.MethodPost, "/libpod/exec/abc/start", "", false},
 		{"libpod-volume-create-denied", http.MethodPost, "/libpod/volumes/create", "", false},
 		{"libpod-network-create-denied", http.MethodPost, "/libpod/networks/create", "", false},
+		{"libpod-network-connect-denied", http.MethodPost, "/libpod/networks/abc/connect", `{"container":"abc","static_ips":["10.9.9.9"]}`, false},
+		{"libpod-network-disconnect-denied", http.MethodPost, "/libpod/networks/abc/disconnect", `{"Container":"abc","Force":true}`, false},
+		{"libpod-network-update-denied", http.MethodPost, "/libpod/networks/abc/update", `{"adddnsservers":["10.6.6.6"]}`, false},
 		{"libpod-secret-create-denied", http.MethodPost, "/libpod/secrets/create", "", false},
 		{"libpod-play-kube-denied", http.MethodPost, "/libpod/play/kube", "", false},
 		{"libpod-kube-apply-denied", http.MethodPost, "/libpod/kube/apply", "", false},
+		// The libpod image-write surface, including the two "local API"
+		// routes that read a daemon-host path and the SSH image transfer.
+		// None has a Docker analog reachable through this preset's rules;
+		// the preset's trailing deny-all is what keeps them shut.
+		{"libpod-image-load-denied", http.MethodPost, "/libpod/images/load", "", false},
+		{"libpod-image-import-denied", http.MethodPost, "/libpod/images/import", "", false},
+		{"libpod-local-image-load-denied", http.MethodPost, "/libpod/local/images/load?path=%2Fetc", "", false},
+		{"libpod-local-build-denied", http.MethodPost, "/libpod/local/build?localcontextdir=%2Fetc", "", false},
+		{"libpod-image-scp-denied", http.MethodPost, "/libpod/images/scp/user@host::img", "", false},
 
 		// --- version-prefixed variants: the same verdicts must hold after
 		// stripVersionPrefix normalization, for Docker's two-part prefixes

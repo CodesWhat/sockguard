@@ -5,9 +5,10 @@
 # Traefik reads that socket via the Docker provider endpoint config.
 #
 # Traefik needs: container list/inspect, network list, service/task list,
-# and /events — all GET/HEAD, zero writes. The locked-down config below
-# strips insecure_allow_read_exfiltration (present in the bundled preset)
-# and enumerates only the specific paths Traefik actually needs.
+# and /events — all GET/HEAD, zero writes.
+# The config below matches the bundled preset. Both omit
+# insecure_allow_read_exfiltration and enumerate only the specific paths
+# Traefik actually needs.
 #
 # IMPORTANT: Replace the traefik.http.routers.* labels with your real
 # domain and remove --certificatesresolvers if you don't use Let's Encrypt.

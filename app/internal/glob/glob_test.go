@@ -16,12 +16,12 @@ func TestToRegexString(t *testing.T) {
 		{name: "root", pattern: "/", want: "/"},
 		{name: "literal", pattern: "/containers/json", want: "/containers/json"},
 		{name: "single star", pattern: "/containers/*", want: "/containers/[^/]*"},
-		{name: "double star tail", pattern: "/containers/**", want: "/containers(/.*)?"},
-		{name: "double star inline", pattern: "/**/json", want: "(/.*)?/json"},
+		{name: "double star tail", pattern: "/containers/**", want: "/containers(/(?s:.*))?"},
+		{name: "double star inline", pattern: "/**/json", want: "(/(?s:.*))?/json"},
 		{name: "regex chars escaped", pattern: "/path.dots+plus", want: "/path\\.dots\\+plus"},
 		{name: "bare star", pattern: "*", want: "[^/]*"},
-		{name: "bare double star", pattern: "**", want: ".*"},
-		{name: "triple star", pattern: "***", want: ".*[^/]*"},
+		{name: "bare double star", pattern: "**", want: "(?s:.*)"},
+		{name: "triple star", pattern: "***", want: "(?s:.*)[^/]*"},
 		{name: "version prefix literal", pattern: "/v1.45/containers", want: "/v1\\.45/containers"},
 	}
 	for _, tc := range tests {

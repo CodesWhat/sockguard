@@ -45,9 +45,19 @@ test("does not flag a markdown setext heading underline of seven equals", () => 
 
 test("does not flag near-misses: wrong length or not at line start", () => {
   assert.deepEqual(findConflictMarkers("<".repeat(6)), []); // six, not seven
-  assert.deepEqual(findConflictMarkers("<".repeat(8)), []); // eight, not seven
   assert.deepEqual(findConflictMarkers(`code ${OURS} inline`), []); // not at column 0
   assert.deepEqual(findConflictMarkers(`${OURS}x`), []); // seven then non-space
+  assert.deepEqual(findConflictMarkers(`${"<".repeat(9)}x`), []); // longer run, then non-space
+});
+
+// A merge whose base is itself a merge (criss-cross history) lengthens the
+// marker runs so the inner conflict stays distinguishable from the outer one.
+// A fixed seven-character match walks straight past those.
+test("detects marker runs longer than seven characters", () => {
+  for (const ch of ["<", "|", ">"]) {
+    assert.equal(findConflictMarkers(ch.repeat(8)).length, 1, `${ch} x8`);
+    assert.equal(findConflictMarkers(`${ch.repeat(9)} HEAD`).length, 1, `${ch} x9 labelled`);
+  }
 });
 
 test("skips tracked symbolic links instead of reading through them", () => {

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -554,17 +555,105 @@ func TestHijackHandler_FullUpgrade(t *testing.T) {
 	serverWg.Wait()
 }
 
-// unixSocketDialer adapts a unix socket path to the upstream.Dialer seam so the
+// unixSocketDialer adapts a unix socket path to the upstream.RequestDialer seam so the
 // HijackHandlerWithDialer path can be exercised against an in-test mock daemon.
-type unixSocketDialer struct{ socketPath string }
+type unixSocketDialer struct {
+	socketPath  string
+	basePath    string
+	rawBasePath string
+}
+
+type cancelProbeDialer struct {
+	started chan struct{}
+	result  chan error
+	release chan struct{}
+}
+
+func (d *cancelProbeDialer) DialContext(context.Context, string, string) (net.Conn, error) {
+	return nil, errors.New("unexpected DialContext call")
+}
+
+func (d *cancelProbeDialer) DialRequest(ctx context.Context, _ *http.Request) (net.Conn, *http.Request, error) {
+	close(d.started)
+	select {
+	case <-ctx.Done():
+		d.result <- ctx.Err()
+		return nil, nil, ctx.Err()
+	case <-d.release:
+		err := errors.New("dial released without request cancellation")
+		d.result <- err
+		return nil, nil, err
+	}
+}
+
+func TestUpgradeHijackConnectionDialerPropagatesRequestCancellation(t *testing.T) {
+	t.Parallel()
+	dialer := &cancelProbeDialer{
+		started: make(chan struct{}),
+		result:  make(chan error, 1),
+		release: make(chan struct{}),
+	}
+	released := false
+	releaseDial := func() {
+		if !released {
+			close(dialer.release)
+			released = true
+		}
+	}
+	defer releaseDial()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "http://client/v1.53/containers/abc/attach", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	upgraded := make(chan bool, 1)
+	go func() {
+		_, ok := upgradeHijackConnectionDialer(rec, req, dialer, testLogger())
+		upgraded <- ok
+	}()
+
+	<-dialer.started
+	cancel()
+
+	select {
+	case err := <-dialer.result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("DialRequest context error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		releaseDial()
+		<-upgraded
+		t.Fatal("request cancellation did not reach DialRequest")
+	}
+	if ok := <-upgraded; ok {
+		t.Fatal("upgrade succeeded after request cancellation")
+	}
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+}
 
 func (d unixSocketDialer) DialContext(ctx context.Context, _, _ string) (net.Conn, error) {
 	return (&net.Dialer{}).DialContext(ctx, "unix", d.socketPath)
 }
 
+func (d unixSocketDialer) DialRequest(ctx context.Context, req *http.Request) (net.Conn, *http.Request, error) {
+	conn, err := d.DialContext(ctx, "", "")
+	if err != nil {
+		return nil, nil, err
+	}
+	clone := req.Clone(req.Context())
+	urlCopy := *req.URL
+	clone.URL = &urlCopy
+	clone.URL.Path = d.basePath + req.URL.Path
+	if d.rawBasePath != "" || req.URL.RawPath != "" {
+		clone.URL.RawPath = d.rawBasePath + req.URL.EscapedPath()
+	}
+	return conn, clone, nil
+}
+
 // TestHijackHandlerWithDialer_FullUpgrade mirrors TestHijackHandler_FullUpgrade
 // for the multi-host dialer path: the hijack must dial the active endpoint via
-// the upstream.Dialer, complete the 101 upgrade, and proxy bytes bidirectionally.
+// the upstream.RequestDialer, complete the 101 upgrade, and proxy bytes bidirectionally.
 func TestHijackHandlerWithDialer_FullUpgrade(t *testing.T) {
 	baseline := runtime.NumGoroutine()
 
@@ -594,6 +683,9 @@ func TestHijackHandlerWithDialer_FullUpgrade(t *testing.T) {
 			return
 		}
 		req.Body.Close()
+		if req.RequestURI != "/proxy%2Fapi/containers/abc/attach?stream=1" {
+			t.Errorf("mock: RequestURI = %q, want prefixed escaped path", req.RequestURI)
+		}
 
 		resp := &http.Response{
 			StatusCode: http.StatusSwitchingProtocols,
@@ -621,7 +713,11 @@ func TestHijackHandlerWithDialer_FullUpgrade(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("next handler should not be called for hijack endpoint")
 	})
-	handler := HijackHandlerWithDialer(unixSocketDialer{socketPath: socketPath}, hijackInactivityTimeout, logger, next)
+	handler := HijackHandlerWithDialer(unixSocketDialer{
+		socketPath:  socketPath,
+		basePath:    "/proxy/api",
+		rawBasePath: "/proxy%2Fapi",
+	}, hijackInactivityTimeout, logger, next)
 
 	clientLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1802,6 +1898,35 @@ func TestProxyHijackStreamsNotTornDownWhileEitherDirectionActive(t *testing.T) {
 	}
 }
 
+// TestWaitForHijackInactivityReturnsAtExactlyZeroRemaining covers the
+// "remaining <= 0" boundary at hijack.go:383 (CONDITIONALS_BOUNDARY to
+// "remaining < 0"). idleFor() is pinned to a constant 1ns by backdating
+// started to the zero time.Time (time.Since saturates at the max
+// representable Duration) and setting lastElapsed to one nanosecond less
+// than that max, so timeout - idleFor() lands on exactly 0 every time it's
+// recomputed. Under "<= 0" the wait returns true on the first pass; under
+// the "< 0" mutant, remaining == 0 never counts as expired, timer.Reset(0)
+// keeps firing immediately, and the loop spins forever.
+func TestWaitForHijackInactivityReturnsAtExactlyZeroRemaining(t *testing.T) {
+	activity := &hijackActivity{}
+	activity.lastElapsed.Store(math.MaxInt64 - 1)
+
+	const timeout = 1 * time.Nanosecond
+	resultCh := make(chan bool, 1)
+	go func() {
+		resultCh <- waitForHijackInactivity(activity, timeout, nil)
+	}()
+
+	select {
+	case got := <-resultCh:
+		if !got {
+			t.Fatal("waitForHijackInactivity() = false, want true at remaining == 0")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("waitForHijackInactivity did not return within 2s; remaining == 0 was not treated as expired")
+	}
+}
+
 func TestHijackActivityNeverMovesBackward(t *testing.T) {
 	activity := newHijackActivity()
 	activity.record(2 * time.Second)
@@ -1810,6 +1935,110 @@ func TestHijackActivityNeverMovesBackward(t *testing.T) {
 	if got := time.Duration(activity.lastElapsed.Load()); got != 2*time.Second {
 		t.Fatalf("last activity = %s, want %s", got, 2*time.Second)
 	}
+}
+
+func TestActivityReaderTouchesOnlyOnPositiveRead(t *testing.T) {
+	// Covers activityReader.Read's "if n > 0" guard at hijack.go:131: a
+	// zero-byte read (e.g. a nil-error EOF-adjacent read) must not touch
+	// the activity clock, while any positive-byte read must.
+	activity := newHijackActivity()
+	// started is backdated so time.Since(started) is deterministically
+	// large (~1s) at the touch() below, rather than relying on wall-clock
+	// progression between construction and the read: on a coarse clock,
+	// time.Since(newHijackActivity().started) can read back as 0 ns.
+	activity.started = time.Now().Add(-time.Second)
+	if got := activity.lastElapsed.Load(); got != 0 {
+		t.Fatalf("lastElapsed = %d before any read, want 0", got)
+	}
+
+	zero := activityReader{reader: funcReader(func(p []byte) (int, error) { return 0, nil }), activity: activity}
+	if _, err := zero.Read(make([]byte, 4)); err != nil {
+		t.Fatalf("Read() error = %v, want nil", err)
+	}
+	if got := activity.lastElapsed.Load(); got != 0 {
+		t.Fatalf("lastElapsed = %d after a zero-byte read, want unchanged 0", got)
+	}
+
+	nonzero := activityReader{reader: funcReader(func(p []byte) (int, error) { return 3, nil }), activity: activity}
+	if _, err := nonzero.Read(make([]byte, 4)); err != nil {
+		t.Fatalf("Read() error = %v, want nil", err)
+	}
+	if got := activity.lastElapsed.Load(); got == 0 {
+		t.Fatal("lastElapsed unchanged after a positive-byte read, want touch() to have recorded elapsed time")
+	}
+}
+
+func TestActivityWriterTouchesOnlyOnPositiveWrite(t *testing.T) {
+	// Covers activityWriter.Write's "if n > 0" guard at hijack.go:144,
+	// mirroring TestActivityReaderTouchesOnlyOnPositiveRead for the write side.
+	activity := newHijackActivity()
+	// See TestActivityReaderTouchesOnlyOnPositiveRead: backdate started so
+	// touch()'s elapsed reading is deterministically nonzero.
+	activity.started = time.Now().Add(-time.Second)
+	if got := activity.lastElapsed.Load(); got != 0 {
+		t.Fatalf("lastElapsed = %d before any write, want 0", got)
+	}
+
+	zero := activityWriter{writer: funcWriter(func(p []byte) (int, error) { return 0, nil }), activity: activity}
+	if _, err := zero.Write([]byte("x")); err != nil {
+		t.Fatalf("Write() error = %v, want nil", err)
+	}
+	if got := activity.lastElapsed.Load(); got != 0 {
+		t.Fatalf("lastElapsed = %d after a zero-byte write, want unchanged 0", got)
+	}
+
+	nonzero := activityWriter{writer: funcWriter(func(p []byte) (int, error) { return len(p), nil }), activity: activity}
+	if _, err := nonzero.Write([]byte("xyz")); err != nil {
+		t.Fatalf("Write() error = %v, want nil", err)
+	}
+	if got := activity.lastElapsed.Load(); got == 0 {
+		t.Fatal("lastElapsed unchanged after a positive-byte write, want touch() to have recorded elapsed time")
+	}
+}
+
+func TestReadHijackUpstreamResponseClosesNonNilBodyOnReadError(t *testing.T) {
+	// Covers the "resp.Body != nil" guard at hijack.go:465: a response
+	// object returned alongside a read/deadline-clear error still owns a
+	// body that must be closed, not leaked.
+	restoreHijackHooks(t)
+
+	closed := false
+	trackingBody := closeTrackingReadCloser{Reader: strings.NewReader("partial"), closed: &closed}
+	readResponseHook = func(*bufio.Reader, *http.Request) (*http.Response, error) {
+		return &http.Response{Body: trackingBody}, errors.New("truncated response")
+	}
+
+	conn := &funcConn{}
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/attach", nil)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	if _, _, ok := readHijackUpstreamResponse(conn, httptest.NewRecorder(), req, logger); ok {
+		t.Fatal("readHijackUpstreamResponse = true, want false on read error")
+	}
+	if !closed {
+		t.Fatal("expected the partially read response body to be closed on error")
+	}
+}
+
+// funcReader adapts a function to io.Reader for activityReader tests.
+type funcReader func(p []byte) (int, error)
+
+func (f funcReader) Read(p []byte) (int, error) { return f(p) }
+
+// funcWriter adapts a function to io.Writer for activityWriter tests.
+type funcWriter func(p []byte) (int, error)
+
+func (f funcWriter) Write(p []byte) (int, error) { return f(p) }
+
+// closeTrackingReadCloser records whether Close was called.
+type closeTrackingReadCloser struct {
+	io.Reader
+	closed *bool
+}
+
+func (r closeTrackingReadCloser) Close() error {
+	*r.closed = true
+	return nil
 }
 
 func TestHandleHijack_NonUpgradeFallbackEdgePaths(t *testing.T) {

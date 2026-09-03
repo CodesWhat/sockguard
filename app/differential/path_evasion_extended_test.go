@@ -13,9 +13,14 @@ import (
 //
 // Axes covered here:
 //
-//   - Pathological daemon API version prefixes (`v0`, bare `v`, three-part
-//     `v1.45.99`, four-part `v1.45.99.1`) — these pin Podman's VersionedPath
-//     grammar rather than assuming every accepted segment is release-shaped.
+//   - Pathological Docker API version prefixes (`v0`, bare `v`, three-part
+//     `v1.45.99`, four-part `v1.45.99.1`, a Podman prerelease suffix
+//     `v5.8.1-dev`) — version-prefix regex was tested against `v1`,
+//     `v1.45`, and double-zero forms; these poke at the boundary.
+//     Three-part and four-part both strip now (#148: Podman's libpod
+//     bindings send the daemon's full semver, and its API server matches
+//     versioned routes on `[0-9][0-9A-Za-z.-]*`, a class sockguard mirrors
+//     exactly); so does a prerelease/build suffix. Bare `v` still does not.
 //   - Repeated slashes beyond two in a row, and a leading single-dot
 //     segment — extra normalization shapes path.Clean must handle.
 //   - Encoded whitespace in path segments (space, tab, LF, CR) — the
@@ -42,14 +47,18 @@ func TestPathDifferentialExtendedEvasionAxes(t *testing.T) {
 		wantAllowed bool
 	}{
 		// --- pathological version prefixes ---
-		// Podman's VersionedPath accepts a leading digit followed by ASCII
-		// letters, digits, dots, or hyphens. Bare v remains literal, while a
-		// four-component spelling is routed and must normalize like the usual
-		// release-shaped versions.
+		// The version-strip logic accepts /v<digit><any run of
+		// [0-9A-Za-z.-]>/ (#148: Podman's libpod bindings send the daemon's
+		// full semver, and its API server registers versioned routes on
+		// that same character class — Podman's VersionedPath — so three-part,
+		// four-part, and prerelease/build-suffixed versions all strip. Bare
+		// 'v' (no digit after it) is not a version prefix; it remains a
+		// literal path segment that does not match the allow rule.
 		{"version zero is a valid prefix", http.MethodGet, "/v0/containers/json", true},
 		{"bare v is not a version prefix", http.MethodGet, "/v/containers/json", false},
 		{"three-part version is a valid prefix", http.MethodGet, "/v1.45.99/containers/json", true},
-		{"four-part version follows Podman route grammar", http.MethodGet, "/v1.45.99.1/containers/json", true},
+		{"four-part version is a valid prefix", http.MethodGet, "/v1.45.99.1/containers/json", true},
+		{"prerelease version is a valid prefix", http.MethodGet, "/v5.8.1-dev/containers/json", true},
 
 		// --- repeated slashes and leading-dot segment ---
 		// path.Clean collapses any run of slashes to one and drops a

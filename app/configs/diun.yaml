@@ -1,8 +1,37 @@
 # Sockguard — Diun Preset
 #
 # Minimal read-only access for Diun (Docker Image Update Notifier).
-# Diun only needs to discover running containers and inspect their images.
-# Registry checks are done directly by Diun, not through Docker.
+#
+# Allows exactly the endpoints Diun's Docker provider calls: the connection
+# check, container list, and image inspect. Registry checks are done directly
+# by Diun, not through Docker. Verified against crazy-max/diun master —
+# pkg/docker/client.go:60 (ServerVersion), internal/provider/docker/container.go:37,46
+# (ContainerList, ImageInspect). IsLocalImage, IsDanglingImage and IsDigest
+# are pure functions over the already-fetched inspect result, not API calls.
+# Diun never calls ContainerInspect on this path, so container inspect stays
+# denied.
+#
+# Image inspect uses "**", not "*", on purpose. Docker registers the route as
+# GET /images/{name:.*}/json, and {name:.*} spans slashes, so a registry-
+# qualified image such as ghcr.io/org/app:tag arrives as
+# GET /images/ghcr.io/org/app:tag/json — five path segments. A single "*"
+# matches one segment and would deny every image that is not a bare
+# library name. The "**" form is still safe here because it is anchored on a
+# literal /json suffix: GET /images/get, GET /images/{name}/get and
+# GET /images/{name}/history do not end in /json and stay denied. Because
+# "/**" can match nothing, an explicit earlier deny keeps GET /images/json
+# (the image list, which Diun does not call) out of the allowed surface.
+#
+# Deliberately does NOT allow the read-exfiltration paths a "/containers/**"
+# or "/images/**" glob would swallow: /containers/{id}/archive,
+# /containers/{id}/export, /containers/{id}/logs, /containers/{id}/attach,
+# /images/get and /images/{name}/get. Diun needs none of them, so this preset
+# needs no insecure_allow_read_exfiltration acknowledgment. A client that
+# genuinely needs container logs or archive has to add that rule AND set
+# insecure_allow_read_exfiltration: true itself.
+#
+# Diun's Swarm provider (internal/provider/swarm/service.go, ServiceList) is
+# not covered here and never was; add GET /services if you run it.
 
 upstream:
   socket: /var/run/docker.sock
@@ -16,9 +45,6 @@ health:
   enabled: true
   path: /health
 
-# Preserve broad Diun read compatibility, including raw archive/export and log/attach stream paths.
-insecure_allow_read_exfiltration: true
-
 rules:
   # Health and metadata
   - match: { method: GET, path: "/_ping" }
@@ -28,12 +54,16 @@ rules:
   - match: { method: GET, path: "/version" }
     action: allow
 
-  # Container read (list and inspect)
-  - match: { method: GET, path: "/containers/**" }
+  # Container list (discovery). Inspect is not called and stays denied.
+  - match: { method: GET, path: "/containers/json" }
     action: allow
 
-  # Image read (inspect local image metadata)
-  - match: { method: GET, path: "/images/**" }
+  # Image inspect for local image metadata. See the header for why this is
+  # "**" and why the /json anchor plus preceding list deny keep it narrow.
+  - match: { method: GET, path: "/images/json" }
+    action: deny
+    reason: "Diun does not list images"
+  - match: { method: GET, path: "/images/**/json" }
     action: allow
 
   # Deny everything else

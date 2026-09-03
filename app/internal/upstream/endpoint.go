@@ -20,9 +20,11 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -38,6 +40,12 @@ type Endpoint struct {
 	// Address is the unix socket path or the TCP host:port. It is the second
 	// argument to net.Dial.
 	Address string
+	// BasePath is prepended to every Docker API request sent through this
+	// endpoint. RawBasePath preserves the configured percent-encoding when it
+	// differs from BasePath's default escaping. Both are empty for endpoints
+	// without a URL path prefix.
+	BasePath    string
+	RawBasePath string
 	// TLSConfig is non-nil only for TCP endpoints that negotiate TLS. It is nil
 	// for unix sockets and for plain-TCP endpoints (which require an explicit
 	// insecure acknowledgement to construct).
@@ -54,7 +62,7 @@ func (e Endpoint) String() string {
 	if e.IsTLS() {
 		scheme += "+tls"
 	}
-	return scheme + "://" + e.Address
+	return scheme + "://" + e.Address + e.escapedBasePath()
 }
 
 // EndpointSpec is the parsed, validated configuration for one endpoint before
@@ -83,40 +91,44 @@ type EndpointSpec struct {
 	// certificate. Useful for self-signed homelab daemons; dangerous in
 	// production because it defeats authentication of the upstream.
 	InsecureSkipTLSVerify bool
-	// TLSSystemRoots requests verified TLS using the host's system root CA pool
-	// and no client certificate — the server-authentication-only case produced
-	// by DOCKER_TLS_VERIFY with no DOCKER_CERT_PATH. It makes a tcp:// endpoint
-	// valid without any explicit CA/cert/key material (the CA defaults to the
-	// system roots). Not exposed as a YAML knob; it only originates from the
-	// DOCKER_* environment drop-in.
-	TLSSystemRoots bool
 }
 
 // BuildEndpoint parses spec.Address, loads any TLS material, and returns a
 // dialable Endpoint. It returns a descriptive error for every malformed or
 // inconsistent spec so config validation can surface the exact problem.
 func BuildEndpoint(spec EndpointSpec) (Endpoint, error) {
-	network, address, err := parseAddress(spec.Address)
+	parsed, err := parseEndpointAddress(spec.Address)
 	if err != nil {
 		return Endpoint{}, err
 	}
 
-	switch network {
+	switch parsed.network {
 	case "unix":
 		// TLS material on a unix endpoint is meaningless and almost always a
 		// copy-paste mistake — reject it rather than silently ignore.
+		if spec.ServerName != "" {
+			return Endpoint{}, fmt.Errorf("upstream endpoint %q: tls.server_name is not valid for a unix socket", spec.Address)
+		}
 		if spec.CertFile != "" || spec.KeyFile != "" || spec.CAFile != "" {
 			return Endpoint{}, fmt.Errorf("upstream endpoint %q: TLS settings are not valid for a unix socket", spec.Address)
 		}
-		return Endpoint{Name: address, Network: "unix", Address: address}, nil
+		return Endpoint{Name: parsed.address, Network: "unix", Address: parsed.address}, nil
 	case "tcp":
-		tlsConfig, err := buildClientTLS(spec, address)
+		tlsConfig, err := buildClientTLS(spec, parsed.address)
 		if err != nil {
 			return Endpoint{}, err
 		}
-		return Endpoint{Name: address, Network: "tcp", Address: address, TLSConfig: tlsConfig}, nil
+		name := parsed.address + parsed.escapedBasePath()
+		return Endpoint{
+			Name:        name,
+			Network:     "tcp",
+			Address:     parsed.address,
+			BasePath:    parsed.basePath,
+			RawBasePath: parsed.rawBasePath,
+			TLSConfig:   tlsConfig,
+		}, nil
 	default:
-		return Endpoint{}, fmt.Errorf("upstream endpoint %q: unsupported scheme %q (use unix:// or tcp://)", spec.Address, network)
+		return Endpoint{}, fmt.Errorf("upstream endpoint %q: unsupported scheme %q (use unix:// or tcp://)", spec.Address, parsed.network)
 	}
 }
 
@@ -127,12 +139,15 @@ func BuildEndpoint(spec EndpointSpec) (Endpoint, error) {
 // BuildEndpoint performs the same structural checks and additionally loads the
 // referenced files.
 func ValidateSpec(spec EndpointSpec) error {
-	network, address, err := parseAddress(spec.Address)
+	parsed, err := parseEndpointAddress(spec.Address)
 	if err != nil {
 		return err
 	}
-	switch network {
+	switch parsed.network {
 	case "unix":
+		if spec.ServerName != "" {
+			return fmt.Errorf("upstream endpoint %q: tls.server_name is not valid for a unix socket", spec.Address)
+		}
 		if spec.CertFile != "" || spec.KeyFile != "" || spec.CAFile != "" {
 			return fmt.Errorf("upstream endpoint %q: TLS settings are not valid for a unix socket", spec.Address)
 		}
@@ -141,61 +156,103 @@ func ValidateSpec(spec EndpointSpec) error {
 		if (spec.CertFile == "") != (spec.KeyFile == "") {
 			return fmt.Errorf("upstream endpoint %q: tls.cert_file and tls.key_file must be set together", spec.Address)
 		}
-		hasAnyTLS := spec.CertFile != "" || spec.KeyFile != "" || spec.CAFile != "" || spec.InsecureSkipTLSVerify || spec.TLSSystemRoots
+		hasAnyTLS := spec.CertFile != "" || spec.KeyFile != "" || spec.CAFile != "" || spec.InsecureSkipTLSVerify
 		if !hasAnyTLS && !spec.InsecureAllowPlainTCP {
 			return fmt.Errorf("upstream endpoint %q: TCP requires TLS (set tls.ca_file/cert_file/key_file) or insecure_allow_plain_tcp: true", spec.Address)
 		}
-		_ = address
 		return nil
 	default:
-		return fmt.Errorf("upstream endpoint %q: unsupported scheme %q (use unix:// or tcp://)", spec.Address, network)
+		return fmt.Errorf("upstream endpoint %q: unsupported scheme %q (use unix:// or tcp://)", spec.Address, parsed.network)
 	}
+}
+
+type parsedEndpointAddress struct {
+	network     string
+	address     string
+	basePath    string
+	rawBasePath string
+}
+
+func (a parsedEndpointAddress) escapedBasePath() string {
+	return (&url.URL{Path: a.basePath, RawPath: a.rawBasePath}).EscapedPath()
+}
+
+func (e Endpoint) escapedBasePath() string {
+	return (&url.URL{Path: e.BasePath, RawPath: e.RawBasePath}).EscapedPath()
 }
 
 // parseAddress splits a Docker-style upstream address into a (network, address)
 // pair. A bare path with no scheme is treated as a unix socket for backward
 // compatibility with the legacy upstream.socket field.
 func parseAddress(raw string) (network, address string, err error) {
+	parsed, err := parseEndpointAddress(raw)
+	if err != nil {
+		return "", "", err
+	}
+	return parsed.network, parsed.address, nil
+}
+
+func parseEndpointAddress(raw string) (parsedEndpointAddress, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return "", "", fmt.Errorf("upstream endpoint address is empty")
+		return parsedEndpointAddress{}, fmt.Errorf("upstream endpoint address is empty")
 	}
 
 	// Bare absolute or relative path with no scheme → unix socket.
 	if !strings.Contains(raw, "://") {
 		if strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "./") || strings.HasPrefix(raw, "../") {
-			return "unix", raw, nil
+			return parsedEndpointAddress{network: "unix", address: raw}, nil
 		}
-		return "", "", fmt.Errorf("upstream endpoint %q: address must be a unix path or a unix://, tcp:// URL", raw)
+		return parsedEndpointAddress{}, fmt.Errorf("upstream endpoint %q: address must be a unix path or a unix://, tcp:// URL", raw)
+	}
+
+	// Docker treats everything after unix:// as literal socket-name bytes.
+	// URL parsing would decode %2F and reinterpret ?/# as query/fragment
+	// delimiters, selecting a different socket from the one the client named.
+	if strings.HasPrefix(raw, "unix://") {
+		address := strings.TrimPrefix(raw, "unix://")
+		if address == "" {
+			return parsedEndpointAddress{}, fmt.Errorf("upstream endpoint %q: missing socket path", raw)
+		}
+		if strings.Contains(address, "://") {
+			return parsedEndpointAddress{}, fmt.Errorf("upstream endpoint %q: invalid unix socket address", raw)
+		}
+		// Validate the URL grammar before discarding the parsed form. In
+		// particular, Go's host parser rejects escapes such as %2F and %3F in
+		// unix://relative%2Fsock while accepting them in the absolute path form.
+		// Docker performs the same validation but still dials the original,
+		// literal address bytes after it succeeds.
+		if _, err := url.Parse(raw); err != nil {
+			return parsedEndpointAddress{}, fmt.Errorf("upstream endpoint %q: invalid unix socket address: %w", raw, err)
+		}
+		return parsedEndpointAddress{network: "unix", address: address}, nil
 	}
 
 	u, err := url.Parse(raw)
 	if err != nil {
-		return "", "", fmt.Errorf("upstream endpoint %q: %w", raw, err)
+		return parsedEndpointAddress{}, fmt.Errorf("upstream endpoint %q: %w", raw, err)
 	}
 
 	switch u.Scheme {
-	case "unix":
-		// unix:///var/run/docker.sock → Path carries the socket path. A
-		// host-form unix://relative.sock is rejected as ambiguous.
-		if u.Host != "" {
-			return "", "", fmt.Errorf("upstream endpoint %q: unix sockets use an absolute path (unix:///var/run/docker.sock)", raw)
-		}
-		if u.Path == "" {
-			return "", "", fmt.Errorf("upstream endpoint %q: missing socket path", raw)
-		}
-		return "unix", u.Path, nil
 	case "tcp", "http", "https":
 		if u.Host == "" {
-			return "", "", fmt.Errorf("upstream endpoint %q: missing host:port", raw)
+			return parsedEndpointAddress{}, fmt.Errorf("upstream endpoint %q: missing host:port", raw)
+		}
+		if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return parsedEndpointAddress{}, fmt.Errorf("upstream endpoint %q: TCP query, fragment, and userinfo components are not supported", raw)
 		}
 		host := u.Host
 		if u.Port() == "" {
-			return "", "", fmt.Errorf("upstream endpoint %q: TCP address must include a port (e.g. tcp://host:2376)", raw)
+			return parsedEndpointAddress{}, fmt.Errorf("upstream endpoint %q: TCP address must include a port (e.g. tcp://host:2376)", raw)
 		}
-		return "tcp", host, nil
+		return parsedEndpointAddress{
+			network:     "tcp",
+			address:     host,
+			basePath:    u.Path,
+			rawBasePath: u.RawPath,
+		}, nil
 	default:
-		return "", "", fmt.Errorf("upstream endpoint %q: unsupported scheme %q (use unix:// or tcp://)", raw, u.Scheme)
+		return parsedEndpointAddress{}, fmt.Errorf("upstream endpoint %q: unsupported scheme %q (use unix:// or tcp://)", raw, u.Scheme)
 	}
 }
 
@@ -203,7 +260,7 @@ func parseAddress(raw string) (network, address string, err error) {
 // returns nil only when plaintext TCP is explicitly acknowledged.
 func buildClientTLS(spec EndpointSpec, address string) (*tls.Config, error) {
 	hasCert := spec.CertFile != "" || spec.KeyFile != ""
-	hasAnyTLS := hasCert || spec.CAFile != "" || spec.InsecureSkipTLSVerify || spec.TLSSystemRoots
+	hasAnyTLS := hasCert || spec.CAFile != "" || spec.InsecureSkipTLSVerify
 
 	if !hasAnyTLS {
 		if spec.InsecureAllowPlainTCP {
@@ -270,46 +327,149 @@ func splitHostPort(hostport string) (host, port string, ok bool) {
 	return host, port, port != ""
 }
 
-// SpecsFromDockerEnv reads the standard Docker client environment variables
-// (DOCKER_HOST, DOCKER_TLS_VERIFY, DOCKER_CERT_PATH) and returns a single
-// EndpointSpec when DOCKER_HOST names a TCP daemon, so an operator with a
-// working `docker -H tcp://…` setup can point sockguard at it with no YAML.
-// It returns ok=false when DOCKER_HOST is unset or names a unix socket (the
-// local-socket default already covers that case).
-func SpecsFromDockerEnv(getenv func(string) string) (EndpointSpec, bool) {
-	host := strings.TrimSpace(getenv("DOCKER_HOST"))
+const (
+	dockerDefaultHost = "localhost"
+	dockerDefaultPort = "2375"
+)
+
+func parseDockerHost(raw string) (normalized, network string, err error) {
+	host := strings.TrimSpace(raw)
 	if host == "" {
-		return EndpointSpec{}, false
-	}
-	network, _, err := parseAddress(host)
-	if err != nil || network != "tcp" {
-		return EndpointSpec{}, false
+		return "", "", fmt.Errorf("DOCKER_HOST is empty")
 	}
 
-	spec := EndpointSpec{Address: host}
-	tlsVerify := getenv("DOCKER_TLS_VERIFY") != ""
-	certPath := strings.TrimSpace(getenv("DOCKER_CERT_PATH"))
-	if certPath != "" {
+	protocol, address, hasProtocol := strings.Cut(host, "://")
+	if !hasProtocol {
+		address = protocol
+		protocol = "tcp"
+	}
+
+	switch protocol {
+	case "tcp":
+		address, err = parseDockerTCPAddress(address)
+		if err != nil {
+			return "", "", fmt.Errorf("DOCKER_HOST %q: %w", host, err)
+		}
+		return "tcp://" + address, "tcp", nil
+	case "unix":
+		if strings.Contains(address, "://") {
+			return "", "", fmt.Errorf("DOCKER_HOST %q: invalid Unix socket address", host)
+		}
+		if address == "" {
+			address = "/var/run/docker.sock"
+		}
+		return "unix://" + address, "unix", nil
+	default:
+		return "", "", fmt.Errorf("DOCKER_HOST %q: unsupported transport %q (use unix:// or tcp://)", host, protocol)
+	}
+}
+
+func parseDockerTCPAddress(address string) (string, error) {
+	if address == "" {
+		return net.JoinHostPort(dockerDefaultHost, dockerDefaultPort), nil
+	}
+	if strings.Contains(address, "://") {
+		return "", fmt.Errorf("invalid TCP address")
+	}
+	if strings.HasSuffix(address, "]:") {
+		address += dockerDefaultPort
+	}
+
+	u, err := url.Parse("tcp://" + address)
+	if err != nil {
+		return "", fmt.Errorf("invalid TCP address: %w", err)
+	}
+	if u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("TCP query, fragment, and userinfo components are not supported")
+	}
+	host, port := u.Hostname(), u.Port()
+	if host == "" {
+		host = dockerDefaultHost
+	}
+	if port == "" {
+		port = dockerDefaultPort
+	}
+	// Keep Docker's exact numeric-port check: zero and out-of-range numeric
+	// values are accepted here and rejected only when the client dials.
+	if parsedPort, err := strconv.Atoi(port); err != nil && parsedPort == 0 {
+		return "", fmt.Errorf("invalid TCP port %q", port)
+	}
+	return net.JoinHostPort(host, port) + u.EscapedPath(), nil
+}
+
+// SpecsFromDockerEnv reads the standard Docker client environment variables
+// and returns one normalized TCP or Unix EndpointSpec. It returns ok=false only
+// when DOCKER_HOST is absent; a present invalid or unsupported value is an
+// error so startup cannot silently route to a different daemon.
+func SpecsFromDockerEnv(lookupEnv func(string) (string, bool)) (EndpointSpec, bool, error) {
+	rawHost, present := lookupEnv("DOCKER_HOST")
+	if !present {
+		return EndpointSpec{}, false, nil
+	}
+	normalizedHost, network, err := parseDockerHost(rawHost)
+	if err != nil {
+		return EndpointSpec{}, false, err
+	}
+	if network == "unix" {
+		return EndpointSpec{Address: normalizedHost}, true, nil
+	}
+
+	spec := EndpointSpec{Address: normalizedHost}
+	tlsValue, _ := lookupEnv("DOCKER_TLS")
+	tlsVerifyValue, _ := lookupEnv("DOCKER_TLS_VERIFY")
+	tlsEnabled := tlsValue != ""
+	tlsVerify := tlsVerifyValue != ""
+	if tlsEnabled || tlsVerify {
+		certPath, err := dockerCertificateDirectory(lookupEnv)
+		if err != nil {
+			return EndpointSpec{}, false, err
+		}
 		spec.CAFile = filepath.Join(certPath, "ca.pem")
-		spec.CertFile = filepath.Join(certPath, "cert.pem")
-		spec.KeyFile = filepath.Join(certPath, "key.pem")
+		certFile := filepath.Join(certPath, "cert.pem")
+		keyFile := filepath.Join(certPath, "key.pem")
+		certPresent := dockerOptionalFilePresent(certFile)
+		keyPresent := dockerOptionalFilePresent(keyFile)
+		if certPresent && keyPresent {
+			spec.CertFile = certFile
+			spec.KeyFile = keyFile
+		} else if certPresent {
+			if _, err := os.ReadFile(certFile); err != nil { // #nosec G304 -- the Docker client certificate directory is explicit operator configuration.
+				return EndpointSpec{}, false, fmt.Errorf("reading Docker client certificate: %w", err)
+			}
+		} else if keyPresent {
+			if _, err := os.ReadFile(keyFile); err != nil { // #nosec G304 -- the Docker client certificate directory is explicit operator configuration.
+				return EndpointSpec{}, false, fmt.Errorf("reading Docker client key: %w", err)
+			}
+		}
 	}
-	switch {
-	case tlsVerify && certPath == "":
-		// DOCKER_TLS_VERIFY with no DOCKER_CERT_PATH: verify the daemon against
-		// the system root CAs and present no client cert (server-auth only).
-		// Without this signal the spec would carry no TLS material and be
-		// rejected as plain TCP, breaking the documented env drop-in.
-		spec.TLSSystemRoots = true
-	case !tlsVerify && certPath == "":
-		// No verification and no cert material → plaintext TCP, matching the
-		// docker CLI when neither TLS env var is set.
-		spec.InsecureAllowPlainTCP = true
-	case !tlsVerify && certPath != "":
-		// Cert material present but verification off → encrypted, unverified.
+	if tlsEnabled && !tlsVerify {
+		// Like Docker CLI's --tls flag, any non-empty DOCKER_TLS value enables
+		// encrypted transport without server verification. DOCKER_TLS_VERIFY
+		// takes precedence and enables verification when both are set.
 		spec.InsecureSkipTLSVerify = true
+	} else if !tlsVerify {
+		// DOCKER_CERT_PATH only locates TLS material; it does not enable TLS.
+		// With neither TLS signal present the Docker CLI uses plaintext TCP.
+		spec.InsecureAllowPlainTCP = true
 	}
-	// tlsVerify && certPath != "" → verified mTLS loaded from the cert files,
-	// no insecure flag needed.
-	return spec, true
+	return spec, true, nil
+}
+
+func dockerCertificateDirectory(lookupEnv func(string) (string, bool)) (string, error) {
+	if certPath, _ := lookupEnv("DOCKER_CERT_PATH"); certPath != "" {
+		return certPath, nil
+	}
+	if configDir, _ := lookupEnv("DOCKER_CONFIG"); configDir != "" {
+		return configDir, nil
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve Docker client config directory: %w", err)
+	}
+	return filepath.Join(homeDir, ".docker"), nil
+}
+
+func dockerOptionalFilePresent(path string) bool {
+	_, err := os.Stat(path)
+	return !os.IsNotExist(err)
 }
