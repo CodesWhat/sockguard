@@ -189,8 +189,18 @@ func middlewareWithDeps(
 				}
 			}
 
-			ownerFilterApplies := needsOwnerFilter(r.Method, normPath) ||
-				(r.Method == http.MethodGet || r.Method == http.MethodHead) && libpodNeedsOwnerFilter(normPath)
+			// Refuse the libpod writes owner isolation cannot scope, for the
+			// reason filter.LibpodPodPruneDenyReason gives: the endpoint
+			// takes no filters and names no resource, so forwarding it
+			// deletes other owners' resources. Like the read refusals above
+			// it is unconditional — a warn-mode measurement is worth nothing
+			// once the pods are gone.
+			if write, ok := filter.LookupLibpodUnscopeableWrite(r.Method, normPath); ok {
+				denyUnscopeableLibpodWrite(w, r, write)
+				return
+			}
+
+			ownerFilterApplies := needsOwnerFilter(r.Method, normPath) || libpodNeedsOwnerFilter(r.Method, normPath)
 			if ownerFilterApplies && dockerfilters.RequiresSoleValue(r, ownerFilterKey(normPath)) {
 				logging.SetDeniedWithCode(w, r, reasonCodeOwnerVisibilityPodmanEventsUnscopeable, ownerVisibilityPodmanEventsDenyReason, nil)
 				_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: ownerVisibilityPodmanEventsDenyReason})
@@ -273,7 +283,7 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 		// build-query mutator already does exactly this "decode 'labels' query
 		// param as a JSON-encoded map, inject, re-encode" shape.
 		return nil, addOwnerLabelToBuildQuery(r, opts.LabelKey, opts.Owner)
-	case needsOwnerFilter(r.Method, normPath), (r.Method == http.MethodGet || r.Method == http.MethodHead) && libpodNeedsOwnerFilter(normPath):
+	case needsOwnerFilter(r.Method, normPath), libpodNeedsOwnerFilter(r.Method, normPath):
 		return nil, addOwnerLabelFilter(r, opts.LabelKey, opts.Owner)
 	default:
 		return nil, nil

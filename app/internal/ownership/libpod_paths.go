@@ -31,8 +31,38 @@ func isLibpodOwnershipPath(normPath string) bool {
 	return strings.HasPrefix(normPath, libpodPrefix)
 }
 
-// libpodNeedsOwnerFilter mirrors needsOwnerFilter for libpod's list
-// endpoints. Podman consistently suffixes every /libpod/ list endpoint with
+// libpodNeedsOwnerFilter mirrors needsOwnerFilter for libpod's list and prune
+// endpoints, and takes the method for the same reason its Docker-compat
+// counterpart does: the two families are reached by different methods and a
+// path alone cannot say which.
+//
+// The POST half is the prune family. Podman documents a JSON-encoded
+// `filters` query parameter taking `label` on all four routes and reads it
+// through util.PrepareFilters in each handler at v5.8.1:
+// POST /libpod/containers/prune is registered onto compat.PruneContainers —
+// literally the same handler as the Docker-compat route (register_containers.go),
+// POST /libpod/networks/prune onto libpod.Prune, POST /libpod/volumes/prune
+// onto libpod.PruneVolumes, and POST /libpod/images/prune onto
+// libpod.PruneImages. Without the injection each one deletes every prunable
+// resource on the host, which is the same host-wide write the Docker-compat
+// entries in needsOwnerFilter have been scoped against since owner isolation
+// shipped.
+//
+// libpod.PruneImages is the one that constrains how the filter is written: it
+// flattens the decoded filter map with `fmt.Sprintf("%s=%s", k, v[0])`, so
+// only the FIRST value under `label` reaches libimage. addOwnerLabelFilter
+// writes the owner label first and appends proxy-injected visibility
+// selectors after it, so the owner selector is the one that survives that
+// truncation. Nothing injects visibility selectors into a prune today —
+// needsVisibilityLabelFilter covers lists and events only — so the case is
+// hypothetical, and the ordering keeps it fail-closed for the owner boundary
+// if it stops being.
+//
+// POST /libpod/pods/prune is deliberately absent: it takes no parameters at
+// all, so there is nothing to inject. It is refused instead, through
+// filter.LookupLibpodUnscopeableWrite.
+//
+// Podman consistently suffixes every /libpod/ list endpoint with
 // "/json" (unlike the Docker-compat API's mixed /networks vs /containers/json
 // convention), so every list entry here follows that one shape.
 //
@@ -58,7 +88,18 @@ func isLibpodOwnershipPath(normPath string) bool {
 // which disjunctive and conjunctive evaluation are the same thing. Every other
 // filter key the endpoint accepts is ANDed, so a client can only narrow the
 // stream further.
-func libpodNeedsOwnerFilter(normPath string) bool {
+func libpodNeedsOwnerFilter(method, normPath string) bool {
+	if method == http.MethodPost {
+		switch normPath {
+		case libpodPrefix + "containers/prune", libpodPrefix + "images/prune", libpodPrefix + "networks/prune", libpodPrefix + "volumes/prune":
+			return true
+		default:
+			return false
+		}
+	}
+	if method != http.MethodGet && method != http.MethodHead {
+		return false
+	}
 	switch normPath {
 	case libpodPrefix + "events",
 		libpodPrefix + "containers/json",
