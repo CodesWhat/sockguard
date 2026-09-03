@@ -2125,6 +2125,14 @@ func TestValidateAndCompileRulesRejectsSlashBearingCatalogRoutes(t *testing.T) {
 		ackBlind     bool
 	}{
 		{
+			name:         "docker container top",
+			method:       http.MethodGet,
+			denyPattern:  "/containers/*/top",
+			allowPattern: "/containers/*/*/top",
+			wantAck:      "insecure_allow_read_exfiltration",
+			wantWitness:  "GET /containers/a/a/top",
+		},
+		{
 			name:         "docker image export",
 			method:       http.MethodGet,
 			denyPattern:  "/images/*/get",
