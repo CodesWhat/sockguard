@@ -559,7 +559,10 @@ host's `ps`, and native `GET /libpod/containers/{id}/top` exposes the same
 process-list class; both return command lines without response redaction. Every
 other exfiltration-gated route remains denied by the narrow rules, including
 native `GET /libpod/pods/{id}/top`, which carries the same global guard but is
-not part of this preset's pod read surface. Point
+not part of this preset's pod read surface. The flag is global rather than
+per-rule, so anything you add to this preset later that the exfiltration
+catalog covers, container logs being the obvious one, is admitted without a
+fresh startup refusal to warn you. Point
 `upstream.socket` at either a rootful
 (`/run/podman/podman.sock`) or rootless (`$XDG_RUNTIME_DIR/podman/podman.sock`)
 Podman socket; the rule set itself doesn't change.

@@ -132,7 +132,7 @@ test("libpod container risk catalogs name every guarded endpoint", () => {
   assert.match(podman, /plus the libpod-only entries below:/u);
 });
 
-test("read-exfiltration warning docs describe representative endpoint probes", () => {
+test("read-exfiltration docs credit the load-time audit, not the request-time gate", () => {
   const documents = [
     ["configuration reference", read("docs/content/docs/configuration.mdx")],
     ["changelog", read("CHANGELOG.md")],
@@ -142,16 +142,22 @@ test("read-exfiltration warning docs describe representative endpoint probes", (
     const normalized = document.replaceAll(/\s+/gu, " ");
     assert.match(
       normalized,
-      /endpoint fields use representative startup-validation probes and are not exhaustive/u,
-      `${name} must qualify the warning's endpoint fields`,
+      /Startup validation audits the authored rule literals/u,
+      `${name} must attribute the exact-name and ordered refusal to startup validation`,
     );
     assert.match(
       normalized,
-      /Empty endpoint lists can still mean an exact-name or ordered process-list rule needs the acknowledgment/u,
-      `${name} must explain why empty endpoint fields can still need the acknowledgment`,
+      /the warning names the concrete reachable path/u,
+      `${name} must say what the warning reports once the acknowledgment is set`,
+    );
+    assert.doesNotMatch(
+      normalized,
+      /can be visible only to the request-time hard gate|Empty endpoint lists can still mean an exact-name or ordered process-list rule needs the acknowledgment/u,
+      `${name} must not claim exact-name or ordered process-list rules escape startup validation`,
     );
   }
 });
+
 test("release docs distinguish candidate and stable source branches", () => {
   const releasing = read("RELEASING.md").replaceAll(/\s+/gu, " ");
 

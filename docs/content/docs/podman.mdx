@@ -478,7 +478,10 @@ Docker-compatible and native libpod routes require
 `ps_args` control the daemon host's `ps` output, and both routes return process
 command lines that bypass response redaction. Native
 `GET /libpod/pods/{id}/top` carries the same global guard but stays denied by
-this preset's narrow pod rules. Every other exfiltration-gated endpoint is
+this preset's narrow pod rules. That acknowledgment is global rather than
+per-rule, so anything you add to this preset later that the exfiltration
+catalog covers, container logs being the obvious one, is admitted without a
+fresh startup refusal to warn you. Every other exfiltration-gated endpoint is
 excluded: archive, export, logs, attach, image `get`, and image push on both
 surfaces, plus the libpod-only exfiltration surfaces alongside them —
 mounted-container inventory (`showmounted`), `generate/kube`, and manifest
