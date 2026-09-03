@@ -153,15 +153,6 @@ func (b *bufferedConn) Read(p []byte) (int, error) {
 // verbatim to the hijacked client connection — required ordering per the
 // synthesis: "require a valid upstream 101 before hijacking downstream."
 func dialDaemonH2C(ctx context.Context, dialer Dialer, path string, header http.Header) (net.Conn, *http.Response, error) {
-	conn, err := dialer.DialContext(ctx, "", "")
-	if err != nil {
-		return nil, nil, fmt.Errorf("buildkitproxy: dial daemon: %w", err)
-	}
-
-	if deadline, ok := ctx.Deadline(); ok {
-		_ = conn.SetDeadline(deadline)
-	}
-
 	req := &http.Request{
 		Method:     http.MethodPost,
 		URL:        &url.URL{Scheme: "http", Host: "docker", Path: path},
@@ -174,6 +165,15 @@ func dialDaemonH2C(ctx context.Context, dialer Dialer, path string, header http.
 	req.Header.Set("Connection", "Upgrade")
 	req.Header.Set("Upgrade", "h2c")
 	req.ContentLength = 0
+
+	conn, req, err := dialer.DialRequest(ctx, req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("buildkitproxy: dial daemon: %w", err)
+	}
+
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	}
 
 	if err := req.Write(conn); err != nil {
 		_ = conn.Close()

@@ -17,8 +17,8 @@ const upstreamReachableTimeout = 10 * time.Second
 // resolveUpstreamSpecs determines the ordered endpoint specs for the upstream
 // and whether this is the legacy single-local-socket case (which keeps the
 // original fail-fast reachability check and log/banner wording). Precedence:
-// explicit upstream.endpoints > DOCKER_HOST (tcp) env > upstream.socket.
-func resolveUpstreamSpecs(cfg *config.Config, getenv func(string) string, logger *slog.Logger) (specs []upstream.EndpointSpec, legacySocket bool) {
+// explicit upstream.endpoints > DOCKER_HOST env > upstream.socket.
+func resolveUpstreamSpecs(cfg *config.Config, lookupEnv func(string) (string, bool), logger *slog.Logger) (specs []upstream.EndpointSpec, legacySocket bool, err error) {
 	if len(cfg.Upstream.Endpoints) > 0 {
 		specs = make([]upstream.EndpointSpec, len(cfg.Upstream.Endpoints))
 		for i, ep := range cfg.Upstream.Endpoints {
@@ -29,50 +29,99 @@ func resolveUpstreamSpecs(cfg *config.Config, getenv func(string) string, logger
 				KeyFile:               ep.TLS.KeyFile,
 				ServerName:            ep.TLS.ServerName,
 				InsecureAllowPlainTCP: ep.InsecureAllowPlainTCP,
+				//nolint:staticcheck // SA1019: v2.1 keeps the deprecated setting functional until its v3.0.0 removal
 				InsecureSkipTLSVerify: ep.InsecureSkipTLSVerify,
 			}
 		}
 		warnInsecureUpstreamSpecs(logger, specs, "upstream.endpoints config")
-		return specs, false
+		return specs, false, nil
 	}
-	if spec, ok := upstream.SpecsFromDockerEnv(getenv); ok {
-		logger.Info("using remote upstream from DOCKER_HOST environment", "address", spec.Address)
+	spec, ok, err := upstream.SpecsFromDockerEnv(lookupEnv)
+	if err != nil {
+		return nil, false, err
+	}
+	if ok {
+		logger.Info("using upstream from DOCKER_HOST environment", "address", spec.Address)
 		warnInsecureUpstreamSpecs(logger, []upstream.EndpointSpec{spec}, "DOCKER_HOST environment")
-		return []upstream.EndpointSpec{spec}, false
+		return []upstream.EndpointSpec{spec}, false, nil
 	}
-	return []upstream.EndpointSpec{{Address: cfg.Upstream.Socket}}, true
+	return []upstream.EndpointSpec{{Address: cfg.Upstream.Socket}}, true, nil
 }
 
-// warnInsecureUpstreamSpecs logs a startup warning for each endpoint that
-// transports Docker API traffic without proper TLS — plaintext TCP, or TLS with
-// certificate verification disabled. Both leave exec streams, secrets, and
-// container data exposed (unencrypted, or encrypted but MITM-susceptible), so an
-// operator who reaches them via a DOCKER_HOST drop-in (not just explicit config)
-// gets a visible breadcrumb rather than a silent downgrade.
+// warnInsecureUpstreamSpecs logs startup warnings for insecure endpoint
+// settings. TCP warnings follow the transport selected by BuildEndpoint. Unix
+// endpoints instead warn that TCP-only insecure settings have no effect.
 func warnInsecureUpstreamSpecs(logger *slog.Logger, specs []upstream.EndpointSpec, source string) {
 	if logger == nil {
 		return
 	}
 	for _, spec := range specs {
-		switch {
-		case spec.InsecureAllowPlainTCP:
-			logger.Warn("upstream Docker endpoint uses plaintext TCP with no TLS; "+
-				"Docker API traffic (exec streams, secrets, container data) is unencrypted and unauthenticated on the wire",
-				"address", spec.Address, "source", source)
-		case spec.InsecureSkipTLSVerify:
-			logger.Warn("upstream Docker endpoint skips TLS certificate verification; "+
-				"the connection is encrypted but the daemon's identity is not checked (MITM-susceptible)",
+		unixEndpoint := upstreamSpecUsesUnixTransport(spec)
+		if spec.InsecureAllowPlainTCP {
+			message := "upstream Docker endpoint uses plaintext TCP with no TLS; " +
+				"Docker API traffic (exec streams, secrets, container data) is unencrypted and unauthenticated on the wire"
+			if unixEndpoint {
+				message = "upstream Docker endpoint uses a Unix socket; " +
+					"insecure_allow_plain_tcp only applies to TCP endpoints and has no effect"
+			} else if upstreamSpecSelectsTLS(spec) {
+				message = "upstream Docker endpoint has insecure_allow_plain_tcp enabled, but TLS is selected; " +
+					"remove insecure_allow_plain_tcp because it has no effect while TLS is configured"
+			}
+			logger.Warn(message,
 				"address", spec.Address, "source", source)
 		}
+		if spec.InsecureSkipTLSVerify {
+			deprecatedSetting := "upstream.endpoints[].insecure_skip_tls_verify"
+			replacement := "upstream.endpoints[].tls.ca_file"
+			message := "upstream Docker endpoint skips TLS certificate verification; " +
+				"upstream.endpoints[].insecure_skip_tls_verify is deprecated and will be removed in v3.0.0; " +
+				"configure upstream.endpoints[].tls.ca_file to verify the daemon"
+			if source == "DOCKER_HOST environment" {
+				deprecatedSetting = "DOCKER_TLS without DOCKER_TLS_VERIFY"
+				replacement = "DOCKER_TLS_VERIFY=1"
+				message = "upstream Docker endpoint skips TLS certificate verification because DOCKER_TLS is set without DOCKER_TLS_VERIFY; " +
+					"this Docker environment fallback is deprecated and will be removed in v3.0.0; set DOCKER_TLS_VERIFY=1 to verify the daemon"
+			}
+			if unixEndpoint {
+				message = "upstream Docker endpoint uses a Unix socket; " +
+					"insecure_skip_tls_verify only applies to TCP endpoints and has no effect; " +
+					deprecatedSetting + " is deprecated and will be removed in v3.0.0; configure " + replacement + " for TCP endpoints"
+			}
+			logger.Warn(message,
+				"address", spec.Address,
+				"source", source,
+				"deprecated_setting", deprecatedSetting,
+				"replacement", replacement,
+				"removal_version", "v3.0.0",
+			)
+		}
 	}
+}
+
+// upstreamSpecUsesUnixTransport asks the endpoint builder to classify only the
+// address, avoiding TLS file loads while keeping warning behavior aligned with
+// the actual transport parser.
+func upstreamSpecUsesUnixTransport(spec upstream.EndpointSpec) bool {
+	endpoint, err := upstream.BuildEndpoint(upstream.EndpointSpec{Address: spec.Address})
+	return err == nil && endpoint.Network == "unix"
+}
+
+// upstreamSpecSelectsTLS mirrors the transport selection in
+// upstream.BuildEndpoint without loading certificate files.
+func upstreamSpecSelectsTLS(spec upstream.EndpointSpec) bool {
+	return spec.CAFile != "" || spec.CertFile != "" || spec.KeyFile != "" ||
+		spec.InsecureSkipTLSVerify
 }
 
 // buildUpstreamResolver constructs the shared upstream resolver from config,
 // loading any per-endpoint TLS material. It returns the resolver, whether the
 // legacy single-socket path was taken, and an error for any unbuildable
 // endpoint (bad address, missing/invalid TLS files).
-func buildUpstreamResolver(cfg *config.Config, logger *slog.Logger, getenv func(string) string) (*upstream.Resolver, bool, error) {
-	specs, legacy := resolveUpstreamSpecs(cfg, getenv, logger)
+func buildUpstreamResolver(cfg *config.Config, logger *slog.Logger, lookupEnv func(string) (string, bool)) (*upstream.Resolver, bool, error) {
+	specs, legacy, err := resolveUpstreamSpecs(cfg, lookupEnv, logger)
+	if err != nil {
+		return nil, false, err
+	}
 	endpoints := make([]upstream.Endpoint, 0, len(specs))
 	for _, spec := range specs {
 		ep, err := upstream.BuildEndpoint(spec)

@@ -14,8 +14,8 @@ Optimized for the [drydock](https://github.com/CodesWhat/drydock) container upda
 ```yaml
 # Allows: container read, start, stop, restart, remove, create
 # Allows: image read, pull
-# Allows: network read, volume read, distribution
-# Denies: exec, build, swarm, secrets, plugins
+# Allows: network read, volume read, distribution, Swarm service reads
+# Denies: exec, build, swarm writes, secrets, plugins, raw archive/export/logs/attach streams
 # container-create bodies are inspected by default — add host bind-mount sources to
 # request_body.container_create.allowed_bind_mounts if your updates require them.
 # image pulls are inspected too; this preset explicitly allows arbitrary registries
@@ -82,6 +82,11 @@ through this proxy, not just a single standalone container.
 # instead if you specifically want the CLASSIC builder (POST /build only,
 # requires DOCKER_BUILDKIT=0 in the client). See the Compose/BuildKit
 # Transport section of the security model docs for the full breakdown.
+# Compose-Spec post_start hooks are also still denied: they run through exec
+# (POST /containers/{id}/exec, POST /exec/{id}/start), which the catch-all
+# blocks, so drydock's PostStartExecutor fails the deploy loudly rather than
+# skipping the hook. Add a pinned allowed_commands entry (modeled on
+# drydock-with-selfupdate.yaml) rather than a blanket exec allow if you need it.
 # Self-update finalize exec is still denied, same caveat as drydock.yaml;
 # combine with drydock-with-selfupdate.yaml by hand if you need both
 ```
@@ -303,6 +308,7 @@ Traefik v3.7.12; other reverse proxies need their own call-surface review.
 # Denies: everything else, including container archive/export/logs/attach
 ```
 
+In Swarm mode, task discovery includes node inspection at `GET /nodes/*`.
 Every allowed path is a named list or required inspect endpoint rather than a
 `/containers/**` glob, so this preset does **not** set
 `insecure_allow_read_exfiltration: true`. A client that genuinely needs
@@ -401,7 +407,7 @@ Minimal read-only access for [Diun](https://github.com/crazy-max/diun) (Docker I
 
 ```yaml
 # Allows: GET container list, image inspect, ping, version
-# Denies: everything else — Diun checks registries directly. Container
+# Denies: all other routes. Diun checks registries directly. Container
 #         inspect is denied too; Diun's Docker provider never calls it
 ```
 

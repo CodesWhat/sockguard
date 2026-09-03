@@ -345,6 +345,29 @@ func TestPolicyBundleReload_ResolvesSignaturePathFromCandidate(t *testing.T) {
 	}
 }
 
+// TestPolicyBundleReload_NilRootCtxUsesBackground pins the CONDITIONALS_NEGATION
+// mutant at serve_reload.go:445 (`parent == nil` -> `!=`) in verifyBundle. The
+// fixture always wires RootCtx to context.Background(), so no existing test
+// exercises the nil branch; with the mutation, a nil c.rootCtx is left as-is
+// and context.WithTimeout(nil, ...) panics.
+func TestPolicyBundleReload_NilRootCtxUsesBackground(t *testing.T) {
+	verifier := &stubBundleVerifier{res: policybundle.VerifyResult{Signer: "keyed:1"}}
+	f := newPolicyBundleFixture(t, policyBundleInitialConfig(), verifier)
+	f.coordinator.rootCtx = nil
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("reload() panicked with a nil rootCtx: %v", r)
+		}
+	}()
+
+	f.coordinator.reload()
+
+	if got, ok := metricsReloadCount(t, f.registry, "ok"); !ok || got != 1 {
+		t.Fatalf("ok count = %d (found=%v), want 1", got, ok)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // verifyPolicyBundleAtStartup — exhaustive branch coverage.
 // Every failure branch of the signature gate aborts startup, so each one

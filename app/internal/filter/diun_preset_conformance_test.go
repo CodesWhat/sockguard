@@ -2,8 +2,16 @@ package filter_test
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 )
+
+func TestDiunPresetDocumentationIncludesIncidentalImageList(t *testing.T) {
+	section := presetDocsSection(t, "## Diun (`diun.yaml`)", "## Autoheal (`autoheal.yaml`)")
+	if !strings.Contains(section, "`GET /images/json`") {
+		t.Fatal("Diun preset documentation must disclose the incidentally allowed image-list route GET /images/json")
+	}
+}
 
 // TestDiunPresetConformance proves the shipped diun.yaml admits every
 // endpoint Diun's Docker provider actually calls while denying the

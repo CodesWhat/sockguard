@@ -3,8 +3,11 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/spf13/viper"
 )
 
 func FuzzLoadYAML(f *testing.F) {
@@ -25,6 +28,29 @@ func FuzzLoadYAML(f *testing.F) {
 
 		_, _ = Load(cfgPath)
 	})
+}
+
+// clearProvenanceEnv unsets every SOCKGUARD_* environment variable derived
+// from keys (dotted config paths, matching the SOCKGUARD_<PATH> convention
+// SetEnvKeyReplacer applies), restoring each on test cleanup via t.Setenv.
+// explicitLegacyListenFile/explicitNetworkEndpointConfigFile's file-only
+// regressions read these via viper's AutomaticEnv regardless of what
+// triggered the call, so an ambient SOCKGUARD_LISTEN_* or
+// SOCKGUARD_REQUEST_BODY_NETWORK_ENDPOINT_CONFIG_* variable left set in the
+// test process would make explicitKeysSet return true independent of the
+// mutation under test, silently defeating the regression. t.Setenv only
+// restores on cleanup, it does not itself unset — os.Unsetenv after it does
+// the actual clearing for the duration of the test.
+func clearProvenanceEnv(t *testing.T, keys []string) {
+	t.Helper()
+	replacer := strings.NewReplacer(".", "_")
+	for _, key := range keys {
+		name := "SOCKGUARD_" + strings.ToUpper(replacer.Replace(key))
+		t.Setenv(name, "")
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatalf("Unsetenv(%s): %v", name, err)
+		}
+	}
 }
 
 func snapshotSockguardEnv(t *testing.T) func() {
@@ -1150,5 +1176,104 @@ rules: definitely-not-a-list
 	_, err := Load(cfgPath)
 	if err == nil {
 		t.Fatal("expected unmarshal error for invalid rules type")
+	}
+}
+
+// TestLoadTracksFileProvenance tables explicitLegacyListenFile's and
+// explicitNetworkEndpointConfigFile's direct regressions: each block's
+// presence must be detected by reading and parsing the YAML file at
+// configPath — not skipped because the path is treated as absent, and not
+// left undetected because the read's success was mishandled.
+// clearProvenanceEnv strips every SOCKGUARD_LISTEN_* /
+// SOCKGUARD_REQUEST_BODY_NETWORK_ENDPOINT_CONFIG_* var from the process
+// first, so an ambient one left set by the test runner cannot make either
+// subtest pass regardless of the mutation — the explicit answer can only
+// come from the file itself.
+func TestLoadTracksFileProvenance(t *testing.T) {
+	tests := []struct {
+		name      string
+		clearKeys []string
+		yaml      string
+		assert    func(t *testing.T, cfg *Config)
+	}{
+		{
+			// explicitLegacyListenFile's direct regression.
+			name:      "TestLoadTracksFileLegacyListenerProvenance",
+			clearKeys: legacyListenKeys,
+			yaml: `listen:
+  socket: /run/legacy.sock
+`,
+			assert: func(t *testing.T, cfg *Config) {
+				t.Helper()
+				if !cfg.ExplicitLegacyListen() {
+					t.Fatal("ExplicitLegacyListen() = false, want true from the YAML file's listen.socket key")
+				}
+			},
+		},
+		{
+			// explicitNetworkEndpointConfigFile's #186 counterpart to the
+			// legacy-listen regression above.
+			name:      "TestLoadTracksFileNetworkEndpointConfigProvenance",
+			clearKeys: networkEndpointConfigKeys,
+			yaml: `request_body:
+  network:
+    endpoint_config:
+      allow_static_addressing: true
+`,
+			assert: func(t *testing.T, cfg *Config) {
+				t.Helper()
+				if !cfg.ExplicitNetworkEndpointConfig() {
+					t.Fatal("ExplicitNetworkEndpointConfig() = false, want true from the YAML file's endpoint_config key")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearProvenanceEnv(t, tt.clearKeys)
+
+			dir := t.TempDir()
+			path := filepath.Join(dir, "sockguard.yaml")
+			if err := os.WriteFile(path, []byte(tt.yaml), 0o600); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			tt.assert(t, cfg)
+		})
+	}
+}
+
+// TestRegisterDefaultsSkipsRulesOnlyAtTopLevel pins registerDefaults' rules
+// skip (load.go's `if prefix == "" && name == "rules"`) to the top level
+// only: a nested field that happens to carry the same "rules" mapstructure
+// tag (e.g. a per-profile rules list, at a non-empty prefix) must still be
+// registered as a Viper default. A `prefix == ""` -> `prefix != ""` mutation
+// would instead skip the nested one and register the top-level one.
+func TestRegisterDefaultsSkipsRulesOnlyAtTopLevel(t *testing.T) {
+	type rulesLeaf struct {
+		Rules []string `mapstructure:"rules"`
+	}
+	type nested struct {
+		Sub rulesLeaf `mapstructure:"sub"`
+	}
+
+	v := viper.New()
+	registerDefaults(v, "", reflect.ValueOf(nested{Sub: rulesLeaf{Rules: []string{"a", "b"}}}))
+	if got := v.GetStringSlice("sub.rules"); !reflect.DeepEqual(got, []string{"a", "b"}) {
+		t.Fatalf("registerDefaults() nested sub.rules default = %v, want [a b] (nested \"rules\" must not be skipped)", got)
+	}
+
+	type topLevel struct {
+		Rules []string `mapstructure:"rules"`
+	}
+	v2 := viper.New()
+	registerDefaults(v2, "", reflect.ValueOf(topLevel{Rules: []string{"a", "b"}}))
+	if v2.IsSet("rules") {
+		t.Fatalf("registerDefaults() top-level rules default = %v, want unset (top-level \"rules\" must be skipped)", v2.Get("rules"))
 	}
 }

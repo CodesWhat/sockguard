@@ -275,6 +275,67 @@ func TestVerifyKeylessSANMismatch(t *testing.T) {
 	}
 }
 
+// TestVerifyKeylessIdentityPOSIXPatternDivergence kills the
+// sigverify.go:198:21 CONDITIONALS_NEGATION mutant on
+// "!subjectPattern.MatchString(...)". That re-check is not fully redundant
+// with sigstore-go's own policy gate: VerifyKeylessIdentity hands
+// sigstore-go's verify.NewSANMatcher only the pattern's *source text* (via
+// subjectPattern.String()), and NewSANMatcher recompiles that text with
+// plain regexp.Compile — never with the POSIX flavor the caller's
+// *regexp.Regexp may have been built with. A pattern compiled with
+// regexp.CompilePOSIX has different match semantics for identical source
+// text than one compiled with regexp.Compile: "^[^x]$" accepts "\n" under
+// the default engine (a negated character class matches newlines) but
+// rejects it under POSIX. So sigstore-go's recompiled matcher can accept a
+// SAN that the caller's own (POSIX) subjectPattern rejects, which makes
+// line 198's local re-check observable rather than equivalent. If the
+// mutant flips the negation, this SAN passes sigstore-go's gate and the
+// (broken) local check no longer rejects it, so VerifyKeylessIdentity
+// would wrongly return success.
+func TestVerifyKeylessIdentityPOSIXPatternDivergence(t *testing.T) {
+	t.Parallel()
+	vs, err := ca.NewVirtualSigstore()
+	if err != nil {
+		t.Fatalf("NewVirtualSigstore: %v", err)
+	}
+	const signIssuer = "https://github.com/login/oauth"
+	// The signed SAN is a lone newline: regexp.MustCompile("^[^x]$") matches
+	// it, but regexp.MustCompilePOSIX("^[^x]$") does not.
+	const signSubject = "\n"
+
+	artifact := []byte("manifest contents for POSIX-pattern-divergence test")
+	digest := sha256.Sum256(artifact)
+
+	entity, err := vs.Sign(signSubject, signIssuer, artifact)
+	if err != nil {
+		t.Fatalf("vs.Sign: %v", err)
+	}
+
+	posixPattern := regexp.MustCompilePOSIX("^[^x]$")
+	if posixPattern.MatchString(signSubject) {
+		t.Fatalf("test setup invalid: POSIX pattern unexpectedly matches %q", signSubject)
+	}
+	if !regexp.MustCompile(posixPattern.String()).MatchString(signSubject) {
+		t.Fatalf("test setup invalid: a plain-Compile recompile of the POSIX pattern's source text (as sigstore-go's NewSANMatcher builds it) does not match %q", signSubject)
+	}
+
+	_, err = VerifyKeylessIdentity(
+		context.Background(),
+		entity,
+		digest[:],
+		vs,
+		signIssuer,
+		posixPattern,
+		false,
+	)
+	if err == nil {
+		t.Fatal("VerifyKeylessIdentity with a POSIX pattern that rejects the signed SAN returned nil; want error")
+	}
+	if !strings.Contains(err.Error(), "does not match pattern") {
+		t.Fatalf("VerifyKeylessIdentity error = %v, want it to report the local SAN pattern mismatch", err)
+	}
+}
+
 // keyedTestEntity implements verify.SignedEntity for raw public-key (non-Fulcio)
 // signing tests. It wraps a MessageSignature and surfaces a bundle.PublicKey so
 // that sigstore-go's keyed verification path is exercised.
