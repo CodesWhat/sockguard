@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { SITE_CONFIG } from "../lib/site-config.ts";
 import { roadmap } from "../lib/site-content.ts";
@@ -59,7 +60,10 @@ test("website comparison rows live in extracted data modules", () => {
 
   const perClientRow = comparisonRows.find((row) => row.feature === "Per-client policies");
   assert.ok(perClientRow);
-  assert.equal(perClientRow.sockguard, "CIDR + labels + cert selectors incl. SPKI + unix peer");
+  assert.equal(
+    perClientRow.sockguard,
+    "Yes (CIDR + labels + cert selectors incl. SPKI + unix peer)",
+  );
   assert.equal(perClientRow.wollomatic, "Partial (IP/hostname + labels)");
 
   assert.ok(comparisonRows.find((row) => row.feature === "Resource owner labels"));
@@ -145,6 +149,45 @@ test("compare surfaces derive their cells from the comparison rows", () => {
   assert.equal(comparisonCell("Method + path filtering", "elevenNotes"), "partial");
   assert.equal(comparisonCell("Request body inspection", "wollomatic"), "partial");
   assert.equal(comparisonCell("Podman native libpod API", "wollomatic"), "partial");
+});
+
+test("route pages and the compare matrix agree on Sockguard's column", () => {
+  // Each per-competitor page states Sockguard's side of every row in prose,
+  // and /compare derives an icon for the same feature from comparison-rows.
+  // When the page names a capability outright and the matrix derives a
+  // partial, one page contradicts the page it links to. That is how
+  // "Per-client policies" drifted: the row's Sockguard cell opened with
+  // "CIDR + labels ..." rather than "Yes", so toComparisonCell() read it as
+  // a partial while every route page called it Full.
+  const dir = new URL("../lib/comparison-route-data/", import.meta.url);
+  const routeFiles = readdirSync(dir).filter((name) => name.endsWith(".tsx"));
+  assert.ok(routeFiles.length >= 5, "expected one route data module per competitor");
+
+  const featureNames = new Set(comparisonRows.map((row) => row.feature));
+  let checked = 0;
+  for (const name of routeFiles) {
+    const source = readFileSync(new URL(name, dir), "utf8");
+    const table = source.match(/comparisonTable:\s*`([\s\S]*?)`/);
+    assert.ok(table, `${name} carries no comparisonTable`);
+    for (const line of table[1].split("\n")) {
+      const [feature, , sockguard] = line.trim().split("|");
+      if (!feature || !sockguard || !featureNames.has(feature)) {
+        continue;
+      }
+      // The page hedges on this row too, so a partial icon is honest.
+      if (/^(no|partial)\b/i.test(sockguard)) {
+        continue;
+      }
+      checked += 1;
+      assert.equal(
+        comparisonCell(feature, "sockguard"),
+        "yes",
+        `${name} calls Sockguard's "${feature}" ${sockguard}, but /compare derives a partial`,
+      );
+    }
+  }
+  assert.ok(checked > 20, `expected substantial overlap with the rows, checked ${checked}`);
+  assert.equal(comparisonCell("Per-client policies", "sockguard"), "yes");
 });
 
 test("roadmap data is valid and matches expected milestones", () => {

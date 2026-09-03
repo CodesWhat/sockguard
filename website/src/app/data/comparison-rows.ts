@@ -45,7 +45,7 @@ export const comparisonRows: ComparisonRow[] = [
     wollomatic: "Partial (IP/hostname + labels)",
     elevenNotes: "No",
     cetusguard: "No",
-    sockguard: "CIDR + labels + cert selectors incl. SPKI + unix peer",
+    sockguard: "Yes (CIDR + labels + cert selectors incl. SPKI + unix peer)",
   },
   {
     feature: "Resource owner labels",
