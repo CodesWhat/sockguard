@@ -1,142 +1,43 @@
 import { ArrowUpRight, Check, Minus, X } from "lucide-react";
 import Link from "next/link";
+import {
+  type ComparisonCell,
+  type ComparisonTool,
+  comparisonCell,
+  MATRIX_FEATURES,
+  PROJECT_HEALTH,
+} from "@/app/data/comparison-rows";
 import { ComparisonCellIcon } from "@/components/comparison-cell-icon";
 import { SITE_CONFIG } from "@/lib/site-config";
 
 // Full comparison matrix for /compare. Each competitor row links to its
-// dedicated deep-dive page. Cell values are derived from comparison-rows.ts
-// and the per-competitor data in lib/comparison-route-data/.
-
-type Cell = "yes" | "partial" | "no";
-
-const FEATURES = [
-  { key: "pathFilter", label: "Path filter" },
-  { key: "bodyInspect", label: "Body inspect" },
-  { key: "perClient", label: "Per-client" },
-  { key: "remoteMtls", label: "Remote mTLS" },
-  { key: "signedBundles", label: "Signed bundles" },
-  { key: "imageTrust", label: "Image trust" },
-  { key: "metrics", label: "Metrics" },
-  { key: "podmanNative", label: "Podman native" },
-  { key: "multipleListeners", label: "Multiple listeners" },
-  { key: "maintained", label: "Maintained" },
-  { key: "openSource", label: "Open source" },
-] as const;
-
-type FeatureKey = (typeof FEATURES)[number]["key"];
+// dedicated deep-dive page. Every policy cell is derived from
+// comparison-rows.ts, which is also what the per-competitor pages in
+// lib/comparison-route-data/ restate, so the matrix cannot contradict the page
+// it links to.
 
 type Tool = {
   name: string;
   slug: string | null;
+  key: ComparisonTool;
   highlight?: boolean;
-  cells: Record<FeatureKey, Cell>;
 };
 
 const TOOLS: Tool[] = [
-  {
-    name: SITE_CONFIG.name,
-    slug: null,
-    highlight: true,
-    cells: {
-      pathFilter: "yes",
-      bodyInspect: "yes",
-      perClient: "yes",
-      remoteMtls: "yes",
-      signedBundles: "yes",
-      imageTrust: "yes",
-      metrics: "yes",
-      podmanNative: "yes",
-      multipleListeners: "yes",
-      maintained: "yes",
-      openSource: "yes",
-    },
-  },
-  {
-    name: "Tecnativa",
-    slug: "tecnativa",
-    cells: {
-      pathFilter: "yes",
-      bodyInspect: "no",
-      perClient: "no",
-      remoteMtls: "no",
-      signedBundles: "no",
-      imageTrust: "no",
-      metrics: "no",
-      podmanNative: "no",
-      multipleListeners: "no",
-      maintained: "yes",
-      openSource: "yes",
-    },
-  },
-  {
-    name: "LinuxServer",
-    slug: "linuxserver",
-    cells: {
-      pathFilter: "yes",
-      bodyInspect: "no",
-      perClient: "no",
-      remoteMtls: "no",
-      signedBundles: "no",
-      imageTrust: "no",
-      metrics: "no",
-      podmanNative: "yes",
-      multipleListeners: "no",
-      maintained: "yes",
-      openSource: "yes",
-    },
-  },
-  {
-    name: "wollomatic",
-    slug: "wollomatic",
-    cells: {
-      pathFilter: "partial",
-      bodyInspect: "partial",
-      perClient: "partial",
-      remoteMtls: "no",
-      signedBundles: "no",
-      imageTrust: "no",
-      metrics: "no",
-      podmanNative: "partial",
-      multipleListeners: "no",
-      maintained: "yes",
-      openSource: "yes",
-    },
-  },
-  {
-    name: "11notes",
-    slug: "11notes",
-    cells: {
-      pathFilter: "partial",
-      bodyInspect: "no",
-      perClient: "no",
-      remoteMtls: "no",
-      signedBundles: "no",
-      imageTrust: "no",
-      metrics: "no",
-      podmanNative: "no",
-      multipleListeners: "yes",
-      maintained: "yes",
-      openSource: "yes",
-    },
-  },
-  {
-    name: "CetusGuard",
-    slug: "cetusguard",
-    cells: {
-      pathFilter: "partial",
-      bodyInspect: "no",
-      perClient: "no",
-      remoteMtls: "yes",
-      signedBundles: "no",
-      imageTrust: "no",
-      metrics: "no",
-      podmanNative: "yes",
-      multipleListeners: "yes",
-      maintained: "yes",
-      openSource: "yes",
-    },
-  },
+  { name: SITE_CONFIG.name, slug: null, key: "sockguard", highlight: true },
+  { name: "Tecnativa", slug: "tecnativa", key: "tecnativa" },
+  { name: "LinuxServer", slug: "linuxserver", key: "linuxserver" },
+  { name: "wollomatic", slug: "wollomatic", key: "wollomatic" },
+  { name: "11notes", slug: "11notes", key: "elevenNotes" },
+  { name: "CetusGuard", slug: "cetusguard", key: "cetusguard" },
 ];
+
+function cellFor(tool: Tool, feature: (typeof MATRIX_FEATURES)[number]): ComparisonCell {
+  if (feature.row === null) {
+    return PROJECT_HEALTH[tool.key][feature.key as "maintained" | "openSource"];
+  }
+  return comparisonCell(feature.row, tool.key);
+}
 
 export function CompareMatrix() {
   return (
@@ -148,7 +49,7 @@ export function CompareMatrix() {
               <th className="px-4 py-3 text-left font-medium text-neutral-500 dark:text-neutral-400">
                 Tool
               </th>
-              {FEATURES.map((f) => (
+              {MATRIX_FEATURES.map((f) => (
                 <th
                   key={f.key}
                   className="whitespace-nowrap px-3 py-3 text-center text-xs font-medium text-neutral-500 dark:text-neutral-400"
@@ -182,9 +83,9 @@ export function CompareMatrix() {
                     </span>
                   )}
                 </th>
-                {FEATURES.map((f) => (
+                {MATRIX_FEATURES.map((f) => (
                   <td key={f.key} className="px-3 py-3 text-center">
-                    <ComparisonCellIcon value={tool.cells[f.key]} />
+                    <ComparisonCellIcon value={cellFor(tool, f)} />
                   </td>
                 ))}
               </tr>
