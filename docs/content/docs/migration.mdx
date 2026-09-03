@@ -283,11 +283,12 @@ Key differences:
 
 ## From 11notes/docker-socket-proxy
 
-`11notes/docker-socket-proxy` is a fixed read-only proxy — it allows every Docker API `GET` except seven exfiltration-prone endpoints and blocks every write. There is no rule syntax to translate; the equivalent in Sockguard is a default-deny config that allows reads broadly while denying those same endpoints first (first-match-wins):
+`11notes/docker-socket-proxy` is a fixed read-only proxy: it allows every Docker API `GET` except seven targeted exfiltration-prone endpoints and blocks every write. Its own regex for the image-get endpoint (`images/get(/|)$`) doesn't match the real `ImageGet`/`ImageGetAll` request shapes, so only six of the seven are reliably blocked. Separately, 11notes issue #12 documents that same style of pattern misfiring on the image-inspect endpoint ([11notes #12](https://github.com/11notes/docker-socket-proxy/issues/12)). There is no rule syntax to translate; the equivalent in Sockguard is a default-deny config that allows reads broadly while denying those same endpoints first (first-match-wins):
 
 ```yaml filename="sockguard.yaml"
 rules:
-  # Deny the seven exfiltration-prone reads 11notes blocks
+  # Deny the seven exfiltration-prone reads 11notes targets
+  # (11notes' own regex only reliably blocks six of these)
   - match: { method: GET, path: "/containers/*/attach/ws" }
     action: deny
   - match: { method: GET, path: "/containers/*/export" }
@@ -300,9 +301,10 @@ rules:
     action: deny
   - match: { method: GET, path: "/swarm/unlockkey" }
     action: deny
-  - match: { method: GET, path: "/images/*/get" }
+  # ** covers both single-segment and nested (registry-qualified) image names
+  - match: { method: GET, path: "/images/**/get" }
     action: deny
-  # Allow everything else read-only — writes fall through to default-deny
+  # Allow everything else read-only, writes fall through to default-deny
   - match: { method: GET, path: "/**" }
     action: allow
 ```
@@ -313,7 +315,7 @@ The 11notes environment variables configure the process, not the policy, so they
 |-----------------|----------------------|
 | `SOCKET_PROXY_DOCKER_SOCKET` | `upstream.socket` (env: `SOCKGUARD_UPSTREAM_SOCKET`) |
 | `SOCKET_PROXY_VOLUME` | `listen.socket` (env: `SOCKGUARD_LISTEN_SOCKET`) |
-| `SOCKET_PROXY_HTTP_LISTEN_IP` | `listen.address` — mTLS is required for any non-loopback bind |
+| `SOCKET_PROXY_HTTP_LISTEN_IP` | `listen.address`. mTLS is required by default for any non-loopback bind; a legacy plaintext escape hatch exists behind two explicit acknowledgments, `listen.insecure_allow_plain_tcp: true` and `listen.insecure_allow_unauthenticated_clients: true` (one without the other is rejected). 11notes defaults this to `0.0.0.0` unauthenticated on its TCP listener; a default change to `127.0.0.1` ([`a9f6073`](https://github.com/11notes/docker-socket-proxy/commit/a9f6073)) was reverted the next day after user complaints ([`79f6afb`](https://github.com/11notes/docker-socket-proxy/commit/79f6afb)), and the maintainer flagged that reachable-by-default as the wrong call in [issue #17](https://github.com/11notes/docker-socket-proxy/issues/17) |
 | `SOCKET_PROXY_UID` / `SOCKET_PROXY_GID` | Sockguard's image already runs as UID 65532; set container runtime `user:` / `group_add` only when you need to match the host Docker socket's numeric UID/GID |
 | `DEBUG` | `log.level: debug` (env: `SOCKGUARD_LOG_LEVEL`) |
 
