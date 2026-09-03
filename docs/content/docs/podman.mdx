@@ -296,7 +296,7 @@ redaction. A malformed plugin, interface name, IPAM topology field, range, or
 Sockguard strips the Docker API version prefix (`/v1.45/`) before matching
 rules, same as it always has. Podman's own clients send their **full daemon
 semver** as that prefix — three parts (`/v5.0.0/`, `/v4.9.3/`), not Docker's
-one-or-two-part form (`/v1.45/`) — so the path normalizer
+one-or-two-part form (`/v1.45/`), so the path normalizer
 doesn't count dot-separated groups at all. It takes `/v`, one digit, then any
 run of alphanumerics, `.` and `-` up to the next `/`, which is Podman's own
 `VersionedPath` class and covers prerelease and dev builds
