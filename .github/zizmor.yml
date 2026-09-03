@@ -12,19 +12,20 @@ rules:
     # behavioural no-op.
     #
     # It is ignored because actionlint does not know the syntax yet.
-    # actionlint 1.7.12, the current release and the one behind the pinned
-    # `raven-actions/actionlint` gate in ci-verify.yml, rejects `$/...` with
-    # "invalid format because ref is missing". So taking zizmor's fix reds a
-    # required PR check to satisfy a low-severity style preference on two
-    # release workflows.
+    # actionlint 1.7.12, the current release, rejects `$/...` with "invalid
+    # format because ref is missing". The `raven-actions/actionlint` gate in
+    # ci-verify.yml is SHA-pinned but installs the latest actionlint at run
+    # time, so the executable version floats; the day it ships `$/` support
+    # this ignore becomes unnecessary rather than wrong. Until then, taking
+    # zizmor's fix reds a required PR check to satisfy a low-severity style
+    # preference on two release workflows.
+    #
+    # The ignores are line-scoped so a new self-repository finding anywhere
+    # else in these files still fails the gate. If either call site moves,
+    # zizmor reports the finding again and the line here needs updating.
     #
     # Revisit when actionlint ships `$/` support: drop this block, run
     # `zizmor --fix`, and confirm `actionlint .github/workflows/` is clean.
-    #
-    # Scoped to the two `uses:` lines, not the whole files, so a future
-    # workspace-relative `./` reference anywhere else in either workflow is
-    # still caught. If either line moves, the audit fires again; that is the
-    # intended failure mode, and the fix is to re-point the line number here.
     ignore:
       - release-cut.yml:61
       - release-from-tag.yml:155
