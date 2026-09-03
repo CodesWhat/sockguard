@@ -45,6 +45,25 @@ var errImageLoadOCIUninspectable = errors.New("OCI image archive cannot be fully
 // the Docker half is the only reference set the load can produce.
 var errImageLoadOCIPreNameFailure = errors.New("OCI image archive cannot name an image")
 
+// imageLoadOCIMultiImageError is the pre-name failure that still carries
+// names. An index holding several manifests picks no single image on Podman,
+// which moves on to the Docker archive, but a containerd-store dockerd
+// imports that same index and records the name each descriptor's annotations
+// carry, so the OCI names stay policy-relevant on the Docker-compat route
+// even though no OCI image is selected. A missing or undecodable index has no
+// names to carry and gets the plain sentinel instead.
+type imageLoadOCIMultiImageError struct {
+	count       int
+	references  []string
+	hasUntagged bool
+}
+
+func (e *imageLoadOCIMultiImageError) Error() string {
+	return fmt.Sprintf("%s: decode index.json: Podman requires exactly one image when no OCI reference is selected, got %d", errImageLoadOCIPreNameFailure, e.count)
+}
+
+func (e *imageLoadOCIMultiImageError) Unwrap() error { return errImageLoadOCIPreNameFailure }
+
 // ImageLoadOptions configures request-body inspection for POST /images/load
 // and its libpod counterpart POST /libpod/images/load.
 type ImageLoadOptions struct {
@@ -456,8 +475,8 @@ func parseImageLoadArchiveControlFiles(controls imageLoadArchiveControlFiles, pr
 		if !errors.Is(ociErr, errImageLoadOCIPreNameFailure) {
 			return imageLoadArchiveInspection{}, fmt.Errorf("mixed image archive OCI archive invalid: %w", ociErr)
 		}
-		// The OCI half failed where the daemon fails it too, before any OCI
-		// name exists, so the archive loads through its Docker half alone.
+		// The OCI half failed where the daemon fails it too, before any single
+		// OCI image is selected, so the archive loads through its Docker half.
 		// `docker save a:1 b:2` on Docker 25+'s containerd store writes exactly
 		// this shape: a two-manifest index.json beside the compatibility
 		// manifest.json. Denying it would refuse an ordinary multi-image save
@@ -465,6 +484,15 @@ func parseImageLoadArchiveControlFiles(controls imageLoadArchiveControlFiles, pr
 		dockerFallback, dockerErr := parseDockerImageLoadManifest(controls.dockerManifest)
 		if dockerErr != nil {
 			return imageLoadArchiveInspection{}, fmt.Errorf("mixed image archive Docker archive invalid: %w", dockerErr)
+		}
+		// A multi-manifest index still names images on a containerd-store
+		// dockerd, which imports every descriptor in it, so those names are
+		// checked alongside the Docker repo tags rather than dropped. Only a
+		// missing or undecodable index carries nothing to check.
+		var multiImage *imageLoadOCIMultiImageError
+		if errors.As(ociErr, &multiImage) {
+			dockerFallback.references = append(dockerFallback.references, multiImage.references...)
+			dockerFallback.hasUntagged = dockerFallback.hasUntagged || multiImage.hasUntagged
 		}
 		return dockerFallback, nil
 	}
@@ -519,7 +547,11 @@ func parseOCIImageLoadManifest(controls imageLoadArchiveControlFiles) (imageLoad
 		return imageLoadArchiveInspection{}, fmt.Errorf("%w: decode index.json: %w", errImageLoadOCIPreNameFailure, err)
 	}
 	if len(index.Manifests) != 1 {
-		return imageLoadArchiveInspection{}, fmt.Errorf("%w: decode index.json: Podman requires exactly one image when no OCI reference is selected, got %d", errImageLoadOCIPreNameFailure, len(index.Manifests))
+		references, hasUntagged, err := imageLoadOCIIndexReferences(index.Manifests)
+		if err != nil {
+			return imageLoadArchiveInspection{}, err
+		}
+		return imageLoadArchiveInspection{}, &imageLoadOCIMultiImageError{count: len(index.Manifests), references: references, hasUntagged: hasUntagged}
 	}
 	referenced, err := validateImageLoadOCIManifestGraphReferences(index.Manifests[0], controls.ociBlobs)
 	if err != nil {
@@ -529,29 +561,43 @@ func parseOCIImageLoadManifest(controls imageLoadArchiveControlFiles) (imageLoad
 		return imageLoadArchiveInspection{}, fmt.Errorf("%w: archive contains unreferenced blobs", errImageLoadOCIUninspectable)
 	}
 
-	archive := imageLoadArchiveInspection{format: imageLoadArchiveOCI}
-	for _, descriptor := range index.Manifests {
-		// Podman names an OCI-archive load from the containerd annotation
-		// first and only falls back to the OCI ref-name annotation when it is
-		// absent. The policy must inspect that same effective name or a second,
-		// lower-priority annotation can disguise the registry Podman records.
+	references, hasUntagged, err := imageLoadOCIIndexReferences(index.Manifests)
+	if err != nil {
+		return imageLoadArchiveInspection{}, err
+	}
+	archive := imageLoadArchiveInspection{format: imageLoadArchiveOCI, references: references, hasUntagged: hasUntagged}
+	if len(index.Manifests) == 0 {
+		archive.hasUntagged = true
+	}
+	return archive, nil
+}
+
+// imageLoadOCIIndexReferences reads the effective name of every index entry.
+// Podman names an OCI-archive load from the containerd annotation first and
+// only falls back to the OCI ref-name annotation when it is absent, and a
+// containerd-store dockerd reads the same pair in the same order, so the
+// policy must inspect that effective name or a second, lower-priority
+// annotation can disguise the registry the daemon records. One reader serves
+// the single-image path and the multi-image fallback so the precedence cannot
+// diverge between them.
+func imageLoadOCIIndexReferences(descriptors []imageLoadOCIIndexDescriptor) ([]string, bool, error) {
+	var references []string
+	hasUntagged := false
+	for _, descriptor := range descriptors {
 		reference := descriptor.Annotations[containerdImageNameAnnotation]
 		if reference == "" {
 			reference = descriptor.Annotations[ociImageRefNameAnnotation]
 		}
 		if reference != strings.TrimSpace(reference) {
-			return imageLoadArchiveInspection{}, fmt.Errorf("OCI image archive effective name %q is not valid", reference)
+			return nil, false, fmt.Errorf("OCI image archive effective name %q is not valid", reference)
 		}
 		if reference == "" {
-			archive.hasUntagged = true
+			hasUntagged = true
 			continue
 		}
-		archive.references = append(archive.references, reference)
+		references = append(references, reference)
 	}
-	if len(index.Manifests) == 0 {
-		archive.hasUntagged = true
-	}
-	return archive, nil
+	return references, hasUntagged, nil
 }
 
 func validateImageLoadOCIManifestGraph(descriptor imageLoadOCIIndexDescriptor, blobs map[string]imageLoadOCIBlob) error {

@@ -453,19 +453,21 @@ func TestLibpodImageLoadInspectsEveryMixedArchiveFormat(t *testing.T) {
 	})
 }
 
-// TestImageLoadInspectsMultiImageArchivesThroughTheDockerManifest covers the
-// archive `docker save a:1 b:2` produces on Docker 25+'s containerd image
-// store: index.json holds two manifests and manifest.json holds both images.
-// No daemon can name an image from that index — containers/image's oci/layout
-// returns ErrMoreThanOneImage before it reads a single annotation, and Podman
-// then falls through to its docker-archive transport — so the load is judged
-// on the Docker reference set alone instead of being refused for having an
-// OCI half that cannot be reconciled.
-func TestImageLoadInspectsMultiImageArchivesThroughTheDockerManifest(t *testing.T) {
+// TestImageLoadChecksBothNameSetsOnMultiImageArchives covers the archive
+// `docker save a:1 b:2` produces on Docker 25+'s containerd image store:
+// index.json holds two manifests and manifest.json holds both images. No
+// daemon selects a single image from that index, so containers/image returns
+// ErrMoreThanOneImage from oci/layout and Podman falls through to its
+// docker-archive transport, but a containerd-store dockerd imports every
+// descriptor in the index and records the name its annotations carry. The
+// archive is therefore judged on the Docker repo tags AND the index
+// annotation names together, instead of being refused outright or trusting
+// either half alone.
+func TestImageLoadChecksBothNameSetsOnMultiImageArchives(t *testing.T) {
 	for _, endpoint := range []string{"/images/load", "/libpod/images/load"} {
-		t.Run("allows the Docker reference set on "+endpoint, func(t *testing.T) {
+		t.Run("allows a consistent docker save archive on "+endpoint, func(t *testing.T) {
 			payload := mustContainerdStoreImageLoadTar(t,
-				[]string{"evil.example.com/acme/a:1", "evil.example.com/acme/b:2"},
+				[]string{"ghcr.io/acme/a:1", "ghcr.io/acme/b:2"},
 				[]string{"ghcr.io/acme/a:1", "ghcr.io/acme/b:2"},
 			)
 			req := httptest.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
@@ -475,7 +477,7 @@ func TestImageLoadInspectsMultiImageArchivesThroughTheDockerManifest(t *testing.
 				t.Fatalf("inspect() error = %v", err)
 			}
 			if reason != "" {
-				t.Fatalf("reason = %q, want the multi-image archive judged on manifest.json alone", reason)
+				t.Fatalf("reason = %q, want the multi-image save admitted", reason)
 			}
 			forwarded, err := io.ReadAll(req.Body)
 			if err != nil {
@@ -489,7 +491,23 @@ func TestImageLoadInspectsMultiImageArchivesThroughTheDockerManifest(t *testing.
 			}
 		})
 
-		t.Run("denies an off-allowlist Docker reference set on "+endpoint, func(t *testing.T) {
+		t.Run("denies an off-allowlist index annotation on "+endpoint, func(t *testing.T) {
+			payload := mustContainerdStoreImageLoadTar(t,
+				[]string{"ghcr.io/acme/a:1", "evil.example.com/acme/b:2"},
+				[]string{"ghcr.io/acme/a:1", "ghcr.io/acme/b:2"},
+			)
+			req := httptest.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
+
+			reason, err := newImageLoadPolicy(libpodImageLoadAllowlist()).inspect(nil, req, NormalizePath(req.URL.Path))
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if !strings.Contains(reason, "evil.example.com") {
+				t.Fatalf("reason = %q, want the index name a containerd-store daemon records denied", reason)
+			}
+		})
+
+		t.Run("denies an off-allowlist Docker manifest entry on "+endpoint, func(t *testing.T) {
 			payload := mustContainerdStoreImageLoadTar(t,
 				[]string{"ghcr.io/acme/a:1", "ghcr.io/acme/b:2"},
 				[]string{"ghcr.io/acme/a:1", "evil.example.com/acme/b:2"},
@@ -502,6 +520,28 @@ func TestImageLoadInspectsMultiImageArchivesThroughTheDockerManifest(t *testing.
 			}
 			if !strings.Contains(reason, "evil.example.com") {
 				t.Fatalf("reason = %q, want the second Docker manifest entry denied", reason)
+			}
+		})
+
+		t.Run("reads the containerd annotation ahead of the ref name on "+endpoint, func(t *testing.T) {
+			payload := mustContainerdStoreImageLoadTarWithAnnotations(t,
+				[]map[string]string{
+					{containerdImageNameAnnotation: "ghcr.io/acme/a:1"},
+					{
+						ociImageRefNameAnnotation:     "ghcr.io/acme/b:2",
+						containerdImageNameAnnotation: "evil.example.com/acme/b:2",
+					},
+				},
+				[]string{"ghcr.io/acme/a:1", "ghcr.io/acme/b:2"},
+			)
+			req := httptest.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
+
+			reason, err := newImageLoadPolicy(libpodImageLoadAllowlist()).inspect(nil, req, NormalizePath(req.URL.Path))
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if !strings.Contains(reason, "evil.example.com") {
+				t.Fatalf("reason = %q, want the higher-priority containerd annotation denied", reason)
 			}
 		})
 	}
@@ -1326,18 +1366,31 @@ func mustOCIImageLoadTarWithDockerManifest(t *testing.T, references []string, do
 func mustContainerdStoreImageLoadTar(t *testing.T, ociNames, repoTags []string) []byte {
 	t.Helper()
 
+	annotations := make([]map[string]string, 0, len(ociNames))
+	for _, name := range ociNames {
+		annotations = append(annotations, map[string]string{containerdImageNameAnnotation: name})
+	}
+	return mustContainerdStoreImageLoadTarWithAnnotations(t, annotations, repoTags)
+}
+
+// mustContainerdStoreImageLoadTarWithAnnotations is the same archive with each
+// index descriptor's annotation map given verbatim, so a test can pin which
+// annotation the multi-image path reads when both are present.
+func mustContainerdStoreImageLoadTarWithAnnotations(t *testing.T, annotations []map[string]string, repoTags []string) []byte {
+	t.Helper()
+
 	config := []byte(`{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]},"config":{}}`)
 	configDigest := sha256.Sum256(config)
 	manifest := []byte(fmt.Sprintf(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:%x","size":%d},"layers":[]}`, configDigest, len(config)))
 	manifestDigest := sha256.Sum256(manifest)
 
-	descriptors := make([]map[string]any, 0, len(ociNames))
-	for _, name := range ociNames {
+	descriptors := make([]map[string]any, 0, len(annotations))
+	for _, annotation := range annotations {
 		descriptors = append(descriptors, map[string]any{
 			"mediaType":   "application/vnd.oci.image.manifest.v1+json",
 			"digest":      fmt.Sprintf("sha256:%x", manifestDigest),
 			"size":        len(manifest),
-			"annotations": map[string]string{containerdImageNameAnnotation: name},
+			"annotations": annotation,
 		})
 	}
 	index, err := json.Marshal(map[string]any{"schemaVersion": 2, "manifests": descriptors})
