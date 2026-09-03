@@ -40,6 +40,12 @@ of their own, so anything inside the allowlist can scrape them as fast as it
 likes. If that matters for your deployment, put the listener carrying them on a
 Unix socket or narrow `clients.allowed_cidrs` to your scrape source.
 
+They are not the only endpoints Sockguard can answer itself. With
+`admin.enabled: true` and no `admin.listen`, `admin.path` and
+`admin.policy_version_path` are mounted in-band on the main listener too, but
+they sit on the far side of the rate limiter rather than in front of it, so
+admin calls do consume a caller's quota. See [Admin API](/admin).
+
 ```yaml filename="sockguard.yaml"
 metrics:
   enabled: true
@@ -84,7 +90,7 @@ all default to `false`, so existing deployments stay quiet until you opt in.
 | `sockguard_http_denied_requests_total`       | counter   | `listener`, `mode`, `profile`, `reason_code`, `route`   | Only deny-decision rows. `mode` ∈ `{enforce, warn, audit}`. Use for policy-violation alerts. Rule index is in the structured audit log (`matched_rule` field). |
 | `sockguard_http_request_duration_seconds`    | histogram | `decision`, `listener`, `method`, `profile`, `route`    | Buckets: `0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10` seconds.                        |
 | `sockguard_http_requests_active`             | gauge     | —                                                       | Currently in-flight requests. Spikes during streaming endpoints (logs/attach/events).              |
-| `sockguard_listener_up`                      | gauge     | `listener`, `role`, `network`                           | `1` the listener is serving, `0` it stopped. Published once the bind barrier releases and set to `0` on shutdown or a fatal serve error. The series is never removed, so a stopped listener stays visibly down rather than vanishing from scrape output. |
+| `sockguard_listener_up`                      | gauge     | `listener`, `role`, `network`                           | `1` the listener is serving. Every configured listener is pre-registered at `0` while the group is bound but not yet published, flips to `1` when the bind barrier releases, and returns to `0` on shutdown or a fatal serve error, so `0` means bound-not-serving, stopped, or failed. The series is never removed, so a stopped listener stays visibly down rather than vanishing from scrape output. |
 | `sockguard_upstream_socket_up`               | gauge     | —                                                       | `1` reachable, `0` unreachable. Only emitted when `health.watchdog.enabled` is true.               |
 | `sockguard_upstream_watchdog_checks_total`   | counter   | `result`                                                | `result` ∈ `{connected, unreachable}`. Increments every interval; ratio is your error budget.      |
 | `sockguard_upstream_api_up`                  | gauge     | —                                                       | `1` the Docker API answered the readiness probe, `0` it did not. Only emitted when `health.readiness.enabled` is true. |
@@ -107,8 +113,12 @@ An arbitrary method never becomes a new series.
 `/images/linuxserver/qbittorrent:latest/json` collapse to
 `/images/{id}/json`. Every unrecognized first path segment collapses to the
 single `unknown` route instead of retaining caller-controlled text. Profile
-names come from configured profile assignments; if none matches, requests are
-tagged `profile="default"`.
+names come from configured profile assignments; if none matches,
+`sockguard_http_requests_total`, `sockguard_http_request_duration_seconds` and
+`sockguard_http_denied_requests_total` tag the request `profile="default"`.
+`sockguard_throttle_requests_total` and `sockguard_inflight_requests` key on the
+throttle bucket instead, so an unresolved caller shows up there as
+`profile="_anonymous"`.
 
 `listener` is the operator-configured listener name the request arrived on, so
 its value set is bounded by the configuration rather than by callers. A legacy
@@ -117,10 +127,24 @@ reports that name, and the admin listener reports `admin`. `listeners` is
 capped at 32 entries (`MaxListeners`), so the label cannot grow without an
 operator editing the config.
 
-`reason_code` is a bounded enum: `matched_deny_rule`, `no_matching_allow_rule`,
-`request_body_policy_denied`, `request_body_too_large`,
-`upstream_socket_unreachable`, `upstream_response_rejected_by_policy`. New
-codes are added rarely and follow the same naming scheme.
+`reason_code` is bounded by the code rather than by callers, but it is much
+wider than one list: every layer that can deny a request contributes its own
+codes, and there are dozens in total. The families are rule evaluation
+(`matched_deny_rule`, `no_matching_allow_rule`, `request_body_policy_denied`,
+`request_body_too_large`, ...), client ACL (`client_ip_not_allowed`,
+`client_label_policy_denied_request`, ...), ownership (`owner_*`), visibility
+(`visibility_*`), resource limits (`resource_limit_*`), request mutation
+(`mutation_*`), throttling (`rate_limit_exceeded`, `concurrency_cap`,
+`priority_floor`), the admin endpoints (`admin_*`), and upstream failures
+(`upstream_socket_unreachable`, `upstream_request_timeout`,
+`upstream_response_rejected_by_policy`). A denial that carries no code at all
+is exported as `reason_code="unknown"`. New codes are added as new guards land
+and follow the same naming scheme, so alert on prefixes rather than pinning the
+full set.
+
+The mediated BuildKit tunnel has its own `buildkit_*` reason codes, but they
+only appear on the `buildkit_rpc` audit event, not on these metrics: a mediated
+gRPC call is not a separate HTTP request.
 
 ## Example scrape config
 
@@ -248,10 +272,12 @@ was preserved.
 
 ## Active upstream watchdog
 
-By default `/health` answers from a cached upstream probe taken when a real
-request comes through. That's enough for liveness, but it can lag by minutes
-when traffic is sparse. Enabling the watchdog flips Sockguard to active
-monitoring:
+By default `/health` answers from a single upstream probe: the first request to
+reach the endpoint runs the check, and every later request is served the stored
+verdict. Nothing on the proxy data path refreshes it, so without the watchdog
+the answer is as old as the process. That is enough to prove Sockguard itself
+is up, but it will not notice the upstream going away. Enabling the watchdog
+flips Sockguard to active monitoring:
 
 - A goroutine dials the upstream socket every `health.watchdog.interval` and
   records the result.
@@ -326,7 +352,7 @@ Every access log line, audit event, and upstream-error log carries:
 | `request_id`      | Always                                  | 16-byte hex Sockguard-generated request identifier. Independent of W3C trace context.    |
 | `trace_id`        | Always                                  | 32-hex W3C trace ID. Inherited from a valid incoming `traceparent`, otherwise generated. |
 | `trace_span_id`   | Always                                  | 16-hex span ID Sockguard generates for the proxied request. Always proxy-local.          |
-| `trace_parent_id` | Only when incoming `traceparent` valid  | The span ID Sockguard's span is parented to.                                             |
+| `trace_parent_id` | Access and upstream-error logs only when incoming `traceparent` valid; audit events always | The span ID Sockguard's span is parented to. Audit JSON always carries the key, empty when there was no incoming parent. |
 | `trace_sampled`   | Always (boolean)                        | Inherited sampled flag from the incoming `traceparent`. Defaults to `false`.             |
 
 ### Example: caller sends valid traceparent
