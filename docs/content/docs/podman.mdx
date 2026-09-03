@@ -163,6 +163,19 @@ same way they cover Docker-compat:
   volumes, secrets — is owner-filtered and visibility-filtered, so switching
   a client from Docker-compat to libpod-native paths is not a way around
   isolation configured on the Docker-compat side.
+- Response redaction covers every libpod read whose Docker-compat counterpart
+  is redacted, so the same switch is not a way around redaction either. That
+  is a separate layer from the two above, and it needed its own libpod field
+  names rather than the compat ones: `redact_container_env`,
+  `redact_mount_paths` and `redact_network_topology` apply to
+  `GET /libpod/containers/{id}/json`, `redact_mount_paths` to
+  `GET /libpod/volumes/json` and `GET /libpod/volumes/{name}/json`,
+  `redact_network_topology` to `GET /libpod/networks/json`,
+  `GET /libpod/networks/{id}/json` and its bare `GET /libpod/networks/{id}`
+  alias, and `redact_sensitive_data` to `GET /libpod/secrets/json` and
+  `GET /libpod/secrets/{name}/json`. See
+  [Response Redaction on the libpod Surface](#response-redaction-on-the-libpod-surface)
+  for which field names differ and what is deliberately left alone.
 - `GET /libpod/system/df` and `GET /libpod/containers/showmounted` cannot be
   filtered, and are refused with a `403` instead whenever owner isolation or a
   visibility policy is active. Podman's native disk-usage report is not the
@@ -196,6 +209,57 @@ Denial reasons for libpod-family requests carry a `libpod ` prefix, matching
 the convention the libpod body inspectors use, so a `reason` grep separates
 libpod-originated denials from their Docker-compat counterparts without a
 dedicated log field.
+
+## Response Redaction on the libpod Surface
+
+The `response.redact_*` options are a different layer from ownership and
+visibility: they rewrite fields inside a body the caller is already entitled
+to see. Four of them default to `true`, so this applies to a deployment that
+configured nothing.
+
+Reusing a Docker-compat redactor on a libpod path is a decision made per
+endpoint, never the default, because Podman's bodies agree with Docker's far
+less often than the route names suggest. Where the shapes match, the same
+handler runs. Where they don't, the libpod field names are pinned separately:
+
+| libpod read | Option | What is redacted |
+|---|---|---|
+| `GET /libpod/containers/{id}/json` | `redact_container_env`, `redact_mount_paths`, `redact_network_topology` | `Config.Env`; `Mounts[].Source`, `HostConfig.Binds`, and the native host paths `Rootfs`, `ResolvConfPath`, `HostnamePath`, `HostsPath`, `StaticDir`, `OCIConfigPath`, `ConmonPidFile`, and `PidFile`; `HostConfig.NetworkMode`, the `NetworkSettings` address block and each `Networks` entry — the remaining fields use Docker's json tags, plus libpod's own `AdditionalMACAddresses` list, which has no compat counterpart |
+| `GET /libpod/volumes/json`, `GET /libpod/volumes/{name}/json` | `redact_mount_paths` | `Mountpoint`. The list body is a bare array, not Docker's `{"Volumes": [...]}` envelope |
+| `GET /libpod/networks/json`, `GET /libpod/networks/{id}/json`, `GET /libpod/networks/{id}` | `redact_network_topology` | Podman v4 and later: `subnets`, `routes`, `network_dns_servers`, `network_interface`, and inspect's `containers` map. Podman v2.2.1-v3.4.4: the raw CNI plugin's host `bridge` or macvlan `master`; plugin-level and IPAM-nested `dns.nameservers`, `dns.domain`, and `dns.search`; plus IPAM `routes`, `ranges`, static `addresses`, and backward-compatible flat `subnet`, `gateway`, `rangeStart`, and `rangeEnd`. List's top-level and per-plugin `Bytes` fields are removed because they are base64 copies of the complete raw conflist/plugin and would retain the same topology |
+| `GET /libpod/secrets/json`, `GET /libpod/secrets/{name}/json` | `redact_sensitive_data` | `SecretData`, the plaintext Podman returns for `?showsecret=true`. It is a top-level field, not the `Spec.Data` Docker uses — Podman's `Spec` has no `Data` at all |
+
+Three things are deliberately left alone. Modern `ipam_options` and legacy
+`plugins[].ipam.type` name the allocator, not an address; the former maps onto
+Docker's `IPAM.Driver` and `IPAM.Options`, which `redact_network_topology`
+also keeps. Legacy `plugins[].dns.options` and
+`plugins[].ipam.dns.options` control resolver behavior rather than naming
+internal resolvers or domains, so they are the only DNS subfields retained;
+`nameservers` and `search` are emptied, `domain` is redacted, and unknown DNS
+keys are removed at either nesting level. This matches the modern contract's
+selective treatment of `network_dns_servers`. And on container inspect,
+`HostConfig.Mounts`, `MaskedPaths` and `ReadonlyPaths` simply do not exist on
+the libpod shape — Podman folds every mount into `Binds` — so those rewrites
+have nothing to act on rather than being skipped.
+
+Network inspect is reached on two paths and returns two envelopes, and both
+halves of that are easy to miss. Podman registers `GET /libpod/networks/{id}`
+against the same handler as `GET /libpod/networks/{id}/json` but documents
+only the suffixed one, so redaction covers both spellings. And through v3.0.0
+the handler wrote its whole report slice, making the response `[{...}]`; from
+v3.1.0 onward it writes a bare object. Sockguard redacts either and re-emits
+the shape it was given, so the client's decoder sees what its own daemon
+sends.
+
+The object inside those envelopes also changed. Podman v2.2.1 through v3.4.4
+returns its raw lowercase CNI conflist on inspect. Its list report embeds
+`libcni.NetworkConfigList`, so that route instead exposes capitalized
+`Plugins` entries and base64 `Bytes` copies at both the list and plugin level.
+Podman v4.0 switches both routes to the modern network type. Sockguard detects
+the fields on the wire rather than trusting the requested version prefix, so
+an intermediary or compatibility server cannot make the wrong schema bypass
+redaction. A malformed plugin, interface name, IPAM topology field, range, or
+`Bytes` field fails closed.
 
 ## Version-Prefix Handling
 
@@ -289,6 +353,57 @@ land):
   instead of an enforced distinction.
 - Range-overlap analysis for `idmappings` — `allow_custom_id_mappings` is a
   blunt allow/deny gate for this release, not a range-aware check.
+- Response redaction for `GET /libpod/pods/{id}/json`. Pods have no
+  Docker-compat equivalent, so there is no existing handler to route the
+  path to, and `InspectPodData` is not a renamed container body:
+  it spells its bind-mount array as lowercase `mounts` and carries the infra
+  container's network configuration under `InfraConfig`. Under
+  `redact_mount_paths` or `redact_network_topology`, a pod inspect still
+  returns host bind-mount sources and the infra container's addresses. Owner
+  isolation and visibility policy do cover the path, so a caller only sees
+  its own pods; what is missing is the field-level rewrite inside a pod it
+  is entitled to inspect.
+- Response redaction for `GET /libpod/info`. Every field the `/info`
+  redactors rewrite is a Docker Engine field Podman does not have: there is
+  no `Swarm` object (Podman has no swarm) and none of the
+  `Containerd`/`FirewallBackend`/`DiscoveredDevices`/`NRI` keys
+  `redact_host_topology` covers. `libpod/define.Info` is a different document
+  with lowercase keys, so the body is passed through rather than run through
+  a rewrite that would match nothing.
+- Response redaction for `GET /libpod/containers/json`. There is nothing in
+  the body to redact: `ListContainer.Mounts` is a list of container-side
+  destination paths, not host sources, and the shape has no `NetworkSettings`
+  and no `HostConfig` at all. It is listed here because the Docker-compat
+  `GET /containers/json` **is** redacted, and the asymmetry is a property of
+  the two bodies rather than a gap.
+- Response redaction for `GET /libpod/system/df`. Podman's native disk-usage
+  report has no field for any redactor to act on and no label for any owner or
+  visibility selector to match, so it is refused with a `403` under isolation
+  rather than filtered — see the bullet in
+  [Ownership and Visibility Coverage](#ownership-and-visibility-coverage)
+  above. It is named here so the response-redaction picture is complete: this
+  is the one libpod read where the answer is a refusal instead of a rewrite,
+  and a deployment with neither owner isolation nor a visibility policy still
+  gets the unredacted report.
+- Response redaction and owner filtering for
+  `GET /libpod/containers/showmounted`. The handler walks
+  `runtime.GetAllContainers()` and answers with a bare
+  `{"<container id>": "<host mountpoint>"}` map, so it discloses host storage
+  paths *and* enumerates every container on the host in one body. Redacting the
+  values alone would leave the enumeration, which makes it the same problem
+  `GET /libpod/system/df` has and points at the same answer — a refusal decided
+  by the ownership and visibility layer, not a rewrite in the response filter.
+  Neither is wired today. The endpoint is not in `podman-readonly.yaml` and no
+  default rule admits it; a `GET /libpod/**` allow rule does.
+- Response redaction for `GET /libpod/images/{name}/json`. Image inspect
+  returns the image's own `Config.Env` and `GraphDriver.Data`'s host storage
+  paths, and neither is rewritten. This one is **not** a libpod-specific gap:
+  the Docker-compat `GET /images/{name}/json` carries the same two fields and
+  is not redacted either, so switching surfaces changes nothing. It is listed
+  here because `podman-readonly.yaml` allows both spellings and a reader would
+  otherwise reasonably expect `redact_container_env` and `redact_mount_paths`
+  to cover them. The list route `GET /libpod/images/json` is not affected —
+  `ImageSummary` has neither field.
 - Tecnativa-style env-var compatibility for the libpod surface — the
   existing `CONTAINERS=1`/`POST=0`-style compat env vars only ever generate
   rules against literal Docker-compat paths (`/containers/**`, and similar),
