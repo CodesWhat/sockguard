@@ -1,9 +1,11 @@
 package filter
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -696,6 +698,27 @@ func TestDockerContainerInspectorAcceptsResponseAtExactCap(t *testing.T) {
 	}
 }
 
+// TestReadBoundedResponseBodyReadsFullBodyAtExactCap covers
+// resource_limit_guard.go line 766's LimitReader bound directly: a response
+// body of exactly MaxResponseBodyBytes must be read in full, not truncated.
+// An ARITHMETIC_BASE mutant (+1 -> -1) would cap the LimitReader one byte
+// short of MaxResponseBodyBytes, silently truncating the last byte of every
+// response at (or over) the cap without ever returning an error — the prior
+// exact-cap test above doesn't catch this because its JSON payload sits at
+// the very start of the body, so a one-byte truncation of trailing padding
+// never changes the parsed result.
+func TestReadBoundedResponseBodyReadsFullBodyAtExactCap(t *testing.T) {
+	resp := dockerInspectResponse(http.StatusOK, strings.Repeat("x", MaxResponseBodyBytes))
+
+	body, err := readBoundedResponseBody(resp)
+	if err != nil {
+		t.Fatalf("readBoundedResponseBody() error = %v, want nil", err)
+	}
+	if len(body) != MaxResponseBodyBytes {
+		t.Fatalf("len(body) = %d, want exactly %d (must not silently truncate)", len(body), MaxResponseBodyBytes)
+	}
+}
+
 func TestResourceLimitGuardContainerInspectorNilFailsClosed(t *testing.T) {
 	out := runResourceGuardRequest(t, ResourceLimitGuardOptions{
 		PolicyConfig: PolicyConfig{ContainerUpdate: ContainerUpdateOptions{AllowResourceUpdates: true, RequireMemoryLimit: true}},
@@ -1207,4 +1230,80 @@ func FuzzResourceLimitGuardContainerRequestDecode(f *testing.F) {
 			t.Fatalf("unexpected status %d for body %q", out.status, body)
 		}
 	})
+}
+
+// TestResourceLimitGuardHardDenyLogsEncodeError covers respondHardDeny's
+// encode-error log (resource_limit_guard.go line 820): the error log must
+// fire when httpjson.Write fails, and only then. A CONDITIONALS_NEGATION
+// mutant on err != nil would invert this — never logging a genuine encode
+// failure, and always logging (with a nil error) on every successful write.
+func TestResourceLimitGuardHardDenyLogsEncodeError(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("should not reach inner handler for a hard-deny request")
+	})
+	handler := ResourceLimitGuardWithOptions(logger, ResourceLimitGuardOptions{
+		PolicyConfig: PolicyConfig{ContainerUpdate: ContainerUpdateOptions{AllowResourceUpdates: true, RequireMemoryLimit: true}},
+	})(next)
+
+	// An empty body hits the "a request body is required" hard-deny path
+	// (reasonCodeResourceLimitRequestInvalid) before any container inspect
+	// is attempted.
+	meta := &logging.RequestMeta{}
+	req := httptest.NewRequest(http.MethodPost, "/containers/legacy/update", strings.NewReader(""))
+	req = req.WithContext(logging.WithMeta(req.Context(), meta))
+	rec := &failingResponseWriter{}
+	handler.ServeHTTP(rec, req)
+
+	if rec.status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.status, http.StatusBadRequest)
+	}
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "failed to encode resource-limit denial response") {
+		t.Errorf("expected encode error log, got %q", logOutput)
+	}
+	if !strings.Contains(logOutput, errWriteFailed.Error()) {
+		t.Errorf("expected write error in log, got %q", logOutput)
+	}
+}
+
+// TestResourceLimitGuardPolicyDeniedLogsEncodeError covers
+// respondPolicyDenied's encode-error log (resource_limit_guard.go line
+// 805): same err != nil guard as respondHardDeny, but on the genuine
+// policy-violation (not pass-through) path.
+func TestResourceLimitGuardPolicyDeniedLogsEncodeError(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("should not reach inner handler for a policy-denied request")
+	})
+	handler := ResourceLimitGuardWithOptions(logger, ResourceLimitGuardOptions{
+		PolicyConfig: PolicyConfig{ContainerUpdate: ContainerUpdateOptions{AllowResourceUpdates: true, RequireMemoryLimit: true}},
+		InspectContainer: func(context.Context, string) (ContainerUpdateInspectResult, bool, error) {
+			return ContainerUpdateInspectResult{}, true, nil
+		},
+	})(next)
+
+	// Memory:0 cannot fabricate compliance against a weak (zero-value)
+	// current state, and RolloutMode is unset (enforce) so respondPolicyDenied
+	// takes the hard-deny-and-respond branch rather than pass-through.
+	meta := &logging.RequestMeta{}
+	req := httptest.NewRequest(http.MethodPost, "/containers/legacy/update", strings.NewReader(`{"Memory":0}`))
+	req = req.WithContext(logging.WithMeta(req.Context(), meta))
+	rec := &failingResponseWriter{}
+	handler.ServeHTTP(rec, req)
+
+	if rec.status != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.status, http.StatusForbidden)
+	}
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "failed to encode resource-limit denial response") {
+		t.Errorf("expected encode error log, got %q", logOutput)
+	}
+	if !strings.Contains(logOutput, errWriteFailed.Error()) {
+		t.Errorf("expected write error in log, got %q", logOutput)
+	}
 }

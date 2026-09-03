@@ -867,3 +867,102 @@ func mutationMiddlewareWithLogger(t *testing.T, logger *slog.Logger, opts Option
 	}
 	return MiddlewareWithOptions([]*CompiledRule{rule}, logger, opts)(next)
 }
+
+// TestMutationRuleKindString pins mutationRuleKind.String() for both enum
+// values. A CONDITIONALS_NEGATION mutant on k == mutationRuleRemapImage
+// (mutation.go line 109) would swap the two returned strings.
+func TestMutationRuleKindString(t *testing.T) {
+	if got := mutationRuleInjectLabels.String(); got != "inject_labels" {
+		t.Errorf("mutationRuleInjectLabels.String() = %q, want %q", got, "inject_labels")
+	}
+	if got := mutationRuleRemapImage.String(); got != "remap_image" {
+		t.Errorf("mutationRuleRemapImage.String() = %q, want %q", got, "remap_image")
+	}
+}
+
+// TestMutationAllWarnRulesStillCloneShadow covers mutation.go line 257: the
+// shadow-clone loop must trigger on any non-"enforce" rule, not only when
+// paired with an "enforce" rule. With a rule set that is entirely "warn"
+// (no "enforce" rule present at all), shadow must still be populated from
+// actual so the dry-run apply sees the real document and reports
+// would_apply — not a nil map silently reporting noop. A
+// CONDITIONALS_NEGATION mutant on rule.mode != "enforce" would never clone
+// shadow when no enforce rule exists, leaving every dry-run outcome pinned
+// to would_noop regardless of what the rule would actually do.
+func TestMutationAllWarnRulesStillCloneShadow(t *testing.T) {
+	const sourceImage = "registry.example.com/team/app:v1"
+	const targetImage = "registry.example.com/team/app:v2"
+
+	var auditBuf bytes.Buffer
+	auditLogger := logging.NewAuditLogger(&auditBuf)
+	opts := Options{Mutation: MutationOptions{Rules: []MutationRuleOptions{
+		{ID: "warn-only", Mode: "warn", Surfaces: []string{mutationSurfaceContainerCreate}, RemapImage: &ImageRemapMutationOptions{Match: "exact", From: sourceImage, To: targetImage}},
+	}}}
+
+	handler := logging.AuditLogMiddleware(auditLogger, logging.AuditOptions{})(
+		mutationMiddleware(t, opts, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})),
+	)
+
+	body := `{"Image":"` + sourceImage + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if err := auditLogger.Close(); err != nil {
+		t.Fatalf("audit logger Close: %v", err)
+	}
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rec.Code, rec.Body.String())
+	}
+
+	var event map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(auditBuf.Bytes()), &event); err != nil {
+		t.Fatalf("decode audit event: %v\n%s", err, auditBuf.String())
+	}
+	mutation, ok := event["mutation"].(map[string]any)
+	if !ok {
+		t.Fatalf("audit mutation = %#v, want object", event["mutation"])
+	}
+	if mutation["actual_changed"] != false {
+		t.Fatalf("mutation.actual_changed = %#v, want false (warn-only must never mutate the real document)", mutation["actual_changed"])
+	}
+	rules, ok := mutation["rules"].([]any)
+	if !ok || len(rules) != 1 {
+		t.Fatalf("mutation.rules = %#v, want one outcome", mutation["rules"])
+	}
+	got := rules[0].(map[string]any)["outcome"]
+	if got != mutationOutcomeWouldApply {
+		t.Fatalf("rules[0].outcome = %#v, want %q (shadow must be a live clone of actual, not nil)", got, mutationOutcomeWouldApply)
+	}
+}
+
+// TestMutationAuditOnlyRuleDoesNotMarkWarnEvaluated covers mutation.go line
+// 285: warnEvaluated must be set only by an actual "warn"-mode rule, not by
+// an "audit"-mode rule (the only two modes reachable at that point in the
+// loop). A CONDITIONALS_NEGATION mutant on rule.mode == "warn" would flip
+// this to only "audit" rules, spuriously forcing WARN-level access logging
+// for a purely audit-mode deployment that never asked for it.
+func TestMutationAuditOnlyRuleDoesNotMarkWarnEvaluated(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	opts := Options{Mutation: MutationOptions{Rules: []MutationRuleOptions{
+		{ID: "audit-only", Mode: "audit", Surfaces: []string{mutationSurfaceContainerCreate}, InjectLabels: &InjectLabelsMutationOptions{Labels: map[string]string{"foo": "bar"}}},
+	}}}
+
+	handler := logging.AccessLogMiddleware(logger)(
+		mutationMiddlewareWithLogger(t, logger, opts, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(`{"Image":"alpine"}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(logBuf.String(), `"level":"WARN"`) {
+		t.Fatalf("access log = %s, want no WARN level for an audit-only rule set", logBuf.String())
+	}
+}
