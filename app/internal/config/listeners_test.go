@@ -259,6 +259,22 @@ func TestValidateListenerSocketOwnershipIsPerEntry(t *testing.T) {
 	requireValidationContains(t, &invalidMode, "listeners[ci].socket_mode must be \"0600\" or \"0660\"")
 }
 
+// TestValidateListenerSocketOwnershipAllowsZeroUIDAndGID covers the exact
+// boundary of "must be >= 0": uid/gid 0 (root) is a legitimate, if unusual,
+// owner and must not itself trigger "socket_uid/socket_gid must be >= 0" —
+// only a strictly negative value may.
+func TestValidateListenerSocketOwnershipAllowsZeroUIDAndGID(t *testing.T) {
+	t.Parallel()
+
+	zero := 0
+	cfg := listenerTestConfig(unixListener("ci", "/run/ci.sock", "ci", "ops"))
+	cfg.Listeners[0].SocketUID = &zero
+	cfg.Listeners[0].SocketGID = &zero
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("Validate(uid=0, gid=0) = %v, want nil", err)
+	}
+}
+
 func TestValidatePlaintextAcknowledgementsArePerListener(t *testing.T) {
 	t.Parallel()
 
