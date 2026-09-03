@@ -82,6 +82,18 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	{method: http.MethodPost, path: "/libpod/exec/sockguard-test/start"},
 	{method: http.MethodPost, path: "/libpod/volumes/create"},
 	{method: http.MethodPost, path: "/libpod/networks/create"},
+	// Podman's native network connect/disconnect. Connect runs its own
+	// libpod handler and body shape; disconnect is registered straight onto
+	// the Docker-compat handler. Both go through request_body.libpod_network
+	// (filter.networkPolicy.inspectLibpod), the same config block that
+	// governs libpod network create.
+	{method: http.MethodPost, path: "/libpod/networks/sockguard-test/connect"},
+	{method: http.MethodPost, path: "/libpod/networks/sockguard-test/disconnect"},
+	// Podman's netavark-only network update, which rewrites an existing
+	// network's DNS resolvers. No Docker analog exists at any Engine API
+	// version. Gated by request_body.libpod_network.allow_dns_servers
+	// (filter.networkPolicy.inspectLibpodUpdate).
+	{method: http.MethodPost, path: "/libpod/networks/sockguard-test/update"},
 	{method: http.MethodPost, path: "/libpod/secrets/create"},
 	// Podman's native image pull, the libpod counterpart of
 	// POST /images/create. It runs through the SAME request_body.image_pull
@@ -581,7 +593,7 @@ func bodyInspectionConfiguredForEndpoint(requestBody config.RequestBodyConfig, e
 		// container_update's allow_* gates are enforced against libpod's own
 		// body and query shape by containerUpdatePolicy.inspectLibpod.
 		return true
-	case "/libpod/pods/create", "/libpod/volumes/create", "/libpod/networks/create", "/libpod/secrets/create", "/libpod/images/pull":
+	case "/libpod/pods/create", "/libpod/volumes/create", "/libpod/networks/create", "/libpod/networks/sockguard-test/connect", "/libpod/networks/sockguard-test/disconnect", "/libpod/networks/sockguard-test/update", "/libpod/secrets/create", "/libpod/images/pull":
 		// libpod_pod_create/libpod_volume/libpod_network/libpod_secret gates
 		// are all plain booleans/allowlists with real fail-closed defaults —
 		// none of them read insecure_allow_body_blind_writes the way exec
@@ -591,7 +603,14 @@ func bodyInspectionConfiguredForEndpoint(requestBody config.RequestBodyConfig, e
 		// joins them on the same terms: it reuses request_body.image_pull,
 		// whose allow_official-only default already denies a pull from any
 		// non-Docker-Hub-official registry, exactly as it does for the
-		// Docker-compat /images/create entry above.
+		// Docker-compat /images/create entry above. The libpod network
+		// connect/disconnect entries reuse request_body.libpod_network,
+		// whose allow_endpoint_config and allow_disconnect_force both
+		// default false, matching the Docker-compat /networks/*/connect and
+		// /networks/*/disconnect entries above. /libpod/networks/*/update
+		// joins them on the same terms via allow_dns_servers, also default
+		// false; it has no Docker-compat entry to match because the Engine
+		// API has no network-update route.
 		return true
 	// /libpod/play/kube, /libpod/kube/play, /libpod/kube/apply,
 	// /libpod/manifests/*, and /libpod/containers/*/restore deliberately have

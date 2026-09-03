@@ -32,8 +32,8 @@ const (
 const ownerVisibilityPodmanEventsDenyReason = "events denied: this upstream is Podman, whose GET /events filters labels disjunctively, so owner isolation and visibility label selectors cannot be enforced together"
 
 // maxOwnershipBodyBytes caps the request body the ownership middleware will
-// read when it mutates a container/network/volume create body or a build
-// query to inject the owner label. Docker's own create payloads are at most
+// read when it mutates a create body, extracts network-membership references,
+// or injects an owner label into a build query. Docker's own payloads are at most
 // a few KiB, so 1 MiB is generous while preventing an allowlisted client
 // from OOMing the proxy with an unbounded JSON body.
 const maxOwnershipBodyBytes = 1 << 20 // 1 MiB
@@ -184,14 +184,16 @@ func (o Options) normalized() Options {
 }
 
 // mutateOwnershipRequest injects the owner label and extracts every resource
-// identifier embedded in container/service create or update bodies during the
-// same bounded decode pass. Authorization must cover those identifiers as well
-// as the resource named by the URL; otherwise an owner-stamped workload could
-// still consume another owner's image, volume, network, secret, or config.
+// identifier embedded in container/service create or update and network
+// membership bodies during the same bounded decode pass. Authorization must
+// cover those identifiers as well as the resource named by the URL; otherwise
+// a permitted request could still consume or modify another owner's resource.
 func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ownershipRequestReferences, error) {
 	switch {
 	case r.Method == http.MethodPost && normPath == "/containers/create":
 		return mutateContainerCreateOwnershipBody(r, opts.LabelKey, opts.Owner)
+	case r.Method == http.MethodPost && isNetworkMembershipChangePath(normPath):
+		return extractNetworkMembershipOwnershipReferences(r)
 	case r.Method == http.MethodPost && (normPath == "/networks/create" || normPath == "/volumes/create" || normPath == "/secrets/create" || normPath == "/configs/create"):
 		return nil, addOwnerLabelToBody(r, opts.LabelKey, opts.Owner)
 	case r.Method == http.MethodPost && (normPath == "/services/create" || isServiceUpdatePath(normPath)):
@@ -220,6 +222,20 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 	default:
 		return nil, nil
 	}
+}
+
+func extractNetworkMembershipOwnershipReferences(r *http.Request) (*ownershipRequestReferences, error) {
+	refs := &ownershipRequestReferences{}
+	err := mutateJSONBody(r, func(decoded map[string]any) error {
+		for _, identifier := range filter.FoldedStrings(decoded, "Container") {
+			appendEmbeddedOwnershipReference(&refs.embeddedResources, dockerresource.KindContainer, identifier, "network membership Container")
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return refs, nil
 }
 
 // allowOwnershipRequest is allowOwnershipRequestUnprefixed with the "libpod "

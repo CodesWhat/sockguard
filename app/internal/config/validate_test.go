@@ -204,6 +204,76 @@ func TestValidateRejectsLiteralPercentInProfileRulePath(t *testing.T) {
 	}
 }
 
+// TestValidateRejectsVersionPrefixInRulePath pins GHSA-worthy behavior:
+// NormalizePath strips a leading API version prefix from the request path
+// before rule matching ever runs, so a match.path pattern that itself starts
+// with one can never match real traffic — widening stripVersionPrefix to
+// Podman's prerelease/build-suffix class (e.g. "-dev", "-rc1") made this
+// silent-dead-rule trap reachable through more spellings than Docker's bare
+// /vN/vN.N, so it must fail config validation rather than only warn.
+func TestValidateRejectsVersionPrefixInRulePath(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+	}{
+		{"docker vN.N prefix", "/v1.45/containers/json"},
+		{"podman prerelease semver prefix", "/v5.8.1-dev/libpod/x"},
+		{"bare vN prefix", "/v1/x"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Rules = append(cfg.Rules, RuleConfig{
+				Match:  MatchConfig{Method: "GET", Path: tt.path},
+				Action: "allow",
+			})
+
+			err := Validate(&cfg)
+			if err == nil || !strings.Contains(err.Error(), "begins with an API version prefix") {
+				t.Fatalf("Validate() = %v, want version-prefix rejection", err)
+			}
+			if !strings.Contains(err.Error(), tt.path) {
+				t.Fatalf("Validate() = %v, want the offending pattern %q in the error", err, tt.path)
+			}
+		})
+	}
+}
+
+// TestValidateAcceptsPathsThatOnlyLookVersioned pins the other side of
+// stripVersionPrefix's character class: a path that merely starts with "v"
+// or "/v" without a digit immediately after is not a version prefix at all,
+// so these must NOT be rejected.
+func TestValidateAcceptsPathsThatOnlyLookVersioned(t *testing.T) {
+	tests := []string{"/version", "/volumes", "/v/containers"}
+	for _, path := range tests {
+		t.Run(path, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Rules = append(cfg.Rules, RuleConfig{
+				Match:  MatchConfig{Method: "GET", Path: path},
+				Action: "allow",
+			})
+
+			if err := Validate(&cfg); err != nil {
+				t.Fatalf("Validate() = %v, want nil for non-versioned path %q", err, path)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsVersionPrefixInProfileRulePath(t *testing.T) {
+	cfg := Defaults()
+	cfg.Clients.Profiles = []ClientProfileConfig{
+		{Name: "ro", Rules: []RuleConfig{
+			{Match: MatchConfig{Method: "GET", Path: "/v1.45/images/json"}, Action: "allow"},
+		}},
+	}
+
+	err := Validate(&cfg)
+	if err == nil || !strings.Contains(err.Error(), "begins with an API version prefix") {
+		t.Fatalf("Validate() = %v, want version-prefix rejection for profile rule", err)
+	}
+}
+
 func TestValidateRejectsIncompleteMutualTLSConfig(t *testing.T) {
 	cfg := Defaults()
 	cfg.Listen.Address = ":2376"
