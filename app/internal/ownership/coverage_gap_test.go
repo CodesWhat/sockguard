@@ -192,6 +192,339 @@ func TestAllowOwnershipRequestExecError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// middleware.go: checkContainerNamespaceSharingRefs — strictest verdict
+// accumulation. A single owned (verdictAllow) ref must make the function
+// return verdictAllow rather than leaving strictest at its verdictPassThrough
+// zero value.
+// ---------------------------------------------------------------------------
+
+func TestCheckContainerNamespaceSharingRefsSingleOwnedRefReturnsAllow(t *testing.T) {
+	t.Parallel()
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+	fi := fakeInspector{
+		resources: map[string]map[string]inspectResult{
+			"containers": {
+				"target": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+			},
+		},
+	}
+
+	verdict, reason, err := checkContainerNamespaceSharingRefs(context.Background(), fi.inspectResource, []string{"target"}, opts)
+	if err != nil {
+		t.Fatalf("checkContainerNamespaceSharingRefs() error = %v", err)
+	}
+	if verdict != verdictAllow {
+		t.Fatalf("checkContainerNamespaceSharingRefs() verdict = %v, want verdictAllow", verdict)
+	}
+	if reason != "" {
+		t.Fatalf("checkContainerNamespaceSharingRefs() reason = %q, want empty", reason)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// middleware.go: allowOwnershipRequestUnprefixed — namespace-sharing and
+// embedded-reference verdicts must actually flow into the combined result,
+// not just gate on error/deny. Each test isolates one accumulation step by
+// forcing every other step to verdictPassThrough (an empty ref list, or a
+// normPath allowPathOwnershipRequest does not recognize).
+// ---------------------------------------------------------------------------
+
+// TestAllowOwnershipRequestUnprefixedNamespaceSharingAllowPropagates covers
+// the "if verdict == verdictAllow { strictest = verdictAllow }" step inside
+// the namespace-sharing block: with embeddedResources empty and a normPath
+// (POST /containers/create) that allowPathOwnershipRequest always treats as
+// passthrough, the final verdict can only be verdictAllow if the namespace
+// block's own verdictAllow was captured into strictest.
+func TestAllowOwnershipRequestUnprefixedNamespaceSharingAllowPropagates(t *testing.T) {
+	t.Parallel()
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+	fi := fakeInspector{
+		resources: map[string]map[string]inspectResult{
+			"containers": {
+				"target": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+			},
+		},
+	}
+	refs := &ownershipRequestReferences{namespaceContainers: []string{"target"}}
+
+	verdict, _, err := allowOwnershipRequestUnprefixed(context.Background(), http.MethodPost, "/containers/create", opts, fi.inspectResource, fi.inspectExec, refs)
+	if err != nil {
+		t.Fatalf("allowOwnershipRequestUnprefixed() error = %v", err)
+	}
+	if verdict != verdictAllow {
+		t.Fatalf("allowOwnershipRequestUnprefixed() verdict = %v, want verdictAllow (namespace-sharing allow must propagate to the combined verdict)", verdict)
+	}
+}
+
+// TestAllowOwnershipRequestUnprefixedEmbeddedAllowPropagates covers the
+// equivalent accumulation step for refs.embeddedResources, with
+// namespaceContainers left empty so only the embedded-reference block can
+// have set strictest.
+func TestAllowOwnershipRequestUnprefixedEmbeddedAllowPropagates(t *testing.T) {
+	t.Parallel()
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+	fi := fakeInspector{
+		resources: map[string]map[string]inspectResult{
+			"images": {
+				"registry.example/owned/app:latest": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+			},
+		},
+	}
+	refs := &ownershipRequestReferences{
+		embeddedResources: []embeddedOwnershipReference{
+			{kind: dockerresource.KindImage, identifier: "registry.example/owned/app:latest", source: "Image"},
+		},
+	}
+
+	verdict, _, err := allowOwnershipRequestUnprefixed(context.Background(), http.MethodPost, "/containers/create", opts, fi.inspectResource, fi.inspectExec, refs)
+	if err != nil {
+		t.Fatalf("allowOwnershipRequestUnprefixed() error = %v", err)
+	}
+	if verdict != verdictAllow {
+		t.Fatalf("allowOwnershipRequestUnprefixed() verdict = %v, want verdictAllow (embedded-reference allow must propagate to the combined verdict)", verdict)
+	}
+}
+
+// TestAllowOwnershipRequestUnprefixedPathCheckNotBypassedByEmbeddedAllow
+// pins the ordering the "err != nil || verdict == verdictDeny" short-circuit
+// after the embedded-reference check depends on: a verdictAllow from an
+// embedded reference must NOT return early. If it did, the path-level
+// ownership check below it — which is what actually protects the resource
+// the URL names — would never run, and a cross-owner container action could
+// be smuggled past ownership by attaching an unrelated owned image
+// reference. Here the embedded image is owned, but the target container in
+// the URL belongs to another owner, so the path check must still deny.
+func TestAllowOwnershipRequestUnprefixedPathCheckNotBypassedByEmbeddedAllow(t *testing.T) {
+	t.Parallel()
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+	fi := fakeInspector{
+		resources: map[string]map[string]inspectResult{
+			"images": {
+				"registry.example/owned/app:latest": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+			},
+			"containers": {
+				"other-owners-container": {labels: map[string]string{"com.sockguard.owner": "job-999"}, found: true},
+			},
+		},
+	}
+	refs := &ownershipRequestReferences{
+		embeddedResources: []embeddedOwnershipReference{
+			{kind: dockerresource.KindImage, identifier: "registry.example/owned/app:latest", source: "Image"},
+		},
+	}
+
+	verdict, reason, err := allowOwnershipRequestUnprefixed(context.Background(), http.MethodPost, "/containers/other-owners-container/start", opts, fi.inspectResource, fi.inspectExec, refs)
+	if err != nil {
+		t.Fatalf("allowOwnershipRequestUnprefixed() error = %v", err)
+	}
+	if verdict != verdictDeny {
+		t.Fatalf("allowOwnershipRequestUnprefixed() verdict = %v, want verdictDeny (an owned embedded reference must not bypass the URL target's own ownership check)", verdict)
+	}
+	if !strings.Contains(reason, "container") {
+		t.Fatalf("allowOwnershipRequestUnprefixed() reason = %q, want it naming the denied container", reason)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// middleware.go: mutateJSONBody — request-body size boundary. A body of
+// exactly maxOwnershipBodyBytes must succeed; only strictly more must be
+// rejected (the ">" in "int64(len(body)) > maxOwnershipBodyBytes" is not a
+// ">=").
+// ---------------------------------------------------------------------------
+
+func TestMutateJSONBodyAcceptsExactlyMaxSizedBody(t *testing.T) {
+	t.Parallel()
+	const prefix, suffix = `{"pad":"`, `"}`
+	padding := maxOwnershipBodyBytes - len(prefix) - len(suffix)
+	body := prefix + strings.Repeat("x", padding) + suffix
+	if len(body) != maxOwnershipBodyBytes {
+		t.Fatalf("constructed body length = %d, want %d", len(body), maxOwnershipBodyBytes)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(body))
+
+	mutated := false
+	err := mutateJSONBody(req, func(map[string]any) error {
+		mutated = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("mutateJSONBody() error = %v, want nil for an at-limit body", err)
+	}
+	if !mutated {
+		t.Fatal("mutate callback not invoked for an at-limit body")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// paths.go: needsOwnerFilter — GET/HEAD boundary
+// ---------------------------------------------------------------------------
+
+// needsOwnerFilter's read-side branch guards on "method != GET && method !=
+// HEAD", so a HEAD request must be treated the same as GET. Only asserting
+// with GET leaves the "method != HEAD" comparison free to flip without any
+// test noticing.
+func TestNeedsOwnerFilterHeadMethodMatchesGet(t *testing.T) {
+	t.Parallel()
+	if !needsOwnerFilter(http.MethodHead, "/containers/json") {
+		t.Fatal("needsOwnerFilter(HEAD, /containers/json) = false, want true")
+	}
+	if needsOwnerFilter(http.MethodDelete, "/containers/json") {
+		t.Fatal("needsOwnerFilter(DELETE, /containers/json) = true, want false")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// paths.go: containerIdentifier/networkIdentifier/volumeIdentifier —
+// collection-keyword exclusion boundaries. Mirrors the libpod counterpart
+// tables in libpod_test.go: each row isolates one method/keyword comparison
+// in the exclusion clause so flipping any single == to != in it changes the
+// expected outcome of at least one row.
+// ---------------------------------------------------------------------------
+
+func TestContainerIdentifierCollectionKeywordBoundaries(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		method     string
+		identifier string
+		wantOK     bool
+	}{
+		{http.MethodGet, "json", false},
+		{http.MethodHead, "json", false},
+		{http.MethodPost, "create", false},
+		{http.MethodPost, "prune", false},
+		{http.MethodDelete, "json", true},
+		{http.MethodGet, "create", true},
+		{http.MethodGet, "prune", true},
+		{http.MethodGet, "other", true},
+		{http.MethodHead, "create", true},
+		{http.MethodPost, "json", true},
+		{http.MethodPost, "other", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method+"_"+tt.identifier, func(t *testing.T) {
+			t.Parallel()
+			got, ok := containerIdentifier(tt.method, "/containers/"+tt.identifier)
+			if ok != tt.wantOK {
+				t.Fatalf("containerIdentifier(%s, .../%s) ok = %v, want %v", tt.method, tt.identifier, ok, tt.wantOK)
+			}
+			if ok && got != tt.identifier {
+				t.Fatalf("containerIdentifier(%s, .../%s) = %q, want %q", tt.method, tt.identifier, got, tt.identifier)
+			}
+		})
+	}
+}
+
+func TestNetworkIdentifierCollectionKeywordBoundaries(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		method     string
+		identifier string
+		wantOK     bool
+	}{
+		{http.MethodPost, "create", false},
+		{http.MethodPost, "prune", false},
+		{http.MethodGet, "create", true},
+		{http.MethodGet, "prune", true},
+		{http.MethodPost, "other", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method+"_"+tt.identifier, func(t *testing.T) {
+			t.Parallel()
+			got, ok := networkIdentifier(tt.method, "/networks/"+tt.identifier)
+			if ok != tt.wantOK {
+				t.Fatalf("networkIdentifier(%s, .../%s) ok = %v, want %v", tt.method, tt.identifier, ok, tt.wantOK)
+			}
+			if ok && got != tt.identifier {
+				t.Fatalf("networkIdentifier(%s, .../%s) = %q, want %q", tt.method, tt.identifier, got, tt.identifier)
+			}
+		})
+	}
+}
+
+func TestVolumeIdentifierCollectionKeywordBoundaries(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		method     string
+		identifier string
+		wantOK     bool
+	}{
+		{http.MethodPost, "create", false},
+		{http.MethodPost, "prune", false},
+		{http.MethodGet, "create", true},
+		{http.MethodGet, "prune", true},
+		{http.MethodPost, "other", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method+"_"+tt.identifier, func(t *testing.T) {
+			t.Parallel()
+			got, ok := volumeIdentifier(tt.method, "/volumes/"+tt.identifier)
+			if ok != tt.wantOK {
+				t.Fatalf("volumeIdentifier(%s, .../%s) ok = %v, want %v", tt.method, tt.identifier, ok, tt.wantOK)
+			}
+			if ok && got != tt.identifier {
+				t.Fatalf("volumeIdentifier(%s, .../%s) = %q, want %q", tt.method, tt.identifier, got, tt.identifier)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// paths.go: imageIdentifier — GET and POST collection-keyword boundaries.
+// The two method branches are independent switch-like clauses, so each gets
+// its own table isolating "rest == <keyword>" comparisons.
+// ---------------------------------------------------------------------------
+
+func TestImageIdentifierGetCollectionKeywordBoundaries(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		rest   string
+		wantOK bool
+	}{
+		{"json", false},
+		{"search", false},
+		{"get", false},
+		{"other", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.rest, func(t *testing.T) {
+			t.Parallel()
+			got, ok := imageIdentifier(http.MethodGet, "/images/"+tt.rest)
+			if ok != tt.wantOK {
+				t.Fatalf("imageIdentifier(GET, .../%s) ok = %v, want %v", tt.rest, ok, tt.wantOK)
+			}
+			if ok && got != tt.rest {
+				t.Fatalf("imageIdentifier(GET, .../%s) = %q, want %q", tt.rest, got, tt.rest)
+			}
+		})
+	}
+}
+
+func TestImageIdentifierPostCollectionKeywordBoundaries(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		rest   string
+		wantOK bool
+	}{
+		{"create", false},
+		{"load", false},
+		{"prune", false},
+		{"other", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.rest, func(t *testing.T) {
+			t.Parallel()
+			got, ok := imageIdentifier(http.MethodPost, "/images/"+tt.rest)
+			if ok != tt.wantOK {
+				t.Fatalf("imageIdentifier(POST, .../%s) ok = %v, want %v", tt.rest, ok, tt.wantOK)
+			}
+			if ok && got != tt.rest {
+				t.Fatalf("imageIdentifier(POST, .../%s) = %q, want %q", tt.rest, got, tt.rest)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // paths.go: taskIdentifier — empty identifier
 // ---------------------------------------------------------------------------
 

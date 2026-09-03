@@ -1642,3 +1642,42 @@ func TestNewHTTPExecInspectorBoundsResponseBody(t *testing.T) {
 type execRoundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f execRoundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// TestExecEnvDenyReasonAllowedEnvValuesAloneGatesFiltering covers
+// exec.go's envDenyReason short-circuit (line 352): with AllowedEnvVars and
+// DeniedEnvVars both unset but AllowedEnvValues configured, the third
+// zero-check clause must be false (non-empty), so the early "" return does
+// NOT fire and per-value filtering actually runs. A mutant that negates the
+// third == 0 comparison would make the early return fire whenever
+// AllowedEnvValues is non-empty, unconditionally bypassing the value pin.
+func TestExecEnvDenyReasonAllowedEnvValuesAloneGatesFiltering(t *testing.T) {
+	policy := newExecPolicy(ExecOptions{
+		AllowedCommands:  [][]string{{"/bin/sh"}},
+		AllowRootUser:    true,
+		AllowedEnvValues: []string{"FOO=bar"},
+	})
+
+	reason := policy.denyReason(ExecInspectResult{Command: []string{"/bin/sh"}, Env: []string{"FOO=baz"}})
+	if !strings.Contains(reason, "disallowed value") {
+		t.Fatalf("denyReason() = %q, want a disallowed-value denial (AllowedEnvValues must still gate when the other two lists are empty)", reason)
+	}
+}
+
+// TestExecEnvDenyReasonAllowedEnvVarsEmptyDoesNotDenyEverything covers
+// exec.go's allowedEnvVars gate (line 360): len(p.allowedEnvVars) > 0 must
+// stay false when the allowlist is unset, so the "not allowlisted" branch is
+// skipped entirely and only DeniedEnvVars applies. A boundary mutant
+// (> 0 -> >= 0) would make this always true, denying every Env entry as
+// "not allowlisted" the moment any other list is configured.
+func TestExecEnvDenyReasonAllowedEnvVarsEmptyDoesNotDenyEverything(t *testing.T) {
+	policy := newExecPolicy(ExecOptions{
+		AllowedCommands: [][]string{{"/bin/sh"}},
+		AllowRootUser:   true,
+		DeniedEnvVars:   []string{"SOME_OTHER_VAR"},
+	})
+
+	reason := policy.denyReason(ExecInspectResult{Command: []string{"/bin/sh"}, Env: []string{"PATH=/usr/bin"}})
+	if reason != "" {
+		t.Fatalf("denyReason() = %q, want empty (AllowedEnvVars unset must not deny every entry)", reason)
+	}
+}

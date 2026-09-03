@@ -18,8 +18,11 @@ admin:
   max_request_bytes: 524288            # 512 KiB hard cap on validate request bodies
 ```
 
-Both endpoints share the `admin.enabled` gate. When disabled, any request to
-either path returns `404`.
+Both endpoints share the `admin.enabled` gate. When disabled, Sockguard never
+wires the admin layers into the handler chain, so a request to either path
+falls through to the normal rule evaluator and is denied per the active
+policy — `403` default-deny (`no_matching_allow_rule`) unless some other rule
+happens to match the path first.
 
 ## Dedicated admin listener (recommended)
 

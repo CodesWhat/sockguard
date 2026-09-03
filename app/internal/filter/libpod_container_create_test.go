@@ -305,12 +305,45 @@ func TestSplitLibpodDevicePath(t *testing.T) {
 		{"/dev/null:/dev/xnull:rwm", "/dev/null", true},
 		{"/dev/fuse", "/dev/fuse", true},
 		{"", "", false},
+		// A leading ':' puts the separator at index 0 — the
+		// idx >= 0 boundary in splitLibpodDevicePath (idx must include
+		// zero, not just strictly-positive indices) must still split, not
+		// fall through to treating the whole raw string as an unsplit
+		// single-argument host path.
+		{":leading", "", true},
 	}
 	for _, tt := range tests {
 		host, ok := splitLibpodDevicePath(tt.raw)
 		if host != tt.wantHost || ok != tt.wantOK {
 			t.Errorf("splitLibpodDevicePath(%q) = (%q, %v), want (%q, %v)", tt.raw, host, ok, tt.wantHost, tt.wantOK)
 		}
+	}
+}
+
+// TestLibpodNamespaceContainerRef covers libpodNamespace.containerRef
+// (libpod_container_create_types.go line 84), including its ref == ""
+// boundary at line 89: a "container:" nsmode with an empty or
+// whitespace-only value must report ok=false, not a spurious ref.
+func TestLibpodNamespaceContainerRef(t *testing.T) {
+	tests := []struct {
+		name    string
+		ns      libpodNamespace
+		wantRef string
+		wantOK  bool
+	}{
+		{name: "joins another container", ns: libpodNamespace{NSMode: "container", Value: "abc123"}, wantRef: "abc123", wantOK: true},
+		{name: "trims surrounding whitespace", ns: libpodNamespace{NSMode: "container", Value: "  abc123  "}, wantRef: "abc123", wantOK: true},
+		{name: "empty value is not a ref", ns: libpodNamespace{NSMode: "container", Value: ""}, wantRef: "", wantOK: false},
+		{name: "whitespace-only value is not a ref", ns: libpodNamespace{NSMode: "container", Value: "   "}, wantRef: "", wantOK: false},
+		{name: "non-container nsmode is never a ref", ns: libpodNamespace{NSMode: "host", Value: "abc123"}, wantRef: "", wantOK: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ref, ok := tt.ns.containerRef()
+			if ref != tt.wantRef || ok != tt.wantOK {
+				t.Errorf("containerRef() = (%q, %v), want (%q, %v)", ref, ok, tt.wantRef, tt.wantOK)
+			}
+		})
 	}
 }
 

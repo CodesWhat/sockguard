@@ -665,6 +665,113 @@ func TestBucket_CASStress(t *testing.T) {
 	}
 }
 
+// The denial-path retryAfter must be computed from the deficit (cost minus
+// remaining tokens), not their sum. With tokens still present the two only
+// coincide when tokens == 0, which the existing zero-token tests exercise;
+// this drains to a nonzero remainder so a swapped operator is observable.
+func TestBucket_AllowN_RetryAfterUsesDeficitNotSum(t *testing.T) {
+	t.Parallel()
+	clk := newFixedClock(time.Unix(0, 0))
+	b := newBucket(1, 10, clk.Now) // 1 token/s, burst 10
+
+	// Drain to exactly 3 tokens remaining (burst=10, minus 7 cost-1 withdrawals).
+	for i := range 7 {
+		ok, _ := b.Allow()
+		if !ok {
+			t.Fatalf("setup withdrawal %d should succeed within burst", i+1)
+		}
+	}
+
+	// Request cost=5 against 3 remaining tokens: deficit=5-3=2 → retryAfter=2.
+	// A mutant that sums instead of subtracts would compute 5+3=8.
+	ok, retryAfter := b.AllowN(5)
+	if ok {
+		t.Fatal("expected AllowN(5) = false with only 3 tokens remaining")
+	}
+	if retryAfter != 2 {
+		t.Fatalf("expected retryAfter = 2 (deficit = cost(5) - remaining(3)), got %d", retryAfter)
+	}
+}
+
+// Idle exactly equal to the TTL must NOT be evicted — only idle strictly
+// greater than TTL is. Mirrors the AuditSampler eviction boundary test below.
+func TestLimiter_EvictBoundary_ExactlyAtTTLIsNotEvicted(t *testing.T) {
+	t.Parallel()
+	clk := newFixedClock(time.Unix(0, 0))
+	l := newLimiterWithClock(10, 10, clk.Now)
+	defer l.Stop()
+
+	l.Allow("alice") //nolint:errcheck
+
+	const ttl = 10 * time.Minute
+	clk.Advance(ttl) // idleSince == ttl exactly
+	l.evict(ttl)
+
+	if _, exists := l.buckets.Load("alice"); !exists {
+		t.Fatal("bucket idle for exactly ttl should survive; only idle > ttl is evicted")
+	}
+}
+
+// The suppression window must compare elapsed time (nowNs - prev), not their
+// sum. Starting the clock at a large, non-zero timestamp makes prev huge, so
+// a mutant that adds instead of subtracts blows past the window immediately
+// regardless of how little time actually elapsed.
+func TestAuditSampler_WindowUsesElapsedDeltaNotSum(t *testing.T) {
+	t.Parallel()
+	clk := newFixedClock(time.Unix(1_000_000, 0))
+	s, stop := newAuditSamplerWithClock(clk.Now)
+	defer stop()
+
+	s.ShouldEmit("alice", ReasonRateLimit) // stores prev = t0 (a large, non-zero ns value)
+
+	clk.Advance(500 * time.Millisecond) // well within the 1s window
+	if s.ShouldEmit("alice", ReasonRateLimit) {
+		t.Fatal("emit 500ms after a non-zero prev timestamp should still be suppressed (elapsed < window)")
+	}
+}
+
+// evict's cutoff must be now MINUS ttl (a point in the past), not now PLUS
+// ttl. A entry idle far less than the TTL must survive; a mutant that adds
+// ttl instead of subtracting it pushes the cutoff into the future, which
+// would evict everything unconditionally.
+func TestAuditSampler_EvictionBoundary_FreshEntrySurvives(t *testing.T) {
+	t.Parallel()
+	clk := newFixedClock(time.Unix(0, 0))
+	s, stop := newAuditSamplerWithClock(clk.Now)
+	defer stop()
+
+	s.ShouldEmit("alice", ReasonRateLimit)
+	key := clientReasonKey{clientID: "alice", reason: ReasonRateLimit}
+
+	clk.Advance(10 * time.Second) // idle 10s against a 60s TTL
+	s.evict(60 * time.Second)
+
+	if _, ok := s.lastHit.Load(key); !ok {
+		t.Fatal("entry idle well under the eviction TTL must survive evict")
+	}
+}
+
+// Idle exactly equal to the TTL must NOT be evicted — evict's comparison is
+// strictly-less-than the cutoff, so an entry idle for exactly ttl (timestamp
+// == cutoffNs) survives. Only idle strictly greater than ttl is evicted.
+func TestAuditSampler_EvictionBoundary_ExactlyAtTTLSurvives(t *testing.T) {
+	t.Parallel()
+	clk := newFixedClock(time.Unix(0, 0))
+	s, stop := newAuditSamplerWithClock(clk.Now)
+	defer stop()
+
+	s.ShouldEmit("alice", ReasonRateLimit) // ts = t0
+	key := clientReasonKey{clientID: "alice", reason: ReasonRateLimit}
+
+	const ttl = 60 * time.Second
+	clk.Advance(ttl) // idle == ttl exactly → cutoffNs == t0 exactly
+	s.evict(ttl)
+
+	if _, ok := s.lastHit.Load(key); !ok {
+		t.Fatal("entry idle for exactly ttl should survive; only idle > ttl is evicted")
+	}
+}
+
 // TestAuditSampler_Race verifies the sampler is safe under concurrent access.
 func TestAuditSampler_Race(t *testing.T) {
 	t.Parallel()
