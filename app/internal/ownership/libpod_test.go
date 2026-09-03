@@ -562,7 +562,6 @@ func TestMiddlewareLibpodListInjectsOwnerFilter(t *testing.T) {
 		"/libpod/pods/json",
 		"/libpod/networks/json",
 		"/libpod/volumes/json",
-		"/libpod/secrets/json",
 	}
 	for _, path := range paths {
 		t.Run(path, func(t *testing.T) {

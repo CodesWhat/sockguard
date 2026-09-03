@@ -130,6 +130,16 @@ func TestServePolicyConfigWiresInsecureAllowBodyBlindWrites(t *testing.T) {
 	}
 }
 
+func TestServeFilterOptionsWiresGlobalReadExfiltrationAcknowledgment(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.InsecureAllowReadExfiltration = true
+
+	opts := serveFilterOptions(&cfg, nil, nil)
+	if !opts.AllowReadExfiltration {
+		t.Fatal("serveFilterOptions did not carry insecure_allow_read_exfiltration into request-time enforcement")
+	}
+}
+
 func TestServePolicyConfigHonorsBlindWriteOptInForExec(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Upstream.Socket = "/tmp/docker.sock"

@@ -34,16 +34,6 @@ const SystemDataUsagePath = "/system/df"
 // normalizes here too.
 const LibpodSystemDataUsagePath = LibpodPathPrefix + SystemDataUsagePath
 
-// LibpodShowMountedPath is the normalized path of Podman's native collection
-// endpoint that returns every mounted container ID and daemon-host mount path.
-const LibpodShowMountedPath = "/libpod/containers/showmounted"
-
-// LibpodShowMountedDenyReason is shared by ownership and visibility when they
-// refuse an inventory whose entries carry no labels or names those policies
-// can use to scope the response safely.
-const LibpodShowMountedDenyReason = "libpod mounted-container inventory denied: " +
-	"/libpod/containers/showmounted returns every mounted container ID and daemon-host mount path, so it cannot be scoped to one caller"
-
 // LibpodSystemDataUsageDenyReason is the operator-facing reason the ownership
 // and visibility middlewares report when they refuse GET /libpod/system/df.
 // Both share this string so the two layers cannot drift into explaining the
@@ -383,8 +373,7 @@ func filterSystemDataUsageArray(raw json.RawMessage, label string, keepItem func
 // reason.
 func marshalJSONPreservingEscapes(value any) (json.RawMessage, error) {
 	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
+	enc := newJSONEncoder(&buf)
 	if err := enc.Encode(value); err != nil {
 		return nil, err
 	}

@@ -69,9 +69,9 @@ func (p buildPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath str
 	}
 
 	query := r.URL.Query()
-	if normalizedPath == "/libpod/build" {
+	if isLibpodBuildPath(normalizedPath) {
 		query = foldQueryKeys(query)
-		if denyReason := p.inspectLibpodBuildControls(r, query); denyReason != "" {
+		if denyReason := p.inspectLibpodBuildControls(r, normalizedPath, query); denyReason != "" {
 			return denyReason, nil
 		}
 	}
@@ -160,7 +160,20 @@ type legacyPodmanAdditionalBuildContext struct {
 	DownloadedCache string
 }
 
-func (p buildPolicy) inspectLibpodBuildControls(r *http.Request, query url.Values) string {
+func (p buildPolicy) inspectLibpodBuildControls(r *http.Request, normalizedPath string, query url.Values) string {
+	// POST /libpod/local/build names its build context with a daemon-host
+	// path (`localcontextdir`) instead of shipping a tar, so every
+	// body-derived control further down inspect() — the RUN-instruction
+	// scan, the BuildKit syntax-frontend check, the byte caps — has nothing
+	// to read and would fall through to inspect()'s empty-body allow. That
+	// is the same "can expose host paths, cannot be inspected" shape as the
+	// localpath: additional context and the host volume mounts gated below,
+	// so it takes the same acknowledgment rather than being silently
+	// forwarded as an inspected build.
+	if isLibpodLocalBuildPath(normalizedPath) && !p.allowBlindWrites {
+		return "build denied: Podman local build context reads a daemon-host path and requires insecure_allow_body_blind_writes"
+	}
+
 	requiresRemoteContext, requiresBlindWrites, malformed := classifyPodmanAdditionalBuildContexts(query["additionalbuildcontexts"])
 	if malformed != "" {
 		return "build denied: malformed additional build context: " + malformed

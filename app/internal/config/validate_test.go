@@ -204,6 +204,84 @@ func TestValidateRejectsLiteralPercentInProfileRulePath(t *testing.T) {
 	}
 }
 
+func TestValidateAllowsEscapedLibpodImageScpPostRule(t *testing.T) {
+	paths := []string{
+		"/libpod/images/scp/alpine%20",
+		"/libpod/images/scp/foreign%2Fpush",
+		"/libpod/images/scp/foreign%20/push/",
+	}
+	for _, path := range paths {
+		for _, profile := range []bool{false, true} {
+			name := "default policy"
+			if profile {
+				name = "named profile"
+			}
+			t.Run(path+"/"+name, func(t *testing.T) {
+				cfg := Defaults()
+				rule := RuleConfig{
+					Match:  MatchConfig{Method: "POST", Path: path},
+					Action: "allow",
+				}
+				if profile {
+					cfg.Clients.Profiles = []ClientProfileConfig{{Name: "transfer", Rules: []RuleConfig{rule}}}
+				} else {
+					cfg.Rules = append(cfg.Rules, rule)
+				}
+
+				if err := Validate(&cfg); err != nil {
+					t.Fatalf("Validate() error = %v, want escaped libpod image-SCP route rule accepted", err)
+				}
+			})
+		}
+	}
+}
+
+func TestValidateRejectsInvalidEscapedLibpodImageScpRules(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{name: "wrong method", method: "GET", path: "/libpod/images/scp/alpine%20"},
+		{name: "wildcard method", method: "*", path: "/libpod/images/scp/alpine%20"},
+		{name: "mixed methods", method: "POST,GET", path: "/libpod/images/scp/alpine%20"},
+		{name: "mixed methods with whitespace", method: "GET, POST", path: "/libpod/images/scp/alpine%20"},
+		{name: "wrong route", method: "POST", path: "/libpod/images/alpine%20/push"},
+		{name: "malformed escape", method: "POST", path: "/libpod/images/scp/alpine%2"},
+		{name: "single star glob", method: "POST", path: "/libpod/images/scp/alpine%20*"},
+		{name: "double star glob", method: "POST", path: "/libpod/images/scp/alpine%20/**"},
+		{name: "push action suffix", method: "POST", path: "/libpod/images/scp/alpine%20/push"},
+		{name: "tag action suffix", method: "POST", path: "/libpod/images/scp/alpine%20/tag"},
+		{name: "untag action suffix", method: "POST", path: "/libpod/images/scp/alpine%20/untag"},
+	}
+
+	for _, tt := range tests {
+		for _, profile := range []bool{false, true} {
+			name := "default policy"
+			if profile {
+				name = "named profile"
+			}
+			t.Run(tt.name+"/"+name, func(t *testing.T) {
+				cfg := Defaults()
+				rule := RuleConfig{
+					Match:  MatchConfig{Method: tt.method, Path: tt.path},
+					Action: "allow",
+				}
+				if profile {
+					cfg.Clients.Profiles = []ClientProfileConfig{{Name: "transfer", Rules: []RuleConfig{rule}}}
+				} else {
+					cfg.Rules = append(cfg.Rules, rule)
+				}
+
+				err := Validate(&cfg)
+				if err == nil || !strings.Contains(err.Error(), "literal '%'") {
+					t.Fatalf("Validate() = %v, want literal-percent rejection", err)
+				}
+			})
+		}
+	}
+}
+
 // TestValidateRejectsVersionPrefixInRulePath pins GHSA-worthy behavior:
 // NormalizePath strips a leading API version prefix from the request path
 // before rule matching ever runs, so a match.path pattern that itself starts

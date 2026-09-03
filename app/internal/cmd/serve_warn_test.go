@@ -127,6 +127,11 @@ func TestWarnReadExfiltrationOnce(t *testing.T) {
 	if got := strings.Count(buf.String(), marker); got != 1 {
 		t.Fatalf("warning count after first enabled build = %d, want 1; log: %q", got, buf.String())
 	}
+	for _, want := range []string{"process-list", "process arguments"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Fatalf("warning does not describe %q exposure; log: %q", want, buf.String())
+		}
+	}
 	// The warning names what the acknowledgment is currently buying, sourced
 	// from the same probe the startup validator uses for its refusal message.
 	for _, want := range []string{
@@ -208,6 +213,97 @@ func TestWarnReadExfiltrationOnce(t *testing.T) {
 	}
 }
 
+func TestWarnReadExfiltrationRetainsShadowedTopLevelRoute(t *testing.T) {
+	t.Parallel()
+
+	configured := []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/sockguard-test/push"}, Action: "deny"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/team/**"}, Action: "allow"},
+	}
+	rules, err := compileConfiguredRules(configured)
+	if err != nil {
+		t.Fatalf("compileConfiguredRules: %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.InsecureAllowReadExfiltration = true
+	cfg.Rules = configured
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	var once sync.Once
+	warnReadExfiltrationOnce(&cfg, rules, nil, logger, &once)
+
+	if !strings.Contains(buf.String(), "POST /libpod/images/team/push") {
+		t.Fatalf("warning lost reachable push route behind a denied representative; log: %q", buf.String())
+	}
+}
+
+func TestWarnReadExfiltrationRetainsShadowedProfileRoute(t *testing.T) {
+	t.Parallel()
+
+	configured := []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/sockguard-test/push"}, Action: "deny"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "*/images/team/*/push"}, Action: "allow"},
+	}
+	rules, err := compileConfiguredRules(configured)
+	if err != nil {
+		t.Fatalf("compileConfiguredRules: %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.InsecureAllowReadExfiltration = true
+	cfg.Clients.Profiles = []config.ClientProfileConfig{{Name: "publisher", Rules: configured}}
+	profiles := map[string]filter.Policy{"publisher": {Rules: rules}}
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	var once sync.Once
+	warnReadExfiltrationOnce(&cfg, nil, profiles, logger, &once)
+
+	if !strings.Contains(buf.String(), "publisher: POST /libpod/images/team/a/push") {
+		t.Fatalf("warning lost reachable profile push route behind a denied representative; log: %q", buf.String())
+	}
+}
+
+func TestWarnReadExfiltrationReportsExactLibpodImagePushRepresentativeOnce(t *testing.T) {
+	t.Parallel()
+
+	topLevelRules := []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/sockguard-test/push"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+	compiledTopLevel, err := compileConfiguredRules(topLevelRules)
+	if err != nil {
+		t.Fatalf("compileConfiguredRules(top-level): %v", err)
+	}
+	profileRules := []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/scp/sockguard-test/push"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+	compiledProfile, err := compileConfiguredRules(profileRules)
+	if err != nil {
+		t.Fatalf("compileConfiguredRules(profile): %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.InsecureAllowReadExfiltration = true
+	cfg.Rules = topLevelRules
+	cfg.Clients.Profiles = []config.ClientProfileConfig{{Name: "publisher", Rules: profileRules}}
+	profiles := map[string]filter.Policy{"publisher": {Rules: compiledProfile}}
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	var once sync.Once
+	warnReadExfiltrationOnce(&cfg, compiledTopLevel, profiles, logger, &once)
+
+	for _, endpoint := range []string{
+		"POST /libpod/images/sockguard-test/push",
+		"publisher: POST /libpod/images/scp/sockguard-test/push",
+	} {
+		if got := strings.Count(buf.String(), endpoint); got != 1 {
+			t.Fatalf("warning count for %q = %d, want 1; log: %q", endpoint, got, buf.String())
+		}
+	}
+}
+
 func TestWarnReadExfiltrationOncePreservesShadowedRouteDetection(t *testing.T) {
 	t.Parallel()
 
@@ -286,6 +382,42 @@ func TestWarnReadExfiltrationOnceDescribesCheckpointAndMountRisks(t *testing.T) 
 		if !strings.Contains(buf.String(), want) {
 			t.Fatalf("warning does not describe %q; log: %q", want, buf.String())
 		}
+	}
+}
+
+// TestWarnReadExfiltrationOnceNamesExactNameProcessListRule pins the audit
+// that actually runs: allowedSensitiveExfilEndpoints searches the catalog's
+// route language against the authored rule literals, so an exact container
+// name is found and reported rather than left to the request-time gate. The
+// configured and compiled rule sets have to be the same policy for the
+// assertion to mean anything — feeding config.Defaults() alongside a disjoint
+// compiled set makes an empty endpoint list vacuous.
+func TestWarnReadExfiltrationOnceNamesExactNameProcessListRule(t *testing.T) {
+	t.Parallel()
+
+	rules := []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/containers/payments/top"}, Action: "allow"},
+	}
+	compiled, err := compileConfiguredRules(rules)
+	if err != nil {
+		t.Fatalf("compileConfiguredRules: %v", err)
+	}
+
+	enabled := config.Defaults()
+	enabled.InsecureAllowReadExfiltration = true
+	enabled.Rules = rules
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	var once sync.Once
+	warnReadExfiltrationOnce(&enabled, compiled, nil, logger, &once)
+	logOutput := buf.String()
+
+	if !strings.Contains(logOutput, "process-list reads allowed by policy are admitted instead of denied at request time") {
+		t.Fatalf("warning does not describe request-time process-list enforcement; log: %q", logOutput)
+	}
+	if !strings.Contains(logOutput, "GET /containers/payments/top") {
+		t.Fatalf("warning does not name the exact-name process-list rule the literal audit reaches; log: %q", logOutput)
 	}
 }
 

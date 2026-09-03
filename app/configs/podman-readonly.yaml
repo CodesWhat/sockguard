@@ -9,13 +9,14 @@
 # or a rootless `$XDG_RUNTIME_DIR/podman/podman.sock` — the rule set itself
 # does not change; only `upstream.socket` does.
 #
-# Unlike `readonly.yaml`, this preset does NOT set
-# insecure_allow_read_exfiltration: true. Every rule below is a narrow
-# list/inspect/metadata read; raw archive/export/logs/attach streams and
-# image/manifest pushes are deliberately left off the allowlist on both
-# surfaces, so this preset validates clean without acknowledging that
-# guardrail. Widen the allowlist yourself (and add the acknowledgment) if
-# your monitoring tool genuinely needs log streaming.
+# This preset intentionally keeps container process monitoring on both API
+# surfaces. Docker-compatible GET /containers/{id}/top forwards caller-selected
+# ps_args to the daemon's host `ps`, and native GET
+# /libpod/containers/{id}/top exposes the same process-list class. Both return
+# process command lines outside response redaction, so
+# insecure_allow_read_exfiltration: true below acknowledges that exposure. Raw
+# archive/export/logs/attach streams, native pod top, and image/manifest pushes
+# remain off the allowlist on both surfaces.
 #
 # No write operations are allowed on either surface. This includes native
 # POST /libpod/build. If you add that path later, it uses request_body.build
@@ -45,6 +46,8 @@ health:
   enabled: true
   path: /health
 
+insecure_allow_read_exfiltration: true
+
 rules:
   # --- Docker-compat surface: health + metadata ---
   - match: { method: GET, path: "/_ping" }
@@ -59,8 +62,8 @@ rules:
     action: allow
 
   # --- Docker-compat surface: container reads ---
-  # Logs / archive / attach / export deliberately omitted — they are gated
-  # by insecure_allow_read_exfiltration, which this preset does not set.
+  # Process monitoring is intentionally admitted and acknowledged above.
+  # Logs / archive / attach / export remain deliberately omitted.
   - match: { method: GET, path: "/containers/json" }
     action: allow
   - match: { method: GET, path: "/containers/*/json" }
@@ -122,8 +125,13 @@ rules:
     action: allow
   - match: { method: GET, path: "/libpod/pods/*/json" }
     action: allow
-  - match: { method: GET, path: "/libpod/pods/stats" }
-    action: allow
+  # GET /libpod/pods/stats is deliberately absent, and was removed in v2.1.
+  # It reports every running pod on the host, carries no labels, and takes no
+  # `filters` parameter, so owner isolation and visibility policy both refuse
+  # it outright rather than filter it. A rule allowing it could only ever end
+  # in a 403, and shipping one implied a scoping this preset cannot deliver.
+  # Podman registers no per-pod stats route to narrow it to. Add the rule back
+  # yourself if you run single-tenant with neither isolation layer on.
 
   # --- libpod surface: image reads ---
   # /libpod/images/export, /libpod/images/*/get, and image/manifest pushes
@@ -146,8 +154,11 @@ rules:
     action: allow
   - match: { method: GET, path: "/libpod/volumes/*/json" }
     action: allow
-  - match: { method: GET, path: "/libpod/secrets/json" }
-    action: allow
+  # GET /libpod/secrets/json is deliberately absent, and was removed in v2.1.
+  # Podman filters that endpoint with `name` and `id` only and answers 500 for
+  # any other key, so neither owner isolation nor a visibility policy can push
+  # a label filter to it, and both refuse it outright. Per-secret inspect below
+  # names one secret and is scoped normally.
   - match: { method: GET, path: "/libpod/secrets/*/json" }
     action: allow
 

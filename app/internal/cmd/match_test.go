@@ -59,6 +59,245 @@ rules:
 	}
 }
 
+// TestExecuteMatchCommandEnforcesProcessListReadAcknowledgment covers both
+// layers that stand between an unacknowledged process-list rule and an allow.
+//
+// Startup validation reads the authored rule literals, not only a
+// representative probe path, so an exact-name rule and an ordered deny that
+// shadows the probe are both refused before the policy compiles: those cases
+// never reach the matcher and `sockguard match` reports the validation error.
+// The request-time gate in filter.EnforceReadExfiltrationAcknowledgment stays
+// as the second layer for a policy that validation cannot see through, and
+// TestExecuteMatchCommandPreservesProcessListPolicyDenials covers the arm of it
+// that keeps a policy's own denial reason.
+func TestExecuteMatchCommandEnforcesProcessListReadAcknowledgment(t *testing.T) {
+	tests := []struct {
+		name         string
+		path         string
+		acknowledged bool
+		// refusedEndpoint is the endpoint startup validation names when it
+		// refuses the config outright. Empty means the config loads and the
+		// match output is the answer under test.
+		refusedEndpoint string
+		rules           string
+	}{
+		{
+			name:            "exact docker container",
+			path:            "/v1.53/containers/payments/top",
+			refusedEndpoint: "GET /containers/payments/top",
+			rules: `
+  - match: { method: GET, path: "/containers/payments/top" }
+    action: allow
+  - match: { method: "*", path: "/**" }
+    action: deny`,
+		},
+		{
+			name:            "exact libpod container",
+			path:            "/v5.0.0/libpod/containers/payments/top",
+			refusedEndpoint: "GET /libpod/containers/payments/top",
+			rules: `
+  - match: { method: GET, path: "/libpod/containers/payments/top" }
+    action: allow
+  - match: { method: "*", path: "/**" }
+    action: deny`,
+		},
+		{
+			name:            "exact libpod pod",
+			path:            "/v5.0.0/libpod/pods/payments/top",
+			refusedEndpoint: "GET /libpod/pods/payments/top",
+			rules: `
+  - match: { method: GET, path: "/libpod/pods/payments/top" }
+    action: allow
+  - match: { method: "*", path: "/**" }
+    action: deny`,
+		},
+		{
+			name:            "representative deny shadows targeted allow",
+			path:            "/containers/payments/top",
+			refusedEndpoint: "GET /containers/a/top",
+			rules: `
+  - match: { method: GET, path: "/containers/sockguard-test/top" }
+    action: deny
+  - match: { method: GET, path: "/containers/*/top" }
+    action: allow
+  - match: { method: "*", path: "/**" }
+    action: deny`,
+		},
+		{
+			name:         "acknowledged docker container",
+			path:         "/v1.53/containers/payments/top",
+			acknowledged: true,
+			rules: `
+  - match: { method: GET, path: "/containers/payments/top" }
+    action: allow
+  - match: { method: "*", path: "/**" }
+    action: deny`,
+		},
+		{
+			name:         "acknowledged libpod pod",
+			path:         "/v5.0.0/libpod/pods/payments/top",
+			acknowledged: true,
+			rules: `
+  - match: { method: GET, path: "/libpod/pods/payments/top" }
+    action: allow
+  - match: { method: "*", path: "/**" }
+    action: deny`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, "sockguard.yaml")
+			acknowledgment := ""
+			if tt.acknowledged {
+				acknowledgment = "insecure_allow_read_exfiltration: true\n"
+			}
+			yaml := `
+upstream:
+  socket: /var/run/docker.sock
+` + acknowledgment + "rules:" + tt.rules + "\n"
+			if err := os.WriteFile(cfgPath, []byte(yaml), 0o644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+
+			stdout, stderr, err := executeRootCommand(t,
+				"-c", cfgPath,
+				"match",
+				"--method", "GET",
+				"--path", tt.path,
+				"-o", "json",
+			)
+			if tt.refusedEndpoint != "" {
+				if err == nil {
+					t.Fatalf("Execute() error = nil, want config validation to refuse; stdout:\n%s", stdout)
+				}
+				for _, want := range []string{
+					"insecure_allow_read_exfiltration: true to acknowledge the risk",
+					"Exposed endpoints: " + tt.refusedEndpoint,
+				} {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("Execute() error = %v, want it to name %q", err, want)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Execute() error = %v\nstderr:\n%s", err, stderr)
+			}
+
+			var got struct {
+				Decision    string `json:"decision"`
+				Reason      string `json:"reason"`
+				MatchedRule *struct {
+					Action string `json:"action"`
+				} `json:"matched_rule"`
+			}
+			if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v\nstdout:\n%s", err, stdout)
+			}
+
+			wantDecision := "deny"
+			wantReason := "process-list reads require insecure_allow_read_exfiltration: true"
+			if tt.acknowledged {
+				wantDecision = "allow"
+				wantReason = ""
+			}
+			if got.Decision != wantDecision {
+				t.Fatalf("decision = %q, want %s", got.Decision, wantDecision)
+			}
+			if got.Reason != wantReason {
+				t.Fatalf("reason = %q, want %q", got.Reason, wantReason)
+			}
+			if got.MatchedRule == nil || got.MatchedRule.Action != "allow" {
+				t.Fatalf("matched_rule = %#v, want matched allow rule", got.MatchedRule)
+			}
+			if stderr != "" {
+				t.Fatalf("expected no stderr output, got:\n%s", stderr)
+			}
+		})
+	}
+}
+
+func TestExecuteMatchCommandPreservesProcessListPolicyDenials(t *testing.T) {
+	tests := []struct {
+		name              string
+		rules             string
+		wantReason        string
+		wantMatchedAction string
+	}{
+		{
+			name: "default deny",
+			rules: `
+  - match: { method: GET, path: "/_ping" }
+    action: allow`,
+			wantReason: "no matching allow rule",
+		},
+		{
+			name: "matched deny",
+			rules: `
+  - match: { method: GET, path: "/containers/*/top" }
+    action: deny
+    reason: process lists are disabled by policy`,
+			wantReason:        "process lists are disabled by policy",
+			wantMatchedAction: "deny",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfgPath := filepath.Join(dir, "sockguard.yaml")
+			yaml := `
+upstream:
+  socket: /var/run/docker.sock
+rules:` + tt.rules + "\n"
+			if err := os.WriteFile(cfgPath, []byte(yaml), 0o644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+
+			stdout, stderr, err := executeRootCommand(t,
+				"-c", cfgPath,
+				"match",
+				"--method", "GET",
+				"--path", "/v1.53/containers/payments/top",
+				"-o", "json",
+			)
+			if err != nil {
+				t.Fatalf("Execute() error = %v\nstderr:\n%s", err, stderr)
+			}
+
+			var got struct {
+				Decision    string `json:"decision"`
+				Reason      string `json:"reason"`
+				MatchedRule *struct {
+					Action string `json:"action"`
+				} `json:"matched_rule"`
+			}
+			if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v\nstdout:\n%s", err, stdout)
+			}
+
+			if got.Decision != "deny" {
+				t.Fatalf("decision = %q, want deny", got.Decision)
+			}
+			if got.Reason != tt.wantReason {
+				t.Fatalf("reason = %q, want %q", got.Reason, tt.wantReason)
+			}
+			if tt.wantMatchedAction == "" {
+				if got.MatchedRule != nil {
+					t.Fatalf("matched_rule = %#v, want nil", got.MatchedRule)
+				}
+			} else if got.MatchedRule == nil || got.MatchedRule.Action != tt.wantMatchedAction {
+				t.Fatalf("matched_rule = %#v, want matched %s rule", got.MatchedRule, tt.wantMatchedAction)
+			}
+			if stderr != "" {
+				t.Fatalf("expected no stderr output, got:\n%s", stderr)
+			}
+		})
+	}
+}
+
 func TestExecuteMatchCommandReportsDefaultDenyWhenNoRuleMatches(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "sockguard.yaml")

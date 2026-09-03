@@ -309,7 +309,7 @@ func TestNormalizeImageLoadArchivePath(t *testing.T) {
 		value string
 		want  string
 	}{
-		{value: "  ", want: ""},
+		{value: "  ", want: "  "},
 		{value: "/", want: ""},
 		{value: "/manifest.json", want: "manifest.json"},
 	}
@@ -318,6 +318,28 @@ func TestNormalizeImageLoadArchivePath(t *testing.T) {
 		if got := normalizeImageLoadArchivePath(tt.value); got != tt.want {
 			t.Fatalf("normalizeImageLoadArchivePath(%q) = %q, want %q", tt.value, got, tt.want)
 		}
+	}
+}
+
+func TestExtractImageLoadArchiveRejectsEscapingEntries(t *testing.T) {
+	tests := []struct {
+		name  string
+		entry containerArchiveTestEntry
+	}{
+		{name: "regular parent", entry: containerArchiveTestEntry{name: "../ignored", body: "data"}},
+		{name: "regular parent after clean", entry: containerArchiveTestEntry{name: "a/../..", body: "data"}},
+		{name: "directory parent", entry: containerArchiveTestEntry{name: "../ignored-dir", typ: tar.TypeDir}},
+		{name: "directory parent after clean", entry: containerArchiveTestEntry{name: "a/../../ignored-dir", typ: tar.TypeDir}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := mustContainerArchiveTar(t, tt.entry)
+			_, err := defaultIODeps().extractImageLoadArchiveFromTar(tar.NewReader(bytes.NewReader(payload)), true)
+			if err == nil || !strings.Contains(err.Error(), "escapes archive root") {
+				t.Fatalf("extractImageLoadArchiveFromTar() error = %v, want archive-root escape error", err)
+			}
+		})
 	}
 }
 
@@ -344,49 +366,48 @@ func mustGzip(t *testing.T, raw []byte) []byte {
 	return buf.Bytes()
 }
 
-// TestExtractImageLoadRepoTagsFromGzipDrainsAfterSuccess covers
-// image_load.go's post-extraction drain (line 166): once
-// extractImageLoadRepoTagsFromTar succeeds (err == nil), the remaining
-// gzip stream must still be drained through the decompressed-byte-bounded
-// limitedReader so a gzip bomb positioned after manifest.json is caught. A
-// mutant that negates the err == nil guard would skip the drain on success
-// (and attempt it only on failure), silently disabling the bomb guard for
-// every archive whose manifest.json is found before the padding.
-func TestExtractImageLoadRepoTagsFromGzipDrainsAfterSuccess(t *testing.T) {
+// TestExtractImageLoadArchiveFromGzipDrainsAfterSuccess covers
+// image_load.go's post-extraction drain: once extractImageLoadArchiveFromTar
+// succeeds (err == nil), the remaining gzip stream must still be drained
+// through the decompressed-byte-bounded limitedReader so a gzip bomb
+// positioned after manifest.json is caught. A mutant that negates the
+// err == nil guard would skip the drain on success (and attempt it only on
+// failure), silently disabling the bomb guard for every archive whose
+// manifest.json is found before the padding.
+func TestExtractImageLoadArchiveFromGzipDrainsAfterSuccess(t *testing.T) {
 	sentinel := errors.New("drain failed")
 	iod := defaultIODeps()
 	iod.DrainReader = func(io.Reader) error { return sentinel }
 
 	payload := mustGzip(t, mustImageLoadTar(t, `[{"RepoTags":["registry.example.com/acme/app:latest"]}]`))
 	file := mustImageLoadTempFile(t, payload)
-	_, _, err := iod.extractImageLoadRepoTagsFromGzip(file)
+	_, _, err := iod.extractImageLoadArchiveFromGzip(file, false)
 	if !errors.Is(err, sentinel) {
-		t.Fatalf("extractImageLoadRepoTagsFromGzip() error = %v, want wrapped %v (drain must run after a successful extract)", err, sentinel)
+		t.Fatalf("extractImageLoadArchiveFromGzip() error = %v, want wrapped %v (drain must run after a successful extract)", err, sentinel)
 	}
 }
 
-// TestExtractImageLoadRepoTagsFromGzipSurfacesCloseErrorOnSuccess covers
-// image_load.go's close-error surfacing (line 171): when extraction and
-// drain both succeed (err == nil), a failing gzip-reader Close must still be
-// surfaced as the returned error rather than silently discarded. A mutant
-// that negates the err == nil guard would only surface the close error when
-// err was already non-nil, swallowing a real close failure on the success
-// path.
-func TestExtractImageLoadRepoTagsFromGzipSurfacesCloseErrorOnSuccess(t *testing.T) {
+// TestExtractImageLoadArchiveFromGzipSurfacesCloseErrorOnSuccess covers
+// image_load.go's close-error surfacing: when extraction and drain both
+// succeed (err == nil), a failing gzip-reader Close must still be surfaced as
+// the returned error rather than silently discarded. A mutant that negates
+// the err == nil guard would only surface the close error when err was
+// already non-nil, swallowing a real close failure on the success path.
+func TestExtractImageLoadArchiveFromGzipSurfacesCloseErrorOnSuccess(t *testing.T) {
 	sentinel := errors.New("close failed")
 	iod := defaultIODeps()
 	iod.CloseReadCloser = func(io.Closer) error { return sentinel }
 
 	payload := mustGzip(t, mustImageLoadTar(t, `[{"RepoTags":["registry.example.com/acme/app:latest"]}]`))
 	file := mustImageLoadTempFile(t, payload)
-	_, _, err := iod.extractImageLoadRepoTagsFromGzip(file)
+	_, _, err := iod.extractImageLoadArchiveFromGzip(file, false)
 	if !errors.Is(err, sentinel) {
-		t.Fatalf("extractImageLoadRepoTagsFromGzip() error = %v, want wrapped %v (close error must surface even when extraction succeeded)", err, sentinel)
+		t.Fatalf("extractImageLoadArchiveFromGzip() error = %v, want wrapped %v (close error must surface even when extraction succeeded)", err, sentinel)
 	}
 }
 
 // mustImageLoadTempFile writes content to a temp file, rewinds it to the
-// start, and registers cleanup — extractImageLoadRepoTagsFromGzip reads
+// start, and registers cleanup — extractImageLoadArchiveFromGzip reads
 // from an *os.File rather than an io.Reader.
 func mustImageLoadTempFile(t *testing.T, content []byte) *os.File {
 	t.Helper()

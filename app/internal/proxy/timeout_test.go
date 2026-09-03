@@ -101,6 +101,141 @@ func TestIsLongLivedUpstreamRequest(t *testing.T) {
 	}
 }
 
+func TestIsLongLivedUpstreamRequestPodmanTopStream(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		target string
+		want   bool
+	}{
+		{"native container true", "/libpod/containers/abc/top?stream=true", true},
+		{"versioned native container one", "/v5.0.0/libpod/containers/abc/top?stream=1", true},
+		{"native pod lowercase t", "/libpod/pods/abc/top?stream=t", true},
+		{"versioned native pod uppercase true", "/v5.0.0/libpod/pods/abc/top?stream=TRUE", true},
+		{"native container mixed-case true", "/libpod/containers/abc/top?stream=True", true},
+		{"native pod lowercase on", "/libpod/pods/abc/top?stream=on", true},
+		{"native container uppercase query key", "/libpod/containers/abc/top?Stream=true", true},
+		{"native pod mixed-case query key", "/libpod/pods/abc/top?sTrEaM=on", true},
+		{"native container unsupported mixed-case true", "/libpod/containers/abc/top?stream=TrUe", false},
+		{"native container false", "/libpod/containers/abc/top?stream=false", false},
+		{"native pod zero", "/libpod/pods/abc/top?stream=0", false},
+		{"native container lowercase f", "/libpod/containers/abc/top?stream=f", false},
+		{"native container uppercase f", "/libpod/containers/abc/top?stream=F", false},
+		{"native pod uppercase false", "/libpod/pods/abc/top?stream=FALSE", false},
+		{"native container mixed-case false", "/libpod/containers/abc/top?stream=False", false},
+		{"native pod omitted", "/libpod/pods/abc/top", false},
+		{"native pod empty", "/libpod/pods/abc/top?stream=", false},
+		{"native container repeated last true", "/libpod/containers/abc/top?stream=false&stream=true", true},
+		{"native pod repeated last false", "/libpod/pods/abc/top?stream=true&stream=false", false},
+		{"native container repeated case-insensitive key last true", "/libpod/containers/abc/top?Stream=false&Stream=true", true},
+		{"native pod repeated case-insensitive key last false", "/libpod/pods/abc/top?STREAM=true&STREAM=false", false},
+		{"native container invalid yes", "/libpod/containers/abc/top?stream=yes", false},
+		{"native pod invalid uppercase on", "/libpod/pods/abc/top?stream=ON", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequest(http.MethodGet, tc.target, nil)
+			if got := isLongLivedUpstreamRequest(httptest.NewRecorder(), req); got != tc.want {
+				t.Fatalf("isLongLivedUpstreamRequest(GET %s) = %v, want %v", tc.target, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWithRequestTimeout_DockerCompatibleTopUsesUpstreamFlavor(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name           string
+		podmanUpstream bool
+		target         string
+		wantUnbounded  bool
+	}{
+		{name: "Docker remains finite", target: "/containers/abc/top?stream=true", wantUnbounded: false},
+		{name: "Podman streams", podmanUpstream: true, target: "/containers/abc/top?stream=true", wantUnbounded: true},
+		{name: "Podman false remains finite", podmanUpstream: true, target: "/containers/abc/top?stream=false", wantUnbounded: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			reached := false
+			hasDeadline := false
+			next := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				reached = true
+				_, hasDeadline = r.Context().Deadline()
+			})
+			WithRequestTimeoutForFlavor(next, 50*time.Millisecond, tc.podmanUpstream).
+				ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, tc.target, nil))
+			if !reached {
+				t.Fatal("request did not reach the wrapped handler")
+			}
+			if got := !hasDeadline; got != tc.wantUnbounded {
+				t.Fatalf("unbounded GET %s with podman=%v = %v, want %v", tc.target, tc.podmanUpstream, got, tc.wantUnbounded)
+			}
+		})
+	}
+}
+
+func TestIsLongLivedUpstreamRequestPodmanTopMixedCaseDuplicateStreamKeys(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name           string
+		podmanUpstream bool
+		target         string
+		want           bool
+	}{
+		{
+			name:   "native truthy second case-folded group",
+			target: "/libpod/containers/abc/top?stream=false&Stream=true",
+			want:   true,
+		},
+		{
+			name:   "native truthy first case-folded group",
+			target: "/libpod/pods/abc/top?stream=true&Stream=false",
+			want:   true,
+		},
+		{
+			name:   "native identical-key last true",
+			target: "/libpod/containers/abc/top?stream=false&stream=true&Stream=false",
+			want:   true,
+		},
+		{
+			name:   "native identical-key last false in every group",
+			target: "/libpod/pods/abc/top?stream=true&stream=false&Stream=0&STREAM=F",
+			want:   false,
+		},
+		{
+			name:           "Podman-compatible truthy second case-folded group",
+			podmanUpstream: true,
+			target:         "/containers/abc/top?stream=false&Stream=yes",
+			want:           true,
+		},
+		{
+			name:           "Podman-compatible false in every group",
+			podmanUpstream: true,
+			target:         "/containers/abc/top?stream=true&stream=false&Stream=no&STREAM=none",
+			want:           false,
+		},
+		{
+			name:   "Docker-compatible remains finite",
+			target: "/containers/abc/top?stream=false&Stream=true",
+			want:   false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			for i := 0; i < 256; i++ {
+				req := httptest.NewRequest(http.MethodGet, tc.target, nil)
+				if got := isLongLivedUpstreamRequestForFlavor(httptest.NewRecorder(), req, tc.podmanUpstream); got != tc.want {
+					t.Fatalf("iteration %d: isLongLivedUpstreamRequestForFlavor(GET %s, podman=%v) = %v, want %v", i, tc.target, tc.podmanUpstream, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
 func TestWithRequestTimeout_AppliesDeadlineToFiniteRequest(t *testing.T) {
 	t.Parallel()
 	var hasDeadline bool
