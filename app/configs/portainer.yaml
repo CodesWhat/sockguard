@@ -25,10 +25,16 @@ health:
 # inspected too, and this preset widens those controls to preserve Portainer's
 # expected functionality. Exec and swarm-management writes still require the
 # unsafe opt-in below because Portainer allows arbitrary commands and cluster
-# mutation. Inspected request bodies have a 30-second read deadline even with
-# access logging enabled; attach and exec-start use the same finite handshake
-# window before a successful protocol upgrade clears it for the live stream.
+# mutation. Its container cleanup uses force and anonymous-volume removal but
+# not Docker's legacy link-removal mode. Inspected request bodies have a
+# 30-second read deadline even with access logging enabled; attach and
+# exec-start use the same finite handshake window before a successful protocol
+# upgrade clears it for the live stream.
 request_body:
+  container_remove:
+    allow_force: true
+    allow_remove_volumes: true
+    allow_remove_links: false
   container_create:
     allowed_bind_mounts: []
   image_pull:

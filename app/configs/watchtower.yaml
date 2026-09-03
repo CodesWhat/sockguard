@@ -1,9 +1,10 @@
 # Sockguard — Watchtower Preset
 #
-# Optimized for Watchtower container auto-updater.
-# Allows: container lifecycle, image pull/remove, exec (lifecycle hooks),
-#         network connect/disconnect (preserve network attachments).
-# Denies: build, swarm, secrets, plugins.
+# Optimized for nicholas-fedor/watchtower v1.21.2.
+# Allows: ping/info, container list/inspect/lifecycle/recreate, image
+#         inspect/pull/remove, exec lifecycle hooks, and network connect.
+# Denies: unused container/image/network reads and writes, volumes,
+#         distribution, build, swarm, secrets, configs, and plugins.
 
 upstream:
   socket: /var/run/docker.sock
@@ -32,55 +33,69 @@ response:
 
 # Watchtower recreates containers and can use exec lifecycle hooks. Container
 # creation is inspected by default, but bind-mounted workloads are denied until
-# you allowlist their host paths here. Image pulls are inspected too; this
-# preset explicitly allows any registry so Watchtower can continue tracking
-# arbitrary images while still denying `fromSrc` imports. Exec lifecycle hooks
-# can be inspected when you configure a fixed command allowlist, but this preset
-# keeps the compatibility opt-in below because hooks are often arbitrary.
+# you allowlist their host paths here. Recreated containers may carry an
+# explicit HostConfig.Runtime, so the stock runc runtime is allowlisted and
+# other explicit runtimes are denied. Watchtower sets RestartPolicy.Name to
+# "no" during shutdown and failed self-update paths; restart-policy updates are
+# allowed while Moby's serialized zero-value Resources remain daemon no-ops and
+# actual resource, privilege, device and capability updates stay denied. Modern
+# Watchtower recreates copied endpoint settings with IPAddress and, for a
+# user-configured MAC, MacAddress. Those two granular endpoint controls are
+# allowed without opening links, driver options, link-local IPs or GwPriority.
+# Image pulls are inspected too, with arbitrary registries allowed but fromSrc
+# imports denied. Lifecycle-hook commands are arbitrary and default to the
+# container's configured user. Sockguard treats an empty User as root, so root
+# exec must be acknowledged in addition to the blind-write opt-in below.
 request_body:
+  container_remove:
+    allow_force: true
+    allow_remove_volumes: true
   container_create:
     allowed_bind_mounts: []
+    allowed_runtimes:
+      - runc
+  container_update:
+    allow_restart_policy: true
+  exec:
+    allow_privileged: false
+    allow_root_user: true
   image_pull:
     allow_all_registries: true
+  network:
+    endpoint_config:
+      allow_static_addressing: true
+      allow_mac_pinning: true
 
 # If your lifecycle hooks are fixed commands, replace this with
 # request_body.exec.allowed_commands and remove the unsafe opt-in.
 insecure_allow_body_blind_writes: true
-# Preserve broad Watchtower read compatibility, including raw archive/export and log/attach stream paths.
-insecure_allow_read_exfiltration: true
 
 rules:
-  # Health and metadata
+  # Moby client ping (HEAD with GET fallback) and daemon info.
   - match: { method: GET, path: "/_ping" }
     action: allow
   - match: { method: HEAD, path: "/_ping" }
     action: allow
-  - match: { method: GET, path: "/version" }
-    action: allow
   - match: { method: GET, path: "/info" }
     action: allow
-  - match: { method: GET, path: "/events" }
+
+  # Container discovery.
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
     action: allow
 
-  # Container read operations
-  - match: { method: GET, path: "/containers/**" }
-    action: allow
-
-  # Container lifecycle (start, stop, kill, restart, rename, remove)
+  # Container lifecycle and recreate.
   - match: { method: POST, path: "/containers/*/start" }
     action: allow
   - match: { method: POST, path: "/containers/*/stop" }
     action: allow
-  - match: { method: POST, path: "/containers/*/kill" }
-    action: allow
-  - match: { method: POST, path: "/containers/*/restart" }
-    action: allow
   - match: { method: POST, path: "/containers/*/rename" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/update" }
     action: allow
   - match: { method: DELETE, path: "/containers/*" }
     action: allow
-
-  # Container creation (for updates)
   - match: { method: POST, path: "/containers/create" }
     action: allow
 
@@ -92,28 +107,20 @@ rules:
   - match: { method: GET, path: "/exec/*/json" }
     action: allow
 
-  # Image operations (pull, inspect, list, remove)
-  - match: { method: GET, path: "/images/**" }
+  # Image operations. Image names can contain slashes, so inspect needs **;
+  # deny the zero-segment /images/json list form before that allow rule.
+  - match: { method: GET, path: "/images/json" }
+    action: deny
+    reason: "watchtower does not list images"
+  - match: { method: GET, path: "/images/**/json" }
     action: allow
   - match: { method: POST, path: "/images/create" }
     action: allow
   - match: { method: DELETE, path: "/images/*" }
     action: allow
 
-  # Network connect/disconnect (preserve network attachments during recreate)
-  - match: { method: GET, path: "/networks/**" }
-    action: allow
+  # Preserve secondary network attachments during recreate.
   - match: { method: POST, path: "/networks/*/connect" }
-    action: allow
-  - match: { method: POST, path: "/networks/*/disconnect" }
-    action: allow
-
-  # Volume read
-  - match: { method: GET, path: "/volumes/**" }
-    action: allow
-
-  # Distribution (registry info)
-  - match: { method: GET, path: "/distribution/**" }
     action: allow
 
   # Deny everything else

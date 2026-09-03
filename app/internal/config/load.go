@@ -71,7 +71,7 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	cfg.explicitLegacyListen = explicitLegacyListenFile(configPath)
-	cfg.explicitNetworkEndpointConfig = explicitNetworkEndpointConfigFile(configPath)
+	applyEndpointConfigProvenance(&cfg, explicitEndpointConfigFile(configPath))
 
 	return &cfg, nil
 }
@@ -139,28 +139,78 @@ func explicitLegacyListenSet(pv *viper.Viper) bool {
 	return explicitKeysSet(pv, legacyListenKeys)
 }
 
-// networkEndpointConfigKeys are the dotted config paths under
-// request_body.network.endpoint_config whose presence (via YAML or a
-// SOCKGUARD_REQUEST_BODY_NETWORK_ENDPOINT_CONFIG_* environment variable)
-// marks the granular endpoint-config block as explicitly configured, for the
-// allow_endpoint_config/endpoint_config mutual-exclusion check (#186). See
-// explicitNetworkEndpointConfigFile/Bytes and legacyListenKeys' doc comment
-// for why zero-value comparison cannot answer this question on its own.
-var networkEndpointConfigKeys = []string{
-	"request_body.network.endpoint_config.allow_static_addressing",
-	"request_body.network.endpoint_config.allow_link_local_ips",
-	"request_body.network.endpoint_config.allow_mac_pinning",
-	"request_body.network.endpoint_config.allow_gw_priority",
-	"request_body.network.endpoint_config.allow_aliases",
+// endpointConfigLeafKeys are the leaf names inside an endpoint_config block
+// (#186's granular per-field gates). Kept as leaves and expanded per group by
+// endpointConfigKeysUnder so a future granular field is picked up for every
+// group at once — a hand-maintained per-group list is exactly how
+// request_body.libpod_network.endpoint_config came to be silently exempt from
+// the mutual-exclusion check that request_body.network.endpoint_config had.
+var endpointConfigLeafKeys = []string{
+	"allow_static_addressing",
+	"allow_link_local_ips",
+	"allow_mac_pinning",
+	"allow_gw_priority",
+	"allow_aliases",
 }
 
-// explicitNetworkEndpointConfigFile is explicitLegacyListenFile's #186
-// counterpart: reports whether any request_body.network.endpoint_config.*
-// key was set via the YAML file at configPath or a matching
-// SOCKGUARD_REQUEST_BODY_NETWORK_ENDPOINT_CONFIG_* environment variable,
-// using a second, defaults-free Viper instance so registerDefaults' leaf
-// registrations cannot mask the answer.
-func explicitNetworkEndpointConfigFile(configPath string) bool {
+// endpointConfigKeysUnder returns the dotted config paths under
+// request_body.<group>.endpoint_config whose presence (via YAML or a matching
+// SOCKGUARD_REQUEST_BODY_<GROUP>_ENDPOINT_CONFIG_* environment variable)
+// marks that group's granular endpoint-config block as explicitly configured.
+// See explicitEndpointConfigFile/Bytes and legacyListenKeys' doc comment for
+// why zero-value comparison cannot answer this question on its own.
+func endpointConfigKeysUnder(group string) []string {
+	keys := make([]string, 0, len(endpointConfigLeafKeys))
+	for _, leaf := range endpointConfigLeafKeys {
+		keys = append(keys, "request_body."+group+".endpoint_config."+leaf)
+	}
+	return keys
+}
+
+// networkEndpointConfigKeys and libpodNetworkEndpointConfigKeys are the two
+// groups that carry an endpoint_config block. Both are consulted: network
+// gates POST /networks/*/connect and container-create's EndpointsConfig,
+// libpod_network gates POST /libpod/networks/{name}/connect.
+var (
+	networkEndpointConfigKeys       = endpointConfigKeysUnder("network")
+	libpodNetworkEndpointConfigKeys = endpointConfigKeysUnder("libpod_network")
+)
+
+type clientProfileEndpointConfigProvenance struct {
+	network                   bool
+	libpodNetwork             bool
+	networkAllowAliases       bool
+	libpodNetworkAllowAliases bool
+}
+
+type endpointConfigProvenance struct {
+	network       bool
+	libpodNetwork bool
+	profiles      []clientProfileEndpointConfigProvenance
+}
+
+type endpointConfigPresenceBlock struct {
+	EndpointConfig map[string]any `mapstructure:"endpoint_config"`
+}
+
+type endpointConfigPresenceDocument struct {
+	Clients struct {
+		Profiles []struct {
+			RequestBody struct {
+				Network       endpointConfigPresenceBlock `mapstructure:"network"`
+				LibpodNetwork endpointConfigPresenceBlock `mapstructure:"libpod_network"`
+			} `mapstructure:"request_body"`
+		} `mapstructure:"profiles"`
+	} `mapstructure:"clients"`
+}
+
+// explicitEndpointConfigFile is explicitLegacyListenFile's #186 counterpart:
+// reports, for each endpoint_config group, whether any of its keys was set
+// via the YAML file at configPath or a matching SOCKGUARD_* environment
+// variable, using a second, defaults-free Viper instance so registerDefaults'
+// leaf registrations cannot mask the answer. Both groups are answered from
+// one pass so the file is read once.
+func explicitEndpointConfigFile(configPath string) endpointConfigProvenance {
 	pv := viper.New()
 	if configPath != "" {
 		if data, err := ReadFile(configPath); err == nil {
@@ -171,21 +221,83 @@ func explicitNetworkEndpointConfigFile(configPath string) bool {
 	pv.SetEnvPrefix("SOCKGUARD")
 	pv.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	pv.AutomaticEnv()
-	return explicitKeysSet(pv, networkEndpointConfigKeys)
+	return endpointConfigProvenanceFor(pv)
 }
 
-// explicitNetworkEndpointConfigBytes is explicitNetworkEndpointConfigFile's
-// LoadBytes counterpart: no environment overlay, matching LoadBytes' own
-// contract (env vars never affect a candidate/signed YAML body).
-func explicitNetworkEndpointConfigBytes(data []byte) bool {
+// explicitEndpointConfigBytes is explicitEndpointConfigFile's LoadBytes
+// counterpart: no environment overlay, matching LoadBytes' own contract (env
+// vars never affect a candidate/signed YAML body).
+func explicitEndpointConfigBytes(data []byte) endpointConfigProvenance {
 	pv := viper.New()
 	pv.SetConfigType("yaml")
 	if len(data) > 0 {
 		if err := pv.ReadConfig(bytes.NewReader(data)); err != nil {
-			return false
+			return endpointConfigProvenance{}
 		}
 	}
-	return explicitKeysSet(pv, networkEndpointConfigKeys)
+	return endpointConfigProvenanceFor(pv)
+}
+
+func endpointConfigProvenanceFor(pv *viper.Viper) endpointConfigProvenance {
+	provenance := endpointConfigProvenance{
+		network:       explicitKeysSet(pv, networkEndpointConfigKeys),
+		libpodNetwork: explicitKeysSet(pv, libpodNetworkEndpointConfigKeys),
+	}
+
+	var presence endpointConfigPresenceDocument
+	if err := pv.Unmarshal(&presence); err != nil {
+		return provenance
+	}
+	provenance.profiles = make([]clientProfileEndpointConfigProvenance, len(presence.Clients.Profiles))
+	for i, profile := range presence.Clients.Profiles {
+		network := profile.RequestBody.Network.EndpointConfig
+		libpodNetwork := profile.RequestBody.LibpodNetwork.EndpointConfig
+		provenance.profiles[i] = clientProfileEndpointConfigProvenance{
+			network:                   endpointConfigMapExplicit(network),
+			libpodNetwork:             endpointConfigMapExplicit(libpodNetwork),
+			networkAllowAliases:       endpointConfigMapHas(network, "allow_aliases"),
+			libpodNetworkAllowAliases: endpointConfigMapHas(libpodNetwork, "allow_aliases"),
+		}
+	}
+	return provenance
+}
+
+func endpointConfigMapExplicit(values map[string]any) bool {
+	for _, leaf := range endpointConfigLeafKeys {
+		if endpointConfigMapHas(values, leaf) {
+			return true
+		}
+	}
+	return false
+}
+
+func endpointConfigMapHas(values map[string]any, leaf string) bool {
+	for key := range values {
+		if strings.EqualFold(key, leaf) {
+			return true
+		}
+	}
+	return false
+}
+
+func applyEndpointConfigProvenance(cfg *Config, provenance endpointConfigProvenance) {
+	cfg.explicitNetworkEndpointConfig = provenance.network
+	cfg.explicitLibpodNetworkEndpointConfig = provenance.libpodNetwork
+	for i := range cfg.Clients.Profiles {
+		profile := &cfg.Clients.Profiles[i]
+		var raw clientProfileEndpointConfigProvenance
+		if i < len(provenance.profiles) {
+			raw = provenance.profiles[i]
+		}
+		profile.explicitNetworkEndpointConfig = raw.network
+		profile.explicitLibpodNetworkEndpointConfig = raw.libpodNetwork
+		if !raw.networkAllowAliases {
+			profile.RequestBody.Network.EndpointConfig.AllowAliases = true
+		}
+		if !raw.libpodNetworkAllowAliases {
+			profile.RequestBody.LibpodNetwork.EndpointConfig.AllowAliases = true
+		}
+	}
 }
 
 // explicitKeysSet reports whether any of keys is set on pv — shared by the
@@ -351,7 +463,7 @@ func LoadBytes(data []byte) (*Config, error) {
 	}
 
 	cfg.explicitLegacyListen = explicitLegacyListenBytes(data)
-	cfg.explicitNetworkEndpointConfig = explicitNetworkEndpointConfigBytes(data)
+	applyEndpointConfigProvenance(&cfg, explicitEndpointConfigBytes(data))
 
 	return &cfg, nil
 }

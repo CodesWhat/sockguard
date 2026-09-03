@@ -540,6 +540,13 @@ func TestFetchCandidates_UnsignedImageReturnsErrNoSignatures(t *testing.T) {
 	if !errors.Is(err, ErrNoSignatures) {
 		t.Fatalf("got err %v, want ErrNoSignatures for an unsigned image", err)
 	}
+	// Covers the "len(candidateErrs) > 0" boundary at imagefetch.go:284: an
+	// unsigned image with no malformed sibling manifests has zero
+	// candidateErrs, so the error must be the bare ErrNoSignatures wrap, not
+	// one additionally joined with (empty) parsing failures.
+	if strings.Contains(err.Error(), "signature parsing failures") {
+		t.Fatalf("got err %v, want no parsing-failures wrapping when candidateErrs is empty", err)
+	}
 }
 
 func TestFetchCandidates_GoodAndBadLayers_GoodWins(t *testing.T) {

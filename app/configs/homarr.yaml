@@ -1,7 +1,7 @@
 # Sockguard — Homarr Preset
 #
 # Optimized for Homarr dashboard with container management.
-# Allows: container list, inspect, stats, start/stop/restart.
+# Allows: container list, inspect, stats, logs, start/stop/restart/remove.
 # Denies: exec, create, image/network/volume writes.
 
 upstream:
@@ -16,36 +16,28 @@ health:
   enabled: true
   path: /health
 
-# Preserve broad Homarr read compatibility, including raw archive/export and log/attach stream paths.
+# Homarr reads container logs, which are an explicit read-exfiltration route.
 insecure_allow_read_exfiltration: true
 
 rules:
-  # Health and metadata
-  - match: { method: GET, path: "/_ping" }
+  # Container reads
+  - match: { method: GET, path: "/containers/json" }
     action: allow
-  - match: { method: HEAD, path: "/_ping" }
+  - match: { method: GET, path: "/containers/*/json" }
     action: allow
-  - match: { method: GET, path: "/version" }
+  - match: { method: GET, path: "/containers/*/stats" }
     action: allow
-  - match: { method: GET, path: "/info" }
-    action: allow
-  - match: { method: GET, path: "/events" }
+  - match: { method: GET, path: "/containers/*/logs" }
     action: allow
 
-  # Container read (list, inspect, stats)
-  - match: { method: GET, path: "/containers/**" }
-    action: allow
-
-  # Container lifecycle (start, stop, restart)
+  # Container lifecycle
   - match: { method: POST, path: "/containers/*/start" }
     action: allow
   - match: { method: POST, path: "/containers/*/stop" }
     action: allow
   - match: { method: POST, path: "/containers/*/restart" }
     action: allow
-
-  # Image read (for image info display)
-  - match: { method: GET, path: "/images/**" }
+  - match: { method: DELETE, path: "/containers/*" }
     action: allow
 
   # Deny everything else

@@ -1,13 +1,17 @@
 package ownership
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codeswhat/sockguard/app/internal/filter"
 	"github.com/codeswhat/sockguard/app/internal/logging"
@@ -502,14 +506,19 @@ func TestLibpodSystemDataUsageRefusedUnderOwnership(t *testing.T) {
 	// could have sent.
 	tests := []struct {
 		name     string
+		method   string
 		path     string
 		upstream string
 	}{
-		{name: "bare libpod path", path: "/libpod/system/df", upstream: libpodSystemDFUpstream},
-		{name: "podman v5.8.1 client spelling", path: "/v5.8.1/libpod/system/df", upstream: libpodSystemDFUpstream},
-		{name: "libpod minimum api version", path: "/v4.0.0/libpod/system/df", upstream: libpodSystemDFUpstream},
-		{name: "two-part version prefix", path: "/v5.0/libpod/system/df", upstream: libpodSystemDFUpstream},
-		{name: "undecodable upstream body", path: "/v5.8.1/libpod/system/df", upstream: `{"Containers":[{"ContainerID":"c-b","Names":"team-b-web"`},
+		{name: "bare libpod path", method: http.MethodGet, path: "/libpod/system/df", upstream: libpodSystemDFUpstream},
+		{name: "podman v5.8.1 client spelling", method: http.MethodGet, path: "/v5.8.1/libpod/system/df", upstream: libpodSystemDFUpstream},
+		{name: "libpod minimum api version", method: http.MethodGet, path: "/v4.0.0/libpod/system/df", upstream: libpodSystemDFUpstream},
+		{name: "two-part version prefix", method: http.MethodGet, path: "/v5.0/libpod/system/df", upstream: libpodSystemDFUpstream},
+		{name: "undecodable upstream body", method: http.MethodGet, path: "/v5.8.1/libpod/system/df", upstream: `{"Containers":[{"ContainerID":"c-b","Names":"team-b-web"`},
+		// HEAD must be refused the same as GET: the switch this refusal lives
+		// in used to gate on GET alone, so a HEAD request fell all the way
+		// through to next.ServeHTTP and reached the daemon unscoped.
+		{name: "HEAD request", method: http.MethodHead, path: "/v5.8.1/libpod/system/df", upstream: libpodSystemDFUpstream},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -518,7 +527,7 @@ func TestLibpodSystemDataUsageRefusedUnderOwnership(t *testing.T) {
 			handler := middlewareWithDeps(testLogger(), Options{Owner: "team-a"},
 				fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(countingUpstream(tt.upstream, &reached))
 
-			rec, meta := getPathForTest(t, handler, http.MethodGet, tt.path)
+			rec, meta := getPathForTest(t, handler, tt.method, tt.path)
 			if rec.Code != http.StatusForbidden {
 				t.Fatalf("status = %d, want 403; body: %s", rec.Code, rec.Body.String())
 			}
@@ -536,6 +545,43 @@ func TestLibpodSystemDataUsageRefusedUnderOwnership(t *testing.T) {
 			}
 			if !strings.Contains(body, "carry no labels") {
 				t.Errorf("refusal does not say why it happened: %s", body)
+			}
+		})
+	}
+}
+
+func TestLibpodShowMountedRefusedUnderOwnership(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodGet, path: "/libpod/containers/showmounted"},
+		{method: http.MethodGet, path: "/v5.8.1/libpod/containers/showmounted"},
+		// HEAD must be refused the same as GET; see the equivalent case in
+		// TestLibpodSystemDataUsageRefusedUnderOwnership for why.
+		{method: http.MethodHead, path: "/v5.8.1/libpod/containers/showmounted"},
+	} {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			t.Parallel()
+			reached := false
+			handler := middlewareWithDeps(testLogger(), Options{Owner: "team-a"},
+				fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(countingUpstream(`{"other-id":"/var/lib/containers/storage/overlay/other/merged"}`, &reached))
+
+			rec, meta := getPathForTest(t, handler, tt.method, tt.path)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403; body: %s", rec.Code, rec.Body.String())
+			}
+			if reached {
+				t.Fatal("the daemon was queried for mount paths that cannot be owner-scoped")
+			}
+			if meta.ReasonCode != "owner_libpod_show_mounted_unscopeable" {
+				t.Fatalf("meta.ReasonCode = %q, want owner_libpod_show_mounted_unscopeable", meta.ReasonCode)
+			}
+			for _, leaked := range []string{"other-id", "/var/lib/containers"} {
+				if strings.Contains(rec.Body.String(), leaked) {
+					t.Fatalf("mount inventory %q reached the client: %s", leaked, rec.Body.String())
+				}
 			}
 		})
 	}
@@ -589,5 +635,115 @@ func TestLibpodSystemDataUsageRefusalIsExact(t *testing.T) {
 				t.Fatalf("the refusal swallowed %s %s; status = %d, body: %s", tt.method, tt.path, rec.Code, rec.Body.String())
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// system_data_usage.go: ownerFilterWriter.Write — buffer size boundary. A
+// single write that lands exactly on filter.MaxResponseBodyBytes must still
+// be buffered in full; only strictly exceeding the limit trips overflow.
+// ---------------------------------------------------------------------------
+
+func TestOwnerFilterWriterWriteAcceptsExactlyMaxSizedWrite(t *testing.T) {
+	t.Parallel()
+	w := newOwnerFilterWriter(httptest.NewRecorder())
+	buf := bytes.Repeat([]byte("x"), filter.MaxResponseBodyBytes)
+
+	n, err := w.Write(buf)
+	if err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if n != len(buf) {
+		t.Fatalf("Write() n = %d, want %d", n, len(buf))
+	}
+	if w.overflow {
+		t.Fatal("overflow = true for a write exactly at the size limit, want false")
+	}
+	if w.body.Len() != len(buf) {
+		t.Fatalf("buffered body length = %d, want %d (an at-limit write must not be discarded)", w.body.Len(), len(buf))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// system_data_usage.go: ownerFilterWriter.flushOwned — non-2xx status
+// boundary. Status 300 (http.StatusMultipleChoices) is the first status the
+// "forward verbatim, do not attempt to parse as a system/df report" branch
+// must catch; 299 already falls through the same way, but is not the
+// mutated comparison's boundary and is not asserted here.
+// ---------------------------------------------------------------------------
+
+func TestOwnerFilterWriterFlushOwnedForwardsMultipleChoicesVerbatim(t *testing.T) {
+	t.Parallel()
+	rec := httptest.NewRecorder()
+	w := newOwnerFilterWriter(rec)
+	w.statusCode = http.StatusMultipleChoices
+	body := "not a system/df JSON body at all"
+	if _, err := w.Write([]byte(body)); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	if _, err := w.flushOwned(Options{Owner: "team-a"}); err != nil {
+		t.Fatalf("flushOwned() error = %v, want nil (a >=300 status must forward verbatim, never attempt to decode the body as a system/df report)", err)
+	}
+	if rec.Code != http.StatusMultipleChoices {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusMultipleChoices)
+	}
+	if rec.Body.String() != body {
+		t.Fatalf("body = %q, want %q forwarded verbatim", rec.Body.String(), body)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// system_data_usage.go: filterSystemDataUsageResponse — the
+// FirstSightSystemDataUsageSections(dropped); len(fresh) > 0 guard around the
+// "dropped unclassifiable response sections" warning log.
+// ---------------------------------------------------------------------------
+
+// TestFilterSystemDataUsageResponseLogsOnFirstUnclassifiableSection uses a
+// top-level /system/df key unique to this *run* of the test to prove the
+// warning fires on first sight.
+//
+// FirstSightSystemDataUsageSections (responsefilter package) dedupes through
+// an unexported, package-level sync.Map with no reset hook this package can
+// reach, so a fixed key would only fire once per test binary process: a
+// second pass (go test -count=2, or any other test in this process that
+// probes the same key) would find it already marked seen and the warning
+// would never log, failing this test nondeterministically depending on run
+// order. Mixing in the test name and a nanosecond timestamp keeps the key
+// fresh on every invocation without needing to touch that map at all.
+func TestFilterSystemDataUsageResponseLogsOnFirstUnclassifiableSection(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	probeSection := fmt.Sprintf("ZZZOwnershipMutationBoundaryProbe_%s_%d", t.Name(), time.Now().UnixNano())
+	upstream := `{"ImageUsage":{"TotalCount":1,"Items":[{"Id":"sha256:mine","Labels":{"` + ownerLabelForTest + `":"team-a"}}]},` +
+		`"` + probeSection + `":{"TotalCount":1,"Items":[{"Id":"x1"}]}}`
+	handler := middlewareWithDeps(logger, Options{Owner: "team-a"},
+		fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(systemDFUpstreamHandler(upstream))
+
+	getSystemDFForTest(t, handler)
+
+	if !strings.Contains(buf.String(), "dropped unclassifiable response sections") {
+		t.Fatalf("log = %q, want a warning naming the unclassifiable section", buf.String())
+	}
+	if !strings.Contains(buf.String(), probeSection) {
+		t.Fatalf("log = %q, want it to name %s", buf.String(), probeSection)
+	}
+}
+
+// TestFilterSystemDataUsageResponseNoLogWhenEveryKnownSectionSeen asserts the
+// negative: a response built only from known sections (no unclassifiable
+// keys) must not emit the warning at all.
+func TestFilterSystemDataUsageResponseNoLogWhenEveryKnownSectionSeen(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	handler := middlewareWithDeps(logger, Options{Owner: "team-a"},
+		fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(systemDFUpstreamHandler(modernSystemDFUpstream))
+
+	getSystemDFForTest(t, handler)
+
+	if strings.Contains(buf.String(), "dropped unclassifiable response sections") {
+		t.Fatalf("log = %q, want no unclassifiable-sections warning when every top-level key is a known section", buf.String())
 	}
 }

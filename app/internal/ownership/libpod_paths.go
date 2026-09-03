@@ -2,6 +2,7 @@ package ownership
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -96,8 +97,9 @@ func libpodContainerIdentifier(method, normPath string) (string, bool) {
 // bare DELETE /libpod/images/{name}, returning {name}. It is imageIdentifier's
 // libpod counterpart and follows its shape exactly: reserve the collection
 // keywords for the method that actually routes them, then trim a known
-// per-image action suffix from the END so a namespaced reference such as
-// "registry.io/team/app" survives intact — Podman routes its per-image
+// per-image action suffix for the method that routes it from the END so a
+// namespaced reference such as "registry.io/team/app" survives intact —
+// Podman routes its per-image
 // libpod paths with `{name:.*}`, so an identifier here legitimately contains
 // "/". (The one exception is /changes, routed `{name}`, which cannot span a
 // "/"; trimming it here is a superset of what the daemon will route, which
@@ -112,10 +114,12 @@ func libpodContainerIdentifier(method, normPath string) (string, bool) {
 // POST /libpod/images/scp/{name:.*} copies an image to another host, which is
 // the same exfiltration shape as a push and has to be owner-checked against
 // the same {name}. "scp" is a route segment rather than part of the
-// reference, so it is stripped — but only after the suffix trimming above,
-// because gorilla/mux resolves the per-image action routes first and Podman
-// registers them earlier: POST /libpod/images/scp/app/push is an image named
-// "scp/app" being pushed, not an scp of "app".
+// reference, so libpodImageScpSource classifies it before the generic suffix
+// handling can mistake a source ending in "/json" or another GET-only action
+// for an ordinary per-image route. The only collisions are POST push/tag/
+// untag: gorilla/mux resolves those per-image handlers first because Podman
+// registers them earlier, so POST /libpod/images/scp/app/push is an image
+// named "scp/app" being pushed, not an scp of "app".
 //
 // Two batch image endpoints are still NOT matched here, because they name
 // their images in the QUERY STRING rather than the path and so need a
@@ -128,8 +132,22 @@ func libpodContainerIdentifier(method, normPath string) (string, bool) {
 // allowed by any shipped preset, and both are covered in the Podman guide's
 // Known Limitations.
 func libpodImageIdentifier(method, normPath string) (string, bool) {
+	return libpodImageIdentifierForRoute(method, normPath, normPath)
+}
+
+// libpodImageIdentifierForRoute classifies the resource from normPath while
+// resolving route collisions against routePath. They differ when the client
+// percent-encodes a slash: net/http decodes URL.Path, but Podman's gorilla/mux
+// router uses URL.EscapedPath and therefore keeps that slash inside {name}.
+func libpodImageIdentifierForRoute(method, normPath, routePath string) (string, bool) {
 	if !strings.HasPrefix(normPath, libpodPrefix+"images/") {
 		return "", false
+	}
+	if identifier, remote, ok := libpodImageScpSource(method, routePath); ok {
+		if remote || identifier == "" {
+			return "", false
+		}
+		return identifier, true
 	}
 	rest := strings.TrimPrefix(normPath, libpodPrefix+"images/")
 	if rest == "" {
@@ -145,17 +163,62 @@ func libpodImageIdentifier(method, normPath string) (string, bool) {
 			return "", false
 		}
 	}
-	for _, suffix := range []string{"/json", "/history", "/tree", "/exists", "/changes", "/resolve", "/get", "/push", "/tag", "/untag"} {
+	var suffixes []string
+	switch method {
+	case http.MethodGet, http.MethodHead:
+		suffixes = []string{"/json", "/history", "/tree", "/exists", "/changes", "/resolve", "/get"}
+	case http.MethodPost:
+		suffixes = []string{"/push", "/tag", "/untag"}
+	}
+	for _, suffix := range suffixes {
 		if trimmed := strings.TrimSuffix(rest, suffix); trimmed != rest && trimmed != "" {
 			return trimmed, true
 		}
 	}
-	if method == http.MethodPost {
-		if reference, ok := strings.CutPrefix(rest, "scp/"); ok && reference != "" {
-			return reference, true
+	return rest, true
+}
+
+// libpodImageScpSource reports whether normPath is Podman's native image-SCP
+// route and parses the source using ParseImageSCPArg's v5.8.1 semantics.
+// `user@localhost::image` names a local image and returns the image portion;
+// any other source containing "::" is remote. A remote source names an image
+// in another daemon's store, so the local image inspect used by ownership
+// cannot classify it. A malformed local-user source returns an empty local
+// identifier so the caller can fail closed without issuing an invalid inspect.
+//
+// The push/tag/untag exclusions preserve Podman's route order: those handlers
+// are registered before /images/scp/{name:.*}, so a path such as
+// /images/scp/app/push pushes the local image named "scp/app" rather than
+// invoking image SCP.
+//
+// routePath is normalized from URL.EscapedPath, matching Podman's
+// mux.Router.UseEncodedPath. Once the route is known to be SCP, its variable is
+// unescaped exactly once, matching handlers/utils.GetName. This keeps an
+// encoded slash inside the source instead of mistaking it for an action-route
+// separator.
+func libpodImageScpSource(method, routePath string) (identifier string, remote, ok bool) {
+	if method != http.MethodPost {
+		return "", false, false
+	}
+	rest, ok := strings.CutPrefix(routePath, libpodPrefix+"images/scp/")
+	if !ok || rest == "" {
+		return "", false, false
+	}
+	for _, action := range []string{"push", "tag", "untag"} {
+		if rest == action || strings.HasSuffix(rest, "/"+action) {
+			return "", false, false
 		}
 	}
-	return rest, true
+	if decoded, err := url.PathUnescape(rest); err == nil {
+		rest = decoded
+	}
+	if strings.Contains(rest, "@localhost::") {
+		return strings.Split(rest, "::")[1], false, true
+	}
+	if strings.Contains(rest, "::") {
+		return "", true, true
+	}
+	return rest, false, true
 }
 
 // libpodExecIdentifier matches /libpod/exec/{id}/..., the libpod

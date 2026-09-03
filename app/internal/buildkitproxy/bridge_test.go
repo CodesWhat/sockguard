@@ -382,6 +382,98 @@ func TestLimitedReadCloserDisabledWhenLimitIsZero(t *testing.T) {
 	}
 }
 
+// TestLimitedReadCloserBoundaryArithmetic pins Read's own one-byte-sentinel
+// bookkeeping directly, at the one buffer size TestLimitedReadCloserCap
+// (driven through io.ReadAll's own variable-sized buffers) never controls
+// precisely: a caller-supplied p exactly as long as remaining. Read's
+// int64(len(p))-1 > l.remaining guard must NOT truncate p in this case (p is
+// already no longer than remaining+1), so the full read proceeds and comes
+// back clean. At these values (len(p) = remaining = 5) the guard evaluates
+// 4 > 5, false. Perturbing the "-1" to "+1" changes that to 6 > 5, true, so
+// the guard fires and re-slices p past its own length, panicking with a
+// capacity exactly at len(p), which is exactly what make([]byte, remaining)
+// below gives it, no slack to hide the bug. That kills both the
+// ARITHMETIC_BASE and INVERT_NEGATIVES mutants on the guard's "-1", since
+// both rewrite it to "+1".
+//
+// The CONDITIONALS_BOUNDARY mutant on the same guard, which shifts
+// "-1 > remaining" to "-1 >= remaining", is not killed by this test. It is
+// already documented as equivalent: at these values it still evaluates to
+// 4 >= 5, false, same as the original, so it does not fire either. It only
+// diverges from the original guard when len(p) == remaining+1, and there the
+// re-slice p[:remaining+1] is a no-op (p is already that length) rather than
+// a panic, so no test can distinguish the mutant from the original.
+func TestLimitedReadCloserBoundaryArithmetic(t *testing.T) {
+	const remaining = 5
+	src := io.NopCloser(strings.NewReader(strings.Repeat("x", 50)))
+	lrc := newLimitedReadCloser(src, remaining).(*limitedReadCloser)
+
+	p := make([]byte, remaining)
+	n, err := lrc.Read(p)
+	if err != nil {
+		t.Fatalf("Read() error = %v, want nil (a buffer exactly as long as remaining must not trip the cap)", err)
+	}
+	if n != remaining {
+		t.Fatalf("Read() n = %d, want %d", n, remaining)
+	}
+	if lrc.remaining != 0 {
+		t.Fatalf("remaining after Read() = %d, want 0", lrc.remaining)
+	}
+}
+
+// TestBridgeAuditOmitsReasonCodeWhenEmpty pins audit's reasonCode != ""
+// guard directly: an admitted (Mediate/Passthrough) call passes reasonCode
+// "" and must never emit a reason_code attr at all, only a denial/error path
+// supplies one. Exercised via the bridge method directly (not a full
+// RoundTrip) since the distinction is purely about whether the attr is
+// present in the log line, not about response bytes.
+func TestBridgeAuditOmitsReasonCodeWhenEmpty(t *testing.T) {
+	registry := NewSessionRegistry()
+	session := registry.Open(SessionKey{ClientIdentity: "c", Profile: "p"}, EndpointGRPC, "")
+
+	admittedLogs := &syncLogBuffer{}
+	admittedLogger := slog.New(slog.NewTextHandler(admittedLogs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	admittedBridge := &bridge{legs: bridgeLegs{endpoint: EndpointGRPC}, session: session, logger: admittedLogger}
+	admittedBridge.audit("moby.buildkit.v1.Control", "Solve", Mediate, "")
+	if strings.Contains(admittedLogs.String(), "reason_code=") {
+		t.Fatalf("admitted call's audit log carries a reason_code attr, want none:\n%s", admittedLogs.String())
+	}
+
+	deniedLogs := &syncLogBuffer{}
+	deniedLogger := slog.New(slog.NewTextHandler(deniedLogs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	deniedBridge := &bridge{legs: bridgeLegs{endpoint: EndpointGRPC}, session: session, logger: deniedLogger}
+	deniedBridge.audit("moby.buildkit.v1.Control", "Solve", Deny, "buildkit_policy_denied")
+	if !strings.Contains(deniedLogs.String(), "reason_code=buildkit_policy_denied") {
+		t.Fatalf("denied call's audit log missing reason_code attr:\n%s", deniedLogs.String())
+	}
+}
+
+// TestBridgeAuditLevelReflectsDisposition pins audit's disposition == Deny
+// guard: only a Deny disposition raises the log line to Info; every other
+// disposition (Mediate/Passthrough — an admitted call) logs at Debug, so
+// routine traffic doesn't spam an operator's default log level while a
+// denial still surfaces.
+func TestBridgeAuditLevelReflectsDisposition(t *testing.T) {
+	registry := NewSessionRegistry()
+	session := registry.Open(SessionKey{ClientIdentity: "c", Profile: "p"}, EndpointGRPC, "")
+
+	mediateLogs := &syncLogBuffer{}
+	mediateLogger := slog.New(slog.NewTextHandler(mediateLogs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	mediateBridge := &bridge{legs: bridgeLegs{endpoint: EndpointGRPC}, session: session, logger: mediateLogger}
+	mediateBridge.audit("moby.buildkit.v1.Control", "Solve", Mediate, "")
+	if strings.Contains(mediateLogs.String(), "level=INFO") {
+		t.Fatalf("an admitted (non-Deny) call logged at INFO, want DEBUG:\n%s", mediateLogs.String())
+	}
+
+	denyLogs := &syncLogBuffer{}
+	denyLogger := slog.New(slog.NewTextHandler(denyLogs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	denyBridge := &bridge{legs: bridgeLegs{endpoint: EndpointGRPC}, session: session, logger: denyLogger}
+	denyBridge.audit("moby.buildkit.v1.Control", "Solve", Deny, "buildkit_policy_denied")
+	if !strings.Contains(denyLogs.String(), "level=INFO") {
+		t.Fatalf("a Deny call did not log at INFO:\n%s", denyLogs.String())
+	}
+}
+
 func TestBridgeDeniedStreamBudgetTerminatesTunnel(t *testing.T) {
 	limits := DefaultLimits()
 	limits.DeniedStreamBudget = 1

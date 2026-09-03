@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strconv"
 	"strings"
@@ -709,6 +710,19 @@ func TestBridgeControlListWorkersDropsAndReportsSchemaDrift(t *testing.T) {
 	if !strings.Contains(out, "message=WorkerRecord") || !strings.Contains(out, "field=7") {
 		t.Fatalf("drift report does not name the message and field an operator has to look up:\n%s", out)
 	}
+
+	// runBridge must actually USE the driftLimiter it was handed, not just
+	// accept it and fall back to the package-level controlSchemaDrift
+	// anyway: the recorded sighting has to land in THIS limiter's own seen
+	// set, and must NOT land in the package-level one — which is exactly
+	// the isolation this test's own limiter comment above says it needs.
+	field := schemaDriftField{table: "WorkerRecord", number: 7}
+	if _, ok := limiter.seen.Load(field); !ok {
+		t.Fatal("the driftLimiter passed to runBridge never recorded the sighting; runBridge is not using it")
+	}
+	if _, ok := controlSchemaDrift.seen.Load(field); ok {
+		t.Fatal("the sighting landed in the package-level controlSchemaDrift instead of the limiter runBridge was given")
+	}
 }
 
 // TestSchemaDriftLimiterReportsEachFieldOnce pins the rate limit. ListWorkers
@@ -729,5 +743,106 @@ func TestSchemaDriftLimiterReportsEachFieldOnce(t *testing.T) {
 	}
 	if !limiter.allow(schemaDriftField{table: "WorkerRecord", number: 8}) {
 		t.Fatal("a different field in the same message must be reported on its own")
+	}
+}
+
+// TestReportControlSchemaDriftDefaultsToPackageLevelLimiter pins
+// reportControlSchemaDrift's OWN nil fallback directly — controlinfo.go's
+// copy of the same "nil means use the package-level limiter" convention
+// runBridge applies to schemaDriftLimiter before ever constructing a
+// *bridge (TestBridgeControlListWorkersDropsAndReportsSchemaDrift proves
+// that copy). A *bridge built any other way — the zero value, as here —
+// must still record through controlSchemaDrift rather than skip recording
+// or panic on a nil map access.
+func TestReportControlSchemaDriftDefaultsToPackageLevelLimiter(t *testing.T) {
+	registry := NewSessionRegistry()
+	session := registry.Open(SessionKey{ClientIdentity: "c", Profile: "p"}, EndpointGRPC, "")
+	b := &bridge{legs: bridgeLegs{endpoint: EndpointGRPC}, session: session, logger: noopLogger()}
+
+	field := schemaDriftField{table: "TestReportControlSchemaDriftDefaultsToPackageLevelLimiter", number: 999}
+	b.reportControlSchemaDrift("svc", "method", []schemaDriftField{field})
+
+	if _, ok := controlSchemaDrift.seen.Load(field); !ok {
+		t.Fatal("reportControlSchemaDrift with a nil schemaDriftLimiter did not fall back to the package-level controlSchemaDrift")
+	}
+}
+
+// TestForwardControlInfoMediatedHostFallback pins forwardControlInfoMediated's
+// own "default the outgoing Host to buildkitd" logic — the Control/Info and
+// Control/ListWorkers response-filtering path's copy of the same fallback
+// forward() applies on every other Mediate/Passthrough call
+// (TestBridgeForwardDefaultsHostWhenEmpty covers that copy). Driven through
+// fakeClientLeg rather than a live http2 round trip, same rationale as
+// forward()'s own unit tests: it isolates the Host-selection logic from
+// anything about the response.
+func TestForwardControlInfoMediatedHostFallback(t *testing.T) {
+	cases := []struct {
+		name     string
+		reqHost  string
+		wantHost string
+	}{
+		{"empty Host falls back to buildkitd", "", "buildkitd"},
+		{"non-empty Host is preserved verbatim, not clobbered", "custom-buildkitd-host", "custom-buildkitd-host"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeClientLeg{resp: &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{},
+				Body:       io.NopCloser(bytes.NewReader(nil)),
+			}}
+			b := newUnitTestBridge(t, fake)
+
+			req := httptest.NewRequest(http.MethodPost, "/moby.buildkit.v1.Control/ListWorkers", nil)
+			req.Host = tc.reqHost
+			rec := httptest.NewRecorder()
+
+			b.forwardControlInfoMediated(rec, req, "moby.buildkit.v1.Control", "ListWorkers")
+
+			if fake.gotReq == nil {
+				t.Fatal("forwardControlInfoMediated() never called RoundTrip")
+			}
+			if fake.gotReq.Host != tc.wantHost {
+				t.Fatalf("outgoing request Host = %q, want %q", fake.gotReq.Host, tc.wantHost)
+			}
+		})
+	}
+}
+
+// writeCountingRecorder counts Write calls independently of the bytes
+// written, distinguishing "Write was never called" from "Write was called
+// with a zero-length slice" — the two are indistinguishable through
+// httptest.ResponseRecorder's own Body content alone.
+type writeCountingRecorder struct {
+	*httptest.ResponseRecorder
+	writes int
+}
+
+func (w *writeCountingRecorder) Write(p []byte) (int, error) {
+	w.writes++
+	return w.ResponseRecorder.Write(p)
+}
+
+// TestForwardControlInfoMediatedSkipsBodyWriteForEmptyFrame pins the
+// len(frame) > 0 guard around forwardControlInfoMediated's body write: a
+// completely empty daemon response filters down to a zero-length frame, and
+// the flushWriter.Write call over it must be skipped entirely, not made with
+// an empty slice — the header (WriteHeader, already sent) is the whole
+// response in that case.
+func TestForwardControlInfoMediatedSkipsBodyWriteForEmptyFrame(t *testing.T) {
+	fake := &fakeClientLeg{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{},
+		Body:       io.NopCloser(bytes.NewReader(nil)),
+	}}
+	b := newUnitTestBridge(t, fake)
+
+	req := httptest.NewRequest(http.MethodPost, "/moby.buildkit.v1.Control/ListWorkers", nil)
+	rec := &writeCountingRecorder{ResponseRecorder: httptest.NewRecorder()}
+
+	b.forwardControlInfoMediated(rec, req, "moby.buildkit.v1.Control", "ListWorkers")
+
+	if rec.writes != 0 {
+		t.Fatalf("Write() called %d times for an empty filtered frame, want 0 (len(frame) > 0 must gate the write)", rec.writes)
 	}
 }

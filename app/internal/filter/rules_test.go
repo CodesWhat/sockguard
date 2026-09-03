@@ -49,11 +49,15 @@ func TestStripVersionPrefix(t *testing.T) {
 		{name: "valid major version", path: "/v1/containers/json", want: "/containers/json"},
 		{name: "valid major minor version", path: "/v1.45/containers/json", want: "/containers/json"},
 		{name: "invalid missing digits after v", path: "/v/x", want: "/v/x"},
-		{name: "invalid missing minor digits", path: "/v1./x", want: "/v1./x"},
+		// A trailing '.' is inside Podman's VersionedPath class ([0-9A-Za-z.-]*),
+		// so it strips like any other continuation char.
+		{name: "trailing dot in class still strips", path: "/v1./x", want: "/x"},
 		{name: "invalid no trailing slash", path: "/v1.45", want: "/v1.45"},
 		{name: "version root path", path: "/v1.45/", want: "/"},
 		{name: "double prefix strips only first", path: "/v1.45/v1.46/containers/json", want: "/v1.46/containers/json"},
-		{name: "invalid prefix without slash after digits", path: "/v1x/containers/json", want: "/v1x/containers/json"},
+		// Letters after the leading digit are inside Podman's class too
+		// (e.g. "5.8.1-dev"), so a trailing letter run strips as well.
+		{name: "trailing letters in class still strips", path: "/v1x/containers/json", want: "/containers/json"},
 		{name: "uppercase V is not a version prefix", path: "/V1.45/containers/json", want: "/V1.45/containers/json"},
 		{name: "uppercase V major only is not a version prefix", path: "/V1/containers/json", want: "/V1/containers/json"},
 		// Three-part semver -- Podman's libpod bindings send the full daemon
@@ -61,13 +65,29 @@ func TestStripVersionPrefix(t *testing.T) {
 		{name: "three-part semver version prefix", path: "/v5.0.0/libpod/containers/json", want: "/libpod/containers/json"},
 		{name: "three-part semver with larger components", path: "/v4.9.3/libpod/containers/json", want: "/libpod/containers/json"},
 		{name: "three-part semver root path", path: "/v5.0.0/", want: "/"},
-		{name: "three-part semver missing patch digits", path: "/v5.0./x", want: "/v5.0./x"},
+		{name: "Podman accepts prerelease suffix", path: "/v5.8.1-dev/libpod/containers/json", want: "/libpod/containers/json"},
+		{name: "three-part semver trailing dot still strips", path: "/v5.0./x", want: "/x"},
 		{name: "three-part semver no trailing slash", path: "/v5.0.0", want: "/v5.0.0"},
-		{name: "four-part version is not stripped", path: "/v1.2.3.4/x", want: "/v1.2.3.4/x"},
+		// Podman's VersionedPath regex has no part-count limit, so a
+		// four-part run strips just like three-part.
+		{name: "four-part version strips too", path: "/v1.2.3.4/x", want: "/x"},
+		{name: "invalid version character is not stripped", path: "/v5.8.1_rc/libpod/containers/json", want: "/v5.8.1_rc/libpod/containers/json"},
 		// Adversarial digit runs.
 		{name: "long digit run in major", path: "/v99999999999999999999/x", want: "/x"},
 		{name: "long digit run in minor", path: "/v1.99999999999999999999/x", want: "/x"},
 		{name: "long digit run in patch", path: "/v1.2.99999999999999999999/x", want: "/x"},
+		// Podman prerelease / dev builds (this fix): VersionedPath is
+		// [0-9][0-9A-Za-z.-]*, which admits "-dev", "-rc1", trailing '.'/'-',
+		// but not '+' (semver build metadata) or '_'.
+		{name: "podman dev prerelease suffix strips", path: "/v5.8.1-dev/libpod/networks/x/connect", want: "/libpod/networks/x/connect"},
+		{name: "podman rc prerelease suffix strips", path: "/v5.8.1-rc1/libpod/containers/json", want: "/libpod/containers/json"},
+		{name: "plus is not in podman's class", path: "/v5.8.1+build.7/libpod/containers/json", want: "/v5.8.1+build.7/libpod/containers/json"},
+		{name: "trailing dot before slash strips", path: "/v1.45./containers/json", want: "/containers/json"},
+		{name: "trailing dash before slash strips", path: "/v1.45-/containers/json", want: "/containers/json"},
+		{name: "bare v with no digits unchanged", path: "/v/containers/json", want: "/v/containers/json"},
+		{name: "first char after v must be a digit", path: "/vX/containers/json", want: "/vX/containers/json"},
+		{name: "podman dev prerelease no trailing slash", path: "/v5.8.1-dev", want: "/v5.8.1-dev"},
+		{name: "podman dev prerelease root path", path: "/v5.8.1-dev/", want: "/"},
 	}
 
 	for _, tt := range tests {
@@ -80,8 +100,8 @@ func TestStripVersionPrefix(t *testing.T) {
 	}
 }
 
-func TestStripVersionPrefixMatchesLegacyRegex(t *testing.T) {
-	legacyVersionPrefix := regexp.MustCompile(`^/v\d+(\.\d+){0,2}/`)
+func TestStripVersionPrefixMatchesPodmanRouteGrammar(t *testing.T) {
+	podmanVersionPrefix := regexp.MustCompile(`^/v[0-9][0-9A-Za-z.-]*/`)
 	paths := []string{
 		"",
 		"/",
@@ -112,14 +132,27 @@ func TestStripVersionPrefixMatchesLegacyRegex(t *testing.T) {
 		"/v1.2.3/",
 		"/v1.2./x",
 		"/v1.2.3.4/x",
+		"/v5.8.1-dev/libpod/manifests/app/json",
+		"/v5.8.1_rc/libpod/manifests/app/json",
+		"/v5.8.1-dev/libpod/images/load",
+		"/v5.8.1_rc/libpod/images/load",
+		// Podman prerelease / dev builds (this fix).
+		"/v5.8.1-dev/libpod/networks/x/connect",
+		"/v5.8.1-rc1/libpod/containers/json",
+		"/v5.8.1+build.7/libpod/containers/json",
+		"/v1.45./containers/json",
+		"/v1.45-/containers/json",
+		"/vX/containers/json",
+		"/v5.8.1-dev",
+		"/v5.8.1-dev/",
 	}
 
 	for _, path := range paths {
 		t.Run(path, func(t *testing.T) {
-			want := legacyVersionPrefix.ReplaceAllString(path, "/")
+			want := podmanVersionPrefix.ReplaceAllString(path, "/")
 			got := stripVersionPrefix(path)
 			if got != want {
-				t.Errorf("stripVersionPrefix(%q) = %q, want legacy regex result %q", path, got, want)
+				t.Errorf("stripVersionPrefix(%q) = %q, want Podman route result %q", path, got, want)
 			}
 		})
 	}
@@ -160,6 +193,12 @@ func TestNormalizePath(t *testing.T) {
 		// Three-part semver version prefix (#148): Podman libpod clients send
 		// the full daemon semver, unlike Docker's vN / vN.N.
 		{"three-part semver libpod prefix", "/v5.0.0/libpod/containers/json", "/libpod/containers/json"},
+		// Podman prerelease suffix combined with a traversal segment: Clean
+		// runs first and collapses ".." against the version-looking segment
+		// as an ordinary path component (it has no version semantics), so
+		// the result never reaches stripVersionPrefix with a "/v..." prefix
+		// at all. Assert the final result carries no ".." either way.
+		{"podman prerelease prefix with traversal", "/v1.45-foo/../containers/create", "/containers/create"},
 	}
 
 	for _, tt := range tests {
@@ -169,6 +208,11 @@ func TestNormalizePath(t *testing.T) {
 				t.Errorf("NormalizePath(%q) = %q, want %q", tt.path, got, tt.want)
 			}
 		})
+	}
+
+	// Dedicated assertion for the traversal case: no ".." segment survives.
+	if got := NormalizePath("/v1.45-foo/../containers/create"); strings.Contains(got, "..") {
+		t.Errorf("NormalizePath(%q) = %q still contains \"..\"", "/v1.45-foo/../containers/create", got)
 	}
 }
 
@@ -1098,16 +1142,16 @@ func TestGlobToRegexSpecialSequences(t *testing.T) {
 		{
 			name:        "trailing slash double-star matches bare prefix",
 			pattern:     "/containers/**",
-			match:       []string{"/containers", "/containers/", "/containers/json", "/containers/a/b/c"},
+			match:       []string{"/containers", "/containers/", "/containers/json", "/containers/a/b/c", "/containers/a\nb"},
 			dontMatch:   []string{"/containerstuff", "/images/json"},
-			regexSuffix: "(/.*)?",
+			regexSuffix: "(?s:.*)",
 		},
 		{
 			name:        "bare double-star matches everything",
 			pattern:     "/**",
-			match:       []string{"", "/", "/x", "/x/y/z"},
+			match:       []string{"", "/", "/x", "/x/y/z", "/x\ny"},
 			dontMatch:   nil,
-			regexSuffix: "(/.*)?",
+			regexSuffix: "(?s:.*)",
 		},
 		{
 			// Single * compiles to [^/]* — does not cross slash boundaries.
@@ -1122,7 +1166,8 @@ func TestGlobToRegexSpecialSequences(t *testing.T) {
 			regexSuffix: "[^/]*",
 		},
 		{
-			// Non-trailing /**/ compiles to (/.*)? — the slash + anything
+			// Non-trailing /**/ compiles to an optional slash + dot-all group,
+			// so the slash + anything
 			// group is optional, so the pattern also matches when there is
 			// no middle path at all (`/containers/json`). This is the
 			// established behavior; the test exists to lock it in.

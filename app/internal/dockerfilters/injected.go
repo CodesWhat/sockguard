@@ -40,6 +40,7 @@ import (
 // than in a package-level map: middlewares run concurrently across requests.
 
 type injectedContextKey struct{}
+type soleValueContextKey struct{}
 
 // RecordInjectedSelectors returns a request whose context notes values as
 // filter values this proxy injected under filterKey, in addition to anything
@@ -79,4 +80,34 @@ func InjectedSelectors(r *http.Request, filterKey string) []string {
 	}
 	recorded, _ := r.Context().Value(injectedContextKey{}).(map[string][]string)
 	return recorded[filterKey]
+}
+
+// RecordSoleValueFilter returns a request whose context records that filterKey
+// must contain exactly the value an earlier proxy layer wrote. It is used for
+// upstream filters whose repeated values widen rather than narrow a request,
+// so a later enforcement layer can refuse an impossible conjunction instead
+// of appending its own value or silently replacing the earlier constraint.
+func RecordSoleValueFilter(r *http.Request, filterKey string) *http.Request {
+	if r == nil || filterKey == "" {
+		return r
+	}
+	ctx := r.Context()
+	existing, _ := ctx.Value(soleValueContextKey{}).(map[string]struct{})
+	recorded := make(map[string]struct{}, len(existing)+1)
+	for key := range existing {
+		recorded[key] = struct{}{}
+	}
+	recorded[filterKey] = struct{}{}
+	return r.WithContext(context.WithValue(ctx, soleValueContextKey{}, recorded))
+}
+
+// RequiresSoleValue reports whether an earlier proxy layer requires
+// filterKey to remain single-valued on this request.
+func RequiresSoleValue(r *http.Request, filterKey string) bool {
+	if r == nil {
+		return false
+	}
+	recorded, _ := r.Context().Value(soleValueContextKey{}).(map[string]struct{})
+	_, ok := recorded[filterKey]
+	return ok
 }

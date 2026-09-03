@@ -208,6 +208,70 @@ func TestValidateMutationBounds(t *testing.T) {
 	})
 }
 
+// TestValidateMutationBoundsAtExactLimit pins every "must contain at most /
+// must not exceed" check to its exact limit, which must still validate
+// cleanly — only exceeding the limit (covered by TestValidateMutationBounds
+// above) may error. A `>` -> `>=` boundary mutation on any of these checks
+// would wrongly reject the exact-limit case tested here.
+func TestValidateMutationBoundsAtExactLimit(t *testing.T) {
+	t.Run("exactly 64 rules", func(t *testing.T) {
+		cfg := Defaults()
+		for i := 0; i < maxMutationRules; i++ {
+			cfg.Mutations.Rules = append(cfg.Mutations.Rules, validInjectRule(fmt.Sprintf("rule-%d", i), "container_create", mutationLabels(i, 1)))
+		}
+		if err := Validate(&cfg); err != nil {
+			t.Fatalf("Validate() with exactly %d rules = %v, want nil", maxMutationRules, err)
+		}
+	})
+
+	t.Run("exactly 32 labels in one rule and 256 total across 8 rules", func(t *testing.T) {
+		cfg := Defaults()
+		for i := 0; i < 8; i++ {
+			cfg.Mutations.Rules = append(cfg.Mutations.Rules, validInjectRule(fmt.Sprintf("rule-%d", i), "container_create", mutationLabels(i*maxMutationLabelsPerRule, maxMutationLabelsPerRule)))
+		}
+		if err := Validate(&cfg); err != nil {
+			t.Fatalf("Validate() with exactly %d labels/rule and %d total = %v, want nil", maxMutationLabelsPerRule, 8*maxMutationLabelsPerRule, err)
+		}
+	})
+
+	t.Run("label key and value at exact byte caps", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Mutations.Rules = []MutationRuleConfig{
+			validInjectRule("bytecap", "container_create", map[string]string{
+				strings.Repeat("k", maxMutationLabelKeyBytes): strings.Repeat("v", maxMutationLabelValueBytes),
+			}),
+		}
+		if err := Validate(&cfg); err != nil {
+			t.Fatalf("Validate() with label key/value at exact byte caps = %v, want nil", err)
+		}
+	})
+
+	t.Run("image field at exact byte cap", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Mutations.Rules = []MutationRuleConfig{
+			validImageRule("imgcap", "container_create", "prefix", strings.Repeat("f", maxMutationImageFieldBytes), "mirror.example/"),
+		}
+		if err := Validate(&cfg); err != nil {
+			t.Fatalf("Validate() with remap_image.from at exact byte cap = %v, want nil", err)
+		}
+	})
+}
+
+// TestValidateMutationImageLiteralAcceptsValidExactMatchReference exercises
+// validateMutationImageLiteral's err == nil path specifically, which only an
+// exact-match rule's from/to reaches: a well-formed reference must not
+// itself add a "must be a valid image reference" error to an otherwise
+// valid config.
+func TestValidateMutationImageLiteralAcceptsValidExactMatchReference(t *testing.T) {
+	cfg := Defaults()
+	cfg.Mutations.Rules = []MutationRuleConfig{
+		validImageRule("exact-valid", "container_create", "exact", "alpine:3.21", "mirror.example/alpine:3.21"),
+	}
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("Validate() with a well-formed exact-match image reference = %v, want nil", err)
+	}
+}
+
 func TestValidateMutationLabelShape(t *testing.T) {
 	tests := []struct {
 		name   string

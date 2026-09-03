@@ -66,9 +66,10 @@ const libpodEventsDenyReason = "libpod events denied: " +
 //
 //   - No selectors (a patterns-only policy): forwarded untouched, exactly as
 //     the Docker-compat /events is. Pattern axes reach neither endpoint —
-//     needsPatternResponseFilter covers two Docker-compat list endpoints and
-//     nothing else — and compileVisibilityPolicies already warns at startup
-//     that a patterns-only policy leaves the event stream unrestricted.
+//     needsPatternResponseFilter covers the four container/image list
+//     endpoints and nothing else — and compileVisibilityPolicies already warns
+//     at startup that a patterns-only policy leaves the event stream
+//     unrestricted.
 //   - One selector: injected as the sole `label` filter value.
 //   - Two or more: refused. See libpodEventsDenyReason.
 //
@@ -81,12 +82,13 @@ func handleLibpodVisibilityEventsRequest(next http.Handler, w http.ResponseWrite
 	case 0:
 		next.ServeHTTP(w, r)
 	case 1:
-		if err := setPodmanEventLabelFilter(r, policy.selectors[0]); err != nil {
+		forwarded, err := setPodmanEventLabelFilter(r, policy.selectors[0])
+		if err != nil {
 			logging.SetDeniedWithCode(w, r, reasonCodeVisibilityFilterInvalid, err.Error(), nil)
 			_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: err.Error()})
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, forwarded)
 	default:
 		denyLibpodEvents(w, r)
 	}

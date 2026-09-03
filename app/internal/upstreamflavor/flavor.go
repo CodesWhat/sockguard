@@ -56,6 +56,13 @@ const (
 // something else".
 var ErrUnrecognized = errors.New("upstream flavor: unrecognized engine")
 
+// ErrAmbiguous reports that the upstream's GET /version response named
+// components matching both engines. Neither guess is safe to make silently
+// — see classify — so this fails closed the same way ErrUnrecognized does,
+// distinguished so an operator reading the startup error can tell "named
+// nothing recognizable" from "named both".
+var ErrAmbiguous = errors.New("upstream flavor: ambiguous engine")
+
 // DetectTimeout bounds the whole probe: connect, request, and body read. The
 // upstream has already passed its reachability check by the time the probe
 // runs, and GET /version is the cheapest call either engine serves, so a
@@ -152,10 +159,13 @@ type versionPayload struct {
 // classify maps a /version body onto a Flavor.
 //
 // Every component is scanned before deciding, rather than returning on the
-// first hit, so a hypothetical response naming both engines resolves to
-// Podman regardless of the order they appear in. Podman winning a conflict is
-// the fail-closed tiebreak: the Podman answer refuses or narrows, the Docker
-// answer widens.
+// first hit, so the order components appear in never changes the answer. A
+// response naming both engines is ambiguous rather than resolved to either
+// one: silently picking Podman would refuse /events on what may be a real
+// Docker deployment, and silently picking Docker would reopen the exact
+// disclosure this package exists to close. Both guesses are wrong in a
+// direction the operator can't see, so a dual match fails closed the same
+// way naming neither engine does.
 func classify(body []byte) (Flavor, error) {
 	var payload versionPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -172,6 +182,8 @@ func classify(body []byte) (Flavor, error) {
 		}
 	}
 	switch {
+	case podman && docker:
+		return "", fmt.Errorf("%w: GET /version named both a %q and a Podman component", ErrAmbiguous, dockerEngineComponent)
 	case podman:
 		return Podman, nil
 	case docker:

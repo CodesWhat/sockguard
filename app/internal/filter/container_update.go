@@ -19,6 +19,10 @@ type ContainerUpdateOptions struct {
 	AllowCapabilities    bool
 	AllowRestartPolicy   bool
 	AllowResourceUpdates bool
+	// AllowBlindWrites acknowledges native libpod update fields that cannot
+	// be constrained by the structured container-update gates. Runtime wiring
+	// supplies it from the global insecure_allow_body_blind_writes setting.
+	AllowBlindWrites bool
 
 	// RequireMemoryLimit/RequireCPULimit/RequireCPULimitHard/RequirePidsLimit
 	// are enforced by ResourceLimitGuard (resource_limit_guard.go), not by
@@ -40,6 +44,7 @@ type containerUpdatePolicy struct {
 	allowCapabilities    bool
 	allowRestartPolicy   bool
 	allowResourceUpdates bool
+	allowBlindWrites     bool
 }
 
 func newContainerUpdatePolicy(opts ContainerUpdateOptions) containerUpdatePolicy {
@@ -49,6 +54,7 @@ func newContainerUpdatePolicy(opts ContainerUpdateOptions) containerUpdatePolicy
 		allowCapabilities:    opts.AllowCapabilities,
 		allowRestartPolicy:   opts.AllowRestartPolicy,
 		allowResourceUpdates: opts.AllowResourceUpdates,
+		allowBlindWrites:     opts.AllowBlindWrites,
 	}
 }
 
@@ -88,19 +94,22 @@ func (p containerUpdatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if !p.allowRestartPolicy && containerUpdateHasAnyField(objects, containerUpdateRestartPolicyFields...) {
 		return "container update denied: restart policy changes are not allowed", nil
 	}
-	if !p.allowResourceUpdates && containerUpdateHasAnyField(objects, containerUpdateResourceControlFields...) {
+	if !p.allowResourceUpdates && containerUpdateHasAnyResourceChange(objects, containerUpdateResourceControlFields...) {
 		return "container update denied: resource control changes are not allowed", nil
 	}
 
 	return "", nil
 }
 
+// isContainerUpdatePath matches POST /containers/{id}/update, the
+// Docker-compat spelling only. The libpod spelling is
+// isLibpodContainerUpdatePath and routes to inspectLibpod instead, because
+// the two endpoints share nothing but a name on the wire. Both are built from
+// containerSubresourcePath so the pair cannot drift; the split here is a
+// deliberate body-shape decision, not two independently maintained lists.
 func isContainerUpdatePath(normalizedPath string) bool {
-	if !strings.HasPrefix(normalizedPath, "/containers/") {
-		return false
-	}
-	_, tail, ok := strings.Cut(strings.TrimPrefix(normalizedPath, "/containers/"), "/")
-	return ok && tail == "update"
+	libpod, ok := containerSubresourcePath(normalizedPath, "update")
+	return ok && !libpod
 }
 
 func containerUpdatePolicyObjects(root map[string]json.RawMessage) []map[string]json.RawMessage {
@@ -139,15 +148,67 @@ func decodeContainerUpdateObjectField(root map[string]json.RawMessage, name stri
 
 func containerUpdateHasAnyField(objects []map[string]json.RawMessage, fields ...string) bool {
 	for _, object := range objects {
-		for key := range object {
+		for key, raw := range object {
 			for _, field := range fields {
-				if strings.EqualFold(key, field) {
+				if strings.EqualFold(key, field) && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 					return true
 				}
 			}
 		}
 	}
 	return false
+}
+
+// containerUpdateHasAnyResourceChange distinguishes Moby's serialized zero
+// values from resource mutations. UpdateConfig embeds Resources without
+// omitempty tags, so a restart-only client request contains every resource
+// key. The daemon applies scalar values only when nonzero, string values only
+// when nonempty, and pointer/slice values only when non-nil. JSON null is nil;
+// an empty array is deliberately not treated as nil because the blkio arrays
+// use a non-nil empty slice to clear their existing value.
+func containerUpdateHasAnyResourceChange(objects []map[string]json.RawMessage, fields ...string) bool {
+	for _, object := range objects {
+		for key, raw := range object {
+			for _, field := range fields {
+				if strings.EqualFold(key, field) && containerUpdateResourceValueChanges(field, raw) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func containerUpdateResourceValueChanges(field string, raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if bytes.Equal(trimmed, []byte("null")) {
+		return false
+	}
+
+	switch field {
+	case "BlkioWeight",
+		"CpuCount",
+		"CpuPercent",
+		"CpuPeriod",
+		"CpuQuota",
+		"CpuRealtimePeriod",
+		"CpuRealtimeRuntime",
+		"CpuShares",
+		"IOMaximumBandwidth",
+		"IOMaximumIOps",
+		"KernelMemory",
+		"KernelMemoryTCP",
+		"Memory",
+		"MemoryReservation",
+		"MemorySwap",
+		"NanoCpus":
+		return !bytes.Equal(trimmed, []byte("0"))
+	case "CgroupParent", "CgroupnsMode", "CpusetCpus", "CpusetMems":
+		var value string
+		return json.Unmarshal(trimmed, &value) != nil || value != ""
+	default:
+		return true
+	}
 }
 
 var containerUpdatePrivilegedFields = []string{

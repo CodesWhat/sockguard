@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -28,10 +29,7 @@ import (
 	"github.com/codeswhat/sockguard/app/internal/upstream"
 )
 
-const (
-	wantHijackHandshakeTimeout  = 30 * time.Second
-	wantHijackInactivityTimeout = 10 * time.Minute
-)
+const wantHijackHandshakeTimeout = 30 * time.Second
 
 // safeBuffer is a goroutine-safe bytes.Buffer for concurrent log capture.
 type safeBuffer struct {
@@ -557,17 +555,105 @@ func TestHijackHandler_FullUpgrade(t *testing.T) {
 	serverWg.Wait()
 }
 
-// unixSocketDialer adapts a unix socket path to the upstream.Dialer seam so the
+// unixSocketDialer adapts a unix socket path to the upstream.RequestDialer seam so the
 // HijackHandlerWithDialer path can be exercised against an in-test mock daemon.
-type unixSocketDialer struct{ socketPath string }
+type unixSocketDialer struct {
+	socketPath  string
+	basePath    string
+	rawBasePath string
+}
+
+type cancelProbeDialer struct {
+	started chan struct{}
+	result  chan error
+	release chan struct{}
+}
+
+func (d *cancelProbeDialer) DialContext(context.Context, string, string) (net.Conn, error) {
+	return nil, errors.New("unexpected DialContext call")
+}
+
+func (d *cancelProbeDialer) DialRequest(ctx context.Context, _ *http.Request) (net.Conn, *http.Request, error) {
+	close(d.started)
+	select {
+	case <-ctx.Done():
+		d.result <- ctx.Err()
+		return nil, nil, ctx.Err()
+	case <-d.release:
+		err := errors.New("dial released without request cancellation")
+		d.result <- err
+		return nil, nil, err
+	}
+}
+
+func TestUpgradeHijackConnectionDialerPropagatesRequestCancellation(t *testing.T) {
+	t.Parallel()
+	dialer := &cancelProbeDialer{
+		started: make(chan struct{}),
+		result:  make(chan error, 1),
+		release: make(chan struct{}),
+	}
+	released := false
+	releaseDial := func() {
+		if !released {
+			close(dialer.release)
+			released = true
+		}
+	}
+	defer releaseDial()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "http://client/v1.53/containers/abc/attach", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	upgraded := make(chan bool, 1)
+	go func() {
+		_, ok := upgradeHijackConnectionDialer(rec, req, dialer, testLogger())
+		upgraded <- ok
+	}()
+
+	<-dialer.started
+	cancel()
+
+	select {
+	case err := <-dialer.result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("DialRequest context error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		releaseDial()
+		<-upgraded
+		t.Fatal("request cancellation did not reach DialRequest")
+	}
+	if ok := <-upgraded; ok {
+		t.Fatal("upgrade succeeded after request cancellation")
+	}
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+}
 
 func (d unixSocketDialer) DialContext(ctx context.Context, _, _ string) (net.Conn, error) {
 	return (&net.Dialer{}).DialContext(ctx, "unix", d.socketPath)
 }
 
+func (d unixSocketDialer) DialRequest(ctx context.Context, req *http.Request) (net.Conn, *http.Request, error) {
+	conn, err := d.DialContext(ctx, "", "")
+	if err != nil {
+		return nil, nil, err
+	}
+	clone := req.Clone(req.Context())
+	urlCopy := *req.URL
+	clone.URL = &urlCopy
+	clone.URL.Path = d.basePath + req.URL.Path
+	if d.rawBasePath != "" || req.URL.RawPath != "" {
+		clone.URL.RawPath = d.rawBasePath + req.URL.EscapedPath()
+	}
+	return conn, clone, nil
+}
+
 // TestHijackHandlerWithDialer_FullUpgrade mirrors TestHijackHandler_FullUpgrade
 // for the multi-host dialer path: the hijack must dial the active endpoint via
-// the upstream.Dialer, complete the 101 upgrade, and proxy bytes bidirectionally.
+// the upstream.RequestDialer, complete the 101 upgrade, and proxy bytes bidirectionally.
 func TestHijackHandlerWithDialer_FullUpgrade(t *testing.T) {
 	baseline := runtime.NumGoroutine()
 
@@ -597,6 +683,9 @@ func TestHijackHandlerWithDialer_FullUpgrade(t *testing.T) {
 			return
 		}
 		req.Body.Close()
+		if req.RequestURI != "/proxy%2Fapi/containers/abc/attach?stream=1" {
+			t.Errorf("mock: RequestURI = %q, want prefixed escaped path", req.RequestURI)
+		}
 
 		resp := &http.Response{
 			StatusCode: http.StatusSwitchingProtocols,
@@ -624,7 +713,11 @@ func TestHijackHandlerWithDialer_FullUpgrade(t *testing.T) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("next handler should not be called for hijack endpoint")
 	})
-	handler := HijackHandlerWithDialer(unixSocketDialer{socketPath: socketPath}, logger, next)
+	handler := HijackHandlerWithDialer(unixSocketDialer{
+		socketPath:  socketPath,
+		basePath:    "/proxy/api",
+		rawBasePath: "/proxy%2Fapi",
+	}, hijackInactivityTimeout, logger, next)
 
 	clientLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1583,7 +1676,7 @@ func TestProxyHijackStreamsClosesConnections(t *testing.T) {
 		upstreamBuf:  bufio.NewReader(strings.NewReader("")),
 		clientConn:   clientConn,
 		clientBuf:    bufio.NewReadWriter(bufio.NewReader(strings.NewReader("")), bufio.NewWriter(io.Discard)),
-	}, logger)
+	}, hijackInactivityTimeout, logger)
 
 	if got := copyCalls.Load(); got != 2 {
 		t.Fatalf("copyHijackBuffer calls = %d, want 2", got)
@@ -1618,7 +1711,7 @@ func TestProxyHijackStreamsWrapperClosesConnections(t *testing.T) {
 		upstreamBuf:  bufio.NewReader(strings.NewReader("")),
 		clientConn:   clientConn,
 		clientBuf:    bufio.NewReadWriter(bufio.NewReader(strings.NewReader("")), bufio.NewWriter(io.Discard)),
-	}, logger)
+	}, hijackInactivityTimeout, logger)
 
 	if clientConn.closeWriteCalls == 0 || upstreamConn.closeWriteCalls == 0 {
 		t.Fatal("expected proxyHijackStreams wrapper to half-close both sides")
@@ -1650,7 +1743,7 @@ func TestProxyHijackStreamsHalfClosesOnCopyPanic(t *testing.T) {
 			upstreamBuf:  bufio.NewReader(strings.NewReader("")),
 			clientConn:   clientConn,
 			clientBuf:    bufio.NewReadWriter(bufio.NewReader(strings.NewReader("")), bufio.NewWriter(io.Discard)),
-		}, logger)
+		}, hijackInactivityTimeout, logger)
 		close(done)
 	}()
 
@@ -1674,168 +1767,278 @@ func TestProxyHijackStreamsHalfClosesOnCopyPanic(t *testing.T) {
 	}
 }
 
-func TestInactivityDeadlineReaderReturnsDeadlineError(t *testing.T) {
-	wantErr := errors.New("deadline boom")
-	conn := &funcConn{
-		readDeadlineFn: func(time.Time) error { return wantErr },
-		readFn: func([]byte) (int, error) {
-			t.Fatal("reader should not be called when deadline setup fails")
-			return 0, nil
-		},
+// TestProxyHijackStreamsTornDownAfterConfiguredInactivityTimeout proves the
+// configurable inactivity timeout (upstream.hijack_inactivity_timeout,
+// threaded into proxyHijackStreams as an explicit parameter rather than the
+// hijackInactivityTimeout package default) actually tears an idle hijacked
+// connection down, at a scaled-down duration instead of the 10m default.
+// The client→upstream direction is given an already-exhausted (EOF) source
+// so the test's timing is driven entirely by the upstream→client direction,
+// which reads from a real net.Pipe conn nobody writes to.
+func TestProxyHijackStreamsTornDownAfterConfiguredInactivityTimeout(t *testing.T) {
+	restoreHijackHooks(t)
+	const timeout = 60 * time.Millisecond
+
+	upstreamConn, upstreamPeer := net.Pipe()
+	defer upstreamPeer.Close()
+	clientConn := &funcConn{}
+
+	var logs safeBuffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	done := make(chan struct{})
+	go func() {
+		proxyHijackStreams(&hijackSession{
+			path:         "/containers/abc/attach",
+			upstreamConn: upstreamConn,
+			upstreamBuf:  bufio.NewReader(upstreamConn),
+			clientConn:   clientConn,
+			clientBuf:    bufio.NewReadWriter(bufio.NewReader(strings.NewReader("")), bufio.NewWriter(io.Discard)),
+		}, timeout, logger)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected an idle hijacked connection to be torn down once the configured inactivity timeout elapsed")
 	}
 
-	_, err := withReadInactivityDeadline(strings.NewReader("data"), conn, time.Second).Read(make([]byte, 4))
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("Read() error = %v, want %v", err, wantErr)
+	if count := strings.Count(logs.String(), "hijack: idle connection closed after inactivity timeout"); count != 1 {
+		t.Fatalf("idle-timeout warn log count = %d, want 1; logs = %q", count, logs.String())
+	}
+	for line := range strings.SplitSeq(logs.String(), "\n") {
+		if strings.Contains(line, "hijack: idle connection closed after inactivity timeout") && strings.Contains(line, "direction=") {
+			t.Fatalf("connection-wide idle log must not blame one direction, got %q", line)
+		}
 	}
 }
 
-func TestInactivityDeadlineWriterReturnsDeadlineError(t *testing.T) {
-	wantErr := errors.New("deadline boom")
-	conn := &funcConn{
-		writeDeadlineFn: func(time.Time) error { return wantErr },
-		writeFn: func([]byte) (int, error) {
-			t.Fatal("writer should not be called when deadline setup fails")
-			return 0, nil
-		},
+// TestProxyHijackStreamsNotTornDownWhileEitherDirectionActive proves that
+// inactivity belongs to the whole hijacked session. Continuous upstream
+// output must keep the client-input direction usable past one timeout.
+func TestProxyHijackStreamsNotTornDownWhileEitherDirectionActive(t *testing.T) {
+	restoreHijackHooks(t)
+	const timeout = 120 * time.Millisecond
+	const writeInterval = 30 * time.Millisecond
+
+	upstreamConn, upstreamPeer := net.Pipe()
+	clientConn, clientPeer := net.Pipe()
+	defer upstreamPeer.Close()
+	defer clientPeer.Close()
+
+	var logs safeBuffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	done := make(chan struct{})
+	go func() {
+		proxyHijackStreams(&hijackSession{
+			path:         "/containers/abc/attach",
+			upstreamConn: upstreamConn,
+			upstreamBuf:  bufio.NewReader(upstreamConn),
+			clientConn:   clientConn,
+			clientBuf:    bufio.NewReadWriter(bufio.NewReader(clientConn), bufio.NewWriter(clientConn)),
+		}, timeout, logger)
+		close(done)
+	}()
+
+	for i := byte(0); i < 6; i++ {
+		time.Sleep(writeInterval)
+		writeDone := make(chan error, 1)
+		go func(value byte) {
+			_, err := upstreamPeer.Write([]byte{value})
+			writeDone <- err
+		}(i)
+		if err := clientPeer.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+			t.Fatalf("set client read deadline: %v", err)
+		}
+		got := []byte{0}
+		if _, err := io.ReadFull(clientPeer, got); err != nil {
+			t.Fatalf("read active upstream output: %v; logs = %q", err, logs.String())
+		}
+		if got[0] != i {
+			t.Fatalf("upstream output = %d, want %d", got[0], i)
+		}
+		if err := <-writeDone; err != nil {
+			t.Fatalf("write active upstream output: %v", err)
+		}
 	}
 
-	_, err := withWriteInactivityDeadline(io.Discard, conn, time.Second).Write([]byte("data"))
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("Write() error = %v, want %v", err, wantErr)
+	if err := clientPeer.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
+		t.Fatalf("set client write deadline: %v", err)
+	}
+	clientWriteDone := make(chan error, 1)
+	go func() {
+		_, err := clientPeer.Write([]byte("input"))
+		clientWriteDone <- err
+	}()
+	if err := upstreamPeer.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+		t.Fatalf("set upstream read deadline: %v", err)
+	}
+	gotInput := make([]byte, len("input"))
+	if _, err := io.ReadFull(upstreamPeer, gotInput); err != nil {
+		t.Fatalf("read client input after sustained upstream output: %v; logs = %q", err, logs.String())
+	}
+	if string(gotInput) != "input" {
+		t.Fatalf("client input = %q, want %q", gotInput, "input")
+	}
+	if err := <-clientWriteDone; err != nil {
+		t.Fatalf("write client input after sustained upstream output: %v", err)
+	}
+
+	_ = clientPeer.Close()
+	_ = upstreamPeer.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxyHijackStreams did not return after peers closed")
+	}
+	if strings.Contains(logs.String(), "hijack: idle connection closed after inactivity timeout") {
+		t.Fatalf("did not expect an idle-timeout warn log while the connection was active, got %q", logs.String())
 	}
 }
 
-// TestInactivityDeadlineRefreshBoundary pins the strict `>` boundary in
-// inactivityDeadlineReader.Read and inactivityDeadlineWriter.Write
-// (hijack.go:459, hijack.go:487). The condition is
-// `now.Sub(lastRefresh) > refreshInterval`; the surviving CONDITIONALS_BOUNDARY
-// mutation flips it to `>=`. A flip would cause an extra SetReadDeadline /
-// SetWriteDeadline call when the elapsed time equals refreshInterval exactly.
-//
-// We pin the boundary using the timeNowHook to drive elapsed time to *exactly*
-// refreshInterval on the second Read/Write — the only point where `>` and `>=`
-// disagree. The first call always refreshes (lastRefresh is zero-valued); the
-// boundary case asserts that the second call does NOT refresh.
-func TestInactivityDeadlineRefreshBoundary(t *testing.T) {
-	t.Run("reader does not refresh when elapsed == refreshInterval", func(t *testing.T) {
-		base := time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC)
-		refreshInterval := 250 * time.Millisecond // = timeout/4 of 1s
-		// Sequence: first Read sees base (refresh, lastRefresh=base).
-		// Second Read sees base+refreshInterval; elapsed == refreshInterval;
-		// `>` says don't refresh, `>=` says refresh. We assert "don't refresh."
-		times := []time.Time{base, base.Add(refreshInterval)}
-		idx := 0
-		restore := swapTimeNow(func() time.Time {
-			ts := times[idx]
-			idx++
-			return ts
-		})
-		defer restore()
+// TestWaitForHijackInactivityReturnsAtExactlyZeroRemaining covers the
+// "remaining <= 0" boundary at hijack.go:383 (CONDITIONALS_BOUNDARY to
+// "remaining < 0"). idleFor() is pinned to a constant 1ns by backdating
+// started to the zero time.Time (time.Since saturates at the max
+// representable Duration) and setting lastElapsed to one nanosecond less
+// than that max, so timeout - idleFor() lands on exactly 0 every time it's
+// recomputed. Under "<= 0" the wait returns true on the first pass; under
+// the "< 0" mutant, remaining == 0 never counts as expired, timer.Reset(0)
+// keeps firing immediately, and the loop spins forever.
+func TestWaitForHijackInactivityReturnsAtExactlyZeroRemaining(t *testing.T) {
+	activity := &hijackActivity{}
+	activity.lastElapsed.Store(math.MaxInt64 - 1)
 
-		conn := &funcConn{readFn: func(p []byte) (int, error) { return len(p), nil }}
-		r := withReadInactivityDeadline(strings.NewReader("ab"), conn, time.Second)
+	const timeout = 1 * time.Nanosecond
+	resultCh := make(chan bool, 1)
+	go func() {
+		resultCh <- waitForHijackInactivity(activity, timeout, nil)
+	}()
 
-		if _, err := r.Read(make([]byte, 1)); err != nil {
-			t.Fatalf("first Read: %v", err)
+	select {
+	case got := <-resultCh:
+		if !got {
+			t.Fatal("waitForHijackInactivity() = false, want true at remaining == 0")
 		}
-		if got := conn.readDeadlineCalls; got != 1 {
-			t.Fatalf("after first Read: readDeadlineCalls=%d, want 1", got)
-		}
-		if _, err := r.Read(make([]byte, 1)); err != nil {
-			t.Fatalf("second Read: %v", err)
-		}
-		if got := conn.readDeadlineCalls; got != 1 {
-			t.Fatalf("after second Read at exact boundary: readDeadlineCalls=%d, want 1 (mutant `>=` would yield 2)", got)
-		}
-	})
-
-	t.Run("reader refreshes when elapsed > refreshInterval", func(t *testing.T) {
-		base := time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC)
-		refreshInterval := 250 * time.Millisecond
-		times := []time.Time{base, base.Add(refreshInterval + time.Nanosecond)}
-		idx := 0
-		restore := swapTimeNow(func() time.Time {
-			ts := times[idx]
-			idx++
-			return ts
-		})
-		defer restore()
-
-		conn := &funcConn{readFn: func(p []byte) (int, error) { return len(p), nil }}
-		r := withReadInactivityDeadline(strings.NewReader("ab"), conn, time.Second)
-
-		if _, err := r.Read(make([]byte, 1)); err != nil {
-			t.Fatalf("first Read: %v", err)
-		}
-		if _, err := r.Read(make([]byte, 1)); err != nil {
-			t.Fatalf("second Read: %v", err)
-		}
-		if got := conn.readDeadlineCalls; got != 2 {
-			t.Fatalf("after second Read just past boundary: readDeadlineCalls=%d, want 2", got)
-		}
-	})
-
-	t.Run("writer does not refresh when elapsed == refreshInterval", func(t *testing.T) {
-		base := time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC)
-		refreshInterval := 250 * time.Millisecond
-		times := []time.Time{base, base.Add(refreshInterval)}
-		idx := 0
-		restore := swapTimeNow(func() time.Time {
-			ts := times[idx]
-			idx++
-			return ts
-		})
-		defer restore()
-
-		conn := &funcConn{writeFn: func(p []byte) (int, error) { return len(p), nil }}
-		w := withWriteInactivityDeadline(io.Discard, conn, time.Second)
-
-		if _, err := w.Write([]byte("a")); err != nil {
-			t.Fatalf("first Write: %v", err)
-		}
-		if got := conn.writeDeadlineCalls; got != 1 {
-			t.Fatalf("after first Write: writeDeadlineCalls=%d, want 1", got)
-		}
-		if _, err := w.Write([]byte("b")); err != nil {
-			t.Fatalf("second Write: %v", err)
-		}
-		if got := conn.writeDeadlineCalls; got != 1 {
-			t.Fatalf("after second Write at exact boundary: writeDeadlineCalls=%d, want 1 (mutant `>=` would yield 2)", got)
-		}
-	})
-
-	t.Run("writer refreshes when elapsed > refreshInterval", func(t *testing.T) {
-		base := time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC)
-		refreshInterval := 250 * time.Millisecond
-		times := []time.Time{base, base.Add(refreshInterval + time.Nanosecond)}
-		idx := 0
-		restore := swapTimeNow(func() time.Time {
-			ts := times[idx]
-			idx++
-			return ts
-		})
-		defer restore()
-
-		conn := &funcConn{writeFn: func(p []byte) (int, error) { return len(p), nil }}
-		w := withWriteInactivityDeadline(io.Discard, conn, time.Second)
-
-		if _, err := w.Write([]byte("a")); err != nil {
-			t.Fatalf("first Write: %v", err)
-		}
-		if _, err := w.Write([]byte("b")); err != nil {
-			t.Fatalf("second Write: %v", err)
-		}
-		if got := conn.writeDeadlineCalls; got != 2 {
-			t.Fatalf("after second Write just past boundary: writeDeadlineCalls=%d, want 2", got)
-		}
-	})
+	case <-time.After(2 * time.Second):
+		t.Fatal("waitForHijackInactivity did not return within 2s; remaining == 0 was not treated as expired")
+	}
 }
 
-func swapTimeNow(fn func() time.Time) func() {
-	prev := timeNowHook
-	timeNowHook = fn
-	return func() { timeNowHook = prev }
+func TestHijackActivityNeverMovesBackward(t *testing.T) {
+	activity := newHijackActivity()
+	activity.record(2 * time.Second)
+	activity.record(time.Second)
+
+	if got := time.Duration(activity.lastElapsed.Load()); got != 2*time.Second {
+		t.Fatalf("last activity = %s, want %s", got, 2*time.Second)
+	}
+}
+
+func TestActivityReaderTouchesOnlyOnPositiveRead(t *testing.T) {
+	// Covers activityReader.Read's "if n > 0" guard at hijack.go:131: a
+	// zero-byte read (e.g. a nil-error EOF-adjacent read) must not touch
+	// the activity clock, while any positive-byte read must.
+	activity := newHijackActivity()
+	// started is backdated so time.Since(started) is deterministically
+	// large (~1s) at the touch() below, rather than relying on wall-clock
+	// progression between construction and the read: on a coarse clock,
+	// time.Since(newHijackActivity().started) can read back as 0 ns.
+	activity.started = time.Now().Add(-time.Second)
+	if got := activity.lastElapsed.Load(); got != 0 {
+		t.Fatalf("lastElapsed = %d before any read, want 0", got)
+	}
+
+	zero := activityReader{reader: funcReader(func(p []byte) (int, error) { return 0, nil }), activity: activity}
+	if _, err := zero.Read(make([]byte, 4)); err != nil {
+		t.Fatalf("Read() error = %v, want nil", err)
+	}
+	if got := activity.lastElapsed.Load(); got != 0 {
+		t.Fatalf("lastElapsed = %d after a zero-byte read, want unchanged 0", got)
+	}
+
+	nonzero := activityReader{reader: funcReader(func(p []byte) (int, error) { return 3, nil }), activity: activity}
+	if _, err := nonzero.Read(make([]byte, 4)); err != nil {
+		t.Fatalf("Read() error = %v, want nil", err)
+	}
+	if got := activity.lastElapsed.Load(); got == 0 {
+		t.Fatal("lastElapsed unchanged after a positive-byte read, want touch() to have recorded elapsed time")
+	}
+}
+
+func TestActivityWriterTouchesOnlyOnPositiveWrite(t *testing.T) {
+	// Covers activityWriter.Write's "if n > 0" guard at hijack.go:144,
+	// mirroring TestActivityReaderTouchesOnlyOnPositiveRead for the write side.
+	activity := newHijackActivity()
+	// See TestActivityReaderTouchesOnlyOnPositiveRead: backdate started so
+	// touch()'s elapsed reading is deterministically nonzero.
+	activity.started = time.Now().Add(-time.Second)
+	if got := activity.lastElapsed.Load(); got != 0 {
+		t.Fatalf("lastElapsed = %d before any write, want 0", got)
+	}
+
+	zero := activityWriter{writer: funcWriter(func(p []byte) (int, error) { return 0, nil }), activity: activity}
+	if _, err := zero.Write([]byte("x")); err != nil {
+		t.Fatalf("Write() error = %v, want nil", err)
+	}
+	if got := activity.lastElapsed.Load(); got != 0 {
+		t.Fatalf("lastElapsed = %d after a zero-byte write, want unchanged 0", got)
+	}
+
+	nonzero := activityWriter{writer: funcWriter(func(p []byte) (int, error) { return len(p), nil }), activity: activity}
+	if _, err := nonzero.Write([]byte("xyz")); err != nil {
+		t.Fatalf("Write() error = %v, want nil", err)
+	}
+	if got := activity.lastElapsed.Load(); got == 0 {
+		t.Fatal("lastElapsed unchanged after a positive-byte write, want touch() to have recorded elapsed time")
+	}
+}
+
+func TestReadHijackUpstreamResponseClosesNonNilBodyOnReadError(t *testing.T) {
+	// Covers the "resp.Body != nil" guard at hijack.go:465: a response
+	// object returned alongside a read/deadline-clear error still owns a
+	// body that must be closed, not leaked.
+	restoreHijackHooks(t)
+
+	closed := false
+	trackingBody := closeTrackingReadCloser{Reader: strings.NewReader("partial"), closed: &closed}
+	readResponseHook = func(*bufio.Reader, *http.Request) (*http.Response, error) {
+		return &http.Response{Body: trackingBody}, errors.New("truncated response")
+	}
+
+	conn := &funcConn{}
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/attach", nil)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	if _, _, ok := readHijackUpstreamResponse(conn, httptest.NewRecorder(), req, logger); ok {
+		t.Fatal("readHijackUpstreamResponse = true, want false on read error")
+	}
+	if !closed {
+		t.Fatal("expected the partially read response body to be closed on error")
+	}
+}
+
+// funcReader adapts a function to io.Reader for activityReader tests.
+type funcReader func(p []byte) (int, error)
+
+func (f funcReader) Read(p []byte) (int, error) { return f(p) }
+
+// funcWriter adapts a function to io.Writer for activityWriter tests.
+type funcWriter func(p []byte) (int, error)
+
+func (f funcWriter) Write(p []byte) (int, error) { return f(p) }
+
+// closeTrackingReadCloser records whether Close was called.
+type closeTrackingReadCloser struct {
+	io.Reader
+	closed *bool
+}
+
+func (r closeTrackingReadCloser) Close() error {
+	*r.closed = true
+	return nil
 }
 
 func TestHandleHijack_NonUpgradeFallbackEdgePaths(t *testing.T) {
@@ -1959,162 +2162,6 @@ func TestHandleHijack_CopyErrorsAreLoggedAndIgnored(t *testing.T) {
 	}
 	if !strings.Contains(logText, `msg="hijack: copy ended" direction=client→upstream`) {
 		t.Fatalf("expected client copy log, got %q", logText)
-	}
-}
-
-func TestHandleHijack_StreamingActivityRefreshesInactivityDeadlines(t *testing.T) {
-	restoreHijackHooks(t)
-
-	readResponseHook = func(*bufio.Reader, *http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusSwitchingProtocols,
-			ProtoMajor: 1,
-			ProtoMinor: 1,
-			Header:     http.Header{"Connection": []string{"Upgrade"}, "Upgrade": []string{"tcp"}},
-			Body:       io.NopCloser(strings.NewReader("")),
-		}, nil
-	}
-
-	upstreamPayload := bytes.Repeat([]byte("u"), hijackBufSize+1)
-	clientPayload := bytes.Repeat([]byte("c"), hijackBufSize+1)
-
-	upstreamReader := bytes.NewReader(upstreamPayload)
-	upstreamConn := &funcConn{
-		readFn: func(p []byte) (int, error) {
-			return upstreamReader.Read(p)
-		},
-		writeFn: func(p []byte) (int, error) {
-			return len(p), nil
-		},
-	}
-	dialUpstreamHook = func(network, address string) (net.Conn, error) {
-		return upstreamConn, nil
-	}
-
-	clientConn := &funcConn{
-		writeFn: func(p []byte) (int, error) {
-			return len(p), nil
-		},
-	}
-	writer := newHijackTestWriter(clientConn, bytes.NewReader(clientPayload))
-	req := httptest.NewRequest(http.MethodPost, "/containers/abc/attach", nil)
-
-	start := time.Now()
-	handleHijack(writer, req, "/unused.sock", slog.New(slog.NewTextHandler(io.Discard, nil)))
-	end := time.Now()
-
-	if upstreamConn.readDeadlineCalls < 1 {
-		t.Fatalf("upstream read deadline calls = %d, want at least 1", upstreamConn.readDeadlineCalls)
-	}
-	if upstreamConn.writeDeadlineCalls < 1 {
-		t.Fatalf("upstream write deadline calls = %d, want at least 1", upstreamConn.writeDeadlineCalls)
-	}
-	if clientConn.readDeadlineCalls < 1 {
-		t.Fatalf("client read deadline calls = %d, want at least 1", clientConn.readDeadlineCalls)
-	}
-	if clientConn.writeDeadlineCalls < 1 {
-		t.Fatalf("client write deadline calls = %d, want at least 1", clientConn.writeDeadlineCalls)
-	}
-
-	assertDeadlineNearTimeout(t, upstreamConn.readDeadlines[len(upstreamConn.readDeadlines)-1], start, end)
-	assertDeadlineNearTimeout(t, upstreamConn.writeDeadlines[len(upstreamConn.writeDeadlines)-1], start, end)
-	assertDeadlineNearTimeout(t, clientConn.readDeadlines[len(clientConn.readDeadlines)-1], start, end)
-	assertDeadlineNearTimeout(t, clientConn.writeDeadlines[len(clientConn.writeDeadlines)-1], start, end)
-}
-
-// TestReadInactivityDeadlineRefreshIsThrottled exercises the same throttle
-// boundary as TestInactivityDeadlineRefreshBoundary but along the temporal
-// axis the production code uses on a live stream: the first call primes
-// lastRefresh, a second call within refreshInterval must not re-arm the
-// deadline, and a call beyond refreshInterval must. The earlier version of
-// this test pegged the third call by sleeping (timeout/4)+(timeout/20)
-// against a 200ms timeout — a 60ms wall-clock pause that put the test in
-// scheduler-noise territory and made the QA-3 soak suite, which depends on
-// these throttle assertions, non-deterministic. The conversion drives
-// elapsed time through the timeNowHook the production code already reads
-// from (hijack.go:62), so the boundary is hit to the nanosecond and the
-// test runs in microseconds.
-func TestReadInactivityDeadlineRefreshIsThrottled(t *testing.T) {
-	timeout := 200 * time.Millisecond
-	refreshInterval := timeout / 4
-	base := time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)
-	// Read 1: lastRefresh is zero, refresh fires.
-	// Read 2: same instant — elapsed == 0, no refresh.
-	// Read 3: refreshInterval + 1ns past base — elapsed > refreshInterval, refresh fires.
-	times := []time.Time{base, base, base.Add(refreshInterval + time.Nanosecond)}
-	idx := 0
-	restore := swapTimeNow(func() time.Time {
-		ts := times[idx]
-		idx++
-		return ts
-	})
-	defer restore()
-
-	readerConn := &funcConn{}
-	reader := withReadInactivityDeadline(bytes.NewReader([]byte("abc")), readerConn, timeout)
-	buf := make([]byte, 1)
-
-	if _, err := reader.Read(buf); err != nil {
-		t.Fatalf("first read: %v", err)
-	}
-	if got, want := readerConn.readDeadlineCalls, 1; got != want {
-		t.Fatalf("read deadline calls after first read = %d, want %d", got, want)
-	}
-
-	if _, err := reader.Read(buf); err != nil {
-		t.Fatalf("second read: %v", err)
-	}
-	if got, want := readerConn.readDeadlineCalls, 1; got != want {
-		t.Fatalf("read deadline calls after immediate second read = %d, want %d", got, want)
-	}
-
-	if _, err := reader.Read(buf); err != nil {
-		t.Fatalf("third read: %v", err)
-	}
-	if got, want := readerConn.readDeadlineCalls, 2; got != want {
-		t.Fatalf("read deadline calls after delayed third read = %d, want %d", got, want)
-	}
-}
-
-// TestWriteInactivityDeadlineRefreshIsThrottled is the writer-side twin of
-// TestReadInactivityDeadlineRefreshIsThrottled — see that test for the
-// throttle invariant and the rationale for using timeNowHook instead of a
-// wall-clock sleep.
-func TestWriteInactivityDeadlineRefreshIsThrottled(t *testing.T) {
-	timeout := 200 * time.Millisecond
-	refreshInterval := timeout / 4
-	base := time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)
-	times := []time.Time{base, base, base.Add(refreshInterval + time.Nanosecond)}
-	idx := 0
-	restore := swapTimeNow(func() time.Time {
-		ts := times[idx]
-		idx++
-		return ts
-	})
-	defer restore()
-
-	writerConn := &funcConn{}
-	writer := withWriteInactivityDeadline(io.Discard, writerConn, timeout)
-
-	if _, err := writer.Write([]byte("a")); err != nil {
-		t.Fatalf("first write: %v", err)
-	}
-	if got, want := writerConn.writeDeadlineCalls, 1; got != want {
-		t.Fatalf("write deadline calls after first write = %d, want %d", got, want)
-	}
-
-	if _, err := writer.Write([]byte("b")); err != nil {
-		t.Fatalf("second write: %v", err)
-	}
-	if got, want := writerConn.writeDeadlineCalls, 1; got != want {
-		t.Fatalf("write deadline calls after immediate second write = %d, want %d", got, want)
-	}
-
-	if _, err := writer.Write([]byte("c")); err != nil {
-		t.Fatalf("third write: %v", err)
-	}
-	if got, want := writerConn.writeDeadlineCalls, 2; got != want {
-		t.Fatalf("write deadline calls after delayed third write = %d, want %d", got, want)
 	}
 }
 
@@ -2941,11 +2988,6 @@ func TestPutHijackBufferRestoresFullLengthBeforeReuse(t *testing.T) {
 	if cap(pooled) != hijackBufSize {
 		t.Fatalf("pooled capacity = %d, want %d", cap(pooled), hijackBufSize)
 	}
-}
-
-func assertDeadlineNearTimeout(t *testing.T, got, start, end time.Time) {
-	t.Helper()
-	assertDeadlineNear(t, got, start, end, wantHijackInactivityTimeout)
 }
 
 func assertDeadlineNear(t *testing.T, got, start, end time.Time, timeout time.Duration) {

@@ -5,7 +5,7 @@ export const wollomaticComparisonRouteData = {
   slug: "wollomatic",
   comparisonTable: `
 Method + path filtering|Yes (regex)|Yes|tie
-Upstream watchdog|Yes|Yes (+ /health endpoint + metrics)|tie
+Upstream watchdog|Yes|Yes (opt-in, + /health endpoint + metrics)|tie
 Structured logging|Yes (JSON option)|Yes (request + W3C trace correlation)|tie
 Bind-mount restriction|Yes (body inspection)|Yes (bind + structured mount policy)|tie
 Config simplicity|ENV vars, no file needed|YAML config required|competitor
@@ -13,10 +13,10 @@ Request body inspection (full)|Partial (bind mounts only)|Yes (12+ resource type
 Per-client policies|Partial (IP/hostname + labels)|Full (CIDR + labels + cert selectors + SPKI + unix peer)|self
 Signed policy bundles|No|Yes (cosign keyed + keyless, Rekor)|self
 Container image trust|No|Yes (cosign + enforce / warn modes)|self
-Prometheus metrics|No|Yes (socket-proxy request metrics)|self
+Prometheus metrics|No|Yes (opt-in, socket-proxy request metrics)|self
 Rollout modes (enforce / warn / audit)|No|Yes (per-profile shadow mode)|self
 Rate limits|No|Yes (per-profile token-bucket)|self
-Audit log schema|No|Yes (JSON schema + reason codes)|self
+Audit log schema|No|Yes (opt-in, JSON schema + reason codes)|self
 `,
   highlightsTable: `
 shield|Full Request Body Inspection|wollomatic can restrict bind mounts in request bodies. Sockguard goes further — inspecting container create, exec, image pull, volume, network, secret, config, service, swarm, node, and plugin requests for fine-grained control.

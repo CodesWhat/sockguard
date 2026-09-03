@@ -26,10 +26,10 @@ func ToRegexString(pattern string) string {
 	for i < len(runes) {
 		switch {
 		case i+2 < len(runes) && runes[i] == '/' && runes[i+1] == '*' && runes[i+2] == '*':
-			b.WriteString("(/.*)?")
+			b.WriteString("(/(?s:.*))?")
 			i += 3
 		case i+1 < len(runes) && runes[i] == '*' && runes[i+1] == '*':
-			b.WriteString(".*")
+			b.WriteString("(?s:.*)")
 			i += 2
 		case runes[i] == '*':
 			b.WriteString("[^/]*")

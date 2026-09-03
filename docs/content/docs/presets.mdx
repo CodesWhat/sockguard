@@ -14,14 +14,16 @@ Optimized for the [drydock](https://github.com/CodesWhat/drydock) container upda
 ```yaml
 # Allows: container read, start, stop, restart, remove, create
 # Allows: image read, pull
-# Allows: network read, volume read, distribution
-# Denies: exec, build, swarm, secrets, plugins
+# Allows: network read, volume read, distribution, Swarm service reads
+# Denies: exec, build, swarm writes, secrets, plugins, raw archive/export/logs/attach streams
 # container-create bodies are inspected by default — add host bind-mount sources to
 # request_body.container_create.allowed_bind_mounts if your updates require them.
 # image pulls are inspected too; this preset explicitly allows arbitrary registries
 # while still denying image imports via fromSrc
 # container updates are inspected; restart-policy/resource/device/capability changes
 # stay denied unless you explicitly allow them under request_body.container_update
+# container removal permits drydock's force-removal recovery path but keeps
+# anonymous-volume and legacy-link deletion denied
 # the stock "runc" runtime is allowlisted (request_body.container_create.allowed_runtimes)
 # because drydock recreates containers from their inspect spec, which usually carries an
 # explicit HostConfig.Runtime — without it every update would 403 at /containers/create
@@ -69,6 +71,8 @@ through this proxy, not just a single standalone container.
 # (POST /networks/*/connect is already allowed by drydock.yaml — untouched)
 # Body inspection for the new endpoints reuses drydock.yaml's existing
 # network/volume create guardrails (deny custom drivers/driver opts by default)
+# Container removal additionally permits Compose's force and anonymous-volume
+# cleanup controls; legacy link deletion stays denied
 # Still denied: /build, /session, /grpc. `docker compose build` / `up --build`
 # with default settings never calls POST /build at all — it drives dockerd's
 # embedded BuildKit over the hijacked, unversioned /session and /grpc streams
@@ -78,6 +82,11 @@ through this proxy, not just a single standalone container.
 # instead if you specifically want the CLASSIC builder (POST /build only,
 # requires DOCKER_BUILDKIT=0 in the client). See the Compose/BuildKit
 # Transport section of the security model docs for the full breakdown.
+# Compose-Spec post_start hooks are also still denied: they run through exec
+# (POST /containers/{id}/exec, POST /exec/{id}/start), which the catch-all
+# blocks, so drydock's PostStartExecutor fails the deploy loudly rather than
+# skipping the hook. Add a pinned allowed_commands entry (modeled on
+# drydock-with-selfupdate.yaml) rather than a blanket exec allow if you need it.
 # Self-update finalize exec is still denied, same caveat as drydock.yaml;
 # combine with drydock-with-selfupdate.yaml by hand if you need both
 ```
@@ -153,6 +162,8 @@ any remote Docker agent that needs lifecycle control, image pull, and event stre
 ```yaml
 # Allows: container read (list, inspect, stats, top, changes, logs)
 # Allows: container lifecycle (start, stop, restart, kill, rename, update, wait, create, remove)
+# Container removal permits Portwing's force option; anonymous-volume and
+# legacy-link deletion stay denied
 # Allows: image read, pull, remove
 # Allows: network read, volume read, distribution, Swarm service reads
 # Denies: exec, build, swarm writes, secrets, plugins, raw archive/export/attach streams
@@ -203,6 +214,8 @@ plain container orchestration.
 #         POST /volumes/create, DELETE /volumes/*
 # Body inspection for the new endpoints reuses portwing.yaml's existing
 # network/volume create guardrails (deny custom drivers/driver opts by default)
+# Container removal additionally permits Compose's force and anonymous-volume
+# cleanup controls; legacy link deletion stays denied
 # Still denied: /build, /session, /grpc. `docker compose build` / `up --build`
 # with default settings never calls POST /build at all — it drives dockerd's
 # embedded BuildKit over the hijacked, unversioned /session and /grpc streams
@@ -286,12 +299,21 @@ this preset's classic-builder sibling gets for `/build`.
 
 Minimal read-only access for Traefik reverse proxy.
 
-**Use for:** Traefik, nginx-proxy, or any reverse proxy with Docker provider.
+**Use for:** Traefik's Docker provider. The allowlist is source-verified against
+Traefik v3.7.12; other reverse proxies need their own call-surface review.
 
 ```yaml
-# Allows: GET on containers, networks, services, tasks, events, ping, version
-# Denies: everything else
+# Allows: GET container list + inspect, network/service/task lists, node inspect
+#         (Swarm), events, ping, version
+# Denies: everything else, including container archive/export/logs/attach
 ```
+
+In Swarm mode, task discovery includes node inspection at `GET /nodes/*`.
+Every allowed path is a named list or required inspect endpoint rather than a
+`/containers/**` glob, so this preset does **not** set
+`insecure_allow_read_exfiltration: true`. A client that genuinely needs
+`GET /containers/*/logs` or `GET /containers/*/archive` has to add that rule
+and the acknowledgment itself.
 
 ## Portainer (`portainer.yaml`)
 
@@ -306,19 +328,43 @@ Full Docker API access for Portainer management UI.
 # Portainer's arbitrary exec/plugin-setting behavior may still require the unsafe opt-in
 ```
 
+Portainer's cleanup path uses force removal and anonymous-volume removal, so
+both controls are enabled. Docker's legacy link-removal mode stays denied.
+
 ## Watchtower (`watchtower.yaml`)
 
-Optimized for the [Watchtower](https://github.com/containrrr/watchtower) container auto-updater.
+Optimized for the [Watchtower](https://github.com/nicholas-fedor/watchtower) container auto-updater.
 
-**Use for:** Watchtower with lifecycle hooks and network-aware updates.
+**Use for:** Watchtower v1.21.2 with lifecycle hooks and network-aware updates.
 
 ```yaml
-# Allows: container lifecycle (start, stop, kill, restart, rename, remove, create)
-# Allows: image pull/remove, exec (lifecycle hooks), network connect/disconnect
-# Denies: build, swarm, secrets, plugins
-# Container-create, image-pull, and network attach requests are inspected; exec lifecycle
-# hooks can be inspected too, but this preset keeps insecure_allow_body_blind_writes=true for arbitrary hooks
+# Allows: ping/info; container list, inspect, start, stop, rename, update,
+#         remove and create; image inspect, pull and remove; lifecycle-hook
+#         exec; network connect
+# Denies: every unused container/image/network route, all volume and
+#         distribution routes, read-exfiltration routes, build, swarm,
+#         secrets, configs and plugins
 ```
+
+Container create allows the stock `runc` runtime and rejects other explicit
+runtimes. It also admits the copied endpoint addressing and optional
+user-configured MAC that Watchtower preserves during recreation, without
+allowing endpoint links, driver options, link-local IPs, or gateway priority.
+Watchtower copies those four fields verbatim from the old container, so a
+container that relies on legacy links, per-endpoint driver options, link-local
+IPs or a custom gateway priority cannot be recreated through this preset. Open
+the matching `endpoint_config` switch for that field alone rather than
+`allow_endpoint_config`, which would also admit links and driver options.
+Container update allows the restart-only request Watchtower uses to set
+`Name: "no"`. Moby serializes the embedded `Resources` fields at their zero
+values in that request, which the daemon treats as no-ops; nonzero resource,
+privilege, device and capability updates remain denied. Image list is
+explicitly denied before the registry-qualified image-inspect rule. The preset
+permits Watchtower's force-removal path and optional anonymous-volume cleanup,
+while legacy link removal stays denied. It keeps
+`insecure_allow_body_blind_writes: true` for arbitrary lifecycle hooks and
+allows an empty exec user because Watchtower uses the container's configured
+user, but it no longer needs `insecure_allow_read_exfiltration: true`.
 
 ## Homepage (`homepage.yaml`)
 
@@ -327,21 +373,36 @@ Read-only access for the [Homepage](https://gethomepage.dev) dashboard.
 **Use for:** Homepage, or any dashboard that only reads container state and stats.
 
 ```yaml
-# Allows: GET on containers (list, inspect, stats), images, services, tasks, events
-# Denies: all write operations
+# Allows: GET container list + inspect + stats, service list + inspect and task
+#         list (Swarm)
+# Denies: all write operations, plus container archive/export/logs/attach and
+#         the image-tarball paths GET /images/get and GET /images/*/get
 ```
+
+Every allowed path is a named list, inspect or stats endpoint rather than a
+`/containers/**` or `/images/**` glob, so this preset does **not** set
+`insecure_allow_read_exfiltration: true`. A client that genuinely needs
+`GET /containers/*/logs` or `GET /containers/*/archive` has to add that rule
+and the acknowledgment itself.
 
 ## Homarr (`homarr.yaml`)
 
 Optimized for [Homarr](https://homarr.dev) dashboard with container management.
 
-**Use for:** Homarr with start/stop/restart controls enabled.
+**Use for:** Homarr with start/stop/restart/remove controls enabled.
 
 ```yaml
-# Allows: container read (list, inspect, stats), start, stop, restart
-# Allows: image read
-# Denies: exec, create, network/volume writes
+# Allows: GET container list + inspect + stats + logs
+# Allows: POST start/stop/restart and DELETE container
+# Denies: every other Docker API route, including all image routes
 ```
+
+Homarr v1.76.2 uses container logs, so this preset still sets
+`insecure_allow_read_exfiltration: true`. Logs are the only exfiltration route
+it allows; container archive, export and attach routes and image tarball routes
+stay denied. Its dockerode call is `container.remove()` with no options, so the
+preset allows only bare container removal; `force`, anonymous-volume deletion,
+and legacy link deletion stay denied.
 
 ## Diun (`diun.yaml`)
 
@@ -350,9 +411,20 @@ Minimal read-only access for [Diun](https://github.com/crazy-max/diun) (Docker I
 **Use for:** Diun, or any tool that only needs to discover running containers and inspect images.
 
 ```yaml
-# Allows: GET on containers (list, inspect), images (inspect)
-# Denies: everything else — Diun checks registries directly
+# Allows: GET container list, image inspect, ping, version
+# Denies: all other routes. Diun checks registries directly. Container
+#         inspect is denied too; Diun's Docker provider never calls it
 ```
+
+Image inspect is written `GET /images/**/json` rather than `/images/*/json`
+because Docker registers the route as `/images/{name:.*}/json` and `{name:.*}`
+spans slashes, so a registry-qualified image arrives as
+`GET /images/ghcr.io/org/app:tag/json`. The literal `/json` suffix keeps the
+pattern narrow: `GET /images/get`, `GET /images/{name}/get` and
+`GET /images/{name}/history` do not end in `/json` and stay denied. Because
+`/**` can match zero segments, an earlier `GET /images/json` deny also keeps
+the unused image-list call out of the surface. That is why this preset does
+**not** set `insecure_allow_read_exfiltration: true`.
 
 ## Autoheal (`autoheal.yaml`)
 
@@ -388,7 +460,9 @@ workflows (i.e. anything from a fork PR or a low-trust org member).
 The preset enforces what a workflow can *do* once admitted. Pair it
 with `clients.allowed_cidrs` (TCP listener) or `clients.unix_peer_profiles`
 (unix listener) to authenticate which process is connecting — sockguard
-on its own does not know which runner identity is on the other end.
+on its own does not know which runner identity is on the other end. The runner
+cleans up with `docker rm --force`, so force removal is enabled; anonymous-volume
+and legacy-link deletion stay denied.
 
 ## GitLab Runner (Docker Executor) (`gitlab-runner.yaml`)
 
@@ -409,6 +483,10 @@ to inject job steps.
 # via the logs and attach APIs. Gate the proxy socket to the runner via clients.unix_peer_profiles
 # or clients.allowed_cidrs to bound both.
 ```
+
+GitLab Runner force-removes job containers and removes their anonymous volumes
+unless `volume_keep` is enabled, so this preset enables both controls. Legacy
+link deletion stays denied.
 
 Notable: the preset **deliberately rejects privileged containers** even
 if the runner's `config.toml` has `privileged = true`. DinD-style jobs
@@ -466,8 +544,10 @@ file. See the [Podman guide](/podman) for the full routing model.
 #         only on networks, volumes, secrets — plus pod list/inspect/stats
 #         (libpod only) and health/version/info/events, on both surfaces
 # Denies: all writes on both surfaces, including libpod-only writes
-#         (pod create, play/kube); archive/export/logs/attach/get/push reads
-#         on both surfaces
+#         (pod create, play/kube); archive/export/logs/attach/get/push
+#         reads on both surfaces; and libpod-only exfiltration reads with
+#         no Docker-compat counterpart (mounted-container inventory,
+#         generate/kube, manifest push)
 ```
 
 Unlike `readonly.yaml`, this preset does **not** set

@@ -20,6 +20,7 @@ import (
 	"github.com/codeswhat/sockguard/app/internal/httpjson"
 	"github.com/codeswhat/sockguard/app/internal/logging"
 	"github.com/codeswhat/sockguard/app/internal/responsefilter"
+	"github.com/codeswhat/sockguard/app/internal/upstream"
 )
 
 func testLogger() *slog.Logger {
@@ -70,6 +71,110 @@ func TestNew_ErrorHandler(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), socketPath) {
 		t.Fatalf("response leaked upstream socket path: %q", rec.Body.String())
+	}
+}
+
+func TestReverseProxyPreservesUpstreamBasePath(t *testing.T) {
+	t.Parallel()
+	requestURI := make(chan string, 1)
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestURI <- r.RequestURI
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(daemon.Close)
+	ep, err := upstream.BuildEndpoint(upstream.EndpointSpec{
+		Address:               "tcp://" + strings.TrimPrefix(daemon.URL, "http://") + "/gateway%2Fdocker/",
+		InsecureAllowPlainTCP: true,
+	})
+	if err != nil {
+		t.Fatalf("BuildEndpoint: %v", err)
+	}
+	resolver, err := upstream.New([]upstream.Endpoint{ep}, upstream.Options{Interval: -1})
+	if err != nil {
+		t.Fatalf("upstream.New: %v", err)
+	}
+	rp := NewWithTransport(resolver, testLogger(), Options{})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://client/v1.52/containers/a%2Fb/json?all=1", nil)
+	rp.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if got := <-requestURI; got != "/gateway%2Fdocker/v1.52/containers/a%2Fb/json?all=1" {
+		t.Fatalf("daemon RequestURI = %q, want prefixed escaped path", got)
+	}
+}
+
+func TestReverseProxyBasePathKeepsOriginalRouteForResponsePolicy(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		target     string
+		body       string
+		filterOpts responsefilter.Options
+		wantStatus int
+	}{
+		{
+			name:       "container inspect redaction",
+			target:     "/v1.53/containers/abc/json?size=1",
+			body:       `{"Config":{"Env":["SECRET=value"]}}`,
+			filterOpts: responsefilter.Options{RedactContainerEnv: true},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "attestation statement fails closed",
+			target:     "/v1.53/images/alpine/attestations?statement=true&platform=linux",
+			body:       `{"statement":"SECRET=value"}`,
+			wantStatus: http.StatusBadGateway,
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			requestURI := make(chan string, 1)
+			daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requestURI <- r.RequestURI
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			t.Cleanup(daemon.Close)
+			ep, err := upstream.BuildEndpoint(upstream.EndpointSpec{
+				Address:               "tcp://" + strings.TrimPrefix(daemon.URL, "http://") + "/gateway",
+				InsecureAllowPlainTCP: true,
+			})
+			if err != nil {
+				t.Fatalf("BuildEndpoint: %v", err)
+			}
+			resolver, err := upstream.New([]upstream.Endpoint{ep}, upstream.Options{Interval: -1})
+			if err != nil {
+				t.Fatalf("upstream.New: %v", err)
+			}
+			responsePolicy := responsefilter.New(tt.filterOpts)
+			var policyPath, policyQuery string
+			rp := NewWithTransport(resolver, testLogger(), Options{
+				ModifyResponse: func(resp *http.Response) error {
+					policyPath = resp.Request.URL.Path
+					policyQuery = resp.Request.URL.RawQuery
+					return responsePolicy.ModifyResponse(resp)
+				},
+			})
+			rec := httptest.NewRecorder()
+			rp.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://client"+tt.target, nil))
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			wantPath, wantQuery, _ := strings.Cut(tt.target, "?")
+			if policyPath != wantPath || policyQuery != wantQuery {
+				t.Fatalf("ModifyResponse classified Path=%q Query=%q, want %q %q", policyPath, policyQuery, wantPath, wantQuery)
+			}
+			if got := <-requestURI; got != "/gateway"+tt.target {
+				t.Fatalf("daemon RequestURI = %q, want %q", got, "/gateway"+tt.target)
+			}
+			if strings.Contains(rec.Body.String(), "SECRET=value") {
+				t.Fatalf("sensitive response was not redacted or rejected: %s", rec.Body.String())
+			}
+		})
 	}
 }
 
@@ -393,6 +498,104 @@ func TestNewWithOptions_RedactsProtectedResponses(t *testing.T) {
 		if gotSource, _ := mount["Source"].(string); gotSource != "<redacted>" {
 			t.Fatalf("Mounts[%d].Source = %q, want %q", i, gotSource, "<redacted>")
 		}
+	}
+}
+
+func TestNewWithOptions_RewrittenResponsesDropUpstreamTrailers(t *testing.T) {
+	socketPath := tempSocketPath(t, "response-filter-trailers")
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	const (
+		objectBody = `{"Config":{"Env":["SECRET_TOKEN=shh"]},"HostConfig":{"Binds":[]},"Mounts":[]}`
+		listBody   = `[{"Name":"vol-a","Mountpoint":"/var/lib/containers/storage/volumes/vol-a/_data"}]`
+	)
+	upstream := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Content-Digest", "sha-256=:stale-upstream-body:")
+		w.Header().Set("Repr-Digest", "sha-256=:stale-upstream-representation:")
+		w.Header().Set("Trailer", "Digest, X-Upstream-Trailer")
+		w.Header().Set("X-Upstream-Metadata", "keep-me")
+		w.WriteHeader(http.StatusOK)
+		switch r.URL.Path {
+		case "/v5.8.1/libpod/containers/ctr-a/json":
+			_, _ = io.WriteString(w, objectBody)
+		case "/v5.8.1/libpod/volumes/json":
+			_, _ = io.WriteString(w, listBody)
+		default:
+			t.Errorf("unexpected upstream path %q", r.URL.Path)
+		}
+		w.Header().Set("Digest", "sha-256=:stale-upstream-trailer:")
+		w.Header().Set("X-Upstream-Trailer", "must-not-reach-client")
+	})}
+	go func() { _ = upstream.Serve(ln) }()
+	t.Cleanup(func() { _ = upstream.Close() })
+
+	rp := NewWithOptions(socketPath, testLogger(), Options{
+		ModifyResponse: responsefilter.New(responsefilter.Options{
+			RedactContainerEnv: true,
+			RedactMountPaths:   true,
+		}).ModifyResponse,
+	})
+	front := httptest.NewServer(rp)
+	t.Cleanup(front.Close)
+
+	tests := []struct {
+		name     string
+		path     string
+		redacted string
+	}{
+		{name: "object", path: "/v5.8.1/libpod/containers/ctr-a/json", redacted: `"Env":[]`},
+		{name: "streaming list", path: "/v5.8.1/libpod/volumes/json", redacted: `"Mountpoint":"<redacted>"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, err := http.Get(front.URL + tt.path) // #nosec G107 -- test-only httptest server URL.
+			if err != nil {
+				t.Fatalf("GET through proxy: %v", err)
+			}
+			body, readErr := io.ReadAll(resp.Body)
+			closeErr := resp.Body.Close()
+			if readErr != nil {
+				t.Fatalf("read response: %v", readErr)
+			}
+			if closeErr != nil {
+				t.Fatalf("close response: %v", closeErr)
+			}
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body: %s", resp.StatusCode, body)
+			}
+			if !strings.Contains(string(body), tt.redacted) {
+				t.Fatalf("body = %s, want rewrite containing %s", body, tt.redacted)
+			}
+			if got := resp.TransferEncoding; len(got) != 0 {
+				t.Errorf("TransferEncoding = %#v, want fixed-length rewritten response", got)
+			}
+			if got, want := resp.ContentLength, int64(len(body)); got != want {
+				t.Errorf("ContentLength = %d, want rewritten body length %d", got, want)
+			}
+			if got := resp.Header.Values("Trailer"); len(got) != 0 {
+				t.Errorf("Trailer announcement = %#v, want none", got)
+			}
+			if len(resp.Trailer) != 0 {
+				t.Errorf("Trailer = %#v, want no forwarded upstream trailers", resp.Trailer)
+			}
+			for _, name := range []string{"Content-Digest", "Digest", "Repr-Digest"} {
+				if got := resp.Header.Values(name); len(got) != 0 {
+					t.Errorf("%s = %#v, want stale digest metadata cleared", name, got)
+				}
+			}
+			if got := resp.Header.Get("Content-Type"); got != "application/json; charset=utf-8" {
+				t.Errorf("Content-Type = %q, want preserved JSON type", got)
+			}
+			if got := resp.Header.Get("X-Upstream-Metadata"); got != "keep-me" {
+				t.Errorf("X-Upstream-Metadata = %q, want unrelated metadata preserved", got)
+			}
+		})
 	}
 }
 

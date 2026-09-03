@@ -64,6 +64,17 @@ func networkIdentifier(method, normPath string) (string, bool) {
 	return identifier, true
 }
 
+func isNetworkMembershipChangePath(normPath string) bool {
+	for _, prefix := range []string{"/networks/", libpodPrefix + "networks/"} {
+		if !strings.HasPrefix(normPath, prefix) {
+			continue
+		}
+		identifier, action, ok := strings.Cut(strings.TrimPrefix(normPath, prefix), "/")
+		return ok && identifier != "" && (action == "connect" || action == "disconnect")
+	}
+	return false
+}
+
 func volumeIdentifier(method, normPath string) (string, bool) {
 	if !strings.HasPrefix(normPath, "/volumes/") {
 		return "", false

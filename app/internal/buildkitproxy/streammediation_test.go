@@ -346,30 +346,63 @@ func TestBytesMessageCapValidatorZeroCapDisablesLimit(t *testing.T) {
 	}
 }
 
-func TestRawByteCapValidatorAdmitsUnderCap(t *testing.T) {
-	v := &rawByteCapValidator{maxTotalBytes: 100}
-	// Deliberately not protobuf-shaped bytes at all — rawByteCapValidator
-	// must never attempt to decode, only count.
-	if d := v.validate([]byte{0xff, 0xff, 0xff}); d != nil {
-		t.Fatalf("validate() = %+v, want nil (admitted, no decode attempted)", d)
+// TestRawByteCapValidator tables rawByteCapValidator.validate's cumulative-cap
+// enforcement: each case drives one or more validate() calls against a fresh
+// validator and checks which call, if any, must come back denied.
+// wantDeniedAt == -1 means every call in the case must be admitted; the
+// "total exactly at maxTotalBytes" case pins the cap's own boundary — total
+// landing exactly ON maxTotalBytes must admit, only strictly exceeding it
+// (the "cumulative cap trips" case) denies.
+func TestRawByteCapValidator(t *testing.T) {
+	cases := []struct {
+		name          string
+		maxTotalBytes int64
+		calls         [][]byte
+		wantDeniedAt  int
+	}{
+		{
+			name:          "admits under cap, no decode attempted",
+			maxTotalBytes: 100,
+			// Deliberately not protobuf-shaped bytes at all —
+			// rawByteCapValidator must never attempt to decode, only count.
+			calls:        [][]byte{{0xff, 0xff, 0xff}},
+			wantDeniedAt: -1,
+		},
+		{
+			name:          "cumulative cap trips on the second call",
+			maxTotalBytes: 5,
+			calls:         [][]byte{[]byte("abc"), []byte("abc")},
+			wantDeniedAt:  1,
+		},
+		{
+			name:          "total exactly at maxTotalBytes is admitted",
+			maxTotalBytes: 5,
+			calls:         [][]byte{[]byte("abcde")},
+			wantDeniedAt:  -1,
+		},
+		{
+			name:          "zero cap disables the limit",
+			maxTotalBytes: 0,
+			calls:         [][]byte{bytes.Repeat([]byte("x"), 10000)},
+			wantDeniedAt:  -1,
+		},
 	}
-}
-
-func TestRawByteCapValidatorTripsCumulativeCap(t *testing.T) {
-	v := &rawByteCapValidator{maxTotalBytes: 5}
-	if d := v.validate([]byte("abc")); d != nil {
-		t.Fatalf("first validate() = %+v, want nil", d)
-	}
-	d := v.validate([]byte("abc"))
-	if d == nil || d.reasonCode != "buildkit_byte_limit_exceeded" {
-		t.Fatalf("second validate() = %+v, want buildkit_byte_limit_exceeded", d)
-	}
-}
-
-func TestRawByteCapValidatorZeroCapDisablesLimit(t *testing.T) {
-	v := &rawByteCapValidator{}
-	if d := v.validate(bytes.Repeat([]byte("x"), 10000)); d != nil {
-		t.Fatalf("validate() = %+v, want nil (cap disabled)", d)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := &rawByteCapValidator{maxTotalBytes: tc.maxTotalBytes}
+			for i, payload := range tc.calls {
+				d := v.validate(payload)
+				if i == tc.wantDeniedAt {
+					if d == nil || d.reasonCode != "buildkit_byte_limit_exceeded" {
+						t.Fatalf("call %d validate() = %+v, want buildkit_byte_limit_exceeded", i, d)
+					}
+					continue
+				}
+				if d != nil {
+					t.Fatalf("call %d validate() = %+v, want nil", i, d)
+				}
+			}
+		})
 	}
 }
 

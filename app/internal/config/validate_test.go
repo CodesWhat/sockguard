@@ -51,6 +51,31 @@ func TestValidateRejectsBadReadinessConfig(t *testing.T) {
 			mutate: func(c *Config) { c.Health.Readiness.Path = c.Health.Path },
 			want:   "health.readiness.path must not equal health.path",
 		},
+		{
+			name: "non-positive timeout",
+			mutate: func(c *Config) {
+				// A valid duration string, but exactly zero — the boundary of
+				// "timeout <= 0", distinct from the unparseable-string case above.
+				c.Health.Readiness.Timeout = "0s"
+			},
+			want: "health.readiness.timeout must be a positive duration",
+		},
+		{
+			name: "path collides with metrics.path",
+			mutate: func(c *Config) {
+				c.Metrics.Enabled = true
+				c.Health.Readiness.Path = c.Metrics.Path
+			},
+			want: "health.readiness.path must not equal metrics.path",
+		},
+		{
+			name: "path collides with admin.path",
+			mutate: func(c *Config) {
+				c.Admin.Enabled = true
+				c.Health.Readiness.Path = c.Admin.Path
+			},
+			want: "health.readiness.path must not equal admin.path",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -147,6 +172,24 @@ func TestValidateRejectsLiteralPercentInRulePath(t *testing.T) {
 	}
 }
 
+// TestValidateLiteralPercentRuleErrorUsesOneBasedRuleNumber pins the rule
+// number reported alongside a literal '%' rejection to the 1-based position
+// of the offending rule (i+1), not i or i-1: a rule at slice index 1 (the
+// second rule) must be reported as "rule 2", matching the 1-based numbering
+// every other rule-index error in this function uses.
+func TestValidateLiteralPercentRuleErrorUsesOneBasedRuleNumber(t *testing.T) {
+	cfg := Defaults()
+	cfg.Rules = []RuleConfig{
+		{Match: MatchConfig{Method: "GET", Path: "/_ping"}, Action: "allow"},
+		{Match: MatchConfig{Method: "GET", Path: "/containers/%2F/json"}, Action: "allow"},
+	}
+
+	err := Validate(&cfg)
+	if err == nil || !strings.Contains(err.Error(), "rule 2: match.path") {
+		t.Fatalf("Validate() = %v, want error reporting the second rule as \"rule 2\"", err)
+	}
+}
+
 func TestValidateRejectsLiteralPercentInProfileRulePath(t *testing.T) {
 	cfg := Defaults()
 	cfg.Clients.Profiles = []ClientProfileConfig{
@@ -158,6 +201,154 @@ func TestValidateRejectsLiteralPercentInProfileRulePath(t *testing.T) {
 	err := Validate(&cfg)
 	if err == nil || !strings.Contains(err.Error(), "literal '%'") {
 		t.Fatalf("Validate() = %v, want literal-percent rejection for profile rule", err)
+	}
+}
+
+func TestValidateAllowsEscapedLibpodImageScpPostRule(t *testing.T) {
+	paths := []string{
+		"/libpod/images/scp/alpine%20",
+		"/libpod/images/scp/foreign%2Fpush",
+		"/libpod/images/scp/foreign%20/push/",
+	}
+	for _, path := range paths {
+		for _, profile := range []bool{false, true} {
+			name := "default policy"
+			if profile {
+				name = "named profile"
+			}
+			t.Run(path+"/"+name, func(t *testing.T) {
+				cfg := Defaults()
+				rule := RuleConfig{
+					Match:  MatchConfig{Method: "POST", Path: path},
+					Action: "allow",
+				}
+				if profile {
+					cfg.Clients.Profiles = []ClientProfileConfig{{Name: "transfer", Rules: []RuleConfig{rule}}}
+				} else {
+					cfg.Rules = append(cfg.Rules, rule)
+				}
+
+				if err := Validate(&cfg); err != nil {
+					t.Fatalf("Validate() error = %v, want escaped libpod image-SCP route rule accepted", err)
+				}
+			})
+		}
+	}
+}
+
+func TestValidateRejectsInvalidEscapedLibpodImageScpRules(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{name: "wrong method", method: "GET", path: "/libpod/images/scp/alpine%20"},
+		{name: "wildcard method", method: "*", path: "/libpod/images/scp/alpine%20"},
+		{name: "mixed methods", method: "POST,GET", path: "/libpod/images/scp/alpine%20"},
+		{name: "mixed methods with whitespace", method: "GET, POST", path: "/libpod/images/scp/alpine%20"},
+		{name: "wrong route", method: "POST", path: "/libpod/images/alpine%20/push"},
+		{name: "malformed escape", method: "POST", path: "/libpod/images/scp/alpine%2"},
+		{name: "single star glob", method: "POST", path: "/libpod/images/scp/alpine%20*"},
+		{name: "double star glob", method: "POST", path: "/libpod/images/scp/alpine%20/**"},
+		{name: "push action suffix", method: "POST", path: "/libpod/images/scp/alpine%20/push"},
+		{name: "tag action suffix", method: "POST", path: "/libpod/images/scp/alpine%20/tag"},
+		{name: "untag action suffix", method: "POST", path: "/libpod/images/scp/alpine%20/untag"},
+	}
+
+	for _, tt := range tests {
+		for _, profile := range []bool{false, true} {
+			name := "default policy"
+			if profile {
+				name = "named profile"
+			}
+			t.Run(tt.name+"/"+name, func(t *testing.T) {
+				cfg := Defaults()
+				rule := RuleConfig{
+					Match:  MatchConfig{Method: tt.method, Path: tt.path},
+					Action: "allow",
+				}
+				if profile {
+					cfg.Clients.Profiles = []ClientProfileConfig{{Name: "transfer", Rules: []RuleConfig{rule}}}
+				} else {
+					cfg.Rules = append(cfg.Rules, rule)
+				}
+
+				err := Validate(&cfg)
+				if err == nil || !strings.Contains(err.Error(), "literal '%'") {
+					t.Fatalf("Validate() = %v, want literal-percent rejection", err)
+				}
+			})
+		}
+	}
+}
+
+// TestValidateRejectsVersionPrefixInRulePath pins GHSA-worthy behavior:
+// NormalizePath strips a leading API version prefix from the request path
+// before rule matching ever runs, so a match.path pattern that itself starts
+// with one can never match real traffic — widening stripVersionPrefix to
+// Podman's prerelease/build-suffix class (e.g. "-dev", "-rc1") made this
+// silent-dead-rule trap reachable through more spellings than Docker's bare
+// /vN/vN.N, so it must fail config validation rather than only warn.
+func TestValidateRejectsVersionPrefixInRulePath(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+	}{
+		{"docker vN.N prefix", "/v1.45/containers/json"},
+		{"podman prerelease semver prefix", "/v5.8.1-dev/libpod/x"},
+		{"bare vN prefix", "/v1/x"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Rules = append(cfg.Rules, RuleConfig{
+				Match:  MatchConfig{Method: "GET", Path: tt.path},
+				Action: "allow",
+			})
+
+			err := Validate(&cfg)
+			if err == nil || !strings.Contains(err.Error(), "begins with an API version prefix") {
+				t.Fatalf("Validate() = %v, want version-prefix rejection", err)
+			}
+			if !strings.Contains(err.Error(), tt.path) {
+				t.Fatalf("Validate() = %v, want the offending pattern %q in the error", err, tt.path)
+			}
+		})
+	}
+}
+
+// TestValidateAcceptsPathsThatOnlyLookVersioned pins the other side of
+// stripVersionPrefix's character class: a path that merely starts with "v"
+// or "/v" without a digit immediately after is not a version prefix at all,
+// so these must NOT be rejected.
+func TestValidateAcceptsPathsThatOnlyLookVersioned(t *testing.T) {
+	tests := []string{"/version", "/volumes", "/v/containers"}
+	for _, path := range tests {
+		t.Run(path, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Rules = append(cfg.Rules, RuleConfig{
+				Match:  MatchConfig{Method: "GET", Path: path},
+				Action: "allow",
+			})
+
+			if err := Validate(&cfg); err != nil {
+				t.Fatalf("Validate() = %v, want nil for non-versioned path %q", err, path)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsVersionPrefixInProfileRulePath(t *testing.T) {
+	cfg := Defaults()
+	cfg.Clients.Profiles = []ClientProfileConfig{
+		{Name: "ro", Rules: []RuleConfig{
+			{Match: MatchConfig{Method: "GET", Path: "/v1.45/images/json"}, Action: "allow"},
+		}},
+	}
+
+	err := Validate(&cfg)
+	if err == nil || !strings.Contains(err.Error(), "begins with an API version prefix") {
+		t.Fatalf("Validate() = %v, want version-prefix rejection for profile rule", err)
 	}
 }
 
@@ -1565,6 +1756,33 @@ func TestMutantKills(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "must contain at least one client certificate identity selector") {
 			t.Fatalf("expected selector-required error, got: %v", err)
+		}
+	})
+
+	// ── CONDITIONALS_BOUNDARY validate.go:1254:8 ───────────────────────────────
+	// `r < 0x20` — the C0 control-character upper bound. Space (0x20) is the
+	// first non-control byte, so it must NOT be flagged; 0x1f must be.
+	t.Run("containsControlOrNUL_boundary_at_0x20", func(t *testing.T) {
+		if containsControlOrNUL(" ") {
+			t.Fatal("containsControlOrNUL(space, 0x20) = true, want false: space is not a control character")
+		}
+		if !containsControlOrNUL("\x1f") {
+			t.Fatal("containsControlOrNUL(0x1f) = false, want true: 0x1f is the last C0 control character")
+		}
+	})
+
+	// ── ARITHMETIC_BASE validate.go:1781:141 ───────────────────────────────────
+	// i+1 in the allowed_env_values entry-number error message — a rejected
+	// second entry must be reported as "entry 2", not "entry 0" (i-1).
+	t.Run("exec_allowed_env_values_index_arithmetic", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.RequestBody.Exec.AllowedEnvValues = []string{
+			"CALLBACK_URL=http://127.0.0.1:3000/callback",
+			"NOT_A_VALID_ENTRY",
+		}
+		err := Validate(&cfg)
+		if err == nil || !strings.Contains(err.Error(), "allowed_env_values entry 2") {
+			t.Fatalf("Validate() = %v, want error reporting the second entry as \"entry 2\"", err)
 		}
 	})
 }

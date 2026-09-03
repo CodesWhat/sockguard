@@ -219,8 +219,11 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 			// no labels, so neither the selector axes nor the name/image
 			// pattern axes have a field to read. It is refused rather than
 			// filtered — see
-			// responsefilter.LibpodSystemDataUsageDenyReason.
-			if r.Method == http.MethodGet && normPath == responsefilter.LibpodSystemDataUsagePath {
+			// responsefilter.LibpodSystemDataUsageDenyReason. The refusal
+			// covers HEAD too: falling through to needsVisibilityLabelFilter
+			// or the inspect path below would forward it to the daemon
+			// instead of refusing it.
+			if (r.Method == http.MethodGet || r.Method == http.MethodHead) && normPath == responsefilter.LibpodSystemDataUsagePath {
 				denyLibpodSystemDataUsage(w, r)
 				return
 			}
@@ -232,8 +235,10 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 			// filter.LibpodUnscopeableReads(), shared with the ownership
 			// middleware so the two layers cannot disagree about which
 			// endpoints are refusable; each entry's doc comment carries its
-			// shape evidence.
-			if r.Method == http.MethodGet {
+			// shape evidence. HEAD is refused alongside GET: there is no
+			// body-filtering step it could legitimately need, so gating on GET
+			// alone would forward it to the daemon.
+			if r.Method == http.MethodGet || r.Method == http.MethodHead {
 				if read, ok := filter.LookupLibpodUnscopeableRead(normPath); ok {
 					denyUnscopeableLibpodRead(w, r, read)
 					return
@@ -301,18 +306,18 @@ func compileVisibilityPolicies(logger *slog.Logger, opts Options) (compiledPolic
 
 // warnPatternsWithoutSelectors logs once at construction when a visibility
 // policy carries name/image patterns but no label selector. Pattern response
-// filtering only covers /containers/json, /libpod/containers/json and
-// /images/json (see needsPatternResponseFilter); every other visibility-aware
-// list endpoint — /events in particular — is constrained solely by the label
-// selectors injected into the upstream filter. So a patterns-only policy
-// silently leaves /events (and /networks, /volumes, /services, …)
-// unrestricted.
+// filtering only covers /containers/json, /libpod/containers/json,
+// /images/json and /libpod/images/json (see needsPatternResponseFilter); every
+// other visibility-aware list endpoint — /events in particular — is
+// constrained solely by the label selectors injected into the upstream
+// filter. So a patterns-only policy silently leaves /events (and /networks,
+// /volumes, /services, …) unrestricted.
 func warnPatternsWithoutSelectors(logger *slog.Logger, scope string, policy compiledPolicy) {
 	if logger == nil || !policy.hasPatternAxes() || len(policy.selectors) > 0 {
 		return
 	}
 	logger.Warn("visibility name/image patterns are set without any visible_resource_labels selector; "+
-		"pattern filtering only applies to containers and images (/containers/json, /libpod/containers/json, /images/json, and the "+
+		"pattern filtering only applies to containers and images (/containers/json, /libpod/containers/json, /images/json, /libpod/images/json, and the "+
 		"matching sections of /system/df), so /events and the other list endpoints stay unrestricted. "+
 		"Add a label selector to constrain them",
 		"scope", scope)
@@ -445,7 +450,8 @@ func handleVisibilityInspectRequest(logger *slog.Logger, next http.Handler, deps
 // needsPatternResponseFilter reports whether the given normalized path is a
 // list endpoint for which we support response-body pattern filtering.
 func needsPatternResponseFilter(normPath string) bool {
-	return normPath == "/containers/json" || normPath == libpodPrefix+"containers/json" || normPath == "/images/json"
+	return normPath == "/containers/json" || normPath == libpodPrefix+"containers/json" ||
+		normPath == "/images/json" || normPath == libpodPrefix+"images/json"
 }
 
 // patternFilterWriter is a response-intercepting http.ResponseWriter that
@@ -600,7 +606,7 @@ func itemVisibleByPatterns(raw json.RawMessage, normPath string, policy *compile
 	switch normPath {
 	case "/containers/json", libpodPrefix + "containers/json":
 		return containerItemVisibleByPatterns(raw, policy)
-	case "/images/json":
+	case "/images/json", libpodPrefix + "images/json":
 		return imageItemVisibleByPatterns(raw, policy)
 	default:
 		return true, nil
@@ -867,6 +873,9 @@ func requestVisibleWithPolicy(ctx context.Context, normPath string, policy *comp
 	if identifier, ok := imageReadIdentifier(normPath); ok {
 		return resourceVisibleWithPolicy(ctx, deps, dockerresource.KindImage, identifier, policy)
 	}
+	if identifier, ok := libpodImageReadIdentifier(normPath); ok {
+		return resourceVisibleWithPolicy(ctx, deps, dockerresource.KindImage, identifier, policy)
+	}
 	// Pattern axes only apply to containers and images. All other resource
 	// kinds use label-selector checks only.
 	if !hasSelectors {
@@ -921,9 +930,6 @@ func requestVisibleWithPolicy(ctx context.Context, normPath string, policy *comp
 	// GET /libpod/networks/{id}/json differs in label-key casing and (per
 	// design doc C6) may return a single-element array-wrapped response,
 	// pods because they have no Docker-compat equivalent at all.
-	if identifier, ok := libpodImageReadIdentifier(normPath); ok {
-		return resourceVisible(ctx, deps, dockerresource.KindImage, identifier, policy.selectors)
-	}
 	if identifier, ok := libpodPodReadIdentifier(normPath); ok {
 		return resourceVisible(ctx, deps, dockerresource.KindLibpodPod, identifier, policy.selectors)
 	}
