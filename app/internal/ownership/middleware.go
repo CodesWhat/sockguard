@@ -100,6 +100,15 @@ type embeddedOwnershipReference struct {
 type ownershipRequestReferences struct {
 	namespaceContainers []string
 	embeddedResources   []embeddedOwnershipReference
+	// denyReason, when set, is a refusal the request-shape inspection
+	// reached on its own, before any inspect. It exists because some
+	// requests name their resource in the query string rather than the
+	// path, so the decision needs the *http.Request the mutation pass
+	// already holds, while the refusal still has to travel the ordinary
+	// verdict path — a 403 an operator can stage through warn mode and read
+	// in the access log under reasonCodeOwnerPolicyDeniedAccess, not the
+	// unconditional 400 a mutation error produces.
+	denyReason string
 }
 
 // Options configures per-proxy resource ownership labeling and enforcement.
@@ -266,6 +275,8 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 		return mutateServiceOwnershipBody(r, opts.LabelKey, opts.Owner)
 	case r.Method == http.MethodPost && (isNodeUpdatePath(normPath) || isSwarmUpdatePath(normPath)):
 		return nil, addOwnerLabelToBody(r, opts.LabelKey, opts.Owner)
+	case r.Method == http.MethodPost && isCommitPath(normPath):
+		return mutateCommitOwnershipRequest(r, opts)
 	case r.Method == http.MethodPost && (normPath == "/build" || normPath == libpodPrefix+"build"):
 		return nil, addOwnerLabelToBuildQuery(r, opts.LabelKey, opts.Owner)
 	case r.Method == http.MethodPost && normPath == libpodContainerCreatePath:
@@ -351,6 +362,9 @@ func allowOwnershipRequestUnprefixed(
 ) (ownershipVerdict, string, error) {
 	strictest := verdictPassThrough
 	if refs != nil {
+		if refs.denyReason != "" {
+			return verdictDeny, refs.denyReason, nil
+		}
 		if !opts.AllowCrossOwnerNamespaceSharing && len(refs.namespaceContainers) > 0 {
 			verdict, reason, err := checkContainerNamespaceSharingRefs(ctx, inspectResource, refs.namespaceContainers, opts)
 			if err != nil || verdict.denied() {
