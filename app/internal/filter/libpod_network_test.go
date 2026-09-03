@@ -98,6 +98,45 @@ func TestLibpodNetworkInspectLibpodCreateOptionsGate(t *testing.T) {
 	}
 }
 
+// TestLibpodNetworkInspectLibpodCreateNetworkInterfaceGate pins GHSA-worthy
+// behavior: types.Network's top-level `network_interface` selects a host
+// device (the macvlan/ipvlan parent NIC, or the bridge interface name) just
+// as directly as an entry in `options` does, so it must be denied under the
+// same allow_driver_options gate rather than passing through unnoticed.
+func TestLibpodNetworkInspectLibpodCreateNetworkInterfaceGate(t *testing.T) {
+	tests := []struct {
+		name    string
+		opts    NetworkOptions
+		body    string
+		wantDen bool
+	}{
+		{"macvlan + network_interface denied by default", NetworkOptions{}, `{"driver":"macvlan","network_interface":"eno2"}`, true},
+		{"macvlan + network_interface allowed when driver options on", NetworkOptions{AllowDriverOptions: true}, `{"driver":"macvlan","network_interface":"eno2"}`, false},
+		{"ipvlan + network_interface denied by default", NetworkOptions{}, `{"driver":"ipvlan","network_interface":"eno2"}`, true},
+		{"ipvlan + network_interface allowed when driver options on", NetworkOptions{AllowDriverOptions: true}, `{"driver":"ipvlan","network_interface":"eno2"}`, false},
+		{"bridge + network_interface denied by default", NetworkOptions{}, `{"driver":"bridge","network_interface":"br-attacker"}`, true},
+		{"bridge + network_interface allowed when driver options on", NetworkOptions{AllowDriverOptions: true}, `{"driver":"bridge","network_interface":"br-attacker"}`, false},
+		{"empty network_interface passes by default", NetworkOptions{}, `{"driver":"macvlan","network_interface":""}`, false},
+		{"absent network_interface passes by default", NetworkOptions{}, `{"driver":"macvlan"}`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := newNetworkPolicy(tt.opts)
+			req := httptest.NewRequest(http.MethodPost, "/libpod/networks/create", strings.NewReader(tt.body))
+			reason, err := policy.inspectLibpodCreate(nil, req, NormalizePath(req.URL.Path))
+			if err != nil {
+				t.Fatalf("inspectLibpodCreate() error = %v", err)
+			}
+			if tt.wantDen && reason == "" {
+				t.Fatal("inspectLibpodCreate() reason = empty, want network-interface denial")
+			}
+			if !tt.wantDen && reason != "" {
+				t.Fatalf("inspectLibpodCreate() reason = %q, want empty", reason)
+			}
+		})
+	}
+}
+
 func TestLibpodNetworkInspectLibpodCreateSubnetsGate(t *testing.T) {
 	policy := newNetworkPolicy(NetworkOptions{})
 	req := httptest.NewRequest(http.MethodPost, "/libpod/networks/create", strings.NewReader(`{"subnets":[{"subnet":"10.10.0.0/24"}]}`))

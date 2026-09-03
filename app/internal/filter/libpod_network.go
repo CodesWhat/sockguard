@@ -40,6 +40,18 @@ type libpodNetworkCreateRequest struct {
 	Options     map[string]string `json:"options"`
 	IPAMOptions map[string]string `json:"ipam_options"`
 	Subnets     []json.RawMessage `json:"subnets"`
+	// NetworkInterface is types.Network's `network_interface`: the host
+	// network device backing this network — for macvlan/ipvlan the parent
+	// NIC (Podman's docs call it the driver-option equivalent of `parent`),
+	// for bridge the bridge interface name. There is no Docker analog:
+	// Docker's macvlan/ipvlan drivers take the same parent selection through
+	// an entry in NetworkRequestBodyConfig.Options (a driver option), so
+	// this field is gated by the SAME allow_driver_options knob rather than
+	// a new one — same host-resource-selection question, just carried as
+	// its own top-level field instead of nested under Options on the wire.
+	// Gated regardless of driver: bridge's own `network_interface` selects a
+	// host bridge device just as directly as macvlan/ipvlan's parent NIC.
+	NetworkInterface string `json:"network_interface"`
 	// NetworkDNSServers is types.Network's `network_dns_servers`: the
 	// resolvers every container attached to this network will use. Gated by
 	// the same allow_dns_servers knob as the update endpoint's add/remove
@@ -378,6 +390,9 @@ func (p networkPolicy) inspectLibpodCreate(logger *slog.Logger, r *http.Request,
 	}
 	if !p.allowDriverOptions && len(req.Options) > 0 {
 		return "libpod network create denied: driver options are not allowed", nil
+	}
+	if !p.allowDriverOptions && strings.TrimSpace(req.NetworkInterface) != "" {
+		return "libpod network create denied: network interface selection is not allowed", nil
 	}
 	if !p.allowCustomIPAMConfig && len(req.Subnets) > 0 {
 		return "libpod network create denied: custom subnet configuration is not allowed", nil
