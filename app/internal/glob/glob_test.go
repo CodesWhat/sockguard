@@ -1,9 +1,37 @@
 package glob
 
 import (
+	"go/parser"
+	"go/token"
 	"regexp"
+	"strings"
 	"testing"
 )
+
+// TestPackageDocQuotesTheEmittedGroups keeps the dialect documented at the top
+// of glob.go tied to what ToRegexString actually emits. The two drifted once
+// already: the doc kept describing "/**" as "(/.*)?" after the compiler moved
+// to an "s"-flagged group so a decoded control byte could not slip past a "**"
+// deny.
+func TestPackageDocQuotesTheEmittedGroups(t *testing.T) {
+	t.Parallel()
+
+	parsed, err := parser.ParseFile(token.NewFileSet(), "glob.go", nil, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse glob.go: %v", err)
+	}
+	if parsed.Doc == nil {
+		t.Fatal("glob.go has no package doc comment")
+	}
+
+	doc := parsed.Doc.Text()
+	for _, pattern := range []string{"**", "/**"} {
+		want := ToRegexString(pattern)
+		if !strings.Contains(doc, `"`+want+`"`) {
+			t.Fatalf("package doc does not quote %q as the compilation of %q:\n%s", want, pattern, doc)
+		}
+	}
+}
 
 func TestToRegexString(t *testing.T) {
 	t.Parallel()
