@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -436,5 +437,111 @@ func TestPatternListHeadRequestNotIntercepted(t *testing.T) {
 	}
 	if got := rec.Header().Get("Content-Length"); got != "4096" {
 		t.Fatalf("Content-Length = %q, want the upstream's 4096 untouched", got)
+	}
+}
+
+// upstreamRepresentationHeaders is the set every rewriting path has to strip.
+// It mirrors responsefilter.ClearUpstreamRepresentationHeaders, spelled out
+// here so a header quietly dropped from that list fails a test rather than
+// silently stops being checked.
+var upstreamRepresentationHeaders = []string{
+	"Accept-Ranges",
+	"Content-Digest",
+	"Content-Encoding",
+	"Content-Language",
+	"Content-Location",
+	"Content-MD5",
+	"Content-Range",
+	"Digest",
+	"ETag",
+	"Last-Modified",
+	"Repr-Digest",
+	"Trailer",
+	"Transfer-Encoding",
+}
+
+// setUpstreamRepresentationHeaders makes an upstream response announce every
+// representation header a rewrite has to invalidate.
+func setUpstreamRepresentationHeaders(h http.Header) {
+	h.Set("Accept-Ranges", "bytes")
+	h.Set("Content-Digest", "sha-256=:upstream:")
+	h.Set("Content-Encoding", "identity")
+	h.Set("Content-Language", "en")
+	h.Set("Content-Location", "/v1.53/containers/json")
+	h.Set("Content-MD5", "upstream-md5")
+	h.Set("Content-Range", "bytes 0-99/100")
+	h.Set("Digest", "sha-256=upstream")
+	h.Set("ETag", `"upstream-etag"`)
+	h.Set("Last-Modified", "Wed, 21 Oct 2026 07:28:00 GMT")
+	h.Set("Repr-Digest", "sha-256=:upstream:")
+	h.Set("Trailer", "X-Upstream-Trailer")
+	h.Set("Content-Length", "4096")
+}
+
+// TestPatternListRewriteClearsUpstreamRepresentationHeaders pins that a
+// rewritten list body does not ship the daemon's metadata for the body it
+// replaced. Content-Length was already corrected; ETag, Content-Encoding,
+// Content-Range and the rest were not, so the client received a validator and
+// an encoding describing bytes it never got. A caching client keyed on that
+// ETag can serve the unfiltered list back later, and the ETag by itself
+// fingerprints the resources the policy hid.
+func TestPatternListRewriteClearsUpstreamRepresentationHeaders(t *testing.T) {
+	t.Parallel()
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		setUpstreamRepresentationHeaders(w.Header())
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `[{"Names":["/visible-web"],"Image":"alpine"},{"Names":["/hidden-db"],"Image":"nginx"}]`)
+	})
+	handler := middlewareWithDeps(testVisibilityLogger(),
+		Options{NamePatterns: []string{"visible-*"}}, visibilityDeps{})(upstream)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/json", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "hidden-db") {
+		t.Fatalf("hidden container survived the filter: %s", rec.Body.String())
+	}
+	for _, name := range upstreamRepresentationHeaders {
+		if got := rec.Header().Get(name); got != "" {
+			t.Errorf("%s = %q after a body rewrite, want cleared", name, got)
+		}
+	}
+	if got, want := rec.Header().Get("Content-Length"), strconv.Itoa(rec.Body.Len()); got != want {
+		t.Fatalf("Content-Length = %q, want %q (the rewritten body's own length)", got, want)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want the upstream's application/json kept", got)
+	}
+}
+
+// TestSystemDataUsageRewriteClearsUpstreamRepresentationHeaders is the same
+// assertion for the other flush that reaches commitFilteredBody.
+func TestSystemDataUsageRewriteClearsUpstreamRepresentationHeaders(t *testing.T) {
+	t.Parallel()
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		setUpstreamRepresentationHeaders(w.Header())
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, modernSystemDFForTest)
+	})
+	handler := middlewareWithDeps(testVisibilityLogger(),
+		Options{VisibleResourceLabels: []string{"tier=prod"}}, visibilityDeps{})(upstream)
+
+	rec := getSystemDFForTest(t, handler)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	for _, name := range upstreamRepresentationHeaders {
+		if got := rec.Header().Get(name); got != "" {
+			t.Errorf("%s = %q after a body rewrite, want cleared", name, got)
+		}
+	}
+	if got, want := rec.Header().Get("Content-Length"), strconv.Itoa(rec.Body.Len()); got != want {
+		t.Fatalf("Content-Length = %q, want %q (the rewritten body's own length)", got, want)
 	}
 }

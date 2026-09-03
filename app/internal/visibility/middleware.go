@@ -547,7 +547,16 @@ func (p *patternFilterWriter) commitIfUnfilterable() (bool, error) {
 
 // commitFilteredBody writes body as the final response, setting Content-Length
 // so the rewritten length replaces the upstream's.
+//
+// Every other representation header the daemon set describes the body this one
+// replaces, so they are cleared first, exactly as the 502 paths in
+// filterResponseThroughWriter already do. Leaving them meant the client got an
+// ETag and a Content-Encoding for bytes it never received: a caching client
+// keyed on that validator can serve the unfiltered list back later, and the
+// ETag alone is a fingerprint of the resources the policy hid. Content-Length
+// is set after the clear, because the clear removes it.
 func (p *patternFilterWriter) commitFilteredBody(body []byte) error {
+	clearUpstreamRepresentationHeaders(p.underlying.Header())
 	p.underlying.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	p.underlying.WriteHeader(p.statusCode)
 	p.headerWritten = true
