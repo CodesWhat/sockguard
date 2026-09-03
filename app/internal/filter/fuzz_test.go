@@ -6,11 +6,13 @@ import (
 	"testing"
 )
 
-// legacyVersionPrefix allows up to two optional ".N" groups — vN, vN.N, or
-// vN.N.N — matching stripVersionPrefix's production behavior (#148: a
-// second optional group is required so Podman's three-part libpod semver
-// prefixes, e.g. /v5.0.0/, strip identically to Docker's vN.N).
-var legacyVersionPrefix = regexp.MustCompile(`^/v\d+(\.\d+){0,2}/`)
+// legacyVersionPrefix mirrors stripVersionPrefix's production character
+// class: a leading digit followed by any run of Podman's VersionedPath set
+// [0-9A-Za-z.-]. Docker's own router only ever emits vN / vN.N; Podman's API
+// server registers routes with this wider regex, which also admits
+// prerelease/build suffixes like "-dev" and "-rc1" (#148, and this fix's
+// widening from digits-and-dots-only to Podman's full class).
+var legacyVersionPrefix = regexp.MustCompile(`^/v[0-9][0-9A-Za-z.-]*/`)
 
 // referenceNormalizePath is an independent re-implementation of NormalizePath
 // used by FuzzNormalizePath as a differential oracle. Like NormalizePath it
@@ -179,11 +181,12 @@ func FuzzNormalizePath(f *testing.F) {
 		"",
 		"/",
 		"/v/containers/json",    // "/v" alone is not a version prefix
+		"/vX/containers/json",   // first char after v must be a digit
 		"/v1.45",                // version prefix with no trailing path
 		"/v1.45/",               // version prefix with just trailing slash
 		"/version",              // starts with /v but not a version prefix
-		"/v1./containers",       // malformed version
-		"/v.1/containers",       // malformed version
+		"/v1./containers",       // trailing dot is in Podman's class -- strips
+		"/v.1/containers",       // no digit right after v -- not a prefix
 		"/containers/../images", // path traversal
 		"/../../etc/passwd",     // escape attempt
 		"//containers///json",   // redundant slashes
@@ -205,9 +208,20 @@ func FuzzNormalizePath(f *testing.F) {
 		"/v5.0.0/libpod/containers/json",
 		"/v5.0.0/",    // three-part prefix with just trailing slash
 		"/v5.0.0",     // three-part prefix with no trailing path
-		"/v5.0./x",    // malformed three-part (missing patch digits)
-		"/v1.2.3.4/x", // four-part is not a version prefix
+		"/v5.0./x",    // trailing dot is in Podman's class -- strips
+		"/v1.2.3.4/x", // Podman's class has no part-count limit -- strips
 		"/v99999999999999999999.99999999999999999999.99999999999999999999/x", // adversarial digit runs
+		// Podman prerelease / dev builds (this fix): VersionedPath is
+		// [0-9][0-9A-Za-z.-]*, admitting "-dev", "-rc1", trailing '.'/'-',
+		// but not '+' (semver build metadata) or '_'.
+		"/v5.8.1-dev/libpod/networks/x/connect",
+		"/v5.8.1-rc1/libpod/containers/json",
+		"/v5.8.1+build.7/libpod/containers/json", // '+' not in class -- unchanged
+		"/v1.45./containers/json",                // trailing dot
+		"/v1.45-/containers/json",                // trailing dash
+		"/v1.45-foo/../containers/create",        // prerelease suffix + traversal
+		"/v5.8.1-dev",                            // no trailing slash
+		"/v5.8.1-dev/",                           // root path after prefix
 	}
 	for _, s := range seeds {
 		f.Add(s)

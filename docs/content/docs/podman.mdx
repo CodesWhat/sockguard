@@ -182,7 +182,10 @@ Sockguard strips the Docker API version prefix (`/v1.45/`) before matching
 rules, same as it always has. Podman's own clients send their **full daemon
 semver** as that prefix — three parts (`/v5.0.0/`, `/v4.9.3/`), not Docker's
 one-or-two-part form (`/v1.45/`) — so the path normalizer accepts an
-optional second `.N` group as well as the first. `/v5.0.0/libpod/containers/json`
+optional second `.N` group as well as the first, and, since Podman prerelease
+and dev builds also reach the socket, the same alphanumeric/`.`/`-` suffix
+class Podman's own router accepts (e.g. `/v5.8.1-dev/`, `/v5.8.1-rc1/`).
+`/v5.0.0/libpod/containers/json`, `/v5.8.1-dev/libpod/containers/json`,
 and `/libpod/containers/json` normalize to the identical rule-matching path.
 This is transparent — you never configure or reference the version prefix
 yourself — but it is worth knowing if you are reading raw access logs: the

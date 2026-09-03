@@ -932,14 +932,26 @@ func splitPath(path string) []string {
 	return strings.Split(trimmed, "/")
 }
 
+// isDockerVersionSegment reports whether segment is an API version prefix
+// segment. Docker's router only accepts digits and a dot; Podman's libpod
+// bindings send the daemon's full three-part semver plus prerelease/build
+// suffixes like "v5.8.1-dev" (VersionedPath regex [0-9][0-9A-Za-z.-]*, see
+// stripVersionPrefix in internal/filter/rules.go). Mirroring that class
+// here keeps route labels for Podman dev clients from all collapsing into
+// "unknown".
 func isDockerVersionSegment(segment string) bool {
 	if len(segment) < 2 || segment[0] != 'v' {
 		return false
 	}
-	for _, r := range segment[1:] {
-		if (r < '0' || r > '9') && r != '.' {
-			return false
+	if segment[1] < '0' || segment[1] > '9' {
+		return false
+	}
+	for i := 2; i < len(segment); i++ {
+		c := segment[i]
+		if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '.' || c == '-' {
+			continue
 		}
+		return false
 	}
 	return true
 }
