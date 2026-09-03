@@ -3,6 +3,8 @@ package cmd
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,8 +12,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -21,8 +25,116 @@ import (
 	"github.com/codeswhat/sockguard/app/internal/filter"
 	"github.com/codeswhat/sockguard/app/internal/logging"
 	"github.com/codeswhat/sockguard/app/internal/proxy"
+	"github.com/codeswhat/sockguard/app/internal/testcert"
 	"github.com/codeswhat/sockguard/app/internal/testhelp"
 )
+
+func TestBuildServeHandlerLibpodNetworkConnectUsesProductionUpstreamAndOwnership(t *testing.T) {
+	bundle, err := testcert.WriteMutualTLSBundle(t.TempDir(), "127.0.0.1")
+	if err != nil {
+		t.Fatalf("write mutual TLS bundle: %v", err)
+	}
+	serverCert, err := tls.LoadX509KeyPair(bundle.ServerCertFile, bundle.ServerKeyFile)
+	if err != nil {
+		t.Fatalf("load server keypair: %v", err)
+	}
+	caPEM, err := os.ReadFile(bundle.CAFile)
+	if err != nil {
+		t.Fatalf("read CA file: %v", err)
+	}
+	clientCAs := x509.NewCertPool()
+	if !clientCAs.AppendCertsFromPEM(caPEM) {
+		t.Fatal("CA file contains no PEM certificates")
+	}
+
+	wantBody := map[string]any{
+		"container":      "owned-container",
+		"aliases":        []any{"edge"},
+		"interface_name": "eth9",
+	}
+	var mu sync.Mutex
+	upstreamHits := make(map[string]int)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+			t.Error("upstream request arrived without a verified client certificate")
+		}
+		path := r.URL.EscapedPath()
+		mu.Lock()
+		upstreamHits[path]++
+		mu.Unlock()
+
+		switch path {
+		case "/engine%2Fgateway/networks/team-net":
+			_, _ = io.WriteString(w, `{"Labels":{"com.sockguard.owner":"job-123"}}`)
+		case "/engine%2Fgateway/containers/owned-container/json":
+			_, _ = io.WriteString(w, `{"Config":{"Labels":{"com.sockguard.owner":"job-123"}}}`)
+		case "/engine%2Fgateway/v5.8.1-dev/libpod/networks/team-net/connect":
+			var gotBody map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Fatalf("decode forwarded connect body: %v", err)
+			}
+			if !reflect.DeepEqual(gotBody, wantBody) {
+				t.Fatalf("forwarded connect body = %#v, want %#v", gotBody, wantBody)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected upstream request %s %s", r.Method, path)
+			http.Error(w, "unexpected upstream request", http.StatusNotFound)
+		}
+	}))
+	srv.TLS = &tls.Config{
+		Certificates: []tls.Certificate{serverCert},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    clientCAs,
+		MinVersion:   tls.VersionTLS12,
+	}
+	srv.StartTLS()
+	defer srv.Close()
+
+	cfg := config.Defaults()
+	cfg.Health.Enabled = false
+	cfg.Log.AccessLog = false
+	cfg.Upstream.Endpoints = []config.UpstreamEndpoint{{
+		Address: "tcp://" + strings.TrimPrefix(srv.URL, "https://") + "/engine%2Fgateway",
+		TLS: config.UpstreamTLSConfig{
+			CAFile:     bundle.CAFile,
+			CertFile:   bundle.ClientCertFile,
+			KeyFile:    bundle.ClientKeyFile,
+			ServerName: "127.0.0.1",
+		},
+	}}
+	cfg.Upstream.Failover.HealthInterval = "-1s"
+	cfg.Ownership.Owner = "job-123"
+	cfg.Ownership.LabelKey = "com.sockguard.owner"
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/networks/*/connect"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	rules, err := compileRuleConfigsForTest(cfg.Rules)
+	if err != nil {
+		t.Fatalf("compile rules: %v", err)
+	}
+	handler := buildServeHandler(t, &cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v5.8.1-dev/libpod/networks/team-net/connect", strings.NewReader(`{"container":"owned-container","aliases":["edge"],"interface_name":"eth9"}`))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, path := range []string{
+		"/engine%2Fgateway/networks/team-net",
+		"/engine%2Fgateway/containers/owned-container/json",
+		"/engine%2Fgateway/v5.8.1-dev/libpod/networks/team-net/connect",
+	} {
+		if upstreamHits[path] != 1 {
+			t.Fatalf("upstream hits[%q] = %d, want 1; all hits: %#v", path, upstreamHits[path], upstreamHits)
+		}
+	}
+}
 
 func TestFullProxyChainHTTPIntegration(t *testing.T) {
 	socketPath := shortSocketPath(t, "chain-http")
