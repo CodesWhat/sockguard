@@ -930,3 +930,112 @@ func TestLibpodSecretListIsRefusedRatherThanOwnerFiltered(t *testing.T) {
 		}
 	}
 }
+
+// --- the image-SCP route view ----------------------------------------------
+
+// TestLibpodImageScpRouteViewKeepsTheTrailingSlash pins the one thing that
+// makes POST /libpod/images/scp/{name:.*} classifiable at all: the route view
+// has to be the view gorilla/mux matches on, and a trailing slash is part of
+// it.
+//
+// Podman registers the per-image action routes (/push, /tag, /untag) before
+// /libpod/images/scp/{name:.*}, so /libpod/images/scp/victim/push is a push of
+// an image named "scp/victim". Add one slash and the anchored ".../push"
+// pattern no longer matches, so the daemon falls through to the SCP catch-all
+// and copies the local image named "victim/push/" to another host. The
+// middleware recomputed its route view with filter.NormalizePath, whose
+// path.Clean strips that slash, so it read the request the way the daemon
+// would NOT: as a push whose image nothing owns, which inspects to not-found
+// and passes ownership through.
+//
+// The two legs differ in what the filter middleware stamped on the request
+// meta, because the two views disagree by exactly this slash and ownership
+// prefers the stamped one. Both have to reach the same verdict.
+func TestLibpodImageScpRouteViewKeepsTheTrailingSlash(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		// stampedNormPath is what filter.resolveNormalizedPath puts on the
+		// request meta. Empty means no filter middleware ran, so ownership
+		// normalizes the path itself.
+		stampedNormPath string
+	}{
+		{name: "no filter middleware ran"},
+		{name: "filter stamped the route view", stampedNormPath: "/libpod/images/scp/victim/push/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var gotIdentifiers []string
+			upstreamCalls := 0
+			handler := middlewareWithDeps(
+				testLogger(),
+				Options{Owner: "job-123", LabelKey: "com.sockguard.owner"},
+				func(_ context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
+					if kind != dockerresource.KindImage {
+						t.Fatalf("inspect kind = %s, want %s", kind, dockerresource.KindImage)
+					}
+					gotIdentifiers = append(gotIdentifiers, identifier)
+					// Only the image the daemon would actually route to
+					// exists. Every other classification inspects a name no
+					// daemon has, comes back not-found, and is forwarded — the
+					// bug this test exists for.
+					if identifier != "victim/push/" {
+						return nil, false, nil
+					}
+					return map[string]string{"com.sockguard.owner": "other-job"}, true, nil
+				},
+				fakeInspector{}.inspectExec,
+			)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				upstreamCalls++
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			meta := &logging.RequestMeta{NormPath: tt.stampedNormPath}
+			req := httptest.NewRequest(http.MethodPost, "/libpod/images/scp/victim/push/", nil)
+			req = req.WithContext(logging.WithMeta(req.Context(), meta))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if len(gotIdentifiers) != 1 || gotIdentifiers[0] != "victim/push/" {
+				t.Fatalf("image inspects = %#v, want exactly [\"victim/push/\"]; the request was not classified as an image SCP", gotIdentifiers)
+			}
+			if rec.Code != http.StatusForbidden || upstreamCalls != 0 {
+				t.Fatalf("status = %d upstream calls = %d, want %d and 0; body: %s", rec.Code, upstreamCalls, http.StatusForbidden, rec.Body.String())
+			}
+			if meta.Reason != "libpod owner policy denied access to image" {
+				t.Fatalf("meta.Reason = %q, want %q", meta.Reason, "libpod owner policy denied access to image")
+			}
+		})
+	}
+}
+
+// TestLibpodImageScpWithoutATrailingSlashStaysAPush is the control for the
+// test above: without the slash gorilla/mux does match the earlier /push
+// route, so the same fixture has to stay a push of the image named
+// "scp/victim" rather than becoming an SCP of "victim".
+func TestLibpodImageScpWithoutATrailingSlashStaysAPush(t *testing.T) {
+	t.Parallel()
+	var gotIdentifiers []string
+	handler := middlewareWithDeps(
+		testLogger(),
+		Options{Owner: "job-123", LabelKey: "com.sockguard.owner"},
+		func(_ context.Context, _ dockerresource.Kind, identifier string) (map[string]string, bool, error) {
+			gotIdentifiers = append(gotIdentifiers, identifier)
+			return map[string]string{"com.sockguard.owner": "job-123"}, true, nil
+		},
+		fakeInspector{}.inspectExec,
+	)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/libpod/images/scp/victim/push", nil))
+
+	if len(gotIdentifiers) != 1 || gotIdentifiers[0] != "scp/victim" {
+		t.Fatalf("image inspects = %#v, want exactly [\"scp/victim\"]", gotIdentifiers)
+	}
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+}
