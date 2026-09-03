@@ -740,3 +740,35 @@ func TestReloadDiscardWarningTracksLimiterStateNotMiddlewarePresence(t *testing.
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// serve_reload.go:468 — CONDITIONALS_BOUNDARY: `p.Limits.Concurrency.MaxInflight > 0`
+// inside profileNamesWithConcurrency. Mutation flips > to >=, which would
+// include a profile with MaxInflight == 0 in the in-flight-gauge set even
+// though SetInflight is only ever called after a successful Acquire, which
+// never happens for a zero cap.
+// ---------------------------------------------------------------------------
+
+func TestProfileNamesWithConcurrency_MaxInflightBoundary(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Clients.Profiles = []config.ClientProfileConfig{
+		{Name: "zero-cap", Limits: config.LimitsConfig{Concurrency: &config.ConcurrencyConfig{MaxInflight: 0}}},
+		{Name: "capped", Limits: config.LimitsConfig{Concurrency: &config.ConcurrencyConfig{MaxInflight: 1}}},
+		{Name: "no-concurrency-block"},
+	}
+
+	got := profileNamesWithConcurrency(cfg)
+
+	if _, ok := got["zero-cap"]; ok {
+		t.Fatalf("profileNamesWithConcurrency() included %q with MaxInflight == 0 (the boundary), set = %v", "zero-cap", got)
+	}
+	if _, ok := got["capped"]; !ok {
+		t.Fatalf("profileNamesWithConcurrency() missing %q with MaxInflight == 1, set = %v", "capped", got)
+	}
+	if _, ok := got["no-concurrency-block"]; ok {
+		t.Fatalf("profileNamesWithConcurrency() included %q with no Concurrency block, set = %v", "no-concurrency-block", got)
+	}
+	if len(got) != 1 {
+		t.Fatalf("profileNamesWithConcurrency() = %v, want exactly {\"capped\"}", got)
+	}
+}

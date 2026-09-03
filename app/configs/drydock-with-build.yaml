@@ -65,6 +65,9 @@ response:
 # too; restart-policy/resource-control/device/capability changes stay denied
 # unless you explicitly allow them under request_body.container_update.
 request_body:
+  container_remove:
+    allow_force: true
+    allow_remove_volumes: true
   container_create:
     allowed_bind_mounts: []
     # Drydock recreates a container from its own inspect spec, which on most

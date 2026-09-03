@@ -82,6 +82,18 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	{method: http.MethodPost, path: "/libpod/exec/sockguard-test/start"},
 	{method: http.MethodPost, path: "/libpod/volumes/create"},
 	{method: http.MethodPost, path: "/libpod/networks/create"},
+	// Podman's native network connect/disconnect. Connect runs its own
+	// libpod handler and body shape; disconnect is registered straight onto
+	// the Docker-compat handler. Both go through request_body.libpod_network
+	// (filter.networkPolicy.inspectLibpod), the same config block that
+	// governs libpod network create.
+	{method: http.MethodPost, path: "/libpod/networks/sockguard-test/connect"},
+	{method: http.MethodPost, path: "/libpod/networks/sockguard-test/disconnect"},
+	// Podman's netavark-only network update, which rewrites an existing
+	// network's DNS resolvers. No Docker analog exists at any Engine API
+	// version. Gated by request_body.libpod_network.allow_dns_servers
+	// (filter.networkPolicy.inspectLibpodUpdate).
+	{method: http.MethodPost, path: "/libpod/networks/sockguard-test/update"},
 	{method: http.MethodPost, path: "/libpod/secrets/create"},
 	// Podman's native image pull, the libpod counterpart of
 	// POST /images/create. It runs through the SAME request_body.image_pull
@@ -153,8 +165,9 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	// it, bypassing every containers/create gate on both surfaces — the
 	// container's spec lives inside a gzipped tar as spec.dump, not in any
 	// JSON sockguard can read. Treat it with the caution play/kube gets: the
-	// ?pod and ?publishPorts parameters mean one restore can also join a pod
-	// and bind host ports.
+	// ?pod parameter means one restore can also join a pod. (Podman's own
+	// swagger doc for this route lists no publishPorts parameter — that
+	// belongs to play/kube, not restore.)
 	{method: http.MethodPost, path: "/libpod/containers/sockguard-test/restore"},
 	// play/kube, its "kube/play" alias (Podman registers both spellings on
 	// the identical libpod.PlayKube/KubePlay handlers), kube/apply, and
@@ -639,7 +652,7 @@ func bodyInspectionConfiguredForEndpoint(requestBody config.RequestBodyConfig, e
 		// container_update's allow_* gates are enforced against libpod's own
 		// body and query shape by containerUpdatePolicy.inspectLibpod.
 		return true
-	case "/libpod/pods/create", "/libpod/volumes/create", "/libpod/networks/create", "/libpod/secrets/create", "/libpod/images/pull", "/libpod/images/load", "/libpod/images/import":
+	case "/libpod/pods/create", "/libpod/volumes/create", "/libpod/networks/create", "/libpod/networks/sockguard-test/connect", "/libpod/networks/sockguard-test/disconnect", "/libpod/networks/sockguard-test/update", "/libpod/secrets/create", "/libpod/images/pull", "/libpod/images/load", "/libpod/images/import":
 		// libpod_pod_create/libpod_volume/libpod_network/libpod_secret gates
 		// are all plain booleans/allowlists with real fail-closed defaults —
 		// none of them read insecure_allow_body_blind_writes the way exec
@@ -654,7 +667,15 @@ func bodyInspectionConfiguredForEndpoint(requestBody config.RequestBodyConfig, e
 		// /images/load entry above is inspected on and is read by the same
 		// imageLoadPolicy, and POST /libpod/images/import, which is gated by
 		// request_body.image_pull.allow_imports — false by default, and the
-		// same flag that already gates the Docker-compat fromSrc import.
+		// same flag that already gates the Docker-compat fromSrc import. The
+		// libpod network connect/disconnect entries reuse
+		// request_body.libpod_network, whose allow_endpoint_config and
+		// allow_disconnect_force both default false, matching the
+		// Docker-compat /networks/*/connect and /networks/*/disconnect
+		// entries above. /libpod/networks/*/update joins them on the same
+		// terms via allow_dns_servers, also default false; it has no
+		// Docker-compat entry to match because the Engine API has no
+		// network-update route.
 		return true
 	// /libpod/play/kube, /libpod/kube/play, /libpod/kube/apply,
 	// /libpod/manifests/*, /libpod/local/build, /libpod/local/images/load,

@@ -3,7 +3,9 @@ package admin
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +15,27 @@ import (
 const testPath = "/admin/validate"
 
 func newRecorder() *httptest.ResponseRecorder { return httptest.NewRecorder() }
+
+// brokenResponseWriter satisfies http.ResponseWriter but fails every Write
+// call, forcing httpjson.Write to return a non-nil encoding error so tests
+// can exercise the handler's own "failed to encode response" logging path.
+type brokenResponseWriter struct {
+	header http.Header
+	code   int
+}
+
+func (w *brokenResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *brokenResponseWriter) WriteHeader(code int) { w.code = code }
+
+func (w *brokenResponseWriter) Write([]byte) (int, error) {
+	return 0, errors.New("simulated write failure")
+}
 
 func newOKValidator() Validator {
 	return func(_ []byte) ValidateResponse {
@@ -105,6 +128,29 @@ func TestInterceptorReturns200OnValidationSuccess(t *testing.T) {
 	}
 	if got.Rules != 3 || got.Profiles != 1 {
 		t.Fatalf("rules=%d profiles=%d, want 3/1", got.Rules, got.Profiles)
+	}
+}
+
+// TestInterceptorLogsEncodeFailure ensures that a write failure while
+// serializing the validate response is actually surfaced through the
+// configured logger, rather than being silently swallowed. A broken
+// ResponseWriter forces httpjson.Write to return a non-nil error.
+func TestInterceptorLogsEncodeFailure(t *testing.T) {
+	t.Parallel()
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	handler := NewValidateInterceptor(Options{
+		Path:     testPath,
+		Validate: newOKValidator(),
+		Logger:   logger,
+	})(noopHandler())
+
+	req := httptest.NewRequest(http.MethodPost, testPath, strings.NewReader("rules: []\n"))
+	rec := &brokenResponseWriter{}
+	handler.ServeHTTP(rec, req)
+
+	if !strings.Contains(logBuf.String(), "admin validate: failed to encode response") {
+		t.Fatalf("log output = %q, want it to contain the encode-failure warning", logBuf.String())
 	}
 }
 

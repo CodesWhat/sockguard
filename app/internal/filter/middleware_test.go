@@ -2030,3 +2030,121 @@ func TestRunAllowedInspectionReturnsEmptyForPassThrough(t *testing.T) {
 		t.Errorf("runAllowedInspection() status = %d, want 0", status)
 	}
 }
+
+// sequencedDeadlineWriter returns errs[call] (nil if call >= len(errs)) from
+// each successive SetReadDeadline call, so a test can control the set-call
+// and clear-call results independently.
+type sequencedDeadlineWriter struct {
+	http.ResponseWriter
+	errs  []error
+	calls int
+}
+
+func (w *sequencedDeadlineWriter) SetReadDeadline(time.Time) error {
+	var err error
+	if w.calls < len(w.errs) {
+		err = w.errs[w.calls]
+	}
+	w.calls++
+	return err
+}
+
+func (w *sequencedDeadlineWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+// TestRunAllowedInspectionLogsSetDeadlineErrorOnlyOnFailure covers
+// middleware.go line 344: the set-deadline debug log must fire when
+// SetReadDeadline returns a genuine (non-ErrNotSupported) error, and must
+// NOT fire when it succeeds. A CONDITIONALS_NEGATION mutant on err != nil
+// would invert both halves of that.
+func TestRunAllowedInspectionLogsSetDeadlineErrorOnlyOnFailure(t *testing.T) {
+	sentinel := errors.New("set deadline boom")
+	tests := []struct {
+		name      string
+		setErr    error
+		wantDebug bool
+	}{
+		{name: "genuine set error logs debug", setErr: sentinel, wantDebug: true},
+		{name: "successful set does not log debug", setErr: nil, wantDebug: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var logBuf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			w := &sequencedDeadlineWriter{ResponseWriter: httptest.NewRecorder(), errs: []error{tt.setErr, nil}}
+			req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
+			p := compileRuntimePolicy(nil, PolicyConfig{}, nil)
+
+			runAllowedInspection(p, logger, w, req, "/containers/json")
+
+			gotDebug := strings.Contains(logBuf.String(), "slowloris read deadline not applied")
+			if gotDebug != tt.wantDebug {
+				t.Fatalf("debug log present = %v, want %v; log = %s", gotDebug, tt.wantDebug, logBuf.String())
+			}
+		})
+	}
+}
+
+// TestRunAllowedInspectionLogsClearDeadlineErrorOnlyOnFailure covers
+// middleware.go line 348: the clear-deadline error log must fire when the
+// reset SetReadDeadline call returns a genuine error, and must NOT fire
+// when it succeeds. A CONDITIONALS_NEGATION mutant on err != nil would
+// invert both halves of that.
+func TestRunAllowedInspectionLogsClearDeadlineErrorOnlyOnFailure(t *testing.T) {
+	sentinel := errors.New("clear deadline boom")
+	tests := []struct {
+		name      string
+		clearErr  error
+		wantError bool
+	}{
+		{name: "genuine clear error logs error", clearErr: sentinel, wantError: true},
+		{name: "successful clear does not log error", clearErr: nil, wantError: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var logBuf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			w := &sequencedDeadlineWriter{ResponseWriter: httptest.NewRecorder(), errs: []error{nil, tt.clearErr}}
+			req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
+			p := compileRuntimePolicy(nil, PolicyConfig{}, nil)
+
+			runAllowedInspection(p, logger, w, req, "/containers/json")
+
+			gotError := strings.Contains(logBuf.String(), "failed to clear slowloris read deadline")
+			if gotError != tt.wantError {
+				t.Fatalf("error log present = %v, want %v; log = %s", gotError, tt.wantError, logBuf.String())
+			}
+		})
+	}
+}
+
+// TestMatchesLibpodVolumeInspection covers middleware.go line 497's exact
+// path-equality check. A CONDITIONALS_NEGATION mutant (== -> !=) would
+// invert every case here.
+func TestMatchesLibpodVolumeInspection(t *testing.T) {
+	if !matchesLibpodVolumeInspection("/libpod/volumes/create") {
+		t.Error("matchesLibpodVolumeInspection(exact path) = false, want true")
+	}
+	if matchesLibpodVolumeInspection("/libpod/volumes/create/extra") {
+		t.Error("matchesLibpodVolumeInspection(path with suffix) = true, want false")
+	}
+	if matchesLibpodVolumeInspection("/libpod/networks/create") {
+		t.Error("matchesLibpodVolumeInspection(different resource) = true, want false")
+	}
+}
+
+// TestMatchesLibpodSecretInspection covers middleware.go line 505's exact
+// path-equality check. A CONDITIONALS_NEGATION mutant (== -> !=) would
+// invert every case here.
+func TestMatchesLibpodSecretInspection(t *testing.T) {
+	if !matchesLibpodSecretInspection("/libpod/secrets/create") {
+		t.Error("matchesLibpodSecretInspection(exact path) = false, want true")
+	}
+	if matchesLibpodSecretInspection("/libpod/secrets/create/extra") {
+		t.Error("matchesLibpodSecretInspection(path with suffix) = true, want false")
+	}
+	if matchesLibpodSecretInspection("/libpod/volumes/create") {
+		t.Error("matchesLibpodSecretInspection(different resource) = true, want false")
+	}
+}

@@ -1,6 +1,6 @@
 # Sockguard + Watchtower
 
-**Who this is for:** Teams running Watchtower for automatic container updates and wanting to eliminate the raw Docker socket mount from the Watchtower container.
+**Who this is for:** Teams running [Watchtower](https://github.com/nicholas-fedor/watchtower) for automatic container updates and wanting to eliminate the raw Docker socket mount from the Watchtower container.
 
 **What's exposed:** Sockguard listens on plaintext TCP `:2375` on the private Docker compose network. Watchtower connects via `DOCKER_HOST=tcp://sockguard:2375`. The port is **not** published to the host.
 
@@ -15,9 +15,11 @@ Watchtower's `DOCKER_HOST` environment variable accepts `unix://` paths, but the
 | sockguard: `read_only`, `cap_drop: ALL`, `no-new-privileges` | Enabled |
 | No raw socket in Watchtower container | Yes — TCP to sockguard only |
 | Port 2375 exposed to host | No — compose-internal network only |
-| Exec write guard | Disabled — `insecure_allow_body_blind_writes: true` for lifecycle hooks |
-| Raw log/archive streams | Enabled — `insecure_allow_read_exfiltration: true` for compatibility |
+| Exec command allowlist | Disabled — `insecure_allow_body_blind_writes: true` acknowledges arbitrary lifecycle hooks |
+| Raw log/archive/image-export streams | Denied — no read-exfiltration acknowledgment |
 | Image pulls | All registries allowed (Watchtower tracks arbitrary images) |
+| Image list | Denied — Watchtower v1.21.2 inspects images directly |
+| Recreated endpoint settings | Copied addressing and a user-configured MAC allowed; links and driver options denied |
 
 ## Usage
 
@@ -34,6 +36,6 @@ docker compose up -d
 
 ## Hardening tips
 
-- If your Watchtower lifecycle hooks are fixed commands, replace `insecure_allow_body_blind_writes: true` with `request_body.exec.allowed_commands` listing the exact argv vectors.
+- If your Watchtower lifecycle hooks are fixed commands, replace `insecure_allow_body_blind_writes: true` with `request_body.exec.allowed_commands` listing the exact argv vectors. Set `request_body.exec.allow_root_user: false` too if every hook selects a non-root user explicitly.
 - Add `clients.allowed_cidrs` to restrict which source IPs can reach the sockguard TCP listener within the Docker network.
 - Switch to mTLS TCP (`listen.tls`) for stronger in-network authentication if your Watchtower image supports it.

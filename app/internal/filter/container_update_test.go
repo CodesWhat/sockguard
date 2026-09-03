@@ -11,6 +11,8 @@ import (
 	"testing"
 )
 
+const watchtowerNoRestartUpdateBody = `{"CpuShares":0,"Memory":0,"NanoCpus":0,"CgroupParent":"","BlkioWeight":0,"BlkioWeightDevice":null,"BlkioDeviceReadBps":null,"BlkioDeviceWriteBps":null,"BlkioDeviceReadIOps":null,"BlkioDeviceWriteIOps":null,"CpuPeriod":0,"CpuQuota":0,"CpuRealtimePeriod":0,"CpuRealtimeRuntime":0,"CpusetCpus":"","CpusetMems":"","Devices":null,"DeviceCgroupRules":null,"DeviceRequests":null,"MemoryReservation":0,"MemorySwap":0,"MemorySwappiness":null,"OomKillDisable":null,"PidsLimit":null,"Ulimits":null,"CpuCount":0,"CpuPercent":0,"IOMaximumIOps":0,"IOMaximumBandwidth":0,"RestartPolicy":{"Name":"no","MaximumRetryCount":0}}`
+
 func TestContainerUpdateDeniesRestartPolicyByDefault(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/containers/abc/update", strings.NewReader(`{"RestartPolicy":{"Name":"always"}}`))
 
@@ -28,7 +30,7 @@ func TestContainerUpdateDeniesResourceControlsByDefault(t *testing.T) {
 		name string
 		body string
 	}{
-		{name: "memory", body: `{"Memory":0}`},
+		{name: "memory", body: `{"Memory":1}`},
 		{name: "nano cpus", body: `{"NanoCpus":2000000000}`},
 		{name: "pids limit", body: `{"PidsLimit":-1}`},
 		{name: "cgroup parent", body: `{"CgroupParent":"/docker"}`},
@@ -45,6 +47,49 @@ func TestContainerUpdateDeniesResourceControlsByDefault(t *testing.T) {
 			}
 			if reason != "container update denied: resource control changes are not allowed" {
 				t.Fatalf("reason = %q", reason)
+			}
+		})
+	}
+}
+
+func TestContainerUpdateAllowsMobyRestartOnlyWireBody(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/update", strings.NewReader(watchtowerNoRestartUpdateBody))
+
+	reason, err := newContainerUpdatePolicy(ContainerUpdateOptions{AllowRestartPolicy: true}).inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty for Moby's zero-valued embedded Resources", reason)
+	}
+}
+
+func TestContainerUpdateMobyWireBodyDeniesActualResourceChanges(t *testing.T) {
+	tests := []struct {
+		name string
+		from string
+		to   string
+	}{
+		{name: "memory", from: `"Memory":0`, to: `"Memory":1`},
+		{name: "nano cpus", from: `"NanoCpus":0`, to: `"NanoCpus":2000000000`},
+		{name: "blkio device clear", from: `"BlkioDeviceReadBps":null`, to: `"BlkioDeviceReadBps":[]`},
+		{name: "pids limit clear", from: `"PidsLimit":null`, to: `"PidsLimit":0`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := strings.Replace(watchtowerNoRestartUpdateBody, tt.from, tt.to, 1)
+			if body == watchtowerNoRestartUpdateBody {
+				t.Fatalf("fixture mutation %q -> %q did not apply", tt.from, tt.to)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/containers/abc/update", strings.NewReader(body))
+
+			reason, err := newContainerUpdatePolicy(ContainerUpdateOptions{AllowRestartPolicy: true}).inspect(nil, req, NormalizePath(req.URL.Path))
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != "container update denied: resource control changes are not allowed" {
+				t.Fatalf("reason = %q, want resource-control denial", reason)
 			}
 		})
 	}

@@ -108,6 +108,49 @@ func TestParseMutationDocumentDepthAndNodeCaps(t *testing.T) {
 			t.Fatalf("parseMutationDocument() error = %v, want node-cap rejection", err)
 		}
 	})
+
+	t.Run("object depth exactly at cap accepted", func(t *testing.T) {
+		// Mirrors "depth at cap accepted" above but nests through object
+		// members (scanJSONObjectMembers's own depth guard at json_mutate.go
+		// line 121) rather than array elements, since the two are separate
+		// recursive functions each with their own > mutationMaxDepth check.
+		// A boundary mutant (> -> >=) would reject this exact-cap body one
+		// level too early.
+		body := nestedMutationObjectBody(mutationMaxDepth)
+		if _, err := parseMutationDocument(body, mutationMaxNodes(len(body))); err != nil {
+			t.Fatalf("parseMutationDocument() at object depth cap error = %v", err)
+		}
+	})
+
+	t.Run("node count exactly at cap accepted", func(t *testing.T) {
+		// incrementJSONNodeCount's cap check (json_mutate.go line 192) must
+		// accept a node count exactly equal to maxNodes and only reject once
+		// it goes strictly over. A boundary mutant (> -> >=) would reject
+		// the second (cap-reaching) key instead of only a third.
+		body := []byte(`{"a":1,"b":2}`)
+		if _, err := parseMutationDocument(body, 2); err != nil {
+			t.Fatalf("parseMutationDocument() at node cap error = %v", err)
+		}
+	})
+}
+
+// TestMutationMaxNodes pins mutationMaxNodes' exact arithmetic (bodyLen+1).
+// An ARITHMETIC_BASE mutant (+ -> -) would return bodyLen-1 instead, which
+// this direct value assertion catches immediately.
+func TestMutationMaxNodes(t *testing.T) {
+	tests := []struct {
+		bodyLen int
+		want    int64
+	}{
+		{bodyLen: 0, want: 1},
+		{bodyLen: 5, want: 6},
+		{bodyLen: 100, want: 101},
+	}
+	for _, tt := range tests {
+		if got := mutationMaxNodes(tt.bodyLen); got != tt.want {
+			t.Errorf("mutationMaxNodes(%d) = %d, want %d", tt.bodyLen, got, tt.want)
+		}
+	}
 }
 
 func nestedMutationArrayBody(arrayDepth int) []byte {

@@ -173,27 +173,46 @@ func pathSegmentNeedsClean(p string, start, end int, absolutePath, hasNormalSegm
 	return false, true
 }
 
-// stripVersionPrefix removes the leading version segment accepted by Podman's
-// VersionedPath router: /v followed by a digit, then zero or more ASCII
-// letters, digits, dots, or hyphens, and a trailing slash. That includes the
-// usual Docker vN.N and Podman vN.N.N forms plus prerelease and four-component
-// spellings that a hostile API client can send and Podman still routes.
+// stripVersionPrefix removes a leading API version prefix, returning the
+// path from the first slash after the version. Uses a hand-rolled byte loop
+// so the common case (no prefix) avoids regexp overhead and allocation
+// entirely.
 //
-// The hand-rolled check keeps the common no-prefix path free of regexp work.
+// Docker's own router only accepts /vN or /vN.N (a single optional minor
+// component, digits and a dot only). Podman's libpod bindings send the
+// daemon's full three-part semver, e.g. /v5.0.0/libpod/containers/json
+// (#148), and its API server registers versioned routes with the regex
+// `[0-9][0-9A-Za-z.-]*` (see moby/moby vendor of containers/podman's
+// pkg/api/server VersionedPath), which also admits prerelease/build
+// suffixes like /v5.8.1-dev/ and /v5.8.1-rc1/. sockguard mirrors that exact
+// character class — first char after "v" a digit, then any run of
+// [0-9A-Za-z.-] — so its policy view of a path stays byte-identical to
+// Podman's own routing view. A wider or narrower class would leave some
+// versioned libpod paths unstripped, falling through to a catch-all rule
+// with rule matching, body inspection, ownership, visibility and redaction
+// all skipped.
 func stripVersionPrefix(p string) string {
-	// Minimum version prefix is /vN/ (4 chars). Both daemons use lowercase v.
-	if len(p) < 4 || p[0] != '/' || p[1] != 'v' || p[2] < '0' || p[2] > '9' {
+	// Minimum version prefix is /vN/ (4 chars). Docker and Podman both use
+	// lowercase 'v' only.
+	if len(p) < 4 || p[0] != '/' || p[1] != 'v' {
 		return p
 	}
-	i := 3
+	i := 2
+	// First character after "v" must be a digit.
+	if p[i] < '0' || p[i] > '9' {
+		return p
+	}
+	i++
+	// Consume the rest of Podman's VersionedPath class: [0-9A-Za-z.-]*.
 	for i < len(p) {
 		c := p[i]
-		if c >= '0' && c <= '9' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c == '.' || c == '-' {
+		if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '.' || c == '-' {
 			i++
 			continue
 		}
 		break
 	}
+	// Must end with /
 	if i >= len(p) || p[i] != '/' {
 		return p
 	}

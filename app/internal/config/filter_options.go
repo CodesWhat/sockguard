@@ -28,6 +28,7 @@ func (c RequestBodyConfig) ToFilterOptions() filter.PolicyConfig {
 		ImagePull:             c.ImagePull.ToFilterOptions(),
 		Build:                 c.Build.ToFilterOptions(),
 		ContainerUpdate:       c.ContainerUpdate.ToFilterOptions(),
+		ContainerRemove:       c.ContainerRemove.ToFilterOptions(),
 		ContainerArchive:      c.ContainerArchive.ToFilterOptions(),
 		ImageLoad:             c.ImageLoad.ToFilterOptions(),
 		Volume:                c.Volume.ToFilterOptions(),
@@ -47,6 +48,16 @@ func (c RequestBodyConfig) ToFilterOptions() filter.PolicyConfig {
 		// buildkitproxy.Policy translation (c.Buildkit.ToPolicy(c.Build))
 		// isn't threaded through here yet.
 		Buildkit: filter.BuildkitOptions{TunnelConfigured: c.Buildkit.ToPolicy(c.Build).Configured()},
+	}
+}
+
+// ToFilterOptions converts container-remove query config into filter policy
+// options.
+func (c ContainerRemoveRequestBodyConfig) ToFilterOptions() filter.ContainerRemoveOptions {
+	return filter.ContainerRemoveOptions{
+		AllowForce:         c.AllowForce,
+		AllowRemoveVolumes: c.AllowRemoveVolumes,
+		AllowRemoveLinks:   c.AllowRemoveLinks,
 	}
 }
 
@@ -245,6 +256,7 @@ func (c NetworkRequestBodyConfig) ToFilterOptions() filter.NetworkOptions {
 		EndpointConfig:         c.EndpointConfig.ToFilterOptions(),
 		AllowDisconnectForce:   c.AllowDisconnectForce,
 		AllowDisableIPv4:       c.AllowDisableIPv4,
+		AllowDNSServers:        c.AllowDNSServers,
 	}
 }
 

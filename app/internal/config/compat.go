@@ -54,7 +54,7 @@ var compatGranularPostRules = []struct {
 	path    string
 }{
 	{envKeys: []string{"ALLOW_CREATE"}, method: "POST", path: "/containers/create"},
-	{envKeys: []string{"ALLOW_DELETE"}, method: "DELETE", path: "/containers/*"},
+	{envKeys: []string{"ALLOW_DELETE"}, method: "DELETE", path: "/containers/**"},
 	{envKeys: []string{"ALLOW_EXEC"}, method: "POST", path: "/containers/*/exec"},
 	{envKeys: []string{"ALLOW_KILL", "ALLOW_RESTARTS", "ALLOW_RESTART"}, method: "POST", path: "/containers/*/kill"},
 	{envKeys: []string{"ALLOW_PAUSE"}, method: "POST", path: "/containers/*/pause"},
@@ -94,6 +94,17 @@ func ApplyCompat(cfg *Config, logger *slog.Logger) bool {
 	rules = append(rules, catchAllDenyRule())
 
 	cfg.Rules = rules
+
+	// ALLOW_DELETE and the broader CONTAINERS=1 + POST=1 section grant both
+	// predate Sockguard's query inspector and admit the full Tecnativa
+	// container-remove call surface. Preserve that compatibility behavior
+	// without changing native defaults or user-authored rules.
+	if compatEnvEnabled("ALLOW_DELETE", false) ||
+		(compatEnvEnabled("CONTAINERS", false) && compatEnvEnabled("POST", false)) {
+		cfg.RequestBody.ContainerRemove.AllowForce = true
+		cfg.RequestBody.ContainerRemove.AllowRemoveVolumes = true
+		cfg.RequestBody.ContainerRemove.AllowRemoveLinks = true
+	}
 
 	// GRPC=1 / SESSION=1 open the opaque BuildKit /grpc and /session tunnels
 	// (see buildkitTunnelEndpoints in cmd/rules.go), which now require the
