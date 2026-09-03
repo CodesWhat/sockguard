@@ -100,6 +100,9 @@ jobs:
           - { name: FuzzHijackBidirectionalStream, pkg: ./internal/proxy/ }
           - { name: FuzzPathRoutingDifferential,   pkg: ./differential/ }
           - { name: FuzzVisibilityFilter,          pkg: ./internal/visibility/ }
+          - { name: FuzzClassify,                  pkg: ./internal/upstreamflavor/ }
+          - { name: FuzzConfigured,                pkg: ./internal/upstreamflavor/ }
+          - { name: FuzzPodmanEventLabelFilter,    pkg: ./internal/visibility/ }
 
     steps:
       # Stage 1 of the harden-runner egress rollout: pure Go build/fuzz, no

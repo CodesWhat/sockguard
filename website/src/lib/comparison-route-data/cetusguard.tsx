@@ -16,10 +16,10 @@ Per-client policies|No|CIDR + labels + cert selectors + SPKI + unix peer|self
 Read-side redaction|No|Yes (visibility rules + JSON field redaction)|self
 Signed policy bundles|No|Yes (cosign keyed + keyless, Rekor)|self
 Container image trust|No|Yes (cosign + enforce / warn modes)|self
-Prometheus metrics|No|Yes (socket-proxy request metrics)|self
+Prometheus metrics|No|Yes (opt-in, socket-proxy request metrics)|self
 Rate limits|No|Yes (per-profile token-bucket)|self
 Rollout modes (enforce / warn / audit)|No|Yes (per-profile shadow mode)|self
-Audit log schema|No|Yes (JSON schema + reason codes)|self
+Audit log schema|No|Yes (opt-in, JSON schema + reason codes)|self
 `,
   highlightsTable: `
 shield|Request Body Inspection|CetusGuard filters by method and path only. Sockguard inspects request bodies — blocking containers by image, exec commands by pattern, bind mounts by path, and more across 12+ resource types.

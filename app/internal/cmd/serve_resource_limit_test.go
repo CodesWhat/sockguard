@@ -41,59 +41,63 @@ func TestResourceLimitGuardRunsStrictlyAfterOwnership(t *testing.T) {
 		t.Fatalf("layer order = %v: ownership index %d must be greater than guard index %d", names, ownerIndex, guardIndex)
 	}
 
-	inspectCalls := 0
-	rt := serveResourceRoundTripFunc(func(r *http.Request) (*http.Response, error) {
-		inspectCalls++
-		if inspectCalls > 1 {
-			t.Fatalf("resource-limit GET ran after ownership should have denied: %s %s", r.Method, r.URL.Path)
-		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     make(http.Header),
-			Body: io.NopCloser(strings.NewReader(
-				`{"Config":{"Labels":{"com.sockguard.owner":"tenant-b"}},"HostConfig":{"Memory":0}}`,
-			)),
-		}, nil
-	})
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	policy := filter.PolicyConfig{
-		DenyResponseVerbosity: filter.DenyResponseVerbosityVerbose,
-		ContainerUpdate: filter.ContainerUpdateOptions{
-			AllowResourceUpdates: true,
-			RequireMemoryLimit:   true,
-		},
-	}
-	guard := filter.ResourceLimitGuardWithOptions(logger, filter.ResourceLimitGuardOptions{
-		PolicyConfig:     policy,
-		InspectContainer: filter.NewDockerContainerUpdateInspectorWithRoundTripper(rt),
-	})
-	upstreamCalls := 0
-	upstream := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { upstreamCalls++ })
-	handler := ownership.MiddlewareWithRoundTripper(rt, logger, ownership.Options{
-		Owner:    "tenant-a",
-		LabelKey: "com.sockguard.owner",
-	})(guard(upstream))
+	for _, target := range []string{"/containers/foreign/update", "/libpod/containers/foreign/update"} {
+		t.Run(target, func(t *testing.T) {
+			inspectCalls := 0
+			rt := serveResourceRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+				inspectCalls++
+				if inspectCalls > 1 {
+					t.Fatalf("resource-limit GET ran after ownership should have denied: %s %s", r.Method, r.URL.Path)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body: io.NopCloser(strings.NewReader(
+						`{"Config":{"Labels":{"com.sockguard.owner":"tenant-b"}},"HostConfig":{"Memory":0}}`,
+					)),
+				}, nil
+			})
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+			policy := filter.PolicyConfig{
+				DenyResponseVerbosity: filter.DenyResponseVerbosityVerbose,
+				ContainerUpdate: filter.ContainerUpdateOptions{
+					AllowResourceUpdates: true,
+					RequireMemoryLimit:   true,
+				},
+			}
+			guard := filter.ResourceLimitGuardWithOptions(logger, filter.ResourceLimitGuardOptions{
+				PolicyConfig:     policy,
+				InspectContainer: filter.NewDockerContainerUpdateInspectorWithRoundTripper(rt),
+			})
+			upstreamCalls := 0
+			upstream := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { upstreamCalls++ })
+			handler := ownership.MiddlewareWithRoundTripper(rt, logger, ownership.Options{
+				Owner:    "tenant-a",
+				LabelKey: "com.sockguard.owner",
+			})(guard(upstream))
 
-	meta := &logging.RequestMeta{}
-	req := httptest.NewRequest(http.MethodPost, "/containers/foreign/update", strings.NewReader(`{}`))
-	req = req.WithContext(logging.WithMeta(req.Context(), meta))
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+			meta := &logging.RequestMeta{}
+			req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(`{}`))
+			req = req.WithContext(logging.WithMeta(req.Context(), meta))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want ownership 403; body: %s", rec.Code, rec.Body.String())
-	}
-	if meta.ReasonCode != "owner_policy_denied_access" {
-		t.Fatalf("reason code = %q, want owner_policy_denied_access", meta.ReasonCode)
-	}
-	if inspectCalls != 1 {
-		t.Fatalf("daemon GET calls = %d, want exactly ownership's one GET", inspectCalls)
-	}
-	if upstreamCalls != 0 {
-		t.Fatalf("upstream update calls = %d, want 0", upstreamCalls)
-	}
-	if meta.ResourcePolicy != nil {
-		t.Fatalf("ResourcePolicy = %#v, want nil because resource guard never ran", meta.ResourcePolicy)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want ownership 403; body: %s", rec.Code, rec.Body.String())
+			}
+			if meta.ReasonCode != "owner_policy_denied_access" {
+				t.Fatalf("reason code = %q, want owner_policy_denied_access", meta.ReasonCode)
+			}
+			if inspectCalls != 1 {
+				t.Fatalf("daemon GET calls = %d, want exactly ownership's one GET", inspectCalls)
+			}
+			if upstreamCalls != 0 {
+				t.Fatalf("upstream update calls = %d, want 0", upstreamCalls)
+			}
+			if meta.ResourcePolicy != nil {
+				t.Fatalf("ResourcePolicy = %#v, want nil because resource guard never ran", meta.ResourcePolicy)
+			}
+		})
 	}
 }
 

@@ -19,6 +19,10 @@ type ContainerUpdateOptions struct {
 	AllowCapabilities    bool
 	AllowRestartPolicy   bool
 	AllowResourceUpdates bool
+	// AllowBlindWrites acknowledges native libpod update fields that cannot
+	// be constrained by the structured container-update gates. Runtime wiring
+	// supplies it from the global insecure_allow_body_blind_writes setting.
+	AllowBlindWrites bool
 
 	// RequireMemoryLimit/RequireCPULimit/RequireCPULimitHard/RequirePidsLimit
 	// are enforced by ResourceLimitGuard (resource_limit_guard.go), not by
@@ -40,6 +44,7 @@ type containerUpdatePolicy struct {
 	allowCapabilities    bool
 	allowRestartPolicy   bool
 	allowResourceUpdates bool
+	allowBlindWrites     bool
 }
 
 func newContainerUpdatePolicy(opts ContainerUpdateOptions) containerUpdatePolicy {
@@ -49,6 +54,7 @@ func newContainerUpdatePolicy(opts ContainerUpdateOptions) containerUpdatePolicy
 		allowCapabilities:    opts.AllowCapabilities,
 		allowRestartPolicy:   opts.AllowRestartPolicy,
 		allowResourceUpdates: opts.AllowResourceUpdates,
+		allowBlindWrites:     opts.AllowBlindWrites,
 	}
 }
 
@@ -95,12 +101,15 @@ func (p containerUpdatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	return "", nil
 }
 
+// isContainerUpdatePath matches POST /containers/{id}/update, the
+// Docker-compat spelling only. The libpod spelling is
+// isLibpodContainerUpdatePath and routes to inspectLibpod instead, because
+// the two endpoints share nothing but a name on the wire. Both are built from
+// containerSubresourcePath so the pair cannot drift; the split here is a
+// deliberate body-shape decision, not two independently maintained lists.
 func isContainerUpdatePath(normalizedPath string) bool {
-	if !strings.HasPrefix(normalizedPath, "/containers/") {
-		return false
-	}
-	_, tail, ok := strings.Cut(strings.TrimPrefix(normalizedPath, "/containers/"), "/")
-	return ok && tail == "update"
+	libpod, ok := containerSubresourcePath(normalizedPath, "update")
+	return ok && !libpod
 }
 
 func containerUpdatePolicyObjects(root map[string]json.RawMessage) []map[string]json.RawMessage {

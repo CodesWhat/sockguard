@@ -493,6 +493,203 @@ func TestResourceLimitGuardContainerUpdateMatrix(t *testing.T) {
 	}
 }
 
+func TestResourceLimitGuardLibpodContainerUpdateMatrix(t *testing.T) {
+	tests := []struct {
+		name          string
+		body          string
+		options       ContainerUpdateOptions
+		current       ContainerUpdateInspectResult
+		wantStatus    int
+		wantViolation string
+	}{
+		{
+			name:          "memory omission follows weak current state",
+			body:          `{"restart_policy":"no"}`,
+			options:       ContainerUpdateOptions{AllowResourceUpdates: true, RequireMemoryLimit: true},
+			current:       ContainerUpdateInspectResult{},
+			wantStatus:    http.StatusForbidden,
+			wantViolation: "memory",
+		},
+		{
+			name:       "memory patch remediates weak current state",
+			body:       `{"memory":{"limit":134217728}}`,
+			options:    ContainerUpdateOptions{AllowResourceUpdates: true, RequireMemoryLimit: true},
+			current:    ContainerUpdateInspectResult{},
+			wantStatus: guardedRequestAllowedStatus,
+		},
+		{
+			name:          "memory zero clears compliant current state",
+			body:          `{"memory":{"limit":0}}`,
+			options:       ContainerUpdateOptions{AllowResourceUpdates: true, RequireMemoryLimit: true},
+			current:       ContainerUpdateInspectResult{Memory: 512 << 20},
+			wantStatus:    http.StatusForbidden,
+			wantViolation: "memory",
+		},
+		{
+			name:       "memory null preserves compliant current state",
+			body:       `{"memory":{"limit":null}}`,
+			options:    ContainerUpdateOptions{AllowResourceUpdates: true, RequireMemoryLimit: true},
+			current:    ContainerUpdateInspectResult{Memory: 512 << 20},
+			wantStatus: guardedRequestAllowedStatus,
+		},
+		{
+			name:       "cpu shares patch remediates soft requirement",
+			body:       `{"cpu":{"shares":2}}`,
+			options:    ContainerUpdateOptions{AllowResourceUpdates: true, RequireCPULimit: true},
+			current:    ContainerUpdateInspectResult{},
+			wantStatus: guardedRequestAllowedStatus,
+		},
+		{
+			name:       "cpu quota patch remediates hard requirement",
+			body:       `{"cpu":{"quota":50000,"period":100000}}`,
+			options:    ContainerUpdateOptions{AllowResourceUpdates: true, RequireCPULimitHard: true},
+			current:    ContainerUpdateInspectResult{},
+			wantStatus: guardedRequestAllowedStatus,
+		},
+		{
+			name:          "cpu shares alone does not satisfy hard requirement",
+			body:          `{"cpu":{"shares":1024}}`,
+			options:       ContainerUpdateOptions{AllowResourceUpdates: true, RequireCPULimitHard: true},
+			current:       ContainerUpdateInspectResult{},
+			wantStatus:    http.StatusForbidden,
+			wantViolation: "hard_cpu",
+		},
+		{
+			name:          "cpu quota zero clears compat-derived nano cpu",
+			body:          `{"cpu":{"quota":0}}`,
+			options:       ContainerUpdateOptions{AllowResourceUpdates: true, RequireCPULimitHard: true},
+			current:       ContainerUpdateInspectResult{NanoCpus: 500000000, CpuQuota: 50000, CpuPeriod: 100000},
+			wantStatus:    http.StatusForbidden,
+			wantViolation: "hard_cpu",
+		},
+		{
+			name:       "empty cpu block preserves compliant current state",
+			body:       `{"cpu":{}}`,
+			options:    ContainerUpdateOptions{AllowResourceUpdates: true, RequireCPULimitHard: true},
+			current:    ContainerUpdateInspectResult{NanoCpus: 500000000, CpuQuota: 50000, CpuPeriod: 100000},
+			wantStatus: guardedRequestAllowedStatus,
+		},
+		{
+			name:       "pids patch remediates weak current state",
+			body:       `{"pids":{"limit":64}}`,
+			options:    ContainerUpdateOptions{AllowResourceUpdates: true, RequirePidsLimit: true},
+			current:    ContainerUpdateInspectResult{},
+			wantStatus: guardedRequestAllowedStatus,
+		},
+		{
+			name:          "pids zero clears compliant current state",
+			body:          `{"pids":{"limit":0}}`,
+			options:       ContainerUpdateOptions{AllowResourceUpdates: true, RequirePidsLimit: true},
+			current:       ContainerUpdateInspectResult{PidsLimit: int64Ptr(64)},
+			wantStatus:    http.StatusForbidden,
+			wantViolation: "pids",
+		},
+		{
+			name:       "pids null preserves compliant current state",
+			body:       `{"pids":null}`,
+			options:    ContainerUpdateOptions{AllowResourceUpdates: true, RequirePidsLimit: true},
+			current:    ContainerUpdateInspectResult{PidsLimit: int64Ptr(64)},
+			wantStatus: guardedRequestAllowedStatus,
+		},
+		{
+			name:          "empty pids block applies native zero default",
+			body:          `{"pids":{}}`,
+			options:       ContainerUpdateOptions{AllowResourceUpdates: true, RequirePidsLimit: true},
+			current:       ContainerUpdateInspectResult{PidsLimit: int64Ptr(64)},
+			wantStatus:    http.StatusForbidden,
+			wantViolation: "pids",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
+			out := runResourceGuardRequest(t, ResourceLimitGuardOptions{
+				PolicyConfig: PolicyConfig{ContainerUpdate: tt.options},
+				InspectContainer: func(_ context.Context, id string) (ContainerUpdateInspectResult, bool, error) {
+					calls++
+					if id != "legacy" {
+						t.Fatalf("inspect id = %q, want legacy", id)
+					}
+					return tt.current, true, nil
+				},
+			}, http.MethodPost, "/v5.0.0/libpod/containers/legacy/update", tt.body, "")
+
+			if out.status != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body: %s", out.status, tt.wantStatus, out.body)
+			}
+			if calls != 1 {
+				t.Fatalf("inspect calls = %d, want 1", calls)
+			}
+			wantForwarded := 0
+			wantResult := "deny"
+			if tt.wantStatus == guardedRequestAllowedStatus {
+				wantForwarded = 1
+				wantResult = "allow"
+				if out.forwardedBody != tt.body {
+					t.Fatalf("forwarded body = %q, want original %q", out.forwardedBody, tt.body)
+				}
+			}
+			if out.forwarded != wantForwarded {
+				t.Fatalf("forwarded = %d, want %d", out.forwarded, wantForwarded)
+			}
+			if out.meta.ResourcePolicy == nil {
+				t.Fatal("ResourcePolicy metadata is nil after evaluation")
+			}
+			if got := out.meta.ResourcePolicy.Result; got != wantResult {
+				t.Fatalf("resource result = %q, want %q", got, wantResult)
+			}
+			if got := out.meta.ResourcePolicy.Violation; got != tt.wantViolation {
+				t.Fatalf("violation = %q, want %q", got, tt.wantViolation)
+			}
+			if !out.meta.ResourcePolicy.StateLookup {
+				t.Fatal("StateLookup = false, want true")
+			}
+		})
+	}
+}
+
+func TestResourceLimitGuardLibpodContainerUpdateRejectsInvalidNumbers(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "memory fraction", body: `{"memory":{"limit":1.5}}`},
+		{name: "memory string", body: `{"memory":{"limit":"1"}}`},
+		{name: "memory overflow", body: `{"memory":{"limit":9223372036854775808}}`},
+		{name: "negative cpu shares", body: `{"cpu":{"shares":-1}}`},
+		{name: "cpu period string", body: `{"cpu":{"period":"100000"}}`},
+		{name: "pids object limit", body: `{"pids":{"limit":{"value":1}}}`},
+		{name: "non object array", body: `[]`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inspectCalls := 0
+			out := runResourceGuardRequest(t, ResourceLimitGuardOptions{
+				PolicyConfig: PolicyConfig{ContainerUpdate: ContainerUpdateOptions{AllowResourceUpdates: true, RequireMemoryLimit: true}},
+				InspectContainer: func(context.Context, string) (ContainerUpdateInspectResult, bool, error) {
+					inspectCalls++
+					return ContainerUpdateInspectResult{Memory: 1}, true, nil
+				},
+			}, http.MethodPost, "/libpod/containers/strict/update", tt.body, "")
+
+			if out.status != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body: %s", out.status, out.body)
+			}
+			if out.meta.ReasonCode != reasonCodeResourceLimitRequestInvalid {
+				t.Fatalf("reason code = %q, want %q", out.meta.ReasonCode, reasonCodeResourceLimitRequestInvalid)
+			}
+			if inspectCalls != 0 {
+				t.Fatalf("inspect calls = %d, want 0 for invalid request", inspectCalls)
+			}
+			if out.forwarded != 0 {
+				t.Fatalf("forwarded = %d, want 0", out.forwarded)
+			}
+		})
+	}
+}
+
 func TestResourceLimitGuardContainerUpdateReadsRootFieldsOnly(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -1127,6 +1324,18 @@ func TestResourceLimitGuardRolloutOnlySoftensPolicyDenied(t *testing.T) {
 		{
 			name:   "policy denied",
 			target: "/containers/c/update",
+			body:   `{}`,
+			opts: ResourceLimitGuardOptions{PolicyConfig: PolicyConfig{ContainerUpdate: ContainerUpdateOptions{AllowResourceUpdates: true, RequireMemoryLimit: true}}, InspectContainer: func(context.Context, string) (ContainerUpdateInspectResult, bool, error) {
+				return ContainerUpdateInspectResult{}, true, nil
+			}},
+			wantStatus: guardedRequestAllowedStatus,
+			wantCode:   reasonCodeResourceLimitPolicyDenied,
+			wantResult: "would_deny",
+			softened:   true,
+		},
+		{
+			name:   "native policy denied",
+			target: "/libpod/containers/c/update",
 			body:   `{}`,
 			opts: ResourceLimitGuardOptions{PolicyConfig: PolicyConfig{ContainerUpdate: ContainerUpdateOptions{AllowResourceUpdates: true, RequireMemoryLimit: true}}, InspectContainer: func(context.Context, string) (ContainerUpdateInspectResult, bool, error) {
 				return ContainerUpdateInspectResult{}, true, nil

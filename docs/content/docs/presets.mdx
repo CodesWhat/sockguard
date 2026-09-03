@@ -544,8 +544,10 @@ file. See the [Podman guide](/podman) for the full routing model.
 #         only on networks, volumes, secrets — plus pod list/inspect/stats
 #         (libpod only) and health/version/info/events, on both surfaces
 # Denies: all writes on both surfaces, including libpod-only writes
-#         (pod create, play/kube); archive/export/logs/attach/get/push reads
-#         on both surfaces
+#         (pod create, play/kube); archive/export/logs/attach/get/push
+#         reads on both surfaces; and libpod-only exfiltration reads with
+#         no Docker-compat counterpart (mounted-container inventory,
+#         generate/kube, manifest push)
 ```
 
 Unlike `readonly.yaml`, this preset does **not** set

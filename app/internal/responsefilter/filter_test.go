@@ -1088,6 +1088,127 @@ func TestFilterModifyResponse_PreservesLargeIntegerPrecision(t *testing.T) {
 	}
 }
 
+// TestFilterModifyResponse_PreservesLargeIntegerPrecisionOnListPaths is the
+// array-shaped counterpart of the test above, and it exists because the two
+// were not equivalent. Consolidating the whole-body decode sites onto
+// decodeJSONObject left streamArrayResponse constructing its own decoder
+// without UseNumber, so every list endpoint kept coercing JSON numbers to
+// float64 while every inspect endpoint stopped. Both now share
+// newJSONDecoder.
+//
+// The assertion is on the exact bytes rather than on the digits appearing
+// somewhere: the element's keys are already in the sorted order the re-encode
+// emits, so the only intended difference between input and output is the
+// redacted mount source.
+func TestFilterModifyResponse_PreservesLargeIntegerPrecisionOnListPaths(t *testing.T) {
+	t.Parallel()
+
+	// 2^53 + 1. Decoded as a float64 it becomes 9007199254740992 and is
+	// re-encoded with a different final digit.
+	const beyondFloat64 = "9007199254740993"
+
+	// Every list endpoint reaches the client through streamArrayResponse, so
+	// one per dispatch route: the bespoke container-list case, the bespoke
+	// network-list case, a responseTable entry, and the libpod arrays this
+	// branch added.
+	cases := []struct {
+		name     string
+		opts     Options
+		path     string
+		upstream string
+		want     string
+	}{
+		{
+			name:     "containers list",
+			opts:     Options{RedactMountPaths: true},
+			path:     "/v1.51/containers/json",
+			upstream: `[{"Id":"c-a","Mounts":[{"Source":"/host/x"}],"SizeRootFs":` + beyondFloat64 + `}]`,
+			want:     `[{"Id":"c-a","Mounts":[{"Source":"<redacted>"}],"SizeRootFs":` + beyondFloat64 + `}]`,
+		},
+		{
+			name:     "nodes list",
+			opts:     Options{RedactNetworkTopology: true},
+			path:     "/v1.51/nodes",
+			upstream: `[{"ID":"n-a","MemoryBytes":` + beyondFloat64 + `,"Status":{"Addr":"10.0.0.1"}}]`,
+			want:     `[{"ID":"n-a","MemoryBytes":` + beyondFloat64 + `,"Status":{"Addr":"<redacted>"}}]`,
+		},
+		{
+			name:     "libpod volumes list",
+			opts:     Options{RedactMountPaths: true},
+			path:     "/v5.8.1/libpod/volumes/json",
+			upstream: `[{"Mountpoint":"/var/lib/containers/storage/volumes/v/_data","Name":"v","Size":` + beyondFloat64 + `}]`,
+			want:     `[{"Mountpoint":"<redacted>","Name":"v","Size":` + beyondFloat64 + `}]`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			resp := newResponseForTest(t, http.MethodGet, tc.path, tc.upstream)
+			if err := New(tc.opts).ModifyResponse(resp); err != nil {
+				t.Fatalf("ModifyResponse(%s): %v", tc.path, err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("ReadAll: %v", err)
+			}
+			if string(body) != tc.want {
+				t.Fatalf("%s body mismatch\n got: %s\nwant: %s", tc.path, body, tc.want)
+			}
+		})
+	}
+}
+
+// TestFilterModifyResponse_ListPathRejectsTrailingContent pins the second half
+// of the decode asymmetry. json.Decoder stops at the end of the first value,
+// so streamArrayResponse used to decode the array, ignore everything after the
+// closing bracket, and forward the truncated result with no error — a filter
+// silently deciding the client sees less than the daemon sent. decodeJSONObject
+// has rejected the equivalent since the whole-body sites were consolidated.
+func TestFilterModifyResponse_ListPathRejectsTrailingContent(t *testing.T) {
+	t.Parallel()
+
+	rejected := []struct{ name, upstream string }{
+		{"second array", `[{"Id":"c-a"}][{"Id":"c-b"}]`},
+		{"second object", `[{"Id":"c-a"}]{"Id":"c-b"}`},
+		{"bare null", `[{"Id":"c-a"}]null`},
+		{"stray byte", `[{"Id":"c-a"}] x`},
+		{"unbalanced close", `[{"Id":"c-a"}}`},
+		// Truncation already failed closed before the trailing guard existed
+		// (dec.More reports true and the next Decode returns the EOF). Kept
+		// here so the guard cannot be "fixed" in a way that swallows these.
+		{"truncated mid array", `[{"Id":"c-a"},{"Id":"c-b"}`},
+		{"truncated mid object", `[{"Id":"c-a"`},
+		{"open bracket only", `[`},
+	}
+
+	for _, tc := range rejected {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			resp := newResponseForTest(t, http.MethodGet, "/v1.51/containers/json", tc.upstream)
+			if err := New(Options{RedactMountPaths: true}).ModifyResponse(resp); err == nil {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("expected rejection for %q, got nil and body %s", tc.upstream, body)
+			}
+		})
+	}
+
+	t.Run("trailing whitespace is still accepted", func(t *testing.T) {
+		t.Parallel()
+		resp := newResponseForTest(t, http.MethodGet, "/v1.51/containers/json", "[{\"Id\":\"c-a\"}]  \n\t")
+		if err := New(Options{RedactMountPaths: true}).ModifyResponse(resp); err != nil {
+			t.Fatalf("ModifyResponse: %v", err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		if string(body) != `[{"Id":"c-a"}]` {
+			t.Fatalf("body = %s, want [{\"Id\":\"c-a\"}]", body)
+		}
+	})
+}
+
 func TestFilterModifyResponse_RedactsHostTopology(t *testing.T) {
 	t.Parallel()
 	filter := New(Options{RedactHostTopology: true})

@@ -23,14 +23,17 @@ import (
 const DefaultLabelKey = "com.sockguard.owner"
 
 const (
-	reasonCodeOwnerRequestInvalid     = "owner_request_invalid"
-	reasonCodeOwnerPolicyLookupFailed = "owner_policy_lookup_failed"
-	reasonCodeOwnerPolicyDeniedAccess = "owner_policy_denied_access"
+	reasonCodeOwnerRequestInvalid                    = "owner_request_invalid"
+	reasonCodeOwnerPolicyLookupFailed                = "owner_policy_lookup_failed"
+	reasonCodeOwnerPolicyDeniedAccess                = "owner_policy_denied_access"
+	reasonCodeOwnerVisibilityPodmanEventsUnscopeable = "owner_visibility_podman_events_unscopeable"
 )
 
+const ownerVisibilityPodmanEventsDenyReason = "events denied: this upstream is Podman, whose GET /events filters labels disjunctively, so owner isolation and visibility label selectors cannot be enforced together"
+
 // maxOwnershipBodyBytes caps the request body the ownership middleware will
-// read when it mutates a container/network/volume create body or a build
-// query to inject the owner label. Docker's own create payloads are at most
+// read when it mutates a create body, extracts network-membership references,
+// or injects an owner label into a build query. Docker's own payloads are at most
 // a few KiB, so 1 MiB is generous while preventing an allowlisted client
 // from OOMing the proxy with an unbounded JSON body.
 const maxOwnershipBodyBytes = 1 << 20 // 1 MiB
@@ -134,6 +137,14 @@ func middlewareWithDeps(
 				normPath = filter.NormalizePath(r.URL.Path)
 			}
 
+			ownerFilterApplies := needsOwnerFilter(r.Method, normPath) ||
+				(r.Method == http.MethodGet || r.Method == http.MethodHead) && libpodNeedsOwnerFilter(normPath)
+			if ownerFilterApplies && dockerfilters.RequiresSoleValue(r, ownerFilterKey(normPath)) {
+				logging.SetDeniedWithCode(w, r, reasonCodeOwnerVisibilityPodmanEventsUnscopeable, ownerVisibilityPodmanEventsDenyReason, nil)
+				_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: ownerVisibilityPodmanEventsDenyReason})
+				return
+			}
+
 			refs, err := mutateOwnershipRequest(r, normPath, opts)
 			if err != nil {
 				logging.SetDeniedWithCode(w, r, reasonCodeOwnerRequestInvalid, err.Error(), nil)
@@ -173,14 +184,16 @@ func (o Options) normalized() Options {
 }
 
 // mutateOwnershipRequest injects the owner label and extracts every resource
-// identifier embedded in container/service create or update bodies during the
-// same bounded decode pass. Authorization must cover those identifiers as well
-// as the resource named by the URL; otherwise an owner-stamped workload could
-// still consume another owner's image, volume, network, secret, or config.
+// identifier embedded in container/service create or update and network
+// membership bodies during the same bounded decode pass. Authorization must
+// cover those identifiers as well as the resource named by the URL; otherwise
+// a permitted request could still consume or modify another owner's resource.
 func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ownershipRequestReferences, error) {
 	switch {
 	case r.Method == http.MethodPost && normPath == "/containers/create":
 		return mutateContainerCreateOwnershipBody(r, opts.LabelKey, opts.Owner)
+	case r.Method == http.MethodPost && isNetworkMembershipChangePath(normPath):
+		return extractNetworkMembershipOwnershipReferences(r)
 	case r.Method == http.MethodPost && (normPath == "/networks/create" || normPath == "/volumes/create" || normPath == "/secrets/create" || normPath == "/configs/create"):
 		return nil, addOwnerLabelToBody(r, opts.LabelKey, opts.Owner)
 	case r.Method == http.MethodPost && (normPath == "/services/create" || isServiceUpdatePath(normPath)):
@@ -209,6 +222,20 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 	default:
 		return nil, nil
 	}
+}
+
+func extractNetworkMembershipOwnershipReferences(r *http.Request) (*ownershipRequestReferences, error) {
+	refs := &ownershipRequestReferences{}
+	err := mutateJSONBody(r, func(decoded map[string]any) error {
+		for _, identifier := range filter.FoldedStrings(decoded, "Container") {
+			appendEmbeddedOwnershipReference(&refs.embeddedResources, dockerresource.KindContainer, identifier, "network membership Container")
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return refs, nil
 }
 
 // allowOwnershipRequest is allowOwnershipRequestUnprefixed with the "libpod "
@@ -774,9 +801,26 @@ func addOwnerLabelFilter(r *http.Request, labelKey, owner string) error {
 	}
 	filterKey := ownerFilterKey(filter.NormalizePath(r.URL.Path))
 	label := labelKey + "=" + owner
-	// Unconditional replacement ensures a client-supplied owner label cannot
-	// coexist with the proxy-enforced label, preventing OR-semantics bypass.
-	filters[filterKey] = []string{label}
+	// Client-supplied values under this key are dropped: Swarm's control-plane
+	// lists fold `label` into a map[string]string over a randomly-ordered
+	// Args.Get, so a client value repeating the owner key can displace the
+	// proxy-enforced one.
+	//
+	// Selectors sockguard itself injected earlier in the chain survive that
+	// drop. The visibility middleware runs first and writes the same key, and
+	// replacing its selectors left the request owner-scoped but not
+	// visibility-scoped. Both sets go upstream together, and both engines AND
+	// the values under `label` — see internal/dockerfilters/injected.go for the
+	// daemon-side matchers that make that true.
+	injected := dockerfilters.InjectedSelectors(r, filterKey)
+	values := make([]string, 0, len(injected)+1)
+	values = append(values, label)
+	for _, selector := range injected {
+		if !slices.Contains(values, selector) {
+			values = append(values, selector)
+		}
+	}
+	filters[filterKey] = values
 	encoded, err := json.Marshal(filters)
 	if err != nil {
 		return fmt.Errorf("encode filters: %w", err)

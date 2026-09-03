@@ -19,35 +19,51 @@ const (
 	reasonCodeOwnerResponseTooLarge        = "owner_response_too_large"
 	reasonCodeOwnerResponseFilterFail      = "owner_response_filter_failed"
 	reasonCodeOwnerLibpodDataUsageUnscoped = "owner_libpod_data_usage_unscopeable"
+	reasonCodeOwnerLibpodShowMounted       = "owner_libpod_showmounted_unscopeable"
 )
 
 // serveOwnershipAllowed forwards a request the ownership policy did not deny.
 //
-// Almost everything goes straight to next. The two disk-usage endpoints are
-// the exception: each enumerates every container, volume and image on the host
-// and accepts no `filters` query parameter, so addOwnerLabelFilter — the
+// Almost everything goes straight to next. Host-wide inventory endpoints are
+// the exception: they enumerate resources across the daemon and accept no
+// `filters` query parameter, so addOwnerLabelFilter — the
 // mechanism that isolates /containers/json, /volumes and /images/json — has
-// nothing to attach to. Owner isolation for them has to happen on the
-// response, and only one of the two has a response it can happen on.
+// nothing to attach to. Owner isolation for them has to happen on the response
+// when the response carries labels, or fail closed when it does not.
 //
 // GET /system/df returns Docker-shaped summaries that carry Labels, so it is
 // filtered item by item. GET /libpod/system/df returns Podman's own report
 // shape, whose entries carry no labels at all, so there is nothing to filter
 // on and it is refused instead — see
 // responsefilter.LibpodSystemDataUsageDenyReason for the shape and the
-// reasoning.
+// reasoning. GET /libpod/containers/showmounted returns only container IDs and
+// daemon-host mount paths, so it is likewise refused. The two refusals also
+// cover HEAD: nothing here has a body-filtering step for HEAD to legitimately
+// need, so gating on GET alone would forward it straight to the daemon —
+// exactly the unscoped host-inventory disclosure this function exists to
+// prevent.
 func serveOwnershipAllowed(logger *slog.Logger, next http.Handler, w http.ResponseWriter, r *http.Request, normPath string, opts Options) {
-	if r.Method == http.MethodGet {
+	if r.Method == http.MethodGet && normPath == responsefilter.SystemDataUsagePath {
+		filterSystemDataUsageResponse(logger, next, w, r, opts)
+		return
+	}
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
 		switch normPath {
-		case responsefilter.SystemDataUsagePath:
-			filterSystemDataUsageResponse(logger, next, w, r, opts)
-			return
 		case responsefilter.LibpodSystemDataUsagePath:
 			denyLibpodSystemDataUsage(w, r)
+			return
+		case responsefilter.LibpodShowMountedPath:
+			denyLibpodShowMounted(w, r)
 			return
 		}
 	}
 	next.ServeHTTP(w, r)
+}
+
+func denyLibpodShowMounted(w http.ResponseWriter, r *http.Request) {
+	reason := responsefilter.LibpodShowMountedDenyReason
+	logging.SetDeniedWithCode(w, r, reasonCodeOwnerLibpodShowMounted, reason, nil)
+	_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: reason})
 }
 
 // denyLibpodSystemDataUsage refuses GET /libpod/system/df with a 403 and never
@@ -188,7 +204,7 @@ func (o *ownerFilterWriter) flushOwned(opts Options) ([]string, error) {
 // the equivalent list endpoints: an exact `<label_key>=<owner>` match on the
 // item's own Labels map. In particular AllowUnownedImages is NOT honored here,
 // because it is not honored on GET /images/json either — addOwnerLabelFilter
-// replaces the label filter unconditionally, so an unlabeled image is already
+// always sends the owner label upstream, so an unlabeled image is already
 // absent from that listing. Matching it keeps the two views consistent, and it
 // is the fail-closed direction.
 func systemDataUsageItemOwned(section responsefilter.SystemDataUsageSection, raw json.RawMessage, opts Options) (bool, error) {

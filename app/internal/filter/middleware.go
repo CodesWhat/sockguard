@@ -103,8 +103,11 @@ type PolicyConfig struct {
 	// LibpodVolume configures request-body inspection for
 	// POST /libpod/volumes/create. #148.
 	LibpodVolume VolumeOptions
-	// LibpodNetwork configures request-body inspection for
-	// POST /libpod/networks/create. #148.
+	// LibpodNetwork configures request-body inspection for the libpod
+	// network write surface: POST /libpod/networks/create (#148) plus
+	// POST /libpod/networks/{name}/connect and .../disconnect, whose
+	// endpoint-config and disconnect-force gates are the same ones
+	// Network applies to the Docker-compat spellings.
 	LibpodNetwork NetworkOptions
 	// LibpodSecret configures request-body inspection for
 	// POST /libpod/secrets/create. #148.
@@ -380,6 +383,10 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		{http.MethodPost, matchesBuildInspection, inspectSeverityCritical, newBuildPolicy(cfg.Build).inspect, "failed to inspect build request", "unable to inspect build request"},
 		{http.MethodPost, matchesContainerUpdateInspection, inspectSeverityHigh, newContainerUpdatePolicy(cfg.ContainerUpdate).inspect, "failed to inspect container update request body", "unable to inspect container update request body"},
 		{http.MethodDelete, matchesContainerRemoveInspection, inspectSeverityMedium, newContainerRemovePolicy(cfg.ContainerRemove).inspect, "failed to inspect container remove query", "unable to inspect container remove query"},
+		// matchesContainerArchiveInspection covers the Docker-compat AND the
+		// libpod spelling from one predicate. Podman registers both on the
+		// identical compat.Archive handler, so one policy over one wire
+		// format is the whole story here — see isContainerArchivePath.
 		{http.MethodPut, matchesContainerArchiveInspection, inspectSeverityHigh, newContainerArchivePolicy(cfg.ContainerArchive).inspect, "failed to inspect container archive request body", "unable to inspect container archive request body"},
 		{http.MethodPost, matchesImageLoadInspection, inspectSeverityHigh, newImageLoadPolicy(cfg.ImageLoad).inspect, "failed to inspect image load request body", "unable to inspect image load request body"},
 		{http.MethodPost, matchesVolumeInspection, inspectSeverityMedium, newVolumePolicy(cfg.Volume).inspect, "failed to inspect volume create request body", "unable to inspect volume create request body"},
@@ -397,7 +404,7 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		// execPolicy entry (design doc decision C3).
 		{http.MethodPost, matchesLibpodPodCreateInspection, inspectSeverityCritical, newLibpodPodCreatePolicy(cfg.LibpodPodCreate).inspect, "failed to inspect libpod pod create request body", "unable to inspect libpod pod create request body"},
 		{http.MethodPost, matchesLibpodVolumeInspection, inspectSeverityMedium, newVolumePolicy(cfg.LibpodVolume).inspectLibpod, "failed to inspect libpod volume create request body", "unable to inspect libpod volume create request body"},
-		{http.MethodPost, matchesLibpodNetworkInspection, inspectSeverityHigh, newNetworkPolicy(cfg.LibpodNetwork).inspectLibpodCreate, "failed to inspect libpod network create request body", "unable to inspect libpod network create request body"},
+		{http.MethodPost, matchesLibpodNetworkInspection, inspectSeverityHigh, newNetworkPolicy(cfg.LibpodNetwork).inspectLibpod, "failed to inspect libpod network request body", "unable to inspect libpod network request body"},
 		{http.MethodPost, matchesLibpodSecretInspection, inspectSeverityMedium, newLibpodSecretPolicy(cfg.LibpodSecret).inspect, "failed to inspect libpod secret create request", "unable to inspect libpod secret create request"},
 		// libpod image pull shares cfg.ImagePull with the Docker-compat
 		// entry above — one registry allowlist governs both surfaces, so an
@@ -406,6 +413,13 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		// (`reference`, case-folded and repeatable, no `fromSrc`); see
 		// imagePullPolicy.inspectLibpod.
 		{http.MethodPost, matchesLibpodImagePullInspection, inspectSeverityHigh, newImagePullPolicy(cfg.ImagePull).inspectLibpod, "failed to inspect libpod image pull request", "unable to inspect libpod image pull request"},
+		// libpod container update shares cfg.ContainerUpdate with the
+		// Docker-compat entry above — one set of allow_* gates governs both
+		// surfaces. It is a separate entry because libpod's body is
+		// handlers.UpdateEntities (flattened OCI resources plus healthcheck
+		// blocks) and its restart policy lives in the query string, not the
+		// body; see containerUpdatePolicy.inspectLibpod.
+		{http.MethodPost, matchesLibpodContainerUpdateInspection, inspectSeverityHigh, newContainerUpdatePolicy(cfg.ContainerUpdate).inspectLibpod, "failed to inspect libpod container update request body", "unable to inspect libpod container update request body"},
 		// #185 phase 1: deny-only guard for the opaque BuildKit tunnel
 		// endpoints when request_body.buildkit is configured — see
 		// buildkit.go's buildkitPolicy.inspect doc comment. Never reads the
@@ -505,8 +519,12 @@ func matchesLibpodVolumeInspection(normalizedPath string) bool {
 	return normalizedPath == libpodPathPrefix+"volumes/create"
 }
 
+// matchesLibpodNetworkInspection covers the whole libpod network write
+// surface from the same predicate networkPolicy.inspectLibpod dispatches on,
+// so the middleware table cannot admit a narrower set of paths than the
+// inspector handles.
 func matchesLibpodNetworkInspection(normalizedPath string) bool {
-	return normalizedPath == libpodPathPrefix+"networks/create"
+	return isLibpodNetworkWritePath(normalizedPath)
 }
 
 func matchesLibpodSecretInspection(normalizedPath string) bool {
@@ -515,6 +533,10 @@ func matchesLibpodSecretInspection(normalizedPath string) bool {
 
 func matchesLibpodImagePullInspection(normalizedPath string) bool {
 	return isLibpodImagePullPath(normalizedPath)
+}
+
+func matchesLibpodContainerUpdateInspection(normalizedPath string) bool {
+	return isLibpodContainerUpdatePath(normalizedPath)
 }
 
 // inspectBucketCapacity bounds how many policies of a single severity may
