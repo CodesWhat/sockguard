@@ -1351,14 +1351,26 @@ Before rule evaluation, Sockguard canonicalizes the request path: it strips any 
 
 ## Environment Variables
 
-Every YAML field can be set via env var by prefixing with `SOCKGUARD_` and
+Most YAML fields can be set via env var by prefixing with `SOCKGUARD_` and
 replacing dots with underscores (`metrics.enabled` → `SOCKGUARD_METRICS_ENABLED`).
 List-typed values accept comma-separated entries. Precedence is CLI flags >
 env vars > YAML > built-in defaults.
 
-The table below covers the most commonly used variables. See the YAML config
-section above for the full schema; every nested field has an env-var equivalent
-even when not enumerated here.
+The table below covers the most commonly used variables. Scalar and list-of-string
+fields at any nesting depth have an env-var equivalent even when they aren't
+enumerated here. Three things don't:
+
+- The `rules:` block. It's populated after unmarshal rather than from a default,
+  so there is no `SOCKGUARD_RULES`.
+- `clients.global_concurrency`, and a profile's `limits.rate` and
+  `limits.concurrency`. These are pointer blocks that stay absent unless the YAML
+  declares them, and binding them would turn "absent" into "present but empty".
+- Anything inside a list entry, because the list itself is the leaf. That covers
+  `clients.profiles[]`, `listeners[]`, `upstream.endpoints[]`, `mutations.rules[]`,
+  `request_body.container_create.allowed_device_requests[]`, and the
+  `image_trust.allowed_signing_keys` / `allowed_keyless` lists.
+
+Rows marked _(YAML-only)_ below are those cases.
 
 ### Listener and upstream
 
@@ -1479,11 +1491,11 @@ the gates below are denied before the request reaches Docker.
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_SYSCTLS`              | `request_body.container_create.allow_sysctls`             | `false` | Allow a non-empty `HostConfig.Sysctls` map (kernel parameter tuning).                |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOWED_RUNTIMES`            | `request_body.container_create.allowed_runtimes`          | _empty_ | Comma-separated non-empty `HostConfig.Runtime` values to allow (e.g. `runsc,kata-runtime`). An empty/unset runtime field selects the daemon default and is always permitted; only an explicit alternate runtime needs an entry. |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_REQUIRED_LABELS`             | `request_body.container_create.required_labels`           | _empty_ | `Config.Labels` keys that must be present with a non-empty value.                    |
-| _(YAML-only)_                                                         | `request_body.container_create.image_trust.mode`          | `"off"` | Cosign signature verification mode: `off`, `warn`, or `enforce`. |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_IMAGE_TRUST_MODE`            | `request_body.container_create.image_trust.mode`          | `"off"` | Cosign signature verification mode: `off`, `warn`, or `enforce`. |
 | _(YAML-only)_                                                         | `request_body.container_create.image_trust.allowed_signing_keys` | _empty_ | List of PEM public keys (ECDSA/RSA/ed25519) trusted to sign images. At least one key or keyless entry required when mode is not `off`. |
 | _(YAML-only)_                                                         | `request_body.container_create.image_trust.allowed_keyless` | _empty_ | List of Fulcio keyless identities; each entry has `issuer` (exact OIDC URL) and `subject_pattern` (regex matched against the cert SAN). |
-| _(YAML-only)_                                                         | `request_body.container_create.image_trust.require_rekor_inclusion` | `true` | Require a Rekor transparency log entry for keyless bundles. |
-| _(YAML-only)_                                                         | `request_body.container_create.image_trust.verify_timeout` | `10s` | End-to-end image-trust deadline, including registry fetching, with cooperative checks around local crypto. Must be a positive Go duration string (e.g. `5s`, `30s`). |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_IMAGE_TRUST_REQUIRE_REKOR_INCLUSION` | `request_body.container_create.image_trust.require_rekor_inclusion` | `true` | Require a Rekor transparency log entry for keyless bundles. |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_IMAGE_TRUST_VERIFY_TIMEOUT`  | `request_body.container_create.image_trust.verify_timeout` | `10s` | End-to-end image-trust deadline, including registry fetching, with cooperative checks around local crypto. Must be a positive Go duration string (e.g. `5s`, `30s`). |
 
 ### `libpod_container_create`
 
@@ -1517,7 +1529,7 @@ Podman's native `POST /libpod/containers/create` counterpart to `container_creat
 | `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_SYSCTLS`         | `request_body.libpod_container_create.allow_sysctls`         | `false` | Allow a non-empty `sysctl` map (kernel parameter tuning).                            |
 | `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_SYSTEMD_MODE`    | `request_body.libpod_container_create.allow_systemd_mode`    | `false` | Allow a `systemd` value other than the explicit `"false"`. SpecGenerator itself defaults `systemd` to `"true"` even when `--systemd` is never passed by the client, so leaving this off denies the common case. |
 | `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_CUSTOM_ID_MAPPINGS` | `request_body.libpod_container_create.allow_custom_id_mappings` | `false` | Allow a non-default `idmappings.uidMap`/`gidMap` or `--userns=auto`. Independent of `allow_host_userns`, which only covers `userns.nsmode=host`. |
-| _(YAML-only)_                                                          | `request_body.libpod_container_create.image_trust.*`         | see `container_create.image_trust` above | Cosign signature verification on the `image` field. Identical semantics and sub-fields to `container_create.image_trust`. |
+| `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_IMAGE_TRUST_*`         | `request_body.libpod_container_create.image_trust.*`         | see `container_create.image_trust` above | Cosign signature verification on the `image` field. Identical semantics and sub-fields to `container_create.image_trust`. The three scalar sub-fields take env vars; `allowed_signing_keys` and `allowed_keyless` are YAML-only. |
 
 ### Other request-body inspectors
 
