@@ -506,14 +506,19 @@ func TestLibpodSystemDataUsageRefusedUnderOwnership(t *testing.T) {
 	// could have sent.
 	tests := []struct {
 		name     string
+		method   string
 		path     string
 		upstream string
 	}{
-		{name: "bare libpod path", path: "/libpod/system/df", upstream: libpodSystemDFUpstream},
-		{name: "podman v5.8.1 client spelling", path: "/v5.8.1/libpod/system/df", upstream: libpodSystemDFUpstream},
-		{name: "libpod minimum api version", path: "/v4.0.0/libpod/system/df", upstream: libpodSystemDFUpstream},
-		{name: "two-part version prefix", path: "/v5.0/libpod/system/df", upstream: libpodSystemDFUpstream},
-		{name: "undecodable upstream body", path: "/v5.8.1/libpod/system/df", upstream: `{"Containers":[{"ContainerID":"c-b","Names":"team-b-web"`},
+		{name: "bare libpod path", method: http.MethodGet, path: "/libpod/system/df", upstream: libpodSystemDFUpstream},
+		{name: "podman v5.8.1 client spelling", method: http.MethodGet, path: "/v5.8.1/libpod/system/df", upstream: libpodSystemDFUpstream},
+		{name: "libpod minimum api version", method: http.MethodGet, path: "/v4.0.0/libpod/system/df", upstream: libpodSystemDFUpstream},
+		{name: "two-part version prefix", method: http.MethodGet, path: "/v5.0/libpod/system/df", upstream: libpodSystemDFUpstream},
+		{name: "undecodable upstream body", method: http.MethodGet, path: "/v5.8.1/libpod/system/df", upstream: `{"Containers":[{"ContainerID":"c-b","Names":"team-b-web"`},
+		// HEAD must be refused the same as GET: the switch this refusal lives
+		// in used to gate on GET alone, so a HEAD request fell all the way
+		// through to next.ServeHTTP and reached the daemon unscoped.
+		{name: "HEAD request", method: http.MethodHead, path: "/v5.8.1/libpod/system/df", upstream: libpodSystemDFUpstream},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -522,7 +527,7 @@ func TestLibpodSystemDataUsageRefusedUnderOwnership(t *testing.T) {
 			handler := middlewareWithDeps(testLogger(), Options{Owner: "team-a"},
 				fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(countingUpstream(tt.upstream, &reached))
 
-			rec, meta := getPathForTest(t, handler, http.MethodGet, tt.path)
+			rec, meta := getPathForTest(t, handler, tt.method, tt.path)
 			if rec.Code != http.StatusForbidden {
 				t.Fatalf("status = %d, want 403; body: %s", rec.Code, rec.Body.String())
 			}
@@ -547,17 +552,23 @@ func TestLibpodSystemDataUsageRefusedUnderOwnership(t *testing.T) {
 
 func TestLibpodShowMountedRefusedUnderOwnership(t *testing.T) {
 	t.Parallel()
-	for _, path := range []string{
-		"/libpod/containers/showmounted",
-		"/v5.8.1/libpod/containers/showmounted",
+	for _, tt := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodGet, path: "/libpod/containers/showmounted"},
+		{method: http.MethodGet, path: "/v5.8.1/libpod/containers/showmounted"},
+		// HEAD must be refused the same as GET; see the equivalent case in
+		// TestLibpodSystemDataUsageRefusedUnderOwnership for why.
+		{method: http.MethodHead, path: "/v5.8.1/libpod/containers/showmounted"},
 	} {
-		t.Run(path, func(t *testing.T) {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
 			t.Parallel()
 			reached := false
 			handler := middlewareWithDeps(testLogger(), Options{Owner: "team-a"},
 				fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(countingUpstream(`{"other-id":"/var/lib/containers/storage/overlay/other/merged"}`, &reached))
 
-			rec, meta := getPathForTest(t, handler, http.MethodGet, path)
+			rec, meta := getPathForTest(t, handler, tt.method, tt.path)
 			if rec.Code != http.StatusForbidden {
 				t.Fatalf("status = %d, want 403; body: %s", rec.Code, rec.Body.String())
 			}

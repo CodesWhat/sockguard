@@ -37,13 +37,18 @@ const (
 // on and it is refused instead — see
 // responsefilter.LibpodSystemDataUsageDenyReason for the shape and the
 // reasoning. GET /libpod/containers/showmounted returns only container IDs and
-// daemon-host mount paths, so it is likewise refused.
+// daemon-host mount paths, so it is likewise refused. The two refusals also
+// cover HEAD: nothing here has a body-filtering step for HEAD to legitimately
+// need, so gating on GET alone would forward it straight to the daemon —
+// exactly the unscoped host-inventory disclosure this function exists to
+// prevent.
 func serveOwnershipAllowed(logger *slog.Logger, next http.Handler, w http.ResponseWriter, r *http.Request, normPath string, opts Options) {
-	if r.Method == http.MethodGet {
+	if r.Method == http.MethodGet && normPath == responsefilter.SystemDataUsagePath {
+		filterSystemDataUsageResponse(logger, next, w, r, opts)
+		return
+	}
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
 		switch normPath {
-		case responsefilter.SystemDataUsagePath:
-			filterSystemDataUsageResponse(logger, next, w, r, opts)
-			return
 		case responsefilter.LibpodSystemDataUsagePath:
 			denyLibpodSystemDataUsage(w, r)
 			return

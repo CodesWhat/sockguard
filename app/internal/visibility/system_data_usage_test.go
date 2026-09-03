@@ -474,6 +474,7 @@ func TestLibpodSystemDataUsageRefusedUnderVisibilityPolicy(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name     string
+		method   string
 		opts     Options
 		path     string
 		upstream string
@@ -510,6 +511,16 @@ func TestLibpodSystemDataUsageRefusedUnderVisibilityPolicy(t *testing.T) {
 			path:     "/v5.8.1/libpod/system/df",
 			upstream: `{"Containers":[{"ContainerID":"c-dev","Names":"dev-web"`,
 		},
+		{
+			// HEAD must be refused the same as GET: this refusal used to gate
+			// on GET alone, so a HEAD request fell through needsVisibilityLabelFilter
+			// into the inspect path and reached the daemon.
+			name:     "HEAD request",
+			method:   http.MethodHead,
+			opts:     Options{VisibleResourceLabels: []string{"tier=prod"}},
+			path:     "/v5.8.1/libpod/system/df",
+			upstream: libpodSystemDFForTest,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -517,7 +528,11 @@ func TestLibpodSystemDataUsageRefusedUnderVisibilityPolicy(t *testing.T) {
 			reached := false
 			handler := libpodSystemDFHandlerForTest(t, tt.opts, tt.upstream, &reached)
 
-			rec, meta := getLibpodPathForTest(t, handler, http.MethodGet, tt.path)
+			method := tt.method
+			if method == "" {
+				method = http.MethodGet
+			}
+			rec, meta := getLibpodPathForTest(t, handler, method, tt.path)
 			if rec.Code != http.StatusForbidden {
 				t.Fatalf("status = %d, want 403; body: %s", rec.Code, rec.Body.String())
 			}
@@ -539,11 +554,17 @@ func TestLibpodSystemDataUsageRefusedUnderVisibilityPolicy(t *testing.T) {
 
 func TestLibpodShowMountedRefusedUnderVisibilityPolicy(t *testing.T) {
 	t.Parallel()
-	for _, path := range []string{
-		"/libpod/containers/showmounted",
-		"/v5.8.1/libpod/containers/showmounted",
+	for _, tt := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodGet, path: "/libpod/containers/showmounted"},
+		{method: http.MethodGet, path: "/v5.8.1/libpod/containers/showmounted"},
+		// HEAD must be refused the same as GET; see the equivalent case in
+		// TestLibpodSystemDataUsageRefusedUnderVisibilityPolicy for why.
+		{method: http.MethodHead, path: "/v5.8.1/libpod/containers/showmounted"},
 	} {
-		t.Run(path, func(t *testing.T) {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
 			t.Parallel()
 			reached := false
 			handler := libpodSystemDFHandlerForTest(t,
@@ -552,7 +573,7 @@ func TestLibpodShowMountedRefusedUnderVisibilityPolicy(t *testing.T) {
 				&reached,
 			)
 
-			rec, meta := getLibpodPathForTest(t, handler, http.MethodGet, path)
+			rec, meta := getLibpodPathForTest(t, handler, tt.method, tt.path)
 			if rec.Code != http.StatusForbidden {
 				t.Fatalf("status = %d, want 403; body: %s", rec.Code, rec.Body.String())
 			}
