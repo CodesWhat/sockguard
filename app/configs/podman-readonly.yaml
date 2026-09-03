@@ -151,8 +151,11 @@ rules:
     action: allow
   - match: { method: GET, path: "/libpod/volumes/*/json" }
     action: allow
-  - match: { method: GET, path: "/libpod/secrets/json" }
-    action: allow
+  # GET /libpod/secrets/json is deliberately absent, and was removed in v2.1.
+  # Podman filters that endpoint with `name` and `id` only and answers 500 for
+  # any other key, so neither owner isolation nor a visibility policy can push
+  # a label filter to it, and both refuse it outright. Per-secret inspect below
+  # names one secret and is scoped normally.
   - match: { method: GET, path: "/libpod/secrets/*/json" }
     action: allow
 

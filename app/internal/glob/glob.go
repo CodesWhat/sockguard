@@ -2,12 +2,15 @@
 //
 // The dialect supports:
 //   - "*" matches a single path segment (no "/").
-//   - "**" matches any sequence of characters, including "/".
-//   - "/**" compiles to an optional path group "(/.*)?" — the leading slash and
-//     everything after it are optional — at ANY position, not only the end. So
-//     "/containers/**" matches both "/containers" and "/containers/anything",
-//     and a non-trailing "/foo/**/bar" matches "/foo/bar" (the "/**" collapsing
-//     to nothing) as well as "/foo/x/y/bar".
+//   - "**" compiles to "(?s:.*)" and matches any sequence of characters,
+//     including "/" and, through that "s" flag, newlines: a path carrying a
+//     percent-encoded control byte cannot slip past a "**" pattern once
+//     net/http has decoded it.
+//   - "/**" compiles to an optional path group "(/(?s:.*))?" — the leading
+//     slash and everything after it are optional — at ANY position, not only
+//     the end. So "/containers/**" matches both "/containers" and
+//     "/containers/anything", and a non-trailing "/foo/**/bar" matches
+//     "/foo/bar" (the "/**" collapsing to nothing) as well as "/foo/x/y/bar".
 //
 // Callers that need a compiled *regexp.Regexp should wrap the result with
 // "^" + ToRegexString(pattern) + "$".

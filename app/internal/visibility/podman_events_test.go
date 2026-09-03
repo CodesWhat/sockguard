@@ -487,3 +487,51 @@ func TestPodmanCompatEventsRejectsUndecodableFilters(t *testing.T) {
 		t.Fatal("an undecodable filter must not be forwarded")
 	}
 }
+
+// TestEventLabelFilterKeyCoversBothSpellings pins the key setPodmanEventLabelFilter
+// writes and marks sole-valued, on both paths that reach it.
+//
+// The function used to derive that key from compatEventsPath while also
+// serving /libpod/events, which was correct by coincidence: the only key
+// visibilityLabelFilterKey ever answers differently for is the Swarm node
+// list. The assertions below are the two things that coincidence was
+// standing in for. First, the key is the one Podman's event handler reads, on
+// both spellings. Second, it is the key ownership's own derivation produces
+// for those paths, because the sole-value marker recorded here is looked up
+// by that layer under its own key: if the two ever diverge, the ownership
+// layer stops seeing the marker and appends an owner value beside this
+// selector, which Podman ORs, widening the stream this whole path exists to
+// narrow.
+func TestEventLabelFilterKeyCoversBothSpellings(t *testing.T) {
+	t.Parallel()
+	selector := compiledSelector{key: "com.sockguard.visible", value: "true", hasValue: true}
+
+	for _, path := range []string{compatEventsPath, LibpodEventsPath} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			if got := visibilityLabelFilterKey(path); got != eventLabelFilterKey {
+				t.Fatalf("visibilityLabelFilterKey(%q) = %q, want %q: the injected key and the key the other isolation layer derives have diverged", path, got, eventLabelFilterKey)
+			}
+
+			req := httptest.NewRequest(http.MethodGet, path+`?filters={"label":["app=theirs"]}`, nil)
+			forwarded, err := setPodmanEventLabelFilter(req, selector)
+			if err != nil {
+				t.Fatalf("setPodmanEventLabelFilter() error = %v", err)
+			}
+
+			decoded, err := dockerfilters.Decode(forwarded.URL.Query().Get("filters"))
+			if err != nil {
+				t.Fatalf("rewritten filters did not decode: %v", err)
+			}
+			if len(decoded) != 1 {
+				t.Fatalf("rewritten filters = %v, want only the %q key", decoded, eventLabelFilterKey)
+			}
+			if got := decoded[eventLabelFilterKey]; len(got) != 1 || got[0] != "com.sockguard.visible=true" {
+				t.Fatalf("filters[%q] = %v, want exactly the injected selector", eventLabelFilterKey, got)
+			}
+			if !dockerfilters.RequiresSoleValue(forwarded, eventLabelFilterKey) {
+				t.Fatalf("sole-value marker missing under %q, so owner isolation would append beside the selector", eventLabelFilterKey)
+			}
+		})
+	}
+}

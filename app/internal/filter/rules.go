@@ -363,19 +363,25 @@ func normalizedLibpodImageScpRoutePath(r *http.Request) (string, bool) {
 		return "", false
 	}
 	decodedPath := NormalizePath(r.URL.Path)
-	routePath := normalizePodmanRoutePath(r.URL.EscapedPath())
+	routePath := NormalizePodmanRoutePath(r.URL.EscapedPath())
 	if routePath == decodedPath || !isLibpodImageScpRoutePath(routePath) {
 		return "", false
 	}
 	return routePath, true
 }
 
-// normalizePodmanRoutePath keeps the trailing slash that gorilla/mux includes
+// NormalizePodmanRoutePath keeps the trailing slash that gorilla/mux includes
 // in route matching while applying the same API-version and clean-path rules
 // used for policy paths. A trailing slash is security-significant for Podman's
 // anchored push/tag/untag routes: .../push/ misses the earlier action route and
 // falls through to the later image-SCP catch-all.
-func normalizePodmanRoutePath(p string) string {
+//
+// It is exported because the ownership middleware has to compute the same
+// route view this package does. NormalizePath is not a substitute there:
+// path.Clean strips the trailing slash, so a caller using it reads
+// POST /libpod/images/scp/victim/push/ as a push of an image named
+// "scp/victim" while the daemon routes it as an SCP of "victim/push/".
+func NormalizePodmanRoutePath(p string) string {
 	hasTrailingSlash := len(p) > 1 && strings.HasSuffix(p, "/")
 	normalized := NormalizePath(p)
 	if hasTrailingSlash && normalized != "/" && !strings.HasSuffix(normalized, "/") {
