@@ -19,7 +19,7 @@ func TestImageOwnershipEffectDenialRouteClassification(t *testing.T) {
 		{name: "Docker namespaced per-image export", method: http.MethodGet, path: "/images/registry.example/team/app/get", wantDeny: true},
 		{name: "Docker batch export collection", method: http.MethodGet, path: "/images/get"},
 		{name: "Docker image list collection", method: http.MethodGet, path: "/images/json"},
-		{name: "Docker per-image export HEAD", method: http.MethodHead, path: "/images/app/get"},
+		{name: "Docker per-image export HEAD", method: http.MethodHead, path: "/images/app/get", wantDeny: true},
 		{name: "Docker per-image export POST", method: http.MethodPost, path: "/images/app/get"},
 		{name: "Docker per-image delete", method: http.MethodDelete, path: "/images/app", wantDeny: true},
 		{name: "Docker image named get delete", method: http.MethodDelete, path: "/images/get", wantDeny: true},
@@ -44,10 +44,16 @@ func TestImageOwnershipEffectDenialRouteClassification(t *testing.T) {
 func TestImageOwnershipRefusesDockerPerImageExportsWithUnenumerablePlatformEffects(t *testing.T) {
 	tests := []struct {
 		name   string
+		method string
 		target string
 	}{
-		{name: "omitted platform exports every variant", target: "/v1.53/images/mine%3A1/get"},
-		{name: "explicit platform may differ from inspected variant", target: "/v1.53/images/mine%3A1/get?platform=linux%2Farm64"},
+		{name: "omitted platform exports every variant", method: http.MethodGet, target: "/v1.53/images/mine%3A1/get"},
+		{name: "explicit platform may differ from inspected variant", method: http.MethodGet, target: "/v1.53/images/mine%3A1/get?platform=linux%2Farm64"},
+		// HEAD reaches the same exporter route. imageIdentifier trims "/get"
+		// for HEAD as well as GET, so without the HEAD arm in
+		// imageEffectDenial this owned image would be authorized and
+		// forwarded while its GET spelling is refused.
+		{name: "HEAD reaches the same exporter route", method: http.MethodHead, target: "/v1.53/images/mine%3A1/get"},
 	}
 
 	for _, tt := range tests {
@@ -67,7 +73,7 @@ func TestImageOwnershipRefusesDockerPerImageExportsWithUnenumerablePlatformEffec
 			}))
 
 			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tt.target, nil))
+			handler.ServeHTTP(rec, httptest.NewRequest(tt.method, tt.target, nil))
 
 			if rec.Code != http.StatusForbidden {
 				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())

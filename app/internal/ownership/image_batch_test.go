@@ -578,6 +578,60 @@ func TestImageBatchOwnershipForwardsOmittedNoEffectExportLists(t *testing.T) {
 	}
 }
 
+// TestImageBatchOwnershipCoversHeadOnExportRoutes pins HEAD to the same gate
+// GET gets on the two export routes. imageIdentifier and libpodImageIdentifier
+// both reserve the collection words "get" and "export" for GET and HEAD
+// alike, so a HEAD that skipped the batch gate would reach the daemon with no
+// owner check at all rather than falling back to a per-image one.
+func TestImageBatchOwnershipCoversHeadOnExportRoutes(t *testing.T) {
+	tests := []struct {
+		name       string
+		target     string
+		wantReason string
+	}{
+		{
+			name:       "Docker-compat batch export",
+			target:     "/v1.53/images/get?names=theirs%3A1",
+			wantReason: "multi-platform image export",
+		},
+		{
+			name:       "native libpod batch export",
+			target:     "/v5.8.1/libpod/images/export?references=theirs%3A1",
+			wantReason: "owner policy denied access",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inspector := &recordingInspector{resources: map[string]map[string]inspectResult{
+				string(dockerresource.KindImage): {
+					"theirs:1": {labels: map[string]string{"com.sockguard.owner": "job-999"}, found: true},
+				},
+			}}
+			reached := false
+			handler := middlewareWithDeps(
+				testLogger(),
+				Options{Owner: "job-123", LabelKey: "com.sockguard.owner", AllowUnownedImages: true},
+				inspector.inspectResource,
+				inspector.inspectExec,
+			)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				reached = true
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodHead, tt.target, nil))
+
+			if rec.Code != http.StatusForbidden || reached {
+				t.Fatalf("status = %d reached = %v, want %d and false; body: %s", rec.Code, reached, http.StatusForbidden, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tt.wantReason) {
+				t.Fatalf("body = %q, want it to name %q", rec.Body.String(), tt.wantReason)
+			}
+		})
+	}
+}
+
 // TestImageBatchOwnershipCompatExportRefusalHonorsRollout records the contract
 // the visibility layer's refusal of the same two routes is held to. Both
 // layers see GET /images/get?names= and GET /images/{name}/get, the chain runs

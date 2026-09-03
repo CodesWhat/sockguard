@@ -21,9 +21,22 @@ type imageBatchBoolPossibilities struct {
 	mayBeFalse bool
 }
 
+// isImageBatchOwnershipPath reports whether the request is one of the three
+// image endpoints that name their subjects in the query string.
+//
+// HEAD is matched alongside GET on the two export routes, the way
+// imageIdentifier and libpodImageIdentifier already reserve "get" and "export"
+// for both methods. Moby and Podman register the exporters GET-only, so a HEAD
+// gets a 405 from the daemon rather than an archive, but that is the upstream
+// routing table rather than a property of the request. Gating on GET alone
+// would forward the HEAD unchecked and leave the refusal resting on a detail
+// this proxy does not control. Batch removal stays DELETE-only because that is
+// the only method its route accepts and no read spelling of it exists.
 func isImageBatchOwnershipPath(method, normPath string) bool {
-	return method == http.MethodGet && (normPath == "/images/get" || normPath == libpodPrefix+"images/export") ||
-		method == http.MethodDelete && normPath == libpodPrefix+"images/remove"
+	if method == http.MethodGet || method == http.MethodHead {
+		return normPath == "/images/get" || normPath == libpodPrefix+"images/export"
+	}
+	return method == http.MethodDelete && normPath == libpodPrefix+"images/remove"
 }
 
 func parseImageBatchOwnershipReferences(r *http.Request, normPath string) (*imageBatchOwnershipReferences, error) {

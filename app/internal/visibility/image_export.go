@@ -47,8 +47,17 @@ func handleVisibilityImageExportRequest(logger *slog.Logger, next http.Handler, 
 	}
 }
 
+// classifyImageExportRoute identifies the three export routes this file gates.
+//
+// HEAD is classified alongside GET, matching the libpod disk-usage and
+// unscopeable-read gates above it in the middleware. Moby and Podman register
+// all three routes GET-only today, so a HEAD reaches a 405 rather than an
+// exporter, but that is the daemon's routing table rather than a property of
+// the request: gating on GET alone would forward the HEAD to the daemon and
+// leave the refusal depending on an upstream detail this proxy does not
+// control.
 func classifyImageExportRoute(method, normPath string) imageExportRoute {
-	if method != http.MethodGet {
+	if method != http.MethodGet && method != http.MethodHead {
 		return imageExportRouteNone
 	}
 	switch normPath {

@@ -23,8 +23,10 @@ func TestVisibilityImageExportRouteClassification(t *testing.T) {
 		{name: "Docker per-image export", method: http.MethodGet, path: "/images/app/get", want: imageExportRouteDockerSingle},
 		{name: "Docker namespaced per-image export", method: http.MethodGet, path: "/images/registry.example/team/app/get", want: imageExportRouteDockerSingle},
 		{name: "libpod batch export", method: http.MethodGet, path: "/libpod/images/export", want: imageExportRouteLibpodBatch},
+		{name: "Docker batch export HEAD", method: http.MethodHead, path: "/images/get", want: imageExportRouteDockerBatch},
+		{name: "Docker per-image export HEAD", method: http.MethodHead, path: "/images/app/get", want: imageExportRouteDockerSingle},
+		{name: "libpod batch export HEAD", method: http.MethodHead, path: "/libpod/images/export", want: imageExportRouteLibpodBatch},
 		{name: "Docker image list collection", method: http.MethodGet, path: "/images/json"},
-		{name: "Docker batch export HEAD", method: http.MethodHead, path: "/images/get"},
 		{name: "Docker per-image export POST", method: http.MethodPost, path: "/images/app/get"},
 		{name: "libpod batch export POST", method: http.MethodPost, path: "/libpod/images/export"},
 		{name: "native libpod per-image export", method: http.MethodGet, path: "/libpod/images/app/get"},
@@ -43,11 +45,14 @@ func TestVisibilityImageExportRouteClassification(t *testing.T) {
 func TestVisibilityRefusesDockerImageExportsWithUnenumerablePlatformEffects(t *testing.T) {
 	tests := []struct {
 		name   string
+		method string
 		target string
 	}{
-		{name: "query-selected batch export", target: "/v1.53/images/get?names=visible%3A1"},
-		{name: "per-image export with omitted platform", target: "/v1.53/images/visible%3A1/get"},
-		{name: "per-image export with explicit platform", target: "/v1.53/images/visible%3A1/get?platform=linux%2Farm64"},
+		{name: "query-selected batch export", method: http.MethodGet, target: "/v1.53/images/get?names=visible%3A1"},
+		{name: "per-image export with omitted platform", method: http.MethodGet, target: "/v1.53/images/visible%3A1/get"},
+		{name: "per-image export with explicit platform", method: http.MethodGet, target: "/v1.53/images/visible%3A1/get?platform=linux%2Farm64"},
+		{name: "query-selected batch export HEAD", method: http.MethodHead, target: "/v1.53/images/get?names=visible%3A1"},
+		{name: "per-image export HEAD", method: http.MethodHead, target: "/v1.53/images/visible%3A1/get"},
 	}
 
 	for _, tt := range tests {
@@ -65,7 +70,7 @@ func TestVisibilityRefusesDockerImageExportsWithUnenumerablePlatformEffects(t *t
 			}))
 
 			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tt.target, nil))
+			handler.ServeHTTP(rec, httptest.NewRequest(tt.method, tt.target, nil))
 
 			if rec.Code != http.StatusForbidden {
 				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
