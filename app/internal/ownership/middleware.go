@@ -178,7 +178,7 @@ func middlewareWithDeps(
 			// the /libpod/images/scp/{name:.*} catch-all, so the daemon SCPs
 			// the local image "victim/push/". NormalizePath's path.Clean drops
 			// the slash, which read the same request as a push of an image
-			// named "scp/victim" — a name no daemon has, so the inspect came
+			// named "scp/victim", a name no daemon has, so the inspect came
 			// back not-found and ownership passed the transfer through.
 			routePath := normPath
 			if r.Method == http.MethodPost && strings.HasPrefix(normPath, libpodPrefix+"images/scp/") {

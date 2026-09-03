@@ -1172,7 +1172,7 @@ func TestLibpodUnscopeableReadsAreNotCoveredByAnyVisibilityIdentifier(t *testing
 // did not. Podman registers GET /libpod/exec/{id}/json on the very same
 // compat.ExecInspectHandler as GET /exec/{id}/json
 // (pkg/api/server/register_exec.go:179 and :350 at v5.8.1), so the two return
-// the identical InspectExecSession — ContainerID, ProcessConfig and Pid for
+// the identical InspectExecSession: ContainerID, ProcessConfig and Pid for
 // the container the session belongs to. Without a libpod matcher the native
 // spelling fell through requestVisibleWithPolicy to its closing `return true`
 // and was forwarded, disclosing all three for a container the policy hides.
@@ -1258,7 +1258,7 @@ func TestLibpodExecInspectIsScopedLikeTheCompatSpelling(t *testing.T) {
 // Podman filters this endpoint with utils.IfPassesSecretsFilter, whose switch
 // accepts only "name" and "id" and errors on any other key, and
 // compat.ListSecrets turns that error into a 500. So the injected `label`
-// selector did not narrow the list, it broke it — and removing the injection
+// selector did not narrow the list, it broke it, and removing the injection
 // without refusing the path would have handed over every secret ID and name on
 // the host instead.
 func TestLibpodSecretListIsRefusedRatherThanLabelFiltered(t *testing.T) {

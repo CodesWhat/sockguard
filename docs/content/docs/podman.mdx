@@ -182,7 +182,7 @@ every Docker-compat exfiltration surface, plus the libpod-only entries below:
   owner isolation or a visibility policy active, the proxy answers `403`
   before Podman is queried, because the response carries neither labels nor
   names to scope safely. With neither policy active, an allow rule reaching
-  this path forwards Podman's map unredacted — every mounted container's ID
+  this path forwards Podman's map unredacted: every mounted container's ID
   paired with its host mountpoint. The path is in the read-exfiltration
   catalog, so that rule fails startup validation unless you also set
   `insecure_allow_read_exfiltration: true`; the acknowledgment is what makes
@@ -295,8 +295,8 @@ same way they cover Docker-compat:
   accepts no query parameters, so redacting the paths would still hand over
   the enumeration and there is no field left to decide an entry by. It is not
   in `podman-readonly.yaml`, and it **is** in the read-exfiltration catalog, so
-  a rule reaching it — including a broad one such as
-  `GET /libpod/containers/*` — fails startup validation unless
+  a rule reaching it, including a broad one such as
+  `GET /libpod/containers/*`, fails startup validation unless
   `insecure_allow_read_exfiltration: true` is set. With that acknowledgment in
   place and neither an owner nor a visibility policy configured, the proxy
   forwards Podman's unredacted container-ID-to-host-mountpoint map. The
@@ -323,7 +323,7 @@ same way they cover Docker-compat:
   for every other libpod list. Podman evaluates this endpoint's filters with
   `utils.IfPassesSecretsFilter`, whose switch accepts `name` and `id` and
   returns `invalid filter` for anything else, and `compat.ListSecrets` turns
-  that into a `500` — so the injected label did not narrow the list, it broke
+  that into a `500`, so the injected label did not narrow the list, it broke
   every request. Dropping the injection alone would have forwarded the whole
   host's secret inventory instead, so the path is refused, audited as
   `owner_libpod_secret_list_unscopeable` and
@@ -598,7 +598,7 @@ land):
   behaviours are: `403` before Podman is queried with either isolation layer
   active, and Podman's unredacted map forwarded with neither. The endpoint is
   not in `podman-readonly.yaml` and no default rule admits it. A rule that does
-  — `GET /libpod/**` reaches it — needs
+  (`GET /libpod/**` reaches it) needs
   `insecure_allow_read_exfiltration: true` to pass startup validation, because
   the path is in the read-exfiltration catalog.
 - Response redaction for `GET /libpod/images/{name}/json`. Image inspect
@@ -617,8 +617,8 @@ land):
   gap is narrower than the stats one: the report items carry `Spec.Labels`, so
   a response-side filter over that field could scope this list the way
   `GET /system/df` is scoped, and building it is what would lift the refusal.
-  Until then, `GET /libpod/secrets/{name}/json` is the scoped read — it names
-  one secret and both layers resolve it normally — and a deployment that wants
+  Until then, `GET /libpod/secrets/{name}/json` is the scoped read, since it
+  names one secret and both layers resolve it normally, and a deployment that wants
   the whole list has to run without owner isolation and without a visibility
   policy. The rule left `podman-readonly.yaml` in v2.1 for that reason.
 - Tecnativa-style env-var compatibility for the libpod surface — the

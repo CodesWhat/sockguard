@@ -794,7 +794,7 @@ func TestLibpodUnscopeableReadsAreInertWithoutOwner(t *testing.T) {
 // distinct /libpod/images route family. /libpod/secrets/json is the third
 // shape: libpodSecretIdentifier already reserves "json" as a GET/HEAD
 // collection word, so it was never classified either, and what forwarded it
-// was libpodNeedsOwnerFilter — which is exactly what the refusal replaces.
+// was libpodNeedsOwnerFilter, which is exactly what the refusal replaces.
 func TestLibpodUnscopeableReadsWereNotCoveredByTheExistingIdentifiers(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -978,7 +978,7 @@ func TestLibpodImageScpRouteViewKeepsTheTrailingSlash(t *testing.T) {
 					gotIdentifiers = append(gotIdentifiers, identifier)
 					// Only the image the daemon would actually route to
 					// exists. Every other classification inspects a name no
-					// daemon has, comes back not-found, and is forwarded — the
+					// daemon has, comes back not-found, and is forwarded: the
 					// bug this test exists for.
 					if identifier != "victim/push/" {
 						return nil, false, nil

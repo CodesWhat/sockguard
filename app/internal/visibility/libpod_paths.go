@@ -29,7 +29,7 @@ const libpodPrefix = "/libpod/"
 // filter grammar (utils.IfPassesSecretsFilter at v5.8.1) accepts only "name"
 // and "id" and errors on any other key, which compat.ListSecrets turns into a
 // 500, so injecting a `label` selector here broke the endpoint rather than
-// scoping it. It is refused as filter.LibpodSecretListPath instead — see
+// scoping it. It is refused as filter.LibpodSecretListPath instead; see
 // filter.LibpodSecretListDenyReason.
 func needsLibpodVisibilityLabelFilter(normPath string) bool {
 	switch normPath {

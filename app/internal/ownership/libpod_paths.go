@@ -63,7 +63,7 @@ func isLibpodOwnershipPath(normPath string) bool {
 // instead. Podman filters that endpoint with utils.IfPassesSecretsFilter
 // (pkg/domain/utils/secrets_filters.go at v5.8.1), whose switch accepts only
 // "name" and "id" and returns an error on any other key, and
-// compat.ListSecrets turns that error into a 500 — so the injected owner label
+// compat.ListSecrets turns that error into a 500, so the injected owner label
 // did not narrow the list, it broke every request. See
 // filter.LibpodSecretListDenyReason for why the path is refused rather than
 // forwarded unfiltered.
