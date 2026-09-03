@@ -580,8 +580,8 @@ func TestLibpodShowMountedRefusedUnderVisibilityPolicy(t *testing.T) {
 			if reached {
 				t.Fatal("the daemon was queried for mount paths that cannot be visibility-scoped")
 			}
-			if meta.ReasonCode != "visibility_libpod_showmounted_unscopeable" {
-				t.Fatalf("meta.ReasonCode = %q, want visibility_libpod_showmounted_unscopeable", meta.ReasonCode)
+			if meta.ReasonCode != "visibility_libpod_show_mounted_unscopeable" {
+				t.Fatalf("meta.ReasonCode = %q, want visibility_libpod_show_mounted_unscopeable", meta.ReasonCode)
 			}
 			for _, leaked := range []string{"dev-id", "/var/lib/containers"} {
 				if strings.Contains(rec.Body.String(), leaked) {

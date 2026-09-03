@@ -223,8 +223,10 @@ var libpodUnscopeableReadsByPath = func() map[string]LibpodUnscopeableRead {
 
 // LookupLibpodUnscopeableRead reports whether normPath is a libpod read both
 // isolation layers refuse. Callers must have already established the method is
-// GET: every entry is a GET-only route, and refusing another method here would
-// answer 403 where the daemon answers 405.
+// GET or HEAD. Every entry is a GET-only route, so refusing anything else here
+// would answer 403 where the daemon answers 405; HEAD is the exception because
+// there is no body-filtering step it could legitimately need, and forwarding it
+// is the same unscoped disclosure the GET refusal exists to prevent.
 func LookupLibpodUnscopeableRead(normPath string) (LibpodUnscopeableRead, bool) {
 	if read, ok := libpodUnscopeableReadsByPath[normPath]; ok {
 		return read, true

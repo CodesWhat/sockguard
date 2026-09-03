@@ -235,8 +235,10 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 			// filter.LibpodUnscopeableReads(), shared with the ownership
 			// middleware so the two layers cannot disagree about which
 			// endpoints are refusable; each entry's doc comment carries its
-			// shape evidence.
-			if r.Method == http.MethodGet {
+			// shape evidence. HEAD is refused alongside GET: there is no
+			// body-filtering step it could legitimately need, so gating on GET
+			// alone would forward it to the daemon.
+			if r.Method == http.MethodGet || r.Method == http.MethodHead {
 				if read, ok := filter.LookupLibpodUnscopeableRead(normPath); ok {
 					denyUnscopeableLibpodRead(w, r, read)
 					return

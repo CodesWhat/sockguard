@@ -143,7 +143,12 @@ func middlewareWithDeps(
 			// names, which would trigger an inspect and let a foreign-resource
 			// denial pass through under warn/audit rollout before the
 			// unconditional collection refusal got a chance to run.
-			if r.Method == http.MethodGet {
+			//
+			// HEAD is refused alongside GET for the reason
+			// serveOwnershipAllowed gives for the two disk-usage reads:
+			// nothing here has a body-filtering step HEAD could legitimately
+			// need, so gating on GET alone would forward it to the daemon.
+			if r.Method == http.MethodGet || r.Method == http.MethodHead {
 				if read, ok := filter.LookupLibpodUnscopeableRead(normPath); ok {
 					denyUnscopeableLibpodRead(w, r, read)
 					return
