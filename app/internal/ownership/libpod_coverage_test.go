@@ -799,7 +799,11 @@ func TestLibpodUnscopeableReadsWereNotCoveredByTheExistingIdentifiers(t *testing
 		wantIdentifier string
 		wantOK         bool
 	}{
-		{path: filter.LibpodShowMountedPath, classify: libpodContainerIdentifier, wantIdentifier: "showmounted", wantOK: true},
+		// libpodContainerIdentifier stopped classifying this one: "showmounted"
+		// joined "json" in its GET/HEAD collection-word exclusion. The refusal
+		// branch still has to run first for the stats path below, which is
+		// still classified as a container named "stats".
+		{path: filter.LibpodShowMountedPath, classify: libpodContainerIdentifier, wantIdentifier: "", wantOK: false},
 		{path: filter.LibpodContainerStatsPath, classify: libpodContainerIdentifier, wantIdentifier: "stats", wantOK: true},
 		{path: filter.LibpodPodStatsPath, classify: libpodPodIdentifier, wantIdentifier: "", wantOK: false},
 		{path: filter.LibpodManifestExistsPath, classify: libpodImageIdentifier, wantIdentifier: "", wantOK: false},
