@@ -480,10 +480,14 @@ owner-only or OR-widened stream. A patterns-only policy is forwarded untouched,
 as it is on Docker. On a Docker upstream nothing about `/events` changes. See
 [Security](/security) for the operator-facing version of this.
 
-Denial reasons for libpod-family requests carry a `libpod ` prefix, matching
-the convention the libpod body inspectors use, so a `reason` grep separates
-libpod-originated denials from their Docker-compat counterparts without a
-dedicated log field.
+Denial reasons from the libpod-only inspectors carry a `libpod ` prefix:
+`libpod container create denied: …`, `libpod network connect denied: …`,
+`libpod image pull denied: …`. The inspectors shared with the Docker-compat
+surface do not, because one policy and one code path serves both spellings.
+`POST /libpod/build` reports `build denied: …`, libpod exec create and start
+report `exec denied: …`, and `PUT /libpod/containers/*/archive` reports
+`container archive denied: …`. So a `reason` grep is not a reliable way to
+separate libpod-originated denials; split them by `normalized_path` instead.
 
 ## Response Redaction on the libpod Surface
 
@@ -541,10 +545,11 @@ redaction. A malformed plugin, interface name, IPAM topology field, range, or
 Sockguard strips the Docker API version prefix (`/v1.45/`) before matching
 rules, same as it always has. Podman's own clients send their **full daemon
 semver** as that prefix — three parts (`/v5.0.0/`, `/v4.9.3/`), not Docker's
-one-or-two-part form (`/v1.45/`) — so the path normalizer accepts an
-optional second `.N` group as well as the first, and, since Podman prerelease
-and dev builds also reach the socket, the same alphanumeric/`.`/`-` suffix
-class Podman's own router accepts (e.g. `/v5.8.1-dev/`, `/v5.8.1-rc1/`).
+one-or-two-part form (`/v1.45/`), so the path normalizer
+doesn't count dot-separated groups at all. It takes `/v`, one digit, then any
+run of alphanumerics, `.` and `-` up to the next `/`, which is Podman's own
+`VersionedPath` class and covers prerelease and dev builds
+(`/v5.8.1-dev/`, `/v5.8.1-rc1/`) alongside Docker's `/v1.45/`.
 `/v5.0.0/libpod/containers/json`, `/v5.8.1-dev/libpod/containers/json`,
 and `/libpod/containers/json` normalize to the identical rule-matching path.
 This is transparent — you never configure or reference the version prefix

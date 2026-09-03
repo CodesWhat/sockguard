@@ -51,7 +51,7 @@ Set `DOCKER_SOCK_GID` before starting Compose (`export DOCKER_SOCK_GID=$(stat -c
 `--read-only`, `--cap-drop=ALL`, `--security-opt no-new-privileges:true`, and
 your runtime's seccomp/AppArmor/SELinux defaults.
 
-The filtered socket and its named-volume directory are owner-only and owned by UID/GID 65532. A non-root consumer of that socket must also use UID 65532; root consumers can connect as well. If an application must keep another UID, run Sockguard with that matching UID against a pre-owned bind-mounted directory, or use an authenticated TCP listener. The socket mode is deliberately fixed at `0600` and should not be broadened.
+The filtered socket and its named-volume directory are owner-only and owned by UID/GID 65532. A non-root consumer of that socket must also use UID 65532; root consumers can connect as well. If an application must keep another UID, run Sockguard with that matching UID against a pre-owned bind-mounted directory, set `listen.socket_mode: "0660"` with an explicit `listen.socket_gid` so a named group can reach the socket, or use an authenticated TCP listener. `0600` and `0660` are the only modes Sockguard accepts, and `0660` without `socket_gid` is rejected, so a group-shared socket is always a deliberate choice rather than a default.
 
 ### Homebrew
 

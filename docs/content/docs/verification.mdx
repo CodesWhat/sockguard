@@ -38,7 +38,9 @@ image was not produced by our release pipeline — **do not run it**.
 
 ## Prerequisites
 
-Install cosign (v2 or later is required for keyless verification):
+Install cosign v3 or later. That's what the release pipeline signs with
+(v3.1.3, pinned in `release-from-tag.yml`), and the `--bundle` commands below
+assume the bundle format it emits:
 
 ```bash
 # macOS
@@ -107,7 +109,9 @@ supply-chain compromise until proven otherwise:
 - Double-check you pasted the full `certificate-identity-regexp` and
   that the escaping survived your shell (`^`, `$`, and `.+` must all
   appear in the regex).
-- Run `cosign version` and confirm you have cosign v2 or later.
+- Run `cosign version` and confirm you have cosign v3 or later. The `--bundle`
+  commands here assume the Sigstore bundle format cosign v3 emits; the legacy
+  `--signature` / `--certificate` form shown for older v1.7 tags doesn't.
 - Try the verification again with a fresh registry pull; a stale
   cached manifest can sometimes produce confusing errors.
 - If the identity or issuer values differ from the ones published
@@ -118,8 +122,8 @@ supply-chain compromise until proven otherwise:
 ## Verifying release tarballs
 
 The GitHub release assets (`sockguard-v<TAG>.tar.gz`) are also
-cosign-signed. The release workflow uploads a sigstore bundle
-(`.sigstore.json`) alongside each tarball:
+cosign-signed. From v1.7.5 onward the release workflow uploads a sigstore
+bundle (`.sigstore.json`) alongside the tarball:
 
 ```bash
 cosign verify-blob \
@@ -133,12 +137,12 @@ Same interpretation as the image verify: a clean exit code is a
 passing signature, anything else means stop and investigate.
 
 <Callout type="info">
-  Sockguard v2 and later publish only the sigstore bundle above. Published
-  releases in the v1.7 line also carry a legacy detached signature
-  (`.sig`) and signing certificate (`.pem`), so tooling scripted against the
-  older `cosign verify-blob --signature --certificate` invocation keeps
-  working. v1.7.2 has no GitHub release or release assets because its publish
-  workflow failed.
+  Sockguard v2 and later publish only the sigstore bundle above, and v1.7.5
+  published it alongside the legacy assets. Older tags don't have it: v1.7.0,
+  v1.7.1, v1.7.3 and v1.7.4 attach the earlier `.bundle` file plus a detached
+  signature (`.sig`) and signing certificate (`.pem`), so the command above
+  fails on those and you want the detached form instead. v1.7.2 has no GitHub
+  release or release assets because its publish workflow failed.
 
   ```bash
   cosign verify-blob \
@@ -200,20 +204,14 @@ sha256sum --check --ignore-missing checksums.txt
   set.
 </Callout>
 
-The archives also carry GitHub build-provenance attestations, which record
-the workflow and commit that produced them:
+From v1.7.3 onward the archives also carry GitHub build-provenance
+attestations, which record the workflow and commit that produced them:
 
 ```bash
 gh attestation verify "sockguard_<VERSION>_linux_amd64.tar.gz" \
   --repo CodesWhat/sockguard
 ```
 
-Each archive additionally ships a CycloneDX SBOM as
-`sockguard_<VERSION>_<OS>_<ARCH>.tar.gz.cyclonedx.json`.
-
-<Callout type="info">
-  Signatures and provenance on the per-platform archives start with the
-  first release cut after this change. Earlier releases have the SBOM only,
-  so a missing `.sigstore.json` on an older tag is expected rather than a
-  red flag.
-</Callout>
+From v1.7.1 onward each archive additionally ships a CycloneDX SBOM as
+`sockguard_<VERSION>_<OS>_<ARCH>.tar.gz.cyclonedx.json`. v1.7.0's archives
+carry neither an SBOM nor a signature.
