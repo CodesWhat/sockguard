@@ -164,9 +164,11 @@ On a failing candidate (`422`):
 }
 ```
 
-Error strings are the validator's own output, keyed by the indexed config path
-and ending with the offending value. A parse failure returns a single
-`parse: ...` entry instead.
+Error strings are the validator's own output. Most name the config path that
+failed, often with a list index and the offending value on the end, but not all:
+a missing-dependency check reads `clients.container_labels.label_prefix is
+required when clients.container_labels.enabled is true`, with no index and no
+value. A parse failure returns a single `parse: ...` entry instead.
 
 ### CI gate usage
 
