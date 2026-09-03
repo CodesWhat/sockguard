@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 // makePatternPolicy builds a minimal compiledPolicy with name patterns for use
@@ -80,7 +81,6 @@ func TestFilterWriterMarksHeadersWrittenOnEveryCommittedPath(t *testing.T) {
 	}{
 		{name: "empty body status", status: http.StatusNoContent},
 		{name: "non-success status", status: http.StatusBadGateway, body: `upstream error`},
-		{name: "non-array success", status: http.StatusOK, body: `{}`},
 		{name: "filtered array", status: http.StatusOK, body: `[]`},
 	}
 	for _, tt := range tests {
@@ -303,5 +303,138 @@ func TestGeneratedFilterErrorsReplaceUpstreamRepresentationOnWire(t *testing.T) 
 				t.Fatalf("generated error payload = %#v, want message", payload)
 			}
 		})
+	}
+}
+
+// TestFilterWriterFlushFilteredRefusesNonArrayBody is the fail-closed
+// regression for flushFiltered's decode guard. A 2xx list response that is not
+// a JSON array used to be forwarded verbatim, so any body the pattern filter
+// could not walk reached the client with none of its contents ever checked
+// against the policy. Every shape below has to end in an error and an
+// uncommitted response, which is what lets filterResponseThroughWriter answer
+// 502 instead.
+func TestFilterWriterFlushFilteredRefusesNonArrayBody(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "object", body: `{"Names":["/hidden"],"Image":"secret"}`},
+		{name: "null", body: `null`},
+		{name: "string", body: `"a string"`},
+		{name: "number", body: `42`},
+		{name: "bool", body: `true`},
+		{name: "empty", body: ``},
+		{name: "whitespace only", body: "  \n\t"},
+		{name: "not json at all", body: `<html>daemon error page</html>`},
+		{name: "array of arrays opened as object", body: `{"Containers":[{"Names":["/hidden"]}]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			rec := httptest.NewRecorder()
+			fw := newPatternFilterWriter(rec)
+			t.Cleanup(fw.release)
+			fw.WriteHeader(http.StatusOK)
+			_, _ = fw.Write([]byte(tt.body))
+
+			err := fw.flushFiltered("/containers/json", makePatternPolicy(t, "*"))
+			if err == nil {
+				t.Fatalf("flushFiltered() = nil, want an error for a non-array body %q", tt.body)
+			}
+			if fw.headerWritten {
+				t.Fatal("flushFiltered() committed a response for a body it refused")
+			}
+			if got := rec.Body.String(); got != "" {
+				t.Fatalf("refused body reached the client: %q", got)
+			}
+		})
+	}
+}
+
+// TestPatternListNonArrayResponseFailsClosed drives the same refusal through
+// the whole middleware for both list endpoints the pattern filter covers, and
+// pins the client-visible outcome: a 502 whose body carries none of the
+// upstream bytes, audited under the shared response-filter reason code.
+func TestPatternListNonArrayResponseFailsClosed(t *testing.T) {
+	t.Parallel()
+	const secret = "container-the-policy-never-checked"
+	for _, path := range []string{"/v1.53/containers/json", "/v1.53/images/json", "/v5.8.1/libpod/containers/json", "/v5.8.1/libpod/images/json"} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = io.WriteString(w, `{"Names":["/`+secret+`"]}`)
+			})
+			handler := middlewareWithDeps(testVisibilityLogger(),
+				Options{NamePatterns: []string{"visible-*"}}, visibilityDeps{})(upstream)
+
+			meta := &logging.RequestMeta{}
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req = req.WithContext(logging.WithMeta(req.Context(), meta))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadGateway, rec.Body.String())
+			}
+			if strings.Contains(rec.Body.String(), secret) {
+				t.Fatalf("upstream body leaked into the refusal: %s", rec.Body.String())
+			}
+			if meta.ReasonCode != reasonCodeVisibilityPolicyLookupFailed {
+				t.Fatalf("meta.ReasonCode = %q, want %q", meta.ReasonCode, reasonCodeVisibilityPolicyLookupFailed)
+			}
+		})
+	}
+}
+
+// TestPatternListWarnModeStillFailsClosedOnNonArrayBody pins that the refusal
+// is not a policy verdict warn mode stages. Every other response-side control
+// in this package applies regardless of rollout mode, and this one decides
+// whether an unparseable body leaves the proxy at all.
+func TestPatternListWarnModeStillFailsClosedOnNonArrayBody(t *testing.T) {
+	t.Parallel()
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"not":"an array"}`)
+	})
+	handler := middlewareWithDeps(testVisibilityLogger(),
+		Options{NamePatterns: []string{"visible-*"}}, visibilityDeps{})(upstream)
+
+	meta := &logging.RequestMeta{RolloutMode: "warn"}
+	req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/json", nil)
+	req = req.WithContext(logging.WithMeta(req.Context(), meta))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d under warn mode; body: %s", rec.Code, http.StatusBadGateway, rec.Body.String())
+	}
+}
+
+// TestPatternListHeadRequestNotIntercepted is the counterpart of
+// TestSystemDataUsageHeadRequestNotIntercepted: a HEAD carries no body, so the
+// pattern response filter never runs on one. Without the GET gate the empty
+// buffer would hit flushFiltered's decode guard and turn a legitimate HEAD
+// into a 502.
+func TestPatternListHeadRequestNotIntercepted(t *testing.T) {
+	t.Parallel()
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "4096")
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := middlewareWithDeps(testVisibilityLogger(),
+		Options{NamePatterns: []string{"visible-*"}}, visibilityDeps{})(upstream)
+
+	req := httptest.NewRequest(http.MethodHead, "/v1.53/containers/json", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Length"); got != "4096" {
+		t.Fatalf("Content-Length = %q, want the upstream's 4096 untouched", got)
 	}
 }

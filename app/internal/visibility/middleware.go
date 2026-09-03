@@ -366,7 +366,12 @@ func handleVisibilityListRequest(logger *slog.Logger, next http.Handler, w http.
 		// values this layer injected, which ownership reads downstream.
 		r = forwarded
 	}
-	if hasPatterns && needsPatternResponseFilter(normPath) {
+	// The response filter is GET-only, the same gate GET /system/df takes
+	// above. A HEAD carries no body, so there is nothing to filter and nothing
+	// to leak; intercepting one would hand flushFiltered an empty buffer,
+	// which is not the JSON array it now requires, and turn a legitimate HEAD
+	// into a 502.
+	if hasPatterns && r.Method == http.MethodGet && needsPatternResponseFilter(normPath) {
 		filterResponseThroughWriter(logger, next, w, r, "visibility pattern list filter failed", func(fw *patternFilterWriter) error {
 			return fw.flushFiltered(normPath, policy)
 		})
@@ -558,6 +563,16 @@ func (p *patternFilterWriter) commitFilteredBody(body []byte) error {
 // large list responses (hundreds of containers/images) while preserving the
 // per-item visibility check. Filtered items are encoded into a pooled output
 // buffer so Content-Length can be set before WriteHeader.
+//
+// A 2xx body that is not a JSON array is refused, not forwarded, the same way
+// flushSystemDataUsage refuses a /system/df body it cannot decode. This used
+// to be a pass-through branch, which failed open in the one direction that
+// matters: a body the pattern filter cannot walk is one whose items were never
+// checked against the policy, and a JSON object, string or null is exactly
+// what an upstream that is not the daemon this build expects would answer
+// with. The caller turns the error into a 502. Only GET reaches here (see
+// handleVisibilityListRequest), so an empty buffer means a truncated or absent
+// upstream body rather than a legitimate bodiless HEAD.
 func (p *patternFilterWriter) flushFiltered(normPath string, policy *compiledPolicy) error {
 	if committed, err := p.commitIfUnfilterable(); committed {
 		return err
@@ -565,12 +580,11 @@ func (p *patternFilterWriter) flushFiltered(normPath string, policy *compiledPol
 
 	dec := json.NewDecoder(bytes.NewReader(p.body.Bytes()))
 	tok, err := dec.Token()
-	if err != nil || tok != json.Delim('[') {
-		// Not a JSON array — pass through unchanged.
-		p.underlying.WriteHeader(p.statusCode)
-		p.headerWritten = true
-		_, werr := p.underlying.Write(p.body.Bytes())
-		return werr
+	if err != nil {
+		return fmt.Errorf("decode %s list response: %w", normPath, err)
+	}
+	if tok != json.Delim('[') {
+		return fmt.Errorf("decode %s list response: expected a JSON array, got %T", normPath, tok)
 	}
 
 	out := acquirePatternBuffer()
