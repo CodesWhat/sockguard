@@ -80,7 +80,7 @@ export const comparisonRows: ComparisonRow[] = [
     linuxserver: "No",
     wollomatic: "No",
     elevenNotes:
-      "Partial (targets 7 risky GETs; the image-export pattern misses both real shapes, 11notes #12)",
+      "Partial (targets 7 risky GETs; the image-export pattern misses both real shapes and has misfired on image inspect, 11notes #12)",
     cetusguard: "No",
     sockguard: "Yes (visibility + protected JSON redaction)",
   },
