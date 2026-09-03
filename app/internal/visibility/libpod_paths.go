@@ -153,6 +153,31 @@ func libpodVolumeInspectIdentifier(normPath string) (string, bool) {
 	return suffixedIdentifierAny(normPath, libpodPrefix+"volumes/", "json", "exists", "export")
 }
 
+// libpodExecInspectIdentifier matches GET /libpod/exec/{id}/json, Podman's
+// native spelling of the Docker-compat GET /exec/{id}/json that
+// execInspectIdentifier covers. Podman registers both on ONE handler
+// (pkg/api/server/register_exec.go at v5.8.1 wires /exec/{id}/json at line 179
+// and /libpod/exec/{id}/json at line 350, both to compat.ExecInspectHandler),
+// so the two return the identical InspectExecSession: ContainerID,
+// ProcessConfig and Pid for the container the session belongs to. Forwarding
+// the native spelling for a container the policy hides discloses all three,
+// which is why requestVisibleWithPolicy routes this matcher into the same
+// deps.inspectExec branch rather than letting it fall through to the closing
+// "no matcher claimed this path" pass-through.
+//
+// Only the VersionedPath spelling of the libpod route is registered, so a
+// Podman binding issues /v5.8.1/libpod/exec/{id}/json; NormalizePath strips
+// the version prefix but not the /libpod segment, so that spelling normalizes
+// here. suffixedIdentifier is the faithful shape because Podman routes the
+// session with a gorilla/mux {id} variable, which never spans a "/".
+//
+// Ownership's counterpart is libpodExecIdentifier, which is broader on purpose
+// (every /libpod/exec/{id}/... action, not just the inspect) because a write
+// to another owner's session has to be denied as well as a read of it.
+func libpodExecInspectIdentifier(normPath string) (string, bool) {
+	return suffixedIdentifier(normPath, libpodPrefix+"exec/", "json")
+}
+
 // libpodSecretInspectIdentifier matches GET /libpod/secrets/{id}/json and its
 // /exists sibling.
 func libpodSecretInspectIdentifier(normPath string) (string, bool) {

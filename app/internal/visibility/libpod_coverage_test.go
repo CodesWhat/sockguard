@@ -1163,3 +1163,88 @@ func TestLibpodUnscopeableReadsAreNotCoveredByAnyVisibilityIdentifier(t *testing
 		})
 	}
 }
+
+// --- libpod exec inspect ---------------------------------------------------
+
+// TestLibpodExecInspectIsScopedLikeTheCompatSpelling covers the one read
+// ownership already reached (ownership's libpodExecIdentifier) that visibility
+// did not. Podman registers GET /libpod/exec/{id}/json on the very same
+// compat.ExecInspectHandler as GET /exec/{id}/json
+// (pkg/api/server/register_exec.go:179 and :350 at v5.8.1), so the two return
+// the identical InspectExecSession — ContainerID, ProcessConfig and Pid for
+// the container the session belongs to. Without a libpod matcher the native
+// spelling fell through requestVisibleWithPolicy to its closing `return true`
+// and was forwarded, disclosing all three for a container the policy hides.
+//
+// Only the VersionedPath spelling of the libpod route is registered, so the
+// /v5.8.1/ leg is the one a real Podman binding sends.
+func TestLibpodExecInspectIsScopedLikeTheCompatSpelling(t *testing.T) {
+	t.Parallel()
+	paths := []struct {
+		name       string
+		path       string
+		wantReason string
+	}{
+		{name: "compat", path: "/exec/exec-123/json", wantReason: "visibility policy hid resource"},
+		{name: "libpod", path: "/libpod/exec/exec-123/json", wantReason: "libpod visibility policy hid resource"},
+		{name: "libpod versioned", path: "/v5.8.1/libpod/exec/exec-123/json", wantReason: "libpod visibility policy hid resource"},
+	}
+	for _, tt := range paths {
+		for _, visible := range []bool{false, true} {
+			name := tt.name + "/hidden"
+			if visible {
+				name = tt.name + "/visible"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				execLookups := 0
+				reached := false
+				handler := middlewareWithDeps(testVisibilityLogger(), Options{
+					VisibleResourceLabels: []string{"com.sockguard.visible=true"},
+				}, visibilityDeps{
+					inspectExec: func(_ context.Context, execID string) (string, bool, error) {
+						execLookups++
+						if execID != "exec-123" {
+							t.Fatalf("inspectExec id = %q, want exec-123", execID)
+						}
+						return "container-123", true, nil
+					},
+					inspectResource: func(_ context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
+						if kind != dockerresource.KindContainer || identifier != "container-123" {
+							t.Fatalf("inspectResource = %s/%q, want %s/container-123", kind, identifier, dockerresource.KindContainer)
+						}
+						if visible {
+							return map[string]string{"com.sockguard.visible": "true"}, true, nil
+						}
+						return map[string]string{"com.sockguard.visible": "false"}, true, nil
+					},
+				})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					reached = true
+					w.WriteHeader(http.StatusNoContent)
+				}))
+
+				meta := &logging.RequestMeta{}
+				req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+				req = req.WithContext(logging.WithMeta(req.Context(), meta))
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+
+				if execLookups != 1 {
+					t.Fatalf("inspectExec calls = %d, want 1; the path was never classified as an exec inspect", execLookups)
+				}
+				if visible {
+					if !reached || rec.Code != http.StatusNoContent {
+						t.Fatalf("reached = %v status = %d, want true and %d; body: %s", reached, rec.Code, http.StatusNoContent, rec.Body.String())
+					}
+					return
+				}
+				if reached || rec.Code != http.StatusNotFound {
+					t.Fatalf("reached = %v status = %d, want false and %d; body: %s", reached, rec.Code, http.StatusNotFound, rec.Body.String())
+				}
+				if meta.Reason != tt.wantReason {
+					t.Fatalf("meta.Reason = %q, want %q", meta.Reason, tt.wantReason)
+				}
+			})
+		}
+	}
+}

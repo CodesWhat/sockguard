@@ -54,6 +54,7 @@ func FuzzLibpodPathIdentifiers(f *testing.F) {
 		"/libpod/volumes/vol-1/export",
 		"/libpod/secrets/sec-1/json",
 		"/libpod/secrets/sec-1/exists",
+		"/libpod/exec/exec-1/json",
 		// Docker-compat shapes that must never leak into libpod matchers.
 		"/containers/json",
 		"/containers/abc/json",
@@ -119,6 +120,7 @@ func FuzzLibpodPathIdentifiers(f *testing.F) {
 		{"libpodNetworkInspectIdentifier", libpodNetworkInspectIdentifier, false},
 		{"libpodVolumeInspectIdentifier", libpodVolumeInspectIdentifier, false},
 		{"libpodSecretInspectIdentifier", libpodSecretInspectIdentifier, false},
+		{"libpodExecInspectIdentifier", libpodExecInspectIdentifier, false},
 	}
 
 	f.Fuzz(func(t *testing.T, normPath string) {
