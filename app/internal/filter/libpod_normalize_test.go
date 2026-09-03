@@ -41,6 +41,7 @@ func TestLibpodPerResourceMatchers(t *testing.T) {
 		{"isLibpodExecStartPath", isLibpodExecStartPath},
 		{"isLibpodContainerAttachPath", isLibpodContainerAttachPath},
 		{"isLibpodPlayKubePath", isLibpodPlayKubePath},
+		{"isLibpodImagePullPath", isLibpodImagePullPath},
 	}
 
 	positives := map[string]string{
@@ -50,6 +51,7 @@ func TestLibpodPerResourceMatchers(t *testing.T) {
 		"isLibpodExecStartPath":       "/libpod/exec/abc123/start",
 		"isLibpodContainerAttachPath": "/libpod/containers/abc123/attach",
 		"isLibpodPlayKubePath":        "/libpod/play/kube",
+		"isLibpodImagePullPath":       "/libpod/images/pull",
 	}
 
 	// Cross-cutting near-misses every matcher must reject.
@@ -63,6 +65,7 @@ func TestLibpodPerResourceMatchers(t *testing.T) {
 		"/exec/abc123/start",
 		"/containers/abc123/attach",
 		"/pods/create",
+		"/images/create",
 	}
 
 	for _, m := range matchers {
@@ -106,6 +109,7 @@ func TestLibpodMatchersNeverMatchDockerPathsAndViceVersa(t *testing.T) {
 		"/containers/abc123/exec",
 		"/exec/abc123/start",
 		"/containers/abc123/attach",
+		"/images/create",
 	}
 	libpodMatchers := []struct {
 		name    string
@@ -118,6 +122,7 @@ func TestLibpodMatchersNeverMatchDockerPathsAndViceVersa(t *testing.T) {
 		{"isLibpodExecStartPath", isLibpodExecStartPath},
 		{"isLibpodContainerAttachPath", isLibpodContainerAttachPath},
 		{"isLibpodPlayKubePath", isLibpodPlayKubePath},
+		{"isLibpodImagePullPath", isLibpodImagePullPath},
 	}
 	for _, dp := range dockerPaths {
 		for _, m := range libpodMatchers {
@@ -134,6 +139,7 @@ func TestLibpodMatchersNeverMatchDockerPathsAndViceVersa(t *testing.T) {
 		"/libpod/containers/abc123/attach",
 		"/libpod/pods/create",
 		"/libpod/play/kube",
+		"/libpod/images/pull",
 	}
 	dockerMatchers := []struct {
 		name    string

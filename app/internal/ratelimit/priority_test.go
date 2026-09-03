@@ -69,6 +69,17 @@ func TestPriorityThreshold_HardcodedShares(t *testing.T) {
 		// Disabled gate → 0
 		{PriorityNormal, 0, 0},
 		{PriorityHigh, -1, 0},
+		// globalMax == 0 is the exact <= boundary on the disabled-gate guard.
+		// Without this case a mutant that weakens "globalMax <= 0" to
+		// "globalMax < 0" still lands on 0 for PriorityNormal (it falls through
+		// to the t < 1 floor-forcing branch), so only PriorityHigh — whose
+		// floor-forcing branch returns 1 instead of 0 — exposes the mutant.
+		{PriorityHigh, 0, 0},
+		// share=0.8, globalMax=2 → floor(1.6)=1 exactly. This pins the t < 1
+		// boundary: t == 1 must fall through to "return t" (1), not get
+		// caught by a weakened "t <= 1" guard, which would zero it out for a
+		// non-high priority.
+		{PriorityNormal, 2, 1},
 	}
 	for _, tc := range cases {
 		got := priorityThreshold(tc.priority, tc.globalMax)
