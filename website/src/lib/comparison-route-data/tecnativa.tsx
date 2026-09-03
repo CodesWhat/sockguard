@@ -65,7 +65,7 @@ activity|No Upstream Reliability Regressions|Tecnativa v0.5.0, the version compa
   ),
   migrationTitle: "Coming from Tecnativa?",
   migrationDescription:
-    "Start with the compatible ENV allow-list, then map it to YAML before enabling signed policies. Signed mode rejects rule-generating compatibility variables so unsigned process state cannot modify verified rules. The socket mount stays the same.",
+    "Start with the compatible ENV allow-list, plus SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true, because a broad section grant such as CONTAINERS=1 covers the archive, export, log and attach endpoints and Sockguard fails startup rather than open them without an acknowledgment. Then map it to YAML before enabling signed policies, and drop the acknowledgment once the rules no longer need it. Signed mode rejects rule-generating compatibility variables so unsigned process state cannot modify verified rules. The socket mount stays the same.",
   jsonLdName: "Tecnativa docker-socket-proxy vs Sockguard — Docker Socket Proxy Comparison",
   jsonLdDescription:
     "Compare Tecnativa docker-socket-proxy and Sockguard for Docker socket filtering.",

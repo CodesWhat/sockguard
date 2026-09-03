@@ -1,63 +1,18 @@
 import { ArrowRight, Check, Minus, X } from "lucide-react";
 import Link from "next/link";
-import { type CellValue, ComparisonCellIcon } from "@/components/comparison-cell-icon";
+import {
+  type ComparisonCell,
+  type ComparisonTool,
+  comparisonCell,
+  TEASER_FEATURES,
+} from "@/app/data/comparison-rows";
+import { ComparisonCellIcon } from "@/components/comparison-cell-icon";
 import { SectionHeading } from "@/components/section-heading";
 import { SITE_CONFIG } from "@/lib/site-config";
 
-// Mini comparison teaser — 6 rows, 3 rivals.
-
-interface FeatureRow {
-  label: string;
-  sockguard: CellValue;
-  tecnativa: CellValue;
-  cetusguard: CellValue;
-  wollomatic: CellValue;
-}
-
-const featureRows: FeatureRow[] = [
-  {
-    label: "Method + path filtering",
-    sockguard: "yes",
-    tecnativa: "yes",
-    cetusguard: "partial",
-    wollomatic: "partial",
-  },
-  {
-    label: "Request body inspection",
-    sockguard: "yes",
-    tecnativa: "no",
-    cetusguard: "no",
-    wollomatic: "partial",
-  },
-  {
-    label: "Per-client policies",
-    sockguard: "yes",
-    tecnativa: "no",
-    cetusguard: "no",
-    wollomatic: "partial",
-  },
-  {
-    label: "Remote TCP mTLS",
-    sockguard: "yes",
-    tecnativa: "no",
-    cetusguard: "yes",
-    wollomatic: "no",
-  },
-  {
-    label: "Signed policy bundles",
-    sockguard: "yes",
-    tecnativa: "no",
-    cetusguard: "no",
-    wollomatic: "no",
-  },
-  {
-    label: "Prometheus metrics",
-    sockguard: "yes",
-    tecnativa: "no",
-    cetusguard: "no",
-    wollomatic: "no",
-  },
-];
+// Mini comparison teaser — 6 rows, 3 rivals. Cells derive from
+// comparison-rows.ts, the same source /compare uses, so the teaser and the
+// full matrix cannot disagree about the same claim.
 
 function ViewAllLink() {
   return (
@@ -74,14 +29,15 @@ function ViewAllLink() {
 const tools = [SITE_CONFIG.name, "Tecnativa", "CetusGuard", "wollomatic"] as const;
 type Tool = (typeof tools)[number];
 
-function cellValue(row: FeatureRow, tool: Tool): CellValue {
-  const map: Record<Tool, CellValue> = {
-    [SITE_CONFIG.name]: row.sockguard,
-    Tecnativa: row.tecnativa,
-    CetusGuard: row.cetusguard,
-    wollomatic: row.wollomatic,
-  };
-  return map[tool];
+const TOOL_KEYS: Record<Tool, ComparisonTool> = {
+  [SITE_CONFIG.name]: "sockguard",
+  Tecnativa: "tecnativa",
+  CetusGuard: "cetusguard",
+  wollomatic: "wollomatic",
+};
+
+function cellValue(feature: (typeof TEASER_FEATURES)[number], tool: Tool): ComparisonCell {
+  return comparisonCell(feature.row, TOOL_KEYS[tool]);
 }
 
 export function CompareSection() {
@@ -119,7 +75,7 @@ export function CompareSection() {
                 </tr>
               </thead>
               <tbody>
-                {featureRows.map((row, i) => (
+                {TEASER_FEATURES.map((row, i) => (
                   <tr
                     key={row.label}
                     className={[

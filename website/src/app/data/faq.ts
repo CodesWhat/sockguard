@@ -27,11 +27,11 @@ export const faqItems: Array<{ question: string; answer: string }> = [
   {
     question: "Is Sockguard production-ready and what license does it use?",
     answer:
-      "Sockguard is Apache-2.0 licensed and has been in production use since v1.0.0. The proxy binary ships as a distroless container image (Chainguard's `static` base, built from Wolfi packages — no shell, no package manager), cosign-signed with an SBOM and build provenance attached. We enforce a 96%+ Go statement-coverage floor in CI, run a proxy-vs-daemon differential fuzz harness on every PR, and have a published security policy at security@getsockguard.com. The v1.1.0 release incorporated fixes for 21 HIGH and MEDIUM findings from a full multi-axis security audit.",
+      "Sockguard is Apache-2.0 licensed and has been in production use since v1.0.0. The proxy binary ships as a distroless container image (Chainguard's `static` base, built from Wolfi packages — no shell, no package manager), cosign-signed with an SBOM and build provenance attached. We enforce a 96%+ Go statement-coverage floor in CI, run a differential route-oracle fuzzer on every PR plus a real-dockerd differential suite on every change to the proxy, and have a published security policy at security@getsockguard.com. The v1.1.0 release incorporated fixes for 21 HIGH and MEDIUM findings from a full multi-axis security audit.",
   },
   {
     question: "How do I migrate from Tecnativa's docker-socket-proxy?",
     answer:
-      "Point DOCKER_HOST at Sockguard and keep the current Tecnativa section and ALLOW_* variables for the initial unsigned migration. Then translate the generated allow surface into YAML, add body policy and per-client profiles, and use warn mode to measure tighter rules. Signed-policy mode is the final step: it rejects rule-generating compatibility variables so unsigned environment state cannot change a verified policy.",
+      "Point DOCKER_HOST at Sockguard and keep the current Tecnativa section and ALLOW_* variables for the initial unsigned migration. Add SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true with them: a broad section grant like CONTAINERS=1 generates an allow rule that also covers the archive, export, log and attach endpoints, and Sockguard refuses to start rather than open those silently. It is a hard error, not a warning, and the goal is to drop the acknowledgment once the rules are narrow enough not to need it. Then translate the generated allow surface into YAML, add body policy and per-client profiles, and use warn mode to measure tighter rules. Signed-policy mode is the final step: it rejects rule-generating compatibility variables so unsigned environment state cannot change a verified policy.",
   },
 ];

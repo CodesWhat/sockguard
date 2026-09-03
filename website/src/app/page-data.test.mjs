@@ -1,8 +1,15 @@
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 import { SITE_CONFIG } from "../lib/site-config.ts";
 import { roadmap } from "../lib/site-content.ts";
-import { comparisonRows } from "./data/comparison-rows.ts";
+import {
+  comparisonCell,
+  comparisonRows,
+  MATRIX_FEATURES,
+  TEASER_FEATURES,
+  toComparisonCell,
+} from "./data/comparison-rows.ts";
 import { faqItems } from "./data/faq.ts";
 import { features } from "./data/features.ts";
 
@@ -53,7 +60,10 @@ test("website comparison rows live in extracted data modules", () => {
 
   const perClientRow = comparisonRows.find((row) => row.feature === "Per-client policies");
   assert.ok(perClientRow);
-  assert.equal(perClientRow.sockguard, "CIDR + labels + cert selectors incl. SPKI + unix peer");
+  assert.equal(
+    perClientRow.sockguard,
+    "Yes (CIDR + labels + cert selectors incl. SPKI + unix peer)",
+  );
   assert.equal(perClientRow.wollomatic, "Partial (IP/hostname + labels)");
 
   assert.ok(comparisonRows.find((row) => row.feature === "Resource owner labels"));
@@ -86,6 +96,98 @@ test("website comparison rows live in extracted data modules", () => {
   assert.ok(comparisonRows.find((row) => row.feature === "Hot-reload + admin API"));
 
   assert.equal(comparisonRows.at(-1)?.feature, "Hot-reload + admin API");
+});
+
+test("opt-in Sockguard capabilities are labelled opt-in", () => {
+  // Metrics, the audit stream, the upstream watchdog and hot reload all
+  // default to disabled (app/internal/config/config.go Defaults()), so an
+  // unqualified "Yes" reads as a shipped default that isn't one.
+  for (const feature of [
+    "Dedicated audit log schema",
+    "Prometheus metrics",
+    "Active upstream watchdog",
+    "Hot-reload + admin API",
+  ]) {
+    const row = comparisonRows.find((candidate) => candidate.feature === feature);
+    assert.ok(row, `${feature} row must exist`);
+    assert.match(row.sockguard, /opt-in/, `${feature} must name itself opt-in`);
+  }
+
+  // README.md's feature-comparison table credits Tecnativa and LinuxServer
+  // with the same per-action ALLOW_* controls; the site said No for Tecnativa.
+  const granular = comparisonRows.find((row) => row.feature === "Granular POST ops");
+  assert.ok(granular);
+  assert.equal(granular.tecnativa, "Partial (ALLOW_* vars)");
+  assert.equal(granular.linuxserver, "Partial (ALLOW_* vars)");
+});
+
+test("compare surfaces derive their cells from the comparison rows", () => {
+  // /compare and the landing-page teaser render icons, not prose, so they
+  // condense these rows rather than restating them. Every feature name they
+  // reference must resolve, or comparisonCell() silently renders an X.
+  const featureNames = new Set(comparisonRows.map((row) => row.feature));
+  for (const feature of MATRIX_FEATURES) {
+    if (feature.row === null) {
+      continue;
+    }
+    assert.ok(featureNames.has(feature.row), `matrix column ${feature.key} names a missing row`);
+  }
+  for (const feature of TEASER_FEATURES) {
+    assert.ok(featureNames.has(feature.row), `teaser row ${feature.label} names a missing row`);
+  }
+
+  assert.equal(toComparisonCell("Yes (regex)"), "yes");
+  assert.equal(toComparisonCell("No (read-only)"), "no");
+  assert.equal(toComparisonCell("Read-only (fixed)"), "partial");
+  assert.equal(toComparisonCell("Via manual regex"), "partial");
+
+  // The drift this derivation exists to prevent: /compare showed wollomatic
+  // and CetusGuard as partial on path filtering while the row, the per-tool
+  // page it links to, and README.md all said "Yes (regex)".
+  assert.equal(comparisonCell("Method + path filtering", "wollomatic"), "yes");
+  assert.equal(comparisonCell("Method + path filtering", "cetusguard"), "yes");
+  assert.equal(comparisonCell("Method + path filtering", "elevenNotes"), "partial");
+  assert.equal(comparisonCell("Request body inspection", "wollomatic"), "partial");
+  assert.equal(comparisonCell("Podman native libpod API", "wollomatic"), "partial");
+});
+
+test("route pages and the compare matrix agree on Sockguard's column", () => {
+  // Each per-competitor page states Sockguard's side of every row in prose,
+  // and /compare derives an icon for the same feature from comparison-rows.
+  // When the page names a capability outright and the matrix derives a
+  // partial, one page contradicts the page it links to. That is how
+  // "Per-client policies" drifted: the row's Sockguard cell opened with
+  // "CIDR + labels ..." rather than "Yes", so toComparisonCell() read it as
+  // a partial while every route page called it Full.
+  const dir = new URL("../lib/comparison-route-data/", import.meta.url);
+  const routeFiles = readdirSync(dir).filter((name) => name.endsWith(".tsx"));
+  assert.ok(routeFiles.length >= 5, "expected one route data module per competitor");
+
+  const featureNames = new Set(comparisonRows.map((row) => row.feature));
+  let checked = 0;
+  for (const name of routeFiles) {
+    const source = readFileSync(new URL(name, dir), "utf8");
+    const table = source.match(/comparisonTable:\s*`([\s\S]*?)`/);
+    assert.ok(table, `${name} carries no comparisonTable`);
+    for (const line of table[1].split("\n")) {
+      const [feature, , sockguard] = line.trim().split("|");
+      if (!feature || !sockguard || !featureNames.has(feature)) {
+        continue;
+      }
+      // The page hedges on this row too, so a partial icon is honest.
+      if (/^(no|partial)\b/i.test(sockguard)) {
+        continue;
+      }
+      checked += 1;
+      assert.equal(
+        comparisonCell(feature, "sockguard"),
+        "yes",
+        `${name} calls Sockguard's "${feature}" ${sockguard}, but /compare derives a partial`,
+      );
+    }
+  }
+  assert.ok(checked > 20, `expected substantial overlap with the rows, checked ${checked}`);
+  assert.equal(comparisonCell("Per-client policies", "sockguard"), "yes");
 });
 
 test("roadmap data is valid and matches expected milestones", () => {

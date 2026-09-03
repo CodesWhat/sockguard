@@ -64,7 +64,7 @@ layers|Rollout Modes|Sockguard's per-profile rollout modes (enforce / warn / aud
   ),
   migrationTitle: "Coming from wollomatic?",
   migrationDescription:
-    "Your regex path rules translate directly to Sockguard YAML rule blocks. Body inspection rules replace the bind-mount filter with full coverage. The upstream watchdog is built in — and you get a /health endpoint and Prometheus metrics on top.",
+    "Your regex path rules translate into Sockguard's glob rule blocks, since Sockguard matches paths with a glob dialect compiled to specialised matchers, literal, match-all, trailing-deep or per-segment, with regex only as the fallback, rather than with operator-supplied regex. Body inspection rules replace the bind-mount filter with full coverage. The upstream watchdog is built in — and you get a /health endpoint and Prometheus metrics on top.",
   jsonLdName: "wollomatic socket-proxy vs Sockguard — Docker Socket Proxy Comparison",
   jsonLdDescription: "Compare wollomatic socket-proxy and Sockguard for Docker socket filtering.",
 } satisfies ComparisonRouteRawConfig;
