@@ -3,6 +3,8 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"io"
 	"log/slog"
@@ -14,6 +16,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,37 +24,80 @@ import (
 
 	"github.com/codeswhat/sockguard/app/internal/config"
 	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/testcert"
 	"github.com/codeswhat/sockguard/app/internal/testhelp"
+	"github.com/codeswhat/sockguard/app/internal/upstream"
 	"github.com/codeswhat/sockguard/app/internal/upstreamflavor"
 )
 
-// countingRoundTripper fails the test if it is ever used. It is how the
-// explicit-flavor cases prove "no probe runs" rather than merely "the right
-// value is returned": a stubbed detect function could be skipped while the
-// client was still built and used, and only a transport that refuses to be
-// called rules that out.
-type countingRoundTripper struct {
-	t     *testing.T
-	calls int
+// flavorTestDockerVersionBody and flavorTestPodmanVersionBody are the same
+// response shapes flavor_test.go exercises the real classifier against,
+// shared across the multi-endpoint cases below so each subtest states only
+// what differs (which endpoint answers which way).
+const (
+	flavorTestDockerVersionBody = `{"Components":[{"Name":"Engine","Version":"28.6.0"}],"Version":"28.6.0"}`
+	flavorTestPodmanVersionBody = `{"Components":[{"Name":"Podman Engine","Version":"5.8.1"},{"Name":"Conmon"}],"Version":"5.8.1"}`
+)
+
+// versionServer is an httptest server that answers every request with a
+// fixed status and body and counts how many requests it received, so a test
+// can assert not just the resolved flavor but which endpoints were actually
+// probed (and, for the explicit-flavor cases, that none were).
+type versionServer struct {
+	srv   *httptest.Server
+	calls atomic.Int64
 }
 
-func (rt *countingRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
-	rt.t.Helper()
-	rt.calls++
-	rt.t.Fatalf("unexpected upstream request to %s; an explicit upstream.flavor must never probe", r.URL)
-	return nil, errors.New("unreachable")
+func newVersionServer(t *testing.T, status int, body string) *versionServer {
+	t.Helper()
+	vs := &versionServer{}
+	vs.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		vs.calls.Add(1)
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(vs.srv.Close)
+	return vs
 }
 
-// flavorTransportTo dials addr no matter what host the request URL names,
-// which is how the shared upstream.Resolver behaves in production: Detect
-// builds the fixed "http://docker/version" URL and the transport routes it to
-// the configured endpoint.
-func flavorTransportTo(addr string) http.RoundTripper {
-	return &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
-		},
+func (vs *versionServer) addr() string { return vs.srv.Listener.Addr().String() }
+
+// multiEndpointResolver builds a resolver over addrs the same way serve does
+// (config → buildUpstreamResolver), so the per-endpoint transport and
+// base-path plumbing resolveUpstreamFlavor's probe loop depends on is the
+// real thing, not a hand-built stand-in.
+func multiEndpointResolver(t *testing.T, addrs ...string) *upstream.Resolver {
+	t.Helper()
+	cfg := config.Defaults()
+	cfg.Upstream.Endpoints = make([]config.UpstreamEndpoint, len(addrs))
+	for i, addr := range addrs {
+		cfg.Upstream.Endpoints[i] = config.UpstreamEndpoint{Address: "tcp://" + addr, InsecureAllowPlainTCP: true}
 	}
+	res, _, err := buildUpstreamResolver(&cfg, nil, func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatalf("buildUpstreamResolver: %v", err)
+	}
+	return res
+}
+
+// explicitFlavorResolver builds a two-endpoint resolver over servers that
+// count requests, so the explicit-flavor tests can assert zero HTTP requests
+// reached either endpoint — the same rigor a refuse-if-called RoundTripper
+// gave the single-endpoint case, extended to prove neither endpoint in a
+// failover set is probed.
+func explicitFlavorResolver(t *testing.T) (*upstream.Resolver, *versionServer, *versionServer) {
+	t.Helper()
+	s1 := newVersionServer(t, http.StatusOK, flavorTestDockerVersionBody)
+	s2 := newVersionServer(t, http.StatusOK, flavorTestDockerVersionBody)
+	return multiEndpointResolver(t, s1.addr(), s2.addr()), s1, s2
+}
+
+// unprobedSingleSocketResolver returns a resolver over a socket path that is
+// never dialed, for tests where deps.detectUpstreamFlavor is fully stubbed
+// (so the resolver's transport is never exercised) or where resolveUpstreamFlavor
+// is expected to reject the config before touching the resolver at all.
+func unprobedSingleSocketResolver() *upstream.Resolver {
+	return upstream.NewSingleSocket("/nonexistent-for-test.sock")
 }
 
 func flavorTestConfig(flavor string) *config.Config {
@@ -73,7 +119,7 @@ func TestResolveUpstreamFlavorExplicitWinsWithoutProbing(t *testing.T) {
 	for _, want := range []upstreamflavor.Flavor{upstreamflavor.Docker, upstreamflavor.Podman} {
 		t.Run(string(want), func(t *testing.T) {
 			t.Parallel()
-			rt := &countingRoundTripper{t: t}
+			res, s1, s2 := explicitFlavorResolver(t)
 			deps := newServeDeps()
 			deps.detectUpstreamFlavor = func(context.Context, *http.Client) (upstreamflavor.Flavor, error) {
 				t.Fatal("detectUpstreamFlavor called for an explicit flavor")
@@ -81,15 +127,15 @@ func TestResolveUpstreamFlavorExplicitWinsWithoutProbing(t *testing.T) {
 			}
 			logger, collector := flavorTestLogger()
 
-			got, err := resolveUpstreamFlavor(t.Context(), deps, flavorTestConfig(string(want)), rt, logger)
+			got, err := resolveUpstreamFlavor(t.Context(), deps, flavorTestConfig(string(want)), res, logger)
 			if err != nil {
 				t.Fatalf("resolveUpstreamFlavor() error = %v", err)
 			}
 			if got != want {
 				t.Fatalf("resolveUpstreamFlavor() = %q, want %q", got, want)
 			}
-			if rt.calls != 0 {
-				t.Fatalf("upstream round trips = %d, want 0", rt.calls)
+			if s1.calls.Load() != 0 || s2.calls.Load() != 0 {
+				t.Fatalf("upstream requests = (%d, %d), want (0, 0)", s1.calls.Load(), s2.calls.Load())
 			}
 			if !collector.HasMessage("upstream flavor resolved") {
 				t.Fatalf("no resolution log line; records: %#v", collector.Records())
@@ -129,11 +175,12 @@ func TestResolveUpstreamFlavorAutoProbes(t *testing.T) {
 				_, _ = w.Write([]byte(tt.body))
 			}))
 			defer srv.Close()
+			res := multiEndpointResolver(t, srv.Listener.Addr().String())
 
 			deps := newServeDeps()
 			logger, collector := flavorTestLogger()
 
-			got, err := resolveUpstreamFlavor(t.Context(), deps, flavorTestConfig("auto"), flavorTransportTo(srv.Listener.Addr().String()), logger)
+			got, err := resolveUpstreamFlavor(t.Context(), deps, flavorTestConfig("auto"), res, logger)
 			if err != nil {
 				t.Fatalf("resolveUpstreamFlavor() error = %v", err)
 			}
@@ -147,6 +194,75 @@ func TestResolveUpstreamFlavorAutoProbes(t *testing.T) {
 				t.Fatalf("no resolution log line; records: %#v", collector.Records())
 			}
 		})
+	}
+}
+
+func TestResolveUpstreamFlavorAutoUsesMutualTLSAndBasePath(t *testing.T) {
+	dir := t.TempDir()
+	bundle, err := testcert.WriteMutualTLSBundle(dir, "127.0.0.1")
+	if err != nil {
+		t.Fatalf("write mutual TLS bundle: %v", err)
+	}
+	serverCert, err := tls.LoadX509KeyPair(bundle.ServerCertFile, bundle.ServerKeyFile)
+	if err != nil {
+		t.Fatalf("load server keypair: %v", err)
+	}
+	caPEM, err := os.ReadFile(bundle.CAFile)
+	if err != nil {
+		t.Fatalf("read CA file: %v", err)
+	}
+	clientCAs := x509.NewCertPool()
+	if !clientCAs.AppendCertsFromPEM(caPEM) {
+		t.Fatal("CA file contains no PEM certificates")
+	}
+
+	var probedPath string
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		probedPath = r.URL.EscapedPath()
+		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+			t.Error("flavor probe reached daemon without a verified client certificate")
+		}
+		_, _ = io.WriteString(w, `{"Components":[{"Name":"Podman Engine","Version":"5.8.1"}],"Version":"5.8.1"}`)
+	}))
+	srv.TLS = &tls.Config{
+		Certificates: []tls.Certificate{serverCert},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    clientCAs,
+		MinVersion:   tls.VersionTLS12,
+	}
+	srv.StartTLS()
+	defer srv.Close()
+
+	cfg := config.Defaults()
+	cfg.Upstream.Flavor = string(upstreamflavor.Auto)
+	cfg.Upstream.Endpoints = []config.UpstreamEndpoint{{
+		Address: "tcp://" + strings.TrimPrefix(srv.URL, "https://") + "/engine%2Fgateway",
+		TLS: config.UpstreamTLSConfig{
+			CAFile:     bundle.CAFile,
+			CertFile:   bundle.ClientCertFile,
+			KeyFile:    bundle.ClientKeyFile,
+			ServerName: "127.0.0.1",
+		},
+	}}
+	cfg.Upstream.Failover.HealthInterval = "-1s"
+
+	resolver, legacy, err := buildUpstreamResolver(&cfg, nil, func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatalf("buildUpstreamResolver: %v", err)
+	}
+	if legacy {
+		t.Fatal("buildUpstreamResolver used the legacy socket, want configured endpoint")
+	}
+	logger, _ := flavorTestLogger()
+	got, err := resolveUpstreamFlavor(t.Context(), newServeDeps(), &cfg, resolver, logger)
+	if err != nil {
+		t.Fatalf("resolveUpstreamFlavor: %v", err)
+	}
+	if got != upstreamflavor.Podman {
+		t.Fatalf("resolved flavor = %q, want %q", got, upstreamflavor.Podman)
+	}
+	if probedPath != "/engine%2Fgateway/version" {
+		t.Fatalf("probed path = %q, want %q", probedPath, "/engine%2Fgateway/version")
 	}
 }
 
@@ -181,7 +297,7 @@ func TestResolveUpstreamFlavorFailsClosedOnAmbiguousProbe(t *testing.T) {
 			}
 			logger, collector := flavorTestLogger()
 
-			got, err := resolveUpstreamFlavor(t.Context(), deps, flavorTestConfig("auto"), http.DefaultTransport, logger)
+			got, err := resolveUpstreamFlavor(t.Context(), deps, flavorTestConfig("auto"), unprobedSingleSocketResolver(), logger)
 			if err == nil {
 				t.Fatalf("resolveUpstreamFlavor() = %q, want an error", got)
 			}
@@ -208,7 +324,6 @@ func TestResolveUpstreamFlavorFailsClosedOnAmbiguousProbe(t *testing.T) {
 // caller that skipped it must still fail rather than probe.
 func TestResolveUpstreamFlavorRejectsUnknownConfiguredValue(t *testing.T) {
 	t.Parallel()
-	rt := &countingRoundTripper{t: t}
 	deps := newServeDeps()
 	deps.detectUpstreamFlavor = func(context.Context, *http.Client) (upstreamflavor.Flavor, error) {
 		t.Fatal("detectUpstreamFlavor called for an invalid flavor")
@@ -216,12 +331,125 @@ func TestResolveUpstreamFlavorRejectsUnknownConfiguredValue(t *testing.T) {
 	}
 	logger, _ := flavorTestLogger()
 
-	if got, err := resolveUpstreamFlavor(t.Context(), deps, flavorTestConfig("containerd"), rt, logger); err == nil {
+	if got, err := resolveUpstreamFlavor(t.Context(), deps, flavorTestConfig("containerd"), unprobedSingleSocketResolver(), logger); err == nil {
 		t.Fatalf("resolveUpstreamFlavor() = %q, want an error", got)
 	}
-	if rt.calls != 0 {
-		t.Fatalf("upstream round trips = %d, want 0", rt.calls)
-	}
+}
+
+// TestResolveUpstreamFlavorProbesEveryEndpoint is the failover half of
+// constraint (2): a Docker-primary/Podman-secondary pair (or vice versa)
+// must not resolve from whichever endpoint happened to answer first. Every
+// configured endpoint is probed, agreement wins, disagreement or any single
+// endpoint's probe failure fails startup by name, and an explicit flavor
+// still skips every endpoint's probe — not just the primary's.
+func TestResolveUpstreamFlavorProbesEveryEndpoint(t *testing.T) {
+	t.Parallel()
+
+	t.Run("two docker endpoints resolve docker", func(t *testing.T) {
+		t.Parallel()
+		s1 := newVersionServer(t, http.StatusOK, flavorTestDockerVersionBody)
+		s2 := newVersionServer(t, http.StatusOK, flavorTestDockerVersionBody)
+		res := multiEndpointResolver(t, s1.addr(), s2.addr())
+		logger, collector := flavorTestLogger()
+
+		got, err := resolveUpstreamFlavor(t.Context(), newServeDeps(), flavorTestConfig("auto"), res, logger)
+		if err != nil {
+			t.Fatalf("resolveUpstreamFlavor() error = %v", err)
+		}
+		if got != upstreamflavor.Docker {
+			t.Fatalf("resolveUpstreamFlavor() = %q, want %q", got, upstreamflavor.Docker)
+		}
+		if s1.calls.Load() != 1 || s2.calls.Load() != 1 {
+			t.Fatalf("probe calls = (%d, %d), want (1, 1)", s1.calls.Load(), s2.calls.Load())
+		}
+		if !collector.HasMessage("upstream flavor resolved") {
+			t.Fatalf("no resolution log line; records: %#v", collector.Records())
+		}
+	})
+
+	t.Run("two podman endpoints resolve podman", func(t *testing.T) {
+		t.Parallel()
+		s1 := newVersionServer(t, http.StatusOK, flavorTestPodmanVersionBody)
+		s2 := newVersionServer(t, http.StatusOK, flavorTestPodmanVersionBody)
+		res := multiEndpointResolver(t, s1.addr(), s2.addr())
+		logger, _ := flavorTestLogger()
+
+		got, err := resolveUpstreamFlavor(t.Context(), newServeDeps(), flavorTestConfig("auto"), res, logger)
+		if err != nil {
+			t.Fatalf("resolveUpstreamFlavor() error = %v", err)
+		}
+		if got != upstreamflavor.Podman {
+			t.Fatalf("resolveUpstreamFlavor() = %q, want %q", got, upstreamflavor.Podman)
+		}
+		if s1.calls.Load() != 1 || s2.calls.Load() != 1 {
+			t.Fatalf("probe calls = (%d, %d), want (1, 1)", s1.calls.Load(), s2.calls.Load())
+		}
+	})
+
+	t.Run("a mixed failover set fails startup naming both endpoints", func(t *testing.T) {
+		t.Parallel()
+		s1 := newVersionServer(t, http.StatusOK, flavorTestDockerVersionBody)
+		s2 := newVersionServer(t, http.StatusOK, flavorTestPodmanVersionBody)
+		res := multiEndpointResolver(t, s1.addr(), s2.addr())
+		logger, _ := flavorTestLogger()
+
+		got, err := resolveUpstreamFlavor(t.Context(), newServeDeps(), flavorTestConfig("auto"), res, logger)
+		if err == nil {
+			t.Fatalf("resolveUpstreamFlavor() = %q, want a mismatch error", got)
+		}
+		if got != "" {
+			t.Fatalf("resolveUpstreamFlavor() = %q, want no flavor on a mismatch", got)
+		}
+		for _, addr := range []string{s1.addr(), s2.addr()} {
+			if !strings.Contains(err.Error(), addr) {
+				t.Fatalf("error = %v, want it to name endpoint %s", err, addr)
+			}
+		}
+		if !strings.Contains(err.Error(), "upstream.flavor") {
+			t.Fatalf("error = %v, want it to name upstream.flavor as the remedy", err)
+		}
+	})
+
+	t.Run("one endpoint's probe failing fails startup", func(t *testing.T) {
+		t.Parallel()
+		s1 := newVersionServer(t, http.StatusOK, flavorTestDockerVersionBody)
+		s2 := newVersionServer(t, http.StatusForbidden, `{"message":"denied"}`)
+		res := multiEndpointResolver(t, s1.addr(), s2.addr())
+		logger, collector := flavorTestLogger()
+
+		got, err := resolveUpstreamFlavor(t.Context(), newServeDeps(), flavorTestConfig("auto"), res, logger)
+		if err == nil {
+			t.Fatalf("resolveUpstreamFlavor() = %q, want an error", got)
+		}
+		if got != "" {
+			t.Fatalf("resolveUpstreamFlavor() = %q, want no flavor on a probe failure", got)
+		}
+		if !strings.Contains(err.Error(), "upstream.flavor") {
+			t.Fatalf("error = %v, want it to name upstream.flavor as the remedy", err)
+		}
+		if !collector.HasMessage("upstream flavor probe failed") {
+			t.Fatalf("no probe-failure log line; records: %#v", collector.Records())
+		}
+	})
+
+	t.Run("an explicit flavor skips probing every endpoint, not just the primary", func(t *testing.T) {
+		t.Parallel()
+		s1 := newVersionServer(t, http.StatusOK, flavorTestDockerVersionBody)
+		s2 := newVersionServer(t, http.StatusOK, flavorTestDockerVersionBody)
+		res := multiEndpointResolver(t, s1.addr(), s2.addr())
+		logger, _ := flavorTestLogger()
+
+		got, err := resolveUpstreamFlavor(t.Context(), newServeDeps(), flavorTestConfig(string(upstreamflavor.Podman)), res, logger)
+		if err != nil {
+			t.Fatalf("resolveUpstreamFlavor() error = %v", err)
+		}
+		if got != upstreamflavor.Podman {
+			t.Fatalf("resolveUpstreamFlavor() = %q, want %q", got, upstreamflavor.Podman)
+		}
+		if s1.calls.Load() != 0 || s2.calls.Load() != 0 {
+			t.Fatalf("probe calls = (%d, %d), want (0, 0); an explicit flavor must not probe", s1.calls.Load(), s2.calls.Load())
+		}
+	})
 }
 
 // TestServeDepsBindTheRealUpstreamFlavorProbe stops the shared test-deps stub

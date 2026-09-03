@@ -58,6 +58,8 @@ response:
 # too; restart-policy/resource-control/device/capability changes stay denied
 # unless you explicitly allow them under request_body.container_update.
 request_body:
+  container_remove:
+    allow_force: true
   container_create:
     allowed_bind_mounts: []
     # Drydock recreates a container from its own inspect spec, which on most
@@ -174,8 +176,11 @@ rules:
   - match: { method: GET, path: "/volumes/*" }
     action: allow
 
-  # Distribution (registry digest checks for image freshness). Image
-  # references in the URL can be multi-segment (registry/owner/repo:tag).
+  # Distribution (registry digest checks for image freshness). Drydock
+  # itself has no caller for this endpoint; it's granted for the wider
+  # audience this preset targets — Watchtower-class updaters that do
+  # compare digests before pulling. Image references in the URL can be
+  # multi-segment (registry/owner/repo:tag).
   - match: { method: GET, path: "/distribution/**/json" }
     action: allow
 

@@ -18,10 +18,16 @@ func FuzzLibpodPathIdentifiers(f *testing.F) {
 	seeds := []string{
 		// Real endpoint shapes: collection routes.
 		"/libpod/containers/json",
+		"/libpod/images/json",
 		"/libpod/pods/json",
+		"/libpod/pods/stats",
+		"/libpod/containers/stats",
+		"/libpod/containers/showmounted",
 		"/libpod/networks/json",
 		"/libpod/volumes/json",
 		"/libpod/secrets/json",
+		"/libpod/images/search",
+		"/libpod/images/export",
 		// Real endpoint shapes: single-resource reads.
 		"/libpod/containers/abc123/json",
 		"/libpod/containers/abc123/logs",
@@ -29,10 +35,25 @@ func FuzzLibpodPathIdentifiers(f *testing.F) {
 		"/libpod/containers/abc123/top",
 		"/libpod/containers/abc123/changes",
 		"/libpod/containers/abc123/export",
+		"/libpod/containers/abc123/archive",
+		"/libpod/containers/abc123/exists",
+		"/libpod/containers/abc123/healthcheck",
+		"/libpod/images/app/json",
+		"/libpod/images/app/history",
+		"/libpod/images/app/get",
+		"/libpod/images/app/tree",
+		"/libpod/images/app/exists",
+		"/libpod/images/registry.io/team/app/json",
 		"/libpod/pods/pod-1/json",
+		"/libpod/pods/pod-1/exists",
+		"/libpod/pods/pod-1/top",
 		"/libpod/networks/bridge/json",
+		"/libpod/networks/bridge/exists",
+		"/libpod/networks/bridge",
 		"/libpod/volumes/vol-1/json",
+		"/libpod/volumes/vol-1/export",
 		"/libpod/secrets/sec-1/json",
+		"/libpod/secrets/sec-1/exists",
 		// Docker-compat shapes that must never leak into libpod matchers.
 		"/containers/json",
 		"/containers/abc/json",
@@ -65,12 +86,21 @@ func FuzzLibpodPathIdentifiers(f *testing.F) {
 		f.Add(s)
 	}
 
+	// Collection routes: a bare word after the prefix with no "/id/suffix"
+	// shape, so no single-resource identifier may ever match one. The three
+	// in filter.LibpodUnscopeableReads() are here for the same reason the
+	// list endpoints are — misclassifying one as a container or pod named
+	// "stats" or "showmounted" is what left them unchecked before v2.1.
 	collectionRoutes := map[string]bool{
-		"/libpod/containers/json": true,
-		"/libpod/pods/json":       true,
-		"/libpod/networks/json":   true,
-		"/libpod/volumes/json":    true,
-		"/libpod/secrets/json":    true,
+		"/libpod/containers/json":        true,
+		"/libpod/containers/stats":       true,
+		"/libpod/containers/showmounted": true,
+		"/libpod/images/json":            true,
+		"/libpod/pods/json":              true,
+		"/libpod/pods/stats":             true,
+		"/libpod/networks/json":          true,
+		"/libpod/volumes/json":           true,
+		"/libpod/secrets/json":           true,
 	}
 
 	type identifierHelper struct {
@@ -84,6 +114,7 @@ func FuzzLibpodPathIdentifiers(f *testing.F) {
 	}
 	helpers := []identifierHelper{
 		{"libpodContainerReadIdentifier", libpodContainerReadIdentifier, true},
+		{"libpodImageReadIdentifier", libpodImageReadIdentifier, true},
 		{"libpodPodReadIdentifier", libpodPodReadIdentifier, false},
 		{"libpodNetworkInspectIdentifier", libpodNetworkInspectIdentifier, false},
 		{"libpodVolumeInspectIdentifier", libpodVolumeInspectIdentifier, false},

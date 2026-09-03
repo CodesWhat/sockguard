@@ -23,7 +23,13 @@ import (
 //     the Docker daemon, e.g.
 //     `{"label":{"com.sockguard.owner=alice":true}}`. We flatten the
 //     object's keys into a sorted []string so downstream code sees one
-//     deterministic shape.
+//     deterministic shape. The boolean is Docker's own enable flag for the
+//     entry: both dockerd and Podman install a legacy-object filter key only
+//     when its value is true, so a `false` entry is not a filter at all and
+//     we drop it. Keeping it regardless of the boolean let a client send
+//     `{"label":{"com.example.visible=true":false}}` to make a later
+//     "selector already present" check believe an injected selector was
+//     already in the query, forwarding the request unfiltered.
 //
 // Any other encoding returns an error: a filter type we don't know how to
 // render safely is a fail-fast, not a silent drop, so a future Docker API
@@ -65,8 +71,15 @@ func Decode(encoded string) (map[string][]string, error) {
 		case map[string]any:
 			values := make([]string, 0, len(typed))
 			for item, enabled := range typed {
-				if _, ok := enabled.(bool); !ok {
+				boolEnabled, ok := enabled.(bool)
+				if !ok {
 					return nil, fmt.Errorf("decode filters: unexpected %s filter value type %T", key, enabled)
+				}
+				// A false-valued legacy entry is not installed by Docker's
+				// or Podman's own filter parsers; treat it as absent rather
+				// than as a present filter value.
+				if !boolEnabled {
+					continue
 				}
 				values = append(values, item)
 			}

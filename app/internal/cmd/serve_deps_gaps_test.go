@@ -371,3 +371,81 @@ func TestDefaultProbeUnixSocket(t *testing.T) {
 		}
 	})
 }
+
+// serve_deps.go:374 ARITHMETIC_BASE (200*time.Millisecond -> 200/time.Millisecond,
+// i.e. a Duration(0) "no timeout" instead of a 200ms bound) is not exercised
+// here: net.DialTimeout to a missing/refusing unix socket path returns
+// immediately regardless of the timeout value (there is nothing to wait on),
+// and forcing a real connect to actually block past 200ms requires exhausting
+// the kernel's listen accept-backlog. Measured on this machine (darwin), once
+// that backlog fills, further connects return ECONNREFUSED immediately rather
+// than blocking — so even backlog exhaustion doesn't reproduce a hang, and the
+// exact backlog size differs across platforms/kernels regardless. No
+// deterministic, non-flaky unit test isolates this constant's value; skipped.
+
+// ---------------------------------------------------------------------------
+// serve_deps.go:218 — CONDITIONALS_NEGATION: `if fileMode ==
+// config.HardenedListenSocketFileMode` inside createSocketListener. When
+// fileMode is the hardened mode, the true branch calls listenUnixSocket,
+// which itself forwards to listenUnixSocketWithMode(path,
+// HardenedListenSocketFileMode) — byte-identical to what the false branch
+// would do for that same fileMode value, so that direction is unobservable.
+// The mutation IS observable in the other direction: for a non-hardened
+// (group-readable) fileMode, the mutant takes the listenUnixSocket branch
+// and silently binds the socket at the hardened 0600 mode instead of the
+// requested 0660.
+// Kill: request group-readable mode explicitly and assert the resulting
+// socket file's permission bits are 0660, not 0600.
+// ---------------------------------------------------------------------------
+
+func TestCreateSocketListenerUsesRequestedNonHardenedMode(t *testing.T) {
+	socketPath := shortSocketPath(t, "group-mode")
+	deps := newServeTestDeps()
+	gid := os.Getgid()
+
+	ln, err := deps.createSocketListener("listen", socketPath, "0660", nil, &gid)
+	if err != nil {
+		t.Fatalf("createSocketListener() error = %v", err)
+	}
+	defer ln.Close()
+
+	info, statErr := os.Lstat(socketPath)
+	if statErr != nil {
+		t.Fatalf("Lstat(%q) error = %v", socketPath, statErr)
+	}
+	if got, want := info.Mode().Perm(), config.GroupReadableListenSocketFileMode; got != want {
+		t.Fatalf("socket perm = %v, want %v (a mutant that always takes the hardened-mode branch would produce %v)",
+			got, want, config.HardenedListenSocketFileMode)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// serve_deps.go:230 — CONDITIONALS_NEGATION (x2): `if uid == nil && gid ==
+// nil { return ln, nil }` inside createSocketListener. Negating either
+// comparison makes the "skip chown entirely" fast path require a
+// self-contradictory pair of conditions (e.g. uid != nil && gid == nil while
+// both are actually nil), so it's never taken: an unrequested chown(path,
+// -1, -1) call fires even when the caller passed no uid/gid at all.
+// Kill: call createSocketListener with uid == nil && gid == nil and assert
+// deps.chown is never invoked.
+// ---------------------------------------------------------------------------
+
+func TestCreateSocketListenerSkipsChownWhenBothNil(t *testing.T) {
+	socketPath := shortSocketPath(t, "no-chown")
+	deps := newServeTestDeps()
+	chownCalls := 0
+	deps.chown = func(string, int, int) error {
+		chownCalls++
+		return nil
+	}
+
+	ln, err := deps.createSocketListener("listen", socketPath, "0600", nil, nil)
+	if err != nil {
+		t.Fatalf("createSocketListener() error = %v", err)
+	}
+	defer ln.Close()
+
+	if chownCalls != 0 {
+		t.Fatalf("chown calls = %d, want 0 when both uid and gid are nil", chownCalls)
+	}
+}

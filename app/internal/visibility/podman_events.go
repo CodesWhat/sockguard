@@ -56,9 +56,10 @@ const podmanEventsDenyReason = "events denied: this upstream is Podman, whose GE
 //
 //   - No selectors (a patterns-only policy): forwarded untouched, exactly as
 //     it is on a Docker upstream. Pattern axes do not reach this endpoint on
-//     either engine — needsPatternResponseFilter covers two list endpoints and
-//     nothing else — and compileVisibilityPolicies already warns at startup
-//     that a patterns-only policy leaves the event stream unrestricted.
+//     either engine — needsPatternResponseFilter covers the four
+//     container/image list endpoints and nothing else — and
+//     compileVisibilityPolicies already warns at startup that a patterns-only
+//     policy leaves the event stream unrestricted.
 //   - One selector: written as the sole `label` filter value.
 //   - Two or more: refused, without contacting the upstream, so no event
 //     belonging to another tenant is ever read.
@@ -76,12 +77,13 @@ func handlePodmanCompatEventsRequest(next http.Handler, w http.ResponseWriter, r
 	case 0:
 		next.ServeHTTP(w, r)
 	case 1:
-		if err := setPodmanEventLabelFilter(r, policy.selectors[0]); err != nil {
+		forwarded, err := setPodmanEventLabelFilter(r, policy.selectors[0])
+		if err != nil {
 			logging.SetDeniedWithCode(w, r, reasonCodeVisibilityFilterInvalid, err.Error(), nil)
 			_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: err.Error()})
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, forwarded)
 	default:
 		denyPodmanCompatEvents(w, r)
 	}
@@ -99,9 +101,9 @@ func denyPodmanCompatEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 // setPodmanEventLabelFilter REPLACES the `label` filter key with the policy's
-// single selector, rather than appending to it the way
-// addVisibilityLabelFilters does on every other list endpoint and on this one
-// against a Docker upstream.
+// single selector on both Podman event spellings, rather than appending to it
+// the way addVisibilityLabelFilters does on every other list endpoint and on
+// Docker's /events endpoint.
 //
 // Appending is safe on a conjunctive filter: dockerd ANDs event label pairs
 // through filters.Args.MatchKVList, and so do Podman's own LIST endpoints,
@@ -119,22 +121,27 @@ func denyPodmanCompatEvents(w http.ResponseWriter, r *http.Request) {
 // dockerfilters.Decode also accepts Docker's legacy map[string]map[string]bool
 // spelling, so leaving the raw query untouched would forward a client-authored
 // encoding of it carrying extra label values the decode had already seen.
-func setPodmanEventLabelFilter(r *http.Request, selector compiledSelector) error {
+func setPodmanEventLabelFilter(r *http.Request, selector compiledSelector) (*http.Request, error) {
 	query := r.URL.Query()
 	filters, err := dockerfilters.Decode(query.Get("filters"))
 	if err != nil {
-		return err
+		return r, err
 	}
 	value := selector.key
 	if selector.hasValue {
 		value += "=" + selector.value
 	}
-	filters[visibilityLabelFilterKey(compatEventsPath)] = []string{value}
+	filterKey := visibilityLabelFilterKey(compatEventsPath)
+	filters[filterKey] = []string{value}
 	encoded, err := json.Marshal(filters)
 	if err != nil {
-		return fmt.Errorf("encode filters: %w", err)
+		return r, fmt.Errorf("encode filters: %w", err)
 	}
 	query.Set("filters", string(encoded))
 	r.URL.RawQuery = query.Encode()
-	return nil
+	// Podman's event handler ORs repeated values under one key, so this
+	// selector has to remain the sole label value. A later owner-isolation
+	// layer sees the marker and refuses the request rather than dropping this
+	// visibility constraint or appending an owner value that would widen it.
+	return dockerfilters.RecordSoleValueFilter(r, filterKey), nil
 }

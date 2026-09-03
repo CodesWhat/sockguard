@@ -19,6 +19,12 @@ health:
   path: /health
 
 request_body:
+  # Portainer cleanup uses force and anonymous-volume removal, not legacy
+  # link removal.
+  container_remove:
+    allow_force: true
+    allow_remove_volumes: true
+    allow_remove_links: false
   container_create:
     allowed_bind_mounts: []
   image_pull:

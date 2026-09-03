@@ -130,6 +130,9 @@ func TestDrydockPresetConformance(t *testing.T) {
 		{"update", http.MethodPost, "/containers/abc/update", "", true},
 		{"wait", http.MethodPost, "/containers/abc/wait", "", true},
 		{"remove", http.MethodDelete, "/containers/abc", "", true},
+		{"force-remove-recovery", http.MethodDelete, "/containers/abc?force=true", "", true},
+		{"remove-volumes-denied", http.MethodDelete, "/containers/abc?v=true", "", false},
+		{"remove-link-denied", http.MethodDelete, "/containers/abc?link=true", "", false},
 
 		// Recreate: the inspect spec carries an explicit runc runtime, which the
 		// allowed_runtimes allowlist must admit. Guards regression B1.
@@ -315,11 +318,10 @@ func buildDrydockPresetHandlerWithNetworkAllowEndpointConfig(t *testing.T, prese
 
 // drydockPresetHandlerFromConfig assembles the filter middleware the way
 // serve.go does (rules + request-body inspectors) from an already-loaded
-// preset config, wrapping a stub upstream that 200s when a request is
-// allowed through. Shared by buildDrydockPresetHandler and its
-// allow-endpoint-config-override sibling so both build the handler
-// identically apart from the one field they intentionally differ on.
-func drydockPresetHandlerFromConfig(t *testing.T, cfg *config.Config) http.Handler {
+// preset config, wrapping a stub upstream that 200s when a request is allowed
+// through. Optional policy hooks supply runtime-only collaborators such as an
+// exec-start inspector without duplicating the shared preset harness.
+func drydockPresetHandlerFromConfig(t *testing.T, cfg *config.Config, configurePolicy ...func(*filter.PolicyConfig)) http.Handler {
 	t.Helper()
 
 	policy := cfg.RequestBody.ToFilterOptions()
@@ -330,6 +332,9 @@ func drydockPresetHandlerFromConfig(t *testing.T, cfg *config.Config) http.Handl
 	// assignment here so preset conformance tests exercise the same
 	// production wiring instead of a stub that always leaves it false.
 	policy.Exec.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
+	for _, configure := range configurePolicy {
+		configure(&policy)
+	}
 	opts := filter.Options{
 		PolicyConfig:          policy,
 		AllowReadExfiltration: cfg.InsecureAllowReadExfiltration,

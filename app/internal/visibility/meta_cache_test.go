@@ -21,7 +21,7 @@ func TestAddVisibilityLabelFiltersAcceptsLegacyEncoding(t *testing.T) {
 	legacy := `{"label":{"env=prod":true},"status":{"running":true}}`
 	req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/json?filters="+url.QueryEscape(legacy), nil)
 
-	err := addVisibilityLabelFilters(req, "/containers/json", []compiledSelector{
+	forwarded, err := addVisibilityLabelFilters(req, "/containers/json", []compiledSelector{
 		{key: "com.sockguard.visible", value: "true", hasValue: true},
 	})
 	if err != nil {
@@ -29,7 +29,7 @@ func TestAddVisibilityLabelFiltersAcceptsLegacyEncoding(t *testing.T) {
 	}
 
 	var filters map[string][]string
-	if err := json.Unmarshal([]byte(req.URL.Query().Get("filters")), &filters); err != nil {
+	if err := json.Unmarshal([]byte(forwarded.URL.Query().Get("filters")), &filters); err != nil {
 		t.Fatalf("rewritten filters are not modern array form: %v", err)
 	}
 	if got := filters["label"]; len(got) != 2 || got[0] != "env=prod" || got[1] != "com.sockguard.visible=true" {
@@ -185,5 +185,39 @@ func TestNewVisibilityDepsClientResolvesFreshAfterNameReuse(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("upstream inspect calls = %d, want 2 (a memoized positive verdict would show 1)", calls)
+	}
+}
+
+// TestNewVisibilityDepsClientNonContainerImageKindUsesLabelCache is the
+// negation regression for `kind == KindContainer || kind == KindImage` in
+// newVisibilityDepsClient's inspectResource wiring: any other kind (network,
+// volume, ...) must dispatch to the plain label cache, not the combined
+// container/image details cache. inspectResourceDetails refuses every kind
+// but container/image (see upstreamInspector.inspectResourceDetails), so
+// routing a network there would surface as an error instead of the labels
+// the upstream actually returned.
+func TestNewVisibilityDepsClientNonContainerImageKindUsesLabelCache(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"Labels": map[string]string{"tier": "prod"}})
+	}))
+	t.Cleanup(srv.Close)
+
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			r2 := r.Clone(r.Context())
+			r2.URL.Scheme = "http"
+			r2.URL.Host = srv.Listener.Addr().String()
+			return srv.Client().Transport.RoundTrip(r2)
+		}),
+	}
+	deps := newVisibilityDepsClient(client)
+
+	labels, found, err := deps.inspectResource(context.Background(), dockerresource.KindNetwork, "net1")
+	if err != nil {
+		t.Fatalf("inspectResource(network) error = %v, want nil", err)
+	}
+	if !found || labels["tier"] != "prod" {
+		t.Fatalf("inspectResource(network) = (%v, found=%v), want tier=prod, found=true", labels, found)
 	}
 }

@@ -21,13 +21,22 @@ var (
 )
 
 type bodySensitiveWriteEndpoint struct {
-	method string
-	path   string
+	method          string
+	path            string
+	identifierShape catalogIdentifierShape
+	exclusions      []catalogPathExclusion
 }
 
 type sensitiveExfilEndpoint struct {
-	method string
-	path   string
+	method          string
+	path            string
+	identifierShape catalogIdentifierShape
+	exclusions      []catalogPathExclusion
+}
+
+type catalogPathExclusion struct {
+	path            string
+	identifierShape catalogIdentifierShape
 }
 
 var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
@@ -54,7 +63,7 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	{method: http.MethodPost, path: "/nodes/sockguard-test/update"},
 	{method: http.MethodPost, path: "/plugins/pull"},
 	{method: http.MethodPost, path: "/plugins/sockguard-test/upgrade"},
-	{method: http.MethodPost, path: "/plugins/sockguard-test/set"},
+	{method: http.MethodPost, path: "/plugins/sockguard-test/set", identifierShape: catalogIdentifierPath},
 	{method: http.MethodPost, path: "/plugins/create"},
 	// libpod native surface (#148 PR2). POST /libpod/containers/create always
 	// runs through an inspector with fail-closed defaults exactly like its
@@ -73,6 +82,18 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	{method: http.MethodPost, path: "/libpod/exec/sockguard-test/start"},
 	{method: http.MethodPost, path: "/libpod/volumes/create"},
 	{method: http.MethodPost, path: "/libpod/networks/create"},
+	// Podman's native network connect/disconnect. Connect runs its own
+	// libpod handler and body shape; disconnect is registered straight onto
+	// the Docker-compat handler. Both go through request_body.libpod_network
+	// (filter.networkPolicy.inspectLibpod), the same config block that
+	// governs libpod network create.
+	{method: http.MethodPost, path: "/libpod/networks/sockguard-test/connect"},
+	{method: http.MethodPost, path: "/libpod/networks/sockguard-test/disconnect"},
+	// Podman's netavark-only network update, which rewrites an existing
+	// network's DNS resolvers. No Docker analog exists at any Engine API
+	// version. Gated by request_body.libpod_network.allow_dns_servers
+	// (filter.networkPolicy.inspectLibpodUpdate).
+	{method: http.MethodPost, path: "/libpod/networks/sockguard-test/update"},
 	{method: http.MethodPost, path: "/libpod/secrets/create"},
 	// Podman's native image pull, the libpod counterpart of
 	// POST /images/create. It runs through the SAME request_body.image_pull
@@ -81,10 +102,73 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	// acknowledgment — it is listed here so an operator auditing the
 	// body-sensitive write surface sees it alongside the rest of it.
 	{method: http.MethodPost, path: "/libpod/images/pull"},
-	// Native image load and import have no request-body inspector, so allowing
-	// either requires the blind-write acknowledgment.
+	// Podman's native image load and import. Both run through the SAME
+	// config an operator already sets for the Docker-compat spellings —
+	// request_body.image_load for the archive, request_body.image_pull's
+	// allow_imports for the import — so both are recognized as inspected
+	// below rather than requiring the blind-write acknowledgment.
 	{method: http.MethodPost, path: "/libpod/images/load"},
 	{method: http.MethodPost, path: "/libpod/images/import"},
+	// The two libpod "local API" routes have no Docker analog and, unlike
+	// every other entry in this catalog, take their input from a path on the
+	// DAEMON HOST rather than from the request: /libpod/local/build's
+	// required `localcontextdir` and /libpod/local/images/load's required
+	// `path` are absolute server-side paths that Podman v5.8.1 validates
+	// only as absolute-and-exists (internal/localapi's
+	// ValidatePathForLocalAPI — no sandbox root). Nothing crosses the socket
+	// for sockguard to read, so they deliberately have no case in
+	// bodyInspectionConfiguredForEndpoint and always require
+	// insecure_allow_body_blind_writes, which is also exactly what the
+	// runtime inspectors demand (filter.buildPolicy.inspectLibpodBuildControls
+	// and filter.imageLoadPolicy.inspect).
+	{method: http.MethodPost, path: "/libpod/local/build"},
+	{method: http.MethodPost, path: "/libpod/local/images/load"},
+	// Image SCP creates a local image from an archive fetched over SSH from
+	// a host the CALLER names, so it is an uninspectable image-ingest path
+	// that bypasses request_body.image_pull's registry allowlist entirely
+	// (Podman v5.8.1 pkg/domain/utils/scp.go: an unknown connection name
+	// falls back to a literal "ssh://"+name rather than being rejected). It
+	// is also an egress channel, so it appears in sensitiveExfilEndpoints
+	// too — admitting it takes both acknowledgments, one per direction.
+	{
+		method:          http.MethodPost,
+		path:            "/libpod/images/scp/sockguard-test",
+		identifierShape: catalogIdentifierPath,
+		exclusions: []catalogPathExclusion{
+			{path: "/libpod/images/scp/push"},
+			{path: "/libpod/images/scp/tag"},
+			{path: "/libpod/images/scp/untag"},
+			{path: "/libpod/images/scp/sockguard-test/push", identifierShape: catalogIdentifierPath},
+			{path: "/libpod/images/scp/sockguard-test/tag", identifierShape: catalogIdentifierPath},
+			{path: "/libpod/images/scp/sockguard-test/untag", identifierShape: catalogIdentifierPath},
+		},
+	},
+	// Podman's native copy-into-container and container-update writes. Both
+	// were absent from this catalog and from compileRuntimePolicy's
+	// inspection table while their Docker-compat twins above were in both,
+	// so an allow rule opened them with no inspection and no startup
+	// warning. Both are inspected now (see
+	// bodyInspectionConfiguredForEndpoint), archive by the very same
+	// containerArchivePolicy — Podman routes PUT /containers/{name}/archive
+	// and PUT /libpod/containers/{name}/archive to one compat.Archive
+	// handler — and update by containerUpdatePolicy.inspectLibpod, which
+	// reads libpod's own body and query shape against the same
+	// request_body.container_update gates.
+	{method: http.MethodPut, path: "/libpod/containers/sockguard-test/archive"},
+	{method: http.MethodPost, path: "/libpod/containers/sockguard-test/update"},
+	// POST /libpod/containers/{name}/restore has NO request-body inspector,
+	// so it deliberately gets no case in bodyInspectionConfiguredForEndpoint
+	// and always requires insecure_allow_body_blind_writes. With ?import=1
+	// Podman reads the entire request body as a CRIU checkpoint archive
+	// (libpod.Restore -> compat.SaveFromBody in Podman v5.8.1's
+	// pkg/api/handlers/libpod/containers.go) and CREATES A CONTAINER from
+	// it, bypassing every containers/create gate on both surfaces — the
+	// container's spec lives inside a gzipped tar as spec.dump, not in any
+	// JSON sockguard can read. Treat it with the caution play/kube gets: the
+	// ?pod parameter means one restore can also join a pod. (Podman's own
+	// swagger doc for this route lists no publishPorts parameter — that
+	// belongs to play/kube, not restore.)
+	{method: http.MethodPost, path: "/libpod/containers/sockguard-test/restore"},
 	// play/kube, its "kube/play" alias (Podman registers both spellings on
 	// the identical libpod.PlayKube/KubePlay handlers), kube/apply, and
 	// manifest-list writes have NO request-body inspector at all (#148
@@ -100,8 +184,20 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	{method: http.MethodPost, path: "/libpod/kube/play"},
 	{method: http.MethodPost, path: "/libpod/kube/apply"},
 	{method: http.MethodPost, path: "/libpod/manifests/create"},
-	{method: http.MethodPost, path: "/libpod/manifests/sockguard-test"},
-	{method: http.MethodPut, path: "/libpod/manifests/sockguard-test"},
+	{
+		method:          http.MethodPost,
+		path:            "/libpod/manifests/sockguard-test",
+		identifierShape: catalogIdentifierPath,
+		// Podman registers the v4 registry-push route before the generic
+		// manifest-create route. Subtract that route language so a push does
+		// not falsely demand the body-blind acknowledgment in addition to its
+		// read-exfiltration acknowledgment.
+		exclusions: []catalogPathExclusion{{
+			path:            "/libpod/manifests/sockguard-test/registry/sockguard-test",
+			identifierShape: catalogIdentifierPath,
+		}},
+	},
+	{method: http.MethodPut, path: "/libpod/manifests/sockguard-test", identifierShape: catalogIdentifierPath},
 }
 
 type buildkitTunnelEndpoint struct {
@@ -144,12 +240,12 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 	{method: http.MethodGet, path: "/tasks/sockguard-test/logs"},
 	{method: http.MethodPost, path: "/containers/sockguard-test/attach"},
 	{method: http.MethodGet, path: "/images/get"},
-	{method: http.MethodGet, path: "/images/sockguard-test/get"},
+	{method: http.MethodGet, path: "/images/sockguard-test/get", identifierShape: catalogIdentifierPath},
 	// Registry pushes are writes at the Docker API layer, but they read local
 	// artifact content and transmit it to a caller-selected registry. Treat
 	// them as exfiltration surfaces alongside archive/export downloads.
-	{method: http.MethodPost, path: "/images/sockguard-test/push"},
-	{method: http.MethodPost, path: "/plugins/sockguard-test/push"},
+	{method: http.MethodPost, path: "/images/sockguard-test/push", identifierShape: catalogIdentifierPath},
+	{method: http.MethodPost, path: "/plugins/sockguard-test/push", identifierShape: catalogIdentifierPath},
 	// libpod read/export surface (#148). Confirmed against Podman v5.8.1's
 	// own route table (pkg/api/server/register_archive.go,
 	// register_containers.go, register_images.go) rather than assumed from
@@ -169,10 +265,54 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 	{method: http.MethodGet, path: "/libpod/containers/sockguard-test/top"},
 	{method: http.MethodGet, path: "/libpod/pods/sockguard-test/top"},
 	{method: http.MethodPost, path: "/libpod/containers/sockguard-test/attach"},
+	{method: http.MethodGet, path: "/libpod/containers/showmounted"},
 	{method: http.MethodGet, path: "/libpod/images/export"},
-	{method: http.MethodGet, path: "/libpod/images/sockguard-test/get"},
-	{method: http.MethodPost, path: "/libpod/images/sockguard-test/push"},
+	{method: http.MethodGet, path: "/libpod/images/sockguard-test/get", identifierShape: catalogIdentifierPath},
+	{method: http.MethodPost, path: "/libpod/images/sockguard-test/push", identifierShape: catalogIdentifierPath},
+	// Image SCP transfers a local image to another HOST over SSH, with the
+	// destination named by the caller in the `destination` query parameter
+	// (Podman v5.8.1 pkg/api/server/register_images.go routes
+	// POST /libpod/images/scp/{name:.*} to libpod.ImageScp, which parses
+	// source from the path and destination from the query and hands both to
+	// domainUtils.ExecuteTransfer). It is the push entries' problem without
+	// their one mitigation: there is no registry to allowlist, and an
+	// unrecognized connection name is turned into "ssh://"+name instead of
+	// being refused, so the destination is an arbitrary SSH endpoint.
+	{
+		method:          http.MethodPost,
+		path:            "/libpod/images/scp/sockguard-test",
+		identifierShape: catalogIdentifierPath,
+		exclusions: []catalogPathExclusion{
+			{path: "/libpod/images/scp/push"},
+			{path: "/libpod/images/scp/tag"},
+			{path: "/libpod/images/scp/untag"},
+			{path: "/libpod/images/scp/sockguard-test/push", identifierShape: catalogIdentifierPath},
+			{path: "/libpod/images/scp/sockguard-test/tag", identifierShape: catalogIdentifierPath},
+			{path: "/libpod/images/scp/sockguard-test/untag", identifierShape: catalogIdentifierPath},
+		},
+	},
 	{method: http.MethodGet, path: "/libpod/generate/kube"},
+	// Two libpod-only POSTs whose risk is entirely in the RESPONSE, which is
+	// why neither gets a request-body inspector: verified against Podman
+	// v5.8.1's pkg/api/handlers/libpod/containers.go, Checkpoint reads only
+	// the query and MountContainer reads nothing at all, so there is no
+	// request content for an inspector to evaluate and one would degenerate
+	// into an unconditional verdict.
+	//
+	// POST /libpod/containers/*/checkpoint with ?export=1 streams a
+	// tar.gz of the container's CRIU checkpoint back to the caller — the
+	// process memory dump plus root-filesystem changes, so every secret the
+	// container had in memory. That is the same exfiltration shape as
+	// /libpod/containers/*/export above, with more in it.
+	//
+	// POST /libpod/containers/*/mount returns the container root
+	// filesystem's path on the DAEMON host and mounts it there. The response
+	// discloses the storage driver's layout and the container-id-to-path
+	// mapping; it does not return file contents, so it sits here on the
+	// strength of the disclosure rather than being described as a read of
+	// the container's files.
+	{method: http.MethodPost, path: "/libpod/containers/sockguard-test/checkpoint"},
+	{method: http.MethodPost, path: "/libpod/containers/sockguard-test/mount"},
 	// Manifest-list push routes read local manifest content and transmit it
 	// to a caller-selected registry — a write at the Docker API layer but an
 	// exfiltration surface just like the image/plugin push entries above.
@@ -180,7 +320,7 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 	// POST .../push is kept for backward compat (deprecated since v4.0.0 but
 	// still routable). Both are registered in Podman v5.8.1's
 	// pkg/api/server/register_manifest.go.
-	{method: http.MethodPost, path: "/libpod/manifests/sockguard-test/registry/sockguard-test"},
+	{method: http.MethodPost, path: "/libpod/manifests/sockguard-test/registry/sockguard-test", identifierShape: catalogIdentifierPath},
 	{method: http.MethodPost, path: "/libpod/manifests/sockguard-test/push"},
 }
 
@@ -259,11 +399,11 @@ func splitMethods(methods string) []string {
 }
 
 func validateBodyBlindWriteRules(cfg *config.Config, compiled []*filter.CompiledRule) error {
-	return validateBodyBlindWriteRulesForPolicy("", cfg.InsecureAllowBodyBlindWrites, cfg.RequestBody, compiled)
+	return validateBodyBlindWriteRulesForPolicy("", cfg.InsecureAllowBodyBlindWrites, cfg.RequestBody, cfg.Rules, compiled)
 }
 
 func validateReadExfiltrationRules(cfg *config.Config, compiled []*filter.CompiledRule) error {
-	return validateReadExfiltrationRulesForPolicy("", cfg.InsecureAllowReadExfiltration, compiled)
+	return validateReadExfiltrationRulesForPolicy("", cfg.InsecureAllowReadExfiltration, cfg.Rules, compiled)
 }
 
 func validateBuildkitTunnelRules(cfg *config.Config, compiled []*filter.CompiledRule) error {
@@ -271,12 +411,12 @@ func validateBuildkitTunnelRules(cfg *config.Config, compiled []*filter.Compiled
 	return validateBuildkitTunnelRulesForPolicy("", cfg.InsecureAcceptOpaqueBuildkitTunnels, cfg.RequestBody.Buildkit.ToPolicy(cfg.RequestBody.Build).Configured(), compiled)
 }
 
-func validateBodyBlindWriteRulesForPolicy(scope string, insecure bool, requestBody config.RequestBodyConfig, compiled []*filter.CompiledRule) error {
+func validateBodyBlindWriteRulesForPolicy(scope string, insecure bool, requestBody config.RequestBodyConfig, configured []config.RuleConfig, compiled []*filter.CompiledRule) error {
 	if insecure {
 		return nil
 	}
 
-	exposed := allowedBodySensitiveWriteEndpoints(requestBody, compiled)
+	exposed := allowedBodySensitiveWriteEndpoints(requestBody, configured, compiled)
 	if len(exposed) == 0 {
 		return nil
 	}
@@ -295,20 +435,20 @@ func validateBodyBlindWriteRulesForPolicy(scope string, insecure bool, requestBo
 	)
 }
 
-func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, compiled []*filter.CompiledRule) error {
+func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, configured []config.RuleConfig, compiled []*filter.CompiledRule) error {
 	if insecure {
 		return nil
 	}
 
-	exposed := allowedSensitiveExfilEndpoints(compiled)
+	exposed := allowedSensitiveExfilEndpoints(configured, compiled)
 	if len(exposed) == 0 {
 		return nil
 	}
 
 	if scope == "" {
 		return fmt.Errorf(
-			"rules allow raw archive/export, process-list, log/attach streaming, or registry push endpoints "+
-				"(these can exfiltrate container files, images, plugins, process arguments, environment variables, and secrets); "+
+			"rules allow raw archive/export, process-list, log/attach streaming, checkpoint export, container rootfs mount, or registry push endpoints "+
+				"(these can exfiltrate container files, container memory, images, plugins, process arguments, environment variables, secrets, and daemon-host filesystem paths); "+
 				"either tighten the allow rules to omit these paths or set "+
 				"insecure_allow_read_exfiltration: true to acknowledge the risk. "+
 				"Exposed endpoints: %s",
@@ -317,8 +457,8 @@ func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, compile
 	}
 
 	return fmt.Errorf(
-		"client profile %q allows raw archive/export, process-list, log/attach streaming, or registry push endpoints "+
-			"(these can exfiltrate container files, images, plugins, process arguments, environment variables, and secrets); "+
+		"client profile %q allows raw archive/export, process-list, log/attach streaming, checkpoint export, container rootfs mount, or registry push endpoints "+
+			"(these can exfiltrate container files, container memory, images, plugins, process arguments, environment variables, secrets, and daemon-host filesystem paths); "+
 			"either tighten the profile's allow rules to omit these paths or set the "+
 			"top-level insecure_allow_read_exfiltration: true to acknowledge the risk "+
 			"(it is a global setting, not per-profile). "+
@@ -398,38 +538,63 @@ func allowedBuildkitTunnelEndpoints(compiled []*filter.CompiledRule) []string {
 	return allowed
 }
 
-func allowedBodySensitiveWriteEndpoints(requestBody config.RequestBodyConfig, compiled []*filter.CompiledRule) []string {
+func allowedBodySensitiveWriteEndpoints(requestBody config.RequestBodyConfig, configured []config.RuleConfig, compiled []*filter.CompiledRule) []string {
 	allowed := make([]string, 0, len(bodySensitiveWriteEndpoints))
 	for _, endpoint := range bodySensitiveWriteEndpoints {
 		if bodyInspectionConfiguredForEndpoint(requestBody, endpoint) {
 			continue
 		}
-		req := &http.Request{Method: endpoint.method, URL: &url.URL{Path: endpoint.path}}
-		action, _, _ := filter.Evaluate(compiled, req)
-		if action != filter.ActionAllow {
-			continue
+		for _, path := range allowedCatalogPaths(endpoint.method, endpoint.path, endpoint.identifierShape, endpoint.exclusions, configured, compiled) {
+			allowed = append(allowed, endpoint.method+" "+path)
 		}
-		allowed = append(allowed, endpoint.method+" "+endpoint.path)
 	}
 	return allowed
 }
 
-func allowedSensitiveExfilEndpoints(compiled []*filter.CompiledRule) []string {
+func allowedCatalogPaths(method, catalogPath string, identifierShape catalogIdentifierShape, exclusions []catalogPathExclusion, sourceRules []config.RuleConfig, compiledRules []*filter.CompiledRule) []string {
+	// Preserve the stable catalog spelling when its representative route is
+	// itself exposed. Exact reachability is only needed when ordered rules
+	// shadow that representative but may leave another identifier reachable.
+	if policyAllowsPath(method, catalogPath, compiledRules) {
+		return []string{catalogPath}
+	}
+
+	witness, result := firstAllowedCatalogPath(method, catalogPath, identifierShape, exclusions, sourceRules)
+	switch result {
+	case catalogReachable:
+		// Verify the automaton witness through the production evaluator. Any
+		// future matcher-dialect drift fails closed instead of hiding exposure.
+		if policyAllowsPath(method, witness, compiledRules) {
+			return []string{witness}
+		}
+		return []string{catalogPath}
+	case catalogReachabilityIndeterminate:
+		return []string{catalogPath}
+	default:
+		return nil
+	}
+}
+
+func policyAllowsPath(method, path string, compiledRules []*filter.CompiledRule) bool {
+	req := &http.Request{Method: method, URL: &url.URL{Path: path}}
+	action, _, _ := filter.Evaluate(compiledRules, req)
+	return action == filter.ActionAllow
+}
+
+func allowedSensitiveExfilEndpoints(configured []config.RuleConfig, compiled []*filter.CompiledRule) []string {
 	allowed := make([]string, 0, len(sensitiveExfilEndpoints))
 	for _, endpoint := range sensitiveExfilEndpoints {
-		req := &http.Request{Method: endpoint.method, URL: &url.URL{Path: endpoint.path}}
-		action, _, _ := filter.Evaluate(compiled, req)
-		if action != filter.ActionAllow {
-			continue
+		for _, path := range allowedCatalogPaths(endpoint.method, endpoint.path, endpoint.identifierShape, endpoint.exclusions, configured, compiled) {
+			allowed = append(allowed, endpoint.method+" "+path)
 		}
-		allowed = append(allowed, endpoint.method+" "+endpoint.path)
 	}
 	return allowed
 }
 
 // allowedSensitiveExfilEndpointsByProfile probes each named client profile's
-// own rule set for the endpoints allowedSensitiveExfilEndpoints checks,
-// returning "<profile>: <METHOD> <path>" entries.
+// configured and compiled rule sets for the endpoints
+// allowedSensitiveExfilEndpoints checks, returning
+// "<profile>: <METHOD> <path>" entries.
 //
 // The acknowledgment is global but profile rules are evaluated in place of the
 // top-level set, so a profile can be the only reason
@@ -440,7 +605,12 @@ func allowedSensitiveExfilEndpoints(compiled []*filter.CompiledRule) []string {
 // Profile names come from a map, so they are sorted before the walk; within a
 // profile the entries keep sensitiveExfilEndpoints' declaration order. The
 // result is therefore stable across runs, which a log field has to be.
-func allowedSensitiveExfilEndpointsByProfile(profiles map[string]filter.Policy) []string {
+func allowedSensitiveExfilEndpointsByProfile(configured []config.ClientProfileConfig, profiles map[string]filter.Policy) []string {
+	configuredByName := make(map[string][]config.RuleConfig, len(configured))
+	for _, profile := range configured {
+		configuredByName[profile.Name] = profile.Rules
+	}
+
 	names := make([]string, 0, len(profiles))
 	for name := range profiles {
 		names = append(names, name)
@@ -449,7 +619,7 @@ func allowedSensitiveExfilEndpointsByProfile(profiles map[string]filter.Policy) 
 
 	exposed := make([]string, 0, len(names))
 	for _, name := range names {
-		for _, endpoint := range allowedSensitiveExfilEndpoints(profiles[name].Rules) {
+		for _, endpoint := range allowedSensitiveExfilEndpoints(configuredByName[name], profiles[name].Rules) {
 			exposed = append(exposed, name+": "+endpoint)
 		}
 	}
@@ -478,7 +648,17 @@ func bodyInspectionConfiguredForEndpoint(requestBody config.RequestBodyConfig, e
 		return true
 	case "/libpod/containers/create":
 		return true
-	case "/libpod/pods/create", "/libpod/volumes/create", "/libpod/networks/create", "/libpod/secrets/create", "/libpod/images/pull":
+	case "/libpod/containers/sockguard-test/archive", "/libpod/containers/sockguard-test/update":
+		// Both share their Docker-compat twin's config block and its
+		// fail-closed defaults, so they are covered on exactly the terms the
+		// "/containers/sockguard-test/update", "/containers/sockguard-test/archive"
+		// case above is covered on: container_archive's target-path,
+		// setuid, device-node and escaping-link checks apply verbatim
+		// (Podman runs one compat.Archive handler for both spellings), and
+		// container_update's allow_* gates are enforced against libpod's own
+		// body and query shape by containerUpdatePolicy.inspectLibpod.
+		return true
+	case "/libpod/pods/create", "/libpod/volumes/create", "/libpod/networks/create", "/libpod/networks/sockguard-test/connect", "/libpod/networks/sockguard-test/disconnect", "/libpod/networks/sockguard-test/update", "/libpod/secrets/create", "/libpod/images/pull", "/libpod/images/load", "/libpod/images/import":
 		// libpod_pod_create/libpod_volume/libpod_network/libpod_secret gates
 		// are all plain booleans/allowlists with real fail-closed defaults —
 		// none of them read insecure_allow_body_blind_writes the way exec
@@ -488,13 +668,28 @@ func bodyInspectionConfiguredForEndpoint(requestBody config.RequestBodyConfig, e
 		// joins them on the same terms: it reuses request_body.image_pull,
 		// whose allow_official-only default already denies a pull from any
 		// non-Docker-Hub-official registry, exactly as it does for the
-		// Docker-compat /images/create entry above.
+		// Docker-compat /images/create entry above. So do
+		// POST /libpod/images/load, which carries the same archive body the
+		// /images/load entry above is inspected on and is read by the same
+		// imageLoadPolicy, and POST /libpod/images/import, which is gated by
+		// request_body.image_pull.allow_imports — false by default, and the
+		// same flag that already gates the Docker-compat fromSrc import. The
+		// libpod network connect/disconnect entries reuse
+		// request_body.libpod_network, whose allow_endpoint_config and
+		// allow_disconnect_force both default false, matching the
+		// Docker-compat /networks/*/connect and /networks/*/disconnect
+		// entries above. /libpod/networks/*/update joins them on the same
+		// terms via allow_dns_servers, also default false; it has no
+		// Docker-compat entry to match because the Engine API has no
+		// network-update route.
 		return true
-	// /libpod/play/kube, /libpod/kube/play, /libpod/kube/apply, and
-	// /libpod/manifests/* deliberately have NO case here: they have no
-	// request-body inspector at all (#148 design doc decision C2), so they
-	// fall through to `default: false` below and always require
-	// insecure_allow_body_blind_writes to admit.
+	// /libpod/play/kube, /libpod/kube/play, /libpod/kube/apply,
+	// /libpod/manifests/*, /libpod/local/build, /libpod/local/images/load,
+	// /libpod/images/scp/*, and /libpod/containers/*/restore deliberately have
+	// NO case here. The kube/manifest set is deferred by #148 design decision
+	// C2; the rest accepts a daemon-host path, an SSH destination, or an opaque
+	// CRIU checkpoint archive that sockguard cannot inspect. They fall through
+	// to `default: false` and require insecure_allow_body_blind_writes.
 	default:
 		return false
 	}
@@ -507,10 +702,10 @@ func compileClientProfiles(cfg *config.Config) (map[string]filter.Policy, error)
 		if err != nil {
 			return nil, fmt.Errorf("client profile %q: %w", profile.Name, err)
 		}
-		if err := validateBodyBlindWriteRulesForPolicy(profile.Name, cfg.InsecureAllowBodyBlindWrites, profile.RequestBody, compiledRules); err != nil {
+		if err := validateBodyBlindWriteRulesForPolicy(profile.Name, cfg.InsecureAllowBodyBlindWrites, profile.RequestBody, profile.Rules, compiledRules); err != nil {
 			return nil, err
 		}
-		if err := validateReadExfiltrationRulesForPolicy(profile.Name, cfg.InsecureAllowReadExfiltration, compiledRules); err != nil {
+		if err := validateReadExfiltrationRulesForPolicy(profile.Name, cfg.InsecureAllowReadExfiltration, profile.Rules, compiledRules); err != nil {
 			return nil, err
 		}
 		//nolint:staticcheck // SA1019: deprecated flag still needs validating for as long as it stays functional

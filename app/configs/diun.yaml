@@ -18,10 +18,9 @@
 # matches one segment and would deny every image that is not a bare
 # library name. The "**" form is still safe here because it is anchored on a
 # literal /json suffix: GET /images/get, GET /images/{name}/get and
-# GET /images/{name}/history do not end in /json and stay denied. It does
-# also admit GET /images/json (the image list), since "/**" can match
-# nothing; that is a metadata read Diun does not make and not an
-# exfiltration endpoint.
+# GET /images/{name}/history do not end in /json and stay denied. Because
+# "/**" can match nothing, an explicit earlier deny keeps GET /images/json
+# (the image list, which Diun does not call) out of the allowed surface.
 #
 # Deliberately does NOT allow the read-exfiltration paths a "/containers/**"
 # or "/images/**" glob would swallow: /containers/{id}/archive,
@@ -60,7 +59,10 @@ rules:
     action: allow
 
   # Image inspect for local image metadata. See the header for why this is
-  # "**" and why the /json anchor keeps it narrow.
+  # "**" and why the /json anchor plus preceding list deny keep it narrow.
+  - match: { method: GET, path: "/images/json" }
+    action: deny
+    reason: "Diun does not list images"
   - match: { method: GET, path: "/images/**/json" }
     action: allow
 

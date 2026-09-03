@@ -61,6 +61,17 @@ type NetworkOptions struct {
 	// AllowDisableIPv4 permits POST /networks/create with EnableIPv4
 	// explicitly false (Engine API 1.48+). Default false.
 	AllowDisableIPv4 bool
+	// AllowDNSServers permits a request to set or remove a network's own DNS
+	// resolvers: `network_dns_servers` on POST /libpod/networks/create and
+	// both `adddnsservers` and `removednsservers` on
+	// POST /libpod/networks/{name}/update. Libpod-only — Docker networks have
+	// no per-network resolver concept and no update endpoint at all, so the
+	// Docker-compat inspector never consults this. Default false, because
+	// pointing an existing network's resolver at a host the caller controls
+	// changes what names resolve to inside every container already attached
+	// to it, including containers the caller does not own. See
+	// networkPolicy.inspectLibpodUpdate.
+	AllowDNSServers bool
 }
 
 type networkPolicy struct {
@@ -78,6 +89,7 @@ type networkPolicy struct {
 	endpointConfig         EndpointConfigOptions
 	allowDisconnectForce   bool
 	allowDisableIPv4       bool
+	allowDNSServers        bool
 }
 
 type networkCreateRequest struct {
@@ -154,6 +166,7 @@ func newNetworkPolicy(opts NetworkOptions) networkPolicy {
 		endpointConfig:         opts.EndpointConfig,
 		allowDisconnectForce:   opts.AllowDisconnectForce,
 		allowDisableIPv4:       opts.AllowDisableIPv4,
+		allowDNSServers:        opts.AllowDNSServers,
 	}
 }
 
@@ -324,10 +337,24 @@ func (p networkPolicy) inspectDisconnect(logger *slog.Logger, r *http.Request, b
 		return "network disconnect denied: request body could not be inspected", nil
 	}
 
+	return p.denyDisconnectReason(req, "network disconnect"), nil
+}
+
+// denyDisconnectReason evaluates a decoded disconnect body against
+// allow_disconnect_force, returning a "<subject> denied: ..." message (or ""
+// when allowed). Subject-prefixed and shared for the same reason
+// denyEndpointConfigReason is: Podman routes POST
+// /libpod/networks/{name}/disconnect at the identical compat.Disconnect
+// handler and decodes the identical Docker struct
+// (github.com/docker/docker/api/types/network.DisconnectOptions, verified
+// against Podman v5.8.1's pkg/api/server/register_networks.go and
+// pkg/api/handlers/compat/networks.go), so one gate must govern both
+// spellings or the libpod one drifts open.
+func (p networkPolicy) denyDisconnectReason(req networkDisconnectRequest, subject string) string {
 	if !p.allowDisconnectForce && req.Force {
-		return "network disconnect denied: force disconnect is not allowed", nil
+		return fmt.Sprintf("%s denied: force disconnect is not allowed", subject)
 	}
-	return "", nil
+	return ""
 }
 
 // endpointHasStaticIPConfig reports whether endpoint carries any static
@@ -374,10 +401,24 @@ func isNetworkWritePath(normalizedPath string) bool {
 }
 
 func isNetworkActionPath(normalizedPath string, action string) bool {
-	if !strings.HasPrefix(normalizedPath, "/networks/") {
+	return isNetworkActionPathUnder("/networks/", normalizedPath, action)
+}
+
+// isNetworkActionPathUnder matches <prefix>{id}/{action}: exactly one
+// non-empty identifier segment followed by action, nothing after it. The
+// collection prefix is a parameter so the Docker-compat "/networks/" family
+// and libpod's "/libpod/networks/" family share one implementation of the
+// shape rather than each keeping its own copy — the two families are still
+// mutually exclusive because prefix is matched literally, so a Docker path
+// can never satisfy a libpod matcher or vice versa (see
+// TestLibpodMatchersNeverMatchDockerPathsAndViceVersa). Podman routes both
+// spellings with gorilla/mux's {name} placeholder, which likewise stops at
+// the next slash.
+func isNetworkActionPathUnder(prefix string, normalizedPath string, action string) bool {
+	if !strings.HasPrefix(normalizedPath, prefix) {
 		return false
 	}
-	networkID, tail, ok := strings.Cut(strings.TrimPrefix(normalizedPath, "/networks/"), "/")
+	networkID, tail, ok := strings.Cut(strings.TrimPrefix(normalizedPath, prefix), "/")
 	return ok && networkID != "" && tail == action
 }
 

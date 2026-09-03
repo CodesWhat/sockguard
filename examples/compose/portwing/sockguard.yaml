@@ -28,6 +28,8 @@ response:
 insecure_allow_read_exfiltration: true
 
 request_body:
+  container_remove:
+    allow_force: true
   container_create:
     allowed_bind_mounts: []
     allowed_runtimes:

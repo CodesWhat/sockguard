@@ -16,10 +16,10 @@ Per-client policies|No|CIDR + labels + cert selectors + SPKI + unix peer|self
 Read-side redaction|No|Yes (visibility rules + JSON field redaction)|self
 Signed policy bundles|No|Yes (cosign keyed + keyless, Rekor)|self
 Container image trust|No|Yes (cosign + enforce / warn modes)|self
-Prometheus metrics|No|Yes (socket-proxy request metrics)|self
+Prometheus metrics|No|Yes (opt-in, socket-proxy request metrics)|self
 Rate limits|No|Yes (per-profile token-bucket)|self
 Rollout modes (enforce / warn / audit)|No|Yes (per-profile shadow mode)|self
-Audit log schema|No|Yes (JSON schema + reason codes)|self
+Audit log schema|No|Yes (opt-in, JSON schema + reason codes)|self
 `,
   highlightsTable: `
 shield|Request Body Inspection|CetusGuard filters by method and path only. Sockguard inspects request bodies — blocking containers by image, exec commands by pattern, bind mounts by path, and more across 12+ resource types.
@@ -68,7 +68,7 @@ layers|Rollout Modes|Sockguard's per-profile rollout modes (enforce / warn / aud
   ),
   migrationTitle: "Coming from CetusGuard?",
   migrationDescription:
-    "Your regex path rules translate directly to Sockguard YAML rule blocks, and your mTLS certificates work unchanged. Sockguard exposes the same TCP listener — swap the image and enable body inspection and per-client profiles at your own pace.",
+    "Your regex path rules translate directly to Sockguard YAML rule blocks, and your mTLS keypairs carry over. Sockguard's listener requires TLS 1.3 where CetusGuard accepted TLS 1.2, so upgrade any client that can't negotiate 1.3 before cutover. Then swap the image and enable body inspection and per-client profiles at your own pace.",
   jsonLdName: "CetusGuard vs Sockguard — Docker Socket Proxy Comparison",
   jsonLdDescription: "Compare CetusGuard and Sockguard for Docker socket filtering.",
 } satisfies ComparisonRouteRawConfig;

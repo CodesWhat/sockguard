@@ -44,9 +44,11 @@ func TestPathNeedsClean_LengthBoundary(t *testing.T) {
 	}
 }
 
-// CONDITIONALS_BOUNDARY rules.go:175:8  (stripVersionPrefix: `i == 2`)
-// mutant changes `i == 2` to `i <= 2` — a single digit would also fail to match.
-// Ensure /v1/containers/json strips correctly (one digit, i advances from 2→3).
+// CONDITIONALS_BOUNDARY rules.go:201:10  (stripVersionPrefix: `p[i] < '0' || p[i] > '9'`)
+// mutant widens `<`/`>` to `<=`/`>=`, which would let a non-digit byte pass
+// the first-character-after-"v" gate. Ensure /v1/containers/json strips
+// correctly (one digit satisfies the gate; the [0-9A-Za-z.-]* loop then
+// consumes nothing more before the trailing slash).
 func TestStripVersionPrefix_SingleDigit(t *testing.T) {
 	got := stripVersionPrefix("/v1/containers/json")
 	if got != "/containers/json" {
@@ -54,36 +56,43 @@ func TestStripVersionPrefix_SingleDigit(t *testing.T) {
 	}
 }
 
-// CONDITIONALS_BOUNDARY rules.go:182:7  (stripVersionPrefix: `i < len(p)` before `.`)
-// mutant changes `<` to `<=`.
-// A path exactly at the end where `i == len(p)` should NOT read p[i].
-// /v1 (len=3, i=3 after consuming digit) — no trailing slash means we return p unchanged.
+// /v1 (len 3) never reaches stripVersionPrefix's digit gate or
+// character-class loop at all — it is rejected by the `len(p) < 4` fast
+// path at rules.go:196 before the version class is ever inspected. This
+// pins that a too-short input returns unchanged rather than reading out of
+// range.
 func TestStripVersionPrefix_NoTrailingSlash(t *testing.T) {
 	if got := stripVersionPrefix("/v1"); got != "/v1" {
 		t.Fatalf("stripVersionPrefix('/v1') = %q, want /v1", got)
 	}
 }
 
-// CONDITIONALS_BOUNDARY rules.go:184:41  (stripVersionPrefix inner loop: `j < len(p)`)
-// mutant changes `<` to `<=`. With <= we'd read p[len(p)] — undefined — or the loop
-// would terminate one iteration too early. Verify multi-digit minor works:
+// CONDITIONALS_BOUNDARY rules.go:206:8  (stripVersionPrefix: `i < len(p)`)
+// mutant changes `<` to `<=`, which would let the character-class loop read
+// p[len(p)] once it runs to the end of the path. Verify a multi-character
+// version component (the "45" in v1.45, consumed through the
+// [0-9A-Za-z.-]* class at rules.go:208) still strips correctly.
 func TestStripVersionPrefix_MultiDigitMinor(t *testing.T) {
 	if got := stripVersionPrefix("/v1.45/containers/json"); got != "/containers/json" {
 		t.Fatalf("got %q", got)
 	}
 }
 
-// TestStripVersionPrefix_BoundaryGuards pins three surviving CONDITIONALS_BOUNDARY
-// mutants in stripVersionPrefix:
+// TestStripVersionPrefix_BoundaryGuards pins CONDITIONALS_BOUNDARY mutants in
+// stripVersionPrefix's single character-class loop — the loop that replaced
+// the old digit/dot-digit consumption when #148 widened the class to
+// Podman's VersionedPath, [0-9A-Za-z.-]*:
 //
-//   - rules.go:184:8  — outer digit-consume loop bound `i < len(p)` → `<=`
-//   - rules.go:191:7  — '.' check `i < len(p) && p[i] == '.'` → `<=`
-//   - rules.go:193:41 — inner digit-consume `<= '9'` → `< '9'`
+//   - rules.go:206:8  — loop bound `i < len(p)` → `<=`
+//   - rules.go:208:19 — character-class digit check `c <= '9'` → `< '9'`
+//     (the 'a'-'z' and 'A'-'Z' range comparisons on the same line carry the
+//     same class of boundary risk)
+//   - rules.go:215:7  — trailing-slash guard `i >= len(p) || p[i] != '/'` → `>`
 //
-// The existing /v1 case is filtered by the length-<4 fast path (line 179) so
+// The existing /v1 case is filtered by the length-<4 fast path (line 196) so
 // it never enters the loop at all; that's why TestStripVersionPrefix_NoTrailingSlash
 // passed both original and mutated source. The cases below exercise paths
-// that reach the digit loops at the boundary the mutants depend on.
+// that reach the loop at the boundary the mutants depend on.
 func TestStripVersionPrefix_BoundaryGuards(t *testing.T) {
 	tests := []struct {
 		name string
@@ -92,16 +101,16 @@ func TestStripVersionPrefix_BoundaryGuards(t *testing.T) {
 		why  string
 	}{
 		{
-			name: "digits run to end of path (184:8, 191:7)",
+			name: "class run to end of path (206:8, 215:7)",
 			in:   "/v12",
 			want: "/v12",
-			why:  "len>=4 passes the fast-path; both digits consumed make i=len(p). Mutants `i <= len(p)` either re-enter the digit loop or the '.' check and read p[len(p)] → panic. Original exits cleanly and returns the input unchanged (no trailing /).",
+			why:  "len>=4 passes the fast-path; both digits consumed make i=len(p). Mutant `i <= len(p)` on the loop bound would re-enter the loop and read p[len(p)] → panic. Mutant `i > len(p)` on the trailing-slash guard would treat i==len(p) as in-bounds and dereference p[i] out of range. Original exits cleanly and returns the input unchanged (no trailing /).",
 		},
 		{
-			name: "fractional digits with '9' at boundary (193:41)",
+			name: "digit at the class boundary (208:19)",
 			in:   "/v1.9/x",
 			want: "/x",
-			why:  "Original consumes '9' (p[j]<='9' true) and advances j past it; the trailing '/' check passes and the prefix is stripped. Mutant `p[j] < '9'` exits at '9' so j stops at 4; the dot-block check then sees p[i]='.' != '/' and returns the input unchanged.",
+			why:  "Original's character-class check accepts '9' (c <= '9' true) and advances past it; the trailing '/' check then passes and the prefix strips to /x. Mutant `c < '9'` rejects '9', so the loop stops one byte early with '9' unconsumed; the trailing-slash guard then sees a non-'/' byte and returns the input unchanged.",
 		},
 	}
 	for _, tt := range tests {

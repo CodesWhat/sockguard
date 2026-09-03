@@ -89,7 +89,18 @@ func TestPodmanReadonlyPresetConformance(t *testing.T) {
 		// --- libpod: pod reads (no Docker-compat equivalent) ---
 		{"libpod-pods-list", http.MethodGet, "/libpod/pods/json", "", true},
 		{"libpod-pod-inspect", http.MethodGet, "/libpod/pods/abc/json", "", true},
-		{"libpod-pods-stats", http.MethodGet, "/libpod/pods/stats", "", true},
+		// The three unscopeable libpod reads. None of them can be scoped to
+		// one caller — no labels on the entries, no `filters` parameter to
+		// attach anything to — so the ownership and visibility middlewares
+		// refuse all three outright. /libpod/pods/stats was allowed here until
+		// v2.1; the rule was removed because a preset cannot both promise
+		// isolation and serve a host-wide read. See
+		// filter.LibpodUnscopeableReads() and, for the machine-checked version
+		// of this across every shipped preset,
+		// TestNoShippedPresetAdmitsAnUnscopeableLibpodRead.
+		{"libpod-pods-stats", http.MethodGet, "/libpod/pods/stats", "", false},
+		{"libpod-containers-stats", http.MethodGet, "/libpod/containers/stats", "", false},
+		{"libpod-containers-showmounted", http.MethodGet, "/libpod/containers/showmounted", "", false},
 		{"libpod-pod-top-denied", http.MethodGet, "/libpod/pods/abc/top", "", false},
 
 		// --- libpod: image reads ---
@@ -123,9 +134,21 @@ func TestPodmanReadonlyPresetConformance(t *testing.T) {
 		{"libpod-exec-start-denied", http.MethodPost, "/libpod/exec/abc/start", "", false},
 		{"libpod-volume-create-denied", http.MethodPost, "/libpod/volumes/create", "", false},
 		{"libpod-network-create-denied", http.MethodPost, "/libpod/networks/create", "", false},
+		{"libpod-network-connect-denied", http.MethodPost, "/libpod/networks/abc/connect", `{"container":"abc","static_ips":["10.9.9.9"]}`, false},
+		{"libpod-network-disconnect-denied", http.MethodPost, "/libpod/networks/abc/disconnect", `{"Container":"abc","Force":true}`, false},
+		{"libpod-network-update-denied", http.MethodPost, "/libpod/networks/abc/update", `{"adddnsservers":["10.6.6.6"]}`, false},
 		{"libpod-secret-create-denied", http.MethodPost, "/libpod/secrets/create", "", false},
 		{"libpod-play-kube-denied", http.MethodPost, "/libpod/play/kube", "", false},
 		{"libpod-kube-apply-denied", http.MethodPost, "/libpod/kube/apply", "", false},
+		// The libpod image-write surface, including the two "local API"
+		// routes that read a daemon-host path and the SSH image transfer.
+		// None has a Docker analog reachable through this preset's rules;
+		// the preset's trailing deny-all is what keeps them shut.
+		{"libpod-image-load-denied", http.MethodPost, "/libpod/images/load", "", false},
+		{"libpod-image-import-denied", http.MethodPost, "/libpod/images/import", "", false},
+		{"libpod-local-image-load-denied", http.MethodPost, "/libpod/local/images/load?path=%2Fetc", "", false},
+		{"libpod-local-build-denied", http.MethodPost, "/libpod/local/build?localcontextdir=%2Fetc", "", false},
+		{"libpod-image-scp-denied", http.MethodPost, "/libpod/images/scp/user@host::img", "", false},
 
 		// --- version-prefixed variants: the same verdicts must hold after
 		// stripVersionPrefix normalization, for Docker's two-part prefixes

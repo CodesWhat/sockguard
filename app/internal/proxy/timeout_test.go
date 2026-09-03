@@ -10,6 +10,9 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 func TestIsLongLivedUpstreamRequest(t *testing.T) {
@@ -500,5 +503,34 @@ func TestWithRequestTimeout_BodyPhaseTruncatesRatherThanReturning504(t *testing.
 	}
 	if string(body) != `{"partial":` {
 		t.Fatalf("body = %q, want the partial prefix written before the hang", string(body))
+	}
+}
+
+func TestRequestNormalizedPathPrefersAttachedMetaNormPath(t *testing.T) {
+	// Covers the "meta.NormPath != \"\"" guard at timeout.go:192: when
+	// access-log middleware has already attached a non-empty NormPath to
+	// the request meta, requestNormalizedPath must return it as-is rather
+	// than recomputing filter.NormalizePath from the raw URL.
+	meta := &logging.RequestMeta{NormPath: "/containers/redacted/logs"}
+	req := httptest.NewRequest(http.MethodGet, "/v1.43/containers/abc123/logs", nil)
+	req = req.WithContext(logging.WithMeta(req.Context(), meta))
+	w := httptest.NewRecorder()
+
+	got := requestNormalizedPath(w, req)
+	if got != meta.NormPath {
+		t.Fatalf("requestNormalizedPath() = %q, want attached meta.NormPath %q", got, meta.NormPath)
+	}
+}
+
+func TestRequestNormalizedPathFallsBackWhenMetaNormPathEmpty(t *testing.T) {
+	meta := &logging.RequestMeta{}
+	req := httptest.NewRequest(http.MethodGet, "/v1.43/containers/abc123/logs", nil)
+	req = req.WithContext(logging.WithMeta(req.Context(), meta))
+	w := httptest.NewRecorder()
+
+	got := requestNormalizedPath(w, req)
+	want := filter.NormalizePath(req.URL.Path)
+	if got != want {
+		t.Fatalf("requestNormalizedPath() = %q, want fallback %q when meta.NormPath is empty", got, want)
 	}
 }

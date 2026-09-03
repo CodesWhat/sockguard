@@ -2,8 +2,16 @@ package filter_test
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 )
+
+func TestDiunPresetDocumentationIncludesIncidentalImageList(t *testing.T) {
+	section := presetDocsSection(t, "## Diun (`diun.yaml`)", "## Autoheal (`autoheal.yaml`)")
+	if !strings.Contains(section, "`GET /images/json`") {
+		t.Fatal("Diun preset documentation must disclose the incidentally allowed image-list route GET /images/json")
+	}
+}
 
 // TestDiunPresetConformance proves the shipped diun.yaml admits every
 // endpoint Diun's Docker provider actually calls while denying the
@@ -46,11 +54,8 @@ func TestDiunPresetConformance(t *testing.T) {
 		{"image-inspect-registry-qualified", http.MethodGet, "/images/ghcr.io/crazy-max/diun:latest/json", "", true},
 		{"image-inspect-digest", http.MethodGet, "/images/sha256:0000000000000000000000000000000000000000000000000000000000000000/json", "", true},
 
-		// "/images/**/json" also admits the image list, because "/**" can
-		// match nothing. Pinned so the widening is visible rather than
-		// discovered later — it is a metadata read, not an exfiltration
-		// endpoint.
-		{"images-list-incidentally-allowed", http.MethodGet, "/images/json", "", true},
+		// Diun inspects known image references but never lists all images.
+		{"images-list-denied", http.MethodGet, "/images/json", "", false},
 
 		// Version-prefixed forms of the same reads.
 		{"v-prefixed-containers-list", http.MethodGet, "/v1.45/containers/json", "", true},

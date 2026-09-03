@@ -470,6 +470,12 @@ func TestMiddlewareLibpodReadPathOwnershipDispatch(t *testing.T) {
 	}
 }
 
+func TestLibpodContainerIdentifierReservesShowMountedCollection(t *testing.T) {
+	if identifier, ok := libpodContainerIdentifier(http.MethodGet, "/libpod/containers/showmounted"); ok {
+		t.Fatalf("libpodContainerIdentifier(showmounted) = %q, true; want collection route, false", identifier)
+	}
+}
+
 func TestMiddlewareLibpodChecksKeywordNamedResourcesOutsideCollectionActions(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -622,5 +628,186 @@ func TestMiddlewareLibpodDoesNotAffectDockerCompatPaths(t *testing.T) {
 
 	if !forwarded || rec.Code != http.StatusOK {
 		t.Fatalf("status = %d forwarded=%v, want 200/forwarded (libpod predicates must not match non-/libpod/ paths)", rec.Code, forwarded)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// libpod_paths.go: the libpod*Identifier functions each exclude a fixed set
+// of collection-level (method, keyword) pairs from resolving to a per-
+// resource identifier — e.g. GET /libpod/containers/json is the list
+// endpoint, not an inspect of a container literally named "json". Each table
+// below enumerates every method x keyword combination the exclusion clause
+// checks, plus one arbitrary identifier and one unrelated method (DELETE),
+// so that mutating any single method/keyword comparison in the clause (== to
+// !=, or vice versa) flips the expected outcome of at least one row.
+// ---------------------------------------------------------------------------
+
+func TestLibpodContainerIdentifierCollectionKeywordBoundaries(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		method     string
+		identifier string
+		wantOK     bool
+	}{
+		{http.MethodGet, "json", false},
+		{http.MethodHead, "json", false},
+		{http.MethodPost, "create", false},
+		{http.MethodPost, "prune", false},
+		{http.MethodDelete, "json", true},
+		{http.MethodGet, "create", true},
+		{http.MethodGet, "prune", true},
+		{http.MethodGet, "other", true},
+		{http.MethodHead, "create", true},
+		{http.MethodPost, "json", true},
+		{http.MethodPost, "other", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method+"_"+tt.identifier, func(t *testing.T) {
+			t.Parallel()
+			got, ok := libpodContainerIdentifier(tt.method, "/libpod/containers/"+tt.identifier)
+			if ok != tt.wantOK {
+				t.Fatalf("libpodContainerIdentifier(%s, .../%s) ok = %v, want %v", tt.method, tt.identifier, ok, tt.wantOK)
+			}
+			if ok && got != tt.identifier {
+				t.Fatalf("libpodContainerIdentifier(%s, .../%s) = %q, want %q", tt.method, tt.identifier, got, tt.identifier)
+			}
+		})
+	}
+}
+
+func TestLibpodPodIdentifierCollectionKeywordBoundaries(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		method     string
+		identifier string
+		wantOK     bool
+	}{
+		{http.MethodGet, "json", false},
+		{http.MethodGet, "stats", false},
+		{http.MethodHead, "json", false},
+		{http.MethodHead, "stats", false},
+		{http.MethodPost, "create", false},
+		{http.MethodPost, "prune", false},
+		{http.MethodDelete, "json", true},
+		{http.MethodDelete, "stats", true},
+		{http.MethodGet, "create", true},
+		{http.MethodGet, "prune", true},
+		{http.MethodGet, "other", true},
+		{http.MethodHead, "create", true},
+		{http.MethodPost, "json", true},
+		{http.MethodPost, "stats", true},
+		{http.MethodPost, "other", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method+"_"+tt.identifier, func(t *testing.T) {
+			t.Parallel()
+			got, ok := libpodPodIdentifier(tt.method, "/libpod/pods/"+tt.identifier)
+			if ok != tt.wantOK {
+				t.Fatalf("libpodPodIdentifier(%s, .../%s) ok = %v, want %v", tt.method, tt.identifier, ok, tt.wantOK)
+			}
+			if ok && got != tt.identifier {
+				t.Fatalf("libpodPodIdentifier(%s, .../%s) = %q, want %q", tt.method, tt.identifier, got, tt.identifier)
+			}
+		})
+	}
+}
+
+func TestLibpodNetworkIdentifierCollectionKeywordBoundaries(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		method     string
+		identifier string
+		wantOK     bool
+	}{
+		{http.MethodGet, "json", false},
+		{http.MethodHead, "json", false},
+		{http.MethodPost, "create", false},
+		{http.MethodPost, "prune", false},
+		{http.MethodDelete, "json", true},
+		{http.MethodGet, "create", true},
+		{http.MethodGet, "prune", true},
+		{http.MethodGet, "other", true},
+		{http.MethodHead, "create", true},
+		{http.MethodPost, "json", true},
+		{http.MethodPost, "other", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method+"_"+tt.identifier, func(t *testing.T) {
+			t.Parallel()
+			got, ok := libpodNetworkIdentifier(tt.method, "/libpod/networks/"+tt.identifier)
+			if ok != tt.wantOK {
+				t.Fatalf("libpodNetworkIdentifier(%s, .../%s) ok = %v, want %v", tt.method, tt.identifier, ok, tt.wantOK)
+			}
+			if ok && got != tt.identifier {
+				t.Fatalf("libpodNetworkIdentifier(%s, .../%s) = %q, want %q", tt.method, tt.identifier, got, tt.identifier)
+			}
+		})
+	}
+}
+
+func TestLibpodVolumeIdentifierCollectionKeywordBoundaries(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		method     string
+		identifier string
+		wantOK     bool
+	}{
+		{http.MethodGet, "json", false},
+		{http.MethodHead, "json", false},
+		{http.MethodPost, "create", false},
+		{http.MethodPost, "prune", false},
+		{http.MethodDelete, "json", true},
+		{http.MethodGet, "create", true},
+		{http.MethodGet, "prune", true},
+		{http.MethodGet, "other", true},
+		{http.MethodHead, "create", true},
+		{http.MethodPost, "json", true},
+		{http.MethodPost, "other", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method+"_"+tt.identifier, func(t *testing.T) {
+			t.Parallel()
+			got, ok := libpodVolumeIdentifier(tt.method, "/libpod/volumes/"+tt.identifier)
+			if ok != tt.wantOK {
+				t.Fatalf("libpodVolumeIdentifier(%s, .../%s) ok = %v, want %v", tt.method, tt.identifier, ok, tt.wantOK)
+			}
+			if ok && got != tt.identifier {
+				t.Fatalf("libpodVolumeIdentifier(%s, .../%s) = %q, want %q", tt.method, tt.identifier, got, tt.identifier)
+			}
+		})
+	}
+}
+
+// secretIdentifier has no "prune" exclusion (there is no
+// POST /libpod/secrets/prune in the libpod API), so its table is one row
+// shorter than container/network/volume's.
+func TestLibpodSecretIdentifierCollectionKeywordBoundaries(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		method     string
+		identifier string
+		wantOK     bool
+	}{
+		{http.MethodGet, "json", false},
+		{http.MethodHead, "json", false},
+		{http.MethodPost, "create", false},
+		{http.MethodDelete, "json", true},
+		{http.MethodGet, "create", true},
+		{http.MethodGet, "other", true},
+		{http.MethodHead, "create", true},
+		{http.MethodPost, "json", true},
+		{http.MethodPost, "other", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method+"_"+tt.identifier, func(t *testing.T) {
+			t.Parallel()
+			got, ok := libpodSecretIdentifier(tt.method, "/libpod/secrets/"+tt.identifier)
+			if ok != tt.wantOK {
+				t.Fatalf("libpodSecretIdentifier(%s, .../%s) ok = %v, want %v", tt.method, tt.identifier, ok, tt.wantOK)
+			}
+			if ok && got != tt.identifier {
+				t.Fatalf("libpodSecretIdentifier(%s, .../%s) = %q, want %q", tt.method, tt.identifier, got, tt.identifier)
+			}
+		})
 	}
 }

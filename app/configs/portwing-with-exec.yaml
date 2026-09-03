@@ -73,6 +73,8 @@ insecure_allow_read_exfiltration: true
 # interactive sessions. To pin allowed commands, replace allow_root_user
 # with an allowed_commands list (argv prefix allowlist).
 request_body:
+  container_remove:
+    allow_force: true
   container_create:
     allowed_bind_mounts: []
     allowed_runtimes:

@@ -74,6 +74,9 @@ type PolicyConfig struct {
 	// ContainerUpdate configures request-body inspection for
 	// POST /containers/*/update.
 	ContainerUpdate ContainerUpdateOptions
+	// ContainerRemove configures query inspection for
+	// DELETE /containers/{id}.
+	ContainerRemove ContainerRemoveOptions
 	// ContainerArchive configures request-body inspection for
 	// PUT /containers/*/archive.
 	ContainerArchive ContainerArchiveOptions
@@ -101,8 +104,11 @@ type PolicyConfig struct {
 	// LibpodVolume configures request-body inspection for
 	// POST /libpod/volumes/create. #148.
 	LibpodVolume VolumeOptions
-	// LibpodNetwork configures request-body inspection for
-	// POST /libpod/networks/create. #148.
+	// LibpodNetwork configures request-body inspection for the libpod
+	// network write surface: POST /libpod/networks/create (#148) plus
+	// POST /libpod/networks/{name}/connect and .../disconnect, whose
+	// endpoint-config and disconnect-force gates are the same ones
+	// Network applies to the Docker-compat spellings.
 	LibpodNetwork NetworkOptions
 	// LibpodSecret configures request-body inspection for
 	// POST /libpod/secrets/create. #148.
@@ -255,7 +261,7 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			}
 
 			normPath := resolveNormalizedPath(meta, r)
-			action, ruleIndex, reason := evaluateNormalized(activePolicy.rules, r.Method, normPath)
+			action, ruleIndex, reason, normPath := evaluateRequestPolicy(activePolicy.rules, r, normPath)
 			denyStatus := http.StatusForbidden
 			reasonCode := ruleDecisionReasonCode(action, reason)
 			stampDecisionOnMeta(meta, action, ruleIndex, reasonCode, reason, normPath)
@@ -360,6 +366,9 @@ func resolveActivePolicy(opts Options, profilePolicies map[string]runtimePolicy,
 // already produced it; otherwise it normalizes once and lets the meta carry
 // the value forward to downstream layers.
 func resolveNormalizedPath(meta *logging.RequestMeta, r *http.Request) string {
+	if routePath, ok := normalizedLibpodImageScpRoutePath(r); ok {
+		return routePath
+	}
 	if meta != nil && meta.NormPath != "" {
 		return meta.NormPath
 	}
@@ -422,6 +431,11 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		{http.MethodPost, matchesImagePullInspection, inspectSeverityHigh, newImagePullPolicy(cfg.ImagePull).inspect, "failed to inspect image pull request", "unable to inspect image pull request"},
 		{http.MethodPost, matchesBuildInspection, inspectSeverityCritical, newBuildPolicy(cfg.Build).inspect, "failed to inspect build request", "unable to inspect build request"},
 		{http.MethodPost, matchesContainerUpdateInspection, inspectSeverityHigh, newContainerUpdatePolicy(cfg.ContainerUpdate).inspect, "failed to inspect container update request body", "unable to inspect container update request body"},
+		{http.MethodDelete, matchesContainerRemoveInspection, inspectSeverityMedium, newContainerRemovePolicy(cfg.ContainerRemove).inspect, "failed to inspect container remove query", "unable to inspect container remove query"},
+		// matchesContainerArchiveInspection covers the Docker-compat AND the
+		// libpod spelling from one predicate. Podman registers both on the
+		// identical compat.Archive handler, so one policy over one wire
+		// format is the whole story here — see isContainerArchivePath.
 		{http.MethodPut, matchesContainerArchiveInspection, inspectSeverityHigh, newContainerArchivePolicy(cfg.ContainerArchive).inspect, "failed to inspect container archive request body", "unable to inspect container archive request body"},
 		{http.MethodPost, matchesImageLoadInspection, inspectSeverityHigh, newImageLoadPolicy(cfg.ImageLoad).inspect, "failed to inspect image load request body", "unable to inspect image load request body"},
 		{http.MethodPost, matchesVolumeInspection, inspectSeverityMedium, newVolumePolicy(cfg.Volume).inspect, "failed to inspect volume create request body", "unable to inspect volume create request body"},
@@ -439,7 +453,7 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		// execPolicy entry (design doc decision C3).
 		{http.MethodPost, matchesLibpodPodCreateInspection, inspectSeverityCritical, newLibpodPodCreatePolicy(cfg.LibpodPodCreate).inspect, "failed to inspect libpod pod create request body", "unable to inspect libpod pod create request body"},
 		{http.MethodPost, matchesLibpodVolumeInspection, inspectSeverityMedium, newVolumePolicy(cfg.LibpodVolume).inspectLibpod, "failed to inspect libpod volume create request body", "unable to inspect libpod volume create request body"},
-		{http.MethodPost, matchesLibpodNetworkInspection, inspectSeverityHigh, newNetworkPolicy(cfg.LibpodNetwork).inspectLibpodCreate, "failed to inspect libpod network create request body", "unable to inspect libpod network create request body"},
+		{http.MethodPost, matchesLibpodNetworkInspection, inspectSeverityHigh, newNetworkPolicy(cfg.LibpodNetwork).inspectLibpod, "failed to inspect libpod network request body", "unable to inspect libpod network request body"},
 		{http.MethodPost, matchesLibpodSecretInspection, inspectSeverityMedium, newLibpodSecretPolicy(cfg.LibpodSecret).inspect, "failed to inspect libpod secret create request", "unable to inspect libpod secret create request"},
 		// libpod image pull shares cfg.ImagePull with the Docker-compat
 		// entry above — one registry allowlist governs both surfaces, so an
@@ -448,6 +462,20 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		// (`reference`, case-folded and repeatable, no `fromSrc`); see
 		// imagePullPolicy.inspectLibpod.
 		{http.MethodPost, matchesLibpodImagePullInspection, inspectSeverityHigh, newImagePullPolicy(cfg.ImagePull).inspectLibpod, "failed to inspect libpod image pull request", "unable to inspect libpod image pull request"},
+		// libpod image import is the counterpart of the Docker-compat
+		// fromSrc import that the entry above already gates, so it reads the
+		// same request_body.image_pull.allow_imports flag rather than a
+		// second one. Separate entry because the two live on different
+		// paths in Podman's route table — see
+		// imagePullPolicy.inspectLibpodImport.
+		{http.MethodPost, matchesLibpodImageImportInspection, inspectSeverityHigh, newImagePullPolicy(cfg.ImagePull).inspectLibpodImport, "failed to inspect libpod image import request", "unable to inspect libpod image import request"},
+		// libpod container update shares cfg.ContainerUpdate with the
+		// Docker-compat entry above — one set of allow_* gates governs both
+		// surfaces. It is a separate entry because libpod's body is
+		// handlers.UpdateEntities (flattened OCI resources plus healthcheck
+		// blocks) and its restart policy lives in the query string, not the
+		// body; see containerUpdatePolicy.inspectLibpod.
+		{http.MethodPost, matchesLibpodContainerUpdateInspection, inspectSeverityHigh, newContainerUpdatePolicy(cfg.ContainerUpdate).inspectLibpod, "failed to inspect libpod container update request body", "unable to inspect libpod container update request body"},
 		// #185 phase 1: deny-only guard for the opaque BuildKit tunnel
 		// endpoints when request_body.buildkit is configured — see
 		// buildkit.go's buildkitPolicy.inspect doc comment. Never reads the
@@ -483,11 +511,22 @@ func matchesImagePullInspection(normalizedPath string) bool {
 }
 
 func matchesBuildInspection(normalizedPath string) bool {
-	return normalizedPath == "/build" || normalizedPath == "/libpod/build"
+	// isLibpodBuildPath covers POST /libpod/local/build alongside
+	// POST /libpod/build. The local spelling cannot actually be inspected —
+	// its context is a daemon-host path, not a body — so buildPolicy denies
+	// it outright unless the blind-write acknowledgment is set. It is routed
+	// here anyway so that denial happens in the one place that already owns
+	// the build surface, instead of the endpoint sitting outside every
+	// matcher and being forwarded unexamined.
+	return normalizedPath == "/build" || isLibpodBuildPath(normalizedPath)
 }
 
 func matchesContainerUpdateInspection(normalizedPath string) bool {
 	return isContainerUpdatePath(normalizedPath)
+}
+
+func matchesContainerRemoveInspection(normalizedPath string) bool {
+	return isContainerRemovePath(normalizedPath)
 }
 
 func matchesContainerArchiveInspection(normalizedPath string) bool {
@@ -495,7 +534,12 @@ func matchesContainerArchiveInspection(normalizedPath string) bool {
 }
 
 func matchesImageLoadInspection(normalizedPath string) bool {
-	return normalizedPath == "/images/load"
+	// POST /libpod/images/load takes the identical archive body with no
+	// query parameters, so the same policy reads the same manifest.json off
+	// it. POST /libpod/local/images/load is here for the same reason
+	// /libpod/local/build is in matchesBuildInspection: it has no body to
+	// read, so it is denied rather than inspected.
+	return normalizedPath == "/images/load" || isLibpodImageLoadPath(normalizedPath) || isLibpodLocalImageLoadPath(normalizedPath)
 }
 
 func matchesVolumeInspection(normalizedPath string) bool {
@@ -543,8 +587,12 @@ func matchesLibpodVolumeInspection(normalizedPath string) bool {
 	return normalizedPath == libpodPathPrefix+"volumes/create"
 }
 
+// matchesLibpodNetworkInspection covers the whole libpod network write
+// surface from the same predicate networkPolicy.inspectLibpod dispatches on,
+// so the middleware table cannot admit a narrower set of paths than the
+// inspector handles.
 func matchesLibpodNetworkInspection(normalizedPath string) bool {
-	return normalizedPath == libpodPathPrefix+"networks/create"
+	return isLibpodNetworkWritePath(normalizedPath)
 }
 
 func matchesLibpodSecretInspection(normalizedPath string) bool {
@@ -553,6 +601,14 @@ func matchesLibpodSecretInspection(normalizedPath string) bool {
 
 func matchesLibpodImagePullInspection(normalizedPath string) bool {
 	return isLibpodImagePullPath(normalizedPath)
+}
+
+func matchesLibpodImageImportInspection(normalizedPath string) bool {
+	return isLibpodImageImportPath(normalizedPath)
+}
+
+func matchesLibpodContainerUpdateInspection(normalizedPath string) bool {
+	return isLibpodContainerUpdatePath(normalizedPath)
 }
 
 // inspectBucketCapacity bounds how many policies of a single severity may

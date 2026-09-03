@@ -11,9 +11,6 @@
 # dockerode maps those to /containers/json, /containers/{id}/json,
 # /containers/{id}/stats, /services, /services/{id} and /tasks.
 #
-# GET /images/json is kept for image-info display; Homepage makes no other
-# image call, so the rest of /images stays denied.
-#
 # Deliberately does NOT allow the read-exfiltration paths a "/containers/**"
 # or "/images/**" glob would swallow: /containers/{id}/archive,
 # /containers/{id}/export, /containers/{id}/logs, /containers/{id}/attach,
@@ -35,18 +32,6 @@ health:
   path: /health
 
 rules:
-  # Health and metadata
-  - match: { method: GET, path: "/_ping" }
-    action: allow
-  - match: { method: HEAD, path: "/_ping" }
-    action: allow
-  - match: { method: GET, path: "/version" }
-    action: allow
-  - match: { method: GET, path: "/info" }
-    action: allow
-  - match: { method: GET, path: "/events" }
-    action: allow
-
   # Container reads — list, inspect, stats. A single "*" matches one path
   # segment, so the container-ID position cannot absorb a trailing
   # /archive, /export, /logs or /attach.
@@ -57,18 +42,12 @@ rules:
   - match: { method: GET, path: "/containers/*/stats" }
     action: allow
 
-  # Image list (for image info display) — NOT /images/{name}/get
-  - match: { method: GET, path: "/images/json" }
-    action: allow
-
-  # Swarm reads — service list + inspect, task list + inspect
+  # Swarm reads — service list + inspect, task list only
   - match: { method: GET, path: "/services" }
     action: allow
   - match: { method: GET, path: "/services/*" }
     action: allow
   - match: { method: GET, path: "/tasks" }
-    action: allow
-  - match: { method: GET, path: "/tasks/*" }
     action: allow
 
   # Deny everything else

@@ -125,8 +125,13 @@ rules:
     action: allow
   - match: { method: GET, path: "/libpod/pods/*/json" }
     action: allow
-  - match: { method: GET, path: "/libpod/pods/stats" }
-    action: allow
+  # GET /libpod/pods/stats is deliberately absent, and was removed in v2.1.
+  # It reports every running pod on the host, carries no labels, and takes no
+  # `filters` parameter, so owner isolation and visibility policy both refuse
+  # it outright rather than filter it. A rule allowing it could only ever end
+  # in a 403, and shipping one implied a scoping this preset cannot deliver.
+  # Podman registers no per-pod stats route to narrow it to. Add the rule back
+  # yourself if you run single-tenant with neither isolation layer on.
 
   # --- libpod surface: image reads ---
   # /libpod/images/export, /libpod/images/*/get, and image/manifest pushes

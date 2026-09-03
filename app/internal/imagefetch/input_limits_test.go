@@ -143,7 +143,7 @@ func pushClassicSignatureImage(t *testing.T, ref name.Reference, subjectDigest v
 	}
 }
 
-func pushReferrerImage(t *testing.T, ref name.Reference, subject v1.Descriptor, artifactType string, img v1.Image) {
+func pushReferrerImage(t *testing.T, ref name.Reference, subject v1.Descriptor, artifactType string, img v1.Image) v1.Hash {
 	t.Helper()
 	img = mutate.ConfigMediaType(img, types.MediaType(artifactType))
 	img = mutate.Subject(img, subject).(v1.Image)
@@ -154,6 +154,7 @@ func pushReferrerImage(t *testing.T, ref name.Reference, subject v1.Descriptor, 
 	if err := remote.Write(ref.Context().Digest(digest.String()), img); err != nil {
 		t.Fatalf("push referrer image: %v", err)
 	}
+	return digest
 }
 
 func TestFetchCandidatesRejectsTooManyReferrers(t *testing.T) {
@@ -870,5 +871,179 @@ func TestFetchCandidatesRejectsOversizedRedirectedClassicSignatureManifestRespon
 	want := fmt.Sprintf("registry metadata response exceeds %d byte limit", testMaxMetadataResponse)
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("FetchCandidates() error = %v, want %q", err, want)
+	}
+}
+
+func TestFetchCandidatesAllowsExactlyReferrerDescriptorLimit(t *testing.T) {
+	// Covers the "len(im.Manifests) > maxReferrerDescriptors" boundary at
+	// imagefetch.go:355: exactly the limit's worth of referrer descriptors
+	// must not trip the input-limit rejection (only exceeding it may).
+	host := testRegistry(t)
+	ref, subject := pushSubjectImage(t, host, "referrer-cap-exact")
+
+	for i := 0; i < testMaxReferrerDescriptors; i++ {
+		img := signatureImageWithLayers(t, []byte(fmt.Sprintf("unrelated-%d", i)), nil, 1)
+		pushReferrerImage(t, ref, *subject, "application/vnd.example.unrelated", img)
+	}
+
+	_, err := NewFetcher().FetchCandidates(context.Background(), nil, ref.Name())
+	if errors.Is(err, errRegistryInputLimit) {
+		t.Fatalf("FetchCandidates() error = %v, want no input-limit error at exactly %d referrers", err, testMaxReferrerDescriptors)
+	}
+	if !errors.Is(err, ErrNoSignatures) {
+		t.Fatalf("FetchCandidates() error = %v, want ErrNoSignatures (no cosign-typed referrers were pushed)", err)
+	}
+}
+
+// toggleErrContext lets a test flip ctx.Err() to context.Canceled on demand
+// without closing Done(), so an httptest registry call already committed to
+// the wire after the flip still completes instead of racing real
+// cancellation plumbing. That keeps the test deterministic: no sleeps, no
+// real network beyond httptest, and the SUT's own ctx.Err() checks are
+// exercised directly.
+type toggleErrContext struct {
+	context.Context
+	canceled bool
+}
+
+func (c *toggleErrContext) Err() error {
+	if c.canceled {
+		return context.Canceled
+	}
+	return c.Context.Err()
+}
+
+// referrerCancelTransport intercepts GET requests for the referrer
+// manifests named in digests. The first one it sees fails and triggers
+// cancel; every subsequent distinct digest it sees is recorded (also as a
+// failure) so the test can assert whether discovery kept scanning past the
+// first failure.
+type referrerCancelTransport struct {
+	base    http.RoundTripper
+	digests []string
+	cancel  func()
+	seen    map[string]bool
+	order   []string
+}
+
+func (t *referrerCancelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	for _, d := range t.digests {
+		if !strings.Contains(req.URL.Path, d) {
+			continue
+		}
+		if t.seen == nil {
+			t.seen = map[string]bool{}
+		}
+		first := len(t.order) == 0
+		if !t.seen[d] {
+			t.seen[d] = true
+			t.order = append(t.order, d)
+		}
+		if first {
+			t.cancel()
+		}
+		return nil, errors.New("synthetic referrer fetch failure")
+	}
+	return t.base.RoundTrip(req)
+}
+
+func TestFetchCandidatesStopsReferrerScanOnContextCancellation(t *testing.T) {
+	// Covers the "ctxErr != nil" guard inside the referrers loop at
+	// imagefetch.go:368: once ctx.Err() reports non-nil after a referrer
+	// signature-image fetch fails, discovery must stop scanning the
+	// remaining referrer descriptors rather than continuing the loop.
+	host := testRegistry(t)
+	ref, subject := pushSubjectImage(t, host, "referrer-ctx-cancel")
+
+	payload := simpleSigningPayloadFor(t, ref.Context().Name(), subject.Digest.String())
+	// Distinct annotation values so the two referrer images are genuinely
+	// distinct manifests (and digests) in the registry, not the same
+	// content pushed twice.
+	annotationsFor := func(seq string) map[string]string {
+		return map[string]string{
+			cosignSignatureAnnotation: base64.StdEncoding.EncodeToString([]byte("sig")),
+			"seq":                     seq,
+		}
+	}
+	digestA := pushReferrerImage(t, ref, *subject, cosignSigArtifactType, signatureImageWithLayers(t, payload, annotationsFor("a"), 1))
+	digestB := pushReferrerImage(t, ref, *subject, cosignSigArtifactType, signatureImageWithLayers(t, payload, annotationsFor("b"), 1))
+	if digestA == digestB {
+		t.Fatal("test setup bug: referrer images must have distinct digests")
+	}
+
+	spy := &referrerCancelTransport{base: remote.DefaultTransport, digests: []string{digestA.Hex, digestB.Hex}}
+	toggleCtx := &toggleErrContext{Context: context.Background()}
+	spy.cancel = func() { toggleCtx.canceled = true }
+
+	fetcher := NewFetcherWith(WithRegistryTransport(spy))
+	_, err := fetcher.FetchCandidates(toggleCtx, nil, ref.Name())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("FetchCandidates() error = %v, want context.Canceled", err)
+	}
+	if len(spy.order) != 1 {
+		t.Fatalf("distinct referrer descriptors contacted = %v, want exactly 1: discovery must stop once ctx.Err() is non-nil", spy.order)
+	}
+}
+
+func TestCandidateBudgetAddAnnotationMapAllowsExactlyAtLimit(t *testing.T) {
+	// Covers the "materialBytes > maxAnnotationBytes-b.annotationBytes"
+	// boundary at imagefetch.go:401: material that exactly fills the
+	// remaining budget must be accepted, not rejected.
+	const key = "k"
+	budget := &candidateBudget{}
+	exact := strings.Repeat("a", maxAnnotationBytes-len(key))
+	if err := budget.addAnnotationMap(map[string]string{key: exact}); err != nil {
+		t.Fatalf("addAnnotationMap() error = %v, want nil for material exactly at the limit", err)
+	}
+	if budget.annotationBytes != maxAnnotationBytes {
+		t.Fatalf("annotationBytes = %d, want %d", budget.annotationBytes, maxAnnotationBytes)
+	}
+
+	over := &candidateBudget{}
+	oneOver := strings.Repeat("a", maxAnnotationBytes-len(key)+1)
+	if err := over.addAnnotationMap(map[string]string{key: oneOver}); !errors.Is(err, errRegistryInputLimit) {
+		t.Fatalf("addAnnotationMap() error = %v, want errRegistryInputLimit for material one byte over the limit", err)
+	}
+}
+
+func TestReadLayerPayloadWithBudgetAllowsEmptyPayloadAtExhaustedAggregateBudget(t *testing.T) {
+	// Covers the "remaining < 0" boundary at imagefetch.go:547: remaining
+	// == 0 (budget exactly exhausted, not negative) must still allow
+	// reading an empty layer, since nothing has actually gone over budget.
+	budget := &candidateBudget{payloadBytes: int64(maxAggregatePayloadBytes)}
+	layer := static.NewLayer(nil, types.MediaType(simpleSigningMediaType))
+
+	payload, err := readLayerPayloadWithBudget(layer, budget)
+	if err != nil {
+		t.Fatalf("readLayerPayloadWithBudget() error = %v, want nil for an empty layer at exactly the exhausted aggregate budget", err)
+	}
+	if len(payload) != 0 {
+		t.Fatalf("payload = %q, want empty", payload)
+	}
+}
+
+func TestReadLayerPayloadWithBudgetClampsReadLimitToRemainingAggregateBudget(t *testing.T) {
+	// Covers the "remaining < readLimit" guard at imagefetch.go:551: when
+	// the aggregate budget remaining is smaller than the per-layer cap
+	// (maxPayloadBytes), the per-layer read must be clamped to the smaller
+	// remaining amount. An unclamped read of oversized content trips the
+	// per-layer maxPayloadBytes message instead of the aggregate-budget
+	// message, so the two are distinguishable by error text.
+	const remaining = 500 * 1024 // well below maxPayloadBytes (1 MiB)
+	budget := &candidateBudget{payloadBytes: int64(maxAggregatePayloadBytes - remaining)}
+
+	oversizedContent := bytes.Repeat([]byte("x"), maxPayloadBytes+1024)
+	layer := static.NewLayer(oversizedContent, types.MediaType(simpleSigningMediaType))
+
+	_, err := readLayerPayloadWithBudget(layer, budget)
+	if !errors.Is(err, errRegistryInputLimit) {
+		t.Fatalf("readLayerPayloadWithBudget() error = %v, want errRegistryInputLimit", err)
+	}
+	want := fmt.Sprintf("cosign signature payload material exceeds %d byte limit", maxAggregatePayloadBytes)
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("readLayerPayloadWithBudget() error = %v, want the clamped aggregate-budget message %q", err, want)
+	}
+	if strings.Contains(err.Error(), "signature payload exceeds") {
+		t.Fatalf("readLayerPayloadWithBudget() error = %v, want the aggregate message, not the unclamped per-layer message", err)
 	}
 }

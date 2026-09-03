@@ -86,6 +86,9 @@ clients:
     # if you need one).
     - name: ci
       request_body:
+        container_remove:
+          allow_force: true
+          allow_remove_volumes: true
         container_create:
           allow_privileged: false
           allow_host_network: false

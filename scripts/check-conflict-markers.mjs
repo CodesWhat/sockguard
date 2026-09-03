@@ -13,9 +13,12 @@ import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-// A conflict marker line is exactly seven of the marker character, optionally
+// A conflict marker line is seven or more of the marker character, optionally
 // followed by a space and a label (branch name, "merged common ancestors").
-const MARKER_RE = /^(?:<{7}|\|{7}|>{7})(?: .*)?$/;
+// Seven is the usual length, but git lengthens the run when a nested or
+// criss-cross merge conflicts inside an already-conflicted region, so a
+// fixed-length match silently misses the nine-character markers those emit.
+const MARKER_RE = /^(?:<{7,}|\|{7,}|>{7,})(?: .*)?$/;
 
 export function findConflictMarkers(text) {
   const hits = [];
