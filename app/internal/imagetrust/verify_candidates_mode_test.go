@@ -58,6 +58,22 @@ func (v *cancelThenSucceedVerifier) Verify(_ context.Context, _, _ string, _ ver
 	return nil
 }
 
+// failThenPassVerifier fails its first call with an ordinary (non-canceled)
+// error and succeeds on every subsequent call. Used to distinguish an
+// unrelated verification failure — which must fall through to the next
+// candidate — from a context cancellation, which must stop the fallback.
+type failThenPassVerifier struct {
+	calls int
+}
+
+func (v *failThenPassVerifier) Verify(_ context.Context, _, _ string, _ verify.SignedEntity) error {
+	v.calls++
+	if v.calls == 1 {
+		return errors.New("first candidate failed for an ordinary reason")
+	}
+	return nil
+}
+
 // minimalCfgForMode returns the smallest valid Config for the given mode.
 // For modes that require verifiers it uses a freshly-generated ECDSA key.
 func minimalCfgForMode(t *testing.T, mode Mode) Config {
@@ -215,6 +231,36 @@ func TestVerifyCandidatesWithMode_FirstCandidateVerifies_Allowed(t *testing.T) {
 	// called exactly once.
 	if cv.calls != 1 {
 		t.Fatalf("Verify called %d time(s); want exactly 1 (first-wins)", cv.calls)
+	}
+}
+
+// TestVerifyCandidatesWithMode_OrdinaryFailureFallsThroughToSecond ensures
+// that when a candidate fails for a reason unrelated to context cancellation,
+// the loop continues to the next candidate rather than treating the failure
+// as a cancellation and aborting the fallback chain.
+func TestVerifyCandidatesWithMode_OrdinaryFailureFallsThroughToSecond(t *testing.T) {
+	t.Parallel()
+	cfg := minimalCfgForMode(t, ModeEnforce)
+	const wantDigest = "sha256:deadbeef"
+	candidates := []Candidate{
+		{DigestHex: "cafebabe", Entity: nil, ImageDigest: "sha256:cafebabe"},
+		{DigestHex: "deadbeef", Entity: nil, ImageDigest: wantDigest},
+	}
+	v := &failThenPassVerifier{}
+
+	outcome := VerifyCandidatesWithMode(context.Background(), v, cfg, nil, "reg/img:tag", candidates, nil)
+
+	if !outcome.Allowed {
+		t.Fatalf("expected Allowed=true after falling through to the second candidate, got false (FailureMsg=%q)", outcome.FailureMsg)
+	}
+	if outcome.Verifier != "verified" {
+		t.Fatalf("Verifier = %q, want verified", outcome.Verifier)
+	}
+	if outcome.VerifiedDigest != wantDigest {
+		t.Fatalf("VerifiedDigest = %q, want %q", outcome.VerifiedDigest, wantDigest)
+	}
+	if v.calls != 2 {
+		t.Fatalf("Verify called %d time(s); want exactly 2 (fallback to second candidate)", v.calls)
 	}
 }
 

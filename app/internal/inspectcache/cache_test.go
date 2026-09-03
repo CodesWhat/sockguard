@@ -48,6 +48,41 @@ func TestCacheHitsWithinTTL(t *testing.T) {
 	}
 }
 
+// TestCacheExpiresExactlyAtTTLBoundary pins the freshness check's boundary:
+// an entry aged exactly equal to the TTL (age == ttl, not age > ttl) must be
+// treated as expired. "< ttl" is fresh; "== ttl" is not. A lookup landing
+// precisely on that edge must re-resolve rather than serve the stale value.
+func TestCacheExpiresExactlyAtTTLBoundary(t *testing.T) {
+	t.Parallel()
+	baseNow := time.Unix(1_700_000_000, 0)
+	var nowOffset atomic.Int64
+	var calls atomic.Int32
+	const ttl = 10 * time.Second
+
+	cache := New(
+		ttl,
+		4,
+		func() time.Time { return baseNow.Add(time.Duration(nowOffset.Load())) },
+		func(context.Context, string, string) (map[string]string, bool, error) {
+			calls.Add(1)
+			return map[string]string{"com.sockguard.owner": "job-123"}, true, nil
+		},
+	)
+
+	if _, _, err := cache.Lookup(context.Background(), "containers", "abc123"); err != nil {
+		t.Fatalf("first lookup: %v", err)
+	}
+
+	// Age the entry to exactly the TTL — the boundary itself, not past it.
+	nowOffset.Store(int64(ttl))
+	if _, _, err := cache.Lookup(context.Background(), "containers", "abc123"); err != nil {
+		t.Fatalf("at-boundary lookup: %v", err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("resolver calls at age==ttl = %d, want 2 (entry must be treated as expired at the exact boundary)", got)
+	}
+}
+
 func TestCacheCoalescesConcurrentMissesPerResource(t *testing.T) {
 	t.Parallel()
 	const callers = 16
@@ -249,6 +284,38 @@ func TestCacheZeroTTLDisablesMemoizationOfPositiveResults(t *testing.T) {
 	}
 }
 
+// TestCacheZeroTTLDoesNotStoreEntry pins the memoization guard's boundary
+// directly (c.ttl > 0), rather than through the resolver-call count in
+// TestCacheZeroTTLDisablesMemoizationOfPositiveResults above. That test can't
+// distinguish "> 0" from ">= 0" at ttl == 0: even if storeLocked ran and
+// memoized the entry, the separate freshness check in Lookup
+// (now.Sub(at) < c.ttl) can never be true when ttl == 0, so a stored entry
+// would still be treated as a miss on the next call and the resolver-call
+// count would be identical either way. Assert directly on the map instead:
+// at ttl == 0 nothing should ever be written to c.entries.
+func TestCacheZeroTTLDoesNotStoreEntry(t *testing.T) {
+	t.Parallel()
+	cache := New(
+		0,
+		4,
+		time.Now,
+		func(context.Context, string, string) (map[string]string, bool, error) {
+			return map[string]string{"owner": "job-123"}, true, nil
+		},
+	)
+
+	if _, found, err := cache.Lookup(context.Background(), "containers", "abc123"); err != nil || !found {
+		t.Fatalf("lookup = (%v, found=%v), want (nil, found=true)", err, found)
+	}
+
+	cache.mu.Lock()
+	size := len(cache.entries)
+	cache.mu.Unlock()
+	if size != 0 {
+		t.Fatalf("cache.entries size = %d, want 0 (ttl<=0 must never memoize)", size)
+	}
+}
+
 // TestCacheReturnsSameMapAcrossLookups locks in the read-only contract of
 // Lookup: the returned map is shared with the cache and concurrent waiters,
 // so callers must not mutate it. Verified by asserting two consecutive
@@ -351,6 +418,60 @@ func TestStoreLocked_EvictsStaleEntries(t *testing.T) {
 	}
 }
 
+// TestStoreLocked_ScrubsEntryExactlyAtTTLBoundary pins the stale-scrub
+// comparison's boundary: an entry aged exactly equal to the TTL (age == ttl)
+// must be scrubbed as stale, not just entries strictly older than the TTL.
+// TestStoreLocked_EvictsStaleEntries above ages entries to ttl+1s, which
+// doesn't distinguish ">= ttl" from "> ttl"; this test ages to exactly ttl.
+func TestStoreLocked_ScrubsEntryExactlyAtTTLBoundary(t *testing.T) {
+	t.Parallel()
+	const maxSize = 2
+	ttl := 10 * time.Second
+
+	epoch := time.Unix(1_700_000_000, 0)
+	now := epoch
+
+	cache := New(
+		ttl,
+		maxSize,
+		func() time.Time { return now },
+		func(context.Context, string, string) (map[string]string, bool, error) {
+			return map[string]string{"k": "v"}, true, nil
+		},
+	)
+
+	if _, _, err := cache.Lookup(context.Background(), "containers", "a"); err != nil {
+		t.Fatalf("lookup a: %v", err)
+	}
+	if _, _, err := cache.Lookup(context.Background(), "containers", "b"); err != nil {
+		t.Fatalf("lookup b: %v", err)
+	}
+
+	// Advance time to exactly the TTL — the boundary itself, not past it.
+	now = epoch.Add(ttl)
+
+	if _, _, err := cache.Lookup(context.Background(), "containers", "c"); err != nil {
+		t.Fatalf("lookup c: %v", err)
+	}
+
+	cache.mu.Lock()
+	_, aPresent := cache.entries[key{kind: "containers", identifier: "a"}]
+	_, bPresent := cache.entries[key{kind: "containers", identifier: "b"}]
+	_, cPresent := cache.entries[key{kind: "containers", identifier: "c"}]
+	size := len(cache.entries)
+	cache.mu.Unlock()
+
+	if aPresent || bPresent {
+		t.Fatalf("entries aged exactly to the TTL should have been scrubbed as stale (a=%v b=%v)", aPresent, bPresent)
+	}
+	if !cPresent {
+		t.Fatal("new entry c should be present after stale scrub")
+	}
+	if size != 1 {
+		t.Fatalf("cache size = %d, want 1", size)
+	}
+}
+
 // TestStoreLocked_EvictsOldestWhenAllLive exercises the oldest-eviction branch:
 // when the cache is full and no entry is stale, the oldest live entry is deleted.
 func TestStoreLocked_EvictsOldestWhenAllLive(t *testing.T) {
@@ -401,6 +522,37 @@ func TestStoreLocked_EvictsOldestWhenAllLive(t *testing.T) {
 	}
 	if size != maxSize {
 		t.Fatalf("cache size = %d, want %d", size, maxSize)
+	}
+}
+
+// TestStoreLocked_MaxSizeZeroDoesNotPanic pins the tail-eviction loop guard
+// at order.Len() == 0. New(...) does not validate maxSize, so a cache can be
+// constructed with maxSize <= 0. The very first store then sees
+// len(c.entries) (0) >= c.maxSize (0), so storeLocked enters its "at
+// capacity" branch on an empty cache: the stale-scrub walk over an empty
+// list is a no-op, then the tail-eviction loop's first clause
+// (order.Len() > 0) must be false to keep the loop from executing — because
+// its body unconditionally calls c.order.Back() and dereferences the result,
+// which is nil on an empty list. If that clause is ever widened to include
+// zero, the second clause (already true at 0 entries / 0 capacity) lets the
+// loop body run and the nil dereference panics.
+func TestStoreLocked_MaxSizeZeroDoesNotPanic(t *testing.T) {
+	t.Parallel()
+	cache := New(
+		10*time.Second,
+		0,
+		time.Now,
+		func(context.Context, string, string) (map[string]string, bool, error) {
+			return map[string]string{"k": "v"}, true, nil
+		},
+	)
+
+	_, found, err := cache.Lookup(context.Background(), "containers", "a")
+	if err != nil {
+		t.Fatalf("lookup with maxSize=0: %v", err)
+	}
+	if !found {
+		t.Fatal("lookup with maxSize=0: want found=true")
 	}
 }
 
