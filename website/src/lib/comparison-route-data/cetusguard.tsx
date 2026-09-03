@@ -6,7 +6,6 @@ export const cetusguardComparisonRouteData = {
   comparisonTable: `
 Method + path filtering|Yes (regex)|Yes|tie
 Remote TCP mTLS listener|Yes|Yes (TLS 1.3)|tie
-Regex path rules|Yes|Yes|tie
 Remote daemon upstream (TLS)|Yes (in production)|Yes (active/passive failover)|self
 Multiple frontend listeners|Yes|Yes (Unix and/or TCP, listener-scoped TLS + profiles)|tie
 Podman native libpod API|Yes|Yes (default-deny /libpod coverage)|tie
@@ -68,7 +67,7 @@ layers|Rollout Modes|Sockguard's per-profile rollout modes (enforce / warn / aud
   ),
   migrationTitle: "Coming from CetusGuard?",
   migrationDescription:
-    "Your regex path rules translate directly to Sockguard YAML rule blocks, and your mTLS keypairs carry over. Sockguard's listener requires TLS 1.3 where CetusGuard accepted TLS 1.2, so upgrade any client that can't negotiate 1.3 before cutover. Then swap the image and enable body inspection and per-client profiles at your own pace.",
+    "Your regex path rules translate into Sockguard's glob rule blocks — Sockguard matches paths with a glob dialect it compiles to regex internally, not with operator-supplied regex — and your mTLS keypairs carry over. Sockguard's listener requires TLS 1.3 where CetusGuard accepted TLS 1.2, so upgrade any client that can't negotiate 1.3 before cutover. Then swap the image and enable body inspection and per-client profiles at your own pace.",
   jsonLdName: "CetusGuard vs Sockguard — Docker Socket Proxy Comparison",
   jsonLdDescription: "Compare CetusGuard and Sockguard for Docker socket filtering.",
 } satisfies ComparisonRouteRawConfig;

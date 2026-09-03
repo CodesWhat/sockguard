@@ -48,7 +48,7 @@ export const features: Feature[] = [
     color: "text-rose-500 dark:text-rose-400",
     bg: "bg-rose-100 dark:bg-rose-900/50",
     description:
-      "We parse every container, image, build, volume, network, secret, config, service, swarm, node, and plugin write to block privileged or host-namespace workloads, non-allowlisted mounts/devices, unsafe controls, archive writes, and tar imports. Native Podman builds add fail-closed primary/additional-context, host-mount, and resource-usage host-file handling on top of the shared classic-build policy. Bounded inspectors reject oversized bodies with 413 and enforce a 30-second read deadline through logging and metrics.",
+      "We parse container, image, build, volume, network, secret, config, service, swarm, node, and plugin writes to block privileged or host-namespace workloads, non-allowlisted mounts/devices, unsafe controls, archive writes, and tar imports. Native Podman builds add fail-closed primary/additional-context, host-mount, and resource-usage host-file handling on top of the shared classic-build policy. Bounded inspectors reject oversized bodies with 413 and enforce a 30-second read deadline through logging and metrics.",
     category: "security",
   },
   {
