@@ -232,6 +232,19 @@ export const roadmap: Milestone[] = [
   },
   {
     version: "v2.1.0",
+    title: "Native Libpod Write Inspection & Owner-Isolation Hardening",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Native libpod write routes — copy-into-container, container-update, restore, checkpoint, mount, and the gated image-write surface — are inspected on the same terms as their Docker-compat twins",
+      "Owner isolation answers an unresolved target with 404 and a foreign one with 403, forwards neither, and treats an inspect failure as a fail-closed 502 across libpod prune, commit, and image export/removal",
+      "The libpod prune family is owner-scoped and container commit is owner-checked, with the resulting image labeled so it stays visible to later ownership checks",
+      "Container and pod process-list reads now require the read-exfiltration acknowledgment",
+      "Read-side redaction reaches libpod container inspect, volume reads, and network topology, and a plaintext secret is no longer returned under showsecret=true",
+    ],
+  },
+  {
+    version: "v2.2.0",
     title: "BuildKit RUN-Instruction Coverage",
     emoji: "🧩",
     status: "next",
