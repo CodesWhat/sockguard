@@ -1358,13 +1358,16 @@ env vars > YAML > built-in defaults.
 
 The table below covers the most commonly used variables. Scalar and list-of-string
 fields at any nesting depth have an env-var equivalent even when they aren't
-enumerated here. Three things don't:
+enumerated here. Four things don't:
 
 - The `rules:` block. It's populated after unmarshal rather than from a default,
   so there is no `SOCKGUARD_RULES`.
 - `clients.global_concurrency`, and a profile's `limits.rate` and
   `limits.concurrency`. These are pointer blocks that stay absent unless the YAML
   declares them, and binding them would turn "absent" into "present but empty".
+- `listen.socket_uid` and `listen.socket_gid`, and the admin listener's copies of
+  them. They're pointer ints so that an omitted value is distinguishable from UID
+  or GID 0, and the same absent-vs-empty rule applies. Set them in YAML.
 - Anything inside a list entry, because the list itself is the leaf. That covers
   `clients.profiles[]`, `listeners[]`, `upstream.endpoints[]`, `mutations.rules[]`,
   `request_body.container_create.allowed_device_requests[]`, and the
