@@ -350,6 +350,11 @@ Container create allows the stock `runc` runtime and rejects other explicit
 runtimes. It also admits the copied endpoint addressing and optional
 user-configured MAC that Watchtower preserves during recreation, without
 allowing endpoint links, driver options, link-local IPs, or gateway priority.
+Watchtower copies those four fields verbatim from the old container, so a
+container that relies on legacy links, per-endpoint driver options, link-local
+IPs or a custom gateway priority cannot be recreated through this preset. Open
+the matching `endpoint_config` switch for that field alone rather than
+`allow_endpoint_config`, which would also admit links and driver options.
 Container update allows the restart-only request Watchtower uses to set
 `Name: "no"`. Moby serializes the embedded `Resources` fields at their zero
 values in that request, which the daemon treats as no-ops; nonzero resource,
