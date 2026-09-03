@@ -207,7 +207,7 @@ The Docker environment fallback follows the same schedule. A non-empty `DOCKER_T
 
 Sockguard accepts the current Tecnativa environment-variable surface, including section vars, `ALLOW_RESTARTS`, `SOCKET_PATH`, and `LOG_LEVEL`. `DISABLE_IPV6` is the exception: it has no Sockguard equivalent and is ignored, so pick the bind with `listen.address` instead.
 
-Compatibility mode only generates rules while the running ruleset still matches the built-in default. The config the image ships at `/etc/sockguard/sockguard.yaml` is that default, so a drop-in works untouched. Mount your own YAML with a `rules:` block and the section vars and `ALLOW_*` stop generating anything at all, with no error; `SOCKET_PATH` and `LOG_LEVEL` keep applying either way.
+Compatibility mode only generates rules while the effective ruleset is still the built-in default. The check is on the rules themselves, not on whether you supplied a config file, so an explicit `rules:` block that happens to be byte-identical to the default still activates it. That's why a drop-in works untouched: the config the image ships at `/etc/sockguard/sockguard.yaml` is literally the default. Write a ruleset that differs from it and every section var and `ALLOW_*` stops generating anything at all, with no error; `SOCKET_PATH` and `LOG_LEVEL` keep applying either way.
 
 Values parse as `1`, `true`, or `yes`, and `0`, `false`, or `no`, case-insensitively. Anything else logs `ignoring compat env var with unparseable boolean value` and reads as off. That bites hardest on `PING`, `VERSION`, and `EVENTS`, which are on by default whenever compatibility mode is active: `PING=on` is not `PING=1`, it drops the `/_ping` allow rule and startup still succeeds.
 
@@ -241,7 +241,7 @@ such as `client/alias`. To allow bare deletes while denying any of those query
 controls, migrate the delete rule to YAML and leave its matching
 `request_body.container_remove` field disabled.
 
-`POST=1` alongside a section var needs a second acknowledgement on top of the read one. `CONTAINERS=1 POST=1` generates `allow POST /containers/**`, which admits `POST /containers/*/exec` with no command allowlist, so Sockguard exits 1 with `set insecure_allow_body_blind_writes=true to acknowledge this risk` until `SOCKGUARD_INSECURE_ALLOW_BODY_BLIND_WRITES=true` is set too. `EXEC=1`, `SWARM=1`, and `PLUGINS=1` paired with `POST=1` hit the same gate, and so does `ALLOW_EXEC=1` on its own. The other granular vars don't: `ALLOW_DELETE=1`, `ALLOW_START=1`, and `ALLOW_STOP=1` validate clean.
+Adding `POST=1` needs a second acknowledgement whenever the widened section rule reaches a body-sensitive write endpoint. `CONTAINERS=1 POST=1` generates `allow POST /containers/**`, which admits `POST /containers/*/exec` with no command allowlist, so Sockguard exits 1 with `set insecure_allow_body_blind_writes=true to acknowledge this risk` until `SOCKGUARD_INSECURE_ALLOW_BODY_BLIND_WRITES=true` is set too. `EXEC=1`, `SWARM=1`, and `PLUGINS=1` with `POST=1` hit the same gate, and so does `ALLOW_EXEC=1` on its own. Sections whose widened rule reaches nothing body-sensitive don't: `PING=1`, `VERSION=1`, `EVENTS=1`, `INFO=1`, `NETWORKS=1`, and `VOLUMES=1` with `POST=1` all validate clean, as do `POST=1` by itself and `ALLOW_DELETE=1`, `ALLOW_START=1`, and `ALLOW_STOP=1`.
 
 Tecnativa compatibility mode and signed-policy mode are separate migration
 stages. Rule-generating compatibility variables are unsigned process state, so
@@ -283,7 +283,7 @@ ALLOW_STOP=1
 ALLOW_UNPAUSE=1
 ```
 
-[Granular Operations](/configuration#granular-operations-linuxserver-compatible) lists the rule each one generates. `ALLOW_RESTARTS` is the only var that covers more than one endpoint: it generates the kill, restart, and stop rules together.
+[Granular Operations](/configuration#granular-operations-linuxserver-compatible) lists the rule each one generates. `ALLOW_RESTARTS` covers more than one endpoint, generating the kill, restart, and stop rules together, and the legacy singular `ALLOW_RESTART` maps to exactly the same three. Every other var maps to one rule.
 
 ## From wollomatic/socket-proxy
 
