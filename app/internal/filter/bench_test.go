@@ -174,6 +174,27 @@ func BenchmarkMiddlewareAllow(b *testing.B) {
 	}
 }
 
+func TestMiddlewareAllowAllocationBaseline(t *testing.T) {
+	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	handler := MiddlewareWithOptions(benchRules, benchLogger, Options{})(next)
+	req := httptest.NewRequest(http.MethodGet, "/v1.45/containers/json", nil)
+	w := newBenchmarkResponseWriter()
+
+	wantAllocs := 4.0
+	if raceBuild {
+		// Race instrumentation adds one allocation around the otherwise
+		// allocation-free process-list path detector.
+		wantAllocs = 5.0
+	}
+	got := testing.AllocsPerRun(1000, func() {
+		w.Reset()
+		handler.ServeHTTP(w, req)
+	})
+	if got != wantAllocs {
+		t.Fatalf("middleware allow allocations = %.0f, want %.0f baseline", got, wantAllocs)
+	}
+}
+
 func BenchmarkMiddlewareDeny(b *testing.B) {
 	b.ReportAllocs()
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})

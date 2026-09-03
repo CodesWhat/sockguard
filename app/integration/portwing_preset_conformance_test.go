@@ -48,7 +48,10 @@ func newPortwingPresetHandler(t *testing.T, socketPath, presetFile string) http.
 		t,
 		socketPath,
 		cfg.Rules,
-		filter.Options{PolicyConfig: policyConfig},
+		filter.Options{
+			PolicyConfig:          policyConfig,
+			AllowReadExfiltration: cfg.InsecureAllowReadExfiltration,
+		},
 		ownership.Options{},
 	)
 }
@@ -284,7 +287,8 @@ func TestPortwingPresetConformance(t *testing.T) {
 			{http.MethodGet, "/events?until=0", true},
 
 			// Container reads Portwing's docker client uses, including logs
-			// (insecure_allow_read_exfiltration: true acknowledges the tradeoff).
+			// and process-list top (insecure_allow_read_exfiltration: true
+			// acknowledges the tradeoff for both).
 			{http.MethodGet, "/containers/json", true},
 			{http.MethodGet, "/containers/abc/json", true},
 			{http.MethodGet, "/containers/abc/logs?follow=1", true},

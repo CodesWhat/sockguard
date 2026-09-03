@@ -231,6 +231,14 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 	// path-level logs surface conservatively rather than trying to special-case
 	// follow=1 or other streaming toggles here.
 	{method: http.MethodGet, path: "/containers/sockguard-test/logs"},
+	// Container top accepts caller-selected ps_args and returns process command
+	// lines without response redaction. A version-prefixed request normalizes to
+	// this same Docker-compatible path before rule matching. Docker registers
+	// the route as /containers/{name:.*}/top, so the identifier is a
+	// slash-bearing path and a rule constrained below one literal segment is
+	// still reachable. Podman's two libpod top routes below use {name}, which
+	// is a single segment, so they keep the default shape.
+	{method: http.MethodGet, path: "/containers/sockguard-test/top", identifierShape: catalogIdentifierPath},
 	{method: http.MethodGet, path: "/containers/sockguard-test/attach/ws"},
 	{method: http.MethodGet, path: "/services/sockguard-test/logs"},
 	{method: http.MethodGet, path: "/tasks/sockguard-test/logs"},
@@ -258,6 +266,8 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 	{method: http.MethodGet, path: "/libpod/containers/sockguard-test/archive"},
 	{method: http.MethodGet, path: "/libpod/containers/sockguard-test/export"},
 	{method: http.MethodGet, path: "/libpod/containers/sockguard-test/logs"},
+	{method: http.MethodGet, path: "/libpod/containers/sockguard-test/top"},
+	{method: http.MethodGet, path: "/libpod/pods/sockguard-test/top"},
 	{method: http.MethodPost, path: "/libpod/containers/sockguard-test/attach"},
 	{method: http.MethodGet, path: "/libpod/containers/showmounted"},
 	{method: http.MethodGet, path: "/libpod/images/export"},
@@ -441,8 +451,8 @@ func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, configu
 
 	if scope == "" {
 		return fmt.Errorf(
-			"rules allow raw archive/export, log/attach streaming, checkpoint export, container rootfs mount, or registry push endpoints "+
-				"(these can exfiltrate container files, container memory, images, plugins, environment variables, secrets, and daemon-host filesystem paths); "+
+			"rules allow raw archive/export, process-list, log/attach streaming, checkpoint export, container rootfs mount, or registry push endpoints "+
+				"(these can exfiltrate container files, container memory, images, plugins, process arguments, environment variables, secrets, and daemon-host filesystem paths); "+
 				"either tighten the allow rules to omit these paths or set "+
 				"insecure_allow_read_exfiltration: true to acknowledge the risk. "+
 				"Exposed endpoints: %s",
@@ -451,8 +461,8 @@ func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, configu
 	}
 
 	return fmt.Errorf(
-		"client profile %q allows raw archive/export, log/attach streaming, checkpoint export, container rootfs mount, or registry push endpoints "+
-			"(these can exfiltrate container files, container memory, images, plugins, environment variables, secrets, and daemon-host filesystem paths); "+
+		"client profile %q allows raw archive/export, process-list, log/attach streaming, checkpoint export, container rootfs mount, or registry push endpoints "+
+			"(these can exfiltrate container files, container memory, images, plugins, process arguments, environment variables, secrets, and daemon-host filesystem paths); "+
 			"either tighten the profile's allow rules to omit these paths or set the "+
 			"top-level insecure_allow_read_exfiltration: true to acknowledge the risk "+
 			"(it is a global setting, not per-profile). "+

@@ -149,7 +149,9 @@ requires `insecure_allow_body_blind_writes: true`, exactly like `play/kube`.
 every Docker-compat exfiltration surface, plus the libpod-only entries below:
 
 - `GET /libpod/containers/*/archive`, `GET /libpod/containers/*/export`,
-  `GET /libpod/containers/*/logs`, `POST /libpod/containers/*/attach`
+  `GET /libpod/containers/*/logs`, `GET /libpod/containers/*/top`,
+  `POST /libpod/containers/*/attach`
+- `GET /libpod/pods/*/top`
 - `GET /libpod/images/export`, `GET /libpod/images/*/get`,
   `POST /libpod/images/*/push`
 - `POST /libpod/manifests/*/registry/*` and the deprecated backward-compat
@@ -190,8 +192,10 @@ every Docker-compat exfiltration surface, plus the libpod-only entries below:
 
 A broad `GET /libpod/**`-shaped allow rule catches every path above and
 fails startup validation unless you explicitly opt in. Narrow, explicit
-allowlists (see `podman-readonly.yaml` below) avoid needing the
-acknowledgment at all.
+allowlists that omit every path above avoid needing the acknowledgment.
+The `podman-readonly.yaml` preset below intentionally retains container top
+for process monitoring, so it carries the acknowledgment while leaving native
+pod top and every other exfiltration-gated route denied.
 
 ## Ownership and Visibility Coverage
 
@@ -533,14 +537,22 @@ The [`podman-readonly.yaml`](https://github.com/CodesWhat/sockguard/blob/main/ap
 preset ships a read-only monitoring posture covering both surfaces in one
 file — list/inspect/stats/top/changes for containers, list/inspect for pods
 (libpod only), images, networks and volumes, per-secret inspect, plus
-health/version/info/events. It deliberately excludes every exfiltration-gated endpoint:
-archive, export, logs, attach, image `get`, and image push on both
+health/version/info/events. It retains top for process monitoring, so both the
+Docker-compatible and native libpod routes require
+`insecure_allow_read_exfiltration: true`: Docker-compatible caller-selected
+`ps_args` control the daemon host's `ps` output, and both routes return process
+command lines that bypass response redaction. Native
+`GET /libpod/pods/{id}/top` carries the same global guard but stays denied by
+this preset's narrow pod rules. That acknowledgment is global rather than
+per-rule, so anything you add to this preset later that the exfiltration
+catalog covers, container logs being the obvious one, is admitted without a
+fresh startup refusal to warn you. Every other exfiltration-gated endpoint is
+excluded: archive, export, logs, attach, image `get`, and image push on both
 surfaces, plus the libpod-only exfiltration surfaces alongside them —
 mounted-container inventory (`showmounted`), `generate/kube`, and manifest
-pushes, none of which have a Docker-compat counterpart. So it validates
-clean without setting `insecure_allow_read_exfiltration`, and it allows no
-writes at all, so it never needs `insecure_allow_body_blind_writes` either.
-See [Presets](/presets) for how to mount a preset as your config file.
+pushes, none of which have a Docker-compat counterpart. The preset allows no
+writes at all, so it never needs `insecure_allow_body_blind_writes`. See
+[Presets](/presets) for how to mount a preset as your config file.
 
 Two rules left the preset in v2.1: `GET /libpod/pods/stats` and
 `GET /libpod/secrets/json`, both of which the isolation layers now refuse

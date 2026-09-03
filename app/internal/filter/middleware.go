@@ -49,6 +49,7 @@ const (
 	reasonCodeRequestBodyPolicyDenied       = "request_body_policy_denied"
 	reasonCodeRequestBodyTooLarge           = "request_body_too_large"
 	reasonCodeRequestBodyInspectionFailed   = "request_body_inspection_failed"
+	reasonCodeReadExfiltrationAckRequired   = "read_exfiltration_acknowledgment_required"
 )
 
 // PolicyConfig configures deny-response behavior plus request-body inspection
@@ -123,6 +124,11 @@ type PolicyConfig struct {
 // Options configures filter middleware behavior.
 type Options struct {
 	PolicyConfig
+	// AllowReadExfiltration carries the global
+	// insecure_allow_read_exfiltration acknowledgment into request-time
+	// enforcement. It is intentionally not part of PolicyConfig because named
+	// client profiles cannot weaken or override this top-level setting.
+	AllowReadExfiltration bool
 	// Profiles defines named per-client policy overrides selected at request time.
 	Profiles map[string]Policy
 	// ResolveProfile returns the named policy to apply for the request.
@@ -259,6 +265,12 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			denyStatus := http.StatusForbidden
 			reasonCode := ruleDecisionReasonCode(action, reason)
 			stampDecisionOnMeta(meta, action, ruleIndex, reasonCode, reason, normPath)
+			action, acknowledgmentReason, hardDeny := EnforceReadExfiltrationAcknowledgment(action, r.Method, normPath, opts.AllowReadExfiltration)
+			if acknowledgmentReason != "" {
+				reasonCode = reasonCodeReadExfiltrationAckRequired
+				reason = acknowledgmentReason
+				stampDecisionOnMeta(meta, action, ruleIndex, reasonCode, reason, normPath)
+			}
 
 			if action == ActionAllow {
 				denyReason, denyReasonCode, status := runAllowedInspection(activePolicy, logger, w, r, normPath)
@@ -278,7 +290,7 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			}
 
 			if action == ActionDeny {
-				if meta.AllowsPassThrough() {
+				if !hardDeny && meta.AllowsPassThrough() {
 					meta.Decision = logging.DecisionWouldDeny
 					next.ServeHTTP(w, r)
 					return
@@ -292,6 +304,47 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// EnforceReadExfiltrationAcknowledgment applies the hard process-list gate
+// shared by the runtime middleware and offline rule matcher. normalizedPath
+// must already be canonicalized with NormalizePath. The returned reason is
+// non-empty only when the gate replaces an allow decision.
+func EnforceReadExfiltrationAcknowledgment(action Action, method, normalizedPath string, acknowledged bool) (Action, string, bool) {
+	if acknowledged || !isProcessListRead(method, normalizedPath) {
+		return action, "", false
+	}
+	if action == ActionDeny {
+		return action, "", true
+	}
+	return ActionDeny, "process-list reads require insecure_allow_read_exfiltration: true", true
+}
+
+// isProcessListRead reports whether normPath is one of the three process-list
+// routes. The identifier is everything before a trailing "/top" rather than a
+// single leading segment: Docker registers the compat route as
+// /containers/{name:.*}/top, so a rule like GET /containers/*/*/top admits a
+// slash-bearing name that a first-segment split would walk straight past.
+// Podman's {name} is single-segment on both libpod routes, so the extra
+// breadth there matches nothing the daemon would route anyway.
+func isProcessListRead(method, normPath string) bool {
+	if upperHTTPMethodASCII(method) != http.MethodGet {
+		return false
+	}
+
+	rest, ok := strings.CutPrefix(normPath, "/containers/")
+	if !ok {
+		rest, ok = strings.CutPrefix(normPath, "/libpod/containers/")
+	}
+	if !ok {
+		rest, ok = strings.CutPrefix(normPath, "/libpod/pods/")
+	}
+	if !ok {
+		return false
+	}
+
+	name, ok := strings.CutSuffix(rest, "/top")
+	return ok && name != ""
 }
 
 // resolveActivePolicy picks the per-request runtimePolicy based on the

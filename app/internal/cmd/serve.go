@@ -542,7 +542,7 @@ func buildServeHandlerChainWithRuntime(b serveHandlerBuild) (http.Handler, func(
 		return invalidClientProfileHandler(), func() {}, false
 	}
 
-	handler := newServeUpstreamHandler(b.Cfg, resolver, b.Logger)
+	handler := newServeUpstreamHandler(b.Cfg, resolver, b.Logger, b.Runtime)
 	b.ClientProfiles = clientProfiles
 	layers, teardown, limiterStateActive := buildServeHandlerLayersWithRuntime(b)
 	for _, layer := range layers {
@@ -705,7 +705,7 @@ func attachRuntimeInspectors(cfg *config.Config, res *upstream.Resolver, policy 
 	return policy
 }
 
-func newServeUpstreamHandler(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger) http.Handler {
+func newServeUpstreamHandler(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, runtime *serveRuntime) http.Handler {
 	rp := proxy.NewWithTransport(upstreamResolverFor(res, cfg), logger, proxy.Options{
 		ModifyResponse: responsefilter.New(serveResponseFilterOptions(cfg)).ModifyResponse,
 	})
@@ -713,7 +713,15 @@ func newServeUpstreamHandler(cfg *config.Config, res *upstream.Resolver, logger 
 	// Wrapping the proxy itself (rather than adding a chain layer) keeps the
 	// deadline off the hijack path: HijackHandler short-circuits before this
 	// handler runs.
-	return proxy.WithRequestTimeout(rp, effectiveUpstreamRequestTimeout(cfg))
+	return withUpstreamRequestTimeout(cfg, runtime, rp)
+}
+
+func withUpstreamRequestTimeout(cfg *config.Config, runtime *serveRuntime, next http.Handler) http.Handler {
+	return proxy.WithRequestTimeoutForFlavor(
+		next,
+		effectiveUpstreamRequestTimeout(cfg),
+		runtimeUpstreamFlavor(runtime) == upstreamflavor.Podman,
+	)
 }
 
 // effectiveUpstreamRequestTimeout resolves cfg.Upstream.RequestTimeout to the
@@ -1113,10 +1121,14 @@ var readExfiltrationWarnOnce sync.Once
 // insecure_allow_read_exfiltration: true at chain-build time (startup or
 // hot-reload), the read-side counterpart of warnIfBodyBlindWritesEnabled. The
 // startup validator (validateReadExfiltrationRulesForPolicy in rules.go)
-// already refuses to start without this acknowledgment when an
-// exfiltration-capable endpoint is reachable; this is the loud runtime echo of
-// that same acknowledgment, visible in the running process's logs rather than
-// only at validate time. It matters more here than for the write-side flag,
+// already refuses to start without this acknowledgment when a cataloged
+// endpoint is reachable, exact-name and ordered deny/allow shapes included,
+// because the audit runs over the catalog's whole route language rather than
+// one literal probe. The process-list hard gate is narrower: it keeps a
+// warn/audit profile from passing a process-list denial through. This is the
+// loud runtime echo of that acknowledgment, visible in the running process's
+// logs rather than only at validate time. It matters more here than for the
+// write-side flag,
 // because the README quick start and the Tecnativa migration path both ship
 // the acknowledgment set, so the documented happy path had no ongoing signal
 // at all.
@@ -1129,19 +1141,23 @@ func warnIfReadExfiltrationEnabled(cfg *config.Config, rules []*filter.CompiledR
 // the enable-check and the once-per-process gating without racing other tests
 // for the package-level guard.
 //
-// Both endpoint lists come from allowedSensitiveExfilEndpoints, the same probe
-// the startup validator uses to build its refusal message, so the warning names
-// exactly what the acknowledgment is currently buying rather than restating the
-// whole catalog. Named client profiles are reported separately because their
+// Both endpoint lists come from allowedSensitiveExfilEndpoints, the same audit
+// the startup validator uses to build its refusal message. It searches the
+// catalog's route language against the authored rule literals, so an
+// exact-name path or one left reachable below an ordered deny is reported as
+// the concrete path rather than the catalog spelling. It stops at the first
+// reachable path per cataloged endpoint, which is what the warning text means
+// by not naming every path the rules admit. Named client
+// profiles are reported separately because their
 // rules are evaluated in place of the top-level set: the acknowledgment is
 // global, so a profile can be the only reason it has to be set, and the
 // per-profile refusal that would otherwise name it never fires once it is.
 // Both fields are stable across runs (see allowedSensitiveExfilEndpointsByProfile
 // for the sort that makes the profile half so).
 //
-// Two empty lists are still worth logging: that means the acknowledgment is set
-// while no rule needs it, which is a standing permission the operator can
-// remove.
+// Two empty lists are still worth logging: no cataloged endpoint is reachable
+// under the current rules, so the acknowledgment is a standing permission the
+// operator can remove.
 func warnReadExfiltrationOnce(cfg *config.Config, rules []*filter.CompiledRule, clientProfiles map[string]filter.Policy, logger *slog.Logger, once *sync.Once) {
 	if !cfg.InsecureAllowReadExfiltration {
 		return
@@ -1149,7 +1165,7 @@ func warnReadExfiltrationOnce(cfg *config.Config, rules []*filter.CompiledRule, 
 	exposed := allowedSensitiveExfilEndpoints(cfg.Rules, rules)
 	profileExposed := allowedSensitiveExfilEndpointsByProfile(cfg.Clients.Profiles, clientProfiles)
 	once.Do(func() {
-		logger.Warn("insecure_allow_read_exfiltration is enabled: rules matching raw archive/export, log/attach streaming, checkpoint export, container rootfs mount, or registry push endpoints are admitted instead of refused at startup. A caller allowed those paths can read container files, container memory, images, plugins, environment variables, secrets, and daemon-host filesystem paths, or push local artifacts to a registry it chooses",
+		logger.Warn("insecure_allow_read_exfiltration is enabled: rules matching raw archive/export, log/attach streaming, checkpoint export, container rootfs mount, or registry push endpoints are admitted instead of refused at startup, and process-list reads allowed by policy are admitted instead of denied at request time. The exposed endpoint fields name one reachable path per cataloged endpoint, not every path the rules admit. A caller allowed those paths can read container files, container memory, images, plugins, process arguments, environment variables, secrets, and daemon-host filesystem paths, or push local artifacts to a registry it chooses",
 			"exposed_endpoints", exposed,
 			"exposed_profile_endpoints", profileExposed,
 		)
@@ -1543,10 +1559,11 @@ func serveResponseFilterOptions(cfg *config.Config) responsefilter.Options {
 
 func serveFilterOptions(cfg *config.Config, res *upstream.Resolver, clientProfiles map[string]filter.Policy) filter.Options {
 	return filter.Options{
-		PolicyConfig:   servePolicyConfig(cfg, res),
-		Profiles:       clientProfiles,
-		ResolveProfile: clientacl.RequestProfile,
-		Mutation:       cfg.Mutations.ToFilterOptions(),
+		PolicyConfig:          servePolicyConfig(cfg, res),
+		AllowReadExfiltration: cfg.InsecureAllowReadExfiltration,
+		Profiles:              clientProfiles,
+		ResolveProfile:        clientacl.RequestProfile,
+		Mutation:              cfg.Mutations.ToFilterOptions(),
 	}
 }
 
