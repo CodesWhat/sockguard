@@ -242,9 +242,15 @@ func TestLibpodImageScpOwnershipMatrix(t *testing.T) {
 						wantDenied := state.remote || !state.found ||
 							state.labels["com.sockguard.owner"] != "job-123" && (!allowUnowned || len(state.labels) > 0)
 						wantForwarded := !wantDenied || rolloutMode != "enforce"
+						// A source that resolves to nothing answers 404 like
+						// every other unresolvable ownership target; a foreign
+						// or remote one is a 403.
 						wantStatus := http.StatusForbidden
-						if wantForwarded {
+						switch {
+						case wantForwarded:
 							wantStatus = http.StatusNoContent
+						case !state.remote && !state.found:
+							wantStatus = http.StatusNotFound
 						}
 						wantUpstreamCalls := 0
 						if wantForwarded {
@@ -274,8 +280,11 @@ func TestLibpodImageScpOwnershipMatrix(t *testing.T) {
 							t.Fatalf("meta = decision %q code %q, want %q and %q", meta.Decision, meta.ReasonCode, wantDecision, reasonCodeOwnerPolicyDeniedAccess)
 						}
 						wantReason := "libpod owner policy denied access to image"
-						if state.remote {
+						switch {
+						case state.remote:
 							wantReason = "libpod owner policy denied access to remote image source"
+						case !state.found:
+							wantReason = "libpod owner policy could not resolve image"
 						}
 						if meta.Reason != wantReason {
 							t.Fatalf("meta reason = %q, want %q", meta.Reason, wantReason)
@@ -496,8 +505,8 @@ func TestLibpodImageScpMalformedLocalSourceIsDenied(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "could not resolve local image source") {
-		t.Fatalf("body = %q, want local-source resolution denial", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "denied access to malformed local image source") {
+		t.Fatalf("body = %q, want malformed-local-source denial", rec.Body.String())
 	}
 	if meta.Decision != logging.DecisionDeny || meta.ReasonCode != reasonCodeOwnerPolicyDeniedAccess {
 		t.Fatalf("meta = decision %q code %q, want %q and %q", meta.Decision, meta.ReasonCode, logging.DecisionDeny, reasonCodeOwnerPolicyDeniedAccess)

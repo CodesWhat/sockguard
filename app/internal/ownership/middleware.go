@@ -40,8 +40,9 @@ const maxOwnershipBodyBytes = 1 << 20 // 1 MiB
 
 // ownershipVerdict is the outcome of an ownership policy check against an
 // inbound request. Callers should forward `verdictPassThrough` and
-// `verdictAllow` unchanged to the next handler; `verdictDeny` should short
-// circuit with a 403 and the accompanying reason.
+// `verdictAllow` unchanged to the next handler; the two denial verdicts should
+// short circuit with the status their denialStatus reports and the
+// accompanying reason.
 type ownershipVerdict int
 
 const (
@@ -52,11 +53,43 @@ const (
 	// verdictAllow means the request targets a labeled resource that matches
 	// the configured owner.
 	verdictAllow
-	// verdictDeny means the request targets a resource that ownership policy
-	// cannot authorize because it is missing or its labels do not satisfy the
-	// active owner policy.
+	// verdictDeny means the request targets a resource that exists and whose
+	// labels do not satisfy the active owner policy, or names a reference
+	// ownership refuses to authorize at all.
 	verdictDeny
+	// verdictDenyMissing means the request targets a resource the daemon
+	// could not resolve. It is as fail-closed as verdictDeny — nothing is
+	// forwarded in enforce mode — and differs only in the status the client
+	// sees. See denialStatus.
+	verdictDenyMissing
 )
+
+// denied reports whether the verdict refuses the request. Both denial
+// verdicts fail closed identically; a caller that needs the difference asks
+// denialStatus for it rather than comparing against one constant, which is
+// how a missing target could otherwise leak past a `!= verdictDeny` test.
+func (v ownershipVerdict) denied() bool {
+	return v == verdictDeny || v == verdictDenyMissing
+}
+
+// denialStatus is the HTTP status a denial answers with in enforce mode.
+//
+// A target the daemon could not resolve answers 404, not 403, for two
+// reasons. It matches what the visibility layer already returns for a
+// resource its policy hides (see handleVisibilityInspectRequest), so a
+// deployment running both layers reports one status for "you cannot have
+// this" rather than two. And it is the status an idempotent client expects:
+// compose teardown, Ryuk and terraform all DELETE resources that may already
+// be gone, and a 403 there turns a converged run into an error.
+//
+// A resolved resource with a foreign owner keeps 403: the request named
+// something real that policy refuses.
+func (v ownershipVerdict) denialStatus() int {
+	if v == verdictDenyMissing {
+		return http.StatusNotFound
+	}
+	return http.StatusForbidden
+}
 
 type embeddedOwnershipReference struct {
 	kind       dockerresource.Kind
@@ -182,7 +215,7 @@ func middlewareWithDeps(
 				_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "owner policy lookup failed"})
 				return
 			}
-			if verdict != verdictDeny {
+			if !verdict.denied() {
 				serveOwnershipAllowed(logger, next, w, r, normPath, opts)
 				return
 			}
@@ -194,7 +227,7 @@ func middlewareWithDeps(
 				return
 			}
 			logging.SetDeniedWithCode(w, r, reasonCodeOwnerPolicyDeniedAccess, reason, nil)
-			_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: reason})
+			_ = httpjson.Write(w, verdict.denialStatus(), httpjson.ErrorResponse{Message: reason})
 		})
 	}
 }
@@ -290,7 +323,7 @@ func allowOwnershipRequestWithRoutePath(
 	refs *ownershipRequestReferences,
 ) (ownershipVerdict, string, error) {
 	verdict, reason, err := allowOwnershipRequestUnprefixed(ctx, method, normPath, routePath, opts, inspectResource, inspectExec, refs)
-	if verdict == verdictDeny && isLibpodOwnershipPath(normPath) {
+	if verdict.denied() && isLibpodOwnershipPath(normPath) {
 		reason = "libpod " + reason
 	}
 	return verdict, reason, err
@@ -310,7 +343,7 @@ func allowOwnershipRequestUnprefixed(
 	if refs != nil {
 		if !opts.AllowCrossOwnerNamespaceSharing && len(refs.namespaceContainers) > 0 {
 			verdict, reason, err := checkContainerNamespaceSharingRefs(ctx, inspectResource, refs.namespaceContainers, opts)
-			if err != nil || verdict == verdictDeny {
+			if err != nil || verdict.denied() {
 				return verdict, reason, err
 			}
 			if verdict == verdictAllow {
@@ -319,7 +352,7 @@ func allowOwnershipRequestUnprefixed(
 		}
 
 		verdict, reason, err := checkEmbeddedOwnershipReferences(ctx, inspectResource, refs.embeddedResources, opts)
-		if err != nil || verdict == verdictDeny {
+		if err != nil || verdict.denied() {
 			return verdict, reason, err
 		}
 		if verdict == verdictAllow {
@@ -328,7 +361,7 @@ func allowOwnershipRequestUnprefixed(
 	}
 
 	verdict, reason, err := allowPathOwnershipRequest(ctx, method, normPath, routePath, opts, inspectResource, inspectExec)
-	if err != nil || verdict == verdictDeny {
+	if err != nil || verdict.denied() {
 		return verdict, reason, err
 	}
 	if verdict == verdictAllow || strictest == verdictAllow {
@@ -355,7 +388,7 @@ func allowPathOwnershipRequest(
 			return verdictPassThrough, "", err
 		}
 		if !found {
-			return verdictDeny, "owner policy denied access to exec session", nil
+			return verdictDenyMissing, "owner policy could not resolve exec session", nil
 		}
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindContainer, containerID, opts, false)
 	}
@@ -405,7 +438,7 @@ func allowPathOwnershipRequest(
 			return verdictPassThrough, "", err
 		}
 		if !found {
-			return verdictDeny, "owner policy denied access to exec session", nil
+			return verdictDenyMissing, "owner policy could not resolve exec session", nil
 		}
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindContainer, containerID, opts, false)
 	}
@@ -423,7 +456,11 @@ func allowPathOwnershipRequest(
 		case remote:
 			return verdictDeny, "owner policy denied access to remote image source", nil
 		case identifier == "":
-			return verdictDeny, "owner policy could not resolve local image source", nil
+			// 403, not the 404 an unresolvable target gets: nothing was
+			// looked up. The source is malformed, so there is no image name
+			// to ask the daemon about, and "could not resolve" is reserved
+			// for a lookup that ran and came back empty.
+			return verdictDeny, "owner policy denied access to malformed local image source", nil
 		default:
 			return checkOwnedResource(ctx, inspectResource, dockerresource.KindImage, identifier, opts, opts.AllowUnownedImages)
 		}
@@ -450,7 +487,7 @@ func checkEmbeddedOwnershipReferences(
 			return verdictPassThrough, "", err
 		}
 		if !found {
-			return verdictDeny, fmt.Sprintf(
+			return verdictDenyMissing, fmt.Sprintf(
 				"owner policy could not resolve %s %q referenced by %s",
 				singularResource(ref.kind),
 				ref.identifier,
@@ -472,13 +509,21 @@ func checkEmbeddedOwnershipReferences(
 	return strictest, "", nil
 }
 
+// checkOwnedResource authorizes one resource named by the request.
+//
+// The two failures it can report are deliberately different verdicts, not one
+// denial with two wordings. A resource the daemon could not resolve is
+// verdictDenyMissing ("could not resolve"), which enforce mode answers with a
+// 404; a resolved resource whose labels do not satisfy the policy is
+// verdictDeny ("denied access to"), which stays a 403. Both fail closed: the
+// requested upstream path is never contacted either way. See denialStatus.
 func checkOwnedResource(ctx context.Context, inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error), kind dockerresource.Kind, identifier string, opts Options, allowUnowned bool) (ownershipVerdict, string, error) {
 	labels, found, err := inspectResource(ctx, kind, identifier)
 	if err != nil {
 		return verdictPassThrough, "", err
 	}
 	if !found {
-		return verdictDeny, fmt.Sprintf("owner policy denied access to %s", singularResource(kind)), nil
+		return verdictDenyMissing, fmt.Sprintf("owner policy could not resolve %s", singularResource(kind)), nil
 	}
 	if ownerMatches(labels, opts.LabelKey, opts.Owner, allowUnowned) {
 		return verdictAllow, "", nil
@@ -505,10 +550,12 @@ func checkContainerNamespaceSharingRefs(
 		if err != nil {
 			return verdictPassThrough, "", err
 		}
-		if verdict == verdictDeny {
+		switch verdict {
+		case verdictDenyMissing:
+			return verdictDenyMissing, fmt.Sprintf("owner policy could not resolve namespace-sharing target container %q", ref), nil
+		case verdictDeny:
 			return verdictDeny, fmt.Sprintf("owner policy denied access to namespace-sharing target container %q", ref), nil
-		}
-		if verdict == verdictAllow {
+		case verdictAllow:
 			strictest = verdictAllow
 		}
 	}
