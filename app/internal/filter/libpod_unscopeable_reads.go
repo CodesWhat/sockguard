@@ -106,7 +106,7 @@ const LibpodPodStatsPath = "/libpod/pods/stats"
 // spelling only.
 //
 //nolint:gosec // G101: a URL path, not a credential; "secrets" is Podman's route segment.
-const LibpodSecretListPath = "/libpod/secrets/json"
+const LibpodSecretListPath = "/libpod/secrets/json" // #nosec G101 -- a URL path, not a credential; "secrets" is Podman's route segment.
 
 // LibpodManifestExistsPath and LibpodManifestJSONPath are representative
 // normalized paths for Podman's two dynamic manifest-read route families.
