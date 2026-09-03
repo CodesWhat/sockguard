@@ -187,3 +187,37 @@ func TestNewVisibilityDepsClientResolvesFreshAfterNameReuse(t *testing.T) {
 		t.Fatalf("upstream inspect calls = %d, want 2 (a memoized positive verdict would show 1)", calls)
 	}
 }
+
+// TestNewVisibilityDepsClientNonContainerImageKindUsesLabelCache is the
+// negation regression for `kind == KindContainer || kind == KindImage` in
+// newVisibilityDepsClient's inspectResource wiring: any other kind (network,
+// volume, ...) must dispatch to the plain label cache, not the combined
+// container/image details cache. inspectResourceDetails refuses every kind
+// but container/image (see upstreamInspector.inspectResourceDetails), so
+// routing a network there would surface as an error instead of the labels
+// the upstream actually returned.
+func TestNewVisibilityDepsClientNonContainerImageKindUsesLabelCache(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"Labels": map[string]string{"tier": "prod"}})
+	}))
+	t.Cleanup(srv.Close)
+
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			r2 := r.Clone(r.Context())
+			r2.URL.Scheme = "http"
+			r2.URL.Host = srv.Listener.Addr().String()
+			return srv.Client().Transport.RoundTrip(r2)
+		}),
+	}
+	deps := newVisibilityDepsClient(client)
+
+	labels, found, err := deps.inspectResource(context.Background(), dockerresource.KindNetwork, "net1")
+	if err != nil {
+		t.Fatalf("inspectResource(network) error = %v, want nil", err)
+	}
+	if !found || labels["tier"] != "prod" {
+		t.Fatalf("inspectResource(network) = (%v, found=%v), want tier=prod, found=true", labels, found)
+	}
+}
