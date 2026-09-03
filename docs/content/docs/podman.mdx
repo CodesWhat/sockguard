@@ -177,9 +177,16 @@ every Docker-compat exfiltration surface, plus the libpod-only entries below:
   equivalent of `GET .../archive`; it is gated on the disclosure of the
   storage driver's layout and the container-id-to-path mapping.
 - `GET /libpod/containers/showmounted` — returns that mapping for every
-  mounted container in one response, keyed by container ID. Under owner
-  isolation or visibility policy it is refused before Podman is queried,
-  because the response carries neither labels nor names to scope safely.
+  mounted container in one response, keyed by container ID. Two behaviours,
+  and which one you get depends entirely on what else is configured. With
+  owner isolation or a visibility policy active, the proxy answers `403`
+  before Podman is queried, because the response carries neither labels nor
+  names to scope safely. With neither policy active, an allow rule reaching
+  this path forwards Podman's map unredacted — every mounted container's ID
+  paired with its host mountpoint. The path is in the read-exfiltration
+  catalog, so that rule fails startup validation unless you also set
+  `insecure_allow_read_exfiltration: true`; the acknowledgment is what makes
+  the unredacted forward an explicit choice rather than an accident.
 
 A broad `GET /libpod/**`-shaped allow rule catches every path above and
 fails startup validation unless you explicitly opt in. Narrow, explicit
@@ -287,10 +294,14 @@ same way they cover Docker-compat:
   enumeration. It carries no labels, has no Docker-compat counterpart, and
   accepts no query parameters, so redacting the paths would still hand over
   the enumeration and there is no field left to decide an entry by. It is not
-  in `podman-readonly.yaml`, but a rule such as `GET /libpod/containers/*`
-  admits it without needing `insecure_allow_read_exfiltration` — it is not in
-  the read-exfiltration catalog, so a deployment that configures neither an
-  owner nor a visibility policy and allows the path still receives the map.
+  in `podman-readonly.yaml`, and it **is** in the read-exfiltration catalog, so
+  a rule reaching it — including a broad one such as
+  `GET /libpod/containers/*` — fails startup validation unless
+  `insecure_allow_read_exfiltration: true` is set. With that acknowledgment in
+  place and neither an owner nor a visibility policy configured, the proxy
+  forwards Podman's unredacted container-ID-to-host-mountpoint map. The
+  acknowledgment gates the rule; the isolation layers are what turn the read
+  into a `403`.
 - `GET /libpod/containers/stats` and `GET /libpod/pods/stats` are refused the
   same way, new in v2.1. Both are collection endpoints rather than per-resource
   ones: a request that names nothing reports every running container or pod on
@@ -582,8 +593,14 @@ land):
   values alone would leave the enumeration, which makes it the same problem
   `GET /libpod/system/df` has and points at the same answer — a refusal decided
   by the ownership and visibility layer, not a rewrite in the response filter.
-  Neither is wired today. The endpoint is not in `podman-readonly.yaml` and no
-  default rule admits it; a `GET /libpod/**` allow rule does.
+  The refusal is wired as of v2.1; the response-side rewrite is not, and is not
+  planned, because a redacted map is still an enumeration. So the two
+  behaviours are: `403` before Podman is queried with either isolation layer
+  active, and Podman's unredacted map forwarded with neither. The endpoint is
+  not in `podman-readonly.yaml` and no default rule admits it. A rule that does
+  — `GET /libpod/**` reaches it — needs
+  `insecure_allow_read_exfiltration: true` to pass startup validation, because
+  the path is in the read-exfiltration catalog.
 - Response redaction for `GET /libpod/images/{name}/json`. Image inspect
   returns the image's own `Config.Env` and `GraphDriver.Data`'s host storage
   paths, and neither is rewritten. This one is **not** a libpod-specific gap:
