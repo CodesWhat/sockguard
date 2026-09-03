@@ -568,7 +568,7 @@ func newServeRuntime(cfg *config.Config, logger *slog.Logger, deps *serveDeps) (
 		runtime.metrics = metrics.NewRegistry()
 	}
 
-	resolver, legacy, err := buildUpstreamResolver(cfg, logger, os.Getenv)
+	resolver, legacy, err := buildUpstreamResolver(cfg, logger, os.LookupEnv)
 	if err != nil {
 		return nil, err
 	}
@@ -747,7 +747,7 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 		// relative order doesn't affect correctness, only which one a
 		// reader sees "closer to the wire" in this slice.
 		namedServeHandlerLayer("withBuildkitMediator", withBuildkitMediator(cfg, resolver, logger)),
-		namedServeHandlerLayer("withHijack", withHijack(resolver, logger)),
+		namedServeHandlerLayer("withHijack", withHijack(cfg, resolver, logger)),
 		// #152: inserted between hijack and ownership in APPEND order. Later
 		// appends wrap (execute before) earlier ones, so this yields runtime
 		// order ...filter -> visibility -> ownership -> resource-limit guard
@@ -890,13 +890,27 @@ func namedServeHandlerLayer(name string, with func(http.Handler) http.Handler) s
 	return serveHandlerLayer{name: name, with: with}
 }
 
-func withHijack(res *upstream.Resolver, logger *slog.Logger) func(http.Handler) http.Handler {
+func withHijack(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		// Hijack handler: intercepts attach/exec endpoints for native bidirectional
 		// streaming with optimized buffers and TCP half-close signaling. Dials the
 		// same active upstream endpoint as the rest of the proxy.
-		return proxy.HijackHandlerWithDialer(res, logger, next)
+		return proxy.HijackHandlerWithDialer(res, effectiveHijackInactivityTimeout(cfg), logger, next)
 	}
+}
+
+// effectiveHijackInactivityTimeout resolves cfg.Upstream.HijackInactivityTimeout
+// to the time.Duration proxy.HijackHandlerWithDialer consumes, mirroring
+// effectiveUpstreamRequestTimeout. Unlike request_timeout there is no "off"
+// spelling here — hijack_inactivity_timeout is validated at config load to
+// always be a positive duration, so a parse failure degrades to the package
+// default (10m) rather than disabling the deadline outright.
+func effectiveHijackInactivityTimeout(cfg *config.Config) time.Duration {
+	d, err := time.ParseDuration(cfg.Upstream.HijackInactivityTimeout)
+	if err != nil || d <= 0 {
+		return 10 * time.Minute
+	}
+	return d
 }
 
 // withBuildkitMediator intercepts POST /session and POST /grpc once
@@ -1019,6 +1033,7 @@ func withVisibility(cfg *config.Config, res *upstream.Resolver, logger *slog.Log
 
 func withFilter(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, rules []*filter.CompiledRule, clientProfiles map[string]filter.Policy) func(http.Handler) http.Handler {
 	warnIfBodyBlindWritesEnabled(cfg, logger)
+	warnIfReadExfiltrationEnabled(cfg, rules, clientProfiles, logger)
 	return filter.MiddlewareWithOptions(rules, logger, serveFilterOptions(cfg, res, clientProfiles))
 }
 
@@ -1064,6 +1079,59 @@ func warnBodyBlindWritesOnce(cfg *config.Config, logger *slog.Logger, once *sync
 	}
 	once.Do(func() {
 		logger.Warn("insecure_allow_body_blind_writes is enabled: body-sensitive write endpoints with no request-body allowlist configured (e.g. exec with an empty allowed_commands) are reachable without that allowlist check — other configured gates (allow_privileged, allow_root_user, allowed_env_vars/denied_env_vars, allowed_join_remote_addrs, allowed_set_env_prefixes) still apply in full")
+	})
+}
+
+// readExfiltrationWarnOnce gates warnIfReadExfiltrationEnabled to a single
+// emission per process, like bodyBlindWritesWarnOnce — the handler chain is
+// rebuilt on every config hot-reload, so an unguarded warning at the
+// chain-build site would repeat on each reload.
+var readExfiltrationWarnOnce sync.Once
+
+// warnIfReadExfiltrationEnabled surfaces the runtime consequence of
+// insecure_allow_read_exfiltration: true at chain-build time (startup or
+// hot-reload), the read-side counterpart of warnIfBodyBlindWritesEnabled. The
+// startup validator (validateReadExfiltrationRulesForPolicy in rules.go)
+// already refuses to start without this acknowledgment when an
+// exfiltration-capable endpoint is reachable; this is the loud runtime echo of
+// that same acknowledgment, visible in the running process's logs rather than
+// only at validate time. It matters more here than for the write-side flag,
+// because the README quick start and the Tecnativa migration path both ship
+// the acknowledgment set, so the documented happy path had no ongoing signal
+// at all.
+func warnIfReadExfiltrationEnabled(cfg *config.Config, rules []*filter.CompiledRule, clientProfiles map[string]filter.Policy, logger *slog.Logger) {
+	warnReadExfiltrationOnce(cfg, rules, clientProfiles, logger, &readExfiltrationWarnOnce)
+}
+
+// warnReadExfiltrationOnce is the testable core of
+// warnIfReadExfiltrationEnabled: the Once is injected so tests can verify both
+// the enable-check and the once-per-process gating without racing other tests
+// for the package-level guard.
+//
+// Both endpoint lists come from allowedSensitiveExfilEndpoints, the same probe
+// the startup validator uses to build its refusal message, so the warning names
+// exactly what the acknowledgment is currently buying rather than restating the
+// whole catalog. Named client profiles are reported separately because their
+// rules are evaluated in place of the top-level set: the acknowledgment is
+// global, so a profile can be the only reason it has to be set, and the
+// per-profile refusal that would otherwise name it never fires once it is.
+// Both fields are stable across runs (see allowedSensitiveExfilEndpointsByProfile
+// for the sort that makes the profile half so).
+//
+// Two empty lists are still worth logging: that means the acknowledgment is set
+// while no rule needs it, which is a standing permission the operator can
+// remove.
+func warnReadExfiltrationOnce(cfg *config.Config, rules []*filter.CompiledRule, clientProfiles map[string]filter.Policy, logger *slog.Logger, once *sync.Once) {
+	if !cfg.InsecureAllowReadExfiltration {
+		return
+	}
+	exposed := allowedSensitiveExfilEndpoints(rules)
+	profileExposed := allowedSensitiveExfilEndpointsByProfile(clientProfiles)
+	once.Do(func() {
+		logger.Warn("insecure_allow_read_exfiltration is enabled: rules matching raw archive/export, log/attach streaming, or registry push endpoints are admitted instead of refused at startup. A caller allowed those paths can read container files, images, plugins, environment variables, and secrets, or push local artifacts to a registry it chooses",
+			"exposed_endpoints", exposed,
+			"exposed_profile_endpoints", profileExposed,
+		)
 	})
 }
 

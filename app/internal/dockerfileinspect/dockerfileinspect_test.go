@@ -46,6 +46,18 @@ func TestContainsRunInstruction(t *testing.T) {
 		{"comment before instruction ignored", "# comment\nFROM alpine\n", false},
 		{"empty input", "", false},
 		{"only blank lines", "\n\n\n", false},
+		// A comment line that itself ends in the continuation character must
+		// still be treated as a whole, standalone comment and skipped
+		// entirely — it must NOT be joined with the next line. Joining would
+		// garble the following real instruction (prefixing it with "#..."),
+		// which Instruction() would then read as a comment and silently miss
+		// the RUN it contains.
+		{"comment ending in escape is not joined with next line", "# comment\\\nRUN true\n", true},
+		// A dangling continuation at EOF that never gets a following line to
+		// join with must still be evaluated as whatever instruction it
+		// started (fail-safe): the loop's post-loop tail check has to look at
+		// the leftover logical line rather than discarding it outright.
+		{"dangling continuation at eof with no completing line", "FROM alpine\nRUN echo \\", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -65,6 +77,7 @@ func TestInstruction(t *testing.T) {
 		{"run", "RUN echo hi", "RUN"},
 		{"lowercase run", "run echo hi", "RUN"},
 		{"onbuild run", "ONBUILD RUN echo hi", "ONBUILD RUN"},
+		{"onbuild run with exactly two fields", "ONBUILD RUN", "ONBUILD RUN"},
 		{"bare onbuild", "ONBUILD", "ONBUILD"},
 		{"blank", "", ""},
 		{"comment", "# hello", ""},

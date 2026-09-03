@@ -179,6 +179,7 @@ func TestDecodeLibpodLabelsNetworkEdgeCases(t *testing.T) {
 			body:       `[{"labels":{"net":"custom"}}]`,
 			wantLabels: map[string]string{"net": "custom"},
 		},
+		{name: "empty body", body: "", wantErr: true},
 		{name: "empty array", body: `[]`, wantErr: true},
 		{name: "multiple objects", body: `[{"labels":{}},{"labels":{}}]`, wantErr: true},
 		{name: "null object", body: `[null]`, wantErr: true},

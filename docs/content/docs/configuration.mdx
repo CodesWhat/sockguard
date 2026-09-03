@@ -29,6 +29,7 @@ insecure_accept_opaque_buildkit_tunnels: false  # ack required to allow POST /se
 upstream:
   socket: /var/run/docker.sock
   request_timeout: "60s" # total per-request deadline (Go duration); default "60s"; set "off" (or "") to disable
+  hijack_inactivity_timeout: "10m" # idle deadline for attach/exec-start connections (Go duration); default "10m"
 
   # Remote TCP endpoints with mTLS — when set, socket is ignored.
   # List endpoints in priority order; first healthy wins (active/passive failover).
@@ -290,14 +291,16 @@ rules:
 The default listener is loopback TCP `127.0.0.1:2375`, which keeps the Docker API proxy off the network unless you explicitly choose otherwise.
 
 - For the safest deployment, use `listen.socket` and share a unix socket.
-- Sockguard hardens the unix socket to `0600` owner-only permissions. The published image and fresh named-volume directory use UID/GID `65532`, so a non-root consumer must use UID `65532` too; root can also connect. For another consumer UID, run Sockguard under that matching UID with a pre-owned bind mount, or use authenticated TCP. `listen.socket_mode` must stay `0600`; broader modes are rejected at startup.
+- Sockguard hardens the unix socket to `0600` owner-only permissions by default. The published image and fresh named-volume directory use UID/GID `65532`, so a non-root consumer must use UID `65532` too; root can also connect. For another consumer UID, run Sockguard under that matching UID with a pre-owned bind mount, or use authenticated TCP. `listen.socket_mode` accepts one other value: `0660`, group-readable, which also requires `listen.socket_gid` (the group ID that should own the socket). `listen.socket_uid` optionally sets the socket's owning UID for either mode. Any mode other than `0600` or `0660` (with `socket_gid` set) is rejected at startup.
 - For remote or container-network TCP, configure `listen.tls` so Sockguard requires mutual TLS. Sockguard's mTLS server minimum is TLS 1.3, so callers must support TLS 1.3. (The TLS 1.3 floor applies to the *listener* — the side your clients connect to. The upstream client side, where Sockguard dials a remote Docker daemon, floors at TLS 1.2 for daemon compatibility; see [Remote Upstreams & Failover](/multi-host).)
 - `listen.tls.client_ca_file` still defines the issuing trust root. To avoid trusting every cert that CA can mint, optionally narrow the accepted verified client leaf with the selectors described under [mTLS Client Selectors](#mtls-client-selectors) below. Different selector fields are ANDed, while entries inside one field are ORed.
 - Plaintext non-loopback TCP is rejected unless you set **both** `listen.insecure_allow_plain_tcp: true` and `listen.insecure_allow_unauthenticated_clients: true`. Both acknowledgments are required — one without the other is rejected — so a single fat-fingered flag cannot expose the listener. That mode is only for legacy compatibility on a private, trusted network.
 - `health.watchdog.enabled` starts an active upstream socket monitor that checks Docker every `health.watchdog.interval`, logs reachable/unreachable state transitions, and lets `/health` answer from the latest watchdog state instead of waiting for a scrape or probe to discover an outage. The watchdog *dials* the socket — a liveness signal that only proves the socket accepts connections.
 - `health.readiness.enabled` adds an opt-in `/ready` endpoint (default path `/ready`) that goes one step further than the watchdog: instead of dialing the socket, it issues a real `GET /containers/json?limit=1` against the upstream Docker API every `health.readiness.interval` (per-probe deadline `health.readiness.timeout`). It returns `200` only when the daemon actually answers, and `503` on any transport error or non-2xx — catching the failure mode where the socket stays connectable but request handling has wedged. Point a Kubernetes / load-balancer **readiness** check at `/ready` and a **liveness** check at `/health`. The path must start with `/` and must not collide with `health.path`, `metrics.path`, or `admin.path`; `interval` and `timeout` must be positive durations. The whole `health.*` block (readiness included) is immutable across hot reload — changing it requires a restart.
 - `upstream.endpoints` is the ordered list of remote daemon addresses for TCP+mTLS or unix-socket connections. When non-empty, `upstream.socket` is ignored and sockguard uses the first healthy endpoint in the list (active/passive failover). `endpoints` and `upstream.failover.*` are reload-immutable — changing them requires a restart. See [Remote Upstreams & Failover](/multi-host) for the full guide including HA failover, mTLS setup, insecure opt-ins, and the `DOCKER_*` drop-in path.
+- `upstream.endpoints[].insecure_skip_tls_verify` is deprecated in v2.1 and scheduled for removal in v3.0.0. Existing v2.1 configurations remain accepted and keep the same encrypted but unauthenticated wire behavior, with a startup warning naming `tls.ca_file` as the replacement. The Docker environment equivalent (a non-empty `DOCKER_TLS` while `DOCKER_TLS_VERIFY` is empty or unset) has the same schedule and warns with `DOCKER_TLS_VERIFY=1` as its replacement. Configure the daemon's issuing CA or enable Docker TLS verification before v3.0.0.
 - `upstream.request_timeout` bounds the **total** lifetime of a single proxied request as a Go duration string (e.g. `"30s"`); it defaults to `"60s"`. `ResponseHeaderTimeout` only caps the wait for response *headers*; a daemon that sends headers and then hangs the body — or hangs a heavy read like `GET /containers/json` — can otherwise pin a request indefinitely. When active, an expired finite request aborts its upstream connection. If the deadline fires **before** the daemon sends response headers, the caller gets `504 Gateway Timeout` (`reason_code=upstream_request_timeout`), distinct from the `502` an unreachable socket yields. If headers were already committed — the hung-body case above — HTTP does not allow replacing a status that has been sent, so the caller keeps the committed status (typically `200`) and the response body is truncated mid-stream. The request is still aborted rather than pinned, which is the guarantee this setting provides; the `504` is not available once streaming has begun. Long-lived endpoints are **exempt** so the deadline never severs a legitimately long response: event streams, follow/stream logs and stats (including swarm service and task log following), image pull/build/push/load, image export, plugin create/pull/push/upgrade, container export, image get, container archive (`docker cp`, both directions), websocket attach, the BuildKit tunnel endpoints `POST /session` and `POST /grpc`, and the blocking `GET /containers/{id}/wait`; hijacked attach/exec-start connections already bypass it. Set `request_timeout: "off"` to explicitly disable the deadline — the legacy empty string `""` is also still accepted for backward compatibility. Prefer `"off"` when disabling via the env var: `SOCKGUARD_UPSTREAM_REQUEST_TIMEOUT=` (an explicitly empty value) is treated as unset and silently falls back to the `60s` default, while `off` always works; an explicit `request_timeout: ""` in YAML does correctly disable it. Unlike `health.*`, this field is reload-mutable (`upstream.socket`, `upstream.endpoints`, and `upstream.failover` are immutable), so it takes effect on hot reload. Any other value must be a positive duration.
+- `upstream.hijack_inactivity_timeout` bounds how long a hijacked connection (`docker attach`, `docker exec` start) may sit idle — no bytes read or written in either direction — before sockguard tears it down, as a Go duration string (e.g. `"10m"`). Activity in either direction resets the connection-wide timer, so continuous output keeps the input side usable and vice versa. It never caps the total length of an active session, only how long a forgotten one is left open. Hijacked connections are exempt from `upstream.request_timeout` entirely — this is their only deadline. Defaults to `"10m"`, unchanged from sockguard's behavior before this field existed. Unlike `request_timeout` there is no `"off"` spelling: every value, including an empty string, must parse as a positive duration, or config load fails validation. An idle teardown logs at `warn` (`"hijack: idle connection closed after inactivity timeout"`), so it is visible at the default `info` log level instead of only at `debug`. Reload-mutable, same as `request_timeout`.
 - Bounded request-body inspectors set a 30-second body-read deadline before decoding. The access-log and metrics wrappers both preserve the response-controller interface used to set and clear it, so enabling either layer does not turn a slow body into an unlimited request. Attach and exec-start use a separate 30-second handshake deadline for the client body and upstream request/response headers; it is cleared only after a valid `101 Switching Protocols` response so the upgraded stream can remain long lived.
 - `metrics.enabled` is opt-in and serves Prometheus text metrics at `metrics.path` on the same listener. The endpoint is local to Sockguard, is never forwarded to Docker, bypasses Docker API allow rules like `/health`, and remains behind listener security plus `clients.allowed_cidrs`. Every scrape also exports a `sockguard_build_info{version,commit,build_date,go_version}` gauge and a `sockguard_start_time_seconds` gauge for version panels and uptime alerts. Request labels are finite: known methods keep their uppercase name, all other methods use `OTHER`, known route families use bounded templates, and every unknown family uses `unknown`. When the active watchdog is enabled, metrics also include `sockguard_upstream_socket_up` and `sockguard_upstream_watchdog_checks_total`; when the readiness probe is enabled, they also include `sockguard_upstream_api_up` and `sockguard_upstream_readiness_checks_total`.
 - `admin.enabled` is opt-in and exposes a single `POST <admin.path>` endpoint (default `/admin/validate`) that runs the same parse + validate + compile pipeline as the offline `sockguard validate` command against a YAML body in the request payload. Useful as a CI gate before promoting a candidate config to production. Running policy is never mutated. The endpoint rides the main listener, so the listener's CIDR allowlist, mTLS posture, and per-profile rate-limit / concurrency caps all apply. Bodies are hard-capped at `admin.max_request_bytes` (default 512 KiB) via `http.MaxBytesReader` and return `413` on overflow. Non-POST methods return `405` with `Allow: POST`. The response body is a structured JSON report: `{"ok": bool, "rules": int, "profiles": int, "compat_active": bool, "errors": [...]?}`. A failing candidate returns `422` with the validator's per-issue error list; a passing candidate returns `200`. `admin.path` must start with `/` and must not collide with `health.path` or `metrics.path` when those endpoints are also enabled.
@@ -326,18 +329,43 @@ The default listener is loopback TCP `127.0.0.1:2375`, which keeps the Docker AP
 - `POST /images/load` is inspected by default. Sockguard denies image archive imports unless their `manifest.json` repo tags satisfy `request_body.image_load.*` registry policy, or untagged imports are explicitly allowed.
 - `POST /swarm/unlock` and `POST /nodes/*/update` are inspected by default. Swarm unlock is denied unless `request_body.swarm.allow_unlock: true`; node updates block role, availability, name, and unapproved label mutations unless allowed under `request_body.node.*`.
 - `POST /plugins/pull`, `POST /plugins/*/upgrade`, `POST /plugins/*/set`, and `POST /plugins/create` are inspected by default. Sockguard constrains plugin registries, privileges, assignment prefixes, local tar `config.json`, host mounts, device exposure, and capabilities unless you explicitly allow them under `request_body.plugin.*`. `POST /plugins/create` is inspected whether the upload arrives as a raw tar body or a `multipart/form-data` envelope — the multipart stream is parsed and the embedded `config.json` is extracted before policy evaluation.
-- `POST /images/create` (pull), `POST /libpod/images/pull`, and `POST /images/*/push` also decode the base64 `X-Registry-Auth` header (standard, URL-safe, and unpadded variants all accepted) under the same 8 KiB bound as other inspectors; an oversized, non-base64, or non-JSON header is denied fail-closed, and when `image_pull.allowed_registries` is configured the decoded `serveraddress` must canonicalize to an allowlisted host. `POST /build` decodes the analogous `X-Registry-Config` multi-registry header the same bounded way but does not cross-check hosts against a build-time allowlist. Decoded credential fields (username/password/identity token) are never inspected, logged, or reflected in a deny reason.
+- `POST /images/create` (pull), `POST /libpod/images/pull`, and `POST /images/*/push` all decode the base64 `X-Registry-Auth` header (standard, URL-safe, and unpadded variants all accepted) under the same 8 KiB bound as other inspectors; an oversized, non-base64, or non-JSON header is denied fail-closed. The `image_pull.allowed_registries` cross-check against the decoded `serveraddress` applies to the two pull paths only — `POST /images/*/push` is not inspected against it, so a client with push access can push to any registry its own credentials reach, gated only by `insecure_allow_read_exfiltration`. `POST /build` decodes the analogous `X-Registry-Config` multi-registry header the same bounded way but does not cross-check hosts against a build-time allowlist. Decoded credential fields (username/password/identity token) are never inspected, logged, or reflected in a deny reason.
 - `POST /libpod/pods/create` (Podman's libpod-native pod creation) is inspected by default under `request_body.libpod_pod_create`. Sockguard denies a pod-level host network namespace (`netns: {nsmode: "host"}`) unless `allow_host_network: true`, denies a shared PID namespace (`"pid"` present in `shared_namespaces`) unless `allow_shared_pid_namespace: true`, and denies an infra image whose registry isn't in `allowed_infra_image_registries` — reusing the same registry-allowlist shape as `image_pull.allowed_registries` — whenever `infra_image` is set explicitly. When `ownership.owner` is configured, cross-owner pod membership is also denied on both sides of the relationship (#148): `POST /libpod/pods/create` joining another owner's host namespaces, and `POST /libpod/containers/create` targeting another owner's pod — reusing the same `container:<ref>` namespace-sharing checks `POST /containers/create` already applies. See [Owner Label Isolation](#owner-label-isolation) below for the full picture.
 - `POST /libpod/volumes/create`, `POST /libpod/networks/create`, `POST /libpod/networks/{name}/connect`, `POST /libpod/networks/{name}/disconnect`, `POST /libpod/networks/{name}/update`, and `POST /libpod/secrets/create` (Podman's libpod-native equivalents of `POST /volumes/create`/`POST /networks/create`/`POST /networks/*/connect`/`POST /networks/*/disconnect`/`POST /secrets/create`) are inspected by default under `request_body.libpod_volume`, `request_body.libpod_network`, and `request_body.libpod_secret` respectively — these reuse the **same** `volume`/`network`/`secret` config fields documented above rather than introducing separate knobs, since the policy question (custom drivers? driver options? custom IPAM/subnets?) is identical even though libpod's wire shapes differ from the Docker-compat API: volume driver options live under a top-level `Options` key (not `DriverOpts`), network options are snake_case (`ipam_options`, `subnets`) with no swarm/ingress/attachable/config-only fields (libpod has no swarm mode), and secret creation reads `driver` from the query string rather than a JSON body, so the libpod secret inspector never touches `r.Body` at all.
 - `POST /libpod/images/load`, `POST /libpod/images/import`, `POST /libpod/play/kube` (and its identically-handled `POST /libpod/kube/play` alias), `POST /libpod/kube/apply`, and `POST`/`PUT /libpod/manifests/*` have **no** request-body inspector. Admitting any of them requires `insecure_allow_body_blind_writes: true` exactly like uninspected exec. Treat `play/kube` with particular care: a single request can carry a multi-container (or multi-pod) Kubernetes manifest, so one allowed call can provision an arbitrary number of privileged containers from a document sockguard never parses, a materially larger blast radius than the single-container blind writes this flag otherwise covers.
 - Oversized bodies on bounded JSON/tar inspectors are rejected with `413 Payload Too Large` before the inspector decodes them, so a misbehaving or hostile client cannot tie up the filter or the Docker daemon with oversized payloads.
 - `insecure_allow_body_blind_writes` is now reserved for body-bearing controls Sockguard still cannot safely constrain, chiefly arbitrary exec without an `allowed_commands` allowlist, `POST /swarm/join` without `request_body.swarm.allowed_join_remote_addrs`, plugin setting writes without allowed assignment prefixes, Podman build host/local/multipart or resource-usage host-file controls, native Podman image load/import, and the uninspected libpod `play/kube`/`kube/apply`/manifest surface described above. For exec and Podman build, setting it changes request-time behavior, not just startup validation: an exec with no `allowed_commands` is admitted instead of denied, and Podman's host volume/local/multipart controls or `rusage`/`rusagelogfile` output is admitted. The remaining exec and build checks still apply. For native image load/import and the `play/kube`/`kube/apply`/manifest writes there is no equivalent partial protection, so setting the flag admits the request with **no** body inspection at all. Scope any allow rule for these paths as narrowly as possible.
-- `insecure_allow_read_exfiltration` stays `false` by default and must be set explicitly before broad read rules can expose raw archive/export or stream-style endpoints such as `GET /containers/*/archive`, `GET /containers/*/export`, `GET /containers/*/logs`, `GET /containers/*/attach/ws`, `POST /containers/*/attach`, `GET /services/*/logs`, `GET /tasks/*/logs`, `GET /images/get`, or `GET /images/*/get` — as well as their libpod-native counterparts `GET /libpod/containers/*/archive`, `GET /libpod/containers/*/export`, `GET /libpod/containers/*/logs`, `POST /libpod/containers/*/attach`, `GET /libpod/images/export`, `GET /libpod/images/*/get`, `POST /libpod/images/*/push`, and `GET /libpod/generate/kube` (a read despite the "generate" name: Podman serves it as a `GET` that dumps an existing pod's or container's definition to YAML, which can include environment variables and other resource data).
+- `insecure_allow_read_exfiltration` stays `false` by default and must be set explicitly before broad read rules can expose raw archive/export or stream-style endpoints such as `GET /containers/*/archive`, `GET /containers/*/export`, `GET /containers/*/logs`, `GET /containers/*/attach/ws`, `POST /containers/*/attach`, `GET /services/*/logs`, `GET /tasks/*/logs`, `GET /images/get`, or `GET /images/*/get` — as well as their libpod-native counterparts `GET /libpod/containers/*/archive`, `GET /libpod/containers/*/export`, `GET /libpod/containers/*/logs`, `POST /libpod/containers/*/attach`, `GET /libpod/images/export`, `GET /libpod/images/*/get`, `POST /libpod/images/*/push`, and `GET /libpod/generate/kube` (a read despite the "generate" name: Podman serves it as a `GET` that dumps an existing pod's or container's definition to YAML, which can include environment variables and other resource data). Setting it does not make the risk go quiet: sockguard logs a warning naming the exfiltration endpoints the current rules actually admit, once per process, on the first filter-chain build (startup or hot-reload). The top-level rules and each named client profile are reported in separate fields, since the acknowledgement is global and a profile can be the only reason it has to be set. Two empty lists still warn, because that means the acknowledgement is set while no rule needs it.
 - `insecure_accept_opaque_buildkit_tunnels` stays `false` by default and must be set explicitly before startup validation will accept a rule that admits `POST /session` or `POST /grpc` — the opaque BuildKit session/gRPC tunnel Compose uses for `docker compose build`/`up --build` by default (Engine API 1.53 deprecated both, but current Buildx still uses them). (A rule naming a literal `moby.buildkit.v1.Control` method path is held to the same startup acknowledgment, but that path stays denied at runtime regardless — there is no hijack-capable h2c tunnel there for any mediator to terminate, so it is never actually reachable end-to-end.) Unlike `POST /build`'s single inspectable JSON body, this transport carries secrets, SSH agent forwarding, and file sync as an ongoing binary conversation. **This flag is now deprecated**: `request_body.buildkit` (issue #185) mediates the same two endpoints with full per-message policy instead of admitting the tunnel wholesale, and setting the flag to `true` now logs a startup deprecation warning steering operators toward that surface; it will be removed in a future major release. The flag and `request_body.buildkit` are mutually exclusive — mediation supersedes the acknowledgment — so a config cannot set both, and the deprecation warning never fires alongside that validation error. Tecnativa's `GRPC=1`/`SESSION=1` compat env vars still auto-set this flag with their own compat-specific deprecation warning so existing drop-in configs keep working. See the [Compose/BuildKit Transport](/security#compose--buildkit-transport) section of the security model docs, [Migration](/migration) for the step-by-step move off this flag, and the `drydock-with-build.yaml`/`portwing-with-build.yaml` (classic `DOCKER_BUILDKIT=0` builder) or `drydock-with-mediated-build.yaml`/`portwing-with-mediated-build.yaml` (mediated BuildKit) presets for fully-inspectable alternatives.
 - `request_body.buildkit` (issue #185) configures per-gRPC-message mediation of `POST /session`/`POST /grpc`, gating the same two endpoints `insecure_accept_opaque_buildkit_tunnels` admits wholesale. `control.solve.allow` gates the `Control/Solve` RPC — the actual build request — with `security.insecure` always denied (no enabling knob), `network.host` requiring `request_body.build.allow_host_network`, a remote build context requiring `request_body.build.allow_remote_context`, and RUN-instruction inspection on the Dockerfile synced over `session.file_sync` requiring `request_body.build.allow_run_instructions` (the same three sibling `request_body.build` flags used for classic `/build`, reused verbatim rather than duplicated). `control.solve`'s five allowlists (`allowed_cache_import_types`, `allowed_cache_export_types`, `allowed_cache_registries`, `allowed_exporters`, `allowed_exporter_registries`) gate cache import/export types, the registry host of a `registry`-typed cache entry, exporter types, and the destination registry of an `image`-typed exporter that sets `push: true` — each empty by default (deny). `control.allow_info`/`allow_list_workers` gate two worker/version metadata RPCs whose requests carry no policy-relevant field but whose responses are rewritten before relay — a worker record reaches the client with only its id, platforms and buildkit version, never the daemon host's labels, garbage-collection policy or CDI device inventory; `control.allow_status` gates `Control/Status`, admitted only for a ref this same client/profile actually `Solve`d. Under `session`, `auth` (exact registry/realm/scope match for the `moby.filesync.v1.Auth` credential RPCs), `secrets`/`ssh` (exact-ID allowlists), `file_sync`/`file_send` (byte/file/path caps, `file_sync.allow` required to sync any Dockerfile or build context at all), and `upload` (a one-use token bound to an admitted `Solve`) each stay denied until their own `allow`/allowlist fields are set — see the [Request Body Policy Reference](#request-body-policy-reference) table below for the full field list.
 - `response.allow_attestation_statements` stays `false` by default. A truthy `statement` query returns the full in-toto attestation payload, which may have been generated by a different and less-trusted pipeline than the image itself, so it is denied unless explicitly allowed. Empty, `0`, `no`, `false`, and `none` are false after trimming and case-folding; every other non-empty value is true. A request without a truthy statement value still lists available attestation manifests.
 - `response.redact_container_env`, `response.redact_mount_paths`, `response.redact_network_topology`, and `response.redact_sensitive_data` default to `true`. Sockguard redacts workload env arrays across container/service/task/plugin reads, redacts host-path-bearing mount and device metadata across container/volume/task/service/plugin/system-usage reads, strips container/network/swarm/node topology from container/network/service/task/node/swarm/info/system-usage responses, and redacts higher-risk payload material such as config `Spec.Data`, service secret/config references, swarm join/unlock material, and swarm/node TLS metadata. Disable them only for trusted admin clients that truly need Docker's raw metadata.
 - `response.redact_host_topology` defaults to `false` (opt-in): when enabled, Sockguard redacts container-runtime plumbing fields on `GET /info` — `Containerd` (socket path and namespace layout), `FirewallBackend`, `DiscoveredDevices`, and `NRI` — independent of Swarm mode (the redaction runs whether or not the daemon has a `Swarm` section in its response). Enable it when `/info` reads are exposed to a caller that should be able to confirm the daemon is reachable without learning host build details.
+
+## Multiple Listeners
+
+`listeners:` runs more than one main (Docker-API) listener from a single Sockguard process, each with its own bind target and its own admission scope, instead of requiring one process per audience.
+
+```yaml
+listeners:
+  - name: ci
+    socket: /var/run/sockguard-ci.sock
+    socket_mode: "0600"
+    allowed_profiles: [ci]
+
+  - name: ops
+    socket: /var/run/sockguard-ops.sock
+    socket_mode: "0600"
+    allowed_profiles: [ops]
+```
+
+- `listeners:` and the legacy top-level `listen:` block are mutually exclusive — set one or the other, never both. Migrating means moving the `listen:` block's fields into a single-entry `listeners:` list.
+- Each entry's `name` identifies the listener for logs, metrics, health, audit, and reload diagnostics. It must be unique within `listeners`, match the listener-name pattern, and cannot be `admin` (reserved for the admin listener).
+- `allowed_profiles` scopes a listener to a subset of `clients.profiles` and is required and non-empty on every explicit entry. A client that resolves (via mTLS cert, unix peer UID, or source IP) to a profile outside a listener's `allowed_profiles` is denied with `listener_profile_not_allowed`, even if the base policy would otherwise allow it — the listener boundary is evaluated after normal profile resolution and never falls back to a weaker selector. The single-element list `["*"]` preserves legacy behavior: every resolved profile, plus the unprofiled/default-policy path, is admitted.
+- Each entry otherwise takes the same fields as the top-level `listen:` block (`socket`/`address`, `socket_mode`, `tls`, and so on) — see the listener bullets above for what each field does. Unlike the legacy `listen:` block, an explicit `listeners[*]` unix-socket entry does not default `socket_mode`; set it explicitly on every entry.
+- `admin.mount_on` names the single listener that carries `/admin/*` traffic when in-band admin (`admin.enabled: true` with no dedicated `admin.listen`) runs alongside two or more effective listeners. It is required in that case — startup validation rejects a config with 2+ listeners, in-band admin enabled, and no `admin.mount_on` — and the admin endpoints are unreachable from any other listener. Configuring a dedicated `admin.listen` instead sidesteps `mount_on` entirely.
+
+See [`configs/multi-listener.yaml`](https://github.com/CodesWhat/sockguard/blob/main/app/configs/multi-listener.yaml) for a complete working example, including a TCP+mTLS variant and disjoint per-listener client profiles.
 
 ## Request Body Policy Reference
 
@@ -877,6 +905,123 @@ would-have-been-blocked volume side by side:
 sum by (mode) (rate(sockguard_http_denied_requests_total[5m]))
 ```
 
+## Policy Discovery Workflow
+
+`mode: audit` has a second use beyond staging a tighter rule on an existing
+profile: bootstrapping a policy for a client you don't already have rules
+for. Point a deny-everything profile at the real client, run its normal
+traffic through it, and every profile denial comes back as a `would_deny`
+record carrying the exact method and normalized path — the answer to "what
+does this thing actually call" without reading its source or guessing from
+vendor docs. Pre-auth admission failures, including allowed-CIDR and identity
+lookup failures, remain enforced and are not converted to `would_deny`.
+
+**1. Prerequisites.** Access and audit records both carry `would_deny` and
+`normalized_path`, but the dedicated audit log is off by default
+(`log.audit.enabled` defaults to `false` — see [Logging And
+Audit](#logging-and-audit)). The `discovery.yaml` preset in `app/configs/`
+turns it on for you: a `discovery` profile in `mode: audit` with a single
+deny-all rule, applied to every caller of a dedicated owner-only unix socket
+via `clients.default_profile`, with the audit stream on `stdout` (separate
+from the operational log, which stays on its `stderr` default) so it's
+trivial to capture on its own.
+
+**2. Start with the discovery preset.**
+
+```bash
+sockguard serve --config app/configs/discovery.yaml
+```
+
+The preset binds `/var/run/sockguard-discovery.sock` with mode `0600` instead
+of relying on Sockguard's default TCP listener. Mount that dedicated socket
+only into the client being observed. If the client must use authenticated TCP
+or unix-peer identity instead, copy the production listener settings into a
+private discovery config and keep that listener equally isolated; do not put
+the discovery profile on a shared listener.
+
+**3. Exercise the client normally.** Let it run through its actual startup
+and steady-state behavior: list, inspect, create, whatever it does on a
+normal day. `mode: audit` forwards requests denied by the resolved profile;
+pre-auth admission gates still enforce. The observed client therefore has
+unfiltered Docker API access through the dedicated discovery listener while
+the preset is active, so give that socket only to a client you already trust
+with the daemon. Every profile denial that was forwarded is logged as
+`would_deny`.
+
+**4. Harvest the events.** Every audit event the client's traffic produced
+carries `decision: "would_deny"`, plus the request's `method` and
+`normalized_path`. A denied `POST /v1.51/containers/create` looks like:
+
+```json
+{"event_type":"http_request","timestamp":"2026-08-29T14:32:07.118453Z","request_id":"a1b2c3d4e5f67890","client_request_id":"","trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","trace_parent_id":"00f067aa0ba902b7","trace_span_id":"7f1a3c9e2b6d4f80","trace_sampled":true,"method":"POST","raw_path":"/v1.51/containers/create","normalized_path":"/containers/create","decision":"would_deny","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","matched_rule":0,"selected_profile":"discovery","rollout_mode":"audit","status":201,"actor_remote_addr":"@","actor_source_ip":"","transport_listener":"unix","transport_scheme":"http","transport_protocol":"HTTP/1.1","listener_name":"discovery","ownership":{"enabled":false,"owner":"","label_key":""}}
+```
+
+`trace_id`, `trace_span_id`, `trace_parent_id`, and `trace_sampled` ride every audit event (and every access log line and upstream-error log — see [Logging And Audit](#logging-and-audit)) with no `omitempty`, so a real event always carries all four; `trace_sampled` renders `false` rather than vanishing when the incoming request carried no sampled trace context.
+
+`status: 201` is the daemon's real response — the request was actually
+forwarded and actually succeeded; `would_deny` only describes what the
+*profile* would have done. Pull the distinct method/path pairs out of the
+stream with `jq`:
+
+```bash
+docker logs sockguard 2>/dev/null \
+  | jq -r 'select(.decision == "would_deny") | "\(.method) \(.normalized_path)"' \
+  | sort -u
+```
+
+A morning of traffic from, say, a Traefik-style consumer might come back as:
+
+```text
+GET /_ping
+GET /containers/4f8a1c2e9b7d/json
+GET /containers/json
+GET /events
+GET /version
+POST /containers/4f8a1c2e9b7d/start
+```
+
+**5. Turn that into rules.** `normalized_path` carries the real resource ID
+from the traffic that happened to run, not a wildcard — generalize per-
+resource segments (`4f8a1c2e9b7d`) to `*` by hand before writing the rule,
+the same way every other preset in `app/configs/` does. The harvested output
+above becomes:
+
+```yaml filename="sockguard.yaml"
+clients:
+  default_profile: traefik-live
+  profiles:
+    - name: traefik-live
+      rules:
+        - match: { method: GET, path: "/_ping" }
+          action: allow
+        - match: { method: GET, path: "/version" }
+          action: allow
+        - match: { method: GET, path: "/events" }
+          action: allow
+        - match: { method: GET, path: "/containers/json" }
+          action: allow
+        - match: { method: GET, path: "/containers/*/json" }
+          action: allow
+        - match: { method: POST, path: "/containers/*/start" }
+          action: allow
+        - match: { method: "*", path: "/**" }
+          action: deny
+```
+
+Note the new profile has no `mode` field — that's step 6, not this one.
+Leaving `discovery.yaml`'s own deny-all rule in `mode: audit` while you
+edit is fine; nothing is enforced either way until you switch.
+
+**6. Switch off shadow mode and verify.** Replace the discovery config with
+the rules you just wrote — `mode: audit` omitted (or set to `enforce`,
+which is the same thing) so denials are real again — restart sockguard, and
+run the client through the same paths one more time. Confirm two things:
+the client still works exactly as it did in step 3, with no new errors; and
+the audit log shows no `decision: "deny"` events for it (`would_deny` itself
+can't appear anymore — that decision only exists under `warn`/`audit`). If
+you see a real `deny`, you missed a rule; add it and repeat this step before
+calling the profile done.
+
 ## Hot Reload
 
 Sockguard can reload policy at runtime without dropping connections.
@@ -941,10 +1086,10 @@ of `enabled`, `allowed_signing_keys`, `allowed_keyless`,
 pinned bootstrap values.
 
 Everything else — `rules`, `clients.*`, `response.*`, `request_body.*`,
-`ownership.*`, `insecure_allow_*`, and `upstream.request_timeout` (of the
-upstream block, only `request_timeout` is mutable; `socket`, `endpoints`, and
-`failover` are pinned) — is rebuilt and atomically applied on every successful
-reload.
+`ownership.*`, `insecure_allow_*`, and `upstream.request_timeout` /
+`upstream.hijack_inactivity_timeout` (of the upstream block, only those two
+fields are mutable; `socket`, `endpoints`, and `failover` are pinned) — is
+rebuilt and atomically applied on every successful reload.
 
 ### Reload outcomes
 
@@ -1212,6 +1357,7 @@ even when not enumerated here.
 | `SOCKGUARD_LISTEN_SOCKET`                      | `listen.socket`                       | _(unset)_                       | Switches to a unix socket listener. Sockguard hardens the socket to mode `0600` and rejects broader modes.  |
 | `SOCKGUARD_UPSTREAM_SOCKET`                    | `upstream.socket`                     | `/var/run/docker.sock`          | Path to the real Docker daemon socket Sockguard proxies to.                                                  |
 | `SOCKGUARD_UPSTREAM_REQUEST_TIMEOUT`           | `upstream.request_timeout`            | `"60s"`                         | Total per-request deadline (Go duration, e.g. `30s`). Set `off` (or `""`) to disable — prefer `off` here since an explicitly empty env var is treated as unset and falls back to the default. Finite requests over the deadline return `504`; streaming and long-lived endpoints are exempt. Reload-mutable. |
+| `SOCKGUARD_UPSTREAM_HIJACK_INACTIVITY_TIMEOUT` | `upstream.hijack_inactivity_timeout`  | `"10m"`                         | Idle deadline for hijacked `docker attach`/`exec` start connections (Go duration, e.g. `10m`), refreshed on activity in either direction. No `off` spelling — must be a positive duration. Reload-mutable. |
 | `SOCKGUARD_UPSTREAM_FAILOVER_HEALTH_INTERVAL`  | `upstream.failover.health_interval`   | `""` (resolver default: 5s)     | Background health-probe interval per endpoint. Empty uses the resolver default of 5s; a negative value disables continuous probing (failures still detected at request time). Applies only when `upstream.endpoints` is set. Reload-immutable — restart required. |
 | `SOCKGUARD_UPSTREAM_FAILOVER_HEALTH_TIMEOUT`   | `upstream.failover.health_timeout`    | `""` (resolver default: 2s)     | Per-probe dial and TLS-handshake timeout. Empty uses the resolver default of 2s. Applies only when `upstream.endpoints` is set. Reload-immutable — restart required. |
 
@@ -1522,6 +1668,11 @@ ALLOW_STOP=1       # Allow POST /containers/{id}/stop
 ALLOW_RESTARTS=1   # Allow POST /containers/{id}/stop|restart|kill
 ALLOW_CREATE=0     # Deny POST /containers/create (default)
 ALLOW_EXEC=0       # Deny POST /containers/{id}/exec (default)
+ALLOW_PAUSE=0      # Deny POST /containers/{id}/pause (default)
+ALLOW_UNPAUSE=0    # Deny POST /containers/{id}/unpause (default)
+ALLOW_KILL=0       # Deny POST /containers/{id}/kill (default; ALLOW_RESTARTS also grants it)
+ALLOW_DELETE=0     # Deny DELETE /containers/{id} (default)
+ALLOW_PRUNE=0      # Deny POST /containers/prune (default)
 ```
 
 Sockguard also accepts the legacy singular `ALLOW_RESTART=1` alias, but `ALLOW_RESTARTS` is the upstream Tecnativa/LinuxServer name.
@@ -1529,3 +1680,15 @@ Sockguard also accepts the legacy singular `ALLOW_RESTART=1` alias, but `ALLOW_R
 ## Precedence
 
 CLI flags > environment variables > config file > defaults
+
+`sockguard serve` also registers five flags that override specific config keys directly, independent of the `SOCKGUARD_*` env var precedence above:
+
+| Flag | Overrides |
+|------|-----------|
+| `--listen-socket` | `listen.socket` |
+| `--upstream-socket` | `upstream.socket` |
+| `--log-level` | `log.level` |
+| `--log-format` | `log.format` |
+| `--deny-verbosity` | `response.deny_verbosity` (`verbose` or `minimal`) |
+
+Each only takes effect when explicitly set on the command line; an unset flag leaves the config-file/env-var value in place.

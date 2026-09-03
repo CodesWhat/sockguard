@@ -68,6 +68,33 @@ func TestDenyRegistryAuthHeaderReason(t *testing.T) {
 			wantReason: "image pull denied: X-Registry-Auth header exceeds 8192 byte limit",
 		},
 		{
+			// A header exactly at maxRegistryAuthHeaderBytes must NOT be
+			// denied by the pre-decode size gate (registry_auth.go line 32,
+			// len(trimmed) > max): only strictly-over is rejected there. It
+			// still decodes (to all-zero bytes) and then fails as not valid
+			// JSON — proving the size gate itself let it through. A
+			// boundary mutant (> -> >=) would instead deny it as
+			// "exceeds ... byte limit" at this exact length.
+			name:       "header exactly at byte limit passes the size gate",
+			header:     strings.Repeat("A", maxRegistryAuthHeaderBytes),
+			wantReason: "image pull denied: X-Registry-Auth header is not valid JSON",
+		},
+		{
+			// "+/+/AQ==" decodes successfully under base64.StdEncoding but
+			// contains '+' and '/', which base64.URLEncoding rejects
+			// outright. decodeRegistryAuthHeaderBytes must keep the
+			// successful StdEncoding result rather than re-attempting the
+			// URLEncoding fallback (registry_auth.go line 36, err != nil
+			// after the StdEncoding attempt). A CONDITIONALS_NEGATION
+			// mutant (err != nil -> err == nil) would re-run URLEncoding on
+			// this already-successfully-decoded value, fail it, and cascade
+			// into RawStdEncoding/RawURLEncoding, both of which also reject
+			// '+' — ending in a spurious "not valid base64" denial.
+			name:       "standard-alphabet-only base64 is not re-decoded as URL-safe",
+			header:     "+/+/AQ==",
+			wantReason: "image pull denied: X-Registry-Auth header is not valid JSON",
+		},
+		{
 			name:    "url-safe base64 alphabet decodes",
 			header:  base64.URLEncoding.EncodeToString([]byte(`{"serveraddress":"registry.internal"}`)),
 			allowed: []string{"registry.internal"},
@@ -199,6 +226,16 @@ func TestStripRegistryHeaderScheme(t *testing.T) {
 		{"https://registry.internal", "registry.internal"},
 		{"https://registry.internal/v2/", "registry.internal"},
 		{"http://registry.internal:5000/v1/", "registry.internal:5000"},
+		// "://" at index 0 exercises the idx >= 0 boundary on the scheme
+		// strip (registry_auth.go line 121): idx must include zero. A
+		// boundary mutant (>= -> >) would skip the strip here, leaving the
+		// leading "://" for the next "/"-search step to mishandle.
+		{"://x", "x"},
+		// After stripping "https://", the remainder starts with "/" at
+		// index 0 — the idx >= 0 boundary on the path strip (registry_auth.go
+		// line 124). A boundary mutant (>= -> >) would leave the path
+		// unstripped instead of truncating to an empty host.
+		{"https:///foo", ""},
 	}
 	for _, tt := range tests {
 		if got := stripRegistryHeaderScheme(tt.in); got != tt.want {

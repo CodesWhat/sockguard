@@ -451,6 +451,13 @@ func validateUpstream(cfg *Config) []string {
 			errs = append(errs, fmt.Sprintf(`upstream.request_timeout must be a positive duration or "off" to disable, got %q`, cfg.Upstream.RequestTimeout))
 		}
 	}
+	// Unlike RequestTimeout, hijack_inactivity_timeout has no "off"/legacy-empty
+	// disable spelling (see its config.go doc comment), so every value —
+	// including an explicit empty string — goes through ParseDuration and 0 is
+	// rejected the same as a negative duration.
+	if hijackTimeout, err := time.ParseDuration(cfg.Upstream.HijackInactivityTimeout); err != nil || hijackTimeout <= 0 {
+		errs = append(errs, fmt.Sprintf("upstream.hijack_inactivity_timeout must be a positive duration, got %q", cfg.Upstream.HijackInactivityTimeout))
+	}
 	if d := cfg.Upstream.Failover.HealthInterval; d != "" {
 		// Zero is ambiguous: durationOrZero maps it to the resolver default (5s),
 		// not "disabled", which surprises an operator who writes "0s" meaning off.

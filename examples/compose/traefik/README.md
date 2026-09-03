@@ -25,6 +25,6 @@ docker compose up -d
 
 ## Notes
 
-- This config is intentionally tighter than `app/configs/traefik.yaml`, which uses broad globs and `insecure_allow_read_exfiltration: true` for compatibility. If Traefik probes an undiscovered path, add a `GET` rule for it here rather than widening to the bundled preset.
+- This config's rules match `app/configs/traefik.yaml`, which was narrowed to the same named list/inspect paths and no longer sets `insecure_allow_read_exfiltration: true`. If Traefik probes an undiscovered path, add a `GET` rule for it rather than widening back to a `/containers/**` glob.
 - Replace the example entrypoint/domain labels on any services you expose through Traefik.
 - For Swarm mode, ensure your Swarm manager mounts the sockguard socket and the `services`/`tasks` rules above are present.

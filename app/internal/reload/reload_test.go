@@ -1,6 +1,7 @@
 package reload
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -22,6 +24,10 @@ import (
 type fakeWatcher struct {
 	events chan fsnotify.Event
 	errors chan error
+
+	// closeErr, when set, is returned by Close() instead of nil — used to
+	// exercise the watcher.Close() error-logging branch in Run()'s defer.
+	closeErr error
 
 	mu      sync.Mutex
 	closed  bool
@@ -62,7 +68,7 @@ func (f *fakeWatcher) Close() error {
 	f.closed = true
 	close(f.events)
 	close(f.errors)
-	return nil
+	return f.closeErr
 }
 
 func (f *fakeWatcher) Events() <-chan fsnotify.Event { return f.events }
@@ -76,6 +82,34 @@ func (f *fakeWatcher) emit(ev fsnotify.Event) {
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// syncBuffer is a concurrency-safe io.Writer wrapping a bytes.Buffer, used
+// to capture slog output for assertions on which log lines a
+// mutation-covered branch produces (the loop and safeOnReload write from a
+// background goroutine while the test reads).
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+// capturingLogger returns a *slog.Logger writing plain text to a
+// concurrency-safe buffer tests can inspect for specific log lines.
+func capturingLogger() (*slog.Logger, *syncBuffer) {
+	buf := &syncBuffer{}
+	return slog.New(slog.NewTextHandler(buf, nil)), buf
 }
 
 // TestNewRejectsMissingPath / OnReload covers the construction guards.
@@ -109,6 +143,31 @@ func TestNewAbsolvesPath(t *testing.T) {
 // TestTriggerInvokesOnReloadAfterDebounce verifies the manual trigger
 // path: a single Trigger() should fire OnReload exactly once after the
 // debounce window elapses.
+// TestDebouncerArmRespectsPositiveInterval covers the interval<=0 clamp in
+// debouncer.arm(): a positive duration must be used as given, not clamped
+// to the 1-microsecond floor that arm() reserves for duration<=0. Arming
+// with 300ms must therefore stay quiet inside a much shorter window and
+// only fire once the real window elapses.
+func TestDebouncerArmRespectsPositiveInterval(t *testing.T) {
+	t.Parallel()
+
+	d := newDebouncer(300 * time.Millisecond)
+	defer d.close()
+	d.arm()
+
+	select {
+	case <-d.fired():
+		t.Fatal("debounce fired early")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	select {
+	case <-d.fired():
+	case <-time.After(2 * time.Second):
+		t.Fatal("debounce did not fire within deadline")
+	}
+}
+
 func TestTriggerInvokesOnReloadAfterDebounce(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -927,4 +986,249 @@ func TestFileSnapshotChangedFrom(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestNewLoggerAndDebounceDefaults covers the two "only default when unset"
+// guards in New(): a caller-supplied Logger/Debounce must survive
+// construction untouched, and a zero value must be replaced by the
+// documented default (slog.Default() / DefaultDebounce).
+func TestNewLoggerAndDebounceDefaults(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil logger defaults to slog.Default", func(t *testing.T) {
+		t.Parallel()
+		r, err := New(Options{Path: "cfg.yaml", OnReload: func() {}})
+		if err != nil {
+			t.Fatalf("New(): %v", err)
+		}
+		if r.opts.Logger != slog.Default() {
+			t.Fatal("Logger was not defaulted to slog.Default()")
+		}
+	})
+
+	t.Run("provided logger is preserved", func(t *testing.T) {
+		t.Parallel()
+		custom := discardLogger()
+		r, err := New(Options{Path: "cfg.yaml", OnReload: func() {}, Logger: custom})
+		if err != nil {
+			t.Fatalf("New(): %v", err)
+		}
+		if r.opts.Logger != custom {
+			t.Fatal("New() overwrote a caller-supplied Logger")
+		}
+	})
+
+	t.Run("zero debounce defaults to DefaultDebounce", func(t *testing.T) {
+		t.Parallel()
+		r, err := New(Options{Path: "cfg.yaml", OnReload: func() {}})
+		if err != nil {
+			t.Fatalf("New(): %v", err)
+		}
+		if r.opts.Debounce != DefaultDebounce {
+			t.Fatalf("Debounce = %v, want %v", r.opts.Debounce, DefaultDebounce)
+		}
+	})
+
+	t.Run("nonzero debounce is preserved", func(t *testing.T) {
+		t.Parallel()
+		want := 7 * time.Second
+		r, err := New(Options{Path: "cfg.yaml", OnReload: func() {}, Debounce: want})
+		if err != nil {
+			t.Fatalf("New(): %v", err)
+		}
+		if r.opts.Debounce != want {
+			t.Fatalf("Debounce = %v, want %v (New() must not overwrite a set value)", r.opts.Debounce, want)
+		}
+	})
+}
+
+// TestRunClosesWatcherAndLogsCloseError covers the closeErr != nil branch in
+// Run()'s deferred watcher.Close() handling: a close failure must produce a
+// warning log line, and a clean close must not.
+func TestRunClosesWatcherAndLogsCloseError(t *testing.T) {
+	t.Parallel()
+
+	run := func(t *testing.T, closeErr error) string {
+		t.Helper()
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "cfg.yaml")
+		if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+			t.Fatalf("write cfg: %v", err)
+		}
+
+		fw := newFakeWatcher()
+		fw.closeErr = closeErr
+		logger, buf := capturingLogger()
+
+		r, err := New(Options{
+			Path:         cfgPath,
+			Debounce:     time.Millisecond,
+			Logger:       logger,
+			NewWatcher:   func() (Watcher, error) { return fw, nil },
+			SignalNotify: func(c chan<- os.Signal, _ ...os.Signal) {},
+			SignalStop:   func(chan<- os.Signal) {},
+			OnReload:     func() {},
+		})
+		if err != nil {
+			t.Fatalf("New(): %v", err)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { defer close(done); _ = r.Run(ctx) }()
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("Run() did not return after context cancel")
+		}
+		return buf.String()
+	}
+
+	t.Run("close error is logged", func(t *testing.T) {
+		t.Parallel()
+		out := run(t, errors.New("boom"))
+		if !strings.Contains(out, "close watcher") {
+			t.Fatalf("log output = %q, want it to contain %q", out, "close watcher")
+		}
+	})
+
+	t.Run("clean close is not logged", func(t *testing.T) {
+		t.Parallel()
+		out := run(t, nil)
+		if strings.Contains(out, "close watcher") {
+			t.Fatalf("log output = %q, want no %q line on a clean close", out, "close watcher")
+		}
+	})
+}
+
+// TestWatcherErrorsChannelLogging covers the err != nil guard in the
+// watcher.Errors() case of loop(): only a non-nil error should produce a
+// warning log line.
+func TestWatcherErrorsChannelLogging(t *testing.T) {
+	t.Parallel()
+
+	run := func(t *testing.T, sendErr error) string {
+		t.Helper()
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "cfg.yaml")
+		if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+			t.Fatalf("write cfg: %v", err)
+		}
+
+		fw := newFakeWatcher()
+		logger, buf := capturingLogger()
+		fired := make(chan struct{}, 1)
+
+		r, err := New(Options{
+			Path:         cfgPath,
+			Debounce:     -1, // immediate fire, no wait for debounce
+			Logger:       logger,
+			NewWatcher:   func() (Watcher, error) { return fw, nil },
+			SignalNotify: func(c chan<- os.Signal, _ ...os.Signal) {},
+			SignalStop:   func(chan<- os.Signal) {},
+			OnReload:     func() { fired <- struct{}{} },
+		})
+		if err != nil {
+			t.Fatalf("New(): %v", err)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { defer close(done); _ = r.Run(ctx) }()
+
+		fw.errors <- sendErr
+
+		// Use a subsequent Trigger to know the loop is still alive and
+		// making progress after the errors-channel send. This does NOT by
+		// itself prove the errors-channel case was the one processed
+		// first: fw.errors and r.trigger are both buffered, so select can
+		// legally service either ready case first, and the debounce fire
+		// that delivers to fired could in principle beat the errors-branch
+		// log write to the buffer.
+		r.Trigger()
+		select {
+		case <-fired:
+		case <-time.After(time.Second):
+			t.Fatal("OnReload did not fire after trigger following the errors-channel send")
+		}
+
+		// For the "logged" case, don't trust ordering: poll the log
+		// buffer for the expected line with a bounded deadline before
+		// cancel() and the final read, so the assertion below can't race
+		// the loop goroutine's still-in-flight Warn() call.
+		if sendErr != nil {
+			deadline := time.Now().Add(2 * time.Second)
+			for !strings.Contains(buf.String(), "config watcher error") {
+				if time.Now().After(deadline) {
+					t.Fatal("timed out waiting for \"config watcher error\" to appear in the log")
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
+
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("Run() did not return after context cancel")
+		}
+		return buf.String()
+	}
+
+	t.Run("non-nil error is logged", func(t *testing.T) {
+		t.Parallel()
+		out := run(t, errors.New("transient watcher hiccup"))
+		if !strings.Contains(out, "config watcher error") {
+			t.Fatalf("log output = %q, want it to contain %q", out, "config watcher error")
+		}
+	})
+
+	t.Run("nil error is not logged", func(t *testing.T) {
+		t.Parallel()
+		out := run(t, nil)
+		if strings.Contains(out, "config watcher error") {
+			t.Fatalf("log output = %q, want no %q line for a nil error", out, "config watcher error")
+		}
+	})
+}
+
+// TestSafeOnReloadLogsOnlyOnPanic covers the recover() != nil guard in
+// safeOnReload: only a panicking OnReload should produce an error log line.
+func TestSafeOnReloadLogsOnlyOnPanic(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no panic produces no log", func(t *testing.T) {
+		t.Parallel()
+		logger, buf := capturingLogger()
+		r, err := New(Options{
+			Path:     "cfg.yaml",
+			Logger:   logger,
+			OnReload: func() {},
+		})
+		if err != nil {
+			t.Fatalf("New(): %v", err)
+		}
+		r.safeOnReload()
+		if out := buf.String(); strings.Contains(out, "panicked") {
+			t.Fatalf("log output = %q, want no panic log when OnReload does not panic", out)
+		}
+	})
+
+	t.Run("panic produces an error log", func(t *testing.T) {
+		t.Parallel()
+		logger, buf := capturingLogger()
+		r, err := New(Options{
+			Path:     "cfg.yaml",
+			Logger:   logger,
+			OnReload: func() { panic("intentional") },
+		})
+		if err != nil {
+			t.Fatalf("New(): %v", err)
+		}
+		r.safeOnReload()
+		if out := buf.String(); !strings.Contains(out, "panicked") {
+			t.Fatalf("log output = %q, want a panic log when OnReload panics", out)
+		}
+	})
 }
