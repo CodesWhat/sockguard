@@ -9,7 +9,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1508,6 +1510,52 @@ func TestAddVisibilityLabelFiltersLeavesQueryUntouchedWhenSelectorsAlreadyPresen
 	// otherwise ownership's client-value drop would strip it downstream.
 	if got := dockerfilters.InjectedSelectors(forwarded, "label"); len(got) != 2 {
 		t.Fatalf("InjectedSelectors = %v, want both selectors recorded", got)
+	}
+}
+
+// TestMiddlewareRejectsFalseValuedLegacyFilterBypass exercises the full
+// middleware, filters query and all, against a fake upstream: a client that
+// sends the policy's own selector spelled with Docker's legacy object
+// encoding and a `false` value must still get the selector forwarded.
+// dockerd and Podman only install a legacy-object filter entry whose value is
+// true, so a false-valued entry is not a filter at all; a decoder that kept
+// the key regardless of the boolean let this exact query make the
+// "selector already present" check in addVisibilityLabelFilters believe the
+// selector was already there, forwarding the request unfiltered and — on a
+// Podman upstream with no other filter — returning hidden resources.
+func TestMiddlewareRejectsFalseValuedLegacyFilterBypass(t *testing.T) {
+	t.Parallel()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	var gotRawQuery string
+
+	handler := middlewareWithDeps(logger, Options{
+		VisibleResourceLabels: []string{"com.sockguard.visible=true"},
+	}, visibilityDeps{})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotRawQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	query := url.Values{
+		"filters": {`{"label":{"com.sockguard.visible=true":false}}`},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/json?"+query.Encode(), nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+
+	forwardedFilters, err := url.ParseQuery(gotRawQuery)
+	if err != nil {
+		t.Fatalf("ParseQuery(%q) error = %v", gotRawQuery, err)
+	}
+	filters, err := dockerfilters.Decode(forwardedFilters.Get("filters"))
+	if err != nil {
+		t.Fatalf("Decode(%q) error = %v", forwardedFilters.Get("filters"), err)
+	}
+	if !slices.Contains(filters["label"], "com.sockguard.visible=true") {
+		t.Fatalf("forwarded label filters = %#v, want com.sockguard.visible=true present", filters["label"])
 	}
 }
 

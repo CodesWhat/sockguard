@@ -48,6 +48,46 @@ func TestDecode(t *testing.T) {
 			wantErr: "unexpected label filter value type",
 		},
 		{
+			// Docker's and Podman's own filter parsers only install a
+			// legacy-object entry whose value is true; a false-valued entry
+			// is not a filter and must not survive decode as one, or a
+			// client can use it to fake out an "already present" check on
+			// a selector the proxy is about to inject.
+			name:  "legacy object drops false-valued entry",
+			input: `{"label":{"com.example.visible=true":false}}`,
+			want: map[string][]string{
+				"label": {},
+			},
+		},
+		{
+			name:  "legacy object keeps true-valued entry",
+			input: `{"label":{"com.example.visible=true":true}}`,
+			want: map[string][]string{
+				"label": {"com.example.visible=true"},
+			},
+		},
+		{
+			name:  "legacy object mixed true and false under one key keeps only true",
+			input: `{"label":{"a=1":true,"b=2":false,"c=3":true}}`,
+			want: map[string][]string{
+				"label": {"a=1", "c=3"},
+			},
+		},
+		{
+			// The array form has no boolean to drop, so a false-valued
+			// legacy entry under the same key must not affect an array-form
+			// key that names its own distinct filter type — the two forms
+			// never share a JSON key (json.Unmarshal only keeps one value
+			// per key), so this exercises the array form's independence,
+			// not a merge of the two.
+			name:  "array form keeps values regardless of a false entry elsewhere",
+			input: `{"label":["a=1"],"dangling":{"b=2":false,"c=3":true}}`,
+			want: map[string][]string{
+				"label":    {"a=1"},
+				"dangling": {"c=3"},
+			},
+		},
+		{
 			// Negation (key!=value) must pass through verbatim. Docker treats
 			// `!=` as an in-string sentinel; callers don't parse it, so round-
 			// tripping the literal string keeps the original semantics.
