@@ -81,19 +81,23 @@ jobs:
           HTML="$(curl -fsSL --retry 3 --retry-delay 5 "${URL}")"
 
           # The version-history page lists a "v1.NN API changes" heading (and
-          # matching anchor) for every documented minor. Extract every v1.NN
-          # token, strip the leading "v", and take the numerically highest
-          # minor — grep for the pattern rather than parsing the page as
-          # structured HTML, since Docker's docs markup is not a stable
-          # contract but the "v1.NN" version token itself is.
-          LATEST="$(printf '%s\n' "${HTML}" \
-            | grep -oE 'v1\.[0-9]+' \
-            | sed 's/^v//' \
-            | sort -t. -k2 -n -u \
-            | tail -n1)"
+          # matching anchor) for every documented minor, but a bare "v1.NN"
+          # token also shows up elsewhere on the page — inlined SVG icons'
+          # `<path d="...">` coordinate data contains literals like "v1.875",
+          # which outsort every real version. That is what made this job
+          # report Engine API "1.875" on 2026-09-01 and demand a ceiling bump
+          # Docker had never shipped. The extraction lives in
+          # scripts/engine-api-latest.sh, fixture-tested in
+          # scripts/engine-api-latest.test.mjs, rather than staying an inline
+          # pipeline: it needs to fail closed when the *newest* heading is
+          # reworded or recased (e.g. "v1.56 API updates", "V1.56 API
+          # changes") rather than silently keep reporting the previous
+          # version, and that branching logic is worth covering with fixtures
+          # instead of trusting a one-off grep chain against a live page.
+          LATEST="$(printf '%s\n' "${HTML}" | bash scripts/engine-api-latest.sh)"
 
           if [ -z "${LATEST}" ]; then
-            echo "::error::could not extract any v1.NN version token from ${URL} — page layout may have changed"
+            echo "::error::scripts/engine-api-latest.sh printed no version for ${URL}"
             exit 1
           fi
 

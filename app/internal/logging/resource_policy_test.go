@@ -184,6 +184,35 @@ func TestResourcePolicyMetaPoolZeroesBeforeReuse(t *testing.T) {
 	putResourcePolicyMeta(reused)
 }
 
+// TestGetResourcePolicyMetaFallsBackWhenPoolReturnsWrongType mirrors
+// TestGetMutationRecordFallsBackWhenPoolReturnsWrongType's pattern: drain
+// the pool's per-P private slots, then poison both New and the shared list
+// with a non-*ResourcePolicyMeta value, forcing GetResourcePolicyMeta's
+// type assertion at resource_policy.go:55 to fail and exercising the
+// defensive nil-fallback branch at line 56 -- otherwise unreachable, since
+// New always returns *ResourcePolicyMeta.
+func TestGetResourcePolicyMetaFallsBackWhenPoolReturnsWrongType(t *testing.T) {
+	for i := 0; i < 2*runtime.GOMAXPROCS(0)+4; i++ {
+		resourcePolicyMetaPool.Get()
+	}
+
+	wrong := new(int)
+	originalNew := resourcePolicyMetaPool.New
+	resourcePolicyMetaPool.New = func() any { return wrong }
+	t.Cleanup(func() {
+		resourcePolicyMetaPool.New = originalNew
+	})
+	resourcePolicyMetaPool.Put(wrong)
+
+	meta := GetResourcePolicyMeta()
+	if meta == nil {
+		t.Fatal("GetResourcePolicyMeta() = nil, want a usable fallback value")
+	}
+	if *meta != (ResourcePolicyMeta{}) {
+		t.Fatalf("fallback meta = %#v, want zero value", *meta)
+	}
+}
+
 func TestAuditResourcePolicyDeepCopySurvivesConcurrentPoolReuse(t *testing.T) {
 	meta := GetResourcePolicyMeta()
 	*meta = ResourcePolicyMeta{

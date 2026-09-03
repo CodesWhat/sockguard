@@ -1449,6 +1449,12 @@ func TestSortDeviceCgroupPerms(t *testing.T) {
 		{"rr", "r"},
 		{"rww", "rw"},
 		{"rrmm", "rm"},
+		// "z" and "y" both fall through cgroupPermOrder's default case
+		// (order 3), so the sort.Slice less-func compares two equal-order,
+		// distinct-byte elements. A CONDITIONALS_BOUNDARY mutant on the
+		// less-func's < (-> <=) breaks the strict-weak-ordering contract for
+		// this tie, which flips Go's sort.Slice into swapping them.
+		{"zy", "zy"},
 	}
 
 	for _, tt := range tests {
@@ -2409,6 +2415,37 @@ func TestIsValidDeviceCgroupPerms(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDenySecurityOptReasonAppArmorAllowlist covers container_create.go line
+// 1490's apparmor allowlist gate: len(p.allowedAppArmorProfiles) > 0 &&
+// !slices.Contains(...).
+func TestDenySecurityOptReasonAppArmorAllowlist(t *testing.T) {
+	t.Run("empty allowlist does not deny (boundary: > 0 must stay false at zero)", func(t *testing.T) {
+		policy := newContainerCreatePolicy(ContainerCreateOptions{})
+		req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(
+			`{"Image":"alpine","HostConfig":{"SecurityOpt":["apparmor=custom-profile"]}}`))
+		reason, err := policy.inspect(nil, req, "/containers/create")
+		if err != nil {
+			t.Fatalf("inspect() error = %v", err)
+		}
+		if reason != "" {
+			t.Fatalf("inspect() reason = %q, want empty (no allowlist configured must never deny)", reason)
+		}
+	})
+
+	t.Run("configured allowlist still denies an unlisted profile (negation: > 0 must not become <= 0)", func(t *testing.T) {
+		policy := newContainerCreatePolicy(ContainerCreateOptions{AllowedAppArmorProfiles: []string{"docker-default"}})
+		req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(
+			`{"Image":"alpine","HostConfig":{"SecurityOpt":["apparmor=custom-profile"]}}`))
+		reason, err := policy.inspect(nil, req, "/containers/create")
+		if err != nil {
+			t.Fatalf("inspect() error = %v", err)
+		}
+		if !strings.Contains(reason, "apparmor profile") || !strings.Contains(reason, "not in the allowed list") {
+			t.Fatalf("inspect() reason = %q, want an apparmor-not-allowlisted denial", reason)
+		}
+	})
 }
 
 func TestCgroupPermOrder(t *testing.T) {

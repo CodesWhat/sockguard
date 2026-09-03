@@ -14,8 +14,8 @@ Optimized for the [drydock](https://github.com/CodesWhat/drydock) container upda
 ```yaml
 # Allows: container read, start, stop, restart, remove, create
 # Allows: image read, pull
-# Allows: network read, volume read, distribution
-# Denies: exec, build, swarm, secrets, plugins
+# Allows: network read, volume read, distribution, Swarm service reads
+# Denies: exec, build, swarm writes, secrets, plugins, raw archive/export/logs/attach streams
 # container-create bodies are inspected by default — add host bind-mount sources to
 # request_body.container_create.allowed_bind_mounts if your updates require them.
 # image pulls are inspected too; this preset explicitly allows arbitrary registries
@@ -78,6 +78,11 @@ through this proxy, not just a single standalone container.
 # instead if you specifically want the CLASSIC builder (POST /build only,
 # requires DOCKER_BUILDKIT=0 in the client). See the Compose/BuildKit
 # Transport section of the security model docs for the full breakdown.
+# Compose-Spec post_start hooks are also still denied: they run through exec
+# (POST /containers/{id}/exec, POST /exec/{id}/start), which the catch-all
+# blocks, so drydock's PostStartExecutor fails the deploy loudly rather than
+# skipping the hook. Add a pinned allowed_commands entry (modeled on
+# drydock-with-selfupdate.yaml) rather than a blanket exec allow if you need it.
 # Self-update finalize exec is still denied, same caveat as drydock.yaml;
 # combine with drydock-with-selfupdate.yaml by hand if you need both
 ```
@@ -358,6 +363,16 @@ Optimized for [Homarr](https://homarr.dev) dashboard with container management.
 # Allows: container read (list, inspect, stats), start, stop, restart
 # Allows: image read
 # Denies: exec, create, network/volume writes
+```
+
+Homarr's UI also exposes a `removeAll` container-delete action (also surfaced as
+an MCP tool an LLM can drive), which this preset denies by default — the shipped
+config only covers start/stop/restart. To opt in, add a delete rule ahead of the
+catch-all deny:
+
+```yaml
+  - match: { method: DELETE, path: "/containers/*" }
+    action: allow
 ```
 
 ## Diun (`diun.yaml`)
