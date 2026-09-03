@@ -59,16 +59,32 @@ rules:
 	}
 }
 
+// TestExecuteMatchCommandEnforcesProcessListReadAcknowledgment covers both
+// layers that stand between an unacknowledged process-list rule and an allow.
+//
+// Startup validation reads the authored rule literals, not only a
+// representative probe path, so an exact-name rule and an ordered deny that
+// shadows the probe are both refused before the policy compiles: those cases
+// never reach the matcher and `sockguard match` reports the validation error.
+// The request-time gate in filter.EnforceReadExfiltrationAcknowledgment stays
+// as the second layer for a policy that validation cannot see through, and
+// TestExecuteMatchCommandPreservesProcessListPolicyDenials covers the arm of it
+// that keeps a policy's own denial reason.
 func TestExecuteMatchCommandEnforcesProcessListReadAcknowledgment(t *testing.T) {
 	tests := []struct {
 		name         string
 		path         string
 		acknowledged bool
-		rules        string
+		// refusedEndpoint is the endpoint startup validation names when it
+		// refuses the config outright. Empty means the config loads and the
+		// match output is the answer under test.
+		refusedEndpoint string
+		rules           string
 	}{
 		{
-			name: "exact docker container",
-			path: "/v1.53/containers/payments/top",
+			name:            "exact docker container",
+			path:            "/v1.53/containers/payments/top",
+			refusedEndpoint: "GET /containers/payments/top",
 			rules: `
   - match: { method: GET, path: "/containers/payments/top" }
     action: allow
@@ -76,8 +92,9 @@ func TestExecuteMatchCommandEnforcesProcessListReadAcknowledgment(t *testing.T) 
     action: deny`,
 		},
 		{
-			name: "exact libpod container",
-			path: "/v5.0.0/libpod/containers/payments/top",
+			name:            "exact libpod container",
+			path:            "/v5.0.0/libpod/containers/payments/top",
+			refusedEndpoint: "GET /libpod/containers/payments/top",
 			rules: `
   - match: { method: GET, path: "/libpod/containers/payments/top" }
     action: allow
@@ -85,8 +102,9 @@ func TestExecuteMatchCommandEnforcesProcessListReadAcknowledgment(t *testing.T) 
     action: deny`,
 		},
 		{
-			name: "exact libpod pod",
-			path: "/v5.0.0/libpod/pods/payments/top",
+			name:            "exact libpod pod",
+			path:            "/v5.0.0/libpod/pods/payments/top",
+			refusedEndpoint: "GET /libpod/pods/payments/top",
 			rules: `
   - match: { method: GET, path: "/libpod/pods/payments/top" }
     action: allow
@@ -94,8 +112,9 @@ func TestExecuteMatchCommandEnforcesProcessListReadAcknowledgment(t *testing.T) 
     action: deny`,
 		},
 		{
-			name: "representative deny shadows targeted allow",
-			path: "/containers/payments/top",
+			name:            "representative deny shadows targeted allow",
+			path:            "/containers/payments/top",
+			refusedEndpoint: "GET /containers/a/top",
 			rules: `
   - match: { method: GET, path: "/containers/sockguard-test/top" }
     action: deny
@@ -149,6 +168,20 @@ upstream:
 				"--path", tt.path,
 				"-o", "json",
 			)
+			if tt.refusedEndpoint != "" {
+				if err == nil {
+					t.Fatalf("Execute() error = nil, want config validation to refuse; stdout:\n%s", stdout)
+				}
+				for _, want := range []string{
+					"insecure_allow_read_exfiltration: true to acknowledge the risk",
+					"Exposed endpoints: " + tt.refusedEndpoint,
+				} {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("Execute() error = %v, want it to name %q", err, want)
+					}
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("Execute() error = %v\nstderr:\n%s", err, stderr)
 			}
