@@ -233,7 +233,14 @@ func TestLibpodImageScpOwnershipMatrix(t *testing.T) {
 						rec := httptest.NewRecorder()
 						handler.ServeHTTP(rec, req)
 
-						wantDenied := state.remote || state.found && state.labels["com.sockguard.owner"] != "job-123" && (!allowUnowned || len(state.labels) > 0)
+						// A source the daemon cannot resolve denies too: owner
+						// isolation fails closed on an unresolved target, so
+						// not-found is a denial rather than the pass-through it
+						// used to be. AllowUnownedImages does not rescue it —
+						// that option covers an image that exists and carries no
+						// owner label, not one that does not exist.
+						wantDenied := state.remote || !state.found ||
+							state.labels["com.sockguard.owner"] != "job-123" && (!allowUnowned || len(state.labels) > 0)
 						wantForwarded := !wantDenied || rolloutMode != "enforce"
 						wantStatus := http.StatusForbidden
 						if wantForwarded {
