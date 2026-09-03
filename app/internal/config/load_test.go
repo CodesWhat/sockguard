@@ -1167,60 +1167,72 @@ rules: definitely-not-a-list
 	}
 }
 
-// TestLoadTracksFileLegacyListenerProvenance is explicitLegacyListenFile's
-// direct regression: the legacy listen: block's presence must be detected by
-// reading and parsing the YAML file at configPath — not skipped because the
-// path is treated as absent, and not left undetected because the read's
-// success was mishandled. clearProvenanceEnv strips every SOCKGUARD_LISTEN_*
-// var from the process first, so an ambient one left set by the test runner
-// cannot make this pass regardless of the mutation — the explicit answer can
-// only come from the file itself.
-func TestLoadTracksFileLegacyListenerProvenance(t *testing.T) {
-	clearProvenanceEnv(t, legacyListenKeys)
-
-	dir := t.TempDir()
-	path := filepath.Join(dir, "sockguard.yaml")
-	if err := os.WriteFile(path, []byte(`listen:
+// TestLoadTracksFileProvenance tables explicitLegacyListenFile's and
+// explicitNetworkEndpointConfigFile's direct regressions: each block's
+// presence must be detected by reading and parsing the YAML file at
+// configPath — not skipped because the path is treated as absent, and not
+// left undetected because the read's success was mishandled.
+// clearProvenanceEnv strips every SOCKGUARD_LISTEN_* /
+// SOCKGUARD_REQUEST_BODY_NETWORK_ENDPOINT_CONFIG_* var from the process
+// first, so an ambient one left set by the test runner cannot make either
+// subtest pass regardless of the mutation — the explicit answer can only
+// come from the file itself.
+func TestLoadTracksFileProvenance(t *testing.T) {
+	tests := []struct {
+		name      string
+		clearKeys []string
+		yaml      string
+		assert    func(t *testing.T, cfg *Config)
+	}{
+		{
+			// explicitLegacyListenFile's direct regression.
+			name:      "TestLoadTracksFileLegacyListenerProvenance",
+			clearKeys: legacyListenKeys,
+			yaml: `listen:
   socket: /run/legacy.sock
-`), 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if !cfg.ExplicitLegacyListen() {
-		t.Fatal("ExplicitLegacyListen() = false, want true from the YAML file's listen.socket key")
-	}
-}
-
-// TestLoadTracksFileNetworkEndpointConfigProvenance is
-// explicitNetworkEndpointConfigFile's #186 counterpart to the legacy-listen
-// regression above: the granular endpoint_config block's presence must be
-// detected by reading and parsing the YAML file at configPath.
-// clearProvenanceEnv strips every SOCKGUARD_REQUEST_BODY_NETWORK_ENDPOINT_CONFIG_*
-// var from the process first, so an ambient one cannot mask the mutation
-// under test.
-func TestLoadTracksFileNetworkEndpointConfigProvenance(t *testing.T) {
-	clearProvenanceEnv(t, networkEndpointConfigKeys)
-
-	dir := t.TempDir()
-	path := filepath.Join(dir, "sockguard.yaml")
-	if err := os.WriteFile(path, []byte(`request_body:
+`,
+			assert: func(t *testing.T, cfg *Config) {
+				t.Helper()
+				if !cfg.ExplicitLegacyListen() {
+					t.Fatal("ExplicitLegacyListen() = false, want true from the YAML file's listen.socket key")
+				}
+			},
+		},
+		{
+			// explicitNetworkEndpointConfigFile's #186 counterpart to the
+			// legacy-listen regression above.
+			name:      "TestLoadTracksFileNetworkEndpointConfigProvenance",
+			clearKeys: networkEndpointConfigKeys,
+			yaml: `request_body:
   network:
     endpoint_config:
       allow_static_addressing: true
-`), 0o600); err != nil {
-		t.Fatalf("WriteFile: %v", err)
+`,
+			assert: func(t *testing.T, cfg *Config) {
+				t.Helper()
+				if !cfg.ExplicitNetworkEndpointConfig() {
+					t.Fatal("ExplicitNetworkEndpointConfig() = false, want true from the YAML file's endpoint_config key")
+				}
+			},
+		},
 	}
 
-	cfg, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if !cfg.ExplicitNetworkEndpointConfig() {
-		t.Fatal("ExplicitNetworkEndpointConfig() = false, want true from the YAML file's endpoint_config key")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearProvenanceEnv(t, tt.clearKeys)
+
+			dir := t.TempDir()
+			path := filepath.Join(dir, "sockguard.yaml")
+			if err := os.WriteFile(path, []byte(tt.yaml), 0o600); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			tt.assert(t, cfg)
+		})
 	}
 }
 
