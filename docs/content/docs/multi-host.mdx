@@ -9,7 +9,7 @@ By default sockguard reaches Docker through a local unix socket. The `upstream.e
 
 - **Single remote daemon** — Docker runs on a different host than sockguard (a build host, a CI worker, a remote VM). You want mTLS between them so the daemon API is not exposed as plaintext on the wire.
 - **HA / redundancy** — you have two daemon hosts behind keepalived or a Swarm manager HA pair and want sockguard to stay healthy when one goes down.
-- **`docker -H tcp://…` migration** — you already have `DOCKER_HOST` / `DOCKER_TLS_VERIFY` / `DOCKER_CERT_PATH` set and want zero-config drop-in (see [DOCKER_* environment drop-in](#docker_-environment-drop-in) below).
+- **`docker -H tcp://…` migration** — you already have `DOCKER_HOST` / `DOCKER_TLS` / `DOCKER_TLS_VERIFY` / `DOCKER_CERT_PATH` set and want zero-config drop-in (see [DOCKER_* environment drop-in](#docker_-environment-drop-in) below).
 
 ## Single remote daemon (TCP + mTLS)
 
@@ -90,9 +90,9 @@ Correct use cases: a Swarm manager VIP with two manager IPs behind it, a keepali
 Incorrect use case: two independent Docker hosts running different containers. Use separate sockguard instances for that.
 </Callout>
 
-## Insecure opt-ins
+## Insecure and deprecated opt-ins
 
-Two flags loosen the TLS requirement. Both are explicit acknowledgments of the risk and should only appear in controlled environments.
+Two flags loosen the TLS requirement. Plaintext TCP remains an explicit risk acknowledgment. Skipping server verification is deprecated in v2.1 and scheduled for removal in v3.0.0.
 
 ### Plaintext TCP (no TLS)
 
@@ -105,7 +105,7 @@ upstream:
 
 `insecure_allow_plain_tcp: true` permits a `tcp://` endpoint with no TLS material at all. The Docker API is sent in plaintext — any host on the path can read or inject requests. Only use this on a private, trusted network with no external exposure. The flag mirrors the same acknowledgment on the listener side (`listen.insecure_allow_plain_tcp`).
 
-### Skip server certificate verification
+### Deprecated: skip server certificate verification
 
 ```yaml
 upstream:
@@ -117,7 +117,9 @@ upstream:
       insecure_skip_tls_verify: true   # endpoint-level, a sibling of `tls`
 ```
 
-`insecure_skip_tls_verify: true` skips verification of the daemon's server certificate. Traffic is still encrypted but the daemon's identity is not verified — a man-in-the-middle can present any certificate. Useful for self-signed homelab certs when you control the network and cannot rotate the cert. It is an endpoint-level field (a sibling of `tls`, `address`, and `insecure_allow_plain_tcp`), not a key inside the `tls` block. Prefer providing the correct `ca_file` instead.
+`insecure_skip_tls_verify: true` skips verification of the daemon's server certificate. Traffic is still encrypted but the daemon's identity is not verified, so a man-in-the-middle can present any certificate. It is an endpoint-level field (a sibling of `tls`, `address`, and `insecure_allow_plain_tcp`), not a key inside the `tls` block.
+
+The field remains accepted with unchanged wire behavior throughout v2.1, but it logs a startup deprecation warning and will be removed in v3.0.0. Replace it with the correct `tls.ca_file`, including for self-signed or private-CA daemon certificates.
 
 ## DOCKER_* environment drop-in
 
@@ -125,24 +127,29 @@ If you have a working `docker -H tcp://…` setup with the standard Docker clien
 
 | Environment variable | Effect |
 |---|---|
-| `DOCKER_HOST=tcp://host:port` | Routes to that TCP address |
-| `DOCKER_TLS_VERIFY=1` | Enables TLS verification |
-| `DOCKER_CERT_PATH=/path` | Loads `ca.pem`, `cert.pem`, `key.pem` from that directory |
+| `DOCKER_HOST=tcp://host:port[/base/path]`, `host[:port][/base/path]`, or `unix:///path` | Routes to that TCP or Unix endpoint; portless TCP defaults to `2375`, and a TCP path is prepended to every Docker API request |
+| `DOCKER_TLS=<non-empty>` | Enables TLS without server verification; deprecated for removal in v3.0.0 |
+| `DOCKER_TLS_VERIFY=<non-empty>` | Enables TLS verification and takes precedence over `DOCKER_TLS` |
+| `DOCKER_CERT_PATH=/path` | Locates `ca.pem`, `cert.pem`, and `key.pem` when TLS is enabled; does not enable TLS by itself |
+| `DOCKER_CONFIG=/path` | Supplies the certificate directory when `DOCKER_CERT_PATH` is empty; otherwise the Docker default is `~/.docker` |
 
-Precedence: `upstream.endpoints` (YAML) > `DOCKER_HOST` (env) > `upstream.socket` (YAML/default). The env path only activates when `DOCKER_HOST` names a `tcp://` daemon; a `unix://` (or unset) `DOCKER_HOST` falls through to the local-socket default.
+Precedence: `upstream.endpoints` (YAML) > `DOCKER_HOST` (env) > `upstream.socket` (YAML/default). A valid custom `unix://` value is used as a literal socket name; Sockguard does not URL-decode it into a different path. Absolute-path values such as `unix:///tmp/docker%2Fsock?one#two` preserve valid percent escapes and raw `?` or `#` bytes. Relative host-form values preserve raw `?` and `#` too, but follow Docker's URL host grammar, which rejects escapes such as `%2F`, `%3F`, and `%23` there. Only an absent `DOCKER_HOST` falls through to `upstream.socket`; a present empty, malformed, `http://`/`https://`, or unsupported transport value fails startup instead of silently selecting another daemon.
 
-Sockguard follows the same semantics as the Docker CLI, so no YAML acknowledgment is needed for the env drop-in:
+A TCP URL path is an API prefix, matching the Docker CLI. For example, `DOCKER_HOST=tcp://gateway.internal:2375/docker` sends the client's `/v1.52/containers/json` request to `/docker/v1.52/containers/json`. The prefix follows the endpoint selected for that request, including failover, readiness and inspection requests, and the initial attach, exec, and mediated BuildKit upgrade. Percent-encoded separators and dot segments are kept as configured rather than cleaned or decoded while the prefix and client path are joined.
 
-- **`DOCKER_TLS_VERIFY` set + `DOCKER_CERT_PATH`** → verified mTLS using `ca.pem` / `cert.pem` / `key.pem` from the cert directory.
-- **`DOCKER_TLS_VERIFY` set + no `DOCKER_CERT_PATH`** → verified, server-auth-only TLS: the daemon's certificate is checked against the host's **system root CAs** and sockguard presents no client certificate. Use this when the daemon's cert chains to a public/enterprise CA already in the system trust store and the daemon doesn't require client auth.
-- **`DOCKER_TLS_VERIFY` unset + `DOCKER_CERT_PATH` set** → encrypted, but the daemon's server certificate is *not* verified (equivalent to `insecure_skip_tls_verify`), matching the CLI's behavior when verify is off but certs are present.
-- **`DOCKER_TLS_VERIFY` unset + no `DOCKER_CERT_PATH`** → plaintext TCP (equivalent to `insecure_allow_plain_tcp`). The acknowledgment is implicit because your `docker -H` client already talks to that daemon in plaintext.
+Sockguard follows the Docker CLI's presence semantics: an empty or unset TLS variable is disabled, while every non-empty value, including `0` and `false`, is enabled. `DOCKER_TLS_VERIFY` wins when both TLS variables are non-empty, so no YAML acknowledgment is needed for the env drop-in:
+
+- **`DOCKER_TLS_VERIFY` non-empty** → verified TLS using `ca.pem` from the Docker certificate directory. If both `cert.pem` and `key.pem` exist, sockguard also presents them for mutual TLS; if either is absent, it uses server-auth-only TLS.
+- **`DOCKER_TLS` non-empty + `DOCKER_TLS_VERIFY` empty or unset** → encrypted, but the daemon's server certificate is *not* verified. Docker still requires a readable, valid `ca.pem`; the optional client pair is resolved the same way. This mode logs a source-specific deprecation warning and will be removed in v3.0.0. Set `DOCKER_TLS_VERIFY=1` before upgrading.
+- **Both TLS variables empty or unset** → plaintext TCP (equivalent to `insecure_allow_plain_tcp`), regardless of `DOCKER_CERT_PATH`. The acknowledgment is implicit because the Docker CLI also treats the certificate path as a locator rather than a TLS enablement signal.
+
+When TLS is enabled, the certificate directory is `DOCKER_CERT_PATH` when non-empty, otherwise `DOCKER_CONFIG` when non-empty, otherwise `~/.docker`. `ca.pem` is required and replaces the system root pool. `cert.pem` and `key.pem` are optional as a pair. This is the same lookup the Docker CLI applies, including when no explicit certificate path is set.
 
 This means an existing Docker CLI setup works with zero YAML changes — just point sockguard at the same env vars your client uses. To override any of these, set `upstream.endpoints` in YAML, which takes precedence over the environment.
 
 ## Reload immutability
 
-`upstream.endpoints` and `upstream.failover` are **reload-immutable**. Adding, removing, or changing endpoints requires a process restart. `upstream.request_timeout` remains reload-mutable and takes effect on hot reload without a restart — only its **default** value changed in v1.5 (unlimited → `60s`); the field's mutability is unchanged.
+`upstream.endpoints` and `upstream.failover` are **reload-immutable**. Adding, removing, or changing endpoints requires a process restart. `upstream.request_timeout` and `upstream.hijack_inactivity_timeout` are reload-mutable and take effect on hot reload without a restart. Only `request_timeout`'s **default** value changed in v1.5 (unlimited → `60s`); the field's mutability is unchanged.
 
 This matches the behavior of `upstream.socket`, which is also pinned at startup. The upstream transport is bound to long-lived connection pools that cannot be swapped safely from within a running process.
 
@@ -165,6 +172,7 @@ A bare path (starting with `/`) is treated as a `unix://` address. No TLS fields
 upstream:
   socket: /var/run/docker.sock     # legacy; used only when endpoints is empty
   request_timeout: "60s"            # Go duration (e.g. "30s"); default "60s"; set "off" (or "") to disable; reload-mutable
+  hijack_inactivity_timeout: "10m" # positive Go duration; shared idle guard for attach/exec-start; reload-mutable
   endpoints:
     - address: tcp://dockerd-a:2376
       tls:
@@ -173,7 +181,7 @@ upstream:
         key_file: /certs/key.pem
         server_name: ""                # SNI override; empty = derived from address host
       insecure_allow_plain_tcp: false  # permit tcp:// with no TLS (plaintext)
-      insecure_skip_tls_verify: false  # skip daemon server-cert verification
+      insecure_skip_tls_verify: false  # deprecated; removed in v3.0.0
     - address: tcp://dockerd-b:2376
       tls: { ca_file: /certs/ca.pem, cert_file: /certs/cert.pem, key_file: /certs/key.pem }
   failover:
@@ -186,5 +194,6 @@ Per-endpoint fields inside `endpoints` cannot be set via environment variable �
 | Variable | YAML field | Default | Description |
 |---|---|---|---|
 | `SOCKGUARD_UPSTREAM_REQUEST_TIMEOUT` | `upstream.request_timeout` | `"60s"` | Total per-request deadline. Set `off` (or `""`) to disable — prefer `off` via env var since an explicitly empty value is treated as unset. Reload-mutable. |
+| `SOCKGUARD_UPSTREAM_HIJACK_INACTIVITY_TIMEOUT` | `upstream.hijack_inactivity_timeout` | `"10m"` | Connection-wide idle deadline for hijacked attach/exec-start streams. Must be a positive duration; no `off` spelling. Reload-mutable. |
 | `SOCKGUARD_UPSTREAM_FAILOVER_HEALTH_INTERVAL` | `upstream.failover.health_interval` | `""` (resolver default: 5s) | Background probe interval per endpoint. Empty uses the 5s resolver default; negative disables probing. |
 | `SOCKGUARD_UPSTREAM_FAILOVER_HEALTH_TIMEOUT` | `upstream.failover.health_timeout` | `""` (resolver default: 2s) | Per-probe dial+TLS-handshake timeout. Empty uses the 2s resolver default. |

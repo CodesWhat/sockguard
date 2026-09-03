@@ -1,9 +1,12 @@
 package admin
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -144,6 +147,33 @@ func TestPolicyVersionInterceptorReturns200OnGET(t *testing.T) {
 	}
 	if got.ConfigSHA256 != "deadbeef" {
 		t.Fatalf("ConfigSHA256 = %q, want deadbeef", got.ConfigSHA256)
+	}
+}
+
+// TestPolicyVersionInterceptorLogsEncodeFailure ensures that a write failure
+// while serializing the policy-version snapshot is actually surfaced through
+// the configured logger, rather than being silently swallowed. A broken
+// ResponseWriter (defined in admin_test.go) forces httpjson.Write to return a
+// non-nil error.
+func TestPolicyVersionInterceptorLogsEncodeFailure(t *testing.T) {
+	t.Parallel()
+	v := NewPolicyVersioner()
+	v.Update(PolicySnapshot{Source: "startup"})
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+	handler := NewPolicyVersionInterceptor(PolicyVersionOptions{
+		Path:   testPolicyVersionPath,
+		Source: v.Snapshot,
+		Logger: logger,
+	})(noopHandler())
+
+	req := httptest.NewRequest(http.MethodGet, testPolicyVersionPath, nil)
+	rec := &brokenResponseWriter{}
+	handler.ServeHTTP(rec, req)
+
+	if !strings.Contains(logBuf.String(), "admin policy version: failed to encode response") {
+		t.Fatalf("log output = %q, want it to contain the encode-failure warning", logBuf.String())
 	}
 }
 

@@ -628,6 +628,14 @@ func TestNetworkInspectConnectGranularEndpointConfig(t *testing.T) {
 			wantReason: "network connect denied: endpoint driver options are not allowed",
 		},
 		{
+			// len(ep.Aliases) > 0 (network.go line 314) must stay false when
+			// there are no aliases, even with DenyAliases set — a boundary
+			// mutant (> -> >=) would deny on an empty Aliases slice too.
+			name:     "DenyAliases set but no aliases present is allowed",
+			granular: EndpointConfigOptions{DenyAliases: true},
+			body:     `{"EndpointConfig":{}}`,
+		},
+		{
 			name:     "every granular field allowed together admits every gated field",
 			granular: EndpointConfigOptions{AllowStaticAddressing: true, AllowLinkLocalIPs: true, AllowMACPinning: true, AllowGwPriority: true},
 			body: `{"EndpointConfig":{

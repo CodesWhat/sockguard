@@ -338,6 +338,37 @@ func TestAccessLogOmitsMutationFieldsWhenNoRuleMatched(t *testing.T) {
 	}
 }
 
+func TestAccessLogOmitsMutationRuleIDsWhenRulesSliceIsEmpty(t *testing.T) {
+	// meta.Mutation itself can be non-nil (an evaluation ran) while Rules is
+	// empty (no configured rule matched) -- the boundary case for
+	// len(meta.Mutation.Rules) > 0 at access.go:560, distinct from the
+	// Mutation == nil case covered above.
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		m := MetaFromResponseWriter(w)
+		if m == nil {
+			t.Fatal("expected meta on wrapped response writer")
+			return
+		}
+		m.Decision = "allow"
+		m.NormPath = "/_ping"
+		m.Mutation = &MutationRecord{Rules: nil}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := AccessLogMiddleware(logger)(inner)
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	logOutput := buf.String()
+	if strings.Contains(logOutput, "mutation_rule_ids") || strings.Contains(logOutput, "mutation_changed") {
+		t.Fatalf("expected no mutation fields when Mutation.Rules is empty, got: %s", logOutput)
+	}
+}
+
 func TestAccessLogEscapesCRLFInClientRequestID(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
