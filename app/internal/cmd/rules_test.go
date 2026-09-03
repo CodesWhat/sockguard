@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -496,6 +497,7 @@ func TestValidateAndCompileRulesRejectsRegistryPushWithoutExfiltrationOptIn(t *t
 		name     string
 		path     string
 		endpoint string
+		ackBlind bool
 	}{
 		{
 			name:     "image push",
@@ -516,6 +518,11 @@ func TestValidateAndCompileRulesRejectsRegistryPushWithoutExfiltrationOptIn(t *t
 			name:     "libpod manifest push (backward-compat)",
 			path:     "/libpod/manifests/*/push",
 			endpoint: "POST /libpod/manifests/sockguard-test/push",
+			// The normalized rule also reaches v4's body-bearing generic
+			// manifest-create route for a manifest literally named "*/push".
+			// Acknowledge that independent risk so this case can isolate the
+			// v3 registry-push response gate it is asserting.
+			ackBlind: true,
 		},
 	}
 
@@ -523,6 +530,7 @@ func TestValidateAndCompileRulesRejectsRegistryPushWithoutExfiltrationOptIn(t *t
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			cfg := config.Defaults()
+			cfg.InsecureAllowBodyBlindWrites = tt.ackBlind
 			cfg.Rules = []config.RuleConfig{
 				{Match: config.MatchConfig{Method: http.MethodPost, Path: tt.path}, Action: "allow"},
 				{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
@@ -1310,5 +1318,748 @@ func TestBodyInspectionConfiguredForEndpointLibpodCases(t *testing.T) {
 				t.Fatalf("bodyInspectionConfiguredForEndpoint() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// libpodCatalogEntry finds one endpoint in bodySensitiveWriteEndpoints,
+// failing the test when it is absent. Every libpod container-write case below
+// starts by proving its path is in the catalog at all: an endpoint missing
+// from the catalog is scored as "not a body-sensitive write" rather than as
+// "uninspected", which is exactly how PUT /libpod/containers/{name}/archive
+// and POST /libpod/containers/{name}/update went unnoticed.
+func libpodCatalogEntry(t *testing.T, method, path string) bodySensitiveWriteEndpoint {
+	t.Helper()
+
+	for _, candidate := range bodySensitiveWriteEndpoints {
+		if candidate.method == method && candidate.path == path {
+			return candidate
+		}
+	}
+	t.Fatalf("%s %s is missing from the body-sensitive write catalog", method, path)
+	return bodySensitiveWriteEndpoint{}
+}
+
+// TestBodySensitiveWriteCatalogCoversLibpodContainerWrites pins the
+// config-validation half of the libpod container-write gap. Archive and update
+// must be recognized as inspected so allowing them does not spuriously demand
+// insecure_allow_body_blind_writes; restore must NOT be, because its body is
+// an opaque CRIU checkpoint archive no inspector reads.
+func TestBodySensitiveWriteCatalogCoversLibpodContainerWrites(t *testing.T) {
+	tests := []struct {
+		method        string
+		path          string
+		wantInspected bool
+	}{
+		{http.MethodPut, "/libpod/containers/sockguard-test/archive", true},
+		{http.MethodPost, "/libpod/containers/sockguard-test/update", true},
+		{http.MethodPost, "/libpod/containers/sockguard-test/restore", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			endpoint := libpodCatalogEntry(t, tt.method, tt.path)
+			if got := bodyInspectionConfiguredForEndpoint(config.RequestBodyConfig{}, endpoint); got != tt.wantInspected {
+				t.Fatalf("bodyInspectionConfiguredForEndpoint(%s %s) = %v, want %v", tt.method, tt.path, got, tt.wantInspected)
+			}
+		})
+	}
+}
+
+// TestValidateAndCompileRulesLibpodContainerWriteGates pins what an operator
+// actually experiences at startup for each of the five libpod container-write
+// endpoints: archive and update pass on their built-in inspectors, restore
+// demands the blind-write acknowledgment because nothing reads its body, and
+// checkpoint and mount demand the read-exfiltration acknowledgment because
+// their risk is entirely in the response.
+func TestValidateAndCompileRulesLibpodContainerWriteGates(t *testing.T) {
+	tests := []struct {
+		name            string
+		configure       func(cfg *config.Config)
+		wantErr         bool
+		wantErrContains []string
+	}{
+		{
+			name: "allows libpod container archive on the shared container_archive inspector",
+			configure: func(cfg *config.Config) {
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPut, Path: "/libpod/containers/*/archive"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+		},
+		{
+			name: "allows libpod container update on the shared container_update inspector",
+			configure: func(cfg *config.Config) {
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/update"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+		},
+		{
+			name: "allows an exact libpod container update on the shared container_update inspector",
+			configure: func(cfg *config.Config) {
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/real-id/update"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+		},
+		{
+			name: "rejects an exact libpod container restore without the blind-write acknowledgment",
+			configure: func(cfg *config.Config) {
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/real-id/restore"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+			wantErr:         true,
+			wantErrContains: []string{"insecure_allow_body_blind_writes=true", "POST /libpod/containers/real-id/restore"},
+		},
+		{
+			name: "allows an exact libpod container restore once the blind-write acknowledgment is set",
+			configure: func(cfg *config.Config) {
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/real-id/restore"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+				cfg.InsecureAllowBodyBlindWrites = true
+			},
+		},
+		{
+			name: "rejects libpod container restore without the blind-write acknowledgment",
+			configure: func(cfg *config.Config) {
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/restore"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+			wantErr:         true,
+			wantErrContains: []string{"insecure_allow_body_blind_writes=true", "POST /libpod/containers/sockguard-test/restore"},
+		},
+		{
+			name: "allows libpod container restore once the blind-write acknowledgment is set",
+			configure: func(cfg *config.Config) {
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/restore"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+				cfg.InsecureAllowBodyBlindWrites = true
+			},
+		},
+		{
+			name: "rejects libpod container checkpoint without the read-exfiltration acknowledgment",
+			configure: func(cfg *config.Config) {
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/checkpoint"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+			wantErr:         true,
+			wantErrContains: []string{"insecure_allow_read_exfiltration", "POST /libpod/containers/sockguard-test/checkpoint"},
+		},
+		{
+			name: "rejects libpod container mount without the read-exfiltration acknowledgment",
+			configure: func(cfg *config.Config) {
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/mount"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+			wantErr:         true,
+			wantErrContains: []string{"insecure_allow_read_exfiltration", "POST /libpod/containers/sockguard-test/mount"},
+		},
+		{
+			name: "allows libpod checkpoint and mount once the read-exfiltration acknowledgment is set",
+			configure: func(cfg *config.Config) {
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/checkpoint"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/mount"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+				cfg.InsecureAllowReadExfiltration = true
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			tt.configure(&cfg)
+
+			_, err := validateAndCompileRules(&cfg)
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("validateAndCompileRules() error = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("validateAndCompileRules() = nil, want an error")
+			}
+			for _, want := range tt.wantErrContains {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error = %q, want it to mention %q", err.Error(), want)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateAndCompileRulesRequiresReadExfiltrationAckForLibpodShowMounted(t *testing.T) {
+	for _, scope := range []string{"default policy", "named client profile"} {
+		for _, rulePath := range []string{
+			"/libpod/containers/showmounted",
+			"*/containers/showmounted",
+		} {
+			t.Run(scope+" "+rulePath, func(t *testing.T) {
+				rules := []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodGet, Path: rulePath}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+				cfg := config.Defaults()
+				if scope == "named client profile" {
+					cfg.Rules = []config.RuleConfig{{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"}}
+					cfg.Clients.Profiles = []config.ClientProfileConfig{{Name: "storage-reader", Rules: rules}}
+				} else {
+					cfg.Rules = rules
+				}
+
+				_, err := validateAndCompileRules(&cfg)
+				if err == nil {
+					t.Fatal("validateAndCompileRules() = nil, want read-exfiltration acknowledgment error")
+				}
+				for _, want := range []string{"insecure_allow_read_exfiltration", "GET /libpod/containers/showmounted"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("error = %q, want it to mention %q", err.Error(), want)
+					}
+				}
+				if scope == "named client profile" && !strings.Contains(err.Error(), "storage-reader") {
+					t.Fatalf("error = %q, want it to mention the client profile", err.Error())
+				}
+
+				cfg.InsecureAllowReadExfiltration = true
+				if _, err := validateAndCompileRules(&cfg); err != nil {
+					t.Fatalf("validateAndCompileRules() with acknowledgment error = %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestValidateAndCompileRulesRejectsExactLibpodContainerReadExfiltration(t *testing.T) {
+	for _, scope := range []string{"default policy", "named client profile"} {
+		for _, operation := range []string{"checkpoint", "mount"} {
+			t.Run(scope+" "+operation, func(t *testing.T) {
+				path := "/libpod/containers/real-id/" + operation
+				rules := []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: path}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+				cfg := config.Defaults()
+				if scope == "named client profile" {
+					cfg.Rules = []config.RuleConfig{
+						{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+					}
+					cfg.Clients.Profiles = []config.ClientProfileConfig{{
+						Name:  "backup-agent",
+						Rules: rules,
+					}}
+				} else {
+					cfg.Rules = rules
+				}
+
+				_, err := validateAndCompileRules(&cfg)
+				if err == nil {
+					t.Fatal("validateAndCompileRules() = nil, want an error")
+				}
+				for _, want := range []string{"insecure_allow_read_exfiltration", "POST " + path} {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("error = %q, want it to mention %q", err.Error(), want)
+					}
+				}
+				if scope == "named client profile" && !strings.Contains(err.Error(), "backup-agent") {
+					t.Fatalf("error = %q, want it to mention the client profile", err.Error())
+				}
+			})
+		}
+	}
+}
+
+func TestValidateAndCompileRulesEvaluatesOrderedLibpodReadExfiltrationRules(t *testing.T) {
+	tests := []struct {
+		name      string
+		operation string
+		rules     func(operation string) []config.RuleConfig
+		wantErr   bool
+	}{
+		{
+			name:      "broader allow still exposes another identifier after exact sentinel deny",
+			operation: "checkpoint",
+			rules: func(operation string) []config.RuleConfig {
+				return []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/sockguard-test/" + operation}, Action: "deny"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/" + operation}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+			wantErr: true,
+		},
+		{
+			name:      "broader allow still exposes another identifier after exact sentinel deny",
+			operation: "mount",
+			rules: func(operation string) []config.RuleConfig {
+				return []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/sockguard-test/" + operation}, Action: "deny"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/" + operation}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+			wantErr: true,
+		},
+		{
+			name:      "earlier wildcard deny shadows later exact allow",
+			operation: "checkpoint",
+			rules: func(operation string) []config.RuleConfig {
+				return []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/" + operation}, Action: "deny"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/real-id/" + operation}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+		},
+		{
+			name:      "earlier wildcard deny shadows later exact allow",
+			operation: "mount",
+			rules: func(operation string) []config.RuleConfig {
+				return []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/" + operation}, Action: "deny"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/real-id/" + operation}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+		},
+	}
+
+	for _, scope := range []string{"default policy", "named client profile"} {
+		for _, tt := range tests {
+			t.Run(scope+" "+tt.operation+" "+tt.name, func(t *testing.T) {
+				rules := tt.rules(tt.operation)
+				cfg := config.Defaults()
+				if scope == "named client profile" {
+					cfg.Rules = []config.RuleConfig{
+						{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+					}
+					cfg.Clients.Profiles = []config.ClientProfileConfig{{
+						Name:  "backup-agent",
+						Rules: rules,
+					}}
+				} else {
+					cfg.Rules = rules
+				}
+
+				_, err := validateAndCompileRules(&cfg)
+				if !tt.wantErr {
+					if err != nil {
+						t.Fatalf("validateAndCompileRules() error = %v, want nil", err)
+					}
+					return
+				}
+				if err == nil {
+					t.Fatal("validateAndCompileRules() = nil, want an error")
+				}
+				if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration") {
+					t.Fatalf("error = %q, want the read-exfiltration acknowledgment", err.Error())
+				}
+				if scope == "named client profile" && !strings.Contains(err.Error(), "backup-agent") {
+					t.Fatalf("error = %q, want it to mention the client profile", err.Error())
+				}
+			})
+		}
+	}
+}
+
+func TestValidateAndCompileRulesRejectsSelectiveWildcardCatalogShadows(t *testing.T) {
+	tests := []struct {
+		operation string
+		ack       string
+	}{
+		{operation: "checkpoint", ack: "insecure_allow_read_exfiltration"},
+		{operation: "mount", ack: "insecure_allow_read_exfiltration"},
+		{operation: "restore", ack: "insecure_allow_body_blind_writes"},
+	}
+
+	for _, scope := range []string{"default policy", "named client profile"} {
+		for _, tt := range tests {
+			t.Run(scope+" "+tt.operation, func(t *testing.T) {
+				rules := []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/sockguard-*/" + tt.operation}, Action: "deny"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/" + tt.operation}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+				cfg := config.Defaults()
+				if scope == "named client profile" {
+					cfg.Rules = []config.RuleConfig{
+						{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+					}
+					cfg.Clients.Profiles = []config.ClientProfileConfig{{
+						Name:  "backup-agent",
+						Rules: rules,
+					}}
+				} else {
+					cfg.Rules = rules
+				}
+
+				_, err := validateAndCompileRules(&cfg)
+				if err == nil {
+					t.Fatal("validateAndCompileRules() = nil, want an acknowledgment error for the reachable real-id route")
+				}
+				if !strings.Contains(err.Error(), tt.ack) {
+					t.Fatalf("error = %q, want it to mention %q", err.Error(), tt.ack)
+				}
+				if scope == "named client profile" && !strings.Contains(err.Error(), "backup-agent") {
+					t.Fatalf("error = %q, want it to mention the client profile", err.Error())
+				}
+			})
+		}
+	}
+}
+
+func TestValidateAndCompileRulesRejectsNoLeadingSlashCatalogGlobs(t *testing.T) {
+	tests := []struct {
+		operation string
+		ack       string
+	}{
+		{operation: "checkpoint", ack: "insecure_allow_read_exfiltration"},
+		{operation: "mount", ack: "insecure_allow_read_exfiltration"},
+		{operation: "restore", ack: "insecure_allow_body_blind_writes"},
+	}
+
+	for _, scope := range []string{"default policy", "named client profile"} {
+		for _, tt := range tests {
+			t.Run(scope+" "+tt.operation, func(t *testing.T) {
+				rules := []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/sockguard-test/" + tt.operation}, Action: "deny"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "*/containers/*/" + tt.operation}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+				cfg := config.Defaults()
+				if scope == "named client profile" {
+					cfg.Rules = []config.RuleConfig{
+						{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+					}
+					cfg.Clients.Profiles = []config.ClientProfileConfig{{
+						Name:  "backup-agent",
+						Rules: rules,
+					}}
+				} else {
+					cfg.Rules = rules
+				}
+
+				_, err := validateAndCompileRules(&cfg)
+				if err == nil {
+					t.Fatal("validateAndCompileRules() = nil, want an acknowledgment error for the reachable real-id route")
+				}
+				if !strings.Contains(err.Error(), tt.ack) {
+					t.Fatalf("error = %q, want it to mention %q", err.Error(), tt.ack)
+				}
+				wantWitness := "POST /libpod/containers/a/" + tt.operation
+				if !strings.Contains(err.Error(), wantWitness) {
+					t.Fatalf("error = %q, want it to identify reachable route %q", err.Error(), wantWitness)
+				}
+				if scope == "named client profile" && !strings.Contains(err.Error(), "backup-agent") {
+					t.Fatalf("error = %q, want it to mention the client profile", err.Error())
+				}
+			})
+		}
+	}
+}
+
+func TestValidateAndCompileRulesRejectsRelativeSingleStarCatalogGlobs(t *testing.T) {
+	tests := []struct {
+		operation string
+		ack       string
+	}{
+		{operation: "checkpoint", ack: "insecure_allow_read_exfiltration"},
+		{operation: "restore", ack: "insecure_allow_body_blind_writes"},
+	}
+
+	for _, scope := range []string{"default policy", "named client profile"} {
+		for _, tt := range tests {
+			t.Run(scope+" "+tt.operation, func(t *testing.T) {
+				rules := []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/sockguard-test/" + tt.operation}, Action: "deny"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "libpod/containers/*/" + tt.operation}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+				cfg := config.Defaults()
+				if scope == "named client profile" {
+					cfg.Rules = []config.RuleConfig{
+						{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+					}
+					cfg.Clients.Profiles = []config.ClientProfileConfig{{
+						Name:  "backup-agent",
+						Rules: rules,
+					}}
+				} else {
+					cfg.Rules = rules
+				}
+
+				_, err := validateAndCompileRules(&cfg)
+				if err == nil {
+					t.Fatal("validateAndCompileRules() = nil, want an acknowledgment error for the reachable real-id route")
+				}
+				for _, want := range []string{tt.ack, "POST /libpod/containers/a/" + tt.operation} {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("error = %q, want it to mention %q", err.Error(), want)
+					}
+				}
+				if scope == "named client profile" && !strings.Contains(err.Error(), "backup-agent") {
+					t.Fatalf("error = %q, want it to mention the client profile", err.Error())
+				}
+
+				if tt.operation == "restore" {
+					cfg.InsecureAllowBodyBlindWrites = true
+				} else {
+					cfg.InsecureAllowReadExfiltration = true
+				}
+				if _, err := validateAndCompileRules(&cfg); err != nil {
+					t.Fatalf("validateAndCompileRules() with acknowledgment error = %v", err)
+				}
+
+				compiled, err := compileConfiguredRules(rules)
+				if err != nil {
+					t.Fatalf("compileConfiguredRules() error = %v", err)
+				}
+				for _, request := range []struct {
+					path string
+					want filter.Action
+				}{
+					{path: "/libpod/containers/sockguard-test/" + tt.operation, want: filter.ActionDeny},
+					{path: "/libpod/containers/real-id/" + tt.operation, want: filter.ActionAllow},
+				} {
+					req := httptest.NewRequest(http.MethodPost, request.path, nil)
+					action, _, _ := filter.Evaluate(compiled, req)
+					if action != request.want {
+						t.Errorf("POST %s action = %q, want %q", request.path, action, request.want)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestValidateAndCompileRulesAllowsFullyShadowedCatalogRoutes(t *testing.T) {
+	for _, scope := range []string{"default policy", "named client profile"} {
+		for _, operation := range []string{"checkpoint", "mount", "restore"} {
+			t.Run(scope+" "+operation, func(t *testing.T) {
+				rules := []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/" + operation}, Action: "deny"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/" + operation}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+				cfg := config.Defaults()
+				if scope == "named client profile" {
+					cfg.Rules = []config.RuleConfig{
+						{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+					}
+					cfg.Clients.Profiles = []config.ClientProfileConfig{{
+						Name:  "backup-agent",
+						Rules: rules,
+					}}
+				} else {
+					cfg.Rules = rules
+				}
+
+				if _, err := validateAndCompileRules(&cfg); err != nil {
+					t.Fatalf("validateAndCompileRules() error = %v, want nil for a fully shadowed allow", err)
+				}
+			})
+		}
+	}
+}
+
+func TestValidateAndCompileRulesRejectsSlashBearingCatalogRoutes(t *testing.T) {
+	tests := []struct {
+		name         string
+		method       string
+		denyPattern  string
+		allowPattern string
+		wantAck      string
+		wantWitness  string
+		ackBlind     bool
+	}{
+		{
+			name:         "docker image export",
+			method:       http.MethodGet,
+			denyPattern:  "/images/*/get",
+			allowPattern: "/images/*/*/get",
+			wantAck:      "insecure_allow_read_exfiltration",
+			wantWitness:  "GET /images/a/a/get",
+		},
+		{
+			name:         "docker image push",
+			method:       http.MethodPost,
+			denyPattern:  "/images/*/push",
+			allowPattern: "/images/*/*/push",
+			wantAck:      "insecure_allow_read_exfiltration",
+			wantWitness:  "POST /images/a/a/push",
+		},
+		{
+			name:         "libpod image export",
+			method:       http.MethodGet,
+			denyPattern:  "/libpod/images/*/get",
+			allowPattern: "/libpod/images/*/*/get",
+			wantAck:      "insecure_allow_read_exfiltration",
+			wantWitness:  "GET /libpod/images/a/a/get",
+		},
+		{
+			name:         "libpod image push",
+			method:       http.MethodPost,
+			denyPattern:  "/libpod/images/*/push",
+			allowPattern: "/libpod/images/*/*/push",
+			wantAck:      "insecure_allow_read_exfiltration",
+			wantWitness:  "POST /libpod/images/a/a/push",
+		},
+		{
+			name:         "plugin push",
+			method:       http.MethodPost,
+			denyPattern:  "/plugins/*/push",
+			allowPattern: "/plugins/*/*/push",
+			wantAck:      "insecure_allow_read_exfiltration",
+			wantWitness:  "POST /plugins/a/a/push",
+		},
+		{
+			name:         "plugin set",
+			method:       http.MethodPost,
+			denyPattern:  "/plugins/*/set",
+			allowPattern: "/plugins/*/*/set",
+			wantAck:      "insecure_allow_body_blind_writes",
+			wantWitness:  "POST /plugins/a/a/set",
+		},
+		{
+			name:         "libpod manifest create",
+			method:       http.MethodPost,
+			denyPattern:  "/libpod/manifests/*",
+			allowPattern: "/libpod/manifests/a/a",
+			wantAck:      "insecure_allow_body_blind_writes",
+			wantWitness:  "POST /libpod/manifests/a/a",
+		},
+		{
+			name:         "libpod manifest modify",
+			method:       http.MethodPut,
+			denyPattern:  "/libpod/manifests/*",
+			allowPattern: "/libpod/manifests/a/a",
+			wantAck:      "insecure_allow_body_blind_writes",
+			wantWitness:  "PUT /libpod/manifests/a/a",
+		},
+		{
+			name:         "libpod manifest registry push",
+			method:       http.MethodPost,
+			denyPattern:  "/libpod/manifests/*/registry/*",
+			allowPattern: "/libpod/manifests/*/registry/*/*",
+			wantAck:      "insecure_allow_read_exfiltration",
+			wantWitness:  "POST /libpod/manifests/a/registry/a/a",
+			ackBlind:     true,
+		},
+	}
+
+	for _, scope := range []string{"default policy", "named client profile"} {
+		for _, tt := range tests {
+			t.Run(scope+" "+tt.name, func(t *testing.T) {
+				rules := []config.RuleConfig{
+					{Match: config.MatchConfig{Method: tt.method, Path: tt.denyPattern}, Action: "deny"},
+					{Match: config.MatchConfig{Method: tt.method, Path: tt.allowPattern}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+				cfg := config.Defaults()
+				cfg.InsecureAllowBodyBlindWrites = tt.ackBlind
+				if scope == "named client profile" {
+					cfg.Rules = []config.RuleConfig{
+						{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+					}
+					cfg.Clients.Profiles = []config.ClientProfileConfig{{
+						Name:  "slash-bearing",
+						Rules: rules,
+					}}
+				} else {
+					cfg.Rules = rules
+				}
+
+				_, err := validateAndCompileRules(&cfg)
+				if err == nil {
+					t.Fatalf("validateAndCompileRules() = nil, want %s error for reachable slash-bearing route", tt.wantAck)
+				}
+				for _, want := range []string{tt.wantAck, tt.wantWitness} {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("error = %q, want it to mention %q", err.Error(), want)
+					}
+				}
+				if scope == "named client profile" && !strings.Contains(err.Error(), "slash-bearing") {
+					t.Fatalf("error = %q, want it to mention the client profile", err.Error())
+				}
+			})
+		}
+	}
+}
+
+func TestValidateAndCompileRulesAllowsFullyShadowedSlashBearingCatalogRoutes(t *testing.T) {
+	for _, scope := range []string{"default policy", "named client profile"} {
+		for _, endpoint := range []struct {
+			method       string
+			allowPattern string
+		}{
+			{method: http.MethodGet, allowPattern: "/libpod/images/*/*/get"},
+			{method: http.MethodPost, allowPattern: "/libpod/images/*/*/push"},
+		} {
+			t.Run(scope+" "+endpoint.method, func(t *testing.T) {
+				rules := []config.RuleConfig{
+					{Match: config.MatchConfig{Method: endpoint.method, Path: "/libpod/images/**"}, Action: "deny"},
+					{Match: config.MatchConfig{Method: endpoint.method, Path: endpoint.allowPattern}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+				cfg := config.Defaults()
+				if scope == "named client profile" {
+					cfg.Rules = []config.RuleConfig{
+						{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+					}
+					cfg.Clients.Profiles = []config.ClientProfileConfig{{
+						Name:  "fully-shadowed",
+						Rules: rules,
+					}}
+				} else {
+					cfg.Rules = rules
+				}
+
+				if _, err := validateAndCompileRules(&cfg); err != nil {
+					t.Fatalf("validateAndCompileRules() error = %v, want nil for a fully shadowed slash-bearing allow", err)
+				}
+			})
+		}
+	}
+}
+
+func TestFirstAllowedCatalogPathInstructionBudgetFailsClosed(t *testing.T) {
+	rules := make([]config.RuleConfig, 0, 129)
+	for i := 0; i < 128; i++ {
+		rules = append(rules, config.RuleConfig{
+			Match: config.MatchConfig{
+				Method: http.MethodPost,
+				Path:   fmt.Sprintf("/unrelated/%03d/%s", i, strings.Repeat("x", 32)),
+			},
+			Action: "deny",
+		})
+	}
+	rules = append(rules, config.RuleConfig{
+		Match:  config.MatchConfig{Method: http.MethodPost, Path: "/libpod/manifests/**"},
+		Action: "allow",
+	})
+
+	witness, result := firstAllowedCatalogPath(http.MethodPost, "/libpod/manifests/sockguard-test", catalogIdentifierPath, nil, rules)
+	if result != catalogReachabilityIndeterminate {
+		t.Fatalf("firstAllowedCatalogPath() result = %v, want indeterminate after instruction-budget exhaustion", result)
+	}
+	if witness != "/libpod/manifests/sockguard-test" {
+		t.Fatalf("firstAllowedCatalogPath() witness = %q, want stable fail-closed catalog path", witness)
 	}
 }
