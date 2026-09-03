@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1897,6 +1898,35 @@ func TestProxyHijackStreamsNotTornDownWhileEitherDirectionActive(t *testing.T) {
 	}
 }
 
+// TestWaitForHijackInactivityReturnsAtExactlyZeroRemaining covers the
+// "remaining <= 0" boundary at hijack.go:383 (CONDITIONALS_BOUNDARY to
+// "remaining < 0"). idleFor() is pinned to a constant 1ns by backdating
+// started to the zero time.Time (time.Since saturates at the max
+// representable Duration) and setting lastElapsed to one nanosecond less
+// than that max, so timeout - idleFor() lands on exactly 0 every time it's
+// recomputed. Under "<= 0" the wait returns true on the first pass; under
+// the "< 0" mutant, remaining == 0 never counts as expired, timer.Reset(0)
+// keeps firing immediately, and the loop spins forever.
+func TestWaitForHijackInactivityReturnsAtExactlyZeroRemaining(t *testing.T) {
+	activity := &hijackActivity{}
+	activity.lastElapsed.Store(math.MaxInt64 - 1)
+
+	const timeout = 1 * time.Nanosecond
+	resultCh := make(chan bool, 1)
+	go func() {
+		resultCh <- waitForHijackInactivity(activity, timeout, nil)
+	}()
+
+	select {
+	case got := <-resultCh:
+		if !got {
+			t.Fatal("waitForHijackInactivity() = false, want true at remaining == 0")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("waitForHijackInactivity did not return within 2s; remaining == 0 was not treated as expired")
+	}
+}
+
 func TestHijackActivityNeverMovesBackward(t *testing.T) {
 	activity := newHijackActivity()
 	activity.record(2 * time.Second)
@@ -1905,6 +1935,110 @@ func TestHijackActivityNeverMovesBackward(t *testing.T) {
 	if got := time.Duration(activity.lastElapsed.Load()); got != 2*time.Second {
 		t.Fatalf("last activity = %s, want %s", got, 2*time.Second)
 	}
+}
+
+func TestActivityReaderTouchesOnlyOnPositiveRead(t *testing.T) {
+	// Covers activityReader.Read's "if n > 0" guard at hijack.go:131: a
+	// zero-byte read (e.g. a nil-error EOF-adjacent read) must not touch
+	// the activity clock, while any positive-byte read must.
+	activity := newHijackActivity()
+	// started is backdated so time.Since(started) is deterministically
+	// large (~1s) at the touch() below, rather than relying on wall-clock
+	// progression between construction and the read: on a coarse clock,
+	// time.Since(newHijackActivity().started) can read back as 0 ns.
+	activity.started = time.Now().Add(-time.Second)
+	if got := activity.lastElapsed.Load(); got != 0 {
+		t.Fatalf("lastElapsed = %d before any read, want 0", got)
+	}
+
+	zero := activityReader{reader: funcReader(func(p []byte) (int, error) { return 0, nil }), activity: activity}
+	if _, err := zero.Read(make([]byte, 4)); err != nil {
+		t.Fatalf("Read() error = %v, want nil", err)
+	}
+	if got := activity.lastElapsed.Load(); got != 0 {
+		t.Fatalf("lastElapsed = %d after a zero-byte read, want unchanged 0", got)
+	}
+
+	nonzero := activityReader{reader: funcReader(func(p []byte) (int, error) { return 3, nil }), activity: activity}
+	if _, err := nonzero.Read(make([]byte, 4)); err != nil {
+		t.Fatalf("Read() error = %v, want nil", err)
+	}
+	if got := activity.lastElapsed.Load(); got == 0 {
+		t.Fatal("lastElapsed unchanged after a positive-byte read, want touch() to have recorded elapsed time")
+	}
+}
+
+func TestActivityWriterTouchesOnlyOnPositiveWrite(t *testing.T) {
+	// Covers activityWriter.Write's "if n > 0" guard at hijack.go:144,
+	// mirroring TestActivityReaderTouchesOnlyOnPositiveRead for the write side.
+	activity := newHijackActivity()
+	// See TestActivityReaderTouchesOnlyOnPositiveRead: backdate started so
+	// touch()'s elapsed reading is deterministically nonzero.
+	activity.started = time.Now().Add(-time.Second)
+	if got := activity.lastElapsed.Load(); got != 0 {
+		t.Fatalf("lastElapsed = %d before any write, want 0", got)
+	}
+
+	zero := activityWriter{writer: funcWriter(func(p []byte) (int, error) { return 0, nil }), activity: activity}
+	if _, err := zero.Write([]byte("x")); err != nil {
+		t.Fatalf("Write() error = %v, want nil", err)
+	}
+	if got := activity.lastElapsed.Load(); got != 0 {
+		t.Fatalf("lastElapsed = %d after a zero-byte write, want unchanged 0", got)
+	}
+
+	nonzero := activityWriter{writer: funcWriter(func(p []byte) (int, error) { return len(p), nil }), activity: activity}
+	if _, err := nonzero.Write([]byte("xyz")); err != nil {
+		t.Fatalf("Write() error = %v, want nil", err)
+	}
+	if got := activity.lastElapsed.Load(); got == 0 {
+		t.Fatal("lastElapsed unchanged after a positive-byte write, want touch() to have recorded elapsed time")
+	}
+}
+
+func TestReadHijackUpstreamResponseClosesNonNilBodyOnReadError(t *testing.T) {
+	// Covers the "resp.Body != nil" guard at hijack.go:465: a response
+	// object returned alongside a read/deadline-clear error still owns a
+	// body that must be closed, not leaked.
+	restoreHijackHooks(t)
+
+	closed := false
+	trackingBody := closeTrackingReadCloser{Reader: strings.NewReader("partial"), closed: &closed}
+	readResponseHook = func(*bufio.Reader, *http.Request) (*http.Response, error) {
+		return &http.Response{Body: trackingBody}, errors.New("truncated response")
+	}
+
+	conn := &funcConn{}
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/attach", nil)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	if _, _, ok := readHijackUpstreamResponse(conn, httptest.NewRecorder(), req, logger); ok {
+		t.Fatal("readHijackUpstreamResponse = true, want false on read error")
+	}
+	if !closed {
+		t.Fatal("expected the partially read response body to be closed on error")
+	}
+}
+
+// funcReader adapts a function to io.Reader for activityReader tests.
+type funcReader func(p []byte) (int, error)
+
+func (f funcReader) Read(p []byte) (int, error) { return f(p) }
+
+// funcWriter adapts a function to io.Writer for activityWriter tests.
+type funcWriter func(p []byte) (int, error)
+
+func (f funcWriter) Write(p []byte) (int, error) { return f(p) }
+
+// closeTrackingReadCloser records whether Close was called.
+type closeTrackingReadCloser struct {
+	io.Reader
+	closed *bool
+}
+
+func (r closeTrackingReadCloser) Close() error {
+	*r.closed = true
+	return nil
 }
 
 func TestHandleHijack_NonUpgradeFallbackEdgePaths(t *testing.T) {

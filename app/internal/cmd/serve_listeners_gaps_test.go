@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codeswhat/sockguard/app/internal/config"
 	"github.com/codeswhat/sockguard/app/internal/inbound"
 )
 
@@ -209,5 +210,32 @@ func TestListenerStatusBoardSetStateUnregisteredNameNoop(t *testing.T) {
 
 	if got := board.snapshot(); len(got) != 0 {
 		t.Fatalf("snapshot() = %+v, want empty (setState must not create entries)", got)
+	}
+}
+
+// TestNetworkFor covers networkFor's own `listen.Socket != ""` branch
+// (serve_listeners.go:218; not one of the mutants in scope here, but the
+// sibling of listenerAddrFor immediately below it and otherwise untested).
+func TestNetworkFor(t *testing.T) {
+	if got := networkFor(config.ListenConfig{Socket: "/run/sockguard.sock"}); got != inbound.NetworkUnix {
+		t.Fatalf("networkFor(socket set) = %v, want %v", got, inbound.NetworkUnix)
+	}
+	if got := networkFor(config.ListenConfig{Address: "127.0.0.1:2375"}); got != inbound.NetworkTCP {
+		t.Fatalf("networkFor(socket empty) = %v, want %v", got, inbound.NetworkTCP)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// serve_listeners.go:227 — CONDITIONALS_NEGATION: `if listen.Socket != ""`
+// inside listenerAddrFor. Mutation flips != to ==, so a configured unix
+// socket path would render as "tcp://" (and vice versa) in logs/banner text.
+// ---------------------------------------------------------------------------
+
+func TestListenerAddrFor(t *testing.T) {
+	if got := listenerAddrFor(config.ListenConfig{Socket: "/run/sockguard.sock"}); got != "unix:/run/sockguard.sock" {
+		t.Fatalf("listenerAddrFor(socket set) = %q, want %q", got, "unix:/run/sockguard.sock")
+	}
+	if got := listenerAddrFor(config.ListenConfig{Address: "127.0.0.1:2375"}); got != "tcp://127.0.0.1:2375" {
+		t.Fatalf("listenerAddrFor(socket empty) = %q, want %q", got, "tcp://127.0.0.1:2375")
 	}
 }

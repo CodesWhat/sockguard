@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -445,6 +446,36 @@ func TestBuildEndpoint_SNIDerivedFromHost(t *testing.T) {
 	}
 }
 
+func TestSplitHostPort(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		hostport string
+		wantHost string
+		wantPort string
+		wantOK   bool
+	}{
+		{name: "host and port", hostport: "example.com:2376", wantHost: "example.com", wantPort: "2376", wantOK: true},
+		{name: "IPv6 literal", hostport: "[::1]:2376", wantHost: "::1", wantPort: "2376", wantOK: true},
+		{name: "no colon at all", hostport: "example.com", wantHost: "example.com", wantPort: "", wantOK: false},
+		// A colon at index 0 is still a colon that was found (i == 0, not < 0):
+		// the empty host and the port after it must still be split out. This
+		// pins the exact "not found" boundary at i < 0, not i <= 0.
+		{name: "colon at index zero", hostport: ":2376", wantHost: "", wantPort: "2376", wantOK: true},
+		{name: "trailing colon, no port", hostport: "example.com:", wantHost: "example.com", wantPort: "", wantOK: false},
+	}
+	for _, tt := range cases {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			host, port, ok := splitHostPort(tt.hostport)
+			if host != tt.wantHost || port != tt.wantPort || ok != tt.wantOK {
+				t.Fatalf("splitHostPort(%q) = (%q, %q, %v), want (%q, %q, %v)", tt.hostport, host, port, ok, tt.wantHost, tt.wantPort, tt.wantOK)
+			}
+		})
+	}
+}
+
 // ── Endpoint.String / IsTLS ───────────────────────────────────────────────────
 
 func TestEndpoint_StringAndIsTLS(t *testing.T) {
@@ -528,6 +559,39 @@ func TestNewSingleSocket(t *testing.T) {
 	eps := r.Endpoints()
 	if len(eps) != 1 || eps[0].Network != "unix" || eps[0].Address != "/var/run/docker.sock" {
 		t.Errorf("unexpected endpoints: %+v", eps)
+	}
+	// NewSingleSocket passes Options{Interval: -1} specifically: negative (not
+	// merely non-positive) is the sentinel loop() uses to skip the continuous
+	// probe ticker entirely, leaving only the single startup probe.
+	if r.interval != -1 {
+		t.Errorf("interval = %v, want -1 (single startup probe only, no continuous loop)", r.interval)
+	}
+}
+
+func TestNew_TimeoutBoundary(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		timeout time.Duration
+		want    time.Duration
+	}{
+		{name: "zero uses default", timeout: 0, want: defaultProbeTimeout},
+		{name: "negative uses default", timeout: -5 * time.Second, want: defaultProbeTimeout},
+		{name: "positive is kept as-is", timeout: 3 * time.Second, want: 3 * time.Second},
+	}
+	for _, tt := range cases {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ep := Endpoint{Name: "/tmp/timeout-boundary.sock", Network: "unix", Address: "/tmp/timeout-boundary.sock"}
+			r, err := New([]Endpoint{ep}, Options{Probe: probeAlways(nil), Interval: -1, Timeout: tt.timeout})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			if r.timeout != tt.want {
+				t.Fatalf("timeout = %v, want %v", r.timeout, tt.want)
+			}
+		})
 	}
 }
 
@@ -660,6 +724,41 @@ func TestResolver_DialContext_UsesActiveEndpoint(t *testing.T) {
 		t.Fatalf("DialContext: %v", err)
 	}
 	_ = conn.Close()
+}
+
+func TestResolver_DialContextConnectionFailureDemotesActiveEndpoint(t *testing.T) {
+	t.Parallel()
+	primary := tempSocketPath(t, "dialctx-primary-down") // nothing listens here
+	secondary := startUnixServer(t, "dialctx-secondary", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, "secondary")
+	}))
+	r, err := New([]Endpoint{
+		{Name: "primary", Network: "unix", Address: primary},
+		{Name: "secondary", Network: "unix", Address: secondary},
+	}, Options{
+		Interval: -1,
+		// The re-probe (sync and any async follow-up) always reports primary
+		// down, so the assertion below holds regardless of whether the
+		// asynchronous re-probe goroutine has run yet.
+		Probe: func(_ context.Context, ep Endpoint) error {
+			if ep.Name == "primary" {
+				return errors.New("primary remains unreachable")
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	r.setHealth(context.Background(), r.states[0], true)
+	r.setHealth(context.Background(), r.states[1], true)
+
+	if _, err := r.DialContext(context.Background(), "ignored", "ignored"); err == nil {
+		t.Fatal("DialContext error = nil, want a dial failure against the dead primary")
+	}
+	if r.states[0].healthy.Load() {
+		t.Error("primary should be demoted (unhealthy) after DialContext dial failure")
+	}
 }
 
 func TestResolver_DialContext_NoEndpoints(t *testing.T) {
@@ -809,6 +908,63 @@ func TestResolver_Demote_SingleEndpoint_IsNoOp(t *testing.T) {
 	// In a single-endpoint resolver, demote returns early without changing health.
 	if !r.states[0].healthy.Load() {
 		t.Error("single-endpoint demote should be a no-op but flipped health to false")
+	}
+}
+
+// waitForReprobe blocks until demote's asynchronous re-probe goroutine has
+// finished (endpointState.reprobing is CAS-guarded and reset via a deferred
+// Store after setHealth runs). The deadline is a safety net, not a timing
+// assertion: a healthy reprobe finishes in microseconds, so 5s only guards
+// against a future regression that deadlocks the goroutine and would
+// otherwise hang the suite for the full go test default instead of failing
+// fast.
+func waitForReprobe(t *testing.T, s *endpointState) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for s.reprobing.Load() {
+		if time.Now().After(deadline) {
+			t.Fatalf("reprobe did not finish within 5s")
+		}
+		runtime.Gosched()
+	}
+}
+
+func TestResolver_DemoteReprobeSetsHealthFromProbeResult(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name        string
+		probeErr    error
+		wantHealthy bool
+	}{
+		{name: "reprobe succeeds", probeErr: nil, wantHealthy: true},
+		{name: "reprobe still fails", probeErr: errors.New("still down"), wantHealthy: false},
+	}
+	for _, tt := range cases {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ep0 := Endpoint{Name: "ep0", Network: "unix", Address: "/tmp/reprobe-ep0.sock"}
+			ep1 := Endpoint{Name: "ep1", Network: "unix", Address: "/tmp/reprobe-ep1.sock"}
+			probe := func(_ context.Context, ep Endpoint) error {
+				if ep.Name == "ep0" {
+					return tt.probeErr
+				}
+				return nil
+			}
+			r, err := New([]Endpoint{ep0, ep1}, Options{Probe: probe, Interval: -1})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			r.setHealth(context.Background(), r.states[0], true)
+			r.setHealth(context.Background(), r.states[1], true)
+
+			r.demote(r.states[0])
+			waitForReprobe(t, r.states[0])
+
+			if got := r.states[0].healthy.Load(); got != tt.wantHealthy {
+				t.Fatalf("ep0 healthy after reprobe = %v, want %v", got, tt.wantHealthy)
+			}
+		})
 	}
 }
 
@@ -1117,6 +1273,10 @@ func TestSpecsFromDockerEnv_DockerHostGrammar(t *testing.T) {
 		// numeric. Range errors are deferred until the connection attempt.
 		{name: "TCP numeric zero port", host: "tcp://daemon.internal:0", wantAddress: "tcp://daemon.internal:0"},
 		{name: "TCP numeric out-of-range port", host: "tcp://daemon.internal:99999", wantAddress: "tcp://daemon.internal:99999"},
+		// A port long enough to overflow strconv.Atoi's int range still parses
+		// as numeric (net/url only checks the digits, not the magnitude), so
+		// the same "accepted here, rejected only at dial time" rule applies.
+		{name: "TCP overflow numeric port", host: "tcp://daemon.internal:99999999999999999999", wantAddress: "tcp://daemon.internal:99999999999999999999"},
 		{name: "IPv6 host without port", host: "[::1]:", wantAddress: "tcp://[::1]:2375"},
 		{name: "IPv6 host without port and base path", host: "tcp://[::1]/gateway", wantAddress: "tcp://[::1]:2375/gateway"},
 		{name: "absolute Unix socket", host: "unix:///tmp/docker.sock", wantAddress: "unix:///tmp/docker.sock"},
@@ -1318,6 +1478,60 @@ func TestResolverRoundTripPrependsTCPBasePathWithoutCanonicalizing(t *testing.T)
 	}
 }
 
+func TestResolverRoundTripSetsResponseRequestToCallerOriginal(t *testing.T) {
+	t.Parallel()
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(daemon.Close)
+
+	// A non-empty base path forces requestWithBasePath to clone the request,
+	// so the transport's own resp.Request (bound to that clone) differs by
+	// pointer from the caller's original req unless RoundTrip explicitly
+	// rebinds it back.
+	ep, err := BuildEndpoint(EndpointSpec{
+		Address:               "tcp://" + strings.TrimPrefix(daemon.URL, "http://") + "/proxy/",
+		InsecureAllowPlainTCP: true,
+	})
+	if err != nil {
+		t.Fatalf("BuildEndpoint: %v", err)
+	}
+	r, err := New([]Endpoint{ep}, Options{Interval: -1})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodGet, "http://docker/containers/json", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := r.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.Request != req {
+		t.Fatalf("resp.Request = %p, want the caller's original request %p", resp.Request, req)
+	}
+}
+
+func TestRequestWithBasePath_ClonesWhenOnlyRawBasePathIsSet(t *testing.T) {
+	t.Parallel()
+	// BuildEndpoint never produces this exact combination (RawBasePath is
+	// only populated alongside a non-empty BasePath), but the skip-clone
+	// guard must still require BOTH fields empty before returning the
+	// request untouched -- an empty BasePath paired with a non-empty
+	// RawBasePath must still trigger a clone.
+	ep := Endpoint{RawBasePath: "/v1"}
+	req, err := http.NewRequest(http.MethodGet, "http://docker/containers/json", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	if got := ep.requestWithBasePath(req); got == req {
+		t.Fatal("requestWithBasePath returned the original request unmodified, want a clone because RawBasePath is non-empty")
+	}
+}
+
 func TestResolverDialRequestBindsPrefixToDialedEndpoint(t *testing.T) {
 	t.Parallel()
 	primaryListener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -1436,6 +1650,17 @@ func TestJoinURLPathUsesOneSlashBoundaryForDecodedAndEscapedForms(t *testing.T) 
 			wantPath:    "api/v1/a/b",
 			wantRawPath: "api/v1/a%2Fb",
 		},
+		{
+			// Neither side has an escaped form at all: joinURLPath must take
+			// the fast joinPath path and report RawPath == "" (letting the
+			// caller re-derive the escaped form from Path) rather than
+			// falling through to the EscapedPath-based slow path.
+			name:        "neither side has an escaped form",
+			base:        &url.URL{Path: "/api/"},
+			request:     &url.URL{Path: "/containers/json"},
+			wantPath:    "/api/containers/json",
+			wantRawPath: "",
+		},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -1444,6 +1669,12 @@ func TestJoinURLPathUsesOneSlashBoundaryForDecodedAndEscapedForms(t *testing.T) 
 			gotPath, gotRawPath := joinURLPath(tt.base, tt.request)
 			if gotPath != tt.wantPath || gotRawPath != tt.wantRawPath {
 				t.Fatalf("joinURLPath = (%q, %q), want (%q, %q)", gotPath, gotRawPath, tt.wantPath, tt.wantRawPath)
+			}
+			if tt.wantRawPath == "" {
+				// An empty RawPath is the "no custom encoding" sentinel, not
+				// an escaped form of Path, so the round-trip decode check
+				// below does not apply.
+				return
 			}
 			decoded, err := url.PathUnescape(gotRawPath)
 			if err != nil {
@@ -1533,6 +1764,29 @@ func TestResolverRoundTripKeepsEndpointAndPrefixTogetherDuringHealthFlaps(t *tes
 }
 
 // ── Resolver.Start health loop ────────────────────────────────────────────────
+
+func TestResolverLoop_ZeroIntervalFallsThroughNegativeGuard(t *testing.T) {
+	t.Parallel()
+	// New() converts an Options.Interval of exactly zero to defaultProbeInterval,
+	// so loop() never legitimately observes interval == 0 through the public
+	// constructor -- this white-box literal bypasses that guard to pin the
+	// exact boundary of "if r.interval < 0 { return }": only a *negative*
+	// interval (the NewSingleSocket sentinel) skips the continuous-probe
+	// ticker. Zero must fall through to the ticker construction, which panics
+	// on a non-positive duration -- a synchronous, deterministic signal that
+	// the guard did not fire, with no sleep or timeout guess involved.
+	r := &Resolver{
+		states:  []*endpointState{{ep: Endpoint{Name: "x", Network: "unix", Address: "/tmp/zero-interval.sock"}}},
+		timeout: time.Second,
+		probe:   probeAlways(nil),
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("loop() with interval == 0 returned without reaching ticker construction, want it to fall through the negative-interval guard")
+		}
+	}()
+	r.loop(context.Background())
+}
 
 func TestResolver_Start_Idempotent(t *testing.T) {
 	t.Parallel()
