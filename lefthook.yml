@@ -9,11 +9,14 @@
 #   5. Go vulnerability scan (govulncheck — reachable CVEs in deps + stdlib)
 #   6. Go fuzz smoke (5 s per fuzzer, all 8 fuzzers) — tier 0 of the
 #      fuzz strategy. Catches broken fuzz drivers and stale seed corpora
-#      before the push even leaves the machine. The real coverage tiers
-#      are in `.github/workflows/ci-verify.yml` (60 s per fuzzer in a
-#      matrix, on every PR/push), `quality-fuzz-nightly.yml` (15 min
-#      per fuzzer, daily), and `quality-fuzz-monthly.yml` (1 h per
-#      fuzzer, monthly + manual).
+#      before the push even leaves the machine. Real coverage tiers:
+#      6 of the 8 (all but FuzzLoadYAML and FuzzHijackBidirectionalStream)
+#      also run in `.github/workflows/ci-verify.yml` (60 s per fuzzer in
+#      a matrix, on every PR/push); all 8 run in `quality-fuzz-nightly.yml`
+#      (15 min per fuzzer, daily) and `quality-fuzz-monthly.yml` (1 h per
+#      fuzzer, monthly + manual). FuzzLoadYAML and FuzzHijackBidirectionalStream
+#      are the heavy fuzzers that skip Tier 1 CI and reach hosted CI only in
+#      the nightly and monthly tiers, in addition to running here locally.
 #   7. Lockfile dedupe check (catches orphaned hoisted packages)
 #   8. Shellcheck (all tracked *.sh scripts)
 #   9. Knip (unused files/exports/deps in TS workspaces)
@@ -99,8 +102,9 @@ pre-push:
 
     # Fuzz smoke — 5 s per fuzzer, all 8 in series. Tier 0 of the fuzz
     # strategy: catches broken fuzz drivers and stale seed corpora before
-    # the push leaves the machine. Real coverage (60 s, 15 min, 1 h)
-    # happens in the ci-verify + quality-fuzz-{nightly,monthly} workflows.
+    # the push leaves the machine. Real coverage: 6 of the 8 (all but
+    # FuzzLoadYAML and FuzzHijackBidirectionalStream) get the 60 s ci-verify
+    # tier too; all 8 get the 15 min/1 h quality-fuzz-{nightly,monthly} tiers.
     # Keep a finite Go watchdog above the tiny smoke budget so a hung input
     # fails with a stack dump instead of consuming the hook timeout. Retry the
     # known Go fuzztime-boundary flake once, matching the nightly workflow;
