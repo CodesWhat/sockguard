@@ -226,6 +226,13 @@ One other difference from Tecnativa in that diff: Sockguard binds loopback `127.
 
 A third difference is a real permission change, not just a behavior parity gap: Sockguard's granular `ALLOW_*` vars (`ALLOW_START`, `ALLOW_STOP`, `ALLOW_RESTARTS`, and the rest) are honored independently of `POST`. Real Tecnativa's `haproxy.cfg` denies any non-GET request before it ever reaches the `ALLOW_*` rules, so `ALLOW_RESTARTS=1 POST=0` on Tecnativa grants nothing. The same combination on Sockguard grants working restart access. Audit your `ALLOW_*` settings before cutover if you were relying on `POST=0` to blanket-deny them.
 
+`CONTAINERS=1` with `POST=1`, or `ALLOW_DELETE=1` independently, keeps
+Tecnativa's full container-delete behavior, including
+force removal, anonymous-volume removal, and slash-bearing legacy link names
+such as `client/alias`. To allow bare deletes while denying any of those query
+controls, migrate the delete rule to YAML and leave its matching
+`request_body.container_remove` field disabled.
+
 Tecnativa compatibility mode and signed-policy mode are separate migration
 stages. Rule-generating compatibility variables are unsigned process state, so
 Sockguard rejects them whenever `--policy-bundle-trust-config` is active.

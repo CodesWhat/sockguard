@@ -66,6 +66,9 @@ health:
 # capabilities should be redesigned to use proper volume mounts or
 # runner labels rather than relaxing these guards.
 request_body:
+  # actions/runner invokes `docker rm --force` during job cleanup.
+  container_remove:
+    allow_force: true
   container_create:
     # Host isolation — workflows must not escape container boundaries.
     allow_privileged: false

@@ -461,6 +461,7 @@ type RequestBodyConfig struct {
 	ImagePull        ImagePullRequestBodyConfig        `mapstructure:"image_pull"`
 	Build            BuildRequestBodyConfig            `mapstructure:"build"`
 	ContainerUpdate  ContainerUpdateRequestBodyConfig  `mapstructure:"container_update"`
+	ContainerRemove  ContainerRemoveRequestBodyConfig  `mapstructure:"container_remove"`
 	ContainerArchive ContainerArchiveRequestBodyConfig `mapstructure:"container_archive"`
 	ImageLoad        ImageLoadRequestBodyConfig        `mapstructure:"image_load"`
 	Volume           VolumeRequestBodyConfig           `mapstructure:"volume"`
@@ -497,6 +498,16 @@ type RequestBodyConfig struct {
 	LibpodVolume  VolumeRequestBodyConfig  `mapstructure:"libpod_volume"`
 	LibpodNetwork NetworkRequestBodyConfig `mapstructure:"libpod_network"`
 	LibpodSecret  SecretRequestBodyConfig  `mapstructure:"libpod_secret"`
+}
+
+// ContainerRemoveRequestBodyConfig configures query inspection for
+// DELETE /containers/{id}. Docker treats any force, v, or link value other
+// than an empty string, 0, no, false, or none as true, so each destructive
+// behavior requires its own explicit opt-in. All controls default to false.
+type ContainerRemoveRequestBodyConfig struct {
+	AllowForce         bool `mapstructure:"allow_force"`
+	AllowRemoveVolumes bool `mapstructure:"allow_remove_volumes"`
+	AllowRemoveLinks   bool `mapstructure:"allow_remove_links"`
 }
 
 // LibpodPodCreateRequestBodyConfig configures body inspection for

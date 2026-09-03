@@ -9,9 +9,9 @@
 # because the listener is bound to the Docker compose bridge. Never publish
 # port 2375 to the host or the Internet.
 #
-# Watchtower needs: container list/inspect, lifecycle (create/start/stop/
-# kill/restart/rename/remove), exec lifecycle hooks, image pull/inspect/
-# list/remove, and network connect/disconnect to preserve attachments.
+# Watchtower v1.21.2 needs: ping/info, container list/inspect, lifecycle
+# (create/start/stop/rename/update/remove), exec lifecycle hooks, image
+# pull/inspect/remove, and network connect to preserve attachments.
 # The watchtower preset covers all of these; exec hooks require the
 # insecure_allow_body_blind_writes opt-in unless you configure a fixed
 # allowed_commands allowlist.
@@ -38,7 +38,7 @@ services:
     # over the private compose network by service name.
 
   watchtower:
-    image: containrrr/watchtower:latest
+    image: nickfedor/watchtower:latest
     restart: unless-stopped
     depends_on:
       - sockguard

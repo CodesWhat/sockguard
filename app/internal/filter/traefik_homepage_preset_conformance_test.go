@@ -107,7 +107,7 @@ func TestTraefikPresetConformance(t *testing.T) {
 		{"ping-head", http.MethodHead, "/_ping", "", true},
 		{"ping-get", http.MethodGet, "/_ping", "", true},
 		{"version", http.MethodGet, "/version", "", true},
-		{"info", http.MethodGet, "/info", "", true},
+		{"info-denied", http.MethodGet, "/info", "", false},
 		{"events", http.MethodGet, "/events", "", true},
 
 		// Docker-mode provider.
@@ -116,11 +116,11 @@ func TestTraefikPresetConformance(t *testing.T) {
 
 		// Swarm-mode provider.
 		{"networks-list", http.MethodGet, "/networks", "", true},
-		{"network-inspect", http.MethodGet, "/networks/abc", "", true},
+		{"network-inspect-denied", http.MethodGet, "/networks/abc", "", false},
 		{"services-list", http.MethodGet, "/services", "", true},
-		{"service-inspect", http.MethodGet, "/services/abc", "", true},
+		{"service-inspect-denied", http.MethodGet, "/services/abc", "", false},
 		{"tasks-list", http.MethodGet, "/tasks", "", true},
-		{"task-inspect", http.MethodGet, "/tasks/abc", "", true},
+		{"task-inspect-denied", http.MethodGet, "/tasks/abc", "", false},
 		// pswarm.go parseTasks calls NodeInspect for every task carrying a
 		// NodeID; moby/moby client v0.4.0 node_inspect.go:27 maps that to
 		// GET /nodes/{id}. Without this the task is skipped and the service
@@ -183,26 +183,26 @@ func TestHomepagePresetConformance(t *testing.T) {
 	handler := buildDrydockPresetHandler(t, "homepage.yaml")
 
 	cases := []presetCase{
-		// Health + metadata.
-		{"ping-get", http.MethodGet, "/_ping", "", true},
-		{"ping-head", http.MethodHead, "/_ping", "", true},
-		{"version", http.MethodGet, "/version", "", true},
-		{"info", http.MethodGet, "/info", "", true},
-		{"events", http.MethodGet, "/events", "", true},
+		// Homepage does not use Docker health or metadata endpoints.
+		{"ping-get-denied", http.MethodGet, "/_ping", "", false},
+		{"ping-head-denied", http.MethodHead, "/_ping", "", false},
+		{"version-denied", http.MethodGet, "/version", "", false},
+		{"info-denied", http.MethodGet, "/info", "", false},
+		{"events-denied", http.MethodGet, "/events", "", false},
 
 		// Container reads: list, inspect, stats.
 		{"containers-list", http.MethodGet, "/containers/json", "", true},
 		{"container-inspect", http.MethodGet, "/containers/abc/json", "", true},
 		{"container-stats", http.MethodGet, "/containers/abc/stats", "", true},
 
-		// Image list for the image-info display.
-		{"images-list", http.MethodGet, "/images/json", "", true},
+		// Homepage makes no image API call.
+		{"images-list-denied", http.MethodGet, "/images/json", "", false},
 
 		// Swarm reads.
 		{"services-list", http.MethodGet, "/services", "", true},
 		{"service-inspect", http.MethodGet, "/services/abc", "", true},
 		{"tasks-list", http.MethodGet, "/tasks", "", true},
-		{"task-inspect", http.MethodGet, "/tasks/abc", "", true},
+		{"task-inspect-denied", http.MethodGet, "/tasks/abc", "", false},
 
 		// Version-prefixed forms of the same reads.
 		{"v-prefixed-containers-list", http.MethodGet, "/v1.45/containers/json", "", true},

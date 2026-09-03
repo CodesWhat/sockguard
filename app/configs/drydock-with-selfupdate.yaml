@@ -95,6 +95,8 @@ response:
 # Security tradeoff note) — an exec-create body that matches allowed_commands
 # but carries an unlisted Env name (e.g. NODE_OPTIONS) is still denied.
 request_body:
+  container_remove:
+    allow_force: true
   container_create:
     allowed_bind_mounts:
       - /var/run/docker.sock
