@@ -55,8 +55,8 @@ func forwardedLabelFiltersForTest(t *testing.T, r *http.Request) []string {
 // TestLibpodEventsIsDeliberatelyAbsentFromTheLabelFilterSet.
 func TestLibpodEventsIsOwnerFilteredByReplacement(t *testing.T) {
 	t.Parallel()
-	if !libpodNeedsOwnerFilter(libpodPrefix + "events") {
-		t.Fatalf("libpodNeedsOwnerFilter(%q) = false; without it an owner-isolated client reads every tenant's event stream through the libpod spelling", libpodPrefix+"events")
+	if !libpodNeedsOwnerFilter(http.MethodGet, libpodPrefix+"events") {
+		t.Fatalf("libpodNeedsOwnerFilter(GET, %q) = false; without it an owner-isolated client reads every tenant's event stream through the libpod spelling", libpodPrefix+"events")
 	}
 	tests := []struct {
 		name string
@@ -233,11 +233,24 @@ func TestLibpodImageScpOwnershipMatrix(t *testing.T) {
 						rec := httptest.NewRecorder()
 						handler.ServeHTTP(rec, req)
 
-						wantDenied := state.remote || state.found && state.labels["com.sockguard.owner"] != "job-123" && (!allowUnowned || len(state.labels) > 0)
+						// A source the daemon cannot resolve denies too: owner
+						// isolation fails closed on an unresolved target, so
+						// not-found is a denial rather than the pass-through it
+						// used to be. AllowUnownedImages does not rescue it —
+						// that option covers an image that exists and carries no
+						// owner label, not one that does not exist.
+						wantDenied := state.remote || !state.found ||
+							state.labels["com.sockguard.owner"] != "job-123" && (!allowUnowned || len(state.labels) > 0)
 						wantForwarded := !wantDenied || rolloutMode != "enforce"
+						// A source that resolves to nothing answers 404 like
+						// every other unresolvable ownership target; a foreign
+						// or remote one is a 403.
 						wantStatus := http.StatusForbidden
-						if wantForwarded {
+						switch {
+						case wantForwarded:
 							wantStatus = http.StatusNoContent
+						case !state.remote && !state.found:
+							wantStatus = http.StatusNotFound
 						}
 						wantUpstreamCalls := 0
 						if wantForwarded {
@@ -267,8 +280,11 @@ func TestLibpodImageScpOwnershipMatrix(t *testing.T) {
 							t.Fatalf("meta = decision %q code %q, want %q and %q", meta.Decision, meta.ReasonCode, wantDecision, reasonCodeOwnerPolicyDeniedAccess)
 						}
 						wantReason := "libpod owner policy denied access to image"
-						if state.remote {
+						switch {
+						case state.remote:
 							wantReason = "libpod owner policy denied access to remote image source"
+						case !state.found:
+							wantReason = "libpod owner policy could not resolve image"
 						}
 						if meta.Reason != wantReason {
 							t.Fatalf("meta reason = %q, want %q", meta.Reason, wantReason)
@@ -489,8 +505,8 @@ func TestLibpodImageScpMalformedLocalSourceIsDenied(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "could not resolve local image source") {
-		t.Fatalf("body = %q, want local-source resolution denial", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "denied access to malformed local image source") {
+		t.Fatalf("body = %q, want malformed-local-source denial", rec.Body.String())
 	}
 	if meta.Decision != logging.DecisionDeny || meta.ReasonCode != reasonCodeOwnerPolicyDeniedAccess {
 		t.Fatalf("meta = decision %q code %q, want %q and %q", meta.Decision, meta.ReasonCode, logging.DecisionDeny, reasonCodeOwnerPolicyDeniedAccess)
@@ -782,13 +798,9 @@ func TestLibpodUnscopeableReadsAreInertWithoutOwner(t *testing.T) {
 // each refusal has to be its own branch rather than falling out of the path
 // classifiers, and the two failure modes differ.
 //
-// libpodContainerIdentifier DOES classify the two /libpod/containers/ paths —
-// as containers named "showmounted" and "stats" — which is exactly the shape
-// that left them open: the daemon has no such container, the inspect comes
-// back not-found, and checkOwnedResource turns not-found into
-// verdictPassThrough, so the host inventory was forwarded intact.
-// libpodPodIdentifier deliberately reserves "stats", so /libpod/pods/stats was
-// never classified at all and reached the upstream without any check running.
+// The identifier helpers deliberately reserve all three collection paths, so
+// they reach the upstream without any resource ownership check running. The
+// refusal branch remains necessary to keep their host-wide data unavailable.
 // The manifest reads likewise have no ownership identifier: manifest-list
 // responses carry no owner labels, and the image identifier only covers the
 // distinct /libpod/images route family. /libpod/secrets/json is the third
@@ -803,12 +815,8 @@ func TestLibpodUnscopeableReadsWereNotCoveredByTheExistingIdentifiers(t *testing
 		wantIdentifier string
 		wantOK         bool
 	}{
-		// libpodContainerIdentifier stopped classifying this one: "showmounted"
-		// joined "json" in its GET/HEAD collection-word exclusion. The refusal
-		// branch still has to run first for the stats path below, which is
-		// still classified as a container named "stats".
 		{path: filter.LibpodShowMountedPath, classify: libpodContainerIdentifier, wantIdentifier: "", wantOK: false},
-		{path: filter.LibpodContainerStatsPath, classify: libpodContainerIdentifier, wantIdentifier: "stats", wantOK: true},
+		{path: filter.LibpodContainerStatsPath, classify: libpodContainerIdentifier, wantIdentifier: "", wantOK: false},
 		{path: filter.LibpodPodStatsPath, classify: libpodPodIdentifier, wantIdentifier: "", wantOK: false},
 		{path: filter.LibpodManifestExistsPath, classify: libpodImageIdentifier, wantIdentifier: "", wantOK: false},
 		{path: filter.LibpodManifestJSONPath, classify: libpodImageIdentifier, wantIdentifier: "", wantOK: false},
@@ -824,15 +832,8 @@ func TestLibpodUnscopeableReadsWereNotCoveredByTheExistingIdentifiers(t *testing
 			if ok != tt.wantOK || identifier != tt.wantIdentifier {
 				t.Fatalf("classify(GET, %q) = %q, %v; want %q, %v — if this changes, the refusal branch is the only thing covering the endpoint", tt.path, identifier, ok, tt.wantIdentifier, tt.wantOK)
 			}
-			if libpodNeedsOwnerFilter(tt.path) {
-				t.Fatalf("libpodNeedsOwnerFilter(%q) = true; the endpoint has no filters parameter an owner label can be attached to", tt.path)
-			}
-			if !ok {
-				return
-			}
-			labels, found, err := fakeInspector{}.inspectResource(context.Background(), dockerresource.KindContainer, identifier)
-			if err != nil || found || labels != nil {
-				t.Fatalf("inspect of a container named %q = %v, %v, %v; want not-found, which is why the inspect alone would pass the request through", identifier, labels, found, err)
+			if libpodNeedsOwnerFilter(http.MethodGet, tt.path) {
+				t.Fatalf("libpodNeedsOwnerFilter(GET, %q) = true; the endpoint accepts no filters query parameter", tt.path)
 			}
 		})
 	}
@@ -888,6 +889,196 @@ func TestLibpodContainerStatsIsRefusedEvenWhenTheCallerOwnsAContainerNamedStats(
 	})
 }
 
+// --- libpod prune ----------------------------------------------------------
+
+// TestLibpodPruneRoutesAreOwnerFiltered covers the write half of the same gap
+// the list tests above cover on the read side. Every Docker-compat prune route
+// has carried the owner label filter since owner isolation shipped; the four
+// libpod spellings carried nothing, so an owner-isolated client deleted every
+// prunable container, image, network and volume on the host by switching
+// surface. Podman documents a JSON-encoded `filters` parameter taking `label`
+// on all four, and routes /libpod/containers/prune to the same
+// compat.PruneContainers handler as the Docker-compat path.
+//
+// Each case carries its Docker-compat leg over the same fixture, so a change
+// that stopped the middleware touching prune at all fails both legs rather
+// than leaving this passing vacuously.
+func TestLibpodPruneRoutesAreOwnerFiltered(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "compat containers", path: "/containers/prune"},
+		{name: "libpod containers", path: "/libpod/containers/prune"},
+		{name: "compat images", path: "/images/prune"},
+		{name: "libpod images", path: "/libpod/images/prune"},
+		{name: "compat networks", path: "/networks/prune"},
+		{name: "libpod networks", path: "/libpod/networks/prune"},
+		{name: "compat volumes", path: "/volumes/prune"},
+		{name: "libpod volumes", path: "/libpod/volumes/prune"},
+		{name: "libpod containers version prefixed", path: "/v5.8.1/libpod/containers/prune"},
+		{name: "libpod volumes version prefixed", path: "/v5.8.1/libpod/volumes/prune"},
+	}
+	for _, tt := range tests {
+		for _, query := range []string{"", `?filters={"label":["com.sockguard.owner=other-job"],"until":["10m"]}`} {
+			name := tt.name
+			if query != "" {
+				name += "/client filter"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				var got []string
+				var until []string
+				opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+				handler := middlewareWithDeps(testLogger(), opts, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(
+					http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						got = forwardedLabelFiltersForTest(t, r)
+						decoded, err := dockerfilters.Decode(r.URL.Query().Get("filters"))
+						if err != nil {
+							t.Fatalf("forwarded filters did not decode: %v", err)
+						}
+						until = decoded["until"]
+						w.WriteHeader(http.StatusOK)
+					}))
+
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, tt.path+query, nil))
+
+				if rec.Code != http.StatusOK {
+					t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+				}
+				// Exactly one value, and it is ours: Podman's libpod image
+				// prune reads only the first value under a filter key, so a
+				// surviving client value would be the one honored on some
+				// routes and ignored on others.
+				if strings.Join(got, ",") != "com.sockguard.owner=job-123" {
+					t.Fatalf("forwarded label filters = %v, want only the injected owner label", got)
+				}
+				if query != "" && strings.Join(until, ",") != "10m" {
+					t.Fatalf("forwarded until filter = %v, want the client's own non-label filter preserved", until)
+				}
+			})
+		}
+	}
+}
+
+// TestLibpodPruneRoutesAreInertWithoutOwner proves the injection costs a
+// deployment with no owner nothing: the request reaches the upstream with the
+// client's own query untouched.
+func TestLibpodPruneRoutesAreInertWithoutOwner(t *testing.T) {
+	t.Parallel()
+	for _, path := range []string{"/libpod/containers/prune", "/libpod/images/prune", "/libpod/networks/prune", "/libpod/volumes/prune"} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			var forwarded string
+			handler := middlewareWithDeps(testLogger(), Options{}, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(
+				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					forwarded = r.URL.RawQuery
+					w.WriteHeader(http.StatusOK)
+				}))
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path+"?all=true", nil))
+
+			if rec.Code != http.StatusOK || forwarded != "all=true" {
+				t.Fatalf("status = %d query = %q, want %d and the query untouched", rec.Code, forwarded, http.StatusOK)
+			}
+		})
+	}
+}
+
+// wantOwnerUnscopeableWriteReasonCodes is wantOwnerUnscopeableReasonCodes for
+// the write catalog, written out for the same reason: the assembled wire
+// string is what an operator greps for, so it is asserted literally rather
+// than rebuilt from the stem.
+var wantOwnerUnscopeableWriteReasonCodes = map[string]string{
+	filter.LibpodPodPrunePath: "owner_libpod_pod_prune_unscopeable",
+}
+
+// TestLibpodUnscopeableWritesAreRefusedUnderOwnerIsolation covers the one
+// libpod prune route that takes no filters at all. Podman's PodPruneHelper
+// calls runtime.PrunePods with no options, so a forwarded request removes
+// every prunable pod on the host whoever owns it, and there is no argument to
+// narrow it with. The refusal runs in every rollout mode: warn mode exists to
+// let an operator measure what enforcement would cost, and there is no
+// measurement to take once another tenant's pods are gone.
+func TestLibpodUnscopeableWritesAreRefusedUnderOwnerIsolation(t *testing.T) {
+	t.Parallel()
+	writes := filter.LibpodUnscopeableWrites()
+	if len(writes) != len(wantOwnerUnscopeableWriteReasonCodes) {
+		t.Fatalf("filter.LibpodUnscopeableWrites() has %d entries for %d expected reason codes; an endpoint was added or dropped without a decision here", len(writes), len(wantOwnerUnscopeableWriteReasonCodes))
+	}
+	for _, write := range writes {
+		wantCode, ok := wantOwnerUnscopeableWriteReasonCodes[write.Path]
+		if !ok {
+			t.Fatalf("filter.LibpodUnscopeableWrites() gained %q with no expected reason code; decide what this middleware logs for it", write.Path)
+		}
+		for _, path := range []string{write.Path, "/v5.8.1" + write.Path} {
+			for _, rolloutMode := range []string{"enforce", "warn", "audit"} {
+				t.Run(path+"/"+rolloutMode, func(t *testing.T) {
+					t.Parallel()
+					handler := middlewareWithDeps(testLogger(), Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(
+						http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+							t.Fatal("refused prune reached the upstream")
+						}))
+
+					meta := &logging.RequestMeta{RolloutMode: rolloutMode}
+					req := httptest.NewRequest(write.Method, path, nil)
+					req = req.WithContext(logging.WithMeta(req.Context(), meta))
+					rec := httptest.NewRecorder()
+					handler.ServeHTTP(rec, req)
+
+					if rec.Code != http.StatusForbidden {
+						t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+					}
+					if meta.ReasonCode != wantCode {
+						t.Fatalf("meta.ReasonCode = %q, want %q", meta.ReasonCode, wantCode)
+					}
+					if !strings.Contains(rec.Body.String(), write.Reason) {
+						t.Fatalf("body = %s, want the deny reason %q", rec.Body.String(), write.Reason)
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestLibpodUnscopeableWritesAreInertWithoutOwner proves the refusal costs a
+// deployment with no owner nothing, the same way the read refusals do.
+func TestLibpodUnscopeableWritesAreInertWithoutOwner(t *testing.T) {
+	t.Parallel()
+	for _, write := range filter.LibpodUnscopeableWrites() {
+		t.Run(write.Path, func(t *testing.T) {
+			t.Parallel()
+			reached := false
+			handler := middlewareWithDeps(testLogger(), Options{}, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(
+				http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					reached = true
+					w.WriteHeader(http.StatusOK)
+				}))
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(write.Method, write.Path, nil))
+
+			if !reached || rec.Code != http.StatusOK {
+				t.Fatalf("reached = %v status = %d, want true and %d", reached, rec.Code, http.StatusOK)
+			}
+		})
+	}
+}
+
+// TestLibpodPodPruneIsNotSilentlyOwnerFiltered pins the decision that the pod
+// prune route is refused rather than filtered. If someone adds it to
+// libpodNeedsOwnerFilter, the injection would encode a scope Podman's handler
+// never reads, and the request would be forwarded looking scoped.
+func TestLibpodPodPruneIsNotSilentlyOwnerFiltered(t *testing.T) {
+	t.Parallel()
+	if libpodNeedsOwnerFilter(http.MethodPost, filter.LibpodPodPrunePath) {
+		t.Fatalf("libpodNeedsOwnerFilter(POST, %q) = true; the endpoint reads no filters parameter, so injecting one would forward an unscoped host-wide delete looking scoped", filter.LibpodPodPrunePath)
+	}
+}
+
 // --- libpod secret list ----------------------------------------------------
 
 // TestLibpodSecretListIsRefusedRatherThanOwnerFiltered is the ownership half of
@@ -899,8 +1090,8 @@ func TestLibpodContainerStatsIsRefusedEvenWhenTheCallerOwnsAContainerNamedStats(
 func TestLibpodSecretListIsRefusedRatherThanOwnerFiltered(t *testing.T) {
 	t.Parallel()
 	for _, method := range []string{http.MethodGet, http.MethodHead} {
-		if libpodNeedsOwnerFilter(filter.LibpodSecretListPath) {
-			t.Fatalf("libpodNeedsOwnerFilter(%q) = true; Podman answers 500 for a label key on this endpoint", filter.LibpodSecretListPath)
+		if libpodNeedsOwnerFilter(method, filter.LibpodSecretListPath) {
+			t.Fatalf("libpodNeedsOwnerFilter(%s, %q) = true; Podman answers 500 for a label key on this endpoint", method, filter.LibpodSecretListPath)
 		}
 		for _, path := range []string{filter.LibpodSecretListPath, "/v5.8.1" + filter.LibpodSecretListPath} {
 			t.Run(method+" "+path, func(t *testing.T) {

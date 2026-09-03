@@ -18,6 +18,25 @@ import (
 // upstream while carrying dockerd's on a Docker one.
 const compatEventsPath = "/events"
 
+// eventLabelFilterKey is the filter key both event spellings are scoped with.
+//
+// It is a literal rather than a visibilityLabelFilterKey(normPath) call
+// because the key is not path-derived here: it is the name of the filter
+// Podman's event handler itself accepts. libpod/events/filters.go's
+// generateEventFilter takes container, event/status, image, pod, volume, type
+// and label and errors on anything else, and it is reached identically from
+// /events and /libpod/events, so no caller of setPodmanEventLabelFilter has a
+// path whose key could differ. The "node.label" spelling visibilityLabelFilterKey
+// exists for belongs to the Swarm node list, which no event stream reaches.
+//
+// This was previously derived from compatEventsPath, which produced the right
+// key but named the wrong path for the /libpod/events caller.
+//
+// internal/ownership's ownerFilterKey resolves the same literal for both
+// paths, so the sole-value marker recorded under this key is the one that
+// layer looks up.
+const eventLabelFilterKey = "label"
+
 // podmanEventsDenyReason is the operator-facing reason the middleware reports
 // when it refuses GET /events against a Podman upstream.
 //
@@ -101,9 +120,9 @@ func denyPodmanCompatEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 // setPodmanEventLabelFilter REPLACES the `label` filter key with the policy's
-// single selector, rather than appending to it the way
-// addVisibilityLabelFilters does on every other list endpoint and on this one
-// against a Docker upstream.
+// single selector on both Podman event spellings, rather than appending to it
+// the way addVisibilityLabelFilters does on every other list endpoint and on
+// Docker's /events endpoint.
 //
 // Appending is safe on a conjunctive filter: dockerd ANDs event label pairs
 // through filters.Args.MatchKVList, and so do Podman's own LIST endpoints,
@@ -131,8 +150,7 @@ func setPodmanEventLabelFilter(r *http.Request, selector compiledSelector) (*htt
 	if selector.hasValue {
 		value += "=" + selector.value
 	}
-	filterKey := visibilityLabelFilterKey(compatEventsPath)
-	filters[filterKey] = []string{value}
+	filters[eventLabelFilterKey] = []string{value}
 	encoded, err := json.Marshal(filters)
 	if err != nil {
 		return r, fmt.Errorf("encode filters: %w", err)
@@ -143,5 +161,5 @@ func setPodmanEventLabelFilter(r *http.Request, selector compiledSelector) (*htt
 	// selector has to remain the sole label value. A later owner-isolation
 	// layer sees the marker and refuses the request rather than dropping this
 	// visibility constraint or appending an owner value that would widen it.
-	return dockerfilters.RecordSoleValueFilter(r, filterKey), nil
+	return dockerfilters.RecordSoleValueFilter(r, eventLabelFilterKey), nil
 }

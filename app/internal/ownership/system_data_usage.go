@@ -72,6 +72,20 @@ func denyUnscopeableLibpodRead(w http.ResponseWriter, r *http.Request, read filt
 	_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: read.Reason})
 }
 
+// denyUnscopeableLibpodWrite refuses one of filter.LibpodUnscopeableWrites()
+// with a 403 before the daemon is contacted, so the host-wide change it would
+// make never happens.
+//
+// It is the write-side twin of denyUnscopeableLibpodRead, down to assembling
+// the reason code from the entry's stem, and it is unconditional for a
+// sharper version of the same reason: the read refusals exist so a body is
+// never disclosed, and this one exists so another owner's resources are never
+// destroyed. Neither is a verdict warn mode can usefully stage.
+func denyUnscopeableLibpodWrite(w http.ResponseWriter, r *http.Request, write filter.LibpodUnscopeableWrite) {
+	logging.SetDeniedWithCode(w, r, "owner_libpod_"+write.ReasonCodeStem+"_unscopeable", write.Reason, nil)
+	_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: write.Reason})
+}
+
 // denyLibpodSystemDataUsage refuses GET /libpod/system/df with a 403 and never
 // contacts the upstream, so no byte of the host inventory is buffered, let
 // alone relayed.
