@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- `golang.org/x/crypto` moves from v0.55.0 to v0.56.0, clearing GO-2026-6354 (CVE-2026-78662) and GO-2026-6355 (CVE-2026-56855), two denial-of-service bugs in `golang.org/x/crypto/ssh` where a deadlocked channel stalls the connection. Sockguard never imports the `ssh` package; the module is an indirect requirement reached through `sigstore-go` and `certificate-transparency-go` for `cryptobyte` on the opt-in `image_trust` path, never the core proxy path, and `govulncheck` reports zero reachable vulnerabilities either side of the bump. Grype matches on module version rather than reachability, so once the 2026-09-04 vulnerability DB shipped the finding failed `CI: Verify`'s Docker Build on every branch, and it flags the published v2.1.0 image the same way.
+
 ## [2.1.0] - 2026-09-03
 
 v2.1.0 promotes `2.1.0-rc.2` unchanged after the tri-tool conformance gate.
