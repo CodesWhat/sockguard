@@ -671,6 +671,17 @@ func (p *patternFilterWriter) commitFilteredBody(body []byte) error {
 // with. The caller turns the error into a 502. Only GET reaches here (see
 // handleVisibilityListRequest), so an empty buffer means a truncated or absent
 // upstream body rather than a legitimate bodiless HEAD.
+//
+// The array has to close, and nothing but whitespace may follow it. Neither
+// was checked: the element loop ends on dec.More() and that is false both when
+// the array closed and when the input simply ran out, so a body ending
+// mid-array or carrying a second value after the array was rewritten into a
+// well-formed 200 the client read as the complete list. Most truncations
+// already surfaced through the element decode, but that was a property of how
+// More() and Decode() interact rather than of this parser, and trailing bytes
+// were not caught at all. Both are now refused outright, on the same reasoning
+// as the non-array case: a body this build cannot account for in full is one
+// whose contents it cannot claim to have checked.
 func (p *patternFilterWriter) flushFiltered(normPath string, policy *compiledPolicy) error {
 	if committed, err := p.commitIfUnfilterable(); committed {
 		return err
@@ -708,6 +719,24 @@ func (p *patternFilterWriter) flushFiltered(normPath string, policy *compiledPol
 		out.Write(raw)
 	}
 	out.WriteByte(']')
+
+	// dec.More() went false either because the array closed or because the
+	// input ran out, so read the delimiter and require it: a truncated body
+	// fails here instead of being closed on the client's behalf.
+	closing, err := dec.Token()
+	if err != nil {
+		return fmt.Errorf("decode %s list response: array never closed: %w", normPath, err)
+	}
+	if closing != json.Delim(']') {
+		return fmt.Errorf("decode %s list response: expected the array to close, got %v", normPath, closing)
+	}
+	// Only whitespace may follow. A second value or any other trailing bytes
+	// mean the body is not the one JSON array this endpoint returns, so
+	// whatever produced it is not the daemon shape the per-item checks above
+	// were written against.
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("decode %s list response: trailing bytes after the JSON array", normPath)
+	}
 
 	return p.commitFilteredBody(out.Bytes())
 }
