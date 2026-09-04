@@ -434,7 +434,7 @@ type ResponseConfig struct {
 	// container runtime plumbing: Containerd, FirewallBackend,
 	// DiscoveredDevices, and NRI. Separate from RedactNetworkTopology (which
 	// covers swarm/network addressing) — this is host-process/device topology.
-	// Default false; hardened presets enable it.
+	// Default false (opt-in). No shipped preset enables it.
 	RedactHostTopology bool `mapstructure:"redact_host_topology"`
 	// AllowAttestationStatements permits GET /images/{name}/attestations
 	// responses that include the full in-toto statement content

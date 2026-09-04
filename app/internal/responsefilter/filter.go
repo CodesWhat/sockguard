@@ -151,6 +151,8 @@ func (f *Filter) ModifyResponse(resp *http.Response) error {
 		return f.modifyLibpodResponse(resp.Request.Method, normPath, resp)
 	case isContainerInspectPath(normPath):
 		return f.modifyContainerInspect(resp)
+	case isImageInspectPath(normPath):
+		return f.modifyImageInspect(resp)
 	case normPath == "/containers/json":
 		return f.modifyContainerList(resp)
 	case normPath == "/networks":
@@ -248,6 +250,38 @@ func (f *Filter) modifyContainerInspect(resp *http.Response) error {
 	}
 	if f.opts.RedactNetworkTopology {
 		if err := redactContainerNetworkTopology(payload); err != nil {
+			return rejectResponse(err)
+		}
+	}
+
+	return writeResponseBody(resp, payload)
+}
+
+// modifyImageInspect rewrites GET /images/{name}/json (types.ImageInspect).
+// It carries the same two leaks container inspect does and reuses the same
+// helpers to close them: Config.Env is the image's baked-in environment
+// (Dockerfile ENV / --build-arg is a common secret carrier) and
+// GraphDriver.Data is the storage driver's host filesystem paths for the
+// image's layers. Image inspect has no Mounts, HostConfig or
+// NetworkSettings block, so RedactNetworkTopology has nothing to do here.
+func (f *Filter) modifyImageInspect(resp *http.Response) error {
+	body, err := readResponseBody(resp)
+	if err != nil {
+		return rejectResponse(err)
+	}
+
+	payload, err := decodeJSONObject(body)
+	if err != nil {
+		return rejectResponse(err)
+	}
+
+	if f.opts.RedactContainerEnv {
+		if err := redactNestedValue(payload, "Config", "Env", []string{}); err != nil {
+			return rejectResponse(err)
+		}
+	}
+	if f.opts.RedactMountPaths {
+		if err := redactGraphDriverData(payload); err != nil {
 			return rejectResponse(err)
 		}
 	}
@@ -512,6 +546,24 @@ func isImageAttestationsPath(normPath string) bool {
 		return false
 	}
 	return rest[idx+1:] == "attestations"
+}
+
+// isImageInspectPath reports whether normPath is /images/{name}/json. The
+// image name segment itself may contain slashes (registry/owner/repo), so
+// this cannot reuse isContainerInspectPath's single-Cut split — a container
+// ID never contains a slash, an image reference routinely does. It follows
+// isImageAttestationsPath's approach instead: anchor on the last path
+// segment being "json" with a non-empty identifier before it.
+func isImageInspectPath(normPath string) bool {
+	if !strings.HasPrefix(normPath, "/images/") {
+		return false
+	}
+	rest := strings.TrimPrefix(normPath, "/images/")
+	idx := strings.LastIndex(rest, "/")
+	if idx <= 0 {
+		return false
+	}
+	return rest[idx+1:] == "json"
 }
 
 // denyAttestationStatement reports whether resp is a

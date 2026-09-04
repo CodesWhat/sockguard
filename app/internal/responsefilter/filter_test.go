@@ -1399,6 +1399,137 @@ func TestIsImageAttestationsPath(t *testing.T) {
 	}
 }
 
+func TestIsImageInspectPath(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"/images/alpine/json", true},
+		{"/images/ghcr.io/acme/app/json", true},
+		{"/images/alpine/attestations", false},
+		{"/images/json", false}, // no identifier before the segment; this is the list route
+		{"/images/alpine/json/extra", false},
+		{"/containers/alpine/json", false},
+		// rest == "/json" after TrimPrefix: idx == 0 (the slash is the first
+		// byte, not "not found"), so the identifier is still empty. Pins the
+		// idx <= 0 boundary distinctly from idx == -1, mirroring
+		// TestIsImageAttestationsPath's equivalent case.
+		{"/images//json", false},
+	}
+	for _, tt := range tests {
+		if got := isImageInspectPath(tt.path); got != tt.want {
+			t.Errorf("isImageInspectPath(%q) = %v, want %v", tt.path, got, tt.want)
+		}
+	}
+}
+
+// imageInspectUpstream is a realistic GET /images/{name}/json body
+// (types.ImageInspect): Config.Env carries build-time secrets baked in with
+// Dockerfile ENV or --build-arg, and GraphDriver.Data carries the storage
+// driver's host filesystem paths for the image's layers — the same two
+// leaks container inspect closes, on a shape with none of container
+// inspect's other fields (no Mounts, HostConfig, or NetworkSettings).
+const imageInspectUpstream = `{
+	"Id": "sha256:abc123",
+	"RepoTags": ["myapp:latest"],
+	"RepoDigests": ["myapp@sha256:def456"],
+	"Parent": "",
+	"Comment": "",
+	"Created": "2026-01-01T00:00:00Z",
+	"Config": {
+		"Env": ["PATH=/usr/bin", "DB_PASSWORD=build-time-secret"],
+		"Cmd": ["/bin/sh"],
+		"Labels": {"maintainer": "team-a"}
+	},
+	"Architecture": "amd64",
+	"Os": "linux",
+	"Size": 12345678,
+	"GraphDriver": {
+		"Name": "overlay2",
+		"Data": {
+			"MergedDir": "/var/lib/docker/overlay2/abc123/merged",
+			"UpperDir": "/var/lib/docker/overlay2/abc123/diff",
+			"WorkDir": "/var/lib/docker/overlay2/abc123/work"
+		}
+	},
+	"RootFS": {
+		"Type": "layers",
+		"Layers": ["sha256:layer1", "sha256:layer2"]
+	},
+	"Metadata": {"LastTagTime": "2026-01-01T00:00:00Z"}
+}`
+
+func TestFilterModifyResponse_RedactsImageInspectResponse(t *testing.T) {
+	t.Parallel()
+	filter := New(Options{
+		RedactContainerEnv: true,
+		RedactMountPaths:   true,
+	})
+
+	resp := newResponseForTest(t, http.MethodGet, "/v1.53/images/myapp/json", imageInspectUpstream)
+	if err := filter.ModifyResponse(resp); err != nil {
+		t.Fatalf("ModifyResponse() error = %v, want nil", err)
+	}
+
+	got := decodeBodyForTest(t, resp)
+
+	config, _ := got["Config"].(map[string]any)
+	env, _ := config["Env"].([]any)
+	if len(env) != 0 {
+		t.Fatalf("Config.Env = %#v, want empty redacted array", config["Env"])
+	}
+
+	graphDriver, _ := got["GraphDriver"].(map[string]any)
+	data, _ := graphDriver["Data"].(map[string]any)
+	for key, value := range data {
+		if value != redactedValue {
+			t.Fatalf("GraphDriver.Data[%q] = %v, want %q", key, value, redactedValue)
+		}
+	}
+
+	// Nothing else on the shape should change: identity, tags, digests, and
+	// the fields the redaction options don't cover survive untouched.
+	if got["Id"] != "sha256:abc123" {
+		t.Fatalf("Id = %v, want unchanged", got["Id"])
+	}
+	repoTags, _ := got["RepoTags"].([]any)
+	if len(repoTags) != 1 || repoTags[0] != "myapp:latest" {
+		t.Fatalf("RepoTags = %#v, want unchanged", got["RepoTags"])
+	}
+	if graphDriver["Name"] != "overlay2" {
+		t.Fatalf("GraphDriver.Name = %v, want unchanged", graphDriver["Name"])
+	}
+	if cmd, _ := config["Cmd"].([]any); len(cmd) != 1 || cmd[0] != "/bin/sh" {
+		t.Fatalf("Config.Cmd = %#v, want unchanged", config["Cmd"])
+	}
+	labels, _ := config["Labels"].(map[string]any)
+	if labels["maintainer"] != "team-a" {
+		t.Fatalf("Config.Labels = %#v, want unchanged", config["Labels"])
+	}
+	rootFS, _ := got["RootFS"].(map[string]any)
+	if rootFS["Type"] != "layers" {
+		t.Fatalf("RootFS.Type = %v, want unchanged", rootFS["Type"])
+	}
+}
+
+func TestFilterModifyResponse_ImageInspectPassthroughWhenDisabled(t *testing.T) {
+	t.Parallel()
+	filter := New(Options{})
+
+	resp := newResponseForTest(t, http.MethodGet, "/v1.53/images/myapp/json", imageInspectUpstream)
+	if err := filter.ModifyResponse(resp); err != nil {
+		t.Fatalf("ModifyResponse() error = %v, want nil", err)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if string(body) != imageInspectUpstream {
+		t.Fatalf("body = %s, want byte-identical passthrough", body)
+	}
+}
+
 func nestedMapForTest(t *testing.T, payload map[string]any, keys ...string) map[string]any {
 	t.Helper()
 

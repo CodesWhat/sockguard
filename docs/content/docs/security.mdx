@@ -359,6 +359,7 @@ Together with request-side visibility and exfiltration guardrails, the read-side
 - Redact `Config.Env` on `GET /containers/*/json`
 - Redact `HostConfig.Binds` host paths plus `Mounts[*].Source` on container list/inspect responses
 - Redact `LogPath` and every value under `GraphDriver.Data` on container inspect responses, since both are absolute paths under the daemon's own storage root rather than anything the caller configured; `GraphDriver.Name` is kept
+- Redact `Config.Env` and every value under `GraphDriver.Data` on `GET /images/*/json` (and native `GET /libpod/images/*/json`), the same two fields container inspect redacts, since image inspect otherwise discloses the image's own baked-in build environment plus the storage driver's host filesystem paths for its layers
 - Redact volume `Mountpoint` on `GET /volumes` and `GET /volumes/*`
 - Redact container and network address topology on container/network list and inspect responses
 - Redact service/task env, mount, secret/config-reference, and network metadata

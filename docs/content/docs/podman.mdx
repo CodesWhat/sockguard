@@ -256,7 +256,16 @@ same way they cover Docker-compat:
   decoded once for inspection. Podman's earlier per-image POST routes remain
   distinct: `/libpod/images/scp/push`, `/tag`, and `/untag` check the image
   named exactly `scp`, while a longer action path checks the image whose name
-  begins with `scp/`; only an actual SCP route strips that segment.
+  begins with `scp/`; only an actual SCP route strips that segment. Because
+  this is the routed path rather than the cleaned one, a trailing slash
+  survives into rule matching and counts as an empty final segment. Podman
+  routes `POST /libpod/images/scp/alpine/` as an SCP of the image `alpine/`,
+  not of `alpine`, so on the routed view a rule spelling one segment
+  (`/libpod/images/scp/*`) does not cover it and a rule spelling two
+  (`/libpod/images/scp/*/*`) does. The cleaned view
+  (`/libpod/images/scp/alpine`) is evaluated first and has to allow on its
+  own, so a two-segment rule by itself still denies the request. Write
+  `/libpod/images/scp/**` to cover the whole route regardless of shape.
 - Query-selected native image batches are checked too. Sockguard decodes every
   repeated `references` value on `GET /libpod/images/export` and every repeated
   `images` value on `DELETE /libpod/images/remove`, then resolves all of them
@@ -329,7 +338,9 @@ same way they cover Docker-compat:
   is a separate layer from the two above, and it needed its own libpod field
   names rather than the compat ones: `redact_container_env`,
   `redact_mount_paths` and `redact_network_topology` apply to
-  `GET /libpod/containers/{id}/json`, `redact_mount_paths` to
+  `GET /libpod/containers/{id}/json`, `redact_container_env` and
+  `redact_mount_paths` to `GET /libpod/images/{name}/json`,
+  `redact_mount_paths` to
   `GET /libpod/volumes/json` and `GET /libpod/volumes/{name}/json`,
   `redact_network_topology` to `GET /libpod/networks/json`,
   `GET /libpod/networks/{id}/json` and its bare `GET /libpod/networks/{id}`
@@ -504,6 +515,7 @@ handler runs. Where they don't, the libpod field names are pinned separately:
 | libpod read | Option | What is redacted |
 |---|---|---|
 | `GET /libpod/containers/{id}/json` | `redact_container_env`, `redact_mount_paths`, `redact_network_topology` | `Config.Env`; `Mounts[].Source`, `HostConfig.Binds`, the daemon storage paths `LogPath` and every value under `GraphDriver.Data`, and the native host paths `Rootfs`, `ResolvConfPath`, `HostnamePath`, `HostsPath`, `StaticDir`, `OCIConfigPath`, `ConmonPidFile`, and `PidFile`; `HostConfig.NetworkMode`, the `NetworkSettings` address block and each `Networks` entry — the remaining fields use Docker's json tags, plus libpod's own `AdditionalMACAddresses` list, which has no compat counterpart |
+| `GET /libpod/images/{name}/json` | `redact_container_env`, `redact_mount_paths` | `Config.Env` and every value under `GraphDriver.Data`. `*libimage.ImageData`'s `Config` field is `*ociv1.ImageConfig`, whose `Env` carries the identical json tag Docker's compat handler uses, and its `GraphDriver` field is the same `{Name, Data}` shape container inspect redacts, so the same handler runs on both routes. There is no `Mounts`, `HostConfig`, or `NetworkSettings` on this shape, so `redact_network_topology` has nothing to do here. The list route `GET /libpod/images/json` is unaffected — `ImageSummary` has neither field |
 | `GET /libpod/volumes/json`, `GET /libpod/volumes/{name}/json` | `redact_mount_paths` | `Mountpoint`. The list body is a bare array, not Docker's `{"Volumes": [...]}` envelope |
 | `GET /libpod/networks/json`, `GET /libpod/networks/{id}/json`, `GET /libpod/networks/{id}` | `redact_network_topology` | Podman v4 and later: `subnets`, `routes`, `network_dns_servers`, `network_interface`, and inspect's `containers` map. Podman v2.2.1-v3.4.4: the raw CNI plugin's host `bridge` or macvlan `master`; plugin-level and IPAM-nested `dns.nameservers`, `dns.domain`, and `dns.search`; plus IPAM `routes`, `ranges`, static `addresses`, and backward-compatible flat `subnet`, `gateway`, `rangeStart`, and `rangeEnd`. List's top-level and per-plugin `Bytes` fields are removed because they are base64 copies of the complete raw conflist/plugin and would retain the same topology |
 | `GET /libpod/secrets/json`, `GET /libpod/secrets/{name}/json` | `redact_sensitive_data` | `SecretData`, the plaintext Podman returns for `?showsecret=true`. It is a top-level field, not the `Spec.Data` Docker uses — Podman's `Spec` has no `Data` at all. The redactor still covers the list route, but owner isolation and visibility refuse that route before a response exists to rewrite; the redaction is what a deployment running neither layer gets |
@@ -710,15 +722,6 @@ land):
   (`GET /libpod/**` reaches it) needs
   `insecure_allow_read_exfiltration: true` to pass startup validation, because
   the path is in the read-exfiltration catalog.
-- Response redaction for `GET /libpod/images/{name}/json`. Image inspect
-  returns the image's own `Config.Env` and `GraphDriver.Data`'s host storage
-  paths, and neither is rewritten. This one is **not** a libpod-specific gap:
-  the Docker-compat `GET /images/{name}/json` carries the same two fields and
-  is not redacted either, so switching surfaces changes nothing. It is listed
-  here because `podman-readonly.yaml` allows both spellings and a reader would
-  otherwise reasonably expect `redact_container_env` and `redact_mount_paths`
-  to cover them. The list route `GET /libpod/images/json` is not affected —
-  `ImageSummary` has neither field.
 - **`GET /libpod/secrets/json` has no scoped form under either isolation
   layer.** Podman's secret filter grammar accepts only `name` and `id` and
   answers `500` for any other key, so the label filter that scopes every other
