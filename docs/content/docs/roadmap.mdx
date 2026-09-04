@@ -1,15 +1,23 @@
 ---
 title: Roadmap
-description: Sockguard's shipped v1.7 and v2.0 work, planned v2.1 focus, and later direction.
+description: Sockguard's shipped v1.7, v2.0, and v2.1 work, planned v2.2 focus, and later direction.
 ---
 
-Sockguard v2.0 is the current stable feature line, with v2.0.0 the latest
-release. It moves signed-policy trust outside the candidate it authenticates,
-an intentional compatibility break that existing signed-policy deployments
-must handle through the [v2 migration](/migration#from-sockguard-v175-to-v200).
-v2.1 is the next planned line. This roadmap describes direction and priorities,
-not promises about dates. A feature is available only after the release notes
-say it has shipped.
+Sockguard v2.1 is the current stable feature line, with v2.1.0 the latest
+release. It promotes `2.1.0-rc.1` unchanged after the tri-tool conformance
+gate. v2.2 is the next planned line. This roadmap describes direction and
+priorities, not promises about dates. A feature is available only after the
+release notes say it has shipped.
+
+## Shipped in v2.1.0
+
+| Track | Delivered |
+|---|---|
+| Native libpod write inspection | Copy-into-container, container-update, restore, checkpoint, mount, and the gated image-write surface are inspected on the same terms as their Docker-compat twins |
+| Owner isolation fail-closed | An unresolved target answers `404`, a foreign one `403`, and an inspect failure `502`, forwarding none of them, across the libpod prune family, container commit, and image export/removal |
+| Ownership-scoped prune & commit | The libpod prune family is owner-scoped and container commit is owner-checked, with the resulting image labeled so it stays visible to later ownership checks |
+| Process-list read acknowledgment | Container and pod process-list reads now require the read-exfiltration acknowledgment |
+| Read-side redaction | Reaches libpod container inspect, volume reads, and network topology; `showsecret=true` no longer hands back a plaintext secret |
 
 ## Shipped in v2.0.0
 
@@ -21,21 +29,14 @@ say it has shipped.
 | Proxy hardening | Socket cleanup is inode-owned, method-aware resource routing covers keyword names, generated response errors clear stale representation headers, inspected bodies retain deadlines through logging and metrics, and request metric labels have finite cardinality |
 | Release surfaces | README, docs, website, Helm metadata, verification assets, and migration guidance agree on v2.0.0; release blobs use sigstore bundles only and published metadata is read back before the release succeeds |
 
-## Planned for v2.1
+## Planned for v2.2
 
 The general BuildKit gRPC mediation work shipped under
-[issue #185](https://github.com/CodesWhat/sockguard/issues/185). v2.1 extends
+[issue #185](https://github.com/CodesWhat/sockguard/issues/185). v2.2 extends
 that completed foundation into selective instruction-level mediation for the
 remaining frontend-less and third-party-frontend paths. The second is packaging
 rather than proxy behavior: the Go module path still declares a v1 major
 version, which keeps the v2 tags out of the Go module proxy.
-
-The disk-usage track that previously sat here has been resolved rather than
-scheduled, and the conclusion is not the one it described. Podman's native
-`GET /libpod/system/df` cannot be filtered at all, so the response walk is not
-taught its shape; the endpoint is refused whenever owner isolation or a
-visibility policy is active. See
-[Security](/security#layer-6-owner-label-isolation) for what an operator sees.
 
 | Track | Outcome required before release |
 |---|---|

@@ -193,11 +193,11 @@ test("route pages and the compare matrix agree on Sockguard's column", () => {
 test("roadmap data is valid and matches expected milestones", () => {
   assert.ok(roadmap.length > 0, "roadmap must be non-empty");
 
-  // v2.0.0 whole-app hardening release.
+  // v2.1.0 native libpod write inspection & owner-isolation hardening release.
   const releasedMilestones = roadmap.filter((m) => m.status === "released");
   assert.ok(releasedMilestones.length > 0, "must have at least one released milestone");
   const latestReleased = releasedMilestones[releasedMilestones.length - 1];
-  assert.equal(latestReleased.version, "v2.0.0", "latest released milestone must be v2.0.0");
+  assert.equal(latestReleased.version, "v2.1.0", "latest released milestone must be v2.1.0");
   assert.equal(latestReleased.status, "released");
 
   // Must retain the previous stable milestones.
@@ -215,23 +215,21 @@ test("roadmap data is valid and matches expected milestones", () => {
 
   const nextMilestones = roadmap.filter((m) => m.status === "next");
   assert.equal(nextMilestones.length, 1, "roadmap must have exactly one next milestone");
-  assert.equal(nextMilestones[0].version, "v2.1.0", "v2.1.0 must be the next milestone");
+  assert.equal(nextMilestones[0].version, "v2.2.0", "v2.2.0 must be the next milestone");
 
-  const v210 = roadmap.find((m) => m.version === "v2.1.0");
-  assert.ok(v210, "roadmap must retain the RUN-instruction work as v2.1.0");
-  assert.equal(v210.status, "next", "v2.1.0 must become next after v2.0.0 ships");
+  const v220 = roadmap.find((m) => m.version === "v2.2.0");
+  assert.ok(v220, "roadmap must retain the RUN-instruction work as v2.2.0");
+  assert.equal(v220.status, "next", "v2.2.0 must become next after v2.1.0 ships");
   assert.ok(
-    v210.items.every((item) => !item.includes("#185")),
-    "v2.1.0 must not present closed issue #185 as the owner of planned work",
+    v220.items.every((item) => !item.includes("#185")),
+    "v2.2.0 must not present closed issue #185 as the owner of planned work",
   );
 
   assert.ok(
     latestReleased.items.some(
-      (item) =>
-        item.includes("archives and checksums use sigstore bundles") &&
-        item.includes("images are signed and verified by digest"),
+      (item) => item.includes("404") && item.includes("403") && item.includes("502"),
     ),
-    "v2.0.0 must distinguish blob bundles from registry image signatures",
+    "v2.1.0 must describe the fail-closed owner-isolation status codes",
   );
 
   // Every milestone must have a non-empty items array

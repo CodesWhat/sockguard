@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-03
+
+v2.1.0 promotes `2.1.0-rc.1` unchanged after the tri-tool conformance gate.
+Proxy behavior is identical to rc.1, and the GA delta is release metadata. The
+Helm image digest is temporarily clear for the cut, so the chart falls back to
+`appVersion: "2.1.0"` until the stable multi-arch manifest exists and can be
+re-pinned on the active development line.
+
+## [2.1.0-rc.1] - 2026-09-03
+
 ### Security
 
 - **Container removal now separates bare deletion from its destructive query controls.** A rule allowing `DELETE /containers/{id}` still admits a bare removal, including Homarr v1.76.2's exact `container.remove()` call, but force-killing a running container, deleting attached anonymous volumes, and Docker's legacy link-removal mode are denied unless independently enabled with `request_body.container_remove.allow_force`, `allow_remove_volumes`, and `allow_remove_links`. Query parsing mirrors dockerd's `httputils.BoolValue` behavior, including its five false spellings and first-value handling for repeated keys; percent-encoded controls are inspected and malformed queries fail closed with `400`. The drydock, Portwing, Watchtower, Portainer, GitHub Actions runner, and GitLab Runner presets opt into only the controls their verified call surfaces use, and the two Compose extension presets, `drydock-with-compose.yaml` and `portwing-with-compose.yaml` (there is no standalone Compose preset), add anonymous-volume cleanup on top of their base preset's force removal; the generic multi-listener CI profile mirrors the runner cleanup controls, while Homarr opts into none. Tecnativa compatibility mode retains the historical full delete surface when `ALLOW_DELETE=1` or the broader `CONTAINERS=1` and `POST=1` section grant enables container writes, including slash-bearing legacy link names such as `client/alias`; use a YAML delete rule plus the three query controls to narrow it.
