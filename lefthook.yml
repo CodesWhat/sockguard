@@ -206,7 +206,12 @@ pre-push:
     # silently here would let a workflow-security regression reach CI
     # unnoticed.
     zizmor:
-      glob: '.github/workflows/*.yml'
+      # A list, not a single string: a change to .github/zizmor.yml alone
+      # changes what zizmor reports (see the --config note below) and has
+      # to trip this gate too, not just changes under workflows/.
+      glob:
+        - '.github/workflows/*.yml'
+        - '.github/zizmor.yml'
       run: |
         if ! command -v zizmor >/dev/null 2>&1; then
           echo "zizmor is required; install it (e.g. 'brew install zizmor' or 'cargo install zizmor') and re-run" >&2
