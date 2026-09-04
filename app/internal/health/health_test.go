@@ -788,9 +788,9 @@ func (w *failingWriter) Write(p []byte) (int, error) {
 	return 0, io.ErrClosedPipe
 }
 
-func TestHealthHandlerHealthyEncodeFailure(t *testing.T) {
+func TestHealthHandlerHealthyWriteFailure(t *testing.T) {
 	t.Parallel()
-	sock := fmt.Sprintf("/tmp/health-encode-%d.sock", os.Getpid())
+	sock := fmt.Sprintf("/tmp/health-write-%d.sock", os.Getpid())
 	_ = os.Remove(sock)
 	t.Cleanup(func() {
 		_ = os.Remove(sock)
@@ -812,7 +812,7 @@ func TestHealthHandlerHealthyEncodeFailure(t *testing.T) {
 	}
 }
 
-func TestHealthHandlerUnhealthyEncodeFailure(t *testing.T) {
+func TestHealthHandlerUnhealthyWriteFailure(t *testing.T) {
 	t.Parallel()
 	handler := Handler("/nonexistent/socket.sock", time.Now(), testLogger())
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -828,7 +828,7 @@ func TestHealthHandlerUnhealthyEncodeFailure(t *testing.T) {
 // healthMonitorWithLogger builds a Monitor with a pre-seeded watchdog state
 // and listener snapshot, wired to logger, without dialing anything. It lets
 // the three response branches in Handler (upstream-unhealthy,
-// listener-not-serving, healthy) be exercised individually so an encode
+// listener-not-serving, healthy) be exercised individually so a write
 // failure on each branch can be attributed to the right log call site.
 func healthMonitorWithLogger(state WatchdogState, listeners []ListenerStatus, logger *slog.Logger) *Monitor {
 	m := newMonitorWithChecker("docker", time.Now(), logger, newUpstreamHealthChecker(0, time.Second, time.Now, nil))
@@ -842,7 +842,7 @@ func healthMonitorWithLogger(state WatchdogState, listeners []ListenerStatus, lo
 	return m
 }
 
-func TestHealthHandlerLogsEncodeFailureOnUnhealthyUpstreamPath(t *testing.T) {
+func TestHealthHandlerLogsWriteFailureOnUnhealthyUpstreamPath(t *testing.T) {
 	t.Parallel()
 	collector := &testhelp.CollectingHandler{}
 	m := healthMonitorWithLogger(WatchdogState{Status: "unreachable", Err: errors.New("dial failed")}, nil, collector.Logger())
@@ -853,15 +853,15 @@ func TestHealthHandlerLogsEncodeFailureOnUnhealthyUpstreamPath(t *testing.T) {
 	if writer.status != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", writer.status, http.StatusServiceUnavailable)
 	}
-	// A mutant turning "encErr != nil" into "== nil" would log on the
+	// A mutant turning "writeErr != nil" into "== nil" would log on the
 	// (impossible here) success case instead of this write failure, so the
 	// WARN record would never appear.
-	if len(collector.FindMessage("failed to encode unhealthy response")) == 0 {
-		t.Fatalf("expected a \"failed to encode unhealthy response\" WARN record when the write fails; got %#v", collector.Records())
+	if len(collector.FindMessage("failed to write unhealthy response")) == 0 {
+		t.Fatalf("expected a \"failed to write unhealthy response\" WARN record when the write fails; got %#v", collector.Records())
 	}
 }
 
-func TestHealthHandlerLogsEncodeFailureOnListenerNotServingPath(t *testing.T) {
+func TestHealthHandlerLogsWriteFailureOnListenerNotServingPath(t *testing.T) {
 	t.Parallel()
 	collector := &testhelp.CollectingHandler{}
 	listeners := []ListenerStatus{{Name: "ci", Role: "main", Network: "unix", State: ListenerStateFailed}}
@@ -873,14 +873,14 @@ func TestHealthHandlerLogsEncodeFailureOnListenerNotServingPath(t *testing.T) {
 	if writer.status != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", writer.status, http.StatusServiceUnavailable)
 	}
-	// A mutant turning "encErr != nil" into "== nil" on this branch's write
+	// A mutant turning "writeErr != nil" into "== nil" on this branch's write
 	// check would suppress the WARN record on this write failure.
-	if len(collector.FindMessage("failed to encode unhealthy response")) == 0 {
-		t.Fatalf("expected a \"failed to encode unhealthy response\" WARN record when the write fails; got %#v", collector.Records())
+	if len(collector.FindMessage("failed to write unhealthy response")) == 0 {
+		t.Fatalf("expected a \"failed to write unhealthy response\" WARN record when the write fails; got %#v", collector.Records())
 	}
 }
 
-func TestHealthHandlerLogsEncodeFailureOnHealthyPath(t *testing.T) {
+func TestHealthHandlerLogsWriteFailureOnHealthyPath(t *testing.T) {
 	t.Parallel()
 	collector := &testhelp.CollectingHandler{}
 	listeners := []ListenerStatus{{Name: "ci", Role: "main", Network: "unix", State: ListenerStateServing}}
@@ -892,10 +892,10 @@ func TestHealthHandlerLogsEncodeFailureOnHealthyPath(t *testing.T) {
 	if writer.status != http.StatusOK {
 		t.Fatalf("status = %d, want %d", writer.status, http.StatusOK)
 	}
-	// A mutant turning "encErr != nil" into "== nil" on the healthy branch
+	// A mutant turning "writeErr != nil" into "== nil" on the healthy branch
 	// would suppress the WARN record on this write failure.
-	if len(collector.FindMessage("failed to encode healthy response")) == 0 {
-		t.Fatalf("expected a \"failed to encode healthy response\" WARN record when the write fails; got %#v", collector.Records())
+	if len(collector.FindMessage("failed to write healthy response")) == 0 {
+		t.Fatalf("expected a \"failed to write healthy response\" WARN record when the write fails; got %#v", collector.Records())
 	}
 }
 

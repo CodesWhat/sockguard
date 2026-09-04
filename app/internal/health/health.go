@@ -331,16 +331,16 @@ func (m *Monitor) Handler() http.HandlerFunc {
 		}
 
 		if known && state.Err != nil {
-			if encErr := httpjson.Write(w, http.StatusServiceUnavailable, HealthResponse{
+			if writeErr := httpjson.Write(w, http.StatusServiceUnavailable, HealthResponse{
 				Status:        "unhealthy",
 				Upstream:      state.Status,
 				Error:         "upstream unreachable",
 				Version:       version.Version,
 				UptimeSeconds: int(uptime),
 				Listeners:     listeners,
-			}); encErr != nil {
-				m.logger.WarnContext(r.Context(), "failed to encode unhealthy response",
-					"error", encErr,
+			}); writeErr != nil {
+				m.logger.WarnContext(r.Context(), "failed to write unhealthy response",
+					"error", writeErr,
 				)
 			}
 			return
@@ -350,16 +350,16 @@ func (m *Monitor) Handler() http.HandlerFunc {
 			m.logger.WarnContext(r.Context(), "health check failed: a configured listener is not serving",
 				"listeners", listeners,
 			)
-			if encErr := httpjson.Write(w, http.StatusServiceUnavailable, HealthResponse{
+			if writeErr := httpjson.Write(w, http.StatusServiceUnavailable, HealthResponse{
 				Status:        "unhealthy",
 				Upstream:      state.Status,
 				Error:         "listener not serving",
 				Version:       version.Version,
 				UptimeSeconds: int(uptime),
 				Listeners:     listeners,
-			}); encErr != nil {
-				m.logger.WarnContext(r.Context(), "failed to encode unhealthy response",
-					"error", encErr,
+			}); writeErr != nil {
+				m.logger.WarnContext(r.Context(), "failed to write unhealthy response",
+					"error", writeErr,
 				)
 			}
 			return
@@ -369,30 +369,30 @@ func (m *Monitor) Handler() http.HandlerFunc {
 		// is nothing to serve and this request must not queue behind it —
 		// see stateForRequest.
 		if !known {
-			if encErr := httpjson.Write(w, http.StatusServiceUnavailable, HealthResponse{
+			if writeErr := httpjson.Write(w, http.StatusServiceUnavailable, HealthResponse{
 				Status:        "unhealthy",
 				Upstream:      state.Status,
 				Error:         "upstream check in progress",
 				Version:       version.Version,
 				UptimeSeconds: int(uptime),
 				Listeners:     listeners,
-			}); encErr != nil {
-				m.logger.WarnContext(r.Context(), "failed to encode unhealthy response",
-					"error", encErr,
+			}); writeErr != nil {
+				m.logger.WarnContext(r.Context(), "failed to write unhealthy response",
+					"error", writeErr,
 				)
 			}
 			return
 		}
 
-		if encErr := httpjson.Write(w, http.StatusOK, HealthResponse{
+		if writeErr := httpjson.Write(w, http.StatusOK, HealthResponse{
 			Status:        "healthy",
 			Upstream:      state.Status,
 			Version:       version.Version,
 			UptimeSeconds: int(uptime),
 			Listeners:     listeners,
-		}); encErr != nil {
-			m.logger.WarnContext(r.Context(), "failed to encode healthy response",
-				"error", encErr,
+		}); writeErr != nil {
+			m.logger.WarnContext(r.Context(), "failed to write healthy response",
+				"error", writeErr,
 			)
 		}
 	}
