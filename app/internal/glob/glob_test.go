@@ -85,3 +85,68 @@ func FuzzToRegexString(f *testing.F) {
 		}
 	})
 }
+
+// TestEveryMatchStartsWithSlash pins the answer against the dialect rather
+// than against itself: each row names a witness, and the row is only believed
+// if the compiled regex agrees about it. A "false" row has to produce a real
+// string the pattern matches that carries no leading slash, which is the whole
+// claim; a "true" row has to reject every rootless probe in the sweep.
+func TestEveryMatchStartsWithSlash(t *testing.T) {
+	t.Parallel()
+
+	// Rootless probes a "true" answer promises can never match.
+	rootless := []string{"", "json", "a", "a/b", "*", "**", "containers/json", "\n"}
+
+	tests := []struct {
+		name    string
+		pattern string
+		want    bool
+		witness string // a rootless string the pattern matches, for want=false
+	}{
+		{name: "empty", pattern: "", want: false, witness: ""},
+		{name: "literal segment", pattern: "/json", want: true},
+		{name: "bare slash", pattern: "/", want: true},
+		{name: "single star after slash", pattern: "/*", want: true},
+		{name: "trailing double star", pattern: "/**", want: false, witness: ""},
+		{name: "stacked double star", pattern: "/**/**", want: false, witness: ""},
+		{name: "triple stacked double star", pattern: "/**/**/**", want: false, witness: ""},
+		{name: "double star then literal segment", pattern: "/**/json", want: true},
+		{name: "stacked double star then literal segment", pattern: "/**/**/json", want: true},
+		{name: "double star then single star", pattern: "/**/*", want: true},
+		{name: "double star welded to a literal", pattern: "/**json", want: false, witness: "json"},
+		{name: "stacked double star welded to a literal", pattern: "/**/**json", want: false, witness: "json"},
+		{name: "slash star star star", pattern: "/***", want: false, witness: ""},
+		{name: "stacked into a star run", pattern: "/**/***", want: false, witness: ""},
+		{name: "rootless literal", pattern: "json", want: false, witness: "json"},
+		{name: "rootless star", pattern: "*", want: false, witness: ""},
+		{name: "rootless double star", pattern: "**", want: false, witness: ""},
+		{name: "double star then rootless star", pattern: "/***/json", want: false, witness: "a/json"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := EveryMatchStartsWithSlash(tc.pattern); got != tc.want {
+				t.Fatalf("EveryMatchStartsWithSlash(%q) = %v, want %v", tc.pattern, got, tc.want)
+			}
+			compiled, err := regexp.Compile("^" + ToRegexString(tc.pattern) + "$")
+			if err != nil {
+				t.Fatalf("compile %q: %v", tc.pattern, err)
+			}
+			if tc.want {
+				for _, probe := range rootless {
+					if compiled.MatchString(probe) {
+						t.Errorf("%q reports every match starts with /, but %q matches %q", tc.pattern, compiled, probe)
+					}
+				}
+				return
+			}
+			if strings.HasPrefix(tc.witness, "/") {
+				t.Fatalf("witness %q for %q starts with /, so it cannot show the answer is false", tc.witness, tc.pattern)
+			}
+			if !compiled.MatchString(tc.witness) {
+				t.Errorf("%q reports a match without a leading /, but %q does not match the witness %q", tc.pattern, compiled, tc.witness)
+			}
+		})
+	}
+}
