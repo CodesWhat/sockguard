@@ -23,8 +23,6 @@ package filter
 // branches on utils.IsLibpodRequest only when it comes to writing the
 // response envelope. The filter grammar is reached before that branch, so
 // both spellings share it exactly.
-//
-//nolint:gosec // G101: a URL path, not a credential; "secrets" is the Docker API's route segment.
 const PodmanCompatSecretListPath = "/secrets" // #nosec G101 -- a URL path, not a credential; "secrets" is the Docker API's route segment.
 
 // PodmanCompatSecretListDenyReason is reported when either middleware refuses

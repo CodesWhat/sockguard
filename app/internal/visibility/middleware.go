@@ -60,7 +60,7 @@ const (
 	reasonCodeVisibilityPolicyHidResource   = "visibility_policy_hid_resource"
 	reasonCodeVisibilityResponseTooLarge    = "visibility_response_too_large"
 	reasonCodeVisibilityPodmanEvents        = "visibility_podman_events_unscopeable"
-	reasonCodeVisibilityPodmanSecretList    = "visibility_podman_secret_list_unscopeable"
+	reasonCodeVisibilityPodmanSecretList    = "visibility_podman_secret_list_unscopeable" // #nosec G101 -- reason code, not a credential
 	reasonCodeVisibilityLibpodDataUsage     = "visibility_libpod_data_usage_unscopeable"
 	reasonCodeVisibilityLibpodEvents        = "visibility_libpod_events_unscopeable"
 	reasonCodeVisibilityNotModified         = "visibility_not_modified_unfilterable"

@@ -28,7 +28,7 @@ const (
 	reasonCodeOwnerPolicyLookupFailed                = "owner_policy_lookup_failed"
 	reasonCodeOwnerPolicyDeniedAccess                = "owner_policy_denied_access"
 	reasonCodeOwnerVisibilityPodmanEventsUnscopeable = "owner_visibility_podman_events_unscopeable"
-	reasonCodeOwnerPodmanSecretList                  = "owner_podman_secret_list_unscopeable" //nolint:gosec // reason code, not a credential
+	reasonCodeOwnerPodmanSecretList                  = "owner_podman_secret_list_unscopeable" // #nosec G101 -- reason code, not a credential
 )
 
 const ownerVisibilityPodmanEventsDenyReason = "events denied: this upstream is Podman, whose GET /events filters labels disjunctively, so owner isolation and visibility label selectors cannot be enforced together"
