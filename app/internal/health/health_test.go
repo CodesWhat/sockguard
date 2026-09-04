@@ -898,3 +898,417 @@ func TestHealthHandlerLogsEncodeFailureOnHealthyPath(t *testing.T) {
 		t.Fatalf("expected a \"failed to encode healthy response\" WARN record when the write fails; got %#v", collector.Records())
 	}
 }
+
+// requestHealth issues one /health request and returns the recorder plus the
+// decoded body, so a test can assert on the status and the verdict together.
+func requestHealth(t *testing.T, handler http.HandlerFunc) (*httptest.ResponseRecorder, HealthResponse) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+	var body HealthResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode /health body %q: %v", rec.Body.String(), err)
+	}
+	return rec, body
+}
+
+// TestHealthHandlerReprobesAfterCacheTTLWithoutWatchdog pins the default
+// (watchdog-off) /health contract: the endpoint answers from a cached upstream
+// probe, and the cache is healthCacheTTL wide rather than the process lifetime.
+// The regression this closes had the handler publish its own probe as watchdog
+// state, which pinned hasState true and made every later request short-circuit
+// on the stored verdict, so an upstream that went away after the first request
+// was never noticed.
+func TestHealthHandlerReprobesAfterCacheTTLWithoutWatchdog(t *testing.T) {
+	t.Parallel()
+	baseNow := time.Unix(1_700_000_000, 0)
+	var nowOffset atomic.Int64
+	var dialCalls atomic.Int32
+	var upstreamDown atomic.Bool
+
+	checker := newUpstreamHealthChecker(
+		2*time.Second,
+		3*time.Second,
+		func() time.Time {
+			return baseNow.Add(time.Duration(nowOffset.Load()))
+		},
+		func(context.Context, string, string) (net.Conn, error) {
+			dialCalls.Add(1)
+			if upstreamDown.Load() {
+				return nil, errors.New("upstream down")
+			}
+			return noopConn{}, nil
+		},
+	)
+	monitor := newMonitorWithChecker("/tmp/upstream.sock", time.Now(), testLogger(), checker)
+	handler := monitor.Handler()
+
+	rec, body := requestHealth(t, handler)
+	if rec.Code != http.StatusOK || body.Upstream != "connected" {
+		t.Fatalf("first request = %d/%q, want %d/connected", rec.Code, body.Upstream, http.StatusOK)
+	}
+	if dialCalls.Load() != 1 {
+		t.Fatalf("dial calls after first request = %d, want 1", dialCalls.Load())
+	}
+
+	nowOffset.Store(int64(1500 * time.Millisecond))
+	rec, body = requestHealth(t, handler)
+	if rec.Code != http.StatusOK || body.Upstream != "connected" {
+		t.Fatalf("within-TTL request = %d/%q, want %d/connected", rec.Code, body.Upstream, http.StatusOK)
+	}
+	if dialCalls.Load() != 1 {
+		t.Fatalf("dial calls within TTL = %d, want 1 (the cached verdict must be reused)", dialCalls.Load())
+	}
+
+	// The upstream disappears and the TTL lapses: the next request runs the
+	// replacement probe itself and reports the outage instead of replaying the
+	// first verdict.
+	upstreamDown.Store(true)
+	nowOffset.Store(int64(2500 * time.Millisecond))
+	rec, body = requestHealth(t, handler)
+	if rec.Code != http.StatusServiceUnavailable || body.Status != "unhealthy" || body.Upstream != "unreachable" {
+		t.Fatalf("post-TTL request = %d/%q/%q, want %d/unhealthy/unreachable (the TTL must expire and re-probe)", rec.Code, body.Status, body.Upstream, http.StatusServiceUnavailable)
+	}
+	if dialCalls.Load() != 2 {
+		t.Fatalf("dial calls after TTL = %d, want 2", dialCalls.Load())
+	}
+}
+
+// TestHealthHandlerRecoversWhenUpstreamComesUpAfterTheProxy covers the boot
+// order the frozen verdict deadlocked: the daemon is not up when the proxy
+// starts, so the first probe fails, and nothing re-checked. /health has to flip
+// to 200 on its own once the daemon appears. It also pins that the unreachable
+// warning is logged once per probe rather than once per request served, since
+// /health sits ahead of the rate limiter.
+func TestHealthHandlerRecoversWhenUpstreamComesUpAfterTheProxy(t *testing.T) {
+	t.Parallel()
+	baseNow := time.Unix(1_700_000_000, 0)
+	var nowOffset atomic.Int64
+	var dialCalls atomic.Int32
+	var upstreamUp atomic.Bool
+	collector := &testhelp.CollectingHandler{}
+
+	checker := newUpstreamHealthChecker(
+		2*time.Second,
+		3*time.Second,
+		func() time.Time {
+			return baseNow.Add(time.Duration(nowOffset.Load()))
+		},
+		func(context.Context, string, string) (net.Conn, error) {
+			dialCalls.Add(1)
+			if !upstreamUp.Load() {
+				return nil, errors.New("no such file or directory")
+			}
+			return noopConn{}, nil
+		},
+	)
+	monitor := newMonitorWithChecker("/tmp/upstream.sock", time.Now(), collector.Logger(), checker)
+	handler := monitor.Handler()
+
+	rec, body := requestHealth(t, handler)
+	if rec.Code != http.StatusServiceUnavailable || body.Upstream != "unreachable" {
+		t.Fatalf("boot request = %d/%q, want %d/unreachable", rec.Code, body.Upstream, http.StatusServiceUnavailable)
+	}
+
+	// Inside the failure-cache window the same verdict answers without dialing.
+	rec, _ = requestHealth(t, handler)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("within-failure-TTL request = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+
+	// The daemon comes up. One failure-TTL window later the next request runs
+	// the probe that notices it.
+	upstreamUp.Store(true)
+	nowOffset.Store(int64(150 * time.Millisecond))
+	rec, body = requestHealth(t, handler)
+	if rec.Code != http.StatusOK || body.Status != "healthy" || body.Upstream != "connected" {
+		t.Fatalf("recovered request = %d/%q/%q, want %d/healthy/connected", rec.Code, body.Status, body.Upstream, http.StatusOK)
+	}
+	if dialCalls.Load() != 2 {
+		t.Fatalf("dial calls = %d, want 2 (one per probe, not one per request)", dialCalls.Load())
+	}
+	// Three requests were served, two of them a failing verdict, but only the
+	// one failed probe may have logged.
+	if warns := collector.FindMessage("health check failed: upstream unreachable"); len(warns) != 1 {
+		t.Fatalf("unreachable warnings = %d, want exactly 1 (once per probe, not once per request); records: %#v", len(warns), collector.Records())
+	}
+}
+
+// TestHealthHandlerParksAtMostOneRequestOnAStalledProbe is the amplification
+// guard. The endpoint is unauthenticated and sits ahead of the rate limiter, so
+// a blackholed daemon must not turn request volume into blocked goroutines:
+// exactly the one request running the probe waits for it, and everything else
+// is answered immediately. The dial here stalls until the test releases it and
+// the dial timeout is far longer than the deadline below, so an implementation
+// that queues callers behind the probe fails this test rather than merely
+// being slow.
+func TestHealthHandlerParksAtMostOneRequestOnAStalledProbe(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	var dialCalls atomic.Int32
+
+	checker := newUpstreamHealthChecker(
+		2*time.Second,
+		30*time.Second,
+		time.Now,
+		func(ctx context.Context, _, _ string) (net.Conn, error) {
+			dialCalls.Add(1)
+			select {
+			case <-release:
+				return noopConn{}, nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		},
+	)
+	monitor := newMonitorWithChecker("/tmp/upstream.sock", time.Now(), testLogger(), checker)
+	handler := monitor.Handler()
+
+	const requests = 1000
+	codes := make([]int, requests)
+	upstreams := make([]string, requests)
+	var completed atomic.Int32
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range requests {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			rec := httptest.NewRecorder()
+			handler(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+			var body HealthResponse
+			_ = json.Unmarshal(rec.Body.Bytes(), &body)
+			codes[i] = rec.Code
+			upstreams[i] = body.Upstream
+			completed.Add(1)
+		}()
+	}
+	close(start)
+
+	// Everything but the one request running the probe must come back while
+	// the dial is still stalled.
+	deadline := time.Now().Add(5 * time.Second)
+	for completed.Load() < requests-1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d of %d concurrent /health requests returned while the upstream dial was stalled, want %d", completed.Load(), requests, requests-1)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// And the probe's own request must still be outstanding: nothing can
+	// finish it but the release below.
+	time.Sleep(50 * time.Millisecond)
+	if got := completed.Load(); got != requests-1 {
+		t.Fatalf("completed requests while the dial was stalled = %d, want exactly %d (one must still be waiting on the probe)", got, requests-1)
+	}
+	if dialCalls.Load() != 1 {
+		t.Fatalf("dial calls under a %d-request flood = %d, want 1", requests, dialCalls.Load())
+	}
+
+	close(release)
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request waiting on the probe never returned after the dial was released")
+	}
+
+	var served, waited int
+	for i := range requests {
+		switch {
+		case codes[i] == http.StatusServiceUnavailable && upstreams[i] == upstreamStatusChecking:
+			served++
+		case codes[i] == http.StatusOK && upstreams[i] == "connected":
+			waited++
+		default:
+			t.Fatalf("request %d = %d/%q, want %d/%q or %d/connected", i, codes[i], upstreams[i], http.StatusServiceUnavailable, upstreamStatusChecking, http.StatusOK)
+		}
+	}
+	if waited != 1 || served != requests-1 {
+		t.Fatalf("responses = %d probe-backed and %d immediate, want 1 and %d", waited, served, requests-1)
+	}
+
+	rec, body := requestHealth(t, handler)
+	if rec.Code != http.StatusOK || body.Upstream != "connected" {
+		t.Fatalf("post-release request = %d/%q, want %d/connected", rec.Code, body.Upstream, http.StatusOK)
+	}
+	if dialCalls.Load() != 1 {
+		t.Fatalf("dial calls after the flood = %d, want 1 (the released probe's verdict must be reused)", dialCalls.Load())
+	}
+}
+
+// TestHealthHandlerServesStaleVerdictWhileAProbeRuns pins the other half of the
+// amplification guard: with a verdict already on hand, a request arriving while
+// the replacement probe runs is answered from the cache instead of queueing,
+// so only the probe's own request can ever be waiting.
+func TestHealthHandlerServesStaleVerdictWhileAProbeRuns(t *testing.T) {
+	t.Parallel()
+	baseNow := time.Unix(1_700_000_000, 0)
+	var nowOffset atomic.Int64
+	var dialCalls atomic.Int32
+	dialEntered := make(chan struct{})
+	release := make(chan struct{})
+
+	checker := newUpstreamHealthChecker(
+		2*time.Second,
+		30*time.Second,
+		func() time.Time {
+			return baseNow.Add(time.Duration(nowOffset.Load()))
+		},
+		func(ctx context.Context, _, _ string) (net.Conn, error) {
+			if dialCalls.Add(1) == 1 {
+				return noopConn{}, nil
+			}
+			close(dialEntered)
+			select {
+			case <-release:
+				return nil, errors.New("upstream down")
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		},
+	)
+	monitor := newMonitorWithChecker("/tmp/upstream.sock", time.Now(), testLogger(), checker)
+	handler := monitor.Handler()
+
+	if rec, _ := requestHealth(t, handler); rec.Code != http.StatusOK {
+		t.Fatalf("first request = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	// The verdict lapses and one request goes off to replace it.
+	nowOffset.Store(int64(2500 * time.Millisecond))
+	refresher := make(chan int, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		handler(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+		refresher <- rec.Code
+	}()
+	select {
+	case <-dialEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stale verdict never triggered a replacement probe")
+	}
+
+	// A second request during that probe must be answered from the cache.
+	rec, body := requestHealth(t, handler)
+	if rec.Code != http.StatusOK || body.Upstream != "connected" {
+		t.Fatalf("request during the probe = %d/%q, want the stale %d/connected", rec.Code, body.Upstream, http.StatusOK)
+	}
+	if dialCalls.Load() != 2 {
+		t.Fatalf("dial calls = %d, want 2 (the second request must not start its own probe)", dialCalls.Load())
+	}
+
+	close(release)
+	select {
+	case code := <-refresher:
+		if code != http.StatusServiceUnavailable {
+			t.Fatalf("probe-backed request = %d, want %d", code, http.StatusServiceUnavailable)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the probe-backed request never returned")
+	}
+}
+
+// TestHealthHandlerServesWatchdogStateWithoutProbing pins that once the
+// watchdog owns the state, /health serves that snapshot and does not probe. The
+// watchdog's configured interval is the poll rate an operator asked for, its
+// once-per-edge transition logging is computed against the stored state, and
+// the exported gauges are fed from the same callback — a request-driven probe
+// would outpace the interval, race the edge, and let /health disagree with the
+// metrics.
+func TestHealthHandlerServesWatchdogStateWithoutProbing(t *testing.T) {
+	t.Parallel()
+	var dialCalls atomic.Int32
+	checker := newUpstreamHealthChecker(
+		2*time.Second,
+		3*time.Second,
+		time.Now,
+		func(context.Context, string, string) (net.Conn, error) {
+			dialCalls.Add(1)
+			return nil, errors.New("upstream down")
+		},
+	)
+	monitor := newMonitorWithChecker("/tmp/upstream.sock", time.Now(), testLogger(), checker)
+	monitor.onRefreshDone = func() { t.Error("watchdog state must not trigger a request-driven probe") }
+	monitor.storeState("connected", nil)
+	handler := monitor.Handler()
+
+	for i := range 3 {
+		rec, body := requestHealth(t, handler)
+		if rec.Code != http.StatusOK || body.Upstream != "connected" {
+			t.Fatalf("request %d = %d/%q, want %d/connected (the watchdog snapshot must be served verbatim)", i, rec.Code, body.Upstream, http.StatusOK)
+		}
+	}
+	if dialCalls.Load() != 0 {
+		t.Fatalf("dial calls with watchdog state present = %d, want 0", dialCalls.Load())
+	}
+}
+
+// TestHealthProbeIgnoresRequestCancellation pins that the probe a request runs
+// is detached from that request's context. check() discards caller-canceled
+// verdicts instead of caching them, and evicts the entry it held, so a probe on
+// the requester's context would let a client that hangs up mid-check drive one
+// upstream dial per request. The dial reads the context it was handed only
+// after the test has canceled the request, so inheriting it is observable
+// rather than a scheduling coin flip.
+func TestHealthProbeIgnoresRequestCancellation(t *testing.T) {
+	t.Parallel()
+	dialEntered := make(chan struct{})
+	release := make(chan struct{})
+	var dialCalls atomic.Int32
+
+	checker := newUpstreamHealthChecker(
+		2*time.Second,
+		30*time.Second,
+		time.Now,
+		func(ctx context.Context, _, _ string) (net.Conn, error) {
+			if dialCalls.Add(1) == 1 {
+				close(dialEntered)
+			}
+			<-release
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			return noopConn{}, nil
+		},
+	)
+	monitor := newMonitorWithChecker("/tmp/upstream.sock", time.Now(), testLogger(), checker)
+	handler := monitor.Handler()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	codes := make(chan int, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		handler(rec, httptest.NewRequest(http.MethodGet, "/health", nil).WithContext(ctx))
+		codes <- rec.Code
+	}()
+
+	select {
+	case <-dialEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request never started a probe")
+	}
+	cancel()
+	close(release)
+
+	select {
+	case code := <-codes:
+		if code != http.StatusOK {
+			t.Fatalf("canceled caller's request = %d, want %d (the probe must not inherit the caller's cancellation)", code, http.StatusOK)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the canceled caller's request never returned")
+	}
+
+	rec, body := requestHealth(t, handler)
+	if rec.Code != http.StatusOK || body.Upstream != "connected" {
+		t.Fatalf("follow-up request = %d/%q, want %d/connected", rec.Code, body.Upstream, http.StatusOK)
+	}
+	if dialCalls.Load() != 1 {
+		t.Fatalf("dial calls = %d, want 1 (the canceled caller's verdict must still be cached)", dialCalls.Load())
+	}
+}

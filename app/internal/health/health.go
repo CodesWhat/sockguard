@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/codeswhat/sockguard/app/internal/dockerclient"
@@ -20,6 +21,12 @@ import (
 const healthCacheTTL = 2 * time.Second
 const healthFailureCacheTTL = 100 * time.Millisecond
 const healthDialTimeout = 3 * time.Second
+
+// upstreamStatusChecking is the HealthResponse.Upstream value reported when a
+// probe is in flight and none has ever completed, so a caller can tell "the
+// first check has not come back yet" apart from "the upstream answered and it
+// is down".
+const upstreamStatusChecking = "checking"
 
 type dialContextFunc func(ctx context.Context, network, address string) (net.Conn, error)
 
@@ -129,6 +136,15 @@ type Monitor struct {
 	last     WatchdogState
 	hasState bool
 
+	// refreshing is held for the duration of the one request-driven probe
+	// allowed to be in flight at a time (see refreshNow).
+	refreshing atomic.Bool
+
+	// onRefreshDone, when non-nil, is called after a request-driven refresh
+	// has published its verdict and released refreshing. Nil in production;
+	// set in tests to observe that a probe ran.
+	onRefreshDone func()
+
 	// ListenersFunc, when set, is called once per /health request to
 	// populate HealthResponse.Listeners and to fold listener state into the
 	// 503 decision (#149) — any listener not "serving" or "draining" marks
@@ -185,18 +201,52 @@ func newMonitorWithChecker(upstreamSocket string, startTime time.Time, logger *s
 	}
 }
 
-func (c *upstreamHealthChecker) check(ctx context.Context, upstreamSocket string) (string, error) {
-	now := c.now()
+// verdict is one cached upstream observation as a non-dialing reader sees it.
+type verdict struct {
+	status    string
+	err       error
+	checkedAt time.Time
+	// fresh reports that the observation is still inside the TTL that applies
+	// to it — the short failure TTL for an error, the full TTL otherwise.
+	fresh bool
+	// present reports that some probe has completed, so status/err mean
+	// something. A stale-but-present verdict is still worth serving.
+	present bool
+}
 
-	c.mu.Lock()
+// cachedLocked reads the currently held verdict. c.mu must be held. It is the
+// single definition of "still fresh", shared by the dialing path (check) and
+// the non-dialing one (snapshot), so the two cannot drift apart.
+func (c *upstreamHealthChecker) cachedLocked() verdict {
+	if !c.cacheReady {
+		return verdict{}
+	}
 	cacheTTL := c.ttl
 	if c.cachedErr != nil {
 		cacheTTL = c.failureTTL
 	}
-	if c.cacheReady && cacheTTL > 0 && now.Sub(c.cachedAt) < cacheTTL {
-		status, err := c.cachedUp, c.cachedErr
+	return verdict{
+		status:    c.cachedUp,
+		err:       c.cachedErr,
+		checkedAt: c.cachedAt,
+		fresh:     cacheTTL > 0 && c.now().Sub(c.cachedAt) < cacheTTL,
+		present:   true,
+	}
+}
+
+// snapshot returns the held verdict without dialing and without waiting on an
+// in-flight probe. It is what the /health request path reads.
+func (c *upstreamHealthChecker) snapshot() verdict {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cachedLocked()
+}
+
+func (c *upstreamHealthChecker) check(ctx context.Context, upstreamSocket string) (string, error) {
+	c.mu.Lock()
+	if cached := c.cachedLocked(); cached.fresh {
 		c.mu.Unlock()
-		return status, err
+		return cached.status, cached.err
 	}
 	if c.inFlight != nil {
 		call := c.inFlight
@@ -273,21 +323,14 @@ func (m *Monitor) Handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		uptime := time.Since(m.startTime).Seconds()
 
-		state, ok := m.State()
-		if !ok {
-			state = m.check(r.Context())
-		}
+		state, known := m.stateForRequest()
 
 		listeners := make([]ListenerStatus, 0)
 		if m.ListenersFunc != nil {
 			listeners = append(listeners, m.ListenersFunc()...)
 		}
 
-		if state.Err != nil {
-			m.logger.WarnContext(r.Context(), "health check failed: upstream unreachable",
-				"error", state.Err,
-				"upstream_socket", m.upstreamSocket,
-			)
+		if known && state.Err != nil {
 			if encErr := httpjson.Write(w, http.StatusServiceUnavailable, HealthResponse{
 				Status:        "unhealthy",
 				Upstream:      state.Status,
@@ -311,6 +354,25 @@ func (m *Monitor) Handler() http.HandlerFunc {
 				Status:        "unhealthy",
 				Upstream:      state.Status,
 				Error:         "listener not serving",
+				Version:       version.Version,
+				UptimeSeconds: int(uptime),
+				Listeners:     listeners,
+			}); encErr != nil {
+				m.logger.WarnContext(r.Context(), "failed to encode unhealthy response",
+					"error", encErr,
+				)
+			}
+			return
+		}
+
+		// A probe is running and has never yet produced a verdict, so there
+		// is nothing to serve and this request must not queue behind it —
+		// see stateForRequest.
+		if !known {
+			if encErr := httpjson.Write(w, http.StatusServiceUnavailable, HealthResponse{
+				Status:        "unhealthy",
+				Upstream:      state.Status,
+				Error:         "upstream check in progress",
 				Version:       version.Version,
 				UptimeSeconds: int(uptime),
 				Listeners:     listeners,
@@ -392,6 +454,94 @@ func (m *Monitor) emitWatchdogCheck(ctx context.Context, observe func(WatchdogSt
 		attrs = append(attrs, slog.String("error", state.Err.Error()))
 	}
 	m.logger.LogAttrs(ctx, level, "upstream socket watchdog state changed", attrs...)
+}
+
+// stateForRequest returns the verdict /health should answer with, and whether
+// one exists at all.
+//
+// A stored watchdog state wins outright — when the watchdog (or the readiness
+// poller) runs it owns the answer at its configured interval, its transition
+// logging is once-per-edge against that stored value, and the exported gauges
+// come from the same callback, so a request-driven write would race the edge
+// and let /health disagree with the metrics.
+//
+// Without a watchdog nothing writes that state, so requests fall through to the
+// checker's cache. A verdict still inside healthCacheTTL is served as is. Once
+// it lapses, the first request to arrive runs the replacement probe itself and
+// answers with its result, which is what keeps the TTL an actual bound on how
+// old the answer can be. Every other request that arrives while that probe is
+// running is served the verdict on hand instead of queueing behind it, so the
+// number of goroutines waiting on the upstream is one, no matter how much
+// traffic arrives: /health is unauthenticated and sits ahead of the rate
+// limiter, and a blackholed daemon plus one blocked goroutine per caller is an
+// amplification surface. ok is false only in the narrow case where a probe is
+// already running and no verdict exists yet to serve in the meantime.
+func (m *Monitor) stateForRequest() (WatchdogState, bool) {
+	if state, ok := m.State(); ok {
+		return state, true
+	}
+
+	cached := m.checker.snapshot()
+	if cached.fresh {
+		return stateFromVerdict(cached), true
+	}
+	if refreshed, leader := m.refreshNow(); leader {
+		return stateFromVerdict(refreshed), true
+	}
+	if !cached.present {
+		return WatchdogState{Status: upstreamStatusChecking}, false
+	}
+	return stateFromVerdict(cached), true
+}
+
+func stateFromVerdict(v verdict) WatchdogState {
+	return WatchdogState{
+		Status:    v.status,
+		Up:        v.err == nil,
+		Err:       v.err,
+		CheckedAt: v.checkedAt,
+	}
+}
+
+// refreshNow runs the replacement probe on the calling request's goroutine,
+// unless another request is already running one — leader reports which
+// happened, and a caller that is not the leader must not wait.
+//
+// The probe runs on a context of its own rather than the request's. check()
+// discards caller-canceled verdicts instead of caching them, and evicts the
+// entry it held on the way out, so a client that hangs up mid-probe would
+// otherwise leave the cache empty and let one dial per request through. The
+// dial stays bounded by the checker's own timeout, which is the bound on how
+// long this request can be held.
+//
+// The unreachable warning is logged here, once per probe, rather than once per
+// request served: a per-request log line on an endpoint in front of the rate
+// limiter is an amplification surface of its own. Log volume during an outage
+// is therefore bounded by the failure TTL instead of by traffic.
+func (m *Monitor) refreshNow() (verdict, bool) {
+	if !m.refreshing.CompareAndSwap(false, true) {
+		return verdict{}, false
+	}
+	defer func() {
+		m.refreshing.Store(false)
+		if m.onRefreshDone != nil {
+			m.onRefreshDone()
+		}
+	}()
+
+	status, err := m.checker.check(context.Background(), m.upstreamSocket)
+	if err != nil {
+		m.logger.Warn("health check failed: upstream unreachable",
+			"error", err,
+			"upstream_socket", m.upstreamSocket,
+		)
+	}
+	return verdict{
+		status:    status,
+		err:       err,
+		checkedAt: m.checker.now(),
+		present:   true,
+	}, true
 }
 
 func (m *Monitor) check(ctx context.Context) WatchdogState {
