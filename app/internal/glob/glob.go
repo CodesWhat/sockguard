@@ -21,6 +21,20 @@ import (
 	"strings"
 )
 
+// isSlashDoubleStar reports whether the "/**" token starts at runes[i]. All
+// three runes have to be present for the token to form, so a pattern ending
+// in "/*" is a literal slash followed by "[^/]*" and does not match here.
+//
+// ToRegexString and EveryMatchStartsWithSlash both compile the same "/**"
+// token, and share this test so they can't drift apart: if ToRegexString
+// changed how it recognized the token without this being updated too,
+// EveryMatchStartsWithSlash would over-approximate, a caller like
+// literalPrefixForPattern would keep a slash it must trim, and a deny rule
+// could be skipped.
+func isSlashDoubleStar(runes []rune, i int) bool {
+	return i+2 < len(runes) && runes[i] == '/' && runes[i+1] == '*' && runes[i+2] == '*'
+}
+
 // EveryMatchStartsWithSlash reports whether every string
 // "^" + ToRegexString(pattern) + "$" matches begins with a "/".
 //
@@ -31,17 +45,14 @@ import (
 // string it matches is "/json". "/**" and "/**/**" do not, because both match
 // the empty string, and neither does "/**json", which matches "json".
 func EveryMatchStartsWithSlash(pattern string) bool {
+	runes := []rune(pattern)
+	i := 0
 	for {
-		if pattern == "" || pattern[0] != '/' {
+		if i >= len(runes) || runes[i] != '/' {
 			return false
 		}
-		// Mirrors ToRegexString's "/**" case below, bound included: all three
-		// bytes have to be present for the token to form, so a pattern ending
-		// in "/*" is a literal slash followed by "[^/]*" and the slash is
-		// guaranteed. Byte indexing is safe because "/" and "*" are ASCII and
-		// no UTF-8 continuation byte can be either.
-		if len(pattern) >= 3 && pattern[1] == '*' && pattern[2] == '*' {
-			pattern = pattern[3:]
+		if isSlashDoubleStar(runes, i) {
+			i += 3
 			continue
 		}
 		return true
@@ -55,7 +66,7 @@ func ToRegexString(pattern string) string {
 	i := 0
 	for i < len(runes) {
 		switch {
-		case i+2 < len(runes) && runes[i] == '/' && runes[i+1] == '*' && runes[i+2] == '*':
+		case isSlashDoubleStar(runes, i):
 			b.WriteString("(/(?s:.*))?")
 			i += 3
 		case i+1 < len(runes) && runes[i] == '*' && runes[i+1] == '*':

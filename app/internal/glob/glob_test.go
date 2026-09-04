@@ -33,6 +33,34 @@ func TestPackageDocQuotesTheEmittedGroups(t *testing.T) {
 	}
 }
 
+// TestIsSlashDoubleStar pins the token test that ToRegexString and
+// EveryMatchStartsWithSlash both build on, so a change to either caller's
+// tokenization has to change this shared helper (and this test) rather than
+// drifting the two apart silently.
+func TestIsSlashDoubleStar(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		pattern string
+		index   int
+		want    bool
+	}{
+		{name: "/** at end", pattern: "/**", index: 0, want: true},
+		{name: "/**/ ", pattern: "/**/", index: 0, want: true},
+		{name: "/***", pattern: "/***", index: 0, want: true},
+		{name: "** without a leading slash", pattern: "**", index: 0, want: false},
+		{name: "/*", pattern: "/*", index: 0, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isSlashDoubleStar([]rune(tc.pattern), tc.index); got != tc.want {
+				t.Fatalf("isSlashDoubleStar(%q, %d) = %v, want %v", tc.pattern, tc.index, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestToRegexString(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
