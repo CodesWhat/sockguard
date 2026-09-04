@@ -8,32 +8,46 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-	"time"
 )
 
-func assertCompileAndMatchWithin(t *testing.T, pattern, normalizedPath string, wantMatch bool, limit time.Duration) {
+// assertCompileRuleUsesLinearRegexMatcher proves a long, multi-wildcard "**"
+// pattern compiles to the implementation that is contractually linear on
+// long paths, rather than merely finishing quickly on this run. A pattern
+// containing "**" outside the bare "/**" and trailing "/**" special cases
+// (see CompileRule in rules.go) doesn't go through the segment-glob walker;
+// it falls through to pathMatcherRegex, compiled as
+// "^" + globToRegex(pattern) + "$" and matched with Go's RE2-derived
+// regexp package, which runs in linear time in the length of the input by
+// construction rather than backtracking. So the deterministic invariant
+// pinned here — matcherKind, a non-nil compiled pattern, and its exact
+// source string — is what rules out a regression to a backtracking matcher;
+// a raw timing assertion could not tell the two apart on a fast machine. It
+// used to assert a 100ms wall-clock budget instead, which was flaky under
+// -race (seen at 107.952ms on a busy machine).
+func assertCompileRuleUsesLinearRegexMatcher(t *testing.T, pattern, normalizedPath string, wantMatch bool) {
 	t.Helper()
 
-	compileStart := time.Now()
 	rule, err := CompileRule(Rule{
 		Methods: []string{"GET"},
 		Pattern: pattern,
 		Action:  ActionAllow,
 	})
-	compileElapsed := time.Since(compileStart)
 	if err != nil {
 		t.Fatalf("CompileRule(%q) error = %v", pattern, err)
 	}
-	if compileElapsed > limit {
-		t.Fatalf("CompileRule(%q) took %v, want <= %v", pattern, compileElapsed, limit)
+
+	if rule.matcherKind != pathMatcherRegex {
+		t.Fatalf("CompileRule(%q) matcherKind = %v, want pathMatcherRegex", pattern, rule.matcherKind)
+	}
+	if rule.pattern == nil {
+		t.Fatalf("CompileRule(%q) pattern = nil, want a compiled regexp", pattern)
+	}
+	wantRegexSrc := "^" + globToRegex(pattern) + "$"
+	if got := rule.pattern.String(); got != wantRegexSrc {
+		t.Fatalf("CompileRule(%q) pattern source = %q, want %q", pattern, got, wantRegexSrc)
 	}
 
-	matchStart := time.Now()
 	got := rule.matchesNormalizedUpper(http.MethodGet, normalizedPath)
-	matchElapsed := time.Since(matchStart)
-	if matchElapsed > limit {
-		t.Fatalf("rule match for %q on %d-byte path took %v, want <= %v", pattern, len(normalizedPath), matchElapsed, limit)
-	}
 	if got != wantMatch {
 		t.Fatalf("match result = %v, want %v", got, wantMatch)
 	}
@@ -476,7 +490,7 @@ func TestCompileRuleComplexGlobRemainsFastOnLongPaths(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assertCompileAndMatchWithin(t, tt.pattern, tt.path, tt.wantMatch, 100*time.Millisecond)
+			assertCompileRuleUsesLinearRegexMatcher(t, tt.pattern, tt.path, tt.wantMatch)
 		})
 	}
 }

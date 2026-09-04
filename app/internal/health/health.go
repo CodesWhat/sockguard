@@ -288,16 +288,16 @@ func (m *Monitor) Handler() http.HandlerFunc {
 				"error", state.Err,
 				"upstream_socket", m.upstreamSocket,
 			)
-			if encErr := httpjson.Write(w, http.StatusServiceUnavailable, HealthResponse{
+			if writeErr := httpjson.Write(w, http.StatusServiceUnavailable, HealthResponse{
 				Status:        "unhealthy",
 				Upstream:      state.Status,
 				Error:         "upstream unreachable",
 				Version:       version.Version,
 				UptimeSeconds: int(uptime),
 				Listeners:     listeners,
-			}); encErr != nil {
-				m.logger.WarnContext(r.Context(), "failed to encode unhealthy response",
-					"error", encErr,
+			}); writeErr != nil {
+				m.logger.WarnContext(r.Context(), "failed to write unhealthy response",
+					"error", writeErr,
 				)
 			}
 			return
@@ -307,30 +307,30 @@ func (m *Monitor) Handler() http.HandlerFunc {
 			m.logger.WarnContext(r.Context(), "health check failed: a configured listener is not serving",
 				"listeners", listeners,
 			)
-			if encErr := httpjson.Write(w, http.StatusServiceUnavailable, HealthResponse{
+			if writeErr := httpjson.Write(w, http.StatusServiceUnavailable, HealthResponse{
 				Status:        "unhealthy",
 				Upstream:      state.Status,
 				Error:         "listener not serving",
 				Version:       version.Version,
 				UptimeSeconds: int(uptime),
 				Listeners:     listeners,
-			}); encErr != nil {
-				m.logger.WarnContext(r.Context(), "failed to encode unhealthy response",
-					"error", encErr,
+			}); writeErr != nil {
+				m.logger.WarnContext(r.Context(), "failed to write unhealthy response",
+					"error", writeErr,
 				)
 			}
 			return
 		}
 
-		if encErr := httpjson.Write(w, http.StatusOK, HealthResponse{
+		if writeErr := httpjson.Write(w, http.StatusOK, HealthResponse{
 			Status:        "healthy",
 			Upstream:      state.Status,
 			Version:       version.Version,
 			UptimeSeconds: int(uptime),
 			Listeners:     listeners,
-		}); encErr != nil {
-			m.logger.WarnContext(r.Context(), "failed to encode healthy response",
-				"error", encErr,
+		}); writeErr != nil {
+			m.logger.WarnContext(r.Context(), "failed to write healthy response",
+				"error", writeErr,
 			)
 		}
 	}

@@ -451,6 +451,8 @@ func TestBindAdminServerRegistersBoundStateBeforePublish(t *testing.T) {
 // both Serve goroutines were started and both Shutdown calls fire on
 // SIGTERM.
 func TestRunServeWithDedicatedAdminListenerShutsDownBothServers(t *testing.T) {
+	unsetEnvForTest(t, "DOCKER_HOST")
+
 	deps := newServeTestDeps()
 	cfg := testServeConfig()
 	cfg.Admin.Enabled = true
@@ -544,6 +546,8 @@ func TestRunServeWithDedicatedAdminListenerShutsDownBothServers(t *testing.T) {
 // listener identity — admin's createAdminListener returns a tagged
 // listener that startServing recognizes.
 func TestRunServeAdminListenerErrorIsFatal(t *testing.T) {
+	unsetEnvForTest(t, "DOCKER_HOST")
+
 	deps := newServeTestDeps()
 	cfg := testServeConfig()
 	cfg.Admin.Enabled = true
