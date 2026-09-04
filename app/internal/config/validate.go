@@ -639,6 +639,8 @@ func validateRules(cfg *Config) []string {
 		}
 		if r.Match.Path == "" {
 			errs = append(errs, fmt.Sprintf("rule %d: match.path is required", i+1))
+		} else if !strings.HasPrefix(r.Match.Path, "/") {
+			errs = append(errs, rootlessRuleError(fmt.Sprintf("rule %d", i+1), r.Match.Path))
 		} else if strings.Contains(r.Match.Path, "%") && !validEscapedLibpodImageScpRule(r.Match) {
 			errs = append(errs, literalPercentRuleError(fmt.Sprintf("rule %d", i+1), r.Match.Path))
 		} else if filter.HasVersionPrefix(r.Match.Path) {
@@ -692,6 +694,30 @@ func versionPrefixRuleError(label, pattern string) string {
 	return fmt.Sprintf(
 		"%s: match.path %q begins with an API version prefix; sockguard strips version prefixes before matching, so this pattern never matches real traffic — write the pattern without the /vN... prefix",
 		label, pattern,
+	)
+}
+
+// rootlessRuleError reports a rule path pattern that does not begin with "/".
+// Every path rule matching ever sees is rooted: NormalizePath and
+// NormalizePodmanRoutePath both preserve the leading slash of an HTTP
+// request-target, and the anchored regex a pattern compiles to
+// ("^containers/[^/]*$" for "containers/*", "^[^/]*$" for "*") cannot match a
+// path that starts with one. So a rootless pattern describes nothing the proxy
+// will ever be asked about.
+//
+// It used to match anyway on the segment-glob fast path, which stripped a
+// leading slash from both the pattern and the request path and so read
+// "containers/*" as "/containers/*" — a silent widening on an allow rule and,
+// once the walker was corrected, a silent narrowing on a deny. Rejecting the
+// shape is what keeps that correction from quietly reversing an operator's
+// intent: the same fail-closed reasoning as versionPrefixRuleError and
+// literalPercentRuleError, which also refuse a pattern that can only ever be
+// dead. Write the pattern with its leading "/" ("/containers/*"), and use
+// "/**" rather than "**" for a catch-all.
+func rootlessRuleError(label, pattern string) string {
+	return fmt.Sprintf(
+		"%s: match.path %q must start with '/'; sockguard matches rules against the rooted request path, so a pattern without a leading slash never matches real traffic — write it as %q",
+		label, pattern, "/"+pattern,
 	)
 }
 
@@ -1948,6 +1974,8 @@ func validateRuleConfigs(rules []RuleConfig, prefix string) []string {
 		}
 		if r.Match.Path == "" {
 			errs = append(errs, rulePrefix+".match.path is required")
+		} else if !strings.HasPrefix(r.Match.Path, "/") {
+			errs = append(errs, rootlessRuleError(rulePrefix, r.Match.Path))
 		} else if strings.Contains(r.Match.Path, "%") && !validEscapedLibpodImageScpRule(r.Match) {
 			errs = append(errs, literalPercentRuleError(rulePrefix, r.Match.Path))
 		} else if filter.HasVersionPrefix(r.Match.Path) {

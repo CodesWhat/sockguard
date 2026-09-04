@@ -313,7 +313,7 @@ func (cr *CompiledRule) matchesNormalizedUpperWithBit(upperMethod string, method
 	case pathMatcherTrailingDeep:
 		return matchTrailingDoubleStar(cr.trailingPrefix, normalizedPath)
 	case pathMatcherSegmentGlob:
-		if cr.literalPrefix != "" && !strings.HasPrefix(strings.TrimPrefix(normalizedPath, "/"), strings.TrimPrefix(cr.literalPrefix, "/")) {
+		if cr.literalPrefix != "" && !strings.HasPrefix(normalizedPath, cr.literalPrefix) {
 			return false
 		}
 		return matchGlobSegments(cr.segmentPatterns, normalizedPath)
@@ -476,8 +476,17 @@ func isTrailingDoubleStarPattern(pattern string) bool {
 	return strings.HasSuffix(pattern, "/**") && !strings.Contains(pattern[:len(pattern)-3], "*")
 }
 
+// splitGlobSegments splits a single-star pattern on "/" without trimming
+// anything. A leading "/" therefore becomes a leading empty segment, exactly
+// as it does when the same pattern is split by the anchored regex: the "/" is
+// a separator the path has to carry too, not decoration to be normalized away.
+// Trimming it here (and the matching trim matchGlobSegments used to apply to
+// the path) canceled out for a rooted pattern but erased the distinction for
+// a rootless one, so "containers/*" compiled to the same segments as
+// "/containers/*" and matched "/containers/json" while its own regex,
+// "^containers/[^/]*$", did not.
 func splitGlobSegments(pattern string) []string {
-	return strings.Split(strings.TrimPrefix(pattern, "/"), "/")
+	return strings.Split(pattern, "/")
 }
 
 func matchTrailingDoubleStar(prefix, path string) bool {
@@ -505,13 +514,25 @@ func matchTrailingDoubleStar(prefix, path string) bool {
 // image name Podman would act on, so a rule spelling one segment must not
 // quietly cover two, and a deny spelling two must not be dodged by a path
 // whose second segment is empty.
+//
+// A leading "/" is a separator on both sides for the same reason. The walker
+// used to strip one from the path here and one from the pattern in
+// splitGlobSegments, which canceled for a rooted pattern but made a rootless
+// one match as if it were rooted: "*" matched "/_ping" where "^[^/]*$" does
+// not. Neither strip happens now, so a rooted path's leading empty segment has
+// to be spent by a leading empty pattern segment. A rootless pattern only
+// matches a rooted path when its own leading segment is a bare "*" that can
+// absorb that empty segment — "*" and "*/json" do, "containers/*" does not,
+// because "containers" cannot match the empty string. That is exactly why
+// rejecting a rootless pattern at the entry points (config validation for
+// match.path, clientacl.compileContainerLabelRules for a container-label
+// grant) is the real enforcement here, not any property of this matcher.
 func matchGlobSegments(patternSegments []string, path string) bool {
 	last := len(patternSegments) - 1
 	if last < 0 {
 		return false
 	}
 
-	path = strings.TrimPrefix(path, "/")
 	for _, patternSegment := range patternSegments[:last] {
 		segment, rest, hasMore := strings.Cut(path, "/")
 		if !hasMore || !matchGlobSegment(patternSegment, segment) {

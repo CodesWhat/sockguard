@@ -114,9 +114,17 @@ func FuzzPathMatch(f *testing.F) {
 	// slash away, and NormalizePodmanRoutePath, which keeps the one
 	// gorilla/mux routes on for the libpod image-SCP endpoint. "[^/]*" matches
 	// a newline, so unlike the "**" group above these need no newline carve-out.
-	segmentGlobs := make([]*CompiledRule, 0, 3)
-	segmentGlobRegexes := make([]*regexp.Regexp, 0, 3)
-	for _, pattern := range []string{"/containers/*", "/*/*/*", "/libpod/images/scp/*/*"} {
+	//
+	// The last three are rootless. Config validation refuses that shape, but the
+	// walker is what makes the refusal safe rather than a behavior change, and
+	// it is reachable without config validation through the container-label
+	// ACLs, whose patterns come off a container and go straight to CompileRule.
+	segmentGlobs := make([]*CompiledRule, 0, 6)
+	segmentGlobRegexes := make([]*regexp.Regexp, 0, 6)
+	for _, pattern := range []string{
+		"/containers/*", "/*/*/*", "/libpod/images/scp/*/*",
+		"containers/*", "*/json", "*",
+	} {
 		compiled, err := CompileRule(Rule{Methods: []string{"*"}, Pattern: pattern, Action: ActionAllow, Index: 2})
 		if err != nil {
 			f.Fatalf("CompileRule(%q): %v", pattern, err)
@@ -153,11 +161,11 @@ func FuzzPathMatch(f *testing.F) {
 		// with the anchored regex its pattern compiles to. Scoped to rooted
 		// views, which is every path an HTTP request-target produces bar the
 		// asterisk-form and absolute-form-with-empty-path edges. The walker
-		// drops one leading "/" from both the pattern and the path before
-		// comparing, so it reads a rootless pattern as rooted; the regex does
-		// not, and config validation relies on that lenience to match a
-		// rootless rule pattern the way the runtime does. That is a separate
-		// question from segment counting and is not what this pins.
+		// used to drop one leading "/" from both the pattern and the path
+		// before comparing, so it read a rootless pattern as rooted where the
+		// regex does not — "*" matched "/_ping". Neither drop happens now, so
+		// the rootless patterns above have to answer false on every rooted view
+		// here, exactly as their regexes do.
 		upperMethod := upperHTTPMethodASCII(method)
 		methodBit := httpMethodBit(upperMethod)
 		for _, view := range []string{normalized, NormalizePodmanRoutePath(path)} {
