@@ -975,6 +975,25 @@ func validateBuildkitAckMutualExclusion(cfg *Config) []string {
 	return errs
 }
 
+// buildkitMediationConfigured reports whether request_body.buildkit is
+// configured in ANY scope — top level or any client profile — which is
+// exactly the condition validateBuildkitAckMutualExclusion above turns into a
+// refusal once insecure_accept_opaque_buildkit_tunnels is set too. It exists
+// so ApplyCompat (compat.go) can ask that question in one call rather than
+// re-deriving the scope list, which would drift the moment a third scope
+// appears; a scope added to the loop above belongs here as well.
+func buildkitMediationConfigured(cfg *Config) bool {
+	if cfg.RequestBody.Buildkit.ToPolicy(cfg.RequestBody.Build).Configured() {
+		return true
+	}
+	for _, profile := range cfg.Clients.Profiles {
+		if profile.RequestBody.Buildkit.ToPolicy(profile.RequestBody.Build).Configured() {
+			return true
+		}
+	}
+	return false
+}
+
 // Admission-mutation config bounds (#151). These are deliberately generous
 // (a legitimate config needs far fewer than 64 rules or 256 total injected
 // labels) but bound the strict-decoded mutations subtree against pathological

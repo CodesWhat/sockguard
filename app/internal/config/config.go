@@ -139,6 +139,14 @@ type Config struct {
 	// spelling gave them an error.
 	explicitLibpodNetworkEndpointConfig bool
 
+	// compatGeneratedRules records that ApplyCompat replaced Rules with the
+	// ruleset it synthesized from Tecnativa env vars. Same shape and the same
+	// reason as the two explicit* flags above: a validation message that has
+	// to name where a setting came from cannot ask the operator's config file,
+	// because the rules it is refusing are not in it. Read through
+	// HasCompatGeneratedRules; unexported so no YAML or env input can forge it.
+	compatGeneratedRules bool
+
 	// InsecureAcceptOpaqueBuildkitTunnels acknowledges opening POST /session,
 	// POST /grpc, or a direct BuildKit Control-service method path. Both
 	// endpoints are unversioned opaque hijacked streams: dockerd's embedded
@@ -163,6 +171,15 @@ type Config struct {
 	// validateBuildkitAckMutualExclusion in validate.go), so the warning only
 	// ever fires for a config using this flag on its own.
 	InsecureAcceptOpaqueBuildkitTunnels bool `mapstructure:"insecure_accept_opaque_buildkit_tunnels"`
+}
+
+// HasCompatGeneratedRules reports whether Rules were synthesized by
+// ApplyCompat rather than read from the config file. cmd/rules.go uses it to
+// tell an operator that the rule tripping a startup refusal came from a
+// Tecnativa env var, which is the difference between an error they can act on
+// and one that points at a file where the rule does not appear.
+func (c *Config) HasCompatGeneratedRules() bool {
+	return c.compatGeneratedRules
 }
 
 // MarkLegacyListenExplicit records that the legacy listen.* block was set

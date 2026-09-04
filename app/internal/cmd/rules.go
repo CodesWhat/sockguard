@@ -412,7 +412,52 @@ func validateReadExfiltrationRules(cfg *config.Config, compiled []*filter.Compil
 
 func validateBuildkitTunnelRules(cfg *config.Config, compiled []*filter.CompiledRule) error {
 	//nolint:staticcheck // SA1019: deprecated flag still needs validating for as long as it stays functional
-	return validateBuildkitTunnelRulesForPolicy("", cfg.InsecureAcceptOpaqueBuildkitTunnels, cfg.RequestBody.Buildkit.ToPolicy(cfg.RequestBody.Build).Configured(), compiled)
+	return validateBuildkitTunnelRulesForPolicy("", cfg.InsecureAcceptOpaqueBuildkitTunnels, cfg.RequestBody.Buildkit.ToPolicy(cfg.RequestBody.Build).Configured(), compatBuildkitTunnelOrigin(cfg), compiled)
+}
+
+// compatBuildkitTunnelOrigin returns the clause that replaces the generic
+// cure in a top-level tunnel refusal when the rules being refused were
+// synthesized from Tecnativa env vars rather than written by the operator.
+//
+// Without it the message tells an operator who has migrated to
+// request_body.buildkit to "configure request_body.buildkit", because it
+// cannot see that the rule under it came from GRPC=1 or SESSION=1 and that
+// their policy sits on a client profile. It also has to stop offering the
+// acknowledgment, which is a dead end here: ApplyCompat only leaves the flag
+// unset when a mediation policy exists somewhere, and that policy is exactly
+// what validateBuildkitAckMutualExclusion rejects the flag against, so
+// setting it trades this error for that one.
+//
+// Returns "" for hand-written rules, which keep the original message.
+func compatBuildkitTunnelOrigin(cfg *config.Config) string {
+	if !cfg.HasCompatGeneratedRules() {
+		return ""
+	}
+
+	const cure = "configure request_body.buildkit at the top level so those rules are mediated too, or unset GRPC and SESSION"
+
+	if profileConfiguresBuildkitMediation(cfg) {
+		return "these rules came from the GRPC/SESSION Tecnativa compat env vars rather than the config file, and compat did not set " +
+			"insecure_accept_opaque_buildkit_tunnels because a client profile configures request_body.buildkit and the two are " +
+			"mutually exclusive — a profile policy cannot mediate top-level rules, which apply to every client that matches no " +
+			"profile, so " + cure
+	}
+
+	return "these rules came from the GRPC/SESSION Tecnativa compat env vars rather than the config file, so " + cure
+}
+
+// profileConfiguresBuildkitMediation reports whether any client profile
+// carries a request_body.buildkit policy. Deliberately NOT reused as an
+// admission input: a profile's policy mediates that profile's own rules only,
+// so letting it admit the top-level tunnel rules would open an uninspected
+// tunnel for every client the profile does not match.
+func profileConfiguresBuildkitMediation(cfg *config.Config) bool {
+	for _, profile := range cfg.Clients.Profiles {
+		if profile.RequestBody.Buildkit.ToPolicy(profile.RequestBody.Build).Configured() {
+			return true
+		}
+	}
+	return false
 }
 
 func validateBodyBlindWriteRulesForPolicy(scope string, insecure bool, requestBody config.RequestBodyConfig, configured []config.RuleConfig, compiled []*filter.CompiledRule) error {
@@ -500,7 +545,7 @@ func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, configu
 // a no-op and the request falls through to the plain ReverseProxy exactly as
 // it did pre-#185; that flag's meaning and denial message below are
 // unchanged.
-func validateBuildkitTunnelRulesForPolicy(scope string, insecure, buildkitConfigured bool, compiled []*filter.CompiledRule) error {
+func validateBuildkitTunnelRulesForPolicy(scope string, insecure, buildkitConfigured bool, compatOrigin string, compiled []*filter.CompiledRule) error {
 	if insecure || buildkitConfigured {
 		return nil
 	}
@@ -511,6 +556,14 @@ func validateBuildkitTunnelRulesForPolicy(scope string, insecure, buildkitConfig
 	}
 
 	if scope == "" {
+		if compatOrigin != "" {
+			return fmt.Errorf(
+				"rules allow the opaque BuildKit session/gRPC tunnel (POST /session, POST /grpc, or a moby.buildkit.v1.Control method path) — "+
+					"these streams carry secrets, SSH agent forwarding, and file sync that sockguard cannot inspect or bound once opened; %s: %s",
+				compatOrigin,
+				strings.Join(exposed, ", "),
+			)
+		}
 		return fmt.Errorf(
 			"rules allow the opaque BuildKit session/gRPC tunnel (POST /session, POST /grpc, or a moby.buildkit.v1.Control method path) — "+
 				"these streams carry secrets, SSH agent forwarding, and file sync that sockguard cannot inspect or bound once opened; "+
@@ -713,7 +766,9 @@ func compileClientProfiles(cfg *config.Config) (map[string]filter.Policy, error)
 			return nil, err
 		}
 		//nolint:staticcheck // SA1019: deprecated flag still needs validating for as long as it stays functional
-		if err := validateBuildkitTunnelRulesForPolicy(profile.Name, cfg.InsecureAcceptOpaqueBuildkitTunnels, profile.RequestBody.Buildkit.ToPolicy(profile.RequestBody.Build).Configured(), compiledRules); err != nil {
+		// No compat origin for a profile: ApplyCompat only ever replaces the
+		// top-level ruleset, so a profile's rules are always the operator's own.
+		if err := validateBuildkitTunnelRulesForPolicy(profile.Name, cfg.InsecureAcceptOpaqueBuildkitTunnels, profile.RequestBody.Buildkit.ToPolicy(profile.RequestBody.Build).Configured(), "", compiledRules); err != nil {
 			return nil, err
 		}
 		profiles[profile.Name] = filter.Policy{
