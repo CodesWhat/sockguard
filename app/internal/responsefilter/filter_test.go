@@ -1,6 +1,7 @@
 package responsefilter
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -396,6 +397,230 @@ func TestStreamArrayResponseClosesOriginalUpstreamBody(t *testing.T) {
 				t.Fatal("streamArrayResponse() did not close the original upstream body")
 			}
 		})
+	}
+}
+
+func TestResponseWritersUseCanonicalJSONEncoding(t *testing.T) {
+	t.Parallel()
+
+	const value = "<>&"
+	objectResp := &http.Response{Header: make(http.Header)}
+	if err := writeResponseBody(objectResp, map[string]any{"Value": value}); err != nil {
+		t.Fatalf("writeResponseBody() error = %v, want nil", err)
+	}
+	arrayResp := newResponseForTest(t, http.MethodGet, "/containers/json", `[{"Value":"<>&"}]`)
+	if err := streamArrayResponse(arrayResp, func(map[string]any) error { return nil }); err != nil {
+		t.Fatalf("streamArrayResponse() error = %v, want nil", err)
+	}
+
+	objectBody, err := io.ReadAll(objectResp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll(object response): %v", err)
+	}
+	arrayBody, err := io.ReadAll(arrayResp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll(array response): %v", err)
+	}
+	arrayElement := arrayBody[1 : len(arrayBody)-1]
+	if !bytes.Equal(objectBody, arrayElement) {
+		t.Fatalf("response encodings diverged\nobject: %s\n array: %s", objectBody, arrayBody)
+	}
+	if got, want := string(objectBody), `{"Value":"<>&"}`; got != want {
+		t.Fatalf("canonical object encoding = %s, want %s", got, want)
+	}
+
+	var objectDecoded map[string]string
+	if err := json.Unmarshal(objectBody, &objectDecoded); err != nil {
+		t.Fatalf("json.Unmarshal(object response): %v", err)
+	}
+	var arrayDecoded []map[string]string
+	if err := json.Unmarshal(arrayBody, &arrayDecoded); err != nil {
+		t.Fatalf("json.Unmarshal(array response): %v", err)
+	}
+	if got := objectDecoded["Value"]; got != value {
+		t.Fatalf("decoded object value = %q, want %q", got, value)
+	}
+	if got := arrayDecoded[0]["Value"]; got != value {
+		t.Fatalf("decoded array value = %q, want %q", got, value)
+	}
+}
+
+// TestStreamArrayResponseSizeLimitBoundary pins the exact byte at which the
+// streaming array path stops accepting a response: the LimitedReader is
+// sized to MaxResponseBodyBytes+1 so a body of exactly the cap decodes
+// cleanly, while one byte more trips the explicit post-loop size check.
+func TestStreamArrayResponseSizeLimitBoundary(t *testing.T) {
+	t.Parallel()
+	max := requestfilter.MaxResponseBodyBytes
+	// overhead is the exact byte count of `[{"p":""}]` (the array/object
+	// punctuation around the single padded field), computed via len() so a
+	// change in the literal below can't silently desync the pad length.
+	overhead := len(`[{"p":""}]`)
+
+	buildBody := func(totalLen int) string {
+		pad := strings.Repeat("A", totalLen-overhead)
+		return `[{"p":"` + pad + `"}]`
+	}
+
+	t.Run("exactly at cap succeeds", func(t *testing.T) {
+		t.Parallel()
+		body := buildBody(max)
+		resp := &http.Response{Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}
+		if err := streamArrayResponse(resp, func(map[string]any) error { return nil }); err != nil {
+			t.Fatalf("streamArrayResponse() error = %v, want nil for a body exactly at the %d byte cap", err, max)
+		}
+	})
+
+	t.Run("one byte over cap is rejected", func(t *testing.T) {
+		t.Parallel()
+		body := buildBody(max + 1)
+		resp := &http.Response{Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}
+		err := streamArrayResponse(resp, func(map[string]any) error { return nil })
+		if err == nil {
+			t.Fatal("streamArrayResponse() error = nil, want rejection for a body one byte over the cap")
+		}
+		if !errors.Is(err, ErrResponseRejected) {
+			t.Fatalf("streamArrayResponse() error = %v, want errors.Is(..., ErrResponseRejected)", err)
+		}
+		if !strings.Contains(err.Error(), "response body exceeds") {
+			t.Fatalf("streamArrayResponse() error = %v, want size-limit context", err)
+		}
+	})
+}
+
+// smallChunkReader caps every Read call the JSON decoder makes to at most
+// smallChunkReaderSize bytes, regardless of how large a buffer refill
+// requests. This gives byte-exact control over where the LimitedReader's
+// budget runs out relative to JSON element boundaries, which a plain
+// strings.Reader does not: its Read calls are typically satisfied in large
+// (megabyte-scale) chunks, so the decoder ends up with far more already
+// buffered than the size cap should allow before the budget is ever checked
+// mid-array. Capping reads still lands the LimitedReader's cutoff on the
+// exact byte the test constructs for, because io.LimitedReader always caps
+// the bytes it returns to its remaining budget regardless of how many bytes
+// are requested or how many Read calls it takes to get there; a small chunk
+// just keeps the decoder from ever reading past that budget in one shot. A
+// single byte per call would prove the same point but costs ~8.4 million
+// Read calls for an 8 MiB body, which is needlessly slow under -race.
+const smallChunkReaderSize = 8192
+
+type smallChunkReader struct {
+	r io.Reader
+}
+
+func (s *smallChunkReader) Read(p []byte) (int, error) {
+	if len(p) > smallChunkReaderSize {
+		p = p[:smallChunkReaderSize]
+	}
+	return s.r.Read(p)
+}
+
+// TestStreamArrayResponseSizeLimitMidLoopBoundary pins the mid-loop size
+// check that runs before decoding each element after the first. A two
+// element array is sized so the budget is exhausted exactly at the point
+// dec.More() confirms a second element is coming (having already buffered
+// its opening brace), but before that element's body is decoded: the
+// mid-loop check must fire there with the size-limit message rather than
+// letting the decode attempt fail with a raw "unexpected EOF".
+func TestStreamArrayResponseSizeLimitMidLoopBoundary(t *testing.T) {
+	t.Parallel()
+	max := requestfilter.MaxResponseBodyBytes
+	fixedPrefixPart1 := `[{"a":"`
+	fixedPrefixPart2 := `"},{`
+	overhead := len(fixedPrefixPart1) + len(fixedPrefixPart2)
+	padLen := (max + 1) - overhead
+	prefix := fixedPrefixPart1 + strings.Repeat("A", padLen) + fixedPrefixPart2
+	body := prefix + `"b":"z"}]`
+
+	resp := &http.Response{Body: io.NopCloser(&smallChunkReader{r: strings.NewReader(body)}), Header: make(http.Header)}
+	err := streamArrayResponse(resp, func(map[string]any) error { return nil })
+	if err == nil {
+		t.Fatal("streamArrayResponse() error = nil, want rejection for an over-budget multi-element array")
+	}
+	if !errors.Is(err, ErrResponseRejected) {
+		t.Fatalf("streamArrayResponse() error = %v, want errors.Is(..., ErrResponseRejected)", err)
+	}
+	if !strings.Contains(err.Error(), "response body exceeds") {
+		t.Fatalf("streamArrayResponse() error = %v, want the mid-loop size-limit message, not a raw decode error", err)
+	}
+}
+
+// TestStreamArrayResponseHandlesNilPooledBuffer pins the "out == nil"
+// fallback: when the pool has nothing to give, streamArrayResponse must
+// allocate its own buffer rather than dereferencing a nil one.
+//
+// This can't be tested by priming streamArrayBufferPool with a real buffer
+// and checking whether the same object comes back out (a Put-then-Get
+// round trip), because under -race, sync/pool.go's Put has a built-in 1-in-4
+// chance of silently discarding whatever it's given ("Randomly drop x on
+// floor") specifically to catch code that wrongly assumes Put/Get is
+// reliable — no amount of GOMAXPROCS pinning, GC disabling, or pool
+// isolation changes that. Get has no such randomness, so swapping New to
+// deterministically return nil forces the exact branch under test without
+// ever calling Put. streamArrayBufferPool itself can't be reassigned wholesale
+// (sync.Pool embeds a noCopy lock), so only its New field is swapped; whatever
+// this process's other tests already left resident in the pool is drained
+// first so the swapped-in New actually gets reached.
+func TestStreamArrayResponseHandlesNilPooledBuffer(t *testing.T) {
+	origNew := streamArrayBufferPool.New
+	defer func() { streamArrayBufferPool.New = origNew }()
+
+	for range 8192 {
+		streamArrayBufferPool.Get()
+	}
+	streamArrayBufferPool.New = func() any { return nil }
+
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(`[{"a":1}]`)), Header: make(http.Header)}
+	if err := streamArrayResponse(resp, func(map[string]any) error { return nil }); err != nil {
+		t.Fatalf("streamArrayResponse() error = %v, want nil", err)
+	}
+
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if want := `[{"a":1}]`; string(got) != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
+// TestStreamArrayResponseTrimsExactlyOneTrailingNewline pins that the
+// newline json.Encoder appends after every element is trimmed, so the
+// rewritten array is byte-for-byte compact JSON with no embedded newlines
+// between elements or before the closing bracket.
+func TestStreamArrayResponseTrimsExactlyOneTrailingNewline(t *testing.T) {
+	t.Parallel()
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(`[{"a":1},{"b":2}]`)), Header: make(http.Header)}
+	if err := streamArrayResponse(resp, func(map[string]any) error { return nil }); err != nil {
+		t.Fatalf("streamArrayResponse() error = %v, want nil", err)
+	}
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	want := `[{"a":1},{"b":2}]`
+	if string(got) != want {
+		t.Fatalf("body = %q, want %q (no embedded newline left over from json.Encoder)", got, want)
+	}
+}
+
+// TestStreamArrayResponseInitializesNilHeader pins that a response with a
+// nil Header (never touched before reaching this filter) gets one
+// allocated rather than panicking on the subsequent Header.Set call.
+func TestStreamArrayResponseInitializesNilHeader(t *testing.T) {
+	t.Parallel()
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(`[{"a":1}]`))}
+	if resp.Header != nil {
+		t.Fatal("test setup invariant broken: resp.Header must start nil")
+	}
+	if err := streamArrayResponse(resp, func(map[string]any) error { return nil }); err != nil {
+		t.Fatalf("streamArrayResponse() error = %v, want nil", err)
+	}
+	if resp.Header == nil {
+		t.Fatal("resp.Header = nil, want an allocated Header after streamArrayResponse")
+	}
+	if got := resp.Header.Get("Content-Length"); got == "" {
+		t.Fatal("Content-Length header = empty, want it set on the newly allocated Header")
 	}
 }
 
@@ -878,6 +1103,157 @@ func TestFilterModifyResponse_RedactsSensitivePlatformMetadata(t *testing.T) {
 	}
 }
 
+func TestFilterModifyResponse_PreservesLargeIntegerPrecision(t *testing.T) {
+	t.Parallel()
+	filter := New(Options{RedactMountPaths: true})
+
+	// 9007199254740993 is 2^53 + 1, the smallest integer float64 cannot
+	// represent exactly. Decoding this response through a plain
+	// map[string]any (default float64 coercion) would silently round it to
+	// 9007199254740992 on the way back out.
+	const largeLayersSize = "9007199254740993"
+	systemDFResp := newResponseForTest(t, http.MethodGet, "/system/df", `{
+		"LayersSize":`+largeLayersSize+`,
+		"ContainerUsage":{
+			"Items":[
+				{"Mounts":[{"Type":"bind","Source":"/srv/data","Destination":"/data"}]}
+			]
+		}
+	}`)
+	if err := filter.ModifyResponse(systemDFResp); err != nil {
+		t.Fatalf("ModifyResponse(system df) error = %v, want nil", err)
+	}
+
+	body, err := io.ReadAll(systemDFResp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if !bytes.Contains(body, []byte(largeLayersSize)) {
+		t.Fatalf("system df response body = %s, want it to contain LayersSize digits %s intact", body, largeLayersSize)
+	}
+}
+
+// TestFilterModifyResponse_PreservesLargeIntegerPrecisionOnListPaths is the
+// array-shaped counterpart of the test above, and it exists because the two
+// were not equivalent. Consolidating the whole-body decode sites onto
+// decodeJSONObject left streamArrayResponse constructing its own decoder
+// without UseNumber, so every list endpoint kept coercing JSON numbers to
+// float64 while every inspect endpoint stopped. Both now share
+// newJSONDecoder.
+//
+// The assertion is on the exact bytes rather than on the digits appearing
+// somewhere: the element's keys are already in the sorted order the re-encode
+// emits, so the only intended difference between input and output is the
+// redacted mount source.
+func TestFilterModifyResponse_PreservesLargeIntegerPrecisionOnListPaths(t *testing.T) {
+	t.Parallel()
+
+	// 2^53 + 1. Decoded as a float64 it becomes 9007199254740992 and is
+	// re-encoded with a different final digit.
+	const beyondFloat64 = "9007199254740993"
+
+	// Every list endpoint reaches the client through streamArrayResponse, so
+	// one per dispatch route: the bespoke container-list case, the bespoke
+	// network-list case, a responseTable entry, and the libpod arrays this
+	// branch added.
+	cases := []struct {
+		name     string
+		opts     Options
+		path     string
+		upstream string
+		want     string
+	}{
+		{
+			name:     "containers list",
+			opts:     Options{RedactMountPaths: true},
+			path:     "/v1.51/containers/json",
+			upstream: `[{"Id":"c-a","Mounts":[{"Source":"/host/x"}],"SizeRootFs":` + beyondFloat64 + `}]`,
+			want:     `[{"Id":"c-a","Mounts":[{"Source":"<redacted>"}],"SizeRootFs":` + beyondFloat64 + `}]`,
+		},
+		{
+			name:     "nodes list",
+			opts:     Options{RedactNetworkTopology: true},
+			path:     "/v1.51/nodes",
+			upstream: `[{"ID":"n-a","MemoryBytes":` + beyondFloat64 + `,"Status":{"Addr":"10.0.0.1"}}]`,
+			want:     `[{"ID":"n-a","MemoryBytes":` + beyondFloat64 + `,"Status":{"Addr":"<redacted>"}}]`,
+		},
+		{
+			name:     "libpod volumes list",
+			opts:     Options{RedactMountPaths: true},
+			path:     "/v5.8.1/libpod/volumes/json",
+			upstream: `[{"Mountpoint":"/var/lib/containers/storage/volumes/v/_data","Name":"v","Size":` + beyondFloat64 + `}]`,
+			want:     `[{"Mountpoint":"<redacted>","Name":"v","Size":` + beyondFloat64 + `}]`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			resp := newResponseForTest(t, http.MethodGet, tc.path, tc.upstream)
+			if err := New(tc.opts).ModifyResponse(resp); err != nil {
+				t.Fatalf("ModifyResponse(%s): %v", tc.path, err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("ReadAll: %v", err)
+			}
+			if string(body) != tc.want {
+				t.Fatalf("%s body mismatch\n got: %s\nwant: %s", tc.path, body, tc.want)
+			}
+		})
+	}
+}
+
+// TestFilterModifyResponse_ListPathRejectsTrailingContent pins the second half
+// of the decode asymmetry. json.Decoder stops at the end of the first value,
+// so streamArrayResponse used to decode the array, ignore everything after the
+// closing bracket, and forward the truncated result with no error — a filter
+// silently deciding the client sees less than the daemon sent. decodeJSONObject
+// has rejected the equivalent since the whole-body sites were consolidated.
+func TestFilterModifyResponse_ListPathRejectsTrailingContent(t *testing.T) {
+	t.Parallel()
+
+	rejected := []struct{ name, upstream string }{
+		{"second array", `[{"Id":"c-a"}][{"Id":"c-b"}]`},
+		{"second object", `[{"Id":"c-a"}]{"Id":"c-b"}`},
+		{"bare null", `[{"Id":"c-a"}]null`},
+		{"stray byte", `[{"Id":"c-a"}] x`},
+		{"unbalanced close", `[{"Id":"c-a"}}`},
+		// Truncation already failed closed before the trailing guard existed
+		// (dec.More reports true and the next Decode returns the EOF). Kept
+		// here so the guard cannot be "fixed" in a way that swallows these.
+		{"truncated mid array", `[{"Id":"c-a"},{"Id":"c-b"}`},
+		{"truncated mid object", `[{"Id":"c-a"`},
+		{"open bracket only", `[`},
+	}
+
+	for _, tc := range rejected {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			resp := newResponseForTest(t, http.MethodGet, "/v1.51/containers/json", tc.upstream)
+			if err := New(Options{RedactMountPaths: true}).ModifyResponse(resp); err == nil {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("expected rejection for %q, got nil and body %s", tc.upstream, body)
+			}
+		})
+	}
+
+	t.Run("trailing whitespace is still accepted", func(t *testing.T) {
+		t.Parallel()
+		resp := newResponseForTest(t, http.MethodGet, "/v1.51/containers/json", "[{\"Id\":\"c-a\"}]  \n\t")
+		if err := New(Options{RedactMountPaths: true}).ModifyResponse(resp); err != nil {
+			t.Fatalf("ModifyResponse: %v", err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		if string(body) != `[{"Id":"c-a"}]` {
+			t.Fatalf("body = %s, want [{\"Id\":\"c-a\"}]", body)
+		}
+	})
+}
+
 func TestFilterModifyResponse_RedactsHostTopology(t *testing.T) {
 	t.Parallel()
 	filter := New(Options{RedactHostTopology: true})
@@ -1011,6 +1387,10 @@ func TestIsImageAttestationsPath(t *testing.T) {
 		{"/images/attestations", false}, // no identifier before the segment
 		{"/images/alpine/attestations/extra", false},
 		{"/containers/alpine/attestations", false},
+		// rest == "/attestations" after TrimPrefix: idx == 0 (the slash is
+		// the first byte, not "not found"), so the identifier is still
+		// empty. Pins the idx <= 0 boundary distinctly from idx == -1.
+		{"/images//attestations", false},
 	}
 	for _, tt := range tests {
 		if got := isImageAttestationsPath(tt.path); got != tt.want {
@@ -1052,4 +1432,210 @@ func nestedSliceForTest(t *testing.T, payload map[string]any, keys ...string) []
 		t.Fatalf("payload[%q] = %#v, want array", keys[len(keys)-1], current[keys[len(keys)-1]])
 	}
 	return values
+}
+
+// TestDecodeJSONObjectRejectsTrailingContent pins the one behavior
+// json.Decoder does not share with json.Unmarshal: Decode stops at the end of
+// the first value and ignores whatever follows. This filter decides what a
+// client sees from a response body, so a second document hiding behind the
+// first must be an error, not a silent truncation. The error text is
+// json.Unmarshal's, because rejectResponse surfaces it.
+func TestDecodeJSONObjectRejectsTrailingContent(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{name: "second document", body: `{"a":1} {"b":2}`, wantErr: `invalid character '{' after top-level value`},
+		{name: "bare garbage", body: `{"a":1}x`, wantErr: `invalid character 'x' after top-level value`},
+		{name: "trailing whitespace is fine", body: "{\"a\":1}\n  \t", wantErr: ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := decodeJSONObject([]byte(tc.body))
+
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("decodeJSONObject(%q) error = %v, want nil", tc.body, err)
+				}
+				if got == nil {
+					t.Fatalf("decodeJSONObject(%q) payload = nil, want the decoded object", tc.body)
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatalf("decodeJSONObject(%q) error = nil, want %q", tc.body, tc.wantErr)
+			}
+			if err.Error() != tc.wantErr {
+				t.Fatalf("decodeJSONObject(%q) error = %q, want %q", tc.body, err, tc.wantErr)
+			}
+
+			// The rejection has to match what json.Unmarshal did before this
+			// helper existed, or the change is a behavior change in disguise.
+			var discard map[string]any
+			if unmarshalErr := json.Unmarshal([]byte(tc.body), &discard); unmarshalErr == nil {
+				t.Fatalf("json.Unmarshal(%q) accepted the body; this test is asserting a rejection that was never there", tc.body)
+			} else if unmarshalErr.Error() != tc.wantErr {
+				t.Fatalf("json.Unmarshal(%q) error = %q, want the same %q the helper reports", tc.body, unmarshalErr, tc.wantErr)
+			}
+		})
+	}
+}
+
+// dockerContainerInspectHostStorageUpstream is a GET /containers/{id}/json
+// body carrying the two host-path families redact_mount_paths used to miss.
+// LogPath and GraphDriver.Data are the daemon's own storage layout rather than
+// anything the caller configured, and both are absolute paths under the graph
+// root: one inspect discloses the storage driver, the graph root, and whether
+// the daemon runs rootful, to a caller the operator has already decided may
+// not see Mounts[].Source.
+const dockerContainerInspectHostStorageUpstream = `{
+	"Id":"abc123",
+	"Name":"/team-a-web",
+	"LogPath":"/var/lib/docker/containers/abc123/abc123-json.log",
+	"ResolvConfPath":"/var/lib/docker/containers/abc123/resolv.conf",
+	"GraphDriver":{
+		"Name":"overlay2",
+		"Data":{
+			"LowerDir":"/var/lib/docker/overlay2/l/LOWERONE:/var/lib/docker/overlay2/l/LOWERTWO",
+			"MergedDir":"/var/lib/docker/overlay2/abc123/merged",
+			"UpperDir":"/var/lib/docker/overlay2/abc123/diff",
+			"WorkDir":"/var/lib/docker/overlay2/abc123/work"
+		}
+	},
+	"Mounts":[{"Type":"bind","Source":"/srv/secrets","Destination":"/run/secrets"}]
+}`
+
+func TestContainerInspectRedactsLogPathAndGraphDriverData(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "docker", path: "/v1.53/containers/abc123/json"},
+		{name: "libpod", path: "/v5.8.1/libpod/containers/abc123/json"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			resp := newResponseForTest(t, http.MethodGet, tt.path, dockerContainerInspectHostStorageUpstream)
+			if err := New(Options{RedactMountPaths: true}).ModifyResponse(resp); err != nil {
+				t.Fatalf("ModifyResponse() error = %v, want nil", err)
+			}
+			got := decodeBodyForTest(t, resp)
+
+			if logPath, _ := got["LogPath"].(string); logPath != redactedValue {
+				t.Errorf("LogPath = %q, want %q", logPath, redactedValue)
+			}
+
+			graphDriver, ok := got["GraphDriver"].(map[string]any)
+			if !ok {
+				t.Fatalf("GraphDriver = %#v, want an object", got["GraphDriver"])
+			}
+			if name, _ := graphDriver["Name"].(string); name != "overlay2" {
+				t.Errorf("GraphDriver.Name = %q, want overlay2 kept (it names the driver, not a path)", name)
+			}
+			data, ok := graphDriver["Data"].(map[string]any)
+			if !ok {
+				t.Fatalf("GraphDriver.Data = %#v, want an object", graphDriver["Data"])
+			}
+			if len(data) != 4 {
+				t.Errorf("GraphDriver.Data has %d keys, want 4 (shape preserved, values masked)", len(data))
+			}
+			for key, value := range data {
+				if value != redactedValue {
+					t.Errorf("GraphDriver.Data[%q] = %v, want %q", key, value, redactedValue)
+				}
+			}
+
+			body, err := json.Marshal(got)
+			if err != nil {
+				t.Fatalf("json.Marshal: %v", err)
+			}
+			for _, sentinel := range []string{
+				"/var/lib/docker/containers/abc123/abc123-json.log",
+				"/var/lib/docker/overlay2/l/LOWERONE",
+				"/var/lib/docker/overlay2/abc123/merged",
+				"/var/lib/docker/overlay2/abc123/diff",
+				"/var/lib/docker/overlay2/abc123/work",
+			} {
+				if strings.Contains(string(body), sentinel) {
+					t.Errorf("%q survived redaction in %s", sentinel, body)
+				}
+			}
+			if !strings.Contains(string(body), `"Id":"abc123"`) {
+				t.Errorf("Id was removed but should survive; got %s", body)
+			}
+		})
+	}
+}
+
+// TestContainerInspectHostStorageSurvivesWithoutRedactMountPaths is the
+// anti-vacuity leg: both fields are governed by redact_mount_paths, so a
+// deployment that turned it off still gets them.
+func TestContainerInspectHostStorageSurvivesWithoutRedactMountPaths(t *testing.T) {
+	t.Parallel()
+	resp := newResponseForTest(t, http.MethodGet, "/v1.53/containers/abc123/json", dockerContainerInspectHostStorageUpstream)
+	if err := New(Options{RedactContainerEnv: true}).ModifyResponse(resp); err != nil {
+		t.Fatalf("ModifyResponse() error = %v, want nil", err)
+	}
+	got := decodeBodyForTest(t, resp)
+
+	if logPath, _ := got["LogPath"].(string); logPath != "/var/lib/docker/containers/abc123/abc123-json.log" {
+		t.Errorf("LogPath = %q, want the upstream value untouched", logPath)
+	}
+	graphDriver, _ := got["GraphDriver"].(map[string]any)
+	data, _ := graphDriver["Data"].(map[string]any)
+	if merged, _ := data["MergedDir"].(string); merged != "/var/lib/docker/overlay2/abc123/merged" {
+		t.Errorf("GraphDriver.Data.MergedDir = %q, want the upstream value untouched", merged)
+	}
+}
+
+// TestContainerInspectGraphDriverShapeVariants covers the shapes a daemon can
+// legitimately answer with, plus the two that are not objects. An absent or
+// null GraphDriver (or a null Data) is a no-op; a GraphDriver or Data of the
+// wrong type is refused rather than passed through, matching every other
+// unexpected-type branch in this file.
+func TestContainerInspectGraphDriverShapeVariants(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		upstream string
+		wantErr  bool
+	}{
+		{name: "absent", upstream: `{"Id":"abc"}`},
+		{name: "null graph driver", upstream: `{"Id":"abc","GraphDriver":null}`},
+		{name: "null data", upstream: `{"Id":"abc","GraphDriver":{"Name":"vfs","Data":null}}`},
+		{name: "empty data", upstream: `{"Id":"abc","GraphDriver":{"Name":"btrfs","Data":{}}}`},
+		{name: "zfs data", upstream: `{"Id":"abc","GraphDriver":{"Name":"zfs","Data":{"Dataset":"tank/ctr","Mountpoint":"/tank/ctr"}}}`},
+		{name: "graph driver not an object", upstream: `{"Id":"abc","GraphDriver":"overlay2"}`, wantErr: true},
+		{name: "data not an object", upstream: `{"Id":"abc","GraphDriver":{"Data":["/var/lib/docker/overlay2/abc/merged"]}}`, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			resp := newResponseForTest(t, http.MethodGet, "/v1.53/containers/abc/json", tt.upstream)
+			err := New(Options{RedactMountPaths: true}).ModifyResponse(resp)
+			if tt.wantErr {
+				if !errors.Is(err, ErrResponseRejected) {
+					t.Fatalf("ModifyResponse() error = %v, want ErrResponseRejected", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ModifyResponse() error = %v, want nil", err)
+			}
+			body, readErr := io.ReadAll(resp.Body)
+			if readErr != nil {
+				t.Fatalf("read body: %v", readErr)
+			}
+			for _, sentinel := range []string{"tank/ctr", "/tank/ctr"} {
+				if strings.Contains(string(body), sentinel) {
+					t.Errorf("%q survived redaction in %s", sentinel, body)
+				}
+			}
+		})
+	}
 }

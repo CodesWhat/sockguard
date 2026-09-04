@@ -296,6 +296,189 @@ func TestMiddlewareDeniedMinimalVerbosity(t *testing.T) {
 	}
 }
 
+func TestMiddlewareProcessListRequiresReadExfiltrationAcknowledgmentForEveryRuleShape(t *testing.T) {
+	tests := []struct {
+		name  string
+		path  string
+		rules []Rule
+	}{
+		{
+			name: "exact container name",
+			path: "/containers/payments/top",
+			rules: []Rule{
+				{Methods: []string{http.MethodGet}, Pattern: "/containers/payments/top", Action: ActionAllow, Index: 0},
+				{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Index: 1},
+			},
+		},
+		{
+			name: "synthetic name deny shadowing broad allow",
+			path: "/containers/payments/top",
+			rules: []Rule{
+				{Methods: []string{http.MethodGet}, Pattern: "/containers/sockguard-test/top", Action: ActionDeny, Index: 0},
+				{Methods: []string{http.MethodGet}, Pattern: "/containers/**", Action: ActionAllow, Index: 1},
+				{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Index: 2},
+			},
+		},
+		{
+			name: "multi-segment container name",
+			path: "/containers/team/payments/top",
+			rules: []Rule{
+				{Methods: []string{http.MethodGet}, Pattern: "/containers/*/*/top", Action: ActionAllow, Index: 0},
+				{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Index: 1},
+			},
+		},
+		{
+			name: "exact libpod container name",
+			path: "/v5.0.0/libpod/containers/payments/top",
+			rules: []Rule{
+				{Methods: []string{http.MethodGet}, Pattern: "/libpod/containers/payments/top", Action: ActionAllow, Index: 0},
+				{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Index: 1},
+			},
+		},
+		{
+			name: "exact libpod pod name",
+			path: "/v5.0.0/libpod/pods/payments/top",
+			rules: []Rule{
+				{Methods: []string{http.MethodGet}, Pattern: "/libpod/pods/payments/top", Action: ActionAllow, Index: 0},
+				{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Index: 1},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			compiled := make([]*CompiledRule, 0, len(tt.rules))
+			for _, rule := range tt.rules {
+				compiledRule, err := CompileRule(rule)
+				if err != nil {
+					t.Fatalf("CompileRule(%q): %v", rule.Pattern, err)
+				}
+				compiled = append(compiled, compiledRule)
+			}
+
+			reached := false
+			handler := MiddlewareWithOptions(compiled, testLogger(), Options{})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				reached = true
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tt.path, nil))
+
+			if reached {
+				t.Fatal("process-list read reached upstream without insecure_allow_read_exfiltration acknowledgment")
+			}
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+			}
+		})
+	}
+}
+
+func TestMiddlewareProcessListAcknowledgmentAllowsNativePodTop(t *testing.T) {
+	allow, err := CompileRule(Rule{
+		Methods: []string{http.MethodGet},
+		Pattern: "/libpod/pods/payments/top",
+		Action:  ActionAllow,
+		Index:   0,
+	})
+	if err != nil {
+		t.Fatalf("CompileRule: %v", err)
+	}
+
+	reached := false
+	handler := MiddlewareWithOptions([]*CompiledRule{allow}, testLogger(), Options{
+		AllowReadExfiltration: true,
+	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v5.0.0/libpod/pods/payments/top", nil))
+
+	if !reached {
+		t.Fatal("acknowledged native pod top did not reach upstream")
+	}
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
+func TestMiddlewareProcessListHardGatePreservesPolicyDenialsInEveryRolloutMode(t *testing.T) {
+	matchedDeny, err := CompileRule(Rule{
+		Methods: []string{http.MethodGet},
+		Pattern: "/containers/*/top",
+		Action:  ActionDeny,
+		Reason:  "process lists are disabled by policy",
+		Index:   0,
+	})
+	if err != nil {
+		t.Fatalf("CompileRule: %v", err)
+	}
+
+	policies := []struct {
+		name           string
+		rules          []*CompiledRule
+		wantRule       int
+		wantReason     string
+		wantReasonCode string
+	}{
+		{
+			name:           "default deny",
+			wantRule:       -1,
+			wantReason:     ReasonNoMatchingAllowRule,
+			wantReasonCode: reasonCodeNoMatchingAllowRule,
+		},
+		{
+			name:           "matched deny",
+			rules:          []*CompiledRule{matchedDeny},
+			wantRule:       0,
+			wantReason:     "process lists are disabled by policy",
+			wantReasonCode: reasonCodeMatchedDenyRule,
+		},
+	}
+
+	for _, policy := range policies {
+		for _, mode := range []string{"", "warn", "audit"} {
+			modeName := mode
+			if modeName == "" {
+				modeName = "default"
+			}
+			t.Run(policy.name+"/"+modeName, func(t *testing.T) {
+				reached := false
+				handler := MiddlewareWithOptions(policy.rules, testLogger(), Options{})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					reached = true
+					w.WriteHeader(http.StatusNoContent)
+				}))
+
+				meta := &logging.RequestMeta{RolloutMode: mode}
+				req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/payments/top", nil)
+				req = req.WithContext(logging.WithMeta(req.Context(), meta))
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+
+				if reached {
+					t.Fatal("process-list read reached upstream without insecure_allow_read_exfiltration acknowledgment")
+				}
+				if rec.Code != http.StatusForbidden {
+					t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+				}
+				if meta.Decision != string(ActionDeny) {
+					t.Fatalf("decision = %q, want %q", meta.Decision, ActionDeny)
+				}
+				if meta.Rule != policy.wantRule {
+					t.Fatalf("rule = %d, want %d", meta.Rule, policy.wantRule)
+				}
+				if meta.Reason != policy.wantReason {
+					t.Fatalf("reason = %q, want %q", meta.Reason, policy.wantReason)
+				}
+				if meta.ReasonCode != policy.wantReasonCode {
+					t.Fatalf("reason code = %q, want %q", meta.ReasonCode, policy.wantReasonCode)
+				}
+			})
+		}
+	}
+}
+
 func TestMiddlewareRejectsOversizedBoundedRequestBodiesWith413(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -1931,6 +2114,82 @@ func TestResolveNormalizedPathUsesCachedMeta(t *testing.T) {
 	if got != "/containers/json" {
 		t.Errorf("resolveNormalizedPath(meta without NormPath) = %q, want %q", got, "/containers/json")
 	}
+
+	// Podman's router uses EscapedPath for libpod routes. A cached decoded
+	// path must not turn an encoded SCP source suffix into the earlier image
+	// push route.
+	scpReq := httptest.NewRequest(http.MethodPost, "/v5.8.1-dev/libpod/images/scp/foreign%2Fpush", nil)
+	scpMeta := &logging.RequestMeta{NormPath: "/v5.8.1-dev/libpod/images/scp/foreign/push"}
+	got = resolveNormalizedPath(scpMeta, scpReq)
+	if got != "/libpod/images/scp/foreign%2Fpush" {
+		t.Errorf("resolveNormalizedPath(encoded SCP) = %q, want %q", got, "/libpod/images/scp/foreign%2Fpush")
+	}
+}
+
+func TestImageScpDualViewDenialMetadataUsesTheRejectingPolicyView(t *testing.T) {
+	tests := []struct {
+		name         string
+		rawPath      string
+		rules        []Rule
+		wantRule     int
+		wantReason   string
+		wantNormPath string
+	}{
+		{
+			name:    "canonical deny",
+			rawPath: "/libpod/images/scp/foreign%2Fsecret",
+			rules: []Rule{
+				{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/foreign/secret", Action: ActionDeny, Reason: "canonical source denied", Index: 4},
+				{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/**", Action: ActionAllow, Index: 5},
+			},
+			wantRule:     4,
+			wantReason:   "canonical source denied",
+			wantNormPath: "/libpod/images/scp/foreign/secret",
+		},
+		{
+			name:    "encoded route deny",
+			rawPath: "/libpod/images/scp/foreign%2Fsecret",
+			rules: []Rule{
+				{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/foreign/secret", Action: ActionAllow, Index: 6},
+				{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/**", Action: ActionDeny, Reason: "encoded route denied", Index: 7},
+			},
+			wantRule:     7,
+			wantReason:   "encoded route denied",
+			wantNormPath: "/libpod/images/scp/foreign%2Fsecret",
+		},
+		{
+			name:    "trailing slash route deny",
+			rawPath: "/v5.8.1/libpod/images/scp/foreign/push/",
+			rules: []Rule{
+				{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/foreign/push", Action: ActionAllow, Index: 8},
+				{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "SCP route denied", Index: 9},
+			},
+			wantRule:     9,
+			wantReason:   "SCP route denied",
+			wantNormPath: "/libpod/images/scp/foreign/push/",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			meta := &logging.RequestMeta{}
+			req := httptest.NewRequest(http.MethodPost, tt.rawPath, nil)
+			req = req.WithContext(logging.WithMeta(req.Context(), meta))
+			handler := MiddlewareWithOptions(compileRulesForTest(t, tt.rules), testLogger(), Options{})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("encoded SCP request reached upstream")
+			}))
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+			}
+			if meta.Rule != tt.wantRule || meta.Reason != tt.wantReason || meta.NormPath != tt.wantNormPath {
+				t.Fatalf("metadata = rule %d reason %q path %q, want rule %d reason %q path %q", meta.Rule, meta.Reason, meta.NormPath, tt.wantRule, tt.wantReason, tt.wantNormPath)
+			}
+		})
+	}
 }
 
 // TestRunAllowedInspectionReturnsEmptyForPassThrough exercises the happy path
@@ -1952,5 +2211,123 @@ func TestRunAllowedInspectionReturnsEmptyForPassThrough(t *testing.T) {
 	}
 	if status != 0 {
 		t.Errorf("runAllowedInspection() status = %d, want 0", status)
+	}
+}
+
+// sequencedDeadlineWriter returns errs[call] (nil if call >= len(errs)) from
+// each successive SetReadDeadline call, so a test can control the set-call
+// and clear-call results independently.
+type sequencedDeadlineWriter struct {
+	http.ResponseWriter
+	errs  []error
+	calls int
+}
+
+func (w *sequencedDeadlineWriter) SetReadDeadline(time.Time) error {
+	var err error
+	if w.calls < len(w.errs) {
+		err = w.errs[w.calls]
+	}
+	w.calls++
+	return err
+}
+
+func (w *sequencedDeadlineWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+// TestRunAllowedInspectionLogsSetDeadlineErrorOnlyOnFailure covers
+// middleware.go line 344: the set-deadline debug log must fire when
+// SetReadDeadline returns a genuine (non-ErrNotSupported) error, and must
+// NOT fire when it succeeds. A CONDITIONALS_NEGATION mutant on err != nil
+// would invert both halves of that.
+func TestRunAllowedInspectionLogsSetDeadlineErrorOnlyOnFailure(t *testing.T) {
+	sentinel := errors.New("set deadline boom")
+	tests := []struct {
+		name      string
+		setErr    error
+		wantDebug bool
+	}{
+		{name: "genuine set error logs debug", setErr: sentinel, wantDebug: true},
+		{name: "successful set does not log debug", setErr: nil, wantDebug: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var logBuf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			w := &sequencedDeadlineWriter{ResponseWriter: httptest.NewRecorder(), errs: []error{tt.setErr, nil}}
+			req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
+			p := compileRuntimePolicy(nil, PolicyConfig{}, nil)
+
+			runAllowedInspection(p, logger, w, req, "/containers/json")
+
+			gotDebug := strings.Contains(logBuf.String(), "slowloris read deadline not applied")
+			if gotDebug != tt.wantDebug {
+				t.Fatalf("debug log present = %v, want %v; log = %s", gotDebug, tt.wantDebug, logBuf.String())
+			}
+		})
+	}
+}
+
+// TestRunAllowedInspectionLogsClearDeadlineErrorOnlyOnFailure covers
+// middleware.go line 348: the clear-deadline error log must fire when the
+// reset SetReadDeadline call returns a genuine error, and must NOT fire
+// when it succeeds. A CONDITIONALS_NEGATION mutant on err != nil would
+// invert both halves of that.
+func TestRunAllowedInspectionLogsClearDeadlineErrorOnlyOnFailure(t *testing.T) {
+	sentinel := errors.New("clear deadline boom")
+	tests := []struct {
+		name      string
+		clearErr  error
+		wantError bool
+	}{
+		{name: "genuine clear error logs error", clearErr: sentinel, wantError: true},
+		{name: "successful clear does not log error", clearErr: nil, wantError: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var logBuf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			w := &sequencedDeadlineWriter{ResponseWriter: httptest.NewRecorder(), errs: []error{nil, tt.clearErr}}
+			req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
+			p := compileRuntimePolicy(nil, PolicyConfig{}, nil)
+
+			runAllowedInspection(p, logger, w, req, "/containers/json")
+
+			gotError := strings.Contains(logBuf.String(), "failed to clear slowloris read deadline")
+			if gotError != tt.wantError {
+				t.Fatalf("error log present = %v, want %v; log = %s", gotError, tt.wantError, logBuf.String())
+			}
+		})
+	}
+}
+
+// TestMatchesLibpodVolumeInspection covers middleware.go line 497's exact
+// path-equality check. A CONDITIONALS_NEGATION mutant (== -> !=) would
+// invert every case here.
+func TestMatchesLibpodVolumeInspection(t *testing.T) {
+	if !matchesLibpodVolumeInspection("/libpod/volumes/create") {
+		t.Error("matchesLibpodVolumeInspection(exact path) = false, want true")
+	}
+	if matchesLibpodVolumeInspection("/libpod/volumes/create/extra") {
+		t.Error("matchesLibpodVolumeInspection(path with suffix) = true, want false")
+	}
+	if matchesLibpodVolumeInspection("/libpod/networks/create") {
+		t.Error("matchesLibpodVolumeInspection(different resource) = true, want false")
+	}
+}
+
+// TestMatchesLibpodSecretInspection covers middleware.go line 505's exact
+// path-equality check. A CONDITIONALS_NEGATION mutant (== -> !=) would
+// invert every case here.
+func TestMatchesLibpodSecretInspection(t *testing.T) {
+	if !matchesLibpodSecretInspection("/libpod/secrets/create") {
+		t.Error("matchesLibpodSecretInspection(exact path) = false, want true")
+	}
+	if matchesLibpodSecretInspection("/libpod/secrets/create/extra") {
+		t.Error("matchesLibpodSecretInspection(path with suffix) = true, want false")
+	}
+	if matchesLibpodSecretInspection("/libpod/volumes/create") {
+		t.Error("matchesLibpodSecretInspection(different resource) = true, want false")
 	}
 }

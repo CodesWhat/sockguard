@@ -86,6 +86,9 @@ clients:
     # if you need one).
     - name: ci
       request_body:
+        container_remove:
+          allow_force: true
+          allow_remove_volumes: true
         container_create:
           allow_privileged: false
           allow_host_network: false
@@ -125,10 +128,11 @@ clients:
     # ops: broader operator policy for the local dashboard/admin socket —
     # inventory and lifecycle control, no exec, no image pull. Read
     # responses stay redacted (response.* below) even on this more
-    # privileged profile. Deliberately omits raw archive/export
-    # (docker cp), log/attach streaming, and image get/save — those paths
-    # can exfiltrate container files, env vars, and secrets, and would
-    # otherwise trip Sockguard's read-exfiltration guardrail; add them
+    # privileged profile. Deliberately omits process-list top, raw
+    # archive/export (docker cp), log/attach streaming, and image get/save —
+    # those paths can exfiltrate process arguments, container files, env vars,
+    # and secrets, and would otherwise trip Sockguard's read-exfiltration
+    # guardrail; add them
     # (plus the top-level insecure_allow_read_exfiltration: true
     # acknowledgment) only if this profile's audience genuinely needs them.
     - name: ops
@@ -150,8 +154,6 @@ clients:
         - match: { method: GET, path: "/containers/*/json" }
           action: allow
         - match: { method: GET, path: "/containers/*/stats" }
-          action: allow
-        - match: { method: GET, path: "/containers/*/top" }
           action: allow
         - match: { method: GET, path: "/containers/*/changes" }
           action: allow

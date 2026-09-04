@@ -48,7 +48,7 @@ export const features: Feature[] = [
     color: "text-rose-500 dark:text-rose-400",
     bg: "bg-rose-100 dark:bg-rose-900/50",
     description:
-      "We parse every container, image, build, volume, network, secret, config, service, swarm, node, and plugin write to block privileged or host-namespace workloads, non-allowlisted mounts/devices, unsafe controls, archive writes, and tar imports. Native Podman builds add fail-closed primary/additional-context, host-mount, and resource-usage host-file handling on top of the shared classic-build policy. Bounded inspectors reject oversized bodies with 413 and enforce a 30-second read deadline through logging and metrics.",
+      "We parse container, image, build, volume, network, secret, config, service, swarm, node, and plugin writes to block privileged or host-namespace workloads, non-allowlisted mounts/devices, unsafe controls, archive writes, and tar imports. Native Podman builds add fail-closed primary/additional-context, host-mount, and resource-usage host-file handling on top of the shared classic-build policy. Bounded inspectors reject oversized bodies with 413 and enforce a 30-second read deadline through logging and metrics.",
     category: "security",
   },
   {
@@ -111,7 +111,7 @@ export const features: Feature[] = [
     color: "text-blue-500 dark:text-blue-400",
     bg: "bg-blue-100 dark:bg-blue-900/50",
     description:
-      "We use declarative YAML rules with glob patterns, first-match-wins evaluation, and 17 bundled workload presets (drydock, drydock with self-update, drydock with compose, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, read-only, CIS Docker Benchmark, GitHub Actions self-hosted runner, GitLab Runner, Portwing, Portwing with exec, Portwing with compose) plus the default config.",
+      "We use declarative YAML rules with glob patterns, first-match-wins evaluation, and 22 bundled workload presets (drydock, drydock with build, drydock with mediated build, drydock with self-update, drydock with compose, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, read-only, Podman read-only, CIS Docker Benchmark, GitHub Actions self-hosted runner, GitLab Runner, Portwing, Portwing with exec, Portwing with build, Portwing with mediated build, Portwing with compose) plus the default config.",
     category: "control",
   },
   {
@@ -128,7 +128,8 @@ export const features: Feature[] = [
     title: "Minimal Attack Surface",
     color: "text-rose-500 dark:text-rose-400",
     bg: "bg-rose-100 dark:bg-rose-900/50",
-    description: "We ship a Wolfi-based image, cosign-signed with SBOM and build provenance.",
+    description:
+      "We ship a distroless image (Chainguard's `static` base, no shell, no package manager, runs as UID 65532), cosign-signed with SBOM and build provenance.",
     category: "security",
   },
   {

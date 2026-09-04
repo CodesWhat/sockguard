@@ -6,9 +6,13 @@ run-name: >-
   }}
 
 # Tier 2 of the fuzz strategy. Tier 1 lives in `ci-verify.yml`'s reusable
-# `go-ci` fuzz matrix and
-# gives every fuzzer a 60-second budget on every PR/push to main so obvious
-# regressions fail fast. This workflow is where the deep coverage work
+# `go-ci` fuzz matrix and gives most fuzzers a 60-second budget on every
+# PR/push to main so obvious regressions fail fast, except FuzzLoadYAML,
+# FuzzHijackBidirectionalStream, and FuzzValidateUpstreamHijackInactivityTimeout,
+# which are heavy enough that they reach hosted CI only in this nightly tier
+# and the monthly tier below (FuzzLoadYAML and FuzzHijackBidirectionalStream
+# also run in the local pre-push smoke test in `lefthook.yml`). This workflow is
+# where the deep coverage work
 # happens: 15 minutes per fuzzer by default (overridable via
 # `workflow_dispatch` input up to the job `timeout-minutes` cap), every
 # core fuzzer suite, matrix-parallelized across runners so the whole thing
@@ -57,6 +61,20 @@ jobs:
 
     strategy:
       fail-fast: false
+      # The org is on the Free plan: 20 concurrent jobs across every repo.
+      # This matrix is 22 on its own, and portwing's Deep Fuzz is also
+      # `30 9 * * *` and asks for 7 at the same minute, so 29 jobs contend
+      # for 20 slots. Jobs admitted over the ceiling get starved (`execs`
+      # flatlining at 0/sec) and then reclaimed with
+      # "The runner has received a shutdown signal", exit 143, which reads
+      # as a fuzz failure but is an instrument failure: no `--- FAIL`, no
+      # crasher written to testdata. That killed 8, 2 and 7 jobs on the
+      # nights of 2026-08-24/25/26 and 4 on 08-27. The one night it went
+      # 22/22 (08-28) was the night GitHub deferred the schedule to 20:56
+      # UTC, clear of the collision. 12 leaves portwing's 7 intact inside
+      # the ceiling with a slot to spare. Do not raise this past 13 while
+      # the plan is Free and portwing shares the minute.
+      max-parallel: 12
       matrix:
         fuzzer:
           - { name: FuzzPathMatch,                 pkg: ./internal/filter/ }
@@ -76,11 +94,15 @@ jobs:
           - { name: FuzzPlugin,                    pkg: ./internal/filter/ }
           - { name: FuzzNetwork,                   pkg: ./internal/filter/ }
           - { name: FuzzLoadYAML,                  pkg: ./internal/config/ }
+          - { name: FuzzValidateUpstreamHijackInactivityTimeout, pkg: ./internal/config/ }
           - { name: FuzzProxyHeadersAndBody,       pkg: ./internal/proxy/ }
           - { name: FuzzHijackHeadersAndBody,      pkg: ./internal/proxy/ }
           - { name: FuzzHijackBidirectionalStream, pkg: ./internal/proxy/ }
           - { name: FuzzPathRoutingDifferential,   pkg: ./differential/ }
           - { name: FuzzVisibilityFilter,          pkg: ./internal/visibility/ }
+          - { name: FuzzClassify,                  pkg: ./internal/upstreamflavor/ }
+          - { name: FuzzConfigured,                pkg: ./internal/upstreamflavor/ }
+          - { name: FuzzPodmanEventLabelFilter,    pkg: ./internal/visibility/ }
 
     steps:
       # Stage 1 of the harden-runner egress rollout: pure Go build/fuzz, no

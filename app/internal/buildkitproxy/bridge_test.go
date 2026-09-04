@@ -70,7 +70,14 @@ func newTestBridge(t *testing.T, endpoint Endpoint, policy Policy, limits Limits
 // CONTENT (not just gRPC status codes), e.g. that an admitted Auth call
 // logs the normalized registry host rather than the raw client-supplied
 // field. Everything else should keep using newTestBridge/noopLogger.
-func newTestBridgeWithLogger(t *testing.T, endpoint Endpoint, policy Policy, limits Limits, daemonHandler http.Handler, logger *slog.Logger) *testBridge {
+//
+// driftLimiter is optional and variadic rather than a plain trailing
+// parameter so every existing caller keeps compiling unchanged: only the
+// schema-drift tests in controlinfo_test.go need a limiter isolated from the
+// rest of the package (and from -count>1 reruns of themselves), so they pass
+// one explicitly; everything else gets runBridge's own default of the
+// package-level controlSchemaDrift.
+func newTestBridgeWithLogger(t *testing.T, endpoint Endpoint, policy Policy, limits Limits, daemonHandler http.Handler, logger *slog.Logger, driftLimiter ...*schemaDriftLimiter) *testBridge {
 	t.Helper()
 
 	serverLeg, driverConn := net.Pipe()
@@ -86,10 +93,15 @@ func newTestBridgeWithLogger(t *testing.T, endpoint Endpoint, policy Policy, lim
 	}
 	session := registry.Open(SessionKey{ClientIdentity: "test-client", Profile: "test-profile"}, endpoint, clientUUID)
 
+	var limiter *schemaDriftLimiter
+	if len(driftLimiter) > 0 {
+		limiter = driftLimiter[0]
+	}
+
 	legs := bridgeLegs{endpoint: endpoint, serverConn: serverLeg, clientConn: clientLegForBridge}
 	tb := &testBridge{registry: registry, session: session, done: make(chan struct{})}
 	go func() {
-		tb.err = runBridge(context.Background(), legs, session, policy, limits, logger, registry)
+		tb.err = runBridge(context.Background(), legs, session, policy, limits, logger, registry, limiter)
 		close(tb.done)
 	}()
 
@@ -220,9 +232,15 @@ func TestBridgeFailsClosedWhenMediatedMethodHasNoDispatcher(t *testing.T) {
 		registry: registry,
 	}
 	rec := httptest.NewRecorder()
-	req := newGRPCRequest(t, "/moby.buildkit.v1.Control/Info", "opaque")
+	req := newGRPCRequest(t, "/moby.buildkit.v1.Control/Prune", "opaque")
 
-	b.forwardAdmitted(rec, req, "moby.buildkit.v1.Control", "Info", Mediate)
+	// Prune is Deny-by-default and has no dispatcher of any kind, so handing
+	// forwardAdmitted a Mediate disposition for it is exactly the
+	// registry-vs-dispatcher drift this arm exists to fail closed on. Every
+	// method the registry actually lists as Mediate now has a dispatcher —
+	// TestEveryMediatedRegistryMethodHasDispatcher proves it — so the drift
+	// can only be staged artificially like this.
+	b.forwardAdmitted(rec, req, "moby.buildkit.v1.Control", "Prune", Mediate)
 
 	code, msg := grpcStatusOf(t, rec.Result())
 	if code != grpcCodeInternal {
@@ -279,7 +297,7 @@ func TestBridgeForwardsAdmittedMethodVerbatim(t *testing.T) {
 func TestBridgeForwardsPassthroughMethod(t *testing.T) {
 	tb := newTestBridge(t, EndpointGRPC, allowAllPolicy, DefaultLimits(), echoDaemonHandler())
 
-	resp, err := tb.driver.RoundTrip(newGRPCRequest(t, "/moby.buildkit.v1.Control/Info", ""))
+	resp, err := tb.driver.RoundTrip(newGRPCRequest(t, "/grpc.health.v1.Health/Check", ""))
 	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
@@ -299,13 +317,13 @@ func TestBridgeResponseSizeCapTripsResourceExhausted(t *testing.T) {
 
 	tb := newTestBridge(t, EndpointGRPC, allowAllPolicy, limits, bigDaemon)
 
-	// Info (Passthrough) rather than Solve: this test is exercising
+	// Health/Check (Passthrough) rather than Solve: this test is exercising
 	// forward()'s generic response size cap, which applies identically
 	// regardless of method — Solve now routes through
 	// forwardControlMediated's own per-message decode path (see
 	// TestBridgeControlMediatedSolve* for that coverage) and would reject
 	// this request's non-gRPC-framed empty body before ever reaching forward.
-	resp, err := tb.driver.RoundTrip(newGRPCRequest(t, "/moby.buildkit.v1.Control/Info", ""))
+	resp, err := tb.driver.RoundTrip(newGRPCRequest(t, "/grpc.health.v1.Health/Check", ""))
 	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
@@ -361,6 +379,98 @@ func TestLimitedReadCloserDisabledWhenLimitIsZero(t *testing.T) {
 	src := io.NopCloser(strings.NewReader("hello"))
 	if got := newLimitedReadCloser(src, 0); got != io.ReadCloser(src) {
 		t.Fatal("newLimitedReadCloser with limit <= 0 must return the original reader unchanged")
+	}
+}
+
+// TestLimitedReadCloserBoundaryArithmetic pins Read's own one-byte-sentinel
+// bookkeeping directly, at the one buffer size TestLimitedReadCloserCap
+// (driven through io.ReadAll's own variable-sized buffers) never controls
+// precisely: a caller-supplied p exactly as long as remaining. Read's
+// int64(len(p))-1 > l.remaining guard must NOT truncate p in this case (p is
+// already no longer than remaining+1), so the full read proceeds and comes
+// back clean. At these values (len(p) = remaining = 5) the guard evaluates
+// 4 > 5, false. Perturbing the "-1" to "+1" changes that to 6 > 5, true, so
+// the guard fires and re-slices p past its own length, panicking with a
+// capacity exactly at len(p), which is exactly what make([]byte, remaining)
+// below gives it, no slack to hide the bug. That kills both the
+// ARITHMETIC_BASE and INVERT_NEGATIVES mutants on the guard's "-1", since
+// both rewrite it to "+1".
+//
+// The CONDITIONALS_BOUNDARY mutant on the same guard, which shifts
+// "-1 > remaining" to "-1 >= remaining", is not killed by this test. It is
+// already documented as equivalent: at these values it still evaluates to
+// 4 >= 5, false, same as the original, so it does not fire either. It only
+// diverges from the original guard when len(p) == remaining+1, and there the
+// re-slice p[:remaining+1] is a no-op (p is already that length) rather than
+// a panic, so no test can distinguish the mutant from the original.
+func TestLimitedReadCloserBoundaryArithmetic(t *testing.T) {
+	const remaining = 5
+	src := io.NopCloser(strings.NewReader(strings.Repeat("x", 50)))
+	lrc := newLimitedReadCloser(src, remaining).(*limitedReadCloser)
+
+	p := make([]byte, remaining)
+	n, err := lrc.Read(p)
+	if err != nil {
+		t.Fatalf("Read() error = %v, want nil (a buffer exactly as long as remaining must not trip the cap)", err)
+	}
+	if n != remaining {
+		t.Fatalf("Read() n = %d, want %d", n, remaining)
+	}
+	if lrc.remaining != 0 {
+		t.Fatalf("remaining after Read() = %d, want 0", lrc.remaining)
+	}
+}
+
+// TestBridgeAuditOmitsReasonCodeWhenEmpty pins audit's reasonCode != ""
+// guard directly: an admitted (Mediate/Passthrough) call passes reasonCode
+// "" and must never emit a reason_code attr at all, only a denial/error path
+// supplies one. Exercised via the bridge method directly (not a full
+// RoundTrip) since the distinction is purely about whether the attr is
+// present in the log line, not about response bytes.
+func TestBridgeAuditOmitsReasonCodeWhenEmpty(t *testing.T) {
+	registry := NewSessionRegistry()
+	session := registry.Open(SessionKey{ClientIdentity: "c", Profile: "p"}, EndpointGRPC, "")
+
+	admittedLogs := &syncLogBuffer{}
+	admittedLogger := slog.New(slog.NewTextHandler(admittedLogs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	admittedBridge := &bridge{legs: bridgeLegs{endpoint: EndpointGRPC}, session: session, logger: admittedLogger}
+	admittedBridge.audit("moby.buildkit.v1.Control", "Solve", Mediate, "")
+	if strings.Contains(admittedLogs.String(), "reason_code=") {
+		t.Fatalf("admitted call's audit log carries a reason_code attr, want none:\n%s", admittedLogs.String())
+	}
+
+	deniedLogs := &syncLogBuffer{}
+	deniedLogger := slog.New(slog.NewTextHandler(deniedLogs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	deniedBridge := &bridge{legs: bridgeLegs{endpoint: EndpointGRPC}, session: session, logger: deniedLogger}
+	deniedBridge.audit("moby.buildkit.v1.Control", "Solve", Deny, "buildkit_policy_denied")
+	if !strings.Contains(deniedLogs.String(), "reason_code=buildkit_policy_denied") {
+		t.Fatalf("denied call's audit log missing reason_code attr:\n%s", deniedLogs.String())
+	}
+}
+
+// TestBridgeAuditLevelReflectsDisposition pins audit's disposition == Deny
+// guard: only a Deny disposition raises the log line to Info; every other
+// disposition (Mediate/Passthrough — an admitted call) logs at Debug, so
+// routine traffic doesn't spam an operator's default log level while a
+// denial still surfaces.
+func TestBridgeAuditLevelReflectsDisposition(t *testing.T) {
+	registry := NewSessionRegistry()
+	session := registry.Open(SessionKey{ClientIdentity: "c", Profile: "p"}, EndpointGRPC, "")
+
+	mediateLogs := &syncLogBuffer{}
+	mediateLogger := slog.New(slog.NewTextHandler(mediateLogs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	mediateBridge := &bridge{legs: bridgeLegs{endpoint: EndpointGRPC}, session: session, logger: mediateLogger}
+	mediateBridge.audit("moby.buildkit.v1.Control", "Solve", Mediate, "")
+	if strings.Contains(mediateLogs.String(), "level=INFO") {
+		t.Fatalf("an admitted (non-Deny) call logged at INFO, want DEBUG:\n%s", mediateLogs.String())
+	}
+
+	denyLogs := &syncLogBuffer{}
+	denyLogger := slog.New(slog.NewTextHandler(denyLogs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	denyBridge := &bridge{legs: bridgeLegs{endpoint: EndpointGRPC}, session: session, logger: denyLogger}
+	denyBridge.audit("moby.buildkit.v1.Control", "Solve", Deny, "buildkit_policy_denied")
+	if !strings.Contains(denyLogs.String(), "level=INFO") {
+		t.Fatalf("a Deny call did not log at INFO:\n%s", denyLogs.String())
 	}
 }
 
@@ -422,7 +532,7 @@ func TestRunBridgeClientLegHandshakeFailure(t *testing.T) {
 	registry := NewSessionRegistry()
 	session := registry.Open(SessionKey{ClientIdentity: "c", Profile: "p"}, EndpointGRPC, "")
 
-	err := runBridge(context.Background(), bridgeLegs{endpoint: EndpointGRPC, serverConn: serverLeg, clientConn: clientLeg}, session, allowAllPolicy, DefaultLimits(), noopLogger(), registry)
+	err := runBridge(context.Background(), bridgeLegs{endpoint: EndpointGRPC, serverConn: serverLeg, clientConn: clientLeg}, session, allowAllPolicy, DefaultLimits(), noopLogger(), registry, nil)
 	if err == nil {
 		t.Fatal("runBridge() with a dead client leg = nil error, want an error establishing the client leg")
 	}
@@ -484,11 +594,11 @@ func TestBridgeForwardDefaultsHostWhenEmpty(t *testing.T) {
 	}}
 	b := newUnitTestBridge(t, fake)
 
-	req := httptest.NewRequest(http.MethodPost, "/moby.buildkit.v1.Control/Info", nil)
+	req := httptest.NewRequest(http.MethodPost, "/grpc.health.v1.Health/Check", nil)
 	req.Host = ""
 	rec := httptest.NewRecorder()
 
-	b.forward(rec, req, "moby.buildkit.v1.Control", "Info")
+	b.forward(rec, req, "grpc.health.v1.Health", "Check")
 
 	if fake.gotReq == nil {
 		t.Fatal("forward() never called RoundTrip")

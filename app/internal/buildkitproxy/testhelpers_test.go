@@ -14,8 +14,10 @@ import (
 // importing internal/upstream (which would create an import cycle risk this
 // leaf package's doc comments explicitly avoid).
 type fakeDialer struct {
-	conn net.Conn
-	err  error
+	conn        net.Conn
+	err         error
+	basePath    string
+	rawBasePath string
 }
 
 func (d *fakeDialer) DialContext(_ context.Context, _, _ string) (net.Conn, error) {
@@ -23,6 +25,21 @@ func (d *fakeDialer) DialContext(_ context.Context, _, _ string) (net.Conn, erro
 		return nil, d.err
 	}
 	return d.conn, nil
+}
+
+func (d *fakeDialer) DialRequest(ctx context.Context, req *http.Request) (net.Conn, *http.Request, error) {
+	conn, err := d.DialContext(ctx, "", "")
+	if err != nil {
+		return nil, nil, err
+	}
+	clone := req.Clone(req.Context())
+	urlCopy := *req.URL
+	clone.URL = &urlCopy
+	clone.URL.Path = d.basePath + req.URL.Path
+	if d.rawBasePath != "" || req.URL.RawPath != "" {
+		clone.URL.RawPath = d.rawBasePath + req.URL.EscapedPath()
+	}
+	return conn, clone, nil
 }
 
 // fakeHijackWriter is a minimal http.ResponseWriter + http.Hijacker test

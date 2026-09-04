@@ -8,8 +8,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -74,6 +77,15 @@ func TestParseAddress(t *testing.T) {
 		{name: "bare absolute path", input: "/var/run/docker.sock", wantNetwork: "unix", wantAddress: "/var/run/docker.sock"},
 		{name: "bare dot-relative path", input: "./docker.sock", wantNetwork: "unix", wantAddress: "./docker.sock"},
 		{name: "bare dot-dot path", input: "../docker.sock", wantNetwork: "unix", wantAddress: "../docker.sock"},
+		{name: "relative unix url", input: "unix://relative.sock/path", wantNetwork: "unix", wantAddress: "relative.sock/path"},
+		{name: "unix encoded slash is literal", input: "unix:///tmp/docker%2Fsock", wantNetwork: "unix", wantAddress: "/tmp/docker%2Fsock"},
+		{name: "unix encoded question is literal", input: "unix:///tmp/docker%3Fsock", wantNetwork: "unix", wantAddress: "/tmp/docker%3Fsock"},
+		{name: "unix encoded hash is literal", input: "unix:///tmp/docker%23sock", wantNetwork: "unix", wantAddress: "/tmp/docker%23sock"},
+		{name: "unix encoded percent is literal", input: "unix:///tmp/docker%25sock", wantNetwork: "unix", wantAddress: "/tmp/docker%25sock"},
+		{name: "unix raw question and hash are literal", input: "unix:///tmp/docker?sock#one", wantNetwork: "unix", wantAddress: "/tmp/docker?sock#one"},
+		{name: "relative unix raw URL punctuation is literal", input: "unix://relative.sock?one#two", wantNetwork: "unix", wantAddress: "relative.sock?one#two"},
+		{name: "relative unix encoded percent is literal", input: "unix://relative%25sock", wantNetwork: "unix", wantAddress: "relative%25sock"},
+		{name: "absolute unix escaped path and punctuation are literal", input: "unix:///tmp/relative%2Fsock?one#two", wantNetwork: "unix", wantAddress: "/tmp/relative%2Fsock?one#two"},
 		// valid tcp-family
 		{name: "tcp url", input: "tcp://host:2376", wantNetwork: "tcp", wantAddress: "host:2376"},
 		{name: "http url", input: "http://host:2375", wantNetwork: "tcp", wantAddress: "host:2375"},
@@ -82,10 +94,14 @@ func TestParseAddress(t *testing.T) {
 		{name: "empty", input: "", wantErr: true},
 		{name: "whitespace only", input: "   ", wantErr: true},
 		{name: "scheme-less non-path", input: "notapath", wantErr: true},
-		{name: "unix with host", input: "unix://relative.sock/path", wantErr: true},
 		{name: "unix missing path", input: "unix://", wantErr: true},
 		{name: "tcp missing port", input: "tcp://myhost", wantErr: true},
 		{name: "bad scheme", input: "ftp://host:21", wantErr: true},
+		{name: "unix malformed escape", input: "unix:///tmp/docker%zzsock", wantErr: true},
+		{name: "relative unix encoded slash is invalid host grammar", input: "unix://relative%2Fsock", wantErr: true},
+		{name: "relative unix encoded question is invalid host grammar", input: "unix://relative%3Fsock", wantErr: true},
+		{name: "relative unix encoded hash is invalid host grammar", input: "unix://relative%23sock", wantErr: true},
+		{name: "unix nested scheme", input: "unix:///tmp/docker://sock", wantErr: true},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -143,6 +159,11 @@ func TestValidateSpec(t *testing.T) {
 		{
 			name:    "unix with KeyFile",
 			spec:    EndpointSpec{Address: "/run/docker.sock", KeyFile: "/tmp/key.pem"},
+			wantErr: true,
+		},
+		{
+			name:    "unix with ServerName",
+			spec:    EndpointSpec{Address: "/run/docker.sock", ServerName: "daemon.internal"},
 			wantErr: true,
 		},
 		// tcp — valid TLS combos
@@ -227,6 +248,14 @@ func TestBuildEndpoint_UnixWithTLS_Rejected(t *testing.T) {
 	}
 }
 
+func TestBuildEndpoint_UnixWithServerName_Rejected(t *testing.T) {
+	t.Parallel()
+	_, err := BuildEndpoint(EndpointSpec{Address: "/run/docker.sock", ServerName: "daemon.internal"})
+	if err == nil {
+		t.Fatal("expected error for unix+tls.server_name, got nil")
+	}
+}
+
 func TestBuildEndpoint_PlainTCP(t *testing.T) {
 	t.Parallel()
 	ep, err := BuildEndpoint(EndpointSpec{Address: "tcp://host:2376", InsecureAllowPlainTCP: true})
@@ -238,6 +267,40 @@ func TestBuildEndpoint_PlainTCP(t *testing.T) {
 	}
 	if ep.IsTLS() {
 		t.Error("plain TCP endpoint must not be TLS")
+	}
+}
+
+func TestBuildEndpoint_TCPBasePathMatrix(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		address     string
+		wantDial    string
+		wantPath    string
+		wantRawPath string
+		wantString  string
+	}{
+		{name: "none", address: "tcp://host:2375", wantDial: "host:2375", wantString: "tcp://host:2375"},
+		{name: "root", address: "tcp://host:2375/", wantDial: "host:2375", wantPath: "/", wantString: "tcp://host:2375/"},
+		{name: "plain trailing slash", address: "tcp://host:2375/gateway/docker/", wantDial: "host:2375", wantPath: "/gateway/docker/", wantString: "tcp://host:2375/gateway/docker/"},
+		{name: "escaped", address: "tcp://host:2375/gateway%2Fdocker/%2e%2e", wantDial: "host:2375", wantPath: "/gateway/docker/..", wantRawPath: "/gateway%2Fdocker/%2e%2e", wantString: "tcp://host:2375/gateway%2Fdocker/%2e%2e"},
+		{name: "IPv6", address: "tcp://[::1]:2375/gateway", wantDial: "[::1]:2375", wantPath: "/gateway", wantString: "tcp://[::1]:2375/gateway"},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ep, err := BuildEndpoint(EndpointSpec{Address: tt.address, InsecureAllowPlainTCP: true})
+			if err != nil {
+				t.Fatalf("BuildEndpoint: %v", err)
+			}
+			if ep.Address != tt.wantDial || ep.BasePath != tt.wantPath || ep.RawBasePath != tt.wantRawPath {
+				t.Fatalf("Endpoint = {Address:%q BasePath:%q RawBasePath:%q}, want {%q %q %q}", ep.Address, ep.BasePath, ep.RawBasePath, tt.wantDial, tt.wantPath, tt.wantRawPath)
+			}
+			if got := ep.String(); got != tt.wantString {
+				t.Fatalf("String() = %q, want %q", got, tt.wantString)
+			}
+		})
 	}
 }
 
@@ -383,6 +446,36 @@ func TestBuildEndpoint_SNIDerivedFromHost(t *testing.T) {
 	}
 }
 
+func TestSplitHostPort(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		hostport string
+		wantHost string
+		wantPort string
+		wantOK   bool
+	}{
+		{name: "host and port", hostport: "example.com:2376", wantHost: "example.com", wantPort: "2376", wantOK: true},
+		{name: "IPv6 literal", hostport: "[::1]:2376", wantHost: "::1", wantPort: "2376", wantOK: true},
+		{name: "no colon at all", hostport: "example.com", wantHost: "example.com", wantPort: "", wantOK: false},
+		// A colon at index 0 is still a colon that was found (i == 0, not < 0):
+		// the empty host and the port after it must still be split out. This
+		// pins the exact "not found" boundary at i < 0, not i <= 0.
+		{name: "colon at index zero", hostport: ":2376", wantHost: "", wantPort: "2376", wantOK: true},
+		{name: "trailing colon, no port", hostport: "example.com:", wantHost: "example.com", wantPort: "", wantOK: false},
+	}
+	for _, tt := range cases {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			host, port, ok := splitHostPort(tt.hostport)
+			if host != tt.wantHost || port != tt.wantPort || ok != tt.wantOK {
+				t.Fatalf("splitHostPort(%q) = (%q, %q, %v), want (%q, %q, %v)", tt.hostport, host, port, ok, tt.wantHost, tt.wantPort, tt.wantOK)
+			}
+		})
+	}
+}
+
 // ── Endpoint.String / IsTLS ───────────────────────────────────────────────────
 
 func TestEndpoint_StringAndIsTLS(t *testing.T) {
@@ -466,6 +559,39 @@ func TestNewSingleSocket(t *testing.T) {
 	eps := r.Endpoints()
 	if len(eps) != 1 || eps[0].Network != "unix" || eps[0].Address != "/var/run/docker.sock" {
 		t.Errorf("unexpected endpoints: %+v", eps)
+	}
+	// NewSingleSocket passes Options{Interval: -1} specifically: negative (not
+	// merely non-positive) is the sentinel loop() uses to skip the continuous
+	// probe ticker entirely, leaving only the single startup probe.
+	if r.interval != -1 {
+		t.Errorf("interval = %v, want -1 (single startup probe only, no continuous loop)", r.interval)
+	}
+}
+
+func TestNew_TimeoutBoundary(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		timeout time.Duration
+		want    time.Duration
+	}{
+		{name: "zero uses default", timeout: 0, want: defaultProbeTimeout},
+		{name: "negative uses default", timeout: -5 * time.Second, want: defaultProbeTimeout},
+		{name: "positive is kept as-is", timeout: 3 * time.Second, want: 3 * time.Second},
+	}
+	for _, tt := range cases {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ep := Endpoint{Name: "/tmp/timeout-boundary.sock", Network: "unix", Address: "/tmp/timeout-boundary.sock"}
+			r, err := New([]Endpoint{ep}, Options{Probe: probeAlways(nil), Interval: -1, Timeout: tt.timeout})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			if r.timeout != tt.want {
+				t.Fatalf("timeout = %v, want %v", r.timeout, tt.want)
+			}
+		})
 	}
 }
 
@@ -598,6 +724,41 @@ func TestResolver_DialContext_UsesActiveEndpoint(t *testing.T) {
 		t.Fatalf("DialContext: %v", err)
 	}
 	_ = conn.Close()
+}
+
+func TestResolver_DialContextConnectionFailureDemotesActiveEndpoint(t *testing.T) {
+	t.Parallel()
+	primary := tempSocketPath(t, "dialctx-primary-down") // nothing listens here
+	secondary := startUnixServer(t, "dialctx-secondary", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, "secondary")
+	}))
+	r, err := New([]Endpoint{
+		{Name: "primary", Network: "unix", Address: primary},
+		{Name: "secondary", Network: "unix", Address: secondary},
+	}, Options{
+		Interval: -1,
+		// The re-probe (sync and any async follow-up) always reports primary
+		// down, so the assertion below holds regardless of whether the
+		// asynchronous re-probe goroutine has run yet.
+		Probe: func(_ context.Context, ep Endpoint) error {
+			if ep.Name == "primary" {
+				return errors.New("primary remains unreachable")
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	r.setHealth(context.Background(), r.states[0], true)
+	r.setHealth(context.Background(), r.states[1], true)
+
+	if _, err := r.DialContext(context.Background(), "ignored", "ignored"); err == nil {
+		t.Fatal("DialContext error = nil, want a dial failure against the dead primary")
+	}
+	if r.states[0].healthy.Load() {
+		t.Error("primary should be demoted (unhealthy) after DialContext dial failure")
+	}
 }
 
 func TestResolver_DialContext_NoEndpoints(t *testing.T) {
@@ -750,6 +911,63 @@ func TestResolver_Demote_SingleEndpoint_IsNoOp(t *testing.T) {
 	}
 }
 
+// waitForReprobe blocks until demote's asynchronous re-probe goroutine has
+// finished (endpointState.reprobing is CAS-guarded and reset via a deferred
+// Store after setHealth runs). The deadline is a safety net, not a timing
+// assertion: a healthy reprobe finishes in microseconds, so 5s only guards
+// against a future regression that deadlocks the goroutine and would
+// otherwise hang the suite for the full go test default instead of failing
+// fast.
+func waitForReprobe(t *testing.T, s *endpointState) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for s.reprobing.Load() {
+		if time.Now().After(deadline) {
+			t.Fatalf("reprobe did not finish within 5s")
+		}
+		runtime.Gosched()
+	}
+}
+
+func TestResolver_DemoteReprobeSetsHealthFromProbeResult(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name        string
+		probeErr    error
+		wantHealthy bool
+	}{
+		{name: "reprobe succeeds", probeErr: nil, wantHealthy: true},
+		{name: "reprobe still fails", probeErr: errors.New("still down"), wantHealthy: false},
+	}
+	for _, tt := range cases {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ep0 := Endpoint{Name: "ep0", Network: "unix", Address: "/tmp/reprobe-ep0.sock"}
+			ep1 := Endpoint{Name: "ep1", Network: "unix", Address: "/tmp/reprobe-ep1.sock"}
+			probe := func(_ context.Context, ep Endpoint) error {
+				if ep.Name == "ep0" {
+					return tt.probeErr
+				}
+				return nil
+			}
+			r, err := New([]Endpoint{ep0, ep1}, Options{Probe: probe, Interval: -1})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			r.setHealth(context.Background(), r.states[0], true)
+			r.setHealth(context.Background(), r.states[1], true)
+
+			r.demote(r.states[0])
+			waitForReprobe(t, r.states[0])
+
+			if got := r.states[0].healthy.Load(); got != tt.wantHealthy {
+				t.Fatalf("ep0 healthy after reprobe = %v, want %v", got, tt.wantHealthy)
+			}
+		})
+	}
+}
+
 // ── activeState precedence ────────────────────────────────────────────────────
 
 func TestActiveState_Precedence(t *testing.T) {
@@ -807,10 +1025,15 @@ func TestActiveState_Precedence(t *testing.T) {
 
 func TestSpecsFromDockerEnv(t *testing.T) {
 	t.Parallel()
+	mutualTLSDir := t.TempDir()
+	installDockerCertificateFiles(t, mutualTLSDir, true, true, true)
+	caOnlyDir := t.TempDir()
+	installDockerCertificateFiles(t, caOnlyDir, true, false, false)
 	cases := []struct {
 		name     string
 		env      map[string]string
 		wantOK   bool
+		wantErr  bool
 		wantSpec EndpointSpec
 	}{
 		{
@@ -819,14 +1042,22 @@ func TestSpecsFromDockerEnv(t *testing.T) {
 			wantOK: false,
 		},
 		{
-			name:   "DOCKER_HOST is unix socket",
-			env:    map[string]string{"DOCKER_HOST": "unix:///var/run/docker.sock"},
-			wantOK: false,
+			name: "DOCKER_HOST is unix socket regardless of TLS environment",
+			env: map[string]string{
+				"DOCKER_HOST":       "unix:///var/run/docker.sock",
+				"DOCKER_TLS":        "1",
+				"DOCKER_TLS_VERIFY": "1",
+				"DOCKER_CERT_PATH":  "/certs",
+			},
+			wantOK: true,
+			wantSpec: EndpointSpec{
+				Address: "unix:///var/run/docker.sock",
+			},
 		},
 		{
-			name:   "DOCKER_HOST whitespace only",
-			env:    map[string]string{"DOCKER_HOST": "   "},
-			wantOK: false,
+			name:    "DOCKER_HOST whitespace only",
+			env:     map[string]string{"DOCKER_HOST": "   "},
+			wantErr: true,
 		},
 		{
 			name:   "tcp plain no TLS verify no cert path",
@@ -838,22 +1069,20 @@ func TestSpecsFromDockerEnv(t *testing.T) {
 			},
 		},
 		{
-			name: "tcp with TLS_VERIFY and cert path",
+			name: "empty TLS environment values leave TCP plaintext",
 			env: map[string]string{
 				"DOCKER_HOST":       "tcp://host:2376",
-				"DOCKER_TLS_VERIFY": "1",
-				"DOCKER_CERT_PATH":  "/certs",
+				"DOCKER_TLS":        "",
+				"DOCKER_TLS_VERIFY": "",
 			},
 			wantOK: true,
 			wantSpec: EndpointSpec{
-				Address:  "tcp://host:2376",
-				CAFile:   "/certs/ca.pem",
-				CertFile: "/certs/cert.pem",
-				KeyFile:  "/certs/key.pem",
+				Address:               "tcp://host:2376",
+				InsecureAllowPlainTCP: true,
 			},
 		},
 		{
-			name: "tcp without TLS_VERIFY but with cert path — insecure skip",
+			name: "cert path alone does not enable TLS",
 			env: map[string]string{
 				"DOCKER_HOST":      "tcp://host:2376",
 				"DOCKER_CERT_PATH": "/certs",
@@ -861,10 +1090,96 @@ func TestSpecsFromDockerEnv(t *testing.T) {
 			wantOK: true,
 			wantSpec: EndpointSpec{
 				Address:               "tcp://host:2376",
-				CAFile:                "/certs/ca.pem",
-				CertFile:              "/certs/cert.pem",
-				KeyFile:               "/certs/key.pem",
+				InsecureAllowPlainTCP: true,
+			},
+		},
+		{
+			name: "DOCKER_TLS value zero enables unverified TLS",
+			env: map[string]string{
+				"DOCKER_HOST":      "tcp://host:2376",
+				"DOCKER_TLS":       "0",
+				"DOCKER_CERT_PATH": caOnlyDir,
+			},
+			wantOK: true,
+			wantSpec: EndpointSpec{
+				Address:               "tcp://host:2376",
+				CAFile:                filepath.Join(caOnlyDir, "ca.pem"),
 				InsecureSkipTLSVerify: true,
+			},
+		},
+		{
+			name: "DOCKER_TLS value one enables unverified TLS",
+			env: map[string]string{
+				"DOCKER_HOST":      "tcp://host:2376",
+				"DOCKER_TLS":       "1",
+				"DOCKER_CERT_PATH": caOnlyDir,
+			},
+			wantOK: true,
+			wantSpec: EndpointSpec{
+				Address:               "tcp://host:2376",
+				CAFile:                filepath.Join(caOnlyDir, "ca.pem"),
+				InsecureSkipTLSVerify: true,
+			},
+		},
+		{
+			name: "any other non-empty DOCKER_TLS value enables unverified TLS",
+			env: map[string]string{
+				"DOCKER_HOST":      "tcp://host:2376",
+				"DOCKER_TLS":       "false",
+				"DOCKER_CERT_PATH": caOnlyDir,
+			},
+			wantOK: true,
+			wantSpec: EndpointSpec{
+				Address:               "tcp://host:2376",
+				CAFile:                filepath.Join(caOnlyDir, "ca.pem"),
+				InsecureSkipTLSVerify: true,
+			},
+		},
+		{
+			name: "DOCKER_TLS with cert path enables unverified mutual TLS",
+			env: map[string]string{
+				"DOCKER_HOST":      "tcp://host:2376",
+				"DOCKER_TLS":       "1",
+				"DOCKER_CERT_PATH": mutualTLSDir,
+			},
+			wantOK: true,
+			wantSpec: EndpointSpec{
+				Address:               "tcp://host:2376",
+				CAFile:                filepath.Join(mutualTLSDir, "ca.pem"),
+				CertFile:              filepath.Join(mutualTLSDir, "cert.pem"),
+				KeyFile:               filepath.Join(mutualTLSDir, "key.pem"),
+				InsecureSkipTLSVerify: true,
+			},
+		},
+		{
+			name: "tcp with TLS_VERIFY and cert path",
+			env: map[string]string{
+				"DOCKER_HOST":       "tcp://host:2376",
+				"DOCKER_TLS_VERIFY": "1",
+				"DOCKER_CERT_PATH":  mutualTLSDir,
+			},
+			wantOK: true,
+			wantSpec: EndpointSpec{
+				Address:  "tcp://host:2376",
+				CAFile:   filepath.Join(mutualTLSDir, "ca.pem"),
+				CertFile: filepath.Join(mutualTLSDir, "cert.pem"),
+				KeyFile:  filepath.Join(mutualTLSDir, "key.pem"),
+			},
+		},
+		{
+			name: "non-empty TLS_VERIFY takes precedence over DOCKER_TLS",
+			env: map[string]string{
+				"DOCKER_HOST":       "tcp://host:2376",
+				"DOCKER_TLS":        "1",
+				"DOCKER_TLS_VERIFY": "false",
+				"DOCKER_CERT_PATH":  mutualTLSDir,
+			},
+			wantOK: true,
+			wantSpec: EndpointSpec{
+				Address:  "tcp://host:2376",
+				CAFile:   filepath.Join(mutualTLSDir, "ca.pem"),
+				CertFile: filepath.Join(mutualTLSDir, "cert.pem"),
+				KeyFile:  filepath.Join(mutualTLSDir, "key.pem"),
 			},
 		},
 		{
@@ -872,12 +1187,25 @@ func TestSpecsFromDockerEnv(t *testing.T) {
 			env: map[string]string{
 				"DOCKER_HOST":       "tcp://host:2376",
 				"DOCKER_TLS_VERIFY": "1",
+				"DOCKER_CONFIG":     caOnlyDir,
 			},
 			wantOK: true,
 			wantSpec: EndpointSpec{
 				Address: "tcp://host:2376",
-				// no CA/cert/key — verify against the host's system root CAs.
-				TLSSystemRoots: true,
+				CAFile:  filepath.Join(caOnlyDir, "ca.pem"),
+			},
+		},
+		{
+			name: "TLS_VERIFY value zero still enables verified TLS",
+			env: map[string]string{
+				"DOCKER_HOST":       "tcp://host:2376",
+				"DOCKER_TLS_VERIFY": "0",
+				"DOCKER_CONFIG":     caOnlyDir,
+			},
+			wantOK: true,
+			wantSpec: EndpointSpec{
+				Address: "tcp://host:2376",
+				CAFile:  filepath.Join(caOnlyDir, "ca.pem"),
 			},
 		},
 	}
@@ -885,8 +1213,20 @@ func TestSpecsFromDockerEnv(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			getenv := func(key string) string { return tc.env[key] }
-			spec, ok := SpecsFromDockerEnv(getenv)
+			lookupEnv := func(key string) (string, bool) {
+				value, present := tc.env[key]
+				return value, present
+			}
+			spec, ok, err := SpecsFromDockerEnv(lookupEnv)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("SpecsFromDockerEnv returned no error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SpecsFromDockerEnv: %v", err)
+			}
 			if ok != tc.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
 			}
@@ -911,51 +1251,542 @@ func TestSpecsFromDockerEnv(t *testing.T) {
 			if spec.InsecureSkipTLSVerify != tc.wantSpec.InsecureSkipTLSVerify {
 				t.Errorf("InsecureSkipTLSVerify = %v, want %v", spec.InsecureSkipTLSVerify, tc.wantSpec.InsecureSkipTLSVerify)
 			}
-			if spec.TLSSystemRoots != tc.wantSpec.TLSSystemRoots {
-				t.Errorf("TLSSystemRoots = %v, want %v", spec.TLSSystemRoots, tc.wantSpec.TLSSystemRoots)
+		})
+	}
+}
+
+func TestSpecsFromDockerEnv_DockerHostGrammar(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		host        string
+		wantAddress string
+		wantErr     bool
+	}{
+		{name: "bare host", host: "daemon.internal", wantAddress: "tcp://daemon.internal:2375"},
+		{name: "bare host with port", host: "daemon.internal:4243", wantAddress: "tcp://daemon.internal:4243"},
+		{name: "TCP host without port", host: "tcp://daemon.internal", wantAddress: "tcp://daemon.internal:2375"},
+		{name: "TCP host with empty port", host: "tcp://daemon.internal:", wantAddress: "tcp://daemon.internal:2375"},
+		{name: "TCP default host", host: "tcp://", wantAddress: "tcp://localhost:2375"},
+		{name: "TCP default host with port", host: "tcp://:4243", wantAddress: "tcp://localhost:4243"},
+		// Docker's address parser validates only that an explicit port is
+		// numeric. Range errors are deferred until the connection attempt.
+		{name: "TCP numeric zero port", host: "tcp://daemon.internal:0", wantAddress: "tcp://daemon.internal:0"},
+		{name: "TCP numeric out-of-range port", host: "tcp://daemon.internal:99999", wantAddress: "tcp://daemon.internal:99999"},
+		// A port long enough to overflow strconv.Atoi's int range still parses
+		// as numeric (net/url only checks the digits, not the magnitude), so
+		// the same "accepted here, rejected only at dial time" rule applies.
+		{name: "TCP overflow numeric port", host: "tcp://daemon.internal:99999999999999999999", wantAddress: "tcp://daemon.internal:99999999999999999999"},
+		{name: "IPv6 host without port", host: "[::1]:", wantAddress: "tcp://[::1]:2375"},
+		{name: "IPv6 host without port and base path", host: "tcp://[::1]/gateway", wantAddress: "tcp://[::1]:2375/gateway"},
+		{name: "absolute Unix socket", host: "unix:///tmp/docker.sock", wantAddress: "unix:///tmp/docker.sock"},
+		{name: "relative Unix socket", host: "unix://relative.sock", wantAddress: "unix://relative.sock"},
+		{name: "HTTP scheme", host: "http://daemon.internal:2375", wantErr: true},
+		{name: "HTTPS scheme", host: "https://daemon.internal:2376", wantErr: true},
+		{name: "unsupported SSH transport", host: "ssh://daemon.internal", wantErr: true},
+		{name: "unsupported file descriptor transport", host: "fd://3", wantErr: true},
+		{name: "unsupported named pipe transport", host: "npipe:////./pipe/docker_engine", wantErr: true},
+		{name: "invalid port", host: "tcp://daemon.internal:not-a-port", wantErr: true},
+		{name: "embedded spaces", host: "something with spaces", wantErr: true},
+		{name: "TCP base path", host: "tcp://daemon.internal:2375/api", wantAddress: "tcp://daemon.internal:2375/api"},
+		{name: "TCP escaped base path", host: "tcp://daemon.internal:2375/proxy/%2e%2e/docker%2Fapi/", wantAddress: "tcp://daemon.internal:2375/proxy/%2e%2e/docker%2Fapi/"},
+		{name: "TCP query is not a base path", host: "tcp://daemon.internal:2375/api?tenant=one", wantErr: true},
+		{name: "TCP fragment is not a base path", host: "tcp://daemon.internal:2375/api#one", wantErr: true},
+		{name: "TCP malformed escape", host: "tcp://daemon.internal:2375/api%zz", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			spec, ok, err := SpecsFromDockerEnv(func(key string) (string, bool) {
+				if key == "DOCKER_HOST" {
+					return tt.host, true
+				}
+				return "", false
+			})
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("SpecsFromDockerEnv(DOCKER_HOST=%q) returned no error", tt.host)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SpecsFromDockerEnv(DOCKER_HOST=%q): %v", tt.host, err)
+			}
+			if !ok {
+				t.Fatalf("SpecsFromDockerEnv(DOCKER_HOST=%q) was inactive", tt.host)
+			}
+			if spec.Address != tt.wantAddress {
+				t.Fatalf("Address = %q, want %q", spec.Address, tt.wantAddress)
 			}
 		})
 	}
 }
 
-// TestBuildEndpoint_TLSSystemRoots covers the DOCKER_TLS_VERIFY-without-cert-path
-// path end to end: a spec carrying only TLSSystemRoots must build a valid TLS
-// endpoint that verifies against the host's system roots (RootCAs nil) and
-// presents no client certificate, rather than being rejected as plain TCP.
-func TestBuildEndpoint_TLSSystemRoots(t *testing.T) {
+func TestSpecsFromDockerEnv_CustomUnixSocketBuilds(t *testing.T) {
 	t.Parallel()
-	ep, err := BuildEndpoint(EndpointSpec{Address: "tcp://dockerd.internal:2376", TLSSystemRoots: true})
-	if err != nil {
-		t.Fatalf("BuildEndpoint: %v", err)
+	tests := []struct {
+		host        string
+		wantAddress string
+	}{
+		{host: "unix:///tmp/custom-docker.sock", wantAddress: "/tmp/custom-docker.sock"},
+		{host: "unix://relative.sock", wantAddress: "relative.sock"},
+		{host: "unix:///tmp/docker%2Fsock", wantAddress: "/tmp/docker%2Fsock"},
+		{host: "unix:///tmp/docker%3Fsock", wantAddress: "/tmp/docker%3Fsock"},
+		{host: "unix:///tmp/docker%23sock", wantAddress: "/tmp/docker%23sock"},
+		{host: "unix:///tmp/docker%25sock", wantAddress: "/tmp/docker%25sock"},
+		{host: "unix:///tmp/docker?sock#one", wantAddress: "/tmp/docker?sock#one"},
+		{host: "unix://relative.sock?one#two", wantAddress: "relative.sock?one#two"},
+		{host: "unix://relative%25sock", wantAddress: "relative%25sock"},
+		{host: "unix:///tmp/relative%2Fsock?one#two", wantAddress: "/tmp/relative%2Fsock?one#two"},
 	}
-	if !ep.IsTLS() {
-		t.Fatal("endpoint is not TLS, want TLS with system roots")
-	}
-	if ep.TLSConfig.RootCAs != nil {
-		t.Error("RootCAs is non-nil, want nil (use system roots)")
-	}
-	if len(ep.TLSConfig.Certificates) != 0 {
-		t.Error("client certificate present, want none (server-auth only)")
-	}
-	if ep.TLSConfig.InsecureSkipVerify {
-		t.Error("InsecureSkipVerify is true, want false (system roots must verify)")
-	}
-	if ep.TLSConfig.ServerName != "dockerd.internal" {
-		t.Errorf("ServerName = %q, want %q", ep.TLSConfig.ServerName, "dockerd.internal")
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.host, func(t *testing.T) {
+			t.Parallel()
+			spec, ok, err := SpecsFromDockerEnv(func(key string) (string, bool) {
+				if key == "DOCKER_HOST" {
+					return tt.host, true
+				}
+				return "", false
+			})
+			if err != nil {
+				t.Fatalf("SpecsFromDockerEnv: %v", err)
+			}
+			if !ok {
+				t.Fatal("custom Unix DOCKER_HOST was inactive")
+			}
+			endpoint, err := BuildEndpoint(spec)
+			if err != nil {
+				t.Fatalf("BuildEndpoint: %v", err)
+			}
+			if endpoint.Network != "unix" {
+				t.Fatalf("Network = %q, want unix", endpoint.Network)
+			}
+			if endpoint.Address != tt.wantAddress {
+				t.Fatalf("Address = %q, want %q", endpoint.Address, tt.wantAddress)
+			}
+		})
 	}
 }
 
-// TestValidateSpec_TLSSystemRoots confirms the file-free validator accepts the
-// system-roots spec (so admin/validate does not reject a DOCKER_TLS_VERIFY env
-// drop-in on a host without cert files).
-func TestValidateSpec_TLSSystemRoots(t *testing.T) {
+func TestSpecsFromDockerEnv_RelativeUnixHostEscapesFailBuild(t *testing.T) {
 	t.Parallel()
-	if err := ValidateSpec(EndpointSpec{Address: "tcp://dockerd.internal:2376", TLSSystemRoots: true}); err != nil {
-		t.Fatalf("ValidateSpec: %v", err)
+	for _, host := range []string{
+		"unix://relative%2Fsock",
+		"unix://relative%3Fsock",
+		"unix://relative%23sock",
+	} {
+		host := host
+		t.Run(host, func(t *testing.T) {
+			t.Parallel()
+			spec, ok, err := SpecsFromDockerEnv(func(key string) (string, bool) {
+				if key == "DOCKER_HOST" {
+					return host, true
+				}
+				return "", false
+			})
+			if err != nil || !ok {
+				t.Fatalf("SpecsFromDockerEnv = (%v, %v), want active spec deferred to endpoint validation", ok, err)
+			}
+			if _, err := BuildEndpoint(spec); err == nil {
+				t.Fatal("BuildEndpoint accepted an escaped relative Unix host")
+			}
+		})
+	}
+}
+
+func TestSpecsFromDockerEnv_MalformedUnixSocketFailsBuild(t *testing.T) {
+	t.Parallel()
+	spec, ok, err := SpecsFromDockerEnv(func(key string) (string, bool) {
+		if key == "DOCKER_HOST" {
+			return "unix:///tmp/docker%zzsock", true
+		}
+		return "", false
+	})
+	if err != nil || !ok {
+		t.Fatalf("SpecsFromDockerEnv = (%v, %v), want active spec deferred to endpoint validation", ok, err)
+	}
+	if _, err := BuildEndpoint(spec); err == nil {
+		t.Fatal("BuildEndpoint accepted malformed Unix percent escape")
+	}
+}
+
+func TestBuildEndpointDialsLiteralUnixSocketName(t *testing.T) {
+	t.Parallel()
+	path := tempSocketPath(t, "literal") + "%2F?#"
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = listener.Close()
+		_ = os.Remove(path)
+	})
+
+	ep, err := BuildEndpoint(EndpointSpec{Address: "unix://" + path})
+	if err != nil {
+		t.Fatalf("BuildEndpoint: %v", err)
+	}
+	if ep.Address != path {
+		t.Fatalf("Address = %q, want literal %q", ep.Address, path)
+	}
+	conn, err := ep.dial(context.Background())
+	if err != nil {
+		t.Fatalf("dial literal socket: %v", err)
+	}
+	_ = conn.Close()
+}
+
+func TestResolverRoundTripPrependsTCPBasePathWithoutCanonicalizing(t *testing.T) {
+	t.Parallel()
+	requestURI := make(chan string, 1)
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestURI <- r.RequestURI
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(daemon.Close)
+
+	ep, err := BuildEndpoint(EndpointSpec{
+		Address:               "tcp://" + strings.TrimPrefix(daemon.URL, "http://") + "/proxy/%2e%2e/docker%2Fapi/",
+		InsecureAllowPlainTCP: true,
+	})
+	if err != nil {
+		t.Fatalf("BuildEndpoint: %v", err)
+	}
+	r, err := New([]Endpoint{ep}, Options{Interval: -1})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodGet, "http://docker/v1.47/containers/a%2Fb/json?all=1", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	originalPath, originalRawPath := req.URL.Path, req.URL.RawPath
+	resp, err := r.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if got := <-requestURI; got != "/proxy/%2e%2e/docker%2Fapi/v1.47/containers/a%2Fb/json?all=1" {
+		t.Fatalf("daemon RequestURI = %q", got)
+	}
+	if req.URL.Path != originalPath || req.URL.RawPath != originalRawPath {
+		t.Fatalf("RoundTrip mutated input URL: Path=%q RawPath=%q, want Path=%q RawPath=%q", req.URL.Path, req.URL.RawPath, originalPath, originalRawPath)
+	}
+}
+
+func TestResolverRoundTripSetsResponseRequestToCallerOriginal(t *testing.T) {
+	t.Parallel()
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(daemon.Close)
+
+	// A non-empty base path forces requestWithBasePath to clone the request,
+	// so the transport's own resp.Request (bound to that clone) differs by
+	// pointer from the caller's original req unless RoundTrip explicitly
+	// rebinds it back.
+	ep, err := BuildEndpoint(EndpointSpec{
+		Address:               "tcp://" + strings.TrimPrefix(daemon.URL, "http://") + "/proxy/",
+		InsecureAllowPlainTCP: true,
+	})
+	if err != nil {
+		t.Fatalf("BuildEndpoint: %v", err)
+	}
+	r, err := New([]Endpoint{ep}, Options{Interval: -1})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodGet, "http://docker/containers/json", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := r.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.Request != req {
+		t.Fatalf("resp.Request = %p, want the caller's original request %p", resp.Request, req)
+	}
+}
+
+func TestRequestWithBasePath_ClonesWhenOnlyRawBasePathIsSet(t *testing.T) {
+	t.Parallel()
+	// BuildEndpoint never produces this exact combination (RawBasePath is
+	// only populated alongside a non-empty BasePath), but the skip-clone
+	// guard must still require BOTH fields empty before returning the
+	// request untouched -- an empty BasePath paired with a non-empty
+	// RawBasePath must still trigger a clone.
+	ep := Endpoint{RawBasePath: "/v1"}
+	req, err := http.NewRequest(http.MethodGet, "http://docker/containers/json", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	if got := ep.requestWithBasePath(req); got == req {
+		t.Fatal("requestWithBasePath returned the original request unmodified, want a clone because RawBasePath is non-empty")
+	}
+}
+
+func TestResolverDialRequestBindsPrefixToDialedEndpoint(t *testing.T) {
+	t.Parallel()
+	primaryListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen primary: %v", err)
+	}
+	t.Cleanup(func() { _ = primaryListener.Close() })
+	standbyListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen standby: %v", err)
+	}
+	t.Cleanup(func() { _ = standbyListener.Close() })
+
+	primary, err := BuildEndpoint(EndpointSpec{
+		Address:               "tcp://" + primaryListener.Addr().String() + "/primary/%2e%2e/api",
+		InsecureAllowPlainTCP: true,
+	})
+	if err != nil {
+		t.Fatalf("BuildEndpoint(primary): %v", err)
+	}
+	standby, err := BuildEndpoint(EndpointSpec{
+		Address:               "tcp://" + standbyListener.Addr().String() + "/standby%2Fapi",
+		InsecureAllowPlainTCP: true,
+	})
+	if err != nil {
+		t.Fatalf("BuildEndpoint(standby): %v", err)
+	}
+	r, err := New([]Endpoint{primary, standby}, Options{Interval: -1})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	r.states[0].known.Store(true)
+	r.states[0].healthy.Store(false)
+	r.states[1].known.Store(true)
+	r.states[1].healthy.Store(true)
+
+	req, err := http.NewRequest(http.MethodPost, "http://docker/v1.47/containers/a%2Fb/attach?stream=1", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	conn, upstreamReq, err := r.DialRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("DialRequest: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if conn.RemoteAddr().String() != standbyListener.Addr().String() {
+		t.Fatalf("dialed %q, want standby %q", conn.RemoteAddr(), standbyListener.Addr())
+	}
+
+	// A health change after DialRequest returns must not swap in the primary's
+	// prefix for the already-open standby connection.
+	r.states[0].healthy.Store(true)
+	r.states[1].healthy.Store(false)
+	if got := upstreamReq.URL.EscapedPath(); got != "/standby%2Fapi/v1.47/containers/a%2Fb/attach" {
+		t.Fatalf("prefixed path = %q, want standby prefix bound to dialed connection", got)
+	}
+	if req.URL.EscapedPath() != "/v1.47/containers/a%2Fb/attach" {
+		t.Fatalf("DialRequest mutated input URL: %q", req.URL.EscapedPath())
+	}
+}
+
+func TestResolverDialRequestCancellationDoesNotDemote(t *testing.T) {
+	t.Parallel()
+	r, err := New([]Endpoint{
+		{Name: "primary", Network: "unix", Address: "/tmp/canceled-primary.sock"},
+		{Name: "standby", Network: "unix", Address: "/tmp/canceled-standby.sock"},
+	}, Options{Probe: probeAlways(nil), Interval: -1})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.CheckReachable(context.Background()); err != nil {
+		t.Fatalf("CheckReachable: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req, err := http.NewRequest(http.MethodPost, "http://docker/v1.53/containers/abc/attach", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	if _, _, err := r.DialRequest(ctx, req); !errors.Is(err, context.Canceled) {
+		t.Fatalf("DialRequest error = %v, want context.Canceled", err)
+	}
+	if !r.states[0].healthy.Load() {
+		t.Fatal("DialRequest demoted the active endpoint after request cancellation")
+	}
+}
+
+func TestJoinURLPathUsesOneSlashBoundaryForDecodedAndEscapedForms(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		base        *url.URL
+		request     *url.URL
+		wantPath    string
+		wantRawPath string
+	}{
+		{
+			name:        "encoded trailing base slash and escaped client segment",
+			base:        &url.URL{Path: "/api/", RawPath: "/api%2F"},
+			request:     &url.URL{Path: "/v1/containers/a/b", RawPath: "/v1/containers/a%2Fb"},
+			wantPath:    "/api/v1/containers/a/b",
+			wantRawPath: "/api%2Fv1/containers/a%2Fb",
+		},
+		{
+			name:        "plain base and escaped client segment",
+			base:        &url.URL{Path: "/api"},
+			request:     &url.URL{Path: "/containers/a/b", RawPath: "/containers/a%2Fb"},
+			wantPath:    "/api/containers/a/b",
+			wantRawPath: "/api/containers/a%2Fb",
+		},
+		{
+			name:        "neither side has boundary slash",
+			base:        &url.URL{Path: "api", RawPath: "api"},
+			request:     &url.URL{Path: "v1/a/b", RawPath: "v1/a%2Fb"},
+			wantPath:    "api/v1/a/b",
+			wantRawPath: "api/v1/a%2Fb",
+		},
+		{
+			// Neither side has an escaped form at all: joinURLPath must take
+			// the fast joinPath path and report RawPath == "" (letting the
+			// caller re-derive the escaped form from Path) rather than
+			// falling through to the EscapedPath-based slow path.
+			name:        "neither side has an escaped form",
+			base:        &url.URL{Path: "/api/"},
+			request:     &url.URL{Path: "/containers/json"},
+			wantPath:    "/api/containers/json",
+			wantRawPath: "",
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gotPath, gotRawPath := joinURLPath(tt.base, tt.request)
+			if gotPath != tt.wantPath || gotRawPath != tt.wantRawPath {
+				t.Fatalf("joinURLPath = (%q, %q), want (%q, %q)", gotPath, gotRawPath, tt.wantPath, tt.wantRawPath)
+			}
+			if tt.wantRawPath == "" {
+				// An empty RawPath is the "no custom encoding" sentinel, not
+				// an escaped form of Path, so the round-trip decode check
+				// below does not apply.
+				return
+			}
+			decoded, err := url.PathUnescape(gotRawPath)
+			if err != nil {
+				t.Fatalf("PathUnescape(%q): %v", gotRawPath, err)
+			}
+			if decoded != gotPath {
+				t.Fatalf("RawPath %q decodes to %q, want Path %q", gotRawPath, decoded, gotPath)
+			}
+		})
+	}
+}
+
+func TestResolverRoundTripKeepsEndpointAndPrefixTogetherDuringHealthFlaps(t *testing.T) {
+	t.Parallel()
+	errCh := make(chan string, 1)
+	startDaemon := func(prefix string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !strings.HasPrefix(r.RequestURI, prefix) {
+				select {
+				case errCh <- fmt.Sprintf("daemon %s received %q", prefix, r.RequestURI):
+				default:
+				}
+			}
+			w.WriteHeader(http.StatusNoContent)
+		}))
+	}
+	primaryDaemon := startDaemon("/primary/")
+	standbyDaemon := startDaemon("/standby%2F")
+	t.Cleanup(primaryDaemon.Close)
+	t.Cleanup(standbyDaemon.Close)
+	build := func(rawURL, basePath string) Endpoint {
+		t.Helper()
+		ep, err := BuildEndpoint(EndpointSpec{
+			Address:               "tcp://" + strings.TrimPrefix(rawURL, "http://") + basePath,
+			InsecureAllowPlainTCP: true,
+		})
+		if err != nil {
+			t.Fatalf("BuildEndpoint: %v", err)
+		}
+		return ep
+	}
+	r, err := New([]Endpoint{
+		build(primaryDaemon.URL, "/primary"),
+		build(standbyDaemon.URL, "/standby%2F"),
+	}, Options{Interval: -1})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, state := range r.states {
+		state.known.Store(true)
+	}
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				r.states[0].healthy.Store(true)
+				r.states[1].healthy.Store(false)
+				r.states[0].healthy.Store(false)
+				r.states[1].healthy.Store(true)
+			}
+		}
+	}()
+	for i := 0; i < 250; i++ {
+		req, err := http.NewRequest(http.MethodGet, "http://docker/v1.52/containers/a%2Fb/json", nil)
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		resp, err := r.RoundTrip(req)
+		if err != nil {
+			t.Fatalf("RoundTrip %d: %v", i, err)
+		}
+		_ = resp.Body.Close()
+	}
+	close(stop)
+	<-done
+	select {
+	case mismatch := <-errCh:
+		t.Fatal(mismatch)
+	default:
 	}
 }
 
 // ── Resolver.Start health loop ────────────────────────────────────────────────
+
+func TestResolverLoop_ZeroIntervalFallsThroughNegativeGuard(t *testing.T) {
+	t.Parallel()
+	// New() converts an Options.Interval of exactly zero to defaultProbeInterval,
+	// so loop() never legitimately observes interval == 0 through the public
+	// constructor -- this white-box literal bypasses that guard to pin the
+	// exact boundary of "if r.interval < 0 { return }": only a *negative*
+	// interval (the NewSingleSocket sentinel) skips the continuous-probe
+	// ticker. Zero must fall through to the ticker construction, which panics
+	// on a non-positive duration -- a synchronous, deterministic signal that
+	// the guard did not fire, with no sleep or timeout guess involved.
+	r := &Resolver{
+		states:  []*endpointState{{ep: Endpoint{Name: "x", Network: "unix", Address: "/tmp/zero-interval.sock"}}},
+		timeout: time.Second,
+		probe:   probeAlways(nil),
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("loop() with interval == 0 returned without reaching ticker construction, want it to fall through the negative-interval guard")
+		}
+	}()
+	r.loop(context.Background())
+}
 
 func TestResolver_Start_Idempotent(t *testing.T) {
 	t.Parallel()

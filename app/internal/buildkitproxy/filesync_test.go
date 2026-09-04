@@ -239,6 +239,30 @@ func TestFileSyncFileCountCapExceeded(t *testing.T) {
 	}
 }
 
+// TestFileSyncFileCountCapAdmitsExactlyAtLimit pins the file-count cap's own
+// boundary: fileCount strictly EXCEEDING maxFiles denies (see
+// TestFileSyncFileCountCapExceeded), but fileCount landing exactly ON
+// maxFiles must still admit.
+func TestFileSyncFileCountCapAdmitsExactlyAtLimit(t *testing.T) {
+	limits := DefaultLimits()
+	limits.MaxFileSyncFiles = 2
+	respBody := framedPackets(t,
+		statPacket("a.txt"),
+		statPacket("b.txt"),
+		statTerminatorPacket(),
+	)
+	tb := newTestBridge(t, EndpointSession, allowAllPolicy, limits, fileSyncDaemonHandler(respBody))
+
+	resp, err := tb.driver.RoundTrip(newFileSyncGRPCRequest(t, "context", framedPackets(t, finPacket())))
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	code, _ := grpcStatusOf(t, resp)
+	if code != 0 {
+		t.Fatalf("Grpc-Status = %d, want 0 (OK) — exactly MaxFileSyncFiles files must admit, not trip the cap", code)
+	}
+}
+
 func TestFileSyncPerFileByteCapExceeded(t *testing.T) {
 	limits := DefaultLimits()
 	limits.MaxFileSyncFileBytes = 5
@@ -256,6 +280,31 @@ func TestFileSyncPerFileByteCapExceeded(t *testing.T) {
 	code, _ := grpcStatusOf(t, resp)
 	if code != grpcCodeResourceExhausted {
 		t.Fatalf("Grpc-Status = %d, want %d (ResourceExhausted)", code, grpcCodeResourceExhausted)
+	}
+}
+
+// TestFileSyncPerFileByteCapAdmitsExactlyAtLimit pins the per-file byte
+// cap's own boundary the same way as the file-count cap above: a single
+// file's bytes landing exactly ON MaxFileSyncFileBytes must admit, only
+// strictly exceeding it denies.
+func TestFileSyncPerFileByteCapAdmitsExactlyAtLimit(t *testing.T) {
+	limits := DefaultLimits()
+	limits.MaxFileSyncFileBytes = 5
+	respBody := framedPackets(t,
+		statPacket("a.txt"),
+		statTerminatorPacket(),
+		dataPacket(0, bytes.Repeat([]byte("x"), 5)),
+		dataEOFPacket(0),
+	)
+	tb := newTestBridge(t, EndpointSession, allowAllPolicy, limits, fileSyncDaemonHandler(respBody))
+
+	resp, err := tb.driver.RoundTrip(newFileSyncGRPCRequest(t, "context", framedPackets(t, reqPacket(0), finPacket())))
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	code, _ := grpcStatusOf(t, resp)
+	if code != 0 {
+		t.Fatalf("Grpc-Status = %d, want 0 (OK) — exactly MaxFileSyncFileBytes must admit, not trip the cap", code)
 	}
 }
 
@@ -278,6 +327,73 @@ func TestFileSyncTotalByteCapExceeded(t *testing.T) {
 	code, _ := grpcStatusOf(t, resp)
 	if code != grpcCodeResourceExhausted {
 		t.Fatalf("Grpc-Status = %d, want %d (ResourceExhausted)", code, grpcCodeResourceExhausted)
+	}
+}
+
+// TestFileSyncTotalByteCapAdmitsExactlyAtLimit pins the cumulative byte
+// cap's own boundary the same way as the file-count and per-file caps
+// above: totalBytes landing exactly ON MaxFileSyncTotalBytes must admit,
+// only strictly exceeding it denies.
+func TestFileSyncTotalByteCapAdmitsExactlyAtLimit(t *testing.T) {
+	limits := DefaultLimits()
+	limits.MaxFileSyncTotalBytes = 5
+	respBody := framedPackets(t,
+		statPacket("a.txt"),
+		statPacket("b.txt"),
+		statTerminatorPacket(),
+		dataPacket(0, bytes.Repeat([]byte("x"), 2)),
+		dataEOFPacket(0),
+		dataPacket(1, bytes.Repeat([]byte("y"), 3)),
+		dataEOFPacket(1),
+	)
+	tb := newTestBridge(t, EndpointSession, allowAllPolicy, limits, fileSyncDaemonHandler(respBody))
+
+	resp, err := tb.driver.RoundTrip(newFileSyncGRPCRequest(t, "context", framedPackets(t, reqPacket(0), reqPacket(1), finPacket())))
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	code, _ := grpcStatusOf(t, resp)
+	if code != 0 {
+		t.Fatalf("Grpc-Status = %d, want 0 (OK) — exactly MaxFileSyncTotalBytes across both files must admit, not trip the cap", code)
+	}
+}
+
+// TestFileSyncHandleStatAssignsSequentialIndices pins handleStat's own
+// index-assignment bookkeeping directly: nextStatIndex must count UP by one
+// per admitted STAT (0, 1, 2, ...), matching fsutil's own 0-based walk-order
+// ID assignment, and each assigned index must be the key handleStat actually
+// recorded in fileBytes — not some other key a broken counter direction
+// would produce.
+func TestFileSyncHandleStatAssignsSequentialIndices(t *testing.T) {
+	s := newFileSyncRespRelay(false, 0, 0, 0, 0)
+	for i, path := range []string{"a.txt", "b.txt", "c.txt"} {
+		if d := s.handleStat(statPacket(path)); d != nil {
+			t.Fatalf("handleStat(%q) = %+v, want nil", path, d)
+		}
+		if s.nextStatIndex != uint32(i+1) {
+			t.Fatalf("after stat %d (%q), nextStatIndex = %d, want %d", i, path, s.nextStatIndex, i+1)
+		}
+		if _, ok := s.fileBytes[uint32(i)]; !ok {
+			t.Fatalf("after stat %d (%q), fileBytes has no entry for index %d", i, path, i)
+		}
+	}
+}
+
+// TestFileSyncRespRelayDataAtNextIndexDenied pins the id validation
+// boundary in handleData directly: an ID exactly equal to nextStatIndex —
+// one past the last STAT actually admitted — is still an unknown ID and
+// must be denied the same as any other out-of-range one
+// (TestFileSyncRespRelayDataWithoutStatDenied covers IDs far out of range;
+// this is the boundary those never reach).
+func TestFileSyncRespRelayDataAtNextIndexDenied(t *testing.T) {
+	s := newFileSyncRespRelay(false, 10, 0, 0, 0)
+	src := bytes.NewReader(framedPackets(t, statPacket("a.txt"), statTerminatorPacket(), dataPacket(1, []byte("x"))))
+	d, err := s.relay(httptest.NewRecorder(), src, 0)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if d == nil || d.reasonCode != "buildkit_protocol_error" {
+		t.Fatalf("relay() denial = %+v, want buildkit_protocol_error", d)
 	}
 }
 

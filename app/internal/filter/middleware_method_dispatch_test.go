@@ -11,6 +11,7 @@ import (
 //   - GET, HEAD, and OPTIONS requests have no inspectors (nil/empty slice).
 //   - POST has inspectors registered.
 //   - PUT has inspectors registered (container archive).
+//   - DELETE has inspectors registered (container remove query controls).
 func TestInspectPoliciesByMethodDispatch(t *testing.T) {
 	t.Run("GET has no inspectors", func(t *testing.T) {
 		p := compileRuntimePolicy(nil, PolicyConfig{}, nil)
@@ -44,6 +45,13 @@ func TestInspectPoliciesByMethodDispatch(t *testing.T) {
 		p := compileRuntimePolicy(nil, PolicyConfig{}, nil)
 		if got := len(p.inspectPoliciesByMethod[http.MethodPut]); got == 0 {
 			t.Fatal("PUT slice is empty, want at least one inspector (container archive)")
+		}
+	})
+
+	t.Run("DELETE has inspectors", func(t *testing.T) {
+		p := compileRuntimePolicy(nil, PolicyConfig{}, nil)
+		if got := len(p.inspectPoliciesByMethod[http.MethodDelete]); got == 0 {
+			t.Fatal("DELETE slice is empty, want at least one inspector (container remove)")
 		}
 	})
 }

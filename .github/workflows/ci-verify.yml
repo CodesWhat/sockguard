@@ -61,7 +61,7 @@ jobs:
       workflow-security-allowed-endpoints: "ghcr.io:443 github.com:443 pkg-containers.githubusercontent.com:443"
       run-goreleaser: ${{ github.event_name != 'schedule' }}
       fuzzers-json: >-
-        ${{ (github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && '[{"name":"FuzzPathMatch","pkg":"./internal/filter/"},{"name":"FuzzGlobToRegex","pkg":"./internal/filter/"},{"name":"FuzzGlobToRegexString","pkg":"./internal/filter/"},{"name":"FuzzNormalizePath","pkg":"./internal/filter/"},{"name":"FuzzCompileRule","pkg":"./internal/filter/"},{"name":"FuzzBuild","pkg":"./internal/filter/"},{"name":"FuzzContainerCreate","pkg":"./internal/filter/"},{"name":"FuzzExec","pkg":"./internal/filter/"},{"name":"FuzzImagePull","pkg":"./internal/filter/"},{"name":"FuzzVolume","pkg":"./internal/filter/"},{"name":"FuzzSecret","pkg":"./internal/filter/"},{"name":"FuzzConfigWrite","pkg":"./internal/filter/"},{"name":"FuzzService","pkg":"./internal/filter/"},{"name":"FuzzSwarm","pkg":"./internal/filter/"},{"name":"FuzzPlugin","pkg":"./internal/filter/"},{"name":"FuzzNetwork","pkg":"./internal/filter/"},{"name":"FuzzReadUnaryGRPCMessage","pkg":"./internal/buildkitproxy/"},{"name":"FuzzEvaluateGetSecretRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzEvaluateSolveRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzEvaluateStatusRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzRewriteSessionAdvertisement","pkg":"./internal/buildkitproxy/"},{"name":"FuzzValidateUpgradeRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzDecode","pkg":"./internal/dockerfilters/"},{"name":"FuzzProxyHeadersAndBody","pkg":"./internal/proxy/"},{"name":"FuzzHijackHeadersAndBody","pkg":"./internal/proxy/"},{"name":"FuzzPathRoutingDifferential","pkg":"./differential/"},{"name":"FuzzVisibilityFilter","pkg":"./internal/visibility/"},{"name":"FuzzLibpodPathIdentifiers","pkg":"./internal/visibility/"}]' || '[]' }}
+        ${{ (github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && '[{"name":"FuzzPathMatch","pkg":"./internal/filter/"},{"name":"FuzzGlobToRegex","pkg":"./internal/filter/"},{"name":"FuzzGlobToRegexString","pkg":"./internal/filter/"},{"name":"FuzzNormalizePath","pkg":"./internal/filter/"},{"name":"FuzzCompileRule","pkg":"./internal/filter/"},{"name":"FuzzBuild","pkg":"./internal/filter/"},{"name":"FuzzContainerCreate","pkg":"./internal/filter/"},{"name":"FuzzExec","pkg":"./internal/filter/"},{"name":"FuzzImagePull","pkg":"./internal/filter/"},{"name":"FuzzVolume","pkg":"./internal/filter/"},{"name":"FuzzSecret","pkg":"./internal/filter/"},{"name":"FuzzConfigWrite","pkg":"./internal/filter/"},{"name":"FuzzService","pkg":"./internal/filter/"},{"name":"FuzzSwarm","pkg":"./internal/filter/"},{"name":"FuzzPlugin","pkg":"./internal/filter/"},{"name":"FuzzNetwork","pkg":"./internal/filter/"},{"name":"FuzzReadUnaryGRPCMessage","pkg":"./internal/buildkitproxy/"},{"name":"FuzzEvaluateGetSecretRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzEvaluateSolveRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzEvaluateStatusRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzRewriteSessionAdvertisement","pkg":"./internal/buildkitproxy/"},{"name":"FuzzValidateUpgradeRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzFilterControlResponseMessage","pkg":"./internal/buildkitproxy/"},{"name":"FuzzDecode","pkg":"./internal/dockerfilters/"},{"name":"FuzzProxyHeadersAndBody","pkg":"./internal/proxy/"},{"name":"FuzzHijackHeadersAndBody","pkg":"./internal/proxy/"},{"name":"FuzzPathRoutingDifferential","pkg":"./differential/"},{"name":"FuzzVisibilityFilter","pkg":"./internal/visibility/"},{"name":"FuzzLibpodPathIdentifiers","pkg":"./internal/visibility/"}]' || '[]' }}
 
   node-ci:
     name: "Node CI"
@@ -136,7 +136,7 @@ jobs:
           persist-credentials: false
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@5595ccaf912efad79be6eef63a5619ff05969be3  # v4.37.6
+        uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd  # v4.37.7
         with:
           languages: actions, go, javascript-typescript
           queries: security-and-quality
@@ -152,7 +152,7 @@ jobs:
         working-directory: app
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3  # v4.37.6
+        uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd  # v4.37.7
 
   dependency-review:
     name: "Dependency Review"
@@ -401,7 +401,7 @@ jobs:
       - name: Upload Grype SARIF to code scanning
         # Code scanning uploads require GHAS, not available on free private repos.
         if: always() && github.event.repository.visibility == 'public'
-        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3  # v4.37.6
+        uses: github/codeql-action/upload-sarif@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd  # v4.37.7
         with:
           sarif_file: ${{ steps.grype.outputs.sarif }}
           category: grype-image

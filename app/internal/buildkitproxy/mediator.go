@@ -23,7 +23,7 @@ import (
 // the caller-supplied SessionKey — see its doc comment) to stay the
 // dependency-light leaf package registry.go's doc comment describes.
 type Dialer interface {
-	DialContext(ctx context.Context, network, address string) (net.Conn, error)
+	DialRequest(ctx context.Context, req *http.Request) (net.Conn, *http.Request, error)
 }
 
 // Mediator terminates and bridges the two opaque BuildKit HTTP tunnels
@@ -129,7 +129,7 @@ func (m *Mediator) serve(endpoint Endpoint, w http.ResponseWriter, r *http.Reque
 	m.Logger.Info("buildkit: tunnel opened",
 		"endpoint", endpoint.String(), "session_id", session.ID, "profile", logging.SafeString(key.Profile), "path", logging.SafeString(logPath))
 
-	if err := runBridge(r.Context(), legs, session, policy, effectiveLimits(m.Limits, policy), m.Logger, m.Registry); err != nil {
+	if err := runBridge(r.Context(), legs, session, policy, effectiveLimits(m.Limits, policy), m.Logger, m.Registry, nil); err != nil {
 		m.Logger.Warn("buildkit: tunnel terminated",
 			"error", logging.SafeString(err.Error()), "endpoint", endpoint.String(), "session_id", session.ID)
 		return

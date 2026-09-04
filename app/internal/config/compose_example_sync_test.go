@@ -1,10 +1,42 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
+
+func TestTraefikComposeReadmeDescribesBundledPresetParity(t *testing.T) {
+	readmePath := filepath.Join("..", "..", "..", "examples", "compose", "traefik", "README.md")
+	contents, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", readmePath, err)
+	}
+	text := string(contents)
+	if strings.Contains(text, "Tighter than bundled preset") {
+		t.Fatal("Traefik compose README still claims the example is tighter than the matching bundled preset")
+	}
+	if !strings.Contains(text, "Matches bundled preset") {
+		t.Fatal("Traefik compose README does not state that the example matches the bundled preset")
+	}
+}
+
+func TestTraefikComposeHeaderDescribesBundledPresetParity(t *testing.T) {
+	composePath := filepath.Join("..", "..", "..", "examples", "compose", "traefik", "docker-compose.yml")
+	contents, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", composePath, err)
+	}
+	text := string(contents)
+	if strings.Contains(text, "present in the bundled preset") {
+		t.Fatal("Traefik compose header still claims the bundled preset carries the read-exfiltration acknowledgment")
+	}
+	if !strings.Contains(text, "matches the bundled preset") {
+		t.Fatal("Traefik compose header does not state that its policy matches the bundled preset")
+	}
+}
 
 // TestComposeExamplesInSyncWithCanonicalPresets guards every hand-maintained
 // examples/compose/*/sockguard.yaml copy against drift from the canonical
@@ -37,6 +69,16 @@ func TestComposeExamplesInSyncWithCanonicalPresets(t *testing.T) {
 			example:   filepath.Join("..", "..", "..", "examples", "compose", "drydock", "sockguard.yaml"),
 		},
 		{
+			name:      "cis-docker-benchmark",
+			canonical: filepath.Join("..", "..", "configs", "cis-docker-benchmark.yaml"),
+			example:   filepath.Join("..", "..", "..", "examples", "compose", "cis-docker-benchmark", "sockguard.yaml"),
+		},
+		{
+			name:      "traefik",
+			canonical: filepath.Join("..", "..", "configs", "traefik.yaml"),
+			example:   filepath.Join("..", "..", "..", "examples", "compose", "traefik", "sockguard.yaml"),
+		},
+		{
 			// The compose example directory runs Portwing standalone against
 			// the shared docker.sock (no nested compose stack of its own —
 			// see examples/compose/portwing/docker-compose.yml), so
@@ -45,6 +87,16 @@ func TestComposeExamplesInSyncWithCanonicalPresets(t *testing.T) {
 			name:      "portwing",
 			canonical: filepath.Join("..", "..", "configs", "portwing.yaml"),
 			example:   filepath.Join("..", "..", "..", "examples", "compose", "portwing", "sockguard.yaml"),
+		},
+		{
+			name:      "watchtower",
+			canonical: filepath.Join("..", "..", "configs", "watchtower.yaml"),
+			example:   filepath.Join("..", "..", "..", "examples", "compose", "watchtower", "sockguard.yaml"),
+		},
+		{
+			name:      "portainer",
+			canonical: filepath.Join("..", "..", "configs", "portainer.yaml"),
+			example:   filepath.Join("..", "..", "..", "examples", "compose", "portainer", "sockguard.yaml"),
 		},
 		{
 			name:      "github-actions-runner",

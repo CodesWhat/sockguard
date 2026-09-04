@@ -81,11 +81,48 @@ func TestPercentEncodeGRPCMessage(t *testing.T) {
 		{"control character escaped", "line1\nline2", "line1%0Aline2"},
 		{"non-ascii byte escaped", "caf\xe9", "caf%E9"},
 		{"del char escaped", "\x7f", "%7F"},
+		{"tilde (0x7E) is the top of the printable range, not escaped", "cap~here", "cap~here"},
+		{"space (0x20) is the bottom of the printable range, not escaped", "a b", "a b"},
+		// Pins the escaping LOOP's own boundary (grpcstatus.go's second,
+		// character-by-character pass) independently of the fast-path
+		// decision above: a message that DOES need escaping (for the '%')
+		// must still leave a boundary character like '~' unescaped in its
+		// output, not just in the unescaped-fast-path case.
+		{"tilde stays unescaped even when the message also needs escaping", "100%~", "100%25~"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := percentEncodeGRPCMessage(tc.in); got != tc.want {
 				t.Errorf("percentEncodeGRPCMessage(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPercentEncodeGRPCMessageNoEscapeNeededAllocatesNothing pins the fast
+// path directly: a message needing no escaping at all must return the
+// original string value with zero allocations (percentEncodeGRPCMessage's
+// `if !needsEscape { return s }`), never fall through to the
+// strings.Builder path. Content-only assertions (TestPercentEncodeGRPCMessage
+// above) can't tell the two paths apart — the escaping loop's own condition
+// is identical to the fast-path detection loop's, so a broken detection
+// loop still produces byte-identical output through the slow path; only the
+// allocation cost differs.
+func TestPercentEncodeGRPCMessageNoEscapeNeededAllocatesNothing(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+	}{
+		{"plain ascii", "Solve/Solve is denied"},
+		{"contains the top-of-range boundary byte 0x7E", "cap~here"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			n := testing.AllocsPerRun(100, func() {
+				_ = percentEncodeGRPCMessage(tc.in)
+			})
+			if n != 0 {
+				t.Errorf("percentEncodeGRPCMessage(%q) allocated %v times, want 0 (no escaping needed)", tc.in, n)
 			}
 		})
 	}

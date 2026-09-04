@@ -22,6 +22,36 @@ func TestCompatNoEnvVars(t *testing.T) {
 	}
 }
 
+// TestCompatActivationLogNamesMatchedVars asserts that the "tecnativa
+// compatibility mode active" log record names the specific env vars (and
+// their values) that armed it, rather than just a generic note. Without a
+// thread to pull, an operator debugging an unexpectedly permissive proxy
+// in a shared compose environment has no way to tell which of the many
+// generic Tecnativa names (POST, CONTAINERS, ...) actually fired.
+func TestCompatActivationLogNamesMatchedVars(t *testing.T) {
+	cfg := Defaults()
+	t.Setenv("CONTAINERS", "1")
+	t.Setenv("POST", "true")
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	if !ApplyCompat(&cfg, logger) {
+		t.Fatal("expected compat to activate")
+	}
+
+	out := logBuf.String()
+	if !strings.Contains(out, "tecnativa compatibility mode active") {
+		t.Fatalf("expected activation log line, got: %s", out)
+	}
+	if !strings.Contains(out, "CONTAINERS=1") {
+		t.Fatalf("expected activation log to name CONTAINERS=1, got: %s", out)
+	}
+	if !strings.Contains(out, "POST=true") {
+		t.Fatalf("expected activation log to name POST=true, got: %s", out)
+	}
+}
+
 func TestCompatCustomRulesNoOp(t *testing.T) {
 	cfg := Defaults()
 	cfg.Rules = []RuleConfig{
@@ -546,7 +576,7 @@ func TestCompatAllowPruneDeleteKillGeneratedRules(t *testing.T) {
 			name:   "ALLOW_DELETE",
 			envKey: "ALLOW_DELETE",
 			wantRules: []struct{ method, path string }{
-				{"DELETE", "/containers/*"},
+				{"DELETE", "/containers/**"},
 			},
 		},
 		{
@@ -670,6 +700,33 @@ func TestCompatWithoutGrpcOrSessionDoesNotAckBuildkitTunnel(t *testing.T) {
 	}
 	if strings.Contains(logBuf.String(), "GRPC/SESSION compat env vars open the opaque BuildKit tunnel") {
 		t.Fatalf("expected no buildkit tunnel warning without GRPC/SESSION, got logs: %s", logBuf.String())
+	}
+}
+
+// TestCompatDoesNotAckReadExfiltration pins the deliberate asymmetry between
+// the two acknowledgments ApplyCompat could reach for. GRPC=1 / SESSION=1
+// auto-set InsecureAcceptOpaqueBuildkitTunnels (the three tests above), because
+// the tunnel is the only way those vars can mean anything at all. Broad section
+// reads are different: CONTAINERS=1 has a useful meaning without the raw
+// archive/export and log/attach surface, so compat must leave
+// InsecureAllowReadExfiltration false and let startup validation refuse,
+// pushing the operator to either tighten the rules or acknowledge the risk
+// explicitly. The refusal itself is asserted end-to-end by
+// TestValidateRefusesCompatReadsWithoutExfiltrationAck in the cmd package.
+func TestCompatDoesNotAckReadExfiltration(t *testing.T) {
+	for _, envKey := range []string{"CONTAINERS", "IMAGES", "SERVICES", "TASKS"} {
+		t.Run(envKey, func(t *testing.T) {
+			cfg := Defaults()
+			t.Setenv(envKey, "1")
+			t.Setenv("POST", "0")
+
+			if !ApplyCompat(&cfg, discardLogger) {
+				t.Fatalf("expected compat to activate for %s=1", envKey)
+			}
+			if cfg.InsecureAllowReadExfiltration {
+				t.Fatalf("%s=1 auto-set InsecureAllowReadExfiltration; compat must not acknowledge the read-exfiltration surface on the operator's behalf", envKey)
+			}
+		})
 	}
 }
 

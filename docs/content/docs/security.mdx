@@ -95,7 +95,7 @@ Named client profiles sit on top of that admission layer. Sockguard can now sele
 Block entire HTTP methods. Most consumers only need `GET` (read-only mode).
 
 ### Layer 4: Path Filtering
-Allow or deny specific Docker API endpoint paths using glob patterns. Before matching, Sockguard strips Docker API version prefixes (`/v1.45/`), percent-decodes the path (including double-encoded separators and mixed-case escapes such as `%2F`, `%2E`, and `%252F`), and resolves `.` / `..` segments via `path.Clean`. That means `/v1.45/containers/%2e%2e/images/json` canonicalizes to `/images/json` before the glob matcher sees it, so adversarial path shapes cannot slip past a literal allowlist or skip a request-body inspector.
+Allow or deny specific Docker API endpoint paths using glob patterns. Before matching, Sockguard strips Docker API version prefixes (`/v1.45/`) and resolves `.` / `..` segments via `path.Clean`. It works on the path net/http has already percent-decoded exactly once, and it never decodes a second time, so a double-encoded `%252F` stays the literal text `%2F`. That single decode is the point: it's the same one dockerd's request parser applies, which keeps Sockguard's policy view of a path byte-identical to the daemon's routing view. `/v1.45/containers/%2e%2e/images/json` still canonicalizes to `/images/json` before the glob matcher sees it, so adversarial path shapes cannot slip past a literal allowlist or skip a request-body inspector.
 
 ### Layer 5: Request Body Inspection
 `POST /containers/create` bodies are parsed on every request and denied when they contain dangerous configuration:
@@ -148,7 +148,7 @@ Only names represented in `allowed_env_values` receive a value constraint; other
 
 This filtering only applies at exec create — see Known Limitations below for why it cannot be re-checked at exec start.
 
-`POST /images/create` is inspected by default. Sockguard blocks `fromSrc` imports unless explicitly allowed and constrains pulls to Docker Hub official images unless the operator opts into `allow_all_registries` or an explicit registry allowlist.
+`POST /images/create` and native Podman's `POST /libpod/images/pull` are inspected by default through the same `request_body.image_pull` policy. Sockguard blocks imports unless explicitly allowed and constrains pulls to Docker Hub official images unless the operator opts into `allow_all_registries` or an explicit registry allowlist. The libpod pull carries its reference in a `reference` query parameter rather than Docker's `fromImage`, and Podman matches that key case-insensitively, so Sockguard checks every supplied value, strips a leading `docker://` transport before matching the host, and denies a pull that carries no usable reference whenever a registry allowlist posture is in force. Native `POST /libpod/images/import` shares `request_body.image_pull.allow_imports`; body imports are capped at 512 MiB while URL imports retain the coarse gate. Native `POST /libpod/images/load` shares `request_body.image_load` with Docker's archive-load route and checks either Docker `manifest.json` repo tags or OCI `index.json` ref-name annotations according to the actual archive format. The daemon-host `POST /libpod/local/build` and `POST /libpod/local/images/load` routes cannot be inspected because their input never crosses the socket, so they remain behind `insecure_allow_body_blind_writes` instead.
 
 `POST /build` and native Podman's `POST /libpod/build` are inspected by default through the same `request_body.build` policy. Sockguard blocks primary remote contexts, Podman URL/image additional contexts, `networkmode=host`, and Dockerfiles containing `RUN` instructions unless those behaviors are explicitly allowed. Podman host volume controls, local-path additional contexts, multipart local contexts, and resource-usage output to a daemon-host file require `insecure_allow_body_blind_writes`; all other build checks remain active when that acknowledgment is set. Direct and version-prefixed libpod requests follow the same body-sensitive startup validation as Docker's classic builder.
 
@@ -162,13 +162,17 @@ Image-trust discovery stops before hostile registry material can grow without bo
 
 `POST /plugins/pull`, `POST /plugins/*/upgrade`, `POST /plugins/*/set`, and `POST /plugins/create` are inspected by default. Sockguard constrains remote registries, privilege grants, plugin-set assignments, local plugin tar `config.json`, host mounts, device exposure, and capability requests unless explicitly allowed. `POST /plugins/create` is treated as `multipart/form-data` as well as raw tar: Sockguard spools the upload to a temporary file, parses the multipart envelope, extracts `config.json` from the embedded tar, and applies the same plugin policy it applies to `POST /plugins/pull`. Uploads without a parseable `config.json`, or whose `config.json` fails policy, are denied before the body reaches Docker.
 
-`POST /networks/create`, `POST /networks/*/connect`, and `POST /networks/*/disconnect` are inspected by default. Sockguard blocks custom network drivers, swarm/ingress/attachable/config-only networks, custom IPAM drivers/config/options, driver options, and forced disconnects unless explicitly allowed. `request_body.network.allow_endpoint_config` additionally gates endpoint static IP, MAC address, links, and driver options — enforced identically on `POST /networks/*/connect`'s `EndpointConfig` **and** `POST /containers/create`'s `NetworkingConfig.EndpointsConfig`, since Docker connects a create-time network entry the same way a follow-up connect call would; putting the same config on create's primary network used to be an unchecked bypass of the connect-side gate. Endpoint `Aliases` are always allowed at both endpoints, regardless of this flag: Docker Compose sets `Aliases: [serviceName]` on every endpoint it creates, so gating them broke every multi-network Compose recreate for no real security benefit — aliases were never enforced on create's primary network either.
+`POST /networks/create`, `POST /networks/*/connect`, and `POST /networks/*/disconnect` are inspected by default, as are Podman's native `POST /libpod/networks/create`, `POST /libpod/networks/*/connect`, `POST /libpod/networks/*/disconnect`, and `POST /libpod/networks/*/update` under the parallel `request_body.libpod_network` key (see the [Podman guide](/podman) for the libpod wire shapes, which are not Docker's). Sockguard blocks custom network drivers, swarm/ingress/attachable/config-only networks, custom IPAM drivers/config/options, driver options, and forced disconnects unless explicitly allowed. `request_body.network.allow_endpoint_config` gates endpoint static IP, MAC address, links, and driver options on `POST /networks/*/connect`'s `EndpointConfig` and `POST /containers/create`'s `NetworkingConfig.EndpointsConfig`; the separate `request_body.libpod_network.allow_endpoint_config` applies the same posture to native connect's top-level `static_ips`/`static_mac`/`aliases`/`options`. Docker Compose sets `Aliases: [serviceName]` on every endpoint it creates, so aliases default to allowed on both policy groups. They can still be denied explicitly with the corresponding `endpoint_config.allow_aliases: false` under the granular form; `allow_endpoint_config: true` admits them with the rest of the whole object.
 
 Deployments that don't want to admit the whole `EndpointSettings` object can narrow this to independent per-field gates instead (#186): `request_body.network.endpoint_config.allow_static_addressing`, `.allow_link_local_ips`, `.allow_mac_pinning`, and `.allow_gw_priority` each default `false`, while `.allow_aliases` defaults `true` to keep the Compose behavior above unconditional. This block is only consulted when `allow_endpoint_config` is `false` — setting both is a config validation error, since the legacy flag already subsumes it. `Links` and `DriverOpts` have no granular escape hatch; they stay denied unless `allow_endpoint_config: true` is set. See [Configuration](/configuration) for the exact mapping and env vars.
 
-`POST /containers/*/update` and `PUT /containers/*/archive` are inspected by default. Sockguard blocks restart-policy/resource-control changes, privileged/device/capability-like update fields, unsafe archive target paths, tar traversal, setuid/setgid entries, device nodes, and escaping symlinks/hardlinks unless explicitly allowed.
+`request_body.libpod_network.allow_dns_servers` gates a primitive with no Docker equivalent: Podman's netavark-only `POST /libpod/networks/{name}/update` rewrites an existing network's DNS resolvers, so a caller who can point them at a host it controls influences what names resolve to inside **every container already attached to that network**, including containers it does not own. It defaults `false`, and the same knob gates `network_dns_servers` at create time so the control covers the whole per-network resolver surface. Removing a resolver is gated alongside adding one, since dropping the entry that was answering a name falls resolution through to whatever is next.
 
-`POST /images/load` is inspected by default. Image archives are denied unless image-load policy allows matching registries or untagged images; Docker `manifest.json` repo tags are checked against the same official/registry allowlist model used for pulls.
+`DELETE /containers/**` query controls are inspected by default, including slash-bearing names used by Docker's legacy link-removal route. A method/path allow rule admits bare removal, but force-killing a running container (`force`), deleting its anonymous volumes (`v`), and Docker's legacy link removal (`link`) stay denied unless the matching `request_body.container_remove` flag is enabled. Sockguard mirrors dockerd's boolean parsing and first-value behavior for repeated keys, decodes percent-encoded keys and values, and rejects malformed query encoding before proxying.
+
+`POST /containers/*/update`, `POST /libpod/containers/*/update`, `PUT /containers/*/archive`, and `PUT /libpod/containers/*/archive` are inspected by default through the shared `container_update` and `container_archive` policies. Sockguard blocks restart-policy/resource-control changes, privileged/device/capability-like update fields where the endpoint supports them, unsafe archive target paths, tar traversal, setuid/setgid entries, device nodes, and escaping symlinks/hardlinks unless explicitly allowed.
+
+`POST /images/load` and native `POST /libpod/images/load` are inspected by default. Docker `manifest.json` repo tags and the byte-exact effective OCI `index.json` name are checked against the same official/registry allowlist model used for pulls. Podman's higher-priority `io.containerd.image.name` annotation is enforced before `org.opencontainers.image.ref.name`, and bare names follow Podman's `localhost` normalization on the native route. SHA-256, SHA-384, and SHA-512 OCI graphs are inspected. Podman's permissive treatment of advisory layout, index schema-version, and descriptor media-type metadata is mirrored, but every reference set in a mixed OCI and Docker archive must be inspectable and pass policy. Podman can reject config or layer content after metadata inspection and then fall back to Docker, so malformed mixed-format controls fail closed. An `index.json` that holds more than one manifest is the exception: no daemon selects a single image from it, so a multi-image `docker save` loads with its `manifest.json` repo tags and every index annotation name checked together. A missing or undecodable `index.json` carries no names at all, so those archives are judged on `manifest.json` alone. Canonically duplicate controls also fail closed, as does any outer archive symlink or hardlink because link aliases can change the extracted control graph after a streaming inspection. `allow_untagged` never bypasses a tagged OCI name or an untagged member beside a tagged Docker member.
 
 `POST /swarm/unlock` and `POST /nodes/*/update` are inspected by default. Swarm unlock is denied unless explicitly allowed, and node updates block role, availability, name, and arbitrary label mutations unless the corresponding node policy permits them. The default owner-label key remains allowed for controlled node claims.
 
@@ -176,9 +180,9 @@ Bounded JSON/tar inspectors read request bodies under per-endpoint byte caps and
 
 These inspectors intentionally decode only the Docker request fields Sockguard actually enforces. They are not full Docker-schema validators, so full payload validation still belongs to Docker once Sockguard has checked the policy-relevant subset.
 
-The remaining blind-write guardrail covers controls Sockguard still cannot constrain safely, chiefly arbitrary exec without an allowlist, `POST /swarm/join` without configured `allowed_join_remote_addrs`, plugin setting writes without allowed assignment prefixes, Podman build host/local/multipart or resource-usage host-file controls, and the documented uninspected libpod write surface. Validation refuses to start with broad uninspected rules unless you explicitly set `insecure_allow_body_blind_writes: true`, to keep the enforcement boundary honest. The flag is also wired into request-time enforcement for exec and Podman build. It lifts only the specific uninspectable gate; every other configured exec or build check still applies.
+The remaining blind-write guardrail covers controls Sockguard still cannot constrain safely, chiefly arbitrary exec without an allowlist, `POST /swarm/join` without configured `allowed_join_remote_addrs`, plugin setting writes without allowed assignment prefixes, Podman build host/local/multipart or resource-usage host-file controls, the daemon-host `POST /libpod/local/build` and `POST /libpod/local/images/load` routes, the SSH image transfer `POST /libpod/images/scp/*`, `POST /libpod/containers/*/restore`, and the documented uninspected libpod write surface. Validation refuses to start with broad uninspected rules unless you explicitly set `insecure_allow_body_blind_writes: true`, to keep the enforcement boundary honest. The flag is also wired into request-time enforcement for exec and Podman build. It lifts only the specific uninspectable gate; every other configured exec or build check still applies. Native image load and import are inspected through `request_body.image_load` and `request_body.image_pull.allow_imports` instead. Container restore remains uninspected because its CRIU archive carries a complete container spec that never reaches either container-create inspector.
 
-Sockguard now applies the same honesty rule to every recognized data-exfiltration surface. Validation refuses to start broad rules that would expose `GET /containers/*/archive`, `GET /containers/*/export`, `GET /containers/*/logs`, `GET /containers/*/attach/ws`, `POST /containers/*/attach`, `GET /services/*/logs`, `GET /tasks/*/logs`, `GET /images/get`, `GET /images/*/get`, `POST /images/*/push`, or `POST /plugins/*/push` unless you explicitly set `insecure_allow_read_exfiltration: true`. Image and plugin pushes are Docker API writes, but they read local artifacts and transmit them to a caller-selected registry, so they carry the same exfiltration risk; the option name is retained for configuration compatibility. Because this validation layer only sees method + path, `/containers/*/logs` is treated conservatively whether or not the caller also sets `follow=1`. That keeps backup/export, raw-stream, and deliberate registry-publish use cases possible without letting a casual wildcard rule silently include them.
+Sockguard now applies the same honesty rule to every recognized data-exfiltration surface. Validation refuses to start broad rules that would expose `GET /containers/*/top`, `GET /containers/*/archive`, `GET /containers/*/export`, `GET /containers/*/logs`, `GET /containers/*/attach/ws`, `POST /containers/*/attach`, `GET /services/*/logs`, `GET /tasks/*/logs`, `GET /images/get`, `GET /images/*/get`, `POST /images/*/push`, or `POST /plugins/*/push` unless you explicitly set `insecure_allow_read_exfiltration: true`. The native Podman catalog additionally includes `GET /libpod/containers/*/top`, `GET /libpod/pods/*/top`, `GET /libpod/containers/*/archive`, `GET /libpod/containers/*/export`, `GET /libpod/containers/*/logs`, `POST /libpod/containers/*/attach`, `POST /libpod/containers/*/checkpoint`, `POST /libpod/containers/*/mount`, `GET /libpod/containers/showmounted`, `GET /libpod/images/export`, `GET /libpod/images/*/get`, `POST /libpod/images/*/push`, `POST /libpod/images/scp/*`, `POST /libpod/manifests/*/registry/*`, `POST /libpod/manifests/*/push`, and `GET /libpod/generate/kube`. Container and pod top return process command lines without response redaction; the Docker-compatible container route accepts caller-selected `ps_args` that run the daemon host's `ps`, while both native Podman top routes accept caller-selected `ps_args` and can stream repeated process tables. Startup validation audits the authored rule literals against the catalog's whole route language, so an exact-name process-list allow and an ordered deny that shadows the representative path are refused at load time rather than left to run. All three normalized process-list routes also pass through one hard request-time gate, which does the part validation cannot: it stops a `warn` or `audit` profile from passing a process-list denial through as `would_deny`, and it holds as defense in depth if a rule shape ever escapes the load-time audit. `POST /libpod/images/scp/*` is the one route in both catalogs: it reads a local image and sends it to a caller-named SSH host, and in the other direction it creates a local image from one, so it takes both acknowledgments. Image, plugin, and manifest pushes are API writes, but they read local artifacts and transmit them to a caller-selected registry, so they carry the same exfiltration risk; the option name is retained for configuration compatibility. Because startup validation only sees method + path, `/containers/*/logs` and checkpoint are treated conservatively whether or not the caller also selects their streaming or export query mode. That keeps process monitoring, backup/export, raw-stream, and deliberate registry-publish use cases possible without letting a casual wildcard rule silently include them.
 
 #### Compose / BuildKit Transport
 
@@ -189,21 +193,153 @@ Modern `docker build` and `docker compose build` no longer speak the classic `PO
 | Classic builder | `POST /build` | Yes — remote context, host network, `RUN` instructions | Allowed by an explicit `POST /build` rule; `request_body.build` denies remote context, host network, and `RUN` by default (see the `*-with-build.yaml` presets) |
 | Mediated BuildKit session/gRPC | `POST /session`, `POST /grpc` | Yes — per-message policy on `Control/Solve`/`Status` and session `Auth`/`Secrets`/`SSH`/`FileSync`/`FileSend`/`Upload` | Allowed when `request_body.buildkit` is configured (see the `*-with-mediated-build.yaml` presets) |
 | Opaque BuildKit tunnel (deprecated) | `POST /session`, `POST /grpc` | No — whole tunnel admitted with zero inspection | Denied; requires the deprecated `insecure_accept_opaque_buildkit_tunnels: true` |
-| Native gRPC-over-h2c | `moby.buildkit.v1.Control/*` | No — same control plane, bare HTTP/1.1 transport | Denied unconditionally — sockguard's listener has no h2c support outside the two hijack-capable tunnel endpoints, so nothing can dial this path end-to-end |
+| Native gRPC-over-h2c | `moby.buildkit.v1.Control/*` | No, same control plane, untunneled h2c transport | Denied unconditionally. Sockguard's listener has no h2c support outside the two hijack-capable tunnel endpoints, so nothing can dial this path end-to-end |
 
 `request_body.buildkit.control.solve` gates the `Solve` RPC: `security.insecure` is always denied with no enabling knob, `network.host` requires `request_body.build.allow_host_network`, and cache import/export types, cache registries, exporter types, and exporter-push registries each have their own allowlist (empty means deny, the standard `request_body.*` convention). The frontend check pairs with `request_body.build.allow_run_instructions`: a Dockerfile synced over the session's `FileSync` stream gets the identical RUN-instruction hold-and-inspect scan the classic `/build` path already applies, unless it arrives via a genuinely remote context, which requires `request_body.build.allow_remote_context` for the same reason classic `/build` does. `control.allow_status` gates the `Status` RPC, admitted only for a ref this same trusted principal, selected profile, and BuildKit session actually `Solve`d, so one tenant or simultaneous build cannot poll another's state. The principal comes from the verified mTLS certificate, Unix peer credentials, or normalized remote host instead of a source port or caller-controlled session header. Ref ownership and upload IDs are committed atomically only after every limit check passes. Session, ref, and upload identifiers are rejected before persistence when they exceed 256 bytes; one control tunnel can retain at most 256 distinct BuildKit session IDs; and an unconsumed upload grant expires after one hour while remaining valid across a normal control-tunnel close. Session `auth`, `secrets`, `ssh`, `file_sync`, `file_send`, and `upload` calls each stay denied until their own policy allows them, and a registry method classified for mediation but missing a dispatcher fails closed rather than becoming raw passthrough. See [Configuration](/configuration) for the full field reference.
 
 `insecure_accept_opaque_buildkit_tunnels` is now **deprecated**: it still works — existing configs that set it keep running unchanged — but setting it to `true` logs a startup warning steering operators toward `request_body.buildkit`, and the flag will be removed in a future major release. The flag and `request_body.buildkit` are mutually exclusive (mediation supersedes the wholesale acknowledgment), so a config cannot set both, and the deprecation warning only ever fires for a config using the flag on its own. If you see a build fail against a preset with a `/session` or `/grpc` denial, that means neither a classic-builder rule nor a `request_body.buildkit` policy is configured for that path: either switch the client to the classic builder (`DOCKER_BUILDKIT=0`, the `*-with-build.yaml` presets), configure `request_body.buildkit` for the fully-mediated path (the `*-with-mediated-build.yaml` presets), or — not recommended for new deployments — fall back to the deprecated acknowledgment. Tecnativa's `GRPC=1` / `SESSION=1` compat env vars still auto-set the deprecated acknowledgment with their own compat-specific warning; migrating off either warning means configuring `request_body.buildkit` instead. See [Migration](/migration) for the step-by-step move from the acknowledgment to a mediated policy.
 
 ### Layer 6: Owner Label Isolation
-When `ownership.owner` is set, Sockguard stamps label-capable creates and build-produced images with an owner label, injects owner filters into list/prune/events responses, and freshly inspects target resources on individual requests to deny cross-owner access. Ownership decisions are intentionally uncached because Docker names and image tags can be rebound to different resources. The checks cover owned containers, images, networks, volumes, services, tasks, secrets, configs, nodes, and swarm state, with service writes stamping both the service and its task template so downstream tasks inherit the same owner identity, `/nodes` using Docker's `node.label` filter key, and unlabeled node/swarm resources only claimable through their update paths.
+When `ownership.owner` is set, Sockguard stamps label-capable creates, build-produced images and commit-produced images with an owner label, injects owner filters into list, prune and events requests, and freshly inspects target resources on individual requests to deny cross-owner access. Ownership decisions are intentionally uncached because Docker names and image tags can be rebound to different resources. The checks cover owned containers, images, networks, volumes, services, tasks, secrets, configs, nodes, and swarm state, with service writes stamping both the service and its task template so downstream tasks inherit the same owner identity, `/nodes` using Docker's `node.label` filter key, and unlabeled node/swarm resources only claimable through their update paths.
+
+`GET /system/df` is isolated on the response rather than the request, because it enumerates every container, volume and image on the host and accepts no `filters` parameter for the owner filter to attach to. Items that do not carry the owner label are dropped from the body. Two consequences are worth knowing before you enable it: build-cache records carry no labels at all, so they cannot be classified and are dropped whenever isolation is active, and the per-section totals (`ActiveCount`, `Reclaimable`, `TotalSize`, and the pre-1.52 `LayersSize`) are zeroed rather than recomputed, because shared image layers make a sum of the surviving items wrong rather than merely approximate. `TotalCount` reflects the items you can actually see, which means it reads `0` on an Engine API 1.52+ daemon answering without `?verbose=1`, since that shape carries counts but no items. `docker system df` therefore reports `0B` totals under owner isolation; per-item sizes are still present whenever the daemon sent items at all. A third consequence: a top-level section this build does not recognize is removed from the response rather than forwarded, because nothing in it can be classified as owned or visible. That covers a section a future Engine API adds and one only a Docker-compat upstream such as Podman sends. Sockguard logs a warning naming each dropped section once per process, so the gap is visible rather than silent. The same response filtering applies to visibility policy, and the two compose.
+
+Podman's native `GET /libpod/system/df` is **refused** with a `403` whenever owner isolation or a visibility policy is active, and the daemon is never asked for the report. It is not the Docker-compat endpoint under a different path: `libpod.DiskUsage` returns Podman's own `SystemDfReport`, whose image, container and volume entries are `{Repository, Tag, ImageID, Created, Size, SharedSize, UniqueSize, Containers}`, `{ContainerID, Image, Command, LocalVolumes, Size, RWSize, Created, Status, Names}` and `{VolumeName, Links, Size, ReclaimableSize}` respectively. None of the three carries labels — Podman builds each entry field by field and never reads them — so there is no field for an owner label or a visibility selector to match, and no filter that could scope the response. Sockguard refuses rather than returning an emptied report, because a report showing zero images, zero containers and zero volumes is indistinguishable from an idle host and would invite you to trust an isolation guarantee that shape cannot support. The refusal is independent of rollout mode, like every other response-side control. With no owner and no visibility policy configured there is no boundary to enforce, so the endpoint is forwarded normally and your rules stay the only control over it. The redaction toggles have nothing to do there either: `redact_mount_paths` and `redact_network_topology` rewrite `Mounts`, container network topology and volume `Mountpoint`, and Podman's native report carries none of them.
+
+`GET /libpod/containers/showmounted` is refused on the same terms. Its response is only a map from every mounted container ID to its daemon-host mount path, with no label or name field that ownership or visibility can classify. Sockguard denies it before Podman is queried rather than forwarding cross-tenant IDs and host paths or pretending an empty map means nothing is mounted.
+
+Five more Podman-native reads are refused the same way, and the set is one shared table (`filter.LibpodUnscopeableReads()`) so the two layers cannot drift into disagreeing about which endpoints they refuse. `GET /libpod/containers/stats` and `GET /libpod/pods/stats` are collection endpoints that read the whole host when the request names nothing, take no `filters` parameter and carry no labels; `GET /libpod/manifests/{name}/exists` and `GET /libpod/manifests/{name}/json` carry no labels either, and the `/json` route falls back to fetching a caller-named remote reference when no local list exists. `GET /libpod/secrets/json` is the odd one out: its items do carry `Spec.Labels`, but Podman's secret filter grammar accepts only `name` and `id` and answers `500` for any other key, so the label filter that scopes every other libpod list cannot be pushed upstream and no response-side filter for the shape exists yet. Each refusal is a `403` before the daemon is contacted, audited as `owner_libpod_<name>_unscopeable` under ownership and `visibility_libpod_<name>_unscopeable` under a visibility policy, and none of them honors rollout mode. `GET /libpod/events` is refused conditionally rather than always; see Layer 7.
 
 Collection-action words are reserved only for the method and exact path that
 perform that action. A container, network, volume, service, secret, or config
 named `create`, `prune`, `json`, or another reused keyword still receives the
 normal owner check on inspect and trailing-action paths.
 
+Once a path is classified as targeting a specific resource, owner isolation
+must prove that resource exists before the request can continue, and the two
+ways that can fail get different answers. In `enforce` mode a resource the
+daemon could not resolve returns `404`, because a missing inspect result
+establishes no owner and there is nothing to report but absence. A resource
+that resolved and carries another owner's label returns `403`. An inspect that
+errored remains a `502` lookup failure. Nothing reaches the requested upstream
+path in any of the three cases.
+
+The `404` is the same answer a visibility policy gives for a hidden resource,
+and that is what makes the pair safe: if an unresolved resource answered `403`
+while a hidden one answered `404`, the difference between the two codes would
+tell a caller which foreign resources exist. It is also the status an
+idempotent client expects. A Compose teardown, Ryuk, or Terraform destroy that
+deletes an already-removed container reads `404` as "already gone", where a
+`403` looks like a permission failure to retry or escalate.
+
+A profile in `warn` or `audit` mode logs the would-be denial and forwards the
+request under the existing rollout contract, whichever of the two denials it
+would have been. The same rule applies when an exec session cannot be resolved
+to its container, when a `container:<ref>` namespace-sharing target is missing,
+and to every resource referenced inside a request body. `allow_unowned_images`
+applies only to an image that resolves successfully and has no owner label.
+Paths that do not identify a resource still pass through this layer.
+
+Two write surfaces are classified from something other than the path. The
+prune family (`POST /containers/prune`, `/images/prune`, `/networks/prune`,
+`/volumes/prune`, and each of their `/libpod/` spellings) accepts a `filters`
+parameter, so the owner selector is injected into it and a prune removes only
+the caller's resources. `POST /libpod/pods/prune` accepts no filters at all and
+names no pod, so it is refused with a `403` rather than forwarded, audited as
+`owner_libpod_pod_prune_unscopeable` and independent of rollout mode.
+`POST /commit` and `POST /libpod/commit` name their container in the `container`
+query parameter: that container is authorized on the terms above, and the owner
+label is stamped into the commit body's config so the new image is owned rather
+than unlabeled. A commit is denied outright when it carries no `container`, when
+the parameter is repeated or spelled in two cases (Moby reads the first value,
+Podman the last, so the container checked would not be the container committed),
+or when a `changes` value carries a `LABEL` instruction, which both engines
+apply on top of the body config and would use to overwrite the stamp.
+
 The same boundary applies to references embedded inside container and service payloads, not only the resource named by the URL. Container creates authorize the requested image, named volumes, custom network mode, every endpoint-config network, and every `container:<ref>` namespace-sharing target. Service creates and updates authorize the task image, named volumes, networks, secrets, and configs. A foreign label or unresolved workload dependency is denied before Docker sees the request; only an image that successfully resolves and is genuinely unlabeled can use `allow_unowned_images`. Create new volumes, networks, secrets, and configs through their owner-stamping endpoints before attaching them to a workload. This turns one shared Docker socket into N isolated identity views without leaving workload dependencies as an ownership side door.
+
+Network membership changes apply that boundary to both sides of the relationship. On Docker-compatible and native libpod connect/disconnect requests, Sockguard checks the network named by the URL and the body `Container` reference. A foreign resource is denied, and an unresolved body container fails closed before the daemon receives the write. The ownership check reads and restores the bounded request body, so an allowed request reaches the daemon unchanged.
+
+Native image batch export and removal get a stricter preflight because
+forwarding one mixed batch can disclose or delete several images before a
+later member fails. In `enforce` mode, Sockguard resolves every repeated
+`references` value on `GET /libpod/images/export` and every repeated `images`
+value on `DELETE /libpod/images/remove` before the daemon sees the action.
+Every member must carry the caller's owner label; `allow_unowned_images` does
+not admit an unlabeled batch member. A visibility-only policy uses the same
+bounded selector decoder for native export and requires every member to satisfy
+the active label and name/image-pattern axes. A foreign, unlabeled, missing, or
+hidden member stops the whole request in `enforce` mode, and the original query
+is forwarded byte-for-byte only after all checks pass. Visibility-only export
+treats a missing member as hidden rather than relying on Podman's later lookup.
+Those are verdicts, so a `warn` or `audit` profile records the would-be denial
+and forwards instead. A lookup failure is not a verdict and is not staged: it
+stays a `502` in every rollout mode, alongside a malformed or oversized
+selector's `400`.
+Values are percent-decoded once and repeated keys form the list. Commas remain
+part of one value because Podman's string-slice decoder does not split them.
+Podman's `References` and `Images` key spellings are matched with Unicode case
+folding. Sockguard combines every spelling in arrival order, deduplicates exact
+decoded identifiers for lookup, and refuses more than 256 selected values before
+deduplication so one action cannot amplify into unbounded daemon inspect work.
+
+Native batch removal is admitted only when its complete effect remains inside
+that named-image set. An empty `images` list enters Podman's collection-removal
+path even when `all=false`, so owner isolation requires at least one image.
+Podman's default `noprune=false` recursively removes dangling parent images,
+so every possible case-insensitive `noprune` decode must be true. Any possible
+`force=true` decode is refused because Podman can remove containers using the
+image. Any possible `lookupManifest=true` decode is refused because it changes
+lookup from the platform instance returned by the compatibility inspect to the
+manifest-list object. Gorilla/schema groups repetitions by their exact decoded
+key spelling, uses the last value within one spelling, and matches separate
+spellings case-insensitively in unspecified map order. Sockguard therefore
+accepts a scalar control only when every result Podman could act on is safe.
+
+Docker-compatible `GET /images/get?names=…` is refused when ownership is active
+and at least one name is supplied. On Moby's containerd image store, a tag,
+digest, or full ID can name a multi-platform index. Omitting `platform` exports
+the full index, and an explicit platform can differ from the default platform
+whose config the ordinary image inspect returns. Sockguard cannot enumerate
+and authorize every exported config through that inspect shape, so every named
+compatibility export fails closed rather than relying on the classic image
+store's narrower behavior. Podman's Docker-compatible decoder accepts
+case-folded spellings such as `Names`, so Sockguard folds the key too. Dockerd
+requires exact lowercase `names`; applying the fold there is conservative and
+cannot admit an export dockerd would otherwise reject. An omitted `names` list
+is still forwarded, and the two daemons answer it differently: Podman's
+compatibility handler returns `400 no images to download`, while Moby's
+`getImagesGet` has no empty-list check at all and answers `200` with an empty
+`application/x-tar` archive. Sockguard does not substitute an error for either.
+
+The same refusal covers `GET /images/{name}/get`. Moby registers the batch and
+per-image spellings on the same handler, so moving the selector into the path
+does not narrow the exported platforms. Both Docker-compatible spellings are
+also refused when a visibility policy is active, before an image lookup or
+upstream request. Both layers refuse them the same way: `403` in `enforce`,
+and a `would_deny` record with the request forwarded under `warn` and `audit`.
+
+Per-image removal is not a safe substitute for the bounded native batch.
+Docker-compatible `DELETE /images/{name}` can prune uninspected ancestor images
+by default; on the containerd image store the selected name can represent a
+whole index, and the `platforms` query can retarget deletion to configurations
+the ordinary inspect did not authorize. Native
+`DELETE /libpod/images/{name}` has no `noprune` parameter at all, so it always
+permits recursive dangling-parent cleanup, while `force` can remove containers
+and `lookupManifest` retargets the operation to a manifest object. Ownership
+therefore refuses both per-image removal routes before lookup. Use native batch
+removal with explicit `noprune=true`, `force=false`, and
+`lookupManifest=false` when owner-scoped image removal is required. That form
+exists only on Podman. `DELETE /libpod/images/remove` is not a route dockerd
+serves, so on a Docker upstream owner isolation leaves owner-filtered
+`POST /images/prune` as the only image removal it admits, and no way to delete
+a named image at all.
+
+These native checks are preflights, not a daemon transaction. An image tag can
+still be rebound between inspect and action, and a later daemon-side failure
+can still leave a multi-image removal partially applied. The ownership gate
+guarantees that no initially unauthorized native batch is forwarded; it cannot
+make the upstream API atomic.
 
 ### Layer 7: Visibility-Controlled Reads
 Sockguard's response filter applies to known protected Docker JSON response shapes on successful body-bearing 2xx responses across request methods, not only `GET 200`. If a protected successful response cannot be parsed or sanitized safely, Sockguard fails closed with a generic `502` instead of forwarding unsanitized data. Non-success responses, `HEAD` responses, no-body statuses, non-protected paths, and streaming endpoints (logs, attach, events) pass through unmodified — those are protected by request-side rules and the read-side exfiltration guardrail, not by response rewriting.
@@ -212,14 +348,23 @@ Together with request-side visibility and exfiltration guardrails, the read-side
 
 - Inject label visibility selectors into `GET /containers/json`, `GET /images/json`, `GET /networks`, `GET /volumes`, and `GET /events`
 - Inject label visibility selectors into `GET /services`, `GET /tasks`, `GET /secrets`, `GET /configs`, and `GET /nodes`
+- Filter `GET /system/df` items on the response, since that endpoint takes no `filters` parameter; selectors apply to all three sections and name/image patterns to containers and images, matching `GET /containers/json` and `GET /images/json`
+- Refuse `GET /libpod/system/df`, `GET /libpod/containers/showmounted`, `GET /libpod/containers/stats`, `GET /libpod/pods/stats`, `GET /libpod/manifests/*/exists`, `GET /libpod/manifests/*/json`, and `GET /libpod/secrets/json` with a `403`, since no policy axis can scope any of them: the first six carry no labels for a selector to read, and the secret list carries `Spec.Labels` but rejects the label filter with a `500` and has no response-side filter yet (see Layer 6 above)
+- Refuse `GET /libpod/events` with a `403` **conditionally**, when the policy carries two or more selectors or when owner isolation is also active, because Podman evaluates several values under one event filter key disjunctively (see the Podman `/events` note below)
+- Preflight every selected image on `GET /libpod/images/export`, and refuse both Docker-compatible image-export spellings because their platform effects cannot be enumerated from one inspect
 - Return `404` for hidden targets on inspect/log-style reads such as `GET /containers/*/json`, `GET /images/*/json`, `GET /networks/*`, `GET /volumes/*`, `GET /exec/*/json`, `GET /services/*`, `GET /services/*/logs`, `GET /tasks/*`, `GET /tasks/*/logs`, `GET /secrets/*`, `GET /configs/*`, `GET /nodes/*`, and `GET /swarm`
-- Fail startup unless raw archive/export and stream-style reads are explicitly acknowledged via `insecure_allow_read_exfiltration: true`
+- Fail startup unless process-list, raw archive/export, and stream-style reads are explicitly acknowledged via `insecure_allow_read_exfiltration: true`
 - Redact `Config.Env` on `GET /containers/*/json`
 - Redact `HostConfig.Binds` host paths plus `Mounts[*].Source` on container list/inspect responses
+- Redact `LogPath` and every value under `GraphDriver.Data` on container inspect responses, since both are absolute paths under the daemon's own storage root rather than anything the caller configured; `GraphDriver.Name` is kept
 - Redact volume `Mountpoint` on `GET /volumes` and `GET /volumes/*`
 - Redact container and network address topology on container/network list and inspect responses
 - Redact service/task env, mount, secret/config-reference, and network metadata
 - Redact config payload data, plugin env/path metadata, node/swarm TLS material, swarm join/unlock material, and `/info` plus `/system/df` topology-sensitive fields
+
+**`GET /events` on a Podman upstream is scoped differently, because Podman reads the same filter differently.** Every injection above works by appending label selectors to the request's `filters` parameter and letting the daemon apply them, which is correct because dockerd requires *all* of them to match. Podman serves the Docker-compat `/events` and its own `/libpod/events` from one handler, and that handler evaluates several values under a single filter key **disjunctively** — its own source comments it as "Filters under the same key are disjunctive while each key must match". So on a Podman host, a visibility policy carrying **two or more** `response.visible_resource_labels` selectors turned into an OR on `/events`: the client received the union of every selector's events, including events for containers the policy hides, where the operator had written an AND. Owner isolation by itself was never exposed, because it *replaces* the label key with exactly one value, and one value evaluates identically under either rule. Combining owner isolation with a visibility selector does require two values, however, so that conjunction is equally unrepresentable.
+
+Sockguard now resolves which engine the upstream is (see [`upstream.flavor`](/configuration#yaml-config-recommended)) and, when it is Podman, handles `/events` on that engine's terms: a visibility policy with one selector has it written as the sole `label` value — replacing any the client supplied, so a caller cannot OR its own value in beside it — and a policy with two or more is refused with `403` without the request ever reaching the daemon (`reason_code=visibility_podman_events_unscopeable` on the Docker-compat `/events` path, `reason_code=visibility_libpod_events_unscopeable` on Podman's native `/libpod/events`, so the log says which spelling the client used). When owner isolation is also active, even one visibility selector is refused with `403` (`reason_code=owner_visibility_podman_events_unscopeable`), because neither replacing it with the owner label nor appending the owner label preserves both constraints. The conjunction genuinely cannot be expressed: Podman's event filter accepts no second key to hold the extra selector, and the endpoint is a long-lived stream, so buffering the response and filtering it is not available either. Streaming a superset would be the dishonest alternative — a client watching an event stream cannot tell a quiet host from a filter that silently stopped applying. The refusal does not honor rollout mode for the same reason. Against a Docker upstream nothing changes: selectors are appended and ANDed exactly as before.
 
 Single-resource inspect denials honor rollout mode: under a profile in `warn` or `audit` mode, a target that visibility policy would hide is forwarded upstream with a `would_deny` audit verdict instead of being hard-`404`'d, so visibility policy can be staged like every other deny gate. When `response.name_patterns` or `response.image_patterns` filter a list response, Sockguard buffers the upstream body under an 8 MiB cap and rejects a larger response with a `502` rather than buffering it unbounded.
 
@@ -231,12 +376,12 @@ buffered visibility rewrite must generate its own `502`, Sockguard removes
 stale upstream representation headers before writing the replacement JSON so
 clients do not see a mismatched length or encoding.
 
-These controls are on by default where they are pure redaction because runtime env vars routinely carry credentials and Docker read APIs expose raw host mount paths plus internal network layout.
+These controls are on by default where they are pure redaction, because runtime env vars routinely carry credentials and Docker read APIs expose raw host mount paths plus internal network layout. Four toggles carry that default: `response.redact_container_env`, `redact_mount_paths`, `redact_network_topology`, and `redact_sensitive_data`. `response.redact_host_topology` is redaction too, stripping `Containerd`, `FirewallBackend`, `DiscoveredDevices`, and `NRI` from `GET /info`, but it defaults off and no shipped preset turns it on. `response.allow_attestation_statements` is a different shape: it also defaults off, but it rejects the whole `GET /images/*/attestations` response when the caller asks for `statement=true` rather than redacting fields out of it.
 
 ### Layer 8: Structured Access And Audit Logging
 Every request is stamped with a proxy-generated canonical `X-Request-Id` and logged with method, raw `path`, `normalized_path`, decision, matched rule index, selected client profile when present, latency, request ID, trace context, and client metadata. If the caller supplied its own request ID, Sockguard preserves it separately as `client_request_id` in logs instead of trusting it as the canonical correlation key.
 
-`path` is the client-controlled URL path exactly as received and is retained for forensic replay. Detection logic, SIEM grouping, and policy analysis should use `normalized_path`, which is the canonical path after Sockguard strips Docker API version prefixes, decodes escaped separators, and resolves dot segments before rule evaluation.
+`path` is the client-controlled URL path exactly as received and is retained for forensic replay. Detection logic, SIEM grouping, and policy analysis should use `normalized_path`, which is the canonical path after Sockguard strips Docker API version prefixes and resolves dot segments with `path.Clean`, on the path net/http already decoded once, before rule evaluation.
 
 When `log.audit.enabled` is true, Sockguard also emits a dedicated JSON audit event with a stable schema: request ID, client request ID, trace ID, trace parent/span IDs, sampled flag, raw and normalized path, decision, machine-readable `reason_code`, human-readable reason, matched rule, selected profile, flattened actor and transport identity fields, ownership context, and final HTTP status. Upstream reverse-proxy errors overwrite the audit reason code with bounded values such as `upstream_socket_unreachable` or `upstream_response_rejected_by_policy`, so the terminal result remains explicit even after an allow decision has already been made.
 
@@ -250,18 +395,19 @@ When `health.watchdog.enabled` is true, Sockguard actively probes the upstream D
 
 | Risk Level | Endpoints |
 |-----------|-----------|
-| **Critical** | `POST /containers/create`, `POST /containers/{id}/exec`, `POST /exec/{id}/start`, `PUT /containers/{id}/archive` |
-| **High** | `POST /images/create`, `POST /images/load`, `POST /build`, `POST /libpod/build`, `POST /services/create`, `POST /services/{id}/update`, `POST /swarm/init`, `POST /swarm/join`, `POST /swarm/update`, `POST /swarm/unlock`, `POST /nodes/{id}/update`, `POST /plugins/pull`, `POST /plugins/{name}/upgrade`, `POST /plugins/{name}/set`, `POST /plugins/create` |
-| **Medium** | `POST /containers/{id}/update`, `POST /volumes/create`, `POST /networks/create`, `POST /networks/{id}/connect`, `POST /networks/{id}/disconnect`, `POST /secrets/create`, `POST /configs/create`, `DELETE /containers/{id}` |
+| **Critical** | `POST /containers/create`, `POST /containers/{id}/exec`, `POST /exec/{id}/start`, `PUT /containers/{id}/archive`, `PUT /libpod/containers/{id}/archive`, `POST /libpod/containers/{id}/restore` |
+| **High** | `POST /images/create`, `POST /libpod/images/pull`, `POST /libpod/containers/{id}/checkpoint`, `POST /images/load`, `POST /build`, `POST /libpod/build`, `POST /services/create`, `POST /services/{id}/update`, `POST /swarm/init`, `POST /swarm/join`, `POST /swarm/update`, `POST /swarm/unlock`, `POST /nodes/{id}/update`, `POST /plugins/pull`, `POST /plugins/{name}/upgrade`, `POST /plugins/{name}/set`, `POST /plugins/create` |
+| **Medium** | `POST /containers/{id}/update`, `POST /libpod/containers/{id}/update`, `POST /libpod/containers/{id}/mount`, `POST /volumes/create`, `POST /networks/create`, `POST /networks/{id}/connect`, `POST /networks/{id}/disconnect`, `POST /libpod/networks/create`, `POST /libpod/networks/{name}/connect`, `POST /libpod/networks/{name}/disconnect`, `POST /libpod/networks/{name}/update`, `POST /secrets/create`, `POST /configs/create`, `DELETE /containers/{id}` |
 | **Low** | `GET /containers/json`, `GET /events`, `GET /version`, `GET /_ping` |
 
 ## Image Security
 
-Sockguard's container image is built on [Wolfi](https://www.chainguard.dev/chainguard-images) (Chainguard):
+Sockguard's runtime image is Chainguard's distroless [`static`](https://www.chainguard.dev/chainguard-images) base, built from Wolfi packages:
 - Minimal package set, which keeps the base image's CVE exposure low
 - Built-in SBOM output and build provenance when release visibility supports attestations
 - Cosign-signed for verification — see the [image verification guide](/verification) for the canonical `cosign verify` invocation
 - No shell, no package manager in production image
+- Runs as UID 65532 (`nonroot`) from PID 1 — the image has no root user to start as, so there's nothing to drop
 
 ## Runtime Hardening
 
@@ -293,9 +439,9 @@ stack. They are documented here for honest operator awareness rather than as
 open bugs.
 
 **IP-based client identity is soft isolation.** When
-`clients.container_labels.enabled` is true, or any `clients.profiles[*].match`
-rule keys on `source_cidrs`, Sockguard resolves the calling container by
-source IP through the Docker API. This is *soft isolation* — adequate against
+`clients.container_labels.enabled` is true, Sockguard resolves the calling
+container by source IP through the Docker API. This is *soft isolation*:
+adequate against
 configuration drift and friendly-fire mistakes, but **not a hard boundary**
 against an attacker who can influence which container a given bridge IP
 points at:
@@ -308,6 +454,11 @@ points at:
   legitimate container takes it back.
 - Host-network containers (`network_mode: host`) all share the host IP, so
   IP-keyed allowlists cannot tell them apart.
+
+`clients.source_ip_profiles[*].cidrs` and `clients.allowed_cidrs` don't make
+that Docker call at all. They match the peer address against a CIDR directly,
+so the label-lookup race above doesn't apply to them. They still key on an IP,
+so the second and third points do.
 
 For workloads where caller identity is part of the security boundary, listen
 on a unix socket and use `clients.unix_peer_profiles` with `uids`/`gids`.
@@ -323,18 +474,19 @@ client profile assignments conservative for clients that do not need
 interactive command execution.
 
 **Exec Env allowlisting is create-time only.** `request_body.exec.allowed_env_vars`,
-`denied_env_vars`, and `allowed_env_values` are enforced on `POST /containers/*/exec`, not on the
-`POST /exec/*/start` re-check. This isn't a gap in the re-check logic —
+`denied_env_vars`, and `allowed_env_values` are enforced at exec create (`POST /containers/*/exec`
+and `POST /libpod/containers/*/exec`), not on the exec-start re-check (`POST /exec/*/start` or
+`POST /libpod/exec/*/start`). This isn't a gap in the re-check logic:
 `GET /exec/{id}/json` (the metadata the start-time re-check reads) never
 exposes the original `Env`, and exec instances are immutable once created, so
 there is no later point at which the environment could change. Once an exec
 is created with an allowed `Env`, that environment is fixed for the life of
 the exec instance.
 
-**Hijacked-stream redaction limits.** Sockguard's response filter — including
+**Hijacked-stream redaction limits.** Sockguard's response filter, including
 the `response.redact_container_env`, `response.redact_mount_paths`,
-`response.redact_network_topology`, and `response.redact_sensitive_data`
-toggles — operates only on structured JSON responses with known shapes. Raw
+`response.redact_network_topology`, `response.redact_host_topology`, and
+`response.redact_sensitive_data` toggles, operates only on structured JSON responses with known shapes. Raw
 streaming endpoints — `GET /containers/*/logs`, `POST /containers/*/attach`,
 `GET /services/*/logs`, `GET /events`, exec attach, and image-build progress
 output — switch the connection to a raw byte stream (or a non-JSON

@@ -2,10 +2,10 @@ package filter
 
 // resource_limit_guard.go implements #152: revalidating configured
 // require_memory_limit / require_cpu_limit / require_cpu_limit_hard /
-// require_pids_limit guarantees across POST /containers/{id}/update and
-// service create/update/rollback, closing the gap where allow_resource_updates
-// (container) and swarm's replace-the-whole-spec update model let a later
-// write silently clear a limit that was enforced at create time.
+// require_pids_limit guarantees across Docker-compatible and libpod-native
+// container update plus service create/update/rollback, closing the gap where
+// allow_resource_updates (container) and swarm's replace-the-whole-spec update
+// model let a later write silently clear a limit enforced at create time.
 //
 // ResourceLimitGuard is a SEPARATE middleware layer from the request-body
 // inspectors in middleware.go/container_update.go/service.go, and it runs
@@ -79,8 +79,8 @@ type ResourceLimitGuardOptions struct {
 	// ResolveProfile mirrors filter.Options.ResolveProfile (typically
 	// clientacl.RequestProfile).
 	ResolveProfile func(*http.Request) (string, bool)
-	// InspectContainer resolves a container's current HostConfig resource
-	// fields for the update-omission merge. Required for
+	// InspectContainer resolves a container's current compatibility-inspect
+	// resource fields for the endpoint-specific update merge. Required for
 	// require_{memory,cpu,cpu_hard,pids}_limit on container update; a nil
 	// value with an active requirement fails closed (does not panic).
 	InspectContainer ContainerUpdateInspectFunc
@@ -139,7 +139,9 @@ func (g *resourceLimitGuard) serve(w http.ResponseWriter, r *http.Request, next 
 
 	switch {
 	case isContainerUpdatePath(normPath):
-		g.guardContainerUpdate(w, r, normPath, policy, next)
+		g.guardContainerUpdate(w, r, normPath, policy, false, next)
+	case isLibpodContainerUpdatePath(normPath):
+		g.guardContainerUpdate(w, r, normPath, policy, true, next)
 	case isServiceWritePath(normPath):
 		g.guardServiceWrite(w, r, normPath, policy, next)
 	default:
@@ -195,18 +197,39 @@ type containerUpdateResourcePatch struct {
 	PidsLimit *int64 `json:"PidsLimit"`
 }
 
-// containerUpdateIdentifier extracts the {id} path segment from a normalized
-// POST /containers/{id}/update path. Assumes isContainerUpdatePath(normPath)
-// already holds.
+// libpodContainerUpdateResourcePatch mirrors the flattened, lowercase OCI
+// LinuxResources shape accepted by POST /libpod/containers/{name}/update.
+// Pointer fields preserve the native endpoint's distinction between an
+// omitted value and an explicit zero, which clears the corresponding limit.
+type libpodContainerUpdateResourcePatch struct {
+	Memory *struct {
+		Limit *int64 `json:"limit"`
+	} `json:"memory"`
+	CPU *struct {
+		Shares *uint64 `json:"shares"`
+		Quota  *int64  `json:"quota"`
+		Period *uint64 `json:"period"`
+	} `json:"cpu"`
+	Pids *struct {
+		Limit int64 `json:"limit"`
+	} `json:"pids"`
+}
+
+// containerUpdateIdentifier extracts the {id} or {name} path segment from a
+// normalized Docker-compatible or libpod-native container update path.
 func containerUpdateIdentifier(normalizedPath string) (string, bool) {
-	id, tail, ok := strings.Cut(strings.TrimPrefix(normalizedPath, "/containers/"), "/")
+	prefix := "/containers/"
+	if strings.HasPrefix(normalizedPath, libpodPathPrefix+"containers/") {
+		prefix = libpodPathPrefix + "containers/"
+	}
+	id, tail, ok := strings.Cut(strings.TrimPrefix(normalizedPath, prefix), "/")
 	if !ok || id == "" || tail != "update" {
 		return "", false
 	}
 	return id, true
 }
 
-func (g *resourceLimitGuard) guardContainerUpdate(w http.ResponseWriter, r *http.Request, normPath string, policy PolicyConfig, next http.Handler) {
+func (g *resourceLimitGuard) guardContainerUpdate(w http.ResponseWriter, r *http.Request, normPath string, policy PolicyConfig, libpod bool, next http.Handler) {
 	cu := policy.ContainerUpdate
 	// §0.1: require_* is only ever consulted when AllowResourceUpdates is
 	// true. When false, the existing blanket deny of every resource-control
@@ -262,7 +285,12 @@ func (g *resourceLimitGuard) guardContainerUpdate(w http.ResponseWriter, r *http
 	}
 
 	var patch containerUpdateResourcePatch
-	if err := json.Unmarshal(body, &patch); err != nil {
+	var libpodPatch libpodContainerUpdateResourcePatch
+	patchTarget := any(&patch)
+	if libpod {
+		patchTarget = &libpodPatch
+	}
+	if err := json.Unmarshal(body, patchTarget); err != nil {
 		g.respondHardDeny(w, r, http.StatusBadRequest, reasonCodeResourceLimitRequestInvalid,
 			"container update denied: request body could not be inspected", policy.DenyResponseVerbosity, rp)
 		return
@@ -297,28 +325,32 @@ func (g *resourceLimitGuard) guardContainerUpdate(w http.ResponseWriter, r *http
 		CpuShares: current.CpuShares,
 		PidsLimit: current.PidsLimit,
 	}
-	// Moby-faithful overlay (daemon/container_unix.go Container.UpdateContainer):
-	// scalar fields apply ONLY when explicitly nonzero — an explicit 0 is the
-	// same "unchanged" the daemon reports for an omitted field, never a clear.
-	// PidsLimit is a pointer at the daemon too, so ANY non-nil value applies,
-	// including 0/-1, which ARE explicit clears there.
-	if patch.Memory != 0 {
-		effective.Memory = patch.Memory
-	}
-	if patch.NanoCpus != 0 {
-		effective.NanoCpus = patch.NanoCpus
-	}
-	if patch.CpuQuota != 0 {
-		effective.CpuQuota = patch.CpuQuota
-	}
-	if patch.CpuPeriod != 0 {
-		effective.CpuPeriod = patch.CpuPeriod
-	}
-	if patch.CpuShares != 0 {
-		effective.CpuShares = patch.CpuShares
-	}
-	if patch.PidsLimit != nil {
-		effective.PidsLimit = patch.PidsLimit
+	if libpod {
+		overlayLibpodContainerUpdateResources(&effective, libpodPatch)
+	} else {
+		// Moby-faithful overlay (daemon/container_unix.go Container.UpdateContainer):
+		// scalar fields apply ONLY when explicitly nonzero — an explicit 0 is the
+		// same "unchanged" the daemon reports for an omitted field, never a clear.
+		// PidsLimit is a pointer at the daemon too, so ANY non-nil value applies,
+		// including 0/-1, which ARE explicit clears there.
+		if patch.Memory != 0 {
+			effective.Memory = patch.Memory
+		}
+		if patch.NanoCpus != 0 {
+			effective.NanoCpus = patch.NanoCpus
+		}
+		if patch.CpuQuota != 0 {
+			effective.CpuQuota = patch.CpuQuota
+		}
+		if patch.CpuPeriod != 0 {
+			effective.CpuPeriod = patch.CpuPeriod
+		}
+		if patch.CpuShares != 0 {
+			effective.CpuShares = patch.CpuShares
+		}
+		if patch.PidsLimit != nil {
+			effective.PidsLimit = patch.PidsLimit
+		}
 	}
 
 	reason, violation := resourceLimitDenyReason(effective, cu.RequireMemoryLimit, cu.RequireCPULimit, cu.RequireCPULimitHard, cu.RequirePidsLimit, "container update")
@@ -328,6 +360,39 @@ func (g *resourceLimitGuard) guardContainerUpdate(w http.ResponseWriter, r *http
 		return
 	}
 	g.respondAllow(w, r, next, rp)
+}
+
+func overlayLibpodContainerUpdateResources(effective *containerCreateHostConfig, patch libpodContainerUpdateResourcePatch) {
+	if patch.Memory != nil && patch.Memory.Limit != nil {
+		effective.Memory = *patch.Memory.Limit
+	}
+	if patch.CPU != nil {
+		if patch.CPU.Shares != nil {
+			effective.CpuShares = boundedUint64AsInt64(*patch.CPU.Shares)
+		}
+		if patch.CPU.Quota != nil {
+			effective.CpuQuota = *patch.CPU.Quota
+			// Podman's compatibility inspect response derives NanoCpus from
+			// CpuQuota/CpuPeriod. It is not an independent native resource, so
+			// discard the stale derived value whenever either source changes.
+			effective.NanoCpus = 0
+		}
+		if patch.CPU.Period != nil {
+			effective.CpuPeriod = boundedUint64AsInt64(*patch.CPU.Period)
+			effective.NanoCpus = 0
+		}
+	}
+	if patch.Pids != nil {
+		limit := patch.Pids.Limit
+		effective.PidsLimit = &limit
+	}
+}
+
+func boundedUint64AsInt64(value uint64) int64 {
+	if value > 1<<63-1 {
+		return 1<<63 - 1
+	}
+	return int64(value)
 }
 
 func containerUpdateRequirementsList(cu ContainerUpdateOptions) string {

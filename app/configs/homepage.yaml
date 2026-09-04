@@ -1,8 +1,23 @@
 # Sockguard — Homepage Preset
 #
-# Read-only access for Homepage dashboard (gethomepage.dev).
-# Allows: container list, inspect, stats, events.
-# Includes Swarm endpoints (services, tasks) for Swarm deployments.
+# Read-only access for the Homepage dashboard (gethomepage.dev).
+#
+# Allows exactly the endpoints Homepage calls: container list, inspect and
+# stats, plus service list/inspect and task list for Swarm deployments.
+# Verified against gethomepage/homepage main — src/utils/config/service-helpers.js
+# (listContainers, listServices), src/pages/api/docker/status/[...service].js
+# (container.inspect, getService().inspect, listTasks) and
+# src/pages/api/docker/stats/[...service].js (container.stats, listTasks).
+# dockerode maps those to /containers/json, /containers/{id}/json,
+# /containers/{id}/stats, /services, /services/{id} and /tasks.
+#
+# Deliberately does NOT allow the read-exfiltration paths a "/containers/**"
+# or "/images/**" glob would swallow: /containers/{id}/archive,
+# /containers/{id}/export, /containers/{id}/logs, /containers/{id}/attach,
+# /images/get and /images/{name}/get. Homepage needs none of them, so this
+# preset needs no insecure_allow_read_exfiltration acknowledgment. A client
+# that genuinely needs container logs or archive has to add that rule AND set
+# insecure_allow_read_exfiltration: true itself.
 
 upstream:
   socket: /var/run/docker.sock
@@ -16,34 +31,23 @@ health:
   enabled: true
   path: /health
 
-# Preserve broad Homepage read compatibility, including raw archive/export and log/attach stream paths.
-insecure_allow_read_exfiltration: true
-
 rules:
-  # Health and metadata
-  - match: { method: GET, path: "/_ping" }
+  # Container reads — list, inspect, stats. A single "*" matches one path
+  # segment, so the container-ID position cannot absorb a trailing
+  # /archive, /export, /logs or /attach.
+  - match: { method: GET, path: "/containers/json" }
     action: allow
-  - match: { method: HEAD, path: "/_ping" }
+  - match: { method: GET, path: "/containers/*/json" }
     action: allow
-  - match: { method: GET, path: "/version" }
-    action: allow
-  - match: { method: GET, path: "/info" }
-    action: allow
-  - match: { method: GET, path: "/events" }
+  - match: { method: GET, path: "/containers/*/stats" }
     action: allow
 
-  # Container read (list, inspect, stats)
-  - match: { method: GET, path: "/containers/**" }
+  # Swarm reads — service list + inspect, task list only
+  - match: { method: GET, path: "/services" }
     action: allow
-
-  # Image read (for image info display)
-  - match: { method: GET, path: "/images/**" }
+  - match: { method: GET, path: "/services/*" }
     action: allow
-
-  # Swarm endpoints (for Swarm deployments)
-  - match: { method: GET, path: "/services/**" }
-    action: allow
-  - match: { method: GET, path: "/tasks/**" }
+  - match: { method: GET, path: "/tasks" }
     action: allow
 
   # Deny everything else

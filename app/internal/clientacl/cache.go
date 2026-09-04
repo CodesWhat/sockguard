@@ -51,17 +51,24 @@ type clientCache struct {
 	// callers from the same IP skip the expensive re-compile path. May be
 	// nil when label ACLs are disabled.
 	augment func(resolvedClient) resolvedClient
-	// verifyLive re-checks a cached client's container ID against current
-	// daemon state before trusting a found=true cache HIT. Docker recycles a
-	// container's IP the instant it's torn down, so without this check a
-	// cache hit could apply container X's memoized labels/ACL rules to a
-	// request that actually came from a brand-new container Y that reused
-	// X's IP within ttl. A single-container inspect costs the same as the
-	// liveness check resolve() already performs on every cache MISS, so
-	// this closes the gap without reintroducing the O(n) /containers/json
-	// listing the cache exists to avoid. Nil disables the check (e.g. in
-	// tests that don't wire it up).
-	verifyLive func(context.Context, string) bool
+	// verifyLive re-checks a cached client against current daemon state before
+	// trusting a found=true cache HIT. It asks whether that container ID still
+	// holds this very address — existence alone is not enough. Docker releases
+	// a container's IP back to IPAM the moment it stops, while the stopped
+	// container stays inspectable, so an existence-only check would still let
+	// container X's memoized labels/ACL rules be applied to a request that
+	// actually came from a brand-new container Y that reused X's IP within
+	// ttl. Checking ownership closes both halves: `docker rm` (X is gone) and
+	// `docker stop` (X is still there but no longer answers at addr).
+	//
+	// A single-container inspect costs the same as the liveness check
+	// resolve() already performs on every cache MISS, so this closes the gap
+	// without reintroducing the O(n) /containers/json listing the cache exists
+	// to avoid. Returning false is not an error: the caller drops the entry
+	// and falls back to a full re-resolve, so a false negative costs a lookup,
+	// never a wrong verdict. Nil disables the check (e.g. in tests that don't
+	// wire it up).
+	verifyLive func(ctx context.Context, id string, addr netip.Addr) bool
 
 	mu       sync.Mutex
 	entries  map[netip.Addr]*list.Element // value: *clientCacheNode
@@ -112,14 +119,15 @@ func (c *clientCache) Lookup(ctx context.Context, addr netip.Addr) (resolvedClie
 				c.mu.Unlock()
 				// Re-verify a found=true hit against current daemon state before
 				// trusting it — see the verifyLive doc comment on clientCache.
-				if !entry.found || c.verifyLive == nil || c.verifyLive(ctx, entry.client.ID) {
+				if !entry.found || c.verifyLive == nil || c.verifyLive(ctx, entry.client.ID, addr) {
 					return entry.client, entry.found, nil
 				}
 
-				// The cached container no longer exists: its IP may already have
-				// been reassigned to a different container. Remove the stale entry
-				// only if another caller has not refreshed it while verification
-				// was in progress.
+				// The cached container no longer answers at addr — it was removed,
+				// or it stopped and released the address back to IPAM. Either way
+				// the address may already belong to a different container. Remove
+				// the stale entry only if another caller has not refreshed it while
+				// verification was in progress.
 				c.mu.Lock()
 				current, exists := c.entries[addr]
 				if !exists {

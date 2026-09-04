@@ -40,8 +40,8 @@ type PostHogOptions = {
   persistence: "memory";
   disable_persistence: true;
   respect_dnt: true;
-  save_referrer: false;
-  save_campaign_params: false;
+  save_referrer: true;
+  save_campaign_params: true;
   disable_capture_url_hashes: true;
   disable_scroll_properties: true;
   mask_all_element_attributes: true;
@@ -88,8 +88,8 @@ export function createPostHogOptions(token: string, routes: ReadonlySet<string>)
     persistence: "memory",
     disable_persistence: true,
     respect_dnt: true,
-    save_referrer: false,
-    save_campaign_params: false,
+    save_referrer: true,
+    save_campaign_params: true,
     disable_capture_url_hashes: true,
     disable_scroll_properties: true,
     mask_all_element_attributes: true,

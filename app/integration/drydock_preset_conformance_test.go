@@ -80,7 +80,10 @@ func newDrydockIntegrationPresetHandler(t *testing.T, socketPath, presetFile str
 		t,
 		socketPath,
 		cfg.Rules,
-		filter.Options{PolicyConfig: policyConfig},
+		filter.Options{
+			PolicyConfig:          policyConfig,
+			AllowReadExfiltration: cfg.InsecureAllowReadExfiltration,
+		},
 		ownership.Options{},
 	)
 }
@@ -317,11 +320,11 @@ func TestDrydockPresetConformance(t *testing.T) {
 			{http.MethodGet, "/info", true},
 			{http.MethodGet, "/events?until=0", true},
 
-			// Narrow read set — deliberately omits logs/archive/export/attach.
+			// Narrow read set — deliberately omits top/logs/archive/export/attach.
 			{http.MethodGet, "/containers/json", true},
 			{http.MethodGet, "/containers/abc/json", true},
 			{http.MethodGet, "/containers/abc/stats", true},
-			{http.MethodGet, "/containers/abc/top", true},
+			{http.MethodGet, "/containers/abc/top", false},
 			{http.MethodGet, "/containers/abc/changes", true},
 
 			{http.MethodPost, "/containers/abc/start", true},

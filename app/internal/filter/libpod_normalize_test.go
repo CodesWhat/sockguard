@@ -41,15 +41,31 @@ func TestLibpodPerResourceMatchers(t *testing.T) {
 		{"isLibpodExecStartPath", isLibpodExecStartPath},
 		{"isLibpodContainerAttachPath", isLibpodContainerAttachPath},
 		{"isLibpodPlayKubePath", isLibpodPlayKubePath},
+		{"isLibpodImagePullPath", isLibpodImagePullPath},
+		{"isLibpodImageLoadPath", isLibpodImageLoadPath},
+		{"isLibpodLocalImageLoadPath", isLibpodLocalImageLoadPath},
+		{"isLibpodImageImportPath", isLibpodImageImportPath},
+		{"isLibpodLocalBuildPath", isLibpodLocalBuildPath},
+		{"isLibpodNetworkConnectPath", isLibpodNetworkConnectPath},
+		{"isLibpodNetworkDisconnectPath", isLibpodNetworkDisconnectPath},
+		{"isLibpodNetworkUpdatePath", isLibpodNetworkUpdatePath},
 	}
 
 	positives := map[string]string{
-		"isLibpodContainerCreatePath": "/libpod/containers/create",
-		"isLibpodPodCreatePath":       "/libpod/pods/create",
-		"isLibpodExecCreatePath":      "/libpod/containers/abc123/exec",
-		"isLibpodExecStartPath":       "/libpod/exec/abc123/start",
-		"isLibpodContainerAttachPath": "/libpod/containers/abc123/attach",
-		"isLibpodPlayKubePath":        "/libpod/play/kube",
+		"isLibpodContainerCreatePath":   "/libpod/containers/create",
+		"isLibpodPodCreatePath":         "/libpod/pods/create",
+		"isLibpodExecCreatePath":        "/libpod/containers/abc123/exec",
+		"isLibpodExecStartPath":         "/libpod/exec/abc123/start",
+		"isLibpodContainerAttachPath":   "/libpod/containers/abc123/attach",
+		"isLibpodPlayKubePath":          "/libpod/play/kube",
+		"isLibpodImagePullPath":         "/libpod/images/pull",
+		"isLibpodNetworkConnectPath":    "/libpod/networks/abc123/connect",
+		"isLibpodNetworkDisconnectPath": "/libpod/networks/abc123/disconnect",
+		"isLibpodNetworkUpdatePath":     "/libpod/networks/abc123/update",
+		"isLibpodImageLoadPath":         "/libpod/images/load",
+		"isLibpodLocalImageLoadPath":    "/libpod/local/images/load",
+		"isLibpodImageImportPath":       "/libpod/images/import",
+		"isLibpodLocalBuildPath":        "/libpod/local/build",
 	}
 
 	// Cross-cutting near-misses every matcher must reject.
@@ -63,6 +79,13 @@ func TestLibpodPerResourceMatchers(t *testing.T) {
 		"/exec/abc123/start",
 		"/containers/abc123/attach",
 		"/pods/create",
+		"/images/create",
+		"/images/load",
+		"/build",
+		"/libpod/build",
+		"/networks/abc123/connect",
+		"/networks/abc123/disconnect",
+		"/libpod/networks/create",
 	}
 
 	for _, m := range matchers {
@@ -106,6 +129,11 @@ func TestLibpodMatchersNeverMatchDockerPathsAndViceVersa(t *testing.T) {
 		"/containers/abc123/exec",
 		"/exec/abc123/start",
 		"/containers/abc123/attach",
+		"/images/create",
+		"/images/load",
+		"/build",
+		"/networks/abc123/connect",
+		"/networks/abc123/disconnect",
 	}
 	libpodMatchers := []struct {
 		name    string
@@ -118,6 +146,15 @@ func TestLibpodMatchersNeverMatchDockerPathsAndViceVersa(t *testing.T) {
 		{"isLibpodExecStartPath", isLibpodExecStartPath},
 		{"isLibpodContainerAttachPath", isLibpodContainerAttachPath},
 		{"isLibpodPlayKubePath", isLibpodPlayKubePath},
+		{"isLibpodImagePullPath", isLibpodImagePullPath},
+		{"isLibpodImageLoadPath", isLibpodImageLoadPath},
+		{"isLibpodLocalImageLoadPath", isLibpodLocalImageLoadPath},
+		{"isLibpodImageImportPath", isLibpodImageImportPath},
+		{"isLibpodLocalBuildPath", isLibpodLocalBuildPath},
+		{"isLibpodBuildPath", isLibpodBuildPath},
+		{"isLibpodNetworkConnectPath", isLibpodNetworkConnectPath},
+		{"isLibpodNetworkDisconnectPath", isLibpodNetworkDisconnectPath},
+		{"isLibpodNetworkUpdatePath", isLibpodNetworkUpdatePath},
 	}
 	for _, dp := range dockerPaths {
 		for _, m := range libpodMatchers {
@@ -134,6 +171,15 @@ func TestLibpodMatchersNeverMatchDockerPathsAndViceVersa(t *testing.T) {
 		"/libpod/containers/abc123/attach",
 		"/libpod/pods/create",
 		"/libpod/play/kube",
+		"/libpod/images/pull",
+		"/libpod/images/load",
+		"/libpod/local/images/load",
+		"/libpod/images/import",
+		"/libpod/build",
+		"/libpod/local/build",
+		"/libpod/networks/abc123/connect",
+		"/libpod/networks/abc123/disconnect",
+		"/libpod/networks/abc123/update",
 	}
 	dockerMatchers := []struct {
 		name    string
@@ -142,6 +188,9 @@ func TestLibpodMatchersNeverMatchDockerPathsAndViceVersa(t *testing.T) {
 		{"isExecCreatePath", isExecCreatePath},
 		{"isExecStartPath", isExecStartPath},
 		{"isContainerAttachPath", isContainerAttachPath},
+		{"isDockerNetworkConnectPath", func(p string) bool { return isNetworkActionPath(p, "connect") }},
+		{"isDockerNetworkDisconnectPath", func(p string) bool { return isNetworkActionPath(p, "disconnect") }},
+		{"isNetworkWritePath", isNetworkWritePath},
 	}
 	for _, lp := range libpodPaths {
 		for _, m := range dockerMatchers {

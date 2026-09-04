@@ -22,6 +22,8 @@ import (
 	"github.com/codeswhat/sockguard/app/internal/httpjson"
 	"github.com/codeswhat/sockguard/app/internal/inspectcache"
 	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/responsefilter"
+	"github.com/codeswhat/sockguard/app/internal/upstreamflavor"
 )
 
 // patternBufferPool pools bytes.Buffer instances so the pattern-filter writer
@@ -56,6 +58,9 @@ const (
 	reasonCodeVisibilityPolicyLookupFailed  = "visibility_policy_lookup_failed"
 	reasonCodeVisibilityPolicyHidResource   = "visibility_policy_hid_resource"
 	reasonCodeVisibilityResponseTooLarge    = "visibility_response_too_large"
+	reasonCodeVisibilityPodmanEvents        = "visibility_podman_events_unscopeable"
+	reasonCodeVisibilityLibpodDataUsage     = "visibility_libpod_data_usage_unscopeable"
+	reasonCodeVisibilityLibpodEvents        = "visibility_libpod_events_unscopeable"
 )
 
 // Options configures label-based visibility control on Docker read endpoints.
@@ -71,6 +76,19 @@ type Options struct {
 	ImagePatterns  []string
 	Profiles       map[string]Policy
 	ResolveProfile func(*http.Request) (string, bool)
+	// UpstreamFlavor is the engine behind the upstream socket, resolved at
+	// startup from upstream.flavor (see internal/upstreamflavor). It changes
+	// exactly one thing: how GET /events is handled, because Podman evaluates
+	// several values under one event filter key disjunctively where dockerd
+	// ANDs them, so the append-style injection every other list endpoint uses
+	// widens that stream on Podman instead of narrowing it.
+	//
+	// The zero value means Docker — the semantics every construction site had
+	// before this field existed. `auto` never resolves to the zero value:
+	// resolveUpstreamFlavor fails startup rather than leaving it empty, so
+	// production always sets it explicitly and
+	// TestServeChainPassesResolvedFlavorToVisibility pins that wiring.
+	UpstreamFlavor upstreamflavor.Flavor
 }
 
 // Policy defines per-profile visibility overrides.
@@ -154,6 +172,12 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 		return func(next http.Handler) http.Handler { return next }
 	}
 
+	// Hoisted out of the request closure: the flavor is fixed for the life of
+	// the process (upstream.flavor is reload-immutable and the chain is
+	// rebuilt on reload anyway), so the request path compares a bool rather
+	// than a string.
+	podmanUpstream := opts.UpstreamFlavor == upstreamflavor.Podman
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			effectivePolicy, ok := resolveEffectivePolicy(opts, mergedProfilePolicies, defaultPolicy, w, r)
@@ -169,6 +193,72 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 			}
 
 			normPath := normalizedPathForRequest(w, r)
+			// GET /system/df enumerates every container, volume and image on
+			// the host and accepts no `filters` query parameter, so it can only
+			// be constrained on the response. It is deliberately NOT in
+			// needsVisibilityLabelFilter: injecting a `filters=` param the
+			// endpoint does not define would be meaningless at best.
+			if r.Method == http.MethodGet && normPath == responsefilter.SystemDataUsagePath {
+				handleVisibilitySystemDataUsageRequest(logger, next, w, r, &effectivePolicy)
+				return
+			}
+			// On a Podman upstream the Docker-compat GET /events is the same
+			// handler Podman serves /libpod/events from, and it evaluates
+			// several values under one filter key disjunctively. The
+			// append-style injection below would widen that stream rather
+			// than narrow it, so it gets a single-selector replacement and a
+			// refusal when the policy carries more. Docker upstreams take the
+			// ordinary list path here, unchanged. See podmanEventsDenyReason.
+			if podmanUpstream && normPath == compatEventsPath {
+				handlePodmanCompatEventsRequest(next, w, r, &effectivePolicy)
+				return
+			}
+			// Podman's native GET /libpod/system/df has the same
+			// no-`filters`-parameter problem and no response the policy can be
+			// applied to either: its image, container and volume entries carry
+			// no labels, so neither the selector axes nor the name/image
+			// pattern axes have a field to read. It is refused rather than
+			// filtered — see
+			// responsefilter.LibpodSystemDataUsageDenyReason. The refusal
+			// covers HEAD too: falling through to needsVisibilityLabelFilter
+			// or the inspect path below would forward it to the daemon
+			// instead of refusing it.
+			if (r.Method == http.MethodGet || r.Method == http.MethodHead) && normPath == responsefilter.LibpodSystemDataUsagePath {
+				denyLibpodSystemDataUsage(w, r)
+				return
+			}
+			// Three more libpod reads have that same shape — showmounted,
+			// container stats and pod stats — each enumerating the host with
+			// no labels for the selector axes, no name or image field for the
+			// pattern axes, and no `filters` parameter to attach anything to.
+			// They are refused rather than filtered. The set is
+			// filter.LibpodUnscopeableReads(), shared with the ownership
+			// middleware so the two layers cannot disagree about which
+			// endpoints are refusable; each entry's doc comment carries its
+			// shape evidence. HEAD is refused alongside GET: there is no
+			// body-filtering step it could legitimately need, so gating on GET
+			// alone would forward it to the daemon.
+			if r.Method == http.MethodGet || r.Method == http.MethodHead {
+				if read, ok := filter.LookupLibpodUnscopeableRead(normPath); ok {
+					denyUnscopeableLibpodRead(w, r, read)
+					return
+				}
+			}
+			// Podman's native GET /libpod/events accepts the same `filters`
+			// query parameter the Docker-compat /events does — it is literally
+			// the same handler — but evaluates several values under one filter
+			// key disjunctively, so the append-style injection every other list
+			// endpoint uses would widen the stream instead of narrowing it. It
+			// gets its own single-selector injection, and a refusal when the
+			// policy has more selectors than the shape can express. See
+			// libpodEventsDenyReason.
+			if r.Method == http.MethodGet && normPath == LibpodEventsPath {
+				handleLibpodVisibilityEventsRequest(next, w, r, &effectivePolicy)
+				return
+			}
+			if handleVisibilityImageExportRequest(logger, next, deps, w, r, normPath, &effectivePolicy) {
+				return
+			}
 			if needsVisibilityLabelFilter(normPath) {
 				handleVisibilityListRequest(logger, next, w, r, normPath, &effectivePolicy, hasSelectors, hasPatterns)
 				return
@@ -202,7 +292,7 @@ func compileVisibilityPolicies(logger *slog.Logger, opts Options) (compiledPolic
 			return compiledPolicy{}, nil, false
 		}
 		mergedPolicy := compiledPolicy{
-			selectors:     append(slices.Clone(defaultPolicy.selectors), compiled.selectors...),
+			selectors:     appendUniqueSelectors(slices.Clone(defaultPolicy.selectors), compiled.selectors...),
 			namePatterns:  append(slices.Clone(defaultPolicy.namePatterns), compiled.namePatterns...),
 			imagePatterns: append(slices.Clone(defaultPolicy.imagePatterns), compiled.imagePatterns...),
 		}
@@ -219,18 +309,20 @@ func compileVisibilityPolicies(logger *slog.Logger, opts Options) (compiledPolic
 
 // warnPatternsWithoutSelectors logs once at construction when a visibility
 // policy carries name/image patterns but no label selector. Pattern response
-// filtering only covers /containers/json and /images/json (see
-// needsPatternResponseFilter); every other visibility-aware list endpoint —
-// /events in particular — is constrained solely by the label selectors injected
-// into the upstream filter. So a patterns-only policy silently leaves /events
-// (and /networks, /volumes, /services, …) unrestricted.
+// filtering only covers /containers/json, /libpod/containers/json,
+// /images/json and /libpod/images/json (see needsPatternResponseFilter); every
+// other visibility-aware list endpoint — /events in particular — is
+// constrained solely by the label selectors injected into the upstream
+// filter. So a patterns-only policy silently leaves /events (and /networks,
+// /volumes, /services, …) unrestricted.
 func warnPatternsWithoutSelectors(logger *slog.Logger, scope string, policy compiledPolicy) {
 	if logger == nil || !policy.hasPatternAxes() || len(policy.selectors) > 0 {
 		return
 	}
 	logger.Warn("visibility name/image patterns are set without any visible_resource_labels selector; "+
-		"pattern filtering only applies to /containers/json and /images/json, so /events and the other list "+
-		"endpoints stay unrestricted — add a label selector to constrain them",
+		"pattern filtering only applies to containers and images (/containers/json, /libpod/containers/json, /images/json, /libpod/images/json, and the "+
+		"matching sections of /system/df), so /events and the other list endpoints stay unrestricted. "+
+		"Add a label selector to constrain them",
 		"scope", scope)
 }
 
@@ -267,54 +359,66 @@ func resolveEffectivePolicy(opts Options, profiles map[string]compiledPolicy, de
 // and (where supported) pattern-based response filtering for list endpoints.
 func handleVisibilityListRequest(logger *slog.Logger, next http.Handler, w http.ResponseWriter, r *http.Request, normPath string, policy *compiledPolicy, hasSelectors, hasPatterns bool) {
 	if hasSelectors {
-		if err := addVisibilityLabelFilters(r, normPath, policy.selectors); err != nil {
+		forwarded, err := addVisibilityLabelFilters(r, normPath, policy.selectors)
+		if err != nil {
 			logging.SetDeniedWithCode(w, r, reasonCodeVisibilityFilterInvalid, err.Error(), nil)
 			_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: err.Error()})
 			return
 		}
+		// Forward the returned request: it carries the record of which label
+		// values this layer injected, which ownership reads downstream.
+		r = forwarded
 	}
-	if hasPatterns && needsPatternResponseFilter(normPath) {
-		interceptingW := newPatternFilterWriter(w)
-		defer interceptingW.release()
-		next.ServeHTTP(interceptingW, r)
-		if interceptingW.overflow {
-			logger.ErrorContext(r.Context(), "visibility pattern filter: upstream response exceeds size limit",
-				"limit_bytes", filter.MaxResponseBodyBytes, "method", logging.SafeString(r.Method), "path", logging.SafeString(r.URL.Path))
-			logging.SetDeniedWithCode(w, r, reasonCodeVisibilityResponseTooLarge, "upstream response too large to filter", nil)
-			clearUpstreamRepresentationHeaders(w.Header())
-			_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "upstream response too large to filter"})
-			return
-		}
-		if err := interceptingW.flushFiltered(normPath, policy); err != nil {
-			logger.ErrorContext(r.Context(), "visibility pattern list filter failed", "error", logging.SafeString(err.Error()))
-			if !interceptingW.headerWritten {
-				logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyLookupFailed, "visibility pattern filter failed", nil)
-				clearUpstreamRepresentationHeaders(w.Header())
-				_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "visibility pattern filter failed"})
-			}
-		}
+	// The response filter is GET-only, the same gate GET /system/df takes
+	// above. A HEAD carries no body, so there is nothing to filter and nothing
+	// to leak; intercepting one would hand flushFiltered an empty buffer,
+	// which is not the JSON array it now requires, and turn a legitimate HEAD
+	// into a 502.
+	if hasPatterns && r.Method == http.MethodGet && needsPatternResponseFilter(normPath) {
+		filterResponseThroughWriter(logger, next, w, r, "visibility pattern list filter failed", func(fw *patternFilterWriter) error {
+			return fw.flushFiltered(normPath, policy)
+		})
 		return
 	}
 	next.ServeHTTP(w, r)
 }
 
-func clearUpstreamRepresentationHeaders(header http.Header) {
-	for _, name := range []string{
-		"Accept-Ranges",
-		"Content-Digest",
-		"Content-Encoding",
-		"Content-Language",
-		"Content-Length",
-		"Content-Location",
-		"Content-Range",
-		"Digest",
-		"ETag",
-		"Last-Modified",
-		"Repr-Digest",
-		"Transfer-Encoding",
-	} {
-		header.Del(name)
+// filterResponseThroughWriter runs next with a response-buffering writer,
+// applies flush to the buffered body, and converts an oversized upstream
+// response or a flush failure into a fail-closed 502. Both the pattern-filtered
+// list endpoints and GET /system/df share this plumbing; only the flush step
+// differs.
+func filterResponseThroughWriter(logger *slog.Logger, next http.Handler, w http.ResponseWriter, r *http.Request, failureReason string, flush func(*patternFilterWriter) error) {
+	interceptingW := newPatternFilterWriter(w)
+	defer interceptingW.release()
+	next.ServeHTTP(interceptingW, r)
+	if interceptingW.overflow {
+		logger.ErrorContext(r.Context(), "visibility response filter: upstream response exceeds size limit",
+			"limit_bytes", filter.MaxResponseBodyBytes, "method", logging.SafeString(r.Method), "path", logging.SafeString(r.URL.Path))
+		logging.SetDeniedWithCode(w, r, reasonCodeVisibilityResponseTooLarge, "upstream response too large to filter", nil)
+		clearUpstreamRepresentationHeaders(w.Header())
+		_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "upstream response too large to filter"})
+		return
 	}
+	if err := flush(interceptingW); err != nil {
+		logger.ErrorContext(r.Context(), failureReason, "error", logging.SafeString(err.Error()))
+		if !interceptingW.headerWritten {
+			// failureReason names which flush step failed, so the 502 body and
+			// the log record agree. Hard-coding the pattern-filter wording here
+			// told an operator debugging a /system/df 502 to go and look at the
+			// pattern axes, which are not what ran.
+			logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyLookupFailed, failureReason, nil)
+			clearUpstreamRepresentationHeaders(w.Header())
+			_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: failureReason})
+		}
+	}
+}
+
+// clearUpstreamRepresentationHeaders delegates to responsefilter so the header
+// list has exactly one definition; the ownership middleware's /system/df
+// interceptor needs the same one.
+func clearUpstreamRepresentationHeaders(header http.Header) {
+	responsefilter.ClearUpstreamRepresentationHeaders(header)
 }
 
 // handleVisibilityInspectRequest applies the inspect / single-resource
@@ -354,7 +458,8 @@ func handleVisibilityInspectRequest(logger *slog.Logger, next http.Handler, deps
 // needsPatternResponseFilter reports whether the given normalized path is a
 // list endpoint for which we support response-body pattern filtering.
 func needsPatternResponseFilter(normPath string) bool {
-	return normPath == "/containers/json" || normPath == "/images/json"
+	return normPath == "/containers/json" || normPath == libpodPrefix+"containers/json" ||
+		normPath == "/images/json" || normPath == libpodPrefix+"images/json"
 }
 
 // patternFilterWriter is a response-intercepting http.ResponseWriter that
@@ -420,6 +525,48 @@ func mustHaveEmptyBody(code int) bool {
 	}
 }
 
+// commitIfUnfilterable forwards the buffered response untouched for the status
+// codes no body filter applies to, reporting committed=true when it already
+// wrote the response. Shared by flushFiltered and flushSystemDataUsage so both
+// treat 204/304 and non-2xx identically.
+func (p *patternFilterWriter) commitIfUnfilterable() (bool, error) {
+	// RFC 9110 §15.4.5 / §15.3.5: 204 and 304 must have an empty body.
+	// Writing any bytes triggers an http.ResponseWriter downgrade to 502.
+	if mustHaveEmptyBody(p.statusCode) {
+		p.underlying.WriteHeader(p.statusCode)
+		p.headerWritten = true
+		return true, nil
+	}
+
+	// Only filter 2xx responses with a JSON body; pass through everything else.
+	if p.statusCode < http.StatusOK || p.statusCode >= http.StatusMultipleChoices {
+		p.underlying.WriteHeader(p.statusCode)
+		p.headerWritten = true
+		_, err := p.underlying.Write(p.body.Bytes())
+		return true, err
+	}
+	return false, nil
+}
+
+// commitFilteredBody writes body as the final response, setting Content-Length
+// so the rewritten length replaces the upstream's.
+//
+// Every other representation header the daemon set describes the body this one
+// replaces, so they are cleared first, exactly as the 502 paths in
+// filterResponseThroughWriter already do. Leaving them meant the client got an
+// ETag and a Content-Encoding for bytes it never received: a caching client
+// keyed on that validator can serve the unfiltered list back later, and the
+// ETag alone is a fingerprint of the resources the policy hid. Content-Length
+// is set after the clear, because the clear removes it.
+func (p *patternFilterWriter) commitFilteredBody(body []byte) error {
+	clearUpstreamRepresentationHeaders(p.underlying.Header())
+	p.underlying.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	p.underlying.WriteHeader(p.statusCode)
+	p.headerWritten = true
+	_, err := p.underlying.Write(body)
+	return err
+}
+
 // flushFiltered filters the buffered JSON array response by pattern axes and
 // writes the result to the underlying ResponseWriter.
 //
@@ -428,31 +575,28 @@ func mustHaveEmptyBody(code int) bool {
 // large list responses (hundreds of containers/images) while preserving the
 // per-item visibility check. Filtered items are encoded into a pooled output
 // buffer so Content-Length can be set before WriteHeader.
+//
+// A 2xx body that is not a JSON array is refused, not forwarded, the same way
+// flushSystemDataUsage refuses a /system/df body it cannot decode. This used
+// to be a pass-through branch, which failed open in the one direction that
+// matters: a body the pattern filter cannot walk is one whose items were never
+// checked against the policy, and a JSON object, string or null is exactly
+// what an upstream that is not the daemon this build expects would answer
+// with. The caller turns the error into a 502. Only GET reaches here (see
+// handleVisibilityListRequest), so an empty buffer means a truncated or absent
+// upstream body rather than a legitimate bodiless HEAD.
 func (p *patternFilterWriter) flushFiltered(normPath string, policy *compiledPolicy) error {
-	// RFC 9110 §15.4.5 / §15.3.5: 204 and 304 must have an empty body.
-	// Writing any bytes triggers an http.ResponseWriter downgrade to 502.
-	if mustHaveEmptyBody(p.statusCode) {
-		p.underlying.WriteHeader(p.statusCode)
-		p.headerWritten = true
-		return nil
-	}
-
-	// Only filter 2xx responses with a JSON body; pass through everything else.
-	if p.statusCode < http.StatusOK || p.statusCode >= http.StatusMultipleChoices {
-		p.underlying.WriteHeader(p.statusCode)
-		p.headerWritten = true
-		_, err := p.underlying.Write(p.body.Bytes())
+	if committed, err := p.commitIfUnfilterable(); committed {
 		return err
 	}
 
 	dec := json.NewDecoder(bytes.NewReader(p.body.Bytes()))
 	tok, err := dec.Token()
-	if err != nil || tok != json.Delim('[') {
-		// Not a JSON array — pass through unchanged.
-		p.underlying.WriteHeader(p.statusCode)
-		p.headerWritten = true
-		_, werr := p.underlying.Write(p.body.Bytes())
-		return werr
+	if err != nil {
+		return fmt.Errorf("decode %s list response: %w", normPath, err)
+	}
+	if tok != json.Delim('[') {
+		return fmt.Errorf("decode %s list response: expected a JSON array, got %T", normPath, tok)
 	}
 
 	out := acquirePatternBuffer()
@@ -479,20 +623,16 @@ func (p *patternFilterWriter) flushFiltered(normPath string, policy *compiledPol
 	}
 	out.WriteByte(']')
 
-	p.underlying.Header().Set("Content-Length", strconv.Itoa(out.Len()))
-	p.underlying.WriteHeader(p.statusCode)
-	p.headerWritten = true
-	_, err = p.underlying.Write(out.Bytes())
-	return err
+	return p.commitFilteredBody(out.Bytes())
 }
 
 // itemVisibleByPatterns checks a single JSON list item against the pattern
 // axes. Returns true if the item passes all configured axes.
 func itemVisibleByPatterns(raw json.RawMessage, normPath string, policy *compiledPolicy) (bool, error) {
 	switch normPath {
-	case "/containers/json":
+	case "/containers/json", libpodPrefix + "containers/json":
 		return containerItemVisibleByPatterns(raw, policy)
-	case "/images/json":
+	case "/images/json", libpodPrefix + "images/json":
 		return imageItemVisibleByPatterns(raw, policy)
 	default:
 		return true, nil
@@ -631,7 +771,7 @@ func compilePolicy(labels []string, nameGlobs []string, imageGlobs []string) (co
 		if err != nil {
 			return compiled, err
 		}
-		compiled.selectors = append(compiled.selectors, selector)
+		compiled.selectors = appendUniqueSelectors(compiled.selectors, selector)
 	}
 	var err error
 	compiled.namePatterns, err = compilePatterns(nameGlobs)
@@ -643,6 +783,15 @@ func compilePolicy(labels []string, nameGlobs []string, imageGlobs []string) (co
 		return compiledPolicy{}, fmt.Errorf("image_patterns: %w", err)
 	}
 	return compiled, nil
+}
+
+func appendUniqueSelectors(dst []compiledSelector, selectors ...compiledSelector) []compiledSelector {
+	for _, selector := range selectors {
+		if !slices.Contains(dst, selector) {
+			dst = append(dst, selector)
+		}
+	}
+	return dst
 }
 
 func parseSelector(raw string) (compiledSelector, error) {
@@ -681,34 +830,47 @@ func needsVisibilityLabelFilter(normPath string) bool {
 	}
 }
 
-func addVisibilityLabelFilters(r *http.Request, normPath string, selectors []compiledSelector) error {
+// addVisibilityLabelFilters merges the policy's selectors into the request's
+// label filter and returns the request to forward. The returned request may be
+// a context-derived copy: the selectors are recorded on it as proxy-injected
+// (dockerfilters.RecordInjectedSelectors) so the ownership middleware, which
+// runs after this one and drops client-supplied values from the same filter
+// key, keeps them. Callers must forward the returned request, not the argument.
+func addVisibilityLabelFilters(r *http.Request, normPath string, selectors []compiledSelector) (*http.Request, error) {
 	query := r.URL.Query()
 	filters, err := dockerfilters.Decode(query.Get("filters"))
 	if err != nil {
-		return err
+		return r, err
 	}
 	filterKey := visibilityLabelFilterKey(normPath)
+	injected := make([]string, 0, len(selectors))
 	changed := false
 	for _, selector := range selectors {
 		value := selector.key
 		if selector.hasValue {
 			value += "=" + selector.value
 		}
+		injected = append(injected, value)
 		if !slices.Contains(filters[filterKey], value) {
 			filters[filterKey] = append(filters[filterKey], value)
 			changed = true
 		}
 	}
+	// Recorded unconditionally, including the selectors already present
+	// because the client happened to send them: they are policy-enforced
+	// either way, and a later layer that drops client-supplied values would
+	// otherwise strip exactly the ones this loop did not have to write.
+	r = dockerfilters.RecordInjectedSelectors(r, filterKey, injected)
 	if !changed {
-		return nil
+		return r, nil
 	}
 	encoded, err := json.Marshal(filters)
 	if err != nil {
-		return fmt.Errorf("encode filters: %w", err)
+		return r, fmt.Errorf("encode filters: %w", err)
 	}
 	query.Set("filters", string(encoded))
 	r.URL.RawQuery = query.Encode()
-	return nil
+	return r, nil
 }
 
 func visibilityLabelFilterKey(normPath string) string {
@@ -731,7 +893,13 @@ func requestVisibleWithPolicy(ctx context.Context, normPath string, policy *comp
 	if identifier, ok := containerReadIdentifier(normPath); ok {
 		return resourceVisibleWithPolicy(ctx, deps, dockerresource.KindContainer, identifier, policy)
 	}
+	if identifier, ok := libpodContainerReadIdentifier(normPath); ok {
+		return resourceVisibleWithPolicy(ctx, deps, dockerresource.KindContainer, identifier, policy)
+	}
 	if identifier, ok := imageReadIdentifier(normPath); ok {
+		return resourceVisibleWithPolicy(ctx, deps, dockerresource.KindImage, identifier, policy)
+	}
+	if identifier, ok := libpodImageReadIdentifier(normPath); ok {
 		return resourceVisibleWithPolicy(ctx, deps, dockerresource.KindImage, identifier, policy)
 	}
 	// Pattern axes only apply to containers and images. All other resource
@@ -770,7 +938,15 @@ func requestVisibleWithPolicy(ctx context.Context, normPath string, policy *comp
 	if isSwarmInspectPath(normPath) {
 		return resourceVisible(ctx, deps, dockerresource.KindSwarm, "", policy.selectors)
 	}
-	if execID, ok := execInspectIdentifier(normPath); ok {
+	// Both exec-inspect spellings resolve through the same upstream inspector:
+	// Podman serves GET /exec/{id}/json and GET /libpod/exec/{id}/json from one
+	// handler over one exec-session store, so the Docker-compat inspect answers
+	// for a session created either way.
+	execID, isExecInspect := execInspectIdentifier(normPath)
+	if !isExecInspect {
+		execID, isExecInspect = libpodExecInspectIdentifier(normPath)
+	}
+	if isExecInspect {
 		containerID, found, err := deps.inspectExec(ctx, execID)
 		if err != nil {
 			return false, err
@@ -780,17 +956,14 @@ func requestVisibleWithPolicy(ctx context.Context, normPath string, policy *comp
 		}
 		return resourceVisible(ctx, deps, dockerresource.KindContainer, containerID, policy.selectors)
 	}
-	// libpod route family (#148 PR5): containers/volumes/secrets are checked
-	// against their Docker-compat inspect path (Podman's compat API is a
-	// translation layer over the same underlying resource store for those
-	// kinds); networks and pods use their libpod-native inspect path via
+	// libpod route family (#148 PR5): containers, images, volumes and secrets
+	// are checked against their Docker-compat inspect path (Podman's compat
+	// API is a translation layer over the same underlying resource store for
+	// those kinds); networks and pods use their libpod-native inspect path via
 	// dockerresource.KindLibpodNetwork/KindLibpodPod — networks because
 	// GET /libpod/networks/{id}/json differs in label-key casing and (per
 	// design doc C6) may return a single-element array-wrapped response,
 	// pods because they have no Docker-compat equivalent at all.
-	if identifier, ok := libpodContainerReadIdentifier(normPath); ok {
-		return resourceVisible(ctx, deps, dockerresource.KindContainer, identifier, policy.selectors)
-	}
 	if identifier, ok := libpodPodReadIdentifier(normPath); ok {
 		return resourceVisible(ctx, deps, dockerresource.KindLibpodPod, identifier, policy.selectors)
 	}
@@ -809,50 +982,64 @@ func requestVisibleWithPolicy(ctx context.Context, normPath string, policy *comp
 // resourceVisibleWithPolicy checks both label selectors and name/image pattern
 // axes for a single container or image resource.
 func resourceVisibleWithPolicy(ctx context.Context, deps visibilityDeps, kind dockerresource.Kind, identifier string, policy *compiledPolicy) (bool, error) {
+	visible, found, err := lookupResourceVisibilityWithPolicy(ctx, deps, kind, identifier, policy)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return true, nil
+	}
+	return visible, nil
+}
+
+// lookupResourceVisibilityWithPolicy reports visibility and existence
+// separately so callers can choose whether a missing resource is safe to pass
+// through or must fail closed.
+func lookupResourceVisibilityWithPolicy(ctx context.Context, deps visibilityDeps, kind dockerresource.Kind, identifier string, policy *compiledPolicy) (visible, found bool, err error) {
 	if len(policy.selectors) > 0 && policy.hasPatternAxes() && deps.inspectResourceDetails != nil {
 		details, found, err := deps.inspectResourceDetails(ctx, kind, identifier)
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		if !found {
-			return true, nil
+			return false, false, nil
 		}
 		if !matchesSelectors(details.labels, policy.selectors) {
-			return false, nil
+			return false, true, nil
 		}
-		return resourceMetaMatchesPatterns(details.meta, kind, policy), nil
+		return resourceMetaMatchesPatterns(details.meta, kind, policy), true, nil
 	}
 	// Check label selectors first (uses the cached inspect path).
 	if len(policy.selectors) > 0 {
 		labels, found, err := deps.inspectResource(ctx, kind, identifier)
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		if !found {
-			return true, nil
+			return false, false, nil
 		}
 		if !matchesSelectors(labels, policy.selectors) {
-			return false, nil
+			return false, true, nil
 		}
 	}
 	// Check pattern axes if configured.
 	if policy.hasPatternAxes() {
 		if deps.inspectResourceMeta == nil {
 			// No meta inspector configured (e.g. in tests without pattern deps).
-			return true, nil
+			return true, true, nil
 		}
 		meta, found, err := deps.inspectResourceMeta(ctx, kind, identifier)
 		if err != nil {
-			return false, err
+			return false, false, err
 		}
 		if !found {
-			return true, nil
+			return false, false, nil
 		}
 		if !resourceMetaMatchesPatterns(meta, kind, policy) {
-			return false, nil
+			return false, true, nil
 		}
 	}
-	return true, nil
+	return true, true, nil
 }
 
 // resourceMetaMatchesPatterns checks a resource's name/image metadata against

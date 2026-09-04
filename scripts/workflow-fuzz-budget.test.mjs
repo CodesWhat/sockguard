@@ -48,4 +48,29 @@ describe("quality fuzz workflows", () => {
       );
     });
   }
+
+  it("caps the nightly matrix so it fits the Free plan's concurrent-job ceiling", () => {
+    // 20 concurrent jobs org-wide, and portwing's Deep Fuzz shares this
+    // workflow's `30 9 * * *` minute with 7 jobs of its own. Anything admitted
+    // over the ceiling is starved and then reclaimed with exit 143, which
+    // reads as a fuzz failure but produces no crasher. See the comment on
+    // max-parallel in the workflow.
+    const source = readFileSync(
+      resolve(repoRoot, ".github/workflows/quality-fuzz-nightly.yml"),
+      "utf8",
+    );
+
+    const cap = source.match(/^ {6}max-parallel: (\d+)$/m);
+    assert.ok(cap, "quality-fuzz-nightly.yml must set max-parallel on the fuzz matrix");
+    assert.ok(
+      Number(cap[1]) <= 13,
+      `max-parallel must leave room for portwing's 7 jobs under the 20-job ceiling, got ${cap[1]}`,
+    );
+
+    const targets = source.match(/^ {10}- \{ name: Fuzz/gm) ?? [];
+    assert.ok(
+      targets.length > Number(cap[1]),
+      "the cap only matters while the matrix is wider than it; drop this test if that stops being true",
+    );
+  });
 });

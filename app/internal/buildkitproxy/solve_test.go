@@ -892,6 +892,11 @@ func TestRegistryHostFromImageRef(t *testing.T) {
 		{"Example.COM/foo", "example.com", true},
 		{"index.docker.io/library/alpine", "docker.io", true},
 		{"https://example.com/foo", "example.com", true},
+		// Pins strings.Index's idx >= 0 boundary: a "://" found at position 0
+		// (nothing before the scheme separator) must still be stripped, same
+		// as one found further in ("https://..." above) — idx >= 0 covers 0
+		// itself, not just idx > 0.
+		{"://example.com/foo", "example.com", true},
 	}
 	for _, tc := range cases {
 		host, ok := registryHostFromImageRef(tc.ref)
@@ -943,5 +948,62 @@ func TestDeny(t *testing.T) {
 	d := deny(grpcCodePermissionDenied, "buildkit_policy_denied", "message text")
 	if d.code != grpcCodePermissionDenied || d.reasonCode != "buildkit_policy_denied" || d.message != "message text" {
 		t.Fatalf("deny(...) = %+v, unexpected fields", d)
+	}
+}
+
+// TestDefinitionIsExecFreeDepthBoundaries tables definitionIsExecFree's
+// maxDepth handling at both ends:
+//
+//   - zero depth: pins the maxDepth < 0 guard at its own boundary. maxDepth
+//     == 0 must NOT be treated as "too deep" — it still evaluates the ops at
+//     this level normally, only a maxDepth that has gone NEGATIVE (one level
+//     past the caller's budget) bails out early. A def with no
+//     ExecOp/BuildOp at depth 0 must therefore still come back exec-free.
+//   - excessive nesting: pins the maxDepth-1 recursion arithmetic directly.
+//     Nesting BuildOps deeper than maxDepth allows — even when NONE of them
+//     carry an ExecOp — must come back NOT exec-free ("an unevaluable
+//     signal must not pass", per this function's own doc comment). A budget
+//     that increments instead of decrementing each level would never hit
+//     the maxDepth < 0 cutoff and would instead correctly walk all the way
+//     to the bottom, wrongly calling this exec-free.
+func TestDefinitionIsExecFreeDepthBoundaries(t *testing.T) {
+	// A leaf def with a single, definitely-not-Exec op.
+	leaf := &pb.Definition{
+		Def: [][]byte{mustMarshal(t, &pb.Op{Op: &pb.Op_Source{Source: &pb.SourceOp{Identifier: "docker-image://busybox"}}})},
+	}
+	// Wrap it in 4 levels of BuildOp nesting — deeper than the maxDepth of 2
+	// used below, so a correctly-decrementing budget must reject it.
+	nested := leaf
+	for range 4 {
+		nested = &pb.Definition{
+			Def: [][]byte{mustMarshal(t, &pb.Op{Op: &pb.Op_Build{Build: &pb.BuildOp{Def: nested}}})},
+		}
+	}
+
+	cases := []struct {
+		name     string
+		def      *pb.Definition
+		maxDepth int
+		want     bool
+	}{
+		{
+			name:     "zero depth allows a shallow op",
+			def:      leaf,
+			maxDepth: 0,
+			want:     true,
+		},
+		{
+			name:     "nesting deeper than maxDepth is rejected",
+			def:      nested,
+			maxDepth: 2,
+			want:     false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := definitionIsExecFree(tc.def, tc.maxDepth); got != tc.want {
+				t.Fatalf("definitionIsExecFree() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

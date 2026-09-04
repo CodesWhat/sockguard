@@ -89,6 +89,7 @@ jobs:
           - { name: FuzzLoadBytesEndpointConfig,   pkg: ./internal/config/ }
           - { name: FuzzEffectiveListenerValidation, pkg: ./internal/config/ }
           - { name: FuzzLoadYAMLBuildkit,          pkg: ./internal/config/ }
+          - { name: FuzzValidateUpstreamHijackInactivityTimeout, pkg: ./internal/config/ }
           - { name: FuzzProxyHeadersAndBody,       pkg: ./internal/proxy/ }
           - { name: FuzzHijackHeadersAndBody,      pkg: ./internal/proxy/ }
           - { name: FuzzHijackBidirectionalStream, pkg: ./internal/proxy/ }
@@ -97,9 +98,13 @@ jobs:
           - { name: FuzzOwnershipMutateBody,       pkg: ./internal/ownership/ }
           - { name: FuzzOwnershipMutateServiceBody, pkg: ./internal/ownership/ }
           - { name: FuzzFilterModifyResponse,      pkg: ./internal/responsefilter/ }
+          - { name: FuzzFilterSystemDataUsage,     pkg: ./internal/responsefilter/ }
           - { name: FuzzImmutableListenerDiff,     pkg: ./internal/reload/ }
           - { name: FuzzBuildConfig,               pkg: ./internal/policybundle/ }
           - { name: FuzzToRegexString,             pkg: ./internal/glob/ }
+          - { name: FuzzClassify,                  pkg: ./internal/upstreamflavor/ }
+          - { name: FuzzConfigured,                pkg: ./internal/upstreamflavor/ }
+          - { name: FuzzPodmanEventLabelFilter,    pkg: ./internal/visibility/ }
 
     steps:
       # Stays audit for stage 1: this job already has an open, in-repo

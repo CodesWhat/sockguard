@@ -415,7 +415,11 @@ func TestRouteCategoryCoversDockerRouteFamiliesAndPathEdges(t *testing.T) {
 		// here so a future refactor can't silently reintroduce the filter
 		// package's bug on this side.
 		{name: "three-part version prefix stripped", path: "/v5.0.0/containers/json", want: "/containers/json"},
-		{name: "invalid version prefix kept", path: "/v1x/containers/json", want: "unknown"},
+		// Podman prerelease/dev builds (this fix): the version segment class
+		// is [0-9][0-9A-Za-z.-]*, so a trailing letter run like "1x" strips
+		// just like a digit-only segment.
+		{name: "letter suffix in version segment stripped", path: "/v1x/containers/json", want: "/containers/json"},
+		{name: "no digit after v is not a version segment", path: "/vx/containers/json", want: "unknown"},
 		{name: "container collection", path: "/containers", want: "/containers"},
 		{name: "system known tail", path: "/system/df", want: "/system/df"},
 		{name: "system unknown path", path: "/system/foo/bar", want: "/system/{action}"},
@@ -859,4 +863,188 @@ func TestRegistryConcurrentObserveAndScrape(t *testing.T) {
 	assertContains(t, out, `sockguard_config_reload_total{result="ok"} `+strconv.FormatUint(expected, 10))
 	assertContains(t, out, `sockguard_upstream_watchdog_checks_total{result="connected"} `+strconv.FormatUint(expected, 10))
 	assertContains(t, out, `sockguard_http_request_duration_seconds_count{decision="allow",listener="default",method="GET",profile="ci",route="/_ping"} `+strconv.FormatUint(expected, 10))
+}
+
+// --- Mutation-boundary coverage (mutation-report.txt LIVED mutants) ---
+//
+// The tests below pin exact boundary/precision/formatting behavior that
+// gremlins' CONDITIONALS_NEGATION, CONDITIONALS_BOUNDARY, ARITHMETIC_BASE,
+// and INVERT_NEGATIVES mutants at specific metrics.go lines flipped without
+// failing any prior test.
+
+// TestHistogramObserveBucketBoundaryIsInclusive pins atomicHistogram.observe's
+// `seconds <= bucket` comparison at metrics.go:181. A value exactly equal to
+// a bucket boundary must land in that bucket (rules out CONDITIONALS_BOUNDARY
+// turning <= into <), and a value strictly greater than a bucket must not
+// land in it while still landing in the next one up (rules out
+// CONDITIONALS_NEGATION turning <= into >).
+func TestHistogramObserveBucketBoundaryIsInclusive(t *testing.T) {
+	t.Parallel()
+
+	h := newAtomicHistogram()
+	h.observe(defaultDurationBuckets[0]) // exactly on the smallest bucket boundary
+	if got := h.buckets[0].Load(); got != 1 {
+		t.Fatalf("bucket[0] count after observe(bucket[0]) = %d, want 1 (<= must include equal)", got)
+	}
+
+	h2 := newAtomicHistogram()
+	h2.observe(defaultDurationBuckets[0] + 0.0001) // strictly greater than bucket[0], still under bucket[1]
+	if got := h2.buckets[0].Load(); got != 0 {
+		t.Fatalf("bucket[0] count after observe(bucket[0]+epsilon) = %d, want 0 (value exceeds bucket)", got)
+	}
+	if got := h2.buckets[1].Load(); got != 1 {
+		t.Fatalf("bucket[1] count after observe(bucket[0]+epsilon) = %d, want 1", got)
+	}
+}
+
+// TestObserveConfigReloadOnlyStampsTimestampOnOk pins the `result == "ok"`
+// guard at metrics.go:263. A non-"ok" result must never publish the
+// last-success timestamp gauge (rules out CONDITIONALS_NEGATION turning ==
+// into !=, which would stamp the timestamp on every non-ok result and
+// suppress it on "ok").
+func TestObserveConfigReloadOnlyStampsTimestampOnOk(t *testing.T) {
+	t.Parallel()
+	registry := NewRegistry()
+
+	registry.ObserveConfigReload("reject_load")
+	out := renderMetrics(t, registry)
+	if strings.Contains(out, "sockguard_config_reload_last_success_timestamp_seconds") {
+		t.Fatalf("last-success timestamp gauge present after non-ok result:\n%s", out)
+	}
+
+	registry.ObserveConfigReload("ok")
+	out = renderMetrics(t, registry)
+	assertContains(t, out, "sockguard_config_reload_last_success_timestamp_seconds")
+}
+
+// TestConfigReloadTimestampGaugeUsesFullPrecisionSecondsConversion pins the
+// nanos-to-seconds conversion at metrics.go:613 — `float64(reloadLastNanos)/1e9`
+// formatted with strconv.FormatFloat(..., 'f', -1, 64). It stores the nanos
+// gauge directly (same package, bypassing the real-clock write path in
+// ObserveConfigReload) so the expected value is exact and reproducible.
+// Comparing the full rendered string rules out ARITHMETIC_BASE turning /
+// into * at col 48, and rules out INVERT_NEGATIVES / ARITHMETIC_BASE turning
+// the -1 (shortest round-trip) precision into 1 at col 59 — a 1-digit
+// rounding would produce a visibly different string for this value.
+func TestConfigReloadTimestampGaugeUsesFullPrecisionSecondsConversion(t *testing.T) {
+	t.Parallel()
+	registry := NewRegistry()
+
+	const nanos = uint64(1234567890123456)
+	registry.configReloadLastNanos.Store(nanos)
+	registry.configReloadLastKnown.Store(true)
+
+	out := renderMetrics(t, registry)
+	want := "sockguard_config_reload_last_success_timestamp_seconds " +
+		strconv.FormatFloat(float64(nanos)/1e9, 'f', -1, 64) + "\n"
+	assertContains(t, out, want)
+}
+
+// TestDurationSumUsesFullFloatPrecision pins the histogram `_sum` formatting
+// at metrics.go:548 — strconv.FormatFloat(h.sum, 'g', -1, 64). A single
+// observe() from a zero-valued histogram makes the exported sum exactly
+// equal to the observed value, so comparing against the same FormatFloat
+// call with precision -1 rules out INVERT_NEGATIVES / ARITHMETIC_BASE
+// collapsing that precision to 1 (which would round away the fractional
+// digits this value depends on).
+func TestDurationSumUsesFullFloatPrecision(t *testing.T) {
+	t.Parallel()
+	registry := NewRegistry()
+
+	const seconds = 0.123456789012345
+	registry.observe(nil, nil, http.StatusOK, seconds)
+
+	out := renderMetrics(t, registry)
+	want := `sockguard_http_request_duration_seconds_sum{decision="allow",listener="default",method="UNKNOWN",profile="default",route="unknown"} ` +
+		strconv.FormatFloat(seconds, 'g', -1, 64) + "\n"
+	assertContains(t, out, want)
+}
+
+// TestDecisionLabelStatusBoundary pins the `status >= http.StatusBadRequest`
+// comparison at metrics.go:795. Exactly 400 must classify as "error" (rules
+// out CONDITIONALS_BOUNDARY turning >= into >), while 399 must stay "allow".
+func TestDecisionLabelStatusBoundary(t *testing.T) {
+	t.Parallel()
+
+	if got := decisionLabel(nil, http.StatusBadRequest); got != "error" {
+		t.Fatalf("decisionLabel(nil, %d) = %q, want error", http.StatusBadRequest, got)
+	}
+	if got := decisionLabel(nil, http.StatusBadRequest-1); got != "allow" {
+		t.Fatalf("decisionLabel(nil, %d) = %q, want allow", http.StatusBadRequest-1, got)
+	}
+}
+
+// TestIsDockerVersionSegmentLengthAndDigitBoundaries pins two comparisons in
+// isDockerVersionSegment: `len(segment) < 2` at metrics.go:936 and
+// `r > '9'` at metrics.go:940. "v1" is exactly 2 characters — the shortest
+// string the function must still accept — which rules out
+// CONDITIONALS_BOUNDARY turning < into <= (that would reject length-2
+// segments). "v9" ends in the digit '9' — the largest still-valid digit —
+// which rules out CONDITIONALS_BOUNDARY turning > into >= (that would reject
+// '9' itself).
+func TestIsDockerVersionSegmentLengthAndDigitBoundaries(t *testing.T) {
+	t.Parallel()
+
+	if !isDockerVersionSegment("v1") {
+		t.Fatal(`isDockerVersionSegment("v1") = false, want true (2-char segment is the minimum valid length)`)
+	}
+	if !isDockerVersionSegment("v9") {
+		t.Fatal(`isDockerVersionSegment("v9") = false, want true ('9' is the largest valid digit)`)
+	}
+}
+
+// TestContainerRoutePruneTail pins the `segments[1] == "prune"` comparison at
+// metrics.go:951. Rules out CONDITIONALS_NEGATION turning == into != there,
+// which would route "/containers/prune" through routeWithID's {id} template
+// instead of the finite "/containers/prune" tail.
+func TestContainerRoutePruneTail(t *testing.T) {
+	t.Parallel()
+
+	if got := containerRoute([]string{"containers", "prune"}); got != "/containers/prune" {
+		t.Fatalf(`containerRoute(["containers","prune"]) = %q, want "/containers/prune"`, got)
+	}
+}
+
+// TestReleaseResponseWriterNilIsNoop pins the `mw == nil` guard at
+// metrics.go:1098. Rules out CONDITIONALS_NEGATION turning == into !=, which
+// would skip the guard for a nil mw and panic on the following field
+// assignment instead of returning.
+func TestReleaseResponseWriterNilIsNoop(t *testing.T) {
+	t.Parallel()
+	releaseResponseWriter(nil) // must not panic
+}
+
+// TestAcquireResponseWriterRecoversFromNilPoolEntry pins the `mw == nil`
+// guard at metrics.go:1082. sync.Pool.Get does not reliably return an
+// entry that was just Put — Get may skip it and the runtime is free to
+// drop pooled items at any time, including under -race — so seeding the
+// pool with an explicit nil Put is not deterministic. Instead this
+// overrides the pool's New func to return a typed nil *responseWriter,
+// then calls acquireResponseWriter many times without releasing any of
+// them: each Get first drains whatever real entries other tests left in
+// the pool, and once those run out every subsequent Get falls through to
+// New, which now returns nil deterministically. The original code must
+// allocate a fresh writer on that path (asserted non-nil and initialized
+// on every iteration); CONDITIONALS_NEGATION turning == into != would
+// instead try to reuse the nil entry and panic on mw.ResponseWriter = w.
+//
+// Deliberately not t.Parallel(): every other test in this file is, and the
+// Go test runner runs all non-parallel tests to completion (in the order
+// declared) before any parallel test's body resumes past its t.Parallel()
+// call, so this test's override of the shared package-level pool's New
+// func is isolated from them.
+func TestAcquireResponseWriterRecoversFromNilPoolEntry(t *testing.T) {
+	originalNew := metricsResponseWriterPool.New
+	metricsResponseWriterPool.New = func() any { return (*responseWriter)(nil) }
+	t.Cleanup(func() { metricsResponseWriterPool.New = originalNew })
+
+	for i := 0; i < 1024; i++ {
+		mw := acquireResponseWriter(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/_ping", nil))
+		if mw == nil {
+			t.Fatalf("iteration %d: acquireResponseWriter returned nil", i)
+		}
+		if mw.ResponseWriter == nil {
+			t.Fatalf("iteration %d: acquireResponseWriter did not initialize ResponseWriter", i)
+		}
+	}
 }

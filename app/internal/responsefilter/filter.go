@@ -97,6 +97,21 @@ func (f *Filter) ModifyResponse(resp *http.Response) error {
 
 	// Bespoke handlers (non-uniform guard or body shape).
 	switch {
+	case isLibpodPath(normPath):
+		// Podman's native API family is claimed whole, before any
+		// Docker-compat predicate gets a look. NormalizePath strips the API
+		// version prefix but not /libpod, so none of the predicates below
+		// can match one of these paths today — routing first makes that a
+		// property of the dispatch rather than a coincidence of how the
+		// predicates happen to be anchored, so a future predicate loosened
+		// to match a suffix cannot start feeding a libpod body to a handler
+		// written against the Docker shape. modifyLibpodResponse returns nil
+		// for every libpod read this package deliberately leaves alone,
+		// including LibpodSystemDataUsagePath, which the ownership and
+		// visibility middlewares refuse instead — see
+		// LibpodSystemDataUsageDenyReason and modifyLibpodResponse's own
+		// comment for the rest of that list.
+		return f.modifyLibpodResponse(resp.Request.Method, normPath, resp)
 	case isContainerInspectPath(normPath):
 		return f.modifyContainerInspect(resp)
 	case normPath == "/containers/json":
@@ -113,7 +128,18 @@ func (f *Filter) ModifyResponse(resp *http.Response) error {
 		return f.modifySwarmUnlockKey(resp)
 	case normPath == "/info":
 		return f.modifyInfo(resp)
-	case normPath == "/system/df":
+	case normPath == SystemDataUsagePath:
+		// LibpodSystemDataUsagePath reaches the libpod case above and falls
+		// out of modifyLibpodResponse unhandled, on purpose, and that is not
+		// the gap the ownership and visibility middlewares close. Everything
+		// this handler rewrites is a field Podman's native report does not
+		// have: redactSystemDataUsageContainers reads Mounts and the
+		// container network topology, redactSystemDataUsageVolumes reads
+		// Mountpoint, and SystemDfContainerReport/SystemDfVolumeReport carry
+		// none of the three (see LibpodSystemDataUsageDenyReason for the full
+		// field list). Routing the native shape here would decode a body and
+		// rewrite nothing. TestLibpodSystemDataUsageHasNothingToRedact pins
+		// that.
 		return f.modifySystemDataUsage(resp)
 	}
 
@@ -134,8 +160,8 @@ func (f *Filter) modifyContainerInspect(resp *http.Response) error {
 		return rejectResponse(err)
 	}
 
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	payload, err := decodeJSONObject(body)
+	if err != nil {
 		return rejectResponse(err)
 	}
 
@@ -145,6 +171,37 @@ func (f *Filter) modifyContainerInspect(resp *http.Response) error {
 		}
 	}
 	if f.opts.RedactMountPaths {
+		// Docker and Podman both expose the host-side files bind-mounted over
+		// resolv.conf, hostname and hosts, plus the host path of the
+		// container's log file. Podman's native inspect shape also
+		// publishes the container rootfs, persistent metadata directory, OCI
+		// config and PID-file locations at the top level. They are host paths,
+		// so leaving them intact would bypass the same option that redacts
+		// Mounts[].Source and HostConfig.Binds below.
+		//
+		// LogPath is the daemon's own storage root, not anything the caller
+		// asked for: dockerd answers
+		// /var/lib/docker/containers/{id}/{id}-json.log and Podman
+		// /var/lib/containers/storage/overlay-containers/{id}/userdata/ctr.log,
+		// so one inspect discloses the storage driver, the graph root, and
+		// whether the daemon is rootful, to a caller the operator has already
+		// decided may not see Mounts[].Source.
+		for _, key := range [...]string{
+			"Rootfs",
+			"ResolvConfPath",
+			"HostnamePath",
+			"HostsPath",
+			"LogPath",
+			"StaticDir",
+			"OCIConfigPath",
+			"ConmonPidFile",
+			"PidFile",
+		} {
+			redactStringField(payload, key)
+		}
+		if err := redactGraphDriverData(payload); err != nil {
+			return rejectResponse(err)
+		}
 		if err := redactMountObjects(payload, "Mounts"); err != nil {
 			return rejectResponse(err)
 		}
@@ -197,8 +254,8 @@ func (f *Filter) modifyNetworkInspect(resp *http.Response) error {
 		return rejectResponse(err)
 	}
 
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	payload, err := decodeJSONObject(body)
+	if err != nil {
 		return rejectResponse(err)
 	}
 
@@ -218,8 +275,8 @@ func (f *Filter) modifyVolumeList(resp *http.Response) error {
 		return rejectResponse(err)
 	}
 
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	payload, err := decodeJSONObject(body)
+	if err != nil {
 		return rejectResponse(err)
 	}
 
@@ -252,8 +309,8 @@ func (f *Filter) modifyVolumeInspect(resp *http.Response) error {
 		return rejectResponse(err)
 	}
 
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	payload, err := decodeJSONObject(body)
+	if err != nil {
 		return rejectResponse(err)
 	}
 
@@ -470,8 +527,8 @@ func modifyMapResponse(resp *http.Response, mutate func(map[string]any) error) e
 		return rejectResponse(err)
 	}
 
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	payload, err := decodeJSONObject(body)
+	if err != nil {
 		return rejectResponse(err)
 	}
 	if err := mutate(payload); err != nil {
@@ -489,6 +546,12 @@ func modifyMapResponse(resp *http.Response, mutate func(map[string]any) error) e
 // The size limit (MaxResponseBodyBytes) is enforced by wrapping the body
 // reader before handing it to json.Decoder, so oversized responses are
 // still rejected.
+//
+// It decodes through newJSONDecoder and rejects trailing content after the
+// closing bracket for the same two reasons decodeJSONObject does, and neither
+// is cosmetic: this path re-encodes what the client receives, so a number it
+// decoded as a float64 reaches the client with different digits, and a second
+// document after the array was silently dropped rather than refused.
 func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error) error {
 	if resp.Body == nil {
 		return rejectResponse(errors.New("missing response body"))
@@ -501,7 +564,7 @@ func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error)
 		R: upstreamBody,
 		N: requestfilter.MaxResponseBodyBytes + 1,
 	}
-	dec := json.NewDecoder(limited)
+	dec := newJSONDecoder(limited)
 
 	// Consume the opening '['.
 	tok, err := dec.Token()
@@ -519,8 +582,7 @@ func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error)
 	out.Reset()
 	defer streamArrayBufferPool.Put(out)
 
-	enc := json.NewEncoder(out)
-	enc.SetEscapeHTML(false) // preserve original character set; Docker never needs HTML-safe JSON
+	enc := newJSONEncoder(out)
 
 	out.WriteByte('[')
 	first := true
@@ -553,6 +615,28 @@ func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error)
 			out.Truncate(out.Len() - 1)
 		}
 	}
+	// Consume the closing ']' the loop stopped on, then reject anything after
+	// it. A truncated array already fails closed inside the loop, because
+	// dec.More() reports true and the next Decode returns the EOF; what got
+	// through was the opposite shape. json.Decoder stops at the end of the
+	// first value, so a body carrying a second document — or one stray byte —
+	// after the array was quietly truncated to the first document and
+	// forwarded as though it were the whole response. decodeJSONObject has
+	// refused that since the whole-body decode sites were consolidated, via
+	// the same trailingJSONError; this is the streaming path's counterpart.
+	// A filter that decides what a client may see cannot silently drop the
+	// rest of a body.
+	if _, err := dec.Token(); err != nil {
+		return rejectResponse(err)
+	}
+	trailing, err := io.ReadAll(io.MultiReader(dec.Buffered(), limited))
+	if err != nil {
+		return rejectResponse(err)
+	}
+	if err := trailingJSONError(trailing, 0); err != nil {
+		return rejectResponse(err)
+	}
+
 	out.WriteByte(']')
 
 	// Re-check the limit after consuming the closing token.
@@ -569,6 +653,8 @@ func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error)
 	if resp.Header == nil {
 		resp.Header = make(http.Header)
 	}
+	ClearUpstreamRepresentationHeaders(resp.Header)
+	resp.Trailer = nil
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	resp.ContentLength = int64(len(body))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
@@ -647,7 +733,28 @@ func (f *Filter) redactTaskPayload(payload map[string]any) error {
 	return nil
 }
 
+// redactSecretPayload redacts the secret material from a secret list entry or
+// inspect body across both shapes that reach this proxy.
+//
+// Spec.Data is the Docker Engine's swarm secret payload. SecretData is
+// Podman's, and it is NOT a nested field: entities.SecretInfoReport
+// (pkg/domain/entities/types/secrets.go at v5.8.1) declares
+// `SecretData string \`json:"SecretData,omitempty"\“ at the top level, while
+// its Spec is {Name, Driver{Name,Options}, Labels} with no Data field at all.
+// abi.SecretInspect fills SecretData from SecretsManager.LookupSecretData
+// whenever the request carries ?showsecret=true.
+//
+// That query parameter reaches BOTH of Podman's surfaces from one handler:
+// compat.InspectSecret reads showsecret before it branches on
+// utils.IsLibpodRequest, and the Docker-compat branch returns
+// SecretInfoReportCompat, which embeds SecretInfoReport and therefore
+// promotes SecretData to the top level too. So GET /secrets/{id}?showsecret=true
+// against a Podman upstream leaked the plaintext through the compat path as
+// well, not just through /libpod/secrets/{name}/json. Handling both fields
+// here closes both. Docker's own daemon never emits SecretData, so the extra
+// rewrite is inert against dockerd.
 func redactSecretPayload(payload map[string]any) error {
+	redactStringField(payload, "SecretData")
 	spec, found, err := nestedMapValue(payload, "Spec")
 	if err != nil || !found {
 		return err
@@ -808,7 +915,7 @@ func (f *Filter) redactSystemDataUsagePayload(payload map[string]any) error {
 }
 
 func (f *Filter) redactSystemDataUsageContainers(payload map[string]any) error {
-	containers, err := systemDataUsageItems(payload, "ContainerUsage")
+	containers, err := systemDataUsageItems(payload, "ContainerUsage", "Containers")
 	if err != nil {
 		return err
 	}
@@ -831,7 +938,7 @@ func (f *Filter) redactSystemDataUsageVolumes(payload map[string]any) error {
 	if !f.opts.RedactMountPaths {
 		return nil
 	}
-	volumes, err := systemDataUsageItems(payload, "VolumeUsage")
+	volumes, err := systemDataUsageItems(payload, "VolumeUsage", "Volumes")
 	if err != nil {
 		return err
 	}
@@ -841,27 +948,59 @@ func (f *Filter) redactSystemDataUsageVolumes(payload map[string]any) error {
 	return nil
 }
 
-// systemDataUsageItems returns the .Items array from a /system/df sub-key
-// (ContainerUsage or VolumeUsage) decoded as object maps. Returns (nil, nil)
-// when the sub-key or its Items field is absent.
-func systemDataUsageItems(payload map[string]any, key string) ([]map[string]any, error) {
-	usage, found, err := nestedMapValue(payload, key)
-	if err != nil || !found {
+// systemDataUsageItems returns one /system/df section's items as object maps,
+// reading both response shapes the Docker Engine API has used.
+//
+// Engine API >= 1.52 nests a section's items under a per-section usage object
+// (ContainerUsage.Items); <= 1.51 returns a bare top-level array (Containers).
+// A daemon answers in exactly one shape, but the proxy cannot know which: the
+// client's requested API version is advisory, and the upstream may be Podman's
+// Docker-compat API. So both keys are read and whatever is present is returned.
+//
+// Reading only the >= 1.52 key silently made every redaction on this endpoint
+// a no-op against every daemon below that version, which is currently almost
+// all of them — redact_mount_paths and redact_network_topology are documented
+// to cover /system/df and did nothing there. Absent keys yield no items, which
+// also covers the ?type= query that asks for only some sections.
+func systemDataUsageItems(payload map[string]any, usageKey, arrayKey string) ([]map[string]any, error) {
+	var out []map[string]any
+
+	usage, found, err := nestedMapValue(payload, usageKey)
+	if err != nil {
 		return nil, err
 	}
-	items, ok := usage["Items"]
-	if !ok || items == nil {
+	if found {
+		nested, err := systemDataUsageItemObjects(usage[systemDataUsageItemsKey], usageKey+"."+systemDataUsageItemsKey)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, nested...)
+	}
+
+	legacy, err := systemDataUsageItemObjects(payload[arrayKey], arrayKey)
+	if err != nil {
+		return nil, err
+	}
+	return append(out, legacy...), nil
+}
+
+const systemDataUsageItemsKey = "Items"
+
+// systemDataUsageItemObjects decodes one array of /system/df items. label is
+// the config-facing path used in error messages.
+func systemDataUsageItemObjects(value any, label string) ([]map[string]any, error) {
+	if value == nil {
 		return nil, nil
 	}
-	arr, ok := items.([]any)
+	arr, ok := value.([]any)
 	if !ok {
-		return nil, fmt.Errorf("%s.Items has unexpected type %T", key, items)
+		return nil, fmt.Errorf("%s has unexpected type %T", label, value)
 	}
 	out := make([]map[string]any, 0, len(arr))
-	for _, value := range arr {
-		obj, ok := value.(map[string]any)
+	for _, entry := range arr {
+		obj, ok := entry.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("%s.Items entry has unexpected type %T", key, value)
+			return nil, fmt.Errorf("%s entry has unexpected type %T", label, entry)
 		}
 		out = append(out, obj)
 	}
@@ -1058,8 +1197,79 @@ func readResponseBody(resp *http.Response) ([]byte, error) {
 	return body, nil
 }
 
+// newJSONDecoder returns the one json.Decoder configuration this package uses
+// for every response body it decodes and re-encodes, whether the body is read
+// whole or streamed.
+//
+// UseNumber is the load-bearing part. Without it encoding/json coerces every
+// JSON number into a float64, so an integer above 2^53 comes back out of the
+// re-encoded response with different digits than the daemon sent. Configuring
+// the decoder here rather than at each call site is the point: when that bug
+// was first fixed, the five whole-body decode sites were consolidated onto
+// decodeJSONObject and the streaming array path kept its own
+// json.NewDecoder call and therefore kept the float64 coercion. Two decoder
+// setups that have to agree eventually will not.
+func newJSONDecoder(r io.Reader) *json.Decoder {
+	dec := json.NewDecoder(r)
+	dec.UseNumber()
+	return dec
+}
+
+// newJSONEncoder returns the one json.Encoder configuration this package uses
+// for rewritten response bodies. Docker API JSON is not embedded in HTML, so
+// preserve <, >, and & instead of emitting their HTML-safe escape sequences.
+func newJSONEncoder(w io.Writer) *json.Encoder {
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	return enc
+}
+
+// decodeJSONObject decodes body into a JSON object map through newJSONDecoder,
+// so integers that don't fit in a float64 (e.g. LayersSize above 2^53)
+// round-trip through the filter as json.Number instead of losing precision to
+// the default float64 coercion. Error text matches json.Unmarshal's for the
+// same input, including its "unexpected end of JSON input" wording for
+// truncated/empty bodies, since callers reuse that message via rejectResponse.
+//
+// json.Decoder stops at the end of the first value and would accept a body
+// carrying a second document after it, which json.Unmarshal rejects. This
+// filter decides what a client is allowed to see from those bytes, so
+// silently dropping everything after the first document is a smuggling
+// surface. trailingJSONError restores the rejection.
+func decodeJSONObject(body []byte) (map[string]any, error) {
+	dec := newJSONDecoder(bytes.NewReader(body))
+	var payload map[string]any
+	if err := dec.Decode(&payload); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			err = errors.New("unexpected end of JSON input")
+		}
+		return nil, err
+	}
+	if err := trailingJSONError(body, dec.InputOffset()); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+// trailingJSONError reports the same error json.Unmarshal gives for content
+// after a complete top-level value, or nil when only whitespace remains.
+func trailingJSONError(body []byte, offset int64) error {
+	if offset < 0 || offset > int64(len(body)) {
+		return nil
+	}
+	for _, c := range body[offset:] {
+		switch c {
+		case ' ', '\t', '\r', '\n':
+			continue
+		default:
+			return fmt.Errorf("invalid character %q after top-level value", c)
+		}
+	}
+	return nil
+}
+
 func writeResponseBody(resp *http.Response, payload any) error {
-	body, err := json.Marshal(payload)
+	body, err := marshalJSONPreservingEscapes(payload)
 	if err != nil {
 		return err
 	}
@@ -1067,6 +1277,8 @@ func writeResponseBody(resp *http.Response, payload any) error {
 	if resp.Header == nil {
 		resp.Header = make(http.Header)
 	}
+	ClearUpstreamRepresentationHeaders(resp.Header)
+	resp.Trailer = nil
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	resp.ContentLength = int64(len(body))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
@@ -1155,6 +1367,42 @@ func redactHostConfigMountSources(payload map[string]any) error {
 		binds[i] = redactBindSpec(bind)
 	}
 
+	return nil
+}
+
+// redactGraphDriverData masks every value under GraphDriver.Data on a
+// container inspect. The whole map is host filesystem layout: overlay2
+// answers LowerDir, MergedDir, UpperDir and WorkDir, all absolute paths under
+// the daemon's graph root; zfs answers Dataset and Mountpoint; vfs answers
+// RootDir; devicemapper answers DeviceName. Redacting the values rather than
+// deleting the key keeps the response shape a client's decoder expects, and
+// redacting every value rather than a known-path allowlist means a storage
+// driver that publishes a new key is covered the day it ships instead of the
+// day someone notices.
+//
+// GraphDriver.Name is left alone. It names the driver, not a path, and it is
+// the one field a client legitimately reads out of this object.
+func redactGraphDriverData(payload map[string]any) error {
+	graphDriverValue, ok := payload["GraphDriver"]
+	if !ok || graphDriverValue == nil {
+		return nil
+	}
+	graphDriver, ok := graphDriverValue.(map[string]any)
+	if !ok {
+		return fmt.Errorf("GraphDriver has unexpected type %T", graphDriverValue)
+	}
+
+	dataValue, ok := graphDriver["Data"]
+	if !ok || dataValue == nil {
+		return nil
+	}
+	data, ok := dataValue.(map[string]any)
+	if !ok {
+		return fmt.Errorf("GraphDriver.Data has unexpected type %T", dataValue)
+	}
+	for key := range data {
+		data[key] = redactedValue
+	}
 	return nil
 }
 
@@ -1323,6 +1571,15 @@ func redactContainerNetworkTopology(payload map[string]any) error {
 	)
 	redactArrayField(networkSettings, "SecondaryIPAddresses")
 	redactArrayField(networkSettings, "SecondaryIPv6Addresses")
+	// AdditionalMACAddresses is a libpod-only field. Podman's
+	// libpod/define.InspectBasicNetworkConfig carries
+	// `AdditionalMacAddresses []string \`json:"AdditionalMACAddresses,omitempty"\``
+	// alongside the singular MacAddress this function already redacts, for the
+	// case where more than one interface is configured on a single network.
+	// Docker's daemon has no such field, so this is inert on the compat shape
+	// and is the difference between redacting a container's MAC addresses and
+	// redacting only the first one on the native shape.
+	redactArrayField(networkSettings, "AdditionalMACAddresses")
 
 	networksValue, ok := networkSettings["Networks"]
 	if !ok || networksValue == nil {
@@ -1352,6 +1609,14 @@ func redactContainerNetworkTopology(payload map[string]any) error {
 				"IPPrefixLen",
 			},
 		)
+		// Docker's EndpointSettings stops at the scalar addresses above.
+		// Podman's InspectAdditionalNetwork embeds the same
+		// InspectBasicNetworkConfig as NetworkSettings itself, so a per-network
+		// entry on the native shape can also carry the secondary address lists
+		// and the additional MAC list. All three are absent from a compat body.
+		redactArrayField(network, "SecondaryIPAddresses")
+		redactArrayField(network, "SecondaryIPv6Addresses")
+		redactArrayField(network, "AdditionalMACAddresses")
 	}
 	return nil
 }

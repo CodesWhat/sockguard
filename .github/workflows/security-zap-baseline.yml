@@ -27,7 +27,7 @@ concurrency:
 jobs:
   zap-baseline:
     name: "ZAP Baseline: ${{ matrix.name }}"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -39,7 +39,7 @@ jobs:
             target: https://www.getsockguard.com/docs/
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
           # Permanent exception (security.md "Actions hardening" recorded
           # exceptions), not staged audit->block drift: this job scans a

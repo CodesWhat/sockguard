@@ -12,9 +12,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codeswhat/sockguard/app/internal/filter"
 	"github.com/codeswhat/sockguard/app/internal/glob"
 	"github.com/codeswhat/sockguard/app/internal/pkipin"
 	"github.com/codeswhat/sockguard/app/internal/upstream"
+	"github.com/codeswhat/sockguard/app/internal/upstreamflavor"
 	"github.com/google/go-containerregistry/pkg/name"
 )
 
@@ -27,25 +29,70 @@ func (e *ValidationError) Error() string {
 	return fmt.Sprintf("config validation failed:\n  - %s", strings.Join(e.Errors, "\n  - "))
 }
 
+// validateMode selects whether validation may dereference the filesystem
+// paths a config names.
+type validateMode uint8
+
+const (
+	// validateFull is startup and CLI validation: TLS material named by
+	// listen.tls is loaded so a missing, unreadable, or malformed
+	// cert/key/CA fails fast instead of at the first client connection.
+	validateFull validateMode = iota
+	// validateStructural is validation of a candidate config supplied by a
+	// remote caller. It performs every check validateFull does EXCEPT
+	// reading files. See ValidateStructural for why that distinction is a
+	// security boundary and not an optimization.
+	validateStructural
+)
+
 // Validate checks a Config for correctness, returning a ValidationError
-// if any problems are found.
+// if any problems are found. It loads the TLS material the config names, so
+// it must only be used on a config the operator supplied (startup, the CLI).
+// For a candidate config that arrived over the network, use
+// ValidateStructural.
 func Validate(cfg *Config) error {
-	errs := validateBasic(cfg)
+	return validateWithMode(cfg, validateFull)
+}
+
+// ValidateStructural is Validate with every filesystem dereference disabled.
+//
+// The admin API's POST /validate accepts candidate YAML from a caller and
+// returns the validation errors verbatim. Under Validate, a listen.tls block
+// whose cert_file, key_file, and client_ca_file are all set makes the
+// validator call tls.LoadX509KeyPair and os.ReadFile on those paths and wrap
+// the resulting *os.PathError into the response. A caller who cannot read the
+// host filesystem can therefore point the candidate at any absolute path and
+// learn from the error whether it exists, whether the process can read it,
+// and whether it parses as PEM — a filesystem probing oracle built out of a
+// validation endpoint.
+//
+// Scrubbing the error text is not sufficient: "loaded" versus "did not load"
+// is itself the answer the probe is after. The dereference has to not happen.
+// So the structural mode still compiles the client-certificate identity
+// constraints (pure, and the check most likely to catch a real operator
+// mistake) and still requires cert_file/key_file/client_ca_file to be set
+// together, but never opens them.
+func ValidateStructural(cfg *Config) error {
+	return validateWithMode(cfg, validateStructural)
+}
+
+func validateWithMode(cfg *Config, mode validateMode) error {
+	errs := validateBasic(cfg, mode)
 	if len(errs) > 0 {
 		return &ValidationError{Errors: errs}
 	}
 	return nil
 }
 
-func validateBasic(cfg *Config) []string {
+func validateBasic(cfg *Config, mode validateMode) []string {
 	var errs []string
-	errs = append(errs, validateListeners(cfg)...)
+	errs = append(errs, validateListeners(cfg, mode)...)
 	errs = append(errs, validateUpstream(cfg)...)
 	errs = append(errs, validateLogging(cfg)...)
 	errs = append(errs, validateResponse(cfg)...)
 	errs = append(errs, validateHealthMetrics(cfg)...)
 	if cfg.Admin.Enabled {
-		errs = append(errs, validateAdmin(cfg)...)
+		errs = append(errs, validateAdmin(cfg, mode)...)
 	}
 	errs = append(errs, validateReload(cfg)...)
 	errs = append(errs, validatePolicyBundle(cfg)...)
@@ -62,20 +109,20 @@ func validateBasic(cfg *Config) []string {
 // --listen-socket CLI flag) records whether listen.* was set through any
 // channel other than its zero-value default, so a config that sets both is
 // rejected rather than silently picking a winner.
-func validateListeners(cfg *Config) []string {
+func validateListeners(cfg *Config, mode validateMode) []string {
 	var errs []string
 	if len(cfg.Listeners) > 0 {
 		if cfg.explicitLegacyListen {
 			errs = append(errs, "listen and listeners are mutually exclusive; migrate the listen: block into a single-entry listeners: list")
 		}
-		errs = append(errs, validateExplicitListeners(cfg)...)
+		errs = append(errs, validateExplicitListeners(cfg, mode)...)
 		errs = append(errs, validateExplicitListenersBindUniqueness(cfg)...)
 		return errs
 	}
-	return validateLegacyListen(cfg)
+	return validateLegacyListen(cfg, mode)
 }
 
-func validateLegacyListen(cfg *Config) []string {
+func validateLegacyListen(cfg *Config, mode validateMode) []string {
 	var errs []string
 	if cfg.Listen.Socket == "" && cfg.Listen.Address == "" {
 		errs = append(errs, "at least one listener is required (listen.socket or listen.address)")
@@ -84,7 +131,7 @@ func validateLegacyListen(cfg *Config) []string {
 		errs = append(errs, validateSocketOwnership("listen", cfg.Listen)...)
 	}
 	if cfg.Listen.Socket == "" && cfg.Listen.Address != "" {
-		errs = append(errs, validateTCPListenerSecurity(cfg)...)
+		errs = append(errs, validateTCPListenerSecurity(cfg, mode)...)
 	}
 	return errs
 }
@@ -94,7 +141,7 @@ func validateLegacyListen(cfg *Config) []string {
 // exactly-one-of-socket-or-address (stricter than the legacy implicit
 // socket-wins fallback — new entries reject ambiguity outright), per-entry
 // TLS/plaintext-ack/ownership security, and the allowed_profiles scope.
-func validateExplicitListeners(cfg *Config) []string {
+func validateExplicitListeners(cfg *Config, mode validateMode) []string {
 	var errs []string
 
 	if len(cfg.Listeners) > MaxListeners {
@@ -140,7 +187,7 @@ func validateExplicitListeners(cfg *Config) []string {
 				errs = append(errs, label+".tls is only valid for TCP listeners")
 			}
 		default:
-			errs = append(errs, validateListenerTCPSecurity(label, l.ListenConfig)...)
+			errs = append(errs, validateListenerTCPSecurity(label, l.ListenConfig, mode)...)
 			if l.SocketUID != nil {
 				errs = append(errs, label+".socket_uid is only valid for unix listeners")
 			}
@@ -323,7 +370,7 @@ func validateSocketOwnership(prefix string, listen ListenConfig) []string {
 // an arbitrary field prefix and ListenConfig value, so it can validate any
 // listeners[*] entry's TCP/TLS/plaintext-ack posture with the same
 // constructive checks the legacy listen: block gets.
-func validateListenerTCPSecurity(prefix string, listen ListenConfig) []string {
+func validateListenerTCPSecurity(prefix string, listen ListenConfig, mode validateMode) []string {
 	var errs []string
 
 	if listen.TLS.Enabled() && !listen.TLS.Complete() {
@@ -332,7 +379,7 @@ func validateListenerTCPSecurity(prefix string, listen ListenConfig) []string {
 	}
 
 	if listen.TLS.Complete() {
-		if _, err := BuildMutualTLSServerConfigForField(prefix+".tls", listen.TLS); err != nil {
+		if err := checkMutualTLSForField(prefix+".tls", listen.TLS, mode); err != nil {
 			errs = append(errs, err.Error())
 		}
 	}
@@ -406,6 +453,19 @@ func validateUpstream(cfg *Config) []string {
 			errs = append(errs, fmt.Sprintf(`upstream.request_timeout must be a positive duration or "off" to disable, got %q`, cfg.Upstream.RequestTimeout))
 		}
 	}
+	// Unlike RequestTimeout, hijack_inactivity_timeout has no "off"/legacy-empty
+	// disable spelling (see its config.go doc comment), so every value —
+	// including an explicit empty string — goes through ParseDuration and 0 is
+	// rejected the same as a negative duration.
+	if hijackTimeout, err := time.ParseDuration(cfg.Upstream.HijackInactivityTimeout); err != nil || hijackTimeout <= 0 {
+		errs = append(errs, fmt.Sprintf("upstream.hijack_inactivity_timeout must be a positive duration, got %q", cfg.Upstream.HijackInactivityTimeout))
+	}
+	if _, ok := upstreamflavor.Configured(cfg.Upstream.Flavor); !ok {
+		errs = append(errs, fmt.Sprintf(
+			"upstream.flavor must be %q, %q or %q, got %q",
+			upstreamflavor.Auto, upstreamflavor.Docker, upstreamflavor.Podman, cfg.Upstream.Flavor,
+		))
+	}
 	if d := cfg.Upstream.Failover.HealthInterval; d != "" {
 		// Zero is ambiguous: durationOrZero maps it to the resolver default (5s),
 		// not "disabled", which surprises an operator who writes "0s" meaning off.
@@ -471,7 +531,7 @@ func validateResponse(cfg *Config) []string {
 	default:
 		errs = append(errs, enumValueError("response.deny_verbosity", cfg.Response.DenyVerbosity, "minimal", "verbose"))
 	}
-	errs = append(errs, validateVisibleResourceLabels("response.visible_resource_labels", cfg.Response.VisibleResourceLabels)...)
+	errs = append(errs, validateVisibleResourceLabels("response.visible_resource_labels", cfg.Response.VisibleResourceLabels, ownerReservedLabelKey(cfg))...)
 	return errs
 }
 
@@ -515,7 +575,7 @@ func validateHealthMetrics(cfg *Config) []string {
 	return errs
 }
 
-func validateAdmin(cfg *Config) []string {
+func validateAdmin(cfg *Config, mode validateMode) []string {
 	var errs []string
 	if !strings.HasPrefix(cfg.Admin.Path, "/") {
 		errs = append(errs, fmt.Sprintf("admin.path must start with /, got %q", cfg.Admin.Path))
@@ -541,7 +601,7 @@ func validateAdmin(cfg *Config) []string {
 	if cfg.Metrics.Enabled && cfg.Admin.PolicyVersionPath == cfg.Metrics.Path {
 		errs = append(errs, fmt.Sprintf("admin.policy_version_path must not equal metrics.path when both endpoints are enabled, got %q", cfg.Admin.PolicyVersionPath))
 	}
-	errs = append(errs, validateAdminListener(cfg)...)
+	errs = append(errs, validateAdminListener(cfg, mode)...)
 	errs = append(errs, validateAdminMountOn(cfg)...)
 	return errs
 }
@@ -579,8 +639,10 @@ func validateRules(cfg *Config) []string {
 		}
 		if r.Match.Path == "" {
 			errs = append(errs, fmt.Sprintf("rule %d: match.path is required", i+1))
-		} else if strings.Contains(r.Match.Path, "%") {
+		} else if strings.Contains(r.Match.Path, "%") && !validEscapedLibpodImageScpRule(r.Match) {
 			errs = append(errs, literalPercentRuleError(fmt.Sprintf("rule %d", i+1), r.Match.Path))
+		} else if filter.HasVersionPrefix(r.Match.Path) {
+			errs = append(errs, versionPrefixRuleError(fmt.Sprintf("rule %d", i+1), r.Match.Path))
 		}
 		switch r.Action {
 		case "allow", "deny":
@@ -591,10 +653,52 @@ func validateRules(cfg *Config) []string {
 	return errs
 }
 
+// validEscapedLibpodImageScpRule recognizes the one route family whose exact
+// policy view legitimately contains percent escapes. Podman's gorilla/mux
+// router uses EscapedPath for POST /libpod/images/scp/{name:.*}; dual-view
+// evaluation then requires the decoded and encoded route spellings to allow.
+// Keep this exception narrower than the earlier push/tag/untag routes: a
+// multi-method rule, glob, or raw action suffix can otherwise match a
+// double-encoded request that Podman routes somewhere other than image SCP.
+func validEscapedLibpodImageScpRule(match MatchConfig) bool {
+	if !strings.EqualFold(strings.TrimSpace(match.Method), "POST") || strings.Contains(match.Method, ",") {
+		return false
+	}
+	const prefix = "/libpod/images/scp/"
+	rest, ok := strings.CutPrefix(match.Path, prefix)
+	if !ok || rest == "" || strings.Contains(match.Path, "*") {
+		return false
+	}
+	for _, action := range []string{"push", "tag", "untag"} {
+		if rest == action || strings.HasSuffix(rest, "/"+action) {
+			return false
+		}
+	}
+	_, err := url.PathUnescape(match.Path)
+	return err == nil
+}
+
+// versionPrefixRuleError reports a rule path pattern that itself begins with
+// a Docker/Podman API version prefix (e.g. "/v1.45/..." or
+// "/v5.8.1-dev/..."). NormalizePath strips exactly that prefix from the
+// request path before rule matching runs, using the same predicate
+// (filter.HasVersionPrefix, built on filter's stripVersionPrefix) this check
+// calls — so a pattern that still carries the prefix can never match real
+// traffic and is silently dead rather than doing what its author intended.
+// Failing closed at validation time beats the startup warning this replaces:
+// a rule an operator believed was denying (or allowing) versioned traffic
+// that in fact never fires is a security-relevant gap, not a style nit.
+func versionPrefixRuleError(label, pattern string) string {
+	return fmt.Sprintf(
+		"%s: match.path %q begins with an API version prefix; sockguard strips version prefixes before matching, so this pattern never matches real traffic — write the pattern without the /vN... prefix",
+		label, pattern,
+	)
+}
+
 // literalPercentRuleError reports a rule path pattern that contains a literal
-// '%'. sockguard matches the request path as the daemon routes it — decoded
-// exactly once by the HTTP layer — so a '%XX' in a pattern only ever matches a
-// doubly-encoded request, never normal traffic. The rule the author meant is
+// '%' outside Podman's encoded image-SCP route. Other policy paths are decoded
+// exactly once by the HTTP layer, so a '%XX' in their pattern only ever matches
+// a doubly-encoded request, never normal traffic. The rule the author meant is
 // therefore silently dead, a security-intent gap, so it fails config
 // validation rather than logging a warning.
 func literalPercentRuleError(label, pattern string) string {
@@ -619,7 +723,7 @@ func literalPercentRuleError(label, pattern string) string {
 // socket/address than the main listener — otherwise the two http.Servers
 // would race for the same bind and the dedicated-listener model would be a
 // silent lie.
-func validateAdminListener(cfg *Config) []string {
+func validateAdminListener(cfg *Config, mode validateMode) []string {
 	listen := cfg.Admin.Listen
 	if !listen.Configured() {
 		return nil
@@ -642,7 +746,7 @@ func validateAdminListener(cfg *Config) []string {
 		if listen.TLS.Enabled() && !listen.TLS.Complete() {
 			errs = append(errs, requiresError("admin.listen.tls", "cert_file, key_file, and client_ca_file together"))
 		} else if listen.TLS.Complete() {
-			if _, err := BuildMutualTLSServerConfigForField("admin.listen.tls", listen.TLS); err != nil {
+			if err := checkMutualTLSForField("admin.listen.tls", listen.TLS, mode); err != nil {
 				errs = append(errs, err.Error())
 			}
 		}
@@ -670,7 +774,7 @@ func validateAdminListener(cfg *Config) []string {
 	return errs
 }
 
-func validateTCPListenerSecurity(cfg *Config) []string {
+func validateTCPListenerSecurity(cfg *Config, mode validateMode) []string {
 	var errs []string
 
 	if cfg.Listen.TLS.Enabled() && !cfg.Listen.TLS.Complete() {
@@ -679,7 +783,7 @@ func validateTCPListenerSecurity(cfg *Config) []string {
 	}
 
 	if cfg.Listen.TLS.Complete() {
-		if _, err := BuildMutualTLSServerConfig(cfg.Listen.TLS); err != nil {
+		if err := checkMutualTLSForField("listen.tls", cfg.Listen.TLS, mode); err != nil {
 			errs = append(errs, err.Error())
 		}
 	}
@@ -796,25 +900,50 @@ func validateRequestBody(cfg *Config) []string {
 	return errs
 }
 
-// validateNetworkEndpointConfig rejects
-// request_body.network.allow_endpoint_config: true combined with an
-// explicitly configured request_body.network.endpoint_config block (#186):
+// validateNetworkEndpointConfig rejects allow_endpoint_config: true combined
+// with an explicitly configured endpoint_config block (#186):
 // allow_endpoint_config already admits every EndpointSettings field
 // unchanged, so a simultaneous granular block is ambiguous — which one an
 // operator actually intends to govern the request is not something sockguard
-// should guess at silently. Detected via cfg.explicitNetworkEndpointConfig
-// (a provenance-only Viper pass; see explicitNetworkEndpointConfigFile/Bytes
-// in load.go) rather than comparing cfg.RequestBody.Network.EndpointConfig
-// against its Go zero value, because EndpointConfigRequestBodyConfig.AllowAliases
-// defaults to true (config.Defaults()), so the merged struct is never the
-// zero value even when the operator never wrote the block at all.
+// should guess at silently. Detected via the cfg.explicit*EndpointConfig
+// provenance flags (a provenance-only Viper pass; see
+// explicitEndpointConfigFile/Bytes in load.go) rather than comparing the
+// merged EndpointConfig against its Go zero value, because
+// EndpointConfigRequestBodyConfig.AllowAliases defaults to true
+// (config.Defaults()), so the merged struct is never the zero value even
+// when the operator never wrote the block at all.
+//
+// Both groups that carry the block are checked. request_body.libpod_network
+// was originally exempt on the belief that libpod had no network-connect
+// endpoint to gate; it does (POST /libpod/networks/{name}/connect), so an
+// operator writing both keys there used to get silence where the Docker
+// spelling gave them an error — a config that quietly means something other
+// than what it says.
 func validateNetworkEndpointConfig(cfg *Config) []string {
+	var errs []string
 	if cfg.RequestBody.Network.AllowEndpointConfig && cfg.explicitNetworkEndpointConfig {
-		return []string{
-			"request_body.network.allow_endpoint_config and request_body.network.endpoint_config are mutually exclusive: allow_endpoint_config: true already admits every EndpointSettings field, so remove the endpoint_config block or set allow_endpoint_config: false and use the granular fields instead",
+		errs = append(errs, endpointConfigMutualExclusionError("request_body", "network"))
+	}
+	if cfg.RequestBody.LibpodNetwork.AllowEndpointConfig && cfg.explicitLibpodNetworkEndpointConfig {
+		errs = append(errs, endpointConfigMutualExclusionError("request_body", "libpod_network"))
+	}
+	for i, profile := range cfg.Clients.Profiles {
+		prefix := fmt.Sprintf("clients.profiles[%d].request_body", i)
+		if profile.RequestBody.Network.AllowEndpointConfig && profile.explicitNetworkEndpointConfig {
+			errs = append(errs, endpointConfigMutualExclusionError(prefix, "network"))
+		}
+		if profile.RequestBody.LibpodNetwork.AllowEndpointConfig && profile.explicitLibpodNetworkEndpointConfig {
+			errs = append(errs, endpointConfigMutualExclusionError(prefix, "libpod_network"))
 		}
 	}
-	return nil
+	return errs
+}
+
+// endpointConfigMutualExclusionError renders the #186 mutual-exclusion
+// message for one request_body group. One template, so the two groups cannot
+// drift into differently-worded advice for the identical mistake.
+func endpointConfigMutualExclusionError(prefix, group string) string {
+	return fmt.Sprintf("%s.%s.allow_endpoint_config and %s.%s.endpoint_config are mutually exclusive: allow_endpoint_config: true already admits every EndpointSettings field, so remove the endpoint_config block or set allow_endpoint_config: false and use the granular fields instead", prefix, group, prefix, group)
 }
 
 // validateBuildkitAckMutualExclusion rejects
@@ -1220,7 +1349,7 @@ func validateClientsConfig(cfg *Config) []string {
 
 	profilesByName := make(map[string]struct{}, len(cfg.Clients.Profiles))
 	for i, profile := range cfg.Clients.Profiles {
-		errs = append(errs, validateClientProfile(i, profile, profilesByName)...)
+		errs = append(errs, validateClientProfile(i, profile, profilesByName, ownerReservedLabelKey(cfg))...)
 	}
 
 	errs = append(errs, validateClientsGlobalConcurrency(cfg)...)
@@ -1439,7 +1568,7 @@ func validateClientsUnixPeerProfiles(cfg *Config, profilesByName map[string]stru
 	return errs
 }
 
-func validateClientProfile(index int, profile ClientProfileConfig, profilesByName map[string]struct{}) []string {
+func validateClientProfile(index int, profile ClientProfileConfig, profilesByName map[string]struct{}, reservedLabelKey string) []string {
 	var errs []string
 
 	prefix := fmt.Sprintf("clients.profiles[%d]", index)
@@ -1467,7 +1596,7 @@ func validateClientProfile(index int, profile ClientProfileConfig, profilesByNam
 		errs = append(errs, fmt.Sprintf("%s.mode must be one of enforce|warn|audit, got %q", prefix, profile.Mode))
 	}
 
-	errs = append(errs, validateVisibleResourceLabels(prefix+".response.visible_resource_labels", profile.Response.VisibleResourceLabels)...)
+	errs = append(errs, validateVisibleResourceLabels(prefix+".response.visible_resource_labels", profile.Response.VisibleResourceLabels, reservedLabelKey)...)
 	errs = append(errs, validateRequestBodyConfig(prefix+".request_body", profile.RequestBody)...)
 	errs = append(errs, validateRuleConfigs(profile.Rules, prefix+".rules")...)
 	errs = append(errs, validateLimitsConfig(prefix+".limits", profile.Limits)...)
@@ -1800,8 +1929,10 @@ func validateRuleConfigs(rules []RuleConfig, prefix string) []string {
 		}
 		if r.Match.Path == "" {
 			errs = append(errs, rulePrefix+".match.path is required")
-		} else if strings.Contains(r.Match.Path, "%") {
+		} else if strings.Contains(r.Match.Path, "%") && !validEscapedLibpodImageScpRule(r.Match) {
 			errs = append(errs, literalPercentRuleError(rulePrefix, r.Match.Path))
+		} else if filter.HasVersionPrefix(r.Match.Path) {
+			errs = append(errs, versionPrefixRuleError(rulePrefix, r.Match.Path))
 		}
 		switch r.Action {
 		case "allow", "deny":
@@ -1971,7 +2102,29 @@ func validateLogOutputField(fieldPath, output string) error {
 	return nil
 }
 
-func validateVisibleResourceLabels(prefix string, values []string) []string {
+// ownerReservedLabelKey returns the label key ownership stamps and filters on,
+// or "" when owner scoping is off. Read as-is rather than re-deriving the
+// Defaults() fallback, matching validateMutationInjectLabels: an empty
+// LabelKey alongside a configured owner is its own error, reported separately.
+func ownerReservedLabelKey(cfg *Config) string {
+	if cfg.Ownership.Owner == "" {
+		return ""
+	}
+	return cfg.Ownership.LabelKey
+}
+
+// validateVisibleResourceLabels checks one visible_resource_labels list.
+//
+// reservedLabelKey is the ownership label key (empty when owner scoping is
+// off). A visibility selector may not claim it. Both layers write the same
+// `label` filter key upstream and the values are ANDed, so selecting on the
+// owner key either restates what ownership already enforces or asks for a
+// label to hold two values at once. Docker's Swarm control-plane lists resolve
+// that second case by folding `label` into a map[string]string over a
+// randomly-ordered Args.Get (daemon/cluster/filters.go), so one of the two
+// values wins nondeterministically and the visibility scope can silently
+// disappear. Keeping each layer's keys disjoint removes the case.
+func validateVisibleResourceLabels(prefix string, values []string, reservedLabelKey string) []string {
 	var errs []string
 	for _, raw := range values {
 		value := strings.TrimSpace(raw)
@@ -1984,8 +2137,13 @@ func validateVisibleResourceLabels(prefix string, values []string) []string {
 			continue
 		}
 		key, selected, hasValue := strings.Cut(value, "=")
-		if strings.TrimSpace(key) == "" {
+		key = strings.TrimSpace(key)
+		if key == "" {
 			errs = append(errs, fmt.Sprintf("%s entries must include a label key, got %q", prefix, raw))
+			continue
+		}
+		if reservedLabelKey != "" && key == reservedLabelKey {
+			errs = append(errs, fmt.Sprintf("%s entries must not select on the reserved owner label key %q (ownership.owner is configured; that key is proxy-enforced)", prefix, key))
 			continue
 		}
 		if hasValue && strings.TrimSpace(selected) == "" {

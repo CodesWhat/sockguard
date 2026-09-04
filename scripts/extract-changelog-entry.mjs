@@ -68,6 +68,46 @@ export function extractChangelogEntry(changelog, version) {
   return content.slice(startIndex, endIndex).trim();
 }
 
+export const TRUNCATION_FOOTER =
+  "_Release notes truncated to fit GitHub's release body limit. The complete entry is in CHANGELOG.md for this tag._";
+
+function decodeValidUtf8Prefix(buffer, maxLength) {
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  let cut = Math.min(maxLength, buffer.length);
+  while (cut > 0) {
+    try {
+      return decoder.decode(buffer.subarray(0, cut));
+    } catch {
+      cut -= 1;
+    }
+  }
+  return "";
+}
+
+export function truncateToByteLimit(entry, maxBytes, footer = TRUNCATION_FOOTER) {
+  if (!Number.isInteger(maxBytes) || maxBytes <= 0) {
+    throw new Error("--max-bytes must be a positive integer");
+  }
+
+  const entryBuffer = Buffer.from(entry, "utf8");
+  if (entryBuffer.length <= maxBytes) {
+    return entry;
+  }
+
+  const footerBlock = `\n\n${footer}`;
+  const footerBlockBytes = Buffer.byteLength(footerBlock, "utf8");
+  const targetBytes = maxBytes - footerBlockBytes;
+  if (targetBytes <= 0) {
+    throw new Error(`--max-bytes ${maxBytes} is too small to fit the truncation footer`);
+  }
+
+  const validPrefix = decodeValidUtf8Prefix(entryBuffer, targetBytes);
+  const lastNewline = validPrefix.lastIndexOf("\n");
+  const truncated = lastNewline === -1 ? validPrefix : validPrefix.slice(0, lastNewline);
+
+  return `${truncated}${footerBlock}`;
+}
+
 function parseArgs(argv) {
   const args = {};
   for (let i = 0; i < argv.length; i += 1) {
@@ -99,7 +139,16 @@ function main() {
   }
 
   const changelog = readFileSync(file, "utf8");
-  const entry = extractChangelogEntry(changelog, version);
+  let entry = extractChangelogEntry(changelog, version);
+
+  if (args["max-bytes"] !== undefined) {
+    const maxBytes = Number(args["max-bytes"]);
+    if (!Number.isInteger(maxBytes) || maxBytes <= 0) {
+      throw new Error("--max-bytes must be a positive integer");
+    }
+    entry = truncateToByteLimit(entry, maxBytes);
+  }
+
   console.log(entry);
 }
 
