@@ -2,6 +2,7 @@ package visibility
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -25,10 +26,12 @@ func makePatternPolicy(t *testing.T, nameGlobs ...string) *compiledPolicy {
 	return &compiledPolicy{namePatterns: patterns}
 }
 
-// TestFilterWriterFlushFilteredEmptyBodyOn304 asserts that a 304 Not Modified
-// response is forwarded with no body (RFC 9110 §15.4.5). Any bytes written for
-// a 304 would trigger Go's http.ResponseWriter to downgrade to 502.
-func TestFilterWriterFlushFilteredEmptyBodyOn304(t *testing.T) {
+// TestFilterWriterFlushFilteredRefuses304 asserts that a 304 Not Modified is
+// refused rather than forwarded. It used to be relayed as a bodiless 304,
+// which confirmed whatever the client had cached — a list produced under an
+// earlier policy, or none. flushFiltered must leave the response uncommitted
+// so filterResponseThroughWriter can substitute the 502.
+func TestFilterWriterFlushFilteredRefuses304(t *testing.T) {
 	t.Parallel()
 	rec := httptest.NewRecorder()
 	fw := newPatternFilterWriter(rec)
@@ -38,15 +41,15 @@ func TestFilterWriterFlushFilteredEmptyBodyOn304(t *testing.T) {
 	_, _ = fw.Write([]byte("stale-body-that-must-not-be-forwarded"))
 
 	policy := makePatternPolicy(t, "mycontainer")
-	if err := fw.flushFiltered("/containers/json", policy); err != nil {
-		t.Fatalf("flushFiltered error: %v", err)
+	err := fw.flushFiltered("/containers/json", policy)
+	if !errors.Is(err, errNotModifiedUnfilterable) {
+		t.Fatalf("flushFiltered error = %v, want errNotModifiedUnfilterable", err)
 	}
-
-	if rec.Code != http.StatusNotModified {
-		t.Fatalf("status = %d, want 304", rec.Code)
+	if fw.headerWritten {
+		t.Fatal("headerWritten = true, want false so the caller can write the 502")
 	}
 	if body := rec.Body.String(); body != "" {
-		t.Fatalf("body = %q, want empty body for 304", body)
+		t.Fatalf("body = %q, want nothing forwarded for a refused 304", body)
 	}
 }
 

@@ -45,6 +45,19 @@ func NewWithTransport(rt http.RoundTripper, logger *slog.Logger, opts Options) *
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL.Scheme = "http"
 			pr.Out.URL.Host = "docker"
+			// Every request the read-side filters act on passes through here
+			// exactly once, and this is the last point before the wire, so the
+			// conditional headers are dropped once rather than at each of the
+			// three layers that would otherwise have to agree on which paths
+			// they cover. Dropping them unconditionally also keeps the
+			// guarantee independent of which layers are configured: the
+			// response filter has no request-side hook of its own, and its
+			// path set is the dispatch table rather than a predicate a
+			// middleware could consult without going stale.
+			//
+			// pr.Out is ReverseProxy's clone, so the client's own request and
+			// the access/audit record of what it sent are untouched.
+			responsefilter.StripConditionalRequestHeaders(pr.Out.Header)
 		},
 		Transport:      rt,
 		ModifyResponse: opts.ModifyResponse,

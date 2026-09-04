@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -61,7 +62,19 @@ const (
 	reasonCodeVisibilityPodmanEvents        = "visibility_podman_events_unscopeable"
 	reasonCodeVisibilityLibpodDataUsage     = "visibility_libpod_data_usage_unscopeable"
 	reasonCodeVisibilityLibpodEvents        = "visibility_libpod_events_unscopeable"
+	reasonCodeVisibilityNotModified         = "visibility_not_modified_unfilterable"
 )
+
+// notModifiedRefusalMessage is the client-facing reason for the 304 refusal.
+// It names the upstream rather than the policy: no axis of the policy is
+// involved in the decision, and an operator reading it should be looking at
+// what answered the request.
+const notModifiedRefusalMessage = "upstream returned 304 Not Modified for a filtered read"
+
+// errNotModifiedUnfilterable marks the 304 refusal so
+// filterResponseThroughWriter can give it its own reason code instead of the
+// generic flush-failure one. See commitIfUnfilterable.
+var errNotModifiedUnfilterable = errors.New(notModifiedRefusalMessage)
 
 // Options configures label-based visibility control on Docker read endpoints.
 type Options struct {
@@ -407,9 +420,17 @@ func filterResponseThroughWriter(logger *slog.Logger, next http.Handler, w http.
 			// the log record agree. Hard-coding the pattern-filter wording here
 			// told an operator debugging a /system/df 502 to go and look at the
 			// pattern axes, which are not what ran.
-			logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyLookupFailed, failureReason, nil)
+			reasonCode, message := reasonCodeVisibilityPolicyLookupFailed, failureReason
+			// A 304 is not a flush that failed, it is a response shape the
+			// filter cannot act on, and the fix is on the upstream rather than
+			// in the policy. It gets its own code so an operator is not sent
+			// to read pattern axes that never ran.
+			if errors.Is(err, errNotModifiedUnfilterable) {
+				reasonCode, message = reasonCodeVisibilityNotModified, notModifiedRefusalMessage
+			}
+			logging.SetDeniedWithCode(w, r, reasonCode, message, nil)
 			clearUpstreamRepresentationHeaders(w.Header())
-			_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: failureReason})
+			_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: message})
 		}
 	}
 }
@@ -530,8 +551,24 @@ func mustHaveEmptyBody(code int) bool {
 // wrote the response. Shared by flushFiltered and flushSystemDataUsage so both
 // treat 204/304 and non-2xx identically.
 func (p *patternFilterWriter) commitIfUnfilterable() (bool, error) {
+	// A 304 is refused rather than forwarded, the same way a 2xx body that is
+	// not the shape this filter walks is. There is nothing here to apply the
+	// policy to and the response's whole meaning is "the copy you already have
+	// is current" — a copy fetched under whatever policy was in force then,
+	// which the client would go on using in place of a list this policy would
+	// narrow. Nothing is written and headerWritten stays false on purpose, so
+	// filterResponseThroughWriter can substitute the 502.
+	//
+	// Requests leave this proxy with their conditional headers stripped (see
+	// responsefilter.StripConditionalRequestHeaders), so a daemon has nothing
+	// to revalidate against and cannot reach this branch.
+	if p.statusCode == http.StatusNotModified {
+		return true, errNotModifiedUnfilterable
+	}
 	// RFC 9110 §15.4.5 / §15.3.5: 204 and 304 must have an empty body.
-	// Writing any bytes triggers an http.ResponseWriter downgrade to 502.
+	// Writing any bytes triggers an http.ResponseWriter downgrade to 502. A
+	// 204 is not a revalidation, so it still passes through: there is no
+	// stale representation behind it for the client to fall back on.
 	if mustHaveEmptyBody(p.statusCode) {
 		p.underlying.WriteHeader(p.statusCode)
 		p.headerWritten = true

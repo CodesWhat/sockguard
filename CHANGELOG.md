@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **A cached read can no longer be revalidated past the read-side filters.** The visibility filter, owner isolation's `GET /system/df` filter and the response filter all forwarded a `304 Not Modified` untouched, so a client that fetched a list or an inspect before a policy tightened — or before any policy existed — could send `If-None-Match` or `If-Modified-Since`, have the daemon confirm its copy, and go on using a body no filter ever saw. The validator behind that copy is the daemon's, computed over the unfiltered body, and every axis that would have narrowed it (visibility selectors and name/image patterns, the owner label, the redaction options) is reloadable, so the cached copy and the current policy can disagree by an arbitrary amount. Sockguard now strips the whole RFC 9110 precondition set — `If-Match`, `If-Modified-Since`, `If-None-Match`, `If-Range`, `If-Unmodified-Since` — from every request on its way to the daemon, at the one point every proxied request passes through, so a revalidation arrives as the full fetch the filters can inspect. The client's request is left intact in the access and audit records. A `304` that arrives anyway is refused with a `502` instead of relayed, with its own reason code at each layer (`visibility_not_modified_unfilterable`, `owner_not_modified_unfilterable`, and `upstream_response_rejected_by_policy` for the response filter) so it is not read as a policy lookup that failed. A `204` still passes through: it is not a revalidation and has no stale representation behind it. This was pre-existing and theoretical — neither dockerd nor Podman emits `ETag` or `Last-Modified` on these routes, so the strip changes nothing observable against either — but the documented fail-closed guarantee should not depend on an upstream detail Sockguard does not control.
+
 ## [2.1.0] - 2026-09-03
 
 v2.1.0 promotes `2.1.0-rc.2` unchanged after the tri-tool conformance gate.

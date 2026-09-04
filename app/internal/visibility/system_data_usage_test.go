@@ -310,6 +310,10 @@ func TestSystemDataUsageUndecodableBodyReturns502(t *testing.T) {
 	}
 }
 
+// TestSystemDataUsageNonFilterableStatusesPassThrough covers the status codes
+// that carry no data-usage payload. A 304 is deliberately absent: it is a
+// revalidation of a copy no filter ever saw, so it is refused rather than
+// passed through — see conditional_request_test.go.
 func TestSystemDataUsageNonFilterableStatusesPassThrough(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -319,7 +323,6 @@ func TestSystemDataUsageNonFilterableStatusesPassThrough(t *testing.T) {
 		wantBody string
 	}{
 		{name: "daemon error", status: http.StatusInternalServerError, body: `{"message":"boom"}`, wantBody: `{"message":"boom"}`},
-		{name: "not modified", status: http.StatusNotModified, body: `stale`, wantBody: ""},
 		{name: "no content", status: http.StatusNoContent, body: `stale`, wantBody: ""},
 	}
 	for _, tt := range tests {

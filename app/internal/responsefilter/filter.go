@@ -75,6 +75,22 @@ func (f *Filter) ModifyResponse(resp *http.Response) error {
 	if f == nil || resp == nil || resp.Request == nil {
 		return nil
 	}
+	// A 304 is refused ahead of the method and status gates below, and ahead
+	// of Enabled(), because none of them can reason about it: it carries no
+	// body to redact and its whole meaning is "the copy you already have is
+	// current". That copy was fetched under whatever policy was in force at
+	// the time, so confirming it hands the client back a body this build might
+	// redact, drop items out of, or refuse outright today. It is the same
+	// fail-closed direction as rejecting a body this package cannot parse, for
+	// the sharper reason that here there is no body to look at at all.
+	//
+	// The conditional request headers are stripped on the way out (see
+	// StripConditionalRequestHeaders), so a daemon cannot legitimately produce
+	// this: a 304 arriving anyway came from an upstream answering something
+	// this proxy never asked, which is exactly the case worth failing on.
+	if resp.StatusCode == http.StatusNotModified {
+		return rejectResponse(errNotModifiedRevalidation)
+	}
 	if resp.Request.Method == http.MethodHead || !isSuccessfulBodyResponse(resp.StatusCode) {
 		return nil
 	}
