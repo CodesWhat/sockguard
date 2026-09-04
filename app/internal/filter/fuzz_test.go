@@ -3,6 +3,7 @@ package filter
 import (
 	pathpkg "path"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -64,6 +65,22 @@ func FuzzPathMatch(f *testing.F) {
 		{"POST", "/v5.0.0/libpod/play/kube"},
 		{"GET", "/v5.0.0/libpod/generate/kube"},
 		{"POST", "/v1.45/libpod/containers/create"},
+		// Trailing slashes. NormalizePath cleans these away, but the libpod
+		// image-SCP route view keeps them, and there the empty final segment
+		// is part of the image name Podman routes on.
+		{"GET", "/containers/abc/"},
+		{"GET", "/a/b/"},
+		{"POST", "/libpod/images/scp/alpine/"},
+		{"POST", "/libpod/images/scp/tenant/"},
+		{"POST", "/libpod/images/scp/victim/push/"},
+		{"POST", "/v5.8.1/libpod/images/scp/acme/app/"},
+		{"POST", "/v5.8.1-dev/libpod/images/scp/foreign%2Fpush/"},
+		{"GET", "//"},
+		{"GET", "/containers//"},
+		// Rootless request-target shapes, which the rooted-view invariant
+		// below deliberately skips.
+		{"GET", "../00/"},
+		{"OPTIONS", "*"},
 	}
 	for _, s := range seeds {
 		f.Add(s.method, s.path)
@@ -91,6 +108,30 @@ func FuzzPathMatch(f *testing.F) {
 		f.Fatalf("CompileRule containers: %v", err)
 	}
 
+	// Segment-glob rules and the anchored regex their patterns compile to. The
+	// walker is only an optimization, so it has to answer identically on both
+	// path views production hands it: NormalizePath, which cleans a trailing
+	// slash away, and NormalizePodmanRoutePath, which keeps the one
+	// gorilla/mux routes on for the libpod image-SCP endpoint. "[^/]*" matches
+	// a newline, so unlike the "**" group above these need no newline carve-out.
+	segmentGlobs := make([]*CompiledRule, 0, 3)
+	segmentGlobRegexes := make([]*regexp.Regexp, 0, 3)
+	for _, pattern := range []string{"/containers/*", "/*/*/*", "/libpod/images/scp/*/*"} {
+		compiled, err := CompileRule(Rule{Methods: []string{"*"}, Pattern: pattern, Action: ActionAllow, Index: 2})
+		if err != nil {
+			f.Fatalf("CompileRule(%q): %v", pattern, err)
+		}
+		if compiled.matcherKind != pathMatcherSegmentGlob {
+			f.Fatalf("matcherKind for %q = %d, want pathMatcherSegmentGlob (%d)", pattern, compiled.matcherKind, pathMatcherSegmentGlob)
+		}
+		reference, err := regexp.Compile("^" + GlobToRegexString(pattern) + "$")
+		if err != nil {
+			f.Fatalf("compile reference regex for %q: %v", pattern, err)
+		}
+		segmentGlobs = append(segmentGlobs, compiled)
+		segmentGlobRegexes = append(segmentGlobRegexes, reference)
+	}
+
 	f.Fuzz(func(t *testing.T, method, path string) {
 		// NormalizePath must never panic.
 		normalized := NormalizePath(path)
@@ -105,6 +146,31 @@ func FuzzPathMatch(f *testing.F) {
 		if len(normalized) > 0 && normalized[0] == '/' && !containsNewline(normalized) {
 			if !catchAll.matches(method, path) {
 				t.Errorf("catch-all did not match method=%q path=%q (normalized=%q)", method, path, normalized)
+			}
+		}
+
+		// Invariant: on both production path views, the segment walker agrees
+		// with the anchored regex its pattern compiles to. Scoped to rooted
+		// views, which is every path an HTTP request-target produces bar the
+		// asterisk-form and absolute-form-with-empty-path edges. The walker
+		// drops one leading "/" from both the pattern and the path before
+		// comparing, so it reads a rootless pattern as rooted; the regex does
+		// not, and config validation relies on that lenience to match a
+		// rootless rule pattern the way the runtime does. That is a separate
+		// question from segment counting and is not what this pins.
+		upperMethod := upperHTTPMethodASCII(method)
+		methodBit := httpMethodBit(upperMethod)
+		for _, view := range []string{normalized, NormalizePodmanRoutePath(path)} {
+			if !strings.HasPrefix(view, "/") {
+				continue
+			}
+			for i, compiled := range segmentGlobs {
+				got := compiled.matchesNormalizedUpperWithBit(upperMethod, methodBit, view)
+				want := segmentGlobRegexes[i].MatchString(view)
+				if got != want {
+					t.Errorf("segment glob %q path %q (from %q) = %v, regex %q = %v",
+						compiled.segmentPatterns, view, path, got, segmentGlobRegexes[i], want)
+				}
 			}
 		}
 	})
@@ -140,6 +206,17 @@ func FuzzGlobToRegex(f *testing.F) {
 		"/v1.55/session",
 		"/session/**",
 		"/grpc/**",
+		// Trailing slashes, on both sides of the dialect: a pattern that ends
+		// in one spells a final empty segment, which is what the libpod
+		// image-SCP route view can present.
+		"/containers/",
+		"/containers/*/",
+		"/containers/**/",
+		"/libpod/images/scp/*",
+		"/libpod/images/scp/*/",
+		"/libpod/images/scp/*/*",
+		"//",
+		"*/",
 	}
 	for _, s := range seeds {
 		f.Add(s)

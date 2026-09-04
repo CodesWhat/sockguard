@@ -381,6 +381,11 @@ func normalizedLibpodImageScpRoutePath(r *http.Request) (string, bool) {
 // path.Clean strips the trailing slash, so a caller using it reads
 // POST /libpod/images/scp/victim/push/ as a push of an image named
 // "scp/victim" while the daemon routes it as an SCP of "victim/push/".
+//
+// This is the only path shape rule matching ever sees with a trailing slash,
+// and every matcher kind treats that slash as a real, empty final segment.
+// See matchGlobSegments for why the segment walker has to agree with the
+// regex there rather than absorb the slash.
 func NormalizePodmanRoutePath(p string) string {
 	hasTrailingSlash := len(p) > 1 && strings.HasSuffix(p, "/")
 	normalized := NormalizePath(p)
@@ -482,29 +487,42 @@ func matchTrailingDoubleStar(prefix, path string) bool {
 	return path == prefix || strings.HasPrefix(path, prefix+"/")
 }
 
+// matchGlobSegments matches a single-star glob (a pattern with "*" but no
+// "**") against a normalized path by walking both a segment at a time. It is
+// the allocation-free stand-in for the anchored regex the same pattern
+// compiles to, so its verdict has to be identical to
+// "^" + glob.ToRegexString(pattern) + "$": the path must carry exactly as many
+// "/"-separated segments as the pattern, because the "[^/]*" a "*" compiles to
+// can never cross a separator.
+//
+// That makes a trailing slash a real, empty final segment rather than
+// punctuation. "/containers/*" does not match "/containers/abc/", which is two
+// segments after "containers", and "/*/*/*" does match "/a/b/", whose third
+// segment is empty. NormalizePath's path.Clean strips a trailing slash, so the
+// distinction is invisible on the ordinary policy path; the one view that
+// keeps it is NormalizePodmanRoutePath, which mirrors what gorilla/mux routes
+// on for Podman's image-SCP endpoint. There the empty segment is part of the
+// image name Podman would act on, so a rule spelling one segment must not
+// quietly cover two, and a deny spelling two must not be dodged by a path
+// whose second segment is empty.
 func matchGlobSegments(patternSegments []string, path string) bool {
-	path = strings.TrimPrefix(path, "/")
-	if path == "" {
-		return len(patternSegments) == 1 && matchGlobSegment(patternSegments[0], "")
+	last := len(patternSegments) - 1
+	if last < 0 {
+		return false
 	}
 
-	for _, patternSegment := range patternSegments {
-		if path == "" {
-			return false
-		}
-
+	path = strings.TrimPrefix(path, "/")
+	for _, patternSegment := range patternSegments[:last] {
 		segment, rest, hasMore := strings.Cut(path, "/")
-		if !matchGlobSegment(patternSegment, segment) {
+		if !hasMore || !matchGlobSegment(patternSegment, segment) {
 			return false
-		}
-		if !hasMore {
-			path = ""
-			continue
 		}
 		path = rest
 	}
 
-	return path == ""
+	// The final pattern segment has to consume the whole remainder. A "/" left
+	// in it means the path carries more segments than the pattern spends.
+	return !strings.Contains(path, "/") && matchGlobSegment(patternSegments[last], path)
 }
 
 func matchGlobSegment(pattern, segment string) bool {

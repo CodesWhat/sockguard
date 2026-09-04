@@ -256,7 +256,16 @@ same way they cover Docker-compat:
   decoded once for inspection. Podman's earlier per-image POST routes remain
   distinct: `/libpod/images/scp/push`, `/tag`, and `/untag` check the image
   named exactly `scp`, while a longer action path checks the image whose name
-  begins with `scp/`; only an actual SCP route strips that segment.
+  begins with `scp/`; only an actual SCP route strips that segment. Because
+  this is the routed path rather than the cleaned one, a trailing slash
+  survives into rule matching and counts as an empty final segment. Podman
+  routes `POST /libpod/images/scp/alpine/` as an SCP of the image `alpine/`,
+  not of `alpine`, so on the routed view a rule spelling one segment
+  (`/libpod/images/scp/*`) does not cover it and a rule spelling two
+  (`/libpod/images/scp/*/*`) does. The cleaned view
+  (`/libpod/images/scp/alpine`) is evaluated first and has to allow on its
+  own, so a two-segment rule by itself still denies the request. Write
+  `/libpod/images/scp/**` to cover the whole route regardless of shape.
 - Query-selected native image batches are checked too. Sockguard decodes every
   repeated `references` value on `GET /libpod/images/export` and every repeated
   `images` value on `DELETE /libpod/images/remove`, then resolves all of them
