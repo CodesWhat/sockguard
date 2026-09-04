@@ -172,22 +172,35 @@ func (f *Filter) modifyContainerInspect(resp *http.Response) error {
 	}
 	if f.opts.RedactMountPaths {
 		// Docker and Podman both expose the host-side files bind-mounted over
-		// resolv.conf, hostname and hosts. Podman's native inspect shape also
+		// resolv.conf, hostname and hosts, plus the host path of the
+		// container's log file. Podman's native inspect shape also
 		// publishes the container rootfs, persistent metadata directory, OCI
 		// config and PID-file locations at the top level. They are host paths,
 		// so leaving them intact would bypass the same option that redacts
 		// Mounts[].Source and HostConfig.Binds below.
+		//
+		// LogPath is the daemon's own storage root, not anything the caller
+		// asked for: dockerd answers
+		// /var/lib/docker/containers/{id}/{id}-json.log and Podman
+		// /var/lib/containers/storage/overlay-containers/{id}/userdata/ctr.log,
+		// so one inspect discloses the storage driver, the graph root, and
+		// whether the daemon is rootful, to a caller the operator has already
+		// decided may not see Mounts[].Source.
 		for _, key := range [...]string{
 			"Rootfs",
 			"ResolvConfPath",
 			"HostnamePath",
 			"HostsPath",
+			"LogPath",
 			"StaticDir",
 			"OCIConfigPath",
 			"ConmonPidFile",
 			"PidFile",
 		} {
 			redactStringField(payload, key)
+		}
+		if err := redactGraphDriverData(payload); err != nil {
+			return rejectResponse(err)
 		}
 		if err := redactMountObjects(payload, "Mounts"); err != nil {
 			return rejectResponse(err)
@@ -1354,6 +1367,42 @@ func redactHostConfigMountSources(payload map[string]any) error {
 		binds[i] = redactBindSpec(bind)
 	}
 
+	return nil
+}
+
+// redactGraphDriverData masks every value under GraphDriver.Data on a
+// container inspect. The whole map is host filesystem layout: overlay2
+// answers LowerDir, MergedDir, UpperDir and WorkDir, all absolute paths under
+// the daemon's graph root; zfs answers Dataset and Mountpoint; vfs answers
+// RootDir; devicemapper answers DeviceName. Redacting the values rather than
+// deleting the key keeps the response shape a client's decoder expects, and
+// redacting every value rather than a known-path allowlist means a storage
+// driver that publishes a new key is covered the day it ships instead of the
+// day someone notices.
+//
+// GraphDriver.Name is left alone. It names the driver, not a path, and it is
+// the one field a client legitimately reads out of this object.
+func redactGraphDriverData(payload map[string]any) error {
+	graphDriverValue, ok := payload["GraphDriver"]
+	if !ok || graphDriverValue == nil {
+		return nil
+	}
+	graphDriver, ok := graphDriverValue.(map[string]any)
+	if !ok {
+		return fmt.Errorf("GraphDriver has unexpected type %T", graphDriverValue)
+	}
+
+	dataValue, ok := graphDriver["Data"]
+	if !ok || dataValue == nil {
+		return nil
+	}
+	data, ok := dataValue.(map[string]any)
+	if !ok {
+		return fmt.Errorf("GraphDriver.Data has unexpected type %T", dataValue)
+	}
+	for key := range data {
+		data[key] = redactedValue
+	}
 	return nil
 }
 

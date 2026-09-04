@@ -210,6 +210,12 @@ func (o *ownerFilterWriter) flushOwned(opts Options) ([]string, error) {
 		return nil, err
 	}
 
+	// The filtered body is not the daemon's, so the daemon's ETag,
+	// Content-Encoding, Content-Range and Trailer announcement all describe
+	// bytes the client will never see. Clear them the way this file's two 502
+	// paths already do, then set the Content-Length that does describe what
+	// goes out (the clear removes the upstream's).
+	responsefilter.ClearUpstreamRepresentationHeaders(o.underlying.Header())
 	o.underlying.Header().Set("Content-Length", strconv.Itoa(len(filtered)))
 	o.underlying.WriteHeader(o.statusCode)
 	o.headerWritten = true

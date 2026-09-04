@@ -747,3 +747,55 @@ func TestFilterSystemDataUsageResponseNoLogWhenEveryKnownSectionSeen(t *testing.
 		t.Fatalf("log = %q, want no unclassifiable-sections warning when every top-level key is a known section", buf.String())
 	}
 }
+
+// TestSystemDataUsageRewriteClearsUpstreamRepresentationHeaders pins the
+// success path against the same rule the two 502 paths in this file already
+// follow: a body sockguard rewrote is not the daemon's, so the daemon's
+// validator and encoding for it must not go out with it. Content-Length was
+// corrected on its own, which left an ETag describing the unfiltered host
+// inventory on a response that no longer contains it.
+func TestSystemDataUsageRewriteClearsUpstreamRepresentationHeaders(t *testing.T) {
+	t.Parallel()
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("Content-Digest", "sha-256=:upstream:")
+		w.Header().Set("Content-Encoding", "identity")
+		w.Header().Set("Content-Language", "en")
+		w.Header().Set("Content-Location", "/v1.53/system/df")
+		w.Header().Set("Content-MD5", "upstream-md5")
+		w.Header().Set("Content-Range", "bytes 0-99/100")
+		w.Header().Set("Digest", "sha-256=upstream")
+		w.Header().Set("ETag", `"upstream-etag"`)
+		w.Header().Set("Last-Modified", "Wed, 21 Oct 2026 07:28:00 GMT")
+		w.Header().Set("Repr-Digest", "sha-256=:upstream:")
+		w.Header().Set("Trailer", "X-Upstream-Trailer")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, modernSystemDFUpstream)
+	})
+	handler := middlewareWithDeps(testLogger(), Options{Owner: "team-a"},
+		fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(upstream)
+
+	rec := getSystemDFForTest(t, handler)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "team-b") {
+		t.Fatalf("other owner survived the filter: %s", rec.Body.String())
+	}
+	for _, name := range []string{
+		"Accept-Ranges", "Content-Digest", "Content-Encoding", "Content-Language",
+		"Content-Location", "Content-MD5", "Content-Range", "Digest", "ETag",
+		"Last-Modified", "Repr-Digest", "Trailer", "Transfer-Encoding",
+	} {
+		if got := rec.Header().Get(name); got != "" {
+			t.Errorf("%s = %q after a body rewrite, want cleared", name, got)
+		}
+	}
+	if got, want := rec.Header().Get("Content-Length"), strconv.Itoa(rec.Body.Len()); got != want {
+		t.Fatalf("Content-Length = %q, want %q (the rewritten body's own length)", got, want)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want the upstream's application/json kept", got)
+	}
+}

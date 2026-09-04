@@ -356,6 +356,7 @@ Together with request-side visibility and exfiltration guardrails, the read-side
 - Fail startup unless process-list, raw archive/export, and stream-style reads are explicitly acknowledged via `insecure_allow_read_exfiltration: true`
 - Redact `Config.Env` on `GET /containers/*/json`
 - Redact `HostConfig.Binds` host paths plus `Mounts[*].Source` on container list/inspect responses
+- Redact `LogPath` and every value under `GraphDriver.Data` on container inspect responses, since both are absolute paths under the daemon's own storage root rather than anything the caller configured; `GraphDriver.Name` is kept
 - Redact volume `Mountpoint` on `GET /volumes` and `GET /volumes/*`
 - Redact container and network address topology on container/network list and inspect responses
 - Redact service/task env, mount, secret/config-reference, and network metadata

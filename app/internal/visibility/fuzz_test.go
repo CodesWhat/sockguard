@@ -19,7 +19,7 @@ import (
 // out.
 //
 // The harness drives both list endpoints + an off-axis path so the
-// pass-through branch in flushFiltered is exercised too, and varies
+// refusal branch in flushFiltered is exercised too, and varies
 // the buffered-body state (under cap, exactly at cap, overflowed) so
 // the Write/overflow guard rails get coverage. Invariant: no panic, no
 // negative writes, no infinite loop on adversarial inputs. The filtered
@@ -27,13 +27,13 @@ import (
 // array framing — overflowing here would be the parser-differential
 // equivalent of a smuggle.
 func FuzzVisibilityFilter(f *testing.F) {
-	// Seeds cover the parse, pass-through, and overflow paths.
+	// Seeds cover the parse, refusal, and overflow paths.
 	f.Add("/containers/json", []byte(`[{"Names":["/web"],"Image":"nginx"},{"Names":["/db"],"Image":"postgres"}]`))
 	f.Add("/containers/json", []byte(`[]`))
 	f.Add("/containers/json", []byte(`[{"Names":["/web"],"Names":["/db"],"Image":"nginx"}]`)) // duplicate keys
 	f.Add("/containers/json", []byte(`[{"NAMES":["/web"],"image":"nginx"}]`))                 // case variance
 	f.Add("/containers/json", []byte(`[{"Names":null,"Image":""}]`))                          // nulls / empties
-	f.Add("/containers/json", []byte(`{"not":"an array"}`))                                   // pass-through branch
+	f.Add("/containers/json", []byte(`{"not":"an array"}`))                                   // refused, not forwarded
 	f.Add("/containers/json", []byte(`[{"Names":["/web"],"Image":"nginx"}`))                  // truncated array
 	f.Add("/containers/json", []byte(`[{"Names":["/web"],"Image":"nginx"},`))                 // trailing comma
 	f.Add("/images/json", []byte(`[{"RepoTags":["docker.io/library/alpine:latest"]}]`))
@@ -45,7 +45,7 @@ func FuzzVisibilityFilter(f *testing.F) {
 
 	// Pre-compile two policies — one with name + image pattern axes,
 	// one bare — so the fuzzer probes both the filter-and-rewrite path
-	// and the pure-pass-through path on every input.
+	// and the no-axis path on every input.
 	policyWithPatterns := compiledPolicyOrPanic([]string{"*"}, []string{"*"})
 	policyEmpty := &compiledPolicy{}
 

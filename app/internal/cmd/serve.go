@@ -1463,10 +1463,17 @@ func policyConfigHash(cfg *config.Config) string {
 }
 
 // buildAdminValidator returns the parse+validate+compile callback wired into
-// the admin /admin/validate endpoint. It mirrors the offline `sockguard
-// validate` command's pipeline (config.LoadBytes → ApplyCompat →
-// validateAndCompileRules → compileClientProfiles) so an operator's CI gate
-// and the running proxy reach the same verdict for the same YAML.
+// the admin /admin/validate endpoint: config.LoadBytes → ApplyCompat →
+// validateAndCompileRulesStructural, which runs the rule compile, the three
+// insecure-acknowledgment audits and the client-profile compile.
+//
+// It is the STRUCTURAL variant, not the one `sockguard validate` runs offline,
+// so the two do not always reach the same verdict. Every check that does not
+// touch the filesystem is shared; the ones that open the cert, key and client
+// CA that listen.tls names run only offline. A candidate naming TLS material
+// that is missing, unreadable, or not PEM therefore passes here and fails
+// there, on purpose: the reason is in the body comment below and in
+// config.ValidateStructural.
 //
 // ApplyCompat uses a discard logger here because compat-expansion log noise
 // belongs to the proxy's own startup, not to a candidate-config validation
