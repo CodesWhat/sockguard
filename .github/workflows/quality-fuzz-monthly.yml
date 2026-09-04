@@ -105,6 +105,7 @@ jobs:
           - { name: FuzzClassify,                  pkg: ./internal/upstreamflavor/ }
           - { name: FuzzConfigured,                pkg: ./internal/upstreamflavor/ }
           - { name: FuzzPodmanEventLabelFilter,    pkg: ./internal/visibility/ }
+          - { name: FuzzCatalogReachability,       pkg: ./internal/cmd/ }
 
     steps:
       # Stays audit for stage 1: this job already has an open, in-repo
