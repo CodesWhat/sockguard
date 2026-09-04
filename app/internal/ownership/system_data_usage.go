@@ -43,7 +43,10 @@ var errNotModifiedUnfilterable = errors.New(ownerNotModifiedRefusalMessage)
 // when the response carries labels, or fail closed when it does not.
 //
 // GET /system/df returns Docker-shaped summaries that carry Labels, so it is
-// filtered item by item. GET /libpod/system/df returns Podman's own report
+// filtered item by item. HEAD on the same route has no body to filter but
+// still carries the daemon's Content-Length and ETag for the whole host
+// inventory, so it is answered with those removed rather than forwarded — see
+// forwardHeadWithoutUpstreamRepresentation. GET /libpod/system/df returns Podman's own report
 // shape, whose entries carry no labels at all, so there is nothing to filter
 // on and it is refused instead — see
 // responsefilter.LibpodSystemDataUsageDenyReason for the shape and the
@@ -59,9 +62,15 @@ var errNotModifiedUnfilterable = errors.New(ownerNotModifiedRefusalMessage)
 // container names, and rollout handling for a foreign container verdict can
 // pass through directly.
 func serveOwnershipAllowed(logger *slog.Logger, next http.Handler, w http.ResponseWriter, r *http.Request, normPath string, opts Options) {
-	if r.Method == http.MethodGet && normPath == responsefilter.SystemDataUsagePath {
-		filterSystemDataUsageResponse(logger, next, w, r, opts)
-		return
+	if normPath == responsefilter.SystemDataUsagePath {
+		switch r.Method {
+		case http.MethodGet:
+			filterSystemDataUsageResponse(logger, next, w, r, opts)
+			return
+		case http.MethodHead:
+			forwardHeadWithoutUpstreamRepresentation(next, w, r)
+			return
+		}
 	}
 	if (r.Method == http.MethodGet || r.Method == http.MethodHead) && normPath == responsefilter.LibpodSystemDataUsagePath {
 		denyLibpodSystemDataUsage(w, r)
@@ -113,6 +122,29 @@ func denyLibpodSystemDataUsage(w http.ResponseWriter, r *http.Request) {
 	reason := responsefilter.LibpodSystemDataUsageDenyReason
 	logging.SetDeniedWithCode(w, r, reasonCodeOwnerLibpodDataUsageUnscoped, reason, nil)
 	_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: reason})
+}
+
+// forwardHeadWithoutUpstreamRepresentation forwards HEAD /system/df with the
+// daemon's representation metadata removed.
+//
+// It is the owner-isolation twin of the visibility middleware's function of
+// the same name, and it is here for the same reason on the same route: a HEAD
+// comes back as headers only, so there is no body to classify by owner, while
+// the daemon's Content-Length and ETag still describe the whole host
+// inventory. The length is a count of every container, image and volume on the
+// host, including every other owner's, which is the disclosure
+// filterSystemDataUsageResponse exists to prevent for the GET.
+//
+// The two layers nest — visibility wraps ownership — so a deployment running
+// both had this closed by the visibility layer alone. Owner isolation without
+// a visibility policy did not, which is why it is fixed at both.
+func forwardHeadWithoutUpstreamRepresentation(next http.Handler, w http.ResponseWriter, r *http.Request) {
+	interceptingW := newOwnerFilterWriter(w)
+	next.ServeHTTP(interceptingW, r)
+	// Anything buffered is dropped rather than relayed. A daemon sends no body
+	// on a HEAD, and one that does is not answering the request that was made.
+	responsefilter.ClearUpstreamRepresentationHeaders(w.Header())
+	w.WriteHeader(interceptingW.statusCode)
 }
 
 // filterSystemDataUsageResponse buffers the upstream /system/df response,

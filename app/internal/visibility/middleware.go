@@ -210,8 +210,12 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 			// the host and accepts no `filters` query parameter, so it can only
 			// be constrained on the response. It is deliberately NOT in
 			// needsVisibilityLabelFilter: injecting a `filters=` param the
-			// endpoint does not define would be meaningless at best.
-			if r.Method == http.MethodGet && normPath == responsefilter.SystemDataUsagePath {
+			// endpoint does not define would be meaningless at best. HEAD is
+			// claimed here too: it has no body to filter, but the daemon sizes
+			// and validates one over the whole host inventory, and falling
+			// through would forward that metadata to a caller the policy
+			// scopes.
+			if (r.Method == http.MethodGet || r.Method == http.MethodHead) && normPath == responsefilter.SystemDataUsagePath {
 				handleVisibilitySystemDataUsageRequest(logger, next, w, r, &effectivePolicy)
 				return
 			}
@@ -382,12 +386,18 @@ func handleVisibilityListRequest(logger *slog.Logger, next http.Handler, w http.
 		// values this layer injected, which ownership reads downstream.
 		r = forwarded
 	}
-	// The response filter is GET-only, the same gate GET /system/df takes
-	// above. A HEAD carries no body, so there is nothing to filter and nothing
-	// to leak; intercepting one would hand flushFiltered an empty buffer,
-	// which is not the JSON array it now requires, and turn a legitimate HEAD
-	// into a 502.
-	if hasPatterns && r.Method == http.MethodGet && needsPatternResponseFilter(normPath) {
+	// flushFiltered stays GET-only: a HEAD carries no body, and handing it an
+	// empty buffer would fail the JSON-array check and turn a legitimate HEAD
+	// into a 502. The HEAD is not forwarded untouched either. The daemon
+	// computes its Content-Length and ETag over the list the pattern axes
+	// exist to narrow, so the length counts the containers or images this
+	// policy hides and the ETag fingerprints them. See
+	// forwardHeadWithoutUpstreamRepresentation.
+	if hasPatterns && needsPatternResponseFilter(normPath) {
+		if r.Method == http.MethodHead {
+			forwardHeadWithoutUpstreamRepresentation(next, w, r)
+			return
+		}
 		filterResponseThroughWriter(logger, next, w, r, "visibility pattern list filter failed", func(fw *patternFilterWriter) error {
 			return fw.flushFiltered(normPath, policy)
 		})
@@ -433,6 +443,45 @@ func filterResponseThroughWriter(logger *slog.Logger, next http.Handler, w http.
 			_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: message})
 		}
 	}
+}
+
+// forwardHeadWithoutUpstreamRepresentation forwards a HEAD whose GET twin this
+// middleware filters on the response, with the daemon's representation
+// metadata removed.
+//
+// A HEAD comes back as headers only, so there is no body for the policy to
+// walk and nothing this layer can compute a truthful Content-Length or ETag
+// from. Both describe the list the daemon holds, which on a pattern-filtered
+// route or on /system/df is precisely the list the policy narrows: the length
+// counts the items the client may not see, and the ETag is a validator for
+// that unfiltered body, so it fingerprints them and, forwarded, hands the
+// client a key to revalidate against later.
+//
+// It is answered rather than refused, which is the opposite of what the
+// unscopeable libpod reads get, and the difference is which methods can be
+// scoped at all. Those endpoints carry neither labels nor names, so no policy
+// axis applies to any method and GET is refused too; HEAD is refused there
+// only so a method-scoped gate cannot forward what GET could not. Here GET is
+// fully scoped and only the HEAD's metadata is not, so a refusal would be a
+// per-method status this package has nowhere else, and neither candidate says
+// anything true: 405 claims the route rejects the method, which it does not,
+// and 502 blames the upstream for a decision this proxy made. What the
+// middleware does have is a rule that covers this exactly — the client never
+// receives a representation header describing bytes it did not get, which is
+// what clearUpstreamRepresentationHeaders enforces for commitFilteredBody and
+// for both 502 paths. A HEAD is that rule's limit case at zero bytes.
+//
+// Go omits Content-Length on a HEAD when the handler declares none and writes
+// no bytes, so the response goes out carrying no length rather than a
+// synthesized 0.
+func forwardHeadWithoutUpstreamRepresentation(next http.Handler, w http.ResponseWriter, r *http.Request) {
+	interceptingW := newPatternFilterWriter(w)
+	defer interceptingW.release()
+	next.ServeHTTP(interceptingW, r)
+	// Anything buffered is dropped rather than relayed. A daemon sends no body
+	// on a HEAD, and one that does is not answering the request that was made.
+	clearUpstreamRepresentationHeaders(w.Header())
+	w.WriteHeader(interceptingW.statusCode)
 }
 
 // clearUpstreamRepresentationHeaders delegates to responsefilter so the header

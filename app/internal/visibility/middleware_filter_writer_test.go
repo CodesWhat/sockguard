@@ -417,19 +417,74 @@ func TestPatternListWarnModeStillFailsClosedOnNonArrayBody(t *testing.T) {
 	}
 }
 
-// TestPatternListHeadRequestNotIntercepted is the counterpart of
-// TestSystemDataUsageHeadRequestNotIntercepted: a HEAD carries no body, so the
-// pattern response filter never runs on one. Without the GET gate the empty
-// buffer would hit flushFiltered's decode guard and turn a legitimate HEAD
-// into a 502.
-func TestPatternListHeadRequestNotIntercepted(t *testing.T) {
+// TestPatternListHeadDropsUpstreamRepresentation is the counterpart of
+// TestSystemDataUsageHeadStripsUpstreamRepresentation. The pattern response
+// filter still never runs on a HEAD — an empty buffer would hit
+// flushFiltered's decode guard and turn a legitimate HEAD into a 502 — but the
+// HEAD is no longer forwarded untouched either: the daemon's Content-Length
+// and ETag are computed over the unfiltered list, so the length counts the
+// containers and images the policy hides and the ETag validates them. Every
+// pattern-filtered list route is covered, not only /containers/json.
+func TestPatternListHeadDropsUpstreamRepresentation(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		target string
+		opts   Options
+	}{
+		{name: "container list", target: "/v1.53/containers/json", opts: Options{NamePatterns: []string{"visible-*"}}},
+		{name: "libpod container list", target: "/v5.8.1/libpod/containers/json", opts: Options{NamePatterns: []string{"visible-*"}}},
+		{name: "image list", target: "/v1.53/images/json", opts: Options{ImagePatterns: []string{"nginx*"}}},
+		{name: "libpod image list", target: "/v5.8.1/libpod/images/json", opts: Options{ImagePatterns: []string{"nginx*"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Length", "4096")
+				w.Header().Set("Content-Type", "application/json")
+				setUpstreamRepresentationHeaders(w.Header())
+				w.WriteHeader(http.StatusOK)
+			})
+			handler := middlewareWithDeps(testVisibilityLogger(), tt.opts, visibilityDeps{})(upstream)
+
+			req := httptest.NewRequest(http.MethodHead, tt.target, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+			}
+			if got := rec.Header().Get("Content-Length"); got != "" {
+				t.Errorf("Content-Length = %q, want it cleared so the hidden items are not counted", got)
+			}
+			for _, name := range upstreamRepresentationHeaders {
+				if got := rec.Header().Get(name); got != "" {
+					t.Errorf("%s = %q, want it cleared on a HEAD the policy scopes", name, got)
+				}
+			}
+			if got := rec.Header().Get("Content-Type"); got != "application/json" {
+				t.Errorf("Content-Type = %q, want the media type kept", got)
+			}
+			if body := rec.Body.String(); body != "" {
+				t.Errorf("body = %q, want nothing forwarded for a HEAD", body)
+			}
+		})
+	}
+}
+
+// TestPatternListHeadWithoutPatternAxesIsUntouched is the control: with no
+// pattern axis the response filter never runs, the label selectors go upstream
+// on the request, and the daemon's length already describes the scoped list.
+// There is nothing to hide, so the HEAD is forwarded as it always was.
+func TestPatternListHeadWithoutPatternAxesIsUntouched(t *testing.T) {
 	t.Parallel()
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Length", "4096")
 		w.WriteHeader(http.StatusOK)
 	})
 	handler := middlewareWithDeps(testVisibilityLogger(),
-		Options{NamePatterns: []string{"visible-*"}}, visibilityDeps{})(upstream)
+		Options{VisibleResourceLabels: []string{"tier=prod"}}, visibilityDeps{})(upstream)
 
 	req := httptest.NewRequest(http.MethodHead, "/v1.53/containers/json", nil)
 	rec := httptest.NewRecorder()
@@ -546,5 +601,45 @@ func TestSystemDataUsageRewriteClearsUpstreamRepresentationHeaders(t *testing.T)
 	}
 	if got, want := rec.Header().Get("Content-Length"), strconv.Itoa(rec.Body.Len()); got != want {
 		t.Fatalf("Content-Length = %q, want %q (the rewritten body's own length)", got, want)
+	}
+}
+
+// TestPatternListHeadOverRealServerSendsNoContentLength proves the claim the
+// header clear rests on: with Content-Length deleted and no bytes written, Go
+// does not synthesize one for a HEAD, so the client sees no length rather than
+// a length of 0. httptest.NewRecorder never serializes headers, so this needs
+// a real server and a real client.
+func TestPatternListHeadOverRealServerSendsNoContentLength(t *testing.T) {
+	t.Parallel()
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "4096")
+		w.Header().Set("ETag", `"upstream"`)
+		w.WriteHeader(http.StatusOK)
+	})
+	server := httptest.NewServer(middlewareWithDeps(testVisibilityLogger(),
+		Options{NamePatterns: []string{"visible-*"}}, visibilityDeps{})(upstream))
+	t.Cleanup(server.Close)
+
+	req, err := http.NewRequest(http.MethodHead, server.URL+"/v1.53/containers/json", nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest: %v", err)
+	}
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("HEAD: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got, ok := resp.Header["Content-Length"]; ok {
+		t.Errorf("Content-Length = %v, want the header absent entirely", got)
+	}
+	if resp.ContentLength != -1 {
+		t.Errorf("ContentLength = %d, want -1 (unknown)", resp.ContentLength)
+	}
+	if got := resp.Header.Get("ETag"); got != "" {
+		t.Errorf("ETag = %q, want it cleared", got)
 	}
 }

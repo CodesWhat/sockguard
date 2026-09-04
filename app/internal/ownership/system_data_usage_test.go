@@ -315,15 +315,20 @@ func TestSystemDataUsageNonFilterableStatusesPassThrough(t *testing.T) {
 	}
 }
 
-// TestSystemDataUsageHeadRequestNotIntercepted: a HEAD carries no body, so
-// there is nothing to filter and nothing to leak. Buffering it would only risk
-// replacing the daemon's Content-Length with 0.
-func TestSystemDataUsageHeadRequestNotIntercepted(t *testing.T) {
+// TestSystemDataUsageHeadStripsUpstreamRepresentation: a HEAD carries no body
+// to classify by owner, but the daemon's Content-Length and ETag describe the
+// whole host inventory, so the length counts every other owner's containers,
+// images and volumes. The request still reaches the daemon; the metadata does
+// not reach the client.
+func TestSystemDataUsageHeadStripsUpstreamRepresentation(t *testing.T) {
 	t.Parallel()
 	reached := false
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		reached = true
 		w.Header().Set("Content-Length", "4096")
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("ETag", `"upstream"`)
+		w.Header().Set("Last-Modified", "Wed, 03 Sep 2026 10:00:00 GMT")
 		w.WriteHeader(http.StatusOK)
 	})
 	handler := middlewareWithDeps(testLogger(), Options{Owner: "team-a"},
@@ -336,8 +341,16 @@ func TestSystemDataUsageHeadRequestNotIntercepted(t *testing.T) {
 	if !reached {
 		t.Fatal("HEAD did not reach the upstream")
 	}
-	if got := rec.Header().Get("Content-Length"); got != "4096" {
-		t.Fatalf("Content-Length = %q, want the upstream's 4096 untouched", got)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	for _, name := range []string{"Content-Length", "ETag", "Last-Modified"} {
+		if got := rec.Header().Get(name); got != "" {
+			t.Errorf("%s = %q, want it cleared on a HEAD owner isolation scopes", name, got)
+		}
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want the media type kept", got)
 	}
 }
 

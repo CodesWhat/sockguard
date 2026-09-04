@@ -378,6 +378,23 @@ buffered visibility rewrite must generate its own `502`, Sockguard removes
 stale upstream representation headers before writing the replacement JSON so
 clients do not see a mismatched length or encoding.
 
+**A `HEAD` on a response-filtered read is answered without the daemon's
+`Content-Length`, `ETag`, or `Last-Modified`.** A `HEAD` carries no body for a
+filter to walk, but the daemon still sizes and validates one, and on a route
+constrained on the response — `GET /containers/json` and `GET /images/json`
+plus their `/libpod` spellings under `response.name_patterns` or
+`response.image_patterns`, and `GET /system/df` under either visibility policy
+or owner isolation — that body is the unfiltered one. Its length counts the
+containers, images, and volumes the policy hides, and its `ETag` validates
+them. Sockguard forwards the request but clears that metadata, so the response
+carries no length at all rather than a fabricated one. The route is not
+refused: `GET` on it is fully scopeable, and only the `HEAD`'s metadata is
+not, unlike the libpod reads above that no policy axis can scope on any
+method. Where the label selectors go upstream on the request instead
+(`GET /networks`, `GET /volumes`, `GET /services`, and the rest), the daemon
+already computes its length over the scoped list, so those `HEAD` responses
+are unchanged.
+
 These controls are on by default where they are pure redaction, because runtime env vars routinely carry credentials and Docker read APIs expose raw host mount paths plus internal network layout. Four toggles carry that default: `response.redact_container_env`, `redact_mount_paths`, `redact_network_topology`, and `redact_sensitive_data`. `response.redact_host_topology` is redaction too, stripping `Containerd`, `FirewallBackend`, `DiscoveredDevices`, and `NRI` from `GET /info`, but it defaults off and no shipped preset turns it on. `response.allow_attestation_statements` is a different shape: it also defaults off, but it rejects the whole `GET /images/*/attestations` response when the caller asks for `statement=true` rather than redacting fields out of it.
 
 ### Layer 8: Structured Access And Audit Logging
