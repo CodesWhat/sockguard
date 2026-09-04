@@ -143,17 +143,17 @@ func TestCISDockerBenchmark(t *testing.T) {
 		"host network mode is not allowed",
 	)
 
-	// CIS 5.10 / 5.15 — host PID namespace not shared.
+	// CIS 5.15 — host PID namespace not shared.
 	cisBodyDenied(t, handler,
-		"5.10-host-pid",
+		"5.15-host-pid",
 		http.MethodPost, "/containers/create",
 		`{"Image":"scratch","HostConfig":{"PidMode":"host"}}`,
 		"host PID mode is not allowed",
 	)
 
-	// CIS 5.16/5.17 — CapAdd SYS_ADMIN denied (allowed_capabilities is empty).
+	// CIS 5.3 — CapAdd SYS_ADMIN denied (allowed_capabilities is empty).
 	cisBodyDenied(t, handler,
-		"5.16-cap-add-sys-admin",
+		"5.3-cap-add-sys-admin",
 		http.MethodPost, "/containers/create",
 		`{"Image":"scratch","HostConfig":{"CapAdd":["SYS_ADMIN"]}}`,
 		"capability",
@@ -171,7 +171,7 @@ func TestCISDockerBenchmark(t *testing.T) {
 	// CIS 5.12 — read-only root filesystem required.
 	// Body has no-new-privileges but no ReadonlyRootfs.
 	cisBodyDenied(t, handler,
-		"5.30-readonly-rootfs-missing",
+		"5.12-readonly-rootfs-missing",
 		http.MethodPost, "/containers/create",
 		`{"Image":"scratch","HostConfig":{"Memory":67108864,"NanoCpus":1000000000,"PidsLimit":100,"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges:true"]}}`,
 		"read-only root filesystem is required",
