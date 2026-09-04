@@ -1483,3 +1483,159 @@ func TestDecodeJSONObjectRejectsTrailingContent(t *testing.T) {
 		})
 	}
 }
+
+// dockerContainerInspectHostStorageUpstream is a GET /containers/{id}/json
+// body carrying the two host-path families redact_mount_paths used to miss.
+// LogPath and GraphDriver.Data are the daemon's own storage layout rather than
+// anything the caller configured, and both are absolute paths under the graph
+// root: one inspect discloses the storage driver, the graph root, and whether
+// the daemon runs rootful, to a caller the operator has already decided may
+// not see Mounts[].Source.
+const dockerContainerInspectHostStorageUpstream = `{
+	"Id":"abc123",
+	"Name":"/team-a-web",
+	"LogPath":"/var/lib/docker/containers/abc123/abc123-json.log",
+	"ResolvConfPath":"/var/lib/docker/containers/abc123/resolv.conf",
+	"GraphDriver":{
+		"Name":"overlay2",
+		"Data":{
+			"LowerDir":"/var/lib/docker/overlay2/l/LOWERONE:/var/lib/docker/overlay2/l/LOWERTWO",
+			"MergedDir":"/var/lib/docker/overlay2/abc123/merged",
+			"UpperDir":"/var/lib/docker/overlay2/abc123/diff",
+			"WorkDir":"/var/lib/docker/overlay2/abc123/work"
+		}
+	},
+	"Mounts":[{"Type":"bind","Source":"/srv/secrets","Destination":"/run/secrets"}]
+}`
+
+func TestContainerInspectRedactsLogPathAndGraphDriverData(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "docker", path: "/v1.53/containers/abc123/json"},
+		{name: "libpod", path: "/v5.8.1/libpod/containers/abc123/json"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			resp := newResponseForTest(t, http.MethodGet, tt.path, dockerContainerInspectHostStorageUpstream)
+			if err := New(Options{RedactMountPaths: true}).ModifyResponse(resp); err != nil {
+				t.Fatalf("ModifyResponse() error = %v, want nil", err)
+			}
+			got := decodeBodyForTest(t, resp)
+
+			if logPath, _ := got["LogPath"].(string); logPath != redactedValue {
+				t.Errorf("LogPath = %q, want %q", logPath, redactedValue)
+			}
+
+			graphDriver, ok := got["GraphDriver"].(map[string]any)
+			if !ok {
+				t.Fatalf("GraphDriver = %#v, want an object", got["GraphDriver"])
+			}
+			if name, _ := graphDriver["Name"].(string); name != "overlay2" {
+				t.Errorf("GraphDriver.Name = %q, want overlay2 kept (it names the driver, not a path)", name)
+			}
+			data, ok := graphDriver["Data"].(map[string]any)
+			if !ok {
+				t.Fatalf("GraphDriver.Data = %#v, want an object", graphDriver["Data"])
+			}
+			if len(data) != 4 {
+				t.Errorf("GraphDriver.Data has %d keys, want 4 (shape preserved, values masked)", len(data))
+			}
+			for key, value := range data {
+				if value != redactedValue {
+					t.Errorf("GraphDriver.Data[%q] = %v, want %q", key, value, redactedValue)
+				}
+			}
+
+			body, err := json.Marshal(got)
+			if err != nil {
+				t.Fatalf("json.Marshal: %v", err)
+			}
+			for _, sentinel := range []string{
+				"/var/lib/docker/containers/abc123/abc123-json.log",
+				"/var/lib/docker/overlay2/l/LOWERONE",
+				"/var/lib/docker/overlay2/abc123/merged",
+				"/var/lib/docker/overlay2/abc123/diff",
+				"/var/lib/docker/overlay2/abc123/work",
+			} {
+				if strings.Contains(string(body), sentinel) {
+					t.Errorf("%q survived redaction in %s", sentinel, body)
+				}
+			}
+			if !strings.Contains(string(body), `"Id":"abc123"`) {
+				t.Errorf("Id was removed but should survive; got %s", body)
+			}
+		})
+	}
+}
+
+// TestContainerInspectHostStorageSurvivesWithoutRedactMountPaths is the
+// anti-vacuity leg: both fields are governed by redact_mount_paths, so a
+// deployment that turned it off still gets them.
+func TestContainerInspectHostStorageSurvivesWithoutRedactMountPaths(t *testing.T) {
+	t.Parallel()
+	resp := newResponseForTest(t, http.MethodGet, "/v1.53/containers/abc123/json", dockerContainerInspectHostStorageUpstream)
+	if err := New(Options{RedactContainerEnv: true}).ModifyResponse(resp); err != nil {
+		t.Fatalf("ModifyResponse() error = %v, want nil", err)
+	}
+	got := decodeBodyForTest(t, resp)
+
+	if logPath, _ := got["LogPath"].(string); logPath != "/var/lib/docker/containers/abc123/abc123-json.log" {
+		t.Errorf("LogPath = %q, want the upstream value untouched", logPath)
+	}
+	graphDriver, _ := got["GraphDriver"].(map[string]any)
+	data, _ := graphDriver["Data"].(map[string]any)
+	if merged, _ := data["MergedDir"].(string); merged != "/var/lib/docker/overlay2/abc123/merged" {
+		t.Errorf("GraphDriver.Data.MergedDir = %q, want the upstream value untouched", merged)
+	}
+}
+
+// TestContainerInspectGraphDriverShapeVariants covers the shapes a daemon can
+// legitimately answer with, plus the two that are not objects. An absent or
+// null GraphDriver (or a null Data) is a no-op; a GraphDriver or Data of the
+// wrong type is refused rather than passed through, matching every other
+// unexpected-type branch in this file.
+func TestContainerInspectGraphDriverShapeVariants(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		upstream string
+		wantErr  bool
+	}{
+		{name: "absent", upstream: `{"Id":"abc"}`},
+		{name: "null graph driver", upstream: `{"Id":"abc","GraphDriver":null}`},
+		{name: "null data", upstream: `{"Id":"abc","GraphDriver":{"Name":"vfs","Data":null}}`},
+		{name: "empty data", upstream: `{"Id":"abc","GraphDriver":{"Name":"btrfs","Data":{}}}`},
+		{name: "zfs data", upstream: `{"Id":"abc","GraphDriver":{"Name":"zfs","Data":{"Dataset":"tank/ctr","Mountpoint":"/tank/ctr"}}}`},
+		{name: "graph driver not an object", upstream: `{"Id":"abc","GraphDriver":"overlay2"}`, wantErr: true},
+		{name: "data not an object", upstream: `{"Id":"abc","GraphDriver":{"Data":["/var/lib/docker/overlay2/abc/merged"]}}`, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			resp := newResponseForTest(t, http.MethodGet, "/v1.53/containers/abc/json", tt.upstream)
+			err := New(Options{RedactMountPaths: true}).ModifyResponse(resp)
+			if tt.wantErr {
+				if !errors.Is(err, ErrResponseRejected) {
+					t.Fatalf("ModifyResponse() error = %v, want ErrResponseRejected", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ModifyResponse() error = %v, want nil", err)
+			}
+			body, readErr := io.ReadAll(resp.Body)
+			if readErr != nil {
+				t.Fatalf("read body: %v", readErr)
+			}
+			for _, sentinel := range []string{"tank/ctr", "/tank/ctr"} {
+				if strings.Contains(string(body), sentinel) {
+					t.Errorf("%q survived redaction in %s", sentinel, body)
+				}
+			}
+		})
+	}
+}
