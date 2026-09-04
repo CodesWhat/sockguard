@@ -5,7 +5,12 @@ import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { extractChangelogEntry, formatCLIError } from "./extract-changelog-entry.mjs";
+import {
+  extractChangelogEntry,
+  formatCLIError,
+  TRUNCATION_FOOTER,
+  truncateToByteLimit,
+} from "./extract-changelog-entry.mjs";
 
 const scriptPath = fileURLToPath(new URL("./extract-changelog-entry.mjs", import.meta.url));
 
@@ -185,5 +190,114 @@ describe("extractChangelogEntry", () => {
 
   it("formats non-Error CLI failures", () => {
     assert.equal(formatCLIError("plain failure"), "plain failure");
+  });
+
+  it("prints an entry unchanged from the CLI when under --max-bytes", () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "sockguard-changelog-"));
+    const changelogPath = path.join(tempDir, "CHANGELOG.md");
+    writeFileSync(changelogPath, SAMPLE_CHANGELOG, "utf8");
+
+    const result = spawnSync(
+      process.execPath,
+      [scriptPath, "--file", changelogPath, "--version", "1.1.0", "--max-bytes", "100000"],
+      { encoding: "utf8" },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /## \[1\.1\.0\] - 2026-03-10/);
+    assert.ok(!result.stdout.includes(TRUNCATION_FOOTER));
+  });
+
+  it("truncates from the CLI when over --max-bytes", () => {
+    const longLine = "- Note about the release.".repeat(20);
+    const longChangelog = `# Changelog\n\n## [1.2.0] - 2026-03-20\n\n### Added\n\n${longLine
+      .match(/.{1,60}/g)
+      .join("\n")}\n`;
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "sockguard-changelog-"));
+    const changelogPath = path.join(tempDir, "CHANGELOG.md");
+    writeFileSync(changelogPath, longChangelog, "utf8");
+
+    const result = spawnSync(
+      process.execPath,
+      [scriptPath, "--file", changelogPath, "--version", "1.2.0", "--max-bytes", "200"],
+      { encoding: "utf8" },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(result.stdout.includes(TRUNCATION_FOOTER));
+    // stdout includes console.log's trailing newline, so allow one extra byte.
+    assert.ok(Buffer.byteLength(result.stdout, "utf8") <= 200 + 1);
+  });
+
+  it("fails from the CLI when --max-bytes is not a positive integer", () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "sockguard-changelog-"));
+    const changelogPath = path.join(tempDir, "CHANGELOG.md");
+    writeFileSync(changelogPath, SAMPLE_CHANGELOG, "utf8");
+
+    const result = spawnSync(
+      process.execPath,
+      [scriptPath, "--file", changelogPath, "--version", "1.2.0", "--max-bytes", "0"],
+      { encoding: "utf8" },
+    );
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /--max-bytes must be a positive integer/);
+  });
+});
+
+describe("truncateToByteLimit", () => {
+  const LONG_ENTRY = `## [1.2.0] - 2026-03-20\n\n${"a".repeat(50).concat("\n").repeat(50)}`;
+
+  it("returns the entry unchanged when under the limit", () => {
+    const entry = "## [1.0.0] - 2026-01-01\n\nShort entry.";
+    assert.equal(truncateToByteLimit(entry, 1000), entry);
+  });
+
+  it("truncates on a line boundary and appends the footer when over the limit", () => {
+    const truncated = truncateToByteLimit(LONG_ENTRY, 200);
+    assert.ok(truncated.endsWith(TRUNCATION_FOOTER));
+    assert.ok(truncated.includes(TRUNCATION_FOOTER));
+    // The truncation point falls right after a full line, not mid-line.
+    const withoutFooter = truncated.slice(0, truncated.length - `\n\n${TRUNCATION_FOOTER}`.length);
+    assert.ok(LONG_ENTRY.startsWith(withoutFooter));
+    assert.ok(withoutFooter.length === 0 || LONG_ENTRY[withoutFooter.length] === "\n");
+  });
+
+  it("never exceeds --max-bytes", () => {
+    for (const maxBytes of [150, 200, 500, 1000]) {
+      const truncated = truncateToByteLimit(LONG_ENTRY, maxBytes);
+      assert.ok(Buffer.byteLength(truncated, "utf8") <= maxBytes);
+    }
+  });
+
+  it("includes the footer exactly once", () => {
+    const truncated = truncateToByteLimit(LONG_ENTRY, 200);
+    const occurrences = truncated.split(TRUNCATION_FOOTER).length - 1;
+    assert.equal(occurrences, 1);
+  });
+
+  it("keeps the footer under 200 bytes and free of em-dashes", () => {
+    assert.ok(Buffer.byteLength(TRUNCATION_FOOTER, "utf8") < 200);
+    assert.ok(!TRUNCATION_FOOTER.includes("—"));
+  });
+
+  it("throws when max-bytes is too small to fit the footer", () => {
+    assert.throws(
+      () => truncateToByteLimit(LONG_ENTRY, 10),
+      /too small to fit the truncation footer/,
+    );
+  });
+
+  it("throws when max-bytes is not a positive integer", () => {
+    assert.throws(() => truncateToByteLimit(LONG_ENTRY, 0), /positive integer/);
+    assert.throws(() => truncateToByteLimit(LONG_ENTRY, -5), /positive integer/);
+    assert.throws(() => truncateToByteLimit(LONG_ENTRY, 1.5), /positive integer/);
+  });
+
+  it("cuts multi-byte UTF-8 content on a clean character boundary", () => {
+    const entry = `## [1.0.0] - 2026-01-01\n\n${"snowman ☃ ".repeat(40)}`;
+    const truncated = truncateToByteLimit(entry, 120);
+    assert.ok(Buffer.byteLength(truncated, "utf8") <= 120);
+    assert.ok(truncated.endsWith(TRUNCATION_FOOTER));
   });
 });
