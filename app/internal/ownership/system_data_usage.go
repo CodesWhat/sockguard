@@ -3,6 +3,7 @@ package ownership
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -19,7 +20,18 @@ const (
 	reasonCodeOwnerResponseTooLarge        = "owner_response_too_large"
 	reasonCodeOwnerResponseFilterFail      = "owner_response_filter_failed"
 	reasonCodeOwnerLibpodDataUsageUnscoped = "owner_libpod_data_usage_unscopeable"
+	reasonCodeOwnerNotModified             = "owner_not_modified_unfilterable"
 )
+
+// ownerNotModifiedRefusalMessage is the client-facing reason for the 304
+// refusal, worded like the visibility middleware's so the two layers read the
+// same in an audit sink; only the reason code says which one refused.
+const ownerNotModifiedRefusalMessage = "upstream returned 304 Not Modified for an owner-filtered read"
+
+// errNotModifiedUnfilterable marks the 304 refusal so
+// filterSystemDataUsageResponse can give it its own reason code rather than
+// the generic filter-failure one. See flushOwned.
+var errNotModifiedUnfilterable = errors.New(ownerNotModifiedRefusalMessage)
 
 // serveOwnershipAllowed forwards a request the ownership policy did not deny.
 //
@@ -31,7 +43,10 @@ const (
 // when the response carries labels, or fail closed when it does not.
 //
 // GET /system/df returns Docker-shaped summaries that carry Labels, so it is
-// filtered item by item. GET /libpod/system/df returns Podman's own report
+// filtered item by item. HEAD on the same route has no body to filter but
+// still carries the daemon's Content-Length and ETag for the whole host
+// inventory, so it is answered with those removed rather than forwarded — see
+// forwardHeadWithoutUpstreamRepresentation. GET /libpod/system/df returns Podman's own report
 // shape, whose entries carry no labels at all, so there is nothing to filter
 // on and it is refused instead — see
 // responsefilter.LibpodSystemDataUsageDenyReason for the shape and the
@@ -47,9 +62,15 @@ const (
 // container names, and rollout handling for a foreign container verdict can
 // pass through directly.
 func serveOwnershipAllowed(logger *slog.Logger, next http.Handler, w http.ResponseWriter, r *http.Request, normPath string, opts Options) {
-	if r.Method == http.MethodGet && normPath == responsefilter.SystemDataUsagePath {
-		filterSystemDataUsageResponse(logger, next, w, r, opts)
-		return
+	if normPath == responsefilter.SystemDataUsagePath {
+		switch r.Method {
+		case http.MethodGet:
+			filterSystemDataUsageResponse(logger, next, w, r, opts)
+			return
+		case http.MethodHead:
+			forwardHeadWithoutUpstreamRepresentation(logger, next, w, r)
+			return
+		}
 	}
 	if (r.Method == http.MethodGet || r.Method == http.MethodHead) && normPath == responsefilter.LibpodSystemDataUsagePath {
 		denyLibpodSystemDataUsage(w, r)
@@ -103,6 +124,47 @@ func denyLibpodSystemDataUsage(w http.ResponseWriter, r *http.Request) {
 	_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: reason})
 }
 
+// forwardHeadWithoutUpstreamRepresentation forwards HEAD /system/df with the
+// daemon's representation metadata removed.
+//
+// It is the owner-isolation twin of the visibility middleware's function of
+// the same name, and it is here for the same reason on the same route: a HEAD
+// comes back as headers only, so there is no body to classify by owner, while
+// the daemon's Content-Length and ETag still describe the whole host
+// inventory. The length is a count of every container, image and volume on the
+// host, including every other owner's, which is the disclosure
+// filterSystemDataUsageResponse exists to prevent for the GET.
+//
+// The two layers nest — visibility wraps ownership — so a deployment running
+// both had this closed by the visibility layer alone. Owner isolation without
+// a visibility policy did not, which is why it is fixed at both.
+//
+// A recorded 304 is refused rather than answered, the same way flushOwned
+// refuses one on the GET path: the daemon is confirming a previously fetched
+// inventory is still current, and this proxy cannot vouch for what owner
+// isolation that inventory was fetched under. Conditional request headers are
+// stripped before they reach the daemon (see
+// responsefilter.StripConditionalRequestHeaders), so a real daemon cannot
+// produce this status on this path; the check stays unconditional anyway
+// because the fail-closed claim in docs/content/docs/security.mdx does not
+// carve out a method.
+func forwardHeadWithoutUpstreamRepresentation(logger *slog.Logger, next http.Handler, w http.ResponseWriter, r *http.Request) {
+	interceptingW := newOwnerFilterWriter(w)
+	next.ServeHTTP(interceptingW, r)
+	if interceptingW.statusCode == http.StatusNotModified {
+		logger.ErrorContext(r.Context(), ownerNotModifiedRefusalMessage,
+			"method", logging.SafeString(r.Method), "path", logging.SafeString(r.URL.Path))
+		logging.SetDeniedWithCode(w, r, reasonCodeOwnerNotModified, ownerNotModifiedRefusalMessage, nil)
+		responsefilter.ClearUpstreamRepresentationHeaders(w.Header())
+		_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: ownerNotModifiedRefusalMessage})
+		return
+	}
+	// Anything buffered is dropped rather than relayed. A daemon sends no body
+	// on a HEAD, and one that does is not answering the request that was made.
+	responsefilter.ClearUpstreamRepresentationHeaders(w.Header())
+	w.WriteHeader(interceptingW.statusCode)
+}
+
 // filterSystemDataUsageResponse buffers the upstream /system/df response,
 // drops every item that does not carry this proxy's owner label, and converts
 // an oversized or undecodable body into a fail-closed 502 — the same shape the
@@ -130,9 +192,17 @@ func filterSystemDataUsageResponse(logger *slog.Logger, next http.Handler, w htt
 	if err != nil {
 		logger.ErrorContext(r.Context(), "owner system data usage filter failed", "error", logging.SafeString(err.Error()))
 		if !interceptingW.headerWritten {
-			logging.SetDeniedWithCode(w, r, reasonCodeOwnerResponseFilterFail, "owner response filter failed", nil)
+			reasonCode, message := reasonCodeOwnerResponseFilterFail, "owner response filter failed"
+			// A 304 is not a filter that failed, it is a response shape the
+			// filter cannot act on, and the fix is on the upstream rather than
+			// in the ownership config. Its own code keeps the two apart in an
+			// audit sink.
+			if errors.Is(err, errNotModifiedUnfilterable) {
+				reasonCode, message = reasonCodeOwnerNotModified, ownerNotModifiedRefusalMessage
+			}
+			logging.SetDeniedWithCode(w, r, reasonCode, message, nil)
 			responsefilter.ClearUpstreamRepresentationHeaders(w.Header())
-			_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "owner response filter failed"})
+			_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: message})
 		}
 	}
 }
@@ -188,9 +258,23 @@ func (o *ownerFilterWriter) Write(b []byte) (int, error) {
 // classify and therefore removed, so the caller can log them once. See
 // responsefilter.FilterSystemDataUsage.
 func (o *ownerFilterWriter) flushOwned(opts Options) ([]string, error) {
-	// RFC 9110 §15.4.5 / §15.3.5: 204 and 304 must carry an empty body; any
-	// bytes written for them downgrade the response to 502.
-	if o.statusCode == http.StatusNoContent || o.statusCode == http.StatusNotModified {
+	// A 304 is refused rather than forwarded, the same way an undecodable
+	// /system/df body is. It carries nothing to classify by owner, and
+	// confirming the client's cached copy hands back a host inventory that was
+	// fetched under whatever isolation was configured at the time. Nothing is
+	// written and headerWritten stays false, so the caller substitutes the 502.
+	//
+	// Requests leave this proxy with their conditional headers stripped (see
+	// responsefilter.StripConditionalRequestHeaders), so a daemon has nothing
+	// to revalidate against and cannot reach this branch.
+	if o.statusCode == http.StatusNotModified {
+		return nil, errNotModifiedUnfilterable
+	}
+	// RFC 9110 §15.4.5: a 204 must carry an empty body; any bytes written for
+	// it downgrade the response to 502. Unlike a 304 it is not a revalidation,
+	// so it still passes through: there is no stale inventory behind it for
+	// the client to fall back on.
+	if o.statusCode == http.StatusNoContent {
 		o.underlying.WriteHeader(o.statusCode)
 		o.headerWritten = true
 		return nil, nil

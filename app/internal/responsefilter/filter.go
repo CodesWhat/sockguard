@@ -75,7 +75,44 @@ func (f *Filter) ModifyResponse(resp *http.Response) error {
 	if f == nil || resp == nil || resp.Request == nil {
 		return nil
 	}
-	if resp.Request.Method == http.MethodHead || !isSuccessfulBodyResponse(resp.StatusCode) {
+	method := resp.Request.Method
+
+	// A 304 on GET or HEAD is refused ahead of the status gate below, and
+	// ahead of Enabled(), because neither can reason about it: it carries no
+	// body to redact and its whole meaning is "the copy you already have is
+	// current". That copy was fetched under whatever policy was in force at
+	// the time, so confirming it hands the client back a body this build might
+	// redact, drop items out of, or refuse outright today. It is the same
+	// fail-closed direction as rejecting a body this package cannot parse, for
+	// the sharper reason that here there is no body to look at at all.
+	//
+	// The conditional request headers are stripped on the way out (see
+	// StripConditionalRequestHeaders), so a daemon cannot legitimately produce
+	// this for a GET/HEAD: a 304 arriving anyway came from an upstream
+	// answering something this proxy never asked, which is exactly the case
+	// worth failing on.
+	//
+	// Every other method is left alone. A 304 there is not a cache
+	// revalidation at all: the Docker Engine API documents it as an
+	// idempotency status on POST /containers/{id}/start ("container already
+	// started") and POST /containers/{id}/stop ("container already stopped"),
+	// and Podman's libpod API mirrors both plus its own
+	// POST /libpod/containers/{id}/init ("container already initialized").
+	// Checked against the Engine API spec (moby/moby api/docs, through
+	// v1.56) and Podman's server route comments (containers/podman
+	// pkg/api/server/register_containers.go): restart, kill, pause and
+	// unpause document no 304 response on either API, so start/stop/init are
+	// the whole set today. Rejecting those turns a correct no-op into a 502
+	// for orchestrators and retry loops that rely on the idempotent status,
+	// so only GET/HEAD — where 304 can only mean cache revalidation — gets
+	// refused here.
+	if resp.StatusCode == http.StatusNotModified {
+		if method == http.MethodGet || method == http.MethodHead {
+			return rejectResponse(errNotModifiedRevalidation)
+		}
+		return nil
+	}
+	if method == http.MethodHead || !isSuccessfulBodyResponse(resp.StatusCode) {
 		return nil
 	}
 

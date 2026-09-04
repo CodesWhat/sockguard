@@ -342,7 +342,9 @@ guarantees that no initially unauthorized native batch is forwarded; it cannot
 make the upstream API atomic.
 
 ### Layer 7: Visibility-Controlled Reads
-Sockguard's response filter applies to known protected Docker JSON response shapes on successful body-bearing 2xx responses across request methods, not only `GET 200`. If a protected successful response cannot be parsed or sanitized safely, Sockguard fails closed with a generic `502` instead of forwarding unsanitized data. Non-success responses, `HEAD` responses, no-body statuses, non-protected paths, and streaming endpoints (logs, attach, events) pass through unmodified — those are protected by request-side rules and the read-side exfiltration guardrail, not by response rewriting.
+Sockguard's response filter applies to known protected Docker JSON response shapes on successful body-bearing 2xx responses across request methods, not only `GET 200`. If a protected successful response cannot be parsed or sanitized safely, Sockguard fails closed with a generic `502` instead of forwarding unsanitized data. Non-success responses other than a `304 Not Modified` on `GET` or `HEAD`, `HEAD` responses, no-body statuses, non-protected paths, and streaming endpoints (logs, attach, events) pass through unmodified — those are protected by request-side rules and the read-side exfiltration guardrail, not by response rewriting.
+
+**Conditional requests are not forwarded, and a `304` on `GET` or `HEAD` is refused.** A cached response was produced under whatever policy was in force when the client fetched it, and the visibility axes, the owner label, and the redaction options are all reloadable. A validator the client revalidates against is the daemon's, computed over the unfiltered body, so a `304` would confirm a copy no filter ever saw. Sockguard therefore removes `If-Match`, `If-Modified-Since`, `If-None-Match`, `If-Range`, and `If-Unmodified-Since` from every request on its way to the daemon, which turns a revalidation into the full fetch the read-side filters can inspect. The client's own request is left intact in the access and audit records. A `304` arriving anyway on `GET` or `HEAD` comes from an upstream answering something Sockguard never asked, and it is refused with a `502` rather than relayed: `reason_code=visibility_not_modified_unfilterable` from the visibility filter, `owner_not_modified_unfilterable` from owner isolation, and `upstream_response_rejected_by_policy` from the response filter. Neither dockerd nor Podman emits `ETag` or `Last-Modified` on these routes today, so nothing observable changes against either of them; the guarantee is there for the upstreams Sockguard does not control. The refusal is scoped to `GET`/`HEAD` because a `304` on any other method is not a cache revalidation: the Docker Engine API documents it as an idempotency status on `POST /containers/{id}/start` and `POST /containers/{id}/stop` (compat and `/libpod`) when the container is already in the requested state, and those pass through unchanged rather than being rejected as a fabricated revalidation.
 
 Together with request-side visibility and exfiltration guardrails, the read-side layer narrows what callers can see:
 
@@ -367,7 +369,7 @@ Together with request-side visibility and exfiltration guardrails, the read-side
 
 Sockguard now resolves which engine the upstream is (see [`upstream.flavor`](/configuration#yaml-config-recommended)) and, when it is Podman, handles `/events` on that engine's terms: a visibility policy with one selector has it written as the sole `label` value — replacing any the client supplied, so a caller cannot OR its own value in beside it — and a policy with two or more is refused with `403` without the request ever reaching the daemon (`reason_code=visibility_podman_events_unscopeable` on the Docker-compat `/events` path, `reason_code=visibility_libpod_events_unscopeable` on Podman's native `/libpod/events`, so the log says which spelling the client used). When owner isolation is also active, even one visibility selector is refused with `403` (`reason_code=owner_visibility_podman_events_unscopeable`), because neither replacing it with the owner label nor appending the owner label preserves both constraints. The conjunction genuinely cannot be expressed: Podman's event filter accepts no second key to hold the extra selector, and the endpoint is a long-lived stream, so buffering the response and filtering it is not available either. Streaming a superset would be the dishonest alternative — a client watching an event stream cannot tell a quiet host from a filter that silently stopped applying. The refusal does not honor rollout mode for the same reason. Against a Docker upstream nothing changes: selectors are appended and ANDed exactly as before.
 
-Single-resource inspect denials honor rollout mode: under a profile in `warn` or `audit` mode, a target that visibility policy would hide is forwarded upstream with a `would_deny` audit verdict instead of being hard-`404`'d, so visibility policy can be staged like every other deny gate. When `response.name_patterns` or `response.image_patterns` filter a list response, Sockguard buffers the upstream body under an 8 MiB cap and rejects a larger response with a `502` rather than buffering it unbounded.
+Single-resource inspect denials honor rollout mode: under a profile in `warn` or `audit` mode, a target that visibility policy would hide is forwarded upstream with a `would_deny` audit verdict instead of being hard-`404`'d, so visibility policy can be staged like every other deny gate. When `response.name_patterns` or `response.image_patterns` filter a list response, Sockguard buffers the upstream body under an 8 MiB cap and rejects a larger response with a `502` rather than buffering it unbounded. The buffered body has to be exactly one well-formed JSON array to be rewritten: a body that is not an array, one whose array never closes, and one carrying any non-whitespace bytes after the array are all refused with the same `502`. A body Sockguard cannot account for in full is one whose contents it cannot claim to have checked, so it is never completed on the client's behalf.
 
 Write-only collection words remain valid resource identifiers for `GET` and
 `HEAD`, so keyword-named networks, volumes, services, secrets, and configs do
@@ -376,6 +378,23 @@ with name/image patterns obtains both from one bounded inspect response. If a
 buffered visibility rewrite must generate its own `502`, Sockguard removes
 stale upstream representation headers before writing the replacement JSON so
 clients do not see a mismatched length or encoding.
+
+**A `HEAD` on a response-filtered read is answered without the daemon's
+`Content-Length`, `ETag`, or `Last-Modified`.** A `HEAD` carries no body for a
+filter to walk, but the daemon still sizes and validates one, and on a route
+constrained on the response — `GET /containers/json` and `GET /images/json`
+plus their `/libpod` spellings under `response.name_patterns` or
+`response.image_patterns`, and `GET /system/df` under either visibility policy
+or owner isolation — that body is the unfiltered one. Its length counts the
+containers, images, and volumes the policy hides, and its `ETag` validates
+them. Sockguard forwards the request but clears that metadata, so the response
+carries no length at all rather than a fabricated one. The route is not
+refused: `GET` on it is fully scopeable, and only the `HEAD`'s metadata is
+not, unlike the libpod reads above that no policy axis can scope on any
+method. Where the label selectors go upstream on the request instead
+(`GET /networks`, `GET /volumes`, `GET /services`, and the rest), the daemon
+already computes its length over the scoped list, so those `HEAD` responses
+are unchanged.
 
 These controls are on by default where they are pure redaction, because runtime env vars routinely carry credentials and Docker read APIs expose raw host mount paths plus internal network layout. Four toggles carry that default: `response.redact_container_env`, `redact_mount_paths`, `redact_network_topology`, and `redact_sensitive_data`. `response.redact_host_topology` is redaction too, stripping `Containerd`, `FirewallBackend`, `DiscoveredDevices`, and `NRI` from `GET /info`, but it defaults off and no shipped preset turns it on. `response.allow_attestation_statements` is a different shape: it also defaults off, but it rejects the whole `GET /images/*/attestations` response when the caller asks for `statement=true` rather than redacting fields out of it.
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -61,7 +62,19 @@ const (
 	reasonCodeVisibilityPodmanEvents        = "visibility_podman_events_unscopeable"
 	reasonCodeVisibilityLibpodDataUsage     = "visibility_libpod_data_usage_unscopeable"
 	reasonCodeVisibilityLibpodEvents        = "visibility_libpod_events_unscopeable"
+	reasonCodeVisibilityNotModified         = "visibility_not_modified_unfilterable"
 )
+
+// notModifiedRefusalMessage is the client-facing reason for the 304 refusal.
+// It names the upstream rather than the policy: no axis of the policy is
+// involved in the decision, and an operator reading it should be looking at
+// what answered the request.
+const notModifiedRefusalMessage = "upstream returned 304 Not Modified for a filtered read"
+
+// errNotModifiedUnfilterable marks the 304 refusal so
+// filterResponseThroughWriter can give it its own reason code instead of the
+// generic flush-failure one. See commitIfUnfilterable.
+var errNotModifiedUnfilterable = errors.New(notModifiedRefusalMessage)
 
 // Options configures label-based visibility control on Docker read endpoints.
 type Options struct {
@@ -197,8 +210,12 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 			// the host and accepts no `filters` query parameter, so it can only
 			// be constrained on the response. It is deliberately NOT in
 			// needsVisibilityLabelFilter: injecting a `filters=` param the
-			// endpoint does not define would be meaningless at best.
-			if r.Method == http.MethodGet && normPath == responsefilter.SystemDataUsagePath {
+			// endpoint does not define would be meaningless at best. HEAD is
+			// claimed here too: it has no body to filter, but the daemon sizes
+			// and validates one over the whole host inventory, and falling
+			// through would forward that metadata to a caller the policy
+			// scopes.
+			if (r.Method == http.MethodGet || r.Method == http.MethodHead) && normPath == responsefilter.SystemDataUsagePath {
 				handleVisibilitySystemDataUsageRequest(logger, next, w, r, &effectivePolicy)
 				return
 			}
@@ -369,12 +386,18 @@ func handleVisibilityListRequest(logger *slog.Logger, next http.Handler, w http.
 		// values this layer injected, which ownership reads downstream.
 		r = forwarded
 	}
-	// The response filter is GET-only, the same gate GET /system/df takes
-	// above. A HEAD carries no body, so there is nothing to filter and nothing
-	// to leak; intercepting one would hand flushFiltered an empty buffer,
-	// which is not the JSON array it now requires, and turn a legitimate HEAD
-	// into a 502.
-	if hasPatterns && r.Method == http.MethodGet && needsPatternResponseFilter(normPath) {
+	// flushFiltered stays GET-only: a HEAD carries no body, and handing it an
+	// empty buffer would fail the JSON-array check and turn a legitimate HEAD
+	// into a 502. The HEAD is not forwarded untouched either. The daemon
+	// computes its Content-Length and ETag over the list the pattern axes
+	// exist to narrow, so the length counts the containers or images this
+	// policy hides and the ETag fingerprints them. See
+	// forwardHeadWithoutUpstreamRepresentation.
+	if hasPatterns && needsPatternResponseFilter(normPath) {
+		if r.Method == http.MethodHead {
+			forwardHeadWithoutUpstreamRepresentation(logger, next, w, r)
+			return
+		}
 		filterResponseThroughWriter(logger, next, w, r, "visibility pattern list filter failed", func(fw *patternFilterWriter) error {
 			return fw.flushFiltered(normPath, policy)
 		})
@@ -407,11 +430,79 @@ func filterResponseThroughWriter(logger *slog.Logger, next http.Handler, w http.
 			// the log record agree. Hard-coding the pattern-filter wording here
 			// told an operator debugging a /system/df 502 to go and look at the
 			// pattern axes, which are not what ran.
-			logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyLookupFailed, failureReason, nil)
+			reasonCode, message := reasonCodeVisibilityPolicyLookupFailed, failureReason
+			// A 304 is not a flush that failed, it is a response shape the
+			// filter cannot act on, and the fix is on the upstream rather than
+			// in the policy. It gets its own code so an operator is not sent
+			// to read pattern axes that never ran.
+			if errors.Is(err, errNotModifiedUnfilterable) {
+				reasonCode, message = reasonCodeVisibilityNotModified, notModifiedRefusalMessage
+			}
+			logging.SetDeniedWithCode(w, r, reasonCode, message, nil)
 			clearUpstreamRepresentationHeaders(w.Header())
-			_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: failureReason})
+			_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: message})
 		}
 	}
+}
+
+// forwardHeadWithoutUpstreamRepresentation forwards a HEAD whose GET twin this
+// middleware filters on the response, with the daemon's representation
+// metadata removed.
+//
+// A HEAD comes back as headers only, so there is no body for the policy to
+// walk and nothing this layer can compute a truthful Content-Length or ETag
+// from. Both describe the list the daemon holds, which on a pattern-filtered
+// route or on /system/df is precisely the list the policy narrows: the length
+// counts the items the client may not see, and the ETag is a validator for
+// that unfiltered body, so it fingerprints them and, forwarded, hands the
+// client a key to revalidate against later.
+//
+// It is answered rather than refused, which is the opposite of what the
+// unscopeable libpod reads get, and the difference is which methods can be
+// scoped at all. Those endpoints carry neither labels nor names, so no policy
+// axis applies to any method and GET is refused too; HEAD is refused there
+// only so a method-scoped gate cannot forward what GET could not. Here GET is
+// fully scoped and only the HEAD's metadata is not, so a refusal would be a
+// per-method status this package has nowhere else, and neither candidate says
+// anything true: 405 claims the route rejects the method, which it does not,
+// and 502 blames the upstream for a decision this proxy made. What the
+// middleware does have is a rule that covers this exactly — the client never
+// receives a representation header describing bytes it did not get, which is
+// what clearUpstreamRepresentationHeaders enforces for commitFilteredBody and
+// for both 502 paths. A HEAD is that rule's limit case at zero bytes.
+//
+// Go omits Content-Length on a HEAD when the handler declares none and writes
+// no bytes, so the response goes out carrying no length rather than a
+// synthesized 0.
+//
+// A recorded 304 is the one status this still refuses rather than answers.
+// commitIfUnfilterable's reasoning is not about the body a GET would have
+// filtered, it is about what a 304 means: the daemon is confirming a
+// previously fetched representation is still current, and this proxy cannot
+// vouch for what policy that representation was fetched under. A HEAD asking
+// the same question gets the same answer, not the metadata-stripped 200 the
+// rest of this function exists to produce. Conditional request headers are
+// stripped before they reach the daemon (see
+// responsefilter.StripConditionalRequestHeaders), so a real daemon has
+// nothing to revalidate against and cannot produce this status on this path;
+// the check stays unconditional anyway because the fail-closed claim in
+// docs/content/docs/security.mdx does not carve out a method.
+func forwardHeadWithoutUpstreamRepresentation(logger *slog.Logger, next http.Handler, w http.ResponseWriter, r *http.Request) {
+	interceptingW := newPatternFilterWriter(w)
+	defer interceptingW.release()
+	next.ServeHTTP(interceptingW, r)
+	if interceptingW.statusCode == http.StatusNotModified {
+		logger.ErrorContext(r.Context(), notModifiedRefusalMessage,
+			"method", logging.SafeString(r.Method), "path", logging.SafeString(r.URL.Path))
+		logging.SetDeniedWithCode(w, r, reasonCodeVisibilityNotModified, notModifiedRefusalMessage, nil)
+		clearUpstreamRepresentationHeaders(w.Header())
+		_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: notModifiedRefusalMessage})
+		return
+	}
+	// Anything buffered is dropped rather than relayed. A daemon sends no body
+	// on a HEAD, and one that does is not answering the request that was made.
+	clearUpstreamRepresentationHeaders(w.Header())
+	w.WriteHeader(interceptingW.statusCode)
 }
 
 // clearUpstreamRepresentationHeaders delegates to responsefilter so the header
@@ -530,8 +621,24 @@ func mustHaveEmptyBody(code int) bool {
 // wrote the response. Shared by flushFiltered and flushSystemDataUsage so both
 // treat 204/304 and non-2xx identically.
 func (p *patternFilterWriter) commitIfUnfilterable() (bool, error) {
+	// A 304 is refused rather than forwarded, the same way a 2xx body that is
+	// not the shape this filter walks is. There is nothing here to apply the
+	// policy to and the response's whole meaning is "the copy you already have
+	// is current" — a copy fetched under whatever policy was in force then,
+	// which the client would go on using in place of a list this policy would
+	// narrow. Nothing is written and headerWritten stays false on purpose, so
+	// filterResponseThroughWriter can substitute the 502.
+	//
+	// Requests leave this proxy with their conditional headers stripped (see
+	// responsefilter.StripConditionalRequestHeaders), so a daemon has nothing
+	// to revalidate against and cannot reach this branch.
+	if p.statusCode == http.StatusNotModified {
+		return true, errNotModifiedUnfilterable
+	}
 	// RFC 9110 §15.4.5 / §15.3.5: 204 and 304 must have an empty body.
-	// Writing any bytes triggers an http.ResponseWriter downgrade to 502.
+	// Writing any bytes triggers an http.ResponseWriter downgrade to 502. A
+	// 204 is not a revalidation, so it still passes through: there is no
+	// stale representation behind it for the client to fall back on.
 	if mustHaveEmptyBody(p.statusCode) {
 		p.underlying.WriteHeader(p.statusCode)
 		p.headerWritten = true
@@ -585,6 +692,17 @@ func (p *patternFilterWriter) commitFilteredBody(body []byte) error {
 // with. The caller turns the error into a 502. Only GET reaches here (see
 // handleVisibilityListRequest), so an empty buffer means a truncated or absent
 // upstream body rather than a legitimate bodiless HEAD.
+//
+// The array has to close, and nothing but whitespace may follow it. Neither
+// was checked: the element loop ends on dec.More() and that is false both when
+// the array closed and when the input simply ran out, so a body ending
+// mid-array or carrying a second value after the array was rewritten into a
+// well-formed 200 the client read as the complete list. Most truncations
+// already surfaced through the element decode, but that was a property of how
+// More() and Decode() interact rather than of this parser, and trailing bytes
+// were not caught at all. Both are now refused outright, on the same reasoning
+// as the non-array case: a body this build cannot account for in full is one
+// whose contents it cannot claim to have checked.
 func (p *patternFilterWriter) flushFiltered(normPath string, policy *compiledPolicy) error {
 	if committed, err := p.commitIfUnfilterable(); committed {
 		return err
@@ -622,6 +740,24 @@ func (p *patternFilterWriter) flushFiltered(normPath string, policy *compiledPol
 		out.Write(raw)
 	}
 	out.WriteByte(']')
+
+	// dec.More() went false either because the array closed or because the
+	// input ran out, so read the delimiter and require it: a truncated body
+	// fails here instead of being closed on the client's behalf.
+	closing, err := dec.Token()
+	if err != nil {
+		return fmt.Errorf("decode %s list response: array never closed: %w", normPath, err)
+	}
+	if closing != json.Delim(']') {
+		return fmt.Errorf("decode %s list response: expected the array to close, got %v", normPath, closing)
+	}
+	// Only whitespace may follow. A second value or any other trailing bytes
+	// mean the body is not the one JSON array this endpoint returns, so
+	// whatever produced it is not the daemon shape the per-item checks above
+	// were written against.
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("decode %s list response: trailing bytes after the JSON array", normPath)
+	}
 
 	return p.commitFilteredBody(out.Bytes())
 }

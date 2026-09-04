@@ -27,6 +27,13 @@ import (
 // always has at least one axis by the time this runs (middlewareWithDeps
 // short-circuits when it has none).
 func handleVisibilitySystemDataUsageRequest(logger *slog.Logger, next http.Handler, w http.ResponseWriter, r *http.Request, policy *compiledPolicy) {
+	// A HEAD has no body to filter, but the daemon still sizes and validates
+	// the full host inventory in its headers, so it is answered without them
+	// rather than forwarded. See forwardHeadWithoutUpstreamRepresentation.
+	if r.Method == http.MethodHead {
+		forwardHeadWithoutUpstreamRepresentation(logger, next, w, r)
+		return
+	}
 	filterResponseThroughWriter(logger, next, w, r, "visibility system data usage filter failed", func(fw *patternFilterWriter) error {
 		dropped, err := fw.flushSystemDataUsage(policy)
 		if fresh := responsefilter.FirstSightSystemDataUsageSections(dropped); len(fresh) > 0 {
