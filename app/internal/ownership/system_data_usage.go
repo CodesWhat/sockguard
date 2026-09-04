@@ -68,7 +68,7 @@ func serveOwnershipAllowed(logger *slog.Logger, next http.Handler, w http.Respon
 			filterSystemDataUsageResponse(logger, next, w, r, opts)
 			return
 		case http.MethodHead:
-			forwardHeadWithoutUpstreamRepresentation(next, w, r)
+			forwardHeadWithoutUpstreamRepresentation(logger, next, w, r)
 			return
 		}
 	}
@@ -138,9 +138,27 @@ func denyLibpodSystemDataUsage(w http.ResponseWriter, r *http.Request) {
 // The two layers nest — visibility wraps ownership — so a deployment running
 // both had this closed by the visibility layer alone. Owner isolation without
 // a visibility policy did not, which is why it is fixed at both.
-func forwardHeadWithoutUpstreamRepresentation(next http.Handler, w http.ResponseWriter, r *http.Request) {
+//
+// A recorded 304 is refused rather than answered, the same way flushOwned
+// refuses one on the GET path: the daemon is confirming a previously fetched
+// inventory is still current, and this proxy cannot vouch for what owner
+// isolation that inventory was fetched under. Conditional request headers are
+// stripped before they reach the daemon (see
+// responsefilter.StripConditionalRequestHeaders), so a real daemon cannot
+// produce this status on this path; the check stays unconditional anyway
+// because the fail-closed claim in docs/content/docs/security.mdx does not
+// carve out a method.
+func forwardHeadWithoutUpstreamRepresentation(logger *slog.Logger, next http.Handler, w http.ResponseWriter, r *http.Request) {
 	interceptingW := newOwnerFilterWriter(w)
 	next.ServeHTTP(interceptingW, r)
+	if interceptingW.statusCode == http.StatusNotModified {
+		logger.ErrorContext(r.Context(), ownerNotModifiedRefusalMessage,
+			"method", logging.SafeString(r.Method), "path", logging.SafeString(r.URL.Path))
+		logging.SetDeniedWithCode(w, r, reasonCodeOwnerNotModified, ownerNotModifiedRefusalMessage, nil)
+		responsefilter.ClearUpstreamRepresentationHeaders(w.Header())
+		_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: ownerNotModifiedRefusalMessage})
+		return
+	}
 	// Anything buffered is dropped rather than relayed. A daemon sends no body
 	// on a HEAD, and one that does is not answering the request that was made.
 	responsefilter.ClearUpstreamRepresentationHeaders(w.Header())

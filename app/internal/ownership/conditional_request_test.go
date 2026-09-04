@@ -91,6 +91,38 @@ func TestSystemDataUsageFailsClosedOnNotModified(t *testing.T) {
 	}
 }
 
+// TestSystemDataUsageHeadFailsClosedOnNotModified is the HEAD twin of
+// TestSystemDataUsageFailsClosedOnNotModified. HEAD reaches the same 304 check
+// as GET rather than forwardHeadWithoutUpstreamRepresentation's usual
+// metadata-stripped 200: forwarding a recorded 304 on HEAD would leave the
+// fail-closed claim in docs/content/docs/security.mdx untrue for that method.
+func TestSystemDataUsageHeadFailsClosedOnNotModified(t *testing.T) {
+	t.Parallel()
+
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("ETag", `"upstream"`)
+		w.WriteHeader(http.StatusNotModified)
+	})
+	handler := middlewareWithDeps(testLogger(), Options{Owner: "team-a"},
+		fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(upstream)
+
+	meta := &logging.RequestMeta{}
+	req := httptest.NewRequest(http.MethodHead, "/v1.53/system/df", nil)
+	req = req.WithContext(logging.WithMeta(req.Context(), meta))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadGateway, rec.Body.String())
+	}
+	if meta.ReasonCode != reasonCodeOwnerNotModified {
+		t.Fatalf("meta.ReasonCode = %q, want %q", meta.ReasonCode, reasonCodeOwnerNotModified)
+	}
+	if got := rec.Header().Get("ETag"); got != "" {
+		t.Fatalf("ETag = %q, want the upstream validator cleared off the refusal", got)
+	}
+}
+
 // TestSystemDataUsageNotModifiedRefusalIgnoresRolloutMode: every response-side
 // control in this file is unconditional, and this one decides whether a full
 // host inventory is confirmed at all.

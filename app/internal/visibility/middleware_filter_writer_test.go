@@ -643,3 +643,46 @@ func TestPatternListHeadOverRealServerSendsNoContentLength(t *testing.T) {
 		t.Errorf("ETag = %q, want it cleared", got)
 	}
 }
+
+// TestPatternListHeadOverRealServerRefusesNotModified is the wire-level
+// counterpart of TestVisibilityFiltersFailClosedOnNotModified's HEAD cases: it
+// proves that when the upstream answers a HEAD with a recorded 304, the 502
+// refusal body httpjson.Write produces never actually reaches the client, not
+// just that the ResponseRecorder-based test never inspected it. Go's HEAD
+// handling eats a handler's body writes on the wire; this pins that the
+// refusal's JSON error body is exactly the write being eaten, over a real
+// server and a real client.
+func TestPatternListHeadOverRealServerRefusesNotModified(t *testing.T) {
+	t.Parallel()
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("ETag", `"upstream"`)
+		w.WriteHeader(http.StatusNotModified)
+	})
+	server := httptest.NewServer(middlewareWithDeps(testVisibilityLogger(),
+		Options{NamePatterns: []string{"visible-*"}}, visibilityDeps{})(upstream))
+	t.Cleanup(server.Close)
+
+	req, err := http.NewRequest(http.MethodHead, server.URL+"/v1.53/containers/json", nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest: %v", err)
+	}
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("HEAD: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadGateway)
+	}
+	if got := resp.Header.Get("ETag"); got != "" {
+		t.Errorf("ETag = %q, want the upstream validator cleared off the refusal", got)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if len(body) != 0 {
+		t.Errorf("body = %q, want nothing forwarded for a HEAD refusal", body)
+	}
+}

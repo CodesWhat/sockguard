@@ -31,7 +31,7 @@ func handleVisibilitySystemDataUsageRequest(logger *slog.Logger, next http.Handl
 	// the full host inventory in its headers, so it is answered without them
 	// rather than forwarded. See forwardHeadWithoutUpstreamRepresentation.
 	if r.Method == http.MethodHead {
-		forwardHeadWithoutUpstreamRepresentation(next, w, r)
+		forwardHeadWithoutUpstreamRepresentation(logger, next, w, r)
 		return
 	}
 	filterResponseThroughWriter(logger, next, w, r, "visibility system data usage filter failed", func(fw *patternFilterWriter) error {

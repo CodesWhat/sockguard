@@ -68,6 +68,7 @@ func TestVisibilityFiltersFailClosedOnNotModified(t *testing.T) {
 
 	tests := []struct {
 		name   string
+		method string
 		target string
 		opts   Options
 	}{
@@ -91,6 +92,22 @@ func TestVisibilityFiltersFailClosedOnNotModified(t *testing.T) {
 			target: "/v1.53/system/df",
 			opts:   Options{VisibleResourceLabels: []string{"tier=prod"}},
 		},
+		// HEAD reaches the same 304 check as its GET twin rather than
+		// forwardHeadWithoutUpstreamRepresentation's usual metadata-stripped
+		// 200: forwarding a recorded 304 on HEAD would leave the fail-closed
+		// claim in docs/content/docs/security.mdx untrue for that method.
+		{
+			name:   "pattern-filtered container list, HEAD",
+			method: http.MethodHead,
+			target: "/v1.53/containers/json",
+			opts:   Options{NamePatterns: []string{"visible-*"}},
+		},
+		{
+			name:   "system data usage, HEAD",
+			method: http.MethodHead,
+			target: "/v1.53/system/df",
+			opts:   Options{VisibleResourceLabels: []string{"tier=prod"}},
+		},
 	}
 
 	for _, tt := range tests {
@@ -102,8 +119,12 @@ func TestVisibilityFiltersFailClosedOnNotModified(t *testing.T) {
 			})
 			handler := middlewareWithDeps(testVisibilityLogger(), tt.opts, visibilityDeps{})(upstream)
 
+			method := tt.method
+			if method == "" {
+				method = http.MethodGet
+			}
 			meta := &logging.RequestMeta{}
-			req := httptest.NewRequest(http.MethodGet, tt.target, nil)
+			req := httptest.NewRequest(method, tt.target, nil)
 			req = req.WithContext(logging.WithMeta(req.Context(), meta))
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)

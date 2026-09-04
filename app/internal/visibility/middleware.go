@@ -395,7 +395,7 @@ func handleVisibilityListRequest(logger *slog.Logger, next http.Handler, w http.
 	// forwardHeadWithoutUpstreamRepresentation.
 	if hasPatterns && needsPatternResponseFilter(normPath) {
 		if r.Method == http.MethodHead {
-			forwardHeadWithoutUpstreamRepresentation(next, w, r)
+			forwardHeadWithoutUpstreamRepresentation(logger, next, w, r)
 			return
 		}
 		filterResponseThroughWriter(logger, next, w, r, "visibility pattern list filter failed", func(fw *patternFilterWriter) error {
@@ -474,10 +474,31 @@ func filterResponseThroughWriter(logger *slog.Logger, next http.Handler, w http.
 // Go omits Content-Length on a HEAD when the handler declares none and writes
 // no bytes, so the response goes out carrying no length rather than a
 // synthesized 0.
-func forwardHeadWithoutUpstreamRepresentation(next http.Handler, w http.ResponseWriter, r *http.Request) {
+//
+// A recorded 304 is the one status this still refuses rather than answers.
+// commitIfUnfilterable's reasoning is not about the body a GET would have
+// filtered, it is about what a 304 means: the daemon is confirming a
+// previously fetched representation is still current, and this proxy cannot
+// vouch for what policy that representation was fetched under. A HEAD asking
+// the same question gets the same answer, not the metadata-stripped 200 the
+// rest of this function exists to produce. Conditional request headers are
+// stripped before they reach the daemon (see
+// responsefilter.StripConditionalRequestHeaders), so a real daemon has
+// nothing to revalidate against and cannot produce this status on this path;
+// the check stays unconditional anyway because the fail-closed claim in
+// docs/content/docs/security.mdx does not carve out a method.
+func forwardHeadWithoutUpstreamRepresentation(logger *slog.Logger, next http.Handler, w http.ResponseWriter, r *http.Request) {
 	interceptingW := newPatternFilterWriter(w)
 	defer interceptingW.release()
 	next.ServeHTTP(interceptingW, r)
+	if interceptingW.statusCode == http.StatusNotModified {
+		logger.ErrorContext(r.Context(), notModifiedRefusalMessage,
+			"method", logging.SafeString(r.Method), "path", logging.SafeString(r.URL.Path))
+		logging.SetDeniedWithCode(w, r, reasonCodeVisibilityNotModified, notModifiedRefusalMessage, nil)
+		clearUpstreamRepresentationHeaders(w.Header())
+		_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: notModifiedRefusalMessage})
+		return
+	}
 	// Anything buffered is dropped rather than relayed. A daemon sends no body
 	// on a HEAD, and one that does is not answering the request that was made.
 	clearUpstreamRepresentationHeaders(w.Header())
