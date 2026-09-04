@@ -199,7 +199,7 @@ jobs:
           notes_path="release-notes.md"
 
           entry_path="$(mktemp)"
-          if ! node scripts/extract-changelog-entry.mjs --version "${RELEASE_TAG}" --file CHANGELOG.md > "${entry_path}"; then
+          if ! node scripts/extract-changelog-entry.mjs --version "${RELEASE_TAG}" --file CHANGELOG.md --max-bytes 120000 > "${entry_path}"; then
             echo "::error::CHANGELOG entry missing for ${RELEASE_TAG}."
             exit 1
           fi

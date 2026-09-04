@@ -9,11 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.1.0] - 2026-09-03
 
-v2.1.0 promotes `2.1.0-rc.1` unchanged after the tri-tool conformance gate.
-Proxy behavior is identical to rc.1, and the GA delta is release metadata. The
-Helm image digest is temporarily clear for the cut, so the chart falls back to
-`appVersion: "2.1.0"` until the stable multi-arch manifest exists and can be
-re-pinned on the active development line.
+v2.1.0 promotes `2.1.0-rc.2` unchanged after the tri-tool conformance gate.
+Proxy behavior is identical to rc.1, and the GA delta is release metadata;
+rc.2 itself changed only the release-notes tooling after rc.1's publish
+failed on GitHub's release body limit. The Helm image digest is temporarily
+clear for the cut, so the chart falls back to `appVersion: "2.1.0"` until the
+stable multi-arch manifest exists and can be re-pinned on the active
+development line.
+
+## [2.1.0-rc.2] - 2026-09-04
+
+### Fixed
+
+- **Release notes now stay under GitHub's release body limit.** rc.1 tagged successfully, but publication failed: the extracted CHANGELOG entry was 125,426 bytes against GitHub's 125,000-character cap, GitHub silently truncated the published body, and the byte-equality check that exists to catch exactly that failed, skipping the Docker push, QA-6, and Homebrew jobs. `scripts/extract-changelog-entry.mjs` now accepts `--max-bytes`; the tag workflow passes 120000, and an entry over that limit is cut at the last line boundary that fits and gets a short footer pointing back at this file for the complete text.
+- rc.2 re-cuts rc.1 with no proxy changes; only the release-notes tooling and this changelog moved.
 
 ## [2.1.0-rc.1] - 2026-09-03
 
