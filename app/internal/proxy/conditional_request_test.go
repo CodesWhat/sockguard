@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/codeswhat/sockguard/app/internal/responsefilter"
+	"github.com/codeswhat/sockguard/app/internal/upstream"
 )
 
 // conditionalRecordingTransport stands in for the Docker socket and keeps the
@@ -62,5 +65,48 @@ func TestProxyStripsConditionalRequestHeaders(t *testing.T) {
 	// the client actually sent.
 	if got := req.Header.Get("If-None-Match"); got != `"upstream-etag"` {
 		t.Errorf("inbound If-None-Match = %q, want the client's request left intact for the logs", got)
+	}
+}
+
+// TestProxyForwardsStart304Unchanged is the end-to-end pin for the
+// responsefilter fix: ModifyResponse is wired in exactly once, as the
+// proxy-wide ReverseProxy.ModifyResponse (see NewWithTransport), so a 304
+// from POST /containers/{id}/start reaching the client unchanged proves the
+// method-scoped 304 check works through the real reverse-proxy path, not
+// just against a synthetic *http.Response.
+func TestProxyForwardsStart304Unchanged(t *testing.T) {
+	t.Parallel()
+
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	t.Cleanup(daemon.Close)
+	ep, err := upstream.BuildEndpoint(upstream.EndpointSpec{
+		Address:               "tcp://" + strings.TrimPrefix(daemon.URL, "http://") + "/gateway",
+		InsecureAllowPlainTCP: true,
+	})
+	if err != nil {
+		t.Fatalf("BuildEndpoint: %v", err)
+	}
+	resolver, err := upstream.New([]upstream.Endpoint{ep}, upstream.Options{Interval: -1})
+	if err != nil {
+		t.Fatalf("upstream.New: %v", err)
+	}
+
+	responsePolicy := responsefilter.New(responsefilter.Options{
+		RedactContainerEnv:    true,
+		RedactMountPaths:      true,
+		RedactNetworkTopology: true,
+		RedactSensitiveData:   true,
+		RedactHostTopology:    true,
+	})
+	rp := NewWithTransport(resolver, testLogger(), Options{ModifyResponse: responsePolicy.ModifyResponse})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "http://client/v1.53/containers/abc/start", nil)
+	rp.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotModified {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusNotModified, rec.Body.String())
 	}
 }

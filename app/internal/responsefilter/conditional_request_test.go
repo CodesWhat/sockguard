@@ -124,6 +124,52 @@ func TestModifyResponseStillPassesOtherBodilessStatuses(t *testing.T) {
 	}
 }
 
+// TestModifyResponsePassesThroughNonGetHeadNotModified pins the fix: a 304 on
+// a method other than GET/HEAD is not a cache revalidation, it is an
+// idempotency status the Docker Engine API (and Podman's compat/libpod APIs)
+// document on POST .../start ("container already started") and POST
+// .../stop ("container already stopped"). Rejecting those turned a correct
+// no-op into a 502 for orchestrators and retry loops. Every redaction option
+// is enabled to prove the pass-through does not depend on Enabled() being
+// false.
+func TestModifyResponsePassesThroughNonGetHeadNotModified(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "start", path: "/containers/abc/start"},
+		{name: "start versioned", path: "/v1.45/containers/abc/start"},
+		{name: "stop", path: "/containers/abc/stop"},
+		{name: "stop versioned", path: "/v1.45/containers/abc/stop"},
+		{name: "libpod start", path: "/libpod/containers/abc/start"},
+		{name: "libpod stop", path: "/libpod/containers/abc/stop"},
+	}
+
+	opts := Options{
+		RedactContainerEnv:    true,
+		RedactMountPaths:      true,
+		RedactNetworkTopology: true,
+		RedactSensitiveData:   true,
+		RedactHostTopology:    true,
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			resp := newNotModifiedResponseForTest(t, http.MethodPost, tt.path)
+
+			if err := New(opts).ModifyResponse(resp); err != nil {
+				t.Fatalf("ModifyResponse() error = %v, want nil", err)
+			}
+			if resp.StatusCode != http.StatusNotModified {
+				t.Fatalf("StatusCode = %d, want %d preserved", resp.StatusCode, http.StatusNotModified)
+			}
+		})
+	}
+}
+
 func newNotModifiedResponseForTest(t *testing.T, method, path string) *http.Response {
 	t.Helper()
 
