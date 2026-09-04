@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Image inspect responses were not redacted at all.** `GET /images/{name}/json` (and native `GET /libpod/images/{name}/json`) had no entry in the response filter's dispatch table, so with every `response.redact_*` option enabled the body still came back byte-identical, including `Config.Env` (the image's baked-in build-time environment — a common secret carrier from Dockerfile `ENV` or `--build-arg`) and `GraphDriver.Data` (the storage driver's host filesystem paths for the image's layers). Image inspect now reuses container inspect's existing helpers: `Config.Env` is emptied under `redact_container_env` and `GraphDriver.Data` is masked under `redact_mount_paths`, gated exactly as they are on container inspect. The libpod route shares the same handler; `*libimage.ImageData`'s `Config` (`*ociv1.ImageConfig`) and `GraphDriver` (`*DriverData{Name, Data}`) fields carry the identical json tags Docker's compat handler uses, verified against Podman v5.8.1's pinned `containers/common` release. This gap is pre-existing in v2.0.0, not a v2.1.0 regression.
+
 ## [2.1.0] - 2026-09-03
 
 v2.1.0 promotes `2.1.0-rc.2` unchanged after the tri-tool conformance gate.
