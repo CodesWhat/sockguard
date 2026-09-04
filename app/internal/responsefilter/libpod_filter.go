@@ -88,6 +88,29 @@ func isLibpodInspectPath(normPath, collection string) bool {
 	return ok && identifier != "" && tail == libpodInspectSuffix
 }
 
+// isLibpodImageInspectPath reports whether normPath is
+// /libpod/images/{name}/json. This cannot reuse isLibpodInspectPath: that
+// helper Cuts on the first "/" after the collection prefix, which is correct
+// for containers/volumes/secrets identifiers (never contain a slash) but
+// wrong for an image reference, which routinely does
+// (registry.example.com/team/app). register_images.go at v5.8.1 registers
+// {name:.*}/json for both /images/{name}/json and /libpod/images/{name}/json,
+// so the identifier is intentionally slash-permissive on the wire. This
+// follows isImageInspectPath's Docker-compat approach instead: anchor on the
+// last path segment being "json" with a non-empty identifier before it.
+func isLibpodImageInspectPath(normPath string) bool {
+	prefix := LibpodPathPrefix + "/images/"
+	if !strings.HasPrefix(normPath, prefix) {
+		return false
+	}
+	rest := strings.TrimPrefix(normPath, prefix)
+	idx := strings.LastIndex(rest, "/")
+	if idx <= 0 {
+		return false
+	}
+	return rest[idx+1:] == libpodInspectSuffix
+}
+
 // isLibpodNetworkInspectPath reports whether normPath is one of the TWO routes
 // Podman serves libpod.InspectNetwork on. register_networks.go at v5.8.1
 // registers both spellings against that one handler on consecutive lines:
@@ -172,6 +195,16 @@ func (f *Filter) modifyLibpodResponse(method, normPath string, resp *http.Respon
 		return f.modifyContainerInspect(resp)
 	case isLibpodInspectPath(normPath, "volumes"):
 		return f.modifyVolumeInspect(resp)
+	case isLibpodImageInspectPath(normPath):
+		// libpod.GetImage (pkg/api/handlers/libpod/images.go at v5.8.1)
+		// writes *libimage.ImageData (containers/common libimage/inspect.go),
+		// whose Config field is *ociv1.ImageConfig — json:"Env,omitempty" on
+		// []string, the identical key Docker's compat handler uses — and
+		// whose GraphDriver field is *DriverData{Name, Data}, the identical
+		// shape redactGraphDriverData already handles for container inspect.
+		// Checked against both source files rather than assumed; reusing
+		// modifyImageInspect is a verified decision, not the default.
+		return f.modifyImageInspect(resp)
 	case normPath == libpodVolumeListPath:
 		return f.modifyLibpodVolumeList(resp)
 	case normPath == libpodNetworkListPath:
