@@ -256,12 +256,13 @@ func TestMiddleware_DeniedRateRequestNotCountedAsInflight(t *testing.T) {
 	if rec2.Code != http.StatusTooManyRequests {
 		t.Fatalf("second request should be 429, got %d", rec2.Code)
 	}
-	// The status codes above only prove what the recorder saw; a handler
-	// that wrote 429 itself and then still called through to okHandler
-	// would pass them too, since httptest.ResponseRecorder just records
-	// the last WriteHeader call. The reached counter is what actually
-	// proves the second, denied request never reaches the inner handler:
-	// it must be 1 (from the first request only), not 2.
+	// The status codes above only prove what the recorder saw; a
+	// middleware that wrote 429 itself and then still called through to
+	// the inline handler would pass them too, since
+	// httptest.ResponseRecorder keeps the first WriteHeader call and
+	// ignores the handler's later 200. The reached counter is what
+	// actually proves the second, denied request never reaches the inner
+	// handler: it must be 1 (from the first request only), not 2.
 	if reached != 1 {
 		t.Fatalf("inner handler reach count = %d, want 1 (the denied second request must not reach it)", reached)
 	}

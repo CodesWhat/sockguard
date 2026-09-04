@@ -24,7 +24,7 @@ import (
 // a raw timing assertion could not tell the two apart on a fast machine. It
 // used to assert a 100ms wall-clock budget instead, which was flaky under
 // -race (seen at 107.952ms on a busy machine).
-func assertCompileRuleUsesLinearRegexMatcher(t *testing.T, pattern, normalizedPath string, wantMatch bool) {
+func assertCompileRuleUsesLinearRegexMatcher(t *testing.T, pattern, wantRegexSrc, normalizedPath string, wantMatch bool) {
 	t.Helper()
 
 	rule, err := CompileRule(Rule{
@@ -42,7 +42,8 @@ func assertCompileRuleUsesLinearRegexMatcher(t *testing.T, pattern, normalizedPa
 	if rule.pattern == nil {
 		t.Fatalf("CompileRule(%q) pattern = nil, want a compiled regexp", pattern)
 	}
-	wantRegexSrc := "^" + globToRegex(pattern) + "$"
+	// wantRegexSrc is spelled out by the caller rather than derived from
+	// globToRegex, so a broader translation cannot make this pass by itself.
 	if got := rule.pattern.String(); got != wantRegexSrc {
 		t.Fatalf("CompileRule(%q) pattern source = %q, want %q", pattern, got, wantRegexSrc)
 	}
@@ -463,34 +464,38 @@ func TestCompileRuleComplexGlobRemainsFastOnLongPaths(t *testing.T) {
 	longMiddle := strings.Repeat("b/", 4096)
 
 	tests := []struct {
-		name      string
-		pattern   string
-		path      string
-		wantMatch bool
+		name         string
+		pattern      string
+		wantRegexSrc string
+		path         string
+		wantMatch    bool
 	}{
 		{
-			name:      "match near end of long path",
-			pattern:   "/**/x/**/y/**",
-			path:      longPrefix + "x/" + longMiddle + "y/tail",
-			wantMatch: true,
+			name:         "match near end of long path",
+			pattern:      "/**/x/**/y/**",
+			wantRegexSrc: `^(/(?s:.*))?/x(/(?s:.*))?/y(/(?s:.*))?$`,
+			path:         longPrefix + "x/" + longMiddle + "y/tail",
+			wantMatch:    true,
 		},
 		{
-			name:      "non-match scans long path without backtracking explosion",
-			pattern:   "/**/x/**/y/**",
-			path:      longPrefix + "x/" + longMiddle + "z/tail",
-			wantMatch: false,
+			name:         "non-match scans long path without backtracking explosion",
+			pattern:      "/**/x/**/y/**",
+			wantRegexSrc: `^(/(?s:.*))?/x(/(?s:.*))?/y(/(?s:.*))?$`,
+			path:         longPrefix + "x/" + longMiddle + "z/tail",
+			wantMatch:    false,
 		},
 		{
-			name:      "multiple deep wildcards stay linear",
-			pattern:   "/**/alpha/**/omega/**",
-			path:      longPrefix + "alpha/" + longMiddle + "omega/final",
-			wantMatch: true,
+			name:         "multiple deep wildcards stay linear",
+			pattern:      "/**/alpha/**/omega/**",
+			wantRegexSrc: `^(/(?s:.*))?/alpha(/(?s:.*))?/omega(/(?s:.*))?$`,
+			path:         longPrefix + "alpha/" + longMiddle + "omega/final",
+			wantMatch:    true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assertCompileRuleUsesLinearRegexMatcher(t, tt.pattern, tt.path, tt.wantMatch)
+			assertCompileRuleUsesLinearRegexMatcher(t, tt.pattern, tt.wantRegexSrc, tt.path, tt.wantMatch)
 		})
 	}
 }
