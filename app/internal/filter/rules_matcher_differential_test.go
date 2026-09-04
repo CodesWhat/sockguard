@@ -95,20 +95,20 @@ var differentialSegments = []string{
 // differentialPaths builds the corpus: every one and two segment path over the
 // alphabet, plus a strided sample of the three-segment space and a handful of
 // deeper paths aimed at the multi-"**" patterns. Every raw path is mapped
-// through NormalizePath before it is used, because that is the only thing a
-// compiled rule is ever handed.
+// through both path views a compiled rule is ever handed — NormalizePath for
+// ordinary policy matching, and NormalizePodmanRoutePath for the libpod
+// image-SCP route view — so the domain covers everything production evaluates
+// and nothing it does not.
 //
-// Normalizing is what scopes the comparison to a domain where agreement is a
-// real invariant. The one production caller that does NOT hand over
-// NormalizePath output is the libpod image-SCP route view, which keeps a
-// trailing slash on purpose (NormalizePodmanRoutePath), and the segment
-// walkers and the regex genuinely disagree there: matchGlobSegments absorbs a
-// trailing empty segment after its last pattern segment, so "/containers/*"
-// matches "/containers/a/" where "^/containers/[^/]*$" does not, and it
-// refuses to spend a pattern segment on that empty segment, so "/*/*/*" does
-// not match "/a/b/" where the regex does. Which side is right for that view is
-// a decision about Podman route semantics, not about this optimization, so
-// this corpus does not claim to settle it.
+// The route view is the reason the corpus is not NormalizePath-only. It keeps
+// the trailing slash gorilla/mux routes on where path.Clean would strip it, so
+// it is the only shape that reaches rule matching with an empty final segment.
+// That segment is real: "/containers/*" must not match "/containers/a/", and
+// "/*/*/*" must match "/a/b/", exactly as the anchored regex says, because a
+// rule spelling N segments cannot be allowed to cover N+1 and a deny spelling
+// N+1 cannot be dodged by leaving the last one empty. Each raw candidate is
+// therefore also re-run with a trailing slash appended, which is how a client
+// reaches that view.
 func differentialPaths() []string {
 	raw := make([]string, 0, 600)
 	for _, a := range differentialSegments {
@@ -148,23 +148,33 @@ func differentialPaths() []string {
 		"/containers/a\nb/exec",
 		"/v1.53/containers/abc/exec",
 		"/日本/abc/exec",
+		"/libpod/images/scp/victim",
+		"/libpod/images/scp/victim/push",
+		"/v5.8.1/libpod/images/scp/acme/app",
 	)
 
-	seen := make(map[string]struct{}, len(raw))
-	paths := make([]string, 0, len(raw))
-	for _, candidate := range raw {
-		normalized := NormalizePath(candidate)
+	seen := make(map[string]struct{}, 3*len(raw))
+	paths := make([]string, 0, 3*len(raw))
+	add := func(normalized string) {
 		// NormalizePath("") is "" and no request path normalizes to it from a
 		// non-empty input; the segment walkers and the regex disagree there
 		// too, and it is not a path any rule is evaluated against.
 		if normalized == "" {
-			continue
+			return
 		}
 		if _, dup := seen[normalized]; dup {
-			continue
+			return
 		}
 		seen[normalized] = struct{}{}
 		paths = append(paths, normalized)
+	}
+	for _, candidate := range raw {
+		add(NormalizePath(candidate))
+		// The libpod image-SCP route view, both as the client sent it and with
+		// a trailing slash appended, which is the only way an empty final
+		// segment survives into rule matching.
+		add(NormalizePodmanRoutePath(candidate))
+		add(NormalizePodmanRoutePath(candidate + "/"))
 	}
 	return paths
 }
@@ -205,6 +215,18 @@ func TestPathMatcherKindsAgreeWithRegexFallback(t *testing.T) {
 	if len(paths) < 300 {
 		t.Fatalf("differential corpus has %d paths, want at least 300", len(paths))
 	}
+	// The trailing-slash half is the whole reason the corpus covers the libpod
+	// route view. If a future NormalizePodmanRoutePath change stops producing
+	// it, this differential goes quiet on exactly the shape it was widened for.
+	trailingSlash := 0
+	for _, path := range paths {
+		if len(path) > 1 && strings.HasSuffix(path, "/") {
+			trailingSlash++
+		}
+	}
+	if trailingSlash < 100 {
+		t.Fatalf("differential corpus has %d trailing-slash paths, want at least 100", trailingSlash)
+	}
 
 	methodBit := httpMethodBit(http.MethodGet)
 	for _, tc := range patterns {
@@ -242,4 +264,167 @@ func TestPathMatcherKindsAgreeWithRegexFallback(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSegmentGlobCountsATrailingSlashAsAnEmptySegment names the two shapes the
+// segment walker used to get wrong, plus the libpod route they are reachable
+// through. It is the table-driven companion to the corpus differential above:
+// the corpus proves agreement over a wide domain, this states what agreement
+// means for the cases the fix is about, so a regression reads as a named
+// expectation rather than one line lost in a sweep.
+//
+// Each row is also checked against the anchored regex the pattern compiles to,
+// so the table cannot drift away from the dialect it is pinning.
+func TestSegmentGlobCountsATrailingSlashAsAnEmptySegment(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		pattern string
+		path    string
+		want    bool
+	}{
+		{
+			name:    "one star does not absorb a trailing slash",
+			pattern: "/containers/*",
+			path:    "/containers/a/",
+			want:    false,
+		},
+		{
+			name:    "one star still matches a single segment",
+			pattern: "/containers/*",
+			path:    "/containers/a",
+			want:    true,
+		},
+		{
+			name:    "three stars spend one on the empty segment",
+			pattern: "/*/*/*",
+			path:    "/a/b/",
+			want:    true,
+		},
+		{
+			name:    "three stars still need three segments",
+			pattern: "/*/*/*",
+			path:    "/a/b",
+			want:    false,
+		},
+		{
+			name:    "three stars still match three real segments",
+			pattern: "/*/*/*",
+			path:    "/a/b/c",
+			want:    true,
+		},
+		{
+			name:    "libpod scp source is one segment",
+			pattern: "/libpod/images/scp/*",
+			path:    "/libpod/images/scp/alpine",
+			want:    true,
+		},
+		{
+			name:    "libpod scp source with a trailing slash is two",
+			pattern: "/libpod/images/scp/*",
+			path:    "/libpod/images/scp/alpine/",
+			want:    false,
+		},
+		{
+			name:    "two-segment libpod scp rule reaches the empty second segment",
+			pattern: "/libpod/images/scp/*/*",
+			path:    "/libpod/images/scp/tenant/",
+			want:    true,
+		},
+		{
+			name:    "two-segment libpod scp rule matches a real slash-bearing source",
+			pattern: "/libpod/images/scp/*/*",
+			path:    "/libpod/images/scp/acme/app",
+			want:    true,
+		},
+		{
+			name:    "root path is one empty segment",
+			pattern: "/*",
+			path:    "/",
+			want:    true,
+		},
+	}
+
+	methodBit := httpMethodBit(http.MethodPost)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			compiled, err := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: tt.pattern, Action: ActionAllow})
+			if err != nil {
+				t.Fatalf("CompileRule(%q): %v", tt.pattern, err)
+			}
+			if compiled.matcherKind != pathMatcherSegmentGlob {
+				t.Fatalf("matcherKind for %q = %d, want pathMatcherSegmentGlob (%d)", tt.pattern, compiled.matcherKind, pathMatcherSegmentGlob)
+			}
+			if got := compiled.matchesNormalizedUpperWithBit(http.MethodPost, methodBit, tt.path); got != tt.want {
+				t.Errorf("pattern %q path %q = %v, want %v", tt.pattern, tt.path, got, tt.want)
+			}
+
+			reference, err := regexp.Compile("^" + GlobToRegexString(tt.pattern) + "$")
+			if err != nil {
+				t.Fatalf("compile reference regex for %q: %v", tt.pattern, err)
+			}
+			if got := reference.MatchString(tt.path); got != tt.want {
+				t.Errorf("regex %q path %q = %v, want %v; the table disagrees with the dialect", reference, tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestImageScpRouteViewHonorsTheTrailingSlashSegmentCount runs the fix through
+// the production evaluator on the only path view that carries a trailing
+// slash. Both halves of the old disagreement are policy bugs on this route:
+// the walker absorbing the slash let a one-segment allow cover a two-segment
+// source, and the walker refusing to spend a pattern segment on the empty one
+// let a two-segment deny be dodged by a source that ends in "/".
+func TestImageScpRouteViewHonorsTheTrailingSlashSegmentCount(t *testing.T) {
+	t.Parallel()
+
+	t.Run("one-segment allow does not cover a trailing-slash source", func(t *testing.T) {
+		t.Parallel()
+		rules := compileRulesForTest(t, []Rule{
+			{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/*", Action: ActionAllow, Index: 0},
+			{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "SCP route denied", Index: 1},
+		})
+
+		allowed := newParsedRequest(t, http.MethodPost, "/libpod/images/scp/alpine")
+		if action, index, _ := Evaluate(rules, allowed); action != ActionAllow || index != 0 {
+			t.Fatalf("Evaluate(/libpod/images/scp/alpine) = (%q, %d), want (%q, 0)", action, index, ActionAllow)
+		}
+
+		// gorilla/mux routes this as an SCP of the image "alpine/", not of
+		// "alpine", so the one-segment allow above never described it.
+		routed := newParsedRequest(t, http.MethodPost, "/v5.8.1/libpod/images/scp/alpine/")
+		action, index, reason := Evaluate(rules, routed)
+		if action != ActionDeny || index != 1 || reason != "SCP route denied" {
+			t.Fatalf("Evaluate(/v5.8.1/libpod/images/scp/alpine/) = (%q, %d, %q), want (%q, 1, %q)",
+				action, index, reason, ActionDeny, "SCP route denied")
+		}
+	})
+
+	t.Run("two-segment deny is not dodged by an empty second segment", func(t *testing.T) {
+		t.Parallel()
+		rules := compileRulesForTest(t, []Rule{
+			{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/*/*", Action: ActionDeny, Reason: "two-segment scp source denied", Index: 0},
+			{Methods: []string{http.MethodPost}, Pattern: "/libpod/images/scp/**", Action: ActionAllow, Index: 1},
+		})
+
+		// Decoded, this is the one-segment source "tenant" and the deny above
+		// does not describe it; on the route view it is "tenant/", two
+		// segments, and the deny does.
+		routed := newParsedRequest(t, http.MethodPost, "/libpod/images/scp/tenant/")
+		action, index, reason := Evaluate(rules, routed)
+		if action != ActionDeny || index != 0 || reason != "two-segment scp source denied" {
+			t.Fatalf("Evaluate(/libpod/images/scp/tenant/) = (%q, %d, %q), want (%q, 0, %q)",
+				action, index, reason, ActionDeny, "two-segment scp source denied")
+		}
+
+		// The bare one-segment source stays allowed, so the fix narrows only
+		// the shape it is about.
+		bare := newParsedRequest(t, http.MethodPost, "/libpod/images/scp/tenant")
+		if action, index, _ := Evaluate(rules, bare); action != ActionAllow || index != 1 {
+			t.Fatalf("Evaluate(/libpod/images/scp/tenant) = (%q, %d), want (%q, 1)", action, index, ActionAllow)
+		}
+	})
 }
