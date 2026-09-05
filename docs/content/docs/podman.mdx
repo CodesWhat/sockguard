@@ -424,7 +424,13 @@ same way they cover Docker-compat:
   `visibility_libpod_secret_list_unscopeable`. The items do carry
   `Spec.Labels`, so unlike the stats reads a response-side filter could scope
   this one; none exists today, which is what would move it back off this list.
-  `GET /libpod/secrets/{name}/json` names one secret and is unaffected.
+  `GET /libpod/secrets/{name}/json` names one secret and is unaffected. The
+  Docker-compat `GET /secrets` is refused the same way when `upstream.flavor`
+  resolves to Podman, because Podman serves it from that same
+  `compat.ListSecrets` handler and it hit the identical `500`; it is audited as
+  `owner_podman_secret_list_unscopeable` and
+  `visibility_podman_secret_list_unscopeable`, and on a Docker upstream it is
+  untouched.
 - `GET /libpod/manifests/{name}/exists` and
   `GET /libpod/manifests/{name}/json` are refused whenever owner isolation or
   a visibility policy is active. Manifest lists carry no owner or policy
@@ -473,9 +479,9 @@ same way they cover Docker-compat:
   `{"nsmode":"container","value":"<ref>"}` namespace object and
   `pod`/`infra_image` fields.
 
-One endpoint is the exception, and it needs `upstream.flavor: podman` set (or
-left on `auto`, which probes for it) to be handled correctly. Podman registers
-`GET /events` and `GET /libpod/events` on a single handler, so the
+Two endpoints are the exception, and they need `upstream.flavor: podman` set
+(or left on `auto`, which probes for it) to be handled correctly. Podman
+registers `GET /events` and `GET /libpod/events` on a single handler, so the
 Docker-compat spelling carries Podman's filter semantics, and Podman evaluates
 several values under one filter key disjunctively where dockerd ANDs them.
 Sockguard therefore writes a visibility policy's single
@@ -490,6 +496,17 @@ disjunctive key, so Sockguard refuses the request with `403` and reason code
 owner-only or OR-widened stream. A patterns-only policy is forwarded untouched,
 as it is on Docker. On a Docker upstream nothing about `/events` changes. See
 [Security](/security) for the operator-facing version of this.
+
+The Docker-compat `GET /secrets` is the other one. Podman serves it from
+`compat.ListSecrets`, the same handler behind `GET /libpod/secrets/json`, whose
+filter grammar accepts only `name` and `id` and answers `500` for any other
+key, so the `label` filter owner isolation and a visibility policy inject into
+every other list broke the endpoint outright rather than narrowing it. On a
+Podman upstream a configured owner or a visibility policy carrying selectors
+now gets `403` and `owner_podman_secret_list_unscopeable` or
+`visibility_podman_secret_list_unscopeable` before the daemon is contacted; a
+patterns-only visibility policy injects nothing there and is forwarded
+untouched, and a Docker upstream keeps the conjunctive injection unchanged.
 
 Denial reasons from the libpod-only inspectors carry a `libpod ` prefix:
 `libpod container create denied: …`, `libpod network connect denied: …`,
@@ -722,13 +739,18 @@ land):
   (`GET /libpod/**` reaches it) needs
   `insecure_allow_read_exfiltration: true` to pass startup validation, because
   the path is in the read-exfiltration catalog.
-- **`GET /libpod/secrets/json` has no scoped form under either isolation
-  layer.** Podman's secret filter grammar accepts only `name` and `id` and
-  answers `500` for any other key, so the label filter that scopes every other
-  libpod list cannot be pushed upstream, and both layers refuse the path. The
+- **Neither spelling of the secret list has a scoped form under either
+  isolation layer.** `GET /libpod/secrets/json` and, on a Podman upstream, the
+  Docker-compat `GET /secrets` are one handler. Podman's secret filter grammar
+  accepts only `name` and `id` and answers `500` for any other key, so the
+  label filter that scopes every other list cannot be pushed upstream, and both
+  layers refuse the path. The
   gap is narrower than the stats one: the report items carry `Spec.Labels`, so
   a response-side filter over that field could scope this list the way
   `GET /system/df` is scoped, and building it is what would lift the refusal.
+  Building it for one spelling alone is what is ruled out, not the filter
+  itself: it would leave one handler answering `403` on its native path and a
+  filtered list on its compat path off the same policy.
   Until then, `GET /libpod/secrets/{name}/json` is the scoped read, since it
   names one secret and both layers resolve it normally, and a deployment that wants
   the whole list has to run without owner isolation and without a visibility

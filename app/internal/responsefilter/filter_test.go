@@ -584,6 +584,46 @@ func TestStreamArrayResponseHandlesNilPooledBuffer(t *testing.T) {
 	}
 }
 
+// TestAcquireStreamArrayBufferHandlesUnusablePoolValues kills the
+// CONDITIONALS_NEGATION mutant on acquireStreamArrayBuffer's `if out == nil`
+// (out == nil -> out != nil). That mutant drops the fallback allocation for
+// every value a pool can hand back that is not a usable *bytes.Buffer, so
+// Reset dereferences nil, and it swaps a pooled buffer for a fresh one on the
+// path that is supposed to reuse it. The get parameter is the seam: it forces
+// each of those returns directly, where draining streamArrayBufferPool cannot
+// (sync.Pool's Put drops entries at random under -race).
+func TestAcquireStreamArrayBufferHandlesUnusablePoolValues(t *testing.T) {
+	t.Parallel()
+
+	pooled := bytes.NewBufferString("left over from the last response")
+
+	tests := []struct {
+		name string
+		get  func() any
+		want *bytes.Buffer // nil means "any freshly allocated buffer"
+	}{
+		{name: "pool returns an untyped nil", get: func() any { return nil }},
+		{name: "pool returns a typed nil buffer", get: func() any { return (*bytes.Buffer)(nil) }},
+		{name: "pool returns some other type", get: func() any { return new(strings.Builder) }},
+		{name: "pool returns a dirty buffer", get: func() any { return pooled }, want: pooled},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := acquireStreamArrayBuffer(tt.get)
+			if got == nil {
+				t.Fatal("acquireStreamArrayBuffer() = nil, want a usable buffer")
+			}
+			if tt.want != nil && got != tt.want {
+				t.Fatalf("acquireStreamArrayBuffer() allocated a new buffer, want the pooled one reused")
+			}
+			if got.Len() != 0 {
+				t.Fatalf("acquireStreamArrayBuffer() buffer holds %q, want it reset to empty", got.Bytes())
+			}
+		})
+	}
+}
+
 // TestStreamArrayResponseTrimsExactlyOneTrailingNewline pins that the
 // newline json.Encoder appends after every element is trimmed, so the
 // rewritten array is byte-for-byte compact JSON with no embedded newlines

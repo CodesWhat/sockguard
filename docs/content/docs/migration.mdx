@@ -300,13 +300,15 @@ wollomatic already does more than a basic path gate: regex allowlists per method
 | `-allowPOST "^/(v[0-9.]+/)?containers/[a-z0-9]+/start$"` | `{ method: POST, path: "/containers/*/start" }` |
 | `-allowfrom=172.18.0.0/16` | `clients.allowed_cidrs: ["172.18.0.0/16"]` |
 | `-allowfrom=traefik` (hostname admission) | `clients.allowed_cidrs` with the caller's IP, or `clients.container_labels` for name-based resolution. For cryptographic caller identity, `clients.client_certificate_profiles` (mTLS) or `clients.unix_peer_profiles` are a stronger upgrade. |
-| `socket-proxy.allow.get=.*` | `clients.container_labels: { enabled: true, label_prefix: "socket-proxy.allow." }`. The prefix has a default; `enabled` does not, and label ACLs stay off until you set it. |
+| `socket-proxy.allow.get=.*` | `clients.container_labels: { enabled: true, label_prefix: "socket-proxy.allow." }`, and rewrite the label **value** to `socket-proxy.allow.get=/**`. Only the label key's prefix is reusable. Wollomatic label values are regexes; Sockguard reads them as globs, so `.*` is a literal dot followed by one segment and matches no real path. Every comma-separated path in a label must start with `/`, and a container carrying one that does not is refused rather than partly honored. The prefix has a default; `enabled` does not, and label ACLs stay off until you set it. |
 | `-allowbindmountfrom=/srv/data,/var/log` | `request_body.container_create.allowed_bind_mounts: ["/srv/data", "/var/log"]` |
 | `-proxysocketendpoint=/tmp/filtered.sock` | `listen.socket: /tmp/filtered.sock` |
 
 Key differences:
 - Sockguard auto-strips API version prefixes — no need for `(v[0-9.]+/)?` in patterns
-- Glob patterns (`*`, `**`) instead of regex
+- Glob patterns (`*`, `**`) instead of regex, in rule paths and in container-label values alike. A wollomatic regex copied across unchanged is read as a glob, so translate it: `.*` becomes `/**`, `^/containers/.*$` becomes `/containers/**`
+- That last translation is a slight widening, not an exact match: `^/containers/.*$` requires the literal `/containers/` to appear, so it does not match the bare path `/containers`, while sockguard's `/containers/**` does match `/containers` on its own, with nothing after the trailing slash
+- Every path, in a rule and in a label, must start with `/`
 - YAML config instead of CLI flags
 - Auto-anchoring built in (no need for `^` and `$`)
 - Wollomatic already supports hostname allowlists and a filtered unix-socket endpoint today; Sockguard is stronger on exec/pull/build inspection, named profiles, ownership isolation, and visibility-controlled reads

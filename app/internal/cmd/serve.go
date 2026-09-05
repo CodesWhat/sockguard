@@ -783,7 +783,7 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 		// lookup, and the guard still runs before hijack/proxy for every
 		// request ownership allowed.
 		namedServeHandlerLayer("withResourceLimitGuard", withResourceLimitGuard(cfg, resolver, logger, clientProfiles)),
-		namedServeHandlerLayer("withOwnership", withOwnership(cfg, resolver, logger)),
+		namedServeHandlerLayer("withOwnership", withOwnership(cfg, resolver, logger, runtimeUpstreamFlavor(runtime))),
 		namedServeHandlerLayer("withVisibility", withVisibility(cfg, resolver, logger, runtimeUpstreamFlavor(runtime))),
 		namedServeHandlerLayer("withFilter", withFilter(cfg, resolver, logger, rules, clientProfiles)),
 	}
@@ -1040,12 +1040,13 @@ func warnOpaqueBuildkitTunnelDeprecatedOnce(cfg *config.Config, logger *slog.Log
 	})
 }
 
-func withOwnership(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger) func(http.Handler) http.Handler {
+func withOwnership(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, flavor upstreamflavor.Flavor) func(http.Handler) http.Handler {
 	return ownership.MiddlewareWithRoundTripper(res, logger, ownership.Options{
 		Owner:                           cfg.Ownership.Owner,
 		LabelKey:                        cfg.Ownership.LabelKey,
 		AllowUnownedImages:              cfg.Ownership.AllowUnownedImages,
 		AllowCrossOwnerNamespaceSharing: cfg.Ownership.AllowCrossOwnerNamespaceSharing,
+		UpstreamFlavor:                  flavor,
 	})
 }
 
@@ -1147,7 +1148,13 @@ func warnIfReadExfiltrationEnabled(cfg *config.Config, rules []*filter.CompiledR
 // exact-name path or one left reachable below an ordered deny is reported as
 // the concrete path rather than the catalog spelling. It stops at the first
 // reachable path per cataloged endpoint, which is what the warning text means
-// by not naming every path the rules admit. Named client
+// by not naming every path the rules admit. A concrete path in either field
+// was confirmed through the request evaluator; where allowedCatalogPaths could
+// not confirm one it falls back to the endpoint's catalog spelling, so an
+// entry still carrying the catalog's placeholder identifier is a conservative
+// report rather than a confirmed route. The warning text says so, because this is the
+// one caller that reports exposure instead of refusing it, where an
+// over-report is telemetry rather than a fail-closed refusal. Named client
 // profiles are reported separately because their
 // rules are evaluated in place of the top-level set: the acknowledgment is
 // global, so a profile can be the only reason it has to be set, and the
@@ -1165,7 +1172,7 @@ func warnReadExfiltrationOnce(cfg *config.Config, rules []*filter.CompiledRule, 
 	exposed := allowedSensitiveExfilEndpoints(cfg.Rules, rules)
 	profileExposed := allowedSensitiveExfilEndpointsByProfile(cfg.Clients.Profiles, clientProfiles)
 	once.Do(func() {
-		logger.Warn("insecure_allow_read_exfiltration is enabled: rules matching raw archive/export, log/attach streaming, checkpoint export, container rootfs mount, or registry push endpoints are admitted instead of refused at startup, and process-list reads allowed by policy are admitted instead of denied at request time. The exposed endpoint fields name one reachable path per cataloged endpoint, not every path the rules admit. A caller allowed those paths can read container files, container memory, images, plugins, process arguments, environment variables, secrets, and daemon-host filesystem paths, or push local artifacts to a registry it chooses",
+		logger.Warn("insecure_allow_read_exfiltration is enabled: rules matching raw archive/export, log/attach streaming, checkpoint export, container rootfs mount, or registry push endpoints are admitted instead of refused at startup, and process-list reads allowed by policy are admitted instead of denied at request time. The exposed endpoint fields name one reachable path per cataloged endpoint, not every path the rules admit. An entry spelled as a concrete path was confirmed allowed by the request evaluator; an entry still carrying the catalog's placeholder identifier is either that exact path being allowed or a conservative stand-in for an endpoint whose concrete path could not be confirmed. A caller allowed those paths can read container files, container memory, images, plugins, process arguments, environment variables, secrets, and daemon-host filesystem paths, or push local artifacts to a registry it chooses",
 			"exposed_endpoints", exposed,
 			"exposed_profile_endpoints", profileExposed,
 		)

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/testing/ca"
@@ -372,16 +373,55 @@ func TestDefaultProbeUnixSocket(t *testing.T) {
 	})
 }
 
-// serve_deps.go:374 ARITHMETIC_BASE (200*time.Millisecond -> 200/time.Millisecond,
-// i.e. a Duration(0) "no timeout" instead of a 200ms bound) is not exercised
-// here: net.DialTimeout to a missing/refusing unix socket path returns
-// immediately regardless of the timeout value (there is nothing to wait on),
-// and forcing a real connect to actually block past 200ms requires exhausting
-// the kernel's listen accept-backlog. Measured on this machine (darwin), once
-// that backlog fills, further connects return ECONNREFUSED immediately rather
-// than blocking — so even backlog exhaustion doesn't reproduce a hang, and the
-// exact backlog size differs across platforms/kernels regardless. No
-// deterministic, non-flaky unit test isolates this constant's value; skipped.
+// TestDefaultProbeUnixSocketDialsWithBoundedTimeout kills the ARITHMETIC_BASE
+// mutant on the probe's dial timeout (200*time.Millisecond ->
+// 200/time.Millisecond, i.e. a Duration(0) "no timeout" instead of a 200ms
+// bound).
+//
+// No real dial can kill it: net.DialTimeout to a missing or refusing unix
+// socket path returns immediately regardless of the timeout value (there is
+// nothing to wait on), and forcing a real connect to block past 200ms requires
+// exhausting the kernel's listen accept-backlog. Measured on darwin, once that
+// backlog fills, further connects return ECONNREFUSED immediately rather than
+// blocking, and the exact backlog size differs across platforms and kernels
+// regardless. The probeDial seam replaces the flaky timing observation with a
+// direct one: the probe has to hand its dialer a positive, bounded timeout.
+func TestDefaultProbeUnixSocketDialsWithBoundedTimeout(t *testing.T) {
+	original := probeDial
+	t.Cleanup(func() { probeDial = original })
+
+	var (
+		calls      int
+		gotNetwork string
+		gotAddress string
+		gotTimeout time.Duration
+	)
+	probeDial = func(network, address string, timeout time.Duration) (net.Conn, error) {
+		calls++
+		gotNetwork, gotAddress, gotTimeout = network, address, timeout
+		return nil, errors.New("probe dial refused")
+	}
+
+	const socketPath = "/tmp/sockguard-probe-bounded.sock"
+	if err := defaultProbeUnixSocket(socketPath); err == nil {
+		t.Fatal("defaultProbeUnixSocket() error = nil, want the dialer's error passed straight back")
+	}
+	if calls != 1 {
+		t.Fatalf("probe dialed %d times, want exactly 1", calls)
+	}
+	if gotNetwork != "unix" || gotAddress != socketPath {
+		t.Fatalf("probe dialed (%q, %q), want (%q, %q)", gotNetwork, gotAddress, "unix", socketPath)
+	}
+	if gotTimeout <= 0 {
+		t.Fatalf("probe dialed with timeout %v; net.DialTimeout reads a non-positive Duration as no timeout at all, so a stale-socket probe could hang startup", gotTimeout)
+	}
+	if gotTimeout > time.Second {
+		t.Fatalf("probe dialed with timeout %v, want a bind-time bound of at most 1s", gotTimeout)
+	}
+	if gotTimeout != probeDialTimeout {
+		t.Fatalf("probe dialed with timeout %v, want probeDialTimeout %v", gotTimeout, probeDialTimeout)
+	}
+}
 
 // ---------------------------------------------------------------------------
 // serve_deps.go:218 — CONDITIONALS_NEGATION: `if fileMode ==
