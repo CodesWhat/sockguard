@@ -49,6 +49,14 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	{method: http.MethodPost, path: "/build"},
 	{method: http.MethodPost, path: "/libpod/build"},
 	{method: http.MethodPost, path: "/volumes/create"},
+	// The Swarm cluster-volume (CSI) update. Spelled as a slash-bearing
+	// identifier because moby registers the route as
+	// `PUT /volumes/{name:.*}`, the same reason the container top and image
+	// get entries carry that shape, so a rule constrained below one literal
+	// segment is still recognized as reaching it. Inspected by
+	// request_body.volume (filter.volumePolicy.inspectUpdate), the same
+	// config block that governs POST /volumes/create.
+	{method: http.MethodPut, path: "/volumes/sockguard-test", identifierShape: catalogIdentifierPath},
 	{method: http.MethodPost, path: "/networks/create"},
 	{method: http.MethodPost, path: "/networks/sockguard-test/connect"},
 	{method: http.MethodPost, path: "/networks/sockguard-test/disconnect"},
@@ -714,6 +722,14 @@ func bodyInspectionConfiguredForEndpoint(requestBody config.RequestBodyConfig, e
 	case "/containers/sockguard-test/update", "/containers/sockguard-test/archive", "/images/create", "/images/load", "/build", "/libpod/build":
 		return true
 	case "/volumes/create", "/networks/create", "/networks/sockguard-test/connect", "/networks/sockguard-test/disconnect", "/secrets/create", "/configs/create", "/services/create", "/services/sockguard-test/update", "/swarm/init", "/plugins/pull", "/plugins/sockguard-test/upgrade":
+		return true
+	case "/volumes/sockguard-test":
+		// PUT /volumes/{name}, the Swarm cluster-volume update, on the same
+		// terms as its create sibling above: request_body.volume's
+		// allow_cluster_volume_secrets and allow_cluster_volume_updates are
+		// plain booleans that both default false, so the inspector denies
+		// every ClusterVolumeSpec field out of the box whether or not the
+		// operator has configured anything.
 		return true
 	case "/swarm/join":
 		return len(requestBody.Swarm.AllowedJoinRemoteAddrs) > 0
