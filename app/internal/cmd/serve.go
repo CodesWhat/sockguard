@@ -863,6 +863,15 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 	layers = append(layers,
 		namedServeHandlerLayer("withClientACL", withClientACL(cfg, resolver, logger)),
 	)
+	// withRequestTargetGuard is appended AFTER withClientACL so it executes
+	// BEFORE it (append order is reversed at composition time). Every layer
+	// from clientacl inward matches policy against r.URL.Path, and a
+	// container-label grant of "/**" compiles to the same match-all matcher a
+	// configured rule does, so the unrooted shapes this rejects must not reach
+	// any of them. It stays inside metrics, request-ID/trace correlation, and
+	// the access/audit loggers, which are appended after it, so the 400 is
+	// recorded like any other denial.
+	layers = append(layers, namedServeHandlerLayer("withRequestTargetGuard", withRequestTargetGuard()))
 	if runtime.metrics != nil {
 		layers = append(layers, namedServeHandlerLayer("withMetrics", withMetrics(runtime.metrics)))
 	}

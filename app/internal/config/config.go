@@ -837,10 +837,30 @@ type ImageLoadRequestBodyConfig struct {
 	AllowUntagged      bool     `mapstructure:"allow_untagged"`
 }
 
-// VolumeRequestBodyConfig configures inspection for POST /volumes/create.
+// VolumeRequestBodyConfig configures inspection for POST /volumes/create and
+// PUT /volumes/{name}.
 type VolumeRequestBodyConfig struct {
 	AllowCustomDrivers bool `mapstructure:"allow_custom_drivers"`
 	AllowDriverOpts    bool `mapstructure:"allow_driver_opts"`
+	// AllowClusterVolumeSecrets permits ClusterVolumeSpec.Secrets on
+	// PUT /volumes/{name}, the Swarm cluster-volume (CSI) update. Default
+	// false: each entry names a Swarm secret the daemon hands to the CSI
+	// plugin, so rewriting the list points the plugin at a secret the caller
+	// was never granted. allow_cluster_volume_updates does not admit
+	// Secrets; this is the only flag that does.
+	//
+	// The two cluster-volume flags have no libpod analog — Podman has no
+	// swarm mode, no CSI cluster volumes, and no PUT volume route at all —
+	// so the libpod_volume block that otherwise reuses this type verbatim
+	// never consults either of them.
+	AllowClusterVolumeSecrets bool `mapstructure:"allow_cluster_volume_secrets"`
+	// AllowClusterVolumeUpdates permits every other ClusterVolumeSpec field
+	// on PUT /volumes/{name}: Availability, Group, AccessMode,
+	// CapacityRange and AccessibilityRequirements. Default false, because
+	// Availability drain or pause forces an in-use volume off every node
+	// publishing it and the rest re-shape how and where it is published.
+	// See filter/volume.go's volumeClusterSpec.
+	AllowClusterVolumeUpdates bool `mapstructure:"allow_cluster_volume_updates"`
 }
 
 // NetworkRequestBodyConfig configures inspection for network write endpoints.
