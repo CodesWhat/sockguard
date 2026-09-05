@@ -1,6 +1,10 @@
 package filter
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/codeswhat/sockguard/app/internal/apipath"
+)
 
 // libpodPathPrefix is the literal namespace prefix for Podman's native
 // libpod API, distinct from the Docker-compatibility surface sockguard
@@ -20,7 +24,7 @@ const libpodPathPrefix = "/libpod/"
 // otherwise falsely match; NormalizePath collapses it to "/containers/create"
 // before any matcher in this file ever sees it).
 func isLibpodPath(normalizedPath string) bool {
-	return strings.HasPrefix(normalizedPath, libpodPathPrefix)
+	return apipath.IsLibpodPath(normalizedPath)
 }
 
 // isLibpodContainerCreatePath matches POST /libpod/containers/create, the
