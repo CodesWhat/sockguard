@@ -315,7 +315,7 @@ How we stack up against other Docker socket proxies:
 | Feature | Tecnativa | LinuxServer | wollomatic | 11notes | CetusGuard | **Sockguard** |
 |---------|:---------:|:-----------:|:----------:|:-------:|:----------:|:-------------:|
 | Method + path filtering | ✅ | ✅ | ✅ (regex) | Fixed read-only | ✅ (regex) | ✅ |
-| Granular container write ops | Partial (`ALLOW_*`) | Partial (`ALLOW_*`) | Via regex | ❌ (read-only) | Via regex | ✅ |
+| Granular container write ops | Documented only (POST gate blocks them) | Partial (`ALLOW_*`) | Via regex | ❌ (read-only) | Via regex | ✅ |
 | Request inspection | ❌ | ❌ | Partial (bind-mount source restrictions) | ❌ | ❌ | ✅ (`container` create/update/exec/archive/remove query, `image` pull/load, Docker + Podman `build`, `volume`, `network` create/connect/disconnect, `secret`, `config`, `service`, `swarm` init/join/update/unlock, `node` update, `plugin`) |
 | Per-client admission / policy selection | ❌ | ❌ | Partial (IP/hostname + per-container labels) | ❌ | ❌ | ✅ (CIDR + labels + cert selectors incl. SPKI + unix peer profiles) |
 | Read-side visibility / redaction | ❌ | ❌ | ❌ | Partial (targets 7 risky GETs; the image-export pattern misses both real shapes, [11notes #12](https://github.com/11notes/docker-socket-proxy/issues/12)) | ❌ | ✅ (visibility + protected JSON redaction) |
