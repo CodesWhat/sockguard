@@ -2,30 +2,6 @@ package filter
 
 import "testing"
 
-func TestIsLibpodPath(t *testing.T) {
-	tests := []struct {
-		name string
-		path string
-		want bool
-	}{
-		{name: "libpod container create", path: "/libpod/containers/create", want: true},
-		{name: "libpod pod create", path: "/libpod/pods/create", want: true},
-		{name: "libpod info", path: "/libpod/info", want: true},
-		{name: "bare libpod without trailing slash", path: "/libpod", want: false},
-		{name: "docker containers create", path: "/containers/create", want: false},
-		{name: "docker root", path: "/", want: false},
-		{name: "empty", path: "", want: false},
-		{name: "libpod-prefixed but different resource", path: "/libpodxyz/containers/create", want: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := isLibpodPath(tt.path); got != tt.want {
-				t.Errorf("isLibpodPath(%q) = %v, want %v", tt.path, got, tt.want)
-			}
-		})
-	}
-}
-
 // TestLibpodPerResourceMatchers table-tests every per-resource libpod
 // predicate added for #148 against the exact path it must match and a set
 // of near-miss paths (wrong resource, wrong method-shaped path, Docker

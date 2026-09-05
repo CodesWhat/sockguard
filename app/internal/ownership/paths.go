@@ -3,6 +3,8 @@ package ownership
 import (
 	"net/http"
 	"strings"
+
+	"github.com/codeswhat/sockguard/app/internal/apipath"
 )
 
 func needsOwnerFilter(method, normPath string) bool {
@@ -211,11 +213,7 @@ func nodeIdentifier(normPath string) (string, bool) {
 }
 
 func isNodeUpdatePath(normPath string) bool {
-	if !strings.HasPrefix(normPath, "/nodes/") {
-		return false
-	}
-	identifier, tail, ok := strings.Cut(strings.TrimPrefix(normPath, "/nodes/"), "/")
-	return ok && identifier != "" && tail == "update"
+	return apipath.IsNodeUpdatePath(normPath)
 }
 
 func isSwarmPath(normPath string) bool {
