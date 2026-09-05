@@ -2,9 +2,10 @@ package cmd
 
 import (
 	"encoding/binary"
+	"math/bits"
 	"regexp"
 	"regexp/syntax"
-	"sort"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -16,6 +17,27 @@ const (
 	maxCatalogReachabilityInstructions = 4096
 	maxCatalogReachabilityStates       = 8192
 	maxCatalogReachabilityTransitions  = 1 << 18
+	// maxCatalogReachabilitySteps caps the NFA work one firstAllowedCatalogPath
+	// call may spend: every live instruction it visits, plus every word of a
+	// state set it scans to find them. The state and transition caps do not
+	// bound that. A pattern spelled with hundreds of "*" segments keeps a number
+	// of instructions live that grows with the pattern, so a single transition
+	// costs as much as the whole instruction budget while the transition cap
+	// still admits a multi-second call, and a policy of many short rules widens
+	// the product state instead, which the transition cap does not price either.
+	// This is the cap that is proportional to work actually done.
+	//
+	// Exhausting it returns indeterminate, the same conservative "could not
+	// prove reachability, treat the endpoint as exposed" verdict the other caps
+	// return, so a config that trips it is reported under its catalog spelling
+	// instead of being silently passed. 1<<23 is 148x the 56,537 steps the
+	// heaviest policy in configs/ spends on its most expensive catalog row,
+	// which is also the ceiling across the whole test suite, so only a pattern
+	// built to be expensive reaches it: it takes a few hundred "*" segments in
+	// one path segment. That caps one call at around 30ms and a walk of both
+	// sensitive-endpoint catalogs over such a config at under a second, against
+	// the 14s the same config cost before this budget existed.
+	maxCatalogReachabilitySteps = 1 << 23
 )
 
 type catalogReachability uint8
@@ -73,6 +95,7 @@ type catalogRuleMachine struct {
 type catalogReachabilityBudget struct {
 	states      int
 	transitions int
+	steps       int
 }
 
 // firstAllowedCatalogPath returns a concrete route in the catalog shape whose
@@ -92,9 +115,14 @@ type catalogReachabilityBudget struct {
 // stable catalog spelling when it does not survive.
 //
 // The DFA product of several regular languages can be exponential in the
-// number of rules. Startup work is therefore capped. Exhausting a cap returns
-// indeterminate, which callers treat as exposed and fail closed rather than
-// letting an unproved allow rule bypass an acknowledgment.
+// number of rules, and a long rule pattern makes each step of that product
+// expensive on its own. Work per call is therefore capped four ways: program
+// size, states, transitions, and the NFA work a search may spend
+// (maxCatalogReachabilitySteps). The caps are not only a startup concern,
+// because the admin API's POST /validate runs this walk again for every
+// candidate config it is handed. Exhausting a cap returns indeterminate,
+// which callers treat as exposed and fail closed rather than letting an
+// unproved allow rule bypass an acknowledgment.
 func firstAllowedCatalogPath(method, catalogPath string, identifierShape catalogIdentifierShape, exclusions []catalogPathExclusion, rules []config.RuleConfig) (string, catalogReachability) {
 	catalog, err := compileCatalogMachine(catalogPath, identifierShape)
 	if err != nil {
@@ -224,9 +252,39 @@ func compileReachabilityProgram(expression string) (*syntax.Prog, error) {
 	return syntax.Compile(parsed.Simplify())
 }
 
+// reachabilityProduct lays every machine's NFA state set end to end in one word
+// slice. A product state is then a single allocation and its map key is a
+// single copy, instead of one allocation per machine plus a second pass to
+// concatenate them, which the search pays on every transition it examines.
+type reachabilityProduct struct {
+	machines []catalogRuleMachine
+	offsets  []int
+	words    int
+}
+
+func newReachabilityProduct(machines []catalogRuleMachine) reachabilityProduct {
+	offsets := make([]int, len(machines)+1)
+	words := 0
+	for i := range machines {
+		offsets[i] = words
+		words += (len(machines[i].program.Inst) + 63) / 64
+	}
+	offsets[len(machines)] = words
+	return reachabilityProduct{machines: machines, offsets: offsets, words: words}
+}
+
+func (p reachabilityProduct) state(product []uint64, machine int) []uint64 {
+	return product[p.offsets[machine]:p.offsets[machine+1]]
+}
+
 type reachabilityState struct {
-	machines [][]uint64
-	witness  string
+	product []uint64
+	// parent and step spell the witness as a linked list back to the start
+	// state. Carrying the witness string on the state instead re-copies the
+	// whole prefix for every state queued, which is quadratic in the witness
+	// length and so in the pattern length that sets it.
+	parent int
+	step   rune
 }
 
 // catalogAllowWitness receives the positive catalog first, catalog exclusions
@@ -235,43 +293,64 @@ type reachabilityState struct {
 // exclusions or earlier rules, which is precisely first-match reachability for
 // that allow on the upstream route language.
 func catalogAllowWitness(machines []catalogRuleMachine, budget *catalogReachabilityBudget) (string, catalogReachability) {
-	start := reachabilityState{machines: make([][]uint64, len(machines))}
+	product := newReachabilityProduct(machines)
+	last := len(machines) - 1
+
+	start := make([]uint64, product.words)
 	for i := range machines {
-		start.machines[i] = reachabilityStart(machines[i].program)
+		reachabilityAddClosure(machines[i].program, product.state(start, i), machines[i].program.Start, budget)
 	}
 
-	queue := []reachabilityState{start}
-	seen := map[string]struct{}{reachabilityStateKey(start.machines): {}}
+	key := make([]byte, product.words*8)
+	scratch := make([]uint64, product.words)
+	working := &reachabilityCandidates{}
+	reachabilityFillKey(key, start)
+
+	queue := []reachabilityState{{product: start, parent: -1}}
+	seen := map[string]struct{}{string(key): {}}
 	for head := 0; head < len(queue); head++ {
-		current := queue[head]
-		if catalogAllowAccepts(machines, current.machines) {
-			return current.witness, catalogReachable
+		current := queue[head].product
+		if catalogAllowAccepts(product, current) {
+			return reachabilityWitness(queue, head), catalogReachable
 		}
 
-		for _, candidate := range reachabilityCandidateRunes(machines, current.machines) {
+		candidates := reachabilityCandidateRunes(product, current, working, budget)
+		if budget.steps > maxCatalogReachabilitySteps {
+			return "", catalogReachabilityIndeterminate
+		}
+		for _, candidate := range candidates {
 			budget.transitions++
 			if budget.transitions > maxCatalogReachabilityTransitions {
 				return "", catalogReachabilityIndeterminate
 			}
-			nextMachines := make([][]uint64, len(machines))
 			for i := range machines {
-				nextMachines[i] = reachabilityAdvance(machines[i].program, current.machines[i], candidate)
+				reachabilityAdvance(machines[i].program, product.state(current, i), product.state(scratch, i), candidate, budget)
 			}
-			if reachabilityEmpty(nextMachines[0]) {
+			if budget.steps > maxCatalogReachabilitySteps {
+				return "", catalogReachabilityIndeterminate
+			}
+			// A dead catalog can never come back, and neither can a dead
+			// target: reachabilityAdvance maps the empty state set to itself
+			// and catalogAllowAccepts demands both of them accept. Dropping
+			// the target here is what keeps a long literal pattern from
+			// walking the whole catalog language after the pattern itself has
+			// already been ruled out one character in.
+			if reachabilityEmpty(product.state(scratch, 0)) || reachabilityEmpty(product.state(scratch, last)) {
 				continue
 			}
-			key := reachabilityStateKey(nextMachines)
-			if _, ok := seen[key]; ok {
+			reachabilityFillKey(key, scratch)
+			if _, ok := seen[string(key)]; ok {
 				continue
 			}
 			budget.states++
 			if budget.states > maxCatalogReachabilityStates {
 				return "", catalogReachabilityIndeterminate
 			}
-			seen[key] = struct{}{}
+			seen[string(key)] = struct{}{}
 			queue = append(queue, reachabilityState{
-				machines: nextMachines,
-				witness:  current.witness + string(candidate),
+				product: slices.Clone(scratch),
+				parent:  head,
+				step:    candidate,
 			})
 		}
 	}
@@ -279,37 +358,57 @@ func catalogAllowWitness(machines []catalogRuleMachine, budget *catalogReachabil
 	return "", catalogUnreachable
 }
 
-func catalogAllowAccepts(machines []catalogRuleMachine, states [][]uint64) bool {
-	last := len(machines) - 1
-	if !reachabilityAccepts(machines[0].program, states[0]) || !reachabilityAccepts(machines[last].program, states[last]) {
+// reachabilityWitness walks the parent links back to the start state and spells
+// the runes that got there.
+func reachabilityWitness(queue []reachabilityState, index int) string {
+	steps := make([]rune, 0, index)
+	for index > 0 {
+		steps = append(steps, queue[index].step)
+		index = queue[index].parent
+	}
+	slices.Reverse(steps)
+	return string(steps)
+}
+
+func catalogAllowAccepts(product reachabilityProduct, states []uint64) bool {
+	last := len(product.machines) - 1
+	if !reachabilityAccepts(product.machines[0].program, product.state(states, 0)) ||
+		!reachabilityAccepts(product.machines[last].program, product.state(states, last)) {
 		return false
 	}
 	for i := 1; i < last; i++ {
-		if reachabilityAccepts(machines[i].program, states[i]) {
+		if reachabilityAccepts(product.machines[i].program, product.state(states, i)) {
 			return false
 		}
 	}
 	return true
 }
 
-func reachabilityStart(program *syntax.Prog) []uint64 {
-	state := make([]uint64, (len(program.Inst)+63)/64)
-	reachabilityAddClosure(program, state, program.Start)
-	return state
-}
-
-func reachabilityAdvance(program *syntax.Prog, current []uint64, candidate rune) []uint64 {
-	next := make([]uint64, len(current))
-	for pc, instruction := range program.Inst {
-		if !reachabilityHas(current, pc) || !reachabilityInstructionMatches(&instruction, candidate) {
-			continue
-		}
-		reachabilityAddClosure(program, next, int(instruction.Out))
+// reachabilityAdvance overwrites next with the states current reaches on
+// candidate. It walks the live set word by word rather than the whole
+// instruction list, so the cost is the number of live instructions and not the
+// program size — the difference between linear and constant work per
+// transition once a long pattern has compiled to thousands of instructions.
+func reachabilityAdvance(program *syntax.Prog, current, next []uint64, candidate rune, budget *catalogReachabilityBudget) {
+	for i := range next {
+		next[i] = 0
 	}
-	return next
+	budget.steps += len(current)
+	for word, live := range current {
+		for live != 0 {
+			pc := word*64 + bits.TrailingZeros64(live)
+			live &= live - 1
+			budget.steps++
+			instruction := &program.Inst[pc]
+			if !reachabilityInstructionMatches(instruction, candidate) {
+				continue
+			}
+			reachabilityAddClosure(program, next, int(instruction.Out), budget)
+		}
+	}
 }
 
-func reachabilityAddClosure(program *syntax.Prog, state []uint64, start int) {
+func reachabilityAddClosure(program *syntax.Prog, state []uint64, start int, budget *catalogReachabilityBudget) {
 	stack := []int{start}
 	for len(stack) > 0 {
 		last := len(stack) - 1
@@ -318,6 +417,7 @@ func reachabilityAddClosure(program *syntax.Prog, state []uint64, start int) {
 		if pc < 0 || pc >= len(program.Inst) || reachabilityHas(state, pc) {
 			continue
 		}
+		budget.steps++
 		reachabilitySet(state, pc)
 		instruction := program.Inst[pc]
 		switch instruction.Op {
@@ -342,49 +442,78 @@ func reachabilityInstructionMatches(instruction *syntax.Inst, candidate rune) bo
 	}
 }
 
-func reachabilityCandidateRunes(machines []catalogRuleMachine, states [][]uint64) []rune {
-	candidates := map[rune]struct{}{
-		'a': {}, 'b': {}, '0': {}, '-': {}, '_': {}, '.': {}, '/': {}, '\n': {},
+// reachabilityPreferredRunes lead every candidate list so a witness spells the
+// readable identifier a reader expects wherever the languages leave a choice.
+var reachabilityPreferredRunes = []rune{'a', 'b', '0', '-', '_', '.', '/', '\n'}
+
+// reachabilityCandidates is the working set reachabilityCandidateRunes builds.
+// The search reuses one per call: the map and both slices are rebuilt for every
+// state visited, and allocating them fresh each time costs more than the scan
+// they exist for.
+type reachabilityCandidates struct {
+	members map[rune]struct{}
+	ordered []rune
+	rest    []rune
+}
+
+func (c *reachabilityCandidates) reset() {
+	if c.members == nil {
+		c.members = make(map[rune]struct{}, 64)
+	} else {
+		clear(c.members)
 	}
-	for i := range machines {
-		for pc, instruction := range machines[i].program.Inst {
-			if !reachabilityHas(states[i], pc) {
-				continue
-			}
-			switch instruction.Op {
-			case syntax.InstRune, syntax.InstRune1:
-				for j := 0; j < len(instruction.Rune); j += 2 {
-					lo := instruction.Rune[j]
-					hi := lo
-					if j+1 < len(instruction.Rune) {
-						hi = instruction.Rune[j+1]
+	c.ordered = c.ordered[:0]
+	c.rest = c.rest[:0]
+	for _, candidate := range reachabilityPreferredRunes {
+		c.members[candidate] = struct{}{}
+	}
+}
+
+func reachabilityCandidateRunes(product reachabilityProduct, states []uint64, working *reachabilityCandidates, budget *catalogReachabilityBudget) []rune {
+	working.reset()
+	candidates := working.members
+	budget.steps += product.words
+	for i := range product.machines {
+		program := product.machines[i].program
+		for word, live := range product.state(states, i) {
+			for live != 0 {
+				pc := word*64 + bits.TrailingZeros64(live)
+				live &= live - 1
+				budget.steps++
+				instruction := program.Inst[pc]
+				switch instruction.Op {
+				case syntax.InstRune, syntax.InstRune1:
+					for j := 0; j < len(instruction.Rune); j += 2 {
+						lo := instruction.Rune[j]
+						hi := lo
+						if j+1 < len(instruction.Rune) {
+							hi = instruction.Rune[j+1]
+						}
+						addReachabilityBoundaryRunes(candidates, lo)
+						addReachabilityBoundaryRunes(candidates, hi)
 					}
-					addReachabilityBoundaryRunes(candidates, lo)
-					addReachabilityBoundaryRunes(candidates, hi)
+				case syntax.InstRuneAny, syntax.InstRuneAnyNotNL:
+					addReachabilityBoundaryRunes(candidates, 0)
+					addReachabilityBoundaryRunes(candidates, unicode.MaxRune)
 				}
-			case syntax.InstRuneAny, syntax.InstRuneAnyNotNL:
-				addReachabilityBoundaryRunes(candidates, 0)
-				addReachabilityBoundaryRunes(candidates, unicode.MaxRune)
 			}
 		}
 	}
 
-	preferred := []rune{'a', 'b', '0', '-', '_', '.', '/', '\n'}
-	result := make([]rune, 0, len(candidates))
-	for _, candidate := range preferred {
+	for _, candidate := range reachabilityPreferredRunes {
 		if _, ok := candidates[candidate]; ok {
-			result = append(result, candidate)
+			working.ordered = append(working.ordered, candidate)
 			delete(candidates, candidate)
 		}
 	}
-	rest := make([]rune, 0, len(candidates))
 	for candidate := range candidates {
 		if candidate >= 0 && candidate <= unicode.MaxRune && (candidate < 0xD800 || candidate > 0xDFFF) {
-			rest = append(rest, candidate)
+			working.rest = append(working.rest, candidate)
 		}
 	}
-	sort.Slice(rest, func(i, j int) bool { return rest[i] < rest[j] })
-	return append(result, rest...)
+	slices.Sort(working.rest)
+	working.ordered = append(working.ordered, working.rest...)
+	return working.ordered
 }
 
 func addReachabilityBoundaryRunes(candidates map[rune]struct{}, boundary rune) {
@@ -396,9 +525,13 @@ func addReachabilityBoundaryRunes(candidates map[rune]struct{}, boundary rune) {
 }
 
 func reachabilityAccepts(program *syntax.Prog, state []uint64) bool {
-	for pc, instruction := range program.Inst {
-		if instruction.Op == syntax.InstMatch && reachabilityHas(state, pc) {
-			return true
+	for word, live := range state {
+		for live != 0 {
+			pc := word*64 + bits.TrailingZeros64(live)
+			live &= live - 1
+			if program.Inst[pc].Op == syntax.InstMatch {
+				return true
+			}
 		}
 	}
 	return false
@@ -413,20 +546,14 @@ func reachabilityEmpty(state []uint64) bool {
 	return true
 }
 
-func reachabilityStateKey(states [][]uint64) string {
-	size := 0
-	for _, state := range states {
-		size += len(state) * 8
+// reachabilityFillKey writes the product state into a caller-owned buffer so
+// the map key costs one copy and no allocation. Only a state that survives the
+// seen check is ever turned into a string, which is bounded by
+// maxCatalogReachabilityStates rather than by the transition count.
+func reachabilityFillKey(key []byte, states []uint64) {
+	for i, word := range states {
+		binary.LittleEndian.PutUint64(key[i*8:], word)
 	}
-	key := make([]byte, size)
-	offset := 0
-	for _, state := range states {
-		for _, word := range state {
-			binary.LittleEndian.PutUint64(key[offset:], word)
-			offset += 8
-		}
-	}
-	return string(key)
 }
 
 func reachabilityHas(state []uint64, pc int) bool {

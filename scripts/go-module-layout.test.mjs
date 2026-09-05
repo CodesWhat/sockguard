@@ -114,7 +114,7 @@ test("container and coverage tooling preserve app as the package subdirectory", 
   const goTestScript = read("scripts/ci/go-test.sh");
   assert.match(
     goTestScript,
-    /grep -vE 'github\.com\/codeswhat\/sockguard\/app\/\(differential\|internal\/testcert\|internal\/testhelp\|internal\/buildkitproto\)\/'/,
+    /grep -vE 'github\.com\/codeswhat\/sockguard\/app\/internal\/\(differential\|testcert\|testhelp\|buildkitproto\)\/'/,
   );
 });
 
