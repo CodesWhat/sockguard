@@ -434,6 +434,7 @@ sockguard serve                                     # Start proxy (default)
 sockguard validate -c sockguard.yaml                # Validate + print compiled rule table
 sockguard match -c sockguard.yaml -X GET --path /v1.45/containers/json
                                                     # Dry-run a single request through the rules
+sockguard verify -c sockguard.yaml                  # Runtime self-check against a live deployment
 sockguard version                                   # Print version
 ```
 
@@ -443,6 +444,19 @@ what the normalized path looks like, and the reason (if any), so
 you can sanity-check a ruleset before any traffic hits the proxy.
 It applies the same hard process-list acknowledgment gate as the
 running proxy. Output is text by default or JSON via `-o json`.
+
+`sockguard verify` is the runtime counterpart to `validate`. It
+loads the config the way `serve` does (flags, environment, file)
+and then checks that what it names is reachable right now: the
+upstream daemon answers the Docker API and reports its engine
+flavor, this sockguard's own health endpoint answers on each
+configured listener, the mutual-TLS material on disk loads, and
+image trust — when configured with keyless identities — can reach
+the Sigstore trust root. One line per check reporting `ok`, `fail`,
+or `skip`, with `--json` for scripting. A `skip` is a check that
+does not apply (an opt-in feature that is off, a listener that is
+not up) and never changes the exit code; any `fail` exits non-zero,
+so it works as a container healthcheck or a deploy gate.
 
 <hr>
 

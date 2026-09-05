@@ -123,6 +123,10 @@ sockguard validate -c /etc/sockguard/sockguard.yaml
 sockguard match -c /etc/sockguard/sockguard.yaml \
   -X GET --path /v1.45/containers/json
 
+# Runtime self-check: is the upstream daemon answering, is this
+# sockguard's own health endpoint up, does the TLS material load
+sockguard verify -c /etc/sockguard/sockguard.yaml
+
 # Print version
 sockguard version
 ```
@@ -131,6 +135,33 @@ sockguard version
 normalization as the running proxy, and reports the decision in
 text (default) or JSON (`-o json`). Use it to sanity-check a
 ruleset before any traffic hits the proxy.
+
+`sockguard verify` is the runtime counterpart to `sockguard
+validate`. Where validate is an offline check on a config file,
+verify loads the config the way `serve` does (flags, environment,
+file) and then checks that the things it names are reachable right
+now. It runs five checks and prints one line each:
+
+| Check | What it does |
+|-------|--------------|
+| `config` | Loads and validates the effective config, without touching the filesystem paths it names. |
+| `upstream` | Builds the upstream endpoints (loading their TLS material), runs the same reachability probe `serve` runs at startup, asks the Docker API through the same readiness probe `/health` uses, and resolves the engine flavor. |
+| `listener` | Issues `GET <health.path>` against each configured listener. |
+| `tls` | Opens the cert, key, and client CA that each mutual-TLS listener names — the filesystem half of validation that `POST /admin/validate` deliberately skips. |
+| `image-trust` | Reports whether image trust is configured and, when it uses keyless identities, whether the Sigstore trust root loads. |
+
+Each check reports `ok`, `fail`, or `skip`. A `skip` is a check
+that does not apply to this deployment — an opt-in feature that is
+off, a listener that is not running — and never changes the exit
+code; any `fail` exits non-zero, so verify works as a container
+healthcheck or a deploy gate. Add `--json` for a machine-readable
+report with the same five checks in the same order. `--listen-socket`
+and `--upstream-socket` override the config the same way they do on
+`serve`.
+
+Verify does not need the proxy to be running: with no listener up,
+the `listener` check skips and everything else still runs, so it is
+also a pre-flight check on a host before the first start.
 
 Signed-policy mode requires the candidate and bootstrap trust config to be
 different files, including after symlink or hardlink resolution. The trust

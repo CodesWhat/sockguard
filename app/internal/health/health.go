@@ -549,6 +549,15 @@ func (m *Monitor) check(ctx context.Context) WatchdogState {
 	return m.storeState(status, err)
 }
 
+// Probe runs one upstream check now and returns its verdict, bypassing both
+// the /health request path and the watchdog. It exists for one-shot callers
+// that have no HTTP request and no long-running process to hang a watchdog
+// off — `sockguard verify` is the only one today — so they exercise the same
+// probe /health does instead of dialing the upstream themselves.
+func (m *Monitor) Probe(ctx context.Context) WatchdogState {
+	return m.check(ctx)
+}
+
 func (m *Monitor) storeState(status string, err error) WatchdogState {
 	state := WatchdogState{
 		Status:    status,
