@@ -78,9 +78,15 @@ func FuzzPathMatch(f *testing.F) {
 		{"GET", "//"},
 		{"GET", "/containers//"},
 		// Rootless request-target shapes, which the rooted-view invariant
-		// below deliberately skips.
+		// below deliberately skips. The asterisk-form entries are the ones a
+		// client can actually put on the wire: Go's server answers "OPTIONS *"
+		// itself, so a non-OPTIONS method is how "*" reaches rule matching.
 		{"GET", "../00/"},
 		{"OPTIONS", "*"},
+		{"GET", "*"},
+		{"POST", "*"},
+		{"CONNECT", ""},
+		{"GET", "containers/json"},
 	}
 	for _, s := range seeds {
 		f.Add(s.method, s.path)
@@ -95,6 +101,13 @@ func FuzzPathMatch(f *testing.F) {
 	})
 	if err != nil {
 		f.Fatalf("CompileRule catch-all: %v", err)
+	}
+	if catchAll.matcherKind != pathMatcherMatchAll {
+		f.Fatalf("matcherKind for %q = %d, want pathMatcherMatchAll (%d)", "/**", catchAll.matcherKind, pathMatcherMatchAll)
+	}
+	catchAllRegex, err := regexp.Compile("^" + GlobToRegexString("/**") + "$")
+	if err != nil {
+		f.Fatalf("compile reference regex for %q: %v", "/**", err)
 	}
 
 	// Pre-compile a specific rule.
@@ -143,6 +156,8 @@ func FuzzPathMatch(f *testing.F) {
 	f.Fuzz(func(t *testing.T, method, path string) {
 		// NormalizePath must never panic.
 		normalized := NormalizePath(path)
+		upperMethod := upperHTTPMethodASCII(method)
+		methodBit := httpMethodBit(upperMethod)
 
 		// Matches must never panic.
 		catchAll.matches(method, path)
@@ -157,6 +172,20 @@ func FuzzPathMatch(f *testing.F) {
 			}
 		}
 
+		// Invariant: the match-all fast path answers exactly what "/**"'s own
+		// anchored regex answers, on every path view including the unrooted
+		// ones. It has no path test to get wrong except its bounds, and it used
+		// to have no bounds at all: an unconditional true made a catch-all
+		// allow rule admit "*", the request target Go's server produces from a
+		// non-OPTIONS asterisk-form request line, which "^(/(?s:.*))?$" does
+		// not match. This is not scoped to rooted views for that exact reason.
+		for _, view := range []string{normalized, NormalizePodmanRoutePath(path)} {
+			got := catchAll.matchesNormalizedUpperWithBit(upperMethod, methodBit, view)
+			if want := catchAllRegex.MatchString(view); got != want {
+				t.Errorf("match-all on %q (from %q) = %v, regex %q = %v", view, path, got, catchAllRegex, want)
+			}
+		}
+
 		// Invariant: on both production path views, the segment walker agrees
 		// with the anchored regex its pattern compiles to. Scoped to rooted
 		// views, which is every path an HTTP request-target produces bar the
@@ -166,8 +195,6 @@ func FuzzPathMatch(f *testing.F) {
 		// regex does not — "*" matched "/_ping". Neither drop happens now, so
 		// the rootless patterns above have to answer false on every rooted view
 		// here, exactly as their regexes do.
-		upperMethod := upperHTTPMethodASCII(method)
-		methodBit := httpMethodBit(upperMethod)
 		for _, view := range []string{normalized, NormalizePodmanRoutePath(path)} {
 			if !strings.HasPrefix(view, "/") {
 				continue
