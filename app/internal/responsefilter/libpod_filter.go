@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/codeswhat/sockguard/app/internal/apipath"
 )
 
 // libpod_filter.go is filter.go's counterpart for Podman's native /libpod/
@@ -74,7 +76,7 @@ var libpodNetworkTopologyArrayKeys = [...]string{"subnets", "routes", "network_d
 // below — a Docker handler can never be reached by a near-miss match on a
 // path whose body shape it was never checked against.
 func isLibpodPath(normPath string) bool {
-	return strings.HasPrefix(normPath, LibpodPathPrefix+"/")
+	return apipath.IsLibpodPath(normPath)
 }
 
 // isLibpodInspectPath reports whether normPath is

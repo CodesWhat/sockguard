@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`isNodeUpdatePath` and `isLibpodPath`, duplicated verbatim between `internal/filter`, `internal/ownership`, and `internal/responsefilter`, now live in a new leaf package, `internal/apipath`, that all three import; the old package-local names stay as one-line wrappers so no call site changed.** `internal/ownership/paths.go`'s nine near-identical `*Identifier` extractors (`containerIdentifier`, `execIdentifier`, `networkIdentifier`, `volumeIdentifier`, `serviceIdentifier`, `taskIdentifier`, `secretIdentifier`, `configIdentifier`, `nodeIdentifier`) also collapse onto one parameterized `resourceIdentifier` helper, again kept as one-line wrappers with the same exported behavior. No behaviour change.
+
+### Changed
+
 - **The proxy-vs-daemon differential test harness moved from `app/differential` to `app/internal/differential` (CQ-24).** It was `package differential` outside `internal/`, used only by tests, so it was semver-stable public API by accident; nothing outside this module ever imported it. `git mv` carried its history; the real-dockerd importer in `app/integration/`, the fuzz-target `pkg` paths in `ci-verify.yml`/`quality-fuzz-nightly.yml`/`quality-fuzz-monthly.yml`, the coverage-exclusion pattern in `scripts/ci/go-test.sh`, and `.coderabbit.yaml`'s path instructions all now point at the new location.
 
 ### Added
