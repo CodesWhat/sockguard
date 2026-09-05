@@ -23,14 +23,7 @@ func scpDualViewAccepts(t *testing.T, template string, shape catalogIdentifierSh
 	if err != nil {
 		t.Fatalf("compileCatalogMachine(%q, %d) error = %v, want nil", template, shape, err)
 	}
-	state := reachabilityStart(machine.program)
-	for _, r := range candidate {
-		state = reachabilityAdvance(machine.program, state, r)
-		if reachabilityEmpty(state) {
-			return false
-		}
-	}
-	return reachabilityAccepts(machine.program, state)
+	return catalogFuzzAccepts(machine.program, candidate)
 }
 
 // TestCatalogRoutePathIdentifierModelsTheRouteView pins the language the libpod
