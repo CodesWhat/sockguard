@@ -32,6 +32,9 @@ const FIXED_SCRIPTS = new Map([
     ],
   ],
   ["go-fuzz.sh", ["FUZZER", "PKG", "fuzztime=60s"]],
+  // The Qlty adapter is a thin wrapper on purpose: the gate itself lives in
+  // scripts/qlty-check-gate.sh so the pre-push hook and CI run the same code.
+  ["go-qlty.sh", ["MODULE_DIRECTORY", "./scripts/qlty-check-gate.sh all"]],
   [
     "shellcheck.sh",
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash from shellcheck.sh, matched as text; `scripts[@]` isn't valid in a template literal so biome's fix would not parse
@@ -109,6 +112,38 @@ const GO_INPUTS = [
   "test-check-name: Go Test",
   "run-workflow-security: true",
   `run-goreleaser: \${{ github.event_name != 'schedule' }}`,
+  `run-qlty: \${{ github.event_name != 'schedule' }}`,
+  "qlty-egress-policy: block",
+];
+
+// The proven Qlty endpoint allowlist, copied from portwing's ci-verify.yml
+// rather than re-derived (CodesWhat/.github REPOSITORY_ONBOARDING.md says to
+// copy it and not widen it). qlty downloads its own CLI plus every plugin
+// runtime the default source resolves, so this list is wider than an ordinary
+// Go job's and must not grow without a measured need.
+const QLTY_ALLOWED_ENDPOINTS = [
+  "api.github.com:443",
+  "api.osv.dev:443",
+  "api.segment.io:443",
+  "api0.prismacloud.io:443",
+  "dl.google.com:443",
+  "files.pythonhosted.org:443",
+  "github-proxy.qlty.sh:443",
+  "github.com:443",
+  "go.dev:443",
+  "mirror.gcr.io:443",
+  "nodejs.org:443",
+  "objects.githubusercontent.com:443",
+  "proxy.golang.org:443",
+  "pypi.org:443",
+  "qlty-releases.s3.amazonaws.com:443",
+  "radarlint-releases.s3.amazonaws.com:443",
+  "registry.npmjs.org:443",
+  "release-assets.githubusercontent.com:443",
+  "sum.golang.org:443",
+  "tmaproduction.blob.core.windows.net:443",
+  "tuf-repo-cdn.sigstore.dev:443",
+  "tuf-repo.github.com:443",
 ];
 
 const NODE_INPUTS = [
@@ -314,6 +349,85 @@ test("the local lint and release gates use the same isolated fixed adapters", ()
     /^ {4}goreleaser-snapshot:\n {6}run: \.\/scripts\/ci\/go-release-check\.sh$/mu,
   );
   assert.doesNotMatch(lefthook, /^ {6}run: golangci-lint run$/mu);
+});
+
+function qltyAllowedEndpoints(source) {
+  const header = "      qlty-allowed-endpoints: >-\n";
+  const go = jobSection(source, "go-ci");
+  const start = go.indexOf(header);
+  assert.notEqual(start, -1, "go-ci must pin qlty-allowed-endpoints as a block scalar");
+
+  const endpoints = [];
+  for (const line of go.slice(start + header.length).split("\n")) {
+    if (!line.startsWith("        ")) break;
+    endpoints.push(line.trim());
+  }
+  return endpoints;
+}
+
+function prePushPriorities(lefthook) {
+  const section = lefthook.slice(lefthook.indexOf("\npre-push:"));
+  const priorities = new Map();
+  let command = null;
+  for (const line of section.split("\n")) {
+    const name = line.match(/^ {4}([a-z][a-z0-9-]*):$/u);
+    if (name) command = name[1];
+    const priority = line.match(/^ {6}priority: (\d+)$/u);
+    if (priority && command) priorities.set(command, Number(priority[1]));
+  }
+  return priorities;
+}
+
+test("the repository-run Qlty gate is wired into CI, the pre-push hook, and one shared script", () => {
+  // "Go CI / Qlty Check" is the enforced gate. It is not the Qlty Cloud
+  // GitHub App's `qlty check` status, which errors organization-wide on
+  // billing minutes and must never become a required context.
+  const gatePath = path.join(ROOT, "scripts", "qlty-check-gate.sh");
+  const gate = fs.readFileSync(gatePath, "utf8");
+  assert.ok(
+    (fs.statSync(gatePath).mode & 0o111) !== 0,
+    "scripts/qlty-check-gate.sh must be executable",
+  );
+  assert.match(gate, /^#!\/usr\/bin\/env bash\nset -euo pipefail\n/u);
+  assert.ok(gate.includes("qlty check --no-progress"), "the gate must run the Qlty CLI");
+  assert.ok(gate.includes("cmd+=(--all)"), "the gate must support a whole-repository run");
+  assert.ok(
+    gate.includes("command -v qlty"),
+    "a missing qlty CLI must fail with an install hint, not be skipped",
+  );
+
+  // The CI adapter must delegate to that same script rather than reimplement
+  // the gate, so the local hook and the hosted job can never drift.
+  const adapter = fs.readFileSync(path.join(ROOT, "scripts", "ci", "go-qlty.sh"), "utf8");
+  assert.ok(adapter.includes("./scripts/qlty-check-gate.sh all"));
+
+  const lefthook = fs.readFileSync(LEFTHOOK, "utf8");
+  assert.match(lefthook, /^ {4}qlty:\n {6}run: \.\/scripts\/qlty-check-gate\.sh all$/mu);
+
+  const priorities = prePushPriorities(lefthook);
+  assert.equal(
+    new Set(priorities.values()).size,
+    priorities.size,
+    "every pre-push command needs a distinct priority or the piped order is ambiguous",
+  );
+  assert.ok(
+    priorities.get("go-lint") < priorities.get("qlty"),
+    "qlty runs after go-lint, matching the portwing gate order",
+  );
+  assert.ok(
+    priorities.get("qlty") < priorities.get("go-test"),
+    "qlty runs before go-test, matching the portwing gate order",
+  );
+});
+
+test("the Qlty egress allowlist stays exactly the proven portwing endpoint set", () => {
+  const endpoints = qltyAllowedEndpoints(fs.readFileSync(WORKFLOW, "utf8"));
+  assert.deepEqual(endpoints, QLTY_ALLOWED_ENDPOINTS);
+  assert.deepEqual(
+    endpoints,
+    [...endpoints].sort(),
+    "keep the allowlist sorted so an addition is visible in review",
+  );
 });
 
 test("retired X1 bridge jobs must not be reintroduced", () => {

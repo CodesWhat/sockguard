@@ -1581,6 +1581,7 @@ func TestBuildServeHandlerLayers(t *testing.T) {
 		"withMetricsEndpoint",
 		"withListenerAdmission",
 		"withClientACL",
+		"withRequestTargetGuard",
 		"withMetrics",
 		"withTraceContext",
 		"withRequestID",
@@ -1607,6 +1608,7 @@ func TestBuildServeHandlerLayers(t *testing.T) {
 		"withFilter",
 		"withListenerAdmission",
 		"withClientACL",
+		"withRequestTargetGuard",
 		"withTraceContext",
 		"withRequestID",
 	}

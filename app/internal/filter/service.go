@@ -168,6 +168,28 @@ type serviceAppArmorOpts struct {
 type serviceMount struct {
 	Type   string `json:"Type"`
 	Source string `json:"Source"`
+	// VolumeOptions.DriverConfig creates the named volume with a driver and a
+	// driver options map when it does not already exist. With the built-in
+	// local driver those options are forwarded to mount(2), so a volume-type
+	// mount carrying {"type":"none","o":"bind","device":"/host/path"} is a
+	// bind mount of an arbitrary host path — see denyLocalVolumeBindDeviceReason,
+	// which checks the device against the same allowlist a Type: "bind" mount
+	// is checked against.
+	VolumeOptions *serviceMountVolumeOptions `json:"VolumeOptions"`
+}
+
+// serviceMountVolumeOptions mirrors the swarm ContainerSpec Mount.VolumeOptions
+// object, narrowed to the field the policy inspects.
+type serviceMountVolumeOptions struct {
+	DriverConfig *serviceMountVolumeDriverConfig `json:"DriverConfig"`
+}
+
+// serviceMountVolumeDriverConfig mirrors the swarm ContainerSpec
+// Mount.VolumeOptions.DriverConfig object. An empty Name selects the daemon's
+// default driver, which is the local one.
+type serviceMountVolumeDriverConfig struct {
+	Name    string            `json:"Name"`
+	Options map[string]string `json:"Options"`
 }
 
 type serviceNetwork struct {
@@ -372,6 +394,13 @@ func (p servicePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedP
 	}
 
 	for _, mount := range req.TaskTemplate.ContainerSpec.Mounts {
+		if mount.VolumeOptions != nil && mount.VolumeOptions.DriverConfig != nil {
+			driverConfig := mount.VolumeOptions.DriverConfig
+			if denyReason := denyLocalVolumeBindDeviceReason(driverConfig.Name, driverConfig.Options, p.allowedBindMounts, "service"); denyReason != "" {
+				return denyReason, nil
+			}
+		}
+
 		if !strings.EqualFold(mount.Type, "bind") {
 			continue
 		}

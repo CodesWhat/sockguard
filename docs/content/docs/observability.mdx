@@ -135,7 +135,8 @@ codes, and there are dozens in total. The families are rule evaluation
 `client_label_policy_denied_request`, ...), ownership (`owner_*`), visibility
 (`visibility_*`), resource limits (`resource_limit_*`), request mutation
 (`mutation_*`), throttling (`rate_limit_exceeded`, `concurrency_cap`,
-`priority_floor`), the admin endpoints (`admin_*`), and upstream failures
+`priority_floor`), request framing (`request_target_not_rooted`), the admin
+endpoints (`admin_*`), and upstream failures
 (`upstream_socket_unreachable`, `upstream_request_timeout`,
 `upstream_response_rejected_by_policy`). A denial that carries no code at all
 is exported as `reason_code="unknown"`. New codes are added as new guards land
