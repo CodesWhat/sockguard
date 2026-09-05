@@ -1222,6 +1222,13 @@ func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHos
 	}
 
 	for _, mount := range hostConfig.Mounts {
+		if mount.VolumeOptions != nil && mount.VolumeOptions.DriverConfig != nil {
+			driverConfig := mount.VolumeOptions.DriverConfig
+			if denyReason := denyLocalVolumeBindDeviceReason(driverConfig.Name, driverConfig.Options, p.allowedBindMounts, "container create"); denyReason != "" {
+				return denyReason
+			}
+		}
+
 		source, ok := extractAndValidateBindSource("", mount)
 		if !ok || bindPathAllowed(source, p.allowedBindMounts) {
 			continue

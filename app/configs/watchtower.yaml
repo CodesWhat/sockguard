@@ -1,6 +1,23 @@
 # Sockguard — Watchtower Preset
 #
-# Optimized for nicholas-fedor/watchtower v1.21.2.
+# Optimized for nicholas-fedor/watchtower v1.21.2, the maintained continuation
+# of the archived containrrr/watchtower. Verified against both upstreams'
+# pkg/container/client.go: the core recreate flow (container list/inspect,
+# stop, force-remove, create with copied network config via NetworkConnect,
+# start, rename, exec lifecycle hooks, image pull/remove) is identical, so
+# this preset covers containrrr/watchtower drop-ins too.
+#
+# nicholas-fedor's fork added one call containrrr never made: SetNoRestartPolicy
+# issues POST /containers/{id}/update to set RestartPolicy.Name="no" on the
+# shutdown and failed-self-update paths. This preset grants that route for the
+# fork; against original containrrr/watchtower the grant is simply unused, not
+# harmful. The fork's client also defines a generic UpdateContainer that would
+# submit Resources on that same route, but nothing in its update flow calls it
+# (only SetNoRestartPolicy is called, and it never sets Resources) — so
+# request_body.container_update below allows only the restart-policy field and
+# leaves allow_resource_updates unset (denied), matching what watchtower
+# actually sends rather than what the route could theoretically carry.
+#
 # Allows: ping/info, container list/inspect/lifecycle/recreate, image
 #         inspect/pull/remove, exec lifecycle hooks, and network connect.
 # Denies: unused container/image/network reads and writes, volumes,
