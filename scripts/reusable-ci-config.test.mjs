@@ -75,7 +75,7 @@ const FUZZERS = [
   ["FuzzDecode", "./internal/dockerfilters/"],
   ["FuzzProxyHeadersAndBody", "./internal/proxy/"],
   ["FuzzHijackHeadersAndBody", "./internal/proxy/"],
-  ["FuzzPathRoutingDifferential", "./differential/"],
+  ["FuzzPathRoutingDifferential", "./internal/differential/"],
   ["FuzzVisibilityFilter", "./internal/visibility/"],
   ["FuzzLibpodPathIdentifiers", "./internal/visibility/"],
 ];
