@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `RELEASING.md`'s release-facing files list and `scripts/verify-tag-release-metadata.mjs`'s stable-tag gate now cover `SECURITY.md`'s supported-versions table, so a stale table (#421, #431) fails the release cut instead of shipping quietly.
+
 ### Removed
 
 - The internal `security_best_practices_report.md` write-up (dated 2026-07-20) is no longer tracked in the repo; it's archived locally in the gitignored `.planning/`. Public security material stays in `SECURITY.md`, `SECURITY-ASSURANCE.md`, and the docs site.
@@ -60,6 +64,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Image inspect responses were not redacted at all.** `GET /images/{name}/json` (and native `GET /libpod/images/{name}/json`) had no entry in the response filter's dispatch table, so with every `response.redact_*` option enabled the body still came back byte-identical, including `Config.Env` (the image's baked-in build-time environment — a common secret carrier from Dockerfile `ENV` or `--build-arg`) and `GraphDriver.Data` (the storage driver's host filesystem paths for the image's layers). Image inspect now reuses container inspect's existing helpers: `Config.Env` is emptied under `redact_container_env` and `GraphDriver.Data` is masked under `redact_mount_paths`, gated exactly as they are on container inspect. The libpod route shares the same handler; `*libimage.ImageData`'s `Config` (`*ociv1.ImageConfig`) and `GraphDriver` (`*DriverData{Name, Data}`) fields carry the identical json tags Docker's compat handler uses, verified against Podman v5.8.1's pinned `containers/common` release. This gap is pre-existing in v2.0.0, not a v2.1.0 regression.
 
 - `golang.org/x/crypto` moves from v0.55.0 to v0.56.0, clearing GO-2026-6354 (CVE-2026-78662) and GO-2026-6355 (CVE-2026-56855), two denial-of-service bugs in `golang.org/x/crypto/ssh` where a deadlocked channel stalls the connection. Sockguard never imports the `ssh` package; the module is an indirect requirement reached through `sigstore-go` and `certificate-transparency-go` for `cryptobyte` on the opt-in `image_trust` path, never the core proxy path, and `govulncheck` reports zero reachable vulnerabilities either side of the bump. Grype matches on module version rather than reachability, so once the 2026-09-04 vulnerability DB shipped the finding failed `CI: Verify`'s Docker Build on every branch, and it flags the published v2.1.0 image the same way.
+
+### Changed
+
+- Removed the dead `js-yaml` entry from `website/package.json` and `docs/package.json`'s `overrides` blocks. It pinned a floor for a transitive dependency during the v1.4.4 security refresh; `npm ls js-yaml --all` now shows nothing in the tree depends on it, so the override was only feeding the Dependency Dashboard a v5 update offer for a package nothing uses.
 
 ## [2.1.0] - 2026-09-03
 
