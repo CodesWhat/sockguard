@@ -1,17 +1,31 @@
-// Package apipath holds path-classifier predicates over normalized Docker
-// and libpod API paths that internal/filter, internal/ownership,
-// internal/visibility, and internal/responsefilter each need independently.
-// Every predicate here used to be duplicated verbatim in two or more of
-// those packages. apipath has no dependency on any of the four, by design:
-// internal/responsefilter and internal/ownership/internal/visibility all
-// import internal/filter, so a canonical home inside any of the four would
-// create an import cycle for at least one of the others. This package stays
-// a leaf so all four can import it.
+// Package apipath holds the request classification sockguard's policy,
+// ownership, visibility and response-filtering layers all have to agree on:
+// the canonical view of a Docker or libpod API path, and the path-shape
+// predicates read off that view. internal/filter, internal/ownership,
+// internal/visibility, internal/responsefilter, internal/ratelimit,
+// internal/proxy and internal/cmd each need some of it.
 //
-// A path passed to any function here must already have gone through
-// normalization (version prefix stripped, path cleaned) — none of these
-// functions do their own cleaning, so callers must never pass a raw request
-// path straight from the wire.
+// apipath depends on none of them, by design: internal/ownership,
+// internal/visibility and internal/responsefilter all import internal/filter,
+// so a canonical home inside any of those four would create an import cycle
+// for at least one of the others. This package stays a leaf so every one of
+// them can import it, and so the classification a request is judged by is
+// read from one definition rather than re-derived per package — a second
+// parser that disagrees with the first is the smuggling bug this proxy
+// exists to prevent, not a cosmetic duplication.
+//
+// Nothing here reads configuration or policy state. Every function takes a
+// method or a path string and returns a bool or a string.
+//
+// The functions fall into two groups and the split matters. NormalizePath,
+// CanonicalizePath, StripVersionPrefix and NormalizePodmanRoutePath produce
+// the canonical view and are the only ones that accept a raw request path.
+// Every predicate — IsLibpodPath, IsNodeUpdatePath, the hijack-candidate set
+// — consumes that view and does no cleaning of its own, so a caller must
+// never hand one a path straight from the wire: a literal
+// "/libpod/../containers/create" would falsely satisfy IsLibpodPath, where
+// NormalizePath collapses it to "/containers/create" before any predicate
+// sees it.
 package apipath
 
 import "strings"

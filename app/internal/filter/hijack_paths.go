@@ -1,25 +1,17 @@
 package filter
 
-import "net/http"
+import "github.com/codeswhat/sockguard/app/internal/apipath"
 
 // IsHijackCandidatePath reports whether method+normalizedPath is one of the
 // connection-upgrade endpoints — Docker-compat or libpod — that
 // internal/proxy's hijack layer must recognize identically to this package's
 // own routing.
 //
-// Exported (unlike the individual isXxxPath matchers it composes) solely so
-// the cross-package parity invariant test in internal/proxy can exercise the
-// real production matchers on both sides of the filter/proxy package split.
-// A path this reports true for that the hijack layer treats as false (or the
-// reverse) is a two-parser-drift smuggling bug, not a cosmetic mismatch: see
-// internal/proxy's TestHijackFilterParity, and #148's design doc ("Agreed
-// core" item 3) for why this must hold for the libpod namespace too.
+// Thin wrapper over apipath.IsHijackCandidatePath, which owns the definition
+// so both sides of the filter/proxy package split read one matcher rather
+// than each keeping its own. The name stays here because internal/proxy
+// already calls it, and because the cross-package parity invariant test in
+// internal/proxy exercises the real production matchers through it.
 func IsHijackCandidatePath(method, normalizedPath string) bool {
-	if method != http.MethodPost {
-		return false
-	}
-	return isContainerAttachPath(normalizedPath) ||
-		isExecStartPath(normalizedPath) ||
-		isLibpodContainerAttachPath(normalizedPath) ||
-		isLibpodExecStartPath(normalizedPath)
+	return apipath.IsHijackCandidatePath(method, normalizedPath)
 }
