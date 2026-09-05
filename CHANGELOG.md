@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - README.md's and `docs/content/docs/configuration.mdx`'s Tecnativa compat-vs-`rules:` sentence said an explicit `rules:` block always wins over compat, even when byte-identical to the built-in defaults. That contradicts `rulesMatchDefaults` in `app/internal/config/compat.go`, which activates compat whenever the effective ruleset still matches the defaults regardless of where it came from, and it already contradicted `docs/content/docs/migration.mdx`. Both now say what the code does: a byte-identical `rules:` block still activates compat, and only a `rules:` block that differs from the default wins outright.
+- The Watchtower preset's header comment and `docs/content/docs/presets.mdx` now record why `app/configs/watchtower.yaml` grants `POST /containers/{id}/update` and why the grant covers `containrrr/watchtower` too: verified against both upstreams' `pkg/container/client.go`, the core recreate flow (list/inspect, stop, force-remove, create, start, rename, exec hooks, image pull/remove, network connect) is identical, but nicholas-fedor/watchtower added `SetNoRestartPolicy`, which is the only caller of that route and only ever submits the restart policy, never `Resources` — matching the preset's existing restart-only grant with `allow_resource_updates` left denied.
 
 ### Fixed
 
