@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A profile-index cache hit no longer reads the cached value outside the lock.** `profileLRU.lookup` unlocked the mutex and then read the LRU node's `result` field, while `store` overwrites that same field in place under the lock. Two requests arriving from one source IP (or carrying one client certificate) therefore raced on the memoized profile name: `go test -race` reports it, and a torn read of the string header can hand the middleware a profile nobody stored. The value is now copied while the lock is still held.
 
+- **A malformed `reload.debounce` or `reload.poll_interval` is now named in the log instead of silently falling back.** Both were parsed with `time.ParseDuration` and the error was dropped, so `debounce: 250` (no unit) ran on the 250ms default and `poll_interval: "10 seconds"` left polling disabled, with nothing tying the running behavior back to the config file. Validation still rejects those values before startup; when the fallback is reached anyway it now logs one warning naming the key, the value that failed to parse, and the default it fell back to. The fallback itself is unchanged.
+
 
 ### Documentation
 

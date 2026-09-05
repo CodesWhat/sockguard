@@ -475,18 +475,8 @@ func startConfigReload(ctx context.Context, cfg *config.Config, cfgFile string, 
 	if !cfg.Reload.Enabled || cfgFile == "" {
 		return func() {}
 	}
-	debounce := reload.DefaultDebounce
-	if cfg.Reload.Debounce != "" {
-		if d, err := time.ParseDuration(cfg.Reload.Debounce); err == nil {
-			debounce = d
-		}
-	}
-	var pollInterval time.Duration
-	if cfg.Reload.PollInterval != "" {
-		if d, err := time.ParseDuration(cfg.Reload.PollInterval); err == nil {
-			pollInterval = d
-		}
-	}
+	debounce := reloadDuration(logger, "reload.debounce", cfg.Reload.Debounce, reload.DefaultDebounce)
+	pollInterval := reloadDuration(logger, "reload.poll_interval", cfg.Reload.PollInterval, 0)
 	stop, err := startReloader(ctx, cfgFile, debounce, pollInterval, coordinator, logger)
 	if err != nil {
 		logger.Error("config hot-reload disabled: failed to start watcher",
@@ -496,6 +486,29 @@ func startConfigReload(ctx context.Context, cfg *config.Config, cfgFile string, 
 		return func() {}
 	}
 	return stop
+}
+
+// reloadDuration resolves one reload duration setting, falling back to
+// fallback when it is unset or unparseable. Config validation rejects a
+// malformed value before startup, so the fallback is only reachable when
+// something bypassed validation — silently running on a default the operator
+// never asked for hides that, so a malformed value is named in a warning
+// alongside the default it fell back to.
+func reloadDuration(logger *slog.Logger, key, value string, fallback time.Duration) time.Duration {
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		logger.Warn("invalid reload duration; falling back to the default",
+			"key", key,
+			"value", value,
+			"default", fallback.String(),
+			"error", err,
+		)
+		return fallback
+	}
+	return parsed
 }
 
 // serveHandlerBuild bundles the inputs the buildServeHandler* family needs.
