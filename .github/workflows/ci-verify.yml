@@ -23,6 +23,109 @@ permissions:
   contents: read
 
 jobs:
+  # Docs-only PRs used to run the whole matrix. Measured on #438, a
+  # CHANGELOG.md-only PR: 43 jobs and 90 runner-minutes in this workflow
+  # alone, 29 jobs and 67 of those minutes in the fuzz matrix. With five PRs
+  # open against the org's 20-concurrent-job ceiling, that queue is what
+  # every other PR waits behind.
+  #
+  # The scoping cannot live on `on.pull_request.paths`: a required status
+  # check inside a workflow that never triggers produces NO check run at
+  # all, so branch protection has nothing to mark green and blocks the PR
+  # forever. A job that *skips* inside a workflow that *did* trigger reports
+  # `skipped`, which satisfies the ruleset. So the scoping is a gate job and
+  # the heavy jobs `if:` on its output — the same shape, for the same
+  # reason, as security-grype.yml's "Security: Changed Paths".
+  changes:
+    name: "Changed Paths"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      docs_only: ${{ steps.filter.outputs.docs_only }}
+    steps:
+      # Stage 1 of the harden-runner egress rollout: `git fetch`/`git diff`
+      # against the checked-out repo and no other tool download, so
+      # github.com/actions endpoints are the entire footprint — identical to
+      # the "Commit Message" job below, which already runs block mode with
+      # this endpoint set for the same fetch-depth-0-then-read-history shape.
+      - name: Harden Runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            *.actions.githubusercontent.com:443
+          disable-sudo: true
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0  # need base-branch history to diff a PR against it
+
+      - name: Determine whether the diff is documentation only
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -uo pipefail
+          # Deliberately no `-e`: every failure path below must fail OPEN
+          # (docs_only=false, so everything runs) rather than abort the job
+          # and silently skip a build gate with no clear reason why.
+
+          # Only a PR has a base to diff against. Pushes to a dev branch,
+          # merge_group and the weekly schedule always run everything.
+          if [ "${EVENT_NAME}" != "pull_request" ]; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Paths the gated jobs provably do not consume. "Docker Build"
+          # reads the Dockerfile plus go.mod/go.sum/app/ (its COPY lines),
+          # and the fuzz matrix reads app/ Go source and its corpora, so no
+          # markdown anywhere in the tree can change either one — that is
+          # why `.*\.mdx?` is unanchored to a directory and app/**/*.md is
+          # allowed to count as documentation. docs/ holds the Fumadocs app,
+          # whose TypeScript is validated by the Node CI jobs that keep
+          # running. .planning/ is gitignored, so it can never appear here.
+          docs='^(docs/.*|LICENSE|.*\.mdx?)$'
+
+          if ! git fetch --quiet origin "${BASE_REF}"; then
+            echo "::warning::changes: could not fetch origin/${BASE_REF} — failing open, running every job"
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! changed="$(git diff --name-only "origin/${BASE_REF}...HEAD")"; then
+            echo "::warning::changes: git diff against origin/${BASE_REF} failed — failing open, running every job"
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -z "${changed}" ]; then
+            echo "::warning::changes: empty diff against origin/${BASE_REF} — failing open, running every job"
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Changed files:"
+          printf '%s\n' "${changed}" | sed 's/^/  /'
+
+          # grep -c (not -q) so the pipeline always reads all of stdin —
+          # grep -q can exit as soon as it finds a match, sending SIGPIPE
+          # back up the pipe before printf has finished writing, which under
+          # `set -o pipefail` can flip a real match into a failure. `-v`
+          # selects the lines that are NOT documentation, so exit 0 here
+          # means the diff contains at least one code change.
+          if printf '%s\n' "${changed}" | grep -cvE "${docs}" >/dev/null; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+          fi
+
   # Reusable-workflow callers (CodesWhat/.github frozen SHA). Each job below
   # runs the caller repo's own scripts/ci/*.sh so the underlying commands
   # stay identical to what branch CI ran before this migration; only the
@@ -35,6 +138,15 @@ jobs:
   # context names have been removed.
   go-ci:
     name: "Go CI"
+    needs: changes
+    # `!cancelled()` rather than the implicit success() gate `needs:` adds.
+    # "Go CI / Go Lint" and "Go CI / Go Test" are required contexts, and a
+    # skipped required context satisfies the ruleset — so if the gate job
+    # ever failed, the default gate would turn this whole call into an
+    # auto-passing skip and let a PR merge with no Go lint or tests at all.
+    # Under `!cancelled()` a failed gate leaves docs_only empty instead,
+    # which fails open into the full fuzz list below.
+    if: ${{ !cancelled() }}
     # go-ci.yml's nested codeql job declares security-events: write even
     # though run-codeql stays unset here — GitHub validates a called
     # workflow's job-level permissions statically, regardless of if:
@@ -94,8 +206,13 @@ jobs:
         tmaproduction.blob.core.windows.net:443
         tuf-repo-cdn.sigstore.dev:443
         tuf-repo.github.com:443
+      # An empty list produces no matrix jobs at all: go-ci.yml's fuzz job
+      # is gated on `fromJSON(inputs.fuzzers-json)[0] != null`. On a
+      # docs-only PR that is 29 jobs and ~67 runner-minutes not spent
+      # fuzzing Go code the PR did not touch. None of these is a required
+      # context, so nothing to report skipped-green here.
       fuzzers-json: >-
-        ${{ (github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && '[{"name":"FuzzPathMatch","pkg":"./internal/filter/"},{"name":"FuzzGlobToRegex","pkg":"./internal/filter/"},{"name":"FuzzGlobToRegexString","pkg":"./internal/filter/"},{"name":"FuzzNormalizePath","pkg":"./internal/filter/"},{"name":"FuzzCompileRule","pkg":"./internal/filter/"},{"name":"FuzzBuild","pkg":"./internal/filter/"},{"name":"FuzzContainerCreate","pkg":"./internal/filter/"},{"name":"FuzzExec","pkg":"./internal/filter/"},{"name":"FuzzImagePull","pkg":"./internal/filter/"},{"name":"FuzzVolume","pkg":"./internal/filter/"},{"name":"FuzzSecret","pkg":"./internal/filter/"},{"name":"FuzzConfigWrite","pkg":"./internal/filter/"},{"name":"FuzzService","pkg":"./internal/filter/"},{"name":"FuzzSwarm","pkg":"./internal/filter/"},{"name":"FuzzPlugin","pkg":"./internal/filter/"},{"name":"FuzzNetwork","pkg":"./internal/filter/"},{"name":"FuzzReadUnaryGRPCMessage","pkg":"./internal/buildkitproxy/"},{"name":"FuzzEvaluateGetSecretRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzEvaluateSolveRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzEvaluateStatusRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzRewriteSessionAdvertisement","pkg":"./internal/buildkitproxy/"},{"name":"FuzzValidateUpgradeRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzFilterControlResponseMessage","pkg":"./internal/buildkitproxy/"},{"name":"FuzzDecode","pkg":"./internal/dockerfilters/"},{"name":"FuzzProxyHeadersAndBody","pkg":"./internal/proxy/"},{"name":"FuzzHijackHeadersAndBody","pkg":"./internal/proxy/"},{"name":"FuzzPathRoutingDifferential","pkg":"./differential/"},{"name":"FuzzVisibilityFilter","pkg":"./internal/visibility/"},{"name":"FuzzLibpodPathIdentifiers","pkg":"./internal/visibility/"}]' || '[]' }}
+        ${{ needs.changes.outputs.docs_only != 'true' && (github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && '[{"name":"FuzzPathMatch","pkg":"./internal/filter/"},{"name":"FuzzGlobToRegex","pkg":"./internal/filter/"},{"name":"FuzzGlobToRegexString","pkg":"./internal/filter/"},{"name":"FuzzNormalizePath","pkg":"./internal/filter/"},{"name":"FuzzCompileRule","pkg":"./internal/filter/"},{"name":"FuzzBuild","pkg":"./internal/filter/"},{"name":"FuzzContainerCreate","pkg":"./internal/filter/"},{"name":"FuzzExec","pkg":"./internal/filter/"},{"name":"FuzzImagePull","pkg":"./internal/filter/"},{"name":"FuzzVolume","pkg":"./internal/filter/"},{"name":"FuzzSecret","pkg":"./internal/filter/"},{"name":"FuzzConfigWrite","pkg":"./internal/filter/"},{"name":"FuzzService","pkg":"./internal/filter/"},{"name":"FuzzSwarm","pkg":"./internal/filter/"},{"name":"FuzzPlugin","pkg":"./internal/filter/"},{"name":"FuzzNetwork","pkg":"./internal/filter/"},{"name":"FuzzReadUnaryGRPCMessage","pkg":"./internal/buildkitproxy/"},{"name":"FuzzEvaluateGetSecretRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzEvaluateSolveRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzEvaluateStatusRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzRewriteSessionAdvertisement","pkg":"./internal/buildkitproxy/"},{"name":"FuzzValidateUpgradeRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzFilterControlResponseMessage","pkg":"./internal/buildkitproxy/"},{"name":"FuzzDecode","pkg":"./internal/dockerfilters/"},{"name":"FuzzProxyHeadersAndBody","pkg":"./internal/proxy/"},{"name":"FuzzHijackHeadersAndBody","pkg":"./internal/proxy/"},{"name":"FuzzPathRoutingDifferential","pkg":"./differential/"},{"name":"FuzzVisibilityFilter","pkg":"./internal/visibility/"},{"name":"FuzzLibpodPathIdentifiers","pkg":"./internal/visibility/"}]' || '[]' }}
 
   node-ci:
     name: "Node CI"
@@ -380,7 +497,13 @@ jobs:
 
   docker:
     name: "Docker Build"
-    if: github.event_name != 'schedule'
+    needs: changes
+    # Required context, so a docs-only PR gets `skipped` here rather than a
+    # missing check — that is what satisfies the ruleset instead of
+    # deadlocking on it. `!cancelled()` for the same fail-open reason as
+    # go-ci above: a failed gate job leaves docs_only empty, `'' != 'true'`
+    # is true, and the build runs.
+    if: ${{ !cancelled() && github.event_name != 'schedule' && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:

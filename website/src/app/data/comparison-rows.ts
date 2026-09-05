@@ -281,6 +281,20 @@ export const PROJECT_HEALTH: Record<
   cetusguard: { maintained: "yes", openSource: "yes" },
 };
 
+// The upstream version (or, for a project with no tagged release, the
+// default-branch commit date) each competitor's claims above were checked
+// against, taken live from the GitHub API. Re-check at every release cut —
+// see DOC-10 — so a "cannot do X" claim is never more than one release stale.
+export const COMPETITOR_VERSIONS_CHECKED_AT = "2026-09-05";
+
+export const COMPETITOR_VERSIONS: Record<Exclude<ComparisonTool, "sockguard">, string> = {
+  tecnativa: "v0.5.0",
+  linuxserver: "3.4.4-r0-ls96",
+  wollomatic: "1.13.1",
+  elevenNotes: "v2.1.8",
+  cetusguard: "v1.1.4",
+};
+
 // The landing-page teaser: six rows, three rivals. `label` is the shorter
 // wording the teaser uses; `row` is the comparison-rows.ts feature it means.
 export const TEASER_FEATURES = [
