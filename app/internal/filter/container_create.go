@@ -343,6 +343,14 @@ type imageTrustFields struct {
 	initErr  error
 }
 
+// loadLiveTrustedRoot fetches the TUF-backed Sigstore trust root for keyless
+// verification. Production binds imagetrust.LoadLiveTrustedRoot; it is a
+// package var, the same shape as internal/cmd's loadBundleTrustedMaterial, so
+// a test can make the fetch fail without a network. The real one only fails on
+// a TUF or network fault, which a unit test cannot arrange, and the branch it
+// guards is the fail-closed one.
+var loadLiveTrustedRoot = imagetrust.LoadLiveTrustedRoot
+
 // buildImageTrustFields constructs the cosign verifier and signature fetcher for
 // the given options. Any construction error is returned in initErr so callers
 // fail closed (deny) rather than silently allowing unverified images. When the
@@ -362,7 +370,7 @@ func buildImageTrustFields(opts ImageTrustOptions) imageTrustFields {
 	// fail closed rather than allow unverified keyless images.
 	// Keyed-only configs skip this entirely.
 	if len(cfg.AllowedKeyless) > 0 {
-		tm, tmErr := imagetrust.LoadLiveTrustedRoot()
+		tm, tmErr := loadLiveTrustedRoot()
 		if tmErr != nil {
 			f.initErr = fmt.Errorf("image trust keyless trust root load failed: %w", tmErr)
 			return f
