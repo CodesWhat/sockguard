@@ -112,9 +112,25 @@ type containerCreateMount struct {
 }
 
 // containerCreateMountVolumeOptions mirrors the Docker API Mount.VolumeOptions
-// object, narrowed to the field the policy inspects.
+// object, narrowed to the fields the policy inspects.
 type containerCreateMountVolumeOptions struct {
 	Subpath string `json:"Subpath"`
+	// DriverConfig creates the named volume with a driver and a driver
+	// options map when it does not already exist. With the built-in local
+	// driver those options are forwarded to mount(2), so a volume-type mount
+	// carrying {"type":"none","o":"bind","device":"/host/path"} is a bind
+	// mount of an arbitrary host path — see denyLocalVolumeBindDeviceReason,
+	// which checks the device against the same allowlist a Type: "bind"
+	// mount is checked against.
+	DriverConfig *containerCreateMountVolumeDriverConfig `json:"DriverConfig"`
+}
+
+// containerCreateMountVolumeDriverConfig mirrors the Docker API
+// Mount.VolumeOptions.DriverConfig object. An empty Name selects the daemon's
+// default driver, which is the local one.
+type containerCreateMountVolumeDriverConfig struct {
+	Name    string            `json:"Name"`
+	Options map[string]string `json:"Options"`
 }
 
 // containerCreateMountImageOptions mirrors the Docker API Mount.ImageOptions

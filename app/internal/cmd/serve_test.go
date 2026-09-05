@@ -1885,6 +1885,85 @@ func TestNewHTTPServerSetsTimeouts(t *testing.T) {
 	}
 }
 
+// TestNewHTTPServerDoesNotSeverLiveEventsStream drives a real *http.Server
+// built by newHTTPServer (not a stub handler wrapped in httptest's default
+// config) through an actual TCP accept loop, and proves a long-lived
+// /events-shaped stream survives well past the point a response-write
+// deadline would have cut it, using the server's own IdleTimeout,
+// ReadTimeout and WriteTimeout as constructed.
+//
+// newHTTPServer takes no timeout overrides, so there's no way to shrink its
+// 120s IdleTimeout for this test; scaling it down would mean adding a
+// scaled-down constructor to production code, which is out of scope here.
+// Instead this holds the stream open for 1s, two full orders of magnitude
+// short of the 120s IdleTimeout, so the assertion is a real behavioral
+// proof (the stream survives on the actual server) rather than a timing
+// race against production's real deadline. TestNewHTTPServerSetsTimeouts
+// above is what pins the 120s/0/0 field values this bound relies on.
+func TestNewHTTPServerDoesNotSeverLiveEventsStream(t *testing.T) {
+	const (
+		streamInterval = 50 * time.Millisecond
+		holdFor        = 1 * time.Second
+	)
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/events" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Error("ResponseWriter does not support flushing")
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		deadline := time.Now().Add(holdFor)
+		for time.Now().Before(deadline) {
+			if _, err := w.Write([]byte("x")); err != nil {
+				return
+			}
+			flusher.Flush()
+			time.Sleep(streamInterval)
+		}
+	})
+
+	ts := httptest.NewUnstartedServer(handler)
+	ts.Config = newHTTPServer(handler)
+	ts.Start()
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/events")
+	if err != nil {
+		t.Fatalf("GET /events: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	start := time.Now()
+	buf := make([]byte, 1)
+	received := 0
+	for {
+		n, err := resp.Body.Read(buf)
+		received += n
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			t.Fatalf("read after %v and %d bytes: %v", time.Since(start), received, err)
+		}
+	}
+
+	elapsed := time.Since(start)
+	if elapsed < holdFor {
+		t.Fatalf("stream closed after %v, want it held open for at least %v", elapsed, holdFor)
+	}
+	if received == 0 {
+		t.Fatal("received 0 bytes from the events stream")
+	}
+}
+
 func TestIsWildcardTCPBind(t *testing.T) {
 	tests := []struct {
 		address string

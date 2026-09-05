@@ -170,6 +170,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		}()
 	}
 	warnIfDefaultProfileExcluded(cfg, logger)
+	warnIfMainListenerPlaintext(cfg, logger)
 	runtime, err := newServeRuntime(cfg, logger, deps)
 	if err != nil {
 		return fmt.Errorf("upstream: %w", err)
@@ -475,18 +476,8 @@ func startConfigReload(ctx context.Context, cfg *config.Config, cfgFile string, 
 	if !cfg.Reload.Enabled || cfgFile == "" {
 		return func() {}
 	}
-	debounce := reload.DefaultDebounce
-	if cfg.Reload.Debounce != "" {
-		if d, err := time.ParseDuration(cfg.Reload.Debounce); err == nil {
-			debounce = d
-		}
-	}
-	var pollInterval time.Duration
-	if cfg.Reload.PollInterval != "" {
-		if d, err := time.ParseDuration(cfg.Reload.PollInterval); err == nil {
-			pollInterval = d
-		}
-	}
+	debounce := reloadDuration(logger, "reload.debounce", cfg.Reload.Debounce, reload.DefaultDebounce)
+	pollInterval := reloadDuration(logger, "reload.poll_interval", cfg.Reload.PollInterval, 0)
 	stop, err := startReloader(ctx, cfgFile, debounce, pollInterval, coordinator, logger)
 	if err != nil {
 		logger.Error("config hot-reload disabled: failed to start watcher",
@@ -496,6 +487,29 @@ func startConfigReload(ctx context.Context, cfg *config.Config, cfgFile string, 
 		return func() {}
 	}
 	return stop
+}
+
+// reloadDuration resolves one reload duration setting, falling back to
+// fallback when it is unset or unparseable. Config validation rejects a
+// malformed value before startup, so the fallback is only reachable when
+// something bypassed validation — silently running on a default the operator
+// never asked for hides that, so a malformed value is named in a warning
+// alongside the default it fell back to.
+func reloadDuration(logger *slog.Logger, key, value string, fallback time.Duration) time.Duration {
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		logger.Warn("invalid reload duration; falling back to the default",
+			"key", key,
+			"value", value,
+			"default", fallback.String(),
+			"error", err,
+		)
+		return fallback
+	}
+	return parsed
 }
 
 // serveHandlerBuild bundles the inputs the buildServeHandler* family needs.
@@ -1104,6 +1118,38 @@ func warnIfDefaultProfileExcluded(cfg *config.Config, logger *slog.Logger) {
 		logger.Warn("default profile is not allowed on listener; unmatched clients will be denied",
 			"listener", listener.Name,
 			"default_profile", cfg.Clients.DefaultProfile,
+		)
+	}
+}
+
+// warnIfMainListenerPlaintext emits a startup warning for every effective
+// main listener (#149) that carries the Docker API over non-loopback
+// plaintext TCP. That listener proxies exec streams, secrets and container
+// data in the clear, and without mutual TLS any host that can route to the
+// port is admitted as a client. Config validation already refuses the shape
+// unless insecure_allow_plain_tcp and insecure_allow_unauthenticated_clients
+// both acknowledge it, so by the time this fires the operator has opted in —
+// like warnIfAdminListenerWideOpen it keeps the exposure visible in the logs
+// rather than gating startup. The admin listener has warned about its own
+// version of the shape since #21; the main listener, which carries far more
+// traffic, started silently. A clients.allowed_cidrs allowlist deliberately
+// does not silence this one: it bounds who may connect, but the traffic is
+// still in the clear either way.
+func warnIfMainListenerPlaintext(cfg *config.Config, logger *slog.Logger) {
+	if cfg == nil || logger == nil {
+		return
+	}
+	for _, listener := range cfg.EffectiveListeners() {
+		listen := listener.ListenConfig
+		if listen.Socket != "" || listen.Address == "" || listen.TLS.Complete() {
+			continue
+		}
+		if config.IsLoopbackTCPAddress(listen.Address) {
+			continue
+		}
+		logger.Warn("main listener is non-loopback plaintext TCP: Docker API traffic is unencrypted on the wire and any host that can reach the port is admitted as a client — configure mutual TLS on the listener, or bind it to loopback or a unix socket",
+			"listener", listener.Name,
+			"address", listen.Address,
 		)
 	}
 }
