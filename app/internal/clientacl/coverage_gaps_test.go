@@ -7,12 +7,14 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -848,6 +850,58 @@ func TestProfileLRU_StoreDoesNotEvictUnderCap(t *testing.T) {
 	if _, found := idx.lookup("b"); !found {
 		t.Fatal("expected key \"b\" to be present after storing it")
 	}
+}
+
+// ---- profileLRU.lookup: the cached result is read under the lock ---------
+
+// TestProfileLRU_ConcurrentLookupAndStoreOfSameKey pins that lookup copies
+// the node's result while it still holds the mutex. Returning the copy after
+// Unlock leaves the read unsynchronized against a concurrent store that
+// overwrites that same node's result in place, which is a data race on the
+// profile string: `go test -race` reports it, and a torn read of the string
+// header can hand a caller a profile name that was never stored.
+func TestProfileLRU_ConcurrentLookupAndStoreOfSameKey(t *testing.T) {
+	idx := &profileLRU[string]{
+		entries: make(map[string]*list.Element),
+		order:   list.New(),
+	}
+
+	const (
+		key        = "contended"
+		workers    = 4
+		iterations = 500
+	)
+	idx.store(key, profileLookupResult{profile: "profile-seed", ok: true})
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for worker := range workers {
+		wg.Add(2)
+		go func(worker int) {
+			defer wg.Done()
+			<-start
+			for i := range iterations {
+				idx.store(key, profileLookupResult{profile: fmt.Sprintf("profile-%d-%d", worker, i), ok: true})
+			}
+		}(worker)
+		go func() {
+			defer wg.Done()
+			<-start
+			for range iterations {
+				result, found := idx.lookup(key)
+				if !found {
+					t.Error("lookup() found = false, want true: the contended key is never evicted")
+					return
+				}
+				if !result.ok || !strings.HasPrefix(result.profile, "profile-") {
+					t.Errorf("lookup() = %+v, want one of the stored profile-* results", result)
+					return
+				}
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
 }
 
 // ---- middlewareWithDeps: unix peer error propagates as 502

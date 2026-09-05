@@ -877,14 +877,12 @@ func (i *profileLRU[K]) lookup(key K) (profileLookupResult, bool) {
 		return profileLookupResult{}, false
 	}
 	i.mu.Lock()
+	defer i.mu.Unlock()
 	elem, ok := i.entries[key]
-	if ok {
-		i.order.MoveToFront(elem)
-	}
-	i.mu.Unlock()
 	if !ok {
 		return profileLookupResult{}, false
 	}
+	i.order.MoveToFront(elem)
 	return elem.Value.(*profileLRUNode[K]).result, true
 }
 
