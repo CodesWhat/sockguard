@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -69,6 +70,15 @@ type RequestMeta struct {
 	// recordMutationOutcome. nil when no configured mutation rule matched
 	// the request's surface.
 	Mutation *MutationRecord
+	// queryRaw / queryValues / queryErr memoize one url.ParseQuery of the
+	// request's query string so the middlewares and inspectors that each
+	// read it pay for a single parse. Written and read only through
+	// ParseRequestQuery; see request_query.go for why the memo is keyed on
+	// the raw string rather than a bare "already parsed" flag.
+	queryRaw    string
+	queryValues url.Values
+	queryErr    error
+	queryParsed bool
 }
 
 // Decision values written into RequestMeta.Decision. Allow is not stamped

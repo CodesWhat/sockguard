@@ -102,12 +102,25 @@ type upstreamHealthChecker struct {
 	// Nil in production; set in tests to replace time.Sleep rendezvous.
 	onWaiterJoined func()
 
-	mu         sync.Mutex
-	cachedAt   time.Time
-	cachedUp   string
-	cachedErr  error
-	cacheReady bool
-	inFlight   *healthCheckCall
+	// cached holds the last completed probe result, or nil before the first
+	// one lands. It is an atomic pointer rather than a set of mutex-guarded
+	// fields because /health reads it on every request and writes it once
+	// per TTL: the read path (snapshot, and check's cache-hit return) takes
+	// no lock at all. Writes still happen under mu next to inFlight, which
+	// is what keeps two concurrent misses from both dialing the upstream.
+	cached atomic.Pointer[cacheEntry]
+
+	mu       sync.Mutex
+	inFlight *healthCheckCall
+}
+
+// cacheEntry is one completed probe result. Nothing mutates an entry after it
+// is stored, so a reader that loads the pointer sees a consistent triple
+// rather than a torn mix of two probes.
+type cacheEntry struct {
+	at     time.Time
+	status string
+	err    error
 }
 
 type healthCheckCall struct {
@@ -214,22 +227,24 @@ type verdict struct {
 	present bool
 }
 
-// cachedLocked reads the currently held verdict. c.mu must be held. It is the
-// single definition of "still fresh", shared by the dialing path (check) and
-// the non-dialing one (snapshot), so the two cannot drift apart.
-func (c *upstreamHealthChecker) cachedLocked() verdict {
-	if !c.cacheReady {
+// cachedVerdict reads the currently held verdict. It takes no lock: the entry
+// is published as one atomic pointer. It is the single definition of "still
+// fresh", shared by the dialing path (check) and the non-dialing one
+// (snapshot), so the two cannot drift apart.
+func (c *upstreamHealthChecker) cachedVerdict() verdict {
+	entry := c.cached.Load()
+	if entry == nil {
 		return verdict{}
 	}
 	cacheTTL := c.ttl
-	if c.cachedErr != nil {
+	if entry.err != nil {
 		cacheTTL = c.failureTTL
 	}
 	return verdict{
-		status:    c.cachedUp,
-		err:       c.cachedErr,
-		checkedAt: c.cachedAt,
-		fresh:     cacheTTL > 0 && c.now().Sub(c.cachedAt) < cacheTTL,
+		status:    entry.status,
+		err:       entry.err,
+		checkedAt: entry.at,
+		fresh:     cacheTTL > 0 && c.now().Sub(entry.at) < cacheTTL,
 		present:   true,
 	}
 }
@@ -237,14 +252,19 @@ func (c *upstreamHealthChecker) cachedLocked() verdict {
 // snapshot returns the held verdict without dialing and without waiting on an
 // in-flight probe. It is what the /health request path reads.
 func (c *upstreamHealthChecker) snapshot() verdict {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.cachedLocked()
+	return c.cachedVerdict()
 }
 
 func (c *upstreamHealthChecker) check(ctx context.Context, upstreamSocket string) (string, error) {
+	// Cache hit, the common case: no lock, no contention with the probe that
+	// will eventually replace this entry.
+	if cached := c.cachedVerdict(); cached.fresh {
+		return cached.status, cached.err
+	}
 	c.mu.Lock()
-	if cached := c.cachedLocked(); cached.fresh {
+	// Re-read under the lock: an entry published between the two reads makes
+	// this caller a cache hit rather than the next prober.
+	if cached := c.cachedVerdict(); cached.fresh {
 		c.mu.Unlock()
 		return cached.status, cached.err
 	}
@@ -294,20 +314,11 @@ func (c *upstreamHealthChecker) check(ctx context.Context, upstreamSocket string
 	// caller (c.timeout < caller deadline) IS an upstream signal and gets
 	// cached for failureTTL so a burst of probes coalesces into one dial.
 	if err == nil {
-		c.cachedAt = c.now()
-		c.cachedUp = status
-		c.cachedErr = nil
-		c.cacheReady = true
+		c.cached.Store(&cacheEntry{at: c.now(), status: status})
 	} else if c.failureTTL > 0 && !errors.Is(ctx.Err(), context.Canceled) && !errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		c.cachedAt = c.now()
-		c.cachedUp = status
-		c.cachedErr = err
-		c.cacheReady = true
+		c.cached.Store(&cacheEntry{at: c.now(), status: status, err: err})
 	} else {
-		c.cachedAt = time.Time{}
-		c.cachedUp = ""
-		c.cachedErr = nil
-		c.cacheReady = false
+		c.cached.Store(nil)
 	}
 	c.inFlight = nil
 	call.status = status
