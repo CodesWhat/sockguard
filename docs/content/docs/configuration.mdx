@@ -1690,7 +1690,7 @@ SOCKET_PATH=/var/run/docker.sock
 LOG_LEVEL=warning
 ```
 
-Compat env vars only generate rules when no explicit `rules:` are configured. If `rules:` is present in YAML, those rules take precedence even when they are identical to Sockguard's built-in defaults.
+Compat env vars only generate rules while the effective ruleset still matches Sockguard's built-in defaults. The check is on the rules themselves, not on whether you supplied a config file, so an explicit `rules:` block that happens to be byte-identical to the default still activates it; a `rules:` block that differs from the default wins outright and no compat rules are generated.
 
 Broad compat reads such as `CONTAINERS=1`, `IMAGES=1`, or `POST=0` with section-wide `GET` access require `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true` if you intentionally want process-list, raw archive/export, or log/attach streaming parity. Safer YAML configs should allow only the list/inspect endpoints a client needs.
 
