@@ -205,7 +205,7 @@ The Docker environment fallback follows the same schedule. A non-empty `DOCKER_T
 
 ## From Tecnativa/docker-socket-proxy
 
-Sockguard accepts the current Tecnativa environment-variable surface, including section vars, `ALLOW_RESTARTS`, `SOCKET_PATH`, and `LOG_LEVEL`. `DISABLE_IPV6` is the exception: it has no Sockguard equivalent and is ignored, so pick the bind with `listen.address` instead.
+Sockguard accepts the current Tecnativa environment-variable surface, including section vars, `ALLOW_RESTARTS`, `SOCKET_PATH`, and `LOG_LEVEL`.
 
 Compatibility mode only generates rules while the effective ruleset is still the built-in default. The check is on the rules themselves, not on whether you supplied a config file, so an explicit `rules:` block that happens to be byte-identical to the default still activates it. That's why a drop-in works untouched: the config the image ships at `/etc/sockguard/sockguard.yaml` is literally the default. Write a ruleset that differs from it and every section var and `ALLOW_*` stops generating anything at all, with no error; `SOCKET_PATH` and `LOG_LEVEL` keep applying either way.
 
@@ -288,6 +288,15 @@ ALLOW_UNPAUSE=1
 ```
 
 [Granular Operations](/configuration#granular-operations-linuxserver-compatible) lists the rule each one generates. `ALLOW_RESTARTS` covers more than one endpoint, generating the kill, restart, and stop rules together, and the legacy singular `ALLOW_RESTART` maps to exactly the same three. Every other var maps to one rule.
+
+### Ignored on purpose
+
+LinuxServer's image documents several env vars Sockguard has no equivalent for. `LOG_LEVEL` and `SOCKET_PATH` are not on this list — both map, covered above.
+
+- `DISABLE_IPV6`: a container-network toggle (bind to IPv4 only) that has no Sockguard equivalent; pick the bind with `listen.address` instead.
+- `ALLOW_ARCHIVE`, `ALLOW_CHANGES`, `ALLOW_EXPORT`, `ALLOW_LOGS`, `ALLOW_TOP`: LinuxServer's own GET-only per-sub-resource gates for `/containers/{id}/archive`, `/changes`, `/export`, `/logs`, and `/top`. Sockguard has no matching granular var; `CONTAINERS=1` (with the read-exfiltration acknowledgment) admits all of them at once, or write a YAML rule against the specific path.
+- `LIBPOD_*` (all fifteen: `LIBPOD_CONTAINERS`, `LIBPOD_EVENTS`, `LIBPOD_EXEC`, `LIBPOD_GENERATE`, `LIBPOD_IMAGES`, `LIBPOD_INFO`, `LIBPOD_MANIFESTS`, `LIBPOD_NETWORKS`, `LIBPOD_PING`, `LIBPOD_PLAY`, `LIBPOD_PODS`, `LIBPOD_SECRETS`, `LIBPOD_SYSTEM`, `LIBPOD_VERSION`, `LIBPOD_VOLUMES`): LinuxServer's compat vars for Podman's libpod-native API. Sockguard inspects several `/libpod/**` request bodies natively (build, container create, image load) but generates no rules from these vars — `compatVars` has no `LIBPOD_*` entries — so a Podman `/libpod/**` deployment needs hand-written YAML rules for that path family instead.
+- `TZ`: a generic container timezone setting, not an API-gating var; Sockguard's config has nothing that reads it.
 
 ## From wollomatic/socket-proxy
 
