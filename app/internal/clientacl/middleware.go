@@ -983,6 +983,25 @@ func compileContainerLabelRulesWith(
 		}
 
 		for _, pattern := range patterns {
+			// A label path has to be rooted for the same reason a configured
+			// match.path does, plus one more: labels never pass through
+			// config.Validate, so this is the only place the shape is checked.
+			// It matters most for the deep wildcards. A rootless single-star
+			// pattern like "containers/*" now simply matches nothing, but "**"
+			// compiles to "^(?s:.*)$" and "*/**" to "^[^/]*(/(?s:.*))?$", both
+			// of which match straight across the leading slash. A label reading
+			// `com.sockguard.allow.get=**` would therefore grant every GET the
+			// global policy allows instead of the one relative path its author
+			// appears to have written, which defeats the per-client boundary
+			// the label exists to draw. Refusing is fail-closed: the caller
+			// logs this and answers 502 without reaching the proxy, exactly as
+			// it does for a pattern that fails to compile.
+			if !strings.HasPrefix(pattern, "/") {
+				return nil, true, fmt.Errorf(
+					"client ACL label %q path %q must start with '/': sockguard matches labels against the rooted request path, so write it as %q",
+					key, pattern, "/"+pattern)
+			}
+
 			rule, err := compileRule(filter.Rule{
 				Methods: []string{method},
 				Pattern: pattern,

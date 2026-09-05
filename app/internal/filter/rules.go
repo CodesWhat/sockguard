@@ -313,7 +313,7 @@ func (cr *CompiledRule) matchesNormalizedUpperWithBit(upperMethod string, method
 	case pathMatcherTrailingDeep:
 		return matchTrailingDoubleStar(cr.trailingPrefix, normalizedPath)
 	case pathMatcherSegmentGlob:
-		if cr.literalPrefix != "" && !strings.HasPrefix(strings.TrimPrefix(normalizedPath, "/"), strings.TrimPrefix(cr.literalPrefix, "/")) {
+		if cr.literalPrefix != "" && !strings.HasPrefix(normalizedPath, cr.literalPrefix) {
 			return false
 		}
 		return matchGlobSegments(cr.segmentPatterns, normalizedPath)
@@ -395,9 +395,27 @@ func NormalizePodmanRoutePath(p string) string {
 	return normalized
 }
 
+// isLibpodImageScpRoutePath reports whether Podman's router dispatches
+// routePath to the image-SCP handler. The route is
+// POST /libpod/images/scp/{name:.*} and `.*` matches the empty string, so the
+// bare /libpod/images/scp/ is an SCP call with an empty source name, not a
+// non-route: verified against Podman v5.8.1's registration order
+// (pkg/api/server/register_images.go, /libpod/images/{name:.*}/push at line
+// 817 through /libpod/images/scp/{name:.*} at line 2236) replayed through
+// gorilla/mux v1.8.1, where POST /v5.0.0/libpod/images/scp/ dispatches to
+// ImageScp with name="". An empty name is refused deeper in, by
+// ExecuteTransfer's "no source image specified", but that is the handler's
+// argument validation and not a routing boundary, so treating the bare route
+// as reachable is what keeps the route view and the decoded path from
+// disagreeing about which handler a request reaches.
+//
+// The action suffixes stay excluded: /libpod/images/{name:.*}/push, /tag and
+// /untag are registered earlier, so .../scp/app/push is a push of the image
+// "scp/app". A trailing slash defeats those anchored routes, which is why
+// .../scp/app/push/ falls through to this catch-all.
 func isLibpodImageScpRoutePath(routePath string) bool {
 	rest, ok := strings.CutPrefix(routePath, libpodPathPrefix+"images/scp/")
-	if !ok || rest == "" {
+	if !ok {
 		return false
 	}
 	for _, action := range []string{"push", "tag", "untag"} {
@@ -476,8 +494,17 @@ func isTrailingDoubleStarPattern(pattern string) bool {
 	return strings.HasSuffix(pattern, "/**") && !strings.Contains(pattern[:len(pattern)-3], "*")
 }
 
+// splitGlobSegments splits a single-star pattern on "/" without trimming
+// anything. A leading "/" therefore becomes a leading empty segment, exactly
+// as it does when the same pattern is split by the anchored regex: the "/" is
+// a separator the path has to carry too, not decoration to be normalized away.
+// Trimming it here (and the matching trim matchGlobSegments used to apply to
+// the path) canceled out for a rooted pattern but erased the distinction for
+// a rootless one, so "containers/*" compiled to the same segments as
+// "/containers/*" and matched "/containers/json" while its own regex,
+// "^containers/[^/]*$", did not.
 func splitGlobSegments(pattern string) []string {
-	return strings.Split(strings.TrimPrefix(pattern, "/"), "/")
+	return strings.Split(pattern, "/")
 }
 
 func matchTrailingDoubleStar(prefix, path string) bool {
@@ -505,13 +532,25 @@ func matchTrailingDoubleStar(prefix, path string) bool {
 // image name Podman would act on, so a rule spelling one segment must not
 // quietly cover two, and a deny spelling two must not be dodged by a path
 // whose second segment is empty.
+//
+// A leading "/" is a separator on both sides for the same reason. The walker
+// used to strip one from the path here and one from the pattern in
+// splitGlobSegments, which canceled for a rooted pattern but made a rootless
+// one match as if it were rooted: "*" matched "/_ping" where "^[^/]*$" does
+// not. Neither strip happens now, so a rooted path's leading empty segment has
+// to be spent by a leading empty pattern segment. A rootless pattern only
+// matches a rooted path when its own leading segment is a bare "*" that can
+// absorb that empty segment — "*" and "*/json" do, "containers/*" does not,
+// because "containers" cannot match the empty string. That is exactly why
+// rejecting a rootless pattern at the entry points (config validation for
+// match.path, clientacl.compileContainerLabelRules for a container-label
+// grant) is the real enforcement here, not any property of this matcher.
 func matchGlobSegments(patternSegments []string, path string) bool {
 	last := len(patternSegments) - 1
 	if last < 0 {
 		return false
 	}
 
-	path = strings.TrimPrefix(path, "/")
 	for _, patternSegment := range patternSegments[:last] {
 		segment, rest, hasMore := strings.Cut(path, "/")
 		if !hasMore || !matchGlobSegment(patternSegment, segment) {
@@ -563,6 +602,21 @@ func matchGlobSegment(pattern, segment string) bool {
 	return patternIndex == len(pattern)
 }
 
+// literalPrefixForPattern derives the literal head every path a pattern
+// matches has to carry. It is the allocation-free fast reject in front of the
+// regex and segment matchers, so it has to be a prefix of every string the
+// pattern's own anchored regex accepts. One byte too long and the
+// optimization has become a policy change, and on a deny rule it is the
+// dangerous direction: the path the gate turns away falls through to whatever
+// allow sits below it.
+//
+// Everything before the first "*" is literal except one case. A "*" that
+// opens a "/**" takes the slash before it into an optional group, so that
+// slash belongs in the prefix only when the text after the group still
+// guarantees one. "/containers/**/json" guarantees it, because "/containers"
+// followed by the collapsed group still has "/json" to come. "/containers/**"
+// does not, and neither does "/containers/**/**": every "/**" is optional, so
+// both match the bare "/containers".
 func literalPrefixForPattern(pattern string) string {
 	for i := 0; i < len(pattern); i++ {
 		if pattern[i] != '*' {
@@ -570,11 +624,9 @@ func literalPrefixForPattern(pattern string) string {
 		}
 
 		prefix := pattern[:i]
-		if i > 0 && pattern[i-1] == '/' && i+1 < len(pattern) && pattern[i+1] == '*' {
-			suffix := pattern[i+2:]
-			if suffix == "" || suffix[0] != '/' {
-				return strings.TrimSuffix(prefix, "/")
-			}
+		if i > 0 && pattern[i-1] == '/' && i+1 < len(pattern) && pattern[i+1] == '*' &&
+			!glob.EveryMatchStartsWithSlash(pattern[i+2:]) {
+			return strings.TrimSuffix(prefix, "/")
 		}
 		return prefix
 	}
