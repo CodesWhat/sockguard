@@ -261,24 +261,34 @@ func CompileRule(r Rule) (*CompiledRule, error) {
 		Index:           r.Index,
 	}
 
-	if !strings.Contains(r.Pattern, "*") {
-		cr.matcherKind = pathMatcherLiteral
-		cr.literal = r.Pattern
-		return cr, nil
-	}
-	if r.Pattern == "/**" {
-		cr.matcherKind = pathMatcherMatchAll
-		return cr, nil
-	}
-	if isTrailingDoubleStarPattern(r.Pattern) {
-		cr.matcherKind = pathMatcherTrailingDeep
-		cr.trailingPrefix = strings.TrimSuffix(r.Pattern, "/**")
-		return cr, nil
-	}
-	if !strings.Contains(r.Pattern, "**") {
-		cr.matcherKind = pathMatcherSegmentGlob
-		cr.segmentPatterns = splitGlobSegments(r.Pattern)
-		return cr, nil
+	// The four fast paths compare bytes; the regex compares runes. Those agree
+	// on every pattern whose text survives UTF-8 decoding unchanged, and only
+	// on those. A pattern carrying a rune regexp reads as U+FFFD does not: the
+	// anchored regex matches a real U+FFFD and any malformed byte alike, so a
+	// path pathMatcherLiteral, matchTrailingDoubleStar or matchGlobSegment
+	// would reject is one the dialect says the rule covers. The regex is the
+	// definition and the walkers are the optimization, so a pattern that can
+	// tell them apart forfeits the optimization.
+	if firstReplacementRuneIndex(r.Pattern) < 0 {
+		if !strings.Contains(r.Pattern, "*") {
+			cr.matcherKind = pathMatcherLiteral
+			cr.literal = r.Pattern
+			return cr, nil
+		}
+		if r.Pattern == "/**" {
+			cr.matcherKind = pathMatcherMatchAll
+			return cr, nil
+		}
+		if isTrailingDoubleStarPattern(r.Pattern) {
+			cr.matcherKind = pathMatcherTrailingDeep
+			cr.trailingPrefix = strings.TrimSuffix(r.Pattern, "/**")
+			return cr, nil
+		}
+		if !strings.Contains(r.Pattern, "**") {
+			cr.matcherKind = pathMatcherSegmentGlob
+			cr.segmentPatterns = splitGlobSegments(r.Pattern)
+			return cr, nil
+		}
 	}
 
 	// Convert glob pattern to regex.
@@ -617,8 +627,20 @@ func matchGlobSegment(pattern, segment string) bool {
 // followed by the collapsed group still has "/json" to come. "/containers/**"
 // does not, and neither does "/containers/**/**": every "/**" is optional, so
 // both match the bare "/containers".
+//
+// The scan also stops at the first rune regexp reads as U+FFFD, because the
+// gate compares bytes and from there on the two no longer describe the same
+// text. glob.ToRegexString decodes the pattern before quoting it, so a
+// malformed byte and a literal U+FFFD both compile to the same rune, and that
+// rune matches either spelling in the path. Keeping those bytes in the prefix
+// is the one-byte-too-long case again: "/con\xfftainers/*" would demand its own
+// spelling and turn away "/con\uFFFDtainers/json", which its regex accepts.
 func literalPrefixForPattern(pattern string) string {
-	for i := 0; i < len(pattern); i++ {
+	limit := len(pattern)
+	if i := firstReplacementRuneIndex(pattern); i >= 0 {
+		limit = i
+	}
+	for i := 0; i < limit; i++ {
 		if pattern[i] != '*' {
 			continue
 		}
@@ -630,7 +652,24 @@ func literalPrefixForPattern(pattern string) string {
 		}
 		return prefix
 	}
-	return pattern
+	return pattern[:limit]
+}
+
+// firstReplacementRuneIndex returns the byte offset of the first rune in s
+// that Go's regexp reads as U+FFFD, or -1 when there is none. Both spellings
+// count and they have to: regexp decodes the subject as UTF-8, stepping every
+// byte that is not part of a well-formed sequence as U+FFFD with width one, so
+// a pattern carrying that rune matches text it is not byte-for-byte equal to,
+// and a pattern carrying a malformed byte matches text that is not equal to
+// it either. utf8.ValidString would catch only the second. Ranging a string
+// yields utf8.RuneError for both, which is exactly the set this has to find.
+func firstReplacementRuneIndex(s string) int {
+	for i, r := range s {
+		if r == utf8.RuneError {
+			return i
+		}
+	}
+	return -1
 }
 
 // GlobToRegexString converts the sockguard glob dialect to a regex string.
