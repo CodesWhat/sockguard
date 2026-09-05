@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `RELEASING.md`'s release-facing files list and `scripts/verify-tag-release-metadata.mjs`'s stable-tag gate now cover `SECURITY.md`'s supported-versions table, so a stale table (#421, #431) fails the release cut instead of shipping quietly.
+
 ### Removed
 
 - The internal `security_best_practices_report.md` write-up (dated 2026-07-20) is no longer tracked in the repo; it's archived locally in the gitignored `.planning/`. Public security material stays in `SECURITY.md`, `SECURITY-ASSURANCE.md`, and the docs site.
