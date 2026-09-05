@@ -408,6 +408,17 @@ func TestLiteralPrefixForPattern(t *testing.T) {
 		{name: "stacked double star before a literal segment keeps slash prefix", pattern: "/containers/**/**/json", want: "/containers/"},
 		{name: "double star before a single star keeps slash prefix", pattern: "/containers/**/*", want: "/containers/"},
 		{name: "single star before stacked double star keeps slash prefix", pattern: "/containers/*/**/**", want: "/containers/"},
+		// From the first rune regexp reads as U+FFFD onward the pattern's
+		// bytes stop being what its own regex matches, so the prefix ends
+		// there. Both spellings compile to the same rune and that rune matches
+		// either one, which is why a valid-UTF-8 test would miss the second.
+		{name: "malformed byte ends the prefix", pattern: "/con\xfftainers/*", want: "/con"},
+		{name: "literal replacement rune ends the prefix", pattern: "/con\uFFFDtainers/*", want: "/con"},
+		{name: "malformed byte ends the prefix with no wildcard at all", pattern: "/con\xfftainers", want: "/con"},
+		{name: "malformed byte in the first position leaves no prefix", pattern: "\xff/containers", want: ""},
+		// The first "*" still wins when it comes first: everything before it
+		// decoded cleanly, so the existing derivation is unaffected.
+		{name: "malformed byte after the first star is never reached", pattern: "/containers/*/\xffjson", want: "/containers/"},
 	}
 
 	for _, tt := range tests {

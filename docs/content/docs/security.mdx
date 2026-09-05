@@ -107,7 +107,7 @@ Allow or deny specific Docker API endpoint paths using glob patterns. Before mat
 - `HostConfig.UsernsMode: host`
 - A non-empty `HostConfig.Sysctls` map (kernel parameter tuning), unless `request_body.container_create.allow_sysctls` is set
 - A non-empty `HostConfig.Runtime` value not present in `request_body.container_create.allowed_runtimes` (defends against runtime-escape via alternative OCI runtimes; an empty/unset runtime selects the daemon default and is always permitted)
-- Any bind mount whose source is outside `request_body.container_create.allowed_bind_mounts`
+- Any bind mount whose source is outside `request_body.container_create.allowed_bind_mounts`, including a `Mounts` entry of type `volume` whose `VolumeOptions.DriverConfig` asks the local driver for a bind (`{"type":"none","o":"bind","device":"/host/path"}`) — the device is checked against the same allowlist
 - Any `HostConfig.Devices` host path outside `request_body.container_create.allowed_devices`
 - `HostConfig.DeviceRequests` unless explicitly allowed
 - `HostConfig.DeviceCgroupRules` unless explicitly allowed

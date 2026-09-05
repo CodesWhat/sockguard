@@ -9,6 +9,7 @@ import {
   checkTagReleaseMetadata,
   extractChartImageTag,
   extractChartVersions,
+  extractSecurityFirstSupportedVersion,
   extractSiteConfigVersion,
   formatCLIError,
   normalizeTag,
@@ -35,6 +36,18 @@ appVersion: "1.7.4"
 const VALUES = `image:
   repository: codeswhat/sockguard
   tag: ""
+`;
+
+const SECURITY = `# Security Policy
+
+## Supported Versions
+
+| Version           | Supported          |
+| ----------------- | ------------------ |
+| 1.7.x (latest)    | :white_check_mark: |
+| 1.6.x             | :white_check_mark: |
+| 1.5.x             | :x:                |
+| < 1.5             | :x:                |
 `;
 
 const CHANGELOG = `# Changelog
@@ -109,6 +122,42 @@ describe("extractChartVersions", () => {
 
   it("throws when appVersion is missing", () => {
     assert.throws(() => extractChartVersions("version: 1.7.4\n"), /Could not find/);
+  });
+});
+
+describe("extractSecurityFirstSupportedVersion", () => {
+  it("extracts the first row's version and support marker", () => {
+    assert.deepEqual(extractSecurityFirstSupportedVersion(SECURITY), {
+      version: "1.7.x",
+      supported: true,
+    });
+  });
+
+  it("strips a trailing annotation like '(latest)'", () => {
+    assert.equal(
+      extractSecurityFirstSupportedVersion(`| Version        | Supported          |
+| -------------- | ------------------ |
+| 2.1.x (latest) | :white_check_mark: |
+`).version,
+      "2.1.x",
+    );
+  });
+
+  it("reports an unsupported first row", () => {
+    assert.equal(
+      extractSecurityFirstSupportedVersion(`| Version | Supported |
+| ------- | --------- |
+| 1.7.x   | :x:       |
+`).supported,
+      false,
+    );
+  });
+
+  it("throws when there is no table", () => {
+    assert.throws(
+      () => extractSecurityFirstSupportedVersion("# Security Policy\n\nNo table here.\n"),
+      /Could not find a supported-versions table/,
+    );
   });
 });
 
@@ -226,6 +275,7 @@ describe("checkTagReleaseMetadata: stable tags", () => {
       chart: CHART,
       values: VALUES,
       changelog: CHANGELOG,
+      security: SECURITY,
     });
     assert.equal(result.isPrerelease, false);
     assert.deepEqual(result.errors, []);
@@ -238,6 +288,7 @@ describe("checkTagReleaseMetadata: stable tags", () => {
       chart: CHART,
       values: VALUES,
       changelog: CHANGELOG.replace("1.7.4", "1.7.5"),
+      security: SECURITY,
     });
     assert.ok(result.errors.some((e) => e.includes("site-config.ts") && e.includes("1.7.4")));
   });
@@ -249,6 +300,7 @@ describe("checkTagReleaseMetadata: stable tags", () => {
       chart: CHART.replace("version: 1.7.4", "version: 1.7.3"),
       values: VALUES,
       changelog: CHANGELOG,
+      security: SECURITY,
     });
     assert.ok(result.errors.some((e) => e.includes("Chart.yaml version")));
     assert.ok(!result.errors.some((e) => e.includes("site-config.ts")));
@@ -261,6 +313,7 @@ describe("checkTagReleaseMetadata: stable tags", () => {
       chart: CHART.replace('appVersion: "1.7.4"', 'appVersion: "1.7.3"'),
       values: VALUES,
       changelog: CHANGELOG,
+      security: SECURITY,
     });
     assert.ok(result.errors.some((e) => e.includes("Chart.yaml appVersion")));
   });
@@ -272,6 +325,7 @@ describe("checkTagReleaseMetadata: stable tags", () => {
       chart: CHART.replace(/1\.7\.4/g, "1.7.5"),
       values: VALUES,
       changelog: CHANGELOG,
+      security: SECURITY,
     });
     assert.ok(result.errors.some((e) => e.includes("CHANGELOG.md has no dated heading")));
   });
@@ -283,8 +337,9 @@ describe("checkTagReleaseMetadata: stable tags", () => {
       chart: CHART,
       values: VALUES,
       changelog: CHANGELOG,
+      security: SECURITY,
     });
-    assert.equal(result.errors.length, 4);
+    assert.equal(result.errors.length, 5);
   });
 
   it("rejects a non-empty Helm image pin before a stable tag is created", () => {
@@ -294,6 +349,7 @@ describe("checkTagReleaseMetadata: stable tags", () => {
       chart: CHART,
       values: VALUES.replace('tag: ""', `tag: "1.7.4@sha256:${"a".repeat(64)}"`),
       changelog: CHANGELOG,
+      security: SECURITY,
     });
     assert.ok(
       result.errors.some(
@@ -312,6 +368,7 @@ describe("checkTagReleaseMetadata: stable tags", () => {
         "repository: attacker.invalid/sockguard",
       ),
       changelog: CHANGELOG,
+      security: SECURITY,
     });
     assert.ok(
       result.errors.some(
@@ -331,6 +388,7 @@ describe("checkTagReleaseMetadata: stable tags", () => {
         "repository: codeswhat/sockguard#evil",
       ),
       changelog: CHANGELOG,
+      security: SECURITY,
     });
     assert.ok(
       result.errors.some(
@@ -338,6 +396,35 @@ describe("checkTagReleaseMetadata: stable tags", () => {
           error.includes("chart/sockguard/values.yaml") && error.includes("image.repository"),
       ),
     );
+  });
+
+  it("flags a SECURITY.md supported-versions table that is stale relative to the tag (the #421/#431 shape)", () => {
+    const result = checkTagReleaseMetadata({
+      tag: "v1.8.0",
+      siteConfig: SITE_CONFIG.replace("1.7.4", "1.8.0"),
+      chart: CHART.replace(/1\.7\.4/g, "1.8.0"),
+      values: VALUES,
+      changelog: CHANGELOG.replace("1.7.4", "1.8.0"),
+      security: SECURITY, // still leads with 1.7.x -- stale for a 1.8.0 tag
+    });
+    assert.ok(
+      result.errors.some((error) => error.includes("SECURITY.md") && error.includes("1.8.x")),
+    );
+  });
+
+  it("flags an unmarked first SECURITY.md row even when the version text matches", () => {
+    const result = checkTagReleaseMetadata({
+      tag: "v1.7.4",
+      siteConfig: SITE_CONFIG,
+      chart: CHART,
+      values: VALUES,
+      changelog: CHANGELOG,
+      security: SECURITY.replace(
+        "| 1.7.x (latest)    | :white_check_mark: |",
+        "| 1.7.x (latest)    | :x:                |",
+      ),
+    });
+    assert.ok(result.errors.some((error) => error.includes("SECURITY.md")));
   });
 });
 
@@ -406,12 +493,89 @@ describe("CLI: real repository files", () => {
 
     const result = runCLI(["--tag", `v${currentVersion}`, "--values", valuesPath]);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /agrees with website, chart, Helm image, and CHANGELOG metadata/);
+    assert.match(
+      result.stdout,
+      /agrees with website, chart, Helm image, CHANGELOG, and SECURITY.md metadata/,
+    );
   });
 
   it("requires --tag", () => {
     const result = runCLI([]);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /--tag is required/);
+  });
+});
+
+describe("CLI: SECURITY.md supported-versions gate", () => {
+  it("passes when a temp SECURITY.md leads with the tag's minor line, marked supported", (t) => {
+    const currentVersion = extractSiteConfigVersion(
+      readFileSync(resolve(repoRoot, "website/src/lib/site-config.ts"), "utf8"),
+    );
+    const [major, minor] = currentVersion.split(".");
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "sockguard-release-security-"));
+    t.after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
+
+    const valuesPath = resolve(fixtureRoot, "values.yaml");
+    writeFileSync(valuesPath, VALUES);
+
+    const securityPath = resolve(fixtureRoot, "SECURITY.md");
+    writeFileSync(
+      securityPath,
+      `# Security Policy
+
+## Supported Versions
+
+| Version           | Supported          |
+| ----------------- | ------------------ |
+| ${major}.${minor}.x (latest)    | :white_check_mark: |
+| 0.0.x             | :x:                |
+`,
+    );
+
+    const result = runCLI([
+      "--tag",
+      `v${currentVersion}`,
+      "--values",
+      valuesPath,
+      "--security",
+      securityPath,
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+  });
+
+  it("fails when a temp SECURITY.md's supported-versions table is stale relative to the tag", (t) => {
+    const currentVersion = extractSiteConfigVersion(
+      readFileSync(resolve(repoRoot, "website/src/lib/site-config.ts"), "utf8"),
+    );
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "sockguard-release-security-stale-"));
+    t.after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
+
+    const valuesPath = resolve(fixtureRoot, "values.yaml");
+    writeFileSync(valuesPath, VALUES);
+
+    const securityPath = resolve(fixtureRoot, "SECURITY.md");
+    writeFileSync(
+      securityPath,
+      `# Security Policy
+
+## Supported Versions
+
+| Version           | Supported          |
+| ----------------- | ------------------ |
+| 0.1.x (latest)    | :white_check_mark: |
+| 0.0.x             | :x:                |
+`,
+    );
+
+    const result = runCLI([
+      "--tag",
+      `v${currentVersion}`,
+      "--values",
+      valuesPath,
+      "--security",
+      securityPath,
+    ]);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /SECURITY\.md/);
   });
 });
