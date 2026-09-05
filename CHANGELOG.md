@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **The README and website comparison tables no longer credit Tecnativa's `ALLOW_*` vars as a working `Partial` control for granular container write ops.** Tecnativa's own shipped `haproxy.cfg` denies every non-GET request before the `ALLOW_*` rules ever run, so `ALLOW_RESTARTS=1`/`ALLOW_START=1`/etc. are documented but dead in the config Tecnativa ships. The cell now reads `Documented only (POST gate blocks them)` in `README.md`'s feature-comparison table and in `website/src/app/data/comparison-rows.ts`'s "Granular POST ops" row. LinuxServer's cell is untouched: its own README states those same `ALLOW_*` vars "work even when `POST=0`", the opposite of Tecnativa's behavior.
+- The LinuxServer migration section in the docs now lists the LinuxServer env vars sockguard has no equivalent for, instead of documenting only the ten write-side `ALLOW_*` vars it supports: `DISABLE_IPV6`, the five GET-only sub-resource gates (`ALLOW_ARCHIVE`, `ALLOW_CHANGES`, `ALLOW_EXPORT`, `ALLOW_LOGS`, `ALLOW_TOP`), the fifteen `LIBPOD_*` Podman compat vars, and `TZ`. `DISABLE_IPV6`'s "ignored" note moves out of the Tecnativa section, since it's LinuxServer's own variable, not Tecnativa's.
 
 ### Removed
 
