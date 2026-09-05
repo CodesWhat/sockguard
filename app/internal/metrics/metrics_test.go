@@ -407,6 +407,13 @@ func TestRouteCategoryCoversDockerRouteFamiliesAndPathEdges(t *testing.T) {
 		{name: "empty", path: " \t", want: "unknown"},
 		{name: "root", path: "/", want: "/"},
 		{name: "relative gets slash", path: "containers/json", want: "/containers/json"},
+		{name: "empty string", path: "", want: "unknown"},
+		{name: "trailing slash", path: "/containers/json/", want: "/containers/json"},
+		{name: "leading double slash", path: "//containers/json", want: "/containers/json"},
+		{name: "interior empty segment", path: "/containers//json", want: "/containers/{id}/json"},
+		{name: "version prefix", path: "/v1.45/containers/json", want: "/containers/json"},
+		{name: "version prefix with trailing slash", path: "/v1.45/containers/", want: "/containers"},
+		{name: "version prefix followed by empty segment", path: "/v1.45//containers/json", want: "/containers/json"},
 		{name: "version prefix root", path: "/v1.45", want: "/"},
 		// Regression (#148): metrics' own stripVersionPrefix splits on any
 		// digit/dot run (isDockerVersionSegment), so it already strips a
