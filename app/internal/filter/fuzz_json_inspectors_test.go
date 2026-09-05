@@ -16,11 +16,21 @@ const (
 	maxNetworkInspectorFuzzBytes = maxNetworkBodyBytes + 1024
 )
 
+// FuzzVolume drives both halves of the Docker-compat volume write surface off
+// one corpus: POST /volumes/create's volume.CreateOptions and
+// PUT /volumes/{name}'s volume.UpdateOptions. They share a config block and a
+// body bound, and a create-shaped body reaching the update decoder (or the
+// reverse) is exactly the shape confusion the two decode structs exist to
+// prevent, so the same bytes go through both.
 func FuzzVolume(f *testing.F) {
 	f.Add([]byte(`{"Name":"cache"}`))
 	f.Add([]byte(`{"Driver":"nfs"}`))
 	f.Add([]byte(`{"DriverOpts":{"device":"/srv/data"}}`))
 	f.Add([]byte(`{`))
+	f.Add([]byte(`{"Spec":{"Availability":"drain"}}`))
+	f.Add([]byte(`{"Spec":{"Secrets":[{"Key":"password","Secret":"other"}]}}`))
+	f.Add([]byte(`{"Spec":{"AccessMode":{"Scope":"multi"},"CapacityRange":{"RequiredBytes":1}}}`))
+	f.Add([]byte(`{"Spec":null}`))
 	f.Add(bytes.Repeat([]byte("a"), maxVolumeBodyBytes+1))
 
 	policy := newVolumePolicy(VolumeOptions{
@@ -34,6 +44,10 @@ func FuzzVolume(f *testing.F) {
 		req := newJSONInspectorFuzzRequest(http.MethodPost, "/volumes/create", "", body)
 		_, _ = policy.inspect(nil, req, "/volumes/create")
 		drainFuzzRequestBody(req)
+
+		update := newJSONInspectorFuzzRequest(http.MethodPut, "/volumes/csi-data", "version=7", body)
+		_, _ = policy.inspectUpdate(nil, update, "/volumes/csi-data")
+		drainFuzzRequestBody(update)
 	})
 }
 

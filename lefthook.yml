@@ -4,10 +4,13 @@
 # Pre-push pipeline (piped = sequential, fail-fast):
 #   1. Clean-tree check (no stray artifacts before push)
 #   2. GoReleaser snapshot dry-run (full release pipeline, skip publish)
-#   3. Go lint + unit/race test
-#   4. Compile integration and Podman build-tag boundaries
-#   5. Go vulnerability scan (govulncheck — reachable CVEs in deps + stdlib)
-#   6. Go fuzz smoke (5 s per fuzzer, all 8 fuzzers) — tier 0 of the
+#   3. Go lint
+#   4. Qlty whole-repository check (the same gate CI's "Go CI / Qlty Check"
+#      job runs, through scripts/ci/go-qlty.sh)
+#   5. Go unit/race test
+#   6. Compile integration and Podman build-tag boundaries
+#   7. Go vulnerability scan (govulncheck — reachable CVEs in deps + stdlib)
+#   8. Go fuzz smoke (5 s per fuzzer, all 8 fuzzers) — tier 0 of the
 #      fuzz strategy. Catches broken fuzz drivers and stale seed corpora
 #      before the push even leaves the machine. Real coverage tiers:
 #      6 of the 8 (all but FuzzLoadYAML and FuzzHijackBidirectionalStream)
@@ -17,13 +20,13 @@
 #      fuzzer, monthly + manual). FuzzLoadYAML and FuzzHijackBidirectionalStream
 #      are the heavy fuzzers that skip Tier 1 CI and reach hosted CI only in
 #      the nightly and monthly tiers, in addition to running here locally.
-#   7. Lockfile dedupe check (catches orphaned hoisted packages)
-#   8. Shellcheck (all tracked *.sh scripts)
-#   9. Knip (unused files/exports/deps in TS workspaces)
-#  10. Biome lint for TS/JS
-#  11. TS workspace tests
-#  12. Build all workspaces
-#  13. Zizmor (workflow security) — hard-fails if the binary is missing;
+#   9. Lockfile dedupe check (catches orphaned hoisted packages)
+#  10. Shellcheck (all tracked *.sh scripts)
+#  11. Knip (unused files/exports/deps in TS workspaces)
+#  12. Biome lint for TS/JS
+#  13. TS workspace tests
+#  14. Build all workspaces
+#  15. Zizmor (workflow security) — hard-fails if the binary is missing;
 #      this is a blocking local gate, not advisory-only.
 
 pre-commit:
@@ -71,9 +74,21 @@ pre-push:
       priority: 2
       timeout: 1m
 
+    # Whole-repository Qlty check, the local half of the org quality gate.
+    # Same script CI's "Go CI / Qlty Check" job runs through
+    # scripts/ci/go-qlty.sh, so the local and hosted gates cannot drift.
+    # Blocking, and hard-fails with an install hint when the CLI is missing
+    # (the check lives in the gate script) — the same posture as shellcheck
+    # and zizmor, not the skip-when-absent posture goreleaser and govulncheck
+    # take.
+    qlty:
+      run: ./scripts/qlty-check-gate.sh all
+      priority: 3
+      timeout: 4m
+
     go-test:
       run: cd app && go test -race ./...
-      priority: 3
+      priority: 4
       timeout: 3m
 
     # Tagged integration packages have no default-build Go files, so the
@@ -84,7 +99,7 @@ pre-push:
         cd app &&
         go test -run='^$' -tags=integration ./integration/... &&
         go test -run='^$' -tags=podmanintegration ./integration/... ./internal/cmd/...
-      priority: 4
+      priority: 5
       timeout: 3m
 
     # govulncheck — flags known-vulnerable dependencies and stdlib CVEs
@@ -97,7 +112,7 @@ pre-push:
       run: cd app && govulncheck ./...
       skip:
         - run: '! command -v govulncheck >/dev/null 2>&1'
-      priority: 5
+      priority: 6
       timeout: 2m
 
     # Fuzz smoke — 5 s per fuzzer, all 8 in series. Tier 0 of the fuzz
@@ -149,7 +164,7 @@ pre-push:
 
           rm -f "${log}"
         done
-      priority: 6
+      priority: 7
       timeout: 2m
 
     # Lockfile hygiene — catches orphaned hoisted packages (e.g. a stale
@@ -164,7 +179,7 @@ pre-push:
     # inline here.
     lockfile-dedupe:
       run: node scripts/lockfile-dedupe.mjs
-      priority: 7
+      priority: 8
       timeout: 2m
 
     # Shellcheck — lints every tracked *.sh script. Hard-fails (no skip)
@@ -173,7 +188,7 @@ pre-push:
     # only place it's enforced.
     shellcheck:
       run: ./scripts/ci/shellcheck.sh
-      priority: 8
+      priority: 9
       timeout: 30s
 
     # Knip — finds unused files, exports, types, and unlisted/unused
@@ -181,22 +196,22 @@ pre-push:
     # phantom deps that biome/tsc don't see. Config in knip.json.
     knip:
       run: npx knip
-      priority: 9
+      priority: 10
       timeout: 1m
 
     biome:
       run: npx biome check .
-      priority: 10
+      priority: 11
       timeout: 30s
 
     ts-test:
       run: npm test
-      priority: 11
+      priority: 12
       timeout: 1m
 
     build:
       run: npx turbo build
-      priority: 12
+      priority: 13
       timeout: 3m
 
     # Zizmor — GitHub Actions workflow security scanner. Blocking local
@@ -224,5 +239,5 @@ pre-push:
         # main checkout's .github/zizmor.yml. Editing the config on a branch
         # then had no effect on that branch's own pre-push run.
         zizmor --config .github/zizmor.yml .github/workflows/
-      priority: 13
+      priority: 14
       timeout: 30s
