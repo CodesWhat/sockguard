@@ -395,9 +395,27 @@ func NormalizePodmanRoutePath(p string) string {
 	return normalized
 }
 
+// isLibpodImageScpRoutePath reports whether Podman's router dispatches
+// routePath to the image-SCP handler. The route is
+// POST /libpod/images/scp/{name:.*} and `.*` matches the empty string, so the
+// bare /libpod/images/scp/ is an SCP call with an empty source name, not a
+// non-route: verified against Podman v5.8.1's registration order
+// (pkg/api/server/register_images.go, /libpod/images/{name:.*}/push at line
+// 817 through /libpod/images/scp/{name:.*} at line 2236) replayed through
+// gorilla/mux v1.8.1, where POST /v5.0.0/libpod/images/scp/ dispatches to
+// ImageScp with name="". An empty name is refused deeper in, by
+// ExecuteTransfer's "no source image specified", but that is the handler's
+// argument validation and not a routing boundary, so treating the bare route
+// as reachable is what keeps the route view and the decoded path from
+// disagreeing about which handler a request reaches.
+//
+// The action suffixes stay excluded: /libpod/images/{name:.*}/push, /tag and
+// /untag are registered earlier, so .../scp/app/push is a push of the image
+// "scp/app". A trailing slash defeats those anchored routes, which is why
+// .../scp/app/push/ falls through to this catch-all.
 func isLibpodImageScpRoutePath(routePath string) bool {
 	rest, ok := strings.CutPrefix(routePath, libpodPathPrefix+"images/scp/")
-	if !ok || rest == "" {
+	if !ok {
 		return false
 	}
 	for _, action := range []string{"push", "tag", "untag"} {

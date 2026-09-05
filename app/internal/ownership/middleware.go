@@ -271,8 +271,16 @@ func middlewareWithDeps(
 			// the slash, which read the same request as a push of an image
 			// named "scp/victim", a name no daemon has, so the inspect came
 			// back not-found and ownership passed the transfer through.
+			//
+			// The prefilter below stops one character before that separator on
+			// purpose. path.Clean turns the bare /libpod/images/scp/ route,
+			// whose source is empty, into /libpod/images/scp, so requiring the
+			// slash here would leave that request on the cleaned path and read
+			// it as a push of an image named "scp". Every path whose route view
+			// is an SCP route still starts with this prefix once cleaned, so
+			// the guard stays a cheap string compare and never skips one.
 			routePath := normPath
-			if r.Method == http.MethodPost && strings.HasPrefix(normPath, libpodPrefix+"images/scp/") {
+			if r.Method == http.MethodPost && strings.HasPrefix(normPath, libpodPrefix+"images/scp") {
 				routePath = filter.NormalizePodmanRoutePath(r.URL.EscapedPath())
 			}
 			verdict, reason, err := allowOwnershipRequestWithRoutePath(r.Context(), r.Method, normPath, routePath, opts, inspectResource, inspectExec, refs)
