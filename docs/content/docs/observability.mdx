@@ -272,19 +272,28 @@ was preserved.
 
 ## Active upstream watchdog
 
-By default `/health` answers from a single upstream probe: the first request to
-reach the endpoint runs the check, and every later request is served the stored
-verdict. Nothing on the proxy data path refreshes it, so without the watchdog
-the answer is as old as the process. That is enough to prove Sockguard itself
-is up, but it will not notice the upstream going away. Enabling the watchdog
-flips Sockguard to active monitoring:
+By default `/health` answers from a cached upstream probe: once the cached
+verdict is more than 2 seconds old, the next request runs the check itself and
+answers with the result. Requests that arrive while that check is in flight are
+served the verdict already on hand rather than queueing behind it, so the answer
+is at most 2 seconds stale and, however much traffic arrives, only ever one
+request at a time is waiting on the upstream. A failed check is cached for just
+100ms, so a recovery shows up almost immediately. (In the one case where a
+check is in flight and none has ever completed — concurrent requests at
+startup — the ones that did not start it are answered `503` with
+`{"status":"unhealthy","upstream":"checking"}`.) Nothing probes on a schedule,
+though, so an upstream that goes away while nothing is asking goes unnoticed
+until the next request. Enabling the watchdog flips Sockguard to active
+monitoring:
 
 - A goroutine dials the upstream socket every `health.watchdog.interval` and
   records the result.
 - State transitions are logged at `WARN` (unreachable) and `INFO` (recovered)
   with `upstream_socket`, `upstream_status`, `up`, and `error` fields. Steady
   state produces no log noise.
-- `/health` returns the latest watchdog snapshot. Reachable: HTTP 200,
+- `/health` returns the latest watchdog snapshot instead of probing per
+  request, so its answer tracks `health.watchdog.interval`, never dials on the
+  request path, and always agrees with the metrics below. Reachable: HTTP 200,
   `{"status":"healthy","upstream":"connected",...}`. Unreachable: HTTP 503,
   `{"status":"unhealthy","upstream":"unreachable","error":"...",...}`.
 - When `metrics.enabled` is also true, Sockguard exports

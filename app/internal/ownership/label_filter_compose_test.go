@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codeswhat/sockguard/app/internal/filter"
 	"github.com/codeswhat/sockguard/app/internal/logging"
 	"github.com/codeswhat/sockguard/app/internal/upstreamflavor"
 	"github.com/codeswhat/sockguard/app/internal/visibility"
@@ -282,6 +283,108 @@ func TestPodmanEventsRejectsOwnerVisibilityComposition(t *testing.T) {
 			}
 			if meta.ReasonCode != reasonCodeOwnerVisibilityPodmanEventsUnscopeable {
 				t.Fatalf("reason code = %q, want %q", meta.ReasonCode, reasonCodeOwnerVisibilityPodmanEventsUnscopeable)
+			}
+		})
+	}
+}
+
+// TestPodmanCompatSecretsRefusedUnderOwnerAndVisibility is the both-layers
+// case for the Docker-compat GET /secrets refusal. Neither layer can push its
+// constraint into Podman's secret filter grammar, which accepts only name and
+// id, so the exact production nesting has to refuse the request rather than
+// let either injection reach a handler that answers 500 for it.
+//
+// Visibility runs outermost (buildServeHandlerLayersWithRuntime yields
+// filter -> visibility -> ownership), so wherever it refuses at all it is the
+// layer that answers, and each case asserts the exact code rather than the
+// shared suffix: an assertion on the suffix alone would stay green if the
+// visibility guard were deleted, because ownership's own refusal would answer
+// with a code ending the same way.
+//
+// The patterns-only case is the one where ownership is the correct answer.
+// A visibility policy with no selectors injects nothing into /secrets and is
+// forwarded untouched, so the owner refusal behind it is what stops the
+// request. Pinning that case to ownership's code is what proves the two
+// guards are independently load-bearing rather than one masking the other.
+func TestPodmanCompatSecretsRefusedUnderOwnerAndVisibility(t *testing.T) {
+	t.Parallel()
+
+	// The visibility middleware's own code is spelled out rather than
+	// imported: it is unexported in that package, and a literal is what an
+	// operator greps the access log for. internal/visibility pins the same
+	// string against its constant in podman_secrets_test.go, so a rename
+	// cannot pass both files.
+	const visibilityCode = "visibility_podman_secret_list_unscopeable"
+
+	tests := []struct {
+		name     string
+		target   string
+		vis      visibility.Options
+		wantCode string
+	}{
+		{
+			name:   "default policy on versioned path",
+			target: "/v1.53/secrets",
+			vis: visibility.Options{
+				VisibleResourceLabels: []string{"tier=prod"},
+				UpstreamFlavor:        upstreamflavor.Podman,
+			},
+			wantCode: visibilityCode,
+		},
+		{
+			name:   "profile policy on normalized path",
+			target: "/v1.53/containers/../secrets",
+			vis: visibility.Options{
+				Profiles: map[string]visibility.Policy{
+					"watchtower": {VisibleResourceLabels: []string{"tier=prod"}},
+				},
+				ResolveProfile: func(*http.Request) (string, bool) { return "watchtower", true },
+				UpstreamFlavor: upstreamflavor.Podman,
+			},
+			wantCode: visibilityCode,
+		},
+		{
+			name:   "patterns-only visibility policy leaves the owner refusal",
+			target: "/v1.53/secrets",
+			vis: visibility.Options{
+				NamePatterns:   []string{"web-*"},
+				UpstreamFlavor: upstreamflavor.Podman,
+			},
+			wantCode: reasonCodeOwnerPodmanSecretList,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			reached := false
+			upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				reached = true
+				w.WriteHeader(http.StatusNoContent)
+			})
+			inner := middlewareWithDeps(testLogger(), Options{
+				Owner:          "team-a",
+				UpstreamFlavor: upstreamflavor.Podman,
+			}, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(upstream)
+			handler := visibility.Middleware("", testLogger(), tc.vis)(inner)
+
+			meta := &logging.RequestMeta{RolloutMode: "warn"}
+			req := httptest.NewRequest(http.MethodGet, tc.target, nil)
+			req = req.WithContext(logging.WithMeta(req.Context(), meta))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if reached {
+				t.Fatal("combined owner and visibility policy reached Podman's secret list")
+			}
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("GET %s: status = %d, want 403; body: %s", tc.target, rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), filter.PodmanCompatSecretListDenyReason) {
+				t.Fatalf("body = %q, want the shared deny reason %q", rec.Body.String(), filter.PodmanCompatSecretListDenyReason)
+			}
+			if meta.ReasonCode != tc.wantCode {
+				t.Fatalf("reason code = %q, want %q; the layer that refused is not the one this case pins", meta.ReasonCode, tc.wantCode)
 			}
 		})
 	}

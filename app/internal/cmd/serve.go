@@ -783,7 +783,7 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 		// lookup, and the guard still runs before hijack/proxy for every
 		// request ownership allowed.
 		namedServeHandlerLayer("withResourceLimitGuard", withResourceLimitGuard(cfg, resolver, logger, clientProfiles)),
-		namedServeHandlerLayer("withOwnership", withOwnership(cfg, resolver, logger)),
+		namedServeHandlerLayer("withOwnership", withOwnership(cfg, resolver, logger, runtimeUpstreamFlavor(runtime))),
 		namedServeHandlerLayer("withVisibility", withVisibility(cfg, resolver, logger, runtimeUpstreamFlavor(runtime))),
 		namedServeHandlerLayer("withFilter", withFilter(cfg, resolver, logger, rules, clientProfiles)),
 	}
@@ -1040,12 +1040,13 @@ func warnOpaqueBuildkitTunnelDeprecatedOnce(cfg *config.Config, logger *slog.Log
 	})
 }
 
-func withOwnership(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger) func(http.Handler) http.Handler {
+func withOwnership(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, flavor upstreamflavor.Flavor) func(http.Handler) http.Handler {
 	return ownership.MiddlewareWithRoundTripper(res, logger, ownership.Options{
 		Owner:                           cfg.Ownership.Owner,
 		LabelKey:                        cfg.Ownership.LabelKey,
 		AllowUnownedImages:              cfg.Ownership.AllowUnownedImages,
 		AllowCrossOwnerNamespaceSharing: cfg.Ownership.AllowCrossOwnerNamespaceSharing,
+		UpstreamFlavor:                  flavor,
 	})
 }
 
