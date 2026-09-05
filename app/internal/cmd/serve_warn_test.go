@@ -243,7 +243,7 @@ func TestWarnReadExfiltrationRetainsShadowedProfileRoute(t *testing.T) {
 
 	configured := []config.RuleConfig{
 		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/sockguard-test/push"}, Action: "deny"},
-		{Match: config.MatchConfig{Method: http.MethodPost, Path: "*/images/team/*/push"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/*/images/team/*/push"}, Action: "allow"},
 	}
 	rules, err := compileConfiguredRules(configured)
 	if err != nil {

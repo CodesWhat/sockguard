@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -349,6 +350,80 @@ func TestValidateRejectsVersionPrefixInProfileRulePath(t *testing.T) {
 	err := Validate(&cfg)
 	if err == nil || !strings.Contains(err.Error(), "begins with an API version prefix") {
 		t.Fatalf("Validate() = %v, want version-prefix rejection for profile rule", err)
+	}
+}
+
+// TestValidateRejectsRootlessRulePath pins the shape rejection that backs the
+// segment-glob fix. Every path rule matching sees is rooted — NormalizePath and
+// NormalizePodmanRoutePath both keep the leading slash of an HTTP
+// request-target — and the anchored regex a pattern compiles to cannot match
+// across that slash, so a match.path without one describes nothing the proxy
+// will ever be asked about.
+//
+// It used to match anyway: the segment-glob fast path stripped one leading
+// slash from the pattern and one from the request path, so "containers/*" read
+// as "/containers/*". Correcting the matcher alone would have turned a rootless
+// deny an operator relied on into a silent no-op, which is why the shape is
+// refused here rather than quietly redefined — the same fail-closed reasoning
+// as the version-prefix and literal-percent rejections above.
+func TestValidateRejectsRootlessRulePath(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+	}{
+		{"bare single-segment glob", "*"},
+		{"bare catch-all", "**"},
+		{"relative segment glob", "containers/*"},
+		{"leading star", "*/json"},
+		{"relative deep glob", "containers/**"},
+		{"relative literal", "containers/json"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Rules = append(cfg.Rules, RuleConfig{
+				Match:  MatchConfig{Method: "GET", Path: tt.path},
+				Action: "allow",
+			})
+
+			err := Validate(&cfg)
+			if err == nil || !strings.Contains(err.Error(), "must start with '/'") {
+				t.Fatalf("Validate() = %v, want rootless match.path rejection", err)
+			}
+			for _, want := range []string{fmt.Sprintf("%q", tt.path), fmt.Sprintf("%q", "/"+tt.path)} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("Validate() = %v, want the error to mention %q", err, want)
+				}
+			}
+
+			// The rooted spelling is the fix, so it has to be accepted. Without
+			// this the check could pass by rejecting everything.
+			rooted := Defaults()
+			rooted.Rules = append(rooted.Rules, RuleConfig{
+				Match:  MatchConfig{Method: "GET", Path: "/" + tt.path},
+				Action: "allow",
+			})
+			if err := Validate(&rooted); err != nil {
+				t.Fatalf("Validate() = %v, want nil for the rooted spelling %q", err, "/"+tt.path)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsRootlessProfileRulePath(t *testing.T) {
+	cfg := Defaults()
+	cfg.Clients.Profiles = []ClientProfileConfig{
+		{Name: "ro", Rules: []RuleConfig{
+			{Match: MatchConfig{Method: "GET", Path: "images/*/json"}, Action: "allow"},
+		}},
+	}
+
+	err := Validate(&cfg)
+	if err == nil || !strings.Contains(err.Error(), "must start with '/'") {
+		t.Fatalf("Validate() = %v, want rootless match.path rejection for profile rule", err)
+	}
+	if !strings.Contains(err.Error(), "clients.profiles") {
+		t.Fatalf("Validate() = %v, want the error to name the profile rule list", err)
 	}
 }
 

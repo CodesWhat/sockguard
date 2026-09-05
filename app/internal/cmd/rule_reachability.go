@@ -205,12 +205,13 @@ func compileCatalogRuleMachine(pattern, action string) (catalogRuleMachine, erro
 		// and its byte-unrestricted descendant suffix.
 		prefix := strings.TrimSuffix(pattern, "/**")
 		expression = regexp.QuoteMeta(prefix) + `(?:/(?s:.*))?`
-	case !strings.Contains(pattern, "**"):
-		// filter.pathMatcherSegmentGlob strips one optional leading slash from
-		// both the pattern and request path. Preserve the catalog's leading slash
-		// while compiling the remaining segment glob so the automata agree.
-		expression = "/" + glob.ToRegexString(strings.TrimPrefix(pattern, "/"))
 	}
+	// filter.pathMatcherSegmentGlob needs no arm of its own: the segment walker
+	// is defined as the anchored regex glob.ToRegexString already produces, and
+	// the default expression above is exactly that. It used to re-root the
+	// pattern ("/" + ToRegexString(TrimPrefix(pattern, "/"))) to mirror the
+	// walker's leading-slash trim, which was a no-op for a rooted pattern and
+	// modeled a widening for a rootless one; the walker no longer trims.
 	program, err := compileReachabilityProgram(expression)
 	return catalogRuleMachine{program: program, action: action}, err
 }
