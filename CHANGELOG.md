@@ -28,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A malformed `reload.debounce` or `reload.poll_interval` is now named in the log instead of silently falling back.** Both were parsed with `time.ParseDuration` and the error was dropped, so `debounce: 250` (no unit) ran on the 250ms default and `poll_interval: "10 seconds"` left polling disabled, with nothing tying the running behavior back to the config file. Validation still rejects those values before startup; when the fallback is reached anyway it now logs one warning naming the key, the value that failed to parse, and the default it fell back to. The fallback itself is unchanged.
 
+- **A non-loopback plaintext TCP main listener now warns at startup, the way the admin listener already did.** `insecure_allow_plain_tcp` plus `insecure_allow_unauthenticated_clients` let the Docker API listener run unencrypted with every routable host admitted as a client, and that acknowledgment was made once in a config file and never mentioned again — while the far smaller admin surface has warned about the same shape since #21. Startup now emits one warning per effective listener in that shape, naming the listener and its address. Loopback addresses, unix sockets, and listeners with complete mutual TLS stay silent.
+
 
 ### Documentation
 
