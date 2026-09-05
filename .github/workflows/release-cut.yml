@@ -30,10 +30,28 @@ jobs:
       actions: read
       contents: write  # Push the annotated release tag
     steps:
+      # PKG-1: block mode. Every host here showed up in this job's harden-runner
+      # audit log for the v2.1.0, v2.1.0-rc.2 and v2.1.0-rc.1 cuts, except the
+      # two Node download hosts, which a warm tool cache hides until the day
+      # the runner image stops shipping Node 24.
+      #   github.com: Checkout, and Create and push release tag
+      #   api.github.com: the curl loop in ./.github/actions/verify-ci-success
+      #   raw.githubusercontent.com: Setup Node's actions/node-versions manifest
+      #   objects.githubusercontent.com: Setup Node's toolchain tarball on a cold
+      #     tool cache, the legacy redirect twin of the host below
+      #   release-assets.githubusercontent.com: that same tarball, current host
+      #   *.actions.githubusercontent.com: Actions runtime and log upload
       - name: Harden Runner
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            raw.githubusercontent.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            *.actions.githubusercontent.com:443
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
