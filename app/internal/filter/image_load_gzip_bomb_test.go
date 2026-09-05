@@ -18,16 +18,24 @@ import (
 // The bomb is produced by streaming zeros into a gzip writer through a pipe so
 // that the full decompressed payload is never resident in memory — only the
 // (small) compressed bytes are buffered.
+//
+// maxImageLoadDecompressedBytes is overridden to a few KiB for the duration of
+// this test so the payload the guard trips on stays tiny (production still
+// defaults to 2 GiB). This test mutates package state and cannot run in
+// parallel with other tests that read maxImageLoadDecompressedBytes.
 func TestImageLoadGzipBombExceedingDecompressedLimitIsDenied(t *testing.T) {
+	const testLimit = 4 << 10 // 4 KiB — small enough to build instantly
+	original := maxImageLoadDecompressedBytes
+	maxImageLoadDecompressedBytes = testLimit
+	t.Cleanup(func() { maxImageLoadDecompressedBytes = original })
+
 	// We need to produce a gzip-wrapped tar that, when decompressed, exceeds
-	// maxImageLoadDecompressedBytes (2 GiB). Writing real 2 GiB of zeros would
-	// be impractical in a test; instead we produce a well-compressed tar stream
-	// that expands past the limit. Because compress/gzip at default level
+	// maxImageLoadDecompressedBytes. Because compress/gzip at default level
 	// compresses a stream of zeros by ~1000:1 or better, writing
-	// (maxImageLoadDecompressedBytes + 1) zeros produces a gzip blob that is a
-	// few MiB — safe for a unit test. We stream via pipe to avoid a 2 GiB
-	// allocation.
-	const decompressedTarget = maxImageLoadDecompressedBytes + 1 // one byte past the limit
+	// (maxImageLoadDecompressedBytes + 1) zeros still produces a gzip blob far
+	// smaller than the decompressed target. We stream via pipe so the payload
+	// is never fully resident in memory regardless of size.
+	const decompressedTarget = testLimit + 1 // one byte past the limit
 
 	pr, pw := io.Pipe()
 
