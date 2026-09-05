@@ -113,11 +113,14 @@ test("opt-in Sockguard capabilities are labelled opt-in", () => {
     assert.match(row.sockguard, /opt-in/, `${feature} must name itself opt-in`);
   }
 
-  // README.md's feature-comparison table credits Tecnativa and LinuxServer
-  // with the same per-action ALLOW_* controls; the site said No for Tecnativa.
+  // Real Tecnativa's shipped haproxy.cfg denies every non-GET request before
+  // the ALLOW_* rules ever run (docs/content/docs/migration.mdx), so its
+  // ALLOW_* vars are documented but dead in the config they ship. LinuxServer's
+  // own README says the opposite for its ALLOW_* vars ("these options work
+  // even when POST=0"), so only the Tecnativa cell carries the caveat.
   const granular = comparisonRows.find((row) => row.feature === "Granular POST ops");
   assert.ok(granular);
-  assert.equal(granular.tecnativa, "Partial (ALLOW_* vars)");
+  assert.equal(granular.tecnativa, "Documented only (POST gate blocks them)");
   assert.equal(granular.linuxserver, "Partial (ALLOW_* vars)");
 });
 

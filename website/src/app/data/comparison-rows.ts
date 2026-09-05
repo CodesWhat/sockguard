@@ -21,7 +21,7 @@ export const comparisonRows: ComparisonRow[] = [
   },
   {
     feature: "Granular POST ops",
-    tecnativa: "Partial (ALLOW_* vars)",
+    tecnativa: "Documented only (POST gate blocks them)",
     linuxserver: "Partial (ALLOW_* vars)",
     wollomatic: "Via regex",
     elevenNotes: "No (read-only)",

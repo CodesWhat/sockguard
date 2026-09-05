@@ -7,9 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The README and website comparison tables no longer credit Tecnativa's `ALLOW_*` vars as a working `Partial` control for granular container write ops.** Tecnativa's own shipped `haproxy.cfg` denies every non-GET request before the `ALLOW_*` rules ever run, so `ALLOW_RESTARTS=1`/`ALLOW_START=1`/etc. are documented but dead in the config Tecnativa ships. The cell now reads `Documented only (POST gate blocks them)` in `README.md`'s feature-comparison table and in `website/src/app/data/comparison-rows.ts`'s "Granular POST ops" row. LinuxServer's cell is untouched: its own README states those same `ALLOW_*` vars "work even when `POST=0`", the opposite of Tecnativa's behavior.
+- The LinuxServer migration section in the docs now lists the LinuxServer env vars sockguard has no equivalent for, instead of documenting only the ten write-side `ALLOW_*` vars it supports: `DISABLE_IPV6`, the five GET-only sub-resource gates (`ALLOW_ARCHIVE`, `ALLOW_CHANGES`, `ALLOW_EXPORT`, `ALLOW_LOGS`, `ALLOW_TOP`), the fifteen `LIBPOD_*` Podman compat vars, and `TZ`. `DISABLE_IPV6`'s "ignored" note moves out of the Tecnativa section, since it's LinuxServer's own variable, not Tecnativa's.
+
+### Changed
+
+- `RELEASING.md`'s release-facing files list and `scripts/verify-tag-release-metadata.mjs`'s stable-tag gate now cover `SECURITY.md`'s supported-versions table, so a stale table (#421, #431) fails the release cut instead of shipping quietly.
+
 ### Removed
 
 - The internal `security_best_practices_report.md` write-up (dated 2026-07-20) is no longer tracked in the repo; it's archived locally in the gitignored `.planning/`. Public security material stays in `SECURITY.md`, `SECURITY-ASSURANCE.md`, and the docs site.
+
+### Changed
+
+- README.md's and `docs/content/docs/configuration.mdx`'s Tecnativa compat-vs-`rules:` sentence said an explicit `rules:` block always wins over compat, even when byte-identical to the built-in defaults. That contradicts `rulesMatchDefaults` in `app/internal/config/compat.go`, which activates compat whenever the effective ruleset still matches the defaults regardless of where it came from, and it already contradicted `docs/content/docs/migration.mdx`. Both now say what the code does: a byte-identical `rules:` block still activates compat, and only a `rules:` block that differs from the default wins outright.
+- The Watchtower preset's header comment and `docs/content/docs/presets.mdx` now record why `app/configs/watchtower.yaml` grants `POST /containers/{id}/update` and why the grant covers `containrrr/watchtower` too: verified against both upstreams' `pkg/container/client.go`, the core recreate flow (list/inspect, stop, force-remove, create, start, rename, exec hooks, image pull/remove, network connect) is identical, but nicholas-fedor/watchtower added `SetNoRestartPolicy`, which is the only caller of that route and only ever submits the restart policy, never `Resources` — matching the preset's existing restart-only grant with `allow_resource_updates` left denied.
 
 ### Fixed
 
@@ -57,6 +71,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Image inspect responses were not redacted at all.** `GET /images/{name}/json` (and native `GET /libpod/images/{name}/json`) had no entry in the response filter's dispatch table, so with every `response.redact_*` option enabled the body still came back byte-identical, including `Config.Env` (the image's baked-in build-time environment — a common secret carrier from Dockerfile `ENV` or `--build-arg`) and `GraphDriver.Data` (the storage driver's host filesystem paths for the image's layers). Image inspect now reuses container inspect's existing helpers: `Config.Env` is emptied under `redact_container_env` and `GraphDriver.Data` is masked under `redact_mount_paths`, gated exactly as they are on container inspect. The libpod route shares the same handler; `*libimage.ImageData`'s `Config` (`*ociv1.ImageConfig`) and `GraphDriver` (`*DriverData{Name, Data}`) fields carry the identical json tags Docker's compat handler uses, verified against Podman v5.8.1's pinned `containers/common` release. This gap is pre-existing in v2.0.0, not a v2.1.0 regression.
 
 - `golang.org/x/crypto` moves from v0.55.0 to v0.56.0, clearing GO-2026-6354 (CVE-2026-78662) and GO-2026-6355 (CVE-2026-56855), two denial-of-service bugs in `golang.org/x/crypto/ssh` where a deadlocked channel stalls the connection. Sockguard never imports the `ssh` package; the module is an indirect requirement reached through `sigstore-go` and `certificate-transparency-go` for `cryptobyte` on the opt-in `image_trust` path, never the core proxy path, and `govulncheck` reports zero reachable vulnerabilities either side of the bump. Grype matches on module version rather than reachability, so once the 2026-09-04 vulnerability DB shipped the finding failed `CI: Verify`'s Docker Build on every branch, and it flags the published v2.1.0 image the same way.
+
+### Changed
+
+- Removed the dead `js-yaml` entry from `website/package.json` and `docs/package.json`'s `overrides` blocks. It pinned a floor for a transitive dependency during the v1.4.4 security refresh; `npm ls js-yaml --all` now shows nothing in the tree depends on it, so the override was only feeding the Dependency Dashboard a v5 update offer for a package nothing uses.
 
 ## [2.1.0] - 2026-09-03
 
