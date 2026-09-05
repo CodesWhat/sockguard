@@ -9,11 +9,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/differential"
+	"github.com/codeswhat/sockguard/app/internal/differential"
 )
 
 // TestDockerdRouteClassifierOracle is the real-dockerd tier of the
-// proxy-vs-daemon differential. The in-process harness in app/differential/
+// proxy-vs-daemon differential. The in-process harness in app/internal/differential/
 // judges policy bypasses with differential.ClassifyDockerRoute, a hand-written
 // model of how a Docker daemon routes a method+path to an endpoint. That model
 // is only as trustworthy as its agreement with a live daemon — this test is

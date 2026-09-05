@@ -295,7 +295,15 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, resolveClient func(co
 				return
 			}
 
-			evaluateLabelACL(compiled, logger, resolveClient, next, w, r, clientIP)
+			evaluateLabelACL(labelACLRequest{
+				compiled:      compiled,
+				logger:        logger,
+				resolveClient: resolveClient,
+				next:          next,
+				w:             w,
+				r:             r,
+				clientIP:      clientIP,
+			})
 		})
 	}
 }
@@ -338,6 +346,18 @@ func applyProfileSelection(compiled compiledOptions, logger *slog.Logger, w http
 	return r.WithContext(withProfile(r.Context(), profile)), true
 }
 
+// labelACLRequest bundles the parameters evaluateLabelACL needs to resolve
+// and enforce a client's container-label ACL for a single request.
+type labelACLRequest struct {
+	compiled      compiledOptions
+	logger        *slog.Logger
+	resolveClient func(context.Context, netip.Addr) (resolvedClient, bool, error)
+	next          http.Handler
+	w             http.ResponseWriter
+	r             *http.Request
+	clientIP      netip.Addr
+}
+
 // evaluateLabelACL resolves the client's container labels (when enabled),
 // compiles ACL rules from those labels, and runs the request through them.
 // On allow / no-match the request flows to next; on deny we either pass
@@ -347,7 +367,9 @@ func applyProfileSelection(compiled compiledOptions, logger *slog.Logger, w http
 // by IP recycling creates a window where labels from a new container may
 // be applied to a request from the old one. Operators that need strong
 // isolation should prefer UID/GID unix-peer profile assignment instead.
-func evaluateLabelACL(compiled compiledOptions, logger *slog.Logger, resolveClient func(context.Context, netip.Addr) (resolvedClient, bool, error), next http.Handler, w http.ResponseWriter, r *http.Request, clientIP netip.Addr) {
+func evaluateLabelACL(req labelACLRequest) {
+	compiled, logger, resolveClient, next, w, r, clientIP := req.compiled, req.logger, req.resolveClient, req.next, req.w, req.r, req.clientIP
+
 	client, found, err := resolveClient(r.Context(), clientIP)
 	if err != nil {
 		logger.ErrorContext(r.Context(), "client label ACL lookup failed", "error", err, "client_ip", clientIP.String())
