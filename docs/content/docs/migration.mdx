@@ -203,6 +203,8 @@ Replace the flag with the CA that issued the daemon certificate:
 
 The Docker environment fallback follows the same schedule. A non-empty `DOCKER_TLS` with `DOCKER_TLS_VERIFY` empty or unset selects unverified TLS; set `DOCKER_TLS_VERIFY=1` before v3.0.0. Any non-empty verification value, including `0` or `false`, enables verification and takes precedence over `DOCKER_TLS`, matching the Docker CLI's environment semantics. When TLS is enabled, sockguard requires `ca.pem` from `DOCKER_CERT_PATH`, otherwise `DOCKER_CONFIG`, otherwise `~/.docker`; it presents `cert.pem` / `key.pem` only when both exist. `DOCKER_CERT_PATH` alone only locates material and does not enable TLS. Bare and portless TCP hosts default to port `2375`; a TCP URL path is preserved as the API prefix across proxy, inspection, readiness, attach/exec, BuildKit, and failover traffic; and valid custom Unix socket names retain their literal bytes after Docker-compatible URL validation. Absolute Unix paths preserve percent escapes and raw `?` or `#`, while relative host-form escapes such as `%2F` and `%3F` are invalid. An invalid explicit `DOCKER_HOST` fails startup instead of falling through to `upstream.socket`.
 
+The five sections below were checked against these upstream versions on 2026-09-05, re-checked at every release cut: Tecnativa `docker-socket-proxy` v0.5.0, LinuxServer `docker-socket-proxy` 3.4.4-r0-ls96, wollomatic `socket-proxy` 1.13.1, 11notes `docker-socket-proxy` v2.1.8, and hectorm `cetusguard` v1.1.4.
+
 ## From Tecnativa/docker-socket-proxy
 
 Sockguard accepts the current Tecnativa environment-variable surface, including section vars, `ALLOW_RESTARTS`, `SOCKET_PATH`, and `LOG_LEVEL`.

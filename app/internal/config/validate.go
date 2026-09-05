@@ -87,6 +87,7 @@ func validateWithMode(cfg *Config, mode validateMode) error {
 func validateBasic(cfg *Config, mode validateMode) []string {
 	var errs []string
 	errs = append(errs, validateListeners(cfg, mode)...)
+	errs = append(errs, validateServer(cfg)...)
 	errs = append(errs, validateUpstream(cfg)...)
 	errs = append(errs, validateLogging(cfg)...)
 	errs = append(errs, validateResponse(cfg)...)
@@ -433,6 +434,18 @@ func plainTCPListenerErrors(label, prefix string, listen ListenConfig) []string 
 		"non-loopback %s %q requires %s.tls mutual TLS configuration, or — for legacy plaintext on a private trusted network — both %s.insecure_allow_plain_tcp=true and %s.insecure_allow_unauthenticated_clients=true (one acknowledgment without the other is rejected)",
 		label, listen.Address, prefix, prefix, prefix,
 	)}
+}
+
+// validateServer validates server.shutdown_grace. Unlike
+// upstream.hijack_inactivity_timeout, 0 is a valid value here — it means
+// "close immediately, don't wait" — so every value, including an explicit
+// empty string, goes through ParseDuration and only a parse failure or a
+// negative duration is rejected.
+func validateServer(cfg *Config) []string {
+	if d, err := time.ParseDuration(cfg.Server.ShutdownGrace); err != nil || d < 0 {
+		return []string{fmt.Sprintf("server.shutdown_grace must be a non-negative duration, got %q", cfg.Server.ShutdownGrace)}
+	}
+	return nil
 }
 
 func validateUpstream(cfg *Config) []string {

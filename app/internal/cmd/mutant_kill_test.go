@@ -1395,12 +1395,16 @@ func TestRunServe_AdminShutdownTimeoutForcesListenerClose(t *testing.T) {
 	unsetEnvForTest(t, "DOCKER_HOST")
 
 	deps := newServeTestDeps()
-	deps.shutdownGracePeriod = time.Millisecond
 
 	deps.loadConfig = func(string) (*config.Config, error) {
 		cfg := testServeConfig()
 		cfg.Admin.Enabled = true
 		cfg.Admin.Listen.Address = "127.0.0.1:0"
+		// server.shutdown_grace drives deps.shutdownGracePeriod once
+		// runServeWithDeps validates cfg (see effectiveShutdownGracePeriod);
+		// setting it here, not on deps directly, is what now reaches the
+		// real shutdownCtx deadline this test depends on.
+		cfg.Server.ShutdownGrace = "1ms"
 		return cfg, nil
 	}
 	deps.newLogger = func(string, string, string) (*slog.Logger, io.Closer, error) {
@@ -1427,7 +1431,7 @@ func TestRunServe_AdminShutdownTimeoutForcesListenerClose(t *testing.T) {
 		go func() { c <- syscall.SIGTERM }()
 	}
 	deps.shutdownServer = func(_ *http.Server, ctx context.Context) error {
-		// Synchronize with the real shutdownCtx deadline (shutdownGracePeriod,
+		// Synchronize with the real shutdownCtx deadline (server.shutdown_grace,
 		// set above to 1ms) instead of sleeping past it on a wall-clock
 		// margin: wait for ctx.Done() so this returns exactly once the
 		// deadline has actually expired, which is what the force-close

@@ -446,6 +446,14 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		{http.MethodPut, matchesContainerArchiveInspection, inspectSeverityHigh, newContainerArchivePolicy(cfg.ContainerArchive).inspect, "failed to inspect container archive request body", "unable to inspect container archive request body"},
 		{http.MethodPost, matchesImageLoadInspection, inspectSeverityHigh, newImageLoadPolicy(cfg.ImageLoad).inspect, "failed to inspect image load request body", "unable to inspect image load request body"},
 		{http.MethodPost, matchesVolumeInspection, inspectSeverityMedium, newVolumePolicy(cfg.Volume).inspect, "failed to inspect volume create request body", "unable to inspect volume create request body"},
+		// PUT /volumes/{name} is the Swarm cluster-volume update. It shares
+		// cfg.Volume with the create entry above — one config block governs
+		// the whole Docker-compat volume write surface — but needs its own
+		// entry because it is a different method and a different body shape
+		// (volume.UpdateOptions, not volume.CreateOptions). Path-exclusive
+		// with the PUT container-archive entry above, so the severity-bucket
+		// walk can never hand one body to the other inspector.
+		{http.MethodPut, matchesVolumeUpdateInspection, inspectSeverityMedium, newVolumePolicy(cfg.Volume).inspectUpdate, "failed to inspect volume update request body", "unable to inspect volume update request body"},
 		{http.MethodPost, matchesNetworkInspection, inspectSeverityHigh, newNetworkPolicy(cfg.Network).inspect, "failed to inspect network request body", "unable to inspect network request body"},
 		{http.MethodPost, matchesSecretInspection, inspectSeverityMedium, newSecretPolicy(cfg.Secret).inspect, "failed to inspect secret create request body", "unable to inspect secret create request body"},
 		{http.MethodPost, matchesConfigInspection, inspectSeverityMedium, newConfigPolicy(cfg.Config).inspect, "failed to inspect config create request body", "unable to inspect config create request body"},
@@ -551,6 +559,10 @@ func matchesImageLoadInspection(normalizedPath string) bool {
 
 func matchesVolumeInspection(normalizedPath string) bool {
 	return normalizedPath == "/volumes/create"
+}
+
+func matchesVolumeUpdateInspection(normalizedPath string) bool {
+	return isVolumeUpdatePath(normalizedPath)
 }
 
 func matchesNetworkInspection(normalizedPath string) bool {

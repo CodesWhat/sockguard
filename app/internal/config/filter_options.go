@@ -248,8 +248,10 @@ func (c ImageLoadRequestBodyConfig) ToFilterOptions() filter.ImageLoadOptions {
 
 func (c VolumeRequestBodyConfig) ToFilterOptions() filter.VolumeOptions {
 	return filter.VolumeOptions{
-		AllowCustomDrivers: c.AllowCustomDrivers,
-		AllowDriverOpts:    c.AllowDriverOpts,
+		AllowCustomDrivers:        c.AllowCustomDrivers,
+		AllowDriverOpts:           c.AllowDriverOpts,
+		AllowClusterVolumeSecrets: c.AllowClusterVolumeSecrets,
+		AllowClusterVolumeUpdates: c.AllowClusterVolumeUpdates,
 	}
 }
 

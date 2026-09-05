@@ -26,10 +26,28 @@ jobs:
       actions: read
 
     steps:
+      # PKG-1: block mode. Hosts come from this job's harden-runner audit log
+      # for the v2.1.0 and v2.1.0-rc.2 tag runs, plus the Node download hosts
+      # a warm tool cache hides.
+      #   github.com: Checkout, and the git ls-remote in Verify release tag is
+      #     branch HEAD
+      #   api.github.com: the curl loop in ./.github/actions/verify-ci-success
+      #   raw.githubusercontent.com: Setup Node's actions/node-versions manifest
+      #   objects.githubusercontent.com: Setup Node's toolchain tarball on a cold
+      #     tool cache, the legacy redirect twin of the host below
+      #   release-assets.githubusercontent.com: that same tarball, current host
+      #   *.actions.githubusercontent.com: Actions runtime and log upload
       - name: Harden Runner
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            raw.githubusercontent.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            *.actions.githubusercontent.com:443
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -167,10 +185,26 @@ jobs:
       contents: read
 
     steps:
+      # PKG-1: block mode. This job checks out, runs two node scripts against
+      # files already on disk, and uploads one artifact, so its audit-log
+      # footprint is github.com plus the Actions runtime.
+      #   github.com: Checkout
+      #   raw.githubusercontent.com: Setup Node's actions/node-versions manifest
+      #   objects.githubusercontent.com: Setup Node's toolchain tarball on a cold
+      #     tool cache, the legacy redirect twin of the host below
+      #   release-assets.githubusercontent.com: that same tarball, current host
+      #   *.actions.githubusercontent.com: Upload release notes, plus the
+      #     Actions runtime and log upload
       - name: Harden Runner
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            raw.githubusercontent.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            *.actions.githubusercontent.com:443
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -229,10 +263,53 @@ jobs:
       attestations: write # SLSA build provenance for those same archives
 
     steps:
+      # PKG-1: block mode. Hosts come from this job's harden-runner audit log
+      # for the v2.1.0 and v2.1.0-rc.2 tag runs.
+      #   github.com: Checkout, GoReleaser's push to CodesWhat/homebrew-tap, and
+      #     the release downloads for Setup Go, syft, cosign and goreleaser
+      #   api.github.com: GoReleaser's release API calls, the gh calls in Publish
+      #     and verify release notes, and Attest binary archive provenance
+      #   uploads.github.com: GoReleaser uploading archives, checksums and SBOMs
+      #   raw.githubusercontent.com: Setup Go's actions/go-versions manifest, and
+      #     the syft installer script
+      #   objects.githubusercontent.com: the tool tarballs above on a cold tool
+      #     cache, the legacy redirect twin of the host below
+      #   release-assets.githubusercontent.com: those same tarballs, current host
+      #   proxy.golang.org: module downloads for Run GoReleaser, and syft's Go
+      #     cataloger during SBOM generation
+      #   storage.googleapis.com: the module proxy's blob backend for the above
+      #   sum.golang.org: Go's checksum database. Warm runs reach it through the
+      #     proxy and never resolve it directly, so it is absent from the audit
+      #     log until a GOFLAGS or GONOSUMDB change makes it a direct fetch.
+      #   get.anchore.io: Install syft's installer script
+      #   toolbox-data.anchore.io: syft's own data fetch while generating SBOMs
+      #   fulcio.sigstore.dev, rekor.sigstore.dev, timestamp.sigstore.dev,
+      #     tuf-repo-cdn.sigstore.dev: the cosign bundle-signing blocks
+      #     .goreleaser.yaml runs inside Run GoReleaser, and Attest binary
+      #     archive provenance
+      #   *.actions.githubusercontent.com: Download release notes, the OIDC token
+      #     endpoint keyless signing and attestation need, and the runtime
       - name: Harden Runner
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            uploads.github.com:443
+            raw.githubusercontent.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            proxy.golang.org:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+            get.anchore.io:443
+            toolbox-data.anchore.io:443
+            fulcio.sigstore.dev:443
+            rekor.sigstore.dev:443
+            timestamp.sigstore.dev:443
+            tuf-repo-cdn.sigstore.dev:443
+            *.actions.githubusercontent.com:443
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -338,10 +415,71 @@ jobs:
       artifact-metadata: write
 
     steps:
+      # PKG-1: block mode. This is the widest job in the pipeline and every host
+      # below came out of its harden-runner audit log for the v2.1.0 and
+      # v2.1.0-rc.2 tag runs, except sum.golang.org (see the goreleaser job's
+      # note above).
+      #   github.com: Checkout, and the release downloads for Set up QEMU, Set
+      #     up Docker Buildx and Install cosign
+      #   api.github.com: the two Attest ... provenance steps and gh release
+      #   uploads.github.com: Upload signed release assets
+      #   raw.githubusercontent.com: the buildx and QEMU install scripts
+      #   objects.githubusercontent.com: those tool tarballs on a cold tool
+      #     cache, the legacy redirect twin of the host below
+      #   release-assets.githubusercontent.com: those same tarballs, current host
+      #   ghcr.io, pkg-containers.githubusercontent.com: Log in to GHCR, Build
+      #     and push, Sign/Verify container images, and the push-to-registry
+      #     half of Attest build provenance
+      #   registry-1.docker.io, auth.docker.io, index.docker.io,
+      #     production.cloudfront.docker.com: Log in to Docker Hub, Set up
+      #     QEMU's binfmt image pull, and the docker.io half of Build and push,
+      #     Sign container images and Verify container image signatures
+      #   quay.io, cdn01.quay.io: Log in to Quay.io and the quay.io half of
+      #     those same three steps
+      #   cgr.dev, *.r2.cloudflarestorage.com: the Chainguard static base image
+      #     the Dockerfile builds on, and the R2 bucket its blobs redirect to.
+      #     The bucket host is an opaque per-account hash, hence the wildcard.
+      #   proxy.golang.org, storage.googleapis.com, sum.golang.org: the Go build
+      #     that runs inside Build and push
+      #   fulcio.sigstore.dev, rekor.sigstore.dev, timestamp.sigstore.dev,
+      #     tuf-repo-cdn.sigstore.dev: Sign container images, Sign release
+      #     artifact, both Verify steps, and the two attestation steps
+      #   *.blob.core.windows.net: Build and push's cache-from/cache-to
+      #     type=gha. Buildkit's GHA cache spreads across ten or more
+      #     productionresultssaN hosts in a single run, so the one cache host
+      #     harden-runner resolves for itself is not enough.
+      #   *.actions.githubusercontent.com: the OIDC endpoint keyless signing
+      #     needs, the cache results receiver, and the Actions runtime
       - name: Harden Runner
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            uploads.github.com:443
+            raw.githubusercontent.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            pkg-containers.githubusercontent.com:443
+            ghcr.io:443
+            registry-1.docker.io:443
+            auth.docker.io:443
+            index.docker.io:443
+            production.cloudfront.docker.com:443
+            quay.io:443
+            cdn01.quay.io:443
+            cgr.dev:443
+            *.r2.cloudflarestorage.com:443
+            proxy.golang.org:443
+            storage.googleapis.com:443
+            sum.golang.org:443
+            fulcio.sigstore.dev:443
+            rekor.sigstore.dev:443
+            timestamp.sigstore.dev:443
+            tuf-repo-cdn.sigstore.dev:443
+            *.blob.core.windows.net:443
+            *.actions.githubusercontent.com:443
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -683,10 +821,47 @@ jobs:
     permissions:
       contents: read   # gh release download
     steps:
+      # PKG-1: block mode. Hosts come from this job's harden-runner audit log
+      # for the v2.1.0 and v2.1.0-rc.2 tag runs. It only reads, so it needs the
+      # pull half of each registry and no signing endpoints beyond the TUF
+      # roots cosign and gh refresh before verifying.
+      #   github.com: Checkout, and Install cosign's release download
+      #   api.github.com: gh release download and gh attestation verify, both
+      #     inside Verify published image + tarball signatures
+      #   raw.githubusercontent.com: the cosign installer script
+      #   objects.githubusercontent.com: the cosign tarball and the release
+      #     assets that script downloads, legacy twin of the host below
+      #   release-assets.githubusercontent.com: those same downloads, current host
+      #   ghcr.io, pkg-containers.githubusercontent.com: the cosign verify run
+      #     against the ghcr.io tag
+      #   index.docker.io, auth.docker.io, production.cloudfront.docker.com: the
+      #     cosign verify run against the docker.io tag
+      #   quay.io, cdn01.quay.io: the cosign verify run against the quay.io tag
+      #   tuf-repo-cdn.sigstore.dev: cosign's Sigstore TUF root refresh
+      #   tuf-repo.github.com, *.blob.core.windows.net: gh attestation verify's
+      #     GitHub TUF root and the attestation bundle it then fetches
+      #   *.actions.githubusercontent.com: Actions runtime and log upload
       - name: Harden Runner
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            raw.githubusercontent.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            pkg-containers.githubusercontent.com:443
+            tuf-repo.github.com:443
+            ghcr.io:443
+            index.docker.io:443
+            auth.docker.io:443
+            production.cloudfront.docker.com:443
+            quay.io:443
+            cdn01.quay.io:443
+            tuf-repo-cdn.sigstore.dev:443
+            *.blob.core.windows.net:443
+            *.actions.githubusercontent.com:443
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -745,12 +920,41 @@ jobs:
           - platform: linux/arm64
             slug: linux-arm64
     steps:
-      # Stays audit, same reasoning as security-grype.yml's grype-image job:
-      # pulls a published image from GHCR, no fixed allowlist yet.
+      # PKG-1: block mode. The older note here said this job had no fixed
+      # allowlist yet; the v2.1.0 and v2.1.0-rc.2 audit logs give one, and both
+      # platform legs of both runs hit the same set.
+      #   github.com: the buildx and grype release downloads
+      #   api.github.com: Upload Grype SARIF to code scanning
+      #   raw.githubusercontent.com: the buildx and grype installer scripts
+      #   objects.githubusercontent.com: those tool tarballs on a cold tool
+      #     cache, the legacy redirect twin of the host below
+      #   release-assets.githubusercontent.com: those same tarballs, current host
+      #   ghcr.io, pkg-containers.githubusercontent.com: Log in to GHCR, Resolve
+      #     platform-specific digest, and Run Grype's pull of the published image
+      #   registry-1.docker.io, auth.docker.io,
+      #     production.cloudfront.docker.com: Set up Docker Buildx pulling its
+      #     moby/buildkit driver image from Docker Hub
+      #   get.anchore.io: the grype installer anchore/scan-action runs
+      #   grype.anchore.io: grype's vulnerability database download
+      #   *.actions.githubusercontent.com: Actions runtime and log upload
       - name: Harden Runner
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            raw.githubusercontent.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            pkg-containers.githubusercontent.com:443
+            ghcr.io:443
+            registry-1.docker.io:443
+            auth.docker.io:443
+            production.cloudfront.docker.com:443
+            get.anchore.io:443
+            grype.anchore.io:443
+            *.actions.githubusercontent.com:443
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e  # v4.3.0

@@ -94,6 +94,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	// would let that config create or truncate arbitrary files before the
 	// process rejects it.
 	bootstrapLogger := slog.New(slog.NewTextHandler(cmd.ErrOrStderr(), nil))
+	warnUnknownEnvVars(bootstrapLogger, cfgFile, os.Environ())
 
 	trustPath := policyBundleTrustConfigPath(cmd)
 	var bundleVerifier policybundle.Verifier
@@ -139,6 +140,12 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	if err != nil {
 		return fmt.Errorf("config validation: %w", err)
 	}
+
+	// cfg is validated by now, so server.shutdown_grace is guaranteed to
+	// parse; this overrides newServeDeps' built-in 30s fallback with the
+	// operator's configured value for both the main and admin listener
+	// shutdowns (see shutdownServers).
+	deps.shutdownGracePeriod = effectiveShutdownGracePeriod(cfg)
 
 	logger, logOutputCloser, err := deps.newLogger(cfg.Log.Level, cfg.Log.Format, cfg.Log.Output)
 	if err != nil {
@@ -964,6 +971,22 @@ func effectiveHijackInactivityTimeout(cfg *config.Config) time.Duration {
 	return d
 }
 
+// effectiveShutdownGracePeriod resolves cfg.Server.ShutdownGrace to the
+// time.Duration shutdownServers waits for in-flight requests before force-
+// closing every listener. Unlike hijack_inactivity_timeout, 0 is a valid,
+// meaningful value (close immediately) rather than a rejected one, so only
+// a parse failure falls back to the package default (30s) —
+// server.shutdown_grace is validated at config load to always be a
+// non-negative duration, so the fallback should never actually trigger
+// outside of tests that bypass validation on purpose.
+func effectiveShutdownGracePeriod(cfg *config.Config) time.Duration {
+	d, err := time.ParseDuration(cfg.Server.ShutdownGrace)
+	if err != nil {
+		return 30 * time.Second
+	}
+	return d
+}
+
 // withBuildkitMediator intercepts POST /session and POST /grpc once
 // request_body.buildkit is configured for the request's effective policy
 // (global, or the client profile clientacl resolved), handing them to
@@ -1105,6 +1128,34 @@ var bodyBlindWritesWarnOnce sync.Once
 // validate time.
 func warnIfBodyBlindWritesEnabled(cfg *config.Config, logger *slog.Logger) {
 	warnBodyBlindWritesOnce(cfg, logger, &bodyBlindWritesWarnOnce)
+}
+
+// warnUnknownEnvVars emits one warning per SOCKGUARD_* environment variable
+// in environ that no configuration key binds. Viper's AutomaticEnv only
+// consults a variable for a key it already knows, so a typo like
+// SOCKGUARD_LISTEN_SOCKT is not an error anywhere — it is read by nothing and
+// the setting it was meant to carry stays at its config-file or default
+// value. On a default-deny proxy that silence is the dangerous direction: the
+// operator believes they tightened something and nothing says otherwise.
+//
+// It runs off the bootstrap logger, before policy verification and config
+// validation, so a typo that goes on to break startup is named ahead of the
+// failure it causes rather than after the process has already exited.
+//
+// Tecnativa compatibility variables (CONTAINERS, POST, ALLOW_START, ...) are
+// never candidates: they carry no SOCKGUARD_ prefix, and compat.go warns
+// about its own unparseable values separately.
+func warnUnknownEnvVars(logger *slog.Logger, configPath string, environ []string) {
+	if logger == nil {
+		return
+	}
+	for _, unknown := range config.UnknownEnvVars(configPath, environ) {
+		attrs := []any{"var", unknown.Name}
+		if unknown.Suggestion != "" {
+			attrs = append(attrs, "did_you_mean", unknown.Suggestion)
+		}
+		logger.Warn("ignoring unrecognized SOCKGUARD_* environment variable: it maps to no configuration key, so the setting it looks like it carries is still at its config-file or default value", attrs...)
+	}
 }
 
 func warnIfDefaultProfileExcluded(cfg *config.Config, logger *slog.Logger) {
