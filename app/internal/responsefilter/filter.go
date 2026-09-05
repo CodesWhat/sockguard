@@ -318,6 +318,18 @@ func (f *Filter) modifyContainerList(resp *http.Response) error {
 	if !f.opts.RedactMountPaths && !f.opts.RedactNetworkTopology {
 		return nil
 	}
+	// Built from the options actually in force rather than declared static,
+	// because this is the list a busy host answers hundreds of entries of and
+	// the two option groups reach disjoint halves of an entry. With only
+	// redact_mount_paths on, NetworkSettings is the largest block in the body
+	// and nothing looks at it.
+	itemFields := make([]string, 0, 3)
+	if f.opts.RedactMountPaths {
+		itemFields = append(itemFields, "Mounts")
+	}
+	if f.opts.RedactNetworkTopology {
+		itemFields = append(itemFields, "HostConfig", "NetworkSettings")
+	}
 	return streamArrayResponse(resp, func(container map[string]any) error {
 		if f.opts.RedactMountPaths {
 			if err := redactMountObjects(container, "Mounts"); err != nil {
@@ -330,14 +342,14 @@ func (f *Filter) modifyContainerList(resp *http.Response) error {
 			}
 		}
 		return nil
-	})
+	}, itemFields...)
 }
 
 func (f *Filter) modifyNetworkList(resp *http.Response) error {
 	if !f.opts.RedactNetworkTopology {
 		return nil
 	}
-	return streamArrayResponse(resp, redactNetworkTopology)
+	return streamArrayResponse(resp, redactNetworkTopology, networkTopologyItemFields...)
 }
 
 func (f *Filter) modifyNetworkInspect(resp *http.Response) error {
@@ -410,14 +422,22 @@ type tableEntry struct {
 	isList  bool
 	active  func(*Options) bool
 	mutate  func(*Filter) func(map[string]any) error
+	// itemFields is the streamArrayResponse itemFields set for a list entry,
+	// and is ignored on an inspect entry (modifyMapResponse always decodes the
+	// whole body — an inspect response is one object, so there is no
+	// per-element decode to skip). It is declared as the union across every
+	// option the mutator branches on rather than per option, because a
+	// superset only ever costs a decode.
+	itemFields []string
 }
 
 // responseTable covers the six list/inspect pairs whose guard + dispatch are uniform.
 // Each resource appears as two consecutive entries: list then inspect.
 var responseTable = []tableEntry{
 	{
-		path:   "/services",
-		isList: true,
+		path:       "/services",
+		isList:     true,
+		itemFields: []string{"Spec", "PreviousSpec", "Endpoint"},
 		active: func(o *Options) bool {
 			return o.RedactContainerEnv || o.RedactMountPaths || o.RedactNetworkTopology || o.RedactSensitiveData
 		},
@@ -432,8 +452,9 @@ var responseTable = []tableEntry{
 		mutate: func(f *Filter) func(map[string]any) error { return f.redactServicePayload },
 	},
 	{
-		path:   "/tasks",
-		isList: true,
+		path:       "/tasks",
+		isList:     true,
+		itemFields: []string{"Spec", "ServiceID", "NodeID", "Status", "NetworksAttachments"},
 		active: func(o *Options) bool {
 			return o.RedactContainerEnv || o.RedactMountPaths || o.RedactNetworkTopology || o.RedactSensitiveData
 		},
@@ -448,10 +469,11 @@ var responseTable = []tableEntry{
 		mutate: func(f *Filter) func(map[string]any) error { return f.redactTaskPayload },
 	},
 	{
-		path:   "/secrets",
-		isList: true,
-		active: func(o *Options) bool { return o.RedactSensitiveData },
-		mutate: func(*Filter) func(map[string]any) error { return redactSecretPayload },
+		path:       "/secrets",
+		isList:     true,
+		itemFields: secretItemFields,
+		active:     func(o *Options) bool { return o.RedactSensitiveData },
+		mutate:     func(*Filter) func(map[string]any) error { return redactSecretPayload },
 	},
 	{
 		inspect: isSecretInspectPath,
@@ -460,10 +482,11 @@ var responseTable = []tableEntry{
 		mutate:  func(*Filter) func(map[string]any) error { return redactSecretPayload },
 	},
 	{
-		path:   "/configs",
-		isList: true,
-		active: func(o *Options) bool { return o.RedactSensitiveData },
-		mutate: func(*Filter) func(map[string]any) error { return redactConfigPayload },
+		path:       "/configs",
+		isList:     true,
+		itemFields: []string{"Spec"},
+		active:     func(o *Options) bool { return o.RedactSensitiveData },
+		mutate:     func(*Filter) func(map[string]any) error { return redactConfigPayload },
 	},
 	{
 		inspect: isConfigInspectPath,
@@ -472,10 +495,11 @@ var responseTable = []tableEntry{
 		mutate:  func(*Filter) func(map[string]any) error { return redactConfigPayload },
 	},
 	{
-		path:   "/plugins",
-		isList: true,
-		active: func(o *Options) bool { return o.RedactContainerEnv || o.RedactMountPaths },
-		mutate: func(f *Filter) func(map[string]any) error { return f.redactPluginPayload },
+		path:       "/plugins",
+		isList:     true,
+		itemFields: []string{"Settings", "Config"},
+		active:     func(o *Options) bool { return o.RedactContainerEnv || o.RedactMountPaths },
+		mutate:     func(f *Filter) func(map[string]any) error { return f.redactPluginPayload },
 	},
 	{
 		inspect: isPluginInspectPath,
@@ -484,10 +508,11 @@ var responseTable = []tableEntry{
 		mutate:  func(f *Filter) func(map[string]any) error { return f.redactPluginPayload },
 	},
 	{
-		path:   "/nodes",
-		isList: true,
-		active: func(o *Options) bool { return o.RedactNetworkTopology || o.RedactSensitiveData },
-		mutate: func(f *Filter) func(map[string]any) error { return f.redactNodePayload },
+		path:       "/nodes",
+		isList:     true,
+		itemFields: []string{"Status", "ManagerStatus", "Description"},
+		active:     func(o *Options) bool { return o.RedactNetworkTopology || o.RedactSensitiveData },
+		mutate:     func(f *Filter) func(map[string]any) error { return f.redactNodePayload },
 	},
 	{
 		inspect: isNodeInspectPath,
@@ -517,7 +542,7 @@ func (f *Filter) dispatchTableEntry(normPath string, resp *http.Response) error 
 		}
 		mutate := e.mutate(f)
 		if e.isList {
-			return streamArrayResponse(resp, mutate)
+			return streamArrayResponse(resp, mutate, e.itemFields...)
 		}
 		return modifyMapResponse(resp, mutate)
 	}
@@ -651,11 +676,153 @@ func acquirePooledBuffer(get func() any) *bytes.Buffer {
 	return out
 }
 
+// listItemPartialDecode is true in production and is turned off only by the
+// differential test.
+//
+// Declaring a short itemFields set is the one way the partial decode can be
+// wrong, and it is wrong in the direction that matters: a key the mutator
+// reaches for but nobody declared is a key the mutator is handed nothing for,
+// so the redaction silently does not happen and the response still looks
+// well-formed. No ordinary test catches that, because the fixture the route's
+// own tests use goes down the same short path. Turning this off decodes every
+// element whole, which is what the code did before itemFields existed, so a
+// route whose set is short produces a different body with it off — and that
+// difference is what the test asserts cannot exist.
+var listItemPartialDecode = true
+
+// listItemCodec decodes and re-encodes one array element at a time, reusing
+// its scratch across every element of the same response.
+//
+// It exists for the partial-decode path. A list body is mostly fields no
+// redaction option can reach — a container list entry's Names, Image, Command,
+// Ports, Labels, State and Status are most of its bytes, and none of them is
+// anything redact_mount_paths or redact_network_topology looks at — and
+// decoding those into map[string]any costs an allocation per string, per
+// nested map and per interface box, all of it thrown away at the re-encode.
+// Here each element is decoded one level deep into json.RawMessage per key,
+// only the declared keys are decoded the rest of the way, and everything else
+// is re-emitted from the bytes the daemon sent.
+//
+// Everything the loop touches is reused: the shallow field map, the map the
+// mutator is handed, and the buffer the rewritten values are marshaled into.
+// The values that buffer holds are handed to encoding/json inside the same
+// iteration that wrote them and are never referenced after it, which is what
+// makes reusing it safe.
+type listItemCodec struct {
+	fields  map[string]json.RawMessage
+	elem    map[string]any
+	scratch bytes.Buffer
+	enc     *json.Encoder
+	spans   []listItemSpan
+
+	// valueReader/valueDec decode one declared field's raw bytes. They are a
+	// pair and are reused for every field of every element, because a fresh
+	// json.Decoder carries a 512-byte read buffer it allocates on first use
+	// and that dominated everything the partial decode was saving. Reusing
+	// them is what encoding/json's Decoder is built for: it is a reader over a
+	// stream of concatenated values, and each Reset supplies the next one.
+	valueReader bytes.Reader
+	valueDec    *json.Decoder
+}
+
+// listItemSpan locates one rewritten value inside listItemCodec.scratch. The
+// slices are taken after every value is written, because appending to the
+// buffer can move its storage and invalidate a slice taken earlier.
+type listItemSpan struct {
+	name       string
+	start, end int
+}
+
+func newListItemCodec(itemFields []string) *listItemCodec {
+	c := &listItemCodec{
+		fields: make(map[string]json.RawMessage),
+		elem:   make(map[string]any, len(itemFields)),
+		spans:  make([]listItemSpan, 0, len(itemFields)),
+	}
+	c.enc = newJSONEncoder(&c.scratch)
+	c.valueDec = newJSONDecoder(&c.valueReader)
+	return c
+}
+
+// decode reads one element and returns the map the mutator operates on. Only
+// the keys in itemFields are decoded; the rest stay as raw bytes in c.fields.
+func (c *listItemCodec) decode(dec *json.Decoder, itemFields []string) (map[string]any, error) {
+	// json.Decoder adds to an existing map rather than replacing it, so a key
+	// the previous element carried and this one does not would otherwise be
+	// re-emitted here.
+	clear(c.fields)
+	clear(c.elem)
+
+	if err := dec.Decode(&c.fields); err != nil {
+		return nil, err
+	}
+	for _, name := range itemFields {
+		raw, ok := c.fields[name]
+		if !ok {
+			continue
+		}
+		c.valueReader.Reset(raw)
+		var value any
+		if err := c.valueDec.Decode(&value); err != nil {
+			return nil, err
+		}
+		c.elem[name] = value
+	}
+	return c.elem, nil
+}
+
+// encode writes the element back out through enc.
+//
+// The mutated values are marshaled into the scratch buffer and put back into
+// the raw field map, and that map is what gets encoded, so the output is what
+// encoding/json would have produced from a full map[string]any either way:
+// the same sorted key order, the same escaping, the same rewritten values.
+// What differs is the fields the mutator never saw, which carry through as the
+// daemon's own bytes with insignificant whitespace removed rather than being
+// round-tripped through map[string]any.
+//
+// Both directions of change survive. A key the mutator added lands in the
+// field map through the first loop, and a key it deleted is dropped by the
+// second, which walks the declared names for exactly that reason: a declared
+// key missing from elem after mutate either was never in the element or was
+// deleted from it, and delete handles both.
+func (c *listItemCodec) encode(enc *json.Encoder, itemFields []string) error {
+	c.scratch.Reset()
+	c.spans = c.spans[:0]
+	for name, value := range c.elem {
+		start := c.scratch.Len()
+		if err := c.enc.Encode(value); err != nil {
+			return err
+		}
+		// json.Encoder.Encode terminates every value with a newline.
+		c.scratch.Truncate(c.scratch.Len() - 1)
+		c.spans = append(c.spans, listItemSpan{name: name, start: start, end: c.scratch.Len()})
+	}
+	marshaled := c.scratch.Bytes()
+	for _, span := range c.spans {
+		c.fields[span.name] = marshaled[span.start:span.end]
+	}
+	for _, name := range itemFields {
+		if _, kept := c.elem[name]; !kept {
+			delete(c.fields, name)
+		}
+	}
+	return enc.Encode(c.fields)
+}
+
 // streamArrayResponse decodes a JSON array from resp.Body one element at a
 // time, calls mutate on each element, and writes the mutated array back to
 // resp.  It replaces the previous read-all → unmarshal → mutate → marshal
 // round-trip for array-shaped endpoints, eliminating the intermediate
 // full-unmarshal allocation while keeping identical output semantics.
+//
+// itemFields names the top-level object keys mutate may read, rewrite or
+// delete; see decodeListItem for what that buys. It has to be a superset of
+// every key mutate and its helpers index into, because a key left out is a
+// key mutate is handed nothing for and therefore cannot redact. Declaring one
+// too many costs a decode and nothing else, so the set errs wide by
+// construction, and passing none at all is the safe default: the element is
+// decoded whole, exactly as before.
 //
 // The size limit (MaxResponseBodyBytes) is enforced by wrapping the body
 // reader before handing it to json.Decoder, so oversized responses are
@@ -666,7 +833,7 @@ func acquirePooledBuffer(get func() any) *bytes.Buffer {
 // is cosmetic: this path re-encodes what the client receives, so a number it
 // decoded as a float64 reaches the client with different digits, and a second
 // document after the array was silently dropped rather than refused.
-func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error) error {
+func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error, itemFields ...string) error {
 	if resp.Body == nil {
 		return rejectResponse(errors.New("missing response body"))
 	}
@@ -700,6 +867,13 @@ func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error)
 
 	enc := newJSONEncoder(out)
 
+	// Nil when the caller declared no fields: every element is decoded whole,
+	// exactly as before, and there is no scratch to carry.
+	var codec *listItemCodec
+	if len(itemFields) > 0 && listItemPartialDecode {
+		codec = newListItemCodec(itemFields)
+	}
+
 	out.WriteByte('[')
 	first := true
 	for dec.More() {
@@ -712,8 +886,16 @@ func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error)
 		}
 
 		var elem map[string]any
-		if err := dec.Decode(&elem); err != nil {
-			return rejectResponse(err)
+		if codec == nil {
+			if err := dec.Decode(&elem); err != nil {
+				return rejectResponse(err)
+			}
+		} else {
+			decoded, err := codec.decode(dec, itemFields)
+			if err != nil {
+				return rejectResponse(err)
+			}
+			elem = decoded
 		}
 		if err := mutate(elem); err != nil {
 			return rejectResponse(err)
@@ -722,7 +904,11 @@ func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error)
 			out.WriteByte(',')
 		}
 		first = false
-		if err := enc.Encode(elem); err != nil {
+		if codec == nil {
+			if err := enc.Encode(elem); err != nil {
+				return rejectResponse(err)
+			}
+		} else if err := codec.encode(enc, itemFields); err != nil {
 			return rejectResponse(err)
 		}
 		// enc.Encode appends a newline; trim it so the output is compact and
@@ -869,6 +1055,11 @@ func (f *Filter) redactTaskPayload(payload map[string]any) error {
 // well, not just through /libpod/secrets/{name}/json. Handling both fields
 // here closes both. Docker's own daemon never emits SecretData, so the extra
 // rewrite is inert against dockerd.
+// secretItemFields are the top-level keys redactSecretPayload indexes into.
+// Both spellings are needed: SecretData is Podman's flat field and Spec is
+// where the Docker Engine's Data lives.
+var secretItemFields = []string{"SecretData", "Spec"}
+
 func redactSecretPayload(payload map[string]any) error {
 	redactStringField(payload, "SecretData")
 	spec, found, err := nestedMapValue(payload, "Spec")
@@ -1789,6 +1980,12 @@ func redactContainerNetworkTopology(payload map[string]any) error {
 	}
 	return nil
 }
+
+// networkTopologyItemFields are the top-level keys redactNetworkTopology
+// indexes into. It sits here rather than at the /networks call site so a key
+// added to the function below is added a line away from the list that has to
+// name it.
+var networkTopologyItemFields = []string{"IPAM", "Status", "Containers", "Peers"}
 
 func redactNetworkTopology(payload map[string]any) error {
 	ipamValue, ok := payload["IPAM"]

@@ -235,7 +235,7 @@ func (f *Filter) modifyLibpodVolumeList(resp *http.Response) error {
 	return streamArrayResponse(resp, func(volume map[string]any) error {
 		redactStringField(volume, "Mountpoint")
 		return nil
-	})
+	}, "Mountpoint")
 }
 
 // modifyLibpodNetworkList rewrites GET /libpod/networks/json. Podman v4 and
@@ -247,7 +247,7 @@ func (f *Filter) modifyLibpodNetworkList(resp *http.Response) error {
 	if !f.opts.RedactNetworkTopology {
 		return nil
 	}
-	return streamArrayResponse(resp, redactLibpodNetworkTopology)
+	return streamArrayResponse(resp, redactLibpodNetworkTopology, libpodNetworkTopologyItemFields...)
 }
 
 // modifyLibpodNetworkInspect rewrites both routes libpod.InspectNetwork is
@@ -348,6 +348,16 @@ func (f *Filter) modifyLibpodNetworkInspect(resp *http.Response) error {
 //
 // ipam_options on the modern shape and ipam.type on the legacy one are left
 // alone. They name the allocator (host-local, dhcp), not an address.
+// libpodNetworkTopologyItemFields are the top-level keys
+// redactLibpodNetworkTopology indexes into, across both native shapes: the
+// three array-valued topology fields, the containers map, the host bridge
+// name, the CNI Bytes blob removeCNIBytes deletes, and the plugins array under
+// both the inspect (lowercase) and list (capitalized) spellings.
+var libpodNetworkTopologyItemFields = append(
+	append([]string{}, libpodNetworkTopologyArrayKeys[:]...),
+	"containers", "network_interface", "Bytes", "plugins", "Plugins",
+)
+
 func redactLibpodNetworkTopology(payload map[string]any) error {
 	for _, key := range libpodNetworkTopologyArrayKeys {
 		value, ok := payload[key]
@@ -652,7 +662,7 @@ func (f *Filter) modifyLibpodSecretList(resp *http.Response) error {
 	if !f.opts.RedactSensitiveData {
 		return nil
 	}
-	return streamArrayResponse(resp, redactSecretPayload)
+	return streamArrayResponse(resp, redactSecretPayload, secretItemFields...)
 }
 
 // decodeJSONObjectArray is decodeJSONObject for a top-level JSON array of

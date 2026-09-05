@@ -161,25 +161,43 @@ func containerListBenchBody(n int) []byte {
 
 // BenchmarkModifyResponseContainerList measures the streaming array path over a
 // 500-entry list, the size a busy host's `docker ps` actually returns.
+//
+// It runs one case per option profile because the two options reach disjoint
+// halves of a list entry, so how much of an entry has to be decoded at all
+// depends on which of them is on.
 func BenchmarkModifyResponseContainerList(b *testing.B) {
-	f := New(Options{RedactMountPaths: true, RedactNetworkTopology: true})
 	body := containerListBenchBody(500)
 	path := "/v1.53/containers/json"
 
-	resp := newBenchResponse(http.MethodGet, path, body)
-	if err := f.ModifyResponse(resp); err != nil {
-		b.Fatalf("warmup ModifyResponse: %v", err)
+	profiles := []struct {
+		name string
+		opts Options
+	}{
+		{"mounts_and_topology", Options{RedactMountPaths: true, RedactNetworkTopology: true}},
+		{"mounts_only", Options{RedactMountPaths: true}},
+		{"topology_only", Options{RedactNetworkTopology: true}},
 	}
-	drainBenchResponse(b, resp)
 
-	b.ReportAllocs()
-	b.SetBytes(int64(len(body)))
-	b.ResetTimer()
-	for b.Loop() {
-		resp := newBenchResponse(http.MethodGet, path, body)
-		if err := f.ModifyResponse(resp); err != nil {
-			b.Fatalf("ModifyResponse: %v", err)
-		}
-		drainBenchResponse(b, resp)
+	for _, profile := range profiles {
+		b.Run(profile.name, func(b *testing.B) {
+			f := New(profile.opts)
+
+			resp := newBenchResponse(http.MethodGet, path, body)
+			if err := f.ModifyResponse(resp); err != nil {
+				b.Fatalf("warmup ModifyResponse: %v", err)
+			}
+			drainBenchResponse(b, resp)
+
+			b.ReportAllocs()
+			b.SetBytes(int64(len(body)))
+			b.ResetTimer()
+			for b.Loop() {
+				resp := newBenchResponse(http.MethodGet, path, body)
+				if err := f.ModifyResponse(resp); err != nil {
+					b.Fatalf("ModifyResponse: %v", err)
+				}
+				drainBenchResponse(b, resp)
+			}
+		})
 	}
 }
