@@ -869,43 +869,138 @@ func routeLabel(req *http.Request, meta *logging.RequestMeta) string {
 	return RouteCategory(req.URL.Path)
 }
 
+// routeFamily holds every route label one Docker resource family can produce,
+// interned once at init. RouteCategory runs on every request through
+// routeLabel, so the labels are looked up rather than concatenated: building
+// "/containers/" + segment allocates a string per request for a value drawn
+// from a set this small and this fixed.
+type routeFamily struct {
+	// base is the collection label, "/containers".
+	base string
+	// id is the single-resource label, "/containers/{id}". Empty for a
+	// family with no identifier slot (swarm, system).
+	id string
+	// anyAction is the catch-all for an action this file does not know,
+	// "/containers/{id}/{action}" or "/swarm/{action}".
+	anyAction string
+	// staticTail maps a second segment that names a collection-level action
+	// ("json", "create", "prune") to its full label.
+	staticTail map[string]string
+	// actions maps a known trailing action to its full label under id.
+	actions map[string]string
+}
+
+// newRouteFamily builds the labels for prefix. idSlot is the placeholder for
+// the resource identifier ("{id}", "{name}"); an empty idSlot marks a family
+// whose second segment is always an action, never an identifier.
+func newRouteFamily(prefix, idSlot string) *routeFamily {
+	f := &routeFamily{base: "/" + prefix}
+	if idSlot == "" {
+		f.anyAction = f.base + "/{action}"
+		return f
+	}
+	f.id = f.base + "/" + idSlot
+	f.anyAction = f.id + "/{action}"
+	return f
+}
+
+func (f *routeFamily) withStaticTails(names ...string) *routeFamily {
+	f.staticTail = make(map[string]string, len(names))
+	for _, name := range names {
+		f.staticTail[name] = f.base + "/" + name
+	}
+	return f
+}
+
+func (f *routeFamily) withActions(names ...string) *routeFamily {
+	f.actions = make(map[string]string, len(names))
+	for _, name := range names {
+		f.actions[name] = f.id + "/" + name
+	}
+	return f
+}
+
+// For every resource family, an unrecognized action is replaced by the finite
+// {action} label rather than copied from the request path, so an attacker
+// cannot mint unbounded label values.
+var (
+	containersFamily = newRouteFamily("containers", "{id}").
+				withStaticTails("json", "create", "prune").
+				withActions(
+			"archive", "attach", "changes", "exec", "export", "json", "kill", "logs",
+			"pause", "rename", "resize", "restart", "start", "stats", "stop", "top",
+			"unpause", "update", "wait",
+		)
+	execFamily   = newRouteFamily("exec", "{id}").withActions("json", "resize", "start")
+	imagesFamily = newRouteFamily("images", "{id}").
+			withStaticTails("json", "create", "get", "load", "prune", "search").
+			withActions("get", "history", "json", "push", "tag")
+	volumesFamily  = newRouteFamily("volumes", "{id}").withStaticTails("create", "prune")
+	networksFamily = newRouteFamily("networks", "{id}").
+			withStaticTails("create", "prune").
+			withActions("connect", "disconnect")
+	secretsFamily  = newRouteFamily("secrets", "{id}").withStaticTails("create").withActions("update")
+	configsFamily  = newRouteFamily("configs", "{id}").withStaticTails("create").withActions("update")
+	servicesFamily = newRouteFamily("services", "{id}").withStaticTails("create").withActions("logs", "update")
+	nodesFamily    = newRouteFamily("nodes", "{id}").withActions("update")
+	pluginsFamily  = newRouteFamily("plugins", "{name}").
+			withStaticTails("pull", "create", "privileges").
+			withActions("disable", "enable", "json", "push", "set", "upgrade")
+	swarmFamily  = newRouteFamily("swarm", "").withStaticTails("init", "join", "leave", "unlockkey", "update")
+	systemFamily = newRouteFamily("system", "").withStaticTails("df")
+)
+
+// maxInlineRouteSegments bounds the stack buffer RouteCategory splits into.
+// A registry-namespaced image path is the longest real shape at five segments
+// (/images/ghcr.io/owner/name:tag/json); a longer one still routes correctly,
+// it just spills the segment slice to the heap.
+const maxInlineRouteSegments = 12
+
 // RouteCategory converts Docker API paths into low-cardinality route templates.
 func RouteCategory(rawPath string) string {
 	path := strings.TrimSpace(rawPath)
 	if path == "" {
 		return "unknown"
 	}
-	path = stripVersionPrefix(path)
-	segments := splitPath(path)
+	var inline [maxInlineRouteSegments]string
+	segments := appendRouteSegments(inline[:0], path)
 	if len(segments) == 0 {
 		return "/"
 	}
 
 	switch segments[0] {
-	case "_ping", "version", "events", "info", "build":
-		return "/" + segments[0]
+	case "_ping":
+		return "/_ping"
+	case "version":
+		return "/version"
+	case "events":
+		return "/events"
+	case "info":
+		return "/info"
+	case "build":
+		return "/build"
 	case "system":
 		return systemRoute(segments)
 	case "containers":
 		return containerRoute(segments)
 	case "exec":
-		return routeWithID("exec", segments)
+		return routeWithID(execFamily, segments)
 	case "images":
 		return imageRoute(segments)
 	case "volumes":
-		return routeWithStaticTail("volumes", segments, map[string]bool{"create": true, "prune": true})
+		return routeWithStaticTail(volumesFamily, segments)
 	case "networks":
-		return routeWithStaticTail("networks", segments, map[string]bool{"create": true, "prune": true})
+		return routeWithStaticTail(networksFamily, segments)
 	case "secrets":
-		return routeWithStaticTail("secrets", segments, map[string]bool{"create": true})
+		return routeWithStaticTail(secretsFamily, segments)
 	case "configs":
-		return routeWithStaticTail("configs", segments, map[string]bool{"create": true})
+		return routeWithStaticTail(configsFamily, segments)
 	case "services":
-		return routeWithStaticTail("services", segments, map[string]bool{"create": true})
+		return routeWithStaticTail(servicesFamily, segments)
 	case "swarm":
 		return swarmRoute(segments)
 	case "nodes":
-		return routeWithID("nodes", segments)
+		return routeWithID(nodesFamily, segments)
 	case "plugins":
 		return pluginRoute(segments)
 	default:
@@ -913,23 +1008,51 @@ func RouteCategory(rawPath string) string {
 	}
 }
 
-func stripVersionPrefix(path string) string {
-	segments := splitPath(path)
-	if len(segments) == 0 || !isDockerVersionSegment(segments[0]) {
-		if strings.HasPrefix(path, "/") {
-			return path
-		}
-		return "/" + path
+// appendRouteSegments splits path into its slash-separated segments, dropping
+// a leading Docker API version segment on the way through, and appends them to
+// dst. Callers pass a stack array's empty slice, so a path within
+// maxInlineRouteSegments costs no allocation at all.
+//
+// Leading and trailing slashes are dropped, before and after the version
+// segment both; an interior empty segment ("/containers//json") is kept, which
+// is what a Trim-then-Split of the whole path used to produce and what keeps
+// such a path on the {id} template rather than on a shorter one.
+func appendRouteSegments(dst []string, path string) []string {
+	start := 0
+	for start < len(path) && path[start] == '/' {
+		start++
 	}
-	return "/" + strings.Join(segments[1:], "/")
-}
+	end := len(path)
+	for end > start && path[end-1] == '/' {
+		end--
+	}
+	if start >= end {
+		return dst
+	}
+	rest := path[start:end]
 
-func splitPath(path string) []string {
-	trimmed := strings.Trim(path, "/")
-	if trimmed == "" {
-		return nil
+	first := rest
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		first = rest[:i]
 	}
-	return strings.Split(trimmed, "/")
+	if isDockerVersionSegment(first) {
+		rest = rest[len(first):]
+		for len(rest) > 0 && rest[0] == '/' {
+			rest = rest[1:]
+		}
+		if rest == "" {
+			return dst
+		}
+	}
+
+	for {
+		i := strings.IndexByte(rest, '/')
+		if i < 0 {
+			return append(dst, rest)
+		}
+		dst = append(dst, rest[:i])
+		rest = rest[i+1:]
+	}
 }
 
 // isDockerVersionSegment reports whether segment is an API version prefix
@@ -957,118 +1080,81 @@ func isDockerVersionSegment(segment string) bool {
 }
 
 func containerRoute(segments []string) string {
-	if len(segments) == 1 {
-		return "/containers"
-	}
-	if len(segments) == 2 && (segments[1] == "json" || segments[1] == "create" || segments[1] == "prune") {
-		return "/containers/" + segments[1]
-	}
-	return routeWithID("containers", segments)
+	return routeWithStaticTail(containersFamily, segments)
 }
 
 func imageRoute(segments []string) string {
-	if len(segments) == 1 {
-		return "/images"
-	}
-	switch {
-	case len(segments) == 2 && isKnownAction(segments[1], "json", "create", "get", "load", "prune", "search"):
-		return "/images/" + segments[1]
-	}
-	return routeWithID("images", segments)
+	return routeWithStaticTail(imagesFamily, segments)
 }
 
 func pluginRoute(segments []string) string {
 	if len(segments) == 1 {
-		return "/plugins"
-	}
-	switch {
-	case len(segments) == 2 && isKnownAction(segments[1], "pull", "create", "privileges"):
-		return "/plugins/" + segments[1]
+		return pluginsFamily.base
 	}
 	if len(segments) == 2 {
-		return "/plugins/{name}"
+		if label, ok := pluginsFamily.staticTail[segments[1]]; ok {
+			return label
+		}
+		return pluginsFamily.id
 	}
-	if len(segments) == 3 && isKnownRouteAction("plugins", segments[2]) {
-		return "/plugins/{name}/" + segments[2]
+	if len(segments) == 3 {
+		if label, ok := pluginsFamily.actions[segments[2]]; ok {
+			return label
+		}
 	}
-	return "/plugins/{name}/{action}"
+	return pluginsFamily.anyAction
 }
 
-func routeWithStaticTail(prefix string, segments []string, static map[string]bool) string {
+// routeWithStaticTail routes a family whose second segment is either a
+// collection-level action ("/volumes/prune") or a resource identifier.
+func routeWithStaticTail(f *routeFamily, segments []string) string {
 	if len(segments) == 1 {
-		return "/" + prefix
+		return f.base
 	}
-	if len(segments) == 2 && static[segments[1]] {
-		return "/" + prefix + "/" + segments[1]
+	if len(segments) == 2 {
+		if label, ok := f.staticTail[segments[1]]; ok {
+			return label
+		}
 	}
-	return routeWithID(prefix, segments)
+	return routeWithID(f, segments)
 }
 
 func systemRoute(segments []string) string {
-	if len(segments) == 1 {
-		return "/system"
-	}
-	if len(segments) == 2 && segments[1] == "df" {
-		return "/system/df"
-	}
-	return "/system/{action}"
+	return routeStaticOrAction(systemFamily, segments)
 }
 
 func swarmRoute(segments []string) string {
-	if len(segments) == 1 {
-		return "/swarm"
-	}
-	if len(segments) == 2 && isKnownAction(segments[1], "init", "join", "leave", "unlockkey", "update") {
-		return "/swarm/" + segments[1]
-	}
-	return "/swarm/{action}"
+	return routeStaticOrAction(swarmFamily, segments)
 }
 
-func routeWithID(prefix string, segments []string) string {
+// routeStaticOrAction routes a family with no identifier slot: the second
+// segment is an action, known or collapsed to {action}.
+func routeStaticOrAction(f *routeFamily, segments []string) string {
 	if len(segments) == 1 {
-		return "/" + prefix
+		return f.base
 	}
 	if len(segments) == 2 {
-		return "/" + prefix + "/{id}"
+		if label, ok := f.staticTail[segments[1]]; ok {
+			return label
+		}
+	}
+	return f.anyAction
+}
+
+func routeWithID(f *routeFamily, segments []string) string {
+	if len(segments) == 1 {
+		return f.base
+	}
+	if len(segments) == 2 {
+		return f.id
 	}
 	// Docker image names may contain slashes (registry/owner/repo:tag), so the
 	// {id} slot swallows every segment between the prefix and a known trailing
-	// action. For every resource family, an unrecognized action is replaced by
-	// the finite {action} template rather than copied from the request path.
-	action := segments[len(segments)-1]
-	if isKnownRouteAction(prefix, action) {
-		return "/" + prefix + "/{id}/" + action
+	// action.
+	if label, ok := f.actions[segments[len(segments)-1]]; ok {
+		return label
 	}
-	return "/" + prefix + "/{id}/{action}"
-}
-
-func isKnownRouteAction(prefix, action string) bool {
-	switch prefix {
-	case "containers":
-		return isKnownAction(action,
-			"archive", "attach", "changes", "exec", "export", "json", "kill", "logs",
-			"pause", "rename", "resize", "restart", "start", "stats", "stop", "top",
-			"unpause", "update", "wait",
-		)
-	case "exec":
-		return isKnownAction(action, "json", "resize", "start")
-	case "images":
-		return isKnownAction(action, "get", "history", "json", "push", "tag")
-	case "networks":
-		return isKnownAction(action, "connect", "disconnect")
-	case "secrets", "configs", "nodes":
-		return action == "update"
-	case "services":
-		return isKnownAction(action, "logs", "update")
-	case "plugins":
-		return isKnownAction(action, "disable", "enable", "json", "push", "set", "upgrade")
-	default:
-		return false
-	}
-}
-
-func isKnownAction(action string, known ...string) bool {
-	return slices.Contains(known, action)
+	return f.anyAction
 }
 
 type responseWriter struct {

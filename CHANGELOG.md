@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Performance
+
+- **Route metric labels no longer allocate.** `RouteCategory` runs on every request through `routeLabel`, and it split the path twice (once to test for an API version prefix, once to route it) and concatenated the label it returned. It now walks the path once with an index cursor into a stack-allocated segment array, folding the version-prefix check into the same pass, and looks the label up in a per-family table interned at init. A versioned container list costs 0 allocations instead of 5 (128 B) and 19 ns/op instead of 98; no route label changes.
+- **Concurrent `/health` requests no longer serialize on the health cache's mutex.** The cached upstream verdict is published as a single atomic pointer, so a request that hits the cache reads it with no lock; probes still serialize under the same mutex and the same single-flight, so two concurrent misses still produce one dial. Under contention a cache hit costs 24 ns/op instead of 155. TTL, failure-TTL and eviction semantics are unchanged.
+- **Injecting visibility label filters no longer parses and rebuilds the whole query string.** A list request whose query carries no `filters` parameter of its own now has the encoded selectors appended to the raw query instead of being decoded into a `url.Values` and re-encoded parameter by parameter, which costs 19 allocations instead of 28 and 853 ns/op instead of 1125 on a request with two other parameters. A query that already carries `filters` (or a percent escape, or a semicolon separator) still takes the decode-and-merge path unchanged, and the forwarded query means the same thing either way.
+
 ### Changed
 
 - **`isNodeUpdatePath` and `isLibpodPath`, duplicated verbatim between `internal/filter`, `internal/ownership`, and `internal/responsefilter`, now live in a new leaf package, `internal/apipath`, that all three import; the old package-local names stay as one-line wrappers so no call site changed.** `internal/ownership/paths.go`'s nine near-identical `*Identifier` extractors (`containerIdentifier`, `execIdentifier`, `networkIdentifier`, `volumeIdentifier`, `serviceIdentifier`, `taskIdentifier`, `secretIdentifier`, `configIdentifier`, `nodeIdentifier`) also collapse onto one parameterized `resourceIdentifier` helper, again kept as one-line wrappers with the same exported behavior. No behaviour change.
