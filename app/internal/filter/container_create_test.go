@@ -3314,3 +3314,47 @@ func TestContainerCreateTmpfsOptions(t *testing.T) {
 		})
 	}
 }
+
+// TestRejectDuplicateCaseVariantJSONValueMatchesByteForm locks the two entry
+// points to one verdict. RejectDuplicateCaseVariantJSONValue exists so a
+// caller that already decoded a body does not decode it twice, which is only
+// safe while it agrees with the byte-taking form on every input — including
+// the case-sensitive data-map exemption, where the two are easiest to drift
+// apart.
+func TestRejectDuplicateCaseVariantJSONValueMatchesByteForm(t *testing.T) {
+	t.Parallel()
+	bodies := []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{name: "clean container create", body: `{"Image":"busybox","HostConfig":{"Binds":["a:/a"]},"Labels":{"x":"1"}}`},
+		{name: "top-level case-variant duplicate", body: `{"HostConfig":{"a":1},"hostconfig":{"b":2}}`, wantErr: true},
+		{name: "nested case-variant duplicate", body: `{"HostConfig":{"NetworkMode":"a","networkmode":"b"}}`, wantErr: true},
+		{name: "data map keys differing only in case are data", body: `{"Labels":{"Foo":"1","foo":"2"}}`},
+		{name: "struct nested under a data map is still checked", body: `{"NetworkingConfig":{"EndpointsConfig":{"n":{"NetworkID":"a","networkid":"b"}}}}`, wantErr: true},
+		{name: "large integers", body: `{"HostConfig":{"Memory":9007199254740993}}`},
+		{name: "arrays of objects", body: `{"Mounts":[{"Type":"volume","Source":"v"},{"Type":"bind","source":"/s","Source":"/t"}]}`, wantErr: true},
+	}
+
+	for _, tt := range bodies {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			byteErr := RejectDuplicateCaseVariantJSONKeys([]byte(tt.body))
+			if (byteErr != nil) != tt.wantErr {
+				t.Fatalf("RejectDuplicateCaseVariantJSONKeys() error = %v, wantErr %v", byteErr, tt.wantErr)
+			}
+
+			var decoded any
+			dec := json.NewDecoder(strings.NewReader(tt.body))
+			dec.UseNumber()
+			if err := dec.Decode(&decoded); err != nil {
+				t.Fatalf("decode fixture: %v", err)
+			}
+			valueErr := RejectDuplicateCaseVariantJSONValue(decoded)
+			if (valueErr != nil) != (byteErr != nil) {
+				t.Fatalf("RejectDuplicateCaseVariantJSONValue() error = %v, want the byte form's verdict %v", valueErr, byteErr)
+			}
+		})
+	}
+}
