@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The README and website comparison tables no longer credit Tecnativa's `ALLOW_*` vars as a working `Partial` control for granular container write ops.** Tecnativa's own shipped `haproxy.cfg` denies every non-GET request before the `ALLOW_*` rules ever run, so `ALLOW_RESTARTS=1`/`ALLOW_START=1`/etc. are documented but dead in the config Tecnativa ships. The cell now reads `Documented only (POST gate blocks them)` in `README.md`'s feature-comparison table and in `website/src/app/data/comparison-rows.ts`'s "Granular POST ops" row. LinuxServer's cell is untouched: its own README states those same `ALLOW_*` vars "work even when `POST=0`", the opposite of Tecnativa's behavior.
+
 ### Removed
 
 - The internal `security_best_practices_report.md` write-up (dated 2026-07-20) is no longer tracked in the repo; it's archived locally in the gitignored `.planning/`. Public security material stays in `SECURITY.md`, `SECURITY-ASSURANCE.md`, and the docs site.
