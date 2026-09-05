@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Every competitor comparison claim now names the upstream version it was checked against.** README.md's feature-comparison table, `website/src/app/data/comparison-rows.ts` (rendered by `compare-matrix.tsx`), and `docs/content/docs/migration.mdx`'s five per-competitor sections each carry a "versions checked 2026-09-05" line naming Tecnativa `docker-socket-proxy` v0.5.0, LinuxServer `docker-socket-proxy` 3.4.4-r0-ls96, wollomatic `socket-proxy` 1.13.1, 11notes `docker-socket-proxy` v2.1.8, and hectorm `cetusguard` v1.1.4, re-checked at every release cut, so a "cannot do X" claim can't go stale silently (DOC-10).
+
+### Changed
+
 - **The README and website comparison tables no longer credit Tecnativa's `ALLOW_*` vars as a working `Partial` control for granular container write ops.** Tecnativa's own shipped `haproxy.cfg` denies every non-GET request before the `ALLOW_*` rules ever run, so `ALLOW_RESTARTS=1`/`ALLOW_START=1`/etc. are documented but dead in the config Tecnativa ships. The cell now reads `Documented only (POST gate blocks them)` in `README.md`'s feature-comparison table and in `website/src/app/data/comparison-rows.ts`'s "Granular POST ops" row. LinuxServer's cell is untouched: its own README states those same `ALLOW_*` vars "work even when `POST=0`", the opposite of Tecnativa's behavior.
 - The LinuxServer migration section in the docs now lists the LinuxServer env vars sockguard has no equivalent for, instead of documenting only the ten write-side `ALLOW_*` vars it supports: `DISABLE_IPV6`, the five GET-only sub-resource gates (`ALLOW_ARCHIVE`, `ALLOW_CHANGES`, `ALLOW_EXPORT`, `ALLOW_LOGS`, `ALLOW_TOP`), the fifteen `LIBPOD_*` Podman compat vars, and `TZ`. `DISABLE_IPV6`'s "ignored" note moves out of the Tecnativa section, since it's LinuxServer's own variable, not Tecnativa's.
 
