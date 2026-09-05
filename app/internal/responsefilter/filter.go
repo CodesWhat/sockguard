@@ -626,6 +626,24 @@ func modifyMapResponse(resp *http.Response, mutate func(map[string]any) error) e
 	return writeResponseBody(resp, payload)
 }
 
+// acquireStreamArrayBuffer returns an empty *bytes.Buffer to accumulate a
+// rewritten list response in. get is streamArrayBufferPool.Get in production.
+//
+// A sync.Pool Get can hand back something that is not a usable *bytes.Buffer:
+// a pool whose New returns nil, or (in a future refactor) a pool holding a
+// different type. Both land on a nil out, which would panic on the Reset
+// below, so the fallback allocates instead. Taking get as a parameter is what
+// makes that fallback reachable from a test without draining the real pool,
+// whose Put deliberately discards entries at random under -race.
+func acquireStreamArrayBuffer(get func() any) *bytes.Buffer {
+	out, _ := get().(*bytes.Buffer)
+	if out == nil {
+		out = &bytes.Buffer{}
+	}
+	out.Reset()
+	return out
+}
+
 // streamArrayResponse decodes a JSON array from resp.Body one element at a
 // time, calls mutate on each element, and writes the mutated array back to
 // resp.  It replaces the previous read-all → unmarshal → mutate → marshal
@@ -664,11 +682,7 @@ func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error)
 		return rejectResponse(fmt.Errorf("expected JSON array, got %T %v", tok, tok))
 	}
 
-	out, _ := streamArrayBufferPool.Get().(*bytes.Buffer)
-	if out == nil {
-		out = &bytes.Buffer{}
-	}
-	out.Reset()
+	out := acquireStreamArrayBuffer(streamArrayBufferPool.Get)
 	defer streamArrayBufferPool.Put(out)
 
 	enc := newJSONEncoder(out)

@@ -130,10 +130,18 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	// falls back to a literal "ssh://"+name rather than being rejected). It
 	// is also an egress channel, so it appears in sensitiveExfilEndpoints
 	// too — admitting it takes both acknowledgments, one per direction.
+	//
+	// The identifier is spelled as a route path, not a decoded one, because
+	// the trailing empty segment is what separates this catch-all from the
+	// push/tag/untag routes registered ahead of it: Podman routes
+	// POST /libpod/images/scp/{name}/push/ here while the exclusions below
+	// hold for the bare .../push. The same shape covers the empty name, since
+	// POST /libpod/images/scp/ routes here too. See
+	// catalogIdentifierRoutePath.
 	{
 		method:          http.MethodPost,
 		path:            "/libpod/images/scp/sockguard-test",
-		identifierShape: catalogIdentifierPath,
+		identifierShape: catalogIdentifierRoutePath,
 		exclusions: []catalogPathExclusion{
 			{path: "/libpod/images/scp/push"},
 			{path: "/libpod/images/scp/tag"},
@@ -282,10 +290,15 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 	// their one mitigation: there is no registry to allowlist, and an
 	// unrecognized connection name is turned into "ssh://"+name instead of
 	// being refused, so the destination is an arbitrary SSH endpoint.
+	//
+	// Spelled as a route path for the same reason as its body-write twin: the
+	// trailing empty segment carries POST /libpod/images/scp/{name}/push/ into
+	// this catch-all, and an absent name carries POST /libpod/images/scp/ into
+	// it. See catalogIdentifierRoutePath.
 	{
 		method:          http.MethodPost,
 		path:            "/libpod/images/scp/sockguard-test",
-		identifierShape: catalogIdentifierPath,
+		identifierShape: catalogIdentifierRoutePath,
 		exclusions: []catalogPathExclusion{
 			{path: "/libpod/images/scp/push"},
 			{path: "/libpod/images/scp/tag"},
@@ -624,6 +637,13 @@ func allowedCatalogPaths(method, catalogPath string, identifierShape catalogIden
 		if policyAllowsPath(method, witness, compiledRules) {
 			return []string{witness}
 		}
+		// The witness did not survive the evaluator, so the endpoint is
+		// reported conservatively under its catalog spelling rather than as a
+		// path. Every concrete path this function returns is evaluator-
+		// confirmed; a returned catalog spelling is either allowed outright
+		// (the fast path above) or a conservative stand-in. The
+		// read-exfiltration warning says so, because it is the one caller that
+		// reports rather than refuses.
 		return []string{catalogPath}
 	case catalogReachabilityIndeterminate:
 		return []string{catalogPath}
