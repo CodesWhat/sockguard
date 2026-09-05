@@ -396,6 +396,18 @@ func TestLiteralPrefixForPattern(t *testing.T) {
 		{name: "double star before slash keeps slash prefix", pattern: "/containers/**/json", want: "/containers/"},
 		{name: "leading wildcard", pattern: "**/json", want: ""},
 		{name: "match all", pattern: "/**", want: ""},
+		// Every "/**" is optional, so a pattern whose whole tail is made of
+		// them matches its bare head and the prefix cannot keep the slash.
+		{name: "stacked double star trims the optional slash", pattern: "/containers/**/**", want: "/containers"},
+		{name: "triple stacked double star trims the optional slash", pattern: "/containers/**/**/**", want: "/containers"},
+		{name: "stacked double star into a star run trims the optional slash", pattern: "/containers/**/***", want: "/containers"},
+		// The tail resumes with a literal that is not a slash, so the head can
+		// be followed immediately by it.
+		{name: "stacked double star welded to a literal trims the optional slash", pattern: "/containers/**/**json", want: "/containers"},
+		// The tail still guarantees a slash, so this one keeps it.
+		{name: "stacked double star before a literal segment keeps slash prefix", pattern: "/containers/**/**/json", want: "/containers/"},
+		{name: "double star before a single star keeps slash prefix", pattern: "/containers/**/*", want: "/containers/"},
+		{name: "single star before stacked double star keeps slash prefix", pattern: "/containers/*/**/**", want: "/containers/"},
 	}
 
 	for _, tt := range tests {

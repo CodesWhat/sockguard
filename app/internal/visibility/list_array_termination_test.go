@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/testhelp"
 )
 
 // TestPatternListRejectsUnterminatedArrayAndTrailingBytes pins that the
@@ -19,33 +20,26 @@ import (
 // Elements are still checked individually, so this was never a confidentiality
 // bypass. It made the documented fail-closed claim narrower than stated, which
 // is what these cases hold to.
+//
+// The cases come from testhelp.JSONArrayTerminationCases because
+// internal/responsefilter streams the same Docker list bodies through a
+// decoder of its own, and two decoders that have to agree eventually will not.
+// TestArrayTerminationParityWithVisibility runs this table over that package's
+// routes; a case added here is a case that package has to answer too.
 func TestPatternListRejectsUnterminatedArrayAndTrailingBytes(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name     string
-		body     string
-		wantCode int
-	}{
-		{name: "open bracket only", body: `[`, wantCode: http.StatusBadGateway},
-		{name: "unclosed object inside the array", body: `[{`, wantCode: http.StatusBadGateway},
-		{name: "element decoded but array never closed", body: `[{"Id":"a"}`, wantCode: http.StatusBadGateway},
-		{name: "trailing garbage after the array", body: `[{"Id":"a"}]garbage`, wantCode: http.StatusBadGateway},
-		{name: "second value after the array", body: `[{"Id":"a"}] [{"Id":"b"}]`, wantCode: http.StatusBadGateway},
-		{name: "trailing comma after the array", body: `[{"Id":"a"}],`, wantCode: http.StatusBadGateway},
-		{name: "trailing null after the array", body: `[{"Id":"a"}]null`, wantCode: http.StatusBadGateway},
-		{name: "trailing whitespace is still an array", body: "[{\"Id\":\"a\"}]   \n\t", wantCode: http.StatusOK},
-		{name: "closed array", body: `[{"Id":"a"}]`, wantCode: http.StatusOK},
-		{name: "empty array", body: `[]`, wantCode: http.StatusOK},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	for _, tt := range testhelp.JSONArrayTerminationCases() {
+		t.Run(tt.Name, func(t *testing.T) {
 			t.Parallel()
+			wantCode := http.StatusBadGateway
+			if tt.Accept {
+				wantCode = http.StatusOK
+			}
 			upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
-				_, _ = io.WriteString(w, tt.body)
+				_, _ = io.WriteString(w, tt.Body)
 			})
 			// A policy with an image axis only: the container items above
 			// carry no Image field, so nothing is filtered out and the test
@@ -59,16 +53,16 @@ func TestPatternListRejectsUnterminatedArrayAndTrailingBytes(t *testing.T) {
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 
-			if rec.Code != tt.wantCode {
-				t.Fatalf("status = %d, want %d; body: %s", rec.Code, tt.wantCode, rec.Body.String())
+			if rec.Code != wantCode {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, wantCode, rec.Body.String())
 			}
-			if tt.wantCode != http.StatusBadGateway {
+			if tt.Accept {
 				return
 			}
 			if meta.ReasonCode != reasonCodeVisibilityPolicyLookupFailed {
 				t.Errorf("meta.ReasonCode = %q, want %q", meta.ReasonCode, reasonCodeVisibilityPolicyLookupFailed)
 			}
-			if body := rec.Body.String(); body == tt.body {
+			if body := rec.Body.String(); body == tt.Body {
 				t.Errorf("upstream body was relayed instead of refused: %s", body)
 			}
 		})

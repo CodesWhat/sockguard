@@ -19,6 +19,16 @@ func FuzzFilterModifyResponse(f *testing.F) {
 	f.Add("/v1.53/containers/abc123/json", []byte(`{"Config":`))
 	f.Add("/_ping", []byte("not-json"))
 
+	// Array-termination seeds: the shapes a streaming decoder completes on
+	// the client's behalf unless the closing bracket is required and the
+	// bytes after it are refused.
+	f.Add("/v1.53/containers/json", []byte(`[`))
+	f.Add("/v1.53/containers/json", []byte(`[{"Id":"c-a"}`))
+	f.Add("/v1.53/containers/json", []byte(`[{"Id":"c-a"}]garbage`))
+	f.Add("/v1.53/containers/json", []byte(`[{"Id":"c-a"}] [{"Id":"c-b"}]`))
+	f.Add("/v1.53/containers/json", []byte("[{\"Id\":\"c-a\"}]  \n\t"))
+	f.Add("/v5.8.1/libpod/networks/net-a/json", []byte(`[{"name":"net-a"}][{"name":"net-b"}]`))
+
 	// Swarm-resource seeds: exercise redactServicePayload, redactTaskPayload,
 	// redactSecretPayload, redactConfigPayload, redactNodePayload, and redactSwarmPayload.
 	f.Add("/v1.53/services", []byte(`[{"ID":"srv-1","Spec":{"TaskTemplate":{"ContainerSpec":{"Env":["SECRET_TOKEN=shh"],"Mounts":[{"Type":"bind","Source":"/srv/data","Target":"/app"}],"Secrets":[{"SecretID":"sec-1","SecretName":"prod-db"}],"Configs":[{"ConfigID":"cfg-1","ConfigName":"app.conf"}]}}},"Endpoint":{"VirtualIPs":[{"NetworkID":"net-1","Addr":"10.0.0.2/24"}]}}]`))
@@ -54,11 +64,32 @@ func FuzzFilterModifyResponse(f *testing.F) {
 			},
 		}
 
-		_ = filter.ModifyResponse(resp)
+		err := filter.ModifyResponse(resp)
 
+		var out []byte
 		if resp.Body != nil {
-			_, _ = io.ReadAll(resp.Body)
+			out, _ = io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
+		}
+
+		// Smuggling invariant. Every path that rewrites a body here decodes
+		// the whole body first, so a rewrite the filter accepted is a claim
+		// that it accounted for every byte the daemon sent. The oracle is
+		// json.Valid, encoding/json's own whole-body parse, deliberately not
+		// the streaming decoder streamArrayResponse runs: it rejects trailing
+		// non-whitespace and anything incomplete, which is the property a
+		// disagreement between the two decoders would violate. Without it a
+		// truncated array closed on the client's behalf, or a second document
+		// dropped after the first, comes back as a well-formed 200 the client
+		// reads as the complete response.
+		//
+		// Only rewrites are checked, and only in this direction. An untouched
+		// body is a path this filter does not claim to have parsed, and the
+		// reverse implication is legitimate: a well-formed body whose shape
+		// the redactors reject is a correct refusal.
+		if err == nil && !bytes.Equal(out, body) && !json.Valid(body) {
+			t.Fatalf("ModifyResponse rewrote a body that is not one complete JSON document: path=%q in=%q out=%q",
+				path, body, out)
 		}
 	})
 }

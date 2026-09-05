@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/codeswhat/sockguard/app/internal/imagetrust"
+	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 )
 
@@ -3095,6 +3096,51 @@ func TestBuildImageTrustFieldsInvalidKeyFails(t *testing.T) {
 	})
 	if f.initErr == nil {
 		t.Fatal("expected initErr for invalid PEM key, got nil")
+	}
+}
+
+// TestBuildImageTrustFieldsKeylessTrustRootFailureFailsClosed kills the
+// CONDITIONALS_NEGATION mutant on buildImageTrustFields' `if tmErr != nil`
+// guard (-> tmErr == nil), which walks past a failed trust-root fetch and
+// hands imagetrust.New a nil TrustedMaterial. Both versions fail closed, so
+// nothing about the deny decision separates them: what separates them is the
+// initErr the policy reports, which under the mutant blames verifier
+// construction and drops the download failure that actually happened.
+//
+// imagetrust.LoadLiveTrustedRoot only fails on a TUF or network fault, so the
+// loadLiveTrustedRoot seam is what makes the branch reachable offline.
+func TestBuildImageTrustFieldsKeylessTrustRootFailureFailsClosed(t *testing.T) {
+	original := loadLiveTrustedRoot
+	t.Cleanup(func() { loadLiveTrustedRoot = original })
+
+	loadErr := errors.New("TUF mirror unreachable")
+	calls := 0
+	loadLiveTrustedRoot = func() (root.TrustedMaterial, error) {
+		calls++
+		return nil, loadErr
+	}
+
+	f := buildImageTrustFields(ImageTrustOptions{
+		Mode: "enforce",
+		AllowedKeyless: []KeylessOptions{
+			{Issuer: "https://accounts.google.com", SubjectPattern: ".*@example.com"},
+		},
+	})
+
+	if calls != 1 {
+		t.Fatalf("trust root load calls = %d, want 1", calls)
+	}
+	if f.initErr == nil {
+		t.Fatal("initErr = nil after a failed trust root load, want a fail-closed error")
+	}
+	if !errors.Is(f.initErr, loadErr) {
+		t.Fatalf("initErr = %v, want it to wrap the trust root load failure", f.initErr)
+	}
+	if !strings.Contains(f.initErr.Error(), "keyless trust root load failed") {
+		t.Fatalf("initErr = %q, want it to name the trust root load as the failure", f.initErr)
+	}
+	if f.verifier != nil {
+		t.Error("verifier built on top of a trust root that never loaded")
 	}
 }
 

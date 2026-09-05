@@ -60,6 +60,7 @@ const (
 	reasonCodeVisibilityPolicyHidResource   = "visibility_policy_hid_resource"
 	reasonCodeVisibilityResponseTooLarge    = "visibility_response_too_large"
 	reasonCodeVisibilityPodmanEvents        = "visibility_podman_events_unscopeable"
+	reasonCodeVisibilityPodmanSecretList    = "visibility_podman_secret_list_unscopeable" // #nosec G101 -- reason code, not a credential
 	reasonCodeVisibilityLibpodDataUsage     = "visibility_libpod_data_usage_unscopeable"
 	reasonCodeVisibilityLibpodEvents        = "visibility_libpod_events_unscopeable"
 	reasonCodeVisibilityNotModified         = "visibility_not_modified_unfilterable"
@@ -228,6 +229,27 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 			// ordinary list path here, unchanged. See podmanEventsDenyReason.
 			if podmanUpstream && normPath == compatEventsPath {
 				handlePodmanCompatEventsRequest(next, w, r, &effectivePolicy)
+				return
+			}
+			// The Docker-compat GET /secrets is the second endpoint whose
+			// behavior depends on which engine answers it. On dockerd the
+			// injected label filter below is correct; on Podman the same path
+			// is compat.ListSecrets, the handler that also serves
+			// GET /libpod/secrets/json, and its filter grammar accepts only
+			// name and id, answering 500 for the label key. There is no
+			// narrowed request to send and no in-proxy filter for the shape
+			// yet, so a policy carrying selectors gets a refusal. A
+			// patterns-only policy injects nothing here — the pattern
+			// response filter covers containers and images only — so it is
+			// forwarded untouched, exactly as the no-selector branch of
+			// handlePodmanCompatEventsRequest does. HEAD is refused with GET
+			// for the reason filter.LookupLibpodUnscopeableRead gives: there
+			// is no body-filtering step it could need, so forwarding it is
+			// the same unscoped disclosure. See
+			// filter.PodmanCompatSecretListDenyReason.
+			if podmanUpstream && hasSelectors && normPath == filter.PodmanCompatSecretListPath &&
+				(r.Method == http.MethodGet || r.Method == http.MethodHead) {
+				denyPodmanCompatSecretList(w, r)
 				return
 			}
 			// Podman's native GET /libpod/system/df has the same
