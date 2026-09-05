@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -546,4 +547,134 @@ func TestWarnInsecureUpstreamSpecs(t *testing.T) {
 
 	// A nil logger must be a safe no-op.
 	warnInsecureUpstreamSpecs(nil, []upstream.EndpointSpec{{Address: "tcp://x:1", InsecureAllowPlainTCP: true}}, "test")
+}
+
+// warnUnknownEnvVars must name every SOCKGUARD_* variable that binds to no
+// configuration key, exactly one line each, and must never carry the value —
+// a typo'd variable is as likely to hold a credential as a socket path.
+func TestWarnUnknownEnvVarsNamesEachUnknownOnce(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	warnUnknownEnvVars(logger, "", []string{
+		"SOCKGUARD_LISTEN_SOCKT=/run/should-not-be-logged.sock",
+		"SOCKGUARD_NOT_A_KEY_AT_ALL=1",
+		// A repeat of the first: still one line for it, never two.
+		"SOCKGUARD_LISTEN_SOCKT=/run/should-not-be-logged.sock",
+		"PATH=/usr/local/bin",
+	})
+
+	log := buf.String()
+	if got := strings.Count(log, "\n"); got != 2 {
+		t.Fatalf("warning line count = %d, want 2; log: %q", got, log)
+	}
+	for _, name := range []string{"SOCKGUARD_LISTEN_SOCKT", "SOCKGUARD_NOT_A_KEY_AT_ALL"} {
+		if got := strings.Count(log, "var="+name); got != 1 {
+			t.Fatalf("lines naming %s = %d, want 1; log: %q", name, got, log)
+		}
+	}
+	if strings.Contains(log, "should-not-be-logged") {
+		t.Fatalf("warning logged the variable's value; log: %q", log)
+	}
+}
+
+// A variable spelled the way Viper binds it must stay silent, at every depth
+// the config schema reaches — and so must the Tecnativa compatibility vars,
+// which carry no SOCKGUARD_ prefix and are read by compat.go instead.
+func TestWarnUnknownEnvVarsIgnoresKnownAndCompatVariables(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	warnUnknownEnvVars(logger, "", []string{
+		"SOCKGUARD_LOG_LEVEL=debug",
+		"SOCKGUARD_LISTEN_TLS_CERT_FILE=/certs/server.pem",
+		"SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_PRIVILEGED=false",
+		"SOCKGUARD_REQUEST_BODY_NETWORK_ENDPOINT_CONFIG_ALLOW_ALIASES=false",
+		"CONTAINERS=1",
+		"POST=0",
+		"ALLOW_START=1",
+		"SOCKET_PATH=/var/run/docker.sock",
+		"LOG_LEVEL=debug",
+		"HOME=/root",
+	})
+
+	if buf.Len() != 0 {
+		t.Fatalf("known and compat variables logged: %q", buf.String())
+	}
+}
+
+// A near miss names the variable the operator probably meant; something with
+// no close relative names nothing rather than guessing.
+func TestWarnUnknownEnvVarsSuggestsNearestKnownVariable(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		entry string
+		want  string // expected did_you_mean value, "" means no suggestion
+	}{
+		{name: "dropped letter", entry: "SOCKGUARD_LISTEN_SOCKT=/run/sockguard.sock", want: "SOCKGUARD_LISTEN_SOCKET"},
+		{name: "missing underscore", entry: "SOCKGUARD_LOGLEVEL=debug", want: "SOCKGUARD_LOG_LEVEL"},
+		{name: "singular for plural", entry: "SOCKGUARD_REQUEST_BODY_EXEC_ALLOWED_ENV_VAR=PATH", want: "SOCKGUARD_REQUEST_BODY_EXEC_ALLOWED_ENV_VARS"},
+		{name: "nothing close", entry: "SOCKGUARD_TOTALLY_MADE_UP=1", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var buf bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&buf, nil))
+			warnUnknownEnvVars(logger, "", []string{tt.entry})
+
+			log := buf.String()
+			if got := strings.Count(log, "\n"); got != 1 {
+				t.Fatalf("warning line count = %d, want 1; log: %q", got, log)
+			}
+			if tt.want == "" {
+				if strings.Contains(log, "did_you_mean") {
+					t.Fatalf("expected no suggestion, got: %q", log)
+				}
+				return
+			}
+			if !strings.Contains(log, "did_you_mean="+tt.want) {
+				t.Fatalf("log = %q, want suggestion %q", log, tt.want)
+			}
+		})
+	}
+
+	// A nil logger must be a safe no-op.
+	warnUnknownEnvVars(nil, "", []string{"SOCKGUARD_NOT_A_KEY_AT_ALL=1"})
+}
+
+// Serve startup must emit the warning itself rather than merely expose a
+// helper that could: a variable is only ever reported by the process that ran
+// with it, and it has to be named before the failure a typo goes on to cause.
+func TestRunServeWarnsOnUnknownEnvVar(t *testing.T) {
+	t.Setenv("SOCKGUARD_LISTEN_SOCKT", "/run/typo.sock")
+
+	stopErr := errors.New("stop after startup warnings")
+	deps := newServeTestDeps()
+	deps.loadConfig = func(string) (*config.Config, error) { return testServeConfig(), nil }
+	deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) { return nil, stopErr }
+
+	var errOut bytes.Buffer
+	cmd := newServeCommand()
+	cmd.SetErr(&errOut)
+
+	if err := runServeWithDeps(cmd, nil, deps); !errors.Is(err, stopErr) {
+		t.Fatalf("runServeWithDeps() error = %v, want wrapped %v", err, stopErr)
+	}
+
+	log := errOut.String()
+	if !strings.Contains(log, "var=SOCKGUARD_LISTEN_SOCKT") {
+		t.Fatalf("serve startup did not name the unknown variable; stderr: %q", log)
+	}
+	if !strings.Contains(log, "did_you_mean=SOCKGUARD_LISTEN_SOCKET") {
+		t.Fatalf("serve startup warning carried no suggestion; stderr: %q", log)
+	}
 }

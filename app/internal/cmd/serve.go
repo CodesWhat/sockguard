@@ -94,6 +94,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	// would let that config create or truncate arbitrary files before the
 	// process rejects it.
 	bootstrapLogger := slog.New(slog.NewTextHandler(cmd.ErrOrStderr(), nil))
+	warnUnknownEnvVars(bootstrapLogger, cfgFile, os.Environ())
 
 	trustPath := policyBundleTrustConfigPath(cmd)
 	var bundleVerifier policybundle.Verifier
@@ -1096,6 +1097,34 @@ var bodyBlindWritesWarnOnce sync.Once
 // validate time.
 func warnIfBodyBlindWritesEnabled(cfg *config.Config, logger *slog.Logger) {
 	warnBodyBlindWritesOnce(cfg, logger, &bodyBlindWritesWarnOnce)
+}
+
+// warnUnknownEnvVars emits one warning per SOCKGUARD_* environment variable
+// in environ that no configuration key binds. Viper's AutomaticEnv only
+// consults a variable for a key it already knows, so a typo like
+// SOCKGUARD_LISTEN_SOCKT is not an error anywhere — it is read by nothing and
+// the setting it was meant to carry stays at its config-file or default
+// value. On a default-deny proxy that silence is the dangerous direction: the
+// operator believes they tightened something and nothing says otherwise.
+//
+// It runs off the bootstrap logger, before policy verification and config
+// validation, so a typo that goes on to break startup is named ahead of the
+// failure it causes rather than after the process has already exited.
+//
+// Tecnativa compatibility variables (CONTAINERS, POST, ALLOW_START, ...) are
+// never candidates: they carry no SOCKGUARD_ prefix, and compat.go warns
+// about its own unparseable values separately.
+func warnUnknownEnvVars(logger *slog.Logger, configPath string, environ []string) {
+	if logger == nil {
+		return
+	}
+	for _, unknown := range config.UnknownEnvVars(configPath, environ) {
+		attrs := []any{"var", unknown.Name}
+		if unknown.Suggestion != "" {
+			attrs = append(attrs, "did_you_mean", unknown.Suggestion)
+		}
+		logger.Warn("ignoring unrecognized SOCKGUARD_* environment variable: it maps to no configuration key, so the setting it looks like it carries is still at its config-file or default value", attrs...)
+	}
 }
 
 func warnIfDefaultProfileExcluded(cfg *config.Config, logger *slog.Logger) {
