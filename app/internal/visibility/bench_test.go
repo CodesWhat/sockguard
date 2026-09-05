@@ -158,3 +158,38 @@ func BenchmarkContainerInspectWithPatterns(b *testing.B) {
 		}
 	}
 }
+
+// visibilityBenchSelectors is the shape a policy with two label selectors
+// compiles to, which is what every filtered list request carries through
+// addVisibilityLabelFilters.
+var visibilityBenchSelectors = []compiledSelector{
+	{key: "com.sockguard.visible", value: "true", hasValue: true},
+	{key: "com.sockguard.client", value: "watchtower", hasValue: true},
+}
+
+// BenchmarkAddVisibilityLabelFilters measures the query rewrite on the three
+// shapes a container list arrives in: no query at all, other parameters but no
+// filters, and a filters parameter that has to be decoded and merged.
+func BenchmarkAddVisibilityLabelFilters(b *testing.B) {
+	cases := []struct {
+		name     string
+		rawQuery string
+	}{
+		{name: "no_query", rawQuery: ""},
+		{name: "other_params", rawQuery: "all=true&limit=25"},
+		{name: "existing_filters", rawQuery: `filters={"status":["running"]}`},
+	}
+
+	for _, tt := range cases {
+		b.Run(tt.name, func(b *testing.B) {
+			req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/json", nil)
+			b.ReportAllocs()
+			for b.Loop() {
+				req.URL.RawQuery = tt.rawQuery
+				if _, err := addVisibilityLabelFilters(req, "/containers/json", visibilityBenchSelectors); err != nil {
+					b.Fatalf("addVisibilityLabelFilters() error = %v", err)
+				}
+			}
+		})
+	}
+}

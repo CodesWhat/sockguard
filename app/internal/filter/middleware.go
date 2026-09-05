@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codeswhat/sockguard/app/internal/apipath"
 	"github.com/codeswhat/sockguard/app/internal/httpjson"
 	"github.com/codeswhat/sockguard/app/internal/logging"
 )
@@ -771,8 +772,8 @@ func redactDeniedPath(requestPath string) string {
 		return ""
 	}
 
-	cleanedPath := canonicalizePath(requestPath)
-	normalizedPath := stripVersionPrefix(cleanedPath)
+	cleanedPath := apipath.CanonicalizePath(requestPath)
+	normalizedPath := apipath.StripVersionPrefix(cleanedPath)
 
 	var versionPrefix string
 	if normalizedPath != cleanedPath && strings.HasSuffix(cleanedPath, normalizedPath) {

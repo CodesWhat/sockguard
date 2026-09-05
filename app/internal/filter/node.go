@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+
+	"github.com/codeswhat/sockguard/app/internal/apipath"
 )
 
 const (
@@ -184,9 +186,5 @@ func logNodeDecodeDefer(logger *slog.Logger, r *http.Request, err error) {
 }
 
 func isNodeUpdatePath(normalizedPath string) bool {
-	if !strings.HasPrefix(normalizedPath, "/nodes/") {
-		return false
-	}
-	identifier, tail, ok := strings.Cut(strings.TrimPrefix(normalizedPath, "/nodes/"), "/")
-	return ok && identifier != "" && tail == "update"
+	return apipath.IsNodeUpdatePath(normalizedPath)
 }

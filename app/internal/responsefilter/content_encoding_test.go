@@ -80,7 +80,7 @@ func TestModifyResponse_DecodesGzipOnRedactedInspectRoute(t *testing.T) {
 
 // TestModifyResponse_DecodesGzipOnRedactedListRoute covers the other body
 // reader. streamArrayResponse consumes resp.Body through its own decoder
-// rather than readResponseBody, so it needs its own decode.
+// rather than withResponseBody, so it needs its own decode.
 func TestModifyResponse_DecodesGzipOnRedactedListRoute(t *testing.T) {
 	t.Parallel()
 
