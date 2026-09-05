@@ -204,7 +204,7 @@ func matchPodAction(path, action string) bool {
 // spellings and the exact lowercase value "on" are accepted; omitted, invalid,
 // and false-only groups remain finite.
 func podmanBoolValue(r *http.Request, key string) bool {
-	for queryKey, values := range r.URL.Query() {
+	for queryKey, values := range logging.RequestQuery(r) {
 		if !strings.EqualFold(queryKey, key) || len(values) == 0 {
 			continue
 		}
@@ -223,7 +223,7 @@ func podmanBoolValue(r *http.Request, key string) bool {
 func podmanCompatBoolValue(r *http.Request, key string) bool {
 	// Podman's compatibility decoder uses the Docker falsy set, but retains
 	// gorilla/schema's case-insensitive field lookup and per-key last value.
-	for queryKey, values := range r.URL.Query() {
+	for queryKey, values := range logging.RequestQuery(r) {
 		if !strings.EqualFold(queryKey, key) || len(values) == 0 {
 			continue
 		}
@@ -244,7 +244,7 @@ func podmanCompatBoolValue(r *http.Request, key string) bool {
 // actually treat ?follow=/?stream= — e.g. follow=yes streams at the daemon, so
 // it must be exempt from the request deadline here too, not just follow=1.
 func dockerBoolValue(r *http.Request, key string) bool {
-	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get(key))) {
+	switch strings.ToLower(strings.TrimSpace(logging.RequestQuery(r).Get(key))) {
 	case "", "0", "no", "false", "none":
 		return false
 	default:
@@ -256,7 +256,7 @@ func dockerBoolValue(r *http.Request, key string) bool {
 // returns def; a present key (including an empty value) is parsed by
 // dockerBoolValue. Used for ?stream=, which the daemon defaults to true.
 func dockerBoolValueOrDefault(r *http.Request, key string, def bool) bool {
-	if _, ok := r.URL.Query()[key]; !ok {
+	if _, ok := logging.RequestQuery(r)[key]; !ok {
 		return def
 	}
 	return dockerBoolValue(r, key)
