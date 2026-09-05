@@ -310,7 +310,7 @@ Rules can cover method/path filters, body-aware write inspection, declarative ad
 <details>
 <summary><strong>How does Sockguard compare to other Docker socket proxies?</strong></summary>
 
-How we stack up against other Docker socket proxies:
+How we stack up against other Docker socket proxies. Versions checked 2026-09-05: Tecnativa `docker-socket-proxy` v0.5.0, LinuxServer `docker-socket-proxy` 3.4.4-r0-ls96, wollomatic `socket-proxy` 1.13.1, 11notes `docker-socket-proxy` v2.1.8, hectorm `cetusguard` v1.1.4. Re-checked at every release cut, so a claim below is never more than one release stale.
 
 | Feature | Tecnativa | LinuxServer | wollomatic | 11notes | CetusGuard | **Sockguard** |
 |---------|:---------:|:-----------:|:----------:|:-------:|:----------:|:-------------:|
