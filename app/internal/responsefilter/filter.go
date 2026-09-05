@@ -128,6 +128,10 @@ func (f *Filter) ModifyResponse(resp *http.Response) error {
 		return rejectResponse(fmt.Errorf("attestation statement retrieval is not allowed (set response.allow_attestation_statements: true to permit)"))
 	}
 
+	// Enabled() is a cheap short-circuit for "no response policy at all", not
+	// the per-route gate. Every handler below decides for itself whether an
+	// enabled option can rewrite its body, because an option that applies to
+	// one route applies to almost none of the others.
 	if !f.Enabled() {
 		return nil
 	}
@@ -194,6 +198,18 @@ func isSuccessfulBodyResponse(statusCode int) bool {
 }
 
 func (f *Filter) modifyContainerInspect(resp *http.Response) error {
+	// Gate on the three options this function actually reads, not on
+	// Enabled(). Enabled() is the OR of all five, so gating on it sent an
+	// inspect body through the read-decode-re-encode round trip for a policy
+	// that cannot rewrite a single field of it, and turned a body this
+	// package refuses to parse — oversized, malformed, or carrying a second
+	// document behind the first — into a 502 on a read no enabled option
+	// applied to. Every other handler in this file already gates on its own
+	// options; these two are the ones that did not.
+	if !f.opts.RedactContainerEnv && !f.opts.RedactMountPaths && !f.opts.RedactNetworkTopology {
+		return nil
+	}
+
 	body, err := readResponseBody(resp)
 	if err != nil {
 		return rejectResponse(err)
@@ -265,6 +281,15 @@ func (f *Filter) modifyContainerInspect(resp *http.Response) error {
 // image's layers. Image inspect has no Mounts, HostConfig or
 // NetworkSettings block, so RedactNetworkTopology has nothing to do here.
 func (f *Filter) modifyImageInspect(resp *http.Response) error {
+	// RedactNetworkTopology is deliberately absent: image inspect has no
+	// Mounts, HostConfig or NetworkSettings block, so it is an unrelated
+	// option here even though container inspect gates on it. See
+	// modifyContainerInspect for why the gate is per-option rather than
+	// Enabled().
+	if !f.opts.RedactContainerEnv && !f.opts.RedactMountPaths {
+		return nil
+	}
+
 	body, err := readResponseBody(resp)
 	if err != nil {
 		return rejectResponse(err)
