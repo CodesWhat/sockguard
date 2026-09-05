@@ -88,6 +88,7 @@ func (l ListenerConfig) Wildcard() bool {
 type Config struct {
 	Listen                        ListenConfig       `mapstructure:"listen"`
 	Listeners                     []ListenerConfig   `mapstructure:"listeners"`
+	Server                        ServerConfig       `mapstructure:"server"`
 	Upstream                      UpstreamConfig     `mapstructure:"upstream"`
 	Log                           LogConfig          `mapstructure:"log"`
 	Response                      ResponseConfig     `mapstructure:"response"`
@@ -265,6 +266,26 @@ type ListenTLSConfig struct {
 	IPAddresses         []string `mapstructure:"ip_addresses"`
 	URISANs             []string `mapstructure:"uri_sans"`
 	PublicKeySHA256Pins []string `mapstructure:"public_key_sha256_pins"`
+}
+
+// ServerConfig configures process-lifecycle behavior shared by every
+// listener sockguard binds, as distinct from ListenConfig/ListenerConfig,
+// which configure a single listener's bind address and transport.
+type ServerConfig struct {
+	// ShutdownGrace bounds how long sockguard waits for in-flight requests
+	// to finish, on both the main listener(s) and the admin listener, after
+	// a shutdown signal (SIGTERM/SIGINT) is received, as a Go duration
+	// string (e.g. "30s"). A request still running when the grace period
+	// elapses has its listener force-closed out from under it rather than
+	// being waited on indefinitely.
+	//
+	// Default is "30s", unchanged from the hardcoded value sockguard used
+	// before this field existed. Unlike HijackInactivityTimeout, 0 is a
+	// valid value — it means "don't wait, close immediately" — so the field
+	// is validated as a non-negative duration rather than a strictly
+	// positive one; only a negative value or a string that fails to parse
+	// is rejected.
+	ShutdownGrace string `mapstructure:"shutdown_grace"`
 }
 
 // UpstreamConfig configures the upstream Docker daemon(s) sockguard proxies to.
@@ -1501,7 +1522,7 @@ func (cfg AdminListenConfig) Configured() bool {
 // ReloadConfig configures the hot-reload pipeline.
 //
 // When Enabled, sockguard watches the config file via fsnotify and reloads
-// on SIGHUP. A reload that mutates any immutable field — listen.*,
+// on SIGHUP. A reload that mutates any immutable field — listen.*, server.*,
 // upstream.socket, upstream.endpoints, upstream.failover, upstream.flavor,
 // log.*, health.*, metrics.*, admin.* — is rejected; the running config is
 // preserved and the operator must restart sockguard to pick the new values up.
@@ -1646,6 +1667,11 @@ func Defaults() Config {
 		Listen: ListenConfig{
 			Address:    "127.0.0.1:2375",
 			SocketMode: HardenedListenSocketMode, // used only when the user opts into a unix socket listener
+		},
+		Server: ServerConfig{
+			// 30s matches serve.go's pre-existing hardcoded shutdown grace
+			// period; see ShutdownGrace's doc comment.
+			ShutdownGrace: "30s",
 		},
 		Upstream: UpstreamConfig{
 			Socket: "/var/run/docker.sock",

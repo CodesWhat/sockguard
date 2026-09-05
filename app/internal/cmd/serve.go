@@ -140,6 +140,12 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		return fmt.Errorf("config validation: %w", err)
 	}
 
+	// cfg is validated by now, so server.shutdown_grace is guaranteed to
+	// parse; this overrides newServeDeps' built-in 30s fallback with the
+	// operator's configured value for both the main and admin listener
+	// shutdowns (see shutdownServers).
+	deps.shutdownGracePeriod = effectiveShutdownGracePeriod(cfg)
+
 	logger, logOutputCloser, err := deps.newLogger(cfg.Log.Level, cfg.Log.Format, cfg.Log.Output)
 	if err != nil {
 		return fmt.Errorf("logger: %w", err)
@@ -951,6 +957,22 @@ func effectiveHijackInactivityTimeout(cfg *config.Config) time.Duration {
 	d, err := time.ParseDuration(cfg.Upstream.HijackInactivityTimeout)
 	if err != nil || d <= 0 {
 		return 10 * time.Minute
+	}
+	return d
+}
+
+// effectiveShutdownGracePeriod resolves cfg.Server.ShutdownGrace to the
+// time.Duration shutdownServers waits for in-flight requests before force-
+// closing every listener. Unlike hijack_inactivity_timeout, 0 is a valid,
+// meaningful value (close immediately) rather than a rejected one, so only
+// a parse failure falls back to the package default (30s) —
+// server.shutdown_grace is validated at config load to always be a
+// non-negative duration, so the fallback should never actually trigger
+// outside of tests that bypass validation on purpose.
+func effectiveShutdownGracePeriod(cfg *config.Config) time.Duration {
+	d, err := time.ParseDuration(cfg.Server.ShutdownGrace)
+	if err != nil {
+		return 30 * time.Second
 	}
 	return d
 }
