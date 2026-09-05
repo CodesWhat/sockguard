@@ -205,6 +205,68 @@ func TestContainerCreateVolumeMountInlineBind(t *testing.T) {
 	}
 }
 
+// TestServiceMountInlineBind is the swarm half of the same bypass. A
+// ContainerSpec mount of Type "volume" whose VolumeOptions.DriverConfig asks
+// the local driver for a bind reaches the host path a Type "bind" mount would,
+// so POST /services/create and POST /services/{id}/update check its device
+// against service.allowed_bind_mounts exactly as they check a bind source.
+func TestServiceMountInlineBind(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		body       string
+		wantReason string
+	}{
+		{
+			name: "allowlisted device passes on create",
+			path: "/services/create",
+			body: `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Mounts":[{"Type":"volume","Source":"vol","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"none","o":"bind","device":"/safe/data"}}}}]}}}`,
+		},
+		{
+			name:       "device outside the allowlist is denied on create",
+			path:       "/services/create",
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Mounts":[{"Type":"volume","Source":"vol","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"none","o":"bind","device":"/"}}}}]}}}`,
+			wantReason: `service denied: bind mount source "/" is not allowlisted`,
+		},
+		{
+			name:       "device outside the allowlist is denied on update",
+			path:       "/v1.53/services/web/update?version=7",
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Mounts":[{"Type":"volume","Source":"vol","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"o":"rw,rbind","device":"/var/run"}}}}]}}}`,
+			wantReason: `service denied: bind mount source "/var/run" is not allowlisted`,
+		},
+		{
+			name: "non-bind local options are untouched",
+			path: "/services/create",
+			body: `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Mounts":[{"Type":"volume","Source":"vol","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"tmpfs","o":"size=100m","device":"tmpfs"}}}}]}}}`,
+		},
+		{
+			name: "non-local driver is untouched",
+			path: "/services/create",
+			body: `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Mounts":[{"Type":"volume","Source":"vol","VolumeOptions":{"DriverConfig":{"Name":"rexray","Options":{"type":"none","o":"bind","device":"/var/run"}}}}]}}}`,
+		},
+		{
+			name: "plain named volume without a driver config is untouched",
+			path: "/services/create",
+			body: `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Mounts":[{"Type":"volume","Source":"vol"}]}}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := newServicePolicy(ServiceOptions{AllowOfficial: true, AllowedBindMounts: []string{"/safe"}})
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+
+			reason, err := policy.inspect(testLogger(), req, NormalizePath(req.URL.Path))
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
 // TestVolumeCreateInlineBind covers the pre-created half of the same bypass:
 // POST /volumes/create with the local driver and bind driver options makes a
 // named volume that mounts a host path, which a later container-create then
