@@ -1391,6 +1391,30 @@ enumerated here. Four things don't:
 
 Rows marked _(YAML-only)_ below are those cases.
 
+A `SOCKGUARD_*` variable that binds to no config key is read by nothing, and
+without a warning that silence looks exactly like a setting that took effect.
+`sockguard serve` and `sockguard validate` both check the environment at
+startup and log one line per unrecognized variable, naming it and, when the
+spelling is within a couple of characters of a real one, the variable you
+probably meant:
+
+```text
+level=WARN msg="ignoring unrecognized SOCKGUARD_* environment variable: it maps to no configuration key, so the setting it looks like it carries is still at its config-file or default value" var=SOCKGUARD_LISTEN_SOCKT did_you_mean=SOCKGUARD_LISTEN_SOCKET
+```
+
+Only the name is logged, never the value, since a typo lands on a variable
+holding a credential as easily as on one holding a socket path. The warning is
+advisory and never fails startup: a variable nothing reads cannot make a config
+invalid.
+
+Recognized means your configuration could actually bind it, which is the schema
+plus whatever your YAML declares, rather than a fixed list. So a variable for
+one of the four YAML-only cases above is reported unless the file declares the
+block it sits in, because declaring it is what puts the key where an env var
+can reach it. Tecnativa compatibility variables (`CONTAINERS`, `POST`,
+`ALLOW_START`, `SOCKET_PATH`, `LOG_LEVEL`) carry no `SOCKGUARD_` prefix and are
+never flagged.
+
 ### Listener and upstream
 
 | Variable                                       | YAML field                            | Default                         | Description                                                                                                  |

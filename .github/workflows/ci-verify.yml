@@ -172,6 +172,40 @@ jobs:
       workflow-security-egress-policy: block
       workflow-security-allowed-endpoints: "ghcr.io:443 github.com:443 pkg-containers.githubusercontent.com:443"
       run-goreleaser: ${{ github.event_name != 'schedule' }}
+      # Repository-run Qlty gate ("Go CI / Qlty Check"), which needs no Qlty
+      # Cloud account. Distinct from the Qlty Cloud GitHub App's own statuses
+      # (`qlty check`, `qlty coverage`, `qlty coverage diff`), which fail
+      # org-wide on billing minutes and are never required contexts. Skipped on
+      # the weekly schedule alongside GoReleaser, matching portwing.
+      run-qlty: ${{ github.event_name != 'schedule' }}
+      # Copied verbatim from portwing's proven allowlist rather than
+      # re-derived: qlty downloads its own CLI and every plugin runtime it
+      # resolves (node, python, go, java) on a cold runner, so a narrower list
+      # fails on whichever plugin the default source adds next.
+      qlty-egress-policy: block
+      qlty-allowed-endpoints: >-
+        api.github.com:443
+        api.osv.dev:443
+        api.segment.io:443
+        api0.prismacloud.io:443
+        dl.google.com:443
+        files.pythonhosted.org:443
+        github-proxy.qlty.sh:443
+        github.com:443
+        go.dev:443
+        mirror.gcr.io:443
+        nodejs.org:443
+        objects.githubusercontent.com:443
+        proxy.golang.org:443
+        pypi.org:443
+        qlty-releases.s3.amazonaws.com:443
+        radarlint-releases.s3.amazonaws.com:443
+        registry.npmjs.org:443
+        release-assets.githubusercontent.com:443
+        sum.golang.org:443
+        tmaproduction.blob.core.windows.net:443
+        tuf-repo-cdn.sigstore.dev:443
+        tuf-repo.github.com:443
       # An empty list produces no matrix jobs at all: go-ci.yml's fuzz job
       # is gated on `fromJSON(inputs.fuzzers-json)[0] != null`. On a
       # docs-only PR that is 29 jobs and ~67 runner-minutes not spent
