@@ -21,6 +21,19 @@ func (c RequestBodyConfig) ToFilterOptions() filter.PolicyConfig {
 	containerCreate.AllowEndpointConfig = c.Network.AllowEndpointConfig
 	containerCreate.EndpointConfig = c.Network.EndpointConfig.ToFilterOptions()
 
+	// volume.allowed_bind_mounts is deliberately NOT its own YAML key either.
+	// A local-driver volume whose options ask for a bind
+	// ({"type":"none","o":"bind","device":"/host/path"}) reaches exactly the
+	// host path a HostConfig.Binds entry reaches, so it is checked against
+	// container_create.allowed_bind_mounts rather than a second list an
+	// operator could widen and then forget. The libpod volume inspector is
+	// wired the same way from libpod_container_create.allowed_bind_mounts,
+	// keeping each API family on its own allowlist.
+	volume := c.Volume.ToFilterOptions()
+	volume.AllowedBindMounts = c.ContainerCreate.AllowedBindMounts
+	libpodVolume := c.LibpodVolume.ToFilterOptions()
+	libpodVolume.AllowedBindMounts = c.LibpodContainerCreate.AllowedBindMounts
+
 	return filter.PolicyConfig{
 		ContainerCreate:       containerCreate,
 		LibpodContainerCreate: c.LibpodContainerCreate.ToFilterOptions(),
@@ -31,7 +44,7 @@ func (c RequestBodyConfig) ToFilterOptions() filter.PolicyConfig {
 		ContainerRemove:       c.ContainerRemove.ToFilterOptions(),
 		ContainerArchive:      c.ContainerArchive.ToFilterOptions(),
 		ImageLoad:             c.ImageLoad.ToFilterOptions(),
-		Volume:                c.Volume.ToFilterOptions(),
+		Volume:                volume,
 		Network:               c.Network.ToFilterOptions(),
 		Secret:                c.Secret.ToFilterOptions(),
 		Config:                c.Config.ToFilterOptions(),
@@ -40,7 +53,7 @@ func (c RequestBodyConfig) ToFilterOptions() filter.PolicyConfig {
 		Node:                  c.Node.ToFilterOptions(),
 		Plugin:                c.Plugin.ToFilterOptions(),
 		LibpodPodCreate:       c.LibpodPodCreate.ToFilterOptions(),
-		LibpodVolume:          c.LibpodVolume.ToFilterOptions(),
+		LibpodVolume:          libpodVolume,
 		LibpodNetwork:         c.LibpodNetwork.ToFilterOptions(),
 		LibpodSecret:          c.LibpodSecret.ToFilterOptions(),
 		// Buildkit carries ONLY the Configured signal — see

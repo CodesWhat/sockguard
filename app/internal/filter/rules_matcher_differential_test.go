@@ -165,17 +165,42 @@ func differentialPaths() []string {
 		"/libpod/images/scpjson",
 		"/ajson",
 		"/a/bjson",
+		// Heads that only stop being distinct once Go's regexp has decoded
+		// them. Every byte that is not part of a well-formed UTF-8 sequence
+		// steps as U+FFFD with width one, so an anchored regex carrying a
+		// single U+FFFD accepts all three of the first spellings here, while
+		// strings.HasPrefix and the byte-comparing matchers tell them apart.
+		// The two-error head is the negative: one U+FFFD in the pattern
+		// cannot consume two in the path.
+		"/con\uFFFDtainers",
+		"/con\uFFFDtainers/json",
+		"/con\uFFFDtainers/a/b",
+		"/con\xfftainers",
+		"/con\xfftainers/json",
+		"/con\xfftainers/a/b",
+		"/con\xfetainers",
+		"/con\xfetainers/json",
+		"/con\xfe\xfftainers",
+		"/con\xfe\xfftainers/json",
+		"/\uFFFD",
+		"/\xff",
+		// Regex metacharacters that carry no meaning in this dialect and are
+		// literal path content on both sides. A client reaches them by
+		// percent-encoding; the gate compares them as bytes and the regex
+		// only agrees because ToRegexString quotes them.
+		"/a?b",
+		"/a?b/json",
+		"/a[bc]d",
+		"/a[bc]d/json",
+		"/a{b,c}d",
+		"/a{b,c}d/json",
+		"/a\\b",
+		"/a\\b/json",
 	)
 
 	seen := make(map[string]struct{}, 3*len(raw))
 	paths := make([]string, 0, 3*len(raw))
 	add := func(normalized string) {
-		// NormalizePath("") is "" and no request path normalizes to it from a
-		// non-empty input; the segment walkers and the regex disagree there
-		// too, and it is not a path any rule is evaluated against.
-		if normalized == "" {
-			return
-		}
 		if _, dup := seen[normalized]; dup {
 			return
 		}
@@ -190,7 +215,42 @@ func differentialPaths() []string {
 		add(NormalizePodmanRoutePath(candidate))
 		add(NormalizePodmanRoutePath(candidate + "/"))
 	}
+	for _, unrooted := range unrootedRequestTargetPaths {
+		add(NormalizePath(unrooted))
+	}
 	return paths
+}
+
+// unrootedRequestTargetPaths are the normalized paths an unrooted HTTP
+// request-target reaches rule matching as. NormalizePath preserves both
+// shapes: "*" from a non-OPTIONS asterisk-form request line, and "" from an
+// absolute-form line with no path, an opaque target, or a CONNECT
+// authority-form line. The rest are the rootless spellings a pattern could
+// have been written as, kept here so the corpus states the whole unrooted
+// domain rather than the two request forms alone.
+//
+// They belong in the differential because a matcher's whole job is to answer
+// what its own anchored regex answers, and the catch-all fast path used to
+// answer an unconditional true. "^(/(?s:.*))?$" accepts "" and nothing else
+// unrooted, so before the fix "/**" allowed "*" and the regex did not — which
+// is what let a catch-all allow rule admit "GET *". The proxy now rejects an
+// unrooted target at the edge (withRequestTargetGuard), so keeping them here
+// is what stops the matcher from quietly drifting back if that guard ever
+// moves.
+var unrootedRequestTargetPaths = []string{
+	"",
+	"*",
+	"**",
+	".",
+	"..",
+	"_ping",
+	"json",
+	"containers",
+	"containers/json",
+	"containers/abc/json",
+	"*/json",
+	"a\nb",
+	"v1.45/containers/json",
 }
 
 // TestPathMatcherKindsAgreeWithRegexFallback is the differential between the
@@ -273,8 +333,75 @@ func TestPathMatcherKindsAgreeWithRegexFallback(t *testing.T) {
 			if matched == 0 {
 				t.Errorf("pattern %q matched nothing in the corpus; agreement on all-false is vacuous", tc.pattern)
 			}
-			if matched == len(paths) && tc.kind != pathMatcherMatchAll {
+			// No exemption for the match-all kind. The corpus carries the
+			// unrooted request-target shapes now, and "/**" has to refuse
+			// those exactly as "^(/(?s:.*))?$" does, so a pattern that still
+			// matches everything here is one whose fast path stopped tracking
+			// its regex.
+			if matched == len(paths) {
 				t.Errorf("pattern %q matched every path in the corpus; agreement on all-true is vacuous", tc.pattern)
+			}
+		})
+	}
+}
+
+// TestMatchAllFastPathRefusesUnrootedRequestTargets names the case the corpus
+// differential above sweeps over. "/**" is the one pattern that compiles to a
+// matcher with no path test at all, and an unconditional true is wider than
+// the "^(/(?s:.*))?$" it stands for by exactly the unrooted paths: "*", which
+// Go's server hands the handler for a non-OPTIONS asterisk-form request line,
+// and every rootless spelling below.
+//
+// It matters because "/**" is the catch-all every permissive policy is written
+// with, so the divergence turned "allow everything under the API" into "allow
+// a request target the API cannot even name" — and then forwarded it as a
+// different target than the one policy evaluated, since url.URL.RequestURI
+// substitutes "/" for an empty path.
+//
+// The empty path stays a match on purpose. The regex's group is optional, so
+// "" is inside the pattern's language; the guard is "rooted or empty", not
+// "rooted", because the fast path has to answer what the regex answers and
+// nothing else.
+func TestMatchAllFastPathRefusesUnrootedRequestTargets(t *testing.T) {
+	t.Parallel()
+
+	compiled, err := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionAllow})
+	if err != nil {
+		t.Fatalf("CompileRule(%q): %v", "/**", err)
+	}
+	if compiled.matcherKind != pathMatcherMatchAll {
+		t.Fatalf("matcherKind for %q = %d, want pathMatcherMatchAll (%d)", "/**", compiled.matcherKind, pathMatcherMatchAll)
+	}
+	reference := regexp.MustCompile("^" + GlobToRegexString("/**") + "$")
+
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "asterisk form request target", path: "*", want: false},
+		{name: "rootless double star", path: "**", want: false},
+		{name: "rootless single segment", path: "_ping", want: false},
+		{name: "rootless multi segment", path: "containers/json", want: false},
+		{name: "rootless dot segment", path: ".", want: false},
+		{name: "rootless parent segment", path: "..", want: false},
+		{name: "rootless with a decoded newline", path: "a\nb", want: false},
+		{name: "empty path", path: "", want: true},
+		{name: "root", path: "/", want: true},
+		{name: "ordinary docker path", path: "/containers/json", want: true},
+		{name: "path with a decoded newline", path: "/containers/a\nb/json", want: true},
+		{name: "doubled leading slash", path: "//evil/containers/json", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := compiled.matchesNormalizedUpperWithBit(http.MethodGet, httpMethodBit(http.MethodGet), tt.path)
+			if got != tt.want {
+				t.Fatalf("match-all matcher on %q = %v, want %v", tt.path, got, tt.want)
+			}
+			if want := reference.MatchString(tt.path); want != tt.want {
+				t.Fatalf("this table drifted from the dialect: regex %q on %q = %v, table says %v", reference, tt.path, want, tt.want)
 			}
 		})
 	}
@@ -454,6 +581,13 @@ func TestImageScpRouteViewHonorsTheTrailingSlashSegmentCount(t *testing.T) {
 // where "^[^/]*$" does not. That is the walker's own rootedness assumption,
 // not the prefix derivation, and NormalizePath never produces an unrooted
 // path for it to be reached with.
+//
+// The last six stems are the heads whose bytes and whose compiled regex do not
+// line up one to one. A literal U+FFFD and a lone malformed byte both reach
+// regexp as the same rune, so a prefix taken from either one is not what the
+// regex matches there; the four metacharacter stems are the control, literal
+// path content in this dialect that only stays literal because ToRegexString
+// quotes it before the regex sees it.
 var literalPrefixPatternStems = []string{
 	"/",
 	"/containers",
@@ -461,6 +595,12 @@ var literalPrefixPatternStems = []string{
 	"/libpod/images/scp",
 	"/a",
 	"/a/b",
+	"/con\uFFFDtainers",
+	"/con\xfftainers",
+	"/a?b",
+	"/a[bc]d",
+	"/a{b,c}d",
+	"/a\\b",
 }
 
 // literalPrefixPatternTails are the wildcard tails each stem is crossed with.
@@ -668,6 +808,92 @@ func TestFilterLiteralPrefixNarrowsStackedDoubleStar(t *testing.T) {
 		{
 			name: "a head the deny's own literal run does not reach",
 			path: "/containers/secretive",
+			want: ActionAllow,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			action, index, _ := Evaluate(rules, newParsedRequest(t, http.MethodGet, tt.path))
+			if action != tt.want {
+				t.Fatalf("Evaluate(GET %q) = %v (rule %d), want %v", tt.path, action, index, tt.want)
+			}
+		})
+	}
+}
+
+// TestFilterLiteralPrefixStopsAtAReplacementRune is the named regression for
+// the byte-versus-rune split, stated as the policy it breaks.
+//
+// glob.ToRegexString decodes the pattern before it quotes it, so a deny
+// spelling "/containers/sec\uFFFDret/*" compiles to
+// "^/containers/sec\x{FFFD}ret/[^/]*$", and regexp decodes the request path the
+// same way: every byte that is not part of a well-formed UTF-8 sequence steps
+// as U+FFFD with width one. That regex therefore covers
+// GET /containers/sec%FFret/json. Nothing in front of it did. The literal
+// prefix was the pattern's own bytes up to the "*", so the gate demanded the
+// three-byte U+FFFD encoding and turned the request away before the regex was
+// consulted, and the segment walker this pattern used to compile to compares
+// bytes as well, so it would have said no a second time.
+//
+// A gate that turns a request away does not deny it. It hands it to whatever
+// allow sits below, which is how "deny /containers/sec\uFFFDret/*" above
+// "allow /containers/**" admitted the request the deny describes.
+func TestFilterLiteralPrefixStopsAtAReplacementRune(t *testing.T) {
+	t.Parallel()
+
+	rules := compileRulesForTest(t, []Rule{
+		{Methods: []string{"*"}, Pattern: "/containers/sec\uFFFDret/*", Action: ActionDeny, Reason: "secret containers denied", Index: 0},
+		{Methods: []string{"*"}, Pattern: "/containers/**", Action: ActionAllow, Index: 1},
+	})
+
+	// Reported rather than fatal so the table below still runs. A regression
+	// should name the requests that changed hands, not only the internal that
+	// changed.
+	if rules[0].matcherKind != pathMatcherRegex {
+		t.Errorf("matcherKind = %d, want pathMatcherRegex (%d); a byte-comparing matcher cannot answer for this pattern", rules[0].matcherKind, pathMatcherRegex)
+	}
+	if rules[0].literalPrefix != "/containers/sec" {
+		t.Errorf("literalPrefix = %q, want %q; the gate has to stop where the bytes and the regex stop agreeing", rules[0].literalPrefix, "/containers/sec")
+	}
+
+	tests := []struct {
+		name string
+		path string
+		want Action
+	}{
+		{
+			name: "the pattern's own spelling",
+			path: "/containers/sec%EF%BF%BDret/json",
+			want: ActionDeny,
+		},
+		{
+			name: "a malformed byte where the pattern has U+FFFD",
+			path: "/containers/sec%FFret/json",
+			want: ActionDeny,
+		},
+		{
+			name: "a different malformed byte, which decodes to the same rune",
+			path: "/containers/sec%FEret/json",
+			want: ActionDeny,
+		},
+		{
+			// The fix widens a gate, so what is worth pinning beside it is
+			// that it did not widen the rule. One U+FFFD in the pattern is one
+			// rune and cannot consume two.
+			name: "two malformed bytes, which one U+FFFD cannot consume",
+			path: "/containers/sec%FE%FFret/json",
+			want: ActionAllow,
+		},
+		{
+			name: "a sibling with nothing at all where the deny wants a rune",
+			path: "/containers/secret/json",
+			want: ActionAllow,
+		},
+		{
+			name: "a well-formed rune the deny never described",
+			path: "/containers/sec%C3%A9ret/json",
 			want: ActionAllow,
 		},
 	}

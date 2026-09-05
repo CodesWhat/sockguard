@@ -97,6 +97,8 @@ Block entire HTTP methods. Most consumers only need `GET` (read-only mode).
 ### Layer 4: Path Filtering
 Allow or deny specific Docker API endpoint paths using glob patterns. Before matching, Sockguard strips Docker API version prefixes (`/v1.45/`) and resolves `.` / `..` segments via `path.Clean`. It works on the path net/http has already percent-decoded exactly once, and it never decodes a second time, so a double-encoded `%252F` stays the literal text `%2F`. That single decode is the point: it's the same one dockerd's request parser applies, which keeps Sockguard's policy view of a path byte-identical to the daemon's routing view. `/v1.45/containers/%2e%2e/images/json` still canonicalizes to `/images/json` before the glob matcher sees it, so adversarial path shapes cannot slip past a literal allowlist or skip a request-body inspector.
 
+Path filtering only ever runs against a rooted path. HTTP/1.1 has three other request-target forms and Go's server parses all of them: asterisk-form (`GET *`), an absolute-form URI carrying no path (`GET http://host`), and CONNECT's authority-form (`CONNECT host:2375`). None of them names a Docker endpoint, and each reaches the handler with a request path of either `*` or the empty string, so Sockguard answers `400` with reason code `request_target_not_rooted` before any rule, container-label ACL, or body inspector runs. `OPTIONS *` is the one exception: net/http answers it itself with an empty `200` before Sockguard's middleware chain runs, so it reaches neither policy evaluation nor the daemon.
+
 ### Layer 5: Request Body Inspection
 `POST /containers/create` bodies are parsed on every request and denied when they contain dangerous configuration:
 
@@ -107,7 +109,7 @@ Allow or deny specific Docker API endpoint paths using glob patterns. Before mat
 - `HostConfig.UsernsMode: host`
 - A non-empty `HostConfig.Sysctls` map (kernel parameter tuning), unless `request_body.container_create.allow_sysctls` is set
 - A non-empty `HostConfig.Runtime` value not present in `request_body.container_create.allowed_runtimes` (defends against runtime-escape via alternative OCI runtimes; an empty/unset runtime selects the daemon default and is always permitted)
-- Any bind mount whose source is outside `request_body.container_create.allowed_bind_mounts`
+- Any bind mount whose source is outside `request_body.container_create.allowed_bind_mounts`, including a `Mounts` entry of type `volume` whose `VolumeOptions.DriverConfig` asks the local driver for a bind (`{"type":"none","o":"bind","device":"/host/path"}`) — the device is checked against the same allowlist
 - Any `HostConfig.Devices` host path outside `request_body.container_create.allowed_devices`
 - `HostConfig.DeviceRequests` unless explicitly allowed
 - `HostConfig.DeviceCgroupRules` unless explicitly allowed

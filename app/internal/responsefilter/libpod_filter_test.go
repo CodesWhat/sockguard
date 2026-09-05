@@ -158,7 +158,6 @@ func addStaleRepresentationMetadata(resp *http.Response) {
 	for _, name := range []string{
 		"Accept-Ranges",
 		"Content-Digest",
-		"Content-Encoding",
 		"Content-Language",
 		"Content-Length",
 		"Content-Location",
@@ -173,6 +172,12 @@ func addStaleRepresentationMetadata(resp *http.Response) {
 	} {
 		resp.Header.Set(name, "stale-upstream-value")
 	}
+	// Content-Encoding is the one header in that set the filter reads rather
+	// than only clears (decodedResponseReader), so it has to name a real
+	// coding instead of taking the generic junk value. identity is still
+	// stale metadata for a body that got replaced, and
+	// assertRewrittenRepresentationMetadata still requires it gone.
+	resp.Header.Set("Content-Encoding", identityContentCoding)
 	resp.Header.Set("Content-Type", "application/json; charset=utf-8")
 	resp.Header.Set("X-Upstream-Metadata", "keep-me")
 	resp.TransferEncoding = []string{"chunked"}
