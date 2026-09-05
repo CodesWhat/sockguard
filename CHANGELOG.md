@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Performance
 
 - **Route metric labels no longer allocate.** `RouteCategory` runs on every request through `routeLabel`, and it split the path twice (once to test for an API version prefix, once to route it) and concatenated the label it returned. It now walks the path once with an index cursor into a stack-allocated segment array, folding the version-prefix check into the same pass, and looks the label up in a per-family table interned at init. A versioned container list costs 0 allocations instead of 5 (128 B) and 19 ns/op instead of 98; no route label changes.
+- **Concurrent `/health` requests no longer serialize on the health cache's mutex.** The cached upstream verdict is published as a single atomic pointer, so a request that hits the cache reads it with no lock; probes still serialize under the same mutex and the same single-flight, so two concurrent misses still produce one dial. Under contention a cache hit costs 24 ns/op instead of 155. TTL, failure-TTL and eviction semantics are unchanged.
 
 ### Added
 
