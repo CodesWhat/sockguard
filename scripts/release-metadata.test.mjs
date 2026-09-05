@@ -133,12 +133,21 @@ test("libpod container risk catalogs name every guarded endpoint", () => {
 });
 
 test("read-exfiltration docs credit the load-time audit, not the request-time gate", () => {
+  // The two documents word the reported path differently on purpose. The live
+  // reference says what the warning reports now: an evaluator-confirmed
+  // concrete path when a witness survives the production evaluator, and the
+  // catalog spelling otherwise. The changelog keeps the sentence the
+  // 2.1.0-rc.1 entry shipped with, because that entry is released history.
   const documents = [
-    ["configuration reference", read("docs/content/docs/configuration.mdx")],
-    ["changelog", read("CHANGELOG.md")],
+    [
+      "configuration reference",
+      read("docs/content/docs/configuration.mdx"),
+      /the warning names an evaluator-confirmed concrete path where it has one, and otherwise the catalog spelling/u,
+    ],
+    ["changelog", read("CHANGELOG.md"), /the warning names the concrete reachable path/u],
   ];
 
-  for (const [name, document] of documents) {
+  for (const [name, document, reportedPath] of documents) {
     const normalized = document.replaceAll(/\s+/gu, " ");
     assert.match(
       normalized,
@@ -147,7 +156,7 @@ test("read-exfiltration docs credit the load-time audit, not the request-time ga
     );
     assert.match(
       normalized,
-      /the warning names the concrete reachable path/u,
+      reportedPath,
       `${name} must say what the warning reports once the acknowledgment is set`,
     );
     assert.doesNotMatch(

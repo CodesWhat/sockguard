@@ -151,6 +151,20 @@ func differentialPaths() []string {
 		"/libpod/images/scp/victim",
 		"/libpod/images/scp/victim/push",
 		"/v5.8.1/libpod/images/scp/acme/app",
+		// The bare literal head of a pattern whose "/**" groups can all
+		// collapse, and the same head with the next literal run welded
+		// straight onto it. Both are what a stacked-"/**" pattern's own regex
+		// still matches, and neither is reachable from the segment alphabet
+		// above.
+		"/containers/secret",
+		"/containersjson",
+		"/containers/secretjson",
+		"/containers/secret/json",
+		"/containers/secret/a/json",
+		"/libpod/images/scp",
+		"/libpod/images/scpjson",
+		"/ajson",
+		"/a/bjson",
 	)
 
 	seen := make(map[string]struct{}, 3*len(raw))
@@ -427,4 +441,244 @@ func TestImageScpRouteViewHonorsTheTrailingSlashSegmentCount(t *testing.T) {
 			t.Fatalf("Evaluate(/libpod/images/scp/tenant) = (%q, %d), want (%q, 1)", action, index, ActionAllow)
 		}
 	})
+}
+
+// literalPrefixPatternStems are the literal heads the prefix differential
+// builds its patterns on: the collection routes and nested routes real
+// policies spell, the libpod prefix the shipped presets deny, and the bare
+// slash.
+//
+// Every stem is rooted, because a rootless pattern reaches a divergence this
+// test is not about: matchGlobSegments strips a leading "/" from the path
+// unconditionally, so the segment walker reads "*" as matching "/containers"
+// where "^[^/]*$" does not. That is the walker's own rootedness assumption,
+// not the prefix derivation, and NormalizePath never produces an unrooted
+// path for it to be reached with.
+var literalPrefixPatternStems = []string{
+	"/",
+	"/containers",
+	"/containers/secret",
+	"/libpod/images/scp",
+	"/a",
+	"/a/b",
+}
+
+// literalPrefixPatternTails are the wildcard tails each stem is crossed with.
+// The list is built around what the prefix derivation has to reason about:
+// how many "/**" groups stack up, whether the text after the first one is
+// itself optional, and whether it resumes with a "/" or welds a literal run
+// straight onto the head.
+var literalPrefixPatternTails = []string{
+	"",
+	"*",
+	"**",
+	"/*",
+	"/**",
+	"/**/",
+	"/***",
+	"/**/*",
+	"/**/**",
+	"/**/***",
+	"/**/**/**",
+	"/**json",
+	"/**/**json",
+	"/**/json",
+	"/**/**/json",
+	"/*/**",
+	"/*/**/**",
+	"/**/*/**",
+	"/**/exec",
+	"/**/**/exec",
+	"/a/**",
+	"/a/**/**",
+}
+
+// literalPrefixNamedPatterns are the patterns this package's other tests and
+// the shipped presets actually spell, kept alongside the generated cross
+// product so the differential covers the catalog as well as the corners.
+var literalPrefixNamedPatterns = []string{
+	"/_ping",
+	"/**",
+	"/*",
+	"/containers/json",
+	"/containers/**",
+	"/containers/*",
+	"/containers/*/json",
+	"/containers/*/exec",
+	"/containers/*/logs",
+	"/containers/*/*/top",
+	"/containers/a*c",
+	"/containers/a**c",
+	"/containers/**/exec",
+	"/containers/**/json",
+	"/containers/**/*/logs",
+	"/**/json",
+	"/*/json",
+	"/*/*/*",
+	"/a/**/b/**/c",
+	"/a/*/b/*/c",
+	"/**/x/**/y/**",
+	"/libpod/images/scp/*",
+	"/libpod/images/scp/*/*",
+	"/libpod/images/scp/**",
+}
+
+func literalPrefixPatterns() []string {
+	size := len(literalPrefixPatternStems)*len(literalPrefixPatternTails) + len(literalPrefixNamedPatterns)
+	seen := make(map[string]struct{}, size)
+	patterns := make([]string, 0, size)
+	add := func(pattern string) {
+		if pattern == "" {
+			return
+		}
+		if _, dup := seen[pattern]; dup {
+			return
+		}
+		seen[pattern] = struct{}{}
+		patterns = append(patterns, pattern)
+	}
+	for _, stem := range literalPrefixPatternStems {
+		for _, tail := range literalPrefixPatternTails {
+			add(stem + tail)
+		}
+	}
+	for _, pattern := range literalPrefixNamedPatterns {
+		add(pattern)
+	}
+	return patterns
+}
+
+// TestLiteralPrefixGateNeverRejectsARegexMatch is the differential between the
+// literal-prefix fast reject and the anchored regex the same pattern compiles
+// to. The prefix exists only to skip work: a path the regex accepts must never
+// be turned away by the gate in front of it. A gate that is even one byte too
+// long is not an optimization, it is a policy change, and on a deny rule it is
+// the dangerous direction — the rejected path falls through to whatever allow
+// sits below.
+//
+// It is generated rather than tabulated because the shape that broke (S17d,
+// a pattern whose text after the first "/**" is itself entirely optional) is
+// one nobody would think to write down. The full matcher verdict is checked
+// against the same regex on the way past, so a fix that widens the prefix
+// cannot quietly break the matcher it guards.
+func TestLiteralPrefixGateNeverRejectsARegexMatch(t *testing.T) {
+	t.Parallel()
+
+	patterns := literalPrefixPatterns()
+	if len(patterns) < 120 {
+		t.Fatalf("pattern corpus has %d patterns, want at least 120", len(patterns))
+	}
+	paths := differentialPaths()
+
+	methodBit := httpMethodBit(http.MethodGet)
+	regexKinds, matches := 0, 0
+	for _, pattern := range patterns {
+		compiled, err := CompileRule(Rule{Methods: []string{http.MethodGet}, Pattern: pattern, Action: ActionAllow})
+		if err != nil {
+			t.Fatalf("CompileRule(%q): %v", pattern, err)
+		}
+		reference, err := regexp.Compile("^" + GlobToRegexString(pattern) + "$")
+		if err != nil {
+			t.Fatalf("compile reference regex for %q: %v", pattern, err)
+		}
+		if compiled.matcherKind == pathMatcherRegex {
+			regexKinds++
+		}
+
+		for _, path := range paths {
+			want := reference.MatchString(path)
+			if want {
+				matches++
+				if !strings.HasPrefix(path, compiled.literalPrefix) {
+					t.Errorf("pattern %q: regex %q matches %q, but the literal prefix %q rejects it",
+						pattern, reference, path, compiled.literalPrefix)
+				}
+			}
+			if got := compiled.matchesNormalizedUpperWithBit(http.MethodGet, methodBit, path); got != want {
+				t.Errorf("pattern %q path %q: matcher kind %d = %v, regex %q = %v",
+					pattern, path, compiled.matcherKind, got, reference, want)
+			}
+		}
+	}
+
+	// Agreement is only worth asserting over a domain the patterns reach, and
+	// the gate only runs on the regex and segment-glob kinds.
+	if regexKinds < 40 {
+		t.Errorf("corpus compiled %d patterns to pathMatcherRegex, want at least 40", regexKinds)
+	}
+	if matches < 1000 {
+		t.Errorf("corpus produced %d pattern/path matches, want at least 1000", matches)
+	}
+}
+
+// TestFilterLiteralPrefixNarrowsStackedDoubleStar is the named regression for
+// the shape the differential above was written for, stated as the policy it
+// breaks rather than as an invariant over a corpus.
+//
+// A pattern ending in two or more consecutive "/**" compiles to
+// pathMatcherRegex, whose anchored regex matches the bare literal head:
+// every "/**" is an optional group, so "^/containers/secret(/(?s:.*))?(/(?s:.*))?$"
+// matches "/containers/secret". The literal-prefix gate in front of it
+// disagreed. literalPrefixForPattern kept the trailing slash whenever the text
+// after the first "/**" started with "/", so the gate demanded
+// "/containers/secret/" and rejected "/containers/secret" before the regex was
+// ever consulted.
+//
+// The direction is what makes it a policy hole rather than a slow path. On a
+// deny rule the narrowed gate does not deny less loudly, it hands the request
+// to whatever allow sits below: "deny /containers/secret/**/**" above
+// "allow /containers/**" admitted GET /containers/secret.
+func TestFilterLiteralPrefixNarrowsStackedDoubleStar(t *testing.T) {
+	t.Parallel()
+
+	rules := compileRulesForTest(t, []Rule{
+		{Methods: []string{"*"}, Pattern: "/containers/secret/**/**", Action: ActionDeny, Reason: "secret containers denied", Index: 0},
+		{Methods: []string{"*"}, Pattern: "/containers/**", Action: ActionAllow, Index: 1},
+	})
+
+	tests := []struct {
+		name   string
+		path   string
+		want   Action
+		reason string
+	}{
+		{
+			name: "the bare head the stacked groups collapse to",
+			path: "/containers/secret",
+			want: ActionDeny,
+		},
+		{
+			name: "a descendant of that head",
+			path: "/containers/secret/json",
+			want: ActionDeny,
+		},
+		{
+			name: "a deeper descendant, where both groups are spent",
+			path: "/containers/secret/a/json",
+			want: ActionDeny,
+		},
+		{
+			// The fix widens a gate, so the thing worth pinning next to it is
+			// that it did not widen the rule: a sibling the deny never
+			// described still reaches the allow below.
+			name: "a sibling the deny never described",
+			path: "/containers/other",
+			want: ActionAllow,
+		},
+		{
+			name: "a head the deny's own literal run does not reach",
+			path: "/containers/secretive",
+			want: ActionAllow,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			action, index, _ := Evaluate(rules, newParsedRequest(t, http.MethodGet, tt.path))
+			if action != tt.want {
+				t.Fatalf("Evaluate(GET %q) = %v (rule %d), want %v", tt.path, action, index, tt.want)
+			}
+		})
+	}
 }

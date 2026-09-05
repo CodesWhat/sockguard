@@ -395,9 +395,27 @@ func NormalizePodmanRoutePath(p string) string {
 	return normalized
 }
 
+// isLibpodImageScpRoutePath reports whether Podman's router dispatches
+// routePath to the image-SCP handler. The route is
+// POST /libpod/images/scp/{name:.*} and `.*` matches the empty string, so the
+// bare /libpod/images/scp/ is an SCP call with an empty source name, not a
+// non-route: verified against Podman v5.8.1's registration order
+// (pkg/api/server/register_images.go, /libpod/images/{name:.*}/push at line
+// 817 through /libpod/images/scp/{name:.*} at line 2236) replayed through
+// gorilla/mux v1.8.1, where POST /v5.0.0/libpod/images/scp/ dispatches to
+// ImageScp with name="". An empty name is refused deeper in, by
+// ExecuteTransfer's "no source image specified", but that is the handler's
+// argument validation and not a routing boundary, so treating the bare route
+// as reachable is what keeps the route view and the decoded path from
+// disagreeing about which handler a request reaches.
+//
+// The action suffixes stay excluded: /libpod/images/{name:.*}/push, /tag and
+// /untag are registered earlier, so .../scp/app/push is a push of the image
+// "scp/app". A trailing slash defeats those anchored routes, which is why
+// .../scp/app/push/ falls through to this catch-all.
 func isLibpodImageScpRoutePath(routePath string) bool {
 	rest, ok := strings.CutPrefix(routePath, libpodPathPrefix+"images/scp/")
-	if !ok || rest == "" {
+	if !ok {
 		return false
 	}
 	for _, action := range []string{"push", "tag", "untag"} {
@@ -584,6 +602,21 @@ func matchGlobSegment(pattern, segment string) bool {
 	return patternIndex == len(pattern)
 }
 
+// literalPrefixForPattern derives the literal head every path a pattern
+// matches has to carry. It is the allocation-free fast reject in front of the
+// regex and segment matchers, so it has to be a prefix of every string the
+// pattern's own anchored regex accepts. One byte too long and the
+// optimization has become a policy change, and on a deny rule it is the
+// dangerous direction: the path the gate turns away falls through to whatever
+// allow sits below it.
+//
+// Everything before the first "*" is literal except one case. A "*" that
+// opens a "/**" takes the slash before it into an optional group, so that
+// slash belongs in the prefix only when the text after the group still
+// guarantees one. "/containers/**/json" guarantees it, because "/containers"
+// followed by the collapsed group still has "/json" to come. "/containers/**"
+// does not, and neither does "/containers/**/**": every "/**" is optional, so
+// both match the bare "/containers".
 func literalPrefixForPattern(pattern string) string {
 	for i := 0; i < len(pattern); i++ {
 		if pattern[i] != '*' {
@@ -591,11 +624,9 @@ func literalPrefixForPattern(pattern string) string {
 		}
 
 		prefix := pattern[:i]
-		if i > 0 && pattern[i-1] == '/' && i+1 < len(pattern) && pattern[i+1] == '*' {
-			suffix := pattern[i+2:]
-			if suffix == "" || suffix[0] != '/' {
-				return strings.TrimSuffix(prefix, "/")
-			}
+		if i > 0 && pattern[i-1] == '/' && i+1 < len(pattern) && pattern[i+1] == '*' &&
+			!glob.EveryMatchStartsWithSlash(pattern[i+2:]) {
+			return strings.TrimSuffix(prefix, "/")
 		}
 		return prefix
 	}

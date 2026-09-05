@@ -26,11 +26,43 @@ const (
 	catalogReachabilityIndeterminate
 )
 
+// catalogIdentifierShape is the language a catalog template's "sockguard-test"
+// placeholder stands for.
 type catalogIdentifierShape uint8
 
 const (
+	// catalogIdentifierSegment is one non-empty clean segment, the shape of
+	// upstream's {id} and {name} route variables.
 	catalogIdentifierSegment catalogIdentifierShape = iota
+	// catalogIdentifierPath is a non-empty run of clean segments, the shape of
+	// upstream's {name:.*} route variables for registry-qualified image,
+	// plugin, and manifest names.
 	catalogIdentifierPath
+	// catalogIdentifierRoutePath is catalogIdentifierPath as gorilla/mux
+	// resolves it, which is the view Podman routes on: `.*` also matches the
+	// empty string and swallows a trailing slash, so the identifier may be
+	// absent altogether or end on the empty segment that slash leaves behind.
+	// filter.NormalizePodmanRoutePath preserves exactly that segment, and
+	// filter.evaluateRequestPolicy then decides the request on the decoded
+	// path AND on this route view.
+	//
+	// The empty segment is security-significant wherever an action route is
+	// registered under the same prefix as a catch-all:
+	// POST /libpod/images/scp/{name}/push is the image-push route, but
+	// POST /libpod/images/scp/{name}/push/ misses it and falls through to the
+	// image-SCP catch-all (filter.isLibpodImageScpRoutePath). Spelling the
+	// catalog entry with this shape puts that request in the catalog
+	// language, while the entry's exclusions — spelled without the empty
+	// segment — keep removing the bare action routes that really do belong to
+	// the earlier handler. The absent identifier matters for the same reason:
+	// POST /libpod/images/scp/ reaches the catch-all with an empty name, so a
+	// rule written for a sibling route (POST /libpod/images/* covering pull,
+	// load and import, say) must not be able to admit it unnoticed.
+	//
+	// It describes the identifier of a placeholder that ends its template,
+	// which is where both route-view entries spell it. Mid-template it would
+	// also admit a doubled slash, a shape no normalized route view has.
+	catalogIdentifierRoutePath
 )
 
 type catalogRuleMachine struct {
@@ -44,12 +76,20 @@ type catalogReachabilityBudget struct {
 }
 
 // firstAllowedCatalogPath returns a concrete route in the catalog shape whose
-// first matching rule allows it. Catalog occurrences of "sockguard-test" are
-// either one non-empty resource-identifier segment or a non-empty sequence of
-// clean segments, according to identifierShape. The latter mirrors upstream
-// `{name:.*}` route variables used for registry-qualified image, plugin, and
-// manifest names. The search operates on the exact regular languages accepted
-// by Sockguard's glob dialect instead of guessing a finite list of identifiers.
+// first matching rule allows it. Catalog occurrences of "sockguard-test" stand
+// for one non-empty clean segment, a non-empty run of them, or a route view's
+// resolution of that run (absent, or ending on the empty segment a trailing
+// slash keeps), according to identifierShape. The search operates on the exact
+// regular languages accepted by Sockguard's glob dialect instead of guessing a
+// finite list of identifiers.
+//
+// A catalogIdentifierRoutePath witness that ends on the empty segment is a
+// request spelling, not a decoded path: filter.evaluateRequestPolicy requires
+// the decoded view to allow as well, and this search does not model that
+// second view. The verdict therefore over-reports rather than under-reports on
+// that shape, which is the direction the caller can absorb — allowedCatalogPaths
+// re-runs every witness through the production evaluator and falls back to the
+// stable catalog spelling when it does not survive.
 //
 // The DFA product of several regular languages can be exponential in the
 // number of rules. Startup work is therefore capped. Exhausting a cap returns
@@ -130,8 +170,15 @@ func configuredRuleMatchesMethod(configured, method string) bool {
 func compileCatalogMachine(catalogPath string, identifierShape catalogIdentifierShape) (catalogRuleMachine, error) {
 	const segment = `(?:[^/.][^/]*|\.[^/.][^/]*|\.\.[^/]+)`
 	identifier := segment
-	if identifierShape == catalogIdentifierPath {
+	if identifierShape != catalogIdentifierSegment {
 		identifier = segment + `(?:/` + segment + `)*`
+	}
+	if identifierShape == catalogIdentifierRoutePath {
+		// The optional trailing "/" is the empty final segment a route view
+		// keeps, and the outer option is `.*` matching the empty string, which
+		// is how the bare route with no identifier at all reaches the
+		// catch-all handler. See catalogIdentifierRoutePath.
+		identifier = `(?:` + identifier + `/?)?`
 	}
 	parts := strings.Split(catalogPath, "sockguard-test")
 	var expression strings.Builder
