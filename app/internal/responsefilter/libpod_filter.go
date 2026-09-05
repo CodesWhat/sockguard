@@ -276,16 +276,29 @@ func (f *Filter) modifyLibpodNetworkInspect(resp *http.Response) error {
 		return nil
 	}
 
-	body, err := readResponseBody(resp)
-	if err != nil {
+	// The shape sniff needs the raw bytes, so this is the one read site that
+	// works inside withResponseBody's callback rather than through
+	// decodeResponseObject. Both branches finish decoding before the callback
+	// returns, which is what keeps the pooled buffer from escaping.
+	var (
+		networks []map[string]any
+		payload  map[string]any
+		wasArray bool
+	)
+	if err := withResponseBody(resp, func(body []byte) error {
+		wasArray = bytes.HasPrefix(bytes.TrimLeft(body, " \t\r\n"), []byte("["))
+		var err error
+		if wasArray {
+			networks, err = decodeJSONObjectArray(body)
+		} else {
+			payload, err = decodeJSONObject(body)
+		}
+		return err
+	}); err != nil {
 		return rejectResponse(err)
 	}
 
-	if bytes.HasPrefix(bytes.TrimLeft(body, " \t\r\n"), []byte("[")) {
-		networks, err := decodeJSONObjectArray(body)
-		if err != nil {
-			return rejectResponse(err)
-		}
+	if wasArray {
 		for i, network := range networks {
 			if err := redactLibpodNetworkTopology(network); err != nil {
 				return rejectResponse(fmt.Errorf("libpod network inspect array element %d: %w", i, err))
@@ -294,10 +307,6 @@ func (f *Filter) modifyLibpodNetworkInspect(resp *http.Response) error {
 		return writeResponseBody(resp, networks)
 	}
 
-	payload, err := decodeJSONObject(body)
-	if err != nil {
-		return rejectResponse(err)
-	}
 	if err := redactLibpodNetworkTopology(payload); err != nil {
 		return rejectResponse(err)
 	}

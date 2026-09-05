@@ -585,7 +585,7 @@ func TestStreamArrayResponseHandlesNilPooledBuffer(t *testing.T) {
 }
 
 // TestAcquireStreamArrayBufferHandlesUnusablePoolValues kills the
-// CONDITIONALS_NEGATION mutant on acquireStreamArrayBuffer's `if out == nil`
+// CONDITIONALS_NEGATION mutant on acquirePooledBuffer's `if out == nil`
 // (out == nil -> out != nil). That mutant drops the fallback allocation for
 // every value a pool can hand back that is not a usable *bytes.Buffer, so
 // Reset dereferences nil, and it swaps a pooled buffer for a fresh one on the
@@ -610,15 +610,15 @@ func TestAcquireStreamArrayBufferHandlesUnusablePoolValues(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := acquireStreamArrayBuffer(tt.get)
+			got := acquirePooledBuffer(tt.get)
 			if got == nil {
-				t.Fatal("acquireStreamArrayBuffer() = nil, want a usable buffer")
+				t.Fatal("acquirePooledBuffer() = nil, want a usable buffer")
 			}
 			if tt.want != nil && got != tt.want {
-				t.Fatalf("acquireStreamArrayBuffer() allocated a new buffer, want the pooled one reused")
+				t.Fatalf("acquirePooledBuffer() allocated a new buffer, want the pooled one reused")
 			}
 			if got.Len() != 0 {
-				t.Fatalf("acquireStreamArrayBuffer() buffer holds %q, want it reset to empty", got.Bytes())
+				t.Fatalf("acquirePooledBuffer() buffer holds %q, want it reset to empty", got.Bytes())
 			}
 		})
 	}

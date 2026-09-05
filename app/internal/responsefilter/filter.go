@@ -23,6 +23,16 @@ var streamArrayBufferPool = sync.Pool{
 	New: func() any { return new(bytes.Buffer) },
 }
 
+// responseBodyBufferPool keeps growable bytes.Buffer instances warm for the
+// whole-body read path, so an inspect or object-shaped response doesn't pay
+// io.ReadAll's fresh 512-byte allocation and its doubling copies on every
+// request. Same discipline as streamArrayBufferPool: the bytes handed to
+// withResponseBody's callback belong to the pool and are reused by the next
+// caller, so nothing may reference them after the callback returns.
+var responseBodyBufferPool = sync.Pool{
+	New: func() any { return new(bytes.Buffer) },
+}
+
 const (
 	redactedValue = "<redacted>"
 )
@@ -210,12 +220,7 @@ func (f *Filter) modifyContainerInspect(resp *http.Response) error {
 		return nil
 	}
 
-	body, err := readResponseBody(resp)
-	if err != nil {
-		return rejectResponse(err)
-	}
-
-	payload, err := decodeJSONObject(body)
+	payload, err := decodeResponseObject(resp)
 	if err != nil {
 		return rejectResponse(err)
 	}
@@ -290,12 +295,7 @@ func (f *Filter) modifyImageInspect(resp *http.Response) error {
 		return nil
 	}
 
-	body, err := readResponseBody(resp)
-	if err != nil {
-		return rejectResponse(err)
-	}
-
-	payload, err := decodeJSONObject(body)
+	payload, err := decodeResponseObject(resp)
 	if err != nil {
 		return rejectResponse(err)
 	}
@@ -345,12 +345,7 @@ func (f *Filter) modifyNetworkInspect(resp *http.Response) error {
 		return nil
 	}
 
-	body, err := readResponseBody(resp)
-	if err != nil {
-		return rejectResponse(err)
-	}
-
-	payload, err := decodeJSONObject(body)
+	payload, err := decodeResponseObject(resp)
 	if err != nil {
 		return rejectResponse(err)
 	}
@@ -366,12 +361,7 @@ func (f *Filter) modifyVolumeList(resp *http.Response) error {
 		return nil
 	}
 
-	body, err := readResponseBody(resp)
-	if err != nil {
-		return rejectResponse(err)
-	}
-
-	payload, err := decodeJSONObject(body)
+	payload, err := decodeResponseObject(resp)
 	if err != nil {
 		return rejectResponse(err)
 	}
@@ -400,12 +390,7 @@ func (f *Filter) modifyVolumeInspect(resp *http.Response) error {
 		return nil
 	}
 
-	body, err := readResponseBody(resp)
-	if err != nil {
-		return rejectResponse(err)
-	}
-
-	payload, err := decodeJSONObject(body)
+	payload, err := decodeResponseObject(resp)
 	if err != nil {
 		return rejectResponse(err)
 	}
@@ -636,12 +621,7 @@ func (f *Filter) modifySystemDataUsage(resp *http.Response) error {
 }
 
 func modifyMapResponse(resp *http.Response, mutate func(map[string]any) error) error {
-	body, err := readResponseBody(resp)
-	if err != nil {
-		return rejectResponse(err)
-	}
-
-	payload, err := decodeJSONObject(body)
+	payload, err := decodeResponseObject(resp)
 	if err != nil {
 		return rejectResponse(err)
 	}
@@ -651,8 +631,10 @@ func modifyMapResponse(resp *http.Response, mutate func(map[string]any) error) e
 	return writeResponseBody(resp, payload)
 }
 
-// acquireStreamArrayBuffer returns an empty *bytes.Buffer to accumulate a
-// rewritten list response in. get is streamArrayBufferPool.Get in production.
+// acquirePooledBuffer returns an empty *bytes.Buffer from one of this
+// package's two buffer pools. get is streamArrayBufferPool.Get (the rewritten
+// list response) or responseBodyBufferPool.Get (the whole-body read) in
+// production.
 //
 // A sync.Pool Get can hand back something that is not a usable *bytes.Buffer:
 // a pool whose New returns nil, or (in a future refactor) a pool holding a
@@ -660,7 +642,7 @@ func modifyMapResponse(resp *http.Response, mutate func(map[string]any) error) e
 // below, so the fallback allocates instead. Taking get as a parameter is what
 // makes that fallback reachable from a test without draining the real pool,
 // whose Put deliberately discards entries at random under -race.
-func acquireStreamArrayBuffer(get func() any) *bytes.Buffer {
+func acquirePooledBuffer(get func() any) *bytes.Buffer {
 	out, _ := get().(*bytes.Buffer)
 	if out == nil {
 		out = &bytes.Buffer{}
@@ -696,7 +678,7 @@ func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error)
 		return rejectResponse(err)
 	}
 
-	// Enforce the same 8 MiB cap as readResponseBody. It counts decoded
+	// Enforce the same 8 MiB cap as withResponseBody. It counts decoded
 	// bytes, so on a compressed body it is also the gzip-bomb guard.
 	limited := &io.LimitedReader{
 		R: decoded,
@@ -713,7 +695,7 @@ func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error)
 		return rejectResponse(fmt.Errorf("expected JSON array, got %T %v", tok, tok))
 	}
 
-	out := acquireStreamArrayBuffer(streamArrayBufferPool.Get)
+	out := acquirePooledBuffer(streamArrayBufferPool.Get)
 	defer streamArrayBufferPool.Put(out)
 
 	enc := newJSONEncoder(out)
@@ -1312,9 +1294,38 @@ func redactTLSInfo(payload map[string]any) {
 	redactStringField(payload, "CertIssuerPublicKey")
 }
 
-func readResponseBody(resp *http.Response) ([]byte, error) {
+// withResponseBody reads resp's body into a buffer borrowed from
+// responseBodyBufferPool and hands the bytes to use.
+//
+// The bounds are the ones readResponseBody enforced before the buffer was
+// pooled, in the same order and with the same messages: the upstream body is
+// closed on every exit, decodedResponseReader decompresses an
+// unsolicited Content-Encoding while bounding the compressed stream, and the
+// LimitedReader is sized to MaxResponseBodyBytes+1 so a body of exactly the
+// cap is read in full and one byte more is refused. A body that overruns the
+// cap is rejected rather than truncated, which is what makes the read
+// fail-closed.
+//
+// The callback form is what makes the pooling safe. body is the pooled
+// buffer's own storage, and the buffer goes back to the pool the moment use
+// returns — including the read-error, over-cap and decode-error paths, and
+// the 502s the callers turn those into — so use must not keep a reference to
+// it. Every caller decodes into freshly allocated values before returning:
+// encoding/json copies keys, strings and json.Number out of the input, and
+// writeResponseBody marshals into a new slice, so nothing this package hands
+// back to a client points into the pool.
+func withResponseBody(resp *http.Response, use func(body []byte) error) error {
+	return withPooledResponseBody(resp, responseBodyBufferPool.Get, responseBodyBufferPool.Put, use)
+}
+
+// withPooledResponseBody is withResponseBody with the pool handed in. get and
+// put are responseBodyBufferPool's in production; taking them as parameters is
+// what lets a test watch the acquire/release pairing directly, because
+// sync.Pool's own Put discards entries at random under -race and so cannot be
+// used as the observation point.
+func withPooledResponseBody(resp *http.Response, get func() any, put func(any), use func(body []byte) error) error {
 	if resp.Body == nil {
-		return nil, errors.New("missing response body")
+		return errors.New("missing response body")
 	}
 
 	upstreamBody := resp.Body
@@ -1322,18 +1333,37 @@ func readResponseBody(resp *http.Response) ([]byte, error) {
 
 	decoded, err := decodedResponseReader(resp)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
+	buf := acquirePooledBuffer(get)
+	defer put(buf)
+
 	reader := &io.LimitedReader{R: decoded, N: requestfilter.MaxResponseBodyBytes + 1}
-	body, err := io.ReadAll(reader)
-	if err != nil {
+	if _, err := buf.ReadFrom(reader); err != nil {
+		return err
+	}
+	if int64(buf.Len()) > requestfilter.MaxResponseBodyBytes {
+		return fmt.Errorf("response body exceeds %d bytes", requestfilter.MaxResponseBodyBytes)
+	}
+	return use(buf.Bytes())
+}
+
+// decodeResponseObject reads resp's body through withResponseBody and decodes
+// it into a JSON object. It is the whole-body counterpart to
+// streamArrayResponse, and the reason the pooled bytes never escape: the
+// decoded payload owns its own storage, so the buffer is back in the pool
+// before this returns.
+func decodeResponseObject(resp *http.Response) (map[string]any, error) {
+	var payload map[string]any
+	if err := withResponseBody(resp, func(body []byte) error {
+		var err error
+		payload, err = decodeJSONObject(body)
+		return err
+	}); err != nil {
 		return nil, err
 	}
-	if int64(len(body)) > requestfilter.MaxResponseBodyBytes {
-		return nil, fmt.Errorf("response body exceeds %d bytes", requestfilter.MaxResponseBodyBytes)
-	}
-	return body, nil
+	return payload, nil
 }
 
 // newJSONDecoder returns the one json.Decoder configuration this package uses

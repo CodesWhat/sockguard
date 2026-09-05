@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The response filter's whole-body read now fills a pooled `bytes.Buffer` instead of allocating a fresh one per request.** `io.ReadAll` started every inspect, `/info`, `/system/df` and volume-list read at 512 bytes and grew by copying, so a body of any size paid several throwaway allocations before a single field was redacted. `withResponseBody` borrows the buffer from a `sync.Pool` alongside the one `streamArrayResponse` already uses for its output, hands the bytes to a callback, and returns the buffer on every exit including the read-error, over-cap and decode-error paths the caller turns into a 502. The bounds are unchanged and are still checked in the same order: the upstream body is closed, an unsolicited `Content-Encoding` is decompressed through the same compressed-stream bound, and the `LimitedReader` is sized to `MaxResponseBodyBytes+1` so a body of exactly 8 MiB is read whole and one byte more is refused rather than truncated. The callback form is what makes it safe — the pooled bytes are gone by the time the caller sees a payload, because `encoding/json` copies every key, string and `json.Number` out of the input and `writeResponseBody` marshals into a new slice. `BenchmarkModifyResponseInspect` on a container inspect body: 61,152 B/op and 685 allocs/op before, 50,060 B/op and 675 allocs/op after (PERF-18).
+
+### Changed
+
 - **Every competitor comparison claim now names the upstream version it was checked against.** README.md's feature-comparison table, `website/src/app/data/comparison-rows.ts` (rendered by `compare-matrix.tsx`), and `docs/content/docs/migration.mdx`'s five per-competitor sections each carry a "versions checked 2026-09-05" line naming Tecnativa `docker-socket-proxy` v0.5.0, LinuxServer `docker-socket-proxy` 3.4.4-r0-ls96, wollomatic `socket-proxy` 1.13.1, 11notes `docker-socket-proxy` v2.1.8, and hectorm `cetusguard` v1.1.4, re-checked at every release cut, so a "cannot do X" claim can't go stale silently (DOC-10).
 
 ### Changed
