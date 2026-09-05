@@ -520,6 +520,19 @@ func RejectDuplicateCaseVariantJSONKeys(body []byte) error {
 	if err := dec.Decode(&v); err != nil {
 		return err
 	}
+	return RejectDuplicateCaseVariantJSONValue(v)
+}
+
+// RejectDuplicateCaseVariantJSONValue is RejectDuplicateCaseVariantJSONKeys
+// against a body that has already been decoded — same walk, same verdict,
+// without parsing the same bytes a second time.
+//
+// A caller that has to decode a body for its own reasons (internal/ownership
+// decodes every create body it stamps an owner label into) would otherwise
+// pay for two full map[string]any trees per request, one of which it throws
+// away. Decode with json.Decoder.UseNumber, as this package's own decode
+// above does, so the value handed here is the same shape the walk expects.
+func RejectDuplicateCaseVariantJSONValue(v any) error {
 	return checkDuplicateCaseVariantKeys(v, false)
 }
 

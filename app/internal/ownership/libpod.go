@@ -104,7 +104,7 @@ func mutateLibpodPodCreateOwnershipBody(r *http.Request, labelKey, owner string)
 // case-INSENSITIVE via filter.FoldedObjects/FoldedStrings for the same
 // reason containerCreateNamespaceRefs folds Docker's HostConfig keys: a
 // crafted case-variant field name must not smuggle a namespace join past
-// this check (mutateJSONBody's RejectDuplicateCaseVariantJSONKeys pass
+// this check (mutateJSONBody's RejectDuplicateCaseVariantJSONValue pass
 // already ensures at most one case-variant of each field can be present).
 func libpodNamespaceRefs(decoded map[string]any) []string {
 	var refs []string
