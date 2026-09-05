@@ -309,7 +309,7 @@ func (cr *CompiledRule) matchesNormalizedUpperWithBit(upperMethod string, method
 	case pathMatcherLiteral:
 		return normalizedPath == cr.literal
 	case pathMatcherMatchAll:
-		return true
+		return isRootedOrEmptyPath(normalizedPath)
 	case pathMatcherTrailingDeep:
 		return matchTrailingDoubleStar(cr.trailingPrefix, normalizedPath)
 	case pathMatcherSegmentGlob:
@@ -505,6 +505,32 @@ func isTrailingDoubleStarPattern(pattern string) bool {
 // "^containers/[^/]*$", did not.
 func splitGlobSegments(pattern string) []string {
 	return strings.Split(pattern, "/")
+}
+
+// isRootedOrEmptyPath reports exactly what the anchored regex "/**" compiles
+// to — "^(/(?s:.*))?$" — accepts: the empty string, or a path beginning with
+// "/". It is the guard on the match-all fast path, which used to answer an
+// unconditional true and was therefore the one matcher kind wider than the
+// pattern standing behind it.
+//
+// The gap is only reachable with an unrooted request target. Go's server
+// parses a non-OPTIONS asterisk-form request line ("GET * HTTP/1.1") into
+// r.URL.Path == "*" and hands it to the handler — only "OPTIONS *" is
+// answered by the server itself — and an absolute-form line with no path
+// ("GET http://host HTTP/1.1"), an opaque target ("GET foo:bar") or a CONNECT
+// authority-form line all arrive with r.URL.Path == "". NormalizePath
+// preserves both shapes, so they reached Evaluate unrooted, where a catch-all
+// "/**" allow rule admitted them and its own regex would not. Every other
+// matcher kind already refused: a literal cannot equal them, the segment
+// walker cannot spend a rooted pattern's leading empty segment against them,
+// matchTrailingDoubleStar needs the prefix, and the regex kinds are anchored.
+//
+// withRequestTargetGuard now rejects an unrooted target at the edge with 400
+// before any layer evaluates it, so this bound is defense in depth: it keeps
+// the fast path equal to its own regex for every caller of Evaluate, not only
+// the ones sitting behind that guard.
+func isRootedOrEmptyPath(p string) bool {
+	return p == "" || p[0] == '/'
 }
 
 func matchTrailingDoubleStar(prefix, path string) bool {
