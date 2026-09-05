@@ -8,10 +8,11 @@ run-name: >-
 # Tier 2 of the fuzz strategy. Tier 1 lives in `ci-verify.yml`'s reusable
 # `go-ci` fuzz matrix and gives most fuzzers a 60-second budget on every
 # PR/push to main so obvious regressions fail fast, except FuzzLoadYAML,
-# FuzzHijackBidirectionalStream, and FuzzValidateUpstreamHijackInactivityTimeout,
-# which are heavy enough that they reach hosted CI only in this nightly tier
-# and the monthly tier below (FuzzLoadYAML and FuzzHijackBidirectionalStream
-# also run in the local pre-push smoke test in `lefthook.yml`), and
+# FuzzHijackBidirectionalStream, FuzzValidateUpstreamHijackInactivityTimeout,
+# and FuzzValidateServerShutdownGrace, which are heavy enough that they reach
+# hosted CI only in this nightly tier and the monthly tier below (FuzzLoadYAML
+# and FuzzHijackBidirectionalStream also run in the local pre-push smoke test
+# in `lefthook.yml`), and
 # FuzzCatalogReachability, whose value is in long coverage-guided runs against
 # the startup validator's bounded route search rather than in a 60-second
 # regression smoke. This workflow is
@@ -65,8 +66,8 @@ jobs:
     strategy:
       fail-fast: false
       # The org is on the Free plan: 20 concurrent jobs across every repo.
-      # This matrix is 27 on its own, and portwing's Deep Fuzz is also
-      # `30 9 * * *` and asks for 7 at the same minute, so 34 jobs contend
+      # This matrix is 28 on its own, and portwing's Deep Fuzz is also
+      # `30 9 * * *` and asks for 7 at the same minute, so 35 jobs contend
       # for 20 slots. Jobs admitted over the ceiling get starved (`execs`
       # flatlining at 0/sec) and then reclaimed with
       # "The runner has received a shutdown signal", exit 143, which reads
@@ -108,6 +109,7 @@ jobs:
           - { name: FuzzConfigured,                pkg: ./internal/upstreamflavor/ }
           - { name: FuzzPodmanEventLabelFilter,    pkg: ./internal/visibility/ }
           - { name: FuzzCatalogReachability,       pkg: ./internal/cmd/ }
+          - { name: FuzzValidateServerShutdownGrace, pkg: ./internal/config/ }
 
     steps:
       # Stage 1 of the harden-runner egress rollout: pure Go build/fuzz, no

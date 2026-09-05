@@ -1134,7 +1134,20 @@ func TestRunServeLifecyclePaths(t *testing.T) {
 		deps.notifySignals = func(c chan<- os.Signal, _ ...os.Signal) {
 			c <- syscall.SIGINT
 		}
-		deps.shutdownGracePeriod = -time.Second
+		// server.shutdown_grace, not deps.shutdownGracePeriod directly, now
+		// drives the shutdownCtx deadline (see effectiveShutdownGracePeriod);
+		// a negative value here reproduces the already-expired context this
+		// subtest depends on, bypassing the config-load validation that
+		// would normally reject it (validateRules is stubbed above).
+		deps.loadConfig = func(string) (*config.Config, error) {
+			cfg := testServeConfig()
+			cfg.Listen.Socket = "/tmp/sockguard-test.sock"
+			cfg.Listen.Address = ""
+			cfg.Health.Enabled = true
+			cfg.Log.AccessLog = true
+			cfg.Server.ShutdownGrace = "-1s"
+			return cfg, nil
+		}
 		deps.shutdownServer = func(server *http.Server, ctx context.Context) error {
 			if ctx.Err() == nil {
 				t.Fatal("expected expired shutdown context")
