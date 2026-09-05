@@ -58,6 +58,15 @@ func NewWithTransport(rt http.RoundTripper, logger *slog.Logger, opts Options) *
 			// pr.Out is ReverseProxy's clone, so the client's own request and
 			// the access/audit record of what it sent are untouched.
 			responsefilter.StripConditionalRequestHeaders(pr.Out.Header)
+			// Same hook, same reasoning, different header. A client that
+			// asks for gzip and reaches a daemon through something that
+			// honors it hands the read-side filters a compressed body they
+			// cannot parse, and every filtered read becomes a 502 on the
+			// gzip magic bytes. Pinning identity here means the upstream
+			// does not compress at all rather than compressing bytes this
+			// proxy would immediately decompress. The response side still
+			// decodes gzip if an upstream ignores this.
+			responsefilter.PinIdentityAcceptEncoding(pr.Out.Header)
 		},
 		Transport:      rt,
 		ModifyResponse: opts.ModifyResponse,
