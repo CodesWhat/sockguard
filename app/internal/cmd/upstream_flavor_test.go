@@ -579,6 +579,67 @@ func TestServeChainPassesResolvedFlavorToVisibility(t *testing.T) {
 	}
 }
 
+// TestServeChainPassesResolvedFlavorToOwnership is the ownership half of the
+// wiring proof above. The zero Flavor means Docker, so a chain builder that
+// dropped the field would leave the Docker-compat GET /secrets injecting an
+// owner label into a Podman filter grammar that answers 500 for it, with
+// every ownership unit test still green.
+func TestServeChainPassesResolvedFlavorToOwnership(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		flavor     upstreamflavor.Flavor
+		wantStatus int
+	}{
+		{name: "podman refuses the compat secret list", flavor: upstreamflavor.Podman, wantStatus: http.StatusForbidden},
+		{name: "docker is unchanged", flavor: upstreamflavor.Docker, wantStatus: http.StatusNoContent},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.Defaults()
+			cfg.Ownership.Owner = "team-a"
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+			deps := newServeTestDeps()
+
+			serveRT, err := newServeRuntime(&cfg, logger, deps)
+			if err != nil {
+				t.Fatalf("newServeRuntime: %v", err)
+			}
+			serveRT.upstreamFlavor = tt.flavor
+
+			layers, teardown, _ := buildServeHandlerLayersWithRuntime(serveHandlerBuild{
+				Cfg:     &cfg,
+				Logger:  logger,
+				Rules:   []*filter.CompiledRule{},
+				Deps:    deps,
+				Runtime: serveRT,
+			})
+			t.Cleanup(teardown)
+
+			var ownershipLayer func(http.Handler) http.Handler
+			for _, layer := range layers {
+				if layer.name == "withOwnership" {
+					ownershipLayer = layer.with
+				}
+			}
+			if ownershipLayer == nil {
+				t.Fatal("no withOwnership layer in the built chain")
+			}
+
+			handler := ownershipLayer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1.53/secrets", nil))
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("GET /secrets status = %d, want %d; body: %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+		})
+	}
+}
+
 // TestValidateDoesNotRequireAReachableDaemon is constraint (3). `sockguard
 // validate` must be a pure config operation: it runs on a build box, in CI,
 // and in a pre-flight container with no daemon anywhere. The config here

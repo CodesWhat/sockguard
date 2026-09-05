@@ -18,6 +18,7 @@ import (
 	"github.com/codeswhat/sockguard/app/internal/filter"
 	"github.com/codeswhat/sockguard/app/internal/httpjson"
 	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/upstreamflavor"
 )
 
 const DefaultLabelKey = "com.sockguard.owner"
@@ -27,6 +28,7 @@ const (
 	reasonCodeOwnerPolicyLookupFailed                = "owner_policy_lookup_failed"
 	reasonCodeOwnerPolicyDeniedAccess                = "owner_policy_denied_access"
 	reasonCodeOwnerVisibilityPodmanEventsUnscopeable = "owner_visibility_podman_events_unscopeable"
+	reasonCodeOwnerPodmanSecretList                  = "owner_podman_secret_list_unscopeable" // #nosec G101 -- reason code, not a credential
 )
 
 const ownerVisibilityPodmanEventsDenyReason = "events denied: this upstream is Podman, whose GET /events filters labels disjunctively, so owner isolation and visibility label selectors cannot be enforced together"
@@ -124,6 +126,24 @@ type Options struct {
 	// referenced container is missing or does not belong to the configured
 	// owner. Set true to restore the old unchecked behavior.
 	AllowCrossOwnerNamespaceSharing bool
+	// UpstreamFlavor is the engine behind the upstream socket, resolved at
+	// startup from upstream.flavor (see internal/upstreamflavor). It changes
+	// exactly one thing here: whether the Docker-compat GET /secrets is
+	// refused, because on Podman that path is compat.ListSecrets, whose
+	// filter grammar rejects the owner label this layer injects into every
+	// other list. See filter.PodmanCompatSecretListDenyReason.
+	//
+	// Podman's other divergence, the disjunctive GET /events filter, needs no
+	// flavor here: addOwnerLabelFilter replaces the key with exactly one
+	// value, and one value evaluates the same under either rule. Only the
+	// combination with a visibility selector is inexpressible, and that
+	// arrives on the request as dockerfilters.RequiresSoleValue rather than
+	// as a flavor.
+	//
+	// The zero value means Docker, so a chain builder that drops the field
+	// leaves the compat /secrets 500 in place with every unit test green;
+	// TestServeChainPassesResolvedFlavorToOwnership is the wiring proof.
+	UpstreamFlavor upstreamflavor.Flavor
 }
 
 type upstreamInspector struct {
@@ -168,6 +188,12 @@ func middlewareWithDeps(
 		return func(next http.Handler) http.Handler { return next }
 	}
 
+	// Hoisted out of the request closure for the reason the visibility
+	// middleware hoists its own copy: upstream.flavor is reload-immutable and
+	// the chain is rebuilt on reload anyway, so the request path compares a
+	// bool rather than a string.
+	podmanUpstream := opts.UpstreamFlavor == upstreamflavor.Podman
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Prefer the normalized path the filter middleware already stamped
@@ -195,6 +221,17 @@ func middlewareWithDeps(
 			if r.Method == http.MethodGet || r.Method == http.MethodHead {
 				if read, ok := filter.LookupLibpodUnscopeableRead(normPath); ok {
 					denyUnscopeableLibpodRead(w, r, read)
+					return
+				}
+				// The Docker-compat secret list is the same refusal on a
+				// Podman upstream, gated on the flavor because "/secrets"
+				// exists on both engines and only Podman serves it from
+				// compat.ListSecrets. needsOwnerFilter has it, so without
+				// this the owner label reaches a filter grammar that accepts
+				// only name and id and every request answers 500. See
+				// filter.PodmanCompatSecretListDenyReason.
+				if podmanUpstream && normPath == filter.PodmanCompatSecretListPath {
+					denyPodmanCompatSecretList(w, r)
 					return
 				}
 			}
