@@ -1,8 +1,8 @@
-name: "Quality: Engine API Version Watch (monthly)"
+name: "Quality: Upstream API Watch (monthly)"
 run-name: >-
   ${{
-    github.event_name == 'schedule' && 'Quality: Engine API Version Watch — Monthly schedule' ||
-    format('Quality: Engine API Version Watch — Manual by {0}', github.actor)
+    github.event_name == 'schedule' && 'Quality: Upstream API Watch — Monthly schedule' ||
+    format('Quality: Upstream API Watch — Manual by {0}', github.actor)
   }}
 
 # Sockguard's request/response inspectors are validated against a specific
@@ -23,6 +23,17 @@ run-name: >-
 # that number moves past the pinned ceiling. A maintainer then reviews the
 # new API's changelog entry, updates the pin, and files any follow-up
 # filter work the release needs.
+#
+# The second job watches the other daemon the same way. Podman's native
+# POST /libpod/containers/{name}/update decodes handlers.UpdateEntities, and
+# sockguard's inspector allows an UpdateEntities root key it does not
+# recognize on purpose (deny-on-unknown would refuse working requests on
+# every Podman minor that adds a field, including fields Podman itself
+# discards). That posture is only safe if somebody notices when the upstream
+# body grows, so app/testdata/podman-api/update-entities-root-fields.json
+# pins the field set the inspector was reviewed against and this job
+# re-derives it from Podman's source at `main`. A new field lands as a red
+# monthly check instead of as an uninspected key nobody is looking for.
 
 on:
   workflow_dispatch: {}
@@ -129,3 +140,62 @@ jobs:
 
           echo "Engine API ceiling ${PINNED} still covers the latest documented version ${LATEST}."
           echo "**Result: within pinned ceiling.**" >> "$GITHUB_STEP_SUMMARY"
+
+  check-libpod-update-fields:
+    name: "Check libpod UpdateEntities root fields"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      # Audit rather than block, unlike the job above: this one needs the Go
+      # toolchain, the module proxy and the Actions cache on top of
+      # raw.githubusercontent.com, and that endpoint set has not been
+      # enumerated for the egress rollout yet. Same posture the other Go jobs
+      # in this repo hold at stage 1.
+      - name: Harden Runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      # The test parses Podman's own declarations with go/ast and diffs the
+      # flattened root key set against the committed snapshot, so a moved
+      # embedded struct or a changed json tag is resolved the way
+      # encoding/json resolves it rather than grepped for. It skips itself
+      # without the ref, which is how the rest of the suite stays offline.
+      - name: Compare snapshot against Podman main
+        id: drift
+        working-directory: app
+        env:
+          SOCKGUARD_TEST_PODMAN_UPSTREAM_REF: main
+        run: go test ./internal/filter/ -run TestLibpodContainerUpdateSnapshotMatchesUpstreamPodman -count=1 -v
+
+      - name: Summarize
+        if: always()
+        env:
+          STATUS: ${{ steps.drift.outcome }}
+        run: |
+          {
+            echo "### libpod UpdateEntities root fields"
+            echo ""
+            echo "- Pinned set: \`app/testdata/podman-api/update-entities-root-fields.json\`"
+            echo "- Checked against: \`containers/podman@main\`"
+            echo "- Result: ${STATUS}"
+            if [ "${STATUS}" != "success" ]; then
+              echo ""
+              echo "Podman's update body no longer matches the pinned field set."
+              echo "The step log names every field that moved. Add each new one to a"
+              echo "gate list in \`app/internal/filter/libpod_container_update.go\`,"
+              echo "refresh the snapshot, and re-run the offline drift test."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
