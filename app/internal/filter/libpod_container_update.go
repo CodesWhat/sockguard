@@ -6,7 +6,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
+	"unicode/utf8"
 )
 
 // libpodContainerUpdateSubject prefixes libpod-family denial reasons, matching
@@ -88,6 +90,14 @@ func (p containerUpdatePolicy) inspectLibpod(logger *slog.Logger, r *http.Reques
 	}
 	if len(root) == 0 {
 		return "", nil
+	}
+
+	// Reported ahead of the gates rather than after them: a body that also
+	// trips a gate is still evidence that the daemon on the other side speaks
+	// a field set this build does not model, and that is the signal worth
+	// having. Nothing here decides the request.
+	if unknown := libpodContainerUpdateUnknownFields(root); len(unknown) > 0 {
+		logRequestError(logger, r, slog.LevelDebug, fmt.Sprintf("%s: request body carries root fields this build does not inspect (%s); unrecognized fields are allowed by design, so this is the runtime signal that Podman's update body has grown past the field set the inspector is pinned against", libpodContainerUpdateSubject, strings.Join(unknown, ", ")), nil)
 	}
 
 	// Root only: Podman applies nothing outside the request root, so reading
@@ -269,4 +279,109 @@ var libpodContainerUpdateResourceControlFields = []string{
 	"DeviceWriteIOPs",
 
 	"r_limits",
+}
+
+// libpodContainerUpdateKnownFields is every UpdateEntities root key this
+// inspector classifies, assembled from the five gate lists above rather than
+// written out a second time. The assembly is the point: the drift test in
+// libpod_container_update_drift_test.go compares this set against a snapshot
+// of Podman's own type, so a gate list edited without the snapshot being
+// refreshed — or a snapshot refreshed without a gate being extended — fails
+// there instead of quietly changing what this endpoint admits.
+//
+// The snapshot is app/testdata/podman-api/update-entities-root-fields.json,
+// which records the Podman tag it was taken from and the commands that
+// produced it.
+var libpodContainerUpdateKnownFields = buildLibpodContainerUpdateKnownFields()
+
+func buildLibpodContainerUpdateKnownFields() []string {
+	fields := make([]string, 0, len(libpodContainerUpdateUngoverned)+
+		len(libpodContainerUpdateBlindWriteFields)+
+		len(libpodContainerUpdateDeviceFields)+
+		len(libpodContainerUpdateLifecycleFields)+
+		len(libpodContainerUpdateResourceControlFields))
+	for _, entry := range libpodContainerUpdateUngoverned {
+		fields = append(fields, entry.field)
+	}
+	fields = append(fields, libpodContainerUpdateBlindWriteFields...)
+	fields = append(fields, libpodContainerUpdateDeviceFields...)
+	fields = append(fields, libpodContainerUpdateLifecycleFields...)
+	fields = append(fields, libpodContainerUpdateResourceControlFields...)
+	return fields
+}
+
+// The unknown-field debug line is bounded in both directions. The body cap is
+// 1 MiB and every byte of it can be root key names, so an unbounded line here
+// would be a caller-controlled log amplifier on an endpoint that answers a
+// caller who is otherwise allowed through.
+const (
+	libpodContainerUpdateUnknownFieldLogLimit  = 8
+	libpodContainerUpdateUnknownFieldNameLimit = 64
+)
+
+// libpodContainerUpdateUnknownFields returns the root keys of a libpod
+// container-update body that no entry in libpodContainerUpdateKnownFields
+// classifies, sorted for a stable log line and capped for a bounded one.
+//
+// Unknown keys are reported, never denied. Podman discards a body field its
+// own build does not define, so deny-on-unknown would refuse working requests
+// on the first Podman minor that adds a field — including fields Podman
+// itself ignores — while buying nothing, since a field this build cannot name
+// is a field it cannot gate either. Reporting is what keeps that allow
+// visible: the drift test catches the growth against the pinned snapshot, and
+// this catches it on a deployment already running a newer Podman than the
+// build was pinned against.
+//
+// Matching is case-insensitive because that is how encoding/json resolves a
+// struct field, so "MEMORY" is the known "memory" rather than a new key.
+func libpodContainerUpdateUnknownFields(root map[string]json.RawMessage) []string {
+	unknown := make([]string, 0, len(root))
+	for key := range root {
+		if libpodContainerUpdateKnownField(key) {
+			continue
+		}
+		unknown = append(unknown, key)
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+
+	slices.Sort(unknown)
+	extra := 0
+	if len(unknown) > libpodContainerUpdateUnknownFieldLogLimit {
+		extra = len(unknown) - libpodContainerUpdateUnknownFieldLogLimit
+		unknown = unknown[:libpodContainerUpdateUnknownFieldLogLimit:libpodContainerUpdateUnknownFieldLogLimit]
+	}
+	for i, name := range unknown {
+		unknown[i] = libpodContainerUpdateLogFieldName(name)
+	}
+	if extra > 0 {
+		unknown = append(unknown, fmt.Sprintf("+%d more", extra))
+	}
+	return unknown
+}
+
+// libpodContainerUpdateKnownField reports whether key is one of the root keys
+// a gate in this file classifies, folded the way encoding/json folds it.
+func libpodContainerUpdateKnownField(key string) bool {
+	for _, field := range libpodContainerUpdateKnownFields {
+		if strings.EqualFold(key, field) {
+			return true
+		}
+	}
+	return false
+}
+
+// libpodContainerUpdateLogFieldName bounds one reported key name. A single
+// JSON object key can be most of the 1 MiB body, and the cut backs off to a
+// rune boundary so a multi-byte name never reaches the log as invalid UTF-8.
+func libpodContainerUpdateLogFieldName(name string) string {
+	if len(name) <= libpodContainerUpdateUnknownFieldNameLimit {
+		return name
+	}
+	trimmed := name[:libpodContainerUpdateUnknownFieldNameLimit]
+	for len(trimmed) > 0 && !utf8.ValidString(trimmed) {
+		trimmed = trimmed[:len(trimmed)-1]
+	}
+	return trimmed + "..."
 }
