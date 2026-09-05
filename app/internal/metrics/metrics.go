@@ -936,9 +936,9 @@ func splitPath(path string) []string {
 // segment. Docker's router only accepts digits and a dot; Podman's libpod
 // bindings send the daemon's full three-part semver plus prerelease/build
 // suffixes like "v5.8.1-dev" (VersionedPath regex [0-9][0-9A-Za-z.-]*, see
-// stripVersionPrefix in internal/filter/rules.go). Mirroring that class
-// here keeps route labels for Podman dev clients from all collapsing into
-// "unknown".
+// apipath.StripVersionPrefix in internal/apipath/normalize.go). Mirroring
+// that class here keeps route labels for Podman dev clients from all
+// collapsing into "unknown".
 func isDockerVersionSegment(segment string) bool {
 	if len(segment) < 2 || segment[0] != 'v' {
 		return false

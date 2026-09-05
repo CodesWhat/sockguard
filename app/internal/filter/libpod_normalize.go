@@ -8,9 +8,9 @@ import (
 
 // libpodPathPrefix is the literal namespace prefix for Podman's native
 // libpod API, distinct from the Docker-compatibility surface sockguard
-// already filters (see stripVersionPrefix's doc comment for the version-
-// prefix handling that makes /v5.0.0/libpod/... normalize the same as
-// /libpod/...). Every matcher in this file is exact-prefix-guarded on this
+// already filters (see apipath.StripVersionPrefix's doc comment for the
+// version-prefix handling that makes /v5.0.0/libpod/... normalize the same
+// as /libpod/...). Every matcher in this file is exact-prefix-guarded on this
 // constant so a crafted Docker-shaped path (e.g. "/containers/create") can
 // never satisfy a libpod predicate, and vice versa — see
 // TestLibpodMatchersNeverMatchDockerPathsAndViceVersa.
@@ -143,27 +143,10 @@ func isLibpodExecCreatePath(normalizedPath string) bool {
 	return ok && tail == "exec"
 }
 
-// isLibpodExecStartPath matches POST /libpod/exec/{id}/start, the libpod
-// equivalent of isExecStartPath's /exec/{id}/start.
+// isLibpodExecStartPath is a thin wrapper over apipath.IsLibpodExecStartPath,
+// which owns the definition for the reason isExecStartPath's wrapper gives.
 func isLibpodExecStartPath(normalizedPath string) bool {
-	if !strings.HasPrefix(normalizedPath, libpodPathPrefix+"exec/") {
-		return false
-	}
-	rest := strings.TrimPrefix(normalizedPath, libpodPathPrefix+"exec/")
-	_, tail, ok := strings.Cut(rest, "/")
-	return ok && tail == "start"
-}
-
-// isLibpodContainerAttachPath matches POST /libpod/containers/{id}/attach,
-// the libpod equivalent of the Docker hijack endpoint
-// /containers/{id}/attach (see isContainerAttachPath).
-func isLibpodContainerAttachPath(normalizedPath string) bool {
-	if !strings.HasPrefix(normalizedPath, libpodPathPrefix+"containers/") {
-		return false
-	}
-	rest := strings.TrimPrefix(normalizedPath, libpodPathPrefix+"containers/")
-	_, tail, ok := strings.Cut(rest, "/")
-	return ok && tail == "attach"
+	return apipath.IsLibpodExecStartPath(normalizedPath)
 }
 
 // isLibpodPlayKubePath matches POST /libpod/play/kube. It has no Docker
@@ -174,22 +157,6 @@ func isLibpodContainerAttachPath(normalizedPath string) bool {
 // than modeling its body.
 func isLibpodPlayKubePath(normalizedPath string) bool {
 	return normalizedPath == libpodPathPrefix+"play/kube"
-}
-
-// isContainerAttachPath matches POST /containers/{id}/attach, the Docker
-// counterpart of isLibpodContainerAttachPath. Unlike exec create/start,
-// container-attach previously had no reusable filter-side predicate — the
-// hijack layer (internal/proxy) matched it with inline logic instead. This
-// gives that inline logic a named, testable counterpart on this side of the
-// package split, and lets TestLibpodMatchersNeverMatchDockerPathsAndViceVersa
-// assert the libpod/Docker attach matchers stay mutually exclusive.
-func isContainerAttachPath(normalizedPath string) bool {
-	if !strings.HasPrefix(normalizedPath, "/containers/") {
-		return false
-	}
-	rest := strings.TrimPrefix(normalizedPath, "/containers/")
-	_, tail, ok := strings.Cut(rest, "/")
-	return ok && tail == "attach"
 }
 
 // containerSubresourcePath reports whether normalizedPath addresses the
