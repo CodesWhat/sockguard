@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 // libpodSecretPolicy backs POST /libpod/secrets/create. Unlike Docker's
@@ -33,7 +35,7 @@ func (p libpodSecretPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedP
 		return "", nil
 	}
 
-	if driver := strings.TrimSpace(r.URL.Query().Get("driver")); driver != "" && !p.allowCustomDrivers {
+	if driver := strings.TrimSpace(logging.RequestQuery(r).Get("driver")); driver != "" && !p.allowCustomDrivers {
 		return fmt.Sprintf("libpod secret create denied: driver %q is not allowed", driver), nil
 	}
 
