@@ -21,6 +21,7 @@ import (
 	"github.com/codeswhat/sockguard/app/internal/filter"
 	"github.com/codeswhat/sockguard/app/internal/health"
 	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/testhelp"
 )
 
 // TestBuildServeHandlerSkipsAdminLayerWhenDedicatedListenerConfigured proves
@@ -333,6 +334,109 @@ func TestWarnIfAdminListenerWideOpen(t *testing.T) {
 			gotWarn := strings.Contains(buf.String(), wantMsg)
 			if gotWarn != tt.wantWarn {
 				t.Fatalf("warn emitted = %v, want %v. log=%s", gotWarn, tt.wantWarn, buf.String())
+			}
+		})
+	}
+}
+
+// TestWarnIfMainListenerPlaintext is the main-listener twin of
+// TestWarnIfAdminListenerWideOpen. The admin listener has warned about
+// non-loopback plaintext TCP since #21; the main listener, which carries the
+// Docker API itself (exec streams, secrets, container data), started silently.
+// The warning must name every effective listener in that shape and stay quiet
+// for the shapes that are not exposed: loopback, mutual TLS, unix sockets.
+func TestWarnIfMainListenerPlaintext(t *testing.T) {
+	const wantPrefix = "main listener is non-loopback plaintext TCP"
+	completeTLS := config.ListenTLSConfig{CertFile: "cert.pem", KeyFile: "key.pem", ClientCAFile: "ca.pem"}
+
+	tests := []struct {
+		name string
+		// mutate shapes the config; config.Defaults() starts at the loopback
+		// address 127.0.0.1:2375.
+		mutate func(*config.Config)
+		// wantListeners is the "listener" attr of every warning expected, in
+		// EffectiveListeners order. Empty means no warning at all.
+		wantListeners []string
+	}{
+		{
+			name:          "non-loopback plaintext warns",
+			mutate:        func(c *config.Config) { c.Listen.Address = "0.0.0.0:2375" },
+			wantListeners: []string{config.DefaultListenerName},
+		},
+		{
+			name:   "wildcard address warns",
+			mutate: func(c *config.Config) { c.Listen.Address = ":2375" },
+			// A bare port binds every interface, so it is exposed exactly
+			// like an explicit 0.0.0.0.
+			wantListeners: []string{config.DefaultListenerName},
+		},
+		{
+			name:   "loopback plaintext is not exposed",
+			mutate: func(*config.Config) {},
+		},
+		{
+			name: "non-loopback mutual TLS is encrypted and authenticated",
+			mutate: func(c *config.Config) {
+				c.Listen.Address = "0.0.0.0:2375"
+				c.Listen.TLS = completeTLS
+			},
+		},
+		{
+			name: "unix socket wins over a configured address",
+			mutate: func(c *config.Config) {
+				c.Listen.Address = "0.0.0.0:2375"
+				c.Listen.Socket = "/tmp/sockguard-main.sock"
+			},
+		},
+		{
+			name: "only the exposed entry of an explicit listeners list warns",
+			mutate: func(c *config.Config) {
+				c.Listeners = []config.ListenerConfig{
+					{
+						Name:            "public",
+						ListenConfig:    config.ListenConfig{Address: "0.0.0.0:2375"},
+						AllowedProfiles: []string{config.WildcardProfile},
+					},
+					{
+						Name:            "local",
+						ListenConfig:    config.ListenConfig{Address: "127.0.0.1:2376"},
+						AllowedProfiles: []string{config.WildcardProfile},
+					},
+					{
+						Name:            "internal",
+						ListenConfig:    config.ListenConfig{Socket: "/tmp/sockguard-internal.sock"},
+						AllowedProfiles: []string{config.WildcardProfile},
+					},
+				}
+			},
+			wantListeners: []string{"public"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			tt.mutate(&cfg)
+
+			collector := &testhelp.CollectingHandler{}
+			warnIfMainListenerPlaintext(&cfg, collector.Logger())
+
+			var gotListeners []string
+			for _, record := range collector.Records() {
+				if !strings.HasPrefix(record.Message, wantPrefix) {
+					continue
+				}
+				listener, _ := record.Attrs["listener"].(string)
+				gotListeners = append(gotListeners, listener)
+			}
+
+			if len(gotListeners) != len(tt.wantListeners) {
+				t.Fatalf("warned listeners = %v, want %v. records=%+v", gotListeners, tt.wantListeners, collector.Records())
+			}
+			for i, want := range tt.wantListeners {
+				if gotListeners[i] != want {
+					t.Fatalf("warned listeners = %v, want %v", gotListeners, tt.wantListeners)
+				}
 			}
 		})
 	}

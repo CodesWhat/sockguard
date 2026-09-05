@@ -315,7 +315,7 @@ How we stack up against other Docker socket proxies:
 | Feature | Tecnativa | LinuxServer | wollomatic | 11notes | CetusGuard | **Sockguard** |
 |---------|:---------:|:-----------:|:----------:|:-------:|:----------:|:-------------:|
 | Method + path filtering | ✅ | ✅ | ✅ (regex) | Fixed read-only | ✅ (regex) | ✅ |
-| Granular container write ops | Partial (`ALLOW_*`) | Partial (`ALLOW_*`) | Via regex | ❌ (read-only) | Via regex | ✅ |
+| Granular container write ops | Documented only (POST gate blocks them) | Partial (`ALLOW_*`) | Via regex | ❌ (read-only) | Via regex | ✅ |
 | Request inspection | ❌ | ❌ | Partial (bind-mount source restrictions) | ❌ | ❌ | ✅ (`container` create/update/exec/archive/remove query, `image` pull/load, Docker + Podman `build`, `volume`, `network` create/connect/disconnect, `secret`, `config`, `service`, `swarm` init/join/update/unlock, `node` update, `plugin`) |
 | Per-client admission / policy selection | ❌ | ❌ | Partial (IP/hostname + per-container labels) | ❌ | ❌ | ✅ (CIDR + labels + cert selectors incl. SPKI + unix peer profiles) |
 | Read-side visibility / redaction | ❌ | ❌ | ❌ | Partial (targets 7 risky GETs; the image-export pattern misses both real shapes, [11notes #12](https://github.com/11notes/docker-socket-proxy/issues/12)) | ❌ | ✅ (visibility + protected JSON redaction) |
@@ -359,7 +359,7 @@ SOCKET_PATH=/var/run/docker.sock
 LOG_LEVEL=warning
 ```
 
-Compat env vars only generate rules when no explicit `rules:` are configured. If you provide `rules:` in YAML, those rules win even when they happen to match the built-in defaults exactly. Broad compat reads (`CONTAINERS=1`, `IMAGES=1`, `POST=0`) that pull in process-list, raw archive/export, and log/attach streaming also need `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true`; see the [configuration reference](https://getsockguard.com/docs/configuration) for the full env-var surface. Signed-policy mode does not permit rule generation after signature verification, so any section, `POST`, `GRPC`/`SESSION`, or `ALLOW_*` compatibility variable causes startup to fail. Translate those grants into the signed YAML first.
+Compat env vars only generate rules while the effective ruleset still matches Sockguard's built-in defaults. The check is on the rules themselves, not on whether you supplied a config file, so an explicit `rules:` block that happens to be byte-identical to the default still activates it; a `rules:` block that differs from the default wins outright and no compat rules are generated. Broad compat reads (`CONTAINERS=1`, `IMAGES=1`, `POST=0`) that pull in process-list, raw archive/export, and log/attach streaming also need `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true`; see the [configuration reference](https://getsockguard.com/docs/configuration) for the full env-var surface. Signed-policy mode does not permit rule generation after signature verification, so any section, `POST`, `GRPC`/`SESSION`, or `ALLOW_*` compatibility variable causes startup to fail. Translate those grants into the signed YAML first.
 
 `CONTAINERS=1` with `POST=1`, or `ALLOW_DELETE=1` independently, preserves
 the compatibility proxy's full container-removal surface: force removal,
