@@ -691,9 +691,15 @@ func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error)
 	upstreamBody := resp.Body
 	defer func() { _ = upstreamBody.Close() }()
 
-	// Enforce the same 8 MiB cap as readResponseBody.
+	decoded, err := decodedResponseReader(resp)
+	if err != nil {
+		return rejectResponse(err)
+	}
+
+	// Enforce the same 8 MiB cap as readResponseBody. It counts decoded
+	// bytes, so on a compressed body it is also the gzip-bomb guard.
 	limited := &io.LimitedReader{
-		R: upstreamBody,
+		R: decoded,
 		N: requestfilter.MaxResponseBodyBytes + 1,
 	}
 	dec := newJSONDecoder(limited)
@@ -1314,7 +1320,12 @@ func readResponseBody(resp *http.Response) ([]byte, error) {
 	upstreamBody := resp.Body
 	defer func() { _ = upstreamBody.Close() }()
 
-	reader := &io.LimitedReader{R: upstreamBody, N: requestfilter.MaxResponseBodyBytes + 1}
+	decoded, err := decodedResponseReader(resp)
+	if err != nil {
+		return nil, err
+	}
+
+	reader := &io.LimitedReader{R: decoded, N: requestfilter.MaxResponseBodyBytes + 1}
 	body, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, err

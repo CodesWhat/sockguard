@@ -92,7 +92,9 @@ func TestListLabelFilterComposesOwnerAndVisibilitySelectors(t *testing.T) {
 		// other or the record is filed under a key ownership never reads.
 		{name: "docker nodes", target: "/v1.53/nodes", filterKey: "node.label"},
 		{name: "libpod containers", target: "/libpod/containers/json", filterKey: "label"},
+		{name: "libpod images", target: "/libpod/images/json", filterKey: "label"},
 		{name: "libpod pods", target: "/libpod/pods/json", filterKey: "label"},
+		{name: "libpod networks", target: "/libpod/networks/json", filterKey: "label"},
 		{name: "libpod volumes", target: "/libpod/volumes/json", filterKey: "label"},
 	}
 

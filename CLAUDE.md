@@ -23,7 +23,7 @@ Turborepo orchestrates the TypeScript workspaces. The Go app is built independen
 go build -o sockguard ./cmd/sockguard/   # Build binary
 go test ./...                              # All tests with coverage
 go test -fuzz=FuzzPathMatch ./internal/filter/       # Fuzz: path matching pipeline
-go test -fuzz=FuzzGlobToRegex ./internal/filter/     # Fuzz: glob-to-regex conversion
+go test -fuzz=FuzzGlobToRegexString ./internal/filter/     # Fuzz: glob-to-regex conversion
 go test -fuzz=FuzzNormalizePath ./internal/filter/   # Fuzz: version prefix stripping
 go test -fuzz=FuzzCompileRule ./internal/filter/     # Fuzz: rule compilation + matching
 golangci-lint run                          # Lint

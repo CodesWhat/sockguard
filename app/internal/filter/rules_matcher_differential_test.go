@@ -201,12 +201,6 @@ func differentialPaths() []string {
 	seen := make(map[string]struct{}, 3*len(raw))
 	paths := make([]string, 0, 3*len(raw))
 	add := func(normalized string) {
-		// NormalizePath("") is "" and no request path normalizes to it from a
-		// non-empty input; the segment walkers and the regex disagree there
-		// too, and it is not a path any rule is evaluated against.
-		if normalized == "" {
-			return
-		}
 		if _, dup := seen[normalized]; dup {
 			return
 		}
@@ -221,7 +215,42 @@ func differentialPaths() []string {
 		add(NormalizePodmanRoutePath(candidate))
 		add(NormalizePodmanRoutePath(candidate + "/"))
 	}
+	for _, unrooted := range unrootedRequestTargetPaths {
+		add(NormalizePath(unrooted))
+	}
 	return paths
+}
+
+// unrootedRequestTargetPaths are the normalized paths an unrooted HTTP
+// request-target reaches rule matching as. NormalizePath preserves both
+// shapes: "*" from a non-OPTIONS asterisk-form request line, and "" from an
+// absolute-form line with no path, an opaque target, or a CONNECT
+// authority-form line. The rest are the rootless spellings a pattern could
+// have been written as, kept here so the corpus states the whole unrooted
+// domain rather than the two request forms alone.
+//
+// They belong in the differential because a matcher's whole job is to answer
+// what its own anchored regex answers, and the catch-all fast path used to
+// answer an unconditional true. "^(/(?s:.*))?$" accepts "" and nothing else
+// unrooted, so before the fix "/**" allowed "*" and the regex did not — which
+// is what let a catch-all allow rule admit "GET *". The proxy now rejects an
+// unrooted target at the edge (withRequestTargetGuard), so keeping them here
+// is what stops the matcher from quietly drifting back if that guard ever
+// moves.
+var unrootedRequestTargetPaths = []string{
+	"",
+	"*",
+	"**",
+	".",
+	"..",
+	"_ping",
+	"json",
+	"containers",
+	"containers/json",
+	"containers/abc/json",
+	"*/json",
+	"a\nb",
+	"v1.45/containers/json",
 }
 
 // TestPathMatcherKindsAgreeWithRegexFallback is the differential between the
@@ -304,8 +333,75 @@ func TestPathMatcherKindsAgreeWithRegexFallback(t *testing.T) {
 			if matched == 0 {
 				t.Errorf("pattern %q matched nothing in the corpus; agreement on all-false is vacuous", tc.pattern)
 			}
-			if matched == len(paths) && tc.kind != pathMatcherMatchAll {
+			// No exemption for the match-all kind. The corpus carries the
+			// unrooted request-target shapes now, and "/**" has to refuse
+			// those exactly as "^(/(?s:.*))?$" does, so a pattern that still
+			// matches everything here is one whose fast path stopped tracking
+			// its regex.
+			if matched == len(paths) {
 				t.Errorf("pattern %q matched every path in the corpus; agreement on all-true is vacuous", tc.pattern)
+			}
+		})
+	}
+}
+
+// TestMatchAllFastPathRefusesUnrootedRequestTargets names the case the corpus
+// differential above sweeps over. "/**" is the one pattern that compiles to a
+// matcher with no path test at all, and an unconditional true is wider than
+// the "^(/(?s:.*))?$" it stands for by exactly the unrooted paths: "*", which
+// Go's server hands the handler for a non-OPTIONS asterisk-form request line,
+// and every rootless spelling below.
+//
+// It matters because "/**" is the catch-all every permissive policy is written
+// with, so the divergence turned "allow everything under the API" into "allow
+// a request target the API cannot even name" — and then forwarded it as a
+// different target than the one policy evaluated, since url.URL.RequestURI
+// substitutes "/" for an empty path.
+//
+// The empty path stays a match on purpose. The regex's group is optional, so
+// "" is inside the pattern's language; the guard is "rooted or empty", not
+// "rooted", because the fast path has to answer what the regex answers and
+// nothing else.
+func TestMatchAllFastPathRefusesUnrootedRequestTargets(t *testing.T) {
+	t.Parallel()
+
+	compiled, err := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionAllow})
+	if err != nil {
+		t.Fatalf("CompileRule(%q): %v", "/**", err)
+	}
+	if compiled.matcherKind != pathMatcherMatchAll {
+		t.Fatalf("matcherKind for %q = %d, want pathMatcherMatchAll (%d)", "/**", compiled.matcherKind, pathMatcherMatchAll)
+	}
+	reference := regexp.MustCompile("^" + GlobToRegexString("/**") + "$")
+
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "asterisk form request target", path: "*", want: false},
+		{name: "rootless double star", path: "**", want: false},
+		{name: "rootless single segment", path: "_ping", want: false},
+		{name: "rootless multi segment", path: "containers/json", want: false},
+		{name: "rootless dot segment", path: ".", want: false},
+		{name: "rootless parent segment", path: "..", want: false},
+		{name: "rootless with a decoded newline", path: "a\nb", want: false},
+		{name: "empty path", path: "", want: true},
+		{name: "root", path: "/", want: true},
+		{name: "ordinary docker path", path: "/containers/json", want: true},
+		{name: "path with a decoded newline", path: "/containers/a\nb/json", want: true},
+		{name: "doubled leading slash", path: "//evil/containers/json", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := compiled.matchesNormalizedUpperWithBit(http.MethodGet, httpMethodBit(http.MethodGet), tt.path)
+			if got != tt.want {
+				t.Fatalf("match-all matcher on %q = %v, want %v", tt.path, got, tt.want)
+			}
+			if want := reference.MatchString(tt.path); want != tt.want {
+				t.Fatalf("this table drifted from the dialect: regex %q on %q = %v, table says %v", reference, tt.path, want, tt.want)
 			}
 		})
 	}

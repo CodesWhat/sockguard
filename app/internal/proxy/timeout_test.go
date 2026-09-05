@@ -382,6 +382,8 @@ func TestWithRequestTimeout_DoesNotSeverLiveStream(t *testing.T) {
 		method string
 		target string
 	}{
+		{"events", http.MethodGet, "/events"},
+		{"container logs follow", http.MethodGet, "/containers/abc/logs?follow=1"},
 		{"service logs follow", http.MethodGet, "/services/abc/logs?follow=1"},
 		{"task logs follow", http.MethodGet, "/tasks/abc/logs?follow=1"},
 		{"libpod images pull", http.MethodPost, "/libpod/images/pull?reference=redis"},
