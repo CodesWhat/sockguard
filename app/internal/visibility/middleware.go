@@ -995,8 +995,19 @@ func needsVisibilityLabelFilter(normPath string) bool {
 // runs after this one and drops client-supplied values from the same filter
 // key, keeps them. Callers must forward the returned request, not the argument.
 func addVisibilityLabelFilters(r *http.Request, normPath string, selectors []compiledSelector) (*http.Request, error) {
-	query := r.URL.Query()
-	filters, err := dockerfilters.Decode(query.Get("filters"))
+	rawQuery := r.URL.RawQuery
+	// The common list request carries no filters of its own, and often no
+	// query at all. Parsing it into a url.Values only to re-encode every
+	// parameter is per-request garbage on a read endpoint clients poll, so
+	// that case appends the one parameter this function adds instead.
+	appendOnly := rawQueryAcceptsAppendedFilters(rawQuery)
+	var query url.Values
+	var encodedFilters string
+	if !appendOnly {
+		query = r.URL.Query()
+		encodedFilters = query.Get("filters")
+	}
+	filters, err := dockerfilters.Decode(encodedFilters)
 	if err != nil {
 		return r, err
 	}
@@ -1026,9 +1037,53 @@ func addVisibilityLabelFilters(r *http.Request, normPath string, selectors []com
 	if err != nil {
 		return r, fmt.Errorf("encode filters: %w", err)
 	}
+	if appendOnly {
+		r.URL.RawQuery = appendFiltersParameter(rawQuery, string(encoded))
+		return r, nil
+	}
 	query.Set("filters", string(encoded))
 	r.URL.RawQuery = query.Encode()
 	return r, nil
+}
+
+// rawQueryAcceptsAppendedFilters reports whether an encoded filters parameter
+// can be appended to rawQuery as it stands, which needs two things. There must
+// be no filters parameter already, because one that exists has to be decoded
+// and merged rather than duplicated. And every parameter that is there must
+// mean the same thing before and after url.Values would have parsed it: a
+// percent escape decodes (so "filter%73" is the filters key spelled around
+// this check), a semicolon makes net/url drop the whole parameter, and an
+// empty parameter is dropped as well. Any of those, and the request takes the
+// parse-and-re-encode path that has always handled it.
+func rawQueryAcceptsAppendedFilters(rawQuery string) bool {
+	if rawQuery == "" {
+		return true
+	}
+	if strings.ContainsAny(rawQuery, "%;") {
+		return false
+	}
+	for rest := rawQuery; ; {
+		pair, tail, more := strings.Cut(rest, "&")
+		if pair == "" {
+			return false
+		}
+		if key, _, _ := strings.Cut(pair, "="); key == "filters" {
+			return false
+		}
+		if !more {
+			return true
+		}
+		rest = tail
+	}
+}
+
+// appendFiltersParameter adds one encoded filters parameter to rawQuery,
+// escaped exactly as url.Values.Encode would escape it.
+func appendFiltersParameter(rawQuery, encoded string) string {
+	if rawQuery == "" {
+		return "filters=" + url.QueryEscape(encoded)
+	}
+	return rawQuery + "&filters=" + url.QueryEscape(encoded)
 }
 
 func visibilityLabelFilterKey(normPath string) string {

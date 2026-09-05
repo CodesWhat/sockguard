@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 // libpodContainerUpdateSubject prefixes libpod-family denial reasons, matching
@@ -62,7 +64,7 @@ func (p containerUpdatePolicy) inspectLibpod(logger *slog.Logger, r *http.Reques
 	}
 
 	if !p.allowRestartPolicy {
-		if field, ok := libpodContainerUpdateRestartQueryField(r.URL.Query()); ok {
+		if field, ok := libpodContainerUpdateRestartQueryField(logging.RequestQuery(r)); ok {
 			return fmt.Sprintf("%s denied: restart policy changes are not allowed (%s)", libpodContainerUpdateSubject, field), nil
 		}
 	}

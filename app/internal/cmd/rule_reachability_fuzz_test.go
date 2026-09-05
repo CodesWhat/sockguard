@@ -21,10 +21,14 @@ const maxCatalogFuzzRules = 6
 
 // maxCatalogFuzzIdentifier and maxCatalogFuzzPattern bound the two inputs that
 // set the depth of that walk. Length is not what makes a route or a pattern
-// interesting here, and letting either run to a few hundred bytes costs whole
-// seconds per execution: a kilobyte-long identifier reused as a literal rule
-// pattern measured 7.5s for one firstAllowedCatalogPath call. Real container
-// IDs and registry references sit well inside these caps.
+// interesting here, and a long one costs throughput without buying coverage:
+// before the search walked live states instead of whole instruction lists, a
+// kilobyte-long identifier reused as a literal rule pattern measured 7.5s for
+// one firstAllowedCatalogPath call. That shape is now milliseconds and
+// maxCatalogReachabilitySteps bounds the rest, so these caps are about
+// executions per second rather than about hangs. Real container IDs and
+// registry references sit well inside them either way; the long-pattern cases
+// have their own tests in rule_reachability_bound_test.go.
 const (
 	maxCatalogFuzzIdentifier = 48
 	maxCatalogFuzzPattern    = 64
@@ -255,9 +259,14 @@ func catalogFuzzMatchSegments(template, candidate []string, shape catalogIdentif
 // here, never the oracle: every call sits behind a differential comparison
 // against catalogFuzzTemplateMatches.
 func catalogFuzzAccepts(program *syntax.Prog, candidate string) bool {
-	state := reachabilityStart(program)
+	budget := &catalogReachabilityBudget{}
+	words := (len(program.Inst) + 63) / 64
+	state := make([]uint64, words)
+	next := make([]uint64, words)
+	reachabilityAddClosure(program, state, program.Start, budget)
 	for _, r := range candidate {
-		state = reachabilityAdvance(program, state, r)
+		reachabilityAdvance(program, state, next, r, budget)
+		state, next = next, state
 		if reachabilityEmpty(state) {
 			return false
 		}

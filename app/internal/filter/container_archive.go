@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"path"
 	"strings"
+
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 const maxContainerArchiveBodyBytes = 512 << 20 // 512 MiB
@@ -49,7 +51,7 @@ func (p containerArchivePolicy) inspect(_ *slog.Logger, r *http.Request, normali
 		p.io = defaultIODeps()
 	}
 
-	query := r.URL.Query()
+	query := logging.RequestQuery(r)
 	targetValue, targetFound, targetAmbiguous := FoldedScalarQueryValue(query, "path")
 	switch {
 	case targetAmbiguous:

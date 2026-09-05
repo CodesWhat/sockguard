@@ -93,7 +93,7 @@ jobs:
           - { name: FuzzProxyHeadersAndBody,       pkg: ./internal/proxy/ }
           - { name: FuzzHijackHeadersAndBody,      pkg: ./internal/proxy/ }
           - { name: FuzzHijackBidirectionalStream, pkg: ./internal/proxy/ }
-          - { name: FuzzPathRoutingDifferential,   pkg: ./differential/ }
+          - { name: FuzzPathRoutingDifferential,   pkg: ./internal/differential/ }
           - { name: FuzzVisibilityFilter,          pkg: ./internal/visibility/ }
           - { name: FuzzOwnershipMutateBody,       pkg: ./internal/ownership/ }
           - { name: FuzzOwnershipMutateServiceBody, pkg: ./internal/ownership/ }

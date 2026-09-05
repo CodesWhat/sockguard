@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/apipath"
 	"github.com/codeswhat/sockguard/app/internal/glob"
 	"github.com/codeswhat/sockguard/app/internal/httpjson"
 	"github.com/codeswhat/sockguard/app/internal/logging"
@@ -352,7 +352,7 @@ func (h *throttleHandler) serve(w http.ResponseWriter, r *http.Request, next htt
 	if meta := logging.MetaForRequest(w, r); meta != nil && meta.NormPath != "" {
 		normPath = meta.NormPath
 	} else {
-		normPath = filter.NormalizePath(r.URL.Path)
+		normPath = apipath.NormalizePath(r.URL.Path)
 		if meta != nil {
 			meta.NormPath = normPath
 		}
@@ -412,10 +412,10 @@ func (h *throttleHandler) checkRateLimit(w http.ResponseWriter, r *http.Request,
 		slog.Float64("cost", cost),
 	)
 	if meta.AllowsPassThrough() {
-		logging.SetWouldDenyWithCode(w, r, string(ReasonRateLimit), "rate limit exceeded", filter.NormalizePath)
+		logging.SetWouldDenyWithCode(w, r, string(ReasonRateLimit), "rate limit exceeded", apipath.NormalizePath)
 		return false
 	}
-	logging.SetDeniedWithCode(w, r, string(ReasonRateLimit), "rate limit exceeded", filter.NormalizePath)
+	logging.SetDeniedWithCode(w, r, string(ReasonRateLimit), "rate limit exceeded", apipath.NormalizePath)
 	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 	_ = httpjson.Write(w, http.StatusTooManyRequests, ThrottleResponse{
 		Reason:            string(ReasonRateLimit),
@@ -462,10 +462,10 @@ func (h *throttleHandler) checkGlobalPriority(w http.ResponseWriter, r *http.Req
 		// increment the global gauge anyway so operators can correctly observe
 		// real concurrency while sizing a new global cap from dashboard data.
 		h.globalTracker.AcquirePassThrough() // increments; caller defers Release via needsRelease=true
-		logging.SetWouldDenyWithCode(w, r, string(ReasonPriorityFloor), "priority floor exceeded", filter.NormalizePath)
+		logging.SetWouldDenyWithCode(w, r, string(ReasonPriorityFloor), "priority floor exceeded", apipath.NormalizePath)
 		return true, true
 	}
-	logging.SetDeniedWithCode(w, r, string(ReasonPriorityFloor), "priority floor exceeded", filter.NormalizePath)
+	logging.SetDeniedWithCode(w, r, string(ReasonPriorityFloor), "priority floor exceeded", apipath.NormalizePath)
 	_ = httpjson.Write(w, http.StatusTooManyRequests, ThrottleResponse{
 		Reason: string(ReasonPriorityFloor),
 	})
@@ -493,10 +493,10 @@ func (h *throttleHandler) checkProfileConcurrency(w http.ResponseWriter, r *http
 			slog.Int64("max_inflight", cp.concurrency.MaxInflight),
 		)
 		if meta.AllowsPassThrough() {
-			logging.SetWouldDenyWithCode(w, r, string(ReasonConcurrency), "concurrency cap exceeded", filter.NormalizePath)
+			logging.SetWouldDenyWithCode(w, r, string(ReasonConcurrency), "concurrency cap exceeded", apipath.NormalizePath)
 			return nil, true
 		}
-		logging.SetDeniedWithCode(w, r, string(ReasonConcurrency), "concurrency cap exceeded", filter.NormalizePath)
+		logging.SetDeniedWithCode(w, r, string(ReasonConcurrency), "concurrency cap exceeded", apipath.NormalizePath)
 		_ = httpjson.Write(w, http.StatusTooManyRequests, ThrottleResponse{
 			Reason: string(ReasonConcurrency),
 		})

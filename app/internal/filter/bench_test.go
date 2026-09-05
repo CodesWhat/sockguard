@@ -34,29 +34,6 @@ func init() {
 	}
 }
 
-func BenchmarkNormalizePath(b *testing.B) {
-	b.ReportAllocs()
-	paths := []struct {
-		name string
-		path string
-	}{
-		{"bare", "/containers/json"},
-		{"versioned", "/v1.45/containers/json"},
-		{"versioned_three_part", "/v5.0.0/libpod/containers/json"},
-		{"deep", "/v1.45/containers/abc123def/json"},
-		{"traversal", "/v1.45/../containers/json"},
-		{"clean", "/_ping"},
-	}
-	for _, p := range paths {
-		b.Run(p.name, func(b *testing.B) {
-			b.ReportAllocs()
-			for b.Loop() {
-				NormalizePath(p.path)
-			}
-		})
-	}
-}
-
 func BenchmarkEvaluateNormalized(b *testing.B) {
 	cases := []struct {
 		name   string

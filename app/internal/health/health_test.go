@@ -313,12 +313,8 @@ func TestHealthCheckerFailureTTLZeroNeverCachesFailure(t *testing.T) {
 	// even though the caller's context was neither canceled nor past its
 	// deadline. A mutant turning "failureTTL > 0" into ">= 0" would cache
 	// the failure here instead of falling through to the reset branch.
-	checker.mu.Lock()
-	cacheReady := checker.cacheReady
-	cachedErr := checker.cachedErr
-	checker.mu.Unlock()
-	if cacheReady || cachedErr != nil {
-		t.Fatalf("checker state after zero-failureTTL failure = (cacheReady=%v, cachedErr=%v), want (false, nil)", cacheReady, cachedErr)
+	if entry := checker.cached.Load(); entry != nil {
+		t.Fatalf("checker cache after zero-failureTTL failure = (status=%q, err=%v), want no entry at all", entry.status, entry.err)
 	}
 }
 

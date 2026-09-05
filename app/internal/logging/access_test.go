@@ -11,6 +11,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync/atomic"
@@ -567,10 +569,17 @@ func TestPutRequestMetaResetsFields(t *testing.T) {
 		Reason:   "default deny",
 		NormPath: "/containers/create",
 	}
+	// The query memo has to be cleared with everything else: a meta handed
+	// back out of the pool still pointing at the previous request's parse
+	// would answer the next request's reads from it.
+	meta.queryRaw = "force=1"
+	meta.queryValues = url.Values{"force": {"1"}}
+	meta.queryErr = errors.New("boom")
+	meta.queryParsed = true
 
 	putRequestMeta(meta)
 
-	if *meta != (RequestMeta{}) {
+	if !reflect.DeepEqual(*meta, RequestMeta{}) {
 		t.Fatalf("meta after put = %#v, want zero value", *meta)
 	}
 }

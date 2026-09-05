@@ -697,7 +697,7 @@ func validEscapedLibpodImageScpRule(match MatchConfig) bool {
 // a Docker/Podman API version prefix (e.g. "/v1.45/..." or
 // "/v5.8.1-dev/..."). NormalizePath strips exactly that prefix from the
 // request path before rule matching runs, using the same predicate
-// (filter.HasVersionPrefix, built on filter's stripVersionPrefix) this check
+// (filter.HasVersionPrefix, built on apipath.StripVersionPrefix) this check
 // calls — so a pattern that still carries the prefix can never match real
 // traffic and is silently dead rather than doing what its author intended.
 // Failing closed at validation time beats the startup warning this replaces:
