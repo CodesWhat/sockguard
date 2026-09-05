@@ -681,8 +681,9 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 		return "", nil
 	}
 
-	var createReq containerCreateRequest
-	if err := json.Unmarshal(body, &createReq); err != nil {
+	createReq := acquireContainerCreateRequest()
+	defer releaseContainerCreateRequest(createReq)
+	if err := json.Unmarshal(body, createReq); err != nil {
 		// Deny malformed JSON bodies rather than passing them through. A valid
 		// create request must be parseable; letting an unparseable body reach
 		// Docker would silently skip all policy checks (fail-open).
@@ -768,13 +769,13 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if denyReason := p.denyCapabilityReason(createReq.HostConfig); denyReason != "" {
 		return denyReason, nil
 	}
-	if denyReason := p.denyHardeningReason(createReq); denyReason != "" {
+	if denyReason := p.denyHardeningReason(*createReq); denyReason != "" {
 		return denyReason, nil
 	}
 	if denyReason := p.denyResourceLimitReason(createReq.HostConfig); denyReason != "" {
 		return denyReason, nil
 	}
-	if denyReason := p.denyRequiredLabelsReason(createReq); denyReason != "" {
+	if denyReason := p.denyRequiredLabelsReason(*createReq); denyReason != "" {
 		return denyReason, nil
 	}
 

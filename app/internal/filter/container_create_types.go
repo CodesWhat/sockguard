@@ -1,9 +1,13 @@
 package filter
 
+import "sync"
+
 // container_create_types.go holds the on-wire JSON shapes that the
 // /containers/create inspector decodes from request bodies. The split keeps
 // container_create.go focused on policy logic and ensures schema additions
 // (new HostConfig fields, new Mount kinds, etc.) land in one obvious place.
+// A schema addition also has to be added to resetForReuse below, which
+// TestContainerCreateRequestResetForReuseClearsEveryField enforces.
 
 // AllowedDeviceRequestEntry is the public wire type that operators populate
 // in YAML to allowlist GPU/accelerator HostConfig.DeviceRequests entries.
@@ -163,4 +167,130 @@ var knownContainerCreateMountTypes = map[string]bool{
 
 type containerCreateDevice struct {
 	PathOnHost string `json:"PathOnHost"`
+}
+
+// containerCreateRequestPool recycles the decode target for
+// POST /containers/create. The inspector decodes one containerCreateRequest
+// per request and drops it again before it returns, so the ~600-byte struct,
+// the backing arrays behind every list field the body carried, and the
+// buckets behind Labels/Sysctls are all garbage the moment the policy has
+// finished reading them. Recycling them costs nothing in fidelity: the
+// decode is still the same json.Unmarshal against the same type, so every
+// field the policy reads and every type error a malformed body produces are
+// exactly what they were before — only the allocation is removed.
+var containerCreateRequestPool = sync.Pool{
+	New: func() any { return new(containerCreateRequest) },
+}
+
+// containerCreateReuseCap bounds what a recycled decode target is allowed to
+// keep hold of. Bodies are already capped at maxContainerCreateBodyBytes, but
+// a single 1 MiB create with tens of thousands of Binds entries would
+// otherwise leave its backing array parked in the pool for the lifetime of
+// the process, once per P. A target that grew past this is dropped on release
+// and the next request allocates a fresh one.
+const containerCreateReuseCap = 64
+
+// acquireContainerCreateRequest returns a decode target with every field at
+// its zero value. The reset happens here rather than on release so the
+// invariant holds for whatever comes out of the pool: a caller can never
+// observe a previous request's Binds, Labels or PidsLimit, which would be a
+// policy decision made against another client's body.
+func acquireContainerCreateRequest() *containerCreateRequest {
+	req, _ := containerCreateRequestPool.Get().(*containerCreateRequest)
+	if req == nil {
+		return new(containerCreateRequest)
+	}
+	req.resetForReuse()
+	return req
+}
+
+// releaseContainerCreateRequest returns req to the pool unless it is holding
+// more memory than it is worth recycling.
+func releaseContainerCreateRequest(req *containerCreateRequest) {
+	if req == nil || req.oversizedForReuse() {
+		return
+	}
+	containerCreateRequestPool.Put(req)
+}
+
+// resetForReuse puts every field back to the value a freshly allocated
+// containerCreateRequest would have, while keeping the capacity of the
+// []string fields and the buckets of the map fields so the next decode can
+// reuse them.
+//
+// Three rules, and each one is a correctness rule rather than a style choice:
+//
+//   - []string fields are truncated, not dropped. encoding/json overwrites
+//     element i before it is reachable and truncates the slice to the number
+//     of elements it decoded, so nothing left over past the new length can be
+//     read back through the field.
+//   - Slices of structs (Mounts, Devices, DeviceRequests) are dropped, not
+//     truncated. encoding/json decodes into the existing element without
+//     zeroing it first, so a reused element would keep the previous request's
+//     VolumeOptions pointer or Capabilities for any key the new body omits.
+//   - Maps are cleared and pointer fields are nil'd. A surviving PidsLimit
+//     would satisfy a required-limit check the new body never asked for, and
+//     a surviving MaskedPaths pointer reads as "explicitly set to empty",
+//     which is the exact signal denySystemPathsReason denies on.
+func (r *containerCreateRequest) resetForReuse() {
+	r.Image = ""
+	r.User = ""
+	r.MacAddress = ""
+	clear(r.Labels)
+	clear(r.NetworkingConfig.EndpointsConfig)
+
+	h := &r.HostConfig
+	h.Privileged = false
+	h.NetworkMode = ""
+	h.PidMode = ""
+	h.IpcMode = ""
+	h.UsernsMode = ""
+	h.CgroupnsMode = ""
+	h.Binds = h.Binds[:0]
+	h.Mounts = nil
+	h.Devices = nil
+	h.DeviceRequests = nil
+	h.DeviceCgroupRules = h.DeviceCgroupRules[:0]
+	h.SecurityOpt = h.SecurityOpt[:0]
+	h.CapAdd = h.CapAdd[:0]
+	h.CapDrop = h.CapDrop[:0]
+	h.ReadonlyRootfs = false
+	h.Memory = 0
+	h.MemoryReservation = 0
+	h.NanoCpus = 0
+	h.CpuQuota = 0
+	h.CpuPeriod = 0
+	h.CpuShares = 0
+	h.PidsLimit = nil
+	clear(h.Sysctls)
+	h.VolumesFrom = h.VolumesFrom[:0]
+	h.UTSMode = ""
+	h.CgroupParent = ""
+	h.GroupAdd = h.GroupAdd[:0]
+	h.ExtraHosts = h.ExtraHosts[:0]
+	h.Runtime = ""
+	h.MaskedPaths = nil
+	h.ReadonlyPaths = nil
+}
+
+// oversizedForReuse reports whether req grew past containerCreateReuseCap in
+// any of the containers resetForReuse keeps, which is the point at which
+// recycling it costs more memory than the allocation it saves.
+func (r *containerCreateRequest) oversizedForReuse() bool {
+	h := &r.HostConfig
+	return overContainerCreateReuseCap(h.Binds) ||
+		overContainerCreateReuseCap(h.DeviceCgroupRules) ||
+		overContainerCreateReuseCap(h.SecurityOpt) ||
+		overContainerCreateReuseCap(h.CapAdd) ||
+		overContainerCreateReuseCap(h.CapDrop) ||
+		overContainerCreateReuseCap(h.VolumesFrom) ||
+		overContainerCreateReuseCap(h.GroupAdd) ||
+		overContainerCreateReuseCap(h.ExtraHosts) ||
+		len(r.Labels) > containerCreateReuseCap ||
+		len(h.Sysctls) > containerCreateReuseCap ||
+		len(r.NetworkingConfig.EndpointsConfig) > containerCreateReuseCap
+}
+
+func overContainerCreateReuseCap(values []string) bool {
+	return cap(values) > containerCreateReuseCap
 }

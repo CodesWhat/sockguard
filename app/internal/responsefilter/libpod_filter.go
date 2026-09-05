@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/codeswhat/sockguard/app/internal/apipath"
 )
 
 // libpod_filter.go is filter.go's counterpart for Podman's native /libpod/
@@ -74,7 +76,7 @@ var libpodNetworkTopologyArrayKeys = [...]string{"subnets", "routes", "network_d
 // below — a Docker handler can never be reached by a near-miss match on a
 // path whose body shape it was never checked against.
 func isLibpodPath(normPath string) bool {
-	return strings.HasPrefix(normPath, LibpodPathPrefix+"/")
+	return apipath.IsLibpodPath(normPath)
 }
 
 // isLibpodInspectPath reports whether normPath is
@@ -235,7 +237,7 @@ func (f *Filter) modifyLibpodVolumeList(resp *http.Response) error {
 	return streamArrayResponse(resp, func(volume map[string]any) error {
 		redactStringField(volume, "Mountpoint")
 		return nil
-	})
+	}, "Mountpoint")
 }
 
 // modifyLibpodNetworkList rewrites GET /libpod/networks/json. Podman v4 and
@@ -247,7 +249,7 @@ func (f *Filter) modifyLibpodNetworkList(resp *http.Response) error {
 	if !f.opts.RedactNetworkTopology {
 		return nil
 	}
-	return streamArrayResponse(resp, redactLibpodNetworkTopology)
+	return streamArrayResponse(resp, redactLibpodNetworkTopology, libpodNetworkTopologyItemFields...)
 }
 
 // modifyLibpodNetworkInspect rewrites both routes libpod.InspectNetwork is
@@ -276,16 +278,29 @@ func (f *Filter) modifyLibpodNetworkInspect(resp *http.Response) error {
 		return nil
 	}
 
-	body, err := readResponseBody(resp)
-	if err != nil {
+	// The shape sniff needs the raw bytes, so this is the one read site that
+	// works inside withResponseBody's callback rather than through
+	// decodeResponseObject. Both branches finish decoding before the callback
+	// returns, which is what keeps the pooled buffer from escaping.
+	var (
+		networks []map[string]any
+		payload  map[string]any
+		wasArray bool
+	)
+	if err := withResponseBody(resp, func(body []byte) error {
+		wasArray = bytes.HasPrefix(bytes.TrimLeft(body, " \t\r\n"), []byte("["))
+		var err error
+		if wasArray {
+			networks, err = decodeJSONObjectArray(body)
+		} else {
+			payload, err = decodeJSONObject(body)
+		}
+		return err
+	}); err != nil {
 		return rejectResponse(err)
 	}
 
-	if bytes.HasPrefix(bytes.TrimLeft(body, " \t\r\n"), []byte("[")) {
-		networks, err := decodeJSONObjectArray(body)
-		if err != nil {
-			return rejectResponse(err)
-		}
+	if wasArray {
 		for i, network := range networks {
 			if err := redactLibpodNetworkTopology(network); err != nil {
 				return rejectResponse(fmt.Errorf("libpod network inspect array element %d: %w", i, err))
@@ -294,10 +309,6 @@ func (f *Filter) modifyLibpodNetworkInspect(resp *http.Response) error {
 		return writeResponseBody(resp, networks)
 	}
 
-	payload, err := decodeJSONObject(body)
-	if err != nil {
-		return rejectResponse(err)
-	}
 	if err := redactLibpodNetworkTopology(payload); err != nil {
 		return rejectResponse(err)
 	}
@@ -339,6 +350,16 @@ func (f *Filter) modifyLibpodNetworkInspect(resp *http.Response) error {
 //
 // ipam_options on the modern shape and ipam.type on the legacy one are left
 // alone. They name the allocator (host-local, dhcp), not an address.
+// libpodNetworkTopologyItemFields are the top-level keys
+// redactLibpodNetworkTopology indexes into, across both native shapes: the
+// three array-valued topology fields, the containers map, the host bridge
+// name, the CNI Bytes blob removeCNIBytes deletes, and the plugins array under
+// both the inspect (lowercase) and list (capitalized) spellings.
+var libpodNetworkTopologyItemFields = append(
+	append([]string{}, libpodNetworkTopologyArrayKeys[:]...),
+	"containers", "network_interface", "Bytes", "plugins", "Plugins",
+)
+
 func redactLibpodNetworkTopology(payload map[string]any) error {
 	for _, key := range libpodNetworkTopologyArrayKeys {
 		value, ok := payload[key]
@@ -643,7 +664,7 @@ func (f *Filter) modifyLibpodSecretList(resp *http.Response) error {
 	if !f.opts.RedactSensitiveData {
 		return nil
 	}
-	return streamArrayResponse(resp, redactSecretPayload)
+	return streamArrayResponse(resp, redactSecretPayload, secretItemFields...)
 }
 
 // decodeJSONObjectArray is decodeJSONObject for a top-level JSON array of

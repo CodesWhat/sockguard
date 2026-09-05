@@ -55,7 +55,7 @@ func PinIdentityAcceptEncoding(header http.Header) {
 // straight into the JSON decoder and every filtered read became a 502 on the
 // gzip magic bytes.
 //
-// The caller bounds the decompressed stream — readResponseBody and
+// The caller bounds the decompressed stream — withResponseBody and
 // streamArrayResponse both wrap this in the same MaxResponseBodyBytes
 // LimitedReader they already applied to the raw body — which turns that cap
 // into the gzip-bomb guard for this path. The compressed stream is bounded
