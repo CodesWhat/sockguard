@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codeswhat/sockguard/app/internal/bodycodec"
 	"github.com/codeswhat/sockguard/app/internal/dockerclient"
 	"github.com/codeswhat/sockguard/app/internal/dockerfilters"
 	"github.com/codeswhat/sockguard/app/internal/dockerresource"
@@ -71,6 +72,12 @@ const (
 // involved in the decision, and an operator reading it should be looking at
 // what answered the request.
 const notModifiedRefusalMessage = "upstream returned 304 Not Modified for a filtered read"
+
+// responseTooLargeMessage is the client-facing reason for both size refusals:
+// a raw body that overran the buffer, and a compressed one whose decoded form
+// overran the same cap. They are one verdict reached at two points, so they
+// read the same to a client and carry the same reason code.
+const responseTooLargeMessage = "upstream response too large to filter"
 
 // errNotModifiedUnfilterable marks the 304 refusal so
 // filterResponseThroughWriter can give it its own reason code instead of the
@@ -440,9 +447,9 @@ func filterResponseThroughWriter(logger *slog.Logger, next http.Handler, w http.
 	if interceptingW.overflow {
 		logger.ErrorContext(r.Context(), "visibility response filter: upstream response exceeds size limit",
 			"limit_bytes", filter.MaxResponseBodyBytes, "method", logging.SafeString(r.Method), "path", logging.SafeString(r.URL.Path))
-		logging.SetDeniedWithCode(w, r, reasonCodeVisibilityResponseTooLarge, "upstream response too large to filter", nil)
+		logging.SetDeniedWithCode(w, r, reasonCodeVisibilityResponseTooLarge, responseTooLargeMessage, nil)
 		clearUpstreamRepresentationHeaders(w.Header())
-		_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "upstream response too large to filter"})
+		_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: responseTooLargeMessage})
 		return
 	}
 	if err := flush(interceptingW); err != nil {
@@ -453,12 +460,18 @@ func filterResponseThroughWriter(logger *slog.Logger, next http.Handler, w http.
 			// told an operator debugging a /system/df 502 to go and look at the
 			// pattern axes, which are not what ran.
 			reasonCode, message := reasonCodeVisibilityPolicyLookupFailed, failureReason
+			switch {
 			// A 304 is not a flush that failed, it is a response shape the
 			// filter cannot act on, and the fix is on the upstream rather than
 			// in the policy. It gets its own code so an operator is not sent
 			// to read pattern axes that never ran.
-			if errors.Is(err, errNotModifiedUnfilterable) {
+			case errors.Is(err, errNotModifiedUnfilterable):
 				reasonCode, message = reasonCodeVisibilityNotModified, notModifiedRefusalMessage
+			// A compressed body that expands past the cap is the same verdict
+			// the overflow branch above returns, reached one step later
+			// because the raw bytes fit and the decoded ones do not.
+			case errors.Is(err, bodycodec.ErrTooLarge):
+				reasonCode, message = reasonCodeVisibilityResponseTooLarge, responseTooLargeMessage
 			}
 			logging.SetDeniedWithCode(w, r, reasonCode, message, nil)
 			clearUpstreamRepresentationHeaders(w.Header())
@@ -696,6 +709,28 @@ func (p *patternFilterWriter) commitFilteredBody(body []byte) error {
 	return err
 }
 
+// decodedBody returns the buffered upstream body as the identity-encoded bytes
+// the policy walks.
+//
+// The proxy pins Accept-Encoding: identity on every upstream-bound request
+// (see responsefilter.PinIdentityAcceptEncoding) and neither dockerd nor
+// Podman compresses the JSON API, so this is the unlikely path. An
+// intermediary between sockguard and the daemon can ignore the pin, though,
+// and before this the compressed bytes went straight into the list decoder and
+// turned every filtered read into a 502 on the gzip magic bytes. It is shared
+// with the response filter through internal/bodycodec so the two layers cannot
+// disagree about the cap or about which codings they accept; anything but gzip
+// or identity is still refused rather than forwarded unread.
+//
+// It runs after commitIfUnfilterable, so a 304, a 204 and every non-2xx are
+// already committed and keep the coding they arrived with — those bodies are
+// forwarded rather than rewritten, so their Content-Encoding still describes
+// what the client receives. On the rewrite path commitFilteredBody clears the
+// header along with the rest of the upstream's representation metadata.
+func (p *patternFilterWriter) decodedBody() ([]byte, error) {
+	return bodycodec.Bytes(p.header, p.body.Bytes(), filter.MaxResponseBodyBytes)
+}
+
 // flushFiltered filters the buffered JSON array response by pattern axes and
 // writes the result to the underlying ResponseWriter.
 //
@@ -730,7 +765,12 @@ func (p *patternFilterWriter) flushFiltered(normPath string, policy *compiledPol
 		return err
 	}
 
-	dec := json.NewDecoder(bytes.NewReader(p.body.Bytes()))
+	body, err := p.decodedBody()
+	if err != nil {
+		return err
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(body))
 	tok, err := dec.Token()
 	if err != nil {
 		return fmt.Errorf("decode %s list response: %w", normPath, err)
