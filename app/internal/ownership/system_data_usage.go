@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/codeswhat/sockguard/app/internal/bodycodec"
 	"github.com/codeswhat/sockguard/app/internal/filter"
 	"github.com/codeswhat/sockguard/app/internal/httpjson"
 	"github.com/codeswhat/sockguard/app/internal/logging"
@@ -27,6 +28,12 @@ const (
 // refusal, worded like the visibility middleware's so the two layers read the
 // same in an audit sink; only the reason code says which one refused.
 const ownerNotModifiedRefusalMessage = "upstream returned 304 Not Modified for an owner-filtered read"
+
+// ownerResponseTooLargeMessage is the client-facing reason for both size
+// refusals: a raw body that overran the buffer, and a compressed one whose
+// decoded form overran the same cap. They are one verdict reached at two
+// points, so they read the same to a client and carry the same reason code.
+const ownerResponseTooLargeMessage = "upstream response too large to filter"
 
 // errNotModifiedUnfilterable marks the 304 refusal so
 // filterSystemDataUsageResponse can give it its own reason code rather than
@@ -176,9 +183,9 @@ func filterSystemDataUsageResponse(logger *slog.Logger, next http.Handler, w htt
 	if interceptingW.overflow {
 		logger.ErrorContext(r.Context(), "owner response filter: upstream response exceeds size limit",
 			"limit_bytes", filter.MaxResponseBodyBytes, "method", logging.SafeString(r.Method), "path", logging.SafeString(r.URL.Path))
-		logging.SetDeniedWithCode(w, r, reasonCodeOwnerResponseTooLarge, "upstream response too large to filter", nil)
+		logging.SetDeniedWithCode(w, r, reasonCodeOwnerResponseTooLarge, ownerResponseTooLargeMessage, nil)
 		responsefilter.ClearUpstreamRepresentationHeaders(w.Header())
-		_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "upstream response too large to filter"})
+		_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: ownerResponseTooLargeMessage})
 		return
 	}
 
@@ -193,12 +200,18 @@ func filterSystemDataUsageResponse(logger *slog.Logger, next http.Handler, w htt
 		logger.ErrorContext(r.Context(), "owner system data usage filter failed", "error", logging.SafeString(err.Error()))
 		if !interceptingW.headerWritten {
 			reasonCode, message := reasonCodeOwnerResponseFilterFail, "owner response filter failed"
+			switch {
 			// A 304 is not a filter that failed, it is a response shape the
 			// filter cannot act on, and the fix is on the upstream rather than
 			// in the ownership config. Its own code keeps the two apart in an
 			// audit sink.
-			if errors.Is(err, errNotModifiedUnfilterable) {
+			case errors.Is(err, errNotModifiedUnfilterable):
 				reasonCode, message = reasonCodeOwnerNotModified, ownerNotModifiedRefusalMessage
+			// A compressed body that expands past the cap is the same verdict
+			// the overflow branch above returns, reached one step later
+			// because the raw bytes fit and the decoded ones do not.
+			case errors.Is(err, bodycodec.ErrTooLarge):
+				reasonCode, message = reasonCodeOwnerResponseTooLarge, ownerResponseTooLargeMessage
 			}
 			logging.SetDeniedWithCode(w, r, reasonCode, message, nil)
 			responsefilter.ClearUpstreamRepresentationHeaders(w.Header())
@@ -287,7 +300,23 @@ func (o *ownerFilterWriter) flushOwned(opts Options) ([]string, error) {
 		return nil, err
 	}
 
-	filtered, dropped, err := responsefilter.FilterSystemDataUsage(o.body.Bytes(), func(section responsefilter.SystemDataUsageSection, item json.RawMessage) (bool, error) {
+	// The buffered bytes are decoded first, because an intermediary between
+	// sockguard and the daemon can gzip a body the proxy asked to be sent
+	// identity (see responsefilter.PinIdentityAcceptEncoding) and the owner
+	// classifier cannot read one. It is the same decode the visibility filter
+	// and the response filter run, through internal/bodycodec, so the three
+	// cannot disagree about the cap or about which codings they accept;
+	// anything but gzip or identity is refused rather than forwarded unread.
+	// The branches above are reached first, so a 304, a 204 and every non-2xx
+	// keep the coding they arrived with — those bodies are forwarded rather
+	// than rewritten. On this path the clear below drops Content-Encoding with
+	// the rest of the upstream's representation metadata.
+	body, err := bodycodec.Bytes(o.underlying.Header(), o.body.Bytes(), filter.MaxResponseBodyBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	filtered, dropped, err := responsefilter.FilterSystemDataUsage(body, func(section responsefilter.SystemDataUsageSection, item json.RawMessage) (bool, error) {
 		return systemDataUsageItemOwned(section, item, opts)
 	})
 	if err != nil {
