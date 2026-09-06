@@ -11,11 +11,23 @@ import (
 
 // catalogLongPatternBound is the ceiling the long-pattern configs below are
 // held to, and catalogLongPatternRaceBound is the same ceiling with race
-// instrumentation in the way. Both are deliberately generous. The three shapes
-// run in 5ms, 5ms and 138ms on the reference machine and 23x that under -race,
-// so a runner would have to be an order of magnitude slower again to reach
-// either bound by load alone, while the regression they guard against took
-// 3.2s for the third shape without -race and grew with the pattern.
+// instrumentation in the way.
+//
+// A bare -race run is the wrong thing to size them against. CI runs the suite
+// under `go test -race -covermode=atomic` over the whole package at once, and
+// on these tight NFA loops the per-block coverage counters cost more than the
+// race detector does. Only the third shape exhausts
+// maxCatalogReachabilitySteps, and it measures 40ms uninstrumented, 0.48s
+// under -race alone and 5.2s under CI's own flags, where a hosted runner has
+// come in another 1.8-2.6x slower again. That leaves it around 4x inside the
+// race bound on the runners this has actually been measured on. The other two
+// shapes never reach the step budget and sit at 10ms and 10ms uninstrumented,
+// 40ms and 50ms under -race, 50ms and 1.35s under CI's flags.
+//
+// Sizing maxCatalogReachabilitySteps against the uninstrumented number instead
+// is what put this test at 63-92s on CI against the 60s bound, so a change
+// that raises the step budget has to be re-measured under CI's flags and not
+// under a plain `go test -race`.
 const (
 	catalogLongPatternBound     = 2 * time.Second
 	catalogLongPatternRaceBound = 60 * time.Second
@@ -154,5 +166,42 @@ func TestFirstAllowedCatalogPathStepBudgetFailsClosed(t *testing.T) {
 	exposed := allowedCatalogPaths(http.MethodPost, catalogPath, shape, nil, rules, compiled)
 	if len(exposed) != 1 || exposed[0] != catalogPath {
 		t.Fatalf("allowedCatalogPaths() = %v, want the catalog spelling as the conservative fallback", exposed)
+	}
+}
+
+// catalogHeaviestPresetSteps is what the heaviest shipped policy spends on its
+// single most expensive catalog row, and the ceiling across configs/,
+// examples/compose/ and the rest of this suite. Measured by instrumenting
+// catalogReachabilityBudget and walking every shipped config through
+// validateAndCompileRules; configs/drydock-with-selfupdate.yaml sets it, with
+// the rest of the drydock family next at 50,203.
+const catalogHeaviestPresetSteps = 56537
+
+// TestCatalogReachabilityStepBudgetKeepsMeasuredHeadroom pins the window
+// maxCatalogReachabilitySteps has to sit in, which nothing else checks from
+// both sides. Set it too low and a shipped policy stops being provable:
+// TestPresetConfigsPassBuildChain catches that, but only once the budget is
+// already under what a preset spends, so the floor here is the slack that
+// keeps an ordinary policy from landing against the cap the first time a rule
+// is added to it. Set it too high and the search's worst case outruns
+// catalogLongPatternRaceBound, because a glob-dense pattern spends the budget
+// in full on every catalog row and the wall clock is linear in it. At 148x,
+// the long-pattern test above measured 63-92s on CI against its own 60s
+// deadline, which is the regression this ceiling exists to stop coming back.
+func TestCatalogReachabilityStepBudgetKeepsMeasuredHeadroom(t *testing.T) {
+	t.Parallel()
+
+	const (
+		minHeadroom = 10
+		maxHeadroom = 32
+	)
+	headroom := float64(maxCatalogReachabilitySteps) / float64(catalogHeaviestPresetSteps)
+	if headroom < minHeadroom {
+		t.Fatalf("maxCatalogReachabilitySteps = %d, only %.1fx the %d steps the heaviest shipped policy spends, want at least %dx",
+			maxCatalogReachabilitySteps, headroom, catalogHeaviestPresetSteps, minHeadroom)
+	}
+	if headroom > maxHeadroom {
+		t.Fatalf("maxCatalogReachabilitySteps = %d, %.1fx the %d steps the heaviest shipped policy spends, want at most %dx so the long-pattern test keeps its margin under CI's -race -covermode=atomic run",
+			maxCatalogReachabilitySteps, headroom, catalogHeaviestPresetSteps, maxHeadroom)
 	}
 }
