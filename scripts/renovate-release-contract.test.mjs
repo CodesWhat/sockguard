@@ -106,6 +106,74 @@ describe("Renovate release branch contract", () => {
   });
 });
 
+// scripts/ci/active-dev-branch.sh is what the two committing workflows
+// (quality-mutation-monthly.yml's badge job, release-from-tag.yml's
+// pin-chart-digest job) resolve their push target with. `main` rejects a
+// direct push, so a resolver that ever answers `main` -- or answers at all
+// when renovate.json is stale, empty, or names two branches -- would send
+// those jobs at a branch they cannot write.
+function runResolver(baseBranchPatterns, defaultBranch = "main") {
+  const slug = (baseBranchPatterns ?? ["absent"]).join("-").replaceAll("/", "-") || "empty";
+  const fixture = resolve(tempRoot, `resolver-${slug}`);
+  rmSync(fixture, { recursive: true, force: true });
+  mkdirSync(fixture);
+  const config = resolve(fixture, "renovate.json");
+  writeFileSync(config, JSON.stringify(baseBranchPatterns ? { baseBranchPatterns } : {}));
+
+  return spawnSync("bash", [resolve(repoRoot, "scripts/ci/active-dev-branch.sh"), config], {
+    cwd: fixture,
+    encoding: "utf8",
+    env: { ...process.env, DEFAULT_BRANCH: defaultBranch },
+  });
+}
+
+describe("active development branch resolution", () => {
+  it("resolves the repository's own configured branch", () => {
+    const result = spawnSync("bash", [resolve(repoRoot, "scripts/ci/active-dev-branch.sh")], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), renovateConfig().baseBranchPatterns[0]);
+  });
+
+  it("accepts a development or a maintenance branch", () => {
+    for (const branch of ["dev/v2.2", "dev/v10.11", "maintenance/1.6.x"]) {
+      const result = runResolver([branch]);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.stdout.trim(), branch);
+    }
+  });
+
+  it("refuses to resolve to the default branch", () => {
+    for (const branch of ["main", "master"]) {
+      const result = runResolver([branch], branch);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /is not a single dev\/vX\.Y or maintenance\/X\.Y\.x branch/u);
+    }
+  });
+
+  it("refuses an empty, multi-branch, or unrecognized target", () => {
+    for (const patterns of [undefined, [], ["dev/v2.2", "dev/v2.1"], ["release-2.2"], ["dev/v2"]]) {
+      const result = runResolver(patterns);
+      assert.notEqual(result.status, 0, `${JSON.stringify(patterns)} must be refused`);
+      assert.match(result.stderr, /::error::/u);
+    }
+  });
+
+  it("refuses a missing renovate.json", () => {
+    const result = spawnSync(
+      "bash",
+      [resolve(repoRoot, "scripts/ci/active-dev-branch.sh"), resolve(tempRoot, "absent.json")],
+      { encoding: "utf8" },
+    );
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /not found; cannot resolve the active development branch/u);
+  });
+});
+
 describe("release source branch contract", () => {
   it("accepts stable tags on main and prereleases on matching release branches", () => {
     assert.equal(runReleaseBranchGuard("v2.0.0", "main").status, 0);
