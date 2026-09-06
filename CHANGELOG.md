@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The Qlty gate now runs a real plugin set instead of an empty one.** `.qlty/qlty.toml` enabled zero `[[plugin]]` blocks, so `qlty check` always passed regardless of what it was pointed at. It now carries the same 12 plugins portwing and drydock run — actionlint, checkov, dockerfmt, hadolint, markdownlint, osv-scanner, radarlint-iac, ripgrep, shellcheck, shfmt, trufflehog, yamllint — with the same version pins (markdownlint 0.46.0, shellcheck 0.9.0) so the ruleset can't drift between a developer's local `qlty` and CI's. `markdownlint:MD060` and `checkov:CKV_GHA_7` are triaged off for the same false-positive reasons those two repos already ignore them, and `osv-scanner:GO-2026-5932` is triaged off because `govulncheck` confirms it is an unreachable transitive `golang.org/x/crypto/openpgp` advisory with no fixed version.
+
 ## [2.2.0] - 2026-09-06
 
 v2.2.0 closes the volume-mount and read-side gaps that survived v2.1.0 and
