@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The monthly mutation-score badge commits to the active development branch instead of `main`.** The badge job ran on the default branch and pushed back to it, which `main`'s ruleset rejects outright — run 34041041301 died in "Commit badge JSON" with "Changes must be made through a pull request" — so no scheduled run had refreshed the badge since the rule landed. A monthly commit on `main` was the wrong target anyway: `main` is the released version, and a committed artifact refreshed on a cron mutates underneath the GA tag `main` carries. The job still runs only on the default branch, and a `mutation/**` branch run still only reports its score in the job summary, but the commit now goes to the branch `renovate.json`'s `baseBranchPatterns` names, resolved by the new `scripts/ci/active-dev-branch.sh` from the checked-out default branch. That is the one durable record of which branch the next promotion comes from, and `release-cut.yml` already fails a cut when it disagrees with the release line, so the two cannot drift. The resolver fails closed on anything that is not exactly one `dev/vX.Y` or `maintenance/X.Y.x` entry and refuses to answer with the default branch at all. README's shields.io endpoint still reads `main`'s copy on purpose, so the published number is the score as of the last release rather than one that moves between tags.
+
 ## [2.2.0] - 2026-09-06
 
 v2.2.0 closes the volume-mount and read-side gaps that survived v2.1.0 and
