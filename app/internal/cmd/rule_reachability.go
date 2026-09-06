@@ -30,14 +30,26 @@ const (
 	// Exhausting it returns indeterminate, the same conservative "could not
 	// prove reachability, treat the endpoint as exposed" verdict the other caps
 	// return, so a config that trips it is reported under its catalog spelling
-	// instead of being silently passed. 1<<23 is 148x the 56,537 steps the
-	// heaviest policy in configs/ spends on its most expensive catalog row,
-	// which is also the ceiling across the whole test suite, so only a pattern
-	// built to be expensive reaches it: it takes a few hundred "*" segments in
-	// one path segment. That caps one call at around 30ms and a walk of both
-	// sensitive-endpoint catalogs over such a config at under a second, against
-	// the 14s the same config cost before this budget existed.
-	maxCatalogReachabilitySteps = 1 << 23
+	// instead of being silently passed. 1<<20 is 18x the 56,537 steps the
+	// heaviest policy in configs/ spends on its most expensive catalog row
+	// (drydock-with-selfupdate.yaml, also the ceiling across the whole test
+	// suite) and 2.4x the 443,388 a 1KB literal pattern spends being proved
+	// exactly, so only a pattern built to be expensive reaches it: it takes a
+	// few hundred "*" segments in one path segment.
+	//
+	// This was 1<<23 until PERF-24's own CI runs failed on it, because that
+	// value was sized against the wrong measurement: uninstrumented wall time
+	// for a single exhausted call, about 30ms. Two things multiply that. One
+	// validateAndCompileRules walk spends a fresh budget per catalog row, so a
+	// config that exhausts the cap pays it once per row and not once per
+	// config; and CI runs the suite under `go test -race -covermode=atomic`,
+	// where the per-block coverage counters cost more on these tight NFA loops
+	// than the race detector does. Measured on the glob-dense case in
+	// TestValidateAndCompileRulesBoundsLongPatterns, at 1<<23 against 1<<20:
+	// 0.24s to 0.04s uninstrumented, 3.6s to 0.5s under -race, 35s to 5.2s
+	// under CI's exact flags, and an observed 63-92s on a hosted runner
+	// against that test's 60s bound.
+	maxCatalogReachabilitySteps = 1 << 20
 )
 
 type catalogReachability uint8
