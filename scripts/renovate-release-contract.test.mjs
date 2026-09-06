@@ -70,7 +70,7 @@ describe("Renovate release branch contract", () => {
   it("targets exactly the active integration branch", () => {
     const config = renovateConfig();
 
-    assert.deepEqual(config.baseBranchPatterns, ["dev/v2.1"]);
+    assert.deepEqual(config.baseBranchPatterns, ["dev/v2.2"]);
     assert.equal(config.baseBranches, undefined);
   });
 
