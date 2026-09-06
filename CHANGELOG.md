@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Tests
+
+- **The docs-only predicate `ci-verify.yml`'s "Changed Paths" gate job uses to skip Docker Build and the Go fuzz matrix on docs-only PRs now lives in `scripts/docs-only-paths.mjs` with its own regression suite (CI-7, #466's follow-up).** It was an inline shell regex with no test of its own; `scripts/docs-only-paths.test.mjs` covers `isDocsOnlyPath`, `isDocsOnlyChange` and `parsePaths` against `LICENSE`, `docs/src/foo.tsx`, `app/internal/README.md`, `CHANGELOG.md`, `go.mod`, `renovate.json`, `Dockerfile`, `app/internal/filter/rules.go`, `.github/workflows/ci-verify.yml`, the script's own path, and a `git diff --name-only`-quoted path with an escaped newline, plus the workflow's CLI contract end to end. The predicate also now recognizes a nested `docs/` directory anywhere in a path, not just at the root, so `website/public/docs/x.html` — the gitignored Fumadocs export `website/package.json`'s `build:docs-content` script copies in at build time — counts as documentation the same way the top-level `docs/` workspace does.
+
 ## [2.2.0] - 2026-09-06
 
 v2.2.0 closes the volume-mount and read-side gaps that survived v2.1.0 and
