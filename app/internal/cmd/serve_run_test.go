@@ -783,6 +783,11 @@ func TestRunServeErrorPaths(t *testing.T) {
 	})
 
 	t.Run("validate before opening log output", func(t *testing.T) {
+		// The unknown-variable warning goes to stderr before validation on
+		// purpose, so this clean-stderr assertion needs a clean SOCKGUARD_*
+		// environment: the podman integration job exports
+		// SOCKGUARD_TEST_PODMAN_SOCKET, which binds to no config key.
+		clearSockguardEnv(t)
 		deps := newRunServeDeps()
 		var errOut strings.Builder
 		cmd := newServeCommand()
