@@ -245,11 +245,27 @@ export const roadmap: Milestone[] = [
   },
   {
     version: "v2.2.0",
+    title: "Volume-Mount Containment & Read-Side Redaction",
+    emoji: "🛡️",
+    status: "released",
+    items: [
+      "The local volume driver's type/o/device options can no longer bind-mount a host path past allowed_bind_mounts, on container create or on a Swarm service mount",
+      "PUT /volumes/{name} is inspected instead of being an unread write, and a request target that is not a rooted path no longer reaches rule evaluation",
+      "Read-side redaction survives gzip encoding, HEAD, 304 revalidation and image inspect, and stops parsing a body the active options cannot rewrite",
+      "sockguard verify loads the config the way serve does and checks it against the daemon it will actually talk to, next to the offline sockguard validate",
+      "server.shutdown_grace replaces the hardcoded 30s drain, and a SOCKGUARD_* variable matching no configuration key warns at startup instead of being silently ignored",
+      "A match.path without a leading / now fails config validation instead of loading and matching every rooted path",
+      "Route metric labels, the /health cache, visibility label injection, owner-label mutation and POST /containers/create decoding drop their per-request allocations",
+    ],
+  },
+  {
+    version: "v2.3.0",
     title: "BuildKit RUN-Instruction Coverage",
     emoji: "🧩",
     status: "next",
     items: [
       "Extend the shipped BuildKit gRPC mediation foundation: v2.0.0's bounded-depth LLB walk denies any ExecOp, and any op that fails to decode, in frontend-less Solves when allow_run_instructions is false — a blanket refusal; the remaining work is real per-instruction mediation of raw-LLB and third-party frontends so RUN-equivalent ops can be inspected and selectively allowed instead of refused wholesale",
+      "Give the Go module path its v2 major-version suffix: go.mod still declares github.com/codeswhat/sockguard with no /v2, so the module proxy rejects every v2 tag and go install plus the Go Reference badge still resolve to the v1.x line; no documented install path is affected, since Sockguard ships as a binary through Docker, Homebrew, deb and rpm",
     ],
   },
 ];
