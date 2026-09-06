@@ -73,6 +73,14 @@ func FuzzContainerCreate(f *testing.F) {
 	f.Add([]byte(`{"HostConfig":{"MaskedPaths":[]}}`))
 	f.Add([]byte(`{"HostConfig":{"ReadonlyPaths":[]}}`))
 	f.Add([]byte(`{"HostConfig":{"MaskedPaths":null}}`))
+	// Local volume driver seeds — a Type "volume" mount whose DriverConfig
+	// asks the local driver for a bind, and the same entry handing it a
+	// filesystem type over a /dev node, which is not a bind at all.
+	f.Add([]byte(`{"HostConfig":{"Mounts":[{"Type":"volume","Source":"vol","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"none","o":"bind","device":"/"}}}}]}}`))
+	f.Add([]byte(`{"HostConfig":{"Mounts":[{"Type":"volume","Source":"vol","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"ext4","device":"/dev/sda1"}}}}]}}`))
+	f.Add([]byte(`{"HostConfig":{"Mounts":[{"Type":"volume","Source":"vol","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"device":"/dev/../dev/sda1"}}}}]}}`))
+	f.Add([]byte(`{"HostConfig":{"Mounts":[{"Type":"volume","Source":"vol","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"btrfs","o":"rw,device=/dev/sdb"}}}}]}}`))
+	f.Add([]byte(`{"HostConfig":{"Mounts":[{"Type":"volume","Source":"vol","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"nfs","o":"addr=1.2.3.4","device":":/exports/data"}}}}]}}`))
 
 	// permissive policy: exercises JSON decode and existing checks.
 	policy := newContainerCreatePolicy(ContainerCreateOptions{

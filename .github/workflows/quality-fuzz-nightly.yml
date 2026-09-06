@@ -68,17 +68,18 @@ jobs:
       # The org is on the Free plan: 20 concurrent jobs across every repo.
       # This matrix is 28 on its own, and portwing's Deep Fuzz is also
       # `30 9 * * *` and asks for 7 at the same minute, so 35 jobs contend
-      # for 20 slots. Jobs admitted over the ceiling get starved (`execs`
-      # flatlining at 0/sec) and then reclaimed with
-      # "The runner has received a shutdown signal", exit 143, which reads
-      # as a fuzz failure but is an instrument failure: no `--- FAIL`, no
-      # crasher written to testdata. That killed 8, 2 and 7 jobs on the
-      # nights of 2026-08-24/25/26 and 4 on 08-27. The one night it went
-      # green end to end (08-28, when the matrix was 22) was the night
-      # GitHub deferred the schedule to 20:56 UTC, clear of the collision.
-      # 12 leaves portwing's 7 intact inside the ceiling with a slot to
-      # spare. Do not raise this past 13 while the plan is Free and
+      # for 20 slots. 12 leaves portwing's 7 intact inside the ceiling with
+      # a slot to spare, so a leg waits for a runner instead of being
+      # starved of one. Do not raise this past 13 while the plan is Free and
       # portwing shares the minute.
+      #
+      # Corrected 2026-09-06: the "reclaimed with 'The runner has received a
+      # shutdown signal'" kills this cap was originally written to fix are
+      # not a concurrency effect, and capping the matrix did not stop them.
+      # They are `egress-policy: block`. See the Harden Runner step for the
+      # before/after. Contention delays a leg's start; it does not kill one
+      # that is already running, and the killed legs are at full exec rate
+      # in their last tick. The cap stays for the reason above.
       max-parallel: 12
       matrix:
         fuzzer:
@@ -112,26 +113,36 @@ jobs:
           - { name: FuzzValidateServerShutdownGrace, pkg: ./internal/config/ }
 
     steps:
-      # Stage 1 of the harden-runner egress rollout: pure Go build/fuzz, no
-      # Docker. github.com/proxy.golang.org/sum.golang.org cover module
-      # fetch + sumdb; the objects/release-assets hosts cover
-      # actions/setup-go's toolchain download on a runner-image cache miss
-      # (no org precedent yet for Go jobs specifically, so this errs toward
-      # the extra defensive hosts rather than a minimal guess). proxy.golang.org
-      # serves module zips via signed redirects to storage.googleapis.com.
+      # audit, not block. `block` on this job is what kills 3 to 5 legs a
+      # night with "The runner has received a shutdown signal", exit 143 on
+      # the Fuzz step, and every later step skipped including the
+      # `if: always()` Summarize. That is the runner service being stopped
+      # underneath the job, not a fuzz failure, which is why no `--- FAIL`
+      # and no crasher written to testdata ever accompanies it. The
+      # before/after is clean: 3a731fc0 (2026-08-19) flipped this step from
+      # audit to block as stage 1 of the egress rollout, the 18 scheduled
+      # runs before it were green end to end, and 18 of the 22 after it are
+      # red with that signature. The kills land 10m39s to 15m49s into the job
+      # with the fuzzer at full rate in its last tick (run 34041086694,
+      # FuzzExec: 6530 execs/sec 1.1s before the kill), which is the runner's
+      # 10-minute job-lock renewal timeout expiring after its control-plane
+      # connection is dropped, not starvation, memory or disk. Two in-repo
+      # replications agree: quality-mutation-monthly.yml's gremlins leg died
+      # 3 for 3 under block with 13.7 GB memory free seconds before the kill
+      # and runs 47 to 53 minutes green under audit, and
+      # quality-fuzz-monthly.yml runs this same fuzzer matrix at 60 minutes a
+      # leg under audit, green every month since 2026-06-01.
+      #
+      # allowed-endpoints is dropped rather than left as dead config: audit
+      # does not enforce it, and it was never the problem: the dropped
+      # traffic is the runner's own, not the fuzzer's, and 3cdf0b04 already
+      # widened the list once without changing the failure rate. This job
+      # holds contents: read and no persisted credential, so audit costs
+      # detection only; block stays on the short and write-capable jobs.
       - name: Harden Runner
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
         with:
-          egress-policy: block
-          allowed-endpoints: >
-            github.com:443
-            raw.githubusercontent.com:443
-            objects.githubusercontent.com:443
-            release-assets.githubusercontent.com:443
-            proxy.golang.org:443
-            storage.googleapis.com:443
-            sum.golang.org:443
-            *.actions.githubusercontent.com:443
+          egress-policy: audit
           disable-sudo: true
 
       - name: Checkout
