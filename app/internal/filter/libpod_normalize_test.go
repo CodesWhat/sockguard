@@ -1,30 +1,10 @@
 package filter
 
-import "testing"
+import (
+	"testing"
 
-func TestIsLibpodPath(t *testing.T) {
-	tests := []struct {
-		name string
-		path string
-		want bool
-	}{
-		{name: "libpod container create", path: "/libpod/containers/create", want: true},
-		{name: "libpod pod create", path: "/libpod/pods/create", want: true},
-		{name: "libpod info", path: "/libpod/info", want: true},
-		{name: "bare libpod without trailing slash", path: "/libpod", want: false},
-		{name: "docker containers create", path: "/containers/create", want: false},
-		{name: "docker root", path: "/", want: false},
-		{name: "empty", path: "", want: false},
-		{name: "libpod-prefixed but different resource", path: "/libpodxyz/containers/create", want: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := isLibpodPath(tt.path); got != tt.want {
-				t.Errorf("isLibpodPath(%q) = %v, want %v", tt.path, got, tt.want)
-			}
-		})
-	}
-}
+	"github.com/codeswhat/sockguard/app/internal/apipath"
+)
 
 // TestLibpodPerResourceMatchers table-tests every per-resource libpod
 // predicate added for #148 against the exact path it must match and a set
@@ -39,7 +19,7 @@ func TestLibpodPerResourceMatchers(t *testing.T) {
 		{"isLibpodPodCreatePath", isLibpodPodCreatePath},
 		{"isLibpodExecCreatePath", isLibpodExecCreatePath},
 		{"isLibpodExecStartPath", isLibpodExecStartPath},
-		{"isLibpodContainerAttachPath", isLibpodContainerAttachPath},
+		{"IsLibpodContainerAttachPath", apipath.IsLibpodContainerAttachPath},
 		{"isLibpodPlayKubePath", isLibpodPlayKubePath},
 		{"isLibpodImagePullPath", isLibpodImagePullPath},
 		{"isLibpodImageLoadPath", isLibpodImageLoadPath},
@@ -56,7 +36,7 @@ func TestLibpodPerResourceMatchers(t *testing.T) {
 		"isLibpodPodCreatePath":         "/libpod/pods/create",
 		"isLibpodExecCreatePath":        "/libpod/containers/abc123/exec",
 		"isLibpodExecStartPath":         "/libpod/exec/abc123/start",
-		"isLibpodContainerAttachPath":   "/libpod/containers/abc123/attach",
+		"IsLibpodContainerAttachPath":   "/libpod/containers/abc123/attach",
 		"isLibpodPlayKubePath":          "/libpod/play/kube",
 		"isLibpodImagePullPath":         "/libpod/images/pull",
 		"isLibpodNetworkConnectPath":    "/libpod/networks/abc123/connect",
@@ -144,7 +124,7 @@ func TestLibpodMatchersNeverMatchDockerPathsAndViceVersa(t *testing.T) {
 		{"isLibpodPodCreatePath", isLibpodPodCreatePath},
 		{"isLibpodExecCreatePath", isLibpodExecCreatePath},
 		{"isLibpodExecStartPath", isLibpodExecStartPath},
-		{"isLibpodContainerAttachPath", isLibpodContainerAttachPath},
+		{"IsLibpodContainerAttachPath", apipath.IsLibpodContainerAttachPath},
 		{"isLibpodPlayKubePath", isLibpodPlayKubePath},
 		{"isLibpodImagePullPath", isLibpodImagePullPath},
 		{"isLibpodImageLoadPath", isLibpodImageLoadPath},
@@ -187,7 +167,7 @@ func TestLibpodMatchersNeverMatchDockerPathsAndViceVersa(t *testing.T) {
 	}{
 		{"isExecCreatePath", isExecCreatePath},
 		{"isExecStartPath", isExecStartPath},
-		{"isContainerAttachPath", isContainerAttachPath},
+		{"IsContainerAttachPath", apipath.IsContainerAttachPath},
 		{"isDockerNetworkConnectPath", func(p string) bool { return isNetworkActionPath(p, "connect") }},
 		{"isDockerNetworkDisconnectPath", func(p string) bool { return isNetworkActionPath(p, "disconnect") }},
 		{"isNetworkWritePath", isNetworkWritePath},
@@ -304,52 +284,6 @@ func TestIsLibpodExecCreatePathRequiresTail(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := isLibpodExecCreatePath(tt.path); got != tt.want {
 				t.Errorf("isLibpodExecCreatePath(%q) = %v, want %v", tt.path, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestIsLibpodExecStartPathRequiresTail(t *testing.T) {
-	tests := []struct {
-		name string
-		path string
-		want bool
-	}{
-		{"valid", "/libpod/exec/abc/start", true},
-		// Empty id is accepted, matching isExecStartPath's existing Docker
-		// behavior; see the equivalent case in
-		// TestIsLibpodExecCreatePathRequiresTail.
-		{"empty id", "/libpod/exec//start", true},
-		{"wrong tail", "/libpod/exec/abc/resize", false},
-		{"no tail at all", "/libpod/exec/abc", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := isLibpodExecStartPath(tt.path); got != tt.want {
-				t.Errorf("isLibpodExecStartPath(%q) = %v, want %v", tt.path, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestIsLibpodContainerAttachPathRequiresTail(t *testing.T) {
-	tests := []struct {
-		name string
-		path string
-		want bool
-	}{
-		{"valid", "/libpod/containers/abc/attach", true},
-		// Empty id is accepted, matching isContainerAttachPath's existing
-		// Docker behavior; see the equivalent case in
-		// TestIsLibpodExecCreatePathRequiresTail.
-		{"empty id", "/libpod/containers//attach", true},
-		{"wrong tail", "/libpod/containers/abc/exec", false},
-		{"no tail at all", "/libpod/containers/abc", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := isLibpodContainerAttachPath(tt.path); got != tt.want {
-				t.Errorf("isLibpodContainerAttachPath(%q) = %v, want %v", tt.path, got, tt.want)
 			}
 		})
 	}

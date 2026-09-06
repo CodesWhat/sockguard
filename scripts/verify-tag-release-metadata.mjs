@@ -13,8 +13,9 @@
  * files.
  *
  * Stable tags (vX.Y.Z) require exact agreement: SITE_CONFIG.version, the
- * Helm chart's version and appVersion, an empty prepublication image pin, and
- * a dated CHANGELOG heading.
+ * Helm chart's version and appVersion, an empty prepublication image pin, a
+ * dated CHANGELOG heading, and SECURITY.md's supported-versions table
+ * leading with the line being cut.
  *
  * Prerelease tags (vX.Y.Z-rc.N) are cut while the website/chart still show
  * the current *stable* version -- that's correct, not stale, since the
@@ -61,6 +62,35 @@ export function extractChartVersions(source) {
 }
 
 /**
+ * Reads the first data row of SECURITY.md's supported-versions table (the
+ * markdown table's header row and its `---` separator are skipped). Returns
+ * the row's version cell -- with any trailing annotation like " (latest)"
+ * stripped -- and whether that row is marked supported.
+ */
+export function extractSecurityFirstSupportedVersion(source) {
+  const rows = String(source ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("|") && line.endsWith("|"));
+  if (rows.length < 3) {
+    throw new Error("Could not find a supported-versions table in SECURITY.md");
+  }
+
+  const cells = rows[2]
+    .slice(1, -1)
+    .split("|")
+    .map((cell) => cell.trim());
+  if (cells.length < 2 || !cells[0]) {
+    throw new Error("Could not parse the first row of SECURITY.md's supported-versions table");
+  }
+
+  return {
+    version: cells[0].replace(/\s*\(.*\)\s*$/u, "").trim(),
+    supported: cells[1] === ":white_check_mark:",
+  };
+}
+
+/**
  * Pure check: compares a tag against the release-facing file contents.
  * Returns { version, isPrerelease, errors }. Never throws for a metadata
  * mismatch -- errors accumulate so a caller can report every disagreement
@@ -68,7 +98,7 @@ export function extractChartVersions(source) {
  * malformed tag or unparseable file, since those aren't "the tag disagrees
  * with reality", they're "this script can't tell".
  */
-export function checkTagReleaseMetadata({ tag, siteConfig, chart, values, changelog }) {
+export function checkTagReleaseMetadata({ tag, siteConfig, chart, values, changelog, security }) {
   const version = normalizeTag(tag);
   const isPrerelease = !STABLE_VERSION_PATTERN.test(version);
   const errors = [];
@@ -119,6 +149,18 @@ export function checkTagReleaseMetadata({ tag, siteConfig, chart, values, change
     errors.push(`CHANGELOG.md has no dated heading for tag v${version}: ${error.message}`);
   }
 
+  const [, major, minor] = version.match(/^(\d+)\.(\d+)\.\d+$/u);
+  const expectedSecurityLine = `${major}.${minor}.x`;
+  const { version: securityVersion, supported: securitySupported } =
+    extractSecurityFirstSupportedVersion(security);
+  if (securityVersion !== expectedSecurityLine || !securitySupported) {
+    errors.push(
+      `SECURITY.md's supported-versions table must lead with '${expectedSecurityLine}' marked :white_check_mark: for tag v${version}; found '${securityVersion}' marked ${
+        securitySupported ? ":white_check_mark:" : ":x:"
+      }.`,
+    );
+  }
+
   return { version, isPrerelease, errors };
 }
 
@@ -154,11 +196,13 @@ function main() {
   const chartPath = args.chart ?? "chart/sockguard/Chart.yaml";
   const valuesPath = args.values ?? "chart/sockguard/values.yaml";
   const changelogPath = args.changelog ?? "CHANGELOG.md";
+  const securityPath = args.security ?? "SECURITY.md";
 
   const siteConfig = readFileSync(siteConfigPath, "utf8");
   const chart = readFileSync(chartPath, "utf8");
   const values = readFileSync(valuesPath, "utf8");
   const changelog = readFileSync(changelogPath, "utf8");
+  const security = readFileSync(securityPath, "utf8");
 
   const { version, isPrerelease, errors } = checkTagReleaseMetadata({
     tag,
@@ -166,6 +210,7 @@ function main() {
     chart,
     values,
     changelog,
+    security,
   });
 
   if (errors.length > 0) {
@@ -180,7 +225,7 @@ function main() {
   console.log(
     isPrerelease
       ? `Tag v${version} is a prerelease; CHANGELOG heading present.`
-      : `Tag v${version} agrees with website, chart, Helm image, and CHANGELOG metadata.`,
+      : `Tag v${version} agrees with website, chart, Helm image, CHANGELOG, and SECURITY.md metadata.`,
   );
 }
 

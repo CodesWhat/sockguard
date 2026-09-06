@@ -4,299 +4,52 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	pathpkg "path"
 	"regexp"
 	"strings"
 	"testing"
-	"time"
 )
 
-func assertCompileAndMatchWithin(t *testing.T, pattern, normalizedPath string, wantMatch bool, limit time.Duration) {
+// assertCompileRuleUsesLinearRegexMatcher proves a long, multi-wildcard "**"
+// pattern compiles to the implementation that is contractually linear on
+// long paths, rather than merely finishing quickly on this run. A pattern
+// containing "**" outside the bare "/**" and trailing "/**" special cases
+// (see CompileRule in rules.go) doesn't go through the segment-glob walker;
+// it falls through to pathMatcherRegex, compiled as
+// "^" + globToRegex(pattern) + "$" and matched with Go's RE2-derived
+// regexp package, which runs in linear time in the length of the input by
+// construction rather than backtracking. So the deterministic invariant
+// pinned here — matcherKind, a non-nil compiled pattern, and its exact
+// source string — is what rules out a regression to a backtracking matcher;
+// a raw timing assertion could not tell the two apart on a fast machine. It
+// used to assert a 100ms wall-clock budget instead, which was flaky under
+// -race (seen at 107.952ms on a busy machine).
+func assertCompileRuleUsesLinearRegexMatcher(t *testing.T, pattern, wantRegexSrc, normalizedPath string, wantMatch bool) {
 	t.Helper()
 
-	compileStart := time.Now()
 	rule, err := CompileRule(Rule{
 		Methods: []string{"GET"},
 		Pattern: pattern,
 		Action:  ActionAllow,
 	})
-	compileElapsed := time.Since(compileStart)
 	if err != nil {
 		t.Fatalf("CompileRule(%q) error = %v", pattern, err)
 	}
-	if compileElapsed > limit {
-		t.Fatalf("CompileRule(%q) took %v, want <= %v", pattern, compileElapsed, limit)
+
+	if rule.matcherKind != pathMatcherRegex {
+		t.Fatalf("CompileRule(%q) matcherKind = %v, want pathMatcherRegex", pattern, rule.matcherKind)
+	}
+	if rule.pattern == nil {
+		t.Fatalf("CompileRule(%q) pattern = nil, want a compiled regexp", pattern)
+	}
+	// wantRegexSrc is spelled out by the caller rather than derived from
+	// globToRegex, so a broader translation cannot make this pass by itself.
+	if got := rule.pattern.String(); got != wantRegexSrc {
+		t.Fatalf("CompileRule(%q) pattern source = %q, want %q", pattern, got, wantRegexSrc)
 	}
 
-	matchStart := time.Now()
 	got := rule.matchesNormalizedUpper(http.MethodGet, normalizedPath)
-	matchElapsed := time.Since(matchStart)
-	if matchElapsed > limit {
-		t.Fatalf("rule match for %q on %d-byte path took %v, want <= %v", pattern, len(normalizedPath), matchElapsed, limit)
-	}
 	if got != wantMatch {
 		t.Fatalf("match result = %v, want %v", got, wantMatch)
-	}
-}
-
-func TestStripVersionPrefix(t *testing.T) {
-	tests := []struct {
-		name string
-		path string
-		want string
-	}{
-		{name: "no prefix", path: "/containers/json", want: "/containers/json"},
-		{name: "valid major version", path: "/v1/containers/json", want: "/containers/json"},
-		{name: "valid major minor version", path: "/v1.45/containers/json", want: "/containers/json"},
-		{name: "invalid missing digits after v", path: "/v/x", want: "/v/x"},
-		// A trailing '.' is inside Podman's VersionedPath class ([0-9A-Za-z.-]*),
-		// so it strips like any other continuation char.
-		{name: "trailing dot in class still strips", path: "/v1./x", want: "/x"},
-		{name: "invalid no trailing slash", path: "/v1.45", want: "/v1.45"},
-		{name: "version root path", path: "/v1.45/", want: "/"},
-		{name: "double prefix strips only first", path: "/v1.45/v1.46/containers/json", want: "/v1.46/containers/json"},
-		// Letters after the leading digit are inside Podman's class too
-		// (e.g. "5.8.1-dev"), so a trailing letter run strips as well.
-		{name: "trailing letters in class still strips", path: "/v1x/containers/json", want: "/containers/json"},
-		{name: "uppercase V is not a version prefix", path: "/V1.45/containers/json", want: "/V1.45/containers/json"},
-		{name: "uppercase V major only is not a version prefix", path: "/V1/containers/json", want: "/V1/containers/json"},
-		// Three-part semver -- Podman's libpod bindings send the full daemon
-		// version (major.minor.patch), unlike Docker's vN / vN.N (#148).
-		{name: "three-part semver version prefix", path: "/v5.0.0/libpod/containers/json", want: "/libpod/containers/json"},
-		{name: "three-part semver with larger components", path: "/v4.9.3/libpod/containers/json", want: "/libpod/containers/json"},
-		{name: "three-part semver root path", path: "/v5.0.0/", want: "/"},
-		{name: "Podman accepts prerelease suffix", path: "/v5.8.1-dev/libpod/containers/json", want: "/libpod/containers/json"},
-		{name: "three-part semver trailing dot still strips", path: "/v5.0./x", want: "/x"},
-		{name: "three-part semver no trailing slash", path: "/v5.0.0", want: "/v5.0.0"},
-		// Podman's VersionedPath regex has no part-count limit, so a
-		// four-part run strips just like three-part.
-		{name: "four-part version strips too", path: "/v1.2.3.4/x", want: "/x"},
-		{name: "invalid version character is not stripped", path: "/v5.8.1_rc/libpod/containers/json", want: "/v5.8.1_rc/libpod/containers/json"},
-		// Adversarial digit runs.
-		{name: "long digit run in major", path: "/v99999999999999999999/x", want: "/x"},
-		{name: "long digit run in minor", path: "/v1.99999999999999999999/x", want: "/x"},
-		{name: "long digit run in patch", path: "/v1.2.99999999999999999999/x", want: "/x"},
-		// Podman prerelease / dev builds (this fix): VersionedPath is
-		// [0-9][0-9A-Za-z.-]*, which admits "-dev", "-rc1", trailing '.'/'-',
-		// but not '+' (semver build metadata) or '_'.
-		{name: "podman dev prerelease suffix strips", path: "/v5.8.1-dev/libpod/networks/x/connect", want: "/libpod/networks/x/connect"},
-		{name: "podman rc prerelease suffix strips", path: "/v5.8.1-rc1/libpod/containers/json", want: "/libpod/containers/json"},
-		{name: "plus is not in podman's class", path: "/v5.8.1+build.7/libpod/containers/json", want: "/v5.8.1+build.7/libpod/containers/json"},
-		{name: "trailing dot before slash strips", path: "/v1.45./containers/json", want: "/containers/json"},
-		{name: "trailing dash before slash strips", path: "/v1.45-/containers/json", want: "/containers/json"},
-		{name: "bare v with no digits unchanged", path: "/v/containers/json", want: "/v/containers/json"},
-		{name: "first char after v must be a digit", path: "/vX/containers/json", want: "/vX/containers/json"},
-		{name: "podman dev prerelease no trailing slash", path: "/v5.8.1-dev", want: "/v5.8.1-dev"},
-		{name: "podman dev prerelease root path", path: "/v5.8.1-dev/", want: "/"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := stripVersionPrefix(tt.path)
-			if got != tt.want {
-				t.Errorf("stripVersionPrefix(%q) = %q, want %q", tt.path, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestStripVersionPrefixMatchesPodmanRouteGrammar(t *testing.T) {
-	podmanVersionPrefix := regexp.MustCompile(`^/v[0-9][0-9A-Za-z.-]*/`)
-	paths := []string{
-		"",
-		"/",
-		"/containers/json",
-		"/_ping",
-		"/v/x",
-		"/v1",
-		"/v1/",
-		"/v1/containers/json",
-		"/v1.45",
-		"/v1.45/",
-		"/v1.45/containers/json",
-		"/v1.45/_ping",
-		"/v1.45/v1.46/containers/json",
-		"/v1./x",
-		"/v1..45/x",
-		"/v.1/x",
-		"/v1x/containers/json",
-		"/v001.002/images/build",
-		"/v999.0/../containers/json",
-		"/version",
-		"v1.45/containers/json",
-		// Three-part semver (#148): must now strip like vN / vN.N.
-		"/v5.0.0/libpod/containers/json",
-		"/v4.9.3/libpod/containers/json",
-		"/v1.2.3/x",
-		"/v1.2.3",
-		"/v1.2.3/",
-		"/v1.2./x",
-		"/v1.2.3.4/x",
-		"/v5.8.1-dev/libpod/manifests/app/json",
-		"/v5.8.1_rc/libpod/manifests/app/json",
-		"/v5.8.1-dev/libpod/images/load",
-		"/v5.8.1_rc/libpod/images/load",
-		// Podman prerelease / dev builds (this fix).
-		"/v5.8.1-dev/libpod/networks/x/connect",
-		"/v5.8.1-rc1/libpod/containers/json",
-		"/v5.8.1+build.7/libpod/containers/json",
-		"/v1.45./containers/json",
-		"/v1.45-/containers/json",
-		"/vX/containers/json",
-		"/v5.8.1-dev",
-		"/v5.8.1-dev/",
-	}
-
-	for _, path := range paths {
-		t.Run(path, func(t *testing.T) {
-			want := podmanVersionPrefix.ReplaceAllString(path, "/")
-			got := stripVersionPrefix(path)
-			if got != want {
-				t.Errorf("stripVersionPrefix(%q) = %q, want Podman route result %q", path, got, want)
-			}
-		})
-	}
-}
-
-func TestNormalizePath(t *testing.T) {
-	tests := []struct {
-		name string
-		path string
-		want string
-	}{
-		{"no version prefix", "/containers/json", "/containers/json"},
-		{"v1.45 prefix", "/v1.45/containers/json", "/containers/json"},
-		{"v1 prefix", "/v1/containers/json", "/containers/json"},
-		{"ping", "/_ping", "/_ping"},
-		{"versioned ping", "/v1.45/_ping", "/_ping"},
-		{"nested path", "/v1.47/containers/abc123/start", "/containers/abc123/start"},
-		{"root path", "/", "/"},
-		{"version root keeps current clean semantics", "/v1.45/", "/v1.45"},
-		// Path traversal hardening
-		{"dot-dot collapse", "/containers/../images/json", "/images/json"},
-		{"dot-dot at root", "/../../etc/passwd", "/etc/passwd"},
-		{"versioned dot-dot", "/v1.45/../containers/json", "/containers/json"},
-		{"redundant slashes", "//containers///json", "/containers/json"},
-		{"dot segment", "/containers/./json", "/containers/json"},
-		{"empty string", "", ""},
-		// NormalizePath does not percent-decode. Its input (r.URL.Path) has
-		// already been decoded once by net/http — the same single decode the
-		// Docker daemon applies — so any %XX still present is a double-encoded
-		// escape that the daemon's router also leaves literal. Decoding it here
-		// would desync sockguard's policy view from the daemon's routing view.
-		{"literal percent escape is left intact", "/containers%2Fjson", "/containers%2Fjson"},
-		{"encoded dot stays a literal segment", "/containers/%2e/json", "/containers/%2e/json"},
-		{"encoded dot-dot stays a literal segment", "/containers/%2e%2e/images/json", "/containers/%2e%2e/images/json"},
-		{"encoded version separator is not a version prefix", "/v1.45%2Fcontainers/json", "/v1.45%2Fcontainers/json"},
-		{"double-encoded escape is not decoded", "%252Fcontainers%252Fcreate", "%252Fcontainers%252Fcreate"},
-		{"double-encoded traversal does not collapse", "/containers%252F..%252Fimages/json", "/containers%252F..%252Fimages/json"},
-		// Three-part semver version prefix (#148): Podman libpod clients send
-		// the full daemon semver, unlike Docker's vN / vN.N.
-		{"three-part semver libpod prefix", "/v5.0.0/libpod/containers/json", "/libpod/containers/json"},
-		// Podman prerelease suffix combined with a traversal segment: Clean
-		// runs first and collapses ".." against the version-looking segment
-		// as an ordinary path component (it has no version semantics), so
-		// the result never reaches stripVersionPrefix with a "/v..." prefix
-		// at all. Assert the final result carries no ".." either way.
-		{"podman prerelease prefix with traversal", "/v1.45-foo/../containers/create", "/containers/create"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := NormalizePath(tt.path)
-			if got != tt.want {
-				t.Errorf("NormalizePath(%q) = %q, want %q", tt.path, got, tt.want)
-			}
-		})
-	}
-
-	// Dedicated assertion for the traversal case: no ".." segment survives.
-	if got := NormalizePath("/v1.45-foo/../containers/create"); strings.Contains(got, "..") {
-		t.Errorf("NormalizePath(%q) = %q still contains \"..\"", "/v1.45-foo/../containers/create", got)
-	}
-}
-
-// TestNormalizePathLibpodVersionPrefixEquivalence pins the #148 fix's core
-// requirement: a two-part Docker-style version prefix, a three-part Podman
-// semver prefix, and no prefix at all must all normalize a /libpod/ path to
-// the identical string. Before the fix, the three-part form fell through
-// stripVersionPrefix unchanged, so it never converged with the other two —
-// every libpod rule pattern would silently never match a versioned Podman
-// client.
-func TestNormalizePathLibpodVersionPrefixEquivalence(t *testing.T) {
-	const want = "/libpod/containers/json"
-	variants := []string{
-		"/libpod/containers/json",
-		"/v1.45/libpod/containers/json",
-		"/v5.0.0/libpod/containers/json",
-		"/v4.9.3/libpod/containers/json",
-		"/v1/libpod/containers/json",
-	}
-
-	for _, variant := range variants {
-		t.Run(variant, func(t *testing.T) {
-			if got := NormalizePath(variant); got != want {
-				t.Errorf("NormalizePath(%q) = %q, want %q", variant, got, want)
-			}
-		})
-	}
-}
-
-func TestPathNeedsClean(t *testing.T) {
-	tests := []struct {
-		name string
-		path string
-		want bool
-	}{
-		{name: "clean absolute path", path: "/containers/json", want: false},
-		{name: "clean versioned path", path: "/v1.45/containers/json", want: false},
-		{name: "empty string", path: "", want: false},
-		{name: "root path", path: "/", want: false},
-		{name: "double slash", path: "//containers/json", want: true},
-		{name: "dot segment", path: "/containers/./json", want: true},
-		{name: "dot dot segment", path: "/containers/../json", want: true},
-		{name: "trailing slash", path: "/containers/json/", want: true},
-		{name: "relative dot", path: "./containers", want: true},
-		{name: "relative clean", path: "containers/json", want: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := pathNeedsClean(tt.path); got != tt.want {
-				t.Fatalf("pathNeedsClean(%q) = %v, want %v", tt.path, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestPathNeedsCleanRelativeDotPaths(t *testing.T) {
-	tests := []struct {
-		name string
-		path string
-		want bool
-	}{
-		{name: "standalone dot", path: ".", want: false},
-		{name: "standalone dot dot", path: "..", want: false},
-		{name: "leading relative dot dot", path: "../containers", want: false},
-		{name: "repeated leading relative dot dot", path: "../../containers", want: false},
-		{name: "only leading relative dot dots", path: "../..", want: false},
-		{name: "leading relative dot", path: "./containers", want: true},
-		{name: "relative dot dot cancels previous segment", path: "containers/..", want: true},
-		{name: "relative dot dot cancels after leading dot dot", path: "../containers/..", want: true},
-		{name: "rooted dot dot", path: "/..", want: true},
-		{name: "rooted leading dot dot", path: "/../containers", want: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cleaned := pathpkg.Clean(tt.path)
-			if (cleaned != tt.path) != tt.want {
-				t.Fatalf("bad test case: path.Clean(%q) = %q", tt.path, cleaned)
-			}
-			if got := pathNeedsClean(tt.path); got != tt.want {
-				t.Fatalf("pathNeedsClean(%q) = %v, want %v", tt.path, got, tt.want)
-			}
-		})
 	}
 }
 
@@ -381,6 +134,29 @@ func TestLiteralPrefixForPattern(t *testing.T) {
 		{name: "double star before slash keeps slash prefix", pattern: "/containers/**/json", want: "/containers/"},
 		{name: "leading wildcard", pattern: "**/json", want: ""},
 		{name: "match all", pattern: "/**", want: ""},
+		// Every "/**" is optional, so a pattern whose whole tail is made of
+		// them matches its bare head and the prefix cannot keep the slash.
+		{name: "stacked double star trims the optional slash", pattern: "/containers/**/**", want: "/containers"},
+		{name: "triple stacked double star trims the optional slash", pattern: "/containers/**/**/**", want: "/containers"},
+		{name: "stacked double star into a star run trims the optional slash", pattern: "/containers/**/***", want: "/containers"},
+		// The tail resumes with a literal that is not a slash, so the head can
+		// be followed immediately by it.
+		{name: "stacked double star welded to a literal trims the optional slash", pattern: "/containers/**/**json", want: "/containers"},
+		// The tail still guarantees a slash, so this one keeps it.
+		{name: "stacked double star before a literal segment keeps slash prefix", pattern: "/containers/**/**/json", want: "/containers/"},
+		{name: "double star before a single star keeps slash prefix", pattern: "/containers/**/*", want: "/containers/"},
+		{name: "single star before stacked double star keeps slash prefix", pattern: "/containers/*/**/**", want: "/containers/"},
+		// From the first rune regexp reads as U+FFFD onward the pattern's
+		// bytes stop being what its own regex matches, so the prefix ends
+		// there. Both spellings compile to the same rune and that rune matches
+		// either one, which is why a valid-UTF-8 test would miss the second.
+		{name: "malformed byte ends the prefix", pattern: "/con\xfftainers/*", want: "/con"},
+		{name: "literal replacement rune ends the prefix", pattern: "/con\uFFFDtainers/*", want: "/con"},
+		{name: "malformed byte ends the prefix with no wildcard at all", pattern: "/con\xfftainers", want: "/con"},
+		{name: "malformed byte in the first position leaves no prefix", pattern: "\xff/containers", want: ""},
+		// The first "*" still wins when it comes first: everything before it
+		// decoded cleanly, so the existing derivation is unaffected.
+		{name: "malformed byte after the first star is never reached", pattern: "/containers/*/\xffjson", want: "/containers/"},
 	}
 
 	for _, tt := range tests {
@@ -449,34 +225,38 @@ func TestCompileRuleComplexGlobRemainsFastOnLongPaths(t *testing.T) {
 	longMiddle := strings.Repeat("b/", 4096)
 
 	tests := []struct {
-		name      string
-		pattern   string
-		path      string
-		wantMatch bool
+		name         string
+		pattern      string
+		wantRegexSrc string
+		path         string
+		wantMatch    bool
 	}{
 		{
-			name:      "match near end of long path",
-			pattern:   "/**/x/**/y/**",
-			path:      longPrefix + "x/" + longMiddle + "y/tail",
-			wantMatch: true,
+			name:         "match near end of long path",
+			pattern:      "/**/x/**/y/**",
+			wantRegexSrc: `^(/(?s:.*))?/x(/(?s:.*))?/y(/(?s:.*))?$`,
+			path:         longPrefix + "x/" + longMiddle + "y/tail",
+			wantMatch:    true,
 		},
 		{
-			name:      "non-match scans long path without backtracking explosion",
-			pattern:   "/**/x/**/y/**",
-			path:      longPrefix + "x/" + longMiddle + "z/tail",
-			wantMatch: false,
+			name:         "non-match scans long path without backtracking explosion",
+			pattern:      "/**/x/**/y/**",
+			wantRegexSrc: `^(/(?s:.*))?/x(/(?s:.*))?/y(/(?s:.*))?$`,
+			path:         longPrefix + "x/" + longMiddle + "z/tail",
+			wantMatch:    false,
 		},
 		{
-			name:      "multiple deep wildcards stay linear",
-			pattern:   "/**/alpha/**/omega/**",
-			path:      longPrefix + "alpha/" + longMiddle + "omega/final",
-			wantMatch: true,
+			name:         "multiple deep wildcards stay linear",
+			pattern:      "/**/alpha/**/omega/**",
+			wantRegexSrc: `^(/(?s:.*))?/alpha(/(?s:.*))?/omega(/(?s:.*))?$`,
+			path:         longPrefix + "alpha/" + longMiddle + "omega/final",
+			wantMatch:    true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assertCompileAndMatchWithin(t, tt.pattern, tt.path, tt.wantMatch, 100*time.Millisecond)
+			assertCompileRuleUsesLinearRegexMatcher(t, tt.pattern, tt.wantRegexSrc, tt.path, tt.wantMatch)
 		})
 	}
 }
@@ -1198,34 +978,6 @@ func TestGlobToRegexSpecialSequences(t *testing.T) {
 				if re.MatchString(m) {
 					t.Errorf("globToRegex(%q) = %q; expected NOT to match %q", tt.pattern, regexStr, m)
 				}
-			}
-		})
-	}
-}
-
-func TestHasVersionPrefix(t *testing.T) {
-	tests := []struct {
-		name string
-		path string
-		want bool
-	}{
-		{"no prefix", "/containers/json", false},
-		{"v1.45 prefix", "/v1.45/containers/json", true},
-		{"v1 major-only prefix", "/v1/containers/json", true},
-		{"ping no prefix", "/_ping", false},
-		{"root path no prefix", "/", false},
-		{"version literal path no strip", "/version", false},
-		{"uppercase V not a prefix", "/V1.45/containers/json", false},
-		{"empty path", "", false},
-		{"v without digits not a prefix", "/v/containers/json", false},
-		{"v digits no trailing slash not a prefix", "/v1.45", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := HasVersionPrefix(tt.path)
-			if got != tt.want {
-				t.Errorf("HasVersionPrefix(%q) = %v, want %v", tt.path, got, tt.want)
 			}
 		})
 	}

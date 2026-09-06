@@ -1,0 +1,61 @@
+{
+  "description": "Every root JSON key Podman decodes from the request body of POST /libpod/containers/{name}/update. The wire type is libpod.updateEntitiesWire, which embeds handlers.UpdateEntities, which in turn embeds specs.LinuxResources, define.UpdateHealthCheckConfig and define.UpdateContainerDevicesLimits; all four are anonymous, so encoding/json flattens every one of their fields to the request root. Read by app/internal/filter/libpod_container_update_drift_test.go, which fails when this list and the inspector's gate lists in app/internal/filter/libpod_container_update.go disagree, and by the monthly quality-api-version-watch.yml workflow, which re-derives it from upstream and fails when Podman has grown a field.",
+  "podman_tag": "v5.8.1",
+  "runtime_spec_version": "v1.2.1",
+  "recorded": "2026-09-05",
+  "also_verified_at": {
+    "podman_tag": "v6.1.1",
+    "runtime_spec_version": "v1.3.0",
+    "result": "all five struct definitions byte-identical to v5.8.1, so this field set is current for Podman 6.x as well"
+  },
+  "types": [
+    "containers/podman pkg/api/handlers/libpod/containers.go: updateEntitiesWire (adds Rlimits, same r_limits wire key as the embedded one it shadows)",
+    "containers/podman pkg/api/handlers/types.go: handlers.UpdateEntities",
+    "containers/podman libpod/define/healthchecks.go: define.UpdateHealthCheckConfig",
+    "containers/podman libpod/define/container.go: define.UpdateContainerDevicesLimits (no json tags, so its wire keys are the bare Go field names)",
+    "opencontainers/runtime-spec specs-go/config.go: specs.LinuxResources (version resolved from containers/podman go.mod)"
+  ],
+  "fetch": [
+    "gh api 'repos/containers/podman/contents/pkg/api/handlers/libpod/containers.go?ref=v5.8.1' --jq .content | base64 -d",
+    "gh api 'repos/containers/podman/contents/pkg/api/handlers/types.go?ref=v5.8.1' --jq .content | base64 -d",
+    "gh api 'repos/containers/podman/contents/libpod/define/healthchecks.go?ref=v5.8.1' --jq .content | base64 -d",
+    "gh api 'repos/containers/podman/contents/libpod/define/container.go?ref=v5.8.1' --jq .content | base64 -d",
+    "gh api 'repos/containers/podman/contents/go.mod?ref=v5.8.1' --jq .content | base64 -d | grep opencontainers/runtime-spec",
+    "gh api 'repos/opencontainers/runtime-spec/contents/specs-go/config.go?ref=v1.2.1' --jq .content | base64 -d"
+  ],
+  "regenerate": "cd app && SOCKGUARD_TEST_PODMAN_UPSTREAM_REF=<tag> go test ./internal/filter/ -run TestLibpodContainerUpdateSnapshotMatchesUpstreamPodman -v — the failure names every field that moved, in the sorted order this list is kept in.",
+  "root_fields": [
+    "BlkIOWeightDevice",
+    "DeviceReadBPs",
+    "DeviceReadIOPs",
+    "DeviceWriteBPs",
+    "DeviceWriteIOPs",
+    "Env",
+    "UnsetEnv",
+    "blockIO",
+    "cpu",
+    "devices",
+    "health_cmd",
+    "health_interval",
+    "health_log_destination",
+    "health_max_log_count",
+    "health_max_log_size",
+    "health_on_failure",
+    "health_retries",
+    "health_start_period",
+    "health_startup_cmd",
+    "health_startup_interval",
+    "health_startup_retries",
+    "health_startup_success",
+    "health_startup_timeout",
+    "health_timeout",
+    "hugepageLimits",
+    "memory",
+    "network",
+    "no_healthcheck",
+    "pids",
+    "r_limits",
+    "rdma",
+    "unified"
+  ]
+}

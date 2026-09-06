@@ -1,13 +1,26 @@
 ---
 title: Roadmap
-description: Sockguard's shipped v1.7, v2.0, and v2.1 work, planned v2.2 focus, and later direction.
+description: Sockguard's shipped v1.7, v2.0, v2.1, and v2.2 work, planned v2.3 focus, and later direction.
 ---
 
-Sockguard v2.1 is the current stable feature line, with v2.1.0 the latest
-release. It promotes `2.1.0-rc.1` unchanged after the tri-tool conformance
-gate. v2.2 is the next planned line. This roadmap describes direction and
-priorities, not promises about dates. A feature is available only after the
-release notes say it has shipped.
+Sockguard v2.2 is the current stable feature line, with v2.2.0 the latest
+release. It closes the volume-mount and read-side gaps that survived v2.1.0
+and adds the operator-facing checks that were missing around them. v2.3 is
+the next planned line. This roadmap describes direction and priorities, not
+promises about dates. A feature is available only after the release notes say
+it has shipped.
+
+## Shipped in v2.2.0
+
+| Track | Delivered |
+|---|---|
+| Volume-driver bind containment | The `local` driver's `type`/`o`/`device` options can no longer bind-mount a host path past `allowed_bind_mounts`, on container create or on a Swarm service mount |
+| Volume write inspection | `PUT /volumes/{name}` is inspected instead of being an unread write, so an allow rule on it no longer forwards a body nothing reads |
+| Request-target guard | A request target that is not a rooted path no longer reaches rule evaluation, and a `/**` catch-all no longer allows one |
+| Read-side redaction | Survives gzip encoding, `HEAD`, `304` revalidation and image inspect, and stops parsing a body the active options cannot rewrite |
+| Operator checks | `sockguard verify` checks a loaded config against the daemon it will actually talk to, `server.shutdown_grace` replaces the hardcoded 30s drain, and a `SOCKGUARD_*` variable matching no configuration key warns at startup |
+| Rootless rule patterns rejected | A `match.path` without a leading `/` now fails config validation instead of loading and matching every rooted path; breaking for any config that used that spelling |
+| Per-request allocations | Route metric labels, the `/health` cache, visibility label injection, owner-label mutation, `POST /containers/create` decoding and query-string parsing stop repeating work on every request |
 
 ## Shipped in v2.1.0
 
@@ -29,10 +42,10 @@ release notes say it has shipped.
 | Proxy hardening | Socket cleanup is inode-owned, method-aware resource routing covers keyword names, generated response errors clear stale representation headers, inspected bodies retain deadlines through logging and metrics, and request metric labels have finite cardinality |
 | Release surfaces | README, docs, website, Helm metadata, verification assets, and migration guidance agree on v2.0.0; release blobs use sigstore bundles only and published metadata is read back before the release succeeds |
 
-## Planned for v2.2
+## Planned for v2.3
 
 The general BuildKit gRPC mediation work shipped under
-[issue #185](https://github.com/CodesWhat/sockguard/issues/185). v2.2 extends
+[issue #185](https://github.com/CodesWhat/sockguard/issues/185). v2.3 extends
 that completed foundation into selective instruction-level mediation for the
 remaining frontend-less and third-party-frontend paths. The second is packaging
 rather than proxy behavior: the Go module path still declares a v1 major

@@ -10,7 +10,35 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// clearSockguardEnv removes every SOCKGUARD_* variable from the process
+// environment for the duration of the test. runValidate warns about the ones
+// that bind to no config key, so a test asserting clean stderr needs a clean
+// environment to assert it in: the podman integration job runs this package
+// with SOCKGUARD_TEST_PODMAN_SOCKET exported, which is exactly such a
+// variable. config.Load reads the same overlay, so this also stops a stray
+// SOCKGUARD_LISTEN_ADDRESS on a developer's machine from rewriting the
+// report these tests read.
+func clearSockguardEnv(t *testing.T) {
+	t.Helper()
+	for _, entry := range os.Environ() {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok || !strings.HasPrefix(name, "SOCKGUARD_") {
+			continue
+		}
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatalf("Unsetenv(%q): %v", name, err)
+		}
+		t.Cleanup(func() {
+			if err := os.Setenv(name, value); err != nil {
+				t.Errorf("restore %s: %v", name, err)
+			}
+		})
+	}
+}
+
 func TestRunValidateOutputSuccess(t *testing.T) {
+	clearSockguardEnv(t)
+
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "sockguard.yaml")
 	yaml := `
@@ -206,6 +234,8 @@ func TestRunValidateRejectsEmptyExplicitConfig(t *testing.T) {
 }
 
 func TestRunValidateLoadsExistingExplicitConfig(t *testing.T) {
+	clearSockguardEnv(t)
+
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "sockguard.yaml")
 	yaml := `
@@ -332,5 +362,58 @@ rules:
 	}
 	if !strings.Contains(stdout, "readonly (default)") {
 		t.Fatalf("expected default profile label, got:\n%s", stdout)
+	}
+}
+
+// validate reads the SOCKGUARD_* overlay the same way serve does, so it owes
+// the operator the same warning — on stderr, leaving the report on stdout
+// untouched for anything parsing it.
+func TestRunValidateWarnsOnUnknownEnvVar(t *testing.T) {
+	clearSockguardEnv(t)
+	t.Setenv("SOCKGUARD_LISTEN_SOCKT", "/run/typo.sock")
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "sockguard.yaml")
+	yaml := `
+listen:
+  socket: /tmp/sockguard.sock
+upstream:
+  socket: /var/run/docker.sock
+rules:
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: "*", path: "/**" }
+    action: deny
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	oldCfgFile := cfgFile
+	cfgFile = cfgPath
+	t.Cleanup(func() { cfgFile = oldCfgFile })
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	command := &cobra.Command{Use: "validate"}
+	command.SetOut(&out)
+	command.SetErr(&errOut)
+
+	if err := runValidate(command, nil); err != nil {
+		t.Fatalf("runValidate() error = %v", err)
+	}
+
+	stderr := errOut.String()
+	if !strings.Contains(stderr, "var=SOCKGUARD_LISTEN_SOCKT") {
+		t.Fatalf("validate did not name the unknown variable; stderr: %q", stderr)
+	}
+	if !strings.Contains(stderr, "did_you_mean=SOCKGUARD_LISTEN_SOCKET") {
+		t.Fatalf("validate warning carried no suggestion; stderr: %q", stderr)
+	}
+	if !strings.Contains(out.String(), "validation passed") {
+		t.Fatalf("expected the report on stdout, got:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "SOCKGUARD_LISTEN_SOCKT") {
+		t.Fatalf("warning leaked into the stdout report:\n%s", out.String())
 	}
 }

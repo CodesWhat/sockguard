@@ -1,5 +1,15 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["local>CodesWhat/.github:renovate-config"],
-  "baseBranchPatterns": ["dev/v2.1"]
+  "baseBranchPatterns": ["dev/v2.1"],
+  "packageRules": [
+    {
+      "description": "Split knip out of the npm non-major group. knip's transitive graph (oxc-parser, formatly, get-tsconfig, picomatch, ...) has broken Renovate's own lockfile regeneration when bundled with unrelated bumps (#397); isolating it keeps a bad artifact update from blocking the rest of the group.",
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["knip"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "knip",
+      "groupSlug": "knip"
+    }
+  ]
 }

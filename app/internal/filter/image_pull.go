@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 // ImagePullOptions configures query inspection for POST /images/create.
@@ -52,7 +54,7 @@ func (p imagePullPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath
 		return denyReason, nil
 	}
 
-	query := r.URL.Query()
+	query := logging.RequestQuery(r)
 	if fromSrc := strings.TrimSpace(query.Get("fromSrc")); fromSrc != "" {
 		if p.allowImports {
 			return "", nil
@@ -124,7 +126,7 @@ func (p imagePullPolicy) inspectLibpod(_ *slog.Logger, r *http.Request, normaliz
 	}
 
 	evaluated := false
-	for _, raw := range foldQueryKeys(r.URL.Query())["reference"] {
+	for _, raw := range foldQueryKeys(logging.RequestQuery(r))["reference"] {
 		reference := strings.TrimPrefix(strings.TrimSpace(raw), libpodRegistryTransportPrefix)
 		if strings.TrimSpace(reference) == "" {
 			continue
@@ -166,7 +168,7 @@ func (p imagePullPolicy) inspectLibpodImport(_ *slog.Logger, r *http.Request, no
 		return "", nil
 	}
 
-	source, bodyImport := classifyLibpodImageImportSource(r.URL.Query())
+	source, bodyImport := classifyLibpodImageImportSource(logging.RequestQuery(r))
 	if !p.allowImports {
 		if source == "" {
 			return libpodImageImportSubject + " denied: importing images is not allowed", nil

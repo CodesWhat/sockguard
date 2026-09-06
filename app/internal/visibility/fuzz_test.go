@@ -2,6 +2,7 @@ package visibility
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http/httptest"
 	"testing"
 
@@ -26,6 +27,16 @@ import (
 // output buffer must never exceed the input size by more than the JSON
 // array framing — overflowing here would be the parser-differential
 // equivalent of a smuggle.
+//
+// The load-bearing invariant is the refusal one: an accepted body must
+// be exactly one well-formed JSON array, checked against
+// encoding/json's own top-level parse rather than against the decoder
+// flushFiltered uses, so a disagreement between the streaming decode
+// and a whole-body parse shows up as a failure instead of as a
+// rewritten 200. Bounding the output length only ever caught a body
+// that grew; the parser gaps this target exists to find were bodies
+// that were silently completed — a truncated array closed on the
+// client's behalf, or trailing bytes dropped.
 func FuzzVisibilityFilter(f *testing.F) {
 	// Seeds cover the parse, refusal, and overflow paths.
 	f.Add("/containers/json", []byte(`[{"Names":["/web"],"Image":"nginx"},{"Names":["/db"],"Image":"postgres"}]`))
@@ -36,6 +47,11 @@ func FuzzVisibilityFilter(f *testing.F) {
 	f.Add("/containers/json", []byte(`{"not":"an array"}`))                                   // refused, not forwarded
 	f.Add("/containers/json", []byte(`[{"Names":["/web"],"Image":"nginx"}`))                  // truncated array
 	f.Add("/containers/json", []byte(`[{"Names":["/web"],"Image":"nginx"},`))                 // trailing comma
+	f.Add("/containers/json", []byte(`[`))                                                    // bare open bracket
+	f.Add("/containers/json", []byte(`[{`))                                                   // unclosed object inside
+	f.Add("/containers/json", []byte(`[{"Names":["/web"]}]garbage`))                          // trailing garbage
+	f.Add("/containers/json", []byte(`[{"Names":["/web"]}] [{"Names":["/db"]}]`))             // a second array follows
+	f.Add("/containers/json", []byte("[{\"Names\":[\"/web\"]}]   \n"))                        // trailing whitespace, still valid
 	f.Add("/images/json", []byte(`[{"RepoTags":["docker.io/library/alpine:latest"]}]`))
 	f.Add("/images/json", []byte(`[{"RepoTags":null},{"RepoTags":[]}]`))
 	f.Add("/v1.53/containers/json", []byte(`[{"Names":["/web"],"Image":"nginx"}]`))           // normPath drift
@@ -64,11 +80,32 @@ func FuzzVisibilityFilter(f *testing.F) {
 			// overflow, so we don't assert here.
 			_, _ = fw.Write(body)
 
-			// The function under test. We intentionally ignore the
-			// return value; the fuzz target's job is to find a panic,
-			// timeout, or data race in the decode/encode path.
-			_ = fw.flushFiltered(normPath, policy)
+			// The function under test.
+			err := fw.flushFiltered(normPath, policy)
 			fw.release()
+
+			// Refusal invariant: flushFiltered may only accept a body
+			// that is exactly one well-formed JSON array, trailing
+			// whitespace included. Anything else — truncated, an object,
+			// a scalar, empty, or an array with bytes after it — has to
+			// come back as an error the caller turns into a 502, never a
+			// rewritten 200. The oracle is encoding/json's own top-level
+			// parse, deliberately not the streaming decoder under test.
+			//
+			// Only this direction is asserted. The reverse is legitimate:
+			// a well-formed array of scalars fails the per-item decode,
+			// and that refusal is correct.
+			if err == nil && !isSingleJSONArrayForFuzz(body) {
+				t.Fatalf("flushFiltered accepted a body that is not a single JSON array: normPath=%q body=%q output=%q",
+					normPath, body, rec.Body.String())
+			}
+			// A refusal must write nothing. The caller checks
+			// headerWritten before substituting its 502, so a partially
+			// committed refusal would send the client a mixture.
+			if err != nil && rec.Body.Len() != 0 {
+				t.Fatalf("flushFiltered refused but still wrote %q: normPath=%q body=%q",
+					rec.Body.String(), normPath, body)
+			}
 
 			// Sanity: the recorder body length is bounded by the input
 			// plus a constant overhead for the JSON array brackets and
@@ -99,4 +136,19 @@ func compiledPolicyOrPanic(nameGlobs, imageGlobs []string) *compiledPolicy {
 		namePatterns:  namePatterns,
 		imagePatterns: imagePatterns,
 	}
+}
+
+// isSingleJSONArrayForFuzz reports whether body is exactly one well-formed
+// top-level JSON array, using encoding/json's whole-body parse rather than the
+// streaming decoder flushFiltered runs. json.Unmarshal rejects trailing
+// non-whitespace and anything that is not an array, which is the property the
+// refusal invariant needs an independent witness for.
+//
+// A literal `null` unmarshals into a nil slice without error, so this returns
+// true for it while flushFiltered refuses it. That only ever makes the oracle
+// more permissive than the code under test, which is the safe direction for a
+// one-sided check.
+func isSingleJSONArrayForFuzz(body []byte) bool {
+	var items []json.RawMessage
+	return json.Unmarshal(body, &items) == nil
 }

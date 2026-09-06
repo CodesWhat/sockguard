@@ -54,6 +54,9 @@ func (p volumePolicy) inspectLibpod(logger *slog.Logger, r *http.Request, normal
 	if !p.allowDriverOpts && len(req.Options) > 0 {
 		return "libpod volume create denied: driver options are not allowed", nil
 	}
+	if denyReason := denyLocalVolumeBindDeviceReason(req.Driver, req.Options, p.allowedBindMounts, "libpod volume create"); denyReason != "" {
+		return denyReason, nil
+	}
 
 	return "", nil
 }

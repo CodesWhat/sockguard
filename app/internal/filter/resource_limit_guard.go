@@ -530,7 +530,7 @@ func serviceUpdateIdentifier(normalizedPath string) (string, bool) {
 // ?version= query parameter Docker requires on every service update. Multiple
 // values or a non-numeric value is treated as invalid rather than guessed at.
 func serviceVersionQuery(r *http.Request) (uint64, bool) {
-	values := r.URL.Query()["version"]
+	values := logging.RequestQuery(r)["version"]
 	if len(values) != 1 {
 		return 0, false
 	}
@@ -546,7 +546,7 @@ func serviceVersionQuery(r *http.Request) (uint64, bool) {
 // Docker's request parser may choose one of multiple values, but the guard
 // must never guess which daemon behavior it is validating.
 func serviceManualRollbackQuery(r *http.Request) (manualRollback, valid bool) {
-	values, present := r.URL.Query()["rollback"]
+	values, present := logging.RequestQuery(r)["rollback"]
 	if !present {
 		return false, true
 	}

@@ -31,3 +31,19 @@ regexes = ['''Seccomp=default''']
 paths = [
   '''^app/internal/filter/container_create_test\.go$''',
 ]
+
+[[allowlists]]
+description = "Synthetic base64 secret payload ('podman-secret') in the response-filter list fixtures that prove redaction reaches SecretData, not a real secret"
+condition = "AND"
+regexes = ['''cG9kbWFuLXNlY3JldA==''']
+paths = [
+  '''^app/internal/responsefilter/list_item_partial_decode_test\.go$''',
+]
+
+[[allowlists]]
+description = "Synthetic container-env value ('s3cr3t-signing-key') in the response-filter inspect benchmark fixture, not a real signing key"
+condition = "AND"
+regexes = ['''s3cr3t-signing-key''']
+paths = [
+  '''^app/internal/responsefilter/perf_bench_test\.go$''',
+]

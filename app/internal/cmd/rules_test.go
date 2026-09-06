@@ -1750,7 +1750,7 @@ func TestValidateAndCompileRulesRequiresReadExfiltrationAckForLibpodShowMounted(
 	for _, scope := range []string{"default policy", "named client profile"} {
 		for _, rulePath := range []string{
 			"/libpod/containers/showmounted",
-			"*/containers/showmounted",
+			"/*/containers/showmounted",
 		} {
 			t.Run(scope+" "+rulePath, func(t *testing.T) {
 				rules := []config.RuleConfig{
@@ -1965,7 +1965,7 @@ func TestValidateAndCompileRulesRejectsSelectiveWildcardCatalogShadows(t *testin
 	}
 }
 
-func TestValidateAndCompileRulesRejectsNoLeadingSlashCatalogGlobs(t *testing.T) {
+func TestValidateAndCompileRulesRejectsLeadingStarCatalogGlobs(t *testing.T) {
 	tests := []struct {
 		operation string
 		ack       string
@@ -1980,7 +1980,7 @@ func TestValidateAndCompileRulesRejectsNoLeadingSlashCatalogGlobs(t *testing.T) 
 			t.Run(scope+" "+tt.operation, func(t *testing.T) {
 				rules := []config.RuleConfig{
 					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/sockguard-test/" + tt.operation}, Action: "deny"},
-					{Match: config.MatchConfig{Method: http.MethodPost, Path: "*/containers/*/" + tt.operation}, Action: "allow"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/*/containers/*/" + tt.operation}, Action: "allow"},
 					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
 				}
 				cfg := config.Defaults()
@@ -2015,21 +2015,32 @@ func TestValidateAndCompileRulesRejectsNoLeadingSlashCatalogGlobs(t *testing.T) 
 	}
 }
 
-func TestValidateAndCompileRulesRejectsRelativeSingleStarCatalogGlobs(t *testing.T) {
-	tests := []struct {
-		operation string
-		ack       string
-	}{
-		{operation: "checkpoint", ack: "insecure_allow_read_exfiltration"},
-		{operation: "restore", ack: "insecure_allow_body_blind_writes"},
-	}
-
+// TestValidateAndCompileRulesRejectsRootlessRulePatterns pins the refusal that
+// replaced a widening. A match.path without a leading "/" used to reach the
+// segment-glob fast path, which stripped one leading slash from the pattern and
+// one from the request path, so "libpod/containers/*/checkpoint" matched
+// "/libpod/containers/real-id/checkpoint" while its own anchored regex,
+// "^libpod/containers/[^/]*/checkpoint$", did not. The walker now agrees with
+// the regex, and on its own that would turn a rootless deny an operator relied
+// on into a silent no-op, so the shape is refused at config validation rather
+// than quietly changing meaning.
+//
+// Both acknowledgment flags are set before validating, so the only thing left
+// that can refuse these configs is the pattern shape. That also pins the
+// ordering: the shape error lands before the catalog-reachability gate, and no
+// acknowledgment buys back a rule that can never match anything.
+func TestValidateAndCompileRulesRejectsRootlessRulePatterns(t *testing.T) {
 	for _, scope := range []string{"default policy", "named client profile"} {
-		for _, tt := range tests {
-			t.Run(scope+" "+tt.operation, func(t *testing.T) {
+		for _, pattern := range []string{
+			"libpod/containers/*/checkpoint",
+			"*/containers/*/restore",
+			"containers/**",
+			"*",
+			"**",
+		} {
+			t.Run(scope+" "+pattern, func(t *testing.T) {
 				rules := []config.RuleConfig{
-					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/sockguard-test/" + tt.operation}, Action: "deny"},
-					{Match: config.MatchConfig{Method: http.MethodPost, Path: "libpod/containers/*/" + tt.operation}, Action: "allow"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: pattern}, Action: "allow"},
 					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
 				}
 				cfg := config.Defaults()
@@ -2044,44 +2055,20 @@ func TestValidateAndCompileRulesRejectsRelativeSingleStarCatalogGlobs(t *testing
 				} else {
 					cfg.Rules = rules
 				}
+				cfg.InsecureAllowReadExfiltration = true
+				cfg.InsecureAllowBodyBlindWrites = true
 
 				_, err := validateAndCompileRules(&cfg)
 				if err == nil {
-					t.Fatal("validateAndCompileRules() = nil, want an acknowledgment error for the reachable real-id route")
+					t.Fatal("validateAndCompileRules() = nil, want a rootless match.path error")
 				}
-				for _, want := range []string{tt.ack, "POST /libpod/containers/a/" + tt.operation} {
+				for _, want := range []string{
+					"must start with '/'",
+					fmt.Sprintf("%q", pattern),
+					fmt.Sprintf("%q", "/"+pattern),
+				} {
 					if !strings.Contains(err.Error(), want) {
 						t.Fatalf("error = %q, want it to mention %q", err.Error(), want)
-					}
-				}
-				if scope == "named client profile" && !strings.Contains(err.Error(), "backup-agent") {
-					t.Fatalf("error = %q, want it to mention the client profile", err.Error())
-				}
-
-				if tt.operation == "restore" {
-					cfg.InsecureAllowBodyBlindWrites = true
-				} else {
-					cfg.InsecureAllowReadExfiltration = true
-				}
-				if _, err := validateAndCompileRules(&cfg); err != nil {
-					t.Fatalf("validateAndCompileRules() with acknowledgment error = %v", err)
-				}
-
-				compiled, err := compileConfiguredRules(rules)
-				if err != nil {
-					t.Fatalf("compileConfiguredRules() error = %v", err)
-				}
-				for _, request := range []struct {
-					path string
-					want filter.Action
-				}{
-					{path: "/libpod/containers/sockguard-test/" + tt.operation, want: filter.ActionDeny},
-					{path: "/libpod/containers/real-id/" + tt.operation, want: filter.ActionAllow},
-				} {
-					req := httptest.NewRequest(http.MethodPost, request.path, nil)
-					action, _, _ := filter.Evaluate(compiled, req)
-					if action != request.want {
-						t.Errorf("POST %s action = %q, want %q", request.path, action, request.want)
 					}
 				}
 			})

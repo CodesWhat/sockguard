@@ -109,7 +109,8 @@ type listenerMember struct {
 // hijackedConnTracker owns connections removed from net/http's lifecycle by
 // a successful Hijack (Docker attach/exec streaming). http.Server.Shutdown
 // intentionally does not close them, so listener-group shutdown must do so
-// explicitly to keep the single 30-second drain deadline meaningful.
+// explicitly to keep the single configured drain deadline (server.shutdown_grace)
+// meaningful.
 type hijackedConnTracker struct {
 	mu     sync.Mutex
 	conns  map[net.Conn]struct{}

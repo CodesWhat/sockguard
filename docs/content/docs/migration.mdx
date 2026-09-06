@@ -203,9 +203,11 @@ Replace the flag with the CA that issued the daemon certificate:
 
 The Docker environment fallback follows the same schedule. A non-empty `DOCKER_TLS` with `DOCKER_TLS_VERIFY` empty or unset selects unverified TLS; set `DOCKER_TLS_VERIFY=1` before v3.0.0. Any non-empty verification value, including `0` or `false`, enables verification and takes precedence over `DOCKER_TLS`, matching the Docker CLI's environment semantics. When TLS is enabled, sockguard requires `ca.pem` from `DOCKER_CERT_PATH`, otherwise `DOCKER_CONFIG`, otherwise `~/.docker`; it presents `cert.pem` / `key.pem` only when both exist. `DOCKER_CERT_PATH` alone only locates material and does not enable TLS. Bare and portless TCP hosts default to port `2375`; a TCP URL path is preserved as the API prefix across proxy, inspection, readiness, attach/exec, BuildKit, and failover traffic; and valid custom Unix socket names retain their literal bytes after Docker-compatible URL validation. Absolute Unix paths preserve percent escapes and raw `?` or `#`, while relative host-form escapes such as `%2F` and `%3F` are invalid. An invalid explicit `DOCKER_HOST` fails startup instead of falling through to `upstream.socket`.
 
+The five sections below were checked against these upstream versions on 2026-09-05, re-checked at every release cut: Tecnativa `docker-socket-proxy` v0.5.0, LinuxServer `docker-socket-proxy` 3.4.4-r0-ls96, wollomatic `socket-proxy` 1.13.1, 11notes `docker-socket-proxy` v2.1.8, and hectorm `cetusguard` v1.1.4.
+
 ## From Tecnativa/docker-socket-proxy
 
-Sockguard accepts the current Tecnativa environment-variable surface, including section vars, `ALLOW_RESTARTS`, `SOCKET_PATH`, and `LOG_LEVEL`. `DISABLE_IPV6` is the exception: it has no Sockguard equivalent and is ignored, so pick the bind with `listen.address` instead.
+Sockguard accepts the current Tecnativa environment-variable surface, including section vars, `ALLOW_RESTARTS`, `SOCKET_PATH`, and `LOG_LEVEL`.
 
 Compatibility mode only generates rules while the effective ruleset is still the built-in default. The check is on the rules themselves, not on whether you supplied a config file, so an explicit `rules:` block that happens to be byte-identical to the default still activates it. That's why a drop-in works untouched: the config the image ships at `/etc/sockguard/sockguard.yaml` is literally the default. Write a ruleset that differs from it and every section var and `ALLOW_*` stops generating anything at all, with no error; `SOCKET_PATH` and `LOG_LEVEL` keep applying either way.
 
@@ -228,7 +230,7 @@ Replace the image, and add the socket's group. Sockguard runs as UID 65532, so i
        - POST=0
 ```
 
-The acknowledgement is required, not optional. `CONTAINERS=1` generates `allow GET,HEAD /containers/**`, and that admits `GET /containers/*/top`, `/archive`, `/export`, `/logs`, and `/attach/ws`, so without `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true` Sockguard exits 1 at startup with an error naming those endpoints. `IMAGES=1`, `SERVICES=1`, and `TASKS=1` open the same class of surface. Unlike `GRPC=1`/`SESSION=1`, which auto-set their own acknowledgement, compatibility mode never sets this one for you: the whole point is that a section-wide read grant should be a decision you made. Drop the acknowledgement once you move to YAML and allow only the list/inspect endpoints you actually need.
+The acknowledgement is required, not optional. `CONTAINERS=1` generates `allow GET,HEAD /containers/**`, and that admits `GET /containers/*/top`, `/archive`, `/export`, `/logs`, and `/attach/ws`, so without `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true` Sockguard exits 1 at startup with an error naming those endpoints. `IMAGES=1`, `SERVICES=1`, and `TASKS=1` open the same class of surface. Unlike `GRPC=1`/`SESSION=1`, which auto-set their own acknowledgement when nothing else mediates that tunnel, compatibility mode never sets this one for you: the whole point is that a section-wide read grant should be a decision you made. Drop the acknowledgement once you move to YAML and allow only the list/inspect endpoints you actually need.
 
 One other difference from Tecnativa in that diff: Sockguard binds loopback `127.0.0.1:2375` by default rather than all interfaces, so a proxy other Compose services talk to over TCP also needs `SOCKGUARD_LISTEN_ADDRESS` plus both plaintext-TCP acknowledgements, or `SOCKGUARD_LISTEN_SOCKET` and a shared socket volume. See [Getting Started](/getting-started) for either block in full.
 
@@ -242,6 +244,10 @@ controls, migrate the delete rule to YAML and leave its matching
 `request_body.container_remove` field disabled.
 
 Adding `POST=1` needs a second acknowledgement whenever the widened section rule reaches a body-sensitive write endpoint. `CONTAINERS=1 POST=1` generates `allow POST /containers/**`, which admits `POST /containers/*/exec` with no command allowlist, so Sockguard exits 1 with `set insecure_allow_body_blind_writes=true to acknowledge this risk` until `SOCKGUARD_INSECURE_ALLOW_BODY_BLIND_WRITES=true` is set too. `EXEC=1`, `SWARM=1`, and `PLUGINS=1` with `POST=1` hit the same gate, and so does `ALLOW_EXEC=1` on its own. Sections whose widened rule reaches nothing body-sensitive don't: `PING=1`, `VERSION=1`, `EVENTS=1`, `INFO=1`, `NETWORKS=1`, and `VOLUMES=1` with `POST=1` all validate clean, as do `POST=1` by itself and `ALLOW_DELETE=1`, `ALLOW_START=1`, and `ALLOW_STOP=1`.
+
+`GRPC=1` and `SESSION=1` are the one pair that acknowledges itself. They generate `allow /grpc/**` and `allow /session/**`, which open BuildKit's opaque session transport, so compatibility mode sets `insecure_accept_opaque_buildkit_tunnels` for you instead of exiting 1, and that is what keeps a Tecnativa drop-in working untouched. It stops setting it as soon as `request_body.buildkit` is configured, at the top level or on any client profile, because the acknowledgement and a mediation policy are mutually exclusive and compatibility mode runs before validation: setting it there would fail startup over a key you never wrote.
+
+Where that policy sits decides what happens next. A **top-level** `request_body.buildkit` block starts clean, and the rules those two vars generate are admitted under mediation, so every gRPC message on `POST /session` and `POST /grpc` is checked against your policy instead of passing uninspected. A policy on a **client profile only** still refuses to start, and should: the generated rules are top-level, they apply to every client that matches no profile, and a profile's policy cannot mediate them. That refusal names `GRPC`/`SESSION` as where the rules came from and gives the two cures that work, which are adding a top-level `request_body.buildkit` block or dropping the env vars. Setting `insecure_accept_opaque_buildkit_tunnels` yourself alongside `request_body.buildkit` is refused either way, because that one you did write.
 
 Tecnativa compatibility mode and signed-policy mode are separate migration
 stages. Rule-generating compatibility variables are unsigned process state, so
@@ -285,6 +291,15 @@ ALLOW_UNPAUSE=1
 
 [Granular Operations](/configuration#granular-operations-linuxserver-compatible) lists the rule each one generates. `ALLOW_RESTARTS` covers more than one endpoint, generating the kill, restart, and stop rules together, and the legacy singular `ALLOW_RESTART` maps to exactly the same three. Every other var maps to one rule.
 
+### Ignored on purpose
+
+LinuxServer's image documents several env vars Sockguard has no equivalent for. `LOG_LEVEL` and `SOCKET_PATH` are not on this list — both map, covered above.
+
+- `DISABLE_IPV6`: a container-network toggle (bind to IPv4 only) that has no Sockguard equivalent; pick the bind with `listen.address` instead.
+- `ALLOW_ARCHIVE`, `ALLOW_CHANGES`, `ALLOW_EXPORT`, `ALLOW_LOGS`, `ALLOW_TOP`: LinuxServer's own GET-only per-sub-resource gates for `/containers/{id}/archive`, `/changes`, `/export`, `/logs`, and `/top`. Sockguard has no matching granular var; `CONTAINERS=1` (with the read-exfiltration acknowledgment) admits all of them at once, or write a YAML rule against the specific path.
+- `LIBPOD_*` (all fifteen: `LIBPOD_CONTAINERS`, `LIBPOD_EVENTS`, `LIBPOD_EXEC`, `LIBPOD_GENERATE`, `LIBPOD_IMAGES`, `LIBPOD_INFO`, `LIBPOD_MANIFESTS`, `LIBPOD_NETWORKS`, `LIBPOD_PING`, `LIBPOD_PLAY`, `LIBPOD_PODS`, `LIBPOD_SECRETS`, `LIBPOD_SYSTEM`, `LIBPOD_VERSION`, `LIBPOD_VOLUMES`): LinuxServer's compat vars for Podman's libpod-native API. Sockguard inspects several `/libpod/**` request bodies natively (build, container create, image load) but generates no rules from these vars — `compatVars` has no `LIBPOD_*` entries — so a Podman `/libpod/**` deployment needs hand-written YAML rules for that path family instead.
+- `TZ`: a generic container timezone setting, not an API-gating var; Sockguard's config has nothing that reads it.
+
 ## From wollomatic/socket-proxy
 
 wollomatic already does more than a basic path gate: regex allowlists per method, IP or hostname admission, per-container label allowlists, optional bind-mount restrictions, JSON logging, active upstream watchdog checks, and a filtered unix-socket endpoint. Sockguard's migration story is mostly direct: body policy, named profiles, mTLS selectors, owner isolation, Prometheus metrics, trace/log correlation, and read-side visibility are the main upgrades; hostname admission maps best to mTLS DNS/URI selectors, CIDRs, unix peers, or container labels.
@@ -296,13 +311,15 @@ wollomatic already does more than a basic path gate: regex allowlists per method
 | `-allowPOST "^/(v[0-9.]+/)?containers/[a-z0-9]+/start$"` | `{ method: POST, path: "/containers/*/start" }` |
 | `-allowfrom=172.18.0.0/16` | `clients.allowed_cidrs: ["172.18.0.0/16"]` |
 | `-allowfrom=traefik` (hostname admission) | `clients.allowed_cidrs` with the caller's IP, or `clients.container_labels` for name-based resolution. For cryptographic caller identity, `clients.client_certificate_profiles` (mTLS) or `clients.unix_peer_profiles` are a stronger upgrade. |
-| `socket-proxy.allow.get=.*` | `clients.container_labels: { enabled: true, label_prefix: "socket-proxy.allow." }`. The prefix has a default; `enabled` does not, and label ACLs stay off until you set it. |
+| `socket-proxy.allow.get=.*` | `clients.container_labels: { enabled: true, label_prefix: "socket-proxy.allow." }`, and rewrite the label **value** to `socket-proxy.allow.get=/**`. Only the label key's prefix is reusable. Wollomatic label values are regexes; Sockguard reads them as globs, so `.*` is a literal dot followed by one segment and matches no real path. Every comma-separated path in a label must start with `/`, and a container carrying one that does not is refused rather than partly honored. The prefix has a default; `enabled` does not, and label ACLs stay off until you set it. |
 | `-allowbindmountfrom=/srv/data,/var/log` | `request_body.container_create.allowed_bind_mounts: ["/srv/data", "/var/log"]` |
 | `-proxysocketendpoint=/tmp/filtered.sock` | `listen.socket: /tmp/filtered.sock` |
 
 Key differences:
 - Sockguard auto-strips API version prefixes — no need for `(v[0-9.]+/)?` in patterns
-- Glob patterns (`*`, `**`) instead of regex
+- Glob patterns (`*`, `**`) instead of regex, in rule paths and in container-label values alike. A wollomatic regex copied across unchanged is read as a glob, so translate it: `.*` becomes `/**`, `^/containers/.*$` becomes `/containers/**`
+- That last translation is a slight widening, not an exact match: `^/containers/.*$` requires the literal `/containers/` to appear, so it does not match the bare path `/containers`, while sockguard's `/containers/**` does match `/containers` on its own, with nothing after the trailing slash
+- Every path, in a rule and in a label, must start with `/`
 - YAML config instead of CLI flags
 - Auto-anchoring built in (no need for `^` and `$`)
 - Wollomatic already supports hostname allowlists and a filtered unix-socket endpoint today; Sockguard is stronger on exec/pull/build inspection, named profiles, ownership isolation, and visibility-controlled reads

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/codeswhat/sockguard/app/internal/apipath"
 	"github.com/codeswhat/sockguard/app/internal/upstream"
 )
 
@@ -426,13 +427,11 @@ func isExecCreatePath(normalizedPath string) bool {
 	return ok && tail == "exec"
 }
 
+// isExecStartPath is a thin wrapper over apipath.IsExecStartPath, which owns
+// the definition because internal/proxy's hijack layer has to read the same
+// one. Kept unexported here for this package's own call sites.
 func isExecStartPath(normalizedPath string) bool {
-	if !strings.HasPrefix(normalizedPath, "/exec/") {
-		return false
-	}
-	rest := strings.TrimPrefix(normalizedPath, "/exec/")
-	_, tail, ok := strings.Cut(rest, "/")
-	return ok && tail == "start"
+	return apipath.IsExecStartPath(normalizedPath)
 }
 
 // execStartIdentifier extracts the exec ID from a normalized exec-start path,

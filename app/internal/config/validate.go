@@ -87,6 +87,7 @@ func validateWithMode(cfg *Config, mode validateMode) error {
 func validateBasic(cfg *Config, mode validateMode) []string {
 	var errs []string
 	errs = append(errs, validateListeners(cfg, mode)...)
+	errs = append(errs, validateServer(cfg)...)
 	errs = append(errs, validateUpstream(cfg)...)
 	errs = append(errs, validateLogging(cfg)...)
 	errs = append(errs, validateResponse(cfg)...)
@@ -435,6 +436,18 @@ func plainTCPListenerErrors(label, prefix string, listen ListenConfig) []string 
 	)}
 }
 
+// validateServer validates server.shutdown_grace. Unlike
+// upstream.hijack_inactivity_timeout, 0 is a valid value here — it means
+// "close immediately, don't wait" — so every value, including an explicit
+// empty string, goes through ParseDuration and only a parse failure or a
+// negative duration is rejected.
+func validateServer(cfg *Config) []string {
+	if d, err := time.ParseDuration(cfg.Server.ShutdownGrace); err != nil || d < 0 {
+		return []string{fmt.Sprintf("server.shutdown_grace must be a non-negative duration, got %q", cfg.Server.ShutdownGrace)}
+	}
+	return nil
+}
+
 func validateUpstream(cfg *Config) []string {
 	var errs []string
 	// Either the legacy single socket or at least one endpoint must be set.
@@ -639,6 +652,8 @@ func validateRules(cfg *Config) []string {
 		}
 		if r.Match.Path == "" {
 			errs = append(errs, fmt.Sprintf("rule %d: match.path is required", i+1))
+		} else if !strings.HasPrefix(r.Match.Path, "/") {
+			errs = append(errs, rootlessRuleError(fmt.Sprintf("rule %d", i+1), r.Match.Path))
 		} else if strings.Contains(r.Match.Path, "%") && !validEscapedLibpodImageScpRule(r.Match) {
 			errs = append(errs, literalPercentRuleError(fmt.Sprintf("rule %d", i+1), r.Match.Path))
 		} else if filter.HasVersionPrefix(r.Match.Path) {
@@ -682,7 +697,7 @@ func validEscapedLibpodImageScpRule(match MatchConfig) bool {
 // a Docker/Podman API version prefix (e.g. "/v1.45/..." or
 // "/v5.8.1-dev/..."). NormalizePath strips exactly that prefix from the
 // request path before rule matching runs, using the same predicate
-// (filter.HasVersionPrefix, built on filter's stripVersionPrefix) this check
+// (filter.HasVersionPrefix, built on apipath.StripVersionPrefix) this check
 // calls — so a pattern that still carries the prefix can never match real
 // traffic and is silently dead rather than doing what its author intended.
 // Failing closed at validation time beats the startup warning this replaces:
@@ -692,6 +707,30 @@ func versionPrefixRuleError(label, pattern string) string {
 	return fmt.Sprintf(
 		"%s: match.path %q begins with an API version prefix; sockguard strips version prefixes before matching, so this pattern never matches real traffic — write the pattern without the /vN... prefix",
 		label, pattern,
+	)
+}
+
+// rootlessRuleError reports a rule path pattern that does not begin with "/".
+// Every path rule matching ever sees is rooted: NormalizePath and
+// NormalizePodmanRoutePath both preserve the leading slash of an HTTP
+// request-target, and the anchored regex a pattern compiles to
+// ("^containers/[^/]*$" for "containers/*", "^[^/]*$" for "*") cannot match a
+// path that starts with one. So a rootless pattern describes nothing the proxy
+// will ever be asked about.
+//
+// It used to match anyway on the segment-glob fast path, which stripped a
+// leading slash from both the pattern and the request path and so read
+// "containers/*" as "/containers/*" — a silent widening on an allow rule and,
+// once the walker was corrected, a silent narrowing on a deny. Rejecting the
+// shape is what keeps that correction from quietly reversing an operator's
+// intent: the same fail-closed reasoning as versionPrefixRuleError and
+// literalPercentRuleError, which also refuse a pattern that can only ever be
+// dead. Write the pattern with its leading "/" ("/containers/*"), and use
+// "/**" rather than "**" for a catch-all.
+func rootlessRuleError(label, pattern string) string {
+	return fmt.Sprintf(
+		"%s: match.path %q must start with '/'; sockguard matches rules against the rooted request path, so a pattern without a leading slash never matches real traffic — write it as %q",
+		label, pattern, "/"+pattern,
 	)
 }
 
@@ -973,6 +1012,25 @@ func validateBuildkitAckMutualExclusion(cfg *Config) []string {
 		errs = append(errs, fmt.Sprintf("client profile %q configures request_body.buildkit, but the top-level insecure_accept_opaque_buildkit_tunnels=true acknowledgment (a global setting, not per-profile) would otherwise admit the same opaque tunnel with zero inspection for this profile too: set insecure_accept_opaque_buildkit_tunnels: false", profile.Name))
 	}
 	return errs
+}
+
+// buildkitMediationConfigured reports whether request_body.buildkit is
+// configured in ANY scope — top level or any client profile — which is
+// exactly the condition validateBuildkitAckMutualExclusion above turns into a
+// refusal once insecure_accept_opaque_buildkit_tunnels is set too. It exists
+// so ApplyCompat (compat.go) can ask that question in one call rather than
+// re-deriving the scope list, which would drift the moment a third scope
+// appears; a scope added to the loop above belongs here as well.
+func buildkitMediationConfigured(cfg *Config) bool {
+	if cfg.RequestBody.Buildkit.ToPolicy(cfg.RequestBody.Build).Configured() {
+		return true
+	}
+	for _, profile := range cfg.Clients.Profiles {
+		if profile.RequestBody.Buildkit.ToPolicy(profile.RequestBody.Build).Configured() {
+			return true
+		}
+	}
+	return false
 }
 
 // Admission-mutation config bounds (#151). These are deliberately generous
@@ -1929,6 +1987,8 @@ func validateRuleConfigs(rules []RuleConfig, prefix string) []string {
 		}
 		if r.Match.Path == "" {
 			errs = append(errs, rulePrefix+".match.path is required")
+		} else if !strings.HasPrefix(r.Match.Path, "/") {
+			errs = append(errs, rootlessRuleError(rulePrefix, r.Match.Path))
 		} else if strings.Contains(r.Match.Path, "%") && !validEscapedLibpodImageScpRule(r.Match) {
 			errs = append(errs, literalPercentRuleError(rulePrefix, r.Match.Path))
 		} else if filter.HasVersionPrefix(r.Match.Path) {

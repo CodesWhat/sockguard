@@ -18,9 +18,14 @@ import (
 	"strings"
 )
 
-const maxImageLoadBodyBytes = 512 << 20       // 512 MiB
-const maxImageLoadManifestBytes = 1 << 20     // 1 MiB
-const maxImageLoadDecompressedBytes = 2 << 30 // 2 GiB (gzip-bomb guard)
+const maxImageLoadBodyBytes = 512 << 20   // 512 MiB
+const maxImageLoadManifestBytes = 1 << 20 // 1 MiB
+
+// maxImageLoadDecompressedBytes bounds the decompressed size of a gzip'd
+// image-load archive (gzip-bomb guard). It is a var, not a const, so the
+// gzip-bomb test can shrink it and avoid building a multi-GiB payload.
+var maxImageLoadDecompressedBytes int64 = 2 << 30 // 2 GiB (gzip-bomb guard)
+
 const maxImageLoadOCITrackedBlobs = 4096
 const maxImageLoadOCIMetadataBytes = 16 << 20 // 16 MiB
 const maxImageLoadOCIDescriptorVisits = 4096

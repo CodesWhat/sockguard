@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	"github.com/codeswhat/sockguard/app/internal/dockerfileinspect"
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 const maxBuildContextBytes = 512 << 20           // 512 MiB (compressed/on-wire cap)
@@ -68,7 +69,7 @@ func (p buildPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath str
 		return denyReason, nil
 	}
 
-	query := r.URL.Query()
+	query := logging.RequestQuery(r)
 	if isLibpodBuildPath(normalizedPath) {
 		query = foldQueryKeys(query)
 		if denyReason := p.inspectLibpodBuildControls(r, normalizedPath, query); denyReason != "" {

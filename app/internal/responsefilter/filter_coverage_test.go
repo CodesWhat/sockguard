@@ -1,12 +1,14 @@
 package responsefilter
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
+	"testing/iotest"
 
 	requestfilter "github.com/codeswhat/sockguard/app/internal/filter"
 )
@@ -976,22 +978,22 @@ func TestRejectResponse_WithErr(t *testing.T) {
 	}
 }
 
-// ─── readResponseBody – nil body ─────────────────────────────────────────────
+// ─── withResponseBody – nil body ─────────────────────────────────────────────
 
-func TestReadResponseBody_NilBody(t *testing.T) {
+func TestWithResponseBody_NilBody(t *testing.T) {
 	t.Parallel()
 	resp := &http.Response{Body: nil}
-	_, err := readResponseBody(resp)
+	err := withResponseBody(resp, func([]byte) error { return nil })
 	if err == nil {
 		t.Fatal("want error for nil body, got nil")
 	}
 }
 
-// TestReadResponseBody_SizeLimitBoundary pins the exact byte at which
-// readResponseBody stops accepting a body: the underlying LimitedReader is
+// TestWithResponseBody_SizeLimitBoundary pins the exact byte at which
+// withResponseBody stops accepting a body: the underlying LimitedReader is
 // sized to MaxResponseBodyBytes+1 so a body of exactly the cap is read in
 // full, while one byte more is rejected.
-func TestReadResponseBody_SizeLimitBoundary(t *testing.T) {
+func TestWithResponseBody_SizeLimitBoundary(t *testing.T) {
 	t.Parallel()
 	max := requestfilter.MaxResponseBodyBytes
 
@@ -999,12 +1001,16 @@ func TestReadResponseBody_SizeLimitBoundary(t *testing.T) {
 		t.Parallel()
 		body := strings.Repeat("A", max)
 		resp := &http.Response{Body: io.NopCloser(strings.NewReader(body))}
-		got, err := readResponseBody(resp)
+		var got int
+		err := withResponseBody(resp, func(read []byte) error {
+			got = len(read)
+			return nil
+		})
 		if err != nil {
-			t.Fatalf("readResponseBody() error = %v, want nil for a body exactly at the %d byte cap", err, max)
+			t.Fatalf("withResponseBody() error = %v, want nil for a body exactly at the %d byte cap", err, max)
 		}
-		if len(got) != max {
-			t.Fatalf("len(body) = %d, want %d", len(got), max)
+		if got != max {
+			t.Fatalf("len(body) = %d, want %d", got, max)
 		}
 	})
 
@@ -1012,14 +1018,79 @@ func TestReadResponseBody_SizeLimitBoundary(t *testing.T) {
 		t.Parallel()
 		body := strings.Repeat("A", max+1)
 		resp := &http.Response{Body: io.NopCloser(strings.NewReader(body))}
-		_, err := readResponseBody(resp)
+		called := false
+		err := withResponseBody(resp, func([]byte) error {
+			called = true
+			return nil
+		})
 		if err == nil {
-			t.Fatal("readResponseBody() error = nil, want rejection for a body one byte over the cap")
+			t.Fatal("withResponseBody() error = nil, want rejection for a body one byte over the cap")
 		}
 		if !strings.Contains(err.Error(), "response body exceeds") {
-			t.Fatalf("readResponseBody() error = %v, want size-limit context", err)
+			t.Fatalf("withResponseBody() error = %v, want size-limit context", err)
+		}
+		if called {
+			t.Fatal("withResponseBody() ran the callback on an over-cap body, want it refused before the decode")
 		}
 	})
+}
+
+// TestWithPooledResponseBody_ReturnsBufferOnEveryExit pins the release
+// discipline the pool depends on: the buffer goes back on the read-error path,
+// the over-cap path and the callback-error path, not only on success. A buffer
+// dropped on one of those is not a correctness bug, so nothing else in the
+// suite would notice it — the pool just quietly stops being a pool for that
+// shape of request, which is the whole point of pooling the read.
+//
+// It counts through injected get/put rather than the real sync.Pool because
+// sync.Pool's Put discards entries at random under -race.
+func TestWithPooledResponseBody_ReturnsBufferOnEveryExit(t *testing.T) {
+	t.Parallel()
+
+	var gets, puts int
+	get := func() any {
+		gets++
+		return new(bytes.Buffer)
+	}
+	put := func(any) { puts++ }
+
+	noop := func([]byte) error { return nil }
+
+	t.Run("success", func(t *testing.T) {
+		resp := &http.Response{Body: io.NopCloser(strings.NewReader("{}"))}
+		if err := withPooledResponseBody(resp, get, put, noop); err != nil {
+			t.Fatalf("withPooledResponseBody() error = %v, want nil", err)
+		}
+	})
+
+	t.Run("callback error", func(t *testing.T) {
+		wantErr := errors.New("callback refused the body")
+		resp := &http.Response{Body: io.NopCloser(strings.NewReader("{}"))}
+		err := withPooledResponseBody(resp, get, put, func([]byte) error { return wantErr })
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("withPooledResponseBody() error = %v, want %v", err, wantErr)
+		}
+	})
+
+	t.Run("upstream read error", func(t *testing.T) {
+		readErr := errors.New("upstream read failed")
+		resp := &http.Response{Body: io.NopCloser(iotest.ErrReader(readErr))}
+		if err := withPooledResponseBody(resp, get, put, noop); !errors.Is(err, readErr) {
+			t.Fatalf("withPooledResponseBody() error = %v, want %v", err, readErr)
+		}
+	})
+
+	t.Run("over cap", func(t *testing.T) {
+		over := strings.Repeat("A", requestfilter.MaxResponseBodyBytes+1)
+		resp := &http.Response{Body: io.NopCloser(strings.NewReader(over))}
+		if err := withPooledResponseBody(resp, get, put, noop); err == nil {
+			t.Fatal("withPooledResponseBody() error = nil, want rejection for a body one byte over the cap")
+		}
+	})
+
+	if gets != 4 || puts != 4 {
+		t.Fatalf("pool acquire/release = %d/%d across four exit paths, want 4/4", gets, puts)
+	}
 }
 
 // ─── writeResponseBody – nil header ─────────────────────────────────────────

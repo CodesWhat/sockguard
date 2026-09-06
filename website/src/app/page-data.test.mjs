@@ -113,11 +113,14 @@ test("opt-in Sockguard capabilities are labelled opt-in", () => {
     assert.match(row.sockguard, /opt-in/, `${feature} must name itself opt-in`);
   }
 
-  // README.md's feature-comparison table credits Tecnativa and LinuxServer
-  // with the same per-action ALLOW_* controls; the site said No for Tecnativa.
+  // Real Tecnativa's shipped haproxy.cfg denies every non-GET request before
+  // the ALLOW_* rules ever run (docs/content/docs/migration.mdx), so its
+  // ALLOW_* vars are documented but dead in the config they ship. LinuxServer's
+  // own README says the opposite for its ALLOW_* vars ("these options work
+  // even when POST=0"), so only the Tecnativa cell carries the caveat.
   const granular = comparisonRows.find((row) => row.feature === "Granular POST ops");
   assert.ok(granular);
-  assert.equal(granular.tecnativa, "Partial (ALLOW_* vars)");
+  assert.equal(granular.tecnativa, "Documented only (POST gate blocks them)");
   assert.equal(granular.linuxserver, "Partial (ALLOW_* vars)");
 });
 
@@ -193,11 +196,11 @@ test("route pages and the compare matrix agree on Sockguard's column", () => {
 test("roadmap data is valid and matches expected milestones", () => {
   assert.ok(roadmap.length > 0, "roadmap must be non-empty");
 
-  // v2.1.0 native libpod write inspection & owner-isolation hardening release.
+  // v2.2.0 volume-mount containment & read-side redaction release.
   const releasedMilestones = roadmap.filter((m) => m.status === "released");
   assert.ok(releasedMilestones.length > 0, "must have at least one released milestone");
   const latestReleased = releasedMilestones[releasedMilestones.length - 1];
-  assert.equal(latestReleased.version, "v2.1.0", "latest released milestone must be v2.1.0");
+  assert.equal(latestReleased.version, "v2.2.0", "latest released milestone must be v2.2.0");
   assert.equal(latestReleased.status, "released");
 
   // Must retain the previous stable milestones.
@@ -215,21 +218,26 @@ test("roadmap data is valid and matches expected milestones", () => {
 
   const nextMilestones = roadmap.filter((m) => m.status === "next");
   assert.equal(nextMilestones.length, 1, "roadmap must have exactly one next milestone");
-  assert.equal(nextMilestones[0].version, "v2.2.0", "v2.2.0 must be the next milestone");
+  assert.equal(nextMilestones[0].version, "v2.3.0", "v2.3.0 must be the next milestone");
 
-  const v220 = roadmap.find((m) => m.version === "v2.2.0");
-  assert.ok(v220, "roadmap must retain the RUN-instruction work as v2.2.0");
-  assert.equal(v220.status, "next", "v2.2.0 must become next after v2.1.0 ships");
+  const v230 = roadmap.find((m) => m.version === "v2.3.0");
+  assert.ok(v230, "roadmap must carry the RUN-instruction work forward as v2.3.0");
+  assert.equal(v230.status, "next", "v2.3.0 must become next after v2.2.0 ships");
   assert.ok(
-    v220.items.every((item) => !item.includes("#185")),
-    "v2.2.0 must not present closed issue #185 as the owner of planned work",
+    v230.items.every((item) => !item.includes("#185")),
+    "v2.3.0 must not present closed issue #185 as the owner of planned work",
+  );
+
+  const v210 = roadmap.find((m) => m.version === "v2.1.0");
+  assert.ok(v210, "roadmap must include a v2.1.0 milestone");
+  assert.ok(
+    v210.items.some((item) => item.includes("404") && item.includes("403") && item.includes("502")),
+    "v2.1.0 must describe the fail-closed owner-isolation status codes",
   );
 
   assert.ok(
-    latestReleased.items.some(
-      (item) => item.includes("404") && item.includes("403") && item.includes("502"),
-    ),
-    "v2.1.0 must describe the fail-closed owner-isolation status codes",
+    latestReleased.items.some((item) => item.includes("allowed_bind_mounts")),
+    "v2.2.0 must describe the volume-driver bind-mount containment",
   );
 
   // Every milestone must have a non-empty items array

@@ -2,6 +2,7 @@ package boundedio
 
 import (
 	"errors"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -56,5 +57,54 @@ func TestReadFileRejectsNonPositiveLimitBeforeOpening(t *testing.T) {
 		if os.IsNotExist(err) {
 			t.Fatalf("ReadFile(limit=%d) opened the path before validating the limit", limit)
 		}
+	}
+}
+
+// TestReadFileKeepsTheFirstErrorWhenCloseAlsoFails kills the
+// CONDITIONALS_NEGATION mutant on the deferred close's `returnErr == nil`
+// guard (-> returnErr != nil), which inverts which error survives: the close
+// failure is reported and the error that actually stopped the read is thrown
+// away. Every caller of ReadFile decides on that error, so a "close" wrapper
+// around it is a diagnosis pointed at the wrong thing.
+//
+// The two failures have to happen together, and a regular file on a healthy
+// filesystem never fails Close on request. The openReadOnly seam supplies a
+// descriptor that is already closed instead: Stat and Close then both fail
+// with os.ErrClosed, and only the operation named in the returned error tells
+// the correct code apart from the mutant.
+func TestReadFileKeepsTheFirstErrorWhenCloseAlsoFails(t *testing.T) {
+	original := openReadOnly
+	t.Cleanup(func() { openReadOnly = original })
+
+	path := filepath.Join(t.TempDir(), "payload.bin")
+	if err := os.WriteFile(path, []byte("12345"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	openReadOnly = func(p string) (*os.File, error) {
+		f, err := original(p)
+		if err != nil {
+			return nil, err
+		}
+		if err := f.Close(); err != nil {
+			t.Fatalf("closing the descriptor under test: %v", err)
+		}
+		return f, nil
+	}
+
+	data, err := ReadFile(path, 1024)
+	if err == nil {
+		t.Fatalf("ReadFile() on a closed descriptor = %q, nil; want an error", data)
+	}
+	if !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("ReadFile() error = %v, want it to wrap os.ErrClosed", err)
+	}
+	var pathErr *fs.PathError
+	if !errors.As(err, &pathErr) {
+		t.Fatalf("ReadFile() error = %v (%T), want a *fs.PathError in the chain", err, err)
+	}
+	if pathErr.Op != "stat" {
+		t.Fatalf("ReadFile() reported the %q failure (%v); want the stat failure that stopped the read, not the close failure that followed it",
+			pathErr.Op, err)
 	}
 }

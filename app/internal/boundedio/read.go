@@ -12,6 +12,14 @@ var ErrTooLarge = errors.New("file exceeds byte limit")
 // ErrNotRegular identifies an input rejected because it is not a regular file.
 var ErrNotRegular = errors.New("path is not a regular file")
 
+// openReadOnly opens path for reading. Production binds the build-tagged
+// openReadOnlyFile (O_NONBLOCK on unix so a FIFO cannot stall the open, plain
+// os.Open elsewhere); it is a package var, in the same shape as
+// imagetrust.newLiveTrustedRootFactory, so a test can substitute a descriptor
+// whose Stat, Read or Close fails and reach ReadFile's error branches. A real
+// file on a healthy filesystem does not fail those calls on demand.
+var openReadOnly = openReadOnlyFile
+
 // ReadFile reads at most maxBytes from path and fails closed when more data is
 // present. The one-byte lookahead distinguishes an exact-limit file from an
 // oversized one without allocating for the remainder.

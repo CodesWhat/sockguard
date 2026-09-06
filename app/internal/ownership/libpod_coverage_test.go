@@ -1230,3 +1230,67 @@ func TestLibpodImageScpWithoutATrailingSlashStaysAPush(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
 	}
 }
+
+// TestLibpodImageScpEmptySourceIsDeniedWithoutAnInspect covers the other end
+// of the same route: POST /libpod/images/scp/ with no source at all. Podman's
+// {name:.*} matches the empty string, so mux dispatches that request to the
+// SCP handler, and ownership has to classify it as an SCP with a malformed
+// source. Classified any other way it becomes an image named "scp/", which
+// costs an upstream inspect for a name no daemon has and then denies with the
+// wrong answer.
+//
+// Both legs are the same request. They differ in what the filter middleware
+// stamped, because the route view and the cleaned view disagree by the one
+// slash that decides this route.
+func TestLibpodImageScpEmptySourceIsDeniedWithoutAnInspect(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		// stampedNormPath is what filter.resolveNormalizedPath puts on the
+		// request meta. Empty means no filter middleware ran, so ownership
+		// normalizes the path itself and only sees the cleaned spelling.
+		stampedNormPath string
+	}{
+		{name: "no filter middleware ran"},
+		{name: "filter stamped the route view", stampedNormPath: "/libpod/images/scp/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			inspectCalls := 0
+			upstreamCalls := 0
+			handler := middlewareWithDeps(
+				testLogger(),
+				Options{Owner: "job-123", LabelKey: "com.sockguard.owner"},
+				func(_ context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
+					inspectCalls++
+					t.Errorf("empty image SCP source inspected %s/%q", kind, identifier)
+					return nil, false, nil
+				},
+				fakeInspector{}.inspectExec,
+			)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				upstreamCalls++
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			meta := &logging.RequestMeta{NormPath: tt.stampedNormPath}
+			req := httptest.NewRequest(http.MethodPost, "/libpod/images/scp/", nil)
+			req = req.WithContext(logging.WithMeta(req.Context(), meta))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if inspectCalls != 0 || upstreamCalls != 0 {
+				t.Fatalf("inspect calls = %d upstream calls = %d, want 0 and 0", inspectCalls, upstreamCalls)
+			}
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "denied access to malformed local image source") {
+				t.Fatalf("body = %q, want malformed-local-source denial", rec.Body.String())
+			}
+			if meta.Decision != logging.DecisionDeny || meta.ReasonCode != reasonCodeOwnerPolicyDeniedAccess {
+				t.Fatalf("meta = decision %q code %q, want %q and %q", meta.Decision, meta.ReasonCode, logging.DecisionDeny, reasonCodeOwnerPolicyDeniedAccess)
+			}
+		})
+	}
+}

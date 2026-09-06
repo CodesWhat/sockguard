@@ -94,6 +94,7 @@ func ApplyCompat(cfg *Config, logger *slog.Logger) bool {
 	rules = append(rules, catchAllDenyRule())
 
 	cfg.Rules = rules
+	cfg.compatGeneratedRules = true
 
 	// ALLOW_DELETE and the broader CONTAINERS=1 + POST=1 section grant both
 	// predate Sockguard's query inspector and admit the full Tecnativa
@@ -113,8 +114,50 @@ func ApplyCompat(cfg *Config, logger *slog.Logger) bool {
 	// drop-in migration promise — these vars keep working exactly as before —
 	// by auto-setting the new key when either is enabled, while nudging the
 	// operator toward setting it explicitly going forward.
+	//
+	// Except when request_body.buildkit is configured (top level or on any
+	// client profile — buildkitMediationConfigured in validate.go). The
+	// acknowledgment and a mediation policy are mutually exclusive
+	// (validateBuildkitAckMutualExclusion), and ApplyCompat runs before
+	// validation, so auto-setting it there refuses startup over a key the
+	// operator never wrote: they migrated to request_body.buildkit and still
+	// carry GRPC=1 from their old Tecnativa environment.
+	//
+	// Skipping keeps the fail-closed posture rather than relaxing it. The
+	// acknowledgment has no request-time effect at all — it gates startup
+	// admission only, while what actually happens to a /session or /grpc
+	// request is decided by filter.BuildkitOptions.TunnelConfigured, which
+	// comes from request_body.buildkit (see filter_options.go). With a
+	// TOP-LEVEL policy the compat rules for those two paths are still
+	// admitted, by validateBuildkitTunnelRulesForPolicy's buildkitConfigured
+	// arm instead of its acknowledgment arm, and that is the tighter of the
+	// two: every message on the tunnel goes through buildkitproxy.Mediator's
+	// per-method policy rather than being wholesale admitted uninspected.
+	//
+	// With the policy on a client PROFILE only, that admission check still
+	// refuses, and must: it reads the top-level request_body.buildkit, the
+	// compat rules it is checking are top-level, and those rules apply to
+	// every client that matches no profile — letting a profile's policy admit
+	// them would open an uninspected tunnel for exactly the clients that
+	// profile does not cover. Skipping the ack is still right there, because
+	// the refusal an operator gets then names the GRPC/SESSION vars that
+	// generated the rule and the cures that work (see
+	// compatBuildkitTunnelOrigin in cmd/rules.go), where the mutual-exclusion
+	// error auto-setting it produced named a key they never wrote and told
+	// them to unset it, which compat would only set again.
 	if compatEnvEnabled("GRPC", false) || compatEnvEnabled("SESSION", false) {
-		if !cfg.InsecureAcceptOpaqueBuildkitTunnels {
+		switch {
+		case buildkitMediationConfigured(cfg):
+			// Says "skipped", not "left unset": this branch also runs when the
+			// operator set the acknowledgment themselves, and compat neither
+			// changes nor clears that value. The attribute carries what the
+			// flag actually is so the two cases are distinguishable in a log.
+			logger.Info("request_body.buildkit is configured, so the GRPC/SESSION compat acknowledgment of the opaque BuildKit tunnel is skipped; an insecure_accept_opaque_buildkit_tunnels you set yourself is left untouched",
+				"compat_vars", "GRPC, SESSION",
+				"reason", "request_body.buildkit is configured, and the two are mutually exclusive",
+				"insecure_accept_opaque_buildkit_tunnels", cfg.InsecureAcceptOpaqueBuildkitTunnels,
+			)
+		case !cfg.InsecureAcceptOpaqueBuildkitTunnels:
 			cfg.InsecureAcceptOpaqueBuildkitTunnels = true
 			logger.Warn("GRPC/SESSION compat env vars open the opaque BuildKit tunnel; set insecure_accept_opaque_buildkit_tunnels: true explicitly going forward",
 				"deprecated_vars", "GRPC, SESSION",

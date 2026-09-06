@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/codeswhat/sockguard/app/internal/imagetrust"
+	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 )
 
@@ -3098,6 +3099,51 @@ func TestBuildImageTrustFieldsInvalidKeyFails(t *testing.T) {
 	}
 }
 
+// TestBuildImageTrustFieldsKeylessTrustRootFailureFailsClosed kills the
+// CONDITIONALS_NEGATION mutant on buildImageTrustFields' `if tmErr != nil`
+// guard (-> tmErr == nil), which walks past a failed trust-root fetch and
+// hands imagetrust.New a nil TrustedMaterial. Both versions fail closed, so
+// nothing about the deny decision separates them: what separates them is the
+// initErr the policy reports, which under the mutant blames verifier
+// construction and drops the download failure that actually happened.
+//
+// imagetrust.LoadLiveTrustedRoot only fails on a TUF or network fault, so the
+// loadLiveTrustedRoot seam is what makes the branch reachable offline.
+func TestBuildImageTrustFieldsKeylessTrustRootFailureFailsClosed(t *testing.T) {
+	original := loadLiveTrustedRoot
+	t.Cleanup(func() { loadLiveTrustedRoot = original })
+
+	loadErr := errors.New("TUF mirror unreachable")
+	calls := 0
+	loadLiveTrustedRoot = func() (root.TrustedMaterial, error) {
+		calls++
+		return nil, loadErr
+	}
+
+	f := buildImageTrustFields(ImageTrustOptions{
+		Mode: "enforce",
+		AllowedKeyless: []KeylessOptions{
+			{Issuer: "https://accounts.google.com", SubjectPattern: ".*@example.com"},
+		},
+	})
+
+	if calls != 1 {
+		t.Fatalf("trust root load calls = %d, want 1", calls)
+	}
+	if f.initErr == nil {
+		t.Fatal("initErr = nil after a failed trust root load, want a fail-closed error")
+	}
+	if !errors.Is(f.initErr, loadErr) {
+		t.Fatalf("initErr = %v, want it to wrap the trust root load failure", f.initErr)
+	}
+	if !strings.Contains(f.initErr.Error(), "keyless trust root load failed") {
+		t.Fatalf("initErr = %q, want it to name the trust root load as the failure", f.initErr)
+	}
+	if f.verifier != nil {
+		t.Error("verifier built on top of a trust root that never loaded")
+	}
+}
+
 func TestContainerCreateUnknownMountType(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -3264,6 +3310,50 @@ func TestContainerCreateTmpfsOptions(t *testing.T) {
 			}
 			if reason != tt.wantReason {
 				t.Fatalf("reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+// TestRejectDuplicateCaseVariantJSONValueMatchesByteForm locks the two entry
+// points to one verdict. RejectDuplicateCaseVariantJSONValue exists so a
+// caller that already decoded a body does not decode it twice, which is only
+// safe while it agrees with the byte-taking form on every input — including
+// the case-sensitive data-map exemption, where the two are easiest to drift
+// apart.
+func TestRejectDuplicateCaseVariantJSONValueMatchesByteForm(t *testing.T) {
+	t.Parallel()
+	bodies := []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{name: "clean container create", body: `{"Image":"busybox","HostConfig":{"Binds":["a:/a"]},"Labels":{"x":"1"}}`},
+		{name: "top-level case-variant duplicate", body: `{"HostConfig":{"a":1},"hostconfig":{"b":2}}`, wantErr: true},
+		{name: "nested case-variant duplicate", body: `{"HostConfig":{"NetworkMode":"a","networkmode":"b"}}`, wantErr: true},
+		{name: "data map keys differing only in case are data", body: `{"Labels":{"Foo":"1","foo":"2"}}`},
+		{name: "struct nested under a data map is still checked", body: `{"NetworkingConfig":{"EndpointsConfig":{"n":{"NetworkID":"a","networkid":"b"}}}}`, wantErr: true},
+		{name: "large integers", body: `{"HostConfig":{"Memory":9007199254740993}}`},
+		{name: "arrays of objects", body: `{"Mounts":[{"Type":"volume","Source":"v"},{"Type":"bind","source":"/s","Source":"/t"}]}`, wantErr: true},
+	}
+
+	for _, tt := range bodies {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			byteErr := RejectDuplicateCaseVariantJSONKeys([]byte(tt.body))
+			if (byteErr != nil) != tt.wantErr {
+				t.Fatalf("RejectDuplicateCaseVariantJSONKeys() error = %v, wantErr %v", byteErr, tt.wantErr)
+			}
+
+			var decoded any
+			dec := json.NewDecoder(strings.NewReader(tt.body))
+			dec.UseNumber()
+			if err := dec.Decode(&decoded); err != nil {
+				t.Fatalf("decode fixture: %v", err)
+			}
+			valueErr := RejectDuplicateCaseVariantJSONValue(decoded)
+			if (valueErr != nil) != (byteErr != nil) {
+				t.Fatalf("RejectDuplicateCaseVariantJSONValue() error = %v, want the byte form's verdict %v", valueErr, byteErr)
 			}
 		})
 	}

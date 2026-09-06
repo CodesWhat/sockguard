@@ -234,6 +234,11 @@ func libpodImageIdentifierForRoute(method, normPath, routePath string) (string, 
 // in another daemon's store, so the local image inspect used by ownership
 // cannot classify it. A malformed local-user source returns an empty local
 // identifier so the caller can fail closed without issuing an invalid inspect.
+// The bare route, /libpod/images/scp/ with no source at all, is an SCP route
+// for the same reason: {name:.*} matches the empty string, so mux dispatches it
+// to the SCP handler. It reports an empty local identifier rather than "not an
+// SCP route", which is what keeps the caller from handing the leftover "scp/"
+// to the generic image classifier and inspecting an image name no daemon has.
 //
 // The push/tag/untag exclusions preserve Podman's route order: those handlers
 // are registered before /images/scp/{name:.*}, so a path such as
@@ -250,7 +255,7 @@ func libpodImageScpSource(method, routePath string) (identifier string, remote, 
 		return "", false, false
 	}
 	rest, ok := strings.CutPrefix(routePath, libpodPrefix+"images/scp/")
-	if !ok || rest == "" {
+	if !ok {
 		return "", false, false
 	}
 	for _, action := range []string{"push", "tag", "untag"} {

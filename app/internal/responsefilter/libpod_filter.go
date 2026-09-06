@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/codeswhat/sockguard/app/internal/apipath"
 )
 
 // libpod_filter.go is filter.go's counterpart for Podman's native /libpod/
@@ -74,7 +76,7 @@ var libpodNetworkTopologyArrayKeys = [...]string{"subnets", "routes", "network_d
 // below — a Docker handler can never be reached by a near-miss match on a
 // path whose body shape it was never checked against.
 func isLibpodPath(normPath string) bool {
-	return strings.HasPrefix(normPath, LibpodPathPrefix+"/")
+	return apipath.IsLibpodPath(normPath)
 }
 
 // isLibpodInspectPath reports whether normPath is
@@ -86,6 +88,29 @@ func isLibpodInspectPath(normPath, collection string) bool {
 	}
 	identifier, tail, ok := strings.Cut(strings.TrimPrefix(normPath, prefix), "/")
 	return ok && identifier != "" && tail == libpodInspectSuffix
+}
+
+// isLibpodImageInspectPath reports whether normPath is
+// /libpod/images/{name}/json. This cannot reuse isLibpodInspectPath: that
+// helper Cuts on the first "/" after the collection prefix, which is correct
+// for containers/volumes/secrets identifiers (never contain a slash) but
+// wrong for an image reference, which routinely does
+// (registry.example.com/team/app). register_images.go at v5.8.1 registers
+// {name:.*}/json for both /images/{name}/json and /libpod/images/{name}/json,
+// so the identifier is intentionally slash-permissive on the wire. This
+// follows isImageInspectPath's Docker-compat approach instead: anchor on the
+// last path segment being "json" with a non-empty identifier before it.
+func isLibpodImageInspectPath(normPath string) bool {
+	prefix := LibpodPathPrefix + "/images/"
+	if !strings.HasPrefix(normPath, prefix) {
+		return false
+	}
+	rest := strings.TrimPrefix(normPath, prefix)
+	idx := strings.LastIndex(rest, "/")
+	if idx <= 0 {
+		return false
+	}
+	return rest[idx+1:] == libpodInspectSuffix
 }
 
 // isLibpodNetworkInspectPath reports whether normPath is one of the TWO routes
@@ -172,6 +197,16 @@ func (f *Filter) modifyLibpodResponse(method, normPath string, resp *http.Respon
 		return f.modifyContainerInspect(resp)
 	case isLibpodInspectPath(normPath, "volumes"):
 		return f.modifyVolumeInspect(resp)
+	case isLibpodImageInspectPath(normPath):
+		// libpod.GetImage (pkg/api/handlers/libpod/images.go at v5.8.1)
+		// writes *libimage.ImageData (containers/common libimage/inspect.go),
+		// whose Config field is *ociv1.ImageConfig — json:"Env,omitempty" on
+		// []string, the identical key Docker's compat handler uses — and
+		// whose GraphDriver field is *DriverData{Name, Data}, the identical
+		// shape redactGraphDriverData already handles for container inspect.
+		// Checked against both source files rather than assumed; reusing
+		// modifyImageInspect is a verified decision, not the default.
+		return f.modifyImageInspect(resp)
 	case normPath == libpodVolumeListPath:
 		return f.modifyLibpodVolumeList(resp)
 	case normPath == libpodNetworkListPath:
@@ -202,7 +237,7 @@ func (f *Filter) modifyLibpodVolumeList(resp *http.Response) error {
 	return streamArrayResponse(resp, func(volume map[string]any) error {
 		redactStringField(volume, "Mountpoint")
 		return nil
-	})
+	}, "Mountpoint")
 }
 
 // modifyLibpodNetworkList rewrites GET /libpod/networks/json. Podman v4 and
@@ -214,7 +249,7 @@ func (f *Filter) modifyLibpodNetworkList(resp *http.Response) error {
 	if !f.opts.RedactNetworkTopology {
 		return nil
 	}
-	return streamArrayResponse(resp, redactLibpodNetworkTopology)
+	return streamArrayResponse(resp, redactLibpodNetworkTopology, libpodNetworkTopologyItemFields...)
 }
 
 // modifyLibpodNetworkInspect rewrites both routes libpod.InspectNetwork is
@@ -243,16 +278,29 @@ func (f *Filter) modifyLibpodNetworkInspect(resp *http.Response) error {
 		return nil
 	}
 
-	body, err := readResponseBody(resp)
-	if err != nil {
+	// The shape sniff needs the raw bytes, so this is the one read site that
+	// works inside withResponseBody's callback rather than through
+	// decodeResponseObject. Both branches finish decoding before the callback
+	// returns, which is what keeps the pooled buffer from escaping.
+	var (
+		networks []map[string]any
+		payload  map[string]any
+		wasArray bool
+	)
+	if err := withResponseBody(resp, func(body []byte) error {
+		wasArray = bytes.HasPrefix(bytes.TrimLeft(body, " \t\r\n"), []byte("["))
+		var err error
+		if wasArray {
+			networks, err = decodeJSONObjectArray(body)
+		} else {
+			payload, err = decodeJSONObject(body)
+		}
+		return err
+	}); err != nil {
 		return rejectResponse(err)
 	}
 
-	if bytes.HasPrefix(bytes.TrimLeft(body, " \t\r\n"), []byte("[")) {
-		networks, err := decodeJSONObjectArray(body)
-		if err != nil {
-			return rejectResponse(err)
-		}
+	if wasArray {
 		for i, network := range networks {
 			if err := redactLibpodNetworkTopology(network); err != nil {
 				return rejectResponse(fmt.Errorf("libpod network inspect array element %d: %w", i, err))
@@ -261,10 +309,6 @@ func (f *Filter) modifyLibpodNetworkInspect(resp *http.Response) error {
 		return writeResponseBody(resp, networks)
 	}
 
-	payload, err := decodeJSONObject(body)
-	if err != nil {
-		return rejectResponse(err)
-	}
 	if err := redactLibpodNetworkTopology(payload); err != nil {
 		return rejectResponse(err)
 	}
@@ -306,6 +350,16 @@ func (f *Filter) modifyLibpodNetworkInspect(resp *http.Response) error {
 //
 // ipam_options on the modern shape and ipam.type on the legacy one are left
 // alone. They name the allocator (host-local, dhcp), not an address.
+// libpodNetworkTopologyItemFields are the top-level keys
+// redactLibpodNetworkTopology indexes into, across both native shapes: the
+// three array-valued topology fields, the containers map, the host bridge
+// name, the CNI Bytes blob removeCNIBytes deletes, and the plugins array under
+// both the inspect (lowercase) and list (capitalized) spellings.
+var libpodNetworkTopologyItemFields = append(
+	append([]string{}, libpodNetworkTopologyArrayKeys[:]...),
+	"containers", "network_interface", "Bytes", "plugins", "Plugins",
+)
+
 func redactLibpodNetworkTopology(payload map[string]any) error {
 	for _, key := range libpodNetworkTopologyArrayKeys {
 		value, ok := payload[key]
@@ -610,7 +664,7 @@ func (f *Filter) modifyLibpodSecretList(resp *http.Response) error {
 	if !f.opts.RedactSensitiveData {
 		return nil
 	}
-	return streamArrayResponse(resp, redactSecretPayload)
+	return streamArrayResponse(resp, redactSecretPayload, secretItemFields...)
 }
 
 // decodeJSONObjectArray is decodeJSONObject for a top-level JSON array of

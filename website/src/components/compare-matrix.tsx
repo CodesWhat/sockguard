@@ -1,6 +1,8 @@
 import { ArrowUpRight, Check, Minus, X } from "lucide-react";
 import Link from "next/link";
 import {
+  COMPETITOR_VERSIONS,
+  COMPETITOR_VERSIONS_CHECKED_AT,
   type ComparisonCell,
   type ComparisonTool,
   comparisonCell,
@@ -107,6 +109,17 @@ export function CompareMatrix() {
         <span className="text-neutral-400 dark:text-neutral-600">
           · Click a tool for the full breakdown
         </span>
+      </div>
+
+      <div className="border-t border-neutral-200 px-4 py-3 text-xs text-neutral-400 dark:border-neutral-800 dark:text-neutral-600">
+        Versions checked {COMPETITOR_VERSIONS_CHECKED_AT}:{" "}
+        {TOOLS.filter((tool) => tool.key !== "sockguard")
+          .map(
+            (tool) =>
+              `${tool.name} ${COMPETITOR_VERSIONS[tool.key as keyof typeof COMPETITOR_VERSIONS]}`,
+          )
+          .join(" · ")}
+        . Re-checked at every release cut.
       </div>
     </div>
   );

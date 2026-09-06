@@ -94,6 +94,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	// would let that config create or truncate arbitrary files before the
 	// process rejects it.
 	bootstrapLogger := slog.New(slog.NewTextHandler(cmd.ErrOrStderr(), nil))
+	warnUnknownEnvVars(bootstrapLogger, cfgFile, os.Environ())
 
 	trustPath := policyBundleTrustConfigPath(cmd)
 	var bundleVerifier policybundle.Verifier
@@ -140,6 +141,12 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		return fmt.Errorf("config validation: %w", err)
 	}
 
+	// cfg is validated by now, so server.shutdown_grace is guaranteed to
+	// parse; this overrides newServeDeps' built-in 30s fallback with the
+	// operator's configured value for both the main and admin listener
+	// shutdowns (see shutdownServers).
+	deps.shutdownGracePeriod = effectiveShutdownGracePeriod(cfg)
+
 	logger, logOutputCloser, err := deps.newLogger(cfg.Log.Level, cfg.Log.Format, cfg.Log.Output)
 	if err != nil {
 		return fmt.Errorf("logger: %w", err)
@@ -170,6 +177,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		}()
 	}
 	warnIfDefaultProfileExcluded(cfg, logger)
+	warnIfMainListenerPlaintext(cfg, logger)
 	runtime, err := newServeRuntime(cfg, logger, deps)
 	if err != nil {
 		return fmt.Errorf("upstream: %w", err)
@@ -475,18 +483,8 @@ func startConfigReload(ctx context.Context, cfg *config.Config, cfgFile string, 
 	if !cfg.Reload.Enabled || cfgFile == "" {
 		return func() {}
 	}
-	debounce := reload.DefaultDebounce
-	if cfg.Reload.Debounce != "" {
-		if d, err := time.ParseDuration(cfg.Reload.Debounce); err == nil {
-			debounce = d
-		}
-	}
-	var pollInterval time.Duration
-	if cfg.Reload.PollInterval != "" {
-		if d, err := time.ParseDuration(cfg.Reload.PollInterval); err == nil {
-			pollInterval = d
-		}
-	}
+	debounce := reloadDuration(logger, "reload.debounce", cfg.Reload.Debounce, reload.DefaultDebounce)
+	pollInterval := reloadDuration(logger, "reload.poll_interval", cfg.Reload.PollInterval, 0)
 	stop, err := startReloader(ctx, cfgFile, debounce, pollInterval, coordinator, logger)
 	if err != nil {
 		logger.Error("config hot-reload disabled: failed to start watcher",
@@ -496,6 +494,29 @@ func startConfigReload(ctx context.Context, cfg *config.Config, cfgFile string, 
 		return func() {}
 	}
 	return stop
+}
+
+// reloadDuration resolves one reload duration setting, falling back to
+// fallback when it is unset or unparseable. Config validation rejects a
+// malformed value before startup, so the fallback is only reachable when
+// something bypassed validation — silently running on a default the operator
+// never asked for hides that, so a malformed value is named in a warning
+// alongside the default it fell back to.
+func reloadDuration(logger *slog.Logger, key, value string, fallback time.Duration) time.Duration {
+	if value == "" {
+		return fallback
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		logger.Warn("invalid reload duration; falling back to the default",
+			"key", key,
+			"value", value,
+			"default", fallback.String(),
+			"error", err,
+		)
+		return fallback
+	}
+	return parsed
 }
 
 // serveHandlerBuild bundles the inputs the buildServeHandler* family needs.
@@ -783,7 +804,7 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 		// lookup, and the guard still runs before hijack/proxy for every
 		// request ownership allowed.
 		namedServeHandlerLayer("withResourceLimitGuard", withResourceLimitGuard(cfg, resolver, logger, clientProfiles)),
-		namedServeHandlerLayer("withOwnership", withOwnership(cfg, resolver, logger)),
+		namedServeHandlerLayer("withOwnership", withOwnership(cfg, resolver, logger, runtimeUpstreamFlavor(runtime))),
 		namedServeHandlerLayer("withVisibility", withVisibility(cfg, resolver, logger, runtimeUpstreamFlavor(runtime))),
 		namedServeHandlerLayer("withFilter", withFilter(cfg, resolver, logger, rules, clientProfiles)),
 	}
@@ -843,6 +864,15 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 	layers = append(layers,
 		namedServeHandlerLayer("withClientACL", withClientACL(cfg, resolver, logger)),
 	)
+	// withRequestTargetGuard is appended AFTER withClientACL so it executes
+	// BEFORE it (append order is reversed at composition time). Every layer
+	// from clientacl inward matches policy against r.URL.Path, and a
+	// container-label grant of "/**" compiles to the same match-all matcher a
+	// configured rule does, so the unrooted shapes this rejects must not reach
+	// any of them. It stays inside metrics, request-ID/trace correlation, and
+	// the access/audit loggers, which are appended after it, so the 400 is
+	// recorded like any other denial.
+	layers = append(layers, namedServeHandlerLayer("withRequestTargetGuard", withRequestTargetGuard()))
 	if runtime.metrics != nil {
 		layers = append(layers, namedServeHandlerLayer("withMetrics", withMetrics(runtime.metrics)))
 	}
@@ -937,6 +967,22 @@ func effectiveHijackInactivityTimeout(cfg *config.Config) time.Duration {
 	d, err := time.ParseDuration(cfg.Upstream.HijackInactivityTimeout)
 	if err != nil || d <= 0 {
 		return 10 * time.Minute
+	}
+	return d
+}
+
+// effectiveShutdownGracePeriod resolves cfg.Server.ShutdownGrace to the
+// time.Duration shutdownServers waits for in-flight requests before force-
+// closing every listener. Unlike hijack_inactivity_timeout, 0 is a valid,
+// meaningful value (close immediately) rather than a rejected one, so only
+// a parse failure falls back to the package default (30s) —
+// server.shutdown_grace is validated at config load to always be a
+// non-negative duration, so the fallback should never actually trigger
+// outside of tests that bypass validation on purpose.
+func effectiveShutdownGracePeriod(cfg *config.Config) time.Duration {
+	d, err := time.ParseDuration(cfg.Server.ShutdownGrace)
+	if err != nil {
+		return 30 * time.Second
 	}
 	return d
 }
@@ -1040,12 +1086,13 @@ func warnOpaqueBuildkitTunnelDeprecatedOnce(cfg *config.Config, logger *slog.Log
 	})
 }
 
-func withOwnership(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger) func(http.Handler) http.Handler {
+func withOwnership(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, flavor upstreamflavor.Flavor) func(http.Handler) http.Handler {
 	return ownership.MiddlewareWithRoundTripper(res, logger, ownership.Options{
 		Owner:                           cfg.Ownership.Owner,
 		LabelKey:                        cfg.Ownership.LabelKey,
 		AllowUnownedImages:              cfg.Ownership.AllowUnownedImages,
 		AllowCrossOwnerNamespaceSharing: cfg.Ownership.AllowCrossOwnerNamespaceSharing,
+		UpstreamFlavor:                  flavor,
 	})
 }
 
@@ -1083,6 +1130,34 @@ func warnIfBodyBlindWritesEnabled(cfg *config.Config, logger *slog.Logger) {
 	warnBodyBlindWritesOnce(cfg, logger, &bodyBlindWritesWarnOnce)
 }
 
+// warnUnknownEnvVars emits one warning per SOCKGUARD_* environment variable
+// in environ that no configuration key binds. Viper's AutomaticEnv only
+// consults a variable for a key it already knows, so a typo like
+// SOCKGUARD_LISTEN_SOCKT is not an error anywhere — it is read by nothing and
+// the setting it was meant to carry stays at its config-file or default
+// value. On a default-deny proxy that silence is the dangerous direction: the
+// operator believes they tightened something and nothing says otherwise.
+//
+// It runs off the bootstrap logger, before policy verification and config
+// validation, so a typo that goes on to break startup is named ahead of the
+// failure it causes rather than after the process has already exited.
+//
+// Tecnativa compatibility variables (CONTAINERS, POST, ALLOW_START, ...) are
+// never candidates: they carry no SOCKGUARD_ prefix, and compat.go warns
+// about its own unparseable values separately.
+func warnUnknownEnvVars(logger *slog.Logger, configPath string, environ []string) {
+	if logger == nil {
+		return
+	}
+	for _, unknown := range config.UnknownEnvVars(configPath, environ) {
+		attrs := []any{"var", unknown.Name}
+		if unknown.Suggestion != "" {
+			attrs = append(attrs, "did_you_mean", unknown.Suggestion)
+		}
+		logger.Warn("ignoring unrecognized SOCKGUARD_* environment variable: it maps to no configuration key, so the setting it looks like it carries is still at its config-file or default value", attrs...)
+	}
+}
+
 func warnIfDefaultProfileExcluded(cfg *config.Config, logger *slog.Logger) {
 	if cfg == nil || logger == nil || cfg.Clients.DefaultProfile == "" || len(cfg.Listeners) == 0 {
 		return
@@ -1094,6 +1169,38 @@ func warnIfDefaultProfileExcluded(cfg *config.Config, logger *slog.Logger) {
 		logger.Warn("default profile is not allowed on listener; unmatched clients will be denied",
 			"listener", listener.Name,
 			"default_profile", cfg.Clients.DefaultProfile,
+		)
+	}
+}
+
+// warnIfMainListenerPlaintext emits a startup warning for every effective
+// main listener (#149) that carries the Docker API over non-loopback
+// plaintext TCP. That listener proxies exec streams, secrets and container
+// data in the clear, and without mutual TLS any host that can route to the
+// port is admitted as a client. Config validation already refuses the shape
+// unless insecure_allow_plain_tcp and insecure_allow_unauthenticated_clients
+// both acknowledge it, so by the time this fires the operator has opted in —
+// like warnIfAdminListenerWideOpen it keeps the exposure visible in the logs
+// rather than gating startup. The admin listener has warned about its own
+// version of the shape since #21; the main listener, which carries far more
+// traffic, started silently. A clients.allowed_cidrs allowlist deliberately
+// does not silence this one: it bounds who may connect, but the traffic is
+// still in the clear either way.
+func warnIfMainListenerPlaintext(cfg *config.Config, logger *slog.Logger) {
+	if cfg == nil || logger == nil {
+		return
+	}
+	for _, listener := range cfg.EffectiveListeners() {
+		listen := listener.ListenConfig
+		if listen.Socket != "" || listen.Address == "" || listen.TLS.Complete() {
+			continue
+		}
+		if config.IsLoopbackTCPAddress(listen.Address) {
+			continue
+		}
+		logger.Warn("main listener is non-loopback plaintext TCP: Docker API traffic is unencrypted on the wire and any host that can reach the port is admitted as a client — configure mutual TLS on the listener, or bind it to loopback or a unix socket",
+			"listener", listener.Name,
+			"address", listen.Address,
 		)
 	}
 }
@@ -1147,7 +1254,13 @@ func warnIfReadExfiltrationEnabled(cfg *config.Config, rules []*filter.CompiledR
 // exact-name path or one left reachable below an ordered deny is reported as
 // the concrete path rather than the catalog spelling. It stops at the first
 // reachable path per cataloged endpoint, which is what the warning text means
-// by not naming every path the rules admit. Named client
+// by not naming every path the rules admit. A concrete path in either field
+// was confirmed through the request evaluator; where allowedCatalogPaths could
+// not confirm one it falls back to the endpoint's catalog spelling, so an
+// entry still carrying the catalog's placeholder identifier is a conservative
+// report rather than a confirmed route. The warning text says so, because this is the
+// one caller that reports exposure instead of refusing it, where an
+// over-report is telemetry rather than a fail-closed refusal. Named client
 // profiles are reported separately because their
 // rules are evaluated in place of the top-level set: the acknowledgment is
 // global, so a profile can be the only reason it has to be set, and the
@@ -1165,7 +1278,7 @@ func warnReadExfiltrationOnce(cfg *config.Config, rules []*filter.CompiledRule, 
 	exposed := allowedSensitiveExfilEndpoints(cfg.Rules, rules)
 	profileExposed := allowedSensitiveExfilEndpointsByProfile(cfg.Clients.Profiles, clientProfiles)
 	once.Do(func() {
-		logger.Warn("insecure_allow_read_exfiltration is enabled: rules matching raw archive/export, log/attach streaming, checkpoint export, container rootfs mount, or registry push endpoints are admitted instead of refused at startup, and process-list reads allowed by policy are admitted instead of denied at request time. The exposed endpoint fields name one reachable path per cataloged endpoint, not every path the rules admit. A caller allowed those paths can read container files, container memory, images, plugins, process arguments, environment variables, secrets, and daemon-host filesystem paths, or push local artifacts to a registry it chooses",
+		logger.Warn("insecure_allow_read_exfiltration is enabled: rules matching raw archive/export, log/attach streaming, checkpoint export, container rootfs mount, or registry push endpoints are admitted instead of refused at startup, and process-list reads allowed by policy are admitted instead of denied at request time. The exposed endpoint fields name one reachable path per cataloged endpoint, not every path the rules admit. An entry spelled as a concrete path was confirmed allowed by the request evaluator; an entry still carrying the catalog's placeholder identifier is either that exact path being allowed or a conservative stand-in for an endpoint whose concrete path could not be confirmed. A caller allowed those paths can read container files, container memory, images, plugins, process arguments, environment variables, secrets, and daemon-host filesystem paths, or push local artifacts to a registry it chooses",
 			"exposed_endpoints", exposed,
 			"exposed_profile_endpoints", profileExposed,
 		)

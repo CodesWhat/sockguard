@@ -665,6 +665,55 @@ func TestBucket_CASStress(t *testing.T) {
 	}
 }
 
+// TestBucket_AllowN_RetriesAfterLostCAS kills the INVERT_LOOP_CTRL mutant that
+// rewrites AllowN's `continue` on a lost CAS into a `break`. Under that mutant
+// one lost race drops the caller straight through to the exhausted-retries
+// safety valve and denies a request the bucket had tokens for.
+// TestBucket_CASStress cannot see it: with 32 goroutines contending, a denial
+// caused by a lost CAS is indistinguishable from an honest out-of-tokens
+// denial in the grant total.
+//
+// Losing a CAS needs another goroutine to win the same word inside the window
+// between the Load and the swap, which no test can schedule, so casFailHook
+// forces exactly one loss instead.
+func TestBucket_AllowN_RetriesAfterLostCAS(t *testing.T) {
+	// Deliberately not parallel: casFailHook is a package-level var, and Go
+	// resumes parallel tests only once the sequential ones have finished, so
+	// nothing else in the package can be inside AllowN while it is set.
+	original := casFailHook
+	t.Cleanup(func() { casFailHook = original })
+
+	frozen := time.Now()
+	b := newBucket(1, 10, func() time.Time { return frozen })
+	startFP := uint64(unpackTokenFP(b.state.Load()))
+
+	attempts := 0
+	casFailHook = func(hooked *bucket, attempt int) {
+		attempts++
+		if attempt > 0 {
+			return
+		}
+		// Race the pending CompareAndSwap: shave one fixed-point unit off the
+		// token half of the packed word, leaving the timestamp half alone. The
+		// state the loop read is now stale so its swap fails, and the retry
+		// still reads ~10 tokens, well clear of the 1-token cost.
+		hooked.state.Store(hooked.state.Load() - 1)
+	}
+
+	ok, retryAfter := b.AllowN(1)
+
+	if !ok || retryAfter != 0 {
+		t.Fatalf("AllowN() after one lost CAS = (%v, %d), want (true, 0) — the loop denied instead of retrying", ok, retryAfter)
+	}
+	if attempts != 2 {
+		t.Fatalf("CAS attempts = %d, want 2 (one lost, one won)", attempts)
+	}
+	want := startFP - 1 - packedFracScale
+	if got := uint64(unpackTokenFP(b.state.Load())); got != want {
+		t.Fatalf("tokens left = %d, want %d (one unit taken by the forced race, one token by the request)", got, want)
+	}
+}
+
 // The denial-path retryAfter must be computed from the deficit (cost minus
 // remaining tokens), not their sum. With tokens still present the two only
 // coincide when tokens == 0, which the existing zero-token tests exercise;

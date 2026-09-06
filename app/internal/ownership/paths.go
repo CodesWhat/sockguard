@@ -3,6 +3,8 @@ package ownership
 import (
 	"net/http"
 	"strings"
+
+	"github.com/codeswhat/sockguard/app/internal/apipath"
 )
 
 func needsOwnerFilter(method, normPath string) bool {
@@ -25,43 +27,59 @@ func needsOwnerFilter(method, normPath string) bool {
 	}
 }
 
-func containerIdentifier(method, normPath string) (string, bool) {
-	if !strings.HasPrefix(normPath, "/containers/") {
+// resourceIdentifier extracts the identifier segment right after prefix from
+// normPath (e.g. "/networks/{id}" -> "{id}"), the pattern shared by every
+// per-resource identifier extractor in this file. A bare collection route
+// (no identifier), or a single-segment path whose identifier is actually a
+// collection-level action name for the given method, is not a resource and
+// returns ("", false) — postExcluded lists the action names excluded on
+// POST (e.g. "create", "prune"), getExcluded lists the ones excluded on
+// GET/HEAD (e.g. "json"). Either may be nil when a family has no such
+// collision (exec, tasks, and nodes never register such actions).
+func resourceIdentifier(method, normPath, prefix string, postExcluded, getExcluded []string) (string, bool) {
+	if !strings.HasPrefix(normPath, prefix) {
 		return "", false
 	}
-	identifier, _, hasTail := strings.Cut(strings.TrimPrefix(normPath, "/containers/"), "/")
+	identifier, _, hasTail := strings.Cut(strings.TrimPrefix(normPath, prefix), "/")
 	if identifier == "" {
 		return "", false
 	}
-	if !hasTail && ((method == http.MethodGet || method == http.MethodHead) && identifier == "json" || method == http.MethodPost && (identifier == "create" || identifier == "prune")) {
-		return "", false
+	if !hasTail {
+		if method == http.MethodPost && identifierExcluded(postExcluded, identifier) {
+			return "", false
+		}
+		if (method == http.MethodGet || method == http.MethodHead) && identifierExcluded(getExcluded, identifier) {
+			return "", false
+		}
 	}
 	return identifier, true
+}
+
+func identifierExcluded(excluded []string, identifier string) bool {
+	for _, candidate := range excluded {
+		if candidate == identifier {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	createPruneExcluded = []string{"create", "prune"}
+	createExcluded      = []string{"create"}
+	jsonExcluded        = []string{"json"}
+)
+
+func containerIdentifier(method, normPath string) (string, bool) {
+	return resourceIdentifier(method, normPath, "/containers/", createPruneExcluded, jsonExcluded)
 }
 
 func execIdentifier(normPath string) (string, bool) {
-	if !strings.HasPrefix(normPath, "/exec/") {
-		return "", false
-	}
-	identifier, _, _ := strings.Cut(strings.TrimPrefix(normPath, "/exec/"), "/")
-	if identifier == "" {
-		return "", false
-	}
-	return identifier, true
+	return resourceIdentifier("", normPath, "/exec/", nil, nil)
 }
 
 func networkIdentifier(method, normPath string) (string, bool) {
-	if !strings.HasPrefix(normPath, "/networks/") {
-		return "", false
-	}
-	identifier, _, hasTail := strings.Cut(strings.TrimPrefix(normPath, "/networks/"), "/")
-	if identifier == "" {
-		return "", false
-	}
-	if !hasTail && method == http.MethodPost && (identifier == "create" || identifier == "prune") {
-		return "", false
-	}
-	return identifier, true
+	return resourceIdentifier(method, normPath, "/networks/", createPruneExcluded, nil)
 }
 
 func isNetworkMembershipChangePath(normPath string) bool {
@@ -89,17 +107,7 @@ func isCommitPath(normPath string) bool {
 }
 
 func volumeIdentifier(method, normPath string) (string, bool) {
-	if !strings.HasPrefix(normPath, "/volumes/") {
-		return "", false
-	}
-	identifier, _, hasTail := strings.Cut(strings.TrimPrefix(normPath, "/volumes/"), "/")
-	if identifier == "" {
-		return "", false
-	}
-	if !hasTail && method == http.MethodPost && (identifier == "create" || identifier == "prune") {
-		return "", false
-	}
-	return identifier, true
+	return resourceIdentifier(method, normPath, "/volumes/", createPruneExcluded, nil)
 }
 
 func imageIdentifier(method, normPath string) (string, bool) {
@@ -139,17 +147,7 @@ func imageIdentifier(method, normPath string) (string, bool) {
 }
 
 func serviceIdentifier(method, normPath string) (string, bool) {
-	if !strings.HasPrefix(normPath, "/services/") {
-		return "", false
-	}
-	identifier, _, hasTail := strings.Cut(strings.TrimPrefix(normPath, "/services/"), "/")
-	if identifier == "" {
-		return "", false
-	}
-	if !hasTail && method == http.MethodPost && identifier == "create" {
-		return "", false
-	}
-	return identifier, true
+	return resourceIdentifier(method, normPath, "/services/", createExcluded, nil)
 }
 
 func isServiceUpdatePath(normPath string) bool {
@@ -161,61 +159,23 @@ func isServiceUpdatePath(normPath string) bool {
 }
 
 func taskIdentifier(normPath string) (string, bool) {
-	if !strings.HasPrefix(normPath, "/tasks/") {
-		return "", false
-	}
-	identifier, _, _ := strings.Cut(strings.TrimPrefix(normPath, "/tasks/"), "/")
-	if identifier == "" {
-		return "", false
-	}
-	return identifier, true
+	return resourceIdentifier("", normPath, "/tasks/", nil, nil)
 }
 
 func secretIdentifier(method, normPath string) (string, bool) {
-	if !strings.HasPrefix(normPath, "/secrets/") {
-		return "", false
-	}
-	identifier, _, hasTail := strings.Cut(strings.TrimPrefix(normPath, "/secrets/"), "/")
-	if identifier == "" {
-		return "", false
-	}
-	if !hasTail && method == http.MethodPost && identifier == "create" {
-		return "", false
-	}
-	return identifier, true
+	return resourceIdentifier(method, normPath, "/secrets/", createExcluded, nil)
 }
 
 func configIdentifier(method, normPath string) (string, bool) {
-	if !strings.HasPrefix(normPath, "/configs/") {
-		return "", false
-	}
-	identifier, _, hasTail := strings.Cut(strings.TrimPrefix(normPath, "/configs/"), "/")
-	if identifier == "" {
-		return "", false
-	}
-	if !hasTail && method == http.MethodPost && identifier == "create" {
-		return "", false
-	}
-	return identifier, true
+	return resourceIdentifier(method, normPath, "/configs/", createExcluded, nil)
 }
 
 func nodeIdentifier(normPath string) (string, bool) {
-	if !strings.HasPrefix(normPath, "/nodes/") {
-		return "", false
-	}
-	identifier, _, _ := strings.Cut(strings.TrimPrefix(normPath, "/nodes/"), "/")
-	if identifier == "" {
-		return "", false
-	}
-	return identifier, true
+	return resourceIdentifier("", normPath, "/nodes/", nil, nil)
 }
 
 func isNodeUpdatePath(normPath string) bool {
-	if !strings.HasPrefix(normPath, "/nodes/") {
-		return false
-	}
-	identifier, tail, ok := strings.Cut(strings.TrimPrefix(normPath, "/nodes/"), "/")
-	return ok && identifier != "" && tail == "update"
+	return apipath.IsNodeUpdatePath(normPath)
 }
 
 func isSwarmPath(normPath string) bool {

@@ -343,6 +343,14 @@ type imageTrustFields struct {
 	initErr  error
 }
 
+// loadLiveTrustedRoot fetches the TUF-backed Sigstore trust root for keyless
+// verification. Production binds imagetrust.LoadLiveTrustedRoot; it is a
+// package var, the same shape as internal/cmd's loadBundleTrustedMaterial, so
+// a test can make the fetch fail without a network. The real one only fails on
+// a TUF or network fault, which a unit test cannot arrange, and the branch it
+// guards is the fail-closed one.
+var loadLiveTrustedRoot = imagetrust.LoadLiveTrustedRoot
+
 // buildImageTrustFields constructs the cosign verifier and signature fetcher for
 // the given options. Any construction error is returned in initErr so callers
 // fail closed (deny) rather than silently allowing unverified images. When the
@@ -362,7 +370,7 @@ func buildImageTrustFields(opts ImageTrustOptions) imageTrustFields {
 	// fail closed rather than allow unverified keyless images.
 	// Keyed-only configs skip this entirely.
 	if len(cfg.AllowedKeyless) > 0 {
-		tm, tmErr := imagetrust.LoadLiveTrustedRoot()
+		tm, tmErr := loadLiveTrustedRoot()
 		if tmErr != nil {
 			f.initErr = fmt.Errorf("image trust keyless trust root load failed: %w", tmErr)
 			return f
@@ -512,6 +520,19 @@ func RejectDuplicateCaseVariantJSONKeys(body []byte) error {
 	if err := dec.Decode(&v); err != nil {
 		return err
 	}
+	return RejectDuplicateCaseVariantJSONValue(v)
+}
+
+// RejectDuplicateCaseVariantJSONValue is RejectDuplicateCaseVariantJSONKeys
+// against a body that has already been decoded — same walk, same verdict,
+// without parsing the same bytes a second time.
+//
+// A caller that has to decode a body for its own reasons (internal/ownership
+// decodes every create body it stamps an owner label into) would otherwise
+// pay for two full map[string]any trees per request, one of which it throws
+// away. Decode with json.Decoder.UseNumber, as this package's own decode
+// above does, so the value handed here is the same shape the walk expects.
+func RejectDuplicateCaseVariantJSONValue(v any) error {
 	return checkDuplicateCaseVariantKeys(v, false)
 }
 
@@ -660,8 +681,9 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 		return "", nil
 	}
 
-	var createReq containerCreateRequest
-	if err := json.Unmarshal(body, &createReq); err != nil {
+	createReq := acquireContainerCreateRequest()
+	defer releaseContainerCreateRequest(createReq)
+	if err := json.Unmarshal(body, createReq); err != nil {
 		// Deny malformed JSON bodies rather than passing them through. A valid
 		// create request must be parseable; letting an unparseable body reach
 		// Docker would silently skip all policy checks (fail-open).
@@ -747,13 +769,13 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if denyReason := p.denyCapabilityReason(createReq.HostConfig); denyReason != "" {
 		return denyReason, nil
 	}
-	if denyReason := p.denyHardeningReason(createReq); denyReason != "" {
+	if denyReason := p.denyHardeningReason(*createReq); denyReason != "" {
 		return denyReason, nil
 	}
 	if denyReason := p.denyResourceLimitReason(createReq.HostConfig); denyReason != "" {
 		return denyReason, nil
 	}
-	if denyReason := p.denyRequiredLabelsReason(createReq); denyReason != "" {
+	if denyReason := p.denyRequiredLabelsReason(*createReq); denyReason != "" {
 		return denyReason, nil
 	}
 
@@ -1214,6 +1236,13 @@ func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHos
 	}
 
 	for _, mount := range hostConfig.Mounts {
+		if mount.VolumeOptions != nil && mount.VolumeOptions.DriverConfig != nil {
+			driverConfig := mount.VolumeOptions.DriverConfig
+			if denyReason := denyLocalVolumeBindDeviceReason(driverConfig.Name, driverConfig.Options, p.allowedBindMounts, "container create"); denyReason != "" {
+				return denyReason
+			}
+		}
+
 		source, ok := extractAndValidateBindSource("", mount)
 		if !ok || bindPathAllowed(source, p.allowedBindMounts) {
 			continue

@@ -10,11 +10,11 @@
 |---|---|
 | sockguard: `read_only`, `cap_drop: ALL`, `no-new-privileges` | Enabled |
 | CIS 5.4 — no privileged containers | Enforced |
-| CIS 5.9–5.11 — no host net/PID/IPC | Enforced |
-| CIS 5.15–5.17 — kernel capability allowlist + drop ALL | Enforced |
+| CIS 5.9, 5.15–5.16 — no host net/PID/IPC | Enforced |
+| CIS 5.3 — kernel capability allowlist + drop ALL | Enforced |
 | CIS 5.22 — no `docker exec --privileged` | Enforced |
 | CIS 5.25 — no-new-privileges required | Enforced |
-| CIS 5.30 — read-only root FS required | Enforced |
+| CIS 5.12 — read-only root FS required | Enforced |
 | Bind mounts denied by default | Yes — add paths to `allowed_bind_mounts` when the workload requires |
 
 ## Usage

@@ -101,29 +101,6 @@ func BenchmarkCompileRealisticBasket(b *testing.B) {
 	}
 }
 
-// Adversarial NormalizePath inputs: many segments, traversal, long paths.
-func BenchmarkNormalizePathAdversarial(b *testing.B) {
-	cases := []struct {
-		name string
-		path string
-	}{
-		{"long_versioned", "/v1.45/containers/abc123def456ghi789jkl012mno345pqr678/exec/0123456789abcdef/start"},
-		{"many_traversals", "/v1.45/containers/../../../../../etc/passwd"},
-		{"deeply_nested", "/v1.45/networks/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t"},
-		{"double_slashes", "/v1.45//containers////json"},
-		{"no_prefix_long", "/containers/abc123def456ghi789/exec/0123456789abcdef/start"},
-		{"short_clean", "/_ping"},
-	}
-	for _, c := range cases {
-		b.Run(c.name, func(b *testing.B) {
-			b.ReportAllocs()
-			for b.Loop() {
-				NormalizePath(c.path)
-			}
-		})
-	}
-}
-
 // Cold Evaluate() measures cost of http.Request wrapping + normalize + eval.
 func BenchmarkEvaluateRequest(b *testing.B) {
 	rules := buildRealisticRules(b)

@@ -408,14 +408,20 @@ func TestDockerCompatEventsIsUnchangedByFlavorDetection(t *testing.T) {
 }
 
 // TestPodmanFlavorLeavesOtherListEndpointsAlone bounds the blast radius: the
-// flavor only changes /events. Podman's LIST endpoints run label filters
-// through filters.MatchLabelFilters (containers, volumes, networks) or
-// libimage's applyFilters (images), all of which require every value to
-// match, so appending stays correct there and a multi-selector policy must
-// NOT be refused.
+// flavor changes /events and the compat secret list, and nothing else.
+// Podman's other LIST endpoints run label filters through
+// filters.MatchLabelFilters (containers, volumes, networks) or libimage's
+// applyFilters (images), all of which require every value to match, so
+// appending stays correct there and a multi-selector policy must NOT be
+// refused.
+//
+// /v1.53/secrets was in this list until the compat secret-list refusal
+// landed. It never belonged: Podman serves it from compat.ListSecrets, whose
+// grammar accepts only name and id and answers 500 for the appended label
+// filter this test asserted was correct. See podman_secrets_test.go.
 func TestPodmanFlavorLeavesOtherListEndpointsAlone(t *testing.T) {
 	t.Parallel()
-	for _, path := range []string{"/v1.53/containers/json", "/v1.53/images/json", "/v1.53/volumes", "/v1.53/networks", "/v1.53/secrets"} {
+	for _, path := range []string{"/v1.53/containers/json", "/v1.53/images/json", "/v1.53/volumes", "/v1.53/networks"} {
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
 			var got []string

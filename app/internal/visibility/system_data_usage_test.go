@@ -310,6 +310,10 @@ func TestSystemDataUsageUndecodableBodyReturns502(t *testing.T) {
 	}
 }
 
+// TestSystemDataUsageNonFilterableStatusesPassThrough covers the status codes
+// that carry no data-usage payload. A 304 is deliberately absent: it is a
+// revalidation of a copy no filter ever saw, so it is refused rather than
+// passed through — see conditional_request_test.go.
 func TestSystemDataUsageNonFilterableStatusesPassThrough(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -319,7 +323,6 @@ func TestSystemDataUsageNonFilterableStatusesPassThrough(t *testing.T) {
 		wantBody string
 	}{
 		{name: "daemon error", status: http.StatusInternalServerError, body: `{"message":"boom"}`, wantBody: `{"message":"boom"}`},
-		{name: "not modified", status: http.StatusNotModified, body: `stale`, wantBody: ""},
 		{name: "no content", status: http.StatusNoContent, body: `stale`, wantBody: ""},
 	}
 	for _, tt := range tests {
@@ -343,12 +346,18 @@ func TestSystemDataUsageNonFilterableStatusesPassThrough(t *testing.T) {
 	}
 }
 
-// TestSystemDataUsageHeadRequestNotIntercepted: a HEAD carries no body, so
-// there is nothing to filter and nothing to leak.
-func TestSystemDataUsageHeadRequestNotIntercepted(t *testing.T) {
+// TestSystemDataUsageHeadStripsUpstreamRepresentation: a HEAD carries no body
+// to filter, but the daemon sizes and validates the whole host inventory in
+// its headers, and /system/df takes no `filters` parameter that could have
+// narrowed what it counted. The length and the validator are dropped rather
+// than forwarded.
+func TestSystemDataUsageHeadStripsUpstreamRepresentation(t *testing.T) {
 	t.Parallel()
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Length", "4096")
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("ETag", `"upstream"`)
+		w.Header().Set("Last-Modified", "Wed, 03 Sep 2026 10:00:00 GMT")
 		w.WriteHeader(http.StatusOK)
 	})
 	handler := middlewareWithDeps(slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -358,8 +367,16 @@ func TestSystemDataUsageHeadRequestNotIntercepted(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if got := rec.Header().Get("Content-Length"); got != "4096" {
-		t.Fatalf("Content-Length = %q, want the upstream's 4096 untouched", got)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	for _, name := range []string{"Content-Length", "ETag", "Last-Modified"} {
+		if got := rec.Header().Get(name); got != "" {
+			t.Errorf("%s = %q, want it cleared on a HEAD the policy scopes", name, got)
+		}
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want the media type kept", got)
 	}
 }
 

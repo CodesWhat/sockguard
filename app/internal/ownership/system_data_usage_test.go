@@ -280,7 +280,9 @@ func TestSystemDataUsageUndecodableBodyReturns502(t *testing.T) {
 }
 
 // TestSystemDataUsageNonFilterableStatusesPassThrough covers the status codes
-// that carry no data-usage payload.
+// that carry no data-usage payload. A 304 is deliberately absent: it is a
+// revalidation of a copy no filter ever saw, so it is refused rather than
+// passed through — see conditional_request_test.go.
 func TestSystemDataUsageNonFilterableStatusesPassThrough(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -290,7 +292,6 @@ func TestSystemDataUsageNonFilterableStatusesPassThrough(t *testing.T) {
 		wantBody string
 	}{
 		{name: "daemon error", status: http.StatusInternalServerError, body: `{"message":"boom"}`, wantBody: `{"message":"boom"}`},
-		{name: "not modified", status: http.StatusNotModified, body: `stale`, wantBody: ""},
 		{name: "no content", status: http.StatusNoContent, body: `stale`, wantBody: ""},
 	}
 	for _, tt := range tests {
@@ -314,15 +315,20 @@ func TestSystemDataUsageNonFilterableStatusesPassThrough(t *testing.T) {
 	}
 }
 
-// TestSystemDataUsageHeadRequestNotIntercepted: a HEAD carries no body, so
-// there is nothing to filter and nothing to leak. Buffering it would only risk
-// replacing the daemon's Content-Length with 0.
-func TestSystemDataUsageHeadRequestNotIntercepted(t *testing.T) {
+// TestSystemDataUsageHeadStripsUpstreamRepresentation: a HEAD carries no body
+// to classify by owner, but the daemon's Content-Length and ETag describe the
+// whole host inventory, so the length counts every other owner's containers,
+// images and volumes. The request still reaches the daemon; the metadata does
+// not reach the client.
+func TestSystemDataUsageHeadStripsUpstreamRepresentation(t *testing.T) {
 	t.Parallel()
 	reached := false
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		reached = true
 		w.Header().Set("Content-Length", "4096")
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("ETag", `"upstream"`)
+		w.Header().Set("Last-Modified", "Wed, 03 Sep 2026 10:00:00 GMT")
 		w.WriteHeader(http.StatusOK)
 	})
 	handler := middlewareWithDeps(testLogger(), Options{Owner: "team-a"},
@@ -335,8 +341,58 @@ func TestSystemDataUsageHeadRequestNotIntercepted(t *testing.T) {
 	if !reached {
 		t.Fatal("HEAD did not reach the upstream")
 	}
-	if got := rec.Header().Get("Content-Length"); got != "4096" {
-		t.Fatalf("Content-Length = %q, want the upstream's 4096 untouched", got)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	for _, name := range []string{"Content-Length", "ETag", "Last-Modified"} {
+		if got := rec.Header().Get(name); got != "" {
+			t.Errorf("%s = %q, want it cleared on a HEAD owner isolation scopes", name, got)
+		}
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want the media type kept", got)
+	}
+}
+
+// TestSystemDataUsageHeadOverRealServerRefusesNotModified is the wire-level
+// counterpart of TestSystemDataUsageHeadFailsClosedOnNotModified: it proves
+// that when the upstream answers a HEAD with a recorded 304, the 502
+// refusal's JSON error body never actually reaches the client — Go's HEAD
+// handling eats a handler's body writes on the wire — rather than merely
+// going unchecked by a ResponseRecorder.
+func TestSystemDataUsageHeadOverRealServerRefusesNotModified(t *testing.T) {
+	t.Parallel()
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("ETag", `"upstream"`)
+		w.WriteHeader(http.StatusNotModified)
+	})
+	handler := middlewareWithDeps(testLogger(), Options{Owner: "team-a"},
+		fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(upstream)
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	req, err := http.NewRequest(http.MethodHead, server.URL+"/v1.53/system/df", nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest: %v", err)
+	}
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("HEAD: %v", err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadGateway)
+	}
+	if got := resp.Header.Get("ETag"); got != "" {
+		t.Errorf("ETag = %q, want the upstream validator cleared off the refusal", got)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if len(body) != 0 {
+		t.Errorf("body = %q, want nothing forwarded for a HEAD refusal", body)
 	}
 }
 

@@ -234,6 +234,12 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 		Volume: filter.VolumeOptions{
 			AllowCustomDrivers: true,
 			AllowDriverOpts:    true,
+			// AllowedBindMounts has no VolumeRequestBodyConfig field of its
+			// own — it is cross-wired from cfg.ContainerCreate.AllowedBindMounts
+			// (set above) by RequestBodyConfig.ToFilterOptions. See
+			// TestRequestBodyConfigToFilterOptionsWiresAllowedBindMountsIntoVolume
+			// for a focused regression on that cross-wire alone.
+			AllowedBindMounts: []string{"/srv/data", "/var/lib/sockguard"},
 		},
 		Network: filter.NetworkOptions{
 			AllowCustomDrivers:     true,
@@ -347,6 +353,32 @@ func TestRequestBodyConfigToFilterOptionsWiresNetworkAllowEndpointConfigIntoCont
 			t.Error("ContainerCreate.AllowEndpointConfig = true, want false")
 		}
 	})
+}
+
+// TestRequestBodyConfigToFilterOptionsWiresAllowedBindMountsIntoVolume proves
+// the bind-mount allowlist is one list, not two: a local-driver volume whose
+// options ask for a bind reaches the same host path a HostConfig.Binds entry
+// reaches, so RequestBodyConfig.ToFilterOptions must copy
+// container_create.allowed_bind_mounts into filter.VolumeOptions and
+// libpod_container_create.allowed_bind_mounts into the libpod volume policy,
+// with no allowed_bind_mounts key of their own and no leakage across the two
+// API families.
+func TestRequestBodyConfigToFilterOptionsWiresAllowedBindMountsIntoVolume(t *testing.T) {
+	got := (RequestBodyConfig{
+		ContainerCreate: ContainerCreateRequestBodyConfig{
+			AllowedBindMounts: []string{"/srv/data"},
+		},
+		LibpodContainerCreate: LibpodContainerCreateRequestBodyConfig{
+			AllowedBindMounts: []string{"/srv/podman"},
+		},
+	}).ToFilterOptions()
+
+	if want := []string{"/srv/data"}; !reflect.DeepEqual(got.Volume.AllowedBindMounts, want) {
+		t.Errorf("Volume.AllowedBindMounts = %#v, want %#v (cross-wired from ContainerCreate)", got.Volume.AllowedBindMounts, want)
+	}
+	if want := []string{"/srv/podman"}; !reflect.DeepEqual(got.LibpodVolume.AllowedBindMounts, want) {
+		t.Errorf("LibpodVolume.AllowedBindMounts = %#v, want %#v (cross-wired from LibpodContainerCreate)", got.LibpodVolume.AllowedBindMounts, want)
+	}
 }
 
 // TestRequestBodyConfigToFilterOptionsWiresNetworkEndpointConfigIntoContainerCreate

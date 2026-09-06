@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 const maxSwarmBodyBytes = 256 << 10 // 256 KiB
@@ -265,7 +267,7 @@ func hasSwarmSigningCAUpdate(cfg swarmCAConfig) bool {
 // rotation the operator disabled. proxy.dockerBoolValue carries the same
 // semantics for the same reason.
 func dockerBoolValue(r *http.Request, name string) bool {
-	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get(name))) {
+	switch strings.ToLower(strings.TrimSpace(logging.RequestQuery(r).Get(name))) {
 	case "", "0", "no", "false", "none":
 		return false
 	default:

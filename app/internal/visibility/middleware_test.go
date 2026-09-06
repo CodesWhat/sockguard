@@ -1536,6 +1536,66 @@ func TestAddVisibilityLabelFiltersLeavesQueryUntouchedWhenSelectorsAlreadyPresen
 	}
 }
 
+// TestAddVisibilityLabelFiltersAppendedQueryMatchesEncodedForm pins the
+// append path against the parse-and-re-encode path it replaces. A request
+// with no filters parameter of its own has the encoded selectors appended to
+// its raw query instead of being parsed into a url.Values and rebuilt, so the
+// result has to carry the same parameters with the same escaping. Byte
+// equality holds wherever the parameters already there sort before "filters";
+// where they do not, url.Values.Encode's key sort is the only difference, so
+// every case is compared re-encoded as well.
+func TestAddVisibilityLabelFiltersAppendedQueryMatchesEncodedForm(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		rawQuery      string
+		wantByteEqual bool
+	}{
+		{name: "empty query", rawQuery: "", wantByteEqual: true},
+		{name: "parameter sorting before filters", rawQuery: "all=true", wantByteEqual: true},
+		{name: "parameter sorting after filters", rawQuery: "limit=25"},
+		{name: "several parameters", rawQuery: "all=true&limit=25&size=1"},
+		{name: "percent escape falls back to the encode path", rawQuery: "name=web%2Dtier", wantByteEqual: true},
+		{name: "existing filters falls back to the encode path", rawQuery: `filters={"status":["running"]}`, wantByteEqual: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/json", nil)
+			req.URL.RawQuery = tt.rawQuery
+
+			forwarded, err := addVisibilityLabelFilters(req, "/containers/json", []compiledSelector{
+				{key: "com.sockguard.visible", value: "true", hasValue: true},
+			})
+			if err != nil {
+				t.Fatalf("addVisibilityLabelFilters() error = %v, want nil", err)
+			}
+			got := forwarded.URL.RawQuery
+
+			parsed, err := url.ParseQuery(got)
+			if err != nil {
+				t.Fatalf("ParseQuery(%q) error = %v", got, err)
+			}
+			// Rebuild the query the way the encode path builds it, from the
+			// filters value this call produced.
+			reference := (&url.URL{RawQuery: tt.rawQuery}).Query()
+			reference.Set("filters", parsed.Get("filters"))
+			want := reference.Encode()
+
+			if tt.wantByteEqual && got != want {
+				t.Fatalf("RawQuery = %q, want byte-identical to the encoded form %q", got, want)
+			}
+			if canonical := parsed.Encode(); canonical != want {
+				t.Fatalf("RawQuery = %q re-encodes to %q, want %q", got, canonical, want)
+			}
+			if parsed.Get("filters") == "" {
+				t.Fatalf("RawQuery = %q, want a filters parameter", got)
+			}
+		})
+	}
+}
+
 // TestMiddlewareRejectsFalseValuedLegacyFilterBypass exercises the full
 // middleware, filters query and all, against a fake upstream: a client that
 // sends the policy's own selector spelled with Docker's legacy object

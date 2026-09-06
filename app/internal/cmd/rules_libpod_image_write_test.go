@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -420,86 +421,116 @@ func TestValidateAndCompileRulesPreservesOrderedWildcardPathBytes(t *testing.T) 
 	})
 }
 
-func TestValidateAndCompileRulesMatchesRelativeSegmentGlobsLikeRuntime(t *testing.T) {
+// TestRelativeSegmentGlobsAreRefusedAndRootedOnesMatchLikeRuntime replaces the
+// test that pinned the opposite. The segment-glob fast path used to strip one
+// leading slash from the pattern and one from the request path, so a rootless
+// pattern matched as if it were rooted: "*/images/team/*/push" admitted
+// "/libpod/images/team/acme/push" and "*libpod/images/scp/team/*" admitted
+// "/libpod/images/scp/team/alpine", neither of which their own anchored regexes
+// accept, because "[^/]*" cannot cross a separator. The walker now agrees with
+// the regex and the rootless spelling is refused at config validation, which is
+// what keeps the correction from silently disarming a rootless deny.
+//
+// Rooting the same pattern is the fix an operator makes, so each case also runs
+// the rooted spelling all the way through: it still reaches the catalog route
+// and demands the same acknowledgment, and once acknowledged it still matches
+// at runtime. That is the half the old test was right about, and it is the half
+// that proves this narrows only the leading slash.
+func TestRelativeSegmentGlobsAreRefusedAndRootedOnesMatchLikeRuntime(t *testing.T) {
+	cases := []struct {
+		name        string
+		relative    string
+		rooted      string
+		requestPath string
+		profile     string
+		// acks are the acknowledgment substrings the rooted pattern has to
+		// demand, in the order validation surfaces them.
+		acks []string
+	}{
+		{
+			name:        "slash-bearing image push",
+			relative:    "*/images/team/*/push",
+			rooted:      "/*/images/team/*/push",
+			requestPath: "/libpod/images/team/acme/push",
+			profile:     "publisher",
+			acks:        []string{"insecure_allow_read_exfiltration: true"},
+		},
+		{
+			name:        "image SCP",
+			relative:    "*libpod/images/scp/team/*",
+			rooted:      "/*libpod/images/scp/team/*",
+			requestPath: "/libpod/images/scp/team/alpine",
+			profile:     "transfer",
+			acks:        []string{"insecure_allow_body_blind_writes=true", "insecure_allow_read_exfiltration: true"},
+		},
+	}
+
+	newConfig := func(pattern, profileName string, profile bool) (config.Config, []config.RuleConfig) {
+		rules := []config.RuleConfig{
+			{Match: config.MatchConfig{Method: http.MethodPost, Path: pattern}, Action: "allow"},
+			{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+		}
+		cfg := config.Defaults()
+		if profile {
+			cfg.Rules = []config.RuleConfig{{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"}}
+			cfg.Clients.Profiles = []config.ClientProfileConfig{{Name: profileName, Rules: rules}}
+		} else {
+			cfg.Rules = rules
+		}
+		return cfg, rules
+	}
+
 	for _, profile := range []bool{false, true} {
 		name := "default policy"
 		if profile {
 			name = "named profile"
 		}
 		t.Run(name, func(t *testing.T) {
-			t.Run("slash-bearing image push", func(t *testing.T) {
-				const pattern = "*/images/team/*/push"
-				const requestPath = "/libpod/images/team/acme/push"
-				rules := []config.RuleConfig{
-					{Match: config.MatchConfig{Method: http.MethodPost, Path: pattern}, Action: "allow"},
-					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
-				}
-				cfg := config.Defaults()
-				if profile {
-					cfg.Rules = []config.RuleConfig{{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"}}
-					cfg.Clients.Profiles = []config.ClientProfileConfig{{Name: "publisher", Rules: rules}}
-				} else {
-					cfg.Rules = rules
-				}
+			for _, tc := range cases {
+				t.Run(tc.name, func(t *testing.T) {
+					t.Run("relative pattern is refused", func(t *testing.T) {
+						cfg, _ := newConfig(tc.relative, tc.profile, profile)
+						// Acknowledged up front so nothing but the pattern
+						// shape can refuse this config.
+						cfg.InsecureAllowReadExfiltration = true
+						cfg.InsecureAllowBodyBlindWrites = true
 
-				err := errorFromValidate(t, &cfg)
-				if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
-					t.Fatalf("error = %q, want the relative segment glob to demand the exfiltration acknowledgment", err)
-				}
+						err := errorFromValidate(t, &cfg)
+						for _, want := range []string{"must start with '/'", fmt.Sprintf("%q", tc.relative), fmt.Sprintf("%q", tc.rooted)} {
+							if !strings.Contains(err.Error(), want) {
+								t.Fatalf("error = %q, want it to mention %q", err, want)
+							}
+						}
+					})
 
-				cfg.InsecureAllowReadExfiltration = true
-				if _, err := validateAndCompileRules(&cfg); err != nil {
-					t.Fatalf("validateAndCompileRules() error = %v once acknowledged, want nil", err)
-				}
-				compiled, err := compileConfiguredRules(rules)
-				if err != nil {
-					t.Fatalf("compileConfiguredRules() error = %v", err)
-				}
-				request := &http.Request{Method: http.MethodPost, URL: &url.URL{Path: requestPath}}
-				if action, _, _ := filter.Evaluate(compiled, request); action != filter.ActionAllow {
-					t.Fatalf("Evaluate(%q) action = %q, want %q for pattern %q", requestPath, action, filter.ActionAllow, pattern)
-				}
-			})
+					t.Run("rooted pattern still reaches the route", func(t *testing.T) {
+						cfg, rules := newConfig(tc.rooted, tc.profile, profile)
+						for _, ack := range tc.acks {
+							err := errorFromValidate(t, &cfg)
+							if !strings.Contains(err.Error(), ack) {
+								t.Fatalf("error = %q, want the rooted segment glob to demand %q", err, ack)
+							}
+							if strings.HasPrefix(ack, "insecure_allow_body_blind_writes") {
+								cfg.InsecureAllowBodyBlindWrites = true
+							} else {
+								cfg.InsecureAllowReadExfiltration = true
+							}
+						}
 
-			t.Run("image SCP", func(t *testing.T) {
-				const pattern = "*libpod/images/scp/team/*"
-				const requestPath = "/libpod/images/scp/team/alpine"
-				rules := []config.RuleConfig{
-					{Match: config.MatchConfig{Method: http.MethodPost, Path: pattern}, Action: "allow"},
-					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
-				}
-				cfg := config.Defaults()
-				if profile {
-					cfg.Rules = []config.RuleConfig{{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"}}
-					cfg.Clients.Profiles = []config.ClientProfileConfig{{Name: "transfer", Rules: rules}}
-				} else {
-					cfg.Rules = rules
-				}
-
-				err := errorFromValidate(t, &cfg)
-				if !strings.Contains(err.Error(), "insecure_allow_body_blind_writes=true") {
-					t.Fatalf("error = %q, want the relative segment glob to demand the blind-write acknowledgment", err)
-				}
-
-				cfg.InsecureAllowBodyBlindWrites = true
-				err = errorFromValidate(t, &cfg)
-				if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
-					t.Fatalf("error = %q, want the relative segment glob to demand the exfiltration acknowledgment", err)
-				}
-
-				cfg.InsecureAllowReadExfiltration = true
-				if _, err := validateAndCompileRules(&cfg); err != nil {
-					t.Fatalf("validateAndCompileRules() error = %v once acknowledged, want nil", err)
-				}
-				compiled, err := compileConfiguredRules(rules)
-				if err != nil {
-					t.Fatalf("compileConfiguredRules() error = %v", err)
-				}
-				request := &http.Request{Method: http.MethodPost, URL: &url.URL{Path: requestPath}}
-				if action, _, _ := filter.Evaluate(compiled, request); action != filter.ActionAllow {
-					t.Fatalf("Evaluate(%q) action = %q, want %q for pattern %q", requestPath, action, filter.ActionAllow, pattern)
-				}
-			})
+						if _, err := validateAndCompileRules(&cfg); err != nil {
+							t.Fatalf("validateAndCompileRules() error = %v once acknowledged, want nil", err)
+						}
+						compiled, err := compileConfiguredRules(rules)
+						if err != nil {
+							t.Fatalf("compileConfiguredRules() error = %v", err)
+						}
+						request := &http.Request{Method: http.MethodPost, URL: &url.URL{Path: tc.requestPath}}
+						if action, _, _ := filter.Evaluate(compiled, request); action != filter.ActionAllow {
+							t.Fatalf("Evaluate(%q) action = %q, want %q for pattern %q", tc.requestPath, action, filter.ActionAllow, tc.rooted)
+						}
+					})
+				})
+			}
 		})
 	}
 }

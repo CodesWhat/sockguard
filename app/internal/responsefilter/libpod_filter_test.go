@@ -158,7 +158,6 @@ func addStaleRepresentationMetadata(resp *http.Response) {
 	for _, name := range []string{
 		"Accept-Ranges",
 		"Content-Digest",
-		"Content-Encoding",
 		"Content-Language",
 		"Content-Length",
 		"Content-Location",
@@ -173,6 +172,12 @@ func addStaleRepresentationMetadata(resp *http.Response) {
 	} {
 		resp.Header.Set(name, "stale-upstream-value")
 	}
+	// Content-Encoding is the one header in that set the filter reads rather
+	// than only clears (decodedResponseReader), so it has to name a real
+	// coding instead of taking the generic junk value. identity is still
+	// stale metadata for a body that got replaced, and
+	// assertRewrittenRepresentationMetadata still requires it gone.
+	resp.Header.Set("Content-Encoding", identityContentCoding)
 	resp.Header.Set("Content-Type", "application/json; charset=utf-8")
 	resp.Header.Set("X-Upstream-Metadata", "keep-me")
 	resp.TransferEncoding = []string{"chunked"}
@@ -396,6 +401,92 @@ func TestLibpodContainerListIsNotRewritten(t *testing.T) {
 		body := libpodBodyForTest(t, allRedactions, "/v1.51/containers/json", compat)
 		assertAbsent(t, "compat container list", body, "/host/compat-secrets", "172.17.0.4")
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Images
+// ---------------------------------------------------------------------------
+
+// libpodImageInspectUpstream is a GET /libpod/images/{name}/json body:
+// *libimage.ImageData (containers/common libimage/inspect.go at v0.67.0,
+// the release Podman v5.8.1 pins). Config is *ociv1.ImageConfig
+// (opencontainers/image-spec specs-go/v1/config.go), whose Env field carries
+// json:"Env,omitempty" — the identical key Docker's compat handler uses.
+// GraphDriver is *DriverData{Name, Data}, the identical shape
+// redactGraphDriverData already handles for container inspect. Both were
+// checked against source, which is why modifyImageInspect is reused here
+// rather than reimplemented.
+const libpodImageInspectUpstream = `{
+  "Id": "sha256:libpod-image-a",
+  "RepoTags": ["team-a-app:latest"],
+  "Config": {"Env": ["PATH=/usr/bin", "DB_PASSWORD=libpod-image-secret"], "Labels": {"owner": "team-a"}},
+  "Architecture": "amd64",
+  "GraphDriver": {
+    "Name": "overlay",
+    "Data": {
+      "UpperDir": "/home/alice/.local/share/containers/storage/overlay/img-a/diff",
+      "WorkDir": "/home/alice/.local/share/containers/storage/overlay/img-a/work"
+    }
+  },
+  "RootFS": {"Type": "layers", "Layers": ["sha256:layer1"]}
+}`
+
+// libpodCompatImageInspectUpstream is the same image as a Docker Engine
+// body, for the anti-vacuity leg.
+const libpodCompatImageInspectUpstream = `{
+  "Id": "sha256:compat-image-a",
+  "Config": {"Env": ["DB_PASSWORD=compat-image-secret"]},
+  "GraphDriver": {"Name": "overlay2", "Data": {"MergedDir": "/var/lib/docker/overlay2/img-a/merged"}}
+}`
+
+func TestLibpodImageInspectIsRedacted(t *testing.T) {
+	t.Parallel()
+
+	t.Run("libpod", func(t *testing.T) {
+		t.Parallel()
+		body := libpodBodyForTest(t, allRedactions, "/v5.8.1/libpod/images/team-a-app/json", libpodImageInspectUpstream)
+		assertAbsent(t, "libpod image inspect", body,
+			"libpod-image-secret",
+			"/home/alice/.local/share/containers/storage/overlay/img-a/diff",
+			"/home/alice/.local/share/containers/storage/overlay/img-a/work",
+		)
+		// The response is redacted, not emptied: identity, tags, and the
+		// owner label a monitoring client actually reads must survive.
+		assertPresent(t, "libpod image inspect", body, `"sha256:libpod-image-a"`, `"team-a-app:latest"`, `"team-a"`, `"overlay"`)
+	})
+
+	t.Run("compat is still redacted", func(t *testing.T) {
+		t.Parallel()
+		body := libpodBodyForTest(t, allRedactions, "/v1.51/images/compat-app/json", libpodCompatImageInspectUpstream)
+		assertAbsent(t, "compat image inspect", body,
+			"compat-image-secret", "/var/lib/docker/overlay2/img-a/merged",
+		)
+	})
+
+	t.Run("multi-segment image reference is matched", func(t *testing.T) {
+		t.Parallel()
+		body := libpodBodyForTest(t, allRedactions, "/v5.8.1/libpod/images/ghcr.io/team-a/app/json", libpodImageInspectUpstream)
+		assertAbsent(t, "libpod image inspect (multi-segment name)", body, "libpod-image-secret")
+	})
+}
+
+func TestIsLibpodImageInspectPath(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"/libpod/images/alpine/json", true},
+		{"/libpod/images/ghcr.io/team-a/app/json", true},
+		{"/libpod/images/json", false}, // list route, no identifier
+		{"/libpod/images/alpine/exists", false},
+		{"/libpod/containers/alpine/json", false},
+		{"/libpod/images//json", false},
+	}
+	for _, tt := range tests {
+		if got := isLibpodImageInspectPath(tt.path); got != tt.want {
+			t.Errorf("isLibpodImageInspectPath(%q) = %v, want %v", tt.path, got, tt.want)
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------

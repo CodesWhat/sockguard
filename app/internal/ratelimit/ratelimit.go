@@ -163,6 +163,15 @@ func (b *bucket) Allow() (ok bool, retryAfter int) {
 // the same ×packedFracScale factor, so the quotient is in units of seconds.
 const maxCASRetries = 100
 
+// casFailHook is a test-only seam and is nil in production, where the whole
+// cost on the hot path is one nil check per CAS attempt. When set it runs
+// immediately before each CompareAndSwap in AllowN, receiving the bucket and
+// the zero-based attempt index, so a test can store a competing state
+// underneath the pending swap and force the CAS-failure retry. Nothing else
+// can: losing a CAS requires another goroutine winning the same word in the
+// window between the Load and the swap, which no test can schedule.
+var casFailHook func(b *bucket, attempt int)
+
 func (b *bucket) AllowN(cost float64) (ok bool, retryAfter int) {
 	if cost < 1 {
 		cost = 1
@@ -211,6 +220,9 @@ func (b *bucket) AllowN(cost float64) (ok bool, retryAfter int) {
 			// timestamp half of the word even if a caller bypasses the
 			// config validator (e.g., a direct newBucket call with burst>65535).
 			next := uint64(newMS)<<32 | (uint64(remainingFP) & 0xFFFFFFFF)
+			if casFailHook != nil {
+				casFailHook(b, i)
+			}
 			if b.state.CompareAndSwap(old, next) {
 				return true, 0
 			}

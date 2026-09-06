@@ -359,7 +359,11 @@ both controls are enabled. Docker's legacy link-removal mode stays denied.
 
 ## Watchtower (`watchtower.yaml`)
 
-Optimized for the [Watchtower](https://github.com/nicholas-fedor/watchtower) container auto-updater.
+Optimized for [nicholas-fedor/watchtower](https://github.com/nicholas-fedor/watchtower), the maintained
+continuation of the archived `containrrr/watchtower`. The preset was checked against both upstreams'
+container client code: the core recreate flow (list/inspect, stop, force-remove, create with copied
+network config, start, rename, exec lifecycle hooks, image pull/remove) is identical between them, so
+this preset works as a drop-in for `containrrr/watchtower` too.
 
 **Use for:** Watchtower v1.21.2 with lifecycle hooks and network-aware updates.
 
@@ -382,9 +386,13 @@ IPs or a custom gateway priority cannot be recreated through this preset. Open
 the matching `endpoint_config` switch for that field alone rather than
 `allow_endpoint_config`, which would also admit links and driver options.
 Container update allows the restart-only request Watchtower uses to set
-`Name: "no"`. Moby serializes the embedded `Resources` fields at their zero
-values in that request, which the daemon treats as no-ops; nonzero resource,
-privilege, device and capability updates remain denied. Image list is
+`Name: "no"`. This is a nicholas-fedor addition: containrrr/watchtower never
+called `POST /containers/{id}/update` at all, so the rule is simply unused
+against the original image rather than unsafe. Moby serializes the embedded
+`Resources` fields at their zero values in that request, which the daemon
+treats as no-ops; nonzero resource, privilege, device and capability updates
+remain denied, matching the fact that no code path in either upstream submits
+real resource limits through this route. Image list is
 explicitly denied before the registry-qualified image-inspect rule. The preset
 permits Watchtower's force-removal path and optional anonymous-volume cleanup,
 while legacy link removal stays denied. It keeps

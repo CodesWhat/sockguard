@@ -216,7 +216,7 @@ func TestMiddleware_UnknownProfilePassthrough(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Denied request is NOT counted as in-flight.
+// A rate-denied request gets a 429 and does not reach the inner handler.
 // ---------------------------------------------------------------------------
 
 func TestMiddleware_DeniedRateRequestNotCountedAsInflight(t *testing.T) {
@@ -237,7 +237,11 @@ func TestMiddleware_DeniedRateRequestNotCountedAsInflight(t *testing.T) {
 		Now:            clk.Now,
 	}
 
-	h := mustMiddleware(t, newTestLogger(), reg, sampler, opts)(okHandler)
+	reached := 0
+	h := mustMiddleware(t, newTestLogger(), reg, sampler, opts)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached++
+		w.WriteHeader(http.StatusOK)
+	}))
 
 	// First request passes.
 	rec1 := httptest.NewRecorder()
@@ -252,11 +256,16 @@ func TestMiddleware_DeniedRateRequestNotCountedAsInflight(t *testing.T) {
 	if rec2.Code != http.StatusTooManyRequests {
 		t.Fatalf("second request should be 429, got %d", rec2.Code)
 	}
-	// If the denied request were erroneously counted as inflight, the tracker
-	// counter would be > 0 after both requests complete. Since the denied
-	// request exits before Acquire, the counter should be 0 after handler return.
-	// (We cannot directly inspect the tracker, but the test validates the 429
-	// denial path does not call through to the inner handler.)
+	// The status codes above only prove what the recorder saw; a
+	// middleware that wrote 429 itself and then still called through to
+	// the inline handler would pass them too, since
+	// httptest.ResponseRecorder keeps the first WriteHeader call and
+	// ignores the handler's later 200. The reached counter is what
+	// actually proves the second, denied request never reaches the inner
+	// handler: it must be 1 (from the first request only), not 2.
+	if reached != 1 {
+		t.Fatalf("inner handler reach count = %d, want 1 (the denied second request must not reach it)", reached)
+	}
 }
 
 // ---------------------------------------------------------------------------

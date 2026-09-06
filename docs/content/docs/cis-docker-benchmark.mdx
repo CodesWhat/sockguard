@@ -65,7 +65,7 @@ the violating field; the structured access log in
 |---|---|---|
 | **5.3** | Linux kernel capabilities restricted | `allowed_capabilities: []` + `require_drop_all_capabilities: true`: `CapAdd` must be empty, `CapDrop` must include `ALL` |
 | **5.4** | Privileged containers not used | `allow_privileged: false`: rejects `HostConfig.Privileged: true` |
-| **5.5** | Sensitive host directories not mounted | `allowed_bind_mounts: []`: every host-path bind must be on the allowlist; default-empty rejects all host-path binds. Named and anonymous volumes aren't host paths and pass regardless |
+| **5.5** | Sensitive host directories not mounted | `allowed_bind_mounts: []`: every host-path bind must be on the allowlist; default-empty rejects all host-path binds. Named and anonymous volumes aren't host paths and pass regardless, except when their local-driver options request a bind, which is checked against the same allowlist |
 | **5.9** | Host network namespace not shared | `allow_host_network: false`: rejects `NetworkMode: "host"` |
 | **5.10** | Memory usage limited | `require_memory_limit: true`: `HostConfig.Memory` must be non-zero |
 | **5.11** | CPU priority set | `require_cpu_limit: true`: at least one of `NanoCpus`, `CpuQuota`, `CpuPeriod`, `CpuShares` must be set |

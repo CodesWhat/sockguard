@@ -2,12 +2,12 @@ package filter
 
 import (
 	"net/http"
-	"path"
 	"regexp"
 	"slices"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/codeswhat/sockguard/app/internal/apipath"
 	"github.com/codeswhat/sockguard/app/internal/glob"
 )
 
@@ -85,147 +85,21 @@ type CompiledRule struct {
 }
 
 // NormalizePath canonicalizes a request path into the form policy rules are
-// matched against: it resolves "." and ".." segments and collapses redundant
-// slashes (path.Clean), then strips a leading Docker or Podman API version
-// prefix.
-//
-// It deliberately does NOT percent-decode. The path it receives is r.URL.Path,
-// which net/http's request parser has already decoded exactly once — the same
-// single decode the Docker daemon's request parser applies. Decoding again
-// would let sockguard resolve an escape the daemon leaves literal: a
-// double-encoded "%252e", for instance, would become a "." segment that
-// path.Clean collapses for sockguard while the daemon still routes it as a
-// real path segment, so the two would disagree on which endpoint the request
-// targets. evaluateRequestPolicy handles Podman's UseEncodedPath exception for
-// the image-SCP route before policy matching.
+// matched against. It is a thin wrapper over apipath.NormalizePath, which
+// owns the definition and documents why the path is never percent-decoded a
+// second time; the name stays here because most of this package and five
+// others outside it already call it.
 func NormalizePath(p string) string {
-	if p == "" {
-		return ""
-	}
-	return stripVersionPrefix(canonicalizePath(p))
-}
-
-// canonicalizePath resolves "." / ".." segments and collapses redundant
-// slashes via path.Clean, fronted by the allocation-free pathNeedsClean fast
-// path. It does not percent-decode — see NormalizePath for why.
-func canonicalizePath(p string) string {
-	if pathNeedsClean(p) {
-		p = path.Clean(p)
-	}
-	return p
-}
-
-// pathNeedsClean is a zero-allocation fast path in front of path.Clean so
-// the overwhelmingly common case — paths that are already clean, like
-// `/containers/json` or `/v1.45/_ping` — skips Clean's string allocation
-// entirely. `BenchmarkNormalizePath/bare` and `/clean` report 0 B/op when
-// this guard returns false; calling path.Clean unconditionally made that
-// ~200ns and added two heap allocations per request. We only return true
-// when the path actually has a trailing slash, a doubled slash, or a `.`
-// or `..` segment — exactly the cases Clean would change.
-func pathNeedsClean(p string) bool {
-	if p == "/" {
-		return false
-	}
-	if len(p) > 1 && p[len(p)-1] == '/' {
-		return true
-	}
-
-	absolutePath := strings.HasPrefix(p, "/")
-	hasNormalSegment := false
-	segmentStart := 0
-	for i := 0; i < len(p); i++ {
-		if p[i] != '/' {
-			continue
-		}
-
-		needsClean, normalSegment := pathSegmentNeedsClean(p, segmentStart, i, absolutePath, hasNormalSegment, true)
-		if needsClean {
-			return true
-		}
-		hasNormalSegment = hasNormalSegment || normalSegment
-		segmentStart = i + 1
-	}
-
-	needsClean, _ := pathSegmentNeedsClean(p, segmentStart, len(p), absolutePath, hasNormalSegment, false)
-	return needsClean
-}
-
-func pathSegmentNeedsClean(p string, start, end int, absolutePath, hasNormalSegment, hasMoreSegments bool) (needsClean bool, normalSegment bool) {
-	if end == start {
-		return start != 0, false
-	}
-
-	segmentLen := end - start
-	if segmentLen == 1 && p[start] == '.' {
-		// WHY: A lone relative "." is already clean because path.Clean(".") == ".".
-		// Only dotted segments that would collapse with surrounding path context
-		// should take the allocation-heavy Clean path.
-		if start == 0 && !absolutePath && !hasMoreSegments {
-			return false, false
-		}
-		return true, false
-	}
-	if segmentLen == 2 && p[start] == '.' && p[start+1] == '.' {
-		return absolutePath || hasNormalSegment, false
-	}
-
-	return false, true
-}
-
-// stripVersionPrefix removes a leading API version prefix, returning the
-// path from the first slash after the version. Uses a hand-rolled byte loop
-// so the common case (no prefix) avoids regexp overhead and allocation
-// entirely.
-//
-// Docker's own router only accepts /vN or /vN.N (a single optional minor
-// component, digits and a dot only). Podman's libpod bindings send the
-// daemon's full three-part semver, e.g. /v5.0.0/libpod/containers/json
-// (#148), and its API server registers versioned routes with the regex
-// `[0-9][0-9A-Za-z.-]*` (see moby/moby vendor of containers/podman's
-// pkg/api/server VersionedPath), which also admits prerelease/build
-// suffixes like /v5.8.1-dev/ and /v5.8.1-rc1/. sockguard mirrors that exact
-// character class — first char after "v" a digit, then any run of
-// [0-9A-Za-z.-] — so its policy view of a path stays byte-identical to
-// Podman's own routing view. A wider or narrower class would leave some
-// versioned libpod paths unstripped, falling through to a catch-all rule
-// with rule matching, body inspection, ownership, visibility and redaction
-// all skipped.
-func stripVersionPrefix(p string) string {
-	// Minimum version prefix is /vN/ (4 chars). Docker and Podman both use
-	// lowercase 'v' only.
-	if len(p) < 4 || p[0] != '/' || p[1] != 'v' {
-		return p
-	}
-	i := 2
-	// First character after "v" must be a digit.
-	if p[i] < '0' || p[i] > '9' {
-		return p
-	}
-	i++
-	// Consume the rest of Podman's VersionedPath class: [0-9A-Za-z.-]*.
-	for i < len(p) {
-		c := p[i]
-		if (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '.' || c == '-' {
-			i++
-			continue
-		}
-		break
-	}
-	// Must end with /
-	if i >= len(p) || p[i] != '/' {
-		return p
-	}
-	return p[i:]
+	return apipath.NormalizePath(p)
 }
 
 // HasVersionPrefix reports whether p begins with a daemon API version prefix
 // (e.g. "/v1.45/") that NormalizePath strips before rule matching. A rule
 // pattern carrying such a prefix can never match real traffic — the request
 // path is normalized first — so it is almost always an authoring mistake worth
-// flagging.
+// flagging. Thin wrapper over apipath.HasVersionPrefix.
 func HasVersionPrefix(p string) bool {
-	return stripVersionPrefix(p) != p
+	return apipath.HasVersionPrefix(p)
 }
 
 // CompileRule compiles a Rule into a CompiledRule for efficient matching.
@@ -261,24 +135,34 @@ func CompileRule(r Rule) (*CompiledRule, error) {
 		Index:           r.Index,
 	}
 
-	if !strings.Contains(r.Pattern, "*") {
-		cr.matcherKind = pathMatcherLiteral
-		cr.literal = r.Pattern
-		return cr, nil
-	}
-	if r.Pattern == "/**" {
-		cr.matcherKind = pathMatcherMatchAll
-		return cr, nil
-	}
-	if isTrailingDoubleStarPattern(r.Pattern) {
-		cr.matcherKind = pathMatcherTrailingDeep
-		cr.trailingPrefix = strings.TrimSuffix(r.Pattern, "/**")
-		return cr, nil
-	}
-	if !strings.Contains(r.Pattern, "**") {
-		cr.matcherKind = pathMatcherSegmentGlob
-		cr.segmentPatterns = splitGlobSegments(r.Pattern)
-		return cr, nil
+	// The four fast paths compare bytes; the regex compares runes. Those agree
+	// on every pattern whose text survives UTF-8 decoding unchanged, and only
+	// on those. A pattern carrying a rune regexp reads as U+FFFD does not: the
+	// anchored regex matches a real U+FFFD and any malformed byte alike, so a
+	// path pathMatcherLiteral, matchTrailingDoubleStar or matchGlobSegment
+	// would reject is one the dialect says the rule covers. The regex is the
+	// definition and the walkers are the optimization, so a pattern that can
+	// tell them apart forfeits the optimization.
+	if firstReplacementRuneIndex(r.Pattern) < 0 {
+		if !strings.Contains(r.Pattern, "*") {
+			cr.matcherKind = pathMatcherLiteral
+			cr.literal = r.Pattern
+			return cr, nil
+		}
+		if r.Pattern == "/**" {
+			cr.matcherKind = pathMatcherMatchAll
+			return cr, nil
+		}
+		if isTrailingDoubleStarPattern(r.Pattern) {
+			cr.matcherKind = pathMatcherTrailingDeep
+			cr.trailingPrefix = strings.TrimSuffix(r.Pattern, "/**")
+			return cr, nil
+		}
+		if !strings.Contains(r.Pattern, "**") {
+			cr.matcherKind = pathMatcherSegmentGlob
+			cr.segmentPatterns = splitGlobSegments(r.Pattern)
+			return cr, nil
+		}
 	}
 
 	// Convert glob pattern to regex.
@@ -309,11 +193,11 @@ func (cr *CompiledRule) matchesNormalizedUpperWithBit(upperMethod string, method
 	case pathMatcherLiteral:
 		return normalizedPath == cr.literal
 	case pathMatcherMatchAll:
-		return true
+		return isRootedOrEmptyPath(normalizedPath)
 	case pathMatcherTrailingDeep:
 		return matchTrailingDoubleStar(cr.trailingPrefix, normalizedPath)
 	case pathMatcherSegmentGlob:
-		if cr.literalPrefix != "" && !strings.HasPrefix(strings.TrimPrefix(normalizedPath, "/"), strings.TrimPrefix(cr.literalPrefix, "/")) {
+		if cr.literalPrefix != "" && !strings.HasPrefix(normalizedPath, cr.literalPrefix) {
 			return false
 		}
 		return matchGlobSegments(cr.segmentPatterns, normalizedPath)
@@ -372,27 +256,41 @@ func normalizedLibpodImageScpRoutePath(r *http.Request) (string, bool) {
 
 // NormalizePodmanRoutePath keeps the trailing slash that gorilla/mux includes
 // in route matching while applying the same API-version and clean-path rules
-// used for policy paths. A trailing slash is security-significant for Podman's
-// anchored push/tag/untag routes: .../push/ misses the earlier action route and
-// falls through to the later image-SCP catch-all.
+// used for policy paths. It is a thin wrapper over
+// apipath.NormalizePodmanRoutePath, which owns the definition and documents
+// why that trailing slash is security-significant on Podman's anchored
+// push/tag/untag routes; the name stays here because the rule evaluator and
+// the ownership middleware both already call it.
 //
-// It is exported because the ownership middleware has to compute the same
-// route view this package does. NormalizePath is not a substitute there:
-// path.Clean strips the trailing slash, so a caller using it reads
-// POST /libpod/images/scp/victim/push/ as a push of an image named
-// "scp/victim" while the daemon routes it as an SCP of "victim/push/".
+// This is the only path shape rule matching ever sees with a trailing slash,
+// and every matcher kind treats that slash as a real, empty final segment.
+// See matchGlobSegments for why the segment walker has to agree with the
+// regex there rather than absorb the slash.
 func NormalizePodmanRoutePath(p string) string {
-	hasTrailingSlash := len(p) > 1 && strings.HasSuffix(p, "/")
-	normalized := NormalizePath(p)
-	if hasTrailingSlash && normalized != "/" && !strings.HasSuffix(normalized, "/") {
-		normalized += "/"
-	}
-	return normalized
+	return apipath.NormalizePodmanRoutePath(p)
 }
 
+// isLibpodImageScpRoutePath reports whether Podman's router dispatches
+// routePath to the image-SCP handler. The route is
+// POST /libpod/images/scp/{name:.*} and `.*` matches the empty string, so the
+// bare /libpod/images/scp/ is an SCP call with an empty source name, not a
+// non-route: verified against Podman v5.8.1's registration order
+// (pkg/api/server/register_images.go, /libpod/images/{name:.*}/push at line
+// 817 through /libpod/images/scp/{name:.*} at line 2236) replayed through
+// gorilla/mux v1.8.1, where POST /v5.0.0/libpod/images/scp/ dispatches to
+// ImageScp with name="". An empty name is refused deeper in, by
+// ExecuteTransfer's "no source image specified", but that is the handler's
+// argument validation and not a routing boundary, so treating the bare route
+// as reachable is what keeps the route view and the decoded path from
+// disagreeing about which handler a request reaches.
+//
+// The action suffixes stay excluded: /libpod/images/{name:.*}/push, /tag and
+// /untag are registered earlier, so .../scp/app/push is a push of the image
+// "scp/app". A trailing slash defeats those anchored routes, which is why
+// .../scp/app/push/ falls through to this catch-all.
 func isLibpodImageScpRoutePath(routePath string) bool {
 	rest, ok := strings.CutPrefix(routePath, libpodPathPrefix+"images/scp/")
-	if !ok || rest == "" {
+	if !ok {
 		return false
 	}
 	for _, action := range []string{"push", "tag", "untag"} {
@@ -471,8 +369,43 @@ func isTrailingDoubleStarPattern(pattern string) bool {
 	return strings.HasSuffix(pattern, "/**") && !strings.Contains(pattern[:len(pattern)-3], "*")
 }
 
+// splitGlobSegments splits a single-star pattern on "/" without trimming
+// anything. A leading "/" therefore becomes a leading empty segment, exactly
+// as it does when the same pattern is split by the anchored regex: the "/" is
+// a separator the path has to carry too, not decoration to be normalized away.
+// Trimming it here (and the matching trim matchGlobSegments used to apply to
+// the path) canceled out for a rooted pattern but erased the distinction for
+// a rootless one, so "containers/*" compiled to the same segments as
+// "/containers/*" and matched "/containers/json" while its own regex,
+// "^containers/[^/]*$", did not.
 func splitGlobSegments(pattern string) []string {
-	return strings.Split(strings.TrimPrefix(pattern, "/"), "/")
+	return strings.Split(pattern, "/")
+}
+
+// isRootedOrEmptyPath reports exactly what the anchored regex "/**" compiles
+// to — "^(/(?s:.*))?$" — accepts: the empty string, or a path beginning with
+// "/". It is the guard on the match-all fast path, which used to answer an
+// unconditional true and was therefore the one matcher kind wider than the
+// pattern standing behind it.
+//
+// The gap is only reachable with an unrooted request target. Go's server
+// parses a non-OPTIONS asterisk-form request line ("GET * HTTP/1.1") into
+// r.URL.Path == "*" and hands it to the handler — only "OPTIONS *" is
+// answered by the server itself — and an absolute-form line with no path
+// ("GET http://host HTTP/1.1"), an opaque target ("GET foo:bar") or a CONNECT
+// authority-form line all arrive with r.URL.Path == "". NormalizePath
+// preserves both shapes, so they reached Evaluate unrooted, where a catch-all
+// "/**" allow rule admitted them and its own regex would not. Every other
+// matcher kind already refused: a literal cannot equal them, the segment
+// walker cannot spend a rooted pattern's leading empty segment against them,
+// matchTrailingDoubleStar needs the prefix, and the regex kinds are anchored.
+//
+// withRequestTargetGuard now rejects an unrooted target at the edge with 400
+// before any layer evaluates it, so this bound is defense in depth: it keeps
+// the fast path equal to its own regex for every caller of Evaluate, not only
+// the ones sitting behind that guard.
+func isRootedOrEmptyPath(p string) bool {
+	return p == "" || p[0] == '/'
 }
 
 func matchTrailingDoubleStar(prefix, path string) bool {
@@ -482,29 +415,54 @@ func matchTrailingDoubleStar(prefix, path string) bool {
 	return path == prefix || strings.HasPrefix(path, prefix+"/")
 }
 
+// matchGlobSegments matches a single-star glob (a pattern with "*" but no
+// "**") against a normalized path by walking both a segment at a time. It is
+// the allocation-free stand-in for the anchored regex the same pattern
+// compiles to, so its verdict has to be identical to
+// "^" + glob.ToRegexString(pattern) + "$": the path must carry exactly as many
+// "/"-separated segments as the pattern, because the "[^/]*" a "*" compiles to
+// can never cross a separator.
+//
+// That makes a trailing slash a real, empty final segment rather than
+// punctuation. "/containers/*" does not match "/containers/abc/", which is two
+// segments after "containers", and "/*/*/*" does match "/a/b/", whose third
+// segment is empty. NormalizePath's path.Clean strips a trailing slash, so the
+// distinction is invisible on the ordinary policy path; the one view that
+// keeps it is NormalizePodmanRoutePath, which mirrors what gorilla/mux routes
+// on for Podman's image-SCP endpoint. There the empty segment is part of the
+// image name Podman would act on, so a rule spelling one segment must not
+// quietly cover two, and a deny spelling two must not be dodged by a path
+// whose second segment is empty.
+//
+// A leading "/" is a separator on both sides for the same reason. The walker
+// used to strip one from the path here and one from the pattern in
+// splitGlobSegments, which canceled for a rooted pattern but made a rootless
+// one match as if it were rooted: "*" matched "/_ping" where "^[^/]*$" does
+// not. Neither strip happens now, so a rooted path's leading empty segment has
+// to be spent by a leading empty pattern segment. A rootless pattern only
+// matches a rooted path when its own leading segment is a bare "*" that can
+// absorb that empty segment — "*" and "*/json" do, "containers/*" does not,
+// because "containers" cannot match the empty string. That is exactly why
+// rejecting a rootless pattern at the entry points (config validation for
+// match.path, clientacl.compileContainerLabelRules for a container-label
+// grant) is the real enforcement here, not any property of this matcher.
 func matchGlobSegments(patternSegments []string, path string) bool {
-	path = strings.TrimPrefix(path, "/")
-	if path == "" {
-		return len(patternSegments) == 1 && matchGlobSegment(patternSegments[0], "")
+	last := len(patternSegments) - 1
+	if last < 0 {
+		return false
 	}
 
-	for _, patternSegment := range patternSegments {
-		if path == "" {
-			return false
-		}
-
+	for _, patternSegment := range patternSegments[:last] {
 		segment, rest, hasMore := strings.Cut(path, "/")
-		if !matchGlobSegment(patternSegment, segment) {
+		if !hasMore || !matchGlobSegment(patternSegment, segment) {
 			return false
-		}
-		if !hasMore {
-			path = ""
-			continue
 		}
 		path = rest
 	}
 
-	return path == ""
+	// The final pattern segment has to consume the whole remainder. A "/" left
+	// in it means the path carries more segments than the pattern spends.
+	return !strings.Contains(path, "/") && matchGlobSegment(patternSegments[last], path)
 }
 
 func matchGlobSegment(pattern, segment string) bool {
@@ -545,22 +503,64 @@ func matchGlobSegment(pattern, segment string) bool {
 	return patternIndex == len(pattern)
 }
 
+// literalPrefixForPattern derives the literal head every path a pattern
+// matches has to carry. It is the allocation-free fast reject in front of the
+// regex and segment matchers, so it has to be a prefix of every string the
+// pattern's own anchored regex accepts. One byte too long and the
+// optimization has become a policy change, and on a deny rule it is the
+// dangerous direction: the path the gate turns away falls through to whatever
+// allow sits below it.
+//
+// Everything before the first "*" is literal except one case. A "*" that
+// opens a "/**" takes the slash before it into an optional group, so that
+// slash belongs in the prefix only when the text after the group still
+// guarantees one. "/containers/**/json" guarantees it, because "/containers"
+// followed by the collapsed group still has "/json" to come. "/containers/**"
+// does not, and neither does "/containers/**/**": every "/**" is optional, so
+// both match the bare "/containers".
+//
+// The scan also stops at the first rune regexp reads as U+FFFD, because the
+// gate compares bytes and from there on the two no longer describe the same
+// text. glob.ToRegexString decodes the pattern before quoting it, so a
+// malformed byte and a literal U+FFFD both compile to the same rune, and that
+// rune matches either spelling in the path. Keeping those bytes in the prefix
+// is the one-byte-too-long case again: "/con\xfftainers/*" would demand its own
+// spelling and turn away "/con\uFFFDtainers/json", which its regex accepts.
 func literalPrefixForPattern(pattern string) string {
-	for i := 0; i < len(pattern); i++ {
+	limit := len(pattern)
+	if i := firstReplacementRuneIndex(pattern); i >= 0 {
+		limit = i
+	}
+	for i := 0; i < limit; i++ {
 		if pattern[i] != '*' {
 			continue
 		}
 
 		prefix := pattern[:i]
-		if i > 0 && pattern[i-1] == '/' && i+1 < len(pattern) && pattern[i+1] == '*' {
-			suffix := pattern[i+2:]
-			if suffix == "" || suffix[0] != '/' {
-				return strings.TrimSuffix(prefix, "/")
-			}
+		if i > 0 && pattern[i-1] == '/' && i+1 < len(pattern) && pattern[i+1] == '*' &&
+			!glob.EveryMatchStartsWithSlash(pattern[i+2:]) {
+			return strings.TrimSuffix(prefix, "/")
 		}
 		return prefix
 	}
-	return pattern
+	return pattern[:limit]
+}
+
+// firstReplacementRuneIndex returns the byte offset of the first rune in s
+// that Go's regexp reads as U+FFFD, or -1 when there is none. Both spellings
+// count and they have to: regexp decodes the subject as UTF-8, stepping every
+// byte that is not part of a well-formed sequence as U+FFFD with width one, so
+// a pattern carrying that rune matches text it is not byte-for-byte equal to,
+// and a pattern carrying a malformed byte matches text that is not equal to
+// it either. utf8.ValidString would catch only the second. Ranging a string
+// yields utf8.RuneError for both, which is exactly the set this has to find.
+func firstReplacementRuneIndex(s string) int {
+	for i, r := range s {
+		if r == utf8.RuneError {
+			return i
+		}
+	}
+	return -1
 }
 
 // GlobToRegexString converts the sockguard glob dialect to a regex string.

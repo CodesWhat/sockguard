@@ -295,7 +295,15 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, resolveClient func(co
 				return
 			}
 
-			evaluateLabelACL(compiled, logger, resolveClient, next, w, r, clientIP)
+			evaluateLabelACL(labelACLRequest{
+				compiled:      compiled,
+				logger:        logger,
+				resolveClient: resolveClient,
+				next:          next,
+				w:             w,
+				r:             r,
+				clientIP:      clientIP,
+			})
 		})
 	}
 }
@@ -338,6 +346,18 @@ func applyProfileSelection(compiled compiledOptions, logger *slog.Logger, w http
 	return r.WithContext(withProfile(r.Context(), profile)), true
 }
 
+// labelACLRequest bundles the parameters evaluateLabelACL needs to resolve
+// and enforce a client's container-label ACL for a single request.
+type labelACLRequest struct {
+	compiled      compiledOptions
+	logger        *slog.Logger
+	resolveClient func(context.Context, netip.Addr) (resolvedClient, bool, error)
+	next          http.Handler
+	w             http.ResponseWriter
+	r             *http.Request
+	clientIP      netip.Addr
+}
+
 // evaluateLabelACL resolves the client's container labels (when enabled),
 // compiles ACL rules from those labels, and runs the request through them.
 // On allow / no-match the request flows to next; on deny we either pass
@@ -347,7 +367,9 @@ func applyProfileSelection(compiled compiledOptions, logger *slog.Logger, w http
 // by IP recycling creates a window where labels from a new container may
 // be applied to a request from the old one. Operators that need strong
 // isolation should prefer UID/GID unix-peer profile assignment instead.
-func evaluateLabelACL(compiled compiledOptions, logger *slog.Logger, resolveClient func(context.Context, netip.Addr) (resolvedClient, bool, error), next http.Handler, w http.ResponseWriter, r *http.Request, clientIP netip.Addr) {
+func evaluateLabelACL(req labelACLRequest) {
+	compiled, logger, resolveClient, next, w, r, clientIP := req.compiled, req.logger, req.resolveClient, req.next, req.w, req.r, req.clientIP
+
 	client, found, err := resolveClient(r.Context(), clientIP)
 	if err != nil {
 		logger.ErrorContext(r.Context(), "client label ACL lookup failed", "error", err, "client_ip", clientIP.String())
@@ -877,14 +899,12 @@ func (i *profileLRU[K]) lookup(key K) (profileLookupResult, bool) {
 		return profileLookupResult{}, false
 	}
 	i.mu.Lock()
+	defer i.mu.Unlock()
 	elem, ok := i.entries[key]
-	if ok {
-		i.order.MoveToFront(elem)
-	}
-	i.mu.Unlock()
 	if !ok {
 		return profileLookupResult{}, false
 	}
+	i.order.MoveToFront(elem)
 	return elem.Value.(*profileLRUNode[K]).result, true
 }
 
@@ -983,6 +1003,25 @@ func compileContainerLabelRulesWith(
 		}
 
 		for _, pattern := range patterns {
+			// A label path has to be rooted for the same reason a configured
+			// match.path does, plus one more: labels never pass through
+			// config.Validate, so this is the only place the shape is checked.
+			// It matters most for the deep wildcards. A rootless single-star
+			// pattern like "containers/*" now simply matches nothing, but "**"
+			// compiles to "^(?s:.*)$" and "*/**" to "^[^/]*(/(?s:.*))?$", both
+			// of which match straight across the leading slash. A label reading
+			// `com.sockguard.allow.get=**` would therefore grant every GET the
+			// global policy allows instead of the one relative path its author
+			// appears to have written, which defeats the per-client boundary
+			// the label exists to draw. Refusing is fail-closed: the caller
+			// logs this and answers 502 without reaching the proxy, exactly as
+			// it does for a pattern that fails to compile.
+			if !strings.HasPrefix(pattern, "/") {
+				return nil, true, fmt.Errorf(
+					"client ACL label %q path %q must start with '/': sockguard matches labels against the rooted request path, so write it as %q",
+					key, pattern, "/"+pattern)
+			}
+
 			rule, err := compileRule(filter.Rule{
 				Methods: []string{method},
 				Pattern: pattern,

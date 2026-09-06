@@ -93,7 +93,7 @@ jobs:
           - { name: FuzzProxyHeadersAndBody,       pkg: ./internal/proxy/ }
           - { name: FuzzHijackHeadersAndBody,      pkg: ./internal/proxy/ }
           - { name: FuzzHijackBidirectionalStream, pkg: ./internal/proxy/ }
-          - { name: FuzzPathRoutingDifferential,   pkg: ./differential/ }
+          - { name: FuzzPathRoutingDifferential,   pkg: ./internal/differential/ }
           - { name: FuzzVisibilityFilter,          pkg: ./internal/visibility/ }
           - { name: FuzzOwnershipMutateBody,       pkg: ./internal/ownership/ }
           - { name: FuzzOwnershipMutateServiceBody, pkg: ./internal/ownership/ }
@@ -105,6 +105,8 @@ jobs:
           - { name: FuzzClassify,                  pkg: ./internal/upstreamflavor/ }
           - { name: FuzzConfigured,                pkg: ./internal/upstreamflavor/ }
           - { name: FuzzPodmanEventLabelFilter,    pkg: ./internal/visibility/ }
+          - { name: FuzzCatalogReachability,       pkg: ./internal/cmd/ }
+          - { name: FuzzValidateServerShutdownGrace, pkg: ./internal/config/ }
 
     steps:
       # Stays audit for stage 1: this job already has an open, in-repo
@@ -115,7 +117,7 @@ jobs:
       # with the otherwise-identical quality-fuzz-nightly.yml job.
       - name: Harden Runner
         if: ${{ inputs.skip_harden_runner != true }}
-        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
         with:
           egress-policy: audit
 

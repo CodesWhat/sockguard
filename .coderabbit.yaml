@@ -74,7 +74,7 @@ reviews:
     - path: "app/internal/**"
       instructions: |
         Request-filtering engine with a default-deny posture. Any change to rule matching, path parsing, or method filtering is security-sensitive — flag anything that could widen what reaches the Docker socket.
-    - path: "app/differential/**"
+    - path: "app/internal/differential/**"
       instructions: |
         Differential test harness comparing behavior against Tecnativa. Don't suggest refactors here.
     - path: "app/integration/**"

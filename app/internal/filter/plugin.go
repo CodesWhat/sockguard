@@ -15,6 +15,8 @@ import (
 	"path"
 	"slices"
 	"strings"
+
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 const maxPluginBodyBytes = 512 << 20 // 512 MiB
@@ -136,7 +138,7 @@ func (p pluginPolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPa
 }
 
 func (p pluginPolicy) inspectPluginPull(logger *slog.Logger, r *http.Request) (string, error) {
-	query := r.URL.Query()
+	query := logging.RequestQuery(r)
 	if remote := strings.TrimSpace(query.Get("remote")); remote != "" {
 		if denyReason := p.imagePolicy.denyReasonForReference(remote, "plugin pull"); denyReason != "" {
 			return denyReason, nil
@@ -147,7 +149,7 @@ func (p pluginPolicy) inspectPluginPull(logger *slog.Logger, r *http.Request) (s
 }
 
 func (p pluginPolicy) inspectPluginUpgrade(logger *slog.Logger, r *http.Request) (string, error) {
-	query := r.URL.Query()
+	query := logging.RequestQuery(r)
 	if remote := strings.TrimSpace(query.Get("remote")); remote != "" {
 		if denyReason := p.imagePolicy.denyReasonForReference(remote, "plugin upgrade"); denyReason != "" {
 			return denyReason, nil

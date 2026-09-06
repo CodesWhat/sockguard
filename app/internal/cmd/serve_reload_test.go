@@ -14,12 +14,14 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/codeswhat/sockguard/app/internal/admin"
 	"github.com/codeswhat/sockguard/app/internal/config"
 	"github.com/codeswhat/sockguard/app/internal/filter"
 	"github.com/codeswhat/sockguard/app/internal/metrics"
 	"github.com/codeswhat/sockguard/app/internal/reload"
+	"github.com/codeswhat/sockguard/app/internal/testhelp"
 )
 
 // reloadCoordinatorFixture builds a coordinator wired up to a swappable
@@ -122,6 +124,94 @@ func (f *reloadCoordinatorFixture) reloadCount(result string) (uint64, bool) {
 		return value, true
 	}
 	return 0, false
+}
+
+// TestStartConfigReloadWarnsOnMalformedDurations proves a malformed
+// reload.debounce / reload.poll_interval is named in the log instead of being
+// swallowed. Both settings used to fall through to their default on a parse
+// error with nothing logged, so an operator who typed "250" (no unit) got the
+// 250ms default and a config file that disagreed with the running process
+// forever.
+func TestStartConfigReloadWarnsOnMalformedDurations(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Reload.Enabled = true
+	cfg.Reload.Debounce = "250"
+	cfg.Reload.PollInterval = "10 seconds"
+
+	fixture := newReloadCoordinatorFixture(t, &cfg)
+	collector := &testhelp.CollectingHandler{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stop := startConfigReload(ctx, &cfg, fixture.cfgPath, fixture.coordinator, collector.Logger())
+	t.Cleanup(stop)
+
+	records := collector.FindMessage("invalid reload duration; falling back to the default")
+	if len(records) != 2 {
+		t.Fatalf("warnings = %d, want 2 (one per malformed setting). records=%+v", len(records), collector.Records())
+	}
+
+	byKey := make(map[string]testhelp.LogRecord, len(records))
+	for _, record := range records {
+		key, _ := record.Attrs["key"].(string)
+		byKey[key] = record
+	}
+
+	want := []struct {
+		key      string
+		value    string
+		fallback string
+	}{
+		{key: "reload.debounce", value: "250", fallback: "250ms"},
+		{key: "reload.poll_interval", value: "10 seconds", fallback: "0s"},
+	}
+	for _, tt := range want {
+		record, ok := byKey[tt.key]
+		if !ok {
+			t.Fatalf("no warning carried key=%q, got %v", tt.key, byKey)
+		}
+		if got, _ := record.Attrs["value"].(string); got != tt.value {
+			t.Errorf("%s warning value = %q, want %q", tt.key, got, tt.value)
+		}
+		if got, _ := record.Attrs["default"].(string); got != tt.fallback {
+			t.Errorf("%s warning default = %q, want %q", tt.key, got, tt.fallback)
+		}
+		if record.Attrs["error"] == nil {
+			t.Errorf("%s warning carries no error attr, want the parse error", tt.key)
+		}
+	}
+}
+
+// TestReloadDurationFallsBackAndWarnsOnlyWhenMalformed pins the resolver
+// itself: an unset or valid setting resolves silently, and a malformed one
+// returns the fallback the warning names rather than a zero duration.
+func TestReloadDurationFallsBackAndWarnsOnlyWhenMalformed(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    string
+		fallback time.Duration
+		want     time.Duration
+		wantWarn bool
+	}{
+		{name: "unset uses the fallback", value: "", fallback: reload.DefaultDebounce, want: reload.DefaultDebounce},
+		{name: "valid duration is used", value: "5s", fallback: reload.DefaultDebounce, want: 5 * time.Second},
+		{name: "malformed falls back and warns", value: "250", fallback: reload.DefaultDebounce, want: reload.DefaultDebounce, wantWarn: true},
+		{name: "malformed poll interval keeps polling disabled", value: "10 seconds", fallback: 0, want: 0, wantWarn: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			collector := &testhelp.CollectingHandler{}
+			got := reloadDuration(collector.Logger(), "reload.debounce", tt.value, tt.fallback)
+			if got != tt.want {
+				t.Errorf("reloadDuration() = %v, want %v", got, tt.want)
+			}
+			gotWarn := collector.HasMessage("invalid reload duration; falling back to the default")
+			if gotWarn != tt.wantWarn {
+				t.Errorf("warned = %v, want %v. records=%+v", gotWarn, tt.wantWarn, collector.Records())
+			}
+		})
+	}
 }
 
 func TestReloadCoordinatorRejectsLoadError(t *testing.T) {

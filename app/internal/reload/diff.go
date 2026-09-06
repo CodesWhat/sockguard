@@ -21,6 +21,11 @@ import (
 var ImmutableFields = []string{
 	"listen",
 	"listeners",
+	// server.shutdown_grace is read once at startup into the deps seam that
+	// shutdownServers consults; the running process never re-reads a
+	// reloaded config at shutdown time, so a reload changing it would be a
+	// silent no-op if left mutable.
+	"server",
 	"upstream.socket",
 	"upstream.endpoints",
 	"upstream.failover",
@@ -72,6 +77,9 @@ func ImmutableDiff(oldCfg, newCfg *config.Config) []string {
 		}
 	} else {
 		changed = append(changed, diffListeners(oldCfg, newCfg)...)
+	}
+	if !reflect.DeepEqual(oldCfg.Server, newCfg.Server) {
+		changed = append(changed, "server")
 	}
 	if oldCfg.Upstream.Socket != newCfg.Upstream.Socket {
 		changed = append(changed, "upstream.socket")

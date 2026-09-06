@@ -3,6 +3,8 @@ package cmd
 import (
 	"fmt"
 	"io"
+	"log/slog"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -32,6 +34,13 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		printValidationFailure(errOut, stderrP, wrapped)
 		return wrapped
 	}
+
+	// validate reads the same SOCKGUARD_* overlay serve does (config.Load
+	// below), so it owes the operator the same warning about a variable that
+	// overlay ignores — this is the command they run to find out whether
+	// their configuration says what they think it says. Warnings go to
+	// stderr, leaving the report on stdout intact for anything parsing it.
+	warnUnknownEnvVars(slog.New(slog.NewTextHandler(errOut, nil)), cfgFile, os.Environ())
 
 	cfg, err := config.Load(cfgFile)
 	if err != nil {

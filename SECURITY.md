@@ -6,10 +6,11 @@ Security fixes ship on the current minor release line and the immediately preced
 
 | Version           | Supported          |
 | ----------------- | ------------------ |
-| 2.0.x (latest)    | :white_check_mark: |
-| 1.7.x             | :white_check_mark: |
-| 1.6.x             | :x:                |
-| < 1.6             | :x:                |
+| 2.2.x (latest)    | :white_check_mark: |
+| 2.1.x             | :white_check_mark: |
+| 2.0.x             | :x:                |
+| 1.7.x             | :x:                |
+| < 1.7             | :x:                |
 
 ## Reporting a Vulnerability
 

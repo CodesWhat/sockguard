@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 // ContainerRemoveOptions configures query inspection for container removal,
@@ -34,7 +36,7 @@ func (p containerRemovePolicy) inspect(_ *slog.Logger, r *http.Request, normaliz
 		return "", nil
 	}
 
-	query, err := url.ParseQuery(r.URL.RawQuery)
+	query, err := logging.ParseRequestQuery(r)
 	if err != nil {
 		return "", newRequestRejectionError(http.StatusBadRequest, "container remove denied: query parameters could not be parsed")
 	}

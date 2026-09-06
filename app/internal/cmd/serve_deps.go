@@ -376,11 +376,26 @@ func disableUnixListenerAutoUnlink(ln net.Listener) {
 	}
 }
 
+// probeDialTimeout bounds the stale-socket probe's connect attempt. It is a
+// package var rather than an inline literal so a test can read it back and a
+// future caller can shrink it: net.DialTimeout treats a zero Duration as "no
+// timeout at all", so an unbounded probe would hang bind-time startup on a
+// socket whose listener never accepts instead of failing over to the
+// ambiguous-error path that preserves the file.
+var probeDialTimeout = 200 * time.Millisecond
+
+// probeDial is the dialer defaultProbeUnixSocket connects through. Production
+// binds net.DialTimeout; a test substitutes a recorder to observe the timeout
+// the probe hands it. Same seam shape as the serveDeps.dialUpstream field, one
+// level down: the probe itself is already stubbable, this makes the constant
+// inside it observable.
+var probeDial = net.DialTimeout
+
 // defaultProbeUnixSocket dials path with a short timeout and returns the exact
 // connect result so the caller can distinguish a proven ECONNREFUSED stale
 // socket from every ambiguous failure.
 func defaultProbeUnixSocket(path string) error {
-	conn, err := net.DialTimeout("unix", path, 200*time.Millisecond)
+	conn, err := probeDial("unix", path, probeDialTimeout)
 	if err != nil {
 		return err
 	}

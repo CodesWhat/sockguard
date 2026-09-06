@@ -45,6 +45,28 @@ func NewWithTransport(rt http.RoundTripper, logger *slog.Logger, opts Options) *
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL.Scheme = "http"
 			pr.Out.URL.Host = "docker"
+			// Every request the read-side filters act on passes through here
+			// exactly once, and this is the last point before the wire, so the
+			// conditional headers are dropped once rather than at each of the
+			// three layers that would otherwise have to agree on which paths
+			// they cover. Dropping them unconditionally also keeps the
+			// guarantee independent of which layers are configured: the
+			// response filter has no request-side hook of its own, and its
+			// path set is the dispatch table rather than a predicate a
+			// middleware could consult without going stale.
+			//
+			// pr.Out is ReverseProxy's clone, so the client's own request and
+			// the access/audit record of what it sent are untouched.
+			responsefilter.StripConditionalRequestHeaders(pr.Out.Header)
+			// Same hook, same reasoning, different header. A client that
+			// asks for gzip and reaches a daemon through something that
+			// honors it hands the read-side filters a compressed body they
+			// cannot parse, and every filtered read becomes a 502 on the
+			// gzip magic bytes. Pinning identity here means the upstream
+			// does not compress at all rather than compressing bytes this
+			// proxy would immediately decompress. The response side still
+			// decodes gzip if an upstream ignores this.
+			responsefilter.PinIdentityAcceptEncoding(pr.Out.Header)
 		},
 		Transport:      rt,
 		ModifyResponse: opts.ModifyResponse,

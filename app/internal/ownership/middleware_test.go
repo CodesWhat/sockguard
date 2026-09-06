@@ -3381,3 +3381,75 @@ func TestMiddlewareOverwritesClientSuppliedOwnerLabel(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
 	}
 }
+
+// TestMutateJSONBodyRejectsAmbiguousBodyBeforeMutating locks the fail-closed
+// guard on duplicate case-variant keys after it moved off the raw bytes and
+// onto the decoded tree. Same verdict, same wording, and the mutate callback
+// still never sees the body.
+func TestMutateJSONBodyRejectsAmbiguousBodyBeforeMutating(t *testing.T) {
+	t.Parallel()
+	body := `{"HostConfig":{"NetworkMode":"bridge"},"hostconfig":{"NetworkMode":"container:victim"}}`
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(body))
+
+	err := mutateJSONBody(req, func(map[string]any) error {
+		t.Fatal("mutate callback invoked for an ambiguous body")
+		return nil
+	})
+	if err == nil {
+		t.Fatal("mutateJSONBody() err = nil, want an ambiguous-body error")
+	}
+	if !strings.Contains(err.Error(), "ambiguous request body") {
+		t.Fatalf("mutateJSONBody() err = %v, want contains 'ambiguous request body'", err)
+	}
+}
+
+// TestMutateJSONBodyReportsMalformedBodyAsADecodeFailure pins the error a
+// client gets for JSON that does not parse. The decode now runs before the
+// ambiguity check, so a syntax error is reported as one instead of being
+// dressed up as an ambiguous body by the check that used to parse first.
+func TestMutateJSONBodyReportsMalformedBodyAsADecodeFailure(t *testing.T) {
+	t.Parallel()
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(`{"Image":`))
+
+	err := mutateJSONBody(req, func(map[string]any) error {
+		t.Fatal("mutate callback invoked for a malformed body")
+		return nil
+	})
+	if err == nil {
+		t.Fatal("mutateJSONBody() err = nil, want a decode error")
+	}
+	if !strings.Contains(err.Error(), "decode request body") {
+		t.Fatalf("mutateJSONBody() err = %v, want contains 'decode request body'", err)
+	}
+}
+
+// TestMutateJSONBodyRejectsNonObjectBodies keeps every non-object payload
+// fail-closed. A JSON null decodes into a nil map without an error, so it
+// needs its own rejection; the rest fail the decode into map[string]any.
+func TestMutateJSONBodyRejectsNonObjectBodies(t *testing.T) {
+	t.Parallel()
+	bodies := []struct {
+		name string
+		body string
+	}{
+		{name: "null", body: `null`},
+		{name: "array", body: `[{"Labels":{}}]`},
+		{name: "string", body: `"Labels"`},
+		{name: "number", body: `42`},
+		{name: "bool", body: `true`},
+	}
+
+	for _, tt := range bodies {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(tt.body))
+			err := mutateJSONBody(req, func(map[string]any) error {
+				t.Fatalf("mutate callback invoked for a %s body", tt.name)
+				return nil
+			})
+			if err == nil {
+				t.Fatalf("mutateJSONBody(%s) err = nil, want an error", tt.body)
+			}
+		})
+	}
+}
