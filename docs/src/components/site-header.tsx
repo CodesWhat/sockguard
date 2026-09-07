@@ -5,7 +5,7 @@ import { TrackedAnchor } from "@/components/tracked-anchor";
 import { iconButtonCn, navLinkCn } from "@/lib/class-names";
 import { GITHUB_URL, SITE_CONFIG } from "@/lib/site-config";
 
-// NOTE: All navigation links here are plain <a> anchors, not Next <Link>.
+// All navigation links here are plain <a> anchors, not Next <Link>.
 // The docs app runs under basePath="/docs", which causes Next <Link> to prefix
 // every href with /docs — sending the logo to /docs/ and nav links to /docs/...
 // Plain <a> tags resolve at the origin root and are not affected by basePath.
