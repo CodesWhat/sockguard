@@ -15,9 +15,10 @@ fi
 # golangci-lint float to a newer staticcheck that has regressed SA5011:
 # it false-positives "possible nil pointer dereference" on
 # `if x == nil { t.Fatal(...) }` guards (t.Fatal ends the test via
-# Goexit, so the deref below is unreachable). v2.12.2 reports 0 issues.
+# Goexit, so the deref below is unreachable). v2.13.2 is the first line with
+# go1.27 support (golangci-lint#6642) and reports 0 issues on this tree.
 GOLANGCI_LINT_CACHE="$(mktemp -d "${TMPDIR:-/tmp}/sockguard-golangci-lint.XXXXXX")"
 export GOLANGCI_LINT_CACHE
 trap 'rm -rf "${GOLANGCI_LINT_CACHE}"' EXIT
 
-go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run
+go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run

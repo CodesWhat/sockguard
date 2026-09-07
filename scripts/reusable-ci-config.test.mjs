@@ -15,7 +15,7 @@ const SHARED_SHA = "01bf40b06b110946f12a49b82e407d77c6480df7";
 // requiring an exact-text match.
 const FIXED_SCRIPTS = new Map([
   ["go-test.sh", ["go test -race", "COVERAGE_MIN", "internal/buildkitproto"]],
-  ["go-lint.sh", ["golangci-lint/v2/cmd/golangci-lint@v2.12.2", "gofmt -l", "GOLANGCI_LINT_CACHE"]],
+  ["go-lint.sh", ["golangci-lint/v2/cmd/golangci-lint@v2.13.2", "gofmt -l", "GOLANGCI_LINT_CACHE"]],
   [
     "go-release-check.sh",
     [
