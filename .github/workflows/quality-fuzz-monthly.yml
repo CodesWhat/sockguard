@@ -85,6 +85,7 @@ jobs:
           - { name: FuzzContainerCreatePolicyInspectEndpointConfig, pkg: ./internal/filter/ }
           - { name: FuzzContainerCreateEndpointConfigGates, pkg: ./internal/filter/ }
           - { name: FuzzResourceLimitGuardContainerRequestDecode, pkg: ./internal/filter/ }
+          - { name: FuzzDuplicateCaseVariantKeyScan, pkg: ./internal/filter/ }
           - { name: FuzzLoadYAML,                  pkg: ./internal/config/ }
           - { name: FuzzLoadBytesEndpointConfig,   pkg: ./internal/config/ }
           - { name: FuzzEffectiveListenerValidation, pkg: ./internal/config/ }
