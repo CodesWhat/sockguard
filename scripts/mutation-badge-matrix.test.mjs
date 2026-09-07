@@ -161,6 +161,50 @@ describe("quality mutation workflow", () => {
     );
   });
 
+  it("commits the badge to the active development branch, never to the default branch", () => {
+    const source = readFileSync(resolve(repoRoot, workflowPath), "utf8");
+    const badgeStart = source.indexOf("  update-badge:\n");
+    assert.notEqual(badgeStart, -1, "update-badge job not found");
+    const badge = source.slice(badgeStart);
+
+    // The default branch is where this job *runs* (the gate above) and the
+    // development branch is where it *writes*. Pushing to main failed
+    // outright -- the ruleset answers "Changes must be made through a pull
+    // request" (run 34041041301) -- and a monthly badge commit on main would
+    // move a committed artifact underneath the GA tag main carries.
+    assert.match(
+      badge,
+      /bash scripts\/ci\/active-dev-branch\.sh renovate\.json/u,
+      "update-badge does not resolve its target with scripts/ci/active-dev-branch.sh",
+    );
+    assert.match(
+      badge,
+      /^\s+TARGET_REF: \$\{\{ steps\.target\.outputs\.branch \}\}$/mu,
+      "the badge commit does not take its target from the resolve step",
+    );
+    assert.match(
+      badge,
+      /git push origin "HEAD:refs\/heads\/\$\{TARGET_REF\}"/u,
+      "the badge commit does not push a fully qualified branch ref",
+    );
+    assert.doesNotMatch(
+      badge,
+      /TARGET_REF: \$\{\{ github\.ref_name \}\}/u,
+      "the badge commit still targets the branch the run is on",
+    );
+
+    // The resolve step reads the checked-out default branch, so switching
+    // branches may only happen after it.
+    const resolveIndex = badge.indexOf("      - name: Resolve the active development branch\n");
+    const checkoutIndex = badge.indexOf("      - name: Check out the active development branch\n");
+    const writeIndex = badge.indexOf("      - name: Write badge JSON\n");
+    assert.ok(resolveIndex !== -1, "resolve step not found");
+    assert.ok(
+      resolveIndex < checkoutIndex && checkoutIndex < writeIndex,
+      "the badge is written before the development branch is checked out",
+    );
+  });
+
   it("reports the parsed count when the report set is incomplete", () => {
     const source = readFileSync(resolve(repoRoot, workflowPath), "utf8");
     const incompleteStart = source.indexOf(
