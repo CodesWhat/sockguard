@@ -11,7 +11,7 @@ jobs:
     if: github.event.label.name == 'second-opinion'
     permissions:
       pull-requests: write
-    uses: CodesWhat/.github/.github/workflows/greptile-summon.yml@f356f779ce3bd359a6af1fa7b9b3fc5beaa1e56b # main, 2026-08-16
+    uses: CodesWhat/.github/.github/workflows/greptile-summon.yml@f356f779ce3bd359a6af1fa7b9b3fc5beaa1e56b  # main, 2026-08-16
     with:
       pr_number: ${{ github.event.pull_request.number }}
       head_sha: ${{ github.event.pull_request.head.sha }}

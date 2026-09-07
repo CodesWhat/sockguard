@@ -38,7 +38,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 BUNDLE_DIR="${REPO_ROOT}/examples/compose/tri-tool"
 
-# shellcheck source=scripts/tri-tool-conformance/lib.sh
+# shellcheck source=scripts/tri-tool-conformance/lib.sh disable=SC1091
 source "${SCRIPT_DIR}/lib.sh"
 
 # Every transient err/log/cid file lives under one private mktemp dir: a
@@ -484,6 +484,7 @@ case "$ROW" in
     # overridable by the workflow's portwing_version/drydock_version
     # inputs. This row exists to keep the COMPATIBILITY promise honest;
     # letting a dispatch input silently drift it would defeat the point.
+    # shellcheck disable=SC2034 # read by lib.sh's compose_up, not this file
     COMPOSE_FILES=("${BUNDLE_DIR}/docker-compose.yml" "${BUNDLE_DIR}/docker-compose.conformance-overlay.yml")
     MODE="standard"
     PRESET_FILE="sockguard.yaml"

@@ -4,11 +4,11 @@ set -euo pipefail
 mode="${1:-changed}"
 
 case "${mode}" in
-changed | all) ;;
-*)
-  echo "Usage: $0 [changed|all]" >&2
-  exit 1
-  ;;
+  changed | all) ;;
+  *)
+    echo "Usage: $0 [changed|all]" >&2
+    exit 1
+    ;;
 esac
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
