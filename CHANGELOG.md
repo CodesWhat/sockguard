@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-09-07
+
 ### Changed
 
 - The Qlty gate is green on `dev/v2.2` again. CI's `qlty check --all` exits 1 on `note`-level findings too, so the six left after the plugin set landed (one `actionlint:shellcheck` SC2153 in `quality-mutation-monthly.yml`, upstream's own FIXME/TODO in the mirrored `buildkitproto` protobuf, and three `NOTE:` comment markers) were failing Go CI / Qlty Check on every PR and on the dev branch itself. The SC2153 line carries a `shellcheck disable` directive (the variable really is assigned, in the step's `env:` block); the three comments drop the `NOTE:` prefix; and `app/internal/buildkitproto/**` is triaged out of the `ripgrep` marker rules because its FIXME/TODO text is upstream moby/buildkit's and must stay byte-identical for the provenance check.
