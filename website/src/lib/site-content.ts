@@ -259,6 +259,19 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
+    version: "v2.2.1",
+    title: "Security Patch: Block Devices, Deny Globs, Duplicate Keys",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "A local volume can no longer mount a raw host block device through a type/device pair that asks for no bind; the device is checked against allowed_bind_mounts like a bind would be",
+      "A path segment carrying a literal * can no longer slip past a deny rule whose segment glob is not a bare star; the fast-path walker now agrees with its anchored regex, and FuzzCompileRule holds every matcher to that regex",
+      "Two byte-identical keys in one JSON object are rejected alongside case-variant pairs, and the guard no longer builds a JSON tree the decode after it cannot share",
+      "The visibility and owner-isolation filters decode a gzip-compressed upstream body instead of answering every scoped read with a 502",
+      "The monthly mutation score moves from 96.5% to 97.8%, release-from-tag pins the chart image digest after each stable publish, and the nightly deep-fuzz job runs harden-runner in audit so its legs stop being killed",
+    ],
+  },
+  {
     version: "v2.3.0",
     title: "BuildKit RUN-Instruction Coverage",
     emoji: "🧩",
