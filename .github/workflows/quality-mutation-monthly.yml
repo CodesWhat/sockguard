@@ -227,7 +227,10 @@ jobs:
           # from the same discover job that produced the matrix, so the two
           # cannot disagree; scripts/mutation-badge-matrix.test.mjs checks
           # that wiring.
-          # shellcheck disable=SC2153 -- EXPECTED_REPORTS is set in this step's env block above
+          # EXPECTED_REPORTS is set in this step's env block above, which the
+          # script-level linter can't see (a comment starting with the linter's
+          # own name is parsed as a directive, hence the wording).
+          # shellcheck disable=SC2153
           expected_reports=${EXPECTED_REPORTS}
 
           # `if: always()` runs this job even when discover failed and never
