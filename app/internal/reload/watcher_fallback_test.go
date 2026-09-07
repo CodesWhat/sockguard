@@ -157,7 +157,7 @@ func TestFsnotifyWatcherRemoveIsDeadCode(t *testing.T) {
 		t.Fatalf("watcher.Remove(%q): %v", dir, removeErr)
 	}
 
-	// NOTE: fsnotifyWatcher.Remove is never invoked by the reload loop — the
+	// fsnotifyWatcher.Remove is never invoked by the reload loop — the
 	// loop only calls Add (once, for the parent directory), Events(), Errors(),
 	// and Close(). The method exists solely because the Watcher interface
 	// requires it. Any future refactor that removes the method from the

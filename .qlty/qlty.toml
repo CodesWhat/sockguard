@@ -104,6 +104,15 @@ name = "trufflehog"
 [[plugin]]
 name = "yamllint"
 
+# app/internal/buildkitproto mirrors upstream moby/buildkit protobuf sources
+# and their protoc-gen-go output verbatim (see PROVENANCE.md there); the
+# FIXME/TODO markers in ops.proto and ops.pb.go are upstream's, and rewriting
+# them would break the byte-for-byte provenance check.
+[[triage]]
+match.rules = ["ripgrep:FIXME", "ripgrep:TODO", "ripgrep:XXX", "ripgrep:HACK"]
+match.file_patterns = ["app/internal/buildkitproto/**"]
+set.ignored = true
+
 # markdownlint table column style is low-signal for this repository's docs
 # format, same as portwing and drydock.
 [[triage]]

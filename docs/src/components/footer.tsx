@@ -6,7 +6,7 @@ import type { AnalyticsCtaId } from "@/lib/analytics-contract";
 import { iconButtonCn, navLinkCn } from "@/lib/class-names";
 import { BASE_PATH, GITHUB_RELEASES_URL, GITHUB_URL, SITE_CONFIG } from "@/lib/site-config";
 
-// NOTE: All navigation links here are plain <a> anchors, not Next <Link>.
+// All navigation links here are plain <a> anchors, not Next <Link>.
 // The docs app runs under basePath="/docs", which causes Next <Link> to prefix
 // every href with /docs — sending /docs to /docs/docs and / to /docs/.
 // Plain <a> tags resolve at the origin root and are not affected by basePath.
