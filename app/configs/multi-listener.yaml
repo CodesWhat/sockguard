@@ -74,9 +74,9 @@ clients:
   # even runs.
   unix_peer_profiles:
     - profile: ci
-      uids: [1000] # replace with your CI runner's real UID
+      uids: [1000]  # replace with your CI runner's real UID
     - profile: ops
-      uids: [1001] # replace with your operator process's real UID
+      uids: [1001]  # replace with your operator process's real UID
 
   profiles:
     # ci: CI-runner-shaped policy — container lifecycle, image pull, and a

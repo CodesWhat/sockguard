@@ -1,8 +1,18 @@
 ---
-# Tunes yamllint for CodeRabbit's review pass — nothing in CI or lefthook
-# runs this locally, see .coderabbit.yaml tools.yamllint
+# Tunes yamllint for CodeRabbit's review pass (see .coderabbit.yaml
+# tools.yamllint) and is qlty-managed for the Qlty gate (see .qlty/qlty.toml).
 extends: default
 rules:
   document-start: disable
   truthy: disable
   line-length: disable
+  # Filter rule fixtures and every docs page use the flow-mapping spelling
+  # `{ match: ..., action: ... }` on purpose; default yamllint rejects the
+  # inner spacing.
+  braces:
+    min-spaces-inside: 0
+    max-spaces-inside: -1
+  commas:
+    max-spaces-before: 0
+    min-spaces-after: 1
+    max-spaces-after: -1

@@ -28,5 +28,5 @@ permissions: {}
 jobs:
   released:
     permissions:
-      contents: read # Read main and its tags.
-    uses: CodesWhat/.github/.github/workflows/main-is-released.yml@11004e42d7d19e86eb3b7777c467ec9522b784e1 # main 2026-08-21
+      contents: read  # Read main and its tags.
+    uses: CodesWhat/.github/.github/workflows/main-is-released.yml@11004e42d7d19e86eb3b7777c467ec9522b784e1  # main 2026-08-21

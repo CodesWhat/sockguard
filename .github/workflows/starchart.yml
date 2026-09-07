@@ -27,8 +27,8 @@ permissions: {}
 jobs:
   starchart:
     permissions:
-      contents: write # Commit the regenerated pair back to the dispatched branch.
-    uses: CodesWhat/.github/.github/workflows/starchart-refresh.yml@11004e42d7d19e86eb3b7777c467ec9522b784e1 # main 2026-08-21
+      contents: write  # Commit the regenerated pair back to the dispatched branch.
+    uses: CodesWhat/.github/.github/workflows/starchart-refresh.yml@11004e42d7d19e86eb3b7777c467ec9522b784e1  # main 2026-08-21
     with:
       # The branch the dispatch ran on, so nothing rotates at a branch cut.
       # The reusable workflow rejects a default-branch target, so a stray
