@@ -45,3 +45,37 @@ test("the release guide includes the publication readback gates", () => {
   assert.match(releasing, /persists the GHCR image's linked artifact metadata/);
   assert.match(releasing, /GitHub release notes match the tagged CHANGELOG entry/);
 });
+
+test("the chart image pin lands on the development branch and never on main", () => {
+  const workflow = read(".github/workflows/release-from-tag.yml");
+  const release = workflowJob(workflow, "release");
+  const pin = workflowJob(workflow, "pin-chart-digest");
+
+  // main only advances through a promotion PR, so the pin commit has to go
+  // to the branch renovate.json names. Every cut through v2.2.0 (#430, #492)
+  // did this by hand afterwards.
+  assert.match(pin, /^ {4}needs: \[release, verify-published, verify-homebrew\]$/m);
+  assert.match(pin, /^ {4}if: \$\{\{ !contains\(github\.ref_name, '-'\) \}\}$/m);
+  assert.match(pin, /^ {6}contents: write {2}# the pin commit/m);
+  assert.match(pin, /bash scripts\/ci\/active-dev-branch\.sh renovate\.json/);
+  assert.match(pin, /git push origin "HEAD:refs\/heads\/\$\{TARGET_BRANCH\}"/);
+  assert.doesNotMatch(pin, /github\.event\.repository\.default_branch \}\}"/);
+
+  // The digest it writes has to be the one the publish job pushed, not
+  // merely whatever the tag resolves to when this job runs.
+  assert.match(
+    release,
+    /^ {4}outputs:\n(?: {6}#.*\n)* {6}digest: \$\{\{ steps\.digest\.outputs\.value \}\}$/m,
+  );
+  assert.match(pin, /BUILD_DIGEST: \$\{\{ needs\.release\.outputs\.digest \}\}/);
+  assert.match(pin, /if \[ "\$\{digest\}" != "\$\{BUILD_DIGEST\}" \]; then/);
+  assert.match(pin, /refusing to pin a digest this pipeline did not push/);
+
+  assert.match(pin, /node scripts\/pin-chart-image-digest\.mjs \\/);
+  assert.match(pin, /node --test scripts\/release-metadata\.test\.mjs/);
+  assert.match(
+    pin,
+    /git commit -m "chore\(chart\): pin the \$\{RELEASE_VERSION\} image to its multi-arch digest"/,
+  );
+  assert.match(pin, /nothing to commit/);
+});

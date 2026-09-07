@@ -85,6 +85,7 @@ jobs:
           - { name: FuzzContainerCreatePolicyInspectEndpointConfig, pkg: ./internal/filter/ }
           - { name: FuzzContainerCreateEndpointConfigGates, pkg: ./internal/filter/ }
           - { name: FuzzResourceLimitGuardContainerRequestDecode, pkg: ./internal/filter/ }
+          - { name: FuzzDuplicateCaseVariantKeyScan, pkg: ./internal/filter/ }
           - { name: FuzzLoadYAML,                  pkg: ./internal/config/ }
           - { name: FuzzLoadBytesEndpointConfig,   pkg: ./internal/config/ }
           - { name: FuzzEffectiveListenerValidation, pkg: ./internal/config/ }
@@ -99,6 +100,7 @@ jobs:
           - { name: FuzzOwnershipMutateServiceBody, pkg: ./internal/ownership/ }
           - { name: FuzzFilterModifyResponse,      pkg: ./internal/responsefilter/ }
           - { name: FuzzFilterSystemDataUsage,     pkg: ./internal/responsefilter/ }
+          - { name: FuzzDecodeResponseBody,        pkg: ./internal/bodycodec/ }
           - { name: FuzzImmutableListenerDiff,     pkg: ./internal/reload/ }
           - { name: FuzzBuildConfig,               pkg: ./internal/policybundle/ }
           - { name: FuzzToRegexString,             pkg: ./internal/glob/ }
