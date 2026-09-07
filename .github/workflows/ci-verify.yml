@@ -155,7 +155,7 @@ jobs:
       actions: read
       contents: read
       security-events: write
-    uses: CodesWhat/.github/.github/workflows/go-ci.yml@01bf40b06b110946f12a49b82e407d77c6480df7 # main, 2026-08-16 (no tags in .github; comment cites freeze date)
+    uses: CodesWhat/.github/.github/workflows/go-ci.yml@01bf40b06b110946f12a49b82e407d77c6480df7  # main, 2026-08-16 (no tags in .github; comment cites freeze date)
     with:
       module-directory: app
       go-version-file: go.mod
@@ -219,7 +219,7 @@ jobs:
     if: github.event_name != 'schedule'
     permissions:
       contents: read
-    uses: CodesWhat/.github/.github/workflows/node-ci.yml@01bf40b06b110946f12a49b82e407d77c6480df7 # main, 2026-08-16 (no tags in .github; comment cites freeze date)
+    uses: CodesWhat/.github/.github/workflows/node-ci.yml@01bf40b06b110946f12a49b82e407d77c6480df7  # main, 2026-08-16 (no tags in .github; comment cites freeze date)
     with:
       node-version: 24
       lockfile-path: package-lock.json

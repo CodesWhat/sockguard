@@ -22,7 +22,7 @@ ARTIFACT_ROOT=""
 KEEP_WORK="0"
 DRY_RUN="0"
 
-# shellcheck source=scripts/fuzz-duration.sh
+# shellcheck source=scripts/fuzz-duration.sh disable=SC1091
 source "$REPO_ROOT/scripts/fuzz-duration.sh"
 
 usage() {
@@ -63,7 +63,7 @@ find_go() {
     return 0
   fi
   for candidate in /opt/homebrew/bin/go /usr/local/go/bin/go /usr/local/bin/go; do
-    if [[ -x "$candidate" ]]; then
+    if [[ -x $candidate ]]; then
       printf '%s\n' "$candidate"
       return 0
     fi
@@ -125,7 +125,7 @@ while [[ $# -gt 0 ]]; do
       DRY_RUN="1"
       shift
       ;;
-    -h|--help)
+    -h | --help)
       usage
       exit 0
       ;;
@@ -136,14 +136,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$JOBS" in
-  ''|*[!0-9]*) die "--jobs must be a positive integer" ;;
+  '' | *[!0-9]*) die "--jobs must be a positive integer" ;;
 esac
 
-if [[ -n "$GO_PARALLEL" ]]; then
+if [[ -n $GO_PARALLEL ]]; then
   case "$GO_PARALLEL" in
-    ''|*[!0-9]*) die "--parallel must be a positive integer" ;;
+    '' | *[!0-9]*) die "--parallel must be a positive integer" ;;
   esac
-  if [[ "$GO_PARALLEL" -lt 1 ]]; then
+  if [[ $GO_PARALLEL -lt 1 ]]; then
     die "--parallel must be a positive integer"
   fi
 fi
@@ -151,7 +151,7 @@ fi
 if ! fuzz_duration_to_seconds "$FUZZTIME" >/dev/null; then
   die "--fuzztime must use h/m/s components, for example 60s, 15m, or 1h30m"
 fi
-if [[ -z "$TEST_TIMEOUT" ]]; then
+if [[ -z $TEST_TIMEOUT ]]; then
   TEST_TIMEOUT="$(fuzz_timeout_for_budget "$FUZZTIME")" || die "failed to derive --timeout from --fuzztime"
 elif ! fuzz_duration_to_seconds "$TEST_TIMEOUT" >/dev/null; then
   die "--timeout must use h/m/s components, for example 10m, 1h15m, or 2h"
@@ -213,7 +213,7 @@ case "$SUITE" in
   response)
     add_entry "FuzzFilterModifyResponse" "./internal/responsefilter/"
     ;;
-  all|ultra)
+  all | ultra)
     add_filter_entries
     add_entry "FuzzLoadYAML" "./internal/config/"
     add_proxy_entries
@@ -224,14 +224,14 @@ case "$SUITE" in
     ;;
 esac
 
-if [[ "$JOBS" -eq 0 ]]; then
+if [[ $JOBS -eq 0 ]]; then
   JOBS="${#ENTRIES[@]}"
-  if [[ "$JOBS" -gt 4 ]]; then
+  if [[ $JOBS -gt 4 ]]; then
     JOBS="4"
   fi
 fi
 
-if [[ "$JOBS" -lt 1 ]]; then
+if [[ $JOBS -lt 1 ]]; then
   die "--jobs must be a positive integer"
 fi
 
@@ -239,7 +239,7 @@ native_command_text() {
   local fuzzer="$1"
   local pkg="$2"
   printf "go test -run='^$' -fuzz='^%s$' -fuzztime=%s -timeout=%s" "$fuzzer" "$FUZZTIME" "$TEST_TIMEOUT"
-  if [[ -n "$GO_PARALLEL" ]]; then
+  if [[ -n $GO_PARALLEL ]]; then
     printf " -parallel=%s" "$GO_PARALLEL"
   fi
   printf " %s" "$pkg"
@@ -250,11 +250,11 @@ docker_command_text() {
   local pkg="$2"
   local repo_path="${3:-<isolated-repo>}"
   local platform_args=()
-  if [[ -n "$PLATFORM" ]]; then
+  if [[ -n $PLATFORM ]]; then
     platform_args=(--platform "$PLATFORM")
   fi
   printf "docker run --rm"
-  if [[ "${#platform_args[@]}" -gt 0 ]]; then
+  if [[ ${#platform_args[@]} -gt 0 ]]; then
     printf " %s %s" "${platform_args[0]}" "${platform_args[1]}"
   fi
   printf " -v '%s:/src' -w /src/app -e GOTOOLCHAIN=local %s sh -lc " \
@@ -264,27 +264,27 @@ docker_command_text() {
     "$fuzzer" \
     "$FUZZTIME" \
     "$TEST_TIMEOUT"
-  if [[ -n "$GO_PARALLEL" ]]; then
+  if [[ -n $GO_PARALLEL ]]; then
     printf " -parallel=%s" "$GO_PARALLEL"
   fi
   printf " '%s'\"" "$pkg"
 }
 
-if [[ "$DRY_RUN" = "1" ]]; then
+if [[ $DRY_RUN == "1" ]]; then
   echo "suite: $SUITE"
   echo "fuzztime: $FUZZTIME"
   echo "timeout: $TEST_TIMEOUT"
   echo "jobs: $JOBS"
-  if [[ -n "$GO_PARALLEL" ]]; then
+  if [[ -n $GO_PARALLEL ]]; then
     echo "parallel: $GO_PARALLEL"
   fi
-  echo "runner: $([[ "$USE_DOCKER" = "1" ]] && echo docker || echo native)"
+  echo "runner: $([[ $USE_DOCKER == "1" ]] && echo docker || echo native)"
   echo
   for entry in "${ENTRIES[@]}"; do
     fuzzer="${entry%%|*}"
     pkg="${entry#*|}"
     echo "[$fuzzer] $pkg"
-    if [[ "$USE_DOCKER" = "1" ]]; then
+    if [[ $USE_DOCKER == "1" ]]; then
       docker_command_text "$fuzzer" "$pkg"
     else
       native_command_text "$fuzzer" "$pkg"
@@ -294,32 +294,32 @@ if [[ "$DRY_RUN" = "1" ]]; then
   exit 0
 fi
 
-if [[ "$USE_DOCKER" = "1" ]]; then
+if [[ $USE_DOCKER == "1" ]]; then
   command -v docker >/dev/null 2>&1 || die "docker is required for --docker"
 else
   GO_BIN="$(find_go)" || die "go is required for native fuzzing"
 fi
 
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-if [[ -z "$ARTIFACT_ROOT" ]]; then
+if [[ -z $ARTIFACT_ROOT ]]; then
   ARTIFACT_ROOT="$REPO_ROOT/.fuzz-artifacts/$timestamp"
 fi
 ARTIFACT_ROOT="$(mkdir -p "$ARTIFACT_ROOT" && cd "$ARTIFACT_ROOT" && pwd)"
 
-if [[ "$USE_DOCKER" = "1" ]]; then
+if [[ $USE_DOCKER == "1" ]]; then
   mkdir -p "$REPO_ROOT/.fuzz-artifacts/.work"
   WORK_ROOT="$(mktemp -d "$REPO_ROOT/.fuzz-artifacts/.work/$timestamp.XXXXXX")"
 else
   WORK_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/sockguard-local-fuzz.XXXXXX")"
 fi
 cleanup_work_root() {
-  if [[ -d "$WORK_ROOT" ]]; then
+  if [[ -d $WORK_ROOT ]]; then
     chmod -R u+w "$WORK_ROOT" 2>/dev/null || true
     rm -rf "$WORK_ROOT"
   fi
 }
 
-if [[ "$KEEP_WORK" != "1" ]]; then
+if [[ $KEEP_WORK != "1" ]]; then
   trap cleanup_work_root EXIT
 fi
 
@@ -341,12 +341,12 @@ run_native_fuzzer() {
       GOTMPDIR="$repo/.gotmp" \
       GOFLAGS="-mod=readonly" \
       "$GO_BIN" test \
-        -run='^$' \
-        -fuzz="^${fuzzer}$" \
-        -fuzztime="$FUZZTIME" \
-        -timeout="$TEST_TIMEOUT" \
-        ${GO_PARALLEL:+-parallel="$GO_PARALLEL"} \
-        "$pkg"
+      -run='^$' \
+      -fuzz="^${fuzzer}$" \
+      -fuzztime="$FUZZTIME" \
+      -timeout="$TEST_TIMEOUT" \
+      ${GO_PARALLEL:+-parallel="$GO_PARALLEL"} \
+      "$pkg"
   )
 }
 
@@ -378,7 +378,7 @@ replay_docker_input() {
   local fuzzer="$2"
   local pkg="$3"
   local input="$4"
-  if [[ -n "$PLATFORM" ]]; then
+  if [[ -n $PLATFORM ]]; then
     docker run --rm --platform "$PLATFORM" \
       -v "$repo:/src" \
       -w /src/app \
@@ -413,7 +413,7 @@ collect_and_replay() {
 
     local replay_log
     replay_log="$out_dir/replay-$(basename "$input").log"
-    if [[ "$USE_DOCKER" = "1" ]]; then
+    if [[ $USE_DOCKER == "1" ]]; then
       if replay_docker_input "$repo" "$fuzzer" "$pkg" "$input" >"$replay_log" 2>&1; then
         echo "replay $(basename "$input"): PASS" >>"$out_dir/summary.txt"
       else
@@ -428,7 +428,7 @@ collect_and_replay() {
     fi
   done < <(find "$repo/app/internal" -path "*/testdata/fuzz/$fuzzer/*" -type f 2>/dev/null | sort)
 
-  if [[ "$found" -eq 0 ]]; then
+  if [[ $found -eq 0 ]]; then
     echo "no corpus files found for $fuzzer" >>"$out_dir/summary.txt"
   fi
 }
@@ -450,11 +450,11 @@ run_one() {
     echo "package: $pkg"
     echo "fuzztime: $FUZZTIME"
     echo "timeout: $TEST_TIMEOUT"
-    echo "runner: $([[ "$USE_DOCKER" = "1" ]] && echo docker || echo native)"
-    if [[ -n "$GO_PARALLEL" ]]; then
+    echo "runner: $([[ $USE_DOCKER == "1" ]] && echo docker || echo native)"
+    if [[ -n $GO_PARALLEL ]]; then
       echo "parallel: $GO_PARALLEL"
     fi
-    if [[ "$USE_DOCKER" = "1" && -n "$PLATFORM" ]]; then
+    if [[ $USE_DOCKER == "1" && -n $PLATFORM ]]; then
       echo "platform: $PLATFORM"
     fi
     echo
@@ -463,7 +463,7 @@ run_one() {
   copy_repo "$repo"
 
   local command_log="$out_dir/command.txt"
-  if [[ "$USE_DOCKER" = "1" ]]; then
+  if [[ $USE_DOCKER == "1" ]]; then
     docker_command_text "$fuzzer" "$pkg" "$repo" >"$command_log"
   else
     native_command_text "$fuzzer" "$pkg" >"$command_log"
@@ -471,7 +471,7 @@ run_one() {
 
   local fuzz_log="$out_dir/fuzz.log"
   echo "[$fuzzer] start"
-  if [[ "$USE_DOCKER" = "1" ]]; then
+  if [[ $USE_DOCKER == "1" ]]; then
     if run_docker_fuzzer "$repo" "$fuzzer" "$pkg" >"$fuzz_log" 2>&1; then
       echo "result: PASS" >>"$out_dir/summary.txt"
       echo "[$fuzzer] PASS"
@@ -497,17 +497,17 @@ echo "Suite:      $SUITE (${#ENTRIES[@]} fuzzers)"
 echo "Fuzztime:   $FUZZTIME"
 echo "Timeout:    $TEST_TIMEOUT"
 echo "Jobs:       $JOBS"
-if [[ -n "$GO_PARALLEL" ]]; then
+if [[ -n $GO_PARALLEL ]]; then
   echo "Parallel:   $GO_PARALLEL"
 fi
-echo "Runner:     $([[ "$USE_DOCKER" = "1" ]] && echo docker || echo native)"
+echo "Runner:     $([[ $USE_DOCKER == "1" ]] && echo docker || echo native)"
 echo
 
 declare -a PIDS=()
 declare -a PID_NAMES=()
 
 for i in "${!ENTRIES[@]}"; do
-  while [[ "$(jobs -pr | wc -l | tr -d ' ')" -ge "$JOBS" ]]; do
+  while [[ "$(jobs -pr | wc -l | tr -d ' ')" -ge $JOBS ]]; do
     sleep 0.2
   done
   run_one "${ENTRIES[$i]}" "$i" &
@@ -529,14 +529,14 @@ done
   echo "- Suite: $SUITE"
   echo "- Fuzztime: $FUZZTIME"
   echo "- Timeout: $TEST_TIMEOUT"
-  echo "- Runner: $([[ "$USE_DOCKER" = "1" ]] && echo docker || echo native)"
+  echo "- Runner: $([[ $USE_DOCKER == "1" ]] && echo docker || echo native)"
   echo "- Jobs: $JOBS"
-  if [[ -n "$GO_PARALLEL" ]]; then
+  if [[ -n $GO_PARALLEL ]]; then
     echo "- Parallel: $GO_PARALLEL"
   fi
   echo
   for dir in "$ARTIFACT_ROOT"/*; do
-    [[ -d "$dir" ]] || continue
+    [[ -d $dir ]] || continue
     echo "## $(basename "$dir")"
     sed 's/^/- /' "$dir/summary.txt"
     echo
@@ -546,6 +546,6 @@ done
 echo
 echo "Summary: $ARTIFACT_ROOT/summary.md"
 
-if [[ "$failed" -ne 0 ]]; then
+if [[ $failed -ne 0 ]]; then
   exit 1
 fi

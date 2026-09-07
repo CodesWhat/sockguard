@@ -1,5 +1,5 @@
 {
-  "$comment": "Tunes markdownlint for CodeRabbit's review pass — nothing in CI or lefthook runs this locally, see .coderabbit.yaml tools.markdownlint",
+  "$comment": "Tunes markdownlint for CodeRabbit's review pass (see .coderabbit.yaml tools.markdownlint) and is qlty-managed for the Qlty gate (see .qlty/qlty.toml).",
   "MD013": false,
   "MD024": false,
   "MD033": false,

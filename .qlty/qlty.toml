@@ -19,6 +19,11 @@ exclude_patterns = [
   ".planning/**",
   ".qlty/**",
   ".secrets/**",
+  # Rendered Helm templates, not standalone YAML: unresolved `{{ ... }}`
+  # directives (e.g. a bare `{{- if ... }}` opening a line) are not valid YAML
+  # syntax before `helm template` runs, so yamllint's parser errors on them
+  # rather than producing lint signal.
+  "chart/**/templates/**",
 ]
 
 test_patterns = [
@@ -125,4 +130,85 @@ set.ignored = true
 # identical advisory.
 [[triage]]
 match.rules = ["osv-scanner:GO-2026-5932"]
+set.ignored = true
+
+# chart/sockguard/values.yaml deliberately nests commented-out example keys
+# under an empty `{}`/`[]` collection (policyBundleTrust.secretRef,
+# resources, tolerations) to show the shape a user would fill in. yamllint's
+# comments-indentation wants those comments to match the next real
+# sibling's indent instead of the collection they annotate, which would
+# flatten the example and lose the nesting it exists to show.
+[[triage]]
+match.rules = ["yamllint:comments-indentation"]
+match.file_patterns = ["chart/sockguard/values.yaml"]
+set.ignored = true
+
+# The final stage is cgr.dev/chainguard/static (see CLAUDE.md Key
+# Constraints): no shell, no package manager, nothing to run curl/wget with,
+# and sockguard has no self-check CLI subcommand yet to exec directly. A
+# real HEALTHCHECK needs that subcommand added first — tracked as a
+# follow-up, not something a CI-config PR should grow.
+[[triage]]
+match.rules = ["checkov:CKV_DOCKER_2"]
+set.ignored = true
+
+# Merging the go-build RUN with the following `install`/`touch` RUN breaks
+# scripts/go-module-layout.test.mjs's "container and coverage tooling
+# preserve app as the package subdirectory" test, which anchors a regex on
+# `-o /sockguard ./app/cmd/sockguard/` being the last line of that RUN
+# (confirmed: merging the two makes that test fail). Two RUN layers here
+# cost nothing at runtime this image cares about, and rewriting the test's
+# regex to accommodate a purely cosmetic layer-count change is out of scope
+# for a CI-config PR.
+[[triage]]
+match.rules = ["radarlint-iac:docker:S7031"]
+set.ignored = true
+
+# GitHub added the "artifact-metadata" permission scope after qlty's bundled
+# actionlint was last updated; the raven-actions/actionlint job in
+# ci-verify.yml installs latest and already accepts it (in production use
+# since the release-publish job first shipped it). qlty's actionlint just
+# hasn't caught up to the new scope name yet.
+[[triage]]
+match.rules = ["actionlint:permissions"]
+set.ignored = true
+
+# Formatting backlog, follow-up DEP-7c. 11 shell scripts still fail shfmt
+# after .editorconfig fixed the tabs-vs-spaces and switch-case-indent
+# mismatch for most of the tree (see .editorconfig); the remainder need a
+# per-file review before reformatting rather than a blind `qlty fmt`, since
+# case-indent conventions are inconsistent across the existing scripts.
+# Ignored here so enabling the plugin set doesn't block every PR on a
+# pre-existing backlog it didn't introduce; DEP-7c fixes the scripts and
+# removes this entry.
+[[triage]]
+match.rules = ["shfmt:fmt"]
+set.ignored = true
+
+# Formatting backlog, follow-up DEP-7c. 15 Markdown files (102 MD049, 14
+# MD034, 11 MD040, 10 MD022, 8 markdownlint:fmt, 5 MD038, 5 MD036, 5 MD032,
+# 4 MD028, 3 MD037, 1 MD029 -- 168 findings total) predate this PR.
+# markdownlint's own --fix rewrites prose byte-for-byte, including inside
+# inline code spans and `*`-wrapped literals (confirmed on CHANGELOG.md: it
+# collapsed a deliberate double space inside a quoted `issuer: ` code span
+# and ate the space before a literal trailing `libpod ` prefix), so applying
+# it blind against CHANGELOG.md's history and the docs/ pages risks
+# corrupting exactly the text these findings are about. Ignored here so
+# enabling the plugin set doesn't block every PR on a pre-existing backlog it
+# didn't introduce; DEP-7c reviews and fixes each file by hand and removes
+# this entry.
+[[triage]]
+match.rules = [
+  "markdownlint:fmt",
+  "markdownlint:MD022",
+  "markdownlint:MD028",
+  "markdownlint:MD029",
+  "markdownlint:MD032",
+  "markdownlint:MD034",
+  "markdownlint:MD036",
+  "markdownlint:MD037",
+  "markdownlint:MD038",
+  "markdownlint:MD040",
+  "markdownlint:MD049",
+]
 set.ignored = true
