@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The default runner test suite now covers HTTP/2 orchestration, relay metadata and framing, mutual TLS, report failures, cancellation and cleanup through inert subprocess fixtures. These paths contribute to the existing production coverage gate alongside the separate real-Docker integration tests.
+
 - Frontend cleanup gives its final container-absence query a separate bounded timeout after removal, so a slow removal cannot consume verification's entire budget. Runner framing appends an already-bounded payload without manual allocation-size addition, and network teardown explicitly ignores close errors after the result is known.
 
 - BuildKit callback advertisements now recognize the full `/service/method` paths emitted by real clients and preserve only policy-admitted methods. `session.health` also permits the daemon's unary health callback on `/session`, keeping long-running frontend sessions alive.
