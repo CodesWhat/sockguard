@@ -1,8 +1,8 @@
 // Package dockerfileinspect holds the Dockerfile-content heuristics classic
 // POST /build inspection (internal/filter/build.go) and BuildKit gRPC
 // mediation's Dockerfile hold-and-inspect (internal/buildkitproxy, issue
-// #185 phase 5) both need: detecting a `# syntax=` parser-directive frontend
-// override, and detecting a RUN (or ONBUILD RUN) instruction.
+// #185 phase 5) both need: detecting a BuildKit syntax frontend override,
+// and detecting a RUN (or ONBUILD RUN) instruction.
 //
 // This logic used to live as unexported functions in internal/filter/build.go
 // alone. Phase 5's synthesis requires BuildKit's Dockerfile hold-and-inspect
@@ -19,38 +19,69 @@
 // package directly.
 package dockerfileinspect
 
-import "strings"
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"regexp"
+	"strings"
+	"unicode"
+)
 
-// SyntaxFrontend returns the value of a BuildKit `# syntax=` parser directive
-// when one is in force in raw, else "". Directives are only honored by
-// Docker at the very top of the file — the first blank line, regular
-// comment, instruction, or unrecognized directive ends the directive block —
-// so this mirrors that to avoid both bypasses and false positives on later
-// comments. A `# syntax=` directive delegates parsing to an external
-// frontend image that can treat arbitrary tokens as shell execution, so a
-// caller whose RUN-instruction scan is a trust boundary (classic /build's
-// allow_run_instructions gate, BuildKit Solve's Dockerfile hold-and-inspect)
-// must treat its presence as "cannot be inspected," not as content to scan
-// through.
+var syntaxDirectivePattern = regexp.MustCompile(`^([a-zA-Z][a-zA-Z0-9]*)\s*=\s*(.+?)\s*$`)
+
+// SyntaxFrontend returns the frontend selected by BuildKit v0.32.0's
+// DetectSyntax, or "" when no nonempty frontend is selected. It recognizes
+// leading # and // directive blocks and complete JSON objects, after removing
+// one initial UTF-8 BOM and shebang. Blank lines, ordinary comments,
+// instructions, malformed or unknown directives, and duplicate keys end a
+// directive block. A selected frontend can interpret arbitrary input, so
+// callers restricting RUN must reject it before inspecting instructions.
 func SyntaxFrontend(raw []byte) string {
-	for _, line := range strings.Split(string(raw), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "#") {
-			return "" // blank line or instruction ends the directive block
+	raw = bytes.TrimPrefix(raw, []byte{0xef, 0xbb, 0xbf})
+	if bytes.HasPrefix(raw, []byte("#!")) {
+		_, raw, _ = bytes.Cut(raw, []byte("\n"))
+	}
+	for _, prefix := range []string{"#", "//"} {
+		if frontend := syntaxDirective(raw, prefix); frontend != "" {
+			return frontend
 		}
-		key, value, ok := strings.Cut(strings.TrimSpace(strings.TrimPrefix(trimmed, "#")), "=")
+	}
+	var document map[string]any
+	if err := json.Unmarshal(raw, &document); err == nil {
+		frontend, _ := document["syntax"].(string)
+		return frontend
+	}
+	return ""
+}
+
+func syntaxDirective(raw []byte, prefix string) string {
+	// Keep the scanner and expression boundaries aligned with BuildKit's
+	// frontend/dockerfile/parser/directives.go at v0.32.0.
+	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	seen := make(map[string]bool, 3)
+	for scanner.Scan() {
+		line, ok := bytes.CutPrefix(scanner.Bytes(), []byte(prefix))
 		if !ok {
-			return "" // a plain comment (no '=') ends the directive block
+			return ""
 		}
-		switch strings.ToLower(strings.TrimSpace(key)) {
-		case "syntax":
-			if v := strings.TrimSpace(value); v != "" {
-				return v
-			}
-		case "escape":
-			// recognized directive; keep scanning the leading block
+		match := syntaxDirectivePattern.FindSubmatch(bytes.TrimLeftFunc(line, unicode.IsSpace))
+		if len(match) == 0 {
+			return ""
+		}
+		key := strings.ToLower(string(match[1]))
+		switch key {
+		case "syntax", "escape", "check":
 		default:
-			return "" // unknown directive → treated as a comment, ends the block
+			return ""
+		}
+		if seen[key] {
+			return ""
+		}
+		seen[key] = true
+		if key == "syntax" {
+			frontend, _, _ := strings.Cut(string(match[2]), " ")
+			return frontend
 		}
 	}
 	return ""
@@ -74,39 +105,37 @@ func SyntaxFrontend(raw []byte) string {
 func ContainsRunInstruction(raw []byte) bool {
 	cont := escapeChar(raw)
 	lines := strings.Split(string(raw), "\n")
-	var logical string
+	var logical strings.Builder
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
 			continue
 		}
-		if logical == "" && strings.HasPrefix(trimmed, "#") {
+		if logical.Len() == 0 && strings.HasPrefix(trimmed, "#") {
 			continue
 		}
 
-		if logical == "" {
-			logical = trimmed
-		} else {
-			logical += trimmed
+		continued := strings.HasSuffix(trimmed, cont)
+		if continued {
+			trimmed = strings.TrimSuffix(trimmed, cont)
 		}
-
-		if strings.HasSuffix(logical, cont) {
-			logical = strings.TrimSuffix(logical, cont)
+		logical.WriteString(trimmed)
+		if continued {
 			continue
 		}
 
-		instruction := Instruction(logical)
+		instruction := Instruction(logical.String())
 		if instruction == "RUN" || instruction == "ONBUILD RUN" {
 			return true
 		}
-		logical = ""
+		logical.Reset()
 	}
 
-	if logical == "" {
+	if logical.Len() == 0 {
 		return false
 	}
-	instruction := Instruction(logical)
+	instruction := Instruction(logical.String())
 	return instruction == "RUN" || instruction == "ONBUILD RUN"
 }
 

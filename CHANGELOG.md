@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Dockerfile syntax inspection recognizes BuildKit's BOM, shebang, slash-comment, JSON and check-before-syntax forms. Restricted classic builds and FileSync uploads reject external frontend selection consistently. Continued instructions use a builder instead of repeatedly copying the accumulated line, keeping inspection work linear.
+
 - OCI image loads charge cumulative logical blob sizes before hashing or retention, so sparse members cannot expand beyond the inspection budget despite a small compressed archive. Oversized members fail immediately; bounded sparse OCI graphs and Docker archive forwarding remain supported.
 
 - Legacy `HostConfig.Tmpfs` now requires `allow_tmpfs_privileged_options` for effective `exec`, `dev` or `suid` flags. Paired restrictive flags follow Docker's last-wins ordering. Structured mount policy and byte-identical forwarding remain unchanged, and pooled decoding clears legacy mount state between requests.
