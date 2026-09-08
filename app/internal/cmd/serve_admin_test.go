@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/admin"
-	"github.com/codeswhat/sockguard/app/internal/config"
-	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/v2/app/internal/admin"
+	"github.com/codeswhat/sockguard/v2/app/internal/config"
+	"github.com/codeswhat/sockguard/v2/app/internal/filter"
 )
 
 // adminTestRules produces a single allow rule so buildServeHandler succeeds

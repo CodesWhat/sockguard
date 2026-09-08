@@ -10,7 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/v2/app/internal/config"
 )
 
 // buildkitMediationConfigYAML is a config that has migrated off the

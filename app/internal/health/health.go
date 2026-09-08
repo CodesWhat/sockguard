@@ -12,10 +12,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/codeswhat/sockguard/app/internal/dockerclient"
-	"github.com/codeswhat/sockguard/app/internal/httpjson"
-	"github.com/codeswhat/sockguard/app/internal/upstream"
-	"github.com/codeswhat/sockguard/app/internal/version"
+	"github.com/codeswhat/sockguard/v2/app/internal/dockerclient"
+	"github.com/codeswhat/sockguard/v2/app/internal/httpjson"
+	"github.com/codeswhat/sockguard/v2/app/internal/upstream"
+	"github.com/codeswhat/sockguard/v2/app/internal/version"
 )
 
 const healthCacheTTL = 2 * time.Second

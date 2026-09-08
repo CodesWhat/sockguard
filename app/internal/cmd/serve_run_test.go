@@ -22,12 +22,12 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/verify"
 	"github.com/spf13/cobra"
 
-	"github.com/codeswhat/sockguard/app/internal/config"
-	"github.com/codeswhat/sockguard/app/internal/filter"
-	"github.com/codeswhat/sockguard/app/internal/logging"
-	"github.com/codeswhat/sockguard/app/internal/policybundle"
-	"github.com/codeswhat/sockguard/app/internal/testhelp"
-	"github.com/codeswhat/sockguard/app/internal/upstreamflavor"
+	"github.com/codeswhat/sockguard/v2/app/internal/config"
+	"github.com/codeswhat/sockguard/v2/app/internal/filter"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/policybundle"
+	"github.com/codeswhat/sockguard/v2/app/internal/testhelp"
+	"github.com/codeswhat/sockguard/v2/app/internal/upstreamflavor"
 )
 
 type serveTestConn struct {

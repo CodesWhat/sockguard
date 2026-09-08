@@ -5,7 +5,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/dockerfilters"
+	"github.com/codeswhat/sockguard/v2/app/internal/dockerfilters"
 )
 
 // FuzzPodmanEventLabelFilter drives client-controlled `filters` query values

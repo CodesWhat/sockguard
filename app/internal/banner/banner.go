@@ -10,8 +10,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/codeswhat/sockguard/app/internal/ui"
-	"github.com/codeswhat/sockguard/app/internal/version"
+	"github.com/codeswhat/sockguard/v2/app/internal/ui"
+	"github.com/codeswhat/sockguard/v2/app/internal/version"
 )
 
 const art = `                   ▓▓▒

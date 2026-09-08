@@ -12,10 +12,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/config"
-	"github.com/codeswhat/sockguard/app/internal/filter"
-	"github.com/codeswhat/sockguard/app/internal/ownership"
-	"github.com/codeswhat/sockguard/app/internal/responsefilter"
+	"github.com/codeswhat/sockguard/v2/app/internal/config"
+	"github.com/codeswhat/sockguard/v2/app/internal/filter"
+	"github.com/codeswhat/sockguard/v2/app/internal/ownership"
+	"github.com/codeswhat/sockguard/v2/app/internal/responsefilter"
 )
 
 // libpodDFTestLabelKey is the owner label this file stamps on the container it

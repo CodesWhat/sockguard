@@ -10,7 +10,7 @@ import (
 	mapstructure "github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
 
-	"github.com/codeswhat/sockguard/app/internal/boundedio"
+	"github.com/codeswhat/sockguard/v2/app/internal/boundedio"
 )
 
 // MaxConfigFileBytes caps every YAML configuration file read from disk.

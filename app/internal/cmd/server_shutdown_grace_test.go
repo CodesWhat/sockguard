@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/app/internal/health"
-	"github.com/codeswhat/sockguard/app/internal/inbound"
-	"github.com/codeswhat/sockguard/app/internal/metrics"
+	"github.com/codeswhat/sockguard/v2/app/internal/health"
+	"github.com/codeswhat/sockguard/v2/app/internal/inbound"
+	"github.com/codeswhat/sockguard/v2/app/internal/metrics"
 )
 
 // TestShutdownServersConfiguredGracePeriodBoundsInFlightRequests proves that

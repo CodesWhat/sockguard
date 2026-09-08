@@ -23,10 +23,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/app/internal/httpjson"
-	"github.com/codeswhat/sockguard/app/internal/logging"
-	"github.com/codeswhat/sockguard/app/internal/testhelp"
-	"github.com/codeswhat/sockguard/app/internal/upstream"
+	"github.com/codeswhat/sockguard/v2/app/internal/httpjson"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/testhelp"
+	"github.com/codeswhat/sockguard/v2/app/internal/upstream"
 )
 
 const wantHijackHandshakeTimeout = 30 * time.Second

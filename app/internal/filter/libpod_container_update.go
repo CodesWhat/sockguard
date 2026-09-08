@@ -10,7 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
 )
 
 // libpodContainerUpdateSubject prefixes libpod-family denial reasons, matching

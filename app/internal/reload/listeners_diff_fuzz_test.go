@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/v2/app/internal/config"
 )
 
 func FuzzImmutableListenerDiff(f *testing.F) {

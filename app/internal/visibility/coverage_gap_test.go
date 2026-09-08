@@ -12,7 +12,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/v2/app/internal/dockerresource"
 )
 
 // TestResourceVisibleInspectError verifies that when deps.inspectResource

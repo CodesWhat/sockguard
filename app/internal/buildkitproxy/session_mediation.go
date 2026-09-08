@@ -35,9 +35,9 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/codeswhat/sockguard/app/internal/buildkitproto/auth"
-	"github.com/codeswhat/sockguard/app/internal/buildkitproto/secrets"
-	"github.com/codeswhat/sockguard/app/internal/buildkitproto/sshforward"
+	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/auth"
+	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/secrets"
+	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/sshforward"
 )
 
 // decodeMediatedMessage unmarshals payload into msg and runs Phase 3's

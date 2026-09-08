@@ -3,7 +3,7 @@ package filter
 import (
 	"strings"
 
-	"github.com/codeswhat/sockguard/app/internal/apipath"
+	"github.com/codeswhat/sockguard/v2/app/internal/apipath"
 )
 
 // libpodPathPrefix is the literal namespace prefix for Podman's native

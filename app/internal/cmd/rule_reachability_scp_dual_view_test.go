@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/config"
-	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/v2/app/internal/config"
+	"github.com/codeswhat/sockguard/v2/app/internal/filter"
 )
 
 // scpDualViewCatalogPath is the libpod image-SCP catalog template both the

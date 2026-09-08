@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/app/internal/testcert"
+	"github.com/codeswhat/sockguard/v2/app/internal/testcert"
 )
 
 // ── helpers ────────────────────────────────────────────────────────────────────

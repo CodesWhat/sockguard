@@ -4,7 +4,7 @@ import (
 	"os"
 	"regexp"
 
-	"github.com/codeswhat/sockguard/app/internal/upstreamflavor"
+	"github.com/codeswhat/sockguard/v2/app/internal/upstreamflavor"
 )
 
 // HardenedListenSocketMode is the only supported unix-socket permission mode

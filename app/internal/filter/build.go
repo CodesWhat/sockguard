@@ -16,8 +16,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/codeswhat/sockguard/app/internal/dockerfileinspect"
-	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/dockerfileinspect"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
 )
 
 const maxBuildContextBytes = 512 << 20           // 512 MiB (compressed/on-wire cap)

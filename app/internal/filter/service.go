@@ -10,8 +10,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/codeswhat/sockguard/app/internal/imagefetch"
-	"github.com/codeswhat/sockguard/app/internal/imagetrust"
+	"github.com/codeswhat/sockguard/v2/app/internal/imagefetch"
+	"github.com/codeswhat/sockguard/v2/app/internal/imagetrust"
 )
 
 const maxServiceBodyBytes = 1 << 20 // 1 MiB

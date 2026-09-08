@@ -5,10 +5,10 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/codeswhat/sockguard/app/internal/dockerresource"
-	"github.com/codeswhat/sockguard/app/internal/httpjson"
-	"github.com/codeswhat/sockguard/app/internal/imageselector"
-	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/v2/app/internal/httpjson"
+	"github.com/codeswhat/sockguard/v2/app/internal/imageselector"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
 )
 
 const reasonCodeVisibilityImageExport = "visibility_image_export_unscopeable"

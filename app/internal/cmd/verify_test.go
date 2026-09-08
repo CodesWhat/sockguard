@@ -17,7 +17,7 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/spf13/cobra"
 
-	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/v2/app/internal/config"
 )
 
 // verifyEnv holds the throwaway paths one verify test case runs against.
