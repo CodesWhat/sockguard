@@ -33,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Non-Return gateway calls inherit the root build context directly and reject cancellation already visible before dispatch. Incoming-request cancellation still propagates. An admitted Return retains its bounded completion path after normal root completion.
+
 - Secret creation accepts Docker's object-shaped `Driver` when `allow_custom_drivers` is enabled. Default denial, legacy string compatibility, duplicate-object decoding, template gates and original forwarded bodies are preserved.
 
 - Restored seven missing Apple Silicon native dependency entries in the npm lockfile. Fresh Mac checkouts can build the docs and website without manually installing esbuild, Lightning CSS, Tailwind, TypeScript, Sharp, or the analyzer bindings. Existing dependency versions are unchanged.

@@ -52,20 +52,29 @@ func (b *bridge) forwardGatewayMediated(w http.ResponseWriter, r *http.Request, 
 		b.denyGateway(w, method, deny(grpcCodeResourceExhausted, "buildkit_ref_limit_exceeded", "frontend solve limit reached or build closed"))
 		return
 	}
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-	stop := context.AfterFunc(g.ctx, func() {
-		// A successful Return can finish Control.Solve before its own reply
-		// is flushed. Let that already-admitted reply finish within its cap.
-		if method != "Return" || !errors.Is(context.Cause(g.ctx), errGatewayComplete) {
-			cancel()
-		}
-	})
-	defer stop()
+	var ctx context.Context
 	if method == "Return" {
-		var stopReturn context.CancelFunc
-		ctx, stopReturn = context.WithTimeout(ctx, 30*time.Second)
-		defer stopReturn()
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		stop := context.AfterFunc(g.ctx, func() {
+			// A successful Return can finish Control.Solve before its own reply
+			// is flushed. Let that already-admitted reply finish within its cap.
+			if !errors.Is(context.Cause(g.ctx), errGatewayComplete) {
+				cancel()
+			}
+		})
+		defer stop()
+	} else {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(g.ctx)
+		defer cancel()
+		stop := context.AfterFunc(r.Context(), cancel)
+		defer stop()
+		if ctx.Err() != nil || r.Context().Err() != nil {
+			b.denyGateway(w, method, deny(grpcCodePermissionDenied, "buildkit_ref_not_owned", "frontend request or build is no longer active"))
+			return
+		}
 	}
 	out := r.Clone(ctx)
 	out.Header.Set(gatewayBuildHeader, daemonBuildRef(b.session.Key, ids[0]))
