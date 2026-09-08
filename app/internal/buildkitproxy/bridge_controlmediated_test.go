@@ -25,8 +25,8 @@ func newFramedGRPCRequest(t *testing.T, path string, msg proto.Message) *http.Re
 
 // TestBridgeControlMediatedSolve covers forwardControlMediated's Solve path
 // end to end through a live bridge: framing/decode failures, each policy
-// denial reason, ref-cap enforcement, and the admitted case's byte-verbatim
-// forward plus ref registration. Every denial case also asserts the daemon
+// denial reason, ref-cap enforcement, and the admitted case's scoped Ref
+// plus ref registration. Every denial case also asserts the daemon
 // handler was never invoked — a Solve mediation failure must never reach
 // the daemon.
 func TestBridgeControlMediatedSolve(t *testing.T) {
@@ -138,7 +138,7 @@ func TestBridgeControlMediatedSolve(t *testing.T) {
 		}
 	})
 
-	t.Run("admitted Solve forwards the exact frame and registers the ref", func(t *testing.T) {
+	t.Run("admitted Solve scopes the daemon ref and registers the client ref", func(t *testing.T) {
 		tb := newTestBridge(t, EndpointGRPC, allowAllPolicy, DefaultLimits(), echoDaemonHandler())
 
 		payload := mustMarshal(t, &control.SolveRequest{Ref: "admitted-ref", Session: testBuildkitSessionID})
@@ -154,8 +154,9 @@ func TestBridgeControlMediatedSolve(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reading response body: %v", err)
 		}
-		if string(body) != string(frame) {
-			t.Fatalf("response body does not match the original frame verbatim (no re-encoding expected)")
+		expected := grpcFrame(mustMarshal(t, &control.SolveRequest{Ref: daemonBuildRef(tb.session.Key, "admitted-ref"), Session: testBuildkitSessionID}))
+		if string(body) != string(expected) {
+			t.Fatal("forwarded request did not preserve fields other than the scoped ref")
 		}
 		if !tb.registry.OwnsRef(tb.session.Key, "admitted-ref") {
 			t.Fatal("registry does not own the ref from an admitted Solve")

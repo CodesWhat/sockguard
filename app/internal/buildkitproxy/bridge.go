@@ -412,14 +412,15 @@ func isControlMediatedMethod(endpoint Endpoint, service, method string) bool {
 // request message (readUnaryGRPCMessage), decode it with the vendored
 // buildkitproto stubs, run policy checks (evaluateSolveRequest /
 // evaluateStatusRequest, plus Status's ref-ownership check below), and only
-// on admission forward the exact original frame bytes via forwardWithBody —
-// never a re-encoded message, per the #185 Phase 3 constraint. Every denial
+// on admission replace Ref with its client/profile namespace before forwarding.
+// All other protobuf wire bytes stay original, including LLB operation bytes.
+// Every denial
 // path here ends the STREAM only (a per-stream gRPC status plus
 // recordDeniedAndMaybeClose's soft connection-abuse budget), matching the
 // task's fail-closed granularity: "per-stream policy/decode failure -> gRPC
 // status on that stream only, session survives."
 func (b *bridge) forwardControlMediated(w http.ResponseWriter, r *http.Request, service, method string) {
-	frame, payload, err := readUnaryGRPCMessage(r.Body, b.limits.MaxMessageBytes)
+	_, payload, err := readUnaryGRPCMessage(r.Body, b.limits.MaxMessageBytes)
 	if err != nil {
 		if errors.Is(err, errMessageTooLarge) {
 			// Mirrors forward()'s own size-cap handling: a size-cap trip is a
@@ -453,6 +454,9 @@ func (b *bridge) forwardControlMediated(w http.ResponseWriter, r *http.Request, 
 		if d == nil && !b.registry.OwnsRef(b.session.Key, req.GetRef()) {
 			d = deny(grpcCodePermissionDenied, "buildkit_ref_not_owned", "this ref does not belong to an admitted Solve for this client/profile")
 		}
+		if req != nil {
+			ref = req.GetRef()
+		}
 	default:
 		// Unreachable today — isControlMediatedMethod only routes Solve and
 		// Status here — but if it and this switch ever drift (a method added
@@ -466,6 +470,19 @@ func (b *bridge) forwardControlMediated(w http.ResponseWriter, r *http.Request, 
 	if d != nil {
 		writeGRPCStatus(w, d.code, d.message)
 		b.audit(service, method, Deny, d.reasonCode)
+		b.recordDeniedAndMaybeClose()
+		return
+	}
+
+	frame, err := controlRefFrame(payload, daemonBuildRef(b.session.Key, ref), b.limits.MaxMessageBytes)
+	if err != nil {
+		if errors.Is(err, errMessageTooLarge) {
+			writeGRPCStatus(w, grpcCodeResourceExhausted, "namespaced request exceeds sockguard's size cap")
+			b.audit(service, method, Deny, "buildkit_message_too_large")
+			return
+		}
+		writeGRPCStatus(w, grpcCodeInvalidArgument, "malformed BuildKit control ref")
+		b.audit(service, method, Deny, "buildkit_protocol_error")
 		b.recordDeniedAndMaybeClose()
 		return
 	}

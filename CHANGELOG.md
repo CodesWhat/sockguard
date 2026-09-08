@@ -9,9 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Raw-LLB builds can approve individual ExecOps with `request_body.buildkit.control.solve.allowed_exec_digests` while keeping `build.allow_run_instructions: false`. Each lowercase SHA-256 digest covers the original operation bytes, including arguments, environment, mounts and input references. Host networking still requires its own grant; insecure execution, CDI devices, unknown execution modes, and empty commands cannot be approved this way. Admission forwards the original gRPC frame unchanged, and the allowlist remains scoped to the selected client profile.
+- Raw-LLB builds can approve individual ExecOps with `request_body.buildkit.control.solve.allowed_exec_digests` while keeping `build.allow_run_instructions: false`. Each lowercase SHA-256 digest covers the original operation bytes, including arguments, environment, mounts and input references. Host networking still requires its own grant; insecure execution, CDI devices, unknown execution modes, and empty commands cannot be approved this way. Admission preserves the original operation bytes, and the allowlist remains scoped to the selected client profile.
 
 ### Security
+
+- BuildKit Solve and Status refs are translated into a stable client/profile namespace before reaching the daemon. Reusing another client's ref no longer claims its daemon-global job or retained build history. Only the top-level ref changes; all other protobuf bytes, including digest-approved LLB operations, stay original. The translated frame must fit the message cap before any admission state is published.
 
 - Raw LLB containing an unknown operation or a nested `BuildOp` is denied while RUN instructions are restricted. BuildKit's `BuildOp` loads its graph from a filesystem result inside the daemon; checking its optional inline definition did not inspect the graph that actually executes.
 
