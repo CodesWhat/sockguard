@@ -20,13 +20,32 @@ import (
 // a volume that is then mounted by name later — so none of the bind-mount
 // allowlist checks used to see it.
 //
-// The same options map reaches the host a second way, without asking for a
-// bind at all: `{"type":"ext4","device":"/dev/sda1"}` hands the kernel a raw
-// block device and a filesystem driver, which mounts the whole device into
-// the container. That is host-root-equivalent for the same reason a bind of
-// "/" is — it is the host's own storage, read and written outside every
-// namespace boundary — so it is checked against the same allowlist rather
-// than a second one. Every caller here runs each device through the same
+// The same options map reaches the host without asking for a bind at all,
+// and it does so in more than one shape, which is why the gate is a type
+// ALLOWLIST rather than an enumerated list of dangerous spellings:
+//
+//   - `{"type":"ext4","device":"/dev/sda1"}` hands the kernel a raw block
+//     device and a filesystem driver, which mounts the host's own storage
+//     into the container.
+//   - `{"type":"proc","device":"proc"}` (and sysfs, cgroup, debugfs, bpf,
+//     tracefs, securityfs, and every other pseudo-filesystem) ignores the
+//     device entirely and mounts host kernel state. Host /proc alone carries
+//     /proc/1/root, which is the host's root filesystem.
+//   - `{"type":"overlay","device":"overlay","o":"lowerdir=/,upperdir=…"}`
+//     names its host paths in the mount data rather than in `device`, so a
+//     check that only reads `device` never sees them.
+//
+// All three are host-root-equivalent for the same reason a bind of "/" is:
+// they are the host's own storage or its own kernel state, read and written
+// outside every namespace boundary. So the rule is not "which types are
+// dangerous" — a list like that loses to the next filesystem name — but
+// "which types provably do not name a local host path". That set is
+// localVolumeAllowedRemoteTypes: the network filesystems, whose device is a
+// server export, and tmpfs, which ignores the device and allocates its own
+// pages. Everything else, including a request that declares no type at all,
+// has to name a device that passes bindPathAllowed, and the overlay-style
+// directory options in "o" are checked against the same allowlist whatever
+// the type says. Every caller here runs each path through the same
 // bindPathAllowed the bind checks use, so there is a single allowlist and a
 // single place an operator widens it.
 
@@ -54,21 +73,49 @@ var localVolumeBindFilesystemTypes = map[string]bool{
 	"bind": true,
 }
 
-// localVolumeRemoteFilesystemTypes are the "type" values whose device is not
-// a host path at all. The network filesystems take a server export
-// ("nfs-server:/exports", "//host/share") and tmpfs ignores the device
-// entirely, so a device under one of these types never names local storage
-// and is left alone. Every other type — ext4, xfs, btrfs, vfat, and any
-// other kernel filesystem driver, plus a type the request omits — mounts
-// whatever the device points at, which is why the device-path check below
-// applies to all of them rather than to an enumerated block-device list that
-// a new filesystem name would fall out of.
-var localVolumeRemoteFilesystemTypes = map[string]bool{
+// localVolumeAllowedRemoteTypes is the type allowlist: the "type" values
+// whose device provably is not a local host path. The network filesystems
+// take a server export ("nfs-server:/exports", "//host/share") and tmpfs
+// ignores the device entirely and allocates its own pages, so a device under
+// one of these never names local storage and is left alone.
+//
+// It is an allowlist and not a denylist on purpose. Every other type — ext4,
+// xfs, btrfs and vfat over a block device, proc and sysfs and cgroup and
+// every other pseudo-filesystem that ignores the device and mounts host
+// kernel state, overlay, and any kernel filesystem driver that does not exist
+// yet — mounts something of the host's, so all of them fall to the device
+// check below. A type this set does not name is denied unless its device is
+// allowlisted, which is the direction a new filesystem name has to fail in.
+//
+// The cost of the narrow set is a false deny: a working `type=9p` or
+// `type=virtiofs` volume now needs its device spelled in
+// allowed_bind_mounts. That is the fail-closed side, and an operator clears
+// it with one allowlist entry.
+var localVolumeAllowedRemoteTypes = map[string]bool{
 	"nfs":   true,
 	"nfs4":  true,
 	"cifs":  true,
 	"smb3":  true,
 	"tmpfs": true,
+}
+
+// localVolumeHostPathOptions are the "o" keys whose value is a host path (or
+// a colon-separated list of them) rather than a flag or a tunable. They are
+// overlayfs's layer directories, which is the one filesystem in wide use that
+// takes its sources in the mount data instead of in the mount source, so a
+// check that reads only "device" sees nothing at all for
+// `{"type":"overlay","o":"lowerdir=/,upperdir=/u,workdir=/w"}` while the
+// kernel mounts the host's root.
+//
+// The "+" spellings are the kernel's append forms (data-only lower layers),
+// listed because they reach the same parser and leaving them out would be a
+// hole of exactly the shape this closes.
+var localVolumeHostPathOptions = map[string]bool{
+	"lowerdir":  true,
+	"lowerdir+": true,
+	"datadir+":  true,
+	"upperdir":  true,
+	"workdir":   true,
 }
 
 // localVolumeOptions is the decoded view of a local driver options map: every
@@ -83,7 +130,18 @@ var localVolumeRemoteFilesystemTypes = map[string]bool{
 type localVolumeOptions struct {
 	types   []string
 	devices []string
-	bind    bool
+	// hostPaths are the paths named by an "o" key in
+	// localVolumeHostPathOptions, each carrying the key it came from so the
+	// denial can say which option reached the host.
+	hostPaths []localVolumeHostPath
+	bind      bool
+}
+
+// localVolumeHostPath is one path an "o" option names, with the option key
+// that named it.
+type localVolumeHostPath struct {
+	option string
+	path   string
 }
 
 // parseLocalVolumeOptions decodes a local driver options map. It reports
@@ -125,30 +183,95 @@ func parseLocalVolumeOptions(driver string, options map[string]string) (localVol
 				// pass "o" through to mount(2) verbatim, so a device
 				// spelled there reaches the kernel exactly as the
 				// "device" option does.
-				name, deviceValue, hasValue := strings.Cut(option, "=")
-				if !hasValue || !strings.EqualFold(strings.TrimSpace(name), "device") {
+				name, optionValue, hasValue := strings.Cut(option, "=")
+				if !hasValue {
 					continue
 				}
-				if device := strings.TrimSpace(deviceValue); device != "" {
-					parsed.devices = append(parsed.devices, device)
+				name = strings.ToLower(strings.TrimSpace(name))
+				if name == "device" {
+					if device := strings.TrimSpace(optionValue); device != "" {
+						parsed.devices = append(parsed.devices, device)
+					}
+					continue
+				}
+				// overlayfs names its layer directories here rather than in
+				// the mount source, so these reach the host exactly as
+				// "device" does and are checked against the same allowlist
+				// whatever the type says.
+				if !localVolumeHostPathOptions[name] {
+					continue
+				}
+				for _, dir := range splitOverlayDirList(optionValue) {
+					if dir = strings.TrimSpace(dir); dir != "" {
+						parsed.hostPaths = append(parsed.hostPaths, localVolumeHostPath{option: name, path: dir})
+					}
 				}
 			}
 		}
 	}
 
 	slices.Sort(parsed.devices)
+	slices.SortFunc(parsed.hostPaths, func(a, b localVolumeHostPath) int {
+		if c := strings.Compare(a.option, b.option); c != 0 {
+			return c
+		}
+		return strings.Compare(a.path, b.path)
+	})
 	return parsed, true
 }
 
-// mountsHostFilesystem reports whether the options ask the kernel to mount a
-// filesystem off whatever the device names. That is every type other than the
-// network filesystems and tmpfs, and it is also the absent-type case: the
-// local driver with a device and no type builds a mount request the daemon
-// rejects, so denying it costs a working configuration nothing and keeps the
-// gate from turning on a field the request can simply omit.
+// splitOverlayDirList splits an overlayfs directory list the way the kernel's
+// own option parser does: on ":" only when it is unescaped, with "\" escaping
+// the byte that follows it. A path carrying a literal colon is spelled "\:"
+// and has to stay one path, because splitting it would compare two prefixes
+// that are not the directory the kernel mounts.
+//
+// A trailing backslash escapes nothing, so it is kept as itself rather than
+// dropped: the value that gets checked has to be the value the kernel sees.
+func splitOverlayDirList(value string) []string {
+	var (
+		dirs    []string
+		current strings.Builder
+		escaped bool
+	)
+	for i := range len(value) {
+		c := value[i]
+		switch {
+		case escaped:
+			current.WriteByte(c)
+			escaped = false
+		case c == '\\':
+			escaped = true
+		case c == ':':
+			dirs = append(dirs, current.String())
+			current.Reset()
+		default:
+			current.WriteByte(c)
+		}
+	}
+	if escaped {
+		current.WriteByte('\\')
+	}
+	return append(dirs, current.String())
+}
+
+// mountsHostFilesystem reports whether the options ask the kernel to mount
+// something of the host's — its storage over a block device, or its kernel
+// state through a pseudo-filesystem that ignores the device. That is every
+// type localVolumeAllowedRemoteTypes does not name, and it is also the
+// absent-type case: the local driver with a device and no type builds a mount
+// request the daemon rejects, so denying it costs a working configuration
+// nothing and keeps the gate from turning on a field the request can simply
+// omit.
+//
+// A map carrying two spellings of the type key ("type" and "Type") is one
+// request with two live entries whose precedence neither daemon promises, so
+// a single non-allowlisted type among them is enough. That is the
+// conservative direction: the request is denied unless every type it names is
+// one this build can prove reaches no local path.
 func (o localVolumeOptions) mountsHostFilesystem() bool {
 	for _, fsType := range o.types {
-		if !localVolumeRemoteFilesystemTypes[fsType] {
+		if !localVolumeAllowedRemoteTypes[fsType] {
 			return true
 		}
 	}
@@ -188,13 +311,6 @@ func normalizeLocalVolumeDevice(device string) (string, bool) {
 	return path.Clean(trimmed), true
 }
 
-// isHostDevicePath reports whether a normalized device path names a node
-// under /dev, the directory both daemons' host block and character devices
-// live in.
-func isHostDevicePath(device string) bool {
-	return device == "/dev" || strings.HasPrefix(device, "/dev/")
-}
-
 // denyLocalVolumeBindDeviceReason checks every host path a local volume driver
 // options map reaches against allowedBindMounts, using the same prefix rule
 // (bindPathAllowed) a HostConfig.Binds entry or a Type: "bind" mount is
@@ -202,21 +318,32 @@ func isHostDevicePath(device string) bool {
 // request is neither required nor consulted here, exactly as it is not for a
 // "/host:/ctr:ro" bind.
 //
-// There are two ways in and they are checked in order, so a map that asks for
-// both keeps the bind wording it has always had. A bind normalizes with
-// normalizeBindMount, so "/srv/../etc" is compared as "/etc", and a device
-// that is not an absolute path is denied rather than skipped — the one place
-// this differs from the bind checks, which skip a source normalizeBindMount
-// rejects because a relative source in Binds is a named volume and not a host
-// path at all, whereas an options map that has already asked for a bind is
-// naming a device the daemon resolves against its own working directory.
+// There are three ways in and they are checked in order, so a map that asks
+// for more than one keeps the wording of the first.
 //
-// A filesystem type over a /dev path is the second way: it is not a bind, so
-// nothing above sees it, but mounting the host's own block device inside the
-// container reaches the same data an allowlisted bind is there to bound. An
-// operator who genuinely wants one lists the device path in the same
-// allowed_bind_mounts. subject names the endpoint for the denial message so
-// it matches the wording each inspector's other denials use.
+// A bind ("type":"none"/"bind", or an "o" carrying bind/rbind) normalizes
+// with normalizeBindMount, so "/srv/../etc" is compared as "/etc", and a
+// device that is not an absolute path is denied rather than skipped — the one
+// place this differs from the bind checks, which skip a source
+// normalizeBindMount rejects because a relative source in Binds is a named
+// volume and not a host path at all, whereas an options map that has already
+// asked for a bind is naming a device the daemon resolves against its own
+// working directory.
+//
+// A type outside localVolumeAllowedRemoteTypes is the second way: it is not a
+// bind, so nothing above sees it, but it mounts the host's own storage
+// (ext4/xfs/btrfs over a block node) or the host's own kernel state (proc,
+// sysfs, cgroup, debugfs and the rest, which ignore the device entirely and
+// mount it anyway), and both reach the data an allowlisted bind is there to
+// bound. The device is compared as a path whatever it spells, so a bare
+// "proc" is checked as "/proc" and denied unless the allowlist names it.
+//
+// An overlay-style "o" directory is the third, and it runs whatever the type
+// says because "lowerdir=/" reaches the host's root under any type name that
+// gets it past the second check. An operator who genuinely wants any of the
+// three lists the path in the same allowed_bind_mounts. subject names the
+// endpoint for the denial message so it matches the wording each inspector's
+// other denials use.
 func denyLocalVolumeBindDeviceReason(driver string, options map[string]string, allowedBindMounts []string, subject string) string {
 	parsed, local := parseLocalVolumeOptions(driver, options)
 	if !local {
@@ -235,16 +362,29 @@ func denyLocalVolumeBindDeviceReason(driver string, options map[string]string, a
 		}
 	}
 
-	if !parsed.mountsHostFilesystem() {
-		return ""
-	}
-	for _, device := range parsed.devices {
-		source, ok := normalizeLocalVolumeDevice(device)
-		if !ok || !isHostDevicePath(source) {
-			continue
+	if parsed.mountsHostFilesystem() {
+		for _, device := range parsed.devices {
+			// normalizeLocalVolumeDevice only refuses an empty value, which
+			// parseLocalVolumeOptions already drops. Reporting the raw
+			// spelling in that case keeps the message honest rather than
+			// quoting an empty path.
+			source, ok := normalizeLocalVolumeDevice(device)
+			if !ok {
+				source = device
+			}
+			if !ok || !bindPathAllowed(source, allowedBindMounts) {
+				return fmt.Sprintf("%s denied: local volume device %q is not allowlisted", subject, source)
+			}
 		}
-		if !bindPathAllowed(source, allowedBindMounts) {
-			return fmt.Sprintf("%s denied: local volume device %q is not allowlisted", subject, source)
+	}
+
+	for _, hostPath := range parsed.hostPaths {
+		source, ok := normalizeLocalVolumeDevice(hostPath.path)
+		if !ok {
+			source = hostPath.path
+		}
+		if !ok || !bindPathAllowed(source, allowedBindMounts) {
+			return fmt.Sprintf("%s denied: local volume %s path %q is not allowlisted", subject, hostPath.option, source)
 		}
 	}
 

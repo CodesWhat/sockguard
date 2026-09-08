@@ -3,8 +3,11 @@ package filter
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
+	"unicode"
 )
 
 // ---------------------------------------------------------------------------
@@ -349,4 +352,167 @@ func FuzzDuplicateCaseVariantKeyScan(f *testing.F) {
 			t.Fatalf("RejectDuplicateCaseVariantJSONKeys() error = %v, token reference error = %v, body %q", scanErr, refErr, body)
 		}
 	})
+}
+
+// wideCaseVariantBody builds one JSON object with count distinct keys, and
+// optionally appends a final key that case-folds to the first one, so a test
+// can put the duplicate on either side of the pairwise/hashed switch.
+func wideCaseVariantBody(count int, appendCaseVariantOfFirst bool) []byte {
+	var b strings.Builder
+	b.Grow(count * 12)
+	b.WriteByte('{')
+	for i := range count {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, "%q:0", fmt.Sprintf("k%07d", i))
+	}
+	if appendCaseVariantOfFirst {
+		fmt.Fprintf(&b, ",%q:1", "K0000000")
+	}
+	b.WriteByte('}')
+	return []byte(b.String())
+}
+
+// TestCaseVariantScanCrossesTheFanoutLimit pins the switch from the pairwise
+// duplicate check to the hashed one. The two forms have to give the same
+// verdict on both sides of caseVariantFoldFanoutLimit and across it, because
+// the boundary is an implementation detail and a duplicate that lands on the
+// wrong side of it would be a filter bypass.
+func TestCaseVariantScanCrossesTheFanoutLimit(t *testing.T) {
+	tests := []struct {
+		name       string
+		count      int
+		duplicate  bool
+		wantReject bool
+	}{
+		{name: "one under the limit, all distinct", count: caseVariantFoldFanoutLimit - 1},
+		{name: "at the limit, all distinct", count: caseVariantFoldFanoutLimit},
+		{name: "one over the limit, all distinct", count: caseVariantFoldFanoutLimit + 1},
+		{name: "far over the limit, all distinct", count: 4 * caseVariantFoldFanoutLimit},
+		{
+			name:       "the last pairwise sibling is a case variant of the first",
+			count:      caseVariantFoldFanoutLimit - 1,
+			duplicate:  true,
+			wantReject: true,
+		},
+		{
+			name:       "the first hashed sibling is a case variant of the first",
+			count:      caseVariantFoldFanoutLimit,
+			duplicate:  true,
+			wantReject: true,
+		},
+		{
+			name:       "a much later hashed sibling is a case variant of the first",
+			count:      10 * caseVariantFoldFanoutLimit,
+			duplicate:  true,
+			wantReject: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := wideCaseVariantBody(tt.count, tt.duplicate)
+			if !json.Valid(body) {
+				t.Fatalf("fixture is not valid JSON")
+			}
+			err := RejectDuplicateCaseVariantJSONKeys(body)
+			if tt.wantReject {
+				if err == nil {
+					t.Fatalf("RejectDuplicateCaseVariantJSONKeys() = nil, want a duplicate-key error")
+				}
+				const want = `duplicate case-variant JSON keys "k0000000" and "K0000000"`
+				if err.Error() != want {
+					t.Fatalf("error = %q, want %q", err.Error(), want)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("RejectDuplicateCaseVariantJSONKeys() error = %v, want nil", err)
+			}
+			// The token reference shares the rule and none of the parsing, so
+			// it is the independent verdict on the same body.
+			if refErr := tokenCaseVariantReference(body); refErr != nil {
+				t.Fatalf("tokenCaseVariantReference() error = %v, want nil", refErr)
+			}
+		})
+	}
+}
+
+// TestCaseVariantScanStaysLinearOnAWideObject is the availability half of the
+// guard. The sibling count is attacker-controlled all the way to
+// maxContainerCreateBodyBytes, and the pairwise scan this replaced spent 13.5
+// seconds of CPU on one core for a single 1 MiB create body carrying ~80k
+// distinct keys. The budget here is deliberately two orders of magnitude
+// above the hashed scan's measured cost and two below the quadratic one's, so
+// it fails on a return to O(n^2) without flaking on a slow shared runner.
+func TestCaseVariantScanStaysLinearOnAWideObject(t *testing.T) {
+	body := wideCaseVariantBody(80_000, false)
+	if len(body) > maxContainerCreateBodyBytes {
+		t.Fatalf("fixture is %d bytes, past the %d byte create-body cap", len(body), maxContainerCreateBodyBytes)
+	}
+
+	start := time.Now()
+	if err := RejectDuplicateCaseVariantJSONKeys(body); err != nil {
+		t.Fatalf("RejectDuplicateCaseVariantJSONKeys() error = %v", err)
+	}
+	elapsed := time.Since(start)
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("scan of a %d-key body took %v, want under 500ms", 80_000, elapsed)
+	}
+
+	// Same width, duplicate at the very end: the linear form still has to
+	// find it.
+	dup := wideCaseVariantBody(80_000, true)
+	if err := RejectDuplicateCaseVariantJSONKeys(dup); err == nil {
+		t.Fatal("RejectDuplicateCaseVariantJSONKeys() = nil for a duplicate at position 80000, want an error")
+	}
+}
+
+// TestCanonicalFoldKeyMatchesEqualFold is the load-bearing claim under the
+// hashed path: the map can only stand in for the pairwise comparison if
+// having the same canonical form is the same relation as strings.EqualFold.
+// It is checked exhaustively over the BMP and the first two supplementary
+// planes rather than on a sample, because a single rune whose fold class the
+// canonical form splits is a key pair the guard would stop catching.
+func TestCanonicalFoldKeyMatchesEqualFold(t *testing.T) {
+	for r := rune(0); r <= 0x2FFFF; r++ {
+		if r >= 0xD800 && r <= 0xDFFF { // surrogates are not encodable
+			continue
+		}
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			a, b := string(r), string(f)
+			if canonicalFoldKey(a) != canonicalFoldKey(b) {
+				t.Fatalf("canonicalFoldKey(%q) = %q, canonicalFoldKey(%q) = %q, want equal (same fold class)",
+					a, canonicalFoldKey(a), b, canonicalFoldKey(b))
+			}
+			if !strings.EqualFold(a, b) {
+				t.Fatalf("strings.EqualFold(%q, %q) = false but they share a fold class", a, b)
+			}
+		}
+	}
+
+	pairs := []struct {
+		a, b string
+		want bool
+	}{
+		{a: "HostConfig", b: "hostconfig", want: true},
+		{a: "HostConfig", b: "HostConfig", want: true},
+		{a: "K", b: "K", want: true},  // Kelvin sign
+		{a: "S", b: "ſ", want: true},  // long s
+		{a: "ſ", b: "s", want: true},  // and the other way round
+		{a: "I", b: "ı", want: false}, // dotless i is its own class
+		{a: "Image", b: "Images", want: false},
+		{a: "\x80", b: "\x81", want: true}, // both decode to U+FFFD
+		{a: "�", b: "\x80", want: true},
+		{a: "\U0001F600", b: "\U0001F600", want: true},
+		{a: "", b: "", want: true},
+	}
+	for _, p := range pairs {
+		gotCanonical := canonicalFoldKey(p.a) == canonicalFoldKey(p.b)
+		gotFold := strings.EqualFold(p.a, p.b)
+		if gotCanonical != p.want || gotFold != p.want {
+			t.Fatalf("%q vs %q: canonical=%v equalFold=%v, want %v", p.a, p.b, gotCanonical, gotFold, p.want)
+		}
+	}
 }

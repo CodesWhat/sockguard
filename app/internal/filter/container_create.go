@@ -534,7 +534,10 @@ func soleFoldedRawKey(m map[string]json.RawMessage, canonical string) (string, e
 // struct for the guard — so there is no decoded tree to share with them, and
 // building a throwaway map[string]any here only to walk it doubles the parse.
 // The scan below reads the body once and allocates nothing for a body without
-// escaped object keys.
+// escaped object keys, up to the sibling count at which it swaps the pairwise
+// duplicate check for a hashed one to stay linear — see
+// caseVariantFoldFanoutLimit, which sits far above the widest object in the
+// Docker API request types.
 //
 // It deliberately validates only what it must to locate object keys correctly:
 // a malformed body may be reported as a syntax error or walked past, because
@@ -625,6 +628,10 @@ func (s *caseVariantKeyScanner) scanObject(depth int, skip bool) error {
 	}
 	s.pos++ // the '{'
 	keys := s.takeKeyBuf(depth)
+	// folded stays nil until this object crosses caseVariantFoldFanoutLimit
+	// siblings; see rejectFoldDuplicate for why the cheap form is the one
+	// every real body gets.
+	var folded map[string]caseVariantKeySpan
 	for i := 0; ; i++ {
 		s.skipSpace()
 		if s.pos >= len(s.body) {
@@ -653,10 +660,10 @@ func (s *caseVariantKeyScanner) scanObject(depth int, skip bool) error {
 			return err
 		}
 		if !skip {
-			if err := s.rejectFoldDuplicate(keys, key); err != nil {
+			var err error
+			if keys, folded, err = s.recordSiblingKey(keys, folded, key); err != nil {
 				return err
 			}
-			keys = append(keys, key)
 		}
 		s.skipSpace()
 		if s.pos >= len(s.body) || s.body[s.pos] != ':' {
@@ -758,13 +765,105 @@ func (s *caseVariantKeyScanner) skipSpace() {
 	}
 }
 
-func (s *caseVariantKeyScanner) rejectFoldDuplicate(keys []caseVariantKeySpan, key caseVariantKeySpan) error {
+// caseVariantFoldFanoutLimit is the sibling count at which one object stops
+// being checked by comparing pairs and starts being checked by hashing.
+//
+// The pairwise form is the right one for every object a Docker client sends:
+// it allocates nothing, needs no canonical form of a key, and compares raw
+// bytes. But it is O(n^2) in the sibling count, and the sibling count is
+// attacker-controlled up to maxContainerCreateBodyBytes. A 1 MiB create body
+// carrying ~80k distinct short keys is 3.2 billion comparisons, measured at
+// 13.5s of CPU on one core for a single request — a request-rate amplifier
+// against a proxy whose whole job is to stay in front of the daemon.
+//
+// Past this many siblings the keys go into a map keyed by canonicalFoldKey,
+// which makes the whole scan linear. 64 is chosen well above the widest
+// object in the Docker API request types (HostConfig is the biggest at ~60
+// fields, and a body has to exceed the WIDEST object, not the total field
+// count, to pay for the map at all), so nothing a real client sends ever
+// allocates it.
+const caseVariantFoldFanoutLimit = 64
+
+// recordSiblingKey rejects key if it case-folds to a sibling already seen in
+// this object, then records it. It returns the updated key slice and fold map
+// so the caller's locals stay in step with the switch from one to the other.
+//
+// Below caseVariantFoldFanoutLimit siblings this is the pairwise scan it has
+// always been. At the limit the keys seen so far are hashed once and every key
+// after that is a map lookup, so a wide object costs O(n) instead of O(n^2).
+// The verdict is identical either way: canonicalFoldKey is a canonical form of
+// the same equivalence relation keysFoldEqual tests, so two keys collide in
+// the map exactly when the pairwise form would have called them equal.
+func (s *caseVariantKeyScanner) recordSiblingKey(
+	keys []caseVariantKeySpan,
+	folded map[string]caseVariantKeySpan,
+	key caseVariantKeySpan,
+) ([]caseVariantKeySpan, map[string]caseVariantKeySpan, error) {
+	if folded != nil {
+		canonical := canonicalFoldKey(s.keyString(key))
+		if prev, duplicate := folded[canonical]; duplicate {
+			return keys, folded, s.duplicateKeyError(prev, key)
+		}
+		folded[canonical] = key
+		return keys, folded, nil
+	}
+
 	for _, prev := range keys {
 		if s.keysFoldEqual(prev, key) {
-			return fmt.Errorf("duplicate case-variant JSON keys %q and %q", s.keyString(prev), s.keyString(key))
+			return keys, folded, s.duplicateKeyError(prev, key)
 		}
 	}
-	return nil
+	keys = append(keys, key)
+
+	if len(keys) >= caseVariantFoldFanoutLimit {
+		// Every key so far is distinct under the fold, so this cannot find a
+		// collision; it is a straight transfer into the form the rest of the
+		// object is checked in.
+		folded = make(map[string]caseVariantKeySpan, 2*len(keys))
+		for _, prev := range keys {
+			folded[canonicalFoldKey(s.keyString(prev))] = prev
+		}
+	}
+	return keys, folded, nil
+}
+
+func (s *caseVariantKeyScanner) duplicateKeyError(prev, key caseVariantKeySpan) error {
+	return fmt.Errorf("duplicate case-variant JSON keys %q and %q", s.keyString(prev), s.keyString(key))
+}
+
+// canonicalFoldKey returns the representative of key under the same case-fold
+// equivalence strings.EqualFold tests, so two keys have the same canonical
+// form exactly when EqualFold reports them equal.
+//
+// unicode.SimpleFold walks a rune's equivalence class as a cycle, and
+// EqualFold's general case is "is the other rune reachable in this cycle", so
+// the class is the equivalence and any fixed member of it is a canonical form.
+// The smallest is the one picked here. That covers the pairs a pure ASCII
+// lowering would miss and that both daemons' decoders do fold: 'K' with the
+// Kelvin sign U+212A, and 'S' with the long s U+017F.
+//
+// Ranging over the string decodes an invalid UTF-8 byte to U+FFFD, one byte at
+// a time, which is exactly what bytes.EqualFold and encoding/json's own decode
+// do with it, so an unescaped key holding invalid bytes canonicalizes the same
+// way the pairwise comparison treats it.
+func canonicalFoldKey(key string) string {
+	var b strings.Builder
+	b.Grow(len(key))
+	for _, r := range key {
+		b.WriteRune(foldClassMinimum(r))
+	}
+	return b.String()
+}
+
+// foldClassMinimum returns the smallest rune in r's simple-fold equivalence
+// class. unicode.SimpleFold cycles through the class and wraps, so walking it
+// until it returns to r visits every member exactly once.
+func foldClassMinimum(r rune) rune {
+	minimum := r
+	for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+		minimum = min(minimum, f)
+	}
+	return minimum
 }
 
 // keysFoldEqual compares two key spans the way strings.EqualFold would compare
