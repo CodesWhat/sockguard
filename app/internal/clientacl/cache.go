@@ -154,8 +154,12 @@ func (c *clientCache) Lookup(ctx context.Context, addr netip.Addr) (resolvedClie
 func (c *clientCache) resolveAndStoreLocked(ctx context.Context, addr netip.Addr) (resolvedClient, bool, error) {
 	if call, ok := c.inFlight[addr]; ok {
 		c.mu.Unlock()
-		<-call.done
-		return call.client, call.found, call.err
+		select {
+		case <-call.done:
+			return call.client, call.found, call.err
+		case <-ctx.Done():
+			return resolvedClient{}, false, ctx.Err()
+		}
 	}
 	call := &clientLookup{done: make(chan struct{})}
 	c.inFlight[addr] = call
