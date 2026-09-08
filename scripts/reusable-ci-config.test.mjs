@@ -67,6 +67,8 @@ const FUZZERS = [
   ["FuzzNetwork", "./internal/filter/"],
   ["FuzzReadUnaryGRPCMessage", "./internal/buildkitproxy/"],
   ["FuzzControlRefFrame", "./internal/buildkitproxy/"],
+  ["FuzzEvaluateGatewayRequest", "./internal/buildkitproxy/"],
+  ["FuzzFilterGatewayPong", "./internal/buildkitproxy/"],
   ["FuzzEvaluateGetSecretRequest", "./internal/buildkitproxy/"],
   ["FuzzEvaluateSolveRequest", "./internal/buildkitproxy/"],
   ["FuzzEvaluateStatusRequest", "./internal/buildkitproxy/"],

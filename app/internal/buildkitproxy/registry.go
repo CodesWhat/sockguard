@@ -64,9 +64,8 @@ func (d Disposition) String() string {
 
 // Endpoint identifies which of sockguard's two opaque BuildKit HTTP tunnels
 // (see app/internal/cmd/rules.go's buildkitTunnelEndpoints) a gRPC method is
-// reached through. The same fully-qualified service+method may only ever be
-// classified under one Endpoint in registry — the two tunnels carry
-// disjoint service sets.
+// reached through. Classification includes the endpoint: a gateway method
+// admitted on /grpc remains denied on the reverse /session tunnel.
 type Endpoint int
 
 const (
@@ -74,7 +73,7 @@ const (
 	// the gRPC client; buildkitd is the server) plus the locally-served
 	// gRPC health check.
 	EndpointGRPC Endpoint = iota
-	// EndpointSession is POST /session: the frontend/session bridge over
+	// EndpointSession is POST /session: the session bridge over
 	// which buildkitd calls BACK into the client for auth, secrets, SSH
 	// agent forwarding, and file sync/send/upload — plus the frontend
 	// (LLBBridge), exporter-negotiation, and source-policy-verifier
@@ -114,6 +113,17 @@ type method struct {
 // alphabetically, so a reviewer diffing this table against the issue can
 // read it top to bottom.
 var registry = map[method]Disposition{
+	{EndpointGRPC, gatewayService, "Ping"}:               Mediate,
+	{EndpointGRPC, gatewayService, "Solve"}:              Mediate,
+	{EndpointGRPC, gatewayService, "ResolveImageConfig"}: Mediate,
+	{EndpointGRPC, gatewayService, "ResolveSourceMeta"}:  Mediate,
+	{EndpointGRPC, gatewayService, "ReadFile"}:           Mediate,
+	{EndpointGRPC, gatewayService, "ReadDir"}:            Mediate,
+	{EndpointGRPC, gatewayService, "StatFile"}:           Mediate,
+	{EndpointGRPC, gatewayService, "Evaluate"}:           Mediate,
+	{EndpointGRPC, gatewayService, "Return"}:             Mediate,
+	{EndpointGRPC, gatewayService, "Inputs"}:             Mediate,
+	{EndpointGRPC, gatewayService, "Warn"}:               Mediate,
 	// moby.buildkit.v1.Control (EndpointGRPC, POST /grpc).
 	{EndpointGRPC, "moby.buildkit.v1.Control", "Solve"}:  Mediate,
 	{EndpointGRPC, "moby.buildkit.v1.Control", "Status"}: Mediate,
@@ -204,14 +214,14 @@ func ServiceAdmittedByPolicy(endpoint Endpoint, service string, p Policy) bool {
 // descriptors for the services that also appear in registry.
 //
 // Source proto files for method names not already vendored in
-// app/internal/buildkitproto (LLBBridge, Exporter, PolicyVerifier) are
+// app/internal/buildkitproto (Exporter, PolicyVerifier) are
 // documented in PROVENANCE.md's "Deliberately NOT vendored" section.
 var DeniedExamples = []struct {
 	Endpoint Endpoint
 	Service  string
 	Method   string
 }{
-	// moby.buildkit.v1.frontend.LLBBridge — every method, per "LLBBridge/*".
+	// Gateway methods are never admitted on the reverse session tunnel.
 	{EndpointSession, "moby.buildkit.v1.frontend.LLBBridge", "ResolveImageConfig"},
 	{EndpointSession, "moby.buildkit.v1.frontend.LLBBridge", "ResolveSourceMeta"},
 	{EndpointSession, "moby.buildkit.v1.frontend.LLBBridge", "Solve"},
@@ -229,6 +239,14 @@ var DeniedExamples = []struct {
 	{EndpointSession, "moby.buildkit.v1.frontend.LLBBridge", "ReadDirContainer"},
 	{EndpointSession, "moby.buildkit.v1.frontend.LLBBridge", "StatFileContainer"},
 	{EndpointSession, "moby.buildkit.v1.frontend.LLBBridge", "Warn"},
+
+	// Interactive containers can execute commands outside inspected LLB.
+	{EndpointGRPC, gatewayService, "NewContainer"},
+	{EndpointGRPC, gatewayService, "ReleaseContainer"},
+	{EndpointGRPC, gatewayService, "ExecProcess"},
+	{EndpointGRPC, gatewayService, "ReadFileContainer"},
+	{EndpointGRPC, gatewayService, "ReadDirContainer"},
+	{EndpointGRPC, gatewayService, "StatFileContainer"},
 
 	// Nested Control/Session and the rest of the Control service the
 	// synthesis names explicitly.

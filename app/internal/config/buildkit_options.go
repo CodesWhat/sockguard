@@ -49,6 +49,7 @@ func (c BuildkitSolveRequestBodyConfig) toPolicy(build BuildRequestBodyConfig) b
 	}
 	return buildkitproxy.SolvePolicy{
 		Allow:                     c.Allow,
+		AllowFrontendGateway:      c.AllowFrontendGateway,
 		AllowedExecDigests:        execDigests,
 		AllowHostNetwork:          build.AllowHostNetwork,
 		AllowRemoteContext:        build.AllowRemoteContext,
