@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `release-from-tag.yml`'s `pin-chart-digest` job no longer reds a successful release when the development branch has already moved past the tagged `appVersion`. `scripts/pin-chart-image-digest.mjs` now reports that version skew as a `::warning::` and exits zero without writing, and RELEASING.md describes the by-hand pin for that case. A digest that disagrees with what the release job pushed, a malformed digest, and a values file without exactly one `image.tag` line are still hard errors.
+
 ### Fixed
 
 - Homebrew cask generation uses `postflight_steps` to avoid Homebrew 7 deprecation warnings while retaining the macOS quarantine removal.

@@ -1244,5 +1244,6 @@ jobs:
               echo "- Version: \`${RELEASE_VERSION}\`"
               echo "- Manifest-list digest: \`${IMAGE_DIGEST}\`"
               echo "- Branch: \`${TARGET_BRANCH}\` (never \`main\` — it only advances through a promotion PR)"
+              echo "- If the pin step printed a version-skew warning, the branch had already moved past this appVersion and nothing was written; pin by hand per RELEASING.md."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
