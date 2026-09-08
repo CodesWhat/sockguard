@@ -562,14 +562,21 @@ func TestLocalVolumeDeviceMounts(t *testing.T) {
 			options: map[string]string{"type": "nfs", "o": "addr=1.2.3.4,rw", "device": ":/exports/data"},
 		},
 		{
-			name:    "a traversal out of dev leaves the device check",
-			driver:  "local",
-			options: map[string]string{"type": "ext4", "device": "/dev/../elsewhere"},
+			name:       "a traversal out of dev is still checked as the path it lands on",
+			driver:     "local",
+			options:    map[string]string{"type": "ext4", "device": "/dev/../elsewhere"},
+			wantReason: `volume create denied: local volume device "/elsewhere" is not allowlisted`,
 		},
 		{
-			name:    "a device outside dev is left to the daemon",
+			name:       "a device outside dev is checked too, not left to the daemon",
+			driver:     "local",
+			options:    map[string]string{"type": "ext4", "device": "/srv/disk.img"},
+			wantReason: `volume create denied: local volume device "/srv/disk.img" is not allowlisted`,
+		},
+		{
+			name:    "a device under an allowlisted directory outside dev passes",
 			driver:  "local",
-			options: map[string]string{"type": "ext4", "device": "/srv/disk.img"},
+			options: map[string]string{"type": "ext4", "device": "/safe/disk.img"},
 		},
 		{
 			name:    "a non-local driver is untouched",
@@ -580,6 +587,108 @@ func TestLocalVolumeDeviceMounts(t *testing.T) {
 			name:    "a size-only quota map names no device",
 			driver:  "local",
 			options: map[string]string{"size": "10g"},
+		},
+
+		// Pseudo-filesystems ignore the device entirely and mount host
+		// kernel state, so the type allowlist has to catch them by not
+		// naming them rather than by anything the device says. Host /proc
+		// alone carries /proc/1/root, which is the host's root filesystem.
+		{
+			name:       "proc mounts host kernel state and is denied",
+			driver:     "local",
+			options:    map[string]string{"type": "proc", "device": "proc"},
+			wantReason: `volume create denied: local volume device "/proc" is not allowlisted`,
+		},
+		{
+			name:       "sysfs is denied",
+			driver:     "local",
+			options:    map[string]string{"type": "sysfs", "device": "sysfs"},
+			wantReason: `volume create denied: local volume device "/sysfs" is not allowlisted`,
+		},
+		{
+			name:       "cgroup is denied",
+			driver:     "local",
+			options:    map[string]string{"type": "cgroup", "device": "cgroup"},
+			wantReason: `volume create denied: local volume device "/cgroup" is not allowlisted`,
+		},
+		{
+			name:       "debugfs with the conventional none device is denied",
+			driver:     "local",
+			options:    map[string]string{"type": "debugfs", "device": "none"},
+			wantReason: `volume create denied: local volume device "/none" is not allowlisted`,
+		},
+		{
+			name:       "a filesystem name this build has never heard of is denied",
+			driver:     "local",
+			options:    map[string]string{"type": "somefsfromthefuture", "device": "whatever"},
+			wantReason: `volume create denied: local volume device "/whatever" is not allowlisted`,
+		},
+		{
+			name:       "9p is not on the remote allowlist, so its tag is checked as a path",
+			driver:     "local",
+			options:    map[string]string{"type": "9p", "device": "hostshare", "o": "trans=virtio"},
+			wantReason: `volume create denied: local volume device "/hostshare" is not allowlisted`,
+		},
+		{
+			name:       "a second spelling of the type key cannot launder a pseudo-filesystem",
+			driver:     "local",
+			options:    map[string]string{"type": "nfs", "Type": "proc", "device": "proc"},
+			wantReason: `volume create denied: local volume device "/proc" is not allowlisted`,
+		},
+
+		// overlay names its host paths in the mount data, not in the mount
+		// source, so a check that reads only "device" sees nothing while the
+		// kernel mounts the host's root.
+		{
+			name:       "an overlay lowerdir of the host root is denied",
+			driver:     "local",
+			options:    map[string]string{"type": "overlay", "device": "/safe/ovl", "o": "lowerdir=/,upperdir=/safe/u,workdir=/safe/w"},
+			wantReason: `volume create denied: local volume lowerdir path "/" is not allowlisted`,
+		},
+		{
+			name:       "an overlay upperdir outside the allowlist is denied",
+			driver:     "local",
+			options:    map[string]string{"type": "overlay", "device": "/safe/ovl", "o": "lowerdir=/safe/l,upperdir=/etc,workdir=/safe/w"},
+			wantReason: `volume create denied: local volume upperdir path "/etc" is not allowlisted`,
+		},
+		{
+			name:       "an overlay workdir outside the allowlist is denied",
+			driver:     "local",
+			options:    map[string]string{"type": "overlay", "device": "/safe/ovl", "o": "lowerdir=/safe/l,upperdir=/safe/u,workdir=/var/tmp"},
+			wantReason: `volume create denied: local volume workdir path "/var/tmp" is not allowlisted`,
+		},
+		{
+			name:       "one bad entry in a colon-separated lowerdir list is enough",
+			driver:     "local",
+			options:    map[string]string{"type": "overlay", "device": "/safe/ovl", "o": "lowerdir=/safe/a:/etc"},
+			wantReason: `volume create denied: local volume lowerdir path "/etc" is not allowlisted`,
+		},
+		{
+			name:       "the kernel's append spellings are checked too",
+			driver:     "local",
+			options:    map[string]string{"type": "overlay", "device": "/safe/ovl", "o": "lowerdir=/safe/a,lowerdir+=/,datadir+=/safe/d"},
+			wantReason: `volume create denied: local volume lowerdir+ path "/" is not allowlisted`,
+		},
+		{
+			name:       "an overlay directory is checked whatever the type claims to be",
+			driver:     "local",
+			options:    map[string]string{"type": "nfs", "device": "nfs-server:/exports", "o": "addr=10.0.0.1,lowerdir=/"},
+			wantReason: `volume create denied: local volume lowerdir path "/" is not allowlisted`,
+		},
+		{
+			name:    "an overlay entirely inside the allowlist passes",
+			driver:  "local",
+			options: map[string]string{"type": "overlay", "device": "/safe/ovl", "o": "lowerdir=/safe/l1:/safe/l2,upperdir=/safe/u,workdir=/safe/w"},
+		},
+		{
+			name:    "an escaped colon stays one path instead of splitting into two",
+			driver:  "local",
+			options: map[string]string{"type": "overlay", "device": "/safe/ovl", "o": `lowerdir=/safe/a\:b`},
+		},
+		{
+			name:    "a real nfs export is untouched by the type allowlist",
+			driver:  "local",
+			options: map[string]string{"type": "nfs", "device": "nfs-server:/exports", "o": "addr=10.0.0.1,rw,nolock"},
 		},
 	}
 
@@ -810,6 +919,177 @@ func TestLibpodVolumeCreateBlockDevice(t *testing.T) {
 			}
 			if reason != tt.wantReason {
 				t.Fatalf("reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+// TestLocalVolumeHostFilesystemEntryPoints replays the pseudo-filesystem and
+// overlay cases through every route that reaches the shared helper, because
+// the three carry the options map in three different fields and a check that
+// only ran on one of them would leave the other two open: container create
+// takes it as Mounts[].VolumeOptions.DriverConfig.Options, Docker volume
+// create as DriverOpts, and the libpod twin as Options. Container create is
+// the one that needs no opt-in — it has no allow_driver_opts gate in front of
+// it — so it is the surface that matters most.
+func TestLocalVolumeHostFilesystemEntryPoints(t *testing.T) {
+	allowed := []string{"/safe", "/dev/sdb1"}
+
+	tests := []struct {
+		name       string
+		options    string
+		wantSuffix string
+	}{
+		{
+			name:       "proc",
+			options:    `{"type":"proc","device":"proc"}`,
+			wantSuffix: ` denied: local volume device "/proc" is not allowlisted`,
+		},
+		{
+			name:       "sysfs",
+			options:    `{"type":"sysfs","device":"sysfs"}`,
+			wantSuffix: ` denied: local volume device "/sysfs" is not allowlisted`,
+		},
+		{
+			name:       "cgroup",
+			options:    `{"type":"cgroup","device":"cgroup"}`,
+			wantSuffix: ` denied: local volume device "/cgroup" is not allowlisted`,
+		},
+		{
+			name:       "debugfs",
+			options:    `{"type":"debugfs","device":"none"}`,
+			wantSuffix: ` denied: local volume device "/none" is not allowlisted`,
+		},
+		{
+			name:       "overlay lowerdir of the host root",
+			options:    `{"type":"overlay","device":"/safe/ovl","o":"lowerdir=/,upperdir=/safe/u,workdir=/safe/w"}`,
+			wantSuffix: ` denied: local volume lowerdir path "/" is not allowlisted`,
+		},
+		{
+			name:       "overlay whose device is not allowlisted either",
+			options:    `{"type":"overlay","device":"overlay","o":"lowerdir=/,upperdir=/safe/u,workdir=/safe/w"}`,
+			wantSuffix: ` denied: local volume device "/overlay" is not allowlisted`,
+		},
+		{
+			name:       "ext4 over a raw block device",
+			options:    `{"type":"ext4","device":"/dev/sda1"}`,
+			wantSuffix: ` denied: local volume device "/dev/sda1" is not allowlisted`,
+		},
+		{
+			name:       "a second type key cannot launder a pseudo-filesystem",
+			options:    `{"type":"nfs","Type":"proc","device":"proc"}`,
+			wantSuffix: ` denied: local volume device "/proc" is not allowlisted`,
+		},
+		{
+			name:    "a real nfs export still passes",
+			options: `{"type":"nfs","device":"nfs-server:/exports","o":"addr=10.0.0.1,rw"}`,
+		},
+		{
+			name:    "an allowlisted block device still passes",
+			options: `{"type":"ext4","device":"/dev/sdb1"}`,
+		},
+		{
+			name:    "an overlay entirely inside the allowlist still passes",
+			options: `{"type":"overlay","device":"/safe/ovl","o":"lowerdir=/safe/l,upperdir=/safe/u,workdir=/safe/w"}`,
+		},
+		{
+			name:    "a tmpfs quota volume still passes",
+			options: `{"type":"tmpfs","o":"size=100m"}`,
+		},
+	}
+
+	surfaces := []struct {
+		name    string
+		subject string
+		body    func(options string) string
+		inspect func(t *testing.T, body string) (string, error)
+	}{
+		{
+			name:    "containers/create",
+			subject: "container create",
+			body: func(options string) string {
+				return `{"HostConfig":{"Mounts":[{"Type":"volume","Source":"vol","VolumeOptions":{"DriverConfig":{"Name":"local","Options":` + options + `}}}]}}`
+			},
+			inspect: func(t *testing.T, body string) (string, error) {
+				t.Helper()
+				policy := newContainerCreatePolicy(ContainerCreateOptions{AllowedBindMounts: allowed})
+				req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(body))
+				return policy.inspect(testLogger(), req, "/containers/create")
+			},
+		},
+		{
+			name:    "volumes/create",
+			subject: "volume create",
+			body: func(options string) string {
+				return `{"Name":"vol","Driver":"local","DriverOpts":` + options + `}`
+			},
+			inspect: func(t *testing.T, body string) (string, error) {
+				t.Helper()
+				policy := newVolumePolicy(VolumeOptions{AllowDriverOpts: true, AllowedBindMounts: allowed})
+				req := httptest.NewRequest(http.MethodPost, "/volumes/create", strings.NewReader(body))
+				return policy.inspect(testLogger(), req, NormalizePath(req.URL.Path))
+			},
+		},
+		{
+			name:    "libpod/volumes/create",
+			subject: "libpod volume create",
+			body: func(options string) string {
+				return `{"Name":"vol","Driver":"local","Options":` + options + `}`
+			},
+			inspect: func(t *testing.T, body string) (string, error) {
+				t.Helper()
+				policy := newVolumePolicy(VolumeOptions{AllowDriverOpts: true, AllowedBindMounts: allowed})
+				req := httptest.NewRequest(http.MethodPost, "/libpod/volumes/create", strings.NewReader(body))
+				return policy.inspectLibpod(testLogger(), req, NormalizePath(req.URL.Path))
+			},
+		},
+	}
+
+	for _, surface := range surfaces {
+		t.Run(surface.name, func(t *testing.T) {
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					want := ""
+					if tt.wantSuffix != "" {
+						want = surface.subject + tt.wantSuffix
+					}
+					got, err := surface.inspect(t, surface.body(tt.options))
+					if err != nil {
+						t.Fatalf("inspect() error = %v", err)
+					}
+					if got != want {
+						t.Fatalf("reason = %q, want %q", got, want)
+					}
+				})
+			}
+		})
+	}
+}
+
+// TestSplitOverlayDirList pins the one piece of parsing this file does that
+// the kernel also does: an overlayfs directory list splits on ":" only where
+// the separator is unescaped, so a path carrying a literal colon stays one
+// path and is compared against the allowlist as the directory the kernel
+// actually mounts.
+func TestSplitOverlayDirList(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  []string
+	}{
+		{name: "a single path", value: "/lower", want: []string{"/lower"}},
+		{name: "a two-entry list", value: "/a:/b", want: []string{"/a", "/b"}},
+		{name: "an escaped colon stays one path", value: `/a\:b`, want: []string{"/a:b"}},
+		{name: "an escaped backslash", value: `/a\\:/b`, want: []string{`/a\`, "/b"}},
+		{name: "a trailing backslash escapes nothing", value: `/a\`, want: []string{`/a\`}},
+		{name: "an empty entry is still an entry", value: "/a::/b", want: []string{"/a", "", "/b"}},
+		{name: "an empty value", value: "", want: []string{""}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := splitOverlayDirList(tt.value); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("splitOverlayDirList(%q) = %#v, want %#v", tt.value, got, tt.want)
 			}
 		})
 	}
