@@ -92,7 +92,12 @@ func (p *patternFilterWriter) flushSystemDataUsage(policy *compiledPolicy) ([]st
 		return nil, err
 	}
 
-	filtered, dropped, err := responsefilter.FilterSystemDataUsage(p.body.Bytes(), func(section responsefilter.SystemDataUsageSection, item json.RawMessage) (bool, error) {
+	body, err := p.decodedBody()
+	if err != nil {
+		return nil, err
+	}
+
+	filtered, dropped, err := responsefilter.FilterSystemDataUsage(body, func(section responsefilter.SystemDataUsageSection, item json.RawMessage) (bool, error) {
 		return systemDataUsageItemVisible(section, item, policy)
 	})
 	if err != nil {

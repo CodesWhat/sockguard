@@ -3,10 +3,15 @@ title: Roadmap
 description: Sockguard's shipped v1.7, v2.0, v2.1, and v2.2 work, planned v2.3 focus, and later direction.
 ---
 
-Sockguard v2.2 is the current stable feature line, with v2.2.0 the latest
-release. It closes the volume-mount and read-side gaps that survived v2.1.0
-and adds the operator-facing checks that were missing around them. v2.3 is
-the next planned line. This roadmap describes direction and priorities, not
+Sockguard v2.2 is the current stable feature line, with v2.2.1 the latest
+release. v2.2.0 closed the volume-mount and read-side gaps that survived
+v2.1.0 and added the operator-facing checks that were missing around them;
+v2.2.1 is a security patch on that line, closing a raw block-device,
+pseudo-filesystem or `overlay` lower/upper/work-dir mount through the
+`local` volume driver, a literal-`*` segment slipping past a deny glob,
+byte-identical duplicate JSON keys, and a `502` on gzip-compressed bodies
+in the visibility and owner-isolation filters. v2.3 is the next
+planned line. This roadmap describes direction and priorities, not
 promises about dates. A feature is available only after the release notes say
 it has shipped.
 

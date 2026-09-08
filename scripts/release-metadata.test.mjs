@@ -281,6 +281,12 @@ test("release docs keep Helm metadata lockstep and use a two-stage digest flow",
     releasing,
     /After the release images are live, pin `image\.tag` to `<appVersion>@sha256:<digest>` in the active development branch\./u,
   );
+  assert.match(
+    releasing,
+    /`release-from-tag\.yml`'s `pin-chart-digest` job does this on every stable tag/u,
+  );
+  assert.match(releasing, /It commits to the development branch and never to `main`/u);
+  assert.match(releasing, /Doing it by hand with step 3's `imagetools inspect` is the fallback/u);
   assert.match(releasing, /The tagged chart selects the versioned release tag/u);
   assert.doesNotMatch(releasing, /tagged chart selects the immutable release tag/u);
   assert.doesNotMatch(releasing, /increment independently of the app version/u);

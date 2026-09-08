@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/codeswhat/sockguard/app/internal/imagefetch"
 	"github.com/codeswhat/sockguard/app/internal/imagetrust"
@@ -504,36 +506,431 @@ func soleFoldedRawKey(m map[string]json.RawMessage, canonical string) (string, e
 }
 
 // RejectDuplicateCaseVariantJSONKeys returns an error if body contains any JSON
-// object with two keys that case-fold to the same name (e.g. "HostConfig" and
-// "hostconfig"). The daemon decodes object keys case-insensitively and lets the
-// last duplicate win, whereas sockguard inspects a create/update body via a
-// struct decode and then may re-marshal it (owner-label stamping, image-digest
-// pinning) through a map whose keys json.Marshal re-sorts on the way out. That
-// re-sort can move a shadow lowercase key into last position, so the daemon acts
-// on a value the filter never checked — a bypass of every body-inspection rule.
-// No legitimate Docker client emits duplicate case-variant keys, so any body
-// that does is rejected fail-closed before it can be re-marshaled and forwarded.
+// object with two sibling keys that case-fold to the same name (e.g.
+// "HostConfig" and "hostconfig"). The daemon decodes object keys
+// case-insensitively and lets the last duplicate win, whereas sockguard
+// inspects a create/update body via a struct decode and then may re-marshal it
+// (owner-label stamping, image-digest pinning) through a map whose keys
+// json.Marshal re-sorts on the way out. That re-sort can move a shadow
+// lowercase key into last position, so the daemon acts on a value the filter
+// never checked — a bypass of every body-inspection rule. No legitimate Docker
+// client emits duplicate case-variant keys, so any body that does is rejected
+// fail-closed before it can be re-marshaled and forwarded.
+//
+// Two keys that are byte-identical are rejected on the same grounds, and are
+// the reason this walks the raw bytes instead of a decoded tree. A decode
+// collapses "X" and "X" into one map entry, so the old tree-walking form could
+// not see them at all — yet Go's struct decode MERGES the two objects under a
+// repeated key while a re-marshal through map[string]json.RawMessage keeps only
+// the last. That is the same split view the case-variant check exists to close:
+// sockguard validates the union, the daemon receives the last one, and a body
+// like {"HostConfig":{"Memory":N},"HostConfig":{}} passes require_memory_limit
+// here and arrives at the daemon with no limit at all.
+//
+// Every caller of this form (container-create and libpod-create image pinning,
+// service image pinning, the resource-limit guard) decodes the same bytes again
+// immediately afterwards into a shape this check cannot supply —
+// map[string]json.RawMessage for the byte-preserving rewrites, a typed patch
+// struct for the guard — so there is no decoded tree to share with them, and
+// building a throwaway map[string]any here only to walk it doubles the parse.
+// The scan below reads the body once and allocates nothing for a body without
+// escaped object keys, up to the sibling count at which it swaps the pairwise
+// duplicate check for a hashed one to stay linear — see
+// caseVariantFoldFanoutLimit, which sits far above the widest object in the
+// Docker API request types.
+//
+// It deliberately validates only what it must to locate object keys correctly:
+// a malformed body may be reported as a syntax error or walked past, because
+// every caller re-parses the same bytes with encoding/json on the next line and
+// rejects there. What it may never do is miss a duplicate in a body that parses.
 func RejectDuplicateCaseVariantJSONKeys(body []byte) error {
-	var v any
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	if err := dec.Decode(&v); err != nil {
-		return err
-	}
-	return RejectDuplicateCaseVariantJSONValue(v)
+	s := caseVariantKeyScanner{body: body}
+	return s.scanValue(0, false)
 }
 
 // RejectDuplicateCaseVariantJSONValue is RejectDuplicateCaseVariantJSONKeys
-// against a body that has already been decoded — same walk, same verdict,
-// without parsing the same bytes a second time.
+// against a body that has already been decoded — same sibling fold-check, same
+// data-map exemption, without parsing the same bytes a second time.
 //
 // A caller that has to decode a body for its own reasons (internal/ownership
-// decodes every create body it stamps an owner label into) would otherwise
-// pay for two full map[string]any trees per request, one of which it throws
-// away. Decode with json.Decoder.UseNumber, as this package's own decode
-// above does, so the value handed here is the same shape the walk expects.
+// decodes every create body it stamps an owner label into) would otherwise pay
+// for a second full parse per request whose result it throws away. Decode with
+// json.Decoder.UseNumber so the value handed here is the same shape the walk
+// expects.
+//
+// This form cannot see byte-identical duplicate keys, which the decode that
+// produced v has already collapsed; only the byte-taking form above rejects
+// those.
 func RejectDuplicateCaseVariantJSONValue(v any) error {
 	return checkDuplicateCaseVariantKeys(v, false)
+}
+
+// maxJSONNestingDepth mirrors encoding/json's own cap on simultaneously open
+// containers, which json.Decoder.Decode enforces ("exceeded max depth"). The
+// scan enforces it too, so a body the decoding form used to reject cannot slip
+// past the guard, and so a hostile body cannot drive the scan's recursion
+// deeper than the standard library would have allowed.
+const maxJSONNestingDepth = 10000
+
+var (
+	errCaseVariantScanSyntax    = errors.New("malformed JSON body")
+	errCaseVariantScanTruncated = errors.New("truncated JSON body")
+	errCaseVariantScanTooDeep   = fmt.Errorf("JSON body exceeds %d nested containers", maxJSONNestingDepth)
+)
+
+// caseVariantKeySpan locates one object key inside the body being scanned:
+// body[start:end] is its quoted JSON literal, quotes included. Keys are carried
+// as spans rather than decoded strings because that is what keeps the scan
+// allocation-free on the bodies real clients send; escaped reports whether the
+// literal contains a backslash, the only case that needs materializing.
+type caseVariantKeySpan struct {
+	start   int
+	end     int
+	escaped bool
+}
+
+// caseVariantKeyScanner walks a JSON body's structure looking only for object
+// keys. keyBufs holds one reusable key-span buffer per nesting depth: sibling
+// objects at the same depth are never open at the same time, so they can share
+// one backing array instead of allocating per object.
+type caseVariantKeyScanner struct {
+	body    []byte
+	pos     int
+	keyBufs [][]caseVariantKeySpan
+}
+
+// scanValue consumes exactly one JSON value, as json.Decoder.Decode does,
+// ignoring whatever follows it. depth counts the containers already open, and
+// skip is checkDuplicateCaseVariantKeys' skipKeyCheck: set for the value of a
+// case-sensitive data-map field, where the keys are user data rather than
+// daemon-folded struct field names.
+func (s *caseVariantKeyScanner) scanValue(depth int, skip bool) error {
+	s.skipSpace()
+	if s.pos >= len(s.body) {
+		return errCaseVariantScanTruncated
+	}
+	switch s.body[s.pos] {
+	case '{':
+		return s.scanObject(depth, skip)
+	case '[':
+		return s.scanArray(depth)
+	case '"':
+		_, err := s.scanString()
+		return err
+	default:
+		return s.skipPrimitive()
+	}
+}
+
+func (s *caseVariantKeyScanner) scanObject(depth int, skip bool) error {
+	if depth >= maxJSONNestingDepth {
+		return errCaseVariantScanTooDeep
+	}
+	s.pos++ // the '{'
+	keys := s.takeKeyBuf(depth)
+	// folded stays nil until this object crosses caseVariantFoldFanoutLimit
+	// siblings; see rejectFoldDuplicate for why the cheap form is the one
+	// every real body gets.
+	var folded map[string]caseVariantKeySpan
+	for i := 0; ; i++ {
+		s.skipSpace()
+		if s.pos >= len(s.body) {
+			return errCaseVariantScanTruncated
+		}
+		if s.body[s.pos] == '}' {
+			s.pos++
+			s.putKeyBuf(depth, keys)
+			return nil
+		}
+		if i > 0 {
+			if s.body[s.pos] != ',' {
+				return errCaseVariantScanSyntax
+			}
+			s.pos++
+			s.skipSpace()
+			if s.pos >= len(s.body) {
+				return errCaseVariantScanTruncated
+			}
+		}
+		if s.body[s.pos] != '"' {
+			return errCaseVariantScanSyntax
+		}
+		key, err := s.scanString()
+		if err != nil {
+			return err
+		}
+		if !skip {
+			var err error
+			if keys, folded, err = s.recordSiblingKey(keys, folded, key); err != nil {
+				return err
+			}
+		}
+		s.skipSpace()
+		if s.pos >= len(s.body) || s.body[s.pos] != ':' {
+			return errCaseVariantScanSyntax
+		}
+		s.pos++
+		// Only a struct level classifies its children, so a field named like
+		// an exempt one INSIDE a data map does not inherit the exemption —
+		// see checkDuplicateCaseVariantKeys, whose childSkip this mirrors.
+		if err := s.scanValue(depth+1, !skip && s.keyIsCaseSensitiveDataMapField(key)); err != nil {
+			return err
+		}
+	}
+}
+
+func (s *caseVariantKeyScanner) scanArray(depth int) error {
+	if depth >= maxJSONNestingDepth {
+		return errCaseVariantScanTooDeep
+	}
+	s.pos++ // the '['
+	for i := 0; ; i++ {
+		s.skipSpace()
+		if s.pos >= len(s.body) {
+			return errCaseVariantScanTruncated
+		}
+		if s.body[s.pos] == ']' {
+			s.pos++
+			return nil
+		}
+		if i > 0 {
+			if s.body[s.pos] != ',' {
+				return errCaseVariantScanSyntax
+			}
+			s.pos++
+		}
+		// Array elements always reset the exemption, matching the recursive
+		// form's checkDuplicateCaseVariantKeys(item, false).
+		if err := s.scanValue(depth+1, false); err != nil {
+			return err
+		}
+	}
+}
+
+// scanString consumes the quoted literal at the cursor and returns its span. It
+// does not validate escape sequences: an invalid one leaves a body that the
+// caller's own json.Unmarshal rejects a moment later, and skipping the byte
+// after a backslash is all it takes to find the closing quote correctly.
+func (s *caseVariantKeyScanner) scanString() (caseVariantKeySpan, error) {
+	start := s.pos
+	s.pos++ // the opening quote
+	escaped := false
+	for s.pos < len(s.body) {
+		switch s.body[s.pos] {
+		case '\\':
+			escaped = true
+			s.pos += 2
+		case '"':
+			s.pos++
+			return caseVariantKeySpan{start: start, end: s.pos, escaped: escaped}, nil
+		default:
+			s.pos++
+		}
+	}
+	return caseVariantKeySpan{}, errCaseVariantScanTruncated
+}
+
+// skipPrimitive consumes a number, true, false or null. The literal is not
+// validated — see RejectDuplicateCaseVariantJSONKeys — but it stops at any byte
+// that cannot appear inside one, so a malformed value can never swallow the
+// structure that follows it.
+func (s *caseVariantKeyScanner) skipPrimitive() error {
+	start := s.pos
+	for s.pos < len(s.body) && isJSONPrimitiveByte(s.body[s.pos]) {
+		s.pos++
+	}
+	if s.pos == start {
+		return errCaseVariantScanSyntax
+	}
+	return nil
+}
+
+func isJSONPrimitiveByte(c byte) bool {
+	switch {
+	case c >= '0' && c <= '9', c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+		return true
+	default:
+		return c == '-' || c == '+' || c == '.'
+	}
+}
+
+func (s *caseVariantKeyScanner) skipSpace() {
+	for s.pos < len(s.body) {
+		switch s.body[s.pos] {
+		case ' ', '\t', '\r', '\n':
+			s.pos++
+		default:
+			return
+		}
+	}
+}
+
+// caseVariantFoldFanoutLimit is the sibling count at which one object stops
+// being checked by comparing pairs and starts being checked by hashing.
+//
+// The pairwise form is the right one for every object a Docker client sends:
+// it allocates nothing, needs no canonical form of a key, and compares raw
+// bytes. But it is O(n^2) in the sibling count, and the sibling count is
+// attacker-controlled up to maxContainerCreateBodyBytes. A 1 MiB create body
+// carrying ~80k distinct short keys is 3.2 billion comparisons, measured at
+// 13.5s of CPU on one core for a single request — a request-rate amplifier
+// against a proxy whose whole job is to stay in front of the daemon.
+//
+// Past this many siblings the keys go into a map keyed by canonicalFoldKey,
+// which makes the whole scan linear. 64 is chosen well above the widest
+// object in the Docker API request types (HostConfig is the biggest at ~60
+// fields, and a body has to exceed the WIDEST object, not the total field
+// count, to pay for the map at all), so nothing a real client sends ever
+// allocates it.
+const caseVariantFoldFanoutLimit = 64
+
+// recordSiblingKey rejects key if it case-folds to a sibling already seen in
+// this object, then records it. It returns the updated key slice and fold map
+// so the caller's locals stay in step with the switch from one to the other.
+//
+// Below caseVariantFoldFanoutLimit siblings this is the pairwise scan it has
+// always been. At the limit the keys seen so far are hashed once and every key
+// after that is a map lookup, so a wide object costs O(n) instead of O(n^2).
+// The verdict is identical either way: canonicalFoldKey is a canonical form of
+// the same equivalence relation keysFoldEqual tests, so two keys collide in
+// the map exactly when the pairwise form would have called them equal.
+func (s *caseVariantKeyScanner) recordSiblingKey(
+	keys []caseVariantKeySpan,
+	folded map[string]caseVariantKeySpan,
+	key caseVariantKeySpan,
+) ([]caseVariantKeySpan, map[string]caseVariantKeySpan, error) {
+	if folded != nil {
+		canonical := canonicalFoldKey(s.keyString(key))
+		if prev, duplicate := folded[canonical]; duplicate {
+			return keys, folded, s.duplicateKeyError(prev, key)
+		}
+		folded[canonical] = key
+		return keys, folded, nil
+	}
+
+	for _, prev := range keys {
+		if s.keysFoldEqual(prev, key) {
+			return keys, folded, s.duplicateKeyError(prev, key)
+		}
+	}
+	keys = append(keys, key)
+
+	if len(keys) >= caseVariantFoldFanoutLimit {
+		// Every key so far is distinct under the fold, so this cannot find a
+		// collision; it is a straight transfer into the form the rest of the
+		// object is checked in.
+		folded = make(map[string]caseVariantKeySpan, 2*len(keys))
+		for _, prev := range keys {
+			folded[canonicalFoldKey(s.keyString(prev))] = prev
+		}
+	}
+	return keys, folded, nil
+}
+
+func (s *caseVariantKeyScanner) duplicateKeyError(prev, key caseVariantKeySpan) error {
+	return fmt.Errorf("duplicate case-variant JSON keys %q and %q", s.keyString(prev), s.keyString(key))
+}
+
+// canonicalFoldKey returns the representative of key under the same case-fold
+// equivalence strings.EqualFold tests, so two keys have the same canonical
+// form exactly when EqualFold reports them equal.
+//
+// unicode.SimpleFold walks a rune's equivalence class as a cycle, and
+// EqualFold's general case is "is the other rune reachable in this cycle", so
+// the class is the equivalence and any fixed member of it is a canonical form.
+// The smallest is the one picked here. That covers the pairs a pure ASCII
+// lowering would miss and that both daemons' decoders do fold: 'K' with the
+// Kelvin sign U+212A, and 'S' with the long s U+017F.
+//
+// Ranging over the string decodes an invalid UTF-8 byte to U+FFFD, one byte at
+// a time, which is exactly what bytes.EqualFold and encoding/json's own decode
+// do with it, so an unescaped key holding invalid bytes canonicalizes the same
+// way the pairwise comparison treats it.
+func canonicalFoldKey(key string) string {
+	var b strings.Builder
+	b.Grow(len(key))
+	for _, r := range key {
+		b.WriteRune(foldClassMinimum(r))
+	}
+	return b.String()
+}
+
+// foldClassMinimum returns the smallest rune in r's simple-fold equivalence
+// class. unicode.SimpleFold cycles through the class and wraps, so walking it
+// until it returns to r visits every member exactly once.
+func foldClassMinimum(r rune) rune {
+	minimum := r
+	for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+		minimum = min(minimum, f)
+	}
+	return minimum
+}
+
+// keysFoldEqual compares two key spans the way strings.EqualFold would compare
+// the decoded keys. For an unescaped literal the raw UTF-8 between the quotes
+// is already the decoded key byte-for-byte — encoding/json only substitutes
+// U+FFFD for an invalid sequence, which is what bytes.EqualFold decodes an
+// invalid byte to as well — so the common case needs no decode at all.
+func (s *caseVariantKeyScanner) keysFoldEqual(a, b caseVariantKeySpan) bool {
+	if a.escaped || b.escaped {
+		return strings.EqualFold(s.keyString(a), s.keyString(b))
+	}
+	return bytes.EqualFold(s.body[a.start+1:a.end-1], s.body[b.start+1:b.end-1])
+}
+
+// keyString materializes a key. An escaped literal goes through the JSON
+// unquote so "\u0049mage" folds against "Image"; if that unquote fails the body
+// is malformed and the caller's own decode will reject it, so the raw literal
+// is returned rather than inventing a verdict here.
+func (s *caseVariantKeyScanner) keyString(k caseVariantKeySpan) string {
+	raw := s.body[k.start:k.end]
+	if !k.escaped {
+		return string(raw[1 : len(raw)-1])
+	}
+	var decoded string
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return string(raw)
+	}
+	return decoded
+}
+
+// keyIsCaseSensitiveDataMapField classifies a key span with
+// isCaseSensitiveDataMapField's exact semantics without materializing it. The
+// field names are all ASCII, so lowering the key into a stack buffer either
+// lands on an ASCII name or proves it cannot be one; a key carrying an escape
+// is rare enough to decode the slow way.
+func (s *caseVariantKeyScanner) keyIsCaseSensitiveDataMapField(k caseVariantKeySpan) bool {
+	if k.escaped {
+		return isCaseSensitiveDataMapField(s.keyString(k))
+	}
+	var lowered [caseSensitiveDataMapFieldMaxLen]byte
+	n := 0
+	for _, r := range string(s.body[k.start+1 : k.end-1]) {
+		lr := unicode.ToLower(r)
+		if lr < 'a' || lr > 'z' || n == len(lowered) {
+			// Every name is lowercase ASCII letters, so a rune that lowers
+			// outside a-z, or a key longer than the longest name, cannot be
+			// part of one.
+			return false
+		}
+		lowered[n] = byte(lr) // #nosec G115 -- lr is bounded to 'a'..'z' by the check above.
+		n++
+	}
+	return isCaseSensitiveDataMapField(string(lowered[:n]))
+}
+
+func (s *caseVariantKeyScanner) takeKeyBuf(depth int) []caseVariantKeySpan {
+	if depth < len(s.keyBufs) {
+		return s.keyBufs[depth][:0]
+	}
+	return nil
+}
+
+func (s *caseVariantKeyScanner) putKeyBuf(depth int, keys []caseVariantKeySpan) {
+	for len(s.keyBufs) <= depth {
+		s.keyBufs = append(s.keyBufs, nil)
+	}
+	s.keyBufs[depth] = keys
 }
 
 // checkDuplicateCaseVariantKeys walks a decoded JSON value and rejects any object
@@ -617,6 +1014,11 @@ func checkDuplicateCaseVariantKeys(v any, skipKeyCheck bool) error {
 // the sibling key-scan at that field's own value and still recurses into it, so
 // nested structs (e.g. the IPAMConfig elements under IPAM.Config, a []struct)
 // keep their fold check; see checkDuplicateCaseVariantKeys.
+// caseSensitiveDataMapFieldMaxLen is the length of the longest name
+// isCaseSensitiveDataMapField accepts ("auxiliaryaddresses"), which bounds the
+// stack buffer keyIsCaseSensitiveDataMapField lowers a key into.
+const caseSensitiveDataMapFieldMaxLen = len("auxiliaryaddresses")
+
 func isCaseSensitiveDataMapField(key string) bool {
 	switch strings.ToLower(key) {
 	case "labels",

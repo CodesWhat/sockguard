@@ -15,9 +15,15 @@ exclude_patterns = [
   "**/node_modules/**",
   "**/testdata/**",
   "**/vendor/**",
+  ".claude/**",
   ".planning/**",
   ".qlty/**",
   ".secrets/**",
+  # Rendered Helm templates, not standalone YAML: unresolved `{{ ... }}`
+  # directives (e.g. a bare `{{- if ... }}` opening a line) are not valid YAML
+  # syntax before `helm template` runs, so yamllint's parser errors on them
+  # rather than producing lint signal.
+  "chart/**/templates/**",
 ]
 
 test_patterns = [
@@ -42,3 +48,176 @@ enabled = false
 [[source]]
 name = "default"
 default = true
+
+# Plugin set mirrors portwing and drydock (both Go + TS + Markdown + YAML +
+# shell + Dockerfile monorepos): actionlint, checkov, dockerfmt, hadolint,
+# markdownlint, osv-scanner, radarlint-iac, ripgrep, shellcheck, shfmt,
+# trufflehog, yamllint. No Go-specific plugin (gofmt/golangci-lint/staticcheck)
+# is enabled here, same as those two repos — golangci-lint already runs as its
+# own lefthook step and CI job, so a duplicate Go linter inside the Qlty gate
+# would just double-report the same findings.
+
+[[plugin]]
+name = "actionlint"
+
+[[plugin]]
+name = "checkov"
+
+[[plugin]]
+name = "dockerfmt"
+
+[[plugin]]
+name = "hadolint"
+
+[[plugin]]
+name = "markdownlint"
+mode = "comment"
+# Pinned so the markdownlint ruleset is identical locally and in CI. Left
+# unpinned, qlty resolves whatever markdownlint the installed CLI defaults to,
+# which drifts between a developer's qlty and CI's (latest) qlty.
+version = "0.46.0"
+
+[[plugin]]
+name = "osv-scanner"
+
+[[plugin]]
+name = "radarlint-iac"
+mode = "monitor"
+
+[[plugin]]
+name = "ripgrep"
+mode = "comment"
+
+[[plugin]]
+name = "shellcheck"
+# Pinned to the version GitHub Actions ubuntu-latest pre-installs.
+# qlty otherwise resolves to the latest (0.11.0) and rejects the runner's
+# 0.9.0 binary with "Invalid tool version", failing the lint job.
+version = "0.9.0"
+
+[[plugin]]
+name = "shfmt"
+
+[[plugin]]
+name = "trufflehog"
+
+[[plugin]]
+name = "yamllint"
+
+# app/internal/buildkitproto mirrors upstream moby/buildkit protobuf sources
+# and their protoc-gen-go output verbatim (see PROVENANCE.md there); the
+# FIXME/TODO markers in ops.proto and ops.pb.go are upstream's, and rewriting
+# them would break the byte-for-byte provenance check.
+[[triage]]
+match.rules = ["ripgrep:FIXME", "ripgrep:TODO", "ripgrep:XXX", "ripgrep:HACK"]
+match.file_patterns = ["app/internal/buildkitproto/**"]
+set.ignored = true
+
+# markdownlint table column style is low-signal for this repository's docs
+# format, same as portwing and drydock.
+[[triage]]
+match.rules = ["markdownlint:MD060"]
+set.ignored = true
+
+# workflow_dispatch inputs in the fuzz/soak/tri-tool-conformance/release-cut
+# workflows are intentional runtime controls (fuzz duration, soak duration,
+# conformance overrides, release tag) that a maintainer supplies when
+# dispatching the run manually — dispatching already requires write access, so
+# the "user" steering the build is not an anonymous caller. checkov's
+# CKV_GHA_7 fires on the mere presence of any workflow_dispatch input, which
+# does not hold for these. Same rationale as portwing and drydock.
+[[triage]]
+match.rules = ["checkov:CKV_GHA_7"]
+set.ignored = true
+
+# GO-2026-5932 (golang.org/x/crypto/openpgp, unmaintained/unsafe by design,
+# no fixed version) is an indirect dependency pulled in transitively by the
+# sigstore/go-containerregistry/go-tuf image-trust stack. `go mod why
+# golang.org/x/crypto` shows the main module does not need the package
+# directly, and `govulncheck ./...` confirms 0 reachable vulnerabilities in
+# code sockguard imports or calls. Same conclusion portwing reached for the
+# identical advisory.
+[[triage]]
+match.rules = ["osv-scanner:GO-2026-5932"]
+set.ignored = true
+
+# chart/sockguard/values.yaml deliberately nests commented-out example keys
+# under an empty `{}`/`[]` collection (policyBundleTrust.secretRef,
+# resources, tolerations) to show the shape a user would fill in. yamllint's
+# comments-indentation wants those comments to match the next real
+# sibling's indent instead of the collection they annotate, which would
+# flatten the example and lose the nesting it exists to show.
+[[triage]]
+match.rules = ["yamllint:comments-indentation"]
+match.file_patterns = ["chart/sockguard/values.yaml"]
+set.ignored = true
+
+# The final stage is cgr.dev/chainguard/static (see CLAUDE.md Key
+# Constraints): no shell, no package manager, nothing to run curl/wget with,
+# and sockguard has no self-check CLI subcommand yet to exec directly. A
+# real HEALTHCHECK needs that subcommand added first — tracked as a
+# follow-up, not something a CI-config PR should grow.
+[[triage]]
+match.rules = ["checkov:CKV_DOCKER_2"]
+set.ignored = true
+
+# Merging the go-build RUN with the following `install`/`touch` RUN breaks
+# scripts/go-module-layout.test.mjs's "container and coverage tooling
+# preserve app as the package subdirectory" test, which anchors a regex on
+# `-o /sockguard ./app/cmd/sockguard/` being the last line of that RUN
+# (confirmed: merging the two makes that test fail). Two RUN layers here
+# cost nothing at runtime this image cares about, and rewriting the test's
+# regex to accommodate a purely cosmetic layer-count change is out of scope
+# for a CI-config PR.
+[[triage]]
+match.rules = ["radarlint-iac:docker:S7031"]
+set.ignored = true
+
+# GitHub added the "artifact-metadata" permission scope after qlty's bundled
+# actionlint was last updated; the raven-actions/actionlint job in
+# ci-verify.yml installs latest and already accepts it (in production use
+# since the release-publish job first shipped it). qlty's actionlint just
+# hasn't caught up to the new scope name yet.
+[[triage]]
+match.rules = ["actionlint:permissions"]
+set.ignored = true
+
+# Formatting backlog, follow-up DEP-7c. 11 shell scripts still fail shfmt
+# after .editorconfig fixed the tabs-vs-spaces and switch-case-indent
+# mismatch for most of the tree (see .editorconfig); the remainder need a
+# per-file review before reformatting rather than a blind `qlty fmt`, since
+# case-indent conventions are inconsistent across the existing scripts.
+# Ignored here so enabling the plugin set doesn't block every PR on a
+# pre-existing backlog it didn't introduce; DEP-7c fixes the scripts and
+# removes this entry.
+[[triage]]
+match.rules = ["shfmt:fmt"]
+set.ignored = true
+
+# Formatting backlog, follow-up DEP-7c. 15 Markdown files (102 MD049, 14
+# MD034, 11 MD040, 10 MD022, 8 markdownlint:fmt, 5 MD038, 5 MD036, 5 MD032,
+# 4 MD028, 3 MD037, 1 MD029 -- 168 findings total) predate this PR.
+# markdownlint's own --fix rewrites prose byte-for-byte, including inside
+# inline code spans and `*`-wrapped literals (confirmed on CHANGELOG.md: it
+# collapsed a deliberate double space inside a quoted `issuer: ` code span
+# and ate the space before a literal trailing `libpod ` prefix), so applying
+# it blind against CHANGELOG.md's history and the docs/ pages risks
+# corrupting exactly the text these findings are about. Ignored here so
+# enabling the plugin set doesn't block every PR on a pre-existing backlog it
+# didn't introduce; DEP-7c reviews and fixes each file by hand and removes
+# this entry.
+[[triage]]
+match.rules = [
+  "markdownlint:fmt",
+  "markdownlint:MD022",
+  "markdownlint:MD028",
+  "markdownlint:MD029",
+  "markdownlint:MD032",
+  "markdownlint:MD034",
+  "markdownlint:MD036",
+  "markdownlint:MD037",
+  "markdownlint:MD038",
+  "markdownlint:MD040",
+  "markdownlint:MD049",
+]
+set.ignored = true

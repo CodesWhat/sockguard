@@ -196,11 +196,11 @@ test("route pages and the compare matrix agree on Sockguard's column", () => {
 test("roadmap data is valid and matches expected milestones", () => {
   assert.ok(roadmap.length > 0, "roadmap must be non-empty");
 
-  // v2.2.0 volume-mount containment & read-side redaction release.
+  // v2.2.1 security-patch release on the v2.2 line.
   const releasedMilestones = roadmap.filter((m) => m.status === "released");
   assert.ok(releasedMilestones.length > 0, "must have at least one released milestone");
   const latestReleased = releasedMilestones[releasedMilestones.length - 1];
-  assert.equal(latestReleased.version, "v2.2.0", "latest released milestone must be v2.2.0");
+  assert.equal(latestReleased.version, "v2.2.1", "latest released milestone must be v2.2.1");
   assert.equal(latestReleased.status, "released");
 
   // Must retain the previous stable milestones.
@@ -222,7 +222,7 @@ test("roadmap data is valid and matches expected milestones", () => {
 
   const v230 = roadmap.find((m) => m.version === "v2.3.0");
   assert.ok(v230, "roadmap must carry the RUN-instruction work forward as v2.3.0");
-  assert.equal(v230.status, "next", "v2.3.0 must become next after v2.2.0 ships");
+  assert.equal(v230.status, "next", "v2.3.0 must stay next after v2.2.1 ships");
   assert.ok(
     v230.items.every((item) => !item.includes("#185")),
     "v2.3.0 must not present closed issue #185 as the owner of planned work",
@@ -235,8 +235,10 @@ test("roadmap data is valid and matches expected milestones", () => {
     "v2.1.0 must describe the fail-closed owner-isolation status codes",
   );
 
+  const v220 = roadmap.find((m) => m.version === "v2.2.0");
+  assert.ok(v220, "v2.2.0 must exist in roadmap");
   assert.ok(
-    latestReleased.items.some((item) => item.includes("allowed_bind_mounts")),
+    v220.items.some((item) => item.includes("allowed_bind_mounts")),
     "v2.2.0 must describe the volume-driver bind-mount containment",
   );
 

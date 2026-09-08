@@ -21,9 +21,9 @@ on:
   # a matrix change under active development would mean re-dispatching by
   # hand after every push. Pushing any `mutation/*` branch runs the full
   # matrix on that branch's copy of this file automatically instead, which
-  # is how the widened matrix itself was iterated. The badge commit below
-  # is gated to the default branch, so a branch run only reports its score
-  # in the job summary.
+  # is how the widened matrix itself was iterated. Only a default-branch
+  # run may publish the badge, so a branch run only reports its score in
+  # the job summary.
   push:
     branches:
       - 'mutation/**'
@@ -166,8 +166,8 @@ jobs:
   # Read-only: aggregates the reports and publishes the per-package table
   # on every run, including `mutation/*` branch runs. It holds no write
   # credential, so workflow code pushed to a branch never executes with
-  # one. The badge commit is a separate job below, gated to the default
-  # branch at job level.
+  # one. The badge commit is a separate job below, gated at job level to a
+  # run on the default branch.
   score:
     name: "Aggregate mutation score"
     needs: [discover, gremlins]
@@ -227,6 +227,10 @@ jobs:
           # from the same discover job that produced the matrix, so the two
           # cannot disagree; scripts/mutation-badge-matrix.test.mjs checks
           # that wiring.
+          # EXPECTED_REPORTS is set in this step's env block above, which the
+          # script-level linter can't see (a comment starting with the linter's
+          # own name is parsed as a directive, hence the wording).
+          # shellcheck disable=SC2153
           expected_reports=${EXPECTED_REPORTS}
 
           # `if: always()` runs this job even when discover failed and never
@@ -379,6 +383,19 @@ jobs:
   # The only job with a write credential. Job-level `if` means it is
   # never scheduled for a `mutation/*` branch run, so branch-authored
   # workflow code never runs with the write permission or a persisted credential.
+  #
+  # It runs on the default branch and commits to the active development
+  # branch, which are two different things. `main` is the released version
+  # and only advances through a promotion PR: its ruleset answers a direct
+  # push with "Changes must be made through a pull request", which is how
+  # run 34041041301 died in this job's "Commit badge JSON" step. A badge
+  # refreshed monthly on `main` would also mutate a committed artifact
+  # underneath the GA tag `main` carries. The commit therefore goes to the
+  # branch renovate.json names, resolved by scripts/ci/active-dev-branch.sh
+  # from the checked-out default branch, and reaches `main` at the next
+  # promotion like every other change. README's shields.io endpoint reads
+  # `main`'s copy on purpose, so the published score is the score as of the
+  # last release rather than a number that moves between tags.
   update-badge:
     name: "Update mutation score badge"
     needs: score
@@ -402,6 +419,28 @@ jobs:
         with:
           persist-credentials: true
 
+      # renovate.json is read from the default-branch checkout above, the
+      # ref this job is gated to, so the answer comes from the same commit
+      # release-cut.yml asserts against and not from whatever the target
+      # branch happens to say about itself.
+      - name: Resolve the active development branch
+        id: target
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          branch="$(bash scripts/ci/active-dev-branch.sh renovate.json)"
+          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+          echo "Publishing the mutation badge to ${branch}."
+
+      - name: Check out the active development branch
+        env:
+          TARGET_BRANCH: ${{ steps.target.outputs.branch }}
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin "${TARGET_BRANCH}"
+          git checkout -B "${TARGET_BRANCH}" FETCH_HEAD
+
       - name: Write badge JSON
         env:
           PCT: ${{ needs.score.outputs.pct }}
@@ -419,15 +458,17 @@ jobs:
           KILLED: ${{ needs.score.outputs.killed }}
           LIVED: ${{ needs.score.outputs.lived }}
           REPORTS_FOUND: ${{ needs.score.outputs.reports_found }}
-          TARGET_REF: ${{ github.ref_name }}
+          TARGET_REF: ${{ steps.target.outputs.branch }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .github/badges/mutation-score.json
           if git diff --cached --quiet; then
-            echo "mutation score unchanged at ${PCT}% -- nothing to commit"
+            echo "mutation score unchanged at ${PCT}% on ${TARGET_REF} -- nothing to commit"
             exit 0
           fi
           git commit -m "chore(badges): update mutation score to ${PCT}% (killed ${KILLED}, lived ${LIVED}, ${REPORTS_FOUND} package reports)"
-          git push origin "HEAD:${TARGET_REF}"
+          # Fully qualified so the push can only ever create or move a
+          # branch ref, never resolve to a tag of the same name.
+          git push origin "HEAD:refs/heads/${TARGET_REF}"

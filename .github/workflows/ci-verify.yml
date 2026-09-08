@@ -83,16 +83,6 @@ jobs:
             exit 0
           fi
 
-          # Paths the gated jobs provably do not consume. "Docker Build"
-          # reads the Dockerfile plus go.mod/go.sum/app/ (its COPY lines),
-          # and the fuzz matrix reads app/ Go source and its corpora, so no
-          # markdown anywhere in the tree can change either one — that is
-          # why `.*\.mdx?` is unanchored to a directory and app/**/*.md is
-          # allowed to count as documentation. docs/ holds the Fumadocs app,
-          # whose TypeScript is validated by the Node CI jobs that keep
-          # running. .planning/ is gitignored, so it can never appear here.
-          docs='^(docs/.*|LICENSE|.*\.mdx?)$'
-
           if ! git fetch --quiet origin "${BASE_REF}"; then
             echo "::warning::changes: could not fetch origin/${BASE_REF} — failing open, running every job"
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
@@ -114,16 +104,19 @@ jobs:
           echo "Changed files:"
           printf '%s\n' "${changed}" | sed 's/^/  /'
 
-          # grep -c (not -q) so the pipeline always reads all of stdin —
-          # grep -q can exit as soon as it finds a match, sending SIGPIPE
-          # back up the pipe before printf has finished writing, which under
-          # `set -o pipefail` can flip a real match into a failure. `-v`
-          # selects the lines that are NOT documentation, so exit 0 here
-          # means the diff contains at least one code change.
-          if printf '%s\n' "${changed}" | grep -cvE "${docs}" >/dev/null; then
-            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          # The docs-only predicate itself (which paths the gated jobs
+          # provably do not consume — "Docker Build" reads the Dockerfile
+          # plus go.mod/go.sum/app/, the fuzz matrix reads app/ Go source and
+          # its corpora) lives in scripts/docs-only-paths.mjs, with its own
+          # regression coverage in scripts/docs-only-paths.test.mjs, rather
+          # than inline here. Capture its stdout before touching
+          # GITHUB_OUTPUT so a script failure can't leave a partial or
+          # duplicate docs_only line behind.
+          if node_out="$(printf '%s\n' "${changed}" | node scripts/docs-only-paths.mjs)"; then
+            echo "${node_out}" >> "$GITHUB_OUTPUT"
           else
-            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::changes: docs-only-paths.mjs failed — failing open, running every job"
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
           fi
 
   # Reusable-workflow callers (CodesWhat/.github frozen SHA). Each job below
@@ -155,7 +148,7 @@ jobs:
       actions: read
       contents: read
       security-events: write
-    uses: CodesWhat/.github/.github/workflows/go-ci.yml@01bf40b06b110946f12a49b82e407d77c6480df7 # main, 2026-08-16 (no tags in .github; comment cites freeze date)
+    uses: CodesWhat/.github/.github/workflows/go-ci.yml@01bf40b06b110946f12a49b82e407d77c6480df7  # main, 2026-08-16 (no tags in .github; comment cites freeze date)
     with:
       module-directory: app
       go-version-file: go.mod
@@ -219,7 +212,7 @@ jobs:
     if: github.event_name != 'schedule'
     permissions:
       contents: read
-    uses: CodesWhat/.github/.github/workflows/node-ci.yml@01bf40b06b110946f12a49b82e407d77c6480df7 # main, 2026-08-16 (no tags in .github; comment cites freeze date)
+    uses: CodesWhat/.github/.github/workflows/node-ci.yml@01bf40b06b110946f12a49b82e407d77c6480df7  # main, 2026-08-16 (no tags in .github; comment cites freeze date)
     with:
       node-version: 24
       lockfile-path: package-lock.json

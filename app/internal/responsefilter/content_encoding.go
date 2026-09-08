@@ -1,19 +1,17 @@
 package responsefilter
 
 import (
-	"compress/gzip"
-	"fmt"
 	"io"
 	"net/http"
-	"strings"
 
+	"github.com/codeswhat/sockguard/app/internal/bodycodec"
 	requestfilter "github.com/codeswhat/sockguard/app/internal/filter"
 )
 
 // identityContentCoding is RFC 9110 §8.4.1's "no transformation" coding. It is
 // the only response encoding this package can hand to a JSON decoder as it
 // stands, and the only one it asks an upstream for.
-const identityContentCoding = "identity"
+const identityContentCoding = bodycodec.Identity
 
 // PinIdentityAcceptEncoding replaces Accept-Encoding on an upstream-bound
 // request with identity, so the daemon answers with the bytes the read-side
@@ -58,36 +56,14 @@ func PinIdentityAcceptEncoding(header http.Header) {
 // The caller bounds the decompressed stream — withResponseBody and
 // streamArrayResponse both wrap this in the same MaxResponseBodyBytes
 // LimitedReader they already applied to the raw body — which turns that cap
-// into the gzip-bomb guard for this path. The compressed stream is bounded
-// here as well, because the caller's limit counts output bytes and would let
+// into the gzip-bomb guard for this path. bodycodec bounds the compressed
+// stream as well, because the caller's limit counts output bytes and would let
 // an archive that expands to nothing pull an unbounded number of input bytes
 // off the socket first.
 //
-// Anything other than gzip or identity is refused rather than guessed at.
-// Handing br or zstd bytes to the decoder produces the same 502 with a worse
-// error, and forwarding them unread would mean redacting nothing on a route
-// policy says must be redacted.
+// The decode itself lives in internal/bodycodec, which the visibility and
+// ownership middlewares read their buffered bodies through, so the three
+// layers cannot drift on the size cap or on which codings they accept.
 func decodedResponseReader(resp *http.Response) (io.Reader, error) {
-	values := resp.Header.Values("Content-Encoding")
-	if len(values) == 0 {
-		return resp.Body, nil
-	}
-
-	// Join before matching so a body wrapped twice ("gzip, gzip", or two
-	// Content-Encoding header lines) fails the single-token comparison
-	// instead of being half-decoded by a Get that returns only the first.
-	coding := strings.ToLower(strings.TrimSpace(strings.Join(values, ", ")))
-	switch coding {
-	case "", identityContentCoding:
-		return resp.Body, nil
-	case "gzip", "x-gzip":
-		compressed := &io.LimitedReader{R: resp.Body, N: requestfilter.MaxResponseBodyBytes + 1}
-		gzr, err := gzip.NewReader(compressed)
-		if err != nil {
-			return nil, fmt.Errorf("decode gzip response body: %w", err)
-		}
-		return gzr, nil
-	default:
-		return nil, fmt.Errorf("unsupported response Content-Encoding %q", coding)
-	}
+	return bodycodec.Reader(resp.Header, resp.Body, requestfilter.MaxResponseBodyBytes)
 }

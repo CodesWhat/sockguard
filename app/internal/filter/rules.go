@@ -478,15 +478,20 @@ func matchGlobSegment(pattern, segment string) bool {
 	starIndex := -1
 	segmentRetry := 0
 	for segmentIndex < len(segment) {
-		if patternIndex < len(pattern) && pattern[patternIndex] == segment[segmentIndex] {
-			patternIndex++
-			segmentIndex++
-			continue
-		}
+		// A pattern star is always the wildcard, never a literal: the regex this
+		// walker stands in for compiles it to [^/]*, so a path segment carrying
+		// a literal '*' must not be allowed to consume it byte-for-byte. Testing
+		// equality first did exactly that and left no star to backtrack to, so
+		// "web-*" failed to match "web-*1" while the regex matched it.
 		if patternIndex < len(pattern) && pattern[patternIndex] == '*' {
 			starIndex = patternIndex
 			patternIndex++
 			segmentRetry = segmentIndex
+			continue
+		}
+		if patternIndex < len(pattern) && pattern[patternIndex] == segment[segmentIndex] {
+			patternIndex++
+			segmentIndex++
 			continue
 		}
 		if starIndex == -1 {

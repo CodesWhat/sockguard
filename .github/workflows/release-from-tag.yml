@@ -260,7 +260,7 @@ jobs:
     permissions:
       contents: write
       id-token: write     # cosign keyless signing of the release archives
-      attestations: write # SLSA build provenance for those same archives
+      attestations: write  # SLSA build provenance for those same archives
 
     steps:
       # PKG-1: block mode. Hosts come from this job's harden-runner audit log
@@ -413,6 +413,12 @@ jobs:
       id-token: write  # cosign keyless signing
       attestations: write
       artifact-metadata: write
+    outputs:
+      # The multi-arch manifest-list digest this job actually published,
+      # from the build or from the manifest-only retry. pin-chart-digest
+      # re-resolves it from the registry and refuses to write a pin the two
+      # disagree about.
+      digest: ${{ steps.digest.outputs.value }}
 
     steps:
       # PKG-1: block mode. This is the widest job in the pipeline and every host
@@ -1033,4 +1039,210 @@ jobs:
             echo "- Scanned the published multi-arch manifest by resolved platform digest, pulled from the registry (not a from-source build)"
             echo "- Image: \`${IMAGE_REF}\`"
             echo "- Fails on any HIGH or CRITICAL finding"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  pin-chart-digest:
+    # REL-4. The chart's default `image.tag` is a two-stage pin (RELEASING.md,
+    # "Helm chart"): empty before the cut so the DaemonSet falls back to
+    # Chart.yaml's appVersion, then `<appVersion>@sha256:<manifest-list
+    # digest>` once the images are live, because the digest does not exist
+    # until they are. Every cut through v2.2.0 wrote that second stage by
+    # hand afterwards (#430, #492). This job writes it.
+    #
+    # It commits to the active development branch and never to `main`.
+    # `main` is the released version: its ruleset rejects a direct push
+    # outright, and a commit landing there after the tag would move the
+    # released tree past the thing that was tagged. `dev/*` accepts direct
+    # pushes, and the pin reaches `main` at the next promotion, which is what
+    # RELEASING.md's "in the active development branch" has always meant.
+    # scripts/ci/active-dev-branch.sh reads that branch out of the tag's own
+    # renovate.json -- release-cut.yml asserted the same value matched this
+    # release line before the tag existed -- and fails closed on anything
+    # that is not a single dev/vX.Y or maintenance/X.Y.x branch.
+    #
+    # Stable tags only. A prerelease deliberately leaves the chart on the
+    # current stable version while it soaks, which is the case
+    # verify-tag-release-metadata.mjs encodes, so there is nothing to pin.
+    #
+    # release-image-scan is not in `needs` on purpose: it is a Grype gate on
+    # an already-published image, and a vulnerability-DB refresh reds it
+    # independently of whether this release published correctly. The pin
+    # waits on the jobs that assert the artifacts are the ones this pipeline
+    # built.
+    name: "Release: Pin Chart Image Digest"
+    needs: [release, verify-published, verify-homebrew]
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write  # the pin commit, pushed to the development branch
+      packages: read   # reading the published manifest list back from GHCR
+
+    steps:
+      # PKG-1: block mode. Same shape as the changelog job (checkout plus
+      # Setup Node), with the GHCR read this job adds.
+      #   github.com: Checkout, the git fetch/push of the development branch,
+      #     and Setup Node's toolchain release download
+      #   raw.githubusercontent.com: Setup Node's actions/node-versions manifest
+      #   objects.githubusercontent.com: that toolchain tarball on a cold tool
+      #     cache, the legacy redirect twin of the host below
+      #   release-assets.githubusercontent.com: that same tarball, current host
+      #   ghcr.io, pkg-containers.githubusercontent.com: Log in to GHCR and
+      #     Resolve the published manifest-list digest
+      #   *.actions.githubusercontent.com: Actions runtime and log upload
+      - name: Harden Runner
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            raw.githubusercontent.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            ghcr.io:443
+            pkg-containers.githubusercontent.com:443
+            *.actions.githubusercontent.com:443
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: true
+
+      - name: Setup Node (for release scripts)
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: 24
+          # This job writes a commit to a protected-flow branch, so the same
+          # cache-poisoning reasoning the changelog and verify-ci jobs record
+          # applies: setup-node auto-enables npm caching because the root
+          # package.json declares "packageManager", and it has to be turned
+          # off explicitly through package-manager-cache (zizmor
+          # cache-poisoning).
+          package-manager-cache: false
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve the published manifest-list digest
+        id: digest
+        # No Set up Docker Buildx step: `imagetools inspect` is a registry
+        # read through the default builder, not a build, so it needs neither
+        # the container driver nor the buildkit image pull that setting one
+        # up would add to the egress allowlist above.
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          BUILD_DIGEST: ${{ needs.release.outputs.digest }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${BUILD_DIGEST}" ]; then
+            echo "::error::The release job published no digest; refusing to pin the chart."
+            exit 1
+          fi
+
+          version="${RELEASE_TAG#v}"
+          # GHCR rejects a mixed-case path and github.repository preserves the
+          # repository's actual case (CodesWhat/sockguard).
+          repository="$(printf '%s' "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          image_ref="ghcr.io/${repository}:${version}"
+
+          # `|| true` on both, and an awk that reads to EOF rather than
+          # exiting on the first match: pipefail plus an early-exiting reader
+          # is a SIGPIPE trap that would fail a pipeline which had already
+          # parsed the value correctly.
+          digest="$(docker buildx imagetools inspect "${image_ref}" --format '{{.Manifest.Digest}}' || true)"
+          if ! [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            # Older buildx templates expose the descriptor differently; the
+            # human-readable output has always carried the manifest-list
+            # digest as its first top-level Digest line.
+            digest="$(docker buildx imagetools inspect "${image_ref}" | awk '$1 == "Digest:" && !seen { print $2; seen = 1 }' || true)"
+          fi
+          if ! [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Could not resolve a manifest-list digest for ${image_ref}."
+            exit 1
+          fi
+
+          if [ "${digest}" != "${BUILD_DIGEST}" ]; then
+            echo "::error::${image_ref} resolves to ${digest} but the release job published ${BUILD_DIGEST}; refusing to pin a digest this pipeline did not push."
+            exit 1
+          fi
+
+          echo "value=${digest}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "${image_ref} is ${digest}."
+
+      # renovate.json is read from the tag's checkout, not from the branch
+      # this is about to write to, so the answer comes from the commit
+      # release-cut.yml already validated.
+      - name: Resolve the active development branch
+        id: target
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          branch="$(bash scripts/ci/active-dev-branch.sh renovate.json)"
+          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+          echo "Pinning the chart image digest on ${branch}."
+
+      - name: Check out the active development branch
+        env:
+          TARGET_BRANCH: ${{ steps.target.outputs.branch }}
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin "${TARGET_BRANCH}"
+          git checkout -B "${TARGET_BRANCH}" FETCH_HEAD
+
+      - name: Pin the chart image digest
+        env:
+          RELEASE_VERSION: ${{ steps.digest.outputs.version }}
+          IMAGE_DIGEST: ${{ steps.digest.outputs.value }}
+        run: |
+          set -euo pipefail
+          node scripts/pin-chart-image-digest.mjs \
+            --version "${RELEASE_VERSION}" \
+            --digest "${IMAGE_DIGEST}"
+
+      - name: Re-check release metadata
+        run: node --test scripts/release-metadata.test.mjs
+
+      - name: Commit the pin
+        env:
+          RELEASE_VERSION: ${{ steps.digest.outputs.version }}
+          TARGET_BRANCH: ${{ steps.target.outputs.branch }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add chart/sockguard/values.yaml
+          if git diff --cached --quiet; then
+            echo "chart image digest already pinned for ${RELEASE_VERSION} on ${TARGET_BRANCH} -- nothing to commit"
+            exit 0
+          fi
+          git commit -m "chore(chart): pin the ${RELEASE_VERSION} image to its multi-arch digest"
+          # Fully qualified so the push can only ever create or move a branch
+          # ref, never resolve to a tag of the same name.
+          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+
+      - name: Summarize
+        if: always()
+        env:
+          RELEASE_VERSION: ${{ steps.digest.outputs.version }}
+          IMAGE_DIGEST: ${{ steps.digest.outputs.value }}
+          TARGET_BRANCH: ${{ steps.target.outputs.branch }}
+        run: |
+          {
+            echo "### Helm chart image pin"
+            if [ -z "${RELEASE_VERSION}" ] || [ -z "${TARGET_BRANCH}" ]; then
+              # Same lesson the mutation badge summary learned: a step that
+              # never produced its outputs must name that, not format blanks.
+              echo "- Did not get as far as writing a pin; see the failing step above."
+            else
+              echo "- Version: \`${RELEASE_VERSION}\`"
+              echo "- Manifest-list digest: \`${IMAGE_DIGEST}\`"
+              echo "- Branch: \`${TARGET_BRANCH}\` (never \`main\` — it only advances through a promotion PR)"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
