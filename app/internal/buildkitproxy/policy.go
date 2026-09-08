@@ -48,6 +48,7 @@ func (p Policy) Configured() bool {
 		p.Control.AllowListWorkers ||
 		p.Control.AllowStatus ||
 		p.Control.Solve.Allow ||
+		len(p.Control.Solve.AllowedExecDigests) > 0 ||
 		len(p.Control.Solve.AllowedCacheImportTypes) > 0 ||
 		len(p.Control.Solve.AllowedCacheExportTypes) > 0 ||
 		len(p.Control.Solve.AllowedCacheRegistries) > 0 ||
@@ -167,46 +168,17 @@ type ControlPolicy struct {
 	Solve            SolvePolicy
 }
 
-// SolvePolicy gates moby.buildkit.v1.Control/Solve. See
-// config.BuildkitSolveRequestBodyConfig's doc comment for why this has no
-// allow_run_instructions/allow_host_network/allow_remote_context fields of
-// its own — AllowHostNetwork/AllowRemoteContext below are threaded through
-// from the sibling request_body.build block by
-// config.BuildkitRequestBodyConfig.ToPolicy, not duplicated config knobs.
-//
-// Phase 3 (issue #185) is the first phase that actually reads these fields:
-// bridge.go's forwardControlMediated decodes a Solve request and checks its
-// Entitlements/Frontend/FrontendAttrs/Cache/Exporters against them before
-// forwarding. AllowRunInstructions has only a partial Phase 3 equivalent:
-// unlike classic POST /build (build.go), a BuildKit Solve using the
-// dockerfile.v0 frontend never puts the Dockerfile's RUN instructions in the
-// SolveRequest message itself — the daemon's embedded frontend resolves
-// those from the build context, which sockguard cannot see until the
-// file-sync mediation Phase 5 ships (the #185 synthesis's "temporal
-// enforcement on file-sync": Solve is forwarded before the daemon requests
-// the Dockerfile). A raw, frontend-less Solve (Frontend == "") is different:
-// it embeds its instructions directly as an ExecOp in its own LLB op graph
-// (solver/pb/ops.proto's Definition.Def, a `repeated bytes` field Phase 3's
-// protobuf-reflection-based unknown-field walk cannot decode — see
-// protowalk.go), so solve.go's checkSolveDefinitionExec does a second,
-// targeted proto.Unmarshal pass per Op to deny ExecOp (or anything it cannot
-// decode) instead. A full LLB op-graph content policy beyond that targeted
-// check remains out of Phase 3's scope.
+// SolvePolicy gates Control/Solve. The three build flags come from the sibling
+// request_body.build block. Dockerfile RUN checks inspect the FileSync stream;
+// raw-LLB RUN checks inspect each serialized operation before forwarding Solve.
 type SolvePolicy struct {
-	Allow              bool
-	AllowHostNetwork   bool
-	AllowRemoteContext bool
-	// AllowRunInstructions is reused verbatim from the sibling
-	// request_body.build block, exactly like AllowHostNetwork/
-	// AllowRemoteContext above — see this struct's doc comment for why
-	// Solve itself has no phase 3 use for it. Phase 5 (issue #185) is the
-	// first phase that reads it: filesync.go's Dockerfile hold-and-inspect
-	// path applies the identical allow_run_instructions gate the classic
-	// POST /build path does (internal/filter/build.go's buildPolicy.inspect)
-	// to the Dockerfile bytes it holds from a "dockerfile"-named
-	// FileSync/DiffCopy stream, via the shared internal/dockerfileinspect
-	// parser — before ever releasing them to the daemon.
+	Allow                bool
+	AllowHostNetwork     bool
+	AllowRemoteContext   bool
 	AllowRunInstructions bool
+	// AllowedExecDigests contains exact SHA-256 approvals for raw ExecOps when
+	// AllowRunInstructions is false. Other execution guards still apply.
+	AllowedExecDigests map[string]struct{}
 
 	// AllowedCacheImportTypes/AllowedCacheExportTypes gate SolveRequest.
 	// Cache.Imports/.Exports' CacheOptionsEntry.Type (e.g. "registry",

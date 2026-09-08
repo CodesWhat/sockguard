@@ -130,8 +130,7 @@ var controlSchemaDrift schemaDriftLimiter
 // The tables form an acyclic graph three levels deep at most
 // (ListWorkersResponse -> WorkerRecord -> Platform/BuildkitVersion), so
 // filterControlResponseMessage's recursion is statically bounded and needs no
-// depth cap of its own, unlike solve.go's solveDefinitionExecMaxDepth (whose
-// input nesting is client-controlled).
+// depth cap of its own.
 
 // controlPlatformFields is solver/pb's Platform, reached through
 // WorkerRecord.platforms. Every field is kept: a platform triple is what a

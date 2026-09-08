@@ -18,16 +18,12 @@
 //     SessionRegistry.PutRef record ownership of "", and a later
 //     Control/Status{Ref:""} call would then pass OwnsRef's check for
 //     free.
-//   - Definition (2): the actual LLB op graph. Forwarded byte-for-byte on
-//     the wire in every case — full per-op LLB inspection remains out of
-//     Phase 3's scope. But for a frontend-less Solve (Frontend == ""),
-//     checkSolveDefinitionExec decodes each Op and denies when
-//     AllowRunInstructions is false and the graph contains (or cannot be
-//     proven not to contain) an ExecOp — see that function's doc comment.
-//     A Solve naming a frontend builds its own Definition server-side from
-//     FrontendAttrs, so a client-supplied Definition alongside a non-empty
-//     Frontend is not meaningfully actionable here and is left to the
-//     frontend/daemon.
+//   - Definition (2): forwarded byte-for-byte after inspecting each raw LLB
+//     operation when Frontend is empty and AllowRunInstructions is false.
+//     ExecOps require exact digest approval; malformed or unknown operations
+//     and daemon-resolved BuildOps are denied. A named frontend creates its
+//     graph inside the daemon; its admission follows checkSolveFrontend and
+//     the Dockerfile FileSync guard instead.
 //   - ExporterDeprecated / ExporterAttrsDeprecated (3, 4): denied outright
 //     — see checkSolveCache.
 //   - Session (5): names the session the daemon calls back through for
@@ -62,6 +58,8 @@
 package buildkitproxy
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"regexp"
 	"slices"
 	"strconv"
@@ -361,15 +359,6 @@ func checkSolveFrontend(req *control.SolveRequest, solvePolicy SolvePolicy) *med
 	return nil
 }
 
-// solveDefinitionExecMaxDepth bounds definitionIsExecFree's recursion into
-// nested BuildOp Definitions (an Op_Build node carries its own full nested
-// Definition, whose Ops can themselves include another BuildOp) so a client
-// cannot force unbounded recursion by nesting BuildOps — the same
-// depth-cap pattern internal/filter/json_mutate.go's mutationMaxDepth uses
-// for JSON nesting. Nesting past the cap is treated as unprovable, not
-// silently accepted.
-const solveDefinitionExecMaxDepth = 32
-
 // checkSolveDefinitionExec enforces AllowRunInstructions against a raw,
 // frontend-less Solve (Frontend == ""). Unlike a dockerfile.v0 solve — whose
 // RUN instructions arrive as Dockerfile text the daemon's embedded frontend
@@ -379,39 +368,48 @@ const solveDefinitionExecMaxDepth = 32
 // Definition carrying that graph is opaque `repeated bytes` at the
 // SolveRequest level (each entry an individually-marshaled pb.Op), so
 // protowalk.go's reflection-based unknown-field walk cannot see inside it —
-// definitionIsExecFree does a second, targeted proto.Unmarshal pass per Op
+// definitionExecAllowed does a second, targeted proto.Unmarshal pass per Op
 // instead.
 func checkSolveDefinitionExec(req *control.SolveRequest, solvePolicy SolvePolicy) *mediationDenial {
 	if req.GetFrontend() != "" || solvePolicy.AllowRunInstructions {
 		return nil
 	}
-	if !definitionIsExecFree(req.GetDefinition(), solveDefinitionExecMaxDepth) {
+	if !definitionExecAllowed(req.GetDefinition(), solvePolicy) {
 		return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "RUN instructions are not allowed")
 	}
 	return nil
 }
 
-// definitionIsExecFree reports whether every Op reachable from def — walking
-// into a BuildOp's own nested Definition up to maxDepth levels — contains no
-// ExecOp. An Op this function cannot decode, or nesting deeper than
-// maxDepth, is NOT treated as exec-free: an unevaluable signal must not
-// pass, matching checkSolveEntitlements' unrecognized-entitlement denial and
-// internal/filter/build.go's "unable to inspect" default-deny posture for
-// content it cannot parse.
-func definitionIsExecFree(def *pb.Definition, maxDepth int) bool {
-	if maxDepth < 0 {
-		return false
-	}
+// definitionExecAllowed admits only individually approved ExecOps. The digest
+// covers the original operation bytes, including its input references. BuildOp
+// loads another graph from a filesystem result inside the daemon, so its
+// optional inline Def cannot prove it safe to execute.
+func definitionExecAllowed(def *pb.Definition, policy SolvePolicy) bool {
 	for _, opBytes := range def.GetDef() {
 		op := &pb.Op{}
-		if err := proto.Unmarshal(opBytes, op); err != nil {
+		if err := proto.Unmarshal(opBytes, op); err != nil || hasUnknownFields(op) {
 			return false
 		}
-		if op.GetExec() != nil {
+		if op.GetBuild() != nil {
 			return false
 		}
-		if build := op.GetBuild(); build != nil && !definitionIsExecFree(build.GetDef(), maxDepth-1) {
-			return false
+		if exec := op.GetExec(); exec != nil {
+			if len(exec.GetMeta().GetArgs()) == 0 || exec.GetMeta().GetArgs()[0] == "" || exec.GetSecurity() != pb.SecurityMode_SANDBOX || len(exec.GetCdiDevices()) != 0 {
+				return false
+			}
+			switch exec.GetNetwork() {
+			case pb.NetMode_UNSET, pb.NetMode_NONE:
+			case pb.NetMode_HOST:
+				if !policy.AllowHostNetwork {
+					return false
+				}
+			default:
+				return false
+			}
+			sum := sha256.Sum256(opBytes)
+			if _, ok := policy.AllowedExecDigests["sha256:"+hex.EncodeToString(sum[:])]; !ok {
+				return false
+			}
 		}
 	}
 	return true
