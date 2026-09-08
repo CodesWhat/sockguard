@@ -54,7 +54,10 @@ func TestBuildkitExecDigestRealDaemon(t *testing.T) {
 	platform := &pb.Platform{OS: "linux", Architecture: runtime.GOARCH}
 	source := marshal(&pb.Op{
 		Platform: platform,
-		Op:       &pb.Op_Source{Source: &pb.SourceOp{Identifier: "docker-image://docker.io/library/" + busyboxPinnedRef}},
+		Op: &pb.Op_Source{Source: &pb.SourceOp{
+			Identifier: "docker-image://docker.io/library/" + busyboxPinnedRef,
+			Attrs:      map[string]string{"image.resolvemode": "local"},
+		}},
 	})
 	execution := marshal(&pb.Op{
 		Platform: platform,
@@ -114,8 +117,11 @@ func TestBuildkitExecDigestRealDaemon(t *testing.T) {
 			}
 			defer client.Close()
 			payload := marshal(&control.SolveRequest{
-				Ref:     fmt.Sprintf("sockguard-llb-%d", time.Now().UnixNano()),
-				Session: "sockguard-integration", Definition: definition,
+				Ref:        fmt.Sprintf("sockguard-llb-%d", time.Now().UnixNano()),
+				Session:    "sockguard-integration",
+				Definition: definition,
+				// Older BuildKit versions require the empty cache message too.
+				Cache: &control.CacheOptions{},
 			})
 			frame := make([]byte, 5+len(payload))
 			binary.BigEndian.PutUint32(frame[1:5], uint32(len(payload)))
@@ -143,7 +149,7 @@ func TestBuildkitExecDigestRealDaemon(t *testing.T) {
 				want = "0"
 			}
 			if status != want {
-				t.Fatalf("gRPC status=%q, want %q; header=%v trailer=%v", status, want, resp.Header, resp.Trailer)
+				t.Fatalf("gRPC status=%q, want %q; message=%q %q", status, want, resp.Header.Get("Grpc-Message"), resp.Trailer.Get("Grpc-Message"))
 			}
 		})
 	}
