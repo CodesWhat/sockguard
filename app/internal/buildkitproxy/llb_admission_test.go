@@ -136,8 +136,10 @@ func TestBridgeExecDigestAdmission(t *testing.T) {
 			defer resp.Body.Close()
 			if approved {
 				body, err := io.ReadAll(resp.Body)
-				if err != nil || string(body) != string(frame) || calls.Load() != 1 {
-					t.Fatalf("approved frame was not forwarded verbatim: calls=%d err=%v", calls.Load(), err)
+				req.Ref = daemonBuildRef(tb.session.Key, req.Ref)
+				expected := grpcFrame(mustMarshal(t, req))
+				if err != nil || string(body) != string(expected) || calls.Load() != 1 {
+					t.Fatalf("approved operation bytes changed during ref scoping: calls=%d err=%v", calls.Load(), err)
 				}
 			} else {
 				code, _ := grpcStatusOf(t, resp)

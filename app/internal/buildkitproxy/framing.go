@@ -32,9 +32,9 @@ var errUnaryFrameProtocolError = errors.New("buildkitproxy: malformed or multi-m
 // (Control/Solve, Control/Status) presents on its request stream — and
 // confirms no further bytes follow. It returns the COMPLETE original frame
 // (5-byte header + payload, byte-for-byte as read) for forwarding to the
-// daemon untouched on allow — per the #185 Phase 3 constraint "on allow
-// forward the ORIGINAL bytes, never a re-encoded message" — and the payload
-// alone, separately, for proto.Unmarshal to decode for the policy decision.
+// daemon after policy checks, and the payload alone for proto.Unmarshal.
+// Control mediation translates its top-level Ref before forwarding; the
+// remaining wire bytes, including LLB operations, stay original.
 //
 // A nonzero compression flag is rejected outright: sockguard's mediator
 // never negotiates message-level gRPC compression, so a compressed frame is
