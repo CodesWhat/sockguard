@@ -37,11 +37,11 @@ func (b *bridge) forwardGatewayMediated(w http.ResponseWriter, r *http.Request, 
 	}
 	frame, payload, err := readUnaryGRPCMessage(r.Body, b.limits.MaxMessageBytes)
 	if err != nil {
-		code := grpcCodeInvalidArgument
 		if errors.Is(err, errMessageTooLarge) {
-			code = grpcCodeResourceExhausted
+			b.denyGateway(w, method, deny(grpcCodeResourceExhausted, "buildkit_message_too_large", "frontend request exceeds sockguard's size cap"))
+			return
 		}
-		b.denyGateway(w, method, deny(code, "buildkit_protocol_error", "invalid frontend request framing"))
+		b.denyGateway(w, method, deny(grpcCodeInvalidArgument, "buildkit_protocol_error", "invalid frontend request framing"))
 		return
 	}
 	if d := evaluateGatewayRequest(method, payload, g.policy); d != nil {

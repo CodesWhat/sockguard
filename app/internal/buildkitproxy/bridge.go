@@ -501,6 +501,9 @@ func (b *bridge) forwardControlMediated(w http.ResponseWriter, r *http.Request, 
 			if denied != nil {
 				writeGRPCStatus(w, denied.code, denied.message)
 				b.audit(service, method, Deny, denied.reasonCode)
+				if denied.code != grpcCodeResourceExhausted {
+					b.recordDeniedAndMaybeClose()
+				}
 				return
 			}
 			defer b.registry.endGatewayBuild(g)
