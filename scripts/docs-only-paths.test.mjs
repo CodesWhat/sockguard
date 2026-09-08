@@ -18,12 +18,17 @@ test("isDocsOnlyPath: true cases carried over from #466", () => {
   assert.equal(isDocsOnlyPath("CHANGELOG.md"), true);
 });
 
-test("isDocsOnlyPath: a nested docs/ directory also counts (website's copied Fumadocs export)", () => {
+test("isDocsOnlyPath: the website's copied Fumadocs export counts", () => {
   assert.equal(isDocsOnlyPath("website/public/docs/x.html"), true);
 });
 
 test("isDocsOnlyPath: false cases carried over from #466", () => {
   assert.equal(isDocsOnlyPath("go.mod"), false);
+  // A directory named docs under the Go module is code: Docker Build and
+  // the fuzz matrix consume it, so it must never read as docs-only.
+  assert.equal(isDocsOnlyPath("app/internal/docs/backdoor.go"), false);
+  assert.equal(isDocsOnlyPath("scripts/docs/helper.mjs"), false);
+  assert.equal(isDocsOnlyPath("docs"), false);
   assert.equal(isDocsOnlyPath("renovate.json"), false);
   assert.equal(isDocsOnlyPath("Dockerfile"), false);
   assert.equal(isDocsOnlyPath("app/internal/filter/rules.go"), false);

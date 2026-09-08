@@ -235,8 +235,10 @@ test("roadmap data is valid and matches expected milestones", () => {
     "v2.1.0 must describe the fail-closed owner-isolation status codes",
   );
 
+  const v220 = roadmap.find((m) => m.version === "v2.2.0");
+  assert.ok(v220, "v2.2.0 must exist in roadmap");
   assert.ok(
-    latestReleased.items.some((item) => item.includes("allowed_bind_mounts")),
+    v220.items.some((item) => item.includes("allowed_bind_mounts")),
     "v2.2.0 must describe the volume-driver bind-mount containment",
   );
 

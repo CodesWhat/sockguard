@@ -4,13 +4,15 @@
 //
 // Extracted from the inline `docs='^(docs/.*|LICENSE|.*\.mdx?)$'` regex that
 // job used to grep the changed-file list against (CI-7, #466), plus one
-// addition: a nested `docs/` directory anywhere in the path also counts, so
-// website/public/docs/ — where website/package.json's build:docs-content
-// script copies the Fumadocs static export before it ships under
-// getsockguard.com/docs — reads as documentation the same way the top-level
-// docs/ workspace does. That directory is gitignored (generated at build
-// time), so it never actually appears in a PR diff today; the rule exists so
-// the predicate does not have to change if that ever stops being true.
+// addition: website/public/docs/ — where website/package.json's
+// build:docs-content script copies the Fumadocs static export before it
+// ships under getsockguard.com/docs — reads as documentation the same way
+// the top-level docs/ workspace does. That directory is gitignored
+// (generated at build time), so it never actually appears in a PR diff
+// today; the rule exists so the predicate does not have to change if that
+// ever stops being true. Only those two prefixes count: a directory named
+// docs anywhere else (app/internal/docs/x.go) is code, because Docker Build
+// and the fuzz matrix consume it and must not be skipped for it.
 //
 // A single garbled or unusual path (e.g. one `git diff --name-only` prints
 // quoted because it contains a literal newline) is deliberately NOT
@@ -24,12 +26,10 @@ export function isDocsOnlyPath(path) {
   if (path === "LICENSE") return true;
   if (/\.mdx?$/.test(path)) return true;
 
-  // Any directory component named exactly "docs" — not just a top-level
-  // docs/ — counts. The path's own final segment (the filename) is excluded
-  // so a file merely named "docs" or "docs-something.ext" doesn't count.
-  const segments = path.split("/");
-  segments.pop();
-  return segments.includes("docs");
+  // Exactly two documentation trees, both by prefix: the docs/ workspace
+  // and the website's copied export. A file merely named "docs" or
+  // "docs-something.ext" at the top level does not match either prefix.
+  return path.startsWith("docs/") || path.startsWith("website/public/docs/");
 }
 
 // paths.length === 0 (no changed files at all) is deliberately NOT
