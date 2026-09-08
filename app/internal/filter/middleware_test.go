@@ -2331,3 +2331,29 @@ func TestMatchesLibpodSecretInspection(t *testing.T) {
 		t.Error("matchesLibpodSecretInspection(different resource) = true, want false")
 	}
 }
+
+func assertFilterCreateRoundTrip(t *testing.T, path, body string, cfg PolicyConfig, denied bool) {
+	t.Helper()
+	rule, err := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: NormalizePath(path), Action: ActionAllow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reached := false
+	handler := MiddlewareWithOptions([]*CompiledRule{rule}, testLogger(), Options{PolicyConfig: cfg})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		got, err := io.ReadAll(r.Body)
+		if err != nil || string(got) != body {
+			t.Errorf("body = %q, %v; want %q", got, err, body)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)))
+	want := http.StatusNoContent
+	if denied {
+		want = http.StatusForbidden
+	}
+	if rec.Code != want || reached == denied {
+		t.Fatalf("status = %d, reached = %v; want %d, %v; response %s", rec.Code, reached, want, !denied, rec.Body)
+	}
+}

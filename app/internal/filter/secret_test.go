@@ -148,3 +148,54 @@ func TestSecretInspectMalformedJSONWithLogger(t *testing.T) {
 		t.Fatalf("log records = %d, want 1", len(logs.snapshot()))
 	}
 }
+
+func TestSecretInspectDockerDriverShape(t *testing.T) {
+	const driverDenied = `secret create denied: driver "vault" is not allowed`
+	const malformed = "secret create denied: request body could not be inspected"
+	for _, tt := range []struct {
+		name, body string
+		allow      bool
+		want       string
+	}{
+		{"object denied", `{"Driver":{"Name":"vault","Options":{"address":"local"}}}`, false, driverDenied},
+		{"object allowed", `{"Driver":{"Name":"vault","Options":{"address":"local"}}}`, true, ""},
+		{"absent", `{}`, false, ""},
+		{"null", `{"Driver":null}`, false, ""},
+		{"empty", `{"Driver":{}}`, false, ""},
+		{"boolean", `{"Driver":true}`, true, malformed},
+		{"array", `{"Driver":[]}`, true, malformed},
+		{"number", `{"Driver":1}`, true, malformed},
+		{"invalid name", `{"Driver":{"Name":1}}`, true, malformed},
+		{"merge empty", `{"Driver":{"Name":"vault"},"Driver":{}}`, false, driverDenied},
+		{"merge null name", `{"Driver":{"Name":"vault"},"Driver":{"Name":null}}`, false, driverDenied},
+		{"clear selection", `{"Driver":{"Name":"vault"},"Driver":null}`, false, ""},
+		{"compatibility denied", `{"Driver":"vault"}`, false, driverDenied},
+		{"compatibility allowed", `{"Driver":"vault"}`, true, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/secrets/create", strings.NewReader(tt.body))
+			reason, err := newSecretPolicy(SecretOptions{AllowCustomDrivers: tt.allow}).inspect(nil, req, "/secrets/create")
+			if err != nil || reason != tt.want {
+				t.Fatalf("inspect() = (%q, %v), want (%q, nil)", reason, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestMiddlewareSecretDockerDriver(t *testing.T) {
+	for _, path := range []string{"/secrets/create", "/v1.53/secrets/create"} {
+		for _, tt := range []struct {
+			name, body    string
+			allow, denied bool
+		}{
+			{"denied", `{"Driver":{"Name":"vault","Options":{"address":"local"}}}`, false, true},
+			{"allowed", `{"Driver":{"Name":"vault","Options":{"address":"local"}}}`, true, false},
+			{"template still denied", `{"Driver":{"Name":"vault"},"TemplateDriver":"golang"}`, true, true},
+			{"templating still denied", `{"Driver":{"Name":"vault"},"Templating":{"Name":"golang"}}`, true, true},
+		} {
+			t.Run(path+"/"+tt.name, func(t *testing.T) {
+				assertFilterCreateRoundTrip(t, path, tt.body, PolicyConfig{Secret: SecretOptions{AllowCustomDrivers: tt.allow}}, tt.denied)
+			})
+		}
+	}
+}
