@@ -48,6 +48,7 @@ func (p Policy) Configured() bool {
 		p.Control.AllowListWorkers ||
 		p.Control.AllowStatus ||
 		p.Control.Solve.Allow ||
+		p.Control.Solve.AllowFrontendGateway ||
 		len(p.Control.Solve.AllowedExecDigests) > 0 ||
 		len(p.Control.Solve.AllowedCacheImportTypes) > 0 ||
 		len(p.Control.Solve.AllowedCacheExportTypes) > 0 ||
@@ -103,6 +104,8 @@ func (p Policy) Allowed(endpoint Endpoint, service, rpcMethod string) bool {
 	switch endpoint {
 	case EndpointGRPC:
 		switch service {
+		case gatewayService:
+			return Classify(endpoint, service, rpcMethod) == Mediate && p.Control.Solve.Allow && p.Control.Solve.AllowFrontendGateway
 		case "moby.buildkit.v1.Control":
 			switch rpcMethod {
 			case "Solve":
@@ -172,6 +175,9 @@ type ControlPolicy struct {
 // request_body.build block. Dockerfile RUN checks inspect the FileSync stream;
 // raw-LLB RUN checks inspect each serialized operation before forwarding Solve.
 type SolvePolicy struct {
+	// AllowFrontendGateway permits mediated external frontend calls bound to
+	// an active frontend-less Solve. It never grants execution by itself.
+	AllowFrontendGateway bool
 	Allow                bool
 	AllowHostNetwork     bool
 	AllowRemoteContext   bool

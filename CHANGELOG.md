@@ -9,7 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Vendored the pinned BuildKit v0.32.0 frontend gateway, worker, and capability message schemas as groundwork for the companion frontend runner. Their provenance and generated package paths are checked. Gateway RPCs remain denied. Error messages reuse the Google RPC schema already in the dependency graph, with no new dependency version or gRPC runtime.
+- Opt-in external frontend gateway mediation with `request_body.buildkit.control.solve.allow_frontend_gateway`. Gateway calls must belong to an active root Solve for the same client/profile and retain that root's policy. Every iterative LLB Solve uses the existing individual ExecOp approvals, cache grants, and source-session isolation. Image/source resolution, result reads, and completion are mediated; Ping strips private worker metadata and unsupported capabilities. Interactive container/process RPCs and filesystem-loaded nested builds remain denied. Builds are capped at eight per principal, 256 gateway Solves each, and 30 minutes. The companion runner is still in progress.
+
+- Vendored the pinned BuildKit v0.32.0 frontend gateway, worker, and capability message schemas as groundwork for the companion frontend runner. Their provenance and generated package paths are checked. Error messages reuse the Google RPC schema already in the dependency graph, with no new dependency version or gRPC runtime.
 
 - Raw-LLB builds can approve individual ExecOps with `request_body.buildkit.control.solve.allowed_exec_digests` while keeping `build.allow_run_instructions: false`. Each lowercase SHA-256 digest covers the original operation bytes, including arguments, environment, mounts and input references. Host networking still requires its own grant; insecure execution, CDI devices, unknown execution modes, and empty commands cannot be approved this way. Admission preserves the original operation bytes, and the allowlist remains scoped to the selected client profile.
 

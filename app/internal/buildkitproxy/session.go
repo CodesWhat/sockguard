@@ -1,6 +1,7 @@
 package buildkitproxy
 
 import (
+	"context"
 	"crypto/rand"
 	"sync"
 	"time"
@@ -157,6 +158,7 @@ type SessionRegistry struct {
 	sessions      map[uint64]*Session
 	nextID        uint64
 	sessionSecret [32]byte
+	gatewayBuilds map[SessionKey]map[string]*gatewayBuild
 
 	// refOwners is Phase 3's ref-ownership index: which SessionKey (client
 	// identity + profile — see SessionKey's doc comment) admitted a given
@@ -290,6 +292,16 @@ func (r *SessionRegistry) Close(id uint64) {
 		return
 	}
 	delete(r.sessions, id)
+	for ref, g := range r.gatewayBuilds[s.Key] {
+		if g.session == s {
+			g.cancel(context.Canceled)
+			g.stopTimer()
+			delete(r.gatewayBuilds[s.Key], ref)
+		}
+	}
+	if len(r.gatewayBuilds[s.Key]) == 0 {
+		delete(r.gatewayBuilds, s.Key)
+	}
 
 	refs := s.refsSnapshot()
 	owners := r.refOwners[s.Key]

@@ -253,6 +253,10 @@ func (b *bridge) forwardAdmitted(w http.ResponseWriter, r *http.Request, service
 		b.audit(service, method, Passthrough, "")
 		b.forward(w, r, service, method)
 	case Mediate:
+		if isGatewayMediatedMethod(b.legs.endpoint, service, method) {
+			b.forwardGatewayMediated(w, r, method)
+			return
+		}
 		if isControlMediatedMethod(b.legs.endpoint, service, method) {
 			// Phase 3: Control/Solve and Control/Status get per-message
 			// decode/policy mediation instead of Phase 2's byte-verbatim
@@ -492,6 +496,19 @@ func (b *bridge) forwardControlMediated(w http.ResponseWriter, r *http.Request, 
 	}
 
 	if method == "Solve" {
+		if b.policy.Control.Solve.AllowFrontendGateway && solveReq.GetFrontend() == "" && solveReq.Definition == nil {
+			g, denied := b.registry.beginGatewayBuild(r.Context(), b.session, ref, solveReq.GetSession(), b.policy)
+			if denied != nil {
+				writeGRPCStatus(w, denied.code, denied.message)
+				b.audit(service, method, Deny, denied.reasonCode)
+				if denied.code != grpcCodeResourceExhausted {
+					b.recordDeniedAndMaybeClose()
+				}
+				return
+			}
+			defer b.registry.endGatewayBuild(g)
+			r = r.WithContext(g.ctx)
+		}
 		switch b.registry.admitSolve(
 			b.session,
 			solveReq.GetSession(),

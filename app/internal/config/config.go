@@ -1137,6 +1137,9 @@ type BuildkitControlRequestBodyConfig struct {
 type BuildkitSolveRequestBodyConfig struct {
 	// Allow permits the Control/Solve RPC at all. Default false.
 	Allow bool `mapstructure:"allow"`
+	// AllowFrontendGateway permits external frontend RPCs tied to an active
+	// Solve and checked against that build's original policy. Default false.
+	AllowFrontendGateway bool `mapstructure:"allow_frontend_gateway"`
 	// AllowedExecDigests approves exact raw-LLB ExecOp bytes while the sibling
 	// allow_run_instructions flag is false. Entries are lowercase sha256 digests.
 	AllowedExecDigests []string `mapstructure:"allowed_exec_digests"`
