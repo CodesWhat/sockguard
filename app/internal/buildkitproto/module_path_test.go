@@ -12,6 +12,7 @@ import (
 	_ "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/control"
 	_ "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/filesync"
 	_ "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/fsutiltypes"
+	_ "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/gateway"
 	_ "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/health"
 	_ "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/secrets"
 	_ "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/sshforward"
@@ -31,7 +32,7 @@ func TestGeneratedDescriptorModulePaths(t *testing.T) {
 		}
 		return true
 	})
-	if count != 11 {
-		t.Fatalf("checked %d generated descriptors, want all 11", count)
+	if count != 14 {
+		t.Fatalf("checked %d generated descriptors, want all 14", count)
 	}
 }

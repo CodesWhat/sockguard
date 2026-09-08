@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Vendored the pinned BuildKit v0.32.0 frontend gateway, worker, and capability message schemas as groundwork for the companion frontend runner. Their provenance and generated package paths are checked. Gateway RPCs remain denied. Error messages reuse the Google RPC schema already in the dependency graph, with no new dependency version or gRPC runtime.
+
 - Raw-LLB builds can approve individual ExecOps with `request_body.buildkit.control.solve.allowed_exec_digests` while keeping `build.allow_run_instructions: false`. Each lowercase SHA-256 digest covers the original operation bytes, including arguments, environment, mounts and input references. Host networking still requires its own grant; insecure execution, CDI devices, unknown execution modes, and empty commands cannot be approved this way. Admission preserves the original operation bytes, and the allowlist remains scoped to the selected client profile.
 
 ### Security

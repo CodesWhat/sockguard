@@ -34,6 +34,10 @@ type vendoredFile struct {
 // "compatibility is keyed to the committed manifest, never a client version
 // string" posture, applied to the vendoring step itself.
 var vendoredManifest = []vendoredFile{
+	{path: "github.com/moby/buildkit/frontend/gateway/pb/gateway.proto", tag: "v0.32.0", curationPrefix: "full", sha256: "9cb0dcc2696816cb558929a3573c88074a6622c24a43e7c8621e901482b254a9"},
+	{path: "github.com/moby/buildkit/api/types/worker.proto", tag: "v0.32.0", curationPrefix: "full", sha256: "f314ffb5935e78a468724392cb05e88266c444d77735bcf6679e0ab5ee102dfc"},
+	{path: "github.com/moby/buildkit/util/apicaps/pb/caps.proto", tag: "v0.32.0", curationPrefix: "full", sha256: "fe00b7f4e7f7f993c0c792796cd41488acbdf318088104af0ed5d8cc562b78be"},
+	{path: "google/rpc/status.proto", tag: "a68d4433fa8f0cf72710a60cc09dec096db0fcee", curationPrefix: "full", sha256: "f5bfd262e6705c7ae73f32e0ad8ee20ce8c0a2578df8c4f76ebf76b572f295ed"},
 	{
 		path:           "github.com/moby/buildkit/api/services/control/control.proto",
 		tag:            "v0.32.0",
