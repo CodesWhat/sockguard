@@ -35,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Docker integration CI and the engine compatibility matrix enable isolated Swarm resource-limit tests instead of silently skipping them. The rollback fixture now sends a valid service specification and verifies the daemon restored the expected resource limit.
+- Docker integration CI and the engine compatibility matrix enable isolated Swarm resource-limit tests instead of silently skipping them. Both workflows disable incompatible live restore on their disposable daemon, preserve other settings and verify the effective configuration. The rollback fixture now sends a valid service specification and verifies the daemon restored the expected resource limit.
 
 - A client-ACL cache waiter now returns its own context cancellation while another caller owns the lookup. The shared lookup continues for remaining callers, and successful cache population is preserved.
 

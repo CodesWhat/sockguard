@@ -79,6 +79,8 @@ jobs:
         uses: docker/setup-docker-action@77e84dbf09b47d1e29270283c22f16145aa85ca1  # v5.4.0
         with:
           version: ${{ matrix.engine }}
+          # Merged over the hosted daemon config, preserving DNS and other settings.
+          daemon-config: '{"live-restore": false}'
 
       # setup-docker-action serves the pinned daemon on its own context
       # socket, not necessarily /var/run/docker.sock — resolve the actual
@@ -104,6 +106,11 @@ jobs:
             exit 1
           fi
           echo "server=${got} socket=${sock}"
+          live_restore="$(docker info --format '{{.LiveRestoreEnabled}}')"
+          if [ "$live_restore" != "false" ]; then
+            echo "live restore must be disabled for isolated Swarm tests; got ${live_restore}" >&2
+            exit 1
+          fi
 
       # Same digest-pin sourcing as quality-integration.yml: dockerd will not
       # pull-on-create for a digest ref that isn't already local, and the
