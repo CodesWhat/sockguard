@@ -706,13 +706,15 @@ func compileRuleFuzzSeeds() []compileRuleSeed {
 // the seed so the pairs are near misses rather than unrelated strings.
 //
 // The two committed seeds under testdata/fuzz/FuzzCompileRule name the fourth,
-// which its first run found and which is not fixed yet: matchGlobSegment tests
-// literal byte equality before it tests for '*', so a path segment carrying a
-// literal '*' consumes the pattern's own '*' as a literal and never records the
-// star anchor to backtrack to. "/containers/web-*/stop" therefore does not
-// match "/containers/web-*1/stop", which "^/containers/web-[^/]*/stop$" does.
-// The walker is narrower than the regex there, which on a deny rule hands the
-// request to whatever allow sits below it.
+// which this target's first run found: matchGlobSegment used to test literal
+// byte equality before it tested for '*', so a path segment carrying a
+// literal '*' consumed the pattern's own '*' as a literal and never recorded
+// the star anchor to backtrack to. "/containers/web-*/stop" did not match
+// "/containers/web-*1/stop", which "^/containers/web-[^/]*/stop$" does, and on
+// a deny rule that handed the request to whatever allow sat below it. Fixed
+// in the same change (the star branch now runs first) and pinned by the
+// segment-star-matched-as-literal table case; the seeds stay so the target
+// keeps proving it.
 func FuzzCompileRule(f *testing.F) {
 	for _, seed := range compileRuleFuzzSeeds() {
 		f.Add(seed.method, seed.pattern, seed.path)
