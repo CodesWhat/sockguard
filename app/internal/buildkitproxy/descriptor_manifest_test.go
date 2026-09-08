@@ -8,6 +8,7 @@ import (
 	bkauth "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/auth"
 	bkcontrol "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/control"
 	bkfilesync "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/filesync"
+	bkgateway "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/gateway"
 	bkhealth "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/health"
 	bksecrets "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/secrets"
 	bksshforward "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/sshforward"
@@ -19,6 +20,7 @@ import (
 // vendored proto that actually declares a gRPC service (fsutiltypes,
 // sourcepolicy, and pb are message-only and have no service to check).
 var vendoredFileDescriptors = []protoreflect.FileDescriptor{
+	bkgateway.File_github_com_moby_buildkit_frontend_gateway_pb_gateway_proto,
 	bkcontrol.File_github_com_moby_buildkit_api_services_control_control_proto,
 	bkhealth.File_grpc_health_v1_health_proto,
 	bkauth.File_github_com_moby_buildkit_session_auth_auth_proto,
@@ -51,7 +53,7 @@ func realMethods(t *testing.T) map[string]bool {
 // realServices is the set of fully-qualified service names the vendored
 // descriptors actually declare — used to scope the cross-check to services
 // this phase vendored messages for. registry.go/DeniedExamples entries for
-// services with NO vendored descriptor (LLBBridge, Exporter, PolicyVerifier,
+// services with NO vendored descriptor (Exporter, PolicyVerifier,
 // containerd content, OTLP trace) are intentionally out of scope here; see
 // PROVENANCE.md's "Deliberately NOT vendored" section for why.
 func realServices(t *testing.T) map[string]bool {
@@ -104,7 +106,8 @@ func TestRegistryMatchesVendoredDescriptors(t *testing.T) {
 	services := realServices(t)
 	methods := realMethods(t)
 
-	claimed := make(map[string]string) // "service.method" -> where it's claimed
+	claimed := make(map[method]string)
+	covered := make(map[string]bool)
 	for m, d := range registry {
 		if !services[m.Service] {
 			continue // out of scope: no vendored descriptor for this service
@@ -116,7 +119,8 @@ func TestRegistryMatchesVendoredDescriptors(t *testing.T) {
 		if !methods[full] {
 			t.Errorf("registry claims %s (%s) but no such method exists on the vendored %s descriptor", full, d, m.Service)
 		}
-		claimed[full] = "registry"
+		claimed[m] = "registry"
+		covered[full] = true
 	}
 	for _, ex := range DeniedExamples {
 		if !services[ex.Service] {
@@ -129,14 +133,16 @@ func TestRegistryMatchesVendoredDescriptors(t *testing.T) {
 		if !methods[full] {
 			t.Errorf("DeniedExamples claims %s but no such method exists on the vendored %s descriptor", full, ex.Service)
 		}
-		if prev, ok := claimed[full]; ok {
+		m := method{ex.Endpoint, ex.Service, ex.Method}
+		if prev, ok := claimed[m]; ok {
 			t.Errorf("%s is claimed by both %s and DeniedExamples", full, prev)
 		}
-		claimed[full] = "DeniedExamples"
+		claimed[m] = "DeniedExamples"
+		covered[full] = true
 	}
 
 	for full := range methods {
-		if _, ok := claimed[full]; !ok {
+		if !covered[full] {
 			t.Errorf("%s exists on a vendored descriptor but is classified nowhere (add it to registry or DeniedExamples)", full)
 		}
 	}

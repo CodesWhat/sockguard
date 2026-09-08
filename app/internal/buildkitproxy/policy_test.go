@@ -132,7 +132,7 @@ func TestPolicyAllowedEachMediateOrPassthroughMethod(t *testing.T) {
 			AllowInfo:        true,
 			AllowListWorkers: true,
 			AllowStatus:      true,
-			Solve:            SolvePolicy{Allow: true},
+			Solve:            SolvePolicy{Allow: true, AllowFrontendGateway: true},
 		},
 		Session: SessionPolicy{
 			Health:   true,

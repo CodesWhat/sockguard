@@ -226,9 +226,28 @@ BuildKit can load a nested graph from a filesystem result that Sockguard
 cannot inspect. The broad `build.allow_run_instructions: true` flag retains
 its existing unrestricted-RUN behavior and does not use this allowlist.
 
-These digest approvals currently apply to frontend-less raw-LLB Solves.
-They do not approve Dockerfile RUN lines or third-party frontend images.
-The Dockerfile FileSync guard and third-party frontend denial still apply.
+Digest approvals also apply to external gateway LLB when
+`request_body.buildkit.control.solve.allow_frontend_gateway: true`. A client
+starts a frontend-less `Control.Solve` with no definition, then sends gateway
+RPCs over `/grpc` with that root's `buildkit-controlapi-buildid` metadata.
+Sockguard binds those calls to the active root, client identity, and profile,
+rewrites the daemon-facing build ID, and checks every iterative Solve against
+the root's original policy. Opening a new connection with a different policy
+does not broaden an existing build's grants. Closing the root or its tunnel
+revokes gateway access. Each principal can hold eight active builds, each
+limited to 256 gateway Solves and 30 minutes.
+
+The gateway mediates image/source resolution, result reads, evaluation and
+completion. Remote sources still require `build.allow_remote_context`.
+Explicit source-session overrides, nested frontends, source policies,
+interactive container/process RPCs, and filesystem-loaded nested BuildOps
+remain denied. Ping advertises supported capabilities and strips worker
+labels, garbage-collection policy, and CDI details. The companion runner
+that executes a frontend outside the daemon is still in progress.
+
+These approvals do not approve a third-party image for execution inside the
+daemon. Dockerfile FileSync inspection and the denial of opaque in-daemon
+frontend graphs remain in force.
 
 `insecure_accept_opaque_buildkit_tunnels` is now **deprecated**: it still works — existing configs that set it keep running unchanged — but setting it to `true` logs a startup warning steering operators toward `request_body.buildkit`, and the flag will be removed in a future major release. The flag and `request_body.buildkit` are mutually exclusive (mediation supersedes the wholesale acknowledgment), so a config cannot set both, and the deprecation warning only ever fires for a config using the flag on its own. If you see a build fail against a preset with a `/session` or `/grpc` denial, that means neither a classic-builder rule nor a `request_body.buildkit` policy is configured for that path: either switch the client to the classic builder (`DOCKER_BUILDKIT=0`, the `*-with-build.yaml` presets), configure `request_body.buildkit` for the fully-mediated path (the `*-with-mediated-build.yaml` presets), or — not recommended for new deployments — fall back to the deprecated acknowledgment. Tecnativa's `GRPC=1` / `SESSION=1` compat env vars still auto-set the deprecated acknowledgment with their own compat-specific warning, unless `request_body.buildkit` is already configured, in which case they leave it alone: a top-level policy then mediates the tunnel those vars open, while a policy on a client profile only makes startup refuse, since the rules they generate are top-level and a profile's policy cannot mediate them. Migrating off either warning means configuring `request_body.buildkit` at the top level. See [Migration](/migration) for the step-by-step move from the acknowledgment to a mediated policy.
 
