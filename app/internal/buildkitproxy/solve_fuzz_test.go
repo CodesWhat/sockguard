@@ -1,6 +1,8 @@
 package buildkitproxy
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -55,6 +57,8 @@ var statusMediationGRPCCodes = map[int]bool{
 // payload bytes gets exercised against meaningfully different policy
 // postures: fully denied, minimally allowed, and fully permissive across
 // every allowlist field evaluateSolveRequest's checks consult.
+var fuzzApprovedExec = mustMarshalFuzz(&pb.Op{Op: &pb.Op_Exec{Exec: &pb.ExecOp{Meta: &pb.Meta{Args: []string{"/bin/true"}}}}})
+
 var fuzzSolvePolicies = []SolvePolicy{
 	{}, // deny-everything default
 	{Allow: true},
@@ -67,6 +71,10 @@ var fuzzSolvePolicies = []SolvePolicy{
 		AllowedCacheRegistries:    []string{"example.com"},
 		AllowedExporters:          []string{"image", "local", "oci"},
 		AllowedExporterRegistries: []string{"example.com"},
+	},
+	{
+		Allow:              true,
+		AllowedExecDigests: map[string]struct{}{fmt.Sprintf("sha256:%x", sha256.Sum256(fuzzApprovedExec)): {}},
 	},
 }
 
@@ -105,6 +113,7 @@ func mustMarshalFuzz(m proto.Message) []byte {
 //     ever returning success).
 func FuzzEvaluateSolveRequest(f *testing.F) {
 	seeds := []proto.Message{
+		&control.SolveRequest{Ref: "r", Definition: &pb.Definition{Def: [][]byte{fuzzApprovedExec}}},
 		&control.SolveRequest{},         // empty ref -> buildkit_invalid_ref
 		&control.SolveRequest{Ref: "r"}, // minimal admit once the seed loop supplies Session
 		&control.SolveRequest{Ref: "r", Entitlements: []string{"security.insecure"}}, // always denied
@@ -147,7 +156,7 @@ func FuzzEvaluateSolveRequest(f *testing.F) {
 		&control.SolveRequest{Ref: "r", Session: "some-buildkit-session-uuid"},
 	}
 
-	for _, idx := range []uint8{0, 1, 2} {
+	for _, idx := range []uint8{0, 1, 2, 3} {
 		for _, m := range seeds {
 			if req, ok := m.(*control.SolveRequest); ok && req.GetSession() == "" {
 				req.Session = testBuildkitSessionID

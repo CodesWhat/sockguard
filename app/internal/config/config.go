@@ -1137,6 +1137,9 @@ type BuildkitControlRequestBodyConfig struct {
 type BuildkitSolveRequestBodyConfig struct {
 	// Allow permits the Control/Solve RPC at all. Default false.
 	Allow bool `mapstructure:"allow"`
+	// AllowedExecDigests approves exact raw-LLB ExecOp bytes while the sibling
+	// allow_run_instructions flag is false. Entries are lowercase sha256 digests.
+	AllowedExecDigests []string `mapstructure:"allowed_exec_digests"`
 
 	// AllowedCacheImportTypes/AllowedCacheExportTypes gate the "Type" of each
 	// entry in a Solve's Cache.Imports/.Exports (e.g. "registry", "local",

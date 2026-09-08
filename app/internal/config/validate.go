@@ -1774,6 +1774,11 @@ func validateRequestBodyConfig(prefix string, cfg RequestBodyConfig) []string {
 // exact string comparison the mediator uses).
 func validateBuildkitConfig(prefix string, cfg BuildkitRequestBodyConfig) []string {
 	var errs []string
+	for i, digest := range cfg.Control.Solve.AllowedExecDigests {
+		if len(digest) != 71 || !strings.HasPrefix(digest, "sha256:") || strings.Trim(digest[7:], "0123456789abcdef") != "" {
+			errs = append(errs, fmt.Sprintf("%s.buildkit.control.solve.allowed_exec_digests[%d] must be a lowercase sha256 digest", prefix, i))
+		}
+	}
 	errs = append(errs, validateRegistryHostEntries(prefix, "buildkit.session.auth.allowed_registries", cfg.Session.Auth.AllowedRegistries)...)
 	errs = append(errs, validateBuildkitOpaqueEntries(prefix, "buildkit.session.auth.allowed_realms", cfg.Session.Auth.AllowedRealms)...)
 	errs = append(errs, validateBuildkitOpaqueEntries(prefix, "buildkit.session.auth.allowed_scopes", cfg.Session.Auth.AllowedScopes)...)
