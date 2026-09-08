@@ -85,6 +85,7 @@ jobs:
         working-directory: app
         env:
           SOCKGUARD_TEST_DOCKER_SOCKET: /var/run/docker.sock
+          SOCKGUARD_TEST_ENABLE_SWARM: '1'
         run: go test -tags=integration -count=1 -timeout=10m ./integration/
 
       - name: Docker diagnostics on failure

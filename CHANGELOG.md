@@ -35,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Docker integration CI and the engine compatibility matrix enable isolated Swarm resource-limit tests instead of silently skipping them. The rollback fixture now sends a valid service specification and verifies the daemon restored the expected resource limit.
+
 - A client-ACL cache waiter now returns its own context cancellation while another caller owns the lookup. The shared lookup continues for remaining callers, and successful cache population is preserved.
 
 - Non-Return gateway calls inherit the root build context directly and reject cancellation already visible before dispatch. Incoming-request cancellation still propagates. An admitted Return retains its bounded completion path after normal root completion.

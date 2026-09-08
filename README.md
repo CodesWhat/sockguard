@@ -502,6 +502,7 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 
 ### v2.3 hardening
 
+- Docker CI enables isolated Swarm resource-limit coverage, including full replacement updates and rollback targets.
 - Held Dockerfile FileSync data accounts for original frame overhead as well as decoded content.
 - Canceled client-ACL cache waiters stop promptly without canceling the shared lookup for other callers.
 - Non-Return gateway requests inherit root cancellation directly; an admitted Return may finish after normal root completion.
