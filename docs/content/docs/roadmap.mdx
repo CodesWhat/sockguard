@@ -57,7 +57,7 @@ remaining frontend-less and third-party-frontend paths. The packaging track is i
 
 | Track | Outcome required before release |
 |---|---|
-| BuildKit RUN-instruction coverage | Raw-LLB ExecOps now support exact operation-digest approvals with `control.solve.allowed_exec_digests`. Unknown operations and daemon-resolved nested BuildOps are denied while RUN instructions are restricted. Solve/Status refs are scoped at the daemon boundary by client and profile, including retained history. Third-party frontend mediation remains in progress because image frontends generate their graphs inside the daemon |
+| BuildKit RUN-instruction coverage | Raw-LLB ExecOps now support exact operation-digest approvals with `control.solve.allowed_exec_digests`. Unknown operations and daemon-resolved nested BuildOps are denied while RUN instructions are restricted. Solve/Status refs are scoped at the daemon boundary by client and profile, including retained history. Callback session IDs use a private client/profile namespace on both tunnel setup and Solve; raw LLB sources inherit that session. Third-party frontend mediation remains in progress because image frontends generate their graphs inside the daemon |
 | Go module major-version path | Implemented for v2.3: `github.com/codeswhat/sockguard/v2`, with migrated imports, release linker flags, and all 11 BuildKit descriptors regenerated from their vendored schemas. After publication, install `github.com/codeswhat/sockguard/v2/app/cmd/sockguard@latest`. Existing tags keep their original metadata; Docker, Homebrew, deb and rpm paths are unchanged |
 
 ## Twelve-month direction

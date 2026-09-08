@@ -137,6 +137,7 @@ func TestBridgeExecDigestAdmission(t *testing.T) {
 			if approved {
 				body, err := io.ReadAll(resp.Body)
 				req.Ref = daemonBuildRef(tb.session.Key, req.Ref)
+				req.Session = tb.registry.daemonSessionID(tb.session.Key, req.Session)
 				expected := grpcFrame(mustMarshal(t, req))
 				if err != nil || string(body) != string(expected) || calls.Load() != 1 {
 					t.Fatalf("approved operation bytes changed during ref scoping: calls=%d err=%v", calls.Load(), err)

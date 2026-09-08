@@ -412,7 +412,7 @@ func isControlMediatedMethod(endpoint Endpoint, service, method string) bool {
 // request message (readUnaryGRPCMessage), decode it with the vendored
 // buildkitproto stubs, run policy checks (evaluateSolveRequest /
 // evaluateStatusRequest, plus Status's ref-ownership check below), and only
-// on admission replace Ref with its client/profile namespace before forwarding.
+// on admission namespace Ref and Solve.Session before forwarding.
 // All other protobuf wire bytes stay original, including LLB operation bytes.
 // Every denial
 // path here ends the STREAM only (a per-stream gRPC status plus
@@ -474,7 +474,11 @@ func (b *bridge) forwardControlMediated(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	frame, err := controlRefFrame(payload, daemonBuildRef(b.session.Key, ref), b.limits.MaxMessageBytes)
+	daemonSession := ""
+	if solveReq != nil {
+		daemonSession = b.registry.daemonSessionID(b.session.Key, solveReq.GetSession())
+	}
+	frame, err := controlRefFrame(payload, daemonBuildRef(b.session.Key, ref), daemonSession, b.limits.MaxMessageBytes)
 	if err != nil {
 		if errors.Is(err, errMessageTooLarge) {
 			writeGRPCStatus(w, grpcCodeResourceExhausted, "namespaced request exceeds sockguard's size cap")

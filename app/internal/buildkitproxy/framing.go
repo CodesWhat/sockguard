@@ -33,7 +33,7 @@ var errUnaryFrameProtocolError = errors.New("buildkitproxy: malformed or multi-m
 // confirms no further bytes follow. It returns the COMPLETE original frame
 // (5-byte header + payload, byte-for-byte as read) for forwarding to the
 // daemon after policy checks, and the payload alone for proto.Unmarshal.
-// Control mediation translates its top-level Ref before forwarding; the
+// Control mediation translates top-level Ref and Solve.Session; the
 // remaining wire bytes, including LLB operations, stay original.
 //
 // A nonzero compression flag is rejected outright: sockguard's mediator

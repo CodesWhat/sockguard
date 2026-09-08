@@ -24,12 +24,17 @@ func daemonBuildRef(key SessionKey, ref string) string {
 	return "sg-" + hex.EncodeToString(h.Sum(nil))
 }
 
-// controlRefFrame replaces only top-level Ref (field 1 in both Solve and
-// Status). All other wire bytes, including digest-approved LLB operations,
-// remain untouched. Duplicate Ref fields collapse to the validated value.
-func controlRefFrame(payload []byte, ref string, maxBytes int64) ([]byte, error) {
+// controlRefFrame replaces top-level Ref (field 1 in Solve and Status) and,
+// for Solve, Session (field 5). All other wire bytes, including digest-approved
+// LLB operations, remain untouched. Duplicate identity fields collapse to the
+// validated values. An empty session leaves field 5 untouched for Status.
+func controlRefFrame(payload []byte, ref, session string, maxBytes int64) ([]byte, error) {
 	out := make([]byte, grpcMessageHeaderLen, grpcMessageHeaderLen+len(payload))
-	found := false
+	identities := map[protowire.Number]string{1: ref}
+	if session != "" {
+		identities[5] = session
+	}
+	found := make(map[protowire.Number]bool, len(identities))
 	for len(payload) > 0 {
 		num, typ, tagLen := protowire.ConsumeTag(payload)
 		if tagLen < 0 {
@@ -40,21 +45,21 @@ func controlRefFrame(payload []byte, ref string, maxBytes int64) ([]byte, error)
 			return nil, errUnaryFrameProtocolError
 		}
 		end := tagLen + valueLen
-		if num == 1 {
+		if value, replace := identities[num]; replace {
 			if typ != protowire.BytesType {
 				return nil, errUnaryFrameProtocolError
 			}
-			if !found {
-				out = protowire.AppendTag(out, 1, protowire.BytesType)
-				out = protowire.AppendString(out, ref)
-				found = true
+			if !found[num] {
+				out = protowire.AppendTag(out, num, protowire.BytesType)
+				out = protowire.AppendString(out, value)
+				found[num] = true
 			}
 		} else {
 			out = append(out, payload[:end]...)
 		}
 		payload = payload[end:]
 	}
-	if !found {
+	if len(found) != len(identities) {
 		return nil, errUnaryFrameProtocolError
 	}
 	payloadSize := int64(len(out)) - grpcMessageHeaderLen
