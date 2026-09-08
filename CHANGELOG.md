@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Raw LLB containing an unknown operation or a nested `BuildOp` is denied while RUN instructions are restricted. BuildKit's `BuildOp` loads its graph from a filesystem result inside the daemon; checking its optional inline definition did not inspect the graph that actually executes.
 
+### Fixed
+
+- Restored seven missing Apple Silicon native dependency entries in the npm lockfile. Fresh Mac checkouts can build the docs and website without manually installing esbuild, Lightning CSS, Tailwind, TypeScript, Sharp, or the analyzer bindings. Existing dependency versions are unchanged.
+
 ### Changed
 
 - The Go module now declares `github.com/codeswhat/sockguard/v2`, so future v2 release tags can resolve through the Go module proxy. Imports, Docker and GoReleaser version linker flags, and coverage tooling use the new path. All 11 vendored BuildKit protobuf bindings were regenerated from the retargeted schemas, with updated provenance hashes and a regression check for their serialized package metadata. After the next tag is published, Go installs use `github.com/codeswhat/sockguard/v2/app/cmd/sockguard@latest`. Existing tags keep their original module declarations. Docker, Homebrew, deb and rpm installation paths are unchanged.
