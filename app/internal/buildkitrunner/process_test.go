@@ -3,6 +3,7 @@ package buildkitrunner
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -179,6 +180,77 @@ esac
 			}
 			if got := strings.Join(commands, ","); got != tc.wantCommands {
 				t.Errorf("commands = %s, want %s", got, tc.wantCommands)
+			}
+		})
+	}
+}
+
+func TestFrontendCleanupVerification(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		wantErr string
+	}{
+		{"removal-timeout", ""},
+		{"absent", ""},
+		{"survived", "survived cleanup"},
+		{"query-failure", "verify frontend container cleanup"},
+		{"query-timeout", "verify frontend container cleanup"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			log := filepath.Join(dir, "calls")
+			script := `#!/bin/sh
+printf '%s\t' "$@" >> "$FRONTEND_CLEANUP_CALLS"
+printf '\n' >> "$FRONTEND_CLEANUP_CALLS"
+shift 2
+case "$1 $2" in
+  'rm -f')
+    if [ "$FRONTEND_CLEANUP_CASE" = removal-timeout ]; then exec sleep 30; fi
+    exit 1;;
+  'container ls')
+    case "$FRONTEND_CLEANUP_CASE" in
+      survived) echo surviving-container;;
+      query-failure) exit 1;;
+      query-timeout) exec sleep 30;;
+    esac;;
+  *) exit 2;;
+esac
+`
+			if err := os.WriteFile(filepath.Join(dir, "docker"), []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv("FRONTEND_CLEANUP_CALLS", log)
+			t.Setenv("FRONTEND_CLEANUP_CASE", tc.name)
+			read, write, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan struct{})
+			close(done)
+			p := &frontendProcess{cmd: &exec.Cmd{}, conn: &pipeConn{read: read, write: write}, done: done, opts: Options{RuntimeContext: "isolated"}, name: "sockguard-cleanup-test"}
+			started := time.Now()
+			err = p.close()
+			limit := 20 * time.Second
+			if tc.name == "query-timeout" {
+				limit = 5 * time.Second
+			}
+			if elapsed := time.Since(started); elapsed > limit {
+				t.Errorf("cleanup took %s, limit %s", elapsed, limit)
+			}
+			if tc.wantErr == "" && err != nil {
+				t.Errorf("cleanup error = %v", err)
+			}
+			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Errorf("cleanup error = %v, want %q", err, tc.wantErr)
+			}
+			calls, readErr := os.ReadFile(log)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			want := "--context\tisolated\trm\t-f\tsockguard-cleanup-test\t\n--context\tisolated\tcontainer\tls\t--all\t--filter\tname=^/sockguard-cleanup-test$\t--format\t{{.ID}}\t\n"
+			if string(calls) != want {
+				t.Errorf("cleanup invocations = %q, want %q", calls, want)
 			}
 		})
 	}

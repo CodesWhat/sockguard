@@ -95,7 +95,7 @@ func startFrontend(ctx context.Context, opts Options, name, workers string) (*fr
 	}
 	defer func() { _ = stdoutWrite.Close() }()
 	conn := &pipeConn{read: stdoutRead, write: stdinWrite}
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd := exec.CommandContext(ctx, "docker", args...) // #nosec G204 -- fixed Docker executable; frontendArgs validates the pinned image and constructs separate arguments without a shell.
 	cmd.Stdin = stdinRead
 	cmd.Stdout = stdoutWrite
 	cmd.Stderr = opts.Stderr
@@ -111,7 +111,7 @@ func startFrontend(ctx context.Context, opts Options, name, workers string) (*fr
 
 func preflightFrontendImage(ctx context.Context, opts Options) error {
 	inspect := func() ([]byte, error) {
-		cmd := exec.CommandContext(ctx, "docker", "--context", opts.RuntimeContext, "image", "inspect", "--format", "{{len .Config.Volumes}}", opts.Image)
+		cmd := exec.CommandContext(ctx, "docker", "--context", opts.RuntimeContext, "image", "inspect", "--format", "{{len .Config.Volumes}}", opts.Image) // #nosec G204 -- fixed Docker command; runtime context is explicit operator input and the validated digest-pinned image is a separate argument, with no shell.
 		cmd.WaitDelay = 2 * time.Second
 		return cmd.Output()
 	}
@@ -120,7 +120,7 @@ func preflightFrontendImage(ctx context.Context, opts Options) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		pull := exec.CommandContext(ctx, "docker", "--context", opts.RuntimeContext, "pull", opts.Image)
+		pull := exec.CommandContext(ctx, "docker", "--context", opts.RuntimeContext, "pull", opts.Image) // #nosec G204 -- fixed Docker command; runtime context is explicit operator input and the validated digest-pinned image is a separate argument, with no shell.
 		pull.WaitDelay = 2 * time.Second
 		pull.Stdout, pull.Stderr = opts.Stderr, opts.Stderr
 		if err := pull.Run(); err != nil {
@@ -151,7 +151,7 @@ func (p *frontendProcess) close() error {
 	_ = p.conn.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	remove := exec.CommandContext(ctx, "docker", "--context", p.opts.RuntimeContext, "rm", "-f", p.name)
+	remove := exec.CommandContext(ctx, "docker", "--context", p.opts.RuntimeContext, "rm", "-f", p.name) // #nosec G204 -- fixed Docker command; runtime context is explicit operator input and the container name is generated internally, with no shell.
 	remove.WaitDelay = time.Second
 	// --rm can win the race; verify the owned name is absent either way.
 	_ = remove.Run()
@@ -159,7 +159,9 @@ func (p *frontendProcess) close() error {
 		_ = p.cmd.Process.Kill()
 	}
 	<-p.done
-	inspect := exec.CommandContext(ctx, "docker", "--context", p.opts.RuntimeContext, "container", "ls", "--all", "--filter", "name=^/"+p.name+"$", "--format", "{{.ID}}")
+	verifyCtx, stopVerify := context.WithTimeout(context.Background(), 2*time.Second)
+	defer stopVerify()
+	inspect := exec.CommandContext(verifyCtx, "docker", "--context", p.opts.RuntimeContext, "container", "ls", "--all", "--filter", "name=^/"+p.name+"$", "--format", "{{.ID}}") // #nosec G204 -- fixed Docker command; runtime context is explicit operator input and the container name is generated internally, with no shell.
 	inspect.WaitDelay = time.Second
 	output, err := inspect.Output()
 	if err != nil {

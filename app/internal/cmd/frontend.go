@@ -27,7 +27,7 @@ are not attached. The container runtime context must be selected explicitly.`,
 			opts.Operations = cmd.OutOrStdout()
 			opts.Stderr = cmd.ErrOrStderr()
 			if reportPath != "" {
-				file, err := os.OpenFile(reportPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+				file, err := os.OpenFile(reportPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- report destination is explicit local CLI input; exclusive creation prevents overwriting existing files.
 				if err != nil {
 					return err
 				}

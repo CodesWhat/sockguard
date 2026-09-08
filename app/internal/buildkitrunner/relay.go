@@ -106,7 +106,7 @@ func (g *gatewayRelay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	out, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://sockguard/"+gatewayService+"/"+method, bytes.NewReader(frameMessage(payload)))
+	out, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://sockguard/"+gatewayService+"/"+method, bytes.NewReader(frameMessage(payload))) // #nosec G704 -- fixed authority on an existing proxy connection; method is restricted to the gateway allowlist above.
 	if err != nil {
 		rpcError(w, "13", "cannot construct gateway request")
 		return

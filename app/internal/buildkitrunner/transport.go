@@ -74,11 +74,11 @@ func dialUpgrade(ctx context.Context, opts Options, path string, headers http.He
 	success := false
 	defer func() {
 		if !success {
-			conn.Close()
+			_ = conn.Close()
 		}
 	}()
 	rawConn := conn
-	stop := context.AfterFunc(handshakeCtx, func() { rawConn.Close() })
+	stop := context.AfterFunc(handshakeCtx, func() { _ = rawConn.Close() })
 	defer stop()
 	deadline, _ := handshakeCtx.Deadline()
 	if err := conn.SetDeadline(deadline); err != nil {
@@ -117,7 +117,7 @@ func dialUpgrade(ctx context.Context, opts Options, path string, headers http.He
 		return nil, fmt.Errorf("read proxy upgrade: %w", err)
 	}
 	if response.StatusCode != http.StatusSwitchingProtocols || !strings.EqualFold(response.Header.Get("Upgrade"), "h2c") {
-		response.Body.Close()
+		_ = response.Body.Close()
 		return nil, fmt.Errorf("proxy refused %s upgrade: %s", path, response.Status)
 	}
 	if !stop() || handshakeCtx.Err() != nil {
@@ -181,10 +181,9 @@ func frameMessage(payload []byte) []byte {
 	if length > maxMessageBytes-5 || length > math.MaxUint32 {
 		return nil
 	}
-	frame := make([]byte, 5+len(payload))
+	frame := make([]byte, 5)
 	binary.BigEndian.PutUint32(frame[1:5], uint32(length))
-	copy(frame[5:], payload)
-	return frame
+	return append(frame, payload...)
 }
 
 func unary(ctx context.Context, client *http2.ClientConn, path, build string, message proto.Message) ([]byte, error) {

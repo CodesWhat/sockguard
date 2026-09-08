@@ -39,7 +39,7 @@ func Run(ctx context.Context, opts Options) (retErr error) {
 		return err
 	}
 	defer func() { _ = client.Close() }()
-	stopConn := context.AfterFunc(ctx, func() { conn.Close() })
+	stopConn := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stopConn()
 
 	headers := http.Header{"X-Docker-Expose-Session-Uuid": {session}, "X-Docker-Expose-Session-Grpc-Method": {"/grpc.health.v1.Health/Check", "/moby.filesync.v1.Auth/Credentials"}}
@@ -53,7 +53,7 @@ func Run(ctx context.Context, opts Options) (retErr error) {
 		defer close(sessionDone)
 		(&http2.Server{MaxConcurrentStreams: 8}).ServeConn(sessionConn, &http2.ServeConnOpts{Context: ctx, Handler: http.HandlerFunc(serveSession)})
 	}()
-	defer func() { sessionConn.Close(); <-sessionDone }()
+	defer func() { _ = sessionConn.Close(); <-sessionDone }()
 
 	root := &control.SolveRequest{Ref: build, Session: session, Cache: &control.CacheOptions{}}
 	if opts.ExportName != "" {

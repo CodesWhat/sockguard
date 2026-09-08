@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Frontend cleanup gives its final container-absence query a separate bounded timeout after removal, so a slow removal cannot consume verification's entire budget. Runner framing appends an already-bounded payload without manual allocation-size addition, and network teardown explicitly ignores close errors after the result is known.
+
 - BuildKit callback advertisements now recognize the full `/service/method` paths emitted by real clients and preserve only policy-admitted methods. `session.health` also permits the daemon's unary health callback on `/session`, keeping long-running frontend sessions alive.
 
 - Restored seven missing Apple Silicon native dependency entries in the npm lockfile. Fresh Mac checkouts can build the docs and website without manually installing esbuild, Lightning CSS, Tailwind, TypeScript, Sharp, or the analyzer bindings. Existing dependency versions are unchanged.
