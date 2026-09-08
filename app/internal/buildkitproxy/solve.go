@@ -260,7 +260,7 @@ func evaluateSolveRequest(payload []byte, policy Policy) (*control.SolveRequest,
 	if d := checkSolveDefinitionExec(req, solvePolicy); d != nil {
 		return nil, d
 	}
-	if d := checkSolveSourceSessions(req.GetDefinition()); d != nil {
+	if d := checkSolveDefinitionSources(req.GetDefinition(), solvePolicy); d != nil {
 		return nil, d
 	}
 	if d := checkSolveCache(req, solvePolicy); d != nil {
@@ -331,6 +331,8 @@ func checkSolveFrontend(req *control.SolveRequest, solvePolicy SolvePolicy) *med
 			return deny(grpcCodeFailedPrecondition, "buildkit_schema_unsupported", "unsupported BuildKit schema")
 		}
 		switch {
+		case key == "build-arg:BUILDKIT_SYNTAX" && !solvePolicy.AllowRunInstructions:
+			return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "BuildKit syntax frontend overrides cannot be inspected while RUN instructions are restricted")
 		case (key == "context" || strings.HasPrefix(key, "context:")) && isRemoteContextRef(value):
 			if !solvePolicy.AllowRemoteContext {
 				return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "a remote build context requires this profile's allow_remote_context")
@@ -418,13 +420,18 @@ func definitionExecAllowed(def *pb.Definition, policy SolvePolicy) bool {
 	return true
 }
 
-// Raw LLB sources must inherit the namespaced Solve session. Rewriting an
-// embedded override would change its op digest and every downstream approval.
-func checkSolveSourceSessions(def *pb.Definition) *mediationDenial {
+// Remote raw LLB sources require the remote-context grant. All sources must
+// inherit the namespaced Solve session: rewriting an embedded override would
+// change its op digest and every downstream approval.
+func checkSolveDefinitionSources(def *pb.Definition, policy SolvePolicy) *mediationDenial {
 	for _, raw := range def.GetDef() {
 		op := &pb.Op{}
 		if err := proto.Unmarshal(raw, op); err != nil || hasUnknownFields(op) {
 			return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "LLB source session cannot be inspected")
+		}
+		identifier := op.GetSource().GetIdentifier()
+		if !policy.AllowRemoteContext && (strings.HasPrefix(identifier, "http://") || strings.HasPrefix(identifier, "https://") || strings.HasPrefix(identifier, "git://")) {
+			return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "remote LLB sources are not allowed")
 		}
 		attrs := op.GetSource().GetAttrs()
 		if attrs["local.session"] != "" || attrs["oci.session"] != "" {

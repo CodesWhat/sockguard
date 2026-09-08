@@ -303,3 +303,20 @@ func TestForwardControlMediatedUnknownMethodFailsClosed(t *testing.T) {
 		t.Fatal("Grpc-Message is empty, want a fixed denial message")
 	}
 }
+
+func TestBridgeDeniesSyntaxBuildArg(t *testing.T) {
+	daemon := &fakeClientLeg{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Grpc-Status": {"0"}}, Body: io.NopCloser(strings.NewReader(""))}}
+	b := newUnitTestBridge(t, daemon)
+	t.Cleanup(func() { b.closeAll(nil) })
+	b.policy.Control.Solve.AllowRunInstructions = false
+	b.policy.Control.Solve.AllowFrontendGateway = true
+	req := &control.SolveRequest{Ref: "build", Session: testBuildkitSessionID, Frontend: "dockerfile.v0", FrontendAttrs: map[string]string{"build-arg:BUILDKIT_SYNTAX": "example.invalid/inert-compiler:review"}}
+	rec := httptest.NewRecorder()
+	b.handleStream(rec, newFramedGRPCRequest(t, "/moby.buildkit.v1.Control/Solve", req))
+	if daemon.gotReq != nil {
+		t.Fatal("reserved frontend override reached daemon transport")
+	}
+	if got := rec.Header().Get("Grpc-Status"); got != "7" {
+		t.Fatalf("status = %q, want PermissionDenied", got)
+	}
+}

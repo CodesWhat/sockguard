@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Raw `Control/Solve` HTTP, HTTPS and Git sources require `build.allow_remote_context`, independently of broad RUN or individual ExecOp approval. Restricted Dockerfile solves also reject the exact `build-arg:BUILDKIT_SYNTAX` attribute, which BuildKit otherwise uses to select an internal frontend before Dockerfile inspection. Ordinary build arguments and explicit unrestricted-RUN behavior remain supported.
+
 - Dockerfile syntax inspection recognizes BuildKit's BOM, shebang, slash-comment, JSON and check-before-syntax forms. Restricted classic builds and FileSync uploads reject external frontend selection consistently. Continued instructions use a builder instead of repeatedly copying the accumulated line, keeping inspection work linear.
 
 - OCI image loads charge cumulative logical blob sizes before hashing or retention, so sparse members cannot expand beyond the inspection budget despite a small compressed archive. Oversized members fail immediately; bounded sparse OCI graphs and Docker archive forwarding remain supported.

@@ -502,6 +502,7 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 
 ### v2.3 hardening
 
+- Raw LLB remote sources require the remote-context grant independently of RUN approval. Restricted Dockerfile builds reject the reserved `BUILDKIT_SYNTAX` frontend override.
 - Dockerfile inspection recognizes BuildKit's supported syntax-selector forms and joins continued instructions with linear copying.
 - OCI image inspection bounds cumulative logical blob sizes before hashing, including sparse archives.
 - Legacy `HostConfig.Tmpfs` applies the same privileged-option grant as structured tmpfs mounts, using Docker's last-wins flag ordering.

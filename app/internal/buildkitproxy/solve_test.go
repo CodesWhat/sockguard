@@ -988,3 +988,33 @@ func TestDefinitionExecAllowedRejectsNestedBuilds(t *testing.T) {
 		})
 	}
 }
+
+func TestSolveSyntaxBuildArg(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		attrs        map[string]string
+		allowRun     bool
+		allowGateway bool
+		denied       bool
+	}{
+		{name: "reserved override", attrs: map[string]string{"build-arg:BUILDKIT_SYNTAX": "example.invalid/inert-compiler:review"}, denied: true},
+		{name: "empty override", attrs: map[string]string{"build-arg:BUILDKIT_SYNTAX": ""}, denied: true},
+		{name: "override with cmdline", attrs: map[string]string{"build-arg:BUILDKIT_SYNTAX": "example.invalid/inert-compiler:review", "cmdline": "ignored"}, denied: true},
+		{name: "mediated gateway does not authorize internal frontend", attrs: map[string]string{"build-arg:BUILDKIT_SYNTAX": "example.invalid/inert-compiler:review"}, allowGateway: true, denied: true},
+		{name: "ordinary build argument", attrs: map[string]string{"build-arg:FOO": "bar"}},
+		{name: "unrestricted RUN", attrs: map[string]string{"build-arg:BUILDKIT_SYNTAX": "example.invalid/inert-compiler:review"}, allowRun: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &control.SolveRequest{Ref: "build", Session: testBuildkitSessionID, Frontend: "dockerfile.v0", FrontendAttrs: tc.attrs}
+			policy := Policy{Control: ControlPolicy{Solve: SolvePolicy{Allow: true, AllowRunInstructions: tc.allowRun, AllowFrontendGateway: tc.allowGateway}}}
+			_, d := evaluateSolveRequest(mustMarshal(t, req), policy)
+			if tc.denied {
+				if d == nil || d.code != grpcCodePermissionDenied || d.reasonCode != "buildkit_policy_denied" {
+					t.Fatalf("expected policy denial, got %+v", d)
+				}
+			} else if d != nil {
+				t.Fatalf("unexpected denial: %+v", d)
+			}
+		})
+	}
+}
