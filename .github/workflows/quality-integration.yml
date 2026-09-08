@@ -81,10 +81,20 @@ jobs:
           echo "Pre-pulling pinned sentinel image: ${ref}"
           docker pull "${ref}"
 
+      - name: Pre-pull pinned external frontend
+        run: |
+          ref=$(sed -nE 's/^[[:space:]]*const[[:space:]]+frontendPinnedRef[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' app/integration/buildkit_frontend_integration_test.go)
+          if [[ ! "$ref" =~ ^docker/dockerfile@sha256:[0-9a-f]{64}$ ]]; then
+            echo "invalid or unpinned frontendPinnedRef" >&2
+            exit 1
+          fi
+          docker --context default pull "$ref"
+
       - name: Run integration suite
         working-directory: app
         env:
           SOCKGUARD_TEST_DOCKER_SOCKET: /var/run/docker.sock
+          SOCKGUARD_FRONTEND_RUNTIME_CONTEXT: default
         run: go test -tags=integration -count=1 -timeout=10m ./integration/
 
       - name: Docker diagnostics on failure

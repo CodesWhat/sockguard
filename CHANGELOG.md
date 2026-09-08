@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Opt-in external frontend gateway mediation with `request_body.buildkit.control.solve.allow_frontend_gateway`. Gateway calls must belong to an active root Solve for the same client/profile and retain that root's policy. Every iterative LLB Solve uses the existing individual ExecOp approvals, cache grants, and source-session isolation. Image/source resolution, result reads, and completion are mediated; Ping strips private worker metadata and unsupported capabilities. Interactive container/process RPCs and filesystem-loaded nested builds remain denied. Builds are capped at eight per principal, 256 gateway Solves each, and 30 minutes. The companion runner is still in progress.
+- Opt-in external frontend gateway mediation with `request_body.buildkit.control.solve.allow_frontend_gateway`. Gateway calls must belong to an active root Solve for the same client/profile and retain that root's policy. Every iterative LLB Solve uses the existing individual ExecOp approvals, cache grants, and source-session isolation. Image/source resolution, result reads, and completion are mediated; Ping strips private worker metadata and unsupported capabilities. Interactive container/process RPCs and filesystem-loaded nested builds remain denied. Builds are capped at eight per principal, 256 gateway Solves each, and 30 minutes. The `sockguard frontend` companion runner executes a pinned image in a constrained Docker container, sends every gateway call through the selected proxy, writes original operation bytes and digests for review, and verifies container cleanup. Supports remote contexts, anonymous registry callbacks and policy-controlled Docker image output. Real-daemon tests cover exact approvals, changed-command denial, output files and cancellation.
 
 - Vendored the pinned BuildKit v0.32.0 frontend gateway, worker, and capability message schemas as groundwork for the companion frontend runner. Their provenance and generated package paths are checked. Error messages reuse the Google RPC schema already in the dependency graph, with no new dependency version or gRPC runtime.
 
@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Raw LLB containing an unknown operation or a nested `BuildOp` is denied while RUN instructions are restricted. BuildKit's `BuildOp` loads its graph from a filesystem result inside the daemon; checking its optional inline definition did not inspect the graph that actually executes.
 
 ### Fixed
+
+- BuildKit callback advertisements now recognize the full `/service/method` paths emitted by real clients and preserve only policy-admitted methods. `session.health` also permits the daemon's unary health callback on `/session`, keeping long-running frontend sessions alive.
 
 - Restored seven missing Apple Silicon native dependency entries in the npm lockfile. Fresh Mac checkouts can build the docs and website without manually installing esbuild, Lightning CSS, Tailwind, TypeScript, Sharp, or the analyzer bindings. Existing dependency versions are unchanged.
 

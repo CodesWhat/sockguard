@@ -1,0 +1,121 @@
+---
+title: External frontend runner
+description: Run a pinned BuildKit frontend with individual operation approvals through Sockguard.
+---
+
+`sockguard frontend` runs an external frontend image on a selected Docker
+runtime and routes its gateway calls through Sockguard. Every generated LLB
+Solve is checked against the active build's policy, including each ExecOp's
+original SHA-256 digest. A frontend image digest identifies the compiler you
+run; it does not approve the commands that compiler generates.
+
+Run this command on a machine with the Docker CLI. The proxy's distroless
+container does not include that CLI. Select the runtime with
+`--runtime-context`; `--host` selects the Sockguard endpoint separately.
+The frontend container receives neither a Docker socket nor host mounts or
+credentials. It runs with no network, a read-only root filesystem, all
+capabilities dropped, no-new-privileges, and CPU, memory and process limits.
+Images declaring writable volumes are rejected before launch. Its only gateway
+connection is its standard input/output stream.
+
+## Configure the proxy
+
+Add these fields to the policy for the client that runs the command. Retain
+your existing listener and authentication configuration. Only the two tunnel
+routes are needed for this build workflow.
+
+```yaml
+request_body:
+  build:
+    allow_run_instructions: false
+    allow_remote_context: true
+  buildkit:
+    control:
+      solve:
+        allow: true
+        allow_frontend_gateway: true
+        allowed_exec_digests: []
+        allowed_exporters: [moby]
+    session:
+      health: true
+      auth:
+        allow: true
+        allowed_registries: [docker.io]
+        allowed_realms: [https://auth.docker.io/token]
+        allowed_scopes: ["repository:library/busybox:pull"]
+rules:
+  - match: {method: POST, path: /grpc}
+    action: allow
+  - match: {method: POST, path: /session}
+    action: allow
+```
+
+The registry example covers the public BusyBox base image. Use the exact
+registry, realm and scopes your build needs. The session provider supplies anonymous credentials only and does not attach
+your Docker CLI credentials to the target BuildKit daemon. The runtime Docker
+CLI can still authenticate when pulling the selected frontend image. Private
+base images must already be available to the target daemon through an approved
+workflow. `session.health` permits the callback health check BuildKit uses to
+keep a session alive. `allowed_exporters: [moby]` permits the Docker-local
+image output requested by `--output-image`; omit that exporter grant when
+you do not want image output.
+
+## Inspect and approve operations
+
+This pinned Dockerfile frontend is covered by the real-daemon integration
+suite. Replace the context URL with a Dockerfile or context archive reachable
+by the target daemon, and select your frontend runtime context.
+
+```sh
+sockguard frontend --runtime-context frontend-runtime --opt context=https://build.example.com/Dockerfile --operations-file frontend-operations.jsonl docker/dockerfile@sha256:fe40cf4e92cd0c467be2cfc30657a680ae2398318afd50b0c80585784c604f28
+```
+
+The first unapproved ExecOp fails. The report contains each observed
+operation's digest, its original encoded bytes, and a readable protobuf JSON
+representation. Review the command, environment, user, working directory,
+mounts and input references. Add only the reviewed ExecOp digests to
+`allowed_exec_digests` in the selected profile, reload the proxy, and start
+a new build. The runner never changes policy or approves its own report.
+
+Use a new report filename on each invocation. `--operations-file` creates a
+new file with mode `0600` and refuses to overwrite an existing file. Without
+that flag the JSONL report goes to stdout. Operation records can contain
+build arguments and environment values, so treat the report as private.
+
+Frontends can submit several successive graphs. A later graph may only become
+available after an earlier approved graph finishes; review and rerun as
+needed. This is not a static analysis that discovers every future operation
+without executing approved predecessors. Digests cover the original encoded
+operation and its input references, not changing content behind an image tag,
+local context or cache mount. Prefer pinned inputs when approving operations.
+
+Add `--output-image example/app:reviewed` to export the result into the target
+Docker daemon. Sockguard still checks the root Solve's exporter grant. HTTPS
+endpoints support `--tls-ca`, `--tls-cert` and `--tls-key`; certificate
+verification remains enabled.
+
+## Supported boundary
+
+The runner supports gateway Solve, image/source resolution, result reads,
+evaluation, warnings and completion. Remote HTTP and Git sources require the
+existing remote-context grant. Local FileSync, secret, SSH and upload
+providers are not attached. Frontends requiring those providers or their own
+network, writable root filesystem, or host mounts need a different workflow.
+
+Interactive gateway containers and ExecProcess are denied, as are nested
+frontend requests, source-policy rewrites, explicit source-session overrides,
+and filesystem-loaded nested builds. This command does not change ordinary
+Docker/buildx invocation or permit an opaque frontend to run inside the
+daemon. A nested `# syntax=` selection is still subject to that denial; select
+the intended frontend image explicitly.
+
+Each runner invocation is limited to ten minutes. Sockguard separately caps
+active gateway builds at eight per client/profile, 256 gateway Solves per
+build, and 30 minutes. Ending the root build revokes its gateway authority.
+Canceling the runner closes its connections, terminates the frontend, and
+checks that its named runtime container was removed.
+
+The integration suite exercises a real pinned Dockerfile frontend against
+Docker: an unapproved command is denied, its reviewed digest produces an
+image with the expected file, a changed command is denied, and cancellation
+terminates the frontend. No unrestricted-RUN grant is used.

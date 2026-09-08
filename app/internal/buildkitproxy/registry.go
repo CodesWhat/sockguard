@@ -141,6 +141,8 @@ var registry = map[method]Disposition{
 	// reached over the same POST /grpc tunnel as Control.
 	{EndpointGRPC, "grpc.health.v1.Health", "Check"}: Passthrough,
 	{EndpointGRPC, "grpc.health.v1.Health", "Watch"}: Passthrough,
+	// BuildKit monitors callback sessions with unary Health/Check.
+	{EndpointSession, "grpc.health.v1.Health", "Check"}: Passthrough,
 
 	// moby.filesync.v1.Auth (EndpointSession, POST /session): registry/
 	// realm/scope allowlists gate every method — "Auth/*" in the synthesis.
