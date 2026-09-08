@@ -260,6 +260,9 @@ func evaluateSolveRequest(payload []byte, policy Policy) (*control.SolveRequest,
 	if d := checkSolveDefinitionExec(req, solvePolicy); d != nil {
 		return nil, d
 	}
+	if d := checkSolveSourceSessions(req.GetDefinition()); d != nil {
+		return nil, d
+	}
 	if d := checkSolveCache(req, solvePolicy); d != nil {
 		return nil, d
 	}
@@ -413,6 +416,22 @@ func definitionExecAllowed(def *pb.Definition, policy SolvePolicy) bool {
 		}
 	}
 	return true
+}
+
+// Raw LLB sources must inherit the namespaced Solve session. Rewriting an
+// embedded override would change its op digest and every downstream approval.
+func checkSolveSourceSessions(def *pb.Definition) *mediationDenial {
+	for _, raw := range def.GetDef() {
+		op := &pb.Op{}
+		if err := proto.Unmarshal(raw, op); err != nil || hasUnknownFields(op) {
+			return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "LLB source session cannot be inspected")
+		}
+		attrs := op.GetSource().GetAttrs()
+		if attrs["local.session"] != "" || attrs["oci.session"] != "" {
+			return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "LLB sources must inherit the Solve session")
+		}
+	}
+	return nil
 }
 
 // checkSolveCache enforces the cache import/export allowlists. The

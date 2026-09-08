@@ -83,10 +83,10 @@ func TestControlRefIsolationAcrossPrincipals(t *testing.T) {
 				}
 				call(bridges[1], "Solve", &control.SolveRequest{Ref: "shared-ref", Session: "attacker-session"})
 				status := call(bridges[1], "Status", &control.StatusRequest{Ref: "shared-ref"})
-				if bytes.Contains(status.Body.Bytes(), []byte("victim-session")) {
+				if bytes.Contains(status.Body.Bytes(), []byte(bridges[0].registry.daemonSessionID(victim, "victim-session"))) {
 					t.Fatal("duplicate Solve granted access to another principal's build status")
 				}
-				if status.Body.String() != "attacker-session" {
+				if status.Body.String() != bridges[1].registry.daemonSessionID(attacker, "attacker-session") {
 					t.Fatalf("own build status = %q, want attacker-session", status.Body.String())
 				}
 			})
@@ -133,7 +133,7 @@ func TestControlRefFramePreservesOtherWireBytes(t *testing.T) {
 	if err := proto.Unmarshal(payload, &req); err != nil || req.Ref != "final-ref" {
 		t.Fatalf("invalid fixture: %v", err)
 	}
-	frame, err := controlRefFrame(payload, "scoped-ref", 1024)
+	frame, err := controlRefFrame(payload, "scoped-ref", "", 1024)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestControlRefFramePreservesOtherWireBytes(t *testing.T) {
 
 func TestControlRefFrameRejectsMalformedFields(t *testing.T) {
 	for _, payload := range [][]byte{nil, {0x80}, {0x0a, 0x80}, {0x08, 0x01}, {0x2a, 0x01, 's'}} {
-		if _, err := controlRefFrame(payload, "scoped-ref", 1024); err == nil {
+		if _, err := controlRefFrame(payload, "scoped-ref", "", 1024); err == nil {
 			t.Fatalf("accepted malformed or missing ref: %x", payload)
 		}
 	}

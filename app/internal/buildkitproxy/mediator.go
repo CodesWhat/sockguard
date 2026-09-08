@@ -94,6 +94,7 @@ func (m *Mediator) serve(endpoint Endpoint, w http.ResponseWriter, r *http.Reque
 	outHeader := r.Header.Clone()
 	if endpoint == EndpointSession {
 		rewriteSessionAdvertisement(outHeader, policy)
+		outHeader.Set(sessionUUIDHeader, m.Registry.daemonSessionID(key, clientUUID))
 	}
 
 	dialCtx, cancel := context.WithTimeout(r.Context(), h2cDialTimeout)

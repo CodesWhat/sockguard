@@ -1,6 +1,7 @@
 package buildkitproxy
 
 import (
+	"crypto/rand"
 	"sync"
 	"time"
 )
@@ -152,9 +153,10 @@ type uploadKeyState struct {
 // SessionRegistry tracks every currently-open mediated BuildKit tunnel.
 // Safe for concurrent use.
 type SessionRegistry struct {
-	mu       sync.Mutex
-	sessions map[uint64]*Session
-	nextID   uint64
+	mu            sync.Mutex
+	sessions      map[uint64]*Session
+	nextID        uint64
+	sessionSecret [32]byte
 
 	// refOwners is Phase 3's ref-ownership index: which SessionKey (client
 	// identity + profile — see SessionKey's doc comment) admitted a given
@@ -221,7 +223,9 @@ const (
 
 // NewSessionRegistry returns an empty registry.
 func NewSessionRegistry() *SessionRegistry {
-	return &SessionRegistry{sessions: make(map[uint64]*Session), now: time.Now}
+	r := &SessionRegistry{sessions: make(map[uint64]*Session), now: time.Now}
+	_, _ = rand.Read(r.sessionSecret[:])
+	return r
 }
 
 // setNow replaces the registry clock. Production uses time.Now; tests inject

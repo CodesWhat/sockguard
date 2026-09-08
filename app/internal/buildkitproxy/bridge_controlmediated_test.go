@@ -154,9 +154,9 @@ func TestBridgeControlMediatedSolve(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reading response body: %v", err)
 		}
-		expected := grpcFrame(mustMarshal(t, &control.SolveRequest{Ref: daemonBuildRef(tb.session.Key, "admitted-ref"), Session: testBuildkitSessionID}))
+		expected := grpcFrame(mustMarshal(t, &control.SolveRequest{Ref: daemonBuildRef(tb.session.Key, "admitted-ref"), Session: tb.registry.daemonSessionID(tb.session.Key, testBuildkitSessionID)}))
 		if string(body) != string(expected) {
-			t.Fatal("forwarded request did not preserve fields other than the scoped ref")
+			t.Fatal("forwarded request did not preserve fields other than the scoped ref and session")
 		}
 		if !tb.registry.OwnsRef(tb.session.Key, "admitted-ref") {
 			t.Fatal("registry does not own the ref from an admitted Solve")

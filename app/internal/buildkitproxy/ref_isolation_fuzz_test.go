@@ -27,7 +27,11 @@ func FuzzControlRefFrame(f *testing.F) {
 			return
 		}
 		ref := daemonBuildRef(SessionKey{"client", "profile"}, original.Ref)
-		frame, err := controlRefFrame(payload, ref, 1<<20)
+		session := ""
+		if original.Session != "" {
+			session = "sg-scoped-session"
+		}
+		frame, err := controlRefFrame(payload, ref, session, 1<<20)
 		if errors.Is(err, errMessageTooLarge) {
 			return
 		}
@@ -46,6 +50,7 @@ func FuzzControlRefFrame(f *testing.F) {
 			t.Fatal("translated ref was not canonical")
 		}
 		original.Ref = ref
+		original.Session = session
 		if !proto.Equal(&original, &got) {
 			t.Fatal("ref translation changed another field")
 		}
