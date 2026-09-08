@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Legacy `HostConfig.Tmpfs` now requires `allow_tmpfs_privileged_options` for effective `exec`, `dev` or `suid` flags. Paired restrictive flags follow Docker's last-wins ordering. Structured mount policy and byte-identical forwarding remain unchanged, and pooled decoding clears legacy mount state between requests.
+
 - BuildKit callback session IDs are now translated consistently on the upstream `/session` handshake and `Control/Solve.Session`. A keyed client/profile namespace prevents a caller from selecting another principal's daemon-global callback session or calculating its backend ID. Client-facing authorization still uses the original session ID. Raw LLB must inherit the Solve session: nonempty `local.session` and `oci.session` overrides are denied, preserving the operation bytes used by digest approvals.
 
 - BuildKit Solve and Status refs are translated into a stable client/profile namespace before reaching the daemon. Reusing another client's ref no longer claims its daemon-global job or retained build history. Only top-level identity fields change; digest-approved LLB operations and all other protobuf bytes stay original. The translated frame must fit the message cap before any admission state is published.

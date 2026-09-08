@@ -158,8 +158,9 @@ type ContainerCreateOptions struct {
 
 	// AllowTmpfsPrivilegedOptions permits tmpfs mount options that re-enable
 	// exec/dev/suid semantics: "exec", "dev", "suid" in
-	// HostConfig.Mounts[].TmpfsOptions.Options (Engine API 1.46+). Default
-	// false: any such option is denied.
+	// HostConfig.Tmpfs or HostConfig.Mounts[].TmpfsOptions.Options (Engine
+	// API 1.46+). Default false. Legacy comma-separated flags use Docker's
+	// last-wins ordering, so "exec,noexec" remains allowed.
 	AllowTmpfsPrivilegedOptions bool
 
 	// AllowEndpointConfig permits static IP, MAC address, Links, and
@@ -1156,6 +1157,9 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if denyReason := p.denyTmpfsOptionsReason(createReq.HostConfig.Mounts); denyReason != "" {
 		return denyReason, nil
 	}
+	if denyReason := p.denyLegacyTmpfsOptionsReason(createReq.HostConfig.Tmpfs); denyReason != "" {
+		return denyReason, nil
+	}
 	if denyReason := p.denyNetworkingConfigReason(createReq.NetworkingConfig); denyReason != "" {
 		return denyReason, nil
 	}
@@ -1758,6 +1762,37 @@ func (p containerCreatePolicy) denyTmpfsOptionsReason(mounts []containerCreateMo
 			if tmpfsPrivilegeEscalatingOptions[key] && !p.allowTmpfsPrivilegedOptions {
 				return fmt.Sprintf("container create denied: tmpfs mount option %q is not allowed", option[0])
 			}
+		}
+	}
+	return ""
+}
+
+// denyLegacyTmpfsOptionsReason follows Docker's comma-separated, last-wins
+// handling of the legacy HostConfig.Tmpfs mount flags.
+func (p containerCreatePolicy) denyLegacyTmpfsOptionsReason(mounts map[string]string) string {
+	if p.allowTmpfsPrivilegedOptions {
+		return ""
+	}
+	for _, options := range mounts {
+		var exec, dev, suid bool
+		for option := range strings.SplitSeq(options, ",") {
+			switch option {
+			case "exec":
+				exec = true
+			case "noexec":
+				exec = false
+			case "dev":
+				dev = true
+			case "nodev":
+				dev = false
+			case "suid":
+				suid = true
+			case "nosuid":
+				suid = false
+			}
+		}
+		if exec || dev || suid {
+			return "container create denied: legacy tmpfs mount enables exec, dev, or suid"
 		}
 	}
 	return ""

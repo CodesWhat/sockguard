@@ -125,6 +125,8 @@ func TestContainerCreateRequestResetForReuseClearsEveryField(t *testing.T) {
 // ones: the hazard a recycled decode target introduces is a field the second
 // body never mentions still reading back the first body's value.
 var containerCreateDecodeCorpus = []string{
+	`{"HostConfig":{"Tmpfs":{"/Run":"noexec","/run":"exec"}}}`,
+	`{"HostConfig":{"Tmpfs":null}}`,
 	`{}`,
 	`{"Image":"alpine:3.19","User":"1000","Labels":{"team":"core"}}`,
 	`{"MacAddress":"02:42:ac:11:00:02"}`,
@@ -302,6 +304,8 @@ func TestReleaseContainerCreateRequestDropsOversizedTargets(t *testing.T) {
 	}{
 		{name: "nil", req: nil, want: false},
 		{name: "empty", req: new(containerCreateRequest), want: false},
+		{name: "tmpfs over cap", req: &containerCreateRequest{HostConfig: containerCreateHostConfig{Tmpfs: makeStringMap(containerCreateReuseCap + 1)}}, want: true},
+		{name: "tmpfs at cap", req: &containerCreateRequest{HostConfig: containerCreateHostConfig{Tmpfs: makeStringMap(containerCreateReuseCap)}}, want: false},
 		{
 			name: "binds within cap",
 			req: &containerCreateRequest{HostConfig: containerCreateHostConfig{
@@ -518,6 +522,12 @@ func TestContainerCreateDecodedFieldsAreTheInspectedFields(t *testing.T) {
 			allow:  `{"HostConfig":{"Mounts":[{"Type":"image","Source":"alpine:3.19","ImageOptions":{"Subpath":"nested/dir"}}]}}`,
 		},
 		{
+			field:  "HostConfig.Tmpfs",
+			policy: bindPolicy,
+			deny:   `{"HostConfig":{"Tmpfs":{"/scratch":"exec"}}}`,
+			allow:  `{"HostConfig":{"Tmpfs":{"/scratch":"exec,noexec"}}}`,
+		},
+		{
 			field:  "HostConfig.Mounts[].TmpfsOptions.Options",
 			policy: bindPolicy,
 			deny:   `{"HostConfig":{"Mounts":[{"Type":"tmpfs","TmpfsOptions":{"Options":[["exec"]]}}]}}`,
@@ -709,6 +719,8 @@ func TestContainerCreateDecodeTypeErrorsStillDeny(t *testing.T) {
 		`{"HostConfig":{"Binds":[5]}}`,
 		`{"HostConfig":{"MaskedPaths":{}}}`,
 		`{"HostConfig":{"Mounts":{}}}`,
+		`{"HostConfig":{"Tmpfs":[]}}`,
+		`{"HostConfig":{"Tmpfs":{"/scratch":5}}}`,
 		`{"HostConfig":{"DeviceRequests":[{"Count":"4"}]}}`,
 	}
 

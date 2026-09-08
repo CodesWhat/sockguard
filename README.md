@@ -502,6 +502,7 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 
 ### v2.3 hardening
 
+- Legacy `HostConfig.Tmpfs` applies the same privileged-option grant as structured tmpfs mounts, using Docker's last-wins flag ordering.
 - Secret creation accepts Docker's object-shaped custom driver selection when explicitly allowed, while preserving independent template controls.
 
 ### Shipped in v2.2.0
