@@ -7,7 +7,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
 )
 
 // ImagePullOptions configures query inspection for POST /images/create.

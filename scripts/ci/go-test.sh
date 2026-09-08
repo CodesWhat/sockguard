@@ -23,7 +23,7 @@ go list ./... | grep -v '/internal/testcert$' | xargs go test -race \
 # let the gate be drowned out by codegen instead of measuring hand-written
 # shipping logic (the hand-written internal/buildkitproxy package stays
 # counted).
-grep -vE 'github.com/codeswhat/sockguard/app/internal/(differential|testcert|testhelp|buildkitproto)/' \
+grep -vE 'github.com/codeswhat/sockguard/v2/app/internal/(differential|testcert|testhelp|buildkitproto)/' \
   "${artifact_directory}/coverage.txt" > "${artifact_directory}/coverage.prod.txt"
 
 # Vendor-free floor on PRODUCTION code: fails the job when the weighted

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/app/internal/config"
-	"github.com/codeswhat/sockguard/app/internal/testhelp"
+	"github.com/codeswhat/sockguard/v2/app/internal/config"
+	"github.com/codeswhat/sockguard/v2/app/internal/testhelp"
 )
 
 // unrootedRequestTargetCase is one raw HTTP/1.1 request line that Go's server

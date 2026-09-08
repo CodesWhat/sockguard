@@ -5,7 +5,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
 )
 
 func TestValidateLogOutputUsesLoggingValidateOutput(t *testing.T) {

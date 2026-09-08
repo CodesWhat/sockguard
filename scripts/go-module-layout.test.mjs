@@ -33,7 +33,7 @@ const gosecArgs = (workflow) =>
 test("the repository root is the canonical Go module root", () => {
   assert.ok(existsSync(rootModule), "go.mod must live at the repository root");
   assert.ok(!existsSync(nestedModule), "app must not declare a mismatched nested module");
-  assert.match(readFileSync(rootModule, "utf8"), /^module github\.com\/codeswhat\/sockguard$/m);
+  assert.match(readFileSync(rootModule, "utf8"), /^module github\.com\/codeswhat\/sockguard\/v2$/m);
 });
 
 test("temporary staged compatibility packages are absent from the final tree", () => {
@@ -74,8 +74,8 @@ test("the binary has the package path implied by its repository directory", () =
     }),
   );
 
-  assert.equal(packageInfo.ImportPath, "github.com/codeswhat/sockguard/app/cmd/sockguard");
-  assert.equal(packageInfo.Module.Path, "github.com/codeswhat/sockguard");
+  assert.equal(packageInfo.ImportPath, "github.com/codeswhat/sockguard/v2/app/cmd/sockguard");
+  assert.equal(packageInfo.Module.Path, "github.com/codeswhat/sockguard/v2");
   assert.equal(packageInfo.Module.Dir, repoRoot);
 });
 
@@ -114,7 +114,7 @@ test("container and coverage tooling preserve app as the package subdirectory", 
   const goTestScript = read("scripts/ci/go-test.sh");
   assert.match(
     goTestScript,
-    /grep -vE 'github\.com\/codeswhat\/sockguard\/app\/internal\/\(differential\|testcert\|testhelp\|buildkitproto\)\/'/,
+    /grep -vE 'github\.com\/codeswhat\/sockguard\/v2\/app\/internal\/\(differential\|testcert\|testhelp\|buildkitproto\)\/'/,
   );
 });
 

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/codeswhat/sockguard/app/internal/apipath"
-	"github.com/codeswhat/sockguard/app/internal/glob"
+	"github.com/codeswhat/sockguard/v2/app/internal/apipath"
+	"github.com/codeswhat/sockguard/v2/app/internal/glob"
 )
 
 // regexpCompileHook is the package-level hook for regexp compilation.

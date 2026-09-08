@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/dockerresource"
-	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
 )
 
 // commit_test.go covers POST /commit and POST /libpod/commit, which no

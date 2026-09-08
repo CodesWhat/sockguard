@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/app/internal/dockerclient"
-	"github.com/codeswhat/sockguard/app/internal/upstream"
+	"github.com/codeswhat/sockguard/v2/app/internal/dockerclient"
+	"github.com/codeswhat/sockguard/v2/app/internal/upstream"
 )
 
 func startUnixUpstream(t *testing.T, handler http.Handler) string {

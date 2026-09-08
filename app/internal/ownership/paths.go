@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/codeswhat/sockguard/app/internal/apipath"
+	"github.com/codeswhat/sockguard/v2/app/internal/apipath"
 )
 
 func needsOwnerFilter(method, normPath string) bool {

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"testing/iotest"
 
-	requestfilter "github.com/codeswhat/sockguard/app/internal/filter"
+	requestfilter "github.com/codeswhat/sockguard/v2/app/internal/filter"
 )
 
 // ─── Enabled ────────────────────────────────────────────────────────────────

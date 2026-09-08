@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/v2/app/internal/config"
 )
 
 // TestServerIsImmutable pins both halves of the immutability contract for

@@ -13,9 +13,9 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/codeswhat/sockguard/app/internal/buildkitproto/auth"
-	"github.com/codeswhat/sockguard/app/internal/buildkitproto/secrets"
-	"github.com/codeswhat/sockguard/app/internal/buildkitproto/sshforward"
+	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/auth"
+	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/secrets"
+	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/sshforward"
 )
 
 // sessionAuthPolicy admits Auth/Secrets/SSH with a fixed, realistic set of

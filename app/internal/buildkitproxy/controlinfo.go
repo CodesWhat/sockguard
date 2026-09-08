@@ -70,7 +70,7 @@ import (
 
 	"google.golang.org/protobuf/encoding/protowire"
 
-	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
 )
 
 // responseFieldRule is one row of a response field-number allowlist. Its zero

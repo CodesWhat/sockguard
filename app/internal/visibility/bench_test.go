@@ -9,7 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/v2/app/internal/dockerresource"
 )
 
 // BenchmarkPatternFilterContainerList measures the allocation budget for

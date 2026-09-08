@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/filter"
-	"github.com/codeswhat/sockguard/app/internal/logging"
-	"github.com/codeswhat/sockguard/app/internal/upstreamflavor"
-	"github.com/codeswhat/sockguard/app/internal/visibility"
+	"github.com/codeswhat/sockguard/v2/app/internal/filter"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/upstreamflavor"
+	"github.com/codeswhat/sockguard/v2/app/internal/visibility"
 )
 
 // forwardedFilters runs one GET through the production middleware nesting —

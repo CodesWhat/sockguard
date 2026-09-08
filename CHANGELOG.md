@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The Go module now declares `github.com/codeswhat/sockguard/v2`, so future v2 release tags can resolve through the Go module proxy. Imports, Docker and GoReleaser version linker flags, and coverage tooling use the new path. All 11 vendored BuildKit protobuf bindings were regenerated from the retargeted schemas, with updated provenance hashes and a regression check for their serialized package metadata. After the next tag is published, Go installs use `github.com/codeswhat/sockguard/v2/app/cmd/sockguard@latest`. Existing tags keep their original module declarations. Docker, Homebrew, deb and rpm installation paths are unchanged.
+
 ## [2.2.1] - 2026-09-07
 
 ### Security

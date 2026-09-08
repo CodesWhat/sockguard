@@ -39,7 +39,7 @@ which are already committed under `proto/`).
 `protoc-gen-go` emits Go `import` statements from each file's `go_package`
 option, not from where the `.proto` file physically sits in the module used
 to generate it. Vendoring these files under
-`github.com/codeswhat/sockguard/app/internal/buildkitproto/...` instead of
+`github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/...` instead of
 `github.com/moby/buildkit/...` means every vendored file's `go_package` had
 to be rewritten to point here — otherwise the generated code's cross-package
 imports (e.g. `control.proto` importing `pb.Definition` from `ops.proto`)
@@ -51,17 +51,17 @@ service definition is otherwise byte-for-byte upstream.
 
 | Vendored path (under `proto/`) | Go package | Upstream source | Upstream tag | Curation | Upstream sha256 | Vendored sha256 |
 |---|---|---|---|---|---|---|
-| `github.com/moby/buildkit/api/services/control/control.proto` | `control` | https://github.com/moby/buildkit/blob/v0.32.0/api/services/control/control.proto | `v0.32.0` | trimmed (see file header) | `0a187c5e92c24690d913b797953ddc8d901755ba52739e3ff776b10d0fd94614` | `8c6abff899ecec4d0cbc2224d7e1fb00415179d0b701955397b75303be6adcc3` |
-| `github.com/moby/buildkit/solver/pb/ops.proto` | `pb` | https://github.com/moby/buildkit/blob/v0.32.0/solver/pb/ops.proto | `v0.32.0` | full | `309d9735d15cd945372a0dade3672cea19f94b61b6d0c05cf22856c608ff2a9c` | `1e015aded858583f7688621e43e142af9a0308d6742d7f636d8e1b74dd0ec4f5` |
-| `github.com/moby/buildkit/sourcepolicy/pb/policy.proto` | `sourcepolicy` | https://github.com/moby/buildkit/blob/v0.32.0/sourcepolicy/pb/policy.proto | `v0.32.0` | full | `171bff4439bb69e16a12b808d9c09a5ca1da70ea267a08e9f94a7d4ffcd854fa` | `ba71e9a52c650723e0a4301efc13a79b9c8046de16471aff057b1fc5c8b7d96c` |
-| `github.com/moby/buildkit/session/auth/auth.proto` | `auth` | https://github.com/moby/buildkit/blob/v0.32.0/session/auth/auth.proto | `v0.32.0` | full | `bb484658f71296efa1bdbe4977055c949e9d49ddfd5fff6b9d240d068e9e269d` | `09b949ed66ef011c117376a3dfdf328f4b734a6ee74259ba5562493805fddbeb` |
-| `github.com/moby/buildkit/session/secrets/secrets.proto` | `secrets` | https://github.com/moby/buildkit/blob/v0.32.0/session/secrets/secrets.proto | `v0.32.0` | full | `0bec7c813157312d551ae881a36ddb08faf13eb042286c9fcc90c63148688150` | `7475254566bb8cd291f4222d322a01c235b46a9514aa1eb25175569ec57d4733` |
-| `github.com/moby/buildkit/session/sshforward/ssh.proto` | `sshforward` | https://github.com/moby/buildkit/blob/v0.32.0/session/sshforward/ssh.proto | `v0.32.0` | full | `0277eb53c08696e785fcbe9ccc687fd32f28f906059518872aedcce2e4181aad` | `0c338d7aabda6b2aebd9e3a75dba8acfc362b4aa5c987fabdd14532cfda10606` |
-| `github.com/moby/buildkit/session/filesync/filesync.proto` | `filesync` | https://github.com/moby/buildkit/blob/v0.32.0/session/filesync/filesync.proto | `v0.32.0` | full | `5bbdd3a8158c350cd2a75cc5925a020c0f5259542cf9c2cbe6c5c38a14c3fa3d` | `7c72ac356bd1f1f55c1b482487231802da7efc19cb03852f21d8d2c08e1cec2e` |
-| `github.com/moby/buildkit/session/upload/upload.proto` | `upload` | https://github.com/moby/buildkit/blob/v0.32.0/session/upload/upload.proto | `v0.32.0` | full | `e0aaf9ca20ec2bf0b96545609a6efb83e35feca2f4c87d67fa40cacb0bd6dbee` | `6feb98a78551a85a8a2e42d2d0ee5d573c6eacb2143cf81e01f361719986d9d6` |
-| `github.com/tonistiigi/fsutil/types/wire.proto` | `fsutiltypes` | https://github.com/moby/buildkit/blob/v0.32.0/vendor/github.com/tonistiigi/fsutil/types/wire.proto | `v0.32.0` (buildkit's vendored copy) | trimmed, dep dropped (see file header) | `bebd874ecae74b6e0e2e6f542bf54b8bf2254613fc13615948bce68b5297fa8a` | `a9ae5b41d629514b97541eb36db59de0686140fe1ff546b136ec0c7119058790` |
-| `github.com/tonistiigi/fsutil/types/stat.proto` | `fsutiltypes` | https://github.com/moby/buildkit/blob/v0.32.0/vendor/github.com/tonistiigi/fsutil/types/stat.proto | `v0.32.0` (buildkit's vendored copy) | trimmed, dep dropped (see file header) | `80422956cb3741c83b4516e9d6ca931b4731ff3731b08e81309410d208c85d4c` | `9b0d11f3581a25f9caad122151cf238024d3af3a3d1a41e199e053704c5381f0` |
-| `grpc/health/v1/health.proto` | `health` (proto package `grpc.health.v1`) | https://github.com/grpc/grpc/blob/v1.71.0/src/proto/grpc/health/v1/health.proto | `v1.71.0` | full | `8d44f54645557c1e10ba0da377883fd4d24ad994aff4f2139d61b7e9f0ece511` | `4fd3e7fd85d5ffe6a6e4952756b7599f432c4f1d907fa29101a15f7d4e257f76` |
+| `github.com/moby/buildkit/api/services/control/control.proto` | `control` | https://github.com/moby/buildkit/blob/v0.32.0/api/services/control/control.proto | `v0.32.0` | trimmed (see file header) | `0a187c5e92c24690d913b797953ddc8d901755ba52739e3ff776b10d0fd94614` | `8f60c8592555c2d2724463fa9deaff4e2fc0572a3ec5140ac9f500b2f9e65d8a` |
+| `github.com/moby/buildkit/solver/pb/ops.proto` | `pb` | https://github.com/moby/buildkit/blob/v0.32.0/solver/pb/ops.proto | `v0.32.0` | full | `309d9735d15cd945372a0dade3672cea19f94b61b6d0c05cf22856c608ff2a9c` | `3b39e65013eeac73e79f3d389876364deb4788ca4bead126329b5da39bbda76a` |
+| `github.com/moby/buildkit/sourcepolicy/pb/policy.proto` | `sourcepolicy` | https://github.com/moby/buildkit/blob/v0.32.0/sourcepolicy/pb/policy.proto | `v0.32.0` | full | `171bff4439bb69e16a12b808d9c09a5ca1da70ea267a08e9f94a7d4ffcd854fa` | `805c2f0f355ffa63077100c2237aeac349d73ce56a762a37a8c69aeb0ebd5510` |
+| `github.com/moby/buildkit/session/auth/auth.proto` | `auth` | https://github.com/moby/buildkit/blob/v0.32.0/session/auth/auth.proto | `v0.32.0` | full | `bb484658f71296efa1bdbe4977055c949e9d49ddfd5fff6b9d240d068e9e269d` | `96877cb2d6d988f1cb0249a9a4752ad16a4418b7569de7726fbdcdb889b65314` |
+| `github.com/moby/buildkit/session/secrets/secrets.proto` | `secrets` | https://github.com/moby/buildkit/blob/v0.32.0/session/secrets/secrets.proto | `v0.32.0` | full | `0bec7c813157312d551ae881a36ddb08faf13eb042286c9fcc90c63148688150` | `791357c9c61acfd6e95bb62285000b0a8ea8e5ee508cb676bd646e762467b24c` |
+| `github.com/moby/buildkit/session/sshforward/ssh.proto` | `sshforward` | https://github.com/moby/buildkit/blob/v0.32.0/session/sshforward/ssh.proto | `v0.32.0` | full | `0277eb53c08696e785fcbe9ccc687fd32f28f906059518872aedcce2e4181aad` | `fa2423010f4e9ef8784a5d09f8330da58de602eafcbefb57a00b0446f8d956ea` |
+| `github.com/moby/buildkit/session/filesync/filesync.proto` | `filesync` | https://github.com/moby/buildkit/blob/v0.32.0/session/filesync/filesync.proto | `v0.32.0` | full | `5bbdd3a8158c350cd2a75cc5925a020c0f5259542cf9c2cbe6c5c38a14c3fa3d` | `1b9360aba32f1c630dbee325c1d0c1261d4a3c313c32a7baa9191f4fd878e807` |
+| `github.com/moby/buildkit/session/upload/upload.proto` | `upload` | https://github.com/moby/buildkit/blob/v0.32.0/session/upload/upload.proto | `v0.32.0` | full | `e0aaf9ca20ec2bf0b96545609a6efb83e35feca2f4c87d67fa40cacb0bd6dbee` | `79743ff02a341ca0ab34da5bf61e12525f17fc52f8cc952c70d92a59382bb265` |
+| `github.com/tonistiigi/fsutil/types/wire.proto` | `fsutiltypes` | https://github.com/moby/buildkit/blob/v0.32.0/vendor/github.com/tonistiigi/fsutil/types/wire.proto | `v0.32.0` (buildkit's vendored copy) | trimmed, dep dropped (see file header) | `bebd874ecae74b6e0e2e6f542bf54b8bf2254613fc13615948bce68b5297fa8a` | `6084471550211900a233fbcf08440dad3ec1fa2e450e57d0aece8c83e2524931` |
+| `github.com/tonistiigi/fsutil/types/stat.proto` | `fsutiltypes` | https://github.com/moby/buildkit/blob/v0.32.0/vendor/github.com/tonistiigi/fsutil/types/stat.proto | `v0.32.0` (buildkit's vendored copy) | trimmed, dep dropped (see file header) | `80422956cb3741c83b4516e9d6ca931b4731ff3731b08e81309410d208c85d4c` | `964e5788abd96dc6c5e02986ba6083005329808be6950b6c494f0762824c8f14` |
+| `grpc/health/v1/health.proto` | `health` (proto package `grpc.health.v1`) | https://github.com/grpc/grpc/blob/v1.71.0/src/proto/grpc/health/v1/health.proto | `v1.71.0` | full | `8d44f54645557c1e10ba0da377883fd4d24ad994aff4f2139d61b7e9f0ece511` | `46f8b3bfc81963d98d0f5a7a29df485184fce2b8495a7bcd47666764f69a54cb` |
 
 Notes:
 
@@ -88,7 +88,7 @@ Notes:
   scoped to exactly `golang.org/x/net/http2` (phase 2) and
   `google.golang.org/protobuf` — nothing else, ever.
 - Every vendored `.proto` file's `go_package` option points into this
-  module (`github.com/codeswhat/sockguard/app/internal/buildkitproto/...`)
+  module (`github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/...`)
   rather than upstream's own module path — see "Why every file's
   `go_package` is retargeted" above. `sourcepolicy/pb/policy.proto` and
   `grpc/health/v1/health.proto` additionally get a shorter Go package alias

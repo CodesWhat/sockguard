@@ -10,8 +10,8 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/codeswhat/sockguard/app/internal/dockerresource"
-	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/v2/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/v2/app/internal/filter"
 )
 
 // commit.go authorizes the container-commit endpoint, which is the one write

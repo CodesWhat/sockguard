@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/imagetrust"
+	"github.com/codeswhat/sockguard/v2/app/internal/imagetrust"
 )
 
 // libpod_container_create_test.go tests the POST /libpod/containers/create

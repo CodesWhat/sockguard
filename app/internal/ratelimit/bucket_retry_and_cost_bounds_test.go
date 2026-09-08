@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
 )
 
 // Four mutants in this package stay alive on purpose, all verified by

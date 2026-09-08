@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/app/internal/config"
-	"github.com/codeswhat/sockguard/app/internal/testcert"
+	"github.com/codeswhat/sockguard/v2/app/internal/config"
+	"github.com/codeswhat/sockguard/v2/app/internal/testcert"
 )
 
 func TestUpstreamMutualTLSFromYAML_RoundTrip(t *testing.T) {

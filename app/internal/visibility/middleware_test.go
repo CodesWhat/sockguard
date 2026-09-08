@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/app/internal/dockerfilters"
-	"github.com/codeswhat/sockguard/app/internal/dockerresource"
-	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/dockerfilters"
+	"github.com/codeswhat/sockguard/v2/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
 )
 
 // warnCapturingLogger returns a *slog.Logger backed by a bytes.Buffer of

@@ -22,12 +22,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/codeswhat/sockguard/app/internal/config"
-	"github.com/codeswhat/sockguard/app/internal/filter"
-	"github.com/codeswhat/sockguard/app/internal/testcert"
-	"github.com/codeswhat/sockguard/app/internal/testhelp"
-	"github.com/codeswhat/sockguard/app/internal/upstream"
-	"github.com/codeswhat/sockguard/app/internal/upstreamflavor"
+	"github.com/codeswhat/sockguard/v2/app/internal/config"
+	"github.com/codeswhat/sockguard/v2/app/internal/filter"
+	"github.com/codeswhat/sockguard/v2/app/internal/testcert"
+	"github.com/codeswhat/sockguard/v2/app/internal/testhelp"
+	"github.com/codeswhat/sockguard/v2/app/internal/upstream"
+	"github.com/codeswhat/sockguard/v2/app/internal/upstreamflavor"
 )
 
 // flavorTestDockerVersionBody and flavorTestPodmanVersionBody are the same

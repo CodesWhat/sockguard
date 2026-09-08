@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/codeswhat/sockguard/app/internal/apipath"
+	"github.com/codeswhat/sockguard/v2/app/internal/apipath"
 )
 
 // libpod_filter.go is filter.go's counterpart for Podman's native /libpod/

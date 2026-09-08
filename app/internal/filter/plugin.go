@@ -16,7 +16,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
 )
 
 const maxPluginBodyBytes = 512 << 20 // 512 MiB

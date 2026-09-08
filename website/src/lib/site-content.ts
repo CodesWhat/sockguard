@@ -278,7 +278,7 @@ export const roadmap: Milestone[] = [
     status: "next",
     items: [
       "Extend the shipped BuildKit gRPC mediation foundation: v2.0.0's bounded-depth LLB walk denies any ExecOp, and any op that fails to decode, in frontend-less Solves when allow_run_instructions is false — a blanket refusal; the remaining work is real per-instruction mediation of raw-LLB and third-party frontends so RUN-equivalent ops can be inspected and selectively allowed instead of refused wholesale",
-      "Give the Go module path its v2 major-version suffix: go.mod still declares github.com/codeswhat/sockguard with no /v2, so the module proxy rejects every v2 tag and go install plus the Go Reference badge still resolve to the v1.x line; no documented install path is affected, since Sockguard ships as a binary through Docker, Homebrew, deb and rpm",
+      "The Go module migration is implemented for v2.3: the /v2 module path, imports, release linker flags and regenerated BuildKit descriptors are ready for the next tag; Docker, Homebrew, deb and rpm installation paths are unchanged",
     ],
   },
 ];

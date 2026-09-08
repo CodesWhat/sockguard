@@ -3,8 +3,8 @@ package visibility
 import (
 	"net/http"
 
-	"github.com/codeswhat/sockguard/app/internal/httpjson"
-	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/httpjson"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
 )
 
 // LibpodEventsPath is the normalized path of Podman's native

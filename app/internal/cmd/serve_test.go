@@ -23,12 +23,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/codeswhat/sockguard/app/internal/config"
-	"github.com/codeswhat/sockguard/app/internal/filter"
-	"github.com/codeswhat/sockguard/app/internal/health"
-	"github.com/codeswhat/sockguard/app/internal/logging"
-	"github.com/codeswhat/sockguard/app/internal/metrics"
-	"github.com/codeswhat/sockguard/app/internal/testcert"
+	"github.com/codeswhat/sockguard/v2/app/internal/config"
+	"github.com/codeswhat/sockguard/v2/app/internal/filter"
+	"github.com/codeswhat/sockguard/v2/app/internal/health"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/metrics"
+	"github.com/codeswhat/sockguard/v2/app/internal/testcert"
 )
 
 // shortSocketPath returns a unique short /tmp socket path that fits within

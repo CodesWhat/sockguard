@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/testcert"
+	"github.com/codeswhat/sockguard/v2/app/internal/testcert"
 )
 
 // tcpTLSConfig returns a config whose only listener is a TCP listener with a

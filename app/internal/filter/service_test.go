@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/imagetrust"
+	"github.com/codeswhat/sockguard/v2/app/internal/imagetrust"
 )
 
 func TestServiceInspectDeniesBindMountSource(t *testing.T) {

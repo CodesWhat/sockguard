@@ -95,8 +95,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/codeswhat/sockguard/app/internal/buildkitproto/fsutiltypes"
-	"github.com/codeswhat/sockguard/app/internal/dockerfileinspect"
+	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/fsutiltypes"
+	"github.com/codeswhat/sockguard/v2/app/internal/dockerfileinspect"
 )
 
 // fsutilDirNameHeader is the gRPC metadata key — surfaced as an HTTP/2

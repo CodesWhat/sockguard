@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/testhelp"
+	"github.com/codeswhat/sockguard/v2/app/internal/testhelp"
 )
 
 // arrayTerminationRoutes are the routes in this package that walk a top-level

@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/codeswhat/sockguard/app/internal/imagefetch"
-	"github.com/codeswhat/sockguard/app/internal/imagetrust"
+	"github.com/codeswhat/sockguard/v2/app/internal/imagefetch"
+	"github.com/codeswhat/sockguard/v2/app/internal/imagetrust"
 )
 
 // libpod_container_create.go implements the POST /libpod/containers/create

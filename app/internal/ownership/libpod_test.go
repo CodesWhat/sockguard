@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/v2/app/internal/dockerresource"
 )
 
 // TestMiddlewareStampsOwnerLabelOnLibpodCreateEndpoints covers #148 PR5 item

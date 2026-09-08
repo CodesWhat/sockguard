@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/buildkitproto/auth"
-	"github.com/codeswhat/sockguard/app/internal/buildkitproto/secrets"
-	"github.com/codeswhat/sockguard/app/internal/buildkitproto/sshforward"
+	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/auth"
+	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/secrets"
+	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/sshforward"
 )
 
 // TestEvaluateAuthHostOnlyRPCs table-drives Credentials/GetTokenAuthority/

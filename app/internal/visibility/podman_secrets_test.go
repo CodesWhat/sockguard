@@ -9,11 +9,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/dockerfilters"
-	"github.com/codeswhat/sockguard/app/internal/dockerresource"
-	"github.com/codeswhat/sockguard/app/internal/filter"
-	"github.com/codeswhat/sockguard/app/internal/logging"
-	"github.com/codeswhat/sockguard/app/internal/upstreamflavor"
+	"github.com/codeswhat/sockguard/v2/app/internal/dockerfilters"
+	"github.com/codeswhat/sockguard/v2/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/v2/app/internal/filter"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/upstreamflavor"
 )
 
 // podman_secrets_test.go covers the Docker-compat GET /secrets on a Podman
