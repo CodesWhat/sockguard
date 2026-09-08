@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- OCI image loads charge cumulative logical blob sizes before hashing or retention, so sparse members cannot expand beyond the inspection budget despite a small compressed archive. Oversized members fail immediately; bounded sparse OCI graphs and Docker archive forwarding remain supported.
+
 - Legacy `HostConfig.Tmpfs` now requires `allow_tmpfs_privileged_options` for effective `exec`, `dev` or `suid` flags. Paired restrictive flags follow Docker's last-wins ordering. Structured mount policy and byte-identical forwarding remain unchanged, and pooled decoding clears legacy mount state between requests.
 
 - BuildKit callback session IDs are now translated consistently on the upstream `/session` handshake and `Control/Solve.Session`. A keyed client/profile namespace prevents a caller from selecting another principal's daemon-global callback session or calculating its backend ID. Client-facing authorization still uses the original session ID. Raw LLB must inherit the Solve session: nonempty `local.session` and `oci.session` overrides are denied, preserving the operation bytes used by digest approvals.
