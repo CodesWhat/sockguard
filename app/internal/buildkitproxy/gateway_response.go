@@ -85,7 +85,7 @@ func filterGatewayPong(src io.Reader, maxLen int64, policy Policy) ([]byte, *med
 		return nil, denyControlResponseUnparsable()
 	}
 	length := int64(len(filtered))
-	if length > math.MaxUint32 || (maxLen > 0 && length+grpcMessageHeaderLen > maxLen) {
+	if length > math.MaxUint32 || length > int64(math.MaxInt-grpcMessageHeaderLen) || (maxLen > 0 && length+grpcMessageHeaderLen > maxLen) {
 		return nil, deny(grpcCodeResourceExhausted, "buildkit_message_too_large", "frontend response exceeds size cap")
 	}
 	frame := make([]byte, grpcMessageHeaderLen+len(filtered))
