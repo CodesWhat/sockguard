@@ -10,7 +10,7 @@ release) can mechanically verify what changed upstream before touching
 
 **Normal builds never fetch anything here.** The `.pb.go` files under
 `control/`, `pb/`, `sourcepolicy/`, `auth/`, `secrets/`, `sshforward/`,
-`filesync/`, `upload/`, `fsutiltypes/`, and `health/` are committed,
+`filesync/`, `upload/`, `fsutiltypes/`, `health/`, `gateway/`, `worker/`, and `caps/` are committed,
 generated code — `go build`/`go test` just compile them like any other
 package. Only `scripts/generate-buildkit-proto.sh`, run deliberately to bump
 a pin, touches the network (to fetch the pinned `protoc-gen-go`/`buf` Go
@@ -62,6 +62,10 @@ service definition is otherwise byte-for-byte upstream.
 | `github.com/tonistiigi/fsutil/types/wire.proto` | `fsutiltypes` | https://github.com/moby/buildkit/blob/v0.32.0/vendor/github.com/tonistiigi/fsutil/types/wire.proto | `v0.32.0` (buildkit's vendored copy) | trimmed, dep dropped (see file header) | `bebd874ecae74b6e0e2e6f542bf54b8bf2254613fc13615948bce68b5297fa8a` | `6084471550211900a233fbcf08440dad3ec1fa2e450e57d0aece8c83e2524931` |
 | `github.com/tonistiigi/fsutil/types/stat.proto` | `fsutiltypes` | https://github.com/moby/buildkit/blob/v0.32.0/vendor/github.com/tonistiigi/fsutil/types/stat.proto | `v0.32.0` (buildkit's vendored copy) | trimmed, dep dropped (see file header) | `80422956cb3741c83b4516e9d6ca931b4731ff3731b08e81309410d208c85d4c` | `964e5788abd96dc6c5e02986ba6083005329808be6950b6c494f0762824c8f14` |
 | `grpc/health/v1/health.proto` | `health` (proto package `grpc.health.v1`) | https://github.com/grpc/grpc/blob/v1.71.0/src/proto/grpc/health/v1/health.proto | `v1.71.0` | full | `8d44f54645557c1e10ba0da377883fd4d24ad994aff4f2139d61b7e9f0ece511` | `46f8b3bfc81963d98d0f5a7a29df485184fce2b8495a7bcd47666764f69a54cb` |
+| `github.com/moby/buildkit/frontend/gateway/pb/gateway.proto` | `gateway` | https://github.com/moby/buildkit/blob/v0.32.0/frontend/gateway/pb/gateway.proto | `v0.32.0` | full | `cc3bf88b551578c859c2985a6157a9f725ebe49181bd92220c91d3f89c659287` | `9cb0dcc2696816cb558929a3573c88074a6622c24a43e7c8621e901482b254a9` |
+| `github.com/moby/buildkit/api/types/worker.proto` | `worker` | https://github.com/moby/buildkit/blob/v0.32.0/api/types/worker.proto | `v0.32.0` | full | `fcae6456534010fc6afdf8440dfa3d8fad5677734e456778fcf1ad23c22194f5` | `f314ffb5935e78a468724392cb05e88266c444d77735bcf6679e0ab5ee102dfc` |
+| `github.com/moby/buildkit/util/apicaps/pb/caps.proto` | `caps` | https://github.com/moby/buildkit/blob/v0.32.0/util/apicaps/pb/caps.proto | `v0.32.0` | full | `1cb3824b0daabf5b57de609d17b5d785a6d474c240e93185d2fafa5a2f04de89` | `fe00b7f4e7f7f993c0c792796cd41488acbdf318088104af0ed5d8cc562b78be` |
+| `google/rpc/status.proto` | `status (generation dependency)` | https://github.com/googleapis/googleapis/blob/a68d4433fa8f0cf72710a60cc09dec096db0fcee/google/rpc/status.proto | `a68d4433fa8f0cf72710a60cc09dec096db0fcee` | full | `f5bfd262e6705c7ae73f32e0ad8ee20ce8c0a2578df8c4f76ebf76b572f295ed` | `f5bfd262e6705c7ae73f32e0ad8ee20ce8c0a2578df8c4f76ebf76b572f295ed` |
 
 Notes:
 
@@ -96,6 +100,12 @@ Notes:
   `moby_buildkit_v1_sourcepolicy`/`grpc_health_v1`, purely for import
   ergonomics — no schema content changed.
 
+## Gateway schema dependencies
+
+The full v0.32.0 gateway, worker, and capability schemas support mediation of external frontend RPCs. Vendoring a schema does not admit its methods. Container creation and process execution remain denied until explicitly implemented.
+
+`google/rpc/status.proto` is an unchanged, pinned generation dependency. Its `go_package` intentionally remains the official package already present in the Go module graph. The generator does not copy a local Status binding: registering a second `google.rpc.Status` descriptor would conflict with the existing Sigstore dependency. Gateway bindings import the existing message type, without adding a gRPC server or client library.
+
 ## Deliberately NOT vendored (message types)
 
 The #185 synthesis classifies these services/methods as **Deny** — rejected
@@ -104,8 +114,6 @@ message types are generated for them. Only their fully-qualified method
 names appear (as plain Go string literals) in
 `buildkitproxy/registry.go`'s `DeniedExamples`, sourced from:
 
-- `frontend/gateway/pb/gateway.proto` (`LLBBridge` service) —
-  https://github.com/moby/buildkit/blob/v0.32.0/frontend/gateway/pb/gateway.proto
 - `session/exporter/exporter.proto` (`Exporter` service, negotiation) —
   https://github.com/moby/buildkit/blob/v0.32.0/session/exporter/exporter.proto
 - `sourcepolicy/policysession/policysession.proto` (`PolicyVerifier`

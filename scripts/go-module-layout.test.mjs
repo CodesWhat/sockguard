@@ -145,7 +145,7 @@ test("Gosec scans canonical app packages with audited suppressions", () => {
     .split("\n")
     .filter((path) => path.endsWith(".go"))
     .filter((path) => /^\/\/ Code generated .* DO NOT EDIT\.$/m.test(read(path)));
-  assert.equal(generated.length, 11, "approved generated-file inventory changed");
+  assert.equal(generated.length, 14, "approved generated-file inventory changed");
   for (const path of generated) {
     assert.match(path, /^app\/internal\/buildkitproto\/.+\.pb\.go$/);
   }
