@@ -17,6 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Dockerfile FileSync holding now limits retained original-frame overhead and per-frame bookkeeping separately from decoded content. Metadata, duplicate fields and tiny-frame fragmentation cannot escape the retention allowance. EOF releases the charge; accepted streams retain their original replay bytes.
+
+- Raw `Control/Solve` HTTP, HTTPS and Git sources require `build.allow_remote_context`, independently of broad RUN or individual ExecOp approval. Restricted Dockerfile solves also reject the exact `build-arg:BUILDKIT_SYNTAX` attribute, which BuildKit otherwise uses to select an internal frontend before Dockerfile inspection. Ordinary build arguments and explicit unrestricted-RUN behavior remain supported.
+
+- Dockerfile syntax inspection recognizes BuildKit's BOM, shebang, slash-comment, JSON and check-before-syntax forms. Restricted classic builds and FileSync uploads reject external frontend selection consistently. Continued instructions use a builder instead of repeatedly copying the accumulated line, keeping inspection work linear.
+
+- OCI image loads charge cumulative logical blob sizes before hashing or retention, so sparse members cannot expand beyond the inspection budget despite a small compressed archive. Oversized members fail immediately; bounded sparse OCI graphs and Docker archive forwarding remain supported.
+
+- Legacy `HostConfig.Tmpfs` now requires `allow_tmpfs_privileged_options` for effective `exec`, `dev` or `suid` flags. Paired restrictive flags follow Docker's last-wins ordering. Structured mount policy and byte-identical forwarding remain unchanged, and pooled decoding clears legacy mount state between requests.
+
 - BuildKit callback session IDs are now translated consistently on the upstream `/session` handshake and `Control/Solve.Session`. A keyed client/profile namespace prevents a caller from selecting another principal's daemon-global callback session or calculating its backend ID. Client-facing authorization still uses the original session ID. Raw LLB must inherit the Solve session: nonempty `local.session` and `oci.session` overrides are denied, preserving the operation bytes used by digest approvals.
 
 - BuildKit Solve and Status refs are translated into a stable client/profile namespace before reaching the daemon. Reusing another client's ref no longer claims its daemon-global job or retained build history. Only top-level identity fields change; digest-approved LLB operations and all other protobuf bytes stay original. The translated frame must fit the message cap before any admission state is published.
@@ -30,6 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Frontend cleanup gives its final container-absence query a separate bounded timeout after removal, so a slow removal cannot consume verification's entire budget. Runner framing appends an already-bounded payload without manual allocation-size addition, and network teardown explicitly ignores close errors after the result is known.
 
 - BuildKit callback advertisements now recognize the full `/service/method` paths emitted by real clients and preserve only policy-admitted methods. `session.health` also permits the daemon's unary health callback on `/session`, keeping long-running frontend sessions alive.
+
+- Docker integration CI and the engine compatibility matrix enable isolated Swarm resource-limit tests instead of silently skipping them. Both workflows disable incompatible live restore on their disposable daemon, preserve other settings and verify the effective configuration. The rollback fixture now sends a valid service specification and verifies the daemon restored the expected resource limit.
+
+- A client-ACL cache waiter now returns its own context cancellation while another caller owns the lookup. The shared lookup continues for remaining callers, and successful cache population is preserved.
+
+- Non-Return gateway calls inherit the root build context directly and reject cancellation already visible before dispatch. Incoming-request cancellation still propagates. An admitted Return retains its bounded completion path after normal root completion.
+
+- Secret creation accepts Docker's object-shaped `Driver` when `allow_custom_drivers` is enabled. Default denial, legacy string compatibility, duplicate-object decoding, template gates and original forwarded bodies are preserved.
 
 - Restored seven missing Apple Silicon native dependency entries in the npm lockfile. Fresh Mac checkouts can build the docs and website without manually installing esbuild, Lightning CSS, Tailwind, TypeScript, Sharp, or the analyzer bindings. Existing dependency versions are unchanged.
 

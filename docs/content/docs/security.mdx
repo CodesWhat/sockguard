@@ -233,8 +233,9 @@ RPCs over `/grpc` with that root's `buildkit-controlapi-buildid` metadata.
 Sockguard binds those calls to the active root, client identity, and profile,
 rewrites the daemon-facing build ID, and checks every iterative Solve against
 the root's original policy. Opening a new connection with a different policy
-does not broaden an existing build's grants. Closing the root or its tunnel
-revokes gateway access. Each principal can hold eight active builds, each
+does not broaden an existing build's grants. Canceling the root or closing its tunnel
+revokes gateway access. Normal root completion lets an already-admitted
+Return finish its bounded reply. Each principal can hold eight active builds, each
 limited to 256 gateway Solves and 30 minutes.
 
 The gateway mediates image/source resolution, result reads, evaluation and

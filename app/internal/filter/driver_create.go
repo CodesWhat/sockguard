@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -42,10 +43,8 @@ func newSecretPolicy(opts SecretOptions) driverCreatePolicy {
 }
 
 // driverCreatePolicy backs POST /configs/create and POST /secrets/create.
-// Both endpoints share the same JSON shape and the same driver / template
-// driver allow-list semantics — only the kind label, target path, and size
-// cap differ. Keeping one inspect implementation prevents the two policies
-// from drifting apart.
+// It shares the driver and template-driver inspection checks, including
+// string-shaped driver selections retained for compatibility.
 type driverCreatePolicy struct {
 	kind                 string
 	path                 string
@@ -55,11 +54,29 @@ type driverCreatePolicy struct {
 }
 
 type driverCreateRequest struct {
-	Driver         string `json:"Driver"`
-	TemplateDriver string `json:"TemplateDriver"`
+	Driver         driverCreateSelection `json:"Driver"`
+	TemplateDriver string                `json:"TemplateDriver"`
 	Templating     struct {
 		Name string `json:"Name"`
 	} `json:"Templating"`
+}
+
+type driverCreateSelection struct {
+	Name string `json:"Name"`
+}
+
+func (d *driverCreateSelection) UnmarshalJSON(body []byte) error {
+	if string(body) == "null" {
+		*d = driverCreateSelection{}
+		return nil
+	}
+	if len(body) > 0 && body[0] == '"' {
+		return json.Unmarshal(body, &d.Name)
+	}
+	// Decode into the receiver so repeated object fields retain Docker's
+	// merge behavior, including Name:null leaving an existing name intact.
+	type selection driverCreateSelection
+	return json.Unmarshal(body, (*selection)(d))
 }
 
 func (p driverCreatePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
@@ -85,7 +102,7 @@ func (p driverCreatePolicy) inspect(logger *slog.Logger, r *http.Request, normal
 		return fmt.Sprintf("%s create denied: request body could not be inspected", p.kind), nil
 	}
 
-	if driver := strings.TrimSpace(req.Driver); driver != "" && !p.allowCustomDrivers {
+	if driver := strings.TrimSpace(req.Driver.Name); driver != "" && !p.allowCustomDrivers {
 		return fmt.Sprintf("%s create denied: driver %q is not allowed", p.kind, driver), nil
 	}
 

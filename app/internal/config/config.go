@@ -634,12 +634,10 @@ type ContainerCreateRequestBodyConfig struct {
 	DenySelinuxDisable        bool             `mapstructure:"deny_selinux_disable"`
 	DenySelinuxLabelOverride  bool             `mapstructure:"deny_selinux_label_override"`
 	DenyUnconfinedSystemPaths bool             `mapstructure:"deny_unconfined_system_paths"`
-	// AllowTmpfsPrivilegedOptions permits tmpfs mount options that re-enable
-	// exec/dev/suid semantics inside the tmpfs (HostConfig.Mounts[].
-	// TmpfsOptions.Options, Engine API 1.46+): "exec", "dev", "suid". Docker's
-	// own tmpfs default already sets noexec/nodev/nosuid; a client-supplied
-	// Options entry can override that default per-mount, so it is denied
-	// unless explicitly allowed. Default false.
+	// AllowTmpfsPrivilegedOptions permits exec/dev/suid re-enablement in
+	// HostConfig.Mounts[].TmpfsOptions.Options and legacy HostConfig.Tmpfs.
+	// Legacy comma-separated flags use Docker's last-wins ordering for each
+	// enabling/restrictive pair. Default false.
 	AllowTmpfsPrivilegedOptions bool `mapstructure:"allow_tmpfs_privileged_options"`
 }
 
