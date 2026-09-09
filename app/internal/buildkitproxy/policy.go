@@ -129,6 +129,8 @@ func (p Policy) Allowed(endpoint Endpoint, service, rpcMethod string) bool {
 		}
 	case EndpointSession:
 		switch service {
+		case "grpc.health.v1.Health":
+			return rpcMethod == "Check" && p.Session.Health
 		case "moby.filesync.v1.Auth":
 			switch rpcMethod {
 			case "Credentials", "FetchToken", "GetTokenAuthority", "VerifyTokenAuthority":

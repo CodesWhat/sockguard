@@ -243,8 +243,8 @@ completion. Remote sources still require `build.allow_remote_context`.
 Explicit source-session overrides, nested frontends, source policies,
 interactive container/process RPCs, and filesystem-loaded nested BuildOps
 remain denied. Ping advertises supported capabilities and strips worker
-labels, garbage-collection policy, and CDI details. The companion runner
-that executes a frontend outside the daemon is still in progress.
+labels, garbage-collection policy, and CDI details. The [companion runner](/frontend-runner) executes a pinned frontend outside
+the daemon and reports operation digests before forwarding their graphs.
 
 These approvals do not approve a third-party image for execution inside the
 daemon. Dockerfile FileSync inspection and the denial of opaque in-daemon

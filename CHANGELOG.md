@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Opt-in external frontend gateway mediation with `request_body.buildkit.control.solve.allow_frontend_gateway`. Gateway calls must belong to an active root Solve for the same client/profile and retain that root's policy. Every iterative LLB Solve uses the existing individual ExecOp approvals, cache grants, and source-session isolation. Image/source resolution, result reads, and completion are mediated; Ping strips private worker metadata and unsupported capabilities. Interactive container/process RPCs and filesystem-loaded nested builds remain denied. Builds are capped at eight per principal, 256 gateway Solves each, and 30 minutes. The companion runner is still in progress.
+- Opt-in external frontend gateway mediation with `request_body.buildkit.control.solve.allow_frontend_gateway`. Gateway calls must belong to an active root Solve for the same client/profile and retain that root's policy. Every iterative LLB Solve uses the existing individual ExecOp approvals, cache grants, and source-session isolation. Image/source resolution, result reads, and completion are mediated; Ping strips private worker metadata and unsupported capabilities. Interactive container/process RPCs and filesystem-loaded nested builds remain denied. Builds are capped at eight per principal, 256 gateway Solves each, and 30 minutes. The `sockguard frontend` companion runner executes a pinned image in a constrained Docker container, sends every gateway call through the selected proxy, writes original operation bytes and digests for review, and verifies container cleanup. Supports remote contexts, anonymous registry callbacks and policy-controlled Docker image output. Real-daemon tests cover exact approvals, changed-command denial, output files and cancellation.
 
 - Vendored the pinned BuildKit v0.32.0 frontend gateway, worker, and capability message schemas as groundwork for the companion frontend runner. Their provenance and generated package paths are checked. Error messages reuse the Google RPC schema already in the dependency graph, with no new dependency version or gRPC runtime.
 
@@ -34,6 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Raw LLB containing an unknown operation or a nested `BuildOp` is denied while RUN instructions are restricted. BuildKit's `BuildOp` loads its graph from a filesystem result inside the daemon; checking its optional inline definition did not inspect the graph that actually executes.
 
 ### Fixed
+
+- The default runner test suite now covers HTTP/2 orchestration, relay metadata and framing, mutual TLS, report failures, cancellation and cleanup through inert subprocess fixtures. These paths contribute to the existing production coverage gate alongside the separate real-Docker integration tests.
+
+- Frontend cleanup gives its final container-absence query a separate bounded timeout after removal, so a slow removal cannot consume verification's entire budget. Runner framing appends an already-bounded payload without manual allocation-size addition, and network teardown explicitly ignores close errors after the result is known.
+
+- BuildKit callback advertisements now recognize the full `/service/method` paths emitted by real clients and preserve only policy-admitted methods. `session.health` also permits the daemon's unary health callback on `/session`, keeping long-running frontend sessions alive.
 
 - Docker integration CI and the engine compatibility matrix enable isolated Swarm resource-limit tests instead of silently skipping them. Both workflows disable incompatible live restore on their disposable daemon, preserve other settings and verify the effective configuration. The rollback fixture now sends a valid service specification and verifies the daemon restored the expected resource limit.
 
