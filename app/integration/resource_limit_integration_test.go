@@ -169,9 +169,15 @@ func TestResourceLimitServicesAgainstIsolatedRealSwarm(t *testing.T) {
 		if previousNano <= 0 {
 			t.Fatalf("safe update PreviousSpec NanoCPUs = %d, want positive", previousNano)
 		}
-		status, body = serveIntegrationRequest(handler, http.MethodPost, fmt.Sprintf("/services/%s/update?version=%d&rollback=previous", url.PathEscape(serviceID), version), `{}`)
+		// Docker validates the submitted service schema before applying PreviousSpec.
+		// A valid spec with no CPU limit still proves the daemon rollback target wins.
+		status, body = serveIntegrationRequest(handler, http.MethodPost, fmt.Sprintf("/services/%s/update?version=%d&rollback=previous", url.PathEscape(serviceID), version), swarmServiceSpec(serviceName, 0, "pause"))
 		if status != http.StatusOK {
 			t.Fatalf("manual rollback to safe daemon PreviousSpec status = %d, want 200; body: %s", status, body)
+		}
+		_, rolledBackNano, _ := inspectDockerServiceResourceState(t, socketPath, serviceID)
+		if rolledBackNano != previousNano {
+			t.Fatalf("manual rollback NanoCPUs = %d, want daemon PreviousSpec value %d", rolledBackNano, previousNano)
 		}
 
 		weakServiceID := createDockerService(t, socketPath, "sockguard-resource-auto-weak", 0)

@@ -69,6 +69,7 @@ type containerCreateHostConfig struct {
 	CgroupnsMode      string                  `json:"CgroupnsMode"`
 	Binds             []string                `json:"Binds"`
 	Mounts            []containerCreateMount  `json:"Mounts"`
+	Tmpfs             map[string]string       `json:"Tmpfs"`
 	Devices           []containerCreateDevice `json:"Devices"`
 	DeviceRequests    []dockerDeviceRequest   `json:"DeviceRequests"`
 	DeviceCgroupRules []string                `json:"DeviceCgroupRules"`
@@ -248,6 +249,7 @@ func (r *containerCreateRequest) resetForReuse() {
 	h.CgroupnsMode = ""
 	h.Binds = h.Binds[:0]
 	h.Mounts = nil
+	clear(h.Tmpfs)
 	h.Devices = nil
 	h.DeviceRequests = nil
 	h.DeviceCgroupRules = h.DeviceCgroupRules[:0]
@@ -288,6 +290,7 @@ func (r *containerCreateRequest) oversizedForReuse() bool {
 		overContainerCreateReuseCap(h.ExtraHosts) ||
 		len(r.Labels) > containerCreateReuseCap ||
 		len(h.Sysctls) > containerCreateReuseCap ||
+		len(h.Tmpfs) > containerCreateReuseCap ||
 		len(r.NetworkingConfig.EndpointsConfig) > containerCreateReuseCap
 }
 

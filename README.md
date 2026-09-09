@@ -500,6 +500,18 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 
 **v2.2.0 shipped on 2026-09-06** as the volume-mount containment and read-side redaction release. v2.3 is the next planned line and carries forward two tracks. Raw LLB now supports individual ExecOp approvals through `request_body.buildkit.control.solve.allowed_exec_digests`, while third-party frontend mediation remains in progress. The external frontend gateway now mediates each iterative LLB Solve under the active root build's policy when `control.solve.allow_frontend_gateway` is enabled; the companion runner remains in progress. Interactive container/process RPCs and daemon-resolved nested gateway builds stay denied. Unknown operations and daemon-resolved nested builds are denied when RUN instructions are restricted. BuildKit job refs are scoped by client and profile at the daemon boundary, preventing duplicate refs from exposing another client's status or retained history. Callback session IDs are also scoped by client and profile using a private mediator namespace, and raw LLB sources must inherit the Solve session. The Go module migration is implemented for v2.3: the module now declares `github.com/codeswhat/sockguard/v2`, with updated imports, release linker paths, and regenerated BuildKit descriptors. After the first v2.3 tag is published, Go users can install `github.com/codeswhat/sockguard/v2/app/cmd/sockguard@latest`; existing v2 tags retain their original module metadata. Docker, Homebrew, deb and rpm installation paths are unchanged. The npm lockfile also restores the native packages needed to build the documentation and website from a fresh Apple Silicon checkout. Work beyond the next planned line remains driven by demonstrated risk and operator demand. See [CHANGELOG.md](CHANGELOG.md) for release history and the [roadmap docs](https://getsockguard.com/docs/roadmap) for compatibility evidence and scope boundaries.
 
+### v2.3 hardening
+
+- Docker CI configures a Swarm-compatible test daemon and enables isolated resource-limit coverage, including full replacement updates and rollback targets.
+- Held Dockerfile FileSync data accounts for original frame overhead as well as decoded content.
+- Canceled client-ACL cache waiters stop promptly without canceling the shared lookup for other callers.
+- Non-Return gateway requests inherit root cancellation directly; an admitted Return may finish after normal root completion.
+- Raw LLB remote sources require the remote-context grant independently of RUN approval. Restricted Dockerfile builds reject the reserved `BUILDKIT_SYNTAX` frontend override.
+- Dockerfile inspection recognizes BuildKit's supported syntax-selector forms and joins continued instructions with linear copying.
+- OCI image inspection bounds cumulative logical blob sizes before hashing, including sparse archives.
+- Legacy `HostConfig.Tmpfs` applies the same privileged-option grant as structured tmpfs mounts, using Docker's last-wins flag ordering.
+- Secret creation accepts Docker's object-shaped custom driver selection when explicitly allowed, while preserving independent template controls.
+
 ### Shipped in v2.2.0
 
 | Track | Delivered |

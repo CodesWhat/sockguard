@@ -102,7 +102,7 @@ func checkGatewayDefinition(def *pb.Definition, policy SolvePolicy) *mediationDe
 	if !policy.AllowRunInstructions && !definitionExecAllowed(def, policy) {
 		return gatewayPolicyDenial("frontend operation is not approved")
 	}
-	if d := checkSolveSourceSessions(def); d != nil {
+	if d := checkSolveDefinitionSources(def, policy); d != nil {
 		return d
 	}
 	for _, raw := range def.GetDef() {

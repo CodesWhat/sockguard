@@ -21,17 +21,17 @@ import (
 const maxImageLoadBodyBytes = 512 << 20   // 512 MiB
 const maxImageLoadManifestBytes = 1 << 20 // 1 MiB
 
-// maxImageLoadDecompressedBytes bounds the decompressed size of a gzip'd
-// image-load archive (gzip-bomb guard). It is a var, not a const, so the
-// gzip-bomb test can shrink it and avoid building a multi-GiB payload.
-var maxImageLoadDecompressedBytes int64 = 2 << 30 // 2 GiB (gzip-bomb guard)
+// maxImageLoadDecompressedBytes bounds gzip decompression and aggregate
+// logical OCI blob hashing, including sparse holes. Tests shrink the limit
+// to exercise both guards without building multi-GiB payloads.
+var maxImageLoadDecompressedBytes int64 = 2 << 30 // 2 GiB inspection limit
 
 const maxImageLoadOCITrackedBlobs = 4096
 const maxImageLoadOCIMetadataBytes = 16 << 20 // 16 MiB
 const maxImageLoadOCIDescriptorVisits = 4096
 
-// errImageLoadDecompressedTooLarge is the loud sentinel returned when a
-// gzip-compressed image archive expands past maxImageLoadDecompressedBytes.
+// errImageLoadDecompressedTooLarge is the loud sentinel returned when
+// gzip decompression or logical OCI blob content exceeds the inspection limit.
 var errImageLoadDecompressedTooLarge = errors.New("decompressed image archive exceeds byte limit")
 
 // errImageLoadOCIUninspectable distinguishes a valid-looking OCI archive that
@@ -250,15 +250,16 @@ type imageLoadOCIManifest struct {
 }
 
 type imageLoadArchiveControlFiles struct {
-	dockerManifest []byte
-	ociIndex       []byte
-	ociLayout      []byte
-	seenDocker     bool
-	seenOCIIndex   bool
-	seenOCILayout  bool
-	ociBlobs       map[string]imageLoadOCIBlob
-	ociMetadata    int64
-	ociContentErr  error
+	dockerManifest  []byte
+	ociIndex        []byte
+	ociLayout       []byte
+	seenDocker      bool
+	seenOCIIndex    bool
+	seenOCILayout   bool
+	ociBlobs        map[string]imageLoadOCIBlob
+	ociMetadata     int64
+	ociLogicalBytes int64
+	ociContentErr   error
 }
 
 type imageLoadOCIBlob struct {
@@ -339,6 +340,9 @@ func (io_ ioDeps) extractImageLoadArchiveFromTar(tr *tar.Reader, preferOCI bool)
 		if isImageLoadOCIBlobPath(name) {
 			if controls.ociContentErr == nil {
 				controls.ociContentErr = io_.recordImageLoadOCIBlob(&controls, name, header, tr)
+				if errors.Is(controls.ociContentErr, errImageLoadDecompressedTooLarge) {
+					return imageLoadArchiveInspection{}, errImageLoadDecompressedTooLarge
+				}
 			}
 			continue
 		}
@@ -398,6 +402,12 @@ func (io_ ioDeps) recordImageLoadOCIBlob(controls *imageLoadArchiveControlFiles,
 	if !ok {
 		return fmt.Errorf("%w: OCI image archive uses unsupported blob path %s", errImageLoadOCIUninspectable, name)
 	}
+	// tar.Reader exposes the logical size, including synthesized sparse holes.
+	// Reject before reading so hashing cannot expand a compact sparse archive.
+	if header.Size < 0 || header.Size > maxImageLoadDecompressedBytes-controls.ociLogicalBytes {
+		return errImageLoadDecompressedTooLarge
+	}
+	controls.ociLogicalBytes += header.Size
 	var body bytes.Buffer
 	writer := io.Writer(hasher)
 	retainBody := header.Size >= 0 && header.Size <= maxImageLoadManifestBytes && controls.ociMetadata+header.Size <= maxImageLoadOCIMetadataBytes

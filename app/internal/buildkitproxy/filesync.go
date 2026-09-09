@@ -153,12 +153,15 @@ func validateFileSyncRequestPacket(payload []byte) *mediationDenial {
 	}
 }
 
+const fileSyncFrameBookkeepingBytes uint64 = 64
+
 // heldFileSyncEntry accumulates one file's PACKET_DATA content (and the
 // original frame bytes to replay verbatim once released) while
 // fileSyncRespRelay holds it for Dockerfile inspection.
 type heldFileSyncEntry struct {
-	content []byte
-	frames  [][]byte
+	content          []byte
+	frames           [][]byte
+	retainedOverhead uint64
 }
 
 // fileSyncRespRelay is the stateful, per-stream response-direction handler
@@ -169,11 +172,13 @@ type heldFileSyncEntry struct {
 // on interleaving) until that file's own EOF, running dockerfileinspect
 // against the reassembled bytes before releasing them.
 type fileSyncRespRelay struct {
-	holdForInspection bool
-	maxFiles          int
-	maxPathLength     int
-	maxFileBytes      int64
-	maxTotalBytes     int64
+	holdForInspection   bool
+	maxFiles            int
+	maxPathLength       int
+	maxFileBytes        int64
+	maxTotalBytes       int64
+	maxRetainedOverhead uint64
+	retainedOverhead    uint64
 
 	fileCount     int
 	totalBytes    int64
@@ -185,14 +190,15 @@ type fileSyncRespRelay struct {
 
 func newFileSyncRespRelay(holdForInspection bool, maxFiles, maxPathLength int, maxFileBytes, maxTotalBytes int64) *fileSyncRespRelay {
 	return &fileSyncRespRelay{
-		holdForInspection: holdForInspection,
-		maxFiles:          maxFiles,
-		maxPathLength:     maxPathLength,
-		maxFileBytes:      maxFileBytes,
-		maxTotalBytes:     maxTotalBytes,
-		fileBytes:         make(map[uint32]int64),
-		held:              make(map[uint32]*heldFileSyncEntry),
-		doneFiles:         make(map[uint32]bool),
+		holdForInspection:   holdForInspection,
+		maxFiles:            maxFiles,
+		maxPathLength:       maxPathLength,
+		maxFileBytes:        maxFileBytes,
+		maxTotalBytes:       maxTotalBytes,
+		maxRetainedOverhead: uint64(max(0, DefaultLimits().MaxMessageBytes)) + 5 + fileSyncFrameBookkeepingBytes,
+		fileBytes:           make(map[uint32]int64),
+		held:                make(map[uint32]*heldFileSyncEntry),
+		doneFiles:           make(map[uint32]bool),
 	}
 }
 
@@ -201,6 +207,11 @@ func newFileSyncRespRelay(holdForInspection bool, maxFiles, maxPathLength int, m
 // uses), dispatch by Packet type, and write admitted frames to w. Matches
 // forwardStreamRelay's relayResponse signature.
 func (s *fileSyncRespRelay) relay(w http.ResponseWriter, src io.Reader, maxMessageBytes int64) (*mediationDenial, error) {
+	messageAllowance := maxMessageBytes
+	if messageAllowance <= 0 {
+		messageAllowance = DefaultLimits().MaxMessageBytes
+	}
+	s.maxRetainedOverhead = uint64(max(0, messageAllowance)) + 5 + fileSyncFrameBookkeepingBytes
 	fw := flushWriter{w}
 	for {
 		frame, payload, err := readGRPCFrame(src, maxMessageBytes)
@@ -341,11 +352,20 @@ func (s *fileSyncRespRelay) handleData(pkt *fsutiltypes.Packet, frame []byte) (d
 		return nil, [][]byte{frame}
 	}
 
+	// Decoded content caps do not bound duplicate fields or other wire padding.
+	// Charge original-frame overhead separately, including per-frame bookkeeping.
+	overhead := uint64(max(0, len(frame)-len(pkt.GetData()))) + fileSyncFrameBookkeepingBytes
+	if s.retainedOverhead > s.maxRetainedOverhead || overhead > s.maxRetainedOverhead-s.retainedOverhead {
+		return deny(grpcCodeResourceExhausted, "buildkit_file_limit_exceeded", "FileSync retained frame overhead exceeds sockguard's resource limit"), nil
+	}
+
 	entry, ok := s.held[id]
 	if !ok {
 		entry = &heldFileSyncEntry{}
 		s.held[id] = entry
 	}
+	entry.retainedOverhead += overhead
+	s.retainedOverhead += overhead
 	entry.content = append(entry.content, pkt.GetData()...)
 	entry.frames = append(entry.frames, frame)
 
@@ -356,6 +376,7 @@ func (s *fileSyncRespRelay) handleData(pkt *fsutiltypes.Packet, frame []byte) (d
 
 	s.doneFiles[id] = true
 	delete(s.held, id)
+	s.retainedOverhead -= entry.retainedOverhead
 	if frontend := dockerfileinspect.SyntaxFrontend(entry.content); frontend != "" {
 		return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "BuildKit syntax frontend directives cannot be inspected while RUN instructions are restricted"), nil
 	}
