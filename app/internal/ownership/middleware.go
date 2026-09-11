@@ -112,6 +112,13 @@ type ownershipRequestReferences struct {
 	// in the access log under reasonCodeOwnerPolicyDeniedAccess, not the
 	// unconditional 400 a mutation error produces.
 	denyReason string
+	// imagePushTag carries the ?tag= value of POST /images/{name}/push,
+	// captured by the mutation pass for the authorization pass: the
+	// Docker-compatible push route splits its subject between the path
+	// (repository) and the query (tag), and only the qualified
+	// {name}:{tag} reference is the local image the daemon will push. See
+	// imagePushOwnershipReferences for the shapes that refuse instead.
+	imagePushTag string
 }
 
 // Options configures per-proxy resource ownership labeling and enforcement.
@@ -337,6 +344,8 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 		return mutateServiceOwnershipBody(r, opts.LabelKey, opts.Owner)
 	case r.Method == http.MethodPost && (isNodeUpdatePath(normPath) || isSwarmUpdatePath(normPath)):
 		return nil, addOwnerLabelToBody(r, opts.LabelKey, opts.Owner)
+	case r.Method == http.MethodPost && isImagePushRoutePath(r.Method, normPath):
+		return imagePushOwnershipReferences(r), nil
 	case r.Method == http.MethodPost && isCommitPath(normPath):
 		return mutateCommitOwnershipRequest(r, opts)
 	case r.Method == http.MethodPost && (normPath == "/build" || normPath == libpodPrefix+"build"):
@@ -454,7 +463,7 @@ func allowOwnershipRequestUnprefixed(
 		}
 	}
 
-	verdict, reason, err := allowPathOwnershipRequest(ctx, method, normPath, routePath, opts, inspectResource, inspectExec)
+	verdict, reason, err := allowPathOwnershipRequest(ctx, method, normPath, routePath, opts, inspectResource, inspectExec, refs)
 	if err != nil || verdict.denied() {
 		return verdict, reason, err
 	}
@@ -472,6 +481,7 @@ func allowPathOwnershipRequest(
 	opts Options,
 	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
 	inspectExec func(context.Context, string) (string, bool, error),
+	refs *ownershipRequestReferences,
 ) (ownershipVerdict, string, error) {
 	if reason, deny := imageEffectDenial(method, normPath); deny {
 		return verdictDeny, reason, nil
@@ -496,7 +506,7 @@ func allowPathOwnershipRequest(
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindVolume, identifier, opts, false)
 	}
 	if identifier, ok := imageIdentifier(method, normPath); ok {
-		return checkOwnedResource(ctx, inspectResource, dockerresource.KindImage, identifier, opts, opts.AllowUnownedImages)
+		return checkOwnedResource(ctx, inspectResource, dockerresource.KindImage, appendImagePushTag(identifier, refs, method, normPath), opts, opts.AllowUnownedImages)
 	}
 	if identifier, ok := serviceIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindService, identifier, opts, false)
