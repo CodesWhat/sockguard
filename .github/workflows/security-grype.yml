@@ -47,7 +47,7 @@ jobs:
       # github.com/actions endpoints are the entire footprint. Stays audit
       # like the rest of this file's jobs pending stage 2 review.
       - name: Harden Runner
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
@@ -109,7 +109,7 @@ jobs:
       # Same base endpoints as quality-fuzz-nightly.yml plus vuln.go.dev for
       # govulncheck's own vulnerability database fetch.
       - name: Harden Runner
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -178,7 +178,7 @@ jobs:
       # Chainguard's CDN endpoints — not a fixed set. Same reasoning as
       # ci-verify.yml's "Docker Build" job. Revisit in stage 2.
       - name: Harden Runner
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
@@ -201,7 +201,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Run Grype vulnerability scanner
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2  # v7.4.0
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439  # v7.4.2
         id: grype
         with:
           image: sockguard:grype-scan
@@ -212,7 +212,7 @@ jobs:
       - name: Upload Grype SARIF to code scanning
         # Code scanning uploads require GHAS, not available on free private repos.
         if: always() && github.event.repository.visibility == 'public'
-        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28  # v4.37.8
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938  # v4.37.9
         with:
           sarif_file: ${{ steps.grype.outputs.sarif }}
           category: grype-image
@@ -241,7 +241,7 @@ jobs:
       # runs in block mode for its own (npm-only) grype-deps job — this
       # extends it to the identical Go+npm scan sockguard runs.
       - name: Harden Runner
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -265,7 +265,7 @@ jobs:
         # so a single pass covers both ecosystems. Grype matches the
         # lockfile-resolved versions (not the full module graph), so it does
         # not emit the phantom-dependency findings the manifest-graph scanners do.
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2  # v7.4.0
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439  # v7.4.2
         id: grype-deps
         with:
           path: .
@@ -275,7 +275,7 @@ jobs:
 
       - name: Upload Grype dependency SARIF
         if: always() && github.event.repository.visibility == 'public'
-        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28  # v4.37.8
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938  # v4.37.9
         with:
           sarif_file: ${{ steps.grype-deps.outputs.sarif }}
           category: grype-deps
@@ -308,7 +308,7 @@ jobs:
       # domain in the harden-runner log to show why. Revisit in stage 2,
       # when the container jobs get their egress characterised properly.
       - name: Harden Runner
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
@@ -318,13 +318,13 @@ jobs:
           persist-credentials: false
 
       - name: Run Gosec
-        uses: securego/gosec@9e75c0576c9878035d4221392108d458abe10fc3  # v2.28.0
+        uses: securego/gosec@deb54465fea23d19a77f037e11e6589021f8501d  # v2.29.0
         with:
           args: -exclude-generated -nosec-require-rules -nosec-require-justification -fmt sarif -out gosec-results.sarif ./app/...
 
       - name: Upload Gosec SARIF
         if: always() && github.event.repository.visibility == 'public'
-        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28  # v4.37.8
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938  # v4.37.9
         with:
           sarif_file: gosec-results.sarif
           category: gosec
@@ -352,7 +352,7 @@ jobs:
       # same permanent-audit posture for the same reason: it queries a live,
       # third-party analysis surface).
       - name: Harden Runner
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
@@ -413,7 +413,7 @@ jobs:
       version: ${{ steps.latest_release.outputs.version }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -458,7 +458,7 @@ jobs:
       # Stays audit, same reasoning as grype-image above: pulls a published
       # image from GHCR, no fixed allowlist yet.
       - name: Harden Runner
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
@@ -498,7 +498,7 @@ jobs:
 
       - name: Run Grype vulnerability scanner
         # Same severity gate as grype-image above: fail on HIGH/CRITICAL.
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2  # v7.4.0
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439  # v7.4.2
         id: grype
         with:
           image: ${{ steps.platform_digest.outputs.ref }}
@@ -508,7 +508,7 @@ jobs:
 
       - name: Upload Grype SARIF to code scanning
         if: always() && github.event.repository.visibility == 'public'
-        uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28  # v4.37.8
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938  # v4.37.9
         with:
           sarif_file: ${{ steps.grype.outputs.sarif }}
           category: grype-published-release-${{ matrix.slug }}
