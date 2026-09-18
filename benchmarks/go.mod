@@ -2,4 +2,4 @@ module github.com/codeswhat/sockguard/benchmarks
 
 go 1.26
 
-toolchain go1.27.0
+toolchain go1.27.1
