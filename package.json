@@ -20,7 +20,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.12",
-    "knip": "6.34.0",
+    "knip": "6.38.0",
     "lefthook": "2.1.12",
     "turbo": "2.10.12"
   },
