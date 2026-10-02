@@ -142,10 +142,13 @@ type Options struct {
 	AllowCrossOwnerNamespaceSharing bool
 	// UpstreamFlavor is the engine behind the upstream socket, resolved at
 	// startup from upstream.flavor (see internal/upstreamflavor). It changes
-	// exactly one thing here: whether the Docker-compat GET /secrets is
-	// refused, because on Podman that path is compat.ListSecrets, whose
-	// filter grammar rejects the owner label this layer injects into every
-	// other list. See filter.PodmanCompatSecretListDenyReason.
+	// two things here. The Docker-compat GET /secrets is refused on Podman,
+	// because that path is compat.ListSecrets there, whose filter grammar
+	// rejects the owner label this layer injects into every other list. See
+	// filter.PodmanCompatSecretListDenyReason. And a Docker-compat image
+	// retag onto a name with no registry is checked under two names on
+	// Podman, which can store it under localhost/ where dockerd has one
+	// reading of a name. See imageTagNamingFor.
 	//
 	// Podman's other divergence, the disjunctive GET /events filter, needs no
 	// flavor here: addOwnerLabelFilter replaces the key with exactly one
@@ -155,8 +158,10 @@ type Options struct {
 	// as a flavor.
 	//
 	// The zero value means Docker, so a chain builder that drops the field
-	// leaves the compat /secrets 500 in place with every unit test green;
-	// TestServeChainPassesResolvedFlavorToOwnership is the wiring proof.
+	// leaves the compat /secrets 500 in place, and the retag checked under
+	// one name, with every unit test green;
+	// TestServeChainPassesResolvedFlavorToOwnership is the wiring proof, and
+	// TestServeChainImageTagChecksTheLocalhostNameOnPodman is a second one.
 	UpstreamFlavor upstreamflavor.Flavor
 }
 
@@ -354,7 +359,7 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 	case r.Method == http.MethodPost && isImagePushRoutePath(r.Method, normPath):
 		return imagePushOwnershipReferences(r, normPath), nil
 	case isImageTagRoutePath(r.Method, normPath):
-		return imageTagOwnershipReferences(r, normPath), nil
+		return imageTagOwnershipReferences(r, normPath, opts.UpstreamFlavor), nil
 	case r.Method == http.MethodPost && isCommitPath(normPath):
 		return mutateCommitOwnershipRequest(r, opts)
 	case r.Method == http.MethodPost && (normPath == "/build" || normPath == libpodPrefix+"build"):
