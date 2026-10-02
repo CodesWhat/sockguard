@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Homebrew cask generation uses `postflight_steps` to avoid Homebrew 7 deprecation warnings while retaining the macOS quarantine removal.
+
 ## [2.2.1] - 2026-09-07
 
 ### Security
