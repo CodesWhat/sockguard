@@ -108,8 +108,8 @@ func withFormBodyGuard() func(http.Handler) http.Handler {
 // the guard to net/http's actual parser.
 //
 // A request with no body is let through whatever it declares.
-// `curl -d ”` and `wget --post-data=”` label an empty POST as a form, and
-// with ContentLength == 0 there is nothing for the daemon to parse: net/http
+// curl -d and wget --post-data with an empty string label an empty POST as a
+// form, and with ContentLength == 0 there is nothing for the daemon to parse: net/http
 // sets it to 0 only for a request with no body at all, and the proxy then
 // forwards none. A chunked body has an unknown length (-1) and is treated as
 // present.
