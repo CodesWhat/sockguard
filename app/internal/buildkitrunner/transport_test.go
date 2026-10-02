@@ -2,8 +2,13 @@ package buildkitrunner
 
 import (
 	"context"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -77,10 +82,81 @@ func TestUpgradeCancellation(t *testing.T) {
 }
 
 func TestInvalidTargetsFailBeforeDial(t *testing.T) {
-	for _, host := range []string{"", "ftp://daemon", "http://user:secret@daemon", "http://daemon/path", "http://daemon?x=1", "unix://relative"} {
-		if c, err := dialUpgrade(t.Context(), Options{Host: host}, "/grpc", nil); err == nil {
-			c.Close()
-			t.Fatalf("invalid host accepted: %s", host)
+	// A live listener stands in for the daemon. Every host below that points
+	// at it would connect if validation let it through, so a connection
+	// count above zero proves a dial happened. Errors are compared whole:
+	// a dial failure arrives wrapped as "connect to proxy: ...", which none
+	// of the expected validation messages are.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	var accepted atomic.Int32
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			accepted.Add(1)
+			_ = c.Close()
 		}
+	}()
+	live := ln.Addr().String()
+
+	const (
+		errScheme = "proxy host must use unix://, http://, or https://"
+		errUserQF = "proxy host cannot contain credentials, query, or fragment"
+		errHTTP   = "HTTP proxy host must contain only scheme and authority"
+		errUnix   = "unix proxy host requires an absolute socket path"
+		errTLS    = "TLS files require an https proxy host"
+	)
+	tests := []struct {
+		name string
+		opts Options
+		want string
+	}{
+		{"empty host", Options{Host: ""}, errScheme},
+		{"unsupported scheme", Options{Host: "ftp://daemon"}, errScheme},
+		{"credentials", Options{Host: "http://user:secret@" + live}, errUserQF},
+		{"query", Options{Host: "http://" + live + "?x=1"}, errUserQF},
+		{"fragment", Options{Host: "http://" + live + "#frag"}, errUserQF},
+		{"path", Options{Host: "http://" + live + "/path"}, errHTTP},
+		{"missing hostname", Options{Host: "http://"}, errHTTP},
+		{"relative unix socket", Options{Host: "unix://relative"}, errUnix},
+		{"unix host with path", Options{Host: "unix://host/var/run/x.sock"}, errUnix},
+		{"CA file on http", Options{Host: "http://" + live, CAFile: "ca.pem"}, errTLS},
+		{"client cert on http", Options{Host: "http://" + live, CertFile: "c.pem"}, errTLS},
+		{"client key on http", Options{Host: "http://" + live, KeyFile: "k.pem"}, errTLS},
+		{"TLS files on unix", Options{Host: "unix:///var/run/x.sock", CAFile: "ca.pem"}, errTLS},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			conn, err := dialUpgrade(t.Context(), tt.opts, "/grpc", nil)
+			if err == nil {
+				conn.Close()
+				t.Fatalf("invalid target accepted: %+v", tt.opts)
+			}
+			if err.Error() != tt.want {
+				t.Fatalf("error = %q, want %q", err.Error(), tt.want)
+			}
+		})
+	}
+
+	t.Run("unparseable host", func(t *testing.T) {
+		_, err := dialUpgrade(t.Context(), Options{Host: "http://%zz"}, "/grpc", nil)
+		var urlErr *url.Error
+		if !errors.As(err, &urlErr) || !strings.HasPrefix(err.Error(), "parse proxy host: ") {
+			t.Fatalf("error = %v, want a wrapped *url.Error from parse proxy host", err)
+		}
+	})
+
+	// Close the listener and wait for the accept loop to drain before
+	// reading the counter, so a late accept cannot slip past the check.
+	ln.Close()
+	time.Sleep(50 * time.Millisecond)
+	if n := accepted.Load(); n != 0 {
+		t.Fatalf("%d connection(s) reached the listener, want 0: validation must fail before dialing", n)
 	}
 }

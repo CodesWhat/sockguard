@@ -13,7 +13,7 @@ byte-identical duplicate JSON keys, and a `502` on gzip-compressed bodies
 in the visibility and owner-isolation filters. v2.2.2 is a second security
 patch, refusing form-encoded request bodies that could replace the query
 parameters sockguard had evaluated and closing two owner-isolation gaps on
-image push and image retag. v2.3 is the next planned line. This roadmap describes direction and priorities, not
+image push and image retag. v2.3.0-rc.1 is the first candidate for the next line and is still in soak. This roadmap describes direction and priorities, not
 promises about dates. A feature is available only after the release notes say
 it has shipped.
 
@@ -54,13 +54,13 @@ it has shipped.
 The general BuildKit gRPC mediation work shipped under
 [issue #185](https://github.com/CodesWhat/sockguard/issues/185). v2.3 extends
 that completed foundation into selective instruction-level mediation for the
-remaining frontend-less and third-party-frontend paths. The packaging track is implemented for v2.3: the Go module now uses its
-`/v2` major-version suffix. Publication still requires a new release tag.
+remaining frontend-less and third-party-frontend paths. The packaging track shipped in v2.3.0-rc.1: the Go module now uses its
+`/v2` major-version suffix, and `@latest` resolves to v2.3 once v2.3.0 is published.
 
 | Track | Outcome required before release |
 |---|---|
 | BuildKit RUN-instruction coverage | Raw-LLB ExecOps now support exact operation-digest approvals with `control.solve.allowed_exec_digests`. Unknown operations and daemon-resolved nested BuildOps are denied while RUN instructions are restricted. Solve/Status refs are scoped at the daemon boundary by client and profile, including retained history. Callback session IDs use a private client/profile namespace on both tunnel setup and Solve; raw LLB sources inherit that session. External gateway RPCs now mediate iterative LLB under the root build's policy, with interactive execution denied. The companion runner and real external frontend tests now cover approved execution, Docker image output, changed-command denial and cancellation; opaque in-daemon image frontends stay denied |
-| Go module major-version path | Implemented for v2.3: `github.com/codeswhat/sockguard/v2`, with migrated imports, release linker flags, and all 11 BuildKit descriptors regenerated from their vendored schemas. After publication, install `github.com/codeswhat/sockguard/v2/app/cmd/sockguard@latest`. Existing tags keep their original metadata; Docker, Homebrew, deb and rpm paths are unchanged |
+| Go module major-version path | Shipped in v2.3.0-rc.1: `github.com/codeswhat/sockguard/v2`, with migrated imports, release linker flags, and all 11 BuildKit descriptors regenerated from their vendored schemas. After v2.3.0 is published, install `github.com/codeswhat/sockguard/v2/app/cmd/sockguard@latest`. Existing tags keep their original metadata; Docker, Homebrew, deb and rpm paths are unchanged |
 
 ## Twelve-month direction
 
