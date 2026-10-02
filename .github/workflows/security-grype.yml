@@ -317,8 +317,17 @@ jobs:
         with:
           persist-credentials: false
 
+      # The image is referenced directly instead of through securego/gosec's
+      # action, whose action.yml at tag vN still names the image for N-1: the
+      # v2.29.0 action runs the 2.28.0 image, built with Go 1.26. The image
+      # sets GOTOOLCHAIN=local, so its Go has to be at least go.mod's `go`
+      # line. When it is older, gosec loads no packages and exits 1 with an
+      # empty SARIF and nothing in the log past the "Import directory" lines.
+      # 2.29.0 is the first image built with Go 1.27. No trailing comment on
+      # the `uses` line: Renovate reads everything after docker:// as the
+      # image reference.
       - name: Run Gosec
-        uses: securego/gosec@deb54465fea23d19a77f037e11e6589021f8501d  # v2.29.0
+        uses: docker://ghcr.io/securego/gosec:2.29.0@sha256:a6cd2f302b5f692e0b77b25751b299ddfbc0763a9711fa36e5a6bccd5292b0e8
         with:
           args: -exclude-generated -nosec-require-rules -nosec-require-justification -fmt sarif -out gosec-results.sarif ./app/...
 

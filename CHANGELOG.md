@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`Security: Gosec SAST` runs the gosec 2.29.0 image directly.** The gosec action's v2.29.0 tag still runs the 2.28.0 image, which is built with Go 1.26 and sets `GOTOOLCHAIN=local`. Against a module whose `go` line is 1.27 it loads no packages and exits 1 with an empty SARIF and no error in the log, which is how the check failed on the Renovate PR that first raised the `go` line. 2.29.0 is the first image built with Go 1.27.
+
 - The validated Docker Engine API ceiling moves from 1.55 to 1.56, which turns the monthly Upstream API Watch green again. The 1.56 changelog adds a `GET /containers/json` `annotation` filter and `HostConfig.Umask` on `POST /containers/create`. Neither needs a filter change: the annotation filter can only narrow a list that owner and visibility filtering have already scoped, and a umask grants no host access, mounts or capabilities, so the create inspector passes it through like any other field it does not gate.
 
 ## [2.3.0-rc.1] - 2026-10-02
