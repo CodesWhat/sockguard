@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0-rc.1] - 2026-10-02
+
 ### Added
 
 - Opt-in external frontend gateway mediation with `request_body.buildkit.control.solve.allow_frontend_gateway`. Gateway calls must belong to an active root Solve for the same client/profile and retain that root's policy. Every iterative LLB Solve uses the existing individual ExecOp approvals, cache grants, and source-session isolation. Image/source resolution, result reads, and completion are mediated; Ping strips private worker metadata and unsupported capabilities. Interactive container/process RPCs and filesystem-loaded nested builds remain denied. Builds are capped at eight per principal, 256 gateway Solves each, and 30 minutes. The `sockguard frontend` companion runner executes a pinned image in a constrained Docker container, sends every gateway call through the selected proxy, writes original operation bytes and digests for review, and verifies container cleanup. Supports remote contexts, anonymous registry callbacks and policy-controlled Docker image output. Real-daemon tests cover exact approvals, changed-command denial, output files and cancellation.
