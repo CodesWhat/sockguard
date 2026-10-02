@@ -126,6 +126,11 @@ type ownershipRequestReferences struct {
 	// after the image-SCP route view has had its say. See
 	// imageTagOwnershipReferences.
 	imageTag *imageTagOwnershipReference
+	// imageDestinations carries every image name the request writes on a
+	// route other than a retag: a commit's `repo` and `tag`. The path of such
+	// a route names no image, so there is no route view to wait for and a
+	// refusal travels in denyReason. See image_destination.go.
+	imageDestinations *imageDestinationReferences
 }
 
 // Options configures per-proxy resource ownership labeling and enforcement.
@@ -361,7 +366,7 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 	case isImageTagRoutePath(r.Method, normPath):
 		return imageTagOwnershipReferences(r, normPath, opts.UpstreamFlavor), nil
 	case r.Method == http.MethodPost && isCommitPath(normPath):
-		return mutateCommitOwnershipRequest(r, opts)
+		return mutateCommitOwnershipRequest(r, normPath, opts)
 	case r.Method == http.MethodPost && (normPath == "/build" || normPath == libpodPrefix+"build"):
 		return nil, addOwnerLabelToBuildQuery(r, opts.LabelKey, opts.Owner)
 	case r.Method == http.MethodPost && normPath == libpodContainerCreatePath:
@@ -469,6 +474,17 @@ func allowOwnershipRequestUnprefixed(
 		}
 
 		verdict, reason, err = checkEmbeddedOwnershipReferences(ctx, inspectResource, refs.embeddedResources, opts)
+		if err != nil || verdict.denied() {
+			return verdict, reason, err
+		}
+		if verdict == verdictAllow {
+			strictest = verdictAllow
+		}
+
+		// After the embedded references, so a request that also names a
+		// source keeps the missing and foreign answers it had: a commit's
+		// container is checked before the name the commit assigns.
+		verdict, reason, err = checkImageDestinations(ctx, inspectResource, refs.imageDestinations, opts)
 		if err != nil || verdict.denied() {
 			return verdict, reason, err
 		}

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Under owner isolation, a commit could take a name away from another owner's image.** `POST /commit` and `POST /libpod/commit` name the image they make in `repo` and `tag`, and both engines move that reference off whatever image already holds it. Ownership checked the container and stamped the new image, and never read the name. A client could send `POST /commit?container=mine&repo=theirs/app&tag=latest` and repoint `theirs/app:latest` at an image of its own. That image carries the client's owner label, so the other owner was then denied on every request that used the name. Confirmed against dockerd 29.5.2. The name is now built the way the daemon builds it and authorized like a retag target: a reference nothing holds is allowed, the caller's own is allowed, another owner's is a `403`, and an unlabeled one follows `allow_unowned_images`. On a Podman upstream a `repo` that names no registry is checked as written and under `localhost/`, on both routes. A commit with no `repo` is unchanged. A `repo` or `tag` sockguard cannot read the way the daemon will is refused with a `403`: repeated, spelled in any case but lowercase, carrying a digest, carrying a tag next to a `tag` parameter, or outside the image reference grammar. The retag check from 2.2.2 now runs on the same code.
+
 ## [2.2.2] - 2026-10-02
 
 ### Security
