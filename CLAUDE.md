@@ -10,7 +10,7 @@ Sockguard is a Docker socket proxy written in Go. It sits between Docker API con
 
 This is a monorepo with three workspaces:
 
-- **`app/`** — Go proxy (the core binary). Built with Go 1.26, uses stdlib `net/http/httputil.ReverseProxy` for proxying, Cobra+Viper for CLI/config.
+- **`app/`** — Go proxy (the core binary). Built with Go 1.27, uses stdlib `net/http/httputil.ReverseProxy` for proxying, Cobra+Viper for CLI/config.
 - **`website/`** — Next.js landing page at getsockguard.com. Hosts the benchmarks + feature pages.
 - **`docs/`** — Fumadocs documentation site served under `getsockguard.com/docs` (the `docs/` Next.js app is built with `basePath: "/docs"`, then `website/package.json`'s `prebuild` script copies its static export into `website/public/docs/` so the marketing site serves it as a subpath).
 
@@ -110,7 +110,7 @@ Runs piped (sequential, fail-fast): go-lint → go-test → biome → build.
 
 ## Key Constraints
 
-- No third-party code executes on the proxy's request hot path — filtering, proxying, logging. This is about what runs, not what links: `internal/filter` also holds the image-trust and signed-policy-bundle verification code, so `internal/proxy`'s dependency graph pulls in sigstore/sigstore-go, go-containerregistry, and their transitive deps (grpc, protobuf, and the rest) at the package level even though none of it executes unless the opt-in `image_trust` path is configured. The binary's direct external dependencies are Cobra+Viper (+go-viper/mapstructure for config decoding), fsnotify (config hot-reload), golang.org/x/net + google.golang.org/protobuf (buildkitproxy's HTTP/2 and protobuf handling for Docker build proxying), sigstore/sigstore + sigstore/sigstore-go + sigstore/protobuf-specs + theupdateframework/go-tuf (image-trust and signed-policy-bundle verification), and go-containerregistry (OCI registry fetch for image-trust signatures — only on the opt-in `image_trust` path, never the core proxy path).
+- No third-party code executes on the proxy's request hot path — filtering, proxying, logging. This is about what runs, not what links: `internal/filter` also holds the image-trust and signed-policy-bundle verification code, so `internal/proxy`'s dependency graph pulls in sigstore/sigstore-go, go-containerregistry, and their transitive deps (grpc, protobuf, and the rest) at the package level even though none of it executes unless the opt-in `image_trust` path is configured. The binary's direct external dependencies are Cobra+Viper (+go-viper/mapstructure for config decoding), fsnotify (config hot-reload), google.golang.org/protobuf (buildkitproxy's protobuf handling for Docker build proxying; its HTTP/2 runs on stdlib net/http, and golang.org/x/net is only an indirect dependency), sigstore/sigstore + sigstore/sigstore-go + sigstore/protobuf-specs + theupdateframework/go-tuf (image-trust and signed-policy-bundle verification), and go-containerregistry (OCI registry fetch for image-trust signatures — only on the opt-in `image_trust` path, never the core proxy path).
 - Container image is **Chainguard's distroless `static` base** (built from Wolfi packages, no shell, no package manager) for near-zero CVEs and built-in SBOM/provenance.
 - Biome is a direct devDependency in the root workspace for TS/JS linting.
 - `.planning/` is gitignored — local-only working notes; never reference its contents in committed files.
