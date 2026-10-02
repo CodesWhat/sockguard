@@ -74,10 +74,11 @@ func isImagePushRoutePath(method, normPath string) bool {
 // imageselector.Parse is used instead of r.URL.Query() because it keeps the
 // exact key spelling and arrival order and reports what url.Values hides.
 //
-// The retag route POST /images/{name}/tag deliberately keeps its bare-path
-// authorization: the resource it mutates is the source image the path names,
-// and docker tag src dst spells the full source reference (tag included)
-// into the path.
+// The retag route POST /images/{name}/tag keeps its bare-path identifier for
+// the source, because docker tag src dst spells the full source reference
+// (tag included) into the path. Its `repo` and `tag` name a second image, the
+// one the new reference is taken from, which imageTagOwnershipReferences
+// authorizes separately.
 func imagePushOwnershipReferences(r *http.Request, normPath string) *ownershipRequestReferences {
 	refs := &ownershipRequestReferences{}
 	if imagePushHasFormBody(r) {
@@ -89,16 +90,10 @@ func imagePushOwnershipReferences(r *http.Request, normPath string) *ownershipRe
 		refs.denyReason = imagePushDenyAmbiguous
 		return refs
 	}
-	tag, found := "", false
-	for _, field := range query {
-		if !strings.EqualFold(field.Key, imagePushTagQueryField) {
-			continue
-		}
-		if found || field.Key != imagePushTagQueryField {
-			refs.denyReason = imagePushDenyAmbiguous
-			return refs
-		}
-		tag, found = field.Value, true
+	tag, ok := exactQueryScalar(query, imagePushTagQueryField)
+	if !ok {
+		refs.denyReason = imagePushDenyAmbiguous
+		return refs
 	}
 	switch {
 	case tag == "":

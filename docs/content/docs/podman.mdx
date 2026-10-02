@@ -266,6 +266,22 @@ same way they cover Docker-compat:
   (`/libpod/images/scp/alpine`) is evaluated first and has to allow on its
   own, so a two-segment rule by itself still denies the request. Write
   `/libpod/images/scp/**` to cover the whole route regardless of shape.
+- A native retag is checked on both of its images.
+  `POST /libpod/images/{name}/tag` runs on the same handler as the
+  Docker-compatible route, reads `repo` and `tag`, and moves the reference they
+  name off whatever image holds it, so owner isolation inspects that reference
+  after the source image. A reference nothing holds is allowed, the caller's
+  own is allowed, another owner's is denied with a `403`, and an unlabeled one
+  follows `allow_unowned_images`. Podman stores a `repo` that names no registry
+  under `localhost/` on this route without looking anything up, so
+  `repo=team/app` is checked as `localhost/team/app`, the name the tag will
+  actually land on. A registry-qualified `repo` is checked as written. The
+  request shapes refused outright are the ones listed for the
+  Docker-compatible route under
+  [Owner Label Isolation](/security#layer-6-owner-label-isolation).
+  `POST /libpod/images/{name}/untag` takes the same parameters and is
+  authorized on its source image alone: Podman removes a name only from the
+  image the path resolves, so `repo` and `tag` cannot reach another image.
 - Query-selected native image batches are checked too. Sockguard decodes every
   repeated `references` value on `GET /libpod/images/export` and every repeated
   `images` value on `DELETE /libpod/images/remove`, then resolves all of them
@@ -815,6 +831,18 @@ land):
   These checks do not make the daemon action transactional. A tag can be
   rebound after its preflight inspect, and Podman can still partially apply an
   authorized multi-image delete if a later daemon-side operation fails.
+- The Docker-compatible retag route is checked against the name as the client
+  spelled it, which is exact on dockerd and on Podman's default
+  `compat_api_enforce_docker_hub = true`, where the tag is resolved through the
+  same lookup the inspect uses. With that option turned off, Podman stores a
+  `repo` that names no registry under `localhost/` on the compat route too,
+  while the inspect of the short name goes through short-name resolution, which
+  tries a `registries.conf` alias first. A short name that has an alias can
+  then be checked against the aliased image instead of the `localhost/` one.
+  The native `POST /libpod/images/{name}/tag` does not have this gap, and a
+  registry-qualified `repo` is exact on both routes. A reference held only by a
+  manifest list with no local instance for the host platform inspects as not
+  found, so it is treated as a reference nothing holds.
 - Not every field of a libpod network body has a gate. `POST /libpod/networks/create`
   passes `dns_enabled`, `internal`, `ipv6_enabled` and `routes` through
   uninspected, and `POST /libpod/networks/{name}/connect` passes
