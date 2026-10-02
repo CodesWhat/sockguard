@@ -46,12 +46,11 @@ type imageTagChainDaemon struct {
 func newImageTagChainDaemon() *imageTagChainDaemon {
 	return &imageTagChainDaemon{
 		names: map[string]string{
-			"mine:1":                                  imageTagChainOwnID,
-			"mine:stable":                             imageTagChainOwnID,
-			"theirs/app:latest":                       imageTagChainVictimID,
-			"theirs/app:v1":                           imageTagChainVictimID,
-			"localhost/theirs/app:latest":             imageTagChainVictimID,
-			"registry.example:5000/theirs/app:v1":     imageTagChainVictimID,
+			"mine:1":                              imageTagChainOwnID,
+			"mine:stable":                         imageTagChainOwnID,
+			"theirs/app:latest":                   imageTagChainVictimID,
+			"theirs/app:v1":                       imageTagChainVictimID,
+			"registry.example:5000/theirs/app:v1": imageTagChainVictimID,
 			"registry.example:5000/theirs/app:latest": imageTagChainVictimID,
 			"shared/base:latest":                      imageTagChainUnownedID,
 		},
@@ -177,7 +176,9 @@ func TestServeChainImageTagAuthorizesTheTargetReference(t *testing.T) {
 	tests := []struct {
 		name      string
 		configure func(*config.Config)
-		target    string
+		// names replaces the daemon's default store when set.
+		names  map[string]string
+		target string
 		// reference is the name the request aims at, and wantImage the image
 		// it has to point at once the request is answered.
 		reference  string
@@ -227,7 +228,15 @@ func TestServeChainImageTagAuthorizesTheTargetReference(t *testing.T) {
 			wantStatus: http.StatusForbidden,
 		},
 		{
-			name:       "foreign short name on the libpod tag route is stored under localhost",
+			// The store holds the victim's image under the localhost/ name
+			// only, the way Podman keeps it. Nothing answers for the short
+			// spelling, so the request is refused only if the check asks for
+			// the name the tag will land on.
+			name: "foreign short name on the libpod tag route is stored under localhost",
+			names: map[string]string{
+				"mine:1":                      imageTagChainOwnID,
+				"localhost/theirs/app:latest": imageTagChainVictimID,
+			},
 			target:     "/v5.0.0/libpod/images/mine:1/tag?repo=theirs%2Fapp&tag=latest",
 			reference:  "localhost/theirs/app:latest",
 			wantImage:  imageTagChainVictimID,
@@ -266,6 +275,9 @@ func TestServeChainImageTagAuthorizesTheTargetReference(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			daemon := newImageTagChainDaemon()
+			if tt.names != nil {
+				daemon.names = tt.names
+			}
 			addr := newImageTagChain(t, daemon, tt.configure)
 
 			req, err := http.NewRequest(http.MethodPost, "http://"+addr+tt.target, nil)
