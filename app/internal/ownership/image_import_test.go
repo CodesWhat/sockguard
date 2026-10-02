@@ -157,6 +157,7 @@ func TestImageCreateRoutePathClassification(t *testing.T) {
 	}{
 		{http.MethodPost, "/images/create", true},
 		{http.MethodPost, "/libpod/images/import", true},
+		{http.MethodPost, "/libpod/images/pull", true},
 		{http.MethodGet, "/images/create", false},
 		{http.MethodPost, "/images/create/tag", false},
 		{http.MethodPost, "/libpod/images/create", false},

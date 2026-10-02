@@ -127,9 +127,10 @@ type ownershipRequestReferences struct {
 	// imageTagOwnershipReferences.
 	imageTag *imageTagOwnershipReference
 	// imageDestinations carries every image name the request writes on a
-	// route other than a retag: a commit's `repo` and `tag`, a build's `t`, an import's `repo`.
-	// The path of such a route names no image, so there is no route view to
-	// wait for and a refusal travels in denyReason. See image_destination.go.
+	// route other than a retag: a commit's `repo` and `tag`, a build's `t`,
+	// an import's `repo`, a pull's `fromImage`. The path of such a route
+	// names no image, so there is no route view to wait for and a refusal
+	// travels in denyReason. See image_destination.go.
 	imageDestinations *imageDestinationReferences
 }
 
