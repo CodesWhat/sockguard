@@ -157,7 +157,11 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   [ -S "${MOCK_SOCK}" ] && break
   sleep 0.2
 done
-[ -S "${MOCK_SOCK}" ] || { echo "mockdocker never appeared (see ${MOCK_LOG})" >&2; exit 1; }
+if [ ! -S "${MOCK_SOCK}" ]; then
+  echo "mockdocker never appeared; mockdocker log follows" >&2
+  cat "${MOCK_LOG}" >&2 || true
+  exit 1
+fi
 
 echo "==> Starting sockguard on ${LISTEN_HOST}:${LISTEN_PORT}"
 "${WORK_DIR}/sockguard" serve --config "${CONFIG_PATH}" >"${SG_LOG}" 2>&1 &
@@ -170,7 +174,8 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   sleep 0.3
 done
 if ! (echo >"/dev/tcp/${LISTEN_HOST}/${LISTEN_PORT}") 2>/dev/null; then
-  echo "sockguard never opened ${LISTEN_HOST}:${LISTEN_PORT} (see ${SG_LOG})" >&2
+  echo "sockguard never opened ${LISTEN_HOST}:${LISTEN_PORT}; sockguard log follows" >&2
+  cat "${SG_LOG}" >&2 || true
   exit 1
 fi
 
