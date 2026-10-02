@@ -512,6 +512,12 @@ same way they cover Docker-compat:
   `{"nsmode":"container","value":"<ref>"}` namespace object and
   `pod`/`infra_image` fields.
 
+Set `upstream.flavor` to the engine that is actually behind the socket, or leave
+it on `auto`. Owner-isolation checks branch on it and a wrong value does not
+fail startup: on a Podman upstream configured as `docker`, an image retag gets
+the single-name target check instead of the two-name one that also covers
+`localhost/{repo}:{tag}`.
+
 Two endpoints are the exception, and they need `upstream.flavor: podman` set
 (or left on `auto`, which probes for it) to be handled correctly. Podman
 registers `GET /events` and `GET /libpod/events` on a single handler, so the
