@@ -10,29 +10,27 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/net/http2"
-
 	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/control"
+	"github.com/codeswhat/sockguard/v2/app/internal/h2conn"
 )
 
 // newConcurrencyTestBridge is newTestBridge's (bridge_test.go) sibling for
 // this file's concurrency-cap tests specifically: it drives the bridge with
-// an http2.Transport configured with StrictMaxConcurrentStreams: true, so a
+// a client configured with StrictMaxConcurrentRequests: true, so a
 // RoundTrip issued once the server's advertised
 // SETTINGS_MAX_CONCURRENT_STREAMS is saturated BLOCKS and waits for a slot —
 // matching how a well-behaved gRPC/BuildKit client actually behaves — rather
-// than failing immediately with "http2: client conn not usable", which is
-// what golang.org/x/net/http2.ClientConn.RoundTrip does by default once a
-// single ClientConn (not the full pooling Transport) hits the cap. This
-// package's other tests never intentionally saturate the cap, so
-// newTestBridge itself is left using the simpler, non-strict Transport.
-func newConcurrencyTestBridge(t *testing.T, limits Limits, daemonHandler http.Handler) *http2.ClientConn {
+// than failing with "http2: client conn not usable". net/http's single
+// ClientConn already waits on its own; the setting is kept so this helper
+// states the behavior its tests depend on. This package's other tests never
+// intentionally saturate the cap, so newTestBridge passes no client config.
+func newConcurrencyTestBridge(t *testing.T, limits Limits, daemonHandler http.Handler) *http.ClientConn {
 	t.Helper()
 
 	serverLeg, driverConn := net.Pipe()
 	daemonSide, clientLegForBridge := net.Pipe()
 
-	go (&http2.Server{}).ServeConn(daemonSide, &http2.ServeConnOpts{Handler: daemonHandler})
+	go h2conn.Serve(context.Background(), daemonSide, h2conn.ServerConfig{Handler: daemonHandler})
 
 	registry := NewSessionRegistry()
 	session := registry.Open(SessionKey{ClientIdentity: "dos-test-client", Profile: "dos-test-profile"}, EndpointGRPC, "")
@@ -44,16 +42,15 @@ func newConcurrencyTestBridge(t *testing.T, limits Limits, daemonHandler http.Ha
 		_ = runBridge(context.Background(), legs, session, allowAllPolicy, limits, noopLogger(), registry, nil)
 	}()
 
-	tr := &http2.Transport{AllowHTTP: true, StrictMaxConcurrentStreams: true}
-	driver, err := tr.NewClientConn(driverConn)
+	driver, err := h2conn.NewClientConn(driverConn, &http.HTTP2Config{StrictMaxConcurrentRequests: true})
 	if err != nil {
 		t.Fatalf("NewClientConn: %v", err)
 	}
 
-	// Warm-up round trip: StrictMaxConcurrentStreams only blocks a RoundTrip
+	// Warm-up round trip: StrictMaxConcurrentRequests only blocks a RoundTrip
 	// once the client has actually LEARNED the server's real
 	// SETTINGS_MAX_CONCURRENT_STREAMS — until that SETTINGS frame is
-	// processed, http2.ClientConn optimistically assumes a large default and
+	// processed, http.ClientConn optimistically assumes a large default and
 	// will happily send more streams than the server actually allows, which
 	// the SERVER then answers with REFUSED_STREAM (a real, spec-correct
 	// safely-retryable HTTP/2 outcome — but this test drives a single
@@ -88,7 +85,7 @@ func newConcurrencyTestBridge(t *testing.T, limits Limits, daemonHandler http.Ha
 // open at once (the daemon handler blocks on each until the test explicitly
 // lets it finish) while a larger number of concurrent RoundTrips are
 // attempted, and asserts the daemon never observes more requests in flight
-// simultaneously than Limits.MaxConcurrentStreams — the http2.Server this
+// simultaneously than Limits.MaxConcurrentStreams — the HTTP/2 server this
 // package configures with that field (bridge.go's runBridge) is
 // responsible for enforcing the ceiling; this proves it's actually wired
 // through, not just carried in the struct.
@@ -203,7 +200,7 @@ func TestBridgeControlMediatedSolveSizeCapBoundary(t *testing.T) {
 }
 
 // TestBridgeIdleTimeoutClosesTunnel asserts Limits.IdleTimeout — passed
-// straight through to http2.Server (bridge.go's runBridge) — actually
+// straight through to the HTTP/2 server (bridge.go's runBridge) — actually
 // closes a bridged tunnel that never carries any stream activity, rather
 // than just being a struct field nothing consults.
 func TestBridgeIdleTimeoutClosesTunnel(t *testing.T) {
@@ -216,7 +213,7 @@ func TestBridgeIdleTimeoutClosesTunnel(t *testing.T) {
 	case <-tb.done:
 		// runBridge returned on its own — the idle timeout fired. Whether
 		// finalErr is nil or non-nil isn't asserted: an idle timeout is a
-		// graceful, expected closure from http2.Server's own perspective,
+		// graceful, expected closure from the HTTP/2 server's own perspective,
 		// not the "protocol/transport failure" runBridge's doc comment
 		// reserves a non-nil return for.
 	case <-time.After(2 * time.Second):

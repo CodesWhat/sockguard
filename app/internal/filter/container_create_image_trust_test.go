@@ -4,12 +4,12 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/pem"
 	"testing"
 	"time"
 
 	"github.com/codeswhat/sockguard/v2/app/internal/imagetrust"
-	"github.com/sigstore/sigstore/pkg/cryptoutils"
 )
 
 // generateTestECDSAPEM produces a PEM-encoded ECDSA P-256 public key for use
@@ -20,7 +20,7 @@ func generateTestECDSAPEM(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("generate ECDSA key: %v", err)
 	}
-	der, err := cryptoutils.MarshalPublicKeyToDER(privKey.Public())
+	der, err := x509.MarshalPKIXPublicKey(privKey.Public())
 	if err != nil {
 		t.Fatalf("marshal public key to DER: %v", err)
 	}

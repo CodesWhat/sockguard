@@ -4,8 +4,8 @@
 // mediation functions (filesync.go, filesend.go, upload.go), and the
 // generic per-message-validating relay primitives all three build on —
 // streamRelayReader for the request direction (a pull-based io.ReadCloser
-// suitable as an outgoing http.Request.Body, so golang.org/x/net/http2's
-// Transport does the actual concurrent body-pump) and relayValidatedFrames
+// suitable as an outgoing http.Request.Body, so net/http's HTTP/2
+// client does the actual concurrent body-pump) and relayValidatedFrames
 // for a response direction with no hold-and-inspect needs (FileSync's own
 // response relay, which DOES need to hold, gets its own loop in filesync.go).
 //
@@ -78,8 +78,8 @@ func (b *bridge) forwardStreamMediated(w http.ResponseWriter, r *http.Request, s
 // through validate, and — once admitted — serves the frame's ORIGINAL bytes
 // verbatim to its own Read calls, exactly as required by the "on allow
 // forward the original bytes, never a re-encoded message" constraint Phase 3
-// established. Used as an http.Request's outgoing Body: golang.org/x/net/
-// http2.Transport pumps it on its own goroutine while concurrently awaiting
+// established. Used as an http.Request's outgoing Body: net/http's HTTP/2
+// client pumps it on its own goroutine while concurrently awaiting
 // response headers, so no separate goroutine/pipe is needed here.
 //
 // The first denial or transport-level error is sticky: once Read returns a
@@ -96,7 +96,7 @@ type streamRelayReader struct {
 	buf []byte
 	err error
 	// denial is written by Read (on the request-body-pump goroutine
-	// golang.org/x/net/http2.Transport runs) and read by forwardStreamRelay
+	// net/http's HTTP/2 client runs) and read by forwardStreamRelay
 	// via Denial() on the RoundTrip-calling goroutine. Those goroutines are
 	// NOT ordered when RoundTrip returns for a reason unrelated to this reader
 	// (a peer RST_STREAM/GOAWAY on the client leg, whose peer is the untrusted

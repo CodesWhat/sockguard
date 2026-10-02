@@ -18,7 +18,6 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/net/http2"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -186,7 +185,7 @@ func frameMessage(payload []byte) []byte {
 	return append(frame, payload...)
 }
 
-func unary(ctx context.Context, client *http2.ClientConn, path, build string, message proto.Message) ([]byte, error) {
+func unary(ctx context.Context, client *http.ClientConn, path, build string, message proto.Message) ([]byte, error) {
 	payload, err := proto.Marshal(message)
 	if err != nil {
 		return nil, err

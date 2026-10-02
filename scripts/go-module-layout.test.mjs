@@ -25,9 +25,10 @@ const pathEntryExists = (path) => {
 const hasTemporaryInternalCopy = (dockerfile) =>
   /^COPY[ \t]+internal\/?[ \t]+\.\/internal\/?[ \t]*$/im.test(dockerfile);
 
+// Gosec runs either through its action or as the image the action wraps.
 const gosecArgs = (workflow) =>
   workflow.match(
-    /^[ \t]+(?:- )?uses:[ \t]+securego\/gosec@[^\n]+\n[ \t]+with:\n[ \t]+args:[ \t]+(.+)$/m,
+    /^[ \t]+(?:- )?uses:[ \t]+(?:securego\/gosec@|docker:\/\/ghcr\.io\/securego\/gosec[:@])[^\n]+\n[ \t]+with:\n[ \t]+args:[ \t]+(.+)$/m,
   )?.[1] ?? "";
 
 test("the repository root is the canonical Go module root", () => {
@@ -153,15 +154,24 @@ test("Gosec scans canonical app packages with audited suppressions", () => {
 });
 
 test("Gosec argument selection ignores unrelated action arguments", () => {
-  const workflow = `
+  for (const uses of [
+    "securego/gosec@v2",
+    "docker://ghcr.io/securego/gosec:2.29.0@sha256:0000",
+    "docker://ghcr.io/securego/gosec@sha256:0000",
+  ]) {
+    const workflow = `
       - uses: example/unrelated@v1
         with:
           args: -no-fail ./ignored/...
-      - uses: securego/gosec@v2
+      - uses: docker://ghcr.io/example/unrelated:1
+        with:
+          args: -no-fail ./ignored/...
+      - uses: ${uses}
         with:
           args: -exclude-generated ./app/...
   `;
-  assert.equal(gosecArgs(workflow), "-exclude-generated ./app/...");
+    assert.equal(gosecArgs(workflow), "-exclude-generated ./app/...", uses);
+  }
 });
 
 test("the pre-push hook compiles every integration build-tag boundary", () => {

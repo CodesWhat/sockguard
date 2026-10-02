@@ -7,6 +7,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
@@ -18,7 +19,6 @@ import (
 
 	"github.com/sigstore/sigstore-go/pkg/testing/ca"
 	"github.com/sigstore/sigstore-go/pkg/verify"
-	"github.com/sigstore/sigstore/pkg/cryptoutils"
 	sigsig "github.com/sigstore/sigstore/pkg/signature"
 )
 
@@ -36,7 +36,7 @@ func generateECDSAKey(t *testing.T) (pemStr string, priv *ecdsa.PrivateKey) {
 	if err != nil {
 		t.Fatalf("generate ECDSA key: %v", err)
 	}
-	der, err := cryptoutils.MarshalPublicKeyToDER(privKey.Public())
+	der, err := x509.MarshalPKIXPublicKey(privKey.Public())
 	if err != nil {
 		t.Fatalf("marshal public key DER: %v", err)
 	}

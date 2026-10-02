@@ -16,7 +16,7 @@ JOBS="0"
 GO_PARALLEL=""
 GO_BIN=""
 USE_DOCKER="0"
-DOCKER_IMAGE="golang:1.26.2"
+DOCKER_IMAGE="golang:1.27.1"
 PLATFORM=""
 ARTIFACT_ROOT=""
 KEEP_WORK="0"
@@ -38,7 +38,7 @@ Options:
   --parallel N       Workers per go test fuzz process (default: Go test default)
   --docker           Run each fuzzer inside a golang Docker image
   --platform VALUE   Docker platform, for example linux/amd64
-  --image VALUE      Docker image to use with --docker (default: golang:1.26.2)
+  --image VALUE      Docker image to use with --docker (default: golang:1.27.1)
   --artifacts DIR    Directory for logs and failing corpora (default: .fuzz-artifacts/<timestamp>)
   --keep-work        Keep temporary isolated repository copies
   --dry-run          Print planned commands without copying or running fuzzers

@@ -7,6 +7,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
@@ -63,9 +64,9 @@ func TestCompileKey(t *testing.T) {
 		if err != nil {
 			t.Fatalf("MarshalPublicKeyToPEM: %v", err)
 		}
-		der, err := cryptoutils.MarshalPublicKeyToDER(priv.Public())
+		der, err := x509.MarshalPKIXPublicKey(priv.Public())
 		if err != nil {
-			t.Fatalf("MarshalPublicKeyToDER: %v", err)
+			t.Fatalf("MarshalPKIXPublicKey: %v", err)
 		}
 		want := sha256.Sum256(der)
 		wantHex := hex.EncodeToString(want[:])

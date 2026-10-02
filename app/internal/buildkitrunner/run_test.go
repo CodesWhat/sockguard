@@ -23,7 +23,7 @@ import (
 	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/gateway"
 	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/pb"
 	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/worker"
-	"golang.org/x/net/http2"
+	"github.com/codeswhat/sockguard/v2/app/internal/h2conn"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -41,7 +41,7 @@ func TestRunnerFixtureProcess(t *testing.T) {
 func runFixtureFrontend() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cc, err := (&http2.Transport{}).NewClientConn(&pipeConn{read: os.Stdin, write: os.Stdout})
+	cc, err := h2conn.NewClientConn(&pipeConn{read: os.Stdin, write: os.Stdout}, nil)
 	if err != nil {
 		return err
 	}
@@ -131,7 +131,7 @@ func TestRunOrchestration(t *testing.T) {
 					if strings.Join(methods, ",") != "/grpc.health.v1.Health/Check,/moby.filesync.v1.Auth/Credentials" {
 						t.Errorf("unexpected session providers: %v", methods)
 					}
-					cc, err := (&http2.Transport{}).NewClientConn(upgraded)
+					cc, err := h2conn.NewClientConn(upgraded, nil)
 					if err != nil {
 						t.Error(err)
 						return
@@ -149,7 +149,7 @@ func TestRunOrchestration(t *testing.T) {
 					<-fixtureCtx.Done()
 					return
 				}
-				(&http2.Server{}).ServeConn(upgraded, &http2.ServeConnOpts{Context: fixtureCtx, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				h2conn.Serve(fixtureCtx, upgraded, h2conn.ServerConfig{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					payload, err := readMessage(r.Body)
 					if err != nil {
 						t.Error(err)
@@ -379,7 +379,7 @@ func TestWaitGatewayReadiness(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer conn.Close()
-			cc, err := (&http2.Transport{}).NewClientConn(conn)
+			cc, err := h2conn.NewClientConn(conn, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -13,9 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"golang.org/x/net/http2"
-
 	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/control"
+	"github.com/codeswhat/sockguard/v2/app/internal/h2conn"
 	"github.com/codeswhat/sockguard/v2/app/internal/logging"
 )
 
@@ -28,10 +27,10 @@ var errMessageTooLarge = errors.New("buildkitproxy: message exceeds configured s
 // bridgeLegs names the two connections a mediated tunnel bridges, already
 // assigned to their h2c ROLE (not their client/daemon identity, which
 // differs by endpoint — see the doc comments on Mediator.ServeGRPC/
-// ServeSession): serverConn is where sockguard runs http2.Server.ServeConn
-// (accepting incoming streams as one *http.Request per stream), and
-// clientConn is the connection sockguard dials outbound requests on via an
-// http2.Transport-backed http2.ClientConn.
+// ServeSession): serverConn is where sockguard runs an HTTP/2 server
+// (h2conn.Serve, accepting incoming streams as one *http.Request per stream),
+// and clientConn is the connection sockguard sends outbound requests on via
+// an HTTP/2 client (h2conn.NewClientConn's *http.ClientConn).
 //
 // For EndpointGRPC (POST /grpc): serverConn is the hijacked Docker-client
 // connection (the client is the gRPC client dialing IN to sockguard),
@@ -51,12 +50,12 @@ type bridgeLegs struct {
 }
 
 // clientLegConn is the minimal surface bridge.forward and bridge.closeAll
-// need from the client leg's HTTP/2 connection. *http2.ClientConn satisfies
+// need from the client leg's HTTP/2 connection. *http.ClientConn satisfies
 // this structurally in production; tests exercising forward()'s error
 // handling (a genuine RoundTrip failure vs. a response-body copy failure vs.
 // the size-cap path) use a hand-rolled fake instead of driving a real
 // network round trip end to end, since those specific failure modes aren't
-// reproducible deterministically over a live http2.ClientConn.
+// reproducible deterministically over a live http.ClientConn.
 type clientLegConn interface {
 	RoundTrip(*http.Request) (*http.Response, error)
 	Close() error
@@ -89,7 +88,7 @@ type bridge struct {
 	// credentialCalls is Phase 4's per-session credential-call counter — see
 	// Limits.MaxCredentialCallsPerSession and forwardSessionMediated
 	// (bridge_session.go) for what it bounds. atomic.Int64 rather than a
-	// mutex-guarded int since concurrent http2.Server handler goroutines (one
+	// mutex-guarded int since concurrent HTTP/2 server handler goroutines (one
 	// per stream) may all be admitting Auth/Secrets/SSH calls at once.
 	credentialCalls atomic.Int64
 
@@ -132,8 +131,7 @@ func runBridge(ctx context.Context, legs bridgeLegs, session *Session, policy Po
 	}
 	defer b.closeAll(nil)
 
-	clientTransport := &http2.Transport{AllowHTTP: true}
-	cc, err := clientTransport.NewClientConn(legs.clientConn)
+	cc, err := h2conn.NewClientConn(legs.clientConn, nil)
 	if err != nil {
 		// Route this through closeAll/finalErr too, rather than returning
 		// fmt.Errorf(...) directly: closeOnce still gives at-most-once
@@ -146,14 +144,11 @@ func runBridge(ctx context.Context, legs bridgeLegs, session *Session, policy Po
 	}
 	b.clientLeg = cc
 
-	srv := &http2.Server{
-		MaxConcurrentStreams: limits.MaxConcurrentStreams,
+	h2conn.Serve(ctx, legs.serverConn, h2conn.ServerConfig{
+		Handler:              http.HandlerFunc(b.handleStream),
+		MaxConcurrentStreams: int(limits.MaxConcurrentStreams),
 		IdleTimeout:          limits.IdleTimeout,
 		ReadIdleTimeout:      limits.ReadIdleTimeout,
-	}
-	srv.ServeConn(legs.serverConn, &http2.ServeConnOpts{
-		Context: ctx,
-		Handler: http.HandlerFunc(b.handleStream),
 	})
 
 	return b.finalErr()
@@ -168,12 +163,12 @@ func runBridge(ctx context.Context, legs bridgeLegs, session *Session, policy Po
 //
 // closeAll is called from both runBridge's own goroutine (the deferred
 // cleanup, and the early client-leg-handshake-failure path) and stream
-// handler goroutines http2.Server spawns (recordDeniedAndMaybeClose, forward)
-// — closeErr is guarded by closeMu, not just closeOnce, because closing
-// legs.serverConn here and runBridge's ServeConn call noticing that closure
+// handler goroutines the HTTP/2 server spawns (recordDeniedAndMaybeClose,
+// forward) — closeErr is guarded by closeMu, not just closeOnce, because closing
+// legs.serverConn here and runBridge's h2conn.Serve call noticing that closure
 // and returning are NOT themselves a synchronization point the Go memory
 // model recognizes: without closeMu, runBridge reading closeErr after
-// ServeConn returns would be a data race with a handler goroutine's write
+// Serve returns would be a data race with a handler goroutine's write
 // inside this closure. See finalErr, which every closeErr read must go
 // through instead of touching the field directly.
 func (b *bridge) closeAll(err error) {
@@ -198,7 +193,7 @@ func (b *bridge) finalErr() error {
 	return b.closeErr
 }
 
-// handleStream is the http.Handler golang.org/x/net/http2.Server invokes
+// handleStream is the http.Handler net/http's HTTP/2 server invokes
 // once per HTTP/2 stream on the server leg — one *http.Request per gRPC
 // call, per the #185 synthesis's chosen bridging granularity (see
 // registry.go's package doc). It classifies the call's fully-qualified

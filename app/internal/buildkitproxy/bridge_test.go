@@ -9,13 +9,14 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"testing"
 	"testing/iotest"
 	"time"
 
-	"golang.org/x/net/http2"
+	"github.com/codeswhat/sockguard/v2/app/internal/h2conn"
 )
 
 // allowAllPolicy admits every Mediate/Passthrough method this package's
@@ -48,7 +49,7 @@ var allowAllPolicy = Policy{
 // that isn't specifically testing endpoint role-wiring, which
 // mediator_test.go covers separately).
 type testBridge struct {
-	driver   *http2.ClientConn
+	driver   *http.ClientConn
 	registry *SessionRegistry
 	session  *Session
 	// done is CLOSED (never sent-on) once runBridge returns, so both the
@@ -83,8 +84,7 @@ func newTestBridgeWithLogger(t *testing.T, endpoint Endpoint, policy Policy, lim
 	serverLeg, driverConn := net.Pipe()
 	daemonSide, clientLegForBridge := net.Pipe()
 
-	daemonSrv := &http2.Server{}
-	go daemonSrv.ServeConn(daemonSide, &http2.ServeConnOpts{Handler: daemonHandler})
+	go h2conn.Serve(context.Background(), daemonSide, h2conn.ServerConfig{Handler: daemonHandler})
 
 	registry := NewSessionRegistry()
 	clientUUID := ""
@@ -105,8 +105,7 @@ func newTestBridgeWithLogger(t *testing.T, endpoint Endpoint, policy Policy, lim
 		close(tb.done)
 	}()
 
-	tr := &http2.Transport{AllowHTTP: true}
-	driver, err := tr.NewClientConn(driverConn)
+	driver, err := h2conn.NewClientConn(driverConn, nil)
 	if err != nil {
 		t.Fatalf("NewClientConn (driver): %v", err)
 	}
@@ -193,6 +192,48 @@ func TestBridgeDeniesMalformedPath(t *testing.T) {
 	code, _ := grpcStatusOf(t, resp)
 	if code != grpcCodeUnimplemented {
 		t.Fatalf("Grpc-Status = %d, want %d (UNIMPLEMENTED)", code, grpcCodeUnimplemented)
+	}
+}
+
+// TestBridgeDeniesOptionsStar pins that "OPTIONS *" is one more stream for
+// handleStream to classify, deny, and count against the abuse budget. A
+// stock net/http server answers that request itself with a bare 200, which
+// here would be a stream the bridge never audits.
+func TestBridgeDeniesOptionsStar(t *testing.T) {
+	limits := DefaultLimits()
+	limits.DeniedStreamBudget = 1
+	limits.DeniedStreamWindow = time.Minute
+	tb := newTestBridge(t, EndpointGRPC, allowAllPolicy, limits, echoDaemonHandler())
+
+	optionsStar := func() *http.Request {
+		return &http.Request{
+			Method: http.MethodOptions,
+			URL:    &url.URL{Scheme: "http", Host: "buildkit-test", Path: "*"},
+			Header: http.Header{},
+			Host:   "buildkit-test",
+		}
+	}
+	resp, err := tb.driver.RoundTrip(optionsStar())
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	code, _ := grpcStatusOf(t, resp)
+	if code != grpcCodeUnimplemented {
+		t.Fatalf("Grpc-Status = %d, want %d (UNIMPLEMENTED)", code, grpcCodeUnimplemented)
+	}
+
+	// The second one exceeds the one-denial budget, so the tunnel closes.
+	if resp, err := tb.driver.RoundTrip(optionsStar()); err == nil {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}
+	select {
+	case <-tb.done:
+		if tb.err == nil {
+			t.Fatal("runBridge returned nil after OPTIONS * exceeded the denied-stream budget, want the budget's teardown error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("OPTIONS * streams were not counted against the denied-stream budget")
 	}
 }
 
@@ -517,7 +558,7 @@ func TestBridgeSessionRegistryTracksOpenSession(t *testing.T) {
 }
 
 func TestRunBridgeClientLegHandshakeFailure(t *testing.T) {
-	// A dead client-leg connection makes clientTransport.NewClientConn's
+	// A dead client-leg connection makes h2conn.NewClientConn's
 	// initial preface/settings flush fail synchronously, before runBridge
 	// ever starts serving the server leg — exercising runBridge's own
 	// "establish client leg" error return, distinct from every other bridge
@@ -546,7 +587,7 @@ func TestRunBridgeClientLegHandshakeFailure(t *testing.T) {
 // RoundTrip failure, a response body whose Read fails with something other
 // than errMessageTooLarge, and the outgoing request's Host — none of which
 // are reproducible reliably by racing a real network connection's teardown
-// against a live http2.ClientConn.
+// against a live http.ClientConn.
 type fakeClientLeg struct {
 	gotReq *http.Request
 	resp   *http.Response
@@ -615,7 +656,7 @@ func TestBridgeForwardRequestSizeCapTripsResourceExhaustedWithoutClosingTunnel(t
 	// The request-body size cap (limitedReadCloser wrapping r.Body) surfaces
 	// as errMessageTooLarge coming back OUT of RoundTrip itself, since it's
 	// the outgoing body read that trips, not the response. Exercised here via
-	// fakeClientLeg rather than a live http2.ClientConn: driving a real
+	// fakeClientLeg rather than a live http.ClientConn: driving a real
 	// oversized request through an actual RoundTrip races the client's
 	// in-flight body write against the server's response, which is exactly
 	// the flakiness this package's integration tests avoid elsewhere in
