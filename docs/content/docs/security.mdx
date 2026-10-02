@@ -390,6 +390,18 @@ routes, and under both `{name}` and `localhost/{name}` on the compat routes
 and on a native commit or pull. See
 [Known Limitations](/podman#known-limitations).
 
+Two ways a build can write an image name are not covered:
+
+- A BuildKit build through the mediated `POST /grpc` tunnel names its image in
+  the exporter attributes of its `Control/Solve` call, which
+  `request_body.buildkit` gates by exporter type and push registry and which
+  owner isolation does not read, so that name is not checked against the image
+  holding it.
+- A classic-builder `FROM` on a build sent with `pull=1` (`docker build --pull`)
+  pulls the base image and re-tags it locally, the same overwrite a pull on
+  `POST /images/create` is checked for, and the base image names are in the
+  Dockerfile inside the build context, which owner isolation does not read.
+
 `POST /libpod/images/{name}/untag` takes the same two parameters and needs no
 second check. Podman removes a name only from the image the path resolves, so
 the source image is the whole effect.
