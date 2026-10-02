@@ -285,6 +285,20 @@ same way they cover Docker-compat:
   `POST /libpod/images/{name}/untag` takes the same parameters and is
   authorized on its source image alone: Podman removes a name only from the
   image the path resolves, so `repo` and `tag` cannot reach another image.
+- The other native routes that name an image are checked on that name.
+  `POST /libpod/commit` (`repo` and `tag`), `POST /libpod/build` (every `t`),
+  `POST /libpod/images/import` (`reference`), `POST /libpod/images/pull`
+  (`reference`) and `POST /libpod/images/load` (the names in the archive) each
+  write a reference Podman moves off whatever image held it, so owner
+  isolation authorizes it like a retag target. Build, import and load tag
+  without a lookup, so a name with no registry is checked under `localhost/`.
+  A commit and a pull resolve the name against local images first, so they are
+  checked as written and under `localhost/`. A build tag that starts with an
+  image transport (`containers-storage:app`, `oci-archive:out`,
+  `dir:5000/out`) is refused, because Podman's builder writes such an output
+  to that transport instead of to the name it spells, and so is a build with a
+  `manifest` parameter. A pull with `allTags`, or of a bare name with no tag,
+  is refused. See [Owner Label Isolation](/security#layer-6-owner-label-isolation).
 - Query-selected native image batches are checked too. Sockguard decodes every
   repeated `references` value on `GET /libpod/images/export` and every repeated
   `images` value on `DELETE /libpod/images/remove`, then resolves all of them
@@ -877,6 +891,16 @@ land):
   A reference held only by a manifest list with no local instance for the host
   platform inspects as not found, so it is treated as a reference nothing
   holds.
+- A pull of a name with no registry is exact on Podman only without a
+  platform. Podman pulls a short name under the name a local image already
+  holds, alias first, and the inspect of the name as written resolves the same
+  way, so it answers for the image the pull replaces. Naming a platform
+  (`platform` on the compat route, `Arch`, `OS` or `Variant` on the native
+  one) makes Podman skip that lookup and resolve the name through
+  `registries.conf`, which Sockguard cannot read. So when `upstream.flavor`
+  resolves to Podman, or to nothing Sockguard recognizes, such a pull is
+  refused with a `403`. Spell the registry in the name to pull for a platform.
+  A dockerd upstream has one reading of a name and is not narrowed.
 - Not every field of a libpod network body has a gate. `POST /libpod/networks/create`
   passes `dns_enabled`, `internal`, `ipv6_enabled` and `routes` through
   uninspected, and `POST /libpod/networks/{name}/connect` passes

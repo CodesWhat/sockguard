@@ -268,7 +268,9 @@ names no pod, so it is refused with a `403` rather than forwarded, audited as
 `POST /commit` and `POST /libpod/commit` name their container in the `container`
 query parameter: that container is authorized on the terms above, and the owner
 label is stamped into the commit body's config so the new image is owned rather
-than unlabeled. A commit is denied outright when it carries no `container`, when
+than unlabeled. The `repo` and `tag` a commit names its image with are
+authorized as well, as described below. A commit is denied outright when it
+carries no `container`, when
 the parameter is repeated or spelled in two cases (Moby reads the first value,
 Podman the last, so the container checked would not be the container committed),
 or when a `changes` value carries a `LABEL` instruction, which both engines
@@ -322,6 +324,57 @@ sends is unaffected; see [Known Limitations](/podman#known-limitations). The
 target denial and these refusals are verdicts, so a `warn` or `audit` profile
 records the would-be denial and forwards. An inspect of the target that
 errors, under either name, is a `502` in every mode.
+
+Every other route that gives an image a name is authorized the same way. A
+commit, a build, an import, a load and a pull each write a reference, both
+engines move it off whatever image held it, and Sockguard builds that
+reference the way the daemon will and checks it on the terms above: nothing
+holds it, the caller's own image holds it, or an unlabeled one does and
+`allow_unowned_images` is on. Another owner's image is a `403`.
+
+| Route | Where the name comes from | Notes |
+|---|---|---|
+| `POST /commit`, `POST /libpod/commit` | `repo` and `tag` | Checked after the container. No `repo` names nothing. |
+| `POST /build`, `POST /libpod/build` | every `t` value | No `t` names nothing. `outputs` that name an image and `manifest` are refused. |
+| `POST /images/create` with `fromSrc`, `POST /libpod/images/import` | `repo` and `tag`, or `reference` | No name is an unnamed image. |
+| `POST /images/create` with `fromImage`, `POST /libpod/images/pull` | `fromImage` and `tag`, or `reference` | A tag or a digest is required. A pull by digest writes no tag and is not checked. |
+| `POST /images/load`, `POST /libpod/images/load` | the archive's `RepoTags` and OCI name annotations | Read by `request_body.image_load` and handed to ownership. |
+
+A commit and a build stamp the image they make, so taking a name with one
+leaves the other owner denied wherever it uses that name. An import, a load
+and a pull do not: the image carries whatever labels came with it, none or
+the other owner's own, so the other owner goes on to run the client's content.
+That is why a load and an import are checked even though both are off by
+default (`request_body.image_load` and `request_body.image_pull.allow_imports`).
+
+Pulling over an existing name is ordinary Docker behavior and stays allowed
+wherever it takes nothing from another owner. `docker pull nginx:latest`
+refreshes a name an unlabeled image holds, which the default
+`allow_unowned_images: true` permits, and a caller can always refresh its own
+names. What is refused is a pull onto a name another owner's labeled image
+holds: one that owner built, committed or tagged locally. Two shapes of pull
+are refused outright, because one inspect cannot cover them. A pull with no
+tag and no digest (`fromImage=alpine` alone, `docker pull -a`, Podman's
+`allTags`) pulls every tag of the repository on dockerd, so send the tag. And
+on an upstream that is or may be Podman, a pull of a name with no registry
+that also names a platform resolves through `registries.conf` instead of the
+local lookup the inspect mirrors, so spell the registry
+(`docker.io/library/alpine`). The Docker CLI and SDK already send both.
+
+These routes refuse the same unreadable names a retag does: a repeated
+parameter or one spelled in another case, a query with a semicolon or a bad
+percent escape, a digest where a name belongs, a tag next to a `tag`
+parameter, and anything outside the image reference grammar or its length
+bounds. A build is limited to 256 `t` values and a load to 256 names. A
+build's `outputs` may not name an image, because BuildKit stores an exporter
+`name` as spelled and there is no reference to inspect; name the image in `t`.
+A load whose archive is in neither the Docker nor the OCI format is refused
+under owner isolation even when `allow_untagged` admits it, because nobody
+read its names. On a Podman upstream a name with no registry is checked where
+Podman stores it: under `localhost/` on the native build, import and load
+routes, and under both `{name}` and `localhost/{name}` on the compat routes
+and on a native commit or pull. See
+[Known Limitations](/podman#known-limitations).
 
 `POST /libpod/images/{name}/untag` takes the same two parameters and needs no
 second check. Podman removes a name only from the image the path resolves, so
