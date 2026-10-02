@@ -112,6 +112,51 @@ func TestImagePullInspectImportAllowed(t *testing.T) {
 	}
 }
 
+// TestImagePullInspectGatesImportAndPullIndependently pins the two gates on
+// POST /images/create as independent of each other. dockerd pulls whenever
+// `fromImage` is set and never reads `fromSrc` then, so an allowed import must
+// not answer for the pull beside it. Podman reads each parameter in any case
+// and keeps its last value, so every value under every spelling is checked.
+func TestImagePullInspectGatesImportAndPullIndependently(t *testing.T) {
+	const (
+		importDenied = `image pull denied: importing images from "-" is not allowed`
+		pullDenied   = `image pull denied: registry "evil.example" is not allowlisted`
+	)
+	tests := []struct {
+		name         string
+		allowImports bool
+		query        string
+		want         string
+	}{
+		{name: "import source then foreign pull", allowImports: true, query: "fromSrc=-&fromImage=evil.example%2Fx&tag=latest", want: pullDenied},
+		{name: "foreign pull then import source", allowImports: true, query: "fromImage=evil.example%2Fx&fromSrc=-", want: pullDenied},
+		{name: "import source then allowlisted pull", allowImports: true, query: "fromSrc=-&fromImage=ghcr.io%2Facme%2Fapp"},
+		{name: "import alone", allowImports: true, query: "fromSrc=-&repo=acme%2Fapp"},
+		{name: "import source beside an allowlisted pull while imports are off", query: "fromImage=ghcr.io%2Facme%2Fapp&fromSrc=-", want: importDenied},
+		{name: "foreign pull behind an allowlisted one", query: "fromImage=ghcr.io%2Facme%2Fapp&fromImage=evil.example%2Fx", want: pullDenied},
+		{name: "foreign pull ahead of an allowlisted one", query: "fromImage=evil.example%2Fx&fromImage=ghcr.io%2Facme%2Fapp", want: pullDenied},
+		{name: "foreign pull in another spelling", query: "fromImage=ghcr.io%2Facme%2Fapp&FROMIMAGE=evil.example%2Fx", want: pullDenied},
+		{name: "foreign pull in another spelling alone", query: "FromImage=evil.example%2Fx", want: pullDenied},
+		{name: "import source behind an empty one", query: "fromSrc=&fromSrc=-", want: importDenied},
+		{name: "import source in another spelling", query: "fromSrc=&FromSrc=-", want: importDenied},
+		{name: "empty import source and empty pull", query: "fromSrc=&fromImage="},
+		{name: "allowlisted pull", query: "fromImage=ghcr.io%2Facme%2Fapp&tag=latest"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := newImagePullPolicy(ImagePullOptions{AllowImports: tt.allowImports, AllowedRegistries: []string{"ghcr.io"}})
+			req := httptest.NewRequest(http.MethodPost, "/images/create?"+tt.query, nil)
+			reason, err := policy.inspect(nil, req, "/images/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.want {
+				t.Fatalf("inspect() = %q, want %q", reason, tt.want)
+			}
+		})
+	}
+}
+
 func TestDenyReasonForReferenceEmptyImageReturnsEmpty(t *testing.T) {
 	policy := newImagePullPolicy(ImagePullOptions{})
 	reason := policy.denyReasonForReference("", "image pull")

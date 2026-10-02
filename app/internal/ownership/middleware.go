@@ -1036,18 +1036,63 @@ func mutateBuildOwnershipRequest(r *http.Request, normPath string, opts Options)
 
 func addOwnerLabelToBuildQuery(r *http.Request, labelKey, owner string) error {
 	query := r.URL.Query()
+
+	// Refuse a build that unsets the owner label. Podman's builder applies
+	// `unsetlabel` AFTER the `labels` it set, so `unsetlabel=<owner key>`
+	// strips the stamp this function writes and commits an image with no
+	// owner (buildah 1.43.2 imagebuildah commit(): the unsetLabels loop runs
+	// after the config-label loop). Podman folds the key's case through
+	// gorilla/schema, so every spelling is checked; the value is matched
+	// exactly because buildah's UnsetLabel deletes by exact key. dockerd has
+	// no `unsetlabel` parameter, so a dockerd upstream never trips this.
+	for key, values := range query {
+		if !strings.EqualFold(key, "unsetlabel") {
+			continue
+		}
+		if slices.Contains(values, labelKey) {
+			return fmt.Errorf("build unsets the owner label %q", labelKey)
+		}
+	}
+
+	// Read the client's `labels` under any spelling and collapse it to the
+	// one canonical lowercase key. Podman decodes `labels` case-insensitively
+	// and keeps the last value, while dockerd reads the exact lowercase key,
+	// so a `Labels=` left beside the stamped `labels` could win on a Podman
+	// upstream and drop the owner. A legitimate client sends the parameter
+	// once, so more than one occurrence across every spelling and repeat is
+	// ambiguous and refused rather than guessed at. Every case variant is
+	// removed before the canonical key is written, so none survives the stamp.
+	var encoded string
+	occurrences := 0
+	for key, values := range query {
+		if !strings.EqualFold(key, "labels") {
+			continue
+		}
+		occurrences += len(values)
+		if len(values) > 0 {
+			encoded = values[len(values)-1]
+		}
+		delete(query, key)
+	}
+	if occurrences > 1 {
+		return fmt.Errorf("build labels parameter is ambiguous across case-variant or repeated keys")
+	}
+
 	labels := make(map[string]string)
-	if encoded := query.Get("labels"); encoded != "" {
+	if encoded != "" {
 		if err := json.NewDecoder(strings.NewReader(encoded)).Decode(&labels); err != nil {
 			return fmt.Errorf("decode build labels: %w", err)
 		}
 	}
+	if labels == nil {
+		labels = make(map[string]string)
+	}
 	labels[labelKey] = owner
-	encoded, err := json.Marshal(labels)
+	marshaled, err := json.Marshal(labels)
 	if err != nil {
 		return fmt.Errorf("encode build labels: %w", err)
 	}
-	query.Set("labels", string(encoded))
+	query.Set("labels", string(marshaled))
 	r.URL.RawQuery = query.Encode()
 	return nil
 }
