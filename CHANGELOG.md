@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Homebrew cask generation uses `postflight_steps` to avoid Homebrew 7 deprecation warnings while retaining the macOS quarantine removal.
 
+- **The weekly soak, the testssl.sh scan, and the synthetic benchmark boot again.** Sockguard made the upstream flavor probe fatal in `4eda1ca0` (2026-09-03): startup now fails with `upstream flavor: GET /version returned HTTP 404` when the upstream cannot answer `GET /version`, and `benchmarks/cmd/mockdocker`, the stand-in daemon all three harnesses use, only served `/_ping`, `/containers/json` and `/exec/`. `scripts/soak.sh` and `scripts/security-testssl.sh` have been red since. The mock now serves a dockerd-shaped `/version` with an `Engine` component, so the harnesses go through the real probe instead of a config override. Every wait loop in the three scripts also prints the mockdocker or sockguard log when it times out, which is what was hiding this.
+
 ## [2.2.1] - 2026-09-07
 
 ### Security
