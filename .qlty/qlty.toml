@@ -97,7 +97,9 @@ version = "0.9.0"
 
 [[plugin]]
 name = "shfmt"
-# Pinned to the last release that builds on qlty's bundled Go 1.22 runtime.
+# Pinned to a release that builds on qlty's bundled Go 1.22 runtime (3.8.0
+# needs go 1.21, and is the version this repo's scripts were last checked
+# against locally).
 # qlty otherwise resolves to the latest (3.13.1), which needs go >= 1.25, so
 # `go install` switches toolchains and downloads go1.26.8 from
 # storage.googleapis.com. That host is outside the Qlty egress allowlist, so
