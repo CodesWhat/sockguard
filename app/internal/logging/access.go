@@ -70,6 +70,13 @@ type RequestMeta struct {
 	// recordMutationOutcome. nil when no configured mutation rule matched
 	// the request's surface.
 	Mutation *MutationRecord
+	// ImageLoad carries what the filter's image-load inspector read from the
+	// archive of POST /images/load or POST /libpod/images/load, for the owner
+	// isolation layer, which authorizes the image names the load assigns and
+	// has no reason to spool and parse the archive a second time. nil on every
+	// other request, and on a load the inspector did not let through. Set
+	// only by filter's imageLoadPolicy.inspect.
+	ImageLoad *ImageLoadRecord
 	// queryRaw / queryValues / queryErr memoize one url.ParseQuery of the
 	// request's query string so the middlewares and inspectors that each
 	// read it pay for a single parse. Written and read only through
@@ -79,6 +86,27 @@ type RequestMeta struct {
 	queryValues url.Values
 	queryErr    error
 	queryParsed bool
+}
+
+// ImageLoadRecord is what the filter read from an image archive on its way to
+// the daemon. See RequestMeta.ImageLoad.
+type ImageLoadRecord struct {
+	// References are the image names the archive carries, exactly as it
+	// spells them: every RepoTags entry of a Docker archive's manifest.json
+	// and the effective name of every OCI index entry. An archive that
+	// carries both formats contributes both sets.
+	References []string
+	// Unreadable reports an archive in neither format, which the filter
+	// lets through only under allow_untagged. Its names, if it has any, were
+	// not read.
+	Unreadable bool
+	// LegacyNames reports an archive that carries a top-level `repositories`
+	// file and no manifest.json. moby's classic image store, up to 28.x,
+	// loads such an archive in its pre-1.10 layout and takes the image names
+	// from that file, whatever else the archive holds, and the filter does
+	// not read it. So References is not the names that daemon assigns. The
+	// filter lets the archive through only where every registry is allowed.
+	LegacyNames bool
 }
 
 // Decision values written into RequestMeta.Decision. Allow is not stamped

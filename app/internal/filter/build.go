@@ -15,6 +15,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/codeswhat/sockguard/app/internal/dockerfileinspect"
 	"github.com/codeswhat/sockguard/app/internal/logging"
@@ -390,10 +391,23 @@ func (s *spooledRequestBody) closeAndRemove() {
 	_ = s.io.RemoveFilePath(s.path)
 }
 
+// tempFileBody is a request body an inspector spooled to a temp file. Closing
+// it removes the file.
+//
+// More than one party closes it. The reverse proxy closes the outbound body,
+// the upstream transport closes it again and may do so from its own goroutine
+// after the round trip has returned, and the filter middleware closes it once
+// the rest of the chain has returned (see closeSpooledRequestBody). So the
+// file is closed and removed once, and every later Close reports what the
+// first one did. A second removal would be more than wasted work: the name is
+// free again after the first, and another request can have been handed it.
 type tempFileBody struct {
 	file *os.File
 	path string
 	io   ioDeps
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func (b *tempFileBody) Read(p []byte) (int, error) {
@@ -401,15 +415,45 @@ func (b *tempFileBody) Read(p []byte) (int, error) {
 }
 
 func (b *tempFileBody) Close() error {
-	closeErr := b.file.Close()
-	removeErr := b.io.RemoveFilePath(b.path)
-	if closeErr != nil {
-		return closeErr
+	b.closeOnce.Do(func() {
+		closeErr := b.file.Close()
+		removeErr := b.io.RemoveFilePath(b.path)
+		switch {
+		case closeErr != nil:
+			b.closeErr = closeErr
+		case removeErr != nil && !os.IsNotExist(removeErr):
+			b.closeErr = removeErr
+		}
+	})
+	return b.closeErr
+}
+
+// closeSpooledRequestBody removes the temp file behind r.Body when an
+// inspector spooled the body there, and returns the function that does it for
+// the caller to defer. It returns nil for a request whose body was not
+// spooled.
+//
+// An inspector that spools a body swaps it in as r.Body, and the server only
+// closes the body it handed out, so the swapped one is the filter's to close.
+// Nothing downstream can be relied on to: the reverse proxy closes the body
+// it forwards, but a layer in between that answers the request itself returns
+// without one. Owner isolation does that for a request it refuses and for one
+// whose lookup fails, and each such request used to leave its body on disk.
+// Closing after the chain returns matches what net/http promises a handler: a
+// request body is not read once ServeHTTP has returned.
+//
+// The body is captured here, before the rest of the chain runs, so a layer
+// that replaces r.Body in turn does not hide the file from the close.
+func closeSpooledRequestBody(logger *slog.Logger, r *http.Request) func() {
+	spooled, ok := r.Body.(*tempFileBody)
+	if !ok {
+		return nil
 	}
-	if removeErr != nil && !os.IsNotExist(removeErr) {
-		return removeErr
+	return func() {
+		if err := spooled.Close(); err != nil {
+			logRequestError(logger, r, slog.LevelWarn, "failed to remove spooled request body", err)
+		}
 	}
-	return nil
 }
 
 func normalizeBuildDockerfilePath(value string) string {

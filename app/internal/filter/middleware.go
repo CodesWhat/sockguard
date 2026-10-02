@@ -275,6 +275,9 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 
 			if action == ActionAllow {
 				denyReason, denyReasonCode, status := runAllowedInspection(activePolicy, logger, w, r, normPath)
+				if removeSpooledBody := closeSpooledRequestBody(logger, r); removeSpooledBody != nil {
+					defer removeSpooledBody()
+				}
 				if denyReason != "" {
 					action = ActionDeny
 					reasonCode = denyReasonCode

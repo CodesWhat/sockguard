@@ -190,7 +190,7 @@ Deployments that don't want to admit the whole `EndpointSettings` object can nar
 
 `POST /containers/*/update`, `POST /libpod/containers/*/update`, `PUT /containers/*/archive`, and `PUT /libpod/containers/*/archive` are inspected by default through the shared `container_update` and `container_archive` policies. Sockguard blocks restart-policy/resource-control changes, privileged/device/capability-like update fields where the endpoint supports them, unsafe archive target paths, tar traversal, setuid/setgid entries, device nodes, and escaping symlinks/hardlinks unless explicitly allowed.
 
-`POST /images/load` and native `POST /libpod/images/load` are inspected by default. Docker `manifest.json` repo tags and the byte-exact effective OCI `index.json` name are checked against the same official/registry allowlist model used for pulls. Podman's higher-priority `io.containerd.image.name` annotation is enforced before `org.opencontainers.image.ref.name`, and bare names follow Podman's `localhost` normalization on the native route. SHA-256, SHA-384, and SHA-512 OCI graphs are inspected. Podman's permissive treatment of advisory layout, index schema-version, and descriptor media-type metadata is mirrored, but every reference set in a mixed OCI and Docker archive must be inspectable and pass policy. Podman can reject config or layer content after metadata inspection and then fall back to Docker, so malformed mixed-format controls fail closed. An `index.json` that holds more than one manifest is the exception: no daemon selects a single image from it, so a multi-image `docker save` loads with its `manifest.json` repo tags and every index annotation name checked together. A missing or undecodable `index.json` carries no names at all, so those archives are judged on `manifest.json` alone. Canonically duplicate controls also fail closed, as does any outer archive symlink or hardlink because link aliases can change the extracted control graph after a streaming inspection. `allow_untagged` never bypasses a tagged OCI name or an untagged member beside a tagged Docker member.
+`POST /images/load` and native `POST /libpod/images/load` are inspected by default. Docker `manifest.json` repo tags and the byte-exact effective OCI `index.json` name are checked against the same official/registry allowlist model used for pulls. Podman's higher-priority `io.containerd.image.name` annotation is enforced before `org.opencontainers.image.ref.name`, and bare names follow Podman's `localhost` normalization on the native route. SHA-256, SHA-384, and SHA-512 OCI graphs are inspected. Podman's permissive treatment of advisory layout, index schema-version, and descriptor media-type metadata is mirrored, but every reference set in a mixed OCI and Docker archive must be inspectable and pass policy. Podman can reject config or layer content after metadata inspection and then fall back to Docker, so malformed mixed-format controls fail closed. An `index.json` that holds more than one manifest is the exception: no daemon selects a single image from it, so a multi-image `docker save` loads with its `manifest.json` repo tags and every index annotation name checked together. A missing or undecodable `index.json` carries no names at all, so those archives are judged on `manifest.json` alone. Canonically duplicate controls also fail closed, as does any outer archive symlink or hardlink because link aliases can change the extracted control graph after a streaming inspection. `allow_untagged` never bypasses a tagged OCI name or an untagged member beside a tagged Docker member. An archive with a top-level `repositories` file and no `manifest.json` is refused on `POST /images/load` unless `allow_all_registries` is set. Docker's classic image store, before Docker 29, loads that shape in its pre-1.10 layout and takes the image names from `repositories` whatever else the archive holds, and Sockguard does not read that file, so its names would skip the allowlist. Every `docker save` since 1.10 writes a `manifest.json` and is unaffected, and Podman never reads the file, so its native route is left alone.
 
 `POST /swarm/unlock` and `POST /nodes/*/update` are inspected by default. Swarm unlock is denied unless explicitly allowed, and node updates block role, availability, name, and arbitrary label mutations unless the corresponding node policy permits them. The default owner-label key remains allowed for controlled node claims.
 
@@ -268,7 +268,9 @@ names no pod, so it is refused with a `403` rather than forwarded, audited as
 `POST /commit` and `POST /libpod/commit` name their container in the `container`
 query parameter: that container is authorized on the terms above, and the owner
 label is stamped into the commit body's config so the new image is owned rather
-than unlabeled. A commit is denied outright when it carries no `container`, when
+than unlabeled. The `repo` and `tag` a commit names its image with are
+authorized as well, as described below. A commit is denied outright when it
+carries no `container`, when
 the parameter is repeated or spelled in two cases (Moby reads the first value,
 Podman the last, so the container checked would not be the container committed),
 or when a `changes` value carries a `LABEL` instruction, which both engines
@@ -322,6 +324,90 @@ sends is unaffected; see [Known Limitations](/podman#known-limitations). The
 target denial and these refusals are verdicts, so a `warn` or `audit` profile
 records the would-be denial and forwards. An inspect of the target that
 errors, under either name, is a `502` in every mode.
+
+Every other route that gives an image a name is authorized the same way. A
+commit, a build, an import, a load and a pull each write a reference, both
+engines move it off whatever image held it, and Sockguard builds that
+reference the way the daemon will and checks it on the terms above: nothing
+holds it, the caller's own image holds it, or an unlabeled one does and
+`allow_unowned_images` is on. Another owner's image is a `403`.
+
+| Route | Where the name comes from | Notes |
+|---|---|---|
+| `POST /commit`, `POST /libpod/commit` | `repo` and `tag` | Checked after the container. No `repo` names nothing. |
+| `POST /build`, `POST /libpod/build` | every `t` value | No `t` names nothing. `outputs` that name an image and `manifest` are refused. |
+| `POST /images/create` with `fromSrc`, `POST /libpod/images/import` | `repo` and `tag`, or `reference` | No name is an unnamed image. |
+| `POST /images/create` with `fromImage`, `POST /libpod/images/pull` | `fromImage` and `tag`, or `reference` | A tag or a digest is required. A pull by digest writes no tag and is not checked, with or without a tag beside the digest. |
+| `POST /images/load`, `POST /libpod/images/load` | the archive's `RepoTags` and OCI name annotations | Read by `request_body.image_load` and handed to ownership. A name by digest (`name@sha256:...`) is checked as written. |
+
+A commit and a build stamp the image they make, so taking a name with one
+leaves the other owner denied wherever it uses that name. An import, a load
+and a pull do not: the image carries whatever labels came with it, none or
+the other owner's own, so the other owner goes on to run the client's content.
+That is why a load and an import are checked even though both are off by
+default (`request_body.image_load` and `request_body.image_pull.allow_imports`).
+
+Pulling over an existing name is ordinary Docker behavior and stays allowed
+wherever it takes nothing from another owner. `docker pull nginx:latest`
+refreshes a name an unlabeled image holds, which the default
+`allow_unowned_images: true` permits, and a caller can always refresh its own
+names. What is refused is a pull onto a name another owner's labeled image
+holds: one that owner built, committed or tagged locally. Two shapes of pull
+are refused outright, because one inspect cannot cover them. A pull with no
+tag and no digest (`fromImage=alpine` alone, `docker pull -a`, Podman's
+`allTags`) pulls every tag of the repository on dockerd, so send the tag. And
+on an upstream that is or may be Podman, a pull of a name with no registry
+that also names a platform resolves through `registries.conf` instead of the
+local lookup the inspect mirrors, so spell the registry
+(`docker.io/library/alpine`). The Docker CLI and the Go SDK already send both.
+docker-py and dockerode send the name as the caller wrote it and default the
+tag to `latest` (docker-py since 4.4.0, dockerode since 3.0), so with those an
+untagged pull comes only from `all_tags=True` or `pullAll`.
+
+A pull by digest writes no tag and is not checked. That covers a pinned
+reference that carries a tag beside the digest, in both shapes a client sends
+it: `fromImage=nginx:1.27@sha256:...`, and `fromImage=nginx:1.27` with the
+digest in `tag`, which is how docker-py and dockerode split it. Both engines
+pull by the digest and drop the tag. A `fromImage` that carries a digest next
+to any `tag` parameter, or a tag next to a `tag` parameter naming another tag,
+is refused, because the engines build different references out of the two.
+
+These routes refuse the same unreadable names a retag does: a repeated
+parameter or one spelled in another case, a query with a semicolon or a bad
+percent escape, a name carrying a digest on a commit, a build or an import, a
+tag next to a `tag` parameter, and anything outside the image reference
+grammar or its length bounds. A load's name by digest is checked, not refused,
+and one that carries a tag as well as a digest is refused. A build is limited
+to 256 `t` values and a load to 256 names. A build's `outputs` may not name an
+image, because BuildKit stores an exporter `name` as spelled and there is no
+reference to inspect; name the image in `t`. A load whose archive is in
+neither the Docker nor the OCI format is refused under owner isolation even
+when `allow_untagged` admits it, because nobody read its names. So is a load
+on `POST /images/load` whose archive carries a top-level `repositories` file
+and no `manifest.json`, whatever `request_body.image_load` allows: Docker's
+classic image store before Docker 29 names the images from that file, and
+Sockguard does not read it. On a Podman upstream a name with no registry is
+checked where Podman stores it: under `localhost/` on the native build, import
+and load routes, and under both `{name}` and `localhost/{name}` on the compat
+routes and on a native commit or pull. See
+[Known Limitations](/podman#known-limitations).
+
+These ways of writing an image name are not covered:
+
+- A BuildKit build through the mediated `POST /grpc` tunnel names its image in
+  the exporter attributes of its `Control/Solve` call, which
+  `request_body.buildkit` gates by exporter type and push registry and which
+  owner isolation does not read, so that name is not checked against the image
+  holding it.
+- A classic-builder `FROM` on a build sent with `pull=1` (`docker build --pull`)
+  pulls the base image and re-tags it locally, the same overwrite a pull on
+  `POST /images/create` is checked for, and the base image names are in the
+  Dockerfile inside the build context, which owner isolation does not read.
+- Podman's daemon-host routes `POST /libpod/local/build` and
+  `POST /libpod/local/images/load` read their input from a path on the daemon
+  host and are left to the `insecure_allow_body_blind_writes` acknowledgment.
+  With that acknowledgment set under `ownership.owner`, the names they assign
+  are not checked against the image holding them.
 
 `POST /libpod/images/{name}/untag` takes the same two parameters and needs no
 second check. Podman removes a name only from the image the path resolves, so
