@@ -407,6 +407,129 @@ func TestMiddlewareDeniesUnsafeNativeLibpodBuildQueryControls(t *testing.T) {
 	}
 }
 
+// TestMiddlewareDeniesPodmanBuildControlsOnTheCompatPath pins that the
+// Podman-only build controls are gated on the Docker-compat POST /build as
+// well as on POST /libpod/build. Podman serves both from one handler
+// (compat.BuildImage), so on a Podman upstream the compat path honors volume
+// host mounts, url:/image: additional contexts and the rusagelogfile
+// daemon-host write. Those were gated only on the /libpod/ prefix, so a build
+// sent to /build slipped them past the proxy. moby's POST /build reads none of
+// these query parameters (confirmed against moby 29.5.2), so no Docker client
+// sends them and gating them on the compat path narrows nothing legitimate.
+func TestMiddlewareDeniesPodmanBuildControlsOnTheCompatPath(t *testing.T) {
+	allowed, err := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/build", Action: ActionAllow, Index: 0})
+	if err != nil {
+		t.Fatalf("compile allow rule: %v", err)
+	}
+	denied, err := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	if err != nil {
+		t.Fatalf("compile deny rule: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		target     string
+		wantReason string
+	}{
+		{
+			name:       "volume host mount",
+			target:     "/build?volume=%2Fsrv%2Fsecrets%3A%2Frun%2Fsecrets%3Aro",
+			wantReason: "host volume",
+		},
+		{
+			name:       "version-prefixed volume host mount",
+			target:     "/v1.45/build?volume=%2F%3A%2Fhost",
+			wantReason: "host volume",
+		},
+		{
+			name:       "mixed-case volume host mount",
+			target:     "/build?Volume=%2Fsrv%3A%2Frun",
+			wantReason: "host volume",
+		},
+		{
+			name:       "transient run mount",
+			target:     "/build?transientRunMounts=type%3Dbind%2Csrc%3D%2Fsrv%2Csrc%3D%2Frun",
+			wantReason: "host volume",
+		},
+		{
+			name:       "url additional build context",
+			target:     "/build?additionalbuildcontexts=docs%3Durl%3Ahttps%3A%2F%2Fexample.com%2Fdocs.tar",
+			wantReason: "remote additional build context",
+		},
+		{
+			name:       "resource usage log file",
+			target:     "/build?rusage=true&rusagelogfile=%2Fetc%2Fsockguard-build-rusage",
+			wantReason: "resource usage log",
+		},
+		{
+			name:       "standalone resource usage log file",
+			target:     "/v1.45/build?rusagelogfile=%2Fetc%2Fcron.d%2Fsgprobe",
+			wantReason: "resource usage log",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := mustBuildContextTar(t, "Dockerfile", "FROM busybox\nCOPY . /app\n")
+			req := httptest.NewRequest(http.MethodPost, tt.target, bytes.NewReader(payload))
+			rec := httptest.NewRecorder()
+			upstreamCalls := 0
+			handler := verboseMiddleware([]*CompiledRule{allowed, denied}, testLogger())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				upstreamCalls++
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			if upstreamCalls != 0 {
+				t.Fatalf("upstream calls = %d, want 0", upstreamCalls)
+			}
+			var response DenialResponse
+			if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if !strings.Contains(response.Reason, tt.wantReason) {
+				t.Fatalf("reason = %q, want substring %q", response.Reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+// TestMiddlewareAllowsPlainCompatBuild is the positive control for the gate
+// above: a compat build with none of the Podman-only controls still reaches
+// the daemon, so the new check does not deny ordinary Docker builds.
+func TestMiddlewareAllowsPlainCompatBuild(t *testing.T) {
+	allowed, err := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/build", Action: ActionAllow, Index: 0})
+	if err != nil {
+		t.Fatalf("compile allow rule: %v", err)
+	}
+	denied, err := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	if err != nil {
+		t.Fatalf("compile deny rule: %v", err)
+	}
+
+	payload := mustBuildContextTar(t, "Dockerfile", "FROM busybox\nCOPY . /app\n")
+	req := httptest.NewRequest(http.MethodPost, "/v1.45/build?t=mine%2Fapp%3Av1&networkmode=bridge", bytes.NewReader(payload))
+	rec := httptest.NewRecorder()
+	upstreamCalls := 0
+	handler := verboseMiddleware([]*CompiledRule{allowed, denied}, testLogger())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("upstream calls = %d, want 1", upstreamCalls)
+	}
+}
+
 func TestMiddlewareAppliesNativeLibpodBuildControlAcknowledgements(t *testing.T) {
 	allowed, err := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/libpod/build", Action: ActionAllow, Index: 0})
 	if err != nil {

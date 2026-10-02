@@ -91,6 +91,14 @@ those host-facing inputs. Malformed, empty, unsupported, and duplicate
 additional-context definitions stay denied even when all acknowledgments are
 enabled.
 
+Podman serves the Docker-compatible `POST /build` and native `POST /libpod/build`
+from one handler, so the compat path honors every one of those controls too.
+All of them are therefore checked on both paths. Docker's own `POST /build`
+reads none of these query parameters, so a Docker client is never affected;
+the check only matters on a Podman upstream, where sending `volume`,
+`additionalbuildcontexts`, or `rusagelogfile` to `/build` used to reach the
+daemon unexamined.
+
 Treat `play/kube` with more caution than a typical blind write. A single
 request can carry a **multi-container, multi-pod** Kubernetes manifest —
 one allowed call can provision an arbitrary number of privileged containers

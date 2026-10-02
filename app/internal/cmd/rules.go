@@ -127,7 +127,7 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	// for sockguard to read, so they deliberately have no case in
 	// bodyInspectionConfiguredForEndpoint and always require
 	// insecure_allow_body_blind_writes, which is also exactly what the
-	// runtime inspectors demand (filter.buildPolicy.inspectLibpodBuildControls
+	// runtime inspectors demand (filter.buildPolicy.inspectPodmanBuildControls
 	// and filter.imageLoadPolicy.inspect).
 	{method: http.MethodPost, path: "/libpod/local/build"},
 	{method: http.MethodPost, path: "/libpod/local/images/load"},
