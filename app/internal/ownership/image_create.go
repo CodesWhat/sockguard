@@ -209,6 +209,8 @@ func libpodImageImportDestination(query imageselector.Query) (*imageDestinationR
 //     pulls every tag the registry lists for the repository.
 //   - Podman joins the name and `tag` with ":" or "@" and rejects a name that
 //     then carries two tags. A bare name is :latest.
+//   - Both pull a reference that carries a digest by that digest, and drop a
+//     tag that comes with it.
 //
 // Where the name lands on Podman depends on local state. A name some local
 // image holds is pulled under that image's name, alias first, and the inspect
@@ -223,8 +225,10 @@ func libpodImageImportDestination(query imageselector.Query) (*imageDestinationR
 //     tag, which one inspect cannot enumerate, the same reason a push without
 //     a tag is refused. It is refused on Podman too, where it would mean
 //     :latest: the flavor is a setting, and spelling the tag costs nothing.
-//   - A name carrying a digest next to a tag, in either parameter. dockerd
-//     pulls by the digest and the engines differ on what happens to the tag.
+//   - A name carrying a digest with a `tag` parameter beside it. dockerd
+//     builds one reference out of the two and pulls it by a digest, and
+//     Podman joins them into a string it cannot parse and answers with an
+//     error. No client sends that.
 //   - A digest outside the digest grammar: an algorithm other than sha256,
 //     sha384 or sha512, or hex of the wrong length or case. The engines read
 //     such a value as a tag and reject it.
@@ -233,9 +237,24 @@ func libpodImageImportDestination(query imageselector.Query) (*imageDestinationR
 //     resolves the name through registries.conf, which this layer cannot
 //     read, so the pull can land on a name the inspect never asked about.
 //
-// A pull by digest writes no tag on either engine and has no destination.
-// Read from moby 28.5.1 and from Podman 5.8.6 and its libimage
-// (go.podman.io/common v0.67.1, copySingleImageFromRegistry).
+// A pull by digest writes no tag on either engine and has no destination. It
+// fetches the content the digest names, so whatever reference it leaves can
+// only sit on that content, and nothing is taken from anyone.
+//
+// That holds when a tag comes with the digest, which is how a pinned
+// reference such as nginx:1.27@sha256:... is written. The tag is not pulled
+// and not written: moby's classic store records the digest reference alone,
+// its containerd store keeps one image record under the whole string, which
+// the tag by itself does not resolve to, and libimage strips the tag before it
+// does anything else ("the digest is the sole source of truth"). So the
+// request is a pull by digest in both shapes a client sends it in: the whole
+// reference in `fromImage`, and the name with its tag in `fromImage` beside
+// the digest in `tag`, which is how docker-py and dockerode split it. Both
+// were pulled against dockerd 28.5.1 on each image store with a tag the
+// registry does not have, and neither wrote that tag.
+//
+// Read from moby 28.5.1 and 29.5.2 and from Podman 5.8.6 and its libimage
+// (go.podman.io/common v0.67.1, Pull and copySingleImageFromRegistry).
 func imagePullDestination(route imageDestinationRoute, name, tag string, naming imageTagNaming, namesPlatform bool) (*imageDestinationReferences, string) {
 	repository, digest, digested := strings.Cut(name, "@")
 	switch {
@@ -245,7 +264,7 @@ func imagePullDestination(route imageDestinationRoute, name, tag string, naming 
 		repository, digest, digested, tag = name, tag, true, ""
 	}
 	if digested {
-		return nil, route.refusal(imageDigestedNameProblem(repository, digest, naming))
+		return nil, route.refusal(imagePullByDigestProblem(repository, digest, naming))
 	}
 
 	carriesTag := strings.LastIndex(name, ":") > strings.LastIndex(name, "/")
@@ -262,6 +281,23 @@ func imagePullDestination(route imageDestinationRoute, name, tag string, naming 
 	refs := &imageDestinationReferences{route: route}
 	refs.add(dest)
 	return refs, ""
+}
+
+// imagePullByDigestProblem reports why a pull by digest cannot be read the way
+// the daemon reads it. repository is the name the digest came with, and may
+// carry a tag, which the engines drop. A readable one has no destination. See
+// imagePullDestination.
+//
+// The name and a tag it carries are held to the grammar a tagged pull is, so
+// a string only one engine can parse is refused here as well.
+func imagePullByDigestProblem(repository, digest string, naming imageTagNaming) imageDestinationProblem {
+	if _, problem := imageDestinationFor(repository, "", naming); problem != imageDestinationReadable {
+		return problem
+	}
+	if !isImageDigest(digest) {
+		return imageDestinationBadDigest
+	}
+	return imageDestinationReadable
 }
 
 // libpodImagePullDestination reads the local name Podman's native pull

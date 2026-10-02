@@ -211,15 +211,15 @@ func imageDestinationFor(repo, tag string, naming imageTagNaming) (imageDestinat
 // the same grammar, the same length bounds and the same names under naming,
 // with the digest in place of the tag and nothing appended to it.
 //
-// The repository has to be a name with no tag. dockerd reads name:tag@digest
-// by the digest and the engines differ on what becomes of the tag, so that
-// shape is refused here and left to the route to read if it can. The digest
-// has to be one both engines' parsers accept. See isImageDigest.
+// The repository has to be a name with no tag: a daemon that writes
+// name:tag@digest at all writes it under a spelling that depends on where it
+// read it, so that shape has no one reference to inspect. The digest has to be
+// one both engines' parsers accept. See isImageDigest.
 //
-// Whether such a reference is a destination is the route's call. A pull by
-// digest fetches the content the digest names, so the reference can only land
-// on that content and takes nothing from anyone. A load is different: see
-// imageLoadDestinations.
+// Only a load builds one of these. A pull by digest fetches the content the
+// digest names, so the reference it leaves can only sit on that content and
+// takes nothing from anyone; see imagePullDestination. A load writes the name
+// onto whatever the archive holds; see imageLoadDestinations.
 func imageDigestedDestinationFor(repository, digest string, naming imageTagNaming) (imageDestination, imageDestinationProblem) {
 	// The tag stands in for the one a name beside a digest must not carry,
 	// so a name that does carry one comes back as tagged twice.
@@ -239,14 +239,6 @@ func imageDigestedDestinationFor(repository, digest string, naming imageTagNamin
 		return strings.TrimSuffix(target, ":"+imageTagDefaultTag) + "@" + digest
 	}
 	return imageDestination{target: byDigest(tagged.target), storedTarget: byDigest(tagged.storedTarget)}, imageDestinationReadable
-}
-
-// imageDigestedNameProblem reports why a reference by digest, repository@digest,
-// cannot be read the way the daemon reads it, for a route on which a readable
-// one has no destination. See imageDigestedDestinationFor.
-func imageDigestedNameProblem(repository, digest string, naming imageTagNaming) imageDestinationProblem {
-	_, problem := imageDigestedDestinationFor(repository, digest, naming)
-	return problem
 }
 
 // isImageDigest reports whether value is a digest both engines' parsers

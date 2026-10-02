@@ -337,7 +337,7 @@ holds it, the caller's own image holds it, or an unlabeled one does and
 | `POST /commit`, `POST /libpod/commit` | `repo` and `tag` | Checked after the container. No `repo` names nothing. |
 | `POST /build`, `POST /libpod/build` | every `t` value | No `t` names nothing. `outputs` that name an image and `manifest` are refused. |
 | `POST /images/create` with `fromSrc`, `POST /libpod/images/import` | `repo` and `tag`, or `reference` | No name is an unnamed image. |
-| `POST /images/create` with `fromImage`, `POST /libpod/images/pull` | `fromImage` and `tag`, or `reference` | A tag or a digest is required. A pull by digest writes no tag and is not checked. |
+| `POST /images/create` with `fromImage`, `POST /libpod/images/pull` | `fromImage` and `tag`, or `reference` | A tag or a digest is required. A pull by digest writes no tag and is not checked, with or without a tag beside the digest. |
 | `POST /images/load`, `POST /libpod/images/load` | the archive's `RepoTags` and OCI name annotations | Read by `request_body.image_load` and handed to ownership. A name by digest (`name@sha256:...`) is checked as written. |
 
 A commit and a build stamp the image they make, so taking a name with one
@@ -359,7 +359,18 @@ tag and no digest (`fromImage=alpine` alone, `docker pull -a`, Podman's
 on an upstream that is or may be Podman, a pull of a name with no registry
 that also names a platform resolves through `registries.conf` instead of the
 local lookup the inspect mirrors, so spell the registry
-(`docker.io/library/alpine`). The Docker CLI and SDK already send both.
+(`docker.io/library/alpine`). The Docker CLI and the Go SDK already send both.
+docker-py and dockerode send the name as the caller wrote it and default the
+tag to `latest` (docker-py since 4.4.0, dockerode since 3.0), so with those an
+untagged pull comes only from `all_tags=True` or `pullAll`.
+
+A pull by digest writes no tag and is not checked. That covers a pinned
+reference that carries a tag beside the digest, in both shapes a client sends
+it: `fromImage=nginx:1.27@sha256:...`, and `fromImage=nginx:1.27` with the
+digest in `tag`, which is how docker-py and dockerode split it. Both engines
+pull by the digest and drop the tag. A `fromImage` that carries a digest next
+to any `tag` parameter, or a tag next to a `tag` parameter naming another tag,
+is refused, because the engines build different references out of the two.
 
 These routes refuse the same unreadable names a retag does: a repeated
 parameter or one spelled in another case, a query with a semicolon or a bad

@@ -147,6 +147,8 @@ func TestServeChainPullAuthorizesTheNameItOverwrites(t *testing.T) {
 		{name: "caller refreshes its own name", step: imagePullChainStep("/v1.45/images/create?fromImage=mine&tag=stable", "mine:stable", imagePullChainRegistryID, http.StatusOK)},
 		{name: "pull by digest in the tag parameter writes no tag", step: imagePullChainStep("/v1.45/images/create?fromImage=theirs%2Fapp&tag="+imagePullChainDigest, "theirs/app:latest", imageTagChainVictimID, http.StatusOK)},
 		{name: "pull by digest in fromImage writes no tag", step: imagePullChainStep("/v1.45/images/create?fromImage=theirs%2Fapp%40"+imagePullChainDigest, "theirs/app:latest", imageTagChainVictimID, http.StatusOK)},
+		{name: "pull by tag and digest in fromImage writes no tag", step: imagePullChainStep("/v1.45/images/create?fromImage=theirs%2Fapp%3Av1%40"+imagePullChainDigest, "theirs/app:v1", imageTagChainVictimID, http.StatusOK)},
+		{name: "pull by a tag in fromImage and a digest in tag writes no tag", step: imagePullChainStep("/v1.45/images/create?fromImage=theirs%2Fapp%3Av1&tag="+imagePullChainDigest, "theirs/app:v1", imageTagChainVictimID, http.StatusOK)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

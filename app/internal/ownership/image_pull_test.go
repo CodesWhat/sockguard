@@ -44,6 +44,14 @@ func TestImagePullDestination(t *testing.T) {
 		},
 		{name: "pull by digest in tag", path: imageCreatePath, query: "fromImage=team%2Fapp&tag=" + testDigestQuery},
 		{name: "pull by digest in fromImage", path: imageCreatePath, query: "fromImage=team%2Fapp%40" + testDigestQuery},
+		// A tag beside the digest is dropped by both engines, which pull by
+		// the digest and write no tag. Confirmed against dockerd 28.5.1 on
+		// both image stores. The first shape is the reference passed through
+		// whole, and the second is how docker-py and dockerode split it.
+		{name: "pull by tag and digest in fromImage", path: imageCreatePath, query: "fromImage=team%2Fapp%3Av1%40" + testDigestQuery},
+		{name: "pull by a tag in fromImage and a digest in tag", path: imageCreatePath, query: "fromImage=team%2Fapp%3Av1&tag=" + testDigestQuery},
+		{name: "pull by tag and digest on podman", path: imageCreatePath, query: "fromImage=team%2Fapp%3Av1%40" + testDigestQuery, flavor: upstreamflavor.Podman},
+		{name: "pull by tag and digest of a short name for a platform on podman", path: imageCreatePath, query: "fromImage=team%2Fapp%3Av1%40" + testDigestQuery + "&platform=linux%2Farm64", flavor: upstreamflavor.Podman},
 		{name: "pull by digest of a short name for a platform on podman", path: imageCreatePath, query: "fromImage=team%2Fapp%40" + testDigestQuery + "&platform=linux%2Farm64", flavor: upstreamflavor.Podman},
 
 		{name: "no tag", path: imageCreatePath, query: "fromImage=team%2Fapp", wantReason: imagePullDenyNoTag},
@@ -52,8 +60,10 @@ func TestImagePullDestination(t *testing.T) {
 		{name: "trailing colon", path: imageCreatePath, query: "fromImage=team%2Fapp%3A", wantReason: "owner policy denied image pull with a tag outside the image reference grammar"},
 		{name: "tag in fromImage beside a tag parameter", path: imageCreatePath, query: "fromImage=team%2Fapp%3Av1&tag=v2", wantReason: "owner policy denied image pull whose fromImage already carries a tag beside a tag parameter"},
 		{name: "digest in fromImage beside a tag parameter", path: imageCreatePath, query: "fromImage=team%2Fapp%40" + testDigestQuery + "&tag=v1", wantReason: "owner policy denied image pull that names both a tag and a digest"},
-		{name: "tag and digest in fromImage", path: imageCreatePath, query: "fromImage=team%2Fapp%3Av1%40" + testDigestQuery, wantReason: "owner policy denied image pull that names both a tag and a digest"},
-		{name: "tag in fromImage beside a digest tag", path: imageCreatePath, query: "fromImage=team%2Fapp%3Av1&tag=" + testDigestQuery, wantReason: "owner policy denied image pull that names both a tag and a digest"},
+		{name: "tag outside the grammar beside a digest in fromImage", path: imageCreatePath, query: "fromImage=team%2Fapp%3A-v1%40" + testDigestQuery, wantReason: "owner policy denied image pull with a tag outside the image reference grammar"},
+		{name: "tag and a digest of the wrong length in fromImage", path: imageCreatePath, query: "fromImage=team%2Fapp%3Av1%40sha256%3Aabc", wantReason: "owner policy denied image pull with a digest outside the digest grammar"},
+		{name: "name outside the grammar pulled by tag and digest", path: imageCreatePath, query: "fromImage=Team%2FApp%3Av1%40" + testDigestQuery, wantReason: "owner policy denied image pull with a fromImage outside the image reference grammar"},
+		{name: "tag and digest in fromImage beside a tag parameter", path: imageCreatePath, query: "fromImage=team%2Fapp%3Av1%40" + testDigestQuery + "&tag=v2", wantReason: "owner policy denied image pull that names both a tag and a digest"},
 		{name: "digest of the wrong length", path: imageCreatePath, query: "fromImage=team%2Fapp%40sha256%3Aabc", wantReason: "owner policy denied image pull with a digest outside the digest grammar"},
 		{name: "digest in upper case", path: imageCreatePath, query: "fromImage=team%2Fapp%40sha256%3A" + strings.Repeat("A", 64), wantReason: "owner policy denied image pull with a digest outside the digest grammar"},
 		{name: "digest of an unknown algorithm as the tag", path: imageCreatePath, query: "fromImage=team%2Fapp&tag=md5%3Aabc", wantReason: "owner policy denied image pull with a tag outside the image reference grammar"},
@@ -71,6 +81,7 @@ func TestImagePullDestination(t *testing.T) {
 		{name: "native pull behind the docker transport", path: libpodImagePullPath, query: "reference=docker%3A%2F%2Fquay.io%2Fteam%2Fapp%3Av1", want: []imageDestination{{target: "quay.io/team/app:v1"}}},
 		{name: "native pull with allTags off", path: libpodImagePullPath, query: "reference=quay.io%2Fteam%2Fapp%3Av1&allTags=false", want: []imageDestination{{target: "quay.io/team/app:v1"}}},
 		{name: "native pull by digest", path: libpodImagePullPath, query: "reference=quay.io%2Fteam%2Fapp%40" + testDigestQuery},
+		{name: "native pull by tag and digest", path: libpodImagePullPath, query: "reference=quay.io%2Fteam%2Fapp%3Av1%40" + testDigestQuery},
 		{name: "native pull with no reference", path: libpodImagePullPath, query: "policy=always"},
 		{name: "native pull of a bare name", path: libpodImagePullPath, query: "reference=quay.io%2Fteam%2Fapp", wantReason: imagePullDenyNoTag},
 		{name: "native pull of every tag", path: libpodImagePullPath, query: "reference=quay.io%2Fteam%2Fapp%3Av1&allTags=true", wantReason: imagePullDenyAllTags},
@@ -148,6 +159,7 @@ func TestImagePullAuthorizesTheNameItOverwrites(t *testing.T) {
 		{name: "name the caller's image holds", target: "/images/create?fromImage=mine%2Fapp&tag=latest", wantStatus: http.StatusOK},
 		{name: "name nothing holds", target: "/images/create?fromImage=fresh%2Fapp&tag=1", wantStatus: http.StatusOK},
 		{name: "another owner's name by digest", target: "/images/create?fromImage=theirs%2Fapp%40" + testDigestQuery, wantStatus: http.StatusOK},
+		{name: "another owner's name by tag and digest", target: "/images/create?fromImage=theirs%2Fapp%3Av1%40" + testDigestQuery, wantStatus: http.StatusOK},
 		{name: "every tag of a repository", target: "/images/create?fromImage=theirs%2Fapp", wantStatus: http.StatusForbidden, wantReason: imagePullDenyNoTag},
 		{name: "native name another owner's image holds", target: "/v5.0.0/libpod/images/pull?reference=theirs%2Fapp%3Av1", wantStatus: http.StatusForbidden, wantReason: "libpod " + heldByAnotherOwner},
 		{name: "native name only the stored spelling of which is held", target: "/v5.0.0/libpod/images/pull?reference=theirs%2Ftool%3Av1", wantStatus: http.StatusForbidden, wantReason: "libpod " + heldByAnotherOwner},
