@@ -1,6 +1,7 @@
 package ownership
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/codeswhat/sockguard/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/app/internal/proxy"
 )
 
 func imagePushInspector(ownedTag string, owner string) *recordingInspector {
@@ -269,6 +271,94 @@ func TestImagePushOwnershipReferencesParsing(t *testing.T) {
 				if refs.imagePushTag != tt.wantTag {
 					t.Fatalf("imagePushTag = %q, want %q", refs.imagePushTag, tt.wantTag)
 				}
+			}
+		})
+	}
+}
+
+// pushRecordingTransport stands in for the Docker socket behind the real
+// reverse proxy and keeps the request line that reached the wire.
+type pushRecordingTransport struct {
+	calls    int
+	method   string
+	path     string
+	rawQuery string
+}
+
+func (t *pushRecordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.calls++
+	t.method = req.Method
+	t.path = req.URL.EscapedPath()
+	t.rawQuery = req.URL.RawQuery
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader("")),
+		Request:    req,
+	}, nil
+}
+
+// TestImagePushForwardsAuthorizedPathAndQueryThroughProxy drives ownership
+// middleware over the real reverse proxy so the daemon-facing request is
+// pinned too. The other push tests only prove which tag was inspected; a later
+// forwarding change could send the daemon a different tag and still pass them.
+func TestImagePushForwardsAuthorizedPathAndQueryThroughProxy(t *testing.T) {
+	const owner = "job-123"
+
+	tests := []struct {
+		name     string
+		ownedRef string
+		path     string
+		query    string
+	}{
+		{
+			name:     "plain repository",
+			ownedRef: "app:owned",
+			path:     "/images/app/push",
+			query:    "tag=owned",
+		},
+		{
+			name:     "api version prefix",
+			ownedRef: "registry.example/team/app:owned",
+			path:     "/v1.45/images/registry.example/team/app/push",
+			query:    "tag=owned",
+		},
+		{
+			name:     "registry host with port",
+			ownedRef: "registry.example:5000/team/app:owned",
+			path:     "/v1.45/images/registry.example:5000/team/app/push",
+			query:    "tag=owned",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inspector := imagePushInspector(tt.ownedRef, owner)
+			transport := &pushRecordingTransport{}
+			upstream := proxy.NewWithTransport(transport, testLogger(), proxy.Options{})
+			handler := middlewareWithDeps(testLogger(), Options{Owner: owner, LabelKey: "com.sockguard.owner"},
+				inspector.inspectResource, inspector.inspectExec)(upstream)
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, tt.path+"?"+tt.query, nil))
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			if len(inspector.calls) != 1 || inspector.calls[0].id != tt.ownedRef {
+				t.Fatalf("inspect calls = %+v, want one for %q", inspector.calls, tt.ownedRef)
+			}
+			if transport.calls != 1 {
+				t.Fatalf("upstream calls = %d, want 1", transport.calls)
+			}
+			if transport.method != http.MethodPost {
+				t.Fatalf("forwarded method = %q, want %q", transport.method, http.MethodPost)
+			}
+			if transport.path != tt.path {
+				t.Fatalf("forwarded path = %q, want %q", transport.path, tt.path)
+			}
+			if transport.rawQuery != tt.query {
+				t.Fatalf("forwarded query = %q, want %q", transport.rawQuery, tt.query)
 			}
 		})
 	}
