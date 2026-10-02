@@ -1047,6 +1047,9 @@ func addOwnerLabelToBuildQuery(r *http.Request, labelKey, owner string) error {
 			return fmt.Errorf("decode build labels: %w", err)
 		}
 	}
+	if labels == nil {
+		labels = make(map[string]string)
+	}
 	labels[labelKey] = owner
 	marshaled, err := json.Marshal(labels)
 	if err != nil {

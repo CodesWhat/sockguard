@@ -2881,6 +2881,15 @@ func TestAddOwnerLabelToBuildQuery(t *testing.T) {
 	if err := addOwnerLabelToBuildQuery(req, "com.sockguard.owner", "job-123"); err == nil {
 		t.Fatal("expected invalid build labels error")
 	}
+
+	// JSON null decodes into a nil map without an error.
+	req = httptest.NewRequest(http.MethodPost, "/build?labels=null", nil)
+	if err := addOwnerLabelToBuildQuery(req, "com.sockguard.owner", "job-123"); err != nil {
+		t.Fatalf("addOwnerLabelToBuildQuery() with null labels error = %v", err)
+	}
+	if got := req.URL.Query().Get("labels"); got != `{"com.sockguard.owner":"job-123"}` {
+		t.Fatalf("labels = %s, want only the owner label", got)
+	}
 }
 
 // TestAddOwnerLabelToBuildQueryResistsOwnerStampStripping covers the two ways
