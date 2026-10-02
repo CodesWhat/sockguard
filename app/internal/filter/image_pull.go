@@ -237,6 +237,67 @@ func classifyLibpodImageImportSource(query map[string][]string) (source string, 
 	return source, bodyImport
 }
 
+// distributionInspectSubject prefixes distribution-inspect denial reasons.
+const distributionInspectSubject = "distribution inspect"
+
+// isDistributionInspectPath reports whether normalizedPath is the
+// Docker-compatible registry-distribution inspect route, which the daemon
+// serves as GET /distribution/{name}/json. {name} is a full image reference
+// and can be multi-segment (registry/owner/repo:tag or @digest), so the match
+// is a prefix-and-suffix test rather than a fixed segment count. The caller
+// has already version-stripped the path (NormalizePath), so no /vX.YZ prefix
+// reaches here.
+func isDistributionInspectPath(normalizedPath string) bool {
+	return distributionInspectReference(normalizedPath) != ""
+}
+
+// distributionInspectReference returns the image reference embedded between
+// "/distribution/" and "/json", or "" when normalizedPath is not that route
+// or carries an empty name.
+func distributionInspectReference(normalizedPath string) string {
+	rest, ok := strings.CutPrefix(normalizedPath, "/distribution/")
+	if !ok {
+		return ""
+	}
+	name, ok := strings.CutSuffix(rest, "/json")
+	if !ok || name == "" {
+		return ""
+	}
+	return name
+}
+
+// inspectDistribution applies the same registry allowlist as inspect to
+// GET /distribution/{name}/json (S38). That route makes the daemon reach out
+// to whatever registry the reference names to fetch a manifest descriptor, so
+// it is a registry-contact surface exactly like a pull and shares
+// request_body.image_pull rather than a second config block.
+//
+// It is gated on an explicitly configured allowlist: when no allowed_registries
+// are set (and allow_all_registries is not in force) the route is left exactly
+// as open as it was before S38, so enabling the pull inspector's default
+// allow_official posture never silently starts denying distribution queries an
+// operator did not opt into restricting. Once an allowlist is configured, the
+// reference's registry host must satisfy it on the same terms a pull does
+// (allow_official still exempts Docker Hub official images). Credentials in an
+// X-Registry-Auth header are not inspected here: the registry the daemon
+// contacts is the one named in the path reference, which is what this checks.
+func (p imagePullPolicy) inspectDistribution(_ *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
+	if r == nil || r.Method != http.MethodGet {
+		return "", nil
+	}
+	reference := distributionInspectReference(normalizedPath)
+	if reference == "" {
+		return "", nil
+	}
+	if p.allowAllRegistries || len(p.allowedRegistries) == 0 {
+		return "", nil
+	}
+	if denyReason := p.denyReasonForReference(reference, distributionInspectSubject); denyReason != "" {
+		return denyReason, nil
+	}
+	return "", nil
+}
+
 func (p imagePullPolicy) denyReasonForReference(fromImage, subject string) string {
 	if fromImage == "" {
 		return ""

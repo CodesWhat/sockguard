@@ -8,15 +8,16 @@ import (
 
 // TestInspectPoliciesByMethodDispatch verifies that the method-keyed dispatch
 // table built by compileRuntimePolicy routes requests correctly:
-//   - GET, HEAD, and OPTIONS requests have no inspectors (nil/empty slice).
+//   - GET has exactly one inspector, the distribution registry allowlist.
+//   - HEAD and OPTIONS requests have no inspectors (nil/empty slice).
 //   - POST has inspectors registered.
 //   - PUT has inspectors registered (container archive).
 //   - DELETE has inspectors registered (container remove query controls).
 func TestInspectPoliciesByMethodDispatch(t *testing.T) {
-	t.Run("GET has no inspectors", func(t *testing.T) {
+	t.Run("GET has only the distribution inspector", func(t *testing.T) {
 		p := compileRuntimePolicy(nil, PolicyConfig{}, nil)
-		if got := len(p.inspectPoliciesByMethod[http.MethodGet]); got != 0 {
-			t.Fatalf("GET slice len = %d, want 0", got)
+		if got := len(p.inspectPoliciesByMethod[http.MethodGet]); got != 1 {
+			t.Fatalf("GET slice len = %d, want 1 (distribution)", got)
 		}
 	})
 
@@ -56,8 +57,9 @@ func TestInspectPoliciesByMethodDispatch(t *testing.T) {
 	})
 }
 
-// TestInspectAllowedRequestGetPassesThrough asserts that a GET request is
-// never intercepted by inspectors — the method-keyed map for GET is empty so
+// TestInspectAllowedRequestGetPassesThrough asserts that a GET request to a
+// path no GET inspector matches is never intercepted: the only GET inspector
+// is the distribution allowlist, whose matcher does not match /containers, so
 // inspectAllowedRequest returns "" immediately.
 func TestInspectAllowedRequestGetPassesThrough(t *testing.T) {
 	allow, _ := CompileRule(Rule{Methods: []string{http.MethodGet}, Pattern: "/containers/**", Action: ActionAllow, Index: 0})
