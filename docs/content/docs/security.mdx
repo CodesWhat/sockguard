@@ -338,7 +338,7 @@ holds it, the caller's own image holds it, or an unlabeled one does and
 | `POST /build`, `POST /libpod/build` | every `t` value | No `t` names nothing. `outputs` that name an image and `manifest` are refused. |
 | `POST /images/create` with `fromSrc`, `POST /libpod/images/import` | `repo` and `tag`, or `reference` | No name is an unnamed image. |
 | `POST /images/create` with `fromImage`, `POST /libpod/images/pull` | `fromImage` and `tag`, or `reference` | A tag or a digest is required. A pull by digest writes no tag and is not checked. |
-| `POST /images/load`, `POST /libpod/images/load` | the archive's `RepoTags` and OCI name annotations | Read by `request_body.image_load` and handed to ownership. |
+| `POST /images/load`, `POST /libpod/images/load` | the archive's `RepoTags` and OCI name annotations | Read by `request_body.image_load` and handed to ownership. A name by digest (`name@sha256:...`) is checked as written. |
 
 A commit and a build stamp the image they make, so taking a name with one
 leaves the other owner denied wherever it uses that name. An import, a load

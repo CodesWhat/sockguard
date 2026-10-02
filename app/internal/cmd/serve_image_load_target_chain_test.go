@@ -67,6 +67,9 @@ func (d *imageNameChainDaemon) serveLoad(w http.ResponseWriter, r *http.Request,
 	return true
 }
 
+// imageLoadChainDigest is a well-formed digest for a name held by digest.
+const imageLoadChainDigest = "sha256:5c02a4b1e0f3d2c6b7a8990f1e2d3c4b5a69788796a5b4c3d2e1f00112233445"
+
 func newImageLoadChainDaemon() *imageNameChainDaemon {
 	daemon := newImageNameChainDaemon()
 	daemon.routes = append(daemon.routes, daemon.serveLoad)
@@ -122,7 +125,9 @@ func TestServeChainLoadAuthorizesTheNamesItAssigns(t *testing.T) {
 		target    string
 		// podman makes the store Podman-shaped, with the victim's image under
 		// the localhost/ name a load there writes.
-		podman     bool
+		podman bool
+		// held adds names to the store before the request.
+		held       map[string]string
 		reference  string
 		wantImage  string
 		wantStatus int
@@ -132,6 +137,25 @@ func TestServeChainLoadAuthorizesTheNamesItAssigns(t *testing.T) {
 		{name: "foreign name on a registry with a port", repoTags: []string{"registry.example:5000/theirs/app:v1"}, target: "/images/load", reference: "registry.example:5000/theirs/app:v1", wantImage: imageTagChainVictimID, wantStatus: http.StatusForbidden},
 		{name: "unlabeled holder is refused once unowned images are", configure: denyUnowned, repoTags: []string{"shared/base:latest"}, target: "/v1.45/images/load", reference: "shared/base:latest", wantImage: imageTagChainUnownedID, wantStatus: http.StatusForbidden},
 		{name: "unlabeled holder follows allow_unowned_images", repoTags: []string{"shared/base:latest"}, target: "/v1.45/images/load", reference: "shared/base:latest", wantStatus: http.StatusOK},
+		{
+			// A containerd-store dockerd writes a name by digest as an image
+			// record of its own, whatever digest the loaded image has, so the
+			// image that was held only under that reference loses it.
+			// Confirmed against dockerd 29.5.2.
+			name: "foreign name held only by digest", held: map[string]string{"theirs/pinned@" + imageLoadChainDigest: imageTagChainVictimID},
+			repoTags: []string{"theirs/pinned@" + imageLoadChainDigest}, target: "/v1.45/images/load",
+			reference: "theirs/pinned@" + imageLoadChainDigest, wantImage: imageTagChainVictimID, wantStatus: http.StatusForbidden,
+		},
+		{
+			name: "foreign name by digest behind one of the caller's own", held: map[string]string{"theirs/pinned@" + imageLoadChainDigest: imageTagChainVictimID},
+			repoTags: []string{"mine/new:v2", "theirs/pinned@" + imageLoadChainDigest}, target: "/v1.45/images/load",
+			reference: "theirs/pinned@" + imageLoadChainDigest, wantImage: imageTagChainVictimID, wantStatus: http.StatusForbidden,
+		},
+		{name: "name by digest nothing holds", repoTags: []string{"mine/pinned@" + imageLoadChainDigest}, target: "/v1.45/images/load", reference: "mine/pinned@" + imageLoadChainDigest, wantStatus: http.StatusOK},
+		{
+			name: "caller reloads its own name by digest", held: map[string]string{"mine/pinned@" + imageLoadChainDigest: imageTagChainOwnID},
+			repoTags: []string{"mine/pinned@" + imageLoadChainDigest}, target: "/v1.45/images/load", reference: "mine/pinned@" + imageLoadChainDigest, wantStatus: http.StatusOK,
+		},
 		{name: "new name is created", repoTags: []string{"mine/new:v2"}, target: "/v1.45/images/load", reference: "mine/new:v2", wantStatus: http.StatusOK},
 		{name: "caller reloads its own name", repoTags: []string{"mine:stable"}, target: "/v1.45/images/load", reference: "mine:stable", wantStatus: http.StatusOK},
 		{
@@ -149,6 +173,16 @@ func TestServeChainLoadAuthorizesTheNamesItAssigns(t *testing.T) {
 		{name: "native load onto a short name", podman: true, labels: forged, repoTags: []string{"theirs/app:latest"}, target: "/v5.0.0/libpod/images/load", reference: "localhost/theirs/app:latest", wantImage: imageTagChainVictimID, wantStatus: http.StatusForbidden},
 		{name: "compat load onto a short name on podman", podman: true, repoTags: []string{"theirs/app:latest"}, target: "/v1.41/images/load", reference: "localhost/theirs/app:latest", wantImage: imageTagChainVictimID, wantStatus: http.StatusForbidden},
 		{name: "native load onto a name nothing holds", podman: true, repoTags: []string{"mine/new:v2"}, target: "/v5.0.0/libpod/images/load", reference: "localhost/mine/new:v2", wantStatus: http.StatusOK},
+		{
+			name: "native load onto a short name by digest", podman: true, held: map[string]string{"localhost/theirs/pinned@" + imageLoadChainDigest: imageTagChainVictimID},
+			repoTags: []string{"theirs/pinned@" + imageLoadChainDigest}, target: "/v5.0.0/libpod/images/load",
+			reference: "localhost/theirs/pinned@" + imageLoadChainDigest, wantImage: imageTagChainVictimID, wantStatus: http.StatusForbidden,
+		},
+		{
+			name: "compat load onto a short name by digest on podman", podman: true, held: map[string]string{"localhost/theirs/pinned@" + imageLoadChainDigest: imageTagChainVictimID},
+			repoTags: []string{"theirs/pinned@" + imageLoadChainDigest}, target: "/v1.41/images/load",
+			reference: "localhost/theirs/pinned@" + imageLoadChainDigest, wantImage: imageTagChainVictimID, wantStatus: http.StatusForbidden,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -159,6 +193,9 @@ func TestServeChainLoadAuthorizesTheNamesItAssigns(t *testing.T) {
 					"localhost/theirs/app:latest": imageTagChainVictimID,
 				}
 				daemon.shortNameAliases = map[string]string{}
+			}
+			for name, id := range tt.held {
+				daemon.names[name] = id
 			}
 			addr := newImageNameChain(t, daemon, tt.configure)
 

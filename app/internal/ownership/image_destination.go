@@ -28,8 +28,9 @@ import (
 
 // imageDestination is one reference a request writes. See imageDestinationFor.
 type imageDestination struct {
-	// target is the reference as name:tag, always tag-qualified, spelled the
-	// way the engine builds it.
+	// target is the reference spelled the way the engine builds it: name:tag,
+	// always tag-qualified, on every route but a load, whose archive can also
+	// name an image by digest as name@digest. See imageDigestedDestinationFor.
 	target string
 	// storedTarget is a second name the same request can land on, set only
 	// when the daemon may store the reference under another name than the one
@@ -204,27 +205,48 @@ func imageDestinationFor(repo, tag string, naming imageTagNaming) (imageDestinat
 	return imageDestination{target: name + ":" + tag, storedTarget: stored + ":" + tag}, imageDestinationReadable
 }
 
-// imageDigestedNameProblem reports why a reference by digest, repository@digest,
-// cannot be read the way the daemon reads it. A readable one has no
-// destination: a pull or a load by digest gives the image no tag on either
-// engine, so there is no name to take from anyone.
+// imageDigestedDestinationFor builds the reference repository@digest, or
+// reports why it cannot be read the way the daemon reads it. It is
+// imageDestinationFor for a name that carries a digest where a tag would be:
+// the same grammar, the same length bounds and the same names under naming,
+// with the digest in place of the tag and nothing appended to it.
 //
 // The repository has to be a name with no tag. dockerd reads name:tag@digest
 // by the digest and the engines differ on what becomes of the tag, so that
-// shape is refused. The digest has to be one both engines' parsers accept. See
-// isImageDigest.
-func imageDigestedNameProblem(repository, digest string, naming imageTagNaming) imageDestinationProblem {
+// shape is refused here and left to the route to read if it can. The digest
+// has to be one both engines' parsers accept. See isImageDigest.
+//
+// Whether such a reference is a destination is the route's call. A pull by
+// digest fetches the content the digest names, so the reference can only land
+// on that content and takes nothing from anyone. A load is different: see
+// imageLoadDestinations.
+func imageDigestedDestinationFor(repository, digest string, naming imageTagNaming) (imageDestination, imageDestinationProblem) {
 	// The tag stands in for the one a name beside a digest must not carry,
 	// so a name that does carry one comes back as tagged twice.
-	switch _, problem := imageDestinationFor(repository, imageTagDefaultTag, naming); {
+	tagged, problem := imageDestinationFor(repository, imageTagDefaultTag, naming)
+	switch {
 	case problem == imageDestinationTaggedTwice:
-		return imageDestinationTagAndDigest
+		return imageDestination{}, imageDestinationTagAndDigest
 	case problem != imageDestinationReadable:
-		return problem
+		return imageDestination{}, problem
 	case !isImageDigest(digest):
-		return imageDestinationBadDigest
+		return imageDestination{}, imageDestinationBadDigest
 	}
-	return imageDestinationReadable
+	byDigest := func(target string) string {
+		if target == "" {
+			return ""
+		}
+		return strings.TrimSuffix(target, ":"+imageTagDefaultTag) + "@" + digest
+	}
+	return imageDestination{target: byDigest(tagged.target), storedTarget: byDigest(tagged.storedTarget)}, imageDestinationReadable
+}
+
+// imageDigestedNameProblem reports why a reference by digest, repository@digest,
+// cannot be read the way the daemon reads it, for a route on which a readable
+// one has no destination. See imageDigestedDestinationFor.
+func imageDigestedNameProblem(repository, digest string, naming imageTagNaming) imageDestinationProblem {
+	_, problem := imageDigestedDestinationFor(repository, digest, naming)
+	return problem
 }
 
 // isImageDigest reports whether value is a digest both engines' parsers

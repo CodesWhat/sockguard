@@ -78,9 +78,22 @@ func imageLoadOwnershipReferences(r *http.Request, normPath string, flavor upstr
 //     spelled on dockerd, and under both names when the upstream is or may be
 //     Podman.
 //
-// A name with a digest and no tag (what `docker save name@sha256:...` writes)
-// gives the image no tag and has no destination. An entry with no name, or
-// the "<none>:<none>" placeholder, names nothing.
+// A name with a digest and no tag, name@sha256:..., is a destination too,
+// checked as spelled. A containerd-store dockerd writes it as an image record
+// of its own and does not compare the digest in the name with the image it
+// loaded, so the record moves to the archive's image and the image that was
+// held only under that reference loses it: `docker pull name@sha256:...` holds
+// an image that way, and afterwards the reference answers "No such image".
+// Confirmed against dockerd 29.5.2, where the inspect of name@digest before
+// the load answers for the image holding it. Podman keeps a name by digest
+// only where the digest is the loaded image's own (containers/image compares
+// the two before it copies) and resolves an inspect of one to the image with
+// that digest, and moby's classic store refuses to tag by digest at all, so on
+// those the check only ever finds the same image or nothing. A name carrying a
+// tag and a digest is refused: a containerd-store dockerd records a Docker
+// archive's without the tag and an OCI archive's exactly as spelled.
+//
+// An entry with no name, or the "<none>:<none>" placeholder, names nothing.
 //
 // Refused: a load whose archive nobody inspected, which is a request that
 // reached this layer without passing the filter's inspector; an archive in
@@ -111,13 +124,15 @@ func imageLoadDestinations(record *logging.ImageLoadRecord, normPath string, fla
 		if names++; names > imageLoadMaxNames {
 			return nil, imageLoadDenyTooManyNames
 		}
+		var (
+			dest    imageDestination
+			problem imageDestinationProblem
+		)
 		if repository, digest, digested := strings.Cut(name, "@"); digested {
-			if problem := imageDigestedNameProblem(repository, digest, naming); problem != imageDestinationReadable {
-				return nil, imageLoadRoute.refusal(problem)
-			}
-			continue
+			dest, problem = imageDigestedDestinationFor(repository, digest, naming)
+		} else {
+			dest, problem = imageDestinationFor(name, "", naming)
 		}
-		dest, problem := imageDestinationFor(name, "", naming)
 		if problem != imageDestinationReadable {
 			return nil, imageLoadRoute.refusal(problem)
 		}

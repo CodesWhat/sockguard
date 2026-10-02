@@ -37,7 +37,30 @@ func TestImageLoadDestinations(t *testing.T) {
 		},
 		{name: "a repeated name is checked once", record: &logging.ImageLoadRecord{References: []string{"team/app:v1", "team/app:v1"}}, path: imageLoadPath, want: []imageDestination{{target: "team/app:v1"}}},
 		{name: "name with no tag", record: &logging.ImageLoadRecord{References: []string{"team/app"}}, path: imageLoadPath, want: []imageDestination{{target: "team/app:latest"}}},
-		{name: "name saved by digest writes no tag", record: &logging.ImageLoadRecord{References: []string{"docker.io/library/app@" + testDigestSHA256}}, path: imageLoadPath},
+		{
+			name: "name by digest is checked as the daemon holds it", record: &logging.ImageLoadRecord{References: []string{"docker.io/library/app@" + testDigestSHA256}}, path: imageLoadPath,
+			want: []imageDestination{{target: "docker.io/library/app@" + testDigestSHA256}},
+		},
+		{
+			name: "short name by digest", record: &logging.ImageLoadRecord{References: []string{"team/app@" + testDigestSHA256}}, path: imageLoadPath,
+			want: []imageDestination{{target: "team/app@" + testDigestSHA256}},
+		},
+		{
+			name: "name by digest beside the same name by tag", record: &logging.ImageLoadRecord{References: []string{"team/app:latest", "team/app@" + testDigestSHA256}}, path: imageLoadPath,
+			want: []imageDestination{{target: "team/app:latest"}, {target: "team/app@" + testDigestSHA256}},
+		},
+		{
+			name: "podman compat short name by digest is checked under both names", record: &logging.ImageLoadRecord{References: []string{"team/app@" + testDigestSHA256}}, path: imageLoadPath, flavor: upstreamflavor.Podman,
+			want: []imageDestination{{target: "team/app@" + testDigestSHA256, storedTarget: "localhost/team/app@" + testDigestSHA256}},
+		},
+		{
+			name: "native route checks the stored name by digest", record: &logging.ImageLoadRecord{References: []string{"team/app@" + testDigestSHA256}}, path: libpodImageLoadPath,
+			want: []imageDestination{{target: "localhost/team/app@" + testDigestSHA256}},
+		},
+		{
+			name: "native route keeps a name by digest with a registry", record: &logging.ImageLoadRecord{References: []string{"quay.io/team/app@" + testDigestSHA256}}, path: libpodImageLoadPath,
+			want: []imageDestination{{target: "quay.io/team/app@" + testDigestSHA256}},
+		},
 		{
 			name: "podman compat short name is checked under both names", record: &logging.ImageLoadRecord{References: []string{"team/app:v1"}}, path: imageLoadPath, flavor: upstreamflavor.Podman,
 			want: []imageDestination{{target: "team/app:v1", storedTarget: "localhost/team/app:v1"}},
@@ -54,6 +77,8 @@ func TestImageLoadDestinations(t *testing.T) {
 		{name: "tag and digest", record: &logging.ImageLoadRecord{References: []string{"team/app:v1@" + testDigestSHA256}}, path: imageLoadPath, wantReason: "owner policy denied image load that names both a tag and a digest"},
 		{name: "digest outside the grammar", record: &logging.ImageLoadRecord{References: []string{"team/app@sha256:abc"}}, path: imageLoadPath, wantReason: "owner policy denied image load with a digest outside the digest grammar"},
 		{name: "digest algorithm name", record: &logging.ImageLoadRecord{References: []string{"sha256:v1"}}, path: imageLoadPath, wantReason: "owner policy denied image load whose name is a digest algorithm name: the engines read such a reference as an image ID"},
+		{name: "digest algorithm name by digest", record: &logging.ImageLoadRecord{References: []string{"sha256@" + testDigestSHA256}}, path: imageLoadPath, wantReason: "owner policy denied image load whose name is a digest algorithm name: the engines read such a reference as an image ID"},
+		{name: "name outside the grammar by digest", record: &logging.ImageLoadRecord{References: []string{"Team/App@" + testDigestSHA256}}, path: imageLoadPath, wantReason: "owner policy denied image load with a name outside the image reference grammar"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -97,6 +122,13 @@ func TestImageLoadAuthorizesTheNamesItAssigns(t *testing.T) {
 		{name: "second name another owner's image holds", path: "/v1.45/images/load", record: &logging.ImageLoadRecord{References: []string{"mine/app:latest", "theirs/app:v1"}}, wantStatus: http.StatusForbidden, wantReason: heldByAnotherOwner},
 		{name: "name an unlabeled image holds", path: "/images/load", record: &logging.ImageLoadRecord{References: []string{"shared/base:latest"}}, wantStatus: http.StatusForbidden, wantReason: heldByAnotherOwner},
 		{name: "name an unlabeled image holds with unowned images allowed", path: "/images/load", record: &logging.ImageLoadRecord{References: []string{"shared/base:latest"}}, allowUnowned: true, wantStatus: http.StatusOK},
+		{name: "name by digest another owner's image holds", path: "/images/load", record: &logging.ImageLoadRecord{References: []string{"theirs/app@" + testDigestSHA256}}, wantStatus: http.StatusForbidden, wantReason: heldByAnotherOwner},
+		{name: "name by digest behind one of the caller's own", path: "/images/load", record: &logging.ImageLoadRecord{References: []string{"mine/app:latest", "theirs/app@" + testDigestSHA256}}, wantStatus: http.StatusForbidden, wantReason: heldByAnotherOwner},
+		{name: "name by digest an unlabeled image holds", path: "/images/load", record: &logging.ImageLoadRecord{References: []string{"shared/base@" + testDigestSHA256}}, wantStatus: http.StatusForbidden, wantReason: heldByAnotherOwner},
+		{name: "name by digest an unlabeled image holds with unowned images allowed", path: "/images/load", record: &logging.ImageLoadRecord{References: []string{"shared/base@" + testDigestSHA256}}, allowUnowned: true, wantStatus: http.StatusOK},
+		{name: "name by digest the caller's image holds", path: "/images/load", record: &logging.ImageLoadRecord{References: []string{"mine/app@" + testDigestSHA256}}, wantStatus: http.StatusOK},
+		{name: "name by digest nothing holds", path: "/images/load", record: &logging.ImageLoadRecord{References: []string{"mine/new@" + testDigestSHA256}}, wantStatus: http.StatusOK},
+		{name: "native name by digest another owner's image holds", path: "/v5.0.0/libpod/images/load", record: &logging.ImageLoadRecord{References: []string{"theirs/app@" + testDigestSHA256}}, wantStatus: http.StatusForbidden, wantReason: "libpod " + heldByAnotherOwner},
 		{name: "name the caller's image holds", path: "/images/load", record: &logging.ImageLoadRecord{References: []string{"mine/app:latest"}}, wantStatus: http.StatusOK},
 		{name: "name nothing holds", path: "/images/load", record: &logging.ImageLoadRecord{References: []string{"mine/new:v2"}}, wantStatus: http.StatusOK},
 		{name: "no names", path: "/images/load", record: &logging.ImageLoadRecord{}, wantStatus: http.StatusOK},
@@ -115,6 +147,11 @@ func TestImageLoadAuthorizesTheNamesItAssigns(t *testing.T) {
 					"localhost/theirs/app:v1": theirs,
 					"mine/app:latest":         {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
 					"shared/base:latest":      {found: true},
+
+					"theirs/app@" + testDigestSHA256:           theirs,
+					"localhost/theirs/app@" + testDigestSHA256: theirs,
+					"mine/app@" + testDigestSHA256:             {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+					"shared/base@" + testDigestSHA256:          {found: true},
 				},
 			}}
 			forwarded := false
