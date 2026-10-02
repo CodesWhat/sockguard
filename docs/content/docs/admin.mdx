@@ -23,7 +23,9 @@ Both endpoints share the `admin.enabled` gate. When disabled, Sockguard never
 wires the admin layers into the handler chain, so a request to either path
 falls through to the normal rule evaluator and is denied per the active
 policy — `403` default-deny (`no_matching_allow_rule`) unless some other rule
-happens to match the path first.
+happens to match the path first. A call that carries a form `Content-Type`, as
+`curl --data-binary` does, gets the `400` form-body refusal instead (see
+[CI gate usage](#ci-gate-usage)).
 
 ## Dedicated admin listener (recommended)
 
@@ -183,6 +185,14 @@ in CI without extra scripting. Use `--fail-with-body` (curl 7.76 or later) and
 not plain `--fail`: `--fail` throws the response body away on any status at or
 above 400, which is exactly the `422` case the gate exists for, so the job would
 fail without ever printing which validation error caused it.
+
+A `400` with reason code `request_form_body_refused` on this call means the
+request never reached the admin endpoint. curl labels `--data-binary` as a form
+(`application/x-www-form-urlencoded`), the admin layer is what normally answers
+before the form-body check, and without it the request falls through to the
+proxy chain, which refuses form bodies. Check that `admin.enabled` is `true`,
+and that the request goes to the admin listener: the dedicated `admin.listen`
+address if you set one, or the listener named by `admin.mount_on`.
 
 ## GET /admin/policy/version
 
