@@ -278,6 +278,55 @@ The same boundary applies to references embedded inside container and service pa
 
 Network membership changes apply that boundary to both sides of the relationship. On Docker-compatible and native libpod connect/disconnect requests, Sockguard checks the network named by the URL and the body `Container` reference. A foreign resource is denied, and an unresolved body container fails closed before the daemon receives the write. The ownership check reads and restores the bounded request body, so an allowed request reaches the daemon unchanged.
 
+An image retag names two images, and both are authorized.
+`POST /images/{name}/tag` and Podman's `POST /libpod/images/{name}/tag` take
+the source in the path and the reference to create in `repo` and `tag`, and
+both engines move that reference off whatever image already holds it.
+Sockguard builds the target the way the daemon does and inspects it once the
+source has passed: `repo:tag`, the tag `repo` itself carries when there is no
+`tag`, `latest` when there is neither, and a registry port is never read as a
+tag. A target that no image holds yet is allowed, because tagging it takes
+nothing from anyone. A target that resolves is checked like the subject of any
+other per-image request. The caller's own image passes, another owner's is a
+`403`, and an unlabeled one follows `allow_unowned_images`.
+
+On a Podman upstream the Docker-compatible route checks a `repo` that names no
+registry under two names. Podman either tags the name a local lookup finds or
+stores the name under `localhost/`, depending on
+`compat_api_enforce_docker_hub` in its `containers.conf`, and Sockguard cannot
+see that setting. So it inspects `{repo}:{tag}` and `localhost/{repo}:{tag}`,
+and both have to pass. dockerd has one reading of a name and is inspected
+once, and so is a `repo` that names its registry on either engine. See
+[Known Limitations](/podman#known-limitations).
+
+That last case matters when owners share a daemon. With the option at its
+default of `true`, a name held by an unlabeled image can be repointed by any
+owner, the same way that image can already be used, pushed and tagged by any
+owner. An image pulled through the proxy is unlabeled, so set
+`allow_unowned_images: false` when owners do not trust each other.
+
+A retag whose target Sockguard cannot read exactly as the daemon will is
+refused with a `403` before anything is inspected: no `repo`, a repeated
+`repo` or `tag`, either key in any spelling but lowercase, a query with a
+semicolon or a bad percent escape, a `repo` carrying a digest, a `repo`
+carrying a tag next to a `tag` parameter, a name or tag outside the image
+reference grammar, a name that is only too long once the engine completes it
+(a `repo` with no slash over 247 characters, which dockerd reads as
+`library/{repo}`, and on a Podman upstream a `repo` with no registry over 245,
+which Podman stores as `localhost/{repo}`), and a `repo` that is a digest
+algorithm name (`sha256`, `sha384` or `sha512`). One path is refused as well:
+an unversioned `POST /images/{name}/tag` whose image is named `libpod` or
+starts with `libpod/`, because Podman reads that URL as a native request and
+Sockguard reads it as a compat one. The versioned path every Docker client
+sends is unaffected; see [Known Limitations](/podman#known-limitations). The
+target denial and these refusals are verdicts, so a `warn` or `audit` profile
+records the would-be denial and forwards. An inspect of the target that
+errors, under either name, is a `502` in every mode.
+
+`POST /libpod/images/{name}/untag` takes the same two parameters and needs no
+second check. Podman removes a name only from the image the path resolves, so
+the source image is the whole effect.
+
 Native image batch export and removal get a stricter preflight because
 forwarding one mixed batch can disclose or delete several images before a
 later member fails. In `enforce` mode, Sockguard resolves every repeated

@@ -161,13 +161,14 @@ func TestImagePushRefusesUnenumerableTagShapes(t *testing.T) {
 }
 
 // TestImagePushDoesNotTouchOtherImageRoutes pins the neighbors: the retag
-// route keeps authorizing the bare path source (docker tag src dst spells the
-// full source reference into the path), and the plain image inspect keeps its
-// bare-identifier semantics.
+// route keeps the bare path identifier for its source (docker tag src dst
+// spells the full source reference into the path) and authorizes its target
+// on its own terms, and the plain image inspect keeps its bare-identifier
+// semantics.
 func TestImagePushDoesNotTouchOtherImageRoutes(t *testing.T) {
 	const owner = "job-123"
 
-	t.Run("retag authorizes the bare path source", func(t *testing.T) {
+	t.Run("retag authorizes the bare path source, then its target", func(t *testing.T) {
 		inspector := &recordingInspector{resources: map[string]map[string]inspectResult{
 			string(dockerresource.KindImage): {
 				"src": {labels: map[string]string{"com.sockguard.owner": owner}, found: true},
@@ -184,8 +185,8 @@ func TestImagePushDoesNotTouchOtherImageRoutes(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
 		}
-		if len(inspector.calls) != 1 || inspector.calls[0].id != "src" {
-			t.Fatalf("inspect calls = %#v, want exactly one for the bare source %q", inspector.calls, "src")
+		if len(inspector.calls) != 2 || inspector.calls[0].id != "src" || inspector.calls[1].id != "registry.example/team/app:v2" {
+			t.Fatalf("inspect calls = %#v, want the bare source %q and then the target %q", inspector.calls, "src", "registry.example/team/app:v2")
 		}
 	})
 

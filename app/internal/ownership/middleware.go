@@ -119,6 +119,13 @@ type ownershipRequestReferences struct {
 	// {name}:{tag} reference is the local image the daemon will push. See
 	// imagePushOwnershipReferences for the shapes that refuse instead.
 	imagePushTag string
+	// imageTag carries the reference POST /images/{name}/tag and POST
+	// /libpod/images/{name}/tag create, read from `repo` and `tag` by the
+	// mutation pass. It is kept apart from denyReason so a refusal applies
+	// only where the authorization pass classifies the request as a retag,
+	// after the image-SCP route view has had its say. See
+	// imageTagOwnershipReferences.
+	imageTag *imageTagOwnershipReference
 }
 
 // Options configures per-proxy resource ownership labeling and enforcement.
@@ -135,10 +142,13 @@ type Options struct {
 	AllowCrossOwnerNamespaceSharing bool
 	// UpstreamFlavor is the engine behind the upstream socket, resolved at
 	// startup from upstream.flavor (see internal/upstreamflavor). It changes
-	// exactly one thing here: whether the Docker-compat GET /secrets is
-	// refused, because on Podman that path is compat.ListSecrets, whose
-	// filter grammar rejects the owner label this layer injects into every
-	// other list. See filter.PodmanCompatSecretListDenyReason.
+	// two things here. The Docker-compat GET /secrets is refused on Podman,
+	// because that path is compat.ListSecrets there, whose filter grammar
+	// rejects the owner label this layer injects into every other list. See
+	// filter.PodmanCompatSecretListDenyReason. And a Docker-compat image
+	// retag onto a name with no registry is checked under two names on
+	// Podman, which can store it under localhost/ where dockerd has one
+	// reading of a name. See imageTagNamingFor.
 	//
 	// Podman's other divergence, the disjunctive GET /events filter, needs no
 	// flavor here: addOwnerLabelFilter replaces the key with exactly one
@@ -148,8 +158,10 @@ type Options struct {
 	// as a flavor.
 	//
 	// The zero value means Docker, so a chain builder that drops the field
-	// leaves the compat /secrets 500 in place with every unit test green;
-	// TestServeChainPassesResolvedFlavorToOwnership is the wiring proof.
+	// leaves the compat /secrets 500 in place, and the retag checked under
+	// one name, with every unit test green;
+	// TestServeChainPassesResolvedFlavorToOwnership is the wiring proof, and
+	// TestServeChainImageTagChecksTheLocalhostNameOnPodman is a second one.
 	UpstreamFlavor upstreamflavor.Flavor
 }
 
@@ -346,6 +358,8 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 		return nil, addOwnerLabelToBody(r, opts.LabelKey, opts.Owner)
 	case r.Method == http.MethodPost && isImagePushRoutePath(r.Method, normPath):
 		return imagePushOwnershipReferences(r, normPath), nil
+	case isImageTagRoutePath(r.Method, normPath):
+		return imageTagOwnershipReferences(r, normPath, opts.UpstreamFlavor), nil
 	case r.Method == http.MethodPost && isCommitPath(normPath):
 		return mutateCommitOwnershipRequest(r, opts)
 	case r.Method == http.MethodPost && (normPath == "/build" || normPath == libpodPrefix+"build"):
@@ -510,7 +524,7 @@ func allowPathOwnershipRequest(
 		if !ok {
 			return verdictDeny, imagePushDenyNoTag, nil
 		}
-		return checkOwnedResource(ctx, inspectResource, dockerresource.KindImage, identifier, opts, opts.AllowUnownedImages)
+		return checkOwnedImageRoute(ctx, inspectResource, identifier, opts, refs, method, normPath)
 	}
 	if identifier, ok := serviceIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindService, identifier, opts, false)
@@ -577,7 +591,7 @@ func allowPathOwnershipRequest(
 		}
 	}
 	if identifier, ok := libpodImageIdentifierForRoute(method, normPath, routePath); ok {
-		return checkOwnedResource(ctx, inspectResource, dockerresource.KindImage, identifier, opts, opts.AllowUnownedImages)
+		return checkOwnedImageRoute(ctx, inspectResource, identifier, opts, refs, method, normPath)
 	}
 	if identifier, ok := libpodSecretIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindSecret, identifier, opts, false)
