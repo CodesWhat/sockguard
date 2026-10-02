@@ -807,6 +807,15 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 		namedServeHandlerLayer("withOwnership", withOwnership(cfg, resolver, logger, runtimeUpstreamFlavor(runtime))),
 		namedServeHandlerLayer("withVisibility", withVisibility(cfg, resolver, logger, runtimeUpstreamFlavor(runtime))),
 		namedServeHandlerLayer("withFilter", withFilter(cfg, resolver, logger, rules, clientProfiles)),
+		// withFormBodyGuard is appended right AFTER withFilter so it executes
+		// immediately BEFORE it. Every layer above reads request parameters
+		// from the URL query, and both engines also read them from a form
+		// body, so a request carrying one must not reach any of them. The
+		// admin, health and metrics endpoints and the rate limiter are
+		// appended later and so run first: they answer without the daemon,
+		// and the documented `curl --data-binary` call to the admin validate
+		// endpoint labels its YAML as a form body.
+		namedServeHandlerLayer("withFormBodyGuard", withFormBodyGuard()),
 	}
 
 	// Admin endpoints sit inside filter (so the filter never sees admin paths)

@@ -101,7 +101,8 @@ echo "==> Building sockguard, mockdocker, loadgen"
 
 echo "==> Starting mockdocker on ${MOCK_SOCK}"
 rm -f "${MOCK_SOCK}"
-"${BUILD_DIR}/mockdocker" -socket "${MOCK_SOCK}" >/dev/null 2>&1 &
+MOCK_LOG="${BUILD_DIR}/mockdocker.log"
+"${BUILD_DIR}/mockdocker" -socket "${MOCK_SOCK}" >"${MOCK_LOG}" 2>&1 &
 MOCK_PID=$!
 trap 'kill "${MOCK_PID}" 2>/dev/null || true; rm -f "${MOCK_SOCK}" "${PROXY_SOCK}"; rm -rf "${BUILD_DIR}"; rm -f "${SAMPLES_TSV}"' EXIT
 
@@ -109,12 +110,17 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   [ -S "${MOCK_SOCK}" ] && break
   sleep 0.2
 done
-[ -S "${MOCK_SOCK}" ] || { echo "mockdocker socket never appeared" >&2; exit 1; }
+if [ ! -S "${MOCK_SOCK}" ]; then
+  echo "mockdocker socket never appeared; mockdocker log follows" >&2
+  cat "${MOCK_LOG}" >&2 || true
+  exit 1
+fi
 
+PROXY_LOG="${BUILD_DIR}/sockguard.log"
 echo "==> Starting sockguard on ${PROXY_SOCK}"
 rm -f "${PROXY_SOCK}"
 "${BUILD_DIR}/sockguard" serve --config "${BENCH_DIR}/config.yaml" \
-  --listen-socket "${PROXY_SOCK}" --upstream-socket "${MOCK_SOCK}" >/dev/null 2>&1 &
+  --listen-socket "${PROXY_SOCK}" --upstream-socket "${MOCK_SOCK}" >"${PROXY_LOG}" 2>&1 &
 PROXY_PID=$!
 trap 'kill "${MOCK_PID}" "${PROXY_PID}" 2>/dev/null || true; rm -f "${MOCK_SOCK}" "${PROXY_SOCK}"; rm -rf "${BUILD_DIR}"; rm -f "${SAMPLES_TSV}"' EXIT
 
@@ -122,7 +128,11 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   [ -S "${PROXY_SOCK}" ] && break
   sleep 0.2
 done
-[ -S "${PROXY_SOCK}" ] || { echo "sockguard socket never appeared" >&2; exit 1; }
+if [ ! -S "${PROXY_SOCK}" ]; then
+  echo "sockguard socket never appeared; sockguard log follows" >&2
+  cat "${PROXY_LOG}" >&2 || true
+  exit 1
+fi
 
 # RSS sampler reads VmRSS (Linux) or `ps -o rss=` (macOS) for a stable
 # kilobyte count regardless of the runner host kernel. Threads come

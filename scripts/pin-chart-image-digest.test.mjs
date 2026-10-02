@@ -65,17 +65,21 @@ describe("chart image digest pin", () => {
     }
   });
 
-  it("rejects a version that does not match Chart.yaml appVersion", () => {
-    assert.throws(
-      () =>
-        pinChartImageTag({
-          values: VALUES,
-          appVersion: "2.2.0",
-          version: "2.3.0",
-          digest: DIGEST,
-        }),
-      /Refusing to pin 2\.3\.0: chart\/sockguard\/Chart\.yaml declares appVersion "2\.2\.0"/u,
-    );
+  it("skips without throwing when the version does not match Chart.yaml appVersion", () => {
+    const result = pinChartImageTag({
+      values: VALUES,
+      appVersion: "2.2.0",
+      version: "2.3.0",
+      digest: DIGEST,
+    });
+
+    assert.equal(result.skipped, true);
+    assert.equal(result.changed, false);
+    assert.equal(result.values, VALUES);
+    assert.match(result.reason, /release 2\.3\.0/u);
+    assert.match(result.reason, /appVersion "2\.2\.0"/u);
+    assert.match(result.reason, /RELEASING\.md/u);
+
     assert.throws(
       () =>
         pinChartImageTag({ values: VALUES, appVersion: "2.2.0", version: "2.2", digest: DIGEST }),
@@ -165,7 +169,7 @@ describe("chart image digest pin", () => {
     assert.match(second.stdout, /is already 2\.2\.0@sha256:a{64} -- nothing to write/u);
   });
 
-  it("exits non-zero and leaves the file alone on a bad digest or version", () => {
+  it("exits non-zero and leaves the file alone on a bad digest", () => {
     const dir = chartFixture("cli-reject");
     const valuesPath = resolve(dir, "chart/sockguard/values.yaml");
 
@@ -173,9 +177,18 @@ describe("chart image digest pin", () => {
     assert.notEqual(badDigest.status, 0);
     assert.match(badDigest.stderr, /Invalid manifest digest/u);
 
-    const badVersion = runPin(dir, ["--version", "2.3.0", "--digest", DIGEST]);
-    assert.notEqual(badVersion.status, 0);
-    assert.match(badVersion.stderr, /declares appVersion "2\.2\.0"/u);
+    assert.equal(readFileSync(valuesPath, "utf8"), VALUES);
+  });
+
+  it("exits zero with a workflow warning and leaves the file alone on version skew", () => {
+    const dir = chartFixture("cli-skew");
+    const valuesPath = resolve(dir, "chart/sockguard/values.yaml");
+
+    const skew = runPin(dir, ["--version", "2.3.0", "--digest", DIGEST]);
+    assert.equal(skew.status, 0, skew.stderr);
+    assert.match(skew.stdout, /^::warning::release 2\.3\.0 but .*declares appVersion "2\.2\.0"/mu);
+    assert.match(skew.stdout, /RELEASING\.md/u);
+    assert.equal(skew.stderr, "");
 
     assert.equal(readFileSync(valuesPath, "utf8"), VALUES);
   });
