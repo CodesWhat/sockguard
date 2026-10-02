@@ -13,7 +13,7 @@ import (
 
 	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/control"
 	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/gateway"
-	"golang.org/x/net/http2"
+	"github.com/codeswhat/sockguard/v2/app/internal/h2conn"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -34,7 +34,7 @@ func Run(ctx context.Context, opts Options) (retErr error) {
 		return err
 	}
 	defer conn.Close()
-	client, err := (&http2.Transport{}).NewClientConn(conn)
+	client, err := h2conn.NewClientConn(conn, nil)
 	if err != nil {
 		return err
 	}
@@ -51,7 +51,7 @@ func Run(ctx context.Context, opts Options) (retErr error) {
 	sessionDone := make(chan struct{})
 	go func() {
 		defer close(sessionDone)
-		(&http2.Server{MaxConcurrentStreams: 8}).ServeConn(sessionConn, &http2.ServeConnOpts{Context: ctx, Handler: http.HandlerFunc(serveSession)})
+		h2conn.Serve(ctx, sessionConn, h2conn.ServerConfig{Handler: http.HandlerFunc(serveSession), MaxConcurrentStreams: 8})
 	}()
 	defer func() { _ = sessionConn.Close(); <-sessionDone }()
 
@@ -93,7 +93,7 @@ func Run(ctx context.Context, opts Options) (retErr error) {
 	relay := &gatewayRelay{client: client, build: build, report: newOperationReporter(opts.Operations)}
 	go func() {
 		defer close(served)
-		(&http2.Server{MaxConcurrentStreams: 16}).ServeConn(process.conn, &http2.ServeConnOpts{Context: ctx, BaseConfig: &http.Server{MaxHeaderBytes: 64 << 10, ReadHeaderTimeout: 10 * time.Second}, Handler: relay})
+		h2conn.Serve(ctx, process.conn, h2conn.ServerConfig{Handler: relay, MaxConcurrentStreams: 16, MaxHeaderBytes: 64 << 10, PrefaceTimeout: 10 * time.Second})
 	}()
 	defer func() { _ = process.conn.Close(); <-served }()
 
@@ -130,7 +130,7 @@ func Run(ctx context.Context, opts Options) (retErr error) {
 	}
 }
 
-func waitGateway(ctx context.Context, client *http2.ClientConn, build string, rootDone <-chan struct{}, rootErr *error, pong *gateway.PongResponse) error {
+func waitGateway(ctx context.Context, client *http.ClientConn, build string, rootDone <-chan struct{}, rootErr *error, pong *gateway.PongResponse) error {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {

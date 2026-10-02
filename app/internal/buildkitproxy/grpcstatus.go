@@ -60,7 +60,7 @@ func writeGRPCStatus(w http.ResponseWriter, code int, message string) {
 // writeGRPCTrailerStatus sets grpc-status/grpc-message as TRAILERS on w,
 // using the http.TrailerPrefix convention (valid for both HTTP/1.1 chunked
 // and HTTP/2 responses via net/http's server abstractions, which is what
-// golang.org/x/net/http2.Server's per-request ResponseWriter implements) —
+// the HTTP/2 server's per-request ResponseWriter implements) —
 // used when a stream's response headers (and possibly some body bytes) have
 // ALREADY been relayed and sockguard needs to end the stream with an error
 // status instead of the daemon's real trailers, e.g. after a mid-stream

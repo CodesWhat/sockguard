@@ -18,11 +18,11 @@ import (
 
 	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/gateway"
 	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/pb"
-	"golang.org/x/net/http2"
+	"github.com/codeswhat/sockguard/v2/app/internal/h2conn"
 	"google.golang.org/protobuf/proto"
 )
 
-func relayTestClient(t *testing.T, handler http.HandlerFunc) *http2.ClientConn {
+func relayTestClient(t *testing.T, handler http.HandlerFunc) *http.ClientConn {
 	t.Helper()
 	server := httptest.NewUnstartedServer(handler)
 	server.EnableHTTP2 = true
@@ -35,7 +35,7 @@ func relayTestClient(t *testing.T, handler http.HandlerFunc) *http2.ClientConn {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { conn.Close() })
-	client, err := (&http2.Transport{}).NewClientConn(conn)
+	client, err := h2conn.NewClientConn(conn, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

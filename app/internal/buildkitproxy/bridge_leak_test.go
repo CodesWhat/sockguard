@@ -2,18 +2,17 @@ package buildkitproxy
 
 import (
 	"io"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
-
-	"golang.org/x/net/http2"
 )
 
 // TestBridgeSetupTeardownDoesNotLeakGoroutines drives many full bridge
 // lifecycles (setup, one admitted round trip, client-initiated teardown) in
 // a row and asserts the process's live goroutine count settles back to its
 // pre-test baseline once the last one completes — sockguard's own runBridge,
-// http2.Server.ServeConn, and the daemon-leg http2.Server this test spins up
+// h2conn.Serve, and the daemon-leg HTTP/2 server this test spins up
 // must all actually exit rather than leaking a per-tunnel goroutine on the
 // ordinary, non-error teardown path.
 func TestBridgeSetupTeardownDoesNotLeakGoroutines(t *testing.T) {
@@ -22,7 +21,7 @@ func TestBridgeSetupTeardownDoesNotLeakGoroutines(t *testing.T) {
 
 	const iterations = 25
 	for i := 0; i < iterations; i++ {
-		runBridgeAndWaitClosed(t, EndpointGRPC, allowAllPolicy, DefaultLimits(), echoDaemonHandler(), func(driver *http2.ClientConn) {
+		runBridgeAndWaitClosed(t, EndpointGRPC, allowAllPolicy, DefaultLimits(), echoDaemonHandler(), func(driver *http.ClientConn) {
 			resp, err := driver.RoundTrip(newGRPCRequest(t, "/grpc.health.v1.Health/Check", "payload"))
 			if err != nil {
 				t.Fatalf("iteration %d: RoundTrip: %v", i, err)
@@ -51,7 +50,7 @@ func TestBridgeDeniedStreamBudgetTeardownDoesNotLeakGoroutines(t *testing.T) {
 
 	const iterations = 15
 	for i := 0; i < iterations; i++ {
-		runBridgeAndWaitClosed(t, EndpointGRPC, allowAllPolicy, limits, echoDaemonHandler(), func(driver *http2.ClientConn) {
+		runBridgeAndWaitClosed(t, EndpointGRPC, allowAllPolicy, limits, echoDaemonHandler(), func(driver *http.ClientConn) {
 			for range 3 {
 				resp, err := driver.RoundTrip(newGRPCRequest(t, "/moby.buildkit.v1.Control/Prune", ""))
 				if err != nil {
@@ -69,7 +68,7 @@ func TestBridgeDeniedStreamBudgetTeardownDoesNotLeakGoroutines(t *testing.T) {
 
 // TestBridgeIdleTimeoutTeardownDoesNotLeakGoroutines is the third teardown
 // path: Limits.IdleTimeout closing a tunnel with no stream activity at all,
-// entirely from inside golang.org/x/net/http2.Server's own idle-connection
+// entirely from inside the HTTP/2 server's own idle-connection
 // machinery, with no client-initiated close and no denied stream ever sent.
 func TestBridgeIdleTimeoutTeardownDoesNotLeakGoroutines(t *testing.T) {
 	check := goroutineLeakCheck(t)
@@ -80,9 +79,9 @@ func TestBridgeIdleTimeoutTeardownDoesNotLeakGoroutines(t *testing.T) {
 
 	const iterations = 10
 	for i := 0; i < iterations; i++ {
-		runBridgeAndWaitClosed(t, EndpointGRPC, allowAllPolicy, limits, echoDaemonHandler(), func(_ *http2.ClientConn) {
+		runBridgeAndWaitClosed(t, EndpointGRPC, allowAllPolicy, limits, echoDaemonHandler(), func(_ *http.ClientConn) {
 			// Hold the connection idle past Limits.IdleTimeout so
-			// http2.Server's own idle machinery closes the tunnel,
+			// the HTTP/2 server's own idle machinery closes the tunnel,
 			// rather than the helper's client-initiated close winning
 			// the race — otherwise this measures the same teardown path
 			// TestBridgeSetupTeardownDoesNotLeakGoroutines already covers.

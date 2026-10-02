@@ -18,12 +18,12 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/net/http2"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/control"
 	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/pb"
 	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproxy"
+	"github.com/codeswhat/sockguard/v2/app/internal/h2conn"
 )
 
 type llbDaemonDialer struct{ socket string }
@@ -110,8 +110,7 @@ func TestBuildkitExecDigestRealDaemon(t *testing.T) {
 				_ = response.Body.Close()
 				t.Fatalf("upgrade: %s: %s", response.Status, body)
 			}
-			transport := &http2.Transport{}
-			client, err := transport.NewClientConn(llbBufferedConn{Conn: conn, reader: reader})
+			client, err := h2conn.NewClientConn(llbBufferedConn{Conn: conn, reader: reader}, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

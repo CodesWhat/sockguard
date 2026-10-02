@@ -9,9 +9,9 @@ import (
 // hijacked /session or /grpc connection). Terminating a client-driven HTTP/2
 // connection reopens the Rapid Reset class (CVE-2023-44487): a malicious
 // client can open many streams and reset them before sockguard finishes
-// classifying/forwarding, forcing repeated work per stream. golang.org/x/net
-// v0.58.0 (this package's pinned version) already carries upstream's
-// connection-level Rapid Reset mitigation inside http2.Server itself; Limits
+// classifying/forwarding, forcing repeated work per stream. net/http's HTTP/2
+// server (the one h2conn.Serve runs) already carries upstream's
+// connection-level Rapid Reset mitigation; Limits
 // adds sockguard-specific, defense-in-depth caps on top: a hard concurrent
 // stream ceiling and a budget on how many denied/errored streams a single
 // connection may produce before sockguard tears the whole tunnel down,
@@ -33,7 +33,7 @@ import (
 type Limits struct {
 	// MaxConcurrentStreams caps concurrent HTTP/2 streams sockguard will
 	// accept on the server leg of a bridged tunnel (see bridge.go). Passed
-	// straight through to http2.Server.MaxConcurrentStreams.
+	// straight through to h2conn.ServerConfig.MaxConcurrentStreams.
 	MaxConcurrentStreams uint32
 
 	// MaxMessageBytes caps the cumulative bytes sockguard will relay for a
@@ -62,7 +62,7 @@ type Limits struct {
 	// long-lived connection sockguard terminates.
 	IdleTimeout time.Duration
 
-	// ReadIdleTimeout, when non-zero, makes http2.Server proactively PING an
+	// ReadIdleTimeout, when non-zero, makes the HTTP/2 server proactively PING an
 	// otherwise-quiet connection to detect a half-dead peer faster than
 	// IdleTimeout alone would (IdleTimeout only fires on total silence;
 	// ReadIdleTimeout catches a peer that ACKs TCP but stopped speaking

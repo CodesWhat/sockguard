@@ -152,7 +152,7 @@ func TestStreamRelayReaderOversizedFrameDeniesMessageTooLarge(t *testing.T) {
 }
 
 func TestStreamRelayReaderDenialAccessorIsRaceFree(t *testing.T) {
-	// Read runs on one goroutine (as golang.org/x/net/http2.Transport pumps
+	// Read runs on one goroutine (as net/http's HTTP/2 client pumps
 	// the outgoing body) while Denial() is polled from another (as
 	// forwardStreamRelay reads the sticky denial after RoundTrip returns for a
 	// reason unrelated to this reader). Under `go test -race` this asserts the
@@ -409,7 +409,7 @@ func TestRawByteCapValidator(t *testing.T) {
 // --- forwardStreamRelay ----------------------------------------------------
 
 // drainingFakeClientLeg reads r.Body to completion before returning resp/err
-// (as golang.org/x/net/http2.Transport genuinely does when pumping an
+// (as net/http's HTTP/2 client genuinely does when pumping an
 // outgoing streaming request body), so tests can drive
 // streamRelayReader-originated denials/errors deterministically through
 // forwardStreamRelay without a live transport — mirroring bridge_test.go's

@@ -14,7 +14,6 @@ import (
 
 	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/gateway"
 	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/pb"
-	"golang.org/x/net/http2"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
@@ -73,7 +72,7 @@ func (r *operationReporter) write(def *pb.Definition) error {
 }
 
 type gatewayRelay struct {
-	client *http2.ClientConn
+	client *http.ClientConn
 	build  string
 	report *operationReporter
 }

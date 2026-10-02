@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/gateway"
-	"golang.org/x/net/http2"
+	"github.com/codeswhat/sockguard/v2/app/internal/h2conn"
 )
 
 func TestUpgradeAndUnaryTrailers(t *testing.T) {
@@ -36,7 +36,7 @@ func TestUpgradeAndUnaryTrailers(t *testing.T) {
 			t.Error(err)
 			return
 		}
-		(&http2.Server{}).ServeConn(&bufferedConn{Conn: conn, reader: rw.Reader}, &http2.ServeConnOpts{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h2conn.Serve(context.Background(), &bufferedConn{Conn: conn, reader: rw.Reader}, h2conn.ServerConfig{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get(buildHeader) != "build" {
 				t.Error("missing build metadata")
 			}
@@ -55,7 +55,7 @@ func TestUpgradeAndUnaryTrailers(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	cc, err := (&http2.Transport{}).NewClientConn(conn)
+	cc, err := h2conn.NewClientConn(conn, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
