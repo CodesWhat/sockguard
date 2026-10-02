@@ -50,21 +50,6 @@ func podmanSchemaScalar(query url.Values, name string) string {
 	return field
 }
 
-// podmanSchemaList is the value gorilla/schema leaves in a []string field
-// tagged name: the non-empty values of whichever spelling it visits last.
-func podmanSchemaList(query url.Values, name string) []string {
-	var field []string
-	for _, key := range podmanSchemaKeys(query, name) {
-		field = nil
-		for _, value := range query[key] {
-			if value != "" {
-				field = append(field, value)
-			}
-		}
-	}
-	return field
-}
-
 // engineChainVersion answers GET /version the way each engine names itself in
 // Components, which is all the upstream.flavor probe reads.
 func engineChainVersion(podman bool) map[string]any {
