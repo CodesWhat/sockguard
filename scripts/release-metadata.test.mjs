@@ -286,7 +286,14 @@ test("release docs keep Helm metadata lockstep and use a two-stage digest flow",
     /`release-from-tag\.yml`'s `pin-chart-digest` job does this on every stable tag/u,
   );
   assert.match(releasing, /It commits to the development branch and never to `main`/u);
-  assert.match(releasing, /Doing it by hand with step 3's `imagetools inspect` is the fallback/u);
+  assert.match(
+    releasing,
+    /the job prints a version-skew warning, writes nothing, and stays green/u,
+  );
+  assert.match(
+    releasing,
+    /`node scripts\/pin-chart-image-digest\.mjs --version <version> --digest <digest>`/u,
+  );
   assert.match(releasing, /The tagged chart selects the versioned release tag/u);
   assert.doesNotMatch(releasing, /tagged chart selects the immutable release tag/u);
   assert.doesNotMatch(releasing, /increment independently of the app version/u);

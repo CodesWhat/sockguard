@@ -60,7 +60,7 @@ jobs:
       # the busybox sentinel image from Docker Hub — same variable-CDN
       # reasoning as quality-integration.yml. Revisit in stage 2.
       - name: Harden Runner
-        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c  # v2.21.0
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
         with:
           egress-policy: audit
 
@@ -76,7 +76,7 @@ jobs:
           cache-dependency-path: go.sum
 
       - name: Setup Docker Engine ${{ matrix.engine }}
-        uses: docker/setup-docker-action@77e84dbf09b47d1e29270283c22f16145aa85ca1  # v5.4.0
+        uses: docker/setup-docker-action@2bf61fb9464cc67f0cbdeabed6aa0380accd1c70  # v5.5.0
         with:
           version: ${{ matrix.engine }}
           # Merged over the hosted daemon config, preserving DNS and other settings.

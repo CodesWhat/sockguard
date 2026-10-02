@@ -46,6 +46,11 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   [ -S "${MOCK_SOCK}" ] && break
   sleep 0.2
 done
+if [ ! -S "${MOCK_SOCK}" ]; then
+  echo "mockdocker socket never appeared; mockdocker log (${MOCK_LOG}) follows" >&2
+  cat "${MOCK_LOG}" >&2 || true
+  exit 1
+fi
 
 SG_LOG="${BENCH_DIR}/sockguard.log"
 : > "${SG_LOG}"
@@ -60,7 +65,11 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   [ -S "${PROXY_SOCK}" ] && break
   sleep 0.2
 done
-[ -S "${PROXY_SOCK}" ] || { echo "proxy socket never appeared"; exit 1; }
+if [ ! -S "${PROXY_SOCK}" ]; then
+  echo "proxy socket never appeared; sockguard log (${SG_LOG}) follows" >&2
+  cat "${SG_LOG}" >&2 || true
+  exit 1
+fi
 
 # Optional: start wollomatic/socket-proxy on the same upstream for a head-to-head
 # regression check. Skipped if the binary is missing.

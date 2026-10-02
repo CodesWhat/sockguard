@@ -43,3 +43,16 @@ func TestSanitizeLogField(t *testing.T) {
 		})
 	}
 }
+
+func TestFakeVersionNamesDockerEngine(t *testing.T) {
+	components, ok := fakeVersion["Components"].([]map[string]any)
+	if !ok {
+		t.Fatalf("Components has type %T, want []map[string]any", fakeVersion["Components"])
+	}
+	for _, c := range components {
+		if c["Name"] == "Engine" {
+			return
+		}
+	}
+	t.Fatal("fakeVersion has no \"Engine\" component; sockguard's upstream flavor probe would reject it")
+}

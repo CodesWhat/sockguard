@@ -9,10 +9,12 @@
 //
 // It rewrites exactly the one `tag:` line inside the top-level `image:`
 // block, and refuses anything it cannot prove is that: a digest that is not
-// 64 lowercase hexadecimal characters, a version that disagrees with
-// Chart.yaml's appVersion, a values file with no single image.tag line, and
-// any existing tag other than the empty prepublication value, the bare
-// appVersion, or the exact pin it was going to write.
+// 64 lowercase hexadecimal characters, a values file with no single
+// image.tag line, and any existing tag other than the empty prepublication
+// value, the bare appVersion, or the exact pin it was going to write. A
+// version that disagrees with Chart.yaml's appVersion is not a hard error:
+// dev can move past the tagged version before this runs, so that case is
+// skipped with a `::warning::` and exit 0 rather than failing the release.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { extractChartImageConfig } from "./chart-image-tag.mjs";
@@ -98,10 +100,18 @@ export function pinChartImageTag({ values, appVersion, version, digest }) {
   const releaseVersion = normalizeVersion(version);
   const normalizedDigest = normalizeDigest(digest);
 
+  // Version skew, not an error: dev has moved past the tag (a metadata bump
+  // for the next line landed before this release finished), and the caller
+  // is expected to skip the pin rather than fail the release. Returning a
+  // result instead of throwing keeps this function pure so the CLI wrapper
+  // is the one that decides how to report it.
   if (releaseVersion !== appVersion) {
-    throw new Error(
-      `Refusing to pin ${releaseVersion}: chart/sockguard/Chart.yaml declares appVersion ${JSON.stringify(appVersion)}`,
-    );
+    return {
+      values,
+      changed: false,
+      skipped: true,
+      reason: `release ${releaseVersion} but chart/sockguard/Chart.yaml declares appVersion ${JSON.stringify(appVersion)} -- skipping the chart digest pin; pin by hand per RELEASING.md`,
+    };
   }
 
   const desired = `${releaseVersion}@${normalizedDigest}`;
@@ -171,6 +181,11 @@ function main() {
     version: args.version,
     digest: args.digest,
   });
+
+  if (result.skipped) {
+    console.log(`::warning::${result.reason}`);
+    return;
+  }
 
   if (!result.changed) {
     console.log(`${valuesPath}: image.tag is already ${result.tag} -- nothing to write`);

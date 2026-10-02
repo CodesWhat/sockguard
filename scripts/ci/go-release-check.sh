@@ -34,4 +34,9 @@ cask="dist/homebrew/Casks/sockguard.rb"
 test -f "${cask}"
 grep -Fq 'cask "sockguard" do' "${cask}"
 grep -Fq 'binary "sockguard"' "${cask}"
-grep -Fq 'system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/sockguard"]' "${cask}"
+grep -Fq 'postflight_steps do' "${cask}"
+grep -Fq 'run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "sockguard"], chdir: "."' "${cask}"
+if grep -Eq '^[[:space:]]*postflight do' "${cask}"; then
+  echo "Generated cask uses deprecated postflight syntax" >&2
+  exit 1
+fi

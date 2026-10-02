@@ -142,7 +142,7 @@ func TestLibpodImageActionsAreOwnerChecked(t *testing.T) {
 		{name: "libpod exists oracle", method: http.MethodGet, path: "/libpod/images/app/exists"},
 		{name: "libpod push", method: http.MethodPost, path: "/libpod/images/app/push"},
 		{name: "libpod scp to another host", method: http.MethodPost, path: "/libpod/images/scp/app"},
-		{name: "libpod tag", method: http.MethodPost, path: "/libpod/images/app/tag"},
+		{name: "libpod tag", method: http.MethodPost, path: "/libpod/images/app/tag?repo=retagged"},
 		{name: "libpod untag", method: http.MethodPost, path: "/libpod/images/app/untag"},
 		{name: "libpod delete", method: http.MethodDelete, path: "/libpod/images/app"},
 	}
@@ -328,10 +328,10 @@ func TestLibpodImageScpPreservesPostActionRouteCollisions(t *testing.T) {
 		wantIdentifier string
 	}{
 		{name: "push with no extra segment", path: "/libpod/images/scp/push", wantIdentifier: "scp"},
-		{name: "tag with no extra segment", path: "/libpod/images/scp/tag", wantIdentifier: "scp"},
+		{name: "tag with no extra segment", path: "/libpod/images/scp/tag?repo=retagged", wantIdentifier: "scp"},
 		{name: "untag with no extra segment", path: "/libpod/images/scp/untag", wantIdentifier: "scp"},
 		{name: "nested push", path: "/libpod/images/scp/builder::app/push", wantIdentifier: "scp/builder::app"},
-		{name: "nested tag", path: "/libpod/images/scp/builder::app/tag", wantIdentifier: "scp/builder::app"},
+		{name: "nested tag", path: "/libpod/images/scp/builder::app/tag?repo=retagged", wantIdentifier: "scp/builder::app"},
 		{name: "nested untag", path: "/libpod/images/scp/builder::app/untag", wantIdentifier: "scp/builder::app"},
 	}
 	for _, tt := range tests {
@@ -342,7 +342,11 @@ func TestLibpodImageScpPreservesPostActionRouteCollisions(t *testing.T) {
 				if kind != dockerresource.KindImage {
 					t.Fatalf("inspect kind = %s, want %s", kind, dockerresource.KindImage)
 				}
-				gotIdentifier = identifier
+				// The route's image is the first inspect. A retag goes on to
+				// inspect the reference it creates.
+				if gotIdentifier == "" {
+					gotIdentifier = identifier
+				}
 				return map[string]string{"com.sockguard.owner": "job-123"}, true, nil
 			}, fakeInspector{}.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusNoContent)
