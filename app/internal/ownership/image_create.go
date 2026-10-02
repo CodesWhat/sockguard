@@ -27,11 +27,9 @@ const (
 	libpodImageImportDenyAmbiguousRef = "owner policy denied image import with an ambiguous reference parameter"
 	libpodImagePullDenyAmbiguousRef   = "owner policy denied image pull with an ambiguous reference parameter"
 
-	imagePullDenyNoTag        = "owner policy denied image pull without a tag or digest: dockerd pulls every tag of the repository"
-	imagePullDenyAllTags      = "owner policy denied image pull of every tag of a repository"
-	imagePullDenyTagAndDigest = "owner policy denied image pull that names both a tag and a digest"
-	imagePullDenyDigest       = "owner policy denied image pull with a digest outside the digest grammar"
-	imagePullDenyPlatform     = "owner policy denied image pull of a name with no registry for a named platform: Podman resolves it through registries.conf, so spell the registry"
+	imagePullDenyNoTag    = "owner policy denied image pull without a tag or digest: dockerd pulls every tag of the repository"
+	imagePullDenyAllTags  = "owner policy denied image pull of every tag of a repository"
+	imagePullDenyPlatform = "owner policy denied image pull of a name with no registry for a named platform: Podman resolves it through registries.conf, so spell the registry"
 )
 
 // The routes that bring an image in from outside the daemon and name it. See
@@ -242,22 +240,12 @@ func imagePullDestination(route imageDestinationRoute, name, tag string, naming 
 	repository, digest, digested := strings.Cut(name, "@")
 	switch {
 	case digested && tag != "":
-		return nil, imagePullDenyTagAndDigest
+		return nil, route.refusal(imageDestinationTagAndDigest)
 	case !digested && isImageDigest(tag):
 		repository, digest, digested, tag = name, tag, true, ""
 	}
 	if digested {
-		// The tag stands in for the one a name pulled by digest must not
-		// carry, so a name that does carry one is reported the usual way.
-		switch _, problem := imageDestinationFor(repository, imageTagDefaultTag, naming); {
-		case problem == imageDestinationTaggedTwice:
-			return nil, imagePullDenyTagAndDigest
-		case problem != imageDestinationReadable:
-			return nil, route.refusal(problem)
-		case !isImageDigest(digest):
-			return nil, imagePullDenyDigest
-		}
-		return nil, ""
+		return nil, route.refusal(imageDigestedNameProblem(repository, digest, naming))
 	}
 
 	carriesTag := strings.LastIndex(name, ":") > strings.LastIndex(name, "/")
@@ -326,36 +314,4 @@ func queryNamesAny(query imageselector.Query, keys ...string) bool {
 		}
 	}
 	return false
-}
-
-// isImageDigest reports whether value is a digest both engines' parsers
-// accept (opencontainers/go-digest): sha256, sha384 or sha512, a colon, and
-// lowercase hex of exactly that algorithm's length. Nothing else parses as a
-// digest there, and no such string is a valid tag, so a `tag` parameter is
-// one or the other.
-func isImageDigest(value string) bool {
-	algorithm, encoded, found := strings.Cut(value, ":")
-	if !found {
-		return false
-	}
-	var length int
-	switch algorithm {
-	case "sha256":
-		length = 64
-	case "sha384":
-		length = 96
-	case "sha512":
-		length = 128
-	default:
-		return false
-	}
-	if len(encoded) != length {
-		return false
-	}
-	for i := 0; i < len(encoded); i++ {
-		if c := encoded[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	return true
 }

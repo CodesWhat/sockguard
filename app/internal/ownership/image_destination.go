@@ -56,6 +56,8 @@ const (
 	imageDestinationBadName
 	imageDestinationBadTag
 	imageDestinationDigestName
+	imageDestinationTagAndDigest
+	imageDestinationBadDigest
 )
 
 // refusal is the deny reason for a destination this layer will not read.
@@ -72,6 +74,10 @@ func (route imageDestinationRoute) refusal(problem imageDestinationProblem) stri
 		return denied + " with a tag outside the image reference grammar"
 	case imageDestinationDigestName:
 		return denied + " whose " + route.field + " is a digest algorithm name: the engines read such a reference as an image ID"
+	case imageDestinationTagAndDigest:
+		return denied + " that names both a tag and a digest"
+	case imageDestinationBadDigest:
+		return denied + " with a digest outside the digest grammar"
 	default:
 		return ""
 	}
@@ -196,6 +202,61 @@ func imageDestinationFor(repo, tag string, naming imageTagNaming) (imageDestinat
 		return imageDestination{target: stored + ":" + tag}, imageDestinationReadable
 	}
 	return imageDestination{target: name + ":" + tag, storedTarget: stored + ":" + tag}, imageDestinationReadable
+}
+
+// imageDigestedNameProblem reports why a reference by digest, repository@digest,
+// cannot be read the way the daemon reads it. A readable one has no
+// destination: a pull or a load by digest gives the image no tag on either
+// engine, so there is no name to take from anyone.
+//
+// The repository has to be a name with no tag. dockerd reads name:tag@digest
+// by the digest and the engines differ on what becomes of the tag, so that
+// shape is refused. The digest has to be one both engines' parsers accept. See
+// isImageDigest.
+func imageDigestedNameProblem(repository, digest string, naming imageTagNaming) imageDestinationProblem {
+	// The tag stands in for the one a name beside a digest must not carry,
+	// so a name that does carry one comes back as tagged twice.
+	switch _, problem := imageDestinationFor(repository, imageTagDefaultTag, naming); {
+	case problem == imageDestinationTaggedTwice:
+		return imageDestinationTagAndDigest
+	case problem != imageDestinationReadable:
+		return problem
+	case !isImageDigest(digest):
+		return imageDestinationBadDigest
+	}
+	return imageDestinationReadable
+}
+
+// isImageDigest reports whether value is a digest both engines' parsers
+// accept (opencontainers/go-digest): sha256, sha384 or sha512, a colon, and
+// lowercase hex of exactly that algorithm's length. Nothing else parses as a
+// digest there, and no such string is a valid tag, so a `tag` parameter is
+// one or the other.
+func isImageDigest(value string) bool {
+	algorithm, encoded, found := strings.Cut(value, ":")
+	if !found {
+		return false
+	}
+	var length int
+	switch algorithm {
+	case "sha256":
+		length = 64
+	case "sha384":
+		length = 96
+	case "sha512":
+		length = 128
+	default:
+		return false
+	}
+	if len(encoded) != length {
+		return false
+	}
+	for i := 0; i < len(encoded); i++ {
+		if c := encoded[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // imageNameSpellsRegistry reports whether name, a repository with no tag,

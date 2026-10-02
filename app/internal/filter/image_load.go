@@ -16,6 +16,8 @@ import (
 	"os"
 	"path"
 	"strings"
+
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 const maxImageLoadBodyBytes = 512 << 20   // 512 MiB
@@ -125,6 +127,7 @@ func (p imageLoadPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath
 		return "image load denied: loading image archives is not allowed", nil
 	}
 	if r.Body == nil {
+		recordImageLoad(r, imageLoadArchiveInspection{format: imageLoadArchiveDocker})
 		return "", nil
 	}
 	if p.io.CreateTempFile == nil {
@@ -142,6 +145,7 @@ func (p imageLoadPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath
 		// closeAndRemove is nil-safe; this avoids a per-path nil check and
 		// eliminates an equivalent mutation point in the inspect hot path.
 		spool.closeAndRemove()
+		recordImageLoad(r, imageLoadArchiveInspection{format: imageLoadArchiveDocker})
 		return "", nil
 	}
 
@@ -188,7 +192,32 @@ func (p imageLoadPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath
 	}
 	r.Body = spool.requestBody()
 	r.ContentLength = size
+	recordImageLoad(r, archive)
 	return "", nil
+}
+
+// recordImageLoad leaves what this inspection read from the archive on the
+// request's metadata, for the owner isolation layer. That layer authorizes
+// the names a load assigns, the way it authorizes a retag's target, and the
+// names are in the archive this policy has just spooled and parsed. Handing
+// them over keeps the two layers on one reading of the archive and off a
+// second pass over a body that can be half a gigabyte.
+//
+// It is called only on the paths that let the load through with its body
+// read: a request with no body or an empty one carries no names, and an
+// archive in neither format is marked unreadable, because allow_untagged
+// admits it without anyone having read a name out of it. A request with no
+// metadata on its context (a caller outside the middleware chain) records
+// nothing.
+func recordImageLoad(r *http.Request, archive imageLoadArchiveInspection) {
+	meta := logging.Meta(r.Context())
+	if meta == nil {
+		return
+	}
+	meta.ImageLoad = &logging.ImageLoadRecord{
+		References: archive.references,
+		Unreadable: archive.format == imageLoadArchiveUnknown,
+	}
 }
 
 func (p imageLoadPolicy) allowsAnyImageLoad() bool {
