@@ -289,7 +289,7 @@ export const roadmap: Milestone[] = [
     status: "next",
     items: [
       "Raw LLB now supports individual ExecOp digest approvals while RUN instructions stay restricted; third-party frontend mediation remains in progress because image frontends generate their graphs inside the daemon",
-      "The Go module migration is implemented for v2.3: the /v2 module path, imports, release linker flags and regenerated BuildKit descriptors are ready for the next tag; Docker, Homebrew, deb and rpm installation paths are unchanged",
+      "The Go module migration shipped in v2.3.0-rc.1: the /v2 module path, imports, release linker flags and regenerated BuildKit descriptors; Docker, Homebrew, deb and rpm installation paths are unchanged",
     ],
   },
 ];
