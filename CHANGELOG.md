@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The validated Docker Engine API ceiling moves from 1.55 to 1.56, which turns the monthly Upstream API Watch green again. The 1.56 changelog adds a `GET /containers/json` `annotation` filter and `HostConfig.Umask` on `POST /containers/create`. Neither needs a filter change: the annotation filter can only narrow a list that owner and visibility filtering have already scoped, and a umask grants no host access, mounts or capabilities, so the create inspector passes it through like any other field it does not gate.
+
 ## [2.3.0-rc.1] - 2026-10-02
 
 ### Added

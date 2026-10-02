@@ -7,8 +7,8 @@ run-name: >-
 
 # Sockguard's request/response inspectors are validated against a specific
 # ceiling of the Docker Engine API (see app/testdata/docker-api/
-# max-supported-version.txt, currently 1.55, and the Engine API 1.55
-# validation work tracked in #153). NormalizePath itself strips any
+# max-supported-version.txt, currently 1.56; the 1.55 validation work
+# was tracked in #153). NormalizePath itself strips any
 # well-formed /vN[.N]/ prefix regardless of value, so sockguard never
 # hard-rejects traffic from a newer daemon — but a new Engine API minor can
 # ship new inspectable fields (containers/create, exec, service
