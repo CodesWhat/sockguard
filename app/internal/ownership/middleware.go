@@ -127,7 +127,7 @@ type ownershipRequestReferences struct {
 	// imageTagOwnershipReferences.
 	imageTag *imageTagOwnershipReference
 	// imageDestinations carries every image name the request writes on a
-	// route other than a retag: a commit's `repo` and `tag`, a build's `t`.
+	// route other than a retag: a commit's `repo` and `tag`, a build's `t`, an import's `repo`.
 	// The path of such a route names no image, so there is no route view to
 	// wait for and a refusal travels in denyReason. See image_destination.go.
 	imageDestinations *imageDestinationReferences
@@ -365,6 +365,8 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 		return imagePushOwnershipReferences(r, normPath), nil
 	case isImageTagRoutePath(r.Method, normPath):
 		return imageTagOwnershipReferences(r, normPath, opts.UpstreamFlavor), nil
+	case isImageCreateRoutePath(r.Method, normPath):
+		return imageCreateOwnershipReferences(r, normPath, opts.UpstreamFlavor), nil
 	case r.Method == http.MethodPost && isCommitPath(normPath):
 		return mutateCommitOwnershipRequest(r, normPath, opts)
 	case r.Method == http.MethodPost && (normPath == "/build" || normPath == libpodPrefix+"build"):
