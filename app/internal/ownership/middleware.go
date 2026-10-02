@@ -127,9 +127,9 @@ type ownershipRequestReferences struct {
 	// imageTagOwnershipReferences.
 	imageTag *imageTagOwnershipReference
 	// imageDestinations carries every image name the request writes on a
-	// route other than a retag: a commit's `repo` and `tag`. The path of such
-	// a route names no image, so there is no route view to wait for and a
-	// refusal travels in denyReason. See image_destination.go.
+	// route other than a retag: a commit's `repo` and `tag`, a build's `t`.
+	// The path of such a route names no image, so there is no route view to
+	// wait for and a refusal travels in denyReason. See image_destination.go.
 	imageDestinations *imageDestinationReferences
 }
 
@@ -368,7 +368,7 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 	case r.Method == http.MethodPost && isCommitPath(normPath):
 		return mutateCommitOwnershipRequest(r, normPath, opts)
 	case r.Method == http.MethodPost && (normPath == "/build" || normPath == libpodPrefix+"build"):
-		return nil, addOwnerLabelToBuildQuery(r, opts.LabelKey, opts.Owner)
+		return mutateBuildOwnershipRequest(r, normPath, opts)
 	case r.Method == http.MethodPost && normPath == libpodContainerCreatePath:
 		return mutateLibpodContainerCreateOwnershipBody(r, opts.LabelKey, opts.Owner)
 	case r.Method == http.MethodPost && normPath == libpodPodCreatePath:
@@ -1011,6 +1011,21 @@ func appendServiceObjectReferences(
 			}
 		}
 	}
+}
+
+// mutateBuildOwnershipRequest stamps the owner label into the build query and
+// returns the image names the request has to be authorized for.
+//
+// The names are read from the query as it arrived, and the stamp is written
+// whether or not they can be: a warn or audit rollout forwards the request it
+// would have denied, and a name this layer cannot read is no reason for the
+// image to arrive without its owner label.
+func mutateBuildOwnershipRequest(r *http.Request, normPath string, opts Options) (*ownershipRequestReferences, error) {
+	destinations, denyReason := buildImageDestinations(r.URL.RawQuery, normPath, opts.UpstreamFlavor)
+	if err := addOwnerLabelToBuildQuery(r, opts.LabelKey, opts.Owner); err != nil {
+		return nil, err
+	}
+	return &ownershipRequestReferences{imageDestinations: destinations, denyReason: denyReason}, nil
 }
 
 func addOwnerLabelToBuildQuery(r *http.Request, labelKey, owner string) error {
