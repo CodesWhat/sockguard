@@ -75,6 +75,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The weekly soak, the testssl.sh scan, and the synthetic benchmark boot again.** Sockguard made the upstream flavor probe fatal in `4eda1ca0` (2026-09-03): startup now fails with `upstream flavor: GET /version returned HTTP 404` when the upstream cannot answer `GET /version`, and `benchmarks/cmd/mockdocker`, the stand-in daemon all three harnesses use, only served `/_ping`, `/containers/json` and `/exec/`. `scripts/soak.sh` and `scripts/security-testssl.sh` have been red since. The mock now serves a dockerd-shaped `/version` with an `Engine` component, so the harnesses go through the real probe instead of a config override. Every wait loop in the three scripts also prints the mockdocker or sockguard log when it times out, which is what was hiding this.
 
+- `Go CI / Qlty Check` installs again. The unpinned shfmt plugin had drifted to 3.13.1, which needs a newer Go than qlty bundles, and the toolchain download it triggered is blocked by the job's egress allowlist. shfmt is pinned to 3.8.0.
+
 ## [2.2.1] - 2026-09-07
 
 ### Security
