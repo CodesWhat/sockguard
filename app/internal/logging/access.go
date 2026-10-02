@@ -100,6 +100,13 @@ type ImageLoadRecord struct {
 	// lets through only under allow_untagged. Its names, if it has any, were
 	// not read.
 	Unreadable bool
+	// LegacyNames reports an archive that carries a top-level `repositories`
+	// file and no manifest.json. moby's classic image store, up to 28.x,
+	// loads such an archive in its pre-1.10 layout and takes the image names
+	// from that file, whatever else the archive holds, and the filter does
+	// not read it. So References is not the names that daemon assigns. The
+	// filter lets the archive through only where every registry is allowed.
+	LegacyNames bool
 }
 
 // Decision values written into RequestMeta.Decision. Allow is not stamped

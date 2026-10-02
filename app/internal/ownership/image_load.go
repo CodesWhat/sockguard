@@ -23,6 +23,7 @@ const (
 	imageLoadDenyUninspected  = "owner policy denied image load whose archive was not inspected for image names: request_body.image_load reads them"
 	imageLoadDenyUnreadable   = "owner policy denied image load of an archive in no format its image names can be read from"
 	imageLoadDenyTooManyNames = "owner policy denied image load of an archive with more image names than it can authorize"
+	imageLoadDenyLegacyNames  = "owner policy denied image load of an archive with a legacy repositories file and no manifest.json: dockerd before 29 can take image names from that file, and nobody read them"
 )
 
 // imageLoadRoute words the refusals of a load's image names. See
@@ -98,17 +99,30 @@ func imageLoadOwnershipReferences(r *http.Request, normPath string, flavor upstr
 // Refused: a load whose archive nobody inspected, which is a request that
 // reached this layer without passing the filter's inspector; an archive in
 // neither format, which request_body.image_load.allow_untagged admits
-// unread, and which a daemon may still find names in (moby's classic store
-// falls back to the legacy `repositories` file when there is no
-// manifest.json); more names than imageLoadMaxNames; and every name
-// imageDestinationFor refuses. Read from moby 28.5.1 and libimage
-// (go.podman.io/common v0.67.1).
+// unread; more names than imageLoadMaxNames; and every name
+// imageDestinationFor refuses.
+//
+// Also refused, on the Docker-compatible route: an archive with a legacy
+// `repositories` file and no manifest.json. moby's classic store, up to 28.x,
+// loads such an archive in its pre-1.10 layout and names the images from that
+// file, whatever else the archive holds, so the names the record carries are
+// not the names that daemon writes: an index.json naming the caller's own
+// image passed every check here while the file named another owner's. The
+// filter does not parse the file, so there is nothing to authorize, and no
+// `docker save` since 1.10 writes an archive of that shape. moby 29.0 removed
+// the fallback and a containerd-store dockerd never had it, but which store is
+// behind the socket is not visible here. Podman reads no such file, so its
+// native route is left alone. See logging.ImageLoadRecord.LegacyNames.
+//
+// Read from moby 28.5.1 and 29.5.2 and libimage (go.podman.io/common v0.67.1).
 func imageLoadDestinations(record *logging.ImageLoadRecord, normPath string, flavor upstreamflavor.Flavor) (*imageDestinationReferences, string) {
 	switch {
 	case record == nil:
 		return nil, imageLoadDenyUninspected
 	case record.Unreadable:
 		return nil, imageLoadDenyUnreadable
+	case record.LegacyNames && !isLibpodOwnershipPath(normPath):
+		return nil, imageLoadDenyLegacyNames
 	}
 	naming := imageTagNamedAsStored
 	if !isLibpodOwnershipPath(normPath) {

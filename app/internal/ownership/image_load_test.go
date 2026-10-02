@@ -70,6 +70,15 @@ func TestImageLoadDestinations(t *testing.T) {
 
 		{name: "archive nobody inspected", path: imageLoadPath, wantReason: imageLoadDenyUninspected},
 		{name: "archive in neither format", record: &logging.ImageLoadRecord{Unreadable: true}, path: imageLoadPath, wantReason: imageLoadDenyUnreadable},
+		{name: "legacy repositories file beside names that were read", record: &logging.ImageLoadRecord{References: []string{"team/app:v1"}, LegacyNames: true}, path: imageLoadPath, wantReason: imageLoadDenyLegacyNames},
+		{name: "legacy repositories file and no other name", record: &logging.ImageLoadRecord{LegacyNames: true}, path: imageLoadPath, wantReason: imageLoadDenyLegacyNames},
+		{name: "legacy repositories file on a podman upstream's compat route", record: &logging.ImageLoadRecord{References: []string{"team/app:v1"}, LegacyNames: true}, path: imageLoadPath, flavor: upstreamflavor.Podman, wantReason: imageLoadDenyLegacyNames},
+		{name: "legacy repositories file in an archive in neither format", record: &logging.ImageLoadRecord{Unreadable: true, LegacyNames: true}, path: imageLoadPath, wantReason: imageLoadDenyUnreadable},
+		{
+			// Podman never reads the file, and only Podman serves this route.
+			name: "legacy repositories file on the native route", record: &logging.ImageLoadRecord{References: []string{"team/app:v1"}, LegacyNames: true}, path: libpodImageLoadPath,
+			want: []imageDestination{{target: "localhost/team/app:v1"}},
+		},
 		{name: "too many names", record: &logging.ImageLoadRecord{References: tooMany}, path: imageLoadPath, wantReason: imageLoadDenyTooManyNames},
 		{name: "name outside the grammar", record: &logging.ImageLoadRecord{References: []string{"Team/App:v1"}}, path: imageLoadPath, wantReason: "owner policy denied image load with a name outside the image reference grammar"},
 		{name: "name with surrounding space", record: &logging.ImageLoadRecord{References: []string{" team/app:v1"}}, path: imageLoadPath, wantReason: "owner policy denied image load with a name outside the image reference grammar"},
@@ -133,6 +142,8 @@ func TestImageLoadAuthorizesTheNamesItAssigns(t *testing.T) {
 		{name: "name nothing holds", path: "/images/load", record: &logging.ImageLoadRecord{References: []string{"mine/new:v2"}}, wantStatus: http.StatusOK},
 		{name: "no names", path: "/images/load", record: &logging.ImageLoadRecord{}, wantStatus: http.StatusOK},
 		{name: "archive nobody inspected", path: "/images/load", wantStatus: http.StatusForbidden, wantReason: imageLoadDenyUninspected},
+		{name: "legacy repositories file beside the caller's own name", path: "/images/load", record: &logging.ImageLoadRecord{References: []string{"mine/app:latest"}, LegacyNames: true}, wantStatus: http.StatusForbidden, wantReason: imageLoadDenyLegacyNames},
+		{name: "native legacy repositories file beside a name nothing holds", path: "/v5.0.0/libpod/images/load", record: &logging.ImageLoadRecord{References: []string{"mine/new:v2"}, LegacyNames: true}, wantStatus: http.StatusOK},
 		{name: "native name another owner's image holds", path: "/v5.0.0/libpod/images/load", record: &logging.ImageLoadRecord{References: []string{"theirs/app:v1"}}, wantStatus: http.StatusForbidden, wantReason: "libpod " + heldByAnotherOwner},
 		{name: "native archive nobody inspected", path: "/v5.0.0/libpod/images/load", wantStatus: http.StatusForbidden, wantReason: "libpod " + imageLoadDenyUninspected},
 		{name: "host path load is left to the blind-write acknowledgment", path: "/v5.0.0/libpod/local/images/load", wantStatus: http.StatusOK},

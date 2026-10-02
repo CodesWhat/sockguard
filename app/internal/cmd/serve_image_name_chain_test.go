@@ -43,6 +43,10 @@ type imageNameChainDaemon struct {
 	routes []func(http.ResponseWriter, *http.Request, string) bool
 	// created counts the images the daemon made, to name the next one.
 	created int
+	// legacyRepositories makes a load read the pre-1.10 `repositories` file
+	// when the archive has no manifest.json, the way moby's classic image
+	// store does up to 28.x. See serveLoad.
+	legacyRepositories bool
 }
 
 func newImageNameChainDaemon() *imageNameChainDaemon {

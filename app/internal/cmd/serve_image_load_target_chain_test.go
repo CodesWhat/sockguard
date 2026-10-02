@@ -3,10 +3,14 @@ package cmd
 import (
 	"archive/tar"
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/codeswhat/sockguard/app/internal/config"
@@ -35,6 +39,8 @@ func (d *imageNameChainDaemon) serveLoad(w http.ResponseWriter, r *http.Request,
 	var manifest []struct {
 		RepoTags []string `json:"RepoTags"`
 	}
+	hasManifest := false
+	repositories := map[string]map[string]string{}
 	labels := map[string]string{}
 	archive := tar.NewReader(r.Body)
 	for {
@@ -48,12 +54,26 @@ func (d *imageNameChainDaemon) serveLoad(w http.ResponseWriter, r *http.Request,
 		}
 		switch header.Name {
 		case "manifest.json":
+			hasManifest = true
 			_ = json.NewDecoder(archive).Decode(&manifest)
 		case "config.json":
 			_ = json.NewDecoder(archive).Decode(&labels)
+		case "repositories":
+			_ = json.NewDecoder(archive).Decode(&repositories)
 		}
 	}
 	id := d.newImage(labels)
+	// With no manifest.json, moby's classic store up to 28.x loads the archive
+	// in its pre-1.10 layout and takes the names from `repositories`, whatever
+	// else the archive holds (image/tarexport/load.go, legacyLoad). Podman
+	// reads manifest.json or index.json and nothing else.
+	if !hasManifest && d.legacyRepositories && !d.podman() {
+		for name, tags := range repositories {
+			for tag := range tags {
+				d.names[name+":"+tag] = id
+			}
+		}
+	}
 	for _, entry := range manifest {
 		for _, name := range entry.RepoTags {
 			if d.podman() && imageTagChainShortName(imageNameChainName(name)) {
@@ -102,6 +122,144 @@ func imageLoadChainArchive(t *testing.T, labels map[string]string, repoTags ...s
 		t.Fatalf("close archive: %v", err)
 	}
 	return archive.Bytes()
+}
+
+// imageLoadChainOCIArchive is an OCI archive holding one image named name, with
+// extra entries beside it.
+func imageLoadChainOCIArchive(t *testing.T, name string, extra map[string][]byte) []byte {
+	t.Helper()
+	blobs := map[string][]byte{}
+	blob := func(body []byte) string {
+		digest := fmt.Sprintf("%x", sha256.Sum256(body))
+		blobs["blobs/sha256/"+digest] = body
+		return "sha256:" + digest
+	}
+	config := []byte(`{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]},"config":{}}`)
+	manifest := []byte(fmt.Sprintf(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":%q,"size":%d},"layers":[]}`, blob(config), len(config)))
+	index := []byte(fmt.Sprintf(`{"schemaVersion":2,"manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":%q,"size":%d,"annotations":{"io.containerd.image.name":%q}}]}`, blob(manifest), len(manifest), name))
+
+	files := map[string][]byte{"oci-layout": []byte(`{"imageLayoutVersion":"1.0.0"}`), "index.json": index}
+	for _, group := range []map[string][]byte{blobs, extra} {
+		for path, body := range group {
+			files[path] = body
+		}
+	}
+	paths := make([]string, 0, len(files))
+	for path := range files {
+		paths = append(paths, path)
+	}
+	slices.Sort(paths)
+
+	var archive bytes.Buffer
+	writer := tar.NewWriter(&archive)
+	for _, path := range paths {
+		if err := writer.WriteHeader(&tar.Header{Name: path, Mode: 0o644, Size: int64(len(files[path])), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatalf("write %s header: %v", path, err)
+		}
+		if _, err := writer.Write(files[path]); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close archive: %v", err)
+	}
+	return archive.Bytes()
+}
+
+// TestServeChainLoadRefusesNamesInALegacyRepositoriesFile sends archives that
+// carry the pre-1.10 `repositories` file through the production handler chain
+// to a store that loads the way moby's classic one does up to 28.x: with no
+// manifest.json in the archive it takes the image names from that file.
+//
+// The filter classes an archive by manifest.json and index.json, so one with
+// an index.json and a `repositories` file read as an OCI archive whose only
+// name was the index's. Owner isolation authorized that name, and the daemon
+// assigned the ones in the file nobody had read. Every case asserts on the
+// daemon's state.
+func TestServeChainLoadRefusesNamesInALegacyRepositoriesFile(t *testing.T) {
+	legacy := map[string][]byte{
+		"repositories":    []byte(`{"theirs/app":{"latest":"blobs"}}`),
+		"blobs/json":      []byte(`{"id":"blobs","os":"linux"}`),
+		"blobs/layer.tar": []byte("layer"),
+	}
+	dockerAndLegacy := func(t *testing.T) []byte {
+		t.Helper()
+		var archive bytes.Buffer
+		writer := tar.NewWriter(&archive)
+		for _, file := range []struct {
+			name string
+			body []byte
+		}{
+			{"manifest.json", []byte(`[{"RepoTags":["mine/new:v2"]}]`)},
+			{"config.json", []byte(`{}`)},
+			{"repositories", legacy["repositories"]},
+		} {
+			if err := writer.WriteHeader(&tar.Header{Name: file.name, Mode: 0o644, Size: int64(len(file.body)), Typeflag: tar.TypeReg}); err != nil {
+				t.Fatalf("write %s header: %v", file.name, err)
+			}
+			if _, err := writer.Write(file.body); err != nil {
+				t.Fatalf("write %s: %v", file.name, err)
+			}
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("close archive: %v", err)
+		}
+		return archive.Bytes()
+	}
+
+	tests := []struct {
+		name   string
+		podman bool
+		target string
+		body   func(*testing.T) []byte
+		// reference is the name the `repositories` file aims at.
+		reference string
+		// created is a name the load has to have made, when it goes through.
+		created    string
+		wantStatus int
+	}{
+		{
+			name: "beside an OCI index", target: "/v1.45/images/load",
+			body:      func(t *testing.T) []byte { return imageLoadChainOCIArchive(t, "mine/new:v2", legacy) },
+			reference: "theirs/app:latest", wantStatus: http.StatusForbidden,
+		},
+		{
+			// The daemon reads manifest.json and ignores the file, which is
+			// what every `docker save` since 1.10 writes.
+			name: "beside manifest.json", target: "/v1.45/images/load", body: dockerAndLegacy,
+			reference: "theirs/app:latest", created: "mine/new:v2", wantStatus: http.StatusOK,
+		},
+		{
+			// Podman reads no such file, and only Podman serves this route.
+			name: "beside an OCI index on the native route", podman: true, target: "/v5.0.0/libpod/images/load",
+			body:      func(t *testing.T) []byte { return imageLoadChainOCIArchive(t, "mine/new:v2", legacy) },
+			reference: "localhost/theirs/app:latest", wantStatus: http.StatusOK,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			daemon := newImageLoadChainDaemon()
+			daemon.legacyRepositories = true
+			if tt.podman {
+				daemon.names = map[string]string{"localhost/theirs/app:latest": imageTagChainVictimID}
+				daemon.shortNameAliases = map[string]string{}
+			}
+			addr := newImageNameChain(t, daemon, nil)
+
+			runImageNameChainStep(t, addr, daemon, imageNameChainStep{
+				name:        tt.name,
+				target:      tt.target,
+				body:        tt.body(t),
+				contentType: "application/x-tar",
+				reference:   tt.reference,
+				wantImage:   imageTagChainVictimID,
+				wantStatus:  tt.wantStatus,
+			})
+			if tt.created != "" && !strings.HasPrefix(daemon.nameTarget(tt.created), "sha256:new") {
+				t.Errorf("%s points at %q, want the image the load made", tt.created, daemon.nameTarget(tt.created))
+			}
+		})
+	}
 }
 
 // TestServeChainLoadAuthorizesTheNamesItAssigns sends image loads through the

@@ -186,6 +186,16 @@ func (p imageLoadPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath
 		}
 	}
 
+	// The names read above are the ones in manifest.json and index.json. An
+	// archive that also carries a legacy `repositories` file and no
+	// manifest.json has names nobody read, on the one daemon that loads it
+	// that way, so it passes only where no name could have been refused. See
+	// imageLoadLegacyRepositoriesFile.
+	if archive.legacyNames && !p.imagePolicy.allowAllRegistries && !isLibpodImageLoadPath(normalizedPath) {
+		spool.closeAndRemove()
+		return "image load denied: archive names images in a legacy repositories file that is not inspected", nil
+	}
+
 	if err := p.io.SeekToStart(spool.file); err != nil {
 		spool.closeAndRemove()
 		return "", fmt.Errorf("rewind image load body: %w", err)
@@ -215,8 +225,9 @@ func recordImageLoad(r *http.Request, archive imageLoadArchiveInspection) {
 		return
 	}
 	meta.ImageLoad = &logging.ImageLoadRecord{
-		References: archive.references,
-		Unreadable: archive.format == imageLoadArchiveUnknown,
+		References:  archive.references,
+		Unreadable:  archive.format == imageLoadArchiveUnknown,
+		LegacyNames: archive.legacyNames,
 	}
 }
 
@@ -253,10 +264,35 @@ const (
 const ociImageRefNameAnnotation = "org.opencontainers.image.ref.name"
 const containerdImageNameAnnotation = "io.containerd.image.name"
 
+// imageLoadLegacyRepositoriesFile is the file a pre-1.10 `docker save` names
+// its images in: {"repo": {"tag": "<image directory>"}} at the archive root,
+// beside one directory per image holding `json` and `layer.tar`.
+//
+// Every archive since carries manifest.json, and a daemon that finds one reads
+// its names from there. moby's classic image store, up to 28.x, still falls
+// back to the old layout when manifest.json is absent (image/tarexport/load.go,
+// legacyLoad), and it does so whatever else is in the archive: an index.json
+// and an OCI layout beside the file change nothing, because that store never
+// reads them. So an archive with an index.json, a `repositories` file and no
+// manifest.json reads as an OCI archive here and loads under the file's names
+// there. moby 29.0 removed the fallback, a containerd-store dockerd imports
+// through containerd, which has never had it, and Podman reads manifest.json
+// or index.json and nothing else.
+//
+// This inspector does not parse the file. It notes that the archive has one
+// and no manifest.json (imageLoadArchiveInspection.legacyNames), and inspect
+// refuses the archive on the Docker-compatible route unless every registry is
+// allowed, since an unread name could be on any of them. Owner isolation
+// refuses it there outright. See logging.ImageLoadRecord.
+const imageLoadLegacyRepositoriesFile = "repositories"
+
 type imageLoadArchiveInspection struct {
 	format      imageLoadArchiveFormat
 	references  []string
 	hasUntagged bool
+	// legacyNames reports a top-level `repositories` entry in an archive with
+	// no manifest.json. See imageLoadLegacyRepositoriesFile.
+	legacyNames bool
 }
 
 type imageLoadOCIIndex struct {
@@ -288,6 +324,10 @@ type imageLoadArchiveControlFiles struct {
 	ociBlobs       map[string]imageLoadOCIBlob
 	ociMetadata    int64
 	ociContentErr  error
+
+	// seenLegacyRepositories is set by an entry of any type at the path
+	// imageLoadLegacyRepositoriesFile names. Its content is not read.
+	seenLegacyRepositories bool
 }
 
 type imageLoadOCIBlob struct {
@@ -363,6 +403,10 @@ func (io_ ioDeps) extractImageLoadArchiveFromTar(tr *tar.Reader, preferOCI bool)
 			if controls.ociContentErr == nil {
 				controls.ociContentErr = fmt.Errorf("%w: archive link entry %q", errImageLoadOCIUninspectable, header.Name)
 			}
+			continue
+		}
+		if name == imageLoadLegacyRepositoriesFile {
+			controls.seenLegacyRepositories = true
 			continue
 		}
 		if isImageLoadOCIBlobPath(name) {
@@ -475,7 +519,19 @@ func imageLoadOCIBlobHasher(name string) (string, hash.Hash, int, bool) {
 	return "", nil, 0, false
 }
 
+// parseImageLoadArchiveControlFiles reads the archive's names out of the
+// control files the tar walk collected, and notes whether a daemon could take
+// names from a file that walk did not read.
 func parseImageLoadArchiveControlFiles(controls imageLoadArchiveControlFiles, preferOCI bool) (imageLoadArchiveInspection, error) {
+	archive, err := parseImageLoadArchiveFormats(controls, preferOCI)
+	if err != nil {
+		return archive, err
+	}
+	archive.legacyNames = controls.seenLegacyRepositories && !controls.seenDocker
+	return archive, nil
+}
+
+func parseImageLoadArchiveFormats(controls imageLoadArchiveControlFiles, preferOCI bool) (imageLoadArchiveInspection, error) {
 	// The daemon extracts the complete outer tar before deciding which image
 	// format it contains. A link can synthesize or replace OCI controls through
 	// an aliased parent even when this streaming parser never saw those controls
