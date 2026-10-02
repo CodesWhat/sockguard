@@ -2,8 +2,11 @@
 // unix socket. It exists so the sockguard synthetic benchmark has a stable
 // upstream whose behavior doesn't drift between runs. It intentionally does
 // NOT implement the full Docker API — just the three endpoints the
-// benchmark targets:
+// benchmark targets, plus the startup probe sockguard runs:
 //
+//	GET  /version            → 200 JSON with the dockerd "Engine" component
+//	                           (sockguard's upstream flavor probe fails
+//	                           startup on anything else)
 //	GET  /_ping              → 200 "OK" (tiny body)
 //	GET  /containers/json    → 200 JSON array of 5 fake containers (~2KB)
 //	POST /exec/{id}/start    → 204 no body (the deny target — sockguard
@@ -44,6 +47,18 @@ var fakeContainers = []mockContainer{
 	{ID: "c0000000005", Names: []string{"/redis"}, Image: "redis:8", State: "running", Status: "Up 5 hours", Labels: map[string]string{"com.docker.compose.project": "db"}},
 }
 
+// fakeVersion mirrors the shape of dockerd's GET /version: a Components list
+// whose "Engine" entry is what sockguard's upstream flavor probe reads.
+var fakeVersion = map[string]any{
+	"Platform":      map[string]string{"Name": "Docker Engine - Community"},
+	"Components":    []map[string]any{{"Name": "Engine", "Version": "28.0.0", "Details": map[string]string{"ApiVersion": "1.48"}}},
+	"Version":       "28.0.0",
+	"ApiVersion":    "1.48",
+	"MinAPIVersion": "1.24",
+	"Os":            "linux",
+	"Arch":          "amd64",
+}
+
 func main() {
 	socket := flag.String("socket", "/tmp/sg-bench-mock.sock", "unix socket path")
 	// Debug-only: per-request sanitization and log formatting currently add
@@ -65,7 +80,19 @@ func main() {
 		log.Fatalf("marshal containers: %v", err)
 	}
 
+	versionPayload, err := json.Marshal(fakeVersion)
+	if err != nil {
+		log.Fatalf("marshal version: %v", err)
+	}
+
 	mux := http.NewServeMux()
+	mux.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
+		if *verbose {
+			logRequest(r)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(versionPayload)
+	})
 	mux.HandleFunc("/_ping", func(w http.ResponseWriter, r *http.Request) {
 		if *verbose {
 			logRequest(r)

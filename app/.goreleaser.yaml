@@ -106,12 +106,12 @@ homebrew_casks:
       See https://getsockguard.com/docs/getting-started before starting it.
       The macOS binary is not yet Apple notarized. This cask removes its quarantine
       attribute after Homebrew verifies the release archive checksum.
-    hooks:
-      post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/sockguard"]
-          end
+    custom_block: |
+      postflight_steps do
+        on_macos do
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "sockguard"], chdir: "."
+        end
+      end
     skip_upload: auto
     repository:
       owner: CodesWhat

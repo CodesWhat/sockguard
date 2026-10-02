@@ -24,10 +24,11 @@ test("GoReleaser publishes the sockguard binary to the CodesWhat Homebrew tap", 
   assert.match(config, /^ {6}owner: CodesWhat$/m);
   assert.match(config, /^ {6}name: homebrew-tap$/m);
   assert.match(config, /^ {6}token: "{{ \.Env\.HOMEBREW_TAP_TOKEN }}"$/m);
-  assert.match(config, /^ {4}hooks:\n {6}post:\n {8}install: \|$/m);
+  assert.match(config, /^ {4}custom_block: \|\n {6}postflight_steps do\n {8}on_macos do$/m);
+  assert.doesNotMatch(config, /^ {4}hooks:/m);
   assert.match(
     config,
-    /system_command "\/usr\/bin\/xattr", args: \["-dr", "com\.apple\.quarantine", "#\{staged_path\}\/sockguard"\]/,
+    /run "\/usr\/bin\/xattr", args: \["-dr", "com\.apple\.quarantine", "sockguard"\], chdir: "\."/,
   );
 });
 

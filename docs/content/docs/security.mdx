@@ -99,6 +99,21 @@ Allow or deny specific Docker API endpoint paths using glob patterns. Before mat
 
 Path filtering only ever runs against a rooted path. HTTP/1.1 has three other request-target forms and Go's server parses all of them: asterisk-form (`GET *`), an absolute-form URI carrying no path (`GET http://host`), and CONNECT's authority-form (`CONNECT host:2375`). None of them names a Docker endpoint, and each reaches the handler with a request path of either `*` or the empty string, so Sockguard answers `400` with reason code `request_target_not_rooted` before any rule, container-label ACL, or body inspector runs. `OPTIONS *` is the one exception: net/http answers it itself with an empty `200` before Sockguard's middleware chain runs, so it reaches neither policy evaluation nor the daemon.
 
+#### Form bodies are refused
+
+Sockguard reads request parameters from the URL query, and when it enforces by rewriting (the owner and visibility label filters, the owner label on a build) it writes them back to the URL query. Both engines also read parameters from a form body. dockerd's handlers read Go's `r.Form`, which puts the fields of an `application/x-www-form-urlencoded` body ahead of the query string's, and its build handler parses a `multipart/form-data` body too, which fills in any parameter the query leaves out. Podman parses a form-encoded body on every request. A request carrying one is asking the daemon to act on parameters the proxy never evaluated.
+
+So before any rule, inspector, visibility or ownership check runs, Sockguard answers `400` with reason code `request_form_body_refused` for:
+
+- any request with an `application/x-www-form-urlencoded` body, on any method and any path
+- any request with a `multipart/form-data` body outside Podman's native `/libpod/` API
+
+No Docker or Podman client sends parameters this way. The Docker CLI, the Go SDK and Compose put every parameter in the query and send JSON, tar or `text/plain` bodies. Podman's own client uploads `multipart/form-data` to a few `/libpod/` endpoints (build with extra contexts, manifest modify, quadlet install), where Podman reads it as upload parts and not as query parameters, so that namespace is left to the request-body inspectors. A multipart `POST /libpod/build` still needs `insecure_allow_body_blind_writes`.
+
+A form `Content-Type` on a request with no body is allowed, because there is nothing to parse: `curl -d ''` and `wget --post-data=''` both label an empty POST that way. A chunked body has no declared length and counts as a body. The check is by header, not by sniffing: every `Content-Type` line is examined, in any letter case, with or without parameters.
+
+Sockguard's own endpoints are answered before this check and never reach the daemon, so `curl --data-binary @candidate.yaml` against the admin validate endpoint keeps working. Like the unrooted-target rejection above, this is a hard `400` in every rollout mode.
+
 ### Layer 5: Request Body Inspection
 `POST /containers/create` bodies are parsed on every request and denied when they contain dangerous configuration:
 
@@ -163,7 +178,7 @@ Image-trust discovery stops before hostile registry material can grow without bo
 
 `POST /swarm/init`, `POST /swarm/join`, and `POST /swarm/update` are inspected by default. Sockguard blocks `ForceNewCluster`, external CA configuration, non-allowlisted join targets, token rotations, manager unlock-key rotations, manager autolock, and signing-CA updates unless explicitly allowed.
 
-`POST /plugins/pull`, `POST /plugins/*/upgrade`, `POST /plugins/*/set`, and `POST /plugins/create` are inspected by default. Sockguard constrains remote registries, privilege grants, plugin-set assignments, local plugin tar `config.json`, host mounts, device exposure, and capability requests unless explicitly allowed. `POST /plugins/create` is treated as `multipart/form-data` as well as raw tar: Sockguard spools the upload to a temporary file, parses the multipart envelope, extracts `config.json` from the embedded tar, and applies the same plugin policy it applies to `POST /plugins/pull`. Uploads without a parseable `config.json`, or whose `config.json` fails policy, are denied before the body reaches Docker.
+`POST /plugins/pull`, `POST /plugins/*/upgrade`, `POST /plugins/*/set`, and `POST /plugins/create` are inspected by default. Sockguard constrains remote registries, privilege grants, plugin-set assignments, local plugin tar `config.json`, host mounts, device exposure, and capability requests unless explicitly allowed. `POST /plugins/create` takes a raw tar upload: Sockguard spools it to a temporary file, extracts `config.json`, and applies the same plugin policy it applies to `POST /plugins/pull`. Uploads without a parseable `config.json`, or whose `config.json` fails policy, are denied before the body reaches Docker. A `multipart/form-data` upload is refused before inspection (see [form bodies](#form-bodies-are-refused)), because Docker ignores the framing and untars the raw body.
 
 `POST /networks/create`, `POST /networks/*/connect`, and `POST /networks/*/disconnect` are inspected by default, as are Podman's native `POST /libpod/networks/create`, `POST /libpod/networks/*/connect`, `POST /libpod/networks/*/disconnect`, and `POST /libpod/networks/*/update` under the parallel `request_body.libpod_network` key (see the [Podman guide](/podman) for the libpod wire shapes, which are not Docker's). Sockguard blocks custom network drivers, swarm/ingress/attachable/config-only networks, custom IPAM drivers/config/options, driver options, and forced disconnects unless explicitly allowed. `request_body.network.allow_endpoint_config` gates endpoint static IP, MAC address, links, and driver options on `POST /networks/*/connect`'s `EndpointConfig` and `POST /containers/create`'s `NetworkingConfig.EndpointsConfig`; the separate `request_body.libpod_network.allow_endpoint_config` applies the same posture to native connect's top-level `static_ips`/`static_mac`/`aliases`/`options`. Docker Compose sets `Aliases: [serviceName]` on every endpoint it creates, so aliases default to allowed on both policy groups. They can still be denied explicitly with the corresponding `endpoint_config.allow_aliases: false` under the granular form; `allow_endpoint_config: true` admits them with the rest of the whole object.
 
@@ -262,6 +277,55 @@ apply on top of the body config and would use to overwrite the stamp.
 The same boundary applies to references embedded inside container and service payloads, not only the resource named by the URL. Container creates authorize the requested image, named volumes, custom network mode, every endpoint-config network, and every `container:<ref>` namespace-sharing target. Service creates and updates authorize the task image, named volumes, networks, secrets, and configs. A foreign label or unresolved workload dependency is denied before Docker sees the request; only an image that successfully resolves and is genuinely unlabeled can use `allow_unowned_images`. Create new volumes, networks, secrets, and configs through their owner-stamping endpoints before attaching them to a workload. This turns one shared Docker socket into N isolated identity views without leaving workload dependencies as an ownership side door.
 
 Network membership changes apply that boundary to both sides of the relationship. On Docker-compatible and native libpod connect/disconnect requests, Sockguard checks the network named by the URL and the body `Container` reference. A foreign resource is denied, and an unresolved body container fails closed before the daemon receives the write. The ownership check reads and restores the bounded request body, so an allowed request reaches the daemon unchanged.
+
+An image retag names two images, and both are authorized.
+`POST /images/{name}/tag` and Podman's `POST /libpod/images/{name}/tag` take
+the source in the path and the reference to create in `repo` and `tag`, and
+both engines move that reference off whatever image already holds it.
+Sockguard builds the target the way the daemon does and inspects it once the
+source has passed: `repo:tag`, the tag `repo` itself carries when there is no
+`tag`, `latest` when there is neither, and a registry port is never read as a
+tag. A target that no image holds yet is allowed, because tagging it takes
+nothing from anyone. A target that resolves is checked like the subject of any
+other per-image request. The caller's own image passes, another owner's is a
+`403`, and an unlabeled one follows `allow_unowned_images`.
+
+On a Podman upstream the Docker-compatible route checks a `repo` that names no
+registry under two names. Podman either tags the name a local lookup finds or
+stores the name under `localhost/`, depending on
+`compat_api_enforce_docker_hub` in its `containers.conf`, and Sockguard cannot
+see that setting. So it inspects `{repo}:{tag}` and `localhost/{repo}:{tag}`,
+and both have to pass. dockerd has one reading of a name and is inspected
+once, and so is a `repo` that names its registry on either engine. See
+[Known Limitations](/podman#known-limitations).
+
+That last case matters when owners share a daemon. With the option at its
+default of `true`, a name held by an unlabeled image can be repointed by any
+owner, the same way that image can already be used, pushed and tagged by any
+owner. An image pulled through the proxy is unlabeled, so set
+`allow_unowned_images: false` when owners do not trust each other.
+
+A retag whose target Sockguard cannot read exactly as the daemon will is
+refused with a `403` before anything is inspected: no `repo`, a repeated
+`repo` or `tag`, either key in any spelling but lowercase, a query with a
+semicolon or a bad percent escape, a `repo` carrying a digest, a `repo`
+carrying a tag next to a `tag` parameter, a name or tag outside the image
+reference grammar, a name that is only too long once the engine completes it
+(a `repo` with no slash over 247 characters, which dockerd reads as
+`library/{repo}`, and on a Podman upstream a `repo` with no registry over 245,
+which Podman stores as `localhost/{repo}`), and a `repo` that is a digest
+algorithm name (`sha256`, `sha384` or `sha512`). One path is refused as well:
+an unversioned `POST /images/{name}/tag` whose image is named `libpod` or
+starts with `libpod/`, because Podman reads that URL as a native request and
+Sockguard reads it as a compat one. The versioned path every Docker client
+sends is unaffected; see [Known Limitations](/podman#known-limitations). The
+target denial and these refusals are verdicts, so a `warn` or `audit` profile
+records the would-be denial and forwards. An inspect of the target that
+errors, under either name, is a `502` in every mode.
+
+`POST /libpod/images/{name}/untag` takes the same two parameters and needs no
+second check. Podman removes a name only from the image the path resolves, so
+the source image is the whole effect.
 
 Native image batch export and removal get a stricter preflight because
 forwarding one mixed batch can disclose or delete several images before a
