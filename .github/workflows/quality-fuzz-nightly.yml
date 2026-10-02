@@ -111,6 +111,7 @@ jobs:
           - { name: FuzzConfigured,                pkg: ./internal/upstreamflavor/ }
           - { name: FuzzPodmanEventLabelFilter,    pkg: ./internal/visibility/ }
           - { name: FuzzCatalogReachability,       pkg: ./internal/cmd/ }
+          - { name: FuzzFormBodyGuardCoversNetHTTP, pkg: ./internal/cmd/ }
           - { name: FuzzValidateServerShutdownGrace, pkg: ./internal/config/ }
 
     steps:
