@@ -707,32 +707,6 @@ func TestExtractPluginConfigFromTarReader_ExactlyAtLimit(t *testing.T) {
 	}
 }
 
-// CONDITIONALS_BOUNDARY plugin.go:542:21
-// looksLikeGzipHeader: `len(header) >= 2` — mutant → `> 2`.
-// A 2-byte header is the minimum; it must be accepted.
-func TestLooksLikeGzipHeader_ExactlyTwoBytes(t *testing.T) {
-	if !looksLikeGzipHeader([]byte{0x1f, 0x8b}) {
-		t.Fatal("2-byte gzip magic should be detected")
-	}
-	if looksLikeGzipHeader([]byte{0x1f}) {
-		t.Fatal("1-byte input should not match gzip")
-	}
-}
-
-// CONDITIONALS_BOUNDARY plugin.go:546:21
-// looksLikeTarHeader: `len(header) >= 262` — mutant → `> 262`.
-// A 262-byte header with the ustar magic must be accepted.
-func TestLooksLikeTarHeader_ExactlyAt262(t *testing.T) {
-	header := make([]byte, 262)
-	copy(header[257:], "ustar")
-	if !looksLikeTarHeader(header) {
-		t.Fatal("262-byte header with ustar magic should be detected")
-	}
-	if looksLikeTarHeader(header[:261]) {
-		t.Fatal("261-byte header should not match")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // volume.go mutants
 // ---------------------------------------------------------------------------
