@@ -10,9 +10,15 @@ import (
 const (
 	imagePushTagQueryField = "tag"
 
-	imagePushDenyNoTag     = "owner policy denied image push without an explicit tag: it pushes every local tag of the repository"
-	imagePushDenyAmbiguous = "owner policy denied image push with an ambiguous tag parameter"
-	imagePushDenyFormBody  = "owner policy denied image push with a form-encoded request body: the daemon reads the tag from it"
+	imagePushDenyNoTag         = "owner policy denied image push without an explicit tag: it pushes every local tag of the repository"
+	imagePushDenyAmbiguous     = "owner policy denied image push with an ambiguous tag parameter"
+	imagePushDenyFormBody      = "owner policy denied image push with a form-encoded request body: the daemon reads the tag from it"
+	imagePushDenyQualifiedName = "owner policy denied image push whose path already carries a tag or digest"
+	imagePushDenyInvalidTag    = "owner policy denied image push with a tag outside the image reference grammar"
+
+	// imagePushTagMaxLen is the tag length bound of the image reference
+	// grammar (distribution/reference: [\w][\w.-]{0,127}).
+	imagePushTagMaxLen = 128
 )
 
 // isImagePushRoutePath reports whether normPath is the Docker-compatible
@@ -46,6 +52,9 @@ func isImagePushRoutePath(method, normPath string) bool {
 //     r.URL.Query() drops such a pair silently, current dockerd answers 400
 //     for it, and a daemon built with a pre-1.17 Go runtime splits on the
 //     semicolon and reads a tag out of the pair this layer never saw.
+//   - A path that already carries a tag or digest. See
+//     imagePushNameIsQualified.
+//   - A tag outside the image reference grammar. See isImagePushTag.
 //   - No `tag` parameter at all, or an empty one. Moby's postImagesPush
 //     treats an empty tag as "push every local tag of the repository", an
 //     effect one image inspect cannot enumerate — the same reason
@@ -69,7 +78,7 @@ func isImagePushRoutePath(method, normPath string) bool {
 // authorization: the resource it mutates is the source image the path names,
 // and docker tag src dst spells the full source reference (tag included)
 // into the path.
-func imagePushOwnershipReferences(r *http.Request) *ownershipRequestReferences {
+func imagePushOwnershipReferences(r *http.Request, normPath string) *ownershipRequestReferences {
 	refs := &ownershipRequestReferences{}
 	if imagePushHasFormBody(r) {
 		refs.denyReason = imagePushDenyFormBody
@@ -91,13 +100,68 @@ func imagePushOwnershipReferences(r *http.Request) *ownershipRequestReferences {
 		}
 		tag, found = field.Value, true
 	}
-	tag = strings.TrimSpace(tag)
-	if tag == "" {
+	switch {
+	case tag == "":
 		refs.denyReason = imagePushDenyNoTag
-		return refs
+	case !isImagePushTag(tag):
+		refs.denyReason = imagePushDenyInvalidTag
+	case imagePushNameIsQualified(normPath):
+		refs.denyReason = imagePushDenyQualifiedName
+	default:
+		refs.imagePushTag = tag
 	}
-	refs.imagePushTag = tag
 	return refs
+}
+
+// isImagePushTag reports whether tag matches the image reference grammar's
+// tag production, [\w][\w.-]{0,127} over ASCII, which is what dockerd's
+// reference.WithTag enforces before it pushes anything.
+//
+// The value is compared as it arrived, with no trimming: a tag this layer
+// tidied up before the inspect is not the tag that gets forwarded. Podman's
+// compat handler does no validation of its own and concatenates the tag onto
+// the name, so without this a value such as "v1@sha256:..." would be handed
+// to the inspect as a reference whose meaning depends on the engine's lookup
+// rules instead of on a tag.
+func isImagePushTag(tag string) bool {
+	if tag == "" || len(tag) > imagePushTagMaxLen {
+		return false
+	}
+	for i := 0; i < len(tag); i++ {
+		c := tag[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_':
+		case (c == '.' || c == '-') && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// imagePushNameIsQualified reports whether the {name} of a push route already
+// carries a tag or a digest.
+//
+// Dockerd does not append the query tag to such a name. reference.WithTag
+// replaces the tag the path spelled, so /images/app:foreign/push?tag=owned
+// pushes app:owned (verified against dockerd 29.5.2), and a digest in the
+// path is an error on current daemons and a push by digest on older ones.
+// Appending the tag here would build "app:foreign:owned", which the daemon
+// answers with a 400 on inspect; that fails closed, but as a 502 and an
+// error-level log line for a request the client fully controls. The docker
+// CLI never sends this shape: it splits the reference and puts only the
+// repository in the path.
+//
+// A colon counts only in the last path segment, because a registry port
+// ("registry.example:5000/team/app") puts one earlier. A single-segment name
+// with a colon ("localhost:5000") is read as name:tag by the reference
+// parser, so it counts too.
+func imagePushNameIsQualified(normPath string) bool {
+	name := strings.TrimSuffix(strings.TrimPrefix(normPath, "/images/"), "/push")
+	if strings.Contains(name, "@") {
+		return true
+	}
+	return strings.Contains(name[strings.LastIndex(name, "/")+1:], ":")
 }
 
 // imagePushHasFormBody reports whether the request declares a form-encoded
@@ -126,14 +190,19 @@ func imagePushHasFormBody(r *http.Request) bool {
 	return false
 }
 
-// appendImagePushTag qualifies a Docker-compatible push identifier with the
+// imagePushIdentifier qualifies a Docker-compatible push identifier with the
 // captured tag, so checkOwnedResource inspects the exact local image the
-// daemon will push. The refs must come from the same request; a nil refs (a
-// direct caller of the authorization functions with no mutation pass behind
-// it) leaves the identifier untouched.
-func appendImagePushTag(identifier string, refs *ownershipRequestReferences, method, normPath string) string {
-	if refs == nil || refs.imagePushTag == "" || !isImagePushRoutePath(method, normPath) {
-		return identifier
+// daemon will push. It returns false for a push route that reaches the
+// authorization pass with no captured tag, which the caller refuses: falling
+// back to the bare identifier would be the default-tag inspect this route was
+// fixed to stop doing. Every other image route gets its identifier back
+// untouched.
+func imagePushIdentifier(identifier string, refs *ownershipRequestReferences, method, normPath string) (string, bool) {
+	if !isImagePushRoutePath(method, normPath) {
+		return identifier, true
 	}
-	return identifier + ":" + refs.imagePushTag
+	if refs == nil || refs.imagePushTag == "" {
+		return "", false
+	}
+	return identifier + ":" + refs.imagePushTag, true
 }

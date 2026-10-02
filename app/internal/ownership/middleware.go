@@ -345,7 +345,7 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 	case r.Method == http.MethodPost && (isNodeUpdatePath(normPath) || isSwarmUpdatePath(normPath)):
 		return nil, addOwnerLabelToBody(r, opts.LabelKey, opts.Owner)
 	case r.Method == http.MethodPost && isImagePushRoutePath(r.Method, normPath):
-		return imagePushOwnershipReferences(r), nil
+		return imagePushOwnershipReferences(r, normPath), nil
 	case r.Method == http.MethodPost && isCommitPath(normPath):
 		return mutateCommitOwnershipRequest(r, opts)
 	case r.Method == http.MethodPost && (normPath == "/build" || normPath == libpodPrefix+"build"):
@@ -506,7 +506,11 @@ func allowPathOwnershipRequest(
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindVolume, identifier, opts, false)
 	}
 	if identifier, ok := imageIdentifier(method, normPath); ok {
-		return checkOwnedResource(ctx, inspectResource, dockerresource.KindImage, appendImagePushTag(identifier, refs, method, normPath), opts, opts.AllowUnownedImages)
+		identifier, ok := imagePushIdentifier(identifier, refs, method, normPath)
+		if !ok {
+			return verdictDeny, imagePushDenyNoTag, nil
+		}
+		return checkOwnedResource(ctx, inspectResource, dockerresource.KindImage, identifier, opts, opts.AllowUnownedImages)
 	}
 	if identifier, ok := serviceIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindService, identifier, opts, false)

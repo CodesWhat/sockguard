@@ -244,14 +244,15 @@ func TestImagePushOwnershipReferencesParsing(t *testing.T) {
 		wantDenyFor string
 	}{
 		{name: "plain tag", rawQuery: "tag=v1", wantTag: "v1"},
-		{name: "tag with slash", rawQuery: url.QueryEscape("tag") + "=" + url.QueryEscape("v1.2/rc-3"), wantTag: "v1.2/rc-3"},
-		{name: "whitespace tag", rawQuery: "tag=%20%20", wantDenyFor: imagePushDenyNoTag},
+		{name: "tag with dots and dashes", rawQuery: url.QueryEscape("tag") + "=" + url.QueryEscape("v1.2-rc_3"), wantTag: "v1.2-rc_3"},
+		{name: "tag with slash", rawQuery: url.QueryEscape("tag") + "=" + url.QueryEscape("v1.2/rc-3"), wantDenyFor: imagePushDenyInvalidTag},
+		{name: "whitespace tag", rawQuery: "tag=%20%20", wantDenyFor: imagePushDenyInvalidTag},
 		{name: "no query", rawQuery: "", wantDenyFor: imagePushDenyNoTag},
 		{name: "repeated tag", rawQuery: "tag=a&tag=b", wantDenyFor: imagePushDenyAmbiguous},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			refs := imagePushOwnershipReferences(httptest.NewRequest(http.MethodPost, "/images/app/push?"+tt.rawQuery, nil))
+			refs := imagePushOwnershipReferences(httptest.NewRequest(http.MethodPost, "/images/app/push?"+tt.rawQuery, nil), "/images/app/push")
 			switch {
 			case tt.wantDenyFor != "":
 				if refs.denyReason != tt.wantDenyFor {

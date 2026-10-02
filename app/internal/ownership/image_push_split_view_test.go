@@ -179,3 +179,126 @@ func TestImagePushRefusesTagSpellingsTheEnginesDisagreeOn(t *testing.T) {
 		}
 	})
 }
+
+// TestImagePushRefusesReferencesTheDaemonRewrites covers a path that already
+// carries a tag or digest next to a query tag. Dockerd does not append the
+// query tag to such a name, it replaces the path's own (reference.WithTag),
+// so /images/app:foreign/push?tag=owned pushes app:owned. Appending here
+// produced "app:foreign:owned", which no daemon resolves: dockerd answers the
+// inspect with a 400, which surfaced as a 502 "owner policy lookup failed"
+// and an error log line for a request shape the client fully controls.
+func TestImagePushRefusesReferencesTheDaemonRewrites(t *testing.T) {
+	const owner = "job-123"
+
+	for _, target := range []string{
+		"/v1.45/images/registry.example/team/app:foreign/push?tag=owned",
+		"/v1.45/images/registry.example/team/app:owned/push?tag=owned",
+		"/v1.45/images/registry.example/team/app@sha256:0000000000000000000000000000000000000000000000000000000000000000/push?tag=owned",
+		"/v1.45/images/localhost:5000/push?tag=owned",
+	} {
+		t.Run(target, func(t *testing.T) {
+			inspector := imagePushSplitViewInspector(owner)
+			rec, forwarded := serveImagePushRequest(t, inspector, owner, httptest.NewRequest(http.MethodPost, target, nil))
+			if forwarded {
+				t.Fatal("push reached the upstream")
+			}
+			if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), imagePushDenyQualifiedName) {
+				t.Fatalf("status = %d, body = %s; want %d carrying %q", rec.Code, rec.Body.String(), http.StatusForbidden, imagePushDenyQualifiedName)
+			}
+			if len(inspector.calls) != 0 {
+				t.Fatalf("inspect calls = %#v, want none", inspector.calls)
+			}
+		})
+	}
+
+	t.Run("registry port without a tag is still a repository", func(t *testing.T) {
+		inspector := &recordingInspector{resources: map[string]map[string]inspectResult{
+			string(dockerresource.KindImage): {
+				"localhost:5000/app:owned": {labels: map[string]string{"com.sockguard.owner": owner}, found: true},
+			},
+		}}
+		rec, forwarded := serveImagePushRequest(t, inspector, owner, httptest.NewRequest(http.MethodPost, "/v1.45/images/localhost:5000/app/push?tag=owned", nil))
+		if !forwarded || rec.Code != http.StatusOK {
+			t.Fatalf("forwarded = %v, status = %d, want an allowed push; body: %s", forwarded, rec.Code, rec.Body.String())
+		}
+	})
+}
+
+// TestImagePushRefusesTagsOutsideTheReferenceGrammar pins the tag to the
+// grammar dockerd enforces (reference.WithTag: a word character, then up to
+// 127 word characters, dots or dashes). Anything else is a tag dockerd rejects
+// and Podman's compat handler concatenates onto the name unvalidated, so the
+// string inspected here should never be something only one engine can parse.
+// The surrounding-whitespace case used to be trimmed for the inspect and
+// forwarded untrimmed.
+func TestImagePushRefusesTagsOutsideTheReferenceGrammar(t *testing.T) {
+	const owner = "job-123"
+
+	for name, tag := range map[string]string{
+		"trailing space":   "owned%20",
+		"leading space":    "%20owned",
+		"whitespace only":  "%20%20",
+		"embedded digest":  "owned@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+		"path separator":   "owned/json",
+		"second colon":     "foreign:owned",
+		"leading dot":      ".owned",
+		"leading dash":     "-owned",
+		"non-ascii letter": "own%C3%A9d",
+		"over 128 chars":   strings.Repeat("a", 129),
+	} {
+		t.Run(name, func(t *testing.T) {
+			inspector := imagePushSplitViewInspector(owner)
+			req := httptest.NewRequest(http.MethodPost, "/", nil)
+			req.URL.Path = "/v1.45/images/registry.example/team/app/push"
+			req.URL.RawQuery = "tag=" + tag
+			rec, forwarded := serveImagePushRequest(t, inspector, owner, req)
+			if forwarded {
+				t.Fatal("push reached the upstream")
+			}
+			if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), imagePushDenyInvalidTag) {
+				t.Fatalf("status = %d, body = %s; want %d carrying %q", rec.Code, rec.Body.String(), http.StatusForbidden, imagePushDenyInvalidTag)
+			}
+			if len(inspector.calls) != 0 {
+				t.Fatalf("inspect calls = %#v, want none", inspector.calls)
+			}
+		})
+	}
+
+	for _, tag := range []string{"owned", "v1.2.3-rc.1", "_x", "0", strings.Repeat("a", 128)} {
+		if !isImagePushTag(tag) {
+			t.Errorf("isImagePushTag(%q) = false, want true", tag)
+		}
+	}
+}
+
+// TestImagePushWithoutCapturedTagFailsClosed pins the authorization pass on
+// its own: a push route that reaches it with no captured tag is refused
+// instead of falling back to the bare repository inspect the route was fixed
+// to stop doing.
+func TestImagePushWithoutCapturedTagFailsClosed(t *testing.T) {
+	const owner = "job-123"
+	opts := Options{Owner: owner, LabelKey: "com.sockguard.owner"}
+
+	for name, refs := range map[string]*ownershipRequestReferences{
+		"nil references":   nil,
+		"empty references": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			inspector := &recordingInspector{resources: map[string]map[string]inspectResult{
+				string(dockerresource.KindImage): {
+					"app": {labels: map[string]string{"com.sockguard.owner": owner}, found: true},
+				},
+			}}
+			verdict, reason, err := allowOwnershipRequest(t.Context(), http.MethodPost, "/images/app/push", opts, inspector.inspectResource, inspector.inspectExec, refs)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if verdict != verdictDeny || reason != imagePushDenyNoTag {
+				t.Fatalf("verdict = %v, reason = %q; want a deny carrying %q", verdict, reason, imagePushDenyNoTag)
+			}
+			if len(inspector.calls) != 0 {
+				t.Fatalf("inspect calls = %#v, want none", inspector.calls)
+			}
+		})
+	}
+}
