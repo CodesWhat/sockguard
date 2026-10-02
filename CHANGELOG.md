@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`GET /distribution/{name}/json` ignored `request_body.image_pull.allowed_registries`.** That route makes the daemon reach out to whatever registry the reference names to fetch a manifest descriptor, which is the same registry-contact a pull performs, but it was never checked against the pull allowlist. It now applies the same allowlist, reading the registry host from the path reference (`allow_official` still exempts Docker Hub official images). The check is gated on an explicitly configured allowlist: with no `allowed_registries` set, or with `allow_all_registries: true`, the route stays exactly as open as before, so enabling the pull inspector's default `allow_official` posture never starts denying distribution queries an operator did not opt into restricting. Every bundled preset that allows this route sets `allow_all_registries: true`, so none of them change. Credentials in an `X-Registry-Auth` header are not inspected here, because the registry the daemon contacts is the one named in the path.
+
 ## [2.2.2] - 2026-10-02
 
 ### Security

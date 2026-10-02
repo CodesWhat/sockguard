@@ -437,6 +437,12 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		{http.MethodPost, matchesLibpodContainerCreateInspection, inspectSeverityCritical, newLibpodContainerCreatePolicy(cfg.LibpodContainerCreate).inspect, "failed to inspect libpod container create request body", "unable to inspect libpod container create request body"},
 		{http.MethodPost, matchesExecInspection, inspectSeverityHigh, newExecPolicy(cfg.Exec).inspect, "failed to inspect exec request body", "unable to inspect exec request body"},
 		{http.MethodPost, matchesImagePullInspection, inspectSeverityHigh, newImagePullPolicy(cfg.ImagePull).inspect, "failed to inspect image pull request", "unable to inspect image pull request"},
+		// GET /distribution/{name}/json makes the daemon contact the registry
+		// the reference names, so it reuses request_body.image_pull's registry
+		// allowlist (imagePullPolicy.inspectDistribution). It is the only GET
+		// inspector; when no allowlist is configured the inspector is a no-op,
+		// so an unrestricted deployment pays only a path prefix/suffix check.
+		{http.MethodGet, matchesDistributionInspection, inspectSeverityHigh, newImagePullPolicy(cfg.ImagePull).inspectDistribution, "failed to inspect distribution request", "unable to inspect distribution request"},
 		{http.MethodPost, matchesBuildInspection, inspectSeverityCritical, newBuildPolicy(cfg.Build).inspect, "failed to inspect build request", "unable to inspect build request"},
 		{http.MethodPost, matchesContainerUpdateInspection, inspectSeverityHigh, newContainerUpdatePolicy(cfg.ContainerUpdate).inspect, "failed to inspect container update request body", "unable to inspect container update request body"},
 		{http.MethodDelete, matchesContainerRemoveInspection, inspectSeverityMedium, newContainerRemovePolicy(cfg.ContainerRemove).inspect, "failed to inspect container remove query", "unable to inspect container remove query"},
@@ -524,6 +530,10 @@ func matchesExecInspection(normalizedPath string) bool {
 
 func matchesImagePullInspection(normalizedPath string) bool {
 	return normalizedPath == "/images/create"
+}
+
+func matchesDistributionInspection(normalizedPath string) bool {
+	return isDistributionInspectPath(normalizedPath)
 }
 
 func matchesBuildInspection(normalizedPath string) bool {
