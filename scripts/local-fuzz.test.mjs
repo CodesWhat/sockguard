@@ -121,7 +121,7 @@ describe("local-fuzz.sh", () => {
 
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /docker run --rm --platform linux\/amd64/);
-    assert.match(result.stdout, /golang:1\.26\.2/);
+    assert.match(result.stdout, /golang:1\.27\.1/);
     assert.match(result.stdout, /\/usr\/local\/go\/bin\/go test/);
     assert.match(result.stdout, /-timeout='10m1s'/);
     assert.match(result.stdout, /-parallel=2/);

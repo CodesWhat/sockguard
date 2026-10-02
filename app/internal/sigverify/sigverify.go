@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -39,7 +40,7 @@ func CompileKey(pem string) (sigsig.Verifier, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	der, err := cryptoutils.MarshalPublicKeyToDER(pubKey)
+	der, err := x509.MarshalPKIXPublicKey(pubKey)
 	if err != nil {
 		return nil, "", fmt.Errorf("fingerprint: %w", err)
 	}

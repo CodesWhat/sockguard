@@ -6,6 +6,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
@@ -15,7 +16,6 @@ import (
 	"time"
 
 	"github.com/sigstore/sigstore-go/pkg/testing/ca"
-	"github.com/sigstore/sigstore/pkg/cryptoutils"
 )
 
 // generatePEM mints a fresh ECDSA P-256 keypair and returns the PEM-encoded
@@ -26,7 +26,7 @@ func generatePEM(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
-	der, err := cryptoutils.MarshalPublicKeyToDER(priv.Public())
+	der, err := x509.MarshalPKIXPublicKey(priv.Public())
 	if err != nil {
 		t.Fatalf("marshal DER: %v", err)
 	}
