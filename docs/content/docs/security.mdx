@@ -301,10 +301,18 @@ refused with a `403` before anything is inspected: no `repo`, a repeated
 `repo` or `tag`, either key in any spelling but lowercase, a query with a
 semicolon or a bad percent escape, a `repo` carrying a digest, a `repo`
 carrying a tag next to a `tag` parameter, a name or tag outside the image
-reference grammar, and a `repo` that is a digest algorithm name such as
-`sha256`. The target denial and these refusals are verdicts, so a `warn` or
-`audit` profile records the would-be denial and forwards. An inspect of the
-target that errors is a `502` in every mode.
+reference grammar, a name that is only too long once the engine completes it
+(a `repo` with no slash over 247 characters, which dockerd reads as
+`library/{repo}`), and a `repo` that is a digest algorithm name (`sha256`,
+`sha384` or `sha512`). One path is refused as well: an unversioned
+`POST /images/{name}/tag` whose image is named `libpod` or starts with
+`libpod/`, because Podman reads that URL as a native request and names the
+target differently than the inspect does. The versioned path every Docker
+client sends is unaffected; see
+[Known Limitations](/podman#known-limitations). The target denial and these
+refusals are verdicts, so a `warn` or `audit` profile records the would-be
+denial and forwards. An inspect of the target that errors is a `502` in every
+mode.
 
 `POST /libpod/images/{name}/untag` takes the same two parameters and needs no
 second check. Podman removes a name only from the image the path resolves, so

@@ -106,7 +106,13 @@ func TestImageTagTargetReference(t *testing.T) {
 		{name: "raw slash in the query", rawQuery: "repo=team/app&tag=v1", want: "team/app:v1"},
 		{name: "unrelated parameters", rawQuery: "force=1&repo=team%2Fapp&tag=v1&x=y", want: "team/app:v1"},
 		{name: "percent-encoded exact key", rawQuery: "re%70o=team%2Fapp&ta%67=v1", want: "team/app:v1"},
-		{name: "longest name", rawQuery: "repo=" + strings.Repeat("a", imageTagRepoMaxLen), want: strings.Repeat("a", imageTagRepoMaxLen) + ":latest"},
+		// The 255 bound is on the repository path, and dockerd completes a
+		// name with no slash to library/<name> before it measures. A name
+		// with a slash is measured as spelled. dockerd 29.5.2 answers the
+		// inspect of each of these with a plain 404.
+		{name: "longest single-segment name", rawQuery: "repo=" + strings.Repeat("a", imageTagBareRepoMaxLen), want: strings.Repeat("a", imageTagBareRepoMaxLen) + ":latest"},
+		{name: "longest single-segment name with its tag carried in repo", rawQuery: "repo=" + strings.Repeat("a", imageTagBareRepoMaxLen) + "%3Av1", want: strings.Repeat("a", imageTagBareRepoMaxLen) + ":v1"},
+		{name: "longest multi-segment name", rawQuery: "repo=team%2F" + strings.Repeat("a", imageTagRepoMaxLen-len("team/")), want: "team/" + strings.Repeat("a", imageTagRepoMaxLen-len("team/")) + ":latest"},
 		{name: "longest tag", rawQuery: "repo=app&tag=" + strings.Repeat("a", imagePushTagMaxLen), want: "app:" + strings.Repeat("a", imagePushTagMaxLen)},
 
 		// dockerd: 200 with no effect. Podman: 400.
@@ -147,12 +153,24 @@ func TestImageTagTargetReference(t *testing.T) {
 		{name: "repo with a query delimiter", rawQuery: "repo=team%2Fapp%3Fx", wantDeny: imageTagDenyInvalidRepo},
 		{name: "repo that is only a registry port", rawQuery: "repo=registry.example%3A5000%2F", wantDeny: imageTagDenyInvalidRepo},
 		{name: "repo over 255 characters", rawQuery: "repo=" + strings.Repeat("a", imageTagRepoMaxLen+1), wantDeny: imageTagDenyInvalidRepo},
+		{name: "multi-segment repo over 255 characters", rawQuery: "repo=team%2F" + strings.Repeat("a", imageTagRepoMaxLen+1-len("team/")), wantDeny: imageTagDenyInvalidRepo},
+		// dockerd: 400 "repository name must not be more than 255
+		// characters" on the inspect of each, which this layer would turn
+		// into a 502 the client can produce at will. library/<name> is over
+		// the bound although the name as spelled is not.
+		{name: "single-segment repo one over what library/ leaves room for", rawQuery: "repo=" + strings.Repeat("a", imageTagBareRepoMaxLen+1), wantDeny: imageTagDenyInvalidRepo},
+		{name: "single-segment repo one over with its tag carried in repo", rawQuery: "repo=" + strings.Repeat("a", imageTagBareRepoMaxLen+1) + "%3Av1", wantDeny: imageTagDenyInvalidRepo},
+		{name: "single-segment repo at 255 characters", rawQuery: "repo=" + strings.Repeat("a", imageTagRepoMaxLen), wantDeny: imageTagDenyInvalidRepo},
 		// dockerd: 400 "refusing to create an ambiguous tag using digest
 		// algorithm as name". GET /images/sha256:<hex>/json resolves an image
 		// by ID prefix, so the inspect could not answer for the name.
 		{name: "digest algorithm as the name", rawQuery: "repo=sha256&tag=abcd", wantDeny: imageTagDenyDigestName},
 		{name: "digest algorithm with the tag carried in repo", rawQuery: "repo=sha256%3Aabcd", wantDeny: imageTagDenyDigestName},
-		{name: "longer digest algorithm as the name", rawQuery: "repo=sha512&tag=" + strings.Repeat("a", 128), wantDeny: imageTagDenyDigestName},
+		// dockerd refuses only "sha256" and would create these two. They are
+		// refused here because <algorithm>:<hex> of the right length parses
+		// as a digest, so the inspect could not ask for the name.
+		{name: "sha384 as the name", rawQuery: "repo=sha384&tag=" + strings.Repeat("a", 96), wantDeny: imageTagDenyDigestName},
+		{name: "sha512 as the name", rawQuery: "repo=sha512&tag=" + strings.Repeat("a", 128), wantDeny: imageTagDenyDigestName},
 		{name: "digest algorithm under a namespace is an ordinary name", rawQuery: "repo=team%2Fsha256&tag=abcd", want: "team/sha256:abcd"},
 	}
 	for _, tt := range tests {
@@ -198,6 +216,26 @@ func TestImageTagTargetOnPodmansNativeRoute(t *testing.T) {
 		// Podman stores the name under localhost/, where "Team" is a path
 		// component it rejects.
 		{name: "upper-case short first component", rawQuery: "repo=Team%2Fapp", wantCompat: "Team/app:latest", wantDeny: imageTagDenyInvalidRepo},
+		// Podman's reference grammar bounds the whole name, registry
+		// included, so the localhost/ it adds counts toward the 255.
+		{
+			name:       "longest short name that fits under localhost",
+			rawQuery:   "repo=team%2F" + strings.Repeat("a", imageTagRepoMaxLen-len("localhost/team/")),
+			wantLibpod: "localhost/team/" + strings.Repeat("a", imageTagRepoMaxLen-len("localhost/team/")) + ":latest",
+			wantCompat: "team/" + strings.Repeat("a", imageTagRepoMaxLen-len("localhost/team/")) + ":latest",
+		},
+		{
+			name:       "short name that outgrows the bound under localhost",
+			rawQuery:   "repo=team%2F" + strings.Repeat("a", imageTagRepoMaxLen+1-len("localhost/team/")),
+			wantCompat: "team/" + strings.Repeat("a", imageTagRepoMaxLen+1-len("localhost/team/")) + ":latest",
+			wantDeny:   imageTagDenyInvalidRepo,
+		},
+		{
+			name:       "qualified name at the bound is not prefixed",
+			rawQuery:   "repo=registry.example%2F" + strings.Repeat("a", imageTagRepoMaxLen-len("registry.example/")),
+			wantLibpod: "registry.example/" + strings.Repeat("a", imageTagRepoMaxLen-len("registry.example/")) + ":latest",
+			wantCompat: "registry.example/" + strings.Repeat("a", imageTagRepoMaxLen-len("registry.example/")) + ":latest",
+		},
 		{name: "digest algorithm as the name", rawQuery: "repo=sha256&tag=abcd", wantDeny: imageTagDenyDigestName},
 	}
 	for _, tt := range tests {
@@ -245,6 +283,79 @@ func TestLibpodImageTagChecksTheStoredName(t *testing.T) {
 			}
 			if got, want := inspectedImages(inspector), []string{imageTagTestSource, "localhost/team/app:v2"}; !slices.Equal(got, want) {
 				t.Fatalf("inspected images = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+// TestImageTagRefusesTheCompatPathPodmanReadsAsNative covers the one
+// Docker-compatible path Podman does not read as a compat request. Podman
+// tells the two APIs apart by the third "/"-separated piece of the request URL
+// (IsLibpodRequest, read at v5.8.6), not by the route it matched. On an
+// unversioned POST /images/libpod/tag that piece is the image name, so Podman
+// stores a `repo` that names no registry under localhost/ without looking
+// anything up, while this layer inspects the name as the client spelled it and
+// Podman answers that inspect through short-name resolution. The two can name
+// different images, so the path is refused. The versioned spelling every
+// Docker client sends has "images" in that position and is left alone.
+func TestImageTagRefusesTheCompatPathPodmanReadsAsNative(t *testing.T) {
+	t.Parallel()
+	const query = "?repo=nginx&tag=prod"
+	own := inspectResult{labels: map[string]string{imageTagTestLabelKey: imageTagTestOwner}, found: true}
+
+	tests := []struct {
+		name string
+		path string
+		// wantInspects is empty for a refused path: the refusal comes before
+		// any inspect.
+		wantInspects []string
+	}{
+		{name: "unversioned path to an image named libpod", path: "/images/libpod/tag"},
+		{name: "unversioned path to an image under libpod/", path: "/images/libpod/app/tag"},
+		{name: "unversioned path to a tagged image under libpod/", path: "/images/libpod/app:1/tag"},
+
+		{name: "versioned path to an image named libpod", path: "/v1.45/images/libpod/tag", wantInspects: []string{"libpod", "nginx:prod"}},
+		{name: "versioned path to an image under libpod/", path: "/v1.45/images/libpod/app/tag", wantInspects: []string{"libpod/app", "nginx:prod"}},
+		// Podman compares the piece as it arrived, and the proxy forwards the
+		// path unchanged, so an escape keeps the request a compat one.
+		{name: "escaped letter in the segment", path: "/images/%6Cibpod/tag", wantInspects: []string{"libpod", "nginx:prod"}},
+		{name: "escaped slash keeps the name in one segment", path: "/images/libpod%2Fapp/tag", wantInspects: []string{"libpod/app", "nginx:prod"}},
+		{name: "tag in the first segment", path: "/images/libpod:1/tag", wantInspects: []string{"libpod:1", "nginx:prod"}},
+		{name: "longer first segment", path: "/images/libpods/app/tag", wantInspects: []string{"libpods/app", "nginx:prod"}},
+		{name: "libpod further into the name", path: "/images/team/libpod/tag", wantInspects: []string{"team/libpod", "nginx:prod"}},
+		// The native route is the one both sides read the same way, and its
+		// target is checked under the name Podman stores.
+		{name: "native route to an image named libpod", path: "/v5.0.0/libpod/images/libpod/tag", wantInspects: []string{"libpod", "localhost/nginx:prod"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			// Every image the caller could name here is its own, including
+			// the one the short target resolves to, so the only thing that
+			// can refuse a request is the shape of its path.
+			inspector := imageTagInspector("nginx:prod", own)
+			for _, source := range []string{"libpod", "libpod/app", "libpod/app:1", "libpod:1", "libpods/app", "team/libpod"} {
+				inspector.resources[string(dockerresource.KindImage)][source] = own
+			}
+			rec, forwarded := serveImageTagRequest(t, inspector, Options{Owner: imageTagTestOwner, LabelKey: imageTagTestLabelKey}, httptest.NewRequest(http.MethodPost, tt.path+query, nil))
+
+			if len(tt.wantInspects) > 0 {
+				if !forwarded || rec.Code != http.StatusCreated {
+					t.Fatalf("forwarded = %v status = %d, want true and %d; body: %s", forwarded, rec.Code, http.StatusCreated, rec.Body.String())
+				}
+				if got := inspectedImages(inspector); !slices.Equal(got, tt.wantInspects) {
+					t.Fatalf("inspected images = %v, want %v", got, tt.wantInspects)
+				}
+				return
+			}
+			if forwarded {
+				t.Fatal("retag reached the upstream")
+			}
+			if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), imageTagDenyLibpodSegment) {
+				t.Fatalf("status = %d, body = %s; want %d carrying %q", rec.Code, rec.Body.String(), http.StatusForbidden, imageTagDenyLibpodSegment)
+			}
+			if len(inspector.calls) != 0 {
+				t.Fatalf("inspect calls = %#v, want none for a refused path", inspector.calls)
 			}
 		})
 	}

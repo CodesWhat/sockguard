@@ -3,6 +3,7 @@ package ownership
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -23,6 +24,11 @@ const (
 	// grammar (distribution/reference: RepositoryNameTotalLengthMax).
 	imageTagRepoMaxLen = 255
 
+	// imageTagBareRepoMaxLen is that bound for a name with no slash. dockerd
+	// completes such a name to library/<name> before it measures the path, so
+	// the eight characters come out of what the client may spell.
+	imageTagBareRepoMaxLen = imageTagRepoMaxLen - len("library/")
+
 	imageTagDenyNoRepo        = "owner policy denied image tag without a repo parameter: there is no target reference to authorize"
 	imageTagDenyAmbiguous     = "owner policy denied image tag with an ambiguous repo or tag parameter"
 	imageTagDenyDigest        = "owner policy denied image tag whose repo carries a digest"
@@ -31,6 +37,7 @@ const (
 	imageTagDenyInvalidTag    = "owner policy denied image tag with a tag outside the image reference grammar"
 	imageTagDenyDigestName    = "owner policy denied image tag whose repo is a digest algorithm name: the engines read such a reference as an image ID"
 	imageTagDenyTarget        = "owner policy denied image tag onto a reference that already names an image outside this owner"
+	imageTagDenyLibpodSegment = "owner policy denied image tag on an unversioned path whose image name starts with a libpod segment: Podman reads that request as a native one, so send it on a versioned path"
 )
 
 // imageTagOwnershipReference is the second image a retag names: the reference
@@ -107,9 +114,51 @@ func isImageTagRoutePath(method, normPath string) bool {
 // body never reaches the daemon. That is a property of every handler that
 // reads r.Form, so it has to be refused for the whole proxy and not route by
 // route here.
+//
+// A Docker-compatible path Podman would read as a native request is refused
+// before the query is looked at. See compatPathReadAsLibpod.
 func imageTagOwnershipReferences(r *http.Request, normPath string) *ownershipRequestReferences {
-	target, denyReason := imageTagTarget(r.URL.RawQuery, isLibpodOwnershipPath(normPath))
+	libpod := isLibpodOwnershipPath(normPath)
+	if !libpod && compatPathReadAsLibpod(r.URL) {
+		return &ownershipRequestReferences{imageTag: &imageTagOwnershipReference{denyReason: imageTagDenyLibpodSegment}}
+	}
+	target, denyReason := imageTagTarget(r.URL.RawQuery, libpod)
 	return &ownershipRequestReferences{imageTag: &imageTagOwnershipReference{target: target, denyReason: denyReason}}
+}
+
+// compatPathReadAsLibpod reports whether Podman reads the request as a native
+// libpod one, whatever route it matches.
+//
+// Podman does not take that from the route. IsLibpodRequest splits the request
+// URL on "/" and compares the third piece with "libpod": the segment after the
+// version in /v5.0.0/libpod/images/..., and the first segment of the image
+// name in an unversioned /images/{name}/tag. Both run compat.TagImage, and
+// what the answer changes is NormalizeToDockerHub. A compat request has its
+// target looked up the same way the inspect's handler looks it up. A native
+// one skips that, so libimage stores a `repo` that names no registry under
+// localhost/ (see podmanStoredImageName), while this layer, having classified
+// the path as Docker-compatible, inspects the name as spelled and Podman
+// answers that inspect through short-name resolution. A client could name one
+// of its images "libpod", plant another under the name an alias resolves to,
+// and move a localhost/ name off another owner's image. Read from Podman
+// 5.8.6 (pkg/api/handlers/utils/apiutil).
+//
+// So an unversioned retag of an image named "libpod", or of one whose name
+// starts with "libpod/", is refused, for every upstream: the flavor is a
+// setting, and refusing costs a dockerd client only that one spelling. The
+// versioned path, which is what the docker CLI, the SDKs and Podman's own
+// compat clients send, has "images" in that position and is a compat request
+// to Podman as well.
+//
+// The comparison is on the escaped path because that is the string Podman
+// splits. The proxy forwards the path as it arrived and Podman's router
+// matches it encoded, so "%6Cibpod" is "libpod" to neither, and
+// "libpod%2Fapp" is one piece to both. Podman's split also runs over the
+// query, which cannot matter here: a path its router sends to the tag handler
+// always has the third piece.
+func compatPathReadAsLibpod(u *url.URL) bool {
+	pieces := strings.SplitN(u.EscapedPath(), "/", 4)
+	return len(pieces) >= 3 && pieces[2] == "libpod"
 }
 
 // imageTagTarget builds the reference a retag creates, as name:tag, or returns
@@ -151,11 +200,21 @@ func imageTagOwnershipReferences(r *http.Request, normPath string) *ownershipReq
 //     the tag `repo` spelled, Podman concatenates both and rejects the result.
 //   - A name or tag outside the image reference grammar. The engines reject
 //     those themselves, and refusing here keeps a string only one of them can
-//     parse out of the inspect.
-//   - A name that is a digest algorithm ("sha256"). The reference it builds,
-//     sha256:<tag>, is an image ID to both engines' lookups, so the inspect
-//     would answer for a different image than the tag names. dockerd and
-//     libimage both refuse to create it.
+//     parse out of the inspect. That includes a name that only outgrows the
+//     length bound once the engine completes it: one with no slash that
+//     dockerd reads as library/<name>, and a short one Podman's native route
+//     stores under localhost/. Either would have the inspect answer with an
+//     error, which is a 502 a client could produce at will.
+//   - A name that is a digest algorithm: "sha256", "sha384" or "sha512". The
+//     reference it builds, <algorithm>:<tag>, can be a well-formed digest,
+//     and a lookup that parses it as one searches by image ID instead of by
+//     name, so the inspect could answer for a different image than the one
+//     the tag names, or for none. Both engines' lookups read sha256:<hex>
+//     that way, and dockerd and libimage both refuse to create a tag named
+//     "sha256". Neither refuses "sha384" or "sha512", whose 96 and 128
+//     character hex values fit the tag grammar and still parse as digests to
+//     dockerd's reference parser. This layer refuses all three, because the
+//     inspect has no way to ask for such a reference by name.
 func imageTagTarget(rawQuery string, libpod bool) (target, denyReason string) {
 	query, err := imageselector.Parse(rawQuery)
 	if err != nil {
@@ -186,7 +245,7 @@ func imageTagTarget(rawQuery string, libpod bool) (target, denyReason string) {
 		tag = imageTagDefaultTag
 	}
 
-	if len(name) > imageTagRepoMaxLen {
+	if len(name) > imageTagRepoMaxLen || (len(name) > imageTagBareRepoMaxLen && !strings.Contains(name, "/")) {
 		return "", imageTagDenyInvalidRepo
 	}
 	match := imageTagRepoName.FindStringSubmatch(name)
@@ -199,7 +258,7 @@ func imageTagTarget(rawQuery string, libpod bool) (target, denyReason string) {
 		return "", imageTagDenyDigestName
 	}
 	if libpod {
-		if name, ok = podmanStoredImageName(name, match[1]); !ok {
+		if name, ok = podmanStoredImageName(name, match[1]); !ok || len(name) > imageTagRepoMaxLen {
 			return "", imageTagDenyInvalidRepo
 		}
 	}
@@ -221,11 +280,30 @@ func imageTagTarget(rawQuery string, libpod bool) (target, denyReason string) {
 //
 // A short name whose first component carries an upper-case letter is refused.
 // The grammar allows one only in a domain, and under localhost/ that
-// component becomes part of the path, which Podman rejects.
+// component becomes part of the path, which Podman rejects. The caller also
+// refuses a completed name over the length bound, because Podman's reference
+// grammar measures the whole name, registry included.
 //
-// The Docker-compatible route is left as the client spelled it: dockerd has
-// no such rule, and Podman's default compat_api_enforce_docker_hub resolves
-// that route's target through the same lookup the inspect uses.
+// The Docker-compatible route is left as the client spelled it. That is exact
+// on dockerd, where a name means one reference. On Podman what holds is
+// narrower:
+//
+//   - With its default compat_api_enforce_docker_hub, a request Podman reads
+//     as a compat one has its target run through NormalizeToDockerHub, which
+//     looks a short name up locally (alias first) and tags the name that
+//     lookup found, or the Docker Hub one when nothing holds it. The inspect's
+//     handler starts with the same call, so the image this layer checks is
+//     the one holding the name the tag moves. It is the same lookup, not a
+//     fixed name: which name a short `repo` means depends on what the store
+//     holds when the request arrives.
+//   - Whether Podman reads the request as a compat one is decided by its URL,
+//     not by this layer's route. compatPathReadAsLibpod refuses the one
+//     Docker-compatible path it reads as native.
+//   - With that option off, NormalizeToDockerHub does nothing on either
+//     route, so the compat route stores a short name under localhost/ as well
+//     while the inspect still resolves it alias-first. Nothing here closes
+//     that. This layer cannot see the setting, and
+//     docs/content/docs/podman.mdx carries the caveat.
 func podmanStoredImageName(name, domain string) (string, bool) {
 	if strings.ContainsAny(domain, ".:") || domain == "localhost" {
 		return name, true

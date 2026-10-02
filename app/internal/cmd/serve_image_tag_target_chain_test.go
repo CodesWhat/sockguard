@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -33,12 +32,18 @@ const (
 // parsed form, a tag carried in `repo` kept unless `tag` replaces it, and
 // "latest" when neither names one. Confirmed against dockerd 29.5.2. Podman
 // registers its compat and libpod tag routes on one handler that builds
-// repo + ":" + tag and moves the name the same way, and on the libpod route
-// it stores a name with no registry under localhost/.
+// repo + ":" + tag and moves the name the same way, and on a request it reads
+// as a native one it stores a name with no registry under localhost/. See
+// imageTagChainLibpodRequest for how it tells.
 type imageTagChainDaemon struct {
 	mu     sync.Mutex
 	names  map[string]string
 	labels map[string]map[string]string
+	// shortNameAliases, when non-nil, makes the store Podman-shaped: every
+	// stored name is registry-qualified and a name with no registry is looked
+	// up the way resolve describes. Nil leaves it dockerd-shaped, where a
+	// name is held exactly as the client spelled it.
+	shortNameAliases map[string]string
 	// requests is every request the daemon saw, as "METHOD normalized-path".
 	requests []string
 }
@@ -68,12 +73,77 @@ func (d *imageTagChainDaemon) nameTarget(name string) string {
 	return d.names[name]
 }
 
-func (d *imageTagChainDaemon) sawTagCall() bool {
+func (d *imageTagChainDaemon) tagCalls() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return slices.ContainsFunc(d.requests, func(request string) bool {
-		return strings.HasPrefix(request, http.MethodPost+" ") && strings.HasSuffix(request, "/tag")
-	})
+	calls := 0
+	for _, request := range d.requests {
+		if strings.HasPrefix(request, http.MethodPost+" ") && strings.HasSuffix(request, "/tag") {
+			calls++
+		}
+	}
+	return calls
+}
+
+func (d *imageTagChainDaemon) sawTagCall() bool {
+	return d.tagCalls() > 0
+}
+
+// resolve returns the stored name ref points at. The caller holds d.mu.
+//
+// A dockerd-shaped store matches the name as spelled. A Podman-shaped one
+// follows libimage's LookupImage for a name with no registry: the
+// registries.conf alias if the repository has one, then localhost/, then
+// Docker Hub, with "latest" for a missing tag. Read from
+// go.podman.io/common v0.67.1 and go.podman.io/image/v5 v5.39.2
+// (shortnames.ResolveLocally).
+func (d *imageTagChainDaemon) resolve(ref string) (string, bool) {
+	if _, ok := d.names[ref]; ok {
+		return ref, true
+	}
+	if d.shortNameAliases == nil {
+		return "", false
+	}
+	repo, tag := ref, "latest"
+	if colon := strings.LastIndex(ref, ":"); colon > strings.LastIndex(ref, "/") {
+		repo, tag = ref[:colon], ref[colon+1:]
+	}
+	candidates := []string{repo}
+	if imageTagChainShortName(repo) {
+		candidates = []string{"localhost/" + repo, imageTagChainDockerHubName(repo)}
+		if alias, ok := d.shortNameAliases[repo]; ok {
+			candidates = append([]string{alias}, candidates...)
+		}
+	}
+	for _, candidate := range candidates {
+		if _, ok := d.names[candidate+":"+tag]; ok {
+			return candidate + ":" + tag, true
+		}
+	}
+	return "", false
+}
+
+// imageTagChainShortName reports whether name carries no registry.
+func imageTagChainShortName(name string) bool {
+	registry, _, _ := strings.Cut(name, "/")
+	return !strings.ContainsAny(registry, ".:") && registry != "localhost"
+}
+
+func imageTagChainDockerHubName(name string) string {
+	if !strings.Contains(name, "/") {
+		return "docker.io/library/" + name
+	}
+	return "docker.io/" + name
+}
+
+// imageTagChainLibpodRequest is Podman's IsLibpodRequest
+// (pkg/api/handlers/utils/apiutil, v5.8.6). It is how Podman decides whether
+// a request is a native one, and it reads the request URL, not the route: the
+// third "/"-separated piece is "libpod" in /v5.0.0/libpod/images/..., and it
+// is the image name in an unversioned /images/{name}/tag.
+func imageTagChainLibpodRequest(r *http.Request) bool {
+	pieces := strings.Split(r.URL.String(), "/")
+	return len(pieces) >= 3 && pieces[2] == "libpod"
 }
 
 func (d *imageTagChainDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -86,23 +156,25 @@ func (d *imageTagChainDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	rest, isImage := strings.CutPrefix(strings.TrimPrefix(normPath, "/libpod"), "/images/")
 	switch {
 	case isImage && r.Method == http.MethodGet && strings.HasSuffix(rest, "/json"):
-		id, ok := d.names[strings.TrimSuffix(rest, "/json")]
+		name, ok := d.resolve(strings.TrimSuffix(rest, "/json"))
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = io.WriteString(w, `{"message":"No such image"}`)
 			return
 		}
+		id := d.names[name]
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"Id":     id,
 			"Config": map[string]any{"Labels": d.labels[id]},
 		})
 	case isImage && r.Method == http.MethodPost && strings.HasSuffix(rest, "/tag"):
-		id, ok := d.names[strings.TrimSuffix(rest, "/tag")]
+		source, ok := d.resolve(strings.TrimSuffix(rest, "/tag"))
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = io.WriteString(w, `{"message":"No such image"}`)
 			return
 		}
+		id := d.names[source]
 		_ = r.ParseForm()
 		repo, tag := r.Form.Get("repo"), r.Form.Get("tag")
 		if repo == "" {
@@ -120,10 +192,26 @@ func (d *imageTagChainDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		default:
 			tag = "latest"
 		}
-		if registry, _, _ := strings.Cut(name, "/"); strings.HasPrefix(normPath, "/libpod/") && !strings.ContainsAny(registry, ".:") && registry != "localhost" {
-			name = "localhost/" + name
+		// Podman runs the target through NormalizeToDockerHub. A native
+		// request returns from it untouched, and libimage's Image.Tag then
+		// stores a short name under localhost/. A compat request (with the
+		// default compat_api_enforce_docker_hub) looks the name up first and
+		// tags whatever name the lookup found, or the Docker Hub one when
+		// nothing holds it. Read from Podman 5.8.6.
+		target := name + ":" + tag
+		switch {
+		case imageTagChainLibpodRequest(r):
+			if imageTagChainShortName(name) {
+				target = "localhost/" + target
+			}
+		case d.shortNameAliases != nil:
+			if held, ok := d.resolve(target); ok {
+				target = held
+			} else if imageTagChainShortName(name) {
+				target = imageTagChainDockerHubName(target)
+			}
 		}
-		d.names[name+":"+tag] = id
+		d.names[target] = id
 		w.WriteHeader(http.StatusCreated)
 	default:
 		w.WriteHeader(http.StatusNotFound)
@@ -301,5 +389,83 @@ func TestServeChainImageTagAuthorizesTheTargetReference(t *testing.T) {
 				t.Errorf("tag call reached the daemon = %v, want %v; daemon saw %v", daemon.sawTagCall(), wantForwarded, daemon.requests)
 			}
 		})
+	}
+}
+
+// TestServeChainImageTagRefusesTheCompatPathPodmanReadsAsNative replays, against
+// a Podman-shaped store, the three requests that took a localhost/ name away
+// from another owner through the Docker-compatible route.
+//
+// The first two are ordinary retags onto names nothing holds, and stay
+// allowed: one plants the caller's image under the name Podman's short-name
+// alias for "nginx" resolves to, the other names the caller's image "libpod".
+// The third retags that image on the unversioned path. Sockguard read
+// POST /images/libpod/tag as a compat request and inspected "nginx:prod",
+// which Podman answers alias-first with the planted image. Podman reads the
+// same URL as a native request, because its third piece is "libpod", so it
+// skips that lookup and moves localhost/nginx:prod. The path is refused.
+func TestServeChainImageTagRefusesTheCompatPathPodmanReadsAsNative(t *testing.T) {
+	daemon := newImageTagChainDaemon()
+	daemon.names = map[string]string{
+		"localhost/mine:1":     imageTagChainOwnID,
+		"localhost/nginx:prod": imageTagChainVictimID,
+	}
+	daemon.shortNameAliases = map[string]string{"nginx": "docker.io/library/nginx"}
+	addr := newImageTagChain(t, daemon, nil)
+
+	steps := []struct {
+		name       string
+		target     string
+		reference  string
+		wantImage  string
+		wantStatus int
+	}{
+		{
+			name:       "plant the name the alias resolves to",
+			target:     "/v1.41/images/mine:1/tag?repo=docker.io%2Flibrary%2Fnginx&tag=prod",
+			reference:  "docker.io/library/nginx:prod",
+			wantImage:  imageTagChainOwnID,
+			wantStatus: http.StatusCreated,
+		},
+		{
+			name:       "name an image libpod",
+			target:     "/v1.41/images/mine:1/tag?repo=docker.io%2Flibrary%2Flibpod",
+			reference:  "docker.io/library/libpod:latest",
+			wantImage:  imageTagChainOwnID,
+			wantStatus: http.StatusCreated,
+		},
+		{
+			name:       "retag it on the unversioned path",
+			target:     "/images/libpod/tag?repo=nginx&tag=prod",
+			reference:  "localhost/nginx:prod",
+			wantImage:  imageTagChainVictimID,
+			wantStatus: http.StatusForbidden,
+		},
+	}
+	wantTagCalls := 0
+	for _, step := range steps {
+		req, err := http.NewRequest(http.MethodPost, "http://"+addr+step.target, nil)
+		if err != nil {
+			t.Fatalf("%s: new request: %v", step.name, err)
+		}
+		resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+		if err != nil {
+			t.Fatalf("%s: POST %s: %v", step.name, step.target, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+
+		if step.wantStatus == http.StatusCreated {
+			wantTagCalls++
+		}
+		if got := daemon.nameTarget(step.reference); got != step.wantImage {
+			t.Errorf("%s: %s points at %s after the request, want %s", step.name, step.reference, got, step.wantImage)
+		}
+		if resp.StatusCode != step.wantStatus {
+			t.Errorf("%s: status = %d, want %d; body: %s", step.name, resp.StatusCode, step.wantStatus, body)
+		}
+		if got := daemon.tagCalls(); got != wantTagCalls {
+			t.Errorf("%s: tag calls that reached the daemon = %d, want %d", step.name, got, wantTagCalls)
+		}
 	}
 }
