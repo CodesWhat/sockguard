@@ -392,7 +392,7 @@ and load routes, and under both `{name}` and `localhost/{name}` on the compat
 routes and on a native commit or pull. See
 [Known Limitations](/podman#known-limitations).
 
-Two ways a build can write an image name are not covered:
+These ways of writing an image name are not covered:
 
 - A BuildKit build through the mediated `POST /grpc` tunnel names its image in
   the exporter attributes of its `Control/Solve` call, which
@@ -403,6 +403,11 @@ Two ways a build can write an image name are not covered:
   pulls the base image and re-tags it locally, the same overwrite a pull on
   `POST /images/create` is checked for, and the base image names are in the
   Dockerfile inside the build context, which owner isolation does not read.
+- Podman's daemon-host routes `POST /libpod/local/build` and
+  `POST /libpod/local/images/load` read their input from a path on the daemon
+  host and are left to the `insecure_allow_body_blind_writes` acknowledgment.
+  With that acknowledgment set under `ownership.owner`, the names they assign
+  are not checked against the image holding them.
 
 `POST /libpod/images/{name}/untag` takes the same two parameters and needs no
 second check. Podman removes a name only from the image the path resolves, so
