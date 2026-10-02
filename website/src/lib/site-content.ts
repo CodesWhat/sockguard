@@ -272,6 +272,17 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
+    version: "v2.2.2",
+    title: "Security Patch: Form Bodies, Image Push and Retag",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "A form-encoded request body, or a multipart one outside the /libpod/ API, is refused with a 400 because the daemon reads its fields ahead of the query string that every filter, prune scope and registry check evaluated",
+      "Under owner isolation, an image push is authorized against exactly {name}:{tag}, and any request where sockguard and the daemon could read a different tag is refused",
+      "Under owner isolation, an image retag also checks the target name, so a client can no longer repoint a name held by another owner's image",
+    ],
+  },
+  {
     version: "v2.3.0",
     title: "BuildKit RUN-Instruction Coverage",
     emoji: "🧩",
