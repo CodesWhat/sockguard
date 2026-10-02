@@ -374,20 +374,22 @@ is refused, because the engines build different references out of the two.
 
 These routes refuse the same unreadable names a retag does: a repeated
 parameter or one spelled in another case, a query with a semicolon or a bad
-percent escape, a digest where a name belongs, a tag next to a `tag`
-parameter, and anything outside the image reference grammar or its length
-bounds. A build is limited to 256 `t` values and a load to 256 names. A
-build's `outputs` may not name an image, because BuildKit stores an exporter
-`name` as spelled and there is no reference to inspect; name the image in `t`.
-A load whose archive is in neither the Docker nor the OCI format is refused
-under owner isolation even when `allow_untagged` admits it, because nobody
-read its names. So is a load on `POST /images/load` whose archive carries a
-top-level `repositories` file and no `manifest.json`, whatever
-`request_body.image_load` allows: Docker's classic image store before
-Docker 29 names the images from that file, and Sockguard does not read it. On a Podman upstream a name with no registry is checked where
-Podman stores it: under `localhost/` on the native build, import and load
-routes, and under both `{name}` and `localhost/{name}` on the compat routes
-and on a native commit or pull. See
+percent escape, a name carrying a digest on a commit, a build or an import, a
+tag next to a `tag` parameter, and anything outside the image reference
+grammar or its length bounds. A load's name by digest is checked, not refused,
+and one that carries a tag as well as a digest is refused. A build is limited
+to 256 `t` values and a load to 256 names. A build's `outputs` may not name an
+image, because BuildKit stores an exporter `name` as spelled and there is no
+reference to inspect; name the image in `t`. A load whose archive is in
+neither the Docker nor the OCI format is refused under owner isolation even
+when `allow_untagged` admits it, because nobody read its names. So is a load
+on `POST /images/load` whose archive carries a top-level `repositories` file
+and no `manifest.json`, whatever `request_body.image_load` allows: Docker's
+classic image store before Docker 29 names the images from that file, and
+Sockguard does not read it. On a Podman upstream a name with no registry is
+checked where Podman stores it: under `localhost/` on the native build, import
+and load routes, and under both `{name}` and `localhost/{name}` on the compat
+routes and on a native commit or pull. See
 [Known Limitations](/podman#known-limitations).
 
 Two ways a build can write an image name are not covered:
