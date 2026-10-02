@@ -290,6 +290,15 @@ nothing from anyone. A target that resolves is checked like the subject of any
 other per-image request. The caller's own image passes, another owner's is a
 `403`, and an unlabeled one follows `allow_unowned_images`.
 
+On a Podman upstream the Docker-compatible route checks a `repo` that names no
+registry under two names. Podman either tags the name a local lookup finds or
+stores the name under `localhost/`, depending on
+`compat_api_enforce_docker_hub` in its `containers.conf`, and Sockguard cannot
+see that setting. So it inspects `{repo}:{tag}` and `localhost/{repo}:{tag}`,
+and both have to pass. dockerd has one reading of a name and is inspected
+once, and so is a `repo` that names its registry on either engine. See
+[Known Limitations](/podman#known-limitations).
+
 That last case matters when owners share a daemon. With the option at its
 default of `true`, a name held by an unlabeled image can be repointed by any
 owner, the same way that image can already be used, pushed and tagged by any
@@ -303,16 +312,16 @@ semicolon or a bad percent escape, a `repo` carrying a digest, a `repo`
 carrying a tag next to a `tag` parameter, a name or tag outside the image
 reference grammar, a name that is only too long once the engine completes it
 (a `repo` with no slash over 247 characters, which dockerd reads as
-`library/{repo}`), and a `repo` that is a digest algorithm name (`sha256`,
-`sha384` or `sha512`). One path is refused as well: an unversioned
-`POST /images/{name}/tag` whose image is named `libpod` or starts with
-`libpod/`, because Podman reads that URL as a native request and names the
-target differently than the inspect does. The versioned path every Docker
-client sends is unaffected; see
-[Known Limitations](/podman#known-limitations). The target denial and these
-refusals are verdicts, so a `warn` or `audit` profile records the would-be
-denial and forwards. An inspect of the target that errors is a `502` in every
-mode.
+`library/{repo}`, and on a Podman upstream a `repo` with no registry over 245,
+which Podman stores as `localhost/{repo}`), and a `repo` that is a digest
+algorithm name (`sha256`, `sha384` or `sha512`). One path is refused as well:
+an unversioned `POST /images/{name}/tag` whose image is named `libpod` or
+starts with `libpod/`, because Podman reads that URL as a native request and
+Sockguard reads it as a compat one. The versioned path every Docker client
+sends is unaffected; see [Known Limitations](/podman#known-limitations). The
+target denial and these refusals are verdicts, so a `warn` or `audit` profile
+records the would-be denial and forwards. An inspect of the target that
+errors, under either name, is a `502` in every mode.
 
 `POST /libpod/images/{name}/untag` takes the same two parameters and needs no
 second check. Podman removes a name only from the image the path resolves, so

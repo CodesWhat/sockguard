@@ -10,6 +10,7 @@ import (
 
 	"github.com/codeswhat/sockguard/app/internal/dockerresource"
 	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/upstreamflavor"
 )
 
 const (
@@ -176,9 +177,9 @@ func TestImageTagTargetReference(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got, deny := imageTagTarget(tt.rawQuery, false)
-			if got != tt.want || deny != tt.wantDeny {
-				t.Fatalf("imageTagTarget(%q) = (%q, %q), want (%q, %q)", tt.rawQuery, got, deny, tt.want, tt.wantDeny)
+			got, stored, deny := imageTagTarget(tt.rawQuery, imageTagNamedAsSpelled)
+			if got != tt.want || stored != "" || deny != tt.wantDeny {
+				t.Fatalf("imageTagTarget(%q) = (%q, %q, %q), want (%q, \"\", %q)", tt.rawQuery, got, stored, deny, tt.want, tt.wantDeny)
 			}
 		})
 	}
@@ -190,6 +191,11 @@ func TestImageTagTargetReference(t *testing.T) {
 // go.podman.io/common v0.67.1), so that is the reference the inspect has to
 // ask for. The Docker-compatible spelling of each request keeps the name as
 // the client sent it.
+//
+// On a Podman upstream the Docker-compatible route can land on either, so it
+// reads both out of the same request: the name as spelled is the target and
+// the localhost/ one comes back beside it. A `repo` that names its registry
+// has one name, and a name the native route refuses is refused there too.
 func TestImageTagTargetOnPodmansNativeRoute(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -241,15 +247,27 @@ func TestImageTagTargetOnPodmansNativeRoute(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got, deny := imageTagTarget(tt.rawQuery, true)
-			if got != tt.wantLibpod || deny != tt.wantDeny {
-				t.Fatalf("libpod imageTagTarget(%q) = (%q, %q), want (%q, %q)", tt.rawQuery, got, deny, tt.wantLibpod, tt.wantDeny)
+			got, stored, deny := imageTagTarget(tt.rawQuery, imageTagNamedAsStored)
+			if got != tt.wantLibpod || stored != "" || deny != tt.wantDeny {
+				t.Fatalf("libpod imageTagTarget(%q) = (%q, %q, %q), want (%q, \"\", %q)", tt.rawQuery, got, stored, deny, tt.wantLibpod, tt.wantDeny)
 			}
+
+			wantTarget, wantStored := tt.wantCompat, tt.wantLibpod
+			switch {
+			case tt.wantDeny != "":
+				wantTarget, wantStored = "", ""
+			case wantStored == wantTarget:
+				wantStored = ""
+			}
+			if got, stored, deny := imageTagTarget(tt.rawQuery, imageTagNamedEitherWay); got != wantTarget || stored != wantStored || deny != tt.wantDeny {
+				t.Fatalf("docker-compatible on podman imageTagTarget(%q) = (%q, %q, %q), want (%q, %q, %q)", tt.rawQuery, got, stored, deny, wantTarget, wantStored, tt.wantDeny)
+			}
+
 			if tt.wantCompat == "" {
 				return
 			}
-			if got, deny := imageTagTarget(tt.rawQuery, false); got != tt.wantCompat || deny != "" {
-				t.Fatalf("docker-compatible imageTagTarget(%q) = (%q, %q), want (%q, \"\")", tt.rawQuery, got, deny, tt.wantCompat)
+			if got, stored, deny := imageTagTarget(tt.rawQuery, imageTagNamedAsSpelled); got != tt.wantCompat || stored != "" || deny != "" {
+				t.Fatalf("docker-compatible imageTagTarget(%q) = (%q, %q, %q), want (%q, \"\", \"\")", tt.rawQuery, got, stored, deny, tt.wantCompat)
 			}
 		})
 	}
@@ -283,6 +301,222 @@ func TestLibpodImageTagChecksTheStoredName(t *testing.T) {
 			}
 			if got, want := inspectedImages(inspector), []string{imageTagTestSource, "localhost/team/app:v2"}; !slices.Equal(got, want) {
 				t.Fatalf("inspected images = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+// TestCompatImageTagChecksBothNamesOnPodman covers the Docker-compatible route
+// on a Podman upstream, where a `repo` that names no registry has two possible
+// destinations and this layer cannot tell which one the daemon will write.
+//
+// With compat_api_enforce_docker_hub at its default, Podman looks the short
+// name up (alias first) and tags the name the lookup found, which is the image
+// the inspect of the name as spelled answers with. With the option off it
+// stores the name under localhost/ and looks nothing up (NormalizeToDockerHub
+// and libimage's NormalizeName, read from Podman 5.8.6). So both are
+// inspected, and the request goes through only when neither takes a name from
+// another owner. dockerd has one reading of a name and is asked once.
+func TestCompatImageTagChecksBothNamesOnPodman(t *testing.T) {
+	t.Parallel()
+	const (
+		compatPath = "/v1.45/images/" + imageTagTestSource + "/tag"
+		libpodPath = "/v5.0.0/libpod/images/" + imageTagTestSource + "/tag"
+		short      = "?repo=nginx&tag=prod"
+		spelled    = "nginx:prod"
+		stored     = "localhost/nginx:prod"
+	)
+	own := inspectResult{labels: map[string]string{imageTagTestLabelKey: imageTagTestOwner}, found: true}
+	foreign := inspectResult{labels: map[string]string{imageTagTestLabelKey: "someone-else"}, found: true}
+	unlabeled := inspectResult{found: true}
+	failing := inspectResult{err: errors.New("upstream returned 500")}
+	// One character more than fits once Podman puts localhost/ in front.
+	longShort := "team/" + strings.Repeat("a", imageTagRepoMaxLen+1-len("localhost/team/"))
+
+	tests := []struct {
+		name         string
+		flavor       upstreamflavor.Flavor
+		path         string
+		query        string
+		images       map[string]inspectResult
+		allowUnowned bool
+		wantStatus   int
+		wantReason   string
+		wantInspects []string
+	}{
+		{
+			name: "podman: caller holds both names", flavor: upstreamflavor.Podman, path: compatPath, query: short,
+			images:     map[string]inspectResult{spelled: own, stored: own},
+			wantStatus: http.StatusCreated, wantInspects: []string{imageTagTestSource, spelled, stored},
+		},
+		{
+			name: "podman: neither name is held", flavor: upstreamflavor.Podman, path: compatPath, query: short,
+			wantStatus: http.StatusCreated, wantInspects: []string{imageTagTestSource, spelled, stored},
+		},
+		{
+			// The image short-name resolution finds is another owner's. The
+			// first inspect settles it.
+			name: "podman: another owner holds the name as spelled", flavor: upstreamflavor.Podman, path: compatPath, query: short,
+			images:     map[string]inspectResult{spelled: foreign, stored: own},
+			wantStatus: http.StatusForbidden, wantReason: imageTagDenyTarget, wantInspects: []string{imageTagTestSource, spelled},
+		},
+		{
+			// The reported case: the alias resolves to the caller's image and
+			// localhost/ is another owner's.
+			name: "podman: another owner holds the localhost name", flavor: upstreamflavor.Podman, path: compatPath, query: short,
+			images:     map[string]inspectResult{spelled: own, stored: foreign},
+			wantStatus: http.StatusForbidden, wantReason: imageTagDenyTarget, wantInspects: []string{imageTagTestSource, spelled, stored},
+		},
+		{
+			name: "podman: another owner holds the localhost name and nothing answers for the short one", flavor: upstreamflavor.Podman, path: compatPath, query: short,
+			images:     map[string]inspectResult{stored: foreign},
+			wantStatus: http.StatusForbidden, wantReason: imageTagDenyTarget, wantInspects: []string{imageTagTestSource, spelled, stored},
+		},
+		{
+			name: "podman: unlabeled image holds the localhost name and unowned images are allowed", flavor: upstreamflavor.Podman, path: compatPath, query: short,
+			images: map[string]inspectResult{spelled: own, stored: unlabeled}, allowUnowned: true,
+			wantStatus: http.StatusCreated, wantInspects: []string{imageTagTestSource, spelled, stored},
+		},
+		{
+			name: "podman: unlabeled image holds the localhost name and unowned images are refused", flavor: upstreamflavor.Podman, path: compatPath, query: short,
+			images:     map[string]inspectResult{spelled: own, stored: unlabeled},
+			wantStatus: http.StatusForbidden, wantReason: imageTagDenyTarget, wantInspects: []string{imageTagTestSource, spelled, stored},
+		},
+		{
+			name: "podman: inspect of the localhost name fails", flavor: upstreamflavor.Podman, path: compatPath, query: short,
+			images: map[string]inspectResult{spelled: own, stored: failing}, allowUnowned: true,
+			wantStatus: http.StatusBadGateway, wantInspects: []string{imageTagTestSource, spelled, stored},
+		},
+		{
+			name: "podman: default tag", flavor: upstreamflavor.Podman, path: compatPath, query: "?repo=team%2Fapp",
+			wantStatus: http.StatusCreated, wantInspects: []string{imageTagTestSource, "team/app:latest", "localhost/team/app:latest"},
+		},
+		// A `repo` that names its registry is stored as written whatever the
+		// option says, so there is one name to check.
+		{
+			name: "podman: registry-qualified repo", flavor: upstreamflavor.Podman, path: compatPath, query: "?repo=registry.example%2Fteam%2Fapp&tag=v2",
+			images:     map[string]inspectResult{"localhost/registry.example/team/app:v2": foreign},
+			wantStatus: http.StatusCreated, wantInspects: []string{imageTagTestSource, "registry.example/team/app:v2"},
+		},
+		{
+			name: "podman: repo already under localhost", flavor: upstreamflavor.Podman, path: compatPath, query: "?repo=localhost%2Fnginx&tag=prod",
+			images:     map[string]inspectResult{stored: foreign},
+			wantStatus: http.StatusForbidden, wantReason: imageTagDenyTarget, wantInspects: []string{imageTagTestSource, stored},
+		},
+		{
+			name: "podman: registry with a port", flavor: upstreamflavor.Podman, path: compatPath, query: "?repo=localhost%3A5000%2Fnginx&tag=prod",
+			wantStatus: http.StatusCreated, wantInspects: []string{imageTagTestSource, "localhost:5000/nginx:prod"},
+		},
+		// Podman accepts neither of these under either setting: the name is
+		// over the bound as localhost/<repo> and as docker.io/<repo>, and an
+		// upper-case first component is a path component once it is completed.
+		{
+			name: "podman: short name that outgrows the bound under localhost", flavor: upstreamflavor.Podman, path: compatPath, query: "?repo=" + longShort,
+			wantStatus: http.StatusForbidden, wantReason: imageTagDenyInvalidRepo,
+		},
+		{
+			name: "podman: upper-case short first component", flavor: upstreamflavor.Podman, path: compatPath, query: "?repo=Team%2Fapp",
+			wantStatus: http.StatusForbidden, wantReason: imageTagDenyInvalidRepo,
+		},
+		// The native route always stores under localhost/, so that is still
+		// the only name it is checked under.
+		{
+			name: "podman: native route", flavor: upstreamflavor.Podman, path: libpodPath, query: short,
+			images:     map[string]inspectResult{spelled: foreign},
+			wantStatus: http.StatusCreated, wantInspects: []string{imageTagTestSource, stored},
+		},
+
+		// dockerd: unchanged. localhost/nginx:prod is an image on a registry
+		// called localhost there, and not the reference the request names.
+		{
+			name: "docker: short repo", flavor: upstreamflavor.Docker, path: compatPath, query: short,
+			images:     map[string]inspectResult{stored: foreign},
+			wantStatus: http.StatusCreated, wantInspects: []string{imageTagTestSource, spelled},
+		},
+		{
+			name: "docker: another owner holds the name", flavor: upstreamflavor.Docker, path: compatPath, query: short,
+			images:     map[string]inspectResult{spelled: foreign},
+			wantStatus: http.StatusForbidden, wantReason: imageTagDenyTarget, wantInspects: []string{imageTagTestSource, spelled},
+		},
+		{
+			name: "docker: registry-qualified repo", flavor: upstreamflavor.Docker, path: compatPath, query: "?repo=registry.example%2Fteam%2Fapp&tag=v2",
+			wantStatus: http.StatusCreated, wantInspects: []string{imageTagTestSource, "registry.example/team/app:v2"},
+		},
+		{
+			name: "docker: short name over the bound Podman has", flavor: upstreamflavor.Docker, path: compatPath, query: "?repo=" + longShort,
+			wantStatus: http.StatusCreated, wantInspects: []string{imageTagTestSource, longShort + ":latest"},
+		},
+		{
+			name: "docker: upper-case first component is a domain", flavor: upstreamflavor.Docker, path: compatPath, query: "?repo=Team%2Fapp",
+			wantStatus: http.StatusCreated, wantInspects: []string{imageTagTestSource, "Team/app:latest"},
+		},
+		// The zero Flavor is Docker everywhere in this package. See
+		// Options.UpstreamFlavor.
+		{
+			name: "zero flavor is docker", path: compatPath, query: short,
+			images:     map[string]inspectResult{stored: foreign},
+			wantStatus: http.StatusCreated, wantInspects: []string{imageTagTestSource, spelled},
+		},
+		// Startup never hands the chain an unresolved flavor. If one arrived
+		// anyway there would be no telling which engine reads the request, so
+		// it gets the check that holds on both.
+		{
+			name: "unresolved flavor gets the podman check", flavor: upstreamflavor.Auto, path: compatPath, query: short,
+			images:     map[string]inspectResult{spelled: own, stored: foreign},
+			wantStatus: http.StatusForbidden, wantReason: imageTagDenyTarget, wantInspects: []string{imageTagTestSource, spelled, stored},
+		},
+		{
+			name: "unrecognized flavor gets the podman check", flavor: "containerd", path: compatPath, query: short,
+			images:     map[string]inspectResult{spelled: own, stored: foreign},
+			wantStatus: http.StatusForbidden, wantReason: imageTagDenyTarget, wantInspects: []string{imageTagTestSource, spelled, stored},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			inspector := imageTagInspector("", inspectResult{})
+			for name, state := range tt.images {
+				inspector.resources[string(dockerresource.KindImage)][name] = state
+			}
+			opts := Options{Owner: imageTagTestOwner, LabelKey: imageTagTestLabelKey, AllowUnownedImages: tt.allowUnowned, UpstreamFlavor: tt.flavor}
+			rec, forwarded := serveImageTagRequest(t, inspector, opts, httptest.NewRequest(http.MethodPost, tt.path+tt.query, nil))
+
+			if rec.Code != tt.wantStatus || forwarded != (tt.wantStatus == http.StatusCreated) {
+				t.Fatalf("status = %d forwarded = %v, want %d; body: %s", rec.Code, forwarded, tt.wantStatus, rec.Body.String())
+			}
+			if tt.wantReason != "" && !strings.Contains(rec.Body.String(), tt.wantReason) {
+				t.Fatalf("body should carry %q, got: %s", tt.wantReason, rec.Body.String())
+			}
+			if got := inspectedImages(inspector); !slices.Equal(got, tt.wantInspects) {
+				t.Fatalf("inspected images = %v, want %v", got, tt.wantInspects)
+			}
+		})
+	}
+}
+
+// TestCompatImageTagOnPodmanFollowsRolloutModes: the second name is an owner
+// verdict like the first, so warn and audit record it and forward.
+func TestCompatImageTagOnPodmanFollowsRolloutModes(t *testing.T) {
+	t.Parallel()
+	own := inspectResult{labels: map[string]string{imageTagTestLabelKey: imageTagTestOwner}, found: true}
+	foreign := inspectResult{labels: map[string]string{imageTagTestLabelKey: "someone-else"}, found: true}
+
+	for _, mode := range []string{"warn", "audit"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			inspector := imageTagInspector("localhost/nginx:prod", foreign)
+			inspector.resources[string(dockerresource.KindImage)]["nginx:prod"] = own
+			meta := &logging.RequestMeta{RolloutMode: mode}
+			req := httptest.NewRequest(http.MethodPost, "/v1.45/images/"+imageTagTestSource+"/tag?repo=nginx&tag=prod", nil)
+			req = req.WithContext(logging.WithMeta(req.Context(), meta))
+			opts := Options{Owner: imageTagTestOwner, LabelKey: imageTagTestLabelKey, UpstreamFlavor: upstreamflavor.Podman}
+			rec, forwarded := serveImageTagRequest(t, inspector, opts, req)
+
+			if !forwarded || rec.Code != http.StatusCreated {
+				t.Fatalf("forwarded = %v status = %d, want true and %d", forwarded, rec.Code, http.StatusCreated)
+			}
+			if meta.Decision != logging.DecisionWouldDeny || meta.ReasonCode != reasonCodeOwnerPolicyDeniedAccess || meta.Reason != imageTagDenyTarget {
+				t.Fatalf("meta = decision %q code %q reason %q, want %q, %q and %q", meta.Decision, meta.ReasonCode, meta.Reason, logging.DecisionWouldDeny, reasonCodeOwnerPolicyDeniedAccess, imageTagDenyTarget)
 			}
 		})
 	}

@@ -275,9 +275,12 @@ same way they cover Docker-compat:
   follows `allow_unowned_images`. Podman stores a `repo` that names no registry
   under `localhost/` on this route without looking anything up, so
   `repo=team/app` is checked as `localhost/team/app`, the name the tag will
-  actually land on. A registry-qualified `repo` is checked as written. The
-  request shapes refused outright are the ones listed for the
-  Docker-compatible route under
+  actually land on. A registry-qualified `repo` is checked as written. On the
+  Docker-compatible route of a Podman upstream the same short `repo` is
+  checked under both names, as written and under `localhost/`, because a
+  daemon setting decides which one that route writes; see
+  [Known Limitations](#known-limitations). The request shapes refused outright
+  are the ones listed for the Docker-compatible route under
   [Owner Label Isolation](/security#layer-6-owner-label-isolation).
   `POST /libpod/images/{name}/untag` takes the same parameters and is
   authorized on its source image alone: Podman removes a name only from the
@@ -831,35 +834,47 @@ land):
   These checks do not make the daemon action transactional. A tag can be
   rebound after its preflight inspect, and Podman can still partially apply an
   authorized multi-image delete if a later daemon-side operation fails.
-- The Docker-compatible retag route is checked against the name as the client
-  spelled it. On dockerd that is exact, because a name means one reference
-  there. On Podman it is exact only for a registry-qualified `repo`. With the
-  default `compat_api_enforce_docker_hub = true`, Podman looks a `repo` that
-  names no registry up locally, a `registries.conf` alias first and
-  `localhost/` next, and tags whichever name that lookup found, or the Docker
-  Hub name when nothing holds it. The inspect goes through the same lookup, so
-  the image Sockguard checks is the one holding the name the tag moves, but
-  which name a short `repo` means depends on what the store holds when the
-  request arrives.
+- The Docker-compatible retag route has one reading of its target on dockerd
+  and two on Podman. On dockerd a name means one reference, and Sockguard
+  checks it as the client spelled it. On Podman that is exact only for a
+  registry-qualified `repo`. Where a `repo` that names no registry lands
+  depends on `compat_api_enforce_docker_hub` in the daemon's `containers.conf`,
+  which Sockguard cannot see. With the default `true`, Podman looks the name up
+  locally, a `registries.conf` alias first and `localhost/` next, and tags
+  whichever name that lookup found, or the Docker Hub name when nothing holds
+  it. The inspect of the short name goes through the same lookup, so it answers
+  with the image holding the name the tag moves. With the option off, Podman
+  looks nothing up and stores the name under `localhost/`, the way the native
+  route does, while the inspect of the short name still resolves the alias
+  first.
 
-  That only covers a request Podman reads as a compat one, and Podman decides
-  that from the URL instead of the route: the third `/`-separated piece is
-  `libpod` on the native API, and on an unversioned `/images/{name}/tag` it is
-  the image name. An unversioned retag of an image named `libpod`, or of one
-  whose name starts with `libpod/`, is therefore a native request to Podman. It
-  skips the lookup and stores a short `repo` under `localhost/`, a name the
-  inspect never asked about. Sockguard refuses that path with a `403` on every
-  upstream. The versioned path (`/v1.41/images/libpod/tag`), which the Docker
-  CLI and SDKs always send, is a compat request to Podman too and is
-  unaffected.
+  So when `upstream.flavor` resolves to Podman, set or detected, Sockguard
+  inspects a short `repo` under both names, `{repo}:{tag}` and
+  `localhost/{repo}:{tag}`, and forwards the retag only when both pass: each
+  is held by nothing, by the caller's own image, or by an unlabeled one with
+  `allow_unowned_images` on. That holds whichever way the option is set. It
+  costs one more inspect on such a retag, and one refusal the default setting
+  would not need on its own: a caller whose short name resolves through an
+  alias to its own image is denied while another owner holds
+  `localhost/{repo}:{tag}`, although Podman would have moved the aliased name.
+  Spell the registry in `repo` (`docker.io/library/nginx`, `localhost/nginx`)
+  to name one reference and get one check. A short `repo` Podman cannot store
+  under `localhost/` is refused with a `403` before anything is inspected: one
+  whose first component has an upper-case letter, and one over 245 characters.
+  A registry-qualified `repo`, and every retag on a dockerd upstream, is
+  inspected once.
 
-  With `compat_api_enforce_docker_hub` turned off, Podman stores a `repo` that
-  names no registry under `localhost/` on the compat route too, while the
-  inspect of the short name still goes through short-name resolution. A short
-  name that has an alias can then be checked against the aliased image instead
-  of the `localhost/` one, and Sockguard cannot see the setting to close that.
-  The native `POST /libpod/images/{name}/tag` does not have this gap. A
-  reference held only by a manifest list with no local instance for the host
+  Podman also decides whether a request is a compat one from the URL instead of
+  the route: the third `/`-separated piece is `libpod` on the native API, and
+  on an unversioned `/images/{name}/tag` it is the image name. An unversioned
+  retag of an image named `libpod`, or of one whose name starts with `libpod/`,
+  is therefore a native request to Podman. It skips the lookup and stores a
+  short `repo` under `localhost/` whatever the option says. Sockguard refuses
+  that path with a `403` on every upstream, whatever `upstream.flavor` resolved
+  to. The versioned path (`/v1.41/images/libpod/tag`), which the Docker CLI and
+  SDKs always send, is a compat request to Podman too and is unaffected.
+
+  A reference held only by a manifest list with no local instance for the host
   platform inspects as not found, so it is treated as a reference nothing
   holds.
 - Not every field of a libpod network body has a gate. `POST /libpod/networks/create`
