@@ -157,7 +157,7 @@ func TestFormBodyGuardRefusesWithoutCallingNext(t *testing.T) {
 }
 
 // netHTTPReadsParametersFromBody reports whether net/http hands a handler a
-// parameter out of the body of a request labelled with contentTypes, by
+// parameter out of the body of a request labeled with contentTypes, by
 // either route a daemon takes: ParseForm, which parses a form-encoded body, or
 // FormValue on an unparsed request, which parses a multipart one as well.
 //
