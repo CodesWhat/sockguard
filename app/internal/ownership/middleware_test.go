@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -2880,6 +2881,132 @@ func TestAddOwnerLabelToBuildQuery(t *testing.T) {
 	if err := addOwnerLabelToBuildQuery(req, "com.sockguard.owner", "job-123"); err == nil {
 		t.Fatal("expected invalid build labels error")
 	}
+}
+
+// TestAddOwnerLabelToBuildQueryResistsOwnerStampStripping covers the two ways
+// a Podman build could shed the owner stamp this function writes: unsetting
+// the owner label, and racing the stamped `labels` with a case variant the
+// proxy left in place.
+func TestAddOwnerLabelToBuildQueryResistsOwnerStampStripping(t *testing.T) {
+	t.Parallel()
+	const key = "com.sockguard.owner"
+
+	t.Run("unsetlabel of the owner key is refused", func(t *testing.T) {
+		t.Parallel()
+		for _, target := range []string{
+			"/libpod/build?unsetlabel=com.sockguard.owner",
+			"/build?unsetlabel=com.sockguard.owner",
+			"/libpod/build?UnsetLabel=com.sockguard.owner",
+			"/libpod/build?unsetlabel=keep&unsetlabel=com.sockguard.owner",
+		} {
+			req := httptest.NewRequest(http.MethodPost, target, nil)
+			if err := addOwnerLabelToBuildQuery(req, key, "job-123"); err == nil {
+				t.Fatalf("%s: expected owner-unset refusal", target)
+			}
+		}
+	})
+
+	t.Run("unsetlabel of another key is left alone", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodPost, "/libpod/build?unsetlabel=org.opencontainers.image.vendor", nil)
+		if err := addOwnerLabelToBuildQuery(req, key, "job-123"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := req.URL.Query().Get("unsetlabel"); got != "org.opencontainers.image.vendor" {
+			t.Fatalf("unrelated unsetlabel = %q, want it preserved", got)
+		}
+	})
+
+	t.Run("case-variant labels is collapsed to the stamped owner", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodPost, `/libpod/build?Labels=%7B%22com.sockguard.owner%22%3A%22attacker%22%7D`, nil)
+		if err := addOwnerLabelToBuildQuery(req, key, "job-123"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		q := req.URL.Query()
+		if _, present := q["Labels"]; present {
+			t.Fatal("case-variant Labels survived the stamp")
+		}
+		var labels map[string]string
+		if err := json.Unmarshal([]byte(q.Get("labels")), &labels); err != nil {
+			t.Fatalf("decode labels: %v", err)
+		}
+		if labels[key] != "job-123" {
+			t.Fatalf("owner label = %q, want job-123", labels[key])
+		}
+	})
+
+	t.Run("two label spellings are ambiguous and refused", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodPost, `/libpod/build?labels=%7B%7D&Labels=%7B%7D`, nil)
+		if err := addOwnerLabelToBuildQuery(req, key, "job-123"); err == nil {
+			t.Fatal("expected ambiguous-labels refusal")
+		}
+	})
+
+	t.Run("repeated labels key is ambiguous and refused", func(t *testing.T) {
+		t.Parallel()
+		req := httptest.NewRequest(http.MethodPost, `/build?labels=%7B%7D&labels=%7B%7D`, nil)
+		if err := addOwnerLabelToBuildQuery(req, key, "job-123"); err == nil {
+			t.Fatal("expected ambiguous-labels refusal")
+		}
+	})
+}
+
+// TestMiddlewareRefusesOwnerStampStrippingBuild runs the two stamp-stripping
+// shapes through the ownership middleware: an unsetlabel of the owner key is
+// refused before the daemon sees it, and a case-variant Labels is collapsed so
+// the forwarded query carries the owner once and no shadow key.
+func TestMiddlewareRefusesOwnerStampStrippingBuild(t *testing.T) {
+	t.Parallel()
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+
+	t.Run("unsetlabel owner is refused", func(t *testing.T) {
+		t.Parallel()
+		forwarded := false
+		handler := middlewareWithDeps(testLogger(), opts, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			forwarded = true
+		}))
+		req := httptest.NewRequest(http.MethodPost, "/libpod/build?unsetlabel=com.sockguard.owner", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+		}
+		if forwarded {
+			t.Fatal("owner-unset build was forwarded")
+		}
+	})
+
+	t.Run("case-variant Labels is collapsed before forwarding", func(t *testing.T) {
+		t.Parallel()
+		var forwardedQuery string
+		forwarded := false
+		handler := middlewareWithDeps(testLogger(), opts, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			forwarded = true
+			forwardedQuery = r.URL.RawQuery
+		}))
+		req := httptest.NewRequest(http.MethodPost, `/build?Labels=%7B%22com.sockguard.owner%22%3A%22attacker%22%7D`, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if !forwarded {
+			t.Fatalf("build was not forwarded; status %d body %s", rec.Code, rec.Body.String())
+		}
+		values, err := url.ParseQuery(forwardedQuery)
+		if err != nil {
+			t.Fatalf("parse forwarded query: %v", err)
+		}
+		if _, present := values["Labels"]; present {
+			t.Fatal("case-variant Labels was forwarded")
+		}
+		var labels map[string]string
+		if err := json.Unmarshal([]byte(values.Get("labels")), &labels); err != nil {
+			t.Fatalf("decode forwarded labels: %v", err)
+		}
+		if labels["com.sockguard.owner"] != "job-123" {
+			t.Fatalf("forwarded owner label = %q, want job-123", labels["com.sockguard.owner"])
+		}
+	})
 }
 
 func TestAddOwnerLabelToBodyAndFilterHelpers(t *testing.T) {
