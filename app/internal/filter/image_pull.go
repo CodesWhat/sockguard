@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -45,6 +46,28 @@ func newImagePullPolicy(opts ImagePullOptions) imagePullPolicy {
 	}
 }
 
+// inspect applies allow_imports and the registry allowlist to
+// POST /images/create. The route is two operations, an import and a pull, and
+// the two gates are independent: neither one answers for the other.
+//
+// The engines disagree on which operation a request is, and on which value of
+// a parameter they read:
+//
+//   - dockerd (postImagesCreate) reads the first `fromImage` under the exact
+//     key and pulls when it is not empty. It reads `fromSrc` on the other
+//     branch only, so a request carrying both is a pull. Read from moby 28.5.1
+//     and 29.5.2 and confirmed against dockerd 29.5.2.
+//   - Podman registers the path once per operation and gorilla/mux picks the
+//     handler by which exact key is present, `fromImage` first. The handler
+//     then decodes its parameter with gorilla/schema v1.4.1, which matches the
+//     key in any case and keeps the last value. Read from Podman 5.8.6.
+//
+// So every value of each parameter is read, under every spelling of its key.
+// Any `fromSrc` value makes the request an import that allow_imports has to
+// permit, and every `fromImage` value has to pass the registry allowlist,
+// whether or not the request also names an import source. Returning as soon
+// as an import was allowed is what let `?fromSrc=-&fromImage=<any registry>`
+// pull from outside the allowlist.
 func (p imagePullPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
 	if r == nil || r.Method != http.MethodPost || normalizedPath != "/images/create" {
 		return "", nil
@@ -55,22 +78,38 @@ func (p imagePullPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath
 	}
 
 	query := logging.RequestQuery(r)
-	if fromSrc := strings.TrimSpace(query.Get("fromSrc")); fromSrc != "" {
-		if p.allowImports {
-			return "", nil
+	if !p.allowImports {
+		for _, fromSrc := range queryValuesInAnySpelling(query, "fromSrc") {
+			if fromSrc != "" {
+				return fmt.Sprintf("image pull denied: importing images from %q is not allowed", strings.TrimSpace(fromSrc)), nil
+			}
 		}
-		return fmt.Sprintf("image pull denied: importing images from %q is not allowed", fromSrc), nil
 	}
 
-	fromImage := strings.TrimSpace(query.Get("fromImage"))
-	if fromImage == "" {
-		return "", nil
-	}
-
-	if denyReason := p.denyReasonForReference(fromImage, "image pull"); denyReason != "" {
-		return denyReason, nil
+	for _, fromImage := range queryValuesInAnySpelling(query, "fromImage") {
+		if denyReason := p.denyReasonForReference(strings.TrimSpace(fromImage), "image pull"); denyReason != "" {
+			return denyReason, nil
+		}
 	}
 	return "", nil
+}
+
+// queryValuesInAnySpelling returns every value query carries under name,
+// whatever the case of the key. Spellings are visited in sorted order so the
+// first value to be refused is the same one on every request.
+func queryValuesInAnySpelling(query url.Values, name string) []string {
+	var keys []string
+	for key := range query {
+		if strings.EqualFold(key, name) {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	var values []string
+	for _, key := range keys {
+		values = append(values, query[key]...)
+	}
+	return values
 }
 
 // libpodRegistryTransportPrefix is the only non-bare reference spelling
