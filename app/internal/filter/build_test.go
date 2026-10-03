@@ -1024,6 +1024,11 @@ func TestSpoolRequestBodyToTempFileRewindError(t *testing.T) {
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("spoolRequestBodyToTempFile() error = %v, want %v", err, sentinel)
 	}
+	// The body is already on disk, so the request still carries it.
+	t.Cleanup(func() { _ = req.Body.Close() })
+	if got, err := io.ReadAll(req.Body); err != nil || string(got) != "FROM busybox\n" {
+		t.Fatalf("body after rewind error = %q, %v; want the client's body", got, err)
+	}
 }
 
 func TestInspectBuildContextWrapsTooLargeError(t *testing.T) {
@@ -1176,28 +1181,6 @@ func TestBuildPolicyInspectRefusesCompressedBodyThatIsNotAGzipTar(t *testing.T) 
 				t.Fatalf("reason = %q, want %q", reason, want)
 			}
 		})
-	}
-}
-
-func TestBuildPolicyInspectRewindBuildBodyError(t *testing.T) {
-	payload := mustBuildContextTar(t, "Dockerfile", "FROM busybox\nCOPY . /app\n")
-	req := httptest.NewRequest(http.MethodPost, "/build", bytes.NewReader(payload))
-
-	p := newBuildPolicy(BuildOptions{})
-	realSeekToStart := p.io.SeekToStart
-	var seekCalls int
-	sentinel := errors.New("rewind build body failed")
-	p.io.SeekToStart = func(file *os.File) error {
-		seekCalls++
-		if seekCalls == 4 {
-			return sentinel
-		}
-		return realSeekToStart(file)
-	}
-
-	_, err := p.inspect(nil, req, "/build")
-	if !errors.Is(err, sentinel) {
-		t.Fatalf("inspect() error = %v, want %v", err, sentinel)
 	}
 }
 
@@ -1873,6 +1856,10 @@ func TestSpoolRequestBodyToTempFileHandlesTooLargeBody(t *testing.T) {
 	payload := bytes.Repeat([]byte("x"), max+1)
 	req := httptest.NewRequest(http.MethodPost, "/build", bytes.NewReader(payload))
 
+	original := &trackingReadCloser{reader: bytes.NewReader(append(payload, "tail"...))}
+	req.Body = original
+	req.ContentLength = -1
+
 	spool, size, err := defaultIODeps().spoolRequestBodyToTempFile(req, "sockguard-test-", max)
 	if err != nil {
 		t.Fatalf("spoolRequestBodyToTempFile() error = %v", err)
@@ -1887,7 +1874,23 @@ func TestSpoolRequestBodyToTempFileHandlesTooLargeBody(t *testing.T) {
 	if size != max+1 {
 		t.Fatalf("size = %d, want %d", size, max+1)
 	}
-	spool.closeAndRemove()
+	// The spooled part and the unread rest read back as the one body, and the
+	// original stays open until that body is closed.
+	if original.closed {
+		t.Fatal("original body closed while it still has bytes to forward")
+	}
+	if got, err := io.ReadAll(req.Body); err != nil || string(got) != string(payload)+"tail" {
+		t.Fatalf("body = %q, %v; want %q", got, err, string(payload)+"tail")
+	}
+	if req.ContentLength != -1 {
+		t.Fatalf("ContentLength = %d, want the client's -1 left alone", req.ContentLength)
+	}
+	if err := req.Body.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if !original.closed {
+		t.Fatal("closing the spooled body did not close the original")
+	}
 }
 
 func TestBuildPolicyAllowsRemoteContextWhenRunInstructionsAllowed(t *testing.T) {
@@ -2035,18 +2038,6 @@ func TestBuildPolicyInspectNotADockerfileDenied(t *testing.T) {
 	if reason == "" {
 		t.Fatal("expected denial when build context has no recognizable Dockerfile")
 	}
-}
-
-func TestCloseAndRemoveNilSpool(t *testing.T) {
-	// Exercises lines 149-151: closeAndRemove on nil spool → no panic.
-	var s *spooledRequestBody
-	s.closeAndRemove() // must not panic
-}
-
-func TestCloseAndRemoveNilFile(t *testing.T) {
-	// Exercises lines 149-151: closeAndRemove on spool with nil file → no panic.
-	s := &spooledRequestBody{file: nil, path: ""}
-	s.closeAndRemove() // must not panic
 }
 
 func TestInspectBuildContextTarSkipsUnrelatedDirectory(t *testing.T) {

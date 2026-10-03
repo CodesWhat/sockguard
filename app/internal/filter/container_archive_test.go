@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"strings"
 	"testing"
 )
@@ -428,30 +427,11 @@ func TestContainerArchiveInvalidTarReturnsInspectionError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "inspect archive body") {
 		t.Fatalf("inspect() error = %v, want archive inspection error", err)
 	}
-}
-
-func TestContainerArchiveRewindErrorAfterInspection(t *testing.T) {
-	sentinel := errors.New("rewind failed")
-	p := newContainerArchivePolicy(ContainerArchiveOptions{})
-	oldSeekToStart := p.io.SeekToStart
-	seekCalls := 0
-	p.io.SeekToStart = func(file *os.File) error {
-		seekCalls++
-		if seekCalls == 2 {
-			return sentinel
-		}
-		return oldSeekToStart(file)
-	}
-
-	payload := mustContainerArchiveTar(t, containerArchiveTestEntry{name: "file.txt", body: "ok"})
-	req := httptest.NewRequest(http.MethodPut, "/containers/abc/archive?path=app", bytes.NewReader(payload))
-
-	reason, err := p.inspect(nil, req, "/containers/abc/archive")
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty", reason)
-	}
-	if !errors.Is(err, sentinel) {
-		t.Fatalf("inspect() error = %v, want wrapped %v", err, sentinel)
+	// Warn and audit forward a request whose inspection failed, so it still
+	// carries the body.
+	t.Cleanup(func() { _ = req.Body.Close() })
+	if got, err := io.ReadAll(req.Body); err != nil || string(got) != "not a tar archive" {
+		t.Fatalf("body after inspection error = %q, %v; want the client's body", got, err)
 	}
 }
 
@@ -505,15 +485,21 @@ func TestSpoolRequestBodyForInspectionEdgeCases(t *testing.T) {
 		t.Fatalf("spoolRequestBodyForInspection(nil) = %#v, %d; want nil, 0", spool, size)
 	}
 
-	sentinel := errors.New("close failed")
+	// A body declared over the limit is refused without being read or
+	// closed, so warn and audit can still forward it.
+	declared := &readErrorReadCloser{closeErr: errors.New("close failed")}
 	req := httptest.NewRequest(http.MethodPut, "/containers/abc/archive", nil)
-	req.Body = &readErrorReadCloser{closeErr: sentinel}
+	req.Body = declared
 	req.ContentLength = 5
 	_, _, err = iod.spoolRequestBodyForInspection(req, "sockguard-test-", 4)
-	if !errors.Is(err, sentinel) {
-		t.Fatalf("spoolRequestBodyForInspection(close error) = %v, want %v", err, sentinel)
+	if !isBodyTooLargeError(err) {
+		t.Fatalf("spoolRequestBodyForInspection(declared too large) error = %v, want bodyTooLargeError", err)
+	}
+	if req.Body != declared {
+		t.Fatalf("req.Body = %T, want the client's body left in place", req.Body)
 	}
 
+	// One found over the limit while spooling still reads whole.
 	req = httptest.NewRequest(http.MethodPut, "/containers/abc/archive", strings.NewReader("12345"))
 	req.ContentLength = -1
 	_, size, err = iod.spoolRequestBodyForInspection(req, "sockguard-test-", 4)
@@ -522,6 +508,10 @@ func TestSpoolRequestBodyForInspectionEdgeCases(t *testing.T) {
 	}
 	if size != 5 {
 		t.Fatalf("size = %d, want 5", size)
+	}
+	t.Cleanup(func() { _ = req.Body.Close() })
+	if got, err := io.ReadAll(req.Body); err != nil || string(got) != "12345" {
+		t.Fatalf("req.Body read %q, %v; want the whole body the client sent", got, err)
 	}
 }
 

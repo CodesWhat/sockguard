@@ -899,6 +899,11 @@ concurrency throttle gates:
 in `warn` or `audit` mode, observe `would_deny` in dashboards and logs until
 you are confident the deny rate is correct, then flip to `enforce`.
 
+A request a body inspector refuses, for what the body holds or for its size,
+is forwarded with every byte the client sent. Sockguard still reads no more of
+it than the inspector's byte limit, but under `warn` and `audit` that limit
+doesn't stop an oversized body reaching the daemon.
+
 > Pre-auth admission gates — `clients.allowed_cidrs` CIDR checks and
 > identity-lookup failures — stay `enforce` regardless of the profile's mode.
 > Unacknowledged Docker-compatible and native libpod process-list
