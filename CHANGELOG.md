@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.4] - 2026-10-04
+
 ### Security
 
 - **A `RUN` in a Podman build's Containerfile got past `allow_run_instructions: false`.** With no `dockerfile` parameter, Podman's `POST /libpod/build` (sent as `/v{version}/libpod/build`) builds `Containerfile` when the context has one and `Dockerfile` otherwise. Sockguard always inspected `Dockerfile`, so a context with `RUN id` in its Containerfile and a harmless Dockerfile next to it was allowed and built. The libpod path now inspects both and refuses the build when either one it finds carries `RUN` or can't be read. That also refuses a context whose unused Dockerfile has a `RUN`, which is the price of not having to predict from the tar which file Podman will find on disk. The compat `POST /build` only ever builds `Dockerfile` on Podman. dockerd falls back to a lowercase `dockerfile` when `Dockerfile` is missing, so `/build` now inspects that one too, where it used to refuse the build as uninspectable.
