@@ -148,7 +148,9 @@ func podmanSchemaStringMap(query url.Values, name string) map[string]string {
 // always sends `driver=file`, so `podman secret create` was denied unless
 // allow_custom_drivers was on. It never read `driveropts` at all, so with
 // the flag off a create could still set the file driver's `path` and have
-// the daemon write the secret data into any directory on its host.
+// the daemon write the secret data into any directory on its host. The
+// compat inspector read Driver as a string, but both engines send an object,
+// so a named driver was refused as uninspectable even with the flag on.
 func TestServeChainSecretCreateDriverAndOptions(t *testing.T) {
 	const pathOption = "driveropts=%7B%22path%22%3A%22%2Fetc%2Fcron.d%22%7D"
 	tests := []struct {
@@ -220,11 +222,44 @@ func TestServeChainSecretCreateDriverAndOptions(t *testing.T) {
 			wantStored: []string{"file " + podmanFileDriverDefaultPath},
 		},
 		{
+			name:       "compat create on Podman with a custom driver",
+			podman:     true,
+			target:     "/v1.41/secrets/create",
+			body:       `{"Name":"s","Data":"c2VjcmV0","Driver":{"Name":"shell"}}`,
+			wantStatus: http.StatusForbidden,
+			wantReason: `secret create denied: driver "shell" is not allowed`,
+		},
+		{
+			name:       "compat create on Podman with a custom driver when allowed",
+			podman:     true,
+			allow:      true,
+			target:     "/v1.41/secrets/create",
+			body:       `{"Name":"s","Data":"c2VjcmV0","Driver":{"Name":"shell"}}`,
+			wantStatus: http.StatusOK,
+			wantStored: []string{"shell"},
+		},
+		{
 			name:       "compat create on dockerd",
 			target:     "/v1.45/secrets/create",
 			body:       `{"Name":"s","Data":"c2VjcmV0"}`,
 			wantStatus: http.StatusOK,
 			wantStored: []string{"swarm store"},
+		},
+		{
+			// dockerd has no "file" driver; the name is a plugin's.
+			name:       "compat create on dockerd naming a file driver",
+			target:     "/v1.45/secrets/create",
+			body:       `{"Name":"s","Driver":{"Name":"file"}}`,
+			wantStatus: http.StatusForbidden,
+			wantReason: `secret create denied: driver "file" is not allowed`,
+		},
+		{
+			name:       "compat create on dockerd with a plugin driver when allowed",
+			allow:      true,
+			target:     "/v1.45/secrets/create",
+			body:       `{"Name":"s","Driver":{"Name":"vault","Options":{"addr":"https://vault:8200"}}}`,
+			wantStatus: http.StatusOK,
+			wantStored: []string{"plugin vault"},
 		},
 	}
 	for _, tt := range tests {

@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `podman secret create` through podman-remote no longer needs `allow_custom_drivers`. podman-remote sends `driver=file`, the containers.conf default, on every create, and the libpod inspector refused any `driver` that wasn't empty. `file` now passes the way an empty `driver` does, which Podman fills with that same default.
 
+- `allow_custom_drivers` on `POST /secrets/create` now admits a named driver. dockerd and Podman both take `Driver` as an object, `{"Name": ..., "Options": {...}}`, and sockguard read it as a string, so every body naming a driver failed to decode and was refused as uninspectable whether the flag was on or not. `Driver` is now read as that object, with the flag off a driver name is refused as before, and `Driver.Options` needs the flag too, the same rule the libpod route applies to `driveropts`. A `Driver` sent as a string, which neither engine accepts, is refused as uninspectable. `POST /configs/create` shares the inspector and reads the same shape.
+
 - podman-remote builds of a Containerfile inside the build context pass the `RUN` check when it has no `RUN`. podman-remote always sends `dockerfile` as a JSON array, holding the Containerfile it found in the context (`["Containerfile"]`) or one path per `-f`. Sockguard took the whole array as one file name, so every podman-remote build was refused as uninspectable while `RUN` was restricted. Every file in the array is now inspected.
 
 - A raw Dockerfile body shorter than one 512-byte tar block is inspected, instead of being refused as an uninspectable build request. That includes a body shorter than a gzip header, such as `FROM a`, which the gzip probe used to fail on.
