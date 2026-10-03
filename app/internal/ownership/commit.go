@@ -12,6 +12,8 @@ import (
 
 	"github.com/codeswhat/sockguard/app/internal/dockerresource"
 	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/imageselector"
+	"github.com/codeswhat/sockguard/app/internal/upstreamflavor"
 )
 
 // commit.go authorizes the container-commit endpoint, which is the one write
@@ -34,6 +36,9 @@ import (
 // v5.8.1). So the check reads the query and authorizes the named container as
 // an embedded reference, which is the same machinery a create body's Image or
 // Mounts reference already travels.
+//
+// The image the commit makes can be given a name, in `repo` and `tag`, and
+// that name is a second thing the request acts on. See commitImageDestination.
 
 const (
 	commitContainerQueryField = "container"
@@ -42,19 +47,29 @@ const (
 	commitDenyNoContainer        = "owner policy denied commit with no container parameter"
 	commitDenyAmbiguousContainer = "owner policy denied commit with an ambiguous container parameter"
 	commitDenyLabelChange        = "owner policy denied commit with a LABEL change instruction"
+	commitDenyAmbiguousName      = "owner policy denied commit with an ambiguous repo or tag parameter"
 )
 
+// commitRoute words the refusals of a commit's image name. See
+// imageDestinationRoute.
+var commitRoute = imageDestinationRoute{action: "commit", field: "repo"}
+
 // mutateCommitOwnershipRequest stamps the owner label into the commit body and
-// returns the container reference the request has to be authorized against.
+// returns the container and the image name the request has to be authorized
+// against.
 //
-// A refusal short-circuits before the body is touched: a request that will not
-// be forwarded has nothing to gain from a stamp, and the LABEL refusal below
-// exists precisely because the stamp would not survive.
-func mutateCommitOwnershipRequest(r *http.Request, opts Options) (*ownershipRequestReferences, error) {
+// A refusal over the container or a LABEL change short-circuits before the
+// body is touched: a request that will not be forwarded has nothing to gain
+// from a stamp, and the LABEL refusal exists precisely because the stamp
+// would not survive. A refusal over the image name does not. A warn or audit
+// rollout forwards the request it would have denied, and a name this layer
+// cannot read is no reason for the image to arrive without its owner label.
+func mutateCommitOwnershipRequest(r *http.Request, normPath string, opts Options) (*ownershipRequestReferences, error) {
 	refs := commitOwnershipReferences(r)
 	if refs.denyReason != "" {
 		return refs, nil
 	}
+	refs.imageDestinations, refs.denyReason = commitImageDestination(r.URL.RawQuery, normPath, opts.UpstreamFlavor)
 	if err := mutateCommitOwnershipBody(r, opts.LabelKey, opts.Owner); err != nil {
 		return nil, err
 	}
@@ -94,6 +109,62 @@ func commitOwnershipReferences(r *http.Request) *ownershipRequestReferences {
 		appendEmbeddedOwnershipReference(&refs.embeddedResources, dockerresource.KindContainer, identifier, "commit container parameter")
 	}
 	return refs
+}
+
+// commitImageDestination reads the name a commit gives the image it makes, or
+// returns the reason the request is refused.
+//
+// `repo` and `tag` name a reference the daemon points at the new image, and
+// both engines move it off whatever image held it. The new image carries the
+// caller's owner label, so the image that held the name loses it to an image
+// its owner may not touch: every later request of theirs that uses the name is
+// denied. Confirmed against dockerd 29.5.2.
+//
+// dockerd builds the reference with httputils.RepoTagReference, the same call
+// its retag handler makes, so imageDestinationFor reads it. Podman builds
+// repo + ":" + tag on both of its routes and hands it to libimage's
+// ResolveName, which looks the name up locally before it completes it: a name
+// some image already holds, alias first, resolves to that image's name. The
+// inspect of the name as spelled resolves the same way, so it answers for the
+// image whose name the commit moves. That holds on the native route as well,
+// which is why it is checked under both names there instead of under
+// localhost/ alone, the way a native retag is: the stored name covers only a
+// name nothing holds yet. Read from Podman 5.8.6 and its libimage
+// (go.podman.io/common v0.67.1).
+//
+// A commit with no `repo` names nothing and has no destination. Podman ignores
+// a one-character `repo` as well. Checking it anyway costs one inspect.
+//
+// Refused, like a retag: a query net/url cannot parse cleanly, a repeated
+// `repo` or `tag`, any other spelling of either key, and every shape
+// imageDestinationFor refuses. See imageTagTarget.
+func commitImageDestination(rawQuery, normPath string, flavor upstreamflavor.Flavor) (*imageDestinationReferences, string) {
+	query, err := imageselector.Parse(rawQuery)
+	if err != nil {
+		return nil, commitDenyAmbiguousName
+	}
+	repo, ok := exactQueryScalar(query, imageTagRepoQueryField)
+	if !ok {
+		return nil, commitDenyAmbiguousName
+	}
+	tag, ok := exactQueryScalar(query, imageTagTagQueryField)
+	if !ok {
+		return nil, commitDenyAmbiguousName
+	}
+	if repo == "" {
+		return nil, ""
+	}
+	naming := imageTagNamedEitherWay
+	if !isLibpodOwnershipPath(normPath) {
+		naming = imageTagNamingFor(flavor)
+	}
+	dest, problem := imageDestinationFor(repo, tag, naming)
+	if problem != imageDestinationReadable {
+		return nil, commitRoute.refusal(problem)
+	}
+	refs := &imageDestinationReferences{route: commitRoute}
+	refs.add(dest)
+	return refs, ""
 }
 
 // mutateCommitOwnershipBody injects the owner label into the commit request's

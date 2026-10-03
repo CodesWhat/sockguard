@@ -8,7 +8,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -328,28 +327,6 @@ func TestPluginPolicyInspectCreateDeniesMalformedConfigJSON(t *testing.T) {
 	}
 }
 
-func TestPluginPolicyInspectCreateDeniesMultipartFormUpload(t *testing.T) {
-	policy := newPluginPolicy(PluginOptions{
-		AllowedBindMounts:   []string{"/allowed"},
-		AllowedDevices:      []string{"/dev/allowed"},
-		AllowedCapabilities: []string{"NET_ADMIN"},
-	})
-
-	archivePayload := mustPluginCreateContextPayload(t, `{"Linux":{"Capabilities":["SYS_ADMIN"]}}`, false)
-	body, contentType := mustMultipartPluginUpload(t, archivePayload)
-
-	req := httptest.NewRequest(http.MethodPost, "/plugins/create?name=acme/plugin", bytes.NewReader(body))
-	req.Header.Set("Content-Type", contentType)
-
-	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
-	if err != nil {
-		t.Fatalf("inspect() error = %v", err)
-	}
-	if reason != `plugin create denied: capability "SYS_ADMIN" is not allowlisted` {
-		t.Fatalf("reason = %q", reason)
-	}
-}
-
 func TestPluginPolicyInspectCreateMultipartNoBoundaryStillInspected(t *testing.T) {
 	policy := newPluginPolicy(PluginOptions{
 		AllowedBindMounts:   []string{"/allowed"},
@@ -478,29 +455,6 @@ func mustPluginCreateContextTarBytes(tb testing.TB, entries []pluginTarEntry, gz
 		tb.Fatalf("gzip close: %v", err)
 	}
 	return gzBuf.Bytes()
-}
-
-func mustMultipartPluginUpload(tb testing.TB, payload []byte) ([]byte, string) {
-	tb.Helper()
-
-	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	if err := writer.WriteField("note", "ignored"); err != nil {
-		tb.Fatalf("WriteField(): %v", err)
-	}
-
-	part, err := writer.CreateFormFile("context", "plugin.tar")
-	if err != nil {
-		tb.Fatalf("CreateFormFile(): %v", err)
-	}
-	if _, err := part.Write(payload); err != nil {
-		tb.Fatalf("Write(): %v", err)
-	}
-	if err := writer.Close(); err != nil {
-		tb.Fatalf("Close(): %v", err)
-	}
-
-	return body.Bytes(), writer.FormDataContentType()
 }
 
 func slicesEqual[T comparable](got, want []T) bool {
@@ -871,50 +825,6 @@ func TestParsePluginSettingEmptyKeyOrValue(t *testing.T) {
 	}
 }
 
-func TestExtractPluginConfigFromArchiveReaderPlainTar(t *testing.T) {
-	// Exercises the looksLikeTarHeader branch in extractPluginConfigFromArchiveReader.
-	payload := mustPluginCreateContextPayload(t, `{"Network":{"Type":"bridge"}}`, false)
-	reader := bytes.NewReader(payload)
-	config, ok, err := defaultIODeps().extractPluginConfigFromArchiveReader(reader)
-	if err != nil {
-		t.Fatalf("defaultIODeps().extractPluginConfigFromArchiveReader() error = %v", err)
-	}
-	if !ok {
-		t.Fatal("defaultIODeps().extractPluginConfigFromArchiveReader() ok=false, want true")
-	}
-	if len(config) == 0 {
-		t.Fatal("config is empty")
-	}
-}
-
-func TestExtractPluginConfigFromArchiveReaderGzip(t *testing.T) {
-	// Exercises the looksLikeGzipHeader branch.
-	payload := mustPluginCreateContextPayload(t, `{"Network":{"Type":"bridge"}}`, true)
-	reader := bytes.NewReader(payload)
-	config, ok, err := defaultIODeps().extractPluginConfigFromArchiveReader(reader)
-	if err != nil {
-		t.Fatalf("defaultIODeps().extractPluginConfigFromArchiveReader() error = %v", err)
-	}
-	if !ok {
-		t.Fatal("defaultIODeps().extractPluginConfigFromArchiveReader() ok=false, want true")
-	}
-	if len(config) == 0 {
-		t.Fatal("config is empty")
-	}
-}
-
-func TestExtractPluginConfigFromArchiveReaderUnknownFormat(t *testing.T) {
-	// Neither gzip nor tar header → ok=false.
-	reader := bytes.NewReader(bytes.Repeat([]byte("x"), 512))
-	_, ok, err := defaultIODeps().extractPluginConfigFromArchiveReader(reader)
-	if err != nil {
-		t.Fatalf("defaultIODeps().extractPluginConfigFromArchiveReader() error = %v", err)
-	}
-	if ok {
-		t.Fatal("expected ok=false for unknown format")
-	}
-}
-
 func TestExtractPluginConfigFromGzipReaderInvalidGzip(t *testing.T) {
 	// gzip.NewReader requires at least 10 bytes for the header before it can
 	// detect gzip.ErrHeader. Provide a full non-gzip header that triggers ErrHeader.
@@ -970,7 +880,7 @@ func TestExtractPluginConfigGzipTarPath(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 
-	config, ok, err := defaultIODeps().extractPluginConfig(file, "")
+	config, ok, err := defaultIODeps().extractPluginConfig(file)
 	if err != nil {
 		t.Fatalf("extractPluginConfig() error = %v", err)
 	}
@@ -997,7 +907,7 @@ func TestExtractPluginConfigPlainTarPath(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 
-	config, ok, err := defaultIODeps().extractPluginConfig(file, "")
+	config, ok, err := defaultIODeps().extractPluginConfig(file)
 	if err != nil {
 		t.Fatalf("extractPluginConfig() error = %v", err)
 	}
@@ -1217,30 +1127,6 @@ func TestInspectPluginCreateDecodeErrorDenied(t *testing.T) {
 	}
 }
 
-func TestExtractPluginConfigMultipartRewindError(t *testing.T) {
-	body, contentType := mustMultipartPluginUpload(t, mustPluginCreateContextPayload(t, `{"Linux":{"Capabilities":[]}}`, false))
-	file, err := os.CreateTemp("", "sockguard-plugin-multipart-*")
-	if err != nil {
-		t.Fatalf("CreateTemp: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = file.Close()
-		_ = os.Remove(file.Name())
-	})
-	if _, err := file.Write(body); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-
-	sentinel := errors.New("multipart rewind failed")
-	iod := defaultIODeps()
-	iod.SeekToStart = func(*os.File) error { return sentinel }
-
-	_, _, err = iod.extractPluginConfig(file, contentType)
-	if !errors.Is(err, sentinel) {
-		t.Fatalf("extractPluginConfig() error = %v, want %v", err, sentinel)
-	}
-}
-
 func TestExtractPluginConfigInitialRewindError(t *testing.T) {
 	file, err := os.CreateTemp("", "sockguard-plugin-rewind-*")
 	if err != nil {
@@ -1258,7 +1144,7 @@ func TestExtractPluginConfigInitialRewindError(t *testing.T) {
 	iod := defaultIODeps()
 	iod.SeekToStart = func(*os.File) error { return sentinel }
 
-	_, _, err = iod.extractPluginConfig(file, "application/x-tar")
+	_, _, err = iod.extractPluginConfig(file)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("extractPluginConfig() error = %v, want %v", err, sentinel)
 	}
@@ -1289,31 +1175,7 @@ func TestExtractPluginConfigRewindAfterGzipProbeError(t *testing.T) {
 		return realSeekToStart(file)
 	}
 
-	_, _, err = iod.extractPluginConfig(file, "application/x-tar")
-	if !errors.Is(err, sentinel) {
-		t.Fatalf("extractPluginConfig() error = %v, want %v", err, sentinel)
-	}
-}
-
-func TestExtractPluginConfigFromMultipartArchiveError(t *testing.T) {
-	body, contentType := mustMultipartPluginUpload(t, mustPluginCreateContextPayload(t, `{"Linux":{"Capabilities":[]}}`, false))
-	file, err := os.CreateTemp("", "sockguard-plugin-multipart-*")
-	if err != nil {
-		t.Fatalf("CreateTemp: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = file.Close()
-		_ = os.Remove(file.Name())
-	})
-	if _, err := file.Write(body); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-
-	sentinel := errors.New("archive read failed")
-	iod := defaultIODeps()
-	iod.ReadAllLimited = func(io.Reader, int64) ([]byte, error) { return nil, sentinel }
-
-	_, _, err = iod.extractPluginConfig(file, contentType)
+	_, _, err = iod.extractPluginConfig(file)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("extractPluginConfig() error = %v, want %v", err, sentinel)
 	}
@@ -1362,150 +1224,6 @@ func TestDenyReasonForPrivilegesEmptyCapability(t *testing.T) {
 	reason := policy.denyReasonForPrivileges("test", privileges)
 	if reason == "" {
 		t.Fatal("expected denial for unapproved capability NET_ADMIN")
-	}
-}
-
-func TestExtractPluginConfigMultipartEmptyBoundary(t *testing.T) {
-	// A multipart/form-data media type with no boundary parameter must NOT skip
-	// inspection. Docker ignores Content-Type on /plugins/create and reads the
-	// body as a tar, so extractPluginConfig falls through to the tar probe and
-	// still extracts config.json rather than returning (nil, false, nil).
-	payload := mustPluginCreateContextPayload(t, `{"Linux":{"Capabilities":["SYS_ADMIN"]}}`, false)
-	file, err := os.CreateTemp("", "sockguard-plugin-*")
-	if err != nil {
-		t.Fatalf("CreateTemp: %v", err)
-	}
-	t.Cleanup(func() { _ = file.Close(); _ = os.Remove(file.Name()) })
-	if _, err := file.Write(payload); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-
-	// Content type with no boundary param → boundary == "" → tar probe.
-	config, ok, err := defaultIODeps().extractPluginConfig(file, "multipart/form-data")
-	if err != nil {
-		t.Fatalf("extractPluginConfig() error = %v, want nil", err)
-	}
-	if !ok {
-		t.Fatalf("extractPluginConfig() ok = false, want true (tar body must be inspected)")
-	}
-	if !bytes.Contains(config, []byte("SYS_ADMIN")) {
-		t.Fatalf("extractPluginConfig() config = %q, want extracted config.json", config)
-	}
-}
-
-func TestExtractPluginConfigFromMultipartEOF(t *testing.T) {
-	// Exercises lines 465-467: reader.NextPart returns EOF → (nil, false, nil).
-	file, err := os.CreateTemp("", "sockguard-plugin-*")
-	if err != nil {
-		t.Fatalf("CreateTemp: %v", err)
-	}
-	t.Cleanup(func() { _ = file.Close(); _ = os.Remove(file.Name()) })
-
-	// Write an empty multipart body (just the closing boundary).
-	boundary := "testboundary"
-	var buf bytes.Buffer
-	mw := multipart.NewWriter(&buf)
-	mw.SetBoundary(boundary)
-	_ = mw.Close()
-	if _, err := file.Write(buf.Bytes()); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		t.Fatalf("Seek: %v", err)
-	}
-
-	config, ok, err := defaultIODeps().extractPluginConfigFromMultipart(file, boundary)
-	if err != nil {
-		t.Fatalf("defaultIODeps().extractPluginConfigFromMultipart() error = %v, want nil", err)
-	}
-	if ok {
-		t.Fatalf("defaultIODeps().extractPluginConfigFromMultipart() ok = true, want false")
-	}
-	_ = config
-}
-
-func TestExtractPluginConfigFromMultipartMalformedHeaders(t *testing.T) {
-	// Exercises lines 468-470: reader.NextPart returns non-EOF error when part headers
-	// are invalid. A part starting after the boundary but with a null byte in the header
-	// causes textproto.ReadMIMEHeader to return an error.
-	file, err := os.CreateTemp("", "sockguard-plugin-*")
-	if err != nil {
-		t.Fatalf("CreateTemp: %v", err)
-	}
-	t.Cleanup(func() { _ = file.Close(); _ = os.Remove(file.Name()) })
-
-	const boundary = "testboundary"
-	// Write a multipart body where a part has a header line with a null byte,
-	// which causes the MIME header parser to fail with a non-EOF error.
-	body := "--" + boundary + "\r\nContent-Disposition: form-data; name=\"data\"\x00invalid\r\n\r\nhello\r\n--" + boundary + "--\r\n"
-	if _, err := file.Write([]byte(body)); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		t.Fatalf("Seek: %v", err)
-	}
-
-	_, _, err = defaultIODeps().extractPluginConfigFromMultipart(file, boundary)
-	// Either the part is read successfully (with a possibly truncated header) or
-	// NextPart returns a non-EOF error → triggers lines 468-470. Accept either outcome.
-	_ = err
-}
-
-func TestExtractPluginConfigFromMultipartExtractsConfig(t *testing.T) {
-	// Exercises lines 473-475: extractPluginConfigFromArchiveReader returns ok=true.
-	file, err := os.CreateTemp("", "sockguard-plugin-*")
-	if err != nil {
-		t.Fatalf("CreateTemp: %v", err)
-	}
-	t.Cleanup(func() { _ = file.Close(); _ = os.Remove(file.Name()) })
-
-	// Write a multipart body where one part is a gzip tar containing config.json.
-	boundary := "testboundary"
-	var buf bytes.Buffer
-	mw := multipart.NewWriter(&buf)
-	mw.SetBoundary(boundary)
-
-	// Create a gzip tar with config.json as part content.
-	configContent := `{"Network":{"Type":"bridge"}}`
-	var tarBuf bytes.Buffer
-	gw := gzip.NewWriter(&tarBuf)
-	tw := tar.NewWriter(gw)
-	_ = tw.WriteHeader(&tar.Header{Name: "config.json", Typeflag: tar.TypeReg, Size: int64(len(configContent)), Mode: 0o644})
-	_, _ = tw.Write([]byte(configContent))
-	_ = tw.Close()
-	_ = gw.Close()
-
-	pw, _ := mw.CreateFormFile("data", "plugin.tar.gz")
-	_, _ = pw.Write(tarBuf.Bytes())
-	_ = mw.Close()
-
-	if _, err := file.Write(buf.Bytes()); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		t.Fatalf("Seek: %v", err)
-	}
-
-	config, ok, err := defaultIODeps().extractPluginConfigFromMultipart(file, boundary)
-	if err != nil {
-		t.Fatalf("defaultIODeps().extractPluginConfigFromMultipart() error = %v", err)
-	}
-	if !ok {
-		t.Fatal("defaultIODeps().extractPluginConfigFromMultipart() ok=false, want true")
-	}
-	if len(config) == 0 {
-		t.Fatal("config is empty")
-	}
-}
-
-func TestExtractPluginConfigFromArchiveReaderPeekError(t *testing.T) {
-	// Exercises lines 493-495: buffered.Peek(512) returns non-EOF error.
-	sentinel := io.ErrUnexpectedEOF
-	// A readErrorReadCloser always returns an error on Read → Peek propagates it.
-	r := &readErrorReadCloser{readErr: sentinel}
-	_, _, err := defaultIODeps().extractPluginConfigFromArchiveReader(r)
-	if err == nil {
-		t.Fatal("expected peek error to propagate from extractPluginConfigFromArchiveReader")
 	}
 }
 

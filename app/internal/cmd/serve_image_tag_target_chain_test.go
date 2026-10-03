@@ -250,7 +250,7 @@ func (d *imageTagChainDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-func newImageTagChain(t *testing.T, daemon *imageTagChainDaemon, configure func(*config.Config)) string {
+func newImageTagChain(t *testing.T, daemon http.Handler, configure func(*config.Config)) string {
 	t.Helper()
 
 	socketPath := shortSocketPath(t, "tag-target")
