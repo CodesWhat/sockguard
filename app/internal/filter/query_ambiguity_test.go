@@ -93,6 +93,15 @@ func TestPolicyQueryReadsRefuseAmbiguousParameters(t *testing.T) {
 		{name: "remove with every flag false", method: http.MethodDelete, target: "/containers/app?v=False&link=False&force=False", inspect: via(remove.inspect)},
 		{name: "repeated force with the gate open", method: http.MethodDelete, target: "/containers/app?force=0&Force=1", inspect: via(removeOpen.inspect)},
 
+		// DELETE /libpod/containers/{id}, `force`, `volumes`, `v`, `depend`.
+		{name: "libpod remove force in another spelling", method: http.MethodDelete, target: "/v5.0.0/libpod/containers/app?Force=1", inspect: via(remove.inspect), wantReason: "ambiguous force query parameter"},
+		{name: "libpod remove volumes behind a false first value", method: http.MethodDelete, target: "/v5.0.0/libpod/containers/app?volumes=false&volumes=true", inspect: via(remove.inspect), wantReason: "ambiguous volumes query parameter"},
+		{name: "libpod remove volumes in another spelling", method: http.MethodDelete, target: "/v5.0.0/libpod/containers/app?VOLUMES=true", inspect: via(remove.inspect), wantReason: "ambiguous volumes query parameter"},
+		{name: "libpod remove depend in two spellings", method: http.MethodDelete, target: "/v5.0.0/libpod/containers/app?depend=false&Depend=true", inspect: via(remove.inspect), wantReason: "ambiguous depend query parameter"},
+		{name: "libpod remove force", method: http.MethodDelete, target: "/v5.0.0/libpod/containers/app?force=true", inspect: via(remove.inspect), wantReason: "force removal is not allowed"},
+		{name: "podman-remote rm shape", method: http.MethodDelete, target: "/v5.8.6/libpod/containers/app?depend=false&force=false&ignore=false&volumes=false", inspect: via(remove.inspect)},
+		{name: "repeated libpod volumes with the gates open", method: http.MethodDelete, target: "/v5.0.0/libpod/containers/app?volumes=0&Volumes=1&depend=1", inspect: via(removeOpen.inspect)},
+
 		// POST /build and POST /libpod/build.
 		{name: "libpod build Dockerfile in another spelling", method: http.MethodPost, target: "/libpod/build?Dockerfile=decoy", body: decoyBuild, inspect: via(build.inspect), wantReason: "ambiguous dockerfile query parameter"},
 		{name: "libpod build Dockerfile in two spellings", method: http.MethodPost, target: "/libpod/build?dockerfile=Dockerfile&Dockerfile=decoy", body: decoyBuild, inspect: via(build.inspect), wantReason: "ambiguous dockerfile query parameter"},
