@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1024,7 +1026,7 @@ func TestSpoolRequestBodyToTempFileRewindError(t *testing.T) {
 	}
 }
 
-func TestExtractBuildDockerfileWrapsTooLargeError(t *testing.T) {
+func TestInspectBuildContextWrapsTooLargeError(t *testing.T) {
 	tests := []struct {
 		name        string
 		contentType string
@@ -1057,9 +1059,9 @@ func TestExtractBuildDockerfileWrapsTooLargeError(t *testing.T) {
 				t.Fatalf("Write: %v", err)
 			}
 
-			_, _, err = defaultIODeps().extractBuildDockerfile(file, tt.contentType, "Dockerfile")
+			_, err = defaultIODeps().inspectBuildContext(file, tt.contentType, []string{"Dockerfile"})
 			if err == nil {
-				t.Fatal("expected extractBuildDockerfile() to fail")
+				t.Fatal("expected inspectBuildContext() to fail")
 			}
 			if !errors.Is(err, errBuildDockerfileTooLarge) {
 				t.Fatalf("errors.Is(err, errBuildDockerfileTooLarge) = false, err = %v", err)
@@ -1071,13 +1073,13 @@ func TestExtractBuildDockerfileWrapsTooLargeError(t *testing.T) {
 	}
 }
 
-// TestExtractBuildDockerfileAcceptsExactLimit pins the strict `>` boundary
-// at build.go:228 (`len(raw) > maxBuildDockerfileBytes`). A
+// TestInspectBuildContextAcceptsExactLimit pins the strict `>` boundary on
+// the raw Dockerfile read (`len(raw) > maxBuildDockerfileBytes`). A
 // CONDITIONALS_BOUNDARY mutation to `>=` would reject a Dockerfile at exactly
 // the limit, even though the existing too-large test only proves rejection at
 // limit+1. We pad to a deterministic FROM line followed by 'A's filling the
 // remainder so the dockerfile-detection heuristic still classifies it.
-func TestExtractBuildDockerfileAcceptsExactLimit(t *testing.T) {
+func TestInspectBuildContextAcceptsExactLimit(t *testing.T) {
 	const prefix = "FROM busybox\n"
 	payload := make([]byte, maxBuildDockerfileBytes)
 	copy(payload, prefix)
@@ -1097,15 +1099,83 @@ func TestExtractBuildDockerfileAcceptsExactLimit(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 
-	got, ok, err := defaultIODeps().extractBuildDockerfile(file, "text/plain", "Dockerfile")
+	reason, err := defaultIODeps().inspectBuildContext(file, "text/plain", []string{"Dockerfile"})
 	if err != nil {
-		t.Fatalf("extractBuildDockerfile at exact limit: err = %v, want nil — mutant `>=` would reject this size", err)
+		t.Fatalf("inspectBuildContext at exact limit: err = %v, want nil — mutant `>=` would reject this size", err)
 	}
-	if !ok {
-		t.Fatal("ok = false, want true — Dockerfile at exact limit must be accepted")
+	if reason != "" {
+		t.Fatalf("reason = %q, want none — Dockerfile at exact limit must be accepted", reason)
 	}
-	if len(got) != maxBuildDockerfileBytes {
-		t.Fatalf("len(got) = %d, want %d", len(got), maxBuildDockerfileBytes)
+}
+
+func TestBuildPolicyInspectReadsRawDockerfileShorterThanAGzipHeader(t *testing.T) {
+	tests := []struct {
+		body string
+		want string
+	}{
+		{body: "FROM a\n", want: ""},
+		{body: "RUN id", want: `build denied: RUN instructions are not allowed`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.body, func(t *testing.T) {
+			file, err := os.CreateTemp(t.TempDir(), "build-context-*")
+			if err != nil {
+				t.Fatalf("CreateTemp: %v", err)
+			}
+			t.Cleanup(func() { _ = file.Close() })
+			if _, err := file.WriteString(tt.body); err != nil {
+				t.Fatalf("Write: %v", err)
+			}
+			reason, err := defaultIODeps().inspectBuildContext(file, "text/plain", []string{"Dockerfile"})
+			if err != nil {
+				t.Fatalf("inspectBuildContext: %v", err)
+			}
+			if !strings.HasPrefix(reason, tt.want) || (tt.want == "") != (reason == "") {
+				t.Fatalf("reason = %q, want prefix %q", reason, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildPolicyInspectRefusesCompressedBodyThatIsNotAGzipTar(t *testing.T) {
+	var gzipped bytes.Buffer
+	gzw := gzip.NewWriter(&gzipped)
+	if _, err := gzw.Write([]byte("FROM busybox\nRUN id\n")); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := gzw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	tests := []struct {
+		name string
+		body []byte
+	}{
+		// The engines decompress it before looking for a tar, so its bytes
+		// can't be scanned as instructions.
+		{name: "gzipped raw Dockerfile", body: gzipped.Bytes()},
+		{name: "bzip2", body: append([]byte("BZh91AY&SY"), bytes.Repeat([]byte{0x01}, 64)...)},
+		{name: "xz", body: append([]byte{0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00}, bytes.Repeat([]byte{0x01}, 64)...)},
+		{name: "zstd", body: append([]byte{0x28, 0xB5, 0x2F, 0xFD}, bytes.Repeat([]byte{0x01}, 64)...)},
+		{name: "zstd skippable frame", body: append([]byte{0x5A, 0x2A, 0x4D, 0x18, 0x04, 0x00, 0x00, 0x00}, bytes.Repeat([]byte{0x01}, 64)...)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			file, err := os.CreateTemp(t.TempDir(), "build-context-*")
+			if err != nil {
+				t.Fatalf("CreateTemp: %v", err)
+			}
+			t.Cleanup(func() { _ = file.Close() })
+			if _, err := file.Write(tt.body); err != nil {
+				t.Fatalf("Write: %v", err)
+			}
+			reason, err := defaultIODeps().inspectBuildContext(file, "text/plain", []string{"Dockerfile"})
+			if err != nil {
+				t.Fatalf("inspectBuildContext: %v", err)
+			}
+			if want := `build denied: unable to inspect Dockerfile "Dockerfile"`; reason != want {
+				t.Fatalf("reason = %q, want %q", reason, want)
+			}
+		})
 	}
 }
 
@@ -1320,42 +1390,270 @@ func TestDockerfileContainsRunInstructionNegative(t *testing.T) {
 	}
 }
 
-func TestNormalizeBuildDockerfilePath(t *testing.T) {
+func TestBuildInstructionFiles(t *testing.T) {
 	tests := []struct {
-		name  string
-		input string
-		want  string
+		name       string
+		path       string
+		value      string
+		want       []string
+		wantReason string
 	}{
-		{name: "empty defaults to Dockerfile", input: "", want: "Dockerfile"},
-		{name: "whitespace defaults to Dockerfile", input: "   ", want: "Dockerfile"},
-		{name: "dot defaults to Dockerfile", input: "/.", want: "Dockerfile"},
-		{name: "leading slash trimmed", input: "/subdir/Dockerfile", want: "subdir/Dockerfile"},
-		{name: "relative path unchanged", input: "subdir/Dockerfile", want: "subdir/Dockerfile"},
-		{name: "dot-dot collapsed", input: "subdir/../Dockerfile", want: "Dockerfile"},
+		{name: "compat default", path: "/build", want: []string{"Dockerfile", "dockerfile"}},
+		{name: "libpod default", path: "/libpod/build", want: []string{"Containerfile", "Dockerfile"}},
+		{name: "compat named Dockerfile", path: "/build", value: "build/Dockerfile", want: []string{"build/Dockerfile", "build/dockerfile"}},
+		{name: "compat named file", path: "/build", value: "build/Containerfile", want: []string{"build/Containerfile"}},
+		{name: "libpod named Dockerfile", path: "/libpod/build", value: "build/Dockerfile", want: []string{"build/Dockerfile"}},
+		{name: "relative path cleaned", path: "/libpod/build", value: "./build//Containerfile", want: []string{"build/Containerfile"}},
+		{name: "dot-dot inside the context", path: "/libpod/build", value: "build/../Containerfile", want: []string{"Containerfile"}},
+		{
+			// Neither engine trims the value, so neither does the filter.
+			name:  "whitespace is part of the name",
+			path:  "/libpod/build",
+			value: " Containerfile",
+			want:  []string{" Containerfile"},
+		},
+		{name: "whitespace only is a name", path: "/libpod/build", value: "   ", want: []string{"   "}},
+		{name: "libpod JSON array", path: "/libpod/build", value: `["Containerfile.a","build/Containerfile.b"]`, want: []string{"Containerfile.a", "build/Containerfile.b"}},
+		{name: "libpod JSON array repeats a file", path: "/libpod/build", value: `["Containerfile","Containerfile"]`, want: []string{"Containerfile"}},
+		{
+			// dockerd reads the whole value as one path.
+			name:  "compat JSON array",
+			path:  "/build",
+			value: `["Containerfile"]`,
+			want:  []string{"Containerfile", `["Containerfile"]`},
+		},
+		{name: "empty JSON array", path: "/libpod/build", value: `[]`, wantReason: "names no Dockerfile"},
+		{name: "JSON null", path: "/libpod/build", value: `null`, wantReason: "names no Dockerfile"},
+		{name: "empty JSON array on compat", path: "/build", value: `[]`, want: []string{"[]"}},
+		{name: "empty name in a JSON array", path: "/libpod/build", value: `[""]`, want: []string{"."}},
+		{name: "JSON string is one path", path: "/libpod/build", value: `"Containerfile"`, want: []string{`"Containerfile"`}},
+		{name: "JSON array of mixed types is one path", path: "/libpod/build", value: `["Containerfile",1]`, want: []string{`["Containerfile",1]`}},
+		{name: "remote https Dockerfile", path: "/libpod/build", value: "https://example.com/Containerfile", wantReason: "remote Dockerfile"},
+		{name: "remote http Dockerfile in an array", path: "/libpod/build", value: `["Containerfile","http://example.com/Containerfile"]`, wantReason: "remote Dockerfile"},
+		{name: "remote Dockerfile on compat", path: "/build", value: "https://example.com/Dockerfile", wantReason: "remote Dockerfile"},
+		{name: "uppercase scheme is a path", path: "/libpod/build", value: "HTTPS://example.com/Containerfile", want: []string{"HTTPS:/example.com/Containerfile"}},
+		{name: "absolute path", path: "/libpod/build", value: "/home/user/app/Containerfile", wantReason: "absolute path"},
+		{name: "absolute path on compat", path: "/build", value: "/Dockerfile", wantReason: "absolute path"},
+		{name: "podman-remote out-of-context file", path: "/libpod/build", value: `["/home/user/other/Containerfile"]`, wantReason: "absolute path"},
+		{name: "parent directory", path: "/libpod/build", value: "../Containerfile", wantReason: "outside the build context"},
+		{name: "parent directory after cleaning", path: "/build", value: "build/../../Dockerfile", wantReason: "outside the build context"},
+		{name: "preprocessed file", path: "/libpod/build", value: "Containerfile.in", wantReason: "C preprocessor"},
+		{name: "preprocessed file on compat", path: "/build", value: `["Containerfile","build/Containerfile.in"]`, wantReason: "C preprocessor"},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := normalizeBuildDockerfilePath(tt.input)
-			if got != tt.want {
-				t.Fatalf("normalizeBuildDockerfilePath(%q) = %q, want %q", tt.input, got, tt.want)
+			got, reason := buildInstructionFiles(tt.path, tt.value)
+			if tt.wantReason != "" {
+				if !strings.Contains(reason, tt.wantReason) {
+					t.Fatalf("buildInstructionFiles(%q, %q) reason = %q, want substring %q", tt.path, tt.value, reason, tt.wantReason)
+				}
+				return
+			}
+			if reason != "" {
+				t.Fatalf("buildInstructionFiles(%q, %q) reason = %q, want none", tt.path, tt.value, reason)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("buildInstructionFiles(%q, %q) = %q, want %q", tt.path, tt.value, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestExtractBuildDockerfileFromRawDockerfileTextPlain(t *testing.T) {
-	// To exercise the raw-dockerfile path in extractBuildDockerfile we need the
-	// content to pass through the gzip and tar probes without error and without
-	// matching any file. A 512-byte all-zero block causes:
-	//  - gzip probe: 0x00 != 0x1f → gzip.ErrHeader → false, nil ✓
-	//  - tar probe: two consecutive zero 512-byte blocks = end-of-archive → io.EOF → false, nil ✓
-	// Then the raw read sees those bytes. With content-type "text/plain",
-	// looksLikeDockerfile returns true even for zero bytes... wait, zeros are
-	// TrimSpace-empty → false. Instead prepend real Dockerfile bytes AFTER zeros:
-	// actually we just need to use a gzip tar for a real Dockerfile, which is
-	// already tested elsewhere. This test validates extractBuildDockerfile succeeds
-	// for a proper gzip tar with text/plain content-type header.
+func TestBuildContextEntryName(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{in: "Dockerfile", want: "Dockerfile"},
+		{in: "./Dockerfile", want: "Dockerfile"},
+		{in: "/Dockerfile", want: "Dockerfile"},
+		{in: "//Dockerfile", want: "Dockerfile"},
+		{in: "Dockerfile/", want: "Dockerfile"},
+		{in: "build//./Containerfile", want: "build/Containerfile"},
+		{in: "build/../Dockerfile", want: "Dockerfile"},
+		{in: "../Dockerfile", want: "Dockerfile"},
+		{in: " Dockerfile", want: " Dockerfile"},
+		{in: "dockerfile", want: "dockerfile"},
+		{in: "", want: ""},
+		{in: ".", want: ""},
+		{in: "./", want: ""},
+		{in: "/", want: ""},
+	}
+	for _, tt := range tests {
+		if got := buildContextEntryName(tt.in); got != tt.want {
+			t.Errorf("buildContextEntryName(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// buildContextTarEntry is one entry of a tar written by
+// mustBuildContextTarEntries: a regular file unless typeflag says otherwise.
+type buildContextTarEntry struct {
+	name     string
+	typeflag byte
+	body     string
+	linkname string
+}
+
+func mustBuildContextTarEntries(t testing.TB, entries ...buildContextTarEntry) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, entry := range entries {
+		header := &tar.Header{Name: entry.name, Typeflag: entry.typeflag, Linkname: entry.linkname, Mode: 0o644}
+		if header.Typeflag == tar.TypeXGlobalHeader {
+			header = &tar.Header{Typeflag: tar.TypeXGlobalHeader, PAXRecords: map[string]string{"comment": "global"}}
+		}
+		if header.Typeflag == 0 {
+			header.Typeflag = tar.TypeReg
+		}
+		if header.Typeflag == tar.TypeReg {
+			header.Size = int64(len(entry.body))
+		}
+		if err := tw.WriteHeader(header); err != nil {
+			t.Fatalf("write tar header %q: %v", entry.name, err)
+		}
+		if header.Size > 0 {
+			if _, err := tw.Write([]byte(entry.body)); err != nil {
+				t.Fatalf("write tar body %q: %v", entry.name, err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// TestInspectBuildContextTarFollowsWhatExtractionLeavesOnDisk covers the ways a
+// later tar entry changes what the engine reads at a name an earlier entry
+// wrote. Both engines unpack the context before reading a Dockerfile from it,
+// replace a path with the next entry for it, and write through a symlink an
+// earlier entry left on the path (go.podman.io/storage 1.62.0
+// pkg/archive/archive.go Unpack and extractTarFileEntry; moby/go-archive
+// 0.3.3 Unpack).
+func TestInspectBuildContextTarFollowsWhatExtractionLeavesOnDisk(t *testing.T) {
+	const (
+		harmless = "FROM busybox\nCOPY . /app\n"
+		runs     = "FROM busybox\nRUN id\n"
+	)
+	file := func(name, body string) buildContextTarEntry {
+		return buildContextTarEntry{name: name, body: body}
+	}
+	symlink := func(name, target string) buildContextTarEntry {
+		return buildContextTarEntry{name: name, typeflag: tar.TypeSymlink, linkname: target}
+	}
+	dir := func(name string) buildContextTarEntry {
+		return buildContextTarEntry{name: name, typeflag: tar.TypeDir}
+	}
+	tests := []struct {
+		name       string
+		files      []string
+		entries    []buildContextTarEntry
+		wantReason string
+	}{
+		{name: "harmless Dockerfile", files: []string{"Dockerfile"}, entries: []buildContextTarEntry{dir("./"), file("Dockerfile", harmless)}},
+		{name: "Dockerfile with RUN", files: []string{"Dockerfile"}, entries: []buildContextTarEntry{file("Dockerfile", runs)}, wantReason: `RUN instructions are not allowed in "Dockerfile"`},
+		{name: "symlinks elsewhere in the context", files: []string{"Dockerfile"}, entries: []buildContextTarEntry{symlink("node_modules/.bin/tool", "../tool/cli.js"), file("Dockerfile", harmless), file("app/Dockerfile", runs)}},
+		{name: "global header", files: []string{"Dockerfile"}, entries: []buildContextTarEntry{{typeflag: tar.TypeXGlobalHeader}, file("Dockerfile", harmless)}},
+		{name: "either candidate with RUN", files: []string{"Containerfile", "Dockerfile"}, entries: []buildContextTarEntry{file("Containerfile", harmless), file("Dockerfile", runs)}, wantReason: `RUN instructions are not allowed in "Dockerfile"`},
+		{name: "one candidate present", files: []string{"Containerfile", "Dockerfile"}, entries: []buildContextTarEntry{file("Containerfile", harmless)}},
+		{name: "no candidate present", files: []string{"Containerfile", "Dockerfile"}, entries: []buildContextTarEntry{file("app.go", "package main")}, wantReason: `unable to inspect Dockerfile "Containerfile" or "Dockerfile"`},
+		{name: "same name spelled with leading slashes", files: []string{"Dockerfile"}, entries: []buildContextTarEntry{file("Dockerfile", harmless), file("//Dockerfile", runs)}, wantReason: `unable to inspect Dockerfile "Dockerfile"`},
+		{name: "regular file replaced by a symlink", files: []string{"Dockerfile"}, entries: []buildContextTarEntry{file("Dockerfile", harmless), file("steps", runs), symlink("Dockerfile", "steps")}, wantReason: `unable to inspect Dockerfile "Dockerfile"`},
+		{name: "regular file replaced by a hard link", files: []string{"Dockerfile"}, entries: []buildContextTarEntry{file("steps", runs), file("Dockerfile", harmless), {name: "Dockerfile", typeflag: tar.TypeLink, linkname: "steps"}}, wantReason: `unable to inspect Dockerfile "Dockerfile"`},
+		{name: "Dockerfile is a symlink", files: []string{"Dockerfile"}, entries: []buildContextTarEntry{file("steps", runs), symlink("Dockerfile", "steps")}, wantReason: `unable to inspect Dockerfile "Dockerfile"`},
+		{name: "Containerfile is a dangling symlink", files: []string{"Containerfile", "Dockerfile"}, entries: []buildContextTarEntry{symlink("Containerfile", "missing"), file("Dockerfile", harmless)}, wantReason: `unable to inspect Dockerfile "Containerfile"`},
+		{name: "Dockerfile is a directory", files: []string{"Dockerfile"}, entries: []buildContextTarEntry{dir("Dockerfile/")}, wantReason: `unable to inspect Dockerfile "Dockerfile"`},
+		{name: "written through a symlinked directory", files: []string{"Containerfile", "Dockerfile"}, entries: []buildContextTarEntry{file("Dockerfile", harmless), symlink("here", "."), file("here/Containerfile", runs)}, wantReason: `unable to inspect build context: tar entry "here/Containerfile" is written through a symlink`},
+		{name: "written through an absolute symlink", files: []string{"Dockerfile"}, entries: []buildContextTarEntry{file("Dockerfile", harmless), symlink("a/root", "/"), file("a/root/Dockerfile", runs)}, wantReason: "is written through a symlink"},
+		{name: "symlink chained through a symlink", files: []string{"Dockerfile"}, entries: []buildContextTarEntry{file("Dockerfile", harmless), symlink("a", "."), symlink("a/b", "."), file("b/Dockerfile", runs)}, wantReason: `tar entry "a/b" is written through a symlink`},
+		{name: "directory on the path replaced by a symlink", files: []string{"build/Containerfile"}, entries: []buildContextTarEntry{file("build/Containerfile", harmless), file("other/Containerfile", runs), symlink("build", "other")}, wantReason: `tar entry "build" replaces a directory on the path to a Dockerfile`},
+		{name: "context root replaced", files: []string{"Dockerfile"}, entries: []buildContextTarEntry{file("Dockerfile", harmless), symlink(".", "elsewhere")}, wantReason: "replaces the build context root"},
+		{name: "context root directory entry", files: []string{"Dockerfile"}, entries: []buildContextTarEntry{dir("."), dir("/"), file("Dockerfile", harmless)}},
+		{name: "case differs", files: []string{"Containerfile", "Dockerfile"}, entries: []buildContextTarEntry{file("containerfile", runs), file("Dockerfile", harmless)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := mustBuildContextTarEntries(t, tt.entries...)
+			isTar, reason, err := defaultIODeps().inspectBuildContextTar(tar.NewReader(bytes.NewReader(payload)), tt.files)
+			if err != nil {
+				t.Fatalf("inspectBuildContextTar() error = %v", err)
+			}
+			if !isTar {
+				t.Fatal("inspectBuildContextTar() isTar = false, want true")
+			}
+			if tt.wantReason == "" {
+				if reason != "" {
+					t.Fatalf("reason = %q, want none", reason)
+				}
+				return
+			}
+			if !strings.Contains(reason, tt.wantReason) {
+				t.Fatalf("reason = %q, want substring %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+// TestInspectBuildContextTarBoundsTheSymlinksItTracks fills the symlink set,
+// then sends a Dockerfile under a symlink the scan no longer has room to
+// remember. It is refused, and one at the context root still is not.
+func TestInspectBuildContextTarBoundsTheSymlinksItTracks(t *testing.T) {
+	entries := make([]buildContextTarEntry, 0, maxTrackedBuildContextLinks+3)
+	for i := range maxTrackedBuildContextLinks {
+		entries = append(entries, buildContextTarEntry{name: fmt.Sprintf("l/%d", i), typeflag: tar.TypeSymlink, linkname: "."})
+	}
+	entries = append(entries,
+		buildContextTarEntry{name: "here", typeflag: tar.TypeSymlink, linkname: "."},
+		buildContextTarEntry{name: "Dockerfile", body: "FROM busybox\n"},
+	)
+	payload := mustBuildContextTarEntries(t, entries...)
+	_, reason, err := defaultIODeps().inspectBuildContextTar(tar.NewReader(bytes.NewReader(payload)), []string{"Dockerfile"})
+	if err != nil || reason != "" {
+		t.Fatalf("root Dockerfile after the cap: reason = %q, err = %v, want neither", reason, err)
+	}
+
+	payload = mustBuildContextTarEntries(t, append(entries, buildContextTarEntry{name: "here/Dockerfile", body: "FROM busybox\nRUN id\n"})...)
+	_, reason, err = defaultIODeps().inspectBuildContextTar(tar.NewReader(bytes.NewReader(payload)), []string{"Dockerfile"})
+	if err != nil {
+		t.Fatalf("inspectBuildContextTar() error = %v", err)
+	}
+	if !strings.Contains(reason, "may be written through one of more than") {
+		t.Fatalf("reason = %q, want the symlink cap refusal", reason)
+	}
+}
+
+// TestInspectBuildContextReadsAShortRawDockerfile covers a raw Dockerfile
+// shorter than one tar block. The tar probe used to fail on it with an
+// unexpected EOF, which refused the build as uninspectable.
+func TestInspectBuildContextReadsAShortRawDockerfile(t *testing.T) {
+	for _, tt := range []struct {
+		body, wantReason string
+	}{
+		{body: "FROM busybox\nCOPY . /app\n"},
+		{body: "FROM busybox\nRUN id\n", wantReason: "build denied: RUN instructions are not allowed"},
+	} {
+		file, err := os.CreateTemp("", "sockguard-build-short-*")
+		if err != nil {
+			t.Fatalf("CreateTemp: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = file.Close()
+			_ = os.Remove(file.Name())
+		})
+		if _, err := file.WriteString(tt.body); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+		reason, err := defaultIODeps().inspectBuildContext(file, "text/plain", []string{"Dockerfile"})
+		if err != nil {
+			t.Fatalf("inspectBuildContext(%q) error = %v", tt.body, err)
+		}
+		if reason != tt.wantReason {
+			t.Fatalf("inspectBuildContext(%q) reason = %q, want %q", tt.body, reason, tt.wantReason)
+		}
+	}
+}
+
+func TestInspectBuildContextFromGzipTar(t *testing.T) {
+	// A gzip tar whose Dockerfile has no RUN passes.
 	payload := mustBuildContextGzipTarSeed(t, "Dockerfile", "FROM busybox:latest\nCOPY . /app\n")
 	file, err := os.CreateTemp("", "sockguard-build-*")
 	if err != nil {
@@ -1369,20 +1667,18 @@ func TestExtractBuildDockerfileFromRawDockerfileTextPlain(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 
-	got, ok, err := defaultIODeps().extractBuildDockerfile(file, "application/gzip", "Dockerfile")
+	reason, err := defaultIODeps().inspectBuildContext(file, "application/gzip", []string{"Dockerfile"})
 	if err != nil {
-		t.Fatalf("extractBuildDockerfile() error = %v", err)
+		t.Fatalf("inspectBuildContext() error = %v", err)
 	}
-	if !ok {
-		t.Fatal("extractBuildDockerfile() ok = false, want true")
-	}
-	if len(got) == 0 {
-		t.Fatal("dockerfile content is empty")
+	if reason != "" {
+		t.Fatalf("inspectBuildContext() reason = %q, want none", reason)
 	}
 }
 
-func TestExtractBuildDockerfileFromTarNotFoundReturnsNotOK(t *testing.T) {
-	// A tar that does NOT contain a "Dockerfile" entry returns ok=false.
+func TestInspectBuildContextFromTarWithoutTheDockerfile(t *testing.T) {
+	// A tar that does NOT contain a "Dockerfile" entry is refused, and is not
+	// read again as a raw Dockerfile.
 	payload := mustBuildContextTar(t, "OtherFile", "FROM busybox\n")
 	file, err := os.CreateTemp("", "sockguard-build-*")
 	if err != nil {
@@ -1396,16 +1692,16 @@ func TestExtractBuildDockerfileFromTarNotFoundReturnsNotOK(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 
-	got, ok, err := defaultIODeps().extractBuildDockerfile(file, "application/x-tar", "Dockerfile")
+	reason, err := defaultIODeps().inspectBuildContext(file, "text/plain", []string{"Dockerfile"})
 	if err != nil {
-		t.Fatalf("extractBuildDockerfile() error = %v, want nil", err)
+		t.Fatalf("inspectBuildContext() error = %v, want nil", err)
 	}
-	if ok {
-		t.Fatalf("extractBuildDockerfile() ok = true, want false; dockerfile = %q", got)
+	if want := `build denied: unable to inspect Dockerfile "Dockerfile"`; reason != want {
+		t.Fatalf("inspectBuildContext() reason = %q, want %q", reason, want)
 	}
 }
 
-func TestExtractBuildDockerfileInitialRewindError(t *testing.T) {
+func TestInspectBuildContextInitialRewindError(t *testing.T) {
 	file, err := os.CreateTemp("", "sockguard-build-rewind-*")
 	if err != nil {
 		t.Fatalf("CreateTemp: %v", err)
@@ -1416,13 +1712,13 @@ func TestExtractBuildDockerfileInitialRewindError(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Remove(name) })
 
-	_, _, err = defaultIODeps().extractBuildDockerfile(file, "text/plain", "Dockerfile")
-	if err == nil || !strings.Contains(err.Error(), "rewind Dockerfile reader") {
-		t.Fatalf("extractBuildDockerfile() error = %v, want rewind Dockerfile reader failure", err)
+	_, err = defaultIODeps().inspectBuildContext(file, "text/plain", []string{"Dockerfile"})
+	if err == nil || !strings.Contains(err.Error(), "rewind build context reader") {
+		t.Fatalf("inspectBuildContext() error = %v, want rewind build context reader failure", err)
 	}
 }
 
-func TestExtractBuildDockerfileRewindAfterGzipProbeError(t *testing.T) {
+func TestInspectBuildContextRewindAfterGzipProbeError(t *testing.T) {
 	file, err := os.CreateTemp("", "sockguard-build-rewind-*")
 	if err != nil {
 		t.Fatalf("CreateTemp: %v", err)
@@ -1447,13 +1743,13 @@ func TestExtractBuildDockerfileRewindAfterGzipProbeError(t *testing.T) {
 		return realSeekToStart(file)
 	}
 
-	_, _, err = iod.extractBuildDockerfile(file, "application/x-tar", "Dockerfile")
+	_, err = iod.inspectBuildContext(file, "application/x-tar", []string{"Dockerfile"})
 	if !errors.Is(err, sentinel) {
-		t.Fatalf("extractBuildDockerfile() error = %v, want %v", err, sentinel)
+		t.Fatalf("inspectBuildContext() error = %v, want %v", err, sentinel)
 	}
 }
 
-func TestExtractBuildDockerfileRewindAfterTarProbeError(t *testing.T) {
+func TestInspectBuildContextRewindAfterTarProbeError(t *testing.T) {
 	file, err := os.CreateTemp("", "sockguard-build-rewind-*")
 	if err != nil {
 		t.Fatalf("CreateTemp: %v", err)
@@ -1478,13 +1774,13 @@ func TestExtractBuildDockerfileRewindAfterTarProbeError(t *testing.T) {
 		return realSeekToStart(file)
 	}
 
-	_, _, err = iod.extractBuildDockerfile(file, "", "Dockerfile")
+	_, err = iod.inspectBuildContext(file, "", []string{"Dockerfile"})
 	if !errors.Is(err, sentinel) {
-		t.Fatalf("extractBuildDockerfile() error = %v, want %v", err, sentinel)
+		t.Fatalf("inspectBuildContext() error = %v, want %v", err, sentinel)
 	}
 }
 
-func TestExtractBuildDockerfileRawReadError(t *testing.T) {
+func TestInspectBuildContextRawReadError(t *testing.T) {
 	file, err := os.CreateTemp("", "sockguard-build-raw-read-*")
 	if err != nil {
 		t.Fatalf("CreateTemp: %v", err)
@@ -1501,9 +1797,9 @@ func TestExtractBuildDockerfileRawReadError(t *testing.T) {
 	iod := defaultIODeps()
 	iod.ReadAllLimited = func(io.Reader, int64) ([]byte, error) { return nil, sentinel }
 
-	_, _, err = iod.extractBuildDockerfile(file, "text/plain", "Dockerfile")
+	_, err = iod.inspectBuildContext(file, "text/plain", []string{"Dockerfile"})
 	if !errors.Is(err, sentinel) {
-		t.Fatalf("extractBuildDockerfile() error = %v, want %v", err, sentinel)
+		t.Fatalf("inspectBuildContext() error = %v, want %v", err, sentinel)
 	}
 }
 
@@ -1753,34 +2049,35 @@ func TestCloseAndRemoveNilFile(t *testing.T) {
 	s.closeAndRemove() // must not panic
 }
 
-func TestExtractDockerfileFromTarReaderSkipsNonRegularEntry(t *testing.T) {
-	// Exercises lines 264-265: non-TypeReg entries are skipped; Dockerfile found after.
+func TestInspectBuildContextTarSkipsUnrelatedDirectory(t *testing.T) {
+	// A directory entry that is not on the Dockerfile's path is skipped, and
+	// the Dockerfile after it is read.
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	// Directory entry (skipped).
 	_ = tw.WriteHeader(&tar.Header{Name: "subdir/", Typeflag: tar.TypeDir})
 	// Dockerfile entry (found).
-	body := "FROM busybox\n"
+	body := "FROM busybox\nRUN id\n"
 	_ = tw.WriteHeader(&tar.Header{Name: "Dockerfile", Typeflag: tar.TypeReg, Size: int64(len(body)), Mode: 0o644})
 	_, _ = tw.Write([]byte(body))
 	_ = tw.Close()
 
-	got, ok, err := defaultIODeps().extractDockerfileFromTarReader(tar.NewReader(&buf), "Dockerfile")
+	isTar, reason, err := defaultIODeps().inspectBuildContextTar(tar.NewReader(&buf), []string{"Dockerfile"})
 	if err != nil {
-		t.Fatalf("extractDockerfileFromTarReader() error = %v", err)
+		t.Fatalf("inspectBuildContextTar() error = %v", err)
 	}
-	if !ok {
-		t.Fatal("extractDockerfileFromTarReader() ok=false, want true")
+	if !isTar {
+		t.Fatal("inspectBuildContextTar() isTar = false, want true")
 	}
-	if string(got) != body {
-		t.Fatalf("got %q, want %q", got, body)
+	if want := `build denied: RUN instructions are not allowed in "Dockerfile"`; reason != want {
+		t.Fatalf("reason = %q, want %q", reason, want)
 	}
 }
 
-func TestExtractDockerfileFromTarReaderDeniesDuplicateEntry(t *testing.T) {
+func TestInspectBuildContextTarDeniesDuplicateEntry(t *testing.T) {
 	// A second tar entry at the same Dockerfile path must not be silently
-	// resolved to the first (or last) match: extraction must report ok=false
-	// so the caller treats the context as un-inspectable.
+	// resolved to the first (or last) match: the context is refused as
+	// uninspectable.
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	for _, body := range []string{"FROM busybox\n", "FROM busybox\nRUN id\n"} {
@@ -1789,28 +2086,19 @@ func TestExtractDockerfileFromTarReaderDeniesDuplicateEntry(t *testing.T) {
 	}
 	_ = tw.Close()
 
-	got, ok, err := defaultIODeps().extractDockerfileFromTarReader(tar.NewReader(&buf), "Dockerfile")
+	_, reason, err := defaultIODeps().inspectBuildContextTar(tar.NewReader(&buf), []string{"Dockerfile"})
 	if err != nil {
-		t.Fatalf("extractDockerfileFromTarReader() error = %v", err)
+		t.Fatalf("inspectBuildContextTar() error = %v", err)
 	}
-	if ok {
-		t.Fatalf("extractDockerfileFromTarReader() ok=true, want false for duplicate entries; got %q", got)
-	}
-	if got != nil {
-		t.Fatalf("extractDockerfileFromTarReader() body = %q, want nil", got)
+	if want := `build denied: unable to inspect Dockerfile "Dockerfile"`; reason != want {
+		t.Fatalf("reason = %q, want %q", reason, want)
 	}
 }
 
-func TestExtractBuildDockerfileRawDockerfilePath(t *testing.T) {
-	// Exercises line 222: extractBuildDockerfile succeeds via the raw-Dockerfile path.
-	// Requirements:
-	//  - Not gzip (no 0x1f 0x8b magic bytes)
-	//  - Tar probe produces "invalid tar header" (requires 512+ non-zero bytes) → (nil,false,nil)
-	//  - looksLikeDockerfile with "text/plain" returns true for any non-empty content
-	//
-	// Use 512 'A' bytes so the tar reader attempts to parse a header block, fails with
-	// "invalid tar header" (bad checksum), returns (nil, false, nil).
-	// Then the raw read proceeds; with content-type "text/plain", any content passes.
+func TestInspectBuildContextRawDockerfile(t *testing.T) {
+	// A body that is neither gzip nor a tar is read as the Dockerfile itself.
+	// 512 'A' bytes fail the tar probe's first header (bad checksum), and with
+	// content-type "text/plain" looksLikeDockerfile accepts any content.
 	raw := bytes.Repeat([]byte("A"), 512)
 	file, err := os.CreateTemp("", "sockguard-build-raw-*")
 	if err != nil {
@@ -1824,19 +2112,16 @@ func TestExtractBuildDockerfileRawDockerfilePath(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 
-	got, ok, err := defaultIODeps().extractBuildDockerfile(file, "text/plain", "Dockerfile")
+	reason, err := defaultIODeps().inspectBuildContext(file, "text/plain", []string{"Dockerfile"})
 	if err != nil {
-		t.Fatalf("extractBuildDockerfile() error = %v", err)
+		t.Fatalf("inspectBuildContext() error = %v", err)
 	}
-	if !ok {
-		t.Fatal("extractBuildDockerfile() ok=false, want true for raw content with text/plain")
-	}
-	if len(got) == 0 {
-		t.Fatal("extractBuildDockerfile() returned empty dockerfile")
+	if reason != "" {
+		t.Fatalf("inspectBuildContext() reason = %q, want none for raw content with text/plain", reason)
 	}
 }
 
-func TestExtractDockerfileFromGzipTarCloseError(t *testing.T) {
+func TestInspectGzipBuildContextCloseError(t *testing.T) {
 	file, err := os.CreateTemp("", "sockguard-build-gzip-*")
 	if err != nil {
 		t.Fatalf("CreateTemp: %v", err)
@@ -1856,20 +2141,20 @@ func TestExtractDockerfileFromGzipTarCloseError(t *testing.T) {
 	iod := defaultIODeps()
 	iod.CloseReadCloser = func(io.Closer) error { return sentinel }
 
-	_, _, err = iod.extractDockerfileFromGzipTar(file, "Dockerfile")
+	_, _, err = iod.inspectGzipBuildContext(file, []string{"Dockerfile"})
 	if !errors.Is(err, sentinel) {
-		t.Fatalf("extractDockerfileFromGzipTar() error = %v, want %v", err, sentinel)
+		t.Fatalf("inspectGzipBuildContext() error = %v, want %v", err, sentinel)
 	}
 }
 
-func TestExtractDockerfileFromTarReaderReadError(t *testing.T) {
+func TestInspectBuildContextTarReadError(t *testing.T) {
 	sentinel := errors.New("tar read failed")
 	iod := defaultIODeps()
 	iod.ReadAllLimited = func(io.Reader, int64) ([]byte, error) { return nil, sentinel }
 
-	_, _, err := iod.extractDockerfileFromTarReader(tar.NewReader(bytes.NewReader(mustBuildContextTar(t, "Dockerfile", "FROM busybox\n"))), "Dockerfile")
+	_, _, err := iod.inspectBuildContextTar(tar.NewReader(bytes.NewReader(mustBuildContextTar(t, "Dockerfile", "FROM busybox\n"))), []string{"Dockerfile"})
 	if !errors.Is(err, sentinel) {
-		t.Fatalf("extractDockerfileFromTarReader() error = %v, want %v", err, sentinel)
+		t.Fatalf("inspectBuildContextTar() error = %v, want %v", err, sentinel)
 	}
 }
 
