@@ -21,7 +21,7 @@ Rollout modes (enforce / warn / audit)|No|Yes (per-profile shadow mode)|self
 Audit log schema|No|Yes (opt-in, JSON schema + reason codes)|self
 `,
   highlightsTable: `
-shield|Request Body Inspection|CetusGuard filters by method and path only. Sockguard inspects request bodies — blocking containers by image, exec commands by pattern, bind mounts by path, and more across 12+ resource types.
+shield|Request Body Inspection|CetusGuard filters by method and path only. Sockguard inspects request bodies — blocking exec commands by pattern, bind mounts by path, and more across 12+ resource types.
 users|Per-Client Policies|CetusGuard applies the same regex rules to every caller. Sockguard assigns different policies per CIDR range, Docker label, TLS certificate selector (including SPKI pinning), or Unix peer credential.
 key|Signed Policy Bundles|Sockguard verifies policy files with cosign keyed or keyless signatures and Rekor transparency log inclusion. An unsigned or tampered bundle is rejected before any request is evaluated.
 fingerprint|Container Image Trust|Sockguard enforces image signatures at deployment time — blocking container or swarm-service creates whose images aren't signed or don't match a trusted digest. CetusGuard has no image-trust layer.
