@@ -19,6 +19,7 @@ import (
 
 	"github.com/codeswhat/sockguard/app/internal/dockerfileinspect"
 	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/queryparam"
 )
 
 const maxBuildContextBytes = 512 << 20           // 512 MiB (compressed/on-wire cap)
@@ -79,48 +80,53 @@ func (p buildPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath str
 	// a legitimate Docker client never sends them. Gating them on the compat
 	// path therefore costs a dockerd upstream nothing and closes the bypass on
 	// a Podman one, where the compat /build path previously went uninspected
-	// for every control gated only on the /libpod/ prefix. The folded view is
-	// passed only to this check; Podman folds query-key case through
-	// gorilla/schema, which the controls check mirrors.
-	folded := foldQueryKeys(query)
-	if denyReason := p.inspectPodmanBuildControls(r, normalizedPath, folded); denyReason != "" {
+	// for every control gated only on the /libpod/ prefix.
+	//
+	// Every parameter below is read through queryparam, the same way on both
+	// paths. The engines disagree per parameter: dockerd reads the first value
+	// of the exact key, and Podman decodes rusagelogfile, networkmode and
+	// volume with gorilla/schema (any letter case, last value) but reads
+	// dockerfile and remote with url.Values.Get (exact key, first value).
+	// Folding the keys on the libpod path, as this used to, made sockguard
+	// inspect `?Dockerfile=decoy` while Podman built the default file. So a
+	// parameter the decision depends on is refused when it is repeated or not
+	// spelled as documented, and a control refused outright is refused under
+	// any spelling. Read from Podman 5.8.6 (pkg/api/handlers/compat/images_build.go).
+	if denyReason := p.inspectPodmanBuildControls(r, normalizedPath, query); denyReason != "" {
 		return denyReason, nil
-	}
-	if isLibpodBuildPath(normalizedPath) {
-		// On the libpod path the host-network, remote-context and Dockerfile
-		// reads below must also see the folded keys, because Podman decodes
-		// the whole libpod query case-insensitively. The compat path keeps the
-		// original query for those reads: moby reads each key case-sensitively
-		// (r.FormValue is exact-case), so folding there could make sockguard
-		// inspect a different Dockerfile than dockerd builds.
-		query = folded
 	}
 	// WHY: Host-network builds are denied even when the request also uses a
 	// remote context, so this must run before the remote-context branch returns
 	// its own denial or allow decision.
 	if !p.allowHostNetwork {
-		for _, networkMode := range query["networkmode"] {
-			if strings.EqualFold(strings.TrimSpace(networkMode), "host") {
-				return "build denied: host network mode is not allowed", nil
-			}
+		networkMode, _, ok := queryparam.Scalar(query, "networkmode")
+		if !ok {
+			return ambiguousQueryReason("build", "networkmode"), nil
+		}
+		if strings.EqualFold(strings.TrimSpace(networkMode), "host") {
+			return "build denied: host network mode is not allowed", nil
 		}
 	}
 
-	for _, remoteValue := range query["remote"] {
-		remote := strings.TrimSpace(remoteValue)
-		if remote == "" {
-			continue
+	if !p.allowRemoteContext || !p.allowRunInstructions {
+		remote, _, ok := queryparam.Scalar(query, "remote")
+		if !ok {
+			return ambiguousQueryReason("build", "remote"), nil
 		}
-		if p.allowRemoteContext {
-			if p.allowRunInstructions {
-				continue
+		if remote = strings.TrimSpace(remote); remote != "" {
+			if p.allowRemoteContext {
+				return "build denied: remote build contexts cannot be inspected while RUN instructions are restricted", nil
 			}
-			return "build denied: remote build contexts cannot be inspected while RUN instructions are restricted", nil
+			return fmt.Sprintf("build denied: remote build context %q is not allowed", remote), nil
 		}
-		return fmt.Sprintf("build denied: remote build context %q is not allowed", remote), nil
 	}
 	if p.allowRunInstructions || r.Body == nil {
 		return "", nil
+	}
+
+	dockerfileParam, _, ok := queryparam.Scalar(query, "dockerfile")
+	if !ok {
+		return ambiguousQueryReason("build", "dockerfile"), nil
 	}
 
 	spool, size, err := p.io.spoolRequestBodyToTempFile(r, "sockguard-build-", maxBuildContextBytes)
@@ -136,7 +142,7 @@ func (p buildPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath str
 		return "", nil
 	}
 
-	dockerfilePath := normalizeBuildDockerfilePath(query.Get("dockerfile"))
+	dockerfilePath := normalizeBuildDockerfilePath(dockerfileParam)
 	dockerfile, ok, err := p.io.extractBuildDockerfile(spool.file, r.Header.Get("Content-Type"), dockerfilePath)
 	if err != nil {
 		spool.closeAndRemove()
@@ -201,7 +207,11 @@ func (p buildPolicy) inspectPodmanBuildControls(r *http.Request, normalizedPath 
 		return "build denied: Podman local build context reads a daemon-host path and requires insecure_allow_body_blind_writes"
 	}
 
-	requiresRemoteContext, requiresBlindWrites, malformed := classifyPodmanAdditionalBuildContexts(query["additionalbuildcontexts"])
+	additionalContexts, ok := queryparam.List(query, "additionalbuildcontexts")
+	if !ok {
+		return ambiguousQueryReason("build", "additionalbuildcontexts")
+	}
+	requiresRemoteContext, requiresBlindWrites, malformed := classifyPodmanAdditionalBuildContexts(additionalContexts)
 	if malformed != "" {
 		return "build denied: malformed additional build context: " + malformed
 	}
@@ -211,15 +221,11 @@ func (p buildPolicy) inspectPodmanBuildControls(r *http.Request, normalizedPath 
 	if requiresBlindWrites && !p.allowBlindWrites {
 		return "build denied: uninspectable additional build context requires insecure_allow_body_blind_writes"
 	}
-	rusageBlindWrites, malformed := classifyPodmanRusageControls(query)
-	if malformed != "" {
-		return "build denied: malformed rusage control: " + malformed
-	}
-	if rusageBlindWrites && !p.allowBlindWrites {
-		return "build denied: Podman resource usage log requires insecure_allow_body_blind_writes"
+	if denyReason := p.inspectPodmanRusageControls(query); denyReason != "" {
+		return denyReason
 	}
 
-	if queryControlPresent(query, "volume", "volumes", "transientrunmounts") && !p.allowBlindWrites {
+	if !p.allowBlindWrites && (queryparam.Present(query, "volume") || queryparam.Present(query, "volumes") || queryparam.Present(query, "transientrunmounts")) {
 		return "build denied: Podman host volume mounts require insecure_allow_body_blind_writes"
 	}
 
@@ -229,15 +235,6 @@ func (p buildPolicy) inspectPodmanBuildControls(r *http.Request, normalizedPath 
 	}
 
 	return ""
-}
-
-func foldQueryKeys(query url.Values) url.Values {
-	folded := make(url.Values, len(query))
-	for key, values := range query {
-		name := strings.ToLower(key)
-		folded[name] = append(folded[name], values...)
-	}
-	return folded
 }
 
 func classifyPodmanAdditionalBuildContexts(values []string) (requiresRemoteContext, requiresBlindWrites bool, malformed string) {
@@ -306,32 +303,39 @@ func classifyPodmanAdditionalBuildContexts(values []string) (requiresRemoteConte
 	return requiresRemoteContext, requiresBlindWrites, ""
 }
 
-func classifyPodmanRusageControls(query map[string][]string) (requiresBlindWrites bool, malformed string) {
-	for _, value := range query["rusage"] {
+// inspectPodmanRusageControls validates `rusage` and gates `rusagelogfile`,
+// which makes Podman's builder write its resource-usage report to that path on
+// the daemon host. Podman decodes both with gorilla/schema, so a spelling such
+// as `ruſagelogfile` (U+017F folds to s) names the log file there; a
+// strings.ToLower fold of the key does not see it, which is how the write got
+// past this check. A malformed rusage value is refused even with every
+// acknowledgment, because Podman answers it with a 400 and refusing it here
+// keeps the two in step.
+func (p buildPolicy) inspectPodmanRusageControls(query url.Values) string {
+	rusage, ok := queryparam.List(query, "rusage")
+	if !ok {
+		return ambiguousQueryReason("build", "rusage")
+	}
+	for _, value := range rusage {
 		if value == "on" {
 			continue
 		}
 		if _, err := strconv.ParseBool(value); err != nil {
-			return false, "invalid boolean value"
+			return "build denied: malformed rusage control: invalid boolean value"
 		}
 	}
 
-	for _, file := range query["rusagelogfile"] {
-		if file != "" {
-			requiresBlindWrites = true
-		}
+	if p.allowBlindWrites {
+		return ""
 	}
-
-	return requiresBlindWrites, ""
-}
-
-func queryControlPresent(query map[string][]string, names ...string) bool {
-	for _, name := range names {
-		if _, present := query[name]; present {
-			return true
-		}
+	logFile, _, ok := queryparam.Scalar(query, "rusagelogfile")
+	if !ok {
+		return ambiguousQueryReason("build", "rusagelogfile")
 	}
-	return false
+	if logFile != "" {
+		return "build denied: Podman resource usage log requires insecure_allow_body_blind_writes"
+	}
+	return ""
 }
 
 type spooledRequestBody struct {

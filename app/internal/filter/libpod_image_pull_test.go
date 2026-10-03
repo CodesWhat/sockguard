@@ -63,14 +63,14 @@ func TestLibpodImagePullInspect(t *testing.T) {
 			opts:        libpodPullAllowlist(),
 			rawQuery:    "Reference=evil.example.com/acme/app",
 			wantDeny:    true,
-			wantReasonC: "evil.example.com",
+			wantReasonC: "ambiguous reference query parameter",
 		},
 		{
 			name:        "denies the shouted REFERENCE spelling Podman accepts",
 			opts:        libpodPullAllowlist(),
 			rawQuery:    "REFERENCE=evil.example.com/acme/app",
 			wantDeny:    true,
-			wantReasonC: "evil.example.com",
+			wantReasonC: "ambiguous reference query parameter",
 		},
 		{
 			// Podman reads the LAST value; a proxy reading only the first
@@ -79,7 +79,7 @@ func TestLibpodImagePullInspect(t *testing.T) {
 			opts:        libpodPullAllowlist(),
 			rawQuery:    "reference=ghcr.io/acme/app&reference=evil.example.com/acme/app",
 			wantDeny:    true,
-			wantReasonC: "evil.example.com",
+			wantReasonC: "ambiguous reference query parameter",
 		},
 		{
 			// The mirror image: a proxy reading only the last value would
@@ -88,14 +88,14 @@ func TestLibpodImagePullInspect(t *testing.T) {
 			opts:        libpodPullAllowlist(),
 			rawQuery:    "reference=evil.example.com/acme/app&reference=ghcr.io/acme/app",
 			wantDeny:    true,
-			wantReasonC: "evil.example.com",
+			wantReasonC: "ambiguous reference query parameter",
 		},
 		{
 			name:        "denies a case-variant duplicate that smuggles a second registry",
 			opts:        libpodPullAllowlist(),
 			rawQuery:    "reference=ghcr.io/acme/app&Reference=evil.example.com/acme/app",
 			wantDeny:    true,
-			wantReasonC: "evil.example.com",
+			wantReasonC: "ambiguous reference query parameter",
 		},
 		{
 			// utils.IsRegistryReference admits the docker transport, and
@@ -271,7 +271,7 @@ func TestLibpodImagePullMiddlewareEnforcesAllowlist(t *testing.T) {
 			name:       "denies the case-folded Reference spelling through the middleware",
 			target:     "/libpod/images/pull?Reference=evil.example.com%2Facme%2Fapp",
 			wantStatus: http.StatusForbidden,
-			wantReason: "evil.example.com",
+			wantReason: "ambiguous reference query parameter",
 		},
 		{
 			name:       "allows an allowlisted registry on the libpod path",

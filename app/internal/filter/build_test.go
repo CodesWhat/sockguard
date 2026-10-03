@@ -232,7 +232,7 @@ func TestMiddlewareDeniesUnsafeNativeLibpodBuildQueryControls(t *testing.T) {
 		{
 			name:       "mixed-case additional URL context",
 			target:     "/libpod/build?AdditionalBuildContexts=docs%3Durl%3Ahttps%3A%2F%2Fexample.com%2Fdocs.tar",
-			wantReason: "remote additional build context",
+			wantReason: "ambiguous additionalbuildcontexts query parameter",
 		},
 		{
 			name:       "legacy JSON additional URL context",
@@ -247,22 +247,22 @@ func TestMiddlewareDeniesUnsafeNativeLibpodBuildQueryControls(t *testing.T) {
 		{
 			name:       "later primary remote context cannot hide behind empty first value",
 			target:     "/libpod/build?remote=&remote=https%3A%2F%2Fexample.com%2Fcontext.tar",
-			wantReason: "remote build context",
+			wantReason: "ambiguous remote query parameter",
 		},
 		{
 			name:       "mixed-case primary remote context",
 			target:     "/libpod/build?Remote=https%3A%2F%2Fexample.com%2Fcontext.tar",
-			wantReason: "remote build context",
+			wantReason: "ambiguous remote query parameter",
 		},
 		{
 			name:       "later host network cannot hide behind bridge first value",
 			target:     "/libpod/build?networkmode=bridge&networkmode=host",
-			wantReason: "host network",
+			wantReason: "ambiguous networkmode query parameter",
 		},
 		{
 			name:       "mixed-case host network",
 			target:     "/libpod/build?NetworkMode=host",
-			wantReason: "host network",
+			wantReason: "ambiguous networkmode query parameter",
 		},
 		{
 			name:       "malformed additional context",
@@ -322,7 +322,7 @@ func TestMiddlewareDeniesUnsafeNativeLibpodBuildQueryControls(t *testing.T) {
 		{
 			name:       "mixed-case resource usage log file",
 			target:     "/libpod/build?RusageLogFile=%2Fetc%2Fsockguard-build-rusage",
-			wantReason: "resource usage log",
+			wantReason: "ambiguous rusagelogfile query parameter",
 		},
 		{
 			name:       "disabled resource usage still cannot expose a log file",
@@ -332,12 +332,12 @@ func TestMiddlewareDeniesUnsafeNativeLibpodBuildQueryControls(t *testing.T) {
 		{
 			name:       "earlier resource usage log cannot hide behind final empty value",
 			target:     "/libpod/build?rusagelogfile=%2Fetc%2Fsockguard-build-rusage&rusagelogfile=",
-			wantReason: "resource usage log",
+			wantReason: "ambiguous rusagelogfile query parameter",
 		},
 		{
 			name:       "later resource usage log cannot hide behind first empty value",
 			target:     "/libpod/build?rusagelogfile=&rusagelogfile=%2Fetc%2Fsockguard-build-rusage",
-			wantReason: "resource usage log",
+			wantReason: "ambiguous rusagelogfile query parameter",
 		},
 		{
 			name:       "malformed mixed-case resource usage boolean",

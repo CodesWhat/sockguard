@@ -7,11 +7,11 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"path"
 	"strings"
 
 	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/queryparam"
 )
 
 const maxContainerArchiveBodyBytes = 512 << 20 // 512 MiB
@@ -51,17 +51,22 @@ func (p containerArchivePolicy) inspect(_ *slog.Logger, r *http.Request, normali
 		p.io = defaultIODeps()
 	}
 
+	// `path` and `rename` are read through queryparam. Moby reads the first
+	// `path` under the exact key and has no `rename`, and Podman's
+	// compat.Archive decodes both with gorilla/schema, which folds the key's
+	// case and keeps the last value. Only one value under the documented
+	// spelling reads the same to both.
 	query := logging.RequestQuery(r)
-	targetValue, targetFound, targetAmbiguous := FoldedScalarQueryValue(query, "path")
+	targetValue, targetFound, targetOK := queryparam.Scalar(query, "path")
 	switch {
-	case targetAmbiguous:
-		return "container archive denied: ambiguous path query", nil
+	case !targetOK:
+		return ambiguousQueryReason("container archive", "path"), nil
 	case !targetFound || targetValue == "":
 		return "container archive denied: target path is required", nil
 	}
 
-	renameValue, _, renameAmbiguous := FoldedScalarQueryValue(query, "rename")
-	if renameAmbiguous || renameValue != "" {
+	renameValue, _, renameOK := queryparam.Scalar(query, "rename")
+	if !renameOK || renameValue != "" {
 		// Podman passes rename through to Buildah, which rewrites tar header
 		// names after this inspector would otherwise validate them. A rename
 		// can therefore change a safe relative symlink into one that escapes
@@ -117,39 +122,6 @@ func (p containerArchivePolicy) inspect(_ *slog.Logger, r *http.Request, normali
 	r.Body = spool.requestBody()
 	r.ContentLength = size
 	return "", nil
-}
-
-// FoldedScalarQueryValue recognizes the query behavior Podman's handlers get
-// from gorilla/schema: field aliases are case-insensitive. It rejects repeated
-// values because the supported daemons disagree about which scalar wins (Moby
-// reads the first while Podman reads the last), and rejects two case-variant
-// spellings because gorilla/schema's winner then depends on url.Values map
-// iteration order.
-//
-// It is exported because the same ambiguity governs any single-valued query
-// parameter a policy layer has to agree with the daemon about — the archive
-// policy below reads `path` and `rename` with it, and internal/ownership reads
-// the `container` parameter of POST /commit with it.
-func FoldedScalarQueryValue(query url.Values, field string) (value string, found, ambiguous bool) {
-	var spelling string
-	for key, values := range query {
-		if !strings.EqualFold(key, field) {
-			continue
-		}
-		if found && key != spelling {
-			return "", true, true
-		}
-		if len(values) > 1 {
-			return "", true, true
-		}
-		found = true
-		spelling = key
-		value = ""
-		if len(values) > 0 {
-			value = values[len(values)-1]
-		}
-	}
-	return value, found, false
 }
 
 // isContainerArchivePath matches the copy-into-container route on BOTH of
