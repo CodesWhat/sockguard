@@ -26,7 +26,7 @@ func TestConfigWriteInspectAllowsDefaultCreate(t *testing.T) {
 func TestConfigWriteInspectDeniesDriverSelections(t *testing.T) {
 	policy := newConfigPolicy(ConfigOptions{})
 
-	req := httptest.NewRequest(http.MethodPost, "/v1.53/configs/create", strings.NewReader(`{"Driver":"vault"}`))
+	req := httptest.NewRequest(http.MethodPost, "/v1.53/configs/create", strings.NewReader(`{"Driver":{"Name":"vault"}}`))
 	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
@@ -121,7 +121,7 @@ func TestConfigWriteInspectAllowsTemplateDriverWhenConfigured(t *testing.T) {
 
 func TestConfigInspectAllowsCustomDriverWhenConfigured(t *testing.T) {
 	policy := newConfigPolicy(ConfigOptions{AllowCustomDrivers: true})
-	req := httptest.NewRequest(http.MethodPost, "/configs/create", strings.NewReader(`{"Name":"tls-cert","Driver":"vault"}`))
+	req := httptest.NewRequest(http.MethodPost, "/configs/create", strings.NewReader(`{"Name":"tls-cert","Driver":{"Name":"vault"}}`))
 	reason, err := policy.inspect(nil, req, "/configs/create")
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
