@@ -1108,6 +1108,35 @@ func TestInspectBuildContextAcceptsExactLimit(t *testing.T) {
 	}
 }
 
+func TestBuildPolicyInspectReadsRawDockerfileShorterThanAGzipHeader(t *testing.T) {
+	tests := []struct {
+		body string
+		want string
+	}{
+		{body: "FROM a\n", want: ""},
+		{body: "RUN id", want: `build denied: RUN instructions are not allowed`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.body, func(t *testing.T) {
+			file, err := os.CreateTemp(t.TempDir(), "build-context-*")
+			if err != nil {
+				t.Fatalf("CreateTemp: %v", err)
+			}
+			t.Cleanup(func() { _ = file.Close() })
+			if _, err := file.WriteString(tt.body); err != nil {
+				t.Fatalf("Write: %v", err)
+			}
+			reason, err := defaultIODeps().inspectBuildContext(file, "text/plain", []string{"Dockerfile"})
+			if err != nil {
+				t.Fatalf("inspectBuildContext: %v", err)
+			}
+			if !strings.HasPrefix(reason, tt.want) || (tt.want == "") != (reason == "") {
+				t.Fatalf("reason = %q, want prefix %q", reason, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildPolicyInspectRefusesCompressedBodyThatIsNotAGzipTar(t *testing.T) {
 	var gzipped bytes.Buffer
 	gzw := gzip.NewWriter(&gzipped)
@@ -1121,12 +1150,13 @@ func TestBuildPolicyInspectRefusesCompressedBodyThatIsNotAGzipTar(t *testing.T) 
 		name string
 		body []byte
 	}{
-		// BuildKit decompresses a body that isn't a tar and builds it as the
-		// Dockerfile, so gzip bytes can't be scanned as instructions.
+		// The engines decompress it before looking for a tar, so its bytes
+		// can't be scanned as instructions.
 		{name: "gzipped raw Dockerfile", body: gzipped.Bytes()},
 		{name: "bzip2", body: append([]byte("BZh91AY&SY"), bytes.Repeat([]byte{0x01}, 64)...)},
 		{name: "xz", body: append([]byte{0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00}, bytes.Repeat([]byte{0x01}, 64)...)},
 		{name: "zstd", body: append([]byte{0x28, 0xB5, 0x2F, 0xFD}, bytes.Repeat([]byte{0x01}, 64)...)},
+		{name: "zstd skippable frame", body: append([]byte{0x5A, 0x2A, 0x4D, 0x18, 0x04, 0x00, 0x00, 0x00}, bytes.Repeat([]byte{0x01}, 64)...)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

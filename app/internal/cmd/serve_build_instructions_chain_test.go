@@ -372,7 +372,7 @@ func TestServeChainBuildInspectsTheFilesTheEngineBuilds(t *testing.T) {
 			podman:     true,
 			target:     "/v5.0.0/libpod/build?dockerfile=https%3A%2F%2Fexample.com%2FContainerfile",
 			wantStatus: http.StatusForbidden,
-			wantReason: `remote Dockerfile "https://example.com/Containerfile" cannot be inspected`,
+			wantReason: `remote Dockerfile "https://example.com/Containerfile" cannot be inspected while RUN instructions are restricted`,
 		},
 		{
 			name:       "remote Containerfile next to a decoy on Podman",
@@ -380,7 +380,7 @@ func TestServeChainBuildInspectsTheFilesTheEngineBuilds(t *testing.T) {
 			target:     "/v5.0.0/libpod/build?dockerfile=https%3A%2F%2Fexample.com%2FContainerfile",
 			context:    buildInstructionsChainContext(t, file("https:/example.com/Containerfile", harmless)),
 			wantStatus: http.StatusForbidden,
-			wantReason: `remote Dockerfile "https://example.com/Containerfile" cannot be inspected`,
+			wantReason: `remote Dockerfile "https://example.com/Containerfile" cannot be inspected while RUN instructions are restricted`,
 		},
 		{
 			name:       "daemon-host Containerfile next to a decoy on Podman",
@@ -388,7 +388,7 @@ func TestServeChainBuildInspectsTheFilesTheEngineBuilds(t *testing.T) {
 			target:     "/v5.0.0/libpod/build?dockerfile=%2Fsrv%2Fapp%2FContainerfile",
 			context:    buildInstructionsChainContext(t, file("srv/app/Containerfile", harmless)),
 			wantStatus: http.StatusForbidden,
-			wantReason: `Dockerfile "/srv/app/Containerfile" is an absolute path`,
+			wantReason: `Dockerfile "/srv/app/Containerfile" is an absolute path, which Podman reads from the daemon host, and cannot be inspected while RUN instructions are restricted`,
 		},
 		{
 			name:       "JSON array on the compat route on Podman",
@@ -433,8 +433,8 @@ func TestServeChainBuildInspectsTheFilesTheEngineBuilds(t *testing.T) {
 				var denial struct {
 					Reason string `json:"reason"`
 				}
-				if err := json.Unmarshal(body, &denial); err != nil || !strings.Contains(denial.Reason, tt.wantReason) {
-					t.Errorf("body = %s, want reason containing %q", body, tt.wantReason)
+				if err := json.Unmarshal(body, &denial); err != nil || !strings.HasSuffix(denial.Reason, tt.wantReason) {
+					t.Errorf("body = %s, want reason ending in %q", body, tt.wantReason)
 				}
 			}
 		})

@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -600,8 +601,7 @@ func (io_ ioDeps) inspectBuildContext(file *os.File, contentType string, files [
 		return "", fmt.Errorf("read raw Dockerfile: %w", err)
 	}
 	// The engines decompress bzip2, xz and zstd as well as gzip before they
-	// look for a tar, and BuildKit builds a decompressed body that isn't one as
-	// the Dockerfile. Sockguard only decodes gzip, so a compressed body that
+	// look for a tar. Sockguard only decodes gzip, so a compressed body that
 	// didn't open as a tar above can't be inspected.
 	if hasBuildContextCompressionMagic(raw) {
 		return uninspectableBuildFilesReason(files), nil
@@ -618,7 +618,9 @@ func (io_ ioDeps) inspectBuildContext(file *os.File, contentType string, files [
 func (io_ ioDeps) inspectGzipBuildContext(file *os.File, files []string) (bool, string, error) {
 	gzr, err := gzip.NewReader(file)
 	if err != nil {
-		if errors.Is(err, gzip.ErrHeader) {
+		// A body shorter than a gzip header can't be gzip; the magic check
+		// before the raw read still refuses one that opens like it.
+		if errors.Is(err, gzip.ErrHeader) || errors.Is(err, io.ErrUnexpectedEOF) {
 			return false, "", nil
 		}
 		return false, "", fmt.Errorf("create gzip reader: %w", err)
@@ -892,7 +894,9 @@ func hasBuildContextCompressionMagic(raw []byte) bool {
 			return true
 		}
 	}
-	return false
+	// A zstd stream may open with a skippable frame, magic 0x184D2A50 to
+	// 0x184D2A5F little-endian, which moby and BuildKit both detect.
+	return len(raw) >= 8 && binary.LittleEndian.Uint32(raw)&0xFFFFFFF0 == 0x184D2A50
 }
 
 func looksLikeDockerfile(raw []byte, contentType string) bool {

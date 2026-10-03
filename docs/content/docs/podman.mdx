@@ -105,10 +105,10 @@ out with `../`, and a name ending in `.in`, which Podman runs through the C
 preprocessor before parsing it. podman-remote sends an absolute path in three
 cases, and each is refused while `RUN` is restricted: a Containerfile outside
 the build context, `-f -` (it writes stdin to a temporary file outside the
-context), and a context reached through a symlink, such as a project under
-`/tmp` or `/var/folders` on macOS. Keep the Containerfile inside the context,
-write a stdin Containerfile into the context first, and build from the resolved
-directory (`podman --remote build "$(pwd -P)"`).
+context), and a relative `-f` run from a directory reached through a symlink,
+such as a project under `/tmp` or `/var/folders` on macOS. Keep the
+Containerfile inside the context, write a stdin Containerfile into the context
+first, and either drop `-f` or `cd "$(pwd -P)"` before building.
 
 Podman serves the Docker-compatible `POST /build` and native `POST /libpod/build`
 from one handler, so the compat path honors every one of those controls too.
