@@ -221,8 +221,10 @@ same way they cover Docker-compat:
   policy parameter sent twice or in another case (`?Driver=custom` on secret
   create, `?Force=1` or `?force=0&force=1` on container remove) would be
   checked as one value and executed as another, so Sockguard refuses it with a
-  `403` while the check that reads it is enabled. This holds on every upstream
-  flavor and covers the secret `driver`, container remove `force`, `v` and
+  `403`. A parameter whose value is always validated (`rusage`,
+  `additionalbuildcontexts`) is refused in another spelling whatever the gates
+  are, and the others only while the check that reads them is enabled. This
+  holds on every upstream flavor and covers the secret `driver`, container remove `force`, `v` and
   `link`, the build controls, image create `fromImage` and `fromSrc`, libpod
   pull `reference`, archive `path` and `rename`, and commit `container`.
 - `POST /libpod/secrets/create` has no JSON body at all (`driver`/`label`
