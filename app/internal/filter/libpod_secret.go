@@ -44,8 +44,9 @@ func newLibpodSecretPolicy(opts SecretOptions) libpodSecretPolicy {
 // (pkg/secrets/secrets.go).
 //
 // An empty driver and `file` both pass: abi.SecretCreate fills an empty one
-// with the containers.conf default, which is `file`. Any other name is a
-// custom driver.
+// with the containers.conf default, which ships as `file`. A server that
+// configures another default still stores a `file` secret at Podman's own
+// path, which the caller can't choose. Any other name is a custom driver.
 //
 // `driveropts` is a JSON object handed to whichever driver ends up storing
 // the secret, the default included. The file driver's `path` option is the
