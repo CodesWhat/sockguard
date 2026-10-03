@@ -140,8 +140,8 @@ test("compare surfaces derive their cells from the comparison rows", () => {
   }
 
   assert.equal(toComparisonCell("Yes (regex)"), "yes");
-  assert.equal(toComparisonCell("No (read-only)"), "no");
-  assert.equal(toComparisonCell("Read-only (fixed)"), "partial");
+  assert.equal(toComparisonCell("No (blocked by default)"), "no");
+  assert.equal(toComparisonCell("Read-only by default (opt-in containers-only mode)"), "partial");
   assert.equal(toComparisonCell("Via manual regex"), "partial");
 
   // The drift this derivation exists to prevent: /compare showed wollomatic

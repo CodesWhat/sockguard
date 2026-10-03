@@ -5,13 +5,13 @@ export const elevenNotesComparisonRouteData = {
   slug: "11notes",
   comparisonTable: `
 Method filtering|Yes|Yes|tie
-Read-only focus|Yes (hardcoded, zero write risk)|Configurable (read + controlled write)|competitor
+Read-only focus|Yes (read-only by default; opt-in containers-only mode allows start/stop)|Configurable (read + controlled write)|competitor
 Zero-config|Yes (no file needed)|Partial (Tecnativa-compat env vars work with no file; YAML needed beyond that)|tie
-Attack surface|Minimal (read-only hardcoded)|Broader (configurable)|competitor
+Attack surface|Minimal (read-only by default)|Broader (configurable)|competitor
 Request body inspection|No|Yes (12+ resource types)|self
 Per-client policies|No|CIDR + labels + cert selectors + unix peer|self
-Write API control|No (blocks all writes)|Yes (default-deny + granular rules)|self
-Read-side redaction|Partial (targets 7 risky GETs; the image-export pattern misses both real export shapes and has misfired on image inspect, 11notes #12)|Full (visibility rules + JSON field redaction)|self
+Write API control|Limited (blocks writes by default; opt-in mode allows container start/stop only)|Yes (default-deny + granular rules)|self
+Read-side redaction|Partial (targets 7 risky GETs; the image-export pattern misses both real export shapes; its image-inspect misfire, 11notes #12, was fixed in v2.1.6)|Full (visibility rules + JSON field redaction)|self
 Signed policy bundles|No|Yes (cosign keyed + keyless, Rekor)|self
 Container image trust|No|Yes (cosign + enforce / warn modes)|self
 Prometheus metrics|No|Yes (opt-in, socket-proxy request metrics)|self
@@ -19,8 +19,8 @@ Rate limits|No|Yes (per-profile token-bucket)|self
 Audit log schema|No|Yes (opt-in, JSON schema + reason codes)|self
 `,
   highlightsTable: `
-shield|Configurable Default-Deny|11notes is read-only by design — you cannot enable writes. Sockguard starts default-deny and lets you open exactly the operations you need with explicit rules, so CI can run containers while monitoring only reads metrics.
-eye|Full Read-Side Redaction|11notes targets 7 risky GET endpoints, but its image-export pattern matches neither the single-image nor the multi-image export request shape, and it has misfired on an image inspect in the field (11notes issue #12). Sockguard goes further with visibility rules and JSON field redaction, so callers only see the labels, environment variables, and mount paths their policy allows.
+shield|Configurable Default-Deny|11notes is read-only by default, and its opt-in containers-only mode allows nothing beyond container start and stop. Sockguard starts default-deny and lets you open exactly the operations you need with explicit rules, so CI can run containers while monitoring only reads metrics.
+eye|Full Read-Side Redaction|11notes targets 7 risky GET endpoints, but its image-export pattern matches neither the single-image nor the multi-image export request shape, and the same style of pattern misfired on image inspect in 11notes issue #12 (fixed in v2.1.6). Sockguard goes further with visibility rules and JSON field redaction, so callers only see the labels, environment variables, and mount paths their policy allows.
 users|Per-Client Policies|11notes applies the same read-only stance to every caller. Sockguard assigns different policies per CIDR range, Docker label, TLS certificate selector, or Unix peer credential.
 fingerprint|Container Image Trust|Sockguard enforces image signatures at deployment time — blocking container or swarm-service creates whose images aren't signed or don't match a trusted digest. 11notes has no image-trust layer.
 key|Signed Policy Bundles|Sockguard verifies policy files with cosign keyed or keyless signatures and Rekor inclusion. Policy tampering is caught before any request is evaluated.

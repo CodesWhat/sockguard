@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- **The competitor comparison no longer calls 11notes read-only without qualification, no longer cites its issue #12 as a live misfire, and no longer implies Sockguard allowlists the image a container is created from.** 11notes v2.2.0 (2026-09-21) added the opt-in `SOCKET_PROXY_CONTAINERS_ONLY` mode, which allows only container start and stop and refuses reads, so `README.md`, `docs/content/docs/migration.mdx`, `website/src/app/data/comparison-rows.ts` and the 11notes comparison page now say read-only by default with that opt-in mode. Issue #12 (image inspect caught by the image-export pattern) was closed 2025-10-13 and fixed in v2.1.6, so it is cited as fixed. The CetusGuard and LinuxServer pages dropped "blocking containers by image" from the request-body highlight: Sockguard verifies image signatures (`image_trust`) and allowlists pull registries, but has no allowlist of which image a container may be created from. Version stamps moved to 2026-10-02: LinuxServer 3.4.6-r0-ls100 and 11notes v2.2.0.
+
 ## [2.2.3] - 2026-10-02
 
 ### Security
