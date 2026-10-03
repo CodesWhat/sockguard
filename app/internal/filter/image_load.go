@@ -142,16 +142,12 @@ func (p imageLoadPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath
 		return "", err
 	}
 	if spool == nil || size == 0 {
-		// closeAndRemove is nil-safe; this avoids a per-path nil check and
-		// eliminates an equivalent mutation point in the inspect hot path.
-		spool.closeAndRemove()
 		recordImageLoad(r, imageLoadArchiveInspection{format: imageLoadArchiveDocker})
 		return "", nil
 	}
 
 	archive, err := p.io.extractImageLoadArchive(spool.file, isLibpodImageLoadPath(normalizedPath))
 	if err != nil {
-		spool.closeAndRemove()
 		if errors.Is(err, errImageLoadDecompressedTooLarge) {
 			return fmt.Sprintf("image load denied: decompressed image archive exceeds %d byte limit", maxImageLoadDecompressedBytes), nil
 		}
@@ -162,12 +158,10 @@ func (p imageLoadPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath
 	}
 	if archive.format == imageLoadArchiveUnknown {
 		if !p.allowUntagged {
-			spool.closeAndRemove()
 			return "image load denied: image manifest is not inspectable", nil
 		}
 	} else {
 		if archive.hasUntagged && !p.allowUntagged {
-			spool.closeAndRemove()
 			return "image load denied: untagged images are not allowed", nil
 		}
 		for _, tag := range archive.references {
@@ -180,7 +174,6 @@ func (p imageLoadPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath
 				tag = normalizeLibpodImageLoadReference(tag)
 			}
 			if denyReason := p.denyReasonForTag(tag); denyReason != "" {
-				spool.closeAndRemove()
 				return denyReason, nil
 			}
 		}
@@ -192,16 +185,9 @@ func (p imageLoadPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath
 	// that way, so it passes only where no name could have been refused. See
 	// imageLoadLegacyRepositoriesFile.
 	if archive.legacyNames && !p.imagePolicy.allowAllRegistries && !isLibpodImageLoadPath(normalizedPath) {
-		spool.closeAndRemove()
 		return "image load denied: archive names images in a legacy repositories file that is not inspected", nil
 	}
 
-	if err := p.io.SeekToStart(spool.file); err != nil {
-		spool.closeAndRemove()
-		return "", fmt.Errorf("rewind image load body: %w", err)
-	}
-	r.Body = spool.requestBody()
-	r.ContentLength = size
 	recordImageLoad(r, archive)
 	return "", nil
 }

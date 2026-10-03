@@ -99,29 +99,14 @@ func (p containerArchivePolicy) inspect(_ *slog.Logger, r *http.Request, normali
 		return "", err
 	}
 	if spool == nil || size == 0 {
-		// closeAndRemove is nil-safe; this avoids a per-path nil check and
-		// eliminates an equivalent mutation point in the inspect hot path.
-		spool.closeAndRemove()
 		return "", nil
 	}
 
 	denyReason, err := p.inspectContainerArchiveTar(spool.file)
 	if err != nil {
-		spool.closeAndRemove()
 		return "", fmt.Errorf("inspect archive body: %w", err)
 	}
-	if denyReason != "" {
-		spool.closeAndRemove()
-		return denyReason, nil
-	}
-
-	if err := p.io.SeekToStart(spool.file); err != nil {
-		spool.closeAndRemove()
-		return "", fmt.Errorf("rewind archive body: %w", err)
-	}
-	r.Body = spool.requestBody()
-	r.ContentLength = size
-	return "", nil
+	return denyReason, nil
 }
 
 // isContainerArchivePath matches the copy-into-container route on BOTH of
@@ -288,10 +273,10 @@ func (io_ ioDeps) spoolRequestBodyForInspection(r *http.Request, prefix string, 
 	if r == nil || r.Body == nil {
 		return nil, 0, nil
 	}
+	// A body declared over the limit is refused unread and left open. Warn and
+	// audit forward a refused request, so it still has to carry what the
+	// client sent; see spoolRequestBodyToTempFile.
 	if r.ContentLength > maxBytes {
-		if err := r.Body.Close(); err != nil {
-			return nil, 0, err
-		}
 		return nil, 0, &bodyTooLargeError{limit: maxBytes}
 	}
 
@@ -300,7 +285,6 @@ func (io_ ioDeps) spoolRequestBodyForInspection(r *http.Request, prefix string, 
 		return nil, 0, err
 	}
 	if spool.tooLarge {
-		spool.closeAndRemove()
 		return nil, size, &bodyTooLargeError{limit: maxBytes}
 	}
 	return spool, size, nil

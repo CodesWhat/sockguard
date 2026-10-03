@@ -77,7 +77,7 @@ func TestSpoolRequestBodyToTempFile_ExactlyAtLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("spoolRequestBodyToTempFile error = %v", err)
 	}
-	defer spool.closeAndRemove()
+	defer req.Body.Close()
 	if spool.tooLarge {
 		t.Fatalf("tooLarge=true for body of exactly maxBuildContextBytes (%d); want false", maxBuildContextBytes)
 	}
@@ -275,11 +275,11 @@ func TestSpoolRequestBodyForInspection_ContentLengthExactlyAtLimit(t *testing.T)
 	req := httptest.NewRequest(http.MethodPut, "/containers/abc/archive?path=/app", bytes.NewReader(body))
 	req.ContentLength = maxBytes // exactly at limit — must NOT trigger bodyTooLargeError
 
-	spool, size, err := defaultIODeps().spoolRequestBodyForInspection(req, "sockguard-test-", maxBytes)
+	_, size, err := defaultIODeps().spoolRequestBodyForInspection(req, "sockguard-test-", maxBytes)
 	if err != nil {
 		t.Fatalf("spoolRequestBodyForInspection at exact limit error = %v", err)
 	}
-	defer spool.closeAndRemove()
+	defer req.Body.Close()
 	if size != maxBytes {
 		t.Fatalf("size = %d, want %d", size, maxBytes)
 	}

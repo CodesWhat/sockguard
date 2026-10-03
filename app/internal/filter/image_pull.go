@@ -205,28 +205,12 @@ func (p imagePullPolicy) inspectLibpodImport(_ *slog.Logger, r *http.Request, no
 		p.io = defaultIODeps()
 	}
 
-	spool, size, err := p.io.spoolRequestBodyForInspection(r, "sockguard-image-import-", maxLibpodImageImportBodyBytes)
-	if err != nil {
+	if _, _, err := p.io.spoolRequestBodyForInspection(r, "sockguard-image-import-", maxLibpodImageImportBodyBytes); err != nil {
 		if isBodyTooLargeError(err) {
 			return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("%s denied: request body exceeds %d byte limit", libpodImageImportSubject, maxLibpodImageImportBodyBytes))
 		}
 		return "", err
 	}
-	if spool == nil {
-		return "", nil
-	}
-	if size == 0 {
-		spool.closeAndRemove()
-		r.Body = http.NoBody
-		r.ContentLength = 0
-		return "", nil
-	}
-	if err := p.io.SeekToStart(spool.file); err != nil {
-		spool.closeAndRemove()
-		return "", fmt.Errorf("rewind libpod image import body: %w", err)
-	}
-	r.Body = spool.requestBody()
-	r.ContentLength = size
 	return "", nil
 }
 
