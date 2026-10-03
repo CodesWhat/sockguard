@@ -97,7 +97,7 @@ func TestSharedQueryInspectorsDecideIdentically(t *testing.T) {
 		{"image_pull_allowed", http.MethodPost, "/images/create?fromImage=ghcr.io/org/app&tag=v1", nil, imagePull.inspect, "", false},
 		{"image_pull_denied_registry", http.MethodPost, "/images/create?fromImage=evil.example.com/app&tag=v1", nil, imagePull.inspect, `image pull denied: registry "evil.example.com" is not allowlisted`, false},
 		{"image_pull_denied_import", http.MethodPost, "/images/create?fromSrc=http://evil.example.com/x.tar", nil, imagePull.inspect, `image pull denied: importing images from "http://evil.example.com/x.tar" is not allowed`, false},
-		{"libpod_image_pull_folded_key", http.MethodPost, "/libpod/images/pull?Reference=docker%3A%2F%2Fghcr.io%2Forg%2Fapp", nil, imagePull.inspectLibpod, "", false},
+		{"libpod_image_pull_folded_key", http.MethodPost, "/libpod/images/pull?Reference=docker%3A%2F%2Fghcr.io%2Forg%2Fapp", nil, imagePull.inspectLibpod, `libpod image pull denied: ambiguous reference query parameter (repeated, or not spelled "reference")`, false},
 		{"libpod_image_import_denied", http.MethodPost, "/libpod/images/import?url=http%3A%2F%2Fevil.example.com%2Fx.tar", nil, imagePull.inspectLibpodImport, `libpod image import denied: importing images from "http://evil.example.com/x.tar" is not allowed`, false},
 		{"build_remote_context_denied", http.MethodPost, "/build?t=app%3Alatest&dockerfile=Dockerfile&remote=https%3A%2F%2Fgit.example.com%2Fr.git&nocache=1", nil, build.inspect, `build denied: remote build context "https://git.example.com/r.git" is not allowed`, false},
 		{"build_host_network_denied", http.MethodPost, "/build?t=app%3Alatest&networkmode=host&dockerfile=Dockerfile", nil, build.inspect, "build denied: host network mode is not allowed", false},

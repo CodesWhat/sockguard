@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -132,38 +131,6 @@ func TestIsContainerRemovePathNeedsAnIdentifier(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := isContainerRemovePath(tt.path); got != tt.want {
 				t.Fatalf("isContainerRemovePath(%q) = %v, want %v", tt.path, got, tt.want)
-			}
-		})
-	}
-}
-
-// TestFoldedScalarQueryValueHandlesAKeyWithNoValues covers a url.Values entry
-// whose value slice is empty. url.ParseQuery never builds one, but the type is
-// a plain exported map and callers hand it in directly, so the read has to
-// answer "present, empty" instead of indexing off the front of the slice.
-func TestFoldedScalarQueryValueHandlesAKeyWithNoValues(t *testing.T) {
-	tests := []struct {
-		name          string
-		query         url.Values
-		field         string
-		wantValue     string
-		wantFound     bool
-		wantAmbiguous bool
-	}{
-		{name: "nil value slice", query: url.Values{"path": nil}, field: "path", wantValue: "", wantFound: true},
-		{name: "empty value slice", query: url.Values{"path": {}}, field: "path", wantValue: "", wantFound: true},
-		{name: "single value", query: url.Values{"path": {"/etc"}}, field: "path", wantValue: "/etc", wantFound: true},
-		{name: "case folded key", query: url.Values{"PATH": {"/etc"}}, field: "path", wantValue: "/etc", wantFound: true},
-		{name: "missing key", query: url.Values{"other": {"x"}}, field: "path"},
-		{name: "repeated values are ambiguous", query: url.Values{"path": {"/a", "/b"}}, field: "path", wantFound: true, wantAmbiguous: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			value, found, ambiguous := FoldedScalarQueryValue(tt.query, tt.field)
-			if value != tt.wantValue || found != tt.wantFound || ambiguous != tt.wantAmbiguous {
-				t.Fatalf("FoldedScalarQueryValue(%v, %q) = (%q, %v, %v), want (%q, %v, %v)",
-					tt.query, tt.field, value, found, ambiguous, tt.wantValue, tt.wantFound, tt.wantAmbiguous)
 			}
 		})
 	}

@@ -1,6 +1,8 @@
 package imageselector
 
 import (
+	"net/url"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -65,6 +67,30 @@ func TestParseRejectsMalformedQueries(t *testing.T) {
 		t.Run(rawQuery, func(t *testing.T) {
 			if _, err := Parse(rawQuery); err == nil {
 				t.Fatalf("Parse(%q) succeeded, want error", rawQuery)
+			}
+		})
+	}
+}
+
+func TestQueryValuesMatchesParseQuery(t *testing.T) {
+	for _, rawQuery := range []string{
+		"",
+		"tag=v1",
+		"repo=a&tag=v1&Tag=v2&tag=v3",
+		"names=one%3A1&name%C5%BF=two%3A1&names=",
+		"flag&flag=&x=%2F",
+	} {
+		t.Run(rawQuery, func(t *testing.T) {
+			query, err := Parse(rawQuery)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, err := url.ParseQuery(rawQuery)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := query.Values(); !reflect.DeepEqual(got, want) {
+				t.Fatalf("Values() = %#v, want %#v", got, want)
 			}
 		})
 	}

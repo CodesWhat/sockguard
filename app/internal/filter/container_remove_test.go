@@ -6,7 +6,13 @@ import (
 	"testing"
 )
 
-func TestContainerRemoveDefaultPolicyMatchesDockerQuerySemantics(t *testing.T) {
+// TestContainerRemoveDefaultPolicyQuerySemantics pins how the default policy
+// reads `force`, `v` and `link`: each value with dockerd's boolean parsing,
+// and each parameter only when it is sent once under its exact spelling. A
+// repeated flag or one in another case is refused, because dockerd reads the
+// first value of the exact key and Podman folds the key's case and reads the
+// last, so the two can disagree about whether the removal is forced.
+func TestContainerRemoveDefaultPolicyQuerySemantics(t *testing.T) {
 	tests := []struct {
 		name     string
 		path     string
@@ -16,7 +22,7 @@ func TestContainerRemoveDefaultPolicyMatchesDockerQuerySemantics(t *testing.T) {
 		{name: "bare remove", path: "/containers/abc", wantCode: http.StatusNoContent},
 		{name: "version prefixed bare remove", path: "/v1.45/containers/abc", wantCode: http.StatusNoContent},
 		{name: "unrelated query", path: "/containers/abc", rawQuery: "timeout=10", wantCode: http.StatusNoContent},
-		{name: "case distinct key", path: "/containers/abc", rawQuery: "Force=true", wantCode: http.StatusNoContent},
+		{name: "case distinct key is ambiguous", path: "/containers/abc", rawQuery: "Force=true", wantCode: http.StatusForbidden},
 		{name: "empty force", path: "/containers/abc", rawQuery: "force=", wantCode: http.StatusNoContent},
 		{name: "bare force key", path: "/containers/abc", rawQuery: "force", wantCode: http.StatusNoContent},
 		{name: "zero force", path: "/containers/abc", rawQuery: "force=0", wantCode: http.StatusNoContent},
@@ -26,7 +32,7 @@ func TestContainerRemoveDefaultPolicyMatchesDockerQuerySemantics(t *testing.T) {
 		{name: "trimmed mixed case false", path: "/containers/abc", rawQuery: "force=%20FaLsE%20", wantCode: http.StatusNoContent},
 		{name: "false anonymous volume removal", path: "/containers/abc", rawQuery: "v=false", wantCode: http.StatusNoContent},
 		{name: "false link removal", path: "/containers/abc", rawQuery: "link=none", wantCode: http.StatusNoContent},
-		{name: "first repeated value controls false", path: "/containers/abc", rawQuery: "force=false&force=true", wantCode: http.StatusNoContent},
+		{name: "repeated value is ambiguous when the first is false", path: "/containers/abc", rawQuery: "force=false&force=true", wantCode: http.StatusForbidden},
 		{name: "force true", path: "/containers/abc", rawQuery: "force=true", wantCode: http.StatusForbidden},
 		{name: "version prefixed force true", path: "/v1.45/containers/abc", rawQuery: "force=true", wantCode: http.StatusForbidden},
 		{name: "anonymous volume removal true", path: "/containers/abc", rawQuery: "v=1", wantCode: http.StatusForbidden},
@@ -34,7 +40,7 @@ func TestContainerRemoveDefaultPolicyMatchesDockerQuerySemantics(t *testing.T) {
 		{name: "docker treats off as true", path: "/containers/abc", rawQuery: "force=off", wantCode: http.StatusForbidden},
 		{name: "docker treats malformed boolean as true", path: "/containers/abc", rawQuery: "force=definitely-not", wantCode: http.StatusForbidden},
 		{name: "encoded key and value", path: "/containers/abc", rawQuery: "%66orce=%74rue", wantCode: http.StatusForbidden},
-		{name: "first repeated value controls true", path: "/containers/abc", rawQuery: "force=true&force=false", wantCode: http.StatusForbidden},
+		{name: "repeated value is ambiguous when the first is true", path: "/containers/abc", rawQuery: "force=true&force=false", wantCode: http.StatusForbidden},
 		{name: "later destructive parameter", path: "/containers/abc", rawQuery: "force=false&v=true", wantCode: http.StatusForbidden},
 		{name: "invalid percent escape", path: "/containers/abc", rawQuery: "force=%zz", wantCode: http.StatusBadRequest},
 		{name: "invalid semicolon separator", path: "/containers/abc", rawQuery: "force=false;v=true", wantCode: http.StatusBadRequest},

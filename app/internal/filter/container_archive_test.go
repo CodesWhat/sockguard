@@ -55,7 +55,7 @@ func TestContainerArchiveAllowsAbsoluteContainerTargetPath(t *testing.T) {
 	}
 }
 
-func TestContainerArchiveTargetQueryMatchesPodmanSemantics(t *testing.T) {
+func TestContainerArchiveTargetQuerySemantics(t *testing.T) {
 	payload := mustContainerArchiveTar(t, containerArchiveTestEntry{name: "file.txt", body: "ok"})
 	tests := []struct {
 		name       string
@@ -75,10 +75,10 @@ func TestContainerArchiveTargetQueryMatchesPodmanSemantics(t *testing.T) {
 			wantReason: "target path is required",
 		},
 		{
-			name:       "case folded unallowlisted target",
+			name:       "case folded unallowlisted target is ambiguous",
 			query:      "?Path=/etc",
 			wantDeny:   true,
-			wantReason: "is not allowlisted",
+			wantReason: "ambiguous path query",
 		},
 		{
 			name:       "repeated target is ambiguous even when last is unallowlisted",
@@ -115,8 +115,11 @@ func TestContainerArchiveTargetQueryMatchesPodmanSemantics(t *testing.T) {
 			query: "?path=/app",
 		},
 		{
-			name:  "single case folded target is accepted",
-			query: "?Path=/app",
+			// moby reads only the exact key, so it would see no target at all.
+			name:       "single case folded target is ambiguous",
+			query:      "?Path=/app",
+			wantDeny:   true,
+			wantReason: "ambiguous path query",
 		},
 		{
 			name:       "repeated target is ambiguous even when last is allowlisted",

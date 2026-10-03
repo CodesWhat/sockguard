@@ -3,10 +3,10 @@ package filter
 import (
 	"log/slog"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/queryparam"
 )
 
 // ContainerRemoveOptions configures query inspection for container removal,
@@ -31,6 +31,18 @@ func newContainerRemovePolicy(opts ContainerRemoveOptions) containerRemovePolicy
 	}
 }
 
+// inspect applies allow_force, allow_remove_volumes and allow_remove_links to
+// the `force`, `v` and `link` query parameters.
+//
+// dockerd reads each with httputils.BoolValue, the first value under the
+// exact key (moby 28.5.1 deleteContainers). Podman's compat.RemoveContainer
+// decodes them with gorilla/schema, which matches the key in any letter case
+// and keeps the last value (Podman 5.8.6, pkg/api/handlers/compat/containers.go),
+// so on a Podman upstream `?Force=1` and `?force=0&force=1` force-removed a
+// running container that the first value of the exact key said was not
+// forced. Each flag is read through queryparam, which refuses both shapes,
+// and only while its gate is closed: with the gate open, no value of it
+// changes the decision.
 func (p containerRemovePolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
 	if r == nil || r.Method != http.MethodDelete || !isContainerRemovePath(normalizedPath) {
 		return "", nil
@@ -41,14 +53,25 @@ func (p containerRemovePolicy) inspect(_ *slog.Logger, r *http.Request, normaliz
 		return "", newRequestRejectionError(http.StatusBadRequest, "container remove denied: query parameters could not be parsed")
 	}
 
-	if !p.allowForce && dockerBoolQueryValue(query, "force") {
-		return "container remove denied: force removal is not allowed", nil
-	}
-	if !p.allowRemoveVolumes && dockerBoolQueryValue(query, "v") {
-		return "container remove denied: anonymous volume removal is not allowed", nil
-	}
-	if !p.allowRemoveLinks && dockerBoolQueryValue(query, "link") {
-		return "container remove denied: link removal is not allowed", nil
+	for _, flag := range []struct {
+		name    string
+		allowed bool
+		reason  string
+	}{
+		{name: "force", allowed: p.allowForce, reason: "container remove denied: force removal is not allowed"},
+		{name: "v", allowed: p.allowRemoveVolumes, reason: "container remove denied: anonymous volume removal is not allowed"},
+		{name: "link", allowed: p.allowRemoveLinks, reason: "container remove denied: link removal is not allowed"},
+	} {
+		if flag.allowed {
+			continue
+		}
+		value, _, ok := queryparam.Scalar(query, flag.name)
+		if !ok {
+			return ambiguousQueryReason("container remove", flag.name), nil
+		}
+		if dockerBoolQueryValue(value) {
+			return flag.reason, nil
+		}
 	}
 
 	return "", nil
@@ -60,10 +83,11 @@ func isContainerRemovePath(normalizedPath string) bool {
 
 // dockerBoolQueryValue mirrors Moby's httputils.BoolValue. Docker treats only
 // the five normalized values below as false and treats every other value as
-// true. url.Values.Get intentionally selects the first repeated value, the
-// same choice net/http's Request.FormValue makes in the daemon handler.
-func dockerBoolQueryValue(query url.Values, key string) bool {
-	switch strings.ToLower(strings.TrimSpace(query.Get(key))) {
+// true. Podman's compat routes decode with NewCompatAPIDecoder, which registers
+// a converter that copies this same function, so they agree on the spellings:
+// no 400 on "no", "none" or "yes", and an empty value sets false.
+func dockerBoolQueryValue(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "", "0", "no", "false", "none":
 		return false
 	default:

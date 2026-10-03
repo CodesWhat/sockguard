@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/queryparam"
 )
 
 // libpodSecretPolicy backs POST /libpod/secrets/create. Unlike Docker's
@@ -30,12 +31,26 @@ func newLibpodSecretPolicy(opts SecretOptions) libpodSecretPolicy {
 	return libpodSecretPolicy{allowCustomDrivers: opts.AllowCustomDrivers}
 }
 
+// inspect applies allow_custom_drivers to the `driver` query parameter.
+// libpod.CreateSecret decodes it with gorilla/schema, which matches the key in
+// any letter case and keeps the last value, so `?Driver=shell` and
+// `?driver=&driver=shell` both store the secret with the shell driver while
+// the first value of the exact key reads as no driver at all. The parameter is
+// read through queryparam, which refuses both shapes. Read from Podman 5.8.6
+// (pkg/api/handlers/libpod/secrets.go).
 func (p libpodSecretPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
 	if r == nil || r.Method != http.MethodPost || normalizedPath != libpodPathPrefix+"secrets/create" {
 		return "", nil
 	}
+	if p.allowCustomDrivers {
+		return "", nil
+	}
 
-	if driver := strings.TrimSpace(logging.RequestQuery(r).Get("driver")); driver != "" && !p.allowCustomDrivers {
+	driver, _, ok := queryparam.Scalar(logging.RequestQuery(r), "driver")
+	if !ok {
+		return ambiguousQueryReason("libpod secret create", "driver"), nil
+	}
+	if driver = strings.TrimSpace(driver); driver != "" {
 		return fmt.Sprintf("libpod secret create denied: driver %q is not allowed", driver), nil
 	}
 
