@@ -539,9 +539,11 @@ type RequestBodyConfig struct {
 }
 
 // ContainerRemoveRequestBodyConfig configures query inspection for
-// DELETE /containers/{id}. Docker treats any force, v, or link value other
-// than an empty string, 0, no, false, or none as true, so each destructive
-// behavior requires its own explicit opt-in. All controls default to false.
+// DELETE /containers/{id} and Podman's DELETE /libpod/containers/{id}. Docker
+// treats any force, v, or link value other than an empty string, 0, no,
+// false, or none as true, so each destructive behavior requires its own
+// explicit opt-in. On the libpod route AllowRemoveVolumes also covers
+// `volumes` and `depend`. All controls default to false.
 type ContainerRemoveRequestBodyConfig struct {
 	AllowForce         bool `mapstructure:"allow_force"`
 	AllowRemoveVolumes bool `mapstructure:"allow_remove_volumes"`
