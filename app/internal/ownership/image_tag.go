@@ -229,34 +229,18 @@ func compatPathReadAsLibpod(u *url.URL) bool {
 	return len(pieces) >= 3 && pieces[2] == "libpod"
 }
 
+// imageTagRoute words a retag's refusals. See imageDestinationRoute.
+var imageTagRoute = imageDestinationRoute{action: "image tag", field: "repo"}
+
 // imageTagTarget builds the reference a retag creates, as name:tag, or returns
 // the reason the request is refused. storedTarget is the second name the same
 // request can land on, and is empty wherever there is only one.
 //
-// The result follows moby's httputils.RepoTagReference, confirmed against
-// dockerd 29.5.2, and is the same string Podman's compat.TagImage builds
-// wherever Podman accepts the request at all:
+// The reference is built from `repo` and `tag` by imageDestinationFor, which
+// also says which shapes of the two are refused and why. Confirmed against
+// dockerd 29.5.2. What this adds is the reading of the query itself.
 //
-//   - `repo` with no tag of its own and a `tag` parameter is repo:tag.
-//   - `repo` with no tag and no `tag` parameter, or an empty one, is
-//     repo:latest.
-//   - `repo` that already carries a tag and no `tag` parameter keeps its own.
-//     This is what docker-py sends for image.tag("name:v1"). Podman appends
-//     ":latest" to it and rejects the result.
-//
-// The tag separator is a colon in the last path segment, so the port of
-// "registry.example:5000/team/app" is not one. A single-segment
-// "localhost:5000" is name "localhost" with tag "5000" to the reference
-// parser, and is read that way here.
-//
-// On Podman's native route the name is then completed the way Podman stores
-// it, and that is the target. On the Docker-compatible route of a Podman
-// upstream the target stays as spelled and the completed name comes back as
-// storedTarget, unless `repo` names its registry and the two are the same
-// name. See podmanStoredImageName and imageTagNamedEitherWay.
-//
-// Refused, because the engines disagree with each other or with any reading
-// this layer could check:
+// Refused before a reference is built:
 //
 //   - A query net/url cannot parse cleanly. See imagePushOwnershipReferences.
 //   - A repeated `repo` or `tag`, or any spelling of either key other than
@@ -266,30 +250,6 @@ func compatPathReadAsLibpod(u *url.URL) bool {
 //     does not depend on which decoder the handler happens to use.
 //   - No `repo`, or an empty one. dockerd answers 200 and does nothing,
 //     Podman answers 400, and there is no target to authorize.
-//   - A `repo` carrying a digest. dockerd refuses it today, and daemons from
-//     before the check dropped the digest whenever a `tag` came with it.
-//   - A `repo` that carries a tag next to a `tag` parameter. dockerd replaces
-//     the tag `repo` spelled, Podman concatenates both and rejects the result.
-//   - A name or tag outside the image reference grammar. The engines reject
-//     those themselves, and refusing here keeps a string only one of them can
-//     parse out of the inspect. That includes a name that only outgrows the
-//     length bound once the engine completes it: one with no slash that
-//     dockerd reads as library/<name>, and a short one Podman stores under
-//     localhost/. Either would have the inspect answer with an error, which
-//     is a 502 a client could produce at will. The Podman bound applies on
-//     its Docker-compatible route too, where the default setting completes
-//     the name to docker.io/<name> instead: that is no shorter than
-//     localhost/<name>, so Podman accepts such a name under neither setting.
-//   - A name that is a digest algorithm: "sha256", "sha384" or "sha512". The
-//     reference it builds, <algorithm>:<tag>, can be a well-formed digest,
-//     and a lookup that parses it as one searches by image ID instead of by
-//     name, so the inspect could answer for a different image than the one
-//     the tag names, or for none. Both engines' lookups read sha256:<hex>
-//     that way, and dockerd and libimage both refuse to create a tag named
-//     "sha256". Neither refuses "sha384" or "sha512", whose 96 and 128
-//     character hex values fit the tag grammar and still parse as digests to
-//     dockerd's reference parser. This layer refuses all three, because the
-//     inspect has no way to ask for such a reference by name.
 func imageTagTarget(rawQuery string, naming imageTagNaming) (target, storedTarget, denyReason string) {
 	query, err := imageselector.Parse(rawQuery)
 	if err != nil {
@@ -307,42 +267,11 @@ func imageTagTarget(rawQuery string, naming imageTagNaming) (target, storedTarge
 	if repo == "" {
 		return "", "", imageTagDenyNoRepo
 	}
-	if strings.Contains(repo, "@") {
-		return "", "", imageTagDenyDigest
+	dest, problem := imageDestinationFor(repo, tag, naming)
+	if problem != imageDestinationReadable {
+		return "", "", imageTagRoute.refusal(problem)
 	}
-	name := repo
-	if colon := strings.LastIndex(repo, ":"); colon > strings.LastIndex(repo, "/") {
-		if tag != "" {
-			return "", "", imageTagDenyQualifiedRepo
-		}
-		name, tag = repo[:colon], repo[colon+1:]
-	} else if tag == "" {
-		tag = imageTagDefaultTag
-	}
-
-	if len(name) > imageTagRepoMaxLen || (len(name) > imageTagBareRepoMaxLen && !strings.Contains(name, "/")) {
-		return "", "", imageTagDenyInvalidRepo
-	}
-	match := imageTagRepoName.FindStringSubmatch(name)
-	switch {
-	case match == nil:
-		return "", "", imageTagDenyInvalidRepo
-	case !isImagePushTag(tag):
-		return "", "", imageTagDenyInvalidTag
-	case name == "sha256" || name == "sha384" || name == "sha512":
-		return "", "", imageTagDenyDigestName
-	}
-	if naming == imageTagNamedAsSpelled {
-		return name + ":" + tag, "", ""
-	}
-	stored, ok := podmanStoredImageName(name, match[1])
-	if !ok || len(stored) > imageTagRepoMaxLen {
-		return "", "", imageTagDenyInvalidRepo
-	}
-	if naming == imageTagNamedAsStored || stored == name {
-		return stored + ":" + tag, "", ""
-	}
-	return name + ":" + tag, stored + ":" + tag, ""
+	return dest.target, dest.storedTarget, ""
 }
 
 // podmanStoredImageName completes name the way Podman stores it when it tags
@@ -410,8 +339,7 @@ func exactQueryScalar(query imageselector.Query, key string) (value string, ok b
 // checkOwnedImageRoute authorizes a per-image route. Every route but a retag
 // names one image and gets the ordinary check. A retag names two and has to
 // clear both, the source first so its missing and foreign answers stay what
-// they were. Where the target can land on either of two names, each is
-// checked on the same terms and the first denial or failed lookup ends it.
+// they were. The target is authorized by checkImageDestination.
 //
 // A retag that reaches this pass with no captured target is refused, the same
 // way imagePushIdentifier refuses a push with no captured tag: falling back
@@ -437,46 +365,5 @@ func checkOwnedImageRoute(
 	if err != nil || verdict.denied() {
 		return verdict, reason, err
 	}
-	verdict, reason, err = checkImageTagTarget(ctx, inspectResource, refs.imageTag.target, opts)
-	if err != nil || verdict.denied() || refs.imageTag.storedTarget == "" {
-		return verdict, reason, err
-	}
-	return checkImageTagTarget(ctx, inspectResource, refs.imageTag.storedTarget, opts)
-}
-
-// checkImageTagTarget authorizes the reference a retag points at its source.
-//
-// A reference no image holds yet is allowed: tagging it takes nothing from
-// anyone, and it is what every first `docker tag` of a new name looks like.
-// This is the one place a not-found inspect is not a denial, because the
-// target is a name being created, not a resource being acted on.
-//
-// A reference an image already holds is being taken away from that image, so
-// the image has to pass the same test as the subject of any other per-image
-// request: the caller's own label always passes, another owner's never does,
-// and no owner label at all follows allow_unowned_images. The flag already
-// decides whether this caller may act on an unlabeled image, including
-// removing one of its names through Podman's untag route, so a stricter rule
-// here would not hold on a Podman upstream and would only add a second
-// meaning to the option. With the flag at its default, a name held by an
-// unlabeled image is therefore movable by any owner, the same way that image
-// is usable, taggable and pushable by any owner. allow_unowned_images: false
-// closes that for a deployment whose owners do not trust each other.
-//
-// Like every preflight inspect, this cannot close the window between the
-// inspect and the daemon's write.
-func checkImageTagTarget(
-	ctx context.Context,
-	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
-	target string,
-	opts Options,
-) (ownershipVerdict, string, error) {
-	labels, found, err := inspectResource(ctx, dockerresource.KindImage, target)
-	if err != nil {
-		return verdictPassThrough, "", err
-	}
-	if !found || ownerMatches(labels, opts.LabelKey, opts.Owner, opts.AllowUnownedImages) {
-		return verdictAllow, "", nil
-	}
-	return verdictDeny, imageTagDenyTarget, nil
+	return checkImageDestination(ctx, inspectResource, imageDestination{target: refs.imageTag.target, storedTarget: refs.imageTag.storedTarget}, opts, imageTagRoute.heldByAnotherOwner())
 }

@@ -15,6 +15,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/codeswhat/sockguard/v2/app/internal/dockerfileinspect"
 	"github.com/codeswhat/sockguard/v2/app/internal/logging"
@@ -70,11 +71,29 @@ func (p buildPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath str
 	}
 
 	query := logging.RequestQuery(r)
+	// Podman serves POST /build and POST /libpod/build from one handler that
+	// honors build controls Docker's API has no field for: host volume mounts
+	// (volume/volumes/transientRunMounts), url:/image: additional build
+	// contexts, and the rusagelogfile daemon-host write. moby's POST /build
+	// reads none of those query parameters (confirmed against moby 29.5.2), so
+	// a legitimate Docker client never sends them. Gating them on the compat
+	// path therefore costs a dockerd upstream nothing and closes the bypass on
+	// a Podman one, where the compat /build path previously went uninspected
+	// for every control gated only on the /libpod/ prefix. The folded view is
+	// passed only to this check; Podman folds query-key case through
+	// gorilla/schema, which the controls check mirrors.
+	folded := foldQueryKeys(query)
+	if denyReason := p.inspectPodmanBuildControls(r, normalizedPath, folded); denyReason != "" {
+		return denyReason, nil
+	}
 	if isLibpodBuildPath(normalizedPath) {
-		query = foldQueryKeys(query)
-		if denyReason := p.inspectLibpodBuildControls(r, normalizedPath, query); denyReason != "" {
-			return denyReason, nil
-		}
+		// On the libpod path the host-network, remote-context and Dockerfile
+		// reads below must also see the folded keys, because Podman decodes
+		// the whole libpod query case-insensitively. The compat path keeps the
+		// original query for those reads: moby reads each key case-sensitively
+		// (r.FormValue is exact-case), so folding there could make sockguard
+		// inspect a different Dockerfile than dockerd builds.
+		query = folded
 	}
 	// WHY: Host-network builds are denied even when the request also uses a
 	// remote context, so this must run before the remote-context branch returns
@@ -161,7 +180,14 @@ type legacyPodmanAdditionalBuildContext struct {
 	DownloadedCache string
 }
 
-func (p buildPolicy) inspectLibpodBuildControls(r *http.Request, normalizedPath string, query url.Values) string {
+// inspectPodmanBuildControls gates the build controls Podman honors that
+// Docker's API does not define. It runs on both the compat POST /build and the
+// native POST /libpod/build, because Podman serves both from one handler (see
+// inspect): a control gated only on the /libpod/ prefix was ungated on the
+// compat path of a Podman upstream. The daemon-host local-build check stays
+// keyed on the libpod local path, the only route that names a daemon-host
+// build context.
+func (p buildPolicy) inspectPodmanBuildControls(r *http.Request, normalizedPath string, query url.Values) string {
 	// POST /libpod/local/build names its build context with a daemon-host
 	// path (`localcontextdir`) instead of shipping a tar, so every
 	// body-derived control further down inspect() — the RUN-instruction
@@ -365,10 +391,23 @@ func (s *spooledRequestBody) closeAndRemove() {
 	_ = s.io.RemoveFilePath(s.path)
 }
 
+// tempFileBody is a request body an inspector spooled to a temp file. Closing
+// it removes the file.
+//
+// More than one party closes it. The reverse proxy closes the outbound body,
+// the upstream transport closes it again and may do so from its own goroutine
+// after the round trip has returned, and the filter middleware closes it once
+// the rest of the chain has returned (see closeSpooledRequestBody). So the
+// file is closed and removed once, and every later Close reports what the
+// first one did. A second removal would be more than wasted work: the name is
+// free again after the first, and another request can have been handed it.
 type tempFileBody struct {
 	file *os.File
 	path string
 	io   ioDeps
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func (b *tempFileBody) Read(p []byte) (int, error) {
@@ -376,15 +415,45 @@ func (b *tempFileBody) Read(p []byte) (int, error) {
 }
 
 func (b *tempFileBody) Close() error {
-	closeErr := b.file.Close()
-	removeErr := b.io.RemoveFilePath(b.path)
-	if closeErr != nil {
-		return closeErr
+	b.closeOnce.Do(func() {
+		closeErr := b.file.Close()
+		removeErr := b.io.RemoveFilePath(b.path)
+		switch {
+		case closeErr != nil:
+			b.closeErr = closeErr
+		case removeErr != nil && !os.IsNotExist(removeErr):
+			b.closeErr = removeErr
+		}
+	})
+	return b.closeErr
+}
+
+// closeSpooledRequestBody removes the temp file behind r.Body when an
+// inspector spooled the body there, and returns the function that does it for
+// the caller to defer. It returns nil for a request whose body was not
+// spooled.
+//
+// An inspector that spools a body swaps it in as r.Body, and the server only
+// closes the body it handed out, so the swapped one is the filter's to close.
+// Nothing downstream can be relied on to: the reverse proxy closes the body
+// it forwards, but a layer in between that answers the request itself returns
+// without one. Owner isolation does that for a request it refuses and for one
+// whose lookup fails, and each such request used to leave its body on disk.
+// Closing after the chain returns matches what net/http promises a handler: a
+// request body is not read once ServeHTTP has returned.
+//
+// The body is captured here, before the rest of the chain runs, so a layer
+// that replaces r.Body in turn does not hide the file from the close.
+func closeSpooledRequestBody(logger *slog.Logger, r *http.Request) func() {
+	spooled, ok := r.Body.(*tempFileBody)
+	if !ok {
+		return nil
 	}
-	if removeErr != nil && !os.IsNotExist(removeErr) {
-		return removeErr
+	return func() {
+		if err := spooled.Close(); err != nil {
+			logRequestError(logger, r, slog.LevelWarn, "failed to remove spooled request body", err)
+		}
 	}
-	return nil
 }
 
 func normalizeBuildDockerfilePath(value string) string {

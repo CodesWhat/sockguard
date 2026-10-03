@@ -2,14 +2,11 @@ package filter
 
 import (
 	"archive/tar"
-	"bufio"
 	"compress/gzip"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"mime"
-	"mime/multipart"
 	"net/http"
 	"os"
 	"path"
@@ -255,7 +252,7 @@ func (p pluginPolicy) inspectPluginCreate(logger *slog.Logger, r *http.Request) 
 		return "", nil
 	}
 
-	configBytes, ok, err := p.io.extractPluginConfig(spool.file, r.Header.Get("Content-Type"))
+	configBytes, ok, err := p.io.extractPluginConfig(spool.file)
 	if err != nil {
 		spool.closeAndRemove()
 		if errors.Is(err, errPluginDecompressedTooLarge) {
@@ -460,20 +457,11 @@ func (p pluginPolicy) setEnvAllowed(setting string) bool {
 	return false
 }
 
-func (io_ ioDeps) extractPluginConfig(file *os.File, contentType string) ([]byte, bool, error) {
-	if mediaType, params, err := mime.ParseMediaType(contentType); err == nil && strings.EqualFold(mediaType, "multipart/form-data") {
-		if boundary := strings.TrimSpace(params["boundary"]); boundary != "" {
-			if err := io_.SeekToStart(file); err != nil {
-				return nil, false, fmt.Errorf("rewind plugin reader: %w", err)
-			}
-			return io_.extractPluginConfigFromMultipart(file, boundary)
-		}
-		// A multipart media type with no boundary is not something Docker honors:
-		// /plugins/create ignores Content-Type and always reads the body as a
-		// (optionally gzipped) tar. Fall through to the tar probe so we still inspect
-		// the config.json rather than skipping policy enforcement entirely.
-	}
-
+// extractPluginConfig reads config.json from the raw (optionally gzipped) tar
+// the daemon untars from a plugin create body. dockerd ignores Content-Type
+// there, so this does too. withFormBodyGuard refuses multipart/form-data
+// before the filter runs, so no multipart framing reaches this point.
+func (io_ ioDeps) extractPluginConfig(file *os.File) ([]byte, bool, error) {
 	if err := io_.SeekToStart(file); err != nil {
 		return nil, false, fmt.Errorf("rewind plugin reader: %w", err)
 	}
@@ -487,48 +475,12 @@ func (io_ ioDeps) extractPluginConfig(file *os.File, contentType string) ([]byte
 	return io_.extractPluginConfigFromTar(file)
 }
 
-func (io_ ioDeps) extractPluginConfigFromMultipart(file *os.File, boundary string) ([]byte, bool, error) {
-	reader := multipart.NewReader(file, boundary)
-	for {
-		part, err := reader.NextPart()
-		if errors.Is(err, io.EOF) {
-			return nil, false, nil
-		}
-		if err != nil {
-			return nil, false, fmt.Errorf("read multipart part: %w", err)
-		}
-
-		config, ok, err := io_.extractPluginConfigFromArchiveReader(part)
-		if err != nil {
-			return nil, false, err
-		}
-		if ok {
-			return config, true, nil
-		}
-	}
-}
-
 func (io_ ioDeps) extractPluginConfigFromGzipTar(file *os.File) ([]byte, bool, error) {
 	return io_.extractPluginConfigFromGzipReader(file)
 }
 
 func (io_ ioDeps) extractPluginConfigFromTar(file *os.File) ([]byte, bool, error) {
 	return io_.extractPluginConfigFromTarReader(tar.NewReader(file))
-}
-
-func (io_ ioDeps) extractPluginConfigFromArchiveReader(reader io.Reader) ([]byte, bool, error) {
-	buffered := bufio.NewReader(reader)
-	header, err := buffered.Peek(512)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, false, fmt.Errorf("peek archive header: %w", err)
-	}
-	if looksLikeGzipHeader(header) {
-		return io_.extractPluginConfigFromGzipReader(buffered)
-	}
-	if !looksLikeTarHeader(header) {
-		return nil, false, nil
-	}
-	return io_.extractPluginConfigFromTarReader(tar.NewReader(buffered))
 }
 
 func (io_ ioDeps) extractPluginConfigFromGzipReader(reader io.Reader) ([]byte, bool, error) {
@@ -596,14 +548,6 @@ func (io_ ioDeps) extractPluginConfigFromTarReader(tr *tar.Reader) ([]byte, bool
 			found = true
 		}
 	}
-}
-
-func looksLikeGzipHeader(header []byte) bool {
-	return len(header) >= 2 && header[0] == 0x1f && header[1] == 0x8b
-}
-
-func looksLikeTarHeader(header []byte) bool {
-	return len(header) >= 262 && string(header[257:262]) == "ustar"
 }
 
 func normalizePluginConfigPath(value string) string {
