@@ -59,6 +59,7 @@ func FuzzVolume(f *testing.F) {
 func FuzzSecret(f *testing.F) {
 	f.Add([]byte(`{"Name":"db-password","Data":"c2VjcmV0"}`))
 	f.Add([]byte(`{"Driver":"vault"}`))
+	f.Add([]byte(`{"Driver":{"Name":"vault","Options":{"addr":"https://vault:8200"}}}`))
 	f.Add([]byte(`{"Templating":{"Name":"golang-template"}}`))
 	f.Add([]byte(`{`))
 	f.Add(bytes.Repeat([]byte("a"), driverCreateMaxBodyBytes+1))
@@ -80,6 +81,7 @@ func FuzzSecret(f *testing.F) {
 func FuzzConfigWrite(f *testing.F) {
 	f.Add([]byte(`{"Name":"app-config","Data":"Y29uZmln"}`))
 	f.Add([]byte(`{"Driver":"vault"}`))
+	f.Add([]byte(`{"Driver":{"Name":"vault","Options":{"addr":"https://vault:8200"}}}`))
 	f.Add([]byte(`{"TemplateDriver":"sprig"}`))
 	f.Add([]byte(`{`))
 	f.Add(bytes.Repeat([]byte("a"), driverCreateMaxBodyBytes+1))
