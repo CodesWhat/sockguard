@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The website and docs builds no longer fetch Google Fonts. IBM Plex is now self-hosted with `next/font/local`, so a build no longer fails when Google answers the font request with URLs Turbopack can't resolve.
+
 ## [2.2.3] - 2026-10-02
 
 ### Security
