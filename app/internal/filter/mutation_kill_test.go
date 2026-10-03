@@ -86,8 +86,8 @@ func TestSpoolRequestBodyToTempFile_ExactlyAtLimit(t *testing.T) {
 	}
 }
 
-// CONDITIONALS_BOUNDARY build.go:219:14
-// extractBuildDockerfile (raw path): `len(raw) > maxBuildDockerfileBytes` — mutant → `>=`.
+// CONDITIONALS_BOUNDARY build.go
+// inspectBuildContext (raw path): `len(raw) > maxBuildDockerfileBytes` — mutant → `>=`.
 // A raw Dockerfile of exactly maxBuildDockerfileBytes bytes should be accepted.
 // We verify via the readAllLimited mock: with the real code, a limit of maxBuildDockerfileBytes+1
 // means exactly-at-limit data is NOT truncated and len(raw)==maxBuildDockerfileBytes passes.
@@ -118,10 +118,10 @@ func TestExtractBuildDockerfile_RawExactlyAtLimit(t *testing.T) {
 	}
 }
 
-// CONDITIONALS_BOUNDARY build.go:278:16
-// extractDockerfileFromTarReader: `len(body) > maxBuildDockerfileBytes` — mutant → `>=`.
+// CONDITIONALS_BOUNDARY build.go
+// inspectBuildContextTar: `len(body) > maxBuildDockerfileBytes` — mutant → `>=`.
 // A tar entry whose Dockerfile content is exactly maxBuildDockerfileBytes should succeed.
-func TestExtractDockerfileFromTarReader_ExactlyAtLimit(t *testing.T) {
+func TestInspectBuildContextTar_ExactlyAtLimit(t *testing.T) {
 	content := bytes.Repeat([]byte("x"), maxBuildDockerfileBytes)
 
 	var buf bytes.Buffer
@@ -134,15 +134,12 @@ func TestExtractDockerfileFromTarReader_ExactlyAtLimit(t *testing.T) {
 	_, _ = tw.Write(content)
 	_ = tw.Close()
 
-	body, ok, err := defaultIODeps().extractDockerfileFromTarReader(tar.NewReader(bytes.NewReader(buf.Bytes())), "Dockerfile")
+	_, reason, err := defaultIODeps().inspectBuildContextTar(tar.NewReader(bytes.NewReader(buf.Bytes())), []string{"Dockerfile"})
 	if err != nil {
-		t.Fatalf("extractDockerfileFromTarReader error = %v", err)
+		t.Fatalf("inspectBuildContextTar error = %v for body at exactly the limit", err)
 	}
-	if !ok {
-		t.Fatal("extractDockerfileFromTarReader ok=false for body at exactly the limit")
-	}
-	if len(body) != maxBuildDockerfileBytes {
-		t.Fatalf("body length = %d, want %d", len(body), maxBuildDockerfileBytes)
+	if reason != "" {
+		t.Fatalf("inspectBuildContextTar reason = %q, want none for body at exactly the limit", reason)
 	}
 }
 
