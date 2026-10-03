@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/codeswhat/sockguard/v2/app/internal/apipath"
 	"github.com/codeswhat/sockguard/v2/app/internal/config"
 )
 
@@ -164,6 +166,15 @@ func TestFormBodyGuardRefusesWithoutCallingNext(t *testing.T) {
 // It asks net/http itself rather than restating its rules, so the guard is
 // held to whatever the parser in this toolchain actually does.
 func netHTTPReadsParametersFromBody(method string, contentTypes []string) bool {
+	formEncoded, multipartForm := netHTTPBodyParseKinds(method, contentTypes)
+	return formEncoded || multipartForm
+}
+
+// netHTTPBodyParseKinds splits netHTTPReadsParametersFromBody by which parser
+// read the parameter, because the guard treats the two differently: a
+// form-encoded body is refused on every path, a multipart one only outside
+// /libpod/.
+func netHTTPBodyParseKinds(method string, contentTypes []string) (formEncoded, multipartForm bool) {
 	newRequest := func(body string) *http.Request {
 		return &http.Request{
 			Method:        method,
@@ -174,38 +185,63 @@ func netHTTPReadsParametersFromBody(method string, contentTypes []string) bool {
 		}
 	}
 
-	formEncoded := newRequest(formBodyProbeField + "=1")
-	_ = formEncoded.ParseForm()
-	if formEncoded.Form.Has(formBodyProbeField) {
-		return true
+	urlencoded := newRequest(formBodyProbeField + "=1")
+	_ = urlencoded.ParseForm()
+	if urlencoded.Form.Has(formBodyProbeField) {
+		formEncoded = true
 	}
 
 	if len(contentTypes) == 0 {
-		return false
+		return formEncoded, false
 	}
 	// A multipart body only parses against the boundary its own Content-Type
 	// declares, so build the body around whatever net/http reads out of it.
 	_, params, err := mime.ParseMediaType(contentTypes[0])
 	if err != nil || params["boundary"] == "" {
-		return false
+		return formEncoded, false
 	}
 	boundary := params["boundary"]
-	multipartForm := newRequest("--" + boundary + "\r\n" +
+	multipartRequest := newRequest("--" + boundary + "\r\n" +
 		"Content-Disposition: form-data; name=\"" + formBodyProbeField + "\"\r\n\r\n" +
 		"1\r\n--" + boundary + "--\r\n")
-	return multipartForm.FormValue(formBodyProbeField) != ""
+	return formEncoded, multipartRequest.FormValue(formBodyProbeField) != ""
 }
 
 // formBodyGuardCoversNetHTTP checks the one property the guard exists for:
 // whenever net/http would read a parameter out of the body, the guard refuses
 // the request. It returns a description of the gap, or "".
 func formBodyGuardCoversNetHTTP(contentTypes []string) string {
+	return formBodyGuardCoversNetHTTPAt("/build", 14, contentTypes)
+}
+
+// formBodyGuardCoversNetHTTPAt is the same property for a request at path
+// carrying contentLength. The guard leaves two things alone on purpose, and
+// the property says so in the same terms:
+//
+//   - a request with ContentLength == 0 has no body for net/http to parse, so
+//     it must not be refused. Any other length, including -1 for a chunked
+//     body, is a body that is present.
+//   - a multipart body under /libpod/ is an upload format there. A
+//     form-encoded body is refused on every path.
+func formBodyGuardCoversNetHTTPAt(path string, contentLength int64, contentTypes []string) string {
+	libpod := apipath.IsLibpodPath(apipath.NormalizePath(path))
+	label := path + " length " + strconv.FormatInt(contentLength, 10) + " Content-Type " + strings.Join(contentTypes, " | ")
+
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodGet, http.MethodDelete} {
-		if !netHTTPReadsParametersFromBody(method, contentTypes) {
+		req := newFormBodyGuardRequest(method, "/build", contentTypes, contentLength)
+		req.URL.Path = path
+		refusal := formBodyRefusal(req)
+
+		if contentLength == 0 {
+			if refusal != "" {
+				return method + " " + label + ": the guard refuses a request with no body"
+			}
 			continue
 		}
-		if formBodyRefusal(newFormBodyGuardRequest(method, "/build", contentTypes, 14)) == "" {
-			return method + " with Content-Type " + strings.Join(contentTypes, " | ") + ": net/http reads parameters from the body and the guard lets it through"
+
+		formEncoded, multipartForm := netHTTPBodyParseKinds(method, contentTypes)
+		if (formEncoded || (multipartForm && !libpod)) && refusal == "" {
+			return method + " " + label + ": net/http reads parameters from the body and the guard lets it through"
 		}
 	}
 	return ""
@@ -275,17 +311,58 @@ func TestFormBodyGuardCoversNetHTTP(t *testing.T) {
 	}
 }
 
-// FuzzFormBodyGuardCoversNetHTTP searches for a Content-Type that net/http
-// parses a body's parameters under and the guard does not refuse.
+// formBodyGuardPathSeeds cover the axes the Content-Type seeds leave fixed:
+// the path (a Docker route, a version prefix, the /libpod/ namespace and the
+// spellings that normalize into or out of it) and the content length (none,
+// present, chunked).
+var formBodyGuardPathSeeds = []struct {
+	path          string
+	contentLength int64
+}{
+	{"/build", 14},
+	{"/build", 1},
+	{"/build", 0},
+	{"/build", -1},
+	{"/v1.54/images/create", 14},
+	{"/libpod/build", 14},
+	{"/libpod/build", 0},
+	{"/libpod/build", -1},
+	{"/v5.0.0/libpod/manifests/x/add", 14},
+	{"/libpod/../build", 14},
+	{"/libpod", 14},
+	{"//libpod//build", 14},
+	{"", 14},
+}
+
+// FuzzFormBodyGuardCoversNetHTTP searches for a request path, content length
+// and Content-Type that net/http parses a body's parameters under and the
+// guard does not refuse, or a body-less request the guard refuses anyway.
 func FuzzFormBodyGuardCoversNetHTTP(f *testing.F) {
 	for _, seed := range formBodyGuardDifferentialSeeds {
-		f.Add(seed[0], seed[1])
+		f.Add(seed[0], seed[1], "/build", int64(14))
 	}
-	f.Fuzz(func(t *testing.T, first, second string) {
-		if gap := formBodyGuardCoversNetHTTP(formBodyGuardDifferentialLines(first, second)); gap != "" {
+	for _, seed := range formBodyGuardPathSeeds {
+		f.Add("application/x-www-form-urlencoded", "", seed.path, seed.contentLength)
+		f.Add("multipart/form-data; boundary=sockguard", "", seed.path, seed.contentLength)
+	}
+	f.Fuzz(func(t *testing.T, first, second, path string, contentLength int64) {
+		contentTypes := formBodyGuardDifferentialLines(first, second)
+		if gap := formBodyGuardCoversNetHTTPAt(path, contentLength, contentTypes); gap != "" {
 			t.Fatal(gap)
 		}
 	})
+}
+
+// TestFormBodyGuardCoversNetHTTPPathAndLength runs the fuzz property over the
+// path and length seeds for both body kinds on every ordinary run.
+func TestFormBodyGuardCoversNetHTTPPathAndLength(t *testing.T) {
+	for _, contentType := range []string{"application/x-www-form-urlencoded", "multipart/form-data; boundary=sockguard", "application/json"} {
+		for _, seed := range formBodyGuardPathSeeds {
+			if gap := formBodyGuardCoversNetHTTPAt(seed.path, seed.contentLength, []string{contentType}); gap != "" {
+				t.Error(gap)
+			}
+		}
+	}
 }
 
 // TestFormBodyGuardLeavesTheAdminEndpointAlone covers the documented CI gate,

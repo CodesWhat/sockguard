@@ -283,6 +283,18 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
+    version: "v2.2.3",
+    title: "Security Patch: Owner Isolation Image Names and Filter Gaps",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Under owner isolation, the image names that commit, build, import, pull and load assign are now checked, so a client can no longer take a name away from another owner's image; an untagged pull (docker pull -a) is refused",
+      "fromImage beside fromSrc on POST /images/create no longer skips the registry allowlist, and GET /distribution/{name}/json now follows it",
+      "Podman's compat POST /build gets the same host-mount and remote-context controls as /libpod/build, and a Podman build can no longer shed the owner label",
+      "A spooled request body is removed from disk when a later layer denies the request",
+    ],
+  },
+  {
     version: "v2.3.0",
     title: "BuildKit RUN-Instruction Coverage",
     emoji: "🧩",

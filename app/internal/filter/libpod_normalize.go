@@ -100,7 +100,7 @@ func isLibpodLocalBuildPath(normalizedPath string) bool {
 
 // isLibpodBuildPath matches both of Podman's native build endpoints. They
 // differ only in where the build context comes from, and exactly one of them
-// puts it in the request body, which is why inspectLibpodBuildControls gates
+// puts it in the request body, which is why inspectPodmanBuildControls gates
 // both while only /libpod/build can be inspected — see isLibpodLocalBuildPath.
 func isLibpodBuildPath(normalizedPath string) bool {
 	return normalizedPath == libpodPathPrefix+"build" || isLibpodLocalBuildPath(normalizedPath)
