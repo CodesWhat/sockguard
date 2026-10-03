@@ -216,6 +216,20 @@ func TestServeChainLibpodContainerRemoveAppliesTheRemoveGates(t *testing.T) {
 			wantReason: "container remove denied: anonymous volume removal is not allowed",
 		},
 		{name: "depend", target: "/v5.0.0/libpod/containers/app?depend=true", wantStatus: http.StatusForbidden, wantReason: "container remove denied: removing dependent containers can delete anonymous volumes and is not allowed"},
+		{
+			// podman-remote rm --all always sends depend=true.
+			name:       "podman-remote rm --all shape",
+			target:     "/v5.8.6/libpod/containers/app?depend=true&force=false&ignore=false&volumes=false",
+			wantStatus: http.StatusForbidden,
+			wantReason: "container remove denied: removing dependent containers can delete anonymous volumes and is not allowed",
+		},
+		{
+			// podman-remote's cleanup after run --rm asks for the volumes too.
+			name:       "podman-remote run --rm cleanup shape",
+			target:     "/v5.8.6/libpod/containers/app?force=false&volumes=true",
+			wantStatus: http.StatusForbidden,
+			wantReason: "container remove denied: anonymous volume removal is not allowed",
+		},
 		{name: "depend with only force allowed", gates: gates{force: true}, target: "/v5.0.0/libpod/containers/app?force=true&depend=true", wantStatus: http.StatusForbidden, wantReason: "container remove denied: removing dependent containers can delete anonymous volumes and is not allowed"},
 		{
 			name:         "force with only force allowed",

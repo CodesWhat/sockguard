@@ -77,8 +77,9 @@ var compatContainerRemoveFlags = [...]containerRemoveFlag{
 //     whatever `volumes` says (libpod/runtime_ctr.go:837,
 //     libpod/runtime_pod_common.go:256). Which container a request names can't
 //     be told from the request, so `depend` waits for allow_remove_volumes.
-//     It never stops a running container: the dependents are removed with the
-//     request's own `force`.
+//     It never stops a running workload container: the dependents are removed
+//     with the request's own `force`. A pod's infra container can be stopped,
+//     but only once every workload container in the pod is already stopped.
 //
 // `timeout` only applies to a forced stop and `ignore` only hides a missing
 // container, so neither is read. `link` is decoded and ignored here.
