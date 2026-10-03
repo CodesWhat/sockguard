@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -17,30 +16,25 @@ import (
 )
 
 // podmanSchemaBool is the value gorilla/schema leaves in a bool field tagged
-// name, visiting spellings in the order podmanSchemaKeys gives. Each spelling
-// contributes its last value, an empty one leaves the field as it was, and
-// the converter accepts "on" plus whatever strconv.ParseBool does. Anything
-// else is a ConversionError, which Podman's handlers answer with 400; ok is
-// false then. Read from gorilla/schema v1.4.1 (decoder.go, converter.go).
+// name on Podman's compat routes, visiting spellings in the order
+// podmanSchemaKeys gives. NewCompatAPIDecoder registers a converter that
+// copies dockerd's httputils.BoolValue, so the last value under each spelling
+// is false only for "", "0", "no", "false" and "none" (trimmed, any case) and
+// true for everything else. An empty value therefore sets false rather than
+// leaving the field alone, and nothing is a conversion error, so ok is always
+// true. Read from Podman 5.8.6 pkg/api/handlers/decoder.go.
 func podmanSchemaBool(query url.Values, name string) (value, ok bool) {
 	for _, key := range podmanSchemaKeys(query, name) {
 		values := query[key]
 		if len(values) == 0 {
 			continue
 		}
-		last := values[len(values)-1]
-		switch last {
-		case "":
-			continue
-		case "on":
+		switch strings.ToLower(strings.TrimSpace(values[len(values)-1])) {
+		case "", "0", "no", "false", "none":
+			value = false
+		default:
 			value = true
-			continue
 		}
-		parsed, err := strconv.ParseBool(last)
-		if err != nil {
-			return false, false
-		}
-		value = parsed
 	}
 	return value, true
 }

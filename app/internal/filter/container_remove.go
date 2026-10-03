@@ -83,9 +83,9 @@ func isContainerRemovePath(normalizedPath string) bool {
 
 // dockerBoolQueryValue mirrors Moby's httputils.BoolValue. Docker treats only
 // the five normalized values below as false and treats every other value as
-// true. Podman's bool converter reads "on" and strconv.ParseBool's spellings
-// and answers anything else with a 400, so a value this calls false is either
-// false to Podman too or refused by it before anything is removed.
+// true. Podman's compat routes decode with NewCompatAPIDecoder, which registers
+// a converter that copies this same function, so they agree on the spellings:
+// no 400 on "no", "none" or "yes", and an empty value sets false.
 func dockerBoolQueryValue(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "", "0", "no", "false", "none":
