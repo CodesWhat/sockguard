@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"os"
 	"path"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -489,8 +488,10 @@ func closeSpooledRequestBody(logger *slog.Logger, r *http.Request) func() {
 func buildInstructionFiles(normalizedPath, value string) ([]string, string) {
 	libpod := isLibpodBuildPath(normalizedPath)
 	var files []string
+	seen := make(map[string]struct{})
 	add := func(name string) {
-		if !slices.Contains(files, name) {
+		if _, ok := seen[name]; !ok {
+			seen[name] = struct{}{}
 			files = append(files, name)
 		}
 	}
@@ -597,6 +598,13 @@ func (io_ ioDeps) inspectBuildContext(file *os.File, contentType string, files [
 	raw, err := io_.ReadAllLimited(file, maxBuildDockerfileBytes+1)
 	if err != nil {
 		return "", fmt.Errorf("read raw Dockerfile: %w", err)
+	}
+	// The engines decompress bzip2, xz and zstd as well as gzip before they
+	// look for a tar, and BuildKit builds a decompressed body that isn't one as
+	// the Dockerfile. Sockguard only decodes gzip, so a compressed body that
+	// didn't open as a tar above can't be inspected.
+	if hasBuildContextCompressionMagic(raw) {
+		return uninspectableBuildFilesReason(files), nil
 	}
 	if len(raw) > maxBuildDockerfileBytes {
 		return "", fmt.Errorf("%w: %d bytes", errBuildDockerfileTooLarge, maxBuildDockerfileBytes)
@@ -868,6 +876,23 @@ func uninspectableBuildFilesReason(files []string) string {
 		quoted[i] = strconv.Quote(file)
 	}
 	return "build denied: unable to inspect Dockerfile " + strings.Join(quoted, " or ")
+}
+
+// hasBuildContextCompressionMagic reports whether raw opens with a compression
+// format the engines' archive readers detect (moby and containers/storage
+// DetectCompression).
+func hasBuildContextCompressionMagic(raw []byte) bool {
+	for _, magic := range [][]byte{
+		{0x1F, 0x8B, 0x08},                   // gzip
+		{0x42, 0x5A, 0x68},                   // bzip2
+		{0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00}, // xz
+		{0x28, 0xB5, 0x2F, 0xFD},             // zstd
+	} {
+		if bytes.HasPrefix(raw, magic) {
+			return true
+		}
+	}
+	return false
 }
 
 func looksLikeDockerfile(raw []byte, contentType string) bool {

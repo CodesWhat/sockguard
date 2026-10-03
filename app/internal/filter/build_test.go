@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -1104,6 +1105,47 @@ func TestInspectBuildContextAcceptsExactLimit(t *testing.T) {
 	}
 	if reason != "" {
 		t.Fatalf("reason = %q, want none — Dockerfile at exact limit must be accepted", reason)
+	}
+}
+
+func TestBuildPolicyInspectRefusesCompressedBodyThatIsNotAGzipTar(t *testing.T) {
+	var gzipped bytes.Buffer
+	gzw := gzip.NewWriter(&gzipped)
+	if _, err := gzw.Write([]byte("FROM busybox\nRUN id\n")); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := gzw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	tests := []struct {
+		name string
+		body []byte
+	}{
+		// BuildKit decompresses a body that isn't a tar and builds it as the
+		// Dockerfile, so gzip bytes can't be scanned as instructions.
+		{name: "gzipped raw Dockerfile", body: gzipped.Bytes()},
+		{name: "bzip2", body: append([]byte("BZh91AY&SY"), bytes.Repeat([]byte{0x01}, 64)...)},
+		{name: "xz", body: append([]byte{0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00}, bytes.Repeat([]byte{0x01}, 64)...)},
+		{name: "zstd", body: append([]byte{0x28, 0xB5, 0x2F, 0xFD}, bytes.Repeat([]byte{0x01}, 64)...)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			file, err := os.CreateTemp(t.TempDir(), "build-context-*")
+			if err != nil {
+				t.Fatalf("CreateTemp: %v", err)
+			}
+			t.Cleanup(func() { _ = file.Close() })
+			if _, err := file.Write(tt.body); err != nil {
+				t.Fatalf("Write: %v", err)
+			}
+			reason, err := defaultIODeps().inspectBuildContext(file, "text/plain", []string{"Dockerfile"})
+			if err != nil {
+				t.Fatalf("inspectBuildContext: %v", err)
+			}
+			if want := `build denied: unable to inspect Dockerfile "Dockerfile"`; reason != want {
+				t.Fatalf("reason = %q, want %q", reason, want)
+			}
+		})
 	}
 }
 
