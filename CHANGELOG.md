@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0-rc.2] - 2026-10-02
+
 ### Changed
 
 - **Building from source now needs Go 1.27.** `go.mod`'s `go` line moves from 1.26.0 to 1.27.0 because `sigstore/sigstore` v1.10.10 requires it, and the toolchain line moves to go1.27.1. Release binaries and images have been built with Go 1.27 since 2.2.1, so this only affects people who compile sockguard themselves. `scripts/local-fuzz.sh --docker` defaults to `golang:1.27.1`, because the old `golang:1.26.2` image can no longer build the module.
