@@ -259,6 +259,7 @@ func TestServeChainBuildInspectsTheFilesTheEngineBuilds(t *testing.T) {
 		target     string
 		context    []byte
 		wantStatus int
+		wantReason string
 		wantBuilds [][]string
 	}{
 		{
@@ -267,6 +268,7 @@ func TestServeChainBuildInspectsTheFilesTheEngineBuilds(t *testing.T) {
 			target:     "/v5.0.0/libpod/build",
 			context:    containerfileRuns,
 			wantStatus: http.StatusForbidden,
+			wantReason: `RUN instructions are not allowed in "Containerfile"`,
 		},
 		{
 			// Podman 5.8.6 answers this path with 404, so nothing could be
@@ -276,6 +278,7 @@ func TestServeChainBuildInspectsTheFilesTheEngineBuilds(t *testing.T) {
 			target:     "/libpod/build",
 			context:    containerfileRuns,
 			wantStatus: http.StatusForbidden,
+			wantReason: `RUN instructions are not allowed in "Containerfile"`,
 		},
 		{
 			name:       "versioned libpod build with only a Containerfile",
@@ -299,6 +302,7 @@ func TestServeChainBuildInspectsTheFilesTheEngineBuilds(t *testing.T) {
 			target:     "/v5.0.0/libpod/build",
 			context:    buildInstructionsChainContext(t, file("Dockerfile", harmless), link("here", "."), file("here/Containerfile", runs)),
 			wantStatus: http.StatusForbidden,
+			wantReason: `tar entry "here/Containerfile" is written through a symlink`,
 		},
 		{
 			// The compat route never looks for a Containerfile.
@@ -328,18 +332,21 @@ func TestServeChainBuildInspectsTheFilesTheEngineBuilds(t *testing.T) {
 			target:     "/v1.45/build",
 			context:    buildInstructionsChainContext(t, file("dockerfile", runs)),
 			wantStatus: http.StatusForbidden,
+			wantReason: `RUN instructions are not allowed in "dockerfile"`,
 		},
 		{
 			name:       "compat build on dockerd whose Dockerfile is replaced by a symlink",
 			target:     "/v1.45/build",
 			context:    buildInstructionsChainContext(t, file("Dockerfile", harmless), file("steps", runs), link("Dockerfile", "steps")),
 			wantStatus: http.StatusForbidden,
+			wantReason: `unable to inspect Dockerfile "Dockerfile"`,
 		},
 		{
 			name:       "compat build on dockerd with a Dockerfile written through a symlinked directory",
 			target:     "/v1.45/build",
 			context:    buildInstructionsChainContext(t, file("Dockerfile", harmless), link("here", "."), file("here/Dockerfile", runs)),
 			wantStatus: http.StatusForbidden,
+			wantReason: `tar entry "here/Dockerfile" is written through a symlink`,
 		},
 		{
 			// podman-remote build -f Containerfile.a -f Containerfile.b
@@ -356,6 +363,7 @@ func TestServeChainBuildInspectsTheFilesTheEngineBuilds(t *testing.T) {
 			target:     "/v5.0.0/libpod/build?dockerfile=%5B%22Containerfile.a%22%2C%22Containerfile.b%22%5D",
 			context:    buildInstructionsChainContext(t, file("Containerfile.a", harmless), file("Containerfile.b", "RUN id\n")),
 			wantStatus: http.StatusForbidden,
+			wantReason: `RUN instructions are not allowed in "Containerfile.b"`,
 		},
 		{
 			// The old inspector let an empty body through without reading
@@ -364,6 +372,7 @@ func TestServeChainBuildInspectsTheFilesTheEngineBuilds(t *testing.T) {
 			podman:     true,
 			target:     "/v5.0.0/libpod/build?dockerfile=https%3A%2F%2Fexample.com%2FContainerfile",
 			wantStatus: http.StatusForbidden,
+			wantReason: `remote Dockerfile "https://example.com/Containerfile" cannot be inspected`,
 		},
 		{
 			name:       "remote Containerfile next to a decoy on Podman",
@@ -371,6 +380,7 @@ func TestServeChainBuildInspectsTheFilesTheEngineBuilds(t *testing.T) {
 			target:     "/v5.0.0/libpod/build?dockerfile=https%3A%2F%2Fexample.com%2FContainerfile",
 			context:    buildInstructionsChainContext(t, file("https:/example.com/Containerfile", harmless)),
 			wantStatus: http.StatusForbidden,
+			wantReason: `remote Dockerfile "https://example.com/Containerfile" cannot be inspected`,
 		},
 		{
 			name:       "daemon-host Containerfile next to a decoy on Podman",
@@ -378,6 +388,7 @@ func TestServeChainBuildInspectsTheFilesTheEngineBuilds(t *testing.T) {
 			target:     "/v5.0.0/libpod/build?dockerfile=%2Fsrv%2Fapp%2FContainerfile",
 			context:    buildInstructionsChainContext(t, file("srv/app/Containerfile", harmless)),
 			wantStatus: http.StatusForbidden,
+			wantReason: `Dockerfile "/srv/app/Containerfile" is an absolute path`,
 		},
 		{
 			name:       "JSON array on the compat route on Podman",
@@ -385,6 +396,7 @@ func TestServeChainBuildInspectsTheFilesTheEngineBuilds(t *testing.T) {
 			target:     "/v1.41/build?dockerfile=%5B%22build%2FContainerfile%22%5D",
 			context:    buildInstructionsChainContext(t, file("build/Containerfile", runs), file("Dockerfile", harmless)),
 			wantStatus: http.StatusForbidden,
+			wantReason: `RUN instructions are not allowed in "build/Containerfile"`,
 		},
 		{
 			name:       "named file in the context on Podman",
@@ -399,6 +411,7 @@ func TestServeChainBuildInspectsTheFilesTheEngineBuilds(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			daemon := &buildInstructionsChainDaemon{podman: tt.podman}
 			addr := newEngineChain(t, "build-files", daemon, func(cfg *config.Config) {
+				cfg.Response.DenyVerbosity = "verbose"
 				cfg.Rules = []config.RuleConfig{
 					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/build"}, Action: "allow"},
 					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/build"}, Action: "allow"},
@@ -412,6 +425,17 @@ func TestServeChainBuildInspectsTheFilesTheEngineBuilds(t *testing.T) {
 			}
 			if status != tt.wantStatus {
 				t.Errorf("status = %d, want %d; body: %s", status, tt.wantStatus, body)
+			}
+			if tt.wantStatus == http.StatusForbidden && tt.wantReason == "" {
+				t.Fatal("a denied case must name the reason it is denied for")
+			}
+			if tt.wantReason != "" {
+				var denial struct {
+					Reason string `json:"reason"`
+				}
+				if err := json.Unmarshal(body, &denial); err != nil || !strings.Contains(denial.Reason, tt.wantReason) {
+					t.Errorf("body = %s, want reason containing %q", body, tt.wantReason)
+				}
 			}
 		})
 	}

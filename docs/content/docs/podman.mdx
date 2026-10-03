@@ -102,9 +102,13 @@ restricted, a `dockerfile` value Podman would read from outside the uploaded
 context is refused: an `http://` or `https://` URL, an absolute path (Podman
 reads it from the daemon host when the host has that file), a path that climbs
 out with `../`, and a name ending in `.in`, which Podman runs through the C
-preprocessor before parsing it. podman-remote sends an absolute path for a
-Containerfile outside the build context, so keep the Containerfile inside the
-context when `RUN` is restricted.
+preprocessor before parsing it. podman-remote sends an absolute path in three
+cases, and each is refused while `RUN` is restricted: a Containerfile outside
+the build context, `-f -` (it writes stdin to a temporary file outside the
+context), and a context reached through a symlink, such as a project under
+`/tmp` or `/var/folders` on macOS. Keep the Containerfile inside the context,
+write a stdin Containerfile into the context first, and build from the resolved
+directory (`podman --remote build "$(pwd -P)"`).
 
 Podman serves the Docker-compatible `POST /build` and native `POST /libpod/build`
 from one handler, so the compat path honors every one of those controls too.
