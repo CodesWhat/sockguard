@@ -246,10 +246,16 @@ same way they cover Docker-compat:
   are, and the others only while the check that reads them is enabled. This
   holds on every upstream flavor and covers the secret `driver`, container remove `force`, `v` and
   `link` (`force`, `volumes`, `v` and `depend` on the libpod route), the build controls, image create `fromImage` and `fromSrc`, libpod
-  pull `reference`, archive `path` and `rename`, and commit `container`.
+  pull `reference`, archive `path` and `rename`, commit `container`, and,
+  under owner isolation, secret create `replace`, `ignore` and `name`.
 - `POST /libpod/secrets/create` has no JSON body at all (`driver`/`labels`
   are query parameters), so it reuses the existing query-param stamping
-  path unchanged.
+  path. Under owner isolation, a create with `replace` or `ignore` set is
+  also checked against the secret it names. `replace` deletes an existing
+  secret and stores the request's data under its name, and `ignore` hands
+  back the existing secret's ID, so the named secret has to be absent or
+  the caller's own. Another owner's secret, or an unlabeled one, is a
+  `403`. See [Security](/security) for the details.
 - Pods have no Docker-compat equivalent, so they get a dedicated
   `KindLibpodPod` resource kind with its own list/inspect owner-filtering
   and visibility coverage.
