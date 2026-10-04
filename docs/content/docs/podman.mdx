@@ -519,8 +519,8 @@ same way they cover Docker-compat:
   refusals in enforce, warn, and audit modes because forwarding cannot produce
   a scoped response. With neither isolation policy configured, the reads pass
   through unchanged.
-- `POST /libpod/pods/prune` is refused under owner isolation, and it is the
-  one write in that position. `PodPruneHelper` at Podman v5.8.1 calls
+- `POST /libpod/pods/prune` is refused under owner isolation, one of two
+  writes in that position (kube down, below, is the other). `PodPruneHelper` at Podman v5.8.1 calls
   `runtime.PrunePods(r.Context())` with no options and turns the result into a
   report, so the endpoint documents no parameters, names no resource, and
   reports what it removed only after removing it. Forwarding it under owner

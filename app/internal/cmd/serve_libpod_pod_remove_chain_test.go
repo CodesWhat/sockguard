@@ -133,9 +133,10 @@ func sendLibpodPodRemoveChainRequest(t *testing.T, target, body string) (int, []
 // Neither route was inspected, so a rule that allowed them reached the daemon
 // with allow_force and allow_remove_volumes off. Without `force`, a pod
 // removal refuses a running or paused workload container
-// (libpod/runtime_ctr.go:860-864, container_internal.go:2632) but still
-// removes every stopped one and then deletes the anonymous volumes of all of
-// them, with no flag to keep them (libpod/runtime_pod_common.go:256-273). So
+// (libpod/runtime_ctr.go:860-864, container_internal.go:2632) and returns
+// before the volume step, but a pod whose workloads are all stopped is
+// removed along with the anonymous volumes of every container in it, with no
+// flag to keep them (libpod/runtime_pod_common.go:256-273). So
 // every pod removal needs allow_remove_volumes, and `force`, which stops the
 // running ones first, needs allow_force too. Kube down stops every pod its
 // YAML names and force-removes them whatever its query says
