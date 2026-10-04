@@ -266,7 +266,11 @@ prune family (`POST /containers/prune`, `/images/prune`, `/networks/prune`,
 parameter, so the owner selector is injected into it and a prune removes only
 the caller's resources. `POST /libpod/pods/prune` accepts no filters at all and
 names no pod, so it is refused with a `403` rather than forwarded, audited as
-`owner_libpod_pod_prune_unscopeable` and independent of rollout mode.
+`owner_libpod_pod_prune_unscopeable` and independent of rollout mode. Kube down
+(`DELETE /libpod/play/kube` and `DELETE /libpod/kube/play`) is refused the same
+way, audited as `owner_libpod_kube_down_unscopeable`: it names the pods, secrets
+and volumes it removes in a YAML body sockguard doesn't parse, so there's no
+owner to check.
 `POST /commit` and `POST /libpod/commit` name their container in the `container`
 query parameter: that container is authorized on the terms above, and the owner
 label is stamped into the commit body's config so the new image is owned rather

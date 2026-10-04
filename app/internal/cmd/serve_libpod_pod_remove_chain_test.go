@@ -267,6 +267,25 @@ func TestServeChainLibpodPodRemoveAppliesTheRemoveGates(t *testing.T) {
 			wantTeardowns: []libpodPodTeardown{{route: "/libpod/kube/play", force: true, body: libpodKubeDownChainYAML}},
 		},
 		{name: "kube down under the default rules", rules: config.Defaults().Rules, gates: gates{force: true, volumes: true}, target: "/v5.8.6/libpod/play/kube?force=false", wantStatus: http.StatusForbidden, wantReason: "no matching allow rule"},
+		{
+			// The YAML names its pods, secrets and volumes in a body owner
+			// isolation doesn't parse, so there's nothing to check an owner
+			// against and the teardown is refused.
+			name:       "kube down under owner isolation",
+			owner:      "team-a",
+			gates:      gates{force: true, volumes: true},
+			target:     "/v5.8.6/libpod/play/kube?force=false",
+			wantStatus: http.StatusForbidden,
+			wantReason: "libpod kube down denied: DELETE /libpod/play/kube and /libpod/kube/play remove the pods, secrets and volumes named in a YAML body",
+		},
+		{
+			name:       "kube down alias under owner isolation",
+			owner:      "team-a",
+			gates:      gates{force: true, volumes: true},
+			target:     "/v5.8.6/libpod/kube/play?force=true",
+			wantStatus: http.StatusForbidden,
+			wantReason: "libpod kube down denied: DELETE /libpod/play/kube and /libpod/kube/play remove the pods, secrets and volumes named in a YAML body",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

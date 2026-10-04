@@ -265,9 +265,10 @@ func middlewareWithDeps(
 			// Refuse the libpod writes owner isolation cannot scope, for the
 			// reason filter.LibpodPodPruneDenyReason gives: the endpoint
 			// takes no filters and names no resource, so forwarding it
-			// deletes other owners' resources. Like the read refusals above
-			// it is unconditional — a warn-mode measurement is worth nothing
-			// once the pods are gone.
+			// deletes other owners' resources. Kube down is here too: it
+			// names what it removes in a YAML body nothing parses. Like the
+			// read refusals above it is unconditional — a warn-mode
+			// measurement is worth nothing once the pods are gone.
 			if write, ok := filter.LookupLibpodUnscopeableWrite(r.Method, normPath); ok {
 				denyUnscopeableLibpodWrite(w, r, write)
 				return
