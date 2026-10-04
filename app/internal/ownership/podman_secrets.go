@@ -77,7 +77,9 @@ func mutateLibpodSecretCreateOwnershipRequest(r *http.Request, opts Options) (*o
 // So when either flag may be set, the named secret has to be absent or the
 // caller's own. Store matches the name against every secret's exact name and
 // exact ID, and the inspect owner isolation makes resolves exact matches the
-// same way first, so it answers for the secret Store would act on.
+// same way first, so it answers for the secret Store would act on. The
+// inspect then falls back to a unique ID prefix, which Store doesn't, so a
+// name that is only a prefix of another owner's ID is refused as well.
 //
 // The libpod handler decodes the flags with gorilla/schema's own bool
 // converter: "on" and whatever strconv.ParseBool reads as true are true, an
