@@ -222,3 +222,20 @@ func isLibpodContainerUpdatePath(normalizedPath string) bool {
 func isLibpodContainerRemovePath(normalizedPath string) bool {
 	return strings.HasPrefix(normalizedPath, libpodPathPrefix+"containers/") && len(normalizedPath) > len(libpodPathPrefix+"containers/")
 }
+
+// isLibpodPodRemovePath matches DELETE /libpod/pods/{name}, registered on
+// libpod.PodDelete in Podman 5.8.6 (pkg/api/server/register_pods.go:106).
+// Like isLibpodContainerRemovePath it matches any longer path too, for the
+// same reason: it is the only DELETE under /libpod/pods/, and a name
+// sockguard sees decoded into two segments is one {name} to the daemon.
+func isLibpodPodRemovePath(normalizedPath string) bool {
+	return strings.HasPrefix(normalizedPath, libpodPathPrefix+"pods/") && len(normalizedPath) > len(libpodPathPrefix+"pods/")
+}
+
+// isLibpodKubeDownPath matches kube down, DELETE /libpod/play/kube and
+// DELETE /libpod/kube/play. Podman 5.8.6 registers the two spellings on the
+// same teardown (pkg/api/server/register_kube.go:180-181), the way it does
+// for kube play.
+func isLibpodKubeDownPath(normalizedPath string) bool {
+	return normalizedPath == libpodPathPrefix+"play/kube" || normalizedPath == libpodPathPrefix+"kube/play"
+}
