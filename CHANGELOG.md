@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0-rc.3] - 2026-10-04
+
+### Security
+
+- **Every 2.2.4 fix is now on the v2.3 line.** rc.2 was cut before 2.2.4 shipped, and this candidate merges that release in. The Podman build `RUN` inspection fixes, the refusal of an ambiguous policy query parameter, the remove gates on libpod containers, pods and kube down, the owner checks on kube down and on the secret a libpod secret create replaces, and the libpod secret `driveropts` gate all apply here, along with the `warn` and `audit` body forwarding fix and the podman-remote fixes. The 2.2.4 entry below describes each one.
+
+- **On a Podman upstream, a repeated `Driver` key ending in `null` got a custom secret driver past `allow_custom_drivers: false`.** rc.1 and rc.2 read `Driver` on `POST /secrets/create` the way dockerd does, where a later `"Driver": null` clears the driver an earlier `Driver` object named. Podman keeps the earlier name, so `{"Driver":{"Name":"pass"},"Driver":null}` passed the check and reached Podman naming the `pass` driver. `Driver` is now read the way 2.2.4 reads it, the earlier name stays, and the request is refused. Only rc.1 and rc.2 were affected, no stable release was.
+
+### Changed
+
+- **`POST /secrets/create` and `POST /configs/create` refuse a `Driver` sent as a string, and `Driver.Options` needs `allow_custom_drivers`.** rc.1 and rc.2 took a string `Driver` as a driver name and didn't read `Driver.Options`. Neither engine accepts a string there, so it's now refused as uninspectable with the flag on or off, and options are refused without the flag. Both match 2.2.4.
+
 ## [2.3.0-rc.2] - 2026-10-02
 
 ### Changed
