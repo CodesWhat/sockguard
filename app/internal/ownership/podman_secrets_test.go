@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -205,5 +206,91 @@ func TestPodmanCompatSecretRefusalIsScopedToTheListPath(t *testing.T) {
 
 	if !reached || rec.Code != http.StatusOK {
 		t.Fatalf("reached = %v status = %d, want true and 200; body: %s", reached, rec.Code, rec.Body.String())
+	}
+}
+
+// TestLibpodSecretCreateFlagsLookUpTheNamedSecret pins which libpod secret
+// creates look the named secret up and what each lookup answer does.
+// `replace` and `ignore` count as set unless gorilla/schema's bool converter
+// would read them as false, so a value Podman refuses with a 400 ("yes",
+// " true") still costs a lookup rather than a guess. The chain test
+// TestServeChainLibpodSecretCreateReplaceIsOwnerChecked drives the same check
+// against a daemon that stores secrets the way Podman does.
+func TestLibpodSecretCreateFlagsLookUpTheNamedSecret(t *testing.T) {
+	t.Parallel()
+	secrets := map[string]inspectResult{
+		"theirs":   {labels: map[string]string{DefaultLabelKey: "team-b"}, found: true},
+		"mine":     {labels: map[string]string{DefaultLabelKey: "team-a"}, found: true},
+		"unowned":  {labels: map[string]string{}, found: true},
+		" padded":  {labels: map[string]string{DefaultLabelKey: "team-b"}, found: true},
+		"unlookup": {err: fmt.Errorf("upstream returned 500")},
+	}
+	tests := []struct {
+		query      string
+		wantLookup string
+		wantStatus int
+	}{
+		{query: "name=theirs", wantStatus: http.StatusAccepted},
+		{query: "name=theirs&replace=false&ignore=false", wantStatus: http.StatusAccepted},
+		{query: "name=theirs&replace=", wantStatus: http.StatusAccepted},
+		{query: "name=theirs&replace=0", wantStatus: http.StatusAccepted},
+		{query: "name=theirs&replace=f", wantStatus: http.StatusAccepted},
+		{query: "name=theirs&replace=F", wantStatus: http.StatusAccepted},
+		{query: "name=theirs&replace=FALSE", wantStatus: http.StatusAccepted},
+		{query: "name=theirs&replace=False", wantStatus: http.StatusAccepted},
+		{query: "name=theirs&replace=true", wantLookup: "theirs", wantStatus: http.StatusForbidden},
+		{query: "name=theirs&replace=TRUE", wantLookup: "theirs", wantStatus: http.StatusForbidden},
+		{query: "name=theirs&replace=t", wantLookup: "theirs", wantStatus: http.StatusForbidden},
+		{query: "name=theirs&replace=on", wantLookup: "theirs", wantStatus: http.StatusForbidden},
+		{query: "name=theirs&replace=yes", wantLookup: "theirs", wantStatus: http.StatusForbidden},
+		{query: "name=theirs&replace=+true", wantLookup: "theirs", wantStatus: http.StatusForbidden},
+		{query: "name=theirs&ignore=1", wantLookup: "theirs", wantStatus: http.StatusForbidden},
+		{query: "name=theirs&replace=true&ignore=true", wantLookup: "theirs", wantStatus: http.StatusForbidden},
+		{query: "name=unowned&replace=true", wantLookup: "unowned", wantStatus: http.StatusForbidden},
+		{query: "name=%20padded&replace=true", wantLookup: " padded", wantStatus: http.StatusForbidden},
+		{query: "name=mine&replace=true", wantLookup: "mine", wantStatus: http.StatusAccepted},
+		{query: "name=mine&ignore=true", wantLookup: "mine", wantStatus: http.StatusAccepted},
+		{query: "name=fresh&replace=true", wantLookup: "fresh", wantStatus: http.StatusAccepted},
+		{query: "name=unlookup&replace=true", wantLookup: "unlookup", wantStatus: http.StatusBadGateway},
+		{query: "replace=true", wantStatus: http.StatusAccepted},
+		{query: "name=&replace=true", wantStatus: http.StatusAccepted},
+		{query: "name=..&replace=true", wantStatus: http.StatusForbidden},
+		{query: "name=.&ignore=true", wantStatus: http.StatusForbidden},
+		{query: "name=theirs&replace=true&Name=mine", wantStatus: http.StatusForbidden},
+		{query: "name=theirs&replace=false&Replace=false", wantStatus: http.StatusForbidden},
+		{query: "name=theirs&ignore=false&ignore=false", wantStatus: http.StatusForbidden},
+		{query: "name=theirs&Name=mine", wantStatus: http.StatusAccepted},
+	}
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			t.Parallel()
+			inspector := &recordingInspector{resources: map[string]map[string]inspectResult{string(dockerresource.KindSecret): secrets}}
+			opts := Options{Owner: "team-a", LabelKey: DefaultLabelKey}
+			var forwarded map[string]string
+			handler := middlewareWithDeps(testLogger(), opts, inspector.inspectResource, inspector.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.Unmarshal([]byte(r.URL.Query().Get("labels")), &forwarded); err != nil {
+					t.Errorf("decode forwarded labels: %v", err)
+				}
+				w.WriteHeader(http.StatusAccepted)
+			}))
+
+			req := httptest.NewRequest(http.MethodPost, "/libpod/secrets/create?"+tt.query, strings.NewReader("payload"))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d; body: %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			var want []resourceInspectCall
+			if tt.wantLookup != "" {
+				want = []resourceInspectCall{{kind: dockerresource.KindSecret, id: tt.wantLookup}}
+			}
+			if !slices.Equal(inspector.calls, want) {
+				t.Errorf("inspect calls = %+v, want %+v", inspector.calls, want)
+			}
+			if rec.Code == http.StatusAccepted && forwarded[DefaultLabelKey] != "team-a" {
+				t.Errorf("forwarded labels = %v, want the owner label stamped", forwarded)
+			}
+		})
 	}
 }
