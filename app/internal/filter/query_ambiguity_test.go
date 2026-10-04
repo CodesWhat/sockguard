@@ -53,6 +53,7 @@ func TestPolicyQueryReadsRefuseAmbiguousParameters(t *testing.T) {
 	secret := newLibpodSecretPolicy(SecretOptions{})
 	remove := newContainerRemovePolicy(ContainerRemoveOptions{})
 	removeOpen := newContainerRemovePolicy(ContainerRemoveOptions{AllowForce: true, AllowRemoveVolumes: true, AllowRemoveLinks: true})
+	removeVolumes := newContainerRemovePolicy(ContainerRemoveOptions{AllowRemoveVolumes: true})
 	build := newBuildPolicy(BuildOptions{})
 	buildAck := newBuildPolicy(BuildOptions{AllowBlindWrites: true})
 	pull := newImagePullPolicy(ImagePullOptions{AllowedRegistries: []string{"ghcr.io"}})
@@ -101,6 +102,13 @@ func TestPolicyQueryReadsRefuseAmbiguousParameters(t *testing.T) {
 		{name: "libpod remove force", method: http.MethodDelete, target: "/v5.0.0/libpod/containers/app?force=true", inspect: via(remove.inspect), wantReason: "force removal is not allowed"},
 		{name: "podman-remote rm shape", method: http.MethodDelete, target: "/v5.8.6/libpod/containers/app?depend=false&force=false&ignore=false&volumes=false", inspect: via(remove.inspect)},
 		{name: "repeated libpod volumes with the gates open", method: http.MethodDelete, target: "/v5.0.0/libpod/containers/app?volumes=0&Volumes=1&depend=1", inspect: via(removeOpen.inspect)},
+
+		// DELETE /libpod/pods/{name}, `force`.
+		{name: "pod remove force in another spelling", method: http.MethodDelete, target: "/v5.0.0/libpod/pods/web?Force=1", inspect: via(removeVolumes.inspect), wantReason: "ambiguous force query parameter"},
+		{name: "pod remove force behind a false first value", method: http.MethodDelete, target: "/v5.0.0/libpod/pods/web?force=false&force=true", inspect: via(removeVolumes.inspect), wantReason: "ambiguous force query parameter"},
+		{name: "pod remove force", method: http.MethodDelete, target: "/v5.0.0/libpod/pods/web?force=true", inspect: via(removeVolumes.inspect), wantReason: "force removal is not allowed"},
+		{name: "podman-remote pod rm shape", method: http.MethodDelete, target: "/v5.8.6/libpod/pods/web?force=false", inspect: via(removeVolumes.inspect)},
+		{name: "repeated pod remove force with the gates open", method: http.MethodDelete, target: "/v5.0.0/libpod/pods/web?force=0&Force=1", inspect: via(removeOpen.inspect)},
 
 		// POST /build and POST /libpod/build.
 		{name: "libpod build Dockerfile in another spelling", method: http.MethodPost, target: "/libpod/build?Dockerfile=decoy", body: decoyBuild, inspect: via(build.inspect), wantReason: "ambiguous dockerfile query parameter"},

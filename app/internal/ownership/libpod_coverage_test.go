@@ -998,15 +998,19 @@ func TestLibpodPruneRoutesAreInertWithoutOwner(t *testing.T) {
 // than rebuilt from the stem.
 var wantOwnerUnscopeableWriteReasonCodes = map[string]string{
 	filter.LibpodPodPrunePath: "owner_libpod_pod_prune_unscopeable",
+	"/libpod/play/kube":       "owner_libpod_kube_down_unscopeable",
+	"/libpod/kube/play":       "owner_libpod_kube_down_unscopeable",
 }
 
 // TestLibpodUnscopeableWritesAreRefusedUnderOwnerIsolation covers the one
-// libpod prune route that takes no filters at all. Podman's PodPruneHelper
-// calls runtime.PrunePods with no options, so a forwarded request removes
-// every prunable pod on the host whoever owns it, and there is no argument to
-// narrow it with. The refusal runs in every rollout mode: warn mode exists to
-// let an operator measure what enforcement would cost, and there is no
-// measurement to take once another tenant's pods are gone.
+// libpod prune route that takes no filters at all, and kube down. Podman's
+// PodPruneHelper calls runtime.PrunePods with no options, so a forwarded
+// request removes every prunable pod on the host whoever owns it, and there
+// is no argument to narrow it with. Kube down removes the pods, secrets and
+// volumes named in a YAML body nothing here parses. The refusal runs in every
+// rollout mode: warn mode exists to let an operator measure what enforcement
+// would cost, and there is no measurement to take once another tenant's pods
+// are gone.
 func TestLibpodUnscopeableWritesAreRefusedUnderOwnerIsolation(t *testing.T) {
 	t.Parallel()
 	writes := filter.LibpodUnscopeableWrites()
@@ -1024,7 +1028,7 @@ func TestLibpodUnscopeableWritesAreRefusedUnderOwnerIsolation(t *testing.T) {
 					t.Parallel()
 					handler := middlewareWithDeps(testLogger(), Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(
 						http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-							t.Fatal("refused prune reached the upstream")
+							t.Fatal("refused write reached the upstream")
 						}))
 
 					meta := &logging.RequestMeta{RolloutMode: rolloutMode}

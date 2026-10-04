@@ -24,9 +24,10 @@ import (
 
 // LibpodUnscopeableWrite describes one refused endpoint.
 type LibpodUnscopeableWrite struct {
-	// Method is the single HTTP method Podman routes the endpoint on.
+	// Method is the HTTP method Podman routes the refused operation on.
 	// Matching it exactly matters: refusing another method would answer 403
-	// where the daemon answers 405.
+	// where the daemon answers 405, or refuse a different operation Podman
+	// serves on the same path, as kube play is on the kube down paths.
 	Method string
 	// Path is the normalized request path, i.e. what NormalizePath returns.
 	// It strips the API version prefix but not the /libpod segment, so a
@@ -73,8 +74,28 @@ const LibpodPodPruneDenyReason = "libpod pod prune denied: " +
 	"POST /libpod/pods/prune removes every prunable pod on the host, accepts no filters at all, and reports " +
 	"what it removed only after removing it, so it cannot be scoped to one caller"
 
+// LibpodKubeDownDenyReason is reported when owner isolation refuses kube
+// down, DELETE /libpod/play/kube and its DELETE /libpod/kube/play alias.
+//
+// Podman 5.8.6 serves both from one handler (pkg/api/server/register_kube.go:180-181),
+// whose only query parameter is `force`. What it removes is named in the
+// request body: the pods, secrets and volumes of a Kubernetes YAML
+// (pkg/domain/infra/abi/play.go:1678-1819), which nothing in sockguard
+// parses. So the request takes no `filters`, the URL names no resource to
+// check an owner on, and a client can name another owner's pod, secret or
+// volume in the YAML and have it removed.
+//
+// The refusal is unconditional for the reason the pod prune one is. A caller
+// under owner isolation removes its pods through DELETE /libpod/pods/{name},
+// which names a pod the ownership layer checks.
+const LibpodKubeDownDenyReason = "libpod kube down denied: " +
+	"DELETE /libpod/play/kube and /libpod/kube/play remove the pods, secrets and volumes named in a YAML body " +
+	"that is not parsed, so the request cannot be scoped to one caller"
+
 var libpodUnscopeableWrites = []LibpodUnscopeableWrite{
 	{Method: http.MethodPost, Path: LibpodPodPrunePath, ReasonCodeStem: "pod_prune", Reason: LibpodPodPruneDenyReason},
+	{Method: http.MethodDelete, Path: libpodPathPrefix + "play/kube", ReasonCodeStem: "kube_down", Reason: LibpodKubeDownDenyReason},
+	{Method: http.MethodDelete, Path: libpodPathPrefix + "kube/play", ReasonCodeStem: "kube_down", Reason: LibpodKubeDownDenyReason},
 }
 
 // LookupLibpodUnscopeableWrite reports whether method and normPath name a
@@ -82,7 +103,8 @@ var libpodUnscopeableWrites = []LibpodUnscopeableWrite{
 // method itself rather than trusting the caller to have checked it, because
 // these paths are not GET-family routes an unconditional refusal could be
 // safe on: POST /libpod/pods/prune is a write and GET on the same path is a
-// route Podman does not serve.
+// route Podman does not serve, and POST on the kube down paths is kube play,
+// a different operation.
 func LookupLibpodUnscopeableWrite(method, normPath string) (LibpodUnscopeableWrite, bool) {
 	for _, write := range libpodUnscopeableWrites {
 		if write.Method == method && write.Path == normPath {

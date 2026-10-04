@@ -171,10 +171,139 @@ func TestLibpodContainerRemoveAppliesTheSameGates(t *testing.T) {
 	}
 }
 
+// TestLibpodPodRemoveAppliesTheRemoveGates pins the remove gates on Podman's
+// DELETE /libpod/pods/{name}. Before, the path wasn't inspected at all, so a
+// rule that allowed it force-stopped and removed every container in the pod
+// with allow_force off and deleted their anonymous volumes with
+// allow_remove_volumes off. Removing a pod always deletes its containers'
+// anonymous volumes, with no flag to keep them, so every request on the path
+// needs allow_remove_volumes, and `force` needs allow_force as well. `timeout`
+// isn't gated.
+func TestLibpodPodRemoveAppliesTheRemoveGates(t *testing.T) {
+	const (
+		forceReason   = "libpod pod remove denied: force removal is not allowed"
+		volumesReason = "libpod pod remove denied: removing a pod deletes its containers' anonymous volumes and is not allowed"
+	)
+	tests := []struct {
+		name               string
+		allowForce         bool
+		allowRemoveVolumes bool
+		path               string
+		rawQuery           string
+		wantCode           int
+		wantReason         string
+	}{
+		{name: "bare remove", path: "/v5.0.0/libpod/pods/web", wantCode: http.StatusForbidden, wantReason: volumesReason},
+		{name: "podman-remote pod rm shape", path: "/v5.8.6/libpod/pods/web", rawQuery: "force=false", wantCode: http.StatusForbidden, wantReason: volumesReason},
+		{name: "force", path: "/v5.0.0/libpod/pods/web", rawQuery: "force=true", wantCode: http.StatusForbidden, wantReason: forceReason},
+		{name: "force opt in alone", allowForce: true, path: "/v5.0.0/libpod/pods/web", rawQuery: "force=true", wantCode: http.StatusForbidden, wantReason: volumesReason},
+		{name: "force opt in alone without force", allowForce: true, path: "/v5.0.0/libpod/pods/web", wantCode: http.StatusForbidden, wantReason: volumesReason},
+		{name: "volume opt in allows a bare remove", allowRemoveVolumes: true, path: "/v5.0.0/libpod/pods/web", wantCode: http.StatusNoContent},
+		{name: "volume opt in allows the unversioned path", allowRemoveVolumes: true, path: "/libpod/pods/web", wantCode: http.StatusNoContent},
+		{name: "volume opt in allows podman-remote pod rm", allowRemoveVolumes: true, path: "/v5.8.6/libpod/pods/web", rawQuery: "force=false", wantCode: http.StatusNoContent},
+		{name: "timeout is not gated", allowRemoveVolumes: true, path: "/v5.0.0/libpod/pods/web", rawQuery: "timeout=5", wantCode: http.StatusNoContent},
+		{name: "flags the route doesn't read", allowRemoveVolumes: true, path: "/v5.0.0/libpod/pods/web", rawQuery: "v=1&volumes=1&depend=1&link=1", wantCode: http.StatusNoContent},
+		{name: "volume opt in does not allow force", allowRemoveVolumes: true, path: "/v5.0.0/libpod/pods/web", rawQuery: "force=true", wantCode: http.StatusForbidden, wantReason: forceReason},
+		{name: "force on", allowRemoveVolumes: true, path: "/v5.0.0/libpod/pods/web", rawQuery: "force=on", wantCode: http.StatusForbidden, wantReason: forceReason},
+		{name: "unversioned force", allowRemoveVolumes: true, path: "/libpod/pods/web", rawQuery: "force=1", wantCode: http.StatusForbidden, wantReason: forceReason},
+		{name: "force in another spelling", allowRemoveVolumes: true, path: "/v5.0.0/libpod/pods/web", rawQuery: "Force=true", wantCode: http.StatusForbidden, wantReason: "libpod pod remove denied: ambiguous force query parameter"},
+		{name: "force behind a false first value", allowRemoveVolumes: true, path: "/v5.0.0/libpod/pods/web", rawQuery: "force=false&force=true", wantCode: http.StatusForbidden, wantReason: "libpod pod remove denied: ambiguous force query parameter"},
+		{name: "name decoded into two segments", allowRemoveVolumes: true, path: "/v5.0.0/libpod/pods/a/b", rawQuery: "force=1", wantCode: http.StatusForbidden, wantReason: forceReason},
+		{name: "invalid percent escape", allowRemoveVolumes: true, path: "/v5.0.0/libpod/pods/web", rawQuery: "force=%zz", wantCode: http.StatusBadRequest},
+		{name: "both opt ins allow podman-remote pod rm --force", allowForce: true, allowRemoveVolumes: true, path: "/v5.8.6/libpod/pods/web", rawQuery: "force=true&timeout=10", wantCode: http.StatusNoContent},
+		{name: "repeated force with both opt ins", allowForce: true, allowRemoveVolumes: true, path: "/v5.0.0/libpod/pods/web", rawQuery: "force=0&Force=1", wantCode: http.StatusNoContent},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := PolicyConfig{
+				DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+				ContainerRemove: ContainerRemoveOptions{
+					AllowForce:         tt.allowForce,
+					AllowRemoveVolumes: tt.allowRemoveVolumes,
+				},
+			}
+			handler := containerRemoveTestHandler(t, cfg)
+			req := httptest.NewRequest(http.MethodDelete, tt.path, nil)
+			req.URL.RawQuery = tt.rawQuery
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, tt.wantCode, rec.Body.String())
+			}
+			if tt.wantReason != "" && !strings.Contains(rec.Body.String(), tt.wantReason) {
+				t.Fatalf("body = %s, want a reason containing %q", rec.Body.String(), tt.wantReason)
+			}
+		})
+	}
+}
+
+// TestLibpodKubeDownAppliesTheRemoveGates pins the remove gates on Podman's
+// kube down, DELETE /libpod/play/kube and its /libpod/kube/play alias. Kube
+// down stops every pod its YAML names and force-removes them whatever the
+// request says, which deletes their containers' anonymous volumes, so every
+// request needs both allow_force and allow_remove_volumes. Its own `force`
+// adds the named volumes the YAML lists, which is behind
+// allow_remove_volumes already.
+func TestLibpodKubeDownAppliesTheRemoveGates(t *testing.T) {
+	const (
+		forceReason   = "libpod kube down denied: tearing down kube YAML force-stops its pods and is not allowed"
+		volumesReason = "libpod kube down denied: tearing down kube YAML deletes its pods' anonymous volumes and is not allowed"
+	)
+	tests := []struct {
+		name               string
+		allowForce         bool
+		allowRemoveVolumes bool
+		rawQuery           string
+		wantCode           int
+		wantReason         string
+	}{
+		{name: "no opt ins", wantCode: http.StatusForbidden, wantReason: forceReason},
+		{name: "podman-remote kube down shape without opt ins", rawQuery: "force=false", wantCode: http.StatusForbidden, wantReason: forceReason},
+		{name: "force opt in alone", allowForce: true, rawQuery: "force=false", wantCode: http.StatusForbidden, wantReason: volumesReason},
+		{name: "volume opt in alone", allowRemoveVolumes: true, rawQuery: "force=false", wantCode: http.StatusForbidden, wantReason: forceReason},
+		{name: "both opt ins allow podman-remote kube down", allowForce: true, allowRemoveVolumes: true, rawQuery: "force=false", wantCode: http.StatusNoContent},
+		{name: "both opt ins allow podman-remote kube down --force", allowForce: true, allowRemoveVolumes: true, rawQuery: "force=true", wantCode: http.StatusNoContent},
+		{name: "both opt ins with no query", allowForce: true, allowRemoveVolumes: true, wantCode: http.StatusNoContent},
+		{name: "malformed query fails before both opt ins", allowForce: true, allowRemoveVolumes: true, rawQuery: "force=%zz", wantCode: http.StatusBadRequest},
+	}
+
+	for _, path := range []string{"/v5.8.6/libpod/play/kube", "/v5.8.6/libpod/kube/play", "/libpod/kube/play"} {
+		for _, tt := range tests {
+			t.Run(path+"/"+tt.name, func(t *testing.T) {
+				cfg := PolicyConfig{
+					DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+					ContainerRemove: ContainerRemoveOptions{
+						AllowForce:         tt.allowForce,
+						AllowRemoveVolumes: tt.allowRemoveVolumes,
+					},
+				}
+				handler := containerRemoveTestHandler(t, cfg)
+				req := httptest.NewRequest(http.MethodDelete, path, strings.NewReader("apiVersion: v1\nkind: Pod\nmetadata:\n  name: web\n"))
+				req.URL.RawQuery = tt.rawQuery
+				rec := httptest.NewRecorder()
+
+				handler.ServeHTTP(rec, req)
+
+				if rec.Code != tt.wantCode {
+					t.Fatalf("status = %d, want %d; body: %s", rec.Code, tt.wantCode, rec.Body.String())
+				}
+				if tt.wantReason != "" && !strings.Contains(rec.Body.String(), tt.wantReason) {
+					t.Fatalf("body = %s, want a reason containing %q", rec.Body.String(), tt.wantReason)
+				}
+			})
+		}
+	}
+}
+
 // TestContainerRemoveFlagsDoNotCrossRoutes pins which flags each route reads:
 // `volumes` and `depend` mean nothing to dockerd, and Podman's compat route
 // decodes them and never uses them, so they stay unread there, while `link`
-// stays unread on the libpod route, which ignores it.
+// stays unread on the libpod route, which ignores it. Pod removal reads only
+// `force`, and kube down reads nothing: both of its gates are needed whatever
+// its query says.
 func TestContainerRemoveFlagsDoNotCrossRoutes(t *testing.T) {
 	policy := newContainerRemovePolicy(ContainerRemoveOptions{})
 	for _, target := range []string{
@@ -186,6 +315,47 @@ func TestContainerRemoveFlagsDoNotCrossRoutes(t *testing.T) {
 		reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
 		if err != nil || reason != "" {
 			t.Errorf("inspect(%s) = (%q, %v), want (\"\", nil)", target, reason, err)
+		}
+	}
+
+	volumesOpen := newContainerRemovePolicy(ContainerRemoveOptions{AllowRemoveVolumes: true})
+	bothOpen := newContainerRemovePolicy(ContainerRemoveOptions{AllowForce: true, AllowRemoveVolumes: true})
+	for _, tc := range []struct {
+		policy containerRemovePolicy
+		target string
+	}{
+		{policy: volumesOpen, target: "/v5.0.0/libpod/pods/web?v=1&volumes=1&depend=1&link=1&ignore=1"},
+		{policy: bothOpen, target: "/v5.0.0/libpod/kube/play?force=1&Force=0&volumes=1&V=1"},
+	} {
+		req := httptest.NewRequest(http.MethodDelete, tc.target, nil)
+		reason, err := tc.policy.inspect(nil, req, NormalizePath(req.URL.Path))
+		if err != nil || reason != "" {
+			t.Errorf("inspect(%s) = (%q, %v), want (\"\", nil)", tc.target, reason, err)
+		}
+	}
+}
+
+// TestContainerRemoveInspectorLeavesOtherLibpodRoutesAlone pins the edges of
+// the pod and kube matchers: a pod create or prune isn't a DELETE, kube play
+// and kube apply aren't kube down, and a pod's own subresource reads never
+// reach the inspector, so none of them is refused for a remove gate.
+func TestContainerRemoveInspectorLeavesOtherLibpodRoutesAlone(t *testing.T) {
+	policy := newContainerRemovePolicy(ContainerRemoveOptions{})
+	for _, tc := range []struct{ method, target string }{
+		{method: http.MethodPost, target: "/v5.0.0/libpod/pods/create"},
+		{method: http.MethodPost, target: "/v5.0.0/libpod/pods/prune"},
+		{method: http.MethodPost, target: "/v5.0.0/libpod/play/kube"},
+		{method: http.MethodPost, target: "/v5.0.0/libpod/kube/play"},
+		{method: http.MethodPost, target: "/v5.0.0/libpod/kube/apply"},
+		{method: http.MethodGet, target: "/v5.0.0/libpod/pods/web/json"},
+		{method: http.MethodDelete, target: "/v5.0.0/libpod/kube/apply"},
+		{method: http.MethodDelete, target: "/v5.0.0/libpod/play/kube/web"},
+		{method: http.MethodDelete, target: "/v5.0.0/libpod/pods"},
+	} {
+		req := httptest.NewRequest(tc.method, tc.target, nil)
+		reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+		if err != nil || reason != "" {
+			t.Errorf("inspect(%s %s) = (%q, %v), want (\"\", nil)", tc.method, tc.target, reason, err)
 		}
 	}
 }
