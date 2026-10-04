@@ -133,6 +133,12 @@ type ownershipRequestReferences struct {
 	// view to wait for and a refusal travels in denyReason. See
 	// image_destination.go.
 	imageDestinations *imageDestinationReferences
+	// existingResources are resources the request acts on only if they
+	// already exist, such as the secret a libpod secret create with
+	// `replace` or `ignore` would take over or return. Unlike an embedded
+	// reference, one the daemon can't resolve is no denial: the request then
+	// creates it. See checkExistingOwnershipReferences.
+	existingResources []embeddedOwnershipReference
 }
 
 // Options configures per-proxy resource ownership labeling and enforcement.
@@ -384,12 +390,7 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 	case r.Method == http.MethodPost && normPath == libpodVolumeCreatePath:
 		return nil, addOwnerLabelToLibpodBody(r, opts.LabelKey, opts.Owner, "Labels")
 	case r.Method == http.MethodPost && normPath == libpodSecretCreatePath:
-		// libpod secret create has no JSON body envelope at all — the body is
-		// the raw secret payload, and driver/labels are URL query parameters
-		// (see internal/filter/libpod_secret.go's doc comment). The existing
-		// build-query mutator already does exactly this "decode 'labels' query
-		// param as a JSON-encoded map, inject, re-encode" shape.
-		return nil, addOwnerLabelToBuildQuery(r, opts.LabelKey, opts.Owner)
+		return mutateLibpodSecretCreateOwnershipRequest(r, opts)
 	case needsOwnerFilter(r.Method, normPath), libpodNeedsOwnerFilter(r.Method, normPath):
 		return nil, addOwnerLabelFilter(r, opts.LabelKey, opts.Owner)
 	default:
@@ -480,6 +481,14 @@ func allowOwnershipRequestUnprefixed(
 		}
 
 		verdict, reason, err = checkEmbeddedOwnershipReferences(ctx, inspectResource, refs.embeddedResources, opts)
+		if err != nil || verdict.denied() {
+			return verdict, reason, err
+		}
+		if verdict == verdictAllow {
+			strictest = verdictAllow
+		}
+
+		verdict, reason, err = checkExistingOwnershipReferences(ctx, inspectResource, refs.existingResources, opts)
 		if err != nil || verdict.denied() {
 			return verdict, reason, err
 		}
@@ -644,6 +653,41 @@ func checkEmbeddedOwnershipReferences(
 
 		allowUnowned := ref.kind == dockerresource.KindImage && opts.AllowUnownedImages
 		if !ownerMatches(labels, opts.LabelKey, opts.Owner, allowUnowned) {
+			return verdictDeny, fmt.Sprintf(
+				"owner policy denied access to %s %q referenced by %s",
+				singularResource(ref.kind),
+				ref.identifier,
+				ref.source,
+			), nil
+		}
+		strictest = verdictAllow
+	}
+	return strictest, "", nil
+}
+
+// checkExistingOwnershipReferences authorizes the resources a request takes
+// over or returns when they already exist. A reference the daemon can't
+// resolve passes, because the request then creates it and takes nothing from
+// anyone. One that resolves has to carry the caller's owner label, the same
+// test checkOwnedResource applies to a resource the path names, and a failed
+// lookup fails closed. Like every preflight inspect, this can't close the
+// window between the inspect and the daemon's write.
+func checkExistingOwnershipReferences(
+	ctx context.Context,
+	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
+	refs []embeddedOwnershipReference,
+	opts Options,
+) (ownershipVerdict, string, error) {
+	strictest := verdictPassThrough
+	for _, ref := range refs {
+		labels, found, err := inspectResource(ctx, ref.kind, ref.identifier)
+		if err != nil {
+			return verdictPassThrough, "", err
+		}
+		if !found {
+			continue
+		}
+		if !ownerMatches(labels, opts.LabelKey, opts.Owner, false) {
 			return verdictDeny, fmt.Sprintf(
 				"owner policy denied access to %s %q referenced by %s",
 				singularResource(ref.kind),
