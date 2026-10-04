@@ -291,7 +291,10 @@ label, is a `403`, a name nobody holds goes through as a normal create, and a
 failed lookup is a `502`. Podman matches the name against secret names and
 full IDs, and so does the lookup. The lookup also resolves a unique ID prefix,
 which Podman's create doesn't, so a new secret whose name is a short hex string
-that prefixes another owner's secret ID is refused too. A flag counts as set unless Podman would read
+that prefixes another owner's secret ID is refused too. The check is a lookup
+before the write, so another owner's proxy, or anything writing to the socket
+directly, can still create the name in between. One sockguard has one owner, so
+nothing going through the same instance can. A flag counts as set unless Podman would read
 it as false. A `replace` or `ignore` that's repeated or spelled in another case
 is refused, and so is a `name` like that while either flag is set, since Podman
 would act on the last one. The names `.` and `..` are refused while a flag is
