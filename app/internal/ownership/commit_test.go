@@ -218,9 +218,9 @@ func TestCommitStampsOwnerLabelIntoTheBody(t *testing.T) {
 
 // TestCommitWithoutAnUnambiguousContainerIsDenied covers the shapes with no
 // single container to authorize. The repeated and case-variant cases are the
-// sharp ones: moby reads the first value of a repeated query parameter and
-// Podman reads the last, so forwarding one would check a container the daemon
-// does not commit.
+// sharp ones: moby reads the first value of a repeated query parameter under
+// the exact key and Podman folds the key's case and reads the last, so
+// forwarding one would check a container the daemon does not commit.
 func TestCommitWithoutAnUnambiguousContainerIsDenied(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -233,6 +233,11 @@ func TestCommitWithoutAnUnambiguousContainerIsDenied(t *testing.T) {
 		{name: "blank", query: "container=%20", wantReason: commitDenyNoContainer},
 		{name: "repeated", query: "container=owned&container=foreign", wantReason: commitDenyAmbiguousContainer},
 		{name: "case variant spellings", query: "container=owned&Container=foreign", wantReason: commitDenyAmbiguousContainer},
+		// moby reads only the exact key and Podman folds it, so even one
+		// value under another spelling names a container only one of them
+		// commits.
+		{name: "single case variant", query: "Container=foreign", wantReason: commitDenyAmbiguousContainer},
+		{name: "single upper-case spelling", query: "CONTAINER=foreign", wantReason: commitDenyAmbiguousContainer},
 	}
 
 	for _, tt := range tests {

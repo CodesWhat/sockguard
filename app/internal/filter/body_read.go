@@ -30,30 +30,41 @@ func isBodyTooLargeError(err error) bool {
 // the request can be forwarded while still restoring safe-sized bodies for
 // downstream use. Once the body has been successfully buffered, Close errors
 // are ignored because forwarding can safely continue from the restored copy.
+//
+// An oversized body is restored too, with what was read put back in front of
+// the rest of it, and one that declares itself oversized is not read at all.
+// Warn and audit forward a request refused as too large, so it still has to
+// carry every byte the client sent.
 func readBoundedBody(r *http.Request, max int64) ([]byte, error) {
 	if r == nil || r.Body == nil {
 		return nil, nil
 	}
 	if r.ContentLength > max {
-		if err := r.Body.Close(); err != nil {
-			return nil, err
-		}
 		return nil, &bodyTooLargeError{limit: max}
 	}
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, max+1))
-	_ = r.Body.Close()
 	if err != nil {
+		_ = r.Body.Close()
 		return nil, err
 	}
 	if int64(len(body)) > max {
+		r.Body = prefixedBody{Reader: io.MultiReader(bytes.NewReader(body), r.Body), Closer: r.Body}
 		return nil, &bodyTooLargeError{limit: max}
 	}
+	_ = r.Body.Close()
 
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	r.ContentLength = int64(len(body))
 
 	return body, nil
+}
+
+// prefixedBody is a request body some of which has already been read: Reader
+// gives that part back and then the rest, and Closer closes the original.
+type prefixedBody struct {
+	io.Reader
+	io.Closer
 }
 
 // replaceRequestBody installs final as the request body a mutation

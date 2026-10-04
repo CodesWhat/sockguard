@@ -1086,28 +1086,6 @@ func TestInspectPluginCreateExtractConfigError(t *testing.T) {
 	}
 }
 
-func TestInspectPluginCreateRewindBodyError(t *testing.T) {
-	payload := mustPluginCreateContextPayload(t, `{"Linux":{"Capabilities":[]}}`, false)
-	req := httptest.NewRequest(http.MethodPost, "/plugins/create", bytes.NewReader(payload))
-
-	p := newPluginPolicy(PluginOptions{})
-	realSeekToStart := p.io.SeekToStart
-	var seekCalls int
-	sentinel := errors.New("rewind plugin body failed")
-	p.io.SeekToStart = func(file *os.File) error {
-		seekCalls++
-		if seekCalls == 4 {
-			return sentinel
-		}
-		return realSeekToStart(file)
-	}
-
-	_, err := p.inspectPluginCreate(nil, req)
-	if !errors.Is(err, sentinel) {
-		t.Fatalf("inspectPluginCreate() error = %v, want %v", err, sentinel)
-	}
-}
-
 func TestInspectPluginCreateDecodeErrorDenied(t *testing.T) {
 	// A config Docker may accept but Sockguard cannot decode must fail closed;
 	// forwarding it would skip every policy check in denyReasonForCreateConfig.

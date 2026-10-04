@@ -3,7 +3,7 @@ title: Roadmap
 description: Sockguard's shipped v1.7, v2.0, v2.1, and v2.2 work, planned v2.3 focus, and later direction.
 ---
 
-Sockguard v2.2 is the current stable feature line, with v2.2.3 the latest
+Sockguard v2.2 is the current stable feature line, with v2.2.4 the latest
 release. v2.2.0 closed the volume-mount and read-side gaps that survived
 v2.1.0 and added the operator-facing checks that were missing around them;
 v2.2.1 is a security patch on that line, closing a raw block-device,
@@ -20,7 +20,13 @@ image (an untagged pull such as `docker pull -a` is refused under owner
 isolation), and it closes filter gaps around `fromImage` beside `fromSrc`,
 Podman's compat `/build` controls, owner-label stripping on Podman builds,
 the distribution endpoint and the registry allowlist, and a spooled request
-body left on disk after a later layer denied it. v2.3.0-rc.1 is the first candidate for the next line and is still in soak. This roadmap describes direction and priorities, not
+body left on disk after a later layer denied it. v2.2.4 is a fourth
+security patch: Podman build `RUN` inspection now follows the Containerfile
+default and every `dockerfile` file, refuses remote, absolute and `.in`
+values, symlink and duplicate tar entries and compressed bodies, and Podman
+query-parameter ambiguity, libpod container, pod and kube removal, the secret a libpod create replaces under owner isolation, and libpod secret driver
+options are gated, while `warn` and `audit` profiles forward the body they
+refused. v2.3.0-rc.1 is the first candidate for the next line and is still in soak. This roadmap describes direction and priorities, not
 promises about dates. A feature is available only after the release notes say
 it has shipped.
 

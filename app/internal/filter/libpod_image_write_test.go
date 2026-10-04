@@ -1587,7 +1587,7 @@ func TestLibpodLocalBuildRequiresBlindWriteAck(t *testing.T) {
 		if err != nil {
 			t.Fatalf("inspect() error = %v", err)
 		}
-		if reason != "build denied: RUN instructions are not allowed" {
+		if reason != `build denied: RUN instructions are not allowed in "Dockerfile"` {
 			t.Fatalf("reason = %q, want the body scan still running on /libpod/build", reason)
 		}
 	})
