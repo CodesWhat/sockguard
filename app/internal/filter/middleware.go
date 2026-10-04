@@ -76,7 +76,8 @@ type PolicyConfig struct {
 	// POST /containers/*/update.
 	ContainerUpdate ContainerUpdateOptions
 	// ContainerRemove configures query inspection for
-	// DELETE /containers/{id}.
+	// DELETE /containers/{id} and DELETE /libpod/containers/{id}, and the
+	// gates on DELETE /libpod/pods/{name} and kube down.
 	ContainerRemove ContainerRemoveOptions
 	// ContainerArchive configures request-body inspection for
 	// PUT /containers/*/archive.
@@ -554,8 +555,14 @@ func matchesContainerUpdateInspection(normalizedPath string) bool {
 	return isContainerUpdatePath(normalizedPath)
 }
 
+// matchesContainerRemoveInspection covers the Docker-compat and the libpod
+// container remove spelling, which Podman serves from one
+// compat.RemoveContainer, plus Podman's pod remove and kube down, which
+// remove containers and their volumes too. containerRemovePolicy picks what
+// each route needs by path.
 func matchesContainerRemoveInspection(normalizedPath string) bool {
-	return isContainerRemovePath(normalizedPath)
+	_, ok := containerRemoveRouteFor(normalizedPath)
+	return ok
 }
 
 func matchesContainerArchiveInspection(normalizedPath string) bool {

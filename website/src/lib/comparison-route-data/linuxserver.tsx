@@ -19,7 +19,7 @@ Hot-reload|No|Yes (opt-in, SIGHUP/fsnotify, validate endpoint)|self
 Audit log schema|No|Yes (opt-in, JSON schema + reason codes)|self
 `,
   highlightsTable: `
-shield|Request Body Inspection|LinuxServer filters by method and path only. Sockguard inspects request bodies — blocking containers by image, exec commands by pattern, bind mounts by path, and more across 12+ resource types.
+shield|Request Body Inspection|LinuxServer filters by method and path only. Sockguard inspects request bodies — blocking exec commands by pattern, bind mounts by path, and more across 12+ resource types.
 users|Per-Client Policies|LinuxServer applies the same ENV-var rules to every caller. Sockguard assigns different policies per CIDR range, Docker label, TLS certificate selector, or Unix peer — so CI, monitoring, and admin clients can each have a tighter scope.
 key|Signed Policy Bundles|Sockguard verifies policy files with cosign keyed or keyless signatures and Rekor transparency log inclusion. An unsigned or tampered bundle is rejected before any request reaches the daemon.
 activity|Prometheus Metrics|Sockguard exports socket-proxy request metrics, deny counts, and latency histograms. LinuxServer has no built-in observability beyond container logs.

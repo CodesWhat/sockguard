@@ -209,3 +209,33 @@ func isLibpodContainerUpdatePath(normalizedPath string) bool {
 	libpod, ok := containerSubresourcePath(normalizedPath, "update")
 	return ok && libpod
 }
+
+// isLibpodContainerRemovePath matches DELETE /libpod/containers/{name}, which
+// Podman 5.8.6 registers on the same compat.RemoveContainer handler as the
+// Docker-compatible DELETE /containers/{name}
+// (pkg/api/server/register_containers.go:894). The handler reads a different
+// set of flags on each route, so containerRemovePolicy keeps one table per
+// route. Like isContainerRemovePath it matches any longer path too: it is
+// the only DELETE under /libpod/containers/, and Podman's router splits on
+// the escaped path, so a name sockguard sees decoded into two segments is
+// still one {name} to the daemon.
+func isLibpodContainerRemovePath(normalizedPath string) bool {
+	return strings.HasPrefix(normalizedPath, libpodPathPrefix+"containers/") && len(normalizedPath) > len(libpodPathPrefix+"containers/")
+}
+
+// isLibpodPodRemovePath matches DELETE /libpod/pods/{name}, registered on
+// libpod.PodDelete in Podman 5.8.6 (pkg/api/server/register_pods.go:106).
+// Like isLibpodContainerRemovePath it matches any longer path too, for the
+// same reason: it is the only DELETE under /libpod/pods/, and a name
+// sockguard sees decoded into two segments is one {name} to the daemon.
+func isLibpodPodRemovePath(normalizedPath string) bool {
+	return strings.HasPrefix(normalizedPath, libpodPathPrefix+"pods/") && len(normalizedPath) > len(libpodPathPrefix+"pods/")
+}
+
+// isLibpodKubeDownPath matches kube down, DELETE /libpod/play/kube and
+// DELETE /libpod/kube/play. Podman 5.8.6 registers the two spellings on the
+// same teardown (pkg/api/server/register_kube.go:180-181), the way it does
+// for kube play.
+func isLibpodKubeDownPath(normalizedPath string) bool {
+	return normalizedPath == libpodPathPrefix+"play/kube" || normalizedPath == libpodPathPrefix+"kube/play"
+}

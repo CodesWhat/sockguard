@@ -295,6 +295,20 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
+    version: "v2.2.4",
+    title: "Security Patch: Podman Build and libpod Gaps",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Podman build RUN inspection now follows the Containerfile default, inspects every dockerfile file, and refuses remote, absolute and .in dockerfile values, symlink and duplicate tar entries, and compressed bodies",
+      "On a Podman upstream, a policy query parameter sent in another case or twice is refused",
+      "Podman's native container remove, pod remove and kube down now honor allow_force and allow_remove_volumes",
+      "Under owner isolation, a libpod secret create can no longer replace another owner's secret, and kube down is refused",
+      "libpod secret driver options are gated: the file driver passes and a compat Driver object now decodes",
+      "warn and audit profiles forward a refused request's body instead of failing with a 502",
+    ],
+  },
+  {
     version: "v2.3.0",
     title: "BuildKit RUN-Instruction Coverage",
     emoji: "🧩",

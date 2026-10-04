@@ -66,10 +66,11 @@ func isImagePushRoutePath(method, normPath string) bool {
 //   - Any spelling of the key other than the exact lowercase `tag`, even on
 //     its own. Podman decodes the query with gorilla/schema, which folds
 //     case, so it reads ?Tag=v1 as the tag. Dockerd reads r.Form.Get("tag")
-//     and sees no tag, which is the push-every-tag shape above. This is where
-//     the route parts ways with commit's container parameter, which can use
-//     filter.FoldedScalarQueryValue: a commit dockerd finds no container for
-//     is an error, while a push dockerd finds no tag for is a wider push.
+//     and sees no tag, which is the push-every-tag shape above. Commit's
+//     `container` parameter is now read the same way (queryparam.Scalar), but
+//     here the exact spelling matters even without that rule: a commit
+//     dockerd finds no container for is an error, while a push dockerd finds
+//     no tag for is a wider push.
 //
 // imageselector.Parse is used instead of r.URL.Query() because it keeps the
 // exact key spelling and arrival order and reports what url.Values hides.

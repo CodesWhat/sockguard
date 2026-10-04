@@ -190,7 +190,7 @@ func TestTempFileBodyCloseIsIdempotent(t *testing.T) {
 		removed = append(removed, name)
 		return os.Remove(name)
 	}
-	body := &tempFileBody{file: file, path: file.Name(), io: iod}
+	body := &tempFileBody{file: file, path: file.Name(), io: iod, content: io.NewSectionReader(file, 0, 0)}
 
 	const closers = 8
 	errs := make([]error, closers)

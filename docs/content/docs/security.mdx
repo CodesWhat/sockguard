@@ -186,7 +186,9 @@ Deployments that don't want to admit the whole `EndpointSettings` object can nar
 
 `request_body.libpod_network.allow_dns_servers` gates a primitive with no Docker equivalent: Podman's netavark-only `POST /libpod/networks/{name}/update` rewrites an existing network's DNS resolvers, so a caller who can point them at a host it controls influences what names resolve to inside **every container already attached to that network**, including containers it does not own. It defaults `false`, and the same knob gates `network_dns_servers` at create time so the control covers the whole per-network resolver surface. Removing a resolver is gated alongside adding one, since dropping the entry that was answering a name falls resolution through to whatever is next.
 
-`DELETE /containers/**` query controls are inspected by default, including slash-bearing names used by Docker's legacy link-removal route. A method/path allow rule admits bare removal, but force-killing a running container (`force`), deleting its anonymous volumes (`v`), and Docker's legacy link removal (`link`) stay denied unless the matching `request_body.container_remove` flag is enabled. Sockguard mirrors dockerd's boolean parsing and first-value behavior for repeated keys, decodes percent-encoded keys and values, and rejects malformed query encoding before proxying.
+`DELETE /containers/**` query controls are inspected by default, including slash-bearing names used by Docker's legacy link-removal route. A method/path allow rule admits bare removal, but force-killing a running container (`force`), deleting its anonymous volumes (`v`), and Docker's legacy link removal (`link`) stay denied unless the matching `request_body.container_remove` flag is enabled. Sockguard mirrors dockerd's boolean parsing, decodes percent-encoded keys and values, and rejects malformed query encoding before proxying. A closed gate also refuses a request that repeats the parameter or spells it in another case (`Force=1`, `force=0&force=1`), because Podman reads the key in any case and keeps the last value where dockerd keeps the first. Podman's `DELETE /libpod/containers/**` goes through the same check. It takes the volumes flag from `volumes`, and `depend` can remove a whole pod along with its containers' anonymous volumes, so `allow_remove_volumes` covers `volumes`, `v` and `depend` there. Podman's pod removal, `DELETE /libpod/pods/{name}`, always deletes the anonymous volumes of the containers it removes, so it needs `allow_remove_volumes` on every request and `allow_force` for `force`. Kube down, `DELETE /libpod/play/kube` and `/libpod/kube/play`, stops and force-removes every pod its YAML names whatever the query says, so it needs both on every request.
+
+The engines don't read every query string the same way. dockerd takes the first value of the exact key. Podman decodes with gorilla/schema, which matches the key in any letter case and keeps the last value. A policy parameter that is given twice, or spelled in a case other than the documented one, could therefore be checked as one thing and executed as another: `?Driver=custom` on `POST /libpod/secrets/create` slipped past `allow_custom_drivers`, and `?Force=1` on a container remove slipped past `allow_force`. Sockguard now refuses such a request with a `403` on every upstream flavor. A parameter whose value is always validated (`rusage`, `additionalbuildcontexts`) is refused in another spelling whatever the gates are, and the others only while the check that reads them is enabled. The parameters covered are the libpod secret `driver` and `driveropts`, libpod secret create `replace`, `ignore` and `name` under owner isolation, container remove `force`, `v` and `link` (`force`, `volumes`, `v` and `depend` on the libpod route), the build controls, image create `fromImage` and `fromSrc`, libpod pull `reference`, archive `path` and `rename`, and commit `container`. Docker CLI, Go SDK, docker-py, dockerode and Podman binding requests send each of these once in the documented case and are unaffected.
 
 `POST /containers/*/update`, `POST /libpod/containers/*/update`, `PUT /containers/*/archive`, and `PUT /libpod/containers/*/archive` are inspected by default through the shared `container_update` and `container_archive` policies. Sockguard blocks restart-policy/resource-control changes, privileged/device/capability-like update fields where the endpoint supports them, unsafe archive target paths, tar traversal, setuid/setgid entries, device nodes, and escaping symlinks/hardlinks unless explicitly allowed.
 
@@ -194,7 +196,7 @@ Deployments that don't want to admit the whole `EndpointSettings` object can nar
 
 `POST /swarm/unlock` and `POST /nodes/*/update` are inspected by default. Swarm unlock is denied unless explicitly allowed, and node updates block role, availability, name, and arbitrary label mutations unless the corresponding node policy permits them. The default owner-label key remains allowed for controlled node claims.
 
-Bounded JSON/tar inspectors read request bodies under per-endpoint byte caps and return `413 Payload Too Large` when those caps are exceeded, instead of streaming unbounded bodies into memory. A malformed or hostile client cannot tie up the filter or the Docker daemon with oversized payloads because the bounded reader short-circuits before the JSON decode or tar parse begins. The filter also applies a 30-second read deadline to the request body before an inspector runs. The access-log and metrics wrappers preserve the response-controller interface used for that deadline, so enabling either layer cannot bypass it. On the upstream side, the reverse-proxy and side-channel transports set a 30-second response-header timeout. Attach and exec-start add a 30-second deadline across client body forwarding, upstream request writes, and the wait for response headers; the deadline is cleared only after a valid `101 Switching Protocols` response, then the long-lived stream uses its inactivity guard.
+Bounded JSON/tar inspectors read request bodies under per-endpoint byte caps and return `413 Payload Too Large` when those caps are exceeded, instead of streaming unbounded bodies into memory. A malformed or hostile client cannot tie up the filter or the Docker daemon with oversized payloads because the bounded reader short-circuits before the JSON decode or tar parse begins. Under a `warn` or `audit` profile the refused request is forwarded with its whole body, like any other refusal there, so the cap still bounds what the filter reads but no longer keeps the body from the daemon (see [Rollout Modes](/configuration#rollout-modes)). The filter also applies a 30-second read deadline to the request body before an inspector runs. The access-log and metrics wrappers preserve the response-controller interface used for that deadline, so enabling either layer cannot bypass it. On the upstream side, the reverse-proxy and side-channel transports set a 30-second response-header timeout. Attach and exec-start add a 30-second deadline across client body forwarding, upstream request writes, and the wait for response headers; the deadline is cleared only after a valid `101 Switching Protocols` response, then the long-lived stream uses its inactivity guard.
 
 These inspectors intentionally decode only the Docker request fields Sockguard actually enforces. They are not full Docker-schema validators, so full payload validation still belongs to Docker once Sockguard has checked the policy-relevant subset.
 
@@ -264,7 +266,11 @@ prune family (`POST /containers/prune`, `/images/prune`, `/networks/prune`,
 parameter, so the owner selector is injected into it and a prune removes only
 the caller's resources. `POST /libpod/pods/prune` accepts no filters at all and
 names no pod, so it is refused with a `403` rather than forwarded, audited as
-`owner_libpod_pod_prune_unscopeable` and independent of rollout mode.
+`owner_libpod_pod_prune_unscopeable` and independent of rollout mode. Kube down
+(`DELETE /libpod/play/kube` and `DELETE /libpod/kube/play`) is refused the same
+way, audited as `owner_libpod_kube_down_unscopeable`: it names the pods, secrets
+and volumes it removes in a YAML body sockguard doesn't parse, so there's no
+owner to check.
 `POST /commit` and `POST /libpod/commit` name their container in the `container`
 query parameter: that container is authorized on the terms above, and the owner
 label is stamped into the commit body's config so the new image is owned rather
@@ -275,6 +281,31 @@ the parameter is repeated or spelled in two cases (Moby reads the first value,
 Podman the last, so the container checked would not be the container committed),
 or when a `changes` value carries a `LABEL` instruction, which both engines
 apply on top of the body config and would use to overwrite the stamp.
+
+`POST /libpod/secrets/create` normally names a secret that doesn't exist yet,
+and Podman refuses a name that's already in use. Its `replace` and `ignore`
+flags change that. With `replace`, Podman deletes the existing secret and
+stores a new one under the same name with the request's labels and data, so
+without a check one owner could swap in their own data under another owner's
+secret, and every container mounting it by name would pick that up on its next
+start. With `ignore`, Podman answers with the existing secret's ID and changes
+nothing. So while either flag might be set, the named secret has to be absent
+or carry the caller's owner label. Another owner's secret, or one with no owner
+label, is a `403`, a name nobody holds goes through as a normal create, and a
+failed lookup is a `502`. Podman matches the name against secret names and
+full IDs, and so does the lookup. The lookup also resolves a unique ID prefix,
+which Podman's create doesn't, so a new secret whose name is a short hex string
+that prefixes another owner's secret ID is refused too. The check is a lookup
+before the write, so another owner's proxy, or anything writing to the socket
+directly, can still create the name in between. One sockguard has one owner, so
+nothing going through the same instance can. A flag counts as set unless Podman would read
+it as false. A `replace` or `ignore` that's repeated or spelled in another case
+is refused, and so is a `name` like that while either flag is set, since Podman
+would act on the last one. The names `.` and `..` are refused while a flag is
+set too, because Podman's router redirects the inspect for them, so the lookup
+can't answer for the secret. The Docker-compatible `POST /secrets/create` has
+no such flags: Podman never sets them on that route and dockerd doesn't have
+them.
 
 The same boundary applies to references embedded inside container and service payloads, not only the resource named by the URL. Container creates authorize the requested image, named volumes, custom network mode, every endpoint-config network, and every `container:<ref>` namespace-sharing target. Service creates and updates authorize the task image, named volumes, networks, secrets, and configs. A foreign label or unresolved workload dependency is denied before Docker sees the request; only an image that successfully resolves and is genuinely unlabeled can use `allow_unowned_images`. Create new volumes, networks, secrets, and configs through their owner-stamping endpoints before attaching them to a workload. This turns one shared Docker socket into N isolated identity views without leaving workload dependencies as an ownership side door.
 

@@ -231,31 +231,6 @@ func TestImageLoadDeniesMissingManifestUnlessUntaggedAllowed(t *testing.T) {
 	}
 }
 
-func TestImageLoadRewindErrorAfterInspection(t *testing.T) {
-	sentinel := errors.New("rewind failed")
-	p := newImageLoadPolicy(ImageLoadOptions{AllowAllRegistries: true})
-	oldSeekToStart := p.io.SeekToStart
-	seekCalls := 0
-	p.io.SeekToStart = func(file *os.File) error {
-		seekCalls++
-		if seekCalls == 2 {
-			return sentinel
-		}
-		return oldSeekToStart(file)
-	}
-
-	payload := mustImageLoadTar(t, `[{"RepoTags":["registry.example.com/acme/app:latest"]}]`)
-	req := httptest.NewRequest(http.MethodPost, "/images/load", bytes.NewReader(payload))
-
-	reason, err := p.inspect(nil, req, "/images/load")
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty", reason)
-	}
-	if !errors.Is(err, sentinel) {
-		t.Fatalf("inspect() error = %v, want wrapped %v", err, sentinel)
-	}
-}
-
 func TestImageLoadDenyReasonForTagEdgeCases(t *testing.T) {
 	if got := newImageLoadPolicy(ImageLoadOptions{}).denyReasonForTag(" <none>:<none> "); got != "image load denied: untagged images are not allowed" {
 		t.Fatalf("denyReasonForTag(<none>) = %q", got)

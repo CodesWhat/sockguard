@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,12 +20,16 @@ import (
 
 	"github.com/codeswhat/sockguard/app/internal/dockerfileinspect"
 	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/queryparam"
 )
 
 const maxBuildContextBytes = 512 << 20           // 512 MiB (compressed/on-wire cap)
 const maxBuildDockerfileBytes = 1 << 20          // 1 MiB
 const maxBuildContextDecompressedBytes = 1 << 30 // 1 GiB (gzip-bomb guard)
-const defaultBuildDockerfilePath = "Dockerfile"
+const (
+	defaultBuildDockerfilePath    = "Dockerfile"
+	defaultBuildContainerfilePath = "Containerfile"
+)
 
 var errBuildDockerfileTooLarge = errors.New("dockerfile exceeds byte limit")
 var errBuildContextDecompressedTooLarge = errors.New("decompressed build context exceeds byte limit")
@@ -79,48 +84,66 @@ func (p buildPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath str
 	// a legitimate Docker client never sends them. Gating them on the compat
 	// path therefore costs a dockerd upstream nothing and closes the bypass on
 	// a Podman one, where the compat /build path previously went uninspected
-	// for every control gated only on the /libpod/ prefix. The folded view is
-	// passed only to this check; Podman folds query-key case through
-	// gorilla/schema, which the controls check mirrors.
-	folded := foldQueryKeys(query)
-	if denyReason := p.inspectPodmanBuildControls(r, normalizedPath, folded); denyReason != "" {
+	// for every control gated only on the /libpod/ prefix.
+	//
+	// Every parameter below is read through queryparam, the same way on both
+	// paths. The engines disagree per parameter: dockerd reads the first value
+	// of the exact key, and Podman decodes rusagelogfile, networkmode and
+	// volume with gorilla/schema (any letter case, last value) but reads
+	// dockerfile and remote with url.Values.Get (exact key, first value).
+	// Folding the keys on the libpod path, as this used to, made sockguard
+	// inspect `?Dockerfile=decoy` while Podman built the default file. So a
+	// parameter the decision depends on is refused when it is repeated or not
+	// spelled as documented, and a control refused outright is refused under
+	// any spelling. Read from Podman 5.8.6 (pkg/api/handlers/compat/images_build.go).
+	if denyReason := p.inspectPodmanBuildControls(r, normalizedPath, query); denyReason != "" {
 		return denyReason, nil
-	}
-	if isLibpodBuildPath(normalizedPath) {
-		// On the libpod path the host-network, remote-context and Dockerfile
-		// reads below must also see the folded keys, because Podman decodes
-		// the whole libpod query case-insensitively. The compat path keeps the
-		// original query for those reads: moby reads each key case-sensitively
-		// (r.FormValue is exact-case), so folding there could make sockguard
-		// inspect a different Dockerfile than dockerd builds.
-		query = folded
 	}
 	// WHY: Host-network builds are denied even when the request also uses a
 	// remote context, so this must run before the remote-context branch returns
 	// its own denial or allow decision.
 	if !p.allowHostNetwork {
-		for _, networkMode := range query["networkmode"] {
-			if strings.EqualFold(strings.TrimSpace(networkMode), "host") {
-				return "build denied: host network mode is not allowed", nil
-			}
+		networkMode, _, ok := queryparam.Scalar(query, "networkmode")
+		if !ok {
+			return ambiguousQueryReason("build", "networkmode"), nil
+		}
+		if strings.EqualFold(strings.TrimSpace(networkMode), "host") {
+			return "build denied: host network mode is not allowed", nil
 		}
 	}
 
-	for _, remoteValue := range query["remote"] {
-		remote := strings.TrimSpace(remoteValue)
-		if remote == "" {
-			continue
+	if !p.allowRemoteContext || !p.allowRunInstructions {
+		remote, _, ok := queryparam.Scalar(query, "remote")
+		if !ok {
+			return ambiguousQueryReason("build", "remote"), nil
 		}
-		if p.allowRemoteContext {
-			if p.allowRunInstructions {
-				continue
+		if remote = strings.TrimSpace(remote); remote != "" {
+			if p.allowRemoteContext {
+				return "build denied: remote build contexts cannot be inspected while RUN instructions are restricted", nil
 			}
-			return "build denied: remote build contexts cannot be inspected while RUN instructions are restricted", nil
+			return fmt.Sprintf("build denied: remote build context %q is not allowed", remote), nil
 		}
-		return fmt.Sprintf("build denied: remote build context %q is not allowed", remote), nil
 	}
 	if p.allowRunInstructions || r.Body == nil {
 		return "", nil
+	}
+
+	dockerfileParam, _, ok := queryparam.Scalar(query, "dockerfile")
+	if !ok {
+		return ambiguousQueryReason("build", "dockerfile"), nil
+	}
+	// POST /libpod/local/build has nothing in its body to inspect: Podman
+	// reads its Containerfile from the daemon host, and inspectPodmanBuildControls
+	// only let it this far under insecure_allow_body_blind_writes.
+	if isLibpodLocalBuildPath(normalizedPath) {
+		return "", nil
+	}
+	// The files are named, and a value that points outside the body refused,
+	// before the body is read: Podman builds from a fetched or daemon-host
+	// file just as readily when the request sends no context at all.
+	files, denyReason := buildInstructionFiles(normalizedPath, dockerfileParam)
+	if denyReason != "" {
+		return denyReason, nil
 	}
 
 	spool, size, err := p.io.spoolRequestBodyToTempFile(r, "sockguard-build-", maxBuildContextBytes)
@@ -128,49 +151,20 @@ func (p buildPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath str
 		return "", err
 	}
 	if spool.tooLarge {
-		spool.closeAndRemove()
 		return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("build denied: request body exceeds %d byte limit", maxBuildContextBytes))
 	}
 	if size == 0 {
-		spool.closeAndRemove()
 		return "", nil
 	}
 
-	dockerfilePath := normalizeBuildDockerfilePath(query.Get("dockerfile"))
-	dockerfile, ok, err := p.io.extractBuildDockerfile(spool.file, r.Header.Get("Content-Type"), dockerfilePath)
+	denyReason, err = p.io.inspectBuildContext(spool.file, r.Header.Get("Content-Type"), files)
 	if err != nil {
-		spool.closeAndRemove()
 		if errors.Is(err, errBuildContextDecompressedTooLarge) {
 			return fmt.Sprintf("build denied: decompressed build context exceeds %d byte limit", maxBuildContextDecompressedBytes), nil
 		}
-		return "", fmt.Errorf("extract Dockerfile: %w", err)
+		return "", fmt.Errorf("inspect build context: %w", err)
 	}
-	if !ok {
-		spool.closeAndRemove()
-		return fmt.Sprintf("build denied: unable to inspect Dockerfile %q", dockerfilePath), nil
-	}
-
-	// A BuildKit `# syntax=` parser directive delegates parsing to an external
-	// frontend image that can treat arbitrary tokens as shell execution, so our
-	// RUN-instruction scan cannot be trusted. Deny it for the same reason remote
-	// contexts are denied while RUN is restricted: the content can't be inspected.
-	if frontend := dockerfileSyntaxFrontend(dockerfile); frontend != "" {
-		spool.closeAndRemove()
-		return fmt.Sprintf("build denied: BuildKit syntax frontend %q cannot be inspected while RUN instructions are restricted", frontend), nil
-	}
-
-	if dockerfileContainsRunInstruction(dockerfile) {
-		spool.closeAndRemove()
-		return "build denied: RUN instructions are not allowed", nil
-	}
-
-	if err := p.io.SeekToStart(spool.file); err != nil {
-		spool.closeAndRemove()
-		return "", fmt.Errorf("rewind build body: %w", err)
-	}
-	r.Body = spool.requestBody()
-	r.ContentLength = size
-	return "", nil
+	return denyReason, nil
 }
 
 type legacyPodmanAdditionalBuildContext struct {
@@ -201,7 +195,11 @@ func (p buildPolicy) inspectPodmanBuildControls(r *http.Request, normalizedPath 
 		return "build denied: Podman local build context reads a daemon-host path and requires insecure_allow_body_blind_writes"
 	}
 
-	requiresRemoteContext, requiresBlindWrites, malformed := classifyPodmanAdditionalBuildContexts(query["additionalbuildcontexts"])
+	additionalContexts, ok := queryparam.List(query, "additionalbuildcontexts")
+	if !ok {
+		return ambiguousQueryReason("build", "additionalbuildcontexts")
+	}
+	requiresRemoteContext, requiresBlindWrites, malformed := classifyPodmanAdditionalBuildContexts(additionalContexts)
 	if malformed != "" {
 		return "build denied: malformed additional build context: " + malformed
 	}
@@ -211,15 +209,11 @@ func (p buildPolicy) inspectPodmanBuildControls(r *http.Request, normalizedPath 
 	if requiresBlindWrites && !p.allowBlindWrites {
 		return "build denied: uninspectable additional build context requires insecure_allow_body_blind_writes"
 	}
-	rusageBlindWrites, malformed := classifyPodmanRusageControls(query)
-	if malformed != "" {
-		return "build denied: malformed rusage control: " + malformed
-	}
-	if rusageBlindWrites && !p.allowBlindWrites {
-		return "build denied: Podman resource usage log requires insecure_allow_body_blind_writes"
+	if denyReason := p.inspectPodmanRusageControls(query); denyReason != "" {
+		return denyReason
 	}
 
-	if queryControlPresent(query, "volume", "volumes", "transientrunmounts") && !p.allowBlindWrites {
+	if !p.allowBlindWrites && (queryparam.Present(query, "volume") || queryparam.Present(query, "volumes") || queryparam.Present(query, "transientrunmounts")) {
 		return "build denied: Podman host volume mounts require insecure_allow_body_blind_writes"
 	}
 
@@ -229,15 +223,6 @@ func (p buildPolicy) inspectPodmanBuildControls(r *http.Request, normalizedPath 
 	}
 
 	return ""
-}
-
-func foldQueryKeys(query url.Values) url.Values {
-	folded := make(url.Values, len(query))
-	for key, values := range query {
-		name := strings.ToLower(key)
-		folded[name] = append(folded[name], values...)
-	}
-	return folded
 }
 
 func classifyPodmanAdditionalBuildContexts(values []string) (requiresRemoteContext, requiresBlindWrites bool, malformed string) {
@@ -306,52 +291,74 @@ func classifyPodmanAdditionalBuildContexts(values []string) (requiresRemoteConte
 	return requiresRemoteContext, requiresBlindWrites, ""
 }
 
-func classifyPodmanRusageControls(query map[string][]string) (requiresBlindWrites bool, malformed string) {
-	for _, value := range query["rusage"] {
+// inspectPodmanRusageControls validates `rusage` and gates `rusagelogfile`,
+// which makes Podman's builder write its resource-usage report to that path on
+// the daemon host. Podman decodes both with gorilla/schema, so a spelling such
+// as `ruſagelogfile` (U+017F folds to s) names the log file there; a
+// strings.ToLower fold of the key does not see it, which is how the write got
+// past this check. A malformed rusage value is refused even with every
+// acknowledgment, because Podman answers it with a 400 and refusing it here
+// keeps the two in step.
+func (p buildPolicy) inspectPodmanRusageControls(query url.Values) string {
+	rusage, ok := queryparam.List(query, "rusage")
+	if !ok {
+		return ambiguousQueryReason("build", "rusage")
+	}
+	for _, value := range rusage {
 		if value == "on" {
 			continue
 		}
 		if _, err := strconv.ParseBool(value); err != nil {
-			return false, "invalid boolean value"
+			return "build denied: malformed rusage control: invalid boolean value"
 		}
 	}
 
-	for _, file := range query["rusagelogfile"] {
-		if file != "" {
-			requiresBlindWrites = true
-		}
+	if p.allowBlindWrites {
+		return ""
 	}
-
-	return requiresBlindWrites, ""
+	logFile, _, ok := queryparam.Scalar(query, "rusagelogfile")
+	if !ok {
+		return ambiguousQueryReason("build", "rusagelogfile")
+	}
+	if logFile != "" {
+		return "build denied: Podman resource usage log requires insecure_allow_body_blind_writes"
+	}
+	return ""
 }
 
-func queryControlPresent(query map[string][]string, names ...string) bool {
-	for _, name := range names {
-		if _, present := query[name]; present {
-			return true
-		}
-	}
-	return false
-}
-
+// spooledRequestBody is a request body an inspector copied to a temp file to
+// read it. file is the inspector's to seek and read. tooLarge reports a body
+// longer than the limit it was spooled under, of which the file holds the
+// first limit+1 bytes.
 type spooledRequestBody struct {
 	file     *os.File
-	path     string
 	tooLarge bool
-	io       ioDeps
 }
 
+// spoolRequestBodyToTempFile copies r.Body to a temp file, up to one byte past
+// maxBytes, and hands the file to the caller rewound.
+//
+// Once the copy succeeds, r.Body is the spool, whatever the caller makes of
+// it: a tempFileBody that reads every byte the client sent from the start,
+// from its own offset, so seeking the file to inspect it never moves what the
+// daemon is sent. That holds for a body the inspector refuses too. Warn and
+// audit forward a request the policy would deny, and this used to leave such
+// a request holding the client's body, read to the end and closed. A body
+// over the limit keeps the rest of the client's body unread behind the
+// spooled part. The filter closes r.Body, which removes the file, once the
+// rest of the chain has returned (see closeSpooledRequestBody).
 func (io_ ioDeps) spoolRequestBodyToTempFile(r *http.Request, prefix string, maxBytes int64) (*spooledRequestBody, int64, error) {
 	file, err := io_.CreateTempFile("", prefix)
 	if err != nil {
 		return nil, 0, fmt.Errorf("create temp file: %w", err)
 	}
 
-	limited := io.LimitReader(r.Body, maxBytes+1)
-	size, copyErr := io.Copy(file, limited)
-	closeErr := r.Body.Close()
-	if copyErr == nil && closeErr != nil {
-		copyErr = closeErr
+	size, copyErr := io.Copy(file, io.LimitReader(r.Body, maxBytes+1))
+	tooLarge := copyErr == nil && size > maxBytes
+	if !tooLarge {
+		if closeErr := r.Body.Close(); copyErr == nil && closeErr != nil {
+			copyErr = closeErr
+		}
 	}
 	if copyErr != nil {
 		name := file.Name()
@@ -360,35 +367,19 @@ func (io_ ioDeps) spoolRequestBodyToTempFile(r *http.Request, prefix string, max
 		return nil, 0, fmt.Errorf("spool build body: %w", copyErr)
 	}
 
+	body := &tempFileBody{file: file, path: file.Name(), io: io_, content: io.NewSectionReader(file, 0, size)}
+	if tooLarge {
+		body.rest = r.Body
+		body.content = io.MultiReader(body.content, r.Body)
+	} else {
+		r.ContentLength = size
+	}
+	r.Body = body
+
 	if err := io_.SeekToStart(file); err != nil {
-		name := file.Name()
-		_ = file.Close()
-		_ = io_.RemoveFilePath(name)
 		return nil, 0, fmt.Errorf("rewind temp file: %w", err)
 	}
-
-	return &spooledRequestBody{
-		file:     file,
-		path:     file.Name(),
-		tooLarge: size > maxBytes,
-		io:       io_,
-	}, size, nil
-}
-
-func (s *spooledRequestBody) requestBody() io.ReadCloser {
-	return &tempFileBody{file: s.file, path: s.path, io: s.io}
-}
-
-func (s *spooledRequestBody) closeAndRemove() {
-	if s == nil || s.file == nil {
-		return
-	}
-	_ = s.file.Close()
-	// s.path is always the name returned by os.CreateTemp inside this
-	// package — sockguard owns every byte of it. Gosec's taint tracker
-	// can't tell it's not a traversal hazard.
-	//nolint:gosec // G703: path is internally generated by os.CreateTemp
-	_ = s.io.RemoveFilePath(s.path)
+	return &spooledRequestBody{file: file, tooLarge: tooLarge}, size, nil
 }
 
 // tempFileBody is a request body an inspector spooled to a temp file. Closing
@@ -405,24 +396,35 @@ type tempFileBody struct {
 	file *os.File
 	path string
 	io   ioDeps
+	// content reads the body: the file from its first byte, then rest.
+	content io.Reader
+	// rest is what the client sent past the spooled bytes, or nil when the
+	// file holds the whole body.
+	rest io.Closer
 
 	closeOnce sync.Once
 	closeErr  error
 }
 
 func (b *tempFileBody) Read(p []byte) (int, error) {
-	return b.file.Read(p)
+	return b.content.Read(p)
 }
 
 func (b *tempFileBody) Close() error {
 	b.closeOnce.Do(func() {
 		closeErr := b.file.Close()
 		removeErr := b.io.RemoveFilePath(b.path)
+		var restErr error
+		if b.rest != nil {
+			restErr = b.rest.Close()
+		}
 		switch {
 		case closeErr != nil:
 			b.closeErr = closeErr
 		case removeErr != nil && !os.IsNotExist(removeErr):
 			b.closeErr = removeErr
+		case restErr != nil:
+			b.closeErr = restErr
 		}
 	})
 	return b.closeErr
@@ -456,57 +458,168 @@ func closeSpooledRequestBody(logger *slog.Logger, r *http.Request) func() {
 	}
 }
 
-func normalizeBuildDockerfilePath(value string) string {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return defaultBuildDockerfilePath
+// buildInstructionFiles names every file in the build context that the engine
+// serving normalizedPath could read build instructions from, given the
+// request's `dockerfile` value, or says why the value can't be inspected.
+//
+// The engines read the value differently, and nothing in a POST /build says
+// which one will answer it, so the compat path gets every file either engine
+// could read:
+//
+//   - dockerd reads the value as one path in the context, Dockerfile when it
+//     is empty, and reads dockerfile when a path named Dockerfile is missing
+//     (moby 28.5.1 builder/remotecontext/detect.go, withDockerfileFromContext;
+//     BuildKit 0.25.1 frontend/dockerui/config.go does the same for any path
+//     whose base is Dockerfile).
+//   - Podman reads it with url.Values.Get, decodes it as a JSON array of paths
+//     and takes it as one path when it is not one, which is how podman-remote
+//     sends its -f files. With no value it reads Dockerfile on the compat
+//     route and Containerfile, else Dockerfile, on its libpod one (Podman 5.8.6
+//     pkg/api/handlers/compat/images_build.go, processBuildContext).
+//
+// The libpod paths are Podman's alone. Both Containerfile and Dockerfile are
+// inspected there rather than only the one Podman picks: that refuses a build
+// whose unused Dockerfile carries a RUN, and in exchange the filter never has
+// to predict from the tar whether Podman will find a Containerfile on disk,
+// where a wrong guess in either direction builds a file nobody inspected.
+func buildInstructionFiles(normalizedPath, value string) ([]string, string) {
+	libpod := isLibpodBuildPath(normalizedPath)
+	var files []string
+	seen := make(map[string]struct{})
+	add := func(name string) {
+		if _, ok := seen[name]; !ok {
+			seen[name] = struct{}{}
+			files = append(files, name)
+		}
 	}
-	cleaned := path.Clean(strings.TrimPrefix(trimmed, "/"))
-	if cleaned == "." || cleaned == "" {
-		return defaultBuildDockerfilePath
+	if value == "" {
+		if libpod {
+			add(defaultBuildContainerfilePath)
+			add(defaultBuildDockerfilePath)
+		} else {
+			add(defaultBuildDockerfilePath)
+			add(strings.ToLower(defaultBuildDockerfilePath))
+		}
+		return files, ""
 	}
-	return cleaned
+
+	var podmanFiles []string
+	if err := json.Unmarshal([]byte(value), &podmanFiles); err != nil {
+		podmanFiles = []string{value}
+	}
+	for _, file := range podmanFiles {
+		name, denyReason := podmanBuildContextFile(file)
+		if denyReason != "" {
+			return nil, denyReason
+		}
+		add(name)
+	}
+	if !libpod {
+		name := buildContextEntryName(value)
+		add(name)
+		if path.Base(name) == defaultBuildDockerfilePath {
+			add(path.Join(path.Dir(name), strings.ToLower(defaultBuildDockerfilePath)))
+		}
+	}
+	if len(files) == 0 {
+		// `[]` or `null`: buildah refuses a build with no Containerfile.
+		return nil, fmt.Sprintf("build denied: dockerfile %q names no Dockerfile to inspect", value)
+	}
+	return files, ""
 }
 
-func (io_ ioDeps) extractBuildDockerfile(file *os.File, contentType string, dockerfilePath string) ([]byte, bool, error) {
+// podmanBuildContextFile maps one file Podman was asked to build onto the
+// context entry it names. Podman joins a relative path onto the unpacked
+// context, but fetches an http:// or https:// one, reads an absolute one from
+// the daemon host whenever the host has that file, follows ../ out of the
+// context, and runs a file whose name ends in .in through cpp before parsing
+// it (processBuildContext, and buildah 1.43.2 imagebuildah.BuildDockerfiles).
+// None of those can be inspected from the request, so each is refused.
+// podman-remote sends an absolute path for a Containerfile outside the build
+// context, which is refused here for the same reason.
+func podmanBuildContextFile(file string) (string, string) {
+	if strings.HasPrefix(file, "http://") || strings.HasPrefix(file, "https://") {
+		return "", fmt.Sprintf("build denied: remote Dockerfile %q cannot be inspected while RUN instructions are restricted", file)
+	}
+	if strings.HasPrefix(file, "/") {
+		return "", fmt.Sprintf("build denied: Dockerfile %q is an absolute path, which Podman reads from the daemon host, and cannot be inspected while RUN instructions are restricted", file)
+	}
+	name := path.Clean(file)
+	if name == ".." || strings.HasPrefix(name, "../") {
+		return "", fmt.Sprintf("build denied: Dockerfile %q is outside the build context and cannot be inspected while RUN instructions are restricted", file)
+	}
+	if strings.HasSuffix(name, ".in") {
+		return "", fmt.Sprintf("build denied: Dockerfile %q is run through the C preprocessor by Podman and cannot be inspected while RUN instructions are restricted", file)
+	}
+	return name, ""
+}
+
+// buildContextEntryName is where a path lands in an unpacked build context:
+// cleaned, with any leading slashes dropped, the way both engines' extractors
+// place a tar entry and dockerd resolves its `dockerfile`. The context root
+// itself is "". A name that climbs out with ../ lands at the root here; the
+// extractors refuse such an entry outright, so reading it as a context file
+// can only inspect more than the engine builds.
+func buildContextEntryName(name string) string {
+	return strings.TrimPrefix(path.Clean("/"+name), "/")
+}
+
+// inspectBuildContext reports why the build whose body is spooled in file may
+// not run while RUN instructions are restricted, or "" when every one of files
+// the context carries can be read and is free of RUN.
+func (io_ ioDeps) inspectBuildContext(file *os.File, contentType string, files []string) (string, error) {
 	if err := io_.SeekToStart(file); err != nil {
-		return nil, false, fmt.Errorf("rewind Dockerfile reader: %w", err)
+		return "", fmt.Errorf("rewind build context reader: %w", err)
 	}
 
-	// Docker build inputs usually arrive as gzip tar, then plain tar, and only sometimes as raw Dockerfile bytes, so probe in that order.
-	if dockerfile, ok, err := io_.extractDockerfileFromGzipTar(file, dockerfilePath); ok || err != nil {
-		return dockerfile, ok, err
+	// Docker build inputs usually arrive as gzip tar, then plain tar, and only
+	// sometimes as raw Dockerfile bytes, so probe in that order. A body that
+	// opens as a tar is a tar: what the scan finds in it is the answer, and
+	// falling through to read the archive as one Dockerfile would scan bytes
+	// the engine never parses as instructions.
+	if isTar, denyReason, err := io_.inspectGzipBuildContext(file, files); isTar || err != nil {
+		return denyReason, err
 	}
 	if err := io_.SeekToStart(file); err != nil {
-		return nil, false, fmt.Errorf("rewind Dockerfile reader: %w", err)
+		return "", fmt.Errorf("rewind build context reader: %w", err)
 	}
-	if dockerfile, ok, err := io_.extractDockerfileFromTar(file, dockerfilePath); ok || err != nil {
-		return dockerfile, ok, err
+	if isTar, denyReason, err := io_.inspectBuildContextTar(tar.NewReader(file), files); isTar || err != nil {
+		return denyReason, err
 	}
 	if err := io_.SeekToStart(file); err != nil {
-		return nil, false, fmt.Errorf("rewind Dockerfile reader: %w", err)
+		return "", fmt.Errorf("rewind build context reader: %w", err)
 	}
 
+	// BuildKit builds a body that is not an archive as the Dockerfile itself,
+	// whatever `dockerfile` says; the classic builder and Podman refuse it.
 	raw, err := io_.ReadAllLimited(file, maxBuildDockerfileBytes+1)
 	if err != nil {
-		return nil, false, fmt.Errorf("read raw Dockerfile: %w", err)
+		return "", fmt.Errorf("read raw Dockerfile: %w", err)
+	}
+	// The engines decompress bzip2, xz and zstd as well as gzip before they
+	// look for a tar. Sockguard only decodes gzip, so a compressed body that
+	// didn't open as a tar above can't be inspected.
+	if hasBuildContextCompressionMagic(raw) {
+		return uninspectableBuildFilesReason(files), nil
 	}
 	if len(raw) > maxBuildDockerfileBytes {
-		return nil, false, fmt.Errorf("%w: %d bytes", errBuildDockerfileTooLarge, maxBuildDockerfileBytes)
+		return "", fmt.Errorf("%w: %d bytes", errBuildDockerfileTooLarge, maxBuildDockerfileBytes)
 	}
 	if !looksLikeDockerfile(raw, contentType) {
-		return nil, false, nil
+		return uninspectableBuildFilesReason(files), nil
 	}
-	return raw, true, nil
+	return buildInstructionsDenyReason(raw, ""), nil
 }
 
-func (io_ ioDeps) extractDockerfileFromGzipTar(file *os.File, dockerfilePath string) ([]byte, bool, error) {
+func (io_ ioDeps) inspectGzipBuildContext(file *os.File, files []string) (bool, string, error) {
 	gzr, err := gzip.NewReader(file)
 	if err != nil {
-		if errors.Is(err, gzip.ErrHeader) {
-			return nil, false, nil
+		// A body shorter than a gzip header can't be gzip; the magic check
+		// before the raw read still refuses one that opens like it.
+		if errors.Is(err, gzip.ErrHeader) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return false, "", nil
 		}
-		return nil, false, fmt.Errorf("create gzip reader: %w", err)
+		return false, "", fmt.Errorf("create gzip reader: %w", err)
 	}
 
 	// Bound the *decompressed* byte count to defuse gzip bombs: a body within
@@ -514,8 +627,8 @@ func (io_ ioDeps) extractDockerfileFromGzipTar(file *os.File, dockerfilePath str
 	// GiB. Both the tar walk and the drain below read through this limit.
 	limited := &limitedReader{r: gzr, remaining: maxBuildContextDecompressedBytes}
 
-	dockerfile, ok, err := io_.extractDockerfileFromTarReader(tar.NewReader(limited), dockerfilePath)
-	if err == nil {
+	isTar, denyReason, err := io_.inspectBuildContextTar(tar.NewReader(limited), files)
+	if err == nil && isTar && denyReason == "" {
 		if drainErr := io_.DrainReader(limited); drainErr != nil {
 			err = fmt.Errorf("drain gzip stream: %w", drainErr)
 		}
@@ -526,9 +639,9 @@ func (io_ ioDeps) extractDockerfileFromGzipTar(file *os.File, dockerfilePath str
 	if errors.Is(err, errBuildContextDecompressedTooLarge) {
 		// Surface the sentinel unwrapped so the caller can map it to a clean
 		// 403 deny reason rather than a 500.
-		return nil, false, errBuildContextDecompressedTooLarge
+		return true, "", errBuildContextDecompressedTooLarge
 	}
-	return dockerfile, ok, err
+	return isTar, denyReason, err
 }
 
 // limitedReader returns its tooLarge sentinel once more than `remaining` bytes
@@ -571,57 +684,215 @@ func dockerfileSyntaxFrontend(raw []byte) string {
 	return dockerfileinspect.SyntaxFrontend(raw)
 }
 
-func (io_ ioDeps) extractDockerfileFromTar(file *os.File, dockerfilePath string) ([]byte, bool, error) {
-	return io_.extractDockerfileFromTarReader(tar.NewReader(file), dockerfilePath)
-}
+// maxTrackedBuildContextLinks bounds how many symlink entries one tar scan
+// remembers. Past it the scan stops telling links apart and refuses any later
+// entry below the context root that could land on an inspected file or on a
+// directory above one, so a context made of nothing but symlink headers costs
+// a bounded amount of memory.
+const maxTrackedBuildContextLinks = 1 << 16
 
-// extractDockerfileFromTarReader scans the entire tar for entries whose
-// normalized path matches dockerfilePath rather than returning on the first
-// match. Standard tar/archive extraction (both the classic builder's
-// untar-to-tempdir and BuildKit's fsutil-based context sync) is last-entry-
-// wins: a later same-named entry silently overwrites an earlier one on disk.
-// So a tar with two "Dockerfile" entries would let this scan inspect one
-// entry while the daemon builds from the other. There is no reliable way to
-// replicate the daemon's own extraction order/semantics here across builder
-// backends and versions, so on any duplicate match the context is treated as
-// un-inspectable (ok=false, matching the "unable to inspect" deny path) —
-// deny-on-ambiguity, not a best-effort guess at which entry wins.
-func (io_ ioDeps) extractDockerfileFromTarReader(tr *tar.Reader, dockerfilePath string) ([]byte, bool, error) {
-	want := normalizeBuildDockerfilePath(dockerfilePath)
-	var body []byte
+// inspectBuildContextTar scans a build context tar for files and reports
+// whether the stream was a tar at all, and if it was, why the build may not
+// run. It reads every entry rather than stopping at the first match, because
+// the engines unpack the whole archive before they read a file from it, and
+// a later entry can change what is on disk at a name an earlier one wrote:
+//
+//   - Extraction replaces whatever is at a path with the next entry for it,
+//     so a second entry at an inspected name, of any type, is refused. A
+//     regular file followed by a symlink at the same name was inspected while
+//     the engine read the symlink's target.
+//   - Extraction writes through a symlink an earlier entry left on the path,
+//     so `here -> .` followed by `here/Dockerfile` replaces Dockerfile without
+//     naming it. An entry sharing an inspected file's base name, and any
+//     symlink, which could chain one, is refused when it descends from a
+//     symlink entry.
+//   - A non-directory entry at the context root, or at a directory on the way
+//     to an inspected file, moves that file somewhere else and is refused.
+//
+// An inspected file present only as something other than a regular file is
+// refused too: following it would mean predicting where the link resolves on
+// the daemon's disk. A context carrying none of files is refused as
+// uninspectable, which is also how the engines answer it.
+//
+// The ancestor and symlink sets hold FNV-1a hashes, which keeps the scan
+// linear in the length of each name however deep it is. A collision can only
+// add a refusal.
+func (io_ ioDeps) inspectBuildContextTar(tr *tar.Reader, files []string) (bool, string, error) {
+	claims := make(map[string]int, len(files))
+	basenames := make(map[string]struct{}, len(files))
+	pathNames := make(map[string]struct{}, len(files))
+	ancestors := make(map[uint64]struct{})
+	for _, file := range files {
+		claims[file] = 0
+		basenames[path.Base(file)] = struct{}{}
+		for _, component := range strings.Split(file, "/") {
+			pathNames[component] = struct{}{}
+		}
+		buildContextPathAncestors(file, func(hash uint64) bool {
+			ancestors[hash] = struct{}{}
+			return false
+		})
+	}
+	links := make(map[uint64]struct{})
+	linksOverflowed := false
+	underLink := func(hash uint64) bool {
+		_, ok := links[hash]
+		return ok
+	}
+
 	found := false
-	for {
+	for entries := 0; ; entries++ {
 		header, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			return body, found, nil
+			break
 		}
 		if err != nil {
-			if strings.Contains(err.Error(), "invalid tar header") {
-				return nil, false, nil
+			if errors.Is(err, errBuildContextDecompressedTooLarge) {
+				return true, "", err
 			}
-			return nil, false, fmt.Errorf("read tar entry: %w", err)
+			if entries == 0 {
+				// Not a tar: the caller tries the next way of reading the body.
+				return false, "", nil
+			}
+			return true, "", fmt.Errorf("read tar entry: %w", err)
 		}
 
-		if header.Typeflag != tar.TypeReg {
+		name := buildContextEntryName(header.Name)
+		isDir := header.Typeflag == tar.TypeDir
+		isLink := header.Typeflag == tar.TypeSymlink
+		if name == "" {
+			if !isDir {
+				return true, buildContextEntryReason(header.Name, "replaces the build context root"), nil
+			}
 			continue
 		}
-		if normalizeBuildDockerfilePath(header.Name) != want {
+		if !isDir {
+			if _, ok := ancestors[buildContextPathHash(name)]; ok {
+				return true, buildContextEntryReason(header.Name, "replaces a directory on the path to a Dockerfile"), nil
+			}
+		}
+		base := path.Base(name)
+		if _, sharesName := basenames[base]; sharesName || isLink {
+			if buildContextPathAncestors(name, underLink) {
+				return true, buildContextEntryReason(header.Name, "is written through a symlink"), nil
+			}
+		}
+		if _, onPath := pathNames[base]; onPath && linksOverflowed && strings.Contains(name, "/") {
+			return true, buildContextEntryReason(header.Name, fmt.Sprintf("may be written through one of more than %d symlinks", maxTrackedBuildContextLinks)), nil
+		}
+		if isLink && !linksOverflowed {
+			if len(links) == maxTrackedBuildContextLinks {
+				linksOverflowed = true
+			} else {
+				links[buildContextPathHash(name)] = struct{}{}
+			}
+		}
+
+		seen, wanted := claims[name]
+		if !wanted {
 			continue
 		}
-
-		if found {
-			return nil, false, nil
+		claims[name] = seen + 1
+		if seen > 0 || header.Typeflag != tar.TypeReg {
+			return true, fmt.Sprintf("build denied: unable to inspect Dockerfile %q", name), nil
 		}
-
-		entryBody, err := io_.ReadAllLimited(tr, maxBuildDockerfileBytes+1)
+		body, err := io_.ReadAllLimited(tr, maxBuildDockerfileBytes+1)
 		if err != nil {
-			return nil, false, fmt.Errorf("read Dockerfile entry: %w", err)
+			return true, "", fmt.Errorf("read Dockerfile entry: %w", err)
 		}
-		if len(entryBody) > maxBuildDockerfileBytes {
-			return nil, false, fmt.Errorf("%w: %d bytes", errBuildDockerfileTooLarge, maxBuildDockerfileBytes)
+		if len(body) > maxBuildDockerfileBytes {
+			return true, "", fmt.Errorf("%w: %d bytes", errBuildDockerfileTooLarge, maxBuildDockerfileBytes)
 		}
-		body, found = entryBody, true
+		if denyReason := buildInstructionsDenyReason(body, name); denyReason != "" {
+			return true, denyReason, nil
+		}
+		found = true
 	}
+	if !found {
+		return true, uninspectableBuildFilesReason(files), nil
+	}
+	return true, "", nil
+}
+
+// buildContextPathHash is the FNV-1a hash of name.
+func buildContextPathHash(name string) uint64 {
+	hash := uint64(fnvOffset64)
+	for i := 0; i < len(name); i++ {
+		hash ^= uint64(name[i])
+		hash *= fnvPrime64
+	}
+	return hash
+}
+
+// buildContextPathAncestors calls visit with the buildContextPathHash of each
+// directory above name, outermost first, and reports whether a visit returned
+// true. It hashes name once, however deep it is.
+func buildContextPathAncestors(name string, visit func(uint64) bool) bool {
+	hash := uint64(fnvOffset64)
+	for i := 0; i < len(name); i++ {
+		if name[i] == '/' && visit(hash) {
+			return true
+		}
+		hash ^= uint64(name[i])
+		hash *= fnvPrime64
+	}
+	return false
+}
+
+const (
+	fnvOffset64 = 14695981039346656037
+	fnvPrime64  = 1099511628211
+)
+
+// buildInstructionsDenyReason reports why the build instructions in body,
+// read from the context file name ("" for a body that is the Dockerfile
+// itself), may not run while RUN instructions are restricted.
+func buildInstructionsDenyReason(body []byte, name string) string {
+	// A BuildKit `# syntax=` parser directive delegates parsing to an external
+	// frontend image that can treat arbitrary tokens as shell execution, so our
+	// RUN-instruction scan cannot be trusted. Deny it for the same reason remote
+	// contexts are denied while RUN is restricted: the content can't be inspected.
+	if frontend := dockerfileSyntaxFrontend(body); frontend != "" {
+		return fmt.Sprintf("build denied: BuildKit syntax frontend %q cannot be inspected while RUN instructions are restricted", frontend)
+	}
+	if !dockerfileContainsRunInstruction(body) {
+		return ""
+	}
+	if name == "" {
+		return "build denied: RUN instructions are not allowed"
+	}
+	return fmt.Sprintf("build denied: RUN instructions are not allowed in %q", name)
+}
+
+func buildContextEntryReason(entry, why string) string {
+	return fmt.Sprintf("build denied: unable to inspect build context: tar entry %q %s", entry, why)
+}
+
+func uninspectableBuildFilesReason(files []string) string {
+	quoted := make([]string, len(files))
+	for i, file := range files {
+		quoted[i] = strconv.Quote(file)
+	}
+	return "build denied: unable to inspect Dockerfile " + strings.Join(quoted, " or ")
+}
+
+// hasBuildContextCompressionMagic reports whether raw opens with a compression
+// format the engines' archive readers detect (moby and containers/storage
+// DetectCompression).
+func hasBuildContextCompressionMagic(raw []byte) bool {
+	for _, magic := range [][]byte{
+		{0x1F, 0x8B, 0x08},                   // gzip
+		{0x42, 0x5A, 0x68},                   // bzip2
+		{0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00}, // xz
+		{0x28, 0xB5, 0x2F, 0xFD},             // zstd
+	} {
+		if bytes.HasPrefix(raw, magic) {
+			return true
+		}
+	}
+	// A zstd stream may open with a skippable frame, magic 0x184D2A50 to
+	// 0x184D2A5F little-endian, which moby and BuildKit both detect.
+	return len(raw) >= 8 && binary.LittleEndian.Uint32(raw)&0xFFFFFFF0 == 0x184D2A50
 }
 
 func looksLikeDockerfile(raw []byte, contentType string) bool {

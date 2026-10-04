@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"slices"
 	"strings"
 
 	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/queryparam"
 )
 
 // ImagePullOptions configures query inspection for POST /images/create.
@@ -62,12 +62,13 @@ func newImagePullPolicy(opts ImagePullOptions) imagePullPolicy {
 //     then decodes its parameter with gorilla/schema v1.4.1, which matches the
 //     key in any case and keeps the last value. Read from Podman 5.8.6.
 //
-// So every value of each parameter is read, under every spelling of its key.
-// Any `fromSrc` value makes the request an import that allow_imports has to
-// permit, and every `fromImage` value has to pass the registry allowlist,
-// whether or not the request also names an import source. Returning as soon
-// as an import was allowed is what let `?fromSrc=-&fromImage=<any registry>`
-// pull from outside the allowlist.
+// So each parameter is read through queryparam, which refuses one that is
+// repeated or spelled other than `fromImage`/`fromSrc`, the only shape the
+// two engines read the same way. A `fromSrc` makes the request an import that
+// allow_imports has to permit, and a `fromImage` has to pass the registry
+// allowlist whether or not the request also names an import source.
+// Returning as soon as an import was allowed is what let
+// `?fromSrc=-&fromImage=<any registry>` pull from outside the allowlist.
 func (p imagePullPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
 	if r == nil || r.Method != http.MethodPost || normalizedPath != "/images/create" {
 		return "", nil
@@ -79,37 +80,23 @@ func (p imagePullPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath
 
 	query := logging.RequestQuery(r)
 	if !p.allowImports {
-		for _, fromSrc := range queryValuesInAnySpelling(query, "fromSrc") {
-			if fromSrc != "" {
-				return fmt.Sprintf("image pull denied: importing images from %q is not allowed", strings.TrimSpace(fromSrc)), nil
-			}
+		fromSrc, _, ok := queryparam.Scalar(query, "fromSrc")
+		if !ok {
+			return ambiguousQueryReason("image pull", "fromSrc"), nil
+		}
+		if fromSrc != "" {
+			return fmt.Sprintf("image pull denied: importing images from %q is not allowed", strings.TrimSpace(fromSrc)), nil
 		}
 	}
 
-	for _, fromImage := range queryValuesInAnySpelling(query, "fromImage") {
-		if denyReason := p.denyReasonForReference(strings.TrimSpace(fromImage), "image pull"); denyReason != "" {
-			return denyReason, nil
-		}
+	if p.allowAllRegistries {
+		return "", nil
 	}
-	return "", nil
-}
-
-// queryValuesInAnySpelling returns every value query carries under name,
-// whatever the case of the key. Spellings are visited in sorted order so the
-// first value to be refused is the same one on every request.
-func queryValuesInAnySpelling(query url.Values, name string) []string {
-	var keys []string
-	for key := range query {
-		if strings.EqualFold(key, name) {
-			keys = append(keys, key)
-		}
+	fromImage, _, ok := queryparam.Scalar(query, "fromImage")
+	if !ok {
+		return ambiguousQueryReason("image pull", "fromImage"), nil
 	}
-	slices.Sort(keys)
-	var values []string
-	for _, key := range keys {
-		values = append(values, query[key]...)
-	}
-	return values
+	return p.denyReasonForReference(strings.TrimSpace(fromImage), "image pull"), nil
 }
 
 // libpodRegistryTransportPrefix is the only non-bare reference spelling
@@ -144,8 +131,8 @@ const libpodImagePullSubject = "libpod image pull"
 //     structInfo.get matches tags with strings.EqualFold and whose scalar
 //     decode takes the LAST value when a key repeats. net/url does neither, so
 //     `?Reference=...` and `?reference=ok&reference=evil` would both slip past
-//     a plain Query().Get("reference"). Keys are folded (the same treatment
-//     the libpod build controls get) and every value is checked.
+//     a plain Query().Get("reference"). The parameter is read through
+//     queryparam, which refuses both shapes.
 //   - There is no `fromSrc` equivalent: libpod imports are a separate endpoint
 //     (POST /libpod/images/import), so allow_imports is not consulted here.
 //
@@ -164,21 +151,18 @@ func (p imagePullPolicy) inspectLibpod(_ *slog.Logger, r *http.Request, normaliz
 		return denyReason, nil
 	}
 
-	evaluated := false
-	for _, raw := range foldQueryKeys(logging.RequestQuery(r))["reference"] {
-		reference := strings.TrimPrefix(strings.TrimSpace(raw), libpodRegistryTransportPrefix)
-		if strings.TrimSpace(reference) == "" {
-			continue
-		}
-		evaluated = true
-		if denyReason := p.denyReasonForReference(reference, libpodImagePullSubject); denyReason != "" {
-			return denyReason, nil
-		}
+	if p.allowAllRegistries {
+		return "", nil
 	}
-	if !evaluated && !p.allowAllRegistries {
+	raw, _, ok := queryparam.Scalar(logging.RequestQuery(r), "reference")
+	if !ok {
+		return ambiguousQueryReason(libpodImagePullSubject, "reference"), nil
+	}
+	reference := strings.TrimPrefix(strings.TrimSpace(raw), libpodRegistryTransportPrefix)
+	if strings.TrimSpace(reference) == "" {
 		return libpodImagePullSubject + " denied: no reference parameter to check against the registry allowlist", nil
 	}
-	return "", nil
+	return p.denyReasonForReference(reference, libpodImagePullSubject), nil
 }
 
 // libpodImageImportSubject prefixes libpod-family import denial reasons.
@@ -221,28 +205,12 @@ func (p imagePullPolicy) inspectLibpodImport(_ *slog.Logger, r *http.Request, no
 		p.io = defaultIODeps()
 	}
 
-	spool, size, err := p.io.spoolRequestBodyForInspection(r, "sockguard-image-import-", maxLibpodImageImportBodyBytes)
-	if err != nil {
+	if _, _, err := p.io.spoolRequestBodyForInspection(r, "sockguard-image-import-", maxLibpodImageImportBodyBytes); err != nil {
 		if isBodyTooLargeError(err) {
 			return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("%s denied: request body exceeds %d byte limit", libpodImageImportSubject, maxLibpodImageImportBodyBytes))
 		}
 		return "", err
 	}
-	if spool == nil {
-		return "", nil
-	}
-	if size == 0 {
-		spool.closeAndRemove()
-		r.Body = http.NoBody
-		r.ContentLength = 0
-		return "", nil
-	}
-	if err := p.io.SeekToStart(spool.file); err != nil {
-		spool.closeAndRemove()
-		return "", fmt.Errorf("rewind libpod image import body: %w", err)
-	}
-	r.Body = spool.requestBody()
-	r.ContentLength = size
 	return "", nil
 }
 

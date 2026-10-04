@@ -48,18 +48,45 @@ func TestReadBoundedBodyRejectsOversizedPayload(t *testing.T) {
 	if !isBodyTooLargeError(err) {
 		t.Fatalf("readBoundedBody() error = %v, want body-too-large error", err)
 	}
+	// Warn and audit forward the refused request, so the bytes read to find
+	// it too large are put back in front of the rest.
+	if rest, err := io.ReadAll(req.Body); err != nil || !bytes.Equal(rest, payload) {
+		t.Fatalf("body after refusal = %q, %v; want %q", rest, err, payload)
+	}
 }
 
-func TestReadBoundedBodyContentLengthFastPathCloseError(t *testing.T) {
-	// ContentLength > max triggers the fast-path; if Body.Close() errors, the error propagates.
-	sentinel := io.ErrClosedPipe
+func TestReadBoundedBodyOversizedPayloadClosesTheOriginal(t *testing.T) {
+	original := &trackingReadCloser{reader: bytes.NewReader([]byte("12345"))}
 	req := httptest.NewRequest(http.MethodPost, "/secrets/create", nil)
-	req.Body = &erroringReadCloser{Reader: bytes.NewReader([]byte("12345")), closeErr: sentinel}
+	req.Body = original
+	req.ContentLength = -1
+
+	if _, err := readBoundedBody(req, 4); !isBodyTooLargeError(err) {
+		t.Fatalf("readBoundedBody() error = %v, want body-too-large error", err)
+	}
+	if original.closed {
+		t.Fatal("original body closed while it still has bytes to forward")
+	}
+	if err := req.Body.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if !original.closed {
+		t.Fatal("closing the restored body did not close the original")
+	}
+}
+
+func TestReadBoundedBodyContentLengthFastPathLeavesBodyUnread(t *testing.T) {
+	// ContentLength > max refuses the body without reading or closing it.
+	original := &trackingReadCloser{reader: bytes.NewReader([]byte("12345"))}
+	req := httptest.NewRequest(http.MethodPost, "/secrets/create", nil)
+	req.Body = original
 	req.ContentLength = 5
 
-	_, err := readBoundedBody(req, 4)
-	if err == nil {
-		t.Fatal("expected error from Body.Close(), got nil")
+	if _, err := readBoundedBody(req, 4); !isBodyTooLargeError(err) {
+		t.Fatalf("readBoundedBody() error = %v, want body-too-large error", err)
+	}
+	if req.Body != original || original.reads != 0 || original.closed {
+		t.Fatalf("body = %T read %d times, closed = %v; want the original untouched", req.Body, original.reads, original.closed)
 	}
 }
 

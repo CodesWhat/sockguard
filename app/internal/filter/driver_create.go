@@ -54,8 +54,20 @@ type driverCreatePolicy struct {
 	allowTemplateDrivers bool
 }
 
+// driverCreateRequest reads Driver as the object both engines decode, Name
+// and Options (moby 28.5.1 api/types/swarm SecretSpec.Driver, a *Driver;
+// Podman 5.8.6 pkg/domain/entities SecretCreateRequest.Driver, a
+// SecretDriverSpec). dockerd hands Options to the secrets plugin Name picks,
+// and Podman's compat handler passes on Name only. Any option is refused
+// without allow_custom_drivers either way, the rule the libpod route applies
+// to driveropts. A driver name is always custom here, `file` included,
+// because dockerd resolves every name as a plugin and the Docker CLI omits
+// Driver for the built-in store, which on Podman picks the file default.
 type driverCreateRequest struct {
-	Driver         string `json:"Driver"`
+	Driver struct {
+		Name    string            `json:"Name"`
+		Options map[string]string `json:"Options"`
+	} `json:"Driver"`
 	TemplateDriver string `json:"TemplateDriver"`
 	Templating     struct {
 		Name string `json:"Name"`
@@ -85,8 +97,11 @@ func (p driverCreatePolicy) inspect(logger *slog.Logger, r *http.Request, normal
 		return fmt.Sprintf("%s create denied: request body could not be inspected", p.kind), nil
 	}
 
-	if driver := strings.TrimSpace(req.Driver); driver != "" && !p.allowCustomDrivers {
+	if driver := strings.TrimSpace(req.Driver.Name); driver != "" && !p.allowCustomDrivers {
 		return fmt.Sprintf("%s create denied: driver %q is not allowed", p.kind, driver), nil
+	}
+	if len(req.Driver.Options) > 0 && !p.allowCustomDrivers {
+		return fmt.Sprintf("%s create denied: driver options are not allowed", p.kind), nil
 	}
 
 	templateDriver := strings.TrimSpace(req.TemplateDriver)
