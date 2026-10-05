@@ -16,8 +16,10 @@ const (
 	// the bound a build's names already have.
 	libpodCreateMaxReferences = buildMaxTags
 
-	libpodCreateDenyUnreadable = "owner policy denied %s with a %s reference it can't look up"
-	libpodCreateDenyTooMany    = "owner policy denied %s that names more resources than it can authorize"
+	libpodCreateDenyUnreadable      = "owner policy denied %s with a %s reference it can't look up"
+	libpodCreateDenyTooMany         = "owner policy denied %s that names more resources than it can authorize"
+	libpodCreateDenyImageVolumeName = "owner policy denied %s with an image volume that doesn't name its image by full ID, which Podman looks up again at every start"
+	libpodCreateDenyArtifactVolume  = "owner policy denied %s with an artifact volume: an artifact carries no owner label to check"
 )
 
 // libpodCreateReferences is what a libpod container or pod create names in its
@@ -25,8 +27,8 @@ const (
 // in libpod.go collect: other containers, networks and named volumes, and the
 // images it mounts as volumes. Every one of resources has to resolve to
 // something carrying the caller's owner label. denyReason is set instead when
-// the body names one in a way no lookup can answer for, and the create is
-// refused before anything is looked up.
+// the body names something no lookup at create can answer for, and the create
+// is refused before anything is looked up.
 //
 // It is its own field of ownershipRequestReferences, with its own refusal,
 // so that nothing else reading the same body can overwrite it.
@@ -51,6 +53,7 @@ type libpodCreateReferences struct {
 //     the list Podman reads when that map is empty (namespaces.go:363-372).
 //   - `volumes` lists named volumes. See namedVolumes.
 //   - `image_volumes` lists images to mount. See imageVolumes.
+//   - `artifact_volumes` lists artifacts to mount. See artifactVolumes.
 //
 // The rest of the SpecGenerator isn't read here:
 //
@@ -78,6 +81,7 @@ func libpodContainerCreateReferences(decoded map[string]any) *libpodCreateRefere
 	reader.containerList(decoded, "volumes_from", libpodVolumesFromContainer)
 	reader.containerList(decoded, "dependencyContainers", nil)
 	reader.shared(decoded)
+	reader.artifactVolumes(decoded, "artifact_volumes")
 	return reader.references()
 }
 
@@ -90,9 +94,9 @@ func libpodContainerCreateReferences(decoded map[string]any) *libpodCreateRefere
 // `cni_networks`, `volumes` and `image_volumes` become the infra container's,
 // and are resolved exactly as a container create's are. A key
 // PodSpecGenerator has no field for is dropped on the way:
-// `dependencyContainers` never reaches the infra container. Read from Podman
-// 5.8.6 pkg/api/handlers/libpod/pods.go:37-75, pkg/specgen/podspecgen.go and
-// pkg/specgen/generate/pod_create.go.
+// `dependencyContainers` and `artifact_volumes` never reach the infra
+// container. Read from Podman 5.8.6 pkg/api/handlers/libpod/pods.go:37-74,
+// pkg/specgen/podspecgen.go and pkg/specgen/generate/pod_create.go.
 //
 // `serviceContainerID` is the pod's own reference. Podman resolves it with
 // LookupContainer, records the pod on that container, and restarts the
@@ -343,6 +347,25 @@ func (r *libpodCreateReferenceReader) namedVolumes(decoded map[string]any, field
 
 // imageVolumes reads `image_volumes`, a list of ImageVolume objects whose
 // Source is the image to mount into the container.
+//
+// This is the one reference a check at create can't vouch for as written.
+// Podman doesn't resolve the source when it creates the container. It keeps
+// the string and looks it up at every start, with the lookup that tries a
+// name before an ID prefix, and nothing stops an image being untagged or
+// removed while a container still names it. So a caller could tag an image of
+// its own "abc", pass the check with it, untag it, and have the next start
+// mount whichever image has an ID starting with "abc", whoever owns it. Read
+// from Podman 5.8.6 libpod/options.go:1387-1403 and
+// libpod/container_internal_common.go:504-510, and go.podman.io/common
+// v0.67.1 libimage/runtime.go:274-345.
+//
+// A full image ID has none of that. The lookup matches it against image IDs
+// and nothing else, and an ID is derived from the image's config, labels
+// included, so it can only ever resolve to the image it resolved to here. So
+// a source has to be a full ID, and anything else is refused, whoever's image
+// it names today. The ID is then checked like the image a container is
+// created from: the caller's own passes, and an unlabeled one follows
+// allow_unowned_images.
 func (r *libpodCreateReferenceReader) imageVolumes(decoded map[string]any, field string) {
 	value, ok := libpodCreateField(decoded, field)
 	volumes, isList := libpodCreateObjectList(value)
@@ -352,13 +375,61 @@ func (r *libpodCreateReferenceReader) imageVolumes(decoded map[string]any, field
 	}
 	for _, volume := range volumes {
 		source, ok := libpodCreateStringField(volume, "Source")
-		if !ok || source == "" {
+		if !ok {
 			r.unreadable(field)
+			return
+		}
+		if !isFullImageID(source) {
+			r.deny(fmt.Sprintf(libpodCreateDenyImageVolumeName, r.create))
 			return
 		}
 		if !r.add(dockerresource.KindImage, source, field) {
 			return
 		}
+	}
+}
+
+// isFullImageID reports whether reference is a full image ID as libimage
+// reads one: 64 lowercase hex digits, with or without a "sha256:" prefix
+// (go.podman.io/common v0.67.1 libimage/runtime.go:274-296,
+// go.podman.io/image/v5 5.39.2 docker/reference IsFullIdentifier). Uppercase
+// hex, a shorter prefix and a name all go through the name lookup instead.
+func isFullImageID(reference string) bool {
+	id := strings.TrimPrefix(reference, "sha256:")
+	if len(id) != 64 {
+		return false
+	}
+	for i := 0; i < len(id); i++ {
+		if c := id[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// artifactVolumes refuses a container create that mounts an artifact with
+// `artifact_volumes`.
+//
+// Podman looks an artifact up by name at every start, as it does an image
+// volume, and here there's no spelling that makes a check hold: an artifact
+// has annotations and no labels, so owner isolation can't tell whose one is
+// even at create. Read from Podman 5.8.6 pkg/specgen/volumes.go:61-86 and
+// libpod/container_internal_common.go:544-556.
+func (r *libpodCreateReferenceReader) artifactVolumes(decoded map[string]any, field string) {
+	value, ok := libpodCreateField(decoded, field)
+	if !ok {
+		r.unreadable(field)
+		return
+	}
+	if value == nil {
+		return
+	}
+	volumes, isList := value.([]any)
+	switch {
+	case !isList:
+		r.unreadable(field)
+	case len(volumes) > 0:
+		r.deny(fmt.Sprintf(libpodCreateDenyArtifactVolume, r.create))
 	}
 }
 

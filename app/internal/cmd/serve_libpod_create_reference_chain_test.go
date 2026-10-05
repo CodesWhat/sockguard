@@ -549,6 +549,12 @@ func (d *libpodCreateRefChainDaemon) lookedUp() []string {
 // leaves a volume no owner can use. The network key "default" is the only
 // reference that isn't looked up, because Podman reads it as the network a
 // create naming none joins.
+//
+// An image volume has to name its image by full ID. Podman looks the source up
+// again at every start, by name before ID prefix, so team-a could pass the
+// check with an image of its own, untag it, and have the next start mount
+// whatever the name resolves to by then. An artifact volume is refused
+// outright: an artifact carries no labels to check.
 func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 	const (
 		containerURL = "/v5.0.0/libpod/containers/create"
@@ -566,6 +572,12 @@ func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 	}
 	unreadable := func(create, field string) string {
 		return fmt.Sprintf("libpod owner policy denied %s with a %s reference it can't look up", create, field)
+	}
+	imageByName := func(create string) string {
+		return "libpod owner policy denied " + create + " with an image volume that doesn't name its image by full ID, which Podman looks up again at every start"
+	}
+	imageVolume := func(source string) string {
+		return `"image_volumes":[{"Source":"` + source + `","Destination":"/img"}]`
 	}
 	container := func(fields string) string {
 		return `{"image":"alpine","systemd":"false",` + fields + `}`
@@ -662,10 +674,38 @@ func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 		{
 			name:        "container with another owner's image as a volume",
 			target:      containerURL,
-			body:        container(`"image_volumes":[{"Source":"theirs-img","Destination":"/img"}]`),
+			body:        container(imageVolume(createRefChainTheirsImageID)),
 			wantStatus:  http.StatusForbidden,
-			wantReason:  denied("image", "theirs-img", "container create image_volumes"),
-			wantLookups: []string{alpine, "images/theirs-img"},
+			wantReason:  denied("image", createRefChainTheirsImageID, "container create image_volumes"),
+			wantLookups: []string{alpine, "images/" + createRefChainTheirsImageID},
+		},
+		{
+			name:        "container with another owner's image as a volume by name",
+			target:      containerURL,
+			body:        container(imageVolume("theirs-img")),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  imageByName("container create"),
+			wantLookups: []string{alpine},
+		},
+		{
+			// A name is refused whoever holds it today: Podman reads it again
+			// at every start.
+			name:        "container with its own image as a volume by name",
+			target:      containerURL,
+			body:        container(imageVolume("mine-img")),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  imageByName("container create"),
+			wantLookups: []string{alpine},
+		},
+		{
+			// Once nothing holds the name "2222", it's a prefix of the other
+			// owner's image ID.
+			name:        "container with an image volume by ID prefix",
+			target:      containerURL,
+			body:        container(imageVolume("2222")),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  imageByName("container create"),
+			wantLookups: []string{alpine},
 		},
 		{
 			name:        "container depending on another owner's container",
@@ -688,9 +728,9 @@ func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 			name:        "container with an artifact as a volume",
 			target:      containerURL,
 			body:        container(`"artifact_volumes":[{"source":"theirs-artifact","destination":"/artifact"}]`),
-			wantStatus:  http.StatusCreated,
+			wantStatus:  http.StatusForbidden,
+			wantReason:  "libpod owner policy denied container create with an artifact volume: an artifact carries no owner label to check",
 			wantLookups: []string{alpine},
-			wantUses:    []string{"artifact theirs-artifact"},
 		},
 		{
 			// Podman 5.8.6 decodes devices_from and never reads it.
@@ -741,10 +781,18 @@ func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 			// label is anyone's to use.
 			name:        "container with an image nobody owns as a volume",
 			target:      containerURL,
-			body:        container(`"image_volumes":[{"Source":"alpine","Destination":"/img"}]`),
+			body:        container(imageVolume(createRefChainBaseImageID)),
 			wantStatus:  http.StatusCreated,
-			wantLookups: []string{alpine, alpine},
+			wantLookups: []string{alpine, "images/" + createRefChainBaseImageID},
 			wantUses:    []string{"image-volume alpine (unlabeled)"},
+		},
+		{
+			name:        "container with an image volume by an ID nothing holds",
+			target:      containerURL,
+			body:        container(imageVolume(strings.Repeat("9", 64))),
+			wantStatus:  http.StatusNotFound,
+			wantReason:  unresolved("image", strings.Repeat("9", 64), "container create image_volumes"),
+			wantLookups: []string{alpine, "images/" + strings.Repeat("9", 64)},
 		},
 
 		{
@@ -793,11 +841,11 @@ func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 		{
 			name:       "container with its own resources",
 			target:     containerURL,
-			body:       container(`"volumes":[{"Name":"mine-data","Dest":"/data"}],"volumes_from":["mine-ctr:ro"],"dependencyContainers":["mine-ctr"],"cgroupns":{"nsmode":"container","value":"mine-ctr"},"netns":{"nsmode":"bridge"},"Networks":{"mine-net":{}},"image_volumes":[{"Source":"mine-img","Destination":"/img"}]`),
+			body:       container(`"volumes":[{"Name":"mine-data","Dest":"/data"}],"volumes_from":["mine-ctr:ro"],"dependencyContainers":["mine-ctr"],"cgroupns":{"nsmode":"container","value":"mine-ctr"},"netns":{"nsmode":"bridge"},"Networks":{"mine-net":{}},` + imageVolume("sha256:"+createRefChainMineImageID)),
 			wantStatus: http.StatusCreated,
 			wantLookups: []string{
 				"containers/mine-ctr", alpine,
-				"containers/mine-ctr", "networks/mine-net", "volumes/mine-data", "images/mine-img",
+				"containers/mine-ctr", "networks/mine-net", "volumes/mine-data", "images/sha256:" + createRefChainMineImageID,
 			},
 			wantUses: []string{
 				"cgroupns mine-ctr (team-a)",
@@ -830,7 +878,7 @@ func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 			// podman-remote sends the fields it has nothing for as null.
 			name:        "container with every reference field null",
 			target:      containerURL,
-			body:        container(`"volumes":null,"volumes_from":null,"dependencyContainers":null,"Networks":null,"cni_networks":null,"image_volumes":null,"cgroupns":{}`),
+			body:        container(`"volumes":null,"volumes_from":null,"dependencyContainers":null,"Networks":null,"cni_networks":null,"image_volumes":null,"artifact_volumes":null,"cgroupns":{}`),
 			wantStatus:  http.StatusCreated,
 			wantLookups: []string{alpine},
 			wantUses:    []string{},
@@ -993,10 +1041,17 @@ func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 		{
 			name:        "pod with another owner's image as a volume",
 			target:      podURL,
-			body:        pod(`"image_volumes":[{"Source":"theirs-img","Destination":"/img"}]`),
+			body:        pod(imageVolume(createRefChainTheirsImageID)),
 			wantStatus:  http.StatusForbidden,
-			wantReason:  denied("image", "theirs-img", "pod create image_volumes"),
-			wantLookups: []string{"images/theirs-img"},
+			wantReason:  denied("image", createRefChainTheirsImageID, "pod create image_volumes"),
+			wantLookups: []string{"images/" + createRefChainTheirsImageID},
+		},
+		{
+			name:       "pod with its own image as a volume by name",
+			target:     podURL,
+			body:       pod(imageVolume("mine-img")),
+			wantStatus: http.StatusForbidden,
+			wantReason: imageByName("pod create"),
 		},
 		{
 			name:        "pod with another owner's container as its service container",
@@ -1025,10 +1080,10 @@ func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 		{
 			name:       "pod with its own resources",
 			target:     podURL,
-			body:       pod(`"volumes":[{"Name":"mine-data","Dest":"/data"}],"volumes_from":["mine-ctr"],"serviceContainerID":"mine-ctr","netns":{"nsmode":"bridge"},"Networks":{"mine-net":{}},"image_volumes":[{"Source":"mine-img","Destination":"/img"}]`),
+			body:       pod(`"volumes":[{"Name":"mine-data","Dest":"/data"}],"volumes_from":["mine-ctr"],"serviceContainerID":"mine-ctr","netns":{"nsmode":"bridge"},"Networks":{"mine-net":{}},` + imageVolume(createRefChainMineImageID)),
 			wantStatus: http.StatusCreated,
 			wantLookups: []string{
-				"containers/mine-ctr", "networks/mine-net", "volumes/mine-data", "images/mine-img",
+				"containers/mine-ctr", "networks/mine-net", "volumes/mine-data", "images/" + createRefChainMineImageID,
 			},
 			wantUses: []string{
 				"image-volume mine-img (team-a)",

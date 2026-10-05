@@ -13,6 +13,13 @@ import (
 	"github.com/codeswhat/sockguard/app/internal/dockerresource"
 )
 
+// testImageID and testOtherImageID are full image IDs, the only way a create
+// may name an image volume.
+const (
+	testImageID      = "1111111111111111111111111111111111111111111111111111111111111111"
+	testOtherImageID = "2222222222222222222222222222222222222222222222222222222222222222"
+)
+
 func decodeLibpodCreateBody(t *testing.T, body string) map[string]any {
 	t.Helper()
 	var decoded map[string]any
@@ -51,7 +58,7 @@ func TestLibpodContainerCreateReferencesReadsEveryReferenceField(t *testing.T) {
 				"Networks":{"b-net":{},"a-net":{"aliases":["x"]}},
 				"cni_networks":["c-net"],
 				"volumes":[{"Name":"data","Dest":"/data"}],
-				"image_volumes":[{"Source":"tools:latest","Destination":"/tools"}]
+				"image_volumes":[{"Source":"` + testImageID + `","Destination":"/tools"},{"Source":"sha256:` + testOtherImageID + `"}]
 			}`,
 			want: []string{
 				"containers web <- container create volumes_from",
@@ -61,7 +68,8 @@ func TestLibpodContainerCreateReferencesReadsEveryReferenceField(t *testing.T) {
 				"networks b-net <- container create Networks",
 				"networks c-net <- container create cni_networks",
 				"volumes data <- container create volumes",
-				"images tools:latest <- container create image_volumes",
+				"images " + testImageID + " <- container create image_volumes",
+				"images sha256:" + testOtherImageID + " <- container create image_volumes",
 			},
 		},
 		{
@@ -112,22 +120,22 @@ func TestLibpodContainerCreateReferencesReadsEveryReferenceField(t *testing.T) {
 		},
 		{
 			name: "null fields name nothing",
-			body: `{"volumes_from":null,"dependencyContainers":null,"Networks":null,"cni_networks":null,"volumes":null,"image_volumes":null}`,
+			body: `{"volumes_from":null,"dependencyContainers":null,"Networks":null,"cni_networks":null,"volumes":null,"image_volumes":null,"artifact_volumes":null}`,
 		},
 		{
 			name: "empty fields name nothing",
-			body: `{"volumes_from":[],"dependencyContainers":[],"Networks":{},"cni_networks":[],"volumes":[],"image_volumes":[]}`,
+			body: `{"volumes_from":[],"dependencyContainers":[],"Networks":{},"cni_networks":[],"volumes":[],"image_volumes":[],"artifact_volumes":[]}`,
 		},
 		{
 			name: "keys in another case",
-			body: `{"VOLUMES_FROM":["web"],"DependencyContainers":["cache"],"networks":{"net":{}},"CNI_Networks":["cni"],"Volumes":[{"name":"data"}],"Image_Volumes":[{"SOURCE":"tools"}]}`,
+			body: `{"VOLUMES_FROM":["web"],"DependencyContainers":["cache"],"networks":{"net":{}},"CNI_Networks":["cni"],"Volumes":[{"name":"data"}],"Image_Volumes":[{"SOURCE":"` + testImageID + `"}]}`,
 			want: []string{
 				"containers web <- container create volumes_from",
 				"containers cache <- container create dependencyContainers",
 				"networks net <- container create Networks",
 				"networks cni <- container create cni_networks",
 				"volumes data <- container create volumes",
-				"images tools <- container create image_volumes",
+				"images " + testImageID + " <- container create image_volumes",
 			},
 		},
 		{
@@ -178,7 +186,7 @@ func TestLibpodPodCreateReferencesReadsEveryReferenceField(t *testing.T) {
 				"Networks":{"net":{}},
 				"cni_networks":["cni"],
 				"volumes":[{"Name":"data","Dest":"/data"}],
-				"image_volumes":[{"Source":"tools","Destination":"/tools"}]
+				"image_volumes":[{"Source":"` + testImageID + `","Destination":"/tools"}]
 			}`,
 			want: []string{
 				"containers web <- pod create volumes_from",
@@ -186,7 +194,7 @@ func TestLibpodPodCreateReferencesReadsEveryReferenceField(t *testing.T) {
 				"networks net <- pod create Networks",
 				"networks cni <- pod create cni_networks",
 				"volumes data <- pod create volumes",
-				"images tools <- pod create image_volumes",
+				"images " + testImageID + " <- pod create image_volumes",
 			},
 		},
 		{name: "an empty service container names nothing", body: `{"serviceContainerID":""}`},
@@ -200,6 +208,10 @@ func TestLibpodPodCreateReferencesReadsEveryReferenceField(t *testing.T) {
 			// PodSpecGenerator has no such field, so Podman drops it.
 			name: "dependencyContainers isn't a pod create field",
 			body: `{"dependencyContainers":["web"]}`,
+		},
+		{
+			name: "artifact_volumes isn't a pod create field",
+			body: `{"artifact_volumes":[{"source":"models","destination":"/models"}]}`,
 		},
 	}
 	for _, tt := range tests {
@@ -252,10 +264,9 @@ func TestLibpodCreateReferencesRefuseWhatTheyCannotRead(t *testing.T) {
 		{name: "volumes with a numeric name", body: `{"volumes":[{"Name":5}]}`, field: "volumes"},
 		{name: "image_volumes as an object", body: `{"image_volumes":{"Source":"tools"}}`, field: "image_volumes"},
 		{name: "image_volumes holding a null", body: `{"image_volumes":[null]}`, field: "image_volumes"},
-		{name: "image_volumes with no source", body: `{"image_volumes":[{"Destination":"/tools"}]}`, field: "image_volumes"},
-		{name: "image_volumes with an empty source", body: `{"image_volumes":[{"Source":""}]}`, field: "image_volumes"},
-		{name: "image_volumes with a null source", body: `{"image_volumes":[{"Source":null}]}`, field: "image_volumes"},
 		{name: "image_volumes with a source that isn't a string", body: `{"image_volumes":[{"Source":{}}]}`, field: "image_volumes"},
+		{name: "artifact_volumes as an object", body: `{"artifact_volumes":{"source":"models"}}`, field: "artifact_volumes"},
+		{name: "artifact_volumes as a string", body: `{"artifact_volumes":"models"}`, field: "artifact_volumes"},
 		{name: "pod serviceContainerID as a list", pod: true, body: `{"serviceContainerID":["web"]}`, field: "serviceContainerID"},
 		{name: "pod serviceContainerID as a number", pod: true, body: `{"serviceContainerID":7}`, field: "serviceContainerID"},
 		{name: "pod volumes_from as a string", pod: true, body: `{"volumes_from":"web"}`, field: "volumes_from"},
@@ -320,8 +331,13 @@ func TestLibpodCreateReferencesRefuseAKeySpelledTwoWays(t *testing.T) {
 		},
 		{
 			name:  "an image volume's source",
-			body:  map[string]any{"image_volumes": []any{map[string]any{"Source": "mine", "source": "theirs"}}},
+			body:  map[string]any{"image_volumes": []any{map[string]any{"Source": testImageID, "source": testOtherImageID}}},
 			field: "image_volumes",
+		},
+		{
+			name:  "artifact_volumes",
+			body:  map[string]any{"artifact_volumes": []any{}, "Artifact_Volumes": []any{map[string]any{"source": "theirs"}}},
+			field: "artifact_volumes",
 		},
 	}
 	for _, tt := range tests {
@@ -343,6 +359,80 @@ func TestLibpodCreateReferencesRefuseAKeySpelledTwoWays(t *testing.T) {
 			t.Fatalf("references = %+v, want denyReason %q", refs, want)
 		}
 	})
+}
+
+// TestLibpodCreateReferencesRefuseAnImageVolumeNotNamedByFullID pins the one
+// reference a lookup at create can't vouch for as written. Podman looks an
+// image volume's source up again at every start, by name before ID prefix, so
+// only a full image ID is sure to be the same image then.
+func TestLibpodCreateReferencesRefuseAnImageVolumeNotNamedByFullID(t *testing.T) {
+	t.Parallel()
+	sources := map[string]string{
+		"a name":                       `"tools"`,
+		"a name and tag":               `"registry.example/team/tools:1.2"`,
+		"a short ID":                   `"111111111111"`,
+		"an ID one digit short":        `"` + testImageID[:63] + `"`,
+		"an ID one digit long":         `"` + testImageID + `1"`,
+		"an uppercase ID":              `"` + strings.ToUpper(strings.Repeat("ab", 32)) + `"`,
+		"an ID with a non-hex digit":   `"` + testImageID[:63] + `g"`,
+		"a padded ID":                  `" ` + testImageID + `"`,
+		"a digest of another kind":     `"sha512:` + testImageID + `"`,
+		"a doubled prefix":             `"sha256:sha256:` + testImageID + `"`,
+		"a name with a digest":         `"tools@sha256:` + testImageID + `"`,
+		"an empty source":              `""`,
+		"a null source":                `null`,
+		"a name after an ID":           `"` + testImageID + `"},{"Source":"tools"`,
+		"a containers-storage address": `"containers-storage:` + testImageID + `"`,
+	}
+	for _, create := range []struct {
+		name string
+		read func(map[string]any) *libpodCreateReferences
+	}{
+		{name: "container create", read: libpodContainerCreateReferences},
+		{name: "pod create", read: libpodPodCreateReferences},
+	} {
+		want := fmt.Sprintf(libpodCreateDenyImageVolumeName, create.name)
+		for name, source := range sources {
+			t.Run(create.name+"/"+name, func(t *testing.T) {
+				t.Parallel()
+				refs := create.read(decodeLibpodCreateBody(t, `{"image_volumes":[{"Source":`+source+`,"Destination":"/tools"}]}`))
+				if refs == nil || refs.denyReason != want {
+					t.Fatalf("references = %+v, want denyReason %q", refs, want)
+				}
+			})
+		}
+		t.Run(create.name+"/no source", func(t *testing.T) {
+			t.Parallel()
+			refs := create.read(decodeLibpodCreateBody(t, `{"image_volumes":[{"Destination":"/tools"}]}`))
+			if refs == nil || refs.denyReason != want {
+				t.Fatalf("references = %+v, want denyReason %q", refs, want)
+			}
+		})
+	}
+}
+
+// TestLibpodContainerCreateReferencesRefuseAnArtifactVolume pins that a
+// container create mounting any artifact is refused: an artifact carries no
+// labels, so there's no owner for a lookup to report.
+func TestLibpodContainerCreateReferencesRefuseAnArtifactVolume(t *testing.T) {
+	t.Parallel()
+	want := fmt.Sprintf(libpodCreateDenyArtifactVolume, "container create")
+	for name, body := range map[string]string{
+		"an artifact by name":     `{"artifact_volumes":[{"source":"quay.io/team/models:latest","destination":"/models"}]}`,
+		"an artifact by digest":   `{"artifact_volumes":[{"source":"sha256:` + testImageID + `","destination":"/models"}]}`,
+		"an entry with no name":   `{"artifact_volumes":[{}]}`,
+		"a null entry":            `{"artifact_volumes":[null]}`,
+		"an entry of any shape":   `{"artifact_volumes":["models"]}`,
+		"the key in another case": `{"Artifact_Volumes":[{"source":"models"}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			refs := libpodContainerCreateReferences(decodeLibpodCreateBody(t, body))
+			if refs == nil || refs.denyReason != want {
+				t.Fatalf("references = %+v, want denyReason %q", refs, want)
+			}
+		})
+	}
 }
 
 // TestLibpodCreateReferencesKeepTheFirstRefusal pins that a later field can't
@@ -387,7 +477,7 @@ func TestLibpodCreateReferencesAreBounded(t *testing.T) {
 		"Networks":      `{"Networks":{` + list(libpodCreateMaxReferences+1, `"net-%d":{}`) + `}}`,
 		"cni_networks":  `{"cni_networks":[` + list(libpodCreateMaxReferences+1, `"net-%d"`) + `]}`,
 		"volumes":       `{"volumes":[` + list(libpodCreateMaxReferences+1, `{"Name":"vol-%d"}`) + `]}`,
-		"image_volumes": `{"image_volumes":[` + list(libpodCreateMaxReferences+1, `{"Source":"img-%d"}`) + `]}`,
+		"image_volumes": `{"image_volumes":[` + list(libpodCreateMaxReferences+1, `{"Source":"%064x"}`) + `]}`,
 		"across fields": `{"volumes_from":[` + list(libpodCreateMaxReferences, `"ctr-%d"`) + `],"volumes":[{"Name":"data"}]}`,
 	} {
 		t.Run("past the bound in "+field, func(t *testing.T) {
@@ -428,13 +518,13 @@ func TestMiddlewareChecksLibpodCreateReferences(t *testing.T) {
 		{name: "container Networks", path: "/libpod/containers/create", body: `{"Networks":{"target":{}}}`, kind: dockerresource.KindNetwork, id: "target", noun: "network", source: "container create Networks"},
 		{name: "container cni_networks", path: "/libpod/containers/create", body: `{"cni_networks":["target"]}`, kind: dockerresource.KindNetwork, id: "target", noun: "network", source: "container create cni_networks"},
 		{name: "container volumes", path: "/libpod/containers/create", body: `{"volumes":[{"Name":"target","Dest":"/data"}]}`, kind: dockerresource.KindVolume, id: "target", noun: "volume", source: "container create volumes"},
-		{name: "container image_volumes", path: "/libpod/containers/create", body: `{"image_volumes":[{"Source":"target","Destination":"/img"}]}`, kind: dockerresource.KindImage, id: "target", noun: "image", source: "container create image_volumes"},
+		{name: "container image_volumes", path: "/libpod/containers/create", body: `{"image_volumes":[{"Source":"` + testImageID + `","Destination":"/img"}]}`, kind: dockerresource.KindImage, id: testImageID, noun: "image", source: "container create image_volumes"},
 		{name: "pod volumes_from", path: "/libpod/pods/create", body: `{"volumes_from":["target"]}`, kind: dockerresource.KindContainer, id: "target", noun: "container", source: "pod create volumes_from"},
 		{name: "pod serviceContainerID", path: "/libpod/pods/create", body: `{"serviceContainerID":"target"}`, kind: dockerresource.KindContainer, id: "target", noun: "container", source: "pod create serviceContainerID"},
 		{name: "pod Networks", path: "/libpod/pods/create", body: `{"Networks":{"target":{}}}`, kind: dockerresource.KindNetwork, id: "target", noun: "network", source: "pod create Networks"},
 		{name: "pod cni_networks", path: "/libpod/pods/create", body: `{"cni_networks":["target"]}`, kind: dockerresource.KindNetwork, id: "target", noun: "network", source: "pod create cni_networks"},
 		{name: "pod volumes", path: "/libpod/pods/create", body: `{"volumes":[{"Name":"target","Dest":"/data"}]}`, kind: dockerresource.KindVolume, id: "target", noun: "volume", source: "pod create volumes"},
-		{name: "pod image_volumes", path: "/libpod/pods/create", body: `{"image_volumes":[{"Source":"target","Destination":"/img"}]}`, kind: dockerresource.KindImage, id: "target", noun: "image", source: "pod create image_volumes"},
+		{name: "pod image_volumes", path: "/libpod/pods/create", body: `{"image_volumes":[{"Source":"` + testImageID + `","Destination":"/img"}]}`, kind: dockerresource.KindImage, id: testImageID, noun: "image", source: "pod create image_volumes"},
 	}
 	outcomes := []struct {
 		name       string
@@ -574,7 +664,7 @@ func TestMiddlewareLibpodCreateImageVolumeFollowsUnownedImagePolicy(t *testing.T
 		t.Run(fmt.Sprintf("allow_unowned_images=%v", allowUnowned), func(t *testing.T) {
 			t.Parallel()
 			fi := fakeInspector{resources: map[string]map[string]inspectResult{
-				"images": {"base": {labels: map[string]string{}, found: true}},
+				"images": {testImageID: {labels: map[string]string{}, found: true}},
 			}}
 			opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner", AllowUnownedImages: allowUnowned}
 			handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -582,7 +672,7 @@ func TestMiddlewareLibpodCreateImageVolumeFollowsUnownedImagePolicy(t *testing.T
 			}))
 
 			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/libpod/containers/create", strings.NewReader(`{"image_volumes":[{"Source":"base","Destination":"/img"}]}`)))
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/libpod/containers/create", strings.NewReader(`{"image_volumes":[{"Source":"`+testImageID+`","Destination":"/img"}]}`)))
 
 			want := http.StatusForbidden
 			if allowUnowned {

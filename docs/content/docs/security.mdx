@@ -324,9 +324,10 @@ hands to the pod's infra container, along with `infra_image` and
 one has to resolve to a resource carrying the caller's owner label. Another
 owner's resource, or one with no owner label, is a `403`, one the daemon can't
 resolve is a `404`, and a failed lookup is a `502`. An image mounted as a
-volume follows `allow_unowned_images` like the image a container is created
-from. `allow_cross_owner_namespace_sharing` opens the namespace targets,
-`cgroupns` included, and nothing else in the list.
+volume has to be named by its full image ID, and then follows
+`allow_unowned_images` like the image a container is created from.
+`allow_cross_owner_namespace_sharing` opens the namespace targets, `cgroupns`
+included, and nothing else in the list.
 
 A few of those answers are worth knowing before you put a Podman client behind
 owner isolation:
@@ -347,9 +348,22 @@ owner isolation:
   `--network bridge`. The names the Docker-compatible create lets through
   unchecked (`bridge`, `host`, `none`) are ordinary network names to a libpod
   create, which Podman lets anyone create, so they're looked up here.
+- An image volume is the one reference Podman doesn't resolve when it creates
+  the container. It keeps the `image_volumes` source as written and looks it
+  up at every start, trying it as a name before an ID prefix, and an image can
+  be untagged or removed while a container still names it. So a check at
+  create says nothing about what a later start mounts. A client could tag an
+  image of its own `abc`, create a container that mounts `abc`, untag it, and
+  have the next start mount whichever image has an ID starting with `abc`. A
+  full image ID (64 lowercase hex digits, with or without `sha256:`) only ever
+  resolves to that one image, so that's the only source accepted. A name, a
+  tag or a short ID is refused with a `403`, whoever's image it is today. Get
+  the ID with `podman image inspect -f '{{.Id}}' <name>`.
+- `artifact_volumes` is refused whenever it lists anything. Podman looks an
+  artifact up by name at every start too, and an artifact carries no labels,
+  so there's no owner to check even at create.
 - `devices_from` isn't checked, because Podman 5.8.6 decodes it and never
-  reads it. `artifact_volumes` isn't either: an artifact carries no labels, so
-  there's no owner to look up.
+  reads it.
 - Host paths aren't checked by this layer. `rootfs`, `overlay_volumes` and
   bind `mounts` name a path on the daemon host, and a path has no owner label
   to look up.

@@ -276,7 +276,10 @@ same way they cover Docker-compat:
   podman-remote sends it as the `Networks` key `default`, which isn't looked
   up, and so does a create with no `--network` at all. `--volumes-from`,
   `--requires` and `--network <name>` need a container or network of the
-  caller's own. See
+  caller's own. An image volume has to name its image by full ID
+  (`--mount type=image,source=<id>`), because Podman looks the source up
+  again at every start, and an artifact volume (`--mount type=artifact`) is
+  refused, because an artifact carries no labels. See
   [Owner Label Isolation](/security#layer-6-owner-label-isolation) for the
   rest.
 - Every filter-capable libpod list and every path-targeted read for containers,
