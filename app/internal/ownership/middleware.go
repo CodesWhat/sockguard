@@ -139,6 +139,11 @@ type ownershipRequestReferences struct {
 	// reference, one the daemon can't resolve is no denial: the request then
 	// creates it. See checkExistingOwnershipReferences.
 	existingResources []embeddedOwnershipReference
+	// libpodCreate carries what a libpod container or pod create names besides
+	// its image, its pod and its namespace targets: other containers,
+	// networks, named volumes and image volumes, or the reason the body is
+	// refused for how it names one. See libpod_create_references.go.
+	libpodCreate *libpodCreateReferences
 }
 
 // Options configures per-proxy resource ownership labeling and enforcement.
@@ -490,6 +495,14 @@ func allowOwnershipRequestUnprefixed(
 		}
 
 		verdict, reason, err = checkExistingOwnershipReferences(ctx, inspectResource, refs.existingResources, opts)
+		if err != nil || verdict.denied() {
+			return verdict, reason, err
+		}
+		if verdict == verdictAllow {
+			strictest = verdictAllow
+		}
+
+		verdict, reason, err = checkLibpodCreateReferences(ctx, inspectResource, refs.libpodCreate, opts)
 		if err != nil || verdict.denied() {
 			return verdict, reason, err
 		}

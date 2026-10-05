@@ -30,10 +30,16 @@ import (
 // (libpodContainerCreateRequest) and POST /libpod/pods/create
 // (PodBasicConfig/PodNetworkConfig) — both SpecGenerator and
 // PodSpecGenerator expose the identical netns/pidns/ipcns/userns/utsns set.
-// cgroupns is intentionally excluded, mirroring
-// internal/filter/libpod_container_create.go's denyNamespaceSharingReason
-// (itself mirroring the Docker-compat containerCreatePolicy's own exclusion).
-var libpodNamespaceSharingFields = [...]string{"netns", "pidns", "ipcns", "userns", "utsns"}
+//
+// cgroupns is the SpecGenerator's alone, and it joins a container the same
+// way: namespaceOptions resolves its value with LookupContainer and the new
+// container shares that one's cgroup namespace and depends on it (Podman
+// 5.8.6 pkg/specgen/generate/namespaces.go:299-310). The Docker-compatible
+// create has no such form, since CgroupnsMode there is only "host" or
+// "private", which is why internal/filter's denyNamespaceSharingReason leaves
+// the field out. A pod spec has no cgroupns and Podman drops the key, so
+// reading it there checks a container the pod would never have joined.
+var libpodNamespaceSharingFields = [...]string{"netns", "pidns", "ipcns", "userns", "utsns", "cgroupns"}
 
 // mutateLibpodContainerCreateOwnershipBody injects the owner label into a
 // POST /libpod/containers/create body under the lowercase "labels" key
@@ -44,6 +50,16 @@ var libpodNamespaceSharingFields = [...]string{"netns", "pidns", "ipcns", "usern
 // {"nsmode":"container","value":"<ref>"} namespace-sharing target — the
 // libpod-shaped counterpart of mutateContainerCreateOwnershipBody's Docker
 // HostConfig.{NetworkMode,PidMode,IpcMode,UTSMode,UsernsMode} handling.
+//
+// The secrets the body mounts with `secrets` are references too. Each has to
+// resolve to a secret carrying the caller's owner label, like the pod, and a
+// body naming one the lookup can't answer for is refused. So is one that sets
+// a secret in the environment with `secret_env`, which Podman reads again at
+// every start. See libpodContainerCreateSecretReferences. The
+// Docker-compatible create has no such reference on either engine: its body
+// has no secret field, and Podman's compat handler never fills the
+// SpecGenerator's (Podman 5.8.6 pkg/api/handlers/types.go:150-158 and
+// compat/containers_create.go).
 func mutateLibpodContainerCreateOwnershipBody(r *http.Request, labelKey, owner string) (*ownershipRequestReferences, error) {
 	refs := &ownershipRequestReferences{}
 	err := mutateJSONBody(r, func(decoded map[string]any) error {
@@ -54,6 +70,7 @@ func mutateLibpodContainerCreateOwnershipBody(r *http.Request, labelKey, owner s
 		labels[labelKey] = owner
 
 		refs.namespaceContainers = libpodNamespaceRefs(decoded)
+		refs.libpodCreate = libpodContainerCreateReferences(decoded)
 
 		for _, image := range filter.FoldedStrings(decoded, "image") {
 			appendEmbeddedOwnershipReference(&refs.embeddedResources, dockerresource.KindImage, image, "libpod container create image")
@@ -61,6 +78,10 @@ func mutateLibpodContainerCreateOwnershipBody(r *http.Request, labelKey, owner s
 		for _, pod := range filter.FoldedStrings(decoded, "pod") {
 			appendEmbeddedOwnershipReference(&refs.embeddedResources, dockerresource.KindLibpodPod, pod, "libpod container create pod")
 		}
+
+		secrets, denyReason := libpodContainerCreateSecretReferences(decoded)
+		refs.denyReason = denyReason
+		refs.embeddedResources = append(refs.embeddedResources, secrets...)
 		return nil
 	})
 	return refs, err
@@ -79,6 +100,12 @@ func mutateLibpodContainerCreateOwnershipBody(r *http.Request, labelKey, owner s
 // exactly like container-create's own "image" field; an empty infra_image —
 // Podman's built-in default pause image — never appears here since
 // FoldedStrings skips empty/absent values).
+//
+// A pod create names no secret. PodSpecGenerator has no field for one, and the
+// handler fills the infra container's spec by marshaling the pod spec it
+// decoded, so a `secrets` or `secret_env` key in the body is dropped before
+// any container exists (Podman 5.8.6 pkg/specgen/podspecgen.go and
+// pkg/api/handlers/libpod/pods.go:37-65).
 func mutateLibpodPodCreateOwnershipBody(r *http.Request, labelKey, owner string) (*ownershipRequestReferences, error) {
 	refs := &ownershipRequestReferences{}
 	err := mutateJSONBody(r, func(decoded map[string]any) error {
@@ -89,6 +116,7 @@ func mutateLibpodPodCreateOwnershipBody(r *http.Request, labelKey, owner string)
 		labels[labelKey] = owner
 
 		refs.namespaceContainers = libpodNamespaceRefs(decoded)
+		refs.libpodCreate = libpodPodCreateReferences(decoded)
 
 		for _, infraImage := range filter.FoldedStrings(decoded, "infra_image") {
 			appendEmbeddedOwnershipReference(&refs.embeddedResources, dockerresource.KindImage, infraImage, "libpod pod create infra_image")
@@ -100,7 +128,7 @@ func mutateLibpodPodCreateOwnershipBody(r *http.Request, labelKey, owner string)
 
 // libpodNamespaceRefs extracts every distinct "container:<ref>"-equivalent
 // namespace-sharing target from a decoded libpod container-create or
-// pod-create body's netns/pidns/ipcns/userns/utsns fields. Key matching is
+// pod-create body's netns/pidns/ipcns/userns/utsns/cgroupns fields. Key matching is
 // case-INSENSITIVE via filter.FoldedObjects/FoldedStrings for the same
 // reason containerCreateNamespaceRefs folds Docker's HostConfig keys: a
 // crafted case-variant field name must not smuggle a namespace join past

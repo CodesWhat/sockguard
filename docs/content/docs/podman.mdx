@@ -324,9 +324,42 @@ same way they cover Docker-compat:
   back the existing secret's ID, so the named secret has to be absent or
   the caller's own. Another owner's secret, or an unlabeled one, is a
   `403`. See [Security](/security) for the details.
+- `POST /libpod/containers/create` is also checked against the secrets it
+  mounts with `secrets`. Each one has to be the caller's own: another owner's
+  secret, or an unlabeled one, is a `403`, and a name nobody holds is a `404`.
+  An empty source, `.`, `..`, and a reference that could be a secret ID or an
+  ID prefix (lowercase hex, 25 characters or fewer) are refused without a
+  lookup, so name a secret by its name and keep that name from being all hex
+  digits. A create that sets a secret in the environment with `secret_env` is
+  refused, because Podman reads an environment secret again by name at every
+  start and exec, and by then the name may be another owner's secret. Use
+  `--secret name` and read `/run/secrets/name` in place of
+  `--secret name,type=env`. See
+  [Owner Label Isolation](/security#layer-6-owner-label-isolation) for why.
 - Pods have no Docker-compat equivalent, so they get a dedicated
   `KindLibpodPod` resource kind with its own list/inspect owner-filtering
   and visibility coverage.
+- A container or pod create is checked against everything its body names,
+  not only its image and pod. On `POST /libpod/containers/create` that's each
+  namespace target (`cgroupns` included), each `volumes_from` and
+  `dependencyContainers` container, each named volume in `volumes`, each
+  image in `image_volumes`, and each network in `Networks` and `cni_networks`.
+  `POST /libpod/pods/create` gets the same volume, network and `volumes_from`
+  checks, plus `serviceContainerID`. Each has to be the caller's own: another
+  owner's resource, or an unlabeled one, is a `403`, and one that doesn't
+  exist is a `404`. That includes a named volume nothing holds yet, so
+  `podman run -v newvol:/data` is refused until `podman volume create newvol`
+  has made it. It also includes the default network under its real name, so
+  `--network podman` is refused. `--network bridge` passes, because
+  podman-remote sends it as the `Networks` key `default`, which isn't looked
+  up, and so does a create with no `--network` at all. `--volumes-from`,
+  `--requires` and `--network <name>` need a container or network of the
+  caller's own. An image volume has to name its image by full ID
+  (`--mount type=image,source=<id>`), because Podman looks the source up
+  again at every start, and an artifact volume (`--mount type=artifact`) is
+  refused, because an artifact carries no labels. See
+  [Owner Label Isolation](/security#layer-6-owner-label-isolation) for the
+  rest.
 - Every filter-capable libpod list and every path-targeted read for containers,
   images, pods, networks, volumes, and secrets is owner-filtered and
   visibility-filtered, so switching a client from Docker-compat to a native
