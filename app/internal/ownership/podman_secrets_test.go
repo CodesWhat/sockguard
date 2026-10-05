@@ -294,3 +294,218 @@ func TestLibpodSecretCreateFlagsLookUpTheNamedSecret(t *testing.T) {
 		})
 	}
 }
+
+// TestLibpodContainerCreateLooksUpTheSecretsItNames pins which secrets a
+// libpod container create is checked against, in what order, and what each
+// lookup answer does. A body naming a secret the lookup can't vouch for is
+// refused before anything is looked up. The chain test
+// TestServeChainLibpodContainerCreateSecretsAreOwnerChecked drives the same
+// check against a daemon that resolves secrets the way Podman does.
+func TestLibpodContainerCreateLooksUpTheSecretsItNames(t *testing.T) {
+	t.Parallel()
+	const (
+		fullID     = "0123456789abcdef012345678"
+		longerThan = fullID + "9"
+	)
+	secrets := map[string]inspectResult{
+		"theirs":     {labels: map[string]string{DefaultLabelKey: "team-b"}, found: true},
+		"mine":       {labels: map[string]string{DefaultLabelKey: "team-a"}, found: true},
+		"also-mine":  {labels: map[string]string{DefaultLabelKey: "team-a"}, found: true},
+		"third-mine": {labels: map[string]string{DefaultLabelKey: "team-a"}, found: true},
+		"CAFE":       {labels: map[string]string{DefaultLabelKey: "team-a"}, found: true},
+		"cafe-1":     {labels: map[string]string{DefaultLabelKey: "team-a"}, found: true},
+		longerThan:   {labels: map[string]string{DefaultLabelKey: "team-a"}, found: true},
+		"unowned":    {labels: map[string]string{}, found: true},
+		" padded":    {labels: map[string]string{DefaultLabelKey: "team-b"}, found: true},
+		"padded":     {labels: map[string]string{DefaultLabelKey: "team-a"}, found: true},
+		"unlookup":   {err: fmt.Errorf("upstream returned 500")},
+	}
+	tests := []struct {
+		body        string
+		wantLookups []string
+		wantStatus  int
+		wantReason  string
+	}{
+		// Nothing named.
+		{body: `{}`, wantStatus: http.StatusAccepted},
+		{body: `{"secrets":[],"secret_env":{}}`, wantStatus: http.StatusAccepted},
+		{body: `{"secrets":null,"secret_env":null}`, wantStatus: http.StatusAccepted},
+
+		// Each source is looked up once, `secrets` in order and then
+		// `secret_env` by variable name.
+		{body: `{"secrets":[{"Source":"mine"}]}`, wantLookups: []string{"mine"}, wantStatus: http.StatusAccepted},
+		{body: `{"secret_env":{"K":"mine"}}`, wantLookups: []string{"mine"}, wantStatus: http.StatusAccepted},
+		{body: `{"secrets":[{"source":"mine"},{"source":"mine"}],"secret_env":{"A":"mine","B":"mine"}}`, wantLookups: []string{"mine"}, wantStatus: http.StatusAccepted},
+		{body: `{"secret_env":{"B":"mine","A":"also-mine"},"secrets":[{"Source":"third-mine"}]}`, wantLookups: []string{"third-mine", "also-mine", "mine"}, wantStatus: http.StatusAccepted},
+
+		// Another owner's, unlabeled, absent and unreadable secrets.
+		{body: `{"secrets":[{"Source":"theirs"}]}`, wantLookups: []string{"theirs"}, wantStatus: http.StatusForbidden, wantReason: `libpod owner policy denied access to secret "theirs" referenced by container create secrets`},
+		{body: `{"secret_env":{"K":"theirs"}}`, wantLookups: []string{"theirs"}, wantStatus: http.StatusForbidden, wantReason: `libpod owner policy denied access to secret "theirs" referenced by container create secret_env`},
+		{body: `{"secrets":[{"Source":"mine"},{"Source":"theirs"}]}`, wantLookups: []string{"mine", "theirs"}, wantStatus: http.StatusForbidden, wantReason: `libpod owner policy denied access to secret "theirs" referenced by container create secrets`},
+		{body: `{"secrets":[{"Source":"unowned"}]}`, wantLookups: []string{"unowned"}, wantStatus: http.StatusForbidden, wantReason: `libpod owner policy denied access to secret "unowned" referenced by container create secrets`},
+		{body: `{"secrets":[{"Source":"gone"}]}`, wantLookups: []string{"gone"}, wantStatus: http.StatusNotFound, wantReason: `libpod owner policy could not resolve secret "gone" referenced by container create secrets`},
+		{body: `{"secrets":[{"Source":"unlookup"}]}`, wantLookups: []string{"unlookup"}, wantStatus: http.StatusBadGateway},
+
+		// Podman doesn't trim a source, so neither does the lookup.
+		{body: `{"secrets":[{"Source":" padded"}]}`, wantLookups: []string{" padded"}, wantStatus: http.StatusForbidden, wantReason: `libpod owner policy denied access to secret " padded" referenced by container create secrets`},
+
+		// encoding/json matches keys in any letter case, and folds the long
+		// s (U+017F) to "s".
+		{body: `{"SECRETS":[{"SOURCE":"theirs"}]}`, wantLookups: []string{"theirs"}, wantStatus: http.StatusForbidden, wantReason: `libpod owner policy denied access to secret "theirs" referenced by container create secrets`},
+		{body: `{"Secret_Env":{"K":"theirs"}}`, wantLookups: []string{"theirs"}, wantStatus: http.StatusForbidden, wantReason: `libpod owner policy denied access to secret "theirs" referenced by container create secret_env`},
+		{body: `{"ſecrets":[{"ſource":"theirs"}]}`, wantLookups: []string{"theirs"}, wantStatus: http.StatusForbidden, wantReason: `libpod owner policy denied access to secret "theirs" referenced by container create secrets`},
+		{body: `{"ſecret_env":{"K":"theirs"}}`, wantLookups: []string{"theirs"}, wantStatus: http.StatusForbidden, wantReason: `libpod owner policy denied access to secret "theirs" referenced by container create secret_env`},
+
+		// Sources Podman resolves that can't be looked up, and shapes its
+		// decode refuses.
+		{body: `{"secrets":[{}]}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretReference},
+		{body: `{"secrets":[null]}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretReference},
+		{body: `{"secrets":[{"Source":""}]}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretReference},
+		{body: `{"secrets":[{"Source":null}]}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretReference},
+		{body: `{"secrets":[{"Source":"."}]}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretReference},
+		{body: `{"secrets":[{"Source":".."}]}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretReference},
+		{body: `{"secrets":[{"Source":"mine"},{"Target":"t"}]}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretReference},
+		{body: `{"secrets":"mine"}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretReference},
+		{body: `{"secrets":{"Source":"mine"}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretReference},
+		{body: `{"secrets":["mine"]}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretReference},
+		{body: `{"secrets":[{"Source":7}]}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretReference},
+		{body: `{"secret_env":{"K":""}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretReference},
+		{body: `{"secret_env":{"K":null}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretReference},
+		{body: `{"secret_env":{"K":".."}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretReference},
+		{body: `{"secret_env":{"K":["mine"]}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretReference},
+		{body: `{"secret_env":"mine"}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretReference},
+		{body: `{"secret_env":["mine"]}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretReference},
+
+		// A source that could be an ID or an ID prefix, whoever's it is.
+		{body: `{"secrets":[{"Source":"a"}]}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretID},
+		{body: `{"secrets":[{"Source":"cafe"}]}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretID},
+		{body: `{"secrets":[{"Source":"` + fullID + `"}]}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretID},
+		{body: `{"secret_env":{"K":"42"}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretID},
+		{body: `{"secrets":[{"Source":"mine"}],"secret_env":{"K":"db"}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretID},
+
+		// And ones that can only be a name.
+		{body: `{"secrets":[{"Source":"CAFE"}]}`, wantLookups: []string{"CAFE"}, wantStatus: http.StatusAccepted},
+		{body: `{"secrets":[{"Source":"cafe-1"}]}`, wantLookups: []string{"cafe-1"}, wantStatus: http.StatusAccepted},
+		{body: `{"secrets":[{"Source":"` + longerThan + `"}]}`, wantLookups: []string{longerThan}, wantStatus: http.StatusAccepted},
+	}
+	for _, tt := range tests {
+		t.Run(tt.body, func(t *testing.T) {
+			t.Parallel()
+			inspector := &recordingInspector{resources: map[string]map[string]inspectResult{string(dockerresource.KindSecret): secrets}}
+			opts := Options{Owner: "team-a", LabelKey: DefaultLabelKey}
+			var forwarded struct {
+				Labels map[string]string `json:"labels"`
+			}
+			handler := middlewareWithDeps(testLogger(), opts, inspector.inspectResource, inspector.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&forwarded); err != nil {
+					t.Errorf("decode forwarded body: %v", err)
+				}
+				w.WriteHeader(http.StatusAccepted)
+			}))
+
+			req := httptest.NewRequest(http.MethodPost, "/v5.0.0/libpod/containers/create", strings.NewReader(tt.body))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d; body: %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			var lookups []string
+			for _, call := range inspector.calls {
+				if call.kind != dockerresource.KindSecret {
+					t.Errorf("inspected %s %q, want only secrets", call.kind, call.id)
+				}
+				lookups = append(lookups, call.id)
+			}
+			if !slices.Equal(lookups, tt.wantLookups) {
+				t.Errorf("secret lookups = %q, want %q", lookups, tt.wantLookups)
+			}
+			if tt.wantReason != "" {
+				var denial struct {
+					Message string `json:"message"`
+				}
+				if err := json.Unmarshal(rec.Body.Bytes(), &denial); err != nil || denial.Message != tt.wantReason {
+					t.Errorf("body = %s, want message %q", rec.Body.String(), tt.wantReason)
+				}
+			}
+			if rec.Code == http.StatusAccepted && forwarded.Labels[DefaultLabelKey] != "team-a" {
+				t.Errorf("forwarded labels = %v, want the owner label stamped", forwarded.Labels)
+			}
+		})
+	}
+}
+
+// TestLibpodContainerCreateSecretRefusalKeepsTheOwnerStamp covers the rollout
+// contract for a create refused on its secrets: a warn profile forwards it,
+// and the container it creates still carries the owner label.
+func TestLibpodContainerCreateSecretRefusalKeepsTheOwnerStamp(t *testing.T) {
+	t.Parallel()
+	for _, body := range []string{
+		`{"secrets":[{"Source":""}]}`,
+		`{"secrets":[{"Source":"cafe"}]}`,
+		`{"secrets":[{"Source":"theirs"}]}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			t.Parallel()
+			inspector := fakeInspector{resources: map[string]map[string]inspectResult{string(dockerresource.KindSecret): {
+				"theirs": {labels: map[string]string{DefaultLabelKey: "team-b"}, found: true},
+			}}}
+			var forwarded struct {
+				Labels map[string]string `json:"labels"`
+			}
+			handler := middlewareWithDeps(testLogger(), Options{Owner: "team-a"}, inspector.inspectResource, inspector.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&forwarded); err != nil {
+					t.Errorf("decode forwarded body: %v", err)
+				}
+				w.WriteHeader(http.StatusAccepted)
+			}))
+
+			meta := &logging.RequestMeta{RolloutMode: "warn"}
+			req := httptest.NewRequest(http.MethodPost, "/v5.0.0/libpod/containers/create", strings.NewReader(body))
+			req = req.WithContext(logging.WithMeta(req.Context(), meta))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusAccepted, rec.Body.String())
+			}
+			if forwarded.Labels[DefaultLabelKey] != "team-a" {
+				t.Errorf("forwarded labels = %v, want the owner label stamped", forwarded.Labels)
+			}
+			if meta.ReasonCode != reasonCodeOwnerPolicyDeniedAccess {
+				t.Errorf("meta.ReasonCode = %q, want %q", meta.ReasonCode, reasonCodeOwnerPolicyDeniedAccess)
+			}
+		})
+	}
+}
+
+// TestCouldBePodmanSecretID pins the references Podman's Lookup could match
+// against a secret ID or a prefix of one: lowercase hex, no longer than an ID.
+func TestCouldBePodmanSecretID(t *testing.T) {
+	t.Parallel()
+	const fullID = "0123456789abcdef012345678"
+	tests := map[string]bool{
+		"":            false,
+		"a":           true,
+		"0":           true,
+		"db":          true,
+		"cafe":        true,
+		"ed25519":     true,
+		fullID:        true,
+		fullID + "9":  false,
+		"CAFE":        false,
+		"cafE":        false,
+		"cafe-1":      false,
+		"cafe ":       false,
+		" cafe":       false,
+		"g":           false,
+		"db_password": false,
+		"café":        false,
+		"0x1f":        false,
+	}
+	for reference, want := range tests {
+		if got := couldBePodmanSecretID(reference); got != want {
+			t.Errorf("couldBePodmanSecretID(%q) = %v, want %v", reference, got, want)
+		}
+	}
+}

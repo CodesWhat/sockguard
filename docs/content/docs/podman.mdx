@@ -258,6 +258,14 @@ same way they cover Docker-compat:
   back the existing secret's ID, so the named secret has to be absent or
   the caller's own. Another owner's secret, or an unlabeled one, is a
   `403`. See [Security](/security) for the details.
+- `POST /libpod/containers/create` is also checked against the secrets it
+  names in `secrets` and `secret_env`. Each one has to be the caller's own:
+  another owner's secret, or an unlabeled one, is a `403`, and a name nobody
+  holds is a `404`. An empty source, `.`, `..`, and a reference that could be
+  a secret ID or an ID prefix (lowercase hex, 25 characters or fewer) are
+  refused without a lookup, so name a secret by its name and keep that name
+  from being all hex digits. See
+  [Owner Label Isolation](/security#layer-6-owner-label-isolation) for why.
 - Pods have no Docker-compat equivalent, so they get a dedicated
   `KindLibpodPod` resource kind with its own list/inspect owner-filtering
   and visibility coverage.
