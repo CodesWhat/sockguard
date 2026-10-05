@@ -91,13 +91,19 @@ case, both of which Podman 5.8.6 answers with a 500.
 |---|---|---|---|
 | absent, empty, `default` | all | The daemon's `containers.conf` default, or the pod's namespace when the container joins a pod that shares it | none |
 | `private` | all | A new namespace of its own | none |
-| `host` | all | The host's | `allow_host_*` |
-| `path` | all | The namespace at `value`, which can be the host's or another container's | `allow_host_*`, and refused while `restrict_namespace_sharing` is on |
+| `host` | `netns`, `pidns`, `ipcns`, `userns` on a container create, `netns` on a pod create | The host's | `allow_host_*` |
+| `path` | the same fields as `host` | The namespace at `value`, which can be the host's or another container's | `allow_host_*`, and refused while `restrict_namespace_sharing` is on |
 | `container` | all | Another container's, which is the host's if that container is in it | `restrict_namespace_sharing`, and owner isolation |
-| `pod` | all | The pod infra container's | `libpod_pod_create`, and owner isolation on the `pod` it names |
+| `pod` | all | The pod infra container's, which is the host's if the pod was created in it | owner isolation on the `pod` it names. Pod create only gates the pod's `netns` |
 | `shareable`, `none` | `ipcns` | A new one | none |
 | `none`, `bridge`, `slirp4netns`, `pasta` | `netns` | A new one | none |
 | `auto`, `keep-id`, `no-map` | `userns` | A new one | none (`allow_custom_id_mappings` covers `idmappings`) |
+
+Not every namespace has a gate on the native routes. `utsns` and `cgroupns` on
+a container create, and the infra container's `pidns`, `ipcns`, `utsns` and
+`userns` on a pod create, aren't gated: `host` and `path` there reach Podman
+whatever the gates say, and a container that joins such a pod inherits the
+namespace. Deny those routes with a path rule if that matters to you.
 
 Keys are matched the way Podman's decoder matches them: in any letter case,
 with the last of a repeated key winning. A namespace field that isn't an
