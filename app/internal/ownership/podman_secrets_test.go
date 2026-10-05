@@ -438,6 +438,67 @@ func TestLibpodContainerCreateLooksUpTheSecretsItNames(t *testing.T) {
 	}
 }
 
+// TestLibpodContainerCreateChecksTheSecretsItForwards pins the two ways a body
+// can name `secrets` twice. Spelled in two letter cases, Podman's decode would
+// take whichever comes later, so the body is refused. Spelled the same way
+// twice, the later one is the one that's checked and the only one forwarded.
+func TestLibpodContainerCreateChecksTheSecretsItForwards(t *testing.T) {
+	t.Parallel()
+	secrets := map[string]inspectResult{
+		"theirs": {labels: map[string]string{DefaultLabelKey: "team-b"}, found: true},
+		"mine":   {labels: map[string]string{DefaultLabelKey: "team-a"}, found: true},
+	}
+	tests := []struct {
+		body          string
+		wantStatus    int
+		wantLookups   []string
+		wantForwarded []string
+	}{
+		{body: `{"secrets":[{"Source":"mine"}],"Secrets":[{"Source":"theirs"}]}`, wantStatus: http.StatusBadRequest},
+		{body: `{"secrets":[{"Source":"mine","source":"theirs"}]}`, wantStatus: http.StatusBadRequest},
+		{body: `{"secret_env":{},"SECRET_ENV":{"K":"theirs"}}`, wantStatus: http.StatusBadRequest},
+		{body: `{"secrets":[{"Source":"mine"}],"secrets":[{"Source":"theirs"}]}`, wantStatus: http.StatusForbidden, wantLookups: []string{"theirs"}},
+		{body: `{"secrets":[{"Source":"theirs"}],"secrets":[{"Source":"mine"}]}`, wantStatus: http.StatusAccepted, wantLookups: []string{"mine"}, wantForwarded: []string{"mine"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.body, func(t *testing.T) {
+			t.Parallel()
+			inspector := &recordingInspector{resources: map[string]map[string]inspectResult{string(dockerresource.KindSecret): secrets}}
+			var forwarded []string
+			handler := middlewareWithDeps(testLogger(), Options{Owner: "team-a"}, inspector.inspectResource, inspector.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body struct {
+					Secrets []struct{ Source string } `json:"secrets"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode forwarded body: %v", err)
+				}
+				for _, secret := range body.Secrets {
+					forwarded = append(forwarded, secret.Source)
+				}
+				w.WriteHeader(http.StatusAccepted)
+			}))
+
+			req := httptest.NewRequest(http.MethodPost, "/v5.0.0/libpod/containers/create", strings.NewReader(tt.body))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d; body: %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			var lookups []string
+			for _, call := range inspector.calls {
+				lookups = append(lookups, call.id)
+			}
+			if !slices.Equal(lookups, tt.wantLookups) {
+				t.Errorf("secret lookups = %q, want %q", lookups, tt.wantLookups)
+			}
+			if !slices.Equal(forwarded, tt.wantForwarded) {
+				t.Errorf("forwarded secrets = %q, want %q", forwarded, tt.wantForwarded)
+			}
+		})
+	}
+}
+
 // TestLibpodContainerCreateSecretRefusalKeepsTheOwnerStamp covers the rollout
 // contract for a create refused on its secrets: a warn profile forwards it,
 // and the container it creates still carries the owner label.
