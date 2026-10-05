@@ -259,12 +259,16 @@ same way they cover Docker-compat:
   the caller's own. Another owner's secret, or an unlabeled one, is a
   `403`. See [Security](/security) for the details.
 - `POST /libpod/containers/create` is also checked against the secrets it
-  names in `secrets` and `secret_env`. Each one has to be the caller's own:
-  another owner's secret, or an unlabeled one, is a `403`, and a name nobody
-  holds is a `404`. An empty source, `.`, `..`, and a reference that could be
-  a secret ID or an ID prefix (lowercase hex, 25 characters or fewer) are
-  refused without a lookup, so name a secret by its name and keep that name
-  from being all hex digits. See
+  mounts with `secrets`. Each one has to be the caller's own: another owner's
+  secret, or an unlabeled one, is a `403`, and a name nobody holds is a `404`.
+  An empty source, `.`, `..`, and a reference that could be a secret ID or an
+  ID prefix (lowercase hex, 25 characters or fewer) are refused without a
+  lookup, so name a secret by its name and keep that name from being all hex
+  digits. A create that sets a secret in the environment with `secret_env` is
+  refused, because Podman reads an environment secret again by name at every
+  start and exec, and by then the name may be another owner's secret. Use
+  `--secret name` and read `/run/secrets/name` in place of
+  `--secret name,type=env`. See
   [Owner Label Isolation](/security#layer-6-owner-label-isolation) for why.
 - Pods have no Docker-compat equivalent, so they get a dedicated
   `KindLibpodPod` resource kind with its own list/inspect owner-filtering

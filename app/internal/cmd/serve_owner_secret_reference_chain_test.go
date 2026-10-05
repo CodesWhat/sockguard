@@ -41,12 +41,15 @@ type chainCreatedContainer struct {
 // empty Source, and a null map value to an empty source. MakeContainer and
 // WithEnvSecrets then resolve every source with SecretsManager.Lookup and
 // fail the create on the first one that doesn't resolve. A mounted secret's
-// data is copied into the container at create and an environment secret's is
-// read at start, both by the resolved secret's name. Read from Podman 5.8.6
-// pkg/api/handlers/libpod/containers_create.go, pkg/specgen/specgen.go:201,
-// :351 and :647, pkg/specgen/generate/container_create.go:667-691,
-// libpod/options.go:1812-1830, libpod/runtime_ctr.go:479-484 and
-// libpod/container_internal_common.go:753-765.
+// data is copied into the container at create. An environment secret's is
+// read at every start and every exec, by the resolved secret's name, so what
+// this daemon records for one is only the first of those reads. Read from
+// Podman 5.8.6 pkg/api/handlers/libpod/containers_create.go,
+// pkg/specgen/specgen.go:201, :351 and :647,
+// pkg/specgen/generate/container_create.go:667-691,
+// libpod/options.go:1812-1830, libpod/runtime_ctr.go:479-484,
+// libpod/container_internal_common.go:753-765 and
+// libpod/oci_conmon_exec_common.go:711-722.
 //
 // Lookup matches a full ID, then a name, then a unique ID prefix when the
 // reference is no longer than an ID, and answers "secret is ambiguous" when
@@ -255,6 +258,11 @@ func (d *libpodSecretRefChainDaemon) lookedUp() []string {
 // prefix once nothing holds the name, so team-a could pass the owner check
 // with its own "bbbb", delete it, and have the read answer with team-b's
 // secret.
+//
+// `secret_env` is refused whoever's secret it names. Podman reads an
+// environment secret by name again at every start and exec, so team-a could
+// create the container with its own secret, remove the secret, and read
+// whatever team-b later stores under that name.
 func TestServeChainLibpodContainerCreateSecretsAreOwnerChecked(t *testing.T) {
 	const (
 		mineID         = "aaaaaaaaaaaaaaaaaaaaaaaa1"
@@ -262,8 +270,8 @@ func TestServeChainLibpodContainerCreateSecretsAreOwnerChecked(t *testing.T) {
 		createURL      = "/v5.0.0/libpod/containers/create"
 		cantLookUp     = "libpod owner policy denied container create with a secret reference it can't look up"
 		idShaped       = "libpod owner policy denied container create with a secret reference that could be a secret ID or ID prefix"
+		envSecret      = "libpod owner policy denied container create with secret_env, which Podman reads by name at every start"
 		deniedMount    = "libpod owner policy denied access to secret %q referenced by container create secrets"
-		deniedEnv      = "libpod owner policy denied access to secret %q referenced by container create secret_env"
 		unresolved     = "libpod owner policy could not resolve secret %q referenced by container create secrets"
 		teamAContainer = "team-a"
 	)
@@ -290,7 +298,7 @@ func TestServeChainLibpodContainerCreateSecretsAreOwnerChecked(t *testing.T) {
 			name:       "another owner's secret in the environment",
 			body:       `{"image":"alpine","systemd":"false","secret_env":{"DB_PASSWORD":"theirs"}}`,
 			wantStatus: http.StatusForbidden,
-			wantReason: fmt.Sprintf(deniedEnv, "theirs"),
+			wantReason: envSecret,
 		},
 		{
 			// podman-remote sends every Secret field, with Go's field names.
@@ -312,12 +320,6 @@ func TestServeChainLibpodContainerCreateSecretsAreOwnerChecked(t *testing.T) {
 			wantReason: idShaped,
 		},
 		{
-			name:       "another owner's secret by an ID prefix in the environment",
-			body:       `{"image":"alpine","systemd":"false","secret_env":{"DB_PASSWORD":"b"}}`,
-			wantStatus: http.StatusForbidden,
-			wantReason: idShaped,
-		},
-		{
 			name:       "own secret named after another owner's ID prefix",
 			body:       `{"image":"alpine","systemd":"false","secrets":[{"source":"bbbb"}]}`,
 			wantStatus: http.StatusForbidden,
@@ -327,7 +329,7 @@ func TestServeChainLibpodContainerCreateSecretsAreOwnerChecked(t *testing.T) {
 			name:       "own secret named after another owner's ID prefix in the environment",
 			body:       `{"image":"alpine","systemd":"false","secret_env":{"DB_PASSWORD":"bbbb"}}`,
 			wantStatus: http.StatusForbidden,
-			wantReason: idShaped,
+			wantReason: envSecret,
 		},
 		{
 			name:       "own secret by its ID",
@@ -351,7 +353,7 @@ func TestServeChainLibpodContainerCreateSecretsAreOwnerChecked(t *testing.T) {
 			name:       "secret_env in another case",
 			body:       `{"image":"alpine","systemd":"false","SECRET_ENV":{"DB_PASSWORD":"theirs"}}`,
 			wantStatus: http.StatusForbidden,
-			wantReason: fmt.Sprintf(deniedEnv, "theirs"),
+			wantReason: envSecret,
 		},
 		{
 			name:       "own secret beside another owner's",
@@ -363,7 +365,7 @@ func TestServeChainLibpodContainerCreateSecretsAreOwnerChecked(t *testing.T) {
 			name:       "own secret mounted, another owner's in the environment",
 			body:       `{"image":"alpine","systemd":"false","secrets":[{"source":"mine"}],"secret_env":{"K":"theirs"}}`,
 			wantStatus: http.StatusForbidden,
-			wantReason: fmt.Sprintf(deniedEnv, "theirs"),
+			wantReason: envSecret,
 		},
 		{
 			name:       "an unlabeled secret",
@@ -413,14 +415,14 @@ func TestServeChainLibpodContainerCreateSecretsAreOwnerChecked(t *testing.T) {
 			only:       []string{"theirs"},
 			body:       `{"image":"alpine","systemd":"false","secret_env":{"DB_PASSWORD":""}}`,
 			wantStatus: http.StatusForbidden,
-			wantReason: cantLookUp,
+			wantReason: envSecret,
 		},
 		{
 			name:       "null environment source against a store of one",
 			only:       []string{"theirs"},
 			body:       `{"image":"alpine","systemd":"false","secret_env":{"DB_PASSWORD":null}}`,
 			wantStatus: http.StatusForbidden,
-			wantReason: cantLookUp,
+			wantReason: envSecret,
 		},
 		{
 			// Podman's router redirects GET /secrets/.. to "/", which answers
@@ -431,8 +433,8 @@ func TestServeChainLibpodContainerCreateSecretsAreOwnerChecked(t *testing.T) {
 			wantReason: cantLookUp,
 		},
 		{
-			name:       "a secret named . in the environment",
-			body:       `{"image":"alpine","systemd":"false","secret_env":{"K":"."}}`,
+			name:       "a secret named .",
+			body:       `{"image":"alpine","systemd":"false","secrets":[{"source":"."}]}`,
 			wantStatus: http.StatusForbidden,
 			wantReason: cantLookUp,
 		},
@@ -459,13 +461,7 @@ func TestServeChainLibpodContainerCreateSecretsAreOwnerChecked(t *testing.T) {
 			name:       "secret_env that isn't an object",
 			body:       `{"image":"alpine","systemd":"false","secret_env":["theirs"]}`,
 			wantStatus: http.StatusForbidden,
-			wantReason: cantLookUp,
-		},
-		{
-			name:       "an environment source that isn't a string",
-			body:       `{"image":"alpine","systemd":"false","secret_env":{"K":{"source":"theirs"}}}`,
-			wantStatus: http.StatusForbidden,
-			wantReason: cantLookUp,
+			wantReason: envSecret,
 		},
 		{
 			name:       "a secret nobody holds",
@@ -495,11 +491,31 @@ func TestServeChainLibpodContainerCreateSecretsAreOwnerChecked(t *testing.T) {
 			wantSecrets: map[string]string{"/run/secrets/password": "team-a hex data"},
 		},
 		{
-			name:        "podman-remote shape naming own secret both ways",
-			body:        `{"image":"alpine","systemd":"false","secrets":[{"Source":"mine","Target":"","UID":0,"GID":0,"Mode":292}],"secret_env":{"DB_PASSWORD":"mine"}}`,
+			name:        "podman-remote shape naming own secret",
+			body:        `{"image":"alpine","systemd":"false","secrets":[{"Source":"mine","Target":"","UID":0,"GID":0,"Mode":292}]}`,
 			wantStatus:  http.StatusCreated,
 			wantOwner:   teamAContainer,
-			wantSecrets: map[string]string{"/run/secrets/mine": "team-a data", "$DB_PASSWORD": "team-a data"},
+			wantSecrets: map[string]string{"/run/secrets/mine": "team-a data"},
+		},
+		{
+			name:       "own secret in the environment",
+			body:       `{"image":"alpine","systemd":"false","secret_env":{"DB_PASSWORD":"mine"}}`,
+			wantStatus: http.StatusForbidden,
+			wantReason: envSecret,
+		},
+		{
+			name:       "own secret mounted and in the environment",
+			body:       `{"image":"alpine","systemd":"false","secrets":[{"source":"mine"}],"secret_env":{"DB_PASSWORD":"mine"}}`,
+			wantStatus: http.StatusForbidden,
+			wantReason: envSecret,
+		},
+		{
+			name:        "another owner's secret in the environment in warn mode",
+			rollout:     "warn",
+			body:        `{"image":"alpine","systemd":"false","secret_env":{"DB_PASSWORD":"theirs"}}`,
+			wantStatus:  http.StatusCreated,
+			wantOwner:   teamAContainer,
+			wantSecrets: map[string]string{"$DB_PASSWORD": "team-b data"},
 		},
 		{
 			name:        "no secrets",
@@ -575,7 +591,7 @@ func TestServeChainLibpodContainerCreateSecretsAreOwnerChecked(t *testing.T) {
 			if status != http.StatusCreated && strings.Contains(string(body), "team-b") {
 				t.Errorf("refusal body carries the other owner's data: %s", body)
 			}
-			if lookups := daemon.lookedUp(); (tt.wantReason == cantLookUp || tt.wantReason == idShaped) && len(lookups) != 0 {
+			if lookups := daemon.lookedUp(); (tt.wantReason == cantLookUp || tt.wantReason == idShaped || tt.wantReason == envSecret) && len(lookups) != 0 {
 				t.Errorf("daemon was asked for secrets %q, want no lookup", lookups)
 			}
 			assertOwnerSecretReferenceChainReason(t, tt.wantStatus, tt.wantReason, body)

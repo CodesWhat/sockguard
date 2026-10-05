@@ -45,13 +45,15 @@ var libpodNamespaceSharingFields = [...]string{"netns", "pidns", "ipcns", "usern
 // libpod-shaped counterpart of mutateContainerCreateOwnershipBody's Docker
 // HostConfig.{NetworkMode,PidMode,IpcMode,UTSMode,UsernsMode} handling.
 //
-// The secrets the body names in `secrets` and `secret_env` are references
-// too. Each has to resolve to a secret carrying the caller's owner label, like
-// the pod, and a body naming one the lookup can't answer for is refused. See
-// libpodContainerCreateSecretReferences. The Docker-compatible create has no
-// such reference on either engine: its body has no secret field, and Podman's
-// compat handler never fills the SpecGenerator's (Podman 5.8.6
-// pkg/api/handlers/types.go:150-158 and compat/containers_create.go).
+// The secrets the body mounts with `secrets` are references too. Each has to
+// resolve to a secret carrying the caller's owner label, like the pod, and a
+// body naming one the lookup can't answer for is refused. So is one that sets
+// a secret in the environment with `secret_env`, which Podman reads again at
+// every start. See libpodContainerCreateSecretReferences. The
+// Docker-compatible create has no such reference on either engine: its body
+// has no secret field, and Podman's compat handler never fills the
+// SpecGenerator's (Podman 5.8.6 pkg/api/handlers/types.go:150-158 and
+// compat/containers_create.go).
 func mutateLibpodContainerCreateOwnershipBody(r *http.Request, labelKey, owner string) (*ownershipRequestReferences, error) {
 	refs := &ownershipRequestReferences{}
 	err := mutateJSONBody(r, func(decoded map[string]any) error {

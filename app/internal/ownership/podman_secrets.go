@@ -23,6 +23,7 @@ const (
 
 	libpodContainerCreateDenySecretReference = "owner policy denied container create with a secret reference it can't look up"
 	libpodContainerCreateDenySecretID        = "owner policy denied container create with a secret reference that could be a secret ID or ID prefix"
+	libpodContainerCreateDenySecretEnv       = "owner policy denied container create with secret_env, which Podman reads by name at every start"
 )
 
 // denyPodmanCompatSecretList refuses the Docker-compat GET (or HEAD) /secrets
@@ -137,8 +138,8 @@ func libpodSecretCreateOwnershipReferences(query url.Values) *ownershipRequestRe
 }
 
 // libpodContainerCreateSecretReferences returns the secrets a libpod container
-// create body names, or the reason the create is refused when it names one in
-// a way the lookup can't vouch for.
+// create body mounts, or the reason the create is refused when it names a
+// secret in a way the lookup can't vouch for.
 //
 // A SpecGenerator names secrets in two places: `secrets`, a list of objects
 // whose Source is mounted under /run/secrets, and `secret_env`, a map from an
@@ -149,6 +150,18 @@ func libpodSecretCreateOwnershipReferences(query url.Values) *ownershipRequestRe
 // pkg/specgen/specgen.go:201, :351 and :647,
 // pkg/specgen/generate/container_create.go:667-691 and
 // libpod/options.go:1812-1830.
+//
+// Only `secrets` can be checked. Podman copies a mounted secret's data into
+// the container while it creates it and never reads the secret again. It
+// doesn't copy an environment secret anywhere: it keeps the secret it resolved
+// and reads the data by that secret's name at every start and every exec, and
+// nothing stops a secret being removed while a container still names it. So a
+// check at create says nothing about those reads. A caller could create the
+// container with a secret of its own, remove the secret, and have the
+// container read whatever secret another owner later creates under the same
+// name. A `secret_env` that names anything is refused. Read from
+// libpod/runtime_ctr.go:479-484, container_internal_common.go:753-765,
+// oci_conmon_exec_common.go:711-722 and pkg/domain/infra/abi/secrets.go:127-157.
 //
 // Lookup matches a full ID, then a name, then a unique ID prefix. The compat
 // secret inspect owner isolation looks a reference up with is the same Lookup,
@@ -162,32 +175,29 @@ func libpodSecretCreateOwnershipReferences(query url.Values) *ownershipRequestRe
 // Three sources resolve in Podman and can't be looked up, so a create naming
 // one is refused. Every ID has the empty prefix, so an empty source is the
 // only secret in a store that holds one, and it's ambiguous in any larger
-// store. Podman reads a missing or null Source, a null list element and a null
-// map value as an empty source. "." and ".." are valid secret names, and
-// Podman's router redirects the inspect for either one somewhere else (see
+// store. Podman reads a missing or null Source and a null list element as an
+// empty source. "." and ".." are valid secret names, and Podman's router
+// redirects the inspect for either one somewhere else (see
 // libpodSecretCreateOwnershipReferences).
 //
 // A source that could be an ID or an ID prefix is refused too, whatever it
-// resolves to. Podman keeps the secret the source resolved to and reads its
-// data by name afterwards: once more during the create for a mounted secret,
-// and at every start and exec for an environment one. That read is Lookup
-// again, so a name falls through to an ID prefix as soon as no secret holds
-// it. A caller could store a secret of its own named after the first
-// characters of another owner's secret ID, pass the owner check with it,
-// delete it, and have the next read answer with the other owner's secret. A
-// source that can't be an ID or a prefix of one only ever matches a name, at
-// the check and at every read after it. Read from libpod/runtime_ctr.go:479-484,
-// container_internal.go:2769-2775, container_internal_common.go:753-765 and
-// oci_conmon_exec_common.go:711-722. See couldBePodmanSecretID.
+// resolves to. Podman resolves the source, then reads the data of the secret
+// it got by that secret's name, in a second Lookup, and a name falls through
+// to an ID prefix as soon as no secret holds it. A caller could store a secret
+// of its own named after the first characters of another owner's secret ID,
+// pass the owner check with it, delete it before Podman's read, and have that
+// read answer with the other owner's secret. A source that can't be an ID or
+// a prefix of one only ever matches a name, at the check and at both of
+// Podman's reads. Read from libpod/container_internal.go:2769-2775. See
+// couldBePodmanSecretID.
 //
 // The body is decoded with encoding/json, which matches keys in any letter
 // case, so the keys are folded here. mutateJSONBody has already refused a body
-// that spells one key two ways. A `secrets` that isn't a list of objects, a
-// `secret_env` that isn't an object, and a source that isn't a string all fail
-// Podman's decode, and they're refused here too instead of being forwarded on
-// the strength of that.
+// that spells one key two ways. A `secrets` that isn't a list of objects and a
+// source that isn't a string both fail Podman's decode, and they're refused
+// here too instead of being forwarded on the strength of that.
 func libpodContainerCreateSecretReferences(decoded map[string]any) (refs []embeddedOwnershipReference, denyReason string) {
-	add := func(value any, source string) string {
+	add := func(value any) string {
 		identifier, isString := value.(string)
 		switch {
 		case (value != nil && !isString) || identifier == "" || identifier == "." || identifier == "..":
@@ -196,7 +206,7 @@ func libpodContainerCreateSecretReferences(decoded map[string]any) (refs []embed
 			return libpodContainerCreateDenySecretID
 		}
 		if !slices.ContainsFunc(refs, func(ref embeddedOwnershipReference) bool { return ref.identifier == identifier }) {
-			refs = append(refs, embeddedOwnershipReference{kind: dockerresource.KindSecret, identifier: identifier, source: source})
+			refs = append(refs, embeddedOwnershipReference{kind: dockerresource.KindSecret, identifier: identifier, source: "container create secrets"})
 		}
 		return ""
 	}
@@ -223,7 +233,7 @@ func libpodContainerCreateSecretReferences(decoded map[string]any) (refs []embed
 				}
 			}
 			for _, source := range sources {
-				if reason := add(source, "container create secrets"); reason != "" {
+				if reason := add(source); reason != "" {
 					return nil, reason
 				}
 			}
@@ -231,17 +241,10 @@ func libpodContainerCreateSecretReferences(decoded map[string]any) (refs []embed
 	}
 
 	for _, value := range foldedValues(decoded, "secret_env") {
-		if value == nil {
-			continue
-		}
-		variables, isObject := value.(map[string]any)
-		if !isObject {
-			return nil, libpodContainerCreateDenySecretReference
-		}
-		for _, variable := range slices.Sorted(maps.Keys(variables)) {
-			if reason := add(variables[variable], "container create secret_env"); reason != "" {
-				return nil, reason
-			}
+		// A null and an empty object name nothing. Podman's decode refuses
+		// anything that isn't an object, and that's refused here as well.
+		if variables, isObject := value.(map[string]any); value != nil && (!isObject || len(variables) > 0) {
+			return nil, libpodContainerCreateDenySecretEnv
 		}
 	}
 	return refs, ""

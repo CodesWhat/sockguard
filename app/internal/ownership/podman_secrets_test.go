@@ -297,8 +297,9 @@ func TestLibpodSecretCreateFlagsLookUpTheNamedSecret(t *testing.T) {
 
 // TestLibpodContainerCreateLooksUpTheSecretsItNames pins which secrets a
 // libpod container create is checked against, in what order, and what each
-// lookup answer does. A body naming a secret the lookup can't vouch for is
-// refused before anything is looked up. The chain test
+// lookup answer does. A body naming a secret the lookup can't vouch for, or
+// setting one in the environment, is refused before anything is looked up.
+// The chain test
 // TestServeChainLibpodContainerCreateSecretsAreOwnerChecked drives the same
 // check against a daemon that resolves secrets the way Podman does.
 func TestLibpodContainerCreateLooksUpTheSecretsItNames(t *testing.T) {
@@ -331,16 +332,13 @@ func TestLibpodContainerCreateLooksUpTheSecretsItNames(t *testing.T) {
 		{body: `{"secrets":[],"secret_env":{}}`, wantStatus: http.StatusAccepted},
 		{body: `{"secrets":null,"secret_env":null}`, wantStatus: http.StatusAccepted},
 
-		// Each source is looked up once, `secrets` in order and then
-		// `secret_env` by variable name.
+		// Each source is looked up once, in the order the body lists them.
 		{body: `{"secrets":[{"Source":"mine"}]}`, wantLookups: []string{"mine"}, wantStatus: http.StatusAccepted},
-		{body: `{"secret_env":{"K":"mine"}}`, wantLookups: []string{"mine"}, wantStatus: http.StatusAccepted},
-		{body: `{"secrets":[{"source":"mine"},{"source":"mine"}],"secret_env":{"A":"mine","B":"mine"}}`, wantLookups: []string{"mine"}, wantStatus: http.StatusAccepted},
-		{body: `{"secret_env":{"B":"mine","A":"also-mine"},"secrets":[{"Source":"third-mine"}]}`, wantLookups: []string{"third-mine", "also-mine", "mine"}, wantStatus: http.StatusAccepted},
+		{body: `{"secrets":[{"source":"mine"},{"source":"mine"}]}`, wantLookups: []string{"mine"}, wantStatus: http.StatusAccepted},
+		{body: `{"secrets":[{"Source":"third-mine"},{"Source":"also-mine"},{"Source":"mine"},{"Source":"also-mine"}]}`, wantLookups: []string{"third-mine", "also-mine", "mine"}, wantStatus: http.StatusAccepted},
 
 		// Another owner's, unlabeled, absent and unreadable secrets.
 		{body: `{"secrets":[{"Source":"theirs"}]}`, wantLookups: []string{"theirs"}, wantStatus: http.StatusForbidden, wantReason: `libpod owner policy denied access to secret "theirs" referenced by container create secrets`},
-		{body: `{"secret_env":{"K":"theirs"}}`, wantLookups: []string{"theirs"}, wantStatus: http.StatusForbidden, wantReason: `libpod owner policy denied access to secret "theirs" referenced by container create secret_env`},
 		{body: `{"secrets":[{"Source":"mine"},{"Source":"theirs"}]}`, wantLookups: []string{"mine", "theirs"}, wantStatus: http.StatusForbidden, wantReason: `libpod owner policy denied access to secret "theirs" referenced by container create secrets`},
 		{body: `{"secrets":[{"Source":"unowned"}]}`, wantLookups: []string{"unowned"}, wantStatus: http.StatusForbidden, wantReason: `libpod owner policy denied access to secret "unowned" referenced by container create secrets`},
 		{body: `{"secrets":[{"Source":"gone"}]}`, wantLookups: []string{"gone"}, wantStatus: http.StatusNotFound, wantReason: `libpod owner policy could not resolve secret "gone" referenced by container create secrets`},
@@ -352,9 +350,7 @@ func TestLibpodContainerCreateLooksUpTheSecretsItNames(t *testing.T) {
 		// encoding/json matches keys in any letter case, and folds the long
 		// s (U+017F) to "s".
 		{body: `{"SECRETS":[{"SOURCE":"theirs"}]}`, wantLookups: []string{"theirs"}, wantStatus: http.StatusForbidden, wantReason: `libpod owner policy denied access to secret "theirs" referenced by container create secrets`},
-		{body: `{"Secret_Env":{"K":"theirs"}}`, wantLookups: []string{"theirs"}, wantStatus: http.StatusForbidden, wantReason: `libpod owner policy denied access to secret "theirs" referenced by container create secret_env`},
 		{body: `{"ſecrets":[{"ſource":"theirs"}]}`, wantLookups: []string{"theirs"}, wantStatus: http.StatusForbidden, wantReason: `libpod owner policy denied access to secret "theirs" referenced by container create secrets`},
-		{body: `{"ſecret_env":{"K":"theirs"}}`, wantLookups: []string{"theirs"}, wantStatus: http.StatusForbidden, wantReason: `libpod owner policy denied access to secret "theirs" referenced by container create secret_env`},
 
 		// Sources Podman resolves that can't be looked up, and shapes its
 		// decode refuses.
@@ -369,24 +365,31 @@ func TestLibpodContainerCreateLooksUpTheSecretsItNames(t *testing.T) {
 		{body: `{"secrets":{"Source":"mine"}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretReference},
 		{body: `{"secrets":["mine"]}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretReference},
 		{body: `{"secrets":[{"Source":7}]}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretReference},
-		{body: `{"secret_env":{"K":""}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretReference},
-		{body: `{"secret_env":{"K":null}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretReference},
-		{body: `{"secret_env":{"K":".."}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretReference},
-		{body: `{"secret_env":{"K":["mine"]}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretReference},
-		{body: `{"secret_env":"mine"}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretReference},
-		{body: `{"secret_env":["mine"]}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretReference},
 
 		// A source that could be an ID or an ID prefix, whoever's it is.
 		{body: `{"secrets":[{"Source":"a"}]}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretID},
 		{body: `{"secrets":[{"Source":"cafe"}]}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretID},
 		{body: `{"secrets":[{"Source":"` + fullID + `"}]}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretID},
-		{body: `{"secret_env":{"K":"42"}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretID},
-		{body: `{"secrets":[{"Source":"mine"}],"secret_env":{"K":"db"}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretID},
+		{body: `{"secrets":[{"Source":"42"}]}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretID},
+		{body: `{"secrets":[{"Source":"mine"},{"Source":"db"}]}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretID},
 
 		// And ones that can only be a name.
 		{body: `{"secrets":[{"Source":"CAFE"}]}`, wantLookups: []string{"CAFE"}, wantStatus: http.StatusAccepted},
 		{body: `{"secrets":[{"Source":"cafe-1"}]}`, wantLookups: []string{"cafe-1"}, wantStatus: http.StatusAccepted},
 		{body: `{"secrets":[{"Source":"` + longerThan + `"}]}`, wantLookups: []string{longerThan}, wantStatus: http.StatusAccepted},
+
+		// An environment secret is read by name at every start, so one is
+		// refused whoever's secret it names, in any key spelling.
+		{body: `{"secret_env":{"K":"mine"}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretEnv},
+		{body: `{"secret_env":{"K":"theirs"}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretEnv},
+		{body: `{"secrets":[{"Source":"mine"}],"secret_env":{"K":"mine"}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretEnv},
+		{body: `{"Secret_Env":{"K":"mine"}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretEnv},
+		{body: `{"ſecret_env":{"K":"mine"}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretEnv},
+		{body: `{"secret_env":{"K":""}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretEnv},
+		{body: `{"secret_env":{"K":null}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretEnv},
+		{body: `{"secret_env":{"":"mine"}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretEnv},
+		{body: `{"secret_env":"mine"}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretEnv},
+		{body: `{"secret_env":["mine"]}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretEnv},
 	}
 	for _, tt := range tests {
 		t.Run(tt.body, func(t *testing.T) {
@@ -444,6 +447,7 @@ func TestLibpodContainerCreateSecretRefusalKeepsTheOwnerStamp(t *testing.T) {
 		`{"secrets":[{"Source":""}]}`,
 		`{"secrets":[{"Source":"cafe"}]}`,
 		`{"secrets":[{"Source":"theirs"}]}`,
+		`{"secret_env":{"K":"theirs"}}`,
 	} {
 		t.Run(body, func(t *testing.T) {
 			t.Parallel()
