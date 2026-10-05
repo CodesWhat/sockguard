@@ -575,28 +575,37 @@ func TestContainerCreatePolicyInspectDenyNamespacePathMode(t *testing.T) {
 		wantReason string
 	}{
 		{
-			name: "off passes network ns path",
+			name: "off passes network ns path once host network is allowed",
+			opts: ContainerCreateOptions{AllowHostNetwork: true},
 			body: `{"HostConfig":{"NetworkMode":"ns:/proc/1/ns/net"}}`,
 		},
 		{
-			name:       "on denies network ns path",
-			opts:       ContainerCreateOptions{DenyNamespacePathMode: true},
+			name:       "on denies network ns path even with host network allowed",
+			opts:       ContainerCreateOptions{AllowHostNetwork: true, DenyNamespacePathMode: true},
 			body:       `{"HostConfig":{"NetworkMode":"ns:/proc/1/ns/net"}}`,
 			wantReason: "container create denied: ns: namespace path mode is not allowed",
 		},
 		{
-			name: "off passes uppercase network ns path",
+			name: "off passes uppercase network ns path once host network is allowed",
+			opts: ContainerCreateOptions{AllowHostNetwork: true},
 			body: `{"HostConfig":{"NetworkMode":"NS:/var/run/netns/build"}}`,
 		},
 		{
-			name:       "on denies uppercase network ns path",
-			opts:       ContainerCreateOptions{DenyNamespacePathMode: true},
+			name:       "on denies uppercase network ns path even with host network allowed",
+			opts:       ContainerCreateOptions{AllowHostNetwork: true, DenyNamespacePathMode: true},
 			body:       `{"HostConfig":{"NetworkMode":"NS:/var/run/netns/build"}}`,
 			wantReason: "container create denied: ns: namespace path mode is not allowed",
 		},
 		{
+			// The host gate answers first, whatever deny_namespace_path_mode says.
+			name:       "host network off denies network ns path",
+			opts:       ContainerCreateOptions{DenyNamespacePathMode: true},
+			body:       `{"HostConfig":{"NetworkMode":"ns:/proc/1/ns/net"}}`,
+			wantReason: "container create denied: network namespace joined by path is not allowed",
+		},
+		{
 			name: "on is scoped to NetworkMode only",
-			opts: ContainerCreateOptions{DenyNamespacePathMode: true},
+			opts: ContainerCreateOptions{DenyNamespacePathMode: true, AllowHostPID: true, AllowHostIPC: true, AllowHostUserNS: true},
 			body: `{"HostConfig":{"PidMode":"ns:/proc/1/ns/pid","IpcMode":"ns:/proc/1/ns/ipc","UsernsMode":"ns:/proc/1/ns/user"}}`,
 		},
 	}
@@ -612,6 +621,127 @@ func TestContainerCreatePolicyInspectDenyNamespacePathMode(t *testing.T) {
 				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
 			}
 		})
+	}
+}
+
+// TestContainerCreatePolicyInspectNamespacePathNeedsTheHostGate pins
+// denyNamespacePathReason: "ns:<path>" on a HostConfig namespace mode joins
+// whatever namespace the path names on a Podman upstream, so each field is
+// held to its own host gate and to no other.
+func TestContainerCreatePolicyInspectNamespacePathNeedsTheHostGate(t *testing.T) {
+	everyGate := ContainerCreateOptions{
+		AllowHostNetwork:  true,
+		AllowHostPID:      true,
+		AllowHostIPC:      true,
+		AllowHostUserNS:   true,
+		AllowHostCgroupNS: true,
+	}
+	fields := []struct {
+		jsonField string
+		label     string
+		// close turns this field's own gate off and leaves the rest on.
+		// nil for UTSMode, which has no gate.
+		close func(*ContainerCreateOptions)
+	}{
+		{"NetworkMode", "network", func(o *ContainerCreateOptions) { o.AllowHostNetwork = false }},
+		{"PidMode", "PID", func(o *ContainerCreateOptions) { o.AllowHostPID = false }},
+		{"IpcMode", "IPC", func(o *ContainerCreateOptions) { o.AllowHostIPC = false }},
+		{"UsernsMode", "user", func(o *ContainerCreateOptions) { o.AllowHostUserNS = false }},
+		{"CgroupnsMode", "cgroup", func(o *ContainerCreateOptions) { o.AllowHostCgroupNS = false }},
+		{"UTSMode", "UTS", nil},
+	}
+	inspect := func(t *testing.T, opts ContainerCreateOptions, body string) string {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(body))
+		reason, err := newContainerCreatePolicy(opts).inspect(nil, req, "/containers/create")
+		if err != nil {
+			t.Fatalf("inspect() error = %v", err)
+		}
+		return reason
+	}
+
+	for _, field := range fields {
+		wantReason := fmt.Sprintf("container create denied: %s namespace joined by path is not allowed", field.label)
+		for _, mode := range []string{"ns:/proc/1/ns/x", "NS:/proc/1/ns/x", "  ns:/proc/1/ns/x  ", "ns:"} {
+			body := fmt.Sprintf(`{"HostConfig":{%q:%q}}`, field.jsonField, mode)
+
+			t.Run(field.jsonField+"/"+mode+"/every gate off", func(t *testing.T) {
+				if reason := inspect(t, ContainerCreateOptions{}, body); reason != wantReason {
+					t.Fatalf("inspect() reason = %q, want %q", reason, wantReason)
+				}
+			})
+			t.Run(field.jsonField+"/"+mode+"/only its own gate off", func(t *testing.T) {
+				opts := everyGate
+				if field.close != nil {
+					field.close(&opts)
+				}
+				if reason := inspect(t, opts, body); reason != wantReason {
+					t.Fatalf("inspect() reason = %q, want %q", reason, wantReason)
+				}
+			})
+			if field.close == nil {
+				continue
+			}
+			t.Run(field.jsonField+"/"+mode+"/every gate on", func(t *testing.T) {
+				if reason := inspect(t, everyGate, body); reason != "" {
+					t.Fatalf("inspect() reason = %q, want empty", reason)
+				}
+			})
+		}
+
+		t.Run(field.jsonField+"/a value that only contains ns:", func(t *testing.T) {
+			body := fmt.Sprintf(`{"HostConfig":{%q:"xns:/proc/1/ns/x"}}`, field.jsonField)
+			if reason := inspect(t, ContainerCreateOptions{}, body); reason != "" {
+				t.Fatalf("inspect() reason = %q, want empty", reason)
+			}
+		})
+	}
+}
+
+// TestContainerCreatePolicyInspectNamespacePathWhileSharingIsRestricted pins
+// the path branch of denyNamespaceSharingReason: with a host gate on, a path
+// still can't be checked against the container allowlist, so it is refused
+// on every field restrict_namespace_sharing covers.
+func TestContainerCreatePolicyInspectNamespacePathWhileSharingIsRestricted(t *testing.T) {
+	everyGate := ContainerCreateOptions{
+		AllowHostNetwork:                  true,
+		AllowHostPID:                      true,
+		AllowHostIPC:                      true,
+		AllowHostUserNS:                   true,
+		AllowHostCgroupNS:                 true,
+		AllowedNamespaceSharingContainers: []string{"ns:/proc/1/ns/x", "/proc/1/ns/x"},
+	}
+	tests := []struct {
+		jsonField  string
+		wantReason string
+	}{
+		{"NetworkMode", "container create denied: network namespace joined by path is not allowed while namespace sharing is restricted"},
+		{"PidMode", "container create denied: PID namespace joined by path is not allowed while namespace sharing is restricted"},
+		{"IpcMode", "container create denied: IPC namespace joined by path is not allowed while namespace sharing is restricted"},
+		{"UsernsMode", "container create denied: user namespace joined by path is not allowed while namespace sharing is restricted"},
+		// restrict_namespace_sharing has never covered CgroupnsMode.
+		{"CgroupnsMode", ""},
+	}
+	for _, tt := range tests {
+		body := fmt.Sprintf(`{"HostConfig":{%q:"ns:/proc/1/ns/x"}}`, tt.jsonField)
+		for _, restrict := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/restrict=%t", tt.jsonField, restrict), func(t *testing.T) {
+				opts := everyGate
+				opts.RestrictNamespaceSharing = restrict
+				req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(body))
+				reason, err := newContainerCreatePolicy(opts).inspect(nil, req, "/containers/create")
+				if err != nil {
+					t.Fatalf("inspect() error = %v", err)
+				}
+				wantReason := ""
+				if restrict {
+					wantReason = tt.wantReason
+				}
+				if reason != wantReason {
+					t.Fatalf("inspect() reason = %q, want %q", reason, wantReason)
+				}
+			})
+		}
 	}
 }
 

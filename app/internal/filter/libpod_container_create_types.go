@@ -64,10 +64,13 @@ type libpodContainerCreateRequest struct {
 // libpodNamespace is the uniform shape SpecGenerator uses for every
 // namespace-mode field (netns, pidns, ipcns, userns, utsns, cgroupns):
 // {"nsmode": "host"} for the host namespace, {"nsmode": "container",
-// "value": "<name-or-id>"} to join another container's namespace, {} (both
-// fields absent/empty) for the private per-container default. Confirmed by
-// host_network.json (nsmode only) and namespace_share_container_ref.json
-// (nsmode+value) — see testdata/libpod/README.md.
+// "value": "<name-or-id>"} to join another container's namespace,
+// {"nsmode": "path", "value": "<path>"} to join the namespace at a path on
+// the daemon host, {} (both fields absent/empty) for the daemon's default.
+// Confirmed by host_network.json (nsmode only) and
+// namespace_share_container_ref.json (nsmode+value) — see
+// testdata/libpod/README.md. libpod_namespace.go holds the full list of
+// modes and the host gate.
 type libpodNamespace struct {
 	NSMode string `json:"nsmode"`
 	Value  string `json:"value"`
