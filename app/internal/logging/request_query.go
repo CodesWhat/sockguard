@@ -34,7 +34,7 @@ import (
 //
 // The returned url.Values is SHARED with every other reader of this request
 // and must be treated as read-only. Callers that need to fold, filter, or
-// rewrite keys build their own map from it (see filter.foldQueryKeys).
+// rewrite keys build their own map from it.
 //
 // When no RequestMeta is attached — a unit test exercising an inspector
 // directly, or any caller outside the serve chain — this falls back to a plain

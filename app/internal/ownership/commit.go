@@ -11,8 +11,8 @@ import (
 	"unicode"
 
 	"github.com/codeswhat/sockguard/v2/app/internal/dockerresource"
-	"github.com/codeswhat/sockguard/v2/app/internal/filter"
 	"github.com/codeswhat/sockguard/v2/app/internal/imageselector"
+	"github.com/codeswhat/sockguard/v2/app/internal/queryparam"
 	"github.com/codeswhat/sockguard/v2/app/internal/upstreamflavor"
 )
 
@@ -85,11 +85,12 @@ func mutateCommitOwnershipRequest(r *http.Request, normPath string, opts Options
 //     the daemon would answer its own error anyway (moby's GetContainer("")
 //     is an invalid-parameter 400). Owner isolation does not forward a write
 //     it could not classify.
-//   - A repeated or two-case-variant `container`. Moby reads the first value
-//     of a repeated parameter and Podman reads the last, so a request naming
-//     an owned container and a foreign one would be checked against one and
-//     executed against the other. filter.FoldedScalarQueryValue is the same
-//     helper the container-archive policy uses for the same disagreement.
+//   - A repeated `container`, or one in any spelling but the exact lowercase
+//     one. Moby reads the first value of a repeated parameter under the exact
+//     key, and Podman folds the key's case and reads the last, so a request
+//     naming an owned container and a foreign one would be checked against
+//     one and executed against the other. queryparam.Scalar is the helper the
+//     filter's query inspectors use for the same disagreement.
 //   - A `changes` value carrying a LABEL instruction. See
 //     commitChangesSetLabel.
 func commitOwnershipReferences(r *http.Request) *ownershipRequestReferences {
@@ -99,9 +100,9 @@ func commitOwnershipReferences(r *http.Request) *ownershipRequestReferences {
 		refs.denyReason = commitDenyLabelChange
 		return refs
 	}
-	identifier, found, ambiguous := filter.FoldedScalarQueryValue(query, commitContainerQueryField)
+	identifier, found, ok := queryparam.Scalar(query, commitContainerQueryField)
 	switch {
-	case ambiguous:
+	case !ok:
 		refs.denyReason = commitDenyAmbiguousContainer
 	case !found || strings.TrimSpace(identifier) == "":
 		refs.denyReason = commitDenyNoContainer

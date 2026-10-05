@@ -116,11 +116,14 @@ func TestImagePullInspectImportAllowed(t *testing.T) {
 // POST /images/create as independent of each other. dockerd pulls whenever
 // `fromImage` is set and never reads `fromSrc` then, so an allowed import must
 // not answer for the pull beside it. Podman reads each parameter in any case
-// and keeps its last value, so every value under every spelling is checked.
+// and keeps its last value, so a repeated parameter or one in another spelling
+// is refused as ambiguous rather than read either way.
 func TestImagePullInspectGatesImportAndPullIndependently(t *testing.T) {
 	const (
-		importDenied = `image pull denied: importing images from "-" is not allowed`
-		pullDenied   = `image pull denied: registry "evil.example" is not allowlisted`
+		importDenied    = `image pull denied: importing images from "-" is not allowed`
+		pullDenied      = `image pull denied: registry "evil.example" is not allowlisted`
+		ambiguousPull   = `image pull denied: ambiguous fromImage query parameter (repeated, or not spelled "fromImage")`
+		ambiguousImport = `image pull denied: ambiguous fromSrc query parameter (repeated, or not spelled "fromSrc")`
 	)
 	tests := []struct {
 		name         string
@@ -133,14 +136,16 @@ func TestImagePullInspectGatesImportAndPullIndependently(t *testing.T) {
 		{name: "import source then allowlisted pull", allowImports: true, query: "fromSrc=-&fromImage=ghcr.io%2Facme%2Fapp"},
 		{name: "import alone", allowImports: true, query: "fromSrc=-&repo=acme%2Fapp"},
 		{name: "import source beside an allowlisted pull while imports are off", query: "fromImage=ghcr.io%2Facme%2Fapp&fromSrc=-", want: importDenied},
-		{name: "foreign pull behind an allowlisted one", query: "fromImage=ghcr.io%2Facme%2Fapp&fromImage=evil.example%2Fx", want: pullDenied},
-		{name: "foreign pull ahead of an allowlisted one", query: "fromImage=evil.example%2Fx&fromImage=ghcr.io%2Facme%2Fapp", want: pullDenied},
-		{name: "foreign pull in another spelling", query: "fromImage=ghcr.io%2Facme%2Fapp&FROMIMAGE=evil.example%2Fx", want: pullDenied},
-		{name: "foreign pull in another spelling alone", query: "FromImage=evil.example%2Fx", want: pullDenied},
-		{name: "import source behind an empty one", query: "fromSrc=&fromSrc=-", want: importDenied},
-		{name: "import source in another spelling", query: "fromSrc=&FromSrc=-", want: importDenied},
+		{name: "foreign pull behind an allowlisted one", query: "fromImage=ghcr.io%2Facme%2Fapp&fromImage=evil.example%2Fx", want: ambiguousPull},
+		{name: "foreign pull ahead of an allowlisted one", query: "fromImage=evil.example%2Fx&fromImage=ghcr.io%2Facme%2Fapp", want: ambiguousPull},
+		{name: "foreign pull in another spelling", query: "fromImage=ghcr.io%2Facme%2Fapp&FROMIMAGE=evil.example%2Fx", want: ambiguousPull},
+		{name: "foreign pull in another spelling alone", query: "FromImage=evil.example%2Fx", want: ambiguousPull},
+		{name: "import source behind an empty one", query: "fromSrc=&fromSrc=-", want: ambiguousImport},
+		{name: "import source in another spelling", query: "fromSrc=&FromSrc=-", want: ambiguousImport},
 		{name: "empty import source and empty pull", query: "fromSrc=&fromImage="},
 		{name: "allowlisted pull", query: "fromImage=ghcr.io%2Facme%2Fapp&tag=latest"},
+		{name: "two allowlisted pulls", query: "fromImage=ghcr.io%2Facme%2Fapp&fromImage=ghcr.io%2Facme%2Fother", want: ambiguousPull},
+		{name: "repeated import source while imports are on", allowImports: true, query: "fromSrc=-&fromSrc=-"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

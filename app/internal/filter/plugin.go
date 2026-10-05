@@ -244,17 +244,14 @@ func (p pluginPolicy) inspectPluginCreate(logger *slog.Logger, r *http.Request) 
 		return "", err
 	}
 	if spool.tooLarge {
-		spool.closeAndRemove()
 		return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("plugin create denied: request body exceeds %d byte limit", maxPluginBodyBytes))
 	}
 	if size == 0 {
-		spool.closeAndRemove()
 		return "", nil
 	}
 
 	configBytes, ok, err := p.io.extractPluginConfig(spool.file)
 	if err != nil {
-		spool.closeAndRemove()
 		if errors.Is(err, errPluginDecompressedTooLarge) {
 			return fmt.Sprintf("plugin create denied: decompressed plugin archive exceeds %d byte limit", maxPluginDecompressedBytes), nil
 		}
@@ -265,27 +262,15 @@ func (p pluginPolicy) inspectPluginCreate(logger *slog.Logger, r *http.Request) 
 		// root. If we can't find/inspect it, deny rather than forward an
 		// uninspectable archive — consistent with the image-load path, which
 		// denies when no manifest is found.
-		spool.closeAndRemove()
 		return "plugin create denied: plugin config could not be inspected", nil
 	}
 
 	var cfg pluginCreateConfig
 	if err := decodePolicySubsetJSON(configBytes, &cfg); err != nil {
 		logRequestError(logger, r, slog.LevelDebug, "plugin config.json could not be decoded for Sockguard policy inspection", err)
-		spool.closeAndRemove()
 		return "plugin create denied: plugin config could not be inspected", nil
-	} else if denyReason := p.denyReasonForCreateConfig(cfg); denyReason != "" {
-		spool.closeAndRemove()
-		return denyReason, nil
 	}
-
-	if err := p.io.SeekToStart(spool.file); err != nil {
-		spool.closeAndRemove()
-		return "", fmt.Errorf("rewind plugin body: %w", err)
-	}
-	r.Body = spool.requestBody()
-	r.ContentLength = size
-	return "", nil
+	return p.denyReasonForCreateConfig(cfg), nil
 }
 
 func (p pluginPolicy) denyReasonForCreateConfig(cfg pluginCreateConfig) string {

@@ -140,8 +140,8 @@ test("compare surfaces derive their cells from the comparison rows", () => {
   }
 
   assert.equal(toComparisonCell("Yes (regex)"), "yes");
-  assert.equal(toComparisonCell("No (read-only)"), "no");
-  assert.equal(toComparisonCell("Read-only (fixed)"), "partial");
+  assert.equal(toComparisonCell("No (blocked by default)"), "no");
+  assert.equal(toComparisonCell("Read-only by default (opt-in containers-only mode)"), "partial");
   assert.equal(toComparisonCell("Via manual regex"), "partial");
 
   // The drift this derivation exists to prevent: /compare showed wollomatic
@@ -196,11 +196,11 @@ test("route pages and the compare matrix agree on Sockguard's column", () => {
 test("roadmap data is valid and matches expected milestones", () => {
   assert.ok(roadmap.length > 0, "roadmap must be non-empty");
 
-  // v2.2.3 security-patch release on the v2.2 line.
+  // v2.2.4 security-patch release on the v2.2 line.
   const releasedMilestones = roadmap.filter((m) => m.status === "released");
   assert.ok(releasedMilestones.length > 0, "must have at least one released milestone");
   const latestReleased = releasedMilestones[releasedMilestones.length - 1];
-  assert.equal(latestReleased.version, "v2.2.3", "latest released milestone must be v2.2.3");
+  assert.equal(latestReleased.version, "v2.2.4", "latest released milestone must be v2.2.4");
   assert.equal(latestReleased.status, "released");
 
   // Must retain the previous stable milestones.
@@ -222,7 +222,7 @@ test("roadmap data is valid and matches expected milestones", () => {
 
   const v230 = roadmap.find((m) => m.version === "v2.3.0");
   assert.ok(v230, "roadmap must carry the RUN-instruction work forward as v2.3.0");
-  assert.equal(v230.status, "next", "v2.3.0 must stay next after v2.2.3 ships");
+  assert.equal(v230.status, "next", "v2.3.0 must stay next after v2.2.4 ships");
   assert.ok(
     v230.items.every((item) => !item.includes("#185")),
     "v2.3.0 must not present closed issue #185 as the owner of planned work",

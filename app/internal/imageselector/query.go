@@ -48,6 +48,17 @@ func Parse(rawQuery string) (Query, error) {
 	return query, nil
 }
 
+// Values groups the fields by their exact key spelling, keeping arrival order
+// within each key: the url.Values url.ParseQuery would return for the same
+// query.
+func (q Query) Values() url.Values {
+	values := make(url.Values, len(q))
+	for _, field := range q {
+		values[field.Key] = append(values[field.Key], field.Value)
+	}
+	return values
+}
+
 // References returns the non-empty values for key in arrival order. Matching
 // follows the case-insensitive decoder used by Podman's image batch handlers.
 // The work bound applies before exact duplicate values are coalesced.

@@ -1,7 +1,6 @@
 package filter
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -43,8 +42,10 @@ func newSecretPolicy(opts SecretOptions) driverCreatePolicy {
 }
 
 // driverCreatePolicy backs POST /configs/create and POST /secrets/create.
-// It shares the driver and template-driver inspection checks, including
-// string-shaped driver selections retained for compatibility.
+// Both endpoints share the same JSON shape and the same driver / template
+// driver allow-list semantics — only the kind label, target path, and size
+// cap differ. Keeping one inspect implementation prevents the two policies
+// from drifting apart.
 type driverCreatePolicy struct {
 	kind                 string
 	path                 string
@@ -53,30 +54,24 @@ type driverCreatePolicy struct {
 	allowTemplateDrivers bool
 }
 
+// driverCreateRequest reads Driver as the object both engines decode, Name
+// and Options (moby 28.5.1 api/types/swarm SecretSpec.Driver, a *Driver;
+// Podman 5.8.6 pkg/domain/entities SecretCreateRequest.Driver, a
+// SecretDriverSpec). dockerd hands Options to the secrets plugin Name picks,
+// and Podman's compat handler passes on Name only. Any option is refused
+// without allow_custom_drivers either way, the rule the libpod route applies
+// to driveropts. A driver name is always custom here, `file` included,
+// because dockerd resolves every name as a plugin and the Docker CLI omits
+// Driver for the built-in store, which on Podman picks the file default.
 type driverCreateRequest struct {
-	Driver         driverCreateSelection `json:"Driver"`
-	TemplateDriver string                `json:"TemplateDriver"`
+	Driver struct {
+		Name    string            `json:"Name"`
+		Options map[string]string `json:"Options"`
+	} `json:"Driver"`
+	TemplateDriver string `json:"TemplateDriver"`
 	Templating     struct {
 		Name string `json:"Name"`
 	} `json:"Templating"`
-}
-
-type driverCreateSelection struct {
-	Name string `json:"Name"`
-}
-
-func (d *driverCreateSelection) UnmarshalJSON(body []byte) error {
-	if string(body) == "null" {
-		*d = driverCreateSelection{}
-		return nil
-	}
-	if len(body) > 0 && body[0] == '"' {
-		return json.Unmarshal(body, &d.Name)
-	}
-	// Decode into the receiver so repeated object fields retain Docker's
-	// merge behavior, including Name:null leaving an existing name intact.
-	type selection driverCreateSelection
-	return json.Unmarshal(body, (*selection)(d))
 }
 
 func (p driverCreatePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
@@ -104,6 +99,9 @@ func (p driverCreatePolicy) inspect(logger *slog.Logger, r *http.Request, normal
 
 	if driver := strings.TrimSpace(req.Driver.Name); driver != "" && !p.allowCustomDrivers {
 		return fmt.Sprintf("%s create denied: driver %q is not allowed", p.kind, driver), nil
+	}
+	if len(req.Driver.Options) > 0 && !p.allowCustomDrivers {
+		return fmt.Sprintf("%s create denied: driver options are not allowed", p.kind), nil
 	}
 
 	templateDriver := strings.TrimSpace(req.TemplateDriver)

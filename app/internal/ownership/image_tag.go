@@ -9,6 +9,7 @@ import (
 
 	"github.com/codeswhat/sockguard/v2/app/internal/dockerresource"
 	"github.com/codeswhat/sockguard/v2/app/internal/imageselector"
+	"github.com/codeswhat/sockguard/v2/app/internal/queryparam"
 	"github.com/codeswhat/sockguard/v2/app/internal/upstreamflavor"
 )
 
@@ -321,19 +322,11 @@ func podmanStoredImageName(name, domain string) (string, bool) {
 // key. It reports false when the request repeats the key or spells it in any
 // other case, the two shapes a first-value decoder (net/http's Form.Get) and
 // a case-folding last-value one (gorilla/schema) read differently. An absent
-// parameter is an empty value with ok true.
+// parameter is an empty value with ok true. The rule is queryparam.Scalar's,
+// the one the filter's query inspectors apply.
 func exactQueryScalar(query imageselector.Query, key string) (value string, ok bool) {
-	found := false
-	for _, field := range query {
-		if !strings.EqualFold(field.Key, key) {
-			continue
-		}
-		if found || field.Key != key {
-			return "", false
-		}
-		value, found = field.Value, true
-	}
-	return value, true
+	value, _, ok = queryparam.Scalar(query.Values(), key)
+	return value, ok
 }
 
 // checkOwnedImageRoute authorizes a per-image route. Every route but a retag

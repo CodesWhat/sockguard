@@ -114,6 +114,7 @@ func TestLibpodMatchersNeverMatchDockerPathsAndViceVersa(t *testing.T) {
 		"/build",
 		"/networks/abc123/connect",
 		"/networks/abc123/disconnect",
+		"/containers/abc123",
 	}
 	libpodMatchers := []struct {
 		name    string
@@ -135,6 +136,9 @@ func TestLibpodMatchersNeverMatchDockerPathsAndViceVersa(t *testing.T) {
 		{"isLibpodNetworkConnectPath", isLibpodNetworkConnectPath},
 		{"isLibpodNetworkDisconnectPath", isLibpodNetworkDisconnectPath},
 		{"isLibpodNetworkUpdatePath", isLibpodNetworkUpdatePath},
+		{"isLibpodContainerRemovePath", isLibpodContainerRemovePath},
+		{"isLibpodPodRemovePath", isLibpodPodRemovePath},
+		{"isLibpodKubeDownPath", isLibpodKubeDownPath},
 	}
 	for _, dp := range dockerPaths {
 		for _, m := range libpodMatchers {
@@ -160,6 +164,9 @@ func TestLibpodMatchersNeverMatchDockerPathsAndViceVersa(t *testing.T) {
 		"/libpod/networks/abc123/connect",
 		"/libpod/networks/abc123/disconnect",
 		"/libpod/networks/abc123/update",
+		"/libpod/containers/abc123",
+		"/libpod/pods/abc123",
+		"/libpod/kube/play",
 	}
 	dockerMatchers := []struct {
 		name    string
@@ -171,6 +178,7 @@ func TestLibpodMatchersNeverMatchDockerPathsAndViceVersa(t *testing.T) {
 		{"isDockerNetworkConnectPath", func(p string) bool { return isNetworkActionPath(p, "connect") }},
 		{"isDockerNetworkDisconnectPath", func(p string) bool { return isNetworkActionPath(p, "disconnect") }},
 		{"isNetworkWritePath", isNetworkWritePath},
+		{"isContainerRemovePath", isContainerRemovePath},
 	}
 	for _, lp := range libpodPaths {
 		for _, m := range dockerMatchers {
