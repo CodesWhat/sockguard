@@ -50,6 +50,16 @@ var libpodNamespaceSharingFields = [...]string{"netns", "pidns", "ipcns", "usern
 // {"nsmode":"container","value":"<ref>"} namespace-sharing target — the
 // libpod-shaped counterpart of mutateContainerCreateOwnershipBody's Docker
 // HostConfig.{NetworkMode,PidMode,IpcMode,UTSMode,UsernsMode} handling.
+//
+// The secrets the body mounts with `secrets` are references too. Each has to
+// resolve to a secret carrying the caller's owner label, like the pod, and a
+// body naming one the lookup can't answer for is refused. So is one that sets
+// a secret in the environment with `secret_env`, which Podman reads again at
+// every start. See libpodContainerCreateSecretReferences. The
+// Docker-compatible create has no such reference on either engine: its body
+// has no secret field, and Podman's compat handler never fills the
+// SpecGenerator's (Podman 5.8.6 pkg/api/handlers/types.go:150-158 and
+// compat/containers_create.go).
 func mutateLibpodContainerCreateOwnershipBody(r *http.Request, labelKey, owner string) (*ownershipRequestReferences, error) {
 	refs := &ownershipRequestReferences{}
 	err := mutateJSONBody(r, func(decoded map[string]any) error {
@@ -68,6 +78,10 @@ func mutateLibpodContainerCreateOwnershipBody(r *http.Request, labelKey, owner s
 		for _, pod := range filter.FoldedStrings(decoded, "pod") {
 			appendEmbeddedOwnershipReference(&refs.embeddedResources, dockerresource.KindLibpodPod, pod, "libpod container create pod")
 		}
+
+		secrets, denyReason := libpodContainerCreateSecretReferences(decoded)
+		refs.denyReason = denyReason
+		refs.embeddedResources = append(refs.embeddedResources, secrets...)
 		return nil
 	})
 	return refs, err
@@ -86,6 +100,12 @@ func mutateLibpodContainerCreateOwnershipBody(r *http.Request, labelKey, owner s
 // exactly like container-create's own "image" field; an empty infra_image —
 // Podman's built-in default pause image — never appears here since
 // FoldedStrings skips empty/absent values).
+//
+// A pod create names no secret. PodSpecGenerator has no field for one, and the
+// handler fills the infra container's spec by marshaling the pod spec it
+// decoded, so a `secrets` or `secret_env` key in the body is dropped before
+// any container exists (Podman 5.8.6 pkg/specgen/podspecgen.go and
+// pkg/api/handlers/libpod/pods.go:37-65).
 func mutateLibpodPodCreateOwnershipBody(r *http.Request, labelKey, owner string) (*ownershipRequestReferences, error) {
 	refs := &ownershipRequestReferences{}
 	err := mutateJSONBody(r, func(decoded map[string]any) error {
