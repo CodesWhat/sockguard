@@ -48,8 +48,8 @@ on.
 
 | libpod endpoint | Config key | Notes |
 |---|---|---|
-| `POST /libpod/containers/create` | `request_body.libpod_container_create` | Podman's native SpecGenerator create body. Field names mirror `container_create` where the semantics map across (privileged, host netns/pidns/ipcns/userns, bind-mount/device allowlists, capabilities, seccomp/AppArmor, `image_trust`), plus two libpod-only gates: `allow_systemd_mode` and `allow_custom_id_mappings`. |
-| `POST /libpod/pods/create` | `request_body.libpod_pod_create` | Pods have no Docker-compat equivalent. Covers pod-level host network (`allow_host_network`), shared PID namespace (`allow_shared_pid_namespace`), and the infra image's registry (`allowed_infra_image_registries`). |
+| `POST /libpod/containers/create` | `request_body.libpod_container_create` | Podman's native SpecGenerator create body. Field names mirror `container_create` where the semantics map across (privileged, host netns/pidns/ipcns/userns, bind-mount/device allowlists, capabilities, seccomp/AppArmor, `image_trust`), plus two libpod-only gates: `allow_systemd_mode` and `allow_custom_id_mappings`. The host namespace gates cover `nsmode` `host` and `path`; see [Namespace Modes and the Host Gates](#namespace-modes-and-the-host-gates). |
+| `POST /libpod/pods/create` | `request_body.libpod_pod_create` | Pods have no Docker-compat equivalent. Covers pod-level host network (`allow_host_network`, for `netns` with `nsmode` `host` or `path`), shared PID namespace (`allow_shared_pid_namespace`), and the infra image's registry (`allowed_infra_image_registries`). |
 | `POST /libpod/build` | `request_body.build`, shared with Docker `POST /build` | Covers primary remote contexts, URL/image `additionalbuildcontexts`, `networkmode=host`, and Dockerfiles containing `RUN`, read from `Containerfile` and `Dockerfile` or from every file a JSON-array `dockerfile` names. Host/local/multipart and resource-usage host-file controls require the global blind-write acknowledgment. Direct and version-prefixed requests use the same tar/gzip bounds and body-sensitive startup validation as Docker's classic builder. |
 | `POST /libpod/containers/{name}/exec`, `POST /libpod/exec/{id}/start` | `request_body.exec` — **shared with Docker-compat** | libpod exec bodies use Docker's own field names on the wire, so there is deliberately no separate `libpod_exec` block. One `allowed_commands`/`allow_privileged`/`allow_root_user`/env-var policy governs exec on both surfaces, so nothing can be configured for one path family and forgotten for the other. |
 | `PUT /libpod/containers/{name}/archive` | `request_body.container_archive` — **shared with Docker-compat** | Podman routes this and Docker's `PUT /containers/{name}/archive` to a single `compat.Archive` handler, so one matcher covers both spellings. The inspector requires one nonempty, unambiguous `path`, matches Podman's case-insensitive field name, refuses relative targets when `allowed_paths` is configured because Podman resolves them against the container WorkingDir, and refuses a nonempty or ambiguous `rename` because Podman applies that transformation after reading the tar headers. `allowed_paths`, `allow_setid`, `allow_device_nodes` and `allow_escaping_links` otherwise apply identically on either path. |
@@ -70,6 +70,72 @@ on.
 See the [Configuration Reference](/configuration#request-body-policy-reference)
 for the complete field-by-field mapping and environment-variable names for
 every key above.
+
+## Namespace Modes and the Host Gates
+
+Podman's create bodies pick each namespace with an object,
+`{"nsmode": "...", "value": "..."}`, and `host` isn't the only mode that
+reaches the host. `{"nsmode": "path", "value": "/proc/1/ns/pid"}` joins
+whatever namespace the path names on the daemon host, and that one is the
+host's PID namespace. Podman only checks that the path exists. So on
+`POST /libpod/containers/create`, `allow_host_network`, `allow_host_pid`,
+`allow_host_ipc` and `allow_host_userns` each gate both `host` and `path`
+for their namespace.
+
+While a gate is off, its namespace only takes a mode from the "no gate"
+rows below, plus `container` and `pod`. Anything else is refused. That
+includes a mode sockguard doesn't know and a known one spelled in another
+case, both of which Podman 5.8.6 answers with a 500.
+
+| `nsmode` | On | Where the container ends up | Gate |
+|---|---|---|---|
+| absent, empty, `default` | all | The daemon's `containers.conf` default, or the pod's namespace when the container joins a pod that shares it | none |
+| `private` | all | A new namespace of its own | none |
+| `host` | all | The host's | `allow_host_*` |
+| `path` | all | The namespace at `value`, which can be the host's or another container's | `allow_host_*`, and refused while `restrict_namespace_sharing` is on |
+| `container` | all | Another container's, which is the host's if that container is in it | `restrict_namespace_sharing`, and owner isolation |
+| `pod` | all | The pod infra container's | `libpod_pod_create`, and owner isolation on the `pod` it names |
+| `shareable`, `none` | `ipcns` | A new one | none |
+| `none`, `bridge`, `slirp4netns`, `pasta` | `netns` | A new one | none |
+| `auto`, `keep-id`, `no-map` | `userns` | A new one | none (`allow_custom_id_mappings` covers `idmappings`) |
+
+Keys are matched the way Podman's decoder matches them: in any letter case,
+with the last of a repeated key winning. A namespace field that isn't an
+object, or an `nsmode` that isn't a string, is refused as malformed whatever
+the gates say.
+
+The default isn't always a private namespace. A rootful Podman with a stock
+`containers.conf` runs containers in the host user namespace unless the
+request asks for another one, and on cgroup v1 the default cgroup namespace
+is the host's. `allow_host_userns: false` refuses a request for the host
+user namespace. It doesn't move the daemon's default.
+
+`POST /libpod/pods/create` sets the infra container's network namespace with
+the same object, and every container in the pod shares it by default.
+`libpod_pod_create.allow_host_network` gates `netns` `host` and `path` there,
+and refuses an unknown `netns` mode while it's off.
+
+The Docker-compatible `POST /containers/create` has the same hole on a
+Podman upstream under another spelling. Podman parses `NetworkMode`,
+`PidMode`, `IpcMode`, `UTSMode`, `UsernsMode` and `CgroupnsMode` with the
+parsers its own CLI flags use, and `ns:<path>` on any of them is a join by
+path. Each needs the `container_create.allow_host_*` gate for its namespace,
+and `UTSMode: ns:<path>` is always refused, like `UTSMode: host`.
+
+What that refuses for a client that was working before:
+
+- `podman --remote run` or `create` with `--network ns:<path>`,
+  `--pid ns:<path>`, `--ipc ns:<path>` or `--userns ns:<path>`, until the
+  matching `libpod_container_create.allow_host_*` is on.
+- `podman --remote pod create --network ns:<path>`, until
+  `libpod_pod_create.allow_host_network` is on.
+- A Docker client pointed at Podman that sends `ns:<path>` in a `HostConfig`
+  mode, such as `docker run --network ns:/run/netns/build`, until the matching
+  `container_create.allow_host_*` is on.
+- Any of those with `restrict_namespace_sharing: true`, even with the host
+  gate on. A path can name another container's namespace, and sockguard can't
+  check a path against a list of container names.
+- An `nsmode` a newer Podman adds, while the gate for that namespace is off.
 
 ## The Uninspected Blind-Write Surface: `play/kube` and Manifests
 

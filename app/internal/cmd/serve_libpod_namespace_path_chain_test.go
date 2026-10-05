@@ -531,16 +531,23 @@ func (d *podmanNamespaceChainDaemon) seen() []string {
 	return slices.Clone(d.created)
 }
 
-// TestServeChainNamespaceJoinedByPathGetsPastTheHostGates sends container and
-// pod creates through the production chain to a daemon that picks namespaces
-// the way Podman does, and asserts on the namespaces each container it made
-// is in.
+// TestServeChainNamespaceJoinedByPathNeedsTheHostGate sends container and pod
+// creates through the production chain to a daemon that picks namespaces the
+// way Podman does, and asserts on the namespaces each container it made is in.
 //
 // The host namespace gates only matched nsmode `host`. Podman's `path` mode
 // joins whatever namespace the path names, and /proc/1/ns/pid is the host's,
-// so every case below marked "joins" reaches the daemon with the gate that
-// should stop it turned off.
-func TestServeChainNamespaceJoinedByPathGetsPastTheHostGates(t *testing.T) {
+// so a create could put a container in the host PID namespace with
+// allow_host_pid off. The same went for netns, ipcns and userns, for a pod's
+// netns, and for `ns:<path>` on every HostConfig mode of the compat create.
+// A namespace joined by path now needs the gate `host` needs, and while a
+// gate is off its namespace takes only the modes Podman has that keep the
+// container out of the host's.
+//
+// The cases still named "joins" with every gate off are the ones no gate
+// reads yet: utsns and cgroupns on the native create, and a pod's pidns,
+// ipcns, utsns and userns.
+func TestServeChainNamespaceJoinedByPathNeedsTheHostGate(t *testing.T) {
 	const (
 		libpodCreate = "/v5.8.6/libpod/containers/create"
 		podCreate    = "/v5.8.6/libpod/pods/create"
@@ -594,38 +601,38 @@ func TestServeChainNamespaceJoinedByPathGetsPastTheHostGates(t *testing.T) {
 		{name: "libpod userns host", send: libpod(`"userns":{"nsmode":"host"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: host user namespace is not allowed"},
 		{name: "libpod utsns host joins", send: libpod(`"utsns":{"nsmode":"host"}`), wantStatus: http.StatusCreated, wantCreated: created("utsns=host")},
 		{name: "libpod cgroupns host joins", send: libpod(`"cgroupns":{"nsmode":"host"}`), wantStatus: http.StatusCreated, wantCreated: created("cgroupns=host")},
-		{name: "libpod netns path joins", send: libpod(`"netns":{"nsmode":"path","value":"/proc/1/ns/net"}`), wantStatus: http.StatusCreated, wantCreated: created("netns=path:/proc/1/ns/net")},
-		{name: "libpod netns path to a named netns joins", send: libpod(`"netns":{"nsmode":"path","value":"/run/netns/other"}`), wantStatus: http.StatusCreated, wantCreated: created("netns=path:/run/netns/other")},
-		{name: "libpod pidns path joins", send: libpod(`"pidns":{"nsmode":"path","value":"/proc/1/ns/pid"}`), wantStatus: http.StatusCreated, wantCreated: created("pidns=path:/proc/1/ns/pid")},
-		{name: "libpod ipcns path joins", send: libpod(`"ipcns":{"nsmode":"path","value":"/proc/1/ns/ipc"}`), wantStatus: http.StatusCreated, wantCreated: created("ipcns=path:/proc/1/ns/ipc")},
-		{name: "libpod userns path joins", send: libpod(`"userns":{"nsmode":"path","value":"/proc/1/ns/user"}`), wantStatus: http.StatusCreated, wantCreated: created("userns=path:/proc/1/ns/user")},
+		{name: "libpod netns path", send: libpod(`"netns":{"nsmode":"path","value":"/proc/1/ns/net"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: network namespace joined by path is not allowed"},
+		{name: "libpod netns path to a named netns", send: libpod(`"netns":{"nsmode":"path","value":"/run/netns/other"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: network namespace joined by path is not allowed"},
+		{name: "libpod pidns path", send: libpod(`"pidns":{"nsmode":"path","value":"/proc/1/ns/pid"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: PID namespace joined by path is not allowed"},
+		{name: "libpod ipcns path", send: libpod(`"ipcns":{"nsmode":"path","value":"/proc/1/ns/ipc"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: IPC namespace joined by path is not allowed"},
+		{name: "libpod userns path", send: libpod(`"userns":{"nsmode":"path","value":"/proc/1/ns/user"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: user namespace joined by path is not allowed"},
 		{name: "libpod utsns path joins", send: libpod(`"utsns":{"nsmode":"path","value":"/proc/1/ns/uts"}`), wantStatus: http.StatusCreated, wantCreated: created("utsns=path:/proc/1/ns/uts")},
 		{name: "libpod cgroupns path joins", send: libpod(`"cgroupns":{"nsmode":"path","value":"/proc/1/ns/cgroup"}`), wantStatus: http.StatusCreated, wantCreated: created("cgroupns=path:/proc/1/ns/cgroup")},
 		{
-			name:        "libpod every namespace by path joins",
-			send:        libpod(`"netns":{"nsmode":"path","value":"/proc/1/ns/net"},"pidns":{"nsmode":"path","value":"/proc/1/ns/pid"},"ipcns":{"nsmode":"path","value":"/proc/1/ns/ipc"},"userns":{"nsmode":"path","value":"/proc/1/ns/user"}`),
-			wantStatus:  http.StatusCreated,
-			wantCreated: created("netns=path:/proc/1/ns/net pidns=path:/proc/1/ns/pid ipcns=path:/proc/1/ns/ipc userns=path:/proc/1/ns/user"),
+			name:       "libpod every namespace by path",
+			send:       libpod(`"netns":{"nsmode":"path","value":"/proc/1/ns/net"},"pidns":{"nsmode":"path","value":"/proc/1/ns/pid"},"ipcns":{"nsmode":"path","value":"/proc/1/ns/ipc"},"userns":{"nsmode":"path","value":"/proc/1/ns/user"}`),
+			wantStatus: http.StatusForbidden,
+			wantReason: "libpod container create denied: network namespace joined by path is not allowed",
 		},
 
 		// The keys the way encoding/json matches them.
-		{name: "libpod pidns path under an upper-case key joins", send: libpod(`"PIDNS":{"NSMode":"path","Value":"/proc/1/ns/pid"}`), wantStatus: http.StatusCreated, wantCreated: created("pidns=path:/proc/1/ns/pid")},
+		{name: "libpod pidns path under an upper-case key", send: libpod(`"PIDNS":{"NSMode":"path","Value":"/proc/1/ns/pid"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: PID namespace joined by path is not allowed"},
 		{
 			// encoding/json folds U+017F, the long s, onto s.
-			name:        "libpod pidns path under a key with a long s joins",
-			send:        libpod("\"pidnſ\":{\"nsmode\":\"path\",\"value\":\"/proc/1/ns/pid\"}"),
-			wantStatus:  http.StatusCreated,
-			wantCreated: created("pidns=path:/proc/1/ns/pid"),
+			name:       "libpod pidns path under a key with a long s",
+			send:       libpod("\"pidn\u017f\":{\"nsmode\":\"path\",\"value\":\"/proc/1/ns/pid\"}"),
+			wantStatus: http.StatusForbidden,
+			wantReason: "libpod container create denied: PID namespace joined by path is not allowed",
 		},
-		{name: "libpod pidns path as the last of two nsmodes joins", send: libpod(`"pidns":{"nsmode":"private","nsmode":"path","value":"/proc/1/ns/pid"}`), wantStatus: http.StatusCreated, wantCreated: created("pidns=path:/proc/1/ns/pid")},
-		{name: "libpod pidns path as the last of two pidns joins", send: libpod(`"pidns":{"nsmode":"private"},"pidns":{"nsmode":"path","value":"/proc/1/ns/pid"}`), wantStatus: http.StatusCreated, wantCreated: created("pidns=path:/proc/1/ns/pid")},
+		{name: "libpod pidns path as the last of two nsmodes", send: libpod(`"pidns":{"nsmode":"private","nsmode":"path","value":"/proc/1/ns/pid"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: PID namespace joined by path is not allowed"},
+		{name: "libpod pidns path as the last of two pidns", send: libpod(`"pidns":{"nsmode":"private"},"pidns":{"nsmode":"path","value":"/proc/1/ns/pid"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: PID namespace joined by path is not allowed"},
 		{
 			// A repeated key decodes into the same struct, so the mode of one
 			// and the value of the other add up.
-			name:        "libpod pidns path split across two spellings joins",
-			send:        libpod(`"pidns":{"value":"/proc/1/ns/pid"},"PidNS":{"nsmode":"path"}`),
-			wantStatus:  http.StatusCreated,
-			wantCreated: created("pidns=path:/proc/1/ns/pid"),
+			name:       "libpod pidns path split across two spellings",
+			send:       libpod(`"pidns":{"value":"/proc/1/ns/pid"},"PidNS":{"nsmode":"path"}`),
+			wantStatus: http.StatusForbidden,
+			wantReason: "libpod container create denied: PID namespace joined by path is not allowed",
 		},
 		{
 			// The last nsmode wins, and Podman refuses a value on `private`.
@@ -634,10 +641,11 @@ func TestServeChainNamespaceJoinedByPathGetsPastTheHostGates(t *testing.T) {
 			wantStatus: http.StatusInternalServerError,
 		},
 
-		// Modes Podman doesn't have, and namespaces that aren't objects.
-		{name: "libpod pidns Path in another case", send: libpod(`"pidns":{"nsmode":"Path","value":"/proc/1/ns/pid"}`), wantStatus: http.StatusInternalServerError},
-		{name: "libpod pidns with a mode Podman doesn't have", send: libpod(`"pidns":{"nsmode":"hostns"}`), wantStatus: http.StatusInternalServerError},
-		{name: "libpod pidns with a network mode", send: libpod(`"pidns":{"nsmode":"bridge"}`), wantStatus: http.StatusInternalServerError},
+		// Modes Podman doesn't have, and namespaces that aren't objects. Podman
+		// answers the first three with a 500, and they don't get that far.
+		{name: "libpod pidns Path in another case", send: libpod(`"pidns":{"nsmode":"Path","value":"/proc/1/ns/pid"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: PID namespace joined by path is not allowed"},
+		{name: "libpod pidns with a mode Podman doesn't have", send: libpod(`"pidns":{"nsmode":"hostns"}`), wantStatus: http.StatusForbidden, wantReason: `libpod container create denied: PID namespace mode "hostns" is not recognized`},
+		{name: "libpod pidns with a network mode", send: libpod(`"pidns":{"nsmode":"bridge"}`), wantStatus: http.StatusForbidden, wantReason: `libpod container create denied: PID namespace mode "bridge" is not recognized`},
 		{name: "libpod pidns as a string", send: libpod(`"pidns":"host"`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: malformed JSON request body"},
 		{name: "libpod pidns with an nsmode that isn't a string", send: libpod(`"pidns":{"nsmode":["path"],"value":"/proc/1/ns/pid"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: malformed JSON request body"},
 
@@ -682,19 +690,19 @@ func TestServeChainNamespaceJoinedByPathGetsPastTheHostGates(t *testing.T) {
 		// Native container create with a gate on.
 		{name: "libpod pidns host with allow_host_pid", configure: hostPID, send: libpod(`"pidns":{"nsmode":"host"}`), wantStatus: http.StatusCreated, wantCreated: created("pidns=host")},
 		{name: "libpod pidns path with allow_host_pid", configure: hostPID, send: libpod(`"pidns":{"nsmode":"path","value":"/proc/1/ns/pid"}`), wantStatus: http.StatusCreated, wantCreated: created("pidns=path:/proc/1/ns/pid")},
-		{name: "libpod netns path with only allow_host_pid joins", configure: hostPID, send: libpod(`"netns":{"nsmode":"path","value":"/proc/1/ns/net"}`), wantStatus: http.StatusCreated, wantCreated: created("netns=path:/proc/1/ns/net")},
+		{name: "libpod netns path with only allow_host_pid", configure: hostPID, send: libpod(`"netns":{"nsmode":"path","value":"/proc/1/ns/net"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: network namespace joined by path is not allowed"},
 		{
 			// A path can name another container's namespace as easily as
 			// the host's, and no allowlist of containers can vouch for it.
-			name: "libpod pidns path with allow_host_pid and sharing restricted joins",
+			name: "libpod pidns path with allow_host_pid and sharing restricted",
 			configure: func(body *gates) {
 				hostPID(body)
 				body.LibpodContainerCreate.RestrictNamespaceSharing = true
 				body.LibpodContainerCreate.AllowedNamespaceSharingContainers = []string{"web"}
 			},
-			send:        libpod(`"pidns":{"nsmode":"path","value":"/proc/1/ns/pid"}`),
-			wantStatus:  http.StatusCreated,
-			wantCreated: created("pidns=path:/proc/1/ns/pid"),
+			send:       libpod(`"pidns":{"nsmode":"path","value":"/proc/1/ns/pid"}`),
+			wantStatus: http.StatusForbidden,
+			wantReason: "libpod container create denied: PID namespace joined by path is not allowed while namespace sharing is restricted",
 		},
 
 		// Pod create, every gate off. The namespaces are the infra container's.
@@ -714,7 +722,7 @@ func TestServeChainNamespaceJoinedByPathGetsPastTheHostGates(t *testing.T) {
 			wantCreated: infra("own namespaces"),
 		},
 		{name: "pod netns host", send: pod(`"netns":{"nsmode":"host"}`), wantStatus: http.StatusForbidden, wantReason: "libpod pod create denied: host network namespace is not allowed"},
-		{name: "pod netns path joins", send: pod(`"netns":{"nsmode":"path","value":"/proc/1/ns/net"}`), wantStatus: http.StatusCreated, wantCreated: infra("netns=path:/proc/1/ns/net")},
+		{name: "pod netns path", send: pod(`"netns":{"nsmode":"path","value":"/proc/1/ns/net"}`), wantStatus: http.StatusForbidden, wantReason: "libpod pod create denied: network namespace joined by path is not allowed"},
 		{name: "pod pidns host joins", send: pod(`"pidns":{"nsmode":"host"}`), wantStatus: http.StatusCreated, wantCreated: infra("pidns=host")},
 		{name: "pod pidns path joins", send: pod(`"pidns":{"nsmode":"path","value":"/proc/1/ns/pid"}`), wantStatus: http.StatusCreated, wantCreated: infra("pidns=path:/proc/1/ns/pid")},
 		{name: "pod ipcns host joins", send: pod(`"ipcns":{"nsmode":"host"}`), wantStatus: http.StatusCreated, wantCreated: infra("ipcns=host")},
@@ -758,25 +766,30 @@ func TestServeChainNamespaceJoinedByPathGetsPastTheHostGates(t *testing.T) {
 		{name: "compat UsernsMode host", send: compat(`"UsernsMode":"host"`), wantStatus: http.StatusForbidden, wantReason: "container create denied: host user namespace mode is not allowed"},
 		{name: "compat CgroupnsMode host", send: compat(`"CgroupnsMode":"host"`), wantStatus: http.StatusForbidden, wantReason: "container create denied: host cgroup namespace mode is not allowed"},
 		{name: "compat UTSMode host", send: compat(`"UTSMode":"host"`), wantStatus: http.StatusForbidden, wantReason: "container create denied: host UTS mode is not allowed"},
-		{name: "compat NetworkMode ns: joins", send: compat(`"NetworkMode":"ns:/proc/1/ns/net"`), wantStatus: http.StatusCreated, wantCreated: created("netns=path:/proc/1/ns/net")},
-		{name: "compat PidMode ns: joins", send: compat(`"PidMode":"ns:/proc/1/ns/pid"`), wantStatus: http.StatusCreated, wantCreated: created("pidns=path:/proc/1/ns/pid")},
-		{name: "compat IpcMode ns: joins", send: compat(`"IpcMode":"ns:/proc/1/ns/ipc"`), wantStatus: http.StatusCreated, wantCreated: created("ipcns=path:/proc/1/ns/ipc")},
-		{name: "compat UsernsMode ns: joins", send: compat(`"UsernsMode":"ns:/proc/1/ns/user"`), wantStatus: http.StatusCreated, wantCreated: created("userns=path:/proc/1/ns/user")},
-		{name: "compat CgroupnsMode ns: joins", send: compat(`"CgroupnsMode":"ns:/proc/1/ns/cgroup"`), wantStatus: http.StatusCreated, wantCreated: created("cgroupns=path:/proc/1/ns/cgroup")},
-		{name: "compat UTSMode ns: joins", send: compat(`"UTSMode":"ns:/proc/1/ns/uts"`), wantStatus: http.StatusCreated, wantCreated: created("utsns=path:/proc/1/ns/uts")},
-		{name: "compat PidMode ns: under a lower-case key joins", send: compat(`"pidmode":"ns:/proc/1/ns/pid"`), wantStatus: http.StatusCreated, wantCreated: created("pidns=path:/proc/1/ns/pid")},
+		{name: "compat NetworkMode ns:", send: compat(`"NetworkMode":"ns:/proc/1/ns/net"`), wantStatus: http.StatusForbidden, wantReason: "container create denied: network namespace joined by path is not allowed"},
+		{name: "compat PidMode ns:", send: compat(`"PidMode":"ns:/proc/1/ns/pid"`), wantStatus: http.StatusForbidden, wantReason: "container create denied: PID namespace joined by path is not allowed"},
+		{name: "compat IpcMode ns:", send: compat(`"IpcMode":"ns:/proc/1/ns/ipc"`), wantStatus: http.StatusForbidden, wantReason: "container create denied: IPC namespace joined by path is not allowed"},
+		{name: "compat UsernsMode ns:", send: compat(`"UsernsMode":"ns:/proc/1/ns/user"`), wantStatus: http.StatusForbidden, wantReason: "container create denied: user namespace joined by path is not allowed"},
+		{name: "compat CgroupnsMode ns:", send: compat(`"CgroupnsMode":"ns:/proc/1/ns/cgroup"`), wantStatus: http.StatusForbidden, wantReason: "container create denied: cgroup namespace joined by path is not allowed"},
+		{name: "compat UTSMode ns:", send: compat(`"UTSMode":"ns:/proc/1/ns/uts"`), wantStatus: http.StatusForbidden, wantReason: "container create denied: UTS namespace joined by path is not allowed"},
+		{name: "compat PidMode ns: under a lower-case key", send: compat(`"pidmode":"ns:/proc/1/ns/pid"`), wantStatus: http.StatusForbidden, wantReason: "container create denied: PID namespace joined by path is not allowed"},
 		{
-			name:       "compat NetworkMode ns: with deny_namespace_path_mode",
-			configure:  func(body *gates) { body.ContainerCreate.DenyNamespacePathMode = true },
+			// deny_namespace_path_mode still refuses it once host network is allowed.
+			name: "compat NetworkMode ns: with allow_host_network and deny_namespace_path_mode",
+			configure: func(body *gates) {
+				body.ContainerCreate.AllowHostNetwork = true
+				body.ContainerCreate.DenyNamespacePathMode = true
+			},
 			send:       compat(`"NetworkMode":"ns:/proc/1/ns/net"`),
 			wantStatus: http.StatusForbidden,
 			wantReason: "container create denied: ns: namespace path mode is not allowed",
 		},
 		{
-			// Podman matches the prefix byte for byte and refuses this one.
+			// Podman matches the prefix byte for byte and would refuse this one.
 			name:       "compat PidMode NS: in another case",
 			send:       compat(`"PidMode":"NS:/proc/1/ns/pid"`),
-			wantStatus: http.StatusInternalServerError,
+			wantStatus: http.StatusForbidden,
+			wantReason: "container create denied: PID namespace joined by path is not allowed",
 		},
 		{name: "compat PidMode Host in another case", send: compat(`"PidMode":"Host"`), wantStatus: http.StatusForbidden, wantReason: "container create denied: host PID mode is not allowed"},
 		{name: "compat PidMode private", send: compat(`"PidMode":"private"`), wantStatus: http.StatusCreated, wantCreated: created("own namespaces")},
@@ -785,15 +798,15 @@ func TestServeChainNamespaceJoinedByPathGetsPastTheHostGates(t *testing.T) {
 		{name: "compat PidMode host with allow_host_pid", configure: hostPID, send: compat(`"PidMode":"host"`), wantStatus: http.StatusCreated, wantCreated: created("pidns=host")},
 		{name: "compat PidMode ns: with allow_host_pid", configure: hostPID, send: compat(`"PidMode":"ns:/proc/1/ns/pid"`), wantStatus: http.StatusCreated, wantCreated: created("pidns=path:/proc/1/ns/pid")},
 		{
-			name: "compat PidMode ns: with allow_host_pid and sharing restricted joins",
+			name: "compat PidMode ns: with allow_host_pid and sharing restricted",
 			configure: func(body *gates) {
 				hostPID(body)
 				body.ContainerCreate.RestrictNamespaceSharing = true
 				body.ContainerCreate.AllowedNamespaceSharingContainers = []string{"web"}
 			},
-			send:        compat(`"PidMode":"ns:/proc/1/ns/pid"`),
-			wantStatus:  http.StatusCreated,
-			wantCreated: created("pidns=path:/proc/1/ns/pid"),
+			send:       compat(`"PidMode":"ns:/proc/1/ns/pid"`),
+			wantStatus: http.StatusForbidden,
+			wantReason: "container create denied: PID namespace joined by path is not allowed while namespace sharing is restricted",
 		},
 	}
 	for _, tt := range tests {
