@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.3.0-rc.3] - 2026-10-04
+## [2.3.0-rc.3] - 2026-10-05
 
 ### Security
 
@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **`POST /secrets/create` and `POST /configs/create` refuse a `Driver` sent as a string, and `Driver.Options` needs `allow_custom_drivers`.** rc.1 and rc.2 took a string `Driver` as a driver name and didn't read `Driver.Options`. Neither engine accepts a string there, so it's now refused as uninspectable with the flag on or off, and options are refused without the flag. Both match 2.2.4.
+- **`POST /secrets/create` and `POST /configs/create` refuse a `Driver` sent as a string, and `Driver.Options` needs `allow_custom_drivers`.** rc.1 and rc.2 took a string `Driver` as a driver name and didn't read `Driver.Options`. Neither engine accepts a string on `/secrets/create` (dockerd ignores `Driver` on a config), so it's now refused as uninspectable with the flag on or off, and options are refused without the flag. Both match 2.2.4.
 
 ## [2.3.0-rc.2] - 2026-10-02
 
