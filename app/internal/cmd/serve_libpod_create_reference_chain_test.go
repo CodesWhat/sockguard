@@ -136,8 +136,8 @@ type createRefChainPodSpec struct {
 //     network.
 //   - `image_volumes` and `artifact_volumes` aren't resolved at create at all.
 //     Podman keeps each source as written and looks it up at every start
-//     (libpod/container_internal_common.go:504-543). The daemon records what
-//     the first start would mount.
+//     (libpod/container_internal_common.go:504-506 and :550). The daemon
+//     records what the first start would mount.
 //   - `devices_from` is decoded and never read.
 //
 // PodCreate marshals the PodSpecGenerator it decoded and unmarshals that into
@@ -145,7 +145,7 @@ type createRefChainPodSpec struct {
 // volumes become the infra container's, and a key PodSpecGenerator has no
 // field for is dropped. MapSpec refuses a pod whose netns joins a container.
 // `serviceContainerID` is resolved with LookupContainer, and starting the pod
-// restarts that container (libpod/options.go:2162, libpod/service.go:214).
+// restarts that container (libpod/options.go:2162, libpod/service.go:211-233).
 //
 // LookupContainer and LookupPod match an exact name, then a unique ID prefix,
 // and NetworkInspect does the same. The inspects resolve the same way:
@@ -530,35 +530,58 @@ func (d *libpodCreateRefChainDaemon) lookedUp() []string {
 	return slices.Clone(d.lookups)
 }
 
-// TestServeChainLibpodCreateReferencesReachTheDaemon sends libpod container
-// and pod creates from team-a through the production chain, each naming one
-// resource of team-b's, to a daemon that resolves the references the way
-// Podman does. It asserts on what the daemon attached to whatever it created
-// and on which inspects owner isolation made first.
+// TestServeChainLibpodCreateReferencesAreOwnerChecked sends libpod container
+// and pod creates from team-a through the production chain to a daemon that
+// resolves their references the way Podman does. It asserts on what the daemon
+// attached to whatever it created, and on which inspects owner isolation made
+// first.
 //
-// This pins what happens today. Owner isolation checks a create's image, its
-// pod and five of its namespace targets, and reads nothing else in the body.
-// So a container create naming another owner's named volume, container
-// (through volumes_from, dependencyContainers or cgroupns), network, image
-// volume or artifact goes to Podman with no lookup of that resource, and so
-// does a pod create naming one, or a container for the pod's service
-// container. Only the cases at the end of each group are refused.
-func TestServeChainLibpodCreateReferencesReachTheDaemon(t *testing.T) {
+// Owner isolation used to check a create's image, its pod and five of its
+// namespace targets, and read nothing else in the body. A container create
+// naming another owner's named volume, container (through volumes_from,
+// dependencyContainers or cgroupns), network or image volume went to Podman
+// with no lookup of that resource, and so did a pod create naming one, or a
+// container for the pod's service container.
+//
+// Every one of those now has to resolve to something carrying the caller's
+// owner label. A named volume nothing holds is refused as unresolved, as on
+// the Docker-compatible create: Podman would create it with no labels, which
+// leaves a volume no owner can use. The network key "default" is the only
+// reference that isn't looked up, because Podman reads it as the network a
+// create naming none joins.
+func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 	const (
 		containerURL = "/v5.0.0/libpod/containers/create"
 		podURL       = "/v5.0.0/libpod/pods/create"
 		alpine       = "images/alpine"
 		theirsCtr    = "containers/theirs-ctr"
 		deniedTarget = `libpod owner policy denied access to namespace-sharing target container "theirs-ctr"`
+		lookupFailed = "owner policy lookup failed"
 	)
+	denied := func(kind, reference, source string) string {
+		return fmt.Sprintf("libpod owner policy denied access to %s %q referenced by %s", kind, reference, source)
+	}
+	unresolved := func(kind, reference, source string) string {
+		return fmt.Sprintf("libpod owner policy could not resolve %s %q referenced by %s", kind, reference, source)
+	}
+	unreadable := func(create, field string) string {
+		return fmt.Sprintf("libpod owner policy denied %s with a %s reference it can't look up", create, field)
+	}
 	container := func(fields string) string {
 		return `{"image":"alpine","systemd":"false",` + fields + `}`
 	}
 	pod := func(fields string) string {
 		return `{"name":"web",` + fields + `}`
 	}
+	var manyContainers []string
+	for i := range 257 {
+		manyContainers = append(manyContainers, fmt.Sprintf(`"ctr-%d"`, i))
+	}
 	tests := []struct {
-		name       string
+		name string
+		// owner is "none" for a chain without owner isolation.
+		owner      string
+		rollout    string
 		target     string
 		body       string
 		wantStatus int
@@ -573,65 +596,101 @@ func TestServeChainLibpodCreateReferencesReachTheDaemon(t *testing.T) {
 			name:        "container with another owner's named volume",
 			target:      containerURL,
 			body:        container(`"volumes":[{"Name":"theirs-data","Dest":"/data"}]`),
-			wantStatus:  http.StatusCreated,
-			wantLookups: []string{alpine},
-			wantUses:    []string{"volume theirs-data (team-b)"},
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("volume", "theirs-data", "container create volumes"),
+			wantLookups: []string{alpine, "volumes/theirs-data"},
+		},
+		{
+			// podman-remote sends every NamedVolume field, with Go's names.
+			name:        "podman-remote shape naming another owner's volume",
+			target:      containerURL,
+			body:        container(`"volumes":[{"Name":"theirs-data","Dest":"/data","Options":null,"IsAnonymous":false,"SubPath":""}]`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("volume", "theirs-data", "container create volumes"),
+			wantLookups: []string{alpine, "volumes/theirs-data"},
 		},
 		{
 			name:        "container with the volumes of another owner's container",
 			target:      containerURL,
 			body:        container(`"volumes_from":["theirs-ctr:ro"]`),
-			wantStatus:  http.StatusCreated,
-			wantLookups: []string{alpine},
-			wantUses:    []string{"volumes-from theirs-ctr (team-b)"},
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("container", "theirs-ctr", "container create volumes_from"),
+			wantLookups: []string{alpine, theirsCtr},
+		},
+		{
+			name:        "container with the volumes of another owner's container by ID prefix",
+			target:      containerURL,
+			body:        container(`"volumes_from":["bbbb"]`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("container", "bbbb", "container create volumes_from"),
+			wantLookups: []string{alpine, "containers/bbbb"},
 		},
 		{
 			name:        "container on another owner's network",
 			target:      containerURL,
 			body:        container(`"netns":{"nsmode":"bridge"},"Networks":{"theirs-net":{}}`),
-			wantStatus:  http.StatusCreated,
-			wantLookups: []string{alpine},
-			wantUses:    []string{"network theirs-net (team-b)"},
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("network", "theirs-net", "container create Networks"),
+			wantLookups: []string{alpine, "networks/theirs-net"},
+		},
+		{
+			name:        "container on another owner's network by ID prefix",
+			target:      containerURL,
+			body:        container(`"netns":{"nsmode":"bridge"},"Networks":{"8888":{}}`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("network", "8888", "container create Networks"),
+			wantLookups: []string{alpine, "networks/8888"},
 		},
 		{
 			name:        "container on another owner's network through cni_networks",
 			target:      containerURL,
 			body:        container(`"netns":{"nsmode":"bridge"},"cni_networks":["theirs-net"]`),
-			wantStatus:  http.StatusCreated,
-			wantLookups: []string{alpine},
-			wantUses:    []string{"network theirs-net (team-b)"},
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("network", "theirs-net", "container create cni_networks"),
+			wantLookups: []string{alpine, "networks/theirs-net"},
+		},
+		{
+			// Podman reads cni_networks only when Networks is empty, and
+			// owner isolation checks it either way.
+			name:        "container with cni_networks naming another owner's network beside its own",
+			target:      containerURL,
+			body:        container(`"Networks":{"mine-net":{}},"cni_networks":["theirs-net"]`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("network", "theirs-net", "container create cni_networks"),
+			wantLookups: []string{alpine, "networks/mine-net", "networks/theirs-net"},
 		},
 		{
 			name:        "container with another owner's image as a volume",
 			target:      containerURL,
 			body:        container(`"image_volumes":[{"Source":"theirs-img","Destination":"/img"}]`),
-			wantStatus:  http.StatusCreated,
-			wantLookups: []string{alpine},
-			wantUses:    []string{"image-volume theirs-img (team-b)"},
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("image", "theirs-img", "container create image_volumes"),
+			wantLookups: []string{alpine, "images/theirs-img"},
 		},
 		{
+			name:        "container depending on another owner's container",
+			target:      containerURL,
+			body:        container(`"dependencyContainers":["theirs-ctr"]`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("container", "theirs-ctr", "container create dependencyContainers"),
+			wantLookups: []string{alpine, theirsCtr},
+		},
+		{
+			name:        "container in another owner's cgroup namespace",
+			target:      containerURL,
+			body:        container(`"cgroupns":{"nsmode":"container","value":"theirs-ctr"}`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  deniedTarget,
+			wantLookups: []string{theirsCtr},
+		},
+		{
+			// Artifacts carry no labels, so there's no owner to look up.
 			name:        "container with an artifact as a volume",
 			target:      containerURL,
 			body:        container(`"artifact_volumes":[{"source":"theirs-artifact","destination":"/artifact"}]`),
 			wantStatus:  http.StatusCreated,
 			wantLookups: []string{alpine},
 			wantUses:    []string{"artifact theirs-artifact"},
-		},
-		{
-			name:        "container depending on another owner's container",
-			target:      containerURL,
-			body:        container(`"dependencyContainers":["theirs-ctr"]`),
-			wantStatus:  http.StatusCreated,
-			wantLookups: []string{alpine},
-			wantUses:    []string{"depends-on theirs-ctr (team-b)"},
-		},
-		{
-			name:        "container in another owner's cgroup namespace",
-			target:      containerURL,
-			body:        container(`"cgroupns":{"nsmode":"container","value":"theirs-ctr"}`),
-			wantStatus:  http.StatusCreated,
-			wantLookups: []string{alpine},
-			wantUses:    []string{"cgroupns theirs-ctr (team-b)"},
 		},
 		{
 			// Podman 5.8.6 decodes devices_from and never reads it.
@@ -642,12 +701,369 @@ func TestServeChainLibpodCreateReferencesReachTheDaemon(t *testing.T) {
 			wantLookups: []string{alpine},
 			wantUses:    []string{},
 		},
+
+		{
+			name:        "container with a volume nobody owns",
+			target:      containerURL,
+			body:        container(`"volumes":[{"Name":"host-data","Dest":"/data"}]`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("volume", "host-data", "container create volumes"),
+			wantLookups: []string{alpine, "volumes/host-data"},
+		},
+		{
+			name:        "container with the volumes of a container nobody owns",
+			target:      containerURL,
+			body:        container(`"volumes_from":["host-ctr"]`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("container", "host-ctr", "container create volumes_from"),
+			wantLookups: []string{alpine, "containers/host-ctr"},
+		},
+		{
+			name:        "container on the default network by its own name",
+			target:      containerURL,
+			body:        container(`"netns":{"nsmode":"bridge"},"Networks":{"podman":{}}`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("network", "podman", "container create Networks"),
+			wantLookups: []string{alpine, "networks/podman"},
+		},
+		{
+			// The inspect reads "bridge" as the default network, and the
+			// create reads it as a network of that name.
+			name:        "container on a network called bridge",
+			target:      containerURL,
+			body:        container(`"netns":{"nsmode":"bridge"},"Networks":{"bridge":{}}`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("network", "bridge", "container create Networks"),
+			wantLookups: []string{alpine, "networks/bridge"},
+		},
+		{
+			// With allow_unowned_images, the default, an image with no owner
+			// label is anyone's to use.
+			name:        "container with an image nobody owns as a volume",
+			target:      containerURL,
+			body:        container(`"image_volumes":[{"Source":"alpine","Destination":"/img"}]`),
+			wantStatus:  http.StatusCreated,
+			wantLookups: []string{alpine, alpine},
+			wantUses:    []string{"image-volume alpine (unlabeled)"},
+		},
+
+		{
+			// Podman would create it on the spot with no labels.
+			name:        "container with a named volume nothing holds",
+			target:      containerURL,
+			body:        container(`"volumes":[{"Name":"fresh-data","Dest":"/data"}]`),
+			wantStatus:  http.StatusNotFound,
+			wantReason:  unresolved("volume", "fresh-data", "container create volumes"),
+			wantLookups: []string{alpine, "volumes/fresh-data"},
+		},
+		{
+			// The volume lookup is by exact name, as Podman's is.
+			name:        "container with a named volume that is a prefix of another owner's",
+			target:      containerURL,
+			body:        container(`"volumes":[{"Name":"theirs","Dest":"/data"}]`),
+			wantStatus:  http.StatusNotFound,
+			wantReason:  unresolved("volume", "theirs", "container create volumes"),
+			wantLookups: []string{alpine, "volumes/theirs"},
+		},
+		{
+			name:        "container depending on a container nothing holds",
+			target:      containerURL,
+			body:        container(`"dependencyContainers":["gone-ctr"]`),
+			wantStatus:  http.StatusNotFound,
+			wantReason:  unresolved("container", "gone-ctr", "container create dependencyContainers"),
+			wantLookups: []string{alpine, "containers/gone-ctr"},
+		},
+		{
+			name:        "container on a network nothing holds",
+			target:      containerURL,
+			body:        container(`"Networks":{"gone-net":{}}`),
+			wantStatus:  http.StatusNotFound,
+			wantReason:  unresolved("network", "gone-net", "container create Networks"),
+			wantLookups: []string{alpine, "networks/gone-net"},
+		},
+		{
+			name:        "container whose reference can't be looked up",
+			target:      containerURL,
+			body:        container(`"volumes_from":["broken-ctr"]`),
+			wantStatus:  http.StatusBadGateway,
+			wantReason:  lookupFailed,
+			wantLookups: []string{alpine, "containers/broken-ctr"},
+		},
+
+		{
+			name:       "container with its own resources",
+			target:     containerURL,
+			body:       container(`"volumes":[{"Name":"mine-data","Dest":"/data"}],"volumes_from":["mine-ctr:ro"],"dependencyContainers":["mine-ctr"],"cgroupns":{"nsmode":"container","value":"mine-ctr"},"netns":{"nsmode":"bridge"},"Networks":{"mine-net":{}},"image_volumes":[{"Source":"mine-img","Destination":"/img"}]`),
+			wantStatus: http.StatusCreated,
+			wantLookups: []string{
+				"containers/mine-ctr", alpine,
+				"containers/mine-ctr", "networks/mine-net", "volumes/mine-data", "images/mine-img",
+			},
+			wantUses: []string{
+				"cgroupns mine-ctr (team-a)",
+				"depends-on mine-ctr (team-a)",
+				"image-volume mine-img (team-a)",
+				"network mine-net (team-a)",
+				"volume mine-data (team-a)",
+				"volumes-from mine-ctr (team-a)",
+			},
+		},
+		{
+			name:        "container with an anonymous volume",
+			target:      containerURL,
+			body:        container(`"volumes":[{"Dest":"/scratch"}]`),
+			wantStatus:  http.StatusCreated,
+			wantLookups: []string{alpine},
+			wantUses:    []string{},
+		},
+		{
+			// Podman renames the key to the default network, which is where
+			// a create naming no network lands anyway.
+			name:        "container on the network key default",
+			target:      containerURL,
+			body:        container(`"netns":{"nsmode":"bridge"},"Networks":{"default":{}}`),
+			wantStatus:  http.StatusCreated,
+			wantLookups: []string{alpine},
+			wantUses:    []string{"network podman (unlabeled)"},
+		},
+		{
+			// podman-remote sends the fields it has nothing for as null.
+			name:        "container with every reference field null",
+			target:      containerURL,
+			body:        container(`"volumes":null,"volumes_from":null,"dependencyContainers":null,"Networks":null,"cni_networks":null,"image_volumes":null,"cgroupns":{}`),
+			wantStatus:  http.StatusCreated,
+			wantLookups: []string{alpine},
+			wantUses:    []string{},
+		},
+
+		{
+			name:        "container with volumes in another case",
+			target:      containerURL,
+			body:        container(`"VOLUMES":[{"name":"theirs-data","dest":"/data"}]`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("volume", "theirs-data", "container create volumes"),
+			wantLookups: []string{alpine, "volumes/theirs-data"},
+		},
+		{
+			// Networks has no JSON tag, so its lowercase spelling matches too.
+			name:        "container with networks in lowercase",
+			target:      containerURL,
+			body:        container(`"netns":{"nsmode":"bridge"},"networks":{"theirs-net":{}}`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("network", "theirs-net", "container create Networks"),
+			wantLookups: []string{alpine, "networks/theirs-net"},
+		},
+		{
+			name:        "container with dependencyContainers in another case",
+			target:      containerURL,
+			body:        container(`"DEPENDENCYCONTAINERS":["theirs-ctr"]`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("container", "theirs-ctr", "container create dependencyContainers"),
+			wantLookups: []string{alpine, theirsCtr},
+		},
+		{
+			// encoding/json folds U+017F, the long s, onto "s".
+			name:        "container with volumes_from spelled with a long s",
+			target:      containerURL,
+			body:        container(`"volumeſ_from":["theirs-ctr"]`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("container", "theirs-ctr", "container create volumes_from"),
+			wantLookups: []string{alpine, theirsCtr},
+		},
+		{
+			name:       "container with volumes spelled two ways",
+			target:     containerURL,
+			body:       container(`"volumes":[{"Name":"mine-data","Dest":"/data"}],"Volumes":[{"Name":"theirs-data","Dest":"/data"}]`),
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			// On its own Podman would merge the two lists element by element
+			// and mount theirs-data. It gets the body owner isolation read,
+			// which holds the last one only.
+			name:        "container with volumes given twice, another owner's first",
+			target:      containerURL,
+			body:        container(`"volumes":[{"Name":"theirs-data","Dest":"/data"}],"volumes":[{"Dest":"/data"}]`),
+			wantStatus:  http.StatusCreated,
+			wantLookups: []string{alpine},
+			wantUses:    []string{},
+		},
+		{
+			name:        "container with volumes given twice, another owner's last",
+			target:      containerURL,
+			body:        container(`"volumes":[{"Dest":"/data"}],"volumes":[{"Name":"theirs-data","Dest":"/data"}]`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("volume", "theirs-data", "container create volumes"),
+			wantLookups: []string{alpine, "volumes/theirs-data"},
+		},
+		{
+			// Podman would merge the two maps and join both networks.
+			name:        "container with Networks given twice, another owner's first",
+			target:      containerURL,
+			body:        container(`"netns":{"nsmode":"bridge"},"Networks":{"theirs-net":{}},"Networks":{"mine-net":{}}`),
+			wantStatus:  http.StatusCreated,
+			wantLookups: []string{alpine, "networks/mine-net"},
+			wantUses:    []string{"network mine-net (team-a)"},
+		},
+
+		{
+			// Podman's decode fails on this, and it's refused here instead of
+			// being forwarded on the strength of that.
+			name:        "container with volumes_from that isn't a list",
+			target:      containerURL,
+			body:        container(`"volumes_from":"theirs-ctr"`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  unreadable("container create", "volumes_from"),
+			wantLookups: []string{alpine},
+		},
+		{
+			name:        "container with an empty volumes_from entry",
+			target:      containerURL,
+			body:        container(`"volumes_from":[":ro"]`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  unreadable("container create", "volumes_from"),
+			wantLookups: []string{alpine},
+		},
+		{
+			name:        "container on a network with an empty name",
+			target:      containerURL,
+			body:        container(`"Networks":{"":{}}`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  unreadable("container create", "Networks"),
+			wantLookups: []string{alpine},
+		},
+		{
+			name:        "container naming more containers than owner isolation will look up",
+			target:      containerURL,
+			body:        container(`"volumes_from":[` + strings.Join(manyContainers, ",") + `]`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  "libpod owner policy denied container create that names more resources than it can authorize",
+			wantLookups: []string{alpine},
+		},
+
+		{
+			name:        "another owner's named volume in warn mode",
+			rollout:     "warn",
+			target:      containerURL,
+			body:        container(`"volumes":[{"Name":"theirs-data","Dest":"/data"}]`),
+			wantStatus:  http.StatusCreated,
+			wantLookups: []string{alpine, "volumes/theirs-data"},
+			wantUses:    []string{"volume theirs-data (team-b)"},
+		},
+		{
+			name:       "another owner's resources without owner isolation",
+			owner:      "none",
+			target:     containerURL,
+			body:       container(`"volumes":[{"Name":"theirs-data","Dest":"/data"}],"volumes_from":["theirs-ctr"]`),
+			wantStatus: http.StatusCreated,
+			wantUses:   []string{"volume theirs-data (team-b)", "volumes-from theirs-ctr (team-b)"},
+		},
+
+		{
+			name:        "pod with another owner's named volume",
+			target:      podURL,
+			body:        pod(`"volumes":[{"Name":"theirs-data","Dest":"/data"}]`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("volume", "theirs-data", "pod create volumes"),
+			wantLookups: []string{"volumes/theirs-data"},
+		},
+		{
+			name:        "pod with the volumes of another owner's container",
+			target:      podURL,
+			body:        pod(`"volumes_from":["theirs-ctr"]`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("container", "theirs-ctr", "pod create volumes_from"),
+			wantLookups: []string{theirsCtr},
+		},
+		{
+			name:        "pod on another owner's network",
+			target:      podURL,
+			body:        pod(`"netns":{"nsmode":"bridge"},"Networks":{"theirs-net":{}}`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("network", "theirs-net", "pod create Networks"),
+			wantLookups: []string{"networks/theirs-net"},
+		},
+		{
+			name:        "pod on another owner's network through cni_networks",
+			target:      podURL,
+			body:        pod(`"netns":{"nsmode":"bridge"},"cni_networks":["theirs-net"]`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("network", "theirs-net", "pod create cni_networks"),
+			wantLookups: []string{"networks/theirs-net"},
+		},
+		{
+			name:        "pod with another owner's image as a volume",
+			target:      podURL,
+			body:        pod(`"image_volumes":[{"Source":"theirs-img","Destination":"/img"}]`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("image", "theirs-img", "pod create image_volumes"),
+			wantLookups: []string{"images/theirs-img"},
+		},
+		{
+			name:        "pod with another owner's container as its service container",
+			target:      podURL,
+			body:        pod(`"serviceContainerID":"theirs-ctr"`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("container", "theirs-ctr", "pod create serviceContainerID"),
+			wantLookups: []string{theirsCtr},
+		},
+		{
+			name:        "pod with a named volume nothing holds",
+			target:      podURL,
+			body:        pod(`"volumes":[{"Name":"fresh-data","Dest":"/data"}]`),
+			wantStatus:  http.StatusNotFound,
+			wantReason:  unresolved("volume", "fresh-data", "pod create volumes"),
+			wantLookups: []string{"volumes/fresh-data"},
+		},
+		{
+			name:        "pod with a service container that isn't a string",
+			target:      podURL,
+			body:        pod(`"serviceContainerID":["theirs-ctr"]`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  unreadable("pod create", "serviceContainerID"),
+			wantLookups: nil,
+		},
+		{
+			name:       "pod with its own resources",
+			target:     podURL,
+			body:       pod(`"volumes":[{"Name":"mine-data","Dest":"/data"}],"volumes_from":["mine-ctr"],"serviceContainerID":"mine-ctr","netns":{"nsmode":"bridge"},"Networks":{"mine-net":{}},"image_volumes":[{"Source":"mine-img","Destination":"/img"}]`),
+			wantStatus: http.StatusCreated,
+			wantLookups: []string{
+				"containers/mine-ctr", "networks/mine-net", "volumes/mine-data", "images/mine-img",
+			},
+			wantUses: []string{
+				"image-volume mine-img (team-a)",
+				"network mine-net (team-a)",
+				"service-container mine-ctr (team-a)",
+				"volume mine-data (team-a)",
+				"volumes-from mine-ctr (team-a)",
+			},
+		},
+		{
+			// PodSpecGenerator has no field for either, so Podman drops them
+			// and there's nothing to check.
+			name:       "pod with references only a container has",
+			target:     podURL,
+			body:       pod(`"dependencyContainers":["theirs-ctr"],"artifact_volumes":[{"source":"theirs-artifact","destination":"/artifact"}]`),
+			wantStatus: http.StatusCreated,
+			wantUses:   []string{},
+		},
+		{
+			// A pod spec has no cgroupns either. Its target is checked with
+			// the other namespaces all the same.
+			name:        "pod with a cgroup namespace in another owner's container",
+			target:      podURL,
+			body:        pod(`"cgroupns":{"nsmode":"container","value":"theirs-ctr"}`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  deniedTarget,
+			wantLookups: []string{theirsCtr},
+		},
+
 		{
 			name:        "container in another owner's pod",
 			target:      containerURL,
 			body:        container(`"pod":"theirs-pod"`),
 			wantStatus:  http.StatusForbidden,
-			wantReason:  `libpod owner policy denied access to pod "theirs-pod" referenced by libpod container create pod`,
+			wantReason:  denied("pod", "theirs-pod", "libpod container create pod"),
 			wantLookups: []string{alpine, "pods/theirs-pod"},
 		},
 		{
@@ -655,7 +1071,7 @@ func TestServeChainLibpodCreateReferencesReachTheDaemon(t *testing.T) {
 			target:      containerURL,
 			body:        `{"image":"theirs-img","systemd":"false"}`,
 			wantStatus:  http.StatusForbidden,
-			wantReason:  `libpod owner policy denied access to image "theirs-img" referenced by libpod container create image`,
+			wantReason:  denied("image", "theirs-img", "libpod container create image"),
 			wantLookups: []string{"images/theirs-img"},
 		},
 		{
@@ -697,57 +1113,6 @@ func TestServeChainLibpodCreateReferencesReachTheDaemon(t *testing.T) {
 			wantStatus:  http.StatusForbidden,
 			wantReason:  deniedTarget,
 			wantLookups: []string{theirsCtr},
-		},
-
-		{
-			name:       "pod with another owner's named volume",
-			target:     podURL,
-			body:       pod(`"volumes":[{"Name":"theirs-data","Dest":"/data"}]`),
-			wantStatus: http.StatusCreated,
-			wantUses:   []string{"volume theirs-data (team-b)"},
-		},
-		{
-			name:       "pod with the volumes of another owner's container",
-			target:     podURL,
-			body:       pod(`"volumes_from":["theirs-ctr"]`),
-			wantStatus: http.StatusCreated,
-			wantUses:   []string{"volumes-from theirs-ctr (team-b)"},
-		},
-		{
-			name:       "pod on another owner's network",
-			target:     podURL,
-			body:       pod(`"netns":{"nsmode":"bridge"},"Networks":{"theirs-net":{}}`),
-			wantStatus: http.StatusCreated,
-			wantUses:   []string{"network theirs-net (team-b)"},
-		},
-		{
-			name:       "pod on another owner's network through cni_networks",
-			target:     podURL,
-			body:       pod(`"netns":{"nsmode":"bridge"},"cni_networks":["theirs-net"]`),
-			wantStatus: http.StatusCreated,
-			wantUses:   []string{"network theirs-net (team-b)"},
-		},
-		{
-			name:       "pod with another owner's image as a volume",
-			target:     podURL,
-			body:       pod(`"image_volumes":[{"Source":"theirs-img","Destination":"/img"}]`),
-			wantStatus: http.StatusCreated,
-			wantUses:   []string{"image-volume theirs-img (team-b)"},
-		},
-		{
-			name:       "pod with another owner's container as its service container",
-			target:     podURL,
-			body:       pod(`"serviceContainerID":"theirs-ctr"`),
-			wantStatus: http.StatusCreated,
-			wantUses:   []string{"service-container theirs-ctr (team-b)"},
-		},
-		{
-			// PodSpecGenerator has no field for either, so Podman drops them.
-			name:       "pod with container-only references",
-			target:     podURL,
-			body:       pod(`"dependencyContainers":["theirs-ctr"],"cgroupns":{"nsmode":"container","value":"theirs-ctr"},"artifact_volumes":[{"source":"theirs-artifact","destination":"/artifact"}]`),
-			wantStatus: http.StatusCreated,
-			wantUses:   []string{},
 		},
 		{
 			name:        "pod in another owner's PID namespace",
@@ -794,13 +1159,21 @@ func TestServeChainLibpodCreateReferencesReachTheDaemon(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			daemon := newLibpodCreateRefChainDaemon()
+			wantOwner := "team-a"
 			addr := newEngineChain(t, "create-ref", daemon, func(cfg *config.Config) {
 				cfg.Response.DenyVerbosity = "verbose"
 				cfg.Ownership.Owner = "team-a"
+				if tt.owner == "none" {
+					cfg.Ownership.Owner, wantOwner = "", ""
+				}
 				cfg.Rules = []config.RuleConfig{
 					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/create"}, Action: "allow"},
 					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/pods/create"}, Action: "allow"},
 					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+				if tt.rollout != "" {
+					cfg.Clients.Profiles = []config.ClientProfileConfig{{Name: "rollout", Mode: tt.rollout, Rules: cfg.Rules}}
+					cfg.Clients.DefaultProfile = "rollout"
 				}
 			})
 
@@ -816,12 +1189,15 @@ func TestServeChainLibpodCreateReferencesReachTheDaemon(t *testing.T) {
 				if !slices.Equal(created[0].Uses, tt.wantUses) {
 					t.Errorf("created %s uses %q, want %q", created[0].Kind, created[0].Uses, tt.wantUses)
 				}
-				if created[0].Owner != "team-a" {
-					t.Errorf("created %s owner = %q, want team-a", created[0].Kind, created[0].Owner)
+				if created[0].Owner != wantOwner {
+					t.Errorf("created %s owner = %q, want %q", created[0].Kind, created[0].Owner, wantOwner)
 				}
 			}
 			if status != tt.wantStatus {
 				t.Errorf("status = %d, want %d; body: %s", status, tt.wantStatus, body)
+			}
+			if status != http.StatusCreated && strings.Contains(string(body), "team-b") {
+				t.Errorf("refusal body names the other owner: %s", body)
 			}
 			if lookups := daemon.lookedUp(); !slices.Equal(lookups, tt.wantLookups) {
 				t.Errorf("owner isolation looked up %q, want %q", lookups, tt.wantLookups)
