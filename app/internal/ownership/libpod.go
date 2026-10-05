@@ -30,10 +30,16 @@ import (
 // (libpodContainerCreateRequest) and POST /libpod/pods/create
 // (PodBasicConfig/PodNetworkConfig) — both SpecGenerator and
 // PodSpecGenerator expose the identical netns/pidns/ipcns/userns/utsns set.
-// cgroupns is intentionally excluded, mirroring
-// internal/filter/libpod_container_create.go's denyNamespaceSharingReason
-// (itself mirroring the Docker-compat containerCreatePolicy's own exclusion).
-var libpodNamespaceSharingFields = [...]string{"netns", "pidns", "ipcns", "userns", "utsns"}
+//
+// cgroupns is the SpecGenerator's alone, and it joins a container the same
+// way: namespaceOptions resolves its value with LookupContainer and the new
+// container shares that one's cgroup namespace and depends on it (Podman
+// 5.8.6 pkg/specgen/generate/namespaces.go:299-310). The Docker-compatible
+// create has no such form, since CgroupnsMode there is only "host" or
+// "private", which is why internal/filter's denyNamespaceSharingReason leaves
+// the field out. A pod spec has no cgroupns and Podman drops the key, so
+// reading it there checks a container the pod would never have joined.
+var libpodNamespaceSharingFields = [...]string{"netns", "pidns", "ipcns", "userns", "utsns", "cgroupns"}
 
 // mutateLibpodContainerCreateOwnershipBody injects the owner label into a
 // POST /libpod/containers/create body under the lowercase "labels" key
@@ -64,6 +70,7 @@ func mutateLibpodContainerCreateOwnershipBody(r *http.Request, labelKey, owner s
 		labels[labelKey] = owner
 
 		refs.namespaceContainers = libpodNamespaceRefs(decoded)
+		refs.libpodCreate = libpodContainerCreateReferences(decoded)
 
 		for _, image := range filter.FoldedStrings(decoded, "image") {
 			appendEmbeddedOwnershipReference(&refs.embeddedResources, dockerresource.KindImage, image, "libpod container create image")
@@ -109,6 +116,7 @@ func mutateLibpodPodCreateOwnershipBody(r *http.Request, labelKey, owner string)
 		labels[labelKey] = owner
 
 		refs.namespaceContainers = libpodNamespaceRefs(decoded)
+		refs.libpodCreate = libpodPodCreateReferences(decoded)
 
 		for _, infraImage := range filter.FoldedStrings(decoded, "infra_image") {
 			appendEmbeddedOwnershipReference(&refs.embeddedResources, dockerresource.KindImage, infraImage, "libpod pod create infra_image")
@@ -120,7 +128,7 @@ func mutateLibpodPodCreateOwnershipBody(r *http.Request, labelKey, owner string)
 
 // libpodNamespaceRefs extracts every distinct "container:<ref>"-equivalent
 // namespace-sharing target from a decoded libpod container-create or
-// pod-create body's netns/pidns/ipcns/userns/utsns fields. Key matching is
+// pod-create body's netns/pidns/ipcns/userns/utsns/cgroupns fields. Key matching is
 // case-INSENSITIVE via filter.FoldedObjects/FoldedStrings for the same
 // reason containerCreateNamespaceRefs folds Docker's HostConfig keys: a
 // crafted case-variant field name must not smuggle a namespace join past
