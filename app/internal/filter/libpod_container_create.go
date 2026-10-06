@@ -39,7 +39,10 @@ import (
 // knowledge transfers between the Docker-compat and native surfaces; two
 // fields (AllowSystemdMode, AllowCustomIDMappings) have no Docker analog.
 type LibpodContainerCreateOptions struct {
-	AllowPrivileged   bool
+	AllowPrivileged bool
+	// AllowHostNetwork/PID/IPC/UserNS each permit that namespace object's
+	// nsmode "host" and "path", and while false refuse any nsmode this
+	// package doesn't know (see libpod_namespace.go).
 	AllowHostNetwork  bool
 	AllowHostPID      bool
 	AllowHostIPC      bool
@@ -48,11 +51,12 @@ type LibpodContainerCreateOptions struct {
 	AllowAllDevices   bool
 	AllowedDevices    []string
 
-	// RestrictNamespaceSharing gates netns/pidns/ipcns/userns/utsns objects
-	// of the form {"nsmode":"container","value":"<ref>"} (join another
+	// RestrictNamespaceSharing gates netns/pidns/ipcns/userns/utsns/cgroupns
+	// objects of the form {"nsmode":"container","value":"<ref>"} (join another
 	// container's namespace) against AllowedNamespaceSharingContainers.
 	// Default false: such values pass through unchecked, mirroring
 	// ContainerCreateOptions.RestrictNamespaceSharing's default exactly.
+	// While true it also refuses nsmode "path" on the same fields.
 	RestrictNamespaceSharing          bool
 	AllowedNamespaceSharingContainers []string
 
@@ -228,17 +232,8 @@ func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Reques
 	if !p.allowPrivileged && createReq.Privileged {
 		return "libpod container create denied: privileged containers are not allowed", nil
 	}
-	if !p.allowHostNetwork && createReq.NetNS.isHost() {
-		return "libpod container create denied: host network namespace is not allowed", nil
-	}
-	if !p.allowHostPID && createReq.PidNS.isHost() {
-		return "libpod container create denied: host PID namespace is not allowed", nil
-	}
-	if !p.allowHostIPC && createReq.IpcNS.isHost() {
-		return "libpod container create denied: host IPC namespace is not allowed", nil
-	}
-	if !p.allowHostUserNS && createReq.UserNS.isHost() {
-		return "libpod container create denied: host user namespace is not allowed", nil
+	if denyReason := p.denyHostNamespaceReason(createReq); denyReason != "" {
+		return denyReason, nil
 	}
 	if denyReason := p.denyNamespaceSharingReason(createReq); denyReason != "" {
 		return denyReason, nil
@@ -311,11 +306,41 @@ func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Reques
 	return "", nil
 }
 
+// denyHostNamespaceReason holds netns, pidns, ipcns and userns to their host
+// gates. While a gate is off its namespace can't be the host's, can't be
+// joined by path, and can't use a mode this package doesn't know (see
+// libpod_namespace.go).
+func (p libpodContainerCreatePolicy) denyHostNamespaceReason(req libpodContainerCreateRequest) string {
+	gates := [...]struct {
+		allowed bool
+		kind    libpodNamespaceKind
+		ns      libpodNamespace
+	}{
+		{p.allowHostNetwork, libpodNetNS, req.NetNS},
+		{p.allowHostPID, libpodPidNS, req.PidNS},
+		{p.allowHostIPC, libpodIpcNS, req.IpcNS},
+		{p.allowHostUserNS, libpodUserNS, req.UserNS},
+	}
+	for _, g := range gates {
+		if g.allowed {
+			continue
+		}
+		if denyReason := g.ns.hostGateDenyReason("libpod container create", g.kind); denyReason != "" {
+			return denyReason
+		}
+	}
+	return ""
+}
+
 // denyNamespaceSharingReason enforces restrictNamespaceSharing against every
 // namespace field that can join another container's namespace via
-// {"nsmode":"container","value":"<ref>"}: netns, pidns, ipcns, userns, utsns.
-// Mirrors containerCreatePolicy.denyNamespaceSharingReason's field coverage
-// (cgroupns is intentionally excluded there too).
+// {"nsmode":"container","value":"<ref>"}: netns, pidns, ipcns, userns, utsns
+// and cgroupns. Podman resolves all six with LookupContainer (Podman 5.8.6
+// pkg/specgen/generate/namespaces.go:146-310). Mirrors
+// containerCreatePolicy.denyNamespaceSharingReason's field coverage. A
+// namespace joined by path is refused on the same fields: the path can name
+// another container's namespace, and no list of container names can vouch for
+// it.
 func (p libpodContainerCreatePolicy) denyNamespaceSharingReason(req libpodContainerCreateRequest) string {
 	if !p.restrictNamespaceSharing {
 		return ""
@@ -329,8 +354,12 @@ func (p libpodContainerCreatePolicy) denyNamespaceSharingReason(req libpodContai
 		{"IPC", req.IpcNS},
 		{"user", req.UserNS},
 		{"UTS", req.UtsNS},
+		{"cgroup", req.CgroupNS},
 	}
 	for _, f := range fields {
+		if f.ns.isPath() {
+			return fmt.Sprintf("libpod container create denied: %s namespace joined by path is not allowed while namespace sharing is restricted", f.label)
+		}
 		ref, ok := f.ns.containerRef()
 		if !ok {
 			continue

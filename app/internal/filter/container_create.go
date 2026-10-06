@@ -103,12 +103,14 @@ type ContainerCreateOptions struct {
 	AllowHostUserNS         bool
 	AllowHostCgroupNS       bool
 	// RestrictNamespaceSharing gates HostConfig.NetworkMode/PidMode/IpcMode/
-	// UsernsMode values of the form "container:<ref>" (join another
-	// container's namespace) against AllowedNamespaceSharingContainers.
-	// Default false: container:<ref> values continue to pass through
-	// unchecked, matching today's behavior exactly — an independent,
-	// orthogonal gate from AllowHostNetwork/PID/IPC/UserNS, which only ever
-	// match the literal "host" value and continue to do so unchanged.
+	// UTSMode/UsernsMode/CgroupnsMode values of the form "container:<ref>"
+	// (join another container's namespace) against
+	// AllowedNamespaceSharingContainers. Default false: container:<ref>
+	// values continue to pass through unchecked, matching today's behavior
+	// exactly — an independent, orthogonal gate from
+	// AllowHostNetwork/PID/IPC/UserNS/CgroupNS, which gate "host" and
+	// "ns:<path>". While true it also refuses "ns:<path>" on the same
+	// fields, since a path can name another container's namespace.
 	RestrictNamespaceSharing bool
 	// AllowedNamespaceSharingContainers allowlists the container:<ref>
 	// targets permitted when RestrictNamespaceSharing is true. Only
@@ -119,9 +121,10 @@ type ContainerCreateOptions struct {
 	// pass-through, not deny-by-default.
 	AllowedNamespaceSharingContainers []string
 	// DenyNamespacePathMode denies HostConfig.NetworkMode values with an
-	// "ns:" prefix (case-insensitive) — Docker's raw host-namespace-file
-	// attachment form, which bypasses the "host" literal check entirely.
-	// Scoped to NetworkMode only. Default false (pass-through).
+	// "ns:" prefix (case-insensitive) even when AllowHostNetwork is true.
+	// With AllowHostNetwork false the value is already refused, as
+	// "ns:<path>" is on every namespace mode whose host gate is off (see
+	// denyNamespacePathReason). Scoped to NetworkMode only. Default false.
 	DenyNamespacePathMode bool
 	RequiredLabels        []string
 
@@ -1112,6 +1115,9 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if !p.allowHostCgroupNS && isHostNamespaceMode(createReq.HostConfig.CgroupnsMode) {
 		return "container create denied: host cgroup namespace mode is not allowed", nil
 	}
+	if denyReason := p.denyNamespacePathReason(createReq.HostConfig); denyReason != "" {
+		return denyReason, nil
+	}
 	if denyReason := p.denyNamespaceSharingReason(createReq.HostConfig); denyReason != "" {
 		return denyReason, nil
 	}
@@ -1249,13 +1255,42 @@ func ContainerNamespaceRef(mode string) (ref string, ok bool) {
 }
 
 // isNamespacePathMode reports whether mode has a case-insensitive "ns:"
-// prefix — Docker's syntax for attaching to an arbitrary host network
-// namespace file path, a form that bypasses the "host" literal check
-// entirely.
+// prefix — the syntax for joining the namespace at an arbitrary path on the
+// daemon host, a form that bypasses the "host" literal check entirely.
+// Podman reads it on every HostConfig namespace mode; see
+// denyNamespacePathReason.
 func isNamespacePathMode(mode string) bool {
 	trimmed := strings.TrimSpace(mode)
 	const prefix = "ns:"
 	return len(trimmed) >= len(prefix) && strings.EqualFold(trimmed[:len(prefix)], prefix)
+}
+
+// denyNamespacePathReason holds a HostConfig namespace mode of "ns:<path>"
+// to the same gate as "host" for that namespace. Podman's compat create
+// parses NetworkMode, PidMode, IpcMode, UTSMode, UsernsMode and CgroupnsMode
+// with the same parsers its own CLI flags use, and "ns:<path>" joins
+// whatever namespace the path names, the host's included (Podman 5.8.6
+// pkg/specgen/namespaces.go ParseNamespace and ParseNetworkFlag). dockerd
+// has no such mode. Host UTS has no gate to open, so a UTS path never passes.
+func (p containerCreatePolicy) denyNamespacePathReason(hostConfig containerCreateHostConfig) string {
+	gates := [...]struct {
+		allowed bool
+		label   string
+		mode    string
+	}{
+		{p.allowHostNetwork, "network", hostConfig.NetworkMode},
+		{p.allowHostPID, "PID", hostConfig.PidMode},
+		{p.allowHostIPC, "IPC", hostConfig.IpcMode},
+		{p.allowHostUserNS, "user", hostConfig.UsernsMode},
+		{p.allowHostCgroupNS, "cgroup", hostConfig.CgroupnsMode},
+		{false, "UTS", hostConfig.UTSMode},
+	}
+	for _, g := range gates {
+		if !g.allowed && isNamespacePathMode(g.mode) {
+			return fmt.Sprintf("container create denied: %s namespace joined by path is not allowed", g.label)
+		}
+	}
+	return ""
 }
 
 // denyNamespaceSharingReason enforces restrictNamespaceSharing against every
@@ -1265,6 +1300,15 @@ func isNamespacePathMode(mode string) bool {
 // UTSMode is included because Docker does honor a "container:<ref>" join for it
 // (moby's UTSMode has an IsContainer/Container form); the separate host-UTS mode
 // is denied unconditionally above and is a different attack surface.
+//
+// CgroupnsMode is included for a Podman upstream. dockerd refuses any value
+// but "private", "host" and "" (moby 28.5.1
+// api/types/container/hostconfig.go:42-44, daemon/daemon_unix.go:726-727).
+// Podman's compat create parses the field with specgen.ParseNamespace, where
+// "container:<ref>" joins that container's cgroup namespace (Podman 5.8.6
+// pkg/api/handlers/compat/containers_create.go:485,
+// pkg/specgenutil/specgen.go:218-223 and
+// pkg/specgen/generate/namespaces.go:299-310).
 func (p containerCreatePolicy) denyNamespaceSharingReason(hostConfig containerCreateHostConfig) string {
 	if !p.restrictNamespaceSharing {
 		return ""
@@ -1278,8 +1322,14 @@ func (p containerCreatePolicy) denyNamespaceSharingReason(hostConfig containerCr
 		{"IPC", hostConfig.IpcMode},
 		{"UTS", hostConfig.UTSMode},
 		{"user", hostConfig.UsernsMode},
+		{"cgroup", hostConfig.CgroupnsMode},
 	}
 	for _, f := range fields {
+		// A path can name another container's namespace, and no list of
+		// container names can vouch for it.
+		if isNamespacePathMode(f.mode) {
+			return fmt.Sprintf("container create denied: %s namespace joined by path is not allowed while namespace sharing is restricted", f.label)
+		}
 		ref, ok := ContainerNamespaceRef(f.mode)
 		if !ok {
 			continue

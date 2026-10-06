@@ -18,8 +18,10 @@ const maxLibpodPodCreateBodyBytes = 1 << 20 // 1 MiB
 type LibpodPodCreateOptions struct {
 	// AllowHostNetwork permits a pod-level NetNS of {"nsmode":"host"} — the
 	// pod (and every container that joins it) shares the host network
-	// namespace. Mirrors container_create.AllowHostNetwork's posture for the
-	// pod-wide equivalent. Default false.
+	// namespace — or of {"nsmode":"path"}, which joins whatever network
+	// namespace the path names. While false, an nsmode this package doesn't
+	// know is refused too. Mirrors container_create.AllowHostNetwork's
+	// posture for the pod-wide equivalent. Default false.
 	AllowHostNetwork bool
 	// AllowSharedPIDNamespace permits "pid" in the pod's SharedNamespaces
 	// list, letting every container in the pod see (and signal) every other
@@ -98,8 +100,10 @@ func (p libpodPodCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 		return "libpod pod create denied: request body could not be inspected", nil
 	}
 
-	if !p.allowHostNetwork && isHostNamespaceMode(req.NetNS.NSMode) {
-		return "libpod pod create denied: host network namespace is not allowed", nil
+	if !p.allowHostNetwork {
+		if denyReason := req.NetNS.hostGateDenyReason("libpod pod create", libpodNetNS); denyReason != "" {
+			return denyReason, nil
+		}
 	}
 	if !p.allowSharedPIDNamespace && slices.ContainsFunc(req.SharedNamespaces, isSharedPIDNamespaceEntry) {
 		return "libpod pod create denied: shared PID namespace is not allowed", nil
