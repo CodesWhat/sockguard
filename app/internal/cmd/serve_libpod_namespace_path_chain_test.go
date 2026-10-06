@@ -705,6 +705,42 @@ func TestServeChainNamespaceJoinedByPathNeedsTheHostGate(t *testing.T) {
 			wantReason: "libpod container create denied: PID namespace joined by path is not allowed while namespace sharing is restricted",
 		},
 
+		{
+			name:        "libpod cgroupns of another container joins",
+			send:        libpod(`"cgroupns":{"nsmode":"container","value":"web"}`),
+			wantStatus:  http.StatusCreated,
+			wantCreated: created("cgroupns=container:web"),
+		},
+		{
+			name:       "libpod cgroupns of another container with sharing restricted",
+			configure:  func(body *gates) { body.LibpodContainerCreate.RestrictNamespaceSharing = true },
+			send:       libpod(`"cgroupns":{"nsmode":"container","value":"web"}`),
+			wantStatus: http.StatusForbidden,
+			wantReason: "libpod container create denied: cgroup namespace sharing with another container is not allowed",
+		},
+		{
+			name: "libpod cgroupns of a container on the sharing allowlist",
+			configure: func(body *gates) {
+				body.LibpodContainerCreate.RestrictNamespaceSharing = true
+				body.LibpodContainerCreate.AllowedNamespaceSharingContainers = []string{"web"}
+			},
+			send:        libpod(`"cgroupns":{"nsmode":"container","value":"web"}`),
+			wantStatus:  http.StatusCreated,
+			wantCreated: created("cgroupns=container:web"),
+		},
+		{
+			// No host gate reads cgroupns on the native create, so only
+			// restrict_namespace_sharing stands between this and Podman.
+			name: "libpod cgroupns path with sharing restricted",
+			configure: func(body *gates) {
+				body.LibpodContainerCreate.RestrictNamespaceSharing = true
+				body.LibpodContainerCreate.AllowedNamespaceSharingContainers = []string{"web"}
+			},
+			send:       libpod(`"cgroupns":{"nsmode":"path","value":"/proc/1/ns/cgroup"}`),
+			wantStatus: http.StatusForbidden,
+			wantReason: "libpod container create denied: cgroup namespace joined by path is not allowed while namespace sharing is restricted",
+		},
+
 		// Pod create, every gate off. The namespaces are the infra container's.
 		{
 			// What podman-remote pod create sends (pkg/domain/entities/pods.go:309-329).

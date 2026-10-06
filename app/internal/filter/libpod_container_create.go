@@ -51,8 +51,8 @@ type LibpodContainerCreateOptions struct {
 	AllowAllDevices   bool
 	AllowedDevices    []string
 
-	// RestrictNamespaceSharing gates netns/pidns/ipcns/userns/utsns objects
-	// of the form {"nsmode":"container","value":"<ref>"} (join another
+	// RestrictNamespaceSharing gates netns/pidns/ipcns/userns/utsns/cgroupns
+	// objects of the form {"nsmode":"container","value":"<ref>"} (join another
 	// container's namespace) against AllowedNamespaceSharingContainers.
 	// Default false: such values pass through unchecked, mirroring
 	// ContainerCreateOptions.RestrictNamespaceSharing's default exactly.
@@ -334,11 +334,13 @@ func (p libpodContainerCreatePolicy) denyHostNamespaceReason(req libpodContainer
 
 // denyNamespaceSharingReason enforces restrictNamespaceSharing against every
 // namespace field that can join another container's namespace via
-// {"nsmode":"container","value":"<ref>"}: netns, pidns, ipcns, userns, utsns.
-// Mirrors containerCreatePolicy.denyNamespaceSharingReason's field coverage
-// (cgroupns is intentionally excluded there too). A namespace joined by path
-// is refused on the same fields: the path can name another container's
-// namespace, and no list of container names can vouch for it.
+// {"nsmode":"container","value":"<ref>"}: netns, pidns, ipcns, userns, utsns
+// and cgroupns. Podman resolves all six with LookupContainer (Podman 5.8.6
+// pkg/specgen/generate/namespaces.go:146-310). Mirrors
+// containerCreatePolicy.denyNamespaceSharingReason's field coverage. A
+// namespace joined by path is refused on the same fields: the path can name
+// another container's namespace, and no list of container names can vouch for
+// it.
 func (p libpodContainerCreatePolicy) denyNamespaceSharingReason(req libpodContainerCreateRequest) string {
 	if !p.restrictNamespaceSharing {
 		return ""
@@ -352,6 +354,7 @@ func (p libpodContainerCreatePolicy) denyNamespaceSharingReason(req libpodContai
 		{"IPC", req.IpcNS},
 		{"user", req.UserNS},
 		{"UTS", req.UtsNS},
+		{"cgroup", req.CgroupNS},
 	}
 	for _, f := range fields {
 		if f.ns.isPath() {

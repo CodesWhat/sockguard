@@ -223,8 +223,7 @@ func TestLibpodContainerCreateNamespacePathWhileSharingIsRestricted(t *testing.T
 		{"ipcns", "libpod container create denied: IPC namespace joined by path is not allowed while namespace sharing is restricted"},
 		{"userns", "libpod container create denied: user namespace joined by path is not allowed while namespace sharing is restricted"},
 		{"utsns", "libpod container create denied: UTS namespace joined by path is not allowed while namespace sharing is restricted"},
-		// restrict_namespace_sharing has never covered cgroupns.
-		{"cgroupns", ""},
+		{"cgroupns", "libpod container create denied: cgroup namespace joined by path is not allowed while namespace sharing is restricted"},
 	}
 	for _, tt := range tests {
 		body := []byte(fmt.Sprintf(`{%q:{"nsmode":"path","value":"/proc/1/ns/x"}}`, tt.field))
@@ -239,6 +238,55 @@ func TestLibpodContainerCreateNamespacePathWhileSharingIsRestricted(t *testing.T
 				}
 				if reason := inspectLibpod(t, newLibpodContainerCreatePolicy(opts), body); reason != wantReason {
 					t.Fatalf("inspect() reason = %q, want %q", reason, wantReason)
+				}
+			})
+		}
+	}
+}
+
+// TestLibpodContainerCreateNamespaceSharingGateCoversEveryNamespace pins the
+// container branch of denyNamespaceSharingReason on each namespace a
+// SpecGenerator can join another container's with. Podman resolves all six
+// the same way, cgroupns included (Podman 5.8.6
+// pkg/specgen/generate/namespaces.go:146-310).
+func TestLibpodContainerCreateNamespaceSharingGateCoversEveryNamespace(t *testing.T) {
+	fields := []struct{ field, label string }{
+		{"netns", "network"},
+		{"pidns", "PID"},
+		{"ipcns", "IPC"},
+		{"userns", "user"},
+		{"utsns", "UTS"},
+		{"cgroupns", "cgroup"},
+	}
+	for _, f := range fields {
+		body := []byte(fmt.Sprintf(`{%q:{"nsmode":"container","value":"web"}}`, f.field))
+		tests := []struct {
+			name       string
+			restrict   bool
+			allowlist  []string
+			wantReason string
+		}{
+			{name: "sharing unrestricted"},
+			{
+				name:       "restricted with no allowlist",
+				restrict:   true,
+				wantReason: fmt.Sprintf("libpod container create denied: %s namespace sharing with another container is not allowed", f.label),
+			},
+			{
+				name:       "restricted with the target off the allowlist",
+				restrict:   true,
+				allowlist:  []string{"db"},
+				wantReason: `libpod container create denied: namespace-sharing target "web" is not in the allowed list`,
+			},
+			{name: "restricted with the target on the allowlist", restrict: true, allowlist: []string{"web"}},
+		}
+		for _, tt := range tests {
+			t.Run(f.field+"/"+tt.name, func(t *testing.T) {
+				opts := libpodGateOptions("")
+				opts.RestrictNamespaceSharing = tt.restrict
+				opts.AllowedNamespaceSharingContainers = tt.allowlist
+				if reason := inspectLibpod(t, newLibpodContainerCreatePolicy(opts), body); reason != tt.wantReason {
+					t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
 				}
 			})
 		}

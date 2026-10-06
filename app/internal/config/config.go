@@ -674,7 +674,7 @@ type LibpodContainerCreateRequestBodyConfig struct {
 	AllowedDevices    []string `mapstructure:"allowed_devices"`
 
 	// RestrictNamespaceSharing/AllowedNamespaceSharingContainers gate
-	// netns/pidns/ipcns/userns/utsns objects of the form
+	// netns/pidns/ipcns/userns/utsns/cgroupns objects of the form
 	// {"nsmode":"container","value":"<ref>"}, mirroring
 	// ContainerCreateRequestBodyConfig.RestrictNamespaceSharing.
 	RestrictNamespaceSharing          bool     `mapstructure:"restrict_namespace_sharing"`
