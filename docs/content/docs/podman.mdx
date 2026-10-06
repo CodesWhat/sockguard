@@ -101,9 +101,11 @@ case, both of which Podman 5.8.6 answers with a 500.
 
 Not every namespace has a gate on the native routes. `utsns` and `cgroupns` on
 a container create, and the infra container's `pidns`, `ipcns`, `utsns` and
-`userns` on a pod create, aren't gated: `host` and `path` there reach Podman
-whatever the gates say, and a container that joins such a pod inherits the
-namespace. Deny those routes with a path rule if that matters to you.
+`userns` on a pod create, have no host gate: `host` and `path` there reach
+Podman whatever the `allow_host_*` gates say, and a container that joins such
+a pod inherits the namespace. `restrict_namespace_sharing` does refuse `path`
+on a container create's `utsns` and `cgroupns` while it's on. Deny those
+routes with a path rule if that matters to you.
 
 Keys are matched the way Podman's decoder matches them: in any letter case,
 with the last of a repeated key winning. A namespace field that isn't an
