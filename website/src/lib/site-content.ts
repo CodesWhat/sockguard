@@ -309,6 +309,17 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
+    version: "v2.2.5",
+    title: "Security Patch: Podman Namespaces and Owner-Isolated libpod Creates",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "On a Podman upstream, a namespace joined by path now needs the same allow_host_* gate as host",
+      "Under owner isolation, a libpod container or pod create is checked against the secrets, volumes, networks, containers and image volumes it names",
+      "secret_env and ID-shaped secret references are refused",
+    ],
+  },
+  {
     version: "v2.3.0",
     title: "BuildKit RUN-Instruction Coverage",
     emoji: "🧩",
