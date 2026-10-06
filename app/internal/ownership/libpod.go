@@ -79,7 +79,7 @@ func mutateLibpodContainerCreateOwnershipBody(r *http.Request, labelKey, owner s
 			appendEmbeddedOwnershipReference(&refs.embeddedResources, dockerresource.KindLibpodPod, pod, "libpod container create pod")
 		}
 
-		secrets, denyReason := libpodContainerCreateSecretReferences(decoded)
+		secrets, denyReason := libpodContainerCreateSecretReferences(decoded, libpodCreateMaxReferences-refs.libpodCreate.count())
 		refs.denyReason = denyReason
 		refs.embeddedResources = append(refs.embeddedResources, secrets...)
 		return nil

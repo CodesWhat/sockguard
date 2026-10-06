@@ -1,6 +1,7 @@
 package ownership
 
 import (
+	"fmt"
 	"maps"
 	"net/http"
 	"net/url"
@@ -196,7 +197,14 @@ func libpodSecretCreateOwnershipReferences(query url.Values) *ownershipRequestRe
 // that spells one key two ways. A `secrets` that isn't a list of objects and a
 // source that isn't a string both fail Podman's decode, and they're refused
 // here too instead of being forwarded on the strength of that.
-func libpodContainerCreateSecretReferences(decoded map[string]any) (refs []embeddedOwnershipReference, denyReason string) {
+//
+// Each secret costs an inspect, like the references
+// libpodContainerCreateReferences reads, and the list is the client's to fill.
+// So the two share libpodCreateMaxReferences: limit is what's left of it after
+// those references, and a create naming more distinct secrets than that is
+// refused. A secret named twice is looked up once.
+func libpodContainerCreateSecretReferences(decoded map[string]any, limit int) (refs []embeddedOwnershipReference, denyReason string) {
+	seen := make(map[string]struct{})
 	add := func(value any) string {
 		identifier, isString := value.(string)
 		switch {
@@ -205,9 +213,14 @@ func libpodContainerCreateSecretReferences(decoded map[string]any) (refs []embed
 		case couldBePodmanSecretID(identifier):
 			return libpodContainerCreateDenySecretID
 		}
-		if !slices.ContainsFunc(refs, func(ref embeddedOwnershipReference) bool { return ref.identifier == identifier }) {
-			refs = append(refs, embeddedOwnershipReference{kind: dockerresource.KindSecret, identifier: identifier, source: "container create secrets"})
+		if _, named := seen[identifier]; named {
+			return ""
 		}
+		if len(refs) >= limit {
+			return fmt.Sprintf(libpodCreateDenyTooMany, "container create")
+		}
+		seen[identifier] = struct{}{}
+		refs = append(refs, embeddedOwnershipReference{kind: dockerresource.KindSecret, identifier: identifier, source: "container create secrets"})
 		return ""
 	}
 

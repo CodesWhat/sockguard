@@ -13,7 +13,8 @@ import (
 const (
 	// libpodCreateMaxReferences bounds the resources one create is checked
 	// for. Each costs an inspect, and the body is the client's to fill. It is
-	// the bound a build's names already have.
+	// the bound a build's names already have. The secrets a container create
+	// mounts count toward it (libpodContainerCreateSecretReferences).
 	libpodCreateMaxReferences = buildMaxTags
 
 	libpodCreateDenyUnreadable      = "owner policy denied %s with a %s reference it can't look up"
@@ -35,6 +36,15 @@ const (
 type libpodCreateReferences struct {
 	denyReason string
 	resources  []embeddedOwnershipReference
+}
+
+// count is how much of libpodCreateMaxReferences the create has used. A nil
+// receiver is a create that names nothing.
+func (refs *libpodCreateReferences) count() int {
+	if refs == nil {
+		return 0
+	}
+	return len(refs.resources)
 }
 
 // libpodContainerCreateReferences reads the references of a

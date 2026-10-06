@@ -318,7 +318,8 @@ caller's owner label. Another owner's secret, or one with no owner label, is a
 `403`, a name nobody holds is a `404`, and a failed lookup is a `502`. The
 lookup is the secret inspect, which resolves a reference the same way the
 create does. It gets the source exactly as it was sent, because Podman doesn't
-trim it and a secret name can start or end with a space.
+trim it and a secret name can start or end with a space. Each secret costs one
+lookup, so secrets count toward the 256 resources a create may name.
 
 Three kinds of reference are refused without a lookup. An empty source is the
 first: every ID starts with the empty string, so Podman resolves it to the only
@@ -422,8 +423,9 @@ and `Source` inside a volume). A body that spells one key two ways is a
 `400`. A body that repeats a key reaches Podman with only the value Sockguard
 read, because the body it forwards is the one it decoded. A reference field
 that isn't the shape Podman decodes, an empty container or network name, and a
-create naming more than 256 resources are each refused with a `403`. Read from
-Podman 5.8.6, not reproduced against a live daemon.
+create naming more than 256 resources, counting the secrets it mounts, are each
+refused with a `403`. Read from Podman 5.8.6, not reproduced against a live
+daemon.
 
 An image retag names two images, and both are authorized.
 `POST /images/{name}/tag` and Podman's `POST /libpod/images/{name}/tag` take

@@ -273,8 +273,14 @@ func TestServeChainLibpodContainerCreateSecretsAreOwnerChecked(t *testing.T) {
 		envSecret      = "libpod owner policy denied container create with secret_env, which Podman reads by name at every start"
 		deniedMount    = "libpod owner policy denied access to secret %q referenced by container create secrets"
 		unresolved     = "libpod owner policy could not resolve secret %q referenced by container create secrets"
+		tooMany        = "libpod owner policy denied container create that names more resources than it can authorize"
 		teamAContainer = "team-a"
 	)
+	// One more than a create is checked for, each a name team-a could hold.
+	var manySecrets []string
+	for i := range 257 {
+		manySecrets = append(manySecrets, fmt.Sprintf(`{"source":"secret-%d"}`, i))
+	}
 	tests := []struct {
 		name       string
 		owner      string
@@ -464,6 +470,14 @@ func TestServeChainLibpodContainerCreateSecretsAreOwnerChecked(t *testing.T) {
 			wantReason: envSecret,
 		},
 		{
+			// Each secret costs a lookup, and the list is the client's to
+			// fill, so secrets count toward the 256 resources a create may name.
+			name:       "more secrets than owner isolation will look up",
+			body:       `{"image":"alpine","systemd":"false","secrets":[` + strings.Join(manySecrets, ",") + `]}`,
+			wantStatus: http.StatusForbidden,
+			wantReason: tooMany,
+		},
+		{
 			name:       "a secret nobody holds",
 			body:       `{"image":"alpine","systemd":"false","secrets":[{"source":"nobody"}]}`,
 			wantStatus: http.StatusNotFound,
@@ -591,7 +605,7 @@ func TestServeChainLibpodContainerCreateSecretsAreOwnerChecked(t *testing.T) {
 			if status != http.StatusCreated && strings.Contains(string(body), "team-b") {
 				t.Errorf("refusal body carries the other owner's data: %s", body)
 			}
-			if lookups := daemon.lookedUp(); (tt.wantReason == cantLookUp || tt.wantReason == idShaped || tt.wantReason == envSecret) && len(lookups) != 0 {
+			if lookups := daemon.lookedUp(); (tt.wantReason == cantLookUp || tt.wantReason == idShaped || tt.wantReason == envSecret || tt.wantReason == tooMany) && len(lookups) != 0 {
 				t.Errorf("daemon was asked for secrets %q, want no lookup", lookups)
 			}
 			assertOwnerSecretReferenceChainReason(t, tt.wantStatus, tt.wantReason, body)
