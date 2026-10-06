@@ -132,6 +132,8 @@ Sockguard's own endpoints are answered before this check and never reach the dae
 
 Five further `HostConfig` fields are denied unconditionally — no policy setting opts back in — because each one opens a namespace-escape or privilege-escalation path: `VolumesFrom`, `UTSMode: host`, a non-empty `CgroupParent`, `GroupAdd`, and `ExtraHosts`.
 
+`host` isn't the only value that reaches a host namespace. On a Podman upstream, `ns:<path>` in `NetworkMode`, `PidMode`, `IpcMode`, `UsernsMode`, `CgroupnsMode` or `UTSMode` joins whatever namespace the path names on the daemon host, and `/proc/1/ns/pid` is the host's PID namespace. Podman's native `POST /libpod/containers/create` and `POST /libpod/pods/create` spell the same thing `{"nsmode": "path", "value": "<path>"}`. Sockguard holds a namespace joined by path to the gate `host` needs for that namespace: `allow_host_network`, `allow_host_pid`, `allow_host_ipc`, `allow_host_userns` and `allow_host_cgroupns` under `request_body.container_create`, the first four of those under `request_body.libpod_container_create`, and `request_body.libpod_pod_create.allow_host_network`. The native routes have no gate for the rest: `utsns` and `cgroupns` on a native container create, and the infra container's `pidns`, `ipcns`, `utsns` and `userns` on a pod create, reach Podman with `host` or `path` whatever the gates say, and a container that joins such a pod inherits the namespace. There's no `libpod_container_create.allow_host_cgroupns`, and setting one does nothing. On the native routes a gate that's off is an allowlist: its namespace takes only the modes Podman has that keep the container out of the host's, so a mode sockguard doesn't know is refused. The [Podman page](/podman#namespace-modes-and-the-host-gates) lists every mode and what gates it.
+
 `POST /containers/*/exec` and `POST /exec/*/start` can also be inspected now. When `request_body.exec.allowed_commands` is configured, Sockguard denies argv vectors that match no allowlist entry, denies privileged exec unless explicitly allowed, denies root-user exec unless explicitly allowed, and re-inspects `POST /exec/*/start` against Docker's stored exec metadata before the command runs. Each allowlist entry is an argv template whose tokens are sockguard globs (`*` matches a run of non-slash characters, `**` matches any sequence): a command matches when its token count equals an entry's and every token matches the glob at that position, so an exec whose argv carries a variable component — a run ID, timestamp, or generated path — can be allowlisted without enumerating every literal form. Keep glob tokens as tight as the use case allows; a token of `**` matches anything.
 
 When a client sends `Cmd` as a single JSON string instead of an array, Sockguard tokenizes it on whitespace before matching — it does **not** interpret shell quoting, so `"sh -c 'rm -rf /tmp/x'"` becomes the five tokens `sh`, `-c`, `'rm`, `-rf`, `/tmp/x'`, not three. Docker itself passes the string form through without re-parsing, so the tokens Sockguard matches can differ from what ultimately executes. Prefer the array form in your Docker API clients when exec allowlists are in play, and write allowlist entries against array-form argv.
@@ -357,9 +359,126 @@ can't answer for the secret. The Docker-compatible `POST /secrets/create` has
 no such flags: Podman never sets them on that route and dockerd doesn't have
 them.
 
-The same boundary applies to references embedded inside container and service payloads, not only the resource named by the URL. Container creates authorize the requested image, named volumes, custom network mode, every endpoint-config network, and every `container:<ref>` namespace-sharing target. Service creates and updates authorize the task image, named volumes, networks, secrets, and configs. A foreign label or unresolved workload dependency is denied before Docker sees the request; only an image that successfully resolves and is genuinely unlabeled can use `allow_unowned_images`. Create new volumes, networks, secrets, and configs through their owner-stamping endpoints before attaching them to a workload. This turns one shared Docker socket into N isolated identity views without leaving workload dependencies as an ownership side door.
+A Podman-native container create names secrets too.
+`POST /libpod/containers/create` takes them in `secrets`, which Podman mounts
+under `/run/secrets`, and in `secret_env`, which it sets as environment
+variables, and it resolves each one by name, full ID or unique ID prefix. Every
+secret a create mounts with `secrets` has to resolve to one that carries the
+caller's owner label. Another owner's secret, or one with no owner label, is a
+`403`, a name nobody holds is a `404`, and a failed lookup is a `502`. The
+lookup is the secret inspect, which resolves a reference the same way the
+create does. It gets the source exactly as it was sent, because Podman doesn't
+trim it and a secret name can start or end with a space. Each secret costs one
+lookup, so secrets count toward the 256 resources a create may name.
+
+Three kinds of reference are refused without a lookup. An empty source is the
+first: every ID starts with the empty string, so Podman resolves it to the only
+secret in a store that holds exactly one, and it reads a missing or null
+`Source` and a null list entry the same way. `.` and `..` are valid secret
+names that the inspect can't address. And a reference that could be a secret ID
+or an ID prefix, meaning lowercase hex of 25 characters or fewer, is refused
+whoever's secret it resolves to. Podman resolves the source and then reads the
+data by the resolved secret's name in a second lookup, and a name falls through
+to an ID prefix once no secret holds it. Without that rule a client could store
+a secret of its own named after the first characters of another owner's secret
+ID, pass the check with it, delete it, and have that read answer with the other
+owner's secret. Behind owner isolation, name a secret by its name, and give it
+a name that isn't all lowercase hex digits: `db`, `cafe` and `ed25519` are
+refused, `db-password` isn't. Like every check here it's a lookup before the
+write, so it can't see a name change hands between the lookup and Podman's own:
+the caller would have to delete its secret and another owner create one under
+the same name inside that moment.
+
+`secret_env` is refused whenever it names anything, whoever's secret that is.
+Podman copies a mounted secret into the container once, while it creates it. It
+doesn't copy an environment secret anywhere: it keeps the secret's name and
+reads the data again at every start and every exec, and a secret can be removed
+while a container still names it. No check at create covers those reads. A
+client could create a container with a secret of its own in `secret_env`,
+remove the secret, and wait for another owner to create one under the same
+name, which the container would read at its next start or exec. So behind owner
+isolation, mount the secret (`podman run --secret name`, which is `type=mount`)
+and read it from `/run/secrets/name` in place of `--secret name,type=env`. A
+container that already exists keeps its environment secrets and still reads
+them by name. The Docker-compatible `POST /containers/create` has no secret
+fields on either engine, and `POST /libpod/pods/create` has none either. Kube
+play reads the secrets its YAML names by name as well, and sockguard doesn't
+parse that YAML, which is one reason it stays behind
+`insecure_allow_body_blind_writes`.
+
+The same boundary applies to references embedded inside container and service payloads, not only the resource named by the URL. Container creates authorize the requested image, named volumes, custom network mode, every endpoint-config network, and every `container:<ref>` namespace-sharing target. A Podman-native container create also authorizes the pod it joins and the secrets it mounts. Service creates and updates authorize the task image, named volumes, networks, secrets, and configs. A foreign label or unresolved workload dependency is denied before Docker sees the request; only an image that successfully resolves and is genuinely unlabeled can use `allow_unowned_images`. Create new volumes, networks, secrets, and configs through their owner-stamping endpoints before attaching them to a workload. This turns one shared Docker socket into N isolated identity views without leaving workload dependencies as an ownership side door.
 
 Network membership changes apply that boundary to both sides of the relationship. On Docker-compatible and native libpod connect/disconnect requests, Sockguard checks the network named by the URL and the body `Container` reference. A foreign resource is denied, and an unresolved body container fails closed before the daemon receives the write. The ownership check reads and restores the bounded request body, so an allowed request reaches the daemon unchanged.
+
+Podman's native creates name more than the Docker-compatible one does, and
+every reference is checked the same way. `POST /libpod/containers/create`
+authorizes its image, the pod it joins, and each namespace target (`netns`,
+`pidns`, `ipcns`, `utsns`, `userns` and `cgroupns` with `nsmode: container`).
+It also authorizes each container in `volumes_from` and `dependencyContainers`,
+each named volume in `volumes`, each image in `image_volumes`, and each network
+in `Networks` and the deprecated `cni_networks`. `POST /libpod/pods/create`
+authorizes the same volume, network and `volumes_from` references, which Podman
+hands to the pod's infra container, along with `infra_image` and
+`serviceContainerID`, a container Podman restarts whenever the pod starts. A
+pod created with `no_infra: true` has no infra container, so Podman attaches
+nothing its volume, network and `volumes_from` fields name, and they aren't
+checked. Its `serviceContainerID` still is. Each reference that is checked
+has to resolve to a resource carrying the caller's owner label. Another
+owner's resource, or one with no owner label, is a `403`, one the daemon can't
+resolve is a `404`, and a failed lookup is a `502`. An image mounted as a
+volume has to be named by its full image ID, and then follows
+`allow_unowned_images` like the image a container is created from.
+`allow_cross_owner_namespace_sharing` opens the namespace targets, `cgroupns`
+included, and nothing else in the list.
+
+A few of those answers are worth knowing before you put a Podman client behind
+owner isolation:
+
+- A named volume that doesn't exist yet is unresolved, so the create is
+  refused with a `404` instead of the volume being created on first use.
+  Podman would create it with no labels, and a volume with no owner label is
+  nobody's to use, so the next create naming it would be refused anyway. The
+  Docker-compatible create has always answered this way. Create the volume
+  first (`podman volume create`, `POST /libpod/volumes/create`), which stamps
+  it. An entry in `volumes` with no name is an anonymous volume, made new for
+  the container, and passes.
+- The network key `default` is the one reference that isn't looked up. Podman
+  reads it as its default network, which is where a create naming no network
+  lands anyway. That same network under its real name (`podman`, unless
+  `containers.conf` renames it) has no owner label and is refused, so leave
+  `Networks` out or use `default`, which is the key podman-remote sends for
+  `--network bridge`. The names the Docker-compatible create lets through
+  unchecked (`bridge`, `host`, `none`) are ordinary network names to a libpod
+  create, which Podman lets anyone create, so they're looked up here.
+- An image volume is the one reference Podman doesn't resolve when it creates
+  the container. It keeps the `image_volumes` source as written and looks it
+  up at every start, trying it as a name before an ID prefix, and an image can
+  be untagged or removed while a container still names it. So a check at
+  create says nothing about what a later start mounts. A client could tag an
+  image of its own `abc`, create a container that mounts `abc`, untag it, and
+  have the next start mount whichever image has an ID starting with `abc`. A
+  full image ID (64 lowercase hex digits, with or without `sha256:`) only ever
+  resolves to that one image, so that's the only source accepted. A name, a
+  tag or a short ID is refused with a `403`, whoever's image it is today. Get
+  the ID with `podman image inspect -f '{{.Id}}' <name>`.
+- `artifact_volumes` is refused whenever it lists anything. Podman looks an
+  artifact up by name at every start too, and an artifact carries no labels,
+  so there's no owner to check even at create.
+- `devices_from` isn't checked, because Podman 5.8.6 decodes it and never
+  reads it.
+- Host paths aren't checked by this layer. `rootfs`, `overlay_volumes` and
+  bind `mounts` name a path on the daemon host, and a path has no owner label
+  to look up.
+
+Keys are matched the way Podman's JSON decoder matches them, in any letter
+case, including the ones it reads by their Go names (`Networks`, and `Name`
+and `Source` inside a volume). A body that spells one key two ways is a
+`400`. A body that repeats a key reaches Podman with only the value Sockguard
+read, because the body it forwards is the one it decoded. A reference field
+that isn't the shape Podman decodes, an empty container or network name, and a
+create naming more than 256 resources, counting the secrets it mounts, are each
+refused with a `403`. Read from Podman 5.8.6, not reproduced against a live
+daemon.
 
 An image retag names two images, and both are authorized.
 `POST /images/{name}/tag` and Podman's `POST /libpod/images/{name}/tag` take
