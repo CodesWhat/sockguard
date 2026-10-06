@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0-rc.4] - 2026-10-06
+
+### Security
+
+- **Every 2.2.5 fix is now on the v2.3 line.** rc.3 was cut before 2.2.5 shipped, and this candidate merges that release in. A namespace joined by path now needs the host gate for that namespace on `POST /libpod/containers/create`, `POST /libpod/pods/create` and the Docker-compatible `POST /containers/create`, `restrict_namespace_sharing` covers a cgroup namespace join, and under owner isolation a libpod container or pod create is checked against the secrets, volumes, networks, containers and image volumes it names, with `secret_env`, ID-shaped secret references, image volumes named by anything but a full image ID, and artifact volumes refused. The 2.2.5 entry below describes each one, including the requests a working client sends that are now refused.
+
 ## [2.3.0-rc.3] - 2026-10-05
 
 ### Security
