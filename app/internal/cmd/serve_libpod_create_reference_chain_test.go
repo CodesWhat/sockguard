@@ -144,6 +144,11 @@ type createRefChainPodSpec struct {
 // the infra container's SpecGenerator, so the pod's namespaces, networks and
 // volumes become the infra container's, and a key PodSpecGenerator has no
 // field for is dropped. MapSpec refuses a pod whose netns joins a container.
+// With `no_infra` true none of that runs: there's no infra container, the
+// pod's volumes, image volumes, volumes_from and cni_networks are decoded and
+// never read, and Validate refuses a `Networks` that names anything
+// (pkg/api/handlers/libpod/pods.go:43-75, pkg/specgen/pod_validate.go:40-48
+// and pkg/specgen/generate/pod_create.go:76-113).
 // `serviceContainerID` is resolved with LookupContainer, and starting the pod
 // restarts that container (libpod/options.go:2162, libpod/service.go:211-233).
 //
@@ -364,6 +369,11 @@ func (d *libpodCreateRefChainDaemon) createPod(w http.ResponseWriter, r *http.Re
 			createRefChainFail(w, fmt.Errorf("failed to decode specgen: %w", err))
 			return
 		}
+	}
+	// PodSpecGenerator.Validate (pkg/specgen/pod_validate.go:40-48).
+	if pod.NoInfra && len(pod.Networks) > 0 {
+		createRefChainFail(w, errors.New("cannot set networks options without infra container"))
+		return
 	}
 	if pod.NetNS.NSMode == "container" {
 		createRefChainFail(w, errors.New("pods presently do not support network mode container"))
@@ -1092,6 +1102,73 @@ func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 				"volume mine-data (team-a)",
 				"volumes-from mine-ctr (team-a)",
 			},
+		},
+		{
+			// A pod with no infra container has nothing to hand its volumes
+			// and networks to. Podman never reads them, so there's nothing
+			// to check.
+			name:       "pod with no infra container naming another owner's resources",
+			target:     podURL,
+			body:       pod(`"no_infra":true,"volumes":[{"Name":"theirs-data","Dest":"/data"}],"volumes_from":["theirs-ctr"],"cni_networks":["theirs-net"],` + imageVolume("theirs-img")),
+			wantStatus: http.StatusCreated,
+			wantUses:   []string{},
+		},
+		{
+			name:       "pod with no infra container under an upper-case key",
+			target:     podURL,
+			body:       pod(`"NO_INFRA":true,"volumes":[{"Name":"theirs-data","Dest":"/data"}]`),
+			wantStatus: http.StatusCreated,
+			wantUses:   []string{},
+		},
+		{
+			// Podman takes the last of a repeated key, and so does the check.
+			name:       "pod with no_infra given twice, true last",
+			target:     podURL,
+			body:       pod(`"no_infra":false,"volumes":[{"Name":"theirs-data","Dest":"/data"}],"no_infra":true`),
+			wantStatus: http.StatusCreated,
+			wantUses:   []string{},
+		},
+		{
+			name:        "pod with no_infra given twice, false last",
+			target:      podURL,
+			body:        pod(`"no_infra":true,"volumes":[{"Name":"theirs-data","Dest":"/data"}],"no_infra":false`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("volume", "theirs-data", "pod create volumes"),
+			wantLookups: []string{"volumes/theirs-data"},
+		},
+		{
+			name:        "pod with no_infra false naming another owner's volume",
+			target:      podURL,
+			body:        pod(`"no_infra":false,"volumes":[{"Name":"theirs-data","Dest":"/data"}]`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("volume", "theirs-data", "pod create volumes"),
+			wantLookups: []string{"volumes/theirs-data"},
+		},
+		{
+			// The service container is the pod's own reference, infra
+			// container or not.
+			name:        "pod with no infra container and another owner's service container",
+			target:      podURL,
+			body:        pod(`"no_infra":true,"serviceContainerID":"theirs-ctr"`),
+			wantStatus:  http.StatusForbidden,
+			wantReason:  denied("container", "theirs-ctr", "pod create serviceContainerID"),
+			wantLookups: []string{theirsCtr},
+		},
+		{
+			name:        "pod with no infra container and its own service container",
+			target:      podURL,
+			body:        pod(`"no_infra":true,"serviceContainerID":"mine-ctr","volumes_from":["theirs-ctr"]`),
+			wantStatus:  http.StatusCreated,
+			wantLookups: []string{"containers/mine-ctr"},
+			wantUses:    []string{"service-container mine-ctr (team-a)"},
+		},
+		{
+			// Podman refuses networks on a pod with no infra container
+			// before it looks any of them up.
+			name:       "pod with no infra container naming another owner's network",
+			target:     podURL,
+			body:       pod(`"no_infra":true,"Networks":{"theirs-net":{}}`),
+			wantStatus: http.StatusInternalServerError,
 		},
 		{
 			// PodSpecGenerator has no field for either, so Podman drops them

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -226,6 +227,106 @@ func TestLibpodPodCreateReferencesReadsEveryReferenceField(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestLibpodPodCreateReferencesWithoutAnInfraContainer pins what a pod create
+// is checked for when it has no infra container. Podman hands a pod's
+// volumes, networks and volumes_from to the infra container and to nothing
+// else, so with `no_infra` true it attaches none of them, and only the
+// service container is left to check. Read from Podman 5.8.6
+// pkg/api/handlers/libpod/pods.go:43-75 and
+// pkg/specgen/generate/pod_create.go:76-113.
+//
+// Anything short of the one key holding true keeps every check: that's a pod
+// Podman gives an infra container, or a body its decode refuses.
+func TestLibpodPodCreateReferencesWithoutAnInfraContainer(t *testing.T) {
+	t.Parallel()
+	const (
+		infraFields = `"volumes_from":["web"],"Networks":{"net":{}},"cni_networks":["cni"],"volumes":[{"Name":"data"}],"image_volumes":[{"Source":"` + testImageID + `"}]`
+		service     = `"serviceContainerID":"service"`
+	)
+	onlyService := []string{"containers service <- pod create serviceContainerID"}
+	everything := []string{
+		"containers web <- pod create volumes_from",
+		"containers service <- pod create serviceContainerID",
+		"networks net <- pod create Networks",
+		"networks cni <- pod create cni_networks",
+		"volumes data <- pod create volumes",
+		"images " + testImageID + " <- pod create image_volumes",
+	}
+	tests := []struct {
+		name string
+		body string
+		want []string
+	}{
+		{name: "no_infra true", body: `{"no_infra":true,` + infraFields + `,` + service + `}`, want: onlyService},
+		{name: "no_infra true and no service container", body: `{"no_infra":true,` + infraFields + `}`},
+		{
+			// Podman never decodes these into anything it reads, so their
+			// shape isn't this check's to refuse.
+			name: "no_infra true with fields the infra checks would refuse",
+			body: `{"no_infra":true,"volumes_from":[""],"Networks":{"":{}},"cni_networks":[""],"volumes":[{"Name":"data"}],"image_volumes":[{"Source":"tools"}],` + service + `}`,
+			want: onlyService,
+		},
+		{name: "the key in another case", body: `{"NO_Infra":true,` + infraFields + `,` + service + `}`, want: onlyService},
+		{name: "the last of a repeated key is true", body: `{"no_infra":false,"no_infra":true,` + infraFields + `,` + service + `}`, want: onlyService},
+		{name: "the last of a repeated key is false", body: `{"no_infra":true,"no_infra":false,` + infraFields + `,` + service + `}`, want: everything},
+		{name: "no_infra false", body: `{"no_infra":false,` + infraFields + `,` + service + `}`, want: everything},
+		{name: "no_infra null", body: `{"no_infra":null,` + infraFields + `,` + service + `}`, want: everything},
+		{name: "no_infra absent", body: `{` + infraFields + `,` + service + `}`, want: everything},
+		// Podman's decode refuses these, and they're checked all the same.
+		{name: "no_infra as a string", body: `{"no_infra":"true",` + infraFields + `,` + service + `}`, want: everything},
+		{name: "no_infra as a number", body: `{"no_infra":1,` + infraFields + `,` + service + `}`, want: everything},
+		{name: "no_infra as a list", body: `{"no_infra":[true],` + infraFields + `,` + service + `}`, want: everything},
+		// A key Podman reads into another field, or into none.
+		{name: "a key that isn't no_infra", body: `{"noinfra":true,"no-infra":true,"no_infra ":true,` + infraFields + `,` + service + `}`, want: everything},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			refs := libpodPodCreateReferences(decodeLibpodCreateBody(t, tt.body))
+			if refs != nil && refs.denyReason != "" {
+				t.Fatalf("denyReason = %q, want none", refs.denyReason)
+			}
+			if got := libpodCreateRefStrings(refs); !slices.Equal(got, tt.want) {
+				t.Fatalf("references = %q, want %q", got, tt.want)
+			}
+		})
+	}
+
+	// mutateJSONBody refuses a body that spells the key two ways before the
+	// reader sees it. On its own the reader can't say which one Podman would
+	// keep, so it keeps every check.
+	for name, body := range map[string]map[string]any{
+		"two spellings, true and false": {"no_infra": true, "No_Infra": false, "volumes_from": []any{"web"}},
+		"two spellings, both true":      {"no_infra": true, "NO_INFRA": true, "volumes_from": []any{"web"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			want := []string{"containers web <- pod create volumes_from"}
+			if got := libpodCreateRefStrings(libpodPodCreateReferences(body)); !slices.Equal(got, want) {
+				t.Fatalf("references = %q, want %q", got, want)
+			}
+		})
+	}
+
+	t.Run("the service container is still refused when it can't be read", func(t *testing.T) {
+		t.Parallel()
+		refs := libpodPodCreateReferences(decodeLibpodCreateBody(t, `{"no_infra":true,"serviceContainerID":["service"]}`))
+		want := fmt.Sprintf(libpodCreateDenyUnreadable, "pod create", "serviceContainerID")
+		if refs == nil || refs.denyReason != want {
+			t.Fatalf("references = %+v, want denyReason %q", refs, want)
+		}
+	})
+
+	t.Run("a container create has no such key", func(t *testing.T) {
+		t.Parallel()
+		refs := libpodContainerCreateReferences(decodeLibpodCreateBody(t, `{"no_infra":true,"volumes_from":["web"]}`))
+		want := []string{"containers web <- container create volumes_from"}
+		if got := libpodCreateRefStrings(refs); !slices.Equal(got, want) {
+			t.Fatalf("references = %q, want %q", got, want)
+		}
+	})
 }
 
 // TestLibpodCreateReferencesRefuseWhatTheyCannotRead pins the fail-closed
@@ -649,6 +750,132 @@ func TestMiddlewareRefusesUnreadableLibpodCreateReferencesWithoutALookup(t *test
 			}
 			if len(fi.calls) != 0 {
 				t.Fatalf("inspect calls = %#v, want none", fi.calls)
+			}
+		})
+	}
+}
+
+// TestMiddlewareLibpodPodCreateWithoutAnInfraContainer drives a pod create
+// with `no_infra` through the middleware. Podman reads the key with
+// encoding/json: in any letter case, the last of a repeated key winning. The
+// body forwarded is the one that was decoded, so Podman sees `no_infra` once,
+// with the value the check went by.
+func TestMiddlewareLibpodPodCreateWithoutAnInfraContainer(t *testing.T) {
+	t.Parallel()
+	const theirs = `"volumes":[{"Name":"theirs","Dest":"/data"}],"volumes_from":["theirs"],"cni_networks":["theirs"],"image_volumes":[{"Source":"theirs"}]`
+	tests := []struct {
+		name        string
+		body        string
+		wantStatus  int
+		wantReason  string
+		wantLookups []resourceInspectCall
+	}{
+		{
+			name:       "no infra container, infra-only fields naming another owner's resources",
+			body:       `{"no_infra":true,` + theirs + `}`,
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			name:       "the key in another case",
+			body:       `{"No_Infra":true,` + theirs + `}`,
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			name:       "the key given twice, true last",
+			body:       `{"no_infra":false,` + theirs + `,"no_infra":true}`,
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			name:        "the key given twice, false last",
+			body:        `{"no_infra":true,"volumes_from":["theirs"],"no_infra":false}`,
+			wantStatus:  http.StatusForbidden,
+			wantReason:  `libpod owner policy denied access to container "theirs" referenced by pod create volumes_from`,
+			wantLookups: []resourceInspectCall{{kind: dockerresource.KindContainer, id: "theirs"}},
+		},
+		{
+			// Two spellings of one key: nothing here can say which Podman
+			// would keep once the body is re-encoded, so it's refused.
+			name:       "the key spelled two ways",
+			body:       `{"no_infra":true,"NO_INFRA":false,"volumes_from":["theirs"]}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:        "no_infra that isn't a bool",
+			body:        `{"no_infra":"true","volumes_from":["theirs"]}`,
+			wantStatus:  http.StatusForbidden,
+			wantReason:  `libpod owner policy denied access to container "theirs" referenced by pod create volumes_from`,
+			wantLookups: []resourceInspectCall{{kind: dockerresource.KindContainer, id: "theirs"}},
+		},
+		{
+			name:        "no infra container, another owner's service container",
+			body:        `{"no_infra":true,"serviceContainerID":"theirs"}`,
+			wantStatus:  http.StatusForbidden,
+			wantReason:  `libpod owner policy denied access to container "theirs" referenced by pod create serviceContainerID`,
+			wantLookups: []resourceInspectCall{{kind: dockerresource.KindContainer, id: "theirs"}},
+		},
+		{
+			name:        "no infra container, the caller's own service container",
+			body:        `{"no_infra":true,"serviceContainerID":"mine",` + theirs + `}`,
+			wantStatus:  http.StatusAccepted,
+			wantLookups: []resourceInspectCall{{kind: dockerresource.KindContainer, id: "mine"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			foreign := inspectResult{labels: map[string]string{"com.sockguard.owner": "job-999"}, found: true}
+			fi := &recordingInspector{resources: map[string]map[string]inspectResult{
+				"containers": {"theirs": foreign, "mine": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true}},
+				"networks":   {"theirs": foreign},
+				"volumes":    {"theirs": foreign},
+				"images":     {"theirs": foreign},
+			}}
+			var forwarded []byte
+			handler := middlewareWithDeps(testLogger(), Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				forwarded, _ = io.ReadAll(r.Body)
+				w.WriteHeader(http.StatusAccepted)
+			}))
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/libpod/pods/create", strings.NewReader(tt.body)))
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if !slices.Equal(fi.calls, tt.wantLookups) {
+				t.Fatalf("inspect calls = %#v, want %#v", fi.calls, tt.wantLookups)
+			}
+			if tt.wantReason != "" {
+				var denial struct {
+					Message string `json:"message"`
+				}
+				if err := json.Unmarshal(rec.Body.Bytes(), &denial); err != nil || denial.Message != tt.wantReason {
+					t.Fatalf("body = %s, want message %q", rec.Body.String(), tt.wantReason)
+				}
+			}
+			if tt.wantStatus != http.StatusAccepted {
+				if forwarded != nil {
+					t.Fatalf("a refused create was forwarded: %s", forwarded)
+				}
+				return
+			}
+			// What Podman decodes from the forwarded body is a pod with no
+			// infra container, from a key that's there once.
+			var pod struct {
+				NoInfra bool              `json:"no_infra"`
+				Labels  map[string]string `json:"labels"`
+			}
+			if err := json.Unmarshal(forwarded, &pod); err != nil {
+				t.Fatalf("decode forwarded body %s: %v", forwarded, err)
+			}
+			if !pod.NoInfra {
+				t.Fatalf("forwarded body %s decodes to a pod with an infra container", forwarded)
+			}
+			if got := strings.Count(strings.ToLower(string(forwarded)), `"no_infra"`); got != 1 {
+				t.Fatalf("forwarded body %s carries no_infra %d times, want once", forwarded, got)
+			}
+			if pod.Labels["com.sockguard.owner"] != "job-123" {
+				t.Fatalf("forwarded labels = %v, want the owner label stamped", pod.Labels)
 			}
 		})
 	}
