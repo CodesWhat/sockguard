@@ -1435,15 +1435,15 @@ type OwnershipConfig struct {
 	// behavior for POST /containers/create when Owner is configured. By
 	// default (false — a security-relevant default, see CHANGELOG),
 	// sockguard resolves every HostConfig.NetworkMode/PidMode/IpcMode/
-	// UsernsMode "container:<ref>" namespace-sharing target and denies the
-	// request if the referenced container belongs to a different owner —
-	// joining a foreign container's namespace is a full cross-tenant
-	// compromise (shared sockets, process visibility, shared /dev/shm),
-	// strictly worse than the access ownership already gates on every other
-	// endpoint. Set true to restore the old unchecked behavior. Same-owner
-	// refs always pass; an unlabeled target is treated as untrusted and
-	// denied too (consistent with every other container-targeting ownership
-	// check), so only a same-owner ref is allowed when this is false.
+	// UTSMode/UsernsMode/CgroupnsMode "container:<ref>" namespace-sharing
+	// target and denies the request if the referenced container belongs to a
+	// different owner — joining a foreign container's namespace is a full
+	// cross-tenant compromise (shared sockets, process visibility, shared
+	// /dev/shm), strictly worse than the access ownership already gates on
+	// every other endpoint. Set true to restore the old unchecked behavior.
+	// Same-owner refs always pass; an unlabeled target is treated as untrusted
+	// and denied too (consistent with every other container-targeting
+	// ownership check), so only a same-owner ref is allowed when this is false.
 	AllowCrossOwnerNamespaceSharing bool `mapstructure:"allow_cross_owner_namespace_sharing"`
 }
 

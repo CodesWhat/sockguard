@@ -432,7 +432,10 @@ func TestMiddlewareRejectsDuplicateCaseVariantContainerCreateHostConfigKeys(t *t
 func TestMiddlewareDeniesCrossOwnerContainerCreateNamespaceSharing(t *testing.T) {
 	t.Parallel()
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
-	fields := []string{"NetworkMode", "PidMode", "IpcMode", "UTSMode", "UsernsMode"}
+	// dockerd only takes "private" and "host" for CgroupnsMode. Podman's
+	// compat create parses it like the others, and "container:<ref>" joins
+	// that container's cgroup namespace.
+	fields := []string{"NetworkMode", "PidMode", "IpcMode", "UTSMode", "UsernsMode", "CgroupnsMode"}
 
 	for _, field := range fields {
 		t.Run(field, func(t *testing.T) {
@@ -835,6 +838,14 @@ func TestMiddlewareDeniesCrossOwnerContainerCreateNamespaceSharingCaseInsensitiv
 		{
 			name: "lowercase hostconfig utsmode",
 			body: `{"Image":"busybox","hostconfig":{"utsmode":"container:target"}}`,
+		},
+		{
+			name: "exact-case HostConfig CgroupnsMode",
+			body: `{"Image":"busybox","HostConfig":{"CgroupnsMode":"container:target"}}`,
+		},
+		{
+			name: "lowercase hostconfig cgroupnsmode",
+			body: `{"Image":"busybox","hostconfig":{"cgroupnsmode":"container:target"}}`,
 		},
 	}
 
@@ -2450,6 +2461,27 @@ func TestContainerCreateNamespaceRefs(t *testing.T) {
 				},
 			},
 			want: []string{"shared", "other"},
+		},
+		{
+			name: "every mode field, in the order they're checked",
+			decoded: map[string]any{
+				"HostConfig": map[string]any{
+					"CgroupnsMode": "container:cgroup",
+					"UsernsMode":   "container:user",
+					"UTSMode":      "container:uts",
+					"IpcMode":      "container:ipc",
+					"PidMode":      "container:pid",
+					"NetworkMode":  "container:net",
+				},
+			},
+			want: []string{"net", "pid", "ipc", "uts", "user", "cgroup"},
+		},
+		{
+			name: "CgroupnsMode values that join no container",
+			decoded: map[string]any{
+				"HostConfig": map[string]any{"CgroupnsMode": "private"},
+				"hostconfig": map[string]any{"CgroupnsMode": "host"},
+			},
 		},
 	}
 
