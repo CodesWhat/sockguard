@@ -318,7 +318,8 @@ caller's owner label. Another owner's secret, or one with no owner label, is a
 `403`, a name nobody holds is a `404`, and a failed lookup is a `502`. The
 lookup is the secret inspect, which resolves a reference the same way the
 create does. It gets the source exactly as it was sent, because Podman doesn't
-trim it and a secret name can start or end with a space.
+trim it and a secret name can start or end with a space. Each secret costs one
+lookup, so secrets count toward the 256 resources a create may name.
 
 Three kinds of reference are refused without a lookup. An empty source is the
 first: every ID starts with the empty string, so Podman resolves it to the only
@@ -368,8 +369,11 @@ each named volume in `volumes`, each image in `image_volumes`, and each network
 in `Networks` and the deprecated `cni_networks`. `POST /libpod/pods/create`
 authorizes the same volume, network and `volumes_from` references, which Podman
 hands to the pod's infra container, along with `infra_image` and
-`serviceContainerID`, a container Podman restarts whenever the pod starts. Each
-one has to resolve to a resource carrying the caller's owner label. Another
+`serviceContainerID`, a container Podman restarts whenever the pod starts. A
+pod created with `no_infra: true` has no infra container, so Podman attaches
+nothing its volume, network and `volumes_from` fields name, and they aren't
+checked. Its `serviceContainerID` still is. Each reference that is checked
+has to resolve to a resource carrying the caller's owner label. Another
 owner's resource, or one with no owner label, is a `403`, one the daemon can't
 resolve is a `404`, and a failed lookup is a `502`. An image mounted as a
 volume has to be named by its full image ID, and then follows
@@ -422,8 +426,9 @@ and `Source` inside a volume). A body that spells one key two ways is a
 `400`. A body that repeats a key reaches Podman with only the value Sockguard
 read, because the body it forwards is the one it decoded. A reference field
 that isn't the shape Podman decodes, an empty container or network name, and a
-create naming more than 256 resources are each refused with a `403`. Read from
-Podman 5.8.6, not reproduced against a live daemon.
+create naming more than 256 resources, counting the secrets it mounts, are each
+refused with a `403`. Read from Podman 5.8.6, not reproduced against a live
+daemon.
 
 An image retag names two images, and both are authorized.
 `POST /images/{name}/tag` and Podman's `POST /libpod/images/{name}/tag` take

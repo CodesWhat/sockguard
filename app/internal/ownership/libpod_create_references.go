@@ -13,7 +13,8 @@ import (
 const (
 	// libpodCreateMaxReferences bounds the resources one create is checked
 	// for. Each costs an inspect, and the body is the client's to fill. It is
-	// the bound a build's names already have.
+	// the bound a build's names already have. The secrets a container create
+	// mounts count toward it (libpodContainerCreateSecretReferences).
 	libpodCreateMaxReferences = buildMaxTags
 
 	libpodCreateDenyUnreadable      = "owner policy denied %s with a %s reference it can't look up"
@@ -35,6 +36,15 @@ const (
 type libpodCreateReferences struct {
 	denyReason string
 	resources  []embeddedOwnershipReference
+}
+
+// count is how much of libpodCreateMaxReferences the create has used. A nil
+// receiver is a create that names nothing.
+func (refs *libpodCreateReferences) count() int {
+	if refs == nil {
+		return 0
+	}
+	return len(refs.resources)
 }
 
 // libpodContainerCreateReferences reads the references of a
@@ -102,12 +112,53 @@ func libpodContainerCreateReferences(decoded map[string]any) *libpodCreateRefere
 // LookupContainer, records the pod on that container, and restarts the
 // container whenever the pod starts, whatever kind of container it is
 // (libpod/options.go:2162-2180, libpod/service.go:211-233).
+//
+// A pod created with `no_infra` true has no infra container, and then only
+// `serviceContainerID` is read. The handler copies the pod spec into the
+// infra spec, and MakePod creates a container from it, only when NoInfra is
+// false (pkg/api/handlers/libpod/pods.go:43-75,
+// pkg/specgen/generate/pod_create.go:76-113). Nothing else reads the pod's
+// `volumes`, `image_volumes`, `volumes_from` or `cni_networks`: MapSpec
+// copies `cni_networks` into the infra spec that's then left unused
+// (pod_create.go:262-268), NewPod keeps none of them
+// (libpod/runtime_pod_common.go:18-94), and the stored pod has no field for
+// one (libpod/pod.go:40-98). Validate refuses a `Networks` that names
+// anything before any lookup (pkg/specgen/pod_validate.go:40-48). The service
+// container is attached either way (pod_create.go:138-140). So those five
+// fields aren't checked on such a pod, which is what podman-remote sends for
+// `pod create --infra=false --volume ...`.
 func libpodPodCreateReferences(decoded map[string]any) *libpodCreateReferences {
 	reader := libpodCreateReferenceReader{create: "pod create"}
-	reader.containerList(decoded, "volumes_from", libpodVolumesFromContainer)
+	infra := !libpodPodCreateNoInfra(decoded)
+	if infra {
+		reader.containerList(decoded, "volumes_from", libpodVolumesFromContainer)
+	}
 	reader.container(decoded, "serviceContainerID")
-	reader.shared(decoded)
+	if infra {
+		reader.shared(decoded)
+	}
 	return reader.references()
+}
+
+// libpodPodCreateNoInfra reports whether Podman will create the pod with no
+// infra container, which is when PodSpecGenerator.NoInfra decodes to true
+// (Podman 5.8.6 pkg/specgen/podspecgen.go:33).
+//
+// encoding/json reads the key in any letter case and keeps the last of a
+// repeated one. The map decoded here already holds the last of a key
+// repeated byte for byte, and the body forwarded is that map re-encoded, so
+// Podman sees the value read here. A key spelled two ways never gets this
+// far, because mutateJSONBody refuses the body.
+//
+// Only a JSON true counts. A false or a null leaves the pod with an infra
+// container. Any other value fails Podman's decode, and so does anything
+// this can't read for sure, like two spellings handed to the reader on its
+// own. Those keep every check, which costs nothing: either the pod has an
+// infra container or Podman creates no pod.
+func libpodPodCreateNoInfra(decoded map[string]any) bool {
+	value, ok := libpodCreateField(decoded, "no_infra")
+	noInfra, isBool := value.(bool)
+	return ok && isBool && noInfra
 }
 
 // checkLibpodCreateReferences authorizes what a libpod create names. Each

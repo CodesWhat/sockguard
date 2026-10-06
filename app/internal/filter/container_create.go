@@ -103,13 +103,14 @@ type ContainerCreateOptions struct {
 	AllowHostUserNS         bool
 	AllowHostCgroupNS       bool
 	// RestrictNamespaceSharing gates HostConfig.NetworkMode/PidMode/IpcMode/
-	// UsernsMode values of the form "container:<ref>" (join another
-	// container's namespace) against AllowedNamespaceSharingContainers.
-	// Default false: container:<ref> values continue to pass through
-	// unchecked, matching today's behavior exactly — an independent,
-	// orthogonal gate from AllowHostNetwork/PID/IPC/UserNS, which gate
-	// "host" and "ns:<path>". While true it also refuses "ns:<path>" on the
-	// same fields, since a path can name another container's namespace.
+	// UTSMode/UsernsMode/CgroupnsMode values of the form "container:<ref>"
+	// (join another container's namespace) against
+	// AllowedNamespaceSharingContainers. Default false: container:<ref>
+	// values continue to pass through unchecked, matching today's behavior
+	// exactly — an independent, orthogonal gate from
+	// AllowHostNetwork/PID/IPC/UserNS/CgroupNS, which gate "host" and
+	// "ns:<path>". While true it also refuses "ns:<path>" on the same
+	// fields, since a path can name another container's namespace.
 	RestrictNamespaceSharing bool
 	// AllowedNamespaceSharingContainers allowlists the container:<ref>
 	// targets permitted when RestrictNamespaceSharing is true. Only
@@ -1295,6 +1296,15 @@ func (p containerCreatePolicy) denyNamespacePathReason(hostConfig containerCreat
 // UTSMode is included because Docker does honor a "container:<ref>" join for it
 // (moby's UTSMode has an IsContainer/Container form); the separate host-UTS mode
 // is denied unconditionally above and is a different attack surface.
+//
+// CgroupnsMode is included for a Podman upstream. dockerd refuses any value
+// but "private", "host" and "" (moby 28.5.1
+// api/types/container/hostconfig.go:42-44, daemon/daemon_unix.go:726-727).
+// Podman's compat create parses the field with specgen.ParseNamespace, where
+// "container:<ref>" joins that container's cgroup namespace (Podman 5.8.6
+// pkg/api/handlers/compat/containers_create.go:485,
+// pkg/specgenutil/specgen.go:218-223 and
+// pkg/specgen/generate/namespaces.go:299-310).
 func (p containerCreatePolicy) denyNamespaceSharingReason(hostConfig containerCreateHostConfig) string {
 	if !p.restrictNamespaceSharing {
 		return ""
@@ -1308,6 +1318,7 @@ func (p containerCreatePolicy) denyNamespaceSharingReason(hostConfig containerCr
 		{"IPC", hostConfig.IpcMode},
 		{"UTS", hostConfig.UTSMode},
 		{"user", hostConfig.UsernsMode},
+		{"cgroup", hostConfig.CgroupnsMode},
 	}
 	for _, f := range fields {
 		// A path can name another container's namespace, and no list of

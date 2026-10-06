@@ -1,6 +1,7 @@
 package ownership
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -497,6 +498,171 @@ func TestLibpodContainerCreateChecksTheSecretsItForwards(t *testing.T) {
 			}
 		})
 	}
+}
+
+// callerOwnsEverythingInspector answers every lookup with a resource carrying
+// the caller's owner label, and records what it was asked.
+type callerOwnsEverythingInspector struct {
+	owner string
+	calls []resourceInspectCall
+}
+
+func (i *callerOwnsEverythingInspector) inspectResource(_ context.Context, kind dockerresource.Kind, id string) (map[string]string, bool, error) {
+	i.calls = append(i.calls, resourceInspectCall{kind: kind, id: id})
+	return map[string]string{DefaultLabelKey: i.owner}, true, nil
+}
+
+func (i *callerOwnsEverythingInspector) inspectExec(context.Context, string) (string, bool, error) {
+	return "", false, nil
+}
+
+// postLibpodContainerCreateOwningEverything sends body as team-a's libpod
+// container create to a daemon where every resource is team-a's, and returns
+// the response and every lookup owner isolation made, in order.
+func postLibpodContainerCreateOwningEverything(t *testing.T, body string) (*httptest.ResponseRecorder, []resourceInspectCall) {
+	t.Helper()
+	inspector := &callerOwnsEverythingInspector{owner: "team-a"}
+	handler := middlewareWithDeps(testLogger(), Options{Owner: "team-a", LabelKey: DefaultLabelKey}, inspector.inspectResource, inspector.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v5.0.0/libpod/containers/create", strings.NewReader(body)))
+	return rec, inspector.calls
+}
+
+// libpodSecretMounts renders count `secrets` entries, the i-th one naming
+// name(i).
+func libpodSecretMounts(count int, name func(i int) string) string {
+	var list strings.Builder
+	for i := range count {
+		if i > 0 {
+			list.WriteByte(',')
+		}
+		fmt.Fprintf(&list, `{"Source":%q}`, name(i))
+	}
+	return list.String()
+}
+
+// TestLibpodContainerCreateSecretsCountTowardTheReferenceCap pins that a
+// secret is one of the resources a create is checked for. Each costs an
+// inspect, so secrets share libpodCreateMaxReferences with the containers,
+// networks, volumes and images the create names, and a create past it is
+// refused before anything is looked up.
+func TestLibpodContainerCreateSecretsCountTowardTheReferenceCap(t *testing.T) {
+	t.Parallel()
+	secret := func(i int) string { return fmt.Sprintf("secret-%d", i) }
+	containers := func(count int) string {
+		names := make([]string, 0, count)
+		for i := range count {
+			names = append(names, fmt.Sprintf(`"ctr-%d"`, i))
+		}
+		return strings.Join(names, ",")
+	}
+	tooMany := "libpod " + fmt.Sprintf(libpodCreateDenyTooMany, "container create")
+	tests := []struct {
+		name        string
+		body        string
+		wantStatus  int
+		wantLookups int
+	}{
+		{
+			name:        "as many secrets as the cap",
+			body:        `{"secrets":[` + libpodSecretMounts(libpodCreateMaxReferences, secret) + `]}`,
+			wantStatus:  http.StatusAccepted,
+			wantLookups: libpodCreateMaxReferences,
+		},
+		{
+			name:       "one secret past the cap",
+			body:       `{"secrets":[` + libpodSecretMounts(libpodCreateMaxReferences+1, secret) + `]}`,
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:        "a secret named twice counts once",
+			body:        `{"secrets":[` + libpodSecretMounts(libpodCreateMaxReferences, secret) + `,` + libpodSecretMounts(libpodCreateMaxReferences, secret) + `]}`,
+			wantStatus:  http.StatusAccepted,
+			wantLookups: libpodCreateMaxReferences,
+		},
+		{
+			name:        "secrets and containers that add up to the cap",
+			body:        `{"volumes_from":[` + containers(200) + `],"secrets":[` + libpodSecretMounts(libpodCreateMaxReferences-200, secret) + `]}`,
+			wantStatus:  http.StatusAccepted,
+			wantLookups: libpodCreateMaxReferences,
+		},
+		{
+			name:       "secrets and containers that add up to one past the cap",
+			body:       `{"volumes_from":[` + containers(200) + `],"secrets":[` + libpodSecretMounts(libpodCreateMaxReferences-199, secret) + `]}`,
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "one secret beside as many containers as the cap",
+			body:       `{"volumes_from":[` + containers(libpodCreateMaxReferences) + `],"secrets":[{"Source":"secret-0"}]}`,
+			wantStatus: http.StatusForbidden,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			rec, lookups := postLibpodContainerCreateOwningEverything(t, tt.body)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if len(lookups) != tt.wantLookups {
+				t.Fatalf("owner isolation made %d lookups, want %d", len(lookups), tt.wantLookups)
+			}
+			if tt.wantStatus != http.StatusForbidden {
+				return
+			}
+			var denial struct {
+				Message string `json:"message"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &denial); err != nil || denial.Message != tooMany {
+				t.Fatalf("body = %s, want message %q", rec.Body.String(), tooMany)
+			}
+		})
+	}
+}
+
+// TestLibpodContainerCreateReadsALongSecretListOnce sends a `secrets` list
+// close to the largest a body can hold. The reader goes through it once: every
+// distinct secret is looked up once, in the order the body first names it,
+// however often it's repeated, and a list of distinct secrets is refused at
+// the cap with nothing looked up.
+func TestLibpodContainerCreateReadsALongSecretListOnce(t *testing.T) {
+	t.Parallel()
+	const entries = 40_000
+
+	t.Run("a few secrets repeated", func(t *testing.T) {
+		t.Parallel()
+		body := `{"secrets":[` + libpodSecretMounts(entries, func(i int) string {
+			return fmt.Sprintf("s-%d", i%libpodCreateMaxReferences)
+		}) + `]}`
+		rec, lookups := postLibpodContainerCreateOwningEverything(t, body)
+
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusAccepted, rec.Body.String())
+		}
+		want := make([]resourceInspectCall, 0, libpodCreateMaxReferences)
+		for i := range libpodCreateMaxReferences {
+			want = append(want, resourceInspectCall{kind: dockerresource.KindSecret, id: fmt.Sprintf("s-%d", i)})
+		}
+		if !slices.Equal(lookups, want) {
+			t.Fatalf("owner isolation made %d lookups, want each of the %d secrets once, in order", len(lookups), len(want))
+		}
+	})
+
+	t.Run("every secret distinct", func(t *testing.T) {
+		t.Parallel()
+		body := `{"secrets":[` + libpodSecretMounts(entries, func(i int) string { return fmt.Sprintf("s-%d", i) }) + `]}`
+		rec, lookups := postLibpodContainerCreateOwningEverything(t, body)
+
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+		}
+		if len(lookups) != 0 {
+			t.Fatalf("owner isolation made %d lookups, want none", len(lookups))
+		}
+	})
 }
 
 // TestLibpodContainerCreateSecretRefusalKeepsTheOwnerStamp covers the rollout

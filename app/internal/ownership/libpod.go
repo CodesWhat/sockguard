@@ -34,11 +34,11 @@ import (
 // cgroupns is the SpecGenerator's alone, and it joins a container the same
 // way: namespaceOptions resolves its value with LookupContainer and the new
 // container shares that one's cgroup namespace and depends on it (Podman
-// 5.8.6 pkg/specgen/generate/namespaces.go:299-310). The Docker-compatible
-// create has no such form, since CgroupnsMode there is only "host" or
-// "private", which is why internal/filter's denyNamespaceSharingReason leaves
-// the field out. A pod spec has no cgroupns and Podman drops the key, so
-// reading it there checks a container the pod would never have joined.
+// 5.8.6 pkg/specgen/generate/namespaces.go:299-310). Podman's
+// Docker-compatible create reaches the same join through
+// HostConfig.CgroupnsMode "container:<ref>", which namespaceModeFields
+// covers. A pod spec has no cgroupns and Podman drops the key, so reading it
+// there checks a container the pod would never have joined.
 var libpodNamespaceSharingFields = [...]string{"netns", "pidns", "ipcns", "userns", "utsns", "cgroupns"}
 
 // mutateLibpodContainerCreateOwnershipBody injects the owner label into a
@@ -49,7 +49,8 @@ var libpodNamespaceSharingFields = [...]string{"netns", "pidns", "ipcns", "usern
 // pod — #148 design doc item 4), the "image" field, and any
 // {"nsmode":"container","value":"<ref>"} namespace-sharing target — the
 // libpod-shaped counterpart of mutateContainerCreateOwnershipBody's Docker
-// HostConfig.{NetworkMode,PidMode,IpcMode,UTSMode,UsernsMode} handling.
+// HostConfig.{NetworkMode,PidMode,IpcMode,UTSMode,UsernsMode,CgroupnsMode}
+// handling.
 //
 // The secrets the body mounts with `secrets` are references too. Each has to
 // resolve to a secret carrying the caller's owner label, like the pod, and a
@@ -79,7 +80,7 @@ func mutateLibpodContainerCreateOwnershipBody(r *http.Request, labelKey, owner s
 			appendEmbeddedOwnershipReference(&refs.embeddedResources, dockerresource.KindLibpodPod, pod, "libpod container create pod")
 		}
 
-		secrets, denyReason := libpodContainerCreateSecretReferences(decoded)
+		secrets, denyReason := libpodContainerCreateSecretReferences(decoded, libpodCreateMaxReferences-refs.libpodCreate.count())
 		refs.denyReason = denyReason
 		refs.embeddedResources = append(refs.embeddedResources, secrets...)
 		return nil

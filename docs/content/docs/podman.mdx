@@ -351,7 +351,10 @@ same way they cover Docker-compat:
   `dependencyContainers` container, each named volume in `volumes`, each
   image in `image_volumes`, and each network in `Networks` and `cni_networks`.
   `POST /libpod/pods/create` gets the same volume, network and `volumes_from`
-  checks, plus `serviceContainerID`. Each has to be the caller's own: another
+  checks, plus `serviceContainerID`. A pod created with `no_infra: true` skips
+  the volume, network and `volumes_from` checks, because Podman only uses
+  those fields for the infra container and such a pod has none. Each has to
+  be the caller's own: another
   owner's resource, or an unlabeled one, is a `403`, and one that doesn't
   exist is a `404`. That includes a named volume nothing holds yet, so
   `podman run -v newvol:/data` is refused until `podman volume create newvol`

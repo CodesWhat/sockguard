@@ -705,6 +705,42 @@ func TestServeChainNamespaceJoinedByPathNeedsTheHostGate(t *testing.T) {
 			wantReason: "libpod container create denied: PID namespace joined by path is not allowed while namespace sharing is restricted",
 		},
 
+		{
+			name:        "libpod cgroupns of another container joins",
+			send:        libpod(`"cgroupns":{"nsmode":"container","value":"web"}`),
+			wantStatus:  http.StatusCreated,
+			wantCreated: created("cgroupns=container:web"),
+		},
+		{
+			name:       "libpod cgroupns of another container with sharing restricted",
+			configure:  func(body *gates) { body.LibpodContainerCreate.RestrictNamespaceSharing = true },
+			send:       libpod(`"cgroupns":{"nsmode":"container","value":"web"}`),
+			wantStatus: http.StatusForbidden,
+			wantReason: "libpod container create denied: cgroup namespace sharing with another container is not allowed",
+		},
+		{
+			name: "libpod cgroupns of a container on the sharing allowlist",
+			configure: func(body *gates) {
+				body.LibpodContainerCreate.RestrictNamespaceSharing = true
+				body.LibpodContainerCreate.AllowedNamespaceSharingContainers = []string{"web"}
+			},
+			send:        libpod(`"cgroupns":{"nsmode":"container","value":"web"}`),
+			wantStatus:  http.StatusCreated,
+			wantCreated: created("cgroupns=container:web"),
+		},
+		{
+			// No host gate reads cgroupns on the native create, so only
+			// restrict_namespace_sharing stands between this and Podman.
+			name: "libpod cgroupns path with sharing restricted",
+			configure: func(body *gates) {
+				body.LibpodContainerCreate.RestrictNamespaceSharing = true
+				body.LibpodContainerCreate.AllowedNamespaceSharingContainers = []string{"web"}
+			},
+			send:       libpod(`"cgroupns":{"nsmode":"path","value":"/proc/1/ns/cgroup"}`),
+			wantStatus: http.StatusForbidden,
+			wantReason: "libpod container create denied: cgroup namespace joined by path is not allowed while namespace sharing is restricted",
+		},
+
 		// Pod create, every gate off. The namespaces are the infra container's.
 		{
 			// What podman-remote pod create sends (pkg/domain/entities/pods.go:309-329).
@@ -794,6 +830,52 @@ func TestServeChainNamespaceJoinedByPathNeedsTheHostGate(t *testing.T) {
 		{name: "compat PidMode Host in another case", send: compat(`"PidMode":"Host"`), wantStatus: http.StatusForbidden, wantReason: "container create denied: host PID mode is not allowed"},
 		{name: "compat PidMode private", send: compat(`"PidMode":"private"`), wantStatus: http.StatusCreated, wantCreated: created("own namespaces")},
 		{name: "compat PidMode of another container joins", send: compat(`"PidMode":"container:web"`), wantStatus: http.StatusCreated, wantCreated: created("pidns=container:web")},
+		{
+			// dockerd refuses this value. Podman joins the container's
+			// cgroup namespace, like any other mode.
+			name:        "compat CgroupnsMode of another container joins",
+			send:        compat(`"CgroupnsMode":"container:web"`),
+			wantStatus:  http.StatusCreated,
+			wantCreated: created("cgroupns=container:web"),
+		},
+		{
+			name:       "compat CgroupnsMode of another container with sharing restricted",
+			configure:  func(body *gates) { body.ContainerCreate.RestrictNamespaceSharing = true },
+			send:       compat(`"CgroupnsMode":"container:web"`),
+			wantStatus: http.StatusForbidden,
+			wantReason: "container create denied: cgroup namespace sharing with another container is not allowed",
+		},
+		{
+			name: "compat CgroupnsMode of a container off the sharing allowlist",
+			configure: func(body *gates) {
+				body.ContainerCreate.RestrictNamespaceSharing = true
+				body.ContainerCreate.AllowedNamespaceSharingContainers = []string{"db"}
+			},
+			send:       compat(`"CgroupnsMode":"container:web"`),
+			wantStatus: http.StatusForbidden,
+			wantReason: `container create denied: namespace-sharing target "web" is not in the allowed list`,
+		},
+		{
+			name: "compat CgroupnsMode of a container on the sharing allowlist",
+			configure: func(body *gates) {
+				body.ContainerCreate.RestrictNamespaceSharing = true
+				body.ContainerCreate.AllowedNamespaceSharingContainers = []string{"web"}
+			},
+			send:        compat(`"CgroupnsMode":"container:web"`),
+			wantStatus:  http.StatusCreated,
+			wantCreated: created("cgroupns=container:web"),
+		},
+		{
+			name: "compat CgroupnsMode ns: with allow_host_cgroupns and sharing restricted",
+			configure: func(body *gates) {
+				body.ContainerCreate.AllowHostCgroupNS = true
+				body.ContainerCreate.RestrictNamespaceSharing = true
+				body.ContainerCreate.AllowedNamespaceSharingContainers = []string{"web"}
+			},
+			send:       compat(`"CgroupnsMode":"ns:/proc/1/ns/cgroup"`),
+			wantStatus: http.StatusForbidden,
+			wantReason: "container create denied: cgroup namespace joined by path is not allowed while namespace sharing is restricted",
+		},
 		{name: "compat NetworkMode naming a network", send: compat(`"NetworkMode":"backend"`), wantStatus: http.StatusCreated, wantCreated: created("own namespaces")},
 		{name: "compat PidMode host with allow_host_pid", configure: hostPID, send: compat(`"PidMode":"host"`), wantStatus: http.StatusCreated, wantCreated: created("pidns=host")},
 		{name: "compat PidMode ns: with allow_host_pid", configure: hostPID, send: compat(`"PidMode":"ns:/proc/1/ns/pid"`), wantStatus: http.StatusCreated, wantCreated: created("pidns=path:/proc/1/ns/pid")},
