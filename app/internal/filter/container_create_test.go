@@ -498,6 +498,9 @@ func TestContainerCreatePolicyInspectNamespaceSharingGate(t *testing.T) {
 		{name: "ipc", jsonField: "IpcMode", hostDenyReason: "container create denied: host IPC mode is not allowed", emptyDenyLabel: "IPC"},
 		{name: "uts", jsonField: "UTSMode", hostDenyReason: "container create denied: host UTS mode is not allowed", emptyDenyLabel: "UTS"},
 		{name: "userns", jsonField: "UsernsMode", hostDenyReason: "container create denied: host user namespace mode is not allowed", emptyDenyLabel: "user"},
+		// dockerd refuses a CgroupnsMode that isn't "private" or "host".
+		// Podman's compat create reads "container:<ref>" there as a join.
+		{name: "cgroupns", jsonField: "CgroupnsMode", hostDenyReason: "container create denied: host cgroup namespace mode is not allowed", emptyDenyLabel: "cgroup"},
 	}
 	values := []struct {
 		name  string
@@ -719,8 +722,7 @@ func TestContainerCreatePolicyInspectNamespacePathWhileSharingIsRestricted(t *te
 		{"PidMode", "container create denied: PID namespace joined by path is not allowed while namespace sharing is restricted"},
 		{"IpcMode", "container create denied: IPC namespace joined by path is not allowed while namespace sharing is restricted"},
 		{"UsernsMode", "container create denied: user namespace joined by path is not allowed while namespace sharing is restricted"},
-		// restrict_namespace_sharing has never covered CgroupnsMode.
-		{"CgroupnsMode", ""},
+		{"CgroupnsMode", "container create denied: cgroup namespace joined by path is not allowed while namespace sharing is restricted"},
 	}
 	for _, tt := range tests {
 		body := fmt.Sprintf(`{"HostConfig":{%q:"ns:/proc/1/ns/x"}}`, tt.jsonField)

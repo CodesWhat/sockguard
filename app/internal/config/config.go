@@ -617,14 +617,14 @@ type ContainerCreateRequestBodyConfig struct {
 	AllowHostUserNS         bool     `mapstructure:"allow_host_userns"`
 	AllowHostCgroupNS       bool     `mapstructure:"allow_host_cgroupns"`
 	// RestrictNamespaceSharing gates HostConfig.NetworkMode/PidMode/IpcMode/
-	// UsernsMode values of the form "container:<ref>" (join another
-	// container's namespace) against AllowedNamespaceSharingContainers.
-	// Default false: container:<ref> values continue to pass through
-	// unchecked exactly as before this knob existed — AllowHostNetwork/PID/
-	// IPC/UserNS/CgroupNS above gate "host" and "ns:<path>"; this is an
-	// independent, orthogonal gate. While true it also refuses "ns:<path>"
-	// on the same fields, since a path can name another container's
-	// namespace.
+	// UTSMode/UsernsMode/CgroupnsMode values of the form "container:<ref>"
+	// (join another container's namespace) against
+	// AllowedNamespaceSharingContainers. Default false: container:<ref>
+	// values continue to pass through unchecked exactly as before this knob
+	// existed — AllowHostNetwork/PID/IPC/UserNS/CgroupNS above gate "host"
+	// and "ns:<path>"; this is an independent, orthogonal gate. While true
+	// it also refuses "ns:<path>" on the same fields, since a path can name
+	// another container's namespace.
 	RestrictNamespaceSharing bool `mapstructure:"restrict_namespace_sharing"`
 	// AllowedNamespaceSharingContainers allowlists the container:<ref>
 	// targets permitted when RestrictNamespaceSharing is true. Only
