@@ -2,6 +2,7 @@ package filter
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -807,6 +808,112 @@ func TestRewriteLibpodJSONImageFieldRejectsDuplicateCaseVariantKeys(t *testing.T
 	_, err := rewriteLibpodJSONImageField(body, "pinned")
 	if err == nil {
 		t.Fatal("want error for duplicate case-variant top-level keys, got nil")
+	}
+}
+
+// TestLibpodContainerCreateHostPathGatesLeaveFixturesAllowed decodes every
+// captured top-level POST /libpod/containers/create body and asserts the new
+// host-path gate (rootfs, overlay_volumes, init_path, conmon_pid_file) refuses
+// none of them, under the strictest posture: a policy with no allowlisted bind
+// mount. No default-client fixture carries any of those fields, so a fixture
+// that started failing here would mean a real podman-remote body hit the gate.
+// denyHostPathReason is checked in isolation on purpose: the full inspect()
+// still refuses fixtures that trip other, pre-existing gates (privileged,
+// host namespaces, devices, sysctls), which this change doesn't touch.
+func TestLibpodContainerCreateHostPathGatesLeaveFixturesAllowed(t *testing.T) {
+	entries, err := os.ReadDir(filepath.Join("testdata", "libpod"))
+	if err != nil {
+		t.Fatalf("read fixture dir: %v", err)
+	}
+	policy := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{})
+	seen := 0
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		seen++
+		t.Run(entry.Name(), func(t *testing.T) {
+			var req libpodContainerCreateRequest
+			if err := json.Unmarshal(loadLibpodFixture(t, entry.Name()), &req); err != nil {
+				t.Fatalf("decode fixture %s: %v", entry.Name(), err)
+			}
+			if reason := policy.denyHostPathReason(req); reason != "" {
+				t.Fatalf("fixture %s newly refused by a host-path gate: %q", entry.Name(), reason)
+			}
+		})
+	}
+	if seen == 0 {
+		t.Fatal("no fixtures replayed")
+	}
+}
+
+// TestLibpodContainerCreateRootfsGate holds rootfs to allowed_bind_mounts: a
+// create with rootfs set is refused with no allowlist entry and allowed with a
+// covering one, while a relative or malformed rootfs fails closed.
+func TestLibpodContainerCreateRootfsGate(t *testing.T) {
+	deny := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowSystemdMode: true})
+	if reason := inspectLibpod(t, deny, []byte(`{"systemd":"false","rootfs":"/"}`)); reason == "" {
+		t.Fatal("want deny: rootfs / with no allowlisted bind mount")
+	}
+
+	allow := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowSystemdMode: true, AllowedBindMounts: []string{"/srv/roots"}})
+	if reason := inspectLibpod(t, allow, []byte(`{"systemd":"false","rootfs":"/srv/roots/app"}`)); reason != "" {
+		t.Fatalf("want allow: rootfs under an allowlisted prefix, got %q", reason)
+	}
+	if reason := inspectLibpod(t, allow, []byte(`{"systemd":"false","rootfs":"/etc"}`)); reason == "" {
+		t.Fatal("want deny: rootfs outside the allowlisted prefix")
+	}
+	if reason := inspectLibpod(t, allow, []byte(`{"systemd":"false","rootfs":"roots/app"}`)); reason == "" {
+		t.Fatal("want deny: a relative rootfs never normalizes to an allowlisted absolute path")
+	}
+	if reason := inspectLibpod(t, allow, []byte(`{"systemd":"false","rootfs":{"path":"/"}}`)); reason != "libpod container create denied: malformed JSON request body" {
+		t.Fatalf("want malformed-body deny for a non-string rootfs, got %q", reason)
+	}
+	if reason := inspectLibpod(t, deny, []byte(`{"systemd":"false","image":"alpine"}`)); reason != "" {
+		t.Fatalf("want allow: an image create carries no rootfs, got %q", reason)
+	}
+}
+
+// TestLibpodContainerCreateOverlayVolumeGate holds every overlay_volumes source
+// to allowed_bind_mounts.
+func TestLibpodContainerCreateOverlayVolumeGate(t *testing.T) {
+	allow := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowSystemdMode: true, AllowedBindMounts: []string{"/srv/roots"}})
+	if reason := inspectLibpod(t, allow, []byte(`{"systemd":"false","image":"a","overlay_volumes":[{"source":"/srv/roots/d","destination":"/d"}]}`)); reason != "" {
+		t.Fatalf("want allow: overlay source under an allowlisted prefix, got %q", reason)
+	}
+	if reason := inspectLibpod(t, allow, []byte(`{"systemd":"false","image":"a","overlay_volumes":[{"source":"/srv/roots/d","destination":"/d"},{"source":"/etc","destination":"/e"}]}`)); reason == "" {
+		t.Fatal("want deny: one overlay source off the allowlist")
+	}
+	if reason := inspectLibpod(t, allow, []byte(`{"systemd":"false","image":"a","overlay_volumes":[{"destination":"/d"}]}`)); reason == "" {
+		t.Fatal("want deny: overlay volume with an empty source fails closed")
+	}
+}
+
+// TestLibpodContainerCreateInitPathGate holds init_path to allowed_bind_mounts,
+// and TestLibpodContainerCreateConmonPidFileGate refuses conmon_pid_file.
+func TestLibpodContainerCreateInitPathGate(t *testing.T) {
+	deny := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowSystemdMode: true})
+	if reason := inspectLibpod(t, deny, []byte(`{"systemd":"false","image":"a","init":true,"init_path":"/opt/catatonit"}`)); reason == "" {
+		t.Fatal("want deny: init_path with no allowlisted bind mount")
+	}
+	allow := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowSystemdMode: true, AllowedBindMounts: []string{"/opt"}})
+	if reason := inspectLibpod(t, allow, []byte(`{"systemd":"false","image":"a","init":true,"init_path":"/opt/catatonit"}`)); reason != "" {
+		t.Fatalf("want allow: init_path under an allowlisted prefix, got %q", reason)
+	}
+}
+
+func TestLibpodContainerCreateConmonPidFileGate(t *testing.T) {
+	deny := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowSystemdMode: true})
+	if reason := inspectLibpod(t, deny, []byte(`{"systemd":"false","image":"a","conmon_pid_file":"/run/x.pid"}`)); reason != "libpod container create denied: setting conmon_pid_file is not allowed" {
+		t.Fatalf("want conmon_pid_file refusal, got %q", reason)
+	}
+	// The read-path allowlist doesn't open the host write path.
+	allow := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowSystemdMode: true, AllowedBindMounts: []string{"/"}})
+	if reason := inspectLibpod(t, allow, []byte(`{"systemd":"false","image":"a","conmon_pid_file":"/run/x.pid"}`)); reason == "" {
+		t.Fatal("want deny: conmon_pid_file stays refused even with / allowlisted")
+	}
+	if reason := inspectLibpod(t, deny, []byte(`{"systemd":"false","image":"a"}`)); reason != "" {
+		t.Fatalf("want allow: no conmon_pid_file set, got %q", reason)
 	}
 }
 

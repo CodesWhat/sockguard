@@ -416,9 +416,12 @@ owner isolation:
   so there's no owner to check even at create.
 - `devices_from` isn't checked, because Podman 5.8.6 decodes it and never
   reads it.
-- Host paths aren't checked by this layer. `rootfs`, `overlay_volumes` and
-  bind `mounts` name a path on the daemon host, and a path has no owner label
-  to look up.
+- Host paths aren't checked by this ownership layer. `rootfs`,
+  `overlay_volumes` and bind `mounts` name a path on the daemon host, and a
+  path has no owner label to look up. The request-body filter holds all three,
+  plus `init_path`, to `request_body.libpod_container_create.allowed_bind_mounts`
+  and refuses `conmon_pid_file`, so a host path still has to be allowlisted;
+  ownership just adds no second check on top.
 
 Keys are matched the way Podman's JSON decoder matches them, in any letter
 case, including the ones it reads by their Go names (`Networks`, and `Name`

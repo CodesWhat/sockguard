@@ -134,8 +134,9 @@ request_body:
     allow_host_userns: false     # deny userns.nsmode=host and path (default)
     allow_host_uts: false        # deny utsns.nsmode=host and path (default)
     allow_host_cgroupns: false   # deny cgroupns.nsmode=host and path (default)
-    allowed_bind_mounts:          # host paths allowed as mounts[] bind sources
+    allowed_bind_mounts:          # host paths allowed as mounts[] bind sources, plus rootfs, overlay_volumes[].source and init_path
       - /srv/containers
+    # conmon_pid_file (a host path the daemon writes conmon's PID to) has no option: it's refused whenever set
     allow_all_devices: false      # allow every devices[] host path
     allowed_devices:              # devices[] host path allowlist (the part before the first ":")
       - /dev/dri

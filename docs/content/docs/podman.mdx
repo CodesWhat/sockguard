@@ -48,7 +48,7 @@ on.
 
 | libpod endpoint | Config key | Notes |
 |---|---|---|
-| `POST /libpod/containers/create` | `request_body.libpod_container_create` | Podman's native SpecGenerator create body. Field names mirror `container_create` where the semantics map across (privileged, host netns/pidns/ipcns/userns/cgroupns, bind-mount/device allowlists, capabilities, seccomp/AppArmor, `image_trust`), plus three libpod-only gates: `allow_host_uts`, `allow_systemd_mode` and `allow_custom_id_mappings`. The six host namespace gates cover `nsmode` `host` and `path`; see [Namespace Modes and the Host Gates](#namespace-modes-and-the-host-gates). |
+| `POST /libpod/containers/create` | `request_body.libpod_container_create` | Podman's native SpecGenerator create body. Field names mirror `container_create` where the semantics map across (privileged, host netns/pidns/ipcns/userns/cgroupns, bind-mount/device allowlists, capabilities, seccomp/AppArmor, `image_trust`), plus three libpod-only gates: `allow_host_uts`, `allow_systemd_mode` and `allow_custom_id_mappings`. The six host namespace gates cover `nsmode` `host` and `path`; see [Namespace Modes and the Host Gates](#namespace-modes-and-the-host-gates). The host-filesystem fields `rootfs`, `overlay_volumes` sources and `init_path` are held to `allowed_bind_mounts`, and `conmon_pid_file` is refused outright; see [Host-Filesystem Fields on a Native Create](#host-filesystem-fields-on-a-native-create). |
 | `POST /libpod/pods/create` | `request_body.libpod_pod_create` | Pods have no Docker-compat equivalent. Covers the pod's five namespaces, each with `nsmode` `host` or `path` behind its own gate (`allow_host_network` for `netns`, `allow_host_pid` for `pidns`, `allow_host_ipc` for `ipcns`, `allow_host_userns` for `userns`, `allow_host_uts` for `utsns`), shared PID namespace (`allow_shared_pid_namespace`), and the infra image's registry (`allowed_infra_image_registries`). |
 | `POST /libpod/build` | `request_body.build`, shared with Docker `POST /build` | Covers primary remote contexts, URL/image `additionalbuildcontexts`, `networkmode=host`, and Dockerfiles containing `RUN`, read from `Containerfile` and `Dockerfile` or from every file a JSON-array `dockerfile` names. Host/local/multipart and resource-usage host-file controls require the global blind-write acknowledgment. Direct and version-prefixed requests use the same tar/gzip bounds and body-sensitive startup validation as Docker's classic builder. |
 | `POST /libpod/containers/{name}/exec`, `POST /libpod/exec/{id}/start` | `request_body.exec` — **shared with Docker-compat** | libpod exec bodies use Docker's own field names on the wire, so there is deliberately no separate `libpod_exec` block. One `allowed_commands`/`allow_privileged`/`allow_root_user`/env-var policy governs exec on both surfaces, so nothing can be configured for one path family and forgotten for the other. |
@@ -220,6 +220,51 @@ A create that asks for none of that isn't affected. podman-remote sends
 `{}` for every namespace on a container create. On a pod create it sends
 `private` for `pidns`, `ipcns` and `utsns`, and `{}` or `default` for
 `userns`. All of those pass with every gate off.
+
+## Host-Filesystem Fields on a Native Create
+
+A native create names host paths in fields that aren't `mounts` or `devices`,
+so the bind-mount and device allowlists never saw them. `rootfs` runs a host
+directory as the container's whole root filesystem, every `overlay_volumes`
+source is a host directory overlay-mounted inside the container, and
+`init_path` is a host binary bind-mounted in and run as PID 1. All three are
+held to the same `request_body.libpod_container_create.allowed_bind_mounts`
+list that `mounts` bind sources use: the path has to be one of those entries
+or sit under one, or the create is refused. A relative or malformed value
+never matches an absolute allowlist entry, so it's refused too.
+
+`conmon_pid_file` is different. It's a host path the daemon writes conmon's PID
+to, not one the container reads, so no list of readable paths fits it. It's
+refused outright whenever it's set.
+
+Before 2.2.6 none of the four reached a gate, so a create with default options
+and `{"rootfs":"/"}` ran a container rooted at the host's `/`, and
+`{"overlay_volumes":[{"source":"/","destination":"/host"}]}` mounted the
+host's `/` inside the container, both past `allowed_bind_mounts`.
+
+### What a Working Client Hits
+
+- `podman --remote run --rootfs /path`, until `/path` is covered by
+  `allowed_bind_mounts`. `--rootfs /path:O` (overlay) and `--rootfs /path:idmap`
+  ride the same `rootfs` path, so one entry covers them.
+- `podman --remote run -v /src:/dst:O` (and other overlay `-v` forms), until
+  `/src` is covered by `allowed_bind_mounts`.
+- `podman --remote run --init --init-path /path`, until `/path` is covered by
+  `allowed_bind_mounts`.
+- `podman --remote run --conmon-pidfile /path`, which is refused whatever the
+  allowlist holds.
+
+A create that sets none of them isn't affected. podman-remote omits all four
+unless the matching flag is passed, so an ordinary image-based create is
+unchanged.
+
+The same host-path exposure on `POST /libpod/pods/create` isn't gated yet. A
+pod's `overlay_volumes`, `mounts`, `volumes`, `image_volumes`, `volumes_from`
+and `pod_devices` attach to its infra container, and `infra_conmon_pid_file`
+is the pod's conmon-pidfile equivalent. Those are tracked with the pod's other
+mount and device gaps. `rootfs` and `init_path` aren't reachable on a pod
+create: a `PodSpecGenerator` has no such field, and the infra container is
+built from an image.
 
 ## The Uninspected Blind-Write Surface: `play/kube` and Manifests
 

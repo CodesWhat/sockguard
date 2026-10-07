@@ -249,6 +249,9 @@ func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Reques
 	if denyReason := p.denyBindMountReason(createReq.Mounts); denyReason != "" {
 		return denyReason, nil
 	}
+	if denyReason := p.denyHostPathReason(createReq); denyReason != "" {
+		return denyReason, nil
+	}
 	if denyReason := p.denyDeviceReason(createReq.Devices); denyReason != "" {
 		return denyReason, nil
 	}

@@ -47,6 +47,16 @@ type libpodContainerCreateRequest struct {
 	Volumes []libpodVolume `json:"volumes"`
 	Devices []libpodDevice `json:"devices"`
 
+	// Rootfs, OverlayVolumes and InitPath each give the container a host
+	// filesystem path that neither mounts[] nor devices[] covers, so each has
+	// its own host-path gate; ConmonPidFile is a host path the daemon writes
+	// conmon's PID to. See libpod_container_create_rootfs.go for the gates and
+	// the specgen references that pin what Podman does with each.
+	Rootfs         string                `json:"rootfs"`
+	OverlayVolumes []libpodOverlayVolume `json:"overlay_volumes"`
+	InitPath       string                `json:"init_path"`
+	ConmonPidFile  string                `json:"conmon_pid_file"`
+
 	CapAdd  []string `json:"cap_add"`
 	CapDrop []string `json:"cap_drop"`
 
@@ -102,6 +112,18 @@ func (n libpodNamespace) containerRef() (ref string, ok bool) {
 // between the two arrays.
 type libpodMount struct {
 	Type        string   `json:"type"`
+	Source      string   `json:"source"`
+	Destination string   `json:"destination"`
+	Options     []string `json:"options"`
+}
+
+// libpodOverlayVolume is one entry of the top-level "overlay_volumes" array
+// (podman -v <host>:<dest>:O). Unlike a named "volumes" entry, its source is a
+// host filesystem path, overlay-mounted at destination inside the container
+// (Podman 5.8.6 pkg/specgen/volumes.go:36-43, mounted at
+// libpod/container_internal_common.go:465-481). Lowercase field names, matching
+// the specgen OverlayVolume JSON tags encoding/json decodes.
+type libpodOverlayVolume struct {
 	Source      string   `json:"source"`
 	Destination string   `json:"destination"`
 	Options     []string `json:"options"`
