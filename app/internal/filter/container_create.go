@@ -1680,11 +1680,16 @@ func cgroupPermOrder(c byte) int {
 
 func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHostConfig) string {
 	for _, bind := range hostConfig.Binds {
-		source, ok := extractAndValidateBindSource(bind, containerCreateMount{})
-		if !ok || bindPathAllowed(source, p.allowedBindMounts) {
-			continue
+		if source, ok := extractAndValidateBindSource(bind, containerCreateMount{}); ok && !bindPathAllowed(source, p.allowedBindMounts) {
+			return fmt.Sprintf("container create denied: bind mount source %q is not allowlisted", source)
 		}
-		return fmt.Sprintf("container create denied: bind mount source %q is not allowlisted", source)
+		// A Podman upstream reads the entry's third field as mount options
+		// and takes an overlay's upper and work directory from them, for a
+		// named volume as much as a host path. dockerd refuses those options
+		// itself. See overlay_mount_options.go.
+		if denyReason := denyBindOverlayReason(bind, p.allowedBindMounts, "container create"); denyReason != "" {
+			return denyReason
+		}
 	}
 
 	for _, mount := range hostConfig.Mounts {
