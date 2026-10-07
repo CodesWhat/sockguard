@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"path"
 	"slices"
@@ -64,6 +65,9 @@ import (
 // options split on ":", the options split on ",", and a source that doesn't
 // start with "/" or "." is a named volume. With "O" among the options the
 // entry is an overlay and the same upper and work directory options apply.
+// Each Config.Volumes key goes into that list as well
+// (containers_create.go:536-541), so a key is a whole "-v" argument to Podman
+// where dockerd only ever reads it as a container path.
 //
 // None of these is a namespace or a devices[] entry, and before this change
 // only an absolute mounts[] bind source and an absolute Binds source reached a
@@ -223,10 +227,14 @@ func (d *libpodRootfsChainDaemon) createLibpodContainer(body io.Reader) error {
 	return nil
 }
 
-// createCompatContainer is the HostConfig.Binds half of the compat handler:
-// each entry goes through GenVolumeMounts (pkg/specgen/volumes.go:89-231).
+// createCompatContainer is the volume half of the compat handler. Every
+// HostConfig.Binds entry, and then every Config.Volumes key that isn't already
+// a destination, is appended to one "-v" list
+// (pkg/api/handlers/compat/containers_create.go:516-541), and each entry of
+// that list goes through GenVolumeMounts (pkg/specgen/volumes.go:89-231).
 func (d *libpodRootfsChainDaemon) createCompatContainer(body io.Reader) error {
 	var cc struct {
+		Volumes    map[string]struct{}
 		HostConfig struct {
 			Binds []string
 		}
@@ -234,11 +242,29 @@ func (d *libpodRootfsChainDaemon) createCompatContainer(body io.Reader) error {
 	if err := json.NewDecoder(body).Decode(&cc); err != nil {
 		return fmt.Errorf("decode(): %w", err)
 	}
-	var parts []string
+	specs := slices.Clone(cc.HostConfig.Binds)
+	destinations := map[string]bool{}
 	for _, bind := range cc.HostConfig.Binds {
-		split := strings.Split(bind, ":")
-		if len(split) < 2 || len(split) > 3 {
-			return fmt.Errorf("%v: incorrect volume format, should be [host-dir:]ctr-dir[:option]", bind)
+		if split := strings.Split(bind, ":"); len(split) == 1 {
+			destinations[bind] = true
+		} else {
+			destinations[split[1]] = true
+		}
+	}
+	for _, key := range slices.Sorted(maps.Keys(cc.Volumes)) {
+		if !destinations[key] {
+			specs = append(specs, key)
+		}
+	}
+	var parts []string
+	for _, spec := range specs {
+		split := strings.Split(spec, ":")
+		if len(split) > 3 {
+			return fmt.Errorf("%v: incorrect volume format, should be [host-dir:]ctr-dir[:option]", spec)
+		}
+		if len(split) == 1 {
+			parts = append(parts, "anonymous="+spec)
+			continue
 		}
 		source, dest := split[0], split[1]
 		var options []string
@@ -313,6 +339,9 @@ func TestServeChainLibpodRootfsAndOverlayNeedTheBindMountAllowlist(t *testing.T)
 	}
 	compat := func(binds string) request {
 		return request{compatCreate, `{"Image":"alpine","HostConfig":{"Binds":[` + binds + `]}}`}
+	}
+	compatVolumes := func(volumes string) request {
+		return request{compatCreate, `{"Image":"alpine","Volumes":{` + volumes + `}}`}
 	}
 	created := func(where ...string) []string {
 		out := make([]string, 0, len(where))
@@ -737,6 +766,54 @@ func TestServeChainLibpodRootfsAndOverlayNeedTheBindMountAllowlist(t *testing.T)
 			send:       compat(`"/srv/roots/d,lowerdir=/etc:/d:O"`),
 			wantStatus: http.StatusForbidden,
 			wantReason: compatDenied + `overlay bind source "/srv/roots/d,lowerdir=/etc" contains a comma or backslash`,
+		},
+
+		// Config.Volumes keys. dockerd reads a key as a container path. Podman
+		// reads it as a "-v" argument, so it gets the checks a Binds entry does.
+		{
+			name:        "compat anonymous volume reaches the daemon",
+			send:        compatVolumes(`"/data":{}`),
+			wantStatus:  http.StatusCreated,
+			wantCreated: created("anonymous=/data"),
+		},
+		{
+			name:       "compat Volumes key that binds /etc is refused by default",
+			send:       compatVolumes(`"/etc:/h":{}`),
+			wantStatus: http.StatusForbidden,
+			wantReason: compatDenied + `bind mount source "/etc" is not allowlisted`,
+		},
+		{
+			name:       "compat Volumes key that binds /etc is refused with an allowlist",
+			configure:  compatSrv,
+			send:       compatVolumes(`"/data":{},"/etc:/h:ro":{}`),
+			wantStatus: http.StatusForbidden,
+			wantReason: compatDenied + `bind mount source "/etc" is not allowlisted`,
+		},
+		{
+			name:        "compat Volumes key that binds an allowlisted path reaches the daemon",
+			configure:   compatSrv,
+			send:        compatVolumes(`"/srv/roots/d:/d":{}`),
+			wantStatus:  http.StatusCreated,
+			wantCreated: created("bind=/srv/roots/d:/d"),
+		},
+		{
+			name:        "compat Volumes key naming a volume reaches the daemon",
+			send:        compatVolumes(`"myvol:/d:ro":{}`),
+			wantStatus:  http.StatusCreated,
+			wantCreated: created("volume=myvol:/d"),
+		},
+		{
+			name:       "compat Volumes key overlay with its upper directory in /etc is refused",
+			configure:  compatSrv,
+			send:       compatVolumes(`"myvol:/d:O,upperdir=/etc,workdir=/mnt":{}`),
+			wantStatus: http.StatusForbidden,
+			wantReason: compatDenied + upperEtcDenied,
+		},
+		{
+			name:       "compat Volumes key under a lower-case field name is refused",
+			send:       request{compatCreate, `{"Image":"alpine","volumes":{"/etc:/h":{}}}`},
+			wantStatus: http.StatusForbidden,
+			wantReason: compatDenied + `bind mount source "/etc" is not allowlisted`,
 		},
 	}
 	for _, tt := range tests {

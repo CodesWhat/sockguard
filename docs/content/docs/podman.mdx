@@ -279,6 +279,14 @@ the same way, and an overlay bind's source can't contain a `,` or a `\`.
 dockerd refuses the `O`, `upperdir` and `workdir` options itself, so nothing
 changes on a Docker upstream.
 
+Podman reads the keys of the top-level `Volumes` map as `-v` arguments too.
+To dockerd a key is the container path of an anonymous volume and nothing
+more, but on Podman `{"Volumes":{"/etc:/h":{}}}` bind-mounts the host's
+`/etc`. Before 2.2.6 Sockguard didn't read that field. A key with a `:` in it
+now gets the checks a `Binds` entry does, source and overlay options both. A
+key without one is a container path on either engine and isn't touched, and
+that's every key a Docker client sends.
+
 ### What a Working Client Hits
 
 - `podman --remote run --rootfs /path`, until `/path` is covered by

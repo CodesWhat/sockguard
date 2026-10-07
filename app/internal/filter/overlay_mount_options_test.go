@@ -301,3 +301,99 @@ func TestContainerCreateBindOverlayOptions(t *testing.T) {
 		})
 	}
 }
+
+// TestContainerCreateVolumesKeysAreBindSpecs sends Docker-compatible creates
+// whose Config.Volumes keys are more than a container path. dockerd creates an
+// anonymous volume at whatever the key spells (daemon/create_unix.go:45-73 in
+// moby 28.5.1). Podman appends the key to the "-v" list Binds feeds
+// (pkg/api/handlers/compat/containers_create.go:536-541), so it's a bind mount
+// or an overlay there and gets the checks a Binds entry does.
+func TestContainerCreateVolumesKeysAreBindSpecs(t *testing.T) {
+	tests := []struct {
+		name       string
+		allowed    []string
+		body       string
+		wantReason string
+	}{
+		// What Docker clients send: container paths, with empty values.
+		{name: "no Volumes", body: `{"Image":"a"}`},
+		{name: "null Volumes", body: `{"Image":"a","Volumes":null}`},
+		{name: "empty Volumes", body: `{"Image":"a","Volumes":{}}`},
+		{name: "one anonymous volume", body: `{"Image":"a","Volumes":{"/data":{}}}`},
+		{name: "several anonymous volumes", body: `{"Image":"a","Volumes":{"/data":{},"/var/lib/mysql":{},"/etc":{}}}`},
+		{name: "anonymous volume with a null value", body: `{"Image":"a","Volumes":{"/data":null}}`},
+		{name: "Windows container path", body: `{"Image":"a","Volumes":{"C:\\data":{}}}`},
+		{name: "key naming a volume", body: `{"Image":"a","Volumes":{"myvol:/d":{}}}`},
+		{name: "key naming a volume read-only", body: `{"Image":"a","Volumes":{"myvol:/d:ro":{}}}`},
+		{name: "key binding an allowlisted path", allowed: []string{"/srv/data"}, body: `{"Image":"a","Volumes":{"/srv/data:/d":{}}}`},
+		{name: "key overlaying a volume", body: `{"Image":"a","Volumes":{"myvol:/d:O":{}}}`},
+		{
+			name:    "key overlaying a volume onto allowlisted directories",
+			allowed: []string{"/srv/roots"},
+			body:    `{"Image":"a","Volumes":{"myvol:/d:O,upperdir=/srv/roots/upper,workdir=/srv/roots/work":{}}}`,
+		},
+
+		{
+			name:       "key binding /etc with nothing allowlisted",
+			body:       `{"Image":"a","Volumes":{"/etc:/h":{}}}`,
+			wantReason: `container create denied: bind mount source "/etc" is not allowlisted`,
+		},
+		{
+			name:       "key binding /etc beside an allowlisted bind",
+			allowed:    []string{"/srv/data"},
+			body:       `{"Image":"a","HostConfig":{"Binds":["/srv/data:/d"]},"Volumes":{"/data":{},"/etc:/h:ro":{}}}`,
+			wantReason: `container create denied: bind mount source "/etc" is not allowlisted`,
+		},
+		{
+			name:       "key that climbs out of the allowlist",
+			allowed:    []string{"/srv/data"},
+			body:       `{"Image":"a","Volumes":{"/srv/data/../../etc:/h":{}}}`,
+			wantReason: `container create denied: bind mount source "/etc" is not allowlisted`,
+		},
+		{
+			name:       "key under a lower-case field name",
+			body:       `{"Image":"a","volumes":{"/etc:/h":{}}}`,
+			wantReason: `container create denied: bind mount source "/etc" is not allowlisted`,
+		},
+		{
+			name:       "key overlaying a volume with its upper directory in /etc",
+			allowed:    []string{"/srv/roots"},
+			body:       `{"Image":"a","Volumes":{"myvol:/d:O,upperdir=/etc,workdir=/mnt":{}}}`,
+			wantReason: `container create denied: overlay option "upperdir=/etc" is not allowlisted (add its directory to allowed_bind_mounts)`,
+		},
+		{
+			name:       "key overlaying a host path whose name carries a comma",
+			allowed:    []string{"/srv/data"},
+			body:       `{"Image":"a","Volumes":{"/srv/data/a,lowerdir=/etc:/d:O":{}}}`,
+			wantReason: `container create denied: overlay bind source "/srv/data/a,lowerdir=/etc" contains a comma or backslash`,
+		},
+		{
+			// The keys are sorted, so the denial names the same one each run.
+			name:       "two keys off the allowlist",
+			body:       `{"Image":"a","Volumes":{"/var/run:/b":{},"/etc:/a":{}}}`,
+			wantReason: `container create denied: bind mount source "/etc" is not allowlisted`,
+		},
+		{
+			// Both engines decode the field as map[string]struct{}, so a
+			// value that isn't an object fails there too.
+			name:       "Volumes that is not a map",
+			body:       `{"Image":"a","Volumes":["/etc:/h"]}`,
+			wantReason: "container create denied: malformed JSON request body",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := newContainerCreatePolicy(ContainerCreateOptions{AllowedBindMounts: tt.allowed})
+			// Repeated so a denial that depended on map order would show up.
+			for range 20 {
+				reason, err := policy.inspect(nil, makeInspectRequest(t, tt.body), "/containers/create")
+				if err != nil {
+					t.Fatalf("inspect() error = %v", err)
+				}
+				if reason != tt.wantReason {
+					t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
+				}
+			}
+		})
+	}
+}
