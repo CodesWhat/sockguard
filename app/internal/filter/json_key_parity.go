@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -27,8 +29,10 @@ import (
 // So a body that spells `privileged` with U+0130 for each "i" holds an
 // unknown key to sockguard and `privileged` to Podman 6: the gate saw the
 // field as absent and the engine set it. The opposite split, a key only
-// encoding/json matches, makes sockguard the stricter reader and is
-// harmless, but it is the same ambiguity.
+// encoding/json matches, gets past a gate that requires a field instead of
+// refusing one: `{"u\u017fer":"1000"}` satisfied require_non_root_user here
+// with a `user` Podman 6 never bound, and the container ran as the image's
+// default user.
 //
 // isDecoderDivergentKeyRune names every character that can cause either one,
 // and a body carrying one in any object key is refused before anything
@@ -36,21 +40,25 @@ import (
 // every rune against both matching rules.
 
 // isDecoderDivergentKeyRune reports whether r is a non-ASCII character that
-// one of Go's case mappings relates to an ASCII letter. Those are the only
-// characters that can make a key match an ASCII field name under one case
-// rule and not under another, whichever rule an engine's decoder is built on:
+// lowercases or case-folds to an ASCII letter. Those are the two ways the
+// engines' decoders match a key to a field name, json-iterator by lowering
+// and encoding/json by folding, so they are the only characters that can
+// make a key match an ASCII field name in one decoder and not in the other:
 //
 //	U+0130  capital I with dot above  lowers to "i", folds to nothing  json-iterator only
-//	U+0131  dotless i                 uppers to "I", folds to nothing  neither decoder today
-//	U+017F  long s                    uppers and folds to "s"          encoding/json only
+//	U+017F  long s                    folds to "s", lowers to itself   encoding/json only
 //	U+212A  Kelvin sign               lowers and folds to "k"          both decoders
 //
-// U+0131 and U+212A change nothing between today's two decoders. They are
-// refused with the others so the rule doesn't depend on which case primitive
-// a decoder happens to use.
+// U+212A changes nothing between the two decoders. It is refused with the
+// others so the rule is "lowers or folds to an ASCII letter" and not a list
+// of which decoder does which today.
+//
+// U+0131, the dotless i, is left out. It uppercases to "I" and neither
+// lowers nor folds to an ASCII letter, so it binds to no field in either
+// decoder, and it is an everyday Turkish letter a label key can well hold.
 func isDecoderDivergentKeyRune(r rune) bool {
 	switch r {
-	case 0x0130, 0x0131, 0x017F, 0x212A:
+	case 0x0130, 0x017F, 0x212A:
 		return true
 	default:
 		return false
@@ -105,6 +113,56 @@ func decoderDivergentKeyError(key string, r rune) error {
 	return fmt.Errorf("%w %+q: %U matches a field name in some JSON decoders and not in others", errDecoderDivergentKey, echoRefusedKey(key), r)
 }
 
+// loweredSiblingKeys reports two of one object's keys that strings.ToLower
+// sends to the same string, the first two in sorted order. json-iterator
+// binds a key by lowering it, so a decoder built on it reads the pair as one
+// field given twice and keeps whichever comes later in the body.
+//
+// The caller has already refused keys that case-fold together, so a pair
+// found here differs only by U+0130 standing where its sibling has an "i",
+// `privileged` beside `pr\u0130v\u0130leged`. Those are the only characters
+// that lower together and don't fold together; see
+// TestLoweredSiblingKeysDifferOnlyByTheDottedCapitalI. keys is sorted in
+// place.
+func loweredSiblingKeys(keys []string) (first, second string, found bool) {
+	slices.Sort(keys)
+	lowered := make(map[string]string, len(keys))
+	for _, key := range keys {
+		lower := strings.ToLower(key)
+		if prev, repeated := lowered[lower]; repeated {
+			return prev, key, true
+		}
+		lowered[lower] = key
+	}
+	return "", "", false
+}
+
+// loweredSiblingKeysError quotes the keys with %+q for the reason
+// decoderDivergentKeyError does: the two look alike in a terminal.
+func loweredSiblingKeysError(first, second string) error {
+	return fmt.Errorf("JSON object keys %+q and %+q lowercase to the same name, which some JSON decoders read as one key given twice", echoRefusedKey(first), echoRefusedKey(second))
+}
+
+// ReasonCodeRequestBodyAmbiguous is the reason code a body is refused under
+// for a key the engines' decoders could read two ways. Exported for the
+// owner isolation layer, which finds such a key in the body it decodes and
+// reports it the way the inspectors do.
+const ReasonCodeRequestBodyAmbiguous = reasonCodeRequestBodyAmbiguous
+
+// AmbiguousRequestBodyReason words that refusal for err, the error one of
+// the key checks returned.
+func AmbiguousRequestBodyReason(err error) string {
+	return "request body denied: " + err.Error()
+}
+
+// ambiguousRequestBodyStaticReason is the same refusal from a layer whose
+// reasons never repeat anything the client sent: the admission-mutation
+// engine and the resource-limit guard. subject is what that layer calls the
+// request.
+func ambiguousRequestBodyStaticReason(subject string) string {
+	return subject + " denied: request body holds a JSON object key the engines could read two ways"
+}
+
 // rejectAmbiguousBodyKeys is the check every inspected request body goes
 // through before an inspector decodes it. It refuses a body that
 // RejectDuplicateCaseVariantJSONKeys refuses: one with a decoder-divergent
@@ -132,5 +190,5 @@ func rejectAmbiguousBodyKeys(body []byte) error {
 		errors.Is(err, errCaseVariantScanTooDeep) {
 		return nil
 	}
-	return newRequestRejectionErrorWithCode(http.StatusBadRequest, reasonCodeRequestBodyAmbiguous, "request body denied: "+err.Error())
+	return newRequestRejectionErrorWithCode(http.StatusBadRequest, reasonCodeRequestBodyAmbiguous, AmbiguousRequestBodyReason(err))
 }

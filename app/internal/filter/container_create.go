@@ -575,6 +575,29 @@ func RejectDuplicateCaseVariantJSONValue(v any) error {
 	return checkDuplicateCaseVariantKeys(v, false)
 }
 
+// InspectJSONValueKeys is RejectDuplicateCaseVariantJSONValue with its two
+// refusals reported apart, for a caller that doesn't treat them alike.
+//
+// repeated is a key an engine could read as given twice. A body re-marshaled
+// through a map can't be forwarded with one, in any rollout mode:
+// json.Marshal sorts the keys, and their order decides which of the two the
+// engine honors. That is two sibling keys that case-fold together, which is
+// the check this has always made, and two that lowercase together; see
+// loweredSiblingKeys.
+//
+// divergent is a key holding a decoder-divergent character. Re-marshaling
+// leaves such a key and its value as the client sent them, so once repeated
+// is nil the body can be forwarded or refused as the rollout mode says. Of
+// several such keys it names the one that sorts first.
+func InspectJSONValueKeys(v any) (repeated, divergent error) {
+	var walk decodedKeyWalk
+	repeated = walk.check(v, false)
+	if walk.found {
+		divergent = decoderDivergentKeyError(walk.key, walk.char)
+	}
+	return repeated, divergent
+}
+
 // maxJSONNestingDepth mirrors encoding/json's own cap on simultaneously open
 // containers, which json.Decoder.Decode enforces ("exceeded max depth"). The
 // scan enforces it too, so a body the decoding form used to reject cannot slip
@@ -607,6 +630,23 @@ type caseVariantKeyScanner struct {
 	body    []byte
 	pos     int
 	keyBufs [][]caseVariantKeySpan
+	// deferDivergent makes the scan keep the first decoder-divergent key it
+	// meets in divergent and carry on, where it otherwise returns it. See
+	// scanBodyKeys.
+	deferDivergent bool
+	divergent      error
+}
+
+// scanBodyKeys is RejectDuplicateCaseVariantJSONKeys with its two refusals
+// reported apart. repeated is what that function returned before it knew of
+// decoder-divergent characters: a repeated struct-level key, or the scan
+// failing on a body it can't walk. divergent is the first key holding one of
+// those characters. A body can have both, and a caller that has always
+// refused the first has to see it whichever comes first in the body.
+func scanBodyKeys(body []byte) (repeated, divergent error) {
+	s := caseVariantKeyScanner{body: body, deferDivergent: true}
+	repeated = s.scanValue(0, false)
+	return repeated, s.divergent
 }
 
 // scanValue consumes exactly one JSON value, as json.Decoder.Decode does,
@@ -673,7 +713,12 @@ func (s *caseVariantKeyScanner) scanObject(depth int, skip bool) error {
 		// the sibling fold-check, and a character the decoders disagree on is
 		// refused wherever it sits.
 		if err := s.rejectDecoderDivergentKey(key); err != nil {
-			return err
+			if !s.deferDivergent {
+				return err
+			}
+			if s.divergent == nil {
+				s.divergent = err
+			}
 		}
 		if !skip {
 			var err error
@@ -993,13 +1038,43 @@ func (s *caseVariantKeyScanner) putKeyBuf(depth int, keys []caseVariantKeySpan) 
 // field's own name is still caught by the enclosing object's scan, and only the
 // map's leaf keys are spared. Every non-exempt level is a struct whose fields the
 // daemon folds, so it stays fully checked.
+//
+// It also refuses a key holding a decoder-divergent character, on every
+// object and a data map's included. A repeated key is reported ahead of one
+// of those when the value has both.
 func checkDuplicateCaseVariantKeys(v any, skipKeyCheck bool) error {
+	var walk decodedKeyWalk
+	if err := walk.check(v, skipKeyCheck); err != nil {
+		return err
+	}
+	if walk.found {
+		return decoderDivergentKeyError(walk.key, walk.char)
+	}
+	return nil
+}
+
+// decodedKeyWalk is one walk of a decoded JSON value. check returns the
+// repeated-key refusal, and the walk keeps the decoder-divergent key that
+// sorts first, so the key an error names doesn't depend on map order.
+type decodedKeyWalk struct {
+	key   string
+	char  rune
+	found bool
+}
+
+func (w *decodedKeyWalk) check(v any, skipKeyCheck bool) error {
 	switch t := v.(type) {
 	case map[string]any:
-		// Checked on every object, a data map's included; see scanObject.
+		// Looked for on every object, a data map's included; see scanObject.
+		divergentSibling := false
 		for k := range t {
-			if r, found := decoderDivergentKeyRune(k); found {
-				return decoderDivergentKeyError(k, r)
+			r, found := decoderDivergentKeyRune(k)
+			if !found {
+				continue
+			}
+			divergentSibling = true
+			if !w.found || k < w.key {
+				w.key, w.char, w.found = k, r, true
 			}
 		}
 		if !skipKeyCheck {
@@ -1012,6 +1087,11 @@ func checkDuplicateCaseVariantKeys(v any, skipKeyCheck bool) error {
 				}
 				keys = append(keys, k)
 			}
+			if divergentSibling {
+				if first, second, found := loweredSiblingKeys(keys); found {
+					return loweredSiblingKeysError(first, second)
+				}
+			}
 		}
 		for k, val := range t {
 			// isCaseSensitiveDataMapField classifies a STRUCT's own field
@@ -1023,13 +1103,13 @@ func checkDuplicateCaseVariantKeys(v any, skipKeyCheck bool) error {
 			// named "config") still needs its fold check. Only a struct level
 			// classifies its children.
 			childSkip := !skipKeyCheck && isCaseSensitiveDataMapField(k)
-			if err := checkDuplicateCaseVariantKeys(val, childSkip); err != nil {
+			if err := w.check(val, childSkip); err != nil {
 				return err
 			}
 		}
 	case []any:
 		for _, item := range t {
-			if err := checkDuplicateCaseVariantKeys(item, false); err != nil {
+			if err := w.check(item, false); err != nil {
 				return err
 			}
 		}

@@ -352,8 +352,8 @@ func TestLibpodContainerCreateLooksUpTheSecretsItNames(t *testing.T) {
 		// the long s (U+017F) to "s" and Podman 6's decoder doesn't, so a
 		// key holding one is refused before anything is looked up.
 		{body: `{"SECRETS":[{"SOURCE":"theirs"}]}`, wantLookups: []string{"theirs"}, wantStatus: http.StatusForbidden, wantReason: `libpod owner policy denied access to secret "theirs" referenced by container create secrets`},
-		{body: `{"ſecrets":[{"ſource":"theirs"}]}`, wantStatus: http.StatusBadRequest, wantReason: `ambiguous request body: ambiguous JSON object key "\u017fecrets": U+017F matches a field name in some JSON decoders and not in others`},
-		{body: `{"secrets":[{"ſource":"theirs"}]}`, wantStatus: http.StatusBadRequest, wantReason: `ambiguous request body: ambiguous JSON object key "\u017fource": U+017F matches a field name in some JSON decoders and not in others`},
+		{body: `{"ſecrets":[{"ſource":"theirs"}]}`, wantStatus: http.StatusBadRequest, wantReason: `request body denied: ambiguous JSON object key "\u017fecrets": U+017F matches a field name in some JSON decoders and not in others`},
+		{body: `{"secrets":[{"ſource":"theirs"}]}`, wantStatus: http.StatusBadRequest, wantReason: `request body denied: ambiguous JSON object key "\u017fource": U+017F matches a field name in some JSON decoders and not in others`},
 
 		// Sources Podman resolves that can't be looked up, and shapes its
 		// decode refuses.
@@ -387,7 +387,7 @@ func TestLibpodContainerCreateLooksUpTheSecretsItNames(t *testing.T) {
 		{body: `{"secret_env":{"K":"theirs"}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretEnv},
 		{body: `{"secrets":[{"Source":"mine"}],"secret_env":{"K":"mine"}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretEnv},
 		{body: `{"Secret_Env":{"K":"mine"}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretEnv},
-		{body: `{"ſecret_env":{"K":"mine"}}`, wantStatus: http.StatusBadRequest, wantReason: `ambiguous request body: ambiguous JSON object key "\u017fecret_env": U+017F matches a field name in some JSON decoders and not in others`},
+		{body: `{"ſecret_env":{"K":"mine"}}`, wantStatus: http.StatusBadRequest, wantReason: `request body denied: ambiguous JSON object key "\u017fecret_env": U+017F matches a field name in some JSON decoders and not in others`},
 		{body: `{"secret_env":{"K":""}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretEnv},
 		{body: `{"secret_env":{"K":null}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretEnv},
 		{body: `{"secret_env":{"":"mine"}}`, wantStatus: http.StatusForbidden, wantReason: "libpod " + libpodContainerCreateDenySecretEnv},

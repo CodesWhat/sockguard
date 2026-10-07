@@ -330,10 +330,12 @@ func TestPodman6ReplicaBindsKeysEncodingJSONDoesNot(t *testing.T) {
 			wantSockguard: "user=1000",
 		},
 		{
-			// The other direction: sockguard binds it and Podman 6 doesn't.
+			// The other direction: sockguard reads a non-root user and
+			// Podman 6 reads none, which is what require_non_root_user was
+			// satisfied by.
 			name:        "libpod user under a long s",
 			decode:      podman6LibpodContainer,
-			body:        "{\"image\":\"alpine\",\"u\u017fer\":\"0\"}",
+			body:        "{\"image\":\"alpine\",\"u\u017fer\":\"1000\"}",
 			wantPodman6: "container",
 			encodingJSON: func(body []byte) string {
 				var spec struct {
@@ -342,7 +344,7 @@ func TestPodman6ReplicaBindsKeysEncodingJSONDoesNot(t *testing.T) {
 				_ = json.Unmarshal(body, &spec)
 				return "user=" + spec.User
 			},
-			wantSockguard: "user=0",
+			wantSockguard: "user=1000",
 		},
 	}
 	for _, tt := range tests {
@@ -440,15 +442,21 @@ func TestServeChainRefusesBodiesTheEnginesReadTwoWays(t *testing.T) {
 			wantReason: ambiguous(`"\u0130gnored"`, "U+0130"),
 		},
 
-		// The characters only encoding/json folds, or that both do. Refusing
-		// them costs nothing and keeps the rule one rule.
+		// The long s splits the other way: encoding/json folds it to "s" and
+		// Podman 6 doesn't bind it. That gets past a gate that requires a
+		// field instead of refusing one. Before 2.2.6 this body satisfied
+		// require_non_root_user with a `user` Podman 6 never set, and the
+		// container ran as the image's default user.
 		{
-			name:       "libpod create with user under a long s",
+			name:       "libpod create with a non-root user under a long s",
+			configure:  nonRoot,
 			target:     libpodCreate,
-			body:       "{\"image\":\"alpine\",\"systemd\":\"false\",\"u\u017fer\":\"0\"}",
+			body:       "{\"image\":\"alpine\",\"systemd\":\"false\",\"u\u017fer\":\"1000\"}",
 			wantStatus: http.StatusBadRequest,
 			wantReason: ambiguous(`"u\u017fer"`, "U+017F"),
 		},
+		// The Kelvin sign binds in both decoders. Refusing it keeps the rule
+		// one rule: a character that lowers or folds to an ASCII letter.
 		{
 			name:       "compat create with NetworkMode under a Kelvin sign",
 			target:     compatCreate,
@@ -508,6 +516,15 @@ func TestServeChainRefusesBodiesTheEnginesReadTwoWays(t *testing.T) {
 			body:        "{\"image\":\"alpine\",\"systemd\":\"false\",\"labels\":{\"\u043a\u043b\u044e\u0447\":\"1\",\"caf\u00e9\":\"2\",\"city\":\"\u0130stanbul\"}}",
 			wantStatus:  http.StatusCreated,
 			wantCreated: []string{"container label caf\u00e9 label city label \u043a\u043b\u044e\u0447"},
+		},
+		{
+			// The dotless i binds to no field in either decoder, and it's
+			// an everyday Turkish letter.
+			name:        "libpod create with a dotless i in a label key",
+			target:      libpodCreate,
+			body:        "{\"image\":\"alpine\",\"systemd\":\"false\",\"labels\":{\"a\u0131\":\"1\"}}",
+			wantStatus:  http.StatusCreated,
+			wantCreated: []string{"container label a\u0131"},
 		},
 		{
 			name:        "libpod create with both proxy spellings in env",

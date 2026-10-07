@@ -99,45 +99,259 @@ func TestDecoderDivergentKeyRunesCoverBothDecoders(t *testing.T) {
 	if want := []rune{0x0130}; !slices.Equal(jsoniterOnly, want) {
 		t.Errorf("runes only json-iterator matches = %U, want %U", jsoniterOnly, want)
 	}
-	// The other direction makes sockguard the stricter reader.
+	// The other direction gets past a gate that requires a field: sockguard
+	// reads one the engine never binds, so require_non_root_user passed on a
+	// `user` Podman 6 didn't set.
 	if want := []rune{0x017F}; !slices.Equal(encodingJSONOnly, want) {
 		t.Errorf("runes only encoding/json matches = %U, want %U", encodingJSONOnly, want)
 	}
 }
 
-// TestDecoderDivergentKeyRunesAreTheCaseTablesWholeAnswer pins the rule
-// against Go's case tables instead of against two decoders: the characters
-// refused are every non-ASCII one that lowers, uppers, titles or folds to an
-// ASCII letter, and no others. A decoder built on any of those primitives
-// can only disagree with another over one of these.
-func TestDecoderDivergentKeyRunesAreTheCaseTablesWholeAnswer(t *testing.T) {
+// TestDecoderDivergentKeyRunesAreWhatLoweringOrFoldingTiesToASCII pins the
+// rule against Go's case tables instead of against two decoders. A decoder
+// matches a key to a field name by lowering it, as json-iterator does, or by
+// folding it, as encoding/json does. So the characters refused are every
+// non-ASCII one that lowers or folds to an ASCII letter, and no others.
+//
+// U+0131, the dotless i, is the one character the tables tie to an ASCII
+// letter some other way: it uppercases to "I". No decoder matches a key by
+// uppercasing it, so U+0131 binds to no field in either one and isn't
+// refused. It's a letter of the Turkish alphabet, and a label key can hold
+// one.
+func TestDecoderDivergentKeyRunesAreWhatLoweringOrFoldingTiesToASCII(t *testing.T) {
 	asciiLetter := func(r rune) bool { return r < utf8.RuneSelf && unicode.IsLetter(r) }
-	var want, got []rune
+	var want, got, upperOnly []rune
 	for r := rune(utf8.RuneSelf); r <= unicode.MaxRune; r++ {
 		if !utf8.ValidRune(r) {
 			continue
 		}
-		related := asciiLetter(unicode.ToLower(r)) || asciiLetter(unicode.ToUpper(r)) || asciiLetter(unicode.ToTitle(r))
+		related := asciiLetter(unicode.ToLower(r))
 		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
 			related = related || asciiLetter(f)
 		}
-		if related {
+		switch {
+		case related:
 			want = append(want, r)
+		case asciiLetter(unicode.ToUpper(r)) || asciiLetter(unicode.ToTitle(r)):
+			upperOnly = append(upperOnly, r)
 		}
 		if isDecoderDivergentKeyRune(r) {
 			got = append(got, r)
 		}
 	}
 	if !slices.Equal(got, want) {
-		t.Fatalf("refused runes = %U, case tables give %U", got, want)
+		t.Fatalf("refused runes = %U, lowering and folding give %U", got, want)
 	}
-	if pinned := []rune{0x0130, 0x0131, 0x017F, 0x212A}; !slices.Equal(got, pinned) {
+	if pinned := []rune{0x0130, 0x017F, 0x212A}; !slices.Equal(got, pinned) {
 		t.Fatalf("refused runes = %U, want %U", got, pinned)
+	}
+	// The exclusion is pinned too, so a case table that gives U+0131 company
+	// shows up here.
+	if pinned := []rune{0x0131}; !slices.Equal(upperOnly, pinned) {
+		t.Fatalf("runes only uppercasing ties to an ASCII letter = %U, want %U", upperOnly, pinned)
+	}
+	if isDecoderDivergentKeyRune(0x0131) {
+		t.Fatal("U+0131 is refused: it binds to no field in either decoder")
 	}
 	for r := rune(0); r < utf8.RuneSelf; r++ {
 		if isDecoderDivergentKeyRune(r) {
 			t.Errorf("ASCII %U is refused", r)
 		}
+	}
+}
+
+// TestLoweredSiblingKeysDifferOnlyByTheDottedCapitalI is why
+// loweredSiblingKeys runs only on an object that holds a decoder-divergent
+// key, and why what it finds is always the same shape. Two keys a lowering
+// decoder reads as one and a folding decoder reads as two have to differ in
+// a character that lowers like another without folding to it, and in all of
+// Unicode that is U+0130 against "I" and "i".
+func TestLoweredSiblingKeysDifferOnlyByTheDottedCapitalI(t *testing.T) {
+	byLower := make(map[rune][]rune)
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if utf8.ValidRune(r) {
+			byLower[unicode.ToLower(r)] = append(byLower[unicode.ToLower(r)], r)
+		}
+	}
+	var got [][2]rune
+	for _, class := range byLower {
+		for i, a := range class {
+			for _, b := range class[i+1:] {
+				if !strings.EqualFold(string(a), string(b)) {
+					got = append(got, [2]rune{a, b})
+				}
+			}
+		}
+	}
+	slices.SortFunc(got, func(a, b [2]rune) int { return int(a[0] - b[0]) })
+	if want := [][2]rune{{'I', 0x0130}, {'i', 0x0130}}; !slices.Equal(got, want) {
+		t.Fatalf("pairs that lower together and don't fold together = %U, want %U", got, want)
+	}
+	if !isDecoderDivergentKeyRune(0x0130) {
+		t.Fatal("U+0130 isn't a decoder-divergent character, so loweredSiblingKeys would never run for it")
+	}
+}
+
+// TestInspectJSONValueKeysReportsRepeatedAndDivergentKeysApart pins the split
+// owner isolation acts on. A repeated key is refused in every rollout mode
+// and a decoder-divergent one follows the mode, so a body with both has to
+// report the repeat whichever the walk meets first.
+func TestInspectJSONValueKeysReportsRepeatedAndDivergentKeysApart(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		body          string
+		wantRepeated  string
+		wantDivergent string
+	}{
+		{name: "neither", body: `{"Image":"alpine","Labels":{"a":"1","A":"2"}}`},
+		{
+			name:          "a divergent label key",
+			body:          "{\"Image\":\"alpine\",\"Labels\":{\"\u0130stanbul\":\"1\"}}",
+			wantDivergent: `ambiguous JSON object key "\u0130stanbul": U+0130 matches a field name in some JSON decoders and not in others`,
+		},
+		{
+			name:         "a case-variant pair",
+			body:         `{"HostConfig":{},"hostconfig":{}}`,
+			wantRepeated: `duplicate case-variant JSON keys`,
+		},
+		{
+			// The walk stops at the repeat, which is all its caller needs.
+			name:         "a case-variant pair and a divergent key under it",
+			body:         "{\"HostConfig\":{\"Pr\u0130vileged\":true},\"hostconfig\":{}}",
+			wantRepeated: `duplicate case-variant JSON keys`,
+		},
+		{
+			name:          "a divergent key and a case-variant pair under it",
+			body:          "{\"\u0130\":{\"User\":\"a\",\"user\":\"b\"}}",
+			wantRepeated:  `duplicate case-variant JSON keys`,
+			wantDivergent: `ambiguous JSON object key "\u0130"`,
+		},
+		{
+			// Podman 6 lowers both to `privileged`, and the last one wins.
+			name:          "a key beside its dotted capital I spelling",
+			body:          "{\"privileged\":false,\"pr\u0130v\u0130leged\":true}",
+			wantRepeated:  `JSON object keys "privileged" and "pr\u0130v\u0130leged" lowercase to the same name, which some JSON decoders read as one key given twice`,
+			wantDivergent: `ambiguous JSON object key "pr\u0130v\u0130leged"`,
+		},
+		{
+			name:          "the same pair in a nested struct",
+			body:          "{\"HostConfig\":{\"P\u0130dMode\":\"host\",\"PidMode\":\"private\"}}",
+			wantRepeated:  `JSON object keys "PidMode" and "P\u0130dMode" lowercase to the same name`,
+			wantDivergent: `ambiguous JSON object key "P\u0130dMode"`,
+		},
+		{
+			// Two entries of a map the client fills in, which no decoder
+			// folds or lowers.
+			name:          "the same pair as two labels",
+			body:          "{\"Labels\":{\"il\":\"1\",\"\u0130l\":\"2\"}}",
+			wantDivergent: `ambiguous JSON object key "\u0130l"`,
+		},
+		{
+			// A long s folds to "s", so this pair was always a repeat.
+			name:          "a key beside its long s spelling",
+			body:          "{\"user\":\"1000\",\"u\u017fer\":\"0\"}",
+			wantRepeated:  `duplicate case-variant JSON keys`,
+			wantDivergent: `ambiguous JSON object key "u\u017fer"`,
+		},
+		{
+			name:          "of two divergent keys the one that sorts first is named",
+			body:          "{\"z\u0130\":1,\"a\":{\"m\u017f\":1,\"b\u212a\":2}}",
+			wantDivergent: `ambiguous JSON object key "b\u212a"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var decoded any
+			if err := json.Unmarshal([]byte(tt.body), &decoded); err != nil {
+				t.Fatalf("decode fixture: %v", err)
+			}
+			repeated, divergent := InspectJSONValueKeys(decoded)
+			check := func(what string, got error, want string) {
+				t.Helper()
+				switch {
+				case want == "" && got != nil:
+					t.Errorf("%s = %v, want nil", what, got)
+				case want != "" && (got == nil || !strings.Contains(got.Error(), want)):
+					t.Errorf("%s = %v, want it to hold %q", what, got, want)
+				}
+			}
+			check("repeated", repeated, tt.wantRepeated)
+			if tt.wantRepeated == "" || tt.wantDivergent != "" {
+				check("divergent", divergent, tt.wantDivergent)
+			}
+			if divergent != nil && !errors.Is(divergent, errDecoderDivergentKey) {
+				t.Errorf("divergent = %v, want an ambiguous key error", divergent)
+			}
+			if repeated != nil && errors.Is(repeated, errDecoderDivergentKey) {
+				t.Errorf("repeated = %v, want it kept apart from the ambiguous key error", repeated)
+			}
+
+			// The one-verdict form refuses whatever either half refuses, and
+			// reports the repeat ahead of the divergent key.
+			combined := RejectDuplicateCaseVariantJSONValue(decoded)
+			if (combined == nil) != (repeated == nil && divergent == nil) {
+				t.Errorf("RejectDuplicateCaseVariantJSONValue() = %v, InspectJSONValueKeys() = %v, %v", combined, repeated, divergent)
+			}
+			if errors.Is(combined, errDecoderDivergentKey) != (repeated == nil && divergent != nil) {
+				t.Errorf("RejectDuplicateCaseVariantJSONValue() = %v, want the repeat reported first: %v, %v", combined, repeated, divergent)
+			}
+		})
+	}
+}
+
+// TestScanBodyKeysReportsRepeatedAndDivergentKeysApart is the same split for
+// the byte scan the resource-limit guard runs. The guard has refused a
+// repeated key on a container update in every rollout mode since it shipped,
+// and has to go on doing that for a body whose first problem is a
+// decoder-divergent key.
+func TestScanBodyKeysReportsRepeatedAndDivergentKeysApart(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		body          string
+		wantRepeated  error
+		wantDuplicate bool
+		wantDivergent string
+	}{
+		{name: "neither", body: `{"Memory":1,"Labels":{"a":"1","A":"2"}}`},
+		{name: "a divergent key", body: "{\"Memor\u0130\":1}", wantDivergent: `"Memor\u0130"`},
+		{name: "a repeated key", body: `{"Memory":1,"Memory":0}`, wantDuplicate: true},
+		{name: "a divergent key, then a repeated one", body: "{\"\u0130\":1,\"Memory\":1,\"memory\":0}", wantDuplicate: true, wantDivergent: `"\u0130"`},
+		{name: "a repeated key, then a divergent one", body: "{\"Memory\":1,\"memory\":0,\"\u0130\":1}", wantDuplicate: true},
+		{name: "a divergent key in a body cut short", body: "{\"\u0130\":1,", wantRepeated: errCaseVariantScanTruncated, wantDivergent: `"\u0130"`},
+		{name: "the first of two divergent keys", body: "{\"z\u017f\":1,\"a\u0130\":2}", wantDivergent: `"z\u017f"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			repeated, divergent := scanBodyKeys([]byte(tt.body))
+			switch {
+			case tt.wantRepeated != nil:
+				if !errors.Is(repeated, tt.wantRepeated) {
+					t.Errorf("repeated = %v, want %v", repeated, tt.wantRepeated)
+				}
+			case tt.wantDuplicate:
+				if repeated == nil || !strings.Contains(repeated.Error(), "duplicate case-variant JSON keys") {
+					t.Errorf("repeated = %v, want a duplicate-key error", repeated)
+				}
+			case repeated != nil:
+				t.Errorf("repeated = %v, want nil", repeated)
+			}
+			switch {
+			case tt.wantDivergent == "" && divergent != nil:
+				t.Errorf("divergent = %v, want nil", divergent)
+			case tt.wantDivergent != "" && (!errors.Is(divergent, errDecoderDivergentKey) || !strings.Contains(divergent.Error(), tt.wantDivergent)):
+				t.Errorf("divergent = %v, want an ambiguous key error naming %s", divergent, tt.wantDivergent)
+			}
+
+			// The one-verdict scan stops at whichever it meets first, so it
+			// refuses exactly the bodies either half does.
+			if combined := RejectDuplicateCaseVariantJSONKeys([]byte(tt.body)); (combined == nil) != (repeated == nil && divergent == nil) {
+				t.Errorf("RejectDuplicateCaseVariantJSONKeys() = %v, scanBodyKeys() = %v, %v", combined, repeated, divergent)
+			}
+		})
 	}
 }
 
@@ -159,7 +373,6 @@ func TestAmbiguousKeysAreRefusedAtEveryDepth(t *testing.T) {
 		{"a namespace's own key", "{\"pidns\":{\"n\u017fmode\":\"host\"}}", 0x017F},
 		{"long s", "{\"u\u017fer\":\"0\"}", 0x017F},
 		{"Kelvin sign", "{\"HostConfig\":{\"Networ\u212aMode\":\"host\"}}", 0x212A},
-		{"dotless i", "{\"HostConfig\":{\"Pr\u0131vileged\":true}}", 0x0131},
 		{"a label key", "{\"Labels\":{\"\u0130stanbul\":\"1\"}}", 0x0130},
 		{"an env name", "{\"env\":{\"\u017f\":\"1\"}}", 0x017F},
 		{"a struct under a data map", "{\"Networks\":{\"web\":{\"stat\u0130c_mac\":\"aa\"}}}", 0x0130},
@@ -203,6 +416,11 @@ func TestAmbiguousKeysAreRefusedAtEveryDepth(t *testing.T) {
 		"{\"Labels\":{\"\u043a\u043b\u044e\u0447\":\"1\",\"\u65e5\u672c\u8a9e\":\"2\",\"caf\u00e9\":\"3\",\"\U0001F600\":\"4\"}}",
 		"{\"env\":{\"\u00dcBER\":\"1\"},\"annotations\":{\"\u00e9\":\"2\"}}",
 		"{\"\u00fcnknown\":1}",
+		// The dotless i binds to no field in either decoder, as a label
+		// key or spelled into a field name.
+		"{\"Image\":\"alpine\",\"Labels\":{\"a\u0131\":\"1\",\"\u0131\u015f\u0131k\":\"2\"}}",
+		"{\"HostConfig\":{\"Pr\u0131vileged\":true}}",
+		`{"Labels":{"a\u0131":"1"}}`,
 		// The same characters as values are nobody's key.
 		"{\"Labels\":{\"city\":\"\u0130stanbul\"},\"Env\":[\"K=\u212a\",\"S=\u017f\"],\"Cmd\":[\"\u0131\"]}",
 		// Invalid UTF-8 matches no field in either decoder.

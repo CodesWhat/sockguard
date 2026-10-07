@@ -475,12 +475,25 @@ func TestMutationFailuresDenyWithoutCallingUpstream(t *testing.T) {
 			wantCode:   reasonCodeMutationRequestInvalid,
 		},
 		{
+			// A repeated key is refused where the body is read, ahead of the
+			// engine, under the code every inspector reports it with. The
+			// reason is still the engine's to word, and it names no key.
+			name:       "duplicate key JSON",
+			body:       []byte(`{"super-secret-label":"one","super-secret-label":"two"}`),
+			mutation:   injectMutationOptions("duplicate"),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   reasonCodeRequestBodyAmbiguous,
+			forbiddenLeaks: []string{
+				"super-secret-label",
+			},
+		},
+		{
 			// A repeated label is the one repeat that reaches the engine: a
 			// data map's entries are spared the check every inspected body
 			// gets first, and the engine's own scan still refuses them.
-			name:       "duplicate key JSON",
+			name:       "duplicate label JSON",
 			body:       []byte(`{"Labels":{"super-secret-label":"one","super-secret-label":"two"}}`),
-			mutation:   injectMutationOptions("duplicate"),
+			mutation:   injectMutationOptions("duplicate-label"),
 			wantStatus: http.StatusBadRequest,
 			wantCode:   reasonCodeMutationRequestInvalid,
 			forbiddenLeaks: []string{
@@ -488,11 +501,17 @@ func TestMutationFailuresDenyWithoutCallingUpstream(t *testing.T) {
 			},
 		},
 		{
-			name:       "duplicate field key JSON",
-			body:       []byte(`{"Image":"alpine","Image":"busybox"}`),
-			mutation:   injectMutationOptions("duplicate-field"),
+			// The other refusal made where the body is read. Its key would
+			// reach the log escaped, and the rest of it is as readable there
+			// as any other.
+			name:       "decoder-divergent key JSON",
+			body:       []byte("{\"Labels\":{\"super-secret-\u0130label\":\"one\"}}"),
+			mutation:   injectMutationOptions("divergent"),
 			wantStatus: http.StatusBadRequest,
 			wantCode:   reasonCodeRequestBodyAmbiguous,
+			forbiddenLeaks: []string{
+				"super-secret-",
+			},
 		},
 		{
 			name:       "oversized JSON",
