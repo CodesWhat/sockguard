@@ -1150,6 +1150,9 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if denyReason := p.denyBindMountReason(createReq.HostConfig); denyReason != "" {
 		return denyReason, nil
 	}
+	if denyReason := p.denyVolumeSpecReason(createReq.Volumes); denyReason != "" {
+		return denyReason, nil
+	}
 	if denyReason := p.denyImageMountReason(createReq.HostConfig); denyReason != "" {
 		return denyReason, nil
 	}
@@ -1678,13 +1681,55 @@ func cgroupPermOrder(c byte) int {
 	}
 }
 
+// denyBindSpecReason holds one "source:destination[:options]" bind spec to
+// allowedBindMounts: its source when that's an absolute host path, and the
+// overlay directories its options name.
+func (p containerCreatePolicy) denyBindSpecReason(bind string) string {
+	if source, ok := extractAndValidateBindSource(bind, containerCreateMount{}); ok && !bindPathAllowed(source, p.allowedBindMounts) {
+		return fmt.Sprintf("container create denied: bind mount source %q is not allowlisted", source)
+	}
+	// A Podman upstream reads the spec's third field as mount options and
+	// takes an overlay's upper and work directory from them, for a named
+	// volume as much as a host path. dockerd refuses those options itself.
+	// See overlay_mount_options.go.
+	return denyBindOverlayReason(bind, p.allowedBindMounts, "container create")
+}
+
+// denyVolumeSpecReason checks the keys of Config.Volumes the way
+// HostConfig.Binds entries are checked. To dockerd a key is the container path
+// of an anonymous volume and nothing more (daemon/create_unix.go:45-73 in
+// moby 28.5.1). Podman 5.8.6 appends every key to the same "-v" list it
+// builds from Binds (pkg/api/handlers/compat/containers_create.go:536-541), so
+// {"Volumes":{"/etc:/h":{}}} is a bind mount of the host's /etc there, and
+// {"Volumes":{"myvol:/d:O,upperdir=/etc,workdir=/mnt":{}}} is the overlay a
+// Binds entry spelled the same way would be. Podman only mounts a key whose
+// destination is an absolute container path, and the destination always
+// follows a ":", so a key is checked only when it has ":/" in it. A container
+// path with a mode ("/data:z", "/data:ro,z", "/data:nocopy", as docker-py and
+// Ansible send) has no ":/" and passes. A whole "/abs:/abs" spec is checked on
+// any upstream, because on Podman it's a real bind. The checked keys are
+// sorted first, so a body with two bad keys always names the same one.
+func (p containerCreatePolicy) denyVolumeSpecReason(volumes map[string]struct{}) string {
+	var specs []string
+	for spec := range volumes {
+		if strings.Contains(spec, ":/") {
+			specs = append(specs, spec)
+		}
+	}
+	slices.Sort(specs)
+	for _, spec := range specs {
+		if denyReason := p.denyBindSpecReason(spec); denyReason != "" {
+			return denyReason
+		}
+	}
+	return ""
+}
+
 func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHostConfig) string {
 	for _, bind := range hostConfig.Binds {
-		source, ok := extractAndValidateBindSource(bind, containerCreateMount{})
-		if !ok || bindPathAllowed(source, p.allowedBindMounts) {
-			continue
+		if denyReason := p.denyBindSpecReason(bind); denyReason != "" {
+			return denyReason
 		}
-		return fmt.Sprintf("container create denied: bind mount source %q is not allowlisted", source)
 	}
 
 	for _, mount := range hostConfig.Mounts {

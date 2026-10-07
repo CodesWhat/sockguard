@@ -249,6 +249,9 @@ func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Reques
 	if denyReason := p.denyBindMountReason(createReq.Mounts); denyReason != "" {
 		return denyReason, nil
 	}
+	if denyReason := p.denyHostPathReason(createReq); denyReason != "" {
+		return denyReason, nil
+	}
 	if denyReason := p.denyDeviceReason(createReq.Devices); denyReason != "" {
 		return denyReason, nil
 	}
@@ -386,15 +389,29 @@ func (p libpodContainerCreatePolicy) denyNamespaceSharingReason(req libpodContai
 
 // denyBindMountReason enforces allowedBindMounts against every "bind"-typed
 // entry of the top-level "mounts" array. Named-volume mounts (the "volumes"
-// array) reference a volume by name, not a host filesystem path, so they
-// carry no bind-mount attack surface and are not checked here.
+// array) reference a volume by name, not a host filesystem path, so the
+// volume isn't checked here; the overlay directories its options can name are
+// (denyNamedVolumeOverlayReason).
+//
+// A bind source that isn't an absolute path is refused rather than skipped.
+// Podman 5.8.6 makes every bind source absolute with filepath.Abs before it
+// builds the container (pkg/specgen/generate/storage.go:203-208), which
+// resolves a relative source, and an empty one, against the daemon's own
+// working directory. "../../../../etc" is /etc from anywhere on the host, and
+// this proxy can't see where the daemon is standing, so no allowlist entry can
+// vouch for a relative path. Only "bind" is treated this way: Podman leaves
+// every other type's source alone, and the source of a tmpfs or devpts mount
+// isn't a path at all.
 func (p libpodContainerCreatePolicy) denyBindMountReason(mounts []libpodMount) string {
 	for _, mount := range mounts {
 		if !strings.EqualFold(mount.Type, "bind") {
 			continue
 		}
 		source, ok := normalizeBindMount(mount.Source)
-		if !ok || bindPathAllowed(source, p.allowedBindMounts) {
+		if !ok {
+			return fmt.Sprintf("libpod container create denied: bind mount source %q is not an absolute path", mount.Source)
+		}
+		if bindPathAllowed(source, p.allowedBindMounts) {
 			continue
 		}
 		return fmt.Sprintf("libpod container create denied: bind mount source %q is not allowlisted", source)
