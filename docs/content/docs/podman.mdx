@@ -113,8 +113,10 @@ case, both of which Podman 5.8.6 answers with a 500.
 | `none`, `bridge`, `slirp4netns`, `pasta` | `netns` | A new one | none |
 | `auto`, `keep-id`, `no-map` | `userns` | A new one | none (`allow_custom_id_mappings` covers `idmappings`) |
 
-Keys are matched the way Podman's decoder matches them: in any letter case,
-with the last of a repeated key winning. A namespace field that isn't an
+Keys are matched in any letter case, the way Podman's decoder matches them.
+A key given twice is refused before any gate reads the body, and so is a key
+holding a character Podman 6's decoder and Go's `encoding/json` match
+differently (see [Security](/security)). A namespace field that isn't an
 object, or an `nsmode` that isn't a string, is refused as malformed whatever
 the gates say.
 
