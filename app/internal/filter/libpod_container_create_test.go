@@ -60,6 +60,16 @@ func makeLibpodInspectRequest(t *testing.T, body []byte) *http.Request {
 func inspectLibpod(t *testing.T, policy libpodContainerCreatePolicy, body []byte) string {
 	t.Helper()
 	reason, err := policy.inspect(nil, makeLibpodInspectRequest(t, body), "/libpod/containers/create")
+	return inspectorDenyReason(t, reason, err)
+}
+
+// inspectorDenyReason is what the middleware makes of an inspector's result:
+// the reason it returned, or the one a request rejection carries.
+func inspectorDenyReason(t *testing.T, reason string, err error) string {
+	t.Helper()
+	if rejection, ok := requestRejectionFromError(err); ok {
+		return rejection.reason
+	}
 	if err != nil {
 		t.Fatalf("inspect() unexpected error: %v", err)
 	}
@@ -93,8 +103,8 @@ func TestNewLibpodContainerCreatePolicyNormalizesAndDeduplicatesAllowedBindMount
 // carry "systemd":"false" purely so the libpod policy's other default-deny
 // gates (see file doc comment) don't mask the privileged-field assertion.
 func TestInspectorRoutingIsPathExclusive(t *testing.T) {
-	dockerDangerousLibpodSafe := []byte(`{"Image":"x","image":"x","HostConfig":{"Privileged":true},"privileged":false,"systemd":"false"}`)
-	dockerSafeLibpodDangerous := []byte(`{"Image":"x","image":"x","HostConfig":{"Privileged":false},"privileged":true,"systemd":"false"}`)
+	dockerDangerousLibpodSafe := []byte(`{"Image":"x","HostConfig":{"Privileged":true},"privileged":false,"systemd":"false"}`)
+	dockerSafeLibpodDangerous := []byte(`{"Image":"x","HostConfig":{"Privileged":false},"privileged":true,"systemd":"false"}`)
 
 	dockerPolicy := newContainerCreatePolicy(ContainerCreateOptions{})
 	libpodPolicy := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{})

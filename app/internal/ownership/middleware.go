@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -294,7 +295,12 @@ func middlewareWithDeps(
 
 			refs, err := mutateOwnershipRequest(r, normPath, opts)
 			if err != nil {
-				logging.SetDeniedWithCode(w, r, reasonCodeOwnerRequestInvalid, err.Error(), nil)
+				reasonCode := reasonCodeOwnerRequestInvalid
+				var ambiguous *ambiguousBodyKeyError
+				if errors.As(err, &ambiguous) {
+					reasonCode = filter.ReasonCodeRequestBodyAmbiguous
+				}
+				logging.SetDeniedWithCode(w, r, reasonCode, err.Error(), nil)
 				_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: err.Error()})
 				return
 			}
@@ -1253,8 +1259,42 @@ func mutateJSONBody(r *http.Request, mutate func(map[string]any) error) error {
 	// identical map[string]any that it walks and throws away, which measured
 	// as 39% of this pass's allocated bytes and 43% of its allocations on a
 	// realistic container-create body. Same walk, same verdict, one decode.
-	if err := filter.RejectDuplicateCaseVariantJSONValue(decoded); err != nil {
-		return fmt.Errorf("ambiguous request body: %w", err)
+	//
+	// A key Podman 6's decoder lowercases onto its sibling is refused with
+	// those, in every rollout mode like them, for the same reason: the sort
+	// would decide which of the two that decoder honors.
+	repeated, divergent := filter.InspectJSONValueKeys(decoded)
+	if repeated != nil {
+		return fmt.Errorf("ambiguous request body: %w", repeated)
+	}
+	// The same walk finds a key holding a character the engines' JSON
+	// decoders match to a field name differently. Stamping doesn't make such
+	// a key safe, since the re-marshal keeps an unknown key exactly as the
+	// client spelled it, so enforce refuses the body the way the inspectors
+	// do.
+	//
+	// Warn and audit forward what enforce refuses, and the body goes on to be
+	// stamped like any other. That is sound for two reasons. The key and its
+	// value go out exactly as they came in, and with no repeated key in the
+	// tree the sort changes no decoder's reading of anything else. And
+	// filter.NestedObject writes the owner label under the exact label key
+	// whatever spelling the client used, so every decoder binds the stamp.
+	// No decoder binds a second key to those labels: that would take a key
+	// that lowers to the label key's name without folding to it, which only
+	// U+0130 standing in for an "i" does, and the one label key with an "i"
+	// in its path is a service's TaskTemplate.ContainerSpec.Labels, on a
+	// route only dockerd serves.
+	if divergent != nil {
+		refusal := &ambiguousBodyKeyError{reason: filter.AmbiguousRequestBodyReason(divergent)}
+		// The filter middleware leaves the request's meta on its context,
+		// which is where imageLoadOwnershipReferences reads it too.
+		meta := logging.Meta(r.Context())
+		if !meta.AllowsPassThrough() {
+			return refusal
+		}
+		meta.Decision = logging.DecisionWouldDeny
+		meta.ReasonCode = filter.ReasonCodeRequestBodyAmbiguous
+		meta.Reason = refusal.reason
 	}
 	if err := mutate(decoded); err != nil {
 		return err
@@ -1267,6 +1307,18 @@ func mutateJSONBody(r *http.Request, mutate func(map[string]any) error) error {
 	r.ContentLength = int64(len(encoded))
 	r.Body = io.NopCloser(bytes.NewReader(encoded))
 	return nil
+}
+
+// ambiguousBodyKeyError is the refusal of a body for a key holding a
+// character the engines' JSON decoders match differently. It is its own type
+// so the middleware reports it under the inspectors' reason code and not as
+// owner_request_invalid, which a body nothing can stamp keeps.
+type ambiguousBodyKeyError struct {
+	reason string
+}
+
+func (e *ambiguousBodyKeyError) Error() string {
+	return e.reason
 }
 
 func (u upstreamInspector) inspectResource(ctx context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
