@@ -146,6 +146,171 @@ func TestProxyDeniesDangerousLibpodPodCreateBodiesAgainstRealPodman(t *testing.T
 	}
 }
 
+// TestProxyRefusesHostNamespacesOnLibpodCreatesAgainstRealPodman sends
+// container and pod creates that ask for a host namespace, by `host` and by
+// `path`, through sockguard with every host gate off. Each is refused before
+// it reaches Podman.
+//
+// utsns and cgroupns on the container create, and pidns, ipcns, userns and
+// utsns on the pod create, had no gate before 2.2.6, so these bodies went
+// through to Podman.
+// TestProxyAllowsHostNamespacesOnLibpodCreatesWithTheirGateAgainstRealPodman
+// below is the other half: what Podman makes of them once a gate is on.
+func TestProxyRefusesHostNamespacesOnLibpodCreatesAgainstRealPodman(t *testing.T) {
+	socketPath := podmanSocketForIntegration(t)
+	apiVersion := podmanLibpodAPIVersion(t, socketPath)
+
+	const (
+		containerCreate = "/libpod/containers/create"
+		podCreate       = "/libpod/pods/create"
+	)
+	container := func(namespace string) string {
+		return `{"image":"` + busyboxPinnedRef + `","command":["sleep","30"],"systemd":"false",` + namespace + `}`
+	}
+	tests := []struct {
+		name    string
+		path    string
+		payload string
+		want    string
+	}{
+		{"container pidns path", containerCreate, container(`"pidns":{"nsmode":"path","value":"/proc/1/ns/pid"}`), "libpod container create denied: PID namespace joined by path is not allowed"},
+		{"container utsns host", containerCreate, container(`"utsns":{"nsmode":"host"}`), "libpod container create denied: host UTS namespace is not allowed"},
+		{"container utsns path", containerCreate, container(`"utsns":{"nsmode":"path","value":"/proc/1/ns/uts"}`), "libpod container create denied: UTS namespace joined by path is not allowed"},
+		{"container cgroupns host", containerCreate, container(`"cgroupns":{"nsmode":"host"}`), "libpod container create denied: host cgroup namespace is not allowed"},
+		{"container cgroupns path", containerCreate, container(`"cgroupns":{"nsmode":"path","value":"/proc/1/ns/cgroup"}`), "libpod container create denied: cgroup namespace joined by path is not allowed"},
+		{"pod pidns host", podCreate, `{"pidns":{"nsmode":"host"}}`, "libpod pod create denied: host PID namespace is not allowed"},
+		{"pod pidns path", podCreate, `{"pidns":{"nsmode":"path","value":"/proc/1/ns/pid"}}`, "libpod pod create denied: PID namespace joined by path is not allowed"},
+		{"pod ipcns host", podCreate, `{"ipcns":{"nsmode":"host"}}`, "libpod pod create denied: host IPC namespace is not allowed"},
+		{"pod utsns host", podCreate, `{"utsns":{"nsmode":"host"}}`, "libpod pod create denied: host UTS namespace is not allowed"},
+		{"pod userns host", podCreate, `{"userns":{"nsmode":"host"}}`, "libpod pod create denied: host user namespace is not allowed"},
+	}
+
+	handler := newIntegrationProxyHandlerWithOptions(t, socketPath, []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: containerCreate}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: podCreate}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "no matching allow rule"},
+	}, filter.Options{}, ownership.Options{})
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Version-prefixed, the way a client sends it and the only way
+			// Podman would serve it if it got through.
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/v"+apiVersion+tt.path, strings.NewReader(tt.payload))
+			req.Header.Set("Content-Type", "application/json")
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			var body filter.DenialResponse
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatalf("decode deny body: %v", err)
+			}
+			if body.Reason != tt.want {
+				t.Fatalf("deny reason = %q, want %q", body.Reason, tt.want)
+			}
+		})
+	}
+}
+
+// TestProxyAllowsHostNamespacesOnLibpodCreatesWithTheirGateAgainstRealPodman
+// is the live half of the gates 2.2.6 added. A pod create with `pidns: host`
+// and a container create with `utsns: host` are refused with the gate off.
+// With the gate on Podman creates each in the host's namespace, which the
+// test reads back from the daemon's own inspect. That's what went through
+// with no gate at all before 2.2.6.
+func TestProxyAllowsHostNamespacesOnLibpodCreatesWithTheirGateAgainstRealPodman(t *testing.T) {
+	socketPath := podmanSocketForIntegration(t)
+	apiVersion := podmanLibpodAPIVersion(t, socketPath)
+	versionPrefix := "/v" + apiVersion
+
+	send := func(t *testing.T, policy filter.PolicyConfig, path, payload string) *httptest.ResponseRecorder {
+		t.Helper()
+		handler := newIntegrationProxyHandlerWithOptions(t, socketPath, []config.RuleConfig{
+			{Match: config.MatchConfig{Method: http.MethodPost, Path: path}, Action: "allow"},
+			{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "no matching allow rule"},
+		}, filter.Options{PolicyConfig: policy}, ownership.Options{})
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, versionPrefix+path, strings.NewReader(payload))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	wantDenied := func(t *testing.T, rec *httptest.ResponseRecorder, want string) {
+		t.Helper()
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+		}
+		var body filter.DenialResponse
+		if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+			t.Fatalf("decode deny body: %v", err)
+		}
+		if body.Reason != want {
+			t.Fatalf("deny reason = %q, want %q", body.Reason, want)
+		}
+	}
+
+	t.Run("pod pidns host", func(t *testing.T) {
+		// The pod names its infra image so Podman uses the busybox the
+		// workflow already pulled instead of building a pause image, which
+		// needs a catatonit binary the runner may not have. That takes
+		// allowed_infra_image_registries on both sides of the comparison,
+		// so the PID gate is the only thing that differs. The pod is
+		// created and never started.
+		payload := `{"infra_image":"` + busyboxPinnedRef + `","pidns":{"nsmode":"host"}}`
+		gateOff := filter.PolicyConfig{LibpodPodCreate: filter.LibpodPodCreateOptions{
+			AllowedInfraImageRegistries: []string{"docker.io"},
+		}}
+		gateOn := gateOff
+		gateOn.LibpodPodCreate.AllowHostPID = true
+
+		wantDenied(t, send(t, gateOff, "/libpod/pods/create", payload), "libpod pod create denied: host PID namespace is not allowed")
+
+		rec := send(t, gateOn, "/libpod/pods/create", payload)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status with allow_host_pid = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+		}
+		var pod libpodPodCreateResponse
+		if err := json.NewDecoder(rec.Body).Decode(&pod); err != nil {
+			t.Fatalf("decode pod create response: %v", err)
+		}
+		if pod.Id == "" {
+			t.Fatal("expected libpod pod create response Id")
+		}
+		t.Cleanup(func() { removeLibpodPod(t, socketPath, apiVersion, pod.Id) })
+
+		infraID := libpodPodInfraContainerID(t, socketPath, apiVersion, pod.Id)
+		if pidMode, _ := libpodContainerNamespaceModes(t, socketPath, apiVersion, infraID); pidMode != "host" {
+			t.Fatalf("infra container PidMode = %q, want %q", pidMode, "host")
+		}
+	})
+
+	t.Run("container utsns host", func(t *testing.T) {
+		payload := `{"image":"` + busyboxPinnedRef + `","command":["sleep","30"],"systemd":"false","utsns":{"nsmode":"host"}}`
+		gateOn := filter.PolicyConfig{LibpodContainerCreate: filter.LibpodContainerCreateOptions{AllowHostUTS: true}}
+
+		wantDenied(t, send(t, filter.PolicyConfig{}, "/libpod/containers/create", payload), "libpod container create denied: host UTS namespace is not allowed")
+
+		rec := send(t, gateOn, "/libpod/containers/create", payload)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status with allow_host_uts = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+		}
+		var created libpodContainerCreateResponse
+		if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+			t.Fatalf("decode create response: %v", err)
+		}
+		if created.Id == "" {
+			t.Fatal("expected libpod create response Id")
+		}
+		t.Cleanup(func() { removeLibpodContainer(t, socketPath, apiVersion, created.Id) })
+
+		if _, utsMode := libpodContainerNamespaceModes(t, socketPath, apiVersion, created.Id); utsMode != "host" {
+			t.Fatalf("container UTSMode = %q, want %q", utsMode, "host")
+		}
+	})
+}
+
 // TestLibpodExecHonorsSharedRequestBodyExecConfigAgainstRealPodman pins #148
 // design decision C3: libpod exec create/start are gated by the SAME
 // request_body.exec config (filter.ExecOptions) as the Docker-compat exec

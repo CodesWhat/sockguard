@@ -37,16 +37,20 @@ import (
 // POST /libpod/containers/create. Field names mirror ContainerCreateOptions
 // where the underlying semantics map onto a libpod equivalent, so operator
 // knowledge transfers between the Docker-compat and native surfaces; two
-// fields (AllowSystemdMode, AllowCustomIDMappings) have no Docker analog.
+// fields (AllowSystemdMode, AllowCustomIDMappings) have no Docker analog,
+// and AllowHostUTS has no compat option to mirror, because the compat create
+// refuses a host UTS namespace unconditionally.
 type LibpodContainerCreateOptions struct {
 	AllowPrivileged bool
-	// AllowHostNetwork/PID/IPC/UserNS each permit that namespace object's
-	// nsmode "host" and "path", and while false refuse any nsmode this
-	// package doesn't know (see libpod_namespace.go).
+	// AllowHostNetwork/PID/IPC/UserNS/UTS/CgroupNS each permit that
+	// namespace object's nsmode "host" and "path", and while false refuse
+	// any nsmode this package doesn't know (see libpod_namespace.go).
 	AllowHostNetwork  bool
 	AllowHostPID      bool
 	AllowHostIPC      bool
 	AllowHostUserNS   bool
+	AllowHostUTS      bool
+	AllowHostCgroupNS bool
 	AllowedBindMounts []string
 	AllowAllDevices   bool
 	AllowedDevices    []string
@@ -110,6 +114,8 @@ type libpodContainerCreatePolicy struct {
 	allowHostPID      bool
 	allowHostIPC      bool
 	allowHostUserNS   bool
+	allowHostUTS      bool
+	allowHostCgroupNS bool
 	allowedBindMounts []string
 	allowAllDevices   bool
 	allowedDevices    []string
@@ -171,6 +177,8 @@ func newLibpodContainerCreatePolicy(opts LibpodContainerCreateOptions) libpodCon
 		allowHostPID:                      opts.AllowHostPID,
 		allowHostIPC:                      opts.AllowHostIPC,
 		allowHostUserNS:                   opts.AllowHostUserNS,
+		allowHostUTS:                      opts.AllowHostUTS,
+		allowHostCgroupNS:                 opts.AllowHostCgroupNS,
 		allowedBindMounts:                 allowedBindMounts,
 		allowAllDevices:                   opts.AllowAllDevices,
 		allowedDevices:                    allowedDevices,
@@ -306,10 +314,10 @@ func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Reques
 	return "", nil
 }
 
-// denyHostNamespaceReason holds netns, pidns, ipcns and userns to their host
-// gates. While a gate is off its namespace can't be the host's, can't be
-// joined by path, and can't use a mode this package doesn't know (see
-// libpod_namespace.go).
+// denyHostNamespaceReason holds netns, pidns, ipcns, userns, utsns and
+// cgroupns to their host gates. While a gate is off its namespace can't be
+// the host's, can't be joined by path, and can't use a mode this package
+// doesn't know (see libpod_namespace.go).
 func (p libpodContainerCreatePolicy) denyHostNamespaceReason(req libpodContainerCreateRequest) string {
 	gates := [...]struct {
 		allowed bool
@@ -320,6 +328,8 @@ func (p libpodContainerCreatePolicy) denyHostNamespaceReason(req libpodContainer
 		{p.allowHostPID, libpodPidNS, req.PidNS},
 		{p.allowHostIPC, libpodIpcNS, req.IpcNS},
 		{p.allowHostUserNS, libpodUserNS, req.UserNS},
+		{p.allowHostUTS, libpodUtsNS, req.UtsNS},
+		{p.allowHostCgroupNS, libpodCgroupNS, req.CgroupNS},
 	}
 	for _, g := range gates {
 		if g.allowed {

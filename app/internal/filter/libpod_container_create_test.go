@@ -182,6 +182,8 @@ func TestLibpodContainerCreateHostNamespaceGates(t *testing.T) {
 		{"host pid", "host_pid.json", LibpodContainerCreateOptions{AllowHostPID: true}},
 		{"host ipc", "host_ipc.json", LibpodContainerCreateOptions{AllowHostIPC: true}},
 		{"host userns", "host_userns.json", LibpodContainerCreateOptions{AllowHostUserNS: true}},
+		{"host uts", "host_uts.json", LibpodContainerCreateOptions{AllowHostUTS: true}},
+		{"host cgroupns", "host_cgroupns.json", LibpodContainerCreateOptions{AllowHostCgroupNS: true}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
