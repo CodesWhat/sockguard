@@ -1253,6 +1253,11 @@ func mutateJSONBody(r *http.Request, mutate func(map[string]any) error) error {
 	// identical map[string]any that it walks and throws away, which measured
 	// as 39% of this pass's allocated bytes and 43% of its allocations on a
 	// realistic container-create body. Same walk, same verdict, one decode.
+	//
+	// The walk also refuses a key holding a character the engines' JSON
+	// decoders match to a field name differently. The re-marshal below keeps
+	// an unknown key exactly as the client spelled it, so stamping a body
+	// doesn't make such a key safe.
 	if err := filter.RejectDuplicateCaseVariantJSONValue(decoded); err != nil {
 		return fmt.Errorf("ambiguous request body: %w", err)
 	}

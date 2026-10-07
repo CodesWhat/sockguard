@@ -104,7 +104,6 @@ func TestLibpodContainerCreateNamespaceHostGateIsAnAllowlist(t *testing.T) {
 		{"a mode Podman doesn't have", `{"nsmode":"hostns"}`, `libpod container create denied: %s namespace mode "hostns" is not recognized`},
 		{"private in another case", `{"nsmode":"Private"}`, `libpod container create denied: %s namespace mode "Private" is not recognized`},
 		{"the CLI spelling ns:", `{"nsmode":"ns","value":"/proc/1/ns/x"}`, `libpod container create denied: %s namespace mode "ns" is not recognized`},
-		{"path as the last of two nsmodes", `{"nsmode":"private","nsmode":"path","value":"/proc/1/ns/x"}`, "libpod container create denied: %s namespace joined by path is not allowed"},
 		{"path under upper-case keys", `{"NSMODE":"path","VALUE":"/proc/1/ns/x"}`, "libpod container create denied: %s namespace joined by path is not allowed"},
 	}
 	for _, c := range libpodNamespaceGateCases {
@@ -122,6 +121,60 @@ func TestLibpodContainerCreateNamespaceHostGateIsAnAllowlist(t *testing.T) {
 				policy := newLibpodContainerCreatePolicy(libpodGateOptions(""))
 				if reason := inspectLibpod(t, policy, body); reason != "" {
 					t.Fatalf("inspect() reason = %q, want empty", reason)
+				}
+			})
+		}
+	}
+}
+
+// repeatedKeyReason is the reason a body is refused for when first and
+// second are sibling keys that fold to one name.
+func repeatedKeyReason(first, second string) string {
+	return fmt.Sprintf("request body denied: duplicate case-variant JSON keys %q and %q", first, second)
+}
+
+// TestLibpodCreateRepeatedNamespaceKeyIsRefused pins that a namespace given
+// twice, or one whose nsmode is, never reaches the gates. Which of the two a
+// decoder keeps is the engine's business, and the engines don't all agree, so
+// the body is refused whether the last one is the harmless one or not and
+// whatever the gates say.
+func TestLibpodCreateRepeatedNamespaceKeyIsRefused(t *testing.T) {
+	tests := []struct {
+		body string
+		want string
+	}{
+		{`{"pidns":{"nsmode":"private","nsmode":"path","value":"/proc/1/ns/x"}}`, repeatedKeyReason("nsmode", "nsmode")},
+		{`{"pidns":{"nsmode":"path","nsmode":"private"}}`, repeatedKeyReason("nsmode", "nsmode")},
+		{`{"cgroupns":{"nsmode":"path","nsmode":"private"}}`, repeatedKeyReason("nsmode", "nsmode")},
+		{`{"pidns":{"nsmode":"host"},"pidns":{"nsmode":"private"}}`, repeatedKeyReason("pidns", "pidns")},
+		{`{"utsns":{"nsmode":"host"},"utsns":{"nsmode":"private"}}`, repeatedKeyReason("utsns", "utsns")},
+		{`{"pidns":{"nsmode":"private"},"PIDNS":{"nsmode":"host"}}`, repeatedKeyReason("pidns", "PIDNS")},
+		{`{"pidns":{"nsmode":"host"},"pidns":null}`, repeatedKeyReason("pidns", "pidns")},
+		{`{"pidns":{"nsmode":"host","nsmode":null}}`, repeatedKeyReason("nsmode", "nsmode")},
+	}
+	gates := []struct {
+		name      string
+		container LibpodContainerCreateOptions
+		pod       LibpodPodCreateOptions
+	}{
+		{"every gate off", LibpodContainerCreateOptions{AllowSystemdMode: true}, LibpodPodCreateOptions{}},
+		{"every gate on", libpodGateOptions(""), libpodPodGateOptions("")},
+	}
+	for _, tt := range tests {
+		for _, g := range gates {
+			t.Run(tt.body+"/container/"+g.name, func(t *testing.T) {
+				policy := newLibpodContainerCreatePolicy(g.container)
+				if reason := inspectLibpod(t, policy, []byte(tt.body)); reason != tt.want {
+					t.Fatalf("inspect() reason = %q, want %q", reason, tt.want)
+				}
+			})
+			if strings.Contains(tt.body, "cgroupns") {
+				continue // a pod has no cgroupns
+			}
+			t.Run(tt.body+"/pod/"+g.name, func(t *testing.T) {
+				policy := newLibpodPodCreatePolicy(g.pod)
+				if reason := inspectLibpodPod(t, policy, []byte(tt.body)); reason != tt.want {
+					t.Fatalf("inspect() reason = %q, want %q", reason, tt.want)
 				}
 			})
 		}
@@ -151,11 +204,6 @@ func TestLibpodContainerCreateNamespaceModesThatPassWithEveryGateOff(t *testing.
 		`{"userns":{"nsmode":"auto","value":"size=4096"}}`,
 		`{"userns":{"nsmode":"keep-id"}}`,
 		`{"userns":{"nsmode":"no-map"}}`,
-		// The last nsmode is the one Podman keeps.
-		`{"pidns":{"nsmode":"path","nsmode":"private"}}`,
-		`{"pidns":{"nsmode":"host"},"pidns":{"nsmode":"private"}}`,
-		`{"utsns":{"nsmode":"host"},"utsns":{"nsmode":"private"}}`,
-		`{"cgroupns":{"nsmode":"path","nsmode":"private"}}`,
 	}
 	for _, body := range bodies {
 		t.Run(body, func(t *testing.T) {
@@ -343,10 +391,7 @@ func inspectLibpodPod(t *testing.T, policy libpodPodCreatePolicy, body []byte) s
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/v5.8.6/libpod/pods/create", strings.NewReader(string(body)))
 	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
-	if err != nil {
-		t.Fatalf("inspect() error = %v", err)
-	}
-	return reason
+	return inspectorDenyReason(t, reason, err)
 }
 
 // TestLibpodPodCreateNamespaceHostGateIsAnAllowlist drives every namespace a
@@ -369,8 +414,23 @@ func TestLibpodPodCreateNamespaceHostGateIsAnAllowlist(t *testing.T) {
 		{"a mode Podman doesn't have", `{"nsmode":"hostns"}`, `libpod pod create denied: %s namespace mode "hostns" is not recognized`},
 		{"private in another case", `{"nsmode":"Private"}`, `libpod pod create denied: %s namespace mode "Private" is not recognized`},
 		{"the CLI spelling ns:", `{"nsmode":"ns","value":"/proc/1/ns/x"}`, `libpod pod create denied: %s namespace mode "ns" is not recognized`},
-		{"path as the last of two nsmodes", `{"nsmode":"private","nsmode":"path","value":"/proc/1/ns/x"}`, "libpod pod create denied: %s namespace joined by path is not allowed"},
 		{"path under upper-case keys", `{"NSMODE":"path","VALUE":"/proc/1/ns/x"}`, "libpod pod create denied: %s namespace joined by path is not allowed"},
+	}
+	// podman-remote sends every namespace on a pod create, so the one under
+	// test replaces its entry there rather than following it.
+	podmanRemote := map[string]string{"netns": `{}`, "pidns": `{"nsmode":"private"}`, "ipcns": `{"nsmode":"private"}`, "userns": `{}`, "utsns": `{"nsmode":"private"}`}
+	amongPodmanRemotes := func(field, namespace string) string {
+		var b strings.Builder
+		b.WriteString(`{"shared_namespaces":["ipc","net","uts"]`)
+		for _, other := range libpodPodNamespaceGateCases {
+			value := podmanRemote[other.field]
+			if other.field == field {
+				value = namespace
+			}
+			fmt.Fprintf(&b, ",%q:%s", other.field, value)
+		}
+		b.WriteString(`}`)
+		return b.String()
 	}
 	for _, c := range libpodPodNamespaceGateCases {
 		for _, mode := range modes {
@@ -378,9 +438,8 @@ func TestLibpodPodCreateNamespaceHostGateIsAnAllowlist(t *testing.T) {
 			bodies := map[string]string{
 				"":                         fmt.Sprintf(`{%q:%s}`, c.field, mode.namespace),
 				" under an upper-case key": fmt.Sprintf(`{%q:%s}`, strings.ToUpper(c.field), mode.namespace),
-				" as the last of two":      fmt.Sprintf(`{%q:{"nsmode":"private"},%q:%s}`, c.field, c.field, mode.namespace),
 				" on a pod with no infra":  fmt.Sprintf(`{"no_infra":true,%q:%s}`, c.field, mode.namespace),
-				" among podman-remote's":   fmt.Sprintf(`{"netns":{},"pidns":{"nsmode":"private"},"ipcns":{"nsmode":"private"},"userns":{},"utsns":{"nsmode":"private"},"shared_namespaces":["ipc","net","uts"],%q:%s}`, c.field, mode.namespace),
+				" among podman-remote's":   amongPodmanRemotes(c.field, mode.namespace),
 			}
 			for spelling, body := range bodies {
 				t.Run(c.field+"/"+mode.name+spelling+"/only its own gate off", func(t *testing.T) {
@@ -435,9 +494,6 @@ func TestLibpodPodCreateNamespaceModesThatPassWithEveryGateOff(t *testing.T) {
 		`{"userns":{"nsmode":"auto","value":"size=4096"}}`,
 		`{"userns":{"nsmode":"keep-id"}}`,
 		`{"userns":{"nsmode":"no-map"}}`,
-		// The last nsmode is the one Podman keeps.
-		`{"pidns":{"nsmode":"path","nsmode":"private"}}`,
-		`{"pidns":{"nsmode":"host"},"pidns":{"nsmode":"private"}}`,
 	}
 	for _, body := range bodies {
 		t.Run(body, func(t *testing.T) {

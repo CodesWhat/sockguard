@@ -25,8 +25,8 @@ import (
 //   - tokenCaseVariantReference applies the scan's rule to json.Decoder's own
 //     tokenizer. It shares the rule and none of the parsing, so it is the
 //     equality oracle for every body encoding/json can parse — which is the
-//     only class of body that matters, because all four call sites re-parse
-//     with encoding/json immediately after the guard and reject there.
+//     only class of body that matters, because every call site re-parses
+//     with encoding/json immediately after the guard and rejects there.
 
 // decodeCaseVariantOracle decodes body into a tree and walks it, which is what
 // RejectDuplicateCaseVariantJSONKeys did before it became a byte scan. It
@@ -43,7 +43,8 @@ func decodeCaseVariantOracle(body []byte) (duplicate bool, decodeErr error) {
 }
 
 // tokenCaseVariantReference is the scan's rule expressed against
-// json.Decoder.Token: same sibling fold-check, same one-level data-map
+// json.Decoder.Token: same decoder-divergent character check on every key,
+// same sibling fold-check, same one-level data-map
 // exemption, same recursion into an exempt value, same nesting cap, and like
 // json.Decoder.Decode it consumes one value and ignores what follows. It is
 // far slower than the byte scan (Token boxes and allocates every token), which
@@ -83,6 +84,10 @@ func tokenCaseVariantReference(body []byte) error {
 				finishValue()
 				nextSkip = false
 				continue
+			}
+			// A data map's keys included, as in the scan.
+			if _, divergent := decoderDivergentKeyRune(key); divergent {
+				return errDecoderDivergentKey
 			}
 			if !top.skip {
 				for _, prev := range top.keys {
@@ -179,6 +184,23 @@ var caseVariantScanBodies = []string{
 	`{"emptykey":"","":1,"":2}`,
 	`{"x":"a\"}\"b","X":1}`,
 	`{"x":"[{,:","X":1}`,
+	// Characters the decoders fold differently, as a field name, inside a
+	// data map, escaped, and under an array; then keys that are merely
+	// non-ASCII, which stay legal.
+	"{\"pr\u0130vileged\":true}",
+	"{\"HostConfig\":{\"Pr\u0130v\u0130leged\":true}}",
+	"{\"Labels\":{\"\u0130\":\"1\"}}",
+	"{\"Labels\":{\"a\":\"1\"},\"Mounts\":[{\"\u017fource\":\"/\"}]}",
+	"{\"\u212Aey\":1}",
+	"{\"d\u0131r\":1}",
+	`{"pr\u0130vileged":true}`,
+	`{"env":{"\u017F":"1"}}`,
+	"{\"Labels\":{\"\u043a\u043b\u044e\u0447\":\"1\",\"\u65e5\u672c\":\"2\",\"caf\u00e9\":\"3\"}}",
+	"{\"\u00fcber\":1,\"\u00dcBER\":2}",
+	"{\"a\xff\u0130\":1}",
+	`{"env":{"http_proxy":"a","HTTP_PROXY":"b"},"secret_env":{"K":"s","k":"t"}}`,
+	`{"Networks":{"Web":{"aliases":["a"]},"web":{"aliases":["b"]}}}`,
+	`{"Networks":{"web":{"static_mac":"a","STATIC_MAC":"b"}}}`,
 }
 
 // TestCaseVariantScanMatchesTokenReference is the equality check: for every
@@ -324,8 +346,8 @@ func TestCaseVariantScanIsAllocationFree(t *testing.T) {
 // FuzzDuplicateCaseVariantKeyScan holds the byte scan to both oracles on
 // arbitrary bytes: it must agree with the token reference on everything
 // encoding/json can parse, and it must still reject everything the tree form
-// called ambiguous. The scan runs before any policy decision at four call
-// sites, so a body it accepts and the tree form rejected is a filter bypass.
+// called ambiguous. The scan runs before any policy decision at every call
+// site, so a body it accepts and the tree form rejected is a filter bypass.
 func FuzzDuplicateCaseVariantKeyScan(f *testing.F) {
 	for _, seed := range caseVariantScanBodies {
 		f.Add([]byte(seed))

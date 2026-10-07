@@ -635,7 +635,7 @@ func TestServeChainNamespaceJoinedByPathNeedsTheHostGate(t *testing.T) {
 		{name: "libpod utsns path", send: libpod(`"utsns":{"nsmode":"path","value":"/proc/1/ns/uts"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: UTS namespace joined by path is not allowed"},
 		{name: "libpod cgroupns path", send: libpod(`"cgroupns":{"nsmode":"path","value":"/proc/1/ns/cgroup"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: cgroup namespace joined by path is not allowed"},
 		{name: "libpod utsns host under an upper-case key", send: libpod(`"UTSNS":{"NSMode":"host"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: host UTS namespace is not allowed"},
-		{name: "libpod cgroupns path as the last of two cgroupns", send: libpod(`"cgroupns":{"nsmode":"private"},"cgroupns":{"nsmode":"path","value":"/proc/1/ns/cgroup"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: cgroup namespace joined by path is not allowed"},
+		{name: "libpod cgroupns path as the last of two cgroupns", send: libpod(`"cgroupns":{"nsmode":"private"},"cgroupns":{"nsmode":"path","value":"/proc/1/ns/cgroup"}`), wantStatus: http.StatusBadRequest, wantReason: repeatedKeyChainReason("cgroupns", "cgroupns")},
 		{name: "libpod utsns with a mode Podman doesn't have", send: libpod(`"utsns":{"nsmode":"hostns"}`), wantStatus: http.StatusForbidden, wantReason: `libpod container create denied: UTS namespace mode "hostns" is not recognized`},
 		{name: "libpod cgroupns with an IPC mode", send: libpod(`"cgroupns":{"nsmode":"shareable"}`), wantStatus: http.StatusForbidden, wantReason: `libpod container create denied: cgroup namespace mode "shareable" is not recognized`},
 		{
@@ -648,28 +648,19 @@ func TestServeChainNamespaceJoinedByPathNeedsTheHostGate(t *testing.T) {
 		// The keys the way encoding/json matches them.
 		{name: "libpod pidns path under an upper-case key", send: libpod(`"PIDNS":{"NSMode":"path","Value":"/proc/1/ns/pid"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: PID namespace joined by path is not allowed"},
 		{
-			// encoding/json folds U+017F, the long s, onto s.
+			// encoding/json folds U+017F, the long s, onto s, and Podman 6's
+			// decoder doesn't, so the key is refused before either reads it.
 			name:       "libpod pidns path under a key with a long s",
 			send:       libpod("\"pidn\u017f\":{\"nsmode\":\"path\",\"value\":\"/proc/1/ns/pid\"}"),
-			wantStatus: http.StatusForbidden,
-			wantReason: "libpod container create denied: PID namespace joined by path is not allowed",
+			wantStatus: http.StatusBadRequest,
+			wantReason: `request body denied: ambiguous JSON object key "pidn\u017f": U+017F matches a field name in some JSON decoders and not in others`,
 		},
-		{name: "libpod pidns path as the last of two nsmodes", send: libpod(`"pidns":{"nsmode":"private","nsmode":"path","value":"/proc/1/ns/pid"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: PID namespace joined by path is not allowed"},
-		{name: "libpod pidns path as the last of two pidns", send: libpod(`"pidns":{"nsmode":"private"},"pidns":{"nsmode":"path","value":"/proc/1/ns/pid"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: PID namespace joined by path is not allowed"},
-		{
-			// A repeated key decodes into the same struct, so the mode of one
-			// and the value of the other add up.
-			name:       "libpod pidns path split across two spellings",
-			send:       libpod(`"pidns":{"value":"/proc/1/ns/pid"},"PidNS":{"nsmode":"path"}`),
-			wantStatus: http.StatusForbidden,
-			wantReason: "libpod container create denied: PID namespace joined by path is not allowed",
-		},
-		{
-			// The last nsmode wins, and Podman refuses a value on `private`.
-			name:       "libpod pidns path as the first of two nsmodes",
-			send:       libpod(`"pidns":{"nsmode":"path","value":"/proc/1/ns/pid","nsmode":"private"}`),
-			wantStatus: http.StatusInternalServerError,
-		},
+		// A repeated key is refused whichever of the two a decoder would
+		// keep, and however the two would add up.
+		{name: "libpod pidns path as the last of two nsmodes", send: libpod(`"pidns":{"nsmode":"private","nsmode":"path","value":"/proc/1/ns/pid"}`), wantStatus: http.StatusBadRequest, wantReason: repeatedKeyChainReason("nsmode", "nsmode")},
+		{name: "libpod pidns path as the last of two pidns", send: libpod(`"pidns":{"nsmode":"private"},"pidns":{"nsmode":"path","value":"/proc/1/ns/pid"}`), wantStatus: http.StatusBadRequest, wantReason: repeatedKeyChainReason("pidns", "pidns")},
+		{name: "libpod pidns path split across two spellings", send: libpod(`"pidns":{"value":"/proc/1/ns/pid"},"PidNS":{"nsmode":"path"}`), wantStatus: http.StatusBadRequest, wantReason: repeatedKeyChainReason("pidns", "PidNS")},
+		{name: "libpod pidns path as the first of two nsmodes", send: libpod(`"pidns":{"nsmode":"path","value":"/proc/1/ns/pid","nsmode":"private"}`), wantStatus: http.StatusBadRequest, wantReason: repeatedKeyChainReason("nsmode", "nsmode")},
 
 		// Modes Podman doesn't have, and namespaces that aren't objects. Podman
 		// answers the first three with a 500, and they don't get that far.
@@ -851,17 +842,12 @@ func TestServeChainNamespaceJoinedByPathNeedsTheHostGate(t *testing.T) {
 		{
 			name:       "pod pidns path under a key with a long s",
 			send:       pod("\"pidn\u017f\":{\"nsmode\":\"path\",\"value\":\"/proc/1/ns/pid\"}"),
-			wantStatus: http.StatusForbidden,
-			wantReason: "libpod pod create denied: PID namespace joined by path is not allowed",
+			wantStatus: http.StatusBadRequest,
+			wantReason: `request body denied: ambiguous JSON object key "pidn\u017f": U+017F matches a field name in some JSON decoders and not in others`,
 		},
-		{name: "pod utsns host as the last of two utsns", send: pod(`"utsns":{"nsmode":"private"},"utsns":{"nsmode":"host"}`), wantStatus: http.StatusForbidden, wantReason: "libpod pod create denied: host UTS namespace is not allowed"},
-		{name: "pod ipcns path split across two spellings", send: pod(`"ipcns":{"value":"/proc/1/ns/ipc"},"IpcNS":{"nsmode":"path"}`), wantStatus: http.StatusForbidden, wantReason: "libpod pod create denied: IPC namespace joined by path is not allowed"},
-		{
-			// The last nsmode wins, and Podman refuses a value on `private`.
-			name:       "pod pidns path as the first of two nsmodes",
-			send:       pod(`"pidns":{"nsmode":"path","value":"/proc/1/ns/pid","nsmode":"private"}`),
-			wantStatus: http.StatusInternalServerError,
-		},
+		{name: "pod utsns host as the last of two utsns", send: pod(`"utsns":{"nsmode":"private"},"utsns":{"nsmode":"host"}`), wantStatus: http.StatusBadRequest, wantReason: repeatedKeyChainReason("utsns", "utsns")},
+		{name: "pod ipcns path split across two spellings", send: pod(`"ipcns":{"value":"/proc/1/ns/ipc"},"IpcNS":{"nsmode":"path"}`), wantStatus: http.StatusBadRequest, wantReason: repeatedKeyChainReason("ipcns", "IpcNS")},
+		{name: "pod pidns path as the first of two nsmodes", send: pod(`"pidns":{"nsmode":"path","value":"/proc/1/ns/pid","nsmode":"private"}`), wantStatus: http.StatusBadRequest, wantReason: repeatedKeyChainReason("nsmode", "nsmode")},
 
 		// Modes Podman doesn't have, and namespaces that aren't objects.
 		// Podman answers the first two with a 500, and they don't get that far.
@@ -1131,6 +1117,12 @@ func TestServeChainNamespaceJoinedByPathNeedsTheHostGate(t *testing.T) {
 			}
 		})
 	}
+}
+
+// repeatedKeyChainReason is the reason a body is refused for when first and
+// second are sibling keys that fold to one name.
+func repeatedKeyChainReason(first, second string) string {
+	return fmt.Sprintf("request body denied: duplicate case-variant JSON keys %q and %q", first, second)
 }
 
 func sendNamespaceChainRequest(t *testing.T, target, body string) (int, []byte) {

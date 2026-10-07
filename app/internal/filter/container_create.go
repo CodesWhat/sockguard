@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/codeswhat/sockguard/app/internal/imagefetch"
 	"github.com/codeswhat/sockguard/app/internal/imagetrust"
@@ -546,6 +547,12 @@ func soleFoldedRawKey(m map[string]json.RawMessage, canonical string) (string, e
 // a malformed body may be reported as a syntax error or walked past, because
 // every caller re-parses the same bytes with encoding/json on the next line and
 // rejects there. What it may never do is miss a duplicate in a body that parses.
+//
+// It also refuses any object key, a data map's included, that holds a
+// character the engines' JSON decoders don't all match to a field name the
+// same way; see isDecoderDivergentKeyRune. And since readBoundedBody runs it
+// through rejectAmbiguousBodyKeys, it now sees every body an inspector
+// decodes, not only the ones about to be rewritten.
 func RejectDuplicateCaseVariantJSONKeys(body []byte) error {
 	s := caseVariantKeyScanner{body: body}
 	return s.scanValue(0, false)
@@ -563,7 +570,7 @@ func RejectDuplicateCaseVariantJSONKeys(body []byte) error {
 //
 // This form cannot see byte-identical duplicate keys, which the decode that
 // produced v has already collapsed; only the byte-taking form above rejects
-// those.
+// those. It does refuse the same decoder-divergent key characters.
 func RejectDuplicateCaseVariantJSONValue(v any) error {
 	return checkDuplicateCaseVariantKeys(v, false)
 }
@@ -660,6 +667,12 @@ func (s *caseVariantKeyScanner) scanObject(depth int, skip bool) error {
 		}
 		key, err := s.scanString()
 		if err != nil {
+			return err
+		}
+		// Every key, a data map's included: skip only spares a map's entries
+		// the sibling fold-check, and a character the decoders disagree on is
+		// refused wherever it sits.
+		if err := s.rejectDecoderDivergentKey(key); err != nil {
 			return err
 		}
 		if !skip {
@@ -831,7 +844,11 @@ func (s *caseVariantKeyScanner) recordSiblingKey(
 }
 
 func (s *caseVariantKeyScanner) duplicateKeyError(prev, key caseVariantKeySpan) error {
-	return fmt.Errorf("duplicate case-variant JSON keys %q and %q", s.keyString(prev), s.keyString(key))
+	return duplicateCaseVariantKeysError(s.keyString(prev), s.keyString(key))
+}
+
+func duplicateCaseVariantKeysError(prev, key string) error {
+	return fmt.Errorf("duplicate case-variant JSON keys %q and %q", echoRefusedKey(prev), echoRefusedKey(key))
 }
 
 // canonicalFoldKey returns the representative of key under the same case-fold
@@ -867,6 +884,32 @@ func foldClassMinimum(r rune) rune {
 		minimum = min(minimum, f)
 	}
 	return minimum
+}
+
+// rejectDecoderDivergentKey refuses a key holding a character
+// isDecoderDivergentKeyRune names. An unescaped literal is checked in place;
+// one carrying an escape is decoded first, so "pr\u0130vileged" is caught
+// like the literal character.
+func (s *caseVariantKeyScanner) rejectDecoderDivergentKey(k caseVariantKeySpan) error {
+	if !k.escaped && keyBytesAreASCII(s.body[k.start+1:k.end-1]) {
+		// Every key a real client sends as a field name, settled without
+		// materializing it.
+		return nil
+	}
+	key := s.keyString(k)
+	if r, found := decoderDivergentKeyRune(key); found {
+		return decoderDivergentKeyError(key, r)
+	}
+	return nil
+}
+
+func keyBytesAreASCII(b []byte) bool {
+	for _, c := range b {
+		if c >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
 }
 
 // keysFoldEqual compares two key spans the way strings.EqualFold would compare
@@ -910,13 +953,13 @@ func (s *caseVariantKeyScanner) keyIsCaseSensitiveDataMapField(k caseVariantKeyS
 	n := 0
 	for _, r := range string(s.body[k.start+1 : k.end-1]) {
 		lr := unicode.ToLower(r)
-		if lr < 'a' || lr > 'z' || n == len(lowered) {
-			// Every name is lowercase ASCII letters, so a rune that lowers
-			// outside a-z, or a key longer than the longest name, cannot be
-			// part of one.
+		if (lr != '_' && (lr < 'a' || lr > 'z')) || n == len(lowered) {
+			// Every name is lowercase ASCII letters and underscores, so a
+			// rune that lowers to anything else, or a key longer than the
+			// longest name, cannot be part of one.
 			return false
 		}
-		lowered[n] = byte(lr) // #nosec G115 -- lr is bounded to 'a'..'z' by the check above.
+		lowered[n] = byte(lr) // #nosec G115 -- lr is '_' or within 'a'..'z' by the check above.
 		n++
 	}
 	return isCaseSensitiveDataMapField(string(lowered[:n]))
@@ -953,12 +996,18 @@ func (s *caseVariantKeyScanner) putKeyBuf(depth int, keys []caseVariantKeySpan) 
 func checkDuplicateCaseVariantKeys(v any, skipKeyCheck bool) error {
 	switch t := v.(type) {
 	case map[string]any:
+		// Checked on every object, a data map's included; see scanObject.
+		for k := range t {
+			if r, found := decoderDivergentKeyRune(k); found {
+				return decoderDivergentKeyError(k, r)
+			}
+		}
 		if !skipKeyCheck {
 			keys := make([]string, 0, len(t))
 			for k := range t {
 				for _, prev := range keys {
 					if strings.EqualFold(prev, k) {
-						return fmt.Errorf("duplicate case-variant JSON keys %q and %q", prev, k)
+						return duplicateCaseVariantKeysError(prev, k)
 					}
 				}
 				keys = append(keys, k)
@@ -1011,6 +1060,25 @@ func checkDuplicateCaseVariantKeys(v any, skipKeyCheck bool) error {
 //	config                HostConfig.LogConfig.Config            map[string]string
 //	auxiliaryaddresses    IPAMConfig.AuxAddress     map[string]string
 //
+// and in Podman's native request types (pkg/specgen's SpecGenerator and
+// PodSpecGenerator, go.podman.io/common's libnetwork types, the runtime-spec
+// resources they embed, and entities.VolumeCreateOptions):
+//
+//	env, secret_env       SpecGenerator.Env, EnvSecrets          map[string]string
+//	sysctl                SpecGenerator/PodSpecGenerator.Sysctl  map[string]string
+//	storage_opts          SpecGenerator.StorageOpts              map[string]string
+//	expose                SpecGenerator.Expose                   map[uint16]string
+//	network_options       SpecGenerator/PodSpecGenerator.NetworkOptions map[string][]string
+//	networks              SpecGenerator.Networks, network connect map[string]PerNetworkOptions
+//	ipam_options          libnetwork Network.IPAMOptions         map[string]string
+//	unified               SpecGenerator.CgroupConf, LinuxResources.Unified map[string]string
+//	weightdevice          SpecGenerator.WeightDevice             map[string]LinuxWeightDevice
+//	throttle*device       SpecGenerator.Throttle{Read,Write}{Bps,IOPS}Device map[string]LinuxThrottleDevice
+//	label                 VolumeCreateOptions.Label              map[string]string
+//
+// `env` is the one a real client trips: an environment that sets both
+// `http_proxy` and `HTTP_PROXY` is two entries, not one key spelled twice.
+//
 // Bias is intentionally toward over-listing: a map field mistakenly omitted here
 // only produces a spurious rejection (fail-closed, never a bypass). Listing a
 // name that is elsewhere a struct is also safe — the exemption only suppresses
@@ -1018,9 +1086,9 @@ func checkDuplicateCaseVariantKeys(v any, skipKeyCheck bool) error {
 // nested structs (e.g. the IPAMConfig elements under IPAM.Config, a []struct)
 // keep their fold check; see checkDuplicateCaseVariantKeys.
 // caseSensitiveDataMapFieldMaxLen is the length of the longest name
-// isCaseSensitiveDataMapField accepts ("auxiliaryaddresses"), which bounds the
-// stack buffer keyIsCaseSensitiveDataMapField lowers a key into.
-const caseSensitiveDataMapFieldMaxLen = len("auxiliaryaddresses")
+// isCaseSensitiveDataMapField accepts ("throttlewriteiopsdevice"), which
+// bounds the stack buffer keyIsCaseSensitiveDataMapField lowers a key into.
+const caseSensitiveDataMapFieldMaxLen = len("throttlewriteiopsdevice")
 
 func isCaseSensitiveDataMapField(key string) bool {
 	switch strings.ToLower(key) {
@@ -1037,7 +1105,22 @@ func isCaseSensitiveDataMapField(key string) bool {
 		"driveropts",
 		"opts",
 		"config",
-		"auxiliaryaddresses":
+		"auxiliaryaddresses",
+		"env",
+		"secret_env",
+		"sysctl",
+		"storage_opts",
+		"expose",
+		"network_options",
+		"networks",
+		"ipam_options",
+		"unified",
+		"weightdevice",
+		"throttlereadbpsdevice",
+		"throttlewritebpsdevice",
+		"throttlereadiopsdevice",
+		"throttlewriteiopsdevice",
+		"label":
 		return true
 	default:
 		return false

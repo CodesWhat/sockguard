@@ -268,6 +268,10 @@ func (g *resourceLimitGuard) guardContainerUpdate(w http.ResponseWriter, r *http
 				policy.DenyResponseVerbosity, rp)
 			return
 		}
+		if rejection, ok := requestRejectionFromError(err); ok {
+			g.respondHardDeny(w, r, rejection.status, reasonCodeResourceLimitRequestInvalid, rejection.reason, policy.DenyResponseVerbosity, rp)
+			return
+		}
 		g.respondHardDeny(w, r, http.StatusBadRequest, reasonCodeResourceLimitRequestInvalid,
 			"container update denied: request body could not be read", policy.DenyResponseVerbosity, rp)
 		return
@@ -619,6 +623,10 @@ func (g *resourceLimitGuard) guardServiceWrite(w http.ResponseWriter, r *http.Re
 			g.respondHardDeny(w, r, http.StatusRequestEntityTooLarge, reasonCodeRequestBodyTooLarge,
 				fmt.Sprintf("service denied: request body exceeds %d byte limit", maxServiceBodyBytes),
 				policy.DenyResponseVerbosity, rp)
+			return
+		}
+		if rejection, ok := requestRejectionFromError(err); ok {
+			g.respondHardDeny(w, r, rejection.status, reasonCodeResourceLimitRequestInvalid, rejection.reason, policy.DenyResponseVerbosity, rp)
 			return
 		}
 		g.respondHardDeny(w, r, http.StatusBadRequest, reasonCodeResourceLimitRequestInvalid,

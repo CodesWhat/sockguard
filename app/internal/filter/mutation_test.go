@@ -475,14 +475,24 @@ func TestMutationFailuresDenyWithoutCallingUpstream(t *testing.T) {
 			wantCode:   reasonCodeMutationRequestInvalid,
 		},
 		{
+			// A repeated label is the one repeat that reaches the engine: a
+			// data map's entries are spared the check every inspected body
+			// gets first, and the engine's own scan still refuses them.
 			name:       "duplicate key JSON",
-			body:       []byte(`{"super-secret-label":"one","super-secret-label":"two"}`),
+			body:       []byte(`{"Labels":{"super-secret-label":"one","super-secret-label":"two"}}`),
 			mutation:   injectMutationOptions("duplicate"),
 			wantStatus: http.StatusBadRequest,
 			wantCode:   reasonCodeMutationRequestInvalid,
 			forbiddenLeaks: []string{
 				"super-secret-label",
 			},
+		},
+		{
+			name:       "duplicate field key JSON",
+			body:       []byte(`{"Image":"alpine","Image":"busybox"}`),
+			mutation:   injectMutationOptions("duplicate-field"),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   reasonCodeRequestBodyAmbiguous,
 		},
 		{
 			name:       "oversized JSON",
