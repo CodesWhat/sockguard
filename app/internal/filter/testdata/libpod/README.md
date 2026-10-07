@@ -118,7 +118,8 @@ the command it was given (`command`, and the command line echoed back in
 `host`.
 
 What these don't show is anything the server does with the body. That's read
-from Podman's source and cited next to the code.
+from Podman's source, cited next to the code, and run against a real Podman in
+`app/integration/podman_libpod_integration_test.go`.
 
 | File | Command | What it pins |
 |---|---|---|
