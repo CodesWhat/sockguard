@@ -1702,13 +1702,17 @@ func (p containerCreatePolicy) denyBindSpecReason(bind string) string {
 // builds from Binds (pkg/api/handlers/compat/containers_create.go:536-541), so
 // {"Volumes":{"/etc:/h":{}}} is a bind mount of the host's /etc there, and
 // {"Volumes":{"myvol:/d:O,upperdir=/etc,workdir=/mnt":{}}} is the overlay a
-// Binds entry spelled the same way would be. A key with no ":" in it is only
-// ever a container path on either engine and is skipped. The rest are sorted
-// first, so a body with two bad keys always names the same one.
+// Binds entry spelled the same way would be. Podman only mounts a key whose
+// destination is an absolute container path, and the destination always
+// follows a ":", so a key is checked only when it has ":/" in it. A container
+// path with a mode ("/data:z", "/data:ro,z", "/data:nocopy", as docker-py and
+// Ansible send) has no ":/" and passes. A whole "/abs:/abs" spec is checked on
+// any upstream, because on Podman it's a real bind. The checked keys are
+// sorted first, so a body with two bad keys always names the same one.
 func (p containerCreatePolicy) denyVolumeSpecReason(volumes map[string]struct{}) string {
 	var specs []string
 	for spec := range volumes {
-		if strings.Contains(spec, ":") {
+		if strings.Contains(spec, ":/") {
 			specs = append(specs, spec)
 		}
 	}

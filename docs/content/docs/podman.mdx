@@ -271,7 +271,7 @@ skipped instead of checked, so
 `{"mounts":[{"type":"bind","source":"../../../../etc","destination":"/h"}]}`
 passed with an empty allowlist.
 
-The Docker-compatible create has the overlay half of this when the upstream is
+The Docker-compatible create gets the overlay option check when the upstream is
 Podman. Podman parses a `HostConfig.Binds` entry as a `-v` argument, so
 `myvol:/dst:O,upperdir=/etc,workdir=/mnt` reaches the same overlay code.
 `request_body.container_create.allowed_bind_mounts` holds those directories
@@ -282,10 +282,13 @@ changes on a Docker upstream.
 Podman reads the keys of the top-level `Volumes` map as `-v` arguments too.
 To dockerd a key is the container path of an anonymous volume and nothing
 more, but on Podman `{"Volumes":{"/etc:/h":{}}}` bind-mounts the host's
-`/etc`. Before 2.2.6 Sockguard didn't read that field. A key with a `:` in it
-now gets the checks a `Binds` entry does, source and overlay options both. A
-key without one is a container path on either engine and isn't touched, and
-that's every key a Docker client sends.
+`/etc`. Before 2.2.6 Sockguard didn't read that field. A key with a `:/` in it
+now gets the checks a `Binds` entry does, source and overlay options both.
+Podman only mounts a key whose destination is an absolute container path, and
+the destination follows a `:`. So a container path with a mode (`/data:z`,
+`/data:ro,z`, `/data:nocopy`, as docker-py and Ansible send) passes, and a key
+that is a whole `/abs:/abs` spec is checked on any upstream, because on Podman
+it's a real bind.
 
 ### What a Working Client Hits
 

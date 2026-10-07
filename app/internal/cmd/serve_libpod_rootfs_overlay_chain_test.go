@@ -777,6 +777,15 @@ func TestServeChainLibpodRootfsAndOverlayNeedTheBindMountAllowlist(t *testing.T)
 			wantCreated: created("anonymous=/data"),
 		},
 		{
+			// docker-py list-form volumes with a mode: the key is a container
+			// path plus a mode, and the bind rides in HostConfig.Binds.
+			name:        "compat docker-py Volumes key with a mode reaches the daemon",
+			configure:   func(body *gates) { body.ContainerCreate.AllowedBindMounts = []string{"/srv/ok"} },
+			send:        request{compatCreate, `{"Image":"alpine","Volumes":{"/data:z":{}},"HostConfig":{"Binds":["/srv/ok:/data:z"]}}`},
+			wantStatus:  http.StatusCreated,
+			wantCreated: created("bind=/srv/ok:/data bind=/data:z"),
+		},
+		{
 			name:       "compat Volumes key that binds /etc is refused by default",
 			send:       compatVolumes(`"/etc:/h":{}`),
 			wantStatus: http.StatusForbidden,

@@ -43,8 +43,9 @@ type containerCreateRequest struct {
 	// created at. dockerd reads each key as a path and nothing else. A Podman
 	// upstream appends each key to the same "-v" list HostConfig.Binds feeds,
 	// so a key spelled "/etc:/h" is a bind mount there. See
-	// denyVolumeSpecReason in container_create.go, which checks the keys the
-	// way Binds entries are checked.
+	// denyVolumeSpecReason in container_create.go, which checks the keys that
+	// have ":/" in them the way Binds entries are checked. A container path
+	// with a mode ("/data:z") has none and passes.
 	Volumes map[string]struct{} `json:"Volumes"`
 	// MacAddress is the deprecated, top-level (pre-API-1.44) container-wide
 	// MAC address field. The daemon still honors it, applying it to the

@@ -333,6 +333,19 @@ func TestContainerCreateVolumesKeysAreBindSpecs(t *testing.T) {
 			body:    `{"Image":"a","Volumes":{"myvol:/d:O,upperdir=/srv/roots/upper,workdir=/srv/roots/work":{}}}`,
 		},
 
+		// Container paths with a mode. The first field is the container path,
+		// so none of these is a bind source.
+		{name: "container path with z", allowed: []string{"/srv/ok"}, body: `{"Image":"a","Volumes":{"/data:z":{}}}`},
+		{name: "container path with ro and z", allowed: []string{"/srv/ok"}, body: `{"Image":"a","Volumes":{"/data:ro,z":{}}}`},
+		{name: "container path with nocopy", allowed: []string{"/srv/ok"}, body: `{"Image":"a","Volumes":{"/data:nocopy":{}}}`},
+		{name: "container path with ro", allowed: []string{"/srv/ok"}, body: `{"Image":"a","Volumes":{"/data:ro":{}}}`},
+
+		{
+			name:       "Windows-drive source overlaying with its upper directory in /etc",
+			allowed:    []string{"/srv/ok"},
+			body:       `{"Image":"a","Volumes":{"C:\\x:/d:O,upperdir=/etc,workdir=/mnt":{}}}`,
+			wantReason: `container create denied: overlay option "upperdir=/etc" is not allowlisted (add its directory to allowed_bind_mounts)`,
+		},
 		{
 			name:       "key binding /etc with nothing allowlisted",
 			body:       `{"Image":"a","Volumes":{"/etc:/h":{}}}`,
