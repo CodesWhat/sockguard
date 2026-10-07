@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -52,6 +53,26 @@ var libpodHostNamespaceGates = []struct {
 		"libpod_pod_create.allow_host_network", "SOCKGUARD_REQUEST_BODY_LIBPOD_POD_CREATE_ALLOW_HOST_NETWORK",
 		func(c *RequestBodyConfig) *bool { return &c.LibpodPodCreate.AllowHostNetwork },
 		func(p *filter.PolicyConfig) *bool { return &p.LibpodPodCreate.AllowHostNetwork },
+	},
+	{
+		"libpod_pod_create.allow_host_pid", "SOCKGUARD_REQUEST_BODY_LIBPOD_POD_CREATE_ALLOW_HOST_PID",
+		func(c *RequestBodyConfig) *bool { return &c.LibpodPodCreate.AllowHostPID },
+		func(p *filter.PolicyConfig) *bool { return &p.LibpodPodCreate.AllowHostPID },
+	},
+	{
+		"libpod_pod_create.allow_host_ipc", "SOCKGUARD_REQUEST_BODY_LIBPOD_POD_CREATE_ALLOW_HOST_IPC",
+		func(c *RequestBodyConfig) *bool { return &c.LibpodPodCreate.AllowHostIPC },
+		func(p *filter.PolicyConfig) *bool { return &p.LibpodPodCreate.AllowHostIPC },
+	},
+	{
+		"libpod_pod_create.allow_host_userns", "SOCKGUARD_REQUEST_BODY_LIBPOD_POD_CREATE_ALLOW_HOST_USERNS",
+		func(c *RequestBodyConfig) *bool { return &c.LibpodPodCreate.AllowHostUserNS },
+		func(p *filter.PolicyConfig) *bool { return &p.LibpodPodCreate.AllowHostUserNS },
+	},
+	{
+		"libpod_pod_create.allow_host_uts", "SOCKGUARD_REQUEST_BODY_LIBPOD_POD_CREATE_ALLOW_HOST_UTS",
+		func(c *RequestBodyConfig) *bool { return &c.LibpodPodCreate.AllowHostUTS },
+		func(p *filter.PolicyConfig) *bool { return &p.LibpodPodCreate.AllowHostUTS },
 	},
 }
 
@@ -119,6 +140,18 @@ func TestLibpodHostNamespaceGatesMapOneToOne(t *testing.T) {
 					}
 				}
 			})
+		}
+	}
+}
+
+// TestLibpodPodCreateConfigHasNoCgroupNamespaceGate pins the one gate the
+// pod block doesn't mirror from the container block. A pod spec has no
+// cgroupns field, so an allow_host_cgroupns key there would gate nothing.
+func TestLibpodPodCreateConfigHasNoCgroupNamespaceGate(t *testing.T) {
+	typ := reflect.TypeOf(LibpodPodCreateRequestBodyConfig{})
+	for i := 0; i < typ.NumField(); i++ {
+		if tag := typ.Field(i).Tag.Get("mapstructure"); tag == "allow_host_cgroupns" {
+			t.Fatalf("LibpodPodCreateRequestBodyConfig.%s is tagged %q, and a pod has no cgroup namespace to gate", typ.Field(i).Name, tag)
 		}
 	}
 }

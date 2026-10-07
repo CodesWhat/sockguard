@@ -309,48 +309,307 @@ func TestLibpodContainerCreateNamespaceSharingGateCoversEveryNamespace(t *testin
 	}
 }
 
-// TestLibpodPodCreateNetworkNamespaceHostGateIsAnAllowlist pins the pod's
-// netns, which is the infra container's, to the same allowlist behind
-// libpod_pod_create.allow_host_network.
-func TestLibpodPodCreateNetworkNamespaceHostGateIsAnAllowlist(t *testing.T) {
-	tests := []struct {
+// libpodPodNamespaceGateCase is one namespace field a pod create's host gate
+// covers, and the option that opens its gate. They are every namespace
+// PodSpecGenerator has (Podman 5.8.6 pkg/specgen/podspecgen.go:58, 89, 93, 95
+// and 111), and each is the infra container's.
+type libpodPodNamespaceGateCase struct {
+	field string
+	label string
+	open  func(*LibpodPodCreateOptions)
+}
+
+var libpodPodNamespaceGateCases = []libpodPodNamespaceGateCase{
+	{"netns", "network", func(o *LibpodPodCreateOptions) { o.AllowHostNetwork = true }},
+	{"pidns", "PID", func(o *LibpodPodCreateOptions) { o.AllowHostPID = true }},
+	{"ipcns", "IPC", func(o *LibpodPodCreateOptions) { o.AllowHostIPC = true }},
+	{"userns", "user", func(o *LibpodPodCreateOptions) { o.AllowHostUserNS = true }},
+	{"utsns", "UTS", func(o *LibpodPodCreateOptions) { o.AllowHostUTS = true }},
+}
+
+// libpodPodGateOptions opens every pod host gate but the one for skip, or
+// every one when skip is "".
+func libpodPodGateOptions(skip string) LibpodPodCreateOptions {
+	var opts LibpodPodCreateOptions
+	for _, c := range libpodPodNamespaceGateCases {
+		if c.field != skip {
+			c.open(&opts)
+		}
+	}
+	return opts
+}
+
+func inspectLibpodPod(t *testing.T, policy libpodPodCreatePolicy, body []byte) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v5.8.6/libpod/pods/create", strings.NewReader(string(body)))
+	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	return reason
+}
+
+// TestLibpodPodCreateNamespaceHostGateIsAnAllowlist drives every namespace a
+// pod has through `host`, `path` and a mode Podman doesn't have. Each is
+// refused while its own gate is off, whatever the other gates say, and
+// passes once its own gate is on. Only netns had a gate before 2.2.6, so a
+// pod could be created in the host PID, IPC, user or UTS namespace with
+// nothing in the way.
+func TestLibpodPodCreateNamespaceHostGateIsAnAllowlist(t *testing.T) {
+	modes := []struct {
 		name       string
+		namespace  string
+		wantReason string // %s is the namespace label
+	}{
+		{"host", `{"nsmode":"host"}`, "libpod pod create denied: host %s namespace is not allowed"},
+		{"host in another case", `{"nsmode":" HOST "}`, "libpod pod create denied: host %s namespace is not allowed"},
+		{"path", `{"nsmode":"path","value":"/proc/1/ns/x"}`, "libpod pod create denied: %s namespace joined by path is not allowed"},
+		{"path with no value", `{"nsmode":"path"}`, "libpod pod create denied: %s namespace joined by path is not allowed"},
+		{"path in another case", `{"nsmode":" Path ","value":"/proc/1/ns/x"}`, "libpod pod create denied: %s namespace joined by path is not allowed"},
+		{"a mode Podman doesn't have", `{"nsmode":"hostns"}`, `libpod pod create denied: %s namespace mode "hostns" is not recognized`},
+		{"private in another case", `{"nsmode":"Private"}`, `libpod pod create denied: %s namespace mode "Private" is not recognized`},
+		{"the CLI spelling ns:", `{"nsmode":"ns","value":"/proc/1/ns/x"}`, `libpod pod create denied: %s namespace mode "ns" is not recognized`},
+		{"path as the last of two nsmodes", `{"nsmode":"private","nsmode":"path","value":"/proc/1/ns/x"}`, "libpod pod create denied: %s namespace joined by path is not allowed"},
+		{"path under upper-case keys", `{"NSMODE":"path","VALUE":"/proc/1/ns/x"}`, "libpod pod create denied: %s namespace joined by path is not allowed"},
+	}
+	for _, c := range libpodPodNamespaceGateCases {
+		for _, mode := range modes {
+			wantReason := fmt.Sprintf(mode.wantReason, c.label)
+			bodies := map[string]string{
+				"":                         fmt.Sprintf(`{%q:%s}`, c.field, mode.namespace),
+				" under an upper-case key": fmt.Sprintf(`{%q:%s}`, strings.ToUpper(c.field), mode.namespace),
+				" as the last of two":      fmt.Sprintf(`{%q:{"nsmode":"private"},%q:%s}`, c.field, c.field, mode.namespace),
+				" on a pod with no infra":  fmt.Sprintf(`{"no_infra":true,%q:%s}`, c.field, mode.namespace),
+				" among podman-remote's":   fmt.Sprintf(`{"netns":{},"pidns":{"nsmode":"private"},"ipcns":{"nsmode":"private"},"userns":{},"utsns":{"nsmode":"private"},"shared_namespaces":["ipc","net","uts"],%q:%s}`, c.field, mode.namespace),
+			}
+			for spelling, body := range bodies {
+				t.Run(c.field+"/"+mode.name+spelling+"/only its own gate off", func(t *testing.T) {
+					policy := newLibpodPodCreatePolicy(libpodPodGateOptions(c.field))
+					if reason := inspectLibpodPod(t, policy, []byte(body)); reason != wantReason {
+						t.Fatalf("inspect() reason = %q, want %q", reason, wantReason)
+					}
+				})
+				t.Run(c.field+"/"+mode.name+spelling+"/every gate on", func(t *testing.T) {
+					policy := newLibpodPodCreatePolicy(libpodPodGateOptions(""))
+					if reason := inspectLibpodPod(t, policy, []byte(body)); reason != "" {
+						t.Fatalf("inspect() reason = %q, want empty", reason)
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestLibpodPodCreateNamespaceModesThatPassWithEveryGateOff is the other
+// half of the allowlist: what a client legitimately sends keeps passing with
+// no gate on. The first three bodies are the namespaces podman-remote sends
+// for `pod create`, `run --pod new:NAME` and `pod create --infra=false`
+// (testdata/libpod/pods, and Podman 5.8.6 pkg/domain/entities/pods.go:313-329
+// and cmd/podman/containers/create.go:453).
+func TestLibpodPodCreateNamespaceModesThatPassWithEveryGateOff(t *testing.T) {
+	policy := newLibpodPodCreatePolicy(LibpodPodCreateOptions{})
+	bodies := []string{
+		`{"netns":{},"pidns":{"nsmode":"private"},"ipcns":{"nsmode":"private"},"userns":{},"utsns":{"nsmode":"private"},"shared_namespaces":["ipc","net","uts"]}`,
+		`{"netns":{},"pidns":{"nsmode":"private"},"ipcns":{"nsmode":"private"},"userns":{"nsmode":"default"},"utsns":{"nsmode":"private"}}`,
+		`{"no_infra":true,"netns":{},"pidns":{"nsmode":"private"},"ipcns":{"nsmode":"private"},"userns":{},"utsns":{"nsmode":"private"}}`,
+		`{}`,
+		`{"name":"p"}`,
+		// What the Go bindings send for a zero PodSpecGenerator.
+		`{"netns":{},"pidns":{},"ipcns":{},"userns":{},"utsns":{}}`,
+		`{"netns":null,"pidns":null,"ipcns":null,"userns":null,"utsns":null}`,
+		`{"netns":{"nsmode":null},"pidns":{"nsmode":""},"utsns":{"nsmode":null}}`,
+		`{"netns":{"nsmode":"default"},"pidns":{"nsmode":"default"},"ipcns":{"nsmode":"default"},"userns":{"nsmode":"default"},"utsns":{"nsmode":"default"}}`,
+		`{"netns":{"nsmode":"private"},"pidns":{"nsmode":"private"},"ipcns":{"nsmode":"private"},"userns":{"nsmode":"private"},"utsns":{"nsmode":"private"}}`,
+		// Another container's namespace isn't the host gate's to refuse.
+		// Owner isolation checks the container it names.
+		`{"pidns":{"nsmode":"container","value":"web"},"ipcns":{"nsmode":"container","value":"web"},"userns":{"nsmode":"container","value":"web"},"utsns":{"nsmode":"container","value":"web"}}`,
+		// Podman refuses `pod` on a pod's own namespaces: the infra
+		// container has no pod to take them from.
+		`{"pidns":{"nsmode":"pod"},"ipcns":{"nsmode":"pod"},"userns":{"nsmode":"pod"},"utsns":{"nsmode":"pod"}}`,
+		`{"netns":{"nsmode":"bridge"}}`,
+		`{"netns":{"nsmode":"none"}}`,
+		`{"netns":{"nsmode":"slirp4netns"}}`,
+		`{"netns":{"nsmode":"pasta"}}`,
+		`{"ipcns":{"nsmode":"shareable"}}`,
+		`{"ipcns":{"nsmode":"none"}}`,
+		`{"userns":{"nsmode":"auto","value":"size=4096"}}`,
+		`{"userns":{"nsmode":"keep-id"}}`,
+		`{"userns":{"nsmode":"no-map"}}`,
+		// The last nsmode is the one Podman keeps.
+		`{"pidns":{"nsmode":"path","nsmode":"private"}}`,
+		`{"pidns":{"nsmode":"host"},"pidns":{"nsmode":"private"}}`,
+	}
+	for _, body := range bodies {
+		t.Run(body, func(t *testing.T) {
+			if reason := inspectLibpodPod(t, policy, []byte(body)); reason != "" {
+				t.Fatalf("inspect() reason = %q, want empty", reason)
+			}
+		})
+	}
+}
+
+// TestLibpodPodCreateNamespaceModeOfTheWrongNamespace pins that each of a
+// pod's namespaces takes only its own extra modes, like a container's.
+func TestLibpodPodCreateNamespaceModeOfTheWrongNamespace(t *testing.T) {
+	policy := newLibpodPodCreatePolicy(LibpodPodCreateOptions{})
+	tests := []struct {
 		body       string
 		wantReason string
 	}{
-		{"host", `{"netns":{"nsmode":"host"}}`, "libpod pod create denied: host network namespace is not allowed"},
-		{"path", `{"netns":{"nsmode":"path","value":"/proc/1/ns/net"}}`, "libpod pod create denied: network namespace joined by path is not allowed"},
-		{"path in another case", `{"netns":{"nsmode":"PATH","value":"/proc/1/ns/net"}}`, "libpod pod create denied: network namespace joined by path is not allowed"},
-		{"path under an upper-case key", `{"NetNS":{"NSMode":"path","Value":"/proc/1/ns/net"}}`, "libpod pod create denied: network namespace joined by path is not allowed"},
-		{"path as the last of two netns", `{"netns":{"nsmode":"bridge"},"netns":{"nsmode":"path","value":"/proc/1/ns/net"}}`, "libpod pod create denied: network namespace joined by path is not allowed"},
-		{"a mode Podman doesn't have", `{"netns":{"nsmode":"hostns"}}`, `libpod pod create denied: network namespace mode "hostns" is not recognized`},
-		{"absent", `{"name":"p"}`, ""},
-		{"empty", `{"netns":{}}`, ""},
-		{"default", `{"netns":{"nsmode":"default"}}`, ""},
-		{"private", `{"netns":{"nsmode":"private"}}`, ""},
-		{"bridge", `{"netns":{"nsmode":"bridge"}}`, ""},
-		{"none", `{"netns":{"nsmode":"none"}}`, ""},
-		{"slirp4netns", `{"netns":{"nsmode":"slirp4netns"}}`, ""},
-		{"pasta", `{"netns":{"nsmode":"pasta"}}`, ""},
+		{`{"pidns":{"nsmode":"bridge"}}`, `libpod pod create denied: PID namespace mode "bridge" is not recognized`},
+		{`{"pidns":{"nsmode":"shareable"}}`, `libpod pod create denied: PID namespace mode "shareable" is not recognized`},
+		{`{"ipcns":{"nsmode":"keep-id"}}`, `libpod pod create denied: IPC namespace mode "keep-id" is not recognized`},
+		{`{"userns":{"nsmode":"shareable"}}`, `libpod pod create denied: user namespace mode "shareable" is not recognized`},
+		{`{"utsns":{"nsmode":"none"}}`, `libpod pod create denied: UTS namespace mode "none" is not recognized`},
+		{`{"utsns":{"nsmode":"auto"}}`, `libpod pod create denied: UTS namespace mode "auto" is not recognized`},
+		{`{"netns":{"nsmode":"shareable"}}`, `libpod pod create denied: network namespace mode "shareable" is not recognized`},
 	}
 	for _, tt := range tests {
-		for _, allow := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/allow_host_network=%t", tt.name, allow), func(t *testing.T) {
-				policy := newLibpodPodCreatePolicy(LibpodPodCreateOptions{AllowHostNetwork: allow})
-				req := httptest.NewRequest(http.MethodPost, "/libpod/pods/create", strings.NewReader(tt.body))
-				reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
-				if err != nil {
-					t.Fatalf("inspect() error = %v", err)
-				}
-				wantReason := tt.wantReason
-				if allow {
-					wantReason = ""
-				}
-				if reason != wantReason {
+		t.Run(tt.body, func(t *testing.T) {
+			if reason := inspectLibpodPod(t, policy, []byte(tt.body)); reason != tt.wantReason {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+// TestLibpodPodCreateNamespaceThatIsNotAnObjectIsDenied pins that a pod
+// namespace of the wrong JSON type never reaches the gates as an empty
+// namespace. The typed decode fails and the create is denied, with the gates
+// on or off. Podman's own decode fails on the same bodies.
+func TestLibpodPodCreateNamespaceThatIsNotAnObjectIsDenied(t *testing.T) {
+	const want = "libpod pod create denied: request body could not be inspected"
+	for _, c := range libpodPodNamespaceGateCases {
+		bodies := []string{
+			fmt.Sprintf(`{%q:"host"}`, c.field),
+			fmt.Sprintf(`{%q:["host"]}`, c.field),
+			fmt.Sprintf(`{%q:1}`, c.field),
+			fmt.Sprintf(`{%q:{"nsmode":["host"]}}`, c.field),
+			fmt.Sprintf(`{%q:{"nsmode":"path","value":["/proc/1/ns/x"]}}`, c.field),
+		}
+		for _, opts := range []LibpodPodCreateOptions{{}, libpodPodGateOptions("")} {
+			policy := newLibpodPodCreatePolicy(opts)
+			for _, body := range bodies {
+				t.Run(fmt.Sprintf("gates_on=%t/%s", opts.AllowHostPID, body), func(t *testing.T) {
+					if reason := inspectLibpodPod(t, policy, []byte(body)); reason != want {
+						t.Fatalf("inspect() reason = %q, want %q", reason, want)
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestLibpodPodCreateHostGatesAreThePodsOwn pins that each pod gate opens one
+// namespace and nothing else: not another of the pod's namespaces, and not
+// "pid" in shared_namespaces, which allow_shared_pid_namespace still gates.
+func TestLibpodPodCreateHostGatesAreThePodsOwn(t *testing.T) {
+	for _, c := range libpodPodNamespaceGateCases {
+		var only LibpodPodCreateOptions
+		c.open(&only)
+		policy := newLibpodPodCreatePolicy(only)
+		for _, other := range libpodPodNamespaceGateCases {
+			body := fmt.Sprintf(`{%q:{"nsmode":"host"}}`, other.field)
+			wantReason := fmt.Sprintf("libpod pod create denied: host %s namespace is not allowed", other.label)
+			if other.field == c.field {
+				wantReason = ""
+			}
+			t.Run("only "+c.field+" open/"+other.field+" host", func(t *testing.T) {
+				if reason := inspectLibpodPod(t, policy, []byte(body)); reason != wantReason {
 					t.Fatalf("inspect() reason = %q, want %q", reason, wantReason)
 				}
 			})
 		}
+	}
+
+	t.Run("allow_host_pid doesn't open a shared PID namespace", func(t *testing.T) {
+		policy := newLibpodPodCreatePolicy(LibpodPodCreateOptions{AllowHostPID: true})
+		const want = "libpod pod create denied: shared PID namespace is not allowed"
+		if reason := inspectLibpodPod(t, policy, []byte(`{"pidns":{"nsmode":"host"},"shared_namespaces":["pid"]}`)); reason != want {
+			t.Fatalf("inspect() reason = %q, want %q", reason, want)
+		}
+	})
+	t.Run("allow_shared_pid_namespace doesn't open the host PID namespace", func(t *testing.T) {
+		policy := newLibpodPodCreatePolicy(LibpodPodCreateOptions{AllowSharedPIDNamespace: true})
+		const want = "libpod pod create denied: host PID namespace is not allowed"
+		if reason := inspectLibpodPod(t, policy, []byte(`{"pidns":{"nsmode":"host"},"shared_namespaces":["pid"]}`)); reason != want {
+			t.Fatalf("inspect() reason = %q, want %q", reason, want)
+		}
+	})
+}
+
+// TestLibpodPodCreateHasNoCgroupNamespaceToGate pins why there is no
+// libpod_pod_create.allow_host_cgroupns. PodSpecGenerator has no cgroupns
+// field (Podman 5.8.6 pkg/specgen/podspecgen.go:11-100 and 223-231), and the
+// handler decodes the body into that struct alone before it builds the infra
+// container's spec from it (pkg/api/handlers/libpod/pods.go:37-65). A
+// `cgroupns` key in a pod create body is dropped there, so it passes here
+// like any other key Podman doesn't read. The infra container's cgroup
+// namespace is always the daemon's default.
+func TestLibpodPodCreateHasNoCgroupNamespaceToGate(t *testing.T) {
+	policy := newLibpodPodCreatePolicy(LibpodPodCreateOptions{})
+	for _, body := range []string{
+		`{"cgroupns":{"nsmode":"host"}}`,
+		`{"cgroupns":{"nsmode":"path","value":"/proc/1/ns/cgroup"}}`,
+		`{"shared_namespaces":["cgroup"]}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			if reason := inspectLibpodPod(t, policy, []byte(body)); reason != "" {
+				t.Fatalf("inspect() reason = %q, want empty", reason)
+			}
+		})
+	}
+}
+
+// libpodPodFixtures are the pod create bodies captured off podman-remote
+// (testdata/libpod/README.md), the reason each is refused with every option
+// off, and the one option that lets it through.
+var libpodPodFixtures = []struct {
+	fixture    string
+	wantReason string
+	open       func(*LibpodPodCreateOptions)
+}{
+	{fixture: "default.json"},
+	{fixture: "pod_new.json"},
+	{fixture: "no_infra.json"},
+	{"host_pid.json", "libpod pod create denied: host PID namespace is not allowed", func(o *LibpodPodCreateOptions) { o.AllowHostPID = true }},
+	{"path_pid.json", "libpod pod create denied: PID namespace joined by path is not allowed", func(o *LibpodPodCreateOptions) { o.AllowHostPID = true }},
+	{"host_uts.json", "libpod pod create denied: host UTS namespace is not allowed", func(o *LibpodPodCreateOptions) { o.AllowHostUTS = true }},
+	{"host_userns.json", "libpod pod create denied: host user namespace is not allowed", func(o *LibpodPodCreateOptions) { o.AllowHostUserNS = true }},
+	{"share_pid.json", "libpod pod create denied: shared PID namespace is not allowed", func(o *LibpodPodCreateOptions) { o.AllowSharedPIDNamespace = true }},
+}
+
+// TestLibpodPodCreateCapturedBodies runs every pod create body captured off
+// podman-remote through the inspector. The three a client sends without
+// asking for a host namespace pass with every option off, which is what
+// keeps 2.2.6's new gates from refusing a pod create that worked on 2.2.5.
+// The rest are refused by default and pass with the one option they need.
+func TestLibpodPodCreateCapturedBodies(t *testing.T) {
+	captured, err := filepath.Glob(filepath.Join("testdata", "libpod", "pods", "*.json"))
+	if err != nil {
+		t.Fatalf("glob pod fixtures: %v", err)
+	}
+	if len(captured) != len(libpodPodFixtures) {
+		t.Fatalf("testdata/libpod/pods has %d bodies and this test knows %d; add the new one to libpodPodFixtures", len(captured), len(libpodPodFixtures))
+	}
+	for _, tt := range libpodPodFixtures {
+		body := loadLibpodFixture(t, filepath.Join("pods", tt.fixture))
+		t.Run(tt.fixture+"/every option off", func(t *testing.T) {
+			policy := newLibpodPodCreatePolicy(LibpodPodCreateOptions{})
+			if reason := inspectLibpodPod(t, policy, body); reason != tt.wantReason {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+		if tt.open == nil {
+			continue
+		}
+		t.Run(tt.fixture+"/its option on", func(t *testing.T) {
+			var opts LibpodPodCreateOptions
+			tt.open(&opts)
+			if reason := inspectLibpodPod(t, newLibpodPodCreatePolicy(opts), body); reason != "" {
+				t.Fatalf("inspect() reason = %q, want empty", reason)
+			}
+		})
 	}
 }
 

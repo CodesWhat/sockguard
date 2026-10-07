@@ -79,6 +79,10 @@ func (c ContainerRemoveRequestBodyConfig) ToFilterOptions() filter.ContainerRemo
 func (c LibpodPodCreateRequestBodyConfig) ToFilterOptions() filter.LibpodPodCreateOptions {
 	return filter.LibpodPodCreateOptions{
 		AllowHostNetwork:            c.AllowHostNetwork,
+		AllowHostPID:                c.AllowHostPID,
+		AllowHostIPC:                c.AllowHostIPC,
+		AllowHostUserNS:             c.AllowHostUserNS,
+		AllowHostUTS:                c.AllowHostUTS,
 		AllowSharedPIDNamespace:     c.AllowSharedPIDNamespace,
 		AllowedInfraImageRegistries: c.AllowedInfraImageRegistries,
 	}

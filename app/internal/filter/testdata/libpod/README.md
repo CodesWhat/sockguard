@@ -8,9 +8,10 @@ request body captured off the wire between the `podman` CLI client and a live
 this package's inspector, types, and tests are pinned against these captures
 rather than either draft's guessed schema.
 
-Two of them, `host_uts.json` and `host_cgroupns.json`, were captured later
-and without a daemon. See [Client-only captures](#client-only-captures) for
-how, and for why the body is the same either way.
+Two of them, `host_uts.json` and `host_cgroupns.json`, and every
+`POST /libpod/pods/create` body under `pods/` were captured later and without a
+daemon. See [Client-only captures](#client-only-captures) for how, and for why
+the body is the same either way.
 
 ## Provenance
 
@@ -123,3 +124,15 @@ from Podman's source and cited next to the code.
 |---|---|---|
 | `host_uts.json` | `create --uts host` | `utsns: {"nsmode": "host"}`. Every other namespace stays `{}`. |
 | `host_cgroupns.json` | `create --cgroupns host` | `cgroupns: {"nsmode": "host"}`. |
+| `pods/default.json` | `pod create --name sg-pod` | What a pod create sends with no namespace flag: `pidns`, `ipcns` and `utsns` are `{"nsmode": "private"}`, `userns` and `netns` are `{}`, and `shared_namespaces` is `["ipc", "net", "uts"]`. There is no `cgroupns` key, because PodSpecGenerator has no such field. |
+| `pods/pod_new.json` | `create --pod new:sg-pod-new alpine:latest echo hi` | The pod create that `run`/`create --pod new:NAME` sends first. `userns` is `{"nsmode": "default"}` and there's no `shared_namespaces`. |
+| `pods/no_infra.json` | `pod create --infra=false` | `no_infra: true` with the same `private` namespaces and no `shared_namespaces`. |
+| `pods/host_pid.json` | `pod create --pid host` | `pidns: {"nsmode": "host"}`. |
+| `pods/path_pid.json` | `pod create --pid ns:/proc/1/ns/pid` | `pidns: {"nsmode": "path", "value": "/proc/1/ns/pid"}`. |
+| `pods/host_uts.json` | `pod create --uts host` | `utsns: {"nsmode": "host"}`. |
+| `pods/host_userns.json` | `pod create --userns host` | `userns: {"nsmode": "host"}`. |
+| `pods/share_pid.json` | `pod create --share pid` | `shared_namespaces: ["pid"]`. |
+
+`podman pod create` has no `--ipc` or `--cgroupns` flag. A pod's `ipcns` can
+still be set by a client that writes the body itself, which is why it has a
+gate, and a pod has no `cgroupns` to set.

@@ -565,6 +565,16 @@ type LibpodPodCreateRequestBodyConfig struct {
 	// namespace the path names. Mirrors container_create.allow_host_network's
 	// posture for the pod-wide equivalent. Default false.
 	AllowHostNetwork bool `mapstructure:"allow_host_network"`
+	// AllowHostPID/IPC/UserNS/UTS each permit the pod's pidns, ipcns, userns
+	// or utsns object's nsmode "host" and "path". They are the infra
+	// container's namespaces, and a container that joins the pod can end up
+	// in them. While one is false its namespace also refuses any nsmode
+	// sockguard doesn't know. A pod spec has no cgroupns, so there is no
+	// allow_host_cgroupns here. Default false.
+	AllowHostPID    bool `mapstructure:"allow_host_pid"`
+	AllowHostIPC    bool `mapstructure:"allow_host_ipc"`
+	AllowHostUserNS bool `mapstructure:"allow_host_userns"`
+	AllowHostUTS    bool `mapstructure:"allow_host_uts"`
 	// AllowSharedPIDNamespace permits "pid" in the pod's shared_namespaces
 	// list, letting every container in the pod see (and signal) every other
 	// container's processes — the pod-wide analog of container_create's

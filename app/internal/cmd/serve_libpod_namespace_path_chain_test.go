@@ -544,11 +544,14 @@ func (d *podmanNamespaceChainDaemon) seen() []string {
 // gate is off its namespace takes only the modes Podman has that keep the
 // container out of the host's.
 //
-// utsns and cgroupns on the native create had no gate to read them until
-// 2.2.6. Each has its own now, off by default.
+// 2.2.5 left six namespaces with no gate to read them: utsns and cgroupns on
+// the native create, and a pod's pidns, ipcns, utsns and userns, which are
+// its infra container's. `host` and `path` on those reached Podman with every
+// gate off, and a container in such a pod inherited the namespace. Each has
+// its own gate now, off by default.
 //
-// The cases still named "joins" with every gate off are the ones no gate
-// reads yet: a pod's pidns, ipcns, utsns and userns.
+// The cases still named "joins" with every gate off are another container's
+// namespace, which restrict_namespace_sharing and owner isolation gate.
 func TestServeChainNamespaceJoinedByPathNeedsTheHostGate(t *testing.T) {
 	const (
 		libpodCreate = "/v5.8.6/libpod/containers/create"
@@ -581,6 +584,10 @@ func TestServeChainNamespaceJoinedByPathNeedsTheHostGate(t *testing.T) {
 	// Each native gate on its own, so a case shows which one it needs.
 	hostUTS := func(body *gates) { body.LibpodContainerCreate.AllowHostUTS = true }
 	hostCgroup := func(body *gates) { body.LibpodContainerCreate.AllowHostCgroupNS = true }
+	podHostPID := func(body *gates) { body.LibpodPodCreate.AllowHostPID = true }
+	podHostIPC := func(body *gates) { body.LibpodPodCreate.AllowHostIPC = true }
+	podHostUTS := func(body *gates) { body.LibpodPodCreate.AllowHostUTS = true }
+	podHostUserNS := func(body *gates) { body.LibpodPodCreate.AllowHostUserNS = true }
 	// Every native gate but the one a case is about.
 	everyNativeGateBut := func(skip string) func(*gates) {
 		return func(body *gates) {
@@ -588,7 +595,8 @@ func TestServeChainNamespaceJoinedByPathNeedsTheHostGate(t *testing.T) {
 			for name, gate := range map[string]*bool{
 				"container netns": &c.AllowHostNetwork, "container pidns": &c.AllowHostPID, "container ipcns": &c.AllowHostIPC,
 				"container userns": &c.AllowHostUserNS, "container utsns": &c.AllowHostUTS, "container cgroupns": &c.AllowHostCgroupNS,
-				"pod netns": &p.AllowHostNetwork,
+				"pod netns": &p.AllowHostNetwork, "pod pidns": &p.AllowHostPID, "pod ipcns": &p.AllowHostIPC,
+				"pod userns": &p.AllowHostUserNS, "pod utsns": &p.AllowHostUTS,
 			} {
 				*gate = name != skip
 			}
@@ -821,32 +829,87 @@ func TestServeChainNamespaceJoinedByPathNeedsTheHostGate(t *testing.T) {
 		},
 		{name: "pod netns host", send: pod(`"netns":{"nsmode":"host"}`), wantStatus: http.StatusForbidden, wantReason: "libpod pod create denied: host network namespace is not allowed"},
 		{name: "pod netns path", send: pod(`"netns":{"nsmode":"path","value":"/proc/1/ns/net"}`), wantStatus: http.StatusForbidden, wantReason: "libpod pod create denied: network namespace joined by path is not allowed"},
-		{name: "pod pidns host joins", send: pod(`"pidns":{"nsmode":"host"}`), wantStatus: http.StatusCreated, wantCreated: infra("pidns=host")},
-		{name: "pod pidns path joins", send: pod(`"pidns":{"nsmode":"path","value":"/proc/1/ns/pid"}`), wantStatus: http.StatusCreated, wantCreated: infra("pidns=path:/proc/1/ns/pid")},
-		{name: "pod ipcns host joins", send: pod(`"ipcns":{"nsmode":"host"}`), wantStatus: http.StatusCreated, wantCreated: infra("ipcns=host")},
-		{name: "pod ipcns path joins", send: pod(`"ipcns":{"nsmode":"path","value":"/proc/1/ns/ipc"}`), wantStatus: http.StatusCreated, wantCreated: infra("ipcns=path:/proc/1/ns/ipc")},
-		{name: "pod utsns host joins", send: pod(`"utsns":{"nsmode":"host"}`), wantStatus: http.StatusCreated, wantCreated: infra("utsns=host")},
-		{name: "pod utsns path joins", send: pod(`"utsns":{"nsmode":"path","value":"/proc/1/ns/uts"}`), wantStatus: http.StatusCreated, wantCreated: infra("utsns=path:/proc/1/ns/uts")},
-		{name: "pod userns host joins", send: pod(`"userns":{"nsmode":"host"}`), wantStatus: http.StatusCreated, wantCreated: infra("userns=host")},
+		{name: "pod pidns host", send: pod(`"pidns":{"nsmode":"host"}`), wantStatus: http.StatusForbidden, wantReason: "libpod pod create denied: host PID namespace is not allowed"},
+		{name: "pod pidns path", send: pod(`"pidns":{"nsmode":"path","value":"/proc/1/ns/pid"}`), wantStatus: http.StatusForbidden, wantReason: "libpod pod create denied: PID namespace joined by path is not allowed"},
+		{name: "pod ipcns host", send: pod(`"ipcns":{"nsmode":"host"}`), wantStatus: http.StatusForbidden, wantReason: "libpod pod create denied: host IPC namespace is not allowed"},
+		{name: "pod ipcns path", send: pod(`"ipcns":{"nsmode":"path","value":"/proc/1/ns/ipc"}`), wantStatus: http.StatusForbidden, wantReason: "libpod pod create denied: IPC namespace joined by path is not allowed"},
+		{name: "pod utsns host", send: pod(`"utsns":{"nsmode":"host"}`), wantStatus: http.StatusForbidden, wantReason: "libpod pod create denied: host UTS namespace is not allowed"},
+		{name: "pod utsns path", send: pod(`"utsns":{"nsmode":"path","value":"/proc/1/ns/uts"}`), wantStatus: http.StatusForbidden, wantReason: "libpod pod create denied: UTS namespace joined by path is not allowed"},
+		{name: "pod userns host", send: pod(`"userns":{"nsmode":"host"}`), wantStatus: http.StatusForbidden, wantReason: "libpod pod create denied: host user namespace is not allowed"},
+		{name: "pod userns path", send: pod(`"userns":{"nsmode":"path","value":"/proc/1/ns/user"}`), wantStatus: http.StatusForbidden, wantReason: "libpod pod create denied: user namespace joined by path is not allowed"},
 		{
-			// The string form "path:/proc/1/ns/user" is one
-			// ParseUserNamespace can't read, so Podman refuses this itself.
-			name:       "pod userns path",
-			send:       pod(`"userns":{"nsmode":"path","value":"/proc/1/ns/user"}`),
+			// What podman-remote pod create --pid host sends
+			// (internal/filter/testdata/libpod/pods/host_pid.json).
+			name:       "pod pidns host among podman-remote's namespaces",
+			send:       pod(`"pidns":{"nsmode":"host"},"ipcns":{"nsmode":"private"},"utsns":{"nsmode":"private"},"userns":{},"netns":{},"shared_namespaces":["ipc","net","uts"]`),
+			wantStatus: http.StatusForbidden,
+			wantReason: "libpod pod create denied: host PID namespace is not allowed",
+		},
+
+		// The keys the way encoding/json matches them.
+		{name: "pod pidns host under an upper-case key", send: pod(`"PIDNS":{"NSMode":"host"}`), wantStatus: http.StatusForbidden, wantReason: "libpod pod create denied: host PID namespace is not allowed"},
+		{
+			name:       "pod pidns path under a key with a long s",
+			send:       pod("\"pidn\u017f\":{\"nsmode\":\"path\",\"value\":\"/proc/1/ns/pid\"}"),
+			wantStatus: http.StatusForbidden,
+			wantReason: "libpod pod create denied: PID namespace joined by path is not allowed",
+		},
+		{name: "pod utsns host as the last of two utsns", send: pod(`"utsns":{"nsmode":"private"},"utsns":{"nsmode":"host"}`), wantStatus: http.StatusForbidden, wantReason: "libpod pod create denied: host UTS namespace is not allowed"},
+		{name: "pod ipcns path split across two spellings", send: pod(`"ipcns":{"value":"/proc/1/ns/ipc"},"IpcNS":{"nsmode":"path"}`), wantStatus: http.StatusForbidden, wantReason: "libpod pod create denied: IPC namespace joined by path is not allowed"},
+		{
+			// The last nsmode wins, and Podman refuses a value on `private`.
+			name:       "pod pidns path as the first of two nsmodes",
+			send:       pod(`"pidns":{"nsmode":"path","value":"/proc/1/ns/pid","nsmode":"private"}`),
 			wantStatus: http.StatusInternalServerError,
 		},
-		{name: "pod pidns host in another case", send: pod(`"pidns":{"nsmode":"Host"}`), wantStatus: http.StatusInternalServerError},
-		{name: "pod pidns of another container joins", send: pod(`"pidns":{"nsmode":"container","value":"web"}`), wantStatus: http.StatusCreated, wantCreated: infra("pidns=container:web")},
+
+		// Modes Podman doesn't have, and namespaces that aren't objects.
+		// Podman answers the first two with a 500, and they don't get that far.
+		{name: "pod pidns host in another case", send: pod(`"pidns":{"nsmode":"Host"}`), wantStatus: http.StatusForbidden, wantReason: "libpod pod create denied: host PID namespace is not allowed"},
+		{name: "pod utsns with a mode Podman doesn't have", send: pod(`"utsns":{"nsmode":"hostns"}`), wantStatus: http.StatusForbidden, wantReason: `libpod pod create denied: UTS namespace mode "hostns" is not recognized`},
+		{name: "pod pidns as a string", send: pod(`"pidns":"host"`), wantStatus: http.StatusForbidden, wantReason: "libpod pod create denied: request body could not be inspected"},
+
+		// Modes that don't join a host namespace.
+		{name: "pod ipcns shareable", send: pod(`"ipcns":{"nsmode":"shareable"}`), wantStatus: http.StatusCreated, wantCreated: infra("own namespaces")},
+		{name: "pod userns keep-id", send: pod(`"userns":{"nsmode":"keep-id"}`), wantStatus: http.StatusCreated, wantCreated: infra("own namespaces")},
 		{
-			// A container in the pod asks for the pod's PID namespace, and
-			// Podman hands it the infra container's whether or not the pod
-			// shares it.
-			name:        "container in a host-PID pod joins the host PID namespace",
-			first:       &request{podCreate, `{"name":"p","pidns":{"nsmode":"host"}}`},
-			send:        libpod(`"pod":"p","pidns":{"nsmode":"pod"}`),
+			// Another container's namespace isn't the host gate's to
+			// refuse. Owner isolation checks the container it names.
+			name:        "pod pidns of another container joins",
+			send:        pod(`"pidns":{"nsmode":"container","value":"web"}`),
 			wantStatus:  http.StatusCreated,
-			wantCreated: []string{"pod p infra: pidns=host", "container: netns=pod:p=own pidns=pod:p=host ipcns=pod:p=own utsns=pod:p=own"},
+			wantCreated: infra("pidns=container:web"),
 		},
+		{
+			// A cgroupns key has no field to decode into on a pod spec, so
+			// Podman drops it and the infra container gets the daemon's
+			// default. There's nothing for a gate to read.
+			name:        "pod cgroupns host is not a field Podman reads",
+			send:        pod(`"cgroupns":{"nsmode":"host"}`),
+			wantStatus:  http.StatusCreated,
+			wantCreated: infra("own namespaces"),
+		},
+
+		// A container in a pod, every gate off. The pod is refused, so
+		// there's no host namespace for the container to inherit.
+		{
+			// A container asks for the pod's PID namespace, and Podman hands
+			// it the infra container's whether or not the pod shares it.
+			name:       "container can't join a host-PID pod that was never made",
+			first:      &request{podCreate, `{"name":"p","pidns":{"nsmode":"host"}}`},
+			send:       libpod(`"pod":"p","pidns":{"nsmode":"pod"}`),
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			// ipc and uts are shared by default, so a container that names
+			// no namespace at all would land in the pod's.
+			name:       "container can't join a host-UTS pod that was never made",
+			first:      &request{podCreate, `{"name":"p","utsns":{"nsmode":"host"}}`},
+			send:       libpod(`"pod":"p"`),
+			wantStatus: http.StatusInternalServerError,
+		},
+
+		// Pod create with a gate on.
 		{
 			name:        "pod netns path with allow_host_network",
 			configure:   func(body *gates) { body.LibpodPodCreate.AllowHostNetwork = true },
@@ -854,7 +917,83 @@ func TestServeChainNamespaceJoinedByPathNeedsTheHostGate(t *testing.T) {
 			wantStatus:  http.StatusCreated,
 			wantCreated: infra("netns=path:/proc/1/ns/net"),
 		},
-		{name: "pod pidns host with the container allow_host_pid", configure: hostPID, send: pod(`"pidns":{"nsmode":"host"}`), wantStatus: http.StatusCreated, wantCreated: infra("pidns=host")},
+		{name: "pod pidns host with allow_host_pid", configure: podHostPID, send: pod(`"pidns":{"nsmode":"host"}`), wantStatus: http.StatusCreated, wantCreated: infra("pidns=host")},
+		{name: "pod pidns path with allow_host_pid", configure: podHostPID, send: pod(`"pidns":{"nsmode":"path","value":"/proc/1/ns/pid"}`), wantStatus: http.StatusCreated, wantCreated: infra("pidns=path:/proc/1/ns/pid")},
+		{name: "pod ipcns host with allow_host_ipc", configure: podHostIPC, send: pod(`"ipcns":{"nsmode":"host"}`), wantStatus: http.StatusCreated, wantCreated: infra("ipcns=host")},
+		{name: "pod ipcns path with allow_host_ipc", configure: podHostIPC, send: pod(`"ipcns":{"nsmode":"path","value":"/proc/1/ns/ipc"}`), wantStatus: http.StatusCreated, wantCreated: infra("ipcns=path:/proc/1/ns/ipc")},
+		{name: "pod utsns host with allow_host_uts", configure: podHostUTS, send: pod(`"utsns":{"nsmode":"host"}`), wantStatus: http.StatusCreated, wantCreated: infra("utsns=host")},
+		{name: "pod utsns path with allow_host_uts", configure: podHostUTS, send: pod(`"utsns":{"nsmode":"path","value":"/proc/1/ns/uts"}`), wantStatus: http.StatusCreated, wantCreated: infra("utsns=path:/proc/1/ns/uts")},
+		{name: "pod userns host with allow_host_userns", configure: podHostUserNS, send: pod(`"userns":{"nsmode":"host"}`), wantStatus: http.StatusCreated, wantCreated: infra("userns=host")},
+		{
+			// The string form "path:/proc/1/ns/user" is one
+			// ParseUserNamespace can't read, so Podman refuses this itself
+			// once the gate lets it through.
+			name:       "pod userns path with allow_host_userns",
+			configure:  podHostUserNS,
+			send:       pod(`"userns":{"nsmode":"path","value":"/proc/1/ns/user"}`),
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			// With the gate on, a mode in the wrong case is Podman's to refuse.
+			name:       "pod pidns host in another case with allow_host_pid",
+			configure:  podHostPID,
+			send:       pod(`"pidns":{"nsmode":"Host"}`),
+			wantStatus: http.StatusInternalServerError,
+		},
+
+		// Each pod gate opens its own namespace and no other.
+		{name: "pod pidns host with every native gate but its own", configure: everyNativeGateBut("pod pidns"), send: pod(`"pidns":{"nsmode":"host"}`), wantStatus: http.StatusForbidden, wantReason: "libpod pod create denied: host PID namespace is not allowed"},
+		{name: "pod ipcns host with every native gate but its own", configure: everyNativeGateBut("pod ipcns"), send: pod(`"ipcns":{"nsmode":"host"}`), wantStatus: http.StatusForbidden, wantReason: "libpod pod create denied: host IPC namespace is not allowed"},
+		{name: "pod utsns host with every native gate but its own", configure: everyNativeGateBut("pod utsns"), send: pod(`"utsns":{"nsmode":"host"}`), wantStatus: http.StatusForbidden, wantReason: "libpod pod create denied: host UTS namespace is not allowed"},
+		{name: "pod userns host with every native gate but its own", configure: everyNativeGateBut("pod userns"), send: pod(`"userns":{"nsmode":"host"}`), wantStatus: http.StatusForbidden, wantReason: "libpod pod create denied: host user namespace is not allowed"},
+		{
+			// libpod_container_create.allow_host_pid is the container
+			// create's gate. A pod has its own.
+			name:       "pod pidns host with only the container allow_host_pid",
+			configure:  hostPID,
+			send:       pod(`"pidns":{"nsmode":"host"}`),
+			wantStatus: http.StatusForbidden,
+			wantReason: "libpod pod create denied: host PID namespace is not allowed",
+		},
+		{
+			// And the pod's gate isn't the container's.
+			name:       "libpod pidns host with only the pod allow_host_pid",
+			configure:  podHostPID,
+			send:       libpod(`"pidns":{"nsmode":"host"}`),
+			wantStatus: http.StatusForbidden,
+			wantReason: "libpod container create denied: host PID namespace is not allowed",
+		},
+
+		// A container in a pod made with a gate on. This is what the pod
+		// gates are for: the container asks for nothing the container gates
+		// read, and ends up in the host's namespace.
+		{
+			name:        "container in a host-PID pod joins the host PID namespace",
+			configure:   podHostPID,
+			first:       &request{podCreate, `{"name":"p","pidns":{"nsmode":"host"}}`},
+			send:        libpod(`"pod":"p","pidns":{"nsmode":"pod"}`),
+			wantStatus:  http.StatusCreated,
+			wantCreated: []string{"pod p infra: pidns=host", "container: netns=pod:p=own pidns=pod:p=host ipcns=pod:p=own utsns=pod:p=own"},
+		},
+		{
+			// Podman gives a container in a pod that shares a host
+			// namespace the host's outright
+			// (pkg/specgen/generate/namespaces.go:66-70).
+			name:        "container in a host-UTS pod joins the host UTS namespace by default",
+			configure:   podHostUTS,
+			first:       &request{podCreate, `{"name":"p","utsns":{"nsmode":"host"}}`},
+			send:        libpod(`"pod":"p"`),
+			wantStatus:  http.StatusCreated,
+			wantCreated: []string{"pod p infra: utsns=host", "container: netns=pod:p=own ipcns=pod:p=own utsns=host"},
+		},
+		{
+			name:        "container in a host-IPC pod joins the host IPC namespace by default",
+			configure:   podHostIPC,
+			first:       &request{podCreate, `{"name":"p","ipcns":{"nsmode":"host"}}`},
+			send:        libpod(`"pod":"p"`),
+			wantStatus:  http.StatusCreated,
+			wantCreated: []string{"pod p infra: ipcns=host", "container: netns=pod:p=own ipcns=host utsns=pod:p=own"},
+		},
 
 		// Docker-compatible create on the same Podman, every gate off.
 		{name: "compat create with no modes", send: compat(``), wantStatus: http.StatusCreated, wantCreated: created("own namespaces")},
