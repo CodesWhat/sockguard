@@ -48,7 +48,7 @@ on.
 
 | libpod endpoint | Config key | Notes |
 |---|---|---|
-| `POST /libpod/containers/create` | `request_body.libpod_container_create` | Podman's native SpecGenerator create body. Field names mirror `container_create` where the semantics map across (privileged, host netns/pidns/ipcns/userns/cgroupns, bind-mount/device allowlists, capabilities, seccomp/AppArmor, `image_trust`), plus three libpod-only gates: `allow_host_uts`, `allow_systemd_mode` and `allow_custom_id_mappings`. The six host namespace gates cover `nsmode` `host` and `path`; see [Namespace Modes and the Host Gates](#namespace-modes-and-the-host-gates). |
+| `POST /libpod/containers/create` | `request_body.libpod_container_create` | Podman's native SpecGenerator create body. Field names mirror `container_create` where the semantics map across (privileged, host netns/pidns/ipcns/userns/cgroupns, bind-mount/device allowlists, capabilities, seccomp/AppArmor, `image_trust`), plus three libpod-only gates: `allow_host_uts`, `allow_systemd_mode` and `allow_custom_id_mappings`. The six host namespace gates cover `nsmode` `host` and `path`; see [Namespace Modes and the Host Gates](#namespace-modes-and-the-host-gates). The host-filesystem fields `rootfs`, `overlay_volumes` sources, overlay `upperdir`/`workdir` options and `init_path` are held to `allowed_bind_mounts`, a `mounts` bind source has to be an absolute path, and `conmon_pid_file` is refused outright; see [Host-Filesystem Fields on a Native Create](#host-filesystem-fields-on-a-native-create). |
 | `POST /libpod/pods/create` | `request_body.libpod_pod_create` | Pods have no Docker-compat equivalent. Covers the pod's five namespaces, each with `nsmode` `host` or `path` behind its own gate (`allow_host_network` for `netns`, `allow_host_pid` for `pidns`, `allow_host_ipc` for `ipcns`, `allow_host_userns` for `userns`, `allow_host_uts` for `utsns`), shared PID namespace (`allow_shared_pid_namespace`), and the infra image's registry (`allowed_infra_image_registries`). |
 | `POST /libpod/build` | `request_body.build`, shared with Docker `POST /build` | Covers primary remote contexts, URL/image `additionalbuildcontexts`, `networkmode=host`, and Dockerfiles containing `RUN`, read from `Containerfile` and `Dockerfile` or from every file a JSON-array `dockerfile` names. Host/local/multipart and resource-usage host-file controls require the global blind-write acknowledgment. Direct and version-prefixed requests use the same tar/gzip bounds and body-sensitive startup validation as Docker's classic builder. |
 | `POST /libpod/containers/{name}/exec`, `POST /libpod/exec/{id}/start` | `request_body.exec` — **shared with Docker-compat** | libpod exec bodies use Docker's own field names on the wire, so there is deliberately no separate `libpod_exec` block. One `allowed_commands`/`allow_privileged`/`allow_root_user`/env-var policy governs exec on both surfaces, so nothing can be configured for one path family and forgotten for the other. |
@@ -222,6 +222,113 @@ A create that asks for none of that isn't affected. podman-remote sends
 `{}` for every namespace on a container create. On a pod create it sends
 `private` for `pidns`, `ipcns` and `utsns`, and `{}` or `default` for
 `userns`. All of those pass with every gate off.
+
+## Host-Filesystem Fields on a Native Create
+
+A native create names host paths in fields that aren't `mounts` or `devices`,
+so the bind-mount and device allowlists never saw them. `rootfs` runs a host
+directory as the container's whole root filesystem, every `overlay_volumes`
+source is a host directory overlay-mounted inside the container, and
+`init_path` is a host binary bind-mounted in and run as PID 1. All three are
+held to the same `request_body.libpod_container_create.allowed_bind_mounts`
+list that `mounts` bind sources use: the path has to be one of those entries
+or sit under one, or the create is refused. A relative or malformed value
+never matches an absolute allowlist entry, so it's refused too.
+
+An overlay names two more host paths, and they're in its options instead of a
+source field. `upperdir=` and `workdir=` put the overlay's writable layer and
+its work directory wherever they point, so
+`-v /src:/dst:O,upperdir=/etc,workdir=/mnt` writes the container's changes
+into the host's `/etc`. Podman reads them from an `overlay_volumes` entry's
+`options`, and from a named `volumes` entry's `Options` once `O` is one of
+them. It matches the option by prefix, so `upperdirX=/etc` counts as well.
+Every one of those directories is held to `allowed_bind_mounts`, for a named
+volume as much as for a host path. A relative directory is refused whatever
+the list holds, because Podman resolves it under the container's own storage
+directory and `../` walks back out.
+
+Podman writes an overlay's source and both directories into one
+comma-separated option string, so a `,` in a path starts a new mount option
+and a `\` escapes whatever follows it. An `overlay_volumes` source, a `rootfs`
+sent with `rootfs_overlay`, and an `upperdir` or `workdir` directory are
+refused when they contain either character. A plain `rootfs` and a bind source
+can still contain them, because those are only ever handed over as paths.
+
+A `mounts` bind source has to be an absolute path. Podman resolves a relative
+source, and an empty one, against the daemon's own working directory, so
+`../../../../etc` is the host's `/etc` and Sockguard can't see where the
+daemon is standing. Only `bind` mounts are read this way. The source of a
+`tmpfs` mount is the word `tmpfs`, not a path.
+
+`conmon_pid_file` is different. It's a host path the daemon writes conmon's PID
+to, not one the container reads, so no list of readable paths fits it. It's
+refused outright whenever it's set.
+
+Before 2.2.6 a create with default options and `{"rootfs":"/"}` ran a
+container rooted at the host's `/`, and
+`{"overlay_volumes":[{"source":"/","destination":"/host"}]}` mounted the
+host's `/` inside the container, both past `allowed_bind_mounts`. An overlay's
+`upperdir` and `workdir` weren't read at all, and a relative bind source was
+skipped instead of checked, so
+`{"mounts":[{"type":"bind","source":"../../../../etc","destination":"/h"}]}`
+passed with an empty allowlist.
+
+The Docker-compatible create gets the overlay option check when the upstream is
+Podman. Podman parses a `HostConfig.Binds` entry as a `-v` argument, so
+`myvol:/dst:O,upperdir=/etc,workdir=/mnt` reaches the same overlay code.
+`request_body.container_create.allowed_bind_mounts` holds those directories
+the same way, and an overlay bind's source can't contain a `,` or a `\`.
+dockerd refuses the `O`, `upperdir` and `workdir` options itself, so nothing
+changes on a Docker upstream.
+
+Podman reads the keys of the top-level `Volumes` map as `-v` arguments too.
+To dockerd a key is the container path of an anonymous volume and nothing
+more, but on Podman `{"Volumes":{"/etc:/h":{}}}` bind-mounts the host's
+`/etc`. Before 2.2.6 Sockguard didn't read that field. A key with a `:/` in it
+now gets the checks a `Binds` entry does, source and overlay options both.
+Podman only mounts a key whose destination is an absolute container path, and
+the destination follows a `:`. So a container path with a mode (`/data:z`,
+`/data:ro,z`, `/data:nocopy`, as docker-py and Ansible send) passes, and a key
+that is a whole `/abs:/abs` spec is checked on any upstream, because on Podman
+it's a real bind.
+
+### What a Working Client Hits
+
+- `podman --remote run --rootfs /path`, until `/path` is covered by
+  `allowed_bind_mounts`. `--rootfs /path:O` (overlay) and `--rootfs /path:idmap`
+  ride the same `rootfs` path, so one entry covers them.
+- `podman --remote run -v /src:/dst:O` (and other overlay `-v` forms), until
+  `/src` is covered by `allowed_bind_mounts`.
+- `podman --remote run -v /src:/dst:O,upperdir=/up,workdir=/work`, until `/up`
+  and `/work` are covered too. A named volume is the same,
+  `-v vol:/dst:O,upperdir=/up,workdir=/work`, and needs no entry for `vol`.
+- An overlay with a relative `upperdir` or `workdir`, which is refused whatever
+  the allowlist holds.
+- An overlay source, or a `--rootfs /path:O`, with a comma or a backslash in
+  the path.
+- A bind mount whose source reaches the daemon as a relative path.
+  podman-remote makes `-v ./dir:/dst` absolute before it sends it, but it sends
+  `-v .:/dst`, `-v ../dir:/dst` and `--mount type=bind,src=dir,dst=/dst` as
+  written. Those were passed through unchecked and are now refused, so use an
+  absolute path.
+- `podman --remote run --init --init-path /path`, until `/path` is covered by
+  `allowed_bind_mounts`.
+- `podman --remote run --conmon-pidfile /path`, which is refused whatever the
+  allowlist holds.
+
+A create that sets none of them isn't affected. podman-remote omits `rootfs`,
+`overlay_volumes`, `init_path` and `conmon_pid_file` unless the matching flag
+is passed, sends a named volume with no overlay options unless they're typed
+out, and sends an absolute source for an ordinary `-v /src:/dst`, so an
+ordinary image-based create is unchanged.
+
+The same host-path exposure on `POST /libpod/pods/create` isn't gated yet. A
+pod's `overlay_volumes`, `mounts`, `volumes`, `image_volumes`, `volumes_from`
+and `pod_devices` attach to its infra container, and `infra_conmon_pid_file`
+is the pod's conmon-pidfile equivalent. Those are tracked with the pod's other
+mount and device gaps. `rootfs` and `init_path` aren't reachable on a pod
+create: a `PodSpecGenerator` has no such field, and the infra container is
+built from an image.
 
 ## The Uninspected Blind-Write Surface: `play/kube` and Manifests
 

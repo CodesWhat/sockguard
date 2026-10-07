@@ -2,6 +2,7 @@ package filter
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -817,6 +818,428 @@ func TestRewriteLibpodJSONImageFieldRejectsDuplicateCaseVariantKeys(t *testing.T
 	_, err := rewriteLibpodJSONImageField(body, "pinned")
 	if err == nil {
 		t.Fatal("want error for duplicate case-variant top-level keys, got nil")
+	}
+}
+
+// TestLibpodContainerCreateHostPathGatesLeaveFixturesAllowed decodes every
+// captured top-level POST /libpod/containers/create body and asserts the new
+// host-path gate (rootfs, overlay_volumes, the overlay directories in a
+// volume's options, init_path, conmon_pid_file) refuses none of them, under
+// the strictest posture: a policy with no allowlisted bind mount. No default-client fixture carries any of those fields, so a fixture
+// that started failing here would mean a real podman-remote body hit the gate.
+// denyHostPathReason is checked in isolation on purpose: the full inspect()
+// still refuses fixtures that trip other, pre-existing gates (privileged,
+// host namespaces, devices, sysctls), which this change doesn't touch.
+func TestLibpodContainerCreateHostPathGatesLeaveFixturesAllowed(t *testing.T) {
+	entries, err := os.ReadDir(filepath.Join("testdata", "libpod"))
+	if err != nil {
+		t.Fatalf("read fixture dir: %v", err)
+	}
+	policy := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{})
+	anyPath := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowedBindMounts: []string{"/"}})
+	seen := 0
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		seen++
+		t.Run(entry.Name(), func(t *testing.T) {
+			var req libpodContainerCreateRequest
+			if err := json.Unmarshal(loadLibpodFixture(t, entry.Name()), &req); err != nil {
+				t.Fatalf("decode fixture %s: %v", entry.Name(), err)
+			}
+			if reason := policy.denyHostPathReason(req); reason != "" {
+				t.Fatalf("fixture %s newly refused by a host-path gate: %q", entry.Name(), reason)
+			}
+			// The bind-source gate refuses a source that isn't an absolute
+			// path. With every path allowlisted that's the only way it can
+			// refuse, so a fixture failing here would mean podman-remote sent
+			// a relative bind source, or that a tmpfs mount's "tmpfs" source
+			// was read as a path.
+			if reason := anyPath.denyBindMountReason(req.Mounts); reason != "" {
+				t.Fatalf("fixture %s newly refused by the bind-source gate: %q", entry.Name(), reason)
+			}
+		})
+	}
+	if seen == 0 {
+		t.Fatal("no fixtures replayed")
+	}
+}
+
+// TestLibpodContainerCreateRootfsGate holds rootfs to allowed_bind_mounts: a
+// create with rootfs set is refused with no allowlist entry and allowed with a
+// covering one, while a relative or malformed rootfs fails closed.
+func TestLibpodContainerCreateRootfsGate(t *testing.T) {
+	deny := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowSystemdMode: true})
+	if reason := inspectLibpod(t, deny, []byte(`{"systemd":"false","rootfs":"/"}`)); reason == "" {
+		t.Fatal("want deny: rootfs / with no allowlisted bind mount")
+	}
+
+	allow := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowSystemdMode: true, AllowedBindMounts: []string{"/srv/roots"}})
+	if reason := inspectLibpod(t, allow, []byte(`{"systemd":"false","rootfs":"/srv/roots/app"}`)); reason != "" {
+		t.Fatalf("want allow: rootfs under an allowlisted prefix, got %q", reason)
+	}
+	if reason := inspectLibpod(t, allow, []byte(`{"systemd":"false","rootfs":"/etc"}`)); reason == "" {
+		t.Fatal("want deny: rootfs outside the allowlisted prefix")
+	}
+	if reason := inspectLibpod(t, allow, []byte(`{"systemd":"false","rootfs":"roots/app"}`)); reason == "" {
+		t.Fatal("want deny: a relative rootfs never normalizes to an allowlisted absolute path")
+	}
+	if reason := inspectLibpod(t, allow, []byte(`{"systemd":"false","rootfs":{"path":"/"}}`)); reason != "libpod container create denied: malformed JSON request body" {
+		t.Fatalf("want malformed-body deny for a non-string rootfs, got %q", reason)
+	}
+	if reason := inspectLibpod(t, deny, []byte(`{"systemd":"false","image":"alpine"}`)); reason != "" {
+		t.Fatalf("want allow: an image create carries no rootfs, got %q", reason)
+	}
+}
+
+// TestLibpodContainerCreateOverlayVolumeGate holds every overlay_volumes source
+// to allowed_bind_mounts.
+func TestLibpodContainerCreateOverlayVolumeGate(t *testing.T) {
+	allow := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowSystemdMode: true, AllowedBindMounts: []string{"/srv/roots"}})
+	if reason := inspectLibpod(t, allow, []byte(`{"systemd":"false","image":"a","overlay_volumes":[{"source":"/srv/roots/d","destination":"/d"}]}`)); reason != "" {
+		t.Fatalf("want allow: overlay source under an allowlisted prefix, got %q", reason)
+	}
+	if reason := inspectLibpod(t, allow, []byte(`{"systemd":"false","image":"a","overlay_volumes":[{"source":"/srv/roots/d","destination":"/d"},{"source":"/etc","destination":"/e"}]}`)); reason == "" {
+		t.Fatal("want deny: one overlay source off the allowlist")
+	}
+	if reason := inspectLibpod(t, allow, []byte(`{"systemd":"false","image":"a","overlay_volumes":[{"destination":"/d"}]}`)); reason == "" {
+		t.Fatal("want deny: overlay volume with an empty source fails closed")
+	}
+}
+
+// TestLibpodContainerCreateInitPathGate holds init_path to allowed_bind_mounts,
+// and TestLibpodContainerCreateConmonPidFileGate refuses conmon_pid_file.
+func TestLibpodContainerCreateInitPathGate(t *testing.T) {
+	deny := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowSystemdMode: true})
+	if reason := inspectLibpod(t, deny, []byte(`{"systemd":"false","image":"a","init":true,"init_path":"/opt/catatonit"}`)); reason == "" {
+		t.Fatal("want deny: init_path with no allowlisted bind mount")
+	}
+	allow := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowSystemdMode: true, AllowedBindMounts: []string{"/opt"}})
+	if reason := inspectLibpod(t, allow, []byte(`{"systemd":"false","image":"a","init":true,"init_path":"/opt/catatonit"}`)); reason != "" {
+		t.Fatalf("want allow: init_path under an allowlisted prefix, got %q", reason)
+	}
+}
+
+func TestLibpodContainerCreateConmonPidFileGate(t *testing.T) {
+	deny := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowSystemdMode: true})
+	if reason := inspectLibpod(t, deny, []byte(`{"systemd":"false","image":"a","conmon_pid_file":"/run/x.pid"}`)); reason != "libpod container create denied: setting conmon_pid_file is not allowed" {
+		t.Fatalf("want conmon_pid_file refusal, got %q", reason)
+	}
+	// The read-path allowlist doesn't open the host write path.
+	allow := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowSystemdMode: true, AllowedBindMounts: []string{"/"}})
+	if reason := inspectLibpod(t, allow, []byte(`{"systemd":"false","image":"a","conmon_pid_file":"/run/x.pid"}`)); reason == "" {
+		t.Fatal("want deny: conmon_pid_file stays refused even with / allowlisted")
+	}
+	if reason := inspectLibpod(t, deny, []byte(`{"systemd":"false","image":"a"}`)); reason != "" {
+		t.Fatalf("want allow: no conmon_pid_file set, got %q", reason)
+	}
+}
+
+// TestLibpodContainerCreateOverlayAndBindSourceGates covers the host paths a
+// native create reaches without naming them in a source field the allowlist
+// already read: the overlay upper and work directory in an overlay_volumes or
+// volumes entry's options, a comma or backslash in a path bound for an overlay
+// option string, and a bind source Podman resolves against its own working
+// directory.
+func TestLibpodContainerCreateOverlayAndBindSourceGates(t *testing.T) {
+	srv := []string{"/srv/roots"}
+	root := []string{"/"}
+	tests := []struct {
+		name       string
+		allowed    []string
+		fields     string
+		wantReason string
+	}{
+		// overlay_volumes options.
+		{
+			name:    "overlay volume with the overlay flag alone",
+			allowed: srv,
+			fields:  `"overlay_volumes":[{"source":"/srv/roots/d","destination":"/d","options":["O"]}]`,
+		},
+		{
+			name:    "overlay volume with chown",
+			allowed: srv,
+			fields:  `"overlay_volumes":[{"source":"/srv/roots/d","destination":"/d","options":["O","U"]}]`,
+		},
+		{
+			name:    "overlay volume with null options",
+			allowed: srv,
+			fields:  `"overlay_volumes":[{"source":"/srv/roots/d","destination":"/d","options":null}]`,
+		},
+		{
+			name:    "overlay volume with allowlisted upper and work directories",
+			allowed: srv,
+			fields:  `"overlay_volumes":[{"source":"/srv/roots/d","destination":"/d","options":["O","upperdir=/srv/roots/upper","workdir=/srv/roots/work"]}]`,
+		},
+		{
+			name:       "overlay volume with its upper directory in /etc",
+			allowed:    srv,
+			fields:     `"overlay_volumes":[{"source":"/srv/roots/d","destination":"/d","options":["O","upperdir=/etc","workdir=/mnt"]}]`,
+			wantReason: `libpod container create denied: overlay option "upperdir=/etc" is not allowlisted (add its directory to allowed_bind_mounts)`,
+		},
+		{
+			name:       "overlay volume with only its work directory off the allowlist",
+			allowed:    srv,
+			fields:     `"overlay_volumes":[{"source":"/srv/roots/d","destination":"/d","options":["upperdir=/srv/roots/upper","workdir=/mnt"]}]`,
+			wantReason: `libpod container create denied: overlay option "workdir=/mnt" is not allowlisted (add its directory to allowed_bind_mounts)`,
+		},
+		{
+			name:       "overlay volume with a suffixed upperdir key",
+			allowed:    srv,
+			fields:     `"overlay_volumes":[{"source":"/srv/roots/d","destination":"/d","options":["upperdirX=/etc","workdirX=/mnt"]}]`,
+			wantReason: `libpod container create denied: overlay option "upperdirX=/etc" is not allowlisted (add its directory to allowed_bind_mounts)`,
+		},
+		{
+			name:       "overlay volume with a relative upper directory",
+			allowed:    root,
+			fields:     `"overlay_volumes":[{"source":"/srv/roots/d","destination":"/d","options":["upperdir=../../../../etc","workdir=../../../../mnt"]}]`,
+			wantReason: `libpod container create denied: overlay option "upperdir=../../../../etc" does not name an absolute path`,
+		},
+		{
+			name:       "overlay volume with an empty upper directory",
+			allowed:    root,
+			fields:     `"overlay_volumes":[{"source":"/srv/roots/d","destination":"/d","options":["upperdir=","workdir=/srv/roots/work"]}]`,
+			wantReason: `libpod container create denied: overlay option "upperdir=" does not name an absolute path`,
+		},
+		{
+			name:       "overlay volume whose upper directory carries a comma",
+			allowed:    srv,
+			fields:     `"overlay_volumes":[{"source":"/srv/roots/d","destination":"/d","options":["upperdir=/srv/roots/upper,lowerdir=/etc","workdir=/srv/roots/work"]}]`,
+			wantReason: `libpod container create denied: overlay option "upperdir=/srv/roots/upper,lowerdir=/etc" contains a comma or backslash`,
+		},
+		{
+			name:       "overlay volume whose upper directory carries a backslash",
+			allowed:    srv,
+			fields:     `"overlay_volumes":[{"source":"/srv/roots/d","destination":"/d","options":["upperdir=/srv/roots/..\\/etc","workdir=/srv/roots/work"]}]`,
+			wantReason: `libpod container create denied: overlay option "upperdir=/srv/roots/..\\/etc" contains a comma or backslash`,
+		},
+		{
+			// encoding/json matches the key in any case, the way Podman's
+			// decoder does.
+			name:       "overlay volume options under an upper-case key",
+			allowed:    srv,
+			fields:     `"overlay_volumes":[{"source":"/srv/roots/d","destination":"/d","Options":["upperdir=/etc","workdir=/mnt"]}]`,
+			wantReason: `libpod container create denied: overlay option "upperdir=/etc" is not allowlisted (add its directory to allowed_bind_mounts)`,
+		},
+		{
+			name:       "second overlay volume carries the off-allowlist directory",
+			allowed:    srv,
+			fields:     `"overlay_volumes":[{"source":"/srv/roots/d","destination":"/d","options":["O"]},{"source":"/srv/roots/e","destination":"/e","options":["upperdir=/etc","workdir=/mnt"]}]`,
+			wantReason: `libpod container create denied: overlay option "upperdir=/etc" is not allowlisted (add its directory to allowed_bind_mounts)`,
+		},
+
+		// overlay_volumes source and rootfs as an overlay lowerdir.
+		{
+			name:       "overlay volume whose source carries a comma",
+			allowed:    srv,
+			fields:     `"overlay_volumes":[{"source":"/srv/roots/d,lowerdir=/etc","destination":"/d"}]`,
+			wantReason: `libpod container create denied: overlay volume source "/srv/roots/d,lowerdir=/etc" contains a comma or backslash`,
+		},
+		{
+			// The comma has to be looked for in the path as sent. This one
+			// cleans to /srv/roots/d, and Podman writes it uncleaned.
+			name:       "overlay volume whose source hides its comma behind a dot-dot",
+			allowed:    srv,
+			fields:     `"overlay_volumes":[{"source":"/srv/roots/a,lowerdir=/etc/../../d","destination":"/d"}]`,
+			wantReason: `libpod container create denied: overlay volume source "/srv/roots/a,lowerdir=/etc/../../d" contains a comma or backslash`,
+		},
+		{
+			name:       "overlay volume whose source carries a backslash",
+			allowed:    srv,
+			fields:     `"overlay_volumes":[{"source":"/srv/roots/d\\:/etc","destination":"/d"}]`,
+			wantReason: `libpod container create denied: overlay volume source "/srv/roots/d\\:/etc" contains a comma or backslash`,
+		},
+		{
+			name:       "overlay volume whose source carries a comma with / allowlisted",
+			allowed:    root,
+			fields:     `"overlay_volumes":[{"source":"/srv/roots/d,lowerdir=/etc","destination":"/d"}]`,
+			wantReason: `libpod container create denied: overlay volume source "/srv/roots/d,lowerdir=/etc" contains a comma or backslash`,
+		},
+		{
+			name:    "overlay volume whose source carries a colon",
+			allowed: srv,
+			fields:  `"overlay_volumes":[{"source":"/srv/roots/a:b","destination":"/d"}]`,
+		},
+		{
+			name:       "overlay rootfs carrying a comma",
+			allowed:    srv,
+			fields:     `"rootfs":"/srv/roots/app,lowerdir=/etc","rootfs_overlay":true`,
+			wantReason: `libpod container create denied: rootfs path "/srv/roots/app,lowerdir=/etc" contains a comma or backslash, which rootfs_overlay can't mount safely`,
+		},
+		{
+			name:       "overlay rootfs carrying a backslash",
+			allowed:    srv,
+			fields:     `"rootfs":"/srv/roots/app\\:/etc","rootfs_overlay":true`,
+			wantReason: `libpod container create denied: rootfs path "/srv/roots/app\\:/etc" contains a comma or backslash, which rootfs_overlay can't mount safely`,
+		},
+		{
+			name:       "overlay rootfs carrying a comma under an upper-case key",
+			allowed:    srv,
+			fields:     `"rootfs":"/srv/roots/app,lowerdir=/etc","Rootfs_Overlay":true`,
+			wantReason: `libpod container create denied: rootfs path "/srv/roots/app,lowerdir=/etc" contains a comma or backslash, which rootfs_overlay can't mount safely`,
+		},
+		{
+			// Without the overlay the path is only ever a path, and a comma is
+			// a legal character in a directory name.
+			name:    "plain rootfs carrying a comma",
+			allowed: srv,
+			fields:  `"rootfs":"/srv/roots/app,v2"`,
+		},
+		{
+			name:    "plain rootfs carrying a comma with rootfs_overlay false",
+			allowed: srv,
+			fields:  `"rootfs":"/srv/roots/app,v2","rootfs_overlay":false`,
+		},
+		{
+			name:    "overlay rootfs with an ordinary path",
+			allowed: srv,
+			fields:  `"rootfs":"/srv/roots/app","rootfs_overlay":true`,
+		},
+		{
+			name:       "rootfs_overlay that is not a boolean",
+			allowed:    srv,
+			fields:     `"rootfs":"/srv/roots/app","rootfs_overlay":"true"`,
+			wantReason: "libpod container create denied: malformed JSON request body",
+		},
+
+		// volumes options.
+		{
+			name:   "named volume with null options",
+			fields: `"image":"a","volumes":[{"Name":"v","Dest":"/d","Options":null}]`,
+		},
+		{
+			name:   "named volume with ordinary options",
+			fields: `"image":"a","volumes":[{"Name":"v","Dest":"/d","Options":["ro","z","U","nocopy","nodev","noexec","nosuid","rprivate"]}]`,
+		},
+		{
+			name:   "named volume with a subpath and an idmap",
+			fields: `"image":"a","volumes":[{"Name":"v","Dest":"/d","Options":["idmap","subpath=cache"],"SubPath":"cache"}]`,
+		},
+		{
+			name:   "named volume overlay",
+			fields: `"image":"a","volumes":[{"Name":"v","Dest":"/d","Options":["O"]}]`,
+		},
+		{
+			name:    "named volume overlay with allowlisted upper and work directories",
+			allowed: srv,
+			fields:  `"image":"a","volumes":[{"Name":"v","Dest":"/d","Options":["O","upperdir=/srv/roots/upper","workdir=/srv/roots/work"]}]`,
+		},
+		{
+			name:       "named volume overlay with its upper directory in /etc",
+			allowed:    srv,
+			fields:     `"image":"a","volumes":[{"Name":"v","Dest":"/d","Options":["O","upperdir=/etc","workdir=/mnt"]}]`,
+			wantReason: `libpod container create denied: overlay option "upperdir=/etc" is not allowlisted (add its directory to allowed_bind_mounts)`,
+		},
+		{
+			name:       "named volume overlay with nothing allowlisted",
+			fields:     `"image":"a","volumes":[{"Name":"v","Dest":"/d","Options":["O","upperdir=/srv/roots/upper","workdir=/srv/roots/work"]}]`,
+			wantReason: `libpod container create denied: overlay option "upperdir=/srv/roots/upper" is not allowlisted (add its directory to allowed_bind_mounts)`,
+		},
+		{
+			// Checked without the overlay flag too. Podman refuses the option
+			// there, so nothing that works is lost.
+			name:       "named volume with an upper directory and no overlay flag",
+			allowed:    srv,
+			fields:     `"image":"a","volumes":[{"Name":"v","Dest":"/d","Options":["upperdir=/etc","workdir=/mnt"]}]`,
+			wantReason: `libpod container create denied: overlay option "upperdir=/etc" is not allowlisted (add its directory to allowed_bind_mounts)`,
+		},
+		{
+			name:       "named volume options under a lower-case key",
+			allowed:    srv,
+			fields:     `"image":"a","volumes":[{"name":"v","dest":"/d","options":["O","upperdir=/etc","workdir=/mnt"]}]`,
+			wantReason: `libpod container create denied: overlay option "upperdir=/etc" is not allowlisted (add its directory to allowed_bind_mounts)`,
+		},
+		{
+			name:       "named volume overlay with a relative work directory",
+			allowed:    root,
+			fields:     `"image":"a","volumes":[{"Name":"v","Dest":"/d","Options":["O","upperdir=/srv/roots/upper","workdir=../w"]}]`,
+			wantReason: `libpod container create denied: overlay option "workdir=../w" does not name an absolute path`,
+		},
+
+		// mounts[] bind sources.
+		{
+			name:    "bind mount from an allowlisted source",
+			allowed: srv,
+			fields:  `"image":"a","mounts":[{"type":"bind","source":"/srv/roots/d","destination":"/d","options":["ro"]}]`,
+		},
+		{
+			name:       "bind mount from a relative source with nothing allowlisted",
+			fields:     `"image":"a","mounts":[{"type":"bind","source":"../../../../etc","destination":"/h"}]`,
+			wantReason: `libpod container create denied: bind mount source "../../../../etc" is not an absolute path`,
+		},
+		{
+			name:       "bind mount from a relative source under an allowlisted name",
+			allowed:    srv,
+			fields:     `"image":"a","mounts":[{"type":"bind","source":"srv/roots/d","destination":"/h"}]`,
+			wantReason: `libpod container create denied: bind mount source "srv/roots/d" is not an absolute path`,
+		},
+		{
+			name:       "bind mount from the daemon's working directory",
+			allowed:    srv,
+			fields:     `"image":"a","mounts":[{"type":"bind","source":".","destination":"/h"}]`,
+			wantReason: `libpod container create denied: bind mount source "." is not an absolute path`,
+		},
+		{
+			name:       "bind mount with an empty source",
+			allowed:    srv,
+			fields:     `"image":"a","mounts":[{"type":"bind","source":"","destination":"/h"}]`,
+			wantReason: `libpod container create denied: bind mount source "" is not an absolute path`,
+		},
+		{
+			name:       "bind mount with no source",
+			allowed:    srv,
+			fields:     `"image":"a","mounts":[{"type":"bind","destination":"/h"}]`,
+			wantReason: `libpod container create denied: bind mount source "" is not an absolute path`,
+		},
+		{
+			// A relative path is some path under /, but which one depends on
+			// where the daemon is standing, so it's refused here too, the way a
+			// relative rootfs is.
+			name:       "bind mount from a relative source with / allowlisted",
+			allowed:    root,
+			fields:     `"image":"a","mounts":[{"type":"bind","source":"../etc","destination":"/h"}]`,
+			wantReason: `libpod container create denied: bind mount source "../etc" is not an absolute path`,
+		},
+		{
+			name:       "bind mount from a relative source under another letter case of the type",
+			allowed:    srv,
+			fields:     `"image":"a","mounts":[{"type":"Bind","source":"etc","destination":"/h"}]`,
+			wantReason: `libpod container create denied: bind mount source "etc" is not an absolute path`,
+		},
+		{
+			name:       "relative bind mount after an allowlisted one",
+			allowed:    srv,
+			fields:     `"image":"a","mounts":[{"type":"bind","source":"/srv/roots/d","destination":"/d"},{"type":"bind","source":"etc","destination":"/h"}]`,
+			wantReason: `libpod container create denied: bind mount source "etc" is not an absolute path`,
+		},
+		// Only a bind mount's source is a host path Podman resolves. The
+		// others name a filesystem, and their source isn't a path at all.
+		{
+			name:   "tmpfs mount with its usual source",
+			fields: `"image":"a","mounts":[{"type":"tmpfs","source":"tmpfs","destination":"/tmp/x"}]`,
+		},
+		{
+			name:   "tmpfs mount with no source",
+			fields: `"image":"a","mounts":[{"type":"tmpfs","destination":"/tmp/x","options":["size=64m"]}]`,
+		},
+		{
+			name:   "ramfs mount",
+			fields: `"image":"a","mounts":[{"type":"ramfs","source":"ramfs","destination":"/tmp/x"}]`,
+		},
+		{
+			name:   "devpts mount",
+			fields: `"image":"a","mounts":[{"type":"devpts","source":"devpts","destination":"/dev/pts"}]`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowedBindMounts: tt.allowed})
+			reason := inspectLibpod(t, policy, []byte(`{"systemd":"false",`+tt.fields+`}`))
+			if reason != tt.wantReason {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
 	}
 }
 
