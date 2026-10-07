@@ -134,6 +134,8 @@ func (c LibpodContainerCreateRequestBodyConfig) ToFilterOptions() filter.LibpodC
 		AllowHostPID:                      c.AllowHostPID,
 		AllowHostIPC:                      c.AllowHostIPC,
 		AllowHostUserNS:                   c.AllowHostUserNS,
+		AllowHostUTS:                      c.AllowHostUTS,
+		AllowHostCgroupNS:                 c.AllowHostCgroupNS,
 		AllowedBindMounts:                 c.AllowedBindMounts,
 		AllowAllDevices:                   c.AllowAllDevices,
 		AllowedDevices:                    c.AllowedDevices,

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **A native Podman container create could join the host UTS or cgroup namespace with every host gate off.** `POST /libpod/containers/create` (sent as `/v{version}/libpod/containers/create`) takes six namespace objects, and `request_body.libpod_container_create` had a host gate for four of them. `utsns` and `cgroupns` had none, so `{"utsns": {"nsmode": "host"}}` and `{"cgroupns": {"nsmode": "host"}}` reached Podman whatever the policy said. So did `nsmode: path` on either, unless `restrict_namespace_sharing` was on. Two new options gate them, `allow_host_uts` and `allow_host_cgroupns` (`SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_HOST_UTS` and `..._ALLOW_HOST_CGROUPNS`). Both are off by default and cover `host` and `path`. While one is off its namespace takes an empty mode, `default`, `private`, `container` and `pod`, which is everything Podman accepts there besides `host` and `path`. The Docker-compatible create was already covered: it always refuses `UTSMode: host`, and `CgroupnsMode: host` needs `container_create.allow_host_cgroupns`. Neither block opens the other's route. `container_create.allow_host_cgroupns` does nothing for a native create, and the compat block has no `allow_host_uts`. That's a behavior change for `podman --remote run` or `create` with `--uts host`, `--uts ns:<path>`, `--cgroupns host` or `--cgroupns ns:<path>`, which are refused until the matching option is on. A create without those flags isn't affected. podman-remote sends an empty object for both namespaces, and an empty object passes. Where the daemon then puts the container is its own default, which is the host cgroup namespace on a cgroup v1 host, and the gate doesn't change that. No shipped preset allows the native create path. Read from Podman 5.8.6 and reproduced through the proxy against a test daemon that picks namespaces the way that source does. The request bodies were captured from podman-remote 6.1.3.
+
 ## [2.2.5] - 2026-10-06
 
 ### Security

@@ -26,6 +26,8 @@ const (
 	libpodPidNS
 	libpodIpcNS
 	libpodUserNS
+	libpodUtsNS
+	libpodCgroupNS
 )
 
 // label is how deny reasons name the namespace.
@@ -37,6 +39,10 @@ func (k libpodNamespaceKind) label() string {
 		return "PID"
 	case libpodIpcNS:
 		return "IPC"
+	case libpodUtsNS:
+		return "UTS"
+	case libpodCgroupNS:
+		return "cgroup"
 	default:
 		return "user"
 	}
@@ -47,6 +53,13 @@ func (k libpodNamespaceKind) label() string {
 // against in Podman 5.8.6 (pkg/specgen/namespaces.go: validate,
 // validateIPCNS, validateUserNS and validateNetNS). Podman compares the mode
 // byte for byte, so this does too: "Private" is not a mode it has.
+//
+// pidns, utsns and cgroupns go through validate alone
+// (pkg/specgen/container_validate.go:134, 140 and 143), so they take the
+// shared modes and nothing else. A pod's namespaces are held to the same
+// lists: the pod create handler copies them onto the infra container's
+// SpecGenerator, which is validated like any other
+// (pkg/api/handlers/libpod/pods.go:60-65).
 //
 // An empty mode and `default` take the daemon's containers.conf setting.
 // `container` joins another container's namespace, which

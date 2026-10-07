@@ -544,9 +544,11 @@ func (d *podmanNamespaceChainDaemon) seen() []string {
 // gate is off its namespace takes only the modes Podman has that keep the
 // container out of the host's.
 //
+// utsns and cgroupns on the native create had no gate to read them until
+// 2.2.6. Each has its own now, off by default.
+//
 // The cases still named "joins" with every gate off are the ones no gate
-// reads yet: utsns and cgroupns on the native create, and a pod's pidns,
-// ipcns, utsns and userns.
+// reads yet: a pod's pidns, ipcns, utsns and userns.
 func TestServeChainNamespaceJoinedByPathNeedsTheHostGate(t *testing.T) {
 	const (
 		libpodCreate = "/v5.8.6/libpod/containers/create"
@@ -576,6 +578,22 @@ func TestServeChainNamespaceJoinedByPathNeedsTheHostGate(t *testing.T) {
 		body.ContainerCreate.AllowHostPID = true
 		body.LibpodContainerCreate.AllowHostPID = true
 	}
+	// Each native gate on its own, so a case shows which one it needs.
+	hostUTS := func(body *gates) { body.LibpodContainerCreate.AllowHostUTS = true }
+	hostCgroup := func(body *gates) { body.LibpodContainerCreate.AllowHostCgroupNS = true }
+	// Every native gate but the one a case is about.
+	everyNativeGateBut := func(skip string) func(*gates) {
+		return func(body *gates) {
+			c, p := &body.LibpodContainerCreate, &body.LibpodPodCreate
+			for name, gate := range map[string]*bool{
+				"container netns": &c.AllowHostNetwork, "container pidns": &c.AllowHostPID, "container ipcns": &c.AllowHostIPC,
+				"container userns": &c.AllowHostUserNS, "container utsns": &c.AllowHostUTS, "container cgroupns": &c.AllowHostCgroupNS,
+				"pod netns": &p.AllowHostNetwork,
+			} {
+				*gate = name != skip
+			}
+		}
+	}
 
 	tests := []struct {
 		name        string
@@ -599,15 +617,19 @@ func TestServeChainNamespaceJoinedByPathNeedsTheHostGate(t *testing.T) {
 		{name: "libpod pidns host", send: libpod(`"pidns":{"nsmode":"host"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: host PID namespace is not allowed"},
 		{name: "libpod ipcns host", send: libpod(`"ipcns":{"nsmode":"host"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: host IPC namespace is not allowed"},
 		{name: "libpod userns host", send: libpod(`"userns":{"nsmode":"host"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: host user namespace is not allowed"},
-		{name: "libpod utsns host joins", send: libpod(`"utsns":{"nsmode":"host"}`), wantStatus: http.StatusCreated, wantCreated: created("utsns=host")},
-		{name: "libpod cgroupns host joins", send: libpod(`"cgroupns":{"nsmode":"host"}`), wantStatus: http.StatusCreated, wantCreated: created("cgroupns=host")},
+		{name: "libpod utsns host", send: libpod(`"utsns":{"nsmode":"host"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: host UTS namespace is not allowed"},
+		{name: "libpod cgroupns host", send: libpod(`"cgroupns":{"nsmode":"host"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: host cgroup namespace is not allowed"},
 		{name: "libpod netns path", send: libpod(`"netns":{"nsmode":"path","value":"/proc/1/ns/net"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: network namespace joined by path is not allowed"},
 		{name: "libpod netns path to a named netns", send: libpod(`"netns":{"nsmode":"path","value":"/run/netns/other"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: network namespace joined by path is not allowed"},
 		{name: "libpod pidns path", send: libpod(`"pidns":{"nsmode":"path","value":"/proc/1/ns/pid"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: PID namespace joined by path is not allowed"},
 		{name: "libpod ipcns path", send: libpod(`"ipcns":{"nsmode":"path","value":"/proc/1/ns/ipc"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: IPC namespace joined by path is not allowed"},
 		{name: "libpod userns path", send: libpod(`"userns":{"nsmode":"path","value":"/proc/1/ns/user"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: user namespace joined by path is not allowed"},
-		{name: "libpod utsns path joins", send: libpod(`"utsns":{"nsmode":"path","value":"/proc/1/ns/uts"}`), wantStatus: http.StatusCreated, wantCreated: created("utsns=path:/proc/1/ns/uts")},
-		{name: "libpod cgroupns path joins", send: libpod(`"cgroupns":{"nsmode":"path","value":"/proc/1/ns/cgroup"}`), wantStatus: http.StatusCreated, wantCreated: created("cgroupns=path:/proc/1/ns/cgroup")},
+		{name: "libpod utsns path", send: libpod(`"utsns":{"nsmode":"path","value":"/proc/1/ns/uts"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: UTS namespace joined by path is not allowed"},
+		{name: "libpod cgroupns path", send: libpod(`"cgroupns":{"nsmode":"path","value":"/proc/1/ns/cgroup"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: cgroup namespace joined by path is not allowed"},
+		{name: "libpod utsns host under an upper-case key", send: libpod(`"UTSNS":{"NSMode":"host"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: host UTS namespace is not allowed"},
+		{name: "libpod cgroupns path as the last of two cgroupns", send: libpod(`"cgroupns":{"nsmode":"private"},"cgroupns":{"nsmode":"path","value":"/proc/1/ns/cgroup"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: cgroup namespace joined by path is not allowed"},
+		{name: "libpod utsns with a mode Podman doesn't have", send: libpod(`"utsns":{"nsmode":"hostns"}`), wantStatus: http.StatusForbidden, wantReason: `libpod container create denied: UTS namespace mode "hostns" is not recognized`},
+		{name: "libpod cgroupns with an IPC mode", send: libpod(`"cgroupns":{"nsmode":"shareable"}`), wantStatus: http.StatusForbidden, wantReason: `libpod container create denied: cgroup namespace mode "shareable" is not recognized`},
 		{
 			name:       "libpod every namespace by path",
 			send:       libpod(`"netns":{"nsmode":"path","value":"/proc/1/ns/net"},"pidns":{"nsmode":"path","value":"/proc/1/ns/pid"},"ipcns":{"nsmode":"path","value":"/proc/1/ns/ipc"},"userns":{"nsmode":"path","value":"/proc/1/ns/user"}`),
@@ -691,6 +713,23 @@ func TestServeChainNamespaceJoinedByPathNeedsTheHostGate(t *testing.T) {
 		{name: "libpod pidns host with allow_host_pid", configure: hostPID, send: libpod(`"pidns":{"nsmode":"host"}`), wantStatus: http.StatusCreated, wantCreated: created("pidns=host")},
 		{name: "libpod pidns path with allow_host_pid", configure: hostPID, send: libpod(`"pidns":{"nsmode":"path","value":"/proc/1/ns/pid"}`), wantStatus: http.StatusCreated, wantCreated: created("pidns=path:/proc/1/ns/pid")},
 		{name: "libpod netns path with only allow_host_pid", configure: hostPID, send: libpod(`"netns":{"nsmode":"path","value":"/proc/1/ns/net"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: network namespace joined by path is not allowed"},
+		{name: "libpod utsns host with allow_host_uts", configure: hostUTS, send: libpod(`"utsns":{"nsmode":"host"}`), wantStatus: http.StatusCreated, wantCreated: created("utsns=host")},
+		{name: "libpod utsns path with allow_host_uts", configure: hostUTS, send: libpod(`"utsns":{"nsmode":"path","value":"/proc/1/ns/uts"}`), wantStatus: http.StatusCreated, wantCreated: created("utsns=path:/proc/1/ns/uts")},
+		{name: "libpod cgroupns host with allow_host_cgroupns", configure: hostCgroup, send: libpod(`"cgroupns":{"nsmode":"host"}`), wantStatus: http.StatusCreated, wantCreated: created("cgroupns=host")},
+		{name: "libpod cgroupns path with allow_host_cgroupns", configure: hostCgroup, send: libpod(`"cgroupns":{"nsmode":"path","value":"/proc/1/ns/cgroup"}`), wantStatus: http.StatusCreated, wantCreated: created("cgroupns=path:/proc/1/ns/cgroup")},
+		{name: "libpod utsns host with only allow_host_cgroupns", configure: hostCgroup, send: libpod(`"utsns":{"nsmode":"host"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: host UTS namespace is not allowed"},
+		{name: "libpod cgroupns host with only allow_host_uts", configure: hostUTS, send: libpod(`"cgroupns":{"nsmode":"host"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: host cgroup namespace is not allowed"},
+		{name: "libpod utsns host with every native gate but its own", configure: everyNativeGateBut("container utsns"), send: libpod(`"utsns":{"nsmode":"host"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: host UTS namespace is not allowed"},
+		{name: "libpod cgroupns host with every native gate but its own", configure: everyNativeGateBut("container cgroupns"), send: libpod(`"cgroupns":{"nsmode":"host"}`), wantStatus: http.StatusForbidden, wantReason: "libpod container create denied: host cgroup namespace is not allowed"},
+		{
+			// The compat block's allow_host_cgroupns is for HostConfig. It
+			// doesn't open the native create's cgroupns.
+			name:       "libpod cgroupns host with the compat allow_host_cgroupns",
+			configure:  func(body *gates) { body.ContainerCreate.AllowHostCgroupNS = true },
+			send:       libpod(`"cgroupns":{"nsmode":"host"}`),
+			wantStatus: http.StatusForbidden,
+			wantReason: "libpod container create denied: host cgroup namespace is not allowed",
+		},
 		{
 			// A path can name another container's namespace as easily as
 			// the host's, and no allowlist of containers can vouch for it.
@@ -729,8 +768,7 @@ func TestServeChainNamespaceJoinedByPathNeedsTheHostGate(t *testing.T) {
 			wantCreated: created("cgroupns=container:web"),
 		},
 		{
-			// No host gate reads cgroupns on the native create, so only
-			// restrict_namespace_sharing stands between this and Podman.
+			// The host gate answers first while it's off.
 			name: "libpod cgroupns path with sharing restricted",
 			configure: func(body *gates) {
 				body.LibpodContainerCreate.RestrictNamespaceSharing = true
@@ -738,7 +776,31 @@ func TestServeChainNamespaceJoinedByPathNeedsTheHostGate(t *testing.T) {
 			},
 			send:       libpod(`"cgroupns":{"nsmode":"path","value":"/proc/1/ns/cgroup"}`),
 			wantStatus: http.StatusForbidden,
+			wantReason: "libpod container create denied: cgroup namespace joined by path is not allowed",
+		},
+		{
+			// With the host gate on, a path is still a namespace no
+			// allowlist of containers can vouch for.
+			name: "libpod cgroupns path with allow_host_cgroupns and sharing restricted",
+			configure: func(body *gates) {
+				hostCgroup(body)
+				body.LibpodContainerCreate.RestrictNamespaceSharing = true
+				body.LibpodContainerCreate.AllowedNamespaceSharingContainers = []string{"web"}
+			},
+			send:       libpod(`"cgroupns":{"nsmode":"path","value":"/proc/1/ns/cgroup"}`),
+			wantStatus: http.StatusForbidden,
 			wantReason: "libpod container create denied: cgroup namespace joined by path is not allowed while namespace sharing is restricted",
+		},
+		{
+			name: "libpod utsns path with allow_host_uts and sharing restricted",
+			configure: func(body *gates) {
+				hostUTS(body)
+				body.LibpodContainerCreate.RestrictNamespaceSharing = true
+				body.LibpodContainerCreate.AllowedNamespaceSharingContainers = []string{"web"}
+			},
+			send:       libpod(`"utsns":{"nsmode":"path","value":"/proc/1/ns/uts"}`),
+			wantStatus: http.StatusForbidden,
+			wantReason: "libpod container create denied: UTS namespace joined by path is not allowed while namespace sharing is restricted",
 		},
 
 		// Pod create, every gate off. The namespaces are the infra container's.

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -22,6 +23,8 @@ var libpodNamespaceGateCases = []libpodNamespaceGateCase{
 	{"pidns", libpodPidNS, "PID", func(o *LibpodContainerCreateOptions) { o.AllowHostPID = true }},
 	{"ipcns", libpodIpcNS, "IPC", func(o *LibpodContainerCreateOptions) { o.AllowHostIPC = true }},
 	{"userns", libpodUserNS, "user", func(o *LibpodContainerCreateOptions) { o.AllowHostUserNS = true }},
+	{"utsns", libpodUtsNS, "UTS", func(o *LibpodContainerCreateOptions) { o.AllowHostUTS = true }},
+	{"cgroupns", libpodCgroupNS, "cgroup", func(o *LibpodContainerCreateOptions) { o.AllowHostCgroupNS = true }},
 }
 
 // libpodGateOptions opens every host gate but the one for skip, or every one
@@ -39,6 +42,9 @@ func libpodGateOptions(skip string) LibpodContainerCreateOptions {
 // TestLibpodNamespaceKindKnowsMode pins the modes each namespace passes while
 // its host gate is off, against the lists Podman 5.8.6 validates with
 // (pkg/specgen/namespaces.go:146-233). `host` and `path` are never among them.
+// pidns, utsns and cgroupns go through validate alone
+// (pkg/specgen/container_validate.go:134, 140 and 143), so they take only the
+// modes every namespace takes.
 func TestLibpodNamespaceKindKnowsMode(t *testing.T) {
 	every := []string{
 		"", "default", "private", "container", "pod",
@@ -50,10 +56,12 @@ func TestLibpodNamespaceKindKnowsMode(t *testing.T) {
 	}
 	common := []string{"", "default", "private", "container", "pod"}
 	known := map[libpodNamespaceKind][]string{
-		libpodNetNS:  append([]string{"none", "bridge", "slirp4netns", "pasta"}, common...),
-		libpodPidNS:  common,
-		libpodIpcNS:  append([]string{"shareable", "none"}, common...),
-		libpodUserNS: append([]string{"auto", "keep-id", "no-map"}, common...),
+		libpodNetNS:    append([]string{"none", "bridge", "slirp4netns", "pasta"}, common...),
+		libpodPidNS:    common,
+		libpodIpcNS:    append([]string{"shareable", "none"}, common...),
+		libpodUserNS:   append([]string{"auto", "keep-id", "no-map"}, common...),
+		libpodUtsNS:    common,
+		libpodCgroupNS: common,
 	}
 	for _, c := range libpodNamespaceGateCases {
 		for _, mode := range every {
@@ -128,12 +136,12 @@ func TestLibpodContainerCreateNamespaceModesThatPassWithEveryGateOff(t *testing.
 	bodies := []string{
 		`{}`,
 		`{"netns":{},"pidns":{},"ipcns":{},"userns":{},"utsns":{},"cgroupns":{}}`,
-		`{"netns":null,"pidns":null,"ipcns":null,"userns":null}`,
-		`{"netns":{"nsmode":null},"pidns":{"nsmode":""}}`,
-		`{"netns":{"nsmode":"default"},"pidns":{"nsmode":"default"},"ipcns":{"nsmode":"default"},"userns":{"nsmode":"default"}}`,
-		`{"netns":{"nsmode":"private"},"pidns":{"nsmode":"private"},"ipcns":{"nsmode":"private"},"userns":{"nsmode":"private"}}`,
-		`{"netns":{"nsmode":"container","value":"web"},"pidns":{"nsmode":"container","value":"web"},"ipcns":{"nsmode":"container","value":"web"},"userns":{"nsmode":"container","value":"web"}}`,
-		`{"pod":"p","netns":{"nsmode":"pod"},"pidns":{"nsmode":"pod"},"ipcns":{"nsmode":"pod"},"userns":{"nsmode":"pod"}}`,
+		`{"netns":null,"pidns":null,"ipcns":null,"userns":null,"utsns":null,"cgroupns":null}`,
+		`{"netns":{"nsmode":null},"pidns":{"nsmode":""},"utsns":{"nsmode":null},"cgroupns":{"nsmode":""}}`,
+		`{"netns":{"nsmode":"default"},"pidns":{"nsmode":"default"},"ipcns":{"nsmode":"default"},"userns":{"nsmode":"default"},"utsns":{"nsmode":"default"},"cgroupns":{"nsmode":"default"}}`,
+		`{"netns":{"nsmode":"private"},"pidns":{"nsmode":"private"},"ipcns":{"nsmode":"private"},"userns":{"nsmode":"private"},"utsns":{"nsmode":"private"},"cgroupns":{"nsmode":"private"}}`,
+		`{"netns":{"nsmode":"container","value":"web"},"pidns":{"nsmode":"container","value":"web"},"ipcns":{"nsmode":"container","value":"web"},"userns":{"nsmode":"container","value":"web"},"utsns":{"nsmode":"container","value":"web"},"cgroupns":{"nsmode":"container","value":"web"}}`,
+		`{"pod":"p","netns":{"nsmode":"pod"},"pidns":{"nsmode":"pod"},"ipcns":{"nsmode":"pod"},"userns":{"nsmode":"pod"},"utsns":{"nsmode":"pod"},"cgroupns":{"nsmode":"pod"}}`,
 		`{"netns":{"nsmode":"bridge"}}`,
 		`{"netns":{"nsmode":"none"}}`,
 		`{"netns":{"nsmode":"slirp4netns","value":"cidr=10.0.3.0/24"}}`,
@@ -146,6 +154,8 @@ func TestLibpodContainerCreateNamespaceModesThatPassWithEveryGateOff(t *testing.
 		// The last nsmode is the one Podman keeps.
 		`{"pidns":{"nsmode":"path","nsmode":"private"}}`,
 		`{"pidns":{"nsmode":"host"},"pidns":{"nsmode":"private"}}`,
+		`{"utsns":{"nsmode":"host"},"utsns":{"nsmode":"private"}}`,
+		`{"cgroupns":{"nsmode":"path","nsmode":"private"}}`,
 	}
 	for _, body := range bodies {
 		t.Run(body, func(t *testing.T) {
@@ -174,6 +184,12 @@ func TestLibpodContainerCreateNamespaceModeOfTheWrongNamespace(t *testing.T) {
 		{`{"userns":{"nsmode":"none"}}`, `libpod container create denied: user namespace mode "none" is not recognized`},
 		{`{"netns":{"nsmode":"shareable"}}`, `libpod container create denied: network namespace mode "shareable" is not recognized`},
 		{`{"netns":{"nsmode":"auto"}}`, `libpod container create denied: network namespace mode "auto" is not recognized`},
+		{`{"utsns":{"nsmode":"bridge"}}`, `libpod container create denied: UTS namespace mode "bridge" is not recognized`},
+		{`{"utsns":{"nsmode":"shareable"}}`, `libpod container create denied: UTS namespace mode "shareable" is not recognized`},
+		{`{"utsns":{"nsmode":"none"}}`, `libpod container create denied: UTS namespace mode "none" is not recognized`},
+		{`{"cgroupns":{"nsmode":"none"}}`, `libpod container create denied: cgroup namespace mode "none" is not recognized`},
+		{`{"cgroupns":{"nsmode":"auto"}}`, `libpod container create denied: cgroup namespace mode "auto" is not recognized`},
+		{`{"cgroupns":{"nsmode":"shareable"}}`, `libpod container create denied: cgroup namespace mode "shareable" is not recognized`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.body, func(t *testing.T) {
@@ -335,5 +351,66 @@ func TestLibpodPodCreateNetworkNamespaceHostGateIsAnAllowlist(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestLibpodContainerCreateCapturedBodiesAndTheUTSAndCgroupGates runs every
+// container create body captured off podman-remote through the inspector
+// with allow_host_uts and allow_host_cgroupns off, then on. Every gate that
+// answers before those two is open, so the two are always reached. Only the
+// bodies that ask for the host UTS or cgroup namespace get a different
+// answer, so a create that worked on 2.2.5 without those two flags still
+// works on 2.2.6.
+func TestLibpodContainerCreateCapturedBodiesAndTheUTSAndCgroupGates(t *testing.T) {
+	captured, err := filepath.Glob(filepath.Join("testdata", "libpod", "*.json"))
+	if err != nil {
+		t.Fatalf("glob container fixtures: %v", err)
+	}
+	if len(captured) < 20 {
+		t.Fatalf("found %d container create bodies in testdata/libpod, want at least the 20 captured for 2.0", len(captured))
+	}
+	gatesOff := LibpodContainerCreateOptions{
+		AllowPrivileged:  true,
+		AllowHostNetwork: true,
+		AllowHostPID:     true,
+		AllowHostIPC:     true,
+		AllowHostUserNS:  true,
+	}
+	gatesOn := gatesOff
+	gatesOn.AllowHostUTS = true
+	gatesOn.AllowHostCgroupNS = true
+	wantRefused := map[string]string{
+		"host_uts.json":      "libpod container create denied: host UTS namespace is not allowed",
+		"host_cgroupns.json": "libpod container create denied: host cgroup namespace is not allowed",
+	}
+	seen := 0
+	for _, path := range captured {
+		name := filepath.Base(path)
+		body := loadLibpodFixture(t, name)
+		t.Run(name, func(t *testing.T) {
+			off := inspectLibpod(t, newLibpodContainerCreatePolicy(gatesOff), body)
+			on := inspectLibpod(t, newLibpodContainerCreatePolicy(gatesOn), body)
+			if want, refused := wantRefused[name]; refused {
+				if off != want {
+					t.Fatalf("with the gates off inspect() reason = %q, want %q", off, want)
+				}
+				if strings.Contains(on, "namespace") {
+					t.Fatalf("with the gates on inspect() reason = %q, want one that isn't about a namespace", on)
+				}
+				return
+			}
+			if off != on {
+				t.Fatalf("the UTS and cgroup gates changed the answer: off %q, on %q", off, on)
+			}
+			if strings.Contains(off, "UTS") || strings.Contains(off, "cgroup") {
+				t.Fatalf("inspect() reason = %q, want one that isn't about the UTS or cgroup namespace", off)
+			}
+		})
+		if _, refused := wantRefused[name]; refused {
+			seen++
+		}
+	}
+	if seen != len(wantRefused) {
+		t.Fatalf("found %d of the %d host UTS and cgroup fixtures", seen, len(wantRefused))
 	}
 }
