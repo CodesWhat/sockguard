@@ -81,6 +81,15 @@ func TestMiddlewareContainerCreateLegacyTmpfsKeyOptions(t *testing.T) {
 		{"/scratch:mpol=bind:0", "", false},
 		{"/scratch:custom=exec", "", false},
 		{"/scratch:EXEC, dev,exec;suid", "", false},
+		// Podman reads the option list from between the first and second colon and drops the rest.
+		{"/scratch:exec:noexec", "", true},
+		{"/scratch:suid:", "", true},
+		{"/scratch:dev:x", "", true},
+		{"/scratch:rw,size=64m,suid:x", "", true},
+		{"/scratch:suid:", "nosuid", true},
+		{"/scratch", "suid:x", true},
+		{"/scratch", "dev:", true},
+		{"/scratch", "exec:noexec", true},
 	} {
 		for _, allow := range []bool{false, true} {
 			name := tt.key + "|" + tt.value

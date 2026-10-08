@@ -2026,17 +2026,21 @@ func (p containerCreatePolicy) denyTmpfsOptionsReason(mounts []containerCreateMo
 }
 
 // denyLegacyTmpfsOptionsReason follows Docker's comma-separated, last-wins
-// handling of the legacy HostConfig.Tmpfs mount flags. Podman also reads
-// options from the map key after its first ":" ("/scratch:exec"), so the key
-// suffix and the value are each evaluated by the same parser. Each source is
-// judged on its own, so a privileged option in either one denies.
+// handling of the legacy HostConfig.Tmpfs mount flags. dockerd reads the whole
+// value as the option string, while Podman splits "key" or "key:value" on every
+// colon and reads only the segment between the first and second colon, which
+// comes from the key when the key has a colon and from the value otherwise.
+// So the whole value, that key segment, and the value up to its first colon are
+// each judged on their own, and a privileged option in any of them denies.
 func (p containerCreatePolicy) denyLegacyTmpfsOptionsReason(mounts map[string]string) string {
 	if p.allowTmpfsPrivilegedOptions {
 		return ""
 	}
-	for path, options := range mounts {
-		_, keyOptions, _ := strings.Cut(path, ":")
-		if legacyTmpfsOptionsEnablePrivilege(keyOptions) || legacyTmpfsOptionsEnablePrivilege(options) {
+	for dest, options := range mounts {
+		_, keyOptions, _ := strings.Cut(dest, ":")
+		keyOptions, _, _ = strings.Cut(keyOptions, ":") // Podman drops everything after the second colon
+		valueHead, _, _ := strings.Cut(options, ":")    // Podman's option list when the key has no colon
+		if legacyTmpfsOptionsEnablePrivilege(keyOptions) || legacyTmpfsOptionsEnablePrivilege(options) || legacyTmpfsOptionsEnablePrivilege(valueHead) {
 			return "container create denied: legacy tmpfs mount enables exec, dev, or suid"
 		}
 	}
