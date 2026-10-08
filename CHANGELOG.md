@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Go toolchain bumped `1.27.0` → `1.27.2` and `golang.org/x/net` to `0.60.0` to remediate six advisories published on 2026-10-08:** [GO-2026-6603](https://pkg.go.dev/vuln/GO-2026-6603) (HTTP/2 server memory exhaustion from Trailer headers), [GO-2026-6607](https://pkg.go.dev/vuln/GO-2026-6607) (unbounded Range header parsing), [GO-2026-6609](https://pkg.go.dev/vuln/GO-2026-6609) (CPU use from repeated HTTP/2 initial-window changes), [GO-2026-6611](https://pkg.go.dev/vuln/GO-2026-6611) (HTTP/1 connection desync after a 2xx CONNECT response), [GO-2026-6613](https://pkg.go.dev/vuln/GO-2026-6613) (malformed ECH outer extension references in `crypto/tls`) and [GO-2026-6617](https://pkg.go.dev/vuln/GO-2026-6617) (an HTTP/2 server crash from an HPACK encoder race). Sockguard runs a `net/http` server and TLS listeners, so these are treated as reachable until shown otherwise; reachability from Sockguard's listeners has not been established yet. The 2.2.7 images were built with Go 1.27.0 and carry them. The Dockerfile builder image is pinned to `golang:1.27.2-alpine3.23` accordingly.
+
 ## [2.2.7] - 2026-10-08
 
 ### Security
