@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0-rc.6] - 2026-10-08
+
+### Security
+
+- **Every 2.2.7 fix is now on the v2.3 line.** rc.5 was cut before 2.2.7 shipped, and this candidate merges that release in. With `request_body.build.allow_run_instructions` off, the RUN gate assembles a Dockerfile's lines the way BuildKit's parser does, on `POST /build` and on the Dockerfile held for inspection on a BuildKit session: a comment line inside a continuation is dropped, a continuation line keeps its leading whitespace, an escaped escape character doesn't continue the line, and `# escape=` is read after a UTF-8 BOM or a `# check=` directive. On a Podman upstream, the Docker-compatible `POST /containers/create` refuses a `HostConfig.Binds` entry or `Volumes` key whose source starts with `.`, is a drive-letter path or starts with a backslash, a `HostConfig.Mounts` bind entry whose `Source` is empty or relative, an absolute `Source` on a `volume` or `tmpfs` entry, and a comma in a `Mounts` entry's `Type`, `Source`, `Target`, `Consistency`, `BindOptions.Propagation` or `VolumeOptions.Subpath`. One fix lands differently here. This line has recognized the `//`, JSON, BOM, shebang and `# check=` forms of the syntax directive since rc.1, and 2.2.7 backported that, but rc.1 to rc.5 matched the JSON form's key only as lowercase `syntax`, so `{"Syntax":"..."}` selected a frontend on BuildKit 0.11 to 0.13 (Docker 24 to 26) that the gate missed. The key is now matched in any letter case, as it is in 2.2.7. The one change that isn't a security fix comes along too: the README follows the shared CodesWhat layout, and what only this line's README had, the v2.3 status paragraph and hardening list, is now the v2.3.0 row of its roadmap table. The 2.2.7 entry below describes each one, including the requests a working client sends that are now refused.
+
 ### Documentation
 
 - **The Podman page and the configuration reference now say that `allow_tmpfs_privileged_options` can't make a tmpfs non-executable on a Podman upstream.** Podman mounts a tmpfs `nosuid,nodev` but executable by default, so a plain `HostConfig.Tmpfs` entry has no option text to deny; `suid` and `dev` are still refused with the option off.
