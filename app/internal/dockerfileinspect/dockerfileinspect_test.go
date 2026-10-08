@@ -58,6 +58,24 @@ func TestContainsRunInstruction(t *testing.T) {
 		// started (fail-safe): the loop's post-loop tail check has to look at
 		// the leftover logical line rather than discarding it outright.
 		{"dangling continuation at eof with no completing line", "FROM alpine\nRUN echo \\", true},
+		// BuildKit's line assembly, one row per rule. Inside a continuation it
+		// drops comment lines and blank lines, and it keeps a continuation
+		// line's leading whitespace.
+		{"comment line inside a continuation is dropped", "FROM alpine\nR\\\n#\nUN id\n", true},
+		{"indented comment inside a continuation is dropped", "FROM alpine\nR\\\n  # note\nUN id\n", true},
+		{"blank line inside a continuation is dropped", "FROM alpine\nR\\\n\nUN id\n", true},
+		{"continuation line keeps its leading whitespace", "FROM alpine\nRUN\\\n id\n", true},
+		{"indented continuation does not rejoin a split keyword", "FROM alpine\nR\\\n  UN id\n", false},
+		// The escape character continues a line only when it isn't itself
+		// escaped, and spaces or tabs may follow it.
+		{"escaped escape does not continue the line", "FROM alpine\nENV a=b\\\\\nRUN id\n", true},
+		{"whitespace after the escape still continues", "FROM alpine\nR\\ \t\nUN id\n", true},
+		{"crlf line endings", "FROM alpine\r\nR\\\r\nUN id\r\n", true},
+		// The escape directive is read after a UTF-8 BOM, and after a check
+		// directive on BuildKit versions that know one.
+		{"escape directive after a bom", "\ufeff# escape=`\nFROM alpine\nR`\nUN id\n", true},
+		{"escape directive after a check directive", "# check=skip=all\n# escape=`\nFROM alpine\nR`\nUN id\n", true},
+		{"backslash still continues where check is not a directive", "# check=skip=all\n# escape=`\nFROM alpine\nR\\\nUN id\n", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

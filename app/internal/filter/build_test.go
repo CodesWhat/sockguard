@@ -1343,26 +1343,21 @@ func TestDockerfileContainsRunInstructionCommentSkipped(t *testing.T) {
 	}
 }
 
-// TestDockerfileContainsRunInstructionMidStatementCommentNotSkipped pins the
-// CONDITIONALS_NEGATION mutant at build.go:327:14 (`logical == ""` → `!= ""`).
-// The guard says "skip comment lines only when no logical statement is open."
-// The mutant flips it to "skip comment lines only when a logical statement IS
-// open," which has the side-effect of merging post-RUN comment continuation
-// into the FROM line and missing the trailing RUN.
-//
-// Setup: a Dockerfile where a comment line appears AFTER a FROM with a
-// continuation (`\`) but BEFORE the eventual RUN. Under the original, the
-// comment is APPENDED to the open FROM logical (because `logical != ""`
-// fails the skip-clause's first conjunct); the FROM's instruction is then
-// checked, found to be non-RUN, and logical resets — so the standalone RUN
-// on the next line is detected. Under the mutant, the comment is SKIPPED;
-// then "RUN y" is appended to the already-open "FROM x" → logical becomes
-// "FROM x RUN y", whose first token is FROM, so RUN is never detected and
-// the result flips to false.
-func TestDockerfileContainsRunInstructionMidStatementCommentNotSkipped(t *testing.T) {
+// TestDockerfileContainsRunInstructionCommentInsideContinuation pins how a
+// comment line inside an open continuation is read. BuildKit drops it and
+// joins the next line onto the open instruction, so here "RUN id" becomes
+// arguments of the FROM and no RUN exists. Appending the comment instead and
+// closing the FROM there would read the next line as its own instruction,
+// which is how a keyword split around a comment (R, escape, #, UN) went
+// unseen. The split-keyword side is covered in the dockerfileinspect tests.
+func TestDockerfileContainsRunInstructionCommentInsideContinuation(t *testing.T) {
 	dockerfile := []byte("FROM busybox \\\n# inline comment\nRUN id\n")
-	if !dockerfileContainsRunInstruction(dockerfile) {
-		t.Fatal("expected RUN to be detected despite a mid-statement comment line — `logical == \"\"` mutated to `!= \"\"` would merge RUN into the open FROM and miss it")
+	if dockerfileContainsRunInstruction(dockerfile) {
+		t.Fatal("a line joined onto an open FROM across a comment is not a RUN instruction")
+	}
+	split := []byte("FROM busybox\nR\\\n# inline comment\nUN id\n")
+	if !dockerfileContainsRunInstruction(split) {
+		t.Fatal("expected a RUN keyword split around a comment line to be detected")
 	}
 }
 

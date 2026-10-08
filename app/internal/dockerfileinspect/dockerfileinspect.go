@@ -101,66 +101,109 @@ func syntaxDirective(raw []byte, prefix string) string {
 }
 
 // ContainsRunInstruction reports whether raw (a Dockerfile's raw bytes)
-// contains a RUN or ONBUILD RUN instruction, joining escape-continued logical
-// lines before classifying each one.
+// contains a RUN or ONBUILD RUN instruction. It assembles logical lines the
+// way BuildKit's Dockerfile parser does before classifying each one, because
+// a line the two assemble differently is a RUN BuildKit runs and this scan
+// never sees:
 //
-// Continuation joins the fragments directly, with NO separator inserted —
-// Docker removes the escape character plus the newline and concatenates the
-// surrounding text. Inserting a space here would let a Dockerfile split the
-// keyword across the escape (`R\`+newline+`UN echo evil`, which Docker reads
-// as `RUN echo evil`) and read back as the instruction `R`, bypassing the RUN
-// gate. Any whitespace that precedes the escape is preserved by trimming only
-// the escape character, so `RUN echo \`+newline+`hi` still joins as
-// `RUN echo hi`. The continuation character honors a leading `# escape=`
-// parser directive (Docker allows `\` — the default — or a backtick), so a
-// Dockerfile that declares a backtick escape cannot hide a keyword split
-// behind a `\` our parser would ignore.
+//   - One leading UTF-8 BOM is dropped.
+//   - A line that is blank, or whose first non-space character is #, is
+//     dropped wherever it falls, including inside a continuation.
+//   - The escape character continues a line when it is the last character
+//     before optional trailing spaces and tabs and is not itself escaped.
+//     The escape and what follows it are removed and the next kept line is
+//     appended with no separator, so a keyword split across the escape
+//     (R, escape, newline, UN) reads back as RUN.
+//   - The first line of an instruction has its leading whitespace removed. A
+//     continuation line keeps its own, so RUN, escape, newline, " id" is
+//     "RUN id".
+//
+// The escape character comes from the leading parser-directive block. Which
+// lines belong to that block differs by BuildKit version (see escapeChars),
+// so the scan runs once per candidate and reports a RUN if any of them finds
+// one.
 func ContainsRunInstruction(raw []byte) bool {
-	cont := escapeChar(raw)
+	raw = bytes.TrimPrefix(raw, utf8BOM)
 	lines := strings.Split(string(raw), "\n")
-	var logical string
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		if logical == "" && strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-
-		if logical == "" {
-			logical = trimmed
-		} else {
-			logical += trimmed
-		}
-
-		if strings.HasSuffix(logical, cont) {
-			logical = strings.TrimSuffix(logical, cont)
-			continue
-		}
-
-		instruction := Instruction(logical)
-		if instruction == "RUN" || instruction == "ONBUILD RUN" {
+	for _, escape := range escapeChars(lines) {
+		if containsRunWithEscape(lines, escape) {
 			return true
 		}
-		logical = ""
+	}
+	return false
+}
+
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
+
+func containsRunWithEscape(lines []string, escape string) bool {
+	var logical string
+	continued := false
+
+	for _, line := range lines {
+		line = strings.TrimRight(line, "\r")
+		leading := strings.TrimLeftFunc(line, unicode.IsSpace)
+		if leading == "" || strings.HasPrefix(leading, "#") {
+			continue
+		}
+		if !continued {
+			line = leading
+		}
+
+		fragment, more := trimContinuation(line, escape)
+		logical += fragment
+		if more {
+			continued = true
+			continue
+		}
+
+		if isRunInstruction(logical) {
+			return true
+		}
+		logical, continued = "", false
 	}
 
-	if logical == "" {
-		return false
+	// A continuation left open at EOF is still whatever instruction it began.
+	return isRunInstruction(logical)
+}
+
+// trimContinuation removes a trailing line continuation from line and reports
+// whether there was one. Two escape characters in a row are an escaped
+// escape, not a continuation.
+func trimContinuation(line, escape string) (string, bool) {
+	body, ok := strings.CutSuffix(strings.TrimRight(line, " \t"), escape)
+	if !ok || strings.HasSuffix(body, escape) {
+		return line, false
 	}
+	return body, true
+}
+
+func isRunInstruction(logical string) bool {
 	instruction := Instruction(logical)
 	return instruction == "RUN" || instruction == "ONBUILD RUN"
 }
 
-// escapeChar returns the line-continuation character in force for raw: the
-// backslash Docker uses by default, or a backtick when a leading `# escape=“
-// parser directive selects it. Docker honors an escape directive only in the
-// same top-of-file directive block SyntaxFrontend scans, and accepts only `\`
-// or a backtick as the value; anything else leaves the default in force.
-func escapeChar(raw []byte) string {
-	for _, line := range strings.Split(string(raw), "\n") {
+// escapeChars returns every line-continuation character a supported BuildKit
+// could have in force for lines: the backslash Docker uses by default, or a
+// backtick when a leading `# escape=` parser directive selects it. BuildKit
+// honors an escape directive only in the top-of-file directive block, which
+// ends at the first line that isn't a known directive, and accepts only `\`
+// or a backtick as the value.
+//
+// `# check=` is a directive on BuildKit versions that know it and an ordinary
+// comment that ends the block on versions that don't, so an escape directive
+// that follows one is in force on some versions only. Both readings are
+// returned when they disagree.
+func escapeChars(lines []string) []string {
+	strict := escapeChar(lines, false)
+	lenient := escapeChar(lines, true)
+	if strict == lenient {
+		return []string{strict}
+	}
+	return []string{strict, lenient}
+}
+
+func escapeChar(lines []string, checkIsDirective bool) string {
+	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if !strings.HasPrefix(trimmed, "#") {
 			return `\`
@@ -177,6 +220,10 @@ func escapeChar(raw []byte) string {
 			return `\`
 		case "syntax":
 			// recognized directive; keep scanning the leading block
+		case "check":
+			if !checkIsDirective {
+				return `\`
+			}
 		default:
 			return `\`
 		}
