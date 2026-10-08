@@ -271,6 +271,14 @@ func (d *libpodRootfsChainDaemon) createCompatContainer(body io.Reader) error {
 	}
 	for _, spec := range specs {
 		split := strings.Split(spec, ":")
+		// A Podman machine hosted on Windows (wsl, hyperv) re-joins a leading
+		// drive letter into the host path ("c:/x:/h" is the source "c:/x").
+		// The re-join only applies to a drive-letter shaped spec, so "c:/h"
+		// and "c:/h:ro" stay a one-letter named volume.
+		if len(split[0]) == 1 && ((len(split) == 3 && strings.HasPrefix(split[2], "/")) || len(split) >= 4) {
+			split = append([]string{split[0] + ":" + split[1]}, split[2:]...)
+			parts = append(parts, "winpath="+split[0])
+		}
 		if len(split) > 3 {
 			return fmt.Errorf("%v: incorrect volume format, should be [host-dir:]ctr-dir[:option]", spec)
 		}

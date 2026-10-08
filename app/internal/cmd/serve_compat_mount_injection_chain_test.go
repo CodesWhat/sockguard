@@ -128,7 +128,13 @@ func compatMountRecord(m compatMount) (string, error) {
 	case "tmpfs":
 		return "tmpfs=" + dest + suffix, nil
 	case "volume":
-		return "volume=" + source + ":" + dest + suffix, nil
+		// The compat handler calls os.MkdirAll on a volume Source before it
+		// parses the entry, so an absolute one creates a host directory.
+		mkdir := ""
+		if path.IsAbs(source) {
+			mkdir = "mkdir=" + path.Clean(source) + " "
+		}
+		return mkdir + "volume=" + source + ":" + dest + suffix, nil
 	default:
 		return "", fmt.Errorf("invalid filesystem type %q", mountType)
 	}
@@ -258,6 +264,54 @@ func TestServeChainCompatMountFieldsNeedTheAllowlist(t *testing.T) {
 			wantCreated: created("volume=myvol:/d"),
 		},
 
+		// Windows-hosted Podman machine: a drive-letter or backslash source is
+		// re-joined into a host path.
+		{
+			name:       "compat Binds drive root is refused",
+			send:       binds(`"c:/:/h"`),
+			wantStatus: http.StatusForbidden,
+			wantReason: denied + `bind mount source "c" is a Windows drive letter path`,
+		},
+		{
+			name:       "compat Binds drive traversal is refused",
+			send:       binds(`"c:/../../etc:/h"`),
+			wantStatus: http.StatusForbidden,
+			wantReason: denied + `bind mount source "c" is a Windows drive letter path`,
+		},
+		{
+			name:       "compat Binds UNC style source is refused",
+			send:       binds(`"\\\\.\\..\\..\\etc:/h"`),
+			wantStatus: http.StatusForbidden,
+			wantReason: denied + `bind mount source "\\\\.\\..\\..\\etc" is a backslash path`,
+		},
+		{
+			name:       "compat Volumes key with a drive traversal is refused",
+			send:       volumes(`"c:/../../etc:/h":{}`),
+			wantStatus: http.StatusForbidden,
+			wantReason: denied + `bind mount source "c" is a Windows drive letter path`,
+		},
+		{
+			name:        "compat Binds one-letter named volume reaches the daemon",
+			send:        binds(`"c:/h"`),
+			wantStatus:  http.StatusCreated,
+			wantCreated: created("volume=c:/h"),
+		},
+		{
+			name:        "compat Binds one-letter named volume with an option reaches the daemon",
+			send:        binds(`"c:/h:ro"`),
+			wantStatus:  http.StatusCreated,
+			wantCreated: created("volume=c:/h"),
+		},
+
+		// A volume-type Source that is an absolute path makes Podman create a
+		// host directory.
+		{
+			name:       "compat Mounts volume with an absolute source is refused",
+			send:       mounts(`{"Type":"volume","Source":"/etc/x","Target":"/h"}`),
+			wantStatus: http.StatusForbidden,
+			wantReason: denied + `volume mount source "/etc/x" is an absolute path`,
+		},
+
 		// S85 (c): a comma in a Mounts field Podman writes into its "--mount"
 		// string injects additional mount fields.
 		{
@@ -265,6 +319,13 @@ func TestServeChainCompatMountFieldsNeedTheAllowlist(t *testing.T) {
 			send:       mounts(`{"Type":"bind","Target":"/h,source=/etc"}`),
 			wantStatus: http.StatusForbidden,
 			wantReason: denied + `mount target "/h,source=/etc"` + injected,
+		},
+		{
+			name:       "compat Mounts comma in an allowlisted bind Source injects an option",
+			configure:  allowSrv,
+			send:       mounts(`{"Type":"bind","Source":"/srv/roots/d,U","Target":"/h"}`),
+			wantStatus: http.StatusForbidden,
+			wantReason: denied + `mount source "/srv/roots/d,U"` + injected,
 		},
 		{
 			name:       "compat Mounts comma in Consistency injects a source",

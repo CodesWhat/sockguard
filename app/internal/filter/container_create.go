@@ -1868,7 +1868,26 @@ func (p containerCreatePolicy) denyBindSpecReason(bind string) string {
 	// takes an overlay's upper and work directory from them, for a named
 	// volume as much as a host path. dockerd refuses those options itself.
 	// See overlay_mount_options.go.
-	return denyBindOverlayReason(bind, p.allowedBindMounts, "container create")
+	if denyReason := denyBindOverlayReason(bind, p.allowedBindMounts, "container create"); denyReason != "" {
+		return denyReason
+	}
+	// On a Podman machine hosted on Windows (wsl, hyperv) Podman also re-joins
+	// a drive letter into a host path: "c:/:/h" binds /mnt/c, "c:/../../etc:/h"
+	// binds /etc, and a UNC-style "\\.\..\..\etc:/h" binds /etc. The source is
+	// the first ":" field, so a single ASCII letter there with a third field
+	// that starts with "/" (or a fourth field) is a drive-letter spec; "c:/h"
+	// and "c:/h:ro" are still a one-letter named volume. This runs after the
+	// overlay check so a drive-letter spec carrying overlay directories still
+	// names the directory.
+	if parts := strings.Split(bind, ":"); len(parts) > 1 {
+		if strings.HasPrefix(parts[0], `\`) {
+			return fmt.Sprintf("container create denied: bind mount source %q is a backslash path", parts[0])
+		}
+		if len(parts[0]) == 1 && isASCIILetter(parts[0][0]) && (len(parts) >= 4 || (len(parts) == 3 && strings.HasPrefix(parts[2], "/"))) {
+			return fmt.Sprintf("container create denied: bind mount source %q is a Windows drive letter path", parts[0])
+		}
+	}
+	return ""
 }
 
 // denyVolumeSpecReason checks the keys of Config.Volumes the way
@@ -1953,6 +1972,16 @@ func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHos
 			if denyReason := denyLocalVolumeBindDeviceReason(driverConfig.Name, driverConfig.Options, p.allowedBindMounts, "container create"); denyReason != "" {
 				return denyReason
 			}
+		}
+
+		// Podman's compat handler calls os.MkdirAll on a volume-type Source
+		// before it parses the entry, so an absolute one creates a host
+		// directory. dockerd rejects an absolute path as a volume name, and a
+		// tmpfs mount takes no Source there at all. npipe sources are
+		// path-shaped by design and image sources are references, so those
+		// types are left alone.
+		if (strings.EqualFold(mount.Type, "volume") || strings.EqualFold(mount.Type, "tmpfs")) && strings.HasPrefix(mount.Source, "/") {
+			return fmt.Sprintf("container create denied: %s mount source %q is an absolute path", mount.Type, mount.Source)
 		}
 
 		if !strings.EqualFold(mount.Type, "bind") {
@@ -2494,4 +2523,8 @@ func normalizeStringList(values []string) []string {
 		allowed = append(allowed, normalized)
 	}
 	return allowed
+}
+
+func isASCIILetter(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
