@@ -236,11 +236,24 @@ func (d *libpodRootfsChainDaemon) createCompatContainer(body io.Reader) error {
 	var cc struct {
 		Volumes    map[string]struct{}
 		HostConfig struct {
-			Binds []string
+			Binds  []string
+			Mounts []compatMount
 		}
 	}
 	if err := json.NewDecoder(body).Decode(&cc); err != nil {
 		return fmt.Errorf("decode(): %w", err)
+	}
+	var parts []string
+	// HostConfig.Mounts are processed first by the compat handler: each is
+	// rebuilt into one comma-joined "--mount" string and re-parsed
+	// (compat/containers_create.go:230-266, specgenutil/volumes.go). See
+	// compatMountRecord.
+	for _, m := range cc.HostConfig.Mounts {
+		record, err := compatMountRecord(m)
+		if err != nil {
+			return err
+		}
+		parts = append(parts, record)
 	}
 	specs := slices.Clone(cc.HostConfig.Binds)
 	destinations := map[string]bool{}
@@ -256,7 +269,6 @@ func (d *libpodRootfsChainDaemon) createCompatContainer(body io.Reader) error {
 			specs = append(specs, key)
 		}
 	}
-	var parts []string
 	for _, spec := range specs {
 		split := strings.Split(spec, ":")
 		if len(split) > 3 {

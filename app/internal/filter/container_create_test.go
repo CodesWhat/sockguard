@@ -838,6 +838,13 @@ func TestContainerCreatePolicyDenyBindMountReasonRejectsBindMountSource(t *testi
 		AllowedBindMounts: []string{"/allowed"},
 	})
 
+	// A non-"bind" mount source is not a host path and is skipped. A "bind"
+	// source that isn't an absolute path is refused outright rather than
+	// skipped: a Podman compat upstream sets an empty bind source to the
+	// destination and resolves a relative one against the daemon's working
+	// directory, so "relative" names a host path this proxy can't vouch for.
+	// The relative source precedes the non-allowlisted absolute one, so its
+	// refusal is what surfaces.
 	reason := policy.denyBindMountReason(containerCreateHostConfig{
 		Binds: []string{"not-a-bind"},
 		Mounts: []containerCreateMount{
@@ -847,7 +854,24 @@ func TestContainerCreatePolicyDenyBindMountReasonRejectsBindMountSource(t *testi
 		},
 	})
 
-	if reason != `container create denied: bind mount source "/denied" is not allowlisted` {
+	if reason != `container create denied: bind mount source "relative" is not an absolute path` {
+		t.Fatalf("denyBindMountReason() = %q", reason)
+	}
+}
+
+// TestContainerCreatePolicyDenyBindMountReasonRejectsEmptyBindMountSource pins
+// the {"Type":"bind","Target":"/etc"} case: Podman sets the source to the
+// destination, binding host /etc, where sockguard used to skip the entry for
+// having no source. An empty source is now refused like any other
+// non-absolute one.
+func TestContainerCreatePolicyDenyBindMountReasonRejectsEmptyBindMountSource(t *testing.T) {
+	policy := newContainerCreatePolicy(ContainerCreateOptions{AllowedBindMounts: []string{"/"}})
+
+	reason := policy.denyBindMountReason(containerCreateHostConfig{
+		Mounts: []containerCreateMount{{Type: "bind", Source: ""}},
+	})
+
+	if reason != `container create denied: bind mount source "" is not an absolute path` {
 		t.Fatalf("denyBindMountReason() = %q", reason)
 	}
 }

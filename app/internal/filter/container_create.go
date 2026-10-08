@@ -1310,6 +1310,9 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if denyReason := p.denyDeviceReason(createReq.HostConfig); denyReason != "" {
 		return denyReason, nil
 	}
+	if denyReason := denyCompatMountFieldInjectionReason(createReq.HostConfig.Mounts, "container create"); denyReason != "" {
+		return denyReason, nil
+	}
 	if denyReason := p.denyBindMountReason(createReq.HostConfig); denyReason != "" {
 		return denyReason, nil
 	}
@@ -1848,6 +1851,16 @@ func cgroupPermOrder(c byte) int {
 // allowedBindMounts: its source when that's an absolute host path, and the
 // overlay directories its options name.
 func (p containerCreatePolicy) denyBindSpecReason(bind string) string {
+	// Podman reads a spec whose source starts with "/" or "." as a host path,
+	// and only a source that starts with neither as a named volume
+	// (specgen/volumes.go GenVolumeMounts). A "."-prefixed source is a relative
+	// host path Podman resolves against the daemon's working directory
+	// ("../../../../etc" is /etc from anywhere), which this proxy can't see, so
+	// no allowlist entry can vouch for it. It used to be skipped as a named
+	// volume; refuse it the way a relative mounts[] bind source is refused.
+	if rawSource, _, hasDest := strings.Cut(bind, ":"); hasDest && strings.HasPrefix(rawSource, ".") {
+		return fmt.Sprintf("container create denied: bind mount source %q is not an absolute path", rawSource)
+	}
 	if source, ok := extractAndValidateBindSource(bind, containerCreateMount{}); ok && !bindPathAllowed(source, p.allowedBindMounts) {
 		return fmt.Sprintf("container create denied: bind mount source %q is not allowlisted", source)
 	}
@@ -1888,6 +1901,45 @@ func (p containerCreatePolicy) denyVolumeSpecReason(volumes map[string]struct{})
 	return ""
 }
 
+// denyCompatMountFieldInjectionReason refuses a HostConfig.Mounts entry whose
+// Type, Source, Target, Consistency, BindOptions.Propagation or
+// VolumeOptions.Subpath carries a comma. A Podman upstream rebuilds each Mount
+// into one comma-joined "--mount" string (compat containers_create.go's
+// addField writes those fields raw) and re-splits it on commas
+// (specgenutilexternal.FindMountType, specgenutil.parseMountOptions), so a
+// comma in any of them injects additional mount fields: a "source=" that binds
+// a host path past allowed_bind_mounts ({"Type":"bind","Target":"/h,source=/etc"}
+// binds host /etc), a "U" that recursively chowns the source, or "exec", "suid"
+// and "dev" that strip a tmpfs's safe defaults
+// ({"Type":"tmpfs","Target":"/scratch,exec,suid,dev"}). Sockguard reads the
+// fields as structured JSON and never re-splits them, so every injected field
+// is invisible to the other gates. dockerd reads the structured Mount and never
+// rebuilds this string, so a comma there is a literal character: a comma in a
+// destination or source path is legal on dockerd but vanishingly rare, and
+// refusing it is the price of closing the Podman injection (see podman.mdx).
+func denyCompatMountFieldInjectionReason(mounts []containerCreateMount, subject string) string {
+	for _, mount := range mounts {
+		fields := []struct{ label, value string }{
+			{"type", mount.Type},
+			{"source", mount.Source},
+			{"target", mount.Target},
+			{"consistency", mount.Consistency},
+		}
+		if mount.BindOptions != nil {
+			fields = append(fields, struct{ label, value string }{"bind propagation", mount.BindOptions.Propagation})
+		}
+		if mount.VolumeOptions != nil {
+			fields = append(fields, struct{ label, value string }{"subpath", mount.VolumeOptions.Subpath})
+		}
+		for _, f := range fields {
+			if strings.Contains(f.value, ",") {
+				return fmt.Sprintf("%s denied: mount %s %q contains a comma a Podman upstream reads as a mount field separator", subject, f.label, f.value)
+			}
+		}
+	}
+	return ""
+}
+
 func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHostConfig) string {
 	for _, bind := range hostConfig.Binds {
 		if denyReason := p.denyBindSpecReason(bind); denyReason != "" {
@@ -1903,8 +1955,22 @@ func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHos
 			}
 		}
 
-		source, ok := extractAndValidateBindSource("", mount)
-		if !ok || bindPathAllowed(source, p.allowedBindMounts) {
+		if !strings.EqualFold(mount.Type, "bind") {
+			continue
+		}
+		source, ok := normalizeBindMount(mount.Source)
+		if !ok {
+			// Podman sets an empty bind source to the destination
+			// ({"Type":"bind","Target":"/etc"} binds host /etc) and resolves a
+			// relative one against the daemon's working directory, both host
+			// paths this proxy can't see. The compat handler feeds the entry to
+			// the same -v/--mount parser the native create uses
+			// (specgenutil/volumes.go getBindMount), which is why this mirrors
+			// the native create's refusal of a non-absolute bind source rather
+			// than skipping it.
+			return fmt.Sprintf("container create denied: bind mount source %q is not an absolute path", mount.Source)
+		}
+		if bindPathAllowed(source, p.allowedBindMounts) {
 			continue
 		}
 		return fmt.Sprintf("container create denied: bind mount source %q is not allowlisted", source)
