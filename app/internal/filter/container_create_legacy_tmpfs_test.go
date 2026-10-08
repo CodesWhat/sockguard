@@ -50,3 +50,70 @@ func TestMiddlewareContainerCreateLegacyTmpfs(t *testing.T) {
 		})
 	}
 }
+
+// Podman's compat create splits each Tmpfs entry at the first ":" of the map
+// key, so options can ride in the key as well as the value.
+func TestMiddlewareContainerCreateLegacyTmpfsKeyOptions(t *testing.T) {
+	for _, tt := range []struct {
+		key, value string
+		denied     bool
+	}{
+		{"/scratch:exec", "", true},
+		{"/scratch:dev", "", true},
+		{"/scratch:suid", "", true},
+		{"/scratch:rw,size=64m,exec", "", true},
+		{"/scratch:noexec,exec", "", true},
+		{"/scratch:exec,noexec", "", false},
+		{"/scratch:nodev,dev", "", true},
+		{"/scratch:dev,nodev", "", false},
+		{"/scratch:nosuid,suid", "", true},
+		{"/scratch:suid,nosuid", "", false},
+		{"/scratch:exec", "noexec", true},
+		{"/scratch:noexec", "exec", true},
+		{"/scratch:rw", "exec", true},
+		{"/scratch:rw", "size=64m", false},
+		{"/scratch:", "", false},
+		{"/scratch:", "exec", true},
+		{"/scratch", "", false},
+		{"/scratch", "noexec", false},
+		{"/scratch:defaults", "", false},
+		{"/scratch:rw,noexec,nodev,nosuid,size=64m,mode=1770", "", false},
+		{"/scratch:mpol=bind:0", "", false},
+		{"/scratch:custom=exec", "", false},
+		{"/scratch:EXEC, dev,exec;suid", "", false},
+		// Podman reads the option list from between the first and second colon and drops the rest.
+		{"/scratch:exec:noexec", "", true},
+		{"/scratch:suid:", "", true},
+		{"/scratch:dev:x", "", true},
+		{"/scratch:rw,size=64m,suid:x", "", true},
+		{"/scratch:suid:", "nosuid", true},
+		{"/scratch", "suid:x", true},
+		{"/scratch", "dev:", true},
+		{"/scratch", "exec:noexec", true},
+	} {
+		for _, allow := range []bool{false, true} {
+			name := tt.key + "|" + tt.value
+			if allow {
+				name += "/opt-in"
+			}
+			t.Run(name, func(t *testing.T) {
+				key, err := json.Marshal(tt.key)
+				if err != nil {
+					t.Fatal(err)
+				}
+				value, err := json.Marshal(tt.value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body := `{"HostConfig":{"Tmpfs":{` + string(key) + `:` + string(value) + `}}}`
+				assertFilterCreateRoundTrip(t, "/v1.46/containers/create", body, PolicyConfig{ContainerCreate: ContainerCreateOptions{AllowTmpfsPrivilegedOptions: allow}}, tt.denied && !allow)
+			})
+		}
+	}
+
+	t.Run("exact reported body", func(t *testing.T) {
+		body := `{"HostConfig":{"Tmpfs":{"/scratch:exec":""}}}`
+		assertFilterCreateRoundTrip(t, "/v1.46/containers/create", body, PolicyConfig{}, true)
+		assertFilterCreateRoundTrip(t, "/v1.46/containers/create", body, PolicyConfig{ContainerCreate: ContainerCreateOptions{AllowTmpfsPrivilegedOptions: true}}, false)
+	})
+}
