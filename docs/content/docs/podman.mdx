@@ -106,7 +106,7 @@ case, both of which Podman 5.8.6 answers with a 500.
 | absent, empty, `default` | all | The daemon's `containers.conf` default, or the pod's namespace when the container joins a pod that shares it | none |
 | `private` | all | A new namespace of its own | none |
 | `host` | all | The host's | `allow_host_*` |
-| `path` | all | The namespace at `value`, which can be the host's or another container's | `allow_host_*`, and on a container create refused while `restrict_namespace_sharing` is on |
+| `path` | all | The namespace at `value`, which can be the host's or another container's | `allow_host_*`, and on a container create refused while `restrict_namespace_sharing` is on. On a pod's `userns` the gate lets it through but Podman refuses it with a 500, because it reads the mode back as `path:<value>` |
 | `container` | all | Another container's, which is the host's if that container is in it | `restrict_namespace_sharing` on a container create, and owner isolation on both |
 | `pod` | all, on a container create | The pod infra container's, which is the host's if the pod was created in it | owner isolation on the `pod` it names. The pod's namespaces have their gates on the pod create |
 | `shareable`, `none` | `ipcns` | A new one | none |
@@ -114,9 +114,9 @@ case, both of which Podman 5.8.6 answers with a 500.
 | `auto`, `keep-id`, `no-map` | `userns` | A new one | none (`allow_custom_id_mappings` covers `idmappings`) |
 
 Keys are matched in any letter case, the way Podman's decoder matches them.
-A key given twice is refused before any gate reads the body, and so is a key
+Under `enforce`, a key given twice is refused before any gate reads the body, and so is a key
 holding a character Podman 6's decoder and Go's `encoding/json` match
-differently (see [Security](/security)). A namespace field that isn't an
+differently (see [Security](/security)). `warn` and `audit` log the would-deny and forward the body. A namespace field that isn't an
 object, or an `nsmode` that isn't a string, is refused as malformed whatever
 the gates say.
 
