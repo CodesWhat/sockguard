@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -139,6 +140,11 @@ type ownershipRequestReferences struct {
 	// reference, one the daemon can't resolve is no denial: the request then
 	// creates it. See checkExistingOwnershipReferences.
 	existingResources []embeddedOwnershipReference
+	// libpodCreate carries what a libpod container or pod create names besides
+	// its image, its pod and its namespace targets: other containers,
+	// networks, named volumes and image volumes, or the reason the body is
+	// refused for how it names one. See libpod_create_references.go.
+	libpodCreate *libpodCreateReferences
 }
 
 // Options configures per-proxy resource ownership labeling and enforcement.
@@ -148,10 +154,10 @@ type Options struct {
 	AllowUnownedImages bool
 	// AllowCrossOwnerNamespaceSharing restores the pre-v1.5 pass-through
 	// behavior for POST /containers/create: by default (false), every
-	// HostConfig.NetworkMode/PidMode/IpcMode/UTSMode/UsernsMode "container:<ref>"
-	// namespace-sharing target is looked up and the request is denied if the
-	// referenced container is missing or does not belong to the configured
-	// owner. Set true to restore the old unchecked behavior.
+	// HostConfig.NetworkMode/PidMode/IpcMode/UTSMode/UsernsMode/CgroupnsMode
+	// "container:<ref>" namespace-sharing target is looked up and the request
+	// is denied if the referenced container is missing or does not belong to
+	// the configured owner. Set true to restore the old unchecked behavior.
 	AllowCrossOwnerNamespaceSharing bool
 	// UpstreamFlavor is the engine behind the upstream socket, resolved at
 	// startup from upstream.flavor (see internal/upstreamflavor). It changes
@@ -289,7 +295,12 @@ func middlewareWithDeps(
 
 			refs, err := mutateOwnershipRequest(r, normPath, opts)
 			if err != nil {
-				logging.SetDeniedWithCode(w, r, reasonCodeOwnerRequestInvalid, err.Error(), nil)
+				reasonCode := reasonCodeOwnerRequestInvalid
+				var ambiguous *ambiguousBodyKeyError
+				if errors.As(err, &ambiguous) {
+					reasonCode = filter.ReasonCodeRequestBodyAmbiguous
+				}
+				logging.SetDeniedWithCode(w, r, reasonCode, err.Error(), nil)
 				_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: err.Error()})
 				return
 			}
@@ -490,6 +501,14 @@ func allowOwnershipRequestUnprefixed(
 		}
 
 		verdict, reason, err = checkExistingOwnershipReferences(ctx, inspectResource, refs.existingResources, opts)
+		if err != nil || verdict.denied() {
+			return verdict, reason, err
+		}
+		if verdict == verdictAllow {
+			strictest = verdictAllow
+		}
+
+		verdict, reason, err = checkLibpodCreateReferences(ctx, inspectResource, refs.libpodCreate, opts)
 		if err != nil || verdict.denied() {
 			return verdict, reason, err
 		}
@@ -902,15 +921,26 @@ func containerCreateEmbeddedOwnershipReferences(decoded map[string]any) []embedd
 // document the container: form; UsernsMode is included defensively (stock
 // Docker's support there is unconfirmed, and matching a non-container: value
 // never yields a ref, so a spurious entry costs nothing).
-var namespaceModeFields = [...]string{"NetworkMode", "PidMode", "IpcMode", "UTSMode", "UsernsMode"}
+//
+// CgroupnsMode is here for a Podman upstream. dockerd takes only "private",
+// "host" and "" and refuses anything else (moby 28.5.1
+// api/types/container/hostconfig.go:42-44, daemon/daemon_unix.go:726-727).
+// Podman's compat create hands the value to the parser its CLI flags use,
+// which reads "container:<ref>" as a join, and the new container then shares
+// that container's cgroup namespace (Podman 5.8.6
+// pkg/api/handlers/compat/containers_create.go:485,
+// pkg/specgenutil/specgen.go:218-223, pkg/specgen/namespaces.go:238-260 and
+// pkg/specgen/generate/namespaces.go:299-310). The native create's `cgroupns`
+// is the same join; see libpodNamespaceSharingFields.
+var namespaceModeFields = [...]string{"NetworkMode", "PidMode", "IpcMode", "UTSMode", "UsernsMode", "CgroupnsMode"}
 
 // containerCreateNamespaceRefs extracts every distinct "container:<ref>"
 // namespace-sharing target from a decoded /containers/create body's
-// HostConfig.{NetworkMode,PidMode,IpcMode,UTSMode,UsernsMode} fields. Malformed or
-// absent HostConfig, and non-string field values, are treated as "no refs"
-// rather than an error — filter's container_create.go is the layer
-// responsible for rejecting malformed bodies; ownership only needs to know
-// which (if any) foreign containers a well-formed create would join.
+// HostConfig.{NetworkMode,PidMode,IpcMode,UTSMode,UsernsMode,CgroupnsMode}
+// fields. Malformed or absent HostConfig, and non-string field values, are
+// treated as "no refs" rather than an error — filter's container_create.go is
+// the layer responsible for rejecting malformed bodies; ownership only needs
+// to know which (if any) foreign containers a well-formed create would join.
 //
 // Key matching is case-INSENSITIVE and iterates every case-variant of
 // HostConfig and each mode field, because Docker decodes these keys
@@ -1229,8 +1259,42 @@ func mutateJSONBody(r *http.Request, mutate func(map[string]any) error) error {
 	// identical map[string]any that it walks and throws away, which measured
 	// as 39% of this pass's allocated bytes and 43% of its allocations on a
 	// realistic container-create body. Same walk, same verdict, one decode.
-	if err := filter.RejectDuplicateCaseVariantJSONValue(decoded); err != nil {
-		return fmt.Errorf("ambiguous request body: %w", err)
+	//
+	// A key Podman 6's decoder lowercases onto its sibling is refused with
+	// those, in every rollout mode like them, for the same reason: the sort
+	// would decide which of the two that decoder honors.
+	repeated, divergent := filter.InspectJSONValueKeys(decoded)
+	if repeated != nil {
+		return fmt.Errorf("ambiguous request body: %w", repeated)
+	}
+	// The same walk finds a key holding a character the engines' JSON
+	// decoders match to a field name differently. Stamping doesn't make such
+	// a key safe, since the re-marshal keeps an unknown key exactly as the
+	// client spelled it, so enforce refuses the body the way the inspectors
+	// do.
+	//
+	// Warn and audit forward what enforce refuses, and the body goes on to be
+	// stamped like any other. That is sound for two reasons. The key and its
+	// value go out exactly as they came in, and with no repeated key in the
+	// tree the sort changes no decoder's reading of anything else. And
+	// filter.NestedObject writes the owner label under the exact label key
+	// whatever spelling the client used, so every decoder binds the stamp.
+	// No decoder binds a second key to those labels: that would take a key
+	// that lowers to the label key's name without folding to it, which only
+	// U+0130 standing in for an "i" does, and the one label key with an "i"
+	// in its path is a service's TaskTemplate.ContainerSpec.Labels, on a
+	// route only dockerd serves.
+	if divergent != nil {
+		refusal := &ambiguousBodyKeyError{reason: filter.AmbiguousRequestBodyReason(divergent)}
+		// The filter middleware leaves the request's meta on its context,
+		// which is where imageLoadOwnershipReferences reads it too.
+		meta := logging.Meta(r.Context())
+		if !meta.AllowsPassThrough() {
+			return refusal
+		}
+		meta.Decision = logging.DecisionWouldDeny
+		meta.ReasonCode = filter.ReasonCodeRequestBodyAmbiguous
+		meta.Reason = refusal.reason
 	}
 	if err := mutate(decoded); err != nil {
 		return err
@@ -1243,6 +1307,18 @@ func mutateJSONBody(r *http.Request, mutate func(map[string]any) error) error {
 	r.ContentLength = int64(len(encoded))
 	r.Body = io.NopCloser(bytes.NewReader(encoded))
 	return nil
+}
+
+// ambiguousBodyKeyError is the refusal of a body for a key holding a
+// character the engines' JSON decoders match differently. It is its own type
+// so the middleware reports it under the inspectors' reason code and not as
+// owner_request_invalid, which a body nothing can stamp keeps.
+type ambiguousBodyKeyError struct {
+	reason string
+}
+
+func (e *ambiguousBodyKeyError) Error() string {
+	return e.reason
 }
 
 func (u upstreamInspector) inspectResource(ctx context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {

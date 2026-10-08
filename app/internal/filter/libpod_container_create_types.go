@@ -47,6 +47,19 @@ type libpodContainerCreateRequest struct {
 	Volumes []libpodVolume `json:"volumes"`
 	Devices []libpodDevice `json:"devices"`
 
+	// Rootfs, OverlayVolumes and InitPath each give the container a host
+	// filesystem path that neither mounts[] nor devices[] covers, so each has
+	// its own host-path gate; ConmonPidFile is a host path the daemon writes
+	// conmon's PID to. RootfsOverlay is read only to know whether Rootfs ends
+	// up in an overlay option string. See libpod_container_create_rootfs.go
+	// for the gates and the specgen references that pin what Podman does with
+	// each.
+	Rootfs         string                `json:"rootfs"`
+	RootfsOverlay  bool                  `json:"rootfs_overlay"`
+	OverlayVolumes []libpodOverlayVolume `json:"overlay_volumes"`
+	InitPath       string                `json:"init_path"`
+	ConmonPidFile  string                `json:"conmon_pid_file"`
+
 	CapAdd  []string `json:"cap_add"`
 	CapDrop []string `json:"cap_drop"`
 
@@ -64,10 +77,13 @@ type libpodContainerCreateRequest struct {
 // libpodNamespace is the uniform shape SpecGenerator uses for every
 // namespace-mode field (netns, pidns, ipcns, userns, utsns, cgroupns):
 // {"nsmode": "host"} for the host namespace, {"nsmode": "container",
-// "value": "<name-or-id>"} to join another container's namespace, {} (both
-// fields absent/empty) for the private per-container default. Confirmed by
-// host_network.json (nsmode only) and namespace_share_container_ref.json
-// (nsmode+value) — see testdata/libpod/README.md.
+// "value": "<name-or-id>"} to join another container's namespace,
+// {"nsmode": "path", "value": "<path>"} to join the namespace at a path on
+// the daemon host, {} (both fields absent/empty) for the daemon's default.
+// Confirmed by host_network.json (nsmode only) and
+// namespace_share_container_ref.json (nsmode+value) — see
+// testdata/libpod/README.md. libpod_namespace.go holds the full list of
+// modes and the host gate.
 type libpodNamespace struct {
 	NSMode string `json:"nsmode"`
 	Value  string `json:"value"`
@@ -104,9 +120,24 @@ type libpodMount struct {
 	Options     []string `json:"options"`
 }
 
+// libpodOverlayVolume is one entry of the top-level "overlay_volumes" array
+// (podman -v <host>:<dest>:O). Unlike a named "volumes" entry, its source is a
+// host filesystem path, overlay-mounted at destination inside the container
+// (Podman 5.8.6 pkg/specgen/volumes.go:36-43, mounted at
+// libpod/container_internal_common.go:465-481). Its options can name two more
+// host paths, the overlay's upper and work directory. Lowercase field names,
+// matching the specgen OverlayVolume JSON tags encoding/json decodes.
+type libpodOverlayVolume struct {
+	Source      string   `json:"source"`
+	Destination string   `json:"destination"`
+	Options     []string `json:"options"`
+}
+
 // libpodVolume is one entry of the top-level "volumes" array (named-volume
 // mounts routed through -v <volume-name>:<container> on the CLI). Capitalized
-// field names, unlike libpodMount — see volumes_named.json.
+// field names, unlike libpodMount — see volumes_named.json. Options is the one
+// field that can reach the host: with "O" among them Podman overlays the
+// volume and reads an upper and work directory out of the rest.
 type libpodVolume struct {
 	Name        string   `json:"Name"`
 	Dest        string   `json:"Dest"`

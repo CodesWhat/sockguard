@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
@@ -65,6 +66,14 @@ func engineChainVersion(podman bool) map[string]any {
 // serve resolves it, with the production probe.
 func newEngineChain(t *testing.T, label string, daemon http.Handler, configure func(*config.Config)) string {
 	t.Helper()
+	return newEngineChainWithLogger(t, label, daemon, newDiscardLogger(), configure)
+}
+
+// newEngineChainWithLogger is newEngineChain logging to logger, for a test
+// that reads the access log. Access logging is off unless configure turns it
+// on.
+func newEngineChainWithLogger(t *testing.T, label string, daemon http.Handler, logger *slog.Logger, configure func(*config.Config)) string {
+	t.Helper()
 
 	socketPath := shortSocketPath(t, label)
 	startUnixHTTPUpstream(t, socketPath, daemon)
@@ -79,7 +88,6 @@ func newEngineChain(t *testing.T, label string, daemon http.Handler, configure f
 	if err != nil {
 		t.Fatalf("compile rules: %v", err)
 	}
-	logger := newDiscardLogger()
 	deps := newServeTestDeps()
 	deps.detectUpstreamFlavor = upstreamflavor.Detect
 	runtime, err := newServeRuntime(&cfg, logger, deps)

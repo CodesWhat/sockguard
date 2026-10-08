@@ -1,0 +1,34 @@
+{
+  "Networks": null,
+  "ipcns": {
+    "nsmode": "private"
+  },
+  "name": "sg-pod-new",
+  "netns": {},
+  "pidns": {
+    "nsmode": "private"
+  },
+  "pod_create_command": [
+    "podman",
+    "--remote",
+    "--url",
+    "unix:///tmp/sg-s76/capture.sock",
+    "create",
+    "--name",
+    "sg-podnew",
+    "--pod",
+    "new:sg-pod-new",
+    "alpine:latest",
+    "echo",
+    "hi"
+  ],
+  "resource_limits": {
+    "cpu": {}
+  },
+  "userns": {
+    "nsmode": "default"
+  },
+  "utsns": {
+    "nsmode": "private"
+  }
+}

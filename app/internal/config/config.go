@@ -561,9 +561,20 @@ type ContainerRemoveRequestBodyConfig struct {
 type LibpodPodCreateRequestBodyConfig struct {
 	// AllowHostNetwork permits a pod-level NetNS of {"nsmode":"host"} — the
 	// pod (and every container that joins it) shares the host network
-	// namespace. Mirrors container_create.allow_host_network's posture for
-	// the pod-wide equivalent. Default false.
+	// namespace — or of {"nsmode":"path"}, which joins whatever network
+	// namespace the path names. Mirrors container_create.allow_host_network's
+	// posture for the pod-wide equivalent. Default false.
 	AllowHostNetwork bool `mapstructure:"allow_host_network"`
+	// AllowHostPID/IPC/UserNS/UTS each permit the pod's pidns, ipcns, userns
+	// or utsns object's nsmode "host" and "path". They are the infra
+	// container's namespaces, and a container that joins the pod can end up
+	// in them. While one is false its namespace also refuses any nsmode
+	// sockguard doesn't know. A pod spec has no cgroupns, so there is no
+	// allow_host_cgroupns here. Default false.
+	AllowHostPID    bool `mapstructure:"allow_host_pid"`
+	AllowHostIPC    bool `mapstructure:"allow_host_ipc"`
+	AllowHostUserNS bool `mapstructure:"allow_host_userns"`
+	AllowHostUTS    bool `mapstructure:"allow_host_uts"`
 	// AllowSharedPIDNamespace permits "pid" in the pod's shared_namespaces
 	// list, letting every container in the pod see (and signal) every other
 	// container's processes — the pod-wide analog of container_create's
@@ -616,12 +627,14 @@ type ContainerCreateRequestBodyConfig struct {
 	AllowHostUserNS         bool     `mapstructure:"allow_host_userns"`
 	AllowHostCgroupNS       bool     `mapstructure:"allow_host_cgroupns"`
 	// RestrictNamespaceSharing gates HostConfig.NetworkMode/PidMode/IpcMode/
-	// UsernsMode values of the form "container:<ref>" (join another
-	// container's namespace) against AllowedNamespaceSharingContainers.
-	// Default false: container:<ref> values continue to pass through
-	// unchecked exactly as before this knob existed — AllowHostNetwork/PID/
-	// IPC/UserNS above only ever match the literal "host" value and still
-	// only do; this is an independent, orthogonal gate.
+	// UTSMode/UsernsMode/CgroupnsMode values of the form "container:<ref>"
+	// (join another container's namespace) against
+	// AllowedNamespaceSharingContainers. Default false: container:<ref>
+	// values continue to pass through unchecked exactly as before this knob
+	// existed — AllowHostNetwork/PID/IPC/UserNS/CgroupNS above gate "host"
+	// and "ns:<path>"; this is an independent, orthogonal gate. While true
+	// it also refuses "ns:<path>" on the same fields, since a path can name
+	// another container's namespace.
 	RestrictNamespaceSharing bool `mapstructure:"restrict_namespace_sharing"`
 	// AllowedNamespaceSharingContainers allowlists the container:<ref>
 	// targets permitted when RestrictNamespaceSharing is true. Only
@@ -629,9 +642,9 @@ type ContainerCreateRequestBodyConfig struct {
 	// container: ref.
 	AllowedNamespaceSharingContainers []string `mapstructure:"allowed_namespace_sharing_containers"`
 	// DenyNamespacePathMode denies HostConfig.NetworkMode values with an
-	// "ns:" prefix (case-insensitive): Docker's raw host-namespace-file
-	// attachment form, which bypasses the "host" literal check entirely.
-	// Default false.
+	// "ns:" prefix (case-insensitive) even when AllowHostNetwork is true.
+	// With AllowHostNetwork false they are refused already, as "ns:<path>"
+	// is on every namespace mode whose host gate is off. Default false.
 	DenyNamespacePathMode     bool             `mapstructure:"deny_namespace_path_mode"`
 	AllowSysctls              bool             `mapstructure:"allow_sysctls"`
 	RequiredLabels            []string         `mapstructure:"required_labels"`
@@ -655,19 +668,27 @@ type ContainerCreateRequestBodyConfig struct {
 // above. Field names mirror ContainerCreateRequestBodyConfig where the
 // underlying semantics map onto a libpod equivalent (see design doc #148),
 // so operator knowledge transfers between the two surfaces; two fields
-// (AllowSystemdMode, AllowCustomIDMappings) have no Docker analog.
+// (AllowSystemdMode, AllowCustomIDMappings) have no Docker analog, and
+// AllowHostUTS has no compat option to mirror, because the compat create
+// refuses a host UTS namespace unconditionally.
 type LibpodContainerCreateRequestBodyConfig struct {
-	AllowPrivileged   bool     `mapstructure:"allow_privileged"`
+	AllowPrivileged bool `mapstructure:"allow_privileged"`
+	// AllowHostNetwork/PID/IPC/UserNS/UTS/CgroupNS each permit that
+	// namespace object's nsmode "host" and "path". A path can name the
+	// host's namespace, so it needs the same gate. While one is false its
+	// namespace also refuses any nsmode sockguard doesn't know.
 	AllowHostNetwork  bool     `mapstructure:"allow_host_network"`
 	AllowHostPID      bool     `mapstructure:"allow_host_pid"`
 	AllowHostIPC      bool     `mapstructure:"allow_host_ipc"`
 	AllowHostUserNS   bool     `mapstructure:"allow_host_userns"`
+	AllowHostUTS      bool     `mapstructure:"allow_host_uts"`
+	AllowHostCgroupNS bool     `mapstructure:"allow_host_cgroupns"`
 	AllowedBindMounts []string `mapstructure:"allowed_bind_mounts"`
 	AllowAllDevices   bool     `mapstructure:"allow_all_devices"`
 	AllowedDevices    []string `mapstructure:"allowed_devices"`
 
 	// RestrictNamespaceSharing/AllowedNamespaceSharingContainers gate
-	// netns/pidns/ipcns/userns/utsns objects of the form
+	// netns/pidns/ipcns/userns/utsns/cgroupns objects of the form
 	// {"nsmode":"container","value":"<ref>"}, mirroring
 	// ContainerCreateRequestBodyConfig.RestrictNamespaceSharing.
 	RestrictNamespaceSharing          bool     `mapstructure:"restrict_namespace_sharing"`
@@ -1428,15 +1449,15 @@ type OwnershipConfig struct {
 	// behavior for POST /containers/create when Owner is configured. By
 	// default (false — a security-relevant default, see CHANGELOG),
 	// sockguard resolves every HostConfig.NetworkMode/PidMode/IpcMode/
-	// UsernsMode "container:<ref>" namespace-sharing target and denies the
-	// request if the referenced container belongs to a different owner —
-	// joining a foreign container's namespace is a full cross-tenant
-	// compromise (shared sockets, process visibility, shared /dev/shm),
-	// strictly worse than the access ownership already gates on every other
-	// endpoint. Set true to restore the old unchecked behavior. Same-owner
-	// refs always pass; an unlabeled target is treated as untrusted and
-	// denied too (consistent with every other container-targeting ownership
-	// check), so only a same-owner ref is allowed when this is false.
+	// UTSMode/UsernsMode/CgroupnsMode "container:<ref>" namespace-sharing
+	// target and denies the request if the referenced container belongs to a
+	// different owner — joining a foreign container's namespace is a full
+	// cross-tenant compromise (shared sockets, process visibility, shared
+	// /dev/shm), strictly worse than the access ownership already gates on
+	// every other endpoint. Set true to restore the old unchecked behavior.
+	// Same-owner refs always pass; an unlabeled target is treated as untrusted
+	// and denied too (consistent with every other container-targeting
+	// ownership check), so only a same-owner ref is allowed when this is false.
 	AllowCrossOwnerNamespaceSharing bool `mapstructure:"allow_cross_owner_namespace_sharing"`
 }
 

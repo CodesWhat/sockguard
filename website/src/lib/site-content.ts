@@ -309,6 +309,28 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
+    version: "v2.2.5",
+    title: "Security Patch: Podman Namespaces and Owner-Isolated libpod Creates",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "On a Podman upstream, a namespace joined by path now needs the same allow_host_* gate as host",
+      "Under owner isolation, a libpod container or pod create is checked against the secrets, volumes, networks, containers and image volumes it names",
+      "secret_env and ID-shaped secret references are refused",
+    ],
+  },
+  {
+    version: "v2.2.6",
+    title: "Security Patch: Podman 6 Body Keys and Native Host Paths",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "A request body with a repeated key, or a key using U+0130, U+017F or U+212A, is refused with request_body_ambiguous",
+      "On a native Podman container create, rootfs, overlay sources, upperdir, workdir and init_path are held to allowed_bind_mounts, and relative bind sources are refused",
+      "Pod creates gain allow_host_pid, allow_host_ipc, allow_host_userns and allow_host_uts, and native container creates gain allow_host_uts and allow_host_cgroupns",
+    ],
+  },
+  {
     version: "v2.3.0",
     title: "BuildKit RUN-Instruction Coverage",
     emoji: "🧩",
