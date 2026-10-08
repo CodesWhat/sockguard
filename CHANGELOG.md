@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- **The README now follows the shared CodesWhat layout.** Documentation moves up to sit right after the contents list, the Sponsor badge joins the header, and Built With, Community & Support and CodesWhat Ecosystem become centered sections with the shared logo and chat lines. The Recent Updates section is gone because this changelog already carries every release, and the roadmap collapses from a table per release into one Version, Theme and Highlights table.
+
 ## [2.2.6] - 2026-10-08
 
 ### Security

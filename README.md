@@ -37,6 +37,7 @@
   <a href="https://github.com/CodesWhat/sockguard/stargazers"><img src="https://img.shields.io/github/stars/CodesWhat/sockguard?style=flat" alt="Stars"></a>
   <a href="https://github.com/CodesWhat/sockguard/issues"><img src="https://img.shields.io/github/issues/CodesWhat/sockguard?style=flat" alt="Issues"></a>
   <a href="https://github.com/CodesWhat/sockguard/discussions"><img src="https://img.shields.io/github/discussions/CodesWhat/sockguard?style=flat" alt="Discussions"></a>
+  <a href="https://github.com/sponsors/CodesWhat"><img src="https://img.shields.io/badge/Sponsor-ea4aaa?logo=githubsponsors&logoColor=white" alt="Sponsor"></a>
 </p>
 
 <hr>
@@ -46,10 +47,8 @@
 
 <h2 align="center">Contents</h2>
 
-- [Docs site](https://getsockguard.com/docs)
-- [Website](https://getsockguard.com)
+- [Documentation](#documentation)
 - [Quick Start](#quick-start)
-- [Recent Updates](#recent-updates)
 - [Why Sockguard](#why-sockguard)
 - [Features](#features)
 - [Supported Profiles](#supported-profiles)
@@ -58,10 +57,39 @@
 - [CLI](#cli)
 - [Migration](#migration)
 - [Roadmap](#roadmap)
-- [Documentation](#documentation)
 - [Star History](#star-history)
 - [Built With](#built-with)
-- [Community & Support](#community--support)
+- [Community & Support](#community-support)
+- [CodesWhat Ecosystem](#codeswhat-ecosystem)
+
+<hr>
+
+<h2 align="center" id="documentation">Documentation</h2>
+
+| Resource | Link |
+| --- | --- |
+| Website | [getsockguard.com](https://getsockguard.com/) |
+| Docs | [getsockguard.com/docs](https://getsockguard.com/docs) |
+| Getting Started | [Getting Started](https://getsockguard.com/docs/getting-started) |
+| Configuration | [Configuration](https://getsockguard.com/docs/configuration) |
+| Multi-Host | [Multi-Host](https://getsockguard.com/docs/multi-host) |
+| Presets | [Presets](https://getsockguard.com/docs/presets) |
+| Podman | [Podman](https://getsockguard.com/docs/podman) |
+| Migration | [Migration](https://getsockguard.com/docs/migration) |
+| Roadmap | See [Roadmap](#roadmap) section below, and the [docs roadmap](https://getsockguard.com/docs/roadmap) |
+| CIS Docker Benchmark | [CIS Docker Benchmark](https://getsockguard.com/docs/cis-docker-benchmark) |
+| Admin API | [Admin API](https://getsockguard.com/docs/admin) |
+| Observability | [Observability](https://getsockguard.com/docs/observability) |
+| Security Model | [Security Model](https://getsockguard.com/docs/security) |
+| Image Verification | [Image Verification](https://getsockguard.com/docs/verification) |
+| Changelog | [`CHANGELOG.md`](CHANGELOG.md) |
+| Contributing | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
+| Code of Conduct | [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) |
+| Governance | [`GOVERNANCE.md`](GOVERNANCE.md) |
+| Security Assurance | [`SECURITY-ASSURANCE.md`](SECURITY-ASSURANCE.md) |
+| Security Policy | [`SECURITY.md`](SECURITY.md) |
+| Issues | [GitHub Issues](https://github.com/CodesWhat/sockguard/issues) |
+| Discussions | [GitHub Discussions](https://github.com/CodesWhat/sockguard/discussions) |
 
 <hr>
 
@@ -207,51 +235,6 @@ The named-volume quick start creates that socket and its parent directory as UID
 
 <hr>
 
-<h2 align="center" id="recent-updates">Recent Updates</h2>
-
-<details>
-<summary><strong>Latest release highlights</strong></summary>
-
-- **v2.2.6 shipped on 2026-10-08** as a security patch on the v2.2 line. A request body with a repeated key, or a key holding U+0130, U+017F or U+212A, is refused with a `400` and reason code `request_body_ambiguous`, because Podman 6 and dockerd can read those keys as a different field than Sockguard did. On a native Podman container create, `rootfs`, `overlay_volumes` sources, overlay `upperdir` and `workdir`, and `init_path` are held to `allowed_bind_mounts`, `conmon_pid_file` is refused, and a relative bind source is refused. The `Volumes` map on a Docker-compatible create is checked on a Podman upstream. A pod create gets `allow_host_pid`, `allow_host_ipc`, `allow_host_userns` and `allow_host_uts`, and a native container create gets `allow_host_uts` and `allow_host_cgroupns`, all off by default.
-- **v2.2.5 shipped on 2026-10-06** as a security patch on the v2.2 line. On a Podman upstream, a namespace joined by path now needs the same `allow_host_*` gate as `host`. Under owner isolation, a libpod container or pod create is checked against the secrets, volumes, networks, containers and image volumes it names, and `secret_env` and ID-shaped secret references are refused.
-- **v2.2.4 shipped on 2026-10-04** as a security patch on the v2.2 line. A Podman build's `RUN` instructions are now inspected the way Podman reads them: the Containerfile is the default when `dockerfile` is absent, every file named by `dockerfile` is checked, a remote, absolute or `.in` value is refused, symlink and duplicate tar entries are refused, and a compressed body is refused. A policy query parameter sent in another case or twice on a Podman upstream is refused, Podman's native container remove, pod remove and kube down go through the `allow_force` and `allow_remove_volumes` gates, owner isolation checks the secret a libpod create replaces and refuses kube down, and a libpod secret create has its driver options gated (the `file` driver passes, and a compat `Driver` object now decodes). `warn` and `audit` profiles forward a request body they would have refused instead of returning a `502`.
-- **v2.2.3 shipped on 2026-10-02** as a security patch on the v2.2 line. Under owner isolation, the image names that commit, build, import, pull and load assign are now authorized like a retag target, so a client can no longer take a name away from another owner's image. The client-visible change: a pull with no tag and no digest (`docker pull -a`) is refused with a `403`, so send the tag. The patch also closes `fromImage` beside `fromSrc` skipping the registry allowlist, Podman's compat `/build` host-mount and remote-context controls, owner-label stripping on Podman builds, the distribution endpoint ignoring the registry allowlist, and a spooled request body staying on disk when a later layer denied the request.
-- **v2.2.2 shipped on 2026-10-02** as a security patch on the v2.2 line. A form-encoded request body (or a multipart one outside `/libpod/`) is refused with a `400` and reason code `request_form_body_refused`, because the daemon reads form fields from the body ahead of the query string and the prune filters, image-pull registry check and build guards only ever saw the query. Under owner isolation, an image push is now authorized against exactly `{name}:{tag}` and an image retag also checks the target name, so a client can no longer push another tag of a repository it owns or take a name away from another owner's image.
-- **v2.2.1 shipped on 2026-09-07** as a security patch on the v2.2 line. A `local` volume can no longer mount a raw host block device: `{"type":"ext4","device":"/dev/sda1"}` asks for no bind, so the v2.2.0 bind check never looked at it, and it is now denied unless the device is allowlisted. The same allowlist now covers the two shapes that name no block device at all: a pseudo-filesystem such as `{"type":"proc","device":"proc"}`, which ignores the device and mounts host kernel state anyway, and an `overlay` whose `lowerdir`/`upperdir`/`workdir` puts the host root in the mount data where nothing was reading. A path segment carrying a literal `*` can no longer slip past a deny rule whose segment glob is not a bare star, so `deny /containers/web-*/stop` matches `/containers/web-*1/stop` the way its anchored regex always did. Two byte-identical keys in one JSON object are rejected alongside the case-variant pairs the guard already caught, without building a JSON tree the decode after it cannot share. The visibility and owner-isolation filters decode a gzip-compressed upstream body instead of answering every scoped read with a `502`. `FuzzCompileRule` now holds every fast-path matcher to its own anchored regex, the monthly mutation score moves from 96.5% to 97.8% with 62 more kills, `release-from-tag.yml` pins the chart's image digest after a stable publish, the mutation badge commits to the development branch instead of `main`, and the nightly deep-fuzz job runs harden-runner in `audit` so its legs stop dying at the ten-minute mark.
-- **v2.2.0 shipped on 2026-09-06** as the volume-mount containment and read-side redaction release. The `local` volume driver's `type`/`o`/`device` options can no longer bind-mount a host path past `allowed_bind_mounts`, on container create or on a Swarm service mount, and `PUT /volumes/{name}` is inspected instead of being an unread write. A request target that is not a rooted path no longer reaches rule evaluation, and a `/**` catch-all no longer allows one. Read-side redaction survives gzip encoding, `HEAD`, `304` revalidation and image inspect, and stops parsing a body the active options cannot rewrite. New in this line: `sockguard verify` checks a loaded config against the daemon it will actually talk to, `server.shutdown_grace` replaces the hardcoded 30s drain, and a `SOCKGUARD_*` variable that matches no configuration key warns at startup instead of being silently ignored. A `match.path` without a leading `/` now fails config validation, which is breaking for any config that used that spelling.
-- **v2.1.0 shipped on 2026-09-03** after the published `2.1.0-rc.2` candidate passed the tri-tool conformance gate unchanged. Native libpod write routes — copy-into-container, container-update, restore, checkpoint, mount, and the gated image-write surface — are inspected on the same terms as their Docker-compat twins. Owner isolation now fails closed: `404` for an unresolved target, `403` for a foreign one, and `502` for an inspect error, none of them forwarded, across the libpod prune family, container commit, and image export/removal. The libpod prune family is owner-scoped and container commit is owner-checked with the resulting image labeled; container and pod process-list reads require the read-exfiltration acknowledgment; and read-side redaction now reaches libpod container inspect, volume, and network-topology responses.
-- **v2.0.0 shipped on 2026-08-28** after the published `2.0.0-rc.4` candidate passed the four-hour soak and full Sockguard + Portwing + drydock conformance matrix. Signed-policy trust is now selected from a separate bootstrap file instead of by the signed candidate itself, and unsigned compatibility variables can no longer mutate a verified deployment. Native Podman builds receive complete body inspection and owner stamping; BuildKit admission state is isolated by trusted caller, profile, and session; routing, visibility, request deadlines, Unix-socket cleanup, and metric cardinality are hardened; and release blobs now use sigstore bundles only. Existing signed-policy deployments must complete the [v2 migration](https://getsockguard.com/docs/migration#from-sockguard-v175-to-v200) before upgrading.
-- **v1.7.5 shipped on 2026-08-23** — promotes `1.7.5-rc.1` to stable. The candidate's security fixes: the Swarm host-network deny now covers `TaskTemplate.Networks` (#332); duplicate-`Dockerfile` build-context tars, frontend-less raw-LLB Solves, and upload-session contexts can no longer bypass `allow_run_instructions` (#333); cross-owner image-attestations access and two stale identity caches are closed (#334); image-trust verification no longer leaks a trust-root refresh goroutine per hot-reload and rejects cross-repository signature transplants (#335); and Grype scans the published multi-arch image per platform on release and weekly (#318). The rc-to-GA delta is release and CI infrastructure: a tracked-file conflict-marker guard (#336), a release-cut guard refusing prerelease tags dispatched on `main` (#337), and harden-runner egress allowlists covering the Go module proxy's storage.googleapis.com redirect (#338).
-- **v1.7.4 shipped on 2026-08-21** — the star-history chart is now a committed first-party SVG pair (light + dark) regenerated at each release cut, replacing the dead Warpchart embed, whose domain leaves the site CSP; a contract test keeps both retired chart hosts from coming back (#303). A daily `Main Is Released` monitor now asserts `main`'s HEAD points at a release tag, so Scorecard, CodeQL, and Grype runs against the default branch always describe the shipped version.
-- **v1.7.3 shipped on 2026-08-21** — the v1.7.2 tag's publish run died signing `checksums.txt` because the cosign that `sigstore/cosign-installer` now installs defaults to the new sigstore bundle format and ignores the `signs:` blocks' output flags; both blocks now pass `--new-bundle-format=false`/`--use-signing-config=false` and every `cosign-installer` step pins `v3.1.3` (#271). v1.7.2 remains a tag with no published artifacts; v1.7.3 ships its content.
-- **v1.7.2 shipped on 2026-08-21** — per-platform release archives are now cosign-signed and carry SLSA build provenance, closing the gap where only the source tarball was signed and attested (#271); the tri-tool conformance matrix's store-sync poll now reads drydock's versioned `/api/v1` endpoints and stops swallowing its own errors, and `current-standard`/`current-edge` rows resolve sockguard to the newest published stable release instead of a stale floor pin (#289); the `lockfile-dedupe` pre-push hook no longer reports a stale `node_modules` as lockfile drift (#295); `release-cut.yml`'s CI gate no longer times out before `CI: Verify` can finish (#288); and Biome now lints and formats the 38 tracked `.mjs` files it had never been checking, which surfaced and fixed a misleading-character-class bug in the release-version classifier (#297).
-- **v1.7.1 shipped on 2026-08-19** — closes four PR-gate gaps from the house security-gating audit: Dependency Review and a new Gitleaks job now run and block on every PR, a new Actionlint job lints workflow files, and Grype image scanning moves into the required Docker Build job (#271); release binaries now ship a CycloneDX SBOM per archive and the SLSA claim is qualified to Build L2 (#279); a weekly ZAP baseline DAST scan covers the static getsockguard.com site and docs (#280); cookieless PostHog analytics replaces Vercel Analytics (#253); branch protection grows from 9 to 17 required contexts and all CI job names drop decorative emoji (#285); and CI runners pin to `ubuntu-24.04` with harden-runner beginning its move off blanket audit-mode egress (#282).
-- **v1.7.0 shipped on 2026-08-11** — full BuildKit gRPC mediation (#185): the hijacked `POST /session`/`POST /grpc` tunnel is now terminated as h2c on both sides, with per-message policy on `Control/Solve`/`Control/Status`, credential session mediation (Auth/Secrets/SSH), and file-sync/upload stream mediation, replacing the opaque-tunnel acknowledgment (`insecure_accept_opaque_buildkit_tunnels`, now deprecated) with real enforcement. Also narrows `request_body.network.allow_endpoint_config` into independent per-field gates — static addressing, link-local IPs, MAC pinning, and gateway priority — on both network connect and container-create (#186).
-- **v1.6.0 shipped on 2026-08-08** — promotes `1.6.0-rc.1` to stable after the pre-GA tri-tool conformance gate ran green on all three published-image matrix rows; the rc.1→GA delta adds the libpod exec-start hijack-path fix (#194), a bounded exec-inspect decode (#188), real-daemon conformance tests for every portwing/drydock preset (#196), and a pinned multi-Engine CI matrix (#187). The v1.6 line delivers the full roadmap sequence: multiple independently scoped main listeners (#149), fail-closed declarative admission mutations (#151), effective-state resource-limit guarantees for container updates and Swarm services (#152), Engine API 1.55 validation plus the fail-closed Compose/BuildKit transport acknowledgment (#153), first-class Podman support across the Docker-compatible and native `/libpod` API surfaces with a dedicated guide and `podman-readonly.yaml` preset (#148), and the weekly Sockguard + Portwing + drydock conformance matrix (#150).
-- **v1.5.2 shipped on 2026-08-04** — closes an `image_trust` bypass where image-type `Mounts` entries on container/service create skipped signature verification, extends `redact_network_topology` to the Engine API 1.53 network-inspect `Status` field, adds Homebrew tap distribution, ships the tri-tool Edge Mode + exec Compose variant, and fixes nightly integration digest drift.
-- **v1.5.1 shipped on 2026-07-28** — fixes fresh named-volume Unix-socket startup for the non-root image, corrects Portwing's published registry reference and token command, loopback-binds the authenticated tri-tool demo, and publishes the tested three-tool compatibility boundary plus the competitor-driven v1.6 roadmap.
-- **v1.5.0 shipped on 2026-07-28** — promotes rc.3 to stable after the v1.5 feature surface had been exercised since rc.1 on July 11 and rc.2 on July 20, followed by clean CI, security, artifact, signature, and published-image validation on rc.3 plus a final full-delta review. Safer finite-request timeouts, namespace-sharing and host-cgroupns controls, a hard CPU-cap option, exact exec-environment value pinning, endpoint-config parity, Compose presets, Helm security defaults, fresh embedded-resource ownership checks, registry-push exfiltration gating, structured-log sanitization, fail-closed plugin inspection, and patched dependency graphs are now GA.
-- **v1.5.0-rc.3 shipped on 2026-07-28** — forwarded the complete v1.4.4 security patch into the v1.5 line: untrusted structured-log fields escape record delimiters, malformed plugin configuration is denied before forwarding, and the affected Go and Node dependencies move to patched releases. It retained rc.2's endpoint-config symmetry and rc.1's safer defaults and namespace hardening, passed the full release gates, and became the final candidate promoted to v1.5.0.
-- **v1.4.4 shipped on 2026-07-28** — security patch. Every attacker-controlled value crossing into structured logs now escapes CR/LF record delimiters; malformed plugin `config.json` is denied before forwarding instead of bypassing inspection; Next.js, PostCSS, sharp, js-yaml, gRPC, `x/net`, `x/text`, `x/crypto`, and `klauspost/compress` move to patched releases. Main-branch protection now requires two approvals and a code-owner review with no bypass actors. No public configuration or API change.
-- **v1.5.0-rc.2 shipped on 2026-07-20** — the second v1.5 candidate, carrying the full five-finding security pass forward from v1.4.3 alongside the endpoint-config symmetry fix landed after rc.1. It freshly authorizes every embedded workload dependency, removes mutable-name ownership caching, gates registry pushes as exfiltration, hardens Vercel and Helm defaults, and keeps the v1.5 namespace-sharing protections in the same authorization path. Its field time contributed to the completed v1.5 prerelease validation.
-- **v1.4.3 shipped on 2026-07-20** — security and correctness patch. Owner isolation now authorizes the images, named volumes, networks, secrets, and configs embedded inside container/service create/update payloads, denies foreign or unresolved dependencies, and freshly inspects mutable Docker names/tags on every authorization decision instead of reusing a ten-second positive cache entry. The exfiltration acknowledgement now covers image/plugin registry pushes; the Vercel-hosted site and copied docs export gain an enforced CSP plus browser hardening headers; Helm defaults pin UID/GID `65532`, `runAsNonRoot`, and `RuntimeDefault` seccomp. Also fixes the v1.4 runtime wiring for explicitly acknowledged unpinned exec without weakening the privilege, root-user, or configured command rails.
-- **v1.4.2 shipped on 2026-07-11** — security patch. Backports the case-varied-JSON-key filter-bypass fix from the v1.5 line: the daemon decodes body keys case-insensitively and honors the last duplicate after re-encoding, so a shadow lowercase `"image"`/`"labels"`/`"hostconfig"` could survive struct-decode inspection and then win at the daemon on every path that mutates and re-marshals a body (owner-label spoofing, image-trust digest pinning, and whole-body reorder of any container-create/service rule). Create/update bodies carrying duplicate case-variant keys are now rejected fail-closed (`400`/`403`) before re-marshaling, a lone lowercase variant is collapsed to canonical so it stays inspected, and image-trust no longer forwards the original tag when digest pinning fails after a successful verify. No config or API change.
-- **v1.4.1 shipped on 2026-07-10** — security patch. Go toolchain `1.26.4` → `1.26.5` to clear a *reachable* `crypto/tls` ECH advisory ([GO-2026-5856](https://pkg.go.dev/vuln/GO-2026-5856)) in the remote-upstream TLS and connection-hijack paths; the v1.4.0 images carried it, v1.4.1 rebuilds them clean (`govulncheck` reports zero reachable vulnerabilities). No proxy behavior, config, or API change.
-- **v1.4.0 shipped on 2026-07-10** — remote upstreams, confinement-mode parity, and supply-chain consolidation. Sockguard can now dial **remote Docker daemons over TCP+mTLS with active/passive failover** (`upstream.endpoints[]`, per-endpoint TLS and connect-level health probes, instant demotion on failure). **`SecurityOpt` SELinux/system-paths rails** (`deny_selinux_disable`, `deny_selinux_label_override`, `deny_unconfined_system_paths`) and **swarm seccomp/AppArmor confinement modes** (`deny_unconfined_seccomp`, `deny_custom_seccomp_profiles`, `deny_unconfined_apparmor`) complete `ContainerSpec` privilege parity with container create. The **rate-limit token bucket is now allocation-free** (0 allocs/op; `burst` validated at ≤ 65535). Three new **Portwing/drydock presets** (12 → 15). CVE scanning consolidated on **Grype + govulncheck (Snyk dropped)** to kill module-graph false positives, a multi-axis security/performance/supply-chain **audit hardening pass** (no critical/high findings), and an enforced **96% production-coverage floor** with live Qlty Cloud reporting.
-- **v1.3.0 shipped on 2026-06-11** — swarm posture parity and admin-surface hardening. Swarm **service create/update now enforces the container-create identity/privilege rails** (`require_non_root_user`, `require_no_new_privileges`, `require_readonly_rootfs`, `require_drop_all_capabilities` on `ContainerSpec`), closing the bypass where a service could request a workload shape `/containers/create` would deny. A **zero-padded-UID root bypass** (`"00"`, `"0000:5"`) is sealed across container create and exec. A **wide-open dedicated admin listener is now a validation error**; admin paths are normalized before matching; non-upgrade hijack responses strip hop-by-hop headers. Operational fixes: the `signature_path` hot-reload wedge, three silently-ignored `SOCKGUARD_*` env vars, oversized bodies returning `403` instead of `413`, and release images now carrying real `commit`/`built` metadata. Multi-arch images cross-compile natively (no more emulated toolchain faults).
-- **v1.2.0 shipped on 2026-06-02** — operational resilience for a wedged daemon. An opt-in **readiness probe** (`health.readiness.*`, default `/ready`) issues a real `GET /containers/json` against the Docker API and returns `503` when the daemon accepts connections but no longer answers — the gap the raw-dial `/health` watchdog misses. An opt-in **`upstream.request_timeout`** bounds finite proxied requests with a total deadline, converting a hung body or heavy read into a fast `504` (`reason_code=upstream_request_timeout`) while exempting streaming and long-lived endpoints. New metrics `sockguard_upstream_api_up` + `sockguard_upstream_readiness_checks_total` mirror the watchdog. The bundled **drydock preset** now allowlists the stock `runc` runtime so drydock recreation stops getting 403'd out of the box. Dependency hygiene: the Go toolchain moves to `1.26.4` (clearing two *reachable* stdlib advisories, GO-2026-5037 / GO-2026-5039), plus the `go-minor` / `npm-minor` / `actions-minor` groups; `govulncheck` reports zero vulnerabilities.
-- **v1.1.0 shipped on 2026-06-01** — image-trust verification wired end to end: registry digest resolution, cosign signature discovery (classic tag + OCI 1.1 referrers), digest-pinned forwarding, keyed (PEM) and keyless (Fulcio + Rekor) both enforced, swarm-service create/update now subject to the same image-trust policy as container create. A 21-finding security audit landed alongside: closed request-inspection bypasses (plugin multipart, BuildKit `# syntax=`, gzip bombs, swarm-service capability/sysctl/image-trust escapes), read-side sub-resource visibility gating, new `allowed_runtimes` allowlist, hardened config/admin paths (signed-bundle TOCTOU, PID-only peer rejection, admin-listener CIDR backstop), response redaction extended to `HostConfig.Mounts[].Source` and service `PreviousSpec`. CodeQL `actions` analysis and supply-chain dependency hygiene (`govulncheck` reports zero vulnerabilities) round out the release.
-- **v1.0.0 shipped on 2026-05-20** with the public proxy contract locked: YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names are now under the v1.x compatibility promise.
-- **22 bundled presets** cover drydock, drydock with build, drydock with mediated build, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, read-only, Podman read-only, CIS Docker Benchmark, GitHub Actions self-hosted runner, GitLab Runner, Portwing, Portwing with exec, Portwing with build, Portwing with mediated build, Portwing with compose, drydock with self-update, and drydock with compose.
-- **Expanded QA hardening** added proxy-vs-daemon differential tests, real-dockerd preset conformance, fuzz corpora for routing and visibility, weekly soak testing, and TLS edge-case coverage.
-- **Supply-chain verification** covers release images across GHCR, Docker Hub, and Quay.io using the same cosign commands documented for operators.
-
-See [CHANGELOG.md](CHANGELOG.md) for the full itemized history.
-
-</details>
-
-<hr>
-
 <h2 align="center" id="why-sockguard">Why Sockguard</h2>
 
 The Docker socket is **root access to your host**. Every container with socket access can escape containment, mount the host filesystem, and pivot to other containers. Yet tools like Traefik, Portainer, and drydock need socket access to function.
@@ -287,7 +270,7 @@ Most existing socket proxies stop at method/path or regex filtering. Tecnativa g
 | **Upstream Request Timeout** | `upstream.request_timeout` (default `60s`) bounds finite proxied requests with a total deadline, so a hung response body or heavy read is aborted rather than pinning the request. The client sees a `504` (`reason_code=upstream_request_timeout`) only when the deadline fires before the response headers commit; after that the status has already been sent and cannot be replaced, so the client keeps it and gets a truncated body. Streaming and long-lived endpoints are exempt: events, follow logs (container, service and task), streaming stats, image create/pull/build/push/load, `GET /images/export` and `/images/*/get`, container export, archive/`docker cp` in both directions, websocket attach, container wait, plugin create/pull/push/upgrade, the BuildKit `POST /session` and `POST /grpc` tunnel, and the `/libpod` mirror of every one of them. Set `"off"` to disable. |
 | **Prometheus Metrics** | Opt-in `/metrics` endpoint with bounded-cardinality request counters, deny counters, latency histograms, active request gauge, throttle counters, per-listener bind/serve state, hot-reload outcome counters, and upstream watchdog + readiness state/check metrics, plus `sockguard_build_info` and `sockguard_start_time_seconds` gauges for version panels and uptime alerts. Named series include `sockguard_listener_up`, `sockguard_throttle_requests_total`, `sockguard_config_reload_total` and `sockguard_config_reload_last_success_timestamp_seconds`; see the [observability guide](https://getsockguard.com/docs/observability) for the full set. Unknown HTTP methods collapse to `OTHER` and unknown route families to `unknown`. |
 | **Trace/Log Correlation** | Preserves valid W3C `traceparent` context or generates local context, forwards a proxy-local span ID, and records trace fields in access, audit, and upstream error logs without an OTLP exporter. |
-| **Battle-Tested** | 96%+ statement coverage (enforced by a CI coverage gate), race-detector clean, monthly Gremlins mutation testing, and 56 fuzz targets across the filter, glob, config, proxy, hijack, ownership, visibility, response-filter, Docker-filters, reload, policy-bundle, upstream-flavor and BuildKit paths, plus the proxy-vs-daemon differential suite. |
+| **Battle-Tested** | 96%+ statement coverage (enforced by a CI coverage gate), race-detector clean, monthly Gremlins mutation testing, and 56 fuzz targets across the filter, glob, config, proxy, hijack, ownership, visibility, response-filter, Docker-filters, reload, policy-bundle, upstream-flavor and BuildKit paths, plus the proxy-vs-daemon differential suite, real-dockerd preset conformance, weekly soak testing and TLS edge-case coverage. |
 
 <hr>
 
@@ -503,188 +486,31 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 <details>
 <summary><strong>Version themes & highlights</strong></summary>
 
-**v2.2.0 shipped on 2026-09-06** as the volume-mount containment and read-side redaction release. v2.3 is the next planned line and carries forward two tracks. The first is selective mediation of raw-LLB and third-party BuildKit frontends, so RUN-equivalent ops can be inspected and allowed individually instead of refused wholesale. The second is packaging rather than proxy behavior: `go.mod` still declares `github.com/codeswhat/sockguard` with no `/v2` suffix, so the module proxy rejects every v2 tag and `go install` plus the Go Reference badge still resolve to the v1.x line. No documented install path is affected, since Sockguard ships as a binary through Docker, Homebrew, deb and rpm. Work beyond the next planned line remains driven by demonstrated risk and operator demand. See [CHANGELOG.md](CHANGELOG.md) for release history and the [roadmap docs](https://getsockguard.com/docs/roadmap) for compatibility evidence and scope boundaries.
+High-level themes only; see [CHANGELOG.md](CHANGELOG.md) for per-release detail.
+The full roadmap, with compatibility evidence and scope boundaries, is on the [docs roadmap page](https://getsockguard.com/docs/roadmap).
 
-### Shipped in v2.2.0
-
-| Track | Delivered |
-|---|---|
-| **Volume-driver bind containment** | The `local` driver's `type`/`o`/`device` options can no longer bind-mount a host path past `allowed_bind_mounts`, on container create or on a Swarm service mount. |
-| **Volume write inspection** | `PUT /volumes/{name}` is inspected instead of being an unread write, so an allow rule on it no longer forwards a body nothing reads. |
-| **Request-target guard** | A request target that is not a rooted path no longer reaches rule evaluation, and a `/**` catch-all no longer allows one. |
-| **Read-side redaction** | Survives gzip encoding, `HEAD`, `304` revalidation and image inspect, and stops parsing a body the active options cannot rewrite. |
-| **Operator checks** | `sockguard verify` checks a loaded config against the daemon it will actually talk to, `server.shutdown_grace` replaces the hardcoded 30s drain, and a `SOCKGUARD_*` variable matching no configuration key warns at startup. |
-| **Rootless rule patterns rejected** | A `match.path` without a leading `/` now fails config validation instead of loading and matching every rooted path. Breaking for any config that used that spelling. |
-| **Per-request allocations** | Route metric labels, the `/health` cache, visibility label injection, owner-label mutation, `POST /containers/create` decoding and query-string parsing stop repeating work on every request. |
-
-### Shipped in v2.1.0
-
-| Track | Delivered |
-|---|---|
-| **Native libpod write inspection** | Copy-into-container, container-update, restore, checkpoint, mount, and the gated image-write surface are inspected on the same terms as their Docker-compat twins. |
-| **Owner isolation fail-closed** | An unresolved target answers `404`, a foreign one `403`, and an inspect failure `502`, forwarding none of them, across the libpod prune family, container commit, and image export/removal. |
-| **Ownership-scoped prune & commit** | The libpod prune family is owner-scoped and container commit is owner-checked, with the resulting image labeled so it stays visible to later ownership checks. |
-| **Process-list read acknowledgment** | Container and pod process-list reads now require the read-exfiltration acknowledgment. |
-| **Read-side redaction** | Reaches libpod container inspect, volume reads, and network topology; `showsecret=true` no longer hands back a plaintext secret. |
-
-### Shipped in v2.0.0
-
-| Track | Delivered |
-|---|---|
-| **Signed-policy integrity** | Bootstrap trust is selected out of band, cannot share authority with the signed candidate or rotatable signature object, stays pinned across reload, and rejects unsigned compatibility-rule mutation. Existing deployments must follow the [migration guide](https://getsockguard.com/docs/migration#from-sockguard-v175-to-v200). |
-| **Native Podman builds** | `/libpod/build` constrains primary and additional contexts, host-facing controls, host networking, Dockerfile `RUN`, and owner labeling on direct and versioned paths. |
-| **BuildKit isolation** | Caller identity comes from verified certificates or Unix peer credentials where available, session state is correlated by principal, profile, and session, Solve admission is atomic, and upgrade handshakes are bounded. |
-| **Proxy hardening** | Socket cleanup is inode-owned, method-aware routing protects keyword-named resources, generated response errors clear stale representation headers, inspected bodies retain deadlines, and request metric labels have finite cardinality. |
-| **Release surfaces** | README, docs, website, Helm metadata, verification assets, and migration guidance agree on v2.0.0; release blobs use sigstore bundles only and published metadata is read back before the release succeeds. |
-
-### Shipped in v1.7.0
-
-Tracked in the [v1.7.0 GitHub milestone](https://github.com/CodesWhat/sockguard/milestone/2).
-
-| Track | Issue | Delivered |
-|---|---|---|
-| **BuildKit gRPC mediation** | [#185](https://github.com/CodesWhat/sockguard/issues/185) | Full mediation of the hijacked `POST /session`/`POST /grpc` tunnel across six phases — h2c termination and stream routing, per-message `Control/Solve`/`Control/Status` policy with ref ownership, credential session mediation (Auth/Secrets/SSH), and file-sync/upload stream mediation — replacing the opaque-tunnel acknowledgment with real enforcement. `insecure_accept_opaque_buildkit_tunnels` is now deprecated. |
-| **Granular endpoint-config gates** | [#186](https://github.com/CodesWhat/sockguard/issues/186) | `request_body.network.endpoint_config.*` splits the broad `allow_endpoint_config` override into independent per-field gates for static addressing, link-local IPs, MAC pinning, and gateway priority. |
-
-### Shipped in v1.6.0
-
-Tracked in the [v1.6.0 GitHub milestone](https://github.com/CodesWhat/sockguard/milestone/1). Delivered in three waves — Wave 1 landed in parallel, Wave 2 was sequential because both items touch the route classifier, and Wave 3 gated GA.
-
-**Wave 1 — parallel**
-
-| Track | Issue | Required outcome |
-|---|---|---|
-| **Multiple listeners** | [#149](https://github.com/CodesWhat/sockguard/issues/149) | Run Unix and TCP listeners together, or multiple instances of either, with listener-scoped TLS and profile boundaries. |
-| **Safe admission mutation** | [#151](https://github.com/CodesWhat/sockguard/issues/151) | Operator-configurable mandatory-label injection and image-reference remapping; canonicalize and re-inspect every mutation before forwarding, fail closed. |
-| **Resource parity** | [#152](https://github.com/CodesWhat/sockguard/issues/152) | Revalidate required memory/CPU/CPU-hard/PIDs limits against effective state during container update (`request_body.container_update.require_*`, opt-in, gated by `allow_resource_updates`), and add Swarm-service CPU-limit requirements covering create/update and both rollback paths (`request_body.service.require_cpu_limit`/`require_cpu_limit_hard`). |
-
-**Wave 2 — sequential**
-
-| Track | Issue | Required outcome |
-|---|---|---|
-| **Engine/build compatibility** | [#153](https://github.com/CodesWhat/sockguard/issues/153) | Validate Docker Engine API 1.55 and current Compose/BuildKit transport without opening the API v1.53-deprecated `/session` and `/grpc` endpoints by assumption. Lands first; Podman routing builds on the updated classifier. |
-| **Podman/libpod** | [#148](https://github.com/CodesWhat/sockguard/issues/148) | Preserve Docker-compatible Podman behavior and add explicit default-deny, body-aware coverage for native `/libpod` routes and pod lifecycle operations. |
-
-**Wave 3 — gates GA**
-
-| Track | Issue | Required outcome |
-|---|---|---|
-| **Three-tool conformance** | [#150](https://github.com/CodesWhat/sockguard/issues/150) | Publish the tested Sockguard + Portwing + drydock conformance matrix across Standard/Edge version combinations; remote-update claims remain blocked until watcher/trigger contracts work in both peer repositories. |
-
-### Shipped in v1.5.0
-
-| Track | Surface |
-|---|---|
-| **Safer defaults** | `upstream.request_timeout` defaults to `60s` (was unlimited), so a wedged daemon that hangs a response body is caught out of the box; long-lived endpoints remain exempt, and `"off"` restores unlimited behavior. `ownership.allow_cross_owner_namespace_sharing` defaults to `false`, denying cross-owner `container:<ref>` joins when ownership is enabled. |
-| **Namespace hardening** | `restrict_namespace_sharing` plus `allowed_namespace_sharing_containers` gates `container:<ref>` joins across Network/PID/IPC/User namespaces; `deny_namespace_path_mode` blocks raw `ns:<path>` network namespace attachment; `allow_host_cgroupns` is now required for host cgroup-namespace mode. |
-| **CPU hard limit** | New opt-in `request_body.container_create.require_cpu_limit_hard` requires a genuine CPU-time cap (`HostConfig.NanoCpus` or `CpuQuota`); `CpuShares` alone or a lone `CpuPeriod` does not satisfy it. |
-| **Exec environment policy** | New opt-in `request_body.exec.allowed_env_vars`/`denied_env_vars` restrict exec-create environment entries by name, while `allowed_env_values` can pin selected entries to exact `NAME=VALUE` strings; denials never log or echo values. |
-| **Endpoint-config parity** | Create-time `NetworkingConfig.EndpointsConfig` now enforces the same static-IP, MAC, links, and driver-option policy as `POST /networks/*/connect`; Compose aliases remain allowed by default. |
-| **Integrations** | Adds `portwing-with-compose.yaml`, `drydock-with-compose.yaml`, and the tri-tool Compose example, taking the bundled preset set from 15 to 17. |
-| **Helm security** | The DaemonSet pins `runAsNonRoot`, UID/GID 65532, and `seccompProfile.type: RuntimeDefault` at pod level while allowing the host socket GID to be merged through `podSecurityContext.supplementalGroups`. |
-| **Configuration internals** | Viper-default registration is generated by reflection off `Defaults()` rather than a hand-maintained list; exhaustive tests now prove every mapstructure leaf and `SOCKGUARD_*` override is registered. |
-| **Security release train** | Carries fresh embedded-resource ownership checks, registry-push exfiltration gating, browser and Helm hardening, structured-log sanitization, fail-closed plugin inspection, and patched dependency graphs through rc.3 into stable. |
-| **Validation** | Full Go/TypeScript CI, CodeQL, Grype, govulncheck, gosec, real-dockerd integration, fuzzing, artifact verification, signatures, provenance, and published-image scans passed before GA promotion. |
-
-### Shipped in v1.4.4
-
-| Track | Surface |
-|---|---|
-| **Scanner remediation** | Sanitizes attacker-controlled structured-log fields to close the CodeQL log-injection findings; upgrades the affected Go and Node dependency graphs to patched releases for the Grype and OpenSSF Scorecard findings; retains only the documented `x/crypto/openpgp` exception where no fixed version exists and the vulnerable package is absent from the shipped binary |
-| **Fail-closed inspection** | Malformed or schema-incompatible plugin `config.json` is denied before forwarding, so an archive Sockguard cannot inspect cannot bypass plugin bind, device, capability, environment, or namespace policy |
-| **Repository protection** | `main` requires two approvals, a code-owner review, stale-review dismissal, last-push approval, resolved conversations, strict required checks, and no bypass actors |
-| **Compatibility** | No YAML schema, CLI flag, environment variable, admin endpoint, metric, or other public API change |
-
-### Shipped in v1.4.0
-
-| Track | Surface |
-|---|---|
-| **Remote upstreams & failover** | `upstream.endpoints[]` — ordered failover set of Docker daemons (`unix://` or `tcp://host:port[/base/path]`), per-endpoint mTLS (`tls.ca_file`/`tls.cert_file`/`tls.key_file`/`tls.server_name`), and the plaintext opt-in; active connect-level health probes on configurable `failover.health_interval`/`health_timeout`; request failure demotes the active endpoint for immediate failover; Docker CLI-compatible `DOCKER_HOST`/`DOCKER_TLS`/`DOCKER_TLS_VERIFY`/`DOCKER_CERT_PATH`/`DOCKER_CONFIG` resolution when no endpoints are set, including bare and portless TCP, preserved TCP API base paths, Docker-validated literal custom Unix socket names, required `ca.pem`, and an optional client pair. The unverified-TLS opt-in remains accepted in v2.1 with a startup deprecation warning and is scheduled for removal in v3.0.0. |
-| **SecurityOpt policy rails** | `deny_selinux_disable`, `deny_selinux_label_override`, `deny_unconfined_system_paths` for `containers/create`; `deny_unconfined_seccomp`, `deny_custom_seccomp_profiles`, `deny_unconfined_apparmor` for `services/create/update`; swarm `ContainerSpec.Privileges` confinement parity with container create |
-| **RC hardening pass** | A multi-axis internal audit of the v1.4 RC (security, performance, tests, supply chain) found no critical or high issues and drove plugin-inspection, SPKI comparison, upstream warning, hot-path allocation, DAST, integration, fuzz, and documentation hardening |
-
-### Shipped in v1.3.0
-
-| Track | Surface |
-|---|---|
-| **Swarm posture parity** | Service create/update enforces the container-create identity/privilege rails on `ContainerSpec`: `require_non_root_user` (numeric-UID parsing, zero-padded forms rejected), `require_no_new_privileges`, `require_readonly_rootfs`, `require_drop_all_capabilities` — all opt-in, closing the bypass where a service could request a workload shape `/containers/create` would deny |
-| **Security fixes** | Zero-padded-UID root bypass sealed (container create `require_non_root_user` + exec `allow_root_user` parse the UID instead of comparing to `"0"`); wide-open dedicated admin listener (non-loopback plaintext, no CIDR backstop) is a validation error unless explicitly acknowledged; admin endpoint paths `path.Clean`-normalized before matching; non-upgrade hijack fallbacks strip hop-by-hop headers; container-label ACL exclusivity warning at startup; `filters` query params capped at 64 KiB |
-| **Operational fixes** | `signature_path` hot-reload no longer wedges subsequent reloads; three silently-ignored `SOCKGUARD_*` env vars registered; oversized bodies return `413` (was `403`) on node-update and build; coalesced inspect-cache waiters honor their own context; release images carry real `commit`/`built` metadata |
-| **Build & internals** | Multi-arch images cross-compile natively (`--platform=$BUILDPLATFORM`), fixing emulated-toolchain faults; shared `internal/dockerfilters` decoder with deterministic legacy-format ordering; upstream inspect responses drained for keep-alive reuse |
-
-### Shipped in v1.2.0
-
-| Track | Surface |
-|---|---|
-| **Operational resilience** | Opt-in readiness probe (`health.readiness.*`, default `/ready`) that issues a real `GET /containers/json` against the Docker API and returns `503` on a daemon that connects but no longer answers; opt-in `upstream.request_timeout` total per-request deadline that converts a hung body / heavy read into a `504` (`reason_code=upstream_request_timeout`) while exempting streaming and long-lived endpoints; new `sockguard_upstream_api_up` gauge + `sockguard_upstream_readiness_checks_total{result}` counter |
-| **Preset fix** | `drydock` preset allowlists the stock `runc` runtime so drydock's recreate-from-inspect updates stop getting 403'd at `POST /containers/create` out of the box |
-| **Dependencies** | Go toolchain `1.26.3` → `1.26.4` (builder image + `go.mod` directive), clearing reachable stdlib advisories GO-2026-5037 / GO-2026-5039; `go-minor` group (go-containerregistry, sigstore, protobuf-specs + closure); `npm-minor` group (12, website/docs/tooling); `actions-minor` group (4, SHA-pinned); `govulncheck` reports zero vulnerabilities |
-
-### Shipped in v1.1.0
-
-| Track | Surface |
-|---|---|
-| **Image trust (end-to-end)** | Registry manifest digest resolution via `internal/imagefetch`; cosign signature discovery (classic `sha256-<digest>.sig` tag + OCI 1.1 referrers); Sigstore bundle reconstruction and digest-binding before verify; keyed (PEM public key) and keyless (Fulcio + Rekor, TUF-fetched trust root) both enforced; `require_rekor_inclusion` defaults to `true` for keyless; verified images digest-pinned (`registry/repo@sha256:…`) before forwarding to close the verify→pull TOCTOU; image-trust policy now also applied to **swarm service create/update** (ContainerSpec) |
-| **Security audit (21 findings)** | Plugin multipart-boundary inspection bypass closed; read-side visibility gates container/image sub-resources (logs/stats/top/changes/export/archive/attach, image history/get); new `allowed_runtimes` allowlist for `HostConfig.Runtime`; empty/whitespace exec `User` treated as root; capability-enforcement fixes; BuildKit `# syntax=` directive denial + gzip-bomb decompression cap; swarm services enforce capability allowlist, `allow_sysctls` gate, and image-trust; keyless SAN patterns anchored; `docker load` gzipped archive false-deny fixed; image `/get` export owner-filtered; inspect cache no longer memoizes not-found verdicts; response redaction extended to `HostConfig.Mounts[].Source` and service `PreviousSpec`; signed-bundle verify-then-load TOCTOU closed + env vars cannot override signed policy; PID-only unix-peer profile assignment rejected; dedicated admin TCP listener enforces `clients.allowed_cidrs` |
-| **CI / supply chain** | CodeQL `actions` language enabled for workflow static analysis; 20 OSSF Scorecard / Go vuln-DB advisory dependency bumps (x/crypto, x/net, x/sys + closure); `govulncheck` reports zero vulnerabilities |
-
-### Shipped in v1.0.0
-
-| Track | Surface |
-|---|---|
-| **Foundation** | Default-deny proxy, glob path rules, Tecnativa env compatibility, structured access + audit logging, health endpoint, hardened distroless image, multi-arch |
-| **Transport** | Unix socket and mTLS-protected TCP listener, TLS 1.3 minimum, loopback by default, SPKI pins, plaintext non-loopback rejected without explicit opt-in |
-| **Body inspection** | Every Docker write surface with a meaningful body shape — `containers/create`, exec, build, services, swarm, configs/secrets, volumes, plugins, networks, image load, container update, archive write, node update |
-| **Container enforcement** | `Privileged` / host namespaces / `CapAdd` / device passthrough denied by default; `no-new-privileges`, non-root, readonly rootfs, drop-all-capabilities, memory / CPU / PIDs limits, seccomp + AppArmor allowlists; cosign image-trust policy schema and rule compiler (end-to-end enforcement wired in v1.1.0) |
-| **Per-client policy** | Source-IP, mTLS (CN/DNS/IP/URI/SPIFFE/SPKI), unix `SO_PEERCRED`, container-label resolution; named profiles with rollout modes (`enforce` / `warn` / `audit`) |
-| **Read-side visibility** | Response filtering across containers/services/tasks/configs/secrets/nodes/plugins/swarm/info/system-df with generic protected-JSON mediation |
-| **Abuse controls** | Per-client token-bucket rate limits, burst budgets, concurrency caps, endpoint-cost weighting, system-wide priority-aware fairness gate |
-| **Observability** | Prometheus `/metrics`, dedicated audit schema, trusted request IDs, deny-reason enums, W3C trace/log correlation, active upstream socket watchdog, lock-free hot path |
-| **Dynamic policy** | `POST /admin/validate` CI gate, `fsnotify` + SIGHUP hot reload with immutable-field gate, monotonic policy versioning, optional dedicated admin listener, cosign-signed policy bundles |
-
-### Later directions
-
-These themes remain unscheduled until their scope and security boundary are concrete.
-
-| Tier | Theme |
-|---|---|
-| Security hardening (v2.x) | Continued mutation-test hardening of the rule-evaluation core and config validators |
-| Supply chain (v2.x) | `egress-policy: block` with curated allow-lists on high-privilege release jobs |
-| Policy refinement (v2.x) | Named rule path aliases and further response-policy refinement |
-| Internals (v2.x) | Code-review backlog: collapse the config → filter-options → policy translation layers behind a single source of truth; profiling-gated JSON redaction fast path |
-| Compliance (v2.x) | CIS Docker Benchmark control mapping, audit-ready policy templates |
-| Extensibility (v2.x+) | Optional plugin extension points (WASM or Go plugins), OPA/Rego policy integration |
+| Version | Theme | Highlights |
+| --- | --- | --- |
+| **v1.0.0** ✅ | Public Proxy Contract | Default-deny proxy with glob path rules and Tecnativa env compatibility, Unix socket and mTLS TCP transport, body inspection across every Docker write surface, container privilege enforcement, per-client policy profiles with `enforce` / `warn` / `audit` rollout modes, read-side visibility filtering, per-client rate limits, Prometheus `/metrics`, `POST /admin/validate` and hot reload with cosign-signed policy bundles |
+| **v1.1.0** ✅ | Image Trust & Security Audit | End-to-end cosign image trust (keyed and keyless, digest-pinned forwarding, also applied to swarm service create/update), 21-finding security audit with plugin, BuildKit `# syntax=` and gzip-bomb bypasses closed, new `allowed_runtimes` allowlist, CodeQL `actions` analysis |
+| **v1.2.0** ✅ | Operational Resilience | Opt-in readiness probe (`health.readiness.*`, default `/ready`), opt-in `upstream.request_timeout` that turns a hung body into a `504`, `sockguard_upstream_api_up` gauge and readiness counter, `drydock` preset allowlisting the stock `runc` runtime, Go `1.26.4` |
+| **v1.3.0** ✅ | Swarm Posture Parity & Admin Hardening | Service create/update enforces the container-create identity and privilege rails (`require_non_root_user`, `require_no_new_privileges`, `require_readonly_rootfs`, `require_drop_all_capabilities`), zero-padded-UID root bypass sealed, wide-open admin listener is a validation error, `413` for oversized bodies, native multi-arch cross-compiles |
+| **v1.4.x** ✅ | Remote Upstreams & Failover | `upstream.endpoints[]` failover set with per-endpoint mTLS and connect-level health probes, `DOCKER_HOST`-style resolution, SecurityOpt SELinux/seccomp/AppArmor rails for container and service create, fail-closed plugin inspection, scanner remediation in v1.4.4 |
+| **v1.5.x** ✅ | Safer Defaults & Namespace Hardening | `upstream.request_timeout` defaults to `60s`, `restrict_namespace_sharing` and `deny_namespace_path_mode`, `require_cpu_limit_hard`, exec environment policy (`allowed_env_vars` / `denied_env_vars`), endpoint-config parity on create, compose presets (15 to 17), Helm pod-level security context |
+| **v1.6.0** ✅ | Multiple Listeners, Admission Mutation & Podman | Multiple listeners with listener-scoped TLS and profiles ([#149](https://github.com/CodesWhat/sockguard/issues/149)), fail-closed admission mutation for mandatory labels and image remapping ([#151](https://github.com/CodesWhat/sockguard/issues/151)), memory/CPU/PIDs resource parity on container update and Swarm services ([#152](https://github.com/CodesWhat/sockguard/issues/152)), Docker Engine API 1.55 validation ([#153](https://github.com/CodesWhat/sockguard/issues/153)), native `/libpod` default-deny coverage ([#148](https://github.com/CodesWhat/sockguard/issues/148)), published three-tool conformance matrix ([#150](https://github.com/CodesWhat/sockguard/issues/150)) |
+| **v1.7.x** ✅ | BuildKit gRPC Mediation | Full mediation of the hijacked `POST /session` / `POST /grpc` tunnel in six phases ([#185](https://github.com/CodesWhat/sockguard/issues/185)), per-field `request_body.network.endpoint_config.*` gates ([#186](https://github.com/CodesWhat/sockguard/issues/186)), `insecure_accept_opaque_buildkit_tunnels` deprecated |
+| **v2.0.0** ✅ | Signed-Policy Integrity & Native Podman Builds | Out-of-band bootstrap trust for signed policy bundles that stays pinned across reload, `/libpod/build` context, host-control and Dockerfile `RUN` constraints, BuildKit caller identity from verified certificates or Unix peer credentials, atomic Solve admission, finite metric label cardinality, sigstore-bundle-only release blobs |
+| **v2.1.0** ✅ | Native libpod Write Inspection & Owner Isolation | Copy-into-container, update, restore, checkpoint and mount inspected on the libpod routes, owner isolation fails closed with `404` / `403` / `502` across the prune family, commit and image export/removal, process-list reads need the read-exfiltration acknowledgment, read-side redaction reaches libpod inspect, volume reads and network topology |
+| **v2.2.x** ✅ | Volume-Mount Containment & Read-Side Redaction | `local` volume driver `type`/`o`/`device` options held to `allowed_bind_mounts` on container create and Swarm mounts, `PUT /volumes/{name}` inspection, request-target guard, redaction that survives gzip, `HEAD`, `304` and image inspect, `sockguard verify`, `server.shutdown_grace`, rootless `match.path` rejected, fewer per-request allocations. Security patches 2.2.1 to 2.2.6 cover Podman/libpod create and body-key hardening, owner-isolation image naming and form-body refusal |
+| **v2.3.0** | BuildKit Frontend Mediation & Go Module v2 | Selective mediation of raw-LLB and third-party BuildKit frontends so RUN-equivalent ops are inspected and allowed individually instead of refused wholesale, and a `/v2` Go module path so `go install` and the Go Reference badge resolve to the v2 line |
+| **v2.x** | Security Hardening | Continued mutation-test hardening of the rule-evaluation core and config validators |
+| **v2.x** | Supply Chain | `egress-policy: block` with curated allow-lists on high-privilege release jobs |
+| **v2.x** | Policy Refinement | Named rule path aliases and further response-policy refinement |
+| **v2.x** | Internals | Code-review backlog: collapse the config → filter-options → policy translation layers behind a single source of truth; profiling-gated JSON redaction fast path |
+| **v2.x** | Compliance | CIS Docker Benchmark control mapping, audit-ready policy templates |
+| **v2.x+** | Extensibility | Optional plugin extension points (WASM or Go plugins), OPA/Rego policy integration |
 
 </details>
-
-<hr>
-
-<h2 align="center" id="documentation">Documentation</h2>
-
-| Resource | Link |
-| --- | --- |
-| Website | [getsockguard.com](https://getsockguard.com/) |
-| Docs | [getsockguard.com/docs](https://getsockguard.com/docs) |
-| Getting Started | [Getting Started](https://getsockguard.com/docs/getting-started) |
-| Configuration | [Configuration](https://getsockguard.com/docs/configuration) |
-| Multi-Host | [Multi-Host](https://getsockguard.com/docs/multi-host) |
-| Presets | [Presets](https://getsockguard.com/docs/presets) |
-| Podman | [Podman](https://getsockguard.com/docs/podman) |
-| Migration | [Migration](https://getsockguard.com/docs/migration) |
-| Roadmap | [Roadmap](https://getsockguard.com/docs/roadmap) |
-| CIS Docker Benchmark | [CIS Docker Benchmark](https://getsockguard.com/docs/cis-docker-benchmark) |
-| Admin API | [Admin API](https://getsockguard.com/docs/admin) |
-| Observability | [Observability](https://getsockguard.com/docs/observability) |
-| Security Model | [Security Model](https://getsockguard.com/docs/security) |
-| Image Verification | [Image Verification](https://getsockguard.com/docs/verification) |
-| Changelog | [`CHANGELOG.md`](CHANGELOG.md) |
-| Contributing | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
-| Code of Conduct | [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) |
-| Governance | [`GOVERNANCE.md`](GOVERNANCE.md) |
-| Security Assurance | [`SECURITY-ASSURANCE.md`](SECURITY-ASSURANCE.md) |
-| Security Policy | [`SECURITY.md`](SECURITY.md) |
-| Issues | [GitHub Issues](https://github.com/CodesWhat/sockguard/issues) |
-| Discussions | [GitHub Discussions](https://github.com/CodesWhat/sockguard/discussions) |
 
 <hr>
 
@@ -699,7 +525,7 @@ These themes remain unscheduled until their scope and security boundary are conc
   <a href="https://github.com/CodesWhat/sockguard/stargazers">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="website/public/star-history-dark.svg">
-      <img alt="Star history for CodesWhat/sockguard" src="website/public/star-history.svg">
+      <img alt="Star history for CodesWhat/sockguard" src="website/public/star-history.svg" width="900">
     </picture>
   </a>
 </div>
@@ -708,7 +534,7 @@ These themes remain unscheduled until their scope and security boundary are conc
 
 <div align="center">
 
-### Built With
+<h2 align="center" id="built-with">Built With</h2>
 
 [![Go 1.26](https://img.shields.io/badge/Go_1.26-00ADD8?logo=go&logoColor=fff)](https://go.dev/)
 [![Sigstore](https://img.shields.io/badge/Sigstore-FFC107?logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxZW0iIGhlaWdodD0iMWVtIiB2aWV3Qm94PSIwIDAgMjQgMjQiPjxwYXRoIGZpbGw9IiMwMDAwMDAiIGQ9Im0xMCAxN2wtNC00bDEuNDEtMS40MUwxMCAxNC4xN2w2LjU5LTYuNTlMMTggOW0tNi04TDMgNXY2YzAgNS41NSAzLjg0IDEwLjc0IDkgMTJjNS4xNi0xLjI2IDktNi40NSA5LTEyVjV6Ii8%2BPC9zdmc%2B)](https://www.sigstore.dev/)
@@ -722,24 +548,26 @@ These themes remain unscheduled until their scope and security boundary are conc
 [![Turborepo](https://img.shields.io/badge/Turborepo-EF4444?logo=turborepo&logoColor=fff)](https://turbo.build/repo)
 [![Biome](https://img.shields.io/badge/Biome_2-60a5fa?logo=biome&logoColor=fff)](https://biomejs.dev/)
 
-[![Anthropic](https://img.shields.io/badge/Anthropic-000000?logo=anthropic&logoColor=fff)](https://www.anthropic.com)
-[![OpenAI](https://img.shields.io/badge/OpenAI-000000?logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyByb2xlPSJpbWciIHZpZXdCb3g9IjAgMCAyNCAyNCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48dGl0bGU%2BT3BlbkFJPC90aXRsZT48cGF0aCBmaWxsPSIjZmZmZmZmIiBkPSJNMjIuMjgxOSA5LjgyMTFhNS45ODQ3IDUuOTg0NyAwIDAgMC0uNTE1Ny00LjkxMDggNi4wNDYyIDYuMDQ2MiAwIDAgMC02LjUwOTgtMi45QTYuMDY1MSA2LjA2NTEgMCAwIDAgNC45ODA3IDQuMTgxOGE1Ljk4NDcgNS45ODQ3IDAgMCAwLTMuOTk3NyAyLjkgNi4wNDYyIDYuMDQ2MiAwIDAgMCAuNzQyNyA3LjA5NjYgNS45OCA1Ljk4IDAgMCAwIC41MTEgNC45MTA3IDYuMDUxIDYuMDUxIDAgMCAwIDYuNTE0NiAyLjkwMDFBNS45ODQ3IDUuOTg0NyAwIDAgMCAxMy4yNTk5IDI0YTYuMDU1NyA2LjA1NTcgMCAwIDAgNS43NzE4LTQuMjA1OCA1Ljk4OTQgNS45ODk0IDAgMCAwIDMuOTk3Ny0yLjkwMDEgNi4wNTU3IDYuMDU1NyAwIDAgMC0uNzQ3NS03LjA3Mjl6bS05LjAyMiAxMi42MDgxYTQuNDc1NSA0LjQ3NTUgMCAwIDEtMi44NzY0LTEuMDQwOGwuMTQxOS0uMDgwNCA0Ljc3ODMtMi43NTgyYS43OTQ4Ljc5NDggMCAwIDAgLjM5MjctLjY4MTN2LTYuNzM2OWwyLjAyIDEuMTY4NmEuMDcxLjA3MSAwIDAgMSAuMDM4LjA1MnY1LjU4MjZhNC41MDQgNC41MDQgMCAwIDEtNC40OTQ1IDQuNDk0NHptLTkuNjYwNy00LjEyNTRhNC40NzA4IDQuNDcwOCAwIDAgMS0uNTM0Ni0zLjAxMzdsLjE0Mi4wODUyIDQuNzgzIDIuNzU4MmEuNzcxMi43NzEyIDAgMCAwIC43ODA2IDBsNS44NDI4LTMuMzY4NXYyLjMzMjRhLjA4MDQuMDgwNCAwIDAgMS0uMDMzMi4wNjE1TDkuNzQgMTkuOTUwMmE0LjQ5OTIgNC40OTkyIDAgMCAxLTYuMTQwOC0xLjY0NjR6TTIuMzQwOCA3Ljg5NTZhNC40ODUgNC40ODUgMCAwIDEgMi4zNjU1LTEuOTcyOFYxMS42YS43NjY0Ljc2NjQgMCAwIDAgLjM4NzkuNjc2NWw1LjgxNDQgMy4zNTQzLTIuMDIwMSAxLjE2ODVhLjA3NTcuMDc1NyAwIDAgMS0uMDcxIDBsLTQuODMwMy0yLjc4NjVBNC41MDQgNC41MDQgMCAwIDEgMi4zNDA4IDcuODcyem0xNi41OTYzIDMuODU1OEwxMy4xMDM4IDguMzY0IDE1LjExOTIgNy4yYS4wNzU3LjA3NTcgMCAwIDEgLjA3MSAwbDQuODMwMyAyLjc5MTNhNC40OTQ0IDQuNDk0NCAwIDAgMS0uNjc2NSA4LjEwNDJ2LTUuNjc3MmEuNzkuNzkgMCAwIDAtLjQwNy0uNjY3em0yLjAxMDctMy4wMjMxbC0uMTQyLS4wODUyLTQuNzczNS0yLjc4MThhLjc3NTkuNzc1OSAwIDAgMC0uNzg1NCAwTDkuNDA5IDkuMjI5N1Y2Ljg5NzRhLjA2NjIuMDY2MiAwIDAgMSAuMDI4NC0uMDYxNWw0LjgzMDMtMi43ODY2YTQuNDk5MiA0LjQ5OTIgMCAwIDEgNi42ODAyIDQuNjZ6TTguMzA2NSAxMi44NjNsLTIuMDItMS4xNjM4YS4wODA0LjA4MDQgMCAwIDEtLjAzOC0uMDU2N1Y2LjA3NDJhNC40OTkyIDQuNDk5MiAwIDAgMSA3LjM3NTctMy40NTM3bC0uMTQyLjA4MDVMOC43MDQgNS40NTlhLjc5NDguNzk0OCAwIDAgMC0uMzkyNy42ODEzem0xLjA5NzYtMi4zNjU0bDIuNjAyLTEuNDk5OCAyLjYwNjkgMS40OTk4djIuOTk5NGwtMi41OTc0IDEuNDk5Ny0yLjYwNjctMS40OTk3WiIvPjwvc3ZnPg%3D%3D)](https://openai.com)
+[![Anthropic](https://img.shields.io/badge/Anthropic-CC785C?style=flat&logo=anthropic&logoColor=white)](https://claude.ai/)
+[![OpenAI](https://img.shields.io/badge/OpenAI-10A37F?logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyByb2xlPSJpbWciIHZpZXdCb3g9IjAgMCAyNCAyNCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48dGl0bGU%2BT3BlbkFJPC90aXRsZT48cGF0aCBmaWxsPSIjZmZmZmZmIiBkPSJNMjIuMjgxOSA5LjgyMTFhNS45ODQ3IDUuOTg0NyAwIDAgMC0uNTE1Ny00LjkxMDggNi4wNDYyIDYuMDQ2MiAwIDAgMC02LjUwOTgtMi45QTYuMDY1MSA2LjA2NTEgMCAwIDAgNC45ODA3IDQuMTgxOGE1Ljk4NDcgNS45ODQ3IDAgMCAwLTMuOTk3NyAyLjkgNi4wNDYyIDYuMDQ2MiAwIDAgMCAuNzQyNyA3LjA5NjYgNS45OCA1Ljk4IDAgMCAwIC41MTEgNC45MTA3IDYuMDUxIDYuMDUxIDAgMCAwIDYuNTE0NiAyLjkwMDFBNS45ODQ3IDUuOTg0NyAwIDAgMCAxMy4yNTk5IDI0YTYuMDU1NyA2LjA1NTcgMCAwIDAgNS43NzE4LTQuMjA1OCA1Ljk4OTQgNS45ODk0IDAgMCAwIDMuOTk3Ny0yLjkwMDEgNi4wNTU3IDYuMDU1NyAwIDAgMC0uNzQ3NS03LjA3Mjl6bS05LjAyMiAxMi42MDgxYTQuNDc1NSA0LjQ3NTUgMCAwIDEtMi44NzY0LTEuMDQwOGwuMTQxOS0uMDgwNCA0Ljc3ODMtMi43NTgyYS43OTQ4Ljc5NDggMCAwIDAgLjM5MjctLjY4MTN2LTYuNzM2OWwyLjAyIDEuMTY4NmEuMDcxLjA3MSAwIDAgMSAuMDM4LjA1MnY1LjU4MjZhNC41MDQgNC41MDQgMCAwIDEtNC40OTQ1IDQuNDk0NHptLTkuNjYwNy00LjEyNTRhNC40NzA4IDQuNDcwOCAwIDAgMS0uNTM0Ni0zLjAxMzdsLjE0Mi4wODUyIDQuNzgzIDIuNzU4MmEuNzcxMi43NzEyIDAgMCAwIC43ODA2IDBsNS44NDI4LTMuMzY4NXYyLjMzMjRhLjA4MDQuMDgwNCAwIDAgMS0uMDMzMi4wNjE1TDkuNzQgMTkuOTUwMmE0LjQ5OTIgNC40OTkyIDAgMCAxLTYuMTQwOC0xLjY0NjR6TTIuMzQwOCA3Ljg5NTZhNC40ODUgNC40ODUgMCAwIDEgMi4zNjU1LTEuOTcyOFYxMS42YS43NjY0Ljc2NjQgMCAwIDAgLjM4NzkuNjc2NWw1LjgxNDQgMy4zNTQzLTIuMDIwMSAxLjE2ODVhLjA3NTcuMDc1NyAwIDAgMS0uMDcxIDBsLTQuODMwMy0yLjc4NjVBNC41MDQgNC41MDQgMCAwIDEgMi4zNDA4IDcuODcyem0xNi41OTYzIDMuODU1OEwxMy4xMDM4IDguMzY0IDE1LjExOTIgNy4yYS4wNzU3LjA3NTcgMCAwIDEgLjA3MSAwbDQuODMwMyAyLjc5MTNhNC40OTQ0IDQuNDk0NCAwIDAgMS0uNjc2NSA4LjEwNDJ2LTUuNjc3MmEuNzkuNzkgMCAwIDAtLjQwNy0uNjY3em0yLjAxMDctMy4wMjMxbC0uMTQyLS4wODUyLTQuNzczNS0yLjc4MThhLjc3NTkuNzc1OSAwIDAgMC0uNzg1NCAwTDkuNDA5IDkuMjI5N1Y2Ljg5NzRhLjA2NjIuMDY2MiAwIDAgMSAuMDI4NC0uMDYxNWw0LjgzMDMtMi43ODY2YTQuNDk5MiA0LjQ5OTIgMCAwIDEgNi42ODAyIDQuNjZ6TTguMzA2NSAxMi44NjNsLTIuMDItMS4xNjM4YS4wODA0LjA4MDQgMCAwIDEtLjAzOC0uMDU2N1Y2LjA3NDJhNC40OTkyIDQuNDk5MiAwIDAgMSA3LjM3NTctMy40NTM3bC0uMTQyLjA4MDVMOC43MDQgNS40NTlhLjc5NDguNzk0OCAwIDAgMC0uMzkyNy42ODEzem0xLjA5NzYtMi4zNjU0bDIuNjAyLTEuNDk5OCAyLjYwNjkgMS40OTk4djIuOTk5NGwtMi41OTc0IDEuNDk5Ny0yLjYwNjctMS40OTk3WiIvPjwvc3ZnPg%3D%3D)](https://openai.com)
 
 [![SemVer](https://img.shields.io/badge/semver-2.0.0-blue)](https://semver.org/)
 [![Conventional Commits](https://img.shields.io/badge/commits-conventional-fe5196?logo=conventionalcommits&logoColor=fff)](https://www.conventionalcommits.org/)
 [![Keep a Changelog](https://img.shields.io/badge/changelog-Keep%20a%20Changelog-E05735)](https://keepachangelog.com/)
 
-### Community & Support
+<h2 align="center" id="community-support">Community & Support</h2>
 
-**[GitHub Issues](https://github.com/CodesWhat/sockguard/issues)** for bugs and feature requests, **[GitHub Discussions](https://github.com/CodesWhat/sockguard/discussions)** for design questions and Q&A, and the **[CodesWhat Discord](https://discord.gg/mWHCPJRzSx)** for real-time chat.
+Real-time chat and early support: **[CodesWhat Discord](https://discord.gg/mWHCPJRzSx)**
+
+Bugs and concrete feature requests go to **[GitHub Issues](https://github.com/CodesWhat/sockguard/issues)**; open-ended questions, ideas, and show-and-tell go to **[GitHub Discussions](https://github.com/CodesWhat/sockguard/discussions)**; real-time chat happens on the **[CodesWhat Discord](https://discord.gg/mWHCPJRzSx)**.
 
 Start with [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request, and use [SECURITY.md](SECURITY.md) for private vulnerability disclosure.
 
 For local fuzz triage, run `scripts/local-fuzz.sh --suite ci --fuzztime 2m`. Use `--suite ultra` for every fuzzer, `--timeout` to set the Go watchdog explicitly, and `--docker --platform linux/amd64` when you want closer GitHub Actions parity.
 
-Every release image is cosign-signed via GitHub Actions OIDC. Before running a sockguard image in production, verify it with the canonical invocation in the [image verification guide](https://getsockguard.com/docs/verification).
+Every release image on GHCR, Docker Hub and Quay.io is cosign-signed via GitHub Actions OIDC. Before running a sockguard image in production, verify it with the canonical invocation in the [image verification guide](https://getsockguard.com/docs/verification).
 
-### Part of the CodesWhat ecosystem
+<h2 align="center" id="codeswhat-ecosystem">CodesWhat Ecosystem</h2>
 
 <table>
   <tr><th>Tool</th><th>Role</th></tr>
@@ -752,11 +580,17 @@ These three tools are designed to layer: sockguard filters the socket, portwing 
 
 See [portwing's COMPATIBILITY.md](https://github.com/CodesWhat/portwing/blob/main/COMPATIBILITY.md) for the full compatibility matrix across all three tools.
 
+---
+
 **[Apache-2.0 License](LICENSE)**
 
-<a href="https://github.com/CodesWhat"><img src="docs/public/codeswhat-logo.png" alt="CodesWhat" height="28"></a>
-
-[![Sponsor](https://img.shields.io/badge/Sponsor-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/CodesWhat)
+<a href="https://github.com/CodesWhat">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/codeswhat-logo-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset=".github/assets/codeswhat-logo-original.svg" />
+    <img src=".github/assets/codeswhat-logo-original.svg" alt="CodesWhat" height="28">
+  </picture>
+</a>
 
 <a href="#sockguard">Back to top</a>
 
