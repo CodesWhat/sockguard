@@ -22,9 +22,11 @@ function walk(directory) {
 }
 
 test("PostHog replaces Vercel telemetry at one exact version in both build roots", () => {
+  const pinned = JSON.parse(source("website/package.json")).dependencies["posthog-js"];
+  assert.match(pinned, /^\d+\.\d+\.\d+$/u, "posthog-js must be pinned to an exact version");
   for (const workspace of ["website", "docs"]) {
     const packageJson = JSON.parse(source(`${workspace}/package.json`));
-    assert.equal(packageJson.dependencies["posthog-js"], "1.434.17");
+    assert.equal(packageJson.dependencies["posthog-js"], pinned);
     assert.equal(packageJson.dependencies["@vercel/analytics"], undefined);
     assert.equal(packageJson.dependencies["@vercel/speed-insights"], undefined);
   }

@@ -112,16 +112,36 @@ type containerCreateHostConfig struct {
 type containerCreateMount struct {
 	Type   string `json:"Type"`
 	Source string `json:"Source"`
+	// Target is the container mount point. Consistency is a macOS cache hint.
+	// A Podman upstream rebuilds each Mount into one comma-joined "--mount"
+	// string (compat containers_create.go addField) and re-splits it on
+	// commas, so Type, Source, Target and Consistency are all written raw into
+	// it: a comma in any of them injects extra mount fields. dockerd reads the
+	// structured Mount and never rebuilds that string. See
+	// denyCompatMountFieldInjectionReason.
+	Target      string `json:"Target"`
+	Consistency string `json:"Consistency"`
+	// BindOptions.Propagation is written into that same "--mount" string for a
+	// bind mount, so a comma in it is the same injection vector.
+	BindOptions *containerCreateMountBindOptions `json:"BindOptions"`
 	// VolumeOptions.Subpath (Engine API 1.45+) mounts a subdirectory of the
 	// named volume instead of its root. ImageOptions.Subpath (Engine API
 	// 1.55+) does the same for image-type mounts. Both are validated by
-	// denyMountSubpathReason against a path-traversal escape.
+	// denyMountSubpathReason against a path-traversal escape. A Podman 6
+	// upstream also writes VolumeOptions.Subpath raw into the "--mount"
+	// string, so a comma in it injects mount fields the same way.
 	VolumeOptions *containerCreateMountVolumeOptions `json:"VolumeOptions"`
 	ImageOptions  *containerCreateMountImageOptions  `json:"ImageOptions"`
 	// TmpfsOptions.Options (Engine API 1.46+) is a nested [][]string of raw
 	// tmpfs mount option tokens (e.g. ["mode","1770"], ["exec"]), validated
 	// by denyTmpfsOptionsReason.
 	TmpfsOptions *containerCreateMountTmpfsOptions `json:"TmpfsOptions"`
+}
+
+// containerCreateMountBindOptions mirrors the Docker API Mount.BindOptions
+// object, narrowed to the field the policy inspects.
+type containerCreateMountBindOptions struct {
+	Propagation string `json:"Propagation"`
 }
 
 // containerCreateMountVolumeOptions mirrors the Docker API Mount.VolumeOptions

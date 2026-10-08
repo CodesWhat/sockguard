@@ -61,6 +61,24 @@ func TestContainsRunInstruction(t *testing.T) {
 		// started (fail-safe): the loop's post-loop tail check has to look at
 		// the leftover logical line rather than discarding it outright.
 		{"dangling continuation at eof with no completing line", "FROM alpine\nRUN echo \\", true},
+		// BuildKit's line assembly, one row per rule. Inside a continuation it
+		// drops comment lines and blank lines, and it keeps a continuation
+		// line's leading whitespace.
+		{"comment line inside a continuation is dropped", "FROM alpine\nR\\\n#\nUN id\n", true},
+		{"indented comment inside a continuation is dropped", "FROM alpine\nR\\\n  # note\nUN id\n", true},
+		{"blank line inside a continuation is dropped", "FROM alpine\nR\\\n\nUN id\n", true},
+		{"continuation line keeps its leading whitespace", "FROM alpine\nRUN\\\n id\n", true},
+		{"indented continuation does not rejoin a split keyword", "FROM alpine\nR\\\n  UN id\n", false},
+		// The escape character continues a line only when it isn't itself
+		// escaped, and spaces or tabs may follow it.
+		{"escaped escape does not continue the line", "FROM alpine\nENV a=b\\\\\nRUN id\n", true},
+		{"whitespace after the escape still continues", "FROM alpine\nR\\ \t\nUN id\n", true},
+		{"crlf line endings", "FROM alpine\r\nR\\\r\nUN id\r\n", true},
+		// The escape directive is read after a UTF-8 BOM, and after a check
+		// directive on BuildKit versions that know one.
+		{"escape directive after a bom", "\ufeff# escape=`\nFROM alpine\nR`\nUN id\n", true},
+		{"escape directive after a check directive", "# check=skip=all\n# escape=`\nFROM alpine\nR`\nUN id\n", true},
+		{"backslash still continues where check is not a directive", "# check=skip=all\n# escape=`\nFROM alpine\nR\\\nUN id\n", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -123,9 +141,13 @@ func TestContainsRunInstructionContinuationCompatibility(t *testing.T) {
 		{"only empty continuation fragments", "\\\n\\\n", false},
 		{"empty fragment then standalone comment", "\\\n# comment\\\nRUN true\n", true},
 		{"blank lines outside and inside continuation", "\nR\\\n\n  \nUN true\n\n", true},
-		{"comment during keyword continuation stays joined", "R\\\n# comment\nUN true\n", false},
+		// BuildKit drops a comment line inside a continuation and joins the
+		// next line onto the open instruction. That rejoins a keyword split
+		// around the comment, and it makes the line after a continued ENV
+		// part of that ENV's arguments.
+		{"comment during keyword continuation is dropped", "R\\\n# comment\nUN true\n", true},
 		{"continued comment during RUN arguments", "RUN echo \\\n# comment\\\nhello\n", true},
-		{"comment after non RUN continuation then RUN", "ENV x=\\\n# comment\nRUN true\n", true},
+		{"line after a comment in a non RUN continuation joins it", "ENV x=\\\n# comment\nRUN true\n", false},
 		{"multiple non RUN instructions", "FROM scratch\nENV x=1\nCOPY . /app\nONBUILD COPY . /app\n", false},
 		{"COPY heredoc with escaped payload", "COPY <<EOF /file\ntext\\\nmore\n# comment\nEOF\n", false},
 		{"ADD heredoc with RUN looking payload", "ADD <<EOF /file\n# comment\nRUN payload\nEOF\n", true},
@@ -180,7 +202,12 @@ func TestSyntaxFrontendBuildKitFormats(t *testing.T) {
 		{"slash after ordinary comment", "// comment\n// syntax=" + frontend + "\n", ""},
 		{"malformed JSON", `{"syntax":"` + frontend + `"`, ""},
 		{"nonstring JSON syntax", `{"syntax":42}`, ""},
-		{"JSON syntax case sensitive", `{"Syntax":"` + frontend + `"}`, ""},
+		{"JSON key capitalized", `{"Syntax":"` + frontend + `"}`, frontend},
+		{"JSON key upper case", `{"SYNTAX":"` + frontend + `"}`, frontend},
+		{"JSON key mixed case", `{"sYnTaX":"` + frontend + `"}`, frontend},
+		{"JSON mixed case key after empty exact key", `{"syntax":"","SYNTAX":"` + frontend + `"}`, frontend},
+		{"JSON nonstring mixed case key", `{"Syntax":42}`, ""},
+		{"JSON similar key not syntax", `{"syntaxes":"` + frontend + `"}`, ""},
 		{"JSON empty syntax", `{"syntax":""}`, ""},
 		{"JSON array", `[{"syntax":"` + frontend + `"}]`, ""},
 		{"JSON trailing instruction", `{"syntax":"` + frontend + `"}` + "\nFROM scratch\n", ""},
