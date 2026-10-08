@@ -2026,34 +2026,44 @@ func (p containerCreatePolicy) denyTmpfsOptionsReason(mounts []containerCreateMo
 }
 
 // denyLegacyTmpfsOptionsReason follows Docker's comma-separated, last-wins
-// handling of the legacy HostConfig.Tmpfs mount flags.
+// handling of the legacy HostConfig.Tmpfs mount flags. Podman also reads
+// options from the map key after its first ":" ("/scratch:exec"), so the key
+// suffix and the value are each evaluated by the same parser. Each source is
+// judged on its own, so a privileged option in either one denies.
 func (p containerCreatePolicy) denyLegacyTmpfsOptionsReason(mounts map[string]string) string {
 	if p.allowTmpfsPrivilegedOptions {
 		return ""
 	}
-	for _, options := range mounts {
-		var exec, dev, suid bool
-		for option := range strings.SplitSeq(options, ",") {
-			switch option {
-			case "exec":
-				exec = true
-			case "noexec":
-				exec = false
-			case "dev":
-				dev = true
-			case "nodev":
-				dev = false
-			case "suid":
-				suid = true
-			case "nosuid":
-				suid = false
-			}
-		}
-		if exec || dev || suid {
+	for path, options := range mounts {
+		_, keyOptions, _ := strings.Cut(path, ":")
+		if legacyTmpfsOptionsEnablePrivilege(keyOptions) || legacyTmpfsOptionsEnablePrivilege(options) {
 			return "container create denied: legacy tmpfs mount enables exec, dev, or suid"
 		}
 	}
 	return ""
+}
+
+// legacyTmpfsOptionsEnablePrivilege reports whether a comma-separated tmpfs
+// option string ends with exec, dev, or suid enabled (last option wins).
+func legacyTmpfsOptionsEnablePrivilege(options string) bool {
+	var exec, dev, suid bool
+	for option := range strings.SplitSeq(options, ",") {
+		switch option {
+		case "exec":
+			exec = true
+		case "noexec":
+			exec = false
+		case "dev":
+			dev = true
+		case "nodev":
+			dev = false
+		case "suid":
+			suid = true
+		case "nosuid":
+			suid = false
+		}
+	}
+	return exec || dev || suid
 }
 
 // denyNetworkingConfigReason applies the same endpoint-config policy
