@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/codeswhat/sockguard/app/internal/imagefetch"
 	"github.com/codeswhat/sockguard/app/internal/imagetrust"
@@ -546,6 +547,12 @@ func soleFoldedRawKey(m map[string]json.RawMessage, canonical string) (string, e
 // a malformed body may be reported as a syntax error or walked past, because
 // every caller re-parses the same bytes with encoding/json on the next line and
 // rejects there. What it may never do is miss a duplicate in a body that parses.
+//
+// It also refuses any object key, a data map's included, that holds a
+// character the engines' JSON decoders don't all match to a field name the
+// same way; see isDecoderDivergentKeyRune. And since readBoundedBody runs it
+// through rejectAmbiguousBodyKeys, it now sees every body an inspector
+// decodes, not only the ones about to be rewritten.
 func RejectDuplicateCaseVariantJSONKeys(body []byte) error {
 	s := caseVariantKeyScanner{body: body}
 	return s.scanValue(0, false)
@@ -563,9 +570,32 @@ func RejectDuplicateCaseVariantJSONKeys(body []byte) error {
 //
 // This form cannot see byte-identical duplicate keys, which the decode that
 // produced v has already collapsed; only the byte-taking form above rejects
-// those.
+// those. It does refuse the same decoder-divergent key characters.
 func RejectDuplicateCaseVariantJSONValue(v any) error {
 	return checkDuplicateCaseVariantKeys(v, false)
+}
+
+// InspectJSONValueKeys is RejectDuplicateCaseVariantJSONValue with its two
+// refusals reported apart, for a caller that doesn't treat them alike.
+//
+// repeated is a key an engine could read as given twice. A body re-marshaled
+// through a map can't be forwarded with one, in any rollout mode:
+// json.Marshal sorts the keys, and their order decides which of the two the
+// engine honors. That is two sibling keys that case-fold together, which is
+// the check this has always made, and two that lowercase together; see
+// loweredSiblingKeys.
+//
+// divergent is a key holding a decoder-divergent character. Re-marshaling
+// leaves such a key and its value as the client sent them, so once repeated
+// is nil the body can be forwarded or refused as the rollout mode says. Of
+// several such keys it names the one that sorts first.
+func InspectJSONValueKeys(v any) (repeated, divergent error) {
+	var walk decodedKeyWalk
+	repeated = walk.check(v, false)
+	if walk.found {
+		divergent = decoderDivergentKeyError(walk.key, walk.char)
+	}
+	return repeated, divergent
 }
 
 // maxJSONNestingDepth mirrors encoding/json's own cap on simultaneously open
@@ -600,6 +630,23 @@ type caseVariantKeyScanner struct {
 	body    []byte
 	pos     int
 	keyBufs [][]caseVariantKeySpan
+	// deferDivergent makes the scan keep the first decoder-divergent key it
+	// meets in divergent and carry on, where it otherwise returns it. See
+	// scanBodyKeys.
+	deferDivergent bool
+	divergent      error
+}
+
+// scanBodyKeys is RejectDuplicateCaseVariantJSONKeys with its two refusals
+// reported apart. repeated is what that function returned before it knew of
+// decoder-divergent characters: a repeated struct-level key, or the scan
+// failing on a body it can't walk. divergent is the first key holding one of
+// those characters. A body can have both, and a caller that has always
+// refused the first has to see it whichever comes first in the body.
+func scanBodyKeys(body []byte) (repeated, divergent error) {
+	s := caseVariantKeyScanner{body: body, deferDivergent: true}
+	repeated = s.scanValue(0, false)
+	return repeated, s.divergent
 }
 
 // scanValue consumes exactly one JSON value, as json.Decoder.Decode does,
@@ -661,6 +708,17 @@ func (s *caseVariantKeyScanner) scanObject(depth int, skip bool) error {
 		key, err := s.scanString()
 		if err != nil {
 			return err
+		}
+		// Every key, a data map's included: skip only spares a map's entries
+		// the sibling fold-check, and a character the decoders disagree on is
+		// refused wherever it sits.
+		if err := s.rejectDecoderDivergentKey(key); err != nil {
+			if !s.deferDivergent {
+				return err
+			}
+			if s.divergent == nil {
+				s.divergent = err
+			}
 		}
 		if !skip {
 			var err error
@@ -831,7 +889,11 @@ func (s *caseVariantKeyScanner) recordSiblingKey(
 }
 
 func (s *caseVariantKeyScanner) duplicateKeyError(prev, key caseVariantKeySpan) error {
-	return fmt.Errorf("duplicate case-variant JSON keys %q and %q", s.keyString(prev), s.keyString(key))
+	return duplicateCaseVariantKeysError(s.keyString(prev), s.keyString(key))
+}
+
+func duplicateCaseVariantKeysError(prev, key string) error {
+	return fmt.Errorf("duplicate case-variant JSON keys %q and %q", echoRefusedKey(prev), echoRefusedKey(key))
 }
 
 // canonicalFoldKey returns the representative of key under the same case-fold
@@ -867,6 +929,32 @@ func foldClassMinimum(r rune) rune {
 		minimum = min(minimum, f)
 	}
 	return minimum
+}
+
+// rejectDecoderDivergentKey refuses a key holding a character
+// isDecoderDivergentKeyRune names. An unescaped literal is checked in place;
+// one carrying an escape is decoded first, so "pr\u0130vileged" is caught
+// like the literal character.
+func (s *caseVariantKeyScanner) rejectDecoderDivergentKey(k caseVariantKeySpan) error {
+	if !k.escaped && keyBytesAreASCII(s.body[k.start+1:k.end-1]) {
+		// Every key a real client sends as a field name, settled without
+		// materializing it.
+		return nil
+	}
+	key := s.keyString(k)
+	if r, found := decoderDivergentKeyRune(key); found {
+		return decoderDivergentKeyError(key, r)
+	}
+	return nil
+}
+
+func keyBytesAreASCII(b []byte) bool {
+	for _, c := range b {
+		if c >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
 }
 
 // keysFoldEqual compares two key spans the way strings.EqualFold would compare
@@ -910,13 +998,13 @@ func (s *caseVariantKeyScanner) keyIsCaseSensitiveDataMapField(k caseVariantKeyS
 	n := 0
 	for _, r := range string(s.body[k.start+1 : k.end-1]) {
 		lr := unicode.ToLower(r)
-		if lr < 'a' || lr > 'z' || n == len(lowered) {
-			// Every name is lowercase ASCII letters, so a rune that lowers
-			// outside a-z, or a key longer than the longest name, cannot be
-			// part of one.
+		if (lr != '_' && (lr < 'a' || lr > 'z')) || n == len(lowered) {
+			// Every name is lowercase ASCII letters and underscores, so a
+			// rune that lowers to anything else, or a key longer than the
+			// longest name, cannot be part of one.
 			return false
 		}
-		lowered[n] = byte(lr) // #nosec G115 -- lr is bounded to 'a'..'z' by the check above.
+		lowered[n] = byte(lr) // #nosec G115 -- lr is '_' or within 'a'..'z' by the check above.
 		n++
 	}
 	return isCaseSensitiveDataMapField(string(lowered[:n]))
@@ -950,18 +1038,59 @@ func (s *caseVariantKeyScanner) putKeyBuf(depth int, keys []caseVariantKeySpan) 
 // field's own name is still caught by the enclosing object's scan, and only the
 // map's leaf keys are spared. Every non-exempt level is a struct whose fields the
 // daemon folds, so it stays fully checked.
+//
+// It also refuses a key holding a decoder-divergent character, on every
+// object and a data map's included. A repeated key is reported ahead of one
+// of those when the value has both.
 func checkDuplicateCaseVariantKeys(v any, skipKeyCheck bool) error {
+	var walk decodedKeyWalk
+	if err := walk.check(v, skipKeyCheck); err != nil {
+		return err
+	}
+	if walk.found {
+		return decoderDivergentKeyError(walk.key, walk.char)
+	}
+	return nil
+}
+
+// decodedKeyWalk is one walk of a decoded JSON value. check returns the
+// repeated-key refusal, and the walk keeps the decoder-divergent key that
+// sorts first, so the key an error names doesn't depend on map order.
+type decodedKeyWalk struct {
+	key   string
+	char  rune
+	found bool
+}
+
+func (w *decodedKeyWalk) check(v any, skipKeyCheck bool) error {
 	switch t := v.(type) {
 	case map[string]any:
+		// Looked for on every object, a data map's included; see scanObject.
+		divergentSibling := false
+		for k := range t {
+			r, found := decoderDivergentKeyRune(k)
+			if !found {
+				continue
+			}
+			divergentSibling = true
+			if !w.found || k < w.key {
+				w.key, w.char, w.found = k, r, true
+			}
+		}
 		if !skipKeyCheck {
 			keys := make([]string, 0, len(t))
 			for k := range t {
 				for _, prev := range keys {
 					if strings.EqualFold(prev, k) {
-						return fmt.Errorf("duplicate case-variant JSON keys %q and %q", prev, k)
+						return duplicateCaseVariantKeysError(prev, k)
 					}
 				}
 				keys = append(keys, k)
+			}
+			if divergentSibling {
+				if first, second, found := loweredSiblingKeys(keys); found {
+					return loweredSiblingKeysError(first, second)
+				}
 			}
 		}
 		for k, val := range t {
@@ -974,13 +1103,13 @@ func checkDuplicateCaseVariantKeys(v any, skipKeyCheck bool) error {
 			// named "config") still needs its fold check. Only a struct level
 			// classifies its children.
 			childSkip := !skipKeyCheck && isCaseSensitiveDataMapField(k)
-			if err := checkDuplicateCaseVariantKeys(val, childSkip); err != nil {
+			if err := w.check(val, childSkip); err != nil {
 				return err
 			}
 		}
 	case []any:
 		for _, item := range t {
-			if err := checkDuplicateCaseVariantKeys(item, false); err != nil {
+			if err := w.check(item, false); err != nil {
 				return err
 			}
 		}
@@ -1011,6 +1140,25 @@ func checkDuplicateCaseVariantKeys(v any, skipKeyCheck bool) error {
 //	config                HostConfig.LogConfig.Config            map[string]string
 //	auxiliaryaddresses    IPAMConfig.AuxAddress     map[string]string
 //
+// and in Podman's native request types (pkg/specgen's SpecGenerator and
+// PodSpecGenerator, go.podman.io/common's libnetwork types, the runtime-spec
+// resources they embed, and entities.VolumeCreateOptions):
+//
+//	env, secret_env       SpecGenerator.Env, EnvSecrets          map[string]string
+//	sysctl                SpecGenerator/PodSpecGenerator.Sysctl  map[string]string
+//	storage_opts          SpecGenerator.StorageOpts              map[string]string
+//	expose                SpecGenerator.Expose                   map[uint16]string
+//	network_options       SpecGenerator/PodSpecGenerator.NetworkOptions map[string][]string
+//	networks              SpecGenerator.Networks, network connect map[string]PerNetworkOptions
+//	ipam_options          libnetwork Network.IPAMOptions         map[string]string
+//	unified               SpecGenerator.CgroupConf, LinuxResources.Unified map[string]string
+//	weightdevice          SpecGenerator.WeightDevice             map[string]LinuxWeightDevice
+//	throttle*device       SpecGenerator.Throttle{Read,Write}{Bps,IOPS}Device map[string]LinuxThrottleDevice
+//	label                 VolumeCreateOptions.Label              map[string]string
+//
+// `env` is the one a real client trips: an environment that sets both
+// `http_proxy` and `HTTP_PROXY` is two entries, not one key spelled twice.
+//
 // Bias is intentionally toward over-listing: a map field mistakenly omitted here
 // only produces a spurious rejection (fail-closed, never a bypass). Listing a
 // name that is elsewhere a struct is also safe — the exemption only suppresses
@@ -1018,9 +1166,9 @@ func checkDuplicateCaseVariantKeys(v any, skipKeyCheck bool) error {
 // nested structs (e.g. the IPAMConfig elements under IPAM.Config, a []struct)
 // keep their fold check; see checkDuplicateCaseVariantKeys.
 // caseSensitiveDataMapFieldMaxLen is the length of the longest name
-// isCaseSensitiveDataMapField accepts ("auxiliaryaddresses"), which bounds the
-// stack buffer keyIsCaseSensitiveDataMapField lowers a key into.
-const caseSensitiveDataMapFieldMaxLen = len("auxiliaryaddresses")
+// isCaseSensitiveDataMapField accepts ("throttlewriteiopsdevice"), which
+// bounds the stack buffer keyIsCaseSensitiveDataMapField lowers a key into.
+const caseSensitiveDataMapFieldMaxLen = len("throttlewriteiopsdevice")
 
 func isCaseSensitiveDataMapField(key string) bool {
 	switch strings.ToLower(key) {
@@ -1037,7 +1185,22 @@ func isCaseSensitiveDataMapField(key string) bool {
 		"driveropts",
 		"opts",
 		"config",
-		"auxiliaryaddresses":
+		"auxiliaryaddresses",
+		"env",
+		"secret_env",
+		"sysctl",
+		"storage_opts",
+		"expose",
+		"network_options",
+		"networks",
+		"ipam_options",
+		"unified",
+		"weightdevice",
+		"throttlereadbpsdevice",
+		"throttlewritebpsdevice",
+		"throttlereadiopsdevice",
+		"throttlewriteiopsdevice",
+		"label":
 		return true
 	default:
 		return false
@@ -1148,6 +1311,9 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 		return denyReason, nil
 	}
 	if denyReason := p.denyBindMountReason(createReq.HostConfig); denyReason != "" {
+		return denyReason, nil
+	}
+	if denyReason := p.denyVolumeSpecReason(createReq.Volumes); denyReason != "" {
 		return denyReason, nil
 	}
 	if denyReason := p.denyImageMountReason(createReq.HostConfig); denyReason != "" {
@@ -1678,13 +1844,55 @@ func cgroupPermOrder(c byte) int {
 	}
 }
 
+// denyBindSpecReason holds one "source:destination[:options]" bind spec to
+// allowedBindMounts: its source when that's an absolute host path, and the
+// overlay directories its options name.
+func (p containerCreatePolicy) denyBindSpecReason(bind string) string {
+	if source, ok := extractAndValidateBindSource(bind, containerCreateMount{}); ok && !bindPathAllowed(source, p.allowedBindMounts) {
+		return fmt.Sprintf("container create denied: bind mount source %q is not allowlisted", source)
+	}
+	// A Podman upstream reads the spec's third field as mount options and
+	// takes an overlay's upper and work directory from them, for a named
+	// volume as much as a host path. dockerd refuses those options itself.
+	// See overlay_mount_options.go.
+	return denyBindOverlayReason(bind, p.allowedBindMounts, "container create")
+}
+
+// denyVolumeSpecReason checks the keys of Config.Volumes the way
+// HostConfig.Binds entries are checked. To dockerd a key is the container path
+// of an anonymous volume and nothing more (daemon/create_unix.go:45-73 in
+// moby 28.5.1). Podman 5.8.6 appends every key to the same "-v" list it
+// builds from Binds (pkg/api/handlers/compat/containers_create.go:536-541), so
+// {"Volumes":{"/etc:/h":{}}} is a bind mount of the host's /etc there, and
+// {"Volumes":{"myvol:/d:O,upperdir=/etc,workdir=/mnt":{}}} is the overlay a
+// Binds entry spelled the same way would be. Podman only mounts a key whose
+// destination is an absolute container path, and the destination always
+// follows a ":", so a key is checked only when it has ":/" in it. A container
+// path with a mode ("/data:z", "/data:ro,z", "/data:nocopy", as docker-py and
+// Ansible send) has no ":/" and passes. A whole "/abs:/abs" spec is checked on
+// any upstream, because on Podman it's a real bind. The checked keys are
+// sorted first, so a body with two bad keys always names the same one.
+func (p containerCreatePolicy) denyVolumeSpecReason(volumes map[string]struct{}) string {
+	var specs []string
+	for spec := range volumes {
+		if strings.Contains(spec, ":/") {
+			specs = append(specs, spec)
+		}
+	}
+	slices.Sort(specs)
+	for _, spec := range specs {
+		if denyReason := p.denyBindSpecReason(spec); denyReason != "" {
+			return denyReason
+		}
+	}
+	return ""
+}
+
 func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHostConfig) string {
 	for _, bind := range hostConfig.Binds {
-		source, ok := extractAndValidateBindSource(bind, containerCreateMount{})
-		if !ok || bindPathAllowed(source, p.allowedBindMounts) {
-			continue
+		if denyReason := p.denyBindSpecReason(bind); denyReason != "" {
+			return denyReason
 		}
-		return fmt.Sprintf("container create denied: bind mount source %q is not allowlisted", source)
 	}
 
 	for _, mount := range hostConfig.Mounts {

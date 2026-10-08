@@ -23,6 +23,16 @@ type LibpodPodCreateOptions struct {
 	// know is refused too. Mirrors container_create.AllowHostNetwork's
 	// posture for the pod-wide equivalent. Default false.
 	AllowHostNetwork bool
+	// AllowHostPID/IPC/UserNS/UTS each permit that namespace object's nsmode
+	// "host" and "path" on the pod, and while false refuse any nsmode this
+	// package doesn't know (see libpod_namespace.go). The pod's pidns, ipcns,
+	// userns and utsns are the infra container's, and a container that
+	// joins the pod can end up in them. PodSpecGenerator has no cgroupns
+	// field, so there is no cgroup gate here. Default false.
+	AllowHostPID    bool
+	AllowHostIPC    bool
+	AllowHostUserNS bool
+	AllowHostUTS    bool
 	// AllowSharedPIDNamespace permits "pid" in the pod's SharedNamespaces
 	// list, letting every container in the pod see (and signal) every other
 	// container's processes — the pod-wide analog of container_create's
@@ -39,6 +49,10 @@ type LibpodPodCreateOptions struct {
 
 type libpodPodCreatePolicy struct {
 	allowHostNetwork            bool
+	allowHostPID                bool
+	allowHostIPC                bool
+	allowHostUserNS             bool
+	allowHostUTS                bool
 	allowSharedPIDNamespace     bool
 	allowedInfraImageRegistries []string
 }
@@ -54,8 +68,19 @@ type libpodPodCreatePolicy struct {
 // which encoding/json flattens to the top level on the wire — so "netns",
 // "shared_namespaces", and "infra_image" all appear directly in the request
 // body, not nested under a sub-object.
+//
+// The five namespace fields are every one PodSpecGenerator has (Podman 5.8.6
+// pkg/specgen/podspecgen.go:58, 89, 93, 95 and 111). The handler marshals
+// the pod spec and unmarshals it over the infra container's SpecGenerator,
+// so each becomes the infra container's namespace of the same name
+// (pkg/api/handlers/libpod/pods.go:60-65). A `cgroupns` key in the body has
+// no field to land in and is dropped by that decode.
 type libpodPodCreateRequest struct {
 	NetNS            libpodNamespace `json:"netns"`
+	PidNS            libpodNamespace `json:"pidns"`
+	IpcNS            libpodNamespace `json:"ipcns"`
+	UserNS           libpodNamespace `json:"userns"`
+	UtsNS            libpodNamespace `json:"utsns"`
 	SharedNamespaces []string        `json:"shared_namespaces"`
 	InfraImage       string          `json:"infra_image"`
 }
@@ -72,6 +97,10 @@ func newLibpodPodCreatePolicy(opts LibpodPodCreateOptions) libpodPodCreatePolicy
 
 	return libpodPodCreatePolicy{
 		allowHostNetwork:            opts.AllowHostNetwork,
+		allowHostPID:                opts.AllowHostPID,
+		allowHostIPC:                opts.AllowHostIPC,
+		allowHostUserNS:             opts.AllowHostUserNS,
+		allowHostUTS:                opts.AllowHostUTS,
 		allowSharedPIDNamespace:     opts.AllowSharedPIDNamespace,
 		allowedInfraImageRegistries: allowed,
 	}
@@ -100,10 +129,8 @@ func (p libpodPodCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 		return "libpod pod create denied: request body could not be inspected", nil
 	}
 
-	if !p.allowHostNetwork {
-		if denyReason := req.NetNS.hostGateDenyReason("libpod pod create", libpodNetNS); denyReason != "" {
-			return denyReason, nil
-		}
+	if denyReason := p.denyHostNamespaceReason(req); denyReason != "" {
+		return denyReason, nil
 	}
 	if !p.allowSharedPIDNamespace && slices.ContainsFunc(req.SharedNamespaces, isSharedPIDNamespaceEntry) {
 		return "libpod pod create denied: shared PID namespace is not allowed", nil
@@ -119,6 +146,39 @@ func (p libpodPodCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	// static policy knobs, independent of any configured ownership.owner.
 
 	return "", nil
+}
+
+// denyHostNamespaceReason holds the pod's netns, pidns, ipcns, userns and
+// utsns to their host gates, the way the container create inspector holds a
+// container's. They are the infra container's namespaces, and a container
+// in the pod inherits one of them when the pod shares it (ipc, net and uts
+// by default) or when the container asks for the pod's with nsmode "pod",
+// which Podman grants whether or not the pod shares it (Podman 5.8.6
+// pkg/specgen/generate/namespaces.go:42-93 and 146-264). They are checked
+// on a no_infra pod too, where Podman reads none of pidns, ipcns, userns
+// and utsns: a body that asks for the host's namespace is refused whether
+// or not Podman would act on it.
+func (p libpodPodCreatePolicy) denyHostNamespaceReason(req libpodPodCreateRequest) string {
+	gates := [...]struct {
+		allowed bool
+		kind    libpodNamespaceKind
+		ns      libpodNamespace
+	}{
+		{p.allowHostNetwork, libpodNetNS, req.NetNS},
+		{p.allowHostPID, libpodPidNS, req.PidNS},
+		{p.allowHostIPC, libpodIpcNS, req.IpcNS},
+		{p.allowHostUserNS, libpodUserNS, req.UserNS},
+		{p.allowHostUTS, libpodUtsNS, req.UtsNS},
+	}
+	for _, g := range gates {
+		if g.allowed {
+			continue
+		}
+		if denyReason := g.ns.hostGateDenyReason("libpod pod create", g.kind); denyReason != "" {
+			return denyReason
+		}
+	}
+	return ""
 }
 
 func (p libpodPodCreatePolicy) denyInfraImageReason(infraImage string) string {

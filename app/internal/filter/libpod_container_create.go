@@ -37,16 +37,20 @@ import (
 // POST /libpod/containers/create. Field names mirror ContainerCreateOptions
 // where the underlying semantics map onto a libpod equivalent, so operator
 // knowledge transfers between the Docker-compat and native surfaces; two
-// fields (AllowSystemdMode, AllowCustomIDMappings) have no Docker analog.
+// fields (AllowSystemdMode, AllowCustomIDMappings) have no Docker analog,
+// and AllowHostUTS has no compat option to mirror, because the compat create
+// refuses a host UTS namespace unconditionally.
 type LibpodContainerCreateOptions struct {
 	AllowPrivileged bool
-	// AllowHostNetwork/PID/IPC/UserNS each permit that namespace object's
-	// nsmode "host" and "path", and while false refuse any nsmode this
-	// package doesn't know (see libpod_namespace.go).
+	// AllowHostNetwork/PID/IPC/UserNS/UTS/CgroupNS each permit that
+	// namespace object's nsmode "host" and "path", and while false refuse
+	// any nsmode this package doesn't know (see libpod_namespace.go).
 	AllowHostNetwork  bool
 	AllowHostPID      bool
 	AllowHostIPC      bool
 	AllowHostUserNS   bool
+	AllowHostUTS      bool
+	AllowHostCgroupNS bool
 	AllowedBindMounts []string
 	AllowAllDevices   bool
 	AllowedDevices    []string
@@ -110,6 +114,8 @@ type libpodContainerCreatePolicy struct {
 	allowHostPID      bool
 	allowHostIPC      bool
 	allowHostUserNS   bool
+	allowHostUTS      bool
+	allowHostCgroupNS bool
 	allowedBindMounts []string
 	allowAllDevices   bool
 	allowedDevices    []string
@@ -171,6 +177,8 @@ func newLibpodContainerCreatePolicy(opts LibpodContainerCreateOptions) libpodCon
 		allowHostPID:                      opts.AllowHostPID,
 		allowHostIPC:                      opts.AllowHostIPC,
 		allowHostUserNS:                   opts.AllowHostUserNS,
+		allowHostUTS:                      opts.AllowHostUTS,
+		allowHostCgroupNS:                 opts.AllowHostCgroupNS,
 		allowedBindMounts:                 allowedBindMounts,
 		allowAllDevices:                   opts.AllowAllDevices,
 		allowedDevices:                    allowedDevices,
@@ -241,6 +249,9 @@ func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Reques
 	if denyReason := p.denyBindMountReason(createReq.Mounts); denyReason != "" {
 		return denyReason, nil
 	}
+	if denyReason := p.denyHostPathReason(createReq); denyReason != "" {
+		return denyReason, nil
+	}
 	if denyReason := p.denyDeviceReason(createReq.Devices); denyReason != "" {
 		return denyReason, nil
 	}
@@ -306,10 +317,10 @@ func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Reques
 	return "", nil
 }
 
-// denyHostNamespaceReason holds netns, pidns, ipcns and userns to their host
-// gates. While a gate is off its namespace can't be the host's, can't be
-// joined by path, and can't use a mode this package doesn't know (see
-// libpod_namespace.go).
+// denyHostNamespaceReason holds netns, pidns, ipcns, userns, utsns and
+// cgroupns to their host gates. While a gate is off its namespace can't be
+// the host's, can't be joined by path, and can't use a mode this package
+// doesn't know (see libpod_namespace.go).
 func (p libpodContainerCreatePolicy) denyHostNamespaceReason(req libpodContainerCreateRequest) string {
 	gates := [...]struct {
 		allowed bool
@@ -320,6 +331,8 @@ func (p libpodContainerCreatePolicy) denyHostNamespaceReason(req libpodContainer
 		{p.allowHostPID, libpodPidNS, req.PidNS},
 		{p.allowHostIPC, libpodIpcNS, req.IpcNS},
 		{p.allowHostUserNS, libpodUserNS, req.UserNS},
+		{p.allowHostUTS, libpodUtsNS, req.UtsNS},
+		{p.allowHostCgroupNS, libpodCgroupNS, req.CgroupNS},
 	}
 	for _, g := range gates {
 		if g.allowed {
@@ -376,15 +389,29 @@ func (p libpodContainerCreatePolicy) denyNamespaceSharingReason(req libpodContai
 
 // denyBindMountReason enforces allowedBindMounts against every "bind"-typed
 // entry of the top-level "mounts" array. Named-volume mounts (the "volumes"
-// array) reference a volume by name, not a host filesystem path, so they
-// carry no bind-mount attack surface and are not checked here.
+// array) reference a volume by name, not a host filesystem path, so the
+// volume isn't checked here; the overlay directories its options can name are
+// (denyNamedVolumeOverlayReason).
+//
+// A bind source that isn't an absolute path is refused rather than skipped.
+// Podman 5.8.6 makes every bind source absolute with filepath.Abs before it
+// builds the container (pkg/specgen/generate/storage.go:203-208), which
+// resolves a relative source, and an empty one, against the daemon's own
+// working directory. "../../../../etc" is /etc from anywhere on the host, and
+// this proxy can't see where the daemon is standing, so no allowlist entry can
+// vouch for a relative path. Only "bind" is treated this way: Podman leaves
+// every other type's source alone, and the source of a tmpfs or devpts mount
+// isn't a path at all.
 func (p libpodContainerCreatePolicy) denyBindMountReason(mounts []libpodMount) string {
 	for _, mount := range mounts {
 		if !strings.EqualFold(mount.Type, "bind") {
 			continue
 		}
 		source, ok := normalizeBindMount(mount.Source)
-		if !ok || bindPathAllowed(source, p.allowedBindMounts) {
+		if !ok {
+			return fmt.Sprintf("libpod container create denied: bind mount source %q is not an absolute path", mount.Source)
+		}
+		if bindPathAllowed(source, p.allowedBindMounts) {
 			continue
 		}
 		return fmt.Sprintf("libpod container create denied: bind mount source %q is not allowlisted", source)
