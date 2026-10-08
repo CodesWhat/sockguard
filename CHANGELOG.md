@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- **The Podman page and the configuration reference now say that `allow_tmpfs_privileged_options` can't make a tmpfs non-executable on a Podman upstream.** Podman mounts a tmpfs `nosuid,nodev` but executable by default, so a plain `HostConfig.Tmpfs` entry has no option text to deny; `suid` and `dev` are still refused with the option off.
+
 ## [2.3.0-rc.5] - 2026-10-08
 
 ### Security
