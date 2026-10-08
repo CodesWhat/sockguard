@@ -131,7 +131,10 @@ operator editing the config.
 wider than one list: every layer that can deny a request contributes its own
 codes, and there are dozens in total. The families are rule evaluation
 (`matched_deny_rule`, `no_matching_allow_rule`, `request_body_policy_denied`,
-`request_body_too_large`, `request_body_ambiguous`, ...), client ACL (`client_ip_not_allowed`,
+`request_body_too_large`, `request_body_ambiguous`, ...; the ownership layer, the
+admission-mutation engine and the resource-limit guard emit
+`request_body_ambiguous` too, when the body they read holds a repeated key or
+a key with U+0130, U+017F or U+212A), client ACL (`client_ip_not_allowed`,
 `client_label_policy_denied_request`, ...), ownership (`owner_*`), visibility
 (`visibility_*`), resource limits (`resource_limit_*`), request mutation
 (`mutation_*`), throttling (`rate_limit_exceeded`, `concurrency_cap`,
