@@ -23,7 +23,9 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"maps"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -36,7 +38,8 @@ var syntaxDirectivePattern = regexp.MustCompile(`^([a-zA-Z][a-zA-Z0-9]*)\s*=\s*(
 // one initial UTF-8 BOM and shebang. Blank lines, ordinary comments,
 // instructions, malformed or unknown directives, and duplicate keys end a
 // directive block. A selected frontend can interpret arbitrary input, so
-// callers restricting RUN must reject it before inspecting instructions.
+// callers restricting RUN must reject it before inspecting instructions. The
+// JSON form's key is matched in any letter case.
 func SyntaxFrontend(raw []byte) string {
 	raw = bytes.TrimPrefix(raw, []byte{0xef, 0xbb, 0xbf})
 	if bytes.HasPrefix(raw, []byte("#!")) {
@@ -49,8 +52,18 @@ func SyntaxFrontend(raw []byte) string {
 	}
 	var document map[string]any
 	if err := json.Unmarshal(raw, &document); err == nil {
-		frontend, _ := document["syntax"].(string)
-		return frontend
+		// BuildKit v0.11 to v0.13 (Docker 24 to 26) decode the object into a
+		// struct with a `json:"syntax"` tag, which encoding/json matches in any
+		// letter case. Go through the keys in sorted order so a document with
+		// several spellings answers the same way every time.
+		for _, key := range slices.Sorted(maps.Keys(document)) {
+			if !strings.EqualFold(key, "syntax") {
+				continue
+			}
+			if frontend, _ := document[key].(string); frontend != "" {
+				return frontend
+			}
+		}
 	}
 	return ""
 }
