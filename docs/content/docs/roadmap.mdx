@@ -33,8 +33,8 @@ volumes, networks, containers and image volumes it names, and `secret_env`
 and ID-shaped secret references are refused. v2.2.6 is a sixth security
 patch: a request body that repeats a key or spells one with U+0130, U+017F
 or U+212A is refused, a native Podman container create is held to
-`allowed_bind_mounts` for `rootfs`, overlays, `init_path` and relative bind
-sources, and pod and container creates in a host UTS, cgroup, PID, IPC or
+`allowed_bind_mounts` for `rootfs`, overlays and `init_path` and refuses
+relative bind sources outright, and pod and container creates in a host UTS, cgroup, PID, IPC or
 user namespace need their own `allow_host_*` option. v2.3 is the next planned
 line. This roadmap describes direction and priorities, not
 promises about dates. A feature is available only after the release notes say
