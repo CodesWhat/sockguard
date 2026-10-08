@@ -1268,3 +1268,4 @@ land):
   or carries no host-side privilege — but "the libpod network write surface
   is inspected" means every endpoint is routed at an inspector, not that
   every field in it is gated.
+- A tmpfs is executable by default on Podman, and `allow_tmpfs_privileged_options` can't change that. The option denies tmpfs options that turn on `exec`, `dev` or `suid`, which is the whole job on dockerd because it mounts a tmpfs `noexec,nosuid,nodev` unless asked otherwise. Podman mounts one `nosuid,nodev` but leaves it executable, so `{"HostConfig":{"Tmpfs":{"/scratch":""}}}` is already an executable mount and carries no option text for Sockguard to deny. With the option off, `suid` and `dev` are still refused on a Podman upstream. On Podman, don't rely on this option to keep tmpfs mounts non-executable.
