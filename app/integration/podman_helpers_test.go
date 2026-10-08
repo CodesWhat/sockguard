@@ -212,3 +212,95 @@ func removeLibpodContainer(t *testing.T, socketPath, apiVersion, containerID str
 		t.Fatalf("libpod remove status = %d, want %d or %d; body: %s", resp.StatusCode, http.StatusOK, http.StatusNoContent, strings.TrimSpace(string(body)))
 	}
 }
+
+// libpodPodCreateResponse is POST /libpod/pods/create's {"Id":...} body.
+type libpodPodCreateResponse struct {
+	Id string `json:"Id"`
+}
+
+// getLibpodJSON decodes a GET straight from the real daemon, bypassing
+// sockguard, the way waitForLibpodContainerRunning does. A test uses it to
+// read back what Podman made of a request sockguard let through.
+func getLibpodJSON(t *testing.T, socketPath, apiVersion, path string, into any) {
+	t.Helper()
+
+	client, closeIdle := dockerHTTPClient(socketPath)
+	defer closeIdle()
+
+	req, err := http.NewRequest(http.MethodGet, "http://podman/v"+apiVersion+path, nil)
+	if err != nil {
+		t.Fatalf("new GET %s request: %v", path, err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s failed: %v", path, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		t.Fatalf("GET %s status = %d, want %d; body: %s", path, resp.StatusCode, http.StatusOK, strings.TrimSpace(string(body)))
+	}
+	if err := json.NewDecoder(resp.Body).Decode(into); err != nil {
+		t.Fatalf("decode GET %s response: %v", path, err)
+	}
+}
+
+// libpodContainerNamespaceModes reads the namespace modes Podman reports for
+// a container. Each is "host" when the container's spec has no namespace of
+// that kind, which is how a container in the host's namespace is created.
+func libpodContainerNamespaceModes(t *testing.T, socketPath, apiVersion, containerID string) (pidMode, utsMode string) {
+	t.Helper()
+
+	var inspect struct {
+		HostConfig struct {
+			PidMode string `json:"PidMode"`
+			UTSMode string `json:"UTSMode"`
+		} `json:"HostConfig"`
+	}
+	getLibpodJSON(t, socketPath, apiVersion, "/libpod/containers/"+url.PathEscape(containerID)+"/json", &inspect)
+	return inspect.HostConfig.PidMode, inspect.HostConfig.UTSMode
+}
+
+// libpodPodInfraContainerID reads the ID of a pod's infra container, the
+// container whose namespaces the pod's are.
+func libpodPodInfraContainerID(t *testing.T, socketPath, apiVersion, podID string) string {
+	t.Helper()
+
+	var inspect struct {
+		InfraContainerID string `json:"InfraContainerID"`
+	}
+	getLibpodJSON(t, socketPath, apiVersion, "/libpod/pods/"+url.PathEscape(podID)+"/json", &inspect)
+	if inspect.InfraContainerID == "" {
+		t.Fatalf("pod %s has no infra container", podID)
+	}
+	return inspect.InfraContainerID
+}
+
+// removeLibpodPod force-removes a pod and its infra container straight from
+// the real daemon, with removeLibpodContainer's longer timeout.
+func removeLibpodPod(t *testing.T, socketPath, apiVersion, podID string) {
+	t.Helper()
+
+	transport := dockerSocketRoundTripper(socketPath)
+	client := &http.Client{Transport: transport, Timeout: removeLibpodContainerTimeout}
+	defer transport.CloseIdleConnections()
+
+	req, err := http.NewRequest(http.MethodDelete, "http://podman/v"+apiVersion+"/libpod/pods/"+url.PathEscape(podID)+"?force=true", nil)
+	if err != nil {
+		t.Fatalf("new libpod pod remove request: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("libpod pod remove request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return
+	}
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		t.Fatalf("libpod pod remove status = %d, want %d or %d; body: %s", resp.StatusCode, http.StatusOK, http.StatusNoContent, strings.TrimSpace(string(body)))
+	}
+}

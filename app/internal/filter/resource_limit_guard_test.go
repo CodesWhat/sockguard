@@ -1516,3 +1516,231 @@ func TestResourceLimitGuardPolicyDeniedLogsEncodeError(t *testing.T) {
 		t.Errorf("expected write error in log, got %q", logOutput)
 	}
 }
+
+// TestResourceLimitGuardAmbiguousBodyFollowsRolloutMode covers the bodies the
+// inspectors refuse as request_body_ambiguous once they reach the guard. The
+// guard sits behind the inspectors, so on a profile in warn or audit it sees
+// exactly the ones they recorded and forwarded.
+//
+// A hard denial here turned those back into a 400: a service create with a
+// Turkish label key, or one that gave "Name" twice, was created under warn
+// before the refusal existed and answered 400 after. The guard now answers
+// the way the inspectors do. Enforce refuses, and warn and audit record the
+// would-be denial and go on to judge the body as they did before.
+func TestResourceLimitGuardAmbiguousBodyFollowsRolloutMode(t *testing.T) {
+	containerOpts := func(current ContainerUpdateInspectResult, calls *int) ResourceLimitGuardOptions {
+		return ResourceLimitGuardOptions{
+			PolicyConfig: PolicyConfig{ContainerUpdate: ContainerUpdateOptions{AllowResourceUpdates: true, RequireMemoryLimit: true}},
+			InspectContainer: func(context.Context, string) (ContainerUpdateInspectResult, bool, error) {
+				*calls++
+				return current, true, nil
+			},
+		}
+	}
+	serviceOpts := func(*int) ResourceLimitGuardOptions {
+		return ResourceLimitGuardOptions{PolicyConfig: PolicyConfig{Service: ServiceOptions{RequireCPULimit: true}}}
+	}
+	const (
+		containerReason = "container update denied: request body holds a JSON object key the engines could read two ways"
+		serviceReason   = "service denied: request body holds a JSON object key the engines could read two ways"
+		cpuLimit        = `"TaskTemplate":{"Resources":{"Limits":{"NanoCPUs":1000000000}}}`
+	)
+	tests := []struct {
+		name   string
+		target string
+		body   string
+		opts   func(calls *int) ResourceLimitGuardOptions
+		// wantReason is the refusal enforce gives.
+		wantReason string
+		// wantLookups is how many times warn and audit read the container's
+		// state, which is once when the guard still judges the body.
+		wantLookups int
+		// wantRolloutCode and wantRolloutResult are what warn and audit
+		// leave on the record once the guard has judged the body.
+		wantRolloutCode   string
+		wantRolloutResult string
+	}{
+		{
+			name:   "container update with a dotted capital I in a key",
+			target: "/containers/c/update",
+			body:   "{\"Memory\":268435456,\"\u0130gnored\":1}",
+			opts: func(calls *int) ResourceLimitGuardOptions {
+				return containerOpts(ContainerUpdateInspectResult{}, calls)
+			},
+			wantReason:        containerReason,
+			wantLookups:       1,
+			wantRolloutCode:   reasonCodeRequestBodyAmbiguous,
+			wantRolloutResult: "allow",
+		},
+		{
+			name:   "native container update with a long s in a key",
+			target: "/libpod/containers/c/update",
+			body:   "{\"memory\":{\"limit\":268435456},\"pid\u017f\":{}}",
+			opts: func(calls *int) ResourceLimitGuardOptions {
+				return containerOpts(ContainerUpdateInspectResult{}, calls)
+			},
+			wantReason:        containerReason,
+			wantLookups:       1,
+			wantRolloutCode:   reasonCodeRequestBodyAmbiguous,
+			wantRolloutResult: "allow",
+		},
+		{
+			// The guard still judges the body, and its own verdict is the
+			// later one on the record.
+			name:   "container update with such a key and no memory limit",
+			target: "/containers/c/update",
+			body:   "{\"\u0130gnored\":1}",
+			opts: func(calls *int) ResourceLimitGuardOptions {
+				return containerOpts(ContainerUpdateInspectResult{}, calls)
+			},
+			wantReason:        containerReason,
+			wantLookups:       1,
+			wantRolloutCode:   reasonCodeResourceLimitPolicyDenied,
+			wantRolloutResult: "would_deny",
+		},
+		{
+			name:              "service create with a dotted capital I in a label key",
+			target:            "/services/create",
+			body:              "{\"Name\":\"web\",\"Labels\":{\"\u0130stanbul\":\"1\"}," + cpuLimit + "}",
+			opts:              serviceOpts,
+			wantReason:        serviceReason,
+			wantRolloutCode:   reasonCodeRequestBodyAmbiguous,
+			wantRolloutResult: "allow",
+		},
+		{
+			name:              "service create that gives Name twice",
+			target:            "/services/create",
+			body:              `{"Name":"web","Name":"web",` + cpuLimit + `}`,
+			opts:              serviceOpts,
+			wantReason:        serviceReason,
+			wantRolloutCode:   reasonCodeRequestBodyAmbiguous,
+			wantRolloutResult: "allow",
+		},
+		{
+			name:              "service update that spells a key in two letter cases",
+			target:            "/services/s/update?version=1",
+			body:              `{"Name":"web","name":"web",` + cpuLimit + `}`,
+			opts:              serviceOpts,
+			wantReason:        serviceReason,
+			wantRolloutCode:   reasonCodeRequestBodyAmbiguous,
+			wantRolloutResult: "allow",
+		},
+		{
+			name:              "service create with such a key and no CPU limit",
+			target:            "/services/create",
+			body:              "{\"Name\":\"web\",\"Labels\":{\"\u0130stanbul\":\"1\"}}",
+			opts:              serviceOpts,
+			wantReason:        serviceReason,
+			wantRolloutCode:   reasonCodeResourceLimitPolicyDenied,
+			wantRolloutResult: "would_deny",
+		},
+	}
+	for _, tt := range tests {
+		for _, mode := range []string{"", "enforce", "warn", "audit"} {
+			t.Run(tt.name+"/mode="+mode, func(t *testing.T) {
+				lookups := 0
+				out := runResourceGuardRequest(t, tt.opts(&lookups), http.MethodPost, tt.target, tt.body, mode)
+
+				if mode == "warn" || mode == "audit" {
+					if out.status != guardedRequestAllowedStatus || out.forwarded != 1 || out.forwardedBody != tt.body {
+						t.Fatalf("status = %d, forwarded %d time(s) with %q, want the body forwarded as sent; answer: %s", out.status, out.forwarded, out.forwardedBody, out.body)
+					}
+					if out.meta.Decision != logging.DecisionWouldDeny || out.meta.ReasonCode != tt.wantRolloutCode {
+						t.Fatalf("decision/reason code = %q/%q, want %q/%q", out.meta.Decision, out.meta.ReasonCode, logging.DecisionWouldDeny, tt.wantRolloutCode)
+					}
+					if tt.wantRolloutCode == reasonCodeRequestBodyAmbiguous && out.meta.Reason != tt.wantReason {
+						t.Fatalf("reason = %q, want %q", out.meta.Reason, tt.wantReason)
+					}
+					if out.meta.ResourcePolicy == nil || out.meta.ResourcePolicy.Result != tt.wantRolloutResult {
+						t.Fatalf("resource metadata = %#v, want result %q", out.meta.ResourcePolicy, tt.wantRolloutResult)
+					}
+					if lookups != tt.wantLookups {
+						t.Fatalf("state lookups = %d, want %d", lookups, tt.wantLookups)
+					}
+					return
+				}
+
+				if out.status != http.StatusBadRequest || out.forwarded != 0 {
+					t.Fatalf("status = %d, forwarded %d time(s), want a 400 and nothing forwarded; answer: %s", out.status, out.forwarded, out.body)
+				}
+				if out.meta.Decision != logging.DecisionDeny || out.meta.ReasonCode != reasonCodeRequestBodyAmbiguous || out.meta.Reason != tt.wantReason {
+					t.Fatalf("decision/reason code/reason = %q/%q/%q, want %q/%q/%q", out.meta.Decision, out.meta.ReasonCode, out.meta.Reason, logging.DecisionDeny, reasonCodeRequestBodyAmbiguous, tt.wantReason)
+				}
+				if out.meta.ResourcePolicy == nil || out.meta.ResourcePolicy.Result != "invalid" {
+					t.Fatalf("resource metadata = %#v, want result invalid", out.meta.ResourcePolicy)
+				}
+				if lookups != 0 {
+					t.Fatalf("state lookups = %d, want none for a refused body", lookups)
+				}
+			})
+		}
+	}
+}
+
+// TestResourceLimitGuardKeepsItsHardDenialsForAnAmbiguousBody pins what the
+// rollout mode doesn't soften. A repeated key on a container update has been
+// refused in every mode since the guard shipped, with a reason that names no
+// key, and a decoder-divergent key ahead of it in the body doesn't change
+// that. And a body the mode does forward is still judged, so a manual
+// rollback against a stale version is still a 409.
+func TestResourceLimitGuardKeepsItsHardDenialsForAnAmbiguousBody(t *testing.T) {
+	tests := []struct {
+		name       string
+		target     string
+		body       string
+		opts       ResourceLimitGuardOptions
+		wantStatus int
+		wantCode   string
+		wantReason string
+		wantResult string
+	}{
+		{
+			name:       "container update that gives Memory twice",
+			target:     "/containers/c/update",
+			body:       `{"Memory":268435456,"Memory":0}`,
+			opts:       ResourceLimitGuardOptions{PolicyConfig: PolicyConfig{ContainerUpdate: ContainerUpdateOptions{AllowResourceUpdates: true, RequireMemoryLimit: true}}},
+			wantStatus: http.StatusBadRequest,
+			wantCode:   reasonCodeResourceLimitRequestInvalid,
+			wantReason: "container update denied: request body contains ambiguous duplicate keys",
+			wantResult: "invalid",
+		},
+		{
+			name:       "container update with a dotted capital I ahead of a repeated key",
+			target:     "/containers/c/update",
+			body:       "{\"\u0130gnored\":1,\"Memory\":268435456,\"memory\":0}",
+			opts:       ResourceLimitGuardOptions{PolicyConfig: PolicyConfig{ContainerUpdate: ContainerUpdateOptions{AllowResourceUpdates: true, RequireMemoryLimit: true}}},
+			wantStatus: http.StatusBadRequest,
+			wantCode:   reasonCodeResourceLimitRequestInvalid,
+			wantReason: "container update denied: request body contains ambiguous duplicate keys",
+			wantResult: "invalid",
+		},
+		{
+			name:   "manual rollback of a stale version with a dotted capital I in a label key",
+			target: "/services/s/update?version=1&rollback=previous",
+			body:   "{\"Labels\":{\"\u0130stanbul\":\"1\"}}",
+			opts: ResourceLimitGuardOptions{PolicyConfig: PolicyConfig{Service: ServiceOptions{RequireCPULimit: true}}, InspectService: func(context.Context, string) (ServiceInspectResult, bool, error) {
+				return ServiceInspectResult{Version: 2, HasPreviousSpec: true, PreviousSpecNanoCPUs: 1}, true, nil
+			}},
+			wantStatus: http.StatusConflict,
+			wantCode:   reasonCodeResourceLimitPolicyStateChanged,
+			wantReason: "service update denied: the service state changed since it was inspected; retry with the current version",
+			wantResult: "state_changed",
+		},
+	}
+	for _, tt := range tests {
+		for _, mode := range []string{"warn", "audit"} {
+			t.Run(tt.name+"/mode="+mode, func(t *testing.T) {
+				out := runResourceGuardRequest(t, tt.opts, http.MethodPost, tt.target, tt.body, mode)
+				if out.status != tt.wantStatus || out.forwarded != 0 {
+					t.Fatalf("status = %d, forwarded %d time(s), want %d and nothing forwarded; answer: %s", out.status, out.forwarded, tt.wantStatus, out.body)
+				}
+				if out.meta.Decision != logging.DecisionDeny || out.meta.ReasonCode != tt.wantCode || out.meta.Reason != tt.wantReason {
+					t.Fatalf("decision/reason code/reason = %q/%q/%q, want %q/%q/%q", out.meta.Decision, out.meta.ReasonCode, out.meta.Reason, logging.DecisionDeny, tt.wantCode, tt.wantReason)
+				}
+				if out.meta.ResourcePolicy == nil || out.meta.ResourcePolicy.Result != tt.wantResult {
+					t.Fatalf("resource metadata = %#v, want result %q", out.meta.ResourcePolicy, tt.wantResult)
+				}
+			})
+		}
+	}
+}

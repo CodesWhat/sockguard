@@ -35,7 +35,28 @@ func isBodyTooLargeError(err error) bool {
 // the rest of it, and one that declares itself oversized is not read at all.
 // Warn and audit forward a request refused as too large, so it still has to
 // carry every byte the client sent.
+//
+// Every inspector reads a JSON body it is about to decode for policy, so this
+// is also where a body whose object keys the engines could read differently
+// is refused, with a requestRejectionError that names the key. See
+// rejectAmbiguousBodyKeys.
 func readBoundedBody(r *http.Request, max int64) ([]byte, error) {
+	body, err := readBoundedBodyUnchecked(r, max)
+	if err != nil {
+		return nil, err
+	}
+	// After the restore, for the same reason an oversized body is restored:
+	// warn and audit forward a request this refuses.
+	if err := rejectAmbiguousBodyKeys(body); err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
+// readBoundedBodyUnchecked is readBoundedBody without the key check, for the
+// resource-limit guard, which makes that check itself: it isn't a filter
+// inspector, so it has to decide what a rollout mode does with the refusal.
+func readBoundedBodyUnchecked(r *http.Request, max int64) ([]byte, error) {
 	if r == nil || r.Body == nil {
 		return nil, nil
 	}

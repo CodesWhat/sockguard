@@ -216,13 +216,6 @@ func TestJSONDifferentialContainerCreateNoDecoderBypass(t *testing.T) {
 			true,
 		},
 		{
-			// Duplicate keys resolve to the last value on both sides; here the
-			// last value is false, so the container is not privileged.
-			"duplicate privileged key resolves to false",
-			`{"HostConfig":{"Privileged":true,"Privileged":false}}`,
-			true,
-		},
-		{
 			// Privileged lives under HostConfig. At the top level it is an
 			// unknown field — ignored by sockguard and by the daemon alike.
 			"privileged at the top level is not a host-config field",
@@ -236,16 +229,6 @@ func TestJSONDifferentialContainerCreateNoDecoderBypass(t *testing.T) {
 		{"privileged uppercase key", `{"HostConfig":{"PRIVILEGED":true}}`, false},
 		{"privileged unicode-escaped key", unicodeEscapedPrivileged, false},
 		{"host-config lowercase key", `{"hostconfig":{"Privileged":true}}`, false},
-		{
-			"duplicate privileged key resolves to true",
-			`{"HostConfig":{"Privileged":false,"Privileged":true}}`,
-			false,
-		},
-		{
-			"duplicate host-config object, last wins",
-			`{"HostConfig":{"Privileged":false},"HostConfig":{"Privileged":true}}`,
-			false,
-		},
 		{
 			"whitespace-laden privileged body",
 			"{\n\t\"HostConfig\" : {\r\n  \"Privileged\"\t:\ttrue\n}\n}",
@@ -305,6 +288,62 @@ func TestJSONDifferentialContainerCreateNoDecoderBypass(t *testing.T) {
 			if dangerous, why := containerCreateDaemonDanger(fwd.Body); dangerous {
 				t.Fatalf("BYPASS: sockguard allowed container-create body %q, "+
 					"but the daemon's JSON decode yields %s", tt.body, why)
+			}
+		})
+	}
+}
+
+// TestJSONDifferentialContainerCreateRefusesBodiesDecodersReadTwoWays covers
+// the bodies no struct decode can be trusted on, because what they mean
+// depends on who decodes them.
+//
+// A repeated key is the first kind. encoding/json merges two objects under
+// one key, replaces a slice, and lets a later null reset a pointer while
+// leaving a struct alone. dockerd's HostConfig is a pointer and sockguard's
+// is a struct, so {"HostConfig":{...},"HostConfig":null} is a full host
+// config to sockguard and none at all to dockerd. json-iterator, which
+// Podman 6 decodes with, also clears a string a later null follows. A map
+// decode keeps only the last of the two.
+//
+// A key holding a character one decoder folds onto an ASCII letter and
+// another doesn't is the second kind: U+0130 is `i` to json-iterator only,
+// U+017F is `s` to encoding/json only.
+//
+// Both are refused with a 400 before any gate reads the body, whichever
+// value would have come out on top.
+func TestJSONDifferentialContainerCreateRefusesBodiesDecodersReadTwoWays(t *testing.T) {
+	t.Parallel()
+
+	daemon := newRecordingDaemon(t)
+	chain := buildChain(t, daemon.socketPath, allowRule(http.MethodPost, "/containers/create"))
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"duplicate privileged key resolves to false", `{"HostConfig":{"Privileged":true,"Privileged":false}}`},
+		{"duplicate privileged key resolves to true", `{"HostConfig":{"Privileged":false,"Privileged":true}}`},
+		{"duplicate host-config object, last wins", `{"HostConfig":{"Privileged":false},"HostConfig":{"Privileged":true}}`},
+		{"duplicate host-config object in two cases", `{"HostConfig":{"Privileged":false},"hostconfig":{"Privileged":true}}`},
+		{"host config reset by a later null", `{"HostConfig":{"Memory":268435456,"ReadonlyRootfs":true},"HostConfig":null}`},
+		{"user cleared by a later null", `{"User":"1000","User":null}`},
+		{"privileged under a dotted capital I", "{\"HostConfig\":{\"Pr\u0130v\u0130leged\":true}}"},
+		{"privileged under an escaped dotted capital I", `{"HostConfig":{"Pr` + string([]byte{0x5c}) + `u0130vileged":true}}`},
+		{"host config under a long s", "{\"Ho\u017ftConfig\":{\"Privileged\":true}}"},
+		{"network mode under a Kelvin sign", "{\"HostConfig\":{\"Networ\u212AMode\":\"host\"}}"},
+		{"a label key with a dotted capital I", "{\"Labels\":{\"\u0130stanbul\":\"1\"}}"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			res, _ := sendRequest(t, chain, daemon, http.MethodPost, "/containers/create", []byte(tt.body))
+			if res.allowed {
+				t.Fatalf("%s: allowed, want refused (body %q)", tt.name, tt.body)
+			}
+			if res.statusCode != http.StatusBadRequest {
+				t.Fatalf("%s: denied with status %d, want %d", tt.name, res.statusCode, http.StatusBadRequest)
 			}
 		})
 	}

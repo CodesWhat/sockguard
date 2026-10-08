@@ -144,6 +144,9 @@ var containerCreateDecodeCorpus = []string{
 	`{"HostConfig":{"MaskedPaths":[],"ReadonlyPaths":[]}}`,
 	`{"HostConfig":{"MaskedPaths":["/proc/kcore"],"ReadonlyPaths":["/proc/sys"]}}`,
 	`{"HostConfig":{"Binds":null,"Labels":null,"PidsLimit":null,"Sysctls":null}}`,
+	`{"Volumes":{"/data":{},"/etc:/h":{},"myvol:/d:O,upperdir=/etc,workdir=/mnt":{}}}`,
+	`{"Volumes":{"/srv/data:/d":{}}}`,
+	`{"Volumes":null}`,
 }
 
 // normalizeContainerCreateForCompare rewrites zero-length slices and maps to
@@ -326,6 +329,16 @@ func TestReleaseContainerCreateRequestDropsOversizedTargets(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "volumes over cap",
+			req:  &containerCreateRequest{Volumes: makeVolumeKeyMap(containerCreateReuseCap + 1)},
+			want: true,
+		},
+		{
+			name: "volumes within cap",
+			req:  &containerCreateRequest{Volumes: makeVolumeKeyMap(containerCreateReuseCap)},
+			want: false,
+		},
+		{
 			name: "sysctls over cap",
 			req: &containerCreateRequest{HostConfig: containerCreateHostConfig{
 				Sysctls: makeStringMap(containerCreateReuseCap + 1),
@@ -352,6 +365,14 @@ func makeStringMap(n int) map[string]string {
 	m := make(map[string]string, n)
 	for i := range n {
 		m[fmt.Sprintf("k%d", i)] = "v"
+	}
+	return m
+}
+
+func makeVolumeKeyMap(n int) map[string]struct{} {
+	m := make(map[string]struct{}, n)
+	for i := range n {
+		m[fmt.Sprintf("/v%d", i)] = struct{}{}
 	}
 	return m
 }

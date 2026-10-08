@@ -175,15 +175,6 @@ func TestLibpodNetworkConnectInspect(t *testing.T) {
 			wantReasonC: "static IP configuration",
 		},
 		{
-			// encoding/json takes the LAST value for a repeated key, exactly
-			// as Podman's own decode does.
-			name:        "denies a repeated static_ips key whose last value pins an address",
-			opts:        libpodConnectDefaults(),
-			body:        `{"container":"abc123","static_ips":[],"static_ips":["10.9.9.9"]}`,
-			wantDeny:    true,
-			wantReasonC: "static IP configuration",
-		},
-		{
 			// The libpod inspector must read libpod's shape and only
 			// libpod's: a Docker-shaped body carries nothing Podman's
 			// handler would act on here.
@@ -224,9 +215,7 @@ func TestLibpodNetworkConnectInspect(t *testing.T) {
 			policy := newNetworkPolicy(tt.opts)
 			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(tt.body))
 			reason, err := policy.inspectLibpod(nil, req, NormalizePath(req.URL.Path))
-			if err != nil {
-				t.Fatalf("inspectLibpod() error = %v", err)
-			}
+			reason = inspectorDenyReason(t, reason, err)
 			if tt.wantDeny {
 				if reason == "" {
 					t.Fatalf("inspectLibpod() reason = empty, want a denial containing %q", tt.wantReasonC)
@@ -333,6 +322,27 @@ func TestLibpodNetworkConnectVersionedPrefixBehavesIdentically(t *testing.T) {
 	}
 }
 
+// TestLibpodNetworkConnectRefusesARepeatedKey pins that a key given twice
+// never reaches the gate. Which value a decoder keeps is the engine's
+// business, so the body is refused whichever one pins the address.
+func TestLibpodNetworkConnectRefusesARepeatedKey(t *testing.T) {
+	const path = "/libpod/networks/mynet/connect"
+	want := repeatedKeyReason("static_ips", "static_ips")
+	for _, body := range []string{
+		`{"container":"abc123","static_ips":[],"static_ips":["10.9.9.9"]}`,
+		`{"container":"abc123","static_ips":["10.9.9.9"],"static_ips":[]}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			policy := newNetworkPolicy(libpodConnectDefaults())
+			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+			reason, err := policy.inspectLibpod(nil, req, NormalizePath(req.URL.Path))
+			if got := inspectorDenyReason(t, reason, err); got != want {
+				t.Fatalf("inspectLibpod() reason = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 // TestNetworkConnectInspectorRoutingIsPathExclusive is the network-connect
 // instance of TestInspectorRoutingIsPathExclusive's invariant: one body
 // carries a Docker-shaped dangerous value and a libpod-shaped safe one, and
@@ -342,8 +352,8 @@ func TestNetworkConnectInspectorRoutingIsPathExclusive(t *testing.T) {
 	const dockerPath = "/networks/mynet/connect"
 	const libpodPath = "/libpod/networks/mynet/connect"
 
-	dockerDangerousLibpodSafe := `{"Container":"abc","EndpointConfig":{"MacAddress":"aa:bb:cc:dd:ee:ff"},"container":"abc","static_mac":""}`
-	dockerSafeLibpodDangerous := `{"Container":"abc","EndpointConfig":{"Aliases":["web"]},"container":"abc","static_mac":"aa:bb:cc:dd:ee:ff"}`
+	dockerDangerousLibpodSafe := `{"Container":"abc","EndpointConfig":{"MacAddress":"aa:bb:cc:dd:ee:ff"},"static_mac":""}`
+	dockerSafeLibpodDangerous := `{"Container":"abc","EndpointConfig":{"Aliases":["web"]},"static_mac":"aa:bb:cc:dd:ee:ff"}`
 
 	policy := newNetworkPolicy(libpodConnectDefaults())
 
