@@ -292,6 +292,35 @@ the destination follows a `:`. So a container path with a mode (`/data:z`,
 that is a whole `/abs:/abs` spec is checked on any upstream, because on Podman
 it's a real bind.
 
+Podman reads a source that starts with `/` or `.` as a host path, and a source
+that starts with neither as a named volume. On a Podman machine hosted on
+Windows (wsl or hyperv) it also reads a drive-letter or backslash source as a
+host path, and those are refused too: `c:/:/h`, `c:/../../etc:/h` and
+`\\.\..\..\etc:/h` are not named volumes there. A one-letter named volume
+(`c:/h`, `c:/h:ro`) still works. A `Binds` entry or `Volumes`
+key whose source starts with `.` (`../../../../etc:/h`) is a relative host path
+Podman resolves against the daemon's working directory, so it's refused, where
+before it was skipped as a named volume. The same create's `HostConfig.Mounts`
+array is read the way `Binds` is: a `bind`-type entry needs an absolute,
+allowlisted `Source`. An empty one is refused because Podman sets the source to
+the destination (`{"Type":"bind","Target":"/etc"}` binds the host's `/etc`), and
+a relative one is refused because Podman resolves it against the working
+directory. An absolute `Source` on a `volume` or `tmpfs` entry is refused as
+well, because Podman calls `os.MkdirAll` on it before parsing the entry and
+creates a host directory. dockerd rejects a relative or empty bind source
+itself, and an absolute path as a volume name, so nothing changes on a Docker
+upstream that uses the `local` volume driver. dockerd reads a `.`-prefixed
+`Binds` source as a volume name, so a plugin volume driver would receive it.
+
+Podman rebuilds each `HostConfig.Mounts` entry into one comma-joined `--mount`
+string and re-splits it on commas, so a comma in `Type`, `Source`, `Target`,
+`Consistency`, `BindOptions.Propagation` or (on Podman 6) `VolumeOptions.Subpath`
+injects extra mount fields: `{"Mounts":[{"Type":"bind","Target":"/h,source=/etc"}]}`
+binds the host's `/etc`, and `{"Type":"tmpfs","Target":"/scratch,exec,suid,dev"}`
+makes an exec/suid/dev tmpfs. A comma in any of those fields is refused. dockerd
+reads the structured mount and never rebuilds that string, so nothing a Docker
+client normally sends is affected.
+
 ### What a Working Client Hits
 
 - `podman --remote run --rootfs /path`, until `/path` is covered by

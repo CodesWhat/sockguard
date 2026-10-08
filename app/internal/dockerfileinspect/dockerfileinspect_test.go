@@ -91,3 +91,62 @@ func TestInstruction(t *testing.T) {
 		})
 	}
 }
+
+func TestSyntaxFrontendBuildKitFormats(t *testing.T) {
+	const frontend = "example.invalid/inert-compiler:review"
+	const directive = "# syntax=" + frontend + "\n"
+	cases := []struct{ name, in, want string }{
+		{"BOM", "\ufeff" + directive + "FROM scratch\n", frontend},
+		{"shebang", "#!/usr/bin/env builder\n" + directive, frontend},
+		{"BOM and shebang", "\ufeff#!/usr/bin/env builder\n" + directive, frontend},
+		{"slash directive", "// syntax=" + frontend + "\n", frontend},
+		{"JSON object", `{"syntax":"` + frontend + `"}`, frontend},
+		{"check before syntax", "# check=skip=all\n" + directive, frontend},
+		{"slash directive block", "// escape=`\n// ChEcK=skip=all\n// SyNtAx=" + frontend + "\n", frontend},
+		{"BOM shebang JSON", "\ufeff#!builder\n" + `{"syntax":"` + frontend + `"}`, frontend},
+		{"ASCII whitespace and case", "#\tSyNtAx\t=\t" + frontend + " \r\n", frontend},
+		{"Unicode space after comment prefix", "#\u00a0syntax=" + frontend + "\n", frontend},
+		{"frontend command arguments", directive[:len(directive)-1] + " argument\n", frontend},
+		{"tab inside frontend retained", "# syntax=" + frontend + "\targument\n", frontend + "\targument"},
+		{"indented comment not directive", " " + directive, ""},
+		{"Unicode key whitespace not accepted", "# syntax\u00a0=" + frontend + "\n", ""},
+		{"second BOM not removed", "\ufeff\ufeff" + directive, ""},
+		{"second shebang ends block", "#!builder\n#!builder\n" + directive, ""},
+		{"shebang without newline", "#!builder", ""},
+		{"BOM after shebang not removed", "#!builder\n\ufeff" + directive, ""},
+		{"blank line after shebang", "#!builder\n\n" + directive, ""},
+		{"instruction before syntax", "FROM scratch\n" + directive, ""},
+		{"plain comment before syntax", "# comment\n" + directive, ""},
+		{"unknown before syntax", "# other=value\n" + directive, ""},
+		{"duplicate escape before syntax", "# escape=`\n# ESCAPE=`\n" + directive, ""},
+		{"duplicate check before syntax", "# check=skip=all\n# check=skip=all\n" + directive, ""},
+		{"duplicate syntax retains first", directive + "# syntax=example.invalid/other\n", frontend},
+		{"empty escape terminates", "# escape=\n" + directive, ""},
+		{"empty syntax terminates", "# syntax=\n" + directive, ""},
+		{"empty check terminates", "# check=\n" + directive, ""},
+		{"whitespace only syntax", "# syntax=   \n" + directive, ""},
+		{"whitespace only escape recognized upstream", "# escape=   \n" + directive, frontend},
+		{"mixed prefixes end block", "# check=skip=all\n// syntax=" + frontend + "\n", ""},
+		{"slash after blank line", "\n// syntax=" + frontend + "\n", ""},
+		{"slash after ordinary comment", "// comment\n// syntax=" + frontend + "\n", ""},
+		{"malformed JSON", `{"syntax":"` + frontend + `"`, ""},
+		{"nonstring JSON syntax", `{"syntax":42}`, ""},
+		{"JSON key capitalized", `{"Syntax":"` + frontend + `"}`, frontend},
+		{"JSON key upper case", `{"SYNTAX":"` + frontend + `"}`, frontend},
+		{"JSON key mixed case", `{"sYnTaX":"` + frontend + `"}`, frontend},
+		{"JSON mixed case key after empty exact key", `{"syntax":"","SYNTAX":"` + frontend + `"}`, frontend},
+		{"JSON nonstring mixed case key", `{"Syntax":42}`, ""},
+		{"JSON similar key not syntax", `{"syntaxes":"` + frontend + `"}`, ""},
+		{"JSON empty syntax", `{"syntax":""}`, ""},
+		{"JSON array", `[{"syntax":"` + frontend + `"}]`, ""},
+		{"JSON trailing instruction", `{"syntax":"` + frontend + `"}` + "\nFROM scratch\n", ""},
+		{"JSON after ordinary comment", "# comment\n" + `{"syntax":"` + frontend + `"}`, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SyntaxFrontend([]byte(tc.in)); got != tc.want {
+				t.Fatalf("SyntaxFrontend(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}

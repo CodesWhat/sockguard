@@ -838,17 +838,106 @@ func TestContainerCreatePolicyDenyBindMountReasonRejectsBindMountSource(t *testi
 		AllowedBindMounts: []string{"/allowed"},
 	})
 
+	// A non-"bind" mount source is not a host path and is skipped (npipe here;
+	// an absolute volume or tmpfs source is refused on its own, see below). A "bind"
+	// source that isn't an absolute path is refused outright rather than
+	// skipped: a Podman compat upstream sets an empty bind source to the
+	// destination and resolves a relative one against the daemon's working
+	// directory, so "relative" names a host path this proxy can't vouch for.
+	// The relative source precedes the non-allowlisted absolute one, so its
+	// refusal is what surfaces.
 	reason := policy.denyBindMountReason(containerCreateHostConfig{
 		Binds: []string{"not-a-bind"},
 		Mounts: []containerCreateMount{
-			{Type: "volume", Source: "/denied"},
+			{Type: "npipe", Source: "/denied"},
 			{Type: "bind", Source: "relative"},
 			{Type: "bind", Source: "/denied"},
 		},
 	})
 
-	if reason != `container create denied: bind mount source "/denied" is not allowlisted` {
+	if reason != `container create denied: bind mount source "relative" is not an absolute path` {
 		t.Fatalf("denyBindMountReason() = %q", reason)
+	}
+}
+
+// TestContainerCreatePolicyDenyBindMountReasonRejectsEmptyBindMountSource pins
+// the {"Type":"bind","Target":"/etc"} case: Podman sets the source to the
+// destination, binding host /etc, where sockguard used to skip the entry for
+// having no source. An empty source is now refused like any other
+// non-absolute one.
+func TestContainerCreatePolicyDenyBindMountReasonRejectsEmptyBindMountSource(t *testing.T) {
+	policy := newContainerCreatePolicy(ContainerCreateOptions{AllowedBindMounts: []string{"/"}})
+
+	reason := policy.denyBindMountReason(containerCreateHostConfig{
+		Mounts: []containerCreateMount{{Type: "bind", Source: ""}},
+	})
+
+	if reason != `container create denied: bind mount source "" is not an absolute path` {
+		t.Fatalf("denyBindMountReason() = %q", reason)
+	}
+}
+
+// TestContainerCreatePolicyDenyBindMountReasonRejectsWindowsHostPathSources
+// pins the sources a Podman machine hosted on Windows re-joins into a host
+// path: a drive letter ("c:/:/h" binds /mnt/c, "c:/../../etc:/h" binds /etc)
+// and a backslash or UNC-style source. A single-letter named volume with a
+// two-part spec, or with an option as its third part, stays a named volume.
+func TestContainerCreatePolicyDenyBindMountReasonRejectsWindowsHostPathSources(t *testing.T) {
+	policy := newContainerCreatePolicy(ContainerCreateOptions{AllowedBindMounts: []string{"/srv/roots"}})
+
+	tests := []struct {
+		name       string
+		bind       string
+		wantReason string
+	}{
+		{name: "drive root", bind: `c:/:/h`, wantReason: `container create denied: bind mount source "c" is a Windows drive letter path`},
+		{name: "drive traversal", bind: `c:/../../etc:/h`, wantReason: `container create denied: bind mount source "c" is a Windows drive letter path`},
+		{name: "drive with option", bind: `c:/x:/h:ro`, wantReason: `container create denied: bind mount source "c" is a Windows drive letter path`},
+		{name: "drive backslash", bind: `c:\x:/h`, wantReason: `container create denied: bind mount source "c" is a Windows drive letter path`},
+		{name: "upper case drive", bind: `C:/x:/h`, wantReason: `container create denied: bind mount source "C" is a Windows drive letter path`},
+		{name: "unc style", bind: `\\.\..\..\etc:/h`, wantReason: `container create denied: bind mount source "\\\\.\\..\\..\\etc" is a backslash path`},
+		{name: "single letter volume", bind: `c:/h`},
+		{name: "single letter volume with option", bind: `c:/h:ro`},
+		{name: "named volume", bind: `myvol:/h`},
+		{name: "two letter volume with path-like third part", bind: `ab:/x:/h`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := policy.denyBindSpecReason(tt.bind); got != tt.wantReason {
+				t.Fatalf("denyBindSpecReason(%q) = %q, want %q", tt.bind, got, tt.wantReason)
+			}
+		})
+	}
+}
+
+// TestContainerCreatePolicyDenyBindMountReasonRejectsAbsoluteNonBindSource pins
+// the Podman compat handler's os.MkdirAll on a volume-type Source before it
+// parses the entry: an absolute Source on a volume or tmpfs mount creates a
+// host directory. dockerd rejects an absolute path as a volume name. npipe
+// sources are path-shaped by design and stay alone.
+func TestContainerCreatePolicyDenyBindMountReasonRejectsAbsoluteNonBindSource(t *testing.T) {
+	policy := newContainerCreatePolicy(ContainerCreateOptions{AllowedBindMounts: []string{"/srv/roots"}})
+
+	tests := []struct {
+		name       string
+		mount      containerCreateMount
+		wantReason string
+	}{
+		{name: "volume absolute", mount: containerCreateMount{Type: "volume", Source: "/etc/x", Target: "/h"}, wantReason: `container create denied: volume mount source "/etc/x" is an absolute path`},
+		{name: "volume absolute mixed case type", mount: containerCreateMount{Type: "Volume", Source: "/etc/x", Target: "/h"}, wantReason: `container create denied: Volume mount source "/etc/x" is an absolute path`},
+		{name: "tmpfs absolute", mount: containerCreateMount{Type: "tmpfs", Source: "/etc/x", Target: "/h"}, wantReason: `container create denied: tmpfs mount source "/etc/x" is an absolute path`},
+		{name: "volume named", mount: containerCreateMount{Type: "volume", Source: "myvol", Target: "/h"}},
+		{name: "volume empty", mount: containerCreateMount{Type: "volume", Target: "/h"}},
+		{name: "npipe path", mount: containerCreateMount{Type: "npipe", Source: `//./pipe/docker_engine`, Target: `//./pipe/docker_engine`}},
+		{name: "image reference", mount: containerCreateMount{Type: "image", Source: "registry.example.com/base:latest", Target: "/h"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := policy.denyBindMountReason(containerCreateHostConfig{Mounts: []containerCreateMount{tt.mount}})
+			if got != tt.wantReason {
+				t.Fatalf("denyBindMountReason() = %q, want %q", got, tt.wantReason)
+			}
+		})
 	}
 }
 
