@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.7] - 2026-10-08
+
 ### Security
 
 - **A RUN instruction assembled differently by BuildKit than by Sockguard got past `request_body.build.allow_run_instructions: false`.** The RUN gate reads the Dockerfile's logical lines and refuses the build when one is a `RUN` or `ONBUILD RUN`. It joined continued lines by its own rules, and BuildKit's differ in four places. BuildKit drops a comment line that falls inside a continuation, so a keyword split around one (`R\`, then a `#` line, then `UN id`) is `RUN id` to BuildKit and was two unrelated lines to Sockguard. It keeps a continuation line's leading whitespace, so `RUN\` followed by ` id` is `RUN id` where Sockguard read `RUNid`. It doesn't treat an escaped escape character (`\\` at the end of a line) as a continuation, so the line after one is its own instruction, where Sockguard folded it into the line before. And it reads the `# escape=` directive after a UTF-8 BOM and, on versions that know the `# check=` directive, after one of those, where Sockguard kept the default backslash. The scan now assembles lines the way BuildKit's parser does in each of those cases, and where BuildKit versions disagree about the escape character it scans under both and refuses the build if either reading has a RUN. This applies to `POST /build` and to the Dockerfile held for inspection on a BuildKit session. A Dockerfile with no RUN, and a deployment that allows RUN, are unaffected. The rules come from BuildKit's parser source, and the comment case was run against BuildKit v0.33.0's parser. No build was run through a live daemon for this entry.
