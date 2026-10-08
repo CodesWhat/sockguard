@@ -8,6 +8,11 @@ request body captured off the wire between the `podman` CLI client and a live
 this package's inspector, types, and tests are pinned against these captures
 rather than either draft's guessed schema.
 
+Two of them, `host_uts.json` and `host_cgroupns.json`, and every
+`POST /libpod/pods/create` body under `pods/` were captured later and without a
+daemon. See [Client-only captures](#client-only-captures) for how, and for why
+the body is the same either way.
+
 ## Provenance
 
 Captured 2026-08-05 via a real Podman machine on macOS (`applehv` backend):
@@ -85,3 +90,50 @@ on or left unverified; the fixtures above are the tiebreaker:
   both will silently miss the other.
 - The sysctl field is singular: `sysctl`, not `sysctls`.
 - `devices[].path` is the raw unsplit `"host:container[:perms]"` string.
+
+## Client-only captures
+
+Captured 2026-10-07 for the host namespace gates 2.2.6 added:
+
+```
+Client:  Podman Engine 6.1.3  (darwin/arm64)
+Server:  none
+```
+
+podman-remote builds a create body on the client. It fills a SpecGenerator or
+a PodSpecGenerator from the command line and its own `containers.conf`,
+marshals it, and sends it. Nothing the server says shapes the body, so these
+were captured from the client alone: `podman --remote --url
+unix:///tmp/sg-s76/capture.sock ...` pointed at a throwaway recorder that
+answers `/libpod/_ping`, the image pull and the create, and writes down every
+request body. The recorder isn't checked in. Each body was pretty-printed
+with sorted keys, and no field was added, removed or renamed by hand.
+
+The method was checked against the captures above. `podman create --name
+sg-basic alpine:latest echo hi` recorded this way has the same keys as
+`basic_create.json` from the live 5.8.1 server, and the same values apart from
+the command it was given (`command`, and the command line echoed back in
+`containerCreateCommand`). Past the container name and that command line,
+`host_uts.json` differs from `host_pid.json` only in which namespace says
+`host`.
+
+What these don't show is anything the server does with the body. That's read
+from Podman's source, cited next to the code, and run against a real Podman in
+`app/integration/podman_libpod_integration_test.go`.
+
+| File | Command | What it pins |
+|---|---|---|
+| `host_uts.json` | `create --uts host` | `utsns: {"nsmode": "host"}`. Every other namespace stays `{}`. |
+| `host_cgroupns.json` | `create --cgroupns host` | `cgroupns: {"nsmode": "host"}`. |
+| `pods/default.json` | `pod create --name sg-pod` | What a pod create sends with no namespace flag: `pidns`, `ipcns` and `utsns` are `{"nsmode": "private"}`, `userns` and `netns` are `{}`, and `shared_namespaces` is `["ipc", "net", "uts"]`. There is no `cgroupns` key, because PodSpecGenerator has no such field. |
+| `pods/pod_new.json` | `create --pod new:sg-pod-new alpine:latest echo hi` | The pod create that `run`/`create --pod new:NAME` sends first. `userns` is `{"nsmode": "default"}` and there's no `shared_namespaces`. |
+| `pods/no_infra.json` | `pod create --infra=false` | `no_infra: true` with the same `private` namespaces and no `shared_namespaces`. |
+| `pods/host_pid.json` | `pod create --pid host` | `pidns: {"nsmode": "host"}`. |
+| `pods/path_pid.json` | `pod create --pid ns:/proc/1/ns/pid` | `pidns: {"nsmode": "path", "value": "/proc/1/ns/pid"}`. |
+| `pods/host_uts.json` | `pod create --uts host` | `utsns: {"nsmode": "host"}`. |
+| `pods/host_userns.json` | `pod create --userns host` | `userns: {"nsmode": "host"}`. |
+| `pods/share_pid.json` | `pod create --share pid` | `shared_namespaces: ["pid"]`. |
+
+`podman pod create` has no `--ipc` or `--cgroupns` flag. A pod's `ipcns` can
+still be set by a client that writes the body itself, which is why it has a
+gate, and a pod has no `cgroupns` to set.

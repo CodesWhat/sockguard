@@ -260,7 +260,7 @@ func (g *resourceLimitGuard) guardContainerUpdate(w http.ResponseWriter, r *http
 	rp.StateSource = "effective_state"
 	rp.Requirements = requirements
 
-	body, err := readBoundedBody(r, maxContainerUpdateBodyBytes)
+	body, err := readBoundedBodyUnchecked(r, maxContainerUpdateBodyBytes)
 	if err != nil {
 		if isBodyTooLargeError(err) {
 			g.respondHardDeny(w, r, http.StatusRequestEntityTooLarge, reasonCodeRequestBodyTooLarge,
@@ -278,9 +278,17 @@ func (g *resourceLimitGuard) guardContainerUpdate(w http.ResponseWriter, r *http
 			"container update denied: a request body is required to verify resource requirements", policy.DenyResponseVerbosity, rp)
 		return
 	}
-	if err := RejectDuplicateCaseVariantJSONKeys(body); err != nil {
+	// A repeated key has been a hard denial here since the guard shipped, in
+	// every rollout mode, and stays one. A key holding a decoder-divergent
+	// character is a newer refusal and follows the mode; see
+	// forwardsAmbiguousBody.
+	repeated, divergent := scanBodyKeys(body)
+	if repeated != nil {
 		g.respondHardDeny(w, r, http.StatusBadRequest, reasonCodeResourceLimitRequestInvalid,
 			"container update denied: request body contains ambiguous duplicate keys", policy.DenyResponseVerbosity, rp)
+		return
+	}
+	if divergent != nil && !g.forwardsAmbiguousBody(w, r, "container update", policy.DenyResponseVerbosity, rp) {
 		return
 	}
 
@@ -613,7 +621,7 @@ func (g *resourceLimitGuard) guardServiceWrite(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	body, err := readBoundedBody(r, maxServiceBodyBytes)
+	body, err := readBoundedBodyUnchecked(r, maxServiceBodyBytes)
 	if err != nil {
 		if isBodyTooLargeError(err) {
 			g.respondHardDeny(w, r, http.StatusRequestEntityTooLarge, reasonCodeRequestBodyTooLarge,
@@ -629,6 +637,12 @@ func (g *resourceLimitGuard) guardServiceWrite(w http.ResponseWriter, r *http.Re
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		g.respondHardDeny(w, r, http.StatusBadRequest, reasonCodeResourceLimitRequestInvalid,
 			"service denied: a request body is required to verify resource requirements", policy.DenyResponseVerbosity, rp)
+		return
+	}
+	// Neither a repeated key nor a decoder-divergent one was refused on a
+	// service write before the inspectors refused both, so both follow the
+	// rollout mode here.
+	if rejectAmbiguousBodyKeys(body) != nil && !g.forwardsAmbiguousBody(w, r, "service", policy.DenyResponseVerbosity, rp) {
 		return
 	}
 	var req serviceResourceGuardRequest
@@ -870,6 +884,32 @@ func (g *resourceLimitGuard) respondPolicyDenied(w http.ResponseWriter, r *http.
 	if err := httpjson.Write(w, http.StatusForbidden, denyResponse(r, reason, verbosity)); err != nil {
 		logRequestError(g.logger, r, slog.LevelError, "failed to encode resource-limit denial response", err)
 	}
+}
+
+// forwardsAmbiguousBody decides what happens to a body an inspector would
+// refuse as request_body_ambiguous, and reports whether the guard goes on to
+// judge it.
+//
+// It follows the profile's rollout mode, which no other request-invalid
+// denial here does, because the inspectors' own refusal of the same body
+// does. The guard sits behind them, so the only such body it sees on a
+// profile in warn or audit is one they recorded and forwarded, and a hard
+// denial here would undo that: a write answered 201 under warn before the
+// refusal existed would be answered 400. Under enforce the answer is the
+// inspectors' 400. Under warn and audit the would-be denial is recorded and
+// the guard judges the body as encoding/json reads it, which is what it did
+// before, so its lookup and stale-version failures stay hard errors.
+//
+// The reason names no key. The guard's messages repeat nothing a client
+// sent, and the body it reads may be one owner isolation has re-marshaled.
+func (g *resourceLimitGuard) forwardsAmbiguousBody(w http.ResponseWriter, r *http.Request, subject string, verbosity DenyResponseVerbosity, rp *logging.ResourcePolicyMeta) bool {
+	reason := ambiguousRequestBodyStaticReason(subject)
+	if logging.MetaForRequest(w, r).AllowsPassThrough() {
+		logging.SetWouldDenyWithCode(w, r, reasonCodeRequestBodyAmbiguous, reason, nil)
+		return true
+	}
+	g.respondHardDeny(w, r, http.StatusBadRequest, reasonCodeRequestBodyAmbiguous, reason, verbosity, rp)
+	return false
 }
 
 // respondHardDeny handles every OTHER reason code (invalid request, lookup

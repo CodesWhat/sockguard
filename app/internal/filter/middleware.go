@@ -50,6 +50,7 @@ const (
 	reasonCodeRequestBodyPolicyDenied       = "request_body_policy_denied"
 	reasonCodeRequestBodyTooLarge           = "request_body_too_large"
 	reasonCodeRequestBodyInspectionFailed   = "request_body_inspection_failed"
+	reasonCodeRequestBodyAmbiguous          = "request_body_ambiguous"
 	reasonCodeReadExfiltrationAckRequired   = "read_exfiltration_acknowledgment_required"
 )
 

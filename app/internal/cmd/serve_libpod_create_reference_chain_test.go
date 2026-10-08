@@ -920,47 +920,45 @@ func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 			wantLookups: []string{alpine, theirsCtr},
 		},
 		{
-			// encoding/json folds U+017F, the long s, onto "s".
-			name:        "container with volumes_from spelled with a long s",
-			target:      containerURL,
-			body:        container(`"volumeſ_from":["theirs-ctr"]`),
-			wantStatus:  http.StatusForbidden,
-			wantReason:  denied("container", "theirs-ctr", "container create volumes_from"),
-			wantLookups: []string{alpine, theirsCtr},
+			// encoding/json folds U+017F, the long s, onto "s", and Podman
+			// 6's decoder doesn't. The body is refused before either reads it.
+			name:       "container with volumes_from spelled with a long s",
+			target:     containerURL,
+			body:       container(`"volumeſ_from":["theirs-ctr"]`),
+			wantStatus: http.StatusBadRequest,
+			wantReason: `request body denied: ambiguous JSON object key "volume\u017f_from": U+017F matches a field name in some JSON decoders and not in others`,
 		},
 		{
 			name:       "container with volumes spelled two ways",
 			target:     containerURL,
 			body:       container(`"volumes":[{"Name":"mine-data","Dest":"/data"}],"Volumes":[{"Name":"theirs-data","Dest":"/data"}]`),
 			wantStatus: http.StatusBadRequest,
+			wantReason: `request body denied: duplicate case-variant JSON keys "volumes" and "Volumes"`,
 		},
 		{
-			// On its own Podman would merge the two lists element by element
-			// and mount theirs-data. It gets the body owner isolation read,
-			// which holds the last one only.
-			name:        "container with volumes given twice, another owner's first",
-			target:      containerURL,
-			body:        container(`"volumes":[{"Name":"theirs-data","Dest":"/data"}],"volumes":[{"Dest":"/data"}]`),
-			wantStatus:  http.StatusCreated,
-			wantLookups: []string{alpine},
-			wantUses:    []string{},
+			// Podman would merge the two lists element by element and mount
+			// theirs-data, and a map decode keeps the last one only. A body
+			// that reads two ways is refused, whichever comes last.
+			name:       "container with volumes given twice, another owner's first",
+			target:     containerURL,
+			body:       container(`"volumes":[{"Name":"theirs-data","Dest":"/data"}],"volumes":[{"Dest":"/data"}]`),
+			wantStatus: http.StatusBadRequest,
+			wantReason: `request body denied: duplicate case-variant JSON keys "volumes" and "volumes"`,
 		},
 		{
-			name:        "container with volumes given twice, another owner's last",
-			target:      containerURL,
-			body:        container(`"volumes":[{"Dest":"/data"}],"volumes":[{"Name":"theirs-data","Dest":"/data"}]`),
-			wantStatus:  http.StatusForbidden,
-			wantReason:  denied("volume", "theirs-data", "container create volumes"),
-			wantLookups: []string{alpine, "volumes/theirs-data"},
+			name:       "container with volumes given twice, another owner's last",
+			target:     containerURL,
+			body:       container(`"volumes":[{"Dest":"/data"}],"volumes":[{"Name":"theirs-data","Dest":"/data"}]`),
+			wantStatus: http.StatusBadRequest,
+			wantReason: `request body denied: duplicate case-variant JSON keys "volumes" and "volumes"`,
 		},
 		{
 			// Podman would merge the two maps and join both networks.
-			name:        "container with Networks given twice, another owner's first",
-			target:      containerURL,
-			body:        container(`"netns":{"nsmode":"bridge"},"Networks":{"theirs-net":{}},"Networks":{"mine-net":{}}`),
-			wantStatus:  http.StatusCreated,
-			wantLookups: []string{alpine, "networks/mine-net"},
-			wantUses:    []string{"network mine-net (team-a)"},
+			name:       "container with Networks given twice, another owner's first",
+			target:     containerURL,
+			body:       container(`"netns":{"nsmode":"bridge"},"Networks":{"theirs-net":{}},"Networks":{"mine-net":{}}`),
+			wantStatus: http.StatusBadRequest,
+			wantReason: `request body denied: duplicate case-variant JSON keys "Networks" and "Networks"`,
 		},
 
 		{
@@ -1121,20 +1119,19 @@ func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 			wantUses:   []string{},
 		},
 		{
-			// Podman takes the last of a repeated key, and so does the check.
+			// A repeated key is refused whichever value comes last.
 			name:       "pod with no_infra given twice, true last",
 			target:     podURL,
 			body:       pod(`"no_infra":false,"volumes":[{"Name":"theirs-data","Dest":"/data"}],"no_infra":true`),
-			wantStatus: http.StatusCreated,
-			wantUses:   []string{},
+			wantStatus: http.StatusBadRequest,
+			wantReason: `request body denied: duplicate case-variant JSON keys "no_infra" and "no_infra"`,
 		},
 		{
-			name:        "pod with no_infra given twice, false last",
-			target:      podURL,
-			body:        pod(`"no_infra":true,"volumes":[{"Name":"theirs-data","Dest":"/data"}],"no_infra":false`),
-			wantStatus:  http.StatusForbidden,
-			wantReason:  denied("volume", "theirs-data", "pod create volumes"),
-			wantLookups: []string{"volumes/theirs-data"},
+			name:       "pod with no_infra given twice, false last",
+			target:     podURL,
+			body:       pod(`"no_infra":true,"volumes":[{"Name":"theirs-data","Dest":"/data"}],"no_infra":false`),
+			wantStatus: http.StatusBadRequest,
+			wantReason: `request body denied: duplicate case-variant JSON keys "no_infra" and "no_infra"`,
 		},
 		{
 			name:        "pod with no_infra false naming another owner's volume",
@@ -1363,10 +1360,13 @@ func assertLibpodCreateRefChainReason(t *testing.T, wantStatus int, wantReason s
 	if wantReason == "" {
 		return
 	}
+	// Owner isolation answers with the reason as the message. The filter in
+	// front of it answers with a fixed message and the reason beside it.
 	var denial struct {
 		Message string `json:"message"`
+		Reason  string `json:"reason"`
 	}
-	if err := json.Unmarshal(body, &denial); err != nil || denial.Message != wantReason {
-		t.Errorf("body = %s, want message %q", body, wantReason)
+	if err := json.Unmarshal(body, &denial); err != nil || (denial.Message != wantReason && denial.Reason != wantReason) {
+		t.Errorf("body = %s, want message or reason %q", body, wantReason)
 	}
 }

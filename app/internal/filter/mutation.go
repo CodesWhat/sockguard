@@ -233,6 +233,11 @@ func (p mutationPolicy) inspect(logger *slog.Logger, r *http.Request, normalized
 				fmt.Sprintf("%s denied: request body exceeds %d byte limit", surface, maxMutationBodyBytes),
 			)
 		}
+		if rejection, ok := requestRejectionFromError(err); ok && rejection.reasonCode == reasonCodeRequestBodyAmbiguous {
+			// readBoundedBody words this refusal with the key it found, and
+			// nothing the engine reports repeats anything from the body.
+			return "", newRequestRejectionErrorWithCode(rejection.status, reasonCodeRequestBodyAmbiguous, ambiguousRequestBodyStaticReason(surface))
+		}
 		return "", fmt.Errorf("read body: %w", err)
 	}
 	if len(body) == 0 {

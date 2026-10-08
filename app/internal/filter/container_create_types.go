@@ -39,6 +39,14 @@ type containerCreateRequest struct {
 	HostConfig containerCreateHostConfig `json:"HostConfig"`
 	User       string                    `json:"User"`
 	Labels     map[string]string         `json:"Labels"`
+	// Volumes is Config.Volumes, the container paths an anonymous volume is
+	// created at. dockerd reads each key as a path and nothing else. A Podman
+	// upstream appends each key to the same "-v" list HostConfig.Binds feeds,
+	// so a key spelled "/etc:/h" is a bind mount there. See
+	// denyVolumeSpecReason in container_create.go, which checks the keys that
+	// have ":/" in them the way Binds entries are checked. A container path
+	// with a mode ("/data:z") has none and passes.
+	Volumes map[string]struct{} `json:"Volumes"`
 	// MacAddress is the deprecated, top-level (pre-API-1.44) container-wide
 	// MAC address field. The daemon still honors it, applying it to the
 	// container's primary network endpoint exactly like
@@ -238,6 +246,7 @@ func (r *containerCreateRequest) resetForReuse() {
 	r.User = ""
 	r.MacAddress = ""
 	clear(r.Labels)
+	clear(r.Volumes)
 	clear(r.NetworkingConfig.EndpointsConfig)
 
 	h := &r.HostConfig
@@ -289,6 +298,7 @@ func (r *containerCreateRequest) oversizedForReuse() bool {
 		overContainerCreateReuseCap(h.GroupAdd) ||
 		overContainerCreateReuseCap(h.ExtraHosts) ||
 		len(r.Labels) > containerCreateReuseCap ||
+		len(r.Volumes) > containerCreateReuseCap ||
 		len(h.Sysctls) > containerCreateReuseCap ||
 		len(h.Tmpfs) > containerCreateReuseCap ||
 		len(r.NetworkingConfig.EndpointsConfig) > containerCreateReuseCap

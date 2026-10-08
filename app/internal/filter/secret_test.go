@@ -2,6 +2,7 @@ package filter
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -225,11 +226,6 @@ func TestSecretInspectDockerDriverShape(t *testing.T) {
 		{"array", `{"Driver":[]}`, true, malformed},
 		{"number", `{"Driver":1}`, true, malformed},
 		{"invalid name", `{"Driver":{"Name":1}}`, true, malformed},
-		{"merge empty", `{"Driver":{"Name":"vault"},"Driver":{}}`, false, driverDenied},
-		{"merge null name", `{"Driver":{"Name":"vault"},"Driver":{"Name":null}}`, false, driverDenied},
-		// Podman decodes Driver into a struct, where a later null leaves the
-		// earlier name in place, so the name stays refused here too.
-		{"null keeps an earlier name", `{"Driver":{"Name":"vault"},"Driver":null}`, false, driverDenied},
 		// Neither engine accepts a string Driver, so it's refused as
 		// uninspectable with the flag on or off.
 		{"string denied", `{"Driver":"vault"}`, false, malformed},
@@ -242,6 +238,31 @@ func TestSecretInspectDockerDriverShape(t *testing.T) {
 				t.Fatalf("inspect() = (%q, %v), want (%q, nil)", reason, err, tt.want)
 			}
 		})
+	}
+}
+
+// TestSecretInspectRefusesARepeatedDriver pins that a Driver given twice never
+// reaches the driver gate. dockerd holds Driver as a pointer, which a later
+// null resets, and Podman holds it as a struct, which keeps the earlier name,
+// so the body is refused whichever one comes last and with the flag on or
+// off.
+func TestSecretInspectRefusesARepeatedDriver(t *testing.T) {
+	want := repeatedKeyReason("Driver", "Driver")
+	for _, body := range []string{
+		`{"Driver":{"Name":"vault"},"Driver":{}}`,
+		`{"Driver":{"Name":"vault"},"Driver":{"Name":null}}`,
+		`{"Driver":{"Name":"vault"},"Driver":null}`,
+		`{"Driver":null,"Driver":{"Name":"vault"}}`,
+	} {
+		for _, allow := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/allow=%t", body, allow), func(t *testing.T) {
+				req := httptest.NewRequest(http.MethodPost, "/secrets/create", strings.NewReader(body))
+				reason, err := newSecretPolicy(SecretOptions{AllowCustomDrivers: allow}).inspect(nil, req, "/secrets/create")
+				if got := inspectorDenyReason(t, reason, err); got != want {
+					t.Fatalf("inspect() reason = %q, want %q", got, want)
+				}
+			})
+		}
 	}
 }
 
