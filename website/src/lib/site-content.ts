@@ -352,6 +352,16 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
+    version: "v2.2.9",
+    title: "Security Patch: Dockerfile RUN Gate Heredocs and Builder Line Rules",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "With allow_run_instructions off, a COPY, ADD or ONBUILD heredoc the gate can't follow now refuses the build instead of hiding a RUN behind a terminator line",
+      "The gate reads carriage returns, doubled escapes, the # escape= directive and the JSON syntax directive the way BuildKit and Podman's builder each do, and refuses the build if any reading has a RUN",
+    ],
+  },
+  {
     version: "v2.3.0",
     title: "BuildKit RUN-Instruction Coverage",
     emoji: "🧩",
