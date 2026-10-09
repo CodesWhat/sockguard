@@ -50,17 +50,20 @@ func SyntaxFrontend(raw []byte) string {
 			return frontend
 		}
 	}
-	var document map[string]any
+	// Decode values lazily: BuildKit v0.11 to v0.13 (Docker 24 to 26) decode
+	// the object into a struct with a `json:"syntax"` tag, so a sibling key
+	// whose value doesn't fit a Go type (1e999) is skipped there and must not
+	// fail the whole document here. That struct tag also matches the key in
+	// any letter case. Go through the keys in sorted order so a document with
+	// several spellings answers the same way every time.
+	var document map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &document); err == nil {
-		// BuildKit v0.11 to v0.13 (Docker 24 to 26) decode the object into a
-		// struct with a `json:"syntax"` tag, which encoding/json matches in any
-		// letter case. Go through the keys in sorted order so a document with
-		// several spellings answers the same way every time.
 		for _, key := range slices.Sorted(maps.Keys(document)) {
 			if !strings.EqualFold(key, "syntax") {
 				continue
 			}
-			if frontend, _ := document[key].(string); frontend != "" {
+			var frontend string
+			if err := json.Unmarshal(document[key], &frontend); err == nil && frontend != "" {
 				return frontend
 			}
 		}
@@ -118,16 +121,36 @@ func syntaxDirective(raw []byte, prefix string) string {
 //     continuation line keeps its own, so RUN, escape, newline, " id" is
 //     "RUN id".
 //
-// The escape character comes from the leading parser-directive block. Which
-// lines belong to that block differs by BuildKit version (see escapeChars),
-// so the scan runs once per candidate and reports a RUN if any of them finds
-// one.
+// A heredoc on ADD or COPY is followed as long as its terminator is made of
+// word characters: such a terminator can't be blank, read as a comment or end
+// in the escape, so the line after it starts a fresh instruction here just as
+// it does for the builder, and a builder with no heredoc support reads the
+// body as instructions, which this scan does too. Any other spelling of a
+// heredoc word (an escape or a quote inside it, a terminator with other
+// characters) can make the builder and this scan disagree about where the
+// body ends, so such a file is reported as containing a RUN.
+//
+// Builders disagree on three more things, and the scan runs once per reading
+// and reports a RUN if any of them finds one:
+//
+//   - which escape character is in force (see escapeChars);
+//   - whether a line ending in several carriage returns loses all of them
+//     (BuildKit) or one (the parser Podman's builder descends from), which
+//     decides whether an escape before them continues the line.
 func ContainsRunInstruction(raw []byte) bool {
 	raw = bytes.TrimPrefix(raw, utf8BOM)
 	lines := strings.Split(string(raw), "\n")
+
+	carriageReadings := []bool{false}
+	if slices.ContainsFunc(lines, func(line string) bool { return strings.HasSuffix(line, "\r\r") }) {
+		carriageReadings = append(carriageReadings, true)
+	}
+
 	for _, escape := range escapeChars(lines) {
-		if containsRunWithEscape(lines, escape) {
-			return true
+		for _, singleCR := range carriageReadings {
+			if containsRunWithEscape(lines, escape, singleCR) {
+				return true
+			}
 		}
 	}
 	return false
@@ -135,12 +158,16 @@ func ContainsRunInstruction(raw []byte) bool {
 
 var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 
-func containsRunWithEscape(lines []string, escape string) bool {
-	var logical string
+func containsRunWithEscape(lines []string, escape string, singleCR bool) bool {
+	var logical strings.Builder
 	continued := false
 
 	for _, line := range lines {
-		line = strings.TrimRight(line, "\r")
+		if singleCR {
+			line = strings.TrimSuffix(line, "\r")
+		} else {
+			line = strings.TrimRight(line, "\r")
+		}
 		leading := strings.TrimLeftFunc(line, unicode.IsSpace)
 		if leading == "" || strings.HasPrefix(leading, "#") {
 			continue
@@ -150,20 +177,21 @@ func containsRunWithEscape(lines []string, escape string) bool {
 		}
 
 		fragment, more := trimContinuation(line, escape)
-		logical += fragment
+		logical.WriteString(fragment)
 		if more {
 			continued = true
 			continue
 		}
 
-		if isRunInstruction(logical) {
+		if isRunInstruction(logical.String()) || hasUnreadableHeredoc(logical.String()) {
 			return true
 		}
-		logical, continued = "", false
+		logical.Reset()
+		continued = false
 	}
 
 	// A continuation left open at EOF is still whatever instruction it began.
-	return isRunInstruction(logical)
+	return isRunInstruction(logical.String()) || hasUnreadableHeredoc(logical.String())
 }
 
 // trimContinuation removes a trailing line continuation from line and reports
@@ -182,27 +210,60 @@ func isRunInstruction(logical string) bool {
 	return instruction == "RUN" || instruction == "ONBUILD RUN"
 }
 
-// escapeChars returns every line-continuation character a supported BuildKit
-// could have in force for lines: the backslash Docker uses by default, or a
-// backtick when a leading `# escape=` parser directive selects it. BuildKit
-// honors an escape directive only in the top-of-file directive block, which
-// ends at the first line that isn't a known directive, and accepts only `\`
-// or a backtick as the value.
-//
-// `# check=` is a directive on BuildKit versions that know it and an ordinary
-// comment that ends the block on versions that don't, so an escape directive
-// that follows one is in force on some versions only. Both readings are
-// returned when they disagree.
-func escapeChars(lines []string) []string {
-	strict := escapeChar(lines, false)
-	lenient := escapeChar(lines, true)
-	if strict == lenient {
-		return []string{strict}
+// plainHeredocWord matches a heredoc word whose terminator is made of word
+// characters, bare or wrapped whole in one pair of quotes.
+var plainHeredocWord = regexp.MustCompile(`^[0-9]*<<-?(?:[A-Za-z0-9_.]+|'[A-Za-z0-9_.]+'|"[A-Za-z0-9_.]+")$`)
+
+// hasUnreadableHeredoc reports whether logical is an ADD or COPY instruction
+// carrying a word that might be a heredoc this scan can't follow. The builder
+// finds heredoc words after shell-style unquoting, so any argument holding a
+// `<` that isn't exactly a plain heredoc word is treated as one.
+func hasUnreadableHeredoc(logical string) bool {
+	if !strings.Contains(logical, "<") {
+		return false
 	}
-	return []string{strict, lenient}
+	switch Instruction(logical) {
+	case "ADD", "COPY", "ONBUILD ADD", "ONBUILD COPY":
+	default:
+		return false
+	}
+	for _, field := range strings.Fields(logical) {
+		if strings.Contains(field, "<") && !plainHeredocWord.MatchString(field) {
+			return true
+		}
+	}
+	return false
 }
 
-func escapeChar(lines []string, checkIsDirective bool) string {
+// escapeChars returns every line-continuation character a supported builder
+// could have in force for lines: the backslash Docker uses by default, or a
+// backtick when a leading `# escape=` parser directive selects it. The
+// directive counts only in the top-of-file directive block, which ends at the
+// first line that isn't a directive the parser knows, and builders differ on
+// which directives those are:
+//
+//   - the parser Podman's builder descends from knows only `escape`;
+//   - BuildKit also knows `syntax`;
+//   - newer BuildKit also knows `check`.
+//
+// An escape directive that follows a `syntax` or `check` line is therefore in
+// force on some builders only. Every distinct reading is returned.
+func escapeChars(lines []string) []string {
+	readings := []string{
+		escapeChar(lines),
+		escapeChar(lines, "syntax"),
+		escapeChar(lines, "syntax", "check"),
+	}
+	slices.Sort(readings)
+	return slices.Compact(readings)
+}
+
+// escapeChar reads the escape directive from the leading directive block,
+// treating the named directives as ones the parser knows and skips over. The
+// value's first character decides: the older parser reads exactly one
+// character and ignores the rest of the line, and BuildKit rejects a value
+// with anything after it, so no builder reads "`x" as a backslash.
+func escapeChar(lines []string, known ...string) string {
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if !strings.HasPrefix(trimmed, "#") {
@@ -212,19 +273,14 @@ func escapeChar(lines []string, checkIsDirective bool) string {
 		if !ok {
 			return `\`
 		}
-		switch strings.ToLower(strings.TrimSpace(key)) {
-		case "escape":
-			if strings.TrimSpace(value) == "`" {
+		key = strings.ToLower(strings.TrimSpace(key))
+		if key == "escape" {
+			if strings.HasPrefix(strings.TrimSpace(value), "`") {
 				return "`"
 			}
 			return `\`
-		case "syntax":
-			// recognized directive; keep scanning the leading block
-		case "check":
-			if !checkIsDirective {
-				return `\`
-			}
-		default:
+		}
+		if !slices.Contains(known, key) {
 			return `\`
 		}
 	}
