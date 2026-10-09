@@ -1,7 +1,7 @@
 # --platform=$BUILDPLATFORM: the builder always runs natively and CROSS-compiles
 # for $TARGETARCH. Running the amd64 toolchain under qemu/Rosetta emulation is
 # both slow and unreliable (Go runtime faults during go mod download).
-FROM --platform=$BUILDPLATFORM golang:1.27.0-alpine3.23@sha256:3747dcba41c8b0db3211fda4db61638b980e17ac5bb3c94460a975a9cfe19395 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine3.23@sha256:2ac5c2a64f1f970b5120fe21c6a5e3d9190b196a9ead95797564738ecd07a8a2 AS builder
 
 ARG VERSION=dev
 ARG COMMIT=unknown
