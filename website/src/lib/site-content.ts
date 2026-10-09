@@ -342,6 +342,16 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
+    version: "v2.2.8",
+    title: "Security Patch: Go Toolchain Rebuild",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Rebuilt with Go 1.27.2 and golang.org/x/net 0.60.0 to clear six Go advisories published on 2026-10-08 in net/http and crypto/tls",
+      "No change to Sockguard's own behaviour; it also carries everything in 2.2.7",
+    ],
+  },
+  {
     version: "v2.3.0",
     title: "BuildKit RUN-Instruction Coverage",
     emoji: "🧩",
