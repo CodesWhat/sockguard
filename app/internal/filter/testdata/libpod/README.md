@@ -8,7 +8,8 @@ request body captured off the wire between the `podman` CLI client and a live
 this package's inspector, types, and tests are pinned against these captures
 rather than either draft's guessed schema.
 
-Two of them, `host_uts.json` and `host_cgroupns.json`, and every
+Five of them, `host_uts.json`, `host_cgroupns.json`, `log_path.json`,
+`log_driver_options.json` and `health_log_destination.json`, and every
 `POST /libpod/pods/create` body under `pods/` were captured later and without a
 daemon. See [Client-only captures](#client-only-captures) for how, and for why
 the body is the same either way.
@@ -137,3 +138,20 @@ from Podman's source, cited next to the code, and run against a real Podman in
 `podman pod create` has no `--ipc` or `--cgroupns` flag. A pod's `ipcns` can
 still be set by a client that writes the body itself, which is why it has a
 gate, and a pod has no `cgroupns` to set.
+
+Three more container bodies were captured the same way on 2026-10-09, from the
+same 6.1.3 client, for the log path gate (`allow_log_path`). The recorder sat
+at `unix:///tmp/sg-logpath/capture.sock` this time, and `create --name
+sg-basic alpine:latest echo hi` recorded beside them again matched
+`basic_create.json` key for key.
+
+| File | Command | What it pins |
+|---|---|---|
+| `log_path.json` | `create --log-driver k8s-file --log-opt path=/var/log/sg-ctr.log --log-opt max-size=10m` | `log_configuration: {"driver": "k8s-file", "path": "/var/log/sg-ctr.log", "size": 10000000}`. podman-remote reads `--log-opt` itself, so `path` and `max-size` arrive as the fields `path` and `size` and not as options. |
+| `log_driver_options.json` | `create --log-driver journald --log-opt tag=web` | `log_configuration: {"driver": "journald", "options": {"tag": "web"}}`. A log configuration with no path, which the gate lets through. |
+| `health_log_destination.json` | `create --health-cmd true --health-log-destination /var/log` | Top-level `healthLogDestination: "/var/log"`, where every other body has `"local"`. |
+
+podman-remote lowers a `--log-opt` name before it reads it, so `--log-opt
+PATH=/var/log/sg-ctr.log` puts the same `path` on the wire. That one was
+recorded and not kept, since the body is `log_path.json` without the driver
+and the size.

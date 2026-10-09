@@ -107,6 +107,19 @@ type containerCreateHostConfig struct {
 	// (non-nil, zero length).
 	MaskedPaths   *[]string `json:"MaskedPaths"`
 	ReadonlyPaths *[]string `json:"ReadonlyPaths"`
+	// LogConfig carries the log driver's options. dockerd hands them to the
+	// driver, and none of its built-in drivers takes a file to write the log
+	// to. A Podman upstream turns each one into a "--log-opt" argument, and
+	// the one named "path" is the file the container's log is written to on
+	// the daemon host. See denyLogPathReason in container_create.go.
+	LogConfig containerCreateLogConfig `json:"LogConfig"`
+}
+
+// containerCreateLogConfig mirrors the Docker API HostConfig.LogConfig object,
+// narrowed to the option map the policy inspects. Type, the driver name, isn't
+// decoded: the one option the policy refuses is refused under every driver.
+type containerCreateLogConfig struct {
+	Config map[string]string `json:"Config"`
 }
 
 type containerCreateMount struct {
@@ -302,6 +315,7 @@ func (r *containerCreateRequest) resetForReuse() {
 	h.Runtime = ""
 	h.MaskedPaths = nil
 	h.ReadonlyPaths = nil
+	clear(h.LogConfig.Config)
 }
 
 // oversizedForReuse reports whether req grew past containerCreateReuseCap in
@@ -321,6 +335,7 @@ func (r *containerCreateRequest) oversizedForReuse() bool {
 		len(r.Volumes) > containerCreateReuseCap ||
 		len(h.Sysctls) > containerCreateReuseCap ||
 		len(h.Tmpfs) > containerCreateReuseCap ||
+		len(h.LogConfig.Config) > containerCreateReuseCap ||
 		len(r.NetworkingConfig.EndpointsConfig) > containerCreateReuseCap
 }
 

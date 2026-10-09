@@ -147,6 +147,10 @@ var containerCreateDecodeCorpus = []string{
 	`{"Volumes":{"/data":{},"/etc:/h":{},"myvol:/d:O,upperdir=/etc,workdir=/mnt":{}}}`,
 	`{"Volumes":{"/srv/data:/d":{}}}`,
 	`{"Volumes":null}`,
+	`{"HostConfig":{"LogConfig":{"Type":"k8s-file","Config":{"path":"/host/x.log","max-size":"10m"}}}}`,
+	`{"HostConfig":{"LogConfig":{"Type":"json-file","Config":{"max-size":"10m","max-file":"3"}}}}`,
+	`{"HostConfig":{"LogConfig":{"Type":"","Config":null}}}`,
+	`{"HostConfig":{"LogConfig":null}}`,
 }
 
 // normalizeContainerCreateForCompare rewrites zero-length slices and maps to
@@ -342,6 +346,13 @@ func TestReleaseContainerCreateRequestDropsOversizedTargets(t *testing.T) {
 			name: "sysctls over cap",
 			req: &containerCreateRequest{HostConfig: containerCreateHostConfig{
 				Sysctls: makeStringMap(containerCreateReuseCap + 1),
+			}},
+			want: true,
+		},
+		{
+			name: "log config options over cap",
+			req: &containerCreateRequest{HostConfig: containerCreateHostConfig{
+				LogConfig: containerCreateLogConfig{Config: makeStringMap(containerCreateReuseCap + 1)},
 			}},
 			want: true,
 		},
@@ -555,6 +566,12 @@ func TestContainerCreateDecodedFieldsAreTheInspectedFields(t *testing.T) {
 			allow:  `{"HostConfig":{"Mounts":[{"Type":"tmpfs","TmpfsOptions":{"Options":[["mode","1770"]]}}]}}`,
 		},
 		{
+			field:  "HostConfig.LogConfig.Config",
+			policy: newContainerCreatePolicy(ContainerCreateOptions{}),
+			deny:   `{"HostConfig":{"LogConfig":{"Config":{"path":"/host/x.log"}}}}`,
+			allow:  `{"HostConfig":{"LogConfig":{"Config":{"max-size":"10m"}}}}`,
+		},
+		{
 			field:  "HostConfig.Devices[].PathOnHost",
 			policy: devicePolicy,
 			deny:   `{"HostConfig":{"Devices":[{"PathOnHost":"/dev/sda"}]}}`,
@@ -742,6 +759,11 @@ func TestContainerCreateDecodeTypeErrorsStillDeny(t *testing.T) {
 		`{"HostConfig":{"Mounts":{}}}`,
 		`{"HostConfig":{"Tmpfs":[]}}`,
 		`{"HostConfig":{"Tmpfs":{"/scratch":5}}}`,
+		`{"HostConfig":{"LogConfig":"k8s-file"}}`,
+		`{"HostConfig":{"LogConfig":{"Config":[]}}}`,
+		`{"HostConfig":{"LogConfig":{"Config":"path=/host/x.log"}}}`,
+		`{"HostConfig":{"LogConfig":{"Config":{"path":5}}}}`,
+		`{"HostConfig":{"LogConfig":{"Config":{"max-size":10}}}}`,
 		`{"HostConfig":{"DeviceRequests":[{"Count":"4"}]}}`,
 	}
 

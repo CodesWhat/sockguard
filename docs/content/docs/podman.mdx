@@ -48,7 +48,7 @@ on.
 
 | libpod endpoint | Config key | Notes |
 |---|---|---|
-| `POST /libpod/containers/create` | `request_body.libpod_container_create` | Podman's native SpecGenerator create body. Field names mirror `container_create` where the semantics map across (privileged, host netns/pidns/ipcns/userns/cgroupns, bind-mount/device allowlists, capabilities, seccomp/AppArmor, `image_trust`), plus three libpod-only gates: `allow_host_uts`, `allow_systemd_mode` and `allow_custom_id_mappings`. The six host namespace gates cover `nsmode` `host` and `path`; see [Namespace Modes and the Host Gates](#namespace-modes-and-the-host-gates). The host-filesystem fields `rootfs`, `overlay_volumes` sources, overlay `upperdir`/`workdir` options and `init_path` are held to `allowed_bind_mounts`, a `mounts` bind source has to be an absolute path, and `conmon_pid_file` is refused outright; see [Host-Filesystem Fields on a Native Create](#host-filesystem-fields-on-a-native-create). |
+| `POST /libpod/containers/create` | `request_body.libpod_container_create` | Podman's native SpecGenerator create body. Field names mirror `container_create` where the semantics map across (privileged, host netns/pidns/ipcns/userns/cgroupns, bind-mount/device allowlists, capabilities, seccomp/AppArmor, `image_trust`), plus three libpod-only gates: `allow_host_uts`, `allow_systemd_mode` and `allow_custom_id_mappings`. The six host namespace gates cover `nsmode` `host` and `path`; see [Namespace Modes and the Host Gates](#namespace-modes-and-the-host-gates). The host-filesystem fields `rootfs`, `overlay_volumes` sources, overlay `upperdir`/`workdir` options and `init_path` are held to `allowed_bind_mounts`, a `mounts` bind source has to be an absolute path, `conmon_pid_file` is refused outright, and a log path (`log_configuration.path`, or a `healthLogDestination` directory) needs `allow_log_path`; see [Host-Filesystem Fields on a Native Create](#host-filesystem-fields-on-a-native-create). |
 | `POST /libpod/pods/create` | `request_body.libpod_pod_create` | Pods have no Docker-compat equivalent. Covers the pod's five namespaces, each with `nsmode` `host` or `path` behind its own gate (`allow_host_network` for `netns`, `allow_host_pid` for `pidns`, `allow_host_ipc` for `ipcns`, `allow_host_userns` for `userns`, `allow_host_uts` for `utsns`), shared PID namespace (`allow_shared_pid_namespace`), and the infra image's registry (`allowed_infra_image_registries`). |
 | `POST /libpod/build` | `request_body.build`, shared with Docker `POST /build` | Covers primary remote contexts, URL/image `additionalbuildcontexts`, `networkmode=host`, and Dockerfiles containing `RUN`, read from `Containerfile` and `Dockerfile` or from every file a JSON-array `dockerfile` names. Host/local/multipart and resource-usage host-file controls require the global blind-write acknowledgment. Direct and version-prefixed requests use the same tar/gzip bounds and body-sensitive startup validation as Docker's classic builder. |
 | `POST /libpod/containers/{name}/exec`, `POST /libpod/exec/{id}/start` | `request_body.exec` — **shared with Docker-compat** | libpod exec bodies use Docker's own field names on the wire, so there is deliberately no separate `libpod_exec` block. One `allowed_commands`/`allow_privileged`/`allow_root_user`/env-var policy governs exec on both surfaces, so nothing can be configured for one path family and forgotten for the other. |
@@ -264,6 +264,20 @@ daemon is standing. Only `bind` mounts are read this way. The source of a
 to, not one the container reads, so no list of readable paths fits it. It's
 refused outright whenever it's set.
 
+A log path is a host path the daemon writes too, and a native create has two.
+`log_configuration.path` is the file the container's output is written to.
+Podman keeps it under any log driver, makes a directory named for the
+container under it when it names a directory, and has conmon write the output
+there under `k8s-file` and `json-file`. `healthLogDestination` is where
+healthcheck results go. `local` and `events_logger` keep them in the
+container's own state, and any other value is a directory on the daemon host
+that each healthcheck run writes `<container id>-healthcheck.log` into. Both
+are refused unless `request_body.libpod_container_create.allow_log_path` is
+on. It's off by default, and `allowed_bind_mounts` doesn't open either one.
+Podman compares `local` and `events_logger` exactly, so `LOCAL` is a directory
+to it and is refused with the rest. `log_configuration.options` isn't read for
+a path on this route, so an entry named `path` there does nothing and passes.
+
 Before 2.2.6 a create with default options and `{"rootfs":"/"}` ran a
 container rooted at the host's `/`, and
 `{"overlay_volumes":[{"source":"/","destination":"/host"}]}` mounted the
@@ -321,6 +335,25 @@ makes an exec/suid/dev tmpfs. A comma in any of those fields is refused. dockerd
 reads the structured mount and never rebuilds that string, so nothing a Docker
 client normally sends is affected.
 
+The Docker-compatible create reaches the same log path through
+`HostConfig.LogConfig`. It has no path field. Podman turns each entry of
+`LogConfig.Config` into a `--log-opt` argument and reads the one named `path`
+as the log file, so
+`{"HostConfig":{"LogConfig":{"Type":"k8s-file","Config":{"path":"/host/x.log"}}}}`
+had Podman write the container's output to `/host/x.log` on the host. That
+body was confirmed on a live Podman 6.1.3.
+`request_body.container_create.allow_log_path` gates it, and it's off by
+default. Podman lowers the option name and cuts each `key=value` at its first
+`=`, so `Path`, `PATH` and a key that already holds its value
+(`"path=/host/x.log"`) are the path as well. All of them are refused, under any
+driver and whatever the value. The rest of `LogConfig` passes: the driver,
+`max-size`, `tag`, and the `Path` that Podman's own inspect reports beside
+`Config`, which a client that recreates a container sends back and Podman
+ignores. dockerd picks the log file itself and none of its built-in drivers
+takes a `path` option, so a Docker upstream is only affected if a logging
+plugin there takes one. The compat create can't set `healthLogDestination`.
+Podman pins it to `local` on that route.
+
 ### What a Working Client Hits
 
 - `podman --remote run --rootfs /path`, until `/path` is covered by
@@ -344,12 +377,26 @@ client normally sends is affected.
   `allowed_bind_mounts`.
 - `podman --remote run --conmon-pidfile /path`, which is refused whatever the
   allowlist holds.
+- `podman --remote run --log-opt path=/path`, until
+  `libpod_container_create.allow_log_path` is on. podman-remote reads the
+  option itself and sends it as `log_configuration.path`. A podman-remote
+  5.8 client whose own containers.conf sets `log_path` sends that on every
+  create.
+- `podman --remote run --health-log-destination /dir`, until the same option
+  is on.
+- `docker run --log-opt path=/path`, or a Compose `logging.options.path`,
+  against a Podman upstream, until `container_create.allow_log_path` is on.
 
 A create that sets none of them isn't affected. podman-remote omits `rootfs`,
 `overlay_volumes`, `init_path` and `conmon_pid_file` unless the matching flag
 is passed, sends a named volume with no overlay options unless they're typed
 out, and sends an absolute source for an ordinary `-v /src:/dst`, so an
-ordinary image-based create is unchanged.
+ordinary image-based create is unchanged. It sends an empty
+`log_configuration` and `"healthLogDestination": "local"` unless a log or
+healthcheck-log flag is passed, and a log driver or a size limit with no path
+passes. Where the daemon puts a log nobody named a path for is its own
+default, containers.conf `log_path` included, and the gate doesn't change
+that.
 
 The same host-path exposure on `POST /libpod/pods/create` isn't gated yet. A
 pod's `overlay_volumes`, `mounts`, `volumes`, `image_volumes`, `volumes_from`
