@@ -172,10 +172,10 @@ jobs:
     permissions:
       contents: read
       security-events: write
-    # Secrets can't be read in a step `if:`, so the username is mapped here
-    # to gate the Docker Hub login on it being present.
+    # Secrets can't be read in a step `if:`, so whether both Docker Hub
+    # credentials are present is mapped here to gate the login on it.
     env:
-      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_LOGIN: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
     steps:
       # Stays audit for stage 1: builds the Wolfi/Chainguard-based image
       # before scanning it, and that base-image pull can land on any of
@@ -197,8 +197,8 @@ jobs:
       - name: Log in to Docker Hub
         # Only here to pull as an authenticated user: anonymous pulls hit
         # Docker Hub's toomanyrequests limit on shared runner IPs. Skipped
-        # when the credentials are absent (fork PRs, Dependabot).
-        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        # unless both credentials are present (fork PRs, Dependabot).
+        if: ${{ env.DOCKERHUB_LOGIN == 'true' }}
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -358,10 +358,10 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    # Secrets can't be read in a step `if:`, so the username is mapped here
-    # to gate the Docker Hub login on it being present.
+    # Secrets can't be read in a step `if:`, so whether both Docker Hub
+    # credentials are present is mapped here to gate the login on it.
     env:
-      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_LOGIN: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
     steps:
       # Stays audit PERMANENTLY, not just for stage 1: this is the DAST-class
       # job — it pulls a third-party scanner image and drives it against a
@@ -387,8 +387,8 @@ jobs:
       - name: Log in to Docker Hub
         # Only here to pull as an authenticated user: anonymous pulls hit
         # Docker Hub's toomanyrequests limit on shared runner IPs. Skipped
-        # when the credentials are absent (fork PRs, Dependabot).
-        if: ${{ env.DOCKERHUB_USERNAME != '' }}
+        # unless both credentials are present (fork PRs, Dependabot).
+        if: ${{ env.DOCKERHUB_LOGIN == 'true' }}
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
