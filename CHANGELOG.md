@@ -115,6 +115,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The Go module now declares `github.com/codeswhat/sockguard/v2`, so future v2 release tags can resolve through the Go module proxy. Imports, Docker and GoReleaser version linker flags, and coverage tooling use the new path. All 11 vendored BuildKit protobuf bindings were regenerated from the retargeted schemas, with updated provenance hashes and a regression check for their serialized package metadata. After the next tag is published, Go installs use `github.com/codeswhat/sockguard/v2/app/cmd/sockguard@latest`. Existing tags keep their original module declarations. Docker, Homebrew, deb and rpm installation paths are unchanged.
 
+## [2.2.8] - 2026-10-09
+
+### Security
+
+- **Go toolchain bumped `1.27.0` → `1.27.2` and `golang.org/x/net` to `0.60.0` to remediate six advisories published on 2026-10-08:** [GO-2026-6603](https://pkg.go.dev/vuln/GO-2026-6603) (HTTP/2 server memory exhaustion from Trailer headers), [GO-2026-6607](https://pkg.go.dev/vuln/GO-2026-6607) (malformed ECH outer extension references in `crypto/tls`), [GO-2026-6609](https://pkg.go.dev/vuln/GO-2026-6609) (unbounded Range header parsing), [GO-2026-6611](https://pkg.go.dev/vuln/GO-2026-6611) (CPU use from repeated HTTP/2 initial-window changes), [GO-2026-6613](https://pkg.go.dev/vuln/GO-2026-6613) (HTTP/1 connection desync after a 2xx CONNECT response) and [GO-2026-6617](https://pkg.go.dev/vuln/GO-2026-6617) (an HTTP/2 server crash from an HPACK encoder race). Sockguard runs a `net/http` server and TLS listeners, so these are treated as reachable until shown otherwise; reachability from Sockguard's listeners has not been established yet. The 2.2.7 images were built with Go 1.27.0 and carry them. The Dockerfile builder image is pinned to `golang:1.27.2-alpine3.23` accordingly. Go 1.27.2 writes a newer export-data format than golangci-lint v2.13.2 can read, so the pinned linter moves to v2.14.0 in the same change.
+
 ## [2.2.7] - 2026-10-08
 
 ### Security
