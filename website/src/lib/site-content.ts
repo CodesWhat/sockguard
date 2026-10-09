@@ -331,6 +331,27 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
+    version: "v2.2.7",
+    title: "Security Patch: Podman Compat Creates and Dockerfile RUN Scan Forms",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "On a Podman upstream, a Docker-compatible create can no longer bind a host path past allowed_bind_mounts through a relative, empty, drive-letter or comma-injected mount field",
+      "Syntax directives written as // or JSON, or after a BOM, shebang or check directive, are recognised by the RUN gate",
+      "RUN instructions that BuildKit assembles across continuations differently than Sockguard did are now scanned the way BuildKit reads them",
+    ],
+  },
+  {
+    version: "v2.2.8",
+    title: "Security Patch: Go Toolchain Rebuild",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Rebuilt with Go 1.27.2 and golang.org/x/net 0.60.0 to clear six Go advisories published on 2026-10-08 in net/http and crypto/tls",
+      "No change to Sockguard's own behaviour; it also carries everything in 2.2.7",
+    ],
+  },
+  {
     version: "v2.3.0",
     title: "BuildKit RUN-Instruction Coverage",
     emoji: "🧩",

@@ -3,7 +3,7 @@ title: Roadmap
 description: Sockguard's shipped v1.7, v2.0, v2.1, and v2.2 work, planned v2.3 focus, and later direction.
 ---
 
-Sockguard v2.2 is the current stable feature line, with v2.2.6 the latest
+Sockguard v2.2 is the current stable feature line, with v2.2.8 the latest
 release. v2.2.0 closed the volume-mount and read-side gaps that survived
 v2.1.0 and added the operator-facing checks that were missing around them;
 v2.2.1 is a security patch on that line, closing a raw block-device,
@@ -35,7 +35,15 @@ patch: a request body that repeats a key or spells one with U+0130, U+017F
 or U+212A is refused, a native Podman container create is held to
 `allowed_bind_mounts` for `rootfs`, overlays and `init_path` and refuses
 relative bind sources outright, and pod and container creates in a host UTS, cgroup, PID, IPC or
-user namespace need their own `allow_host_*` option. v2.3.0-rc.1 is the first candidate for the next line and is still in soak. This roadmap describes direction and priorities, not
+user namespace need their own `allow_host_*` option. v2.2.7 is a seventh
+security patch: on a Podman upstream, a Docker-compatible container create
+is held to `allowed_bind_mounts` for relative, empty, drive-letter and
+comma-injected mount fields, and the RUN gate recognises syntax directives
+written as `//` or JSON and RUN instructions that BuildKit assembles across
+continuations differently than Sockguard did. v2.2.8 is an eighth security
+patch: it rebuilds with Go 1.27.2 and `golang.org/x/net` 0.60.0 to clear six
+Go advisories published on 2026-10-08 in `net/http` and `crypto/tls`, with no
+change to Sockguard's own behaviour. v2.3.0-rc.1 is the first candidate for the next line and is still in soak. This roadmap describes direction and priorities, not
 promises about dates. A feature is available only after the release notes say
 it has shipped.
 

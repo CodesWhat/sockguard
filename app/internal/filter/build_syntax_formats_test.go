@@ -20,6 +20,9 @@ func TestMiddlewareBuildSyntaxFormats(t *testing.T) {
 		{"BOM and shebang", "\ufeff#!/usr/bin/env builder\n# syntax=" + frontend + "\n"},
 		{"slash", "// syntax=" + frontend + "\n"},
 		{"JSON", `{"syntax":"` + frontend + `"}`},
+		{"JSON capitalized key", `{"Syntax":"` + frontend + `"}`},
+		{"JSON upper case key", `{"SYNTAX":"` + frontend + `"}`},
+		{"JSON mixed case key", `{"sYnTaX":"` + frontend + `"}`},
 		{"check", "# check=skip=all\n# syntax=" + frontend + "\nFROM scratch\n"},
 	}
 

@@ -91,3 +91,10 @@ linters:
         linters:
           - staticcheck
         text: SA5011
+      # golang.org/x/net v0.60.0 deprecates http2.Server, http2.Transport and
+      # NewClientConn in favour of net/http. The BuildKit bridge still uses
+      # them on the 2.2 line; the move to net/http's HTTP/2 lives on 2.3.
+      - path: internal/buildkitproxy/
+        linters:
+          - staticcheck
+        text: "SA1019: .*http2\\."
