@@ -75,14 +75,19 @@ type libpodPodCreatePolicy struct {
 // so each becomes the infra container's namespace of the same name
 // (pkg/api/handlers/libpod/pods.go:60-65). A `cgroupns` key in the body has
 // no field to land in and is dropped by that decode.
+//
+// InfraConmonPidFile is the pod's name for a container create's
+// conmon_pid_file: a host path conmon writes its PID to. See
+// denyInfraConmonPidFileReason.
 type libpodPodCreateRequest struct {
-	NetNS            libpodNamespace `json:"netns"`
-	PidNS            libpodNamespace `json:"pidns"`
-	IpcNS            libpodNamespace `json:"ipcns"`
-	UserNS           libpodNamespace `json:"userns"`
-	UtsNS            libpodNamespace `json:"utsns"`
-	SharedNamespaces []string        `json:"shared_namespaces"`
-	InfraImage       string          `json:"infra_image"`
+	NetNS              libpodNamespace `json:"netns"`
+	PidNS              libpodNamespace `json:"pidns"`
+	IpcNS              libpodNamespace `json:"ipcns"`
+	UserNS             libpodNamespace `json:"userns"`
+	UtsNS              libpodNamespace `json:"utsns"`
+	SharedNamespaces   []string        `json:"shared_namespaces"`
+	InfraImage         string          `json:"infra_image"`
+	InfraConmonPidFile string          `json:"infra_conmon_pid_file"`
 }
 
 func newLibpodPodCreatePolicy(opts LibpodPodCreateOptions) libpodPodCreatePolicy {
@@ -136,6 +141,9 @@ func (p libpodPodCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 		return "libpod pod create denied: shared PID namespace is not allowed", nil
 	}
 	if denyReason := p.denyInfraImageReason(req.InfraImage); denyReason != "" {
+		return denyReason, nil
+	}
+	if denyReason := p.denyInfraConmonPidFileReason(req.InfraConmonPidFile); denyReason != "" {
 		return denyReason, nil
 	}
 
@@ -194,6 +202,41 @@ func (p libpodPodCreatePolicy) denyInfraImageReason(infraImage string) string {
 		return ""
 	}
 	return fmt.Sprintf("libpod pod create denied: infra image registry %q is not allowlisted", parsed.registry)
+}
+
+// denyInfraConmonPidFileReason refuses a non-empty infra_conmon_pid_file, the
+// way the container create inspector refuses conmon_pid_file
+// (denyConmonPidFileReason in libpod_container_create_rootfs.go). It's the
+// same host write under the pod's name for it, and no option opens it.
+//
+// What Podman does with it, read from 5.8.6 and 6.1.3:
+//
+//   - PodBasicConfig.InfraConmonPidFile (pkg/specgen/podspecgen.go:36) is the
+//     only key in a pod create body that reaches the infra container's
+//     ConmonPidFile. The handler assigns it there by hand because the two
+//     JSON tags differ (pkg/api/handlers/libpod/pods.go:72), and a
+//     `conmon_pid_file` key in the body has no PodSpecGenerator field to land
+//     in. InfraContainerSpec is tagged `json:"-"` (podspecgen.go:242 in
+//     5.8.6, 234 in 6.1.3), so the body can't fill the infra spec directly
+//     either.
+//   - MakePod hands the infra spec to MakeContainer
+//     (pkg/specgen/generate/pod_create.go:91), which keeps any non-empty
+//     ConmonPidFile (container_create.go:601-602 in 5.8.6, 617-618 in 6.1.3).
+//     conmon then gets it as --conmon-pidfile when the infra container starts
+//     (libpod/oci_conmon_common.go:1044-1045 in 5.8.6, 1054-1055 in 6.1.3) and
+//     writes its PID there as the daemon's user.
+//   - A pod created with no_infra true has no infra container, so nothing
+//     reads the field (pod_create.go:76). It's refused on such a pod too, like
+//     a host namespace is: what the body asks for is refused whether or not
+//     Podman would act on it.
+//
+// Podman acts on any non-empty value (len > 0), a relative path included, so
+// that's the test here too.
+func (p libpodPodCreatePolicy) denyInfraConmonPidFileReason(pidFile string) string {
+	if pidFile == "" {
+		return ""
+	}
+	return "libpod pod create denied: setting infra_conmon_pid_file is not allowed"
 }
 
 func isSharedPIDNamespaceEntry(ns string) bool {

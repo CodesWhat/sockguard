@@ -147,6 +147,64 @@ func TestLibpodPodCreateInspectInfraImageRegistryGate(t *testing.T) {
 	}
 }
 
+// TestLibpodPodCreateInspectInfraConmonPidFileGate pins that a pod create
+// naming infra_conmon_pid_file is refused, the way a container create naming
+// conmon_pid_file is (TestLibpodContainerCreateConmonPidFileGate). Podman
+// copies the field onto the infra container's ConmonPidFile (Podman 5.8.6 and
+// 6.1.3 pkg/api/handlers/libpod/pods.go:72), and conmon writes its PID to
+// that path as the daemon's user when the infra container starts. The
+// inspector didn't decode the field before, so every body in the first five
+// rows was forwarded.
+//
+// No option opens the gate, so each row runs with every option off and with
+// every option on. encoding/json and both of Podman's decoders match a key in
+// any letter case, and a key given twice never reaches the gate, because
+// readBoundedBody refuses the body.
+func TestLibpodPodCreateInspectInfraConmonPidFileGate(t *testing.T) {
+	const (
+		refused   = "libpod pod create denied: setting infra_conmon_pid_file is not allowed"
+		undecoded = "libpod pod create denied: request body could not be inspected"
+	)
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"a host path", `{"infra_conmon_pid_file":"/host/x.pid"}`, refused},
+		// podman-remote sends a relative --infra-conmon-pidfile as typed.
+		{"a relative path", `{"infra_conmon_pid_file":"x.pid"}`, refused},
+		{"under an upper-case key", `{"INFRA_CONMON_PID_FILE":"/host/x.pid"}`, refused},
+		// Podman creates no infra container for this pod and never reads the
+		// field. It's refused all the same, like a host namespace is.
+		{"on a pod with no infra", `{"no_infra":true,"infra_conmon_pid_file":"/host/x.pid"}`, refused},
+		{"a value that isn't a string", `{"infra_conmon_pid_file":["/host/x.pid"]}`, undecoded},
+		{"given twice", `{"infra_conmon_pid_file":"/host/x.pid","infra_conmon_pid_file":""}`, repeatedKeyReason("infra_conmon_pid_file", "infra_conmon_pid_file")},
+		{"absent", `{"name":"my-pod"}`, ""},
+		{"empty", `{"infra_conmon_pid_file":""}`, ""},
+		{"null", `{"infra_conmon_pid_file":null}`, ""},
+	}
+	everyOptionOn := libpodPodGateOptions("")
+	everyOptionOn.AllowSharedPIDNamespace = true
+	everyOptionOn.AllowedInfraImageRegistries = []string{"quay.io"}
+	options := []struct {
+		name string
+		opts LibpodPodCreateOptions
+	}{
+		{"every option off", LibpodPodCreateOptions{}},
+		{"every option on", everyOptionOn},
+	}
+	for _, tt := range tests {
+		for _, o := range options {
+			t.Run(tt.name+"/"+o.name, func(t *testing.T) {
+				policy := newLibpodPodCreatePolicy(o.opts)
+				if reason := inspectLibpodPod(t, policy, []byte(tt.body)); reason != tt.want {
+					t.Fatalf("inspect() reason = %q, want %q", reason, tt.want)
+				}
+			})
+		}
+	}
+}
+
 func TestLibpodPodCreateInspectHandlesMalformedJSON(t *testing.T) {
 	policy := newLibpodPodCreatePolicy(LibpodPodCreateOptions{})
 	req := httptest.NewRequest(http.MethodPost, "/libpod/pods/create", bytes.NewBufferString("{"))

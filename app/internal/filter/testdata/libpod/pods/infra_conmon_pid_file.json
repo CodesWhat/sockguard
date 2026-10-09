@@ -1,0 +1,49 @@
+{
+  "Networks": null,
+  "exit_policy": "continue",
+  "idmappings": {
+    "AutoUserNs": false,
+    "AutoUserNsOpts": {
+      "AdditionalGIDMappings": null,
+      "AdditionalUIDMappings": null,
+      "GroupFile": "",
+      "InitialSize": 0,
+      "PasswdFile": "",
+      "Size": 0
+    },
+    "GIDMap": null,
+    "HostGIDMapping": true,
+    "HostUIDMapping": true,
+    "UIDMap": null
+  },
+  "infra_conmon_pid_file": "/run/sg-pod.pid",
+  "ipcns": {
+    "nsmode": "private"
+  },
+  "name": "sg-pod-pidfile",
+  "netns": {},
+  "pidns": {
+    "nsmode": "private"
+  },
+  "pod_create_command": [
+    "podman",
+    "--remote",
+    "--url",
+    "unix:///tmp/sg-capture/capture.sock",
+    "pod",
+    "create",
+    "--name",
+    "sg-pod-pidfile",
+    "--infra-conmon-pidfile",
+    "/run/sg-pod.pid"
+  ],
+  "resource_limits": {
+    "cpu": {}
+  },
+  "share_parent": true,
+  "shared_namespaces": ["ipc", "net", "uts"],
+  "userns": {},
+  "utsns": {
+    "nsmode": "private"
+  }
+}

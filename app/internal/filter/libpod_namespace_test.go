@@ -619,7 +619,8 @@ func TestLibpodPodCreateHasNoCgroupNamespaceToGate(t *testing.T) {
 
 // libpodPodFixtures are the pod create bodies captured off podman-remote
 // (testdata/libpod/README.md), the reason each is refused with every option
-// off, and the one option that lets it through.
+// off, and the one option that lets it through. A body with a reason and no
+// option is refused whatever the options say.
 var libpodPodFixtures = []struct {
 	fixture    string
 	wantReason string
@@ -633,13 +634,15 @@ var libpodPodFixtures = []struct {
 	{"host_uts.json", "libpod pod create denied: host UTS namespace is not allowed", func(o *LibpodPodCreateOptions) { o.AllowHostUTS = true }},
 	{"host_userns.json", "libpod pod create denied: host user namespace is not allowed", func(o *LibpodPodCreateOptions) { o.AllowHostUserNS = true }},
 	{"share_pid.json", "libpod pod create denied: shared PID namespace is not allowed", func(o *LibpodPodCreateOptions) { o.AllowSharedPIDNamespace = true }},
+	{fixture: "infra_conmon_pid_file.json", wantReason: "libpod pod create denied: setting infra_conmon_pid_file is not allowed"},
 }
 
 // TestLibpodPodCreateCapturedBodies runs every pod create body captured off
 // podman-remote through the inspector. The three a client sends without
 // asking for a host namespace pass with every option off, which is what
 // keeps 2.2.6's new gates from refusing a pod create that worked on 2.2.5.
-// The rest are refused by default and pass with the one option they need.
+// The rest are refused by default and pass with the one option they need,
+// except the one that names infra_conmon_pid_file, which no option opens.
 func TestLibpodPodCreateCapturedBodies(t *testing.T) {
 	captured, err := filepath.Glob(filepath.Join("testdata", "libpod", "pods", "*.json"))
 	if err != nil {
