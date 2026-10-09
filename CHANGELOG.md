@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The pre-push lockfile dedupe check resolves against npm as of 14 days ago, matching the Renovate release-age cool-off, so a just-published dependency no longer blocks pushes.
 
 - CI, PR security scans and quality workflows run harden-runner in audit mode because block mode intermittently refused allow-listed hosts and left jobs hanging until their timeout; the release cut and publisher keep block mode with their curated allow lists.
+- **Sockguard is now MIT licensed, where it was Apache-2.0.** MIT has shorter terms, and unlike Apache-2.0 it has no explicit patent grant and no NOTICE requirement. Releases up to and including 2.2.x remain available under Apache-2.0.
 
 - The release cut and publisher retry checkout, Buildx setup and their GitHub API polling once after a short wait when harden-runner block mode briefly refuses an allow-listed host; block mode and the allow lists are unchanged.
 

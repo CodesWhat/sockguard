@@ -53,7 +53,7 @@ export const SITE_CONFIG = {
   /** Docker Hub image, "owner/name". */
   dockerImage: "codeswhat/sockguard",
   /** License link shown in the footer. */
-  licenseUrl: "https://www.apache.org/licenses/LICENSE-2.0",
+  licenseUrl: "https://opensource.org/license/mit",
   /** Aurora background palette token (see globals.css `[data-bg]`). */
   aurora: "ember" as AuroraPalette,
   /** Prefix for localStorage keys (keeps multi-site deploys from colliding). */
