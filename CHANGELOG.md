@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0-rc.7] - 2026-10-09
+
+### Security
+
+- **Every 2.2.9 fix is now on the v2.3 line.** rc.6 was cut before 2.2.9 shipped, and this candidate merges that release in. 2.2.9 is one change, to the Dockerfile RUN gate behind `request_body.build.allow_run_instructions: false`. It applies on `POST /build`, `POST /libpod/build` and to the Dockerfile held for inspection on a BuildKit session. A heredoc word the gate can't follow now counts as a RUN: on `ADD`, `COPY` and any `ONBUILD` line, an argument holding a `<` that isn't a plain heredoc word (`<<NAME`, `<<-NAME`, or the same with the name in one pair of quotes) refuses the build, because a terminator that isn't a plain word (`COPY <<'A\' /x`) could fold the `RUN` after it into the terminator line. The gate also reads the file each way Podman's builder differs from BuildKit (one carriage return stripped per line, a doubled escape continuing the line, only the first character of `# escape=` read, `# syntax=` not known as a directive) and refuses the build if any reading has a RUN, and the backslash stays a candidate escape unless the first line is an `# escape=` directive every parser accepts. The JSON form of the syntax directive is recognized when another key holds a number too large for a float, and when the key is given as a string and then as `null`. None of it lands differently here. The scan is 2.2.9's source unchanged, and a long continuation is still built up without recopying it on every line, as it has been on this line since rc.1. rc.6 reads a Dockerfile exactly as 2.2.8 does, so it's affected the same way. rc.1 to rc.5 ran this line's earlier scan and are affected too, with one exception: a heredoc terminator that reads as a comment (`ADD <<#A`) only got past rc.6, because the earlier scan didn't drop a comment line inside a continuation. As on 2.2.9, a Dockerfile with ordinary heredocs (`<<EOF`, `<<-EOF`, `<<'EOF'`) and no RUN still passes unless a heredoc body line starts with `add`, `copy` or `onbuild` and contains a `<`, and a deployment that allows RUN is unaffected. The configuration reference's `build` row says the same. The 2.2.9 entry below describes each one and how it was confirmed against BuildKit's parser and Podman's builder library.
+
 ## [2.3.0-rc.6] - 2026-10-09
 
 ### Security
