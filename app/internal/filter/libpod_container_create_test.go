@@ -824,9 +824,14 @@ func TestRewriteLibpodJSONImageFieldRejectsDuplicateCaseVariantKeys(t *testing.T
 // TestLibpodContainerCreateHostPathGatesLeaveFixturesAllowed decodes every
 // captured top-level POST /libpod/containers/create body and asserts the new
 // host-path gate (rootfs, overlay_volumes, the overlay directories in a
-// volume's options, init_path, conmon_pid_file) refuses none of them, under
-// the strictest posture: a policy with no allowlisted bind mount. No default-client fixture carries any of those fields, so a fixture
-// that started failing here would mean a real podman-remote body hit the gate.
+// volume's options, init_path, conmon_pid_file, log_configuration.path,
+// healthLogDestination) refuses none of them, under the strictest posture: a
+// policy with no allowlisted bind mount and allow_log_path off. No
+// default-client fixture carries any of those fields, apart from the empty
+// log_configuration and the "local" healthLogDestination podman-remote always
+// sends, so a fixture that started failing here would mean a real
+// podman-remote body hit the gate. The two bodies captured with a log flag
+// set are the exception, and each has to be refused for its own reason.
 // denyHostPathReason is checked in isolation on purpose: the full inspect()
 // still refuses fixtures that trip other, pre-existing gates (privileged,
 // host namespaces, devices, sysctls), which this change doesn't touch.
@@ -837,6 +842,10 @@ func TestLibpodContainerCreateHostPathGatesLeaveFixturesAllowed(t *testing.T) {
 	}
 	policy := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{})
 	anyPath := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowedBindMounts: []string{"/"}})
+	wantRefused := map[string]string{
+		"log_path.json":               "libpod container create denied: setting log_configuration.path is not allowed (set allow_log_path: true)",
+		"health_log_destination.json": `libpod container create denied: setting healthLogDestination to a host directory is not allowed (set allow_log_path: true, or use "local" or "events_logger")`,
+	}
 	seen := 0
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
@@ -848,8 +857,8 @@ func TestLibpodContainerCreateHostPathGatesLeaveFixturesAllowed(t *testing.T) {
 			if err := json.Unmarshal(loadLibpodFixture(t, entry.Name()), &req); err != nil {
 				t.Fatalf("decode fixture %s: %v", entry.Name(), err)
 			}
-			if reason := policy.denyHostPathReason(req); reason != "" {
-				t.Fatalf("fixture %s newly refused by a host-path gate: %q", entry.Name(), reason)
+			if reason := policy.denyHostPathReason(req); reason != wantRefused[entry.Name()] {
+				t.Fatalf("fixture %s: host-path gates gave %q, want %q", entry.Name(), reason, wantRefused[entry.Name()])
 			}
 			// The bind-source gate refuses a source that isn't an absolute
 			// path. With every path allowlisted that's the only way it can
@@ -933,6 +942,116 @@ func TestLibpodContainerCreateConmonPidFileGate(t *testing.T) {
 	}
 	if reason := inspectLibpod(t, deny, []byte(`{"systemd":"false","image":"a"}`)); reason != "" {
 		t.Fatalf("want allow: no conmon_pid_file set, got %q", reason)
+	}
+}
+
+// TestLibpodContainerCreateLogPathGate pins the two log destinations a native
+// create can put on the daemon host, both behind allow_log_path:
+// log_configuration.path, and a healthLogDestination that isn't one of the two
+// names Podman keeps in the container's own state.
+func TestLibpodContainerCreateLogPathGate(t *testing.T) {
+	const (
+		pathDenied   = "libpod container create denied: setting log_configuration.path is not allowed (set allow_log_path: true)"
+		healthDenied = `libpod container create denied: setting healthLogDestination to a host directory is not allowed (set allow_log_path: true, or use "local" or "events_logger")`
+		malformed    = "libpod container create denied: malformed JSON request body"
+	)
+
+	// What podman-remote 6.1.3 sends for each flag; see testdata/libpod/README.md.
+	// The captured bodies carry systemd "true", so the option is paired with
+	// AllowSystemdMode to see the log gate's own answer.
+	captured := []struct {
+		fixture    string
+		wantReason string
+	}{
+		{"log_path.json", pathDenied},
+		{"health_log_destination.json", healthDenied},
+		{"log_driver_options.json", ""},
+		{"basic_create.json", ""},
+	}
+	for _, tt := range captured {
+		t.Run(tt.fixture, func(t *testing.T) {
+			body := loadLibpodFixture(t, tt.fixture)
+			gateOff := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowSystemdMode: true})
+			if reason := inspectLibpod(t, gateOff, body); reason != tt.wantReason {
+				t.Fatalf("with allow_log_path off inspect() reason = %q, want %q", reason, tt.wantReason)
+			}
+			gateOn := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowSystemdMode: true, AllowLogPath: true})
+			if reason := inspectLibpod(t, gateOn, body); reason != "" {
+				t.Fatalf("with allow_log_path on inspect() reason = %q, want it allowed", reason)
+			}
+		})
+	}
+
+	create := func(fields string) []byte {
+		return []byte(`{"systemd":"false","image":"alpine"` + fields + `}`)
+	}
+	off := LibpodContainerCreateOptions{}
+	on := LibpodContainerCreateOptions{AllowLogPath: true}
+
+	tests := []struct {
+		name       string
+		opts       LibpodContainerCreateOptions
+		body       []byte
+		wantReason string
+	}{
+		{name: "log path under k8s-file is denied", opts: off, body: create(`,"log_configuration":{"driver":"k8s-file","path":"/host/x.log"}`), wantReason: pathDenied},
+		{name: "log path with no driver is denied", opts: off, body: create(`,"log_configuration":{"path":"/host/x.log"}`), wantReason: pathDenied},
+		{name: "log path under journald is denied", opts: off, body: create(`,"log_configuration":{"driver":"journald","path":"/host/logs"}`), wantReason: pathDenied},
+		{name: "log path under none is denied", opts: off, body: create(`,"log_configuration":{"driver":"none","path":"/host/logs"}`), wantReason: pathDenied},
+		{name: "relative log path is denied", opts: off, body: create(`,"log_configuration":{"path":"x.log"}`), wantReason: pathDenied},
+		{name: "log path under capitalized keys is denied", opts: off, body: create(`,"LOG_CONFIGURATION":{"Path":"/host/x.log"}`), wantReason: pathDenied},
+		{
+			name:       "log path under an allowlisted bind directory is denied",
+			opts:       LibpodContainerCreateOptions{AllowedBindMounts: []string{"/"}},
+			body:       create(`,"log_configuration":{"path":"/host/x.log"}`),
+			wantReason: pathDenied,
+		},
+		{name: "log path is allowed with AllowLogPath", opts: on, body: create(`,"log_configuration":{"driver":"k8s-file","path":"/host/x.log"}`)},
+
+		{name: "no log_configuration is allowed", opts: off, body: create(``)},
+		{name: "null log_configuration is allowed", opts: off, body: create(`,"log_configuration":null`)},
+		{name: "empty log_configuration is allowed", opts: off, body: create(`,"log_configuration":{}`)},
+		{name: "empty log path is allowed", opts: off, body: create(`,"log_configuration":{"path":""}`)},
+		{name: "driver and size are allowed", opts: off, body: create(`,"log_configuration":{"driver":"k8s-file","size":10485760}`)},
+		{name: "journald tag and labels are allowed", opts: off, body: create(`,"log_configuration":{"driver":"journald","options":{"tag":"web"},"labels":{"team":"core"}}`)},
+		// MakeContainer reads only "tag" out of options, so a path there
+		// isn't one.
+		{name: "options entry named path is allowed", opts: off, body: create(`,"log_configuration":{"driver":"k8s-file","options":{"path":"/host/x.log","PATH":"/host/y.log"}}`)},
+
+		{name: "health log directory is denied", opts: off, body: create(`,"healthLogDestination":"/host/logs"`), wantReason: healthDenied},
+		{name: "relative health log directory is denied", opts: off, body: create(`,"healthLogDestination":"logs"`), wantReason: healthDenied},
+		{name: "health log directory under a lowercase key is denied", opts: off, body: create(`,"healthlogdestination":"/host/logs"`), wantReason: healthDenied},
+		// Podman compares the two names exactly, so each of these is a
+		// directory under the daemon's working directory.
+		{name: "local in capitals is denied", opts: off, body: create(`,"healthLogDestination":"LOCAL"`), wantReason: healthDenied},
+		{name: "local with a trailing space is denied", opts: off, body: create(`,"healthLogDestination":"local "`), wantReason: healthDenied},
+		{name: "events_logger in capitals is denied", opts: off, body: create(`,"healthLogDestination":"Events_Logger"`), wantReason: healthDenied},
+		{
+			name:       "health log directory under an allowlisted bind directory is denied",
+			opts:       LibpodContainerCreateOptions{AllowedBindMounts: []string{"/"}},
+			body:       create(`,"healthLogDestination":"/host/logs"`),
+			wantReason: healthDenied,
+		},
+		{name: "health log directory is allowed with AllowLogPath", opts: on, body: create(`,"healthLogDestination":"/host/logs"`)},
+		{name: "health log local is allowed", opts: off, body: create(`,"healthLogDestination":"local"`)},
+		{name: "health log events_logger is allowed", opts: off, body: create(`,"healthLogDestination":"events_logger"`)},
+		// Podman refuses an empty destination itself: it isn't a directory.
+		{name: "empty health log destination is allowed", opts: off, body: create(`,"healthLogDestination":""`)},
+		{name: "null health log destination is allowed", opts: off, body: create(`,"healthLogDestination":null`)},
+
+		// The log path answers first when a body sets both.
+		{name: "log path and health log directory name the log path", opts: off, body: create(`,"log_configuration":{"path":"/host/x.log"},"healthLogDestination":"/host/logs"`), wantReason: pathDenied},
+
+		{name: "log_configuration of the wrong type is malformed", opts: on, body: create(`,"log_configuration":"k8s-file"`), wantReason: malformed},
+		{name: "log path of the wrong type is malformed", opts: on, body: create(`,"log_configuration":{"path":["/host/x.log"]}`), wantReason: malformed},
+		{name: "health log destination of the wrong type is malformed", opts: on, body: create(`,"healthLogDestination":{"path":"/host/logs"}`), wantReason: malformed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if reason := inspectLibpod(t, newLibpodContainerCreatePolicy(tt.opts), tt.body); reason != tt.wantReason {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
 	}
 }
 

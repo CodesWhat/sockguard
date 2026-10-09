@@ -60,6 +60,13 @@ type libpodContainerCreateRequest struct {
 	InitPath       string                `json:"init_path"`
 	ConmonPidFile  string                `json:"conmon_pid_file"`
 
+	// LogConfiguration and HealthLogDestination are the two places a create
+	// names a host path for the daemon to write logs to: the container's log
+	// file, and the directory healthcheck results go into. See
+	// denyLogPathReason in libpod_container_create_rootfs.go.
+	LogConfiguration     libpodLogConfiguration `json:"log_configuration"`
+	HealthLogDestination string                 `json:"healthLogDestination"`
+
 	CapAdd  []string `json:"cap_add"`
 	CapDrop []string `json:"cap_drop"`
 
@@ -72,6 +79,16 @@ type libpodContainerCreateRequest struct {
 	Sysctl             map[string]string `json:"sysctl"`
 	ReadOnlyFilesystem bool              `json:"read_only_filesystem"`
 	Systemd            string            `json:"systemd"`
+}
+
+// libpodLogConfiguration mirrors SpecGenerator's "log_configuration" object
+// (specgen.LogConfig), narrowed to the field the policy inspects. driver,
+// size, labels and options aren't decoded: none of them names a host path.
+// podman-remote sends the object empty unless --log-driver or --log-opt was
+// passed, and reads "--log-opt path=" into the path field itself; see
+// basic_create.json and log_path.json.
+type libpodLogConfiguration struct {
+	Path string `json:"path"`
 }
 
 // libpodNamespace is the uniform shape SpecGenerator uses for every

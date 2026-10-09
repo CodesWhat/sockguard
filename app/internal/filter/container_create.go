@@ -167,6 +167,11 @@ type ContainerCreateOptions struct {
 	// last-wins ordering, so "exec,noexec" remains allowed.
 	AllowTmpfsPrivilegedOptions bool
 
+	// AllowLogPath permits a HostConfig.LogConfig.Config key a Podman
+	// upstream reads as the container's log path. Default false. See
+	// denyLogPathReason.
+	AllowLogPath bool
+
 	// AllowEndpointConfig permits static IP, MAC address, Links, and
 	// DriverOpts in NetworkingConfig.EndpointsConfig entries carried on
 	// POST /containers/create. Docker connects every entry here the same way
@@ -227,6 +232,7 @@ type containerCreatePolicy struct {
 	denyUnconfinedSystemPaths bool
 
 	allowTmpfsPrivilegedOptions bool
+	allowLogPath                bool
 
 	allowEndpointConfig bool
 	endpointConfig      EndpointConfigOptions
@@ -323,6 +329,7 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		denySelinuxLabelOverride:          opts.DenySelinuxLabelOverride,
 		denyUnconfinedSystemPaths:         opts.DenyUnconfinedSystemPaths,
 		allowTmpfsPrivilegedOptions:       opts.AllowTmpfsPrivilegedOptions,
+		allowLogPath:                      opts.AllowLogPath,
 		allowEndpointConfig:               opts.AllowEndpointConfig,
 		endpointConfig:                    opts.EndpointConfig,
 	}
@@ -1335,6 +1342,9 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if denyReason := p.denyLegacyTmpfsOptionsReason(createReq.HostConfig.Tmpfs); denyReason != "" {
 		return denyReason, nil
 	}
+	if denyReason := p.denyLogPathReason(createReq.HostConfig.LogConfig); denyReason != "" {
+		return denyReason, nil
+	}
 	if denyReason := p.denyNetworkingConfigReason(createReq.NetworkingConfig); denyReason != "" {
 		return denyReason, nil
 	}
@@ -2163,6 +2173,62 @@ func legacyTmpfsOptionsEnablePrivilege(options string) bool {
 		}
 	}
 	return exec || dev || suid
+}
+
+// denyLogPathReason refuses a HostConfig.LogConfig.Config key that a Podman
+// upstream reads as the container's log path, unless allowLogPath is set.
+//
+// Podman's compat create has no log path field. It writes each Config entry
+// out as a "--log-opt" argument, key + "=" + value (stringMaptoArray,
+// pkg/api/handlers/compat/containers_create.go:144-150 in Podman 6.1.3), and
+// FillOutSpecGen cuts each argument at its first "=" and switches on the
+// lowered name (pkg/specgenutil/specgen.go:848-875). "path" becomes
+// LogConfiguration.Path, and from there libpod.WithLogPath
+// (pkg/specgen/generate/container_create.go:569-570), the file conmon writes
+// the container's output to as the daemon's user. Podman 5.8.6 reads it the
+// same way (specgen.go:855-875).
+//
+// Any driver is refused, and a create that names none. WithLogPath runs
+// whatever the driver is and makes a directory under the path when the path
+// is one (libpod/options.go:1016-1032), and a "driver" entry in the same map
+// replaces HostConfig.LogConfig.Type anyway.
+//
+// The key is what's refused, whatever its value. Config is a data map, so the
+// body key check doesn't refuse a key given twice there
+// (isCaseSensitiveDataMapField), and judging the value would mean agreeing
+// with the daemon's decoder about which of the two it keeps.
+//
+// dockerd picks the log file itself (daemon/container/container.go:462-481
+// in moby docker-v29.9.0). Each of its built-in drivers refuses an option it
+// doesn't know, "path" included, and the none driver ignores its options
+// (ValidateLogOpts, daemon/logger/factory.go:134-178). So this costs a Docker
+// upstream nothing, unless a logging plugin there takes a "path" option of
+// its own: a plugin's options aren't validated.
+//
+// allowed_bind_mounts isn't consulted. It lists host paths a container may
+// mount, and this is a path the daemon writes.
+func (p containerCreatePolicy) denyLogPathReason(logConfig containerCreateLogConfig) string {
+	if p.allowLogPath {
+		return ""
+	}
+	for key := range logConfig.Config {
+		if logOptionNamesLogPath(key) {
+			return "container create denied: setting a log path in HostConfig.LogConfig.Config is not allowed (set allow_log_path: true)"
+		}
+	}
+	return ""
+}
+
+// logOptionNamesLogPath reports whether a Podman upstream reads the
+// HostConfig.LogConfig.Config entry under key as the log path. Podman joins
+// key and value with "=" and cuts the result at the first "=", so the name is
+// the key up to its own first "=" when it has one: {"path=/var/log/x": "y"}
+// is the argument "path=/var/log/x=y", which sets the path to "/var/log/x=y".
+// Podman lowers the name and doesn't trim it. This trims it too, which
+// refuses nothing a client has a use for.
+func logOptionNamesLogPath(key string) bool {
+	name, _, _ := strings.Cut(key, "=")
+	return strings.ToLower(strings.TrimSpace(name)) == "path"
 }
 
 // denyNetworkingConfigReason applies the same endpoint-config policy
