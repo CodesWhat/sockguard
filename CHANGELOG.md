@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Sockguard is now MIT licensed, where it was Apache-2.0.** MIT has shorter terms, and unlike Apache-2.0 it has no explicit patent grant and no NOTICE requirement. Releases up to and including 2.2.x remain available under Apache-2.0.
+
 ## [2.3.0-rc.7] - 2026-10-09
 
 ### Security
