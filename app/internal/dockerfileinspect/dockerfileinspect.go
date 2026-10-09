@@ -56,6 +56,16 @@ func SyntaxFrontend(raw []byte) string {
 	// fail the whole document here. That struct tag also matches the key in
 	// any letter case. Go through the keys in sorted order so a document with
 	// several spellings answers the same way every time.
+	//
+	// The struct decode itself runs first, because it applies keys in document
+	// order and leaves the field alone on null, so a string followed by the
+	// same key as null still selects the frontend there.
+	var tagged struct {
+		Syntax string `json:"syntax"`
+	}
+	if err := json.Unmarshal(raw, &tagged); err == nil && tagged.Syntax != "" {
+		return tagged.Syntax
+	}
 	var document map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &document); err == nil {
 		for _, key := range slices.Sorted(maps.Keys(document)) {
@@ -136,7 +146,9 @@ func syntaxDirective(raw []byte, prefix string) string {
 //   - which escape character is in force (see escapeChars);
 //   - whether a line ending in several carriage returns loses all of them
 //     (BuildKit) or one (the parser Podman's builder descends from), which
-//     decides whether an escape before them continues the line.
+//     decides whether an escape before them continues the line;
+//   - whether a doubled escape at the end of a line is an escaped escape
+//     (BuildKit) or a continuation (Podman's builder).
 func ContainsRunInstruction(raw []byte) bool {
 	raw = bytes.TrimPrefix(raw, utf8BOM)
 	lines := strings.Split(string(raw), "\n")
@@ -147,9 +159,17 @@ func ContainsRunInstruction(raw []byte) bool {
 	}
 
 	for _, escape := range escapeChars(lines) {
+		doubledReadings := []bool{false}
+		if slices.ContainsFunc(lines, func(line string) bool {
+			return strings.HasSuffix(strings.TrimRight(line, " \t\r"), escape+escape)
+		}) {
+			doubledReadings = append(doubledReadings, true)
+		}
 		for _, singleCR := range carriageReadings {
-			if containsRunWithEscape(lines, escape, singleCR) {
-				return true
+			for _, doubledContinues := range doubledReadings {
+				if containsRunWithEscape(lines, escape, singleCR, doubledContinues) {
+					return true
+				}
 			}
 		}
 	}
@@ -158,7 +178,7 @@ func ContainsRunInstruction(raw []byte) bool {
 
 var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 
-func containsRunWithEscape(lines []string, escape string, singleCR bool) bool {
+func containsRunWithEscape(lines []string, escape string, singleCR, doubledContinues bool) bool {
 	var logical strings.Builder
 	continued := false
 
@@ -176,7 +196,7 @@ func containsRunWithEscape(lines []string, escape string, singleCR bool) bool {
 			line = leading
 		}
 
-		fragment, more := trimContinuation(line, escape)
+		fragment, more := trimContinuation(line, escape, doubledContinues)
 		logical.WriteString(fragment)
 		if more {
 			continued = true
@@ -196,10 +216,11 @@ func containsRunWithEscape(lines []string, escape string, singleCR bool) bool {
 
 // trimContinuation removes a trailing line continuation from line and reports
 // whether there was one. Two escape characters in a row are an escaped
-// escape, not a continuation.
-func trimContinuation(line, escape string) (string, bool) {
+// escape, not a continuation, unless doubledContinues selects the reading of
+// a parser that has no such exception.
+func trimContinuation(line, escape string, doubledContinues bool) (string, bool) {
 	body, ok := strings.CutSuffix(strings.TrimRight(line, " \t"), escape)
-	if !ok || strings.HasSuffix(body, escape) {
+	if !ok || (!doubledContinues && strings.HasSuffix(body, escape)) {
 		return line, false
 	}
 	return body, true
@@ -216,18 +237,30 @@ var plainHeredocWord = regexp.MustCompile(`^[0-9]*<<-?(?:[A-Za-z0-9_.]+|'[A-Za-z
 
 // hasUnreadableHeredoc reports whether logical is an ADD or COPY instruction
 // carrying a word that might be a heredoc this scan can't follow. The builder
-// finds heredoc words after shell-style unquoting, so any argument holding a
-// `<` that isn't exactly a plain heredoc word is treated as one.
+// lexes the line into words by shell rules and unquotes the terminator name,
+// so any argument holding a `<` that isn't exactly a plain heredoc word is
+// treated as one.
+//
+// An ONBUILD line is checked whatever follows the keyword: the builders find
+// the sub-instruction only after skipping flags, and they lower-case the
+// keyword where Instruction upper-cases it, so the second field doesn't
+// reliably name it.
 func hasUnreadableHeredoc(logical string) bool {
 	if !strings.Contains(logical, "<") {
 		return false
 	}
-	switch Instruction(logical) {
-	case "ADD", "COPY", "ONBUILD ADD", "ONBUILD COPY":
+	fields := strings.Fields(logical)
+	if len(fields) == 0 {
+		return false
+	}
+	switch keyword := fields[0]; {
+	case strings.ToUpper(keyword) == "ONBUILD", strings.ToLower(keyword) == "onbuild":
+	case strings.ToUpper(keyword) == "ADD", strings.ToLower(keyword) == "add":
+	case strings.ToUpper(keyword) == "COPY", strings.ToLower(keyword) == "copy":
 	default:
 		return false
 	}
-	for _, field := range strings.Fields(logical) {
+	for _, field := range fields {
 		if strings.Contains(field, "<") && !plainHeredocWord.MatchString(field) {
 			return true
 		}
@@ -254,9 +287,21 @@ func escapeChars(lines []string) []string {
 		escapeChar(lines, "syntax"),
 		escapeChar(lines, "syntax", "check"),
 	}
+	// escapeChar accepts looser spellings of the directive than any one
+	// parser does (Unicode whitespace around `#`, the key and `=`). A parser
+	// that rejects the spelling keeps the backslash, so backslash stays a
+	// reading unless the first line is the form every parser accepts.
+	if len(lines) == 0 || !strictBacktickEscapeDirective.MatchString(lines[0]) {
+		readings = append(readings, `\`)
+	}
 	slices.Sort(readings)
 	return slices.Compact(readings)
 }
+
+// strictBacktickEscapeDirective matches a first line that selects the
+// backtick escape on every parser: only spaces and tabs as padding, the key
+// in ASCII letters.
+var strictBacktickEscapeDirective = regexp.MustCompile("^[ \\t]*#[ \\t]*[eE][sS][cC][aA][pP][eE][ \\t]*=[ \\t]*`")
 
 // escapeChar reads the escape directive from the leading directive block,
 // treating the named directives as ones the parser knows and skips over. The

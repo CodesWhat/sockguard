@@ -93,6 +93,16 @@ func TestContainsRunInstruction(t *testing.T) {
 		{"escape directive with text after the backtick", "# escape=`x\nFROM alpine\nCMD a \\\nRUN id\n", true},
 		{"backtick escape directive with trailing text still joins on backtick", "# escape=`x\nFROM alpine\nR`\nUN id\n", true},
 		{"escape directive after a syntax directive is ignored by older parsers", "# syntax=docker/dockerfile:1\n# escape=`\nFROM alpine\nR\\\nUN id\n", true},
+		// ONBUILD: the builders find the sub-instruction after skipping flags
+		// and lower-case the keyword, so any ONBUILD line is checked whole.
+		{"onbuild copy heredoc behind a bare flag separator", "FROM alpine\nONBUILD -- COPY <<'A\\' /x\nbody\nA\\\nRUN id\n", true},
+		{"onbuild spelled with a dotted capital i", "FROM alpine\nONBU\u0130LD COPY <<'A\\' /x\nbody\nA\\\nRUN id\n", true},
+		// Podman's builder continues a line on a doubled escape; BuildKit
+		// doesn't. The heredoc word on the next line belongs to the COPY there.
+		{"doubled escape continues the line on podman", "FROM alpine\nCOPY a \\\\\n<<'A\\' /x\nbody\nA\\\nRUN id\n", true},
+		// An escape directive only some parsers accept leaves backslash in
+		// force on the others.
+		{"escape directive with a no-break space before the equals sign", "# escape\u00a0=`\nFROM alpine\nR\\\nUN id\n", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -172,6 +182,7 @@ func TestSyntaxFrontendBuildKitFormats(t *testing.T) {
 		{"JSON mixed case key after empty exact key", `{"syntax":"","SYNTAX":"` + frontend + `"}`, frontend},
 		{"JSON nonstring mixed case key", `{"Syntax":42}`, ""},
 		{"JSON sibling number out of float range", `{"syntax":"` + frontend + `","x":1e999}`, frontend},
+		{"JSON syntax repeated as null", `{"syntax":"` + frontend + `","syntax":null}`, frontend},
 		{"JSON similar key not syntax", `{"syntaxes":"` + frontend + `"}`, ""},
 		{"JSON empty syntax", `{"syntax":""}`, ""},
 		{"JSON array", `[{"syntax":"` + frontend + `"}]`, ""},
