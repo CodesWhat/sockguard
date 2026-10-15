@@ -362,13 +362,24 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
+    version: "v2.2.10",
+    title: "Security Patch: Pod Infra PID-File Refusal",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Native Podman pod creation refuses every nonempty infra_conmon_pid_file, preventing a caller-selected daemon-side PID-file write, like the container-create conmon_pid_file refusal",
+      "Ordinary pod creation is unchanged; direct and versioned routes have unit and middleware regression coverage",
+    ],
+  },
+  {
     version: "v2.3.0",
     title: "BuildKit RUN-Instruction Coverage",
     emoji: "🧩",
     status: "next",
     items: [
-      "Extend the shipped BuildKit gRPC mediation foundation: v2.0.0's bounded-depth LLB walk denies any ExecOp, and any op that fails to decode, in frontend-less Solves when allow_run_instructions is false — a blanket refusal; the remaining work is real per-instruction mediation of raw-LLB and third-party frontends so RUN-equivalent ops can be inspected and selectively allowed instead of refused wholesale",
-      "Give the Go module path its v2 major-version suffix: go.mod still declares github.com/codeswhat/sockguard with no /v2, so the module proxy rejects every v2 tag and go install plus the Go Reference badge still resolve to the v1.x line; no documented install path is affected, since Sockguard ships as a binary through Docker, Homebrew, deb and rpm",
+      "Implemented in v2.3.0-rc.7, awaiting stable release: individual raw-LLB ExecOp digest approvals, external frontend gateway mediation and the pinned companion runner; opaque in-daemon frontends and interactive execution stay denied",
+      "The /v2 Go module migration is in the candidate, including imports, release linker flags and regenerated BuildKit descriptors; Docker, Homebrew, deb and rpm installation paths are unchanged",
+      "The candidate passed its four-hour soak and TLS scan; GA is no earlier than 2026-10-23, with fresh validation required for each new candidate",
     ],
   },
 ];
