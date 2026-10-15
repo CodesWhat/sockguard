@@ -88,6 +88,7 @@ type libpodPodCreateRequest struct {
 	SharedNamespaces   []string        `json:"shared_namespaces"`
 	InfraImage         string          `json:"infra_image"`
 	InfraConmonPidFile string          `json:"infra_conmon_pid_file"`
+	HostsFile          string          `json:"hostsFile"`
 }
 
 func newLibpodPodCreatePolicy(opts LibpodPodCreateOptions) libpodPodCreatePolicy {
@@ -145,6 +146,9 @@ func (p libpodPodCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	}
 	if denyReason := p.denyInfraConmonPidFileReason(req.InfraConmonPidFile); denyReason != "" {
 		return denyReason, nil
+	}
+	if !isLibpodHostsFileSelector(req.HostsFile) {
+		return "libpod pod create denied: setting hostsFile to a host path is not allowed", nil
 	}
 
 	// Cross-owner namespace-sharing checks and owner-label injection (design

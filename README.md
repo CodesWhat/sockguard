@@ -489,6 +489,8 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 High-level themes only; see [CHANGELOG.md](CHANGELOG.md) for per-release detail.
 The full roadmap, with compatibility evidence and scope boundaries, is on the [docs roadmap page](https://getsockguard.com/docs/roadmap).
 
+Under Unreleased, native Podman container and pod creates refuse caller-selected hosts-file paths. The default, `image` and `none` selectors remain allowed.
+
 | Version | Theme | Highlights |
 | --- | --- | --- |
 | **v1.0.0** ✅ | Public Proxy Contract | Default-deny proxy with glob path rules and Tecnativa env compatibility, Unix socket and mTLS TCP transport, body inspection across every Docker write surface, container privilege enforcement, per-client policy profiles with `enforce` / `warn` / `audit` rollout modes, read-side visibility filtering, per-client rate limits, Prometheus `/metrics`, `POST /admin/validate` and hot reload with cosign-signed policy bundles |

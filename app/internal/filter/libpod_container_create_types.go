@@ -59,6 +59,7 @@ type libpodContainerCreateRequest struct {
 	OverlayVolumes []libpodOverlayVolume `json:"overlay_volumes"`
 	InitPath       string                `json:"init_path"`
 	ConmonPidFile  string                `json:"conmon_pid_file"`
+	BaseHostsFile  string                `json:"base_hosts_file"`
 
 	CapAdd  []string `json:"cap_add"`
 	CapDrop []string `json:"cap_drop"`
