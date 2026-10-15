@@ -362,6 +362,16 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
+    version: "v2.2.10",
+    title: "Security Patch: Pod Infra PID-File Refusal",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Native Podman pod creation refuses every nonempty infra_conmon_pid_file, preventing a caller-selected daemon-side PID-file write, like the container-create conmon_pid_file refusal",
+      "Ordinary pod creation is unchanged; direct and versioned routes have unit and middleware regression coverage",
+    ],
+  },
+  {
     version: "v2.3.0",
     title: "BuildKit RUN-Instruction Coverage",
     emoji: "🧩",

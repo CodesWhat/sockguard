@@ -3,7 +3,7 @@ title: Roadmap
 description: Sockguard's shipped v1.7, v2.0, v2.1, and v2.2 work, v2.3 release-candidate status, and later direction.
 ---
 
-Sockguard v2.2 is the current stable feature line, with v2.2.9 the latest
+Sockguard v2.2 is the current stable feature line, with v2.2.10 the latest
 release. v2.2.0 closed the volume-mount and read-side gaps that survived
 v2.1.0 and added the operator-facing checks that were missing around them;
 v2.2.1 is a security patch on that line, closing a raw block-device,
@@ -47,10 +47,22 @@ change to Sockguard's own behaviour. v2.2.9 is a ninth security patch: with
 `allow_run_instructions` off, a `COPY`, `ADD` or `ONBUILD` heredoc the RUN gate
 can't follow now refuses the build, and the gate reads carriage returns,
 doubled escapes, the `# escape=` directive and the JSON syntax directive the way
-BuildKit and Podman's builder each do. [v2.3.0-rc.7](https://github.com/CodesWhat/sockguard/releases/tag/v2.3.0-rc.7)
+BuildKit and Podman's builder each do. v2.2.10 is a tenth security patch:
+native Podman pod create refuses any nonempty `infra_conmon_pid_file`,
+matching the container-create `conmon_pid_file` refusal and preventing a
+caller-selected host PID-file write. [v2.3.0-rc.7](https://github.com/CodesWhat/sockguard/releases/tag/v2.3.0-rc.7)
 is the current candidate for the next line; v2.3.0 is not stable yet. This roadmap describes direction and priorities, not
 promises about dates. A feature is available only after the release notes say
 it has shipped.
+
+## Shipped in v2.2.10
+
+Native Podman pod creation refuses `infra_conmon_pid_file`, matching the
+existing container-create refusal of `conmon_pid_file`. A caller can no
+longer select the host file conmon writes the infra container's PID to.
+Ordinary pod creation is unchanged. The fix has unit and middleware
+regressions on direct and versioned routes. Podman behavior is established
+from source and a client-only request capture, not a live-daemon reproduction.
 
 ## Shipped in v2.2.0
 
@@ -83,15 +95,6 @@ it has shipped.
 | BuildKit isolation | Caller identity comes from verified certificates or Unix peer credentials where available, session state is correlated by principal, profile, and session, Solve admission is atomic, and upgrade handshakes are bounded |
 | Proxy hardening | Socket cleanup is inode-owned, method-aware resource routing covers keyword names, generated response errors clear stale representation headers, inspected bodies retain deadlines through logging and metrics, and request metric labels have finite cardinality |
 | Release surfaces | README, docs, website, Helm metadata, verification assets, and migration guidance agree on v2.0.0; release blobs use sigstore bundles only and published metadata is read back before the release succeeds |
-
-## Next patch
-
-The next patch refuses `infra_conmon_pid_file` on native Podman pod create,
-matching the existing container-create refusal of `conmon_pid_file`. This
-prevents the caller from selecting the host file conmon writes its PID to.
-The fix is under Unreleased, with unit and middleware regression coverage;
-it is not in v2.2.9. Its Podman behavior is established from source and a
-client-only request capture, not a live-daemon reproduction.
 
 ## v2.3 release candidate
 

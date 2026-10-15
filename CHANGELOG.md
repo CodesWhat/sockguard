@@ -7,9 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.10] - 2026-10-15
+
 ### Changed
 
-- Updated the README, docs and website roadmap to distinguish the implemented v2.3.0-rc.7 features from the stable v2.2.9 line, record the candidate's successful four-hour soak and TLS scan, and name the next pod-create fix.
+- Updated the README, docs and website roadmap to distinguish the implemented v2.3.0-rc.7 features from the stable v2.2.10 line and record the candidate's successful four-hour soak and TLS scan. Release guidance now matches the GA-clock decision: released v2.2 fix forward-ports keep the v2.3 date, while v2.3-only behavior changes restart the 14-day window; every new candidate still needs fresh validation.
 
 ### Security
 
