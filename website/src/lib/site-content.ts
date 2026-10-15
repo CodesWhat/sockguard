@@ -362,13 +362,24 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
+    version: "v2.2.10",
+    title: "Security Patch: Pod Infra PID-File Refusal",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Native Podman pod creation refuses every nonempty infra_conmon_pid_file, preventing a caller-selected daemon-side PID-file write, like the container-create conmon_pid_file refusal",
+      "Ordinary pod creation is unchanged; direct and versioned routes have unit and middleware regression coverage",
+    ],
+  },
+  {
     version: "v2.3.0",
     title: "BuildKit RUN-Instruction Coverage",
     emoji: "🧩",
     status: "next",
     items: [
-      "Raw LLB now supports individual ExecOp digest approvals while RUN instructions stay restricted; third-party frontend mediation remains in progress because image frontends generate their graphs inside the daemon",
-      "The Go module migration shipped in v2.3.0-rc.1: the /v2 module path, imports, release linker flags and regenerated BuildKit descriptors; Docker, Homebrew, deb and rpm installation paths are unchanged",
+      "Included in v2.3.0-rc.8, awaiting stable release: individual raw-LLB ExecOp digest approvals, external frontend gateway mediation and the pinned companion runner; opaque in-daemon frontends and interactive execution stay denied",
+      "The /v2 Go module migration is in the candidate, including imports, release linker flags and regenerated BuildKit descriptors; Docker, Homebrew, deb and rpm installation paths are unchanged",
+      "rc.8 carries the 2.2.10 pod infra PID-file refusal; fresh four-hour soak and TLS validation are pending, and GA remains no earlier than 2026-10-23",
     ],
   },
 ];
