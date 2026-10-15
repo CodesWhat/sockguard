@@ -153,8 +153,8 @@ func TestLibpodPodCreateInspectInfraImageRegistryGate(t *testing.T) {
 // copies the field onto the infra container's ConmonPidFile (Podman 5.8.6 and
 // 6.1.3 pkg/api/handlers/libpod/pods.go:72), and conmon writes its PID to
 // that path as the daemon's user when the infra container starts. The
-// inspector didn't decode the field before, so every body in the first five
-// rows was forwarded.
+// inspector didn't decode the field before, so each valid non-empty path
+// was forwarded.
 //
 // No option opens the gate, so each row runs with every option off and with
 // every option on. encoding/json and both of Podman's decoders match a key in
@@ -173,8 +173,9 @@ func TestLibpodPodCreateInspectInfraConmonPidFileGate(t *testing.T) {
 		{"a host path", `{"infra_conmon_pid_file":"/host/x.pid"}`, refused},
 		// podman-remote sends a relative --infra-conmon-pidfile as typed.
 		{"a relative path", `{"infra_conmon_pid_file":"x.pid"}`, refused},
+		{"a whitespace-only path", `{"infra_conmon_pid_file":" "}`, refused},
 		{"under an upper-case key", `{"INFRA_CONMON_PID_FILE":"/host/x.pid"}`, refused},
-		// Podman creates no infra container for this pod and never reads the
+		// Podman creates no infra container for this pod and never uses the
 		// field. It's refused all the same, like a host namespace is.
 		{"on a pod with no infra", `{"no_infra":true,"infra_conmon_pid_file":"/host/x.pid"}`, refused},
 		{"a value that isn't a string", `{"infra_conmon_pid_file":["/host/x.pid"]}`, undecoded},
@@ -199,6 +200,41 @@ func TestLibpodPodCreateInspectInfraConmonPidFileGate(t *testing.T) {
 				policy := newLibpodPodCreatePolicy(o.opts)
 				if reason := inspectLibpodPod(t, policy, []byte(tt.body)); reason != tt.want {
 					t.Fatalf("inspect() reason = %q, want %q", reason, tt.want)
+				}
+			})
+		}
+	}
+}
+
+func TestLibpodPodCreateInfraConmonPidFileMiddleware(t *testing.T) {
+	rule, err := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/libpod/pods/create", Action: ActionAllow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/libpod/pods/create", "/v6.1.3/libpod/pods/create"} {
+		for _, tt := range []struct {
+			name string
+			body string
+			want int
+		}{
+			{"captured client body", string(loadLibpodFixture(t, "pods/infra_conmon_pid_file.json")), http.StatusForbidden},
+			{"whitespace path", `{"infra_conmon_pid_file":" "}`, http.StatusForbidden},
+			{"no infra", `{"no_infra":true,"infra_conmon_pid_file":"/host/x.pid"}`, http.StatusForbidden},
+			{"ordinary create", `{"name":"my-pod"}`, http.StatusCreated},
+		} {
+			t.Run(path+"/"+tt.name, func(t *testing.T) {
+				forwarded := false
+				handler := MiddlewareWithOptions([]*CompiledRule{rule}, testLogger(), Options{})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					forwarded = true
+					w.WriteHeader(http.StatusCreated)
+				}))
+				recorder := httptest.NewRecorder()
+				handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, path, strings.NewReader(tt.body)))
+				if recorder.Code != tt.want {
+					t.Fatalf("status = %d, want %d: %s", recorder.Code, tt.want, recorder.Body.String())
+				}
+				if forwarded != (tt.want == http.StatusCreated) {
+					t.Fatalf("forwarded = %t, want %t", forwarded, tt.want == http.StatusCreated)
 				}
 			})
 		}

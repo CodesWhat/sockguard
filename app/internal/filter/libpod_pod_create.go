@@ -226,7 +226,7 @@ func (p libpodPodCreatePolicy) denyInfraImageReason(infraImage string) string {
 //     (libpod/oci_conmon_common.go:1044-1045 in 5.8.6, 1054-1055 in 6.1.3) and
 //     writes its PID there as the daemon's user.
 //   - A pod created with no_infra true has no infra container, so nothing
-//     reads the field (pod_create.go:76). It's refused on such a pod too, like
+//     uses the field (pod_create.go:76). It's refused on such a pod too, like
 //     a host namespace is: what the body asks for is refused whether or not
 //     Podman would act on it.
 //

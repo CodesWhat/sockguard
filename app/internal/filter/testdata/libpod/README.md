@@ -133,7 +133,7 @@ from Podman's source, cited next to the code, and run against a real Podman in
 | `pods/host_uts.json` | `pod create --uts host` | `utsns: {"nsmode": "host"}`. |
 | `pods/host_userns.json` | `pod create --userns host` | `userns: {"nsmode": "host"}`. |
 | `pods/share_pid.json` | `pod create --share pid` | `shared_namespaces: ["pid"]`. |
-| `pods/infra_conmon_pid_file.json` | `pod create --infra-conmon-pidfile /run/sg-pod.pid` | `infra_conmon_pid_file: "/run/sg-pod.pid"`, the one key `pods/default.json` doesn't have. Captured 2026-10-09 the same way with the same client, through `unix:///tmp/sg-capture/capture.sock`. |
+| `pods/infra_conmon_pid_file.json` | `pod create --infra-conmon-pidfile /run/sg-pod.pid` | `infra_conmon_pid_file: "/run/sg-pod.pid"`, the one key `pods/default.json` doesn't have. Captured 2026-10-09 the same way with the same client, through `unix:///tmp/sg-capture/capture.sock`. Client-only capture; not run against a live daemon. |
 
 `podman pod create` has no `--ipc` or `--cgroupns` flag. A pod's `ipcns` can
 still be set by a client that writes the body itself, which is why it has a
