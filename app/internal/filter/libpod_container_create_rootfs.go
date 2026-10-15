@@ -60,10 +60,9 @@ import (
 
 // denyHostPathReason holds rootfs, every overlay_volumes source, every overlay
 // upper and work directory and init_path to allowedBindMounts, and refuses
-// conmon_pid_file outright. It returns the first deny reason, or "" when every
-// host-path field is allowed. Malformed shapes of these fields fail the single
-// json.Unmarshal in inspect before this runs, so they're already denied as
-// malformed.
+// conmon_pid_file and custom base_hosts_file paths outright. It returns the
+// first deny reason, or "" when every host-path field is allowed. Malformed
+// shapes fail the JSON decode in inspect before this runs.
 func (p libpodContainerCreatePolicy) denyHostPathReason(req libpodContainerCreateRequest) string {
 	if denyReason := p.denyRootfsReason(req.Rootfs, req.RootfsOverlay); denyReason != "" {
 		return denyReason
@@ -76,6 +75,9 @@ func (p libpodContainerCreatePolicy) denyHostPathReason(req libpodContainerCreat
 	}
 	if denyReason := p.denyInitPathReason(req.InitPath); denyReason != "" {
 		return denyReason
+	}
+	if !isLibpodHostsFileSelector(req.BaseHostsFile) {
+		return "libpod container create denied: setting base_hosts_file to a host path is not allowed"
 	}
 	return p.denyConmonPidFileReason(req.ConmonPidFile)
 }
