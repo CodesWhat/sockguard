@@ -1569,8 +1569,9 @@ func (p containerCreatePolicy) denyDeviceReason(hostConfig containerCreateHostCo
 }
 
 // denyDeviceRequestsReason checks each DeviceRequest against the policy.
-// If allowDeviceRequests is true, all requests pass without inspection (escape
-// hatch). If allowedDeviceRequests is non-empty, every request must match an
+// CDI raw host paths always follow the host-device policy. Otherwise,
+// allowDeviceRequests skips driver/capability checks. If allowedDeviceRequests
+// is non-empty, every request must match an
 // entry by driver (exact, lowercase) and capabilities (each request capability
 // set must be a subset of at least one allowlisted set), and optionally by
 // count (max_count). Empty Driver in the request is rejected as malformed.
