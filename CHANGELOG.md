@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
-- Align roadmap release status with the published rc.7 candidate and the successful soak/TLS runs on prepared, unpublished rc.8 source.
+- Align documentation and changelog release status with the published rc.7 candidate and the successful soak/TLS runs on prepared, unpublished rc.8 source.
 - Record the v2.4 Unix container-label identity decision: labels remain TCP/source-IP only. PID reuse, namespace visibility, delegated cgroups and remote-daemon identity require a separate safe design; Unix clients can use distinct host-visible UID/GID profiles instead.
 
 ### Added
@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Carries the stable line's npm updates and deduped lockfile, authenticated Docker Hub pulls in the security workflow, and current release/roadmap metadata. The BuildKit frontend mediation, companion runner and `/v2` module path remain intact. This forward-port keeps the existing v2.3 GA date, no earlier than 2026-10-23; rc.8 still needs a fresh four-hour soak and TLS scan on its exact head.
+- Carries the stable line's npm updates and deduped lockfile, authenticated Docker Hub pulls in the security workflow, and current release/roadmap metadata. The BuildKit frontend mediation, companion runner and `/v2` module path remain intact. This forward-port keeps the existing v2.3 GA date, no earlier than 2026-10-23. The prepared, unpublished rc.8 source passed fresh four-hour soak and TLS validation on `3d959fe3`; the tag cut still awaits confirmation, followed by published-artifact verification and candidate-image tri-tool conformance.
 
 ## [2.2.10] - 2026-10-15
 
