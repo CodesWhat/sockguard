@@ -51,9 +51,23 @@ func (b *bridge) forwardGatewayMediated(w http.ResponseWriter, r *http.Request, 
 		b.denyGateway(w, method, deny(grpcCodeInvalidArgument, "buildkit_protocol_error", "invalid frontend request framing"))
 		return
 	}
-	if d := evaluateGatewayRequest(method, payload, g.policy); d != nil {
+	validationPolicy := g.policy
+	if method == "Return" {
+		validationPolicy.Control.Solve.returnedSourceSession = b.registry.daemonSessionID(b.session.Key, g.sessionID)
+	}
+	if d := evaluateGatewayRequest(method, payload, validationPolicy); d != nil {
 		b.denyGateway(w, method, d)
 		return
+	}
+	if method == "Solve" {
+		rewritten, d := rewriteGatewayDockerfile(payload, g.policy, b.limits.MaxMessageBytes)
+		if d != nil {
+			b.denyGateway(w, method, d)
+			return
+		}
+		if rewritten != nil {
+			frame = rewritten
+		}
 	}
 	if method == "Return" && g.policy.ImageOwnership.Owner != "" {
 		var d *mediationDenial

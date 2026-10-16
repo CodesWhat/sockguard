@@ -126,9 +126,9 @@ Every new candidate needs a fresh four-hour soak and TLS scan; a candidate
 containing only fixes already released on the v2.2 line keeps the date,
 while a v2.3-only behavior change restarts the 14-day window.
 
-## v2.4 development
+## v2.4 release candidate
 
-This feature line is isolated from the v2.3 release candidate. The implementation
+v2.4.0-rc.1 is a separate release-candidate line from v2.3. The implementation
 includes exact image allowlists for Docker/Podman container create and Swarm
 service create/update, advisory startup/validate warnings for rules matching no
 known Engine/libpod route, and opt-in create environment/command/entrypoint policy.
@@ -142,20 +142,26 @@ policy tests and records when a separate model should be reconsidered.
 Unix container-label identity is closed as a documented limit, with no PID/cgroup
 inference enabled. Unix clients can use distinct host-visible UID/GID profiles;
 the [security decision](/security#unix-container-label-identity) explains the
-requirements for a future implementation. These changes remain unreleased until
-v2.4 release notes say otherwise.
+requirements for a future implementation. Select the v2.4 candidate explicitly;
+stable remains v2.2.10.
 
 The line also implements native Podman mount-type and source-mutation controls,
 CDI host-device checks, classic-build frontend-override refusal, owner-aware
 BuildKit image exports, and explicit Podman RUN-control/private-network checks.
 Docker-native build options retain their existing behavior.
 
-Current-client BuildKit conformance remains open. A live Docker 29.5.2 test with
-Buildx v0.33.0's standard workflow reached `unsupported BuildKit schema`.
-A direct built-in Control/Solve build verified owner stamping and refusal of a
-foreign image destination, but doesn't establish normal Buildx or Compose build
-compatibility. The follow-up must identify the unsupported fields and provide
-a tested workflow without admitting uninspected frontend execution.
+Local Dockerfile builds with Buildx v0.33.0 and v0.38.0 are verified against
+Docker 29.5.2, including owner stamping, foreign-target preservation and
+restricted RUN/syntax refusal. Exact legacy exporter copies are inspected
+alongside their modern representation. The built-in Dockerfile gateway is
+mediated with syntax delegation disabled; arbitrary daemon frontend images,
+attestations and filesystem-loaded nested BuildOps remain denied. The Docker
+integration suite exercises the supported workflow with provenance disabled.
+See [Security](/security#standard-buildx-dockerfile-builds).
+
+The candidate requires fresh four-hour soak and TLS validation, published-image
+conformance and at least 14 days of baking before GA. Candidate-only behavior
+fixes restart that window. The v2.3 clock doesn't cover v2.4 changes.
 
 ## v3 compatibility boundary
 
@@ -235,7 +241,7 @@ repository release history.
 | Portwing Edge dial-out | Stable with drydock 1.6; drydock 1.5 requires `DD_EXPERIMENTAL_PORTWING=true` |
 | drydock-triggered remote updates through Portwing | **Not implemented** in either mode: Standard trigger routes return `501`; the current Edge protocol has no effective watcher/trigger response contract |
 | Classic Compose builds through a bundled preset | Classic `/build` is inspected through the `*-with-build.yaml` presets |
-| Buildx / Compose BuildKit builds | The `*-with-mediated-build.yaml` presets enable session/gRPC mediation, but client schema and policy constraints still apply. Buildx v0.33.0's standard workflow failed the development runtime test above; current-client conformance remains open. See [Security](/security) |
+| Buildx / Compose BuildKit builds | The `*-with-mediated-build.yaml` presets enable session/gRPC mediation, but client schema and policy constraints still apply. v2.4 RC verifies local Dockerfile builds with Buildx v0.33.0/v0.38.0 against Docker 29.5.2; broader client/daemon combinations still need conformance evidence. See [Security](/security) |
 
 The compatibility statement is deliberately narrower than “all three tools work together.” Monitoring and authorized container control work. Remote update orchestration does not yet, and Sockguard will not advertise a preset as enabling it until Portwing and drydock implement and test both sides of that contract.
 

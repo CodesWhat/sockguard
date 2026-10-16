@@ -5,7 +5,7 @@
 # Docker CLI default; no DOCKER_BUILDKIT=0 needed). Compose drives dockerd's
 # embedded BuildKit frontend/session bridge over two hijacked, unversioned
 # streams, POST /session and POST /grpc (Engine API 1.53 deprecated both;
-# current Buildx 0.36.0 still uses them). As of issue #185's gRPC mediation
+# tested Buildx 0.33.0 and 0.38.0 still use them). As of issue #185's gRPC mediation
 # epic, sockguard terminates both streams as h2c and inspects every gRPC
 # message crossing them instead of hijacking the bytes verbatim — see
 # docs/content/docs/security.mdx's "Compose / BuildKit Transport" section for
@@ -21,7 +21,7 @@
 # request_body.buildkit below is deliberately MINIMAL — see
 # drydock-with-mediated-build.yaml's header comment for the full per-field
 # rationale (identical policy, reused verbatim here): control.solve.allow
-# plus an "image"-typed exporter for local tag/load, control.allow_info /
+# plus allow_frontend_gateway and image/moby exporters for local tag/load, control.allow_info /
 # allow_list_workers / allow_status for worker metadata and ref-owned build
 # progress, and session.file_sync.allow — REQUIRED to get the Dockerfile and
 # build context to buildkitd at all, still subject to the same
@@ -113,8 +113,10 @@ request_body:
       allow_status: true
       solve:
         allow: true
+        allow_frontend_gateway: true
         allowed_exporters:
           - image
+          - moby
     session:
       file_sync:
         allow: true

@@ -5,7 +5,7 @@
 # Docker CLI default; no DOCKER_BUILDKIT=0 needed). Compose drives dockerd's
 # embedded BuildKit frontend/session bridge over two hijacked, unversioned
 # streams, POST /session and POST /grpc (Engine API 1.53 deprecated both;
-# current Buildx 0.36.0 still uses them). As of issue #185's gRPC mediation
+# tested Buildx 0.33.0 and 0.38.0 still use them). As of issue #185's gRPC mediation
 # epic, sockguard terminates both streams as h2c and inspects every gRPC
 # message crossing them instead of hijacking the bytes verbatim — see
 # docs/content/docs/security.mdx's "Compose / BuildKit Transport" section for
@@ -22,8 +22,10 @@
 # `docker build`/`docker compose build` of a local Dockerfile against a local
 # context, tagging the result into the local image store, actually needs:
 #
-#   control.solve.allow + allowed_exporters: [image]
-#       Admits the Solve RPC and an "image"-typed exporter (local tag/load).
+#   control.solve.allow + allow_frontend_gateway + allowed_exporters: [image, moby]
+#       Admits the built-in Dockerfile gateway and local image exporters.
+#       Custom daemon frontend images remain denied; external ExecOps need
+#       separate digest approvals, which this preset does not grant.
 #       allowed_exporter_registries stays EMPTY: an "image" exporter only
 #       needs a registry-host match when its "push" attr is true, so a plain
 #       local build/tag never touches that allowlist. Add hosts there (and
@@ -144,8 +146,10 @@ request_body:
       allow_status: true
       solve:
         allow: true
+        allow_frontend_gateway: true
         allowed_exporters:
           - image
+          - moby
     session:
       file_sync:
         allow: true

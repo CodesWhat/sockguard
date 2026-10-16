@@ -189,6 +189,9 @@ type ControlPolicy struct {
 // request_body.build block. Dockerfile RUN checks inspect the FileSync stream;
 // raw-LLB RUN checks inspect each serialized operation before forwarding Solve.
 type SolvePolicy struct {
+	// Set only while validating Return metadata from this active build.
+	returnedSourceSession string
+
 	// AllowFrontendGateway permits mediated external frontend calls bound to
 	// an active frontend-less Solve. It never grants execution by itself.
 	AllowFrontendGateway bool

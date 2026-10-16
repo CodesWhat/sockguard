@@ -1,6 +1,6 @@
 ---
 title: Migration
-description: Upgrade stable v2.2 deployments, select a published v2.3 candidate, prepare for unreleased v2.4 features, or migrate from another Docker socket proxy.
+description: Upgrade stable v2.2 deployments, select a published v2.3 candidate, evaluate the v2.4 release candidate, or migrate from another Docker socket proxy.
 ---
 
 ## Release availability
@@ -10,7 +10,7 @@ description: Upgrade stable v2.2 deployments, select a published v2.3 candidate,
 | v2.2.10 | Published stable | Keep normal Docker, Homebrew, deb/rpm and binary release channels. |
 | v2.3.0-rc.7 | Published candidate | Select the candidate explicitly for the frontend runner and individual LLB execution grants. |
 | v2.3.0-rc.8 | Prepared source, unpublished | Source soak/TLS validation passed; publication and published-artifact validation remain. Don't install this nonexistent tag. |
-| v2.4 | Unreleased development | Image admission, create launch-field policies and route diagnostics require a development build. |
+| v2.4.0-rc.1 | Release candidate line | Select the candidate explicitly for image admission, create launch-field policies, route diagnostics and Buildx compatibility fixes. Stable channels remain on v2.2.10. |
 
 ## From Sockguard v2.1 to v2.2
 
@@ -51,15 +51,25 @@ Also review v2.3's legacy tmpfs privilege checks and BuildKit remote-source
 controls in the CHANGELOG. See the [frontend runner guide](/frontend-runner)
 before enabling external frontend execution.
 
-## Preparing for v2.4
+## Evaluating v2.4
 
-v2.4 features are unreleased. Don't copy its image allowlist, create
-environment/command/entrypoint policies or startup/validate route-diagnostic
-examples into a v2.2 deployment expecting those controls to exist. Development
-build users should follow the version labels in [Configuration](/configuration)
-and validate with the same binary they deploy. Unix container-label identity
-remains a documented limit; distinct UID/GID client profiles are the supported
-Unix alternative.
+v2.4.0-rc.1 is a release candidate. Select `codeswhat/sockguard:2.4.0-rc.1`
+explicitly, or install the source with
+`go install github.com/codeswhat/sockguard/v2/app/cmd/sockguard@v2.4.0-rc.1`.
+Go source builds require Go 1.27. Stable Homebrew and package channels continue
+to follow v2.2.10. Don't copy candidate-only settings into an older binary.
+
+Validate with the exact candidate binary before switching traffic. Review the
+new Podman source-mutation/device checks and RUN-control/private-network
+requirements, image allowlists and create launch-field policies in the
+CHANGELOG. Built-in Buildx Dockerfile builds now use the mediated gateway;
+see [Security](/security#standard-buildx-dockerfile-builds).
+
+Candidate GA requires fresh four-hour soak/TLS results, published-image
+conformance and at least 14 days of baking. A candidate-only behavior fix
+restarts that window. The v2.3 candidate source and its earlier clock are
+separate; they don't satisfy the v2.4 validation gates. Unix container-label
+identity remains a documented limit; use distinct UID/GID client profiles.
 
 ## Deprecation schedule
 

@@ -98,6 +98,13 @@ test("website comparison rows live in extracted data modules", () => {
   assert.equal(comparisonRows.at(-1)?.feature, "Hot-reload + admin API");
 });
 
+test("v2.4 has a candidate milestone without advancing stable", () => {
+  const candidate = roadmap.find((milestone) => milestone.version === "v2.4.0");
+  assert.equal(candidate?.status, "candidate");
+  assert.ok(candidate.items.some((item) => item.includes("v2.4.0-rc.1")));
+  assert.notEqual(SITE_CONFIG.version, "2.4.0");
+});
+
 test("opt-in Sockguard capabilities are labelled opt-in", () => {
   // Metrics, the audit stream, the upstream watchdog and hot reload all
   // default to disabled (app/internal/config/config.go Defaults()), so an

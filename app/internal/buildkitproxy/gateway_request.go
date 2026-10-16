@@ -47,8 +47,21 @@ func evaluateGatewayRequest(method string, payload []byte, policy Policy) *media
 	solve := policy.Control.Solve
 	switch req := message.(type) {
 	case *gateway.SolveRequest:
-		if req.Frontend != "" || len(req.FrontendOpt) != 0 || len(req.FrontendInputs) != 0 || len(req.SourcePolicies) != 0 || req.Final || len(req.ExporterAttr) != 0 {
+		if len(req.FrontendInputs) != 0 || len(req.SourcePolicies) != 0 || req.Final || len(req.ExporterAttr) != 0 {
 			return gatewayPolicyDenial("frontend solve contains an unmediated delegation or output")
+		}
+		if req.Frontend != "" {
+			if req.Frontend != "dockerfile.v0" || req.Definition != nil || req.FrontendOpt["cmdline"] != "" {
+				return gatewayPolicyDenial("only the built-in Dockerfile frontend is supported")
+			}
+			if _, present := req.FrontendOpt["build-arg:BUILDKIT_SYNTAX"]; present {
+				return gatewayPolicyDenial("Dockerfile syntax delegation is not supported")
+			}
+			if d := checkSolveFrontend(&control.SolveRequest{Frontend: req.Frontend, FrontendAttrs: req.FrontendOpt}, solve); d != nil {
+				return d
+			}
+		} else if len(req.FrontendOpt) != 0 {
+			return gatewayPolicyDenial("frontend options require the built-in Dockerfile frontend")
 		}
 		cache := &control.CacheOptions{}
 		for _, entry := range req.CacheImports {
@@ -123,7 +136,7 @@ func checkGatewayDefinition(def *pb.Definition, policy SolvePolicy) *mediationDe
 }
 
 func checkGatewaySource(source *pb.SourceOp, policy SolvePolicy) *mediationDenial {
-	if source == nil || source.Attrs["local.session"] != "" || source.Attrs["oci.session"] != "" {
+	if source == nil || (source.Attrs["local.session"] != "" && source.Attrs["local.session"] != policy.returnedSourceSession) || source.Attrs["oci.session"] != "" {
 		return gatewayPolicyDenial("frontend source must inherit the build session")
 	}
 	switch {
