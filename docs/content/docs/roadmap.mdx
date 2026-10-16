@@ -145,6 +145,15 @@ the [security decision](/security#unix-container-label-identity) explains the
 requirements for a future implementation. These changes remain unreleased until
 v2.4 release notes say otherwise.
 
+## v3 compatibility boundary
+
+v3.0.0 is the promised removal point for the insecure endpoint TLS setting and
+unverified `DOCKER_TLS` fallback deprecated in v2.1. No date or broader feature
+milestone is scheduled. The [deprecation ledger](/deprecations) owns the exact
+contracts and implementation checklist. The opaque BuildKit acknowledgment's
+future-major removal version remains undecided. Current v2 lines retain these
+settings.
+
 ## Twelve-month direction
 
 Beyond the next planned line, work remains risk- and demand-driven:

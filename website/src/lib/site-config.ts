@@ -20,7 +20,7 @@ export const SITE_CONFIG = {
   cliDemo: {
     commit: "<sha>",
     built: "<rfc3339>",
-    goVersion: "go1.26.6",
+    goVersion: "go1.27.2",
     logTime: "<rfc3339>",
   },
   /** Short product tagline used in page titles and OG metadata. */

@@ -3,6 +3,12 @@ title: External frontend runner
 description: Run a pinned BuildKit frontend with individual operation approvals through Sockguard.
 ---
 
+**Version:** this command and the `allow_frontend_gateway` / `allowed_exec_digests`
+grants require v2.3. The published candidate is **v2.3.0-rc.7**; these features
+aren't in stable v2.2.10. Prepared rc.8 is unpublished. Pin a published candidate
+explicitly until v2.3 GA. See [Migration](/migration#upgrading-to-v23) for source
+installation and the Go module change.
+
 `sockguard frontend` runs an external frontend image on a selected Docker
 runtime and routes its gateway calls through Sockguard. Every generated LLB
 Solve is checked against the active build's policy, including each ExecOp's

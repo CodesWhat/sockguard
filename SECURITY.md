@@ -58,9 +58,14 @@ release notes unless you prefer to stay anonymous.
   compose file in the wild, contact that operator directly. We can
   help triage but we can't ship a fix for it.
 - Denial-of-service via CPU/memory exhaustion from an allowlisted
-  client that already has full Docker-socket access. Sockguard's trust
-  boundary is the client CIDR; a client inside the trust boundary is
-  assumed to be cooperating in good faith.
+  client that already has full raw Docker-socket authority. This exception
+  doesn't cover a restricted API client bypassing its configured policy.
+
+Sockguard trusts the operator, daemon and host. Admitted API clients remain
+subject to their selected policy and owner isolation; network admission alone
+doesn't make a restricted client trusted. CIDR identity relies on the deployment's
+network controls, while verified mTLS certificates and Unix peer credentials
+provide the stronger identity signals described in the security guide.
 
 ### Container runtime identity
 

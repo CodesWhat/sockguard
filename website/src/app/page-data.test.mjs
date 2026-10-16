@@ -255,7 +255,9 @@ test("CLI demo keeps release-specific provenance explicitly illustrative", () =>
   assert.deepEqual(SITE_CONFIG.cliDemo, {
     commit: "<sha>",
     built: "<rfc3339>",
-    goVersion: "go1.26.6",
+    goVersion: readFileSync(new URL("../../../go.mod", import.meta.url), "utf8").match(
+      /^toolchain (go\S+)$/m,
+    )[1],
     logTime: "<rfc3339>",
   });
 });
