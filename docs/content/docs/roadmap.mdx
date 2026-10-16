@@ -50,7 +50,7 @@ doubled escapes, the `# escape=` directive and the JSON syntax directive the way
 BuildKit and Podman's builder each do. v2.2.10 is a tenth security patch:
 native Podman pod create refuses any nonempty `infra_conmon_pid_file`,
 matching the container-create `conmon_pid_file` refusal and preventing a
-caller-selected host PID-file write. [v2.3.0-rc.8](https://github.com/CodesWhat/sockguard/releases/tag/v2.3.0-rc.8)
+caller-selected host PID-file write. [v2.3.0-rc.7](https://github.com/CodesWhat/sockguard/releases/tag/v2.3.0-rc.7)
 is the current candidate for the next line; v2.3.0 is not stable yet. This roadmap describes direction and priorities, not
 promises about dates. A feature is available only after the release notes say
 it has shipped.
@@ -134,7 +134,7 @@ for matching rules and restrictions.
 
 After image admission, the planned order is warnings for rules that match no
 known Engine/libpod route, create-time environment/command/entrypoint policy,
-Linux Unix-socket container identity, and a reproducible-build procedure checked
+a reproducible-build procedure checked
 in CI with a recorded decision on a formal policy specification.
 
 ## Twelve-month direction
@@ -215,3 +215,8 @@ until the corresponding published images pass the real-daemon conformance
 matrix. New write transports stay denied when Sockguard cannot inspect them or
 require a narrowly named operator acknowledgement that makes the limitation
 visible.
+
+The Unix container-label identity item is closed as a documented limit: label ACLs
+remain TCP/source-IP based. Unix clients can use UID/GID profiles; the
+[security decision](/security#unix-container-label-identity) records why a PID and
+cgroup-name lookup is insufficient and what a future implementation must verify.

@@ -858,6 +858,38 @@ on a unix socket and use `clients.unix_peer_profiles` with `uids`/`gids`.
 `SO_PEERCRED` is supplied by the kernel and cannot be spoofed from within
 the calling container — that is the hard-isolation path.
 
+### Unix container-label identity
+
+Decision for v2.4: retain container-label ACLs as a TCP/source-IP feature. Do not
+infer container identity from a Unix peer PID and an apparent container ID in a
+cgroup path. Unix callers can use the existing UID/GID profile assignments.
+This is a documented limit, not a promise that label ACLs authenticate Unix clients.
+
+Linux [`SO_PEERCRED`](https://man7.org/linux/man-pages/man7/unix.7.html) reports
+credentials associated with the connecting process. Translating its numeric PID
+into current `/proc` contents adds a separate identity problem: PIDs can be reused,
+and a process can disappear while the socket remains open or is passed elsewhere.
+The credentials describe the connector, not each subsequent writer of the socket.
+[`PID namespaces`](https://man7.org/linux/man-pages/man7/pid_namespaces.7.html) also
+limit which processes the proxy can see. A sibling container's PID may not be
+visible from Sockguard's own PID namespace; mounting host `/proc` alone doesn't
+make that PID meaningful in the receiving namespace.
+
+[`Cgroup namespaces`](https://man7.org/linux/man-pages/man7/cgroup_namespaces.7.html)
+can hide ancestor paths, and cgroup names aren't authenticated container IDs.
+Delegated workloads may create descendant groups. Matching a Docker-looking
+substring without checking the daemon's actual container init process can attribute
+another container's labels to the wrong caller. Remote or failover daemons add
+another mismatch: their container PIDs don't necessarily belong to the proxy host.
+
+Revisit this only with a Linux-specific design that binds the connection to a
+stable kernel process identity, validates PID/cgroup namespace visibility and
+same-host daemon identity, checks membership against the daemon's live container
+init process, and fails closed on missing, exited or changed identities. It must
+cover connection lifetime and descriptor passing without granting broad host
+namespace access by default. Until then, configure distinct host-visible UID/GID
+profiles or verified mTLS client profiles for callers needing stronger identity.
+
 **Exec TOCTOU (inspect/start split).** Docker exposes exec metadata inspection
 and exec start as separate API calls. Sockguard re-checks `POST /exec/*/start`
 against Docker's stored exec metadata before the command runs, but the gap

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- Record the v2.4 Unix container-label identity decision: labels remain TCP/source-IP only. PID reuse, namespace visibility, delegated cgroups and remote-daemon identity require a separate safe design; Unix clients can use distinct host-visible UID/GID profiles instead.
+
 ### Added
 
 - Opt-in container-create command, entrypoint and environment policies for Docker and native Podman, globally or per client profile. Explicit argv templates use anchored globs; environment checks support allowed/denied names and exact values without exposing values in denials. Native host/proxy/secret/merge environment additions are refused while environment checks are active. Image/daemon defaults are outside request-field inspection.
