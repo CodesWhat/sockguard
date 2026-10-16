@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- Align roadmap release status with the published rc.7 candidate and the successful soak/TLS runs on prepared, unpublished rc.8 source.
 - Record the v2.4 Unix container-label identity decision: labels remain TCP/source-IP only. PID reuse, namespace visibility, delegated cgroups and remote-daemon identity require a separate safe design; Unix clients can use distinct host-visible UID/GID profiles instead.
 
 ### Added
