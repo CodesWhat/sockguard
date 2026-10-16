@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **A native Podman create could select a host file as the base for the container's `/etc/hosts`.** Container create's `base_hosts_file` and pod create's `hostsFile` are now limited to the exact empty, `image` and `none` selectors. Every other string is refused, including absolute, relative and whitespace-only paths and padded or differently cased selectors. Podman passes such a string to the daemon's file reader, which copies parsed lines with at least two whitespace-separated fields into the generated hosts file. Empty retains the daemon administrator's configured default, `image` uses the image's hosts file, and `none` supplies no base entries. `allowed_bind_mounts` does not open this gate and there is no new option. This changes `podman --remote run --hosts-file /path` and `podman --remote pod create --hosts-file /path`; normal creates and the three selector values still pass. The guard covers direct and versioned routes, follows `enforce`/`warn`/`audit`, and retains the original body when a rollout mode forwards it. The new tests failed against the previous inspector and pass with the guard. The daemon-side behavior was checked in Podman 5.8.6 and 6.1.3 and their `go.podman.io/common` 0.67.1 and 0.69.2 sources; this was not reproduced against a live Podman daemon.
+
 ## [2.2.10] - 2026-10-15
 
 ### Changed

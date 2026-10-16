@@ -55,6 +55,14 @@ is the current candidate for the next line; v2.3.0 is not stable yet. This roadm
 promises about dates. A feature is available only after the release notes say
 it has shipped.
 
+## Unreleased
+
+Native Podman container `base_hosts_file` and pod `hostsFile` accept only
+empty, `image` or `none`. Custom host paths are refused on both routes;
+the daemon's configured default and image-based hosts files remain usable.
+The guard follows the configured rollout mode and is covered on direct and
+versioned requests. This fix is not in v2.2.10.
+
 ## Shipped in v2.2.10
 
 Native Podman pod creation refuses `infra_conmon_pid_file`, matching the
