@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Rotate dependency updates to `dev/v2.4`, matching the candidate's release source and the release-cut branch guard.
 - Standard local Buildx Dockerfile builds now admit an exact compatibility copy of the first exporter, mediate the built-in `dockerfile.v0` gateway with syntax delegation disabled, and accept only the active build's scoped local-session references in returned metadata. Conflicting/legacy-only exporters, explicit input-session overrides, arbitrary daemon frontend images and nested BuildOps remain denied. Owner mutations stay identical in both exporter representations. Docker integration now exercises Buildx builds, owner stamping, foreign-target preservation and restricted RUN/syntax refusal through the bundled build policy.
 - The mediated-build presets grant the built-in gateway and `moby` local exporter needed by current Buildx. RUN, remote context, host network and external ExecOp grants retain their restricted defaults.
 
