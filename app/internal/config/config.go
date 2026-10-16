@@ -604,6 +604,7 @@ type ContainerCreateRequestBodyConfig struct {
 	AllowHostPID             bool                   `mapstructure:"allow_host_pid"`
 	AllowHostIPC             bool                   `mapstructure:"allow_host_ipc"`
 	AllowedBindMounts        []string               `mapstructure:"allowed_bind_mounts"`
+	AllowMountSourceMutation bool                   `mapstructure:"allow_mount_source_mutation"`
 	AllowAllDevices          bool                   `mapstructure:"allow_all_devices"`
 	AllowedDevices           []string               `mapstructure:"allowed_devices"`
 	AllowDeviceRequests      bool                   `mapstructure:"allow_device_requests"`
@@ -691,15 +692,16 @@ type LibpodContainerCreateRequestBodyConfig struct {
 	// namespace object's nsmode "host" and "path". A path can name the
 	// host's namespace, so it needs the same gate. While one is false its
 	// namespace also refuses any nsmode sockguard doesn't know.
-	AllowHostNetwork  bool     `mapstructure:"allow_host_network"`
-	AllowHostPID      bool     `mapstructure:"allow_host_pid"`
-	AllowHostIPC      bool     `mapstructure:"allow_host_ipc"`
-	AllowHostUserNS   bool     `mapstructure:"allow_host_userns"`
-	AllowHostUTS      bool     `mapstructure:"allow_host_uts"`
-	AllowHostCgroupNS bool     `mapstructure:"allow_host_cgroupns"`
-	AllowedBindMounts []string `mapstructure:"allowed_bind_mounts"`
-	AllowAllDevices   bool     `mapstructure:"allow_all_devices"`
-	AllowedDevices    []string `mapstructure:"allowed_devices"`
+	AllowHostNetwork         bool     `mapstructure:"allow_host_network"`
+	AllowHostPID             bool     `mapstructure:"allow_host_pid"`
+	AllowHostIPC             bool     `mapstructure:"allow_host_ipc"`
+	AllowHostUserNS          bool     `mapstructure:"allow_host_userns"`
+	AllowHostUTS             bool     `mapstructure:"allow_host_uts"`
+	AllowHostCgroupNS        bool     `mapstructure:"allow_host_cgroupns"`
+	AllowedBindMounts        []string `mapstructure:"allowed_bind_mounts"`
+	AllowMountSourceMutation bool     `mapstructure:"allow_mount_source_mutation"`
+	AllowAllDevices          bool     `mapstructure:"allow_all_devices"`
+	AllowedDevices           []string `mapstructure:"allowed_devices"`
 
 	// RestrictNamespaceSharing/AllowedNamespaceSharingContainers gate
 	// netns/pidns/ipcns/userns/utsns/cgroupns objects of the form

@@ -108,6 +108,9 @@ func (p libpodContainerCreatePolicy) denyRootfsReason(rootfs string, overlay boo
 // metacharacter either.
 func (p libpodContainerCreatePolicy) denyOverlayVolumeReason(volumes []libpodOverlayVolume) string {
 	for _, volume := range volumes {
+		if reason := denyMountSourceMutationReason(volume.Options, false, p.allowMountSourceMutation, "libpod container create"); reason != "" {
+			return reason
+		}
 		if source, ok := normalizeBindMount(volume.Source); !ok || !bindPathAllowed(source, p.allowedBindMounts) {
 			return fmt.Sprintf("libpod container create denied: overlay volume source %q is not allowlisted (add it to allowed_bind_mounts)", volume.Source)
 		}
@@ -130,6 +133,9 @@ func (p libpodContainerCreatePolicy) denyOverlayVolumeReason(volumes []libpodOve
 // lost, and nothing here depends on reading "O" the way Podman does.
 func (p libpodContainerCreatePolicy) denyNamedVolumeOverlayReason(volumes []libpodVolume) string {
 	for _, volume := range volumes {
+		if reason := denyMountSourceMutationReason(volume.Options, false, p.allowMountSourceMutation, "libpod container create"); reason != "" {
+			return reason
+		}
 		if denyReason := denyOverlayDirOptionsReason(volume.Options, p.allowedBindMounts, "libpod container create"); denyReason != "" {
 			return denyReason
 		}

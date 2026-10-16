@@ -1428,6 +1428,32 @@ Audit events intentionally preserve both the proxy-generated canonical `request_
 
 Rules are evaluated in order. **First match wins.** If no rule matches, the request is denied.
 
+### Mount source changes and native mount types
+
+**Unreleased v2.4:** `request_body.container_create.allow_mount_source_mutation`
+and `request_body.libpod_container_create.allow_mount_source_mutation` default to
+`false`, including inside client profiles. Podman's `U` (recursive chown) and
+`z`/`Z` (SELinux relabel) modify the daemon's mount source, so an allowed source
+path or a device-request grant doesn't authorize these side effects. Set this
+option to `true` only for clients permitted to change source ownership or labels.
+It covers compat bind/volume specs and native mounts, overlay volumes and named
+volumes. The exact native `tmpfs` type with `U` only sets mount uid/gid and doesn't
+require the grant. The grant never expands `allowed_bind_mounts`.
+
+Native `bind`/`rbind` mount options enforce `allowed_bind_mounts` regardless of
+the mount type. Unmodeled native filesystem/device types, including raw `overlay`
+and `ext4`, are refused. Use constrained `bind` or `overlay_volumes` entries.
+Virtual tmpfs, ramfs, proc, sysfs, devpts, mqueue and cgroup mounts remain supported.
+
+CDI `DeviceRequests` with raw host-device paths also require `allowed_devices`
+(or `allow_all_devices`), even with `allow_device_requests: true`. Qualified CDI
+names such as `nvidia.com/gpu=all` still use the driver/capability grant.
+
+Classic build `buildargs` cannot contain `BUILDKIT_SYNTAX` while
+`request_body.build.allow_run_instructions` is false: a selected frontend cannot
+be constrained by scanning the submitted Dockerfile. This applies to both Docker
+and Podman build routes.
+
 ### Container launch fields
 
 Unreleased, planned for v2.4.
