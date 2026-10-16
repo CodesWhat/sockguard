@@ -1482,6 +1482,9 @@ This private-network-only form doesn't require an `nsoptions` grant. A host
 namespace, namespace path, missing network namespace or chroot isolation is
 refused regardless of other control grants. `networkmode=none` alone doesn't
 satisfy this check. Docker upstreams retain Docker's network defaults.
+Podman's numeric isolation modes `0` (default), `1` (OCI) and `3` (rootless OCI)
+pass this check with an explicit private namespace and an `isolation` grant.
+Mode `2` is chroot and stays refused when host networking is denied.
 
 ### BuildKit image ownership
 

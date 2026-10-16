@@ -61,6 +61,14 @@ func (p buildPolicy) inspectPodmanRunControls(query url.Values, podman bool) str
 	if !p.allowHostNetwork {
 		raw, _, ok := queryparam.Scalar(query, "nsoptions")
 		isolation, _, isolationOK := queryparam.Scalar(query, "isolation")
+		switch isolation {
+		case "0":
+			isolation = ""
+		case "1":
+			isolation = "oci"
+		case "3":
+			isolation = "rootless"
+		}
 		if !ok || !isolationOK || !privateBuildNetwork(raw) || (isolation != "" && isolation != "oci" && isolation != "rootless") {
 			return "build denied: host network mode is not allowed: RUN-enabled Podman builds require an explicit private network namespace"
 		}

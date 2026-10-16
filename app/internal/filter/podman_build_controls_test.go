@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -45,5 +46,38 @@ func TestPodmanRunBuildNeedsExplicitPrivateNetwork(t *testing.T) {
 				t.Fatalf("reason %q, error %v, denied=%v", reason, err, tc.denied)
 			}
 		})
+	}
+}
+
+func TestPodmanRunBuildIsolationModes(t *testing.T) {
+	for _, route := range []string{"/libpod/build", "/v6.1.4/libpod/build", "/build"} {
+		for _, mode := range []string{"0", "1", "3", "oci", "rootless", "2", "chroot", "4"} {
+			for _, granted := range []bool{false, true} {
+				t.Run(route+"/"+mode+"/granted="+strconv.FormatBool(granted), func(t *testing.T) {
+					opts := BuildOptions{AllowRunInstructions: true, PodmanUpstream: true}
+					if granted {
+						opts.AllowedPodmanControls = []string{"isolation"}
+					}
+					query := url.Values{"nsoptions": {`[{"Name":"network","Host":false}]`}, "isolation": {mode}}.Encode()
+					req := httptest.NewRequest("POST", route+"?"+query, strings.NewReader("build context"))
+					path := "/libpod/build"
+					if route == "/build" {
+						path = route
+					}
+					p := newBuildPolicy(opts)
+					reason, err := p.inspect(testLogger(), req, path)
+					denied := !granted || mode == "2" || mode == "chroot" || mode == "4"
+					if err != nil || (reason != "") != denied {
+						t.Fatalf("reason %q, error %v, denied=%v", reason, err, denied)
+					}
+					if !denied {
+						body, err := io.ReadAll(req.Body)
+						if err != nil || string(body) != "build context" || req.URL.RawQuery != query {
+							t.Fatal("Podman request changed")
+						}
+					}
+				})
+			}
+		}
 	}
 }
