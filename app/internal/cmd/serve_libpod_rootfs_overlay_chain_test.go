@@ -850,6 +850,9 @@ func TestServeChainLibpodRootfsAndOverlayNeedTheBindMountAllowlist(t *testing.T)
 			daemon := newLibpodRootfsChainDaemon()
 			addr := newEngineChain(t, "rootfs", daemon, func(cfg *config.Config) {
 				cfg.Response.DenyVerbosity = "verbose"
+				// These cases isolate source-path checks from mount side effects.
+				cfg.RequestBody.ContainerCreate.AllowMountSourceMutation = true
+				cfg.RequestBody.LibpodContainerCreate.AllowMountSourceMutation = true
 				cfg.Rules = []config.RuleConfig{
 					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/create"}, Action: "allow"},
 					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/containers/create"}, Action: "allow"},
