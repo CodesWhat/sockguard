@@ -330,6 +330,8 @@ func checkSolveFrontend(req *control.SolveRequest, solvePolicy SolvePolicy) *med
 			return deny(grpcCodeFailedPrecondition, "buildkit_schema_unsupported", "unsupported BuildKit schema")
 		}
 		switch {
+		case key == "build-arg:BUILDKIT_SYNTAX" && !solvePolicy.AllowRunInstructions:
+			return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "BuildKit syntax frontend overrides cannot be inspected while RUN instructions are restricted")
 		case (key == "context" || strings.HasPrefix(key, "context:")) && isRemoteContextRef(value):
 			if !solvePolicy.AllowRemoteContext {
 				return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "a remote build context requires this profile's allow_remote_context")
