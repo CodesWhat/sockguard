@@ -12,6 +12,9 @@ import (
 	"net/url"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	"google.golang.org/protobuf/proto"
 
 	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/control"
 	"github.com/codeswhat/sockguard/v2/app/internal/h2conn"
@@ -444,6 +447,15 @@ func (b *bridge) forwardControlMediated(w http.ResponseWriter, r *http.Request, 
 	switch method {
 	case "Solve":
 		solveReq, d = evaluateSolveRequest(payload, b.policy)
+		if d == nil {
+			d = applySolveImageOwnership(r.Context(), solveReq, b.policy)
+			if d == nil && b.policy.ImageOwnership.Owner != "" {
+				payload, err = proto.Marshal(solveReq)
+				if err != nil {
+					d = imageOwnershipDenial()
+				}
+			}
+		}
 		if solveReq != nil {
 			ref = solveReq.GetRef()
 		}
@@ -451,7 +463,15 @@ func (b *bridge) forwardControlMediated(w http.ResponseWriter, r *http.Request, 
 		var req *control.StatusRequest
 		req, d = evaluateStatusRequest(payload)
 		if d == nil && !b.registry.OwnsRef(b.session.Key, req.GetRef()) {
-			d = deny(grpcCodePermissionDenied, "buildkit_ref_not_owned", "this ref does not belong to an admitted Solve for this client/profile")
+			admitted := false
+			if b.policy.ImageOwnership.Owner != "" {
+				ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+				admitted = b.registry.waitForRef(ctx, b.session.Key, req.GetRef())
+				cancel()
+			}
+			if !admitted {
+				d = deny(grpcCodePermissionDenied, "buildkit_ref_not_owned", "this ref does not belong to an admitted Solve for this client/profile")
+			}
 		}
 		if req != nil {
 			ref = req.GetRef()
@@ -492,7 +512,9 @@ func (b *bridge) forwardControlMediated(w http.ResponseWriter, r *http.Request, 
 
 	if method == "Solve" {
 		if b.policy.Control.Solve.AllowFrontendGateway && solveReq.GetFrontend() == "" && solveReq.Definition == nil {
-			g, denied := b.registry.beginGatewayBuild(r.Context(), b.session, ref, solveReq.GetSession(), b.policy)
+			gatewayPolicy := b.policy
+			gatewayPolicy.ImageOwnership.RequireConfig = hasImageExporter(solveReq)
+			g, denied := b.registry.beginGatewayBuild(r.Context(), b.session, ref, solveReq.GetSession(), gatewayPolicy)
 			if denied != nil {
 				writeGRPCStatus(w, denied.code, denied.message)
 				b.audit(service, method, Deny, denied.reasonCode)

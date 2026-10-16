@@ -38,7 +38,7 @@ func TestBuildkitMediatorUsesAssignedProfilePolicy(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	handler := withClientACL(&cfg, resolver, newDiscardLogger())(
-		withBuildkitMediator(&cfg, resolver, newDiscardLogger())(next),
+		withBuildkitMediator(&cfg, resolver, newDiscardLogger(), "docker")(next),
 	)
 
 	for _, path := range []string{"/grpc", "/session"} {

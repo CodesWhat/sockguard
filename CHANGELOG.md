@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Mediated BuildKit image exports now enforce owner isolation: check destination names against current daemon labels and stamp the active owner on built-in Dockerfile labels, supported image-config exporter attributes, and mediated frontend Return metadata. Owner-scoped Dockerfile builds use the built-in compiler; raw legacy `moby` exports without a trustworthy stamping path and incomplete frontend image configs fail closed. Status waits briefly for in-progress owner admission without granting unadmitted refs.
+- RUN-enabled Podman builds require explicit grants for namespace, capability, device, security, identity, resource, DNS, base-image and host-entry query controls through `request_body.build.allowed_podman_controls`. Private network-only namespace options need no grant. A Podman upstream must explicitly select a private network namespace when `allow_host_network` is false, closing the daemon's host-network default; the host-network grant and existing blind-write gates remain independent. These new grants apply to Podman upstreams; Docker-native build controls keep their existing behavior. Podman numeric default/OCI/rootless isolation values are accepted with the grant and private namespace; numeric chroot remains refused when host networking is denied.
+
 - Refuse classic-build `BUILDKIT_SYNTAX` frontend overrides while RUN instructions are restricted, including ambiguous query spellings and repeated values.
 - Hold CDI device-request host paths to `allowed_devices`, independently of the device-request driver grant. Qualified CDI names remain supported.
 - Apply native Podman bind-source checks to `bind`/`rbind` options on any mount type. Refuse unmodeled device/filesystem mounts; use constrained bind or `overlay_volumes` entries instead.
@@ -16,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- Record the current Buildx v0.33.0 schema incompatibility and distinguish the verified direct built-in Solve ownership path from unverified normal Buildx/Compose workflows in the public roadmap.
+- Add version-scoped v2.2/v2.3 migration guidance and candidate-only frontend labels, a canonical deprecation ledger with the planned v3 TLS removal checklist, and precise restricted-client security scope. Correct the CLI demo build toolchain and check it against go.mod.
 - Align documentation and changelog release status with the published rc.7 candidate and the successful soak/TLS runs on prepared, unpublished rc.8 source.
 - Record the v2.4 Unix container-label identity decision: labels remain TCP/source-IP only. PID reuse, namespace visibility, delegated cgroups and remote-daemon identity require a separate safe design; Unix clients can use distinct host-visible UID/GID profiles instead.
 

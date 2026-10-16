@@ -31,6 +31,13 @@ func (b *bridge) forwardGatewayMediated(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	g := b.registry.gatewayBuild(b.session.Key, ids[0])
+	if g == nil && b.policy.ImageOwnership.Owner != "" {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		if b.registry.waitForRef(ctx, b.session.Key, ids[0]) {
+			g = b.registry.gatewayBuild(b.session.Key, ids[0])
+		}
+		cancel()
+	}
 	if g == nil {
 		b.denyGateway(w, method, deny(grpcCodePermissionDenied, "buildkit_ref_not_owned", "frontend build is not active for this client/profile"))
 		return
@@ -47,6 +54,14 @@ func (b *bridge) forwardGatewayMediated(w http.ResponseWriter, r *http.Request, 
 	if d := evaluateGatewayRequest(method, payload, g.policy); d != nil {
 		b.denyGateway(w, method, d)
 		return
+	}
+	if method == "Return" && g.policy.ImageOwnership.Owner != "" {
+		var d *mediationDenial
+		frame, d = rewriteGatewayImageOwnership(payload, g.policy, b.limits.MaxMessageBytes)
+		if d != nil {
+			b.denyGateway(w, method, d)
+			return
+		}
 	}
 	if method == "Solve" && !b.registry.admitGatewaySolve(g) {
 		b.denyGateway(w, method, deny(grpcCodeResourceExhausted, "buildkit_ref_limit_exceeded", "frontend solve limit reached or build closed"))

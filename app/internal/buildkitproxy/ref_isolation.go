@@ -29,6 +29,9 @@ func daemonBuildRef(key SessionKey, ref string) string {
 // LLB operations, remain untouched. Duplicate identity fields collapse to the
 // validated values. An empty session leaves field 5 untouched for Status.
 func controlRefFrame(payload []byte, ref, session string, maxBytes int64) ([]byte, error) {
+	if len(payload) > math.MaxInt-grpcMessageHeaderLen {
+		return nil, errMessageTooLarge
+	}
 	out := make([]byte, grpcMessageHeaderLen, grpcMessageHeaderLen+len(payload))
 	identities := map[protowire.Number]string{1: ref}
 	if session != "" {
