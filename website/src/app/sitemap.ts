@@ -46,6 +46,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
       "observability",
       "admin",
       "migration",
+      "deprecations",
       "roadmap",
       "security",
       "verification",
