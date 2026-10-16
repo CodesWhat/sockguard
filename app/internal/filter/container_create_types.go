@@ -1,6 +1,9 @@
 package filter
 
-import "sync"
+import (
+	"encoding/json"
+	"sync"
+)
 
 // container_create_types.go holds the on-wire JSON shapes that the
 // /containers/create inspector decodes from request bodies. The split keeps
@@ -34,9 +37,27 @@ type dockerDeviceRequest struct {
 	Options      map[string]string `json:"Options"`
 }
 
+// containerCreateArgv also accepts Docker's legacy single-string shape. Like
+// Moby's StrSlice decoder, a string is one argument, never shell-split.
+type containerCreateArgv []string
+
+func (a *containerCreateArgv) UnmarshalJSON(data []byte) error {
+	var argv []string
+	if err := json.Unmarshal(data, &argv); err == nil {
+		*a = argv
+		return nil
+	}
+	var argument string
+	if err := json.Unmarshal(data, &argument); err != nil {
+		return err
+	}
+	*a = []string{argument}
+	return nil
+}
+
 type containerCreateRequest struct {
-	Cmd        []string                  `json:"Cmd"`
-	Entrypoint []string                  `json:"Entrypoint"`
+	Cmd        containerCreateArgv       `json:"Cmd"`
+	Entrypoint containerCreateArgv       `json:"Entrypoint"`
 	Env        []string                  `json:"Env"`
 	Image      string                    `json:"Image"`
 	HostConfig containerCreateHostConfig `json:"HostConfig"`

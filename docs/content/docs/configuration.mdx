@@ -1460,7 +1460,8 @@ allowed names. `allowed_env_values` pins only the named variables to exact
 These checks cover request-supplied environment, not defaults inherited from the
 image or daemon. Use trusted, digest-pinned images to control inherited defaults.
 
-Docker uses `Cmd`, `Entrypoint` and an `Env` string array. Native Podman uses
+Docker uses `Cmd`, `Entrypoint` and an `Env` string array. Legacy Docker string-form
+`Cmd`/`Entrypoint` values are checked as a single argument, without shell splitting. Native Podman uses
 `command`, `entrypoint` and an `env` string map. When any environment policy is
 active, native `env_host`, `httpproxy`, `secret_env` and `envmerge` additions are
 refused because their values can't be checked from the request. Set host/proxy

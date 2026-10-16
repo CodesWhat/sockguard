@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Reproducible unsigned Go binary builds: release metadata uses the UTC source commit date, VCS auto-stamping is disabled, and a checked-in procedure compares clean builds from separate directories/caches. CI checks Linux/Darwin on amd64/arm64. Packages, images and signing artifacts are outside this binary-byte guarantee. The security guide records the decision to retain executable policy tests rather than add a separate formal model in v2.4.
 
-- Opt-in container-create command, entrypoint and environment policies for Docker and native Podman, globally or per client profile. Explicit argv templates use anchored globs; environment checks support allowed/denied names and exact values without exposing values in denials. Native host/proxy/secret/merge environment additions are refused while environment checks are active. Image/daemon defaults are outside request-field inspection.
+- Opt-in container-create command, entrypoint and environment policies for Docker and native Podman, globally or per client profile. Explicit argv templates use anchored globs and preserve legacy Docker single-string argv decoding; environment checks support allowed/denied names and exact values without exposing values in denials. Native host/proxy/secret/merge environment additions are refused while environment checks are active. Image/daemon defaults are outside request-field inspection.
 
 - Startup and `validate` diagnostics warn about global or per-client allow/deny rules whose method and glob path match no route in the pinned Engine/Podman API catalog. The offline, bounded analysis is advisory and does not change request authorization.
 

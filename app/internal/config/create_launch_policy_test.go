@@ -149,3 +149,35 @@ func TestCreateLaunchPolicyProfileAndEnv(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateLaunchPolicyLegacyDockerStrings(t *testing.T) {
+	for _, field := range []string{"Cmd", "Entrypoint"} {
+		key := "allowed_commands"
+		if field == "Entrypoint" {
+			key = "allowed_entrypoints"
+		}
+		for _, tc := range []struct {
+			name, policy, value string
+			allow               bool
+		}{
+			{"unrestricted", "{}", `"/app/server"`, true},
+			{"explicit match", key + `: [["/app/server"]]`, `"/app/server"`, true},
+			{"not shell split", key + `: [["/app/server","--help"]]`, `"/app/server --help"`, false},
+			{"different", key + `: [["/app/server"]]`, `"sh"`, false},
+			{"wrong shape", key + `: [["/app/server"]]`, `{}`, false},
+		} {
+			t.Run(field+"/"+tc.name, func(t *testing.T) {
+				handler := imageAllowlistHandler(t, "request_body:\n  container_create: {"+strings.Trim(tc.policy, "{}")+"}\n")
+				response := httptest.NewRecorder()
+				handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1.47/containers/create", strings.NewReader(`{"`+field+`":`+tc.value+`}`)))
+				want := http.StatusForbidden
+				if tc.allow {
+					want = http.StatusOK
+				}
+				if response.Code != want {
+					t.Errorf("status %d, want %d: %s", response.Code, want, response.Body.String())
+				}
+			})
+		}
+	}
+}
