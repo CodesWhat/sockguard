@@ -145,6 +145,18 @@ the [security decision](/security#unix-container-label-identity) explains the
 requirements for a future implementation. These changes remain unreleased until
 v2.4 release notes say otherwise.
 
+The line also implements native Podman mount-type and source-mutation controls,
+CDI host-device checks, classic-build frontend-override refusal, owner-aware
+BuildKit image exports, and explicit Podman RUN-control/private-network checks.
+Docker-native build options retain their existing behavior.
+
+Current-client BuildKit conformance remains open. A live Docker 29.5.2 test with
+Buildx v0.33.0's standard workflow reached `unsupported BuildKit schema`.
+A direct built-in Control/Solve build verified owner stamping and refusal of a
+foreign image destination, but doesn't establish normal Buildx or Compose build
+compatibility. The follow-up must identify the unsupported fields and provide
+a tested workflow without admitting uninspected frontend execution.
+
 ## v3 compatibility boundary
 
 v3.0.0 is the promised removal point for the insecure endpoint TLS setting and
@@ -222,7 +234,8 @@ repository release history.
 | drydock discovery and container-state sync through Portwing Standard Mode | Supported; the agent handshake and state feed work through Sockguard |
 | Portwing Edge dial-out | Stable with drydock 1.6; drydock 1.5 requires `DD_EXPERIMENTAL_PORTWING=true` |
 | drydock-triggered remote updates through Portwing | **Not implemented** in either mode: Standard trigger routes return `501`; the current Edge protocol has no effective watcher/trigger response contract |
-| Compose `--build` through a bundled preset | **Supported** for both transports: classic `/build` via the `*-with-build.yaml` presets, and BuildKit's session/gRPC tunnel via the fully-mediated `*-with-mediated-build.yaml` presets (issue #185's gRPC mediation epic — see [Security](/security)) |
+| Classic Compose builds through a bundled preset | Classic `/build` is inspected through the `*-with-build.yaml` presets |
+| Buildx / Compose BuildKit builds | The `*-with-mediated-build.yaml` presets enable session/gRPC mediation, but client schema and policy constraints still apply. Buildx v0.33.0's standard workflow failed the development runtime test above; current-client conformance remains open. See [Security](/security) |
 
 The compatibility statement is deliberately narrower than “all three tools work together.” Monitoring and authorized container control work. Remote update orchestration does not yet, and Sockguard will not advertise a preset as enabling it until Portwing and drydock implement and test both sides of that contract.
 

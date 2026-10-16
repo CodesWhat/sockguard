@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- Record the current Buildx v0.33.0 schema incompatibility and distinguish the verified direct built-in Solve ownership path from unverified normal Buildx/Compose workflows in the public roadmap.
 - Add version-scoped v2.2/v2.3 migration guidance and candidate-only frontend labels, a canonical deprecation ledger with the planned v3 TLS removal checklist, and precise restricted-client security scope. Correct the CLI demo build toolchain and check it against go.mod.
 - Align documentation and changelog release status with the published rc.7 candidate and the successful soak/TLS runs on prepared, unpublished rc.8 source.
 - Record the v2.4 Unix container-label identity decision: labels remain TCP/source-IP only. PID reuse, namespace visibility, delegated cgroups and remote-daemon identity require a separate safe design; Unix clients can use distinct host-visible UID/GID profiles instead.
