@@ -825,6 +825,30 @@ The getting-started examples use the container-level controls above by
 default so the drop-in path stays simple without hiding the real
 hardening story.
 
+## Policy specification decision
+
+Decision for v2.4, recorded 2026-10-16: keep the policy contract executable in the
+Go implementation and regression/property tests. Do not add a separate TLA+, Quint
+or other formal model in this milestone, and do not describe Sockguard as formally
+verified. A second model would need a maintained mapping to Docker/Podman wire
+semantics, normalization, ordered rules, client profiles, mutations and stateful
+BuildKit mediation. A model limited to glob evaluation would not prove the whole
+proxy's security boundary.
+
+The contract to preserve is: canonicalize a request path before evaluating rules;
+select the first matching method/path rule; deny when no rule matches; inspect
+constrained writes before forwarding; and compose profile, ownership and body
+restrictions without silently bypassing a failed prerequisite. Explicit warn/audit
+rollout and documented blind-write acknowledgments are part of that contract.
+Unit, integration, differential and fuzz regressions exercise these behaviors,
+including malformed and ambiguous request shapes. Tests provide evidence, not a
+proof over every Docker/Podman behavior.
+
+Revisit a formal model when a concrete policy-engine change needs properties the
+current executable tests cannot express or explore adequately. Start with a bounded
+contract, state assumptions and implementation correspondence, and define how CI
+will detect drift before introducing another maintained specification.
+
 ## Known Limitations
 
 These are architectural constraints inherent to Sockguard's position in the

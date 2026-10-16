@@ -125,17 +125,22 @@ while a v2.3-only behavior change restarts the 14-day window.
 
 ## v2.4 development
 
-The next feature line is isolated from the v2.3 release candidate. First is
-image admission: opt-in `allowed_images` lists on Docker-compatible and native
-Podman container create, plus Swarm service create/update. Lists match explicit,
-fully qualified references exactly and support per-client profiles and existing
-rollout modes. See [image admission allowlists](/configuration#image-admission-allowlists)
-for matching rules and restrictions.
+This feature line is isolated from the v2.3 release candidate. The implementation
+includes exact image allowlists for Docker/Podman container create and Swarm
+service create/update, advisory startup/validate warnings for rules matching no
+known Engine/libpod route, and opt-in create environment/command/entrypoint policy.
+See the [configuration reference](/configuration#container-launch-fields).
 
-After image admission, the planned order is warnings for rules that match no
-known Engine/libpod route, create-time environment/command/entrypoint policy,
-a reproducible-build procedure checked
-in CI with a recorded decision on a formal policy specification.
+The [reproducible-build procedure](/verification#reproducible-go-binaries) compares
+independent binary builds in CI for all four supported targets. The
+[formal-spec decision](/security#policy-specification-decision) retains executable
+policy tests and records when a separate model should be reconsidered.
+
+Unix container-label identity is closed as a documented limit, with no PID/cgroup
+inference enabled. Unix clients can use distinct host-visible UID/GID profiles;
+the [security decision](/security#unix-container-label-identity) explains the
+requirements for a future implementation. These changes remain unreleased until
+v2.4 release notes say otherwise.
 
 ## Twelve-month direction
 
@@ -215,8 +220,3 @@ until the corresponding published images pass the real-daemon conformance
 matrix. New write transports stay denied when Sockguard cannot inspect them or
 require a narrowly named operator acknowledgement that makes the limitation
 visible.
-
-The Unix container-label identity item is closed as a documented limit: label ACLs
-remain TCP/source-IP based. Unix clients can use UID/GID profiles; the
-[security decision](/security#unix-container-label-identity) records why a PID and
-cgroup-name lookup is insufficient and what a future implementation must verify.
