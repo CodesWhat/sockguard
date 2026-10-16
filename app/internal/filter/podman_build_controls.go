@@ -55,7 +55,10 @@ func privateNetworkOnly(raw string) bool {
 }
 
 func (p buildPolicy) inspectPodmanRunControls(query url.Values, podman bool) string {
-	if podman && !p.allowHostNetwork {
+	if !podman {
+		return ""
+	}
+	if !p.allowHostNetwork {
 		raw, _, ok := queryparam.Scalar(query, "nsoptions")
 		isolation, _, isolationOK := queryparam.Scalar(query, "isolation")
 		if !ok || !isolationOK || !privateBuildNetwork(raw) || (isolation != "" && isolation != "oci" && isolation != "rootless") {
