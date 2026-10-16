@@ -52,15 +52,16 @@ type LibpodContainerCreateOptions struct {
 	// AllowHostNetwork/PID/IPC/UserNS/UTS/CgroupNS each permit that
 	// namespace object's nsmode "host" and "path", and while false refuse
 	// any nsmode this package doesn't know (see libpod_namespace.go).
-	AllowHostNetwork  bool
-	AllowHostPID      bool
-	AllowHostIPC      bool
-	AllowHostUserNS   bool
-	AllowHostUTS      bool
-	AllowHostCgroupNS bool
-	AllowedBindMounts []string
-	AllowAllDevices   bool
-	AllowedDevices    []string
+	AllowHostNetwork         bool
+	AllowHostPID             bool
+	AllowHostIPC             bool
+	AllowHostUserNS          bool
+	AllowHostUTS             bool
+	AllowHostCgroupNS        bool
+	AllowedBindMounts        []string
+	AllowMountSourceMutation bool
+	AllowAllDevices          bool
+	AllowedDevices           []string
 
 	// RestrictNamespaceSharing gates netns/pidns/ipcns/userns/utsns/cgroupns
 	// objects of the form {"nsmode":"container","value":"<ref>"} (join another
@@ -116,18 +117,19 @@ type LibpodContainerCreateOptions struct {
 }
 
 type libpodContainerCreatePolicy struct {
-	launch            createLaunchPolicy
-	allowedImages     createImageAllowlist
-	allowPrivileged   bool
-	allowHostNetwork  bool
-	allowHostPID      bool
-	allowHostIPC      bool
-	allowHostUserNS   bool
-	allowHostUTS      bool
-	allowHostCgroupNS bool
-	allowedBindMounts []string
-	allowAllDevices   bool
-	allowedDevices    []string
+	launch                   createLaunchPolicy
+	allowedImages            createImageAllowlist
+	allowPrivileged          bool
+	allowHostNetwork         bool
+	allowHostPID             bool
+	allowHostIPC             bool
+	allowHostUserNS          bool
+	allowHostUTS             bool
+	allowHostCgroupNS        bool
+	allowedBindMounts        []string
+	allowMountSourceMutation bool
+	allowAllDevices          bool
+	allowedDevices           []string
 
 	restrictNamespaceSharing          bool
 	allowedNamespaceSharingContainers []string
@@ -191,6 +193,7 @@ func newLibpodContainerCreatePolicy(opts LibpodContainerCreateOptions) libpodCon
 		allowHostUTS:                      opts.AllowHostUTS,
 		allowHostCgroupNS:                 opts.AllowHostCgroupNS,
 		allowedBindMounts:                 allowedBindMounts,
+		allowMountSourceMutation:          opts.AllowMountSourceMutation,
 		allowAllDevices:                   opts.AllowAllDevices,
 		allowedDevices:                    allowedDevices,
 		restrictNamespaceSharing:          opts.RestrictNamespaceSharing,
@@ -438,12 +441,21 @@ func (p libpodContainerCreatePolicy) denyNamespaceSharingReason(req libpodContai
 // resolves a relative source, and an empty one, against the daemon's own
 // working directory. "../../../../etc" is /etc from anywhere on the host, and
 // this proxy can't see where the daemon is standing, so no allowlist entry can
-// vouch for a relative path. Only "bind" is treated this way: Podman leaves
-// every other type's source alone, and the source of a tmpfs or devpts mount
-// isn't a path at all.
+// vouch for a relative path. The kernel also treats bind/rbind options on
+// other types as host binds. Unmodeled filesystem/device mounts are refused;
+// virtual filesystems without bind options do not read a host source.
 func (p libpodContainerCreatePolicy) denyBindMountReason(mounts []libpodMount) string {
 	for _, mount := range mounts {
-		if !strings.EqualFold(mount.Type, "bind") {
+		if reason := denyMountSourceMutationReason(mount.Options, mount.Type == "tmpfs", p.allowMountSourceMutation, "libpod container create"); reason != "" {
+			return reason
+		}
+		bind := strings.EqualFold(mount.Type, "bind") || slices.Contains(mount.Options, "bind") || slices.Contains(mount.Options, "rbind")
+		if !bind {
+			switch mount.Type {
+			case "tmpfs", "ramfs", "proc", "sysfs", "devpts", "mqueue", "cgroup", "cgroup2":
+			default:
+				return fmt.Sprintf("libpod container create denied: mount type %q is not supported; use a constrained bind or overlay_volumes mount", mount.Type)
+			}
 			continue
 		}
 		source, ok := normalizeBindMount(mount.Source)

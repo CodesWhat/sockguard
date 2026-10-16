@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Refuse classic-build `BUILDKIT_SYNTAX` frontend overrides while RUN instructions are restricted, including ambiguous query spellings and repeated values.
+- Hold CDI device-request host paths to `allowed_devices`, independently of the device-request driver grant. Qualified CDI names remain supported.
+- Apply native Podman bind-source checks to `bind`/`rbind` options on any mount type. Refuse unmodeled device/filesystem mounts; use constrained bind or `overlay_volumes` entries instead.
+- Require `allow_mount_source_mutation` for Podman mount options `U`, `z` and `Z` on compat binds, native mounts, overlay volumes and named volumes. The exact native tmpfs `U` form sets mount uid/gid and remains allowed. Source allowlists still apply independently.
+
 ### Documentation
 
 - Align documentation and changelog release status with the published rc.7 candidate and the successful soak/TLS runs on prepared, unpublished rc.8 source.

@@ -84,6 +84,7 @@ type ContainerCreateOptions struct {
 	AllowHostPID             bool
 	AllowHostIPC             bool
 	AllowedBindMounts        []string
+	AllowMountSourceMutation bool
 	AllowAllDevices          bool
 	AllowedDevices           []string
 	AllowDeviceRequests      bool
@@ -201,6 +202,7 @@ type containerCreatePolicy struct {
 	allowHostPID             bool
 	allowHostIPC             bool
 	allowedBindMounts        []string
+	allowMountSourceMutation bool
 	allowAllDevices          bool
 	allowedDevices           []string
 	allowDeviceRequests      bool
@@ -302,6 +304,7 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		allowHostPID:                      opts.AllowHostPID,
 		allowHostIPC:                      opts.AllowHostIPC,
 		allowedBindMounts:                 allowed,
+		allowMountSourceMutation:          opts.AllowMountSourceMutation,
 		allowAllDevices:                   opts.AllowAllDevices,
 		allowedDevices:                    allowedDevices,
 		allowDeviceRequests:               opts.AllowDeviceRequests,
@@ -1566,13 +1569,33 @@ func (p containerCreatePolicy) denyDeviceReason(hostConfig containerCreateHostCo
 }
 
 // denyDeviceRequestsReason checks each DeviceRequest against the policy.
-// If allowDeviceRequests is true, all requests pass without inspection (escape
-// hatch). If allowedDeviceRequests is non-empty, every request must match an
+// CDI raw host paths always follow the host-device policy. Otherwise,
+// allowDeviceRequests skips driver/capability checks. If allowedDeviceRequests
+// is non-empty, every request must match an
 // entry by driver (exact, lowercase) and capabilities (each request capability
 // set must be a subset of at least one allowlisted set), and optionally by
 // count (max_count). Empty Driver in the request is rejected as malformed.
 // If neither flag nor allowlist is set, all requests are denied (default-deny).
 func (p containerCreatePolicy) denyDeviceRequestsReason(reqs []dockerDeviceRequest) string {
+	// Podman's compat API sends CDI DeviceIDs through its raw --device
+	// parser. The request-driver grant alone must not grant host devices.
+	if !p.allowAllDevices {
+		for _, req := range reqs {
+			if !strings.EqualFold(strings.TrimSpace(req.Driver), "cdi") {
+				continue
+			}
+			for _, id := range req.DeviceIDs {
+				if qualifiedCDIDevice.MatchString(id) {
+					continue
+				}
+				raw, ok := splitLibpodDevicePath(id)
+				host, normalized := normalizeContainerCreateDevicePath(raw)
+				if !ok || !normalized || !bindPathAllowed(host, p.allowedDevices) {
+					return fmt.Sprintf("container create denied: CDI device %q is not allowlisted", id)
+				}
+			}
+		}
+	}
 	if p.allowDeviceRequests {
 		return ""
 	}
@@ -1883,6 +1906,11 @@ func cgroupPermOrder(c byte) int {
 // allowedBindMounts: its source when that's an absolute host path, and the
 // overlay directories its options name.
 func (p containerCreatePolicy) denyBindSpecReason(bind string) string {
+	if parts := strings.SplitN(bind, ":", 3); len(parts) == 3 {
+		if reason := denyMountSourceMutationReason(strings.FieldsFunc(parts[2], func(r rune) bool { return r == ',' || r == ':' }), false, p.allowMountSourceMutation, "container create"); reason != "" {
+			return reason
+		}
+	}
 	// Podman reads a spec whose source starts with "/" or "." as a host path,
 	// and only a source that starts with neither as a named volume
 	// (specgen/volumes.go GenVolumeMounts). A "."-prefixed source is a relative
