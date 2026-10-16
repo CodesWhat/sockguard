@@ -1420,6 +1420,26 @@ Audit events intentionally preserve both the proxy-generated canonical `request_
 
 Rules are evaluated in order. **First match wins.** If no rule matches, the request is denied.
 
+### Rules that match no known route
+
+Unreleased, planned for v2.4. At startup and during `sockguard validate`,
+Sockguard warns when a global or profile rule's HTTP methods and glob path
+cannot match any route in its committed Engine/Podman catalog. Both allow and
+deny rules are checked. The diagnostic names the config index, action, method
+and path. It does not reject the configuration, remove the rule, or change
+first-match evaluation. This detects endpoint typos and method mismatches;
+it does not report rules shadowed by an earlier rule.
+
+Checks run offline with bounded regular-language intersection, including
+arbitrary resource names rather than a few sample IDs. If the analysis exceeds
+its budget, it suppresses the warning for that rule rather than declaring it
+unreachable. Upstream extensions and newer API routes can cause an advisory
+warning until the catalog is updated. Provenance is embedded in
+`app/internal/cmd/known_api_routes.json`; maintainers refresh it with
+`python3 scripts/update-route-catalog.py`, reviewing the pinned source revisions
+and generated diff. BuildKit RPC entries come from the vendored definitions and
+method registry. Podman stubs explicitly returning unsupported are excluded.
+
 ### Path Patterns
 
 | Pattern | Matches | Does Not Match |

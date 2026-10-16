@@ -177,6 +177,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		}()
 	}
 	warnIfDefaultProfileExcluded(cfg, logger)
+	warnIfRulesMatchNoKnownRoute(cfg, logger)
 	warnIfMainListenerPlaintext(cfg, logger)
 	runtime, err := newServeRuntime(cfg, logger, deps)
 	if err != nil {

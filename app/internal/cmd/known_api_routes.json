@@ -1,0 +1,1293 @@
+{
+  "sources": {
+    "engine": "https://raw.githubusercontent.com/moby/moby/3f38b15147b14ce0ce7b11558a1aa9e9f14db103/api/swagger.yaml",
+    "podman": "https://github.com/containers/podman/tree/a859fc66702c23e869c282c63e92d9b6cd264229/pkg/api/server",
+    "buildkit": "app/internal/buildkitproto/proto and app/internal/buildkitproxy/registry.go"
+  },
+  "routes": [
+    {
+      "method": "DELETE",
+      "path": "/configs/{id}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/containers/{id}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/containers/{name}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/images/{name:.*}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/libpod/artifacts/remove"
+    },
+    {
+      "method": "DELETE",
+      "path": "/libpod/artifacts/{name:.*}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/libpod/containers/{name}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/libpod/images/remove"
+    },
+    {
+      "method": "DELETE",
+      "path": "/libpod/images/{name:.*}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/libpod/kube/play"
+    },
+    {
+      "method": "DELETE",
+      "path": "/libpod/networks/{name}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/libpod/play/kube"
+    },
+    {
+      "method": "DELETE",
+      "path": "/libpod/pods/{name}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/libpod/quadlets"
+    },
+    {
+      "method": "DELETE",
+      "path": "/libpod/quadlets/{name}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/libpod/secrets/{name}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/libpod/volumes/{name}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/networks/{id}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/networks/{name}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/nodes/{id}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/plugins/{name:.*}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/secrets/{id}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/secrets/{name}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/services/{id}"
+    },
+    {
+      "method": "DELETE",
+      "path": "/volumes/{name}"
+    },
+    {
+      "method": "GET",
+      "path": "/_ping"
+    },
+    {
+      "method": "GET",
+      "path": "/configs"
+    },
+    {
+      "method": "GET",
+      "path": "/configs/{id}"
+    },
+    {
+      "method": "GET",
+      "path": "/containers/json"
+    },
+    {
+      "method": "GET",
+      "path": "/containers/{id}/archive"
+    },
+    {
+      "method": "GET",
+      "path": "/containers/{id}/attach/ws"
+    },
+    {
+      "method": "GET",
+      "path": "/containers/{id}/changes"
+    },
+    {
+      "method": "GET",
+      "path": "/containers/{id}/export"
+    },
+    {
+      "method": "GET",
+      "path": "/containers/{id}/json"
+    },
+    {
+      "method": "GET",
+      "path": "/containers/{id}/logs"
+    },
+    {
+      "method": "GET",
+      "path": "/containers/{id}/stats"
+    },
+    {
+      "method": "GET",
+      "path": "/containers/{id}/top"
+    },
+    {
+      "method": "GET",
+      "path": "/containers/{name}/archive"
+    },
+    {
+      "method": "GET",
+      "path": "/containers/{name}/changes"
+    },
+    {
+      "method": "GET",
+      "path": "/containers/{name}/export"
+    },
+    {
+      "method": "GET",
+      "path": "/containers/{name}/json"
+    },
+    {
+      "method": "GET",
+      "path": "/containers/{name}/logs"
+    },
+    {
+      "method": "GET",
+      "path": "/containers/{name}/stats"
+    },
+    {
+      "method": "GET",
+      "path": "/containers/{name}/top"
+    },
+    {
+      "method": "GET",
+      "path": "/distribution/{name:.*}/json"
+    },
+    {
+      "method": "GET",
+      "path": "/events"
+    },
+    {
+      "method": "GET",
+      "path": "/exec/{id}/json"
+    },
+    {
+      "method": "GET",
+      "path": "/images/get"
+    },
+    {
+      "method": "GET",
+      "path": "/images/json"
+    },
+    {
+      "method": "GET",
+      "path": "/images/search"
+    },
+    {
+      "method": "GET",
+      "path": "/images/{name:.*}/attestations"
+    },
+    {
+      "method": "GET",
+      "path": "/images/{name:.*}/get"
+    },
+    {
+      "method": "GET",
+      "path": "/images/{name:.*}/history"
+    },
+    {
+      "method": "GET",
+      "path": "/images/{name:.*}/json"
+    },
+    {
+      "method": "GET",
+      "path": "/info"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/_ping"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/artifacts/json"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/artifacts/{name:.*}/extract"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/artifacts/{name:.*}/json"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/containers/json"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/containers/showmounted"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/containers/stats"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/containers/{name:.*}/healthcheck"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/containers/{name}/archive"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/containers/{name}/changes"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/containers/{name}/exists"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/containers/{name}/export"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/containers/{name}/json"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/containers/{name}/logs"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/containers/{name}/stats"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/containers/{name}/top"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/events"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/exec/{id}/json"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/generate/kube"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/generate/{name:.*}/systemd"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/images/export"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/images/json"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/images/search"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/images/{name:.*}/exists"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/images/{name:.*}/get"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/images/{name:.*}/history"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/images/{name:.*}/json"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/images/{name:.*}/resolve"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/images/{name:.*}/tree"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/images/{name}/changes"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/info"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/kube/generate"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/networks/json"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/networks/{name}"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/networks/{name}/exists"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/networks/{name}/json"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/pods/json"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/pods/stats"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/pods/{name}/exists"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/pods/{name}/json"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/pods/{name}/top"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/quadlets/json"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/quadlets/{name}/exists"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/quadlets/{name}/file"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/secrets/json"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/secrets/{name}/exists"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/secrets/{name}/json"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/swagger"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/system/df"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/version"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/volumes/json"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/volumes/{name}/exists"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/volumes/{name}/export"
+    },
+    {
+      "method": "GET",
+      "path": "/libpod/volumes/{name}/json"
+    },
+    {
+      "method": "GET",
+      "path": "/networks"
+    },
+    {
+      "method": "GET",
+      "path": "/networks/{id}"
+    },
+    {
+      "method": "GET",
+      "path": "/networks/{name}"
+    },
+    {
+      "method": "GET",
+      "path": "/nodes"
+    },
+    {
+      "method": "GET",
+      "path": "/nodes/{id}"
+    },
+    {
+      "method": "GET",
+      "path": "/plugins"
+    },
+    {
+      "method": "GET",
+      "path": "/plugins/privileges"
+    },
+    {
+      "method": "GET",
+      "path": "/plugins/{name:.*}/json"
+    },
+    {
+      "method": "GET",
+      "path": "/secrets"
+    },
+    {
+      "method": "GET",
+      "path": "/secrets/{id}"
+    },
+    {
+      "method": "GET",
+      "path": "/secrets/{name}"
+    },
+    {
+      "method": "GET",
+      "path": "/services"
+    },
+    {
+      "method": "GET",
+      "path": "/services/{id}"
+    },
+    {
+      "method": "GET",
+      "path": "/services/{id}/logs"
+    },
+    {
+      "method": "GET",
+      "path": "/swarm"
+    },
+    {
+      "method": "GET",
+      "path": "/swarm/unlockkey"
+    },
+    {
+      "method": "GET",
+      "path": "/system/df"
+    },
+    {
+      "method": "GET",
+      "path": "/tasks"
+    },
+    {
+      "method": "GET",
+      "path": "/tasks/{id}"
+    },
+    {
+      "method": "GET",
+      "path": "/tasks/{id}/logs"
+    },
+    {
+      "method": "GET",
+      "path": "/version"
+    },
+    {
+      "method": "GET",
+      "path": "/volumes"
+    },
+    {
+      "method": "GET",
+      "path": "/volumes/{name}"
+    },
+    {
+      "method": "HEAD",
+      "path": "/_ping"
+    },
+    {
+      "method": "HEAD",
+      "path": "/containers/{id}/archive"
+    },
+    {
+      "method": "HEAD",
+      "path": "/containers/{name}/archive"
+    },
+    {
+      "method": "HEAD",
+      "path": "/libpod/_ping"
+    },
+    {
+      "method": "HEAD",
+      "path": "/libpod/containers/{name}/archive"
+    },
+    {
+      "method": "POST",
+      "path": "/auth"
+    },
+    {
+      "method": "POST",
+      "path": "/build"
+    },
+    {
+      "method": "POST",
+      "path": "/build/prune"
+    },
+    {
+      "method": "POST",
+      "path": "/commit"
+    },
+    {
+      "method": "POST",
+      "path": "/configs/create"
+    },
+    {
+      "method": "POST",
+      "path": "/configs/{id}/update"
+    },
+    {
+      "method": "POST",
+      "path": "/containerd.services.content.v1.Content/Abort"
+    },
+    {
+      "method": "POST",
+      "path": "/containerd.services.content.v1.Content/Delete"
+    },
+    {
+      "method": "POST",
+      "path": "/containerd.services.content.v1.Content/Info"
+    },
+    {
+      "method": "POST",
+      "path": "/containerd.services.content.v1.Content/List"
+    },
+    {
+      "method": "POST",
+      "path": "/containerd.services.content.v1.Content/ListStatuses"
+    },
+    {
+      "method": "POST",
+      "path": "/containerd.services.content.v1.Content/Read"
+    },
+    {
+      "method": "POST",
+      "path": "/containerd.services.content.v1.Content/Status"
+    },
+    {
+      "method": "POST",
+      "path": "/containerd.services.content.v1.Content/Update"
+    },
+    {
+      "method": "POST",
+      "path": "/containerd.services.content.v1.Content/Write"
+    },
+    {
+      "method": "POST",
+      "path": "/containers/create"
+    },
+    {
+      "method": "POST",
+      "path": "/containers/prune"
+    },
+    {
+      "method": "POST",
+      "path": "/containers/{id}/attach"
+    },
+    {
+      "method": "POST",
+      "path": "/containers/{id}/exec"
+    },
+    {
+      "method": "POST",
+      "path": "/containers/{id}/kill"
+    },
+    {
+      "method": "POST",
+      "path": "/containers/{id}/pause"
+    },
+    {
+      "method": "POST",
+      "path": "/containers/{id}/rename"
+    },
+    {
+      "method": "POST",
+      "path": "/containers/{id}/resize"
+    },
+    {
+      "method": "POST",
+      "path": "/containers/{id}/restart"
+    },
+    {
+      "method": "POST",
+      "path": "/containers/{id}/start"
+    },
+    {
+      "method": "POST",
+      "path": "/containers/{id}/stop"
+    },
+    {
+      "method": "POST",
+      "path": "/containers/{id}/unpause"
+    },
+    {
+      "method": "POST",
+      "path": "/containers/{id}/update"
+    },
+    {
+      "method": "POST",
+      "path": "/containers/{id}/wait"
+    },
+    {
+      "method": "POST",
+      "path": "/containers/{name}/attach"
+    },
+    {
+      "method": "POST",
+      "path": "/containers/{name}/exec"
+    },
+    {
+      "method": "POST",
+      "path": "/containers/{name}/kill"
+    },
+    {
+      "method": "POST",
+      "path": "/containers/{name}/pause"
+    },
+    {
+      "method": "POST",
+      "path": "/containers/{name}/rename"
+    },
+    {
+      "method": "POST",
+      "path": "/containers/{name}/resize"
+    },
+    {
+      "method": "POST",
+      "path": "/containers/{name}/restart"
+    },
+    {
+      "method": "POST",
+      "path": "/containers/{name}/start"
+    },
+    {
+      "method": "POST",
+      "path": "/containers/{name}/stop"
+    },
+    {
+      "method": "POST",
+      "path": "/containers/{name}/unpause"
+    },
+    {
+      "method": "POST",
+      "path": "/containers/{name}/update"
+    },
+    {
+      "method": "POST",
+      "path": "/containers/{name}/wait"
+    },
+    {
+      "method": "POST",
+      "path": "/exec/{id}/resize"
+    },
+    {
+      "method": "POST",
+      "path": "/exec/{id}/start"
+    },
+    {
+      "method": "POST",
+      "path": "/grpc"
+    },
+    {
+      "method": "POST",
+      "path": "/grpc.health.v1.Health/Check"
+    },
+    {
+      "method": "POST",
+      "path": "/grpc.health.v1.Health/Watch"
+    },
+    {
+      "method": "POST",
+      "path": "/images/create"
+    },
+    {
+      "method": "POST",
+      "path": "/images/load"
+    },
+    {
+      "method": "POST",
+      "path": "/images/prune"
+    },
+    {
+      "method": "POST",
+      "path": "/images/{name:.*}/push"
+    },
+    {
+      "method": "POST",
+      "path": "/images/{name:.*}/tag"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/artifacts/add"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/artifacts/local/add"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/artifacts/pull"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/artifacts/{name:.*}/push"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/build"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/commit"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/containers/create"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/containers/prune"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/containers/{name}/attach"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/containers/{name}/checkpoint"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/containers/{name}/exec"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/containers/{name}/init"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/containers/{name}/kill"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/containers/{name}/mount"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/containers/{name}/pause"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/containers/{name}/rename"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/containers/{name}/resize"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/containers/{name}/restart"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/containers/{name}/restore"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/containers/{name}/start"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/containers/{name}/stop"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/containers/{name}/unmount"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/containers/{name}/unpause"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/containers/{name}/update"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/containers/{name}/wait"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/exec/{id}/remove"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/exec/{id}/resize"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/exec/{id}/start"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/images/import"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/images/load"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/images/prune"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/images/pull"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/images/scp/{name:.*}"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/images/{name:.*}/push"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/images/{name:.*}/tag"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/images/{name:.*}/untag"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/kube/apply"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/kube/play"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/local/build"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/local/images/load"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/networks/create"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/networks/prune"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/networks/{name}/connect"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/networks/{name}/disconnect"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/networks/{name}/update"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/play/kube"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/pods/create"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/pods/prune"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/pods/{name}/kill"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/pods/{name}/pause"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/pods/{name}/restart"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/pods/{name}/start"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/pods/{name}/stop"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/pods/{name}/unpause"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/quadlets"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/secrets/create"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/system/check"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/system/prune"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/volumes/create"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/volumes/prune"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/volumes/{name}/import"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.secrets.v1.Secrets/GetSecret"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.v1.Control/DiskUsage"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.v1.Control/Info"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.v1.Control/ListWorkers"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.v1.Control/ListenBuildHistory"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.v1.Control/Prune"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.v1.Control/Session"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.v1.Control/Solve"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.v1.Control/Status"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.v1.Control/UpdateBuildHistory"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.v1.frontend.LLBBridge/Evaluate"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.v1.frontend.LLBBridge/ExecProcess"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.v1.frontend.LLBBridge/Inputs"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.v1.frontend.LLBBridge/NewContainer"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.v1.frontend.LLBBridge/Ping"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.v1.frontend.LLBBridge/ReadDir"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.v1.frontend.LLBBridge/ReadDirContainer"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.v1.frontend.LLBBridge/ReadFile"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.v1.frontend.LLBBridge/ReadFileContainer"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.v1.frontend.LLBBridge/ReleaseContainer"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.v1.frontend.LLBBridge/ResolveImageConfig"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.v1.frontend.LLBBridge/ResolveSourceMeta"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.v1.frontend.LLBBridge/Return"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.v1.frontend.LLBBridge/Solve"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.v1.frontend.LLBBridge/StatFile"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.v1.frontend.LLBBridge/StatFileContainer"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.v1.frontend.LLBBridge/Warn"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.buildkit.v1.sourcepolicy.policysession.PolicyVerifier/CheckPolicy"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.exporter.v1.Exporter/FinalizeExport"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.exporter.v1.Exporter/FindExporters"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.filesync.v1.Auth/Credentials"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.filesync.v1.Auth/FetchToken"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.filesync.v1.Auth/GetTokenAuthority"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.filesync.v1.Auth/VerifyTokenAuthority"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.filesync.v1.FileSend/DiffCopy"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.filesync.v1.FileSync/DiffCopy"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.filesync.v1.FileSync/TarStream"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.sshforward.v1.SSH/CheckAgent"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.sshforward.v1.SSH/ForwardAgent"
+    },
+    {
+      "method": "POST",
+      "path": "/moby.upload.v1.Upload/Pull"
+    },
+    {
+      "method": "POST",
+      "path": "/networks/create"
+    },
+    {
+      "method": "POST",
+      "path": "/networks/prune"
+    },
+    {
+      "method": "POST",
+      "path": "/networks/{id}/connect"
+    },
+    {
+      "method": "POST",
+      "path": "/networks/{id}/disconnect"
+    },
+    {
+      "method": "POST",
+      "path": "/networks/{name}/connect"
+    },
+    {
+      "method": "POST",
+      "path": "/networks/{name}/disconnect"
+    },
+    {
+      "method": "POST",
+      "path": "/nodes/{id}/update"
+    },
+    {
+      "method": "POST",
+      "path": "/opentelemetry.proto.collector.trace.v1.TraceService/Export"
+    },
+    {
+      "method": "POST",
+      "path": "/plugins/create"
+    },
+    {
+      "method": "POST",
+      "path": "/plugins/pull"
+    },
+    {
+      "method": "POST",
+      "path": "/plugins/{name:.*}/disable"
+    },
+    {
+      "method": "POST",
+      "path": "/plugins/{name:.*}/enable"
+    },
+    {
+      "method": "POST",
+      "path": "/plugins/{name:.*}/push"
+    },
+    {
+      "method": "POST",
+      "path": "/plugins/{name:.*}/set"
+    },
+    {
+      "method": "POST",
+      "path": "/plugins/{name:.*}/upgrade"
+    },
+    {
+      "method": "POST",
+      "path": "/secrets/create"
+    },
+    {
+      "method": "POST",
+      "path": "/secrets/{id}/update"
+    },
+    {
+      "method": "POST",
+      "path": "/secrets/{name}/update"
+    },
+    {
+      "method": "POST",
+      "path": "/services/create"
+    },
+    {
+      "method": "POST",
+      "path": "/services/{id}/update"
+    },
+    {
+      "method": "POST",
+      "path": "/session"
+    },
+    {
+      "method": "POST",
+      "path": "/swarm/init"
+    },
+    {
+      "method": "POST",
+      "path": "/swarm/join"
+    },
+    {
+      "method": "POST",
+      "path": "/swarm/leave"
+    },
+    {
+      "method": "POST",
+      "path": "/swarm/unlock"
+    },
+    {
+      "method": "POST",
+      "path": "/swarm/update"
+    },
+    {
+      "method": "POST",
+      "path": "/volumes/create"
+    },
+    {
+      "method": "POST",
+      "path": "/volumes/prune"
+    },
+    {
+      "method": "PUT",
+      "path": "/containers/{id}/archive"
+    },
+    {
+      "method": "PUT",
+      "path": "/containers/{name}/archive"
+    },
+    {
+      "method": "PUT",
+      "path": "/libpod/containers/{name}/archive"
+    },
+    {
+      "method": "PUT",
+      "path": "/volumes/{name}"
+    }
+  ]
+}

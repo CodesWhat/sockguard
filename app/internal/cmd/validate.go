@@ -56,6 +56,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		printValidationFailure(errOut, stderrP, err)
 		return err
 	}
+	warnIfRulesMatchNoKnownRoute(cfg, slog.New(slog.NewTextHandler(errOut, nil)))
 
 	printHeader(out, stdoutP, cfg, compatActive)
 	printRules(out, stdoutP, cfg, len(compiled))
