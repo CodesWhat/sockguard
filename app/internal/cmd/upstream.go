@@ -32,8 +32,6 @@ func resolveUpstreamSpecs(cfg *config.Config, lookupEnv func(string) (string, bo
 				KeyFile:               ep.TLS.KeyFile,
 				ServerName:            ep.TLS.ServerName,
 				InsecureAllowPlainTCP: ep.InsecureAllowPlainTCP,
-				//nolint:staticcheck // SA1019: v2.1 keeps the deprecated setting functional until its v3.0.0 removal
-				InsecureSkipTLSVerify: ep.InsecureSkipTLSVerify,
 			}
 		}
 		warnInsecureUpstreamSpecs(logger, specs, "upstream.endpoints config")
@@ -73,31 +71,6 @@ func warnInsecureUpstreamSpecs(logger *slog.Logger, specs []upstream.EndpointSpe
 			logger.Warn(message,
 				"address", spec.Address, "source", source)
 		}
-		if spec.InsecureSkipTLSVerify {
-			deprecatedSetting := "upstream.endpoints[].insecure_skip_tls_verify"
-			replacement := "upstream.endpoints[].tls.ca_file"
-			message := "upstream Docker endpoint skips TLS certificate verification; " +
-				"upstream.endpoints[].insecure_skip_tls_verify is deprecated and will be removed in v3.0.0; " +
-				"configure upstream.endpoints[].tls.ca_file to verify the daemon"
-			if source == "DOCKER_HOST environment" {
-				deprecatedSetting = "DOCKER_TLS without DOCKER_TLS_VERIFY"
-				replacement = "DOCKER_TLS_VERIFY=1"
-				message = "upstream Docker endpoint skips TLS certificate verification because DOCKER_TLS is set without DOCKER_TLS_VERIFY; " +
-					"this Docker environment fallback is deprecated and will be removed in v3.0.0; set DOCKER_TLS_VERIFY=1 to verify the daemon"
-			}
-			if unixEndpoint {
-				message = "upstream Docker endpoint uses a Unix socket; " +
-					"insecure_skip_tls_verify only applies to TCP endpoints and has no effect; " +
-					deprecatedSetting + " is deprecated and will be removed in v3.0.0; configure " + replacement + " for TCP endpoints"
-			}
-			logger.Warn(message,
-				"address", spec.Address,
-				"source", source,
-				"deprecated_setting", deprecatedSetting,
-				"replacement", replacement,
-				"removal_version", "v3.0.0",
-			)
-		}
 	}
 }
 
@@ -112,8 +85,7 @@ func upstreamSpecUsesUnixTransport(spec upstream.EndpointSpec) bool {
 // upstreamSpecSelectsTLS mirrors the transport selection in
 // upstream.BuildEndpoint without loading certificate files.
 func upstreamSpecSelectsTLS(spec upstream.EndpointSpec) bool {
-	return spec.CAFile != "" || spec.CertFile != "" || spec.KeyFile != "" ||
-		spec.InsecureSkipTLSVerify
+	return spec.CAFile != "" || spec.CertFile != "" || spec.KeyFile != ""
 }
 
 // buildUpstreamResolver constructs the shared upstream resolver from config,

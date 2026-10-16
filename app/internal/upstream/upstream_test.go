@@ -175,10 +175,7 @@ func TestValidateSpec(t *testing.T) {
 			name: "tcp with cert+key",
 			spec: EndpointSpec{Address: "tcp://host:2376", CertFile: "/tmp/cert.pem", KeyFile: "/tmp/key.pem"},
 		},
-		{
-			name: "tcp insecure skip verify",
-			spec: EndpointSpec{Address: "tcp://host:2376", InsecureSkipTLSVerify: true},
-		},
+
 		{
 			name: "tcp plain insecure acknowledged",
 			spec: EndpointSpec{Address: "tcp://host:2376", InsecureAllowPlainTCP: true},
@@ -304,20 +301,6 @@ func TestBuildEndpoint_TCPBasePathMatrix(t *testing.T) {
 	}
 }
 
-func TestBuildEndpoint_TLSInsecureSkip(t *testing.T) {
-	t.Parallel()
-	ep, err := BuildEndpoint(EndpointSpec{Address: "tcp://host:2376", InsecureSkipTLSVerify: true})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !ep.IsTLS() {
-		t.Error("endpoint should be TLS when InsecureSkipTLSVerify is set")
-	}
-	if !ep.TLSConfig.InsecureSkipVerify {
-		t.Error("TLSConfig.InsecureSkipVerify should be true")
-	}
-}
-
 func TestBuildEndpoint_TLSWithCertFiles(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -419,10 +402,14 @@ func TestBuildEndpoint_KeyWithoutCert(t *testing.T) {
 
 func TestBuildEndpoint_ServerNameOverride(t *testing.T) {
 	t.Parallel()
+	bundle, err := testcert.WriteMutualTLSBundle(t.TempDir(), "daemon.internal")
+	if err != nil {
+		t.Fatal(err)
+	}
 	ep, err := BuildEndpoint(EndpointSpec{
-		Address:               "tcp://host:2376",
-		InsecureSkipTLSVerify: true,
-		ServerName:            "overridden.example.com",
+		Address:    "tcp://host:2376",
+		CAFile:     bundle.CAFile,
+		ServerName: "overridden.example.com",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -434,9 +421,13 @@ func TestBuildEndpoint_ServerNameOverride(t *testing.T) {
 
 func TestBuildEndpoint_SNIDerivedFromHost(t *testing.T) {
 	t.Parallel()
+	bundle, err := testcert.WriteMutualTLSBundle(t.TempDir(), "daemon.internal")
+	if err != nil {
+		t.Fatal(err)
+	}
 	ep, err := BuildEndpoint(EndpointSpec{
-		Address:               "tcp://daemon.example.com:2376",
-		InsecureSkipTLSVerify: true,
+		Address: "tcp://daemon.example.com:2376",
+		CAFile:  bundle.CAFile,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1094,62 +1085,40 @@ func TestSpecsFromDockerEnv(t *testing.T) {
 			},
 		},
 		{
-			name: "DOCKER_TLS value zero enables unverified TLS",
+			name: "DOCKER_TLS value zero without verification is removed",
 			env: map[string]string{
 				"DOCKER_HOST":      "tcp://host:2376",
 				"DOCKER_TLS":       "0",
 				"DOCKER_CERT_PATH": caOnlyDir,
 			},
-			wantOK: true,
-			wantSpec: EndpointSpec{
-				Address:               "tcp://host:2376",
-				CAFile:                filepath.Join(caOnlyDir, "ca.pem"),
-				InsecureSkipTLSVerify: true,
-			},
+			wantErr: true,
 		},
 		{
-			name: "DOCKER_TLS value one enables unverified TLS",
+			name: "DOCKER_TLS value one without verification is removed",
 			env: map[string]string{
 				"DOCKER_HOST":      "tcp://host:2376",
 				"DOCKER_TLS":       "1",
 				"DOCKER_CERT_PATH": caOnlyDir,
 			},
-			wantOK: true,
-			wantSpec: EndpointSpec{
-				Address:               "tcp://host:2376",
-				CAFile:                filepath.Join(caOnlyDir, "ca.pem"),
-				InsecureSkipTLSVerify: true,
-			},
+			wantErr: true,
 		},
 		{
-			name: "any other non-empty DOCKER_TLS value enables unverified TLS",
+			name: "other non-empty DOCKER_TLS without verification is removed",
 			env: map[string]string{
 				"DOCKER_HOST":      "tcp://host:2376",
 				"DOCKER_TLS":       "false",
 				"DOCKER_CERT_PATH": caOnlyDir,
 			},
-			wantOK: true,
-			wantSpec: EndpointSpec{
-				Address:               "tcp://host:2376",
-				CAFile:                filepath.Join(caOnlyDir, "ca.pem"),
-				InsecureSkipTLSVerify: true,
-			},
+			wantErr: true,
 		},
 		{
-			name: "DOCKER_TLS with cert path enables unverified mutual TLS",
+			name: "DOCKER_TLS with client certificates still needs verification",
 			env: map[string]string{
 				"DOCKER_HOST":      "tcp://host:2376",
 				"DOCKER_TLS":       "1",
 				"DOCKER_CERT_PATH": mutualTLSDir,
 			},
-			wantOK: true,
-			wantSpec: EndpointSpec{
-				Address:               "tcp://host:2376",
-				CAFile:                filepath.Join(mutualTLSDir, "ca.pem"),
-				CertFile:              filepath.Join(mutualTLSDir, "cert.pem"),
-				KeyFile:               filepath.Join(mutualTLSDir, "key.pem"),
-				InsecureSkipTLSVerify: true,
-			},
+			wantErr: true,
 		},
 		{
 			name: "tcp with TLS_VERIFY and cert path",
@@ -1248,9 +1217,7 @@ func TestSpecsFromDockerEnv(t *testing.T) {
 			if spec.InsecureAllowPlainTCP != tc.wantSpec.InsecureAllowPlainTCP {
 				t.Errorf("InsecureAllowPlainTCP = %v, want %v", spec.InsecureAllowPlainTCP, tc.wantSpec.InsecureAllowPlainTCP)
 			}
-			if spec.InsecureSkipTLSVerify != tc.wantSpec.InsecureSkipTLSVerify {
-				t.Errorf("InsecureSkipTLSVerify = %v, want %v", spec.InsecureSkipTLSVerify, tc.wantSpec.InsecureSkipTLSVerify)
-			}
+
 		})
 	}
 }

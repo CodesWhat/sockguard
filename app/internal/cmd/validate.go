@@ -15,7 +15,7 @@ import (
 var validateCmd = &cobra.Command{
 	Use:   "validate",
 	Short: "Validate configuration file",
-	Long:  "Parse and validate the sockguard configuration file, then print the effective rule set.",
+	Long:  "Parse and validate the sockguard configuration file, then print the effective rule set. V3 rejects insecure_skip_tls_verify and DOCKER_TLS without DOCKER_TLS_VERIFY.",
 	RunE:  runValidate,
 }
 
@@ -53,6 +53,10 @@ func runValidate(cmd *cobra.Command, args []string) error {
 
 	compiled, err := newServeDeps().validateRules(cfg)
 	if err != nil {
+		printValidationFailure(errOut, stderrP, err)
+		return err
+	}
+	if _, _, err := resolveUpstreamSpecs(cfg, os.LookupEnv, discardLogger); err != nil {
 		printValidationFailure(errOut, stderrP, err)
 		return err
 	}

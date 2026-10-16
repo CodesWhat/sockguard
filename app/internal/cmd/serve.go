@@ -58,7 +58,10 @@ Configuration sources (highest precedence first):
   3. Tecnativa-compat env vars (SOCKET_PATH, LOG_LEVEL) — accepted as aliases
      for backward compatibility; lower precedence than the SOCKGUARD_* form
   4. YAML config file (--config)
-  5. Built-in defaults`,
+  5. Built-in defaults
+
+V3 removes upstream.endpoints[].insecure_skip_tls_verify and unverified
+DOCKER_TLS. Configure tls.ca_file or set DOCKER_TLS_VERIFY=1.`,
 	RunE: runServe,
 }
 

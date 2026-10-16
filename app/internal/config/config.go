@@ -392,21 +392,13 @@ type UpstreamEndpoint struct {
 	// ("tcp://host:2376").
 	Address string `mapstructure:"address"`
 	// TLS configures the client certificate, key, and CA used to dial a remote
-	// daemon over TLS. Required for tcp:// endpoints unless an insecure opt-in
-	// below is set. Meaningless for unix sockets.
+	// daemon over TLS. Required for tcp:// endpoints unless
+	// insecure_allow_plain_tcp is set. Meaningless for unix sockets.
 	TLS UpstreamTLSConfig `mapstructure:"tls"`
 	// InsecureAllowPlainTCP permits a tcp:// endpoint with no TLS material,
 	// exposing the Docker API in plaintext to anyone on the path. Mirrors the
 	// listener-side insecure_allow_plain_tcp acknowledgement.
 	InsecureAllowPlainTCP bool `mapstructure:"insecure_allow_plain_tcp"`
-	// InsecureSkipTLSVerify disables verification of the remote daemon's server
-	// certificate (self-signed homelab daemons). Dangerous in production: it
-	// defeats authentication of the upstream.
-	//
-	// Deprecated: configure tls.ca_file with the daemon's issuing CA instead.
-	// This field remains accepted with unchanged behavior in v2.1 and will be
-	// removed in v3.0.0.
-	InsecureSkipTLSVerify bool `mapstructure:"insecure_skip_tls_verify"`
 }
 
 // UpstreamTLSConfig is the client-side TLS material for dialing a remote daemon.
