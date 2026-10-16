@@ -449,7 +449,7 @@ func TestWithFilterWarnsReadExfiltration(t *testing.T) {
 		{Match: config.MatchConfig{Method: "GET", Path: "/containers/**"}, Action: "allow"},
 	}
 	cfg.Clients.Profiles = []config.ClientProfileConfig{{Name: "broad-reader", Rules: cfg.Rules}}
-	withFilter(&cfg, nil, logger, rules, map[string]filter.Policy{"broad-reader": {Rules: rules}})
+	withFilter(&cfg, nil, logger, rules, map[string]filter.Policy{"broad-reader": {Rules: rules}}, "docker")
 
 	if got := strings.Count(buf.String(), "insecure_allow_read_exfiltration is enabled"); got != 1 {
 		t.Fatalf("chain build warning count = %d, want 1; log: %q", got, buf.String())
@@ -468,7 +468,7 @@ func TestWithFilterWarnsReadExfiltration(t *testing.T) {
 	buf.Reset()
 	readExfiltrationWarnOnce = sync.Once{}
 	clean := config.Defaults()
-	withFilter(&clean, nil, logger, rules, map[string]filter.Policy{"broad-reader": {Rules: rules}})
+	withFilter(&clean, nil, logger, rules, map[string]filter.Policy{"broad-reader": {Rules: rules}}, "docker")
 	if strings.Contains(buf.String(), "insecure_allow_read_exfiltration is enabled") {
 		t.Fatalf("chain build without the acknowledgment logged: %q", buf.String())
 	}

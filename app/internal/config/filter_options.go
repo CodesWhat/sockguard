@@ -228,9 +228,10 @@ func (c ImagePullRequestBodyConfig) ToFilterOptions() filter.ImagePullOptions {
 
 func (c BuildRequestBodyConfig) ToFilterOptions() filter.BuildOptions {
 	return filter.BuildOptions{
-		AllowRemoteContext:   c.AllowRemoteContext,
-		AllowHostNetwork:     c.AllowHostNetwork,
-		AllowRunInstructions: c.AllowRunInstructions,
+		AllowedPodmanControls: c.AllowedPodmanControls,
+		AllowRemoteContext:    c.AllowRemoteContext,
+		AllowHostNetwork:      c.AllowHostNetwork,
+		AllowRunInstructions:  c.AllowRunInstructions,
 	}
 }
 

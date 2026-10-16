@@ -159,6 +159,7 @@ type SessionRegistry struct {
 	nextID        uint64
 	sessionSecret [32]byte
 	gatewayBuilds map[SessionKey]map[string]*gatewayBuild
+	refChanged    chan struct{}
 
 	// refOwners is Phase 3's ref-ownership index: which SessionKey (client
 	// identity + profile — see SessionKey's doc comment) admitted a given
@@ -371,6 +372,7 @@ func (r *SessionRegistry) PutRef(s *Session, ref string, maxRefs int) bool {
 		r.refOwners[s.Key] = owners
 	}
 	owners[ref]++
+	r.signalRefAdmissionLocked()
 	return true
 }
 
@@ -442,6 +444,7 @@ func (r *SessionRegistry) admitSolve(s *Session, buildkitSessionID, ref string, 
 			r.refOwners[s.Key] = owners
 		}
 		owners[ref]++
+		r.signalRefAdmissionLocked()
 	}
 	if !buildkitSessionExists {
 		s.buildkitSessions[buildkitSessionID] = struct{}{}
@@ -510,6 +513,35 @@ func (r *SessionRegistry) OwnsRef(key SessionKey, ref string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.refOwners[key][ref] > 0
+}
+
+func (r *SessionRegistry) signalRefAdmissionLocked() {
+	if r.refChanged != nil {
+		close(r.refChanged)
+		r.refChanged = nil
+	}
+}
+
+// waitForRef only observes admitted refs. Waiting never reserves a name or
+// grants Status permission, and unrelated clients/profiles can't satisfy it.
+func (r *SessionRegistry) waitForRef(ctx context.Context, key SessionKey, ref string) bool {
+	for {
+		r.mu.Lock()
+		if r.refOwners[key][ref] > 0 {
+			r.mu.Unlock()
+			return true
+		}
+		if r.refChanged == nil {
+			r.refChanged = make(chan struct{})
+		}
+		changed := r.refChanged
+		r.mu.Unlock()
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return false
+		}
+	}
 }
 
 // HasAdmittedSolve reports whether key and buildkitSessionID have admitted at

@@ -822,9 +822,10 @@ type ImagePullRequestBodyConfig struct {
 
 // BuildRequestBodyConfig configures inspection for POST /build.
 type BuildRequestBodyConfig struct {
-	AllowRemoteContext   bool `mapstructure:"allow_remote_context"`
-	AllowHostNetwork     bool `mapstructure:"allow_host_network"`
-	AllowRunInstructions bool `mapstructure:"allow_run_instructions"`
+	AllowedPodmanControls []string `mapstructure:"allowed_podman_controls"`
+	AllowRemoteContext    bool     `mapstructure:"allow_remote_context"`
+	AllowHostNetwork      bool     `mapstructure:"allow_host_network"`
+	AllowRunInstructions  bool     `mapstructure:"allow_run_instructions"`
 }
 
 // ContainerUpdateRequestBodyConfig configures inspection for

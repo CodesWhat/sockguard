@@ -589,7 +589,7 @@ func TestMiddlewareAppliesNativeLibpodBuildControlAcknowledgements(t *testing.T)
 			headers: http.Header{
 				"Content-Type": []string{"multipart/form-data; boundary=sockguard-test"},
 			},
-			options: BuildOptions{AllowBlindWrites: true, AllowRunInstructions: true},
+			options: BuildOptions{AllowBlindWrites: true, AllowRunInstructions: true, AllowHostNetwork: true},
 		},
 	}
 

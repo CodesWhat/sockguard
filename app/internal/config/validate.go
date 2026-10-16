@@ -1749,6 +1749,11 @@ func validateEndpointCosts(prefix string, costs []EndpointCostConfig, effectiveB
 
 func validateRequestBodyConfig(prefix string, cfg RequestBodyConfig) []string {
 	var errs []string
+	for i, control := range cfg.Build.AllowedPodmanControls {
+		if !filter.KnownPodmanBuildControl(control) {
+			errs = append(errs, fmt.Sprintf("%s.request_body.build.allowed_podman_controls[%d] is not a supported control", prefix, i))
+		}
+	}
 	errs = append(errs, validateContainerCreateConfig(prefix, cfg.ContainerCreate)...)
 	errs = append(errs, validateLibpodContainerCreateConfig(prefix, cfg.LibpodContainerCreate)...)
 	errs = append(errs, validateExecConfig(prefix, cfg.Exec)...)

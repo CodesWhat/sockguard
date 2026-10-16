@@ -37,29 +37,39 @@ var errBuildContextDecompressedTooLarge = errors.New("decompressed build context
 // BuildOptions configures request-body/query inspection for POST /build and
 // POST /libpod/build.
 type BuildOptions struct {
-	AllowRemoteContext   bool
-	AllowHostNetwork     bool
-	AllowRunInstructions bool
+	AllowedPodmanControls []string
+	PodmanUpstream        bool
+	AllowRemoteContext    bool
+	AllowHostNetwork      bool
+	AllowRunInstructions  bool
 	// AllowBlindWrites acknowledges Podman build controls that can expose
 	// host paths but do not have a narrower request_body.build policy.
 	AllowBlindWrites bool
 }
 
 type buildPolicy struct {
-	allowRemoteContext   bool
-	allowHostNetwork     bool
-	allowRunInstructions bool
-	allowBlindWrites     bool
-	io                   ioDeps
+	allowedPodmanControls map[string]struct{}
+	podmanUpstream        bool
+	allowRemoteContext    bool
+	allowHostNetwork      bool
+	allowRunInstructions  bool
+	allowBlindWrites      bool
+	io                    ioDeps
 }
 
 func newBuildPolicy(opts BuildOptions) buildPolicy {
+	controls := make(map[string]struct{}, len(opts.AllowedPodmanControls))
+	for _, name := range opts.AllowedPodmanControls {
+		controls[name] = struct{}{}
+	}
 	return buildPolicy{
-		allowRemoteContext:   opts.AllowRemoteContext,
-		allowHostNetwork:     opts.AllowHostNetwork,
-		allowRunInstructions: opts.AllowRunInstructions,
-		allowBlindWrites:     opts.AllowBlindWrites,
-		io:                   defaultIODeps(),
+		allowedPodmanControls: controls,
+		podmanUpstream:        opts.PodmanUpstream,
+		allowRemoteContext:    opts.AllowRemoteContext,
+		allowHostNetwork:      opts.AllowHostNetwork,
+		allowRunInstructions:  opts.AllowRunInstructions,
+		allowBlindWrites:      opts.AllowBlindWrites,
+		io:                    defaultIODeps(),
 	}
 }
 
@@ -235,6 +245,12 @@ func (p buildPolicy) inspectPodmanBuildControls(r *http.Request, normalizedPath 
 	contentType := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
 	if strings.HasPrefix(contentType, "multipart/") && !p.allowBlindWrites {
 		return "build denied: Podman multipart build context requires insecure_allow_body_blind_writes"
+	}
+
+	if p.allowRunInstructions {
+		if reason := p.inspectPodmanRunControls(query, p.podmanUpstream || isLibpodBuildPath(normalizedPath)); reason != "" {
+			return reason
+		}
 	}
 
 	return ""

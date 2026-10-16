@@ -1558,7 +1558,7 @@ func TestLibpodLocalBuildRequiresBlindWriteAck(t *testing.T) {
 
 	t.Run("allows once the operator acknowledges the blind write", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, path+"?localcontextdir=%2Fsrv%2Fapp", nil)
-		reason, err := newBuildPolicy(BuildOptions{AllowBlindWrites: true, AllowRunInstructions: true}).inspect(nil, req, NormalizePath(req.URL.Path))
+		reason, err := newBuildPolicy(BuildOptions{AllowBlindWrites: true, AllowRunInstructions: true, AllowHostNetwork: true}).inspect(nil, req, NormalizePath(req.URL.Path))
 		if err != nil {
 			t.Fatalf("inspect() error = %v", err)
 		}
@@ -1746,13 +1746,13 @@ func TestLibpodImageWriteMiddlewareRouting(t *testing.T) {
 		},
 		{
 			name:       "libpod local build allows once acknowledged",
-			policy:     PolicyConfig{Build: BuildOptions{AllowBlindWrites: true, AllowRunInstructions: true}},
+			policy:     PolicyConfig{Build: BuildOptions{AllowBlindWrites: true, AllowRunInstructions: true, AllowHostNetwork: true}},
 			target:     "/libpod/local/build?localcontextdir=%2Fsrv%2Fapp",
 			wantStatus: http.StatusCreated,
 		},
 		{
 			name:       "libpod build twin is untouched by the local-build branch",
-			policy:     PolicyConfig{Build: BuildOptions{AllowRunInstructions: true}},
+			policy:     PolicyConfig{Build: BuildOptions{AllowRunInstructions: true, AllowHostNetwork: true}},
 			target:     "/libpod/build",
 			wantStatus: http.StatusCreated,
 		},
