@@ -79,6 +79,10 @@ func TestKnownRouteWarningsMatchRouteLanguages(t *testing.T) {
 		{"*", "/**", true},
 		{"GET", "/containers/**/json", true},
 		{"PATCH", "/containers/create", false},
+		{"GET", "/typo/containers/json", false},
+		{"GET", "/containers/json/typo", false},
+		{"GET", "/typo/_ping", false},
+		{"GET", "/_ping/typo", false},
 		{"GET", "/containers/**/impossible-suffix", false},
 		{"GET", "/containers/a-specific-typo/jsonn", false},
 	} {
