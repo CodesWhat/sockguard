@@ -87,10 +87,6 @@ type EndpointSpec struct {
 	// anyone on the path; this must be set deliberately, mirroring the
 	// listener-side insecure_allow_plain_tcp acknowledgement.
 	InsecureAllowPlainTCP bool
-	// InsecureSkipTLSVerify disables verification of the daemon's server
-	// certificate. Useful for self-signed homelab daemons; dangerous in
-	// production because it defeats authentication of the upstream.
-	InsecureSkipTLSVerify bool
 }
 
 // BuildEndpoint parses spec.Address, loads any TLS material, and returns a
@@ -156,7 +152,7 @@ func ValidateSpec(spec EndpointSpec) error {
 		if (spec.CertFile == "") != (spec.KeyFile == "") {
 			return fmt.Errorf("upstream endpoint %q: tls.cert_file and tls.key_file must be set together", spec.Address)
 		}
-		hasAnyTLS := spec.CertFile != "" || spec.KeyFile != "" || spec.CAFile != "" || spec.InsecureSkipTLSVerify
+		hasAnyTLS := spec.CertFile != "" || spec.KeyFile != "" || spec.CAFile != ""
 		if !hasAnyTLS && !spec.InsecureAllowPlainTCP {
 			return fmt.Errorf("upstream endpoint %q: TCP requires TLS (set tls.ca_file/cert_file/key_file) or insecure_allow_plain_tcp: true", spec.Address)
 		}
@@ -260,7 +256,7 @@ func parseEndpointAddress(raw string) (parsedEndpointAddress, error) {
 // returns nil only when plaintext TCP is explicitly acknowledged.
 func buildClientTLS(spec EndpointSpec, address string) (*tls.Config, error) {
 	hasCert := spec.CertFile != "" || spec.KeyFile != ""
-	hasAnyTLS := hasCert || spec.CAFile != "" || spec.InsecureSkipTLSVerify
+	hasAnyTLS := hasCert || spec.CAFile != ""
 
 	if !hasAnyTLS {
 		if spec.InsecureAllowPlainTCP {
@@ -286,8 +282,6 @@ func buildClientTLS(spec EndpointSpec, address string) (*tls.Config, error) {
 	tlsConfig := &tls.Config{
 		MinVersion: tls.VersionTLS12,
 		ServerName: serverName,
-		// #nosec G402 -- opt-in and gated behind an explicit acknowledgement.
-		InsecureSkipVerify: spec.InsecureSkipTLSVerify, //nolint:gosec // opt-in, gated behind an explicit acknowledgement
 	}
 
 	if hasCert {
@@ -419,6 +413,9 @@ func SpecsFromDockerEnv(lookupEnv func(string) (string, bool)) (EndpointSpec, bo
 	tlsVerifyValue, _ := lookupEnv("DOCKER_TLS_VERIFY")
 	tlsEnabled := tlsValue != ""
 	tlsVerify := tlsVerifyValue != ""
+	if tlsEnabled && !tlsVerify {
+		return EndpointSpec{}, false, fmt.Errorf("DOCKER_TLS without DOCKER_TLS_VERIFY was removed in v3.0.0; set DOCKER_TLS_VERIFY=1 and configure the daemon CA in the Docker certificate directory")
+	}
 	if tlsEnabled || tlsVerify {
 		certPath, err := dockerCertificateDirectory(lookupEnv)
 		if err != nil {
@@ -442,16 +439,11 @@ func SpecsFromDockerEnv(lookupEnv func(string) (string, bool)) (EndpointSpec, bo
 			}
 		}
 	}
-	if tlsEnabled && !tlsVerify {
-		// Like Docker CLI's --tls flag, any non-empty DOCKER_TLS value enables
-		// encrypted transport without server verification. DOCKER_TLS_VERIFY
-		// takes precedence and enables verification when both are set.
-		spec.InsecureSkipTLSVerify = true
-	} else if !tlsVerify {
+	if !tlsVerify {
 		// DOCKER_CERT_PATH only locates TLS material; it does not enable TLS.
-		// With neither TLS signal present the Docker CLI uses plaintext TCP.
 		spec.InsecureAllowPlainTCP = true
 	}
+
 	return spec, true, nil
 }
 

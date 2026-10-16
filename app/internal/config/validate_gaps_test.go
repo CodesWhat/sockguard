@@ -19,7 +19,6 @@ func TestEndpointSpecMapping(t *testing.T) {
 			ServerName: "daemon.example.com",
 		},
 		InsecureAllowPlainTCP: true,
-		InsecureSkipTLSVerify: false,
 	}
 
 	got := endpointSpec(ep)
@@ -31,7 +30,6 @@ func TestEndpointSpecMapping(t *testing.T) {
 		KeyFile:               "/etc/certs/client-key.pem",
 		ServerName:            "daemon.example.com",
 		InsecureAllowPlainTCP: true,
-		InsecureSkipTLSVerify: false,
 	}
 
 	if got != want {

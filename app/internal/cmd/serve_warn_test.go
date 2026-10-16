@@ -523,7 +523,6 @@ func TestWarnInsecureUpstreamSpecs(t *testing.T) {
 		want string // substring expected in the log, "" means no log
 	}{
 		{name: "plain tcp", spec: upstream.EndpointSpec{Address: "tcp://daemon:2375", InsecureAllowPlainTCP: true}, want: "plaintext TCP"},
-		{name: "skip verify", spec: upstream.EndpointSpec{Address: "tcp://daemon:2376", InsecureSkipTLSVerify: true}, want: "skips TLS certificate verification"},
 		{name: "secure", spec: upstream.EndpointSpec{Address: "tcp://daemon:2376", CertFile: "c", KeyFile: "k"}, want: ""},
 		{name: "unix socket", spec: upstream.EndpointSpec{Address: "/var/run/docker.sock"}, want: ""},
 	}

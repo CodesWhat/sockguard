@@ -55,6 +55,10 @@ func Load(configPath string) (*Config, error) {
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
 
+	if err := rejectRemovedUpstreamTLS(v); err != nil {
+		return nil, err
+	}
+
 	var cfg Config
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, err
@@ -449,6 +453,10 @@ func LoadBytes(data []byte) (*Config, error) {
 		}
 	}
 
+	if err := rejectRemovedUpstreamTLS(v); err != nil {
+		return nil, err
+	}
+
 	var cfg Config
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, err
@@ -466,4 +474,21 @@ func LoadBytes(data []byte) (*Config, error) {
 	applyEndpointConfigProvenance(&cfg, explicitEndpointConfigBytes(data))
 
 	return &cfg, nil
+}
+
+// rejectRemovedUpstreamTLS checks key presence, including false and null, so a
+// removed option cannot be silently discarded by the permissive config decoder.
+func rejectRemovedUpstreamTLS(v *viper.Viper) error {
+	var endpoints []map[string]any
+	if err := v.UnmarshalKey("upstream.endpoints", &endpoints); err != nil {
+		return err
+	}
+	for i, endpoint := range endpoints {
+		for key := range endpoint {
+			if strings.EqualFold(key, "insecure_skip_tls_verify") {
+				return fmt.Errorf("upstream.endpoints[%d].insecure_skip_tls_verify was removed in v3.0.0; remove the setting and configure tls.ca_file to verify the daemon", i)
+			}
+		}
+	}
+	return nil
 }

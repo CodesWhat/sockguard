@@ -90,6 +90,25 @@ upstream:
 	if got, want := string(body), "peer_certs=1"; got != want {
 		t.Fatalf("daemon response = %q, want %q", got, want)
 	}
+
+	cfg.Health.Enabled = false
+	rules, err := compileRuleConfigsForTest(cfg.Rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := newServeRuntime(cfg, newDiscardLogger(), newServeTestDeps())
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, teardown, _ := buildServeHandlerChainWithRuntime(serveHandlerBuild{
+		Cfg: cfg, Logger: newDiscardLogger(), Rules: rules, Deps: newServeTestDeps(), Runtime: runtime,
+	})
+	defer teardown()
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/_ping", nil))
+	if recorder.Code != http.StatusOK || recorder.Body.String() != "peer_certs=1" {
+		t.Fatalf("verified TLS through proxy chain = %d %s", recorder.Code, recorder.Body.String())
+	}
 }
 
 func TestNewServeRuntimeRejectsInvalidDockerHost(t *testing.T) {

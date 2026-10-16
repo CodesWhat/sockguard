@@ -507,7 +507,6 @@ func endpointSpec(ep UpstreamEndpoint) upstream.EndpointSpec {
 		KeyFile:               ep.TLS.KeyFile,
 		ServerName:            ep.TLS.ServerName,
 		InsecureAllowPlainTCP: ep.InsecureAllowPlainTCP,
-		InsecureSkipTLSVerify: ep.InsecureSkipTLSVerify,
 	}
 }
 

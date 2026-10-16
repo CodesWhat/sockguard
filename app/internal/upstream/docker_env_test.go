@@ -74,16 +74,14 @@ func TestSpecsFromDockerEnv_DefaultUserDockerDirectory(t *testing.T) {
 	t.Setenv("HOME", homeDir)
 
 	spec := dockerEnvSpecForTest(t, map[string]string{
-		"DOCKER_HOST": "tcp://daemon.internal:2376",
-		"DOCKER_TLS":  "1",
+		"DOCKER_HOST":       "tcp://daemon.internal:2376",
+		"DOCKER_TLS_VERIFY": "1",
 	})
 
 	if spec.CAFile != filepath.Join(certDir, "ca.pem") {
 		t.Fatalf("CAFile = %q, want user Docker directory", spec.CAFile)
 	}
-	if !spec.InsecureSkipTLSVerify {
-		t.Fatal("InsecureSkipTLSVerify = false, want DOCKER_TLS behavior")
-	}
+
 	if _, err := BuildEndpoint(spec); err != nil {
 		t.Fatalf("BuildEndpoint: %v", err)
 	}
@@ -143,7 +141,6 @@ func TestSpecsFromDockerEnv_TLSRequiresDockerCA(t *testing.T) {
 		name string
 		key  string
 	}{
-		{name: "DOCKER_TLS", key: "DOCKER_TLS"},
 		{name: "DOCKER_TLS_VERIFY", key: "DOCKER_TLS_VERIFY"},
 	}
 	for _, tt := range tests {
@@ -166,18 +163,18 @@ func TestSpecsFromDockerEnv_TLSRequiresDockerCA(t *testing.T) {
 	}
 }
 
-func TestSpecsFromDockerEnv_UnverifiedTLSStillRejectsInvalidDockerCA(t *testing.T) {
+func TestSpecsFromDockerEnv_VerifiedTLSRejectsInvalidDockerCA(t *testing.T) {
 	certDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(certDir, "ca.pem"), []byte("not a certificate"), 0o600); err != nil {
 		t.Fatalf("write invalid CA: %v", err)
 	}
 	spec := dockerEnvSpecForTest(t, map[string]string{
-		"DOCKER_HOST":      "tcp://daemon.internal:2376",
-		"DOCKER_TLS":       "1",
-		"DOCKER_CERT_PATH": certDir,
+		"DOCKER_HOST":       "tcp://daemon.internal:2376",
+		"DOCKER_TLS_VERIFY": "1",
+		"DOCKER_CERT_PATH":  certDir,
 	})
 	if _, err := BuildEndpoint(spec); err == nil {
-		t.Fatal("BuildEndpoint accepted invalid ca.pem for DOCKER_TLS")
+		t.Fatal("BuildEndpoint accepted invalid ca.pem for DOCKER_TLS_VERIFY")
 	}
 }
 
@@ -205,7 +202,6 @@ func TestSpecsFromDockerEnv_PortlessTCPUses2375WithTLS(t *testing.T) {
 		name string
 		key  string
 	}{
-		{name: "DOCKER_TLS", key: "DOCKER_TLS"},
 		{name: "DOCKER_TLS_VERIFY", key: "DOCKER_TLS_VERIFY"},
 	}
 	for _, tt := range tests {
@@ -233,9 +229,7 @@ func TestSpecsFromDockerEnv_WhitespaceTLSVerifyTakesPrecedence(t *testing.T) {
 		"DOCKER_TLS_VERIFY": " ",
 		"DOCKER_CERT_PATH":  certDir,
 	})
-	if spec.InsecureSkipTLSVerify {
-		t.Fatal("InsecureSkipTLSVerify = true, want non-empty DOCKER_TLS_VERIFY to win")
-	}
+
 	if spec.CAFile != filepath.Join(certDir, "ca.pem") {
 		t.Fatalf("CAFile = %q, want Docker CA", spec.CAFile)
 	}

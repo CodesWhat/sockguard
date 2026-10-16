@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed (v3 development only)
+
+- **Breaking change:** the `dev/v3.0` source rejects `upstream.endpoints[].insecure_skip_tls_verify` at any value, including `false` and `null`. Remove the key and configure `tls.ca_file` to verify the daemon. TCP Docker environment resolution rejects non-empty `DOCKER_TLS` without non-empty `DOCKER_TLS_VERIFY`; set `DOCKER_TLS_VERIFY=1`. Verified TLS precedence, certificate lookup, Unix sockets, explicit endpoints and acknowledged plain TCP retain their behavior. Startup, CLI validation and rejected reloads report migration guidance. All v2 release lines, including v2.4.0-rc.1, retain their accepted behavior. No v3 release is published; the Go module major-path and release metadata transition remain release preparation.
+
 ## [2.4.0-rc.1] - 2026-10-16
 
 ### Fixed

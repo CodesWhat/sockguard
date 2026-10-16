@@ -71,6 +71,28 @@ restarts that window. The v2.3 candidate source and its earlier clock are
 separate; they don't satisfy the v2.4 validation gates. Unix container-label
 identity remains a documented limit; use distinct UID/GID client profiles.
 
+## From Sockguard v2 to v3 (development)
+
+The TLS removals are implemented on `dev/v3.0`, without a published v3 release.
+The v2.4 candidate and all v2 release lines retain their accepted settings.
+Before testing the v3 source:
+
+- Remove `upstream.endpoints[].insecure_skip_tls_verify` entirely, including
+  explicit `false` or `null` values. Set `tls.ca_file` to the daemon's issuing CA
+  and keep any required client certificate/key and `tls.server_name`.
+- For a TCP `DOCKER_HOST`, set `DOCKER_TLS_VERIFY=1` when `DOCKER_TLS` is non-empty.
+  Any non-empty verification value, including `0` or `false`, still verifies the
+  server. Certificate-directory precedence and optional client pairs are unchanged.
+- Validate with the v3 source binary before restarting. Startup and CLI validation
+  reject the old settings with migration guidance; rejected config reloads keep
+  the active policy serving. Unix Docker hosts ignore TCP-only TLS environment
+  variables, and explicit YAML endpoints still take precedence over Docker env.
+
+Explicit plain TCP remains supported through `insecure_allow_plain_tcp`, or the
+Docker environment's existing plaintext behavior when neither TLS variable is
+set. The opaque BuildKit acknowledgment remains accepted; its removal target is
+still undecided. The Go module major-path migration is separate release preparation.
+
 ## Deprecation schedule
 
 The [deprecation ledger](/deprecations) records accepted versions, replacements
