@@ -473,7 +473,7 @@ verified digest. The pull and service registry gates still apply independently:
 an image entry does not grant permission to pull from its registry or override
 a service registry denial.
 
-With a list enabled, Docker/Swarm image mounts and native Podman `rootfs` and
+With a list enabled, Docker/Swarm/Podman image mounts and native Podman `rootfs` and
 nonempty `image_volumes` are denied. Swarm updates carrying a `rollback` query
 parameter and specs requesting `UpdateConfig.FailureAction: rollback` are also
 denied, because a stored rollback spec can select an image absent from the

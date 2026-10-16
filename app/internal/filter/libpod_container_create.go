@@ -251,6 +251,13 @@ func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Reques
 	if len(p.allowedImages) > 0 && (createReq.Rootfs != "" || len(createReq.ImageVolumes) > 0) {
 		return "libpod container create denied: rootfs and image volumes are not supported with allowed_images", nil
 	}
+	if len(p.allowedImages) > 0 {
+		for _, mount := range createReq.Mounts {
+			if strings.EqualFold(mount.Type, "image") {
+				return "libpod container create denied: image mounts are not supported with allowed_images", nil
+			}
+		}
+	}
 
 	if !p.allowPrivileged && createReq.Privileged {
 		return "libpod container create denied: privileged containers are not allowed", nil

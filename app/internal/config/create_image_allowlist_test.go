@@ -197,6 +197,8 @@ func TestCreateImageAllowlistAlternateFilesystemsAndRollback(t *testing.T) {
 		{"container_create", "/containers/create", `{"Image":"docker.io/library/alpine:3.22","HostConfig":{"Mounts":[{"Type":"image","Source":"docker.io/library/busybox:1.37","Target":"/other"}]}}`},
 		{"libpod_container_create", "/libpod/containers/create", `{"image":"docker.io/library/alpine:3.22","systemd":"false","rootfs":"/srv/rootfs"}`},
 		{"libpod_container_create", "/libpod/containers/create", `{"image":"docker.io/library/alpine:3.22","systemd":"false","image_volumes":[{"Source":"docker.io/library/busybox:1.37","Destination":"/other"}]}`},
+		{"libpod_container_create", "/libpod/containers/create", `{"image":"docker.io/library/alpine:3.22","systemd":"false","mounts":[{"type":"image","source":"docker.io/library/busybox:1.37","destination":"/other"}]}`},
+		{"libpod_container_create", "/v5.8.1/libpod/containers/create", `{"image":"docker.io/library/alpine:3.22","systemd":"false","mounts":[{"type":"IMAGE","source":"docker.io/library/busybox:1.37","destination":"/other"}]}`},
 		{"service", "/services/app/update?rollback=previous&version=1", `{"TaskTemplate":{"ContainerSpec":{"Image":"docker.io/library/alpine:3.22"}}}`},
 		{"service", "/services/app/update?rollback=previous&version=1", ""},
 		{"service", "/services/app/update?version=1", `{"TaskTemplate":{"ContainerSpec":{"Image":"docker.io/library/alpine:3.22"}},"UpdateConfig":{"FailureAction":"rollback"}}`},
