@@ -35,6 +35,9 @@ type dockerDeviceRequest struct {
 }
 
 type containerCreateRequest struct {
+	Cmd        []string                  `json:"Cmd"`
+	Entrypoint []string                  `json:"Entrypoint"`
+	Env        []string                  `json:"Env"`
 	Image      string                    `json:"Image"`
 	HostConfig containerCreateHostConfig `json:"HostConfig"`
 	User       string                    `json:"User"`
@@ -262,6 +265,9 @@ func releaseContainerCreateRequest(req *containerCreateRequest) {
 //     a surviving MaskedPaths pointer reads as "explicitly set to empty",
 //     which is the exact signal denySystemPathsReason denies on.
 func (r *containerCreateRequest) resetForReuse() {
+	r.Cmd = r.Cmd[:0]
+	r.Entrypoint = r.Entrypoint[:0]
+	r.Env = r.Env[:0]
 	r.Image = ""
 	r.User = ""
 	r.MacAddress = ""
@@ -309,7 +315,10 @@ func (r *containerCreateRequest) resetForReuse() {
 // recycling it costs more memory than the allocation it saves.
 func (r *containerCreateRequest) oversizedForReuse() bool {
 	h := &r.HostConfig
-	return overContainerCreateReuseCap(h.Binds) ||
+	return overContainerCreateReuseCap(r.Cmd) ||
+		overContainerCreateReuseCap(r.Entrypoint) ||
+		overContainerCreateReuseCap(r.Env) ||
+		overContainerCreateReuseCap(h.Binds) ||
 		overContainerCreateReuseCap(h.DeviceCgroupRules) ||
 		overContainerCreateReuseCap(h.SecurityOpt) ||
 		overContainerCreateReuseCap(h.CapAdd) ||

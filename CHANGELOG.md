@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Opt-in container-create command, entrypoint and environment policies for Docker and native Podman, globally or per client profile. Explicit argv templates use anchored globs; environment checks support allowed/denied names and exact values without exposing values in denials. Native host/proxy/secret/merge environment additions are refused while environment checks are active. Image/daemon defaults are outside request-field inspection.
+
 - Startup and `validate` diagnostics warn about global or per-client allow/deny rules whose method and glob path match no route in the pinned Engine/Podman API catalog. The offline, bounded analysis is advisory and does not change request authorization.
 
 - Opt-in `allowed_images` lists for Docker-compatible container creation, native Podman container creation, and Swarm service creation/update. Each list matches fully qualified image references exactly, including an explicit tag or digest, and can be set globally or per client profile. Empty lists preserve existing behavior. Checks run after admission image remapping and before signature verification/digest pinning, and use the existing enforce/warn/audit rollout modes. When a list is enabled, alternate rootfs/image-volume creation, image mounts, and stored or automatic Swarm rollback are refused rather than selecting unchecked image content.

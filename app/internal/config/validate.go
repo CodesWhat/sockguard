@@ -1868,6 +1868,7 @@ func validateRegistryHostEntries(prefix, entries string, registries []string) []
 
 func validateContainerCreateConfig(prefix string, cfg ContainerCreateRequestBodyConfig) []string {
 	var errs []string
+	errs = append(errs, validateCreateLaunchConfig(prefix+".container_create", cfg.AllowedCommands, cfg.AllowedEntrypoints, cfg.AllowedEnvVars, cfg.DeniedEnvVars, cfg.AllowedEnvValues)...)
 	errs = append(errs, validateCreateImageAllowlist(prefix+".container_create.allowed_images", cfg.AllowedImages)...)
 	errs = append(errs, validateHostPathEntries(prefix, "container_create.allowed_bind_mounts", cfg.AllowedBindMounts)...)
 	errs = append(errs, validateHostPathEntries(prefix, "container_create.allowed_devices", cfg.AllowedDevices)...)
@@ -1901,6 +1902,7 @@ func validateContainerCreateConfig(prefix string, cfg ContainerCreateRequestBody
 // equivalent's allowed_namespace_sharing_containers.
 func validateLibpodContainerCreateConfig(prefix string, cfg LibpodContainerCreateRequestBodyConfig) []string {
 	var errs []string
+	errs = append(errs, validateCreateLaunchConfig(prefix+".libpod_container_create", cfg.AllowedCommands, cfg.AllowedEntrypoints, cfg.AllowedEnvVars, cfg.DeniedEnvVars, cfg.AllowedEnvValues)...)
 	errs = append(errs, validateCreateImageAllowlist(prefix+".libpod_container_create.allowed_images", cfg.AllowedImages)...)
 	errs = append(errs, validateHostPathEntries(prefix, "libpod_container_create.allowed_bind_mounts", cfg.AllowedBindMounts)...)
 	errs = append(errs, validateHostPathEntries(prefix, "libpod_container_create.allowed_devices", cfg.AllowedDevices)...)
@@ -2232,6 +2234,36 @@ func validateCreateImageAllowlist(field string, images []string) []string {
 		}
 		if _, err := name.ParseReference(image, name.StrictValidation); err != nil {
 			errs = append(errs, fmt.Sprintf("%s[%d] must be a fully qualified image reference with an explicit tag or digest: %v", field, i, err))
+		}
+	}
+	return errs
+}
+
+func validateCreateLaunchConfig(prefix string, commands, entrypoints [][]string, allowed, denied, values []string) []string {
+	var errs []string
+	for _, field := range []struct {
+		name    string
+		entries [][]string
+	}{{"allowed_commands", commands}, {"allowed_entrypoints", entrypoints}} {
+		for i, entry := range field.entries {
+			if !validExecCommand(entry) {
+				errs = append(errs, fmt.Sprintf("%s.%s entry %d must contain a non-empty argument", prefix, field.name, i+1))
+			}
+		}
+	}
+	for _, field := range []struct {
+		name    string
+		entries []string
+	}{{"allowed_env_vars", allowed}, {"denied_env_vars", denied}} {
+		for _, entry := range field.entries {
+			if !validExecEnvVarName(entry) {
+				errs = append(errs, fmt.Sprintf("%s.%s entries must be bare variable names", prefix, field.name))
+			}
+		}
+	}
+	for i, entry := range values {
+		if !validExecEnvValue(entry) {
+			errs = append(errs, fmt.Sprintf("%s.allowed_env_values entry %d must be NAME=VALUE", prefix, i+1))
 		}
 	}
 	return errs
