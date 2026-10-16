@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0-rc.8] - 2026-10-15
+
+### Security
+
+- **The 2.2.10 pod infra PID-file refusal is now on the v2.3 line.** Native Podman pod creation refuses every nonempty `infra_conmon_pid_file`, matching the existing container-create refusal of `conmon_pid_file`. A caller can no longer choose the host file conmon writes the infra container's PID to. Ordinary pod creation is unchanged, and direct and versioned routes have unit and middleware regressions. The 2.2.10 entry below describes the source and client-capture evidence; no live-daemon reproduction is claimed.
+
+### Changed
+
+- Carries the stable line's npm updates and deduped lockfile, authenticated Docker Hub pulls in the security workflow, and current release/roadmap metadata. The BuildKit frontend mediation, companion runner and `/v2` module path remain intact. This forward-port keeps the existing v2.3 GA date, no earlier than 2026-10-23; rc.8 still needs a fresh four-hour soak and TLS scan on its exact head.
+
+## [2.2.10] - 2026-10-15
+
+### Changed
+
+- Updated the README, docs and website roadmap to distinguish the implemented v2.3.0-rc.7 features from the stable v2.2.10 line and record the candidate's successful four-hour soak and TLS scan. Release guidance now matches the GA-clock decision: released v2.2 fix forward-ports keep the v2.3 date, while v2.3-only behavior changes restart the 14-day window; every new candidate still needs fresh validation.
+
+### Security
+
+- **A pod create could name the host file conmon writes the infra container's PID to.** Podman's `POST /libpod/pods/create` (sent as `/v{version}/libpod/pods/create`) takes `infra_conmon_pid_file` and copies it onto the pod's infra container as that container's `conmon_pid_file`. When the infra container starts, conmon writes its PID to that path as the daemon's user. A container create's `conmon_pid_file` has been refused since 2.2.6, but the pod create inspector didn't read the pod's name for the same path, so `{"infra_conmon_pid_file": "/host/x.pid"}` was forwarded whatever `request_body.libpod_pod_create` was set to. It's now refused whenever it's set. Like `conmon_pid_file` it has no option, because it's a path the daemon writes and not one a container reads, so no allowlist fits it. A relative path is refused as well, since Podman keeps any value that isn't empty, and so is the field on a pod created with `no_infra: true`, where Podman has no infra container and never uses it. The key is matched in any letter case, and a body that gives it twice was already refused with a `400`. That's a behavior change for `podman --remote pod create --infra-conmon-pidfile /path`, which is refused outright, with `--infra=false` too. A pod create without the flag isn't affected: podman-remote leaves the field out unless the flag is passed, and none of the pod create bodies captured for 2.2.6 carries it. The pod's other host-path fields still aren't gated. Its `overlay_volumes`, `mounts`, `volumes`, `image_volumes`, `volumes_from` and `pod_devices` attach to the infra container as before. No shipped preset allows the pod create path. What Podman does with the field is read from source and wasn't run: the pod create handler and the container setup in Podman 5.8.6 and 6.1.3, and the PID file write in conmon 2.0.20. Nothing here ran against a live Podman daemon. What did run is the client: the body podman-remote 6.1.3 sends for `--infra-conmon-pidfile` was captured with no server behind it, and it's the fixture the refusal is tested against.
+
 ## [2.3.0-rc.7] - 2026-10-09
 
 ### Security

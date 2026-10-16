@@ -486,9 +486,9 @@ owner isolation:
   to `request_body.libpod_container_create.allowed_bind_mounts`, along with
   `init_path` and the `upperdir` and `workdir` an overlay names in its options
   (on an `overlay_volumes` entry or a named `volumes` entry). It also refuses a
-  bind source that isn't an absolute path, and refuses `conmon_pid_file`. So a
-  host path still has to be allowlisted; ownership just adds no second check on
-  top.
+  bind source that isn't an absolute path, and refuses `conmon_pid_file`, along
+  with `infra_conmon_pid_file` on a pod create. So a host path still has to be
+  allowlisted; ownership just adds no second check on top.
 
 Keys are matched the way Podman's JSON decoder matches them, in any letter
 case, including the ones it reads by their Go names (`Networks`, and `Name`

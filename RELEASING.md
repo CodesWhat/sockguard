@@ -126,7 +126,7 @@ When a fix applies to the current stable release while a later release candidate
 1. Land and tag the stable patch from `main`; wait for `release-from-tag.yml` and its published-artifact verification to pass.
 2. Merge the stable tag commit forward into the active development branch. Resolve CHANGELOG, site version, roadmap, and chart metadata deliberately — do not drop the stable release history during conflict resolution.
 3. Add an exact prerelease CHANGELOG heading, run the full gates again, and cut the next RC with the explicit `release_tag` workflow input.
-4. Keep the next minor milestone marked as prerelease/next until its soak completes. A security fix resets the promotion clock; it is not a reason to relabel the RC as stable early.
+4. Keep the next minor milestone marked as prerelease/next until its soak completes. For the active v2.3 line, a candidate that only carries fixes already released on v2.2 keeps the existing GA date; a v2.3-only behavior change restarts the 14-day window. Every new candidate still needs a fresh four-hour soak and TLS scan on its exact head before stable promotion.
 
 ---
 
