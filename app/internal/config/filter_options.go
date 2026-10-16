@@ -90,6 +90,7 @@ func (c LibpodPodCreateRequestBodyConfig) ToFilterOptions() filter.LibpodPodCrea
 
 func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCreateOptions {
 	return filter.ContainerCreateOptions{
+		AllowedImages:                     c.AllowedImages,
 		AllowPrivileged:                   c.AllowPrivileged,
 		AllowHostNetwork:                  c.AllowHostNetwork,
 		AllowHostPID:                      c.AllowHostPID,
@@ -133,6 +134,7 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 
 func (c LibpodContainerCreateRequestBodyConfig) ToFilterOptions() filter.LibpodContainerCreateOptions {
 	return filter.LibpodContainerCreateOptions{
+		AllowedImages:                     c.AllowedImages,
 		AllowPrivileged:                   c.AllowPrivileged,
 		AllowHostNetwork:                  c.AllowHostNetwork,
 		AllowHostPID:                      c.AllowHostPID,
@@ -314,6 +316,7 @@ func (c ConfigRequestBodyConfig) ToFilterOptions() filter.ConfigOptions {
 
 func (c ServiceRequestBodyConfig) ToFilterOptions() filter.ServiceOptions {
 	return filter.ServiceOptions{
+		AllowedImages:              c.AllowedImages,
 		AllowHostNetwork:           c.AllowHostNetwork,
 		AllowedBindMounts:          c.AllowedBindMounts,
 		AllowAllRegistries:         c.AllowAllRegistries,

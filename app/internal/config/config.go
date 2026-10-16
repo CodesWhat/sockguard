@@ -591,6 +591,9 @@ type LibpodPodCreateRequestBodyConfig struct {
 // ContainerCreateRequestBodyConfig configures body inspection for
 // POST /containers/create requests.
 type ContainerCreateRequestBodyConfig struct {
+	// AllowedImages is an opt-in exact reference allowlist; empty is unrestricted.
+	// Entries require an explicit registry, repository, and tag or digest.
+	AllowedImages            []string               `mapstructure:"allowed_images"`
 	AllowPrivileged          bool                   `mapstructure:"allow_privileged"`
 	AllowHostNetwork         bool                   `mapstructure:"allow_host_network"`
 	AllowHostPID             bool                   `mapstructure:"allow_host_pid"`
@@ -670,7 +673,10 @@ type ContainerCreateRequestBodyConfig struct {
 // AllowHostUTS has no compat option to mirror, because the compat create
 // refuses a host UTS namespace unconditionally.
 type LibpodContainerCreateRequestBodyConfig struct {
-	AllowPrivileged bool `mapstructure:"allow_privileged"`
+	// AllowedImages is an opt-in exact reference allowlist; empty is unrestricted.
+	// Entries require an explicit registry, repository, and tag or digest.
+	AllowedImages   []string `mapstructure:"allowed_images"`
+	AllowPrivileged bool     `mapstructure:"allow_privileged"`
 	// AllowHostNetwork/PID/IPC/UserNS/UTS/CgroupNS each permit that
 	// namespace object's nsmode "host" and "path". A path can name the
 	// host's namespace, so it needs the same gate. While one is false its
@@ -989,6 +995,9 @@ type ConfigRequestBodyConfig struct {
 
 // ServiceRequestBodyConfig configures inspection for service create/update.
 type ServiceRequestBodyConfig struct {
+	// AllowedImages is an opt-in exact reference allowlist; empty is unrestricted.
+	// Entries require an explicit registry, repository, and tag or digest.
+	AllowedImages              []string `mapstructure:"allowed_images"`
 	AllowHostNetwork           bool     `mapstructure:"allow_host_network"`
 	AllowedBindMounts          []string `mapstructure:"allowed_bind_mounts"`
 	AllowAllRegistries         bool     `mapstructure:"allow_all_registries"`

@@ -1,6 +1,9 @@
 package filter
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // libpod_container_create_types.go holds the on-wire JSON shapes that the
 // POST /libpod/containers/create inspector decodes from request bodies.
@@ -29,11 +32,12 @@ import "strings"
 // unread and therefore unvalidated by sockguard — matching container_create's
 // own posture of only modeling fields it has an explicit gate for.
 type libpodContainerCreateRequest struct {
-	Name       string            `json:"name"`
-	Image      string            `json:"image"`
-	User       string            `json:"user"`
-	Labels     map[string]string `json:"labels"`
-	Privileged bool              `json:"privileged"`
+	Name         string            `json:"name"`
+	Image        string            `json:"image"`
+	ImageVolumes []json.RawMessage `json:"image_volumes"`
+	User         string            `json:"user"`
+	Labels       map[string]string `json:"labels"`
+	Privileged   bool              `json:"privileged"`
 
 	NetNS     libpodNamespace  `json:"netns"`
 	PidNS     libpodNamespace  `json:"pidns"`

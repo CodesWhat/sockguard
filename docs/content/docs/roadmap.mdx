@@ -123,6 +123,20 @@ Every new candidate needs a fresh four-hour soak and TLS scan; a candidate
 containing only fixes already released on the v2.2 line keeps the date,
 while a v2.3-only behavior change restarts the 14-day window.
 
+## v2.4 development
+
+The next feature line is isolated from the v2.3 release candidate. First is
+image admission: opt-in `allowed_images` lists on Docker-compatible and native
+Podman container create, plus Swarm service create/update. Lists match explicit,
+fully qualified references exactly and support per-client profiles and existing
+rollout modes. See [image admission allowlists](/configuration#image-admission-allowlists)
+for matching rules and restrictions.
+
+After image admission, the planned order is warnings for rules that match no
+known Engine/libpod route, create-time environment/command/entrypoint policy,
+Linux Unix-socket container identity, and a reproducible-build procedure checked
+in CI with a recorded decision on a formal policy specification.
+
 ## Twelve-month direction
 
 Beyond the next planned line, work remains risk- and demand-driven:

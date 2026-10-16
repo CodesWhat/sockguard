@@ -59,7 +59,12 @@ reload:
 #     require_cpu_limit: false            # require effective NanoCpus, CpuQuota, CpuPeriod, or CpuShares > 0
 #     require_cpu_limit_hard: false       # require effective NanoCpus or CpuQuota specifically; CpuShares alone does not satisfy this
 #     require_pids_limit: false           # require effective HostConfig.PidsLimit > 0 (a submitted 0 or -1 is an explicit clear)
+#   container_create:
+#     allowed_images: []                  # opt-in exact fully qualified refs, e.g. docker.io/library/alpine:3.22
+#   libpod_container_create:
+#     allowed_images: []                  # independent native Podman list; empty adds no restriction
 #   service:
+#     allowed_images: []                  # service create/update; nonempty also refuses stored/automatic rollback
 #     require_cpu_limit: false            # require Resources.Limits.NanoCPUs > 0 on create/update and both rollback paths
 #     require_cpu_limit_hard: false       # same check as require_cpu_limit; kept separate for parity — Swarm has no soft/hard CPU split
 
