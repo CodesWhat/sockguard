@@ -757,3 +757,27 @@ func TestContainerCreateDecodeTypeErrorsStillDeny(t *testing.T) {
 		})
 	}
 }
+
+func TestContainerCreateLaunchNullElementsMatchFreshDecode(t *testing.T) {
+	for _, field := range []string{"Cmd", "Entrypoint", "Env"} {
+		t.Run(field, func(t *testing.T) {
+			var reused, fresh containerCreateRequest
+			if err := json.Unmarshal([]byte(`{"Cmd":["/app/server"],"Entrypoint":["/app/init"],"Env":["MODE=safe"]}`), &reused); err != nil {
+				t.Fatal(err)
+			}
+			reused.resetForReuse()
+			body := []byte(`{"` + field + `":[null]}`)
+			if err := json.Unmarshal(body, &reused); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(body, &fresh); err != nil {
+				t.Fatal(err)
+			}
+			normalizeContainerCreateForCompare(reflect.ValueOf(&reused).Elem())
+			normalizeContainerCreateForCompare(reflect.ValueOf(&fresh).Elem())
+			if !reflect.DeepEqual(reused, fresh) {
+				t.Errorf("reused decode retained prior launch fields: got Cmd=%q Entrypoint=%q Env=%q; fresh Cmd=%q Entrypoint=%q Env=%q", reused.Cmd, reused.Entrypoint, reused.Env, fresh.Cmd, fresh.Entrypoint, fresh.Env)
+			}
+		})
+	}
+}

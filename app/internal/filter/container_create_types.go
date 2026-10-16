@@ -273,10 +273,9 @@ func releaseContainerCreateRequest(req *containerCreateRequest) {
 //
 // Three rules, and each one is a correctness rule rather than a style choice:
 //
-//   - []string fields are truncated, not dropped. encoding/json overwrites
-//     element i before it is reachable and truncates the slice to the number
-//     of elements it decoded, so nothing left over past the new length can be
-//     read back through the field.
+//   - []string fields are truncated, not dropped. Launch fields are cleared
+//     first because encoding/json leaves an existing string unchanged for a
+//     null array element. A reused launch field must decode like a fresh one.
 //   - Slices of structs (Mounts, Devices, DeviceRequests) are dropped, not
 //     truncated. encoding/json decodes into the existing element without
 //     zeroing it first, so a reused element would keep the previous request's
@@ -286,6 +285,9 @@ func releaseContainerCreateRequest(req *containerCreateRequest) {
 //     a surviving MaskedPaths pointer reads as "explicitly set to empty",
 //     which is the exact signal denySystemPathsReason denies on.
 func (r *containerCreateRequest) resetForReuse() {
+	clear(r.Cmd)
+	clear(r.Entrypoint)
+	clear(r.Env)
 	r.Cmd = r.Cmd[:0]
 	r.Entrypoint = r.Entrypoint[:0]
 	r.Env = r.Env[:0]
