@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Refuse `BUILDKIT_SYNTAX` frontend overrides while RUN instructions are restricted, on classic Docker/Podman build arguments and mediated BuildKit Solve. A selected compiler can't be constrained by scanning the submitted Dockerfile. Classic build arguments with ambiguous query spellings, repeated values or malformed JSON are refused under this restriction. This is prepared maintenance work, not part of v2.2.10.
+
 ## [2.2.10] - 2026-10-15
 
 ### Changed
