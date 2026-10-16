@@ -41,6 +41,8 @@ import (
 // and AllowHostUTS has no compat option to mirror, because the compat create
 // refuses a host UTS namespace unconditionally.
 type LibpodContainerCreateOptions struct {
+	// AllowedImages is an opt-in exact image reference allowlist.
+	AllowedImages   []string
 	AllowPrivileged bool
 	// AllowHostNetwork/PID/IPC/UserNS/UTS/CgroupNS each permit that
 	// namespace object's nsmode "host" and "path", and while false refuse
@@ -109,6 +111,7 @@ type LibpodContainerCreateOptions struct {
 }
 
 type libpodContainerCreatePolicy struct {
+	allowedImages     createImageAllowlist
 	allowPrivileged   bool
 	allowHostNetwork  bool
 	allowHostPID      bool
@@ -172,6 +175,7 @@ func newLibpodContainerCreatePolicy(opts LibpodContainerCreateOptions) libpodCon
 	}
 
 	p := libpodContainerCreatePolicy{
+		allowedImages:                     newCreateImageAllowlist(opts.AllowedImages),
 		allowPrivileged:                   opts.AllowPrivileged,
 		allowHostNetwork:                  opts.AllowHostNetwork,
 		allowHostPID:                      opts.AllowHostPID,
@@ -213,8 +217,11 @@ func newLibpodContainerCreatePolicy(opts LibpodContainerCreateOptions) libpodCon
 }
 
 func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
-	if r == nil || r.Method != http.MethodPost || !isLibpodContainerCreatePath(normalizedPath) || r.Body == nil {
+	if r == nil || r.Method != http.MethodPost || !isLibpodContainerCreatePath(normalizedPath) {
 		return "", nil
+	}
+	if r.Body == nil {
+		return p.allowedImages.denyReason("", "libpod container create"), nil
 	}
 	if p.imageTrustInitErr != nil {
 		return fmt.Sprintf("libpod container create denied: image trust policy initialization error: %s", p.imageTrustInitErr.Error()), nil
@@ -228,13 +235,21 @@ func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Reques
 	}
 
 	if len(body) == 0 {
-		return "", nil
+		return p.allowedImages.denyReason("", "libpod container create"), nil
 	}
 
 	var createReq libpodContainerCreateRequest
 	if err := json.Unmarshal(body, &createReq); err != nil {
 		logRequestError(logger, r, slog.LevelDebug, "libpod container create request body is not valid JSON; denying", err)
 		return "libpod container create denied: malformed JSON request body", nil
+	}
+
+	if reason := p.allowedImages.denyReason(createReq.Image, "libpod container create"); reason != "" {
+		return reason, nil
+	}
+
+	if len(p.allowedImages) > 0 && (createReq.Rootfs != "" || len(createReq.ImageVolumes) > 0) {
+		return "libpod container create denied: rootfs and image volumes are not supported with allowed_images", nil
 	}
 
 	if !p.allowPrivileged && createReq.Privileged {

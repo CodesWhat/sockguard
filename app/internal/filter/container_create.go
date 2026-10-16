@@ -72,6 +72,8 @@ type signatureFetcher interface {
 // ContainerCreateOptions configures request-body policy checks for
 // POST /containers/create.
 type ContainerCreateOptions struct {
+	// AllowedImages is an opt-in exact image reference allowlist.
+	AllowedImages            []string
 	AllowPrivileged          bool
 	AllowHostNetwork         bool
 	AllowHostPID             bool
@@ -187,6 +189,7 @@ type ContainerCreateOptions struct {
 }
 
 type containerCreatePolicy struct {
+	allowedImages            createImageAllowlist
 	allowPrivileged          bool
 	allowHostNetwork         bool
 	allowHostPID             bool
@@ -286,6 +289,7 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 	}
 
 	p := containerCreatePolicy{
+		allowedImages:                     newCreateImageAllowlist(opts.AllowedImages),
 		allowPrivileged:                   opts.AllowPrivileged,
 		allowHostNetwork:                  opts.AllowHostNetwork,
 		allowHostPID:                      opts.AllowHostPID,
@@ -1230,8 +1234,11 @@ func buildImageTrustRaw(opts ImageTrustOptions) imagetrust.RawConfig {
 }
 
 func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
-	if r == nil || r.Method != http.MethodPost || normalizedPath != "/containers/create" || r.Body == nil {
+	if r == nil || r.Method != http.MethodPost || normalizedPath != "/containers/create" {
 		return "", nil
+	}
+	if r.Body == nil {
+		return p.allowedImages.denyReason("", "container create"), nil
 	}
 	// Fail closed if the image trust policy failed to initialize: a
 	// misconfigured trust config must not silently allow all images through.
@@ -1247,7 +1254,7 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	}
 
 	if len(body) == 0 {
-		return "", nil
+		return p.allowedImages.denyReason("", "container create"), nil
 	}
 
 	createReq := acquireContainerCreateRequest()
@@ -1258,6 +1265,10 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 		// Docker would silently skip all policy checks (fail-open).
 		logRequestError(logger, r, slog.LevelDebug, "container create request body is not valid JSON; denying", err)
 		return "container create denied: malformed JSON request body", nil
+	}
+
+	if reason := p.allowedImages.denyReason(createReq.Image, "container create"); reason != "" {
+		return reason, nil
 	}
 
 	if !p.allowPrivileged && createReq.HostConfig.Privileged {
@@ -2025,8 +2036,16 @@ func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHos
 // patch; until then, enforce mode denies the request outright rather than
 // silently admitting an unverified filesystem. warn mode and mode "off" are
 // unaffected — this only gates the request when enforcement would otherwise
-// apply.
+// apply. An active image allowlist also refuses image mounts, whose content
+// is independent of the primary Image field checked at create time.
 func (p containerCreatePolicy) denyImageMountReason(hostConfig containerCreateHostConfig) string {
+	if len(p.allowedImages) > 0 {
+		for _, mount := range hostConfig.Mounts {
+			if strings.EqualFold(mount.Type, "image") {
+				return "container create denied: image mounts are not supported with allowed_images"
+			}
+		}
+	}
 	if p.imageTrustCfg.Mode != imagetrust.ModeEnforce {
 		return ""
 	}

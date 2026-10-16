@@ -382,4 +382,14 @@ export const roadmap: Milestone[] = [
       "rc.8 carries the 2.2.10 pod infra PID-file refusal; fresh four-hour soak and TLS validation are pending, and GA remains no earlier than 2026-10-23",
     ],
   },
+  {
+    version: "v2.4.0",
+    title: "Image Admission & Policy Usability",
+    emoji: "🛡️",
+    status: "planned",
+    items: [
+      "In development: exact image allowlists for Docker and Podman container creation and Swarm service creation/update, with per-client lists and rollout modes",
+      "Next: unreachable-rule warnings, create environment/command policy, Unix-socket container identity, and reproducible-build documentation and CI",
+    ],
+  },
 ];
