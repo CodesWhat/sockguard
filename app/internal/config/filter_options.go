@@ -90,6 +90,11 @@ func (c LibpodPodCreateRequestBodyConfig) ToFilterOptions() filter.LibpodPodCrea
 
 func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCreateOptions {
 	return filter.ContainerCreateOptions{
+		AllowedCommands:                   c.AllowedCommands,
+		AllowedEntrypoints:                c.AllowedEntrypoints,
+		AllowedEnvVars:                    c.AllowedEnvVars,
+		DeniedEnvVars:                     c.DeniedEnvVars,
+		AllowedEnvValues:                  c.AllowedEnvValues,
 		AllowedImages:                     c.AllowedImages,
 		AllowPrivileged:                   c.AllowPrivileged,
 		AllowHostNetwork:                  c.AllowHostNetwork,
@@ -134,6 +139,11 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 
 func (c LibpodContainerCreateRequestBodyConfig) ToFilterOptions() filter.LibpodContainerCreateOptions {
 	return filter.LibpodContainerCreateOptions{
+		AllowedCommands:                   c.AllowedCommands,
+		AllowedEntrypoints:                c.AllowedEntrypoints,
+		AllowedEnvVars:                    c.AllowedEnvVars,
+		DeniedEnvVars:                     c.DeniedEnvVars,
+		AllowedEnvValues:                  c.AllowedEnvValues,
 		AllowedImages:                     c.AllowedImages,
 		AllowPrivileged:                   c.AllowPrivileged,
 		AllowHostNetwork:                  c.AllowHostNetwork,

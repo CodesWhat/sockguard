@@ -377,9 +377,9 @@ export const roadmap: Milestone[] = [
     emoji: "🧩",
     status: "next",
     items: [
-      "Included in v2.3.0-rc.8, awaiting stable release: individual raw-LLB ExecOp digest approvals, external frontend gateway mediation and the pinned companion runner; opaque in-daemon frontends and interactive execution stay denied",
+      "Prepared for rc.8, with rc.7 still the published candidate: individual raw-LLB ExecOp digest approvals, external frontend gateway mediation and the pinned companion runner; opaque in-daemon frontends and interactive execution stay denied",
       "The /v2 Go module migration is in the candidate, including imports, release linker flags and regenerated BuildKit descriptors; Docker, Homebrew, deb and rpm installation paths are unchanged",
-      "rc.8 carries the 2.2.10 pod infra PID-file refusal; fresh four-hour soak and TLS validation are pending, and GA remains no earlier than 2026-10-23",
+      "The prepared rc.8 source carries the 2.2.10 pod infra PID-file refusal and passed fresh soak/TLS validation; the tag cut awaits confirmation, and GA remains no earlier than 2026-10-23",
     ],
   },
   {
@@ -389,7 +389,8 @@ export const roadmap: Milestone[] = [
     status: "planned",
     items: [
       "In development: exact image allowlists for Docker and Podman container creation and Swarm service creation/update, with per-client lists and rollout modes",
-      "Next: unreachable-rule warnings, create environment/command policy, Unix-socket container identity, and reproducible-build documentation and CI",
+      "Unix container-label identity remains a documented limit; use distinct UID/GID profiles. These v2.4 changes are unreleased",
+      "Implemented: known-route startup/validate warnings, create environment/command/entrypoint policy, and reproducible binary build checks for all four targets; the formal-spec decision is recorded",
     ],
   },
 ];

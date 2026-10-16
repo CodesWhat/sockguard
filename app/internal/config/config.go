@@ -591,6 +591,11 @@ type LibpodPodCreateRequestBodyConfig struct {
 // ContainerCreateRequestBodyConfig configures body inspection for
 // POST /containers/create requests.
 type ContainerCreateRequestBodyConfig struct {
+	AllowedCommands    [][]string `mapstructure:"allowed_commands"`
+	AllowedEntrypoints [][]string `mapstructure:"allowed_entrypoints"`
+	AllowedEnvVars     []string   `mapstructure:"allowed_env_vars"`
+	DeniedEnvVars      []string   `mapstructure:"denied_env_vars"`
+	AllowedEnvValues   []string   `mapstructure:"allowed_env_values"`
 	// AllowedImages is an opt-in exact reference allowlist; empty is unrestricted.
 	// Entries require an explicit registry, repository, and tag or digest.
 	AllowedImages            []string               `mapstructure:"allowed_images"`
@@ -673,6 +678,11 @@ type ContainerCreateRequestBodyConfig struct {
 // AllowHostUTS has no compat option to mirror, because the compat create
 // refuses a host UTS namespace unconditionally.
 type LibpodContainerCreateRequestBodyConfig struct {
+	AllowedCommands    [][]string `mapstructure:"allowed_commands"`
+	AllowedEntrypoints [][]string `mapstructure:"allowed_entrypoints"`
+	AllowedEnvVars     []string   `mapstructure:"allowed_env_vars"`
+	DeniedEnvVars      []string   `mapstructure:"denied_env_vars"`
+	AllowedEnvValues   []string   `mapstructure:"allowed_env_values"`
 	// AllowedImages is an opt-in exact reference allowlist; empty is unrestricted.
 	// Entries require an explicit registry, repository, and tag or digest.
 	AllowedImages   []string `mapstructure:"allowed_images"`

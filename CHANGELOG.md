@@ -7,7 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- Align documentation and changelog release status with the published rc.7 candidate and the successful soak/TLS runs on prepared, unpublished rc.8 source.
+- Record the v2.4 Unix container-label identity decision: labels remain TCP/source-IP only. PID reuse, namespace visibility, delegated cgroups and remote-daemon identity require a separate safe design; Unix clients can use distinct host-visible UID/GID profiles instead.
+
 ### Added
+
+- Reproducible unsigned Go binary builds: release metadata uses the UTC source commit date, VCS auto-stamping is disabled, and a checked-in procedure compares clean builds from separate directories/caches. CI checks Linux/Darwin on amd64/arm64. Packages, images and signing artifacts are outside this binary-byte guarantee. The security guide records the decision to retain executable policy tests rather than add a separate formal model in v2.4.
+
+- Opt-in container-create command, entrypoint and environment policies for Docker and native Podman, globally or per client profile. Explicit argv templates use anchored globs and preserve legacy Docker single-string argv decoding; environment checks support allowed/denied names and exact values without exposing values in denials. Native host/proxy/secret/merge environment additions are refused while environment checks are active. Image/daemon defaults are outside request-field inspection. Pooled launch fields are cleared so null array elements cannot retain a previous request's values.
+
+- Startup and `validate` diagnostics warn about global or per-client allow/deny rules whose method and glob path match no route in the pinned Engine/Podman API catalog. The offline, bounded analysis is advisory and does not change request authorization.
 
 - Opt-in `allowed_images` lists for Docker-compatible container creation, native Podman container creation, and Swarm service creation/update. Each list matches fully qualified image references exactly, including an explicit tag or digest, and can be set globally or per client profile. Empty lists preserve existing behavior. Checks run after admission image remapping and before signature verification/digest pinning, and use the existing enforce/warn/audit rollout modes. When a list is enabled, alternate rootfs/image-volume creation, image mounts, and stored or automatic Swarm rollback are refused rather than selecting unchecked image content.
 
@@ -19,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Carries the stable line's npm updates and deduped lockfile, authenticated Docker Hub pulls in the security workflow, and current release/roadmap metadata. The BuildKit frontend mediation, companion runner and `/v2` module path remain intact. This forward-port keeps the existing v2.3 GA date, no earlier than 2026-10-23; rc.8 still needs a fresh four-hour soak and TLS scan on its exact head.
+- Carries the stable line's npm updates and deduped lockfile, authenticated Docker Hub pulls in the security workflow, and current release/roadmap metadata. The BuildKit frontend mediation, companion runner and `/v2` module path remain intact. This forward-port keeps the existing v2.3 GA date, no earlier than 2026-10-23. The prepared, unpublished rc.8 source passed fresh four-hour soak and TLS validation on `3d959fe3`; the tag cut still awaits confirmation, followed by published-artifact verification and candidate-image tri-tool conformance.
 
 ## [2.2.10] - 2026-10-15
 

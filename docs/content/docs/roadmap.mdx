@@ -50,7 +50,7 @@ doubled escapes, the `# escape=` directive and the JSON syntax directive the way
 BuildKit and Podman's builder each do. v2.2.10 is a tenth security patch:
 native Podman pod create refuses any nonempty `infra_conmon_pid_file`,
 matching the container-create `conmon_pid_file` refusal and preventing a
-caller-selected host PID-file write. [v2.3.0-rc.8](https://github.com/CodesWhat/sockguard/releases/tag/v2.3.0-rc.8)
+caller-selected host PID-file write. [v2.3.0-rc.7](https://github.com/CodesWhat/sockguard/releases/tag/v2.3.0-rc.7)
 is the current candidate for the next line; v2.3.0 is not stable yet. This roadmap describes direction and priorities, not
 promises about dates. A feature is available only after the release notes say
 it has shipped.
@@ -109,9 +109,12 @@ the remaining gate is stable promotion after candidate validation.
 | BuildKit RUN-instruction coverage | Raw-LLB ExecOps can be individually approved with `control.solve.allowed_exec_digests`. External frontend gateway Solves are mediated under the root build's policy, and the pinned companion runner executes the compiler outside the daemon. Unknown operations, opaque in-daemon frontends, interactive execution and daemon-resolved nested builds remain denied while RUN is restricted. Build refs and callback session IDs are scoped by client and profile |
 | Go module major-version path | The candidate declares `github.com/codeswhat/sockguard/v2`, with migrated imports, release linker flags and 11 regenerated BuildKit descriptors. After stable v2.3.0 publication, `go install github.com/codeswhat/sockguard/v2/app/cmd/sockguard@latest` will resolve to the v2 line. Existing v2.2 tags retain their original metadata; Docker, Homebrew, deb and rpm installs are unchanged |
 
-v2.3.0-rc.8 carries the 2.2.10 pod infra PID-file refusal and the stable
-line's security-workflow and dependency updates. Fresh four-hour soak and
-TLS validation for rc.8 are pending.
+The prepared rc.8 source at `3d959fe3` carries the 2.2.10 pod infra PID-file
+refusal and the stable line's security-workflow and dependency updates. Its fresh
+[four-hour soak](https://github.com/CodesWhat/sockguard/actions/runs/38828633168)
+and [TLS validation](https://github.com/CodesWhat/sockguard/actions/runs/38828636275)
+passed on that exact head. The rc.8 tag cut still awaits confirmation; rc.7 remains
+the published candidate.
 
 The [four-hour soak](https://github.com/CodesWhat/sockguard/actions/runs/37989593586)
 and [TLS scan](https://github.com/CodesWhat/sockguard/actions/runs/37989596674)
@@ -125,17 +128,22 @@ while a v2.3-only behavior change restarts the 14-day window.
 
 ## v2.4 development
 
-The next feature line is isolated from the v2.3 release candidate. First is
-image admission: opt-in `allowed_images` lists on Docker-compatible and native
-Podman container create, plus Swarm service create/update. Lists match explicit,
-fully qualified references exactly and support per-client profiles and existing
-rollout modes. See [image admission allowlists](/configuration#image-admission-allowlists)
-for matching rules and restrictions.
+This feature line is isolated from the v2.3 release candidate. The implementation
+includes exact image allowlists for Docker/Podman container create and Swarm
+service create/update, advisory startup/validate warnings for rules matching no
+known Engine/libpod route, and opt-in create environment/command/entrypoint policy.
+See the [configuration reference](/configuration#container-launch-fields).
 
-After image admission, the planned order is warnings for rules that match no
-known Engine/libpod route, create-time environment/command/entrypoint policy,
-Linux Unix-socket container identity, and a reproducible-build procedure checked
-in CI with a recorded decision on a formal policy specification.
+The [reproducible-build procedure](/verification#reproducible-go-binaries) compares
+independent binary builds in CI for all four supported targets. The
+[formal-spec decision](/security#policy-specification-decision) retains executable
+policy tests and records when a separate model should be reconsidered.
+
+Unix container-label identity is closed as a documented limit, with no PID/cgroup
+inference enabled. Unix clients can use distinct host-visible UID/GID profiles;
+the [security decision](/security#unix-container-label-identity) explains the
+requirements for a future implementation. These changes remain unreleased until
+v2.4 release notes say otherwise.
 
 ## Twelve-month direction
 

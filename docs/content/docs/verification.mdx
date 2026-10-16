@@ -1,6 +1,6 @@
 ---
-title: Image Verification
-description: Verify sockguard images and release tarballs with cosign keyless GitHub Actions OIDC signatures.
+title: Artifact Verification
+description: Verify signatures and reproduce Sockguard Go binaries from pinned source and build inputs.
 ---
 
 Every sockguard release is signed with [cosign](https://github.com/sigstore/cosign)
@@ -215,3 +215,54 @@ gh attestation verify "sockguard_<VERSION>_linux_amd64.tar.gz" \
 From v1.7.1 onward each archive additionally ships a CycloneDX SBOM as
 `sockguard_<VERSION>_<OS>_<ARCH>.tar.gz.cyclonedx.json`. v1.7.0's archives
 carry neither an SBOM nor a signature.
+
+## Reproducible Go binaries
+
+Starting with the v2.4 development line, unsigned Go binaries have deterministic
+build inputs. This applies to the binary bytes, not to tar/deb/rpm packages,
+container images, SBOMs, provenance records or signing bundles. Existing releases
+with wall-clock build dates aren't covered retroactively. Signature verification
+and independent rebuilding answer different questions; use both when needed.
+
+From a clone with the requested commit or tag available, run the checked-in
+procedure. It defaults to committed `HEAD`, Linux/amd64 and the exact tag's version
+(or `0.0.0-repro` for an untagged commit):
+
+```bash
+bash scripts/ci/go-reproducible.sh
+```
+
+For a particular release, pass its tag. For example, once v2.4.0 is published:
+
+```bash
+GOOS=linux GOARCH=amd64 bash scripts/ci/go-reproducible.sh v2.4.0
+```
+
+The script exports the same committed tree into two different directories, uses
+the exact `toolchain` pinned by that tree's `go.mod`, and builds with two separate,
+initially empty Go build caches. Go may download the pinned toolchain and modules;
+module versions and checksums come from `go.mod` and `go.sum`. The shared module
+download cache isn't an independent supply-chain verification.
+
+The [GoReleaser configuration](https://github.com/CodesWhat/sockguard/blob/dev/v2.4/app/.goreleaser.yaml)
+and reproduction command use `CGO_ENABLED=0`, `-trimpath`, `-buildvcs=false`,
+`-s -w`, and explicit version, full source commit and UTC commit-time metadata.
+`BuildDate` now means the source commit date, not the release workflow's start time.
+AMD64 uses `GOAMD64=v1`; ARM64 uses `GOARM64=v8.0`. The procedure clears ambient Go
+flags, workspace and experiment settings. It prints the chosen inputs and SHA-256,
+compares both binaries byte for byte, and removes its temporary sources/caches on
+exit. Uncommitted working-tree edits aren't part of the build.
+
+CI runs this comparison for Linux and Darwin, each on amd64 and arm64. A different
+result fails that target. For a downloaded release, verify its signature, extract
+the matching platform archive, hash its `sockguard` binary and compare that digest
+with the script's printed digest. Compare the same source commit, version,
+toolchain, target and build flags. The optional second argument overrides the
+version, which is useful for reproducing a snapshot's displayed version.
+
+The build contract follows Go's
+[build flags](https://pkg.go.dev/cmd/go#hdr-Compile_packages_and_dependencies) and
+GoReleaser's [reproducible-build guidance](https://goreleaser.com/customization/builds/builders/go/#reproducible-builds).
+A successful two-build CI check is evidence of deterministic output for those
+inputs. It isn't a claim that the compiler, dependencies or runner are trusted,
+or that every published artifact has been independently reproduced.

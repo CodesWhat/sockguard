@@ -825,6 +825,30 @@ The getting-started examples use the container-level controls above by
 default so the drop-in path stays simple without hiding the real
 hardening story.
 
+## Policy specification decision
+
+Decision for v2.4, recorded 2026-10-16: keep the policy contract executable in the
+Go implementation and regression/property tests. Do not add a separate TLA+, Quint
+or other formal model in this milestone, and do not describe Sockguard as formally
+verified. A second model would need a maintained mapping to Docker/Podman wire
+semantics, normalization, ordered rules, client profiles, mutations and stateful
+BuildKit mediation. A model limited to glob evaluation would not prove the whole
+proxy's security boundary.
+
+The contract to preserve is: canonicalize a request path before evaluating rules;
+select the first matching method/path rule; deny when no rule matches; inspect
+constrained writes before forwarding; and compose profile, ownership and body
+restrictions without silently bypassing a failed prerequisite. Explicit warn/audit
+rollout and documented blind-write acknowledgments are part of that contract.
+Unit, integration, differential and fuzz regressions exercise these behaviors,
+including malformed and ambiguous request shapes. Tests provide evidence, not a
+proof over every Docker/Podman behavior.
+
+Revisit a formal model when a concrete policy-engine change needs properties the
+current executable tests cannot express or explore adequately. Start with a bounded
+contract, state assumptions and implementation correspondence, and define how CI
+will detect drift before introducing another maintained specification.
+
 ## Known Limitations
 
 These are architectural constraints inherent to Sockguard's position in the
@@ -857,6 +881,38 @@ For workloads where caller identity is part of the security boundary, listen
 on a unix socket and use `clients.unix_peer_profiles` with `uids`/`gids`.
 `SO_PEERCRED` is supplied by the kernel and cannot be spoofed from within
 the calling container — that is the hard-isolation path.
+
+### Unix container-label identity
+
+Decision for v2.4: retain container-label ACLs as a TCP/source-IP feature. Do not
+infer container identity from a Unix peer PID and an apparent container ID in a
+cgroup path. Unix callers can use the existing UID/GID profile assignments.
+This is a documented limit, not a promise that label ACLs authenticate Unix clients.
+
+Linux [`SO_PEERCRED`](https://man7.org/linux/man-pages/man7/unix.7.html) reports
+credentials associated with the connecting process. Translating its numeric PID
+into current `/proc` contents adds a separate identity problem: PIDs can be reused,
+and a process can disappear while the socket remains open or is passed elsewhere.
+The credentials describe the connector, not each subsequent writer of the socket.
+[`PID namespaces`](https://man7.org/linux/man-pages/man7/pid_namespaces.7.html) also
+limit which processes the proxy can see. A sibling container's PID may not be
+visible from Sockguard's own PID namespace; mounting host `/proc` alone doesn't
+make that PID meaningful in the receiving namespace.
+
+[`Cgroup namespaces`](https://man7.org/linux/man-pages/man7/cgroup_namespaces.7.html)
+can hide ancestor paths, and cgroup names aren't authenticated container IDs.
+Delegated workloads may create descendant groups. Matching a Docker-looking
+substring without checking the daemon's actual container init process can attribute
+another container's labels to the wrong caller. Remote or failover daemons add
+another mismatch: their container PIDs don't necessarily belong to the proxy host.
+
+Revisit this only with a Linux-specific design that binds the connection to a
+stable kernel process identity, validates PID/cgroup namespace visibility and
+same-host daemon identity, checks membership against the daemon's live container
+init process, and fails closed on missing, exited or changed identities. It must
+cover connection lifetime and descriptor passing without granting broad host
+namespace access by default. Until then, configure distinct host-visible UID/GID
+profiles or verified mTLS client profiles for callers needing stronger identity.
 
 **Exec TOCTOU (inspect/start split).** Docker exposes exec metadata inspection
 and exec start as separate API calls. Sockguard re-checks `POST /exec/*/start`

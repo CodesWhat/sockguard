@@ -72,6 +72,11 @@ type signatureFetcher interface {
 // ContainerCreateOptions configures request-body policy checks for
 // POST /containers/create.
 type ContainerCreateOptions struct {
+	AllowedCommands    [][]string
+	AllowedEntrypoints [][]string
+	AllowedEnvVars     []string
+	DeniedEnvVars      []string
+	AllowedEnvValues   []string
 	// AllowedImages is an opt-in exact image reference allowlist.
 	AllowedImages            []string
 	AllowPrivileged          bool
@@ -189,6 +194,7 @@ type ContainerCreateOptions struct {
 }
 
 type containerCreatePolicy struct {
+	launch                   createLaunchPolicy
 	allowedImages            createImageAllowlist
 	allowPrivileged          bool
 	allowHostNetwork         bool
@@ -290,6 +296,7 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 
 	p := containerCreatePolicy{
 		allowedImages:                     newCreateImageAllowlist(opts.AllowedImages),
+		launch:                            newCreateLaunchPolicy(opts.AllowedCommands, opts.AllowedEntrypoints, opts.AllowedEnvVars, opts.DeniedEnvVars, opts.AllowedEnvValues),
 		allowPrivileged:                   opts.AllowPrivileged,
 		allowHostNetwork:                  opts.AllowHostNetwork,
 		allowHostPID:                      opts.AllowHostPID,
@@ -1238,6 +1245,9 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 		return "", nil
 	}
 	if r.Body == nil {
+		if reason := p.launch.denyReason(nil, nil, nil, "container create"); reason != "" {
+			return reason, nil
+		}
 		return p.allowedImages.denyReason("", "container create"), nil
 	}
 	// Fail closed if the image trust policy failed to initialize: a
@@ -1254,6 +1264,9 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	}
 
 	if len(body) == 0 {
+		if reason := p.launch.denyReason(nil, nil, nil, "container create"); reason != "" {
+			return reason, nil
+		}
 		return p.allowedImages.denyReason("", "container create"), nil
 	}
 
@@ -1265,6 +1278,10 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 		// Docker would silently skip all policy checks (fail-open).
 		logRequestError(logger, r, slog.LevelDebug, "container create request body is not valid JSON; denying", err)
 		return "container create denied: malformed JSON request body", nil
+	}
+
+	if reason := p.launch.denyReason(createReq.Cmd, createReq.Entrypoint, createReq.Env, "container create"); reason != "" {
+		return reason, nil
 	}
 
 	if reason := p.allowedImages.denyReason(createReq.Image, "container create"); reason != "" {

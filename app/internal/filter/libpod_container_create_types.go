@@ -32,6 +32,14 @@ import (
 // unread and therefore unvalidated by sockguard — matching container_create's
 // own posture of only modeling fields it has an explicit gate for.
 type libpodContainerCreateRequest struct {
+	Command    []string          `json:"command"`
+	Entrypoint []string          `json:"entrypoint"`
+	Env        map[string]string `json:"env"`
+	EnvHost    bool              `json:"env_host"`
+	HTTPProxy  *bool             `json:"httpproxy"`
+	EnvSecrets json.RawMessage   `json:"secret_env"`
+	EnvMerge   []string          `json:"envmerge"`
+
 	Name         string            `json:"name"`
 	Image        string            `json:"image"`
 	ImageVolumes []json.RawMessage `json:"image_volumes"`
