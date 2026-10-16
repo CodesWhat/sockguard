@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0-rc.1] - 2026-10-16
+
+### Fixed
+
+- Standard local Buildx Dockerfile builds now admit an exact compatibility copy of the first exporter, mediate the built-in `dockerfile.v0` gateway with syntax delegation disabled, and accept only the active build's scoped local-session references in returned metadata. Conflicting/legacy-only exporters, explicit input-session overrides, arbitrary daemon frontend images and nested BuildOps remain denied. Owner mutations stay identical in both exporter representations. Docker integration now exercises Buildx builds, owner stamping, foreign-target preservation and restricted RUN/syntax refusal through the bundled build policy.
+- The mediated-build presets grant the built-in gateway and `moby` local exporter needed by current Buildx. RUN, remote context, host network and external ExecOp grants retain their restricted defaults.
+
 ### Security
 
 - Mediated BuildKit image exports now enforce owner isolation: check destination names against current daemon labels and stamp the active owner on built-in Dockerfile labels, supported image-config exporter attributes, and mediated frontend Return metadata. Owner-scoped Dockerfile builds use the built-in compiler; raw legacy `moby` exports without a trustworthy stamping path and incomplete frontend image configs fail closed. Status waits briefly for in-progress owner admission without granting unadmitted refs.

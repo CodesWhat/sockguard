@@ -3,8 +3,27 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
+
+func TestMediatedBuildPresetsSupportBuiltinBuildx(t *testing.T) {
+	for _, name := range []string{"drydock-with-mediated-build.yaml", "portwing-with-mediated-build.yaml"} {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := Load(filepath.Join("..", "..", "configs", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			policy := cfg.RequestBody.Buildkit.ToPolicy(cfg.RequestBody.Build)
+			if !policy.Control.Solve.AllowFrontendGateway || !slices.Contains(policy.Control.Solve.AllowedExporters, "moby") {
+				t.Fatal("preset cannot admit standard local Buildx builds")
+			}
+			if policy.Control.Solve.AllowRunInstructions || policy.Control.Solve.AllowRemoteContext || policy.Control.Solve.AllowHostNetwork || len(policy.Control.Solve.AllowedExecDigests) != 0 {
+				t.Fatal("preset broadened build privilege grants")
+			}
+		})
+	}
+}
 
 func TestPresetConfigsValidate(t *testing.T) {
 	presetsDir := filepath.Join("..", "..", "configs")

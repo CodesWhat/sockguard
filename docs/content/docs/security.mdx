@@ -279,7 +279,7 @@ limited to 256 gateway Solves and 30 minutes.
 
 The gateway mediates image/source resolution, result reads, evaluation and
 completion. Remote sources still require `build.allow_remote_context`.
-Explicit source-session overrides, nested frontends, source policies,
+Explicit input source-session overrides, arbitrary daemon frontends, source policies,
 interactive container/process RPCs, and filesystem-loaded nested BuildOps
 remain denied. Ping advertises supported capabilities and strips worker
 labels, garbage-collection policy, and CDI details. The [companion runner](/frontend-runner) executes a pinned frontend outside
@@ -291,7 +291,25 @@ frontend graphs remain in force.
 
 `insecure_accept_opaque_buildkit_tunnels` is now **deprecated**: it still works — existing configs that set it keep running unchanged — but setting it to `true` logs a startup warning steering operators toward `request_body.buildkit`, and the flag will be removed in a future major release. The flag and `request_body.buildkit` are mutually exclusive (mediation supersedes the wholesale acknowledgment), so a config cannot set both, and the deprecation warning only ever fires for a config using the flag on its own. If you see a build fail against a preset with a `/session` or `/grpc` denial, that means neither a classic-builder rule nor a `request_body.buildkit` policy is configured for that path: either switch the client to the classic builder (`DOCKER_BUILDKIT=0`, the `*-with-build.yaml` presets), configure `request_body.buildkit` for the fully-mediated path (the `*-with-mediated-build.yaml` presets), or — not recommended for new deployments — fall back to the deprecated acknowledgment. Tecnativa's `GRPC=1` / `SESSION=1` compat env vars still auto-set the deprecated acknowledgment with their own compat-specific warning, unless `request_body.buildkit` is already configured, in which case they leave it alone: a top-level policy then mediates the tunnel those vars open, while a policy on a client profile only makes startup refuse, since the rules they generate are top-level and a profile's policy cannot mediate them. Migrating off either warning means configuring `request_body.buildkit` at the top level. See [Migration](/migration) for the step-by-step move from the acknowledgment to a mediated policy.
 
-### Layer 6: Owner Label Isolation
+### Standard Buildx Dockerfile builds
+
+**v2.4 RC:** the mediated-build presets admit Buildx's built-in `dockerfile.v0`
+gateway requests. Local Dockerfile builds are verified with Buildx v0.33.0 and
+v0.38.0 against Docker 29.5.2. The Docker integration gate runs the workflow
+with `--provenance=false`; attestations remain unsupported. Dockerfile RUN and
+syntax-directive refusals still apply while RUN is restricted, and host-network,
+remote-context, session capability and image-owner checks remain independent.
+Base-image authentication still needs the appropriate explicit auth grants.
+
+The gateway applies the same frontend-attribute checks as Control.Solve and
+forces the built-in compiler to disable syntax delegation. Third-party compiler
+images still require the companion runner. Only the active build's namespaced
+local-session reference is accepted in returned graph metadata; explicit
+input-session overrides and cross-client/profile references remain denied.
+Matching legacy/current exporter copies are admitted only when they describe
+the same first exporter, and owner mutations update both copies together.
+
+## Layer 6: Owner Label Isolation
 When `ownership.owner` is set, Sockguard stamps label-capable creates, build-produced images and commit-produced images with an owner label, injects owner filters into list, prune and events requests, and freshly inspects target resources on individual requests to deny cross-owner access. Ownership decisions are intentionally uncached because Docker names and image tags can be rebound to different resources. The checks cover owned containers, images, networks, volumes, services, tasks, secrets, configs, nodes, and swarm state, with service writes stamping both the service and its task template so downstream tasks inherit the same owner identity, `/nodes` using Docker's `node.label` filter key, and unlabeled node/swarm resources only claimable through their update paths.
 
 `GET /system/df` is isolated on the response rather than the request, because it enumerates every container, volume and image on the host and accepts no `filters` parameter for the owner filter to attach to. Items that do not carry the owner label are dropped from the body. Two consequences are worth knowing before you enable it: build-cache records carry no labels at all, so they cannot be classified and are dropped whenever isolation is active, and the per-section totals (`ActiveCount`, `Reclaimable`, `TotalSize`, and the pre-1.52 `LayersSize`) are zeroed rather than recomputed, because shared image layers make a sum of the surviving items wrong rather than merely approximate. `TotalCount` reflects the items you can actually see, which means it reads `0` on an Engine API 1.52+ daemon answering without `?verbose=1`, since that shape carries counts but no items. `docker system df` therefore reports `0B` totals under owner isolation; per-item sizes are still present whenever the daemon sent items at all. A third consequence: a top-level section this build does not recognize is removed from the response rather than forwarded, because nothing in it can be classified as owned or visible. That covers a section a future Engine API adds and one only a Docker-compat upstream such as Podman sends. Sockguard logs a warning naming each dropped section once per process, so the gap is visible rather than silent. The same response filtering applies to visibility policy, and the two compose.

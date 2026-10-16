@@ -152,6 +152,9 @@ func applySolveImageOwnership(ctx context.Context, req *control.SolveRequest, po
 		// mediated gateway, where Return image configs are stamped.
 		req.FrontendAttrs["cmdline"] = ""
 	}
+	if req.ExporterDeprecated != "" && len(req.Exporters) > 0 {
+		req.ExporterAttrsDeprecated = req.Exporters[0].GetAttrs()
+	}
 	return nil
 }
 
