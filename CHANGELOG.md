@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [3.0.0-rc.1] - 2026-10-17
 
-This first v3 candidate includes the v2.3 frontend mediation and v2.4 policy/security work documented below, plus the breaking changes in this entry. It starts an independent validation and bake window: fresh four-hour soak, TLS/security checks, published-candidate conformance and at least 14 days after publication before GA. Candidate-only behavior fixes restart that window. Stable installation channels remain on v2.2.10; the v2.4 candidate keeps its own source and bake window.
+This first v3 candidate includes the v2.3 frontend mediation and v2.4 policy/security work described in the [full changelog](https://github.com/CodesWhat/sockguard/blob/dev/v3.0/CHANGELOG.md), plus the breaking changes in this entry. It starts an independent validation and bake window: fresh four-hour soak, TLS/security checks, published-candidate conformance and at least 14 days after publication before GA. Candidate-only behavior fixes restart that window. Stable installation channels remain on v2.2.10; the v2.4 candidate keeps its own source and bake window.
 
 ### Changed
 
