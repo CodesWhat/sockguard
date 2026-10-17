@@ -398,12 +398,12 @@ export const roadmap: Milestone[] = [
     version: "v3.0.0",
     title: "Verified TLS Compatibility Boundary",
     emoji: "🔐",
-    status: "planned",
+    status: "candidate",
     items: [
-      "Prepared v3.0.0-rc.1 source on dev/v3.0; publication awaits cut confirmation. Includes the v2.4 policy and security work",
+      "Published v3.0.0-rc.1 candidate; select its image or /v3 Go tag explicitly. Includes the v2.4 policy and security work",
       "Rejects the deprecated endpoint skip-verification setting and unverified Docker TLS fallback; configure the daemon CA and verified TLS",
       "Go imports, generated descriptors and release builds use /v3; stable channels stay on v2.2.10 and the v2.4 candidate keeps its independent bake",
-      "GA requires fresh candidate soak, TLS/security checks, published-image conformance and at least 14 days after publication; opaque BuildKit removal remains undecided",
+      "GA requires fresh candidate soak, TLS/security checks and published-image conformance; no earlier than October 31, 2026 at 16:08:58 UTC after its 14-day bake. Candidate-only behavior fixes restart the window; opaque BuildKit removal remains undecided",
     ],
   },
 ];
