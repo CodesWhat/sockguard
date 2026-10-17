@@ -394,4 +394,16 @@ export const roadmap: Milestone[] = [
       "Native mount/source and CDI checks, owner-aware BuildKit exports, Podman RUN controls, and standard local Buildx Dockerfile mediation; GA requires fresh candidate validation and at least 14 days of baking",
     ],
   },
+  {
+    version: "v3.0.0",
+    title: "Verified TLS Compatibility Boundary",
+    emoji: "🔐",
+    status: "planned",
+    items: [
+      "Prepared v3.0.0-rc.1 source on dev/v3.0; publication awaits cut confirmation. Includes the v2.4 policy and security work",
+      "Rejects the deprecated endpoint skip-verification setting and unverified Docker TLS fallback; configure the daemon CA and verified TLS",
+      "Go imports, generated descriptors and release builds use /v3; stable channels stay on v2.2.10 and the v2.4 candidate keeps its independent bake",
+      "GA requires fresh candidate soak, TLS/security checks, published-image conformance and at least 14 days after publication; opaque BuildKit removal remains undecided",
+    ],
+  },
 ];

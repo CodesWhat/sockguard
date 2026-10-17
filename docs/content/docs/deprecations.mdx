@@ -8,8 +8,8 @@ the setting. No removals listed here take effect on the v2.2, v2.3 or v2.4 lines
 
 | Setting or behavior | Deprecated since | Accepted through | Replacement | Removal target | Status |
 | --- | --- | --- | --- | --- | --- |
-| `upstream.endpoints[].insecure_skip_tls_verify` | v2.1.0 | All v2.x | Verify the daemon certificate with `tls.ca_file`; retain client cert/key when required. | v3.0.0 | Implemented on `dev/v3.0`; unreleased. |
-| Non-empty `DOCKER_TLS` with empty/unset `DOCKER_TLS_VERIFY` | v2.1.0 | All v2.x | Set `DOCKER_TLS_VERIFY=1` and provide the daemon CA through Docker's certificate-directory resolution. | v3.0.0 | Implemented on `dev/v3.0`; unreleased. |
+| `upstream.endpoints[].insecure_skip_tls_verify` | v2.1.0 | All v2.x | Verify the daemon certificate with `tls.ca_file`; retain client cert/key when required. | v3.0.0 | Implemented in prepared `v3.0.0-rc.1` source. |
+| Non-empty `DOCKER_TLS` with empty/unset `DOCKER_TLS_VERIFY` | v2.1.0 | All v2.x | Set `DOCKER_TLS_VERIFY=1` and provide the daemon CA through Docker's certificate-directory resolution. | v3.0.0 | Implemented in prepared `v3.0.0-rc.1` source. |
 | `insecure_accept_opaque_buildkit_tunnels` | v1.7.0 | All current v2 lines | Configure per-client `request_body.buildkit` mediation. | Future major, exact version undecided | Still accepted with a startup warning; mutually exclusive with mediation. |
 
 `DOCKER_TLS_VERIFY` uses Docker's non-empty semantics: even `0` or `false`
@@ -25,8 +25,9 @@ promise.
 
 ## v3.0.0 removal checklist
 
-The TLS removals are implemented on `dev/v3.0`. No v3 release is published or
-scheduled. The v2.4 candidate keeps the v2 behavior. Before cutting v3:
+The TLS removals are implemented in the prepared `v3.0.0-rc.1` source on
+`dev/v3.0`; publication awaits cut confirmation. The v2.4 candidate keeps the v2
+behavior. The implementation covers these contracts:
 
 - Reject the deprecated endpoint skip-verification setting with migration
   guidance. Continue to validate verified TLS and per-endpoint CA/client certs.
@@ -47,5 +48,5 @@ migrate now without changing their v2 compatibility contract.
 
 The Go module major-path migration is implemented on `dev/v3.0`, including imports,
 generated descriptor options and build contracts. Candidate version metadata and
-release routing still need preparation before any v3 tag. These source changes
-do not publish a v3 artifact.
+release routing are prepared for `v3.0.0-rc.1`. Publication and its independent
+validation/bake window remain separate release gates.

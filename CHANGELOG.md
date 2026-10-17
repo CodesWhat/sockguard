@@ -7,13 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed (v3 development only)
+## [3.0.0-rc.1] - 2026-10-17
 
-- **Breaking change:** the development Go module is `github.com/codeswhat/sockguard/v3`. Imports, generated BuildKit bindings and descriptor options, release/Docker linker flags, and coverage checks use `/v3`. Go consumers must update the major path; v2 tags retain `/v2`. Descriptor wire schemas and upstream pins are unchanged. Development snapshots report `3.0.0-dev` instead of inheriting a v2 version from the nearest older tag. Release validation now checks the tag against the Go module major, and reproducible builds derive their linker package from the requested source ref so historical v2 builds still receive version metadata. No v3 tag or artifact is published; stable installation channels and the v2.4 candidate are unchanged.
+This first v3 candidate includes the v2.3 frontend mediation and v2.4 policy/security work documented below, plus the breaking changes in this entry. It starts an independent validation and bake window: fresh four-hour soak, TLS/security checks, published-candidate conformance and at least 14 days after publication before GA. Candidate-only behavior fixes restart that window. Stable installation channels remain on v2.2.10; the v2.4 candidate keeps its own source and bake window.
 
-### Removed (v3 development only)
+### Changed
 
-- **Breaking change:** the `dev/v3.0` source rejects `upstream.endpoints[].insecure_skip_tls_verify` at any value, including `false` and `null`. Remove the key and configure `tls.ca_file` to verify the daemon. TCP Docker environment resolution rejects non-empty `DOCKER_TLS` without non-empty `DOCKER_TLS_VERIFY`; set `DOCKER_TLS_VERIFY=1`. Verified TLS precedence, certificate lookup, Unix sockets, explicit endpoints and acknowledged plain TCP retain their behavior. Startup, CLI validation and rejected reloads report migration guidance. All v2 release lines, including v2.4.0-rc.1, retain their accepted behavior. No v3 release is published.
+- **Breaking change:** the development Go module is `github.com/codeswhat/sockguard/v3`. Imports, generated BuildKit bindings and descriptor options, release/Docker linker flags, and coverage checks use `/v3`. Go consumers must update the major path; v2 tags retain `/v2`. Descriptor wire schemas and upstream pins are unchanged. Development snapshots report `3.0.0-dev` instead of inheriting a v2 version from the nearest older tag. Release validation now checks the tag against the Go module major, and reproducible builds derive their linker package from the requested source ref so historical v2 builds still receive version metadata. Release routing on the v3 source targets `dev/v3.0`; the v2.4 branch retains its own routing.
+
+### Removed
+
+- **Breaking change:** the `dev/v3.0` source rejects `upstream.endpoints[].insecure_skip_tls_verify` at any value, including `false` and `null`. Remove the key and configure `tls.ca_file` to verify the daemon. TCP Docker environment resolution rejects non-empty `DOCKER_TLS` without non-empty `DOCKER_TLS_VERIFY`; set `DOCKER_TLS_VERIFY=1`. Verified TLS precedence, certificate lookup, Unix sockets, explicit endpoints and acknowledged plain TCP retain their behavior. Startup, CLI validation and rejected reloads report migration guidance. All v2 release lines, including v2.4.0-rc.1, retain their accepted behavior.
 
 ## [2.4.0-rc.1] - 2026-10-16
 

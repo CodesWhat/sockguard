@@ -165,19 +165,25 @@ fixes restart that window. The v2.3 clock doesn't cover v2.4 changes.
 
 ## v3 compatibility boundary
 
-The insecure endpoint TLS setting and unverified `DOCKER_TLS` fallback deprecated
-in v2.1 are now rejected on `dev/v3.0`, the unreleased v3 development source. No date or broader feature
-milestone is scheduled. The [deprecation ledger](/deprecations) owns the exact
-contracts and implementation checklist. The opaque BuildKit acknowledgment's
-future-major removal version remains undecided. Current v2 lines retain these
-settings.
+The first candidate source, `v3.0.0-rc.1`, is prepared on `dev/v3.0` and awaits
+cut confirmation. It includes the v2.4 policy/security work. The insecure endpoint
+TLS setting and unverified `DOCKER_TLS` fallback deprecated in v2.1 are rejected.
+The [deprecation ledger](/deprecations) owns the exact contracts. All v2 lines
+retain those settings; the opaque BuildKit acknowledgment's removal version
+remains undecided.
 
-The v3 source module, imports, generated BuildKit descriptors and release linker
-flags now use `github.com/codeswhat/sockguard/v3`. The tag guard checks the module
-major, and reproduction derives its linker package from the requested source.
-No v3 tag is published. Candidate versioning, release metadata and routing still
-need preparation before a separately confirmed cut. See [migration](/migration#from-sockguard-v2-to-v3-development)
-for building the development source.
+The module, imports, generated BuildKit descriptor options and release linker
+flags use `github.com/codeswhat/sockguard/v3`. The tag guard checks the module
+major; reproduction derives its linker package from the requested source.
+Candidate version metadata and release routing are prepared for `dev/v3.0`.
+See [migration](/migration#from-sockguard-v2-to-v3-development) for testing the
+prepared source while publication is pending.
+
+This candidate needs fresh four-hour soak and TLS/security checks on its exact
+source, conformance against its published image, and at least 14 days after
+publication before GA. Candidate-only behavior fixes restart that window. No GA
+date is set before publication. The v2.3 and v2.4 clocks don't cover v3; those
+candidate sources, stable channels and their existing validation remain separate.
 
 ## Twelve-month direction
 

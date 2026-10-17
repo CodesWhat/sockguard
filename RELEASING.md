@@ -46,7 +46,7 @@
    -X github.com/codeswhat/sockguard/v3/app/internal/version.BuildDate={{.CommitDate}}
    ```
 
-   These linker examples match the v3 development module. Use `/v2` on v2 source branches. The v3 snapshot template is `3.0.0-dev` while no v3 tag exists; it does not inherit a v2 version from the nearest older tag. Revisit that development label when preparing the next release line.
+   These linker examples match the v3 development module. Use `/v2` on v2 source branches. The v3 snapshot template is `3.0.0-dev`; only snapshot dry-runs use it, while tagged builds inject the exact release version. It does not inherit a v2 version from an older tag. Revisit that development label when preparing the next release line.
 
    On v2.4 and later, `BuildDate` is the UTC source commit date, and builds use `-trimpath` and `-buildvcs=false`. Follow the target branch's `app/.goreleaser.yaml`: older v2.2/v2.3 branches retain their existing build-date settings. The [reproduction procedure](docs/content/docs/verification.mdx#reproducible-go-binaries) applies to the v2.4 binary contract, not retroactively to older artifacts.
 
@@ -130,7 +130,7 @@ When a fix applies to the current stable release while a later release candidate
 1. Land and tag the stable patch from `main`; wait for `release-from-tag.yml` and its published-artifact verification to pass.
 2. Merge the stable tag commit forward into the active development branch. Resolve CHANGELOG, site version, roadmap, and chart metadata deliberately — do not drop the stable release history during conflict resolution.
 3. Add an exact prerelease CHANGELOG heading, run the full gates again, and cut the next RC with the explicit `release_tag` workflow input.
-4. Keep the next minor milestone marked as prerelease/next until its soak completes. For the active v2.3 line, a candidate that only carries fixes already released on v2.2 keeps the existing GA date; a v2.3-only behavior change restarts the 14-day window. Every new candidate still needs a fresh four-hour soak and TLS scan on its exact head before stable promotion.
+4. Keep the next minor milestone marked as prerelease/next until its soak completes. For the active v2.3 line, a candidate that only carries fixes already released on v2.2 keeps the existing GA date; a v2.3-only behavior change restarts the 14-day window. Every new candidate still needs a fresh four-hour soak and TLS scan on its exact head before stable promotion. The first v3 candidate has its own minimum 14-day bake from publication and published-image conformance; v2.3/v2.4 clocks do not cover v3. Candidate-only behavior fixes restart its window.
 
 ---
 
