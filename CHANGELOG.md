@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (v3 development only)
 
-- **Breaking change:** the development Go module is `github.com/codeswhat/sockguard/v3`. Imports, generated BuildKit bindings and descriptor options, release/Docker linker flags, and coverage checks use `/v3`. Go consumers must update the major path; v2 tags retain `/v2`. Descriptor wire schemas and upstream pins are unchanged. Release validation now checks the tag against the Go module major, and reproducible builds derive their linker package from the requested source ref so historical v2 builds still receive version metadata. No v3 tag or artifact is published; stable installation channels and the v2.4 candidate are unchanged.
+- **Breaking change:** the development Go module is `github.com/codeswhat/sockguard/v3`. Imports, generated BuildKit bindings and descriptor options, release/Docker linker flags, and coverage checks use `/v3`. Go consumers must update the major path; v2 tags retain `/v2`. Descriptor wire schemas and upstream pins are unchanged. Development snapshots report `3.0.0-dev` instead of inheriting a v2 version from the nearest older tag. Release validation now checks the tag against the Go module major, and reproducible builds derive their linker package from the requested source ref so historical v2 builds still receive version metadata. No v3 tag or artifact is published; stable installation channels and the v2.4 candidate are unchanged.
 
 ### Removed (v3 development only)
 

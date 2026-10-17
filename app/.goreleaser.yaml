@@ -83,7 +83,7 @@ signs:
     artifacts: archive
 
 snapshot:
-  version_template: "{{ incpatch .Version }}-dev"
+  version_template: "3.0.0-dev"
 
 changelog:
   # The workflow supplies --release-notes, which makes GoReleaser load that

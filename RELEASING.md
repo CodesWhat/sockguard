@@ -46,7 +46,7 @@
    -X github.com/codeswhat/sockguard/v3/app/internal/version.BuildDate={{.CommitDate}}
    ```
 
-   These linker examples match the v3 development module. Use `/v2` on v2 source branches.
+   These linker examples match the v3 development module. Use `/v2` on v2 source branches. The v3 snapshot template is `3.0.0-dev` while no v3 tag exists; it does not inherit a v2 version from the nearest older tag. Revisit that development label when preparing the next release line.
 
    On v2.4 and later, `BuildDate` is the UTC source commit date, and builds use `-trimpath` and `-buildvcs=false`. Follow the target branch's `app/.goreleaser.yaml`: older v2.2/v2.3 branches retain their existing build-date settings. The [reproduction procedure](docs/content/docs/verification.mdx#reproducible-go-binaries) applies to the v2.4 binary contract, not retroactively to older artifacts.
 
