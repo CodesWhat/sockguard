@@ -1,6 +1,6 @@
 ---
 title: Migration
-description: Upgrade stable v2.2 deployments, select a published v2.3 candidate, evaluate the v2.4 release candidate, or migrate from another Docker socket proxy.
+description: Upgrade stable v2.2 deployments, select a published v2.3 candidate, evaluate the v2.4 or v3 release candidates, or migrate from another Docker socket proxy.
 ---
 
 ## Release availability
@@ -11,6 +11,7 @@ description: Upgrade stable v2.2 deployments, select a published v2.3 candidate,
 | v2.3.0-rc.7 | Published candidate | Select the candidate explicitly for the frontend runner and individual LLB execution grants. |
 | v2.3.0-rc.8 | Prepared source, unpublished | Source soak/TLS validation passed; publication and published-artifact validation remain. Don't install this nonexistent tag. |
 | v2.4.0-rc.1 | Release candidate line | Select the candidate explicitly for image admission, create launch-field policies, route diagnostics and Buildx compatibility fixes. Stable channels remain on v2.2.10. |
+| v3.0.0-rc.1 | Published candidate | Select its image or `/v3` Go tag explicitly and migrate the removed TLS settings below. Its validation and bake window are independent of v2.4. |
 
 ## From Sockguard v2.1 to v2.2
 
@@ -71,13 +72,12 @@ restarts that window. The v2.3 candidate source and its earlier clock are
 separate; they don't satisfy the v2.4 validation gates. Unix container-label
 identity remains a documented limit; use distinct UID/GID client profiles.
 
-## From Sockguard v2 to v3 (development)
+## From Sockguard v2 to v3 (release candidate)
 
-The first candidate source, `v3.0.0-rc.1`, is prepared on `dev/v3.0`; publication
-awaits cut confirmation. It includes the v2.4 policy/security work and the TLS
-removals below.
+The first candidate, [v3.0.0-rc.1](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0-rc.1),
+is published. It includes the v2.4 policy/security work and the TLS removals below.
 The v2.4 candidate and all v2 release lines retain their accepted settings.
-Before testing the v3 source:
+Before testing the v3 candidate:
 
 - Remove `upstream.endpoints[].insecure_skip_tls_verify` entirely, including
   explicit `false` or `null` values. Set `tls.ca_file` to the daemon's issuing CA
@@ -85,7 +85,7 @@ Before testing the v3 source:
 - For a TCP `DOCKER_HOST`, set `DOCKER_TLS_VERIFY=1` when `DOCKER_TLS` is non-empty.
   Any non-empty verification value, including `0` or `false`, still verifies the
   server. Certificate-directory precedence and optional client pairs are unchanged.
-- Validate with the v3 source binary before restarting. Startup and CLI validation
+- Validate with the exact v3 candidate binary before restarting. Startup and CLI validation
   reject the old settings with migration guidance; rejected config reloads keep
   the active policy serving. Unix Docker hosts ignore TCP-only TLS environment
   variables, and explicit YAML endpoints still take precedence over Docker env.
@@ -95,16 +95,22 @@ Docker environment's existing plaintext behavior when neither TLS variable is
 set. The opaque BuildKit acknowledgment remains accepted; its removal target is
 still undecided.
 
-The candidate source module is now `github.com/codeswhat/sockguard/v3`. Go consumers
-must change Sockguard import prefixes from `/v2` to `/v3`. Until candidate
-publication, test the prepared source directly: check out `dev/v3.0` and run
-`go build ./app/cmd/sockguard` from the repository root. Use the exact Go toolchain pinned in `go.mod`. Published v2
-candidate install commands above retain `/v2`; stable Docker and Homebrew channels
-continue to serve the current stable release.
+Select `ghcr.io/codeswhat/sockguard:3.0.0-rc.1` explicitly, download a platform
+binary from the release, or install with Go 1.27:
+
+```bash
+go install github.com/codeswhat/sockguard/v3/app/cmd/sockguard@v3.0.0-rc.1
+```
+
+The candidate module is `github.com/codeswhat/sockguard/v3`. Go consumers must
+change Sockguard import prefixes from `/v2` to `/v3`. Published v2 candidate
+install commands above retain `/v2`; stable Docker and Homebrew channels continue
+to serve v2.2.10.
 
 V3 has an independent validation and bake window. GA requires fresh exact-source
 four-hour soak and TLS/security checks, published-candidate image conformance,
-and at least 14 days after publication. Candidate-only behavior fixes restart
+and at least 14 days after its 2026-10-17 publication at 16:08:58 UTC. GA is no
+earlier than 2026-10-31 at 16:08:58 UTC. Candidate-only behavior fixes restart
 that window; v2.3/v2.4 validation doesn't replace it.
 
 ## Deprecation schedule
