@@ -73,7 +73,9 @@ identity remains a documented limit; use distinct UID/GID client profiles.
 
 ## From Sockguard v2 to v3 (development)
 
-The TLS removals are implemented on `dev/v3.0`, without a published v3 release.
+The first candidate source, `v3.0.0-rc.1`, is prepared on `dev/v3.0`; publication
+awaits cut confirmation. It includes the v2.4 policy/security work and the TLS
+removals below.
 The v2.4 candidate and all v2 release lines retain their accepted settings.
 Before testing the v3 source:
 
@@ -93,13 +95,17 @@ Docker environment's existing plaintext behavior when neither TLS variable is
 set. The opaque BuildKit acknowledgment remains accepted; its removal target is
 still undecided.
 
-The development module is now `github.com/codeswhat/sockguard/v3`. Go consumers
-must change Sockguard import prefixes from `/v2` to `/v3`. No v3 tag is published,
-so a versioned `go install ...@v3.0.0` command isn't available yet. To test the
-unreleased source, check out `dev/v3.0` and run `go build ./app/cmd/sockguard` from
-the repository root. Use the exact Go toolchain pinned in `go.mod`. Published v2
+The candidate source module is now `github.com/codeswhat/sockguard/v3`. Go consumers
+must change Sockguard import prefixes from `/v2` to `/v3`. Until candidate
+publication, test the prepared source directly: check out `dev/v3.0` and run
+`go build ./app/cmd/sockguard` from the repository root. Use the exact Go toolchain pinned in `go.mod`. Published v2
 candidate install commands above retain `/v2`; stable Docker and Homebrew channels
 continue to serve the current stable release.
+
+V3 has an independent validation and bake window. GA requires fresh exact-source
+four-hour soak and TLS/security checks, published-candidate image conformance,
+and at least 14 days after publication. Candidate-only behavior fixes restart
+that window; v2.3/v2.4 validation doesn't replace it.
 
 ## Deprecation schedule
 
