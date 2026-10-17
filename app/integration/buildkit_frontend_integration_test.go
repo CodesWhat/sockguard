@@ -21,9 +21,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/pb"
-	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproxy"
-	"github.com/codeswhat/sockguard/v2/app/internal/buildkitrunner"
+	"github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/pb"
+	"github.com/codeswhat/sockguard/v3/app/internal/buildkitproxy"
+	"github.com/codeswhat/sockguard/v3/app/internal/buildkitrunner"
 	"google.golang.org/protobuf/proto"
 )
 

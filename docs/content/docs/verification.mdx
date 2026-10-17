@@ -242,10 +242,13 @@ The script exports the same committed tree into two different directories, uses
 the exact `toolchain` pinned by that tree's `go.mod`, and builds with two separate,
 initially empty Go build caches. Go may download the pinned toolchain and modules;
 module versions and checksums come from `go.mod` and `go.sum`. The shared module
-download cache isn't an independent supply-chain verification.
+download cache isn't an independent supply-chain verification. The linker package
+is derived from that exported tree's module declaration, so the v3 procedure also
+rebuilds v2.4 refs with their `/v2` version package.
 
 The [GoReleaser configuration](https://github.com/CodesWhat/sockguard/blob/dev/v2.4/app/.goreleaser.yaml)
-and reproduction command use `CGO_ENABLED=0`, `-trimpath`, `-buildvcs=false`,
+defines the v2.4 contract; the [v3 development configuration](https://github.com/CodesWhat/sockguard/blob/dev/v3.0/app/.goreleaser.yaml)
+uses the corresponding `/v3` linker package. Both and the reproduction command use `CGO_ENABLED=0`, `-trimpath`, `-buildvcs=false`,
 `-s -w`, and explicit version, full source commit and UTC commit-time metadata.
 `BuildDate` now means the source commit date, not the release workflow's start time.
 AMD64 uses `GOAMD64=v1`; ARM64 uses `GOARM64=v8.0`. The procedure clears ambient Go

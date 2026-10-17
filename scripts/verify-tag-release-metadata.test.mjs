@@ -490,13 +490,32 @@ describe("CLI: real repository files", () => {
     t.after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
     const valuesPath = resolve(fixtureRoot, "values.yaml");
     writeFileSync(valuesPath, VALUES);
+    const goModPath = resolve(fixtureRoot, "go.mod");
+    const moduleMajor = Number(currentVersion.split(".")[0]);
+    writeFileSync(
+      goModPath,
+      `module github.com/codeswhat/sockguard${moduleMajor >= 2 ? `/v${moduleMajor}` : ""}\n`,
+    );
 
-    const result = runCLI(["--tag", `v${currentVersion}`, "--values", valuesPath]);
+    const result = runCLI([
+      "--tag",
+      `v${currentVersion}`,
+      "--values",
+      valuesPath,
+      "--go-mod",
+      goModPath,
+    ]);
     assert.equal(result.status, 0, result.stderr);
     assert.match(
       result.stdout,
       /agrees with website, chart, Helm image, CHANGELOG, and SECURITY.md metadata/,
     );
+  });
+
+  it("rejects a stable v2 tag from the current v3 source module", () => {
+    const result = runCLI(["--tag", "v2.2.10"]);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /go\.mod.*v3.*v2/);
   });
 
   it("requires --tag", () => {
@@ -517,6 +536,12 @@ describe("CLI: SECURITY.md supported-versions gate", () => {
 
     const valuesPath = resolve(fixtureRoot, "values.yaml");
     writeFileSync(valuesPath, VALUES);
+    const goModPath = resolve(fixtureRoot, "go.mod");
+    const moduleMajor = Number(currentVersion.split(".")[0]);
+    writeFileSync(
+      goModPath,
+      `module github.com/codeswhat/sockguard${moduleMajor >= 2 ? `/v${moduleMajor}` : ""}\n`,
+    );
 
     const securityPath = resolve(fixtureRoot, "SECURITY.md");
     writeFileSync(
@@ -539,6 +564,8 @@ describe("CLI: SECURITY.md supported-versions gate", () => {
       valuesPath,
       "--security",
       securityPath,
+      "--go-mod",
+      goModPath,
     ]);
     assert.equal(result.status, 0, result.stderr);
   });
@@ -552,6 +579,12 @@ describe("CLI: SECURITY.md supported-versions gate", () => {
 
     const valuesPath = resolve(fixtureRoot, "values.yaml");
     writeFileSync(valuesPath, VALUES);
+    const goModPath = resolve(fixtureRoot, "go.mod");
+    const moduleMajor = Number(currentVersion.split(".")[0]);
+    writeFileSync(
+      goModPath,
+      `module github.com/codeswhat/sockguard${moduleMajor >= 2 ? `/v${moduleMajor}` : ""}\n`,
+    );
 
     const securityPath = resolve(fixtureRoot, "SECURITY.md");
     writeFileSync(
@@ -574,8 +607,70 @@ describe("CLI: SECURITY.md supported-versions gate", () => {
       valuesPath,
       "--security",
       securityPath,
+      "--go-mod",
+      goModPath,
     ]);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /SECURITY\.md/);
+  });
+});
+
+describe("Go module major contract", () => {
+  const changelog = "## [3.0.0-rc.1] - 2026-10-16\n\n### Changed\n\n- V3 development.\n";
+  it("rejects a prerelease whose module major differs from the tag", () => {
+    const result = checkTagReleaseMetadata({
+      tag: "v3.0.0-rc.1",
+      changelog,
+      goMod: "module github.com/codeswhat/sockguard/v2\n",
+    });
+    assert.ok(
+      result.errors.some((error) => /go\.mod.*v2.*v3/.test(error)),
+      result.errors.join("\n"),
+    );
+  });
+  it("accepts matching prerelease module metadata while stable metadata stays older", () => {
+    const result = checkTagReleaseMetadata({
+      tag: "v3.0.0-rc.1",
+      changelog,
+      goMod: "module github.com/codeswhat/sockguard/v3\n",
+    });
+    assert.deepEqual(result.errors, []);
+  });
+  for (const major of [0, 1]) {
+    it(`accepts an unversioned module for v${major} prereleases`, () => {
+      const version = `${major}.8.0-rc.1`;
+      const result = checkTagReleaseMetadata({
+        tag: `v${version}`,
+        changelog: `## [${version}] - 2026-10-16\n\n- Test.\n`,
+        goMod: "module github.com/codeswhat/sockguard\n",
+      });
+      assert.deepEqual(result.errors, []);
+    });
+  }
+  it("accepts a quoted Go module declaration with a trailing comment", () => {
+    const result = checkTagReleaseMetadata({
+      tag: "v3.0.0-rc.1",
+      changelog,
+      goMod: 'module "github.com/codeswhat/sockguard/v3" // development\n',
+    });
+    assert.deepEqual(result.errors, []);
+  });
+  it("rejects an unparseable module file", () => {
+    assert.throws(
+      () => checkTagReleaseMetadata({ tag: "v3.0.0-rc.1", changelog, goMod: "go 1.27.0\n" }),
+      /module declaration in go\.mod/,
+    );
+  });
+  it("rejects a stable tag with a different module major", () => {
+    const result = checkTagReleaseMetadata({
+      tag: "v1.7.4",
+      siteConfig: SITE_CONFIG,
+      chart: CHART,
+      values: VALUES,
+      changelog: CHANGELOG,
+      security: SECURITY,
+      goMod: "module github.com/codeswhat/sockguard/v3\n",
+    });
+    assert.ok(result.errors.some((error) => /go\.mod/.test(error)));
   });
 });

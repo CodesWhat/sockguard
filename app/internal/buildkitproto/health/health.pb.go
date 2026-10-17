@@ -195,7 +195,7 @@ const file_grpc_health_v1_health_proto_rawDesc = "" +
 	"\x06Health\x12P\n" +
 	"\x05Check\x12\".grpc.health.v1.HealthCheckRequest\x1a#.grpc.health.v1.HealthCheckResponse\x12R\n" +
 	"\x05Watch\x12\".grpc.health.v1.HealthCheckRequest\x1a#.grpc.health.v1.HealthCheckResponse0\x01B\x7f\n" +
-	"\x11io.grpc.health.v1B\vHealthProtoP\x01ZJgithub.com/codeswhat/sockguard/v2/app/internal/buildkitproto/health;health\xaa\x02\x0eGrpc.Health.V1b\x06proto3"
+	"\x11io.grpc.health.v1B\vHealthProtoP\x01ZJgithub.com/codeswhat/sockguard/v3/app/internal/buildkitproto/health;health\xaa\x02\x0eGrpc.Health.V1b\x06proto3"
 
 var (
 	file_grpc_health_v1_health_proto_rawDescOnce sync.Once

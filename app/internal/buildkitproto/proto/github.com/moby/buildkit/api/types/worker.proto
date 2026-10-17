@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package moby.buildkit.v1.types;
 
-option go_package = "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/worker;worker";
+option go_package = "github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/worker;worker";
 
 import "github.com/moby/buildkit/solver/pb/ops.proto";
 

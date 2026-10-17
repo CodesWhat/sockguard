@@ -119,7 +119,7 @@ const file_github_com_moby_buildkit_util_apicaps_pb_caps_proto_rawDesc = "" +
 	"Deprecated\x12&\n" +
 	"\x0eDisabledReason\x18\x04 \x01(\tR\x0eDisabledReason\x12,\n" +
 	"\x11DisabledReasonMsg\x18\x05 \x01(\tR\x11DisabledReasonMsg\x120\n" +
-	"\x13DisabledAlternative\x18\x06 \x01(\tR\x13DisabledAlternativeBHZFgithub.com/codeswhat/sockguard/v2/app/internal/buildkitproto/caps;capsb\x06proto3"
+	"\x13DisabledAlternative\x18\x06 \x01(\tR\x13DisabledAlternativeBHZFgithub.com/codeswhat/sockguard/v3/app/internal/buildkitproto/caps;capsb\x06proto3"
 
 var (
 	file_github_com_moby_buildkit_util_apicaps_pb_caps_proto_rawDescOnce sync.Once

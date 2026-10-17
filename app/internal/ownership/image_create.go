@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/imageselector"
-	"github.com/codeswhat/sockguard/v2/app/internal/upstreamflavor"
+	"github.com/codeswhat/sockguard/v3/app/internal/imageselector"
+	"github.com/codeswhat/sockguard/v3/app/internal/upstreamflavor"
 )
 
 const (

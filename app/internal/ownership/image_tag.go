@@ -7,10 +7,10 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/dockerresource"
-	"github.com/codeswhat/sockguard/v2/app/internal/imageselector"
-	"github.com/codeswhat/sockguard/v2/app/internal/queryparam"
-	"github.com/codeswhat/sockguard/v2/app/internal/upstreamflavor"
+	"github.com/codeswhat/sockguard/v3/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/v3/app/internal/imageselector"
+	"github.com/codeswhat/sockguard/v3/app/internal/queryparam"
+	"github.com/codeswhat/sockguard/v3/app/internal/upstreamflavor"
 )
 
 const (

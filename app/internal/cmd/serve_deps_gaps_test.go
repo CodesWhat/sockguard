@@ -18,8 +18,8 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/testing/ca"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/boundedio"
-	"github.com/codeswhat/sockguard/v2/app/internal/config"
+	"github.com/codeswhat/sockguard/v3/app/internal/boundedio"
+	"github.com/codeswhat/sockguard/v3/app/internal/config"
 )
 
 func testPolicyPublicKeyPEM(t *testing.T) string {

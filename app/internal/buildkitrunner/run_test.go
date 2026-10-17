@@ -19,11 +19,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/control"
-	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/gateway"
-	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/pb"
-	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/worker"
-	"github.com/codeswhat/sockguard/v2/app/internal/h2conn"
+	"github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/control"
+	"github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/gateway"
+	"github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/pb"
+	"github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/worker"
+	"github.com/codeswhat/sockguard/v3/app/internal/h2conn"
 	"google.golang.org/protobuf/proto"
 )
 

@@ -9,9 +9,9 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/caps"
-	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/gateway"
-	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/worker"
+	"github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/caps"
+	"github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/gateway"
+	"github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/worker"
 )
 
 // Pinned to the v0.32.0 gateway and LLB capability inventories. An advertised

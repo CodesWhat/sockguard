@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"math"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/gateway"
+	"github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/gateway"
 	"google.golang.org/protobuf/proto"
 )
 

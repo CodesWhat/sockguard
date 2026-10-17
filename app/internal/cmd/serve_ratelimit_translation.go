@@ -3,8 +3,8 @@ package cmd
 import (
 	"log/slog"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/config"
-	"github.com/codeswhat/sockguard/v2/app/internal/ratelimit"
+	"github.com/codeswhat/sockguard/v3/app/internal/config"
+	"github.com/codeswhat/sockguard/v3/app/internal/ratelimit"
 )
 
 // warnAssignedProfilesWithoutLimits flags profiles that operators bound to a

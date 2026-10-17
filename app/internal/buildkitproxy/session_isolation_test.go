@@ -15,8 +15,8 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/control"
-	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/pb"
+	"github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/control"
+	"github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/pb"
 )
 
 // Capture the actual upstream upgrade headers. Rejecting the handshake keeps

@@ -21,12 +21,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/config"
-	"github.com/codeswhat/sockguard/v2/app/internal/filter"
-	"github.com/codeswhat/sockguard/v2/app/internal/logging"
-	"github.com/codeswhat/sockguard/v2/app/internal/proxy"
-	"github.com/codeswhat/sockguard/v2/app/internal/testcert"
-	"github.com/codeswhat/sockguard/v2/app/internal/testhelp"
+	"github.com/codeswhat/sockguard/v3/app/internal/config"
+	"github.com/codeswhat/sockguard/v3/app/internal/filter"
+	"github.com/codeswhat/sockguard/v3/app/internal/logging"
+	"github.com/codeswhat/sockguard/v3/app/internal/proxy"
+	"github.com/codeswhat/sockguard/v3/app/internal/testcert"
+	"github.com/codeswhat/sockguard/v3/app/internal/testhelp"
 )
 
 func TestBuildServeHandlerLibpodNetworkConnectUsesProductionUpstreamAndOwnership(t *testing.T) {

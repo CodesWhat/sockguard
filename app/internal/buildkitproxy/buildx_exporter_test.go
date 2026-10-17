@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/control"
+	"github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/control"
 	"google.golang.org/protobuf/proto"
 )
 

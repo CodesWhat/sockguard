@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/logging"
-	"github.com/codeswhat/sockguard/v2/app/internal/queryparam"
+	"github.com/codeswhat/sockguard/v3/app/internal/logging"
+	"github.com/codeswhat/sockguard/v3/app/internal/queryparam"
 )
 
 // libpodDefaultSecretDriver is the secret driver containers.conf names by

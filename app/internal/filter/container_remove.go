@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/logging"
-	"github.com/codeswhat/sockguard/v2/app/internal/queryparam"
+	"github.com/codeswhat/sockguard/v3/app/internal/logging"
+	"github.com/codeswhat/sockguard/v3/app/internal/queryparam"
 )
 
 // ContainerRemoveOptions configures query inspection for container removal,

@@ -10,8 +10,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/control"
-	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/pb"
+	"github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/control"
+	"github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/pb"
 )
 
 func TestExecDigestDoesNotOverrideExecutionGuards(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"slices"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/queryparam"
+	"github.com/codeswhat/sockguard/v3/app/internal/queryparam"
 )
 
 var podmanRunControlNames = []string{

@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/apipath"
-	"github.com/codeswhat/sockguard/v2/app/internal/config"
+	"github.com/codeswhat/sockguard/v3/app/internal/apipath"
+	"github.com/codeswhat/sockguard/v3/app/internal/config"
 )
 
 // imageCreateChainDaemon is POST /images/create as each engine serves it. It

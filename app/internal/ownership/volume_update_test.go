@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/v3/app/internal/dockerresource"
 )
 
 // TestMiddlewareDeniesCrossOwnerVolumeUpdate pins that PUT /volumes/{name},

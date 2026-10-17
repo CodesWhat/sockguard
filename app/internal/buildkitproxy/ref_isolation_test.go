@@ -11,7 +11,7 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/control"
+	"github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/control"
 )
 
 // Like BuildKit, the daemon keys jobs and retained history by Ref alone.

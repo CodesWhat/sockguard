@@ -12,8 +12,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/gateway"
-	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/pb"
+	"github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/gateway"
+	"github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/pb"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/config"
-	"github.com/codeswhat/sockguard/v2/app/internal/upstreamflavor"
+	"github.com/codeswhat/sockguard/v3/app/internal/config"
+	"github.com/codeswhat/sockguard/v3/app/internal/upstreamflavor"
 )
 
 func TestWithUpstreamRequestTimeoutUsesResolvedFlavor(t *testing.T) {

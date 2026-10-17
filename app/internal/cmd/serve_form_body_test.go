@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/apipath"
-	"github.com/codeswhat/sockguard/v2/app/internal/config"
+	"github.com/codeswhat/sockguard/v3/app/internal/apipath"
+	"github.com/codeswhat/sockguard/v3/app/internal/config"
 )
 
 // formBodyProbeField is the parameter the differential helpers plant in a

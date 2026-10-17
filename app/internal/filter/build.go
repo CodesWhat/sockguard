@@ -18,9 +18,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/dockerfileinspect"
-	"github.com/codeswhat/sockguard/v2/app/internal/logging"
-	"github.com/codeswhat/sockguard/v2/app/internal/queryparam"
+	"github.com/codeswhat/sockguard/v3/app/internal/dockerfileinspect"
+	"github.com/codeswhat/sockguard/v3/app/internal/logging"
+	"github.com/codeswhat/sockguard/v3/app/internal/queryparam"
 )
 
 const maxBuildContextBytes = 512 << 20           // 512 MiB (compressed/on-wire cap)

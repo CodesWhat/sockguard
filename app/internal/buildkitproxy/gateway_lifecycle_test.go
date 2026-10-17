@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/gateway"
+	"github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/gateway"
 )
 
 type gatewayCompletionDaemon struct {

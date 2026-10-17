@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/responsefilter"
-	"github.com/codeswhat/sockguard/v2/app/internal/upstream"
+	"github.com/codeswhat/sockguard/v3/app/internal/responsefilter"
+	"github.com/codeswhat/sockguard/v3/app/internal/upstream"
 )
 
 // conditionalRecordingTransport stands in for the Docker socket and keeps the

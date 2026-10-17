@@ -8,15 +8,15 @@ import (
 	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
 
-	_ "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/auth"
-	_ "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/control"
-	_ "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/filesync"
-	_ "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/fsutiltypes"
-	_ "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/gateway"
-	_ "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/health"
-	_ "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/secrets"
-	_ "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/sshforward"
-	_ "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/upload"
+	_ "github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/auth"
+	_ "github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/control"
+	_ "github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/filesync"
+	_ "github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/fsutiltypes"
+	_ "github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/gateway"
+	_ "github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/health"
+	_ "github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/secrets"
+	_ "github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/sshforward"
+	_ "github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/upload"
 )
 
 func TestGeneratedDescriptorModulePaths(t *testing.T) {
@@ -27,8 +27,8 @@ func TestGeneratedDescriptorModulePaths(t *testing.T) {
 			return true
 		}
 		count++
-		if !strings.HasPrefix(options.GetGoPackage(), "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/") {
-			t.Errorf("%s: generated go_package = %q, want the v2 module path", fd.Path(), options.GetGoPackage())
+		if !strings.HasPrefix(options.GetGoPackage(), "github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/") {
+			t.Errorf("%s: generated go_package = %q, want the v3 module path", fd.Path(), options.GetGoPackage())
 		}
 		return true
 	})

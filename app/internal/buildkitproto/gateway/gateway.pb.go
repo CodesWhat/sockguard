@@ -7,11 +7,11 @@
 package gateway
 
 import (
-	caps "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/caps"
-	fsutiltypes "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/fsutiltypes"
-	pb "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/pb"
-	sourcepolicy "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/sourcepolicy"
-	worker "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/worker"
+	caps "github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/caps"
+	fsutiltypes "github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/fsutiltypes"
+	pb "github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/pb"
+	sourcepolicy "github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/sourcepolicy"
+	worker "github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/worker"
 	status "google.golang.org/genproto/googleapis/rpc/status"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
@@ -3747,7 +3747,7 @@ const file_github_com_moby_buildkit_frontend_gateway_pb_gateway_proto_rawDesc = 
 	"\x11ReadFileContainer\x12*.moby.buildkit.v1.frontend.ReadFileRequest\x1a+.moby.buildkit.v1.frontend.ReadFileResponse\x12i\n" +
 	"\x10ReadDirContainer\x12).moby.buildkit.v1.frontend.ReadDirRequest\x1a*.moby.buildkit.v1.frontend.ReadDirResponse\x12l\n" +
 	"\x11StatFileContainer\x12*.moby.buildkit.v1.frontend.StatFileRequest\x1a+.moby.buildkit.v1.frontend.StatFileResponse\x12W\n" +
-	"\x04Warn\x12&.moby.buildkit.v1.frontend.WarnRequest\x1a'.moby.buildkit.v1.frontend.WarnResponseBNZLgithub.com/codeswhat/sockguard/v2/app/internal/buildkitproto/gateway;gatewayb\x06proto3"
+	"\x04Warn\x12&.moby.buildkit.v1.frontend.WarnRequest\x1a'.moby.buildkit.v1.frontend.WarnResponseBNZLgithub.com/codeswhat/sockguard/v3/app/internal/buildkitproto/gateway;gatewayb\x06proto3"
 
 var (
 	file_github_com_moby_buildkit_frontend_gateway_pb_gateway_proto_rawDescOnce sync.Once

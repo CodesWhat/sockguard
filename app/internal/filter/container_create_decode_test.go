@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/imagetrust"
+	"github.com/codeswhat/sockguard/v3/app/internal/imagetrust"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 )
 

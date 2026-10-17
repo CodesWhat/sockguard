@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/config"
+	"github.com/codeswhat/sockguard/v3/app/internal/config"
 )
 
 // TestUpstreamFlavorIsImmutable pins both halves of the immutability
