@@ -1,5 +1,5 @@
 package config
 
-import "github.com/codeswhat/sockguard/v2/app/internal/logging"
+import "github.com/codeswhat/sockguard/v3/app/internal/logging"
 
 var validateLogOutput = logging.ValidateOutput

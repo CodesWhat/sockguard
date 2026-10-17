@@ -45,5 +45,7 @@ certificate files. Startup, CLI validation and config reload report migration
 guidance; a rejected reload leaves the active policy running. v2 operators can
 migrate now without changing their v2 compatibility contract.
 
-The Go module major-path migration and release metadata remain release-preparation
-work before any v3 tag. The TLS implementation does not publish a v3 artifact.
+The Go module major-path migration is implemented on `dev/v3.0`, including imports,
+generated descriptor options and build contracts. Candidate version metadata and
+release routing still need preparation before any v3 tag. These source changes
+do not publish a v3 artifact.

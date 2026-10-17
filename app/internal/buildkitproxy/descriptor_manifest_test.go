@@ -5,14 +5,14 @@ import (
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	bkauth "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/auth"
-	bkcontrol "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/control"
-	bkfilesync "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/filesync"
-	bkgateway "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/gateway"
-	bkhealth "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/health"
-	bksecrets "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/secrets"
-	bksshforward "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/sshforward"
-	bkupload "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/upload"
+	bkauth "github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/auth"
+	bkcontrol "github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/control"
+	bkfilesync "github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/filesync"
+	bkgateway "github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/gateway"
+	bkhealth "github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/health"
+	bksecrets "github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/secrets"
+	bksshforward "github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/sshforward"
+	bkupload "github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/upload"
 )
 
 // vendoredFileDescriptors lists every generated buildkitproto file whose

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/dockerresource"
-	"github.com/codeswhat/sockguard/v2/app/internal/logging"
+	"github.com/codeswhat/sockguard/v3/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/v3/app/internal/logging"
 )
 
 func TestVisibilityImageExportRouteClassification(t *testing.T) {

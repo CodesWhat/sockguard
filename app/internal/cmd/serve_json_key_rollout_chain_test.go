@@ -10,9 +10,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/apipath"
-	"github.com/codeswhat/sockguard/v2/app/internal/config"
-	"github.com/codeswhat/sockguard/v2/app/internal/testhelp"
+	"github.com/codeswhat/sockguard/v3/app/internal/apipath"
+	"github.com/codeswhat/sockguard/v3/app/internal/config"
+	"github.com/codeswhat/sockguard/v3/app/internal/testhelp"
 )
 
 // keyRolloutChainDaemon is a dockerd that keeps the body of every write it is

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/logging"
-	"github.com/codeswhat/sockguard/v2/app/internal/upstreamflavor"
+	"github.com/codeswhat/sockguard/v3/app/internal/logging"
+	"github.com/codeswhat/sockguard/v3/app/internal/upstreamflavor"
 )
 
 const (

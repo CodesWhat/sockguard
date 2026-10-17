@@ -91,7 +91,15 @@ Before testing the v3 source:
 Explicit plain TCP remains supported through `insecure_allow_plain_tcp`, or the
 Docker environment's existing plaintext behavior when neither TLS variable is
 set. The opaque BuildKit acknowledgment remains accepted; its removal target is
-still undecided. The Go module major-path migration is separate release preparation.
+still undecided.
+
+The development module is now `github.com/codeswhat/sockguard/v3`. Go consumers
+must change Sockguard import prefixes from `/v2` to `/v3`. No v3 tag is published,
+so a versioned `go install ...@v3.0.0` command isn't available yet. To test the
+unreleased source, check out `dev/v3.0` and run `go build ./app/cmd/sockguard` from
+the repository root. Use the exact Go toolchain pinned in `go.mod`. Published v2
+candidate install commands above retain `/v2`; stable Docker and Homebrew channels
+continue to serve the current stable release.
 
 ## Deprecation schedule
 

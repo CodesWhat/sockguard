@@ -10,8 +10,8 @@ import (
 	"path"
 	"strings"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/logging"
-	"github.com/codeswhat/sockguard/v2/app/internal/queryparam"
+	"github.com/codeswhat/sockguard/v3/app/internal/logging"
+	"github.com/codeswhat/sockguard/v3/app/internal/queryparam"
 )
 
 const maxContainerArchiveBodyBytes = 512 << 20 // 512 MiB

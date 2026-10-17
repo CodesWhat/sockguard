@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/config"
-	"github.com/codeswhat/sockguard/v2/app/internal/upstreamflavor"
+	"github.com/codeswhat/sockguard/v3/app/internal/config"
+	"github.com/codeswhat/sockguard/v3/app/internal/upstreamflavor"
 )
 
 // podmanSchemaKeys returns the spellings of name present in query, in the

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/h2conn"
+	"github.com/codeswhat/sockguard/v3/app/internal/h2conn"
 )
 
 // goroutineLeakCheck captures the live goroutine count at call time and

@@ -87,6 +87,17 @@ sockguard serve -c /etc/sockguard/sockguard.yaml
 
 This guide uses a unix socket because it is the simplest secure deployment. If you expose Sockguard on non-loopback TCP, configure `listen.tls` for mutual TLS. Plaintext remote TCP requires the two-flag legacy opt-in — both `SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true` and `SOCKGUARD_LISTEN_INSECURE_ALLOW_UNAUTHENTICATED_CLIENTS=true`.
 
+### Development source
+
+The unreleased `dev/v3.0` branch declares the Go module
+`github.com/codeswhat/sockguard/v3`. To test it, check out that branch and run
+`go build ./app/cmd/sockguard` from the repository root with the toolchain pinned
+in `go.mod`. No v3 tag is published yet. Go consumers must use `/v3` imports with
+this source; published v2 candidate tags retain `/v2`. See the
+[v3 migration guidance](/migration#from-sockguard-v2-to-v3-development) before
+validating an existing configuration. The stable installation channels above
+remain on the current stable release.
+
 ## Connecting Your Apps
 
 Point your Docker consumers at the proxy socket instead of `docker.sock`:

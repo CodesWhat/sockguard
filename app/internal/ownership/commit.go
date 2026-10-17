@@ -10,10 +10,10 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/dockerresource"
-	"github.com/codeswhat/sockguard/v2/app/internal/imageselector"
-	"github.com/codeswhat/sockguard/v2/app/internal/queryparam"
-	"github.com/codeswhat/sockguard/v2/app/internal/upstreamflavor"
+	"github.com/codeswhat/sockguard/v3/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/v3/app/internal/imageselector"
+	"github.com/codeswhat/sockguard/v3/app/internal/queryparam"
+	"github.com/codeswhat/sockguard/v3/app/internal/upstreamflavor"
 )
 
 // commit.go authorizes the container-commit endpoint, which is the one write

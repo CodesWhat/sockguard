@@ -7,9 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (v3 development only)
+
+- **Breaking change:** the development Go module is `github.com/codeswhat/sockguard/v3`. Imports, generated BuildKit bindings and descriptor options, release/Docker linker flags, and coverage checks use `/v3`. Go consumers must update the major path; v2 tags retain `/v2`. Descriptor wire schemas and upstream pins are unchanged. Release validation now checks the tag against the Go module major, and reproducible builds derive their linker package from the requested source ref so historical v2 builds still receive version metadata. No v3 tag or artifact is published; stable installation channels and the v2.4 candidate are unchanged.
+
 ### Removed (v3 development only)
 
-- **Breaking change:** the `dev/v3.0` source rejects `upstream.endpoints[].insecure_skip_tls_verify` at any value, including `false` and `null`. Remove the key and configure `tls.ca_file` to verify the daemon. TCP Docker environment resolution rejects non-empty `DOCKER_TLS` without non-empty `DOCKER_TLS_VERIFY`; set `DOCKER_TLS_VERIFY=1`. Verified TLS precedence, certificate lookup, Unix sockets, explicit endpoints and acknowledged plain TCP retain their behavior. Startup, CLI validation and rejected reloads report migration guidance. All v2 release lines, including v2.4.0-rc.1, retain their accepted behavior. No v3 release is published; the Go module major-path and release metadata transition remain release preparation.
+- **Breaking change:** the `dev/v3.0` source rejects `upstream.endpoints[].insecure_skip_tls_verify` at any value, including `false` and `null`. Remove the key and configure `tls.ca_file` to verify the daemon. TCP Docker environment resolution rejects non-empty `DOCKER_TLS` without non-empty `DOCKER_TLS_VERIFY`; set `DOCKER_TLS_VERIFY=1`. Verified TLS precedence, certificate lookup, Unix sockets, explicit endpoints and acknowledged plain TCP retain their behavior. Startup, CLI validation and rejected reloads report migration guidance. All v2 release lines, including v2.4.0-rc.1, retain their accepted behavior. No v3 release is published.
 
 ## [2.4.0-rc.1] - 2026-10-16
 

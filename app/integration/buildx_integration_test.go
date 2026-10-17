@@ -16,10 +16,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproxy"
-	"github.com/codeswhat/sockguard/v2/app/internal/config"
-	"github.com/codeswhat/sockguard/v2/app/internal/ownership"
-	"github.com/codeswhat/sockguard/v2/app/internal/proxy"
+	"github.com/codeswhat/sockguard/v3/app/internal/buildkitproxy"
+	"github.com/codeswhat/sockguard/v3/app/internal/config"
+	"github.com/codeswhat/sockguard/v3/app/internal/ownership"
+	"github.com/codeswhat/sockguard/v3/app/internal/proxy"
 )
 
 func TestBuildxBuiltinDockerfileRealDaemon(t *testing.T) {

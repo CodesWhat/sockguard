@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package moby.buildkit.v1.apicaps;
 
-option go_package = "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/caps;caps";
+option go_package = "github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/caps;caps";
 
 // APICap defines a capability supported by the service
 message APICap {

@@ -17,10 +17,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/config"
-	"github.com/codeswhat/sockguard/v2/app/internal/filter"
-	"github.com/codeswhat/sockguard/v2/app/internal/policybundle"
-	"github.com/codeswhat/sockguard/v2/app/internal/testhelp"
+	"github.com/codeswhat/sockguard/v3/app/internal/config"
+	"github.com/codeswhat/sockguard/v3/app/internal/filter"
+	"github.com/codeswhat/sockguard/v3/app/internal/policybundle"
+	"github.com/codeswhat/sockguard/v3/app/internal/testhelp"
 )
 
 // flagOverridesFor builds the same closure runServeWithDeps hands the reload

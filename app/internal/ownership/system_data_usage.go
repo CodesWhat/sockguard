@@ -10,11 +10,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/bodycodec"
-	"github.com/codeswhat/sockguard/v2/app/internal/filter"
-	"github.com/codeswhat/sockguard/v2/app/internal/httpjson"
-	"github.com/codeswhat/sockguard/v2/app/internal/logging"
-	"github.com/codeswhat/sockguard/v2/app/internal/responsefilter"
+	"github.com/codeswhat/sockguard/v3/app/internal/bodycodec"
+	"github.com/codeswhat/sockguard/v3/app/internal/filter"
+	"github.com/codeswhat/sockguard/v3/app/internal/httpjson"
+	"github.com/codeswhat/sockguard/v3/app/internal/logging"
+	"github.com/codeswhat/sockguard/v3/app/internal/responsefilter"
 )
 
 const (

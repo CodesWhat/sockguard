@@ -17,7 +17,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/logging"
+	"github.com/codeswhat/sockguard/v3/app/internal/logging"
 )
 
 const maxImageLoadBodyBytes = 512 << 20   // 512 MiB

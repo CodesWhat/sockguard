@@ -26,7 +26,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/config"
+	"github.com/codeswhat/sockguard/v3/app/internal/config"
 )
 
 // http2ClientPreface is the fixed 24-octet connection preface every HTTP/2

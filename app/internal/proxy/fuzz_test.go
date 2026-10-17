@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/httpjson"
+	"github.com/codeswhat/sockguard/v3/app/internal/httpjson"
 )
 
 const maxFuzzBodyBytes = 4096

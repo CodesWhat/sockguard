@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/filter"
-	"github.com/codeswhat/sockguard/v2/app/internal/glob"
-	"github.com/codeswhat/sockguard/v2/app/internal/pkipin"
-	"github.com/codeswhat/sockguard/v2/app/internal/upstream"
-	"github.com/codeswhat/sockguard/v2/app/internal/upstreamflavor"
+	"github.com/codeswhat/sockguard/v3/app/internal/filter"
+	"github.com/codeswhat/sockguard/v3/app/internal/glob"
+	"github.com/codeswhat/sockguard/v3/app/internal/pkipin"
+	"github.com/codeswhat/sockguard/v3/app/internal/upstream"
+	"github.com/codeswhat/sockguard/v3/app/internal/upstreamflavor"
 	"github.com/google/go-containerregistry/pkg/name"
 )
 

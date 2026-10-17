@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/config"
+	"github.com/codeswhat/sockguard/v3/app/internal/config"
 )
 
 //go:embed known_api_routes.json

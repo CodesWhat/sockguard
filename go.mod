@@ -1,4 +1,4 @@
-module github.com/codeswhat/sockguard/v2
+module github.com/codeswhat/sockguard/v3
 
 go 1.27.0
 

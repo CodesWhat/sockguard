@@ -13,13 +13,13 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/dockerclient"
-	"github.com/codeswhat/sockguard/v2/app/internal/dockerfilters"
-	"github.com/codeswhat/sockguard/v2/app/internal/dockerresource"
-	"github.com/codeswhat/sockguard/v2/app/internal/filter"
-	"github.com/codeswhat/sockguard/v2/app/internal/httpjson"
-	"github.com/codeswhat/sockguard/v2/app/internal/logging"
-	"github.com/codeswhat/sockguard/v2/app/internal/upstreamflavor"
+	"github.com/codeswhat/sockguard/v3/app/internal/dockerclient"
+	"github.com/codeswhat/sockguard/v3/app/internal/dockerfilters"
+	"github.com/codeswhat/sockguard/v3/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/v3/app/internal/filter"
+	"github.com/codeswhat/sockguard/v3/app/internal/httpjson"
+	"github.com/codeswhat/sockguard/v3/app/internal/logging"
+	"github.com/codeswhat/sockguard/v3/app/internal/upstreamflavor"
 )
 
 const DefaultLabelKey = "com.sockguard.owner"

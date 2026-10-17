@@ -41,7 +41,12 @@ if [[ ! "${required_toolchain}" =~ ^go[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 printf 'Source: %s\nVersion: %s\nBuild date: %s\nTarget: %s/%s\nToolchain: %s\n' \
   "${source_commit}" "${release_version}" "${build_date}" "${build_os}" "${build_arch}" "${required_toolchain}"
-version_package="github.com/codeswhat/sockguard/v2/app/internal/version"
+module_path="$(sed -n 's/^module //p' "${scratch_dir}/first/go.mod")"
+if [[ ! "${module_path}" =~ ^github\.com/codeswhat/sockguard/v[0-9]+$ ]]; then
+  echo "Source must declare the versioned Sockguard module in go.mod" >&2
+  exit 2
+fi
+version_package="${module_path}/app/internal/version"
 linker_flags="-s -w -X ${version_package}.Version=${release_version} -X ${version_package}.Commit=${source_commit} -X ${version_package}.BuildDate=${build_date}"
 for build_copy in first second; do
   (

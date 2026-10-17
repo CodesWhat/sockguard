@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/dockerclient"
+	"github.com/codeswhat/sockguard/v3/app/internal/dockerclient"
 )
 
 // NewBuildkitImageAuthorizer checks names assigned by mediated image exporters.

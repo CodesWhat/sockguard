@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/imagetrust"
-	"github.com/codeswhat/sockguard/v2/app/internal/logging"
+	"github.com/codeswhat/sockguard/v3/app/internal/imagetrust"
+	"github.com/codeswhat/sockguard/v3/app/internal/logging"
 )
 
 func TestCreateImageAllowlistProfilesAndRollout(t *testing.T) {

@@ -7,7 +7,7 @@
 package worker
 
 import (
-	pb "github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/pb"
+	pb "github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/pb"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -363,7 +363,7 @@ const file_github_com_moby_buildkit_api_types_worker_proto_rawDesc = "" +
 	"\bOnDemand\x18\x04 \x01(\bR\bOnDemand\x1a>\n" +
 	"\x10AnnotationsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01BLZJgithub.com/codeswhat/sockguard/v2/app/internal/buildkitproto/worker;workerb\x06proto3"
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01BLZJgithub.com/codeswhat/sockguard/v3/app/internal/buildkitproto/worker;workerb\x06proto3"
 
 var (
 	file_github_com_moby_buildkit_api_types_worker_proto_rawDescOnce sync.Once

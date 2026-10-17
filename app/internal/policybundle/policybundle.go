@@ -32,8 +32,8 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/verify"
 	sigsig "github.com/sigstore/sigstore/pkg/signature"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/boundedio"
-	"github.com/codeswhat/sockguard/v2/app/internal/sigverify"
+	"github.com/codeswhat/sockguard/v3/app/internal/boundedio"
+	"github.com/codeswhat/sockguard/v3/app/internal/sigverify"
 )
 
 // MaxBundleFileBytes caps a signature bundle before JSON decoding.

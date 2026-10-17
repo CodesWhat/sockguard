@@ -20,8 +20,8 @@
  * Prerelease tags (vX.Y.Z-rc.N) are cut while the website/chart still show
  * the current *stable* version -- that's correct, not stale, since the
  * prerelease isn't the released version yet. Only the CHANGELOG heading is
- * required to exist for a prerelease tag, matching what release-cut.yml's
- * "Validate CHANGELOG entry for release tag" step already enforces.
+ * required to exist for a prerelease tag. Both stable and prerelease tags must
+ * match the Go module major declared in go.mod.
  */
 import { readFileSync } from "node:fs";
 import { extractChartImageConfig, extractChartImageTag } from "./chart-image-tag.mjs";
@@ -98,10 +98,35 @@ export function extractSecurityFirstSupportedVersion(source) {
  * malformed tag or unparseable file, since those aren't "the tag disagrees
  * with reality", they're "this script can't tell".
  */
-export function checkTagReleaseMetadata({ tag, siteConfig, chart, values, changelog, security }) {
+export function checkTagReleaseMetadata({
+  tag,
+  siteConfig,
+  chart,
+  values,
+  changelog,
+  security,
+  goMod,
+}) {
   const version = normalizeTag(tag);
   const isPrerelease = !STABLE_VERSION_PATTERN.test(version);
   const errors = [];
+
+  if (goMod !== undefined) {
+    const modulePath = String(goMod).match(
+      /^module\s+(?:"([^"\n]+)"|([^\s"\n]+))\s*(?:\/\/[^\n]*)?$/mu,
+    );
+    if (!modulePath) {
+      throw new Error("Could not find a module declaration in go.mod");
+    }
+    const actualModule = modulePath[1] ?? modulePath[2];
+    const major = Number(version.split(".")[0]);
+    const expectedModule = `github.com/codeswhat/sockguard${major >= 2 ? `/v${major}` : ""}`;
+    if (actualModule !== expectedModule) {
+      errors.push(
+        `go.mod module is '${actualModule}', tag v${version} requires '${expectedModule}'.`,
+      );
+    }
+  }
 
   if (isPrerelease) {
     try {
@@ -197,12 +222,14 @@ function main() {
   const valuesPath = args.values ?? "chart/sockguard/values.yaml";
   const changelogPath = args.changelog ?? "CHANGELOG.md";
   const securityPath = args.security ?? "SECURITY.md";
+  const goModPath = args["go-mod"] ?? "go.mod";
 
   const siteConfig = readFileSync(siteConfigPath, "utf8");
   const chart = readFileSync(chartPath, "utf8");
   const values = readFileSync(valuesPath, "utf8");
   const changelog = readFileSync(changelogPath, "utf8");
   const security = readFileSync(securityPath, "utf8");
+  const goMod = readFileSync(goModPath, "utf8");
 
   const { version, isPrerelease, errors } = checkTagReleaseMetadata({
     tag,
@@ -211,6 +238,7 @@ function main() {
     values,
     changelog,
     security,
+    goMod,
   });
 
   if (errors.length > 0) {
@@ -224,8 +252,8 @@ function main() {
 
   console.log(
     isPrerelease
-      ? `Tag v${version} is a prerelease; CHANGELOG heading present.`
-      : `Tag v${version} agrees with website, chart, Helm image, CHANGELOG, and SECURITY.md metadata.`,
+      ? `Tag v${version} is a prerelease; CHANGELOG heading and Go module major agree.`
+      : `Tag v${version} agrees with website, chart, Helm image, CHANGELOG, and SECURITY.md metadata; Go module major agrees.`,
   );
 }
 

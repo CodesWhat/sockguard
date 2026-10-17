@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/dockerfilters"
-	"github.com/codeswhat/sockguard/v2/app/internal/upstreamflavor"
+	"github.com/codeswhat/sockguard/v3/app/internal/dockerfilters"
+	"github.com/codeswhat/sockguard/v3/app/internal/upstreamflavor"
 )
 
 // podman_events_test.go covers the Docker-compat GET /events on a Podman

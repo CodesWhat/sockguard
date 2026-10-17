@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/v3/app/internal/dockerresource"
 )
 
 // testImageID and testOtherImageID are full image IDs, the only way a create

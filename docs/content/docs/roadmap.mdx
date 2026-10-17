@@ -107,7 +107,7 @@ the remaining gate is stable promotion after candidate validation.
 | Track | Candidate status |
 |---|---|
 | BuildKit RUN-instruction coverage | Raw-LLB ExecOps can be individually approved with `control.solve.allowed_exec_digests`. External frontend gateway Solves are mediated under the root build's policy, and the pinned companion runner executes the compiler outside the daemon. Unknown operations, opaque in-daemon frontends, interactive execution and daemon-resolved nested builds remain denied while RUN is restricted. Build refs and callback session IDs are scoped by client and profile |
-| Go module major-version path | The candidate declares `github.com/codeswhat/sockguard/v2`, with migrated imports, release linker flags and 11 regenerated BuildKit descriptors. After stable v2.3.0 publication, `go install github.com/codeswhat/sockguard/v2/app/cmd/sockguard@latest` will resolve to the v2 line. Existing v2.2 tags retain their original metadata; Docker, Homebrew, deb and rpm installs are unchanged |
+| Go module major-version path | The v2.3 candidate declares `github.com/codeswhat/sockguard/v2`, with migrated imports, release linker flags and 11 regenerated BuildKit descriptors. After stable v2.3.0 publication, `go install github.com/codeswhat/sockguard/v2/app/cmd/sockguard@latest` will resolve to the v2 line. Existing v2.2 tags retain their original metadata; Docker, Homebrew, deb and rpm installs are unchanged |
 
 The prepared rc.8 source at `3d959fe3` carries the 2.2.10 pod infra PID-file
 refusal and the stable line's security-workflow and dependency updates. Its fresh
@@ -171,6 +171,13 @@ milestone is scheduled. The [deprecation ledger](/deprecations) owns the exact
 contracts and implementation checklist. The opaque BuildKit acknowledgment's
 future-major removal version remains undecided. Current v2 lines retain these
 settings.
+
+The v3 source module, imports, generated BuildKit descriptors and release linker
+flags now use `github.com/codeswhat/sockguard/v3`. The tag guard checks the module
+major, and reproduction derives its linker package from the requested source.
+No v3 tag is published. Candidate versioning, release metadata and routing still
+need preparation before a separately confirmed cut. See [migration](/migration#from-sockguard-v2-to-v3-development)
+for building the development source.
 
 ## Twelve-month direction
 

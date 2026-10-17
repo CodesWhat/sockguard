@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/imagetrust"
+	"github.com/codeswhat/sockguard/v3/app/internal/imagetrust"
 )
 
 // generateTestECDSAPEM produces a PEM-encoded ECDSA P-256 public key for use

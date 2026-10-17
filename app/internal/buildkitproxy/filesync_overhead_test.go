@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/fsutiltypes"
+	"github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/fsutiltypes"
 	"google.golang.org/protobuf/encoding/protowire"
 )
 

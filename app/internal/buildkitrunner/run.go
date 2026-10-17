@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/control"
-	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/gateway"
-	"github.com/codeswhat/sockguard/v2/app/internal/h2conn"
+	"github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/control"
+	"github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/gateway"
+	"github.com/codeswhat/sockguard/v3/app/internal/h2conn"
 	"google.golang.org/protobuf/proto"
 )
 

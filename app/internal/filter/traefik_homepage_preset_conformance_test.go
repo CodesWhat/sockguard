@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/config"
+	"github.com/codeswhat/sockguard/v3/app/internal/config"
 )
 
 func presetDocsSection(t *testing.T, heading, nextHeading string) string {

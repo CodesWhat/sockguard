@@ -6,7 +6,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/buildkitrunner"
+	"github.com/codeswhat/sockguard/v3/app/internal/buildkitrunner"
 	"github.com/spf13/cobra"
 )
 

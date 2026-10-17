@@ -34,7 +34,7 @@ const gosecArgs = (workflow) =>
 test("the repository root is the canonical Go module root", () => {
   assert.ok(existsSync(rootModule), "go.mod must live at the repository root");
   assert.ok(!existsSync(nestedModule), "app must not declare a mismatched nested module");
-  assert.match(readFileSync(rootModule, "utf8"), /^module github\.com\/codeswhat\/sockguard\/v2$/m);
+  assert.match(readFileSync(rootModule, "utf8"), /^module github\.com\/codeswhat\/sockguard\/v3$/m);
 });
 
 test("temporary staged compatibility packages are absent from the final tree", () => {
@@ -75,8 +75,8 @@ test("the binary has the package path implied by its repository directory", () =
     }),
   );
 
-  assert.equal(packageInfo.ImportPath, "github.com/codeswhat/sockguard/v2/app/cmd/sockguard");
-  assert.equal(packageInfo.Module.Path, "github.com/codeswhat/sockguard/v2");
+  assert.equal(packageInfo.ImportPath, "github.com/codeswhat/sockguard/v3/app/cmd/sockguard");
+  assert.equal(packageInfo.Module.Path, "github.com/codeswhat/sockguard/v3");
   assert.equal(packageInfo.Module.Dir, repoRoot);
 });
 
@@ -115,7 +115,7 @@ test("container and coverage tooling preserve app as the package subdirectory", 
   const goTestScript = read("scripts/ci/go-test.sh");
   assert.match(
     goTestScript,
-    /grep -vE 'github\.com\/codeswhat\/sockguard\/v2\/app\/internal\/\(differential\|testcert\|testhelp\|buildkitproto\)\/'/,
+    /grep -vE 'github\.com\/codeswhat\/sockguard\/v3\/app\/internal\/\(differential\|testcert\|testhelp\|buildkitproto\)\/'/,
   );
 });
 
@@ -182,4 +182,22 @@ test("the pre-push hook compiles every integration build-tag boundary", () => {
     hook,
     /go test -run='\^\$' -tags=podmanintegration \.\/integration\/\.\.\. \.\/internal\/cmd\/\.\.\./,
   );
+});
+
+test("every release linker targets the v3 version package", () => {
+  const versionPackage = "github.com/codeswhat/sockguard/v3/app/internal/version";
+  for (const path of ["Dockerfile", "app/.goreleaser.yaml"]) {
+    for (const field of ["Version", "Commit", "BuildDate"]) {
+      assert.ok(
+        read(path).includes(`-X ${versionPackage}.${field}=`),
+        `${path} must inject ${field} into v3`,
+      );
+    }
+  }
+});
+
+test("reproduction derives its linker package from the exported source module", () => {
+  const script = read("scripts/ci/go-reproducible.sh");
+  assert.match(script, /module_path=.*first\/go\.mod/);
+  assert.match(script, /version_package="\$\{module_path\}\/app\/internal\/version"/);
 });

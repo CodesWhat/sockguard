@@ -16,7 +16,7 @@ import (
 	"testing/iotest"
 	"time"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/h2conn"
+	"github.com/codeswhat/sockguard/v3/app/internal/h2conn"
 )
 
 // allowAllPolicy admits every Mediate/Passthrough method this package's

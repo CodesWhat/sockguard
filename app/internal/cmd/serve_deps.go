@@ -19,12 +19,12 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/config"
-	"github.com/codeswhat/sockguard/v2/app/internal/filter"
-	"github.com/codeswhat/sockguard/v2/app/internal/imagetrust"
-	"github.com/codeswhat/sockguard/v2/app/internal/logging"
-	"github.com/codeswhat/sockguard/v2/app/internal/policybundle"
-	"github.com/codeswhat/sockguard/v2/app/internal/upstreamflavor"
+	"github.com/codeswhat/sockguard/v3/app/internal/config"
+	"github.com/codeswhat/sockguard/v3/app/internal/filter"
+	"github.com/codeswhat/sockguard/v3/app/internal/imagetrust"
+	"github.com/codeswhat/sockguard/v3/app/internal/logging"
+	"github.com/codeswhat/sockguard/v3/app/internal/policybundle"
+	"github.com/codeswhat/sockguard/v3/app/internal/upstreamflavor"
 )
 
 type serveDeps struct {

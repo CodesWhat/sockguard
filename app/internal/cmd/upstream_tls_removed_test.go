@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/config"
-	"github.com/codeswhat/sockguard/v2/app/internal/testcert"
-	"github.com/codeswhat/sockguard/v2/app/internal/testhelp"
-	"github.com/codeswhat/sockguard/v2/app/internal/upstream"
+	"github.com/codeswhat/sockguard/v3/app/internal/config"
+	"github.com/codeswhat/sockguard/v3/app/internal/testcert"
+	"github.com/codeswhat/sockguard/v3/app/internal/testhelp"
+	"github.com/codeswhat/sockguard/v3/app/internal/upstream"
 	"github.com/spf13/cobra"
 )
 

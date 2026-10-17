@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/config"
+	"github.com/codeswhat/sockguard/v3/app/internal/config"
 )
 
 func TestServeChainPodmanCompatBuildRequiresPrivateNetwork(t *testing.T) {

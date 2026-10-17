@@ -48,9 +48,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/dockerresource"
-	"github.com/codeswhat/sockguard/v2/app/internal/httpjson"
-	"github.com/codeswhat/sockguard/v2/app/internal/logging"
+	"github.com/codeswhat/sockguard/v3/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/v3/app/internal/httpjson"
+	"github.com/codeswhat/sockguard/v3/app/internal/logging"
 )
 
 const (
