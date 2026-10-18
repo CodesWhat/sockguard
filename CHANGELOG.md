@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- Record published v2.3.0-rc.8 across the roadmap, migration, frontend and configuration guides. Source soak/TLS, release artifacts and explicit candidate-image conformance passed on its approved source; stable channels stay on v2.2.10 and v2.3 GA remains no earlier than 2026-10-23.
 - Align the roadmap, installation, migration and TLS deprecation guidance with published v3.0.0-rc.1. Add explicit candidate image and `/v3` Go installation commands and record its independent 14-day bake window, no earlier than 2026-10-31 at 16:08:58 UTC before GA. Stable channels remain on v2.2.10.
 
 ## [3.0.0-rc.1] - 2026-10-17
@@ -70,7 +71,7 @@ This first v3 candidate includes the v2.3 frontend mediation and v2.4 policy/sec
 
 ### Changed
 
-- Carries the stable line's npm updates and deduped lockfile, authenticated Docker Hub pulls in the security workflow, and current release/roadmap metadata. The BuildKit frontend mediation, companion runner and `/v2` module path remain intact. This forward-port keeps the existing v2.3 GA date, no earlier than 2026-10-23. The prepared, unpublished rc.8 source passed fresh four-hour soak and TLS validation on `3d959fe3`; the tag cut still awaits confirmation, followed by published-artifact verification and candidate-image tri-tool conformance.
+- Carries the stable line's npm updates and deduped lockfile, authenticated Docker Hub pulls in the security workflow, and current release/roadmap metadata. The BuildKit frontend mediation, companion runner and `/v2` module path remain intact. This forward-port keeps the existing v2.3 GA date, no earlier than 2026-10-23. Published v2.3.0-rc.8 at `3d959fe3` passed fresh four-hour soak and TLS validation, published-artifact verification and explicit candidate-image tri-tool conformance. The tag retains its original pre-validation process wording; the linked source validation runs and current roadmap record the completed gates.
 
 ## [2.2.10] - 2026-10-15
 
