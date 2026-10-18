@@ -21,7 +21,15 @@ function goList(args) {
       });
     } catch (error) {
       const stderr = String(error.stderr ?? "");
-      const download = /https:\/\/(?:proxy\.golang\.org|storage\.googleapis\.com)\//.test(stderr);
+      const download = (stderr.match(/https:\/\/[^\s"']+/g) ?? []).some((address) => {
+        try {
+          return ["https://proxy.golang.org", "https://storage.googleapis.com"].includes(
+            new URL(address).origin,
+          );
+        } catch {
+          return false;
+        }
+      });
       const transient =
         /TLS handshake timeout|i\/o timeout|connection reset by peer|unexpected EOF|stream error:.*INTERNAL_ERROR|:\s*(?:408|429|500|502|503|504)\s/.test(
           stderr,

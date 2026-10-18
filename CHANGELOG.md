@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Module-layout checks retry transient public Go proxy/toolchain download failures at most three times, with bounded command deadlines. Both package-layout assertions still run; permanent package, missing-version and authorization errors remain fatal without retry. This changes CI tooling only and does not alter the published candidate's behavior or bake window.
+- Module-layout checks retry transient downloads from recognized public Go origins at most three times, with bounded command deadlines. Both package-layout assertions still run; permanent package, missing-version and authorization errors remain fatal without retry. This changes CI tooling only and does not alter the published candidate's behavior or bake window.
 
 ### Documentation
 

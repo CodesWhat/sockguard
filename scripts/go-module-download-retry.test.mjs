@@ -159,3 +159,19 @@ test("a public proxy module authorization failure is not retried", (t) => {
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.equal(result.calls.length, 1);
 });
+
+for (const address of [
+  "https://private.example/cache/https://proxy.golang.org/module.zip",
+  "https://proxy.golang.org.private.example/module.zip",
+  "https://proxy.golang.org@private.example/module.zip",
+  "https://proxy.golang.org:8443/module.zip",
+]) {
+  test(`a transient failure from ${address} is not retried`, (t) => {
+    const result = runLayoutTest(t, "the binary has the package path", [
+      `go: example.com/private@v1.0.0: Get "${address}": net/http: TLS handshake timeout`,
+    ]);
+
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.equal(result.calls.length, 1);
+  });
+}
