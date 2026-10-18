@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Module-layout checks retry transient public Go proxy/toolchain download failures at most three times, with bounded command deadlines. Both package-layout assertions still run; permanent package, missing-version and authorization errors remain fatal without retry. This changes CI tooling only and does not alter the published candidate's behavior or bake window.
+
 ### Documentation
 
 - Align the roadmap, installation, migration and TLS deprecation guidance with published v3.0.0-rc.1. Add explicit candidate image and `/v3` Go installation commands and record its independent 14-day bake window, no earlier than 2026-10-31 at 16:08:58 UTC before GA. Stable channels remain on v2.2.10.

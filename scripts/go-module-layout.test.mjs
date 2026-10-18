@@ -10,6 +10,32 @@ const rootModule = new URL("../go.mod", import.meta.url);
 const nestedModule = new URL("../app/go.mod", import.meta.url);
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
+function goList(args) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return execFileSync("go", ["list", ...args], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        stdio: "pipe",
+        timeout: 120_000,
+      });
+    } catch (error) {
+      const stderr = String(error.stderr ?? "");
+      const download = /https:\/\/(?:proxy\.golang\.org|storage\.googleapis\.com)\//.test(stderr);
+      const transient =
+        /TLS handshake timeout|i\/o timeout|connection reset by peer|unexpected EOF|stream error:.*INTERNAL_ERROR|:\s*(?:408|429|500|502|503|504)\s/.test(
+          stderr,
+        ) ||
+        (/golang\.org\/toolchain@/.test(stderr) && /403 Forbidden/.test(stderr));
+      if (attempt === 3 || error.status !== 1 || !download || !transient) {
+        throw error;
+      }
+      console.error(`Go download failed; retrying go list (${attempt + 1}/3)`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, attempt * 1_000);
+    }
+  }
+}
+
 const pathEntryExists = (path) => {
   try {
     lstatSync(path);
@@ -68,12 +94,7 @@ test("temporary Docker COPY detection covers equivalent forms", () => {
 });
 
 test("the binary has the package path implied by its repository directory", () => {
-  const packageInfo = JSON.parse(
-    execFileSync("go", ["list", "-json", "./app/cmd/sockguard"], {
-      cwd: repoRoot,
-      encoding: "utf8",
-    }),
-  );
+  const packageInfo = JSON.parse(goList(["-json", "./app/cmd/sockguard"]));
 
   assert.equal(packageInfo.ImportPath, "github.com/codeswhat/sockguard/v3/app/cmd/sockguard");
   assert.equal(packageInfo.Module.Path, "github.com/codeswhat/sockguard/v3");
@@ -129,13 +150,7 @@ test("Gosec scans canonical app packages with audited suppressions", () => {
   assert.match(args, /(?:^|\s)\.\/app\/\.\.\.(?:\s|$)/);
   assert.doesNotMatch(args, /(?:^|\s)-(?:no-fail|exclude|exclude-dir|exclude-rules)(?:=|\s|$)/);
 
-  const packages = execFileSync("go", ["list", "./app/..."], {
-    cwd: repoRoot,
-    encoding: "utf8",
-  })
-    .trim()
-    .split("\n")
-    .filter(Boolean);
+  const packages = goList(["./app/..."]).trim().split("\n").filter(Boolean);
   assert.ok(packages.length > 0, "Gosec target must resolve at least one canonical package");
 
   const generated = execFileSync("git", ["ls-files", "app"], {
