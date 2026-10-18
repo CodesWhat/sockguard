@@ -8,8 +8,7 @@ description: Upgrade stable v2.2 deployments, select a published v2.3 candidate,
 | Line | Availability | Upgrade guidance |
 | --- | --- | --- |
 | v2.2.10 | Published stable | Keep normal Docker, Homebrew, deb/rpm and binary release channels. |
-| v2.3.0-rc.7 | Published candidate | Select the candidate explicitly for the frontend runner and individual LLB execution grants. |
-| v2.3.0-rc.8 | Prepared source, unpublished | Source soak/TLS validation passed; publication and published-artifact validation remain. Don't install this nonexistent tag. |
+| v2.3.0-rc.8 | Published candidate | Select the candidate explicitly for the frontend runner and individual LLB execution grants, with the v2.2.10 fixes included. |
 | v2.4.0-rc.1 | Release candidate line | Select the candidate explicitly for image admission, create launch-field policies, route diagnostics and Buildx compatibility fixes. Stable channels remain on v2.2.10. |
 | v3.0.0-rc.1 | Published candidate | Select its image or `/v3` Go tag explicitly and migrate the removed TLS settings below. Its validation and bake window are independent of v2.4. |
 
@@ -35,14 +34,14 @@ CLI invocations are unchanged.
 v2.3 is a candidate line until GA. Its frontend runner and
 `request_body.buildkit.control.solve.allow_frontend_gateway` /
 `allowed_exec_digests` settings aren't available in v2.2.10. Pin the published
-v2.3.0-rc.7 tag explicitly while evaluating them. The prepared rc.8 source isn't
-an installable release, and GA remains no earlier than 2026-10-23.
+v2.3.0-rc.8 tag explicitly while evaluating them. GA remains no earlier than
+2026-10-23. For Docker, select `codeswhat/sockguard:2.3.0-rc.8`.
 
 The Go module becomes `github.com/codeswhat/sockguard/v2`. Go consumers must add
 `/v2` to imports. Source builds require **Go 1.27 from v2.3.0-rc.2**; the selected
 build toolchain is Go 1.27.2. The v2.2 line retains its Go 1.26 language minimum
 despite also selecting the newer toolchain. Install the published candidate with
-`go install github.com/codeswhat/sockguard/v2/app/cmd/sockguard@v2.3.0-rc.7`.
+`go install github.com/codeswhat/sockguard/v2/app/cmd/sockguard@v2.3.0-rc.8`.
 After GA, the `/v2` path remains and `@latest` can select the stable v2.3 release.
 Docker, Homebrew, deb/rpm and downloaded binaries don't acquire a Go import-path
 requirement or need Go installed. Stable channels continue to follow stable

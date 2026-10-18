@@ -377,9 +377,9 @@ export const roadmap: Milestone[] = [
     emoji: "🧩",
     status: "next",
     items: [
-      "Prepared for rc.8, with rc.7 still the published candidate: individual raw-LLB ExecOp digest approvals, external frontend gateway mediation and the pinned companion runner; opaque in-daemon frontends and interactive execution stay denied",
+      "v2.3.0-rc.8 candidate: individual raw-LLB ExecOp digest approvals, external frontend gateway mediation and the pinned companion runner; opaque in-daemon frontends and interactive execution stay denied",
       "The /v2 Go module migration is in the candidate, including imports, release linker flags and regenerated BuildKit descriptors; Docker, Homebrew, deb and rpm installation paths are unchanged",
-      "The prepared rc.8 source carries the 2.2.10 pod infra PID-file refusal and passed fresh soak/TLS validation; the tag cut awaits confirmation, and GA remains no earlier than 2026-10-23",
+      "Published rc.8 carries the 2.2.10 pod infra PID-file refusal; source soak/TLS, artifact verification and candidate-image conformance passed. GA remains no earlier than 2026-10-23",
     ],
   },
   {
