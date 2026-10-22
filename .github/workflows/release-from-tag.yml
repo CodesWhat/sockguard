@@ -38,7 +38,7 @@ jobs:
       #   release-assets.githubusercontent.com: that same tarball, current host
       #   *.actions.githubusercontent.com: Actions runtime and log upload
       - name: Harden Runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -147,7 +147,7 @@ jobs:
           fi
 
       - name: Setup Node (for release metadata check)
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: 24
           # This job's checkout is what release-cut.yml pushed and what
@@ -196,7 +196,7 @@ jobs:
       #   *.actions.githubusercontent.com: Upload release notes, plus the
       #     Actions runtime and log upload
       - name: Harden Runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -212,7 +212,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Node (for release scripts)
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: 24
           # This job publishes real release notes for a tagged release —
@@ -246,7 +246,7 @@ jobs:
           rm -f "${entry_path}"
 
       - name: Upload release notes
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: release-notes
           path: release-notes.md
@@ -290,7 +290,7 @@ jobs:
       #   *.actions.githubusercontent.com: Download release notes, the OIDC token
       #     endpoint keyless signing and attestation need, and the runtime
       - name: Harden Runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -340,12 +340,12 @@ jobs:
           }
 
       - name: Download release notes
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: release-notes
 
       - name: Install syft
-        uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26  # v0.24.2
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c  # v0.24.3
 
       # Required by .goreleaser.yaml's bundle-signing blocks, which shell out to
       # cosign during `goreleaser release`. Keep the binary pinned to the exact
@@ -457,7 +457,7 @@ jobs:
       #   *.actions.githubusercontent.com: the OIDC endpoint keyless signing
       #     needs, the cache results receiver, and the Actions runtime
       - name: Harden Runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -785,7 +785,7 @@ jobs:
 
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -848,7 +848,7 @@ jobs:
       #     GitHub TUF root and the attestation bundle it then fetches
       #   *.actions.githubusercontent.com: Actions runtime and log upload
       - name: Harden Runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -944,7 +944,7 @@ jobs:
       #   grype.anchore.io: grype's vulnerability database download
       #   *.actions.githubusercontent.com: Actions runtime and log upload
       - name: Harden Runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1023,7 +1023,7 @@ jobs:
 
       - name: Upload Grype SARIF to code scanning
         if: always() && github.event.repository.visibility == 'public'
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2  # v4.38.2
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d  # v4.38.3
         with:
           sarif_file: ${{ steps.grype.outputs.sarif }}
           category: grype-release-${{ matrix.slug }}
@@ -1091,7 +1091,7 @@ jobs:
       #     Resolve the published manifest-list digest
       #   *.actions.githubusercontent.com: Actions runtime and log upload
       - name: Harden Runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1109,7 +1109,7 @@ jobs:
           persist-credentials: true
 
       - name: Setup Node (for release scripts)
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: 24
           # This job writes a commit to a protected-flow branch, so the same
