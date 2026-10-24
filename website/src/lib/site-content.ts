@@ -372,6 +372,17 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
+    version: "v2.2.11",
+    title: "Security Patch: Hosts Files, Frontend Overrides and Dependencies",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Native Podman create refuses custom hosts-file paths; restricted builds refuse BUILDKIT_SYNTAX frontend overrides",
+      "Go 1.27.3 addresses the certificate-verification advisory; website/docs dependencies and CI actions are refreshed",
+      "Building from source now requires Go 1.27",
+    ],
+  },
+  {
     version: "v2.3.0",
     title: "BuildKit RUN-Instruction Coverage",
     emoji: "🧩",

@@ -3,7 +3,7 @@ title: Roadmap
 description: Sockguard's shipped v1.7, v2.0, v2.1, and v2.2 work, v2.3 release-candidate status, and later direction.
 ---
 
-Sockguard v2.2 is the current stable feature line, with v2.2.10 the latest
+Sockguard v2.2 is the current stable feature line, with v2.2.11 the latest
 release. v2.2.0 closed the volume-mount and read-side gaps that survived
 v2.1.0 and added the operator-facing checks that were missing around them;
 v2.2.1 is a security patch on that line, closing a raw block-device,
@@ -55,13 +55,13 @@ is the current candidate for the next line; v2.3.0 is not stable yet. This roadm
 promises about dates. A feature is available only after the release notes say
 it has shipped.
 
-## Unreleased
+## Shipped in v2.2.11
 
 Native Podman container `base_hosts_file` and pod `hostsFile` accept only
 empty, `image` or `none`. Custom host paths are refused on both routes;
 the daemon's configured default and image-based hosts files remain usable.
 The guard follows the configured rollout mode and is covered on direct and
-versioned requests. This fix is not in v2.2.10.
+versioned requests. The same patch refuses BUILDKIT_SYNTAX overrides on restricted classic and mediated builds, rebuilds with Go 1.27.3 for GO-2026-6809, and refreshes dependencies. Building from source now requires Go 1.27.
 
 ## Shipped in v2.2.10
 
