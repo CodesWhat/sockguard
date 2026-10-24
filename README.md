@@ -489,7 +489,7 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 High-level themes only; see [CHANGELOG.md](CHANGELOG.md) for per-release detail.
 The full roadmap, with compatibility evidence and scope boundaries, is on the [docs roadmap page](https://getsockguard.com/docs/roadmap).
 
-Under Unreleased, native Podman container and pod creates refuse caller-selected hosts-file paths. The default, `image` and `none` selectors remain allowed.
+Added in 2.2.11: native Podman container and pod creates refuse caller-selected hosts-file paths. The default, `image` and `none` selectors remain allowed.
 
 | Version | Theme | Highlights |
 | --- | --- | --- |
@@ -504,7 +504,7 @@ Under Unreleased, native Podman container and pod creates refuse caller-selected
 | **v2.0.0** ✅ | Signed-Policy Integrity & Native Podman Builds | Out-of-band bootstrap trust for signed policy bundles that stays pinned across reload, `/libpod/build` context, host-control and Dockerfile `RUN` constraints, BuildKit caller identity from verified certificates or Unix peer credentials, atomic Solve admission, finite metric label cardinality, sigstore-bundle-only release blobs |
 | **v2.1.0** ✅ | Native libpod Write Inspection & Owner Isolation | Copy-into-container, update, restore, checkpoint and mount inspected on the libpod routes, owner isolation fails closed with `404` / `403` / `502` across the prune family, commit and image export/removal, process-list reads need the read-exfiltration acknowledgment, read-side redaction reaches libpod inspect, volume reads and network topology |
 | **v2.2.x** ✅ | Volume-Mount Containment & Read-Side Redaction | `local` volume driver `type`/`o`/`device` options held to `allowed_bind_mounts` on container create and Swarm mounts, `PUT /volumes/{name}` inspection, request-target guard, redaction that survives gzip, `HEAD`, `304` and image inspect, `sockguard verify`, `server.shutdown_grace`, rootless `match.path` rejected, fewer per-request allocations. Security patches 2.2.1 to 2.2.10 cover Podman/libpod create and body-key hardening, compat create host paths, Dockerfile directive, line-assembly and heredoc forms, a Go toolchain rebuild, owner-isolation image naming, form-body refusal and pod infra PID-file refusal The 2.2.11 patch also closes `BUILDKIT_SYNTAX` argument overrides on restricted classic and mediated builds. |
-| **v2.2.11** | Maintenance | Security fixes for native Podman hosts files and restricted frontend overrides, Go 1.27.3 certificate-verification remediation, and dependency/CI updates |
+| **v2.2.11** | Maintenance | Security fixes for native Podman hosts files and restricted frontend overrides, Go 1.27.3 certificate-verification remediation, dependency/CI updates and isolated static docs builds |
 | **v2.3.0** | BuildKit Frontend Mediation & Go Module v2 | Implemented in [v2.3.0-rc.8](https://github.com/CodesWhat/sockguard/releases/tag/v2.3.0-rc.8), awaiting stable release: raw-LLB ExecOp digest approvals, external frontend gateway mediation and a pinned frontend runner, plus the `/v2` Go module path. Opaque in-daemon frontends, interactive execution and daemon-resolved nested builds remain denied. The candidate passed its four-hour soak and TLS scan; GA is no earlier than 2026-10-23 |
 | **v2.x** | Security Hardening | Continued mutation-test hardening of the rule-evaluation core and config validators |
 | **v2.x** | Supply Chain | `egress-policy: block` with curated allow-lists on high-privilege release jobs |

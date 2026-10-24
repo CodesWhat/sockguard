@@ -271,7 +271,7 @@ the image's hosts file, or supply no base entries. Every other value is a
 host file the daemon opens and parses, including relative paths. Those are
 refused, even with `/` in `allowed_bind_mounts`, and no option opens the
 gate. A padded or differently cased selector is a host path to Podman too,
-so ` image ` and `IMAGE` are refused. This guard is under Unreleased;
+so ` image ` and `IMAGE` are refused. This guard was added in 2.2.11;
 releases through 2.2.10 forwarded custom paths. The behavior is checked from
 Podman 5.8.6 and 6.1.3 and their common-library source, not a live-daemon run.
 

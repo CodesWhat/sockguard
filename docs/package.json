@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "node ../scripts/analytics-routes.mjs --check && node ../scripts/analytics-runtime.mjs --check && next dev --port 3002",
-    "build": "node ../scripts/analytics-routes.mjs --check && node ../scripts/analytics-runtime.mjs --check && next build",
+    "build": "node ../scripts/analytics-routes.mjs --check && node ../scripts/analytics-runtime.mjs --check && env -u NEXT_ADAPTER_PATH next build",
     "start": "next start",
     "postinstall": "fumadocs-mdx"
   },

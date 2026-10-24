@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.2.11] - 2026-10-24
 
+### Fixed
+
+- Keep the copied static docs export independent of the deployment platform adapter. The website retains its adapter; nested docs builds clear the inherited adapter path before producing assets. This avoids mixing the platform's immutable-asset handling into docs copied under the website's public directory.
+
 ### Changed
 
 - Refresh the published v2.3.0-rc.8 candidate references and completed validation links while preparing the stable maintenance release.
