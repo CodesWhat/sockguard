@@ -388,7 +388,7 @@ export const roadmap: Milestone[] = [
     emoji: "🧩",
     status: "next",
     items: [
-      "Implemented in v2.3.0-rc.7, awaiting stable release: individual raw-LLB ExecOp digest approvals, external frontend gateway mediation and the pinned companion runner; opaque in-daemon frontends and interactive execution stay denied",
+      "Implemented in v2.3.0-rc.8, awaiting stable release: individual raw-LLB ExecOp digest approvals, external frontend gateway mediation and the pinned companion runner; opaque in-daemon frontends and interactive execution stay denied",
       "The /v2 Go module migration is in the candidate, including imports, release linker flags and regenerated BuildKit descriptors; Docker, Homebrew, deb and rpm installation paths are unchanged",
       "The candidate passed its four-hour soak and TLS scan; GA is no earlier than 2026-10-23, with fresh validation required for each new candidate",
     ],

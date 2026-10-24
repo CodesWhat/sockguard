@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Refresh the published v2.3.0-rc.8 candidate references and completed validation links while preparing the stable maintenance release.
+
 - Building from source now requires Go 1.27 because the updated sigstore dependency requires it. Release binaries and images already used Go 1.27. The module minimum is 1.27.0 and the selected toolchain is 1.27.3.
 
 ### Security
