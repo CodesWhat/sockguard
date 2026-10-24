@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.11] - 2026-10-24
+
+### Fixed
+
+- Pin Gosec to the action commit that actually selects its Go 1.27-built 2.29.0 image. The 2.29.0 action tag still selects the Go 1.26-built 2.28.0 image, which cannot load the updated module with its local-only toolchain.
+
+- Keep the copied static docs export independent of the deployment platform adapter. The website retains its adapter; nested docs builds clear the inherited adapter path before producing assets. This avoids mixing the platform's immutable-asset handling into docs copied under the website's public directory.
+
+### Changed
+
+- Refresh the published v2.3.0-rc.8 candidate references and completed validation links while preparing the stable maintenance release.
+
+- Building from source now requires Go 1.27 because the updated sigstore dependency requires it. Release binaries and images already used Go 1.27. The module minimum is 1.27.0 and the selected toolchain is 1.27.3.
+
+### Security
+
+- Build release binaries and images with Go 1.27.3 to address GO-2026-6809 in certificate verification. Update the Go modules, website/docs dependencies, Knip and pinned GitHub Actions together; dependency scans and the release gates validate the combined maintenance queue.
+
+- **A native Podman create could select a host file as the base for the container's `/etc/hosts`.** Container create's `base_hosts_file` and pod create's `hostsFile` are now limited to the exact empty, `image` and `none` selectors. Every other string is refused, including absolute, relative and whitespace-only paths and padded or differently cased selectors. Podman passes such a string to the daemon's file reader, which copies parsed lines with at least two whitespace-separated fields into the generated hosts file. Empty retains the daemon administrator's configured default, `image` uses the image's hosts file, and `none` supplies no base entries. `allowed_bind_mounts` does not open this gate and there is no new option. This changes `podman --remote run --hosts-file /path` and `podman --remote pod create --hosts-file /path`; normal creates and the three selector values still pass. The guard covers direct and versioned routes, follows `enforce`/`warn`/`audit`, and retains the original body when a rollout mode forwards it. The new tests failed against the previous inspector and pass with the guard. The daemon-side behavior was checked in Podman 5.8.6 and 6.1.3 and their `go.podman.io/common` 0.67.1 and 0.69.2 sources; this was not reproduced against a live Podman daemon.
+
+- Refuse `BUILDKIT_SYNTAX` frontend overrides while RUN instructions are restricted, on classic Docker/Podman build arguments and mediated BuildKit Solve. A selected compiler can't be constrained by scanning the submitted Dockerfile. Classic build arguments with ambiguous query spellings, repeated values or malformed JSON are refused under this restriction. This guard joins the v2.2 maintenance line in 2.2.11.
+
 ## [2.2.10] - 2026-10-15
 
 ### Changed
