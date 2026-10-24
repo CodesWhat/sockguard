@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Pin Gosec to the action commit that actually selects its Go 1.27-built 2.29.0 image. The 2.29.0 action tag still selects the Go 1.26-built 2.28.0 image, which cannot load the updated module with its local-only toolchain.
+
 - Keep the copied static docs export independent of the deployment platform adapter. The website retains its adapter; nested docs builds clear the inherited adapter path before producing assets. This avoids mixing the platform's immutable-asset handling into docs copied under the website's public directory.
 
 ### Changed
