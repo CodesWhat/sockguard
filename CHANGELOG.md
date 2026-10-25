@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Consolidated `/health` response encoding while preserving upstream/listener/probe precedence, response bodies and write-failure logging.
+
 ### Fixed
 
 - Refuse native Podman systemd generation under owner or visibility isolation until compound pod/container references can be checked. Owner isolation also refuses Quadlet installation/batch removal and artifact batch removal, including requests with named query targets and warn/audit rollout modes.
