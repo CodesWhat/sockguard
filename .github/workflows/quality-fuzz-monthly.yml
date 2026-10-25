@@ -120,7 +120,7 @@ jobs:
       # with the otherwise-identical quality-fuzz-nightly.yml job.
       - name: Harden Runner
         if: ${{ inputs.skip_harden_runner != true }}
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
           egress-policy: audit
 
@@ -168,7 +168,7 @@ jobs:
         # kills, both of which signal a wedged fuzzer whose corpus is worth
         # preserving — same as a normal crash.
         if: failure() || cancelled()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: fuzz-corpus-monthly-${{ matrix.fuzzer.name }}-${{ github.run_id }}
           path: app/**/testdata/fuzz/${{ matrix.fuzzer.name }}/
@@ -182,7 +182,7 @@ jobs:
         # 60s so even when the hosted runner OOMs mid-step we still get
         # the growth curve up to the moment of death.
         if: failure() || cancelled()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: fuzz-forensics-monthly-${{ matrix.fuzzer.name }}-${{ github.run_id }}
           path: app/internal/**/forensics/

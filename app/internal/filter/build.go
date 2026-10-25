@@ -99,6 +99,21 @@ func (p buildPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath str
 	if denyReason := p.inspectPodmanBuildControls(r, normalizedPath, query); denyReason != "" {
 		return denyReason, nil
 	}
+	if !p.allowRunInstructions {
+		args, _, ok := queryparam.Scalar(query, "buildargs")
+		if !ok {
+			return ambiguousQueryReason("build", "buildargs"), nil
+		}
+		if args != "" {
+			var values map[string]*string
+			if err := json.Unmarshal([]byte(args), &values); err != nil {
+				return "build denied: malformed buildargs", nil
+			}
+			if _, present := values["BUILDKIT_SYNTAX"]; present {
+				return "build denied: syntax frontend overrides cannot be inspected while RUN instructions are restricted", nil
+			}
+		}
+	}
 	// WHY: Host-network builds are denied even when the request also uses a
 	// remote context, so this must run before the remote-context branch returns
 	// its own denial or allow decision.
