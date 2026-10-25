@@ -8,6 +8,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -67,7 +68,7 @@ func signingKeyPair(t *testing.T) (sigsig.Signer, string) {
 	if err != nil {
 		t.Fatalf("load signer: %v", err)
 	}
-	der, err := cryptoutils.MarshalPublicKeyToDER(priv.Public())
+	der, err := x509.MarshalPKIXPublicKey(priv.Public())
 	if err != nil {
 		t.Fatalf("marshal pub: %v", err)
 	}

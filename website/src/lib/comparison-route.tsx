@@ -159,6 +159,7 @@ export function createComparisonRoute(config: ComparisonRouteConfig) {
     twitterDescription: config.twitterDescription,
   });
 
+  // biome-ignore lint/correctness/noComponentHookFactories: Each route calls this factory once at module initialization, so component identity stays stable.
   function RoutePage() {
     return (
       <ComparisonPage
