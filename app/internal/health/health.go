@@ -341,68 +341,38 @@ func (m *Monitor) Handler() http.HandlerFunc {
 			listeners = append(listeners, m.ListenersFunc()...)
 		}
 
-		if known && state.Err != nil {
-			if writeErr := httpjson.Write(w, http.StatusServiceUnavailable, HealthResponse{
-				Status:        "unhealthy",
-				Upstream:      state.Status,
-				Error:         "upstream unreachable",
-				Version:       version.Version,
-				UptimeSeconds: int(uptime),
-				Listeners:     listeners,
-			}); writeErr != nil {
-				m.logger.WarnContext(r.Context(), "failed to write unhealthy response",
-					"error", writeErr,
-				)
-			}
-			return
-		}
-
-		if anyListenerRequiresAttention(listeners) {
-			m.logger.WarnContext(r.Context(), "health check failed: a configured listener is not serving",
-				"listeners", listeners,
-			)
-			if writeErr := httpjson.Write(w, http.StatusServiceUnavailable, HealthResponse{
-				Status:        "unhealthy",
-				Upstream:      state.Status,
-				Error:         "listener not serving",
-				Version:       version.Version,
-				UptimeSeconds: int(uptime),
-				Listeners:     listeners,
-			}); writeErr != nil {
-				m.logger.WarnContext(r.Context(), "failed to write unhealthy response",
-					"error", writeErr,
-				)
-			}
-			return
-		}
-
-		// A probe is running and has never yet produced a verdict, so there
-		// is nothing to serve and this request must not queue behind it —
-		// see stateForRequest.
-		if !known {
-			if writeErr := httpjson.Write(w, http.StatusServiceUnavailable, HealthResponse{
-				Status:        "unhealthy",
-				Upstream:      state.Status,
-				Error:         "upstream check in progress",
-				Version:       version.Version,
-				UptimeSeconds: int(uptime),
-				Listeners:     listeners,
-			}); writeErr != nil {
-				m.logger.WarnContext(r.Context(), "failed to write unhealthy response",
-					"error", writeErr,
-				)
-			}
-			return
-		}
-
-		if writeErr := httpjson.Write(w, http.StatusOK, HealthResponse{
+		response := HealthResponse{
 			Status:        "healthy",
 			Upstream:      state.Status,
 			Version:       version.Version,
 			UptimeSeconds: int(uptime),
 			Listeners:     listeners,
-		}); writeErr != nil {
-			m.logger.WarnContext(r.Context(), "failed to write healthy response",
+		}
+		switch {
+		case known && state.Err != nil:
+			response.Error = "upstream unreachable"
+		case anyListenerRequiresAttention(listeners):
+			m.logger.WarnContext(r.Context(), "health check failed: a configured listener is not serving",
+				"listeners", listeners,
+			)
+			response.Error = "listener not serving"
+		case !known:
+			// A probe is running and has never yet produced a verdict, so there
+			// is nothing to serve and this request must not queue behind it —
+			// see stateForRequest.
+			response.Error = "upstream check in progress"
+		}
+
+		status := http.StatusOK
+		writeFailureMessage := "failed to write healthy response"
+		if response.Error != "" {
+			response.Status = "unhealthy"
+			status = http.StatusServiceUnavailable
+			writeFailureMessage = "failed to write unhealthy response"
+		}
+
+		if writeErr := httpjson.Write(w, status, response); writeErr != nil {
+			m.logger.WarnContext(r.Context(), writeFailureMessage,
 				"error", writeErr,
 			)
 		}

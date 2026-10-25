@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Consolidated `/health` response encoding while preserving upstream/listener/probe precedence, response bodies and write-failure logging.
+
 ## [2.2.11] - 2026-10-24
 
 ### Fixed
