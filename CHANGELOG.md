@@ -42,6 +42,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Opt-in `allowed_images` lists for Docker-compatible container creation, native Podman container creation, and Swarm service creation/update. Each list matches fully qualified image references exactly, including an explicit tag or digest, and can be set globally or per client profile. Empty lists preserve existing behavior. Checks run after admission image remapping and before signature verification/digest pinning, and use the existing enforce/warn/audit rollout modes. When a list is enabled, alternate rootfs/image-volume creation, image mounts, and stored or automatic Swarm rollback are refused rather than selecting unchecked image content.
 
+## [2.3.1] - 2026-10-26
+
+### Security
+
+- **A container create could have a Podman upstream write the container's log to a host path the client chose.** On the Docker-compatible `POST /containers/create`, Podman turns each `HostConfig.LogConfig.Config` entry into a `--log-opt` argument and reads the one named `path` as the log file. So `{"HostConfig":{"LogConfig":{"Type":"k8s-file","Config":{"path":"/host/x.log"}}}}` was forwarded, and the container's output was written to `/host/x.log` on the daemon host, as the daemon's user. `allowed_bind_mounts` never saw it, because the daemon writes that file and no container mounts it. The native `POST /libpod/containers/create` (sent as `/v{version}/libpod/containers/create`) has the same path as a field, `log_configuration.path`, and a second one, `healthLogDestination`, which Podman reads as a directory to write healthcheck results into unless it's `local` or `events_logger`. All three were forwarded with every option off. A new option, `allow_log_path`, gates them. It's off by default and sits in both blocks: `request_body.container_create.allow_log_path` (`SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_LOG_PATH`) for the compat route, and `request_body.libpod_container_create.allow_log_path` (`SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_LOG_PATH`) for the native one. Neither opens the other's route. While it's off, the compat create refuses a `Config` key Podman would read as the path, whatever its value and whatever the driver: `path` in any letter case, because Podman lowers the name, and a key that carries its own value, such as `"path=/host/x.log"`, because Podman cuts each `key=value` at its first `=`. The native create refuses a non-empty `log_configuration.path`, and a `healthLogDestination` that is anything but `local`, `events_logger` or empty. The request gets a `403` with reason code `request_body_policy_denied`. That's a behavior change for a deployment whose clients set a log path, which has to turn the option on for the route they use: `docker run --log-opt path=...` or a Compose `logging.options.path` against a Podman upstream, `podman --remote run` or `create` with `--log-opt path=...` or `--health-log-destination <dir>`, and every create from a podman-remote 5.8 client whose own containers.conf sets `log_path`, because that client copies it into the body. A create that names no path isn't affected. The log driver, `max-size`, `max-file`, `tag` and the rest of `LogConfig.Config` pass as before, and so do the empty `log_configuration` and the `"healthLogDestination": "local"` podman-remote sends by default. Where the daemon puts a log nobody named a path for is its own default, and the gate doesn't change that. On a Docker upstream no working create changes for the built-in log drivers, because dockerd picks the log file itself and none of them takes a `path` option. A create that sent one anyway got a `400` from dockerd and now gets the `403` from Sockguard, except under the `none` driver, which ignored the option and is now refused too. Past that, only a logging plugin that takes an option of that name is affected. The option covers a log path and nothing else. dockerd's `syslog-address` and `fluentd-address` can name a Unix socket the daemon connects to, and `syslog-tls-ca-cert`, `syslog-tls-cert`, `syslog-tls-key` and `splunk-capath` a file it reads. Those still pass, and Sockguard has no log driver allowlist. No shipped preset turns the option on. The compat body above was confirmed against a live Podman 6.1.3. What Podman does with the other spellings of `path`, with `log_configuration.path` and with `healthLogDestination` is read from Podman 5.8.6 and 6.1.3 and reproduced through the proxy against a test daemon that reads log options the way that source does, not run against a live Podman. The native request bodies were captured from podman-remote 6.1.3.
+
+## [2.3.0] - 2026-10-26
+
+v2.3.0 promotes v2.3.0-rc.9 unchanged in behavior: BuildKit frontend mediation with per-ExecOp digest approvals, the pinned frontend companion runner, the `github.com/codeswhat/sockguard/v2` module path, and everything shipped on 2.2.x through 2.2.11. It is relicensed MIT from this release; 2.2.x and earlier remain Apache-2.0. rc.9 was validated before promotion: a four-hour soak with zero errors across 253 million requests, a TLS 1.3-only scan, and tri-tool conformance with no failures.
+
+### Changed
+
+- The pre-push lockfile dedupe check resolves against npm as of 14 days ago, matching the Renovate release-age cool-off, so a just-published dependency no longer blocks pushes.
+
+- CI, PR security scans and quality workflows run harden-runner in audit mode because block mode intermittently refused allow-listed hosts and left jobs hanging until their timeout; the release cut and publisher keep block mode with their curated allow lists.
+
+- **Sockguard is now MIT licensed, where it was Apache-2.0.** MIT has shorter terms, and unlike Apache-2.0 it has no explicit patent grant and no NOTICE requirement. Releases up to and including 2.2.x remain available under Apache-2.0.
+
+- The release cut and publisher retry checkout, Buildx setup and their GitHub API polling once after a short wait when harden-runner block mode briefly refuses an allow-listed host; block mode and the allow lists are unchanged.
+
+## [2.3.0-rc.9] - 2026-10-25
+
+### Security
+
+- **The 2.2.11 fixes are now on the v2.3 line.** Native Podman container create's `base_hosts_file` and pod create's `hostsFile` are limited to the exact empty, `image` and `none` selectors, so a caller can no longer name a host file for the daemon to read into the container's `/etc/hosts`. `BUILDKIT_SYNTAX` frontend overrides are refused while RUN instructions are restricted. The mediated BuildKit Solve guard was already on v2.3; the classic Docker/Podman build-argument guard is new here, and it also refuses ambiguous query spellings, repeated values and malformed JSON. Release binaries and images are rebuilt with Go 1.27.3 for GO-2026-6809. The 2.2.11 entry below describes the source and test evidence; no live-daemon reproduction is claimed.
+
+### Changed
+
+- Carries the stable line's dependency, GitHub Actions and Gosec pin updates, and the docs build adapter isolation. The BuildKit frontend mediation, companion runner and `/v2` module path behave as they did in rc.8. This candidate only carries changes already released on 2.2.x, so the GA floor stays 2026-10-23. GA follows a fresh four-hour soak, TLS scan and published-image conformance run on the rc.9 head.
+
+## [2.2.11] - 2026-10-24
+
+### Fixed
+
+- Pin Gosec to the action commit that actually selects its Go 1.27-built 2.29.0 image. The 2.29.0 action tag still selects the Go 1.26-built 2.28.0 image, which cannot load the updated module with its local-only toolchain.
+
+- Keep the copied static docs export independent of the deployment platform adapter. The website retains its adapter; nested docs builds clear the inherited adapter path before producing assets. This avoids mixing the platform's immutable-asset handling into docs copied under the website's public directory.
+
+### Changed
+
+- Refresh the published v2.3.0-rc.8 candidate references and completed validation links while preparing the stable maintenance release.
+
+- Building from source now requires Go 1.27 because the updated sigstore dependency requires it. Release binaries and images already used Go 1.27. The module minimum is 1.27.0 and the selected toolchain is 1.27.3.
+
+### Security
+
+- Build release binaries and images with Go 1.27.3 to address GO-2026-6809 in certificate verification. Update the Go modules, website/docs dependencies, Knip and pinned GitHub Actions together; dependency scans and the release gates validate the combined maintenance queue.
+
+- **A native Podman create could select a host file as the base for the container's `/etc/hosts`.** Container create's `base_hosts_file` and pod create's `hostsFile` are now limited to the exact empty, `image` and `none` selectors. Every other string is refused, including absolute, relative and whitespace-only paths and padded or differently cased selectors. Podman passes such a string to the daemon's file reader, which copies parsed lines with at least two whitespace-separated fields into the generated hosts file. Empty retains the daemon administrator's configured default, `image` uses the image's hosts file, and `none` supplies no base entries. `allowed_bind_mounts` does not open this gate and there is no new option. This changes `podman --remote run --hosts-file /path` and `podman --remote pod create --hosts-file /path`; normal creates and the three selector values still pass. The guard covers direct and versioned routes, follows `enforce`/`warn`/`audit`, and retains the original body when a rollout mode forwards it. The new tests failed against the previous inspector and pass with the guard. The daemon-side behavior was checked in Podman 5.8.6 and 6.1.3 and their `go.podman.io/common` 0.67.1 and 0.69.2 sources; this was not reproduced against a live Podman daemon.
+
+- Refuse `BUILDKIT_SYNTAX` frontend overrides while RUN instructions are restricted, on classic Docker/Podman build arguments and mediated BuildKit Solve. A selected compiler can't be constrained by scanning the submitted Dockerfile. Classic build arguments with ambiguous query spellings, repeated values or malformed JSON are refused under this restriction. This guard joins the v2.2 maintenance line in 2.2.11.
+
 ## [2.3.0-rc.8] - 2026-10-15
 
 ### Security

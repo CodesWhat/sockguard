@@ -108,7 +108,7 @@ function buildComparisonJsonLd({
           url: BASE_URL,
           applicationCategory: "DeveloperApplication",
           operatingSystem: "Docker",
-          license: "https://www.apache.org/licenses/LICENSE-2.0",
+          license: "https://opensource.org/license/mit",
         },
       },
       {
@@ -159,6 +159,7 @@ export function createComparisonRoute(config: ComparisonRouteConfig) {
     twitterDescription: config.twitterDescription,
   });
 
+  // biome-ignore lint/correctness/noComponentHookFactories: Each route calls this factory once at module initialization, so component identity stays stable.
   function RoutePage() {
     return (
       <ComparisonPage

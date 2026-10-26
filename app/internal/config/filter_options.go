@@ -135,6 +135,7 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 		DenySelinuxLabelOverride:          c.DenySelinuxLabelOverride,
 		DenyUnconfinedSystemPaths:         c.DenyUnconfinedSystemPaths,
 		AllowTmpfsPrivilegedOptions:       c.AllowTmpfsPrivilegedOptions,
+		AllowLogPath:                      c.AllowLogPath,
 	}
 }
 
@@ -176,6 +177,7 @@ func (c LibpodContainerCreateRequestBodyConfig) ToFilterOptions() filter.LibpodC
 		ImageTrust:                        c.ImageTrust.toFilterOptions(),
 		AllowSystemdMode:                  c.AllowSystemdMode,
 		AllowCustomIDMappings:             c.AllowCustomIDMappings,
+		AllowLogPath:                      c.AllowLogPath,
 	}
 }
 
