@@ -22,7 +22,7 @@ concurrency:
 jobs:
   benchmarks:
     name: "Quality: Go Benchmarks"
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # The Jun/Jul/Aug 2026 runs blew past 30m because benchmarkInspectPolicy
     # (internal/filter/inspect_bench_test.go) called b.StopTimer()/b.StartTimer()
     # every loop iteration, which forces two runtime.ReadMemStats() calls per

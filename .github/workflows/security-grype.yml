@@ -35,7 +35,7 @@ jobs:
   # gate job instead, and the workflow itself always triggers on PRs now.
   changes:
     name: "Security: Changed Paths"
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -102,7 +102,7 @@ jobs:
     name: "Security: Govulncheck"
     needs: changes
     if: needs.changes.outputs.security == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
@@ -149,7 +149,7 @@ jobs:
     # twice per PR; it still catches newly disclosed CVEs against unchanged
     # images between PRs.
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     permissions:
       contents: read
@@ -226,7 +226,7 @@ jobs:
     name: "Security: Grype Dependency Scan (Go + npm)"
     needs: changes
     if: needs.changes.outputs.security == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
       contents: read
@@ -277,7 +277,7 @@ jobs:
     name: "Security: Gosec SAST"
     needs: changes
     if: needs.changes.outputs.security == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
       contents: read
@@ -329,7 +329,7 @@ jobs:
     # DAST is heavy (builds sockguard, pulls the testssl image, probes a
     # live listener) — keep it on scheduled/manual runs, not every PR.
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     # Secrets can't be read in a step `if:`, so whether both Docker Hub
     # credentials are present is mapped here to gate the login on it.
@@ -406,7 +406,7 @@ jobs:
     # scan below can pull the real thing.
     name: "Security: Resolve Latest Published Release"
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -437,7 +437,7 @@ jobs:
   grype-published-release:
     name: "Security: Grype Scan (Published Release Image, ${{ matrix.platform }})"
     needs: resolve-latest-release
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     permissions:
       contents: read

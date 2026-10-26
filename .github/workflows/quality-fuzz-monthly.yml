@@ -49,7 +49,7 @@ concurrency:
 jobs:
   monthly-fuzz:
     name: "Fuzz ${{ matrix.fuzzer.name }} (monthly)"
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # 6-hour ceiling is the hard cap regardless of the fuzztime input.
     # Anything longer should run on a dedicated box, not a shared runner.
     timeout-minutes: 360

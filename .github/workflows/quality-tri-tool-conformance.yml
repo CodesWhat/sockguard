@@ -55,7 +55,7 @@ concurrency:
 jobs:
   self-test:
     name: "Harness self-test"
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
@@ -82,7 +82,7 @@ jobs:
   matrix:
     name: "${{ matrix.row }}"
     needs: self-test
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -155,7 +155,7 @@ jobs:
     name: "Summary"
     needs: matrix
     if: always()
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.

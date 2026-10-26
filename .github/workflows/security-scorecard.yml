@@ -21,7 +21,7 @@ jobs:
     name: "Security: Scorecard Analysis"
     # OpenSSF Scorecard only runs on public repos; SARIF upload also requires GHAS.
     if: github.event.repository.visibility == 'public'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     permissions:
       contents: read  # Checkout code

@@ -38,7 +38,7 @@ jobs:
   # reason, as security-grype.yml's "Security: Changed Paths".
   changes:
     name: "Changed Paths"
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -187,7 +187,7 @@ jobs:
   shellcheck:
     name: "Shellcheck"
     if: github.event_name != 'schedule'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -213,7 +213,7 @@ jobs:
     # CodeQL SARIF upload requires GitHub Advanced Security (GHAS), which is not
     # available on free private repos. Skip unless the repo is public.
     if: github.event.repository.visibility == 'public' && (github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     permissions:
       actions: read
@@ -261,7 +261,7 @@ jobs:
     # The repository Dependency Graph setting was enabled 2026-08-17, so this
     # job now actually runs on every PR (sockguard#271 item 1).
     if: ${{ github.event.repository.visibility == 'public' && github.event_name == 'pull_request' }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -284,7 +284,7 @@ jobs:
 
   gitleaks:
     name: "Gitleaks"
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -326,7 +326,7 @@ jobs:
 
   actionlint:
     name: "Actionlint"
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -352,7 +352,7 @@ jobs:
   commit-message:
     name: "Commit Message"
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
 
     steps:
@@ -432,7 +432,7 @@ jobs:
     # go-ci above: a failed gate job leaves docs_only empty, `'' != 'true'`
     # is true, and the build runs.
     if: ${{ !cancelled() && github.event_name != 'schedule' && needs.changes.outputs.docs_only != 'true' }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     permissions:
       contents: read

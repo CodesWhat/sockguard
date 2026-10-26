@@ -56,7 +56,7 @@ concurrency:
 jobs:
   integration-podman-rootful:
     name: "Integration (rootful podman)"
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
 
     steps:
@@ -224,7 +224,7 @@ jobs:
 
   integration-podman-rootless:
     name: "Integration (rootless podman)"
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     # See the workflow-level comment above: rootless is exercised for
     # coverage but never blocks a PR on runner infrastructure quirks that

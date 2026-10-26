@@ -56,7 +56,7 @@ concurrency:
 jobs:
   deep-fuzz:
     name: "Fuzz ${{ matrix.fuzzer.name }}"
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # Job-level cap is the hard ceiling regardless of what -fuzztime asks
     # for. Keep it comfortably above the default budget run twice (the Fuzz
     # step retries the known boundary flake once → ~2×15m + setup) and above
