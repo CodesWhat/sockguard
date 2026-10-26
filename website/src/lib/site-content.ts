@@ -372,14 +372,36 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
-    version: "v2.3.0",
-    title: "BuildKit RUN-Instruction Coverage",
-    emoji: "🧩",
-    status: "next",
+    version: "v2.2.11",
+    title: "Security Patch: Hosts Files, Frontend Overrides and Dependencies",
+    emoji: "🔒",
+    status: "released",
     items: [
-      "Prepared for rc.8, with rc.7 still the published candidate: individual raw-LLB ExecOp digest approvals, external frontend gateway mediation and the pinned companion runner; opaque in-daemon frontends and interactive execution stay denied",
-      "The /v2 Go module migration is in the candidate, including imports, release linker flags and regenerated BuildKit descriptors; Docker, Homebrew, deb and rpm installation paths are unchanged",
-      "The prepared rc.8 source carries the 2.2.10 pod infra PID-file refusal and passed fresh soak/TLS validation; the tag cut awaits confirmation, and GA remains no earlier than 2026-10-23",
+      "Native Podman create refuses custom hosts-file paths; restricted builds refuse BUILDKIT_SYNTAX frontend overrides",
+      "Go 1.27.3 addresses the certificate-verification advisory; website/docs dependencies and CI actions are refreshed",
+      "Building from source now requires Go 1.27",
+    ],
+  },
+  {
+    version: "v2.3.0",
+    title: "BuildKit Frontend Mediation & Go Module v2",
+    emoji: "🧩",
+    status: "released",
+    items: [
+      "Individual raw-LLB ExecOp digest approvals, external frontend gateway mediation and the pinned companion runner; opaque in-daemon frontends and interactive execution stay denied",
+      "The Go module declares github.com/codeswhat/sockguard/v2, so go install and the Go Reference badge resolve to the v2 line; Docker, Homebrew, deb and rpm installation paths are unchanged",
+      "Relicensed MIT from this release; 2.2.x and earlier remain Apache-2.0",
+      "Promotes v2.3.0-rc.9 after a four-hour soak, a TLS scan and tri-tool conformance",
+    ],
+  },
+  {
+    version: "v2.3.1",
+    title: "Security Patch: Container Log Path Refusal",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Compat and native container create refuse a client-supplied log path, which Podman wrote on the daemon host, unless allow_log_path is on",
+      "Off by default in both container_create and libpod_container_create; a create that names no path is unaffected",
     ],
   },
   {
@@ -389,7 +411,7 @@ export const roadmap: Milestone[] = [
     status: "candidate",
     items: [
       "v2.4.0-rc.1 candidate: exact image allowlists for Docker and Podman container creation and Swarm service creation/update, with per-client lists and rollout modes",
-      "Unix container-label identity remains a documented limit; use distinct UID/GID profiles. Select the candidate explicitly; stable remains v2.2.10",
+      "Unix container-label identity remains a documented limit; use distinct UID/GID profiles. Select the candidate explicitly; stable remains v2.3.1",
       "Implemented: known-route startup/validate warnings, create environment/command/entrypoint policy, and reproducible binary build checks for all four targets; the formal-spec decision is recorded",
       "Native mount/source and CDI checks, owner-aware BuildKit exports, Podman RUN controls, and standard local Buildx Dockerfile mediation; GA requires fresh candidate validation and at least 14 days of baking",
     ],

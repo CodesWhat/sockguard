@@ -41,7 +41,7 @@ export const SITE_CONFIG = {
   /** Whether the logo inverts in dark mode (adds `dark:invert`). */
   logoInvertOnDark: false,
   /** License link shown in the footer. */
-  licenseUrl: "https://www.apache.org/licenses/LICENSE-2.0",
+  licenseUrl: "https://opensource.org/license/mit",
   /** Aurora background palette token (see globals.css `[data-bg]`). */
   aurora: "ember" as AuroraPalette,
 } as const;

@@ -15,12 +15,12 @@ export const SITE_CONFIG = {
   /** Brand name shown in the header, footer, and metadata. */
   name: "Sockguard",
   /** Current release version shown in the hero badge. */
-  version: "2.2.10",
+  version: "2.3.1",
   /** Explicit placeholders and real toolchain version used by the hand-rendered CLI demo. */
   cliDemo: {
     commit: "<sha>",
     built: "<rfc3339>",
-    goVersion: "go1.27.2",
+    goVersion: "go1.27.3",
     logTime: "<rfc3339>",
   },
   /** Short product tagline used in page titles and OG metadata. */
@@ -53,7 +53,7 @@ export const SITE_CONFIG = {
   /** Docker Hub image, "owner/name". */
   dockerImage: "codeswhat/sockguard",
   /** License link shown in the footer. */
-  licenseUrl: "https://www.apache.org/licenses/LICENSE-2.0",
+  licenseUrl: "https://opensource.org/license/mit",
   /** Aurora background palette token (see globals.css `[data-bg]`). */
   aurora: "ember" as AuroraPalette,
   /** Prefix for localStorage keys (keeps multi-site deploys from colliding). */
