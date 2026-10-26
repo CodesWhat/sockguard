@@ -54,17 +54,11 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      # Stage 1 of the harden-runner egress rollout: the only external call
-      # this job makes is curl against docs.docker.com — a single, stable
-      # vendor host.
+      # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       - name: Harden Runner
         uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
-          egress-policy: block
-          allowed-endpoints: >
-            github.com:443
-            docs.docker.com:443
-            *.actions.githubusercontent.com:443
+          egress-policy: audit
           disable-sudo: true
 
       - name: Checkout
