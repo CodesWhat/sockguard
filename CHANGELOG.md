@@ -7,11 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-10-26
+
+v2.3.0 promotes v2.3.0-rc.9 unchanged in behavior: BuildKit frontend mediation with per-ExecOp digest approvals, the pinned frontend companion runner, the `github.com/codeswhat/sockguard/v2` module path, and everything shipped on 2.2.x through 2.2.11. It is relicensed MIT from this release; 2.2.x and earlier remain Apache-2.0. rc.9 was validated before promotion: a four-hour soak with zero errors across 253 million requests, a TLS 1.3-only scan, and tri-tool conformance with no failures.
+
 ### Changed
 
 - The pre-push lockfile dedupe check resolves against npm as of 14 days ago, matching the Renovate release-age cool-off, so a just-published dependency no longer blocks pushes.
 
 - CI, PR security scans and quality workflows run harden-runner in audit mode because block mode intermittently refused allow-listed hosts and left jobs hanging until their timeout; the release cut and publisher keep block mode with their curated allow lists.
+
 - **Sockguard is now MIT licensed, where it was Apache-2.0.** MIT has shorter terms, and unlike Apache-2.0 it has no explicit patent grant and no NOTICE requirement. Releases up to and including 2.2.x remain available under Apache-2.0.
 
 - The release cut and publisher retry checkout, Buildx setup and their GitHub API polling once after a short wait when harden-runner block mode briefly refuses an allow-listed host; block mode and the allow lists are unchanged.
