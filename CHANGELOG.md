@@ -20,6 +20,7 @@ This candidate carries the v2.3.0 and v2.3.1 releases forward onto the v2.4 line
 
 - Carries v2.3.0: the BuildKit frontend mediation, `sockguard frontend` runner and per-ExecOp digest approvals are in stable v2.3, and Sockguard is MIT licensed from that release. 2.2.x and earlier remain Apache-2.0.
 - Carries the v2.3 CI changes: the lockfile dedupe check resolves against npm as of 14 days ago, and CI workflows run harden-runner in audit mode while the release cut and publisher keep block mode.
+- **Carries the v2.3 CI tooling fixes from the PR #638 review.** The pre-push lockfile dedupe check now applies the release-age cutoff only to its dedupe probe, so an exactly pinned dependency published inside the cutoff window can no longer fail the install probe with ETARGET and block a push. The monthly mutation job that commits the badge keeps harden-runner in block mode with an allow list, because it holds a write credential; the read-only jobs stay on audit. The release CI-verify wait now holds each request, its retries and its sleep to the time left in `max-wait-seconds`, so a poll that starts near the deadline fails with the action's timeout error instead of running into the job timeout.
 
 ### Documentation
 
