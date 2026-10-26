@@ -394,4 +394,14 @@ export const roadmap: Milestone[] = [
       "Promotes v2.3.0-rc.9 after a four-hour soak, a TLS scan and tri-tool conformance",
     ],
   },
+  {
+    version: "v2.3.1",
+    title: "Security Patch: Container Log Path Refusal",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Compat and native container create refuse a client-supplied log path, which Podman wrote on the daemon host, unless allow_log_path is on",
+      "Off by default in both container_create and libpod_container_create; a create that names no path is unaffected",
+    ],
+  },
 ];
