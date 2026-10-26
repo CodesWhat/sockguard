@@ -113,37 +113,8 @@ const GO_INPUTS = [
   "run-workflow-security: true",
   `run-goreleaser: \${{ github.event_name != 'schedule' }}`,
   `run-qlty: \${{ github.event_name != 'schedule' }}`,
-  "qlty-egress-policy: block",
-];
-
-// The proven Qlty endpoint allowlist, copied from portwing's ci-verify.yml
-// rather than re-derived (CodesWhat/.github REPOSITORY_ONBOARDING.md says to
-// copy it and not widen it). qlty downloads its own CLI plus every plugin
-// runtime the default source resolves, so this list is wider than an ordinary
-// Go job's and must not grow without a measured need.
-const QLTY_ALLOWED_ENDPOINTS = [
-  "api.github.com:443",
-  "api.osv.dev:443",
-  "api.segment.io:443",
-  "api0.prismacloud.io:443",
-  "dl.google.com:443",
-  "files.pythonhosted.org:443",
-  "github-proxy.qlty.sh:443",
-  "github.com:443",
-  "go.dev:443",
-  "mirror.gcr.io:443",
-  "nodejs.org:443",
-  "objects.githubusercontent.com:443",
-  "proxy.golang.org:443",
-  "pypi.org:443",
-  "qlty-releases.s3.amazonaws.com:443",
-  "radarlint-releases.s3.amazonaws.com:443",
-  "registry.npmjs.org:443",
-  "release-assets.githubusercontent.com:443",
-  "sum.golang.org:443",
-  "tmaproduction.blob.core.windows.net:443",
-  "tuf-repo-cdn.sigstore.dev:443",
-  "tuf-repo.github.com:443",
+  "qlty-egress-policy: audit",
+  "workflow-security-egress-policy: audit",
 ];
 
 const NODE_INPUTS = [
@@ -351,20 +322,6 @@ test("the local lint and release gates use the same isolated fixed adapters", ()
   assert.doesNotMatch(lefthook, /^ {6}run: golangci-lint run$/mu);
 });
 
-function qltyAllowedEndpoints(source) {
-  const header = "      qlty-allowed-endpoints: >-\n";
-  const go = jobSection(source, "go-ci");
-  const start = go.indexOf(header);
-  assert.notEqual(start, -1, "go-ci must pin qlty-allowed-endpoints as a block scalar");
-
-  const endpoints = [];
-  for (const line of go.slice(start + header.length).split("\n")) {
-    if (!line.startsWith("        ")) break;
-    endpoints.push(line.trim());
-  }
-  return endpoints;
-}
-
 function prePushPriorities(lefthook) {
   const section = lefthook.slice(lefthook.indexOf("\npre-push:"));
   const priorities = new Map();
@@ -420,14 +377,45 @@ test("the repository-run Qlty gate is wired into CI, the pre-push hook, and one 
   );
 });
 
-test("the Qlty egress allowlist stays exactly the proven portwing endpoint set", () => {
-  const endpoints = qltyAllowedEndpoints(fs.readFileSync(WORKFLOW, "utf8"));
-  assert.deepEqual(endpoints, QLTY_ALLOWED_ENDPOINTS);
-  assert.deepEqual(
-    endpoints,
-    [...endpoints].sort(),
-    "keep the allowlist sorted so an addition is visible in review",
-  );
+function workflowFiles() {
+  const dir = path.join(ROOT, ".github", "workflows");
+  return fs
+    .readdirSync(dir)
+    .filter((name) => name.endsWith(".yml"))
+    .sort();
+}
+
+const BLOCK_MODE_WORKFLOWS = ["release-cut.yml", "release-from-tag.yml"];
+
+test("only the release workflows keep harden-runner block mode, with an allow list", () => {
+  const dir = path.join(ROOT, ".github", "workflows");
+  for (const name of workflowFiles()) {
+    // Comments may legitimately discuss block mode; only live config counts.
+    const source = fs
+      .readFileSync(path.join(dir, name), "utf8")
+      .split("\n")
+      .filter((line) => !/^\s*#/u.test(line))
+      .join("\n");
+    if (BLOCK_MODE_WORKFLOWS.includes(name)) {
+      assert.match(source, /^\s*egress-policy: block\s*$/mu, `${name} must keep block mode`);
+      assert.match(
+        source,
+        /^\s*allowed-endpoints: (?:[>|][-+]?\s*\n\s+\S|\S)/mu,
+        `${name} must keep a non-empty allowed-endpoints list`,
+      );
+    } else {
+      assert.doesNotMatch(
+        source,
+        /egress-policy: block/u,
+        `${name} must run harden-runner in audit mode (DEP-19)`,
+      );
+      assert.doesNotMatch(
+        source,
+        /allowed-endpoints:/u,
+        `${name} is audit mode, so an allow list is dead config`,
+      );
+    }
+  }
 });
 
 test("retired X1 bridge jobs must not be reintroduced", () => {

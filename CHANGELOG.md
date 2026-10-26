@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- CI, PR security scans and quality workflows run harden-runner in audit mode because block mode intermittently refused allow-listed hosts and left jobs hanging until their timeout; the release cut and publisher keep block mode with their curated allow lists.
+
 ## [2.2.11] - 2026-10-24
 
 ### Fixed
