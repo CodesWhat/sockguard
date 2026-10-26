@@ -10,7 +10,7 @@ description: Upgrade to stable v2.3, keep a v2.2 deployment patched, evaluate th
 | v2.3.1 | Published stable | Keep normal Docker, Homebrew, deb/rpm and binary release channels. |
 | v2.2.11 | Maintenance patch | The latest patch on the v2.2 line, for deployments that haven't moved to v2.3. |
 | v2.4.0-rc.2 | Release candidate | Select the candidate explicitly for image admission, create launch-field policies, route diagnostics and Buildx compatibility fixes. Stable channels stay on v2.3.1. |
-| v3.0.0-rc.2 | Published candidate | Select its image or `/v3` Go tag explicitly and migrate the removed TLS settings below. It carries v2.4.0-rc.2, and its validation and bake window are independent of v2.4. Stable channels stay on v2.3.1. |
+| v3.0.0-rc.3 | Published candidate | Select its image or `/v3` Go tag explicitly and migrate the removed TLS settings below. It carries v2.4.0-rc.2, and its validation and bake window are independent of v2.4. Stable channels stay on v2.3.1. |
 
 ## From Sockguard v2.1 to v2.2
 
@@ -66,7 +66,7 @@ identity remains a documented limit; use distinct UID/GID client profiles.
 
 ## From Sockguard v2 to v3 (release candidate)
 
-The current candidate, [v3.0.0-rc.2](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0-rc.2),
+The current candidate, [v3.0.0-rc.3](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0-rc.3),
 is published. It carries v2.4.0-rc.2 and includes the v2.4 policy/security work and the TLS removals below.
 The v2.4 candidate and all v2 release lines retain their accepted settings.
 Before testing the v3 candidate:
@@ -87,11 +87,11 @@ Docker environment's existing plaintext behavior when neither TLS variable is
 set. The opaque BuildKit acknowledgment remains accepted; its removal target is
 still undecided.
 
-Select `ghcr.io/codeswhat/sockguard:3.0.0-rc.2` explicitly, download a platform
+Select `ghcr.io/codeswhat/sockguard:3.0.0-rc.3` explicitly, download a platform
 binary from the release, or install with Go 1.27:
 
 ```bash
-go install github.com/codeswhat/sockguard/v3/app/cmd/sockguard@v3.0.0-rc.2
+go install github.com/codeswhat/sockguard/v3/app/cmd/sockguard@v3.0.0-rc.3
 ```
 
 The candidate module is `github.com/codeswhat/sockguard/v3`. Go consumers must

@@ -422,7 +422,7 @@ export const roadmap: Milestone[] = [
     emoji: "🔐",
     status: "candidate",
     items: [
-      "Published v3.0.0-rc.2 candidate; select its image or /v3 Go tag explicitly. Includes the v2.4 policy and security work",
+      "Published v3.0.0-rc.3 candidate; select its image or /v3 Go tag explicitly. Includes the v2.4 policy and security work",
       "Rejects the deprecated endpoint skip-verification setting and unverified Docker TLS fallback; configure the daemon CA and verified TLS",
       "Go imports, generated descriptors and release builds use /v3; stable channels stay on v2.3.1 and the v2.4 candidate keeps its independent bake",
       "GA requires fresh candidate soak, TLS/security checks and published-image conformance; no earlier than 2026-10-31 at 16:08:58 UTC. Candidate-only behavior fixes restart the window; opaque BuildKit removal remains undecided",

@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [3.0.0-rc.2] - 2026-10-26
+## [3.0.0-rc.3] - 2026-10-26
+
+This candidate replaces v3.0.0-rc.2. That tag was cut, but its release run failed before building anything, so rc.2 has no published images or binaries. rc.3 has the same code as rc.2. The only change is in the docs, listed below.
+
+### Documentation
+
+- Keep the v3 GA floor at 2026-10-31 16:08:58 UTC. The rc.2 notes had restarted the 14-day window, but forwarding fixes that already shipped in stable doesn't restart it.
+
+## [3.0.0-rc.2] - 2026-10-26 (tagged, not published)
 
 This candidate carries v2.4.0-rc.2 forward onto the v3 line, and through it v2.3.0, v2.3.1 and the 2.2.11 fixes that rc.1 predates. The v3 changes from rc.1 are otherwise unchanged.
 
