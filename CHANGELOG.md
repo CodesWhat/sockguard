@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0-rc.2] - 2026-10-26
+
+This candidate carries the v2.3.0 and v2.3.1 releases forward onto the v2.4 line, along with the 2.2.11 fixes that rc.1 predates. The v2.4 changes from rc.1 are otherwise unchanged.
+
+### Security
+
+- **Carries the v2.3.1 log-path refusal.** A container create could have a Podman upstream write the container's log to a host path the client chose, through `HostConfig.LogConfig.Config` `path` on the compat route or `log_configuration.path` and `healthLogDestination` on the native one. Both creates now refuse those unless the new `allow_log_path` option is turned on for the route. It's off by default, so a deployment whose clients set a log path has to enable it. The 2.3.1 entry below has the full behavior.
+- Carries the 2.2.11 fixes: native Podman `base_hosts_file` and `hostsFile` are limited to the empty, `image` and `none` selectors, and `BUILDKIT_SYNTAX` frontend overrides are refused while RUN instructions are restricted. Release binaries and images build with Go 1.27.3 for GO-2026-6809.
+
+### Changed
+
+- Carries v2.3.0: the BuildKit frontend mediation, `sockguard frontend` runner and per-ExecOp digest approvals are in stable v2.3, and Sockguard is MIT licensed from that release. 2.2.x and earlier remain Apache-2.0.
+- Carries the v2.3 CI changes: the lockfile dedupe check resolves against npm as of 14 days ago, and CI workflows run harden-runner in audit mode while the release cut and publisher keep block mode.
+
+### Documentation
+
+- Refresh the release status across the migration guide, roadmap, README and website: stable is v2.3.1, v2.2.11 is the last v2.2 maintenance patch, and the frontend runner and `allowed_exec_digests` are no longer described as candidate-only.
+
 ## [2.4.0-rc.1] - 2026-10-16
 
 ### Fixed

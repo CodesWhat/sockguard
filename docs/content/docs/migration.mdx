@@ -1,20 +1,19 @@
 ---
 title: Migration
-description: Upgrade stable v2.2 deployments, select a published v2.3 candidate, evaluate the v2.4 release candidate, or migrate from another Docker socket proxy.
+description: Upgrade to stable v2.3, keep a v2.2 deployment patched, evaluate the v2.4 release candidate, or migrate from another Docker socket proxy.
 ---
 
 ## Release availability
 
 | Line | Availability | Upgrade guidance |
 | --- | --- | --- |
-| v2.2.10 | Published stable | Keep normal Docker, Homebrew, deb/rpm and binary release channels. |
-| v2.3.0-rc.7 | Published candidate | Select the candidate explicitly for the frontend runner and individual LLB execution grants. |
-| v2.3.0-rc.8 | Prepared source, unpublished | Source soak/TLS validation passed; publication and published-artifact validation remain. Don't install this nonexistent tag. |
-| v2.4.0-rc.1 | Release candidate line | Select the candidate explicitly for image admission, create launch-field policies, route diagnostics and Buildx compatibility fixes. Stable channels remain on v2.2.10. |
+| v2.3.1 | Published stable | Keep normal Docker, Homebrew, deb/rpm and binary release channels. |
+| v2.2.11 | Maintenance patch | The latest patch on the v2.2 line, for deployments that haven't moved to v2.3. |
+| v2.4.0-rc.2 | Release candidate | Select the candidate explicitly for image admission, create launch-field policies, route diagnostics and Buildx compatibility fixes. Stable channels stay on v2.3.1. |
 
 ## From Sockguard v2.1 to v2.2
 
-Upgrade to the latest v2.2 patch, currently v2.2.10, and validate the deployed
+Upgrade to the latest v2.2 patch, currently v2.2.11, and validate the deployed
 configuration before switching images. v2.2 retains the configuration surface,
 but intentional security fixes can deny requests that older patches forwarded:
 Podman host-path and image-name handling, ambiguous body keys and form bodies,
@@ -31,21 +30,15 @@ CLI invocations are unchanged.
 
 ## Upgrading to v2.3
 
-v2.3 is a candidate line until GA. Its frontend runner and
+v2.3 is the current stable line. It adds the frontend runner and the
 `request_body.buildkit.control.solve.allow_frontend_gateway` /
-`allowed_exec_digests` settings aren't available in v2.2.10. Pin the published
-v2.3.0-rc.7 tag explicitly while evaluating them. The prepared rc.8 source isn't
-an installable release, and GA remains no earlier than 2026-10-23.
+`allowed_exec_digests` settings, which aren't available in v2.2.
 
 The Go module becomes `github.com/codeswhat/sockguard/v2`. Go consumers must add
-`/v2` to imports. Source builds require **Go 1.27 from v2.3.0-rc.2**; the selected
-build toolchain is Go 1.27.2. The v2.2 line retains its Go 1.26 language minimum
-despite also selecting the newer toolchain. Install the published candidate with
-`go install github.com/codeswhat/sockguard/v2/app/cmd/sockguard@v2.3.0-rc.7`.
-After GA, the `/v2` path remains and `@latest` can select the stable v2.3 release.
-Docker, Homebrew, deb/rpm and downloaded binaries don't acquire a Go import-path
-requirement or need Go installed. Stable channels continue to follow stable
-releases; they don't switch to candidates automatically.
+`/v2` to imports. Source builds require Go 1.27. Install with
+`go install github.com/codeswhat/sockguard/v2/app/cmd/sockguard@latest`, or pin
+`@v2.3.1`. Docker, Homebrew, deb/rpm and downloaded binaries don't acquire a Go
+import-path requirement or need Go installed.
 
 Also review v2.3's legacy tmpfs privilege checks and BuildKit remote-source
 controls in the CHANGELOG. See the [frontend runner guide](/frontend-runner)
@@ -53,11 +46,11 @@ before enabling external frontend execution.
 
 ## Evaluating v2.4
 
-v2.4.0-rc.1 is a release candidate. Select `codeswhat/sockguard:2.4.0-rc.1`
+v2.4.0-rc.2 is a release candidate. Select `codeswhat/sockguard:2.4.0-rc.2`
 explicitly, or install the source with
-`go install github.com/codeswhat/sockguard/v2/app/cmd/sockguard@v2.4.0-rc.1`.
+`go install github.com/codeswhat/sockguard/v2/app/cmd/sockguard@v2.4.0-rc.2`.
 Go source builds require Go 1.27. Stable Homebrew and package channels continue
-to follow v2.2.10. Don't copy candidate-only settings into an older binary.
+to follow v2.3.1. Don't copy candidate-only settings into an older binary.
 
 Validate with the exact candidate binary before switching traffic. Review the
 new Podman source-mutation/device checks and RUN-control/private-network
@@ -67,8 +60,7 @@ see [Security](/security#standard-buildx-dockerfile-builds).
 
 Candidate GA requires fresh four-hour soak/TLS results, published-image
 conformance and at least 14 days of baking. A candidate-only behavior fix
-restarts that window. The v2.3 candidate source and its earlier clock are
-separate; they don't satisfy the v2.4 validation gates. Unix container-label
+restarts that window. Validation of v2.3 stable doesn't satisfy the v2.4 gates. Unix container-label
 identity remains a documented limit; use distinct UID/GID client profiles.
 
 ## Deprecation schedule
