@@ -16,7 +16,7 @@
   <a href="https://github.com/CodesWhat/sockguard/releases"><img src="https://img.shields.io/github/v/release/CodesWhat/sockguard?include_prereleases&label=release" alt="Release"></a>
   <a href="https://github.com/orgs/CodesWhat/packages/container/package/sockguard"><img src="https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-informational?logo=linux&logoColor=white" alt="Multi-arch"></a>
   <a href="https://github.com/orgs/CodesWhat/packages/container/package/sockguard"><img src="https://img.shields.io/docker/image-size/codeswhat/sockguard/latest?logo=docker&logoColor=white&label=image%20size" alt="Image size"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-C9A227" alt="License Apache-2.0"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-C9A227" alt="License MIT"></a>
   <br>
   <!-- row 2, quality/security -->
   <a href="https://github.com/CodesWhat/sockguard/actions/workflows/ci-verify.yml"><img src="https://github.com/CodesWhat/sockguard/actions/workflows/ci-verify.yml/badge.svg?branch=main" alt="CI"></a>
@@ -43,7 +43,7 @@
 <hr>
 
 > [!NOTE]
-> **v2.2.11 is the latest stable release.** It closes native Podman hosts-file selection and restricted-build frontend overrides, rebuilds with Go 1.27.3 for certificate-verification security fixes, and refreshes dependencies. Building from source now requires Go 1.27. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
+> **v2.3.0 is the latest stable release.** It promotes `2.3.0-rc.9` unchanged in behavior: BuildKit frontend mediation with per-ExecOp digest approvals and a pinned frontend companion runner, and the `github.com/codeswhat/sockguard/v2` Go module path, on top of everything shipped through 2.2.11. Sockguard is now MIT licensed; 2.2.x and earlier releases remain available under Apache-2.0. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
 <h2 align="center">Contents</h2>
 
@@ -505,7 +505,7 @@ Added in 2.2.11: native Podman container and pod creates refuse caller-selected 
 | **v2.1.0** ✅ | Native libpod Write Inspection & Owner Isolation | Copy-into-container, update, restore, checkpoint and mount inspected on the libpod routes, owner isolation fails closed with `404` / `403` / `502` across the prune family, commit and image export/removal, process-list reads need the read-exfiltration acknowledgment, read-side redaction reaches libpod inspect, volume reads and network topology |
 | **v2.2.x** ✅ | Volume-Mount Containment & Read-Side Redaction | `local` volume driver `type`/`o`/`device` options held to `allowed_bind_mounts` on container create and Swarm mounts, `PUT /volumes/{name}` inspection, request-target guard, redaction that survives gzip, `HEAD`, `304` and image inspect, `sockguard verify`, `server.shutdown_grace`, rootless `match.path` rejected, fewer per-request allocations. Security patches 2.2.1 to 2.2.10 cover Podman/libpod create and body-key hardening, compat create host paths, Dockerfile directive, line-assembly and heredoc forms, a Go toolchain rebuild, owner-isolation image naming, form-body refusal and pod infra PID-file refusal The 2.2.11 patch also closes `BUILDKIT_SYNTAX` argument overrides on restricted classic and mediated builds. |
 | **v2.2.11** | Maintenance | Security fixes for native Podman hosts files and restricted frontend overrides, Go 1.27.3 certificate-verification remediation, dependency/CI updates, a compatible Gosec action and isolated static docs builds |
-| **v2.3.0** | BuildKit Frontend Mediation & Go Module v2 | **v2.3.0-rc.9 is the next candidate and carries the 2.2.11 fixes; [v2.3.0-rc.8](https://github.com/CodesWhat/sockguard/releases/tag/v2.3.0-rc.8) stays the latest published candidate until v2.3.0-rc.9 is cut. GA remains no earlier than 2026-10-23 and follows fresh soak, TLS and published-image conformance on rc.9.** Raw LLB ExecOps are approved individually through `request_body.buildkit.control.solve.allowed_exec_digests`, and with `control.solve.allow_frontend_gateway` on, each iterative LLB Solve from a third-party frontend is mediated under the root build's policy while the `sockguard frontend` companion runner executes a pinned compiler image in an isolated Docker container ([frontend runner guide](https://getsockguard.com/docs/frontend-runner)). Interactive container/process RPCs and daemon-resolved nested gateway builds stay denied, and BuildKit job refs and callback session IDs are scoped by client and profile. The module declares `github.com/codeswhat/sockguard/v2`, so Go users can pin a candidate by tag and `@latest` resolves to v2.3 once v2.3.0 is published; Docker, Homebrew, deb and rpm installs are unchanged. Also on the line: legacy `HostConfig.Tmpfs` held to `allow_tmpfs_privileged_options`, the remote-context grant required for raw LLB remote sources, the reserved `BUILDKIT_SYNTAX` frontend override rejected on restricted Dockerfile builds, OCI image loads bounded by cumulative logical blob size, and object-shaped secret `Driver` selection behind `allow_custom_drivers` |
+| **v2.3.0** ✅ | BuildKit Frontend Mediation & Go Module v2 | Promotes `v2.3.0-rc.9` after a four-hour soak, a TLS scan and tri-tool conformance, and relicenses Sockguard MIT (2.2.x and earlier remain Apache-2.0). Raw LLB ExecOps are approved individually through `request_body.buildkit.control.solve.allowed_exec_digests`, and with `control.solve.allow_frontend_gateway` on, each iterative LLB Solve from a third-party frontend is mediated under the root build's policy while the `sockguard frontend` companion runner executes a pinned compiler image in an isolated Docker container ([frontend runner guide](https://getsockguard.com/docs/frontend-runner)). Interactive container/process RPCs and daemon-resolved nested gateway builds stay denied, and BuildKit job refs and callback session IDs are scoped by client and profile. The module declares `github.com/codeswhat/sockguard/v2`, so `go install github.com/codeswhat/sockguard/v2/app/cmd/sockguard@latest` resolves to the v2 line; Docker, Homebrew, deb and rpm installs are unchanged. Also on the line: legacy `HostConfig.Tmpfs` held to `allow_tmpfs_privileged_options`, the remote-context grant required for raw LLB remote sources, the reserved `BUILDKIT_SYNTAX` frontend override rejected on restricted Dockerfile builds, OCI image loads bounded by cumulative logical blob size, and object-shaped secret `Driver` selection behind `allow_custom_drivers` |
 | **v2.x** | Security Hardening | Continued mutation-test hardening of the rule-evaluation core and config validators |
 | **v2.x** | Supply Chain | `egress-policy: block` with curated allow-lists on high-privilege release jobs |
 | **v2.x** | Policy Refinement | Named rule path aliases and further response-policy refinement |
@@ -585,7 +585,7 @@ See [portwing's COMPATIBILITY.md](https://github.com/CodesWhat/portwing/blob/mai
 
 ---
 
-**[Apache-2.0 License](LICENSE)**
+**[MIT License](LICENSE)**
 
 <a href="https://github.com/CodesWhat">
   <picture>

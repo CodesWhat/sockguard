@@ -236,8 +236,7 @@ export function ComparisonPage({
               {`Ready to try ${SITE_CONFIG.name}?`}
             </h2>
             <p className="mb-8 text-neutral-600 dark:text-neutral-400">
-              Default-deny, Apache-2.0, no SaaS required. Drop it in front of your socket in
-              minutes.
+              Default-deny, MIT, no SaaS required. Drop it in front of your socket in minutes.
             </p>
 
             <CtaButtons placement="comparison" />

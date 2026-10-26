@@ -151,7 +151,7 @@ function LicenseLine({ className }: { className?: string }) {
         rel="noopener noreferrer"
         className="underline underline-offset-2 hover:text-neutral-900 dark:hover:text-neutral-100"
       >
-        Apache-2.0 License
+        MIT License
       </a>
       .
     </p>

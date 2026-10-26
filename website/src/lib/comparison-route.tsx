@@ -108,7 +108,7 @@ function buildComparisonJsonLd({
           url: BASE_URL,
           applicationCategory: "DeveloperApplication",
           operatingSystem: "Docker",
-          license: "https://www.apache.org/licenses/LICENSE-2.0",
+          license: "https://opensource.org/license/mit",
         },
       },
       {
