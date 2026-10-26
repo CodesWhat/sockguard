@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The pre-push lockfile dedupe check resolves against npm as of 14 days ago, matching the Renovate release-age cool-off, so a just-published dependency no longer blocks pushes.
+
 - CI, PR security scans and quality workflows run harden-runner in audit mode because block mode intermittently refused allow-listed hosts and left jobs hanging until their timeout; the release cut and publisher keep block mode with their curated allow lists.
 
 ## [2.3.0-rc.9] - 2026-10-25
