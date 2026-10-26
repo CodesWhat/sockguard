@@ -116,37 +116,8 @@ const GO_INPUTS = [
   "run-workflow-security: true",
   `run-goreleaser: \${{ github.event_name != 'schedule' }}`,
   `run-qlty: \${{ github.event_name != 'schedule' }}`,
-  "qlty-egress-policy: block",
-];
-
-// The proven Qlty endpoint allowlist, copied from portwing's ci-verify.yml
-// rather than re-derived (CodesWhat/.github REPOSITORY_ONBOARDING.md says to
-// copy it and not widen it). qlty downloads its own CLI plus every plugin
-// runtime the default source resolves, so this list is wider than an ordinary
-// Go job's and must not grow without a measured need.
-const QLTY_ALLOWED_ENDPOINTS = [
-  "api.github.com:443",
-  "api.osv.dev:443",
-  "api.segment.io:443",
-  "api0.prismacloud.io:443",
-  "dl.google.com:443",
-  "files.pythonhosted.org:443",
-  "github-proxy.qlty.sh:443",
-  "github.com:443",
-  "go.dev:443",
-  "mirror.gcr.io:443",
-  "nodejs.org:443",
-  "objects.githubusercontent.com:443",
-  "proxy.golang.org:443",
-  "pypi.org:443",
-  "qlty-releases.s3.amazonaws.com:443",
-  "radarlint-releases.s3.amazonaws.com:443",
-  "registry.npmjs.org:443",
-  "release-assets.githubusercontent.com:443",
-  "sum.golang.org:443",
-  "tmaproduction.blob.core.windows.net:443",
-  "tuf-repo-cdn.sigstore.dev:443",
-  "tuf-repo.github.com:443",
+  "qlty-egress-policy: audit",
+  "workflow-security-egress-policy: audit",
 ];
 
 const NODE_INPUTS = [
@@ -354,20 +325,6 @@ test("the local lint and release gates use the same isolated fixed adapters", ()
   assert.doesNotMatch(lefthook, /^ {6}run: golangci-lint run$/mu);
 });
 
-function qltyAllowedEndpoints(source) {
-  const header = "      qlty-allowed-endpoints: >-\n";
-  const go = jobSection(source, "go-ci");
-  const start = go.indexOf(header);
-  assert.notEqual(start, -1, "go-ci must pin qlty-allowed-endpoints as a block scalar");
-
-  const endpoints = [];
-  for (const line of go.slice(start + header.length).split("\n")) {
-    if (!line.startsWith("        ")) break;
-    endpoints.push(line.trim());
-  }
-  return endpoints;
-}
-
 function prePushPriorities(lefthook) {
   const section = lefthook.slice(lefthook.indexOf("\npre-push:"));
   const priorities = new Map();
@@ -423,14 +380,360 @@ test("the repository-run Qlty gate is wired into CI, the pre-push hook, and one 
   );
 });
 
-test("the Qlty egress allowlist stays exactly the proven portwing endpoint set", () => {
-  const endpoints = qltyAllowedEndpoints(fs.readFileSync(WORKFLOW, "utf8"));
-  assert.deepEqual(endpoints, QLTY_ALLOWED_ENDPOINTS);
-  assert.deepEqual(
-    endpoints,
-    [...endpoints].sort(),
-    "keep the allowlist sorted so an addition is visible in review",
+function workflowFiles() {
+  const dir = path.join(ROOT, ".github", "workflows");
+  return fs
+    .readdirSync(dir)
+    .filter((name) => name.endsWith(".yml"))
+    .sort();
+}
+
+const BLOCK_MODE_WORKFLOWS = ["release-cut.yml", "release-from-tag.yml"];
+const HARDEN_RUNNER_USES = /^(\s*)(?:-\s+)?uses:\s*step-security\/harden-runner@/u;
+const ENDPOINT_TOKEN = /^[A-Za-z0-9*.-]+:\d+$/u;
+
+function indentOf(line) {
+  return line.length - line.trimStart().length;
+}
+
+// Returns one violation string per problem found in any harden-runner step of
+// a release workflow. Each step is checked on its own, so a good step cannot
+// vouch for a bad one. Parsed by indentation; the workflows use no anchors or
+// flow-style maps for these steps.
+function releaseHardenRunnerViolations(yamlText) {
+  const lines = yamlText.split("\n").filter((line) => !/^\s*#/u.test(line));
+  const violations = [];
+  let steps = 0;
+  lines.forEach((line, i) => {
+    const m = HARDEN_RUNNER_USES.exec(line);
+    if (!m) return;
+    steps += 1;
+    const label = `harden-runner step ${steps} (line ${i + 1} of comment-stripped source)`;
+    const keyIndent = indentOf(line) + (/^\s*-\s/u.test(line) ? 2 : 0);
+    const body = [];
+    for (let j = i + 1; j < lines.length; j += 1) {
+      if (lines[j].trim() === "") continue;
+      if (indentOf(lines[j]) < keyIndent) break;
+      body.push(lines[j]);
+    }
+    const withAt = body.findIndex((l) => indentOf(l) === keyIndent && /^\s*with:\s*$/u.test(l));
+    if (withAt === -1) {
+      violations.push(`${label}: no with: block`);
+      return;
+    }
+    const withLines = [];
+    for (let j = withAt + 1; j < body.length && indentOf(body[j]) > keyIndent; j += 1) {
+      withLines.push(body[j]);
+    }
+    const childIndent = withLines.length ? indentOf(withLines[0]) : keyIndent + 2;
+    const children = withLines.filter((l) => indentOf(l) === childIndent);
+    if (!children.some((l) => /^\s*egress-policy:\s*block\s*$/u.test(l))) {
+      violations.push(`${label}: egress-policy must be block`);
+    }
+    const epAt = withLines.findIndex(
+      (l) => /^\s*allowed-endpoints:/u.test(l) && indentOf(l) === childIndent,
+    );
+    if (epAt === -1) {
+      violations.push(`${label}: missing allowed-endpoints`);
+      return;
+    }
+    const value = withLines[epAt].replace(/^\s*allowed-endpoints:/u, "").trim();
+    const scalar = /^[>|][-+]?$/u.test(value);
+    const parts = scalar ? [] : [value];
+    if (scalar) {
+      for (let j = epAt + 1; j < withLines.length && indentOf(withLines[j]) > childIndent; j += 1) {
+        parts.push(withLines[j]);
+      }
+    }
+    const tokens = parts.join(" ").split(/\s+/u).filter(Boolean);
+    if (!tokens.some((t) => ENDPOINT_TOKEN.test(t))) {
+      violations.push(`${label}: allowed-endpoints needs at least one host:port`);
+    }
+  });
+  if (steps === 0) violations.push("no harden-runner steps found");
+  return violations;
+}
+
+const RETRIED_STEP_USES = /^\s*uses:\s*(actions\/checkout|docker\/setup-buildx-action)@/u;
+
+// Splits a workflow into jobs (children of the top-level `jobs:` key), then
+// each job into steps by indentation. `steps.<id>` is scoped per job, so the
+// first-attempt/retry matching runs inside one job at a time.
+function releaseRetryViolations(yamlText) {
+  const lines = yamlText.split("\n").filter((line) => !/^\s*#/u.test(line));
+  const jobs = [];
+  let inJobs = false;
+  let job = null;
+  for (const line of lines) {
+    if (/^jobs:\s*$/u.test(line)) {
+      inJobs = true;
+      continue;
+    }
+    if (!inJobs) continue;
+    if (line.trim() !== "" && indentOf(line) === 0) {
+      inJobs = false;
+      job = null;
+      continue;
+    }
+    const m = /^ {2}([A-Za-z0-9_-]+):\s*$/u.exec(line);
+    if (m) {
+      job = { name: m[1], lines: [] };
+      jobs.push(job);
+    } else if (job) {
+      job.lines.push(line);
+    }
+  }
+  // A bare steps fragment (no `jobs:` key) is checked as one anonymous job.
+  if (jobs.length === 0) jobs.push({ name: "(no jobs)", lines });
+  const violations = [];
+  let retried = 0;
+  for (const j of jobs) {
+    const found = jobRetryViolations(j.lines);
+    retried += found.retried;
+    for (const v of found.violations) violations.push(`job ${j.name}: ${v}`);
+  }
+  if (retried === 0) violations.push("no retried checkout or Buildx steps found");
+  return violations;
+}
+
+function jobRetryViolations(lines) {
+  const steps = [];
+  let current = null;
+  for (const line of lines) {
+    if (/^\s*-\s+\S/u.test(line) && indentOf(line) === 6) {
+      current = { lines: [line] };
+      steps.push(current);
+    } else if (current && (line.trim() === "" || indentOf(line) > 6)) {
+      current.lines.push(line);
+    } else {
+      current = null;
+    }
+  }
+  const field = (step, key) =>
+    step.lines
+      .filter((l) => indentOf(l.replace(/^(\s*)-\s/u, "$1  ")) === 8)
+      .map((l) => l.replace(/^\s*(?:-\s+)?/u, ""))
+      .find((l) => l.startsWith(`${key}:`))
+      ?.slice(key.length + 1)
+      .trim();
+  const violations = [];
+  const firstAttempts = [];
+  const retries = [];
+  steps.forEach((step, i) => {
+    if (!step.lines.some((l) => RETRIED_STEP_USES.test(l))) return;
+    const label = `step ${i + 1} (${field(step, "name")})`;
+    const id = field(step, "id");
+    const guard = /^steps\.([A-Za-z0-9_-]+)\.outcome == 'failure'$/u.exec(field(step, "if") ?? "");
+    if (guard) {
+      if (field(step, "continue-on-error") !== undefined) {
+        violations.push(`${label}: retry must not set continue-on-error`);
+      }
+      retries.push({ i, guard: guard[1], label });
+    } else if (id && field(step, "continue-on-error") === "true") {
+      firstAttempts.push({ i, id, label });
+    } else {
+      violations.push(`${label}: needs an id and continue-on-error: true, or an outcome guard`);
+    }
+  });
+  for (const first of firstAttempts) {
+    const match = retries.find((r) => r.guard === first.id && r.i > first.i);
+    if (!match) violations.push(`${first.label}: no retry guarded by steps.${first.id}.outcome`);
+  }
+  for (const r of retries) {
+    if (!firstAttempts.some((f) => f.id === r.guard && f.i < r.i)) {
+      violations.push(`${r.label}: guard references no earlier first attempt`);
+    }
+  }
+  return { violations, retried: firstAttempts.length };
+}
+
+test("release workflows retry checkout and Buildx setup once after a short wait", () => {
+  const dir = path.join(ROOT, ".github", "workflows");
+  for (const name of BLOCK_MODE_WORKFLOWS) {
+    const raw = fs.readFileSync(path.join(dir, name), "utf8");
+    assert.deepEqual(releaseRetryViolations(raw), [], `${name} checkout and Buildx steps`);
+  }
+  const bad = "    steps:\n      - name: Checkout\n        uses: actions/checkout@abc\n";
+  assert.equal(releaseRetryViolations(bad).length, 2);
+});
+
+test("release retry matching is scoped per job", () => {
+  const step = (name, id, extra) =>
+    `      - name: ${name}\n        id: ${id}\n${extra}        uses: actions/checkout@abc\n`;
+  const first = step("Checkout", "checkout", "        continue-on-error: true\n");
+  const retry = step(
+    "Checkout (retry)",
+    "checkout_retry",
+    "        if: steps.checkout.outcome == 'failure'\n",
   );
+  const wf = `on: push\njobs:\n  one:\n    steps:\n${first}  two:\n    steps:\n${first}${retry}`;
+  const found = releaseRetryViolations(wf);
+  assert.equal(found.length, 1);
+  assert.match(found[0], /^job one: .*no retry guarded by steps\.checkout\.outcome/u);
+  const both = `on: push\njobs:\n  one:\n    steps:\n${first}${retry}  two:\n    steps:\n${first}${retry}`;
+  assert.deepEqual(releaseRetryViolations(both), []);
+});
+
+const HR = "step-security/harden-runner@abc  # v2";
+
+// Splits a workflow into { id, text } per job (children of the top-level
+// `jobs:` key) by indentation, comments stripped. `header` is everything
+// before `jobs:`, so a workflow-level permissions block can be inspected.
+function splitJobs(yamlText) {
+  const lines = yamlText.split("\n").filter((line) => !/^\s*#/u.test(line));
+  const jobsAt = lines.findIndex((l) => /^jobs:\s*$/u.test(l));
+  if (jobsAt === -1) return { header: lines.join("\n"), jobs: [] };
+  const jobs = [];
+  for (let i = jobsAt + 1; i < lines.length; i += 1) {
+    if (lines[i].trim() === "") continue;
+    if (indentOf(lines[i]) === 0) break;
+    const m = /^ {2}([A-Za-z0-9_-]+):\s*$/u.exec(lines[i]);
+    if (m) jobs.push({ id: m[1], lines: [] });
+    else if (jobs.length) jobs.at(-1).lines.push(lines[i]);
+  }
+  return {
+    header: lines.slice(0, jobsAt).join("\n"),
+    jobs: jobs.map((j) => ({ id: j.id, text: j.lines.join("\n") })),
+  };
+}
+
+const WRITE_PERMISSION = /^\s*contents:\s*write\b/mu;
+const PERSISTED_CREDENTIAL = /^\s*persist-credentials:\s*true\b/mu;
+
+// Block mode is for jobs that can write: a contents: write permission (job or
+// workflow level) or a checkout that persists its credential. Every
+// harden-runner step in such a job must be block with an allow list; any other
+// job must not carry block or an allow list (DEP-19). Returns violations.
+function hardenRunnerPolicyViolations(yamlText) {
+  const { header, jobs } = splitJobs(yamlText);
+  const workflowWrite = WRITE_PERMISSION.test(header);
+  const violations = [];
+  for (const job of jobs) {
+    // A caller of a reusable workflow has no steps here; its harden-runner
+    // steps live in the called workflow.
+    if (/^ {4}uses:/mu.test(job.text)) continue;
+    const writes =
+      workflowWrite || WRITE_PERMISSION.test(job.text) || PERSISTED_CREDENTIAL.test(job.text);
+    if (writes) {
+      for (const v of releaseHardenRunnerViolations(job.text)) {
+        violations.push(`job ${job.id} holds a write credential: ${v}`);
+      }
+    } else if (/egress-policy: block/u.test(job.text) || /allowed-endpoints:/u.test(job.text)) {
+      violations.push(
+        `job ${job.id} is read-only and must run harden-runner in audit mode (DEP-19)`,
+      );
+    }
+  }
+  return violations;
+}
+
+test("harden-runner block mode is kept on write-credential jobs only, with an allow list", () => {
+  const dir = path.join(ROOT, ".github", "workflows");
+  for (const name of workflowFiles()) {
+    const raw = fs.readFileSync(path.join(dir, name), "utf8");
+    if (BLOCK_MODE_WORKFLOWS.includes(name)) {
+      assert.deepEqual(releaseHardenRunnerViolations(raw), [], `${name} harden-runner steps`);
+      continue;
+    }
+    assert.deepEqual(hardenRunnerPolicyViolations(raw), [], `${name} harden-runner policy`);
+  }
+});
+
+test("the harden-runner policy follows the write credential, not the workflow name", () => {
+  const job = (id, perms, persist, mode, allow) =>
+    [
+      `  ${id}:`,
+      "    runs-on: ubuntu-latest",
+      ...(perms ? ["    permissions:", `      contents: ${perms}`] : []),
+      "    steps:",
+      "      - name: Harden Runner",
+      `        uses: ${HR}`,
+      "        with:",
+      `          egress-policy: ${mode}`,
+      ...(allow ? ["          allowed-endpoints: >", "            github.com:443"] : []),
+      "      - uses: actions/checkout@abc",
+      "        with:",
+      `          persist-credentials: ${persist}`,
+    ].join("\n");
+  const wf = (...jobs) => `on: push\njobs:\n${jobs.join("\n")}\n`;
+
+  // write job in block mode with a list, read-only job in audit: clean
+  assert.deepEqual(
+    hardenRunnerPolicyViolations(
+      wf(
+        job("badge", "write", "false", "block", true),
+        job("scan", "read", "false", "audit", false),
+      ),
+    ),
+    [],
+  );
+  // a persisted checkout credential counts as a write job even without the permission
+  assert.deepEqual(
+    hardenRunnerPolicyViolations(wf(job("push", "read", "true", "block", true))),
+    [],
+  );
+  // write job left in audit mode
+  const audit = hardenRunnerPolicyViolations(wf(job("badge", "write", "false", "audit", false)));
+  assert.equal(audit.length, 2);
+  assert.match(audit[0], /job badge .*egress-policy must be block/u);
+  // write job in block mode without an allow list
+  const noList = hardenRunnerPolicyViolations(wf(job("badge", "write", "false", "block", false)));
+  assert.equal(noList.length, 1);
+  assert.match(noList[0], /missing allowed-endpoints/u);
+  // read-only job in block mode
+  const readBlock = hardenRunnerPolicyViolations(wf(job("scan", "read", "false", "block", true)));
+  assert.equal(readBlock.length, 1);
+  assert.match(readBlock[0], /job scan is read-only/u);
+});
+
+const goodStep = (name) =>
+  [
+    `      - name: ${name}`,
+    `        uses: ${HR}`,
+    "        with:",
+    "          egress-policy: block",
+    "          allowed-endpoints: >",
+    "            github.com:443",
+    "            *.actions.githubusercontent.com:443",
+  ].join("\n");
+
+test("release harden-runner checker accepts good steps and rejects bad ones", () => {
+  assert.deepEqual(releaseHardenRunnerViolations(`${goodStep("one")}\n\n${goodStep("two")}\n`), []);
+
+  // (a) second step in audit mode
+  const audit = goodStep("two").replace("egress-policy: block", "egress-policy: audit");
+  const a = releaseHardenRunnerViolations(`${goodStep("one")}\n${audit}\n`);
+  assert.equal(a.length, 1);
+  assert.match(a[0], /step 2.*egress-policy must be block/u);
+
+  // (b) empty block scalar followed directly by the next key, same or lower indent
+  for (const next of ["          other-key: value", "        env:\n          A: b:1"]) {
+    const empty = [
+      `      - uses: ${HR}`,
+      "        with:",
+      "          egress-policy: block",
+      "          allowed-endpoints: >",
+      next,
+    ].join("\n");
+    const b = releaseHardenRunnerViolations(empty);
+    assert.equal(b.length, 1, next);
+    assert.match(b[0], /host:port/u);
+  }
+
+  // (c) block mode with no allowed-endpoints
+  const noList = [
+    `      - uses: ${HR}`,
+    "        with:",
+    "          egress-policy: block",
+    "      - name: next",
+    "        run: echo hi:80",
+  ].join("\n");
+  const c = releaseHardenRunnerViolations(noList);
+  assert.equal(c.length, 1);
+  assert.match(c[0], /missing allowed-endpoints/u);
+
+  // no harden-runner steps at all fails loudly
+  assert.deepEqual(releaseHardenRunnerViolations("steps: []\n"), ["no harden-runner steps found"]);
 });
 
 test("retired X1 bridge jobs must not be reintroduced", () => {

@@ -12,6 +12,10 @@ inputs:
     description: "Maximum polling attempts (15s apart)"
     required: false
     default: "40"
+  max-wait-seconds:
+    description: "Total wall-clock budget for the polling loop in seconds; polling stops at this deadline or after max-attempts, whichever comes first. Keep it under the calling job's timeout-minutes."
+    required: false
+    default: "900"
   github-token:
     description: "GitHub token for API access"
     required: true
@@ -25,11 +29,23 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         CI_VERIFY_WORKFLOW_FILE: ${{ inputs.workflow-file }}
+        MAX_WAIT_SECONDS: ${{ inputs.max-wait-seconds }}
       run: |
         set -euo pipefail
 
+        # The resolve request gets the same wall-clock budget as the wait loop,
+        # so its retries can't outlast the calling job's timeout either.
+        deadline=$(( $(date +%s) + MAX_WAIT_SECONDS ))
+        remaining=$(( deadline - $(date +%s) ))
+        if [ "${remaining}" -le 0 ]; then
+          echo "::error::No time budget left to resolve ${CI_VERIFY_WORKFLOW_FILE} (max-wait-seconds=${MAX_WAIT_SECONDS})."
+          exit 1
+        fi
+        request_max_time=$(( remaining < 30 ? remaining : 30 ))
+
         workflow_url="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/workflows/${CI_VERIFY_WORKFLOW_FILE}"
-        workflow_json="$(curl -fsSL \
+        workflow_json="$(curl -fsSL --max-time "${request_max_time}" \
+          --retry 5 --retry-delay 5 --retry-max-time "${remaining}" --retry-connrefused --retry-all-errors \
           -H "Authorization: Bearer ${GH_TOKEN}" \
           -H "Accept: application/vnd.github+json" \
           "${workflow_url}")"
@@ -57,14 +73,26 @@ runs:
         CI_WORKFLOW_NAME: ${{ steps.ci_workflow.outputs.name }}
         TARGET_SHA: ${{ inputs.target-sha }}
         MAX_ATTEMPTS: ${{ inputs.max-attempts }}
+        MAX_WAIT_SECONDS: ${{ inputs.max-wait-seconds }}
       run: |
         set -euo pipefail
 
         sleep_seconds=15
+        deadline=$(( $(date +%s) + MAX_WAIT_SECONDS ))
 
         for attempt in $(seq 1 "${MAX_ATTEMPTS}"); do
+          # Budget left before this request. Every curl, its retries and the
+          # sleep below are held to it, so the deadline can't be overrun by
+          # a poll that starts just before it.
+          remaining=$(( deadline - $(date +%s) ))
+          if [ "${remaining}" -le 0 ]; then
+            echo "::error::Timed out waiting for successful ${CI_WORKFLOW_NAME} branch push run on ${TARGET_SHA} after ${MAX_WAIT_SECONDS}s (${MAX_WAIT_SECONDS}s wall-clock budget, stopped before attempt ${attempt}/${MAX_ATTEMPTS}). Check ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/workflows/${CI_WORKFLOW_ID} for a run against ${TARGET_SHA} -- if one completed successfully shortly after this timeout, the max-wait-seconds budget for this caller is too tight."
+            exit 1
+          fi
           runs_url="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/workflows/${CI_WORKFLOW_ID}/runs?head_sha=${TARGET_SHA}&event=push&per_page=50"
-          runs_json="$(curl -fsSL \
+          request_max_time=$(( remaining < 30 ? remaining : 30 ))
+          runs_json="$(curl -fsSL --max-time "${request_max_time}" \
+            --retry 5 --retry-delay 5 --retry-max-time "${remaining}" --retry-connrefused --retry-all-errors \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             "${runs_url}")"
@@ -93,7 +121,11 @@ runs:
           else
             echo "Attempt ${attempt}/${MAX_ATTEMPTS}: no ${CI_WORKFLOW_NAME} branch push run recorded yet for ${TARGET_SHA}, waiting for one to start..."
           fi
-          sleep "${sleep_seconds}"
+          remaining=$(( deadline - $(date +%s) ))
+          if [ "${remaining}" -le 0 ]; then
+            continue
+          fi
+          sleep "$(( remaining < sleep_seconds ? remaining : sleep_seconds ))"
         done
 
         echo "::error::Timed out waiting for successful ${CI_WORKFLOW_NAME} branch push run on ${TARGET_SHA} after ${MAX_ATTEMPTS} attempts. Check ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/workflows/${CI_WORKFLOW_ID} for a run against ${TARGET_SHA} -- if one completed successfully shortly after this timeout, the max-attempts budget for this caller is too tight."

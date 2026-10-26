@@ -52,5 +52,5 @@ If one maintainer becomes unavailable, the remaining organization owner can
 revoke stale access, update role assignments, merge approved work, and publish
 a release within one week.
 
-Project forking remains available under Apache-2.0, but it is not the primary
+Project forking remains available under MIT, but it is not the primary
 continuity plan.

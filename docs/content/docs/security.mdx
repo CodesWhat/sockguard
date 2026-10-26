@@ -128,6 +128,7 @@ Sockguard's own endpoints are answered before this check and never reach the dae
 - Any `Mounts` entry of type `volume` whose `VolumeOptions.DriverConfig` hands the local driver a real filesystem type over a `/dev` node (`{"type":"ext4","device":"/dev/sda1"}`) — that is a raw host block device rather than a bind, and it is checked against the same `allowed_bind_mounts`
 - A `HostConfig.Binds` entry whose overlay options put the `upperdir` or `workdir` outside `allowed_bind_mounts` (`myvol:/dst:O,upperdir=/etc,workdir=/mnt`), or that mounts a source containing a `,` or a `\` as an overlay. Only a Podman upstream reads those options, and it reads them for a named volume too. dockerd refuses them itself
 - A top-level `Volumes` key that a Podman upstream would read as a bind mount of a source outside `allowed_bind_mounts` (`{"Volumes":{"/etc:/h":{}}}`), or as an overlay with its `upperdir` or `workdir` outside it. Podman takes each key as a `-v` argument. dockerd takes it as a container path. A key is checked only when it has a `:/` in it, so a container path with a mode (`/data:z`) passes, and a whole `/abs:/abs` key is checked on any upstream
+- A `HostConfig.LogConfig.Config` option that a Podman upstream reads as the log path (`path`, in any letter case, or a key that starts `path=`), unless `request_body.container_create.allow_log_path` is set. Podman writes the container's output to that file on the daemon host, which no bind-mount allowlist covers. dockerd has no such option
 - Any `HostConfig.Devices` host path outside `request_body.container_create.allowed_devices`
 - `HostConfig.DeviceRequests` unless explicitly allowed
 - `HostConfig.DeviceCgroupRules` unless explicitly allowed
@@ -239,11 +240,7 @@ Supported transports, by preset:
 
 `request_body.buildkit.control.solve` gates the `Solve` RPC: `security.insecure` is always denied with no enabling knob, `network.host` requires `request_body.build.allow_host_network`, and cache import/export types, cache registries, exporter types, and exporter-push registries each have their own allowlist (empty means deny, the standard `request_body.*` convention). The frontend check pairs with `request_body.build.allow_run_instructions`: a Dockerfile synced over the session's `FileSync` stream gets the identical RUN-instruction hold-and-inspect scan the classic `/build` path already applies, unless it arrives via a genuinely remote context, which requires `request_body.build.allow_remote_context` for the same reason classic `/build` does. `control.allow_status` gates the `Status` RPC, admitted only for a ref this same trusted principal and selected profile actually `Solve`d; refs remain shared across that principal/profile's live control tunnels. The principal comes from the verified mTLS certificate, Unix peer credentials, or normalized remote host instead of a source port or caller-controlled session header. Ref ownership and upload IDs are committed atomically only after every limit check passes. Session, ref, and upload identifiers are rejected before persistence when they exceed 256 bytes; one control tunnel can retain at most 256 distinct BuildKit session IDs; and an unconsumed upload grant expires after one hour while remaining valid across a normal control-tunnel close. Session `auth`, `secrets`, `ssh`, `file_sync`, `file_send`, and `upload` calls each stay denied until their own policy allows them, and a registry method classified for mediation but missing a dispatcher fails closed rather than becoming raw passthrough. See [Configuration](/configuration) for the full field reference.
 
-**Version boundary:** individual ExecOp approvals, the mediated external frontend
-gateway and `sockguard frontend` require v2.3 (published candidate rc.8), and
-aren't in stable v2.2.10. Select the candidate explicitly. See
-[Migration](/migration#upgrading-to-v23). Configuration removal contracts live in
-the [deprecation ledger](/deprecations).
+Configuration removal contracts live in the [deprecation ledger](/deprecations).
 
 Raw LLB can selectively approve RUN-equivalent operations while retaining
 `request_body.build.allow_run_instructions: false`. Set
@@ -511,8 +508,12 @@ owner isolation:
   `init_path` and the `upperdir` and `workdir` an overlay names in its options
   (on an `overlay_volumes` entry or a named `volumes` entry). It also refuses a
   bind source that isn't an absolute path, and refuses `conmon_pid_file`, along
-  with `infra_conmon_pid_file` on a pod create. So a host path still has to be
-  allowlisted; ownership just adds no second check on top.
+  with `infra_conmon_pid_file` on a pod create. Native container
+  `base_hosts_file` and pod `hostsFile` accept only empty, `image` or `none`;
+  client-selected host paths are refused. On native container creates, a log
+  path (`log_configuration.path`, or a `healthLogDestination` directory) is
+  refused unless `allow_log_path` is on. These request-body checks apply
+  independently of owner labels.
 
 Keys are matched the way Podman's JSON decoder matches them, in any letter
 case, including the ones it reads by their Go names (`Networks`, and `Name`
