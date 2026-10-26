@@ -2540,6 +2540,147 @@ func TestContainerCreatePolicySysctls(t *testing.T) {
 	}
 }
 
+// TestContainerCreatePolicyLogPath pins the log path gate on the
+// Docker-compatible create. A Podman upstream reads a HostConfig.LogConfig.Config
+// key as the file to write the container's log to when the part of it before
+// the first "=" lowers to "path", so that's what is refused, on the key alone
+// and under any driver.
+func TestContainerCreatePolicyLogPath(t *testing.T) {
+	const denied = "container create denied: setting a log path in HostConfig.LogConfig.Config is not allowed (set allow_log_path: true)"
+	logConfig := func(value string) string {
+		return `{"Image":"alpine","HostConfig":{"LogConfig":` + value + `}}`
+	}
+	allow := ContainerCreateOptions{AllowLogPath: true}
+
+	tests := []struct {
+		name       string
+		opts       ContainerCreateOptions
+		body       string
+		wantReason string
+	}{
+		// What Podman reads as the path.
+		{name: "path under k8s-file is denied", body: logConfig(`{"Type":"k8s-file","Config":{"path":"/host/x.log"}}`), wantReason: denied},
+		{name: "path with a capital is denied", body: logConfig(`{"Type":"k8s-file","Config":{"Path":"/host/x.log"}}`), wantReason: denied},
+		{name: "path in capitals is denied", body: logConfig(`{"Type":"k8s-file","Config":{"PATH":"/host/x.log"}}`), wantReason: denied},
+		{name: "path in mixed case is denied", body: logConfig(`{"Type":"k8s-file","Config":{"pAtH":"/host/x.log"}}`), wantReason: denied},
+		{name: "path with no driver is denied", body: logConfig(`{"Config":{"path":"/host/x.log"}}`), wantReason: denied},
+		{name: "path under json-file is denied", body: logConfig(`{"Type":"json-file","Config":{"path":"/host/x.log"}}`), wantReason: denied},
+		{name: "path under journald is denied", body: logConfig(`{"Type":"journald","Config":{"path":"/host/logs"}}`), wantReason: denied},
+		{name: "path under none is denied", body: logConfig(`{"Type":"none","Config":{"path":"/host/logs"}}`), wantReason: denied},
+		{name: "path beside other options is denied", body: logConfig(`{"Type":"json-file","Config":{"max-size":"10m","path":"/host/x.log","tag":"web"}}`), wantReason: denied},
+		{name: "path carried in the key is denied", body: logConfig(`{"Type":"k8s-file","Config":{"path=/host/x":"log"}}`), wantReason: denied},
+		{name: "capital path carried in the key is denied", body: logConfig(`{"Type":"k8s-file","Config":{"PATH=/host/x":""}}`), wantReason: denied},
+		{name: "path in two spellings is denied", body: logConfig(`{"Type":"k8s-file","Config":{"PATH":"","path":"/host/x.log"}}`), wantReason: denied},
+		{name: "path under lowercase struct keys is denied", body: `{"hostconfig":{"logconfig":{"type":"k8s-file","config":{"path":"/host/x.log"}}}}`, wantReason: denied},
+		// Refused on the key. An empty or null value sets no path on Podman,
+		// but a path key given twice then decodes to whichever one the decoder
+		// keeps, and the key alone doesn't depend on that.
+		{name: "path with an empty value is denied", body: logConfig(`{"Type":"k8s-file","Config":{"path":""}}`), wantReason: denied},
+		{name: "path with a null value is denied", body: logConfig(`{"Type":"k8s-file","Config":{"path":null}}`), wantReason: denied},
+		{name: "path given twice is denied", body: logConfig(`{"Type":"k8s-file","Config":{"path":"/host/x.log","path":""}}`), wantReason: denied},
+		// Wider than Podman reads it, so a daemon that starts trimming option
+		// names doesn't open this.
+		{name: "path padded with spaces is denied", body: logConfig(`{"Type":"k8s-file","Config":{" path ":"/host/x.log"}}`), wantReason: denied},
+		{name: "padded path carried in the key is denied", body: logConfig(`{"Type":"k8s-file","Config":{"path =/host/x":"log"}}`), wantReason: denied},
+		// allowed_bind_mounts lists paths a container may mount. It doesn't
+		// open a path the daemon writes.
+		{
+			name:       "path under an allowlisted bind directory is denied",
+			opts:       ContainerCreateOptions{AllowedBindMounts: []string{"/host"}},
+			body:       logConfig(`{"Type":"k8s-file","Config":{"path":"/host/x.log"}}`),
+			wantReason: denied,
+		},
+
+		// The option.
+		{name: "path is allowed with AllowLogPath", opts: allow, body: logConfig(`{"Type":"k8s-file","Config":{"path":"/host/x.log"}}`)},
+		{name: "path in capitals is allowed with AllowLogPath", opts: allow, body: logConfig(`{"Config":{"PATH":"/host/x.log"}}`)},
+		{name: "path carried in the key is allowed with AllowLogPath", opts: allow, body: logConfig(`{"Type":"k8s-file","Config":{"path=/host/x":"log"}}`)},
+
+		// What stays allowed with the option off.
+		{name: "no HostConfig is allowed", body: `{"Image":"alpine"}`},
+		{name: "no LogConfig is allowed", body: `{"Image":"alpine","HostConfig":{}}`},
+		{name: "null LogConfig is allowed", body: logConfig(`null`)},
+		{name: "empty LogConfig is allowed", body: logConfig(`{}`)},
+		{name: "driver with no options is allowed", body: logConfig(`{"Type":"json-file"}`)},
+		{name: "empty driver and null options are allowed", body: logConfig(`{"Type":"","Config":null}`)},
+		{name: "empty options are allowed", body: logConfig(`{"Type":"json-file","Config":{}}`)},
+		{name: "json-file size options are allowed", body: logConfig(`{"Type":"json-file","Config":{"max-size":"10m","max-file":"3","compress":"true"}}`)},
+		{name: "local size options are allowed", body: logConfig(`{"Type":"local","Config":{"max-size":"10m","max-file":"3"}}`)},
+		{name: "journald tag and labels are allowed", body: logConfig(`{"Type":"journald","Config":{"tag":"{{.Name}}","labels":"team","env":"TIER"}}`)},
+		{name: "a driver option set from an option is allowed", body: logConfig(`{"Type":"journald","Config":{"driver":"k8s-file"}}`)},
+		// Podman's inspect reports the log file as LogConfig.Path, beside
+		// Config. A client that recreates a container sends it back, and the
+		// compat create has no such field to read it into.
+		{name: "the Path Podman's inspect reports beside Config is allowed", body: logConfig(`{"Type":"json-file","Config":null,"Path":"/var/lib/containers/storage/overlay-containers/c1/userdata/ctr.log","Tag":"","Size":"0B"}`)},
+		{name: "a value that mentions path is allowed", body: logConfig(`{"Type":"journald","Config":{"tag":"path=/host/x.log"}}`)},
+		{name: "option names that only contain path are allowed", body: logConfig(`{"Type":"k8s-file","Config":{"xpath":"/a","paths":"/b","path-style":"/c","log-path":"/d","pathx=path":"/e"}}`)},
+		{name: "an option whose value part is path is allowed", body: logConfig(`{"Type":"k8s-file","Config":{"tag=path":"/host/x.log","=path":"/host/y.log"}}`)},
+		// dockerd options that name a socket or a file the daemon reads. They
+		// aren't a log path and this option doesn't cover them.
+		{name: "syslog unix socket address is allowed", body: logConfig(`{"Type":"syslog","Config":{"syslog-address":"unixgram:///dev/log"}}`)},
+		{name: "fluentd unix socket address is allowed", body: logConfig(`{"Type":"fluentd","Config":{"fluentd-address":"unix:///run/fluentd.sock"}}`)},
+		{name: "syslog and splunk certificate paths are allowed", body: logConfig(`{"Type":"syslog","Config":{"syslog-tls-ca-cert":"/etc/ca.pem","syslog-tls-cert":"/etc/c.pem","syslog-tls-key":"/etc/k.pem","splunk-capath":"/etc/s.pem"}}`)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := newContainerCreatePolicy(tt.opts)
+			reason, err := policy.inspect(nil, makeInspectRequest(t, tt.body), "/containers/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+// TestLogOptionNamesLogPath pins which HostConfig.LogConfig.Config keys count
+// as the log path: the part before the first "=", trimmed and lowered, is
+// "path".
+func TestLogOptionNamesLogPath(t *testing.T) {
+	tests := []struct {
+		key  string
+		want bool
+	}{
+		{"path", true},
+		{"Path", true},
+		{"PATH", true},
+		{"pAtH", true},
+		{"path=", true},
+		{"path=/host/x.log", true},
+		{"PATH=/host/x=y", true},
+		{" path", true},
+		{"path\t", true},
+		{"path =/host/x", true},
+
+		{"", false},
+		{"=", false},
+		{"=path", false},
+		{"tag=path", false},
+		{"paths", false},
+		{"xpath", false},
+		{"pat", false},
+		{"path-style", false},
+		{"log-path", false},
+		{"p a t h", false},
+		{"driver", false},
+		{"max-size", false},
+		{"tag", false},
+		{"label", false},
+		{"syslog-address", false},
+		{"splunk-capath", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			if got := logOptionNamesLogPath(tt.key); got != tt.want {
+				t.Fatalf("logOptionNamesLogPath(%q) = %v, want %v", tt.key, got, tt.want)
+			}
+		})
+	}
+}
+
 // containsSubstring is a test helper to avoid importing strings in addition to bytes.
 func containsSubstring(s, sub string) bool {
 	return len(s) >= len(sub) && func() bool {

@@ -658,6 +658,11 @@ type ContainerCreateRequestBodyConfig struct {
 	// Legacy comma-separated flags use Docker's last-wins ordering for each
 	// enabling/restrictive pair. Default false.
 	AllowTmpfsPrivilegedOptions bool `mapstructure:"allow_tmpfs_privileged_options"`
+	// AllowLogPath permits a HostConfig.LogConfig.Config key a Podman
+	// upstream reads as the container's log path: "path" in any letter case,
+	// alone or ahead of an "=". Podman writes the container's output to that
+	// path on the daemon host. dockerd has no such option. Default false.
+	AllowLogPath bool `mapstructure:"allow_log_path"`
 }
 
 // LibpodContainerCreateRequestBodyConfig configures body inspection for
@@ -721,6 +726,14 @@ type LibpodContainerCreateRequestBodyConfig struct {
 	// AllowCustomIDMappings permits a non-default idmappings.UIDMap/GIDMap
 	// or --userns=auto. A blunt gate for v1.6; default false.
 	AllowCustomIDMappings bool `mapstructure:"allow_custom_id_mappings"`
+
+	// AllowLogPath permits the two log destinations a create can put on the
+	// daemon host: log_configuration.path, the file the container's output
+	// is written to, and a healthLogDestination other than "local" or
+	// "events_logger", the directory healthcheck results are written into.
+	// Same name as container_create.allow_log_path, and neither opens the
+	// other's route. Default false.
+	AllowLogPath bool `mapstructure:"allow_log_path"`
 }
 
 // ImageTrustConfig configures cosign signature verification for images

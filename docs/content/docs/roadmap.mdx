@@ -3,9 +3,10 @@ title: Roadmap
 description: Sockguard's shipped v1.7, v2.0, v2.1, v2.2, and v2.3 work and later direction.
 ---
 
-Sockguard v2.3 is the current stable feature line, with v2.3.0 the latest
-release. It promotes `2.3.0-rc.9` unchanged in behavior and is the first
-release under the MIT license; 2.2.x and earlier remain Apache-2.0.
+Sockguard v2.3 is the current stable feature line, with v2.3.1 the latest
+release. v2.3.0 promotes `2.3.0-rc.9` unchanged in behavior and is the first
+release under the MIT license; 2.2.x and earlier remain Apache-2.0. v2.3.1 is a
+security patch that refuses a client-supplied container log path.
 
 The v2.2 line, whose final release is v2.2.11, shipped as follows. v2.2.0 closed the volume-mount and read-side gaps that survived
 v2.1.0 and added the operator-facing checks that were missing around them;
@@ -57,6 +58,16 @@ caller-selected host PID-file write. v2.2.11 closes native Podman hosts-file
 selection and restricted-build frontend overrides. This roadmap describes
 direction and priorities, not promises about dates. A feature is available only after the release notes say
 it has shipped.
+
+## Shipped in v2.3.1
+
+Compat and native container create refuse a client-supplied log path unless
+`allow_log_path` is on. Podman wrote the container log to a host path the
+client named, a file that `allowed_bind_mounts` never saw. The option is off by
+default in both `request_body.container_create` and
+`request_body.libpod_container_create`. A create that names no path is
+unaffected. See the [changelog](https://github.com/CodesWhat/sockguard/blob/main/CHANGELOG.md)
+for the refused fields and the Podman behavior that was confirmed.
 
 ## Shipped in v2.3.0
 
