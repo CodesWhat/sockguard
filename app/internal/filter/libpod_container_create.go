@@ -114,6 +114,11 @@ type LibpodContainerCreateOptions struct {
 	// for v1.6 — no range-overlap or host-UID-collision analysis; see the
 	// design doc's "Deferred past v1.6" list. Default false.
 	AllowCustomIDMappings bool
+
+	// AllowLogPath permits log_configuration.path and a healthLogDestination
+	// that names a directory, the two log destinations a create can put on
+	// the daemon host. Default false. See denyLogPathReason.
+	AllowLogPath bool
 }
 
 type libpodContainerCreatePolicy struct {
@@ -155,6 +160,7 @@ type libpodContainerCreatePolicy struct {
 
 	allowSystemdMode      bool
 	allowCustomIDMappings bool
+	allowLogPath          bool
 
 	imageTrustVerifier imageVerifier
 	imageFetcher       signatureFetcher
@@ -214,6 +220,7 @@ func newLibpodContainerCreatePolicy(opts LibpodContainerCreateOptions) libpodCon
 		allowSysctls:                      opts.AllowSysctls,
 		allowSystemdMode:                  opts.AllowSystemdMode,
 		allowCustomIDMappings:             opts.AllowCustomIDMappings,
+		allowLogPath:                      opts.AllowLogPath,
 	}
 
 	itf := buildImageTrustFields(opts.ImageTrust)

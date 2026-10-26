@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  buildProbeArgs,
   classify,
   collectDrift,
   isIgnoredPostcssOverrideDrift,
   parseNpmJson,
+  RELEASE_AGE_DAYS,
+  releaseAgeCutoff,
 } from "./lockfile-dedupe.mjs";
 
 const NEXT_POSTCSS_CHANGE = {
@@ -124,5 +127,46 @@ describe("parseNpmJson", () => {
 
   it("throws on output with malformed JSON after the first {", () => {
     assert.throws(() => parseNpmJson("noise { not: valid json"), /malformed JSON/);
+  });
+
+  it("fails on an npm error report, naming the probe and code", () => {
+    const raw = JSON.stringify({
+      error: { code: "ETARGET", summary: "No matching version found", detail: "before cutoff" },
+    });
+
+    assert.throws(
+      () => parseNpmJson(`npm warn x\n${raw}`, "dedupe"),
+      (error) =>
+        /dedupe/.test(error.message) &&
+        /ETARGET/.test(error.message) &&
+        /No matching version found/.test(error.message) &&
+        /--before/.test(error.message),
+    );
+  });
+
+  it("fails on unparseable output, naming the probe", () => {
+    assert.throws(() => parseNpmJson("{ nope", "install"), /install probe produced malformed/);
+  });
+
+  it("still parses a normal report when given a probe name", () => {
+    assert.deepEqual(parseNpmJson('{"add":[],"remove":[],"change":[]}', "install"), cleanReport());
+  });
+});
+
+describe("release-age cutoff", () => {
+  const NOW = new Date("2026-10-26T12:00:00.000Z");
+
+  it("defaults to the 14 day Renovate cool-off", () => {
+    assert.equal(RELEASE_AGE_DAYS, 14);
+    assert.equal(releaseAgeCutoff(NOW), "2026-10-12T12:00:00.000Z");
+  });
+
+  it("passes --before=<cutoff> to the dedupe probe only", () => {
+    const { install, dedupe } = buildProbeArgs(NOW);
+
+    assert.ok(!install.some((arg) => arg.startsWith("--before")));
+    assert.ok(dedupe.includes("--before=2026-10-12T12:00:00.000Z"));
+    assert.deepEqual(install.slice(0, 2), ["install", "--dry-run"]);
+    assert.deepEqual(dedupe.slice(0, 2), ["dedupe", "--dry-run"]);
   });
 });

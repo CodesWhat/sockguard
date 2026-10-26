@@ -55,17 +55,61 @@ export function classify({ installReport, dedupeReport }) {
 // npm prefixes JSON output with lifecycle-script noise (deprecation
 // warnings, etc), so the JSON payload doesn't start at offset 0. Find the
 // first "{" and parse from there.
-export function parseNpmJson(text) {
+//
+// npm also prints failures as JSON ({"error":{"code","summary","detail"}}).
+// That is not a drift report, and classify() would read it as "no drift" and
+// pass, so it must fail the gate instead.
+export function parseNpmJson(text, probeName = "npm") {
   const jsonStart = text.indexOf("{");
   if (jsonStart === -1) {
-    throw new Error(`npm produced no JSON output:\n${text}`);
+    throw new Error(`npm ${probeName} probe produced no JSON output:\n${text}`);
   }
 
+  let parsed;
   try {
-    return JSON.parse(text.slice(jsonStart));
+    parsed = JSON.parse(text.slice(jsonStart));
   } catch (error) {
-    throw new Error(`npm produced malformed JSON output: ${error.message}\n${text}`);
+    throw new Error(
+      `npm ${probeName} probe produced malformed JSON output: ${error.message}\n${text}`,
+    );
   }
+
+  if (parsed && typeof parsed === "object" && "error" in parsed) {
+    const { code = "unknown", summary = "", detail = "" } = parsed.error ?? {};
+    const hint =
+      code === "ETARGET"
+        ? "\nThe --before release-age cutoff can cause ETARGET when the lockfile needs a version newer than the cutoff that npm can't resolve."
+        : "";
+    throw new Error(
+      `npm ${probeName} probe returned an error report (${code}): ${summary}${detail ? `\n${detail}` : ""}${hint}`,
+    );
+  }
+
+  return parsed;
+}
+
+// Mirrors minimumReleaseAge (14 days) in the shared Renovate preset
+// (CodesWhat/.github renovate-config.json). A release younger than that never
+// forces a hand lockfile change; it reaches the lockfile through Renovate.
+export const RELEASE_AGE_DAYS = 14;
+
+export function releaseAgeCutoff(now = new Date(), days = RELEASE_AGE_DAYS) {
+  return new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString();
+}
+
+// Only the dedupe probe gets the cutoff. Dedupe can pick a newer version of
+// something than the lockfile holds, and that must stay inside the cool-off
+// window. The install probe only checks that node_modules matches the
+// lockfile, which needs no cutoff, and --before there can fail with ETARGET
+// when package.json exactly pins a version published inside the window
+// (Renovate security updates use minimumReleaseAge 0), which would block
+// pushes.
+export function buildProbeArgs(now = new Date()) {
+  const before = `--before=${releaseAgeCutoff(now)}`;
+  return {
+    install: ["install", "--dry-run", "--json", "--no-audit", "--no-fund", "--ignore-scripts"],
+    dedupe: ["dedupe", "--dry-run", "--json", before],
+  };
 }
 
 function formatEntry(entry) {
@@ -79,7 +123,7 @@ function formatEntry(entry) {
 
 const repoRoot = resolve(import.meta.dirname, "..");
 
-function runNpmJson(args) {
+function runNpmJson(args, probeName) {
   // npm exits non-zero in some of these cases while still emitting usable
   // JSON, so don't treat a non-zero exit as fatal here -- parse first and
   // let parseNpmJson decide whether the output is usable.
@@ -90,7 +134,7 @@ function runNpmJson(args) {
     // stdout alone, not stdout+stderr: --json puts the report on stdout, and
     // parseNpmJson keys off the first "{" it sees. An npm warning containing
     // a brace would otherwise be parsed as the report.
-    return parseNpmJson(stdout);
+    return parseNpmJson(stdout, probeName);
   } catch (error) {
     throw new Error(`${error.message}\n--- npm stderr ---\n${stderr}`);
   }
@@ -118,14 +162,8 @@ function printResult(result) {
 }
 
 function main() {
-  const installReport = runNpmJson([
-    "install",
-    "--dry-run",
-    "--json",
-    "--no-audit",
-    "--no-fund",
-    "--ignore-scripts",
-  ]);
+  const probeArgs = buildProbeArgs();
+  const installReport = runNpmJson(probeArgs.install, "install");
 
   // Classify against an empty dedupe report first, so the short-circuit lives
   // only in classify() and the second npm probe is skipped when the install is
@@ -137,7 +175,7 @@ function main() {
     return;
   }
 
-  const dedupeReport = runNpmJson(["dedupe", "--dry-run", "--json"]);
+  const dedupeReport = runNpmJson(probeArgs.dedupe, "dedupe");
   const result = classify({ installReport, dedupeReport });
 
   printResult(result);

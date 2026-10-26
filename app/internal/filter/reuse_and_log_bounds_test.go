@@ -32,10 +32,10 @@ import (
 //     never exceed 6 KiB and the check is unreachable either way.
 
 // TestOversizedForReuseAcceptsExactlyTheReuseCap pins the at-limit side of the
-// three map gates in oversizedForReuse. A decode target holding exactly
+// four map gates in oversizedForReuse. A decode target holding exactly
 // containerCreateReuseCap entries is still worth recycling; only one past the
 // cap is not. Every existing case sits well clear of 64 in both directions, so
-// the three gates can all slip a step without a test noticing.
+// the four gates can all slip a step without a test noticing.
 func TestOversizedForReuseAcceptsExactlyTheReuseCap(t *testing.T) {
 	labels := func(n int) map[string]string {
 		m := make(map[string]string, n)
@@ -83,6 +83,20 @@ func TestOversizedForReuseAcceptsExactlyTheReuseCap(t *testing.T) {
 			name:  "sysctls one past the cap",
 			build: func(r *containerCreateRequest) { r.HostConfig.Sysctls = labels(containerCreateReuseCap + 1) },
 			want:  true,
+		},
+		{
+			name: "log config options exactly at the cap",
+			build: func(r *containerCreateRequest) {
+				r.HostConfig.LogConfig.Config = labels(containerCreateReuseCap)
+			},
+			want: false,
+		},
+		{
+			name: "log config options one past the cap",
+			build: func(r *containerCreateRequest) {
+				r.HostConfig.LogConfig.Config = labels(containerCreateReuseCap + 1)
+			},
+			want: true,
 		},
 		{
 			name: "endpoints config exactly at the cap",
