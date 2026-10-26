@@ -397,11 +397,14 @@ jobs:
     permissions:
       contents: write  # commit the badge JSON back with GITHUB_TOKEN
     steps:
-      # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
+      # This job holds a write credential, so it keeps block mode per review;
+      # the read-only jobs use audit (DEP-19). Pushes one commit back to origin.
       - name: Harden Runner
         uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
           disable-sudo: true
 
       - name: Checkout
