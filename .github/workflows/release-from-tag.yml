@@ -854,7 +854,7 @@ jobs:
     name: "Release: Verify Homebrew"
     needs: [release]
     if: ${{ !contains(github.ref_name, '-') }}
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 15
     permissions:
       contents: read
