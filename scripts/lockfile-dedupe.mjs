@@ -97,20 +97,17 @@ export function releaseAgeCutoff(now = new Date(), days = RELEASE_AGE_DAYS) {
   return new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString();
 }
 
-// Both probes resolve against the registry as of the cutoff, so a version
-// published inside the cool-off window is invisible to them.
+// Only the dedupe probe gets the cutoff. Dedupe can pick a newer version of
+// something than the lockfile holds, and that must stay inside the cool-off
+// window. The install probe only checks that node_modules matches the
+// lockfile, which needs no cutoff, and --before there can fail with ETARGET
+// when package.json exactly pins a version published inside the window
+// (Renovate security updates use minimumReleaseAge 0), which would block
+// pushes.
 export function buildProbeArgs(now = new Date()) {
   const before = `--before=${releaseAgeCutoff(now)}`;
   return {
-    install: [
-      "install",
-      "--dry-run",
-      "--json",
-      "--no-audit",
-      "--no-fund",
-      "--ignore-scripts",
-      before,
-    ],
+    install: ["install", "--dry-run", "--json", "--no-audit", "--no-fund", "--ignore-scripts"],
     dedupe: ["dedupe", "--dry-run", "--json", before],
   };
 }

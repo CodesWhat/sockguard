@@ -161,10 +161,10 @@ describe("release-age cutoff", () => {
     assert.equal(releaseAgeCutoff(NOW), "2026-10-12T12:00:00.000Z");
   });
 
-  it("passes --before=<cutoff> to both npm probes", () => {
+  it("passes --before=<cutoff> to the dedupe probe only", () => {
     const { install, dedupe } = buildProbeArgs(NOW);
 
-    assert.ok(install.includes("--before=2026-10-12T12:00:00.000Z"));
+    assert.ok(!install.some((arg) => arg.startsWith("--before")));
     assert.ok(dedupe.includes("--before=2026-10-12T12:00:00.000Z"));
     assert.deepEqual(install.slice(0, 2), ["install", "--dry-run"]);
     assert.deepEqual(dedupe.slice(0, 2), ["dedupe", "--dry-run"]);
