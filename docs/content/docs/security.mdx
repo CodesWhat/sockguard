@@ -490,9 +490,10 @@ owner isolation:
   bind source that isn't an absolute path, and refuses `conmon_pid_file`, along
   with `infra_conmon_pid_file` on a pod create. Native container
   `base_hosts_file` and pod `hostsFile` accept only empty, `image` or `none`;
-  client-selected host paths are refused. A log path (`log_configuration.path`,
-  or a `healthLogDestination` directory) is refused unless `allow_log_path` is
-  on. These request-body checks apply independently of owner labels.
+  client-selected host paths are refused. On native container creates, a log
+  path (`log_configuration.path`, or a `healthLogDestination` directory) is
+  refused unless `allow_log_path` is on. These request-body checks apply
+  independently of owner labels.
 
 Keys are matched the way Podman's JSON decoder matches them, in any letter
 case, including the ones it reads by their Go names (`Networks`, and `Name`
