@@ -451,6 +451,126 @@ function releaseHardenRunnerViolations(yamlText) {
   return violations;
 }
 
+const RETRIED_STEP_USES = /^\s*uses:\s*(actions\/checkout|docker\/setup-buildx-action)@/u;
+
+// Splits a workflow into jobs (children of the top-level `jobs:` key), then
+// each job into steps by indentation. `steps.<id>` is scoped per job, so the
+// first-attempt/retry matching runs inside one job at a time.
+function releaseRetryViolations(yamlText) {
+  const lines = yamlText.split("\n").filter((line) => !/^\s*#/u.test(line));
+  const jobs = [];
+  let inJobs = false;
+  let job = null;
+  for (const line of lines) {
+    if (/^jobs:\s*$/u.test(line)) {
+      inJobs = true;
+      continue;
+    }
+    if (!inJobs) continue;
+    if (line.trim() !== "" && indentOf(line) === 0) {
+      inJobs = false;
+      job = null;
+      continue;
+    }
+    const m = /^ {2}([A-Za-z0-9_-]+):\s*$/u.exec(line);
+    if (m) {
+      job = { name: m[1], lines: [] };
+      jobs.push(job);
+    } else if (job) {
+      job.lines.push(line);
+    }
+  }
+  // A bare steps fragment (no `jobs:` key) is checked as one anonymous job.
+  if (jobs.length === 0) jobs.push({ name: "(no jobs)", lines });
+  const violations = [];
+  let retried = 0;
+  for (const j of jobs) {
+    const found = jobRetryViolations(j.lines);
+    retried += found.retried;
+    for (const v of found.violations) violations.push(`job ${j.name}: ${v}`);
+  }
+  if (retried === 0) violations.push("no retried checkout or Buildx steps found");
+  return violations;
+}
+
+function jobRetryViolations(lines) {
+  const steps = [];
+  let current = null;
+  for (const line of lines) {
+    if (/^\s*-\s+\S/u.test(line) && indentOf(line) === 6) {
+      current = { lines: [line] };
+      steps.push(current);
+    } else if (current && (line.trim() === "" || indentOf(line) > 6)) {
+      current.lines.push(line);
+    } else {
+      current = null;
+    }
+  }
+  const field = (step, key) =>
+    step.lines
+      .filter((l) => indentOf(l.replace(/^(\s*)-\s/u, "$1  ")) === 8)
+      .map((l) => l.replace(/^\s*(?:-\s+)?/u, ""))
+      .find((l) => l.startsWith(`${key}:`))
+      ?.slice(key.length + 1)
+      .trim();
+  const violations = [];
+  const firstAttempts = [];
+  const retries = [];
+  steps.forEach((step, i) => {
+    if (!step.lines.some((l) => RETRIED_STEP_USES.test(l))) return;
+    const label = `step ${i + 1} (${field(step, "name")})`;
+    const id = field(step, "id");
+    const guard = /^steps\.([A-Za-z0-9_-]+)\.outcome == 'failure'$/u.exec(field(step, "if") ?? "");
+    if (guard) {
+      if (field(step, "continue-on-error") !== undefined) {
+        violations.push(`${label}: retry must not set continue-on-error`);
+      }
+      retries.push({ i, guard: guard[1], label });
+    } else if (id && field(step, "continue-on-error") === "true") {
+      firstAttempts.push({ i, id, label });
+    } else {
+      violations.push(`${label}: needs an id and continue-on-error: true, or an outcome guard`);
+    }
+  });
+  for (const first of firstAttempts) {
+    const match = retries.find((r) => r.guard === first.id && r.i > first.i);
+    if (!match) violations.push(`${first.label}: no retry guarded by steps.${first.id}.outcome`);
+  }
+  for (const r of retries) {
+    if (!firstAttempts.some((f) => f.id === r.guard && f.i < r.i)) {
+      violations.push(`${r.label}: guard references no earlier first attempt`);
+    }
+  }
+  return { violations, retried: firstAttempts.length };
+}
+
+test("release workflows retry checkout and Buildx setup once after a short wait", () => {
+  const dir = path.join(ROOT, ".github", "workflows");
+  for (const name of BLOCK_MODE_WORKFLOWS) {
+    const raw = fs.readFileSync(path.join(dir, name), "utf8");
+    assert.deepEqual(releaseRetryViolations(raw), [], `${name} checkout and Buildx steps`);
+  }
+  const bad = "    steps:\n      - name: Checkout\n        uses: actions/checkout@abc\n";
+  assert.equal(releaseRetryViolations(bad).length, 2);
+});
+
+test("release retry matching is scoped per job", () => {
+  const step = (name, id, extra) =>
+    `      - name: ${name}\n        id: ${id}\n${extra}        uses: actions/checkout@abc\n`;
+  const first = step("Checkout", "checkout", "        continue-on-error: true\n");
+  const retry = step(
+    "Checkout (retry)",
+    "checkout_retry",
+    "        if: steps.checkout.outcome == 'failure'\n",
+  );
+  const wf = `on: push\njobs:\n  one:\n    steps:\n${first}  two:\n    steps:\n${first}${retry}`;
+  const found = releaseRetryViolations(wf);
+  assert.equal(found.length, 1);
+  assert.match(found[0], /^job one: .*no retry guarded by steps\.checkout\.outcome/u);
+  const both = `on: push\njobs:\n  one:\n    steps:\n${first}${retry}  two:\n    steps:\n${first}${retry}`;
+  assert.deepEqual(releaseRetryViolations(both), []);
+});
+
 test("only the release workflows keep harden-runner block mode, with an allow list", () => {
   const dir = path.join(ROOT, ".github", "workflows");
   for (const name of workflowFiles()) {

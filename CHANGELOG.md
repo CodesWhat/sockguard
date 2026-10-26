@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - CI, PR security scans and quality workflows run harden-runner in audit mode because block mode intermittently refused allow-listed hosts and left jobs hanging until their timeout; the release cut and publisher keep block mode with their curated allow lists.
 
+- The release cut and publisher retry checkout, Buildx setup and their GitHub API polling once after a short wait when harden-runner block mode briefly refuses an allow-listed host; block mode and the allow lists are unchanged.
+
 ## [2.2.11] - 2026-10-24
 
 ### Fixed
