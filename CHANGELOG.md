@@ -23,7 +23,7 @@ This candidate carries the v2.3.0 and v2.3.1 releases forward onto the v2.4 line
 
 ### Documentation
 
-- Refresh the release status across the migration guide, roadmap, README and website: stable is v2.3.1, v2.2.11 is the last v2.2 maintenance patch, and the frontend runner and `allowed_exec_digests` are no longer described as candidate-only.
+- Refresh the release status across the migration guide, roadmap, README and website: stable is v2.3.1, v2.2.11 is the latest v2.2 maintenance patch, and the frontend runner and `allowed_exec_digests` are no longer described as candidate-only.
 
 ## [2.4.0-rc.1] - 2026-10-16
 
