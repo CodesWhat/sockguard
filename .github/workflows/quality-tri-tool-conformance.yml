@@ -58,15 +58,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      # Stage 1 of the harden-runner egress rollout: no Docker in this leg,
-      # just the route-normalizer self-test against the checked-out repo.
+      # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       - name: Harden Runner
         uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
-          egress-policy: block
-          allowed-endpoints: >
-            github.com:443
-            *.actions.githubusercontent.com:443
+          egress-policy: audit
           disable-sudo: true
 
       - name: Checkout
@@ -162,16 +158,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      # Stage 1 of the harden-runner egress rollout: only downloads
-      # artifacts and aggregates JSON locally — all GitHub-internal traffic,
-      # no checkout even needed.
+      # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       - name: Harden Runner
         uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
-          egress-policy: block
-          allowed-endpoints: >
-            github.com:443
-            *.actions.githubusercontent.com:443
+          egress-policy: audit
           disable-sudo: true
 
       - name: Download all row artifacts

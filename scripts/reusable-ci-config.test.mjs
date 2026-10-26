@@ -116,37 +116,8 @@ const GO_INPUTS = [
   "run-workflow-security: true",
   `run-goreleaser: \${{ github.event_name != 'schedule' }}`,
   `run-qlty: \${{ github.event_name != 'schedule' }}`,
-  "qlty-egress-policy: block",
-];
-
-// The proven Qlty endpoint allowlist, copied from portwing's ci-verify.yml
-// rather than re-derived (CodesWhat/.github REPOSITORY_ONBOARDING.md says to
-// copy it and not widen it). qlty downloads its own CLI plus every plugin
-// runtime the default source resolves, so this list is wider than an ordinary
-// Go job's and must not grow without a measured need.
-const QLTY_ALLOWED_ENDPOINTS = [
-  "api.github.com:443",
-  "api.osv.dev:443",
-  "api.segment.io:443",
-  "api0.prismacloud.io:443",
-  "dl.google.com:443",
-  "files.pythonhosted.org:443",
-  "github-proxy.qlty.sh:443",
-  "github.com:443",
-  "go.dev:443",
-  "mirror.gcr.io:443",
-  "nodejs.org:443",
-  "objects.githubusercontent.com:443",
-  "proxy.golang.org:443",
-  "pypi.org:443",
-  "qlty-releases.s3.amazonaws.com:443",
-  "radarlint-releases.s3.amazonaws.com:443",
-  "registry.npmjs.org:443",
-  "release-assets.githubusercontent.com:443",
-  "sum.golang.org:443",
-  "tmaproduction.blob.core.windows.net:443",
-  "tuf-repo-cdn.sigstore.dev:443",
-  "tuf-repo.github.com:443",
+  "qlty-egress-policy: audit",
+  "workflow-security-egress-policy: audit",
 ];
 
 const NODE_INPUTS = [
@@ -354,20 +325,6 @@ test("the local lint and release gates use the same isolated fixed adapters", ()
   assert.doesNotMatch(lefthook, /^ {6}run: golangci-lint run$/mu);
 });
 
-function qltyAllowedEndpoints(source) {
-  const header = "      qlty-allowed-endpoints: >-\n";
-  const go = jobSection(source, "go-ci");
-  const start = go.indexOf(header);
-  assert.notEqual(start, -1, "go-ci must pin qlty-allowed-endpoints as a block scalar");
-
-  const endpoints = [];
-  for (const line of go.slice(start + header.length).split("\n")) {
-    if (!line.startsWith("        ")) break;
-    endpoints.push(line.trim());
-  }
-  return endpoints;
-}
-
 function prePushPriorities(lefthook) {
   const section = lefthook.slice(lefthook.indexOf("\npre-push:"));
   const priorities = new Map();
@@ -423,14 +380,155 @@ test("the repository-run Qlty gate is wired into CI, the pre-push hook, and one 
   );
 });
 
-test("the Qlty egress allowlist stays exactly the proven portwing endpoint set", () => {
-  const endpoints = qltyAllowedEndpoints(fs.readFileSync(WORKFLOW, "utf8"));
-  assert.deepEqual(endpoints, QLTY_ALLOWED_ENDPOINTS);
-  assert.deepEqual(
-    endpoints,
-    [...endpoints].sort(),
-    "keep the allowlist sorted so an addition is visible in review",
-  );
+function workflowFiles() {
+  const dir = path.join(ROOT, ".github", "workflows");
+  return fs
+    .readdirSync(dir)
+    .filter((name) => name.endsWith(".yml"))
+    .sort();
+}
+
+const BLOCK_MODE_WORKFLOWS = ["release-cut.yml", "release-from-tag.yml"];
+const HARDEN_RUNNER_USES = /^(\s*)(?:-\s+)?uses:\s*step-security\/harden-runner@/u;
+const ENDPOINT_TOKEN = /^[A-Za-z0-9*.-]+:\d+$/u;
+
+function indentOf(line) {
+  return line.length - line.trimStart().length;
+}
+
+// Returns one violation string per problem found in any harden-runner step of
+// a release workflow. Each step is checked on its own, so a good step cannot
+// vouch for a bad one. Parsed by indentation; the workflows use no anchors or
+// flow-style maps for these steps.
+function releaseHardenRunnerViolations(yamlText) {
+  const lines = yamlText.split("\n").filter((line) => !/^\s*#/u.test(line));
+  const violations = [];
+  let steps = 0;
+  lines.forEach((line, i) => {
+    const m = HARDEN_RUNNER_USES.exec(line);
+    if (!m) return;
+    steps += 1;
+    const label = `harden-runner step ${steps} (line ${i + 1} of comment-stripped source)`;
+    const keyIndent = indentOf(line) + (/^\s*-\s/u.test(line) ? 2 : 0);
+    const body = [];
+    for (let j = i + 1; j < lines.length; j += 1) {
+      if (lines[j].trim() === "") continue;
+      if (indentOf(lines[j]) < keyIndent) break;
+      body.push(lines[j]);
+    }
+    const withAt = body.findIndex((l) => indentOf(l) === keyIndent && /^\s*with:\s*$/u.test(l));
+    if (withAt === -1) {
+      violations.push(`${label}: no with: block`);
+      return;
+    }
+    const withLines = [];
+    for (let j = withAt + 1; j < body.length && indentOf(body[j]) > keyIndent; j += 1) {
+      withLines.push(body[j]);
+    }
+    const childIndent = withLines.length ? indentOf(withLines[0]) : keyIndent + 2;
+    const children = withLines.filter((l) => indentOf(l) === childIndent);
+    if (!children.some((l) => /^\s*egress-policy:\s*block\s*$/u.test(l))) {
+      violations.push(`${label}: egress-policy must be block`);
+    }
+    const epAt = withLines.findIndex(
+      (l) => /^\s*allowed-endpoints:/u.test(l) && indentOf(l) === childIndent,
+    );
+    if (epAt === -1) {
+      violations.push(`${label}: missing allowed-endpoints`);
+      return;
+    }
+    const value = withLines[epAt].replace(/^\s*allowed-endpoints:/u, "").trim();
+    const scalar = /^[>|][-+]?$/u.test(value);
+    const parts = scalar ? [] : [value];
+    if (scalar) {
+      for (let j = epAt + 1; j < withLines.length && indentOf(withLines[j]) > childIndent; j += 1) {
+        parts.push(withLines[j]);
+      }
+    }
+    const tokens = parts.join(" ").split(/\s+/u).filter(Boolean);
+    if (!tokens.some((t) => ENDPOINT_TOKEN.test(t))) {
+      violations.push(`${label}: allowed-endpoints needs at least one host:port`);
+    }
+  });
+  if (steps === 0) violations.push("no harden-runner steps found");
+  return violations;
+}
+
+test("only the release workflows keep harden-runner block mode, with an allow list", () => {
+  const dir = path.join(ROOT, ".github", "workflows");
+  for (const name of workflowFiles()) {
+    const raw = fs.readFileSync(path.join(dir, name), "utf8");
+    if (BLOCK_MODE_WORKFLOWS.includes(name)) {
+      assert.deepEqual(releaseHardenRunnerViolations(raw), [], `${name} harden-runner steps`);
+      continue;
+    }
+    // Comments may legitimately discuss block mode; only live config counts.
+    const source = raw
+      .split("\n")
+      .filter((line) => !/^\s*#/u.test(line))
+      .join("\n");
+    assert.doesNotMatch(
+      source,
+      /egress-policy: block/u,
+      `${name} must run harden-runner in audit mode (DEP-19)`,
+    );
+    assert.doesNotMatch(
+      source,
+      /allowed-endpoints:/u,
+      `${name} is audit mode, so an allow list is dead config`,
+    );
+  }
+});
+
+const HR = "step-security/harden-runner@abc  # v2";
+const goodStep = (name) =>
+  [
+    `      - name: ${name}`,
+    `        uses: ${HR}`,
+    "        with:",
+    "          egress-policy: block",
+    "          allowed-endpoints: >",
+    "            github.com:443",
+    "            *.actions.githubusercontent.com:443",
+  ].join("\n");
+
+test("release harden-runner checker accepts good steps and rejects bad ones", () => {
+  assert.deepEqual(releaseHardenRunnerViolations(`${goodStep("one")}\n\n${goodStep("two")}\n`), []);
+
+  // (a) second step in audit mode
+  const audit = goodStep("two").replace("egress-policy: block", "egress-policy: audit");
+  const a = releaseHardenRunnerViolations(`${goodStep("one")}\n${audit}\n`);
+  assert.equal(a.length, 1);
+  assert.match(a[0], /step 2.*egress-policy must be block/u);
+
+  // (b) empty block scalar followed directly by the next key, same or lower indent
+  for (const next of ["          other-key: value", "        env:\n          A: b:1"]) {
+    const empty = [
+      `      - uses: ${HR}`,
+      "        with:",
+      "          egress-policy: block",
+      "          allowed-endpoints: >",
+      next,
+    ].join("\n");
+    const b = releaseHardenRunnerViolations(empty);
+    assert.equal(b.length, 1, next);
+    assert.match(b[0], /host:port/u);
+  }
+
+  // (c) block mode with no allowed-endpoints
+  const noList = [
+    `      - uses: ${HR}`,
+    "        with:",
+    "          egress-policy: block",
+    "      - name: next",
+    "        run: echo hi:80",
+  ].join("\n");
+  const c = releaseHardenRunnerViolations(noList);
+  assert.equal(c.length, 1);
+  assert.match(c[0], /missing allowed-endpoints/u);
+
+  // no harden-runner steps at all fails loudly
+  assert.deepEqual(releaseHardenRunnerViolations("steps: []\n"), ["no harden-runner steps found"]);
 });
 
 test("retired X1 bridge jobs must not be reintroduced", () => {
