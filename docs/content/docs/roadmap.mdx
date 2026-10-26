@@ -51,7 +51,7 @@ BuildKit and Podman's builder each do. v2.2.10 is a tenth security patch:
 native Podman pod create refuses any nonempty `infra_conmon_pid_file`,
 matching the container-create `conmon_pid_file` refusal and preventing a
 caller-selected host PID-file write. [v2.3.0-rc.8](https://github.com/CodesWhat/sockguard/releases/tag/v2.3.0-rc.8)
-is the current candidate for the next line; v2.3.0 is not stable yet. This roadmap describes direction and priorities, not
+is the latest published candidate for the next line; v2.3.0-rc.9 will carry the 2.2.11 fixes, and v2.3.0 is not stable yet. This roadmap describes direction and priorities, not
 promises about dates. A feature is available only after the release notes say
 it has shipped.
 
@@ -122,7 +122,9 @@ and [TLS scan](https://github.com/CodesWhat/sockguard/actions/runs/38828636275)
 passed on rc.8's exact head, `3d959fe3`. The soak used a mock daemon,
 completed 257,857,747 requests with zero request errors, and recorded
 3,739,648 bytes of RSS growth, below the 64 MiB threshold. This does not
-validate real BuildKit workloads. GA is no earlier than 2026-10-23.
+validate real BuildKit workloads. v2.3.0-rc.9 carries the 2.2.11 fixes into
+the candidate line and needs its own soak, TLS scan and published-image
+conformance run before GA, which is no earlier than 2026-10-23.
 Every new candidate needs a fresh four-hour soak and TLS scan; a candidate
 containing only fixes already released on the v2.2 line keeps the date,
 while a v2.3-only behavior change restarts the 14-day window.
