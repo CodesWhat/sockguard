@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/v2/app/internal/filter"
+	"github.com/codeswhat/sockguard/v3/app/internal/filter"
 )
 
 // logPathGates is allow_log_path on each create route: its YAML key, its
