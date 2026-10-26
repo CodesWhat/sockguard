@@ -10,7 +10,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/codeswhat/sockguard/app/internal/buildkitproto/control"
+	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/control"
 )
 
 // newFramedGRPCRequest is newGRPCRequest's sibling for forwardControlMediated's
@@ -25,8 +25,8 @@ func newFramedGRPCRequest(t *testing.T, path string, msg proto.Message) *http.Re
 
 // TestBridgeControlMediatedSolve covers forwardControlMediated's Solve path
 // end to end through a live bridge: framing/decode failures, each policy
-// denial reason, ref-cap enforcement, and the admitted case's byte-verbatim
-// forward plus ref registration. Every denial case also asserts the daemon
+// denial reason, ref-cap enforcement, and the admitted case's scoped Ref
+// plus ref registration. Every denial case also asserts the daemon
 // handler was never invoked — a Solve mediation failure must never reach
 // the daemon.
 func TestBridgeControlMediatedSolve(t *testing.T) {
@@ -138,7 +138,7 @@ func TestBridgeControlMediatedSolve(t *testing.T) {
 		}
 	})
 
-	t.Run("admitted Solve forwards the exact frame and registers the ref", func(t *testing.T) {
+	t.Run("admitted Solve scopes the daemon ref and registers the client ref", func(t *testing.T) {
 		tb := newTestBridge(t, EndpointGRPC, allowAllPolicy, DefaultLimits(), echoDaemonHandler())
 
 		payload := mustMarshal(t, &control.SolveRequest{Ref: "admitted-ref", Session: testBuildkitSessionID})
@@ -154,8 +154,9 @@ func TestBridgeControlMediatedSolve(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reading response body: %v", err)
 		}
-		if string(body) != string(frame) {
-			t.Fatalf("response body does not match the original frame verbatim (no re-encoding expected)")
+		expected := grpcFrame(mustMarshal(t, &control.SolveRequest{Ref: daemonBuildRef(tb.session.Key, "admitted-ref"), Session: tb.registry.daemonSessionID(tb.session.Key, testBuildkitSessionID)}))
+		if string(body) != string(expected) {
+			t.Fatal("forwarded request did not preserve fields other than the scoped ref and session")
 		}
 		if !tb.registry.OwnsRef(tb.session.Key, "admitted-ref") {
 			t.Fatal("registry does not own the ref from an admitted Solve")
@@ -300,5 +301,22 @@ func TestForwardControlMediatedUnknownMethodFailsClosed(t *testing.T) {
 	}
 	if msg == "" {
 		t.Fatal("Grpc-Message is empty, want a fixed denial message")
+	}
+}
+
+func TestBridgeDeniesSyntaxBuildArg(t *testing.T) {
+	daemon := &fakeClientLeg{resp: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Grpc-Status": {"0"}}, Body: io.NopCloser(strings.NewReader(""))}}
+	b := newUnitTestBridge(t, daemon)
+	t.Cleanup(func() { b.closeAll(nil) })
+	b.policy.Control.Solve.AllowRunInstructions = false
+	b.policy.Control.Solve.AllowFrontendGateway = true
+	req := &control.SolveRequest{Ref: "build", Session: testBuildkitSessionID, Frontend: "dockerfile.v0", FrontendAttrs: map[string]string{"build-arg:BUILDKIT_SYNTAX": "example.invalid/inert-compiler:review"}}
+	rec := httptest.NewRecorder()
+	b.handleStream(rec, newFramedGRPCRequest(t, "/moby.buildkit.v1.Control/Solve", req))
+	if daemon.gotReq != nil {
+		t.Fatal("reserved frontend override reached daemon transport")
+	}
+	if got := rec.Header().Get("Grpc-Status"); got != "7" {
+		t.Fatalf("status = %q, want PermissionDenied", got)
 	}
 }

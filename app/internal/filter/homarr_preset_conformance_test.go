@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/v2/app/internal/config"
 )
 
 // TestHomarrPresetConformance pins Homarr v1.76.2's Docker Engine API surface.

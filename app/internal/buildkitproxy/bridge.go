@@ -13,10 +13,9 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"golang.org/x/net/http2"
-
-	"github.com/codeswhat/sockguard/app/internal/buildkitproto/control"
-	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/control"
+	"github.com/codeswhat/sockguard/v2/app/internal/h2conn"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
 )
 
 // errMessageTooLarge is returned by limitedReadCloser once a stream's
@@ -28,10 +27,10 @@ var errMessageTooLarge = errors.New("buildkitproxy: message exceeds configured s
 // bridgeLegs names the two connections a mediated tunnel bridges, already
 // assigned to their h2c ROLE (not their client/daemon identity, which
 // differs by endpoint — see the doc comments on Mediator.ServeGRPC/
-// ServeSession): serverConn is where sockguard runs http2.Server.ServeConn
-// (accepting incoming streams as one *http.Request per stream), and
-// clientConn is the connection sockguard dials outbound requests on via an
-// http2.Transport-backed http2.ClientConn.
+// ServeSession): serverConn is where sockguard runs an HTTP/2 server
+// (h2conn.Serve, accepting incoming streams as one *http.Request per stream),
+// and clientConn is the connection sockguard sends outbound requests on via
+// an HTTP/2 client (h2conn.NewClientConn's *http.ClientConn).
 //
 // For EndpointGRPC (POST /grpc): serverConn is the hijacked Docker-client
 // connection (the client is the gRPC client dialing IN to sockguard),
@@ -51,12 +50,12 @@ type bridgeLegs struct {
 }
 
 // clientLegConn is the minimal surface bridge.forward and bridge.closeAll
-// need from the client leg's HTTP/2 connection. *http2.ClientConn satisfies
+// need from the client leg's HTTP/2 connection. *http.ClientConn satisfies
 // this structurally in production; tests exercising forward()'s error
 // handling (a genuine RoundTrip failure vs. a response-body copy failure vs.
 // the size-cap path) use a hand-rolled fake instead of driving a real
 // network round trip end to end, since those specific failure modes aren't
-// reproducible deterministically over a live http2.ClientConn.
+// reproducible deterministically over a live http.ClientConn.
 type clientLegConn interface {
 	RoundTrip(*http.Request) (*http.Response, error)
 	Close() error
@@ -89,7 +88,7 @@ type bridge struct {
 	// credentialCalls is Phase 4's per-session credential-call counter — see
 	// Limits.MaxCredentialCallsPerSession and forwardSessionMediated
 	// (bridge_session.go) for what it bounds. atomic.Int64 rather than a
-	// mutex-guarded int since concurrent http2.Server handler goroutines (one
+	// mutex-guarded int since concurrent HTTP/2 server handler goroutines (one
 	// per stream) may all be admitting Auth/Secrets/SSH calls at once.
 	credentialCalls atomic.Int64
 
@@ -132,8 +131,7 @@ func runBridge(ctx context.Context, legs bridgeLegs, session *Session, policy Po
 	}
 	defer b.closeAll(nil)
 
-	clientTransport := &http2.Transport{AllowHTTP: true}
-	cc, err := clientTransport.NewClientConn(legs.clientConn)
+	cc, err := h2conn.NewClientConn(legs.clientConn, nil)
 	if err != nil {
 		// Route this through closeAll/finalErr too, rather than returning
 		// fmt.Errorf(...) directly: closeOnce still gives at-most-once
@@ -146,14 +144,11 @@ func runBridge(ctx context.Context, legs bridgeLegs, session *Session, policy Po
 	}
 	b.clientLeg = cc
 
-	srv := &http2.Server{
-		MaxConcurrentStreams: limits.MaxConcurrentStreams,
+	h2conn.Serve(ctx, legs.serverConn, h2conn.ServerConfig{
+		Handler:              http.HandlerFunc(b.handleStream),
+		MaxConcurrentStreams: int(limits.MaxConcurrentStreams),
 		IdleTimeout:          limits.IdleTimeout,
 		ReadIdleTimeout:      limits.ReadIdleTimeout,
-	}
-	srv.ServeConn(legs.serverConn, &http2.ServeConnOpts{
-		Context: ctx,
-		Handler: http.HandlerFunc(b.handleStream),
 	})
 
 	return b.finalErr()
@@ -168,12 +163,12 @@ func runBridge(ctx context.Context, legs bridgeLegs, session *Session, policy Po
 //
 // closeAll is called from both runBridge's own goroutine (the deferred
 // cleanup, and the early client-leg-handshake-failure path) and stream
-// handler goroutines http2.Server spawns (recordDeniedAndMaybeClose, forward)
-// — closeErr is guarded by closeMu, not just closeOnce, because closing
-// legs.serverConn here and runBridge's ServeConn call noticing that closure
+// handler goroutines the HTTP/2 server spawns (recordDeniedAndMaybeClose,
+// forward) — closeErr is guarded by closeMu, not just closeOnce, because closing
+// legs.serverConn here and runBridge's h2conn.Serve call noticing that closure
 // and returning are NOT themselves a synchronization point the Go memory
 // model recognizes: without closeMu, runBridge reading closeErr after
-// ServeConn returns would be a data race with a handler goroutine's write
+// Serve returns would be a data race with a handler goroutine's write
 // inside this closure. See finalErr, which every closeErr read must go
 // through instead of touching the field directly.
 func (b *bridge) closeAll(err error) {
@@ -198,7 +193,7 @@ func (b *bridge) finalErr() error {
 	return b.closeErr
 }
 
-// handleStream is the http.Handler golang.org/x/net/http2.Server invokes
+// handleStream is the http.Handler net/http's HTTP/2 server invokes
 // once per HTTP/2 stream on the server leg — one *http.Request per gRPC
 // call, per the #185 synthesis's chosen bridging granularity (see
 // registry.go's package doc). It classifies the call's fully-qualified
@@ -253,6 +248,10 @@ func (b *bridge) forwardAdmitted(w http.ResponseWriter, r *http.Request, service
 		b.audit(service, method, Passthrough, "")
 		b.forward(w, r, service, method)
 	case Mediate:
+		if isGatewayMediatedMethod(b.legs.endpoint, service, method) {
+			b.forwardGatewayMediated(w, r, method)
+			return
+		}
 		if isControlMediatedMethod(b.legs.endpoint, service, method) {
 			// Phase 3: Control/Solve and Control/Status get per-message
 			// decode/policy mediation instead of Phase 2's byte-verbatim
@@ -412,14 +411,15 @@ func isControlMediatedMethod(endpoint Endpoint, service, method string) bool {
 // request message (readUnaryGRPCMessage), decode it with the vendored
 // buildkitproto stubs, run policy checks (evaluateSolveRequest /
 // evaluateStatusRequest, plus Status's ref-ownership check below), and only
-// on admission forward the exact original frame bytes via forwardWithBody —
-// never a re-encoded message, per the #185 Phase 3 constraint. Every denial
+// on admission namespace Ref and Solve.Session before forwarding.
+// All other protobuf wire bytes stay original, including LLB operation bytes.
+// Every denial
 // path here ends the STREAM only (a per-stream gRPC status plus
 // recordDeniedAndMaybeClose's soft connection-abuse budget), matching the
 // task's fail-closed granularity: "per-stream policy/decode failure -> gRPC
 // status on that stream only, session survives."
 func (b *bridge) forwardControlMediated(w http.ResponseWriter, r *http.Request, service, method string) {
-	frame, payload, err := readUnaryGRPCMessage(r.Body, b.limits.MaxMessageBytes)
+	_, payload, err := readUnaryGRPCMessage(r.Body, b.limits.MaxMessageBytes)
 	if err != nil {
 		if errors.Is(err, errMessageTooLarge) {
 			// Mirrors forward()'s own size-cap handling: a size-cap trip is a
@@ -453,6 +453,9 @@ func (b *bridge) forwardControlMediated(w http.ResponseWriter, r *http.Request, 
 		if d == nil && !b.registry.OwnsRef(b.session.Key, req.GetRef()) {
 			d = deny(grpcCodePermissionDenied, "buildkit_ref_not_owned", "this ref does not belong to an admitted Solve for this client/profile")
 		}
+		if req != nil {
+			ref = req.GetRef()
+		}
 	default:
 		// Unreachable today — isControlMediatedMethod only routes Solve and
 		// Status here — but if it and this switch ever drift (a method added
@@ -470,7 +473,37 @@ func (b *bridge) forwardControlMediated(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
+	daemonSession := ""
+	if solveReq != nil {
+		daemonSession = b.registry.daemonSessionID(b.session.Key, solveReq.GetSession())
+	}
+	frame, err := controlRefFrame(payload, daemonBuildRef(b.session.Key, ref), daemonSession, b.limits.MaxMessageBytes)
+	if err != nil {
+		if errors.Is(err, errMessageTooLarge) {
+			writeGRPCStatus(w, grpcCodeResourceExhausted, "namespaced request exceeds sockguard's size cap")
+			b.audit(service, method, Deny, "buildkit_message_too_large")
+			return
+		}
+		writeGRPCStatus(w, grpcCodeInvalidArgument, "malformed BuildKit control ref")
+		b.audit(service, method, Deny, "buildkit_protocol_error")
+		b.recordDeniedAndMaybeClose()
+		return
+	}
+
 	if method == "Solve" {
+		if b.policy.Control.Solve.AllowFrontendGateway && solveReq.GetFrontend() == "" && solveReq.Definition == nil {
+			g, denied := b.registry.beginGatewayBuild(r.Context(), b.session, ref, solveReq.GetSession(), b.policy)
+			if denied != nil {
+				writeGRPCStatus(w, denied.code, denied.message)
+				b.audit(service, method, Deny, denied.reasonCode)
+				if denied.code != grpcCodeResourceExhausted {
+					b.recordDeniedAndMaybeClose()
+				}
+				return
+			}
+			defer b.registry.endGatewayBuild(g)
+			r = r.WithContext(g.ctx)
+		}
 		switch b.registry.admitSolve(
 			b.session,
 			solveReq.GetSession(),

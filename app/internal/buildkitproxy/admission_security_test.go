@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/app/internal/buildkitproto/control"
+	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/control"
 )
 
 func TestBuildkitSessionIDValidationBoundaries(t *testing.T) {

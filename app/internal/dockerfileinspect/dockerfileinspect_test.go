@@ -1,6 +1,9 @@
 package dockerfileinspect
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSyntaxFrontend(t *testing.T) {
 	cases := []struct {
@@ -132,6 +135,56 @@ func TestInstruction(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := Instruction(tc.in); got != tc.want {
 				t.Fatalf("Instruction(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestContainsRunInstructionContinuationAllocations(t *testing.T) {
+	raw := []byte("FROM scratch\nENV x=\\\n" + strings.Repeat("x\\\n", 1024) + "x\n")
+	allocations := testing.AllocsPerRun(5, func() {
+		if ContainsRunInstruction(raw) {
+			t.Fatal("continued ENV must not be classified as RUN")
+		}
+	})
+	if allocations >= 64 {
+		t.Fatalf("allocations per scan = %.0f, want fewer than 64", allocations)
+	}
+	t.Logf("allocations per scan = %.0f", allocations)
+}
+
+func TestContainsRunInstructionContinuationCompatibility(t *testing.T) {
+	longEnv := "FROM scratch\nENV x=\\\n" + strings.Repeat("x\\\n", 1024) + "x\n"
+	cases := []struct {
+		name, in string
+		want     bool
+	}{
+		{"long ENV followed by RUN", longEnv + "RUN true\n", true},
+		{"long ENV followed by split ONBUILD RUN", longEnv + "ONB\\\nUILD R\\\nUN true\n", true},
+		{"backtick split ONBUILD RUN", "# escape=`\nONB`\nUILD R`\nUN true\n", true},
+		{"dangling non RUN continuation", "ENV x=\\", false},
+		{"dangling split RUN", "R\\\nUN\\", true},
+		{"empty continuation fragments", "R\\\n\\\n\\\nUN true\n", true},
+		{"only empty continuation fragments", "\\\n\\\n", false},
+		{"empty fragment then standalone comment", "\\\n# comment\\\nRUN true\n", true},
+		{"blank lines outside and inside continuation", "\nR\\\n\n  \nUN true\n\n", true},
+		// BuildKit drops a comment line inside a continuation and joins the
+		// next line onto the open instruction. That rejoins a keyword split
+		// around the comment, and it makes the line after a continued ENV
+		// part of that ENV's arguments.
+		{"comment during keyword continuation is dropped", "R\\\n# comment\nUN true\n", true},
+		{"continued comment during RUN arguments", "RUN echo \\\n# comment\\\nhello\n", true},
+		{"line after a comment in a non RUN continuation joins it", "ENV x=\\\n# comment\nRUN true\n", false},
+		{"multiple non RUN instructions", "FROM scratch\nENV x=1\nCOPY . /app\nONBUILD COPY . /app\n", false},
+		{"COPY heredoc with escaped payload", "COPY <<EOF /file\ntext\\\nmore\n# comment\nEOF\n", false},
+		{"ADD heredoc with RUN looking payload", "ADD <<EOF /file\n# comment\nRUN payload\nEOF\n", true},
+		{"COPY heredoc with joined RUN looking payload", "COPY <<EOF /file\ntext\\\nRUN payload\nEOF\n", false},
+		{"ADD heredoc followed by real RUN", "ADD <<EOF /file\ntext\\\nmore\n# comment\nEOF\nRUN true\n", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ContainsRunInstruction([]byte(tc.in)); got != tc.want {
+				t.Fatalf("ContainsRunInstruction() = %v, want %v", got, tc.want)
 			}
 		})
 	}

@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/codeswhat/sockguard/app/internal/glob"
+	"github.com/codeswhat/sockguard/v2/app/internal/glob"
 )
 
 // compiledPattern is a pre-compiled glob pattern for name or image matching.

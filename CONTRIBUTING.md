@@ -7,10 +7,10 @@ Questions or ideas? Start a [GitHub Discussion](https://github.com/CodesWhat/soc
 ## Getting started
 
 1. **Fork** the repository and clone your fork.
-2. **Install Go 1.26+** (required for the proxy):
+2. **Install Go 1.27+** (required for the proxy):
 
    ```bash
-   go version  # should be 1.26+
+   go version  # should be 1.27+
    ```
 
 3. **Install Node.js 24** for the website and docs workspaces. It is the version CI uses and the one `.nvmrc` selects; the root `package.json` accepts Node 22 or newer, but only 24 is exercised in CI:

@@ -28,8 +28,8 @@ import (
 	"net/http"
 	"path"
 
-	"github.com/codeswhat/sockguard/app/internal/httpjson"
-	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/httpjson"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
 )
 
 // matchesAdminPath reports whether a request path addresses the admin

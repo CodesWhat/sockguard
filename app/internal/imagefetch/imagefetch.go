@@ -53,8 +53,8 @@ import (
 	protorekor "github.com/sigstore/protobuf-specs/gen/pb-go/rekor/v1"
 	"github.com/sigstore/sigstore-go/pkg/bundle"
 
-	"github.com/codeswhat/sockguard/app/internal/imagetrust"
-	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/imagetrust"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
 )
 
 const (

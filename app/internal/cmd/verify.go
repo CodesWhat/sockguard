@@ -13,11 +13,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/codeswhat/sockguard/app/internal/config"
-	"github.com/codeswhat/sockguard/app/internal/health"
-	"github.com/codeswhat/sockguard/app/internal/imagetrust"
-	"github.com/codeswhat/sockguard/app/internal/ui"
-	"github.com/codeswhat/sockguard/app/internal/version"
+	"github.com/codeswhat/sockguard/v2/app/internal/config"
+	"github.com/codeswhat/sockguard/v2/app/internal/health"
+	"github.com/codeswhat/sockguard/v2/app/internal/imagetrust"
+	"github.com/codeswhat/sockguard/v2/app/internal/ui"
+	"github.com/codeswhat/sockguard/v2/app/internal/version"
 )
 
 // Check names, in the order they run. They are part of the --json contract:

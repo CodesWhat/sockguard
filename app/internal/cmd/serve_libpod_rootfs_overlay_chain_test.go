@@ -12,8 +12,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/apipath"
-	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/v2/app/internal/apipath"
+	"github.com/codeswhat/sockguard/v2/app/internal/config"
 )
 
 // libpodRootfsChainDaemon is the host-filesystem part of a Podman 5.8.6

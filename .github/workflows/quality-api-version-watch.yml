@@ -7,8 +7,8 @@ run-name: >-
 
 # Sockguard's request/response inspectors are validated against a specific
 # ceiling of the Docker Engine API (see app/testdata/docker-api/
-# max-supported-version.txt, currently 1.55, and the Engine API 1.55
-# validation work tracked in #153). NormalizePath itself strips any
+# max-supported-version.txt, currently 1.56; the 1.55 validation work
+# was tracked in #153). NormalizePath itself strips any
 # well-formed /vN[.N]/ prefix regardless of value, so sockguard never
 # hard-rejects traffic from a newer daemon — but a new Engine API minor can
 # ship new inspectable fields (containers/create, exec, service
@@ -54,17 +54,11 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      # Stage 1 of the harden-runner egress rollout: the only external call
-      # this job makes is curl against docs.docker.com — a single, stable
-      # vendor host.
+      # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       - name: Harden Runner
         uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
         with:
-          egress-policy: block
-          allowed-endpoints: >
-            github.com:443
-            docs.docker.com:443
-            *.actions.githubusercontent.com:443
+          egress-policy: audit
           disable-sudo: true
 
       - name: Checkout

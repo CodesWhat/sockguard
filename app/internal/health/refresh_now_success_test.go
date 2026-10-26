@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/app/internal/testhelp"
+	"github.com/codeswhat/sockguard/v2/app/internal/testhelp"
 )
 
 // TestRefreshNowSucceedsWithoutLoggingUnreachable pins refreshNow's `if err

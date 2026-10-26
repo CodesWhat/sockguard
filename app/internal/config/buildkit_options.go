@@ -1,6 +1,6 @@
 package config
 
-import "github.com/codeswhat/sockguard/app/internal/buildkitproxy"
+import "github.com/codeswhat/sockguard/v2/app/internal/buildkitproxy"
 
 // ToPolicy converts BuildkitRequestBodyConfig into buildkitproxy.Policy,
 // mirroring how RequestBodyConfig.ToFilterOptions translates into the filter
@@ -40,8 +40,17 @@ func (c BuildkitControlRequestBodyConfig) toPolicy(build BuildRequestBodyConfig)
 }
 
 func (c BuildkitSolveRequestBodyConfig) toPolicy(build BuildRequestBodyConfig) buildkitproxy.SolvePolicy {
+	var execDigests map[string]struct{}
+	if len(c.AllowedExecDigests) > 0 {
+		execDigests = make(map[string]struct{}, len(c.AllowedExecDigests))
+		for _, digest := range c.AllowedExecDigests {
+			execDigests[digest] = struct{}{}
+		}
+	}
 	return buildkitproxy.SolvePolicy{
 		Allow:                     c.Allow,
+		AllowFrontendGateway:      c.AllowFrontendGateway,
+		AllowedExecDigests:        execDigests,
 		AllowHostNetwork:          build.AllowHostNetwork,
 		AllowRemoteContext:        build.AllowRemoteContext,
 		AllowRunInstructions:      build.AllowRunInstructions,

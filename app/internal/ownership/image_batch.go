@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/codeswhat/sockguard/app/internal/dockerresource"
-	"github.com/codeswhat/sockguard/app/internal/imageselector"
+	"github.com/codeswhat/sockguard/v2/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/v2/app/internal/imageselector"
 )
 
 type imageBatchOwnershipReferences struct {

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/v2/app/internal/dockerresource"
 )
 
 // imagePushSplitViewInspector is a repository where the caller owns exactly

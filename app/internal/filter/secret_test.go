@@ -2,6 +2,7 @@ package filter
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -205,5 +206,80 @@ func TestSecretInspectMalformedJSONWithLogger(t *testing.T) {
 	}
 	if len(logs.snapshot()) != 1 {
 		t.Fatalf("log records = %d, want 1", len(logs.snapshot()))
+	}
+}
+
+func TestSecretInspectDockerDriverShape(t *testing.T) {
+	const driverDenied = `secret create denied: driver "vault" is not allowed`
+	const malformed = "secret create denied: request body could not be inspected"
+	for _, tt := range []struct {
+		name, body string
+		allow      bool
+		want       string
+	}{
+		{"object denied", `{"Driver":{"Name":"vault","Options":{"address":"local"}}}`, false, driverDenied},
+		{"object allowed", `{"Driver":{"Name":"vault","Options":{"address":"local"}}}`, true, ""},
+		{"absent", `{}`, false, ""},
+		{"null", `{"Driver":null}`, false, ""},
+		{"empty", `{"Driver":{}}`, false, ""},
+		{"boolean", `{"Driver":true}`, true, malformed},
+		{"array", `{"Driver":[]}`, true, malformed},
+		{"number", `{"Driver":1}`, true, malformed},
+		{"invalid name", `{"Driver":{"Name":1}}`, true, malformed},
+		// Neither engine accepts a string Driver, so it's refused as
+		// uninspectable with the flag on or off.
+		{"string denied", `{"Driver":"vault"}`, false, malformed},
+		{"string denied when allowed", `{"Driver":"vault"}`, true, malformed},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/secrets/create", strings.NewReader(tt.body))
+			reason, err := newSecretPolicy(SecretOptions{AllowCustomDrivers: tt.allow}).inspect(nil, req, "/secrets/create")
+			if err != nil || reason != tt.want {
+				t.Fatalf("inspect() = (%q, %v), want (%q, nil)", reason, err, tt.want)
+			}
+		})
+	}
+}
+
+// TestSecretInspectRefusesARepeatedDriver pins that a Driver given twice never
+// reaches the driver gate. dockerd holds Driver as a pointer, which a later
+// null resets, and Podman holds it as a struct, which keeps the earlier name,
+// so the body is refused whichever one comes last and with the flag on or
+// off.
+func TestSecretInspectRefusesARepeatedDriver(t *testing.T) {
+	want := repeatedKeyReason("Driver", "Driver")
+	for _, body := range []string{
+		`{"Driver":{"Name":"vault"},"Driver":{}}`,
+		`{"Driver":{"Name":"vault"},"Driver":{"Name":null}}`,
+		`{"Driver":{"Name":"vault"},"Driver":null}`,
+		`{"Driver":null,"Driver":{"Name":"vault"}}`,
+	} {
+		for _, allow := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/allow=%t", body, allow), func(t *testing.T) {
+				req := httptest.NewRequest(http.MethodPost, "/secrets/create", strings.NewReader(body))
+				reason, err := newSecretPolicy(SecretOptions{AllowCustomDrivers: allow}).inspect(nil, req, "/secrets/create")
+				if got := inspectorDenyReason(t, reason, err); got != want {
+					t.Fatalf("inspect() reason = %q, want %q", got, want)
+				}
+			})
+		}
+	}
+}
+
+func TestMiddlewareSecretDockerDriver(t *testing.T) {
+	for _, path := range []string{"/secrets/create", "/v1.53/secrets/create"} {
+		for _, tt := range []struct {
+			name, body    string
+			allow, denied bool
+		}{
+			{"denied", `{"Driver":{"Name":"vault","Options":{"address":"local"}}}`, false, true},
+			{"allowed", `{"Driver":{"Name":"vault","Options":{"address":"local"}}}`, true, false},
+			{"template still denied", `{"Driver":{"Name":"vault"},"TemplateDriver":"golang"}`, true, true},
+			{"templating still denied", `{"Driver":{"Name":"vault"},"Templating":{"Name":"golang"}}`, true, true},
+		} {
+			t.Run(path+"/"+tt.name, func(t *testing.T) {
+				assertFilterCreateRoundTrip(t, path, tt.body, PolicyConfig{Secret: SecretOptions{AllowCustomDrivers: tt.allow}}, tt.denied)
+			})
+		}
 	}
 }

@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/codeswhat/sockguard/app/internal/imageselector"
+	"github.com/codeswhat/sockguard/v2/app/internal/imageselector"
 )
 
 const (

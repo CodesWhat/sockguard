@@ -1,10 +1,13 @@
 ---
 title: Roadmap
-description: Sockguard's shipped v1.7, v2.0, v2.1, and v2.2 work, v2.3 release-candidate status, and later direction.
+description: Sockguard's shipped v1.7, v2.0, v2.1, v2.2, and v2.3 work and later direction.
 ---
 
-Sockguard v2.2 is the current stable feature line, with v2.2.11 the latest
-release. v2.2.0 closed the volume-mount and read-side gaps that survived
+Sockguard v2.3 is the current stable feature line, with v2.3.0 the latest
+release. It promotes `2.3.0-rc.9` unchanged in behavior and is the first
+release under the MIT license; 2.2.x and earlier remain Apache-2.0.
+
+The v2.2 line, whose final release is v2.2.11, shipped as follows. v2.2.0 closed the volume-mount and read-side gaps that survived
 v2.1.0 and added the operator-facing checks that were missing around them;
 v2.2.1 is a security patch on that line, closing a raw block-device,
 pseudo-filesystem or `overlay` lower/upper/work-dir mount through the
@@ -50,10 +53,29 @@ doubled escapes, the `# escape=` directive and the JSON syntax directive the way
 BuildKit and Podman's builder each do. v2.2.10 is a tenth security patch:
 native Podman pod create refuses any nonempty `infra_conmon_pid_file`,
 matching the container-create `conmon_pid_file` refusal and preventing a
-caller-selected host PID-file write. [v2.3.0-rc.8](https://github.com/CodesWhat/sockguard/releases/tag/v2.3.0-rc.8)
-is the current candidate for the next line; v2.3.0 is not stable yet. This roadmap describes direction and priorities, not
-promises about dates. A feature is available only after the release notes say
+caller-selected host PID-file write. v2.2.11 closes native Podman hosts-file
+selection and restricted-build frontend overrides. This roadmap describes
+direction and priorities, not promises about dates. A feature is available only after the release notes say
 it has shipped.
+
+## Shipped in v2.3.0
+
+The general BuildKit gRPC mediation foundation shipped under
+[issue #185](https://github.com/CodesWhat/sockguard/issues/185). v2.3.0
+extends it with selective raw-LLB and external frontend mediation, and moves
+the Go module to its v2 major-version path.
+
+| Track | Delivered |
+|---|---|
+| BuildKit RUN-instruction coverage | Raw-LLB ExecOps can be individually approved with `control.solve.allowed_exec_digests`. External frontend gateway Solves are mediated under the root build's policy, and the pinned companion runner executes the compiler outside the daemon. Unknown operations, opaque in-daemon frontends, interactive execution and daemon-resolved nested builds remain denied while RUN is restricted. Build refs and callback session IDs are scoped by client and profile |
+| Go module major-version path | The module declares `github.com/codeswhat/sockguard/v2`, with migrated imports, release linker flags and 11 regenerated BuildKit descriptors, so `go install github.com/codeswhat/sockguard/v2/app/cmd/sockguard@latest` resolves to the v2 line. Existing v2.2 tags retain their original metadata; Docker, Homebrew, deb and rpm installs are unchanged |
+| License | Sockguard is MIT licensed from this release. Releases up to and including 2.2.x remain available under Apache-2.0 |
+| Carried fixes | Everything shipped on 2.2.x through 2.2.11 is on the v2.3 line |
+
+The release promotes `2.3.0-rc.9`. Its four-hour soak ran against a mock
+daemon with zero request errors across 253 million requests, the TLS scan
+found only TLS 1.3, and tri-tool conformance passed with no failures. The
+soak does not validate real BuildKit workloads.
 
 ## Shipped in v2.2.11
 
@@ -103,29 +125,6 @@ from source and a client-only request capture, not a live-daemon reproduction.
 | BuildKit isolation | Caller identity comes from verified certificates or Unix peer credentials where available, session state is correlated by principal, profile, and session, Solve admission is atomic, and upgrade handshakes are bounded |
 | Proxy hardening | Socket cleanup is inode-owned, method-aware resource routing covers keyword names, generated response errors clear stale representation headers, inspected bodies retain deadlines through logging and metrics, and request metric labels have finite cardinality |
 | Release surfaces | README, docs, website, Helm metadata, verification assets, and migration guidance agree on v2.0.0; release blobs use sigstore bundles only and published metadata is read back before the release succeeds |
-
-## v2.3 release candidate
-
-The general BuildKit gRPC mediation foundation shipped under
-[issue #185](https://github.com/CodesWhat/sockguard/issues/185).
-The next feature line extends it with selective raw-LLB and external frontend
-mediation. Both feature tracks below are implemented in v2.3.0-rc.8;
-the remaining gate is stable promotion after candidate validation.
-
-| Track | Candidate status |
-|---|---|
-| BuildKit RUN-instruction coverage | Raw-LLB ExecOps can be individually approved with `control.solve.allowed_exec_digests`. External frontend gateway Solves are mediated under the root build's policy, and the pinned companion runner executes the compiler outside the daemon. Unknown operations, opaque in-daemon frontends, interactive execution and daemon-resolved nested builds remain denied while RUN is restricted. Build refs and callback session IDs are scoped by client and profile |
-| Go module major-version path | The candidate declares `github.com/codeswhat/sockguard/v2`, with migrated imports, release linker flags and 11 regenerated BuildKit descriptors. After stable v2.3.0 publication, `go install github.com/codeswhat/sockguard/v2/app/cmd/sockguard@latest` will resolve to the v2 line. Existing v2.2 tags retain their original metadata; Docker, Homebrew, deb and rpm installs are unchanged |
-
-The [four-hour soak](https://github.com/CodesWhat/sockguard/actions/runs/38828633168)
-and [TLS scan](https://github.com/CodesWhat/sockguard/actions/runs/38828636275)
-passed on rc.8's exact head, `3d959fe3`. The soak used a mock daemon,
-completed 257,857,747 requests with zero request errors, and recorded
-3,739,648 bytes of RSS growth, below the 64 MiB threshold. This does not
-validate real BuildKit workloads. GA is no earlier than 2026-10-23.
-Every new candidate needs a fresh four-hour soak and TLS scan; a candidate
-containing only fixes already released on the v2.2 line keeps the date,
-while a v2.3-only behavior change restarts the 14-day window.
 
 ## Twelve-month direction
 

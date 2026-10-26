@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	requestfilter "github.com/codeswhat/sockguard/app/internal/filter"
+	requestfilter "github.com/codeswhat/sockguard/v2/app/internal/filter"
 )
 
 // gzipBytesForTest compresses body the way an upstream that ignores

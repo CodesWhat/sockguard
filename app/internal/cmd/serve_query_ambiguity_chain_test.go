@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/app/internal/apipath"
-	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/v2/app/internal/apipath"
+	"github.com/codeswhat/sockguard/v2/app/internal/config"
 )
 
 // podmanSchemaBool is the value gorilla/schema leaves in a bool field tagged

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/v2/app/internal/filter"
 )
 
 // libpodHostNamespaceGates is every host namespace gate on Podman's native

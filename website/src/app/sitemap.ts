@@ -38,6 +38,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
     ...[
       "getting-started",
       "configuration",
+      "frontend-runner",
       "multi-host",
       "presets",
       "podman",

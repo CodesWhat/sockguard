@@ -1,6 +1,6 @@
 package filter
 
-import "github.com/codeswhat/sockguard/app/internal/apipath"
+import "github.com/codeswhat/sockguard/v2/app/internal/apipath"
 
 // IsHijackCandidatePath reports whether method+normalizedPath is one of the
 // connection-upgrade endpoints — Docker-compat or libpod — that

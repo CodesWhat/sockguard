@@ -9,7 +9,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
 )
 
 // withSharedQueryMeta attaches the per-request state the serve chain attaches,

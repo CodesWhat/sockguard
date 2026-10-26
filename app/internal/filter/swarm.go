@@ -8,7 +8,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
 )
 
 const maxSwarmBodyBytes = 256 << 10 // 256 KiB

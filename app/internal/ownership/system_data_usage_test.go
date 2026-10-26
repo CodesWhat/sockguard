@@ -13,10 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/app/internal/filter"
-	"github.com/codeswhat/sockguard/app/internal/logging"
-	"github.com/codeswhat/sockguard/app/internal/responsefilter"
-	"github.com/codeswhat/sockguard/app/internal/visibility"
+	"github.com/codeswhat/sockguard/v2/app/internal/filter"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/responsefilter"
+	"github.com/codeswhat/sockguard/v2/app/internal/visibility"
 )
 
 const ownerLabelForTest = DefaultLabelKey

@@ -70,7 +70,7 @@ import (
 
 	"google.golang.org/protobuf/encoding/protowire"
 
-	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
 )
 
 // responseFieldRule is one row of a response field-number allowlist. Its zero
@@ -130,8 +130,7 @@ var controlSchemaDrift schemaDriftLimiter
 // The tables form an acyclic graph three levels deep at most
 // (ListWorkersResponse -> WorkerRecord -> Platform/BuildkitVersion), so
 // filterControlResponseMessage's recursion is statically bounded and needs no
-// depth cap of its own, unlike solve.go's solveDefinitionExecMaxDepth (whose
-// input nesting is client-controlled).
+// depth cap of its own.
 
 // controlPlatformFields is solver/pb's Platform, reached through
 // WorkerRecord.platforms. Every field is kept: a platform triple is what a
@@ -258,6 +257,15 @@ func (b *bridge) forwardControlInfoMediated(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	b.forwardFilteredUnary(w, r, service, method, func(src io.Reader, maxLen int64) ([]byte, *mediationDenial) {
+		frame, drift, denial := filterControlUnaryResponse(src, maxLen, table)
+		b.reportControlSchemaDrift(service, method, drift)
+		return frame, denial
+	})
+}
+
+func (b *bridge) forwardFilteredUnary(w http.ResponseWriter, r *http.Request, service, method string, filterResponse func(io.Reader, int64) ([]byte, *mediationDenial)) {
+
 	host := r.Host
 	if host == "" {
 		host = "buildkitd"
@@ -291,14 +299,12 @@ func (b *bridge) forwardControlInfoMediated(w http.ResponseWriter, r *http.Reque
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	frame, drift, denial := filterControlUnaryResponse(newLimitedReadCloser(resp.Body, b.limits.MaxMessageBytes), b.limits.MaxMessageBytes, table)
+	frame, denial := filterResponse(newLimitedReadCloser(resp.Body, b.limits.MaxMessageBytes), b.limits.MaxMessageBytes)
 	if denial != nil {
 		writeGRPCStatus(w, denial.code, denial.message)
 		b.audit(service, method, Deny, denial.reasonCode)
 		return
 	}
-	b.reportControlSchemaDrift(service, method, drift)
-
 	for k, vv := range resp.Header {
 		for _, v := range vv {
 			w.Header().Add(k, v)

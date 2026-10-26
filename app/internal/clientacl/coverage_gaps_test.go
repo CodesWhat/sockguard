@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
 )
 
 // ---- storeLocked: TTL-scrub removes all stale entries so havingOldest stays false

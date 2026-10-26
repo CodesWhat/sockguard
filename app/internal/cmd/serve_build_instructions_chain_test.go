@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/app/internal/apipath"
-	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/v2/app/internal/apipath"
+	"github.com/codeswhat/sockguard/v2/app/internal/config"
 )
 
 // buildInstructionsChainDaemon is the build endpoint of each engine, as far as

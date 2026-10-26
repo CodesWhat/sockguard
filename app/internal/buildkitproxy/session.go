@@ -1,6 +1,8 @@
 package buildkitproxy
 
 import (
+	"context"
+	"crypto/rand"
 	"sync"
 	"time"
 )
@@ -152,9 +154,11 @@ type uploadKeyState struct {
 // SessionRegistry tracks every currently-open mediated BuildKit tunnel.
 // Safe for concurrent use.
 type SessionRegistry struct {
-	mu       sync.Mutex
-	sessions map[uint64]*Session
-	nextID   uint64
+	mu            sync.Mutex
+	sessions      map[uint64]*Session
+	nextID        uint64
+	sessionSecret [32]byte
+	gatewayBuilds map[SessionKey]map[string]*gatewayBuild
 
 	// refOwners is Phase 3's ref-ownership index: which SessionKey (client
 	// identity + profile — see SessionKey's doc comment) admitted a given
@@ -221,7 +225,9 @@ const (
 
 // NewSessionRegistry returns an empty registry.
 func NewSessionRegistry() *SessionRegistry {
-	return &SessionRegistry{sessions: make(map[uint64]*Session), now: time.Now}
+	r := &SessionRegistry{sessions: make(map[uint64]*Session), now: time.Now}
+	_, _ = rand.Read(r.sessionSecret[:])
+	return r
 }
 
 // setNow replaces the registry clock. Production uses time.Now; tests inject
@@ -286,6 +292,16 @@ func (r *SessionRegistry) Close(id uint64) {
 		return
 	}
 	delete(r.sessions, id)
+	for ref, g := range r.gatewayBuilds[s.Key] {
+		if g.session == s {
+			g.cancel(context.Canceled)
+			g.stopTimer()
+			delete(r.gatewayBuilds[s.Key], ref)
+		}
+	}
+	if len(r.gatewayBuilds[s.Key]) == 0 {
+		delete(r.gatewayBuilds, s.Key)
+	}
 
 	refs := s.refsSnapshot()
 	owners := r.refOwners[s.Key]

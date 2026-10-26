@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Regenerates the pinned BuildKit protobuf Go bindings under
 # app/internal/buildkitproto/{control,pb,sourcepolicy,auth,secrets,
-# sshforward,filesync,upload,fsutiltypes,health}/*.pb.go from the vendored
+# sshforward,filesync,upload,fsutiltypes,health,gateway,worker,caps}/*.pb.go from the vendored
 # .proto sources committed under app/internal/buildkitproto/proto/. See
 # app/internal/buildkitproto/PROVENANCE.md for the upstream source URL, git
 # tag, and sha256 of every vendored .proto file.
@@ -51,6 +51,9 @@ echo "Running buf generate against ${PROTO_DIR}..."
 
 GEN_ROOT="${PROTO_DIR}/gen"
 
+# google/rpc/status.proto is generation-only: reuse the official message
+# package already in go.mod instead of registering a duplicate descriptor.
+#
 # Maps each buf-generated output path (mirrors the vendored proto/ tree,
 # which mirrors upstream's fully-qualified import paths) to sockguard's flat,
 # importable Go package layout. Only files sockguard actually vendors
@@ -60,6 +63,9 @@ GEN_ROOT="${PROTO_DIR}/gen"
 # preinstalled /bin/bash is 3.2 (no bash 4+ `declare -A` support), and this
 # script has no other reason to require a newer bash.
 FILE_MAP=(
+  "github.com/moby/buildkit/frontend/gateway/pb/gateway.pb.go:gateway/gateway.pb.go"
+  "github.com/moby/buildkit/api/types/worker.pb.go:worker/worker.pb.go"
+  "github.com/moby/buildkit/util/apicaps/pb/caps.pb.go:caps/caps.pb.go"
   "github.com/moby/buildkit/api/services/control/control.pb.go:control/control.pb.go"
   "github.com/moby/buildkit/solver/pb/ops.pb.go:pb/ops.pb.go"
   "github.com/moby/buildkit/sourcepolicy/pb/policy.pb.go:sourcepolicy/policy.pb.go"

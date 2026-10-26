@@ -7,7 +7,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/v2/app/internal/config"
 )
 
 // serveCommit is the commit endpoint of both engines: POST /commit, and

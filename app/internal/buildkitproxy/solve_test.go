@@ -5,9 +5,9 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/codeswhat/sockguard/app/internal/buildkitproto/control"
-	"github.com/codeswhat/sockguard/app/internal/buildkitproto/pb"
-	"github.com/codeswhat/sockguard/app/internal/buildkitproto/sourcepolicy"
+	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/control"
+	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/pb"
+	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/sourcepolicy"
 )
 
 // malformedPayload is a truncated protobuf varint tag: enough to fail
@@ -951,28 +951,12 @@ func TestDeny(t *testing.T) {
 	}
 }
 
-// TestDefinitionIsExecFreeDepthBoundaries tables definitionIsExecFree's
-// maxDepth handling at both ends:
-//
-//   - zero depth: pins the maxDepth < 0 guard at its own boundary. maxDepth
-//     == 0 must NOT be treated as "too deep" — it still evaluates the ops at
-//     this level normally, only a maxDepth that has gone NEGATIVE (one level
-//     past the caller's budget) bails out early. A def with no
-//     ExecOp/BuildOp at depth 0 must therefore still come back exec-free.
-//   - excessive nesting: pins the maxDepth-1 recursion arithmetic directly.
-//     Nesting BuildOps deeper than maxDepth allows — even when NONE of them
-//     carry an ExecOp — must come back NOT exec-free ("an unevaluable
-//     signal must not pass", per this function's own doc comment). A budget
-//     that increments instead of decrementing each level would never hit
-//     the maxDepth < 0 cutoff and would instead correctly walk all the way
-//     to the bottom, wrongly calling this exec-free.
-func TestDefinitionIsExecFreeDepthBoundaries(t *testing.T) {
+func TestDefinitionExecAllowedRejectsNestedBuilds(t *testing.T) {
 	// A leaf def with a single, definitely-not-Exec op.
 	leaf := &pb.Definition{
 		Def: [][]byte{mustMarshal(t, &pb.Op{Op: &pb.Op_Source{Source: &pb.SourceOp{Identifier: "docker-image://busybox"}}})},
 	}
-	// Wrap it in 4 levels of BuildOp nesting — deeper than the maxDepth of 2
-	// used below, so a correctly-decrementing budget must reject it.
+	// A nested BuildOp is denied even when its inline graph has no ExecOp.
 	nested := leaf
 	for range 4 {
 		nested = &pb.Definition{
@@ -981,28 +965,55 @@ func TestDefinitionIsExecFreeDepthBoundaries(t *testing.T) {
 	}
 
 	cases := []struct {
-		name     string
-		def      *pb.Definition
-		maxDepth int
-		want     bool
+		name string
+		def  *pb.Definition
+		want bool
 	}{
 		{
-			name:     "zero depth allows a shallow op",
-			def:      leaf,
-			maxDepth: 0,
-			want:     true,
+			name: "source operation is exec free",
+			def:  leaf,
+			want: true,
 		},
 		{
-			name:     "nesting deeper than maxDepth is rejected",
-			def:      nested,
-			maxDepth: 2,
-			want:     false,
+			name: "nested builds cannot be inspected",
+			def:  nested,
+			want: false,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := definitionIsExecFree(tc.def, tc.maxDepth); got != tc.want {
-				t.Fatalf("definitionIsExecFree() = %v, want %v", got, tc.want)
+			if got := definitionExecAllowed(tc.def, SolvePolicy{}); got != tc.want {
+				t.Fatalf("definitionExecAllowed() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSolveSyntaxBuildArg(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		attrs        map[string]string
+		allowRun     bool
+		allowGateway bool
+		denied       bool
+	}{
+		{name: "reserved override", attrs: map[string]string{"build-arg:BUILDKIT_SYNTAX": "example.invalid/inert-compiler:review"}, denied: true},
+		{name: "empty override", attrs: map[string]string{"build-arg:BUILDKIT_SYNTAX": ""}, denied: true},
+		{name: "override with cmdline", attrs: map[string]string{"build-arg:BUILDKIT_SYNTAX": "example.invalid/inert-compiler:review", "cmdline": "ignored"}, denied: true},
+		{name: "mediated gateway does not authorize internal frontend", attrs: map[string]string{"build-arg:BUILDKIT_SYNTAX": "example.invalid/inert-compiler:review"}, allowGateway: true, denied: true},
+		{name: "ordinary build argument", attrs: map[string]string{"build-arg:FOO": "bar"}},
+		{name: "unrestricted RUN", attrs: map[string]string{"build-arg:BUILDKIT_SYNTAX": "example.invalid/inert-compiler:review"}, allowRun: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &control.SolveRequest{Ref: "build", Session: testBuildkitSessionID, Frontend: "dockerfile.v0", FrontendAttrs: tc.attrs}
+			policy := Policy{Control: ControlPolicy{Solve: SolvePolicy{Allow: true, AllowRunInstructions: tc.allowRun, AllowFrontendGateway: tc.allowGateway}}}
+			_, d := evaluateSolveRequest(mustMarshal(t, req), policy)
+			if tc.denied {
+				if d == nil || d.code != grpcCodePermissionDenied || d.reasonCode != "buildkit_policy_denied" {
+					t.Fatalf("expected policy denial, got %+v", d)
+				}
+			} else if d != nil {
+				t.Fatalf("unexpected denial: %+v", d)
 			}
 		})
 	}

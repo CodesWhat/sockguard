@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/differential"
+	"github.com/codeswhat/sockguard/v2/app/internal/differential"
 )
 
 // TestDockerdRouteClassifierOracle is the real-dockerd tier of the

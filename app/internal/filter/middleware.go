@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/codeswhat/sockguard/app/internal/apipath"
-	"github.com/codeswhat/sockguard/app/internal/httpjson"
-	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/apipath"
+	"github.com/codeswhat/sockguard/v2/app/internal/httpjson"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
 )
 
 // bodyReadTimeout is the per-request deadline applied when reading the

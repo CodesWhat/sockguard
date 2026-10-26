@@ -10,7 +10,7 @@ import (
 
 	"github.com/sigstore/sigstore-go/pkg/testing/ca"
 
-	"github.com/codeswhat/sockguard/app/internal/boundedio"
+	"github.com/codeswhat/sockguard/v2/app/internal/boundedio"
 )
 
 // TestVerify_NoVerifiersConfiguredReturnsError exercises the

@@ -12,9 +12,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/logging"
-	"github.com/codeswhat/sockguard/app/internal/ownership"
-	"github.com/codeswhat/sockguard/app/internal/visibility"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/ownership"
+	"github.com/codeswhat/sockguard/v2/app/internal/visibility"
 )
 
 // nestedSystemDFUpstream is a /system/df report whose three containers differ

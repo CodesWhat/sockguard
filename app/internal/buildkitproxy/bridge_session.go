@@ -17,8 +17,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/codeswhat/sockguard/app/internal/buildkitproto/auth"
-	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/buildkitproto/auth"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
 )
 
 // isSessionMediatedMethod reports whether service/method on endpoint is one
@@ -86,7 +86,7 @@ func (b *bridge) forwardSessionMediated(w http.ResponseWriter, r *http.Request, 
 // admitCredentialCall increments and checks the bridge's per-session
 // credential-call counter against Limits.MaxCredentialCallsPerSession. Safe
 // for concurrent use — buildkitd may have multiple Auth/Secrets/SSH streams
-// in flight at once on the same tunnel, each on its own http2.Server
+// in flight at once on the same tunnel, each on its own HTTP/2 server
 // handler goroutine. A zero or negative limit disables the quota.
 func (b *bridge) admitCredentialCall() bool {
 	if b.limits.MaxCredentialCallsPerSession <= 0 {

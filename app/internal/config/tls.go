@@ -11,8 +11,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/codeswhat/sockguard/app/internal/certmatch"
-	"github.com/codeswhat/sockguard/app/internal/pkipin"
+	"github.com/codeswhat/sockguard/v2/app/internal/certmatch"
+	"github.com/codeswhat/sockguard/v2/app/internal/pkipin"
 )
 
 // Enabled reports whether any listen.tls setting has been configured.

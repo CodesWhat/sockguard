@@ -4,8 +4,8 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/codeswhat/sockguard/app/internal/bodycodec"
-	requestfilter "github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/v2/app/internal/bodycodec"
+	requestfilter "github.com/codeswhat/sockguard/v2/app/internal/filter"
 )
 
 // identityContentCoding is RFC 9110 §8.4.1's "no transformation" coding. It is

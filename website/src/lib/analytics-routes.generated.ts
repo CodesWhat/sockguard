@@ -11,6 +11,7 @@ const routes = [
   "/docs/admin",
   "/docs/cis-docker-benchmark",
   "/docs/configuration",
+  "/docs/frontend-runner",
   "/docs/getting-started",
   "/docs/migration",
   "/docs/multi-host",

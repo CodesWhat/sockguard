@@ -115,6 +115,13 @@ func rewriteSessionAdvertisement(dst http.Header, p Policy) {
 		if service == "" {
 			continue
 		}
+		if strings.HasPrefix(service, "/") {
+			name, method, found := strings.Cut(strings.TrimPrefix(service, "/"), "/")
+			if found && p.Allowed(EndpointSession, name, method) {
+				dst.Add(sessionGRPCMethodHeader, service)
+			}
+			continue
+		}
 		if ServiceAdmittedByPolicy(EndpointSession, service, p) {
 			dst.Add(sessionGRPCMethodHeader, service)
 		}

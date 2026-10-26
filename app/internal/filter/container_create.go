@@ -18,8 +18,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/codeswhat/sockguard/app/internal/imagefetch"
-	"github.com/codeswhat/sockguard/app/internal/imagetrust"
+	"github.com/codeswhat/sockguard/v2/app/internal/imagefetch"
+	"github.com/codeswhat/sockguard/v2/app/internal/imagetrust"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 )
 
@@ -162,8 +162,9 @@ type ContainerCreateOptions struct {
 
 	// AllowTmpfsPrivilegedOptions permits tmpfs mount options that re-enable
 	// exec/dev/suid semantics: "exec", "dev", "suid" in
-	// HostConfig.Mounts[].TmpfsOptions.Options (Engine API 1.46+). Default
-	// false: any such option is denied.
+	// HostConfig.Tmpfs or HostConfig.Mounts[].TmpfsOptions.Options (Engine
+	// API 1.46+). Default false. Legacy comma-separated flags use Docker's
+	// last-wins ordering, so "exec,noexec" remains allowed.
 	AllowTmpfsPrivilegedOptions bool
 
 	// AllowEndpointConfig permits static IP, MAC address, Links, and
@@ -1331,6 +1332,9 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if denyReason := p.denyTmpfsOptionsReason(createReq.HostConfig.Mounts); denyReason != "" {
 		return denyReason, nil
 	}
+	if denyReason := p.denyLegacyTmpfsOptionsReason(createReq.HostConfig.Tmpfs); denyReason != "" {
+		return denyReason, nil
+	}
 	if denyReason := p.denyNetworkingConfigReason(createReq.NetworkingConfig); denyReason != "" {
 		return denyReason, nil
 	}
@@ -2114,6 +2118,51 @@ func (p containerCreatePolicy) denyTmpfsOptionsReason(mounts []containerCreateMo
 		}
 	}
 	return ""
+}
+
+// denyLegacyTmpfsOptionsReason follows Docker's comma-separated, last-wins
+// handling of the legacy HostConfig.Tmpfs mount flags. dockerd reads the whole
+// value as the option string, while Podman splits "key" or "key:value" on every
+// colon and reads only the segment between the first and second colon, which
+// comes from the key when the key has a colon and from the value otherwise.
+// So the whole value, that key segment, and the value up to its first colon are
+// each judged on their own, and a privileged option in any of them denies.
+func (p containerCreatePolicy) denyLegacyTmpfsOptionsReason(mounts map[string]string) string {
+	if p.allowTmpfsPrivilegedOptions {
+		return ""
+	}
+	for dest, options := range mounts {
+		_, keyOptions, _ := strings.Cut(dest, ":")
+		keyOptions, _, _ = strings.Cut(keyOptions, ":") // Podman drops everything after the second colon
+		valueHead, _, _ := strings.Cut(options, ":")    // Podman's option list when the key has no colon
+		if legacyTmpfsOptionsEnablePrivilege(keyOptions) || legacyTmpfsOptionsEnablePrivilege(options) || legacyTmpfsOptionsEnablePrivilege(valueHead) {
+			return "container create denied: legacy tmpfs mount enables exec, dev, or suid"
+		}
+	}
+	return ""
+}
+
+// legacyTmpfsOptionsEnablePrivilege reports whether a comma-separated tmpfs
+// option string ends with exec, dev, or suid enabled (last option wins).
+func legacyTmpfsOptionsEnablePrivilege(options string) bool {
+	var exec, dev, suid bool
+	for option := range strings.SplitSeq(options, ",") {
+		switch option {
+		case "exec":
+			exec = true
+		case "noexec":
+			exec = false
+		case "dev":
+			dev = true
+		case "nodev":
+			dev = false
+		case "suid":
+			suid = true
+		case "nosuid":
+			suid = false
+		}
+	}
+	return exec || dev || suid
 }
 
 // denyNetworkingConfigReason applies the same endpoint-config policy

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/v2/app/internal/filter"
 )
 
 // TestIsHijackEndpointLibpod covers #148's libpod routes:

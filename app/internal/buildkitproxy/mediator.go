@@ -12,8 +12,8 @@ import (
 	"net"
 	"net/http"
 
-	"github.com/codeswhat/sockguard/app/internal/httpjson"
-	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/httpjson"
+	"github.com/codeswhat/sockguard/v2/app/internal/logging"
 )
 
 // Dialer is the minimal upstream-dialing seam the mediator needs to reach
@@ -94,6 +94,7 @@ func (m *Mediator) serve(endpoint Endpoint, w http.ResponseWriter, r *http.Reque
 	outHeader := r.Header.Clone()
 	if endpoint == EndpointSession {
 		rewriteSessionAdvertisement(outHeader, policy)
+		outHeader.Set(sessionUUIDHeader, m.Registry.daemonSessionID(key, clientUUID))
 	}
 
 	dialCtx, cancel := context.WithTimeout(r.Context(), h2cDialTimeout)

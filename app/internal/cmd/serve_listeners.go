@@ -12,11 +12,11 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/codeswhat/sockguard/app/internal/clientacl"
-	"github.com/codeswhat/sockguard/app/internal/config"
-	"github.com/codeswhat/sockguard/app/internal/health"
-	"github.com/codeswhat/sockguard/app/internal/inbound"
-	"github.com/codeswhat/sockguard/app/internal/metrics"
+	"github.com/codeswhat/sockguard/v2/app/internal/clientacl"
+	"github.com/codeswhat/sockguard/v2/app/internal/config"
+	"github.com/codeswhat/sockguard/v2/app/internal/health"
+	"github.com/codeswhat/sockguard/v2/app/internal/inbound"
+	"github.com/codeswhat/sockguard/v2/app/internal/metrics"
 )
 
 // listenerStatusBoard tracks each configured listener's lifecycle state

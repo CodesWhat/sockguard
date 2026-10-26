@@ -10,7 +10,7 @@ Sockguard is a Docker socket proxy written in Go. It sits between Docker API con
 
 This is a monorepo with three workspaces:
 
-- **`app/`** — Go proxy (the core binary). Built with Go 1.26, uses stdlib `net/http/httputil.ReverseProxy` for proxying, Cobra+Viper for CLI/config.
+- **`app/`** — Go proxy (the core binary). Built with Go 1.27, uses stdlib `net/http/httputil.ReverseProxy` for proxying, Cobra+Viper for CLI/config.
 - **`website/`** — Next.js landing page at getsockguard.com. Hosts the benchmarks + feature pages.
 - **`docs/`** — Fumadocs documentation site served under `getsockguard.com/docs` (the `docs/` Next.js app is built with `basePath: "/docs"`, then `website/package.json`'s `prebuild` script copies its static export into `website/public/docs/` so the marketing site serves it as a subpath).
 

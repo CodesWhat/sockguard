@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/app/internal/testhelp"
+	"github.com/codeswhat/sockguard/v2/app/internal/testhelp"
 )
 
 func mustAddr(t *testing.T, s string) netip.Addr {

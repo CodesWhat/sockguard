@@ -3,7 +3,7 @@ package filter
 import (
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/apipath"
+	"github.com/codeswhat/sockguard/v2/app/internal/apipath"
 )
 
 // TestLibpodPerResourceMatchers table-tests every per-resource libpod

@@ -25,15 +25,16 @@ const pathEntryExists = (path) => {
 const hasTemporaryInternalCopy = (dockerfile) =>
   /^COPY[ \t]+internal\/?[ \t]+\.\/internal\/?[ \t]*$/im.test(dockerfile);
 
+// Gosec runs either through its action or as the image the action wraps.
 const gosecArgs = (workflow) =>
   workflow.match(
-    /^[ \t]+(?:- )?uses:[ \t]+securego\/gosec@[^\n]+\n[ \t]+with:\n[ \t]+args:[ \t]+(.+)$/m,
+    /^[ \t]+(?:- )?uses:[ \t]+(?:securego\/gosec@|docker:\/\/ghcr\.io\/securego\/gosec[:@])[^\n]+\n[ \t]+with:\n[ \t]+args:[ \t]+(.+)$/m,
   )?.[1] ?? "";
 
 test("the repository root is the canonical Go module root", () => {
   assert.ok(existsSync(rootModule), "go.mod must live at the repository root");
   assert.ok(!existsSync(nestedModule), "app must not declare a mismatched nested module");
-  assert.match(readFileSync(rootModule, "utf8"), /^module github\.com\/codeswhat\/sockguard$/m);
+  assert.match(readFileSync(rootModule, "utf8"), /^module github\.com\/codeswhat\/sockguard\/v2$/m);
 });
 
 test("temporary staged compatibility packages are absent from the final tree", () => {
@@ -74,8 +75,8 @@ test("the binary has the package path implied by its repository directory", () =
     }),
   );
 
-  assert.equal(packageInfo.ImportPath, "github.com/codeswhat/sockguard/app/cmd/sockguard");
-  assert.equal(packageInfo.Module.Path, "github.com/codeswhat/sockguard");
+  assert.equal(packageInfo.ImportPath, "github.com/codeswhat/sockguard/v2/app/cmd/sockguard");
+  assert.equal(packageInfo.Module.Path, "github.com/codeswhat/sockguard/v2");
   assert.equal(packageInfo.Module.Dir, repoRoot);
 });
 
@@ -114,7 +115,7 @@ test("container and coverage tooling preserve app as the package subdirectory", 
   const goTestScript = read("scripts/ci/go-test.sh");
   assert.match(
     goTestScript,
-    /grep -vE 'github\.com\/codeswhat\/sockguard\/app\/internal\/\(differential\|testcert\|testhelp\|buildkitproto\)\/'/,
+    /grep -vE 'github\.com\/codeswhat\/sockguard\/v2\/app\/internal\/\(differential\|testcert\|testhelp\|buildkitproto\)\/'/,
   );
 });
 
@@ -145,7 +146,7 @@ test("Gosec scans canonical app packages with audited suppressions", () => {
     .split("\n")
     .filter((path) => path.endsWith(".go"))
     .filter((path) => /^\/\/ Code generated .* DO NOT EDIT\.$/m.test(read(path)));
-  assert.equal(generated.length, 11, "approved generated-file inventory changed");
+  assert.equal(generated.length, 14, "approved generated-file inventory changed");
   for (const path of generated) {
     assert.match(path, /^app\/internal\/buildkitproto\/.+\.pb\.go$/);
   }
@@ -153,15 +154,24 @@ test("Gosec scans canonical app packages with audited suppressions", () => {
 });
 
 test("Gosec argument selection ignores unrelated action arguments", () => {
-  const workflow = `
+  for (const uses of [
+    "securego/gosec@v2",
+    "docker://ghcr.io/securego/gosec:2.29.0@sha256:0000",
+    "docker://ghcr.io/securego/gosec@sha256:0000",
+  ]) {
+    const workflow = `
       - uses: example/unrelated@v1
         with:
           args: -no-fail ./ignored/...
-      - uses: securego/gosec@v2
+      - uses: docker://ghcr.io/example/unrelated:1
+        with:
+          args: -no-fail ./ignored/...
+      - uses: ${uses}
         with:
           args: -exclude-generated ./app/...
   `;
-  assert.equal(gosecArgs(workflow), "-exclude-generated ./app/...");
+    assert.equal(gosecArgs(workflow), "-exclude-generated ./app/...", uses);
+  }
 });
 
 test("the pre-push hook compiles every integration build-tag boundary", () => {

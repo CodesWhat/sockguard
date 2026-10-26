@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"sort"
 
-	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/v2/app/internal/config"
 )
 
 // ImmutableFields lists the dotted config paths whose values cannot be

@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/v2/app/internal/config"
 )
 
 // serveImport is the image import of both engines: POST /images/create with

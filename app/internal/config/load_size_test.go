@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/boundedio"
+	"github.com/codeswhat/sockguard/v2/app/internal/boundedio"
 )
 
 func TestLoadRejectsOversizedConfigFile(t *testing.T) {

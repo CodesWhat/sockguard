@@ -3,6 +3,7 @@ package buildkitproxy
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -13,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/net/http2"
+	"github.com/codeswhat/sockguard/v2/app/internal/h2conn"
 )
 
 func newUpgradeRequest(t *testing.T, path string) *http.Request {
@@ -115,8 +116,7 @@ func runDaemonH2CStub(t *testing.T, conn net.Conn, handler http.Handler) {
 	if _, err := conn.Write([]byte("HTTP/1.1 101 UPGRADED\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n")); err != nil {
 		return
 	}
-	srv := &http2.Server{}
-	srv.ServeConn(conn, &http2.ServeConnOpts{Handler: handler})
+	h2conn.Serve(context.Background(), conn, h2conn.ServerConfig{Handler: handler})
 }
 
 func TestMediatorServeGRPCEndToEnd(t *testing.T) {
@@ -155,8 +155,7 @@ func TestMediatorServeGRPCEndToEnd(t *testing.T) {
 	// The connection is now h2c: drive a request into it as the client leg
 	// of the real gRPC tunnel and confirm it gets bridged all the way to the
 	// echo daemon and back.
-	tr := &http2.Transport{AllowHTTP: true}
-	cc, err := tr.NewClientConn(&bufferedConn{Conn: clientTestSide, r: clientBr})
+	cc, err := h2conn.NewClientConn(&bufferedConn{Conn: clientTestSide, r: clientBr}, nil)
 	if err != nil {
 		t.Fatalf("NewClientConn: %v", err)
 	}
@@ -281,12 +280,10 @@ func TestMediatorServeSessionReversedRoles(t *testing.T) {
 		t.Fatalf("reading 101 on the client leg: %v", err)
 	}
 	go func() {
-		srv := &http2.Server{}
-		srv.ServeConn(&bufferedConn{Conn: clientTestSide, r: clientBr}, &http2.ServeConnOpts{Handler: clientHandler})
+		h2conn.Serve(context.Background(), &bufferedConn{Conn: clientTestSide, r: clientBr}, h2conn.ServerConfig{Handler: clientHandler})
 	}()
 
-	tr := &http2.Transport{AllowHTTP: true}
-	daemonCC, err := tr.NewClientConn(&bufferedConn{Conn: daemonSide, r: daemonBr})
+	daemonCC, err := h2conn.NewClientConn(&bufferedConn{Conn: daemonSide, r: daemonBr}, nil)
 	if err != nil {
 		t.Fatalf("NewClientConn (daemon acting as client): %v", err)
 	}
@@ -378,7 +375,7 @@ func TestMediatorServeGRPCTerminatesOnBridgeError(t *testing.T) {
 		// Drain sockguard's replayed 101 response on the client side so
 		// hijackClientH2C's Flush doesn't block forever on this unbuffered
 		// pipe; nothing past that response is expected on this leg since
-		// runBridge fails before ever calling http2.Server.ServeConn.
+		// runBridge fails before ever calling h2conn.Serve.
 		buf := make([]byte, 4096)
 		for {
 			if _, err := clientTestSide.Read(buf); err != nil {

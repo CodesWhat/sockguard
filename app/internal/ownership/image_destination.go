@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/codeswhat/sockguard/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/v2/app/internal/dockerresource"
 )
 
 // image_destination.go authorizes the image name a request writes.

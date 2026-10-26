@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/codeswhat/sockguard/app/internal/config"
-	"github.com/codeswhat/sockguard/app/internal/dockerclient"
-	"github.com/codeswhat/sockguard/app/internal/upstream"
-	"github.com/codeswhat/sockguard/app/internal/upstreamflavor"
+	"github.com/codeswhat/sockguard/v2/app/internal/config"
+	"github.com/codeswhat/sockguard/v2/app/internal/dockerclient"
+	"github.com/codeswhat/sockguard/v2/app/internal/upstream"
+	"github.com/codeswhat/sockguard/v2/app/internal/upstreamflavor"
 )
 
 // upstreamReachableTimeout bounds the startup reachability probe across all

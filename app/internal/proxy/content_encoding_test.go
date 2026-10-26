@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/responsefilter"
-	"github.com/codeswhat/sockguard/app/internal/upstream"
+	"github.com/codeswhat/sockguard/v2/app/internal/responsefilter"
+	"github.com/codeswhat/sockguard/v2/app/internal/upstream"
 )
 
 // newDaemonResolverForTest points an upstream.Resolver at handler over plain

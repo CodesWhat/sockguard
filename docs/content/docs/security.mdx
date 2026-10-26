@@ -222,7 +222,13 @@ Sockguard now applies the same honesty rule to every recognized data-exfiltratio
 
 #### Compose / BuildKit Transport
 
-Modern `docker build` and `docker compose build` no longer speak the classic `POST /build` API by default — Buildx routes through BuildKit's session/gRPC tunnel (`POST /session` for the frontend/session bridge, `POST /grpc` for the `moby.buildkit.v1.Control` gRPC service, both tunneled over a hijacked HTTP/1.1 connection). As of issue #185's BuildKit gRPC mediation epic, Sockguard terminates both streams as h2c and mediates them at the gRPC-method level instead of hijacking the bytes opaquely: `internal/buildkitproxy.Mediator` runs an h2c server against the client and an h2c client against the daemon, classifies every RPC either endpoint exposes (`Deny` by default — only a curated, committed `Mediate`/`Passthrough` set is reachable at all), and for `Mediate` methods decodes the message, checks it against a `request_body.buildkit` policy, and forwards the client's ORIGINAL frame bytes verbatim on admission — never a re-encoded message. Supported transports, by preset:
+Modern `docker build` and `docker compose build` no longer speak the classic `POST /build` API by default — Buildx routes through BuildKit's session/gRPC tunnel (`POST /session` for the frontend/session bridge, `POST /grpc` for the `moby.buildkit.v1.Control` gRPC service, both tunneled over a hijacked HTTP/1.1 connection). As of issue #185's BuildKit gRPC mediation epic, Sockguard terminates both streams as h2c and mediates them at the gRPC-method level instead of hijacking the bytes opaquely: `internal/buildkitproxy.Mediator` runs an h2c server against the client and an h2c client against the daemon, classifies every RPC either endpoint exposes (`Deny` by default — only a curated, committed `Mediate`/`Passthrough` set is reachable at all), and for `Mediate` methods decodes the message, checks it against a `request_body.buildkit` policy, and preserves the original protobuf wire bytes on admission, with identity translations: `Control/Solve.Ref` and `Control/Status.Ref` become a stable digest of the client identity, profile, and client ref; `Control/Solve.Session` and the upstream session handshake share a keyed client/profile namespace.
+
+BuildKit jobs and retained history use daemon-global refs. Sockguard translates Solve and Status refs into a client/profile namespace so a duplicate Solve cannot claim another principal's build. Clients keep using their original refs; operation-digest approvals are unaffected because the LLB definition bytes are preserved. Oversized translated frames are denied before registering ownership.
+
+BuildKit also looks up callback sessions by a daemon-global ID. Sockguard derives backend session IDs with HMAC-SHA-256 and a private key created for each session registry, so guessing another client's original UUID cannot select its files, secrets, SSH, or registry callbacks. The namespace remains stable across reconnects within that registry. Rebuilding the mediator, including during a configuration reload, creates a new namespace; reconnect the control and callback session tunnels together. Existing tunnels retain their original registry and policy. Raw LLB sources must inherit the Solve session: nonempty `local.session` and `oci.session` attributes are denied because rewriting them would change approved operation digests. This does not add a new session policy grant.
+
+Supported transports, by preset:
 
 | Transport | Endpoint(s) | Inspectable | Default posture |
 |-----------|-------------|--------------|------------------|
@@ -231,7 +237,51 @@ Modern `docker build` and `docker compose build` no longer speak the classic `PO
 | Opaque BuildKit tunnel (deprecated) | `POST /session`, `POST /grpc` | No — whole tunnel admitted with zero inspection | Denied; requires the deprecated `insecure_accept_opaque_buildkit_tunnels: true` |
 | Native gRPC-over-h2c | `moby.buildkit.v1.Control/*` | No, same control plane, untunneled h2c transport | Denied unconditionally. Sockguard's listener has no h2c support outside the two hijack-capable tunnel endpoints, so nothing can dial this path end-to-end |
 
-`request_body.buildkit.control.solve` gates the `Solve` RPC: `security.insecure` is always denied with no enabling knob, `network.host` requires `request_body.build.allow_host_network`, and cache import/export types, cache registries, exporter types, and exporter-push registries each have their own allowlist (empty means deny, the standard `request_body.*` convention). The frontend check pairs with `request_body.build.allow_run_instructions`: a Dockerfile synced over the session's `FileSync` stream gets the identical RUN-instruction hold-and-inspect scan the classic `/build` path already applies, unless it arrives via a genuinely remote context, which requires `request_body.build.allow_remote_context` for the same reason classic `/build` does. `control.allow_status` gates the `Status` RPC, admitted only for a ref this same trusted principal, selected profile, and BuildKit session actually `Solve`d, so one tenant or simultaneous build cannot poll another's state. The principal comes from the verified mTLS certificate, Unix peer credentials, or normalized remote host instead of a source port or caller-controlled session header. Ref ownership and upload IDs are committed atomically only after every limit check passes. Session, ref, and upload identifiers are rejected before persistence when they exceed 256 bytes; one control tunnel can retain at most 256 distinct BuildKit session IDs; and an unconsumed upload grant expires after one hour while remaining valid across a normal control-tunnel close. Session `auth`, `secrets`, `ssh`, `file_sync`, `file_send`, and `upload` calls each stay denied until their own policy allows them, and a registry method classified for mediation but missing a dispatcher fails closed rather than becoming raw passthrough. See [Configuration](/configuration) for the full field reference.
+`request_body.buildkit.control.solve` gates the `Solve` RPC: `security.insecure` is always denied with no enabling knob, `network.host` requires `request_body.build.allow_host_network`, and cache import/export types, cache registries, exporter types, and exporter-push registries each have their own allowlist (empty means deny, the standard `request_body.*` convention). The frontend check pairs with `request_body.build.allow_run_instructions`: a Dockerfile synced over the session's `FileSync` stream gets the identical RUN-instruction hold-and-inspect scan the classic `/build` path already applies, unless it arrives via a genuinely remote context, which requires `request_body.build.allow_remote_context` for the same reason classic `/build` does. `control.allow_status` gates the `Status` RPC, admitted only for a ref this same trusted principal and selected profile actually `Solve`d; refs remain shared across that principal/profile's live control tunnels. The principal comes from the verified mTLS certificate, Unix peer credentials, or normalized remote host instead of a source port or caller-controlled session header. Ref ownership and upload IDs are committed atomically only after every limit check passes. Session, ref, and upload identifiers are rejected before persistence when they exceed 256 bytes; one control tunnel can retain at most 256 distinct BuildKit session IDs; and an unconsumed upload grant expires after one hour while remaining valid across a normal control-tunnel close. Session `auth`, `secrets`, `ssh`, `file_sync`, `file_send`, and `upload` calls each stay denied until their own policy allows them, and a registry method classified for mediation but missing a dispatcher fails closed rather than becoming raw passthrough. See [Configuration](/configuration) for the full field reference.
+
+Raw LLB can selectively approve RUN-equivalent operations while retaining
+`request_body.build.allow_run_instructions: false`. Set
+`request_body.buildkit.control.solve.allowed_exec_digests` to the lowercase
+`sha256:` digests of reviewed ExecOps. `buildctl debug dump-llb build.llb`
+shows each operation and its digest without contacting the daemon. Every
+ExecOp in a Solve must be approved; `control.solve.allow: true` is still
+required. Changing the operation's encoded arguments, environment, working
+directory, user, mounts, or input references changes its digest and removes
+the approval. Sockguard hashes the original bytes, not a re-encoded message.
+
+An operation digest binds input references, not the contents behind mutable
+image tags, local contexts, or cache mounts. Use immutable image references
+and reviewed build inputs when those contents form part of the approval.
+Host-network ExecOps still require `build.allow_host_network`; insecure
+execution, CDI devices, unknown execution modes, and empty commands remain
+denied. Unknown operations and nested `BuildOp` graphs are also denied:
+BuildKit can load a nested graph from a filesystem result that Sockguard
+cannot inspect. The broad `build.allow_run_instructions: true` flag retains
+its existing unrestricted-RUN behavior and does not use this allowlist.
+
+Digest approvals also apply to external gateway LLB when
+`request_body.buildkit.control.solve.allow_frontend_gateway: true`. A client
+starts a frontend-less `Control.Solve` with no definition, then sends gateway
+RPCs over `/grpc` with that root's `buildkit-controlapi-buildid` metadata.
+Sockguard binds those calls to the active root, client identity, and profile,
+rewrites the daemon-facing build ID, and checks every iterative Solve against
+the root's original policy. Opening a new connection with a different policy
+does not broaden an existing build's grants. Canceling the root or closing its tunnel
+revokes gateway access. Normal root completion lets an already-admitted
+Return finish its bounded reply. Each principal can hold eight active builds, each
+limited to 256 gateway Solves and 30 minutes.
+
+The gateway mediates image/source resolution, result reads, evaluation and
+completion. Remote sources still require `build.allow_remote_context`.
+Explicit source-session overrides, nested frontends, source policies,
+interactive container/process RPCs, and filesystem-loaded nested BuildOps
+remain denied. Ping advertises supported capabilities and strips worker
+labels, garbage-collection policy, and CDI details. The [companion runner](/frontend-runner) executes a pinned frontend outside
+the daemon and reports operation digests before forwarding their graphs.
+
+These approvals do not approve a third-party image for execution inside the
+daemon. Dockerfile FileSync inspection and the denial of opaque in-daemon
+frontend graphs remain in force.
 
 `insecure_accept_opaque_buildkit_tunnels` is now **deprecated**: it still works — existing configs that set it keep running unchanged — but setting it to `true` logs a startup warning steering operators toward `request_body.buildkit`, and the flag will be removed in a future major release. The flag and `request_body.buildkit` are mutually exclusive (mediation supersedes the wholesale acknowledgment), so a config cannot set both, and the deprecation warning only ever fires for a config using the flag on its own. If you see a build fail against a preset with a `/session` or `/grpc` denial, that means neither a classic-builder rule nor a `request_body.buildkit` policy is configured for that path: either switch the client to the classic builder (`DOCKER_BUILDKIT=0`, the `*-with-build.yaml` presets), configure `request_body.buildkit` for the fully-mediated path (the `*-with-mediated-build.yaml` presets), or — not recommended for new deployments — fall back to the deprecated acknowledgment. Tecnativa's `GRPC=1` / `SESSION=1` compat env vars still auto-set the deprecated acknowledgment with their own compat-specific warning, unless `request_body.buildkit` is already configured, in which case they leave it alone: a top-level policy then mediates the tunnel those vars open, while a policy on a client profile only makes startup refuse, since the rules they generate are top-level and a profile's policy cannot mediate them. Migrating off either warning means configuring `request_body.buildkit` at the top level. See [Migration](/migration) for the step-by-step move from the acknowledgment to a mediated policy.
 

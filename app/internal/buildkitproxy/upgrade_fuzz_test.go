@@ -104,6 +104,7 @@ var fuzzAdvertisementPolicies = []Policy{
 // doesn't actually admit.
 func FuzzRewriteSessionAdvertisement(f *testing.F) {
 	f.Add("moby.filesync.v1.FileSync\nmoby.buildkit.v1.frontend.LLBBridge\nmoby.filesync.v1.Auth", uint8(0))
+	f.Add("/grpc.health.v1.Health/Check\n/moby.filesync.v1.FileSync/DiffCopy\n/moby.filesync.v1.FileSync/TarStream", uint8(1))
 	f.Add("", uint8(0))
 	f.Add("   \n\n  ", uint8(1))
 	f.Add("moby.notreal.v1.Bogus", uint8(2))
@@ -133,7 +134,12 @@ func FuzzRewriteSessionAdvertisement(f *testing.F) {
 			if !originalTrimmed[s] {
 				t.Fatalf("rewritten advertisement contains %q, which was never present (after trim) in the original advertisement %v", s, original)
 			}
-			if !ServiceAdmittedByPolicy(EndpointSession, s, p) {
+			allowed := ServiceAdmittedByPolicy(EndpointSession, s, p)
+			if strings.HasPrefix(s, "/") {
+				parts := strings.Split(s, "/")
+				allowed = len(parts) == 3 && p.Allowed(EndpointSession, parts[1], parts[2])
+			}
+			if !allowed {
 				t.Fatalf("rewritten advertisement kept %q, which this policy does not permit", s)
 			}
 		}

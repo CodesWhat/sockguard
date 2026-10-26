@@ -12,8 +12,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/codeswhat/sockguard/app/internal/apipath"
-	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/v2/app/internal/apipath"
+	"github.com/codeswhat/sockguard/v2/app/internal/config"
 )
 
 // podman6Fields maps a struct's JSON field names, lowered, to what binding
