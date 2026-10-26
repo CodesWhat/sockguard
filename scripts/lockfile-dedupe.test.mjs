@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  buildProbeArgs,
   classify,
   collectDrift,
   isIgnoredPostcssOverrideDrift,
   parseNpmJson,
+  RELEASE_AGE_DAYS,
+  releaseAgeCutoff,
 } from "./lockfile-dedupe.mjs";
 
 const NEXT_POSTCSS_CHANGE = {
@@ -124,5 +127,23 @@ describe("parseNpmJson", () => {
 
   it("throws on output with malformed JSON after the first {", () => {
     assert.throws(() => parseNpmJson("noise { not: valid json"), /malformed JSON/);
+  });
+});
+
+describe("release-age cutoff", () => {
+  const NOW = new Date("2026-10-26T12:00:00.000Z");
+
+  it("defaults to the 14 day Renovate cool-off", () => {
+    assert.equal(RELEASE_AGE_DAYS, 14);
+    assert.equal(releaseAgeCutoff(NOW), "2026-10-12T12:00:00.000Z");
+  });
+
+  it("passes --before=<cutoff> to both npm probes", () => {
+    const { install, dedupe } = buildProbeArgs(NOW);
+
+    assert.ok(install.includes("--before=2026-10-12T12:00:00.000Z"));
+    assert.ok(dedupe.includes("--before=2026-10-12T12:00:00.000Z"));
+    assert.deepEqual(install.slice(0, 2), ["install", "--dry-run"]);
+    assert.deepEqual(dedupe.slice(0, 2), ["dedupe", "--dry-run"]);
   });
 });

@@ -68,6 +68,33 @@ export function parseNpmJson(text) {
   }
 }
 
+// Mirrors minimumReleaseAge (14 days) in the shared Renovate preset
+// (CodesWhat/.github renovate-config.json). A release younger than that never
+// forces a hand lockfile change; it reaches the lockfile through Renovate.
+export const RELEASE_AGE_DAYS = 14;
+
+export function releaseAgeCutoff(now = new Date(), days = RELEASE_AGE_DAYS) {
+  return new Date(now.getTime() - days * 24 * 60 * 60 * 1000).toISOString();
+}
+
+// Both probes resolve against the registry as of the cutoff, so a version
+// published inside the cool-off window is invisible to them.
+export function buildProbeArgs(now = new Date()) {
+  const before = `--before=${releaseAgeCutoff(now)}`;
+  return {
+    install: [
+      "install",
+      "--dry-run",
+      "--json",
+      "--no-audit",
+      "--no-fund",
+      "--ignore-scripts",
+      before,
+    ],
+    dedupe: ["dedupe", "--dry-run", "--json", before],
+  };
+}
+
 function formatEntry(entry) {
   const from = entry.from ?? entry;
   const to = entry.to ?? entry;
@@ -118,14 +145,8 @@ function printResult(result) {
 }
 
 function main() {
-  const installReport = runNpmJson([
-    "install",
-    "--dry-run",
-    "--json",
-    "--no-audit",
-    "--no-fund",
-    "--ignore-scripts",
-  ]);
+  const probeArgs = buildProbeArgs();
+  const installReport = runNpmJson(probeArgs.install);
 
   // Classify against an empty dedupe report first, so the short-circuit lives
   // only in classify() and the second npm probe is skipped when the install is
@@ -137,7 +158,7 @@ function main() {
     return;
   }
 
-  const dedupeReport = runNpmJson(["dedupe", "--dry-run", "--json"]);
+  const dedupeReport = runNpmJson(probeArgs.dedupe);
   const result = classify({ installReport, dedupeReport });
 
   printResult(result);
