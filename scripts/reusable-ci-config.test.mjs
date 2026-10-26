@@ -454,6 +454,74 @@ function releaseHardenRunnerViolations(yamlText) {
   return violations;
 }
 
+const RETRIED_STEP_USES = /^\s*uses:\s*(actions\/checkout|docker\/setup-buildx-action)@/u;
+
+// Splits a workflow into steps by indentation and returns one violation per
+// checkout or Buildx step that is not either a guarded retry or a first
+// attempt (id + continue-on-error) with a matching retry right after it.
+function releaseRetryViolations(yamlText) {
+  const lines = yamlText.split("\n").filter((line) => !/^\s*#/u.test(line));
+  const steps = [];
+  let current = null;
+  for (const line of lines) {
+    if (/^\s*-\s+\S/u.test(line) && indentOf(line) === 6) {
+      current = { lines: [line] };
+      steps.push(current);
+    } else if (current && (line.trim() === "" || indentOf(line) > 6)) {
+      current.lines.push(line);
+    } else {
+      current = null;
+    }
+  }
+  const field = (step, key) =>
+    step.lines
+      .filter((l) => indentOf(l.replace(/^(\s*)-\s/u, "$1  ")) === 8)
+      .map((l) => l.replace(/^\s*(?:-\s+)?/u, ""))
+      .find((l) => l.startsWith(`${key}:`))
+      ?.slice(key.length + 1)
+      .trim();
+  const violations = [];
+  const firstAttempts = [];
+  const retries = [];
+  steps.forEach((step, i) => {
+    if (!step.lines.some((l) => RETRIED_STEP_USES.test(l))) return;
+    const label = `step ${i + 1} (${field(step, "name")})`;
+    const id = field(step, "id");
+    const guard = /^steps\.([A-Za-z0-9_-]+)\.outcome == 'failure'$/u.exec(field(step, "if") ?? "");
+    if (guard) {
+      if (field(step, "continue-on-error") !== undefined) {
+        violations.push(`${label}: retry must not set continue-on-error`);
+      }
+      retries.push({ i, guard: guard[1], label });
+    } else if (id && field(step, "continue-on-error") === "true") {
+      firstAttempts.push({ i, id, label });
+    } else {
+      violations.push(`${label}: needs an id and continue-on-error: true, or an outcome guard`);
+    }
+  });
+  for (const first of firstAttempts) {
+    const match = retries.find((r) => r.guard === first.id && r.i > first.i);
+    if (!match) violations.push(`${first.label}: no retry guarded by steps.${first.id}.outcome`);
+  }
+  for (const r of retries) {
+    if (!firstAttempts.some((f) => f.id === r.guard && f.i < r.i)) {
+      violations.push(`${r.label}: guard references no earlier first attempt`);
+    }
+  }
+  if (firstAttempts.length === 0) violations.push("no retried checkout or Buildx steps found");
+  return violations;
+}
+
+test("release workflows retry checkout and Buildx setup once after a short wait", () => {
+  const dir = path.join(ROOT, ".github", "workflows");
+  for (const name of BLOCK_MODE_WORKFLOWS) {
+    const raw = fs.readFileSync(path.join(dir, name), "utf8");
+    assert.deepEqual(releaseRetryViolations(raw), [], `${name} checkout and Buildx steps`);
+  }
+  const bad = "    steps:\n      - name: Checkout\n        uses: actions/checkout@abc\n";
+  assert.equal(releaseRetryViolations(bad).length, 2);
+});
+
 test("only the release workflows keep harden-runner block mode, with an allow list", () => {
   const dir = path.join(ROOT, ".github", "workflows");
   for (const name of workflowFiles()) {

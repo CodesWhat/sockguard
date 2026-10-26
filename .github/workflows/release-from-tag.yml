@@ -50,6 +50,19 @@ jobs:
             *.actions.githubusercontent.com:443
 
       - name: Checkout
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Wait before checkout retry
+        if: steps.checkout.outcome == 'failure'
+        run: sleep 20
+
+      - name: Checkout (retry)
+        id: checkout_retry
+        if: steps.checkout.outcome == 'failure'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
@@ -207,6 +220,19 @@ jobs:
             *.actions.githubusercontent.com:443
 
       - name: Checkout
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Wait before checkout retry
+        if: steps.checkout.outcome == 'failure'
+        run: sleep 20
+
+      - name: Checkout (retry)
+        id: checkout_retry
+        if: steps.checkout.outcome == 'failure'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
@@ -312,6 +338,20 @@ jobs:
             *.actions.githubusercontent.com:443
 
       - name: Checkout
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Wait before checkout retry
+        if: steps.checkout.outcome == 'failure'
+        run: sleep 20
+
+      - name: Checkout (retry)
+        id: checkout_retry
+        if: steps.checkout.outcome == 'failure'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
@@ -488,6 +528,19 @@ jobs:
             *.actions.githubusercontent.com:443
 
       - name: Checkout
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Wait before checkout retry
+        if: steps.checkout.outcome == 'failure'
+        run: sleep 20
+
+      - name: Checkout (retry)
+        id: checkout_retry
+        if: steps.checkout.outcome == 'failure'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
@@ -496,6 +549,17 @@ jobs:
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1  # v4.4.0
 
       - name: Set up Docker Buildx
+        id: buildx
+        continue-on-error: true
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+
+      - name: Wait before buildx retry
+        if: steps.buildx.outcome == 'failure'
+        run: sleep 20
+
+      - name: Set up Docker Buildx (retry)
+        id: buildx_retry
+        if: steps.buildx.outcome == 'failure'
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
 
       - name: Log in to GHCR
@@ -647,6 +711,19 @@ jobs:
           identity_regex="^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-from-tag.yml@refs/tags/.+$"
           issuer="https://token.actions.githubusercontent.com"
 
+          retry_network() {
+            local attempt
+            for attempt in 1 2 3 4 5; do
+              if "$@"; then
+                return 0
+              fi
+              if [ "${attempt}" -eq 5 ]; then
+                return 1
+              fi
+              sleep 5
+            done
+          }
+
           images=()
           while IFS= read -r tag; do
             [ -n "${tag}" ] && images+=("${tag}@${DIGEST}")
@@ -659,21 +736,13 @@ jobs:
 
           for image in "${images[@]}"; do
             echo "Verifying cosign signature for ${image}"
-            for attempt in 1 2 3; do
-              if cosign verify \
-                --certificate-identity-regexp "${identity_regex}" \
-                --certificate-oidc-issuer "${issuer}" \
-                "${image}" >/dev/null; then
-                break
-              fi
-
-              if [ "${attempt}" -eq 3 ]; then
-                echo "::error::Cosign verification failed for ${image}"
-                exit 1
-              fi
-
-              sleep 5
-            done
+            if ! retry_network cosign verify \
+              --certificate-identity-regexp "${identity_regex}" \
+              --certificate-oidc-issuer "${issuer}" \
+              "${image}" >/dev/null; then
+              echo "::error::Cosign verification failed for ${image}"
+              exit 1
+            fi
           done
 
       - name: Build release artifact
@@ -716,7 +785,20 @@ jobs:
           identity_regex="^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-from-tag.yml@refs/tags/.+$"
           issuer="https://token.actions.githubusercontent.com"
 
-          cosign verify-blob \
+          retry_network() {
+            local attempt
+            for attempt in 1 2 3 4 5; do
+              if "$@"; then
+                return 0
+              fi
+              if [ "${attempt}" -eq 5 ]; then
+                return 1
+              fi
+              sleep 5
+            done
+          }
+
+          retry_network cosign verify-blob \
             --bundle "${artifact}.sigstore.json" \
             --certificate-identity-regexp "${identity_regex}" \
             --certificate-oidc-issuer "${issuer}" \
@@ -870,6 +952,19 @@ jobs:
             *.actions.githubusercontent.com:443
 
       - name: Checkout
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Wait before checkout retry
+        if: steps.checkout.outcome == 'failure'
+        run: sleep 20
+
+      - name: Checkout (retry)
+        id: checkout_retry
+        if: steps.checkout.outcome == 'failure'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
@@ -884,7 +979,22 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
-        run: scripts/verify-published-release.sh --tag "${RELEASE_TAG}"
+        run: |
+          set -euo pipefail
+          retry_network() {
+            local attempt
+            for attempt in 1 2 3 4 5; do
+              if "$@"; then
+                return 0
+              fi
+              if [ "${attempt}" -eq 5 ]; then
+                return 1
+              fi
+              sleep 5
+            done
+          }
+
+          retry_network scripts/verify-published-release.sh --tag "${RELEASE_TAG}"
 
       - name: Summarize
         if: always()
@@ -963,6 +1073,17 @@ jobs:
             *.actions.githubusercontent.com:443
 
       - name: Set up Docker Buildx
+        id: buildx
+        continue-on-error: true
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+
+      - name: Wait before buildx retry
+        if: steps.buildx.outcome == 'failure'
+        run: sleep 20
+
+      - name: Set up Docker Buildx (retry)
+        id: buildx_retry
+        if: steps.buildx.outcome == 'failure'
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
 
       - name: Log in to GHCR
@@ -1104,6 +1225,19 @@ jobs:
             *.actions.githubusercontent.com:443
 
       - name: Checkout
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: true
+
+      - name: Wait before checkout retry
+        if: steps.checkout.outcome == 'failure'
+        run: sleep 20
+
+      - name: Checkout (retry)
+        id: checkout_retry
+        if: steps.checkout.outcome == 'failure'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: true
