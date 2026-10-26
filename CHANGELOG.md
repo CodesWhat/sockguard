@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0-rc.9] - 2026-10-25
+
+### Security
+
+- **The 2.2.11 fixes are now on the v2.3 line.** Native Podman container create's `base_hosts_file` and pod create's `hostsFile` are limited to the exact empty, `image` and `none` selectors, so a caller can no longer name a host file for the daemon to read into the container's `/etc/hosts`. `BUILDKIT_SYNTAX` frontend overrides are refused while RUN instructions are restricted. The mediated BuildKit Solve guard was already on v2.3; the classic Docker/Podman build-argument guard is new here, and it also refuses ambiguous query spellings, repeated values and malformed JSON. Release binaries and images are rebuilt with Go 1.27.3 for GO-2026-6809. The 2.2.11 entry below describes the source and test evidence; no live-daemon reproduction is claimed.
+
+### Changed
+
+- Carries the stable line's dependency, GitHub Actions and Gosec pin updates, and the docs build adapter isolation. The BuildKit frontend mediation, companion runner and `/v2` module path behave as they did in rc.8. This candidate only carries changes already released on 2.2.x, so the GA floor stays 2026-10-23. GA follows a fresh four-hour soak, TLS scan and published-image conformance run on the rc.9 head.
+
 ## [2.2.11] - 2026-10-24
 
 ### Fixed
