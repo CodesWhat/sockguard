@@ -56,13 +56,25 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Wait before checkout retry
+      - name: Wait before Checkout retry
         if: steps.checkout.outcome == 'failure'
-        run: sleep 20
+        run: sleep 30
 
       - name: Checkout (retry)
         id: checkout_retry
         if: steps.checkout.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Wait before Checkout final retry
+        if: steps.checkout.outcome == 'failure' && steps.checkout_retry.outcome == 'failure'
+        run: sleep 60
+
+      - name: Checkout (final retry)
+        id: checkout_final
+        if: steps.checkout.outcome == 'failure' && steps.checkout_retry.outcome == 'failure'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
@@ -226,13 +238,25 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Wait before checkout retry
+      - name: Wait before Checkout retry
         if: steps.checkout.outcome == 'failure'
-        run: sleep 20
+        run: sleep 30
 
       - name: Checkout (retry)
         id: checkout_retry
         if: steps.checkout.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Wait before Checkout final retry
+        if: steps.checkout.outcome == 'failure' && steps.checkout_retry.outcome == 'failure'
+        run: sleep 60
+
+      - name: Checkout (final retry)
+        id: checkout_final
+        if: steps.checkout.outcome == 'failure' && steps.checkout_retry.outcome == 'failure'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
@@ -272,11 +296,42 @@ jobs:
           rm -f "${entry_path}"
 
       - name: Upload release notes
+        id: upload_release_notes
+        continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: release-notes
           path: release-notes.md
           retention-days: 1
+
+      - name: Wait before Upload release notes retry
+        if: steps.upload_release_notes.outcome == 'failure'
+        run: sleep 30
+
+      - name: Upload release notes (retry)
+        id: upload_release_notes_retry
+        if: steps.upload_release_notes.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: release-notes
+          path: release-notes.md
+          retention-days: 1
+          overwrite: true
+
+      - name: Wait before Upload release notes final retry
+        if: steps.upload_release_notes.outcome == 'failure' && steps.upload_release_notes_retry.outcome == 'failure'
+        run: sleep 60
+
+      - name: Upload release notes (final retry)
+        id: upload_release_notes_final
+        if: steps.upload_release_notes.outcome == 'failure' && steps.upload_release_notes_retry.outcome == 'failure'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: release-notes
+          path: release-notes.md
+          retention-days: 1
+          overwrite: true
 
   goreleaser:
     name: "Release: Go Binaries"
@@ -345,13 +400,26 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Wait before checkout retry
+      - name: Wait before Checkout retry
         if: steps.checkout.outcome == 'failure'
-        run: sleep 20
+        run: sleep 30
 
       - name: Checkout (retry)
         id: checkout_retry
         if: steps.checkout.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Wait before Checkout final retry
+        if: steps.checkout.outcome == 'failure' && steps.checkout_retry.outcome == 'failure'
+        run: sleep 60
+
+      - name: Checkout (final retry)
+        id: checkout_final
+        if: steps.checkout.outcome == 'failure' && steps.checkout_retry.outcome == 'failure'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
@@ -380,6 +448,31 @@ jobs:
           }
 
       - name: Download release notes
+        id: download_release_notes
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: release-notes
+
+      - name: Wait before Download release notes retry
+        if: steps.download_release_notes.outcome == 'failure'
+        run: sleep 30
+
+      - name: Download release notes (retry)
+        id: download_release_notes_retry
+        if: steps.download_release_notes.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: release-notes
+
+      - name: Wait before Download release notes final retry
+        if: steps.download_release_notes.outcome == 'failure' && steps.download_release_notes_retry.outcome == 'failure'
+        run: sleep 60
+
+      - name: Download release notes (final retry)
+        id: download_release_notes_final
+        if: steps.download_release_notes.outcome == 'failure' && steps.download_release_notes_retry.outcome == 'failure'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
           name: release-notes
@@ -534,13 +627,25 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Wait before checkout retry
+      - name: Wait before Checkout retry
         if: steps.checkout.outcome == 'failure'
-        run: sleep 20
+        run: sleep 30
 
       - name: Checkout (retry)
         id: checkout_retry
         if: steps.checkout.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Wait before Checkout final retry
+        if: steps.checkout.outcome == 'failure' && steps.checkout_retry.outcome == 'failure'
+        run: sleep 60
+
+      - name: Checkout (final retry)
+        id: checkout_final
+        if: steps.checkout.outcome == 'failure' && steps.checkout_retry.outcome == 'failure'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
@@ -553,13 +658,23 @@ jobs:
         continue-on-error: true
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
 
-      - name: Wait before buildx retry
+      - name: Wait before Set up Docker Buildx retry
         if: steps.buildx.outcome == 'failure'
-        run: sleep 20
+        run: sleep 30
 
       - name: Set up Docker Buildx (retry)
         id: buildx_retry
         if: steps.buildx.outcome == 'failure'
+        continue-on-error: true
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+
+      - name: Wait before Set up Docker Buildx final retry
+        if: steps.buildx.outcome == 'failure' && steps.buildx_retry.outcome == 'failure'
+        run: sleep 60
+
+      - name: Set up Docker Buildx (final retry)
+        id: buildx_final
+        if: steps.buildx.outcome == 'failure' && steps.buildx_retry.outcome == 'failure'
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
 
       - name: Log in to GHCR
@@ -958,13 +1073,25 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Wait before checkout retry
+      - name: Wait before Checkout retry
         if: steps.checkout.outcome == 'failure'
-        run: sleep 20
+        run: sleep 30
 
       - name: Checkout (retry)
         id: checkout_retry
         if: steps.checkout.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Wait before Checkout final retry
+        if: steps.checkout.outcome == 'failure' && steps.checkout_retry.outcome == 'failure'
+        run: sleep 60
+
+      - name: Checkout (final retry)
+        id: checkout_final
+        if: steps.checkout.outcome == 'failure' && steps.checkout_retry.outcome == 'failure'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
@@ -1077,13 +1204,23 @@ jobs:
         continue-on-error: true
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
 
-      - name: Wait before buildx retry
+      - name: Wait before Set up Docker Buildx retry
         if: steps.buildx.outcome == 'failure'
-        run: sleep 20
+        run: sleep 30
 
       - name: Set up Docker Buildx (retry)
         id: buildx_retry
         if: steps.buildx.outcome == 'failure'
+        continue-on-error: true
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+
+      - name: Wait before Set up Docker Buildx final retry
+        if: steps.buildx.outcome == 'failure' && steps.buildx_retry.outcome == 'failure'
+        run: sleep 60
+
+      - name: Set up Docker Buildx (final retry)
+        id: buildx_final
+        if: steps.buildx.outcome == 'failure' && steps.buildx_retry.outcome == 'failure'
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
 
       - name: Log in to GHCR
@@ -1231,13 +1368,25 @@ jobs:
         with:
           persist-credentials: true
 
-      - name: Wait before checkout retry
+      - name: Wait before Checkout retry
         if: steps.checkout.outcome == 'failure'
-        run: sleep 20
+        run: sleep 30
 
       - name: Checkout (retry)
         id: checkout_retry
         if: steps.checkout.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: true
+
+      - name: Wait before Checkout final retry
+        if: steps.checkout.outcome == 'failure' && steps.checkout_retry.outcome == 'failure'
+        run: sleep 60
+
+      - name: Checkout (final retry)
+        id: checkout_final
+        if: steps.checkout.outcome == 'failure' && steps.checkout_retry.outcome == 'failure'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: true
