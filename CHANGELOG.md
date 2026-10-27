@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Release workflows retry network steps three times.** `release-cut.yml` and `release-from-tag.yml` now retry checkout, Buildx setup and artifact upload and download up to three times, waiting 30 s and then 60 s between attempts, so a short egress refusal under block mode no longer kills a release job. Upload retries set `overwrite: true` so a half-created artifact from a failed attempt can't block the next one.
+
 ## [3.0.0-rc.3] - 2026-10-26
 
 This candidate replaces v3.0.0-rc.2. That tag was cut, but its release run failed before building anything, so rc.2 has no published images or binaries. rc.3 has the same code as rc.2. The only change is in the docs, listed below.
