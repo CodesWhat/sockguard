@@ -204,7 +204,7 @@ jobs:
   changelog:
     name: "Release: Extract Changelog"
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     needs: [verify-ci]
     permissions:
       contents: read

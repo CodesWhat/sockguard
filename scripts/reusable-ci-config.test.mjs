@@ -460,7 +460,7 @@ const RETRIED_STEP_USES =
 // Splits a workflow into jobs (children of the top-level `jobs:` key), then
 // each job into steps by indentation. `steps.<id>` is scoped per job, so the
 // first-attempt/retry matching runs inside one job at a time.
-function releaseRetryViolations(yamlText) {
+function retryJobs(yamlText) {
   const lines = yamlText.split("\n").filter((line) => !/^\s*#/u.test(line));
   const jobs = [];
   let inJobs = false;
@@ -486,6 +486,11 @@ function releaseRetryViolations(yamlText) {
   }
   // A bare steps fragment (no `jobs:` key) is checked as one anonymous job.
   if (jobs.length === 0) jobs.push({ name: "(no jobs)", lines });
+  return jobs;
+}
+
+function releaseRetryViolations(yamlText) {
+  const jobs = retryJobs(yamlText);
   const violations = [];
   let retried = 0;
   for (const j of jobs) {
@@ -545,6 +550,21 @@ function jobRetryViolations(lines) {
       continue;
     }
     claimed.add(second);
+    const hasWait = (from, to, guard, seconds) =>
+      steps.some(
+        (w, wi) =>
+          wi > from.i &&
+          wi < to.i &&
+          field(w, "if") === guard &&
+          field(w, "run") === `sleep ${seconds}`,
+      );
+    let waitsOk = true;
+    if (!hasWait(first, second, `steps.${first.id}.outcome == 'failure'`, 30)) {
+      violations.push(
+        `${first.label}: missing 'sleep 30' step between attempt 1 and 2 guarded by steps.${first.id}.outcome`,
+      );
+      waitsOk = false;
+    }
     if (!second.id || second.coe !== "true") {
       violations.push(`${second.label}: second attempt needs an id and continue-on-error: true`);
       continue;
@@ -556,7 +576,20 @@ function jobRetryViolations(lines) {
       continue;
     }
     claimed.add(third);
-    let ok = true;
+    let ok = waitsOk;
+    if (
+      !hasWait(
+        second,
+        third,
+        `steps.${first.id}.outcome == 'failure' && steps.${second.id}.outcome == 'failure'`,
+        60,
+      )
+    ) {
+      violations.push(
+        `${first.label}: missing 'sleep 60' step between attempt 2 and 3 guarded by both failed attempts`,
+      );
+      ok = false;
+    }
     if (third.coe !== undefined) {
       violations.push(`${third.label}: final attempt must not set continue-on-error`);
       ok = false;
@@ -584,7 +617,17 @@ function jobRetryViolations(lines) {
 
 // Builds one three-attempt chain for the fixtures below. `omit` drops the
 // final attempt; `noOverwrite` leaves overwrite: true off the upload retries.
-function chainFixture(action, base, { omit = false, noOverwrite = false } = {}) {
+function chainFixture(
+  action,
+  base,
+  {
+    omit = false,
+    noOverwrite = false,
+    wait1 = "sleep 30",
+    wait2 = "sleep 60",
+    waitOrder = "",
+  } = {},
+) {
   const uses = `        uses: ${action}@abc\n`;
   const ow =
     action.includes("upload-artifact") && !noOverwrite
@@ -592,10 +635,15 @@ function chainFixture(action, base, { omit = false, noOverwrite = false } = {}) 
       : "";
   const g1 = `steps.${base}.outcome == 'failure'`;
   const g2 = `${g1} && steps.${base}_retry.outcome == 'failure'`;
+  const wait = (guard, run) =>
+    run === null ? "" : `      - name: Wait\n        if: ${guard}\n        run: ${run}\n`;
   const first = `      - name: A\n        id: ${base}\n        continue-on-error: true\n${uses}`;
   const second = `      - name: A (retry)\n        id: ${base}_retry\n        if: ${g1}\n        continue-on-error: true\n${uses}${ow}`;
   const third = `      - name: A (final retry)\n        id: ${base}_final\n        if: ${g2}\n${uses}${ow}`;
-  return first + second + (omit ? "" : third);
+  const w1 = wait(waitOrder === "w1-guard" ? g2 : g1, wait1);
+  const w2 = wait(waitOrder === "w2-guard" ? g1 : g2, wait2);
+  if (waitOrder === "w1-after") return first + second + w1 + w2 + (omit ? "" : third);
+  return first + w1 + second + w2 + (omit ? "" : third);
 }
 
 test("release workflows retry network steps three times after 30 s and 60 s waits", () => {
@@ -641,6 +689,36 @@ test("release retry chains must be complete", () => {
     releaseRetryViolations(wrap(chainFixture("docker/setup-buildx-action", "buildx"))),
     [],
   );
+});
+
+test("release retry chains must have the 30 s and 60 s waits", () => {
+  const wrap = (body) => `on: push\njobs:\n  one:\n    steps:\n${body}`;
+  const check = (opts) =>
+    releaseRetryViolations(wrap(chainFixture("actions/checkout", "checkout", opts)));
+  assert.deepEqual(check({}), []);
+  assert.ok(check({ wait1: null }).some((v) => /missing 'sleep 30'/u.test(v)));
+  assert.ok(check({ wait2: null }).some((v) => /missing 'sleep 60'/u.test(v)));
+  assert.ok(check({ wait1: "sleep 5" }).some((v) => /missing 'sleep 30'/u.test(v)));
+  assert.ok(check({ wait2: "sleep 5" }).some((v) => /missing 'sleep 60'/u.test(v)));
+  assert.ok(check({ waitOrder: "w1-guard" }).some((v) => /missing 'sleep 30'/u.test(v)));
+  assert.ok(check({ waitOrder: "w2-guard" }).some((v) => /missing 'sleep 60'/u.test(v)));
+  assert.ok(check({ waitOrder: "w1-after" }).some((v) => /missing 'sleep 30'/u.test(v)));
+});
+
+test("release workflow jobs leave at least half their timeout after retry waits", () => {
+  const dir = path.join(ROOT, ".github", "workflows");
+  for (const name of BLOCK_MODE_WORKFLOWS) {
+    const raw = fs.readFileSync(path.join(dir, name), "utf8");
+    for (const j of retryJobs(raw)) {
+      const chains = jobRetryViolations(j.lines).retried;
+      const m = /^ {4}timeout-minutes:\s*(\d+)/mu.exec(j.lines.join("\n"));
+      const minutes = m ? Number(m[1]) : 360;
+      assert.ok(
+        minutes * 60 >= 2 * (90 * chains),
+        `${name} job ${j.name}: ${chains} chains need ${90 * chains} s of waits, timeout is ${minutes} min`,
+      );
+    }
+  }
 });
 
 test("release retry matching is scoped per job", () => {
