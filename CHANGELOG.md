@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Release workflows retry network steps three times.** `release-cut.yml` and `release-from-tag.yml` now retry checkout, Buildx setup and artifact upload and download up to three times, waiting 30 s and then 60 s between attempts, so a short egress refusal under block mode no longer kills a release job. Upload retries set `overwrite: true` so a half-created artifact from a failed attempt can't block the next one.
+- **Website preview builds skip pushes that don't touch the site.** `website/vercel.json` now runs `website/scripts/vercel-ignore-build.sh` as its ignored build step. A preview is skipped when nothing changed since the branch's last deployment in `website/`, `docs/`, the root `package.json`, `package-lock.json`, `turbo.json`, `biome.json`, `.vercelignore`, `.gitignore` or the two analytics sync scripts, so Go-only pushes stop using up the Hobby plan's daily deploy quota. A missing or unfetchable previous commit builds, and production deploys from main always build.
 
 ## [3.0.0-rc.3] - 2026-10-26
 
