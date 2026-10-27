@@ -27,8 +27,8 @@ rules:
     # Revisit when actionlint ships `$/` support: drop this block, run
     # `zizmor --fix`, and confirm `actionlint .github/workflows/` is clean.
     ignore:
-      - release-cut.yml:94
-      - release-from-tag.yml:186
+      - release-cut.yml:108
+      - release-from-tag.yml:198
 
   cache-poisoning:
     # zizmor flags any setup-go/setup-node caching step in a workflow that

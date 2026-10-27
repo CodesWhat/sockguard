@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **CI tooling fixes from the PR #638 review.** The pre-push lockfile dedupe check now applies the release-age cutoff only to its dedupe probe, so an exactly pinned dependency published inside the cutoff window can no longer fail the install probe with ETARGET and block a push. The monthly mutation job that commits the badge keeps harden-runner in block mode with an allow list, because it holds a write credential; the read-only jobs stay on audit. The release CI-verify wait now holds each request, its retries and its sleep to the time left in `max-wait-seconds`, so a poll that starts near the deadline fails with the action's timeout error instead of running into the job timeout.
+- **Release workflows retry network steps three times.** `release-cut.yml` and `release-from-tag.yml` now retry checkout, Buildx setup and artifact upload and download up to three times, waiting 30 s and then 60 s between attempts, so a short egress refusal under block mode no longer kills a release job. Upload retries set `overwrite: true` so a half-created artifact from a failed attempt can't block the next one.
 
 ## [2.3.1] - 2026-10-26
 
