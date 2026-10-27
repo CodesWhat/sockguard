@@ -65,13 +65,27 @@ jobs:
           # so the v* tag push fires release-from-tag.yml automatically.
           token: ${{ secrets.RELEASE_PAT }}
 
-      - name: Wait before checkout retry
+      - name: Wait before Checkout retry
         if: steps.checkout.outcome == 'failure'
-        run: sleep 20
+        run: sleep 30
 
       - name: Checkout (retry)
         id: checkout_retry
         if: steps.checkout.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+          token: ${{ secrets.RELEASE_PAT }}
+
+      - name: Wait before Checkout final retry
+        if: steps.checkout.outcome == 'failure' && steps.checkout_retry.outcome == 'failure'
+        run: sleep 60
+
+      - name: Checkout (final retry)
+        id: checkout_final
+        if: steps.checkout.outcome == 'failure' && steps.checkout_retry.outcome == 'failure'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
