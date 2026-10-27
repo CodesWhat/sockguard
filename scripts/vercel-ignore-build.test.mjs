@@ -25,6 +25,7 @@ const FILES = [
   "scripts/analytics-routes.mjs",
   "scripts/analytics-runtime.mjs",
   ".vercelignore",
+  ".gitignore",
   "README.md",
 ];
 
@@ -135,6 +136,7 @@ for (const file of [
   "scripts/analytics-routes.mjs",
   "scripts/analytics-runtime.mjs",
   ".vercelignore",
+  ".gitignore",
 ]) {
   test(`a ${file} change builds`, () => {
     const res = run(previewEnv(commitChange(file)));
@@ -142,3 +144,55 @@ for (const file of [
     assert.match(res.stdout, /building/);
   });
 }
+
+test("an unresolvable current SHA builds", () => {
+  const res = run({
+    VERCEL_ENV: "preview",
+    VERCEL_GIT_PREVIOUS_SHA: base,
+    VERCEL_GIT_COMMIT_SHA: "fedcba9876543210fedcba9876543210fedcba98",
+  });
+  assert.equal(res.status, 1, res.stdout + res.stderr);
+  assert.match(res.stdout, /git diff failed/);
+});
+
+test("outside a git checkout builds", () => {
+  const dir = mkdtempSync(join(tmpdir(), "vercel-ignore-nogit-"));
+  try {
+    const res = spawnSync("bash", [join(repo, SCRIPT_REL)], {
+      cwd: dir,
+      env: { PATH: process.env.PATH, HOME: process.env.HOME, ...previewEnv(base) },
+      encoding: "utf8",
+    });
+    assert.equal(res.status, 1, res.stdout + res.stderr);
+    assert.match(res.stdout, /not inside a git checkout/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a shallow clone fetches the previous SHA, then decides", () => {
+  const head = commitChange("app/main.go");
+  const clone = mkdtempSync(join(tmpdir(), "vercel-ignore-shallow-"));
+  try {
+    const res0 = spawnSync(
+      "git",
+      [...gitConfig, "clone", "-q", "--depth=1", "--branch", "main", `file://${repo}`, clone],
+      { encoding: "utf8", env: gitEnv },
+    );
+    assert.equal(res0.status, 0, res0.stderr);
+    const missing = spawnSync("git", ["cat-file", "-e", `${base}^{commit}`], {
+      cwd: clone,
+      env: gitEnv,
+    });
+    assert.notEqual(missing.status, 0, "the shallow clone should not contain the base commit");
+    const res = spawnSync("bash", [join(clone, SCRIPT_REL)], {
+      cwd: join(clone, "website"),
+      env: { PATH: process.env.PATH, HOME: process.env.HOME, ...previewEnv(head) },
+      encoding: "utf8",
+    });
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    assert.match(res.stdout, /skipping/);
+  } finally {
+    rmSync(clone, { recursive: true, force: true });
+  }
+});

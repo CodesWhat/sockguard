@@ -11,6 +11,7 @@ set -u
 #   biome.json      root lint config
 #   scripts/analytics-*.mjs   both builds run these --check steps first
 #   .vercelignore   decides which files are uploaded to the build
+#   .gitignore      Tailwind's automatic source detection skips ignored paths
 SITE_INPUTS=(
   website
   docs
@@ -21,6 +22,7 @@ SITE_INPUTS=(
   scripts/analytics-routes.mjs
   scripts/analytics-runtime.mjs
   .vercelignore
+  .gitignore
 )
 
 if [ "${VERCEL_ENV:-}" = "production" ]; then
