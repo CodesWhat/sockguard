@@ -7,10 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Update `golang.org/x/net` to v0.62.0 for GO-2026-6860 and GO-2026-6866, both in `golang.org/x/net/html`. Sockguard doesn't import that package, and govulncheck reports neither as reachable. The bump clears the module-level findings in dependency scans.
+
 ### Changed
 
 - **Release workflows retry network steps three times.** `release-cut.yml` and `release-from-tag.yml` now retry checkout, Buildx setup and artifact upload and download up to three times, waiting 30 s and then 60 s between attempts, so a short egress refusal under block mode no longer kills a release job. Upload retries set `overwrite: true` so a half-created artifact from a failed attempt can't block the next one.
 - **Website preview builds skip pushes that don't touch the site.** `website/vercel.json` now runs `website/scripts/vercel-ignore-build.sh` as its ignored build step. A preview is skipped when nothing changed since the branch's last deployment in `website/`, `docs/`, the root `package.json`, `package-lock.json`, `turbo.json`, `biome.json`, `.vercelignore`, `.gitignore` or the two analytics sync scripts, so Go-only pushes stop using up the Hobby plan's daily deploy quota. A missing or unfetchable previous commit builds, and production deploys from main always build.
+- **Working branches no longer deploy website previews.** Vercel counts ignored builds toward the daily deployment quota, so `website/vercel.json` also sets `git.deploymentEnabled` to off for `feat/`, `fix/`, `docs/`, `ci/`, `chore/`, `test/`, `refactor/`, `build/`, `perf/`, `style/`, `revert/`, `dev/`, `release/`, `renovate/`, `dependabot/`, `codex/` and `claude/` branches. main still deploys production. A branch with any other prefix, such as `site/`, still gets a preview.
 
 ## [2.4.0-rc.2] - 2026-10-26
 

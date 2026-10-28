@@ -196,3 +196,34 @@ test("a shallow clone fetches the previous SHA, then decides", () => {
     rmSync(clone, { recursive: true, force: true });
   }
 });
+
+// Ignored builds still count toward Vercel's daily deployment quota, so
+// working branches turn deployments off outright. main must keep deploying
+// production, and the ignore step stays for build minutes on what remains.
+test("vercel.json disables deployments for working branches but never main", () => {
+  const config = JSON.parse(
+    readFileSync(fileURLToPath(new URL("../website/vercel.json", import.meta.url)), "utf8"),
+  );
+  assert.equal(config.ignoreCommand, "bash scripts/vercel-ignore-build.sh");
+  const enabled = config.git?.deploymentEnabled ?? {};
+  for (const [pattern, value] of Object.entries(enabled)) {
+    assert.notEqual(pattern, "main", "main must stay deployable");
+    assert.notEqual(pattern, "*", "a catch-all would turn off production");
+    assert.notEqual(pattern, "**", "a catch-all would turn off production");
+    assert.equal(value, false, `${pattern} should only ever be disabled here`);
+  }
+  for (const prefix of [
+    "feat",
+    "fix",
+    "docs",
+    "ci",
+    "chore",
+    "build",
+    "dev",
+    "release",
+    "renovate",
+    "dependabot",
+  ]) {
+    assert.equal(enabled[`${prefix}/**`], false, `${prefix}/** branches should not deploy`);
+  }
+});
