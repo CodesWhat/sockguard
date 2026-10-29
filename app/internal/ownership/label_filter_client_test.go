@@ -2,12 +2,14 @@ package ownership
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 
+	"github.com/codeswhat/sockguard/v2/app/internal/upstreamflavor"
 	"github.com/codeswhat/sockguard/v2/app/internal/visibility"
 )
 
@@ -175,6 +177,66 @@ func TestSelectorLabelKey(t *testing.T) {
 	for in, want := range tests {
 		if got := selectorLabelKey(in); got != want {
 			t.Errorf("selectorLabelKey(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestListLabelFilterValueContainingNegationToken(t *testing.T) {
+	t.Parallel()
+	const owner = ownerLabelForTest + "=team-a"
+	tests := []struct {
+		name   string
+		method string
+		path   string
+		flavor upstreamflavor.Flavor
+		client string
+		want   []string
+	}{
+		{"equality value kept on containers", http.MethodGet, "/v1.53/containers/json", upstreamflavor.Docker, "note=hello!=world", []string{owner, "note=hello!=world"}},
+		{"equality value kept on container prune", http.MethodPost, "/v1.53/containers/prune", upstreamflavor.Docker, "note=hello!=world", []string{owner, "note=hello!=world"}},
+		{"equality value kept on images under docker", http.MethodGet, "/v1.53/images/json", upstreamflavor.Docker, "note=hello!=world", []string{owner, "note=hello!=world"}},
+		{"equality value dropped on images under podman", http.MethodGet, "/v1.53/images/json", upstreamflavor.Podman, "note=hello!=world", []string{owner}},
+		{"equality value dropped on libpod images under podman", http.MethodGet, "/libpod/images/json", upstreamflavor.Podman, "note=hello!=world", []string{owner}},
+		{"equality value kept on containers under podman", http.MethodGet, "/v1.53/containers/json", upstreamflavor.Podman, "note=hello!=world", []string{owner, "note=hello!=world"}},
+		{"negation dropped on containers", http.MethodGet, "/v1.53/containers/json", upstreamflavor.Docker, "a!=b", []string{owner}},
+		{"negation dropped on prune", http.MethodPost, "/v1.53/containers/prune", upstreamflavor.Docker, "a!=b", []string{owner}},
+		{"negation dropped on images under docker", http.MethodGet, "/v1.53/images/json", upstreamflavor.Docker, "a!=b", []string{owner}},
+		{"spaced negation dropped", http.MethodGet, "/v1.53/containers/json", upstreamflavor.Docker, "a! =b", []string{owner}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			client := `{"label":["` + tc.client + `"]}`
+			got := forwardedFiltersFor(t, tc.method, tc.path+"?filters="+url.QueryEscape(client),
+				Options{Owner: "team-a", UpstreamFlavor: tc.flavor}, visibility.Options{})
+			assertFilterValues(t, got, "label", tc.want)
+		})
+	}
+}
+
+func TestListLabelFilterManyClientSelectors(t *testing.T) {
+	t.Parallel()
+	const n = 5000
+	client := make([]string, 0, n+2)
+	for i := 0; i < n; i++ {
+		client = append(client, fmt.Sprintf("k%d=v", i))
+	}
+	client = append(client, "k0=v", ownerLabelForTest+"=other")
+	encoded, err := json.Marshal(map[string][]string{"label": client})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/containers/json?filters="+url.QueryEscape(string(encoded)), nil)
+	if err := addOwnerLabelFilter(req, ownerLabelForTest, "team-a", false); err != nil {
+		t.Fatal(err)
+	}
+	got := decodeFiltersForTest(t, req.URL.Query().Get("filters"))["label"]
+	if len(got) != n+1 || got[0] != ownerLabelForTest+"=team-a" {
+		t.Fatalf("len=%d first=%q, want %d values led by the owner selector", len(got), got[0], n+1)
+	}
+	for i := 0; i < n; i++ {
+		if got[i+1] != fmt.Sprintf("k%d=v", i) {
+			t.Fatalf("got[%d] = %q, order not preserved", i+1, got[i+1])
 		}
 	}
 }

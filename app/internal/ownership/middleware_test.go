@@ -3083,7 +3083,7 @@ func TestAddOwnerLabelToBodyAndFilterHelpers(t *testing.T) {
 	}
 
 	filterReq := httptest.NewRequest(http.MethodGet, "/containers/json?filters=%7B%22label%22%3A%5B%22com.sockguard.owner%3Djob-123%22%5D%7D", nil)
-	if err := addOwnerLabelFilter(filterReq, "com.sockguard.owner", "job-123"); err != nil {
+	if err := addOwnerLabelFilter(filterReq, "com.sockguard.owner", "job-123", false); err != nil {
 		t.Fatalf("addOwnerLabelFilter() error = %v", err)
 	}
 	var filters map[string][]string
@@ -3095,12 +3095,12 @@ func TestAddOwnerLabelToBodyAndFilterHelpers(t *testing.T) {
 	}
 
 	badFilterReq := httptest.NewRequest(http.MethodGet, "/containers/json?filters=%7B%22label%22%3A%22bad%22%7D", nil)
-	if err := addOwnerLabelFilter(badFilterReq, "com.sockguard.owner", "job-123"); err == nil {
+	if err := addOwnerLabelFilter(badFilterReq, "com.sockguard.owner", "job-123", false); err == nil {
 		t.Fatal("expected invalid filters error")
 	}
 
 	taskFilterReq := httptest.NewRequest(http.MethodGet, "/tasks", nil)
-	if err := addOwnerLabelFilter(taskFilterReq, "com.sockguard.owner", "job-123"); err != nil {
+	if err := addOwnerLabelFilter(taskFilterReq, "com.sockguard.owner", "job-123", false); err != nil {
 		t.Fatalf("addOwnerLabelFilter(task) error = %v", err)
 	}
 	var taskFilters map[string][]string
@@ -3112,7 +3112,7 @@ func TestAddOwnerLabelToBodyAndFilterHelpers(t *testing.T) {
 	}
 
 	nodeFilterReq := httptest.NewRequest(http.MethodGet, "/nodes", nil)
-	if err := addOwnerLabelFilter(nodeFilterReq, "com.sockguard.owner", "job-123"); err != nil {
+	if err := addOwnerLabelFilter(nodeFilterReq, "com.sockguard.owner", "job-123", false); err != nil {
 		t.Fatalf("addOwnerLabelFilter(nodes) error = %v", err)
 	}
 	var nodeFilters map[string][]string
