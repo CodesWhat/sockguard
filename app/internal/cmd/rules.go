@@ -317,6 +317,9 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 		},
 	},
 	{method: http.MethodGet, path: "/libpod/generate/kube"},
+	// GET /libpod/kube/generate is Podman's alias of the route above, served
+	// by the same handler, so it carries the same exfiltration risk.
+	{method: http.MethodGet, path: "/libpod/kube/generate"},
 	// Two libpod-only POSTs whose risk is entirely in the RESPONSE, which is
 	// why neither gets a request-body inspector: verified against Podman
 	// v5.8.1's pkg/api/handlers/libpod/containers.go, Checkpoint reads only
