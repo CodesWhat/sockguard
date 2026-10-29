@@ -24,28 +24,30 @@ func TestOwnershipRefusesFilterKeysContainingEquals(t *testing.T) {
 	for _, flavor := range []upstreamflavor.Flavor{upstreamflavor.Docker, upstreamflavor.Podman} {
 		for _, path := range paths {
 			for name, filters := range encodings {
-				t.Run(string(flavor)+"/"+path+"/"+name, func(t *testing.T) {
-					t.Parallel()
-					handler := middlewareWithDeps(testLogger(), Options{Owner: "job-123", LabelKey: "com.sockguard.owner", UpstreamFlavor: flavor}, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(
-						http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-							t.Fatal("request with an invalid filter key reached the upstream")
-						}))
-					meta := &logging.RequestMeta{RolloutMode: "enforce"}
-					req := httptest.NewRequest(http.MethodGet, path+"?filters="+url.QueryEscape(filters), nil)
-					req = req.WithContext(logging.WithMeta(req.Context(), meta))
-					rec := httptest.NewRecorder()
-					handler.ServeHTTP(rec, req)
+				for _, mode := range []string{"enforce", "warn"} {
+					t.Run(string(flavor)+"/"+path+"/"+name+"/"+mode, func(t *testing.T) {
+						t.Parallel()
+						handler := middlewareWithDeps(testLogger(), Options{Owner: "job-123", LabelKey: "com.sockguard.owner", UpstreamFlavor: flavor}, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(
+							http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+								t.Fatal("request with an invalid filter key reached the upstream")
+							}))
+						meta := &logging.RequestMeta{RolloutMode: mode}
+						req := httptest.NewRequest(http.MethodGet, path+"?filters="+url.QueryEscape(filters), nil)
+						req = req.WithContext(logging.WithMeta(req.Context(), meta))
+						rec := httptest.NewRecorder()
+						handler.ServeHTTP(rec, req)
 
-					if rec.Code != http.StatusBadRequest {
-						t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
-					}
-					if meta.ReasonCode != reasonCodeOwnerFilterKeyInvalid {
-						t.Fatalf("reason code = %q, want %q", meta.ReasonCode, reasonCodeOwnerFilterKeyInvalid)
-					}
-					if !strings.Contains(rec.Body.String(), `must not contain`) {
-						t.Fatalf("body = %s, want the filter key message", rec.Body.String())
-					}
-				})
+						if rec.Code != http.StatusBadRequest {
+							t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+						}
+						if meta.ReasonCode != reasonCodeOwnerFilterKeyInvalid {
+							t.Fatalf("reason code = %q, want %q", meta.ReasonCode, reasonCodeOwnerFilterKeyInvalid)
+						}
+						if !strings.Contains(rec.Body.String(), `must not contain`) {
+							t.Fatalf("body = %s, want the filter key message", rec.Body.String())
+						}
+					})
+				}
 			}
 		}
 	}

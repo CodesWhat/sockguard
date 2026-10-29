@@ -58,6 +58,7 @@ const (
 	reasonCodeVisibilityProfileUnresolved   = "visibility_profile_unresolved"
 	reasonCodeVisibilityFilterInvalid       = "visibility_filter_invalid"
 	reasonCodeVisibilityFilterKeyInvalid    = "visibility_filter_key_invalid"
+	reasonCodeVisibilityPodmanVolumeFilter  = "visibility_podman_volume_filter_unscopeable"
 	reasonCodeVisibilityPolicyLookupFailed  = "visibility_policy_lookup_failed"
 	reasonCodeVisibilityPolicyHidResource   = "visibility_policy_hid_resource"
 	reasonCodeVisibilityResponseTooLarge    = "visibility_response_too_large"
@@ -304,6 +305,10 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 				return
 			}
 			if handleVisibilityImageExportRequest(logger, next, deps, w, r, normPath, &effectivePolicy) {
+				return
+			}
+			if podmanUpstream && hasSelectors && (r.Method == http.MethodGet || r.Method == http.MethodHead) &&
+				filter.IsPodmanVolumeListPath(normPath) && refuseUnsupportedPodmanVolumeFilters(w, r) {
 				return
 			}
 			if needsVisibilityLabelFilter(normPath) {

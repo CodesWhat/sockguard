@@ -999,6 +999,7 @@ func TestLibpodPruneRoutesAreInertWithoutOwner(t *testing.T) {
 var wantOwnerUnscopeableWriteReasonCodes = map[string]string{
 	filter.LibpodPodPrunePath:    "owner_libpod_pod_prune_unscopeable",
 	filter.LibpodSystemPrunePath: "owner_libpod_system_prune_unscopeable",
+	filter.LibpodSystemCheckPath: "owner_libpod_system_check_unscopeable",
 	"/libpod/play/kube":          "owner_libpod_kube_down_unscopeable",
 	"/libpod/kube/play":          "owner_libpod_kube_down_unscopeable",
 }
