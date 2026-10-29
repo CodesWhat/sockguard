@@ -33,6 +33,20 @@ func TestLookupLibpodUnscopeableWriteMatchesSystemPrune(t *testing.T) {
 	}
 }
 
+func TestLookupLibpodUnscopeableWriteMatchesSystemCheck(t *testing.T) {
+	t.Parallel()
+	write, ok := LookupLibpodUnscopeableWrite(http.MethodPost, LibpodSystemCheckPath)
+	if !ok {
+		t.Fatalf("LookupLibpodUnscopeableWrite(POST, %q) = no match, want the system check entry", LibpodSystemCheckPath)
+	}
+	if write.ReasonCodeStem != "system_check" {
+		t.Fatalf("ReasonCodeStem = %q, want %q", write.ReasonCodeStem, "system_check")
+	}
+	if write.Reason != LibpodSystemCheckDenyReason {
+		t.Fatalf("Reason = %q, want the shared deny reason", write.Reason)
+	}
+}
+
 // TestLookupLibpodUnscopeableWriteMatchesKubeDown pins both spellings of kube
 // down. Podman serves DELETE /libpod/play/kube and DELETE /libpod/kube/play
 // from one handler (pkg/api/server/register_kube.go:180-181 at v5.8.6), so a
@@ -75,6 +89,8 @@ func TestLookupLibpodUnscopeableWriteIsMethodExact(t *testing.T) {
 		{method: http.MethodPost, path: "/libpod/volumes/prune"},
 		{method: http.MethodPost, path: "/libpod/pods/create"},
 		{method: http.MethodGet, path: LibpodSystemPrunePath},
+		{method: http.MethodGet, path: LibpodSystemCheckPath},
+		{method: http.MethodDelete, path: LibpodSystemCheckPath},
 		{method: http.MethodDelete, path: LibpodSystemPrunePath},
 		{method: http.MethodPost, path: "/libpod/system/df"},
 		{method: http.MethodPost, path: "/v5.8.1/libpod/system/prune"},

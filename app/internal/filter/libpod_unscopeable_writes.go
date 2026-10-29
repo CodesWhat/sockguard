@@ -93,6 +93,21 @@ const LibpodSystemPruneDenyReason = "libpod system prune denied: " +
 	"POST /libpod/system/prune removes unused pods, containers, images and optionally volumes across the whole host in one call, " +
 	"so it cannot be scoped to one caller"
 
+// LibpodSystemCheckPath is the normalized path of Podman's native
+// POST /libpod/system/check endpoint.
+const LibpodSystemCheckPath = "/libpod/system/check"
+
+// LibpodSystemCheckDenyReason is reported when owner isolation refuses
+// POST /libpod/system/check.
+//
+// It runs a storage consistency check over the whole host and can repair it,
+// removing damaged containers and images whoever owns them, so it names no
+// resource an owner check could inspect and cannot be scoped to one caller.
+// The refusal is unconditional for the reason the pod prune one is.
+const LibpodSystemCheckDenyReason = "libpod system check denied: " +
+	"POST /libpod/system/check checks the host's storage and can repair it by removing damaged containers and images " +
+	"whoever owns them, so it cannot be scoped to one caller"
+
 // LibpodKubeDownDenyReason is reported when owner isolation refuses kube
 // down, DELETE /libpod/play/kube and its DELETE /libpod/kube/play alias.
 //
@@ -114,6 +129,7 @@ const LibpodKubeDownDenyReason = "libpod kube down denied: " +
 var libpodUnscopeableWrites = []LibpodUnscopeableWrite{
 	{Method: http.MethodPost, Path: LibpodPodPrunePath, ReasonCodeStem: "pod_prune", Reason: LibpodPodPruneDenyReason},
 	{Method: http.MethodPost, Path: LibpodSystemPrunePath, ReasonCodeStem: "system_prune", Reason: LibpodSystemPruneDenyReason},
+	{Method: http.MethodPost, Path: LibpodSystemCheckPath, ReasonCodeStem: "system_check", Reason: LibpodSystemCheckDenyReason},
 	{Method: http.MethodDelete, Path: libpodPathPrefix + "play/kube", ReasonCodeStem: "kube_down", Reason: LibpodKubeDownDenyReason},
 	{Method: http.MethodDelete, Path: libpodPathPrefix + "kube/play", ReasonCodeStem: "kube_down", Reason: LibpodKubeDownDenyReason},
 }
