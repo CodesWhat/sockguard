@@ -80,7 +80,7 @@ func TestListLabelFilterKeepDropRule(t *testing.T) {
 		{name: "owner key with whitespace dropped", client: `{"label":["  ` + owner + ` =other"]}`, want: nil},
 		{name: "empty value dropped", client: `{"label":["","a=b"]}`, want: []string{"a=b"}},
 		{name: "non-colliding kept in client order", client: `{"label":["z=1","a=b","z=1"]}`, want: []string{"z=1", "a=b"}},
-		{name: "negation of other key kept", client: `{"label":["a!=b"]}`, want: []string{"a!=b"}},
+		{name: "negation of other key dropped", client: `{"label":["a!=b","c=d"]}`, want: []string{"c=d"}},
 		{name: "legacy map spelling kept", client: `{"label":{"a=b":true}}`, want: []string{"a=b"}},
 		{name: "legacy map spelling colliding dropped", client: `{"label":{"` + owner + `=x":true}}`, want: nil},
 	}
@@ -117,6 +117,15 @@ func TestListLabelFilterKeepDropRule(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestLibpodImagePruneSendsOnlyEnforcedSelectors(t *testing.T) {
+	t.Parallel()
+	client := `{"label":["a=b","c=d"],"until":["1h"]}`
+	got := forwardedFiltersFor(t, http.MethodPost, "/libpod/images/prune?filters="+url.QueryEscape(client),
+		Options{Owner: "team-a"}, visibility.Options{})
+	assertFilterValues(t, got, "label", []string{ownerLabelForTest + "=team-a"})
+	assertFilterValues(t, got, "until", []string{"1h"})
 }
 
 func TestListLabelFilterVisibilityKeyCollision(t *testing.T) {

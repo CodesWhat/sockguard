@@ -1196,10 +1196,14 @@ func addOwnerLabelFilter(r *http.Request, labelKey, owner string) error {
 	//     label key over a randomly-ordered Args.Get, so a same-key client
 	//     value can displace the proxy-enforced one. Values with other keys
 	//     fold to different entries and still AND.
-	//   - Event paths keep only the enforced selectors. Podman ORs repeated
+	//   - Event paths and /libpod/images/prune keep only the enforced
+	//     selectors (see enforcedSelectorsOnlyPath). Podman ORs repeated
 	//     `label` values on its event filter, so a kept client selector would
-	//     widen the stream to other owners' events. This holds whatever the
-	//     upstream flavor, which may be misdetected.
+	//     widen the stream to other owners' events, and its image prune reads
+	//     only the first value. This holds whatever the upstream flavor, which
+	//     may be misdetected.
+	//   - Negated client values (`k!=v`) are dropped on every path, because
+	//     libimage rejects them under `label` with a 500.
 	//
 	// Selectors sockguard itself injected earlier in the chain always survive.
 	// The visibility middleware runs first and writes the same key, and
@@ -1214,13 +1218,20 @@ func addOwnerLabelFilter(r *http.Request, labelKey, owner string) error {
 			values = append(values, selector)
 		}
 	}
-	if !isOwnerEventPath(normPath) {
+	if !enforcedSelectorsOnlyPath(normPath) {
 		enforced := map[string]struct{}{selectorLabelKey(label): {}}
 		for _, selector := range injected {
 			enforced[selectorLabelKey(selector)] = struct{}{}
 		}
 		for _, clientValue := range filters[filterKey] {
 			if clientValue == "" {
+				continue
+			}
+			// libimage (Podman image filters) splits on `!=` before `=`, so a
+			// kept `k!=v` makes Podman image lists answer 500 ("invalid image
+			// filter"). Negation belongs under the separate `label!` filter
+			// key, so these values are dropped on every path.
+			if strings.Contains(clientValue, "!=") {
 				continue
 			}
 			if _, collides := enforced[selectorLabelKey(clientValue)]; collides {
