@@ -651,6 +651,27 @@ jobs:
           persist-credentials: false
 
       - name: Set up QEMU
+        id: qemu
+        continue-on-error: true
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1  # v4.4.0
+
+      - name: Wait before Set up QEMU retry
+        if: steps.qemu.outcome == 'failure'
+        run: sleep 30
+
+      - name: Set up QEMU (retry)
+        id: qemu_retry
+        if: steps.qemu.outcome == 'failure'
+        continue-on-error: true
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1  # v4.4.0
+
+      - name: Wait before Set up QEMU final retry
+        if: steps.qemu.outcome == 'failure' && steps.qemu_retry.outcome == 'failure'
+        run: sleep 60
+
+      - name: Set up QEMU (final retry)
+        id: qemu_final
+        if: steps.qemu.outcome == 'failure' && steps.qemu_retry.outcome == 'failure'
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1  # v4.4.0
 
       - name: Set up Docker Buildx
@@ -810,10 +831,30 @@ jobs:
           TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           set -euo pipefail
+          # A cosign signature covers the repository and digest, not the tag, so
+          # signing once per repository covers every tag. Signing each tag
+          # sends Rekor an identical entry and it answers 409.
           images=()
+          seen=" "
           while IFS= read -r tag; do
-            [ -n "${tag}" ] && images+=("${tag}@${DIGEST}")
+            [ -n "${tag}" ] || continue
+            repo="${tag}"
+            last="${repo##*/}"
+            if [[ "${last}" == *:* ]]; then
+              repo="${repo%:*}"
+            fi
+            case "${seen}" in
+              *" ${repo} "*) ;;
+              *)
+                seen="${seen}${repo} "
+                images+=("${repo}@${DIGEST}")
+                ;;
+            esac
           done <<< "${TAGS}"
+          if [ "${#images[@]}" -eq 0 ]; then
+            echo "::error::No images found to sign"
+            exit 1
+          fi
           cosign sign --yes "${images[@]}"
 
       - name: Verify container image signatures
@@ -839,9 +880,25 @@ jobs:
             done
           }
 
+          # A cosign signature covers the repository and digest, not the tag, so
+          # signing once per repository covers every tag. Signing each tag
+          # sends Rekor an identical entry and it answers 409.
           images=()
+          seen=" "
           while IFS= read -r tag; do
-            [ -n "${tag}" ] && images+=("${tag}@${DIGEST}")
+            [ -n "${tag}" ] || continue
+            repo="${tag}"
+            last="${repo##*/}"
+            if [[ "${last}" == *:* ]]; then
+              repo="${repo%:*}"
+            fi
+            case "${seen}" in
+              *" ${repo} "*) ;;
+              *)
+                seen="${seen}${repo} "
+                images+=("${repo}@${DIGEST}")
+                ;;
+            esac
           done <<< "${TAGS}"
 
           if [ "${#images[@]}" -eq 0 ]; then
