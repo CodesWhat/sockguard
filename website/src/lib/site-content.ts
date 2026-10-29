@@ -415,4 +415,14 @@ export const roadmap: Milestone[] = [
       "Updates go-jose and golang.org/x/net",
     ],
   },
+  {
+    version: "v2.3.3",
+    title: "Patch: Signed Container Images",
+    emoji: "🔏",
+    status: "released",
+    items: [
+      "Republishes the 2.3.2 proxy code with signed container images",
+      "The release pipeline retries image signing and signs each image repository once",
+    ],
+  },
 ];

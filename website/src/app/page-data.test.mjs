@@ -196,11 +196,11 @@ test("route pages and the compare matrix agree on Sockguard's column", () => {
 test("roadmap data is valid and matches expected milestones", () => {
   assert.ok(roadmap.length > 0, "roadmap must be non-empty");
 
-  // v2.3.2 is the latest stable release.
+  // v2.3.3 is the latest stable release.
   const releasedMilestones = roadmap.filter((m) => m.status === "released");
   assert.ok(releasedMilestones.length > 0, "must have at least one released milestone");
   const latestReleased = releasedMilestones[releasedMilestones.length - 1];
-  assert.equal(latestReleased.version, "v2.3.2", "latest released milestone must be v2.3.2");
+  assert.equal(latestReleased.version, "v2.3.3", "latest released milestone must be v2.3.3");
   assert.equal(latestReleased.status, "released");
 
   // Must retain the previous stable milestones.

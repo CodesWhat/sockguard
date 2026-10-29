@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.3] - 2026-10-29
+
+A release-pipeline patch on the v2.3 line. The 2.3.2 container images were published without signatures, so 2.3.3 ships the same proxy code with signed images, the Homebrew cask and the chart digest pin.
+
+### Fixed
+
+- **The release publisher retries image signing.** Rekor stored the 2.3.2 signature upload but answered slowly, cosign resent it, and the resend was refused with a 409, so the 2.3.2 container images were published unsigned. Signing now runs up to three times, each with a fresh key, and signs each image repository's digest once instead of once per tag. Set up QEMU in the release workflow also retries under the egress block now, like the other network steps.
+
 ## [2.3.2] - 2026-10-29
 
 A security patch on the v2.3 line. It tightens Podman filter scoping under ownership and visibility, fixes Compose label filters under ownership (#639), and updates go-jose, x/net and the release tooling.
