@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 )
 
 // Decode parses Docker's `filters` query parameter into a normalized
@@ -91,4 +92,38 @@ func Decode(encoded string) (map[string][]string, error) {
 	}
 
 	return filters, nil
+}
+
+// InvalidKeyError reports a filter key no Docker or Podman filter accepts.
+type InvalidKeyError struct {
+	Key string
+}
+
+func (e *InvalidKeyError) Error() string {
+	return fmt.Sprintf("filter key %q is invalid: filter keys must not contain \"=\"", e.Key)
+}
+
+// CheckKeys refuses filter keys containing "=". No Docker or Podman filter is
+// named that way, and Podman flattens query filters into "key=value" strings
+// that its event filter splits again on the first "=", so a client key such as
+// "label=name" would reach the daemon as an extra value of the "label" filter.
+// Decoding is where this has to be decided: both the ownership and visibility
+// layers rewrite the filters they decode, and a key they do not recognize is
+// otherwise passed through untouched. When several keys qualify the
+// lexicographically smallest is reported, so the message is deterministic.
+func CheckKeys(filters map[string][]string) error {
+	var bad string
+	found := false
+	for key := range filters {
+		if !strings.Contains(key, "=") {
+			continue
+		}
+		if !found || key < bad {
+			bad, found = key, true
+		}
+	}
+	if found {
+		return &InvalidKeyError{Key: bad}
+	}
+	return nil
 }

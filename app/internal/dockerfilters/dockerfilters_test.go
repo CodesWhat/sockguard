@@ -1,6 +1,7 @@
 package dockerfilters
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -171,4 +172,25 @@ func FuzzDecode(f *testing.F) {
 		}
 		_, _ = Decode(encoded)
 	})
+}
+
+func TestCheckKeys(t *testing.T) {
+	t.Parallel()
+	if err := CheckKeys(map[string][]string{"label": {"a=b"}, "status": {"running"}, "label!": {"x"}}); err != nil {
+		t.Fatalf("CheckKeys(normal) = %v, want nil", err)
+	}
+	if err := CheckKeys(nil); err != nil {
+		t.Fatalf("CheckKeys(nil) = %v, want nil", err)
+	}
+	err := CheckKeys(map[string][]string{"label": {"a"}, "z=1": nil, "label=k": {"v"}})
+	var invalid *InvalidKeyError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("CheckKeys(bad) = %v, want *InvalidKeyError", err)
+	}
+	if invalid.Key != "label=k" {
+		t.Fatalf("Key = %q, want the smallest offending key %q", invalid.Key, "label=k")
+	}
+	if !strings.Contains(err.Error(), `"="`) {
+		t.Fatalf("message = %q, want it to name the \"=\" rule", err.Error())
+	}
 }
