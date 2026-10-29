@@ -3,12 +3,12 @@ title: Roadmap
 description: Sockguard's shipped v1.7, v2.0, v2.1, v2.2, and v2.3 work and later direction.
 ---
 
-Sockguard v2.3 is the current stable feature line, with v2.3.2 the latest
+Sockguard v2.3 is the current stable feature line, with v2.3.3 the latest
 release. v2.3.0 promotes `2.3.0-rc.9` unchanged in behavior and is the first
 release under the MIT license; 2.2.x and earlier remain Apache-2.0. v2.3.1 is a
 security patch that refuses a client-supplied container log path. v2.3.2 is a
 security patch that tightens Podman filter scoping under ownership and
-visibility.
+visibility. v2.3.3 republishes it with signed container images.
 
 The v2.2 line, whose final release is v2.2.11, shipped as follows. v2.2.0 closed the volume-mount and read-side gaps that survived
 v2.1.0 and added the operator-facing checks that were missing around them;
@@ -60,6 +60,11 @@ caller-selected host PID-file write. v2.2.11 closes native Podman hosts-file
 selection and restricted-build frontend overrides. This roadmap describes
 direction and priorities, not promises about dates. A feature is available only after the release notes say
 it has shipped.
+
+## Shipped in v2.3.3
+
+The release pipeline signs each image repository once, so the container images
+are signed again. The proxy code is the same as v2.3.2.
 
 ## Shipped in v2.3.2
 

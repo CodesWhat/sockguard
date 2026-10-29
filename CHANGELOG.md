@@ -7,9 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.3] - 2026-10-29
+
+A release-pipeline patch on the v2.3 line. The 2.3.2 container images were published without signatures, so 2.3.3 ships the same proxy code with signed images, the Homebrew cask and the chart digest pin.
+
 ### Fixed
 
-- **The release publisher signs each image repository's digest once instead of once per tag.** The signature covers the repository and digest, so signing every tag sent the Sigstore transparency log identical entries, and it now refuses duplicates with a 409. That failure left the 2.3.2 container images unsigned. 2.3.3 ships the same code as 2.3.2 with signed images. Set up QEMU in the release workflow also retries under the egress block now, like the other network steps.
+- **The release publisher signs each image repository's digest once instead of once per tag.** The signature covers the repository and digest, so signing every tag sent the Sigstore transparency log identical entries, and it now refuses duplicates with a 409. That failure left the 2.3.2 container images unsigned. Set up QEMU in the release workflow also retries under the egress block now, like the other network steps.
 
 ## [2.3.2] - 2026-10-29
 
