@@ -1053,7 +1053,7 @@ test("release publisher signs and verifies each image repository once", () => {
         "#!/usr/bin/env bash",
         `echo x >> "${counter}"`,
         `n=$(wc -l < "${counter}")`,
-        'if [ "$n" -le "${FAKE_COSIGN_FAIL_SIGNS:-0}" ]; then exit 1; fi',
+        'if [ "$n" -le "$FAKE_COSIGN_FAIL_SIGNS" ]; then exit 1; fi',
         "",
       ].join("\n"),
       { mode: 0o755 },
