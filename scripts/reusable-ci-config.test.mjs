@@ -454,12 +454,13 @@ function releaseHardenRunnerViolations(yamlText) {
   return violations;
 }
 
-const RETRIED_STEP_USES = /^\s*uses:\s*(actions\/checkout|docker\/setup-buildx-action)@/u;
+const RETRIED_STEP_USES =
+  /^\s*uses:\s*(actions\/checkout|docker\/setup-buildx-action|actions\/upload-artifact|actions\/download-artifact)@/u;
 
 // Splits a workflow into jobs (children of the top-level `jobs:` key), then
 // each job into steps by indentation. `steps.<id>` is scoped per job, so the
 // first-attempt/retry matching runs inside one job at a time.
-function releaseRetryViolations(yamlText) {
+function retryJobs(yamlText) {
   const lines = yamlText.split("\n").filter((line) => !/^\s*#/u.test(line));
   const jobs = [];
   let inJobs = false;
@@ -485,6 +486,11 @@ function releaseRetryViolations(yamlText) {
   }
   // A bare steps fragment (no `jobs:` key) is checked as one anonymous job.
   if (jobs.length === 0) jobs.push({ name: "(no jobs)", lines });
+  return jobs;
+}
+
+function releaseRetryViolations(yamlText) {
+  const jobs = retryJobs(yamlText);
   const violations = [];
   let retried = 0;
   for (const j of jobs) {
@@ -492,7 +498,7 @@ function releaseRetryViolations(yamlText) {
     retried += found.retried;
     for (const v of found.violations) violations.push(`job ${j.name}: ${v}`);
   }
-  if (retried === 0) violations.push("no retried checkout or Buildx steps found");
+  if (retried === 0) violations.push("no retried checkout, Buildx, upload or download steps found");
   return violations;
 }
 
@@ -517,64 +523,269 @@ function jobRetryViolations(lines) {
       ?.slice(key.length + 1)
       .trim();
   const violations = [];
-  const firstAttempts = [];
-  const retries = [];
+  const targets = [];
   steps.forEach((step, i) => {
-    if (!step.lines.some((l) => RETRIED_STEP_USES.test(l))) return;
-    const label = `step ${i + 1} (${field(step, "name")})`;
-    const id = field(step, "id");
-    const guard = /^steps\.([A-Za-z0-9_-]+)\.outcome == 'failure'$/u.exec(field(step, "if") ?? "");
-    if (guard) {
-      if (field(step, "continue-on-error") !== undefined) {
-        violations.push(`${label}: retry must not set continue-on-error`);
-      }
-      retries.push({ i, guard: guard[1], label });
-    } else if (id && field(step, "continue-on-error") === "true") {
-      firstAttempts.push({ i, id, label });
-    } else {
-      violations.push(`${label}: needs an id and continue-on-error: true, or an outcome guard`);
-    }
+    const usesLine = step.lines.find((l) => RETRIED_STEP_USES.test(l));
+    if (!usesLine) return;
+    targets.push({
+      i,
+      step,
+      uses: usesLine.trim(),
+      id: field(step, "id"),
+      cond: field(step, "if"),
+      coe: field(step, "continue-on-error"),
+      label: `step ${i + 1} (${field(step, "name")})`,
+    });
   });
-  for (const first of firstAttempts) {
-    const match = retries.find((r) => r.guard === first.id && r.i > first.i);
-    if (!match) violations.push(`${first.label}: no retry guarded by steps.${first.id}.outcome`);
-  }
-  for (const r of retries) {
-    if (!firstAttempts.some((f) => f.id === r.guard && f.i < r.i)) {
-      violations.push(`${r.label}: guard references no earlier first attempt`);
+  const claimed = new Set();
+  let chains = 0;
+  for (const first of targets) {
+    if (first.cond !== undefined || !first.id || first.coe !== "true") continue;
+    claimed.add(first);
+    const second = targets.find(
+      (t) => t.i > first.i && t.cond === `steps.${first.id}.outcome == 'failure'`,
+    );
+    if (!second) {
+      violations.push(`${first.label}: no second attempt guarded by steps.${first.id}.outcome`);
+      continue;
     }
+    claimed.add(second);
+    const hasWait = (from, to, guard, seconds) =>
+      steps.some(
+        (w, wi) =>
+          wi > from.i &&
+          wi < to.i &&
+          field(w, "if") === guard &&
+          field(w, "run") === `sleep ${seconds}`,
+      );
+    let waitsOk = true;
+    if (!hasWait(first, second, `steps.${first.id}.outcome == 'failure'`, 30)) {
+      violations.push(
+        `${first.label}: missing 'sleep 30' step between attempt 1 and 2 guarded by steps.${first.id}.outcome`,
+      );
+      waitsOk = false;
+    }
+    if (!second.id || second.coe !== "true") {
+      violations.push(`${second.label}: second attempt needs an id and continue-on-error: true`);
+      continue;
+    }
+    const finalGuard = `steps.${first.id}.outcome == 'failure' && steps.${second.id}.outcome == 'failure'`;
+    const third = targets.find((t) => t.i > second.i && t.cond === finalGuard);
+    if (!third) {
+      violations.push(`${first.label}: no third attempt guarded by both failed attempts`);
+      continue;
+    }
+    claimed.add(third);
+    let ok = waitsOk;
+    if (
+      !hasWait(
+        second,
+        third,
+        `steps.${first.id}.outcome == 'failure' && steps.${second.id}.outcome == 'failure'`,
+        60,
+      )
+    ) {
+      violations.push(
+        `${first.label}: missing 'sleep 60' step between attempt 2 and 3 guarded by both failed attempts`,
+      );
+      ok = false;
+    }
+    if (third.coe !== undefined) {
+      violations.push(`${third.label}: final attempt must not set continue-on-error`);
+      ok = false;
+    }
+    if (second.uses !== first.uses || third.uses !== first.uses) {
+      violations.push(`${first.label}: all three attempts must use the same pinned action`);
+      ok = false;
+    }
+    if (/actions\/upload-artifact@/u.test(first.uses)) {
+      for (const retry of [second, third]) {
+        if (!retry.step.lines.some((l) => l.trim() === "overwrite: true")) {
+          violations.push(`${retry.label}: upload retry needs overwrite: true`);
+          ok = false;
+        }
+      }
+    }
+    if (ok) chains += 1;
   }
-  return { violations, retried: firstAttempts.length };
+  for (const t of targets) {
+    if (claimed.has(t)) continue;
+    violations.push(`${t.label}: not part of a complete three-attempt retry chain`);
+  }
+  return { violations, retried: chains };
 }
 
-test("release workflows retry checkout and Buildx setup once after a short wait", () => {
+// Builds one three-attempt chain for the fixtures below. `omit` drops the
+// final attempt; `noOverwrite` leaves overwrite: true off the upload retries.
+function chainFixture(
+  action,
+  base,
+  {
+    omit = false,
+    noOverwrite = false,
+    wait1 = "sleep 30",
+    wait2 = "sleep 60",
+    waitOrder = "",
+  } = {},
+) {
+  const uses = `        uses: ${action}@abc\n`;
+  const ow =
+    action.includes("upload-artifact") && !noOverwrite
+      ? "        with:\n          overwrite: true\n"
+      : "";
+  const g1 = `steps.${base}.outcome == 'failure'`;
+  const g2 = `${g1} && steps.${base}_retry.outcome == 'failure'`;
+  const wait = (guard, run) =>
+    run === null ? "" : `      - name: Wait\n        if: ${guard}\n        run: ${run}\n`;
+  const first = `      - name: A\n        id: ${base}\n        continue-on-error: true\n${uses}`;
+  const second = `      - name: A (retry)\n        id: ${base}_retry\n        if: ${g1}\n        continue-on-error: true\n${uses}${ow}`;
+  const third = `      - name: A (final retry)\n        id: ${base}_final\n        if: ${g2}\n${uses}${ow}`;
+  const w1 = wait(waitOrder === "w1-guard" ? g2 : g1, wait1);
+  const w2 = wait(waitOrder === "w2-guard" ? g1 : g2, wait2);
+  if (waitOrder === "w1-after") return first + second + w1 + w2 + (omit ? "" : third);
+  return first + w1 + second + w2 + (omit ? "" : third);
+}
+
+test("release workflows retry network steps three times after 30 s and 60 s waits", () => {
   const dir = path.join(ROOT, ".github", "workflows");
   for (const name of BLOCK_MODE_WORKFLOWS) {
     const raw = fs.readFileSync(path.join(dir, name), "utf8");
-    assert.deepEqual(releaseRetryViolations(raw), [], `${name} checkout and Buildx steps`);
+    assert.deepEqual(releaseRetryViolations(raw), [], `${name} retried steps`);
   }
   const bad = "    steps:\n      - name: Checkout\n        uses: actions/checkout@abc\n";
   assert.equal(releaseRetryViolations(bad).length, 2);
 });
 
-test("release retry matching is scoped per job", () => {
-  const step = (name, id, extra) =>
-    `      - name: ${name}\n        id: ${id}\n${extra}        uses: actions/checkout@abc\n`;
-  const first = step("Checkout", "checkout", "        continue-on-error: true\n");
-  const retry = step(
-    "Checkout (retry)",
-    "checkout_retry",
-    "        if: steps.checkout.outcome == 'failure'\n",
+test("release retry chains must be complete", () => {
+  const wrap = (body) => `on: push\njobs:\n  one:\n    steps:\n${body}`;
+  assert.deepEqual(releaseRetryViolations(wrap(chainFixture("actions/checkout", "checkout"))), []);
+  const two = releaseRetryViolations(
+    wrap(chainFixture("actions/checkout", "checkout", { omit: true })),
   );
-  const wf = `on: push\njobs:\n  one:\n    steps:\n${first}  two:\n    steps:\n${first}${retry}`;
+  assert.ok(
+    two.some((v) => /no third attempt/u.test(v)),
+    two.join("\n"),
+  );
+  assert.deepEqual(
+    releaseRetryViolations(wrap(chainFixture("actions/upload-artifact", "upload"))),
+    [],
+  );
+  const noOverwrite = releaseRetryViolations(
+    wrap(chainFixture("actions/upload-artifact", "upload", { noOverwrite: true })),
+  );
+  assert.equal(noOverwrite.filter((v) => /needs overwrite: true/u.test(v)).length, 2);
+  const download = releaseRetryViolations(
+    wrap("      - name: Download\n        uses: actions/download-artifact@abc\n"),
+  );
+  assert.ok(
+    download.some((v) => /not part of a complete/u.test(v)),
+    download.join("\n"),
+  );
+  assert.deepEqual(
+    releaseRetryViolations(wrap(chainFixture("actions/download-artifact", "dl"))),
+    [],
+  );
+  assert.deepEqual(
+    releaseRetryViolations(wrap(chainFixture("docker/setup-buildx-action", "buildx"))),
+    [],
+  );
+});
+
+test("release retry chains must have the 30 s and 60 s waits", () => {
+  const wrap = (body) => `on: push\njobs:\n  one:\n    steps:\n${body}`;
+  const check = (opts) =>
+    releaseRetryViolations(wrap(chainFixture("actions/checkout", "checkout", opts)));
+  assert.deepEqual(check({}), []);
+  assert.ok(check({ wait1: null }).some((v) => /missing 'sleep 30'/u.test(v)));
+  assert.ok(check({ wait2: null }).some((v) => /missing 'sleep 60'/u.test(v)));
+  assert.ok(check({ wait1: "sleep 5" }).some((v) => /missing 'sleep 30'/u.test(v)));
+  assert.ok(check({ wait2: "sleep 5" }).some((v) => /missing 'sleep 60'/u.test(v)));
+  assert.ok(check({ waitOrder: "w1-guard" }).some((v) => /missing 'sleep 30'/u.test(v)));
+  assert.ok(check({ waitOrder: "w2-guard" }).some((v) => /missing 'sleep 60'/u.test(v)));
+  assert.ok(check({ waitOrder: "w1-after" }).some((v) => /missing 'sleep 30'/u.test(v)));
+});
+
+test("release workflow jobs leave at least half their timeout after retry waits", () => {
+  const dir = path.join(ROOT, ".github", "workflows");
+  for (const name of BLOCK_MODE_WORKFLOWS) {
+    const raw = fs.readFileSync(path.join(dir, name), "utf8");
+    for (const j of retryJobs(raw)) {
+      const chains = jobRetryViolations(j.lines).retried;
+      const m = /^ {4}timeout-minutes:\s*(\d+)/mu.exec(j.lines.join("\n"));
+      const minutes = m ? Number(m[1]) : 360;
+      assert.ok(
+        minutes * 60 >= 2 * (90 * chains),
+        `${name} job ${j.name}: ${chains} chains need ${90 * chains} s of waits, timeout is ${minutes} min`,
+      );
+    }
+  }
+});
+
+test("release retry matching is scoped per job", () => {
+  const full = chainFixture("actions/checkout", "checkout");
+  const partial = chainFixture("actions/checkout", "checkout", { omit: true });
+  const wf = `on: push\njobs:\n  one:\n    steps:\n${partial}  two:\n    steps:\n${full}`;
   const found = releaseRetryViolations(wf);
   assert.equal(found.length, 1);
-  assert.match(found[0], /^job one: .*no retry guarded by steps\.checkout\.outcome/u);
-  const both = `on: push\njobs:\n  one:\n    steps:\n${first}${retry}  two:\n    steps:\n${first}${retry}`;
+  assert.match(found[0], /^job one: .*no third attempt/u);
+  const both = `on: push\njobs:\n  one:\n    steps:\n${full}  two:\n    steps:\n${full}`;
   assert.deepEqual(releaseRetryViolations(both), []);
 });
 
-test("only the release workflows keep harden-runner block mode, with an allow list", () => {
+const HR = "step-security/harden-runner@abc  # v2";
+
+// Splits a workflow into { id, text } per job (children of the top-level
+// `jobs:` key) by indentation, comments stripped. `header` is everything
+// before `jobs:`, so a workflow-level permissions block can be inspected.
+function splitJobs(yamlText) {
+  const lines = yamlText.split("\n").filter((line) => !/^\s*#/u.test(line));
+  const jobsAt = lines.findIndex((l) => /^jobs:\s*$/u.test(l));
+  if (jobsAt === -1) return { header: lines.join("\n"), jobs: [] };
+  const jobs = [];
+  for (let i = jobsAt + 1; i < lines.length; i += 1) {
+    if (lines[i].trim() === "") continue;
+    if (indentOf(lines[i]) === 0) break;
+    const m = /^ {2}([A-Za-z0-9_-]+):\s*$/u.exec(lines[i]);
+    if (m) jobs.push({ id: m[1], lines: [] });
+    else if (jobs.length) jobs.at(-1).lines.push(lines[i]);
+  }
+  return {
+    header: lines.slice(0, jobsAt).join("\n"),
+    jobs: jobs.map((j) => ({ id: j.id, text: j.lines.join("\n") })),
+  };
+}
+
+const WRITE_PERMISSION = /^\s*contents:\s*write\b/mu;
+const PERSISTED_CREDENTIAL = /^\s*persist-credentials:\s*true\b/mu;
+
+// Block mode is for jobs that can write: a contents: write permission (job or
+// workflow level) or a checkout that persists its credential. Every
+// harden-runner step in such a job must be block with an allow list; any other
+// job must not carry block or an allow list (DEP-19). Returns violations.
+function hardenRunnerPolicyViolations(yamlText) {
+  const { header, jobs } = splitJobs(yamlText);
+  const workflowWrite = WRITE_PERMISSION.test(header);
+  const violations = [];
+  for (const job of jobs) {
+    // A caller of a reusable workflow has no steps here; its harden-runner
+    // steps live in the called workflow.
+    if (/^ {4}uses:/mu.test(job.text)) continue;
+    const writes =
+      workflowWrite || WRITE_PERMISSION.test(job.text) || PERSISTED_CREDENTIAL.test(job.text);
+    if (writes) {
+      for (const v of releaseHardenRunnerViolations(job.text)) {
+        violations.push(`job ${job.id} holds a write credential: ${v}`);
+      }
+    } else if (/egress-policy: block/u.test(job.text) || /allowed-endpoints:/u.test(job.text)) {
+      violations.push(
+        `job ${job.id} is read-only and must run harden-runner in audit mode (DEP-19)`,
+      );
+    }
+  }
+  return violations;
+}
+
+test("harden-runner block mode is kept on write-credential jobs only, with an allow list", () => {
   const dir = path.join(ROOT, ".github", "workflows");
   for (const name of workflowFiles()) {
     const raw = fs.readFileSync(path.join(dir, name), "utf8");
@@ -582,25 +793,57 @@ test("only the release workflows keep harden-runner block mode, with an allow li
       assert.deepEqual(releaseHardenRunnerViolations(raw), [], `${name} harden-runner steps`);
       continue;
     }
-    // Comments may legitimately discuss block mode; only live config counts.
-    const source = raw
-      .split("\n")
-      .filter((line) => !/^\s*#/u.test(line))
-      .join("\n");
-    assert.doesNotMatch(
-      source,
-      /egress-policy: block/u,
-      `${name} must run harden-runner in audit mode (DEP-19)`,
-    );
-    assert.doesNotMatch(
-      source,
-      /allowed-endpoints:/u,
-      `${name} is audit mode, so an allow list is dead config`,
-    );
+    assert.deepEqual(hardenRunnerPolicyViolations(raw), [], `${name} harden-runner policy`);
   }
 });
 
-const HR = "step-security/harden-runner@abc  # v2";
+test("the harden-runner policy follows the write credential, not the workflow name", () => {
+  const job = (id, perms, persist, mode, allow) =>
+    [
+      `  ${id}:`,
+      "    runs-on: ubuntu-latest",
+      ...(perms ? ["    permissions:", `      contents: ${perms}`] : []),
+      "    steps:",
+      "      - name: Harden Runner",
+      `        uses: ${HR}`,
+      "        with:",
+      `          egress-policy: ${mode}`,
+      ...(allow ? ["          allowed-endpoints: >", "            github.com:443"] : []),
+      "      - uses: actions/checkout@abc",
+      "        with:",
+      `          persist-credentials: ${persist}`,
+    ].join("\n");
+  const wf = (...jobs) => `on: push\njobs:\n${jobs.join("\n")}\n`;
+
+  // write job in block mode with a list, read-only job in audit: clean
+  assert.deepEqual(
+    hardenRunnerPolicyViolations(
+      wf(
+        job("badge", "write", "false", "block", true),
+        job("scan", "read", "false", "audit", false),
+      ),
+    ),
+    [],
+  );
+  // a persisted checkout credential counts as a write job even without the permission
+  assert.deepEqual(
+    hardenRunnerPolicyViolations(wf(job("push", "read", "true", "block", true))),
+    [],
+  );
+  // write job left in audit mode
+  const audit = hardenRunnerPolicyViolations(wf(job("badge", "write", "false", "audit", false)));
+  assert.equal(audit.length, 2);
+  assert.match(audit[0], /job badge .*egress-policy must be block/u);
+  // write job in block mode without an allow list
+  const noList = hardenRunnerPolicyViolations(wf(job("badge", "write", "false", "block", false)));
+  assert.equal(noList.length, 1);
+  assert.match(noList[0], /missing allowed-endpoints/u);
+  // read-only job in block mode
+  const readBlock = hardenRunnerPolicyViolations(wf(job("scan", "read", "false", "block", true)));
+  assert.equal(readBlock.length, 1);
+  assert.match(readBlock[0], /job scan is read-only/u);
+});
+
 const goodStep = (name) =>
   [
     `      - name: ${name}`,
