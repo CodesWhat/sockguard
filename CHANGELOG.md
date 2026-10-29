@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Update `github.com/go-jose/go-jose/v4` to v4.1.6 for GHSA-mgcc-cww5-fp2q (denial of service when parsing JWKs that contain RSA keys). It is an indirect dependency of the opt-in image-trust and signed-policy verification path, and govulncheck reports it as not reachable from Sockguard's code.
 - Update `golang.org/x/net` to v0.62.0 for GO-2026-6860 and GO-2026-6866, both in `golang.org/x/net/html`. Sockguard doesn't import that package, and govulncheck reports neither as reachable. The bump clears the module-level findings in dependency scans.
 
 ### Changed
