@@ -57,6 +57,7 @@ const (
 	reasonCodeVisibilityPolicyMisconfigured = "visibility_policy_misconfigured"
 	reasonCodeVisibilityProfileUnresolved   = "visibility_profile_unresolved"
 	reasonCodeVisibilityFilterInvalid       = "visibility_filter_invalid"
+	reasonCodeVisibilityFilterKeyInvalid    = "visibility_filter_key_invalid"
 	reasonCodeVisibilityPolicyLookupFailed  = "visibility_policy_lookup_failed"
 	reasonCodeVisibilityPolicyHidResource   = "visibility_policy_hid_resource"
 	reasonCodeVisibilityResponseTooLarge    = "visibility_response_too_large"
@@ -407,7 +408,7 @@ func handleVisibilityListRequest(logger *slog.Logger, next http.Handler, w http.
 	if hasSelectors {
 		forwarded, err := addVisibilityLabelFilters(r, normPath, policy.selectors)
 		if err != nil {
-			logging.SetDeniedWithCode(w, r, reasonCodeVisibilityFilterInvalid, err.Error(), nil)
+			logging.SetDeniedWithCode(w, r, filterErrorReasonCode(err), err.Error(), nil)
 			_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: err.Error()})
 			return
 		}
@@ -1051,6 +1052,9 @@ func addVisibilityLabelFilters(r *http.Request, normPath string, selectors []com
 	if err != nil {
 		return r, err
 	}
+	if err := dockerfilters.CheckKeys(filters); err != nil {
+		return r, err
+	}
 	filterKey := visibilityLabelFilterKey(normPath)
 	injected := make([]string, 0, len(selectors))
 	changed := false
@@ -1688,4 +1692,15 @@ func decodeResourceMeta(body io.Reader, kind dockerresource.Kind) (*resourceMeta
 	default:
 		return nil, fmt.Errorf("unsupported resource kind %q for meta decode", kind)
 	}
+}
+
+// filterErrorReasonCode picks the structured reason code for a filter decode
+// or validation failure: a filter key containing "=" has its own code so an
+// operator can tell it from a malformed filters parameter.
+func filterErrorReasonCode(err error) string {
+	var invalidKey *dockerfilters.InvalidKeyError
+	if errors.As(err, &invalidKey) {
+		return reasonCodeVisibilityFilterKeyInvalid
+	}
+	return reasonCodeVisibilityFilterInvalid
 }
