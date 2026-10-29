@@ -13,7 +13,9 @@ import (
 
 func TestVisibilityRefusesFilterKeysContainingEquals(t *testing.T) {
 	t.Parallel()
-	paths := []string{"/v1.53/events", "/v5.8.1/libpod/events", "/containers/json"}
+	// The volume list paths also carry the Podman volume-filter refusal; an
+	// invalid key must still get this 400, not that 403.
+	paths := []string{"/v1.53/events", "/v5.8.1/libpod/events", "/containers/json", "/volumes", "/v5.8.1/libpod/volumes/json"}
 	encodings := map[string]string{
 		"modern": `{"label=com.sockguard.visible":["false"]}`,
 		"legacy": `{"label=com.sockguard.visible":{"false":true}}`,
