@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.2] - 2026-10-29
+
+A security patch on the v2.3 line. It tightens Podman filter scoping under ownership and visibility, fixes Compose label filters under ownership (#639), and updates go-jose, x/net and the release tooling.
+
 ### Fixed
 
 - **Ownership no longer drops a client's own `label` filters on list and prune endpoints.** With `ownership.owner` set, the owner selector replaced everything the client sent under `label` (`node.label` on `/nodes`), so Docker Compose, which finds a service's container with `com.docker.compose.project`, `com.docker.compose.service` and `com.docker.compose.oneoff` selectors on `GET /containers/json`, got every container of the owner and `docker compose exec`, `logs` and `port` could hit the wrong one. Client selectors now pass beside the owner selector and the daemon ANDs them. A selector that uses the owner label key, or a key visibility enforces, is still dropped, because Swarm's control-plane lists could let a same-key value displace the enforced one. Event filters (`/events`, `/libpod/events`) and Podman's `/libpod/images/prune` still carry only the enforced selectors, because Podman ORs repeated `label` values on events and its image prune reads only the first value. Negated client selectors (`key!=value`) are dropped on every path, and on Podman image lists a selector whose value contains `!=` is dropped too, because Podman's image filters answer `500` for both. Reported in #639.
