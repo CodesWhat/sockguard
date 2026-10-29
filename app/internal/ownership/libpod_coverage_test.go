@@ -997,9 +997,10 @@ func TestLibpodPruneRoutesAreInertWithoutOwner(t *testing.T) {
 // string is what an operator greps for, so it is asserted literally rather
 // than rebuilt from the stem.
 var wantOwnerUnscopeableWriteReasonCodes = map[string]string{
-	filter.LibpodPodPrunePath: "owner_libpod_pod_prune_unscopeable",
-	"/libpod/play/kube":       "owner_libpod_kube_down_unscopeable",
-	"/libpod/kube/play":       "owner_libpod_kube_down_unscopeable",
+	filter.LibpodPodPrunePath:    "owner_libpod_pod_prune_unscopeable",
+	filter.LibpodSystemPrunePath: "owner_libpod_system_prune_unscopeable",
+	"/libpod/play/kube":          "owner_libpod_kube_down_unscopeable",
+	"/libpod/kube/play":          "owner_libpod_kube_down_unscopeable",
 }
 
 // TestLibpodUnscopeableWritesAreRefusedUnderOwnerIsolation covers the one
