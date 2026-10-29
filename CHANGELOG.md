@@ -13,7 +13,7 @@ A release-pipeline patch on the v2.3 line. The 2.3.2 container images were publi
 
 ### Fixed
 
-- **The release publisher signs each image repository's digest once instead of once per tag.** The signature covers the repository and digest, so signing every tag sent the Sigstore transparency log identical entries, and it now refuses duplicates with a 409. That failure left the 2.3.2 container images unsigned. Set up QEMU in the release workflow also retries under the egress block now, like the other network steps.
+- **The release publisher retries image signing.** Rekor stored the 2.3.2 signature upload but answered slowly, cosign resent it, and the resend was refused with a 409, so the 2.3.2 container images were published unsigned. Signing now runs up to three times, each with a fresh key, and signs each image repository's digest once instead of once per tag. Set up QEMU in the release workflow also retries under the egress block now, like the other network steps.
 
 ## [2.3.2] - 2026-10-29
 

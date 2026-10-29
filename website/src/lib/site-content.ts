@@ -422,7 +422,7 @@ export const roadmap: Milestone[] = [
     status: "released",
     items: [
       "Republishes the 2.3.2 proxy code with signed container images",
-      "The release pipeline signs each image repository once instead of once per tag",
+      "The release pipeline retries image signing and signs each image repository once",
     ],
   },
 ];

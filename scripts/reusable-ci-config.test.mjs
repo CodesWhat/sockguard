@@ -1012,6 +1012,7 @@ test("release publisher signs and verifies each image repository once", () => {
       `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "${record}"\n`,
       { mode: 0o755 },
     );
+    fs.writeFileSync(path.join(bin, "sleep"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
     for (const [step, mode] of [
       ["Sign container images", "sign"],
       ["Verify container image signatures", "verify"],
@@ -1040,6 +1041,41 @@ test("release publisher signs and verifies each image repository once", () => {
         assert.deepEqual(refs, expected);
         assert.ok(calls.every((c) => c.startsWith("verify ")));
       }
+    }
+    // Retry: a fake cosign that fails the first N sign calls.
+    const flaky = path.join(tmp, "flaky-bin");
+    fs.mkdirSync(flaky);
+    const counter = path.join(tmp, "count.txt");
+    fs.writeFileSync(path.join(flaky, "sleep"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
+    fs.writeFileSync(
+      path.join(flaky, "cosign"),
+      [
+        "#!/usr/bin/env bash",
+        `echo x >> "${counter}"`,
+        `n=$(wc -l < "${counter}")`,
+        'if [ "$n" -le "${FAKE_COSIGN_FAIL_SIGNS:-0}" ]; then exit 1; fi',
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    for (const [fails, wantStatus, wantCalls] of [
+      [1, 0, 2],
+      [3, 1, 3],
+    ]) {
+      fs.rmSync(counter, { force: true });
+      const r = spawnSync("bash", [path.join(tmp, "sign.sh")], {
+        encoding: "utf8",
+        env: {
+          PATH: `${flaky}:${process.env.PATH}`,
+          DIGEST: digest,
+          TAGS: tags,
+          FAKE_COSIGN_FAIL_SIGNS: String(fails),
+        },
+      });
+      const calls = fs.readFileSync(counter, "utf8").trim().split("\n").length;
+      assert.equal(r.status === 0 ? 0 : 1, wantStatus, `fail ${fails}: ${r.stderr}`);
+      assert.equal(calls, wantCalls, `fail ${fails}: sign call count`);
+      if (wantStatus !== 0) assert.match(r.stdout, /cosign sign failed after 3 attempts/u);
     }
     const empty = spawnSync("bash", [path.join(tmp, "sign.sh")], {
       encoding: "utf8",

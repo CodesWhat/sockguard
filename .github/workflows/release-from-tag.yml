@@ -831,9 +831,9 @@ jobs:
           TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           set -euo pipefail
-          # A cosign signature covers the repository and digest, not the tag, so
-          # signing once per repository covers every tag. Signing each tag
-          # sends Rekor an identical entry and it answers 409.
+          # A signature covers the repository and digest, not the tag, so one
+          # per repository covers every tag and keeps the Rekor uploads to one
+          # per registry.
           images=()
           seen=" "
           while IFS= read -r tag; do
@@ -855,7 +855,22 @@ jobs:
             echo "::error::No images found to sign"
             exit 1
           fi
-          cosign sign --yes "${images[@]}"
+
+          # Rekor can store an upload and still time out. cosign then resends
+          # it and gets a 409. A new cosign run signs with a fresh key and
+          # certificate, so a retry can't hit the same entry.
+          for attempt in 1 2 3; do
+            if cosign sign --yes "${images[@]}"; then
+              break
+            fi
+            if [ "${attempt}" -eq 3 ]; then
+              echo "::error::cosign sign failed after 3 attempts"
+              exit 1
+            fi
+            delay=$((attempt * 30))
+            echo "::warning::cosign sign attempt ${attempt} failed, retrying in ${delay}s"
+            sleep "${delay}"
+          done
 
       - name: Verify container image signatures
         if: always() && steps.digest.outputs.value
@@ -880,9 +895,9 @@ jobs:
             done
           }
 
-          # A cosign signature covers the repository and digest, not the tag, so
-          # signing once per repository covers every tag. Signing each tag
-          # sends Rekor an identical entry and it answers 409.
+          # A signature covers the repository and digest, not the tag, so one
+          # per repository covers every tag and keeps the Rekor uploads to one
+          # per registry.
           images=()
           seen=" "
           while IFS= read -r tag; do
