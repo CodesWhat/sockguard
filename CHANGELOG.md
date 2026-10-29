@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Filter keys containing `=` are refused.** No Docker or Podman filter is named that way, and Podman flattens query filters to `key=value` strings that it splits again on the first `=`, so a key like `label=name` reached it as an extra value of the `label` filter. On an event stream, where Podman combines values of one key with OR, that could widen a request past the owner or visibility label selector. Owner isolation and the visibility layer now answer `400` with reason codes `owner_filter_key_invalid` and `visibility_filter_key_invalid` for a `filters` parameter with such a key, in both the modern and the legacy map encoding, on every upstream flavor.
+- **Podman volume list and prune accept only `label` filters under owner isolation.** Podman before 6.0 combines volume filters of different keys with OR, so a `driver`, `name`, `label!`, `until` or `dangling` filter widened a list or prune past the owner label selector. On a Podman upstream, `GET /volumes`, `POST /volumes/prune`, `GET /libpod/volumes/json` and `POST /libpod/volumes/prune` with any other filter key are now refused with a `403` and reason code `owner_podman_volume_filter_unscopeable`. The refusal applies to every Podman upstream because the Podman version isn't detectable. Docker upstreams are unchanged.
+- **`POST /libpod/system/prune` is refused under owner isolation.** It prunes pods, containers, images and optionally volumes in one call and can't be scoped to an owner. It is now in the unscopeable-write table next to `POST /libpod/pods/prune` and answers `403` with reason code `owner_libpod_system_prune_unscopeable`.
+
 ### Changed
 
 - The pre-push lockfile dedupe check resolves against npm as of 14 days ago, matching the Renovate release-age cool-off, so a just-published dependency no longer blocks pushes.
