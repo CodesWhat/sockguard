@@ -290,6 +290,9 @@ func middlewareWithDeps(
 			if ownerFilterApplies && refuseInvalidFilterKeys(w, r) {
 				return
 			}
+			if ownerFilterApplies && refuseUnsupportedPodmanVolumeFilters(w, r, normPath, podmanUpstream) {
+				return
+			}
 			if ownerFilterApplies && dockerfilters.RequiresSoleValue(r, ownerFilterKey(normPath)) {
 				logging.SetDeniedWithCode(w, r, reasonCodeOwnerVisibilityPodmanEventsUnscopeable, ownerVisibilityPodmanEventsDenyReason, nil)
 				_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: ownerVisibilityPodmanEventsDenyReason})
