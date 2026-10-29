@@ -192,3 +192,10 @@ func ownerFilterKey(normPath string) string {
 	}
 	return "label"
 }
+
+// isOwnerEventPath reports whether normPath is an event stream, compat or
+// libpod. Those carry only the enforced label selectors because Podman ORs
+// repeated `label` values on event filters.
+func isOwnerEventPath(normPath string) bool {
+	return normPath == "/events" || normPath == libpodPrefix+"events"
+}

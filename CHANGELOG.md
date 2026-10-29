@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Ownership no longer drops a client's own `label` filters on list and prune endpoints.** With `ownership.owner` set, the owner selector replaced everything the client sent under `label` (`node.label` on `/nodes`), so Docker Compose, which finds a service's container with `com.docker.compose.project`, `com.docker.compose.service` and `com.docker.compose.oneoff` selectors on `GET /containers/json`, got every container of the owner and `docker compose exec`, `logs` and `port` could hit the wrong one. Client selectors now pass beside the owner selector and the daemon ANDs them. A selector that uses the owner label key, or a key visibility enforces, is still dropped, because Swarm's control-plane lists could let a same-key value displace the enforced one. Event filters (`/events`, `/libpod/events`) still carry only the enforced selectors, because Podman ORs repeated `label` values there. Reported in #639.
+
 ### Security
 
 - Update `golang.org/x/net` to v0.62.0 for GO-2026-6860 and GO-2026-6866, both in `golang.org/x/net/html`. Sockguard doesn't import that package, and govulncheck reports neither as reachable. The bump clears the module-level findings in dependency scans.

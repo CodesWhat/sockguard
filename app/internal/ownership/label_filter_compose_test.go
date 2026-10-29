@@ -167,16 +167,16 @@ func TestListLabelFilterKeepsVisibilityScopeWhileDroppingClientValues(t *testing
 	}
 }
 
-// TestListLabelFilterUnchangedWithoutVisibilitySelectors pins that the
-// composition change did not alter the ownership-only path: with nothing
-// injected upstream of it, ownership still forwards exactly the owner label.
+// TestListLabelFilterUnchangedWithoutVisibilitySelectors pins the
+// ownership-only path: with nothing injected upstream of it, ownership forwards
+// the owner label first, then the client's non-colliding selector.
 func TestListLabelFilterUnchangedWithoutVisibilitySelectors(t *testing.T) {
 	t.Parallel()
 	got := forwardedFilters(t, "/v1.53/containers/json?filters="+url.QueryEscape(`{"label":["tier=dev"]}`),
 		Options{Owner: "team-a"},
 		visibility.Options{},
 	)
-	assertFilterValues(t, got, "label", []string{ownerLabelForTest + "=team-a"})
+	assertFilterValues(t, got, "label", []string{ownerLabelForTest + "=team-a", "tier=dev"})
 }
 
 // TestListLabelFilterKeepsUnrelatedFilterKeys pins that neither layer disturbs

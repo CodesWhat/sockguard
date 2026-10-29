@@ -10,8 +10,8 @@ import (
 )
 
 // Docker's legacy filter encoding (map[string]map[string]bool) must survive
-// the owner-label rewrite end-to-end: the label filter is replaced with the
-// proxy-enforced owner label while every other legacy key is flattened to the
+// the owner-label rewrite end-to-end: the owner label leads the label filter and
+// a non-colliding legacy client label is kept while every other legacy key is flattened to the
 // modern array form with deterministic (sorted) ordering.
 func TestMiddlewareOwnerLabelFilterAcceptsLegacyFilterEncoding(t *testing.T) {
 	t.Parallel()
@@ -22,8 +22,8 @@ func TestMiddlewareOwnerLabelFilterAcceptsLegacyFilterEncoding(t *testing.T) {
 		if err := json.NewDecoder(strings.NewReader(filtersJSON)).Decode(&filters); err != nil {
 			t.Fatalf("upstream filters are not modern array form: %v (raw %q)", err, filtersJSON)
 		}
-		if got := filters["label"]; len(got) != 1 || got[0] != "com.sockguard.owner=job-123" {
-			t.Fatalf("label filters = %#v, want exactly [com.sockguard.owner=job-123]", got)
+		if got := filters["label"]; len(got) != 2 || got[0] != "com.sockguard.owner=job-123" || got[1] != "existing=1" {
+			t.Fatalf("label filters = %#v, want [com.sockguard.owner=job-123 existing=1]", got)
 		}
 		if got := filters["status"]; len(got) != 2 || got[0] != "paused" || got[1] != "running" {
 			t.Fatalf("status filters = %#v, want sorted [paused running] flattened from legacy map", got)

@@ -1162,11 +1162,10 @@ func TestMiddlewareInjectsOwnerFilterIntoContainerList(t *testing.T) {
 		for _, value := range values {
 			got = append(got, value.(string))
 		}
-		// Client-supplied label values are discarded: Swarm's control-plane
-		// lists fold `label` into a map keyed by label name, so a client value
-		// repeating the owner key could displace the proxy-enforced one.
-		if len(got) != 1 || got[0] != "com.sockguard.owner=job-123" {
-			t.Fatalf("label filters = %#v, want exactly [com.sockguard.owner=job-123]", got)
+		// A client label whose key differs from the owner key is kept and ANDs
+		// with the owner selector; the owner selector comes first.
+		if len(got) != 2 || got[0] != "com.sockguard.owner=job-123" || got[1] != "existing=1" {
+			t.Fatalf("label filters = %#v, want [com.sockguard.owner=job-123 existing=1]", got)
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
