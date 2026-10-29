@@ -25,6 +25,12 @@ func refuseUnsupportedPodmanVolumeFilters(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		return false
 	}
+	// An invalid filter key is answered later by addVisibilityLabelFilters
+	// with its own 400 and reason code. Step aside here so the client and the
+	// log see that category rather than this 403.
+	if dockerfilters.CheckKeys(filters) != nil {
+		return false
+	}
 	reason, denied := filter.PodmanVolumeFilterDenyReason(filters)
 	if !denied {
 		return false
