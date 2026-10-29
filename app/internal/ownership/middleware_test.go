@@ -1162,11 +1162,10 @@ func TestMiddlewareInjectsOwnerFilterIntoContainerList(t *testing.T) {
 		for _, value := range values {
 			got = append(got, value.(string))
 		}
-		// Client-supplied label values are discarded: Swarm's control-plane
-		// lists fold `label` into a map keyed by label name, so a client value
-		// repeating the owner key could displace the proxy-enforced one.
-		if len(got) != 1 || got[0] != "com.sockguard.owner=job-123" {
-			t.Fatalf("label filters = %#v, want exactly [com.sockguard.owner=job-123]", got)
+		// A client label whose key differs from the owner key is kept and ANDs
+		// with the owner selector; the owner selector comes first.
+		if len(got) != 2 || got[0] != "com.sockguard.owner=job-123" || got[1] != "existing=1" {
+			t.Fatalf("label filters = %#v, want [com.sockguard.owner=job-123 existing=1]", got)
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -3084,7 +3083,7 @@ func TestAddOwnerLabelToBodyAndFilterHelpers(t *testing.T) {
 	}
 
 	filterReq := httptest.NewRequest(http.MethodGet, "/containers/json?filters=%7B%22label%22%3A%5B%22com.sockguard.owner%3Djob-123%22%5D%7D", nil)
-	if err := addOwnerLabelFilter(filterReq, "com.sockguard.owner", "job-123"); err != nil {
+	if err := addOwnerLabelFilter(filterReq, "com.sockguard.owner", "job-123", false); err != nil {
 		t.Fatalf("addOwnerLabelFilter() error = %v", err)
 	}
 	var filters map[string][]string
@@ -3096,12 +3095,12 @@ func TestAddOwnerLabelToBodyAndFilterHelpers(t *testing.T) {
 	}
 
 	badFilterReq := httptest.NewRequest(http.MethodGet, "/containers/json?filters=%7B%22label%22%3A%22bad%22%7D", nil)
-	if err := addOwnerLabelFilter(badFilterReq, "com.sockguard.owner", "job-123"); err == nil {
+	if err := addOwnerLabelFilter(badFilterReq, "com.sockguard.owner", "job-123", false); err == nil {
 		t.Fatal("expected invalid filters error")
 	}
 
 	taskFilterReq := httptest.NewRequest(http.MethodGet, "/tasks", nil)
-	if err := addOwnerLabelFilter(taskFilterReq, "com.sockguard.owner", "job-123"); err != nil {
+	if err := addOwnerLabelFilter(taskFilterReq, "com.sockguard.owner", "job-123", false); err != nil {
 		t.Fatalf("addOwnerLabelFilter(task) error = %v", err)
 	}
 	var taskFilters map[string][]string
@@ -3113,7 +3112,7 @@ func TestAddOwnerLabelToBodyAndFilterHelpers(t *testing.T) {
 	}
 
 	nodeFilterReq := httptest.NewRequest(http.MethodGet, "/nodes", nil)
-	if err := addOwnerLabelFilter(nodeFilterReq, "com.sockguard.owner", "job-123"); err != nil {
+	if err := addOwnerLabelFilter(nodeFilterReq, "com.sockguard.owner", "job-123", false); err != nil {
 		t.Fatalf("addOwnerLabelFilter(nodes) error = %v", err)
 	}
 	var nodeFilters map[string][]string

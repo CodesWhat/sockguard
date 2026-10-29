@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Ownership no longer drops a client's own `label` filters on list and prune endpoints.** With `ownership.owner` set, the owner selector replaced everything the client sent under `label` (`node.label` on `/nodes`), so Docker Compose, which finds a service's container with `com.docker.compose.project`, `com.docker.compose.service` and `com.docker.compose.oneoff` selectors on `GET /containers/json`, got every container of the owner and `docker compose exec`, `logs` and `port` could hit the wrong one. Client selectors now pass beside the owner selector and the daemon ANDs them. A selector that uses the owner label key, or a key visibility enforces, is still dropped, because Swarm's control-plane lists could let a same-key value displace the enforced one. Event filters (`/events`, `/libpod/events`) and Podman's `/libpod/images/prune` still carry only the enforced selectors, because Podman ORs repeated `label` values on events and its image prune reads only the first value. Negated client selectors (`key!=value`) are dropped on every path, and on Podman image lists a selector whose value contains `!=` is dropped too, because Podman's image filters answer `500` for both. Reported in #639.
+
 ### Security
 
 - **Filter keys containing `=` are refused.** No Docker or Podman filter is named that way, and Podman flattens query filters to `key=value` strings that it splits again on the first `=`, so a key like `label=name` reached it as an extra value of the `label` filter. On an event stream, where Podman combines values of one key with OR, that could widen a request past the owner or visibility label selector. Owner isolation and the visibility layer now answer `400` with reason codes `owner_filter_key_invalid` and `visibility_filter_key_invalid` for a `filters` parameter with such a key, in both the modern and the legacy map encoding, on every upstream flavor and in every rollout mode.
