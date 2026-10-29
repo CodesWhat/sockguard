@@ -8,17 +8,20 @@ import (
 
 // Two middlewares write the same `filters` query key on the same request:
 // visibility appends its configured label selectors, and ownership then
-// replaces the key with the proxy-enforced owner label. Replacement is
-// deliberate — a client-supplied label selector must never reach the daemon
-// on an ownership-scoped list, because Swarm's control-plane list endpoints
-// fold `label` values into a map[string]string
-// (daemon/cluster/filters.go: convertKVStringsToMap over Args.Get, whose
-// iteration order is randomized), so a client value repeating the owner key
-// can silently displace the proxy's.
+// writes the owner label beside them. Ownership keeps a client-supplied label
+// selector only when its label key differs from every enforced key (the owner
+// label key and the key of each injected selector). Both engines AND repeated
+// `label` values on list and prune endpoints, so such a selector can only
+// narrow the result. Swarm's control-plane list endpoints fold `label` values
+// into a map[string]string (daemon/cluster/filters.go: convertKVStringsToMap
+// over Args.Get, whose iteration order is randomized), so a client value
+// repeating an enforced key could silently displace the proxy's, and is
+// dropped. Event paths keep no client selector at all, because Podman ORs
+// repeated `label` values on its event filter.
 //
-// Replacing everything, though, also discarded the selectors visibility had
-// just injected, leaving the request owner-scoped but not visibility-scoped —
-// a silent widening. The two layers have to compose.
+// The owner layer once replaced the whole key, which also discarded the
+// selectors visibility had just injected, leaving the request owner-scoped but
+// not visibility-scoped, a silent widening. The two layers have to compose.
 //
 // They compose through this record: a layer that injects selectors notes them
 // on the request, and a later layer that must drop client-supplied values can

@@ -170,8 +170,8 @@ type Options struct {
 	// reading of a name. See imageTagNamingFor.
 	//
 	// Podman's other divergence, the disjunctive GET /events filter, needs no
-	// flavor here: addOwnerLabelFilter replaces the key with exactly one
-	// value, and one value evaluates the same under either rule. Only the
+	// flavor here: addOwnerLabelFilter writes only the owner value on event
+	// paths, and one value evaluates the same under either rule. Only the
 	// combination with a visibility selector is inexpressible, and that
 	// arrives on the request as dockerfilters.RequiresSoleValue rather than
 	// as a flavor.
@@ -404,7 +404,7 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 	case r.Method == http.MethodPost && normPath == libpodSecretCreatePath:
 		return mutateLibpodSecretCreateOwnershipRequest(r, opts)
 	case needsOwnerFilter(r.Method, normPath), libpodNeedsOwnerFilter(r.Method, normPath):
-		return nil, addOwnerLabelFilter(r, opts.LabelKey, opts.Owner)
+		return nil, addOwnerLabelFilter(r, opts.LabelKey, opts.Owner, opts.UpstreamFlavor == upstreamflavor.Podman)
 	default:
 		return nil, nil
 	}
@@ -1172,31 +1172,87 @@ func addOwnerLabelToBuildQuery(r *http.Request, labelKey, owner string) error {
 	return nil
 }
 
-func addOwnerLabelFilter(r *http.Request, labelKey, owner string) error {
+func addOwnerLabelFilter(r *http.Request, labelKey, owner string, podmanUpstream bool) error {
 	query := r.URL.Query()
 	filters, err := dockerfilters.Decode(query.Get("filters"))
 	if err != nil {
 		return err
 	}
-	filterKey := ownerFilterKey(filter.NormalizePath(r.URL.Path))
+	normPath := filter.NormalizePath(r.URL.Path)
+	filterKey := ownerFilterKey(normPath)
 	label := labelKey + "=" + owner
-	// Client-supplied values under this key are dropped: Swarm's control-plane
-	// lists fold `label` into a map[string]string over a randomly-ordered
-	// Args.Get, so a client value repeating the owner key can displace the
-	// proxy-enforced one.
+	// Which client-supplied values under this key survive:
 	//
-	// Selectors sockguard itself injected earlier in the chain survive that
-	// drop. The visibility middleware runs first and writes the same key, and
+	//   - List and prune endpoints keep every client selector whose label key
+	//     is not an enforced key. Both engines AND repeated `label` values
+	//     (Docker filters.Args.MatchKVList, Podman MatchLabelFilters and
+	//     libimage), so an extra client selector can only narrow the result.
+	//     Docker Compose finds a service's container through such selectors
+	//     (project, service, oneoff), so dropping them made `compose exec`
+	//     land in the wrong container.
+	//   - A client value whose key equals an enforced key (the owner label key
+	//     or the key of a selector sockguard injected) is dropped. Swarm's
+	//     control-plane lists fold `label` into a map[string]string keyed by
+	//     label key over a randomly-ordered Args.Get, so a same-key client
+	//     value can displace the proxy-enforced one. Values with other keys
+	//     fold to different entries and still AND.
+	//   - Event paths and /libpod/images/prune keep only the enforced
+	//     selectors (see enforcedSelectorsOnlyPath). Podman ORs repeated
+	//     `label` values on its event filter, so a kept client selector would
+	//     widen the stream to other owners' events, and its image prune reads
+	//     only the first value. This holds whatever the upstream flavor, which
+	//     may be misdetected.
+	//   - Negated client values (`k!=v`) are dropped on every path, and values
+	//     containing `!=` after the first `=` are dropped on Podman image
+	//     lists only, because libimage rejects both with a 500.
+	//
+	// Selectors sockguard itself injected earlier in the chain always survive.
+	// The visibility middleware runs first and writes the same key, and
 	// replacing its selectors left the request owner-scoped but not
-	// visibility-scoped. Both sets go upstream together, and both engines AND
-	// the values under `label` — see internal/dockerfilters/injected.go for the
-	// daemon-side matchers that make that true.
+	// visibility-scoped. See internal/dockerfilters/injected.go for the
+	// daemon-side matchers that make the AND true.
 	injected := dockerfilters.InjectedSelectors(r, filterKey)
 	values := make([]string, 0, len(injected)+1)
+	seen := make(map[string]struct{}, len(injected)+1)
 	values = append(values, label)
+	seen[label] = struct{}{}
 	for _, selector := range injected {
-		if !slices.Contains(values, selector) {
+		if _, dup := seen[selector]; !dup {
+			seen[selector] = struct{}{}
 			values = append(values, selector)
+		}
+	}
+	if !enforcedSelectorsOnlyPath(normPath) {
+		enforced := map[string]struct{}{selectorLabelKey(label): {}}
+		for _, selector := range injected {
+			enforced[selectorLabelKey(selector)] = struct{}{}
+		}
+		podmanImageList := podmanUpstream && (normPath == "/images/json" || normPath == libpodPrefix+"images/json")
+		for _, clientValue := range filters[filterKey] {
+			if clientValue == "" {
+				continue
+			}
+			// `key!=value` is negation. Negation belongs under the separate
+			// `label!` filter key, and libimage rejects it under `label`, so
+			// it is dropped on every path. A `!=` that only appears after the
+			// first `=` is an equality filter on a value containing `!=`
+			// (Docker reads `note=hello!=world` as label note), so it is kept.
+			if isNegatedSelector(clientValue) {
+				continue
+			}
+			// libimage (Podman image filters) splits on `!=` before `=`, so
+			// even an equality value containing `!=` makes Podman image lists
+			// answer 500 ("invalid image filter"). Drop it on those paths.
+			if podmanImageList && strings.Contains(clientValue, "!=") {
+				continue
+			}
+			if _, collides := enforced[selectorLabelKey(clientValue)]; collides {
+				continue
+			}
+			if _, dup := seen[clientValue]; !dup {
+				seen[clientValue] = struct{}{}
+				values = append(values, clientValue)
+			}
 		}
 	}
 	filters[filterKey] = values
@@ -1207,6 +1263,22 @@ func addOwnerLabelFilter(r *http.Request, labelKey, owner string) error {
 	query.Set("filters", string(encoded))
 	r.URL.RawQuery = query.Encode()
 	return nil
+}
+
+// selectorLabelKey returns the label key a `label` filter value targets: the
+// text before the first `=` (the whole value when there is none), trimmed, with
+// one trailing `!` removed so `key!=value` maps to `key`.
+func selectorLabelKey(selector string) string {
+	key, _, _ := strings.Cut(selector, "=")
+	key = strings.TrimSpace(key)
+	return strings.TrimSuffix(key, "!")
+}
+
+// isNegatedSelector reports whether a `label` filter value is `key!=value`:
+// the text before the first `=`, trimmed, ends with `!`.
+func isNegatedSelector(selector string) bool {
+	key, _, _ := strings.Cut(selector, "=")
+	return strings.HasSuffix(strings.TrimSpace(key), "!")
 }
 
 func mutateJSONBody(r *http.Request, mutate func(map[string]any) error) error {
