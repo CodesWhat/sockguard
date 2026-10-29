@@ -404,4 +404,15 @@ export const roadmap: Milestone[] = [
       "Off by default in both container_create and libpod_container_create; a create that names no path is unaffected",
     ],
   },
+  {
+    version: "v2.3.2",
+    title: "Security Patch: Podman Filter Scoping",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Podman filter scoping is tighter under owner isolation and visibility, including volume list and prune and libpod system prune",
+      "Ownership keeps a client's own label filters on list and prune endpoints, which Docker Compose relies on",
+      "Updates go-jose and golang.org/x/net",
+    ],
+  },
 ];
