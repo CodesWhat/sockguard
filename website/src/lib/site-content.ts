@@ -431,7 +431,7 @@ export const roadmap: Milestone[] = [
     emoji: "🛡️",
     status: "candidate",
     items: [
-      "v2.4.0-rc.2 candidate: exact image allowlists for Docker and Podman container creation and Swarm service creation/update, with per-client lists and rollout modes",
+      "v2.4.0-rc.3 candidate: exact image allowlists for Docker and Podman container creation and Swarm service creation/update, with per-client lists and rollout modes",
       "Unix container-label identity remains a documented limit; use distinct UID/GID profiles. Select the candidate explicitly; stable remains v2.3.3",
       "Implemented: known-route startup/validate warnings, create environment/command/entrypoint policy, and reproducible binary build checks for all four targets; the formal-spec decision is recorded",
       "Native mount/source and CDI checks, owner-aware BuildKit exports, Podman RUN controls, and standard local Buildx Dockerfile mediation; GA requires fresh candidate validation and at least 14 days of baking",

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0-rc.3] - 2026-10-30
+
+This candidate carries the v2.3.2 and v2.3.3 releases forward onto the v2.4 line, along with the release workflow fixes behind them. The v2.4 changes from rc.2 are otherwise unchanged.
+
 ### Security
 
 - This line now carries the 2.3.2 security fixes (Podman filter scoping, `label` filters kept under ownership, go-jose 4.1.6) and the 2.3.3 release-signing fix. See the 2.3.2 and 2.3.3 entries below.
