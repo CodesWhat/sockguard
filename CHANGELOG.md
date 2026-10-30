@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- This line now carries the 2.3.2 security fixes (Podman filter scoping, `label` filters kept under ownership, go-jose 4.1.6) and the 2.3.3 release-signing fix. See the 2.3.2 and 2.3.3 entries below.
 - Update `golang.org/x/net` to v0.62.0 for GO-2026-6860 and GO-2026-6866, both in `golang.org/x/net/html`. Sockguard doesn't import that package, and govulncheck reports neither as reachable. The bump clears the module-level findings in dependency scans.
 
 ### Changed
@@ -70,6 +71,39 @@ This candidate carries the v2.3.0 and v2.3.1 releases forward onto the v2.4 line
 - Startup and `validate` diagnostics warn about global or per-client allow/deny rules whose method and glob path match no route in the pinned Engine/Podman API catalog. The offline, bounded analysis is advisory and does not change request authorization.
 
 - Opt-in `allowed_images` lists for Docker-compatible container creation, native Podman container creation, and Swarm service creation/update. Each list matches fully qualified image references exactly, including an explicit tag or digest, and can be set globally or per client profile. Empty lists preserve existing behavior. Checks run after admission image remapping and before signature verification/digest pinning, and use the existing enforce/warn/audit rollout modes. When a list is enabled, alternate rootfs/image-volume creation, image mounts, and stored or automatic Swarm rollback are refused rather than selecting unchecked image content.
+
+## [2.3.3] - 2026-10-29
+
+A release-pipeline patch on the v2.3 line. The 2.3.2 container images were published without signatures, so 2.3.3 ships the same proxy code with signed images, the Homebrew cask and the chart digest pin.
+
+### Fixed
+
+- **The release publisher retries image signing.** Rekor stored the 2.3.2 signature upload but answered slowly, cosign resent it, and the resend was refused with a 409, so the 2.3.2 container images were published unsigned. Signing now runs up to three times, each with a fresh key, and signs each image repository's digest once instead of once per tag. Set up QEMU in the release workflow also retries under the egress block now, like the other network steps.
+
+## [2.3.2] - 2026-10-29
+
+A security patch on the v2.3 line. It tightens Podman filter scoping under ownership and visibility, fixes Compose label filters under ownership (#639), and updates go-jose, x/net and the release tooling.
+
+### Fixed
+
+- **Ownership no longer drops a client's own `label` filters on list and prune endpoints.** With `ownership.owner` set, the owner selector replaced everything the client sent under `label` (`node.label` on `/nodes`), so Docker Compose, which finds a service's container with `com.docker.compose.project`, `com.docker.compose.service` and `com.docker.compose.oneoff` selectors on `GET /containers/json`, got every container of the owner and `docker compose exec`, `logs` and `port` could hit the wrong one. Client selectors now pass beside the owner selector and the daemon ANDs them. A selector that uses the owner label key, or a key visibility enforces, is still dropped, because Swarm's control-plane lists could let a same-key value displace the enforced one. Event filters (`/events`, `/libpod/events`) and Podman's `/libpod/images/prune` still carry only the enforced selectors, because Podman ORs repeated `label` values on events and its image prune reads only the first value. Negated client selectors (`key!=value`) are dropped on every path, and on Podman image lists a selector whose value contains `!=` is dropped too, because Podman's image filters answer `500` for both. Reported in #639.
+
+### Security
+
+- **Filter keys containing `=` are refused.** No Docker or Podman filter is named that way, and Podman flattens query filters to `key=value` strings that it splits again on the first `=`, so a key like `label=name` reached it as an extra value of the `label` filter. On an event stream, where Podman combines values of one key with OR, that could widen a request past the owner or visibility label selector. Owner isolation and the visibility layer now answer `400` with reason codes `owner_filter_key_invalid` and `visibility_filter_key_invalid` for a `filters` parameter with such a key, in both the modern and the legacy map encoding, on every upstream flavor and in every rollout mode.
+- **Podman volume list and prune accept only `label` filters under owner isolation and visibility.** Podman before 6.0 combines volume filters of different keys with OR, so a `driver`, `name`, `label!`, `until` or `dangling` filter widened a list or prune past the owner or visibility label selector. On a Podman upstream, `GET /volumes`, `POST /volumes/prune`, `GET /libpod/volumes/json` and `POST /libpod/volumes/prune` with any other filter key are now refused with a `403` under owner isolation (reason code `owner_podman_volume_filter_unscopeable`), and the two list routes are refused the same way when a visibility policy has label selectors (`visibility_podman_volume_filter_unscopeable`). The flavor probe doesn't read the Podman version, so the refusal applies to every Podman upstream. Docker upstreams are unchanged.
+- **`POST /libpod/system/prune` is refused under owner isolation.** It prunes pods, containers, images and optionally volumes in one call and can't be scoped to an owner. It is now in the unscopeable-write table next to `POST /libpod/pods/prune` and answers `403` with reason code `owner_libpod_system_prune_unscopeable`.
+- **Two more libpod routes are covered.** `POST /libpod/system/check` runs a host-wide storage check that can repair it by removing damaged containers and images. It is now refused under owner isolation with a `403` and reason code `owner_libpod_system_check_unscopeable`. `GET /libpod/kube/generate`, Podman's alias of `GET /libpod/generate/kube`, is now in the read-exfiltration catalog, so a broad allow rule that would expose it needs `insecure_allow_read_exfiltration` like the original route.
+- Update `github.com/go-jose/go-jose/v4` to v4.1.6 for GHSA-mgcc-cww5-fp2q (denial of service when parsing JWKs that contain RSA keys). It is an indirect dependency of the opt-in image-trust and signed-policy verification path, and govulncheck reports it as not reachable from Sockguard's code.
+- Update `golang.org/x/net` to v0.62.0 for GO-2026-6860 and GO-2026-6866, both in `golang.org/x/net/html`. Sockguard doesn't import that package, and govulncheck reports neither as reachable. The bump clears the module-level findings in dependency scans.
+
+### Changed
+
+- **Security support covers the latest minor line only.** SECURITY.md drops the two-minor window: security fixes ship on the latest minor release, and 2.2.x reaches end of life with this release. Upgrade to 2.3.2 for the fixes above.
+- **Website preview builds skip pushes that don't touch the site.** `website/vercel.json` now runs `website/scripts/vercel-ignore-build.sh` as its ignored build step. A preview is skipped when nothing changed since the branch's last deployment in `website/`, `docs/`, the root `package.json`, `package-lock.json`, `turbo.json`, `biome.json`, `.vercelignore`, `.gitignore` or the two analytics sync scripts, so Go-only pushes stop using up the Hobby plan's daily deploy quota. A missing or unfetchable previous commit builds, and production deploys from main always build.
+- **Working branches no longer deploy website previews.** Vercel counts ignored builds toward the daily deployment quota, so `website/vercel.json` also sets `git.deploymentEnabled` to off for `feat/`, `fix/`, `docs/`, `ci/`, `chore/`, `test/`, `refactor/`, `build/`, `perf/`, `style/`, `revert/`, `dev/`, `release/`, `renovate/`, `dependabot/`, `codex/` and `claude/` branches. main still deploys production. A branch with any other prefix, such as `site/`, still gets a preview.
+- **CI tooling fixes from the PR #638 review.** The pre-push lockfile dedupe check now applies the release-age cutoff only to its dedupe probe, so an exactly pinned dependency published inside the cutoff window can no longer fail the install probe with ETARGET and block a push. The monthly mutation job that commits the badge keeps harden-runner in block mode with an allow list, because it holds a write credential; the read-only jobs stay on audit. The release CI-verify wait now holds each request, its retries and its sleep to the time left in `max-wait-seconds`, so a poll that starts near the deadline fails with the action's timeout error instead of running into the job timeout.
+- **Release workflows retry network steps three times.** `release-cut.yml` and `release-from-tag.yml` now retry checkout, Buildx setup and artifact upload and download up to three times, waiting 30 s and then 60 s between attempts, so a short egress refusal under block mode no longer kills a release job. Upload retries set `overwrite: true` so a half-created artifact from a failed attempt can't block the next one.
 
 ## [2.3.1] - 2026-10-26
 

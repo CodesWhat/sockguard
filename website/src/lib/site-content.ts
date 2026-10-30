@@ -405,13 +405,34 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
+    version: "v2.3.2",
+    title: "Security Patch: Podman Filter Scoping",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Podman filter scoping is tighter under owner isolation and visibility, including volume list and prune and libpod system prune",
+      "Ownership keeps a client's own label filters on list and prune endpoints, which Docker Compose relies on",
+      "Updates go-jose and golang.org/x/net",
+    ],
+  },
+  {
+    version: "v2.3.3",
+    title: "Patch: Signed Container Images",
+    emoji: "🔏",
+    status: "released",
+    items: [
+      "Republishes the 2.3.2 proxy code with signed container images",
+      "The release pipeline retries image signing and signs each image repository once",
+    ],
+  },
+  {
     version: "v2.4.0",
     title: "Image Admission & Policy Usability",
     emoji: "🛡️",
     status: "candidate",
     items: [
       "v2.4.0-rc.2 candidate: exact image allowlists for Docker and Podman container creation and Swarm service creation/update, with per-client lists and rollout modes",
-      "Unix container-label identity remains a documented limit; use distinct UID/GID profiles. Select the candidate explicitly; stable remains v2.3.1",
+      "Unix container-label identity remains a documented limit; use distinct UID/GID profiles. Select the candidate explicitly; stable remains v2.3.3",
       "Implemented: known-route startup/validate warnings, create environment/command/entrypoint policy, and reproducible binary build checks for all four targets; the formal-spec decision is recorded",
       "Native mount/source and CDI checks, owner-aware BuildKit exports, Podman RUN controls, and standard local Buildx Dockerfile mediation; GA requires fresh candidate validation and at least 14 days of baking",
     ],

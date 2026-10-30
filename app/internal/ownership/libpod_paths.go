@@ -80,11 +80,11 @@ func isLibpodOwnershipPath(normPath string) bool {
 // only {"driver": ...}, so every one of them fails an owner-label filter and
 // is dropped — the fail-closed direction.
 //
-// addOwnerLabelFilter's unconditional replacement is what makes this safe on
-// the event endpoint specifically. Podman's event filter is disjunctive within
+// addOwnerLabelFilter dropping every client label value on event paths is what
+// makes this safe on the event endpoint specifically. Podman's event filter is disjunctive within
 // a key (libpod/events/filters.go: "Filters under the same key are disjunctive
 // while each key must match"), so a client-supplied `label` value left beside
-// the injected one would OR with it; replacement leaves exactly one value, for
+// the injected one would OR with it; dropping them leaves exactly the enforced values, for
 // which disjunctive and conjunctive evaluation are the same thing. Every other
 // filter key the endpoint accepts is ANDed, so a client can only narrow the
 // stream further.

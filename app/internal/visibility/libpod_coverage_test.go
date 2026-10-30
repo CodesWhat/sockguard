@@ -927,8 +927,8 @@ func TestLibpodListRoutesAreNotSingleResourceIdentifiers(t *testing.T) {
 //
 // GET /libpod/events is in ownership's libpodNeedsOwnerFilter and is NOT in
 // this package's needsLibpodVisibilityLabelFilter, and that difference is
-// load-bearing rather than drift. addOwnerLabelFilter REPLACES the `label`
-// key with one value, and Podman evaluates several values under one event
+// load-bearing rather than drift. addOwnerLabelFilter keeps no client `label`
+// value on event paths, and Podman evaluates several values under one event
 // filter key disjunctively, so with exactly one value disjunctive and
 // conjunctive evaluation coincide and the injection is sound.
 // addVisibilityLabelFilters APPENDS, and a visibility policy may carry more
