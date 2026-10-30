@@ -84,7 +84,7 @@ func handleLibpodVisibilityEventsRequest(next http.Handler, w http.ResponseWrite
 	case 1:
 		forwarded, err := setPodmanEventLabelFilter(r, policy.selectors[0])
 		if err != nil {
-			logging.SetDeniedWithCode(w, r, reasonCodeVisibilityFilterInvalid, err.Error(), nil)
+			logging.SetDeniedWithCode(w, r, filterErrorReasonCode(err), err.Error(), nil)
 			_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: err.Error()})
 			return
 		}

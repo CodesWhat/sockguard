@@ -192,3 +192,21 @@ func ownerFilterKey(normPath string) string {
 	}
 	return "label"
 }
+
+// enforcedSelectorsOnlyPath reports whether normPath is a path where only the
+// enforced label selectors (owner plus injected) may be sent upstream.
+//
+// Event streams, compat and libpod: Podman ORs repeated `label` values on
+// event filters, so a kept client selector would widen the stream.
+//
+// /libpod/images/prune: Podman's handler flattens the filters with v[0]
+// (pkg/api/handlers/libpod/images.go), so only the first `label` value is
+// honored. A kept client selector would be silently ignored, so none is sent.
+func enforcedSelectorsOnlyPath(normPath string) bool {
+	switch normPath {
+	case "/events", libpodPrefix + "events", libpodPrefix + "images/prune":
+		return true
+	default:
+		return false
+	}
+}

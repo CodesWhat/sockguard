@@ -74,6 +74,40 @@ const LibpodPodPruneDenyReason = "libpod pod prune denied: " +
 	"POST /libpod/pods/prune removes every prunable pod on the host, accepts no filters at all, and reports " +
 	"what it removed only after removing it, so it cannot be scoped to one caller"
 
+// LibpodSystemPrunePath is the normalized path of Podman's native
+// POST /libpod/system/prune endpoint.
+const LibpodSystemPrunePath = "/libpod/system/prune"
+
+// LibpodSystemPruneDenyReason is reported when owner isolation refuses
+// POST /libpod/system/prune.
+//
+// It prunes pods, containers and images in one call, and volumes too when the
+// client asks for them. That is several resource types behind one handler, so
+// the single optional `filters` parameter cannot be shown to scope every one
+// of them to an owner label, and the removal has happened by the time the
+// report comes back. The refusal is unconditional for the reason the pod
+// prune one is. A caller under owner isolation prunes with the per-type
+// routes (containers, images, networks, volumes), which the ownership layer
+// scopes by injecting the owner label.
+const LibpodSystemPruneDenyReason = "libpod system prune denied: " +
+	"POST /libpod/system/prune removes unused pods, containers, images and optionally volumes across the whole host in one call, " +
+	"so it cannot be scoped to one caller"
+
+// LibpodSystemCheckPath is the normalized path of Podman's native
+// POST /libpod/system/check endpoint.
+const LibpodSystemCheckPath = "/libpod/system/check"
+
+// LibpodSystemCheckDenyReason is reported when owner isolation refuses
+// POST /libpod/system/check.
+//
+// It runs a storage consistency check over the whole host and can repair it,
+// removing damaged containers and images whoever owns them, so it names no
+// resource an owner check could inspect and cannot be scoped to one caller.
+// The refusal is unconditional for the reason the pod prune one is.
+const LibpodSystemCheckDenyReason = "libpod system check denied: " +
+	"POST /libpod/system/check checks the host's storage and can repair it by removing damaged containers and images " +
+	"whoever owns them, so it cannot be scoped to one caller"
+
 // LibpodKubeDownDenyReason is reported when owner isolation refuses kube
 // down, DELETE /libpod/play/kube and its DELETE /libpod/kube/play alias.
 //
@@ -94,6 +128,8 @@ const LibpodKubeDownDenyReason = "libpod kube down denied: " +
 
 var libpodUnscopeableWrites = []LibpodUnscopeableWrite{
 	{Method: http.MethodPost, Path: LibpodPodPrunePath, ReasonCodeStem: "pod_prune", Reason: LibpodPodPruneDenyReason},
+	{Method: http.MethodPost, Path: LibpodSystemPrunePath, ReasonCodeStem: "system_prune", Reason: LibpodSystemPruneDenyReason},
+	{Method: http.MethodPost, Path: LibpodSystemCheckPath, ReasonCodeStem: "system_check", Reason: LibpodSystemCheckDenyReason},
 	{Method: http.MethodDelete, Path: libpodPathPrefix + "play/kube", ReasonCodeStem: "kube_down", Reason: LibpodKubeDownDenyReason},
 	{Method: http.MethodDelete, Path: libpodPathPrefix + "kube/play", ReasonCodeStem: "kube_down", Reason: LibpodKubeDownDenyReason},
 }

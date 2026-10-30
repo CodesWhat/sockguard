@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -455,7 +457,7 @@ function releaseHardenRunnerViolations(yamlText) {
 }
 
 const RETRIED_STEP_USES =
-  /^\s*uses:\s*(actions\/checkout|docker\/setup-buildx-action|actions\/upload-artifact|actions\/download-artifact)@/u;
+  /^\s*uses:\s*(actions\/checkout|docker\/setup-buildx-action|docker\/setup-qemu-action|actions\/upload-artifact|actions\/download-artifact)@/u;
 
 // Splits a workflow into jobs (children of the top-level `jobs:` key), then
 // each job into steps by indentation. `steps.<id>` is scoped per job, so the
@@ -957,4 +959,146 @@ test("the contract rejects a moving reusable ref, a dropped permission, and a re
     () => assertBridgesAbsent(source.replace("  codeql:", `${renamedUnquotedBridge}  codeql:`)),
     /must not report the retired "Go Test" context/u,
   );
+});
+
+// REL-19: Rekor answers 409 when cosign signs the same repository@digest
+// twice, so the publisher signs and verifies each repository once, not each tag.
+function stepRunScript(yamlText, stepName) {
+  const lines = yamlText.split("\n");
+  const at = lines.findIndex((l) => l.trim() === `- name: ${stepName}`);
+  assert.notEqual(at, -1, `step ${stepName} not found`);
+  const runAt = lines.findIndex((l, i) => i > at && l.trim() === "run: |");
+  assert.notEqual(runAt, -1, `${stepName} has no run block`);
+  const body = [];
+  for (let i = runAt + 1; i < lines.length; i += 1) {
+    if (lines[i].trim() !== "" && indentOf(lines[i]) <= indentOf(lines[runAt])) break;
+    body.push(lines[i]);
+  }
+  return body.join("\n");
+}
+
+test("release publisher signs and verifies each image repository once", () => {
+  const raw = fs.readFileSync(
+    path.join(ROOT, ".github", "workflows", "release-from-tag.yml"),
+    "utf8",
+  );
+  const digest = `sha256:${"a".repeat(64)}`;
+  const tags = [
+    "ghcr.io/codeswhat/sockguard:2.3.3",
+    "ghcr.io/codeswhat/sockguard:2.3",
+    "ghcr.io/codeswhat/sockguard:2",
+    "ghcr.io/codeswhat/sockguard:latest",
+    "ghcr.io/codeswhat/sockguard:latest",
+    "docker.io/codeswhat/sockguard:2.3.3",
+    "docker.io/codeswhat/sockguard:latest",
+    "docker.io/codeswhat/sockguard:latest",
+    "quay.io/codeswhat/sockguard:2.3.3",
+    "quay.io/codeswhat/sockguard:latest",
+    "localhost:5000/codeswhat/sockguard:1.0",
+  ].join("\n");
+  const expected = [
+    `ghcr.io/codeswhat/sockguard@${digest}`,
+    `docker.io/codeswhat/sockguard@${digest}`,
+    `quay.io/codeswhat/sockguard@${digest}`,
+    `localhost:5000/codeswhat/sockguard@${digest}`,
+  ];
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rel19-"));
+  try {
+    const bin = path.join(tmp, "bin");
+    fs.mkdirSync(bin);
+    const record = path.join(tmp, "calls.txt");
+    fs.writeFileSync(
+      path.join(bin, "cosign"),
+      `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "${record}"\n`,
+      { mode: 0o755 },
+    );
+    fs.writeFileSync(path.join(bin, "sleep"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
+    for (const [step, mode] of [
+      ["Sign container images", "sign"],
+      ["Verify container image signatures", "verify"],
+    ]) {
+      fs.rmSync(record, { force: true });
+      const script = path.join(tmp, `${mode}.sh`);
+      fs.writeFileSync(script, stepRunScript(raw, step));
+      const result = spawnSync("bash", [script], {
+        encoding: "utf8",
+        env: {
+          PATH: `${bin}:${process.env.PATH}`,
+          DIGEST: digest,
+          TAGS: tags,
+          GITHUB_REPOSITORY: "CodesWhat/sockguard",
+        },
+      });
+      assert.equal(result.status, 0, `${step}: ${result.stderr}`);
+      const calls = fs.readFileSync(record, "utf8").trim().split("\n");
+      if (mode === "sign") {
+        assert.equal(calls.length, 1, "one cosign sign call");
+        const args = calls[0].split(" ");
+        assert.deepEqual(args.slice(0, 2), ["sign", "--yes"]);
+        assert.deepEqual(args.slice(2), expected);
+      } else {
+        const refs = calls.map((c) => c.split(" ").at(-1));
+        assert.deepEqual(refs, expected);
+        assert.ok(calls.every((c) => c.startsWith("verify ")));
+      }
+    }
+    // Retry: a fake cosign that fails the first N sign calls.
+    const flaky = path.join(tmp, "flaky-bin");
+    fs.mkdirSync(flaky);
+    const counter = path.join(tmp, "count.txt");
+    fs.writeFileSync(path.join(flaky, "sleep"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
+    fs.writeFileSync(
+      path.join(flaky, "cosign"),
+      [
+        "#!/usr/bin/env bash",
+        `echo x >> "${counter}"`,
+        `n=$(wc -l < "${counter}")`,
+        'if [ "$n" -le "$FAKE_COSIGN_FAIL_SIGNS" ]; then exit 1; fi',
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    for (const [fails, wantStatus, wantCalls] of [
+      [1, 0, 2],
+      [3, 1, 3],
+    ]) {
+      fs.rmSync(counter, { force: true });
+      const r = spawnSync("bash", [path.join(tmp, "sign.sh")], {
+        encoding: "utf8",
+        env: {
+          PATH: `${flaky}:${process.env.PATH}`,
+          DIGEST: digest,
+          TAGS: tags,
+          FAKE_COSIGN_FAIL_SIGNS: String(fails),
+        },
+      });
+      const calls = fs.readFileSync(counter, "utf8").trim().split("\n").length;
+      assert.equal(r.status === 0 ? 0 : 1, wantStatus, `fail ${fails}: ${r.stderr}`);
+      assert.equal(calls, wantCalls, `fail ${fails}: sign call count`);
+      if (wantStatus !== 0) assert.match(r.stdout, /cosign sign failed after 3 attempts/u);
+    }
+    const empty = spawnSync("bash", [path.join(tmp, "sign.sh")], {
+      encoding: "utf8",
+      env: { PATH: `${bin}:${process.env.PATH}`, DIGEST: digest, TAGS: "" },
+    });
+    assert.notEqual(empty.status, 0, "empty tag set must fail");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("release publisher retries Set up QEMU like Set up Docker Buildx", () => {
+  const raw = fs.readFileSync(
+    path.join(ROOT, ".github", "workflows", "release-from-tag.yml"),
+    "utf8",
+  );
+  for (const name of [
+    "Set up QEMU",
+    "Wait before Set up QEMU retry",
+    "Set up QEMU (retry)",
+    "Wait before Set up QEMU final retry",
+    "Set up QEMU (final retry)",
+  ]) {
+    assert.ok(raw.includes(`- name: ${name}\n`), `${name} missing`);
+  }
 });
