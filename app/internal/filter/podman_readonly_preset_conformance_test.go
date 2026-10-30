@@ -128,6 +128,7 @@ func TestPodmanReadonlyPresetConformance(t *testing.T) {
 		{"libpod-image-get-denied", http.MethodGet, "/libpod/images/abc/get", "", false},
 		{"libpod-image-push-denied", http.MethodPost, "/libpod/images/abc/push", "", false},
 		{"libpod-generate-kube-denied", http.MethodGet, "/libpod/generate/kube", "", false},
+		{"libpod-kube-generate-denied", http.MethodGet, "/libpod/kube/generate", "", false},
 		{"libpod-manifest-registry-push-denied", http.MethodPost, "/libpod/manifests/abc/registry/abc", "", false},
 		{"libpod-manifest-push-denied", http.MethodPost, "/libpod/manifests/abc/push", "", false},
 

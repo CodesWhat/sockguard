@@ -1409,6 +1409,7 @@ func TestValidateAndCompileRulesLibpodGates(t *testing.T) {
 					{Match: config.MatchConfig{Method: http.MethodGet, Path: "/libpod/images/**"}, Action: "allow"},
 					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/*/push"}, Action: "allow"},
 					{Match: config.MatchConfig{Method: http.MethodGet, Path: "/libpod/generate/**"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: http.MethodGet, Path: "/libpod/kube/**"}, Action: "allow"},
 					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
 				}
 			},
@@ -1422,6 +1423,7 @@ func TestValidateAndCompileRulesLibpodGates(t *testing.T) {
 				"GET /libpod/images/sockguard-test/get",
 				"POST /libpod/images/sockguard-test/push",
 				"GET /libpod/generate/kube",
+				"GET /libpod/kube/generate",
 			},
 		},
 		{
@@ -1434,6 +1436,7 @@ func TestValidateAndCompileRulesLibpodGates(t *testing.T) {
 					{Match: config.MatchConfig{Method: http.MethodGet, Path: "/libpod/images/**"}, Action: "allow"},
 					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/*/push"}, Action: "allow"},
 					{Match: config.MatchConfig{Method: http.MethodGet, Path: "/libpod/generate/**"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: http.MethodGet, Path: "/libpod/kube/**"}, Action: "allow"},
 					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
 				}
 			},

@@ -405,6 +405,27 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
+    version: "v2.3.2",
+    title: "Security Patch: Podman Filter Scoping",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Podman filter scoping is tighter under owner isolation and visibility, including volume list and prune and libpod system prune",
+      "Ownership keeps a client's own label filters on list and prune endpoints, which Docker Compose relies on",
+      "Updates go-jose and golang.org/x/net",
+    ],
+  },
+  {
+    version: "v2.3.3",
+    title: "Patch: Signed Container Images",
+    emoji: "🔏",
+    status: "released",
+    items: [
+      "Republishes the 2.3.2 proxy code with signed container images",
+      "The release pipeline retries image signing and signs each image repository once",
+    ],
+  },
+  {
     version: "v2.4.0",
     title: "Image Admission & Policy Usability",
     emoji: "🛡️",

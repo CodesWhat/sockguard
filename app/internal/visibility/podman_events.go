@@ -98,7 +98,7 @@ func handlePodmanCompatEventsRequest(next http.Handler, w http.ResponseWriter, r
 	case 1:
 		forwarded, err := setPodmanEventLabelFilter(r, policy.selectors[0])
 		if err != nil {
-			logging.SetDeniedWithCode(w, r, reasonCodeVisibilityFilterInvalid, err.Error(), nil)
+			logging.SetDeniedWithCode(w, r, filterErrorReasonCode(err), err.Error(), nil)
 			_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: err.Error()})
 			return
 		}
@@ -144,6 +144,9 @@ func setPodmanEventLabelFilter(r *http.Request, selector compiledSelector) (*htt
 	query := r.URL.Query()
 	filters, err := dockerfilters.Decode(query.Get("filters"))
 	if err != nil {
+		return r, err
+	}
+	if err := dockerfilters.CheckKeys(filters); err != nil {
 		return r, err
 	}
 	value := selector.key
