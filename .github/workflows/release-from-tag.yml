@@ -488,6 +488,34 @@ jobs:
         with:
           cosign-release: "v3.1.3"
 
+      # GoReleaser signs every artifact with its own parallel cosign run, and
+      # on v2.3.3's first attempt two of them raced to write the shared TUF
+      # cache and failed. Loading the trust root once, serially, leaves them
+      # a warm cache to read.
+      - name: Initialize Sigstore trust root
+        id: cosign_init
+        continue-on-error: true
+        run: cosign initialize
+
+      - name: Wait before Initialize Sigstore trust root retry
+        if: steps.cosign_init.outcome == 'failure'
+        run: sleep 30
+
+      - name: Initialize Sigstore trust root (retry)
+        id: cosign_init_retry
+        if: steps.cosign_init.outcome == 'failure'
+        continue-on-error: true
+        run: cosign initialize
+
+      - name: Wait before Initialize Sigstore trust root final retry
+        if: steps.cosign_init.outcome == 'failure' && steps.cosign_init_retry.outcome == 'failure'
+        run: sleep 60
+
+      - name: Initialize Sigstore trust root (final retry)
+        id: cosign_init_final
+        if: steps.cosign_init.outcome == 'failure' && steps.cosign_init_retry.outcome == 'failure'
+        run: cosign initialize
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94  # v7.2.3
         with:

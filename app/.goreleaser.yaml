@@ -58,24 +58,30 @@ sboms:
 # Keyless needs `id-token: write` on the goreleaser job and the cosign binary
 # on PATH -- both added alongside this in release-from-tag.yml.
 #
+# GoReleaser runs one signing command per artifact, in parallel, from its
+# working directory (`app` in the release workflow). Each goes through
+# scripts/cosign-sign-blob-retry.sh, which retries a failed `cosign sign-blob`
+# up to three times. The workflow loads the Sigstore trust root once before
+# GoReleaser starts so the parallel runs don't race on the shared TUF cache.
+#
 # v2 publishes only the sigstore bundle format: one `.sigstore.json` file per
 # artifact carries the signature, certificate, and Rekor inclusion proof.
 signs:
   - id: cosign-keyless-bundle
-    cmd: cosign
+    cmd: bash
     signature: "${artifact}.sigstore.json"
     args:
-      - sign-blob
+      - "../scripts/cosign-sign-blob-retry.sh"
       - "--yes"
       # Cosign v3's bundle format. No legacy-output overrides belong here.
       - "--bundle=${signature}"
       - "${artifact}"
     artifacts: checksum
   - id: cosign-keyless-archives-bundle
-    cmd: cosign
+    cmd: bash
     signature: "${artifact}.sigstore.json"
     args:
-      - sign-blob
+      - "../scripts/cosign-sign-blob-retry.sh"
       - "--yes"
       # Same bundle contract as checksums.txt above.
       - "--bundle=${signature}"
