@@ -101,7 +101,7 @@ test("website comparison rows live in extracted data modules", () => {
 test("v2.4 has a candidate milestone without advancing stable", () => {
   const candidate = roadmap.find((milestone) => milestone.version === "v2.4.0");
   assert.equal(candidate?.status, "candidate");
-  assert.ok(candidate.items.some((item) => item.includes("v2.4.0-rc.2")));
+  assert.ok(candidate.items.some((item) => item.includes("v2.4.0-rc.3")));
   assert.notEqual(SITE_CONFIG.version, "2.4.0");
 });
 

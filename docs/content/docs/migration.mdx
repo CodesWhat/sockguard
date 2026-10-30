@@ -9,7 +9,7 @@ description: Upgrade to stable v2.3, keep a v2.2 deployment patched, evaluate th
 | --- | --- | --- |
 | v2.3.1 | Published stable | Keep normal Docker, Homebrew, deb/rpm and binary release channels. |
 | v2.2.11 | Maintenance patch | The latest patch on the v2.2 line, for deployments that haven't moved to v2.3. |
-| v2.4.0-rc.2 | Release candidate | Select the candidate explicitly for image admission, create launch-field policies, route diagnostics and Buildx compatibility fixes. Stable channels stay on v2.3.1. |
+| v2.4.0-rc.3 | Release candidate | Select the candidate explicitly for image admission, create launch-field policies, route diagnostics and Buildx compatibility fixes. Stable channels stay on v2.3.1. |
 
 ## From Sockguard v2.1 to v2.2
 
@@ -46,9 +46,9 @@ before enabling external frontend execution.
 
 ## Evaluating v2.4
 
-v2.4.0-rc.2 is a release candidate. Select `codeswhat/sockguard:2.4.0-rc.2`
+v2.4.0-rc.3 is a release candidate. Select `codeswhat/sockguard:2.4.0-rc.3`
 explicitly, or install the source with
-`go install github.com/codeswhat/sockguard/v2/app/cmd/sockguard@v2.4.0-rc.2`.
+`go install github.com/codeswhat/sockguard/v2/app/cmd/sockguard@v2.4.0-rc.3`.
 Go source builds require Go 1.27. Stable Homebrew and package channels continue
 to follow v2.3.1. Don't copy candidate-only settings into an older binary.
 
