@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Release binary signing retries.** GoReleaser signs every archive with a parallel `cosign sign-blob`, and on 2.3.3's first attempt two of them raced on the Sigstore trust cache and the job failed. The release workflow now loads the trust root once before GoReleaser runs, and each signing call retries up to three times with a fresh key.
+
 ## [2.3.3] - 2026-10-29
 
 A release-pipeline patch on the v2.3 line. The 2.3.2 container images were published without signatures, so 2.3.3 ships the same proxy code with signed images, the Homebrew cask and the chart digest pin.
