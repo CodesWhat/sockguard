@@ -85,7 +85,10 @@ describe("tag-triggered stable release source guard", () => {
 
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /Stable tag v2\.0\.0 points at main HEAD/u);
-    assert.equal(readFileSync(resolve(fixtureRoot, "output"), "utf8"), "latest=true\n");
+    assert.equal(
+      readFileSync(resolve(fixtureRoot, "output"), "utf8"),
+      "latest=true\nmajor_latest=true\n",
+    );
   });
 
   it("accepts a supported older maintenance line without promoting latest", () => {
@@ -97,7 +100,30 @@ describe("tag-triggered stable release source guard", () => {
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /maintenance\/2\.4\.x HEAD/u);
     assert.match(readFileSync(resolve(fixtureRoot, "output"), "utf8"), /latest=false/u);
+    assert.match(readFileSync(resolve(fixtureRoot, "output"), "utf8"), /^major_latest=true$/mu);
   });
+
+  for (const [name, security] of [
+    [
+      "current same-major minor",
+      "| Version | Supported |\n| --- | --- |\n| 2.5.x | :white_check_mark: |\n| 2.4.x | :white_check_mark: |",
+    ],
+    [
+      "retired newer minor",
+      "| Version | Supported |\n| --- | --- |\n| 3.0.x | :white_check_mark: |\n| 2.5.x | :x: |\n| 2.4.x | :white_check_mark: |",
+    ],
+  ]) {
+    it(`maintenance cannot roll back a major channel past its ${name}`, () => {
+      const result = runGuard({
+        releaseTag: "v2.4.3",
+        tagSha: stableSha,
+        remoteRecords: `${branchRecord("b".repeat(40), "main")}\n${branchRecord(stableSha, "maintenance/2.4.x")}`,
+        security,
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(readFileSync(resolve(fixtureRoot, "output"), "utf8"), /^major_latest=false$/mu);
+    });
+  }
 
   it("rejects maintenance releases absent from the default branch support policy", () => {
     for (const security of [
@@ -122,7 +148,10 @@ describe("tag-triggered stable release source guard", () => {
       remoteRecords: branchRecord(stableSha, "dev/v3.0"),
     });
     assert.equal(accepted.status, 0, accepted.stderr);
-    assert.equal(readFileSync(resolve(fixtureRoot, "output"), "utf8"), "latest=false\n");
+    assert.equal(
+      readFileSync(resolve(fixtureRoot, "output"), "utf8"),
+      "latest=false\nmajor_latest=false\n",
+    );
     assert.notEqual(
       runGuard({
         releaseTag: "v3.0.0-rc.4",
@@ -150,7 +179,10 @@ describe("tag-triggered stable release source guard", () => {
       remoteRecords: `${branchRecord(stableSha, "main")}\n${branchRecord(stableSha, "maintenance/3.0.x")}`,
     });
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(readFileSync(resolve(fixtureRoot, "output"), "utf8"), "latest=true\n");
+    assert.equal(
+      readFileSync(resolve(fixtureRoot, "output"), "utf8"),
+      "latest=true\nmajor_latest=true\n",
+    );
   });
 
   it("rejects a stable tag outside the default-branch head", () => {
@@ -197,6 +229,7 @@ describe("tag-triggered stable release source guard", () => {
     assert.match(development.stdout, /dev\/v2\.0 HEAD/u);
     assert.equal(maintenance.status, 0, maintenance.stderr);
     assert.match(maintenance.stdout, /maintenance\/2\.4\.x HEAD/u);
+    assert.match(readFileSync(resolve(fixtureRoot, "output"), "utf8"), /^major_latest=false$/mu);
   });
 
   it("rejects prerelease tags at an arbitrary commit", () => {
