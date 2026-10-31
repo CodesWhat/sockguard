@@ -264,7 +264,7 @@ repository release history.
 | Portwing Edge dial-out | Stable with drydock 1.6; drydock 1.5 requires `DD_EXPERIMENTAL_PORTWING=true` |
 | drydock-triggered remote updates through Portwing | **Not implemented** in either mode: Standard trigger routes return `501`; the current Edge protocol has no effective watcher/trigger response contract |
 | Classic Compose builds through a bundled preset | Classic `/build` is inspected through the `*-with-build.yaml` presets |
-| Buildx / Compose BuildKit builds | The `*-with-mediated-build.yaml` presets enable session/gRPC mediation, but client schema and policy constraints still apply. v2.4 RC verifies local Dockerfile builds with Buildx v0.33.0/v0.38.0 against Docker 29.5.2; broader client/daemon combinations still need conformance evidence. See [Security](/security) |
+| Buildx / Compose BuildKit builds | The `*-with-mediated-build.yaml` presets enable session/gRPC mediation, but client schema and policy constraints still apply. v2.4 verifies local Dockerfile builds with Buildx v0.33.0/v0.38.0 against Docker 29.5.2; broader client/daemon combinations still need conformance evidence. See [Security](/security) |
 
 The compatibility statement is deliberately narrower than “all three tools work together.” Monitoring and authorized container control work. Remote update orchestration does not yet, and Sockguard will not advertise a preset as enabling it until Portwing and drydock implement and test both sides of that contract.
 
