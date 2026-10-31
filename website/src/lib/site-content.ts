@@ -437,4 +437,15 @@ export const roadmap: Milestone[] = [
       "Native mount/source and CDI checks, owner-aware BuildKit exports, Podman RUN controls, and standard local Buildx Dockerfile mediation",
     ],
   },
+  {
+    version: "v2.4.1",
+    title: "Exec Target Protection & CA Refresh",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Containers labeled com.sockguard.exec=deny refuse Docker and Podman exec in enforce mode; the official Sockguard image carries the label",
+      "Exec-create pins the inspected container ID, and the static image has an updated CA certificate bundle",
+      "Published-image Grype uses the runner's existing Buildx plugin with bounded digest lookup retries",
+    ],
+  },
 ];
