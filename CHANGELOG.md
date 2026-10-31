@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Run the native API integration suites against Podman 5 and 6 from Fedora 44 and 45, in addition to the distro rootful/rootless jobs. Verify the live daemon major before testing, retain version/results/log artifacts, and clean up each nested engine.
+
 ## [2.4.2] - 2026-10-31
 
 v2.4.2 tightens Podman engine identification and unscoped native routes, permits safe volume filters on verified Podman 6+ endpoints, and carries the CI reliability and maintenance-release fixes. It carries v2.4.1.
