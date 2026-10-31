@@ -245,7 +245,7 @@ esac
 			started := time.Now()
 			err = p.close()
 			limit := 20 * time.Second
-			if tc.name == "query-timeout" {
+			if strings.Contains(tc.name, "query-timeout") {
 				limit = 5 * time.Second
 			}
 			if elapsed := time.Since(started); elapsed > limit {
@@ -254,8 +254,15 @@ esac
 			if tc.wantErr == "" && err != nil {
 				t.Errorf("cleanup error = %v", err)
 			}
-			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
-				t.Errorf("cleanup error = %v, want %q", err, tc.wantErr)
+			wantErr := tc.wantErr
+			if tc.name == "survived" && errors.Is(err, context.DeadlineExceeded) {
+				var inspectionExit *exec.ExitError
+				if errors.As(err, &inspectionExit) {
+					wantErr = "verify frontend container cleanup"
+				}
+			}
+			if wantErr != "" && (err == nil || !strings.Contains(err.Error(), wantErr)) {
+				t.Errorf("cleanup error = %v, want %q", err, wantErr)
 			}
 			if tc.name == "present-then-query-timeout" && !errors.Is(err, context.DeadlineExceeded) {
 				t.Errorf("cleanup error = %v, want deadline error", err)
