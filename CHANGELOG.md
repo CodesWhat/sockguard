@@ -35,6 +35,8 @@ v2.4.2 tightens Podman engine identification and unscoped native routes, permits
 
 ### Fixed
 
+- Prevent older maintenance minors from moving a floating major image tag backward, while retaining major-tag security updates for that major's newest recorded minor line. Clarify Docker/Podman volume-filter scopes and chart-pin recovery, including resolving a matching digest after the development chart advances.
+
 - Preserve native integration test failures through the results pipeline. Keep cgroups enabled in the nested test engine so host-PID pod positive controls exercise a supported daemon configuration.
 
 - Fail integration tests when an explicitly configured Docker or Podman socket is missing. Optional local runs still skip when no engine is configured.
