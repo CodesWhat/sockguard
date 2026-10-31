@@ -25,7 +25,7 @@ v2.4.2 tightens Podman engine identification and unscoped native routes, permits
 
 - Ignore inherited Git repository/index settings when inventorying generated files in the Go module checks, so a hook's alternate index cannot make a complete source tree appear empty.
 
-- Allow stable patches from an older supported maintenance branch without replacing global Docker latest, GitHub latest or the Homebrew cask. Both cut and publication check the current default-branch support policy; exact source and CI gates still apply. Maintenance chart pins go through reviewed PRs so branch protection stays enforced. Local snapshots default the latest-channel flag off.
+- Allow stable patches from an older supported maintenance branch without replacing global Docker latest, GitHub latest or the Homebrew cask. Both cut and publication check the current default-branch support policy; exact source and CI gates still apply. Maintenance chart pins go through reviewed PRs so branch protection stays enforced. Local snapshots default the latest-channel flag off and use the same GoReleaser version as the tagged publisher.
 
 - Roll the shared Go and Node CI workflows to the reviewed Ubuntu 26.04 revision, preserving the existing checks and caller policy inputs.
 

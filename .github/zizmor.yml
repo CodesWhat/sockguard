@@ -28,7 +28,7 @@ rules:
     # `zizmor --fix`, and confirm `actionlint .github/workflows/` is clean.
     ignore:
       - release-cut.yml:108
-      - release-from-tag.yml:198
+      - release-from-tag.yml:223
 
   cache-poisoning:
     # zizmor flags any setup-go/setup-node caching step in a workflow that

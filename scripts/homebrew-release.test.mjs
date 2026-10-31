@@ -108,4 +108,12 @@ test("the release workflow pins GoReleaser to v2.18.0 or newer", () => {
   const [major, minor] = pin.slice(1).map(Number);
   assert.equal(major, 2, "GoReleaser v2 is the supported major");
   assert.ok(minor >= 18, `GORELEASER_VERSION must be at least v2.18.0, got ${pin[0].trim()}`);
+  const snapshotPin = read("scripts/ci/go-release-check.sh").match(
+    /goreleaser\/v2@(v\d+\.\d+\.\d+)/u,
+  );
+  assert.equal(
+    snapshotPin?.[1],
+    `v${pin.slice(1).join(".")}`,
+    "snapshot and tagged publisher must use the same GoReleaser release",
+  );
 });
