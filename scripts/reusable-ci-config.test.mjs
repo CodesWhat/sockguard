@@ -21,7 +21,7 @@ const FIXED_SCRIPTS = new Map([
   [
     "go-release-check.sh",
     [
-      "goreleaser/goreleaser/v2@v2.15.3",
+      "goreleaser/goreleaser/v2@v2.18.0",
       // `sign` is load-bearing, not cosmetic: the signs: blocks use keyless
       // cosign, which needs an OIDC identity only the tagged release run has.
       // Dropping it back to just "publish" fails this dry-run on any machine
