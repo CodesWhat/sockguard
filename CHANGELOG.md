@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.1] - 2026-10-31
+
+v2.4.1 protects exec targets, refreshes the CA certificate bundle and removes unnecessary Buildx setup from the published-image Grype scan. It carries v2.4.0.
+
 ### Security
 
 - Refuse Docker and native Podman exec create/start against containers labeled `com.sockguard.exec=deny`. The official Sockguard image carries this label by default, protecting the proxy even when interactive exec and root commands are enabled. Exec-create pins the inspected container ID so a concurrent rename cannot swap in another target.
