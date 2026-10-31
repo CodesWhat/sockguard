@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Bound each release CI metadata and polling request to its remaining wall-clock budget, including an in-flight curl retry. The action reports a failed query instead of running past its configured deadline.
+
 ## [2.4.1] - 2026-10-31
 
 v2.4.1 protects exec targets, refreshes the CA certificate bundle and removes unnecessary Buildx setup from the published-image Grype scan. It carries v2.4.0.
