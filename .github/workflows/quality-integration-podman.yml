@@ -140,9 +140,6 @@ jobs:
         run: |
           streak=0
           for _ in $(seq 1 60); do
-            sudo chgrp "$(id -g)" /tmp/sockguard-podman-major /tmp/sockguard-podman-major/podman.sock 2>/dev/null || true
-            sudo chmod 750 /tmp/sockguard-podman-major 2>/dev/null || true
-            sudo chmod 660 /tmp/sockguard-podman-major/podman.sock 2>/dev/null || true
             if curl --fail --silent --max-time 2 --unix-socket "$SOCKGUARD_TEST_PODMAN_SOCKET" \
               http://d/libpod/_ping >/dev/null; then
               streak=$((streak + 1))
@@ -151,6 +148,9 @@ jobs:
               fi
             else
               streak=0
+              sudo chgrp "$(id -g)" /tmp/sockguard-podman-major /tmp/sockguard-podman-major/podman.sock 2>/dev/null || true
+              sudo chmod 750 /tmp/sockguard-podman-major 2>/dev/null || true
+              sudo chmod 660 /tmp/sockguard-podman-major/podman.sock 2>/dev/null || true
             fi
             sleep 1
           done

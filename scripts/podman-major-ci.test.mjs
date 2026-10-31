@@ -39,6 +39,7 @@ test("native CI fails when go test fails before tee", () => {
 for (const [mode, expectedCalls, succeeds] of [
   ["healthy", 5, true],
   ["flapping", 8, true],
+  ["permission-rebind", 8, true],
   ["unreachable", 60, false],
 ]) {
   test(`native CI socket readiness: ${mode}`, () => {
@@ -49,11 +50,19 @@ for (const [mode, expectedCalls, succeeds] of [
     const dir = mkdtempSync(join(tmpdir(), "sockguard-podman-readiness-"));
     try {
       const countFile = join(dir, "count");
-      writeFileSync(join(dir, "sudo"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-      writeFileSync(join(dir, "sleep"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      const readyFile = join(dir, "ready");
+      writeFileSync(readyFile, "");
+      writeFileSync(join(dir, "sudo"), '#!/bin/sh\ntouch "$SOCKET_READY_FILE"\n', {
+        mode: 0o755,
+      });
+      writeFileSync(
+        join(dir, "sleep"),
+        '#!/bin/sh\nif [ "$PROBE_MODE" = permission-rebind ] && [ "$(cat "$PROBE_COUNT_FILE")" -eq 2 ] && [ ! -f "$SOCKET_READY_FILE.rebound" ]; then rm -f "$SOCKET_READY_FILE"; touch "$SOCKET_READY_FILE.rebound"; fi\n',
+        { mode: 0o755 },
+      );
       writeFileSync(
         join(dir, "curl"),
-        '#!/bin/sh\ncount=0\nif [ -f "$PROBE_COUNT_FILE" ]; then count=$(cat "$PROBE_COUNT_FILE"); fi\ncount=$((count+1))\nprintf "%s" "$count" > "$PROBE_COUNT_FILE"\ncase "$PROBE_MODE" in unreachable) exit 1;; flapping) [ "$count" -ne 3 ];; *) exit 0;; esac\n',
+        '#!/bin/sh\ncount=0\nif [ -f "$PROBE_COUNT_FILE" ]; then count=$(cat "$PROBE_COUNT_FILE"); fi\ncount=$((count+1))\nprintf "%s" "$count" > "$PROBE_COUNT_FILE"\ncase "$PROBE_MODE" in unreachable) exit 1;; flapping) [ "$count" -ne 3 ];; permission-rebind) [ -f "$SOCKET_READY_FILE" ];; *) exit 0;; esac\n',
         { mode: 0o755 },
       );
       const result = spawnSync("bash", ["-euo", "pipefail", "-c", body], {
@@ -62,6 +71,7 @@ for (const [mode, expectedCalls, succeeds] of [
           PATH: `${dir}:${process.env.PATH}`,
           PROBE_COUNT_FILE: countFile,
           PROBE_MODE: mode,
+          SOCKET_READY_FILE: readyFile,
           SOCKGUARD_TEST_PODMAN_SOCKET: join(dir, "podman.sock"),
         },
         encoding: "utf8",

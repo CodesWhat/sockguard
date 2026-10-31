@@ -29,7 +29,7 @@ v2.4.2 tightens Podman engine identification and unscoped native routes, permits
 
 - Extract container-create ownership reference collectors without changing resource kinds, refusal reasons, case-alias handling, deduplication or sorted endpoint order.
 
-- Run the native API integration suites against Podman 5 and 6 from Fedora 44 and 45, in addition to the distro rootful/rootless jobs. Verify the live daemon major and wait for a settled socket after pulling the test image, retain version/results/log artifacts, and clean up each nested engine.
+- Run the native API integration suites against Podman 5 and 6 from Fedora 44 and 45, in addition to the distro rootful/rootless jobs. Verify the live daemon major and wait for a settled socket after pulling the test image, retain version/results/log artifacts, and clean up each nested engine. Probe before repairing permissions so a socket rebind resets the success streak.
 
 - Consolidated `/health` response encoding while preserving upstream/listener/probe precedence, response bodies and write-failure logging.
 
