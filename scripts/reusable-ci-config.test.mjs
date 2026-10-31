@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WORKFLOW = path.join(ROOT, ".github", "workflows", "ci-verify.yml");
 const LEFTHOOK = path.join(ROOT, "lefthook.yml");
-const SHARED_SHA = "01bf40b06b110946f12a49b82e407d77c6480df7";
+const SHARED_SHA = "5094cf2f723fe22303b8944658e972bc9ec898a6";
 
 // Every fixed adapter the reusable go-ci/node-ci jobs invoke by convention
 // (./scripts/ci/<name>.sh). Markers are substrings that must survive in the
