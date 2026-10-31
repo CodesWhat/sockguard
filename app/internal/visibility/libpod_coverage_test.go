@@ -1013,12 +1013,13 @@ func TestLibpodEventsInertWithoutVisibilityPolicy(t *testing.T) {
 // wantOwnerUnscopeableReasonCodes is. The two maps differ only in the prefix,
 // which is how an operator tells which layer refused the request.
 var wantVisibilityUnscopeableReasonCodes = map[string]string{
-	filter.LibpodShowMountedPath:    "visibility_libpod_show_mounted_unscopeable",
-	filter.LibpodContainerStatsPath: "visibility_libpod_container_stats_unscopeable",
-	filter.LibpodPodStatsPath:       "visibility_libpod_pod_stats_unscopeable",
-	filter.LibpodManifestExistsPath: "visibility_libpod_manifest_exists_unscopeable",
-	filter.LibpodManifestJSONPath:   "visibility_libpod_manifest_json_unscopeable",
-	filter.LibpodSecretListPath:     "visibility_libpod_secret_list_unscopeable",
+	filter.LibpodGenerateSystemdPath: "visibility_libpod_generate_systemd_unscopeable",
+	filter.LibpodShowMountedPath:     "visibility_libpod_show_mounted_unscopeable",
+	filter.LibpodContainerStatsPath:  "visibility_libpod_container_stats_unscopeable",
+	filter.LibpodPodStatsPath:        "visibility_libpod_pod_stats_unscopeable",
+	filter.LibpodManifestExistsPath:  "visibility_libpod_manifest_exists_unscopeable",
+	filter.LibpodManifestJSONPath:    "visibility_libpod_manifest_json_unscopeable",
+	filter.LibpodSecretListPath:      "visibility_libpod_secret_list_unscopeable",
 }
 
 // TestLibpodUnscopeableReadsAreRefusedUnderVisibilityPolicy covers every

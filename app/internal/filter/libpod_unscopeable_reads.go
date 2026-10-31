@@ -12,8 +12,11 @@ package filter
 // one. An endpoint that fails only the last two is filtered on the response
 // instead, the way GET /system/df is.
 //
-// LibpodSecretListPath is the one entry that does not meet the first
-// condition, and it is the only one allowed not to. Its items carry
+// LibpodGenerateSystemdPath is a named compound read whose pod/container
+// reference checks are not implemented. It is refused until every referenced
+// resource can be checked.
+//
+// LibpodSecretListPath also does not meet the first condition. Its items carry
 // Spec.Labels, so a response-side filter of the /system/df kind could scope
 // it; none exists, and the alternative to refusing it is forwarding the whole
 // host's secret inventory. That reasoning is written out in its own deny
@@ -117,6 +120,15 @@ const (
 	LibpodManifestExistsPath = "/libpod/manifests/sockguard-test/exists"
 	LibpodManifestJSONPath   = "/libpod/manifests/sockguard-test/json"
 )
+
+// LibpodGenerateSystemdPath represents Podman's dynamic systemd generation route.
+const LibpodGenerateSystemdPath = "/libpod/generate/sockguard-test/systemd"
+
+// LibpodGenerateSystemdDenyReason explains the refusal until a compound pod/container
+// reference check can validate every resource represented by the generated units.
+const LibpodGenerateSystemdDenyReason = "libpod systemd generation denied: " +
+	"the name may resolve to a pod or container and the generated units carry no labels; " +
+	"no compound reference check scopes the generated configuration to one caller"
 
 // LibpodShowMountedDenyReason is reported when either middleware refuses
 // GET /libpod/containers/showmounted.
@@ -247,6 +259,9 @@ const LibpodSecretListDenyReason = "libpod secret list denied: " +
 	"exists for its shape, so it cannot be scoped to one caller"
 
 var (
+	libpodGenerateSystemdRead = LibpodUnscopeableRead{
+		Path: LibpodGenerateSystemdPath, ReasonCodeStem: "generate_systemd", Reason: LibpodGenerateSystemdDenyReason,
+	}
 	libpodManifestExistsRead = LibpodUnscopeableRead{
 		Path: LibpodManifestExistsPath, ReasonCodeStem: "manifest_exists", Reason: LibpodManifestExistsDenyReason,
 	}
@@ -256,6 +271,7 @@ var (
 )
 
 var libpodUnscopeableReads = []LibpodUnscopeableRead{
+	libpodGenerateSystemdRead,
 	{Path: LibpodShowMountedPath, ReasonCodeStem: "show_mounted", Reason: LibpodShowMountedDenyReason},
 	{Path: LibpodContainerStatsPath, ReasonCodeStem: "container_stats", Reason: LibpodContainerStatsDenyReason},
 	{Path: LibpodPodStatsPath, ReasonCodeStem: "pod_stats", Reason: LibpodPodStatsDenyReason},
@@ -281,6 +297,12 @@ var libpodUnscopeableReadsByPath = func() map[string]LibpodUnscopeableRead {
 func LookupLibpodUnscopeableRead(normPath string) (LibpodUnscopeableRead, bool) {
 	if read, ok := libpodUnscopeableReadsByPath[normPath]; ok {
 		return read, true
+	}
+
+	if rest, ok := strings.CutPrefix(normPath, "/libpod/generate/"); ok {
+		if name := strings.TrimSuffix(rest, "/systemd"); name != rest && name != "" {
+			return libpodGenerateSystemdRead, true
+		}
 	}
 
 	rest, ok := strings.CutPrefix(normPath, "/libpod/manifests/")

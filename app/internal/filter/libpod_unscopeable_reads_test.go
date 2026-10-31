@@ -42,3 +42,18 @@ func TestLookupLibpodUnscopeableReadDoesNotMatchOtherManifestPaths(t *testing.T)
 		})
 	}
 }
+
+func TestSystemdGenerationRefusalMatchesOnlyItsNativeRoute(t *testing.T) {
+	t.Parallel()
+	for _, path := range []string{"/libpod/generate/tenant/systemd", "/libpod/generate/group/member/systemd"} {
+		read, ok := LookupLibpodUnscopeableRead(path)
+		if !ok || read.ReasonCodeStem != "generate_systemd" {
+			t.Fatalf("%s: read=%#v matched=%v", path, read, ok)
+		}
+	}
+	for _, path := range []string{"/libpod/generate/kube", "/libpod/generate/tenant/systemd/extra", "/generate/tenant/systemd", "/libpod/generate/systemd"} {
+		if _, ok := LookupLibpodUnscopeableRead(path); ok {
+			t.Fatalf("neighbor %s matched", path)
+		}
+	}
+}

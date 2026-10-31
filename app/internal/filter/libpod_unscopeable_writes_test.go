@@ -81,6 +81,12 @@ func TestLookupLibpodUnscopeableWriteIsMethodExact(t *testing.T) {
 		path   string
 	}{
 		{method: http.MethodGet, path: LibpodPodPrunePath},
+		{method: http.MethodGet, path: LibpodQuadletsPath},
+		{method: http.MethodPut, path: LibpodQuadletsPath},
+		{method: http.MethodDelete, path: "/libpod/quadlets/one.container"},
+		{method: http.MethodGet, path: LibpodArtifactRemovePath},
+		{method: http.MethodPost, path: LibpodArtifactRemovePath},
+		{method: http.MethodDelete, path: "/libpod/artifacts/one"},
 		{method: http.MethodHead, path: LibpodPodPrunePath},
 		{method: http.MethodDelete, path: LibpodPodPrunePath},
 		{method: http.MethodPost, path: "/libpod/containers/prune"},

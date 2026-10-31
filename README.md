@@ -490,7 +490,7 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 High-level themes only; see [CHANGELOG.md](CHANGELOG.md) for per-release detail.
 The full roadmap, with compatibility evidence and scope boundaries, is on the [docs roadmap page](https://getsockguard.com/docs/roadmap).
 
-The next release work is v3 candidate validation and GA. The 2.4.x line will receive security fixes until v3.1 ships, through reviewed maintenance releases that preserve the current global latest channels.
+The next release work is v3 candidate validation and GA, followed by the remaining Podman isolation fixes. The 2.4.x line will receive security fixes until v3.1 ships, through reviewed maintenance releases that preserve the current global latest channels.
 
 Added in 2.2.11: native Podman container and pod creates refuse caller-selected hosts-file paths. The default, `image` and `none` selectors remain allowed.
 

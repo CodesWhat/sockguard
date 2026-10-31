@@ -126,7 +126,19 @@ const LibpodKubeDownDenyReason = "libpod kube down denied: " +
 	"DELETE /libpod/play/kube and /libpod/kube/play remove the pods, secrets and volumes named in a YAML body " +
 	"that is not parsed, so the request cannot be scoped to one caller"
 
+// LibpodQuadletsPath and LibpodArtifactRemovePath are native batch writes
+// registered by Podman v6.0.0's register_quadlets.go and register_artifacts.go.
+const (
+	LibpodQuadletsPath             = "/libpod/quadlets"
+	LibpodArtifactRemovePath       = "/libpod/artifacts/remove"
+	LibpodQuadletWriteDenyReason   = "libpod quadlet write denied: installation and batch removal can replace or remove other callers' unit files, with no owner-label scope or per-file ownership check"
+	LibpodArtifactRemoveDenyReason = "libpod artifact batch removal denied: the endpoint can remove all artifacts, accepts no owner-label filter and has no per-artifact ownership check"
+)
+
 var libpodUnscopeableWrites = []LibpodUnscopeableWrite{
+	{Method: http.MethodPost, Path: LibpodQuadletsPath, ReasonCodeStem: "quadlet_write", Reason: LibpodQuadletWriteDenyReason},
+	{Method: http.MethodDelete, Path: LibpodQuadletsPath, ReasonCodeStem: "quadlet_write", Reason: LibpodQuadletWriteDenyReason},
+	{Method: http.MethodDelete, Path: LibpodArtifactRemovePath, ReasonCodeStem: "artifact_remove", Reason: LibpodArtifactRemoveDenyReason},
 	{Method: http.MethodPost, Path: LibpodPodPrunePath, ReasonCodeStem: "pod_prune", Reason: LibpodPodPruneDenyReason},
 	{Method: http.MethodPost, Path: LibpodSystemPrunePath, ReasonCodeStem: "system_prune", Reason: LibpodSystemPruneDenyReason},
 	{Method: http.MethodPost, Path: LibpodSystemCheckPath, ReasonCodeStem: "system_check", Reason: LibpodSystemCheckDenyReason},
