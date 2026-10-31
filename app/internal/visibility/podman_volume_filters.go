@@ -13,8 +13,7 @@ import (
 // Podman upstream's volume list carries a filter key other than `label` while
 // a visibility selector applies. Podman before 6.0 ORs volume filters across
 // keys, so the appended selector would not narrow the result; see
-// filter.PodmanVolumeFilterDenyReason. The flavor probe doesn't read the
-// Podman version, so this applies to every Podman upstream. A filters
+// filter.PodmanVolumeFilterDenyReason. The caller applies this to Podman releases before 6.0 and unknown versions. A filters
 // parameter that doesn't decode is left to the list path to report.
 func refuseUnsupportedPodmanVolumeFilters(w http.ResponseWriter, r *http.Request) bool {
 	encoded := r.URL.Query().Get("filters")

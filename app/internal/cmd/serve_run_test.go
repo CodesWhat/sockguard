@@ -129,8 +129,8 @@ func newServeTestDeps() *serveDeps {
 	// internal/upstreamflavor and by upstream_flavor_test.go, and
 	// TestServeDepsBindTheRealUpstreamFlavorProbe pins that production still
 	// binds the real one.
-	deps.detectUpstreamFlavor = func(context.Context, *http.Client) (upstreamflavor.Flavor, error) {
-		return upstreamflavor.Docker, nil
+	deps.probeUpstream = func(context.Context, *http.Client) (upstreamflavor.Capabilities, error) {
+		return upstreamflavor.Capabilities{Flavor: upstreamflavor.Docker}, nil
 	}
 	return deps
 }

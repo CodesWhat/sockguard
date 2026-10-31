@@ -55,7 +55,15 @@ test("the chart image pin lands on the development branch and never on main", ()
   // to the branch renovate.json names. Every cut through v2.2.0 (#430, #492)
   // did this by hand afterwards.
   assert.match(pin, /^ {4}needs: \[release, verify-published, verify-homebrew\]$/m);
-  assert.match(pin, /^ {4}if: \$\{\{ !contains\(github\.ref_name, '-'\) \}\}$/m);
+  assert.ok(pin.includes("always() && !contains(github.ref_name, '-')"));
+  assert.ok(
+    pin.includes("needs.release.result == 'success' && needs.verify-published.result == 'success'"),
+  );
+  assert.ok(
+    pin.includes(
+      "(needs.verify-homebrew.result == 'success' || needs.verify-homebrew.result == 'skipped')",
+    ),
+  );
   assert.match(pin, /^ {6}contents: write {2}# the pin commit/m);
   assert.match(pin, /bash scripts\/ci\/active-dev-branch\.sh renovate\.json/);
   assert.match(pin, /git push origin "HEAD:refs\/heads\/\$\{TARGET_BRANCH\}"/);
@@ -78,4 +86,18 @@ test("the chart image pin lands on the development branch and never on main", ()
     /git commit -m "chore\(chart\): pin the \$\{RELEASE_VERSION\} image to its multi-arch digest"/,
   );
   assert.match(pin, /nothing to commit/);
+});
+
+test("older supported maintenance releases cannot move global latest channels", () => {
+  const workflow = read(".github/workflows/release-from-tag.yml");
+  const release = workflowJob(workflow, "release");
+  const goreleaser = workflowJob(workflow, "goreleaser");
+  assert.match(release, /^ {4}needs: \[verify-ci, goreleaser\]$/m);
+  assert.match(release, /^ {10}flavor: latest=false$/m);
+  assert.ok(
+    release.includes(
+      "type=raw,value=latest,enable=$" + "{{ needs.verify-ci.outputs.latest == 'true' }}",
+    ),
+  );
+  assert.ok(goreleaser.includes("RELEASE_LATEST: $" + "{{ needs.verify-ci.outputs.latest }}"));
 });

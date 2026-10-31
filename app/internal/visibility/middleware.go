@@ -112,6 +112,9 @@ type Options struct {
 	// production always sets it explicitly and
 	// TestServeChainPassesResolvedFlavorToVisibility pins that wiring.
 	UpstreamFlavor upstreamflavor.Flavor
+	// PodmanConjunctiveVolumeFilters is true only when all upstream endpoints
+	// positively report a released Podman version with AND across volume filter keys.
+	PodmanConjunctiveVolumeFilters bool
 }
 
 // Policy defines per-profile visibility overrides.
@@ -307,7 +310,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 			if handleVisibilityImageExportRequest(logger, next, deps, w, r, normPath, &effectivePolicy) {
 				return
 			}
-			if podmanUpstream && hasSelectors && (r.Method == http.MethodGet || r.Method == http.MethodHead) &&
+			if podmanUpstream && !opts.PodmanConjunctiveVolumeFilters && hasSelectors && (r.Method == http.MethodGet || r.Method == http.MethodHead) &&
 				filter.IsPodmanVolumeListPath(normPath) && refuseUnsupportedPodmanVolumeFilters(w, r) {
 				return
 			}

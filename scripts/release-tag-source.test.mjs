@@ -33,7 +33,13 @@ function branchRecord(sha, ref) {
   return `${sha}\trefs/heads/${ref}`;
 }
 
-function runGuard({ releaseTag, tagSha, remoteRecords, gitExit = 0 }) {
+function runGuard({
+  releaseTag,
+  tagSha,
+  remoteRecords,
+  gitExit = 0,
+  security = "| Version | Supported |\n| --- | --- |\n| 3.0.x | :white_check_mark: |\n| 2.4.x | :white_check_mark: |",
+}) {
   const fakeGit = resolve(fixtureRoot, "git");
   writeFileSync(
     fakeGit,
@@ -41,11 +47,16 @@ function runGuard({ releaseTag, tagSha, remoteRecords, gitExit = 0 }) {
 if [ "${gitExit}" -ne 0 ]; then
   exit "${gitExit}"
 fi
-printf '%s\\n' "\${MOCK_REMOTE_RECORDS}"
+case "$1" in
+  fetch) exit 0 ;;
+  show) printf '%s\\n' "\${MOCK_SECURITY}" ;;
+  *) printf '%s\\n' "\${MOCK_REMOTE_RECORDS}" ;;
+esac
 `,
   );
   chmodSync(fakeGit, 0o755);
 
+  writeFileSync(resolve(fixtureRoot, "output"), "");
   return spawnSync("bash", ["-c", workflowStepScript("Verify release tag is branch HEAD")], {
     cwd: repoRoot,
     encoding: "utf8",
@@ -55,6 +66,8 @@ printf '%s\\n' "\${MOCK_REMOTE_RECORDS}"
       GITHUB_REF_NAME: releaseTag,
       GITHUB_SHA: tagSha,
       MOCK_REMOTE_RECORDS: remoteRecords,
+      MOCK_SECURITY: security,
+      GITHUB_OUTPUT: resolve(fixtureRoot, "output"),
       PATH: `${fixtureRoot}:${process.env.PATH}`,
     },
   });
@@ -72,6 +85,72 @@ describe("tag-triggered stable release source guard", () => {
 
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /Stable tag v2\.0\.0 points at main HEAD/u);
+    assert.equal(readFileSync(resolve(fixtureRoot, "output"), "utf8"), "latest=true\n");
+  });
+
+  it("accepts a supported older maintenance line without promoting latest", () => {
+    const result = runGuard({
+      releaseTag: "v2.4.2",
+      tagSha: stableSha,
+      remoteRecords: `${branchRecord("b".repeat(40), "main")}\n${branchRecord(stableSha, "maintenance/2.4.x")}`,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /maintenance\/2\.4\.x HEAD/u);
+    assert.match(readFileSync(resolve(fixtureRoot, "output"), "utf8"), /latest=false/u);
+  });
+
+  it("rejects maintenance releases absent from the default branch support policy", () => {
+    for (const security of [
+      "| Version | Supported |\n| --- | --- |\n| 3.0.x | :white_check_mark: |\n| 2.4.x | :x: |",
+      "| Version | Supported |\n| --- | --- |\n| 2.4.x | :white_check_mark: |",
+      "malformed",
+    ]) {
+      const result = runGuard({
+        releaseTag: "v2.4.2",
+        tagSha: stableSha,
+        security,
+        remoteRecords: `${branchRecord("b".repeat(40), "main")}\n${branchRecord(stableSha, "maintenance/2.4.x")}`,
+      });
+      assert.notEqual(result.status, 0);
+    }
+  });
+
+  it("never publishes a prerelease as latest, including when only main matches", () => {
+    const accepted = runGuard({
+      releaseTag: "v3.0.0-rc.4",
+      tagSha: stableSha,
+      remoteRecords: branchRecord(stableSha, "dev/v3.0"),
+    });
+    assert.equal(accepted.status, 0, accepted.stderr);
+    assert.equal(readFileSync(resolve(fixtureRoot, "output"), "utf8"), "latest=false\n");
+    assert.notEqual(
+      runGuard({
+        releaseTag: "v3.0.0-rc.4",
+        tagSha: stableSha,
+        remoteRecords: branchRecord(stableSha, "main"),
+      }).status,
+      0,
+    );
+  });
+
+  it("keeps the development branch authoritative for a shared prerelease head", () => {
+    const result = runGuard({
+      releaseTag: "v3.0.0-rc.4",
+      tagSha: stableSha,
+      remoteRecords: `${branchRecord(stableSha, "dev/v3.0")}\n${branchRecord(stableSha, "maintenance/3.0.x")}`,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /dev\/v3\.0 HEAD/u);
+  });
+
+  it("keeps main authoritative when maintenance shares the same head", () => {
+    const result = runGuard({
+      releaseTag: "v3.0.1",
+      tagSha: stableSha,
+      remoteRecords: `${branchRecord(stableSha, "main")}\n${branchRecord(stableSha, "maintenance/3.0.x")}`,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(resolve(fixtureRoot, "output"), "utf8"), "latest=true\n");
   });
 
   it("rejects a stable tag outside the default-branch head", () => {
@@ -109,15 +188,15 @@ describe("tag-triggered stable release source guard", () => {
       remoteRecords: branchRecord(stableSha, "dev/v2.0"),
     });
     const maintenance = runGuard({
-      releaseTag: "v1.7.6-rc.1",
+      releaseTag: "v2.4.2-rc.1",
       tagSha: stableSha,
-      remoteRecords: branchRecord(stableSha, "maintenance/1.7.x"),
+      remoteRecords: `${branchRecord("b".repeat(40), "main")}\n${branchRecord(stableSha, "maintenance/2.4.x")}`,
     });
 
     assert.equal(development.status, 0, development.stderr);
     assert.match(development.stdout, /dev\/v2\.0 HEAD/u);
     assert.equal(maintenance.status, 0, maintenance.stderr);
-    assert.match(maintenance.stdout, /maintenance\/1\.7\.x HEAD/u);
+    assert.match(maintenance.stdout, /maintenance\/2\.4\.x HEAD/u);
   });
 
   it("rejects prerelease tags at an arbitrary commit", () => {

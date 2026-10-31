@@ -182,6 +182,9 @@ type Options struct {
 	// TestServeChainPassesResolvedFlavorToOwnership is the wiring proof, and
 	// TestServeChainImageTagChecksTheLocalhostNameOnPodman is a second one.
 	UpstreamFlavor upstreamflavor.Flavor
+	// PodmanConjunctiveVolumeFilters is true only when all upstream endpoints
+	// positively report a released Podman version with AND across volume filter keys.
+	PodmanConjunctiveVolumeFilters bool
 }
 
 type upstreamInspector struct {
@@ -290,7 +293,7 @@ func middlewareWithDeps(
 			if ownerFilterApplies && refuseInvalidFilterKeys(w, r) {
 				return
 			}
-			if ownerFilterApplies && refuseUnsupportedPodmanVolumeFilters(w, r, normPath, podmanUpstream) {
+			if ownerFilterApplies && refuseUnsupportedPodmanVolumeFilters(w, r, normPath, podmanUpstream && !opts.PodmanConjunctiveVolumeFilters) {
 				return
 			}
 			if ownerFilterApplies && dockerfilters.RequiresSoleValue(r, ownerFilterKey(normPath)) {

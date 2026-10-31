@@ -449,14 +449,25 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
+    version: "v2.4.2",
+    title: "Podman Isolation & Release Reliability",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Docker declarations cannot override positive Podman identity; every failover endpoint must verify Podman 6+ before relaxing volume filter restrictions",
+      "Unscoped native systemd generation, Quadlet writes and artifact batch removal are refused under their isolation policies",
+      "CI retries and deadlines are bounded, local coverage matches CI, and maintenance releases preserve global latest channels",
+    ],
+  },
+  {
     version: "v3.0.0",
     title: "Verified TLS Compatibility Boundary",
     emoji: "🔐",
     status: "candidate",
     items: [
-      "Published v3.0.0-rc.4 candidate; select its image or /v3 Go tag explicitly. Includes v2.4.1 exec target protection and the v2.4 policy/security work",
+      "Published v3.0.0-rc.4 candidate; select its image or /v3 Go tag explicitly. Includes v2.4.2 Podman isolation and dependency updates, exec target protection and the v2.4 policy/security work",
       "Rejects the deprecated endpoint skip-verification setting and unverified Docker TLS fallback; configure the daemon CA and verified TLS",
-      "Go imports, generated descriptors and release builds use /v3; stable channels serve v2.4.1",
+      "Go imports, generated descriptors and release builds use /v3; stable channels serve v2.4.2",
       "GA requires fresh candidate soak, TLS/security checks and published-image conformance; no earlier than 2026-10-31 at 16:08:58 UTC. Candidate-only behavior fixes restart the window; opaque BuildKit removal remains undecided",
     ],
   },

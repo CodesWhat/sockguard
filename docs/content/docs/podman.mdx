@@ -966,11 +966,11 @@ same way they cover Docker-compat:
   `{"nsmode":"container","value":"<ref>"}` namespace object and
   `pod`/`infra_image` fields.
 
-Set `upstream.flavor` to the engine that is actually behind the socket, or leave
-it on `auto`. Owner-isolation checks branch on it and a wrong value does not
-fail startup: on a Podman upstream configured as `docker`, an image retag gets
-the single-name target check instead of the two-name one that also covers
-`localhost/{repo}:{tag}`.
+Leave `upstream.flavor` on `auto` unless an upstream proxy cannot identify its engine. Every mode probes `GET /version` on each configured endpoint before serving clients. Explicit `docker` is rejected when a Podman component or `Server: Libpod/...` header contradicts it, including a malformed body or failed status. Redirects are not followed. This keeps event filtering and the extra `localhost/{repo}:{tag}` image target check tied to the actual engine. An explicit declaration can still resolve an unidentified engine, with conservative version capabilities.
+
+The [Server header](https://github.com/containers/podman/blob/v6.0.0/pkg/api/server/handler_api.go) advertises a native API level. Only the release in the [Podman Engine component](https://github.com/containers/podman/blob/v6.0.0/pkg/api/handlers/compat/version.go) supplies the version evidence for volume capabilities; a header alone cannot grant them.
+
+Volume list and prune permit additional filter keys under owner or label-based visibility isolation only when every endpoint positively reports a released Podman version of 6.0.0 or later. Podman before 6.0 ORs different volume filter keys; old, unknown and prerelease versions therefore retain the label-only restriction. A failover set containing any such endpoint remains restricted. Event semantics are separate and retain the limits below. The engine and capabilities are fixed at startup, so restart Sockguard as part of an upstream engine/version change.
 
 Two endpoints are the exception, and they need `upstream.flavor: podman` set
 (or left on `auto`, which probes for it) to be handled correctly. Podman
@@ -1370,3 +1370,11 @@ land):
   is inspected" means every endpoint is routed at an inspector, not that
   every field in it is gated.
 - A tmpfs is executable by default on Podman, and `allow_tmpfs_privileged_options` can't change that. The option denies tmpfs options that turn on `exec`, `dev` or `suid`, which is the whole job on dockerd because it mounts a tmpfs `noexec,nosuid,nodev` unless asked otherwise. Podman mounts one `nosuid,nodev` but leaves it executable, so `{"HostConfig":{"Tmpfs":{"/scratch":""}}}` is already an executable mount and carries no option text for Sockguard to deny. With the option off, `suid` and `dev` are still refused on a Podman upstream. On Podman, don't rely on this option to keep tmpfs mounts non-executable.
+
+### Native operations without an isolation model
+
+Owner isolation refuses Quadlet installation and removal, including `POST` and `DELETE /libpod/quadlets` and `DELETE /libpod/quadlets/{name}`. It also refuses artifact add, local add, pull, push, batch removal and per-name removal. These types have no owner-label or per-target ownership check. Named query targets and namespaced artifact references receive the same refusal, in enforce, warn and audit modes. A body-blind-write opt-in does not bypass owner isolation.
+
+Owner isolation and visibility policies refuse Quadlet inventory, existence and unit-file reads, and artifact inventory, inspect and extraction reads. This covers `GET` and `HEAD /libpod/quadlets/json`, `/libpod/quadlets/{name}/exists`, `/libpod/quadlets/{name}/file`, `/libpod/artifacts/json`, `/libpod/artifacts/{name}/json` and `/libpod/artifacts/{name}/extract`. Neither resource type has a label-based isolation model.
+
+Owner isolation and visibility policies also refuse `GET` and `HEAD /libpod/generate/{name}/systemd`. The name may refer to a pod or container, and the generated unit bundle has no labels to filter. It remains refused until every referenced resource can be checked. API-version prefixes receive the same checks.

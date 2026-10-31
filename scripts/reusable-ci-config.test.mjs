@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WORKFLOW = path.join(ROOT, ".github", "workflows", "ci-verify.yml");
 const LEFTHOOK = path.join(ROOT, "lefthook.yml");
-const SHARED_SHA = "01bf40b06b110946f12a49b82e407d77c6480df7";
+const SHARED_SHA = "5094cf2f723fe22303b8944658e972bc9ec898a6";
 
 // Every fixed adapter the reusable go-ci/node-ci jobs invoke by convention
 // (./scripts/ci/<name>.sh). Markers are substrings that must survive in the
@@ -21,7 +21,7 @@ const FIXED_SCRIPTS = new Map([
   [
     "go-release-check.sh",
     [
-      "goreleaser/goreleaser/v2@v2.15.3",
+      "goreleaser/goreleaser/v2@v2.18.0",
       // `sign` is load-bearing, not cosmetic: the signs: blocks use keyless
       // cosign, which needs an OIDC identity only the tagged release run has.
       // Dropping it back to just "publish" fails this dry-run on any machine
