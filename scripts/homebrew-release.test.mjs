@@ -22,10 +22,10 @@ test("GoReleaser publishes the sockguard binary to the CodesWhat Homebrew tap", 
   assert.match(config, /^ {4}binaries:\n {6}- sockguard$/m);
   assert.ok(
     config.includes(
-      "skip_upload: '{{ if eq .Env.RELEASE_LATEST \"true\" }}auto{{ else }}true{{ end }}'",
+      'skip_upload: \'{{ if eq (index .Env "RELEASE_LATEST") "true" }}auto{{ else }}true{{ end }}\'',
     ),
   );
-  assert.ok(config.includes("make_latest: '{{ eq .Env.RELEASE_LATEST \"true\" }}'"));
+  assert.ok(config.includes('make_latest: \'{{ eq (index .Env "RELEASE_LATEST") "true" }}\''));
   assert.match(config, /^ {6}owner: CodesWhat$/m);
   assert.match(config, /^ {6}name: homebrew-tap$/m);
   assert.match(config, /^ {6}token: "{{ \.Env\.HOMEBREW_TAP_TOKEN }}"$/m);
