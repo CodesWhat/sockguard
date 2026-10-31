@@ -280,7 +280,7 @@ func newImageTagChain(t *testing.T, daemon http.Handler, configure func(*config.
 	// case sets it, and the daemon names its own engine on GET /version.
 	logger := newDiscardLogger()
 	deps := newServeTestDeps()
-	deps.detectUpstreamFlavor = upstreamflavor.Detect
+	deps.probeUpstream = upstreamflavor.Probe
 	runtime, err := newServeRuntime(&cfg, logger, deps)
 	if err != nil {
 		t.Fatalf("newServeRuntime: %v", err)

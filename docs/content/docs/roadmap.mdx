@@ -3,9 +3,10 @@ title: Roadmap
 description: Sockguard's shipped v1.7, v2.0, v2.1, v2.2, v2.3, and v2.4 work and later direction.
 ---
 
-Sockguard v2.4 is the current stable feature line, with v2.4.1 the latest
-release. It protects exec targets, refreshes the CA certificate bundle and fixes
-the published-image Grype setup timeout. It carries v2.4.0 and everything
+Sockguard v2.4 is the current stable feature line, with v2.4.2 the latest
+release. It tightens Podman engine and native-route isolation, permits safe
+volume filters on verified Podman 6+ endpoints and improves CI and maintenance
+publishing. It carries v2.4.1 and everything
 through v2.3.3. The v2.3 line shipped as follows. v2.3.0 promotes `2.3.0-rc.9` unchanged in behavior and is the first
 release under the MIT license; 2.2.x and earlier remain Apache-2.0. v2.3.1 is a
 security patch that refuses a client-supplied container log path. v2.3.2 is a
@@ -155,6 +156,12 @@ from source and a client-only request capture, not a live-daemon reproduction.
 | BuildKit isolation | Caller identity comes from verified certificates or Unix peer credentials where available, session state is correlated by principal, profile, and session, Solve admission is atomic, and upgrade handshakes are bounded |
 | Proxy hardening | Socket cleanup is inode-owned, method-aware resource routing covers keyword names, generated response errors clear stale representation headers, inspected bodies retain deadlines through logging and metrics, and request metric labels have finite cardinality |
 | Release surfaces | README, docs, website, Helm metadata, verification assets, and migration guidance agree on v2.0.0; release blobs use sigstore bundles only and published metadata is read back before the release succeeds |
+
+## Shipped in v2.4.2
+
+Every startup mode probes each upstream endpoint. Docker declarations cannot override positive Podman identity, and version probes do not follow redirects. Volume list/prune under isolation allow non-label filters only when every endpoint positively reports a released Podman 6.0.0 or later; old, unknown and prerelease versions remain restricted.
+
+Owner and visibility isolation refuse native systemd generation until compound pod/container references can be checked. Owner isolation also refuses Quadlet installation/batch removal and artifact batch removal, in enforce, warn and audit modes. CI now enforces the production coverage floor locally, bounds and retries network operations, and uses the reviewed shared Ubuntu 26.04 workflows. Older supported maintenance releases preserve global latest channels and send chart pins through protected review.
 
 ## Shipped in v2.4.1
 

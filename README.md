@@ -43,7 +43,7 @@
 <hr>
 
 > [!NOTE]
-> **v2.4.1 is the latest stable release.** It protects labeled containers from Docker and Podman exec, marks the official Sockguard image as protected, refreshes the CA certificate bundle and fixes the published-image Grype setup timeout. It carries v2.4.0. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
+> **v2.4.2 is the latest stable release.** It rejects Docker declarations that contradict Podman identity, keeps volume filters safe across failover endpoints, and refuses native operations without an isolation model. It also updates Rekor dependencies, improves CI reliability and prepares protected 2.4 maintenance releases. It carries v2.4.1. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
 <h2 align="center">Contents</h2>
 
@@ -394,7 +394,11 @@ listeners:
 
 A client resolved to a profile outside the listener it connected on's `allowed_profiles` is denied, even if the base policy would otherwise allow it — see [`configs/multi-listener.yaml`](app/configs/multi-listener.yaml) for a complete working example and the [configuration reference](https://getsockguard.com/docs/configuration) for the full schema and reload semantics.
 
-`upstream.flavor` names the engine behind that socket: `auto` (the default), `docker`, or `podman`. It exists because Podman's Docker-compat `GET /events` ORs several values under one filter key where dockerd ANDs them, so the label selectors a visibility policy injects would widen the stream instead of narrowing it, and Sockguard has to know which engine it is talking to before it writes that filter. `auto` issues a real `GET /version` probe at startup, before the listener binds, against every configured endpoint rather than only the active one, so a failover pair cannot cache whichever engine happened to answer first and then keep applying its semantics after traffic moves. A probe that fails, times out, or reports an engine it does not recognize fails startup rather than guessing, and so does a set whose endpoints answer with different engines, because the two possible guesses are wrong in opposite directions. An explicit `docker` or `podman` is taken as given and skips the probe, as [`podman-readonly.yaml`](app/configs/podman-readonly.yaml) does. Like `upstream.socket` and `upstream.endpoints`, it is reload-immutable: the resolved value is bound into the handler chain at startup, so changing it needs a restart.
+`upstream.flavor` names the engine behind the socket: `auto` (the default), `docker`, or `podman`. Every mode probes `GET /version` once per configured endpoint before listeners bind. Engine components and a `Server: Libpod/...` header identify Podman. `auto` fails startup on a failed or unrecognized probe or a mixed-engine failover set. An explicit flavor remains a fallback for a proxy that cannot identify its engine, but `docker` is rejected when any endpoint positively identifies Podman. This protects event filtering and Podman's extra `localhost/` image-name interpretation from a contradictory override.
+
+Podman volume lists and prune allow non-label filters under owner or label-based visibility isolation only when every endpoint positively reports a released Podman version of 6.0.0 or later. Older, unknown and prerelease versions keep the label-only restriction. Only the `Podman Engine` component's release version enables the volume capability; a Libpod header alone cannot. The probe does not follow redirects. Configuration and derived capabilities are reload-immutable, so restart Sockguard as part of an upstream engine/version change.
+
+Owner isolation refuses native Quadlet and artifact writes. Owner isolation and visibility policies also refuse their inventory, inspect, file and extraction reads because these resource types have no isolation model. This includes per-name operations and namespaced artifact references, as well as batch routes.
 
 Sockguard inspects allowed writes, including the destructive query controls on `DELETE /containers/**`, the bodies on `containers/create`, `containers/*/update`, `exec`, `build`, `images/create`, `services/create`, `swarm/init`, and the rest of the body-bearing write paths. It blocks privileged or host-bound workloads, non-allowlisted mounts, devices, and registries, and unsafe swarm/network controls. Response bodies are redacted (env, mount paths, topology, secrets) by default. None of that needs configuration to switch on.
 
@@ -490,6 +494,8 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 High-level themes only; see [CHANGELOG.md](CHANGELOG.md) for per-release detail.
 The full roadmap, with compatibility evidence and scope boundaries, is on the [docs roadmap page](https://getsockguard.com/docs/roadmap).
 
+The next release work is v3 candidate validation and GA, followed by the remaining Podman isolation fixes. The 2.4.x line will receive security fixes until v3.1 ships, through reviewed maintenance releases that preserve the current global latest channels.
+
 Added in 2.2.11: native Podman container and pod creates refuse caller-selected hosts-file paths. The default, `image` and `none` selectors remain allowed.
 
 | Version | Theme | Highlights |
@@ -512,6 +518,7 @@ Added in 2.2.11: native Podman container and pod creates refuse caller-selected 
 | **v2.x** | Security Hardening | Continued mutation-test hardening of the rule-evaluation core and config validators |
 | **v2.4.0** ✅ | BuildKit Compatibility | Local Dockerfile builds with Buildx v0.33.0 and v0.38.0 are verified against Docker 29.5.2. The built-in compiler is mediated under the existing policy and owner checks; arbitrary daemon frontend images, attestations and filesystem-loaded nested builds remain denied. See the [docs roadmap](https://getsockguard.com/docs/roadmap#shipped-in-v240) |
 | **v2.4.1** ✅ | Exec Target Protection & CA Refresh | Protected container labels block Docker and Podman exec create/start, including in the proxy itself. Exec-create pins the inspected ID; the CA bundle is refreshed and published-image Grype no longer sets up a builder. |
+| **v2.4.2** ✅ | Podman Isolation & Release Reliability | Engine identity checks, version-aware volume filter scoping, unscoped native-route refusals, bounded CI retries and protected maintenance chart pins. |
 | **v2.x** | Supply Chain | `egress-policy: block` with curated allow-lists on high-privilege release jobs |
 | **v2.x** | Policy Refinement | Named rule path aliases and further response-policy refinement |
 | **v2.x** | Internals | Code-review backlog: collapse the config → filter-options → policy translation layers behind a single source of truth; profiling-gated JSON redaction fast path |
