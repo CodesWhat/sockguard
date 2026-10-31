@@ -438,14 +438,25 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
+    version: "v2.4.1",
+    title: "Exec Target Protection & CA Refresh",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Containers labeled com.sockguard.exec=deny refuse Docker and Podman exec; the official Sockguard image carries the label",
+      "Exec-create pins the inspected container ID, and the static image has an updated CA certificate bundle",
+      "Published-image Grype uses the runner's existing Buildx plugin with bounded digest lookup retries",
+    ],
+  },
+  {
     version: "v3.0.0",
     title: "Verified TLS Compatibility Boundary",
     emoji: "🔐",
     status: "candidate",
     items: [
-      "Published v3.0.0-rc.4 candidate; select its image or /v3 Go tag explicitly. Includes the v2.4 policy and security work",
+      "Published v3.0.0-rc.4 candidate; select its image or /v3 Go tag explicitly. Includes v2.4.1 exec target protection and the v2.4 policy/security work",
       "Rejects the deprecated endpoint skip-verification setting and unverified Docker TLS fallback; configure the daemon CA and verified TLS",
-      "Go imports, generated descriptors and release builds use /v3; stable channels serve v2.4.0",
+      "Go imports, generated descriptors and release builds use /v3; stable channels serve v2.4.1",
       "GA requires fresh candidate soak, TLS/security checks and published-image conformance; no earlier than 2026-10-31 at 16:08:58 UTC. Candidate-only behavior fixes restart the window; opaque BuildKit removal remains undecided",
     ],
   },

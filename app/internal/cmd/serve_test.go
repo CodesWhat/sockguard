@@ -106,6 +106,9 @@ func TestServePolicyConfigAddsRuntimeFilterOptions(t *testing.T) {
 	if got.Exec.InspectStart == nil {
 		t.Fatal("Exec.InspectStart is nil, want runtime inspector")
 	}
+	if got.Exec.InspectTarget == nil {
+		t.Fatal("Exec.InspectTarget is nil, want runtime inspector")
+	}
 }
 
 // TestServePolicyConfigWiresInsecureAllowBodyBlindWrites covers gap G-exec:
@@ -165,11 +168,15 @@ func TestServePolicyConfigHonorsBlindWriteOptInForExec(t *testing.T) {
 		t.Fatalf("compile deny rule: %v", err)
 	}
 
+	policy := servePolicyConfig(&cfg, nil)
+	policy.Exec.InspectTarget = func(context.Context, string) (filter.ExecTargetInspectResult, bool, error) {
+		return filter.ExecTargetInspectResult{ContainerID: strings.Repeat("a", 64)}, true, nil
+	}
 	reachedUpstream := false
 	handler := filter.MiddlewareWithOptions(
 		[]*filter.CompiledRule{allowExec, denyAll},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		filter.Options{PolicyConfig: servePolicyConfig(&cfg, nil)},
+		filter.Options{PolicyConfig: policy},
 	)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		reachedUpstream = true
 		w.WriteHeader(http.StatusCreated)
@@ -209,6 +216,9 @@ func TestBuildServeClientProfilesHonorsGlobalBlindWriteOptIn(t *testing.T) {
 		t.Fatalf("buildServeClientProfiles() error: %v", err)
 	}
 	profile := profiles["portwing-exec"]
+	if profile.Exec.InspectTarget == nil {
+		t.Fatal("named profile is missing exec target inspection")
+	}
 	if !profile.Exec.AllowBlindWrites || !profile.Build.AllowBlindWrites || !profile.ContainerUpdate.AllowBlindWrites {
 		t.Fatalf("named profile blind-write runtime options = exec:%v build:%v container_update:%v, want all true", profile.Exec.AllowBlindWrites, profile.Build.AllowBlindWrites, profile.ContainerUpdate.AllowBlindWrites)
 	}

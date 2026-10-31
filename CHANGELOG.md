@@ -9,9 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [3.0.0-rc.4] - 2026-10-31
 
-This candidate carries v2.4.0 and the release workflow fixes forward onto the v3 line, with a refreshed CA certificate bundle. The v3 TLS compatibility changes are unchanged. Fresh exact-source soak, TLS/security and published-image conformance are required before GA.
+This candidate carries v2.4.1 and the release workflow fixes forward onto the v3 line, with a refreshed CA certificate bundle. The v3 TLS compatibility changes are unchanged. Fresh exact-source soak, TLS/security and published-image conformance are required before GA.
 
 ### Security
+
+- Refuse Docker and native Podman exec create/start against containers labeled `com.sockguard.exec=deny`. The official Sockguard image carries this label by default, protecting the proxy even when interactive exec and root commands are enabled. Exec-create pins the inspected container ID so a concurrent rename cannot swap in another target.
 
 - Update the Chainguard static image to refresh the CA certificate bundle for CVE-2026-91403. The previous image carried ca-certificates-bundle 20260413-r0 and failed the critical-severity image scan.
 
@@ -72,6 +74,20 @@ This first v3 candidate includes the v2.3 frontend mediation and v2.4 policy/sec
 ### Removed
 
 - **Breaking change:** the `dev/v3.0` source rejects `upstream.endpoints[].insecure_skip_tls_verify` at any value, including `false` and `null`. Remove the key and configure `tls.ca_file` to verify the daemon. TCP Docker environment resolution rejects non-empty `DOCKER_TLS` without non-empty `DOCKER_TLS_VERIFY`; set `DOCKER_TLS_VERIFY=1`. Verified TLS precedence, certificate lookup, Unix sockets, explicit endpoints and acknowledged plain TCP retain their behavior. Startup, CLI validation and rejected reloads report migration guidance. All v2 release lines, including v2.4.0-rc.1, retain their accepted behavior.
+
+## [2.4.1] - 2026-10-31
+
+v2.4.1 protects exec targets, refreshes the CA certificate bundle and removes unnecessary Buildx setup from the published-image Grype scan. It carries v2.4.0.
+
+### Security
+
+- Refuse Docker and native Podman exec create/start against containers labeled `com.sockguard.exec=deny`. The official Sockguard image carries this label by default, protecting the proxy even when interactive exec and root commands are enabled. Exec-create pins the inspected container ID so a concurrent rename cannot swap in another target.
+
+- Update the Chainguard static image to refresh the CA certificate bundle for CVE-2026-91403. The previous image carried ca-certificates-bundle 20260413-r0 and failed the critical-severity image scan.
+
+### Changed
+
+- **The published-image Grype scan no longer sets up Buildx.** It only needs `docker buildx imagetools inspect`, which the runner already has, and setting up a builder under the release egress block was refused and ran the job past its 20-minute limit on both v2.4.0 publisher runs. The digest lookup now retries on its own with a five-minute limit.
 
 ## [2.4.0] - 2026-10-31
 
