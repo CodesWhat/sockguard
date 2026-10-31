@@ -2,8 +2,6 @@ ARG FEDORA_IMAGE
 FROM ${FEDORA_IMAGE}
 
 RUN dnf install -y podman crun conmon netavark aardvark-dns \
-    && dnf clean all \
-    && mkdir -p /etc/containers/containers.conf.d \
-    && printf '[containers]\ncgroups="disabled"\n' > /etc/containers/containers.conf.d/90-integration.conf
+    && dnf clean all
 
 ENTRYPOINT ["podman", "--storage-driver=vfs", "--cgroup-manager=cgroupfs", "--events-backend=file"]

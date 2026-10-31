@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Preserve native integration test failures through the results pipeline. Keep cgroups enabled in the nested test engine so host-PID pod positive controls exercise a supported daemon configuration.
+
 - Fail integration tests when an explicitly configured Docker or Podman socket is missing. Optional local runs still skip when no engine is configured.
 
 - Clear reused container-create string arrays before decoding another request, so null elements cannot retain policy values from an earlier request.

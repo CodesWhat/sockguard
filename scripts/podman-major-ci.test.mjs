@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -14,6 +14,28 @@ const guard = workflow.match(
 )?.[1];
 assert.ok(guard, "the live daemon version guard must exist");
 
+test("native CI fails when go test fails before tee", () => {
+  const body = workflow.match(
+    /- name: Run native API integration suites\n\s+working-directory: app\n\s+run: \|\n([\s\S]+?)\n {6}- name:/u,
+  )?.[1];
+  assert.ok(body);
+  const dir = mkdtempSync(join(tmpdir(), "sockguard-podman-exit-"));
+  try {
+    mkdirSync(join(dir, "app"));
+    mkdirSync(join(dir, "artifacts/podman"), { recursive: true });
+    const result = spawnSync(
+      "bash",
+      ["-e", "-c", 'go() { printf \'{"Action":"fail"}\\n\'; return 17; }\n' + body],
+      { cwd: join(dir, "app"), encoding: "utf8", timeout: 5000 },
+    );
+    assert.ifError(result.error);
+    assert.equal(result.status, 17, result.stdout + result.stderr);
+    assert.match(readFileSync(join(dir, "artifacts/podman/tests.jsonl"), "utf8"), /"fail"/u);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 for (const [mode, expectedCalls, succeeds] of [
   ["healthy", 5, true],
   ["flapping", 8, true],
@@ -21,7 +43,7 @@ for (const [mode, expectedCalls, succeeds] of [
 ]) {
   test(`native CI socket readiness: ${mode}`, () => {
     const body = workflow.match(
-      /- name: Verify native socket is settled\n\s+run: \|\n([\s\S]+?)\n      - name:/u,
+      /- name: Verify native socket is settled\n\s+run: \|\n([\s\S]+?)\n {6}- name:/u,
     )?.[1];
     assert.ok(body, "native suite must verify a settled socket after pre-pull");
     const dir = mkdtempSync(join(tmpdir(), "sockguard-podman-readiness-"));

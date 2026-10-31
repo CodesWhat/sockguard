@@ -102,7 +102,10 @@ jobs:
       - name: Start engine and verify live native API
         run: |
           mkdir -p /tmp/sockguard-podman-major artifacts/podman
-          docker run -d --privileged --name sockguard-podman-major \
+          # Cgroups stay enabled: Podman refuses host-PID pods when they are disabled.
+          # This writable cgroup mount is confined to the disposable hosted runner.
+          docker run -d --privileged --cgroupns=host --name sockguard-podman-major \
+            -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
             -v /tmp/sockguard-podman-major:/run/podman \
             sockguard-podman-integration system service --time=0 unix:///run/podman/podman.sock
           ready=""
@@ -157,6 +160,7 @@ jobs:
       - name: Run native API integration suites
         working-directory: app
         run: |
+          set -o pipefail
           go test -json -tags=podmanintegration -count=1 -timeout=10m \
             ./integration/... ./internal/cmd/... | tee ../artifacts/podman/tests.jsonl
 
