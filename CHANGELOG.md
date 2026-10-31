@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.1] - 2026-10-31
+
+v2.4.1 protects exec targets, refreshes the CA certificate bundle and removes unnecessary Buildx setup from the published-image Grype scan. It carries v2.4.0.
+
+### Security
+
+- Refuse Docker and native Podman exec create/start against containers labeled `com.sockguard.exec=deny`. The official Sockguard image carries this label by default, protecting the proxy even when interactive exec and root commands are enabled. Exec-create pins the inspected container ID so a concurrent rename cannot swap in another target.
+
+- Update the Chainguard static image to refresh the CA certificate bundle for CVE-2026-91403. The previous image carried ca-certificates-bundle 20260413-r0 and failed the critical-severity image scan.
+
+### Changed
+
+- **The published-image Grype scan no longer sets up Buildx.** It only needs `docker buildx imagetools inspect`, which the runner already has, and setting up a builder under the release egress block was refused and ran the job past its 20-minute limit on both v2.4.0 publisher runs. The digest lookup now retries on its own with a five-minute limit.
+
 ## [2.4.0] - 2026-10-31
 
 v2.4.0 promotes v2.4.0-rc.3 unchanged in behavior. The v2.4 line adds exact image admission (`allowed_images` for Docker and Podman container create and Swarm service create/update, with per-client lists and rollout modes), opt-in create environment, command and entrypoint policy, startup and validate warnings for rules that match no known route, reproducible binary build checks, and mediated standard Buildx Dockerfile builds. It carries everything through 2.3.3.

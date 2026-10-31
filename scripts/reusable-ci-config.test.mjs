@@ -1102,3 +1102,91 @@ test("release publisher retries Set up QEMU like Set up Docker Buildx", () => {
     assert.ok(raw.includes(`- name: ${name}\n`), `${name} missing`);
   }
 });
+
+// REL-21: the published-image Grype job only needs `imagetools inspect`, so it
+// must not set up a builder under the release egress block.
+test("published-image Grype scan has no Buildx setup and a bounded retrying digest step", () => {
+  const raw = fs.readFileSync(
+    path.join(ROOT, ".github", "workflows", "release-from-tag.yml"),
+    "utf8",
+  );
+  const lines = raw.split("\n");
+  const start = lines.findIndex((l) => l.includes('name: "Release: Grype Scan (Published Image'));
+  assert.notEqual(start, -1, "published-image Grype job not found");
+  const next = lines.findIndex((l, i) => i > start && /^ {2}[A-Za-z0-9_-]+:\s*$/u.test(l));
+  const job = lines.slice(start, next === -1 ? lines.length : next);
+  const jobText = job.join("\n");
+  assert.doesNotMatch(jobText, /docker\/setup-buildx-action/u);
+  assert.match(jobText, /^ {4}timeout-minutes: \d+$/mu, "job keeps its own timeout");
+
+  const at = job.findIndex((l) => l.trim() === "- name: Resolve platform-specific digest");
+  assert.notEqual(at, -1, "digest step not found");
+  const end = job.findIndex((l, i) => i > at && /^ {6}- name:/u.test(l));
+  const stepText = job.slice(at, end === -1 ? job.length : end).join("\n");
+  const limit = /^ {8}timeout-minutes: (\d+)$/mu.exec(stepText);
+  assert.ok(limit && Number(limit[1]) <= 5, "digest step has timeout-minutes <= 5");
+  assert.match(stepText, /for attempt in 1 2 3/u);
+  assert.match(stepText, /docker buildx version/u);
+
+  const digest = `sha256:${"b".repeat(64)}`;
+  const other = `sha256:${"c".repeat(64)}`;
+  const manifest = JSON.stringify({
+    manifests: [
+      { digest: other, platform: { os: "linux", architecture: "amd64" } },
+      { digest, platform: { os: "linux", architecture: "arm64" } },
+    ],
+  });
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rel21-"));
+  try {
+    const bin = path.join(tmp, "bin");
+    fs.mkdirSync(bin);
+    const counter = path.join(tmp, "count.txt");
+    fs.writeFileSync(path.join(bin, "sleep"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
+    fs.writeFileSync(
+      path.join(bin, "docker"),
+      [
+        "#!/usr/bin/env bash",
+        'if [ "$2" = "version" ]; then exit 0; fi',
+        `echo x >> "${counter}"`,
+        `n=$(wc -l < "${counter}")`,
+        'if [ "$n" -le "$FAKE_DOCKER_FAILS" ]; then exit 1; fi',
+        `printf '%s' '${manifest}'`,
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    const script = path.join(tmp, "digest.sh");
+    fs.writeFileSync(script, stepRunScript(job.join("\n"), "Resolve platform-specific digest"));
+    for (const [fails, wantStatus] of [
+      [0, 0],
+      [2, 0],
+      [3, 1],
+    ]) {
+      fs.rmSync(counter, { force: true });
+      const out = path.join(tmp, "out.txt");
+      fs.rmSync(out, { force: true });
+      fs.writeFileSync(out, "");
+      const r = spawnSync("bash", [script], {
+        encoding: "utf8",
+        env: {
+          PATH: `${bin}:${process.env.PATH}`,
+          IMAGE_REF: "ghcr.io/codeswhat/sockguard:2.4.0",
+          PLATFORM: "linux/arm64",
+          GITHUB_OUTPUT: out,
+          FAKE_DOCKER_FAILS: String(fails),
+        },
+      });
+      assert.equal(r.status === 0 ? 0 : 1, wantStatus, `fails=${fails}: ${r.stdout}${r.stderr}`);
+      if (wantStatus === 0) {
+        assert.equal(
+          fs.readFileSync(out, "utf8").trim(),
+          `ref=ghcr.io/codeswhat/sockguard@${digest}`,
+        );
+      } else {
+        assert.match(r.stdout, /failed 3 times/u);
+      }
+    }
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});

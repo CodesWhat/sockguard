@@ -31,8 +31,13 @@
 #   - Drydock drives exec calls through the Portwing edge mode
 #   - You need exec for container debugging via the Portwing UI
 #
-# Security note: exec grants arbitrary command execution inside any container
-# that Portwing can reach. Keep the proxy socket access-controlled (unix peer
+# Exec targets labeled com.sockguard.exec=deny are always refused in enforce
+# mode. The official Sockguard image carries that label; preserve it on the
+# proxy and add it to custom proxy images and other protected containers.
+# For narrower workload access, use ownership labels and client profiles.
+#
+# Security note: exec grants arbitrary command execution inside unprotected
+# containers that Portwing can reach. Keep the proxy socket access-controlled (unix peer
 # credentials or client CIDR allowlist) so only the Portwing process can call
 # the exec paths. See portwing.yaml for the exec-disabled baseline.
 
