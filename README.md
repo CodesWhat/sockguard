@@ -498,6 +498,8 @@ The full roadmap, with compatibility evidence and scope boundaries, is on the [d
 
 The next release work is v3 candidate validation and GA, followed by the remaining Podman isolation fixes. The 2.4.x line will receive security fixes until v3.1 ships, through reviewed maintenance releases that preserve the current global latest channels. Native API integration CI covers Podman 5 and 6 as well as the distro rootful/rootless jobs, with a live daemon version check and a settled-socket check for each major. An explicitly configured missing engine socket fails the integration run instead of silently skipping it. Native CI preserves failed test status while collecting its result artifacts.
 
+The frontend runner waits within a bounded cleanup deadline for Docker to confirm its container is absent, including when automatic removal is already in progress.
+
 Added in 2.2.11: native Podman container and pod creates refuse caller-selected hosts-file paths. The default, `image` and `none` selectors remain allowed.
 
 | Version | Theme | Highlights |

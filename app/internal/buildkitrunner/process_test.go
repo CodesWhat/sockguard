@@ -192,6 +192,7 @@ func TestFrontendCleanupVerification(t *testing.T) {
 	}{
 		{"removal-timeout", ""},
 		{"absent", ""},
+		{"removing", ""},
 		{"survived", "survived cleanup"},
 		{"query-failure", "verify frontend container cleanup"},
 		{"query-timeout", "verify frontend container cleanup"},
@@ -209,6 +210,12 @@ case "$1 $2" in
     exit 1;;
   'container ls')
     case "$FRONTEND_CLEANUP_CASE" in
+      removing)
+        count=0
+        if [ -f "$FRONTEND_CLEANUP_CALLS.count" ]; then count=$(cat "$FRONTEND_CLEANUP_CALLS.count"); fi
+        count=$((count+1))
+        printf '%s' "$count" > "$FRONTEND_CLEANUP_CALLS.count"
+        if [ "$count" -lt 3 ]; then echo removing-container; fi;;
       survived) echo surviving-container;;
       query-failure) exit 1;;
       query-timeout) exec sleep 30;;
@@ -248,9 +255,21 @@ esac
 			if readErr != nil {
 				t.Fatal(readErr)
 			}
-			want := "--context\tisolated\trm\t-f\tsockguard-cleanup-test\t\n--context\tisolated\tcontainer\tls\t--all\t--filter\tname=^/sockguard-cleanup-test$\t--format\t{{.ID}}\t\n"
-			if string(calls) != want {
-				t.Errorf("cleanup invocations = %q, want %q", calls, want)
+			remove := "--context\tisolated\trm\t-f\tsockguard-cleanup-test\t"
+			query := "--context\tisolated\tcontainer\tls\t--all\t--filter\tname=^/sockguard-cleanup-test$\t--format\t{{.ID}}\t"
+			lines := strings.Split(strings.TrimSuffix(string(calls), "\n"), "\n")
+			if len(lines) < 2 || lines[0] != remove {
+				t.Fatalf("cleanup invocations = %q, want removal then absence queries", calls)
+			}
+			for _, line := range lines[1:] {
+				if line != query {
+					t.Errorf("cleanup query = %q, want %q", line, query)
+				}
+			}
+			if tc.name == "removing" && len(lines) != 4 {
+				t.Errorf("cleanup invocations = %d, want removal and three absence queries", len(lines))
+			} else if tc.name != "removing" && tc.name != "survived" && len(lines) != 2 {
+				t.Errorf("cleanup invocations = %d, want removal and one query", len(lines))
 			}
 		})
 	}
