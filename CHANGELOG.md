@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fail integration tests when an explicitly configured Docker or Podman socket is missing. Optional local runs still skip when no engine is configured.
+
 - Clear reused container-create string arrays before decoding another request, so null elements cannot retain policy values from an earlier request.
 
 ## [2.4.2] - 2026-10-31
