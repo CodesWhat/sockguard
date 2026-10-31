@@ -520,6 +520,9 @@ func (io_ ioDeps) extractPluginConfigFromTarReader(tr *tar.Reader) ([]byte, bool
 		if normalizePluginConfigPath(header.Name) != pluginConfigName {
 			continue
 		}
+		if found {
+			return nil, false, nil
+		}
 
 		body, err := io_.ReadAllLimited(tr, maxPluginConfigBytes+1)
 		if err != nil {
@@ -528,10 +531,8 @@ func (io_ ioDeps) extractPluginConfigFromTarReader(tr *tar.Reader) ([]byte, bool
 		if len(body) > maxPluginConfigBytes {
 			return nil, false, fmt.Errorf("plugin config exceeds %d byte limit", maxPluginConfigBytes)
 		}
-		if !found {
-			config = body
-			found = true
-		}
+		config = body
+		found = true
 	}
 }
 
