@@ -968,6 +968,8 @@ same way they cover Docker-compat:
 
 Leave `upstream.flavor` on `auto` unless an upstream proxy cannot identify its engine. Every mode probes `GET /version` on each configured endpoint before serving clients. Explicit `docker` is rejected when a Podman component or `Server: Libpod/...` header contradicts it, including a malformed body or failed status. Redirects are not followed. This keeps event filtering and the extra `localhost/{repo}:{tag}` image target check tied to the actual engine. An explicit declaration can still resolve an unidentified engine, with conservative version capabilities.
 
+The [Server header](https://github.com/containers/podman/blob/v6.0.0/pkg/api/server/handler_api.go) advertises a native API level. Only the release in the [Podman Engine component](https://github.com/containers/podman/blob/v6.0.0/pkg/api/handlers/compat/version.go) supplies the version evidence for volume capabilities; a header alone cannot grant them.
+
 Volume list and prune permit additional filter keys under owner or label-based visibility isolation only when every endpoint positively reports a released Podman version of 6.0.0 or later. Podman before 6.0 ORs different volume filter keys; old, unknown and prerelease versions therefore retain the label-only restriction. A failover set containing any such endpoint remains restricted. Event semantics are separate and retain the limits below. The engine and capabilities are fixed at startup, so restart Sockguard as part of an upstream engine/version change.
 
 Two endpoints are the exception, and they need `upstream.flavor: podman` set

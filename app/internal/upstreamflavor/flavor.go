@@ -128,8 +128,8 @@ func Detect(ctx context.Context, client *http.Client) (Flavor, error) {
 // fail.
 type versionPayload struct {
 	Components []struct {
-		Name    string `json:"Name"`
-		Version string `json:"Version"`
+		Name    string          `json:"Name"`
+		Version json.RawMessage `json:"Version"`
 	} `json:"Components"`
 }
 

@@ -14,7 +14,7 @@ import (
 
 func TestServeChainUsesVerifiedPodmanVolumeSemantics(t *testing.T) {
 	t.Parallel()
-	for _, engineVersion := range []string{"5.8.1", "6.0.0", ""} {
+	for _, engineVersion := range []string{"5.8.1", "6.0.0", "", "header-only"} {
 		for _, path := range []string{"/volumes", "/libpod/volumes/json"} {
 			for _, method := range []string{http.MethodGet, http.MethodHead} {
 				t.Run(engineVersion+path+method, func(t *testing.T) {
@@ -22,6 +22,11 @@ func TestServeChainUsesVerifiedPodmanVolumeSemantics(t *testing.T) {
 					seen := make(chan url.Values, 1)
 					address := newEngineChain(t, "volume-capability", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						if r.URL.Path == "/version" {
+							w.Header().Set("Server", "Libpod/6.0.0 (linux)")
+							if engineVersion == "header-only" {
+								_, _ = w.Write([]byte(`{}`))
+								return
+							}
 							_, _ = fmt.Fprintf(w, `{"Components":[{"Name":"Podman Engine","Version":%q}]}`, engineVersion)
 							return
 						}

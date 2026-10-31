@@ -13,7 +13,7 @@ v2.4.2 tightens Podman engine identification and unscoped native routes, permits
 
 ### Security
 
-- Probe every upstream endpoint even with an explicit engine declaration, and reject Docker declarations that contradict Podman component or Libpod header identity. Do not follow version-route redirects. Allow conjunctive volume filters under isolation only when every endpoint positively reports a released Podman 6.0.0 or later; old, unknown and prerelease versions keep the conservative restriction, as does any failover set containing such an endpoint.
+- Probe every upstream endpoint even with an explicit engine declaration, and reject Docker declarations that contradict Podman component or Libpod header identity. Do not follow version-route redirects. Allow conjunctive volume filters under isolation only when every endpoint's `Podman Engine` component positively reports a released Podman 6.0.0 or later; API headers supply identity only, and old, unknown and prerelease versions keep the conservative restriction, as does any failover set containing such an endpoint.
 
 ### Changed
 

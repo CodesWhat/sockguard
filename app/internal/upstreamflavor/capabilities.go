@@ -38,8 +38,8 @@ func Probe(ctx context.Context, client *http.Client) (Capabilities, error) {
 		return observed, fmt.Errorf("upstream flavor: GET /version: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	versions := podmanHeaderVersions(resp.Header.Values("Server"))
-	if len(versions) > 0 {
+	var versions []string
+	if hasPodmanHeader(resp.Header.Values("Server")) {
 		observed.Flavor = Podman
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -59,7 +59,13 @@ func Probe(ctx context.Context, client *http.Client) (Capabilities, error) {
 	for _, component := range payload.Components {
 		if strings.Contains(strings.ToLower(strings.TrimSpace(component.Name)), podmanComponentMarker) {
 			observed.Flavor = Podman
-			versions = append(versions, component.Version)
+			if strings.EqualFold(strings.TrimSpace(component.Name), "Podman Engine") {
+				var engineVersion string
+				if err := json.Unmarshal(component.Version, &engineVersion); err != nil {
+					engineVersion = ""
+				}
+				versions = append(versions, engineVersion)
+			}
 		}
 	}
 	flavor, err := classifyPayload(payload)
@@ -80,16 +86,15 @@ func Probe(ctx context.Context, client *http.Client) (Capabilities, error) {
 	return observed, err
 }
 
-func podmanHeaderVersions(headers []string) []string {
-	var versions []string
+func hasPodmanHeader(headers []string) bool {
 	for _, header := range headers {
 		for _, product := range strings.Fields(header) {
 			if strings.HasPrefix(strings.ToLower(product), "libpod/") {
-				versions = append(versions, strings.TrimRight(product[len("Libpod/"):], ",;"))
+				return true
 			}
 		}
 	}
-	return versions
+	return false
 }
 
 var releasedPodmanVersion = regexp.MustCompile(`^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$`)

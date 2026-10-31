@@ -14,6 +14,7 @@ func TestConfiguredDockerRejectsPositivePodmanIdentity(t *testing.T) {
 		status             int
 	}{
 		{"component", "", `{"Components":[{"Name":"Podman Engine","Version":"6.0.0"}]}`, 200},
+		{"component with unknown version type", "", `{"Components":[{"Name":"Podman Engine","Version":6}]}`, 200},
 		{"header", "Libpod/6.0.0", `{}`, 200},
 		{"header contradicts body", "Libpod/6.0.0", flavorTestDockerVersionBody, 200},
 		{"header with malformed body", "Libpod/6.0.0", `{`, 200},

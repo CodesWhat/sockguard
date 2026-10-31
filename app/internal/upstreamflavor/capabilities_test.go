@@ -25,10 +25,10 @@ func TestProbePodmanVolumeCapabilities(t *testing.T) {
 		{"leading zero", "06.0.0", "", false},
 		{"overflow", "999999999999999999999999.0.0", "", false},
 		{"consistent header", "6.0.1", "Libpod/6.0.1", true},
-		{"old header", "6.0.1", "Libpod/5.8.1", false},
-		{"unknown header version", "6.0.1", "Libpod/", false},
+		{"older API header", "6.0.1", "Libpod/5.8.1", true},
+		{"unknown API header version", "6.0.1", "Libpod/", true},
 		{"old component", "5.8.1", "Libpod/6.0.1", false},
-		{"mixed headers", "6.0.1", "Libpod/6.0.1 Libpod/5.8.1", false},
+		{"multiple API levels", "6.0.1", "Libpod/6.0.1 Libpod/5.8.1", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -53,14 +53,17 @@ func TestProbeHeaderIdentityAndAmbiguity(t *testing.T) {
 		flavor              Flavor
 		capability, wantErr bool
 	}{
-		{"header only", "Libpod/6.0.0", `{}`, 200, Podman, true, false},
-		{"header case insensitive", "libpod/6.0.0", `{}`, 200, Podman, true, false},
+		{"header only", "Libpod/6.0.0", `{}`, 200, Podman, false, false},
+		{"header case insensitive", "libpod/6.0.0", `{}`, 200, Podman, false, false},
 		{"unknown header version", "Libpod/unknown", `{}`, 200, Podman, false, false},
 		{"failed route", "Libpod/6.0.0", `failed`, 503, Podman, false, true},
 		{"malformed response", "Libpod/6.0.0", `{`, 200, Podman, false, true},
 		{"contradiction", "Libpod/6.0.0", dockerVersionBody, 200, Podman, false, true},
 		{"ambiguous components", "", `{"Components":[{"Name":"Engine"},{"Name":"Podman Engine","Version":"6.0.0"}]}`, 200, Podman, false, true},
 		{"duplicate old component", "", `{"Components":[{"Name":"Podman Engine","Version":"6.0.0"},{"Name":"Podman Engine","Version":"5.8.1"}]}`, 200, Podman, false, false},
+		{"unknown engine version type", "", `{"Components":[{"Name":"Podman Engine","Version":6}]}`, 200, Podman, false, false},
+		{"other Podman component", "", `{"Components":[{"Name":"Podman API","Version":"6.0.0"}]}`, 200, Podman, false, false},
+		{"engine and older API component", "", `{"Components":[{"Name":"Podman Engine","Version":"6.0.0"},{"Name":"Podman API","Version":"5.0.0"}]}`, 200, Podman, true, false},
 		{"docker", "", dockerVersionBody, 200, Docker, false, false},
 		{"unknown", "", `{}`, 200, "", false, true},
 		{"similar header", "NotLibpod/6.0.0", `{}`, 200, "", false, true},
