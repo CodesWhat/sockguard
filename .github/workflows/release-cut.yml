@@ -202,7 +202,8 @@ jobs:
 
           # main always equals the GA tag users run. Candidates belong on the
           # matching development or maintenance branch, and stable tags belong
-          # on the protected default branch after promotion. This blocks both
+          # on the protected default branch after promotion, or on a supported
+          # older maintenance line. This blocks both
           # the v1.7.5-rc.1 failure mode (a prerelease cut from main) and the
           # inverse bypass (an explicit stable tag cut directly from dev).
           case "${RELEASE_TAG}" in
@@ -218,13 +219,24 @@ jobs:
               esac
               ;;
             *)
-              if [ "${REF_NAME}" != "${DEFAULT_BRANCH}" ]; then
-                echo "::error::Refusing to cut stable ${RELEASE_TAG} from ${REF_NAME}. Stable tags must cut from ${DEFAULT_BRANCH} after promotion."
+              if [ "${REF_NAME}" != "${DEFAULT_BRANCH}" ] && [ "${REF_NAME}" != "maintenance/${minor}.x" ]; then
+                echo "::error::Refusing to cut stable ${RELEASE_TAG} from ${REF_NAME}. Stable tags must cut from ${DEFAULT_BRANCH} after promotion or a supported matching maintenance branch."
                 exit 1
               fi
               ;;
           esac
 
+          if [[ "${REF_NAME}" == maintenance/* ]]; then
+            default_record="$(git ls-remote --exit-code origin "refs/heads/${DEFAULT_BRANCH}")"
+            IFS=$'\t' read -r default_sha _ <<< "${default_record}"
+            expected_record="${default_sha}"$'\t'"refs/heads/${DEFAULT_BRANCH}"
+            if [[ ! "${default_sha}" =~ ^[0-9a-f]{40}$ ]] || [ "${default_record}" != "${expected_record}" ]; then
+              echo "::error::Cannot resolve the default-branch support policy."
+              exit 1
+            fi
+            git fetch --no-tags --depth=1 origin "${default_sha}"
+            git show "${default_sha}:SECURITY.md" | node scripts/verify-maintenance-line.mjs "${RELEASE_TAG}"
+          fi
           echo "Release source ${REF_NAME} is valid for ${RELEASE_TAG}."
 
       - name: Assert Renovate targets release branch

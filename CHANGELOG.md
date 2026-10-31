@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Allow stable patches from an older supported maintenance branch without replacing global Docker latest, GitHub latest or the Homebrew cask. Both cut and publication check the current default-branch support policy; exact source and CI gates still apply.
+
 - Roll the shared Go and Node CI workflows to the reviewed Ubuntu 26.04 revision, preserving the existing checks and caller policy inputs.
 
 - Bound each release CI metadata and polling request to its remaining wall-clock budget, including an in-flight curl retry. The action reports a failed query instead of running past its configured deadline.

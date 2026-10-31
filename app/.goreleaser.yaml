@@ -99,6 +99,7 @@ changelog:
 release:
   draft: false
   prerelease: auto  # RC tags marked as prerelease
+  make_latest: '{{ eq .Env.RELEASE_LATEST "true" }}'
 
 homebrew_casks:
   - name: sockguard
@@ -119,7 +120,7 @@ homebrew_casks:
           run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "sockguard"], chdir: "."
         end
       end
-    skip_upload: auto
+    skip_upload: '{{ if eq .Env.RELEASE_LATEST "true" }}auto{{ else }}true{{ end }}'
     repository:
       owner: CodesWhat
       name: homebrew-tap

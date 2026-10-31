@@ -167,22 +167,28 @@ test("read-exfiltration docs credit the load-time audit, not the request-time ga
   }
 });
 
-test("release docs distinguish candidate and stable source branches", () => {
+test("release docs distinguish candidate, current stable and maintenance sources", () => {
   const releasing = read("RELEASING.md").replaceAll(/\s+/gu, " ");
-
-  assert.match(
-    releasing,
-    /Dispatch prerelease tags from `dev\/vX\.Y` or `maintenance\/X\.Y\.x`; dispatch stable tags from `main`\./u,
+  assert.ok(
+    releasing.includes(
+      "dispatch current stable tags from `main` and older supported patches from their matching maintenance branch",
+    ),
   );
-  assert.match(
-    releasing,
-    /The workflow rejects a prerelease dispatched from `main` or a branch for another release line, and it rejects a stable release dispatched outside `main`, before it creates a tag\./u,
+  assert.ok(
+    releasing.includes(
+      "rejects a stable release outside `main` or its supported maintenance line before creating a tag",
+    ),
   );
-  assert.match(
-    releasing,
-    /tag-triggered publisher independently resolves the protected branch that owns the release line/u,
+  assert.ok(
+    releasing.includes(
+      "A current stable tag must equal the default branch's exact HEAD after promotion through `main`",
+    ),
   );
-  assert.match(releasing, /manual path cannot bypass promotion through `main`/u);
+  assert.ok(
+    releasing.includes(
+      "An older stable tag must equal the matching maintenance branch's exact HEAD and pass the default branch support-policy check",
+    ),
+  );
 });
 
 test("signed-policy docs distinguish keyed and keyless startup requirements", () => {

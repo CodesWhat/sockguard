@@ -25,6 +25,9 @@ jobs:
       contents: read
       actions: read
 
+    outputs:
+      latest: ${{ steps.source.outputs.latest }}
+
     steps:
       # PKG-1: block mode. Hosts come from this job's harden-runner audit log
       # for the v2.1.0 and v2.1.0-rc.2 tag runs, plus the Node download hosts
@@ -91,7 +94,21 @@ jobs:
 
           echo "Tag version: ${tag_version}"
 
+      - name: Setup Node (for release metadata check)
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 24
+          # This job's checkout is what release-cut.yml pushed and what
+          # downstream jobs (goreleaser, docker publish) build from -- a
+          # poisoned npm cache restored here sits on the same critical path
+          # the changelog job's identical comment describes below.
+          # setup-node auto-enables npm caching because root package.json
+          # declares "packageManager": "npm@...", so caching must be turned
+          # off explicitly via package-manager-cache (zizmor cache-poisoning).
+          package-manager-cache: false
+
       - name: Verify release tag is branch HEAD
+        id: source
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
@@ -114,11 +131,14 @@ jobs:
             expected_refs=(
               "refs/heads/dev/v${major}.${minor}"
               "refs/heads/maintenance/${major}.${minor}.x"
+              "refs/heads/${DEFAULT_BRANCH}"
             )
+            primary_ref="refs/heads/dev/v${major}.${minor}"
             expected_description="dev/v${major}.${minor} or maintenance/${major}.${minor}.x"
           else
-            expected_refs=("refs/heads/${DEFAULT_BRANCH}")
-            expected_description="${DEFAULT_BRANCH}"
+            expected_refs=("refs/heads/${DEFAULT_BRANCH}" "refs/heads/maintenance/${major}.${minor}.x")
+            primary_ref="refs/heads/${DEFAULT_BRANCH}"
+            expected_description="${DEFAULT_BRANCH} or maintenance/${major}.${minor}.x"
           fi
 
           if ! remote_records="$(git ls-remote --exit-code origin "${expected_refs[@]}")"; then
@@ -132,6 +152,7 @@ jobs:
 
           seen_refs=""
           matched_ref=""
+          default_sha=""
           while IFS=$'\t' read -r remote_sha remote_ref extra; do
             expected_ref=false
             for candidate_ref in "${expected_refs[@]}"; do
@@ -150,8 +171,13 @@ jobs:
               exit 1
             fi
             seen_refs="${seen_refs}${remote_ref}"$'\n'
-            if [ "${remote_sha}" = "${GITHUB_SHA}" ]; then
-              matched_ref="${remote_ref}"
+            if [ "${remote_ref}" = "refs/heads/${DEFAULT_BRANCH}" ]; then
+              default_sha="${remote_sha}"
+            fi
+            if [ "${remote_sha}" = "${GITHUB_SHA}" ] && { [[ "${GITHUB_REF_NAME}" != *-* ]] || [ "${remote_ref}" != "refs/heads/${DEFAULT_BRANCH}" ]; }; then
+              if [ "${matched_ref}" != "${primary_ref}" ]; then
+                matched_ref="${remote_ref}"
+              fi
             fi
           done <<< "${remote_records}"
 
@@ -165,24 +191,23 @@ jobs:
           fi
 
           matched_branch="${matched_ref#refs/heads/}"
+          latest=false
+          if [[ "${matched_branch}" == maintenance/* ]]; then
+            if [ -z "${default_sha}" ]; then
+              echo "::error::Cannot resolve default-branch support policy."
+              exit 1
+            fi
+            git fetch --no-tags --depth=1 origin "${default_sha}"
+            git show "${default_sha}:SECURITY.md" | node scripts/verify-maintenance-line.mjs "${GITHUB_REF_NAME}"
+          elif [[ "${GITHUB_REF_NAME}" != *-* ]]; then
+            latest=true
+          fi
+          echo "latest=${latest}" >> "$GITHUB_OUTPUT"
           if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
             echo "Prerelease tag ${GITHUB_REF_NAME} points at ${matched_branch} HEAD ${GITHUB_SHA}."
           else
             echo "Stable tag ${GITHUB_REF_NAME} points at ${matched_branch} HEAD ${GITHUB_SHA}."
           fi
-
-      - name: Setup Node (for release metadata check)
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
-        with:
-          node-version: 24
-          # This job's checkout is what release-cut.yml pushed and what
-          # downstream jobs (goreleaser, docker publish) build from -- a
-          # poisoned npm cache restored here sits on the same critical path
-          # the changelog job's identical comment describes below.
-          # setup-node auto-enables npm caching because root package.json
-          # declares "packageManager": "npm@...", so caching must be turned
-          # off explicitly via package-manager-cache (zizmor cache-poisoning).
-          package-manager-cache: false
 
       - name: Check tag against release metadata
         env:
@@ -437,7 +462,7 @@ jobs:
           cache: false
 
       - name: Require Homebrew tap token
-        if: ${{ !contains(github.ref_name, '-') }}
+        if: ${{ needs.verify-ci.outputs.latest == 'true' }}
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
@@ -525,7 +550,8 @@ jobs:
           workdir: app
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ needs.verify-ci.outputs.latest == 'true' && secrets.HOMEBREW_TAP_TOKEN || '' }}
+          RELEASE_LATEST: ${{ needs.verify-ci.outputs.latest }}
 
       - name: Publish and verify release notes
         env:
@@ -567,7 +593,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment: release-publish
-    needs: [goreleaser]
+    needs: [verify-ci, goreleaser]
     permissions:
       contents: write
       packages: write
@@ -754,6 +780,7 @@ jobs:
             ghcr.io/${{ github.repository }}
             docker.io/codeswhat/sockguard
             quay.io/codeswhat/sockguard
+          flavor: latest=false
           tags: |
             # full semver on all tags (e.g. 0.1.0, 0.1.0-rc.1)
             type=semver,pattern={{version}}
@@ -761,8 +788,8 @@ jobs:
             type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
             # major on stable only (e.g. 0)
             type=semver,pattern={{major}},enable=${{ !contains(github.ref_name, '-') }}
-            # latest on stable tags only
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
+            # global latest only for stable releases from the default branch
+            type=raw,value=latest,enable=${{ needs.verify-ci.outputs.latest == 'true' }}
 
       - name: Compute build date
         id: build_date
@@ -1067,8 +1094,8 @@ jobs:
 
   verify-homebrew:
     name: "Release: Verify Homebrew"
-    needs: [release]
-    if: ${{ !contains(github.ref_name, '-') }}
+    needs: [verify-ci, release]
+    if: ${{ needs.verify-ci.outputs.latest == 'true' }}
     runs-on: macos-15
     timeout-minutes: 15
     permissions:
@@ -1423,7 +1450,7 @@ jobs:
     # built.
     name: "Release: Pin Chart Image Digest"
     needs: [release, verify-published, verify-homebrew]
-    if: ${{ !contains(github.ref_name, '-') }}
+    if: ${{ always() && !contains(github.ref_name, '-') && needs.release.result == 'success' && needs.verify-published.result == 'success' && (needs.verify-homebrew.result == 'success' || needs.verify-homebrew.result == 'skipped') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

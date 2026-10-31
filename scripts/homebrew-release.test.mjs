@@ -20,7 +20,12 @@ test("GoReleaser publishes the sockguard binary to the CodesWhat Homebrew tap", 
   assert.match(config, /^ {2}- name: sockguard$/m);
   assert.match(config, /^ {4}ids:\n {6}- default$/m);
   assert.match(config, /^ {4}binaries:\n {6}- sockguard$/m);
-  assert.match(config, /^ {4}skip_upload: auto$/m);
+  assert.ok(
+    config.includes(
+      "skip_upload: '{{ if eq .Env.RELEASE_LATEST \"true\" }}auto{{ else }}true{{ end }}'",
+    ),
+  );
+  assert.ok(config.includes("make_latest: '{{ eq .Env.RELEASE_LATEST \"true\" }}'"));
   assert.match(config, /^ {6}owner: CodesWhat$/m);
   assert.match(config, /^ {6}name: homebrew-tap$/m);
   assert.match(config, /^ {6}token: "{{ \.Env\.HOMEBREW_TAP_TOKEN }}"$/m);
@@ -32,17 +37,25 @@ test("GoReleaser publishes the sockguard binary to the CodesWhat Homebrew tap", 
   );
 });
 
-test("stable releases publish and smoke-test the Homebrew cask", () => {
+test("global latest releases publish and smoke-test the Homebrew cask", () => {
   const workflow = read(".github/workflows/release-from-tag.yml");
   const goreleaser = workflowJob(workflow, "goreleaser");
   const verifyHomebrew = workflowJob(workflow, "verify-homebrew");
 
-  assert.match(goreleaser, /^ {10}HOMEBREW_TAP_TOKEN: \$\{\{ secrets\.HOMEBREW_TAP_TOKEN \}\}$/m);
-  assert.match(goreleaser, /^ {8}if: \$\{\{ !contains\(github\.ref_name, '-'\) \}\}$/m);
+  assert.ok(
+    goreleaser.includes(
+      "HOMEBREW_TAP_TOKEN: $" +
+        "{{ needs.verify-ci.outputs.latest == 'true' && secrets.HOMEBREW_TAP_TOKEN || '' }}",
+    ),
+  );
+  assert.match(goreleaser, /^ {8}if: \$\{\{ needs\.verify-ci\.outputs\.latest == 'true' \}\}$/m);
   assert.match(goreleaser, /test -n "\$\{HOMEBREW_TAP_TOKEN\}"/);
   assert.match(goreleaser, /HOMEBREW_TAP_TOKEN is required/);
-  assert.match(verifyHomebrew, /^ {4}needs: \[release\]$/m);
-  assert.match(verifyHomebrew, /^ {4}if: \$\{\{ !contains\(github\.ref_name, '-'\) \}\}$/m);
+  assert.match(verifyHomebrew, /^ {4}needs: \[verify-ci, release\]$/m);
+  assert.match(
+    verifyHomebrew,
+    /^ {4}if: \$\{\{ needs\.verify-ci\.outputs\.latest == 'true' \}\}$/m,
+  );
   assert.match(verifyHomebrew, /^ {4}runs-on: macos-15$/m);
   assert.match(verifyHomebrew, /^ {6}HOMEBREW_CASK_OPTS: ""$/m);
   assert.match(verifyHomebrew, /brew install --cask codeswhat\/tap\/sockguard/);
