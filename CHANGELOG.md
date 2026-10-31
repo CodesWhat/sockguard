@@ -30,6 +30,7 @@ This candidate carries v2.4.1 and the release workflow fixes forward onto the v3
 
 ### Fixed
 
+- Ignore inherited Git repository/index settings when inventorying generated files in the Go module checks, so a hook's alternate index cannot make a complete source tree appear empty.
 - **Release binary signing retries.** GoReleaser signs every archive with a parallel `cosign sign-blob`, and on 2.3.3's first attempt two of them raced on the Sigstore trust cache and the job failed. The release workflow now loads the trust root once before GoReleaser runs, and each signing call retries up to three times with a fresh key.
 
 ## [3.0.0-rc.3] - 2026-10-26

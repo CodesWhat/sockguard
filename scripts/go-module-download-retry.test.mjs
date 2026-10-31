@@ -12,7 +12,7 @@ const toolchainFailure =
 const moduleFailure =
   'go: github.com/klauspost/compress@v1.19.2: Get "https://proxy.golang.org/github.com/klauspost/compress/@v/v1.19.2.zip": net/http: TLS handshake timeout';
 
-function runLayoutTest(t, name, failures) {
+function runLayoutTest(t, name, failures, envOverrides = {}) {
   const fixture = mkdtempSync(join(tmpdir(), "sockguard-go-download-"));
   t.after(() => rmSync(fixture, { recursive: true, force: true }));
   const calls = join(fixture, "calls.json");
@@ -50,6 +50,7 @@ if (process.argv.includes("-json")) {
     GO_TEST_PLAN: plan,
     GO_TEST_MODULE: modulePath,
     GO_TEST_ROOT: repoRoot,
+    ...envOverrides,
   };
   delete env.NODE_TEST_CONTEXT;
 
@@ -65,6 +66,21 @@ if (process.argv.includes("-json")) {
   );
   return { ...result, calls: JSON.parse(readFileSync(calls, "utf8")) };
 }
+
+test("generated-file inventory ignores an inherited Git index", (t) => {
+  const fixture = mkdtempSync(join(tmpdir(), "sockguard-git-index-"));
+  t.after(() => rmSync(fixture, { recursive: true, force: true }));
+  const result = runLayoutTest(
+    t,
+    "Gosec scans canonical app packages with audited suppressions",
+    [],
+    {
+      GIT_INDEX_FILE: join(fixture, "empty-index"),
+    },
+  );
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /pass 1/);
+});
 
 for (const [name, args] of [
   [
