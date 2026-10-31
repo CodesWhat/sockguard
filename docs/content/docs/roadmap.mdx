@@ -158,7 +158,7 @@ from source and a client-only request capture, not a live-daemon reproduction.
 
 ## Shipped in v2.4.1
 
-Protected container labels refuse Docker and Podman exec create/start. The official Sockguard image carries `com.sockguard.exec=deny`; exec-create pins the inspected container ID. The static image refreshes its CA certificate bundle, and the published-image Grype job uses the runner's existing Buildx plugin with bounded digest lookup retries.
+Protected container labels refuse Docker and Podman exec create/start in enforce mode. The official Sockguard image carries `com.sockguard.exec=deny`; exec-create pins the inspected container ID. The static image refreshes its CA certificate bundle, and the published-image Grype job uses the runner's existing Buildx plugin with bounded digest lookup retries.
 
 ## Shipped in v2.4.0
 
