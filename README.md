@@ -43,7 +43,7 @@
 <hr>
 
 > [!NOTE]
-> **v2.4.1 is the latest stable release.** It protects labeled containers from Docker and Podman exec, marks the official Sockguard image as protected, refreshes the CA certificate bundle and fixes the published-image Grype setup timeout. It carries v2.4.0. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
+> **v2.4.2 is the latest stable release.** It rejects Docker declarations that contradict Podman identity, keeps volume filters safe across failover endpoints, and refuses native operations without an isolation model. It also improves CI reliability and prepares protected 2.4 maintenance releases. It carries v2.4.1. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
 <h2 align="center">Contents</h2>
 
@@ -516,6 +516,7 @@ Added in 2.2.11: native Podman container and pod creates refuse caller-selected 
 | **v2.x** | Security Hardening | Continued mutation-test hardening of the rule-evaluation core and config validators |
 | **v2.4.0** ✅ | BuildKit Compatibility | Local Dockerfile builds with Buildx v0.33.0 and v0.38.0 are verified against Docker 29.5.2. The built-in compiler is mediated under the existing policy and owner checks; arbitrary daemon frontend images, attestations and filesystem-loaded nested builds remain denied. See the [docs roadmap](https://getsockguard.com/docs/roadmap#shipped-in-v240) |
 | **v2.4.1** ✅ | Exec Target Protection & CA Refresh | Protected container labels block Docker and Podman exec create/start, including in the proxy itself. Exec-create pins the inspected ID; the CA bundle is refreshed and published-image Grype no longer sets up a builder. |
+| **v2.4.2** ✅ | Podman Isolation & Release Reliability | Engine identity checks, version-aware volume filter scoping, unscoped native-route refusals, bounded CI retries and protected maintenance chart pins. |
 | **v2.x** | Supply Chain | `egress-policy: block` with curated allow-lists on high-privilege release jobs |
 | **v2.x** | Policy Refinement | Named rule path aliases and further response-policy refinement |
 | **v2.x** | Internals | Code-review backlog: collapse the config → filter-options → policy translation layers behind a single source of truth; profiling-gated JSON redaction fast path |

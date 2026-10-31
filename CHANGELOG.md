@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.2] - 2026-10-31
+
+v2.4.2 tightens Podman engine identification and unscoped native routes, permits safe volume filters on verified Podman 6+ endpoints, and carries the CI reliability and maintenance-release fixes. It carries v2.4.1.
+
 ### Security
 
 - Probe every upstream endpoint even with an explicit engine declaration, and reject Docker declarations that contradict Podman component or Libpod header identity. Do not follow version-route redirects. Allow conjunctive volume filters under isolation only when every endpoint positively reports a released Podman 6.0.0 or later; old, unknown and prerelease versions keep the conservative restriction, as does any failover set containing such an endpoint.
