@@ -7,25 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-
-- Extract container-create ownership reference collectors without changing resource kinds, refusal reasons, case-alias handling, deduplication or sorted endpoint order.
-
-- Run the native API integration suites against Podman 5 and 6 from Fedora 44 and 45, in addition to the distro rootful/rootless jobs. Verify the live daemon major and wait for a settled socket after pulling the test image, retain version/results/log artifacts, and clean up each nested engine.
-
-### Fixed
-
-- Preserve native integration test failures through the results pipeline. Keep cgroups enabled in the nested test engine so host-PID pod positive controls exercise a supported daemon configuration.
-
-- Fail integration tests when an explicitly configured Docker or Podman socket is missing. Optional local runs still skip when no engine is configured.
-
-- Clear reused container-create string arrays before decoding another request, so null elements cannot retain policy values from an earlier request.
-
-- Wait within the existing cleanup deadline for asynchronous frontend-container removal to finish. A surviving container or failed absence query still returns a cleanup error.
-
 ## [2.4.2] - 2026-10-31
 
-v2.4.2 tightens Podman engine identification and unscoped native routes, permits safe volume filters on verified Podman 6+ endpoints, and carries the CI reliability and maintenance-release fixes. It carries v2.4.1.
+v2.4.2 tightens Podman engine identification and unscoped native routes, permits safe volume filters on verified Podman 6+ endpoints, and carries frontend cleanup, CI reliability and maintenance-release fixes. It carries v2.4.1.
 
 ### Security
 
@@ -43,9 +27,21 @@ v2.4.2 tightens Podman engine identification and unscoped native routes, permits
 
 ### Changed
 
+- Extract container-create ownership reference collectors without changing resource kinds, refusal reasons, case-alias handling, deduplication or sorted endpoint order.
+
+- Run the native API integration suites against Podman 5 and 6 from Fedora 44 and 45, in addition to the distro rootful/rootless jobs. Verify the live daemon major and wait for a settled socket after pulling the test image, retain version/results/log artifacts, and clean up each nested engine.
+
 - Consolidated `/health` response encoding while preserving upstream/listener/probe precedence, response bodies and write-failure logging.
 
 ### Fixed
+
+- Preserve native integration test failures through the results pipeline. Keep cgroups enabled in the nested test engine so host-PID pod positive controls exercise a supported daemon configuration.
+
+- Fail integration tests when an explicitly configured Docker or Podman socket is missing. Optional local runs still skip when no engine is configured.
+
+- Clear reused container-create string arrays before decoding another request, so null elements cannot retain policy values from an earlier request.
+
+- Wait within the existing cleanup deadline for asynchronous frontend-container removal to finish. A surviving container or failed absence query still returns a cleanup error.
 
 - Refuse native Podman systemd generation under owner or visibility isolation until compound pod/container references can be checked. Owner isolation also refuses Quadlet and artifact writes, including per-name removal and artifact add/pull/push. Owner isolation and visibility refuse their inventory, existence, inspect, file and extraction reads. Named query targets, namespaced artifacts and warn/audit rollout modes cannot bypass these refusals.
 
