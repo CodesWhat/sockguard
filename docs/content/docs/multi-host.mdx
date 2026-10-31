@@ -92,7 +92,7 @@ Incorrect use case: two independent Docker hosts running different containers. U
 
 ## Insecure and deprecated opt-ins
 
-Plaintext TCP remains an explicit risk acknowledgment. v2 also accepts the deprecated skip-verification flag; published v3.0.0-rc.3 rejects it and requires verified TLS instead.
+Plaintext TCP remains an explicit risk acknowledgment. v2 also accepts the deprecated skip-verification flag; published v3.0.0-rc.4 rejects it and requires verified TLS instead.
 
 ### Plaintext TCP (no TLS)
 
@@ -119,7 +119,7 @@ upstream:
 
 `insecure_skip_tls_verify: true` skips verification of the daemon's server certificate. Traffic is still encrypted but the daemon's identity is not verified, so a man-in-the-middle can present any certificate. It is an endpoint-level field (a sibling of `tls`, `address`, and `insecure_allow_plain_tcp`), not a key inside the `tls` block.
 
-The field remains accepted with unchanged wire behavior throughout v2.x, with a startup deprecation warning. Published `v3.0.0-rc.3` rejects the key entirely, even when it is `false` or `null`. Replace it with the correct `tls.ca_file`, including for self-signed or private-CA daemon certificates.
+The field remains accepted with unchanged wire behavior throughout v2.x, with a startup deprecation warning. Published `v3.0.0-rc.4` rejects the key entirely, even when it is `false` or `null`. Replace it with the correct `tls.ca_file`, including for self-signed or private-CA daemon certificates.
 
 ## DOCKER_* environment drop-in
 

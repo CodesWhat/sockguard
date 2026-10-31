@@ -323,7 +323,7 @@ The default listener is loopback TCP `127.0.0.1:2375`, which keeps the Docker AP
 - `health.watchdog.enabled` starts an active upstream socket monitor that checks Docker every `health.watchdog.interval`, logs reachable/unreachable state transitions, and lets `/health` answer from the latest watchdog state instead of waiting for a scrape or probe to discover an outage. The watchdog *dials* the socket — a liveness signal that only proves the socket accepts connections.
 - `health.readiness.enabled` adds an opt-in `/ready` endpoint (default path `/ready`) that goes one step further than the watchdog: instead of dialing the socket, it issues a real `GET /containers/json?limit=1` against the upstream Docker API every `health.readiness.interval` (per-probe deadline `health.readiness.timeout`). It returns `200` only when the daemon actually answers, and `503` on any transport error or non-2xx — catching the failure mode where the socket stays connectable but request handling has wedged. Point a Kubernetes / load-balancer **readiness** check at `/ready` and a **liveness** check at `/health`. The path must start with `/` and must not collide with `health.path`, `metrics.path`, or `admin.path`; `interval` and `timeout` must be positive durations. The whole `health.*` block (readiness included) is immutable across hot reload — changing it requires a restart.
 - `upstream.endpoints` is the ordered list of remote daemon addresses for TCP+mTLS or unix-socket connections. When non-empty, `upstream.socket` is ignored and sockguard uses the first healthy endpoint in the list (active/passive failover). `endpoints` and `upstream.failover.*` are reload-immutable — changing them requires a restart. See [Remote Upstreams & Failover](/multi-host) for the full guide including HA failover, mTLS setup, insecure opt-ins, and the `DOCKER_*` drop-in path.
-- On v2.x, `upstream.endpoints[].insecure_skip_tls_verify` and unverified `DOCKER_TLS` remain accepted with deprecation warnings. Published `v3.0.0-rc.3` rejects the endpoint key at any value, including `false` and `null`, and rejects non-empty `DOCKER_TLS` without non-empty `DOCKER_TLS_VERIFY` for TCP hosts. Remove the endpoint key and configure `tls.ca_file`, or set `DOCKER_TLS_VERIFY=1`. Verified TLS precedence, certificate-directory resolution, Unix sockets and explicit plain TCP remain supported. See [v3 migration](/migration#from-sockguard-v2-to-v3-release-candidate).
+- On v2.x, `upstream.endpoints[].insecure_skip_tls_verify` and unverified `DOCKER_TLS` remain accepted with deprecation warnings. Published `v3.0.0-rc.4` rejects the endpoint key at any value, including `false` and `null`, and rejects non-empty `DOCKER_TLS` without non-empty `DOCKER_TLS_VERIFY` for TCP hosts. Remove the endpoint key and configure `tls.ca_file`, or set `DOCKER_TLS_VERIFY=1`. Verified TLS precedence, certificate-directory resolution, Unix sockets and explicit plain TCP remain supported. See [v3 migration](/migration#from-sockguard-v2-to-v3-release-candidate).
 - `upstream.request_timeout` bounds the **total** lifetime of a single proxied request as a Go duration string (e.g. `"30s"`); it defaults to `"60s"`. `ResponseHeaderTimeout` only caps the wait for response *headers*; a daemon that sends headers and then hangs the body — or hangs a heavy read like `GET /containers/json` — can otherwise pin a request indefinitely. When active, an expired finite request aborts its upstream connection. If the deadline fires **before** the daemon sends response headers, the caller gets `504 Gateway Timeout` (`reason_code=upstream_request_timeout`), distinct from the `502` an unreachable socket yields. If headers were already committed — the hung-body case above — HTTP does not allow replacing a status that has been sent, so the caller keeps the committed status (typically `200`) and the response body is truncated mid-stream. The request is still aborted rather than pinned, which is the guarantee this setting provides; the `504` is not available once streaming has begun. Long-lived endpoints are **exempt** so the deadline never severs a legitimately long response: event streams, follow/stream logs and stats (including swarm service and task log following), truthy Podman top streams on both the native routes and Docker-compatible container route, image pull/build/push/load, image export, plugin create/pull/push/upgrade, container export, image get, container archive (`docker cp`, both directions), websocket attach, the BuildKit tunnel endpoints `POST /session` and `POST /grpc`, and the blocking `GET /containers/{id}/wait`; hijacked attach/exec-start connections already bypass it. Docker daemon top and Podman top without a truthy `stream` value remain finite and bounded. Set `request_timeout: "off"` to explicitly disable the deadline — the legacy empty string `""` is also still accepted for backward compatibility. Prefer `"off"` when disabling via the env var: `SOCKGUARD_UPSTREAM_REQUEST_TIMEOUT=` (an explicitly empty value) is treated as unset and silently falls back to the `60s` default, while `off` always works; an explicit `request_timeout: ""` in YAML does correctly disable it. Unlike `health.*`, this field is reload-mutable (`upstream.socket`, `upstream.endpoints`, and `upstream.failover` are immutable), so it takes effect on hot reload. Any other value must be a positive duration.
 - `upstream.flavor` names the container engine behind the upstream: `auto` (the default), `docker`, or `podman`. It exists for one reason. Podman serves the Docker-compat `GET /events` and its own `GET /libpod/events` from a single handler, and that handler evaluates several values under one filter key **disjunctively** — Podman's own source comments it as "Filters under the same key are disjunctive while each key must match". dockerd ANDs them. Sockguard enforces a visibility policy on `/events` by injecting `label` filter values, so on Podman two or more `response.visible_resource_labels` selectors would become an OR and stream events the policy hides. Knowing the engine is what lets sockguard write a filter the daemon will read the way it meant it. See [Podman](/podman).
   - `auto` issues one `GET /version` to the daemon at startup, before any listener binds, and classifies it from the engine component name the response carries (`Podman Engine` versus `Engine`). Nothing is probed afterwards; the result is fixed for the process.
@@ -409,7 +409,7 @@ See [`configs/multi-listener.yaml`](https://github.com/CodesWhat/sockguard/blob/
 All request-inspection policy fields under `request_body` default to the safest value unless noted. List fields default to empty lists.
 
 **Version boundaries:** image admission, create launch-field policies and route
-diagnostics require the v2.4 release candidate. See [Migration](/migration) for
+diagnostics require v2.4. See [Migration](/migration) for
 installation/version guidance and [Deprecations](/deprecations) for accepted
 versions and removal targets.
 
@@ -439,7 +439,7 @@ versions and removal targets.
 
 ### Image admission allowlists
 
-Requires the v2.4 release candidate. Each of `request_body.container_create`,
+Requires v2.4. Each of `request_body.container_create`,
 `request_body.libpod_container_create`, and `request_body.service` accepts an
 optional `allowed_images` list. An empty or omitted list adds no restriction.
 A nonempty list requires an exact, case-sensitive match against the image
@@ -1440,7 +1440,7 @@ Rules are evaluated in order. **First match wins.** If no rule matches, the requ
 
 ### Mount source changes and native mount types
 
-**v2.4 RC:** `request_body.container_create.allow_mount_source_mutation`
+**v2.4:** `request_body.container_create.allow_mount_source_mutation`
 and `request_body.libpod_container_create.allow_mount_source_mutation` default to
 `false`, including inside client profiles. Podman's `U` (recursive chown) and
 `z`/`Z` (SELinux relabel) modify the daemon's mount source, so an allowed source
@@ -1466,7 +1466,7 @@ and Podman build routes.
 
 ### Podman RUN build controls
 
-**v2.4 RC:** on a Podman upstream, when `request_body.build.allow_run_instructions` is true,
+**v2.4:** on a Podman upstream, when `request_body.build.allow_run_instructions` is true,
 `request_body.build.allowed_podman_controls` grants specific query controls on
 both `/build` and native `/libpod/build`. The list defaults to empty and works
 inside client profiles and through
@@ -1492,7 +1492,7 @@ Mode `2` is chroot and stays refused when host networking is denied.
 
 ### BuildKit image ownership
 
-**v2.4 RC:** with `ownership.owner` configured, mediated image exporters
+**v2.4:** with `ownership.owner` configured, mediated image exporters
 check every destination name before assigning it. Existing foreign-owned names
 are denied; unowned names follow `ownership.allow_unowned_images`. Names are
 checked against current daemon state, with the same preflight race limitation as
@@ -1513,7 +1513,7 @@ opaque, unmediated tunnel owner-safe.
 
 ### Container launch fields
 
-Requires the v2.4 release candidate.
+Requires v2.4.
 
 `request_body.container_create` and `request_body.libpod_container_create` accept
 `allowed_commands`, `allowed_entrypoints`, `allowed_env_vars`, `denied_env_vars`,
@@ -1555,7 +1555,7 @@ defaults remain outside this request-field policy.
 
 ### Rules that match no known route
 
-Requires the v2.4 release candidate. At startup and during `sockguard validate`,
+Requires v2.4. At startup and during `sockguard validate`,
 Sockguard warns when a global or profile rule's HTTP methods and glob path
 cannot match any route in its committed Engine/Podman catalog. Both allow and
 deny rules are checked. The diagnostic names the config index, action, method
@@ -1734,7 +1734,7 @@ the gates below are denied before the request reaches Docker.
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_HOST_PID`              | `request_body.container_create.allow_host_pid`            | `false` | Allow `HostConfig.PidMode=host` and `ns:<path>`.                                     |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_HOST_IPC`              | `request_body.container_create.allow_host_ipc`            | `false` | Allow `HostConfig.IpcMode=host` and `ns:<path>`.                                     |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOWED_BIND_MOUNTS`         | `request_body.container_create.allowed_bind_mounts`       | _empty_ | Comma-separated host-path prefixes allowed as bind sources, including the `device` of a local-driver volume whose options request a bind, and the `upperdir`/`workdir` options a Podman upstream reads from a `Binds` entry. A `Volumes` key with a `:/` in it, which a Podman upstream would read as a bind, is held to the same list. Named volumes are otherwise always allowed. |
-| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_MOUNT_SOURCE_MUTATION` | `request_body.container_create.allow_mount_source_mutation` | `false` | **v2.4 RC:** permit Podman U/z/Z source ownership/relabel changes, including named volumes; source path grants remain independent. |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_MOUNT_SOURCE_MUTATION` | `request_body.container_create.allow_mount_source_mutation` | `false` | **v2.4:** permit Podman U/z/Z source ownership/relabel changes, including named volumes; source path grants remain independent. |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_ALL_DEVICES`           | `request_body.container_create.allow_all_devices`         | `false` | Allow any `HostConfig.Devices` host path. Prefer the allowlist below instead.        |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOWED_DEVICES`             | `request_body.container_create.allowed_devices`           | _empty_ | Comma-separated host device paths allowed for `HostConfig.Devices`.                  |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_DEVICE_REQUESTS`       | `request_body.container_create.allow_device_requests`     | `false` | Escape hatch for device-request driver/capability checks. CDI raw host paths still require `allowed_devices` or `allow_all_devices`. Prefer `allowed_device_requests` for least-privilege access. |
@@ -1787,7 +1787,7 @@ Podman's native `POST /libpod/containers/create` counterpart to `container_creat
 | `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_HOST_UTS`        | `request_body.libpod_container_create.allow_host_uts`       | `false` | Allow `utsns.nsmode=host` and `path`.                                                 |
 | `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_HOST_CGROUPNS`   | `request_body.libpod_container_create.allow_host_cgroupns`  | `false` | Allow `cgroupns.nsmode=host` and `path`.                                              |
 | `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOWED_BIND_MOUNTS`   | `request_body.libpod_container_create.allowed_bind_mounts`  | _empty_ | Comma-separated host-path prefixes allowed as `mounts[]` bind sources, `rootfs`, `overlay_volumes[]` sources, `init_path`, and the `upperdir`/`workdir` options of an `overlay_volumes[]` or `volumes[]` entry. A named `volumes[]` entry needs no entry of its own. A relative bind source is refused whatever the list holds. |
-| `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_MOUNT_SOURCE_MUTATION` | `request_body.libpod_container_create.allow_mount_source_mutation` | `false` | **v2.4 RC:** permit Podman U/z/Z source ownership/relabel changes, including named volumes; source path grants remain independent. |
+| `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_MOUNT_SOURCE_MUTATION` | `request_body.libpod_container_create.allow_mount_source_mutation` | `false` | **v2.4:** permit Podman U/z/Z source ownership/relabel changes, including named volumes; source path grants remain independent. |
 | `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_ALL_DEVICES`     | `request_body.libpod_container_create.allow_all_devices`    | `false` | Allow any `devices[]` host path. Prefer the allowlist below instead.                 |
 | `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOWED_DEVICES`       | `request_body.libpod_container_create.allowed_devices`      | _empty_ | Comma-separated host device paths allowed for `devices[]`.                           |
 | `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_RESTRICT_NAMESPACE_SHARING` | `request_body.libpod_container_create.restrict_namespace_sharing` | `false` | Gate `{"nsmode":"container","value":"<ref>"}` joins on netns/pidns/ipcns/userns/utsns/cgroupns against `allowed_namespace_sharing_containers`, and refuse `nsmode=path` on them. |
@@ -1831,7 +1831,7 @@ multiple entries via the env var; e.g.
 | `SOCKGUARD_REQUEST_BODY_BUILD_ALLOW_REMOTE_CONTEXT`            | `request_body.build.allow_remote_context`               | `false` | Allow a primary remote build context and Podman URL/image additional contexts. |
 | `SOCKGUARD_REQUEST_BODY_BUILD_ALLOW_HOST_NETWORK`              | `request_body.build.allow_host_network`                 | `false` | Allow `POST /build` with `networkmode=host`.                                 |
 | `SOCKGUARD_REQUEST_BODY_BUILD_ALLOW_RUN_INSTRUCTIONS`          | `request_body.build.allow_run_instructions`             | `false` | Allow Dockerfiles containing `RUN` instructions.                             |
-| `SOCKGUARD_REQUEST_BODY_BUILD_ALLOWED_PODMAN_CONTROLS` | `request_body.build.allowed_podman_controls` | _empty_ | **v2.4 RC:** exact Podman RUN control names permitted in build queries. Private-network and blind-write checks remain independent. |
+| `SOCKGUARD_REQUEST_BODY_BUILD_ALLOWED_PODMAN_CONTROLS` | `request_body.build.allowed_podman_controls` | _empty_ | **v2.4:** exact Podman RUN control names permitted in build queries. Private-network and blind-write checks remain independent. |
 | `SOCKGUARD_REQUEST_BODY_BUILDKIT_CONTROL_ALLOW_INFO`           | `request_body.buildkit.control.allow_info`              | `false` | Allow the `Control/Info` RPC (buildkit version metadata; the response is filtered before relay). |
 | `SOCKGUARD_REQUEST_BODY_BUILDKIT_CONTROL_ALLOW_LIST_WORKERS`   | `request_body.buildkit.control.allow_list_workers`      | `false` | Allow the `Control/ListWorkers` RPC (worker metadata; the response is filtered to worker id, platforms and buildkit version before relay). |
 | `SOCKGUARD_REQUEST_BODY_BUILDKIT_CONTROL_ALLOW_STATUS`         | `request_body.buildkit.control.allow_status`            | `false` | Allow the mediated `Control/Status` RPC — admitted only for a ref this same client/profile actually `Solve`d. |

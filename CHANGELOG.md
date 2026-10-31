@@ -7,12 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0-rc.4] - 2026-10-31
+
+This candidate carries v2.4.0 and the release workflow fixes forward onto the v3 line, with a refreshed CA certificate bundle. The v3 TLS compatibility changes are unchanged. Fresh exact-source soak, TLS/security and published-image conformance are required before GA.
+
 ### Security
+
+- Update the Chainguard static image to refresh the CA certificate bundle for CVE-2026-91403. The previous image carried ca-certificates-bundle 20260413-r0 and failed the critical-severity image scan.
 
 - Update `golang.org/x/net` to v0.62.0 for GO-2026-6860 and GO-2026-6866, both in `golang.org/x/net/html`. Sockguard doesn't import that package, and govulncheck reports neither as reachable. The bump clears the module-level findings in dependency scans.
 - This line now carries the 2.3.2 security fixes (Podman filter scoping under ownership and visibility, the `=` filter-key refusal, `label` filters kept for Compose clients, go-jose 4.1.6) and the 2.3.3 release-signing fix (image signing retries, one signature per image repository). See the 2.3.2 and 2.3.3 sections below.
 
 ### Changed
+
+- **The published-image Grype scan no longer sets up Buildx.** It only needs `docker buildx imagetools inspect`, which the runner already has, and setting up a builder under the release egress block was refused and ran the job past its 20-minute limit on both v2.4.0 publisher runs. The digest lookup now retries on its own with a five-minute limit.
 
 - **Release workflows retry network steps three times.** `release-cut.yml` and `release-from-tag.yml` now retry checkout, Buildx setup and artifact upload and download up to three times, waiting 30 s and then 60 s between attempts, so a short egress refusal under block mode no longer kills a release job. Upload retries set `overwrite: true` so a half-created artifact from a failed attempt can't block the next one.
 - **Website preview builds skip pushes that don't touch the site.** `website/vercel.json` now runs `website/scripts/vercel-ignore-build.sh` as its ignored build step. A preview is skipped when nothing changed since the branch's last deployment in `website/`, `docs/`, the root `package.json`, `package-lock.json`, `turbo.json`, `biome.json`, `.vercelignore`, `.gitignore` or the two analytics sync scripts, so Go-only pushes stop using up the Hobby plan's daily deploy quota. A missing or unfetchable previous commit builds, and production deploys from main always build.
@@ -64,6 +72,29 @@ This first v3 candidate includes the v2.3 frontend mediation and v2.4 policy/sec
 ### Removed
 
 - **Breaking change:** the `dev/v3.0` source rejects `upstream.endpoints[].insecure_skip_tls_verify` at any value, including `false` and `null`. Remove the key and configure `tls.ca_file` to verify the daemon. TCP Docker environment resolution rejects non-empty `DOCKER_TLS` without non-empty `DOCKER_TLS_VERIFY`; set `DOCKER_TLS_VERIFY=1`. Verified TLS precedence, certificate lookup, Unix sockets, explicit endpoints and acknowledged plain TCP retain their behavior. Startup, CLI validation and rejected reloads report migration guidance. All v2 release lines, including v2.4.0-rc.1, retain their accepted behavior.
+
+## [2.4.0] - 2026-10-31
+
+v2.4.0 promotes v2.4.0-rc.3 unchanged in behavior. The v2.4 line adds exact image admission (`allowed_images` for Docker and Podman container create and Swarm service create/update, with per-client lists and rollout modes), opt-in create environment, command and entrypoint policy, startup and validate warnings for rules that match no known route, reproducible binary build checks, and mediated standard Buildx Dockerfile builds. It carries everything through 2.3.3.
+
+## [2.4.0-rc.3] - 2026-10-30
+
+This candidate carries the v2.3.2 and v2.3.3 releases forward onto the v2.4 line, along with the release workflow fixes behind them. The v2.4 changes from rc.2 are otherwise unchanged.
+
+### Security
+
+- This line now carries the 2.3.2 security fixes (Podman filter scoping, `label` filters kept under ownership, go-jose 4.1.6) and the 2.3.3 release-signing fix. See the 2.3.2 and 2.3.3 entries below.
+- Update `golang.org/x/net` to v0.62.0 for GO-2026-6860 and GO-2026-6866, both in `golang.org/x/net/html`. Sockguard doesn't import that package, and govulncheck reports neither as reachable. The bump clears the module-level findings in dependency scans.
+
+### Changed
+
+- **Release workflows retry network steps three times.** `release-cut.yml` and `release-from-tag.yml` now retry checkout, Buildx setup and artifact upload and download up to three times, waiting 30 s and then 60 s between attempts, so a short egress refusal under block mode no longer kills a release job. Upload retries set `overwrite: true` so a half-created artifact from a failed attempt can't block the next one.
+- **Website preview builds skip pushes that don't touch the site.** `website/vercel.json` now runs `website/scripts/vercel-ignore-build.sh` as its ignored build step. A preview is skipped when nothing changed since the branch's last deployment in `website/`, `docs/`, the root `package.json`, `package-lock.json`, `turbo.json`, `biome.json`, `.vercelignore`, `.gitignore` or the two analytics sync scripts, so Go-only pushes stop using up the Hobby plan's daily deploy quota. A missing or unfetchable previous commit builds, and production deploys from main always build.
+- **Working branches no longer deploy website previews.** Vercel counts ignored builds toward the daily deployment quota, so `website/vercel.json` also sets `git.deploymentEnabled` to off for `feat/`, `fix/`, `docs/`, `ci/`, `chore/`, `test/`, `refactor/`, `build/`, `perf/`, `style/`, `revert/`, `dev/`, `release/`, `renovate/`, `dependabot/`, `codex/` and `claude/` branches. main still deploys production. A branch with any other prefix, such as `site/`, still gets a preview.
+
+### Fixed
+
+- **Release binary signing retries.** GoReleaser signs every archive with a parallel `cosign sign-blob`, and on 2.3.3's first attempt two of them raced on the Sigstore trust cache and the job failed. The release workflow now loads the trust root once before GoReleaser runs, and each signing call retries up to three times with a fresh key.
 
 ## [2.4.0-rc.2] - 2026-10-26
 
