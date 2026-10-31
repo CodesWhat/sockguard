@@ -29,6 +29,7 @@ LABEL org.opencontainers.image.title="sockguard"
 LABEL org.opencontainers.image.description="Docker socket proxy — guide what gets through"
 LABEL org.opencontainers.image.source="https://github.com/CodesWhat/sockguard"
 LABEL org.opencontainers.image.licenses="MIT"
+LABEL com.sockguard.exec="deny"
 
 COPY --from=builder /sockguard /sockguard
 COPY app/configs/ /etc/sockguard/

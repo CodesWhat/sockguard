@@ -706,6 +706,7 @@ func buildServeClientProfiles(cfg *config.Config, res *upstream.Resolver) (map[s
 // profile's request_body block. Keeping this centralized gives the default
 // policy and every client profile the same runtime wiring.
 func attachRuntimeInspectors(cfg *config.Config, res *upstream.Resolver, policy filter.PolicyConfig) filter.PolicyConfig {
+	policy.Exec.InspectTarget = filter.NewExecTargetInspectorWithRoundTripper(upstreamResolverFor(res, cfg))
 	policy.Exec.InspectStart = filter.NewDockerExecInspectorWithRoundTripper(upstreamResolverFor(res, cfg))
 	// libpod's POST /libpod/exec/{id}/start re-check queries a different
 	// upstream URL family (GET /libpod/exec/{id}/json) than the Docker-compat

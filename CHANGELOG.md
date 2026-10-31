@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Refuse Docker and native Podman exec create/start against containers labeled `com.sockguard.exec=deny`. The official Sockguard image carries this label by default, protecting the proxy even when interactive exec and root commands are enabled. Exec-create pins the inspected container ID so a concurrent rename cannot swap in another target.
+
 - Update the Chainguard static image to refresh the CA certificate bundle for CVE-2026-91403. The previous image carried ca-certificates-bundle 20260413-r0 and failed the critical-severity image scan.
 
 ### Changed
