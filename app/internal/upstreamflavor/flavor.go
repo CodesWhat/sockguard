@@ -24,14 +24,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
 )
 
 // Flavor is the engine behind the upstream socket, as resolved from
-// upstream.flavor and — for Auto — the startup probe.
+// upstream.flavor and the startup probe.
 type Flavor string
 
 const (
@@ -116,34 +115,11 @@ func Configured(value string) (Flavor, bool) {
 // in opposite directions and neither is safe to make silently; the caller
 // turns the error into a startup failure that names upstream.flavor.
 func Detect(ctx context.Context, client *http.Client) (Flavor, error) {
-	if client == nil {
-		return "", errors.New("upstream flavor: no upstream client")
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, versionURL, nil)
+	capabilities, err := Probe(ctx, client)
 	if err != nil {
-		return "", fmt.Errorf("upstream flavor: build GET /version: %w", err)
+		return "", err
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("upstream flavor: GET /version: %w", err)
-	}
-	defer func() {
-		_ = resp.Body.Close()
-	}()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("upstream flavor: GET /version returned HTTP %d", resp.StatusCode)
-	}
-	// Read one byte past the limit so at-limit and over-limit are
-	// distinguishable, the same shape internal/ownership uses for request
-	// bodies.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxVersionBodyBytes+1))
-	if err != nil {
-		return "", fmt.Errorf("upstream flavor: read /version response: %w", err)
-	}
-	if len(body) > maxVersionBodyBytes {
-		return "", fmt.Errorf("upstream flavor: /version response exceeds %d bytes", maxVersionBodyBytes)
-	}
-	return classify(body)
+	return capabilities.Flavor, nil
 }
 
 // versionPayload is the only part of the /version response this package
@@ -152,7 +128,8 @@ func Detect(ctx context.Context, client *http.Client) (Flavor, error) {
 // fail.
 type versionPayload struct {
 	Components []struct {
-		Name string `json:"Name"`
+		Name    string `json:"Name"`
+		Version string `json:"Version"`
 	} `json:"Components"`
 }
 
@@ -171,6 +148,10 @@ func classify(body []byte) (Flavor, error) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return "", fmt.Errorf("upstream flavor: decode /version response: %w", err)
 	}
+	return classifyPayload(payload)
+}
+
+func classifyPayload(payload versionPayload) (Flavor, error) {
 	podman, docker := false, false
 	for _, component := range payload.Components {
 		name := strings.TrimSpace(component.Name)

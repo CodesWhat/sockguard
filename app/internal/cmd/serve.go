@@ -596,7 +596,8 @@ type serveRuntime struct {
 	// the same reason the resolver is: upstream.socket, upstream.endpoints
 	// and upstream.flavor are all reload-immutable, so no reload can point
 	// sockguard at a different daemon or restate which engine this one is.
-	upstreamFlavor upstreamflavor.Flavor
+	upstreamFlavor                         upstreamflavor.Flavor
+	upstreamPodmanConjunctiveVolumeFilters bool
 }
 
 func newServeRuntime(cfg *config.Config, logger *slog.Logger, deps *serveDeps) (*serveRuntime, error) {
@@ -806,8 +807,8 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 		// lookup, and the guard still runs before hijack/proxy for every
 		// request ownership allowed.
 		namedServeHandlerLayer("withResourceLimitGuard", withResourceLimitGuard(cfg, resolver, logger, clientProfiles)),
-		namedServeHandlerLayer("withOwnership", withOwnership(cfg, resolver, logger, runtimeUpstreamFlavor(runtime))),
-		namedServeHandlerLayer("withVisibility", withVisibility(cfg, resolver, logger, runtimeUpstreamFlavor(runtime))),
+		namedServeHandlerLayer("withOwnership", withOwnership(cfg, resolver, logger, runtimeUpstreamCapabilities(runtime))),
+		namedServeHandlerLayer("withVisibility", withVisibility(cfg, resolver, logger, runtimeUpstreamCapabilities(runtime))),
 		namedServeHandlerLayer("withFilter", withFilter(cfg, resolver, logger, rules, clientProfiles, runtimeUpstreamFlavor(runtime))),
 		// withFormBodyGuard is appended right AFTER withFilter so it executes
 		// immediately BEFORE it. Every layer above reads request parameters
@@ -1108,24 +1109,26 @@ func warnOpaqueBuildkitTunnelDeprecatedOnce(cfg *config.Config, logger *slog.Log
 	})
 }
 
-func withOwnership(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, flavor upstreamflavor.Flavor) func(http.Handler) http.Handler {
+func withOwnership(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, capabilities upstreamflavor.Capabilities) func(http.Handler) http.Handler {
 	return ownership.MiddlewareWithRoundTripper(res, logger, ownership.Options{
 		Owner:                           cfg.Ownership.Owner,
 		LabelKey:                        cfg.Ownership.LabelKey,
 		AllowUnownedImages:              cfg.Ownership.AllowUnownedImages,
 		AllowCrossOwnerNamespaceSharing: cfg.Ownership.AllowCrossOwnerNamespaceSharing,
-		UpstreamFlavor:                  flavor,
+		UpstreamFlavor:                  capabilities.Flavor,
+		PodmanConjunctiveVolumeFilters:  capabilities.PodmanConjunctiveVolumeFilters,
 	})
 }
 
-func withVisibility(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, flavor upstreamflavor.Flavor) func(http.Handler) http.Handler {
+func withVisibility(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, capabilities upstreamflavor.Capabilities) func(http.Handler) http.Handler {
 	return visibility.MiddlewareWithRoundTripper(res, logger, visibility.Options{
-		VisibleResourceLabels: cfg.Response.VisibleResourceLabels,
-		NamePatterns:          cfg.Response.NamePatterns,
-		ImagePatterns:         cfg.Response.ImagePatterns,
-		Profiles:              clientVisibilityProfiles(cfg.Clients.Profiles),
-		ResolveProfile:        clientacl.RequestProfile,
-		UpstreamFlavor:        flavor,
+		VisibleResourceLabels:          cfg.Response.VisibleResourceLabels,
+		NamePatterns:                   cfg.Response.NamePatterns,
+		ImagePatterns:                  cfg.Response.ImagePatterns,
+		Profiles:                       clientVisibilityProfiles(cfg.Clients.Profiles),
+		ResolveProfile:                 clientacl.RequestProfile,
+		UpstreamFlavor:                 capabilities.Flavor,
+		PodmanConjunctiveVolumeFilters: capabilities.PodmanConjunctiveVolumeFilters,
 	})
 }
 

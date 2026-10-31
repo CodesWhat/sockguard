@@ -30,13 +30,13 @@ func isPodmanVolumeFilterPath(method, normPath string) bool {
 //
 // See filter.PodmanVolumeFilterDenyReason for why. It is a refusal rather than
 // a silent strip so the behavior is explicit to the client. Podman 6.0 fixed
-// the combinator, but the flavor probe doesn't read the Podman version, so the
-// refusal applies to every Podman upstream. A Docker upstream is unchanged.
+// the combinator. The caller applies this refusal to old or unknown versions;
+// positively verified Podman 6+ and Docker upstreams are unchanged.
 //
 // Like the other unscopeable refusals it does not honor warn mode: a prune
 // that has run cannot be measured after the fact.
-func refuseUnsupportedPodmanVolumeFilters(w http.ResponseWriter, r *http.Request, normPath string, podmanUpstream bool) bool {
-	if !podmanUpstream || !isPodmanVolumeFilterPath(r.Method, normPath) {
+func refuseUnsupportedPodmanVolumeFilters(w http.ResponseWriter, r *http.Request, normPath string, restrictedPodman bool) bool {
+	if !restrictedPodman || !isPodmanVolumeFilterPath(r.Method, normPath) {
 		return false
 	}
 	encoded := r.URL.Query().Get("filters")

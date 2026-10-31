@@ -4,9 +4,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/codeswhat/sockguard/v2/app/internal/dockerfilters"
 	"github.com/codeswhat/sockguard/v2/app/internal/logging"
 	"github.com/codeswhat/sockguard/v2/app/internal/upstreamflavor"
 )
@@ -112,5 +114,32 @@ func TestPodmanNonVolumeRoutesKeepOtherFilterKeys(t *testing.T) {
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/containers/json?filters="+url.QueryEscape(`{"status":["running"]}`), nil))
 	if !reached || rec.Code != http.StatusOK {
 		t.Fatalf("reached = %v status = %d, want true and 200", reached, rec.Code)
+	}
+}
+
+func TestVerifiedPodmanSixVolumeListAndPrunePreserveOwnerFilter(t *testing.T) {
+	t.Parallel()
+	for _, route := range podmanVolumeFilterRoutes {
+		t.Run(route.method+route.path, func(t *testing.T) {
+			t.Parallel()
+			reached := false
+			handler := middlewareWithDeps(testLogger(), Options{Owner: "job-123", LabelKey: "com.sockguard.owner", UpstreamFlavor: upstreamflavor.Podman, PodmanConjunctiveVolumeFilters: true}, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				reached = true
+				filters, err := dockerfilters.Decode(r.URL.Query().Get("filters"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !slices.Contains(filters["label"], "com.sockguard.owner=job-123") || !slices.Equal(filters["driver"], []string{"local"}) {
+					t.Fatalf("owner/client filters not preserved: %#v", filters)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			request := httptest.NewRequest(route.method, route.path+"?filters="+url.QueryEscape(`{"driver":["local"]}`), nil)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if !reached || response.Code != http.StatusNoContent {
+				t.Fatalf("reached=%v status=%d body=%s", reached, response.Code, response.Body.String())
+			}
+		})
 	}
 }

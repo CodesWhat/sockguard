@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Probe every upstream endpoint even with an explicit engine declaration, and reject Docker declarations that contradict Podman component or Libpod header identity. Do not follow version-route redirects. Allow conjunctive volume filters under isolation only when every endpoint positively reports a released Podman 6.0.0 or later; old, unknown and prerelease versions keep the conservative restriction, as does any failover set containing such an endpoint.
+
 ### Changed
 
 - Consolidated `/health` response encoding while preserving upstream/listener/probe precedence, response bodies and write-failure logging.
