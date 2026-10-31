@@ -10,7 +10,11 @@ ARG TARGETOS TARGETARCH
 WORKDIR /build
 
 COPY go.mod go.sum ./
-RUN go mod download
+RUN for attempt in 1 2 3; do \
+      if timeout -s KILL 120 go mod download; then exit 0; fi; \
+      if [ "$attempt" -eq 3 ]; then exit 1; fi; \
+      sleep $((attempt * 5)); \
+    done
 
 COPY app/ ./app/
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
