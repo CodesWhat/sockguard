@@ -43,7 +43,7 @@
 <hr>
 
 > [!NOTE]
-> **v2.4.2 is the latest stable release.** It rejects Docker declarations that contradict Podman identity, keeps volume filters safe across failover endpoints, and refuses native operations without an isolation model. It also improves CI reliability and prepares protected 2.4 maintenance releases. It carries v2.4.1. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
+> **v2.4.2 is the latest stable release.** It rejects Docker declarations that contradict Podman identity, keeps volume filters safe across failover endpoints, and refuses native operations without an isolation model. It also updates Rekor dependencies, improves CI reliability and prepares protected 2.4 maintenance releases. It carries v2.4.1. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
 <h2 align="center">Contents</h2>
 

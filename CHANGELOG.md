@@ -13,6 +13,8 @@ v2.4.2 tightens Podman engine identification and unscoped native routes, permits
 
 ### Security
 
+- Update Rekor to v1.5.5 and its required dependency graph, replacing the vulnerable chi v5.3.1 and OpenTelemetry SDK v1.44.0 checksums with fixed releases. These packages enter through dependency tests and are absent from the shipped binary.
+
 - Probe every upstream endpoint even with an explicit engine declaration, and reject Docker declarations that contradict Podman component or Libpod header identity. Do not follow version-route redirects. Allow conjunctive volume filters under isolation only when every endpoint's `Podman Engine` component positively reports a released Podman 6.0.0 or later; API headers supply identity only, and old, unknown and prerelease versions keep the conservative restriction, as does any failover set containing such an endpoint.
 
 ### Changed
