@@ -314,6 +314,18 @@ func (p pluginPolicy) denyReasonForPrivileges(subject string, privileges []plugi
 			reason = p.denyDevicePrivilege(subject, privilege.Value)
 		case "capabilities":
 			reason = p.denyCapabilityPrivilege(subject, privilege.Value)
+		case "host ipc namespace":
+			if !p.allowHostIPC {
+				reason = fmt.Sprintf("%s denied: host IPC namespace is not allowed", subject)
+			}
+		case "host pid namespace":
+			if !p.allowHostPID {
+				reason = fmt.Sprintf("%s denied: host PID namespace is not allowed", subject)
+			}
+		case "allow-all-devices":
+			if !p.allowAllDevices {
+				reason = fmt.Sprintf("%s denied: allow-all-devices is not allowed", subject)
+			}
 		}
 		if reason != "" {
 			return reason

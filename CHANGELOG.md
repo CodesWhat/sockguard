@@ -13,6 +13,8 @@ v2.4.2 tightens Podman engine identification and unscoped native routes, permits
 
 ### Security
 
+- Apply the existing host IPC, host PID and all-device grants consistently to plugin pull and upgrade privilege requests.
+
 - Tighten plugin-create archive validation and reject ambiguous configuration entries.
 
 - Update Rekor to v1.5.5 and its required dependency graph, replacing the vulnerable chi v5.3.1 and OpenTelemetry SDK v1.44.0 checksums with fixed releases. These packages enter through dependency tests and are absent from the shipped binary.
