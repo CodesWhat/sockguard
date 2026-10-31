@@ -42,7 +42,7 @@ const (
 // versionServer is an httptest server that answers every request with a
 // fixed status and body and counts how many requests it received, so a test
 // can assert not just the resolved flavor but which endpoints were actually
-// probed (and, for the explicit-flavor cases, that none were).
+// probed, including when an explicit flavor is configured.
 type versionServer struct {
 	srv   *httptest.Server
 	calls atomic.Int64
@@ -81,10 +81,7 @@ func multiEndpointResolver(t *testing.T, addrs ...string) *upstream.Resolver {
 }
 
 // explicitFlavorResolver builds a two-endpoint resolver over servers that
-// count requests, so the explicit-flavor tests can assert zero HTTP requests
-// reached either endpoint — the same rigor a refuse-if-called RoundTripper
-// gave the single-endpoint case, extended to prove neither endpoint in a
-// failover set is probed.
+// count requests, so explicit-flavor tests can assert both endpoints were probed.
 func explicitFlavorResolver(t *testing.T) (*upstream.Resolver, *versionServer, *versionServer) {
 	t.Helper()
 	s1 := newVersionServer(t, http.StatusOK, flavorTestDockerVersionBody)
@@ -93,7 +90,7 @@ func explicitFlavorResolver(t *testing.T) (*upstream.Resolver, *versionServer, *
 }
 
 // unprobedSingleSocketResolver returns a resolver over a socket path that is
-// never dialed, for tests where deps.detectUpstreamFlavor is fully stubbed
+// never dialed, for tests where deps.probeUpstream is fully stubbed
 // (so the resolver's transport is never exercised) or where resolveUpstreamFlavor
 // is expected to reject the config before touching the resolver at all.
 func unprobedSingleSocketResolver() *upstream.Resolver {
@@ -111,20 +108,15 @@ func flavorTestLogger() (*slog.Logger, *testhelp.CollectingHandler) {
 	return collector.Logger(), collector
 }
 
-// TestResolveUpstreamFlavorExplicitWinsWithoutProbing is constraint (2): an
-// explicit docker or podman is taken as given, and nothing on the network can
-// move it. The assertion is on HTTP requests, not on the returned value.
-func TestResolveUpstreamFlavorExplicitWinsWithoutProbing(t *testing.T) {
+// Explicit declarations still probe every endpoint to reject contradictions and
+// discover capabilities. A conservative Podman override on Docker remains safe.
+func TestResolveUpstreamFlavorExplicitStillProbes(t *testing.T) {
 	t.Parallel()
 	for _, want := range []upstreamflavor.Flavor{upstreamflavor.Docker, upstreamflavor.Podman} {
 		t.Run(string(want), func(t *testing.T) {
 			t.Parallel()
 			res, s1, s2 := explicitFlavorResolver(t)
 			deps := newServeDeps()
-			deps.detectUpstreamFlavor = func(context.Context, *http.Client) (upstreamflavor.Flavor, error) {
-				t.Fatal("detectUpstreamFlavor called for an explicit flavor")
-				return "", nil
-			}
 			logger, collector := flavorTestLogger()
 
 			got, err := resolveUpstreamFlavor(t.Context(), deps, flavorTestConfig(string(want)), res, logger)
@@ -134,8 +126,8 @@ func TestResolveUpstreamFlavorExplicitWinsWithoutProbing(t *testing.T) {
 			if got != want {
 				t.Fatalf("resolveUpstreamFlavor() = %q, want %q", got, want)
 			}
-			if s1.calls.Load() != 0 || s2.calls.Load() != 0 {
-				t.Fatalf("upstream requests = (%d, %d), want (0, 0)", s1.calls.Load(), s2.calls.Load())
+			if s1.calls.Load() != 1 || s2.calls.Load() != 1 {
+				t.Fatalf("upstream requests = (%d, %d), want (1, 1)", s1.calls.Load(), s2.calls.Load())
 			}
 			if !collector.HasMessage("upstream flavor resolved") {
 				t.Fatalf("no resolution log line; records: %#v", collector.Records())
@@ -146,7 +138,7 @@ func TestResolveUpstreamFlavorExplicitWinsWithoutProbing(t *testing.T) {
 
 // TestResolveUpstreamFlavorAutoProbes covers the "auto" happy path against a
 // real /version response for each engine, routed through the real
-// upstreamflavor.Detect so the probe itself is exercised end to end rather
+// upstreamflavor.Probe so the probe itself is exercised end to end rather
 // than stubbed.
 func TestResolveUpstreamFlavorAutoProbes(t *testing.T) {
 	t.Parallel()
@@ -292,8 +284,8 @@ func TestResolveUpstreamFlavorFailsClosedOnAmbiguousProbe(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			deps := newServeDeps()
-			deps.detectUpstreamFlavor = func(context.Context, *http.Client) (upstreamflavor.Flavor, error) {
-				return tt.flavor, tt.detectErr
+			deps.probeUpstream = func(context.Context, *http.Client) (upstreamflavor.Capabilities, error) {
+				return upstreamflavor.Capabilities{Flavor: tt.flavor}, tt.detectErr
 			}
 			logger, collector := flavorTestLogger()
 
@@ -325,9 +317,9 @@ func TestResolveUpstreamFlavorFailsClosedOnAmbiguousProbe(t *testing.T) {
 func TestResolveUpstreamFlavorRejectsUnknownConfiguredValue(t *testing.T) {
 	t.Parallel()
 	deps := newServeDeps()
-	deps.detectUpstreamFlavor = func(context.Context, *http.Client) (upstreamflavor.Flavor, error) {
-		t.Fatal("detectUpstreamFlavor called for an invalid flavor")
-		return "", nil
+	deps.probeUpstream = func(context.Context, *http.Client) (upstreamflavor.Capabilities, error) {
+		t.Fatal("probeUpstream called for an invalid flavor")
+		return upstreamflavor.Capabilities{}, nil
 	}
 	logger, _ := flavorTestLogger()
 
@@ -432,7 +424,7 @@ func TestResolveUpstreamFlavorProbesEveryEndpoint(t *testing.T) {
 		}
 	})
 
-	t.Run("an explicit flavor skips probing every endpoint, not just the primary", func(t *testing.T) {
+	t.Run("an explicit flavor still probes every failover endpoint", func(t *testing.T) {
 		t.Parallel()
 		s1 := newVersionServer(t, http.StatusOK, flavorTestDockerVersionBody)
 		s2 := newVersionServer(t, http.StatusOK, flavorTestDockerVersionBody)
@@ -446,8 +438,8 @@ func TestResolveUpstreamFlavorProbesEveryEndpoint(t *testing.T) {
 		if got != upstreamflavor.Podman {
 			t.Fatalf("resolveUpstreamFlavor() = %q, want %q", got, upstreamflavor.Podman)
 		}
-		if s1.calls.Load() != 0 || s2.calls.Load() != 0 {
-			t.Fatalf("probe calls = (%d, %d), want (0, 0); an explicit flavor must not probe", s1.calls.Load(), s2.calls.Load())
+		if s1.calls.Load() != 1 || s2.calls.Load() != 1 {
+			t.Fatalf("probe calls = (%d, %d), want (1, 1); every endpoint needs capability evidence", s1.calls.Load(), s2.calls.Load())
 		}
 	})
 }
@@ -457,9 +449,9 @@ func TestResolveUpstreamFlavorProbesEveryEndpoint(t *testing.T) {
 // not a placeholder.
 func TestServeDepsBindTheRealUpstreamFlavorProbe(t *testing.T) {
 	t.Parallel()
-	got := runtime.FuncForPC(reflect.ValueOf(newServeDeps().detectUpstreamFlavor).Pointer()).Name()
-	if !strings.HasSuffix(got, "upstreamflavor.Detect") {
-		t.Fatalf("newServeDeps().detectUpstreamFlavor = %s, want upstreamflavor.Detect", got)
+	got := runtime.FuncForPC(reflect.ValueOf(newServeDeps().probeUpstream).Pointer()).Name()
+	if !strings.HasSuffix(got, "upstreamflavor.Probe") {
+		t.Fatalf("newServeDeps().probeUpstream = %s, want upstreamflavor.Probe", got)
 	}
 }
 
@@ -487,9 +479,8 @@ func TestResolveUpstreamFlavorForRuntimeRecordsResult(t *testing.T) {
 	t.Parallel()
 	cfg := flavorTestConfig("podman")
 	deps := newServeDeps()
-	deps.detectUpstreamFlavor = func(context.Context, *http.Client) (upstreamflavor.Flavor, error) {
-		t.Fatal("detectUpstreamFlavor called for an explicit flavor")
-		return "", nil
+	deps.probeUpstream = func(context.Context, *http.Client) (upstreamflavor.Capabilities, error) {
+		return upstreamflavor.Capabilities{Flavor: upstreamflavor.Podman, PodmanConjunctiveVolumeFilters: true}, nil
 	}
 	logger, _ := flavorTestLogger()
 
@@ -497,13 +488,16 @@ func TestResolveUpstreamFlavorForRuntimeRecordsResult(t *testing.T) {
 	if err := resolveUpstreamFlavorForRuntime(t.Context(), deps, rt, cfg, logger); err != nil {
 		t.Fatalf("resolveUpstreamFlavorForRuntime() error = %v", err)
 	}
+	if !rt.upstreamPodmanConjunctiveVolumeFilters {
+		t.Fatal("runtime lost the verified volume-filter capability")
+	}
 	if rt.upstreamFlavor != upstreamflavor.Podman {
 		t.Fatalf("runtime.upstreamFlavor = %q, want %q", rt.upstreamFlavor, upstreamflavor.Podman)
 	}
 
 	failing := newServeDeps()
-	failing.detectUpstreamFlavor = func(context.Context, *http.Client) (upstreamflavor.Flavor, error) {
-		return "", errors.New("probe failed")
+	failing.probeUpstream = func(context.Context, *http.Client) (upstreamflavor.Capabilities, error) {
+		return upstreamflavor.Capabilities{}, errors.New("probe failed")
 	}
 	unresolved := &serveRuntime{}
 	if err := resolveUpstreamFlavorForRuntime(t.Context(), failing, unresolved, flavorTestConfig("auto"), logger); err == nil {
@@ -727,8 +721,8 @@ func TestRunServeFailsWhenTheFlavorProbeIsAmbiguous(t *testing.T) {
 	}
 	// Override the shared stub: this test is specifically about the probe
 	// failing.
-	deps.detectUpstreamFlavor = func(context.Context, *http.Client) (upstreamflavor.Flavor, error) {
-		return "", upstreamflavor.ErrUnrecognized
+	deps.probeUpstream = func(context.Context, *http.Client) (upstreamflavor.Capabilities, error) {
+		return upstreamflavor.Capabilities{}, upstreamflavor.ErrUnrecognized
 	}
 	listenerCreated := false
 	deps.createServeListener = func(*config.Config) (net.Listener, error) {
@@ -749,10 +743,10 @@ func TestRunServeFailsWhenTheFlavorProbeIsAmbiguous(t *testing.T) {
 	}
 }
 
-// TestRunServeSucceedsWithAnExplicitFlavorAndNoProbe is the companion: an
+// TestRunServeSucceedsWithExplicitFlavorWhenProbeUnavailable is the companion: an
 // operator who declares the flavor gets a normal startup, and the probe seam
 // is never entered.
-func TestRunServeSucceedsWithAnExplicitFlavorAndNoProbe(t *testing.T) {
+func TestRunServeSucceedsWithExplicitFlavorWhenProbeUnavailable(t *testing.T) {
 	deps := newServeTestDeps()
 	deps.loadConfig = func(string) (*config.Config, error) {
 		cfg := testServeConfig()
@@ -764,9 +758,8 @@ func TestRunServeSucceedsWithAnExplicitFlavorAndNoProbe(t *testing.T) {
 	deps.newLogger = func(string, string, string) (*slog.Logger, io.Closer, error) {
 		return slog.New(slog.NewTextHandler(io.Discard, nil)), nil, nil
 	}
-	deps.detectUpstreamFlavor = func(context.Context, *http.Client) (upstreamflavor.Flavor, error) {
-		t.Fatal("the flavor probe ran despite an explicit upstream.flavor")
-		return "", nil
+	deps.probeUpstream = func(context.Context, *http.Client) (upstreamflavor.Capabilities, error) {
+		return upstreamflavor.Capabilities{}, upstreamflavor.ErrUnrecognized
 	}
 	deps.createServeListener = func(*config.Config) (net.Listener, error) { return &serveTestListener{}, nil }
 	deps.startServing = func(_ *http.Server, _ net.Listener, errCh chan<- error) { errCh <- http.ErrServerClosed }

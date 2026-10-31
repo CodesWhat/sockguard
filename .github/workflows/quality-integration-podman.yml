@@ -45,6 +45,7 @@ on:
     paths:
       - 'app/**'
       - '.github/workflows/quality-integration-podman.yml'
+      - '.github/containers/podman-integration/**'
 
 permissions:
   contents: read
@@ -54,6 +55,130 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  integration-podman-majors:
+    name: "Integration (Podman ${{ matrix.major }} native API)"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - major: '5'
+            fedora: quay.io/fedora/fedora:44@sha256:b414c09be79dd1f32529b55b096b6bb30435d82ee16fbdbbabf8985eb5f86db0
+          - major: '6'
+            fedora: quay.io/fedora/fedora:45@sha256:cfe939b2661e4a8b5215878bc3f132b0b5e3d0a46bb7146c85e95b2471ed487e
+    env:
+      PODMAN_MAJOR: ${{ matrix.major }}
+      SOCKGUARD_TEST_PODMAN_SOCKET: /tmp/sockguard-podman-major/podman.sock
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      # Fedora 44 retains Podman 5; Fedora 45 ships Podman 6 and its matching
+      # Netavark/Aardvark dependencies. Assert the live engine major below so
+      # a repository transition cannot silently erase a compatibility leg.
+      - name: Build engine test image
+        env:
+          FEDORA_IMAGE: ${{ matrix.fedora }}
+        run: |
+          docker build --build-arg "FEDORA_IMAGE=${FEDORA_IMAGE}" \
+            -t sockguard-podman-integration \
+            -f .github/containers/podman-integration/Containerfile .
+
+      - name: Start engine and verify live native API
+        run: |
+          mkdir -p /tmp/sockguard-podman-major artifacts/podman
+          # Cgroups stay enabled: Podman refuses host-PID pods when they are disabled.
+          # This writable cgroup mount is confined to the disposable hosted runner.
+          docker run -d --privileged --cgroupns=host --name sockguard-podman-major \
+            -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            -v /tmp/sockguard-podman-major:/run/podman \
+            sockguard-podman-integration system service --time=0 unix:///run/podman/podman.sock
+          ready=""
+          for _ in $(seq 1 60); do
+            sudo chgrp "$(id -g)" /tmp/sockguard-podman-major /tmp/sockguard-podman-major/podman.sock 2>/dev/null || true
+            sudo chmod 750 /tmp/sockguard-podman-major 2>/dev/null || true
+            sudo chmod 660 /tmp/sockguard-podman-major/podman.sock 2>/dev/null || true
+            if curl --fail --silent --max-time 2 --unix-socket "$SOCKGUARD_TEST_PODMAN_SOCKET" \
+              http://d/version > artifacts/podman/version.json; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test -n "$ready"
+          cat artifacts/podman/version.json
+          jq -e --arg major "$PODMAN_MAJOR" '
+            [.Components[]? | select(.Name == "Podman Engine") | .Version] as $versions |
+            ($versions | length) > 0 and all($versions[]; startswith($major + "."))
+          ' artifacts/podman/version.json
+
+      - name: Pre-pull busybox sentinel image
+        run: |
+          ref=$(sed -nE 's/^[[:space:]]*const[[:space:]]+busyboxPinnedRef[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' app/integration/helpers_test.go)
+          if [[ ! "$ref" =~ ^busybox:[[:alnum:]_.-]+@sha256:[0-9a-f]{64}$ ]]; then
+            echo "invalid or unpinned busyboxPinnedRef: ${ref}" >&2
+            exit 1
+          fi
+          docker exec sockguard-podman-major podman --storage-driver=vfs --cgroup-manager=cgroupfs --events-backend=file pull "docker.io/library/${ref}"
+
+      - name: Verify native socket is settled
+        run: |
+          streak=0
+          for _ in $(seq 1 60); do
+            if curl --fail --silent --max-time 2 --unix-socket "$SOCKGUARD_TEST_PODMAN_SOCKET" \
+              http://d/libpod/_ping >/dev/null; then
+              streak=$((streak + 1))
+              if [ "$streak" -ge 5 ]; then
+                exit 0
+              fi
+            else
+              streak=0
+              sudo chgrp "$(id -g)" /tmp/sockguard-podman-major /tmp/sockguard-podman-major/podman.sock 2>/dev/null || true
+              sudo chmod 750 /tmp/sockguard-podman-major 2>/dev/null || true
+              sudo chmod 660 /tmp/sockguard-podman-major/podman.sock 2>/dev/null || true
+            fi
+            sleep 1
+          done
+          echo "native Podman socket never stayed reachable for five consecutive checks" >&2
+          exit 1
+
+      - name: Run native API integration suites
+        working-directory: app
+        run: |
+          set -o pipefail
+          go test -json -tags=podmanintegration -count=1 -timeout=10m \
+            ./integration/... ./internal/cmd/... | tee ../artifacts/podman/tests.jsonl
+
+      - name: Collect engine logs and clean up
+        if: always()
+        run: |
+          mkdir -p artifacts/podman
+          docker logs sockguard-podman-major > artifacts/podman/engine.log 2>&1 || true
+          docker rm -f sockguard-podman-major || true
+
+      - name: Upload engine evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: podman-${{ matrix.major }}-native-api
+          path: artifacts/podman/
+          if-no-files-found: error
+
   integration-podman-rootful:
     name: "Integration (rootful podman)"
     runs-on: ubuntu-24.04

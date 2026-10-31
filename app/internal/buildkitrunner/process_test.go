@@ -2,6 +2,7 @@ package buildkitrunner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -192,9 +193,11 @@ func TestFrontendCleanupVerification(t *testing.T) {
 	}{
 		{"removal-timeout", ""},
 		{"absent", ""},
+		{"removing", ""},
 		{"survived", "survived cleanup"},
 		{"query-failure", "verify frontend container cleanup"},
 		{"query-timeout", "verify frontend container cleanup"},
+		{"present-then-query-timeout", "verify frontend container cleanup"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -209,9 +212,19 @@ case "$1 $2" in
     exit 1;;
   'container ls')
     case "$FRONTEND_CLEANUP_CASE" in
+      removing)
+        count=0
+        if [ -f "$FRONTEND_CLEANUP_CALLS.count" ]; then count=$(cat "$FRONTEND_CLEANUP_CALLS.count"); fi
+        count=$((count+1))
+        printf '%s' "$count" > "$FRONTEND_CLEANUP_CALLS.count"
+        if [ "$count" -lt 3 ]; then echo removing-container; fi;;
       survived) echo surviving-container;;
       query-failure) exit 1;;
       query-timeout) exec sleep 30;;
+      present-then-query-timeout)
+        if [ -f "$FRONTEND_CLEANUP_CALLS.count" ]; then exec sleep 30; fi
+        touch "$FRONTEND_CLEANUP_CALLS.count"
+        echo removing-container;;
     esac;;
   *) exit 2;;
 esac
@@ -232,7 +245,7 @@ esac
 			started := time.Now()
 			err = p.close()
 			limit := 20 * time.Second
-			if tc.name == "query-timeout" {
+			if strings.Contains(tc.name, "query-timeout") {
 				limit = 5 * time.Second
 			}
 			if elapsed := time.Since(started); elapsed > limit {
@@ -241,16 +254,37 @@ esac
 			if tc.wantErr == "" && err != nil {
 				t.Errorf("cleanup error = %v", err)
 			}
-			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
-				t.Errorf("cleanup error = %v, want %q", err, tc.wantErr)
+			wantErr := tc.wantErr
+			if tc.name == "survived" && errors.Is(err, context.DeadlineExceeded) && strings.Contains(err.Error(), "verify frontend container cleanup") {
+				wantErr = "verify frontend container cleanup"
+			}
+			if wantErr != "" && (err == nil || !strings.Contains(err.Error(), wantErr)) {
+				t.Errorf("cleanup error = %v, want %q", err, wantErr)
+			}
+			if tc.name == "present-then-query-timeout" && !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("cleanup error = %v, want deadline error", err)
 			}
 			calls, readErr := os.ReadFile(log)
 			if readErr != nil {
 				t.Fatal(readErr)
 			}
-			want := "--context\tisolated\trm\t-f\tsockguard-cleanup-test\t\n--context\tisolated\tcontainer\tls\t--all\t--filter\tname=^/sockguard-cleanup-test$\t--format\t{{.ID}}\t\n"
-			if string(calls) != want {
-				t.Errorf("cleanup invocations = %q, want %q", calls, want)
+			remove := "--context\tisolated\trm\t-f\tsockguard-cleanup-test\t"
+			query := "--context\tisolated\tcontainer\tls\t--all\t--filter\tname=^/sockguard-cleanup-test$\t--format\t{{.ID}}\t"
+			lines := strings.Split(strings.TrimSuffix(string(calls), "\n"), "\n")
+			if len(lines) < 2 || lines[0] != remove {
+				t.Fatalf("cleanup invocations = %q, want removal then absence queries", calls)
+			}
+			for _, line := range lines[1:] {
+				if line != query {
+					t.Errorf("cleanup query = %q, want %q", line, query)
+				}
+			}
+			if tc.name == "removing" && len(lines) != 4 {
+				t.Errorf("cleanup invocations = %d, want removal and three absence queries", len(lines))
+			} else if tc.name == "present-then-query-timeout" && len(lines) != 3 {
+				t.Errorf("cleanup invocations = %d, want removal and two absence queries", len(lines))
+			} else if tc.name != "removing" && tc.name != "survived" && tc.name != "present-then-query-timeout" && len(lines) != 2 {
+				t.Errorf("cleanup invocations = %d, want removal and one query", len(lines))
 			}
 		})
 	}

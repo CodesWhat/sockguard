@@ -74,12 +74,13 @@ func dockerSocketForIntegration(t *testing.T) string {
 	t.Helper()
 
 	socketPath := os.Getenv("SOCKGUARD_TEST_DOCKER_SOCKET")
+	configured := socketPath != ""
 	if socketPath == "" {
 		socketPath = defaultDockerSocket
 	}
 
 	if _, err := os.Stat(socketPath); err != nil {
-		if os.IsNotExist(err) {
+		if os.IsNotExist(err) && !configured {
 			t.Skipf("docker socket %q not found; set SOCKGUARD_TEST_DOCKER_SOCKET to override", socketPath)
 		}
 		t.Fatalf("stat docker socket %q: %v", socketPath, err)
