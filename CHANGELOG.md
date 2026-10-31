@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Update the Chainguard static image to refresh the CA certificate bundle for CVE-2026-91403. The previous image carried ca-certificates-bundle 20260413-r0 and failed the critical-severity image scan.
+
 ## [2.4.0] - 2026-10-31
 
 v2.4.0 promotes v2.4.0-rc.3 unchanged in behavior. The v2.4 line adds exact image admission (`allowed_images` for Docker and Podman container create and Swarm service create/update, with per-client lists and rollout modes), opt-in create environment, command and entrypoint policy, startup and validate warnings for rules that match no known route, reproducible binary build checks, and mediated standard Buildx Dockerfile builds. It carries everything through 2.3.3.
