@@ -301,8 +301,10 @@ func (f *Filter) modifyImageInspect(resp *http.Response) error {
 	}
 
 	if f.opts.RedactContainerEnv {
-		if err := redactNestedValue(payload, "Config", "Env", []string{}); err != nil {
-			return rejectResponse(err)
+		for _, field := range [...]string{"Config", "ContainerConfig"} {
+			if err := redactNestedValue(payload, field, "Env", []string{}); err != nil {
+				return rejectResponse(err)
+			}
 		}
 	}
 	if f.opts.RedactMountPaths {
