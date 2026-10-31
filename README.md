@@ -523,7 +523,7 @@ Added in 2.2.11: native Podman container and pod creates refuse caller-selected 
 | **v2.4.2** ✅ | Podman Isolation & Release Reliability | Engine identity checks, version-aware volume filter scoping, unscoped native-route refusals, bounded CI retries and protected maintenance chart pins. |
 | **v2.x** | Supply Chain | `egress-policy: block` with curated allow-lists on high-privilege release jobs |
 | **v2.x** | Policy Refinement | Named rule path aliases and further response-policy refinement |
-| **v2.x** | Internals | Code-review backlog: collapse the config → filter-options → policy translation layers behind a single source of truth; profiling-gated JSON redaction fast path |
+| **v2.x** | Internals | Container-create ownership reference collectors are separated into bind, mount and endpoint helpers with the same isolation checks. Code-review backlog: collapse the config → filter-options → policy translation layers behind a single source of truth; profiling-gated JSON redaction fast path |
 | **v2.x** | Compliance | CIS Docker Benchmark control mapping, audit-ready policy templates |
 | **v2.x+** | Extensibility | Optional plugin extension points (WASM or Go plugins), OPA/Rego policy integration |
 
