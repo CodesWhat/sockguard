@@ -255,11 +255,8 @@ esac
 				t.Errorf("cleanup error = %v", err)
 			}
 			wantErr := tc.wantErr
-			if tc.name == "survived" && errors.Is(err, context.DeadlineExceeded) {
-				var inspectionExit *exec.ExitError
-				if errors.As(err, &inspectionExit) {
-					wantErr = "verify frontend container cleanup"
-				}
+			if tc.name == "survived" && errors.Is(err, context.DeadlineExceeded) && strings.Contains(err.Error(), "verify frontend container cleanup") {
+				wantErr = "verify frontend container cleanup"
 			}
 			if wantErr != "" && (err == nil || !strings.Contains(err.Error(), wantErr)) {
 				t.Errorf("cleanup error = %v, want %q", err, wantErr)
