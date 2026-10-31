@@ -1299,30 +1299,6 @@ jobs:
             grype.anchore.io:443
             *.actions.githubusercontent.com:443
 
-      - name: Set up Docker Buildx
-        id: buildx
-        continue-on-error: true
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
-
-      - name: Wait before Set up Docker Buildx retry
-        if: steps.buildx.outcome == 'failure'
-        run: sleep 30
-
-      - name: Set up Docker Buildx (retry)
-        id: buildx_retry
-        if: steps.buildx.outcome == 'failure'
-        continue-on-error: true
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
-
-      - name: Wait before Set up Docker Buildx final retry
-        if: steps.buildx.outcome == 'failure' && steps.buildx_retry.outcome == 'failure'
-        run: sleep 60
-
-      - name: Set up Docker Buildx (final retry)
-        id: buildx_final
-        if: steps.buildx.outcome == 'failure' && steps.buildx_retry.outcome == 'failure'
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
-
       - name: Log in to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
         with:
@@ -1345,6 +1321,7 @@ jobs:
 
       - name: Resolve platform-specific digest
         id: platform_digest
+        timeout-minutes: 5
         env:
           IMAGE_REF: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
           PLATFORM: ${{ matrix.platform }}
@@ -1358,7 +1335,24 @@ jobs:
           # lowercased ref docker/metadata-action produced, so reusing its
           # image portion keeps the case consistent with what actually pulls.
           image_no_tag="${IMAGE_REF%:*}"
-          manifest="$(docker buildx imagetools inspect "${IMAGE_REF}" --raw)"
+          # The runner image ships docker with the buildx plugin; no builder is
+          # set up here (REL-21), so confirm the plugin is actually present.
+          if ! docker buildx version >/dev/null 2>&1; then
+            echo "::error::docker buildx plugin missing from the runner image"
+            exit 1
+          fi
+          manifest=""
+          for attempt in 1 2 3; do
+            if manifest="$(docker buildx imagetools inspect "${IMAGE_REF}" --raw)"; then
+              break
+            fi
+            manifest=""
+            if [ "${attempt}" -eq 3 ]; then
+              echo "::error::docker buildx imagetools inspect failed 3 times for ${IMAGE_REF}"
+              exit 1
+            fi
+            sleep $((attempt * 10))
+          done
           digest="$(printf '%s' "${manifest}" | jq -r --arg os "${os}" --arg arch "${arch}" \
             '.manifests[] | select(.platform.os == $os and .platform.architecture == $arch) | .digest')"
           if [ -z "${digest}" ] || [ "${digest}" = "null" ]; then

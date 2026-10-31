@@ -98,11 +98,11 @@ test("website comparison rows live in extracted data modules", () => {
   assert.equal(comparisonRows.at(-1)?.feature, "Hot-reload + admin API");
 });
 
-test("v2.4 has a candidate milestone without advancing stable", () => {
-  const candidate = roadmap.find((milestone) => milestone.version === "v2.4.0");
-  assert.equal(candidate?.status, "candidate");
-  assert.ok(candidate.items.some((item) => item.includes("v2.4.0-rc.2")));
-  assert.notEqual(SITE_CONFIG.version, "2.4.0");
+test("v2.4.0 is a released milestone and the current stable version", () => {
+  const v240 = roadmap.find((milestone) => milestone.version === "v2.4.0");
+  assert.equal(v240?.status, "released");
+  assert.ok(v240.items.some((item) => item.includes("image allowlists")));
+  assert.equal(SITE_CONFIG.version, "2.4.0");
 });
 
 test("opt-in Sockguard capabilities are labelled opt-in", () => {
@@ -203,11 +203,11 @@ test("route pages and the compare matrix agree on Sockguard's column", () => {
 test("roadmap data is valid and matches expected milestones", () => {
   assert.ok(roadmap.length > 0, "roadmap must be non-empty");
 
-  // v2.3.3 is the latest stable release.
+  // v2.4.0 is the latest stable release.
   const releasedMilestones = roadmap.filter((m) => m.status === "released");
   assert.ok(releasedMilestones.length > 0, "must have at least one released milestone");
   const latestReleased = releasedMilestones[releasedMilestones.length - 1];
-  assert.equal(latestReleased.version, "v2.3.3", "latest released milestone must be v2.3.3");
+  assert.equal(latestReleased.version, "v2.4.0", "latest released milestone must be v2.4.0");
   assert.equal(latestReleased.status, "released");
 
   // Must retain the previous stable milestones.
