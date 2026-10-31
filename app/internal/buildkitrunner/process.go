@@ -161,14 +161,32 @@ func (p *frontendProcess) close() error {
 	<-p.done
 	verifyCtx, stopVerify := context.WithTimeout(context.Background(), 2*time.Second)
 	defer stopVerify()
-	inspect := exec.CommandContext(verifyCtx, "docker", "--context", p.opts.RuntimeContext, "container", "ls", "--all", "--filter", "name=^/"+p.name+"$", "--format", "{{.ID}}") // #nosec G204 -- fixed Docker command; runtime context is explicit operator input and the container name is generated internally, with no shell.
-	inspect.WaitDelay = time.Second
-	output, err := inspect.Output()
-	if err != nil {
-		return fmt.Errorf("verify frontend container cleanup: %w", err)
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	seenPresent := false
+waitForRemoval:
+	for {
+		inspect := exec.CommandContext(verifyCtx, "docker", "--context", p.opts.RuntimeContext, "container", "ls", "--all", "--filter", "name=^/"+p.name+"$", "--format", "{{.ID}}") // #nosec G204 -- fixed Docker command; runtime context is explicit operator input and the container name is generated internally, with no shell.
+		inspect.WaitDelay = time.Second
+		output, err := inspect.Output()
+		if err != nil {
+			if seenPresent && verifyCtx.Err() != nil && inspect.Process == nil {
+				break
+			}
+			if seenPresent && verifyCtx.Err() != nil {
+				return fmt.Errorf("verify frontend container cleanup: %w", errors.Join(err, verifyCtx.Err()))
+			}
+			return fmt.Errorf("verify frontend container cleanup: %w", err)
+		}
+		if strings.TrimSpace(string(output)) == "" {
+			return nil
+		}
+		seenPresent = true
+		select {
+		case <-verifyCtx.Done():
+			break waitForRemoval
+		case <-ticker.C:
+		}
 	}
-	if strings.TrimSpace(string(output)) != "" {
-		return fmt.Errorf("frontend container %s survived cleanup", p.name)
-	}
-	return nil
+	return fmt.Errorf("frontend container %s survived cleanup: %w", p.name, verifyCtx.Err())
 }

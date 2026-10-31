@@ -448,4 +448,15 @@ export const roadmap: Milestone[] = [
       "Published-image Grype uses the runner's existing Buildx plugin with bounded digest lookup retries",
     ],
   },
+  {
+    version: "v2.4.2",
+    title: "Podman Isolation & Release Reliability",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Docker declarations cannot override positive Podman identity; every failover endpoint must verify Podman 6+ before relaxing volume filter restrictions",
+      "Unscoped native systemd generation, Quadlet writes and artifact batch removal are refused under their isolation policies",
+      "CI retries and deadlines are bounded, local coverage matches CI, and maintenance releases preserve global latest channels",
+    ],
+  },
 ];

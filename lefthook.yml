@@ -7,7 +7,7 @@
 #   3. Go lint
 #   4. Qlty whole-repository check (the same gate CI's "Go CI / Qlty Check"
 #      job runs, through scripts/ci/go-qlty.sh)
-#   5. Go unit/race test
+#   5. Go unit/race tests and the CI production coverage floor
 #   6. Compile integration and Podman build-tag boundaries
 #   7. Go vulnerability scan (govulncheck — reachable CVEs in deps + stdlib)
 #   8. Go fuzz smoke (5 s per fuzzer, all 8 fuzzers) — tier 0 of the
@@ -87,7 +87,7 @@ pre-push:
       timeout: 4m
 
     go-test:
-      run: cd app && go test -race ./...
+      run: ./scripts/ci/go-test.sh
       priority: 4
       timeout: 3m
 

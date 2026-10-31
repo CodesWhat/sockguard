@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.2] - 2026-10-31
+
+v2.4.2 tightens Podman engine identification and unscoped native routes, permits safe volume filters on verified Podman 6+ endpoints, and carries frontend cleanup, CI reliability and maintenance-release fixes. It carries v2.4.1.
+
+### Security
+
+- Apply container name and image visibility patterns to Docker and native Podman exec-session inspection.
+
+- Redact image environment variables from current and legacy configuration fields.
+
+- Apply the existing host IPC, host PID and all-device grants consistently to plugin pull and upgrade privilege requests.
+
+- Tighten plugin-create archive validation and reject ambiguous configuration entries.
+
+- Update Rekor to v1.5.5 and its required dependency graph, replacing the vulnerable chi v5.3.1 and OpenTelemetry SDK v1.44.0 checksums with fixed releases. These packages enter through dependency tests and are absent from the shipped binary.
+
+- Probe every upstream endpoint even with an explicit engine declaration, and reject Docker declarations that contradict Podman component or Libpod header identity. Do not follow version-route redirects. Allow conjunctive volume filters under isolation only when every endpoint's `Podman Engine` component positively reports a released Podman 6.0.0 or later; API headers supply identity only, and old, unknown and prerelease versions keep the conservative restriction, as does any failover set containing such an endpoint.
+
+### Changed
+
+- Extract container-create ownership reference collectors without changing resource kinds, refusal reasons, case-alias handling, deduplication or sorted endpoint order.
+
+- Run the native API integration suites against Podman 5 and 6 from Fedora 44 and 45, in addition to the distro rootful/rootless jobs. Verify the live daemon major and wait for a settled socket after pulling the test image, retain version/results/log artifacts, and clean up each nested engine. Probe before repairing permissions so a socket rebind resets the success streak.
+
+- Consolidated `/health` response encoding while preserving upstream/listener/probe precedence, response bodies and write-failure logging.
+
+### Fixed
+
+- Prevent older maintenance minors from moving a floating major image tag backward, while retaining major-tag security updates for that major's newest recorded minor line. Clarify Docker/Podman volume-filter scopes and chart-pin recovery, including resolving a matching digest after the development chart advances.
+
+- Preserve native integration test failures through the results pipeline. Keep cgroups enabled in the nested test engine so host-PID pod positive controls exercise a supported daemon configuration.
+
+- Fail integration tests when an explicitly configured Docker or Podman socket is missing. Optional local runs still skip when no engine is configured.
+
+- Clear reused container-create string arrays before decoding another request, so null elements cannot retain policy values from an earlier request.
+
+- Wait within the existing cleanup deadline for asynchronous frontend-container removal to finish. A surviving container or failed absence query still returns a cleanup error. A timed-out query preserves the inspection failure instead of claiming that a previously observed container survived.
+
+- Refuse native Podman systemd generation under owner or visibility isolation until compound pod/container references can be checked. Owner isolation also refuses Quadlet and artifact writes, including per-name removal and artifact add/pull/push. Owner isolation and visibility refuse their inventory, existence, inspect, file and extraction reads. Named query targets, namespaced artifacts and warn/audit rollout modes cannot bypass these refusals.
+
+- Ignore inherited Git repository/index settings when inventorying generated files in the Go module checks, so a hook's alternate index cannot make a complete source tree appear empty.
+
+- Allow stable patches from an older supported maintenance branch without replacing global Docker latest, GitHub latest or the Homebrew cask. Both cut and publication check the current default-branch support policy; exact source and CI gates still apply. Maintenance chart pins go through reviewed PRs so branch protection stays enforced. Maintenance support checks resolve real entrypoint paths, including spaces and symlinks. Local snapshots default the latest-channel flag off and use the same GoReleaser version as the tagged publisher.
+
+- Roll the shared Go and Node CI workflows to the reviewed Ubuntu 26.04 revision, preserving the existing checks and caller policy inputs.
+
+- Bound each release CI metadata and polling request to its remaining wall-clock budget, including an in-flight curl retry. The action reports a failed query instead of running past its configured deadline.
+- Retry Docker build module downloads up to three times with five- and ten-second waits and a two-minute limit per attempt, so a transient Go proxy failure can recover without rerunning the whole build.
+- Enforce the same 96% production statement coverage floor in the local pre-push race test gate and hosted CI.
+
 ## [2.4.1] - 2026-10-31
 
 v2.4.1 protects exec targets, refreshes the CA certificate bundle and removes unnecessary Buildx setup from the published-image Grype scan. It carries v2.4.0.

@@ -141,6 +141,7 @@ test("Gosec scans canonical app packages with audited suppressions", () => {
   const generated = execFileSync("git", ["ls-files", "app"], {
     cwd: repoRoot,
     encoding: "utf8",
+    env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))),
   })
     .trim()
     .split("\n")

@@ -1,10 +1,16 @@
 # Releasing sockguard
 
+## Maintenance releases
+
+After v3 ships, 2.4.x receives security fixes until v3.1 ships. Keep its release changes on `maintenance/2.4.x`, with reviewed PRs and exact-SHA branch CI. The release cutter and publisher verify that the matching line is older than the first supported line in the default branch's `SECURITY.md` and is still marked supported there. A retired or mismatched line fails before publication. Protect the maintenance branch with the normal review and required-check rules before its first cut. Update its own release metadata and Renovate target for each patch, and supply an explicit `release_tag` to the cutter.
+
+Maintenance releases publish their versioned assets, Go module, chart digest and full and minor image tags. They advance the floating major image tag only when the default branch's `SECURITY.md` records no newer minor line in that major, including retired lines. This lets a 2.4 patch update `:2` after v3 ships without allowing a 2.4 patch to roll `:2` back from a recorded 2.5 line. Maintenance releases do not replace Docker `latest`, GitHub's latest release or the global Homebrew cask. Homebrew publication and its smoke test apply to current stable releases only; maintenance users pin the versioned binary or image. The chart pin still runs after successful maintenance artifact verification, with Homebrew intentionally skipped. It opens a chart-pin PR instead of pushing to the protected maintenance branch. The existing release credential creates that PR so normal CI is triggered; review and merge it with the usual approvals. A rerun reuses an identical pin branch and open PR, and refuses to overwrite a different tree. Prereleases never move latest channels.
+
 ## Before tagging
 
 1. **Clean tree on the release source branch**
 
-   Use the active `dev/vX.Y` branch, or a `maintenance/X.Y.x` branch, for a prerelease. Use `main` for a stable release.
+   Use the active `dev/vX.Y` branch, or a `maintenance/X.Y.x` branch, for a prerelease. Use `main` for the current stable line. An older supported line uses its exact `maintenance/X.Y.x` branch head.
 
    ```
    git status            # must be clean
@@ -62,7 +68,7 @@
 
 7. **Lefthook pre-push** — runs automatically on `git push`. Sequence: clean-tree → goreleaser snapshot → go-lint → go-test → go-fuzz smoke → lockfile-dedupe → knip → biome → ts-test → build → zizmor. The push is blocked if any step fails. Branch CI independently runs the same GoReleaser snapshot and asserts that it rendered `dist/homebrew/Casks/sockguard.rb`.
 
-8. **Release credentials** — confirm the repository Actions secret `HOMEBREW_TAP_TOKEN` is available and has contents-write access to `CodesWhat/homebrew-tap`. GoReleaser uses it only for stable tags; prereleases skip the cask upload.
+8. **Release credentials** — confirm the repository Actions secret `HOMEBREW_TAP_TOKEN` is available and has contents-write access to `CodesWhat/homebrew-tap`. GoReleaser uses it only for current stable tags from `main`; prereleases and older maintenance releases skip the cask upload.
 
 ---
 
@@ -70,7 +76,7 @@
 
 **Preferred path: use the `release-cut` workflow.**
 
-Go to **Actions → Release: Cut** → **Run workflow** and select the branch that owns the tag. Dispatch prerelease tags from `dev/vX.Y` or `maintenance/X.Y.x`; dispatch stable tags from `main`. The workflow rejects a prerelease dispatched from `main` or a branch for another release line, and it rejects a stable release dispatched outside `main`, before it creates a tag.
+Go to **Actions → Release: Cut** → **Run workflow** and select the branch that owns the tag. Dispatch prerelease tags from `dev/vX.Y` or `maintenance/X.Y.x`; dispatch current stable tags from `main` and older supported patches from their matching maintenance branch. The workflow rejects a prerelease dispatched from `main` or a mismatched branch, and rejects a stable release outside `main` or its supported maintenance line before creating a tag.
 
 The workflow:
 
@@ -92,7 +98,7 @@ git push origin v<version>
 
 Swap `-a` for `-s` if you want to GPG-sign locally, but signing is optional and not enforced anywhere. The `release-from-tag.yml` workflow fires on any `v*` tag push and gates the release on a green `ci-verify` run for the tag SHA.
 
-The tag-triggered publisher independently resolves the protected branch that owns the release line. It rejects a stable tag unless the tag commit is the default branch's exact HEAD, so the manual path cannot bypass promotion through `main`, and rejects a prerelease unless it is the exact HEAD of the matching development or maintenance line.
+The tag-triggered publisher independently resolves the branch that owns the release line. A current stable tag must equal the default branch's exact HEAD after promotion through `main`. An older stable tag must equal the matching maintenance branch's exact HEAD and pass the default branch support-policy check. A prerelease must equal the matching development or maintenance head; maintenance prereleases also need a supported older line. All paths require successful branch CI on that exact SHA.
 
 ---
 
@@ -102,13 +108,13 @@ The tag-triggered publisher independently resolves the protected branch that own
 
 1. **verify-ci** — confirms the tag is the exact HEAD of its protected stable, development, or maintenance branch and that `ci-verify.yml` passed on the tag SHA; fails the release otherwise
 2. **changelog** — extracts the CHANGELOG entry for the tag into release notes
-3. **goreleaser** — builds Linux and Darwin `amd64` + `arm64` binaries, archives, checksums, and a CycloneDX SBOM per archive (via syft); cosign-signs `checksums.txt` and each archive into a sigstore bundle (`.sigstore.json`); attaches them to the GitHub release; reads the published body back and compares it to the extracted CHANGELOG entry; and updates `Casks/sockguard.rb` in `CodesWhat/homebrew-tap` for stable tags
+3. **goreleaser** — builds Linux and Darwin `amd64` + `arm64` binaries, archives, checksums, and a CycloneDX SBOM per archive (via syft); cosign-signs `checksums.txt` and each archive into a sigstore bundle (`.sigstore.json`); attaches them to the GitHub release; reads the published body back and compares it to the extracted CHANGELOG entry; and updates `Casks/sockguard.rb` in `CodesWhat/homebrew-tap` for current stable tags
 4. **release** — builds and pushes the multi-arch Docker image, then:
    - Signs the image with cosign (keyless, via GitHub OIDC)
    - Verifies the cosign signature in the same job
    - Signs the release tarball with cosign (blob signing) into a sigstore bundle (`.sigstore.json`); see `docs/content/docs/verification.mdx`
    - Attests SLSA Build L2 provenance and persists the GHCR image's linked artifact metadata (public repo only; activates automatically when the repo is public)
-5. **verify-homebrew** — on stable tags, clears the hosted runner's implicit `--no-quarantine` setting, installs the cask from `CodesWhat/homebrew-tap` on macOS, proves the installed version matches the tag and has no quarantine attribute, then uninstalls it
+5. **verify-homebrew** — on current stable tags, clears the hosted runner's implicit `--no-quarantine` setting, installs the cask from `CodesWhat/homebrew-tap` on macOS, proves the installed version matches the tag and has no quarantine attribute, then uninstalls it
 6. **verify-published** — QA-6 end-to-end gate: pulls each published image tag (ghcr, docker.io, quay.io) and the release tarball + signature assets, then runs the *exact* `cosign verify` / `cosign verify-blob` commands published in `docs/content/docs/verification.mdx`. Catches drift between the operator-facing docs and the actual pipeline.
 
 **Verify the release:**
@@ -118,7 +124,7 @@ The tag-triggered publisher independently resolves the protected branch that own
 - GHCR image exists: `ghcr.io/codeswhat/sockguard:<version>`
 - Docker Hub mirror updated: `docker.io/codeswhat/sockguard:<version>`
 - Quay.io mirror updated: `quay.io/codeswhat/sockguard:<version>`
-- Homebrew cask updated for stable releases: `brew install --cask codeswhat/tap/sockguard`
+- Homebrew cask updated for current stable releases: `brew install --cask codeswhat/tap/sockguard`
 - Cosign verify — see `docs/content/docs/verification.mdx` for the canonical invocation
 
 ### Stable patch plus active release-candidate line
@@ -141,7 +147,13 @@ The image pin uses a two-stage flow because the immutable image digest does not 
 1. Before tagging, set both fields in `chart/sockguard/Chart.yaml` to the release version without the leading `v`. Before tagging, leave `image.tag` empty so the chart falls back to `appVersion`.
 2. Cut and verify the stable release from `main`. The tagged chart selects the versioned release tag and never falls back to `latest`; the postpublication digest pin supplies immutability on the active development branch.
 3. After the release images are live, resolve the new multi-arch manifest-list digest with `docker buildx imagetools inspect codeswhat/sockguard:<appVersion>`. Use the top-level `Digest:` field, not a per-platform digest.
-4. After the release images are live, pin `image.tag` to `<appVersion>@sha256:<digest>` in the active development branch. `release-from-tag.yml`'s `pin-chart-digest` job does this on every stable tag, so this is not a manual step any more: it resolves the manifest-list digest from GHCR, refuses to continue unless it equals the digest the publish job pushed, reads the target branch out of `renovate.json` on the tag, writes the pin with `scripts/pin-chart-image-digest.mjs`, re-runs `scripts/release-metadata.test.mjs`, and commits `chore(chart): pin the <version> image to its multi-arch digest`. It commits to the development branch and never to `main`, and it is a logged no-op when the pin is already there. When the development branch has already moved past the released `appVersion` (the next line's metadata PR landed before the release finished), the job prints a version-skew warning, writes nothing, and stays green, because a successful release is not a failure of this follow-up. Pin by hand in that case, and for a run that failed: check out the development branch and run `node scripts/pin-chart-image-digest.mjs --version <version> --digest <digest>` with step 3's `imagetools inspect` digest, or edit the `tag:` line directly if the chart's `appVersion` no longer matches. The test accepts only an empty prepublication value or that exact postpublication shape with 64 lowercase hexadecimal characters. Do not advance `main` past the release tag solely for this follow-up; the next release metadata PR clears the pin again before its tag is cut.
+4. After the release images are live, pin `image.tag` to `<appVersion>@sha256:<digest>`. The `release-from-tag.yml` `pin-chart-digest` job runs on every stable tag: it resolves the GHCR manifest-list digest, refuses a digest different from the one it published, reads the target branch from the tagged `renovate.json`, writes the pin with `scripts/pin-chart-image-digest.mjs`, re-runs the release metadata test, and records `chore(chart): pin the <version> image to its multi-arch digest`. Development-line pins commit to the active development branch. Maintenance pins use `chore/chart-pin-<version>` and a reviewed PR targeting the matching `maintenance/X.Y.x` branch. Neither path commits to `main`, and an existing matching pin is a logged no-op.
+
+For a failed development-line pin, check out the development branch and read the chart's current `appVersion`. If it still matches the release, run `node scripts/pin-chart-image-digest.mjs --version <version> --digest <digest>` using step 3's verified digest. If development has moved past the released `appVersion`, the job logs version skew, writes nothing, and stays green. Before pinning that newer chart manually, resolve and verify the multi-arch manifest-list digest for its current `appVersion` as in step 3, then pass that version and its matching digest to the pin command. If the current image has not been published, defer the pin until publication; leave `image.tag` empty so the chart uses `appVersion`.
+
+For a failed maintenance pin, start from the matching `maintenance/X.Y.x` branch, create or check out its `chore/chart-pin-<version>` branch, and run the same pin command with the maintenance release version and verified digest. Open or update the PR against that maintenance branch, then follow normal checks and review. Do not write a maintenance release's digest onto the development branch or push directly to the protected maintenance branch.
+
+The test accepts only an empty prepublication image tag or `<appVersion>@sha256:<digest>` with 64 lowercase hexadecimal characters. Do not advance `main` past the release tag solely for this follow-up; the next release metadata PR clears the pin before its tag is cut.
 
 There is no chart-release workflow at this time. If a Helm repository is available, package and publish the chart only after the Docker images are live.
 

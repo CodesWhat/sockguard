@@ -4,9 +4,8 @@ set -euo pipefail
 module_directory="${MODULE_DIRECTORY:-app}"
 cd "${module_directory}"
 
-# Pinned to the same version the branch-CI GoReleaser Action previously ran
-# (env.GORELEASER_VERSION), so the snapshot build/config-parse behavior is
-# unchanged by the reusable-workflow migration.
+# Keep the snapshot engine in lockstep with GORELEASER_VERSION in the tagged
+# publisher. The release contract test checks that both pins agree.
 #
 # SBOM cataloging (the sboms: block) shells out to syft, which real releases
 # get via a dedicated install step in release-from-tag.yml. Neither this
@@ -28,7 +27,7 @@ if ! command -v syft >/dev/null 2>&1; then
   skip="${skip},sbom"
 fi
 
-go run github.com/goreleaser/goreleaser/v2@v2.15.3 release --snapshot --clean --skip="${skip}"
+go run github.com/goreleaser/goreleaser/v2@v2.18.0 release --snapshot --clean --skip="${skip}"
 
 cask="dist/homebrew/Casks/sockguard.rb"
 test -f "${cask}"
