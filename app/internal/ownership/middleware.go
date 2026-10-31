@@ -866,32 +866,8 @@ func containerCreateEmbeddedOwnershipReferences(decoded map[string]any) []embedd
 	}
 
 	for _, hostConfig := range filter.FoldedObjects(decoded, "HostConfig") {
-		for _, binds := range filter.FoldedArrays(hostConfig, "Binds") {
-			for _, value := range binds {
-				bind, ok := value.(string)
-				if !ok {
-					continue
-				}
-				source, _, ok := strings.Cut(bind, ":")
-				source = strings.TrimSpace(source)
-				if !ok || source == "" || strings.HasPrefix(source, "/") {
-					continue
-				}
-				appendEmbeddedOwnershipReference(&refs, dockerresource.KindVolume, source, "container HostConfig.Binds")
-			}
-		}
-
-		for _, mounts := range filter.FoldedArrays(hostConfig, "Mounts") {
-			for _, value := range mounts {
-				mount, ok := value.(map[string]any)
-				if !ok || !filter.FoldedStringEquals(mount, "Type", "volume") {
-					continue
-				}
-				for _, source := range filter.FoldedStrings(mount, "Source") {
-					appendEmbeddedOwnershipReference(&refs, dockerresource.KindVolume, source, "container HostConfig.Mounts")
-				}
-			}
-		}
+		appendContainerBindOwnershipReferences(&refs, hostConfig)
+		appendContainerMountOwnershipReferences(&refs, hostConfig)
 
 		for _, mode := range filter.FoldedStrings(hostConfig, "NetworkMode") {
 			if !isCustomNetworkMode(mode) {
@@ -901,28 +877,67 @@ func containerCreateEmbeddedOwnershipReferences(decoded map[string]any) []embedd
 		}
 	}
 
-	for _, networkingConfig := range filter.FoldedObjects(decoded, "NetworkingConfig") {
-		for _, endpoints := range filter.FoldedObjects(networkingConfig, "EndpointsConfig") {
-			names := make([]string, 0, len(endpoints))
-			for name := range endpoints {
-				names = append(names, name)
+	appendContainerNetworkEndpointReferences(&refs, decoded)
+	return refs
+}
+
+func appendContainerBindOwnershipReferences(refs *[]embeddedOwnershipReference, hostConfig map[string]any) {
+	for _, binds := range filter.FoldedArrays(hostConfig, "Binds") {
+		for _, value := range binds {
+			bind, ok := value.(string)
+			if !ok {
+				continue
 			}
-			slices.Sort(names)
-			for _, name := range names {
-				if isCustomNetworkMode(name) {
-					appendEmbeddedOwnershipReference(&refs, dockerresource.KindNetwork, name, "container NetworkingConfig.EndpointsConfig")
-				}
-				endpoint, ok := endpoints[name].(map[string]any)
-				if !ok {
-					continue
-				}
-				for _, networkID := range filter.FoldedStrings(endpoint, "NetworkID") {
-					appendEmbeddedOwnershipReference(&refs, dockerresource.KindNetwork, networkID, "container NetworkingConfig.EndpointsConfig.NetworkID")
-				}
+			source, _, ok := strings.Cut(bind, ":")
+			source = strings.TrimSpace(source)
+			if !ok || source == "" || strings.HasPrefix(source, "/") {
+				continue
+			}
+			appendEmbeddedOwnershipReference(refs, dockerresource.KindVolume, source, "container HostConfig.Binds")
+		}
+	}
+}
+
+func appendContainerMountOwnershipReferences(refs *[]embeddedOwnershipReference, hostConfig map[string]any) {
+	for _, mounts := range filter.FoldedArrays(hostConfig, "Mounts") {
+		for _, value := range mounts {
+			mount, ok := value.(map[string]any)
+			if !ok || !filter.FoldedStringEquals(mount, "Type", "volume") {
+				continue
+			}
+			for _, source := range filter.FoldedStrings(mount, "Source") {
+				appendEmbeddedOwnershipReference(refs, dockerresource.KindVolume, source, "container HostConfig.Mounts")
 			}
 		}
 	}
-	return refs
+}
+
+func appendContainerNetworkEndpointReferences(refs *[]embeddedOwnershipReference, decoded map[string]any) {
+	for _, networkingConfig := range filter.FoldedObjects(decoded, "NetworkingConfig") {
+		for _, endpoints := range filter.FoldedObjects(networkingConfig, "EndpointsConfig") {
+			appendContainerEndpointMapReferences(refs, endpoints)
+		}
+	}
+}
+
+func appendContainerEndpointMapReferences(refs *[]embeddedOwnershipReference, endpoints map[string]any) {
+	names := make([]string, 0, len(endpoints))
+	for name := range endpoints {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		if isCustomNetworkMode(name) {
+			appendEmbeddedOwnershipReference(refs, dockerresource.KindNetwork, name, "container NetworkingConfig.EndpointsConfig")
+		}
+		endpoint, ok := endpoints[name].(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, networkID := range filter.FoldedStrings(endpoint, "NetworkID") {
+			appendEmbeddedOwnershipReference(refs, dockerresource.KindNetwork, networkID, "container NetworkingConfig.EndpointsConfig.NetworkID")
+		}
+	}
 }
 
 // namespaceModeFields are the HostConfig fields whose "container:<ref>" form
