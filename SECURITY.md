@@ -2,11 +2,12 @@
 
 ## Supported Versions
 
-Security fixes ship on the latest minor release line only. Stable releases are cut from `main`, which always carries the latest line, so to get a fix, upgrade to the newest patch of the latest minor release. 2.2.x reached end of life with the 2.3.2 release.
+Security fixes ship on the latest minor release line only. Stable releases are cut from `main`, which always carries the latest line, so to get a fix, upgrade to the newest patch of the latest minor release. 2.2.x reached end of life with the 2.3.2 release, and 2.3.x with the 2.4.0 release.
 
 | Version           | Supported          |
 | ----------------- | ------------------ |
-| 2.3.x (latest)    | :white_check_mark: |
+| 2.4.x (latest)    | :white_check_mark: |
+| 2.3.x             | :x:                |
 | 2.2.x             | :x:                |
 | 2.1.x             | :x:                |
 | 2.0.x             | :x:                |
