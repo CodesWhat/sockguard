@@ -400,7 +400,7 @@ Podman volume lists and prune allow non-label filters under owner or label-based
 
 Owner isolation refuses native Quadlet and artifact writes. Owner isolation and visibility policies also refuse their inventory, inspect, file and extraction reads because these resource types have no isolation model. This includes per-name operations and namespaced artifact references, as well as batch routes.
 
-Plugin create archives must contain exactly one root configuration. Plugin pull and upgrade apply the same host IPC, host PID and all-device grants as archive creation. Image-inspect environment redaction also covers legacy Docker configurations.
+Plugin create archives must contain exactly one root configuration. Plugin pull and upgrade apply the same host IPC, host PID and all-device grants as archive creation. Image-inspect environment redaction also covers legacy Docker configurations. Exec-session inspection applies every configured visibility axis to its parent container.
 
 Sockguard inspects allowed writes, including the destructive query controls on `DELETE /containers/**`, the bodies on `containers/create`, `containers/*/update`, `exec`, `build`, `images/create`, `services/create`, `swarm/init`, and the rest of the body-bearing write paths. It blocks privileged or host-bound workloads, non-allowlisted mounts, devices, and registries, and unsafe swarm/network controls. Response bodies are redacted (env, mount paths, topology, secrets) by default. None of that needs configuration to switch on.
 

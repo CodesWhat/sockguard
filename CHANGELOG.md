@@ -13,6 +13,8 @@ v2.4.2 tightens Podman engine identification and unscoped native routes, permits
 
 ### Security
 
+- Apply container name and image visibility patterns to Docker and native Podman exec-session inspection.
+
 - Redact image environment variables from current and legacy configuration fields.
 
 - Apply the existing host IPC, host PID and all-device grants consistently to plugin pull and upgrade privilege requests.
