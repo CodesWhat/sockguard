@@ -41,7 +41,7 @@ v2.4.2 tightens Podman engine identification and unscoped native routes, permits
 
 - Clear reused container-create string arrays before decoding another request, so null elements cannot retain policy values from an earlier request.
 
-- Wait within the existing cleanup deadline for asynchronous frontend-container removal to finish. A surviving container or failed absence query still returns a cleanup error.
+- Wait within the existing cleanup deadline for asynchronous frontend-container removal to finish. A surviving container or failed absence query still returns a cleanup error. A timed-out query preserves the inspection failure instead of claiming that a previously observed container survived.
 
 - Refuse native Podman systemd generation under owner or visibility isolation until compound pod/container references can be checked. Owner isolation also refuses Quadlet and artifact writes, including per-name removal and artifact add/pull/push. Owner isolation and visibility refuse their inventory, existence, inspect, file and extraction reads. Named query targets, namespaced artifacts and warn/audit rollout modes cannot bypass these refusals.
 

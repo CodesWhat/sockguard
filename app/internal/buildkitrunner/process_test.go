@@ -2,6 +2,7 @@ package buildkitrunner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -196,6 +197,7 @@ func TestFrontendCleanupVerification(t *testing.T) {
 		{"survived", "survived cleanup"},
 		{"query-failure", "verify frontend container cleanup"},
 		{"query-timeout", "verify frontend container cleanup"},
+		{"present-then-query-timeout", "verify frontend container cleanup"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -219,6 +221,10 @@ case "$1 $2" in
       survived) echo surviving-container;;
       query-failure) exit 1;;
       query-timeout) exec sleep 30;;
+      present-then-query-timeout)
+        if [ -f "$FRONTEND_CLEANUP_CALLS.count" ]; then exec sleep 30; fi
+        touch "$FRONTEND_CLEANUP_CALLS.count"
+        echo removing-container;;
     esac;;
   *) exit 2;;
 esac
@@ -251,6 +257,9 @@ esac
 			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
 				t.Errorf("cleanup error = %v, want %q", err, tc.wantErr)
 			}
+			if tc.name == "present-then-query-timeout" && !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("cleanup error = %v, want deadline error", err)
+			}
 			calls, readErr := os.ReadFile(log)
 			if readErr != nil {
 				t.Fatal(readErr)
@@ -268,7 +277,9 @@ esac
 			}
 			if tc.name == "removing" && len(lines) != 4 {
 				t.Errorf("cleanup invocations = %d, want removal and three absence queries", len(lines))
-			} else if tc.name != "removing" && tc.name != "survived" && len(lines) != 2 {
+			} else if tc.name == "present-then-query-timeout" && len(lines) != 3 {
+				t.Errorf("cleanup invocations = %d, want removal and two absence queries", len(lines))
+			} else if tc.name != "removing" && tc.name != "survived" && tc.name != "present-then-query-timeout" && len(lines) != 2 {
 				t.Errorf("cleanup invocations = %d, want removal and one query", len(lines))
 			}
 		})

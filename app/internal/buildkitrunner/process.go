@@ -170,8 +170,11 @@ waitForRemoval:
 		inspect.WaitDelay = time.Second
 		output, err := inspect.Output()
 		if err != nil {
-			if seenPresent && verifyCtx.Err() != nil {
+			if seenPresent && verifyCtx.Err() != nil && inspect.Process == nil {
 				break
+			}
+			if seenPresent && verifyCtx.Err() != nil {
+				return fmt.Errorf("verify frontend container cleanup: %w", errors.Join(err, verifyCtx.Err()))
 			}
 			return fmt.Errorf("verify frontend container cleanup: %w", err)
 		}
