@@ -1462,6 +1462,7 @@ jobs:
       # Setup Node), with the GHCR read this job adds.
       #   github.com: Checkout, the git fetch/push of the development branch,
       #     and Setup Node's toolchain release download
+      #   api.github.com: maintenance chart-pin PR creation and readback
       #   raw.githubusercontent.com: Setup Node's actions/node-versions manifest
       #   objects.githubusercontent.com: that toolchain tarball on a cold tool
       #     cache, the legacy redirect twin of the host below
@@ -1475,6 +1476,7 @@ jobs:
           egress-policy: block
           allowed-endpoints: >
             github.com:443
+            api.github.com:443
             raw.githubusercontent.com:443
             objects.githubusercontent.com:443
             release-assets.githubusercontent.com:443
@@ -1614,9 +1616,12 @@ jobs:
         run: node --test scripts/release-metadata.test.mjs
 
       - name: Commit the pin
+        id: pin_commit
         env:
           RELEASE_VERSION: ${{ steps.digest.outputs.version }}
           TARGET_BRANCH: ${{ steps.target.outputs.branch }}
+          IMAGE_DIGEST: ${{ steps.digest.outputs.value }}
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -1629,11 +1634,47 @@ jobs:
           git commit -m "chore(chart): pin the ${RELEASE_VERSION} image to its multi-arch digest"
           # Fully qualified so the push can only ever create or move a branch
           # ref, never resolve to a tag of the same name.
-          git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+          if [[ "${TARGET_BRANCH}" == maintenance/* ]]; then
+            if [ -z "${GH_TOKEN}" ]; then
+              echo "::error::The release credential is required to open a maintenance pin PR and trigger its CI."
+              exit 1
+            fi
+            pin_branch="chore/chart-pin-${RELEASE_VERSION}"
+            remote_record="$(git ls-remote origin "refs/heads/${pin_branch}")"
+            if [ -n "${remote_record}" ]; then
+              git fetch --depth=1 origin "${pin_branch}"
+              if ! git diff --quiet HEAD FETCH_HEAD; then
+                echo "::error::The existing pin branch has a different tree; refusing to overwrite it."
+                exit 1
+              fi
+            else
+              git push origin "HEAD:refs/heads/${pin_branch}"
+            fi
+            existing_pr="$(gh pr list --repo "${GITHUB_REPOSITORY}" --base "${TARGET_BRANCH}" --head "${pin_branch}" --state open --json url --jq '.[0].url // ""')"
+            if [ -z "${existing_pr}" ]; then
+              body_file="$(mktemp)"
+              trap 'rm -f "${body_file}"' EXIT
+              printf 'Pin the %s chart image to its verified multi-arch digest (%s).\n' "${RELEASE_VERSION}" "${IMAGE_DIGEST}" > "${body_file}"
+              existing_pr="$(gh pr create --repo "${GITHUB_REPOSITORY}" --base "${TARGET_BRANCH}" --head "${pin_branch}" \
+                --title "chore(chart): pin the ${RELEASE_VERSION} image digest" --body-file "${body_file}")"
+            fi
+            published_pr="$(gh pr view --repo "${GITHUB_REPOSITORY}" "${existing_pr}" --json url,baseRefName,headRefName)"
+            if ! jq -e --arg base "${TARGET_BRANCH}" --arg head "${pin_branch}" --arg prefix "https://github.com/${GITHUB_REPOSITORY}/pull/" \
+              '.baseRefName == $base and .headRefName == $head and (.url | startswith($prefix))' <<< "${published_pr}" > /dev/null; then
+              echo "::error::The maintenance pin PR did not match the intended source and protected branch."
+              exit 1
+            fi
+            pin_pr_url="$(jq -r '.url' <<< "${published_pr}")"
+            echo "pull_request=${pin_pr_url}" >> "$GITHUB_OUTPUT"
+            echo "Chart pin awaits review and protected merge: ${pin_pr_url}"
+          else
+            git push origin "HEAD:refs/heads/${TARGET_BRANCH}"
+          fi
 
       - name: Summarize
         if: always()
         env:
+          PIN_REVIEW_URL: ${{ steps.pin_commit.outputs.pull_request }}
           RELEASE_VERSION: ${{ steps.digest.outputs.version }}
           IMAGE_DIGEST: ${{ steps.digest.outputs.value }}
           TARGET_BRANCH: ${{ steps.target.outputs.branch }}
@@ -1647,6 +1688,9 @@ jobs:
             else
               echo "- Version: \`${RELEASE_VERSION}\`"
               echo "- Manifest-list digest: \`${IMAGE_DIGEST}\`"
+              if [ -n "${PIN_REVIEW_URL}" ]; then
+                echo "- Review PR: ${PIN_REVIEW_URL} (pin awaits protected merge)."
+              fi
               echo "- Branch: \`${TARGET_BRANCH}\` (never \`main\` — it only advances through a promotion PR)"
               echo "- If the pin step printed a version-skew warning, the branch had already moved past this appVersion and nothing was written; pin by hand per RELEASING.md."
             fi

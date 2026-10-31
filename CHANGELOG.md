@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Ignore inherited Git repository/index settings when inventorying generated files in the Go module checks, so a hook's alternate index cannot make a complete source tree appear empty.
 
-- Allow stable patches from an older supported maintenance branch without replacing global Docker latest, GitHub latest or the Homebrew cask. Both cut and publication check the current default-branch support policy; exact source and CI gates still apply.
+- Allow stable patches from an older supported maintenance branch without replacing global Docker latest, GitHub latest or the Homebrew cask. Both cut and publication check the current default-branch support policy; exact source and CI gates still apply. Maintenance chart pins go through reviewed PRs so branch protection stays enforced.
 
 - Roll the shared Go and Node CI workflows to the reviewed Ubuntu 26.04 revision, preserving the existing checks and caller policy inputs.
 
