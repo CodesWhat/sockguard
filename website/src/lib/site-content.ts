@@ -429,12 +429,12 @@ export const roadmap: Milestone[] = [
     version: "v2.4.0",
     title: "Image Admission & Policy Usability",
     emoji: "🛡️",
-    status: "candidate",
+    status: "released",
     items: [
-      "v2.4.0-rc.3 candidate: exact image allowlists for Docker and Podman container creation and Swarm service creation/update, with per-client lists and rollout modes",
-      "Unix container-label identity remains a documented limit; use distinct UID/GID profiles. Select the candidate explicitly; stable remains v2.3.3",
-      "Implemented: known-route startup/validate warnings, create environment/command/entrypoint policy, and reproducible binary build checks for all four targets; the formal-spec decision is recorded",
-      "Native mount/source and CDI checks, owner-aware BuildKit exports, Podman RUN controls, and standard local Buildx Dockerfile mediation; GA requires fresh candidate validation and at least 14 days of baking",
+      "Exact image allowlists for Docker and Podman container creation and Swarm service creation/update, with per-client lists and rollout modes; promotes v2.4.0-rc.3",
+      "Unix container-label identity remains a documented limit; use distinct UID/GID profiles",
+      "Known-route startup/validate warnings, create environment/command/entrypoint policy, and reproducible binary build checks for all four targets; the formal-spec decision is recorded",
+      "Native mount/source and CDI checks, owner-aware BuildKit exports, Podman RUN controls, and standard local Buildx Dockerfile mediation",
     ],
   },
 ];

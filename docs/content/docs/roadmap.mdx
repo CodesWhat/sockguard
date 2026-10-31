@@ -1,10 +1,11 @@
 ---
 title: Roadmap
-description: Sockguard's shipped v1.7, v2.0, v2.1, v2.2, and v2.3 work and later direction.
+description: Sockguard's shipped v1.7, v2.0, v2.1, v2.2, v2.3, and v2.4 work and later direction.
 ---
 
-Sockguard v2.3 is the current stable feature line, with v2.3.3 the latest
-release. v2.3.0 promotes `2.3.0-rc.9` unchanged in behavior and is the first
+Sockguard v2.4 is the current stable feature line, with v2.4.0 the latest
+release. It promotes `2.4.0-rc.3` unchanged in behavior and carries everything
+through v2.3.3. The v2.3 line shipped as follows. v2.3.0 promotes `2.3.0-rc.9` unchanged in behavior and is the first
 release under the MIT license; 2.2.x and earlier remain Apache-2.0. v2.3.1 is a
 security patch that refuses a client-supplied container log path. v2.3.2 is a
 security patch that tightens Podman filter scoping under ownership and
@@ -154,10 +155,9 @@ from source and a client-only request capture, not a live-daemon reproduction.
 | Proxy hardening | Socket cleanup is inode-owned, method-aware resource routing covers keyword names, generated response errors clear stale representation headers, inspected bodies retain deadlines through logging and metrics, and request metric labels have finite cardinality |
 | Release surfaces | README, docs, website, Helm metadata, verification assets, and migration guidance agree on v2.0.0; release blobs use sigstore bundles only and published metadata is read back before the release succeeds |
 
-## v2.4 release candidate
+## Shipped in v2.4.0
 
-v2.4.0-rc.3 is a separate release-candidate line from v2.3. The implementation
-includes exact image allowlists for Docker/Podman container create and Swarm
+v2.4.0 promotes `2.4.0-rc.3` unchanged in behavior. It includes exact image allowlists for Docker/Podman container create and Swarm
 service create/update, advisory startup/validate warnings for rules matching no
 known Engine/libpod route, and opt-in create environment/command/entrypoint policy.
 See the [configuration reference](/configuration#container-launch-fields).
@@ -170,10 +170,9 @@ policy tests and records when a separate model should be reconsidered.
 Unix container-label identity is closed as a documented limit, with no PID/cgroup
 inference enabled. Unix clients can use distinct host-visible UID/GID profiles;
 the [security decision](/security#unix-container-label-identity) explains the
-requirements for a future implementation. Select the v2.4 candidate explicitly;
-stable remains v2.3.1.
+requirements for a future implementation.
 
-The line also implements native Podman mount-type and source-mutation controls,
+The line also ships native Podman mount-type and source-mutation controls,
 CDI host-device checks, classic-build frontend-override refusal, owner-aware
 BuildKit image exports, and explicit Podman RUN-control/private-network checks.
 Docker-native build options retain their existing behavior.
@@ -186,10 +185,6 @@ mediated with syntax delegation disabled; arbitrary daemon frontend images,
 attestations and filesystem-loaded nested BuildOps remain denied. The Docker
 integration suite exercises the supported workflow with provenance disabled.
 See [Security](/security#standard-buildx-dockerfile-builds).
-
-The candidate requires fresh four-hour soak and TLS validation, published-image
-conformance and at least 14 days of baking before GA. Candidate-only behavior
-fixes restart that window. Validation of v2.3 stable doesn't cover v2.4 changes.
 
 ## v3 compatibility boundary
 
@@ -269,7 +264,7 @@ repository release history.
 | Portwing Edge dial-out | Stable with drydock 1.6; drydock 1.5 requires `DD_EXPERIMENTAL_PORTWING=true` |
 | drydock-triggered remote updates through Portwing | **Not implemented** in either mode: Standard trigger routes return `501`; the current Edge protocol has no effective watcher/trigger response contract |
 | Classic Compose builds through a bundled preset | Classic `/build` is inspected through the `*-with-build.yaml` presets |
-| Buildx / Compose BuildKit builds | The `*-with-mediated-build.yaml` presets enable session/gRPC mediation, but client schema and policy constraints still apply. v2.4 RC verifies local Dockerfile builds with Buildx v0.33.0/v0.38.0 against Docker 29.5.2; broader client/daemon combinations still need conformance evidence. See [Security](/security) |
+| Buildx / Compose BuildKit builds | The `*-with-mediated-build.yaml` presets enable session/gRPC mediation, but client schema and policy constraints still apply. v2.4 verifies local Dockerfile builds with Buildx v0.33.0/v0.38.0 against Docker 29.5.2; broader client/daemon combinations still need conformance evidence. See [Security](/security) |
 
 The compatibility statement is deliberately narrower than “all three tools work together.” Monitoring and authorized container control work. Remote update orchestration does not yet, and Sockguard will not advertise a preset as enabling it until Portwing and drydock implement and test both sides of that contract.
 
