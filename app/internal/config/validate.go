@@ -1749,6 +1749,11 @@ func validateEndpointCosts(prefix string, costs []EndpointCostConfig, effectiveB
 
 func validateRequestBodyConfig(prefix string, cfg RequestBodyConfig) []string {
 	var errs []string
+	for i, control := range cfg.Build.AllowedPodmanControls {
+		if !filter.KnownPodmanBuildControl(control) {
+			errs = append(errs, fmt.Sprintf("%s.request_body.build.allowed_podman_controls[%d] is not a supported control", prefix, i))
+		}
+	}
 	errs = append(errs, validateContainerCreateConfig(prefix, cfg.ContainerCreate)...)
 	errs = append(errs, validateLibpodContainerCreateConfig(prefix, cfg.LibpodContainerCreate)...)
 	errs = append(errs, validateExecConfig(prefix, cfg.Exec)...)
@@ -1868,6 +1873,8 @@ func validateRegistryHostEntries(prefix, entries string, registries []string) []
 
 func validateContainerCreateConfig(prefix string, cfg ContainerCreateRequestBodyConfig) []string {
 	var errs []string
+	errs = append(errs, validateCreateLaunchConfig(prefix+".container_create", cfg.AllowedCommands, cfg.AllowedEntrypoints, cfg.AllowedEnvVars, cfg.DeniedEnvVars, cfg.AllowedEnvValues)...)
+	errs = append(errs, validateCreateImageAllowlist(prefix+".container_create.allowed_images", cfg.AllowedImages)...)
 	errs = append(errs, validateHostPathEntries(prefix, "container_create.allowed_bind_mounts", cfg.AllowedBindMounts)...)
 	errs = append(errs, validateHostPathEntries(prefix, "container_create.allowed_devices", cfg.AllowedDevices)...)
 	for i, entry := range cfg.AllowedDeviceRequests {
@@ -1900,6 +1907,8 @@ func validateContainerCreateConfig(prefix string, cfg ContainerCreateRequestBody
 // equivalent's allowed_namespace_sharing_containers.
 func validateLibpodContainerCreateConfig(prefix string, cfg LibpodContainerCreateRequestBodyConfig) []string {
 	var errs []string
+	errs = append(errs, validateCreateLaunchConfig(prefix+".libpod_container_create", cfg.AllowedCommands, cfg.AllowedEntrypoints, cfg.AllowedEnvVars, cfg.DeniedEnvVars, cfg.AllowedEnvValues)...)
+	errs = append(errs, validateCreateImageAllowlist(prefix+".libpod_container_create.allowed_images", cfg.AllowedImages)...)
 	errs = append(errs, validateHostPathEntries(prefix, "libpod_container_create.allowed_bind_mounts", cfg.AllowedBindMounts)...)
 	errs = append(errs, validateHostPathEntries(prefix, "libpod_container_create.allowed_devices", cfg.AllowedDevices)...)
 	for _, entry := range cfg.AllowedNamespaceSharingContainers {
@@ -1947,6 +1956,7 @@ func validateImagePullConfig(prefix string, cfg ImagePullRequestBodyConfig) []st
 
 func validateServiceConfig(prefix string, cfg ServiceRequestBodyConfig) []string {
 	var errs []string
+	errs = append(errs, validateCreateImageAllowlist(prefix+".service.allowed_images", cfg.AllowedImages)...)
 	errs = append(errs, validateHostPathEntries(prefix, "service.allowed_bind_mounts", cfg.AllowedBindMounts)...)
 	errs = append(errs, validateRegistryHostEntries(prefix, "service.allowed_registries", cfg.AllowedRegistries)...)
 	return errs
@@ -2213,6 +2223,52 @@ func validateVisibleResourceLabels(prefix string, values []string, reservedLabel
 		}
 		if hasValue && strings.TrimSpace(selected) == "" {
 			errs = append(errs, fmt.Sprintf("%s entries with '=' must include a non-empty value, got %q", prefix, raw))
+		}
+	}
+	return errs
+}
+
+// validateCreateImageAllowlist requires fully qualified references so a daemon's
+// short-name search or default tag cannot change what an entry authorizes.
+func validateCreateImageAllowlist(field string, images []string) []string {
+	var errs []string
+	for i, image := range images {
+		if image == "" || image != strings.TrimSpace(image) || len(image) > maxMutationImageFieldBytes || containsControlOrNUL(image) {
+			errs = append(errs, fmt.Sprintf("%s[%d] must be an unpadded, fully qualified image reference of at most %d bytes", field, i, maxMutationImageFieldBytes))
+			continue
+		}
+		if _, err := name.ParseReference(image, name.StrictValidation); err != nil {
+			errs = append(errs, fmt.Sprintf("%s[%d] must be a fully qualified image reference with an explicit tag or digest: %v", field, i, err))
+		}
+	}
+	return errs
+}
+
+func validateCreateLaunchConfig(prefix string, commands, entrypoints [][]string, allowed, denied, values []string) []string {
+	var errs []string
+	for _, field := range []struct {
+		name    string
+		entries [][]string
+	}{{"allowed_commands", commands}, {"allowed_entrypoints", entrypoints}} {
+		for i, entry := range field.entries {
+			if !validExecCommand(entry) {
+				errs = append(errs, fmt.Sprintf("%s.%s entry %d must contain a non-empty argument", prefix, field.name, i+1))
+			}
+		}
+	}
+	for _, field := range []struct {
+		name    string
+		entries []string
+	}{{"allowed_env_vars", allowed}, {"denied_env_vars", denied}} {
+		for _, entry := range field.entries {
+			if !validExecEnvVarName(entry) {
+				errs = append(errs, fmt.Sprintf("%s.%s entries must be bare variable names", prefix, field.name))
+			}
+		}
+	}
+	for i, entry := range values {
+		if !validExecEnvValue(entry) {
+			errs = append(errs, fmt.Sprintf("%s.allowed_env_values entry %d must be NAME=VALUE", prefix, i+1))
 		}
 	}
 	return errs

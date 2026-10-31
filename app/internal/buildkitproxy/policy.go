@@ -1,5 +1,7 @@
 package buildkitproxy
 
+import "context"
+
 // Policy is the runtime-facing translation of request_body.buildkit config
 // (see internal/config's BuildkitRequestBodyConfig.ToPolicy). This package
 // never imports internal/config — translation flows one direction only,
@@ -13,8 +15,18 @@ package buildkitproxy
 // check and validateBuildkitAckMutualExclusion, and filter.BuildkitOptions's
 // unconditional deny-only gate.
 type Policy struct {
-	Control ControlPolicy
-	Session SessionPolicy
+	Control        ControlPolicy
+	Session        SessionPolicy
+	ImageOwnership ImageOwnershipPolicy
+}
+
+// ImageOwnershipPolicy is runtime owner isolation, independent of BuildKit
+// grants. Authorize checks each destination against current daemon state.
+type ImageOwnershipPolicy struct {
+	Owner         string
+	LabelKey      string
+	Authorize     func(context.Context, string) error
+	RequireConfig bool
 }
 
 // Configured reports whether p was set to anything other than every field
@@ -177,6 +189,9 @@ type ControlPolicy struct {
 // request_body.build block. Dockerfile RUN checks inspect the FileSync stream;
 // raw-LLB RUN checks inspect each serialized operation before forwarding Solve.
 type SolvePolicy struct {
+	// Set only while validating Return metadata from this active build.
+	returnedSourceSession string
+
 	// AllowFrontendGateway permits mediated external frontend calls bound to
 	// an active frontend-less Solve. It never grants execution by itself.
 	AllowFrontendGateway bool

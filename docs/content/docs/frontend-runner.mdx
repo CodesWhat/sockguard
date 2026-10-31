@@ -102,11 +102,11 @@ existing remote-context grant. Local FileSync, secret, SSH and upload
 providers are not attached. Frontends requiring those providers or their own
 network, writable root filesystem, or host mounts need a different workflow.
 
-Interactive gateway containers and ExecProcess are denied, as are nested
+Interactive gateway containers and ExecProcess are denied, as are arbitrary daemon
 frontend requests, source-policy rewrites, explicit source-session overrides,
-and filesystem-loaded nested builds. This command does not change ordinary
-Docker/buildx invocation or permit an opaque frontend to run inside the
-daemon. A nested `# syntax=` selection is still subject to that denial; select
+and filesystem-loaded nested builds. The v2.4 candidate separately mediates ordinary Buildx requests for the built-in
+Dockerfile compiler, with syntax delegation disabled. This runner does not
+permit an opaque frontend to run inside the daemon. A nested `# syntax=` selection is still subject to that denial; select
 the intended frontend image explicitly.
 
 Each runner invocation is limited to ten minutes. Sockguard separately caps

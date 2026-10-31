@@ -24,8 +24,8 @@
 //     and daemon-resolved BuildOps are denied. A named frontend creates its
 //     graph inside the daemon; its admission follows checkSolveFrontend and
 //     the Dockerfile FileSync guard instead.
-//   - ExporterDeprecated / ExporterAttrsDeprecated (3, 4): denied outright
-//     — see checkSolveCache.
+//   - ExporterDeprecated / ExporterAttrsDeprecated (3, 4): accepted only as
+//     an exact copy of the first modern exporter — see checkSolveCache.
 //   - Session (5): names the session the daemon calls back through for
 //     Auth/Secrets/SSH/FileSync. It must pass the same canonical identifier
 //     validation as POST /session before admission can publish correlated
@@ -60,6 +60,7 @@ package buildkitproxy
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"maps"
 	"regexp"
 	"slices"
 	"strconv"
@@ -434,7 +435,7 @@ func checkSolveDefinitionSources(def *pb.Definition, policy SolvePolicy) *mediat
 			return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "remote LLB sources are not allowed")
 		}
 		attrs := op.GetSource().GetAttrs()
-		if attrs["local.session"] != "" || attrs["oci.session"] != "" {
+		if (attrs["local.session"] != "" && attrs["local.session"] != policy.returnedSourceSession) || attrs["oci.session"] != "" {
 			return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "LLB sources must inherit the Solve session")
 		}
 	}
@@ -451,7 +452,11 @@ func checkSolveDefinitionSources(def *pb.Definition, policy SolvePolicy) *mediat
 // unknown-but-actually-just-old wire shape, not a compatibility nicety.
 func checkSolveCache(req *control.SolveRequest, solvePolicy SolvePolicy) *mediationDenial {
 	if req.GetExporterDeprecated() != "" || len(req.GetExporterAttrsDeprecated()) > 0 {
-		return deny(grpcCodeFailedPrecondition, "buildkit_schema_unsupported", "unsupported BuildKit schema")
+		// Current BuildKit clients also send the first exporter in the legacy
+		// fields. Both daemon interpretations must describe the same policy.
+		if len(req.Exporters) == 0 || req.ExporterDeprecated == "" || req.ExporterDeprecated != req.Exporters[0].GetType() || !maps.Equal(req.ExporterAttrsDeprecated, req.Exporters[0].GetAttrs()) {
+			return deny(grpcCodeFailedPrecondition, "buildkit_schema_unsupported", "unsupported BuildKit schema")
+		}
 	}
 
 	cache := req.GetCache()

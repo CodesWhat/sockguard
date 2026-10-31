@@ -1,6 +1,9 @@
 package filter
 
-import "sync"
+import (
+	"encoding/json"
+	"sync"
+)
 
 // container_create_types.go holds the on-wire JSON shapes that the
 // /containers/create inspector decodes from request bodies. The split keeps
@@ -34,7 +37,28 @@ type dockerDeviceRequest struct {
 	Options      map[string]string `json:"Options"`
 }
 
+// containerCreateArgv also accepts Docker's legacy single-string shape. Like
+// Moby's StrSlice decoder, a string is one argument, never shell-split.
+type containerCreateArgv []string
+
+func (a *containerCreateArgv) UnmarshalJSON(data []byte) error {
+	var argv []string
+	if err := json.Unmarshal(data, &argv); err == nil {
+		*a = argv
+		return nil
+	}
+	var argument string
+	if err := json.Unmarshal(data, &argument); err != nil {
+		return err
+	}
+	*a = []string{argument}
+	return nil
+}
+
 type containerCreateRequest struct {
+	Cmd        containerCreateArgv       `json:"Cmd"`
+	Entrypoint containerCreateArgv       `json:"Entrypoint"`
+	Env        []string                  `json:"Env"`
 	Image      string                    `json:"Image"`
 	HostConfig containerCreateHostConfig `json:"HostConfig"`
 	User       string                    `json:"User"`
@@ -262,10 +286,9 @@ func releaseContainerCreateRequest(req *containerCreateRequest) {
 //
 // Three rules, and each one is a correctness rule rather than a style choice:
 //
-//   - []string fields are truncated, not dropped. encoding/json overwrites
-//     element i before it is reachable and truncates the slice to the number
-//     of elements it decoded, so nothing left over past the new length can be
-//     read back through the field.
+//   - []string fields are truncated, not dropped. Launch fields are cleared
+//     first because encoding/json leaves an existing string unchanged for a
+//     null array element. A reused launch field must decode like a fresh one.
 //   - Slices of structs (Mounts, Devices, DeviceRequests) are dropped, not
 //     truncated. encoding/json decodes into the existing element without
 //     zeroing it first, so a reused element would keep the previous request's
@@ -275,6 +298,12 @@ func releaseContainerCreateRequest(req *containerCreateRequest) {
 //     a surviving MaskedPaths pointer reads as "explicitly set to empty",
 //     which is the exact signal denySystemPathsReason denies on.
 func (r *containerCreateRequest) resetForReuse() {
+	clear(r.Cmd)
+	clear(r.Entrypoint)
+	clear(r.Env)
+	r.Cmd = r.Cmd[:0]
+	r.Entrypoint = r.Entrypoint[:0]
+	r.Env = r.Env[:0]
 	r.Image = ""
 	r.User = ""
 	r.MacAddress = ""
@@ -323,7 +352,10 @@ func (r *containerCreateRequest) resetForReuse() {
 // recycling it costs more memory than the allocation it saves.
 func (r *containerCreateRequest) oversizedForReuse() bool {
 	h := &r.HostConfig
-	return overContainerCreateReuseCap(h.Binds) ||
+	return overContainerCreateReuseCap(r.Cmd) ||
+		overContainerCreateReuseCap(r.Entrypoint) ||
+		overContainerCreateReuseCap(r.Env) ||
+		overContainerCreateReuseCap(h.Binds) ||
 		overContainerCreateReuseCap(h.DeviceCgroupRules) ||
 		overContainerCreateReuseCap(h.SecurityOpt) ||
 		overContainerCreateReuseCap(h.CapAdd) ||

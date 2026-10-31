@@ -591,11 +591,20 @@ type LibpodPodCreateRequestBodyConfig struct {
 // ContainerCreateRequestBodyConfig configures body inspection for
 // POST /containers/create requests.
 type ContainerCreateRequestBodyConfig struct {
+	AllowedCommands    [][]string `mapstructure:"allowed_commands"`
+	AllowedEntrypoints [][]string `mapstructure:"allowed_entrypoints"`
+	AllowedEnvVars     []string   `mapstructure:"allowed_env_vars"`
+	DeniedEnvVars      []string   `mapstructure:"denied_env_vars"`
+	AllowedEnvValues   []string   `mapstructure:"allowed_env_values"`
+	// AllowedImages is an opt-in exact reference allowlist; empty is unrestricted.
+	// Entries require an explicit registry, repository, and tag or digest.
+	AllowedImages            []string               `mapstructure:"allowed_images"`
 	AllowPrivileged          bool                   `mapstructure:"allow_privileged"`
 	AllowHostNetwork         bool                   `mapstructure:"allow_host_network"`
 	AllowHostPID             bool                   `mapstructure:"allow_host_pid"`
 	AllowHostIPC             bool                   `mapstructure:"allow_host_ipc"`
 	AllowedBindMounts        []string               `mapstructure:"allowed_bind_mounts"`
+	AllowMountSourceMutation bool                   `mapstructure:"allow_mount_source_mutation"`
 	AllowAllDevices          bool                   `mapstructure:"allow_all_devices"`
 	AllowedDevices           []string               `mapstructure:"allowed_devices"`
 	AllowDeviceRequests      bool                   `mapstructure:"allow_device_requests"`
@@ -675,20 +684,29 @@ type ContainerCreateRequestBodyConfig struct {
 // AllowHostUTS has no compat option to mirror, because the compat create
 // refuses a host UTS namespace unconditionally.
 type LibpodContainerCreateRequestBodyConfig struct {
-	AllowPrivileged bool `mapstructure:"allow_privileged"`
+	AllowedCommands    [][]string `mapstructure:"allowed_commands"`
+	AllowedEntrypoints [][]string `mapstructure:"allowed_entrypoints"`
+	AllowedEnvVars     []string   `mapstructure:"allowed_env_vars"`
+	DeniedEnvVars      []string   `mapstructure:"denied_env_vars"`
+	AllowedEnvValues   []string   `mapstructure:"allowed_env_values"`
+	// AllowedImages is an opt-in exact reference allowlist; empty is unrestricted.
+	// Entries require an explicit registry, repository, and tag or digest.
+	AllowedImages   []string `mapstructure:"allowed_images"`
+	AllowPrivileged bool     `mapstructure:"allow_privileged"`
 	// AllowHostNetwork/PID/IPC/UserNS/UTS/CgroupNS each permit that
 	// namespace object's nsmode "host" and "path". A path can name the
 	// host's namespace, so it needs the same gate. While one is false its
 	// namespace also refuses any nsmode sockguard doesn't know.
-	AllowHostNetwork  bool     `mapstructure:"allow_host_network"`
-	AllowHostPID      bool     `mapstructure:"allow_host_pid"`
-	AllowHostIPC      bool     `mapstructure:"allow_host_ipc"`
-	AllowHostUserNS   bool     `mapstructure:"allow_host_userns"`
-	AllowHostUTS      bool     `mapstructure:"allow_host_uts"`
-	AllowHostCgroupNS bool     `mapstructure:"allow_host_cgroupns"`
-	AllowedBindMounts []string `mapstructure:"allowed_bind_mounts"`
-	AllowAllDevices   bool     `mapstructure:"allow_all_devices"`
-	AllowedDevices    []string `mapstructure:"allowed_devices"`
+	AllowHostNetwork         bool     `mapstructure:"allow_host_network"`
+	AllowHostPID             bool     `mapstructure:"allow_host_pid"`
+	AllowHostIPC             bool     `mapstructure:"allow_host_ipc"`
+	AllowHostUserNS          bool     `mapstructure:"allow_host_userns"`
+	AllowHostUTS             bool     `mapstructure:"allow_host_uts"`
+	AllowHostCgroupNS        bool     `mapstructure:"allow_host_cgroupns"`
+	AllowedBindMounts        []string `mapstructure:"allowed_bind_mounts"`
+	AllowMountSourceMutation bool     `mapstructure:"allow_mount_source_mutation"`
+	AllowAllDevices          bool     `mapstructure:"allow_all_devices"`
+	AllowedDevices           []string `mapstructure:"allowed_devices"`
 
 	// RestrictNamespaceSharing/AllowedNamespaceSharingContainers gate
 	// netns/pidns/ipcns/userns/utsns/cgroupns objects of the form
@@ -817,9 +835,10 @@ type ImagePullRequestBodyConfig struct {
 
 // BuildRequestBodyConfig configures inspection for POST /build.
 type BuildRequestBodyConfig struct {
-	AllowRemoteContext   bool `mapstructure:"allow_remote_context"`
-	AllowHostNetwork     bool `mapstructure:"allow_host_network"`
-	AllowRunInstructions bool `mapstructure:"allow_run_instructions"`
+	AllowedPodmanControls []string `mapstructure:"allowed_podman_controls"`
+	AllowRemoteContext    bool     `mapstructure:"allow_remote_context"`
+	AllowHostNetwork      bool     `mapstructure:"allow_host_network"`
+	AllowRunInstructions  bool     `mapstructure:"allow_run_instructions"`
 }
 
 // ContainerUpdateRequestBodyConfig configures inspection for
@@ -1002,6 +1021,9 @@ type ConfigRequestBodyConfig struct {
 
 // ServiceRequestBodyConfig configures inspection for service create/update.
 type ServiceRequestBodyConfig struct {
+	// AllowedImages is an opt-in exact reference allowlist; empty is unrestricted.
+	// Entries require an explicit registry, repository, and tag or digest.
+	AllowedImages              []string `mapstructure:"allowed_images"`
 	AllowHostNetwork           bool     `mapstructure:"allow_host_network"`
 	AllowedBindMounts          []string `mapstructure:"allowed_bind_mounts"`
 	AllowAllRegistries         bool     `mapstructure:"allow_all_registries"`

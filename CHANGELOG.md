@@ -7,6 +7,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-10-31
+
+v2.4.0 promotes v2.4.0-rc.3 unchanged in behavior. The v2.4 line adds exact image admission (`allowed_images` for Docker and Podman container create and Swarm service create/update, with per-client lists and rollout modes), opt-in create environment, command and entrypoint policy, startup and validate warnings for rules that match no known route, reproducible binary build checks, and mediated standard Buildx Dockerfile builds. It carries everything through 2.3.3.
+
+## [2.4.0-rc.3] - 2026-10-30
+
+This candidate carries the v2.3.2 and v2.3.3 releases forward onto the v2.4 line, along with the release workflow fixes behind them. The v2.4 changes from rc.2 are otherwise unchanged.
+
+### Security
+
+- This line now carries the 2.3.2 security fixes (Podman filter scoping, `label` filters kept under ownership, go-jose 4.1.6) and the 2.3.3 release-signing fix. See the 2.3.2 and 2.3.3 entries below.
+- Update `golang.org/x/net` to v0.62.0 for GO-2026-6860 and GO-2026-6866, both in `golang.org/x/net/html`. Sockguard doesn't import that package, and govulncheck reports neither as reachable. The bump clears the module-level findings in dependency scans.
+
+### Changed
+
+- **Release workflows retry network steps three times.** `release-cut.yml` and `release-from-tag.yml` now retry checkout, Buildx setup and artifact upload and download up to three times, waiting 30 s and then 60 s between attempts, so a short egress refusal under block mode no longer kills a release job. Upload retries set `overwrite: true` so a half-created artifact from a failed attempt can't block the next one.
+- **Website preview builds skip pushes that don't touch the site.** `website/vercel.json` now runs `website/scripts/vercel-ignore-build.sh` as its ignored build step. A preview is skipped when nothing changed since the branch's last deployment in `website/`, `docs/`, the root `package.json`, `package-lock.json`, `turbo.json`, `biome.json`, `.vercelignore`, `.gitignore` or the two analytics sync scripts, so Go-only pushes stop using up the Hobby plan's daily deploy quota. A missing or unfetchable previous commit builds, and production deploys from main always build.
+- **Working branches no longer deploy website previews.** Vercel counts ignored builds toward the daily deployment quota, so `website/vercel.json` also sets `git.deploymentEnabled` to off for `feat/`, `fix/`, `docs/`, `ci/`, `chore/`, `test/`, `refactor/`, `build/`, `perf/`, `style/`, `revert/`, `dev/`, `release/`, `renovate/`, `dependabot/`, `codex/` and `claude/` branches. main still deploys production. A branch with any other prefix, such as `site/`, still gets a preview.
+
+### Fixed
+
+- **Release binary signing retries.** GoReleaser signs every archive with a parallel `cosign sign-blob`, and on 2.3.3's first attempt two of them raced on the Sigstore trust cache and the job failed. The release workflow now loads the trust root once before GoReleaser runs, and each signing call retries up to three times with a fresh key.
+
+## [2.4.0-rc.2] - 2026-10-26
+
+This candidate carries the v2.3.0 and v2.3.1 releases forward onto the v2.4 line, along with the 2.2.11 fixes that rc.1 predates. The v2.4 changes from rc.1 are otherwise unchanged.
+
+### Security
+
+- **Carries the v2.3.1 log-path refusal.** A container create could have a Podman upstream write the container's log to a host path the client chose, through `HostConfig.LogConfig.Config` `path` on the compat route or `log_configuration.path` and `healthLogDestination` on the native one. Both creates now refuse those unless the new `allow_log_path` option is turned on for the route. It's off by default, so a deployment whose clients set a log path has to enable it. The 2.3.1 entry below has the full behavior.
+- Carries the 2.2.11 fixes: native Podman `base_hosts_file` and `hostsFile` are limited to the empty, `image` and `none` selectors, and `BUILDKIT_SYNTAX` frontend overrides are refused while RUN instructions are restricted. Release binaries and images build with Go 1.27.3 for GO-2026-6809.
+
+### Changed
+
+- Carries v2.3.0: the BuildKit frontend mediation, `sockguard frontend` runner and per-ExecOp digest approvals are in stable v2.3, and Sockguard is MIT licensed from that release. 2.2.x and earlier remain Apache-2.0.
+- Carries the v2.3 CI changes: the lockfile dedupe check resolves against npm as of 14 days ago, and CI workflows run harden-runner in audit mode while the release cut and publisher keep block mode.
+- **Carries the v2.3 CI tooling fixes from the PR #638 review.** The pre-push lockfile dedupe check now applies the release-age cutoff only to its dedupe probe, so an exactly pinned dependency published inside the cutoff window can no longer fail the install probe with ETARGET and block a push. The monthly mutation job that commits the badge keeps harden-runner in block mode with an allow list, because it holds a write credential; the read-only jobs stay on audit. The release CI-verify wait now holds each request, its retries and its sleep to the time left in `max-wait-seconds`, so a poll that starts near the deadline fails with the action's timeout error instead of running into the job timeout.
+
+### Documentation
+
+- Refresh the release status across the migration guide, roadmap, README and website: stable is v2.3.1, v2.2.11 is the latest v2.2 maintenance patch, and the frontend runner and `allowed_exec_digests` are no longer described as candidate-only.
+
+## [2.4.0-rc.1] - 2026-10-16
+
+### Fixed
+
+- Rotate dependency updates to `dev/v2.4`, matching the candidate's release source and the release-cut branch guard.
+- Standard local Buildx Dockerfile builds now admit an exact compatibility copy of the first exporter, mediate the built-in `dockerfile.v0` gateway with syntax delegation disabled, and accept only the active build's scoped local-session references in returned metadata. Conflicting/legacy-only exporters, explicit input-session overrides, arbitrary daemon frontend images and nested BuildOps remain denied. Owner mutations stay identical in both exporter representations. Docker integration now exercises Buildx builds, owner stamping, foreign-target preservation and restricted RUN/syntax refusal through the bundled build policy.
+- The mediated-build presets grant the built-in gateway and `moby` local exporter needed by current Buildx. RUN, remote context, host network and external ExecOp grants retain their restricted defaults.
+
+### Security
+
+- Mediated BuildKit image exports now enforce owner isolation: check destination names against current daemon labels and stamp the active owner on built-in Dockerfile labels, supported image-config exporter attributes, and mediated frontend Return metadata. Owner-scoped Dockerfile builds use the built-in compiler; raw legacy `moby` exports without a trustworthy stamping path and incomplete frontend image configs fail closed. Status waits briefly for in-progress owner admission without granting unadmitted refs.
+- RUN-enabled Podman builds require explicit grants for namespace, capability, device, security, identity, resource, DNS, base-image and host-entry query controls through `request_body.build.allowed_podman_controls`. Private network-only namespace options need no grant. A Podman upstream must explicitly select a private network namespace when `allow_host_network` is false, closing the daemon's host-network default; the host-network grant and existing blind-write gates remain independent. These new grants apply to Podman upstreams; Docker-native build controls keep their existing behavior. Podman numeric default/OCI/rootless isolation values are accepted with the grant and private namespace; numeric chroot remains refused when host networking is denied.
+
+- Refuse classic-build `BUILDKIT_SYNTAX` frontend overrides while RUN instructions are restricted, including ambiguous query spellings and repeated values.
+- Hold CDI device-request host paths to `allowed_devices`, independently of the device-request driver grant. Qualified CDI names remain supported.
+- Apply native Podman bind-source checks to `bind`/`rbind` options on any mount type. Refuse unmodeled device/filesystem mounts; use constrained bind or `overlay_volumes` entries instead.
+- Require `allow_mount_source_mutation` for Podman mount options `U`, `z` and `Z` on compat binds, native mounts, overlay volumes and named volumes. The exact native tmpfs `U` form sets mount uid/gid and remains allowed. Source allowlists still apply independently.
+
+### Documentation
+
+- Record the current Buildx v0.33.0 schema incompatibility and distinguish the verified direct built-in Solve ownership path from unverified normal Buildx/Compose workflows in the public roadmap.
+- Add version-scoped v2.2/v2.3 migration guidance and candidate-only frontend labels, a canonical deprecation ledger with the planned v3 TLS removal checklist, and precise restricted-client security scope. Correct the CLI demo build toolchain and check it against go.mod.
+- Align documentation and changelog release status with the published rc.7 candidate and the successful soak/TLS runs on prepared, unpublished rc.8 source.
+- Record the v2.4 Unix container-label identity decision: labels remain TCP/source-IP only. PID reuse, namespace visibility, delegated cgroups and remote-daemon identity require a separate safe design; Unix clients can use distinct host-visible UID/GID profiles instead.
+
+### Added
+
+- Reproducible unsigned Go binary builds: release metadata uses the UTC source commit date, VCS auto-stamping is disabled, and a checked-in procedure compares clean builds from separate directories/caches. CI checks Linux/Darwin on amd64/arm64. Packages, images and signing artifacts are outside this binary-byte guarantee. The security guide records the decision to retain executable policy tests rather than add a separate formal model in v2.4.
+
+- Opt-in container-create command, entrypoint and environment policies for Docker and native Podman, globally or per client profile. Explicit argv templates use anchored globs and preserve legacy Docker single-string argv decoding; environment checks support allowed/denied names and exact values without exposing values in denials. Native host/proxy/secret/merge environment additions are refused while environment checks are active. Image/daemon defaults are outside request-field inspection. Pooled launch fields are cleared so null array elements cannot retain a previous request's values.
+
+- Startup and `validate` diagnostics warn about global or per-client allow/deny rules whose method and glob path match no route in the pinned Engine/Podman API catalog. The offline, bounded analysis is advisory and does not change request authorization.
+
+- Opt-in `allowed_images` lists for Docker-compatible container creation, native Podman container creation, and Swarm service creation/update. Each list matches fully qualified image references exactly, including an explicit tag or digest, and can be set globally or per client profile. Empty lists preserve existing behavior. Checks run after admission image remapping and before signature verification/digest pinning, and use the existing enforce/warn/audit rollout modes. When a list is enabled, alternate rootfs/image-volume creation, image mounts, and stored or automatic Swarm rollback are refused rather than selecting unchecked image content.
+
 ## [2.3.3] - 2026-10-29
 
 A release-pipeline patch on the v2.3 line. The 2.3.2 container images were published without signatures, so 2.3.3 ships the same proxy code with signed images, the Homebrew cask and the chart digest pin.
@@ -100,7 +177,7 @@ v2.3.0 promotes v2.3.0-rc.9 unchanged in behavior: BuildKit frontend mediation w
 
 ### Changed
 
-- Carries the stable line's npm updates and deduped lockfile, authenticated Docker Hub pulls in the security workflow, and current release/roadmap metadata. The BuildKit frontend mediation, companion runner and `/v2` module path remain intact. This forward-port keeps the existing v2.3 GA date, no earlier than 2026-10-23; rc.8 still needs a fresh four-hour soak and TLS scan on its exact head.
+- Carries the stable line's npm updates and deduped lockfile, authenticated Docker Hub pulls in the security workflow, and current release/roadmap metadata. The BuildKit frontend mediation, companion runner and `/v2` module path remain intact. This forward-port keeps the existing v2.3 GA date, no earlier than 2026-10-23. The prepared, unpublished rc.8 source passed fresh four-hour soak and TLS validation on `3d959fe3`; the tag cut still awaits confirmation, followed by published-artifact verification and candidate-image tri-tool conformance.
 
 ## [2.2.10] - 2026-10-15
 

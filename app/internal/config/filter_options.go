@@ -90,11 +90,18 @@ func (c LibpodPodCreateRequestBodyConfig) ToFilterOptions() filter.LibpodPodCrea
 
 func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCreateOptions {
 	return filter.ContainerCreateOptions{
+		AllowedCommands:                   c.AllowedCommands,
+		AllowedEntrypoints:                c.AllowedEntrypoints,
+		AllowedEnvVars:                    c.AllowedEnvVars,
+		DeniedEnvVars:                     c.DeniedEnvVars,
+		AllowedEnvValues:                  c.AllowedEnvValues,
+		AllowedImages:                     c.AllowedImages,
 		AllowPrivileged:                   c.AllowPrivileged,
 		AllowHostNetwork:                  c.AllowHostNetwork,
 		AllowHostPID:                      c.AllowHostPID,
 		AllowHostIPC:                      c.AllowHostIPC,
 		AllowedBindMounts:                 c.AllowedBindMounts,
+		AllowMountSourceMutation:          c.AllowMountSourceMutation,
 		AllowAllDevices:                   c.AllowAllDevices,
 		AllowedDevices:                    c.AllowedDevices,
 		AllowDeviceRequests:               c.AllowDeviceRequests,
@@ -134,6 +141,12 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 
 func (c LibpodContainerCreateRequestBodyConfig) ToFilterOptions() filter.LibpodContainerCreateOptions {
 	return filter.LibpodContainerCreateOptions{
+		AllowedCommands:                   c.AllowedCommands,
+		AllowedEntrypoints:                c.AllowedEntrypoints,
+		AllowedEnvVars:                    c.AllowedEnvVars,
+		DeniedEnvVars:                     c.DeniedEnvVars,
+		AllowedEnvValues:                  c.AllowedEnvValues,
+		AllowedImages:                     c.AllowedImages,
 		AllowPrivileged:                   c.AllowPrivileged,
 		AllowHostNetwork:                  c.AllowHostNetwork,
 		AllowHostPID:                      c.AllowHostPID,
@@ -142,6 +155,7 @@ func (c LibpodContainerCreateRequestBodyConfig) ToFilterOptions() filter.LibpodC
 		AllowHostUTS:                      c.AllowHostUTS,
 		AllowHostCgroupNS:                 c.AllowHostCgroupNS,
 		AllowedBindMounts:                 c.AllowedBindMounts,
+		AllowMountSourceMutation:          c.AllowMountSourceMutation,
 		AllowAllDevices:                   c.AllowAllDevices,
 		AllowedDevices:                    c.AllowedDevices,
 		RestrictNamespaceSharing:          c.RestrictNamespaceSharing,
@@ -216,9 +230,10 @@ func (c ImagePullRequestBodyConfig) ToFilterOptions() filter.ImagePullOptions {
 
 func (c BuildRequestBodyConfig) ToFilterOptions() filter.BuildOptions {
 	return filter.BuildOptions{
-		AllowRemoteContext:   c.AllowRemoteContext,
-		AllowHostNetwork:     c.AllowHostNetwork,
-		AllowRunInstructions: c.AllowRunInstructions,
+		AllowedPodmanControls: c.AllowedPodmanControls,
+		AllowRemoteContext:    c.AllowRemoteContext,
+		AllowHostNetwork:      c.AllowHostNetwork,
+		AllowRunInstructions:  c.AllowRunInstructions,
 	}
 }
 
@@ -316,6 +331,7 @@ func (c ConfigRequestBodyConfig) ToFilterOptions() filter.ConfigOptions {
 
 func (c ServiceRequestBodyConfig) ToFilterOptions() filter.ServiceOptions {
 	return filter.ServiceOptions{
+		AllowedImages:              c.AllowedImages,
 		AllowHostNetwork:           c.AllowHostNetwork,
 		AllowedBindMounts:          c.AllowedBindMounts,
 		AllowAllRegistries:         c.AllowAllRegistries,

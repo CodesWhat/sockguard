@@ -28,7 +28,7 @@ func TestBuildFrontendOverrideCannotBypassRunInspection(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				handler := MiddlewareWithOptions([]*CompiledRule{rule}, testLogger(), Options{PolicyConfig: PolicyConfig{Build: BuildOptions{AllowRunInstructions: tc.allowRun}}})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+				handler := MiddlewareWithOptions([]*CompiledRule{rule}, testLogger(), Options{PolicyConfig: PolicyConfig{Build: BuildOptions{AllowRunInstructions: tc.allowRun, AllowHostNetwork: true}}})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))
 				body := mustBuildContextTar(t, "Dockerfile", "FROM scratch\n")
 				rec := httptest.NewRecorder()
 				handler.ServeHTTP(rec, httptest.NewRequest("POST", path+"?"+tc.query, bytes.NewReader(body)))

@@ -72,11 +72,19 @@ type signatureFetcher interface {
 // ContainerCreateOptions configures request-body policy checks for
 // POST /containers/create.
 type ContainerCreateOptions struct {
+	AllowedCommands    [][]string
+	AllowedEntrypoints [][]string
+	AllowedEnvVars     []string
+	DeniedEnvVars      []string
+	AllowedEnvValues   []string
+	// AllowedImages is an opt-in exact image reference allowlist.
+	AllowedImages            []string
 	AllowPrivileged          bool
 	AllowHostNetwork         bool
 	AllowHostPID             bool
 	AllowHostIPC             bool
 	AllowedBindMounts        []string
+	AllowMountSourceMutation bool
 	AllowAllDevices          bool
 	AllowedDevices           []string
 	AllowDeviceRequests      bool
@@ -192,11 +200,14 @@ type ContainerCreateOptions struct {
 }
 
 type containerCreatePolicy struct {
+	launch                   createLaunchPolicy
+	allowedImages            createImageAllowlist
 	allowPrivileged          bool
 	allowHostNetwork         bool
 	allowHostPID             bool
 	allowHostIPC             bool
 	allowedBindMounts        []string
+	allowMountSourceMutation bool
 	allowAllDevices          bool
 	allowedDevices           []string
 	allowDeviceRequests      bool
@@ -292,11 +303,14 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 	}
 
 	p := containerCreatePolicy{
+		allowedImages:                     newCreateImageAllowlist(opts.AllowedImages),
+		launch:                            newCreateLaunchPolicy(opts.AllowedCommands, opts.AllowedEntrypoints, opts.AllowedEnvVars, opts.DeniedEnvVars, opts.AllowedEnvValues),
 		allowPrivileged:                   opts.AllowPrivileged,
 		allowHostNetwork:                  opts.AllowHostNetwork,
 		allowHostPID:                      opts.AllowHostPID,
 		allowHostIPC:                      opts.AllowHostIPC,
 		allowedBindMounts:                 allowed,
+		allowMountSourceMutation:          opts.AllowMountSourceMutation,
 		allowAllDevices:                   opts.AllowAllDevices,
 		allowedDevices:                    allowedDevices,
 		allowDeviceRequests:               opts.AllowDeviceRequests,
@@ -1237,8 +1251,14 @@ func buildImageTrustRaw(opts ImageTrustOptions) imagetrust.RawConfig {
 }
 
 func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
-	if r == nil || r.Method != http.MethodPost || normalizedPath != "/containers/create" || r.Body == nil {
+	if r == nil || r.Method != http.MethodPost || normalizedPath != "/containers/create" {
 		return "", nil
+	}
+	if r.Body == nil {
+		if reason := p.launch.denyReason(nil, nil, nil, "container create"); reason != "" {
+			return reason, nil
+		}
+		return p.allowedImages.denyReason("", "container create"), nil
 	}
 	// Fail closed if the image trust policy failed to initialize: a
 	// misconfigured trust config must not silently allow all images through.
@@ -1254,7 +1274,10 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	}
 
 	if len(body) == 0 {
-		return "", nil
+		if reason := p.launch.denyReason(nil, nil, nil, "container create"); reason != "" {
+			return reason, nil
+		}
+		return p.allowedImages.denyReason("", "container create"), nil
 	}
 
 	createReq := acquireContainerCreateRequest()
@@ -1265,6 +1288,14 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 		// Docker would silently skip all policy checks (fail-open).
 		logRequestError(logger, r, slog.LevelDebug, "container create request body is not valid JSON; denying", err)
 		return "container create denied: malformed JSON request body", nil
+	}
+
+	if reason := p.launch.denyReason(createReq.Cmd, createReq.Entrypoint, createReq.Env, "container create"); reason != "" {
+		return reason, nil
+	}
+
+	if reason := p.allowedImages.denyReason(createReq.Image, "container create"); reason != "" {
+		return reason, nil
 	}
 
 	if !p.allowPrivileged && createReq.HostConfig.Privileged {
@@ -1548,13 +1579,33 @@ func (p containerCreatePolicy) denyDeviceReason(hostConfig containerCreateHostCo
 }
 
 // denyDeviceRequestsReason checks each DeviceRequest against the policy.
-// If allowDeviceRequests is true, all requests pass without inspection (escape
-// hatch). If allowedDeviceRequests is non-empty, every request must match an
+// CDI raw host paths always follow the host-device policy. Otherwise,
+// allowDeviceRequests skips driver/capability checks. If allowedDeviceRequests
+// is non-empty, every request must match an
 // entry by driver (exact, lowercase) and capabilities (each request capability
 // set must be a subset of at least one allowlisted set), and optionally by
 // count (max_count). Empty Driver in the request is rejected as malformed.
 // If neither flag nor allowlist is set, all requests are denied (default-deny).
 func (p containerCreatePolicy) denyDeviceRequestsReason(reqs []dockerDeviceRequest) string {
+	// Podman's compat API sends CDI DeviceIDs through its raw --device
+	// parser. The request-driver grant alone must not grant host devices.
+	if !p.allowAllDevices {
+		for _, req := range reqs {
+			if !strings.EqualFold(strings.TrimSpace(req.Driver), "cdi") {
+				continue
+			}
+			for _, id := range req.DeviceIDs {
+				if qualifiedCDIDevice.MatchString(id) {
+					continue
+				}
+				raw, ok := splitLibpodDevicePath(id)
+				host, normalized := normalizeContainerCreateDevicePath(raw)
+				if !ok || !normalized || !bindPathAllowed(host, p.allowedDevices) {
+					return fmt.Sprintf("container create denied: CDI device %q is not allowlisted", id)
+				}
+			}
+		}
+	}
 	if p.allowDeviceRequests {
 		return ""
 	}
@@ -1865,6 +1916,11 @@ func cgroupPermOrder(c byte) int {
 // allowedBindMounts: its source when that's an absolute host path, and the
 // overlay directories its options name.
 func (p containerCreatePolicy) denyBindSpecReason(bind string) string {
+	if parts := strings.SplitN(bind, ":", 3); len(parts) == 3 {
+		if reason := denyMountSourceMutationReason(strings.FieldsFunc(parts[2], func(r rune) bool { return r == ',' || r == ':' }), false, p.allowMountSourceMutation, "container create"); reason != "" {
+			return reason
+		}
+	}
 	// Podman reads a spec whose source starts with "/" or "." as a host path,
 	// and only a source that starts with neither as a named volume
 	// (specgen/volumes.go GenVolumeMounts). A "."-prefixed source is a relative
@@ -2035,8 +2091,16 @@ func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHos
 // patch; until then, enforce mode denies the request outright rather than
 // silently admitting an unverified filesystem. warn mode and mode "off" are
 // unaffected — this only gates the request when enforcement would otherwise
-// apply.
+// apply. An active image allowlist also refuses image mounts, whose content
+// is independent of the primary Image field checked at create time.
 func (p containerCreatePolicy) denyImageMountReason(hostConfig containerCreateHostConfig) string {
+	if len(p.allowedImages) > 0 {
+		for _, mount := range hostConfig.Mounts {
+			if strings.EqualFold(mount.Type, "image") {
+				return "container create denied: image mounts are not supported with allowed_images"
+			}
+		}
+	}
 	if p.imageTrustCfg.Mode != imagetrust.ModeEnforce {
 		return ""
 	}

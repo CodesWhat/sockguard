@@ -289,7 +289,7 @@ func TestContainerCreateBindOverlayOptions(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			policy := newContainerCreatePolicy(ContainerCreateOptions{AllowedBindMounts: tt.allowed})
+			policy := newContainerCreatePolicy(ContainerCreateOptions{AllowedBindMounts: tt.allowed, AllowMountSourceMutation: true})
 			body := `{"Image":"alpine","HostConfig":{"Binds":[` + tt.binds + `]}}`
 			reason, err := policy.inspect(nil, makeInspectRequest(t, body), "/containers/create")
 			if err != nil {

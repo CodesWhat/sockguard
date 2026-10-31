@@ -1353,7 +1353,7 @@ func TestLibpodContainerCreateOverlayAndBindSourceGates(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			policy := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowedBindMounts: tt.allowed})
+			policy := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowedBindMounts: tt.allowed, AllowMountSourceMutation: true})
 			reason := inspectLibpod(t, policy, []byte(`{"systemd":"false",`+tt.fields+`}`))
 			if reason != tt.wantReason {
 				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)

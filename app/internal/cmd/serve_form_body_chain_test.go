@@ -633,7 +633,7 @@ func TestBodiesRealClientsSendStillReachTheDaemon(t *testing.T) {
 			wantPath:   "/libpod/build",
 			wantBody:   podmanBuild,
 			request: formBodyRequest{
-				method: http.MethodPost, target: "/v5.8.0/libpod/build?t=app%3Adev",
+				method: http.MethodPost, target: "/v5.8.0/libpod/build?t=app%3Adev&nsoptions=%5B%7B%22Name%22%3A%22network%22%7D%5D",
 				contentTypes: []string{podmanBuildType}, body: podmanBuild,
 			},
 		},

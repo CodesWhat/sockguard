@@ -41,19 +41,27 @@ import (
 // and AllowHostUTS has no compat option to mirror, because the compat create
 // refuses a host UTS namespace unconditionally.
 type LibpodContainerCreateOptions struct {
+	AllowedCommands    [][]string
+	AllowedEntrypoints [][]string
+	AllowedEnvVars     []string
+	DeniedEnvVars      []string
+	AllowedEnvValues   []string
+	// AllowedImages is an opt-in exact image reference allowlist.
+	AllowedImages   []string
 	AllowPrivileged bool
 	// AllowHostNetwork/PID/IPC/UserNS/UTS/CgroupNS each permit that
 	// namespace object's nsmode "host" and "path", and while false refuse
 	// any nsmode this package doesn't know (see libpod_namespace.go).
-	AllowHostNetwork  bool
-	AllowHostPID      bool
-	AllowHostIPC      bool
-	AllowHostUserNS   bool
-	AllowHostUTS      bool
-	AllowHostCgroupNS bool
-	AllowedBindMounts []string
-	AllowAllDevices   bool
-	AllowedDevices    []string
+	AllowHostNetwork         bool
+	AllowHostPID             bool
+	AllowHostIPC             bool
+	AllowHostUserNS          bool
+	AllowHostUTS             bool
+	AllowHostCgroupNS        bool
+	AllowedBindMounts        []string
+	AllowMountSourceMutation bool
+	AllowAllDevices          bool
+	AllowedDevices           []string
 
 	// RestrictNamespaceSharing gates netns/pidns/ipcns/userns/utsns/cgroupns
 	// objects of the form {"nsmode":"container","value":"<ref>"} (join another
@@ -114,16 +122,19 @@ type LibpodContainerCreateOptions struct {
 }
 
 type libpodContainerCreatePolicy struct {
-	allowPrivileged   bool
-	allowHostNetwork  bool
-	allowHostPID      bool
-	allowHostIPC      bool
-	allowHostUserNS   bool
-	allowHostUTS      bool
-	allowHostCgroupNS bool
-	allowedBindMounts []string
-	allowAllDevices   bool
-	allowedDevices    []string
+	launch                   createLaunchPolicy
+	allowedImages            createImageAllowlist
+	allowPrivileged          bool
+	allowHostNetwork         bool
+	allowHostPID             bool
+	allowHostIPC             bool
+	allowHostUserNS          bool
+	allowHostUTS             bool
+	allowHostCgroupNS        bool
+	allowedBindMounts        []string
+	allowMountSourceMutation bool
+	allowAllDevices          bool
+	allowedDevices           []string
 
 	restrictNamespaceSharing          bool
 	allowedNamespaceSharingContainers []string
@@ -178,6 +189,8 @@ func newLibpodContainerCreatePolicy(opts LibpodContainerCreateOptions) libpodCon
 	}
 
 	p := libpodContainerCreatePolicy{
+		allowedImages:                     newCreateImageAllowlist(opts.AllowedImages),
+		launch:                            newCreateLaunchPolicy(opts.AllowedCommands, opts.AllowedEntrypoints, opts.AllowedEnvVars, opts.DeniedEnvVars, opts.AllowedEnvValues),
 		allowPrivileged:                   opts.AllowPrivileged,
 		allowHostNetwork:                  opts.AllowHostNetwork,
 		allowHostPID:                      opts.AllowHostPID,
@@ -186,6 +199,7 @@ func newLibpodContainerCreatePolicy(opts LibpodContainerCreateOptions) libpodCon
 		allowHostUTS:                      opts.AllowHostUTS,
 		allowHostCgroupNS:                 opts.AllowHostCgroupNS,
 		allowedBindMounts:                 allowedBindMounts,
+		allowMountSourceMutation:          opts.AllowMountSourceMutation,
 		allowAllDevices:                   opts.AllowAllDevices,
 		allowedDevices:                    allowedDevices,
 		restrictNamespaceSharing:          opts.RestrictNamespaceSharing,
@@ -220,8 +234,14 @@ func newLibpodContainerCreatePolicy(opts LibpodContainerCreateOptions) libpodCon
 }
 
 func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
-	if r == nil || r.Method != http.MethodPost || !isLibpodContainerCreatePath(normalizedPath) || r.Body == nil {
+	if r == nil || r.Method != http.MethodPost || !isLibpodContainerCreatePath(normalizedPath) {
 		return "", nil
+	}
+	if r.Body == nil {
+		if reason := p.launch.denyReason(nil, nil, nil, "libpod container create"); reason != "" {
+			return reason, nil
+		}
+		return p.allowedImages.denyReason("", "libpod container create"), nil
 	}
 	if p.imageTrustInitErr != nil {
 		return fmt.Sprintf("libpod container create denied: image trust policy initialization error: %s", p.imageTrustInitErr.Error()), nil
@@ -235,13 +255,35 @@ func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Reques
 	}
 
 	if len(body) == 0 {
-		return "", nil
+		if reason := p.launch.denyReason(nil, nil, nil, "libpod container create"); reason != "" {
+			return reason, nil
+		}
+		return p.allowedImages.denyReason("", "libpod container create"), nil
 	}
 
 	var createReq libpodContainerCreateRequest
 	if err := json.Unmarshal(body, &createReq); err != nil {
 		logRequestError(logger, r, slog.LevelDebug, "libpod container create request body is not valid JSON; denying", err)
 		return "libpod container create denied: malformed JSON request body", nil
+	}
+
+	if reason := p.launch.denyLibpodReason(createReq); reason != "" {
+		return reason, nil
+	}
+
+	if reason := p.allowedImages.denyReason(createReq.Image, "libpod container create"); reason != "" {
+		return reason, nil
+	}
+
+	if len(p.allowedImages) > 0 && (createReq.Rootfs != "" || len(createReq.ImageVolumes) > 0) {
+		return "libpod container create denied: rootfs and image volumes are not supported with allowed_images", nil
+	}
+	if len(p.allowedImages) > 0 {
+		for _, mount := range createReq.Mounts {
+			if strings.EqualFold(mount.Type, "image") {
+				return "libpod container create denied: image mounts are not supported with allowed_images", nil
+			}
+		}
 	}
 
 	if !p.allowPrivileged && createReq.Privileged {
@@ -406,12 +448,21 @@ func (p libpodContainerCreatePolicy) denyNamespaceSharingReason(req libpodContai
 // resolves a relative source, and an empty one, against the daemon's own
 // working directory. "../../../../etc" is /etc from anywhere on the host, and
 // this proxy can't see where the daemon is standing, so no allowlist entry can
-// vouch for a relative path. Only "bind" is treated this way: Podman leaves
-// every other type's source alone, and the source of a tmpfs or devpts mount
-// isn't a path at all.
+// vouch for a relative path. The kernel also treats bind/rbind options on
+// other types as host binds. Unmodeled filesystem/device mounts are refused;
+// virtual filesystems without bind options do not read a host source.
 func (p libpodContainerCreatePolicy) denyBindMountReason(mounts []libpodMount) string {
 	for _, mount := range mounts {
-		if !strings.EqualFold(mount.Type, "bind") {
+		if reason := denyMountSourceMutationReason(mount.Options, mount.Type == "tmpfs", p.allowMountSourceMutation, "libpod container create"); reason != "" {
+			return reason
+		}
+		bind := strings.EqualFold(mount.Type, "bind") || slices.Contains(mount.Options, "bind") || slices.Contains(mount.Options, "rbind")
+		if !bind {
+			switch mount.Type {
+			case "tmpfs", "ramfs", "proc", "sysfs", "devpts", "mqueue", "cgroup", "cgroup2":
+			default:
+				return fmt.Sprintf("libpod container create denied: mount type %q is not supported; use a constrained bind or overlay_volumes mount", mount.Type)
+			}
 			continue
 		}
 		source, ok := normalizeBindMount(mount.Source)

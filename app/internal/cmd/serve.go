@@ -177,6 +177,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		}()
 	}
 	warnIfDefaultProfileExcluded(cfg, logger)
+	warnIfRulesMatchNoKnownRoute(cfg, logger)
 	warnIfMainListenerPlaintext(cfg, logger)
 	runtime, err := newServeRuntime(cfg, logger, deps)
 	if err != nil {
@@ -795,7 +796,7 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 		// path sets are disjoint (attach/exec vs. session/grpc), so their
 		// relative order doesn't affect correctness, only which one a
 		// reader sees "closer to the wire" in this slice.
-		namedServeHandlerLayer("withBuildkitMediator", withBuildkitMediator(cfg, resolver, logger)),
+		namedServeHandlerLayer("withBuildkitMediator", withBuildkitMediator(cfg, resolver, logger, runtimeUpstreamFlavor(runtime))),
 		namedServeHandlerLayer("withHijack", withHijack(cfg, resolver, logger)),
 		// #152: inserted between hijack and ownership in APPEND order. Later
 		// appends wrap (execute before) earlier ones, so this yields runtime
@@ -806,7 +807,7 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 		namedServeHandlerLayer("withResourceLimitGuard", withResourceLimitGuard(cfg, resolver, logger, clientProfiles)),
 		namedServeHandlerLayer("withOwnership", withOwnership(cfg, resolver, logger, runtimeUpstreamFlavor(runtime))),
 		namedServeHandlerLayer("withVisibility", withVisibility(cfg, resolver, logger, runtimeUpstreamFlavor(runtime))),
-		namedServeHandlerLayer("withFilter", withFilter(cfg, resolver, logger, rules, clientProfiles)),
+		namedServeHandlerLayer("withFilter", withFilter(cfg, resolver, logger, rules, clientProfiles, runtimeUpstreamFlavor(runtime))),
 		// withFormBodyGuard is appended right AFTER withFilter so it executes
 		// immediately BEFORE it. Every layer above reads request parameters
 		// from the URL query, and both engines also read them from a form
@@ -1012,12 +1013,23 @@ func effectiveShutdownGracePeriod(cfg *config.Config) time.Duration {
 // here without either flag somehow — filter's admission gate makes that
 // combination unreachable in practice), this layer is a no-op and the
 // request falls through to next unchanged, exactly like Phase 1.
-func withBuildkitMediator(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger) func(http.Handler) http.Handler {
+func withBuildkitMediator(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, flavor upstreamflavor.Flavor) func(http.Handler) http.Handler {
 	warnIfOpaqueBuildkitTunnelDeprecated(cfg, logger)
 	defaultPolicy := cfg.RequestBody.Buildkit.ToPolicy(cfg.RequestBody.Build)
+	ownerPolicy := buildkitproxy.ImageOwnershipPolicy{
+		Owner: cfg.Ownership.Owner, LabelKey: cfg.Ownership.LabelKey,
+		Authorize: ownership.NewBuildkitImageAuthorizer(upstreamResolverFor(res, cfg), ownership.Options{
+			Owner: cfg.Ownership.Owner, LabelKey: cfg.Ownership.LabelKey,
+			AllowUnownedImages: cfg.Ownership.AllowUnownedImages, UpstreamFlavor: flavor,
+		}),
+	}
+	defaultPolicy.ImageOwnership = ownerPolicy
 	profilePolicies := make(map[string]buildkitproxy.Policy, len(cfg.Clients.Profiles))
 	for _, profile := range cfg.Clients.Profiles {
 		profilePolicies[profile.Name] = profile.RequestBody.Buildkit.ToPolicy(profile.RequestBody.Build)
+		policy := profilePolicies[profile.Name]
+		policy.ImageOwnership = ownerPolicy
+		profilePolicies[profile.Name] = policy
 	}
 	mediator := buildkitproxy.NewMediator(res, logger)
 
@@ -1116,10 +1128,18 @@ func withVisibility(cfg *config.Config, res *upstream.Resolver, logger *slog.Log
 	})
 }
 
-func withFilter(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, rules []*filter.CompiledRule, clientProfiles map[string]filter.Policy) func(http.Handler) http.Handler {
+func withFilter(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, rules []*filter.CompiledRule, clientProfiles map[string]filter.Policy, flavor upstreamflavor.Flavor) func(http.Handler) http.Handler {
 	warnIfBodyBlindWritesEnabled(cfg, logger)
 	warnIfReadExfiltrationEnabled(cfg, rules, clientProfiles, logger)
-	return filter.MiddlewareWithOptions(rules, logger, serveFilterOptions(cfg, res, clientProfiles))
+	opts := serveFilterOptions(cfg, res, clientProfiles)
+	opts.Build.PodmanUpstream = flavor == upstreamflavor.Podman
+	profiles := make(map[string]filter.Policy, len(opts.Profiles))
+	for name, profile := range opts.Profiles {
+		profile.Build.PodmanUpstream = flavor == upstreamflavor.Podman
+		profiles[name] = profile
+	}
+	opts.Profiles = profiles
+	return filter.MiddlewareWithOptions(rules, logger, opts)
 }
 
 // bodyBlindWritesWarnOnce gates warnIfBodyBlindWritesEnabled to a single

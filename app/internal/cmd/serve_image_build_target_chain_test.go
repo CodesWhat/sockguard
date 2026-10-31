@@ -174,7 +174,7 @@ func TestServeChainBuildChecksTheStoredNameOnPodman(t *testing.T) {
 			step: imageBuildChainStep("", "/v5.0.0/libpod/build?t=containers-storage%3Anginx%3Aprod", "localhost/nginx:prod", imageTagChainVictimID, http.StatusForbidden),
 		},
 		{name: "native build with a manifest list name", step: imageBuildChainStep("", "/v5.0.0/libpod/build?t=mine%2Fnew&manifest=nginx%3Aprod", "localhost/nginx:prod", imageTagChainVictimID, http.StatusForbidden)},
-		{name: "native build onto a name nothing holds", step: imageBuildChainStep("", "/v5.0.0/libpod/build?t=mine%2Fnew%3Av2", "localhost/mine/new:v2", "", http.StatusOK)},
+		{name: "native build onto a name nothing holds", step: imageBuildChainStep("", "/v5.0.0/libpod/build?t=mine%2Fnew%3Av2&nsoptions=%5B%7B%22Name%22%3A%22network%22%7D%5D", "localhost/mine/new:v2", "", http.StatusOK)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

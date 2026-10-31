@@ -18,6 +18,8 @@ const maxServiceBodyBytes = 1 << 20 // 1 MiB
 
 // ServiceOptions configures request-body inspection for service create/update.
 type ServiceOptions struct {
+	// AllowedImages is an opt-in exact image reference allowlist.
+	AllowedImages      []string
 	AllowHostNetwork   bool
 	AllowedBindMounts  []string
 	AllowAllRegistries bool
@@ -79,6 +81,7 @@ type ServiceOptions struct {
 }
 
 type servicePolicy struct {
+	allowedImages              createImageAllowlist
 	allowHostNetwork           bool
 	allowedBindMounts          []string
 	imagePolicy                imagePullPolicy
@@ -98,6 +101,9 @@ type servicePolicy struct {
 }
 
 type serviceRequest struct {
+	UpdateConfig *struct {
+		FailureAction string `json:"FailureAction"`
+	} `json:"UpdateConfig"`
 	TaskTemplate struct {
 		ContainerSpec serviceContainerSpec `json:"ContainerSpec"`
 		// Networks is the modern location for swarm network attachments
@@ -207,6 +213,7 @@ func newServicePolicy(opts ServiceOptions) servicePolicy {
 	}
 
 	return servicePolicy{
+		allowedImages:     newCreateImageAllowlist(opts.AllowedImages),
 		allowHostNetwork:  opts.AllowHostNetwork,
 		allowedBindMounts: allowed,
 		imagePolicy: newImagePullPolicy(ImagePullOptions{
@@ -239,8 +246,16 @@ func newServicePolicy(opts ServiceOptions) servicePolicy {
 // image-type mount is invisible to it. Under image_trust enforce mode that
 // invisibility is a trust bypass: ContainerSpec.Image is verified and
 // pinned, but an image-type mount can smuggle in an arbitrary, entirely
-// unverified image filesystem instead.
+// unverified image filesystem instead. Image allowlists likewise refuse these
+// mounts rather than treating the primary ContainerSpec.Image as sufficient.
 func (p servicePolicy) denyImageMountReason(mounts []serviceMount) string {
+	if len(p.allowedImages) > 0 {
+		for _, mount := range mounts {
+			if strings.EqualFold(mount.Type, "image") {
+				return "service denied: image mounts are not supported with allowed_images"
+			}
+		}
+	}
 	if p.imageTrust.cfg.Mode != imagetrust.ModeEnforce {
 		return ""
 	}
@@ -358,8 +373,17 @@ func (p servicePolicy) denyAppArmorModeReason(priv *serviceContainerPrivileges) 
 }
 
 func (p servicePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
-	if r == nil || r.Method != http.MethodPost || !isServiceWritePath(normalizedPath) || r.Body == nil {
+	if r == nil || r.Method != http.MethodPost || !isServiceWritePath(normalizedPath) {
 		return "", nil
+	}
+	if len(p.allowedImages) > 0 {
+		// A stored rollback can ignore ContainerSpec.Image in the request body.
+		if _, present := r.URL.Query()["rollback"]; present {
+			return "service denied: stored rollback is not supported with allowed_images", nil
+		}
+	}
+	if r.Body == nil {
+		return p.allowedImages.denyReason("", "service"), nil
 	}
 
 	body, err := readBoundedBody(r, maxServiceBodyBytes)
@@ -371,13 +395,21 @@ func (p servicePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedP
 	}
 
 	if len(body) == 0 {
-		return "", nil
+		return p.allowedImages.denyReason("", "service"), nil
 	}
 
 	var req serviceRequest
 	if err := decodePolicySubsetJSON(body, &req); err != nil {
 		logRequestError(logger, r, slog.LevelDebug, "service request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", err)
 		return "service denied: request body could not be inspected", nil
+	}
+
+	if reason := p.allowedImages.denyReason(req.TaskTemplate.ContainerSpec.Image, "service"); reason != "" {
+		return reason, nil
+	}
+	if len(p.allowedImages) > 0 && req.UpdateConfig != nil && strings.EqualFold(strings.TrimSpace(req.UpdateConfig.FailureAction), "rollback") {
+		// Automatic rollback can restore the pre-update spec, also outside this body.
+		return "service denied: automatic rollback is not supported with allowed_images", nil
 	}
 
 	if !p.allowHostNetwork {
