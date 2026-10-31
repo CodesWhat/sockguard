@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Bound each release CI metadata and polling request to its remaining wall-clock budget, including an in-flight curl retry. The action reports a failed query instead of running past its configured deadline.
 - Retry Docker build module downloads up to three times with five- and ten-second waits and a two-minute limit per attempt, so a transient Go proxy failure can recover without rerunning the whole build.
+- Enforce the same 96% production statement coverage floor in the local pre-push race test gate and hosted CI.
 
 ## [2.4.1] - 2026-10-31
 
