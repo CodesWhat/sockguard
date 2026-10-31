@@ -29,6 +29,7 @@ This candidate carries the v2.3.2 and v2.3.3 releases forward onto the v2.4 line
 ### Fixed
 
 - **Release binary signing retries.** GoReleaser signs every archive with a parallel `cosign sign-blob`, and on 2.3.3's first attempt two of them raced on the Sigstore trust cache and the job failed. The release workflow now loads the trust root once before GoReleaser runs, and each signing call retries up to three times with a fresh key.
+- **The published-image Grype scan no longer sets up Buildx.** It only needs `docker buildx imagetools inspect`, which the runner already has, and setting up a builder under the release egress block was refused and ran the job past its 20-minute limit on both v2.4.0 publisher runs. The digest lookup now retries on its own with a five-minute limit.
 
 ## [2.4.0-rc.2] - 2026-10-26
 
