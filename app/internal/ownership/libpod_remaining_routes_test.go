@@ -18,6 +18,20 @@ func TestRemainingLibpodRoutesRefusedUnderOwnerIsolation(t *testing.T) {
 		{http.MethodDelete, "/libpod/quadlets?quadlets=other.container"},
 		{http.MethodDelete, "/libpod/artifacts/remove?all=true"},
 		{http.MethodDelete, "/libpod/artifacts/remove?artifacts=other"},
+		{http.MethodDelete, "/libpod/quadlets/other.container"},
+		{http.MethodDelete, "/libpod/artifacts/registry.example/team/other:latest"},
+		{http.MethodGet, "/libpod/quadlets/other.container/file"},
+		{http.MethodHead, "/libpod/quadlets/other.container/file"},
+		{http.MethodGet, "/libpod/quadlets/other.container/exists"},
+		{http.MethodGet, "/libpod/quadlets/json"},
+		{http.MethodGet, "/libpod/artifacts/registry.example/team/other:latest/extract"},
+		{http.MethodHead, "/libpod/artifacts/registry.example/team/other:latest/extract"},
+		{http.MethodGet, "/libpod/artifacts/registry.example/team/other:latest/json"},
+		{http.MethodGet, "/libpod/artifacts/json"},
+		{http.MethodPost, "/libpod/artifacts/add"},
+		{http.MethodPost, "/libpod/artifacts/local/add"},
+		{http.MethodPost, "/libpod/artifacts/pull"},
+		{http.MethodPost, "/libpod/artifacts/registry.example/team/other:latest/push"},
 	} {
 		for _, prefix := range []string{"", "/v6.0.0"} {
 			for _, mode := range []string{"enforce", "warn", "audit"} {

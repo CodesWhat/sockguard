@@ -1373,6 +1373,8 @@ land):
 
 ### Native operations without an isolation model
 
-Owner isolation refuses `POST /libpod/quadlets`, `DELETE /libpod/quadlets` and `DELETE /libpod/artifacts/remove`. Quadlet uploads can replace unit files; batch removal can affect every unit or artifact. Named query targets are refused too because these resource types have no owner-label or per-target ownership check. These refusals apply in enforce, warn and audit modes. A body-blind-write opt-in does not bypass owner isolation.
+Owner isolation refuses Quadlet installation and removal, including `POST` and `DELETE /libpod/quadlets` and `DELETE /libpod/quadlets/{name}`. It also refuses artifact add, local add, pull, push, batch removal and per-name removal. These types have no owner-label or per-target ownership check. Named query targets and namespaced artifact references receive the same refusal, in enforce, warn and audit modes. A body-blind-write opt-in does not bypass owner isolation.
+
+Owner isolation and visibility policies refuse Quadlet inventory, existence and unit-file reads, and artifact inventory, inspect and extraction reads. This covers `GET` and `HEAD /libpod/quadlets/json`, `/libpod/quadlets/{name}/exists`, `/libpod/quadlets/{name}/file`, `/libpod/artifacts/json`, `/libpod/artifacts/{name}/json` and `/libpod/artifacts/{name}/extract`. Neither resource type has a label-based isolation model.
 
 Owner isolation and visibility policies also refuse `GET` and `HEAD /libpod/generate/{name}/systemd`. The name may refer to a pod or container, and the generated unit bundle has no labels to filter. It remains refused until every referenced resource can be checked. API-version prefixes receive the same checks.

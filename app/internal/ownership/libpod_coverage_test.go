@@ -640,6 +640,12 @@ func TestLibpodImageChecksHonorAllowUnownedImages(t *testing.T) {
 // this map fails too, which is the point — the code is a decision, not a
 // derivation.
 var wantOwnerUnscopeableReasonCodes = map[string]string{
+	"/libpod/quadlets/json":          "owner_libpod_quadlet_list_unscopeable",
+	filter.LibpodQuadletFilePath:     "owner_libpod_quadlet_file_unscopeable",
+	filter.LibpodQuadletExistsPath:   "owner_libpod_quadlet_exists_unscopeable",
+	"/libpod/artifacts/json":         "owner_libpod_artifact_list_unscopeable",
+	filter.LibpodArtifactJSONPath:    "owner_libpod_artifact_json_unscopeable",
+	filter.LibpodArtifactExtractPath: "owner_libpod_artifact_extract_unscopeable",
 	filter.LibpodGenerateSystemdPath: "owner_libpod_generate_systemd_unscopeable",
 	filter.LibpodShowMountedPath:     "owner_libpod_show_mounted_unscopeable",
 	filter.LibpodContainerStatsPath:  "owner_libpod_container_stats_unscopeable",
@@ -821,6 +827,12 @@ func TestLibpodUnscopeableReadsWereNotCoveredByTheExistingIdentifiers(t *testing
 		wantOK         bool
 	}{
 		{path: filter.LibpodGenerateSystemdPath, classify: libpodContainerIdentifier, wantIdentifier: "", wantOK: false},
+		{path: "/libpod/quadlets/json", classify: libpodContainerIdentifier, wantIdentifier: "", wantOK: false},
+		{path: filter.LibpodQuadletFilePath, classify: libpodContainerIdentifier, wantIdentifier: "", wantOK: false},
+		{path: filter.LibpodQuadletExistsPath, classify: libpodContainerIdentifier, wantIdentifier: "", wantOK: false},
+		{path: "/libpod/artifacts/json", classify: libpodContainerIdentifier, wantIdentifier: "", wantOK: false},
+		{path: filter.LibpodArtifactJSONPath, classify: libpodContainerIdentifier, wantIdentifier: "", wantOK: false},
+		{path: filter.LibpodArtifactExtractPath, classify: libpodContainerIdentifier, wantIdentifier: "", wantOK: false},
 		{path: filter.LibpodShowMountedPath, classify: libpodContainerIdentifier, wantIdentifier: "", wantOK: false},
 		{path: filter.LibpodContainerStatsPath, classify: libpodContainerIdentifier, wantIdentifier: "", wantOK: false},
 		{path: filter.LibpodPodStatsPath, classify: libpodPodIdentifier, wantIdentifier: "", wantOK: false},
@@ -999,14 +1011,20 @@ func TestLibpodPruneRoutesAreInertWithoutOwner(t *testing.T) {
 // string is what an operator greps for, so it is asserted literally rather
 // than rebuilt from the stem.
 var wantOwnerUnscopeableWriteReasonCodes = map[string]string{
-	"POST " + filter.LibpodQuadletsPath:         "owner_libpod_quadlet_write_unscopeable",
-	"DELETE " + filter.LibpodQuadletsPath:       "owner_libpod_quadlet_write_unscopeable",
-	"DELETE " + filter.LibpodArtifactRemovePath: "owner_libpod_artifact_remove_unscopeable",
-	"POST " + filter.LibpodPodPrunePath:         "owner_libpod_pod_prune_unscopeable",
-	"POST " + filter.LibpodSystemPrunePath:      "owner_libpod_system_prune_unscopeable",
-	"POST " + filter.LibpodSystemCheckPath:      "owner_libpod_system_check_unscopeable",
-	"DELETE /libpod/play/kube":                  "owner_libpod_kube_down_unscopeable",
-	"DELETE /libpod/kube/play":                  "owner_libpod_kube_down_unscopeable",
+	"DELETE " + filter.LibpodQuadletRemovePath:        "owner_libpod_quadlet_remove_unscopeable",
+	"DELETE " + filter.LibpodArtifactSingleRemovePath: "owner_libpod_artifact_remove_one_unscopeable",
+	"POST /libpod/artifacts/add":                      "owner_libpod_artifact_add_unscopeable",
+	"POST /libpod/artifacts/local/add":                "owner_libpod_artifact_local_add_unscopeable",
+	"POST /libpod/artifacts/pull":                     "owner_libpod_artifact_pull_unscopeable",
+	"POST " + filter.LibpodArtifactPushPath:           "owner_libpod_artifact_push_unscopeable",
+	"POST " + filter.LibpodQuadletsPath:               "owner_libpod_quadlet_write_unscopeable",
+	"DELETE " + filter.LibpodQuadletsPath:             "owner_libpod_quadlet_write_unscopeable",
+	"DELETE " + filter.LibpodArtifactRemovePath:       "owner_libpod_artifact_remove_unscopeable",
+	"POST " + filter.LibpodPodPrunePath:               "owner_libpod_pod_prune_unscopeable",
+	"POST " + filter.LibpodSystemPrunePath:            "owner_libpod_system_prune_unscopeable",
+	"POST " + filter.LibpodSystemCheckPath:            "owner_libpod_system_check_unscopeable",
+	"DELETE /libpod/play/kube":                        "owner_libpod_kube_down_unscopeable",
+	"DELETE /libpod/kube/play":                        "owner_libpod_kube_down_unscopeable",
 }
 
 // TestLibpodUnscopeableWritesAreRefusedUnderOwnerIsolation covers the one

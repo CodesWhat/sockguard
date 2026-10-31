@@ -398,6 +398,8 @@ A client resolved to a profile outside the listener it connected on's `allowed_p
 
 Podman volume lists and prune allow non-label filters under owner or label-based visibility isolation only when every endpoint positively reports a released Podman version of 6.0.0 or later. Older, unknown and prerelease versions keep the label-only restriction. Only the `Podman Engine` component's release version enables the volume capability; a Libpod header alone cannot. The probe does not follow redirects. Configuration and derived capabilities are reload-immutable, so restart Sockguard as part of an upstream engine/version change.
 
+Owner isolation refuses native Quadlet and artifact writes. Owner isolation and visibility policies also refuse their inventory, inspect, file and extraction reads because these resource types have no isolation model. This includes per-name operations and namespaced artifact references, as well as batch routes.
+
 Sockguard inspects allowed writes, including the destructive query controls on `DELETE /containers/**`, the bodies on `containers/create`, `containers/*/update`, `exec`, `build`, `images/create`, `services/create`, `swarm/init`, and the rest of the body-bearing write paths. It blocks privileged or host-bound workloads, non-allowlisted mounts, devices, and registries, and unsafe swarm/network controls. Response bodies are redacted (env, mount paths, topology, secrets) by default. None of that needs configuration to switch on.
 
 Beyond these essentials, every knob is documented in full on the docs site rather than duplicated here:

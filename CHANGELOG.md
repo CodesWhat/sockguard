@@ -23,11 +23,11 @@ v2.4.2 tightens Podman engine identification and unscoped native routes, permits
 
 ### Fixed
 
-- Refuse native Podman systemd generation under owner or visibility isolation until compound pod/container references can be checked. Owner isolation also refuses Quadlet installation/batch removal and artifact batch removal, including requests with named query targets and warn/audit rollout modes.
+- Refuse native Podman systemd generation under owner or visibility isolation until compound pod/container references can be checked. Owner isolation also refuses Quadlet and artifact writes, including per-name removal and artifact add/pull/push. Owner isolation and visibility refuse their inventory, existence, inspect, file and extraction reads. Named query targets, namespaced artifacts and warn/audit rollout modes cannot bypass these refusals.
 
 - Ignore inherited Git repository/index settings when inventorying generated files in the Go module checks, so a hook's alternate index cannot make a complete source tree appear empty.
 
-- Allow stable patches from an older supported maintenance branch without replacing global Docker latest, GitHub latest or the Homebrew cask. Both cut and publication check the current default-branch support policy; exact source and CI gates still apply. Maintenance chart pins go through reviewed PRs so branch protection stays enforced. Local snapshots default the latest-channel flag off and use the same GoReleaser version as the tagged publisher.
+- Allow stable patches from an older supported maintenance branch without replacing global Docker latest, GitHub latest or the Homebrew cask. Both cut and publication check the current default-branch support policy; exact source and CI gates still apply. Maintenance chart pins go through reviewed PRs so branch protection stays enforced. Maintenance support checks resolve real entrypoint paths, including spaces and symlinks. Local snapshots default the latest-channel flag off and use the same GoReleaser version as the tagged publisher.
 
 - Roll the shared Go and Node CI workflows to the reviewed Ubuntu 26.04 revision, preserving the existing checks and caller policy inputs.
 

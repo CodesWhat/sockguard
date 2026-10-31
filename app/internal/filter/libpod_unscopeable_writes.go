@@ -131,11 +131,21 @@ const LibpodKubeDownDenyReason = "libpod kube down denied: " +
 const (
 	LibpodQuadletsPath             = "/libpod/quadlets"
 	LibpodArtifactRemovePath       = "/libpod/artifacts/remove"
-	LibpodQuadletWriteDenyReason   = "libpod quadlet write denied: installation and batch removal can replace or remove other callers' unit files, with no owner-label scope or per-file ownership check"
+	LibpodQuadletRemovePath        = "/libpod/quadlets/sockguard-test.container"
+	LibpodArtifactSingleRemovePath = "/libpod/artifacts/sockguard-test"
+	LibpodArtifactPushPath         = "/libpod/artifacts/sockguard-test/push"
+	LibpodQuadletWriteDenyReason   = "libpod quadlet write denied: installation and removal can replace or remove other callers' unit files, with no owner-label scope or per-file ownership check"
 	LibpodArtifactRemoveDenyReason = "libpod artifact batch removal denied: the endpoint can remove all artifacts, accepts no owner-label filter and has no per-artifact ownership check"
+	LibpodArtifactWriteDenyReason  = "libpod artifact write denied: artifacts have no owner-label scope or per-artifact ownership check"
 )
 
 var libpodUnscopeableWrites = []LibpodUnscopeableWrite{
+	{Method: http.MethodDelete, Path: LibpodQuadletRemovePath, ReasonCodeStem: "quadlet_remove", Reason: LibpodQuadletWriteDenyReason},
+	{Method: http.MethodDelete, Path: LibpodArtifactSingleRemovePath, ReasonCodeStem: "artifact_remove_one", Reason: LibpodArtifactWriteDenyReason},
+	{Method: http.MethodPost, Path: "/libpod/artifacts/add", ReasonCodeStem: "artifact_add", Reason: LibpodArtifactWriteDenyReason},
+	{Method: http.MethodPost, Path: "/libpod/artifacts/local/add", ReasonCodeStem: "artifact_local_add", Reason: LibpodArtifactWriteDenyReason},
+	{Method: http.MethodPost, Path: "/libpod/artifacts/pull", ReasonCodeStem: "artifact_pull", Reason: LibpodArtifactWriteDenyReason},
+	{Method: http.MethodPost, Path: LibpodArtifactPushPath, ReasonCodeStem: "artifact_push", Reason: LibpodArtifactWriteDenyReason},
 	{Method: http.MethodPost, Path: LibpodQuadletsPath, ReasonCodeStem: "quadlet_write", Reason: LibpodQuadletWriteDenyReason},
 	{Method: http.MethodDelete, Path: LibpodQuadletsPath, ReasonCodeStem: "quadlet_write", Reason: LibpodQuadletWriteDenyReason},
 	{Method: http.MethodDelete, Path: LibpodArtifactRemovePath, ReasonCodeStem: "artifact_remove", Reason: LibpodArtifactRemoveDenyReason},
@@ -155,11 +165,27 @@ var libpodUnscopeableWrites = []LibpodUnscopeableWrite{
 // a different operation.
 func LookupLibpodUnscopeableWrite(method, normPath string) (LibpodUnscopeableWrite, bool) {
 	for _, write := range libpodUnscopeableWrites {
-		if write.Method == method && write.Path == normPath {
+		if write.Method == method && libpodUnscopeableWritePathMatches(write.Path, normPath) {
 			return write, true
 		}
 	}
 	return LibpodUnscopeableWrite{}, false
+}
+
+func libpodUnscopeableWritePathMatches(representative, normPath string) bool {
+	if representative == normPath {
+		return true
+	}
+	switch representative {
+	case LibpodQuadletRemovePath:
+		return libpodNamedPathMatches(normPath, "/libpod/quadlets/", "", false)
+	case LibpodArtifactSingleRemovePath:
+		return normPath != LibpodArtifactRemovePath && libpodNamedPathMatches(normPath, "/libpod/artifacts/", "", true)
+	case LibpodArtifactPushPath:
+		return libpodNamedPathMatches(normPath, "/libpod/artifacts/", "/push", true)
+	default:
+		return false
+	}
 }
 
 // LibpodUnscopeableWrites returns the whole set, for tests that need to

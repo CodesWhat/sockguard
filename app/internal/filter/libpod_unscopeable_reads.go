@@ -124,6 +124,15 @@ const (
 // LibpodGenerateSystemdPath represents Podman's dynamic systemd generation route.
 const LibpodGenerateSystemdPath = "/libpod/generate/sockguard-test/systemd"
 
+const (
+	LibpodQuadletFilePath        = "/libpod/quadlets/sockguard-test.container/file"
+	LibpodQuadletExistsPath      = "/libpod/quadlets/sockguard-test.container/exists"
+	LibpodArtifactJSONPath       = "/libpod/artifacts/sockguard-test/json"
+	LibpodArtifactExtractPath    = "/libpod/artifacts/sockguard-test/extract"
+	LibpodQuadletReadDenyReason  = "libpod quadlet read denied: unit files and their inventory carry no owner labels and have no per-unit isolation check"
+	LibpodArtifactReadDenyReason = "libpod artifact read denied: artifact content and inventory have no owner-label or per-artifact isolation check"
+)
+
 // LibpodGenerateSystemdDenyReason explains the refusal until a compound pod/container
 // reference check can validate every resource represented by the generated units.
 const LibpodGenerateSystemdDenyReason = "libpod systemd generation denied: " +
@@ -272,6 +281,12 @@ var (
 
 var libpodUnscopeableReads = []LibpodUnscopeableRead{
 	libpodGenerateSystemdRead,
+	{Path: "/libpod/quadlets/json", ReasonCodeStem: "quadlet_list", Reason: LibpodQuadletReadDenyReason},
+	{Path: LibpodQuadletFilePath, ReasonCodeStem: "quadlet_file", Reason: LibpodQuadletReadDenyReason},
+	{Path: LibpodQuadletExistsPath, ReasonCodeStem: "quadlet_exists", Reason: LibpodQuadletReadDenyReason},
+	{Path: "/libpod/artifacts/json", ReasonCodeStem: "artifact_list", Reason: LibpodArtifactReadDenyReason},
+	{Path: LibpodArtifactJSONPath, ReasonCodeStem: "artifact_json", Reason: LibpodArtifactReadDenyReason},
+	{Path: LibpodArtifactExtractPath, ReasonCodeStem: "artifact_extract", Reason: LibpodArtifactReadDenyReason},
 	{Path: LibpodShowMountedPath, ReasonCodeStem: "show_mounted", Reason: LibpodShowMountedDenyReason},
 	{Path: LibpodContainerStatsPath, ReasonCodeStem: "container_stats", Reason: LibpodContainerStatsDenyReason},
 	{Path: LibpodPodStatsPath, ReasonCodeStem: "pod_stats", Reason: LibpodPodStatsDenyReason},
@@ -298,6 +313,19 @@ func LookupLibpodUnscopeableRead(normPath string) (LibpodUnscopeableRead, bool) 
 	if read, ok := libpodUnscopeableReadsByPath[normPath]; ok {
 		return read, true
 	}
+	for _, family := range [...]struct {
+		prefix, suffix, representative string
+		namespaced                     bool
+	}{
+		{"/libpod/quadlets/", "/file", LibpodQuadletFilePath, false},
+		{"/libpod/quadlets/", "/exists", LibpodQuadletExistsPath, false},
+		{"/libpod/artifacts/", "/json", LibpodArtifactJSONPath, true},
+		{"/libpod/artifacts/", "/extract", LibpodArtifactExtractPath, true},
+	} {
+		if libpodNamedPathMatches(normPath, family.prefix, family.suffix, family.namespaced) {
+			return libpodUnscopeableReadsByPath[family.representative], true
+		}
+	}
 
 	if rest, ok := strings.CutPrefix(normPath, "/libpod/generate/"); ok {
 		if name := strings.TrimSuffix(rest, "/systemd"); name != rest && name != "" {
@@ -316,6 +344,15 @@ func LookupLibpodUnscopeableRead(normPath string) (LibpodUnscopeableRead, bool) 
 		return libpodManifestJSONRead, true
 	}
 	return LibpodUnscopeableRead{}, false
+}
+
+func libpodNamedPathMatches(path, prefix, suffix string, namespaced bool) bool {
+	name, ok := strings.CutPrefix(path, prefix)
+	if !ok || !strings.HasSuffix(name, suffix) {
+		return false
+	}
+	name = strings.TrimSuffix(name, suffix)
+	return name != "" && (namespaced || !strings.Contains(name, "/"))
 }
 
 // LibpodUnscopeableReads returns the whole set, for tests that need to assert

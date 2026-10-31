@@ -1013,6 +1013,12 @@ func TestLibpodEventsInertWithoutVisibilityPolicy(t *testing.T) {
 // wantOwnerUnscopeableReasonCodes is. The two maps differ only in the prefix,
 // which is how an operator tells which layer refused the request.
 var wantVisibilityUnscopeableReasonCodes = map[string]string{
+	"/libpod/quadlets/json":          "visibility_libpod_quadlet_list_unscopeable",
+	filter.LibpodQuadletFilePath:     "visibility_libpod_quadlet_file_unscopeable",
+	filter.LibpodQuadletExistsPath:   "visibility_libpod_quadlet_exists_unscopeable",
+	"/libpod/artifacts/json":         "visibility_libpod_artifact_list_unscopeable",
+	filter.LibpodArtifactJSONPath:    "visibility_libpod_artifact_json_unscopeable",
+	filter.LibpodArtifactExtractPath: "visibility_libpod_artifact_extract_unscopeable",
 	filter.LibpodGenerateSystemdPath: "visibility_libpod_generate_systemd_unscopeable",
 	filter.LibpodShowMountedPath:     "visibility_libpod_show_mounted_unscopeable",
 	filter.LibpodContainerStatsPath:  "visibility_libpod_container_stats_unscopeable",
