@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Clear reused container-create string arrays before decoding another request, so null elements cannot retain policy values from an earlier request.
+
 ## [2.4.2] - 2026-10-31
 
 v2.4.2 tightens Podman engine identification and unscoped native routes, permits safe volume filters on verified Podman 6+ endpoints, and carries the CI reliability and maintenance-release fixes. It carries v2.4.1.
