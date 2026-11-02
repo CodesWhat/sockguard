@@ -21,6 +21,7 @@ v2.4.3 stops completed hijacked sessions from accumulating in the listener, reje
 - Reject keyless `subject_pattern` values that are not a complete regexp on their own. A pattern like `a)|(b` used to compile to `^(?:a)|(b)$` and matched `azzz` and `zzb`, defeating the full-match anchor.
 - Stop the Podman 5/6 nightly from breaking when quay purges the rebuilt Fedora base image. The matrix now tracks the Fedora 44 and 45 major tags instead of digests that expire within a day.
 - Stop completed attach, exec and BuildKit sessions from piling up in the listener's hijacked-connection tracker. net/http never reports a closed state for hijacked connections, so entries stayed until shutdown. The tracker now drops a connection when its handler closes it, and live sessions are still closed on shutdown.
+- Keep flush errors visible through the hijack tracker. Its response writer implemented `Flush` but not `FlushError`, so `http.ResponseController.Flush` returned nil even when the underlying writer's flush failed.
 
 ## [2.4.2] - 2026-10-31
 
