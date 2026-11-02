@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Add the Docker error-contract `message` field to rate-limit, concurrency and priority-floor 429 bodies, and send `Retry-After` on the concurrency and priority 429s too. The bodies carried only `reason`, so docker-py raised `KeyError: 'message'` and the moby client reported "provided no error-message" instead of the throttle reason. Existing fields are unchanged.
+
 ## [2.4.3] - 2026-11-02
 
 v2.4.3 stops completed hijacked sessions from accumulating in the listener, rejects malformed keyless subject patterns, and adds Codecov reporting, docs corrections and Podman CI fixes. It carries v2.4.2.

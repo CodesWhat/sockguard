@@ -650,8 +650,12 @@ entirely (or omitting either sub-block) leaves that profile unthrottled.
 `limits.rate` enforces a maximum sustained request rate using a token bucket.
 The bucket refills continuously at `tokens_per_second`; its capacity is `burst`
 (peak burst size). When the bucket is empty a request is denied immediately with
-`429 Too Many Requests`, a JSON body containing `retry_after_seconds`, and a
-`Retry-After` header.
+`429 Too Many Requests`, a JSON body containing `message`, `reason` and
+`retry_after_seconds`, and a `Retry-After` header. Every throttle 429 (rate,
+concurrency and priority floor) carries a `message` field, the Docker error
+contract that docker-py and the moby client read, and a `Retry-After` header.
+Concurrency and priority-floor denials send `Retry-After: 1` and omit
+`retry_after_seconds`, since capacity frees when other requests finish.
 
 - `tokens_per_second` (required): refill rate; must be `> 0`.
 - `burst` (optional, default `= tokens_per_second`): bucket capacity. Must be
