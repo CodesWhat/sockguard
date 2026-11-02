@@ -1,0 +1,13 @@
+# Codecov reports coverage; the production floor in scripts/ci/go-test.sh
+# (COVERAGE_MIN) stays the merge gate. Both statuses are informational until a
+# decision is made to require codecov/patch on a ruleset. target: auto compares
+# against base coverage and is not a fixed minimum.
+coverage:
+  status:
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        target: auto
+        informational: true

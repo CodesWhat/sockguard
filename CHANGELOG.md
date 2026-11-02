@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Go coverage now uploads to Codecov.** A new non-gating `Coverage: Codecov Upload` job in `ci-verify.yml` reads the `coverage.prod.txt` profile the reusable Go test job already publishes and sends it with a tokenless OIDC upload (`id-token: write` on that job only, no stored credential). `codecov.yml` keeps both statuses informational, and the `COVERAGE_MIN` floor in `scripts/ci/go-test.sh` stays the merge gate. Qlty Cloud keeps grading maintainability.
+
 ### Fixed
 
 - Stop the Podman 5/6 nightly from breaking when quay purges the rebuilt Fedora base image. The matrix now tracks the Fedora 44 and 45 major tags instead of digests that expire within a day.
