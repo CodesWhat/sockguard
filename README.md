@@ -434,6 +434,7 @@ The cask installs only the `sockguard` command; it does not create a service, gr
 ```bash
 sockguard serve                                     # Start proxy (default)
 sockguard validate -c sockguard.yaml                # Validate + print compiled rule table
+sockguard validate --strict -c sockguard.yaml       # Also fail on unrecognized config keys
 sockguard match -c sockguard.yaml -X GET --path /v1.45/containers/json
                                                     # Dry-run a single request through the rules
 sockguard verify -c sockguard.yaml                  # Runtime self-check against a live deployment

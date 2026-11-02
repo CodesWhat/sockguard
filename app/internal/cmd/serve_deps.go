@@ -28,7 +28,10 @@ import (
 )
 
 type serveDeps struct {
-	loadConfig          func(string) (*config.Config, error)
+	loadConfig func(string) (*config.Config, error)
+	// loadConfigData, when set, replaces loadConfig and also returns the YAML
+	// bytes it parsed so the unknown-key warning inspects those exact bytes.
+	loadConfigData      func(string) (*config.Config, []byte, error)
 	loadConfigBytes     func([]byte) (*config.Config, error)
 	readConfigBytes     func(string) ([]byte, error)
 	newLogger           func(string, string, string) (*slog.Logger, io.Closer, error)
