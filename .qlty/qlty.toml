@@ -57,17 +57,28 @@ default = true
 # own lefthook step and CI job, so a duplicate Go linter inside the Qlty gate
 # would just double-report the same findings.
 
+# Plugin pins (DEP-14), checked 2026-11-01 against qlty 0.665.0, whose bundled
+# runtimes are Go 1.22.0, Node 22.23.4 and Python 3.11.17. Each pin is the
+# version qlty resolved on that date, so CI and local runs stop drifting when a
+# plugin cuts a release that needs a newer runtime (the shfmt 3.13.1 failure
+# that needed Go >= 1.25). Bump a pin on purpose, in its own PR, and re-run
+# `qlty check --all`.
+
 [[plugin]]
 name = "actionlint"
+version = "1.7.9"
 
 [[plugin]]
 name = "checkov"
+version = "3.2.495"
 
 [[plugin]]
 name = "dockerfmt"
+version = "0.3.9"
 
 [[plugin]]
 name = "hadolint"
+version = "2.15.1"
 
 [[plugin]]
 name = "markdownlint"
@@ -79,14 +90,17 @@ version = "0.46.0"
 
 [[plugin]]
 name = "osv-scanner"
+version = "2.4.0"
 
 [[plugin]]
 name = "radarlint-iac"
 mode = "monitor"
+version = "2.0.0"
 
 [[plugin]]
 name = "ripgrep"
 mode = "comment"
+version = "14.1.1"
 
 [[plugin]]
 name = "shellcheck"
@@ -108,9 +122,11 @@ version = "3.8.0"
 
 [[plugin]]
 name = "trufflehog"
+version = "3.97.4"
 
 [[plugin]]
 name = "yamllint"
+version = "1.37.1"
 
 # app/internal/buildkitproto mirrors upstream moby/buildkit protobuf sources
 # and their protoc-gen-go output verbatim (see PROVENANCE.md there); the
