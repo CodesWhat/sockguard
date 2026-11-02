@@ -124,6 +124,7 @@ jobs:
           - { name: FuzzValidateUpgradeRequest,       pkg: ./internal/buildkitproxy/ }
           - { name: FuzzFilterControlResponseMessage, pkg: ./internal/buildkitproxy/ }
           - { name: FuzzLibpodPathIdentifiers,        pkg: ./internal/visibility/ }
+          - { name: FuzzDecodeLabels,                 pkg: ./internal/dockerresource/ }
 
     steps:
       # audit, not block. `block` on this job is what kills 3 to 5 legs a

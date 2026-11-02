@@ -121,6 +121,7 @@ jobs:
           - { name: FuzzValidateUpgradeRequest,       pkg: ./internal/buildkitproxy/ }
           - { name: FuzzFilterControlResponseMessage, pkg: ./internal/buildkitproxy/ }
           - { name: FuzzLibpodPathIdentifiers,        pkg: ./internal/visibility/ }
+          - { name: FuzzDecodeLabels,                 pkg: ./internal/dockerresource/ }
 
     steps:
       # Stays audit for stage 1: this job already has an open, in-repo
