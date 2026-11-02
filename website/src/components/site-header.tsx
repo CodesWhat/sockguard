@@ -1,49 +1,41 @@
 import Image from "next/image";
 import Link from "next/link";
-import { GithubIcon } from "@/components/github-icon";
+import { HeaderMenu } from "@/components/header-menu";
+import { Icon } from "@/components/icon";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { TrackedLink } from "@/components/tracked-link";
-import { iconButtonCn, navLinkCn } from "@/lib/class-names";
 import { GITHUB_URL, SITE_CONFIG } from "@/lib/site-config";
 
-export function SiteHeader({ maxWidthClassName = "max-w-6xl" }: { maxWidthClassName?: string }) {
+export function SiteHeader() {
   return (
-    <header className="sticky top-0 z-50 border-b border-border/60 bg-white/70 backdrop-blur-md dark:bg-neutral-950/70">
-      <div className={`mx-auto flex h-14 items-center justify-between px-4 ${maxWidthClassName}`}>
-        <Link href="/" className="flex items-center gap-2.5">
-          <Image
-            src={SITE_CONFIG.logo}
-            alt=""
-            width={36}
-            height={36}
-            className={SITE_CONFIG.logoInvertOnDark ? "dark:invert" : undefined}
-          />
-          <span className="text-lg font-semibold text-neutral-900 dark:text-neutral-100">
-            {SITE_CONFIG.name}
-          </span>
+    <header className="top" id="top">
+      <div className="wrap">
+        <Link className="brand" href="/" aria-label={`${SITE_CONFIG.name} home`}>
+          <Image src="/img/dog-64.webp" alt="" width={28} height={28} priority unoptimized />
+          <span>{SITE_CONFIG.name}</span>
         </Link>
-        <nav className="flex items-center gap-1 sm:gap-2">
-          <TrackedLink
-            href="/docs"
-            ctaId="docs_root"
-            placement="header"
-            className={`hidden px-3 py-2 sm:inline-block ${navLinkCn}`}
-          >
+        <nav className="nav" aria-label="Main">
+          <TrackedLink href="/docs" ctaId="docs_root" placement="header">
+            <Icon name="book-open" />
             Docs
           </TrackedLink>
+          <Link href="/compare">
+            <Icon name="arrows-clockwise" />
+            Compare
+          </Link>
           <TrackedLink
             href={GITHUB_URL}
             ctaId="github_repository"
             placement="header"
             target="_blank"
             rel="noopener noreferrer"
-            aria-label="GitHub"
-            className={iconButtonCn}
           >
-            <GithubIcon className="h-5 w-5" />
+            <Icon name="github-logo" />
+            GitHub
           </TrackedLink>
-          <ThemeToggle />
         </nav>
+        <ThemeToggle />
+        <HeaderMenu />
       </div>
     </header>
   );

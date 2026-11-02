@@ -1,76 +1,57 @@
 import Image from "next/image";
-import { GithubIcon } from "@/components/github-icon";
-import { SectionHeading } from "@/components/section-heading";
+import { Icon } from "@/components/icon";
 import { TrackedLink } from "@/components/tracked-link";
 import { GITHUB_URL } from "@/lib/site-config";
-
-// Star History = clean framed card, title above the chart (left-aligned).
 
 // A committed first-party SVG pair, not a third-party embed. Both previous
 // options failed silently at HTTP 200 (see #303), which is the argument for
 // a committed artifact: it needs nothing at runtime, a stale chart is
 // visible, and a missing one is a visibly broken image. It also keeps the
-// cookieless posture — no visitor IPs leave our infrastructure.
+// cookieless posture: no visitor IPs leave our infrastructure.
 // Regenerated at each release cut by .github/workflows/starchart.yml.
-const LIGHT_SRC = "/star-history.svg";
-const DARK_SRC = "/star-history-dark.svg";
-const CHART_HREF = `${GITHUB_URL}/stargazers`;
-
-function StarChart({ className }: { className?: string }) {
-  return (
-    <a href={CHART_HREF} target="_blank" rel="noopener" className={className}>
-      {/* Swap on the .dark class (theme toggle), not prefers-color-scheme */}
-      <Image
-        src={LIGHT_SRC}
-        alt="Star history chart"
-        width={900}
-        height={460}
-        className="h-auto w-full dark:hidden"
-      />
-      <Image
-        src={DARK_SRC}
-        alt="Star history chart"
-        width={900}
-        height={460}
-        className="hidden h-auto w-full dark:block"
-      />
-    </a>
-  );
-}
-
-function GithubCta({ label = "Star on GitHub" }: { label?: string }) {
-  return (
-    <TrackedLink
-      href={GITHUB_URL}
-      ctaId="github_repository"
-      placement="star_history"
-      target="_blank"
-      rel="noopener"
-      className="inline-flex items-center gap-2 rounded-lg border border-neutral-200 bg-white/60 px-5 py-2.5 text-sm font-medium text-neutral-900 backdrop-blur-sm transition-all hover:border-neutral-300 hover:bg-white/90 dark:border-neutral-700 dark:bg-neutral-800/60 dark:text-neutral-100 dark:hover:border-neutral-600 dark:hover:bg-neutral-800/90"
-    >
-      <GithubIcon className="h-4 w-4" />
-      {label}
-    </TrackedLink>
-  );
-}
 
 export function StarHistory() {
   return (
-    <section className="border-t border-border/60 py-16">
-      <div className="mx-auto max-w-4xl px-4">
-        <SectionHeading
-          eyebrow="Community"
-          title="Star History"
-          subtitle="Growing every week — join us on GitHub."
-          align="left"
+    <>
+      <a
+        className="starcard"
+        href={`${GITHUB_URL}/stargazers`}
+        target="_blank"
+        rel="noopener"
+        aria-label="Star history chart for CodesWhat/sockguard"
+      >
+        <Image
+          className="sl"
+          src="/star-history.svg"
+          alt="Star history chart"
+          width={900}
+          height={460}
+          loading="lazy"
+          unoptimized
         />
-
-        <StarChart className="block overflow-hidden rounded-2xl border border-neutral-200 bg-white/50 backdrop-blur-sm transition-all duration-300 hover:border-neutral-300 hover:shadow-lg dark:border-neutral-800 dark:bg-neutral-900/50 dark:hover:border-neutral-700" />
-
-        <div className="mt-6 flex">
-          <GithubCta />
-        </div>
+        <Image
+          className="sd"
+          src="/star-history-dark.svg"
+          alt=""
+          width={900}
+          height={460}
+          loading="lazy"
+          unoptimized
+        />
+      </a>
+      <div className="more">
+        <TrackedLink
+          className="btn primary"
+          href={GITHUB_URL}
+          ctaId="github_repository"
+          placement="star_history"
+          target="_blank"
+          rel="noopener"
+        >
+          <Icon name="star" />
+          Star on GitHub
+        </TrackedLink>
       </div>
-    </section>
+    </>
   );
 }

@@ -9,8 +9,6 @@
 const githubOwner = "CodesWhat";
 const githubRepo = "sockguard";
 
-export type AuroraPalette = "ember" | "ocean" | "violet" | "forest" | "mono";
-
 export const SITE_CONFIG = {
   /** Brand name shown in the header, footer, and metadata. */
   name: "Sockguard",
@@ -54,8 +52,6 @@ export const SITE_CONFIG = {
   dockerImage: "codeswhat/sockguard",
   /** License link shown in the footer. */
   licenseUrl: "https://opensource.org/license/mit",
-  /** Aurora background palette token (see globals.css `[data-bg]`). */
-  aurora: "ember" as AuroraPalette,
   /** Prefix for localStorage keys (keeps multi-site deploys from colliding). */
   storagePrefix: "sg",
 } as const;
