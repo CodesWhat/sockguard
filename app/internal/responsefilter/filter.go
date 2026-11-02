@@ -1068,7 +1068,7 @@ func redactSecretPayload(payload map[string]any) error {
 	if err != nil || !found {
 		return err
 	}
-	redactStringField(spec, "Data")
+	redactByteField(spec, "Data")
 	return nil
 }
 
@@ -1077,7 +1077,7 @@ func redactConfigPayload(payload map[string]any) error {
 	if err != nil || !found {
 		return err
 	}
-	redactStringField(spec, "Data")
+	redactByteField(spec, "Data")
 	return nil
 }
 
@@ -1483,8 +1483,8 @@ func redactEnvVar(value string) string {
 
 func redactTLSInfo(payload map[string]any) {
 	redactStringField(payload, "TrustRoot")
-	redactStringField(payload, "CertIssuerSubject")
-	redactStringField(payload, "CertIssuerPublicKey")
+	redactByteField(payload, "CertIssuerSubject")
+	redactByteField(payload, "CertIssuerPublicKey")
 }
 
 // withResponseBody reads resp's body into a buffer borrowed from
@@ -1774,6 +1774,17 @@ func redactStringField(payload map[string]any, key string) {
 		return
 	}
 	payload[key] = redactedValue
+}
+
+// redactByteField blanks a field Docker clients decode as []byte (base64 on
+// the wire). "<redacted>" is not valid base64, so a Go client fails the whole
+// response; "" is valid empty base64 and decodes to a nil slice.
+func redactByteField(payload map[string]any, key string) {
+	value, ok := payload[key]
+	if !ok || value == nil {
+		return
+	}
+	payload[key] = ""
 }
 
 // redactTypedAddressFields blanks IP and MAC address fields to "". Current

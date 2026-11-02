@@ -972,8 +972,8 @@ func TestFilterModifyResponse_RedactsSensitivePlatformMetadata(t *testing.T) {
 	}
 	configPayload := decodeBodyForTest(t, configResp)
 	spec, _ := configPayload["Spec"].(map[string]any)
-	if got, _ := spec["Data"].(string); got != "<redacted>" {
-		t.Fatalf("Config Spec.Data = %q, want %q", got, "<redacted>")
+	if got, _ := spec["Data"].(string); got != "" {
+		t.Fatalf("Config Spec.Data = %q, want empty", got)
 	}
 
 	pluginResp := newResponseForTest(t, http.MethodGet, "/v1.53/plugins/example/json", `{
