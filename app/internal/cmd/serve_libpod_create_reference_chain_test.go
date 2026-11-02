@@ -744,13 +744,13 @@ func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 			wantLookups: []string{alpine},
 		},
 		{
-			// Podman 5.8.6 decodes devices_from and never reads it.
-			name:        "container with devices_from naming another owner's container",
-			target:      containerURL,
-			body:        container(`"devices_from":["theirs-ctr"]`),
-			wantStatus:  http.StatusCreated,
-			wantLookups: []string{alpine},
-			wantUses:    []string{},
+			// Podman 5.8.6 decodes devices_from and never reads it. The filter
+			// still refuses it outright as hardening, before any owner lookup.
+			name:       "container with devices_from naming another owner's container",
+			target:     containerURL,
+			body:       container(`"devices_from":["theirs-ctr"]`),
+			wantStatus: http.StatusForbidden,
+			wantReason: "libpod container create denied: devices_from is not allowed",
 		},
 
 		{

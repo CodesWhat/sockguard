@@ -1184,12 +1184,13 @@ land):
   instead of an enforced distinction.
 - Range-overlap analysis for `idmappings` — `allow_custom_id_mappings` is a
   blunt allow/deny gate for this release, not a range-aware check.
-- Response redaction for `GET /libpod/pods/{id}/json`. Pods have no
-  Docker-compat equivalent, so there is no existing handler to route the
-  path to, and `InspectPodData` is not a renamed container body:
-  it spells its bind-mount array as lowercase `mounts` and carries the infra
-  container's network configuration under `InfraConfig`. Under
-  `redact_mount_paths` or `redact_network_topology`, a pod inspect still
+- Field-level response redaction for `GET /libpod/pods/{id}/json` beyond
+  `CreateCommand`. `CreateCommand`, the `podman pod create` command line, is
+  cleared to `[]` under `redact_container_env` or `redact_mount_paths`, like a
+  container's `Config.CreateCommand`. The rest of `InspectPodData` is not a
+  renamed container body: it spells its bind-mount array as lowercase `mounts`
+  and carries the infra container's network configuration under `InfraConfig`.
+  Under `redact_mount_paths` or `redact_network_topology`, a pod inspect still
   returns host bind-mount sources and the infra container's addresses. Owner
   isolation and visibility policy do cover the path, so a caller only sees
   its own pods; what is missing is the field-level rewrite inside a pod it
@@ -1262,7 +1263,13 @@ land):
   fields the compat create refuses: `volumes_from`, `cgroup_parent`, `groups`
   and `hostadd` are always denied, `device_cgroup_rule`, `gpus` and `unmask`
   follow `allow_device_cgroup_rules`/`allowed_device_cgroup_rules`,
-  `allow_device_requests` and `deny_unconfined_system_paths`. A client that
+  `allow_device_requests` and `deny_unconfined_system_paths`.
+  `host_device_list` (which Podman uses as the device list when the container
+  joins a pod and `devices` is empty) is checked against the same
+  `allowed_devices`/`allow_all_devices` list as `devices`, and any
+  `devices_from` value is denied. `resource_limits.devices` entries with
+  `allow: true` follow `allow_device_cgroup_rules`/`allowed_device_cgroup_rules`
+  like `device_cgroup_rule`; `allow: false` entries always pass. A client that
   passes `--volumes-from`, `--cgroup-parent`, `--group-add` or `--add-host`
   through an allowed `/libpod/containers/create` is now denied, as it already
   was through `/containers/create`.

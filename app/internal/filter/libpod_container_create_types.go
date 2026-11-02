@@ -60,6 +60,14 @@ type libpodContainerCreateRequest struct {
 	Volumes []libpodVolume `json:"volumes"`
 	Devices []libpodDevice `json:"devices"`
 
+	// HostDeviceList is SpecGenerator.HostDeviceList (specgen.go:324). When
+	// the container joins a pod with an infra container and Devices is empty,
+	// Podman uses this list as the device list (generate/oci_linux.go:283 →
+	// DevicesFromPath), so it is checked exactly like Devices. DevicesFrom is
+	// inert in Podman today; any value is refused as hardening.
+	HostDeviceList []libpodDevice `json:"host_device_list"`
+	DevicesFrom    []string       `json:"devices_from"`
+
 	// Rootfs, OverlayVolumes and InitPath each give the container a host
 	// filesystem path that neither mounts[] nor devices[] covers, so each has
 	// its own host-path gate; ConmonPidFile is a host path the daemon writes
@@ -244,6 +252,27 @@ type libpodResourceLimits struct {
 	CPU    libpodCPUResourceLimit    `json:"cpu"`
 	Memory libpodMemoryResourceLimit `json:"memory"`
 	Pids   libpodPidsResourceLimit   `json:"pids"`
+
+	// Devices is the OCI LinuxDeviceCgroup list. Podman copies it over
+	// Linux.Resources.Devices, so an allow entry grants the same access as
+	// device_cgroup_rule and is gated by the same policy.
+	Devices []libpodResourceDeviceRule `json:"devices"`
+}
+
+// libpodResourceDeviceRule is one resource_limits.devices entry. Unlike
+// device_cgroup_rule, allow is honored here, so an allow:false entry is a
+// deny rule and is always fine.
+type libpodResourceDeviceRule struct {
+	Allow  bool   `json:"allow"`
+	Type   string `json:"type"`
+	Major  *int64 `json:"major"`
+	Minor  *int64 `json:"minor"`
+	Access string `json:"access"`
+}
+
+// docker renders the entry in Docker's "<type> <major>:<minor> <perms>" form.
+func (r libpodResourceDeviceRule) docker() string {
+	return libpodDeviceCgroupRule{Type: r.Type, Major: r.Major, Minor: r.Minor, Access: r.Access}.docker()
 }
 
 // libpodCPUResourceLimit mirrors resource_limits.cpu. period/quota come from

@@ -179,10 +179,10 @@ func isLibpodNetworkInspectPath(method, normPath string) bool {
 //   - GET /libpod/system/df is refused by the ownership and visibility
 //     middlewares instead; see LibpodSystemDataUsageDenyReason.
 //   - GET /libpod/pods/{id}/json has no Docker-compat equivalent to inherit a
-//     handler from, and libpod/define.InspectPodData spells its bind-mount
-//     array as lowercase "mounts" and carries infra network configuration
-//     under InfraConfig. Redacting it is a separate change, not a spelling
-//     variant of one here; the Podman guide lists it as a known limitation.
+//     handler from; only its CreateCommand is redacted (modifyLibpodPodInspect).
+//     libpod/define.InspectPodData spells its bind-mount array as lowercase
+//     "mounts" and carries infra network configuration under InfraConfig,
+//     which stay a known limitation in the Podman guide.
 //   - GET /libpod/containers/showmounted returns a bare
 //     map[containerID]hostMountpoint built from runtime.GetAllContainers(),
 //     so it is a host-path disclosure AND a cross-owner enumeration in one
@@ -197,6 +197,8 @@ func (f *Filter) modifyLibpodResponse(method, normPath string, resp *http.Respon
 		return f.modifyContainerInspect(resp)
 	case isLibpodInspectPath(normPath, "volumes"):
 		return f.modifyVolumeInspect(resp)
+	case isLibpodInspectPath(normPath, "pods"):
+		return f.modifyLibpodPodInspect(resp)
 	case isLibpodImageInspectPath(normPath):
 		// libpod.GetImage (pkg/api/handlers/libpod/images.go at v5.8.1)
 		// writes *libimage.ImageData (containers/common libimage/inspect.go),
@@ -219,6 +221,25 @@ func (f *Filter) modifyLibpodResponse(method, normPath string, resp *http.Respon
 		return f.modifyLibpodSecretList(resp)
 	}
 	return nil
+}
+
+// modifyLibpodPodInspect rewrites GET /libpod/pods/{id}/json. InspectPodData
+// carries CreateCommand, the full `podman pod create` command line, which
+// repeats every -e value and -v host path; it is cleared under the same
+// options that clear a container's Config.CreateCommand, and only when the
+// key is present.
+func (f *Filter) modifyLibpodPodInspect(resp *http.Response) error {
+	if !f.opts.RedactContainerEnv && !f.opts.RedactMountPaths {
+		return nil
+	}
+	payload, err := decodeResponseObject(resp)
+	if err != nil {
+		return rejectResponse(err)
+	}
+	if _, present := payload["CreateCommand"]; present {
+		payload["CreateCommand"] = []string{}
+	}
+	return writeResponseBody(resp, payload)
 }
 
 // modifyLibpodVolumeList rewrites GET /libpod/volumes/json.

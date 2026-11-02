@@ -1680,3 +1680,41 @@ func TestLibpodContainerInspectCreateCommandAndSecrets(t *testing.T) {
 		assertAbsent(t, "compat container inspect", body, "CreateCommand", "Secrets")
 	})
 }
+
+func TestLibpodPodInspectCreateCommand(t *testing.T) {
+	t.Parallel()
+
+	const path = "/v5.8.1/libpod/pods/web/json"
+	const upstream = `{"Id":"abc","Name":"web","CreateCommand":["podman","pod","create","-v","/srv/secret:/data","--name","web"],"State":"Running"}`
+
+	for _, tc := range []struct {
+		name    string
+		opts    Options
+		cleared bool
+	}{
+		{"env clears", Options{RedactContainerEnv: true}, true},
+		{"mount paths clears", Options{RedactMountPaths: true}, true},
+		{"all redactions clear", allRedactions, true},
+		{"network topology alone leaves it", Options{RedactNetworkTopology: true}, false},
+		{"redactions off leaves it", Options{}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			body := libpodBodyForTest(t, tc.opts, path, upstream)
+			if got := strings.Contains(body, `"CreateCommand":[]`); got != tc.cleared {
+				t.Errorf("CreateCommand cleared = %t, want %t (body %s)", got, tc.cleared, body)
+			}
+			if !tc.cleared {
+				return
+			}
+			assertAbsent(t, "pod inspect", body, "/srv/secret")
+			assertPresent(t, "pod inspect", body, `"Name":"web"`)
+		})
+	}
+
+	t.Run("absent key is not added", func(t *testing.T) {
+		t.Parallel()
+		body := libpodBodyForTest(t, allRedactions, path, `{"Id":"abc","Name":"web"}`)
+		assertAbsent(t, "pod inspect", body, "CreateCommand")
+	})
+}

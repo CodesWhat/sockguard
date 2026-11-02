@@ -145,3 +145,55 @@ func TestLibpodContainerCreateUnmaskSystemPathsGate(t *testing.T) {
 		t.Fatalf("no-unmask body denied: %q", got)
 	}
 }
+
+func TestLibpodContainerCreateHostDeviceListAndResourceDevices(t *testing.T) {
+	base := func(extra string) []byte {
+		return []byte(`{"image":"alpine","pod":"p","devices":[],` + extra + `}`)
+	}
+	tests := []struct {
+		name string
+		opts LibpodContainerCreateOptions
+		body string
+		want string
+	}{
+		{"host_device_list denied by default", LibpodContainerCreateOptions{},
+			`"host_device_list":[{"path":"/dev/sda"}]`,
+			`libpod container create denied: host_device_list entry "/dev/sda" is not allowlisted`},
+		{"host_device_list non-allowlisted path denied", LibpodContainerCreateOptions{AllowedDevices: []string{"/dev/fuse"}},
+			`"host_device_list":[{"path":"/dev/fuse"},{"path":"/dev/sda"}]`,
+			`libpod container create denied: host_device_list entry "/dev/sda" is not allowlisted`},
+		{"host_device_list allowlisted path allowed", LibpodContainerCreateOptions{AllowedDevices: []string{"/dev/fuse"}},
+			`"host_device_list":[{"path":"/dev/fuse"}]`, ""},
+		{"host_device_list allowed with allow_all_devices", LibpodContainerCreateOptions{AllowAllDevices: true},
+			`"host_device_list":[{"path":"/dev/sda"}]`, ""},
+		{"host_device_list empty path denied", LibpodContainerCreateOptions{AllowedDevices: []string{"/dev/fuse"}},
+			`"host_device_list":[{}]`,
+			`libpod container create denied: host_device_list entry "" is not allowlisted`},
+		{"devices_from denied", LibpodContainerCreateOptions{AllowAllDevices: true},
+			`"devices_from":["other"]`,
+			"libpod container create denied: devices_from is not allowed"},
+		{"devices_from empty allowed", LibpodContainerCreateOptions{},
+			`"devices_from":[]`, ""},
+		{"resource_limits.devices wildcard denied by default", LibpodContainerCreateOptions{},
+			`"resource_limits":{"devices":[{"allow":true,"access":"rwm"}]}`,
+			"libpod resource_limits.devices: container create denied: device cgroup rules are not allowed"},
+		{"resource_limits.devices allow:false only passes", LibpodContainerCreateOptions{},
+			`"resource_limits":{"devices":[{"allow":false,"access":"rwm"}]}`, ""},
+		{"resource_limits.devices allowlisted rule passes", LibpodContainerCreateOptions{AllowedDeviceCgroupRules: []string{"c 1:3 rwm"}},
+			`"resource_limits":{"devices":[{"allow":true,"type":"c","major":1,"minor":3,"access":"rwm"}]}`, ""},
+		{"resource_limits.devices wildcard denied against narrow allowlist", LibpodContainerCreateOptions{AllowedDeviceCgroupRules: []string{"c 1:3 rwm"}},
+			`"resource_limits":{"devices":[{"allow":true,"type":"a","access":"rwm"}]}`,
+			`libpod resource_limits.devices: container create denied: device cgroup rule "a *:* rwm" is not in the allowed list`},
+		{"resource_limits.devices allowed with allow_device_cgroup_rules", LibpodContainerCreateOptions{AllowDeviceCgroupRules: true},
+			`"resource_limits":{"devices":[{"allow":true,"access":"rwm"}]}`, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.opts.AllowSystemdMode = true
+			policy := newLibpodContainerCreatePolicy(tt.opts)
+			if got := inspectLibpod(t, policy, base(tt.body)); got != tt.want {
+				t.Fatalf("reason = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

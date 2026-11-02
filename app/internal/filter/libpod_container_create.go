@@ -334,6 +334,12 @@ func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Reques
 	if denyReason := p.denyDeviceReason(createReq.Devices); denyReason != "" {
 		return denyReason, nil
 	}
+	if denyReason := p.denyDeviceReason(createReq.HostDeviceList); denyReason != "" {
+		return strings.Replace(denyReason, "device ", "host_device_list entry ", 1), nil
+	}
+	if len(createReq.DevicesFrom) > 0 {
+		return "libpod container create denied: devices_from is not allowed", nil
+	}
 	if denyReason := p.denyDockerParityReason(createReq); denyReason != "" {
 		return denyReason, nil
 	}
@@ -429,6 +435,23 @@ func (p libpodContainerCreatePolicy) denyDockerParityReason(req libpodContainerC
 		}
 		if reason := shared.denyCgroupRulesReason(rules); reason != "" {
 			return "libpod " + reason
+		}
+	}
+	if len(req.ResourceLimits.Devices) > 0 {
+		rules := make([]string, 0, len(req.ResourceLimits.Devices))
+		for _, rule := range req.ResourceLimits.Devices {
+			if rule.Allow {
+				rules = append(rules, rule.docker())
+			}
+		}
+		shared := containerCreatePolicy{
+			allowDeviceCgroupRules:   p.allowDeviceCgroupRules,
+			allowedDeviceCgroupRules: p.allowedDeviceCgroupRules,
+		}
+		if len(rules) > 0 {
+			if reason := shared.denyCgroupRulesReason(rules); reason != "" {
+				return "libpod resource_limits.devices: " + reason
+			}
 		}
 	}
 	if len(req.GPUs) > 0 && !p.allowDeviceRequests {
