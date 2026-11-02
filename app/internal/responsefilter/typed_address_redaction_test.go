@@ -101,9 +101,6 @@ func assertTypedNetworkSettings(t *testing.T, where string, settings map[string]
 	t.Helper()
 	assertTypedAddressObject(t, where, settings)
 	for _, key := range typedAddressKeys {
-		if key == "LinkLocalIPv6Address" {
-			continue
-		}
 		if value, present := settings[key]; present && value != "" {
 			t.Errorf("%s.%s = %#v, want empty string", where, key, value)
 		}
@@ -205,6 +202,54 @@ func TestRedactNetworkTopology_AddressFieldsStayTypeValid(t *testing.T) {
 				if vip["NetworkID"] != "<redacted>" {
 					t.Errorf("VirtualIPs[0].NetworkID = %#v, want <redacted>", vip["NetworkID"])
 				}
+			},
+		},
+		{
+			name: "task network attachments",
+			path: "/v1.53/tasks/task-1",
+			body: `{"ID":"task-1","NetworksAttachments":[{"Network":{"ID":"net-1"},"Addresses":["10.0.0.5/24","fd00::5/64"]}]}`,
+			check: func(t *testing.T, body []byte) {
+				var got map[string]any
+				if err := json.Unmarshal(body, &got); err != nil {
+					t.Fatal(err)
+				}
+				attachments, _ := got["NetworksAttachments"].([]any)
+				attachment, _ := attachments[0].(map[string]any)
+				addrs, ok := attachment["Addresses"].([]any)
+				if !ok || len(addrs) != 0 {
+					t.Errorf("Addresses = %#v, want empty array", attachment["Addresses"])
+				}
+			},
+		},
+		{
+			name: "network inspect",
+			path: "/v1.53/networks/net-1",
+			body: `{"Id":"net-1","IPAM":{"Config":[{"Subnet":"172.18.0.0/16","Gateway":"172.18.0.1"}]},"Containers":{"abc":{"IPv4Address":"172.18.0.5/16","MacAddress":"02:42:ac:12:00:05"}}}`,
+			check: func(t *testing.T, body []byte) {
+				var got map[string]any
+				if err := json.Unmarshal(body, &got); err != nil {
+					t.Fatal(err)
+				}
+				ipam, _ := got["IPAM"].(map[string]any)
+				if cfg, ok := ipam["Config"].([]any); !ok || len(cfg) != 0 {
+					t.Errorf("IPAM.Config = %#v, want empty array", ipam["Config"])
+				}
+				if containers, ok := got["Containers"].(map[string]any); !ok || len(containers) != 0 {
+					t.Errorf("Containers = %#v, want empty object", got["Containers"])
+				}
+			},
+		},
+		{
+			name: "libpod container inspect",
+			path: "/v5.8.1/libpod/containers/abc/json",
+			body: `{"Id":"abc","HostConfig":{"NetworkMode":"bridge"},"NetworkSettings":` + typedNetworkSettingsJSON + `}`,
+			check: func(t *testing.T, body []byte) {
+				var got map[string]any
+				if err := json.Unmarshal(body, &got); err != nil {
+					t.Fatal(err)
+				}
+				settings, _ := got["NetworkSettings"].(map[string]any)
+				assertTypedNetworkSettings(t, "NetworkSettings", settings)
 			},
 		},
 		{
