@@ -41,6 +41,7 @@ request_body:
   image_pull:
     allow_all_registries: true
   network:
+    allow_disconnect_force: true
     endpoint_config:
       allow_static_addressing: true
       allow_mac_pinning: true
@@ -65,6 +66,8 @@ rules:
   - match: { method: POST, path: "/containers/*/start" }
     action: allow
   - match: { method: POST, path: "/containers/*/stop" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/kill" }
     action: allow
   - match: { method: POST, path: "/containers/*/rename" }
     action: allow
@@ -94,6 +97,13 @@ rules:
 
   - match: { method: POST, path: "/networks/*/connect" }
     action: allow
+  - match: { method: POST, path: "/networks/*/disconnect" }
+    action: allow
+
+  # Optional: nicholas-fedor/watchtower reads image disk usage only when disk
+  # thresholds are configured.
+  # - match: { method: GET, path: "/system/df" }
+  #   action: allow
 
   - match: { method: "*", path: "/**" }
     action: deny

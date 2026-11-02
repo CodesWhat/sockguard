@@ -103,6 +103,8 @@ rules:
     action: allow
   - match: { method: GET, path: "/networks/*" }
     action: allow
+  - match: { method: POST, path: "/networks/*/connect" }
+    action: allow
 
   - match: { method: GET, path: "/volumes" }
     action: allow

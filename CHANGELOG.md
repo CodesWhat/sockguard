@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Let `containrrr/watchtower` v1.7.1 update a container through the `watchtower.yaml` preset. It stops with `POST /containers/{id}/kill` and force-disconnects the default network after create, and both were denied. The preset now allows kill and disconnect (with `allow_disconnect_force`), carries a commented `GET /system/df` rule for nicholas-fedor's disk thresholds, and its header names both forks.
+- Allow `POST /networks/*/connect` in `portwing.yaml` (and the matching tri-tool and portwing compose examples), as `drydock.yaml` already does, so drydock behind Portwing can re-attach a recreated container's extra networks. The endpoint-config policy stays at the default, which admits Aliases only.
+
 ## [2.4.3] - 2026-11-02
 
 v2.4.3 stops completed hijacked sessions from accumulating in the listener, rejects malformed keyless subject patterns, and adds Codecov reporting, docs corrections and Podman CI fixes. It carries v2.4.2.
