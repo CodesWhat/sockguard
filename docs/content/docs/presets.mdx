@@ -428,6 +428,12 @@ Every allowed path is a named list, inspect or stats endpoint rather than a
 `GET /containers/*/logs` or `GET /containers/*/archive` has to add that rule
 and the acknowledgment itself.
 
+Homepage's Swarm mode (`swarm:` in `docker.yaml`) reads task and network data
+that the default `response.redact_network_topology` masks, so it needs
+`redact_network_topology: false` until the v3 line narrows that redaction. The
+preset carries the setting as a commented-out `response:` block; uncomment it
+only if you use Swarm mode.
+
 ## Homarr (`homarr.yaml`)
 
 Optimized for [Homarr](https://homarr.dev) dashboard with container management.

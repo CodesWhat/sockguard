@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Let `containrrr/watchtower` v1.7.1 update a container through the `watchtower.yaml` preset. It stops with `POST /containers/{id}/kill` and force-disconnects the default network after create, and both were denied. The preset now allows kill and disconnect (with `allow_disconnect_force`), carries a commented `GET /system/df` rule for nicholas-fedor's disk thresholds, and its header names both forks.
 - Allow `POST /networks/*/connect` in `portwing.yaml` (and the matching tri-tool and portwing compose examples), as `drydock.yaml` already does, so drydock behind Portwing can re-attach a recreated container's extra networks. The endpoint-config policy stays at the default, which admits Aliases only.
+- Document in `homepage.yaml` and the presets page that Homepage's Swarm mode needs `response.redact_network_topology: false`. The default is unchanged.
 
 ## [2.4.3] - 2026-11-02
 

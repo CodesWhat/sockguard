@@ -31,6 +31,13 @@ health:
   enabled: true
   path: /health
 
+# Homepage's Swarm mode (`swarm:` in docker.yaml) reads service tasks and
+# network data that the default network-topology redaction masks, so it needs
+# the redaction off until v3 narrows it. Uncomment only if you use Swarm mode;
+# plain container monitoring works with the default.
+# response:
+#   redact_network_topology: false
+
 rules:
   # Container reads — list, inspect, stats. A single "*" matches one path
   # segment, so the container-ID position cannot absorb a trailing
