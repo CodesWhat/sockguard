@@ -63,6 +63,18 @@ func goroutineLeakCheck(t *testing.T) func() {
 // wound down before the next one starts.
 func runBridgeAndWaitClosed(t *testing.T, endpoint Endpoint, policy Policy, limits Limits, daemonHandler http.Handler, drive func(driver *http.ClientConn)) {
 	t.Helper()
+	runBridgeLifecycle(t, endpoint, policy, limits, daemonHandler, func(driver *http.ClientConn, _ <-chan struct{}) {
+		if drive != nil {
+			drive(driver)
+		}
+	})
+}
+
+// runBridgeLifecycle is runBridgeAndWaitClosed with the bridge's completion
+// channel handed to drive, so a test can observe runBridge returning on its
+// own before the helper's client-side close runs.
+func runBridgeLifecycle(t *testing.T, endpoint Endpoint, policy Policy, limits Limits, daemonHandler http.Handler, drive func(driver *http.ClientConn, bridgeDone <-chan struct{})) {
+	t.Helper()
 
 	serverLeg, driverConn := net.Pipe()
 	daemonSide, clientLegForBridge := net.Pipe()
@@ -89,7 +101,7 @@ func runBridgeAndWaitClosed(t *testing.T, endpoint Endpoint, policy Policy, limi
 	}
 
 	if drive != nil {
-		drive(driver)
+		drive(driver, bridgeDone)
 	}
 
 	_ = driver.Close()
