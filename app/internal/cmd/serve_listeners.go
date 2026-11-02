@@ -162,10 +162,15 @@ type hijackTrackingWriter struct {
 
 func (w *hijackTrackingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
+// FlushError makes http.ResponseController.Flush report the underlying
+// writer's flush error. Without it the controller finds Flush first and the
+// error is lost.
+func (w *hijackTrackingWriter) FlushError() error {
+	return http.NewResponseController(w.ResponseWriter).Flush()
+}
+
 func (w *hijackTrackingWriter) Flush() {
-	if f, ok := w.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
+	_ = w.FlushError()
 }
 
 func (w *hijackTrackingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {

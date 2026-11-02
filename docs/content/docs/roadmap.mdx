@@ -3,10 +3,10 @@ title: Roadmap
 description: Sockguard's shipped v1.7, v2.0, v2.1, v2.2, v2.3, and v2.4 work and later direction.
 ---
 
-Sockguard v2.4 is the current stable feature line, with v2.4.2 the latest
-release. It tightens Podman engine and native-route isolation, permits safe
-volume filters on verified Podman 6+ endpoints and improves CI and maintenance
-publishing. It carries v2.4.2 and everything
+Sockguard v2.4 is the current stable feature line, with v2.4.3 the latest
+release. It stops completed hijacked sessions from accumulating in the listener,
+rejects incomplete keyless subject patterns and fixes Podman nightly CI. It
+carries v2.4.2, v2.4.1 and everything
 through v2.3.3. The v2.3 line shipped as follows. v2.3.0 promotes `2.3.0-rc.9` unchanged in behavior and is the first
 release under the MIT license; 2.2.x and earlier remain Apache-2.0. v2.3.1 is a
 security patch that refuses a client-supplied container log path. v2.3.2 is a
@@ -157,6 +157,10 @@ from source and a client-only request capture, not a live-daemon reproduction.
 | Proxy hardening | Socket cleanup is inode-owned, method-aware resource routing covers keyword names, generated response errors clear stale representation headers, inspected bodies retain deadlines through logging and metrics, and request metric labels have finite cardinality |
 | Release surfaces | README, docs, website, Helm metadata, verification assets, and migration guidance agree on v2.0.0; release blobs use sigstore bundles only and published metadata is read back before the release succeeds |
 
+## Shipped in v2.4.3
+
+Completed attach, exec and BuildKit sessions are dropped from the listener's hijacked-connection tracker when their handler closes them; live sessions are still closed on shutdown. Keyless `subject_pattern` values must be a complete regexp on their own, so `a)|(b` no longer defeats the full-match anchor. Go coverage uploads to Codecov without gating merges, the Podman 5/6 nightly tracks Fedora major tags, and the Podman and governance docs are corrected.
+
 ## Shipped in v2.4.2
 
 Every startup mode probes each upstream endpoint. Docker declarations cannot override positive Podman identity, and version probes do not follow redirects. Volume lists under owner or label-based visibility isolation, and volume prune under owner isolation, allow non-label filters on Docker. Podman requires every endpoint to positively report a released version of 6.0.0 or later; old, unknown and prerelease Podman versions remain restricted. Visibility isolation does not scope volume prune.
@@ -200,8 +204,8 @@ See [Security](/security#standard-buildx-dockerfile-builds).
 
 ## v3 compatibility boundary
 
-The current candidate, [v3.0.0-rc.4](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0-rc.4),
-is published and carries v2.4.2, which includes the v2.4 policy/security work. The insecure endpoint
+The current candidate, [v3.0.0-rc.5](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0-rc.5),
+is published and carries v2.4.3, which includes the v2.4 policy/security work. The insecure endpoint
 TLS setting and unverified `DOCKER_TLS` fallback deprecated in v2.1 are rejected.
 The [deprecation ledger](/deprecations) owns the exact contracts. All v2 lines
 retain those settings; the opaque BuildKit acknowledgment's removal version
@@ -217,8 +221,9 @@ image and Go installation commands and TLS configuration changes.
 This candidate needs fresh four-hour soak and TLS/security checks on its exact
 source, conformance against its published image, and at least 14 days after
 the first candidate's publication at 2026-10-17 16:08:58 UTC before GA, so
-promotion is no earlier than 2026-10-31 at 16:08:58 UTC. Candidate-only behavior
-fixes restart that window.
+promotion is no earlier than 2026-10-31 at 16:08:58 UTC. rc.5 only carries
+fixes already released in v2.4.3 plus site changes, so that floor stands, and rc.5
+needs a fresh soak. Candidate-only behavior fixes restart the window.
 The v2.3 and v2.4 clocks don't cover v3; those candidate sources, stable channels
 and their existing validation remain separate.
 

@@ -7,9 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.3] - 2026-11-02
+
+v2.4.3 stops completed hijacked sessions from accumulating in the listener, rejects malformed keyless subject patterns, and adds Codecov reporting, docs corrections and Podman CI fixes. It carries v2.4.2.
+
+### Changed
+
+- **Go coverage now uploads to Codecov.** A new non-gating `Coverage: Codecov Upload` job in `ci-verify.yml` reads the `coverage.prod.txt` profile the reusable Go test job already publishes and sends it with a tokenless OIDC upload (`id-token: write` on that job only, no stored credential). `codecov.yml` keeps both statuses informational, and the `COVERAGE_MIN` floor in `scripts/ci/go-test.sh` stays the merge gate. Qlty Cloud keeps grading maintainability.
+
+### Fixed
+
+- Correct the Podman docs to say volume prune permits extra filter keys under owner isolation only, and the governance doc to describe the `dev/vX.Y` to `main` promotion flow.
+- Reject keyless `subject_pattern` values that are not a complete regexp on their own. A pattern like `a)|(b` used to compile to `^(?:a)|(b)$` and matched `azzz` and `zzb`, defeating the full-match anchor.
+- Stop the Podman 5/6 nightly from breaking when quay purges the rebuilt Fedora base image. The matrix now tracks the Fedora 44 and 45 major tags instead of digests that expire within a day.
+- Stop completed attach, exec and BuildKit sessions from piling up in the listener's hijacked-connection tracker. net/http never reports a closed state for hijacked connections, so entries stayed until shutdown. The tracker now drops a connection when its handler closes it, and live sessions are still closed on shutdown.
+- Keep flush errors visible through the hijack tracker. Its response writer implemented `Flush` but not `FlushError`, so `http.ResponseController.Flush` returned nil even when the underlying writer's flush failed.
+
+## [3.0.0-rc.5] - 2026-11-02
+
+This candidate adds only fixes already released in v2.4.3 plus getsockguard.com site changes to rc.4. There are no new v3 proxy or TLS changes. The GA floor of 2026-10-31 16:08:58 UTC stands, and a fresh exact-source soak, TLS/security and published-image conformance are required on rc.5 before GA.
+
 ### Changed
 
 - **Website rebuilt.** The getsockguard.com landing page is rebuilt with a refreshed compare matrix, a GitHub star-history chart, and the Go Reference footer link pointing at the `/v3` module. Playwright browser checks now run the site on Chromium, Firefox and WebKit in CI.
+- **Docs layout widened.** The docs site layout is now 1600px wide, the docs header drops the Compare link, and search and the theme toggle moved into the sidebar.
+
+### Fixed
+
+- Carry v2.4.3's FlushError fix. The hijack tracker's response writer now implements `FlushError`, so `http.ResponseController.Flush` reports a failed underlying flush instead of returning nil. The same v2.4.3 release also stops completed hijacked sessions from accumulating in the listener.
 
 ## [3.0.0-rc.4] - 2026-11-02
 

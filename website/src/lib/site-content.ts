@@ -460,15 +460,26 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
+    version: "v2.4.3",
+    title: "Session Cleanup & Pattern Validation",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Completed attach, exec and BuildKit sessions are dropped from the hijacked-connection tracker instead of accumulating until shutdown",
+      "Keyless subject patterns that are not a complete regexp on their own are rejected, closing an anchor bypass",
+      "Go coverage uploads to Codecov without gating merges, and Podman nightly CI tracks Fedora major tags",
+    ],
+  },
+  {
     version: "v3.0.0",
     title: "Verified TLS Compatibility Boundary",
     emoji: "🔐",
     status: "candidate",
     items: [
-      "Published v3.0.0-rc.4 candidate; select its image or /v3 Go tag explicitly. Includes v2.4.2 Podman isolation and dependency updates, exec target protection and the v2.4 policy/security work",
+      "Published v3.0.0-rc.5 candidate; select its image or /v3 Go tag explicitly. Includes v2.4.3 session cleanup, v2.4.2 Podman isolation and dependency updates, exec target protection and the v2.4 policy/security work",
       "Rejects the deprecated endpoint skip-verification setting and unverified Docker TLS fallback; configure the daemon CA and verified TLS",
-      "Go imports, generated descriptors and release builds use /v3; stable channels serve v2.4.2",
-      "GA requires fresh candidate soak, TLS/security checks and published-image conformance; no earlier than 2026-10-31 at 16:08:58 UTC. Candidate-only behavior fixes restart the window; opaque BuildKit removal remains undecided",
+      "Go imports, generated descriptors and release builds use /v3; stable channels serve v2.4.3",
+      "GA requires fresh candidate soak, TLS/security checks and published-image conformance; no earlier than 2026-10-31 at 16:08:58 UTC. rc.5 only carries fixes already released in v2.4.3 plus site changes, so that floor stands, with a fresh soak required on rc.5. Candidate-only behavior fixes restart the window; opaque BuildKit removal remains undecided",
     ],
   },
 ];
