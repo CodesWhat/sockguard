@@ -25,7 +25,7 @@ export const SITE_CONFIG = {
   description:
     "We built a default-deny Docker socket proxy in Go. Filter Docker API requests by method, path, and body, then layer on signed policy bundles, per-profile rollout modes, rate limits, hot-reload, and Prometheus metrics.",
   /** Production domain (no protocol, no trailing slash). */
-  domain: "getsockguard.com",
+  domain: "www.getsockguard.com",
   /** GitHub owner/org. */
   githubOwner,
   /** GitHub repository name. */
