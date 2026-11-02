@@ -8,6 +8,7 @@
     "build": "node scripts/docs-search-index.mjs --check && node ../scripts/analytics-routes.mjs --check && node ../scripts/analytics-runtime.mjs --check && next build",
     "build:docs-content": "(cd ../docs && npm run build) && rm -rf public/docs && mkdir -p public/docs && cp -R ../docs/out/. public/docs/",
     "test": "node --test --experimental-strip-types src/**/*.test.mjs",
+    "test:e2e": "playwright test",
     "start": "next start"
   },
   "dependencies": {
@@ -23,6 +24,7 @@
     "tailwindcss": "^4.3.1"
   },
   "devDependencies": {
+    "@playwright/test": "1.64.1",
     "@types/node": "26.6.5",
     "@types/react": "19.3.0",
     "typescript": "7.0.2"
