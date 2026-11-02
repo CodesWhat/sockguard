@@ -2,11 +2,12 @@
 
 ## Supported Versions
 
-Security fixes ship on the latest supported patch of each line marked below. The current stable line is cut from `main`; an older supported line uses its matching `maintenance/X.Y.x` branch. After v3 ships, 2.4.x remains supported until v3.1 ships. 2.2.x reached end of life with the 2.3.2 release, and 2.3.x with the 2.4.0 release.
+Security fixes ship on the latest supported patch of each line marked below. The current stable line is cut from `main`; an older supported line uses its matching `maintenance/X.Y.x` branch. 2.4.x remains supported as a maintenance line until v3.1 ships. 2.2.x reached end of life with the 2.3.2 release, and 2.3.x with the 2.4.0 release.
 
 | Version           | Supported          |
 | ----------------- | ------------------ |
-| 2.4.x (latest)    | :white_check_mark: |
+| 3.0.x (latest)    | :white_check_mark: |
+| 2.4.x             | :white_check_mark: |
 | 2.3.x             | :x:                |
 | 2.2.x             | :x:                |
 | 2.1.x             | :x:                |

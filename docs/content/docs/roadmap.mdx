@@ -1,13 +1,15 @@
 ---
 title: Roadmap
-description: Sockguard's shipped v1.7, v2.0, v2.1, v2.2, v2.3, and v2.4 work and later direction.
+description: Sockguard's shipped v1.7, v2.0, v2.1, v2.2, v2.3, v2.4, and v3.0 work and later direction.
 ---
 
-Sockguard v2.4 is the current stable feature line, with v2.4.3 the latest
-release. It stops completed hijacked sessions from accumulating in the listener,
-rejects incomplete keyless subject patterns and fixes Podman nightly CI. It
-carries v2.4.2, v2.4.1 and everything
-through v2.3.3. The v2.3 line shipped as follows. v2.3.0 promotes `2.3.0-rc.9` unchanged in behavior and is the first
+Sockguard v3.0 is the current stable feature line, with v3.0.0 the latest
+release. It promotes `3.0.0-rc.5` unchanged in behavior, moves the Go module to
+`/v3`, rejects the insecure endpoint TLS settings deprecated in v2.1, and carries
+everything through v2.4.3. The v2.4 line stays supported for security fixes until
+v3.1 ships. v2.4.3 stops completed hijacked sessions from accumulating in the
+listener, rejects incomplete keyless subject patterns and fixes Podman nightly
+CI. It carries v2.4.2, v2.4.1 and everything through v2.3.3. The v2.3 line shipped as follows. v2.3.0 promotes `2.3.0-rc.9` unchanged in behavior and is the first
 release under the MIT license; 2.2.x and earlier remain Apache-2.0. v2.3.1 is a
 security patch that refuses a client-supplied container log path. v2.3.2 is a
 security patch that tightens Podman filter scoping under ownership and
@@ -202,30 +204,26 @@ attestations and filesystem-loaded nested BuildOps remain denied. The Docker
 integration suite exercises the supported workflow with provenance disabled.
 See [Security](/security#standard-buildx-dockerfile-builds).
 
-## v3 compatibility boundary
+## Shipped in v3.0.0
 
-The current candidate, [v3.0.0-rc.5](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0-rc.5),
-is published and carries v2.4.3, which includes the v2.4 policy/security work. The insecure endpoint
-TLS setting and unverified `DOCKER_TLS` fallback deprecated in v2.1 are rejected.
-The [deprecation ledger](/deprecations) owns the exact contracts. All v2 lines
-retain those settings; the opaque BuildKit acknowledgment's removal version
-remains undecided.
+v3.0.0 promotes [v3.0.0-rc.5](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0-rc.5)
+unchanged in behavior. It carries v2.4.3, which includes the v2.4 policy/security
+work. The insecure endpoint TLS setting and unverified `DOCKER_TLS` fallback
+deprecated in v2.1 are rejected. The [deprecation ledger](/deprecations) owns the
+exact contracts. All v2 lines retain those settings; the opaque BuildKit
+acknowledgment's removal version remains undecided.
 
 The module, imports, generated BuildKit descriptor options and release linker
 flags use `github.com/codeswhat/sockguard/v3`. The tag guard checks the module
-major; reproduction derives its linker package from the requested source.
-Candidate release routing targets `dev/v3.0`. See
-[migration](/migration#from-sockguard-v2-to-v3-release-candidate) for explicit
+major; reproduction derives its linker package from the requested source. v2 tags
+keep `/v2`. See [migration](/migration#from-sockguard-v2-to-v3) for explicit
 image and Go installation commands and TLS configuration changes.
 
-This candidate needs fresh four-hour soak and TLS/security checks on its exact
-source, conformance against its published image, and at least 14 days after
-the first candidate's publication at 2026-10-17 16:08:58 UTC before GA, so
-promotion is no earlier than 2026-10-31 at 16:08:58 UTC. rc.5 only carries
-fixes already released in v2.4.3 plus site changes, so that floor stands, and rc.5
-needs a fresh soak. Candidate-only behavior fixes restart the window.
-The v2.3 and v2.4 clocks don't cover v3; those candidate sources, stable channels
-and their existing validation remain separate.
+The 2.4.x line remains supported for security fixes until v3.1 ships, through
+reviewed maintenance releases that preserve the current global latest channels.
+The v3 release candidates, rc.1 through rc.5, are recorded in the
+[CHANGELOG](https://github.com/CodesWhat/sockguard/blob/main/CHANGELOG.md) for
+history.
 
 ## Twelve-month direction
 

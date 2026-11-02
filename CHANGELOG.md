@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-11-02
+
+v3.0.0 promotes v3.0.0-rc.5 unchanged in behavior. It is the first release on the `github.com/codeswhat/sockguard/v3` Go module and removes the two insecure TLS settings deprecated in v2.1. It carries everything through v2.4.3: the v2.3 BuildKit frontend mediation and MIT license, and the v2.4 image admission, create launch-field policy, Podman isolation, exec target protection and session cleanup work. Stable Docker, Homebrew, deb/rpm and binary channels move to v3 with this release, and 2.4.x stays supported for security fixes until v3.1 ships.
+
+### Breaking changes
+
+- **The Go module is `github.com/codeswhat/sockguard/v3`.** Go consumers must change Sockguard import prefixes from `/v2` to `/v3`, and install with `go install github.com/codeswhat/sockguard/v3/app/cmd/sockguard@v3.0.0`. Generated BuildKit bindings and descriptor options, release and Docker linker flags, and coverage checks use `/v3`. v2 tags keep `/v2`. Docker, Homebrew, deb/rpm and downloaded binaries need no import change.
+- **`upstream.endpoints[].insecure_skip_tls_verify` is rejected at any value,** including `false` and `null`. Remove the key and set `tls.ca_file` to the daemon's issuing CA, keeping any required client certificate, key and `tls.server_name`.
+- **Non-empty `DOCKER_TLS` without non-empty `DOCKER_TLS_VERIFY` is rejected** for TCP Docker hosts. Set `DOCKER_TLS_VERIFY=1`. Any non-empty verification value, including `0` or `false`, still verifies the server.
+
+### Migration
+
+- Run `sockguard validate --config <file>` with the v3 binary before restarting. Startup and CLI validation reject the removed settings with migration guidance, and a rejected hot reload keeps the active policy serving.
+- Verified TLS precedence, certificate-directory lookup, Unix sockets, explicit endpoints and acknowledged plain TCP (`insecure_allow_plain_tcp`) are unchanged. Unix Docker hosts ignore TCP-only TLS environment variables.
+- `insecure_accept_opaque_buildkit_tunnels` remains accepted with its startup warning. Its removal has no chosen version and is not part of v3.0.0.
+- All v2 release lines, including v2.4.x, keep accepting the removed settings. You can move to verified TLS on v2 first. See the [migration guide](https://getsockguard.com/docs/migration#from-sockguard-v2-to-v3) and the [deprecation ledger](https://getsockguard.com/docs/deprecations).
+
+### Security
+
+- Carries the v2.4.0 to v2.4.3 security work: exact image admission, native Podman mount, device and RUN-control checks, protected-label exec refusal, Podman engine identity and unscoped native route refusals, and the CA bundle and `golang.org/x/net` updates.
+- Carries v2.4.3's rejection of keyless `subject_pattern` values that are not a complete regexp on their own, and its fix for completed hijacked sessions accumulating in the listener.
+
+### Changed
+
+- The development snapshot version is `3.0.0-dev`, so local builds no longer inherit a v2 version from the nearest older tag. Release validation checks the tag against the Go module major, and reproducible builds derive their linker package from the requested source ref.
+- **Website rebuilt.** The getsockguard.com landing page has a refreshed compare matrix and a GitHub star-history chart, and the Go Reference footer link points at the `/v3` module. Playwright browser checks run the site on Chromium, Firefox and WebKit in CI. The docs layout is wider, with search and the theme toggle in the sidebar.
+
+The release candidates are kept below: rc.1 introduced the module path and TLS removals, rc.2 and rc.3 carried v2.4.0 forward, rc.4 carried v2.4.2, and rc.5 carried v2.4.3 and the site rebuild.
+
 ## [2.4.3] - 2026-11-02
 
 v2.4.3 stops completed hijacked sessions from accumulating in the listener, rejects malformed keyless subject patterns, and adds Codecov reporting, docs corrections and Podman CI fixes. It carries v2.4.2.

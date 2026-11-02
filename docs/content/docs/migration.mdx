@@ -1,16 +1,16 @@
 ---
 title: Migration
-description: Upgrade to stable v2.4, evaluate the v3 release candidate, or migrate from another Docker socket proxy.
+description: Upgrade to stable v3, stay on the supported v2.4 maintenance line, or migrate from another Docker socket proxy.
 ---
 
 ## Release availability
 
 | Line | Availability | Upgrade guidance |
 | --- | --- | --- |
-| v2.4.3 | Published stable | Keep normal Docker, Homebrew, deb/rpm and binary release channels. |
-| v2.3.3 | End of life | The last v2.3 patch. It no longer receives security fixes, so upgrade to v2.4. |
-| v2.2.11 | End of life | Upgrade to v2.4 for security fixes. |
-| v3.0.0-rc.5 | Published candidate | Select its image or `/v3` Go tag explicitly and migrate the removed TLS settings below. It carries v2.4.3, and its validation and bake window are independent of v2.4. Stable channels serve v2.4.3. |
+| v3.0.0 | Published stable | Current stable line on the normal Docker, Homebrew, deb/rpm and binary release channels. Migrate the removed TLS settings and, for Go consumers, the `/v3` import path below. |
+| v2.4.3 | Maintenance | Supported for security fixes until v3.1 ships, through reviewed maintenance releases. Keeps accepting the TLS settings v3 removes. |
+| v2.3.3 | End of life | The last v2.3 patch. It no longer receives security fixes, so upgrade to v2.4 or v3. |
+| v2.2.11 | End of life | Upgrade to v2.4 or v3 for security fixes. |
 
 ## From Sockguard v2.1 to v2.2
 
@@ -47,8 +47,9 @@ before enabling external frontend execution.
 
 ## Upgrading to v2.4
 
-v2.4 is the current stable line. Pull `codeswhat/sockguard:2.4.3` or the
-`latest` tag, install through Homebrew, deb/rpm or the release binaries, or run
+v2.4 is the maintenance line and stays supported for security fixes until v3.1
+ships. Pull `codeswhat/sockguard:2.4.3` explicitly (the `latest` tag now serves
+v3), install the release binaries, or run
 `go install github.com/codeswhat/sockguard/v2/app/cmd/sockguard@v2.4.3`. Go
 source builds require Go 1.27. Don't copy v2.4-only settings into an older
 binary.
@@ -60,12 +61,13 @@ CHANGELOG. Built-in Buildx Dockerfile builds now use the mediated gateway;
 see [Security](/security#standard-buildx-dockerfile-builds). Unix container-label
 identity remains a documented limit; use distinct UID/GID client profiles.
 
-## From Sockguard v2 to v3 (release candidate)
+## From Sockguard v2 to v3
 
-The current candidate, [v3.0.0-rc.5](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0-rc.5),
-is published. It carries v2.4.3 and includes the v2.4 policy/security work and the TLS removals below.
-All v2 release lines retain their accepted settings.
-Before testing the v3 candidate:
+[v3.0.0](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0) is the
+current stable release. It carries v2.4.3 and includes the v2.4 policy/security
+work and the TLS removals below. All v2 release lines retain their accepted
+settings, so you can make these changes on v2 first.
+Before upgrading to v3:
 
 - Remove `upstream.endpoints[].insecure_skip_tls_verify` entirely, including
   explicit `false` or `null` values. Set `tls.ca_file` to the daemon's issuing CA
@@ -73,7 +75,7 @@ Before testing the v3 candidate:
 - For a TCP `DOCKER_HOST`, set `DOCKER_TLS_VERIFY=1` when `DOCKER_TLS` is non-empty.
   Any non-empty verification value, including `0` or `false`, still verifies the
   server. Certificate-directory precedence and optional client pairs are unchanged.
-- Validate with the exact v3 candidate binary before restarting. Startup and CLI validation
+- Validate with the exact v3 binary before restarting. Startup and CLI validation
   reject the old settings with migration guidance; rejected config reloads keep
   the active policy serving. Unix Docker hosts ignore TCP-only TLS environment
   variables, and explicit YAML endpoints still take precedence over Docker env.
@@ -83,28 +85,27 @@ Docker environment's existing plaintext behavior when neither TLS variable is
 set. The opaque BuildKit acknowledgment remains accepted; its removal target is
 still undecided.
 
-Select `ghcr.io/codeswhat/sockguard:3.0.0-rc.5` explicitly, download a platform
-binary from the release, or install with Go 1.27:
+Pull `ghcr.io/codeswhat/sockguard:3.0.0` (or the `latest` tag), install through
+Homebrew, deb/rpm, download a platform binary from the release, or install with
+Go 1.27:
 
 ```bash
-go install github.com/codeswhat/sockguard/v3/app/cmd/sockguard@v3.0.0-rc.5
+go install github.com/codeswhat/sockguard/v3/app/cmd/sockguard@v3.0.0
 ```
 
-The candidate module is `github.com/codeswhat/sockguard/v3`. Go consumers must
-change Sockguard import prefixes from `/v2` to `/v3`. Published v2 install commands retain `/v2`; stable Docker and Homebrew channels
-serve v2.4.3.
+The module is `github.com/codeswhat/sockguard/v3`. Go consumers must change
+Sockguard import prefixes from `/v2` to `/v3`. Published v2 install commands and
+tags retain `/v2`. Docker, Homebrew, deb/rpm and downloaded binaries don't
+acquire a Go import-path requirement.
 
-V3 has an independent validation and bake window. GA requires fresh exact-source
-four-hour soak and TLS/security checks, published-candidate image conformance,
-and at least 14 days after the first candidate's 2026-10-17 publication at
-16:08:58 UTC. GA is no earlier than 2026-10-31 at 16:08:58 UTC. Candidate-only
-behavior fixes restart that window; v2.3/v2.4 validation doesn't replace it.
+The 2.4.x line receives security fixes until v3.1 ships. Move to v3 when your
+configuration no longer uses the removed TLS settings.
 
 ## Deprecation schedule
 
 The [deprecation ledger](/deprecations) records accepted versions, replacements
-and removal targets. The TLS settings below remain accepted throughout v2.x;
-their removal is scheduled for v3.0.0. The opaque BuildKit acknowledgment has an
+and removal targets. The TLS settings below remain accepted throughout v2.x and
+were removed in v3.0.0. The opaque BuildKit acknowledgment has an
 undecided future-major removal target. Docker Engine endpoint deprecations don't
 by themselves remove a Sockguard setting.
 

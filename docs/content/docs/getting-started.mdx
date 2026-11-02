@@ -87,23 +87,20 @@ sockguard serve -c /etc/sockguard/sockguard.yaml
 
 This guide uses a unix socket because it is the simplest secure deployment. If you expose Sockguard on non-loopback TCP, configure `listen.tls` for mutual TLS. Plaintext remote TCP requires the two-flag legacy opt-in — both `SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true` and `SOCKGUARD_LISTEN_INSECURE_ALLOW_UNAUTHENTICATED_CLIENTS=true`.
 
-### Published v3 release candidate
+### Go install
 
-[v3.0.0-rc.5](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0-rc.5)
-is available for testing. Select `ghcr.io/codeswhat/sockguard:3.0.0-rc.5`
-explicitly, download its platform binary from that release, or install it with Go 1.27:
+[v3.0.0](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0)
+is the current stable release. Install it with Go 1.27:
 
 ```bash
-go install github.com/codeswhat/sockguard/v3/app/cmd/sockguard@v3.0.0-rc.5
+go install github.com/codeswhat/sockguard/v3/app/cmd/sockguard@v3.0.0
 ```
 
-Go consumers must use `/v3` imports; v2 candidate tags retain `/v2`. See the
-[v3 migration guidance](/migration#from-sockguard-v2-to-v3-release-candidate)
-before validating an existing configuration. The stable installation channels
-above serve v2.4.3. The candidate has its own validation and 14-day bake
-window. rc.5 only carries fixes already released in v2.4.3 plus site changes,
-so the GA floor of 2026-10-31 at 16:08:58 UTC stands, but rc.5 needs a fresh
-soak. Candidate-only behavior fixes restart the window.
+Go consumers must use `/v3` imports; v2 tags retain `/v2`. See the
+[v3 migration guidance](/migration#from-sockguard-v2-to-v3)
+before validating an existing configuration. The Docker, Homebrew, deb/rpm and
+binary channels above serve v3. The 2.4.x line remains supported for security
+fixes until v3.1 ships.
 
 ## Connecting Your Apps
 
