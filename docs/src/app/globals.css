@@ -50,14 +50,14 @@ body {
 }
 
 /* ----------------------------------------------------------------------------
-   Layout: sidebar | page | TOC inside the same 1240px column as the site shell.
+   Layout: sidebar | page | TOC inside the same 1600px column as the site shell.
 ---------------------------------------------------------------------------- */
 html {
   scroll-padding-top: 84px;
 }
 
 #nd-docs-layout {
-  --fd-layout-width: min(1240px, 100vw);
+  --fd-layout-width: min(1600px, 100vw);
   --fd-docs-height: calc(100dvh - var(--site-header-h));
   min-height: calc(100dvh - var(--site-header-h));
   background: var(--dd-bg);

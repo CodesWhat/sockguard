@@ -248,7 +248,7 @@
     top: 8px;
   }
   .wrap {
-    max-width: 1240px;
+    max-width: 1600px;
     margin: 0 auto;
     padding: 0 28px;
   }
@@ -646,6 +646,7 @@
     color: var(--tx-sec);
     font-size: 12px;
     line-height: 1.55;
+    max-width: 96ch;
   }
   .pal .ret {
     margin-left: auto;
@@ -875,6 +876,7 @@
     font-size: 12px;
     line-height: 1.55;
     display: block;
+    max-width: 110ch;
   }
   .row .it:before {
     content: "│ ";
