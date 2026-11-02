@@ -128,6 +128,7 @@ jobs:
           - { name: FuzzBuildBundle,                  pkg: ./internal/imagefetch/ }
           - { name: FuzzDockerfileInspect,            pkg: ./internal/dockerfileinspect/ }
           - { name: FuzzCertificateURIStrings,        pkg: ./internal/certmatch/ }
+          - { name: FuzzNormalizeSubjectPublicKeySHA256Pin, pkg: ./internal/pkipin/ }
 
     steps:
       # Stays audit for stage 1: this job already has an open, in-repo
