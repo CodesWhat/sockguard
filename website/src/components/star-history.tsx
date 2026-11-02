@@ -32,7 +32,7 @@ export function StarHistory() {
         <Image
           className="sd"
           src="/star-history-dark.svg"
-          alt=""
+          alt="Star history chart"
           width={900}
           height={460}
           loading="lazy"
