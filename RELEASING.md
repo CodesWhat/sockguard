@@ -142,7 +142,7 @@ When a fix applies to the current stable release while a later release candidate
 
 ## Helm chart
 
-The chart is in `chart/sockguard/`. It is not auto-published by any current workflow. Keep `version` and `appVersion` equal to the stable release version. This is a release contract, not an independently versioned chart line.
+The chart is in `chart/sockguard/`. From v3.0.0 the `publish-chart` job in `release-from-tag.yml` publishes it (see [Publishing the chart](#publishing-the-chart)); earlier tags published no chart. Keep `version` and `appVersion` equal to the stable release version. This is a release contract, not an independently versioned chart line.
 
 The image pin uses a two-stage flow because the immutable image digest does not exist until after the release is published:
 
@@ -157,7 +157,18 @@ For a failed maintenance pin, start from the matching `maintenance/X.Y.x` branch
 
 The test accepts only an empty prepublication image tag or `<appVersion>@sha256:<digest>` with 64 lowercase hexadecimal characters. Do not advance `main` past the release tag solely for this follow-up; the next release metadata PR clears the pin before its tag is cut.
 
-There is no chart-release workflow at this time. If a Helm repository is available, package and publish the chart only after the Docker images are live.
+### Publishing the chart
+
+The `publish-chart` job pushes the chart to `oci://ghcr.io/codeswhat/charts/sockguard` for a stable tag cut from the default branch. It uses the same gate as the global `latest` tag and the Homebrew cask (`verify-ci`'s `latest` output), so prereleases and `maintenance/X.Y.x` tags publish nothing and an older patch can never move the chart channel.
+
+1. It waits for the `release` job, then re-resolves the image's multi-arch manifest-list digest from GHCR and refuses any digest the release job did not publish.
+2. The tagged tree still has the prepublication empty `image.tag`, because `pin-chart-digest` writes the pin to the development branch only after verification. `publish-chart` applies the same `scripts/pin-chart-image-digest.mjs` pin to its own throwaway checkout (nothing is committed), runs `helm lint` and `helm package`, then `scripts/assert-chart-release.mjs` reads Chart.yaml and values back out of the package and requires chart `version` == `appVersion` == the tag, and `image.tag` == `<version>@<digest>`.
+3. It refuses to push over a chart version that already exists, runs `helm push`, signs the pushed digest with cosign keyless (same workflow identity as the image), and verifies the signature.
+4. The `verify-published` job (QA-6) runs the documented `cosign verify` against the chart through `scripts/verify-published-release.sh --chart`. `pin-chart-digest` waits for QA-6, so a chart that does not verify holds the pin back.
+
+Helm is installed from a version-pinned tarball whose SHA-256 is checked in the workflow (`HELM_VERSION` and `HELM_SHA256` in the job); bump both together. Only this job and `release` hold `packages: write`.
+
+If `publish-chart` fails after `helm push`, the chart version exists unsigned or unverified. Do not rerun the job (it refuses to overwrite). Sign the pushed digest by hand with `cosign sign`, or delete that one package version in GitHub and rerun the failed job.
 
 ---
 

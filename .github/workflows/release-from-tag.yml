@@ -1139,6 +1139,357 @@ jobs:
             '.version == $version'
           brew uninstall --cask sockguard
 
+  publish-chart:
+    # HELM-PUB. Publishes the chart as an OCI artifact at
+    # oci://ghcr.io/codeswhat/charts/sockguard and signs it keyless like the
+    # image, so `helm install` has a signed, immutable source.
+    #
+    # Gated exactly like `latest` and the Homebrew cask: verify-ci's `latest`
+    # output is true only for a stable tag whose SHA is the default branch
+    # HEAD. Prereleases and maintenance lines publish no chart, so an older
+    # 2.4.x patch can never move the chart channel backwards.
+    #
+    # The tagged tree still carries the prepublication (empty) image.tag,
+    # because pin-chart-digest writes the digest to the development branch
+    # only after this release is verified. This job therefore applies the same
+    # pin to its own throwaway checkout before packaging, from the digest the
+    # release job pushed and re-resolved from GHCR, so the published chart
+    # references the immutable image digest rather than a mutable tag.
+    #
+    # It runs before verify-published, which verifies the chart signature as
+    # part of QA-6. pin-chart-digest waits on verify-published, so a chart
+    # that does not verify also holds the pin back.
+    #
+    # Only this job holds packages: write; the release job's write access is
+    # for the image, and the rest of the file stays at packages: read or less.
+    name: "Release: Publish Helm Chart"
+    needs: [verify-ci, release]
+    if: ${{ needs.verify-ci.outputs.latest == 'true' && !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write   # helm push to ghcr.io/codeswhat/charts
+      id-token: write   # cosign keyless signing
+
+    steps:
+      # PKG-1: block mode. Same shape as the pin-chart-digest and release
+      # jobs, plus the Helm download and the Sigstore signing endpoints.
+      #   github.com: Checkout, and Install cosign's release download
+      #   api.github.com: Setup Node's release lookup
+      #   raw.githubusercontent.com: Setup Node's actions/node-versions manifest
+      #   objects.githubusercontent.com: Setup Node's and cosign's tarballs on
+      #     a cold tool cache, the legacy redirect twin of the host below
+      #   release-assets.githubusercontent.com: those same tarballs, current host
+      #   get.helm.sh, *.blob.core.windows.net: the checksum-verified Helm
+      #     tarball. get.helm.sh fronts a blob store, hence the wildcard that
+      #     the other jobs already carry for the Actions cache.
+      #   ghcr.io, pkg-containers.githubusercontent.com: Log in to GHCR, the
+      #     manifest-list digest lookup, helm push and cosign sign/verify
+      #   fulcio.sigstore.dev, rekor.sigstore.dev, timestamp.sigstore.dev,
+      #     tuf-repo-cdn.sigstore.dev: keyless signing and verification
+      #   *.actions.githubusercontent.com: the OIDC endpoint keyless signing
+      #     needs, and the Actions runtime and log upload
+      - name: Harden Runner
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            raw.githubusercontent.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            get.helm.sh:443
+            ghcr.io:443
+            pkg-containers.githubusercontent.com:443
+            fulcio.sigstore.dev:443
+            rekor.sigstore.dev:443
+            timestamp.sigstore.dev:443
+            tuf-repo-cdn.sigstore.dev:443
+            *.blob.core.windows.net:443
+            *.actions.githubusercontent.com:443
+
+      - name: Checkout
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Wait before Checkout retry
+        if: steps.checkout.outcome == 'failure'
+        run: sleep 30
+
+      - name: Checkout (retry)
+        id: checkout_retry
+        if: steps.checkout.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Wait before Checkout final retry
+        if: steps.checkout.outcome == 'failure' && steps.checkout_retry.outcome == 'failure'
+        run: sleep 60
+
+      - name: Checkout (final retry)
+        id: checkout_final
+        if: steps.checkout.outcome == 'failure' && steps.checkout_retry.outcome == 'failure'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node (for release scripts)
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 24
+          # No npm cache in a job that publishes and signs (zizmor
+          # cache-poisoning); see the pin-chart-digest job.
+          package-manager-cache: false
+
+      # The tarball is pinned by version and SHA-256 (from
+      # https://get.helm.sh/helm-<version>-linux-amd64.tar.gz.sha256sum) and
+      # refused on any mismatch. Bump both together.
+      - name: Install Helm
+        env:
+          HELM_VERSION: v4.3.1
+          HELM_SHA256: 0403a88ae20913d11b10a2467b50087721fea7581736da6b9d3992f5357fe54b
+        run: |
+          set -euo pipefail
+          retry_network() {
+            local attempt
+            for attempt in 1 2 3 4 5; do
+              if "$@"; then
+                return 0
+              fi
+              if [ "${attempt}" -eq 5 ]; then
+                return 1
+              fi
+              sleep 5
+            done
+          }
+
+          download_dir="$(mktemp -d)"
+          archive="${download_dir}/helm.tar.gz"
+          retry_network curl --fail --silent --show-error --location \
+            --output "${archive}" \
+            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_SHA256}  ${archive}" | sha256sum --check --strict -
+
+          bin_dir="${RUNNER_TEMP}/helm-bin"
+          mkdir -p "${bin_dir}"
+          tar -xzf "${archive}" -C "${bin_dir}" --strip-components=1 linux-amd64/helm
+          echo "${bin_dir}" >> "$GITHUB_PATH"
+          "${bin_dir}/helm" version --short
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+        with:
+          cosign-release: "v3.1.3"  # keep in lockstep with the goreleaser job's pin above
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve the published manifest-list digest
+        id: digest
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          BUILD_DIGEST: ${{ needs.release.outputs.digest }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${BUILD_DIGEST}" ]; then
+            echo "::error::The release job published no digest; refusing to publish the chart."
+            exit 1
+          fi
+
+          version="${RELEASE_TAG#v}"
+          repository="$(printf '%s' "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          image_ref="ghcr.io/${repository}:${version}"
+
+          # Same read and same pipefail/SIGPIPE care as pin-chart-digest.
+          digest="$(docker buildx imagetools inspect "${image_ref}" --format '{{.Manifest.Digest}}' || true)"
+          if ! [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            digest="$(docker buildx imagetools inspect "${image_ref}" | awk '$1 == "Digest:" && !seen { print $2; seen = 1 }' || true)"
+          fi
+          if ! [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Could not resolve a manifest-list digest for ${image_ref}."
+            exit 1
+          fi
+          if [ "${digest}" != "${BUILD_DIGEST}" ]; then
+            echo "::error::${image_ref} resolves to ${digest} but the release job published ${BUILD_DIGEST}; refusing to pin a digest this pipeline did not push."
+            exit 1
+          fi
+
+          echo "value=${digest}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "${image_ref} is ${digest}."
+
+      # Written to this job's checkout only. Nothing here is committed;
+      # pin-chart-digest owns the development-branch commit.
+      - name: Pin the chart image digest (packaged copy only)
+        env:
+          RELEASE_VERSION: ${{ steps.digest.outputs.version }}
+          IMAGE_DIGEST: ${{ steps.digest.outputs.value }}
+        run: |
+          set -euo pipefail
+          node scripts/pin-chart-image-digest.mjs \
+            --version "${RELEASE_VERSION}" \
+            --digest "${IMAGE_DIGEST}"
+
+      - name: Package and check the chart
+        id: package
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ steps.digest.outputs.version }}
+          IMAGE_DIGEST: ${{ steps.digest.outputs.value }}
+        run: |
+          set -euo pipefail
+          out_dir="${RUNNER_TEMP}/chart"
+          mkdir -p "${out_dir}"
+
+          helm lint chart/sockguard
+          helm package chart/sockguard --destination "${out_dir}"
+          package="${out_dir}/sockguard-${RELEASE_VERSION}.tgz"
+          if [ ! -f "${package}" ]; then
+            echo "::error::helm package did not produce ${package}; Chart.yaml version disagrees with the tag."
+            exit 1
+          fi
+
+          # Read the contract back out of the artifact that will be pushed,
+          # not out of the source tree.
+          helm show chart "${package}" > "${out_dir}/Chart.yaml"
+          helm show values "${package}" > "${out_dir}/values.yaml"
+          node scripts/assert-chart-release.mjs \
+            --tag "${RELEASE_TAG}" \
+            --digest "${IMAGE_DIGEST}" \
+            --chart "${out_dir}/Chart.yaml" \
+            --values "${out_dir}/values.yaml"
+
+          echo "path=${package}" >> "$GITHUB_OUTPUT"
+
+      - name: Push the chart to GHCR
+        id: push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_ACTOR: ${{ github.actor }}
+          CHART_PACKAGE: ${{ steps.package.outputs.path }}
+          RELEASE_VERSION: ${{ steps.digest.outputs.version }}
+        run: |
+          set -euo pipefail
+          retry_network() {
+            local attempt
+            for attempt in 1 2 3 4 5; do
+              if "$@"; then
+                return 0
+              fi
+              if [ "${attempt}" -eq 5 ]; then
+                return 1
+              fi
+              sleep 5
+            done
+          }
+
+          owner="$(printf '%s' "${GITHUB_REPOSITORY%%/*}" | tr '[:upper:]' '[:lower:]')"
+          registry="ghcr.io/${owner}/charts"
+          chart_ref="${registry}/sockguard"
+
+          printf '%s' "${GH_TOKEN}" | retry_network helm registry login ghcr.io \
+            --username "${GH_ACTOR}" --password-stdin
+
+          # A chart version is a release, not a moving tag. Refuse to push over
+          # one that is already published: a rerun after a partial publish
+          # needs a human to decide what the existing artifact is.
+          if helm show chart "oci://${chart_ref}" --version "${RELEASE_VERSION}" > /dev/null 2>&1; then
+            echo "::error::${chart_ref}:${RELEASE_VERSION} is already published; refusing to overwrite it."
+            exit 1
+          fi
+
+          push_log="$(mktemp)"
+          push_chart() {
+            helm push "${CHART_PACKAGE}" "oci://${registry}" 2>&1 | tee "${push_log}"
+          }
+          retry_network push_chart
+
+          # awk reads to EOF so the pipeline never dies on SIGPIPE.
+          digest="$(awk '$1 == "Digest:" { d = $2 } END { print d }' "${push_log}")"
+          if ! [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::helm push did not report a chart digest."
+            exit 1
+          fi
+
+          echo "ref=${chart_ref}" >> "$GITHUB_OUTPUT"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "Pushed ${chart_ref}:${RELEASE_VERSION} as ${digest}."
+
+      - name: Sign the chart
+        env:
+          CHART_REF: ${{ steps.push.outputs.ref }}
+          CHART_DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # Rekor can store an upload and still time out, and cosign then gets
+          # a 409 on the resend. A new cosign run signs with a fresh key and
+          # certificate, so a retry can't hit the same entry.
+          for attempt in 1 2 3; do
+            if cosign sign --yes "${CHART_REF}@${CHART_DIGEST}"; then
+              break
+            fi
+            if [ "${attempt}" -eq 3 ]; then
+              echo "::error::cosign sign failed after 3 attempts"
+              exit 1
+            fi
+            delay=$((attempt * 30))
+            echo "::warning::cosign sign attempt ${attempt} failed, retrying in ${delay}s"
+            sleep "${delay}"
+          done
+
+      - name: Verify the chart signature
+        env:
+          CHART_REF: ${{ steps.push.outputs.ref }}
+          CHART_DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          identity_regex="^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-from-tag.yml@refs/tags/.+$"
+          issuer="https://token.actions.githubusercontent.com"
+          for attempt in 1 2 3 4 5; do
+            if cosign verify \
+              --certificate-identity-regexp "${identity_regex}" \
+              --certificate-oidc-issuer "${issuer}" \
+              "${CHART_REF}@${CHART_DIGEST}" > /dev/null; then
+              exit 0
+            fi
+            if [ "${attempt}" -eq 5 ]; then
+              echo "::error::cosign verify of the chart failed after 5 attempts"
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: Summarize
+        if: always()
+        env:
+          CHART_REF: ${{ steps.push.outputs.ref }}
+          CHART_DIGEST: ${{ steps.push.outputs.digest }}
+          RELEASE_VERSION: ${{ steps.digest.outputs.version }}
+          IMAGE_DIGEST: ${{ steps.digest.outputs.value }}
+        run: |
+          {
+            echo "### Helm chart publish"
+            if [ -z "${CHART_DIGEST}" ]; then
+              echo "- Did not get as far as pushing the chart; see the failing step above."
+            else
+              echo "- Chart: \`oci://${CHART_REF}\` version \`${RELEASE_VERSION}\`"
+              echo "- Chart digest: \`${CHART_DIGEST}\` (cosign keyless signed)"
+              echo "- Pins image: \`${RELEASE_VERSION}@${IMAGE_DIGEST}\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
   verify-published:
     # QA-6 end-to-end signature verification: run the *exact* documented
     # cosign verify / cosign verify-blob commands from
@@ -1151,7 +1502,10 @@ jobs:
     name: "Release: Verify Published Artifacts (QA-6)"
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    needs: [release]
+    needs: [verify-ci, release, publish-chart]
+    # publish-chart is skipped for prereleases and maintenance lines, which is
+    # not a failure; a failed or cancelled one still blocks QA-6.
+    if: ${{ always() && needs.release.result == 'success' && (needs.publish-chart.result == 'success' || needs.publish-chart.result == 'skipped') }}
     permissions:
       contents: read   # gh release download
     steps:
@@ -1237,6 +1591,9 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
+          # The chart is published only when publish-chart ran (stable tag
+          # from the default branch), so verify it under the same condition.
+          VERIFY_CHART: ${{ needs.publish-chart.result == 'success' && 'true' || 'false' }}
         run: |
           set -euo pipefail
           retry_network() {
@@ -1252,17 +1609,24 @@ jobs:
             done
           }
 
-          retry_network scripts/verify-published-release.sh --tag "${RELEASE_TAG}"
+          verify_args=(--tag "${RELEASE_TAG}")
+          if [ "${VERIFY_CHART}" = "true" ]; then
+            verify_args+=(--chart)
+          fi
+
+          retry_network scripts/verify-published-release.sh "${verify_args[@]}"
 
       - name: Summarize
         if: always()
         env:
           RELEASE_TAG: ${{ github.ref_name }}
+          VERIFY_CHART: ${{ needs.publish-chart.result == 'success' && 'true' || 'false' }}
         run: |
           {
             echo "### QA-6: Published-artifact signature verification"
             echo "- Tag: \`${RELEASE_TAG}\`"
             echo "- Pulled \`ghcr.io\`, \`docker.io\`, \`quay.io\` image tags and ran the documented \`cosign verify\` against each"
+            echo "- Helm chart (\`oci://ghcr.io/codeswhat/charts/sockguard\`) verified with the documented \`cosign verify\`: ${VERIFY_CHART}"
             echo "- Downloaded the release tarball + .sigstore.json bundle and ran the documented \`cosign verify-blob\`"
             echo "- See \`docs/content/docs/verification.mdx\` for the canonical operator-facing invocation"
           } >> "$GITHUB_STEP_SUMMARY"

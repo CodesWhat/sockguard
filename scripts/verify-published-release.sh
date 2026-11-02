@@ -19,6 +19,10 @@
 # Usage:
 #   scripts/verify-published-release.sh [--dry-run] --tag <vX.Y.Z>
 #
+# --chart also verifies the Helm chart OCI artifact that publish-chart pushed
+# (stable tags from the default branch only). The workflow passes it only
+# when that job ran.
+#
 # --dry-run prints the resolved plan (registries, identity regex,
 # issuer, tarball download path) and exits 0 without contacting any
 # registry or GitHub release. The test seam
@@ -28,18 +32,21 @@
 set -euo pipefail
 
 DRY_RUN=0
+VERIFY_CHART=0
 RELEASE_TAG=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run)
       DRY_RUN=1; shift ;;
+    --chart)
+      VERIFY_CHART=1; shift ;;
     --tag)
       RELEASE_TAG="${2:-}"; shift 2 ;;
     --tag=*)
       RELEASE_TAG="${1#--tag=}"; shift ;;
     -h|--help)
-      sed -n '1,26p' "$0"; exit 0 ;;
+      sed -n '1,30p' "$0"; exit 0 ;;
     *)
       echo "verify-published-release.sh: unknown flag $1" >&2; exit 2 ;;
   esac
@@ -68,6 +75,10 @@ IMAGE_TAGS=(
   "docker.io/codeswhat/sockguard:${RELEASE_TAG#v}"
   "quay.io/codeswhat/sockguard:${RELEASE_TAG#v}"
 )
+
+# The Helm chart is an OCI artifact under the owner's charts namespace,
+# versioned like the release. The chart's version equals the tag version.
+CHART_REF="ghcr.io/${REPO_LOWER%%/*}/charts/sockguard:${RELEASE_TAG#v}"
 
 # Release-asset filenames produced by the goreleaser + tarball signing
 # steps in release-from-tag.yml. v2 uses the sigstore bundle format only.
@@ -105,6 +116,8 @@ verify-published-release.sh dry-run plan:
   issuer:             ${ISSUER}
   image tags to verify:
 $(printf '    - %s\n' "${IMAGE_TAGS[@]}")
+  helm chart to verify (only with --chart):
+    - ${CHART_REF}
   release assets to download + verify:
 $(printf '    - %s\n' "${RELEASE_ASSETS[@]}")
   cosign image command (per tag):
@@ -112,6 +125,11 @@ $(printf '    - %s\n' "${RELEASE_ASSETS[@]}")
       --certificate-identity-regexp '${IDENTITY_REGEX}' \\
       --certificate-oidc-issuer '${ISSUER}' \\
       <image>
+  cosign chart command (--chart only):
+    cosign verify \\
+      --certificate-identity-regexp '${IDENTITY_REGEX}' \\
+      --certificate-oidc-issuer '${ISSUER}' \\
+      ${CHART_REF}
   cosign blob command (run for the source tarball, the per-platform
   archive, and checksums.txt):
     cosign verify-blob \\
@@ -157,6 +175,12 @@ verify_image() {
 for image in "${IMAGE_TAGS[@]}"; do
   verify_image "${image}"
 done
+
+# A Helm chart is an OCI artifact, so the documented command is the same
+# cosign verify as the image's.
+if [ "${VERIFY_CHART}" -eq 1 ]; then
+  verify_image "${CHART_REF}"
+fi
 
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "${WORK_DIR}"' EXIT

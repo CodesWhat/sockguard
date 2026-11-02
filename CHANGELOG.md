@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Helm chart published as a signed OCI artifact.** From v3.0.0, a stable tag cut from the default branch pushes the chart to `oci://ghcr.io/codeswhat/charts/sockguard`, with its image reference pinned to the release's multi-arch digest, signed keyless like the image, and verified by the QA-6 published-artifact job. Release candidates and maintenance patches publish no chart.
+
 ## [2.4.3] - 2026-11-02
 
 v2.4.3 stops completed hijacked sessions from accumulating in the listener, rejects malformed keyless subject patterns, and adds Codecov reporting, docs corrections and Podman CI fixes. It carries v2.4.2.

@@ -77,6 +77,16 @@ brew upgrade --cask sockguard
 brew uninstall --cask sockguard
 ```
 
+### Helm
+
+From v3.0.0, each stable release publishes its Helm chart to GitHub Container Registry as a signed OCI artifact. Chart version, app version and release tag are the same number, and the chart's default image reference is pinned to that release's multi-arch image digest.
+
+```bash
+helm install sockguard oci://ghcr.io/codeswhat/charts/sockguard --version 3.0.0
+```
+
+Replace `3.0.0` with the release you want. Release candidates and maintenance patches (for example v2.4.x) do not publish a chart; for those, install from the `chart/sockguard` directory of the matching tag. The chart does not grant Docker socket access beyond what its values configure, so review `helm show values oci://ghcr.io/codeswhat/charts/sockguard --version 3.0.0` and set an explicit policy before installing. To check the chart's signature first, see [Verifying the Helm chart](/verification#verifying-the-helm-chart).
+
 ### Binary
 
 Download from [GitHub Releases](https://github.com/CodesWhat/sockguard/releases):
