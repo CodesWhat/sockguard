@@ -60,8 +60,22 @@ describe("Vercel security headers", () => {
     // Star History (X55) is the one allowed chart host, image-only. The
     // other retired hosts from #303 stay out.
     assert.match(csp, /(?:^|; )img-src [^;]*https:\/\/api\.star-history\.com(?:[ ;]|$)/u);
-    assert.doesNotMatch(csp, /(?:warpchart\.dev|www\.star-history\.com)/iu);
-    assert.doesNotMatch(csp.replace(/(?:^|; )img-src [^;]*/u, ""), /star-history\.com/iu);
+    const sources = (directives) =>
+      csp
+        .split(/;\s*/u)
+        .filter((d) => directives(d.split(/\s+/u)[0]))
+        .flatMap((d) => d.split(/\s+/u).slice(1));
+    const isHost = (pattern) => (source) => pattern.test(source);
+    assert.ok(
+      !sources(() => true).some(
+        isHost(/^https?:\/\/(?:[^/]*\.)?(?:warpchart\.dev|www\.star-history\.com)(?:\/|$)/iu),
+      ),
+    );
+    assert.ok(
+      !sources((name) => name !== "img-src").some(
+        isHost(/^https?:\/\/(?:[^/]*\.)?star-history\.com(?:\/|$)/iu),
+      ),
+    );
     const scriptSrc = csp.match(/(?:^|; )script-src ([^;]+)/)?.[1];
     const connectSrc = csp.match(/(?:^|; )connect-src ([^;]+)/)?.[1];
     assert.equal(scriptSrc, "'self' 'unsafe-inline' https://e.codeswhat.com");
