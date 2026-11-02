@@ -43,7 +43,7 @@
 <hr>
 
 > [!NOTE]
-> **v2.4.3 is the latest stable release.** It stops completed attach, exec and BuildKit sessions from piling up in the listener, rejects keyless subject patterns that are not a complete regexp, and fixes Podman nightly CI. It also adds Codecov coverage reporting and corrects the Podman and governance docs. It carries v2.4.3. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
+> **v2.4.3 is the latest stable release.** It stops completed attach, exec and BuildKit sessions from piling up in the listener, rejects keyless subject patterns that are not a complete regexp, and fixes Podman nightly CI. It also adds Codecov coverage reporting and corrects the Podman and governance docs. It carries v2.4.2. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
 <h2 align="center">Contents</h2>
 
