@@ -152,3 +152,21 @@ func TestHijackTrackingWriterFlushUnsupported(t *testing.T) {
 		t.Fatalf("Flush error = %v, want ErrNotSupported", got)
 	}
 }
+
+func TestHijackTrackingWriterFlushSucceeds(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w := &hijackTrackingWriter{ResponseWriter: rec}
+	if err := http.NewResponseController(w).Flush(); err != nil {
+		t.Fatalf("Flush error = %v, want nil", err)
+	}
+	if !rec.Flushed {
+		t.Fatal("recorder not flushed through ResponseController")
+	}
+
+	rec = httptest.NewRecorder()
+	w = &hijackTrackingWriter{ResponseWriter: rec}
+	http.Flusher(w).Flush()
+	if !rec.Flushed {
+		t.Fatal("recorder not flushed through plain Flusher")
+	}
+}

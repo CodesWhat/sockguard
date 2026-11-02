@@ -170,9 +170,7 @@ func (w *hijackTrackingWriter) FlushError() error {
 }
 
 func (w *hijackTrackingWriter) Flush() {
-	if f, ok := w.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
+	_ = w.FlushError()
 }
 
 func (w *hijackTrackingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
