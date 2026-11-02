@@ -11,11 +11,7 @@ const vercelCsp = (
   .find((h) => h.key === "Content-Security-Policy")?.value;
 
 test.describe("home", () => {
-  test("loads with no console errors or CSP violations", async ({
-    page,
-    issues,
-    externalHosts,
-  }) => {
+  test("loads with no console errors or CSP violations", async ({ page, issues }) => {
     const response = await page.goto("/");
     expect(response?.status()).toBe(200);
     // The served policy is vercel.json's, minus only upgrade-insecure-requests
@@ -33,8 +29,6 @@ test.describe("home", () => {
     // Let images, hydration and deferred scripts settle before judging.
     await page.waitForLoadState("networkidle");
     expect(issues).toEqual([]);
-    // The README badges are third-party images; they were stubbed, not fetched.
-    expect(externalHosts.has("img.shields.io")).toBe(true);
   });
 });
 

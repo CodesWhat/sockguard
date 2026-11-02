@@ -49,7 +49,13 @@ function plainHttp(key, value) {
 }
 
 function fileFor(pathname) {
-  const clean = normalize(decodeURIComponent(pathname)).replace(/\/+$/, "");
+  let decoded;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return undefined;
+  }
+  const clean = normalize(decoded).replace(/\/+$/, "");
   const candidates = [clean, `${clean}.html`, join(clean, "index.html")];
   for (const rel of candidates) {
     const abs = join(root, rel);
@@ -65,6 +71,11 @@ const server = createServer((req, res) => {
   const { pathname } = new URL(req.url ?? "/", "http://localhost");
   let status = 200;
   let file = pathname === "/" ? join(root, "index.html") : fileFor(pathname);
+  if (file === undefined) {
+    res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Bad Request");
+    return;
+  }
   if (!file) {
     status = 404;
     file = join(root, "404.html");

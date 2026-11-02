@@ -17,7 +17,7 @@ export default defineConfig({
   use: {
     baseURL: `http://127.0.0.1:${PORT}`,
     headless: true,
-    trace: "retain-on-failure",
+    trace: "on-first-retry",
     screenshot: "only-on-failure",
   },
   webServer: {
