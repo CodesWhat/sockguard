@@ -44,7 +44,7 @@ func FuzzNormalizeSubjectPublicKeySHA256Pin(f *testing.F) {
 		}
 		for i := 0; i < len(got); i++ {
 			c := got[i]
-			if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 				t.Fatalf("accepted %q as %q, non-lowercase-hex byte %q", raw, got, c)
 			}
 		}
