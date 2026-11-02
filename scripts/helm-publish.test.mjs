@@ -15,6 +15,7 @@ import { pinChartImageTag, readChartAppVersion } from "./pin-chart-image-digest.
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
 const read = (path) => readFileSync(resolve(repoRoot, path), "utf8");
+const words = (text) => text.split(/[\s"'`]+/u).filter(Boolean);
 
 const workflowJob = (workflow, name) => {
   const lines = workflow.split("\n");
@@ -114,13 +115,16 @@ describe("publish-chart job gating", () => {
     assert.match(job, /cosign sign --yes "\$\{CHART_REF\}@\$\{CHART_DIGEST\}"/);
     assert.match(job, /cosign verify \\/);
     assert.match(job, /release-from-tag\.yml@refs\/tags\/\.\+\$/);
-    assert.match(job, /token\.actions\.githubusercontent\.com/);
+    assert.ok(
+      words(job).some((w) => /^https:\/\/token\.actions\.githubusercontent\.com$/u.test(w)),
+      "verify must name the exact GitHub OIDC issuer",
+    );
   });
 
   it("uses block mode, a pinned runner action and retries on network steps", () => {
     assert.match(job, /egress-policy: block/);
-    assert.match(job, /get\.helm\.sh:443/);
-    assert.match(job, /ghcr\.io:443/);
+    assert.ok(words(job).includes("get.helm.sh:443"), "get.helm.sh:443 must be allowed");
+    assert.ok(words(job).includes("ghcr.io:443"), "ghcr.io:443 must be allowed");
     assert.match(job, /Checkout \(final retry\)/);
     assert.match(job, /retry_network curl/);
     for (const use of job.matchAll(/uses: ([^\s]+)/g)) {
@@ -219,7 +223,12 @@ describe("chart isolation from the image release", () => {
     );
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /chart only:\s+yes/);
-    assert.match(result.stdout, /ghcr\.io\/codeswhat\/charts\/sockguard:3\.0\.0/);
+    assert.ok(
+      result.stdout
+        .split(/\s+/u)
+        .some((w) => /^ghcr\.io\/codeswhat\/charts\/sockguard:3\.0\.0$/u.test(w)),
+      "dry-run must plan the exact chart ref",
+    );
   });
 
   it("the verify script's --chart still plans the chart alongside the images", () => {
