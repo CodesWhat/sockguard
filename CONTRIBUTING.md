@@ -30,7 +30,8 @@ Questions or ideas? Start a [GitHub Discussion](https://github.com/CodesWhat/soc
    ```
 
 5. **Create a branch** from the appropriate base:
-   - Branch from the active `dev/vX.Y` branch. `main` only advances through release promotion PRs.
+   - Current-line changes branch from the active `dev/vX.Y` branch. `main` only advances through release promotion PRs.
+   - Fixes for an older supported line branch from the matching `maintenance/X.Y.x` branch.
 
 ## Development setup
 
@@ -156,7 +157,7 @@ refactor(proxy): simplify middleware chain
 
 ## Pull requests
 
-- **Target branch:** the active `dev/vX.Y` branch
+- **Target branch:** the active `dev/vX.Y` branch, or the matching `maintenance/X.Y.x` branch for a fix to an older supported line
 - Keep commits focused and atomic — one concern per commit
 - Ensure all pre-push checks pass before opening a PR
 - Include tests for new functionality and bug fixes
