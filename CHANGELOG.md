@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **The Diun preset no longer breaks Diun's container list.** The default network-topology redaction rewrote published-port IPs to `<redacted>`, and Diun failed with `ParseAddr("<redacted>"): unable to parse IP` on any host with a published port. `app/configs/diun.yaml` now sets `response.redact_network_topology: false`.
+- **The Diun preset no longer breaks Diun's container list.** The default network-topology redaction rewrites `NetworkSettings.Networks[*].IPAddress`, `Gateway`, `GlobalIPv6Address`, `IPv6Gateway` and `MacAddress` (plus `NetworkMode` and network IDs) to the literal `<redacted>`, which typed Go Docker clients can't decode, so Diun failed with `ParseAddr("<redacted>"): unable to parse IP`. `app/configs/diun.yaml` now sets `response.redact_network_topology: false`, which also exposes `NetworkMode` and network IDs to Diun. A stable fix that writes type-valid empty values is in progress.
 
 ## [2.4.3] - 2026-11-02
 

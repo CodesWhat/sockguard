@@ -45,11 +45,14 @@ health:
   enabled: true
   path: /health
 
-# Diun parses the published-port IPs in the container list response. With the
-# default network-topology redaction those IPs read "<redacted>", and Diun's
-# ContainerList fails with "ParseAddr(\"<redacted>\"): unable to parse IP" on
-# any host that has a container with a published port. Mount paths and
-# container env stay redacted, Diun reads neither.
+# Network-topology redaction rewrites NetworkSettings.Networks[*].IPAddress,
+# Gateway, GlobalIPv6Address, IPv6Gateway and MacAddress (plus NetworkMode and
+# network IDs) to the literal "<redacted>". Typed Go Docker clients such as
+# Diun's can't decode that, so its ContainerList fails with
+# "ParseAddr(\"<redacted>\"): unable to parse IP". Turning redaction off also
+# exposes NetworkMode and network IDs to Diun. A stable fix that writes
+# type-valid empty values instead is in progress; this setting goes away then.
+# Mount paths and container env stay redacted, Diun reads neither.
 response:
   redact_network_topology: false
 
