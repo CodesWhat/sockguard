@@ -159,7 +159,7 @@ from source and a client-only request capture, not a live-daemon reproduction.
 
 ## Shipped in v2.4.2
 
-Every startup mode probes each upstream endpoint. Docker declarations cannot override positive Podman identity, and version probes do not follow redirects. Volume list/prune under isolation allow non-label filters only when every endpoint positively reports a released Podman 6.0.0 or later; old, unknown and prerelease versions remain restricted.
+Every startup mode probes each upstream endpoint. Docker declarations cannot override positive Podman identity, and version probes do not follow redirects. Volume lists under owner or label-based visibility isolation, and volume prune under owner isolation, allow non-label filters on Docker. Podman requires every endpoint to positively report a released version of 6.0.0 or later; old, unknown and prerelease Podman versions remain restricted. Visibility isolation does not scope volume prune.
 
 Owner and visibility isolation refuse native systemd generation until compound pod/container references can be checked. Owner isolation also refuses Quadlet installation/batch removal and artifact batch removal, in enforce, warn and audit modes. CI now enforces the production coverage floor locally, bounds and retries network operations, and uses the reviewed shared Ubuntu 26.04 workflows. Older supported maintenance releases preserve global latest channels and send chart pins through protected review.
 

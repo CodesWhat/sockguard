@@ -100,4 +100,10 @@ test("older supported maintenance releases cannot move global latest channels", 
     ),
   );
   assert.ok(goreleaser.includes("RELEASE_LATEST: $" + "{{ needs.verify-ci.outputs.latest }}"));
+  assert.ok(
+    release.includes(
+      "type=semver,pattern={{major}},enable=$" +
+        "{{ needs.verify-ci.outputs.major_latest == 'true' }}",
+    ),
+  );
 });

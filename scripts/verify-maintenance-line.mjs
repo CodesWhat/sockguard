@@ -31,6 +31,13 @@ export function verifyMaintenanceLine(tag, security) {
   if (matching.length !== 1 || matching[0][1] !== ":white_check_mark:") {
     throw new Error(`Default-branch SECURITY.md does not support maintenance ${line}.`);
   }
+  return (
+    !tag.includes("-") &&
+    !rows.some((row) => {
+      const version = row[0]?.replace(/\s*\(.*\)\s*$/u, "").match(/^(\d+)\.(\d+)\.x$/u);
+      return version && Number(version[1]) === major && Number(version[2]) > minor;
+    })
+  );
 }
 
 if (
@@ -38,7 +45,7 @@ if (
   realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))
 ) {
   try {
-    verifyMaintenanceLine(process.argv[2], readFileSync(0, "utf8"));
+    console.log(verifyMaintenanceLine(process.argv[2], readFileSync(0, "utf8")));
   } catch (error) {
     console.error(error.message);
     process.exit(1);

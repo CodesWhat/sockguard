@@ -27,6 +27,7 @@ jobs:
 
     outputs:
       latest: ${{ steps.source.outputs.latest }}
+      major_latest: ${{ steps.source.outputs.major_latest }}
 
     steps:
       # PKG-1: block mode. Hosts come from this job's harden-runner audit log
@@ -192,17 +193,20 @@ jobs:
 
           matched_branch="${matched_ref#refs/heads/}"
           latest=false
+          major_latest=false
           if [[ "${matched_branch}" == maintenance/* ]]; then
             if [ -z "${default_sha}" ]; then
               echo "::error::Cannot resolve default-branch support policy."
               exit 1
             fi
             git fetch --no-tags --depth=1 origin "${default_sha}"
-            git show "${default_sha}:SECURITY.md" | node scripts/verify-maintenance-line.mjs "${GITHUB_REF_NAME}"
+            major_latest="$(git show "${default_sha}:SECURITY.md" | node scripts/verify-maintenance-line.mjs "${GITHUB_REF_NAME}")"
           elif [[ "${GITHUB_REF_NAME}" != *-* ]]; then
             latest=true
+            major_latest=true
           fi
           echo "latest=${latest}" >> "$GITHUB_OUTPUT"
+          echo "major_latest=${major_latest}" >> "$GITHUB_OUTPUT"
           if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
             echo "Prerelease tag ${GITHUB_REF_NAME} points at ${matched_branch} HEAD ${GITHUB_SHA}."
           else
@@ -786,8 +790,8 @@ jobs:
             type=semver,pattern={{version}}
             # major.minor on stable only (e.g. 0.1)
             type=semver,pattern={{major}}.{{minor}},enable=${{ !contains(github.ref_name, '-') }}
-            # major on stable only (e.g. 0)
-            type=semver,pattern={{major}},enable=${{ !contains(github.ref_name, '-') }}
+            # major only from its newest recorded minor line (e.g. 2)
+            type=semver,pattern={{major}},enable=${{ needs.verify-ci.outputs.major_latest == 'true' }}
             # global latest only for stable releases from the default branch
             type=raw,value=latest,enable=${{ needs.verify-ci.outputs.latest == 'true' }}
 

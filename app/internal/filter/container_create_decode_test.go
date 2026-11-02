@@ -125,6 +125,7 @@ func TestContainerCreateRequestResetForReuseClearsEveryField(t *testing.T) {
 // ones: the hazard a recycled decode target introduces is a field the second
 // body never mentions still reading back the first body's value.
 var containerCreateDecodeCorpus = []string{
+	`{"HostConfig":{"Binds":[null],"DeviceCgroupRules":[null],"SecurityOpt":[null],"CapAdd":[null],"CapDrop":[null],"VolumesFrom":[null],"GroupAdd":[null],"ExtraHosts":[null]}}`,
 	`{"HostConfig":{"Tmpfs":{"/Run":"noexec","/run":"exec"}}}`,
 	`{"HostConfig":{"Tmpfs":null}}`,
 	`{}`,

@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [3.0.0-rc.4] - 2026-10-31
+## [3.0.0-rc.4] - 2026-11-02
 
 This candidate carries v2.4.2 and the release workflow fixes forward onto the v3 line, including the Podman isolation and dependency updates. The v3 TLS compatibility changes are unchanged. Fresh exact-source soak, TLS/security and published-image conformance are required before GA.
 
@@ -31,6 +31,8 @@ This candidate carries v2.4.2 and the release workflow fixes forward onto the v3
 - **Working branches no longer deploy website previews.** Vercel counts ignored builds toward the daily deployment quota, so `website/vercel.json` also sets `git.deploymentEnabled` to off for `feat/`, `fix/`, `docs/`, `ci/`, `chore/`, `test/`, `refactor/`, `build/`, `perf/`, `style/`, `revert/`, `dev/`, `release/`, `renovate/`, `dependabot/`, `codex/` and `claude/` branches. main still deploys production. A branch with any other prefix, such as `site/`, still gets a preview.
 
 ### Fixed
+
+- Stop the Podman 5/6 nightly from breaking when quay purges the rebuilt Fedora base image. The matrix now tracks the Fedora 44 and 45 major tags instead of digests that expire within a day.
 
 - Ignore inherited Git repository/index settings when inventorying generated files in the Go module checks, so a hook's alternate index cannot make a complete source tree appear empty.
 - **Release binary signing retries.** GoReleaser signs every archive with a parallel `cosign sign-blob`, and on 2.3.3's first attempt two of them raced on the Sigstore trust cache and the job failed. The release workflow now loads the trust root once before GoReleaser runs, and each signing call retries up to three times with a fresh key.
@@ -80,9 +82,17 @@ This first v3 candidate includes the v2.3 frontend mediation and v2.4 policy/sec
 
 ## [2.4.2] - 2026-10-31
 
-v2.4.2 tightens Podman engine identification and unscoped native routes, permits safe volume filters on verified Podman 6+ endpoints, and carries the CI reliability and maintenance-release fixes. It carries v2.4.1.
+v2.4.2 tightens Podman engine identification and unscoped native routes, permits safe volume filters on verified Podman 6+ endpoints, and carries frontend cleanup, CI reliability and maintenance-release fixes. It carries v2.4.1.
 
 ### Security
+
+- Apply container name and image visibility patterns to Docker and native Podman exec-session inspection.
+
+- Redact image environment variables from current and legacy configuration fields.
+
+- Apply the existing host IPC, host PID and all-device grants consistently to plugin pull and upgrade privilege requests.
+
+- Tighten plugin-create archive validation and reject ambiguous configuration entries.
 
 - Update Rekor to v1.5.5 and its required dependency graph, replacing the vulnerable chi v5.3.1 and OpenTelemetry SDK v1.44.0 checksums with fixed releases. These packages enter through dependency tests and are absent from the shipped binary.
 
@@ -90,9 +100,23 @@ v2.4.2 tightens Podman engine identification and unscoped native routes, permits
 
 ### Changed
 
+- Extract container-create ownership reference collectors without changing resource kinds, refusal reasons, case-alias handling, deduplication or sorted endpoint order.
+
+- Run the native API integration suites against Podman 5 and 6 from Fedora 44 and 45, in addition to the distro rootful/rootless jobs. Verify the live daemon major and wait for a settled socket after pulling the test image, retain version/results/log artifacts, and clean up each nested engine. Probe before repairing permissions so a socket rebind resets the success streak.
+
 - Consolidated `/health` response encoding while preserving upstream/listener/probe precedence, response bodies and write-failure logging.
 
 ### Fixed
+
+- Prevent older maintenance minors from moving a floating major image tag backward, while retaining major-tag security updates for that major's newest recorded minor line. Clarify Docker/Podman volume-filter scopes and chart-pin recovery, including resolving a matching digest after the development chart advances.
+
+- Preserve native integration test failures through the results pipeline. Keep cgroups enabled in the nested test engine so host-PID pod positive controls exercise a supported daemon configuration.
+
+- Fail integration tests when an explicitly configured Docker or Podman socket is missing. Optional local runs still skip when no engine is configured.
+
+- Clear reused container-create string arrays before decoding another request, so null elements cannot retain policy values from an earlier request.
+
+- Wait within the existing cleanup deadline for asynchronous frontend-container removal to finish. A surviving container or failed absence query still returns a cleanup error. A timed-out query preserves the inspection failure instead of claiming that a previously observed container survived.
 
 - Refuse native Podman systemd generation under owner or visibility isolation until compound pod/container references can be checked. Owner isolation also refuses Quadlet and artifact writes, including per-name removal and artifact add/pull/push. Owner isolation and visibility refuse their inventory, existence, inspect, file and extraction reads. Named query targets, namespaced artifacts and warn/audit rollout modes cannot bypass these refusals.
 

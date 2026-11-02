@@ -41,8 +41,7 @@ type libpodContainerInspectResponse struct {
 }
 
 // podmanSocketForIntegration returns the real Podman socket path from
-// podmanSocketEnvVar, skipping the test cleanly when it is unset or the
-// socket is unreachable — the same pattern dockerSocketForIntegration uses,
+// podmanSocketEnvVar, skipping the test cleanly only when it is unset,
 // so `go test ./...` without the podmanintegration build tag (and even with
 // it, off the dedicated CI job) stays green.
 func podmanSocketForIntegration(t *testing.T) string {
@@ -54,9 +53,6 @@ func podmanSocketForIntegration(t *testing.T) string {
 	}
 
 	if _, err := os.Stat(socketPath); err != nil {
-		if os.IsNotExist(err) {
-			t.Skipf("podman socket %q not found; set %s to override", socketPath, podmanSocketEnvVar)
-		}
 		t.Fatalf("stat podman socket %q: %v", socketPath, err)
 	}
 

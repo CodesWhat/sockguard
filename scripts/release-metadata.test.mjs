@@ -285,17 +285,19 @@ test("release docs keep Helm metadata lockstep and use a two-stage digest flow",
   );
   assert.match(
     releasing,
-    /After the release images are live, pin `image\.tag` to `<appVersion>@sha256:<digest>` in the active development branch\./u,
+    /After the release images are live, pin `image\.tag` to `<appVersion>@sha256:<digest>`\./u,
   );
   assert.match(
     releasing,
-    /`release-from-tag\.yml`'s `pin-chart-digest` job does this on every stable tag/u,
+    /`release-from-tag\.yml` `pin-chart-digest` job runs on every stable tag/u,
   );
-  assert.match(releasing, /It commits to the development branch and never to `main`/u);
+  assert.match(releasing, /Development-line pins commit to the active development branch/u);
   assert.match(
     releasing,
-    /the job prints a version-skew warning, writes nothing, and stays green/u,
+    /Maintenance pins use `chore\/chart-pin-<version>` and a reviewed PR targeting the matching `maintenance\/X\.Y\.x` branch/u,
   );
+  assert.match(releasing, /Neither path commits to `main`/u);
+  assert.match(releasing, /the job logs version skew, writes nothing, and stays green/u);
   assert.match(
     releasing,
     /`node scripts\/pin-chart-image-digest\.mjs --version <version> --digest <digest>`/u,
