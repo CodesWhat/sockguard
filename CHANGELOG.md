@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Correct the Podman docs to say volume prune permits extra filter keys under owner isolation only, and the governance doc to describe the `dev/vX.Y` to `main` promotion flow.
 - Stop the Podman 5/6 nightly from breaking when quay purges the rebuilt Fedora base image. The matrix now tracks the Fedora 44 and 45 major tags instead of digests that expire within a day.
 
 ## [2.4.2] - 2026-10-31

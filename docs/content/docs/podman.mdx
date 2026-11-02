@@ -970,7 +970,7 @@ Leave `upstream.flavor` on `auto` unless an upstream proxy cannot identify its e
 
 The [Server header](https://github.com/containers/podman/blob/v6.0.0/pkg/api/server/handler_api.go) advertises a native API level. Only the release in the [Podman Engine component](https://github.com/containers/podman/blob/v6.0.0/pkg/api/handlers/compat/version.go) supplies the version evidence for volume capabilities; a header alone cannot grant them.
 
-Volume list and prune permit additional filter keys under owner or label-based visibility isolation only when every endpoint positively reports a released Podman version of 6.0.0 or later. Podman before 6.0 ORs different volume filter keys; old, unknown and prerelease versions therefore retain the label-only restriction. A failover set containing any such endpoint remains restricted. Event semantics are separate and retain the limits below. The engine and capabilities are fixed at startup, so restart Sockguard as part of an upstream engine/version change.
+Volume list permits additional filter keys under owner or label-based visibility isolation, and volume prune permits them under owner isolation, only when every endpoint positively reports a released Podman version of 6.0.0 or later. Podman before 6.0 ORs different volume filter keys; old, unknown and prerelease versions therefore retain the label-only restriction. A failover set containing any such endpoint remains restricted. Event semantics are separate and retain the limits below. The engine and capabilities are fixed at startup, so restart Sockguard as part of an upstream engine/version change.
 
 Two endpoints are the exception, and they need `upstream.flavor: podman` set
 (or left on `auto`, which probes for it) to be handled correctly. Podman
