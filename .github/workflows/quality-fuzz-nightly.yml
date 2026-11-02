@@ -129,6 +129,7 @@ jobs:
           - { name: FuzzTlogEntryFromAnnotation,      pkg: ./internal/imagefetch/ }
           - { name: FuzzPemCertToDER,                 pkg: ./internal/imagefetch/ }
           - { name: FuzzBuildBundle,                  pkg: ./internal/imagefetch/ }
+          - { name: FuzzDockerfileInspect,            pkg: ./internal/dockerfileinspect/ }
 
     steps:
       # audit, not block. `block` on this job is what kills 3 to 5 legs a
