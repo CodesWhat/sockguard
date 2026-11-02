@@ -311,6 +311,18 @@ jobs:
           cache: true
           cache-dependency-path: app/compat/go.sum
 
+      # -mod=readonly below fails with an opaque "updates to go.mod needed"
+      # when the root module moves (Renovate bumps it) and this nested module
+      # lags. Check drift first so the failure names the fix.
+      - name: Check app/compat go.mod is tidy
+        working-directory: app/compat
+        run: |
+          go mod tidy
+          if ! git diff --exit-code -- go.mod go.sum; then
+            echo "::error file=app/compat/go.mod::app/compat is out of sync with the root module. Run 'go mod tidy' in app/compat and commit go.mod and go.sum."
+            exit 1
+          fi
+
       - name: Decode redacted responses into client types
         working-directory: app/compat
         env:

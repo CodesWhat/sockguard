@@ -236,16 +236,100 @@ func TestRedactedResponsesDecodeIntoClientTypes(t *testing.T) {
 	}
 }
 
+// expectedRedactions names, per endpoint, fields the filter must change with
+// every flag on. A path is dot-separated; "[]" takes the first array element
+// and "*" the only value of a map. Derived from responsefilter/filter.go.
+var expectedRedactions = map[string][]string{
+	"container inspect": {"Config.Env", "Mounts.[].Source", "LogPath", "NetworkSettings.Networks.*.IPAddress", "NetworkSettings.SandboxKey"},
+	"container list":    {"[].Mounts.[].Source", "[].NetworkSettings.Networks.*.IPAddress"},
+	"image inspect":     {"Config.Env"},
+	"network list":      {"[].IPAM.Config"},
+	"network inspect":   {"IPAM.Config"},
+	"volume list":       {"Volumes.[].Mountpoint"},
+	"volume inspect":    {"Mountpoint"},
+	"plugin list":       {"[].Settings.Env", "[].Config.PropagatedMount"},
+	"plugin inspect":    {"Settings.Env", "Config.PropagatedMount"},
+	"system df":         {"VolumeUsage.Items.[].Mountpoint", "ContainerUsage.Items.[].Mounts.[].Source"},
+	"info manager":      {"Swarm.NodeAddr", "Swarm.NodeID", "Containerd"},
+	"info worker":       {"Swarm.NodeAddr", "Swarm.NodeID", "Containerd"},
+	"service list":      {"[].Spec.TaskTemplate.ContainerSpec.Env", "[].Endpoint.VirtualIPs"},
+	"service inspect":   {"Spec.TaskTemplate.ContainerSpec.Env", "Endpoint.VirtualIPs"},
+	"task list":         {"[].Spec.ContainerSpec.Env", "[].NodeID"},
+	"task inspect":      {"Spec.ContainerSpec.Env", "NodeID"},
+	"node list":         {"[].Status.Addr", "[].ManagerStatus.Addr"},
+	"node inspect":      {"Status.Addr", "ManagerStatus.Addr"},
+	"swarm inspect":     {"JoinTokens.Worker", "JoinTokens.Manager"},
+	"swarm unlock key":  {"UnlockKey"},
+	"config list":       {"[].Spec.Data"},
+	"config inspect":    {"Spec.Data"},
+	"secret list":       {"[].Spec.Data"},
+	"secret inspect":    {"Spec.Data"},
+}
+
+// valueAt walks a decoded JSON document along path. ok is false when a segment
+// is absent, which for the redacted body means the filter removed the field.
+func valueAt(doc any, path string) (any, bool) {
+	cur := doc
+	for _, seg := range strings.Split(path, ".") {
+		switch node := cur.(type) {
+		case []any:
+			if seg != "[]" || len(node) == 0 {
+				return nil, false
+			}
+			cur = node[0]
+		case map[string]any:
+			if seg == "*" {
+				if len(node) != 1 {
+					return nil, false
+				}
+				for _, v := range node {
+					cur = v
+				}
+				continue
+			}
+			v, ok := node[seg]
+			if !ok {
+				return nil, false
+			}
+			cur = v
+		default:
+			return nil, false
+		}
+	}
+	return cur, true
+}
+
 // TestRedactionRewritesEveryEndpoint keeps the decode test honest: with every
-// flag on the filter must change each fixture, otherwise the decode would pass
-// over an endpoint the filter silently stopped handling.
+// flag on, each endpoint must change the fields the filter targets there,
+// otherwise the decode would pass over an endpoint the filter silently stopped
+// handling. Values are compared decoded, so re-encoding alone cannot satisfy it.
 func TestRedactionRewritesEveryEndpoint(t *testing.T) {
 	all := policies()[0].opts
 	for _, ep := range endpoints {
+		paths, ok := expectedRedactions[ep.name]
+		if !ok {
+			t.Errorf("%s: no expected redactions listed", ep.name)
+			continue
+		}
 		src := fixtureSources(ep)[0]
 		fixture := generate(t, ep, src.typ)
-		if out := redact(t, all, ep.path, fixture); bytes.Equal(out, fixture) {
-			t.Errorf("%s: filter left the fixture untouched with every flag on", ep.name)
+		out := redact(t, all, ep.path, fixture)
+		var before, after any
+		if err := json.Unmarshal(fixture, &before); err != nil {
+			t.Fatalf("%s: decode fixture: %v", ep.name, err)
+		}
+		if err := json.Unmarshal(out, &after); err != nil {
+			t.Fatalf("%s: decode output: %v", ep.name, err)
+		}
+		for _, path := range paths {
+			was, present := valueAt(before, path)
+			if !present {
+				t.Errorf("%s: fixture has no %s; fix the expectation table", ep.name, path)
+				continue
+			}
+			if now, present := valueAt(after, path); present && reflect.DeepEqual(was, now) {
+				t.Errorf("%s: %s unchanged with every flag on (%v)", ep.name, path, was)
+			}
 		}
 	}
 }
