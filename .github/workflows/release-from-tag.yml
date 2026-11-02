@@ -98,7 +98,7 @@ jobs:
       - name: Setup Node (for release metadata check)
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
           # This job's checkout is what release-cut.yml pushed and what
           # downstream jobs (goreleaser, docker publish) build from -- a
           # poisoned npm cache restored here sits on the same critical path
@@ -293,7 +293,7 @@ jobs:
       - name: Setup Node (for release scripts)
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
           # This job publishes real release notes for a tagged release —
           # unlike ci-verify.yml, nothing here runs with --skip=publish.
           # A poisoned dependency cache restored here could compromise a
@@ -1521,7 +1521,7 @@ jobs:
       - name: Setup Node (for release scripts)
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
-          node-version: 24
+          node-version: 26
           # This job writes a commit to a protected-flow branch, so the same
           # cache-poisoning reasoning the changelog and verify-ci jobs record
           # applies: setup-node auto-enables npm caching because the root
