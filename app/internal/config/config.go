@@ -752,6 +752,17 @@ type LibpodContainerCreateRequestBodyConfig struct {
 	// Same name as container_create.allow_log_path, and neither opens the
 	// other's route. Default false.
 	AllowLogPath bool `mapstructure:"allow_log_path"`
+
+	// AllowedRuntimes, AllowDeviceCgroupRules, AllowedDeviceCgroupRules,
+	// AllowDeviceRequests and DenyUnconfinedSystemPaths are the libpod
+	// spellings of the same-named container_create fields, gating
+	// oci_runtime, device_cgroup_rule, gpus and unmask. Defaults match the
+	// Docker side: runtimes, cgroup rules and gpus denied, unmask allowed.
+	AllowedRuntimes           []string `mapstructure:"allowed_runtimes"`
+	AllowDeviceCgroupRules    bool     `mapstructure:"allow_device_cgroup_rules"`
+	AllowedDeviceCgroupRules  []string `mapstructure:"allowed_device_cgroup_rules"`
+	AllowDeviceRequests       bool     `mapstructure:"allow_device_requests"`
+	DenyUnconfinedSystemPaths bool     `mapstructure:"deny_unconfined_system_paths"`
 }
 
 // ImageTrustConfig configures cosign signature verification for images

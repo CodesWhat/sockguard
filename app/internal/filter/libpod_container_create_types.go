@@ -2,6 +2,7 @@ package filter
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 )
 
@@ -92,6 +93,51 @@ type libpodContainerCreateRequest struct {
 	Sysctl             map[string]string `json:"sysctl"`
 	ReadOnlyFilesystem bool              `json:"read_only_filesystem"`
 	Systemd            string            `json:"systemd"`
+
+	// The libpod spellings of fields container_create gates or denies on the
+	// Docker side: volumes_from (HostConfig.VolumesFrom), cgroup_parent
+	// (CgroupParent), groups (GroupAdd), hostadd (ExtraHosts), oci_runtime
+	// (Runtime), device_cgroup_rule (DeviceCgroupRules), gpus (the
+	// DeviceRequests a GPU passthrough rides on) and unmask (the
+	// MaskedPaths/ReadonlyPaths half of systempaths=unconfined). Names and
+	// shapes are pinned to Podman v5.8.1 and v6.1.4 pkg/specgen/specgen.go;
+	// gpus exists from v6 only. See denyDockerParityReason.
+	VolumesFrom      []string                 `json:"volumes_from"`
+	CgroupParent     string                   `json:"cgroup_parent"`
+	Groups           []string                 `json:"groups"`
+	HostAdd          []string                 `json:"hostadd"`
+	OCIRuntime       string                   `json:"oci_runtime"`
+	DeviceCgroupRule []libpodDeviceCgroupRule `json:"device_cgroup_rule"`
+	GPUs             []string                 `json:"gpus"`
+	Unmask           []string                 `json:"unmask"`
+}
+
+// libpodDeviceCgroupRule is one entry of "device_cgroup_rule", the OCI
+// runtime-spec LinuxDeviceCgroup object. Podman ignores allow and always
+// grants (oci_linux.go AddLinuxResourcesDevice(true, ...)), so every entry is
+// treated as an allow rule. A nil major or minor is the wildcard.
+type libpodDeviceCgroupRule struct {
+	Type   string `json:"type"`
+	Major  *int64 `json:"major"`
+	Minor  *int64 `json:"minor"`
+	Access string `json:"access"`
+}
+
+// docker renders the rule in Docker's "<type> <major>:<minor> <perms>" string
+// form so it can be checked by the same code as HostConfig.DeviceCgroupRules.
+// An empty type is the runtime spec's "all".
+func (r libpodDeviceCgroupRule) docker() string {
+	devType := strings.TrimSpace(r.Type)
+	if devType == "" {
+		devType = "a"
+	}
+	num := func(n *int64) string {
+		if n == nil {
+			return "*"
+		}
+		return strconv.FormatInt(*n, 10)
+	}
+	return devType + " " + num(r.Major) + ":" + num(r.Minor) + " " + strings.TrimSpace(r.Access)
 }
 
 // libpodLogConfiguration mirrors SpecGenerator's "log_configuration" object

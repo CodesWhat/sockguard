@@ -1256,9 +1256,16 @@ land):
   tracked as its own follow-up rather than folded in here.
 - Podman remote/SSH transport (`podman --remote` over SSH rather than a
   local/proxied socket) is out of scope.
-- `AllowedRuntimes` has no libpod equivalent — `request_body.container_create.allowed_runtimes`
-  gates the Docker-compat `HostConfig.Runtime` field, but
-  `libpod_container_create` has no matching hook today.
+- `request_body.libpod_container_create.allowed_runtimes` gates `oci_runtime`
+  the way `request_body.container_create.allowed_runtimes` gates
+  `HostConfig.Runtime`. The same block gates the other libpod spellings of
+  fields the compat create refuses: `volumes_from`, `cgroup_parent`, `groups`
+  and `hostadd` are always denied, `device_cgroup_rule`, `gpus` and `unmask`
+  follow `allow_device_cgroup_rules`/`allowed_device_cgroup_rules`,
+  `allow_device_requests` and `deny_unconfined_system_paths`. A client that
+  passes `--volumes-from`, `--cgroup-parent`, `--group-add` or `--add-host`
+  through an allowed `/libpod/containers/create` is now denied, as it already
+  was through `/containers/create`.
 - **There is no owner-scoped form of the collection stats reads to offer you.**
   `GET /libpod/containers/stats` and `GET /libpod/pods/stats` are refused
   outright under owner isolation or a visibility policy, so a single-tenant

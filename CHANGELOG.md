@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`POST /libpod/containers/create` now gates the libpod spellings of fields the Docker create refuses.** `volumes_from`, `cgroup_parent`, `groups` and `hostadd` are denied unconditionally, as `VolumesFrom`, a custom `CgroupParent`, `GroupAdd` and `ExtraHosts` already were on `/containers/create`. `oci_runtime` is checked against the new `request_body.libpod_container_create.allowed_runtimes`, `device_cgroup_rule` against `allow_device_cgroup_rules`/`allowed_device_cgroup_rules`, `gpus` against `allow_device_requests` and `unmask` against `deny_unconfined_system_paths`, all under the same names, defaults and denial reasons as the compat create. **Podman users who relied on `--volumes-from`, `--cgroup-parent`, `--group-add` or `--add-host` through an allowed libpod create will now be denied, matching Docker.** `oci_runtime`, `device_cgroup_rule` and `gpus` are also denied until their option is set.
+
 ## [2.4.3] - 2026-11-02
 
 v2.4.3 stops completed hijacked sessions from accumulating in the listener, rejects malformed keyless subject patterns, and adds Codecov reporting, docs corrections and Podman CI fixes. It carries v2.4.2.
