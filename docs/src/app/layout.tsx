@@ -6,8 +6,10 @@ import type { CSSProperties } from "react";
 import { AnalyticsPageview } from "@/components/analytics-pageview";
 import { Footer } from "@/components/footer";
 import { MobileDocsBar } from "@/components/mobile-docs-bar";
+import { SearchButton } from "@/components/search-button";
 import { SidebarBrand } from "@/components/sidebar-brand";
 import { SiteHeader } from "@/components/site-header";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { BASE_PATH, BASE_URL, SITE_CONFIG } from "@/lib/site-config";
 import { source } from "@/lib/source";
 import "./globals.css";
@@ -106,7 +108,22 @@ export default function RootLayout({
               nav={{ component: <MobileDocsBar /> }}
               themeSwitch={{ enabled: false }}
               searchToggle={{ enabled: false }}
-              sidebar={{ collapsible: false, banner: <SidebarBrand /> }}
+              sidebar={{
+                collapsible: false,
+                banner: (
+                  <>
+                    <SidebarBrand />
+                    <div className="sb-s">
+                      <SearchButton />
+                    </div>
+                  </>
+                ),
+                footer: (
+                  <div className="sb-f">
+                    <ThemeToggle />
+                  </div>
+                ),
+              }}
               containerProps={{
                 style: { "--fd-docs-row-1": "var(--site-header-h)" } as CSSProperties,
               }}

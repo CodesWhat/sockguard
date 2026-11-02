@@ -1,8 +1,6 @@
 import Image from "next/image";
 import { HeaderMenu } from "@/components/header-menu";
 import { Icon } from "@/components/icon";
-import { SearchButton } from "@/components/search-button";
-import { ThemeToggle } from "@/components/theme-toggle";
 import { TrackedAnchor } from "@/components/tracked-anchor";
 import { BASE_PATH, GITHUB_URL, SITE_CONFIG } from "@/lib/site-config";
 
@@ -42,8 +40,6 @@ export function SiteHeader() {
             GitHub
           </TrackedAnchor>
         </nav>
-        <SearchButton />
-        <ThemeToggle />
         <HeaderMenu />
       </div>
     </header>
