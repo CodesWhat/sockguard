@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -41,9 +42,11 @@ import (
 // image pull/create/export/build/push, plugin create/pull/push/upgrade,
 // container export/get, container archive i.e. docker cp, websocket attach,
 // the BuildKit tunnel endpoints POST /session and POST /grpc, and the blocking
-// container wait, container and pod stop/restart, the prune endpoints and
-// /system/df) are exempt, because a deadline would sever a legitimately
-// long response.
+// container wait and the prune endpoints) are exempt, because a deadline
+// would sever a legitimately long response. Container and pod stop/restart
+// skip the response-header deadline but get a request deadline of
+// max(timeout, grace+30s), grace being the clamped (at most 1h) ?t= value
+// (default 10s). GET /system/df skips only the response-header deadline.
 // Hijacked endpoints
 // (attach, exec start) never reach this handler: HijackHandler short-circuits
 // them earlier in the chain.
@@ -60,11 +63,16 @@ func WithRequestTimeoutForFlavor(next http.Handler, timeout time.Duration, podma
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isLongLivedUpstreamRequestForFlavor(w, r, podmanUpstream) {
+		mode, grace := upstreamExemptionForFlavor(w, r, podmanUpstream)
+		if mode == exemptFull {
 			next.ServeHTTP(w, r)
 			return
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		deadline := timeout
+		if mode == exemptGraceBound {
+			deadline = graceBoundDeadline(timeout, grace)
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -72,15 +80,18 @@ func WithRequestTimeoutForFlavor(next http.Handler, timeout time.Duration, podma
 
 // WithUpstreamDeadlines applies both upstream time bounds to next: the total
 // per-request deadline (WithRequestTimeoutForFlavor) and the response-header
-// deadline. Long-lived requests skip both; the header deadline lives on the
-// transport, so those requests are marked with upstream.MarkLongLived for the
-// resolver to route over its header-deadline-free transport. The mark is set
-// even when the request timeout is disabled, because the header deadline is a
-// separate setting.
+// deadline. Requests with any exemption skip the header deadline; the header
+// deadline lives on the transport, so those requests are marked with
+// upstream.MarkLongLived for the resolver to route over its
+// header-deadline-free transport. The mark is set even when the request
+// timeout is disabled, because the header deadline is a separate setting.
+// The total deadline is skipped only for fully exempt requests; stop/restart
+// get a deadline derived from their grace period and /system/df keeps the
+// configured request timeout.
 func WithUpstreamDeadlines(next http.Handler, requestTimeout time.Duration, podmanUpstream bool) http.Handler {
 	bounded := WithRequestTimeoutForFlavor(next, requestTimeout, podmanUpstream)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isLongLivedUpstreamRequestForFlavor(w, r, podmanUpstream) {
+		if mode, _ := upstreamExemptionForFlavor(w, r, podmanUpstream); mode != exemptNone {
 			r = r.WithContext(upstream.MarkLongLived(r.Context()))
 		}
 		bounded.ServeHTTP(w, r)
@@ -96,6 +107,104 @@ func isLongLivedUpstreamRequest(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func isLongLivedUpstreamRequestForFlavor(w http.ResponseWriter, r *http.Request, podmanUpstream bool) bool {
+	mode, _ := upstreamExemptionForFlavor(w, r, podmanUpstream)
+	return mode == exemptFull
+}
+
+// upstreamExemption says which upstream deadlines a request skips.
+type upstreamExemption int
+
+const (
+	// exemptNone: both the response-header and request deadlines apply.
+	exemptNone upstreamExemption = iota
+	// exemptHeaderOnly: skips the response-header deadline; the configured
+	// request timeout still applies (GET /system/df).
+	exemptHeaderOnly
+	// exemptGraceBound: skips the response-header deadline; the request
+	// deadline is derived from the stop grace period (stop/restart).
+	exemptGraceBound
+	// exemptFull: skips both deadlines.
+	exemptFull
+)
+
+const (
+	// defaultStopGrace is Docker's and Podman's default stop timeout.
+	defaultStopGrace = 10 * time.Second
+	// maxStopGrace caps a client-supplied grace period.
+	maxStopGrace = time.Hour
+	// stopGraceSlack covers the kill and teardown after the grace expires.
+	stopGraceSlack = 30 * time.Second
+)
+
+// graceBoundDeadline returns max(configured, grace+slack).
+func graceBoundDeadline(configured, grace time.Duration) time.Duration {
+	if d := grace + stopGraceSlack; d > configured {
+		return d
+	}
+	return configured
+}
+
+// stopGraceFromQuery parses the stop grace period from the request's t (Docker
+// and libpod pod) and timeout (libpod container) query params. Absent or
+// unparseable values use the 10s default; negative (wait forever in Docker) and
+// oversized values clamp to maxStopGrace. When both keys parse, the larger wins.
+func stopGraceFromQuery(r *http.Request) time.Duration {
+	var best time.Duration
+	found := false
+	for queryKey, values := range logging.RequestQuery(r) {
+		if len(values) == 0 || (!strings.EqualFold(queryKey, "t") && !strings.EqualFold(queryKey, "timeout")) {
+			continue
+		}
+		n, err := strconv.ParseInt(strings.TrimSpace(values[len(values)-1]), 10, 64)
+		if err != nil {
+			if !errors.Is(err, strconv.ErrRange) {
+				continue
+			}
+			// Out of int64 range: treat like any oversized value.
+			n = -1
+		}
+		var d time.Duration
+		switch {
+		case n < 0 || n > int64(maxStopGrace/time.Second):
+			d = maxStopGrace
+		default:
+			d = time.Duration(n) * time.Second
+		}
+		if !found || d > best {
+			best, found = d, true
+		}
+	}
+	if !found {
+		return defaultStopGrace
+	}
+	return best
+}
+
+// upstreamExemptionForFlavor classifies r. For exemptGraceBound it also
+// returns the clamped stop grace period.
+func upstreamExemptionForFlavor(w http.ResponseWriter, r *http.Request, podmanUpstream bool) (upstreamExemption, time.Duration) {
+	if r != nil && r.Method == http.MethodPost {
+		path := requestNormalizedPath(w, r)
+		path = strings.TrimPrefix(path, "/libpod")
+		if matchContainerAction(path, "stop") || matchContainerAction(path, "restart") ||
+			matchPodAction(path, "stop") || matchPodAction(path, "restart") {
+			return exemptGraceBound, stopGraceFromQuery(r)
+		}
+	}
+	if r != nil && r.Method == http.MethodGet {
+		path := requestNormalizedPath(w, r)
+		path = strings.TrimPrefix(path, "/libpod")
+		if path == "/system/df" {
+			return exemptHeaderOnly, 0
+		}
+	}
+	if longLivedClassification(w, r, podmanUpstream) {
+		return exemptFull, 0
+	}
+	return exemptNone, 0
+}
+
+func longLivedClassification(w http.ResponseWriter, r *http.Request, podmanUpstream bool) bool {
 	if r == nil {
 		return false
 	}
@@ -109,10 +218,6 @@ func isLongLivedUpstreamRequestForFlavor(w http.ResponseWriter, r *http.Request,
 	case http.MethodGet:
 		switch {
 		case path == "/events":
-			return true
-		case path == "/system/df":
-			// GET /system/df (and /libpod/system/df) walks every image,
-			// container and volume and sends no headers until it is done.
 			return true
 		case nativeLibpod && (matchContainerAction(path, "top") || matchPodAction(path, "top")):
 			return podmanBoolValue(r, "stream")
@@ -168,12 +273,6 @@ func isLongLivedUpstreamRequestForFlavor(w http.ResponseWriter, r *http.Request,
 			return true
 		case matchContainerAction(path, "wait"):
 			// /containers/{id}/wait blocks until the container exits.
-			return true
-		case matchContainerAction(path, "stop") || matchContainerAction(path, "restart") ||
-			matchPodAction(path, "stop") || matchPodAction(path, "restart"):
-			// stop/restart send no headers until the container has stopped,
-			// which can take the whole ?t= grace period (docker stop -t 90),
-			// and Docker and libpod share the shape.
 			return true
 		case isPrunePath(path):
 			// Prune walks and deletes arbitrarily many objects before it

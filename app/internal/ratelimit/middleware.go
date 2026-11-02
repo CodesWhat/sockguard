@@ -61,7 +61,8 @@ const defaultCapacityRetryAfter = "1"
 // ThrottleResponse is the JSON body returned on every 429 throttle response.
 // RetryAfterSeconds is included only for rate-limit denials (where the bucket
 // math yields a meaningful wait time); concurrency and priority-floor denials
-// omit it because the available capacity depends on other clients finishing.
+// omit it from the body because the available capacity depends on other
+// clients finishing, but still send a Retry-After: 1 header.
 type ThrottleResponse struct {
 	// Message is the Docker error-contract field; docker-py and moby read it.
 	Message           string `json:"message"`
