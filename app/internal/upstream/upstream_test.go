@@ -1958,7 +1958,7 @@ func TestResolver_OnChange_NoFire_WhenSameState(t *testing.T) {
 func TestEndpoint_NewTransport_PoolTunings(t *testing.T) {
 	t.Parallel()
 	ep := Endpoint{Name: "ep", Network: "unix", Address: "/tmp/pool.sock"}
-	tr := ep.newTransport()
+	tr := ep.newTransport(defaultResponseHeaderTimeout)
 
 	if got, want := tr.MaxIdleConns, defaultMaxIdleConns; got != want {
 		t.Errorf("MaxIdleConns = %d, want %d", got, want)
@@ -2130,4 +2130,45 @@ func doRoundTrip(t *testing.T, r *Resolver, _ string) string {
 		t.Fatalf("read body: %v", err)
 	}
 	return string(body)
+}
+
+func TestNewTransportResponseHeaderTimeout(t *testing.T) {
+	t.Parallel()
+	ep := Endpoint{Network: "unix", Address: "/tmp/x.sock"}
+	if got := ep.newTransport(defaultResponseHeaderTimeout).ResponseHeaderTimeout; got != 30*time.Second {
+		t.Fatalf("default ResponseHeaderTimeout = %v, want 30s", got)
+	}
+	cases := []struct {
+		name string
+		opt  time.Duration
+		want time.Duration
+	}{
+		{"zero uses default", 0, 30 * time.Second},
+		{"explicit", 90 * time.Second, 90 * time.Second},
+		{"negative disables", -1, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r, err := New([]Endpoint{ep}, Options{Interval: -1, ResponseHeaderTimeout: tc.opt})
+			if err != nil {
+				t.Fatal(err)
+			}
+			st := r.states[0]
+			if got := st.transport.ResponseHeaderTimeout; got != tc.want {
+				t.Errorf("bounded transport = %v, want %v", got, tc.want)
+			}
+			if got := st.longTransport.ResponseHeaderTimeout; got != 0 {
+				t.Errorf("long-lived transport = %v, want 0", got)
+			}
+			plain := httptest.NewRequest(http.MethodGet, "/x", nil)
+			if st.transportFor(plain) != st.transport {
+				t.Error("unmarked request should use the bounded transport")
+			}
+			marked := plain.WithContext(MarkLongLived(plain.Context()))
+			if st.transportFor(marked) != st.longTransport {
+				t.Error("marked request should use the long-lived transport")
+			}
+		})
+	}
 }
