@@ -139,6 +139,9 @@ export function Hero() {
               </a>
             </li>
           </ul>
+          <p className="pasof micro">
+            Stars, pulls and forks: snapshot of {PROOF_SNAPSHOT.checkedAt}
+          </p>
           <ul className="pbadges" aria-label="Project badges">
             {BADGES.map((b) => (
               <li key={b.alt}>
