@@ -1,28 +1,31 @@
-import { Check, Minus, X } from "lucide-react";
+import { Icon } from "@/components/icon";
 
 export type CellValue = "yes" | "partial" | "no";
 
+// A "No" is a danger chip carrying the word, not a grey X: a missing
+// capability is the point of the matrix, so it has to read at a glance and
+// not lean on colour alone.
 export function ComparisonCellIcon({ value }: { value: CellValue }) {
-  if (value === "yes") {
+  if (value === "no") {
     return (
-      <>
-        <Check className="mx-auto h-4 w-4 text-amber-500" aria-hidden="true" />
-        <span className="sr-only">Yes</span>
-      </>
+      <span className="chip t-danger nocase">
+        <Icon name="x" />
+        No
+      </span>
     );
   }
   if (value === "partial") {
     return (
-      <>
-        <Minus className="mx-auto h-4 w-4 text-orange-400" aria-hidden="true" />
-        <span className="sr-only">Partial</span>
-      </>
+      <span className="part">
+        <Icon name="minus" />
+        <span className="sr">Partial</span>
+      </span>
     );
   }
   return (
-    <>
-      <X className="mx-auto h-4 w-4 text-neutral-400 dark:text-neutral-600" aria-hidden="true" />
-      <span className="sr-only">No</span>
-    </>
+    <span className="yes">
+      <Icon name="check" />
+      <span className="sr">Yes</span>
+    </span>
   );
 }

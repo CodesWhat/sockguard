@@ -5,7 +5,7 @@ import { BASE_URL, SITE_CONFIG } from "@/lib/site-config";
 
 export const metadata: Metadata = {
   // absolute: this title already carries the brand; opt out of the root template.
-  title: { absolute: "Sockguard vs Alternatives — Docker Socket Proxy Comparisons" },
+  title: { absolute: "Sockguard vs Alternatives: Docker Socket Proxy Comparisons" },
   description:
     "Compare Sockguard to Tecnativa, LinuxServer, wollomatic, 11notes, and CetusGuard. Feature-by-feature breakdowns for Docker socket proxy tools.",
   keywords: [
@@ -20,7 +20,7 @@ export const metadata: Metadata = {
     "docker socket proxy signed policies",
   ],
   openGraph: {
-    title: "Sockguard vs Alternatives — Docker Socket Proxy Comparisons",
+    title: "Sockguard vs Alternatives: Docker Socket Proxy Comparisons",
     description:
       "Compare Sockguard to Tecnativa, LinuxServer, wollomatic, 11notes, and CetusGuard. Feature-by-feature breakdowns.",
     url: `${BASE_URL}/compare`,
@@ -31,7 +31,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "Sockguard vs Alternatives — Docker Socket Proxy Comparisons",
+    title: "Sockguard vs Alternatives: Docker Socket Proxy Comparisons",
     description:
       "Compare Sockguard to Tecnativa, LinuxServer, wollomatic, 11notes, and CetusGuard.",
     creator: SITE_CONFIG.twitterCreator,
@@ -56,7 +56,7 @@ export default function ComparePage() {
     "@graph": [
       {
         "@type": "CollectionPage",
-        name: "Sockguard vs Alternatives — Docker Socket Proxy Comparisons",
+        name: "Sockguard vs Alternatives: Docker Socket Proxy Comparisons",
         description:
           "Compare Sockguard to Tecnativa, LinuxServer, wollomatic, 11notes, and CetusGuard.",
         url: `${BASE_URL}/compare`,
@@ -98,22 +98,20 @@ export default function ComparePage() {
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
       />
       <MarketingShell>
-        {/* Hero */}
-        <section className="px-4 pt-16 pb-12">
-          <div className="mx-auto max-w-4xl text-center">
-            <h1 className="mb-4 text-4xl font-bold tracking-tight text-neutral-900 sm:text-5xl dark:text-neutral-100">
+        <section className="cmp-hero" aria-labelledby="cmp-ix-h1">
+          <div className="wrap">
+            <h1 className="cp" id="cmp-ix-h1">
               Sockguard vs Alternatives
             </h1>
-            <p className="mx-auto max-w-2xl text-lg text-neutral-600 dark:text-neutral-400">
+            <p className="cp-sub">
               We built Sockguard to go further than any existing Docker socket proxy. Click any tool
               to see exactly how we compare.
             </p>
           </div>
         </section>
 
-        {/* Full comparison matrix */}
-        <section className="px-4 pb-24">
-          <div className="mx-auto max-w-5xl">
+        <section className="cmp-ix">
+          <div className="wrap">
             <CompareMatrix />
           </div>
         </section>

@@ -4,6 +4,8 @@ import test from "node:test";
 import { SITE_CONFIG } from "../lib/site-config.ts";
 import { roadmap } from "../lib/site-content.ts";
 import {
+  COMPETITOR_VERSIONS,
+  COMPETITOR_VERSIONS_CHECKED_AT,
   comparisonCell,
   comparisonRows,
   MATRIX_FEATURES,
@@ -198,6 +200,40 @@ test("route pages and the compare matrix agree on Sockguard's column", () => {
   }
   assert.ok(checked > 20, `expected substantial overlap with the rows, checked ${checked}`);
   assert.equal(comparisonCell("Per-client policies", "sockguard"), "yes");
+});
+
+test("the versions-checked line is the same on the site and in the README", () => {
+  // WEB-6: the site said 2026-09-05 while README.md said 2026-10-02. The site
+  // constant is the one date the compare pages show, so the README line must
+  // carry the same date and the same competitor versions.
+  const readme = readFileSync(new URL("../../../README.md", import.meta.url), "utf8");
+  const line = readme.split("\n").find((candidate) => candidate.includes("Versions checked"));
+  assert.ok(line, "README.md must carry a Versions checked line");
+  assert.ok(
+    line.includes(`Versions checked ${COMPETITOR_VERSIONS_CHECKED_AT}:`),
+    `README date differs from COMPETITOR_VERSIONS_CHECKED_AT (${COMPETITOR_VERSIONS_CHECKED_AT})`,
+  );
+  for (const [tool, version] of Object.entries(COMPETITOR_VERSIONS)) {
+    assert.ok(line.includes(` ${version}`), `README line is missing ${tool} ${version}`);
+  }
+});
+
+test("each compare page names itself an alternative in its title, H1 and lead", () => {
+  const dir = new URL("../lib/comparison-route-data/", import.meta.url);
+  const routeFiles = readdirSync(dir).filter((name) => name.endsWith(".tsx"));
+  assert.equal(routeFiles.length, 5);
+  for (const name of routeFiles) {
+    const source = readFileSync(new URL(name, dir), "utf8");
+    assert.match(source, /metadataTitle: "[^"]*alternative/, `${name} title`);
+    assert.match(source, /heroTitle: "[^"]*alternative/, `${name} H1`);
+    assert.match(
+      source,
+      /heroDescription: \(\s*<p>[\s\S]*?alternative[\s\S]*?<\/p>/,
+      `${name} lead`,
+    );
+    const head = source.slice(source.indexOf("metadataTitle"), source.indexOf("migrationTitle"));
+    assert.ok(!head.includes("\u2014"), `${name} title, description or lead has an em dash`);
+  }
 });
 
 test("roadmap data is valid and matches expected milestones", () => {

@@ -1,4 +1,3 @@
-import { Activity, Fingerprint, Key, Layers, Shield, Users2 } from "lucide-react";
 import type { ComparisonRouteRawConfig } from "@/lib/comparison-route-data/types";
 
 export const cetusguardComparisonRouteData = {
@@ -11,7 +10,7 @@ Multiple frontend listeners|Yes|Yes (Unix and/or TCP, listener-scoped TLS + prof
 Podman native libpod API|Yes|Yes (default-deny /libpod coverage)|tie
 Config simplicity|Compact rule files|Full YAML config|competitor
 Request body inspection|No|Yes (12+ resource types)|self
-Per-client policies|No|CIDR + labels + cert selectors + SPKI + unix peer|self
+Per-client policies|No|Yes (CIDR + labels + cert selectors incl. SPKI + unix peer)|self
 Read-side redaction|No|Yes (visibility rules + JSON field redaction)|self
 Signed policy bundles|No|Yes (cosign keyed + keyless, Rekor)|self
 Container image trust|No|Yes (cosign + enforce / warn modes)|self
@@ -29,16 +28,16 @@ activity|Prometheus Metrics|Sockguard exports socket-proxy request metrics, deny
 layers|Rollout Modes|Sockguard's per-profile rollout modes (enforce / warn / audit) let you shadow-test strict rules before they block anything. CetusGuard is enforce-only.
 `,
   highlightIconMap: {
-    shield: Shield,
-    users: Users2,
-    key: Key,
-    fingerprint: Fingerprint,
-    activity: Activity,
-    layers: Layers,
+    shield: "shield-check",
+    users: "users-three",
+    key: "key",
+    fingerprint: "fingerprint",
+    activity: "heartbeat",
+    layers: "stack",
   },
-  metadataTitle: "CetusGuard vs Sockguard — Docker Socket Proxy Comparison",
+  metadataTitle: "CetusGuard alternative: Sockguard vs CetusGuard",
   metadataDescription:
-    "Compare CetusGuard and Sockguard. CetusGuard pioneered regex-based Docker socket filtering with two-way mTLS — see how Sockguard adds request body inspection, per-client policies, signed bundles, and Prometheus metrics.",
+    "Sockguard as a CetusGuard alternative. CetusGuard pioneered regex-based Docker socket filtering with two-way mTLS; Sockguard adds request body inspection, per-client policies, signed bundles, and Prometheus metrics.",
   metadataKeywords: [
     "cetusguard vs sockguard",
     "cetusguard alternative",
@@ -52,22 +51,24 @@ layers|Rollout Modes|Sockguard's per-profile rollout modes (enforce / warn / aud
     "CetusGuard pioneered regex-based filtering with two-way mTLS. See how Sockguard adds body inspection, per-client policies, signed bundles, and Prometheus metrics.",
   twitterDescription: "Compare CetusGuard and Sockguard for Docker socket filtering.",
   competitorName: "CetusGuard",
-  heroTitle: "CetusGuard vs Sockguard",
+  competitorTool: "cetusguard",
+  heroTitle: "Sockguard: a CetusGuard alternative",
   heroDescription: (
     <p>
-      CetusGuard pioneered regex-based Docker socket filtering with two-way mTLS — a genuinely
-      stronger security baseline than ENV-var proxies. Sockguard matches the mTLS listener and adds{" "}
-      <strong className="text-neutral-900 dark:text-neutral-200">
+      Sockguard is a CetusGuard alternative that keeps the mTLS baseline. CetusGuard pioneered
+      regex-based Docker socket filtering with two-way mTLS, a genuinely stronger security baseline
+      than ENV-var proxies. Sockguard matches the mTLS listener and adds{" "}
+      <strong>
         request body inspection, per-client certificate selectors, signed policy bundles, and
         Prometheus metrics
       </strong>
-      . Sockguard now ships remote daemon TLS too — with health-checked active/passive failover
-      across redundant endpoints, which CetusGuard doesn't have.
+      . Sockguard now ships remote daemon TLS too, with health-checked active/passive failover
+      across redundant endpoints, which CetusGuard doesn&apos;t have.
     </p>
   ),
   migrationTitle: "Coming from CetusGuard?",
   migrationDescription:
     "Your regex path rules translate into Sockguard's glob rule blocks, since Sockguard matches paths with a glob dialect compiled to specialised matchers, literal, match-all, trailing-deep or per-segment, with regex only as the fallback, rather than with operator-supplied regex, and your mTLS keypairs carry over. Sockguard's listener requires TLS 1.3 where CetusGuard accepted TLS 1.2, so upgrade any client that can't negotiate 1.3 before cutover. Then swap the image and enable body inspection and per-client profiles at your own pace.",
-  jsonLdName: "CetusGuard vs Sockguard — Docker Socket Proxy Comparison",
-  jsonLdDescription: "Compare CetusGuard and Sockguard for Docker socket filtering.",
+  jsonLdName: "CetusGuard alternative: Sockguard vs CetusGuard",
+  jsonLdDescription: "Sockguard as a CetusGuard alternative.",
 } satisfies ComparisonRouteRawConfig;

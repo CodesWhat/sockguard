@@ -1,4 +1,3 @@
-import { Activity, Fingerprint, Key, Layers, Shield, Users2 } from "lucide-react";
 import type { ComparisonRouteRawConfig } from "@/lib/comparison-route-data/types";
 
 export const wollomaticComparisonRouteData = {
@@ -10,7 +9,7 @@ Structured logging|Yes (JSON option)|Yes (request + W3C trace correlation)|tie
 Bind-mount restriction|Yes (body inspection)|Yes (bind + structured mount policy)|tie
 Config simplicity|ENV vars, no file needed|YAML config required|competitor
 Request body inspection (full)|Partial (bind mounts only)|Yes (12+ resource types)|self
-Per-client policies|Partial (IP/hostname + labels)|Full (CIDR + labels + cert selectors + SPKI + unix peer)|self
+Per-client policies|Partial (IP/hostname + labels)|Yes (CIDR + labels + cert selectors incl. SPKI + unix peer)|self
 Signed policy bundles|No|Yes (cosign keyed + keyless, Rekor)|self
 Container image trust|No|Yes (cosign + enforce / warn modes)|self
 Prometheus metrics|No|Yes (opt-in, socket-proxy request metrics)|self
@@ -27,16 +26,16 @@ activity|Prometheus Metrics|Sockguard exports socket-proxy request metrics, deny
 layers|Rollout Modes|Sockguard's per-profile rollout modes (enforce / warn / audit) let you shadow-test strict rules before they block anything. wollomatic is enforce-only.
 `,
   highlightIconMap: {
-    shield: Shield,
-    users: Users2,
-    key: Key,
-    fingerprint: Fingerprint,
-    activity: Activity,
-    layers: Layers,
+    shield: "shield-check",
+    users: "users-three",
+    key: "key",
+    fingerprint: "fingerprint",
+    activity: "heartbeat",
+    layers: "stack",
   },
-  metadataTitle: "wollomatic socket-proxy vs Sockguard — Docker Socket Proxy Comparison",
+  metadataTitle: "wollomatic socket-proxy alternative: Sockguard vs wollomatic",
   metadataDescription:
-    "Compare wollomatic socket-proxy and Sockguard. wollomatic ships regex path rules, bind-mount restrictions, and an upstream watchdog — see how Sockguard adds full body inspection, per-client cert selectors, signed bundles, and Prometheus metrics.",
+    "Sockguard as a wollomatic socket-proxy alternative. wollomatic ships regex path rules, bind-mount restrictions, and an upstream watchdog; Sockguard adds full body inspection, per-client cert selectors, signed bundles, and Prometheus metrics.",
   metadataKeywords: [
     "wollomatic socket-proxy vs sockguard",
     "wollomatic alternative",
@@ -49,13 +48,14 @@ layers|Rollout Modes|Sockguard's per-profile rollout modes (enforce / warn / aud
     "wollomatic ships regex rules, bind-mount restrictions, and a watchdog. See how Sockguard adds full body inspection, cert selectors, signed bundles, and Prometheus metrics.",
   twitterDescription: "Compare wollomatic socket-proxy and Sockguard for Docker socket filtering.",
   competitorName: "wollomatic",
-  heroTitle: "wollomatic vs Sockguard",
+  competitorTool: "wollomatic",
+  heroTitle: "Sockguard: a wollomatic socket-proxy alternative",
   heroDescription: (
     <p>
-      wollomatic&apos;s socket-proxy ships regex path rules, bind-mount restrictions, and an
-      upstream watchdog — genuinely useful additions over the ENV-var baseline. Sockguard builds on
-      the same ideas and goes further:{" "}
-      <strong className="text-neutral-900 dark:text-neutral-200">
+      Weighing a wollomatic socket-proxy alternative? wollomatic ships regex path rules, bind-mount
+      restrictions, and an upstream watchdog, which are genuinely useful additions over the ENV-var
+      baseline. Sockguard builds on the same ideas and goes further:{" "}
+      <strong>
         full request body inspection across 12+ resource types, per-client certificate selectors,
         signed policy bundles, and Prometheus metrics
       </strong>
@@ -65,6 +65,6 @@ layers|Rollout Modes|Sockguard's per-profile rollout modes (enforce / warn / aud
   migrationTitle: "Coming from wollomatic?",
   migrationDescription:
     "Your regex path rules translate into Sockguard's glob rule blocks, since Sockguard matches paths with a glob dialect compiled to specialised matchers, literal, match-all, trailing-deep or per-segment, with regex only as the fallback, rather than with operator-supplied regex. Body inspection rules replace the bind-mount filter with full coverage. The upstream watchdog is built in — and you get a /health endpoint and Prometheus metrics on top.",
-  jsonLdName: "wollomatic socket-proxy vs Sockguard — Docker Socket Proxy Comparison",
-  jsonLdDescription: "Compare wollomatic socket-proxy and Sockguard for Docker socket filtering.",
+  jsonLdName: "wollomatic socket-proxy alternative: Sockguard vs wollomatic",
+  jsonLdDescription: "Sockguard as a wollomatic socket-proxy alternative.",
 } satisfies ComparisonRouteRawConfig;

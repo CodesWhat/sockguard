@@ -1,11 +1,10 @@
-import type { LucideIcon } from "lucide-react";
-import { AlertTriangle, Check, Clock, Minus, X } from "lucide-react";
-import { CtaButtons } from "@/components/cta-buttons";
-import { DockerRunSnippet } from "@/components/docker-run-snippet";
+import type { ComparisonTool } from "@/app/data/comparison-rows";
+import { COMPETITOR_VERSIONS, COMPETITOR_VERSIONS_CHECKED_AT } from "@/app/data/comparison-rows";
+import { ComparisonCellIcon } from "@/components/comparison-cell-icon";
+import { Icon, type IconName } from "@/components/icon";
 import { MarketingShell } from "@/components/marketing-shell";
-import { Badge } from "@/components/ui/badge";
-import { Card, CardContent } from "@/components/ui/card";
-import { SITE_CONFIG } from "@/lib/site-config";
+import { TrackedLink } from "@/components/tracked-link";
+import { GITHUB_URL, SITE_CONFIG } from "@/lib/site-config";
 
 export type ComparisonRow = {
   feature: string;
@@ -15,23 +14,16 @@ export type ComparisonRow = {
 };
 
 export type Highlight = {
-  icon: LucideIcon;
+  icon: IconName;
   title: string;
   description: string;
 };
 
-type CompetitorBadge = {
-  icon: LucideIcon;
-  label: string;
-  className: string;
-};
-
 type Props = {
   competitorName: string;
+  competitorTool: Exclude<ComparisonTool, "sockguard">;
   heroTitle: string;
   heroDescription: React.ReactNode;
-  competitorBadge: CompetitorBadge;
-  selfBadge: CompetitorBadge;
   comparisonData: ComparisonRow[];
   highlights: Highlight[];
   migrationTitle: string;
@@ -39,25 +31,62 @@ type Props = {
   jsonLd: Record<string, unknown>;
 };
 
-function VerdictIcon({ verdict }: { verdict: ComparisonRow["verdict"] }) {
-  if (verdict === "self" || verdict === "competitor") {
-    return <Check className="h-4 w-4 text-amber-500" />;
+const isNo = (value: string) => value === "No" || value === "None";
+
+type Tone = "good" | "gap" | "tie";
+
+function CompetitorCell({ row, name }: { row: ComparisonRow; name: string }) {
+  if (isNo(row.competitor)) {
+    return (
+      <span className="v">
+        <ComparisonCellIcon value="no" />
+        <span className="sr">{name} does not offer this</span>
+      </span>
+    );
   }
-  return <Minus className="h-4 w-4 text-neutral-400" />;
+  const tone: Tone = row.verdict === "competitor" ? "good" : row.verdict === "self" ? "gap" : "tie";
+  return <VerdictCell tone={tone} text={row.competitor} />;
+}
+
+function SelfCell({ row }: { row: ComparisonRow }) {
+  const tone: Tone = row.verdict === "self" ? "good" : row.verdict === "competitor" ? "gap" : "tie";
+  return <VerdictCell tone={tone} text={row.self} />;
+}
+
+const TONE_LABEL: Record<Tone, string> = {
+  good: "Stronger: ",
+  gap: "Weaker: ",
+  tie: "On par: ",
+};
+
+const TONE_ICON: Record<Tone, IconName> = {
+  good: "check",
+  gap: "warning",
+  tie: "minus",
+};
+
+function VerdictCell({ tone, text }: { tone: Tone; text: string }) {
+  return (
+    <span className={`v ${tone}`}>
+      <Icon name={TONE_ICON[tone]} />
+      <span className="sr">{TONE_LABEL[tone]}</span>
+      <span>{text}</span>
+    </span>
+  );
 }
 
 export function ComparisonPage({
   competitorName,
+  competitorTool,
   heroTitle,
   heroDescription,
-  competitorBadge,
-  selfBadge,
   comparisonData,
   highlights,
   migrationTitle,
   migrationDescription,
   jsonLd,
 }: Props) {
+  const regionLabel = `${competitorName} vs ${SITE_CONFIG.name} feature table. Scroll sideways if it does not fit.`;
   return (
     <>
       <script
@@ -65,181 +94,154 @@ export function ComparisonPage({
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
       />
       <MarketingShell>
-        {/* Hero */}
-        <section className="px-4 pt-16 pb-16">
-          <div className="mx-auto max-w-4xl text-center">
-            <h1 className="mb-6 text-4xl font-bold tracking-tight text-neutral-900 dark:text-neutral-100 sm:text-5xl lg:text-6xl">
+        <section className="cmp-hero cs" aria-labelledby="cmp-h1">
+          <div className="wrap">
+            <h1 className="cp long" id="cmp-h1">
               {heroTitle}
             </h1>
-
-            <div className="mx-auto mb-8 max-w-2xl text-lg text-neutral-600 dark:text-neutral-400">
-              {heroDescription}
-            </div>
-
-            <div className="flex flex-wrap items-center justify-center gap-3">
-              <Badge className={competitorBadge.className}>
-                <competitorBadge.icon className="mr-1.5 h-3.5 w-3.5" />
-                {competitorBadge.label}
-              </Badge>
-              <Badge className={selfBadge.className}>
-                <selfBadge.icon className="mr-1.5 h-3.5 w-3.5" />
-                {selfBadge.label}
-              </Badge>
+            <div className="cp-sub">{heroDescription}</div>
+            <div className="badges2">
+              <span className="chip t-info nocase">
+                <Icon name="check" />
+                {competitorName}: Active
+              </span>
+              <span className="chip t-primary nocase">
+                <Icon name="check" />
+                {SITE_CONFIG.name}: Active
+              </span>
             </div>
           </div>
         </section>
 
-        {/* Comparison Table */}
-        <section className="px-4 py-16">
-          <div className="mx-auto max-w-5xl">
-            <div className="mb-12 text-center">
-              <h2 className="mb-4 text-3xl font-bold tracking-tight text-neutral-900 sm:text-4xl dark:text-neutral-50">
+        <section className="cs" aria-labelledby="cmp-ft">
+          <div className="wrap">
+            <div className="sec-h">
+              <h2 className="title" id="cmp-ft">
                 Feature Comparison
               </h2>
-              <p className="mx-auto max-w-2xl text-neutral-600 dark:text-neutral-400">
-                Here&apos;s how we compare on the features that matter most.
-              </p>
+              <p className="sub">Here&apos;s how we compare on the features that matter most.</p>
             </div>
-
-            <div className="overflow-x-auto rounded-xl border border-neutral-200 bg-white/50 backdrop-blur-sm dark:border-neutral-800 dark:bg-neutral-900/50">
-              <table className="w-full min-w-[600px] text-sm">
-                <thead>
-                  <tr className="border-b border-neutral-200 dark:border-neutral-800">
-                    <th className="px-4 py-3 text-left font-semibold text-neutral-900 sm:px-6 dark:text-neutral-100">
-                      Feature
-                    </th>
-                    <th className="px-4 py-3 text-left font-semibold text-neutral-500 sm:px-6 dark:text-neutral-400">
-                      {competitorName}
-                    </th>
-                    <th className="px-4 py-3 text-left font-semibold text-neutral-900 sm:px-6 dark:text-neutral-100">
-                      {SITE_CONFIG.name}
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {comparisonData.map((row, i) => (
-                    <tr
-                      key={row.feature}
-                      className={
-                        i < comparisonData.length - 1
-                          ? "border-b border-neutral-100 dark:border-neutral-800/50"
-                          : ""
-                      }
-                    >
-                      <td className="px-4 py-3 font-medium text-neutral-900 sm:px-6 dark:text-neutral-100">
-                        {row.feature}
-                      </td>
-                      <td className="px-4 py-3 text-neutral-500 sm:px-6 dark:text-neutral-400">
-                        <span className="flex items-center gap-2">
-                          {row.competitor === "No" || row.competitor === "None" ? (
-                            <X className="h-4 w-4 shrink-0 text-neutral-300 dark:text-neutral-600" />
-                          ) : row.verdict === "self" ? (
-                            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
-                          ) : row.verdict === "competitor" ? (
-                            <Check className="h-4 w-4 shrink-0 text-amber-500" />
-                          ) : (
-                            <VerdictIcon verdict="tie" />
-                          )}
-                          {row.competitor}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 sm:px-6">
-                        <span className="flex items-center gap-2 text-neutral-900 dark:text-neutral-100">
-                          {row.verdict === "self" ? (
-                            <Check className="h-4 w-4 shrink-0 text-amber-500" />
-                          ) : row.verdict === "competitor" ? (
-                            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
-                          ) : (
-                            <VerdictIcon verdict="tie" />
-                          )}
-                          {row.self}
-                        </span>
-                      </td>
+            <div className="mx">
+              {/* biome-ignore lint/a11y/noNoninteractiveTabindex: a horizontally scrollable region must be keyboard reachable */}
+              <section className="scroll" tabIndex={0} aria-label={regionLabel}>
+                <table className="cmp vs mxt">
+                  <caption className="sr">
+                    {competitorName} vs {SITE_CONFIG.name}: {comparisonData.length} features
+                  </caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Feature</th>
+                      <th scope="col">{competitorName}</th>
+                      <th scope="col" className="me">
+                        {SITE_CONFIG.name}
+                      </th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {comparisonData.map((row) => (
+                      <tr key={row.feature}>
+                        <th scope="row">{row.feature}</th>
+                        <td>
+                          <CompetitorCell row={row} name={competitorName} />
+                        </td>
+                        <td className="me">
+                          <SelfCell row={row} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </section>
             </div>
+            <p className="src">
+              Claims on this page were checked {COMPETITOR_VERSIONS_CHECKED_AT} against{" "}
+              {competitorName} {COMPETITOR_VERSIONS[competitorTool]}. Re-checked at every release
+              cut.
+            </p>
           </div>
         </section>
 
-        {/* Key Differentiators */}
-        <section className="px-4 py-16">
-          <div className="mx-auto max-w-5xl">
-            <div className="mb-12 text-center">
-              <h2 className="mb-4 text-3xl font-bold tracking-tight text-neutral-900 sm:text-4xl dark:text-neutral-50">
+        <section className="cs" aria-labelledby="cmp-d">
+          <div className="wrap">
+            <div className="sec-h">
+              <h2 className="title" id="cmp-d">
                 Key Differentiators
               </h2>
-              <p className="mx-auto max-w-2xl text-neutral-600 dark:text-neutral-400">
-                What we built that {competitorName} doesn&apos;t cover.
-              </p>
+              <p className="sub">What we built that {competitorName} doesn&apos;t cover.</p>
             </div>
-
-            <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+            <ul className="cards3">
               {highlights.map((item) => (
-                <Card
-                  key={item.title}
-                  className="border-neutral-200 bg-white/50 backdrop-blur-sm dark:border-neutral-800 dark:bg-neutral-900/50"
-                >
-                  <CardContent className="pt-6">
-                    <div className="mb-4 flex items-center gap-3">
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-amber-100 dark:bg-amber-900/50">
-                        <item.icon className="h-5 w-5 text-amber-500 dark:text-amber-400" />
-                      </div>
-                      <h3 className="font-semibold text-neutral-900 dark:text-neutral-100">
-                        {item.title}
-                      </h3>
-                    </div>
-                    <p className="text-sm text-neutral-600 dark:text-neutral-400">
-                      {item.description}
-                    </p>
-                  </CardContent>
-                </Card>
+                <li key={item.title} className="hc">
+                  <div className="hh">
+                    <span className="tn">
+                      <Icon name={item.icon} />
+                    </span>
+                    <h3>{item.title}</h3>
+                  </div>
+                  <p>{item.description}</p>
+                </li>
               ))}
+            </ul>
+          </div>
+        </section>
+
+        <section className="cs" aria-labelledby="cmp-m">
+          <div className="wrap">
+            <div className="mig">
+              <span className="tn">
+                <Icon name="clock-counter-clockwise" />
+              </span>
+              <div className="migc">
+                <h2 id="cmp-m">{migrationTitle}</h2>
+                <p>{migrationDescription}</p>
+                <div className="code">
+                  <div className="lab">
+                    <Icon name="terminal-window" />
+                    Quick start
+                  </div>
+                  <pre>
+                    <code>
+                      <span className="y-c">$</span> <span className="y-v">docker run</span> -d \
+                      {"\n"}
+                      {"  "}--name sockguard \{"\n"}
+                      {"  "}-v /var/run/docker.sock:/var/run/docker.sock:ro \{"\n"}
+                      {"  "}-v /var/run/sockguard:/var/run/sockguard \{"\n"}
+                      {"  "}-e SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock \{"\n"}
+                      {"  "}
+                      <span className="y-v">{SITE_CONFIG.dockerImage}</span>
+                    </code>
+                  </pre>
+                </div>
+              </div>
             </div>
           </div>
         </section>
 
-        {/* Migration note */}
-        <section className="px-4 py-16">
-          <div className="mx-auto max-w-3xl">
-            <Card className="border-neutral-200 bg-white/50 backdrop-blur-sm dark:border-neutral-800 dark:bg-neutral-900/50">
-              <CardContent className="pt-6">
-                <div className="flex items-start gap-4">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-amber-100 dark:bg-amber-900/50">
-                    <Clock className="h-5 w-5 text-amber-500 dark:text-amber-400" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <h2 className="mb-2 text-lg font-semibold text-neutral-900 dark:text-neutral-100">
-                      {migrationTitle}
-                    </h2>
-                    <p className="mb-4 text-sm text-neutral-600 dark:text-neutral-400">
-                      {migrationDescription}
-                    </p>
-                    <DockerRunSnippet
-                      contentClassName="pt-4 pb-4"
-                      iconClassName="h-3.5 w-3.5"
-                      headerClassName="mb-2 flex items-center gap-2 text-neutral-500"
-                      label="Quick start"
-                    />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        </section>
-
-        {/* CTA */}
-        <section className="px-4 py-16">
-          <div className="mx-auto max-w-3xl text-center">
-            <h2 className="mb-4 text-3xl font-bold tracking-tight text-neutral-900 sm:text-4xl dark:text-neutral-50">
-              {`Ready to try ${SITE_CONFIG.name}?`}
-            </h2>
-            <p className="mb-8 text-neutral-600 dark:text-neutral-400">
-              Default-deny, MIT, no SaaS required. Drop it in front of your socket in minutes.
-            </p>
-
-            <CtaButtons placement="comparison" />
+        <section className="cs last" aria-labelledby="cmp-cta">
+          <div className="wrap">
+            <div className="cta2">
+              <h2 id="cmp-cta">{`Ready to try ${SITE_CONFIG.name}?`}</h2>
+              <p>
+                Default-deny, MIT, no SaaS required. Drop it in front of your socket in minutes.
+              </p>
+              <div className="ctas">
+                <TrackedLink
+                  className="btn primary"
+                  href={GITHUB_URL}
+                  ctaId="github_repository"
+                  placement="comparison"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <Icon name="github-logo" />
+                  View on GitHub
+                </TrackedLink>
+                <TrackedLink className="btn" href="/docs" ctaId="docs_root" placement="comparison">
+                  <Icon name="book-open" />
+                  Documentation
+                </TrackedLink>
+              </div>
+            </div>
           </div>
         </section>
       </MarketingShell>

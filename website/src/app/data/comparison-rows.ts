@@ -283,15 +283,19 @@ export const PROJECT_HEALTH: Record<
 
 // The upstream version (or, for a project with no tagged release, the
 // default-branch commit date) each competitor's claims above were checked
-// against, taken live from the GitHub API. Re-check at every release cut —
-// see DOC-10 — so a "cannot do X" claim is never more than one release stale.
-export const COMPETITOR_VERSIONS_CHECKED_AT = "2026-09-05";
+// against. Re-check at every release cut (DOC-10) so a "cannot do X" claim is
+// never more than one release stale.
+//
+// This is the one "versions checked" date the site shows. README.md carries
+// the same line for the same check; page-data.test.mjs fails if the two stop
+// agreeing, so bump this and the README together.
+export const COMPETITOR_VERSIONS_CHECKED_AT = "2026-10-02";
 
 export const COMPETITOR_VERSIONS: Record<Exclude<ComparisonTool, "sockguard">, string> = {
   tecnativa: "v0.5.0",
-  linuxserver: "3.4.4-r0-ls96",
+  linuxserver: "3.4.6-r0-ls100",
   wollomatic: "1.13.1",
-  elevenNotes: "v2.1.8",
+  elevenNotes: "v2.2.0",
   cetusguard: "v1.1.4",
 };
 
