@@ -84,6 +84,9 @@ function FooterLinkEl({ link }: { link: FooterLink }) {
       </a>
     );
   }
+  if (link.href === "/docs" || link.href.startsWith("/docs/")) {
+    return <a href={link.href}>{link.label}</a>;
+  }
   return <Link href={link.href}>{link.label}</Link>;
 }
 

@@ -81,6 +81,11 @@ export function HeaderMenu() {
               <Icon name={i.icon} />
               {i.label}
             </a>
+          ) : i.href.startsWith("/docs") ? (
+            <a key={i.href} href={i.href} onClick={close}>
+              <Icon name={i.icon} />
+              {i.label}
+            </a>
           ) : (
             <Link key={i.href} href={i.href} onClick={close}>
               <Icon name={i.icon} />
