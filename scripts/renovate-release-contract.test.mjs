@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { after, describe, it } from "node:test";
@@ -53,7 +53,20 @@ function runGuard(baseBranchPatterns, releaseTag = "v2.0.0", refName = "main") {
   });
 }
 
-function runReleaseBranchGuard(releaseTag, refName, defaultBranch = "main") {
+function runReleaseBranchGuard(releaseTag, refName, defaultBranch = "main", supported = true) {
+  const fakeGit = resolve(tempRoot, "git");
+  writeFileSync(
+    fakeGit,
+    `#!/bin/sh
+case "$1" in
+  ls-remote) printf '%s\\trefs/heads/main\\n' '${"a".repeat(40)}' ;;
+  fetch) exit 0 ;;
+  show) printf '%s\\n' '| Version | Supported |' '| --- | --- |' '| 3.0.x | :white_check_mark: |' '| 2.4.x | ${supported ? ":white_check_mark:" : ":x:"} |' ;;
+  *) exit 1 ;;
+esac
+`,
+  );
+  chmodSync(fakeGit, 0o755);
   return spawnSync("bash", ["-c", workflowStepScript("Validate release source branch")], {
     cwd: repoRoot,
     encoding: "utf8",
@@ -61,6 +74,7 @@ function runReleaseBranchGuard(releaseTag, refName, defaultBranch = "main") {
       ...process.env,
       DEFAULT_BRANCH: defaultBranch,
       REF_NAME: refName,
+      PATH: `${tempRoot}:${process.env.PATH}`,
       RELEASE_TAG: releaseTag,
     },
   });
@@ -178,7 +192,14 @@ describe("release source branch contract", () => {
   it("accepts stable tags on main and prereleases on matching release branches", () => {
     assert.equal(runReleaseBranchGuard("v2.0.0", "main").status, 0);
     assert.equal(runReleaseBranchGuard("v2.0.0-rc.1", "dev/v2.0").status, 0);
-    assert.equal(runReleaseBranchGuard("v1.6.4-rc.1", "maintenance/1.6.x").status, 0);
+    assert.equal(runReleaseBranchGuard("v2.4.2-rc.1", "maintenance/2.4.x").status, 0);
+  });
+
+  it("allows only a supported matching maintenance line for stable patches", () => {
+    const accepted = runReleaseBranchGuard("v2.4.2", "maintenance/2.4.x");
+    assert.equal(accepted.status, 0, accepted.stderr);
+    assert.notEqual(runReleaseBranchGuard("v2.4.2", "maintenance/2.3.x").status, 0);
+    assert.notEqual(runReleaseBranchGuard("v2.4.2", "maintenance/2.4.x", "main", false).status, 0);
   });
 
   it("rejects stable tags off main and prereleases on main or a mismatched branch", () => {

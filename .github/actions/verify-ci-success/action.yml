@@ -44,11 +44,14 @@ runs:
         request_max_time=$(( remaining < 30 ? remaining : 30 ))
 
         workflow_url="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/workflows/${CI_VERIFY_WORKFLOW_FILE}"
-        workflow_json="$(curl -fsSL --max-time "${request_max_time}" \
+        if ! workflow_json="$(timeout --signal=KILL "${remaining}s" curl -fsSL --max-time "${request_max_time}" \
           --retry 5 --retry-delay 5 --retry-max-time "${remaining}" --retry-connrefused --retry-all-errors \
           -H "Authorization: Bearer ${GH_TOKEN}" \
           -H "Accept: application/vnd.github+json" \
-          "${workflow_url}")"
+          "${workflow_url}")"; then
+          echo "::error::Failed to resolve ${CI_VERIFY_WORKFLOW_FILE} within the ${remaining}s remaining budget."
+          exit 1
+        fi
 
         workflow_id="$(echo "${workflow_json}" | jq -r '.id // empty')"
         workflow_name="$(echo "${workflow_json}" | jq -r '.name // empty')"
@@ -91,11 +94,14 @@ runs:
           fi
           runs_url="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/workflows/${CI_WORKFLOW_ID}/runs?head_sha=${TARGET_SHA}&event=push&per_page=50"
           request_max_time=$(( remaining < 30 ? remaining : 30 ))
-          runs_json="$(curl -fsSL --max-time "${request_max_time}" \
+          if ! runs_json="$(timeout --signal=KILL "${remaining}s" curl -fsSL --max-time "${request_max_time}" \
             --retry 5 --retry-delay 5 --retry-max-time "${remaining}" --retry-connrefused --retry-all-errors \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
-            "${runs_url}")"
+            "${runs_url}")"; then
+            echo "::error::Timed out or failed querying ${CI_WORKFLOW_NAME} branch CI within the ${remaining}s remaining budget."
+            exit 1
+          fi
 
           success_count="$(echo "${runs_json}" | jq '[.workflow_runs[] | select(.conclusion == "success" and ((.head_branch // "") | length > 0))] | length')"
           noncompleted_count="$(echo "${runs_json}" | jq '[.workflow_runs[] | select(.status != "completed" and ((.head_branch // "") | length > 0))] | length')"

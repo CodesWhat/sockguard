@@ -89,7 +89,7 @@ func newEngineChainWithLogger(t *testing.T, label string, daemon http.Handler, l
 		t.Fatalf("compile rules: %v", err)
 	}
 	deps := newServeTestDeps()
-	deps.detectUpstreamFlavor = upstreamflavor.Detect
+	deps.probeUpstream = upstreamflavor.Probe
 	runtime, err := newServeRuntime(&cfg, logger, deps)
 	if err != nil {
 		t.Fatalf("newServeRuntime: %v", err)

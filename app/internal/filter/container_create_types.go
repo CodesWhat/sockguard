@@ -286,9 +286,9 @@ func releaseContainerCreateRequest(req *containerCreateRequest) {
 //
 // Three rules, and each one is a correctness rule rather than a style choice:
 //
-//   - []string fields are truncated, not dropped. Launch fields are cleared
+//   - []string fields are truncated, not dropped. Their elements are cleared
 //     first because encoding/json leaves an existing string unchanged for a
-//     null array element. A reused launch field must decode like a fresh one.
+//     null array element. A reused field must decode like a fresh one.
 //   - Slices of structs (Mounts, Devices, DeviceRequests) are dropped, not
 //     truncated. encoding/json decodes into the existing element without
 //     zeroing it first, so a reused element would keep the previous request's
@@ -318,6 +318,14 @@ func (r *containerCreateRequest) resetForReuse() {
 	h.IpcMode = ""
 	h.UsernsMode = ""
 	h.CgroupnsMode = ""
+	clear(h.Binds)
+	clear(h.DeviceCgroupRules)
+	clear(h.SecurityOpt)
+	clear(h.CapAdd)
+	clear(h.CapDrop)
+	clear(h.VolumesFrom)
+	clear(h.GroupAdd)
+	clear(h.ExtraHosts)
 	h.Binds = h.Binds[:0]
 	h.Mounts = nil
 	clear(h.Tmpfs)

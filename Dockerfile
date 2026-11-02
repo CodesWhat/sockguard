@@ -10,7 +10,11 @@ ARG TARGETOS TARGETARCH
 WORKDIR /build
 
 COPY go.mod go.sum ./
-RUN go mod download
+RUN for attempt in 1 2 3; do \
+      if timeout -s KILL 120 go mod download; then exit 0; fi; \
+      if [ "$attempt" -eq 3 ]; then exit 1; fi; \
+      sleep "$((attempt * 5))"; \
+    done
 
 COPY app/ ./app/
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
@@ -22,13 +26,14 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -o /sockguard ./app/cmd/sockguard/
 RUN install -d -m 0700 /runtime/sockguard && touch /runtime/sockguard/.volume-init
 
-FROM cgr.dev/chainguard/static:latest@sha256:399c8cb4858f05aaa33f43f02a2e75f28d40f016c0f86e5ba6075769e3303791
+FROM cgr.dev/chainguard/static:latest@sha256:fc42af33e643f20d08baf03cddcc1c02ba57052dfb02edb0d79f3fc47bcea8d9
 
 LABEL maintainer="CodesWhat"
 LABEL org.opencontainers.image.title="sockguard"
 LABEL org.opencontainers.image.description="Docker socket proxy — guide what gets through"
 LABEL org.opencontainers.image.source="https://github.com/CodesWhat/sockguard"
 LABEL org.opencontainers.image.licenses="MIT"
+LABEL com.sockguard.exec="deny"
 
 COPY --from=builder /sockguard /sockguard
 COPY app/configs/ /etc/sockguard/

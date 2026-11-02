@@ -7,12 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0-rc.4] - 2026-11-02
+
+This candidate carries v2.4.2 and the release workflow fixes forward onto the v3 line, including the Podman isolation and dependency updates. The v3 TLS compatibility changes are unchanged. Fresh exact-source soak, TLS/security and published-image conformance are required before GA.
+
 ### Security
+
+- Carry v2.4.2's engine identity and failover capability checks, native Quadlet/artifact isolation refusals and Rekor dependency updates. See the v2.4.2 notes below.
+
+- Refuse Docker and native Podman exec create/start against containers labeled `com.sockguard.exec=deny`. The official Sockguard image carries this label by default, protecting the proxy even when interactive exec and root commands are enabled. Exec-create pins the inspected container ID so a concurrent rename cannot swap in another target.
+
+- Update the Chainguard static image to refresh the CA certificate bundle for CVE-2026-91403. The previous image carried ca-certificates-bundle 20260413-r0 and failed the critical-severity image scan.
 
 - Update `golang.org/x/net` to v0.62.0 for GO-2026-6860 and GO-2026-6866, both in `golang.org/x/net/html`. Sockguard doesn't import that package, and govulncheck reports neither as reachable. The bump clears the module-level findings in dependency scans.
 - This line now carries the 2.3.2 security fixes (Podman filter scoping under ownership and visibility, the `=` filter-key refusal, `label` filters kept for Compose clients, go-jose 4.1.6) and the 2.3.3 release-signing fix (image signing retries, one signature per image repository). See the 2.3.2 and 2.3.3 sections below.
 
 ### Changed
+
+- **The published-image Grype scan no longer sets up Buildx.** It only needs `docker buildx imagetools inspect`, which the runner already has, and setting up a builder under the release egress block was refused and ran the job past its 20-minute limit on both v2.4.0 publisher runs. The digest lookup now retries on its own with a five-minute limit.
 
 - **Release workflows retry network steps three times.** `release-cut.yml` and `release-from-tag.yml` now retry checkout, Buildx setup and artifact upload and download up to three times, waiting 30 s and then 60 s between attempts, so a short egress refusal under block mode no longer kills a release job. Upload retries set `overwrite: true` so a half-created artifact from a failed attempt can't block the next one.
 - **Website preview builds skip pushes that don't touch the site.** `website/vercel.json` now runs `website/scripts/vercel-ignore-build.sh` as its ignored build step. A preview is skipped when nothing changed since the branch's last deployment in `website/`, `docs/`, the root `package.json`, `package-lock.json`, `turbo.json`, `biome.json`, `.vercelignore`, `.gitignore` or the two analytics sync scripts, so Go-only pushes stop using up the Hobby plan's daily deploy quota. A missing or unfetchable previous commit builds, and production deploys from main always build.
@@ -20,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Stop the Podman 5/6 nightly from breaking when quay purges the rebuilt Fedora base image. The matrix now tracks the Fedora 44 and 45 major tags instead of digests that expire within a day.
+
+- Ignore inherited Git repository/index settings when inventorying generated files in the Go module checks, so a hook's alternate index cannot make a complete source tree appear empty.
 - **Release binary signing retries.** GoReleaser signs every archive with a parallel `cosign sign-blob`, and on 2.3.3's first attempt two of them raced on the Sigstore trust cache and the job failed. The release workflow now loads the trust root once before GoReleaser runs, and each signing call retries up to three times with a fresh key.
 
 ## [3.0.0-rc.3] - 2026-10-26
@@ -64,6 +79,93 @@ This first v3 candidate includes the v2.3 frontend mediation and v2.4 policy/sec
 ### Removed
 
 - **Breaking change:** the `dev/v3.0` source rejects `upstream.endpoints[].insecure_skip_tls_verify` at any value, including `false` and `null`. Remove the key and configure `tls.ca_file` to verify the daemon. TCP Docker environment resolution rejects non-empty `DOCKER_TLS` without non-empty `DOCKER_TLS_VERIFY`; set `DOCKER_TLS_VERIFY=1`. Verified TLS precedence, certificate lookup, Unix sockets, explicit endpoints and acknowledged plain TCP retain their behavior. Startup, CLI validation and rejected reloads report migration guidance. All v2 release lines, including v2.4.0-rc.1, retain their accepted behavior.
+
+## [2.4.2] - 2026-10-31
+
+v2.4.2 tightens Podman engine identification and unscoped native routes, permits safe volume filters on verified Podman 6+ endpoints, and carries frontend cleanup, CI reliability and maintenance-release fixes. It carries v2.4.1.
+
+### Security
+
+- Apply container name and image visibility patterns to Docker and native Podman exec-session inspection.
+
+- Redact image environment variables from current and legacy configuration fields.
+
+- Apply the existing host IPC, host PID and all-device grants consistently to plugin pull and upgrade privilege requests.
+
+- Tighten plugin-create archive validation and reject ambiguous configuration entries.
+
+- Update Rekor to v1.5.5 and its required dependency graph, replacing the vulnerable chi v5.3.1 and OpenTelemetry SDK v1.44.0 checksums with fixed releases. These packages enter through dependency tests and are absent from the shipped binary.
+
+- Probe every upstream endpoint even with an explicit engine declaration, and reject Docker declarations that contradict Podman component or Libpod header identity. Do not follow version-route redirects. Allow conjunctive volume filters under isolation only when every endpoint's `Podman Engine` component positively reports a released Podman 6.0.0 or later; API headers supply identity only, and old, unknown and prerelease versions keep the conservative restriction, as does any failover set containing such an endpoint.
+
+### Changed
+
+- Extract container-create ownership reference collectors without changing resource kinds, refusal reasons, case-alias handling, deduplication or sorted endpoint order.
+
+- Run the native API integration suites against Podman 5 and 6 from Fedora 44 and 45, in addition to the distro rootful/rootless jobs. Verify the live daemon major and wait for a settled socket after pulling the test image, retain version/results/log artifacts, and clean up each nested engine. Probe before repairing permissions so a socket rebind resets the success streak.
+
+- Consolidated `/health` response encoding while preserving upstream/listener/probe precedence, response bodies and write-failure logging.
+
+### Fixed
+
+- Prevent older maintenance minors from moving a floating major image tag backward, while retaining major-tag security updates for that major's newest recorded minor line. Clarify Docker/Podman volume-filter scopes and chart-pin recovery, including resolving a matching digest after the development chart advances.
+
+- Preserve native integration test failures through the results pipeline. Keep cgroups enabled in the nested test engine so host-PID pod positive controls exercise a supported daemon configuration.
+
+- Fail integration tests when an explicitly configured Docker or Podman socket is missing. Optional local runs still skip when no engine is configured.
+
+- Clear reused container-create string arrays before decoding another request, so null elements cannot retain policy values from an earlier request.
+
+- Wait within the existing cleanup deadline for asynchronous frontend-container removal to finish. A surviving container or failed absence query still returns a cleanup error. A timed-out query preserves the inspection failure instead of claiming that a previously observed container survived.
+
+- Refuse native Podman systemd generation under owner or visibility isolation until compound pod/container references can be checked. Owner isolation also refuses Quadlet and artifact writes, including per-name removal and artifact add/pull/push. Owner isolation and visibility refuse their inventory, existence, inspect, file and extraction reads. Named query targets, namespaced artifacts and warn/audit rollout modes cannot bypass these refusals.
+
+- Ignore inherited Git repository/index settings when inventorying generated files in the Go module checks, so a hook's alternate index cannot make a complete source tree appear empty.
+
+- Allow stable patches from an older supported maintenance branch without replacing global Docker latest, GitHub latest or the Homebrew cask. Both cut and publication check the current default-branch support policy; exact source and CI gates still apply. Maintenance chart pins go through reviewed PRs so branch protection stays enforced. Maintenance support checks resolve real entrypoint paths, including spaces and symlinks. Local snapshots default the latest-channel flag off and use the same GoReleaser version as the tagged publisher.
+
+- Roll the shared Go and Node CI workflows to the reviewed Ubuntu 26.04 revision, preserving the existing checks and caller policy inputs.
+
+- Bound each release CI metadata and polling request to its remaining wall-clock budget, including an in-flight curl retry. The action reports a failed query instead of running past its configured deadline.
+- Retry Docker build module downloads up to three times with five- and ten-second waits and a two-minute limit per attempt, so a transient Go proxy failure can recover without rerunning the whole build.
+- Enforce the same 96% production statement coverage floor in the local pre-push race test gate and hosted CI.
+
+## [2.4.1] - 2026-10-31
+
+v2.4.1 protects exec targets, refreshes the CA certificate bundle and removes unnecessary Buildx setup from the published-image Grype scan. It carries v2.4.0.
+
+### Security
+
+- Refuse Docker and native Podman exec create/start against containers labeled `com.sockguard.exec=deny`. The official Sockguard image carries this label by default, protecting the proxy even when interactive exec and root commands are enabled. Exec-create pins the inspected container ID so a concurrent rename cannot swap in another target.
+
+- Update the Chainguard static image to refresh the CA certificate bundle for CVE-2026-91403. The previous image carried ca-certificates-bundle 20260413-r0 and failed the critical-severity image scan.
+
+### Changed
+
+- **The published-image Grype scan no longer sets up Buildx.** It only needs `docker buildx imagetools inspect`, which the runner already has, and setting up a builder under the release egress block was refused and ran the job past its 20-minute limit on both v2.4.0 publisher runs. The digest lookup now retries on its own with a five-minute limit.
+
+## [2.4.0] - 2026-10-31
+
+v2.4.0 promotes v2.4.0-rc.3 unchanged in behavior. The v2.4 line adds exact image admission (`allowed_images` for Docker and Podman container create and Swarm service create/update, with per-client lists and rollout modes), opt-in create environment, command and entrypoint policy, startup and validate warnings for rules that match no known route, reproducible binary build checks, and mediated standard Buildx Dockerfile builds. It carries everything through 2.3.3.
+
+## [2.4.0-rc.3] - 2026-10-30
+
+This candidate carries the v2.3.2 and v2.3.3 releases forward onto the v2.4 line, along with the release workflow fixes behind them. The v2.4 changes from rc.2 are otherwise unchanged.
+
+### Security
+
+- This line now carries the 2.3.2 security fixes (Podman filter scoping, `label` filters kept under ownership, go-jose 4.1.6) and the 2.3.3 release-signing fix. See the 2.3.2 and 2.3.3 entries below.
+- Update `golang.org/x/net` to v0.62.0 for GO-2026-6860 and GO-2026-6866, both in `golang.org/x/net/html`. Sockguard doesn't import that package, and govulncheck reports neither as reachable. The bump clears the module-level findings in dependency scans.
+
+### Changed
+
+- **Release workflows retry network steps three times.** `release-cut.yml` and `release-from-tag.yml` now retry checkout, Buildx setup and artifact upload and download up to three times, waiting 30 s and then 60 s between attempts, so a short egress refusal under block mode no longer kills a release job. Upload retries set `overwrite: true` so a half-created artifact from a failed attempt can't block the next one.
+- **Website preview builds skip pushes that don't touch the site.** `website/vercel.json` now runs `website/scripts/vercel-ignore-build.sh` as its ignored build step. A preview is skipped when nothing changed since the branch's last deployment in `website/`, `docs/`, the root `package.json`, `package-lock.json`, `turbo.json`, `biome.json`, `.vercelignore`, `.gitignore` or the two analytics sync scripts, so Go-only pushes stop using up the Hobby plan's daily deploy quota. A missing or unfetchable previous commit builds, and production deploys from main always build.
+- **Working branches no longer deploy website previews.** Vercel counts ignored builds toward the daily deployment quota, so `website/vercel.json` also sets `git.deploymentEnabled` to off for `feat/`, `fix/`, `docs/`, `ci/`, `chore/`, `test/`, `refactor/`, `build/`, `perf/`, `style/`, `revert/`, `dev/`, `release/`, `renovate/`, `dependabot/`, `codex/` and `claude/` branches. main still deploys production. A branch with any other prefix, such as `site/`, still gets a preview.
+
+### Fixed
+
+- **Release binary signing retries.** GoReleaser signs every archive with a parallel `cosign sign-blob`, and on 2.3.3's first attempt two of them raced on the Sigstore trust cache and the job failed. The release workflow now loads the trust root once before GoReleaser runs, and each signing call retries up to three times with a fresh key.
 
 ## [2.4.0-rc.2] - 2026-10-26
 

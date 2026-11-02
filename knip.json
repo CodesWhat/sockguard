@@ -7,7 +7,7 @@
         "scripts/tri-tool-conformance/controller-clock-offset.cjs",
         "scripts/tri-tool-conformance/controller-header-proxy.cjs"
       ],
-      "ignoreBinaries": ["go", "helm"]
+      "ignoreBinaries": ["go", "helm", "jq"]
     },
     "docs": {
       "entry": ["source.config.ts"]

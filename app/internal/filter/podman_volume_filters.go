@@ -29,9 +29,9 @@ func IsPodmanVolumePrunePath(normPath string) bool {
 // (libpod/runtime_volume.go accumulates `include = include || filter(vol)`),
 // so any extra key (driver, name, label!, until, dangling, ...) widens the
 // result past an injected `label` selector, and on prune removes other
-// owners' unused volumes. Podman 6.0 fixed the combinator, but the upstream
-// flavor probe doesn't read the Podman version, so callers apply this to
-// every Podman upstream. Both the ownership and visibility layers use it.
+// owners' unused volumes. Callers apply this to old or unverified Podman
+// versions; every endpoint must positively report a released version >=6
+// before the volume-filter capability bypasses this refusal.
 func PodmanVolumeFilterDenyReason(filters map[string][]string) (string, bool) {
 	var unsupported []string
 	for key := range filters {
@@ -43,5 +43,5 @@ func PodmanVolumeFilterDenyReason(filters map[string][]string) (string, bool) {
 		return "", false
 	}
 	slices.Sort(unsupported)
-	return "volume filter denied: this upstream is Podman, which combines volume filters of different keys disjunctively, so only `label` filters can be scoped to one owner or visibility policy (unsupported: " + strings.Join(unsupported, ", ") + ")", true
+	return "volume filter denied: this Podman upstream has old or unverified volume-filter semantics; different keys may combine disjunctively, so only `label` filters can be scoped to one owner or visibility policy (unsupported: " + strings.Join(unsupported, ", ") + ")", true
 }

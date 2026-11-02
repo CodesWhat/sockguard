@@ -92,7 +92,7 @@ Incorrect use case: two independent Docker hosts running different containers. U
 
 ## Insecure and deprecated opt-ins
 
-Plaintext TCP remains an explicit risk acknowledgment. v2 also accepts the deprecated skip-verification flag; published v3.0.0-rc.3 rejects it and requires verified TLS instead.
+Plaintext TCP remains an explicit risk acknowledgment. v2 also accepts the deprecated skip-verification flag; published v3.0.0-rc.4 rejects it and requires verified TLS instead.
 
 ### Plaintext TCP (no TLS)
 
@@ -119,7 +119,7 @@ upstream:
 
 `insecure_skip_tls_verify: true` skips verification of the daemon's server certificate. Traffic is still encrypted but the daemon's identity is not verified, so a man-in-the-middle can present any certificate. It is an endpoint-level field (a sibling of `tls`, `address`, and `insecure_allow_plain_tcp`), not a key inside the `tls` block.
 
-The field remains accepted with unchanged wire behavior throughout v2.x, with a startup deprecation warning. Published `v3.0.0-rc.3` rejects the key entirely, even when it is `false` or `null`. Replace it with the correct `tls.ca_file`, including for self-signed or private-CA daemon certificates.
+The field remains accepted with unchanged wire behavior throughout v2.x, with a startup deprecation warning. Published `v3.0.0-rc.4` rejects the key entirely, even when it is `false` or `null`. Replace it with the correct `tls.ca_file`, including for self-signed or private-CA daemon certificates.
 
 ## DOCKER_* environment drop-in
 
@@ -173,7 +173,7 @@ upstream:
   socket: /var/run/docker.sock     # legacy; used only when endpoints is empty
   request_timeout: "60s"            # Go duration (e.g. "30s"); default "60s"; set "off" (or "") to disable; reload-mutable
   hijack_inactivity_timeout: "10m" # positive Go duration; shared idle guard for attach/exec-start; reload-mutable
-  flavor: auto                      # auto | docker | podman; auto probes GET /version once at startup; reload-immutable
+  flavor: auto                      # auto | docker | podman; all modes probe each endpoint at startup; reload-immutable
   endpoints:
     - address: tcp://dockerd-a:2376
       tls:
@@ -195,6 +195,6 @@ Per-endpoint fields inside `endpoints` cannot be set via environment variable â€
 |---|---|---|---|
 | `SOCKGUARD_UPSTREAM_REQUEST_TIMEOUT` | `upstream.request_timeout` | `"60s"` | Total per-request deadline. Set `off` (or `""`) to disable â€” prefer `off` via env var since an explicitly empty value is treated as unset. Reload-mutable. |
 | `SOCKGUARD_UPSTREAM_HIJACK_INACTIVITY_TIMEOUT` | `upstream.hijack_inactivity_timeout` | `"10m"` | Connection-wide idle deadline for hijacked attach/exec-start streams. Must be a positive duration; no `off` spelling. Reload-mutable. |
-| `SOCKGUARD_UPSTREAM_FLAVOR` | `upstream.flavor` | `auto` | Which engine is behind the upstream: `auto`, `docker`, or `podman`. `auto` probes `GET /version` once at startup and fails startup if the answer is ambiguous; an explicit value never probes. Reload-immutable. See [Configuration](/configuration#yaml-config-recommended). |
+| `SOCKGUARD_UPSTREAM_FLAVOR` | `upstream.flavor` | `auto` | Which engine is behind the upstream: `auto`, `docker`, or `podman`. Every mode probes each endpoint at startup; explicit values can resolve an unidentified engine, but Docker cannot override positive Podman identity. Reload-immutable. See [Configuration](/configuration#yaml-config-recommended). |
 | `SOCKGUARD_UPSTREAM_FAILOVER_HEALTH_INTERVAL` | `upstream.failover.health_interval` | `""` (resolver default: 5s) | Background probe interval per endpoint. Empty uses the 5s resolver default; negative disables probing. |
 | `SOCKGUARD_UPSTREAM_FAILOVER_HEALTH_TIMEOUT` | `upstream.failover.health_timeout` | `""` (resolver default: 2s) | Per-probe dial+TLS-handshake timeout. Empty uses the 2s resolver default. |

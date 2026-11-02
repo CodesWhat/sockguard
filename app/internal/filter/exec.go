@@ -35,10 +35,11 @@ var (
 // nothing for a start-time Env re-check to catch that create-time didn't
 // already see.
 type ExecInspectResult struct {
-	Command    []string
-	Privileged bool
-	User       string
-	Env        []string
+	ContainerID string
+	Command     []string
+	Privileged  bool
+	User        string
+	Env         []string
 }
 
 // ExecInspectFunc looks up an existing exec instance by id.
@@ -86,6 +87,7 @@ type ExecOptions struct {
 	// so the blind-write concern the flag addresses does not apply.
 	AllowBlindWrites bool
 	InspectStart     ExecInspectFunc
+	InspectTarget    ExecTargetInspectFunc
 	// InspectStartLibpod is InspectStart's counterpart for the libpod
 	// exec-start path (POST /libpod/exec/{id}/start). It exists as a
 	// separate field — rather than reusing InspectStart for both routes —
@@ -112,6 +114,7 @@ type execPolicy struct {
 	allowBlindWrites   bool
 	inspectStart       ExecInspectFunc
 	inspectStartLibpod ExecInspectFunc
+	inspectTarget      ExecTargetInspectFunc
 }
 
 // execCommandMatcher is a compiled allowlist entry: one anchored regex per
@@ -148,6 +151,7 @@ type execCreateRequest struct {
 }
 
 type execInspectResponse struct {
+	ContainerID   string `json:"ContainerID"`
 	ProcessConfig struct {
 		Entrypoint string   `json:"entrypoint"`
 		Arguments  []string `json:"arguments"`
@@ -184,6 +188,7 @@ func newExecPolicy(opts ExecOptions) execPolicy {
 		allowBlindWrites:   opts.AllowBlindWrites,
 		inspectStart:       opts.InspectStart,
 		inspectStartLibpod: opts.InspectStartLibpod,
+		inspectTarget:      opts.InspectTarget,
 	}
 }
 
@@ -233,6 +238,18 @@ func (p execPolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPath
 	// exists or is needed here, unlike every other libpod inspector in this
 	// package (#148 design doc decision C3).
 	case isExecCreatePath(normalizedPath) || isLibpodExecCreatePath(normalizedPath):
+		prefix := "/containers/"
+		if isLibpodExecCreatePath(normalizedPath) {
+			prefix = "/libpod/containers/"
+		}
+		id := strings.TrimSuffix(strings.TrimPrefix(normalizedPath, prefix), "/exec")
+		targetID, reason, err := p.targetDenyReason(r.Context(), id)
+		if reason != "" || err != nil {
+			return reason, err
+		}
+		if targetID != "" {
+			pinExecTarget(r, targetID)
+		}
 		return p.inspectCreate(logger, r)
 	case isExecStartPath(normalizedPath) || isLibpodExecStartPath(normalizedPath):
 		return p.inspectExisting(r.Context(), normalizedPath)
@@ -306,6 +323,9 @@ func (p execPolicy) inspectExisting(ctx context.Context, normalizedPath string) 
 	}
 	if !found {
 		return "", nil
+	}
+	if _, reason, err := p.targetDenyReason(ctx, result.ContainerID); reason != "" || err != nil {
+		return reason, err
 	}
 	return p.denyReason(result), nil
 }
@@ -537,9 +557,10 @@ func newHTTPExecInspector(rt http.RoundTripper, urlPrefix string) ExecInspectFun
 		command = append(command, decoded.ProcessConfig.Arguments...)
 
 		return ExecInspectResult{
-			Command:    command,
-			Privileged: decoded.ProcessConfig.Privileged,
-			User:       decoded.ProcessConfig.User,
+			ContainerID: decoded.ContainerID,
+			Command:     command,
+			Privileged:  decoded.ProcessConfig.Privileged,
+			User:        decoded.ProcessConfig.User,
 		}, true, nil
 	}
 }
