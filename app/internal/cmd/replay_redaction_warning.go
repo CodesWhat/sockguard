@@ -38,25 +38,25 @@ func warnIfCreateAllowedWithResponseRedaction(cfg *config.Config, logger *slog.L
 		return
 	}
 
-	scope := ""
-	if rulesAllowReplayCreate(cfg.Rules) {
-		scope = "rules"
+	// A non-empty clients.default_profile resolves every client that no more
+	// specific selector matched, so the top-level rules are never evaluated.
+	var scopes []string
+	if strings.TrimSpace(cfg.Clients.DefaultProfile) == "" && rulesAllowReplayCreate(cfg.Rules) {
+		scopes = append(scopes, "rules")
 	}
-	if scope == "" {
-		for _, profile := range cfg.Clients.Profiles {
-			if rulesAllowReplayCreate(profile.Rules) {
-				scope = "clients.profiles[" + profile.Name + "].rules"
-				break
-			}
+	for _, profile := range cfg.Clients.Profiles {
+		if rulesAllowReplayCreate(profile.Rules) {
+			scopes = append(scopes, "clients.profiles["+profile.Name+"].rules")
 		}
 	}
-	if scope == "" {
+	if len(scopes) == 0 {
 		return
 	}
 
-	logger.Warn("container create is allowed while response redaction is on: clients that replay container inspect output into create (Portainer Recreate, drydock, watchtower) will lose data, because the redacted Env, Binds/Mounts and network fields are written back into the new container as placeholders or empty values; set these keys to false for those clients, or use their shipped presets",
+	logger.Warn("container create is allowed while response redaction is on: clients that replay container inspect output into create (Portainer Recreate/Duplicate, drydock and watchtower updates) will lose the redacted Env, Binds/Mounts and network fields, which are written back into the new container as placeholders or empty values; other clients can ignore this. Set these keys to false for replaying clients, or use their shipped presets",
 		"keys", strings.Join(keys, ", "),
-		"allowed_by", scope,
+		"allowed_by", scopes[0],
+		"other_allowing_scopes", len(scopes)-1,
 	)
 }
 

@@ -32,7 +32,7 @@ func TestPortainerPresetPassesInspectOutputThroughUnmodified(t *testing.T) {
 		t.Fatalf("Load(portainer.yaml): %v", err)
 	}
 
-	rf := responsefilter.New(responsefilter.Options{
+	got := filterInspectBody(t, responsefilter.Options{
 		RedactContainerEnv:         cfg.Response.RedactContainerEnv,
 		RedactMountPaths:           cfg.Response.RedactMountPaths,
 		RedactNetworkTopology:      cfg.Response.RedactNetworkTopology,
@@ -40,7 +40,32 @@ func TestPortainerPresetPassesInspectOutputThroughUnmodified(t *testing.T) {
 		RedactHostTopology:         cfg.Response.RedactHostTopology,
 		AllowAttestationStatements: cfg.Response.AllowAttestationStatements,
 	})
+	if string(got) != portainerInspectBody {
+		t.Fatalf("inspect body changed by portainer preset:\n got: %s\nwant: %s", got, portainerInspectBody)
+	}
+}
 
+// TestDefaultRedactionRewritesPortainerInspectBody is the negative control for
+// the pass-through test above: the same body through the default redaction
+// settings must change, so the pass-through assertion cannot hold vacuously.
+func TestDefaultRedactionRewritesPortainerInspectBody(t *testing.T) {
+	def := config.Defaults()
+	got := filterInspectBody(t, responsefilter.Options{
+		RedactContainerEnv:         def.Response.RedactContainerEnv,
+		RedactMountPaths:           def.Response.RedactMountPaths,
+		RedactNetworkTopology:      def.Response.RedactNetworkTopology,
+		RedactSensitiveData:        def.Response.RedactSensitiveData,
+		RedactHostTopology:         def.Response.RedactHostTopology,
+		AllowAttestationStatements: def.Response.AllowAttestationStatements,
+	})
+	if string(got) == portainerInspectBody {
+		t.Fatalf("default redaction left the inspect body unchanged: %s", got)
+	}
+}
+
+func filterInspectBody(t *testing.T, opts responsefilter.Options) []byte {
+	t.Helper()
+	rf := responsefilter.New(opts)
 	req, err := http.NewRequest(http.MethodGet, "http://sockguard.test/v1.45/containers/abc123/json", nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
@@ -59,7 +84,5 @@ func TestPortainerPresetPassesInspectOutputThroughUnmodified(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read body: %v", err)
 	}
-	if string(got) != portainerInspectBody {
-		t.Fatalf("inspect body changed by portainer preset:\n got: %s\nwant: %s", got, portainerInspectBody)
-	}
+	return got
 }
