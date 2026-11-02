@@ -45,7 +45,7 @@ describe("Vercel security headers", () => {
       "connect-src 'self' https://e.codeswhat.com",
       "font-src 'self' data:",
       "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data: https://github.com https://img.shields.io https://qlty.sh https://www.bestpractices.dev",
+      "img-src 'self' data: https://api.star-history.com https://github.com https://img.shields.io https://qlty.sh https://www.bestpractices.dev",
     ]) {
       assert.match(
         csp,
@@ -57,10 +57,11 @@ describe("Vercel security headers", () => {
     // The Go Reference badge image is gone (footer text link only), so
     // pkg.go.dev must not stay allowed as an image host.
     assert.doesNotMatch(csp, /pkg\.go\.dev/u);
-    // Retired star-chart hosts stay retired (#303): both failed silently at
-    // HTTP 200, which is why the chart is a committed SVG now. Same pattern
-    // as the Go Report Card removal in #283.
-    assert.doesNotMatch(csp, /(?:warpchart\.dev|star-history\.com)/iu);
+    // Star History (X55) is the one allowed chart host, image-only. The
+    // other retired hosts from #303 stay out.
+    assert.match(csp, /(?:^|; )img-src [^;]*https:\/\/api\.star-history\.com(?:[ ;]|$)/u);
+    assert.doesNotMatch(csp, /(?:warpchart\.dev|www\.star-history\.com)/iu);
+    assert.doesNotMatch(csp.replace(/(?:^|; )img-src [^;]*/u, ""), /star-history\.com/iu);
     const scriptSrc = csp.match(/(?:^|; )script-src ([^;]+)/)?.[1];
     const connectSrc = csp.match(/(?:^|; )connect-src ([^;]+)/)?.[1];
     assert.equal(scriptSrc, "'self' 'unsafe-inline' https://e.codeswhat.com");

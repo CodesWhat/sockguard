@@ -537,16 +537,14 @@ Added in 2.2.11: native Podman container and pod creates refuse caller-selected 
 
 <h2 align="center" id="star-history">Star History</h2>
 
-<!-- Committed SVG pair, regenerated at each release cut by
-     .github/workflows/starchart.yml. A <picture> element, never an <img>:
-     GitHub's theme toggle sets color-scheme on the page and drives the
-     media query below, whereas a media query inside an <img>-embedded SVG
-     resolves against the OS preference and shows the wrong card. -->
+<!-- Star History's generated snippet for CodesWhat/sockguard. A <picture>
+     element, never an <img>: GitHub's theme toggle drives the media query. -->
 <div align="center">
-  <a href="https://github.com/CodesWhat/sockguard/stargazers">
+  <a href="https://www.star-history.com/?type=date&repos=CodesWhat%2Fsockguard">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="website/public/star-history-dark.svg">
-      <img alt="Star history for CodesWhat/sockguard" src="website/public/star-history.svg" width="900">
+      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=codeswhat/sockguard&type=date&legend=top-left&theme=dark">
+      <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=codeswhat/sockguard&type=date&legend=top-left">
+      <img alt="Star History chart for CodesWhat/sockguard" src="https://api.star-history.com/chart?repos=codeswhat/sockguard&type=date&legend=top-left" width="800">
     </picture>
   </a>
 </div>
