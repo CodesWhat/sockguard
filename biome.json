@@ -15,7 +15,8 @@
       "**/*.mjs",
       "**/*.json",
       "**/*.css",
-      "!**/globals.css"
+      "!**/globals.css",
+      "!website/src/lib/docs-search-index.generated.ts"
     ]
   },
   "formatter": {
@@ -39,6 +40,10 @@
     }
   },
   "overrides": [
+    {
+      "includes": ["website/src/app/suite.css"],
+      "linter": { "enabled": false }
+    },
     {
       "includes": [
         "website/src/app/page.tsx",

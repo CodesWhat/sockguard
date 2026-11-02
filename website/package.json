@@ -3,9 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "dev": "node ../scripts/analytics-routes.mjs --check && node ../scripts/analytics-runtime.mjs --check && next dev --port 3001",
+    "dev": "node scripts/docs-search-index.mjs --check && node ../scripts/analytics-routes.mjs --check && node ../scripts/analytics-runtime.mjs --check && next dev --port 3001",
     "prebuild": "npm run build:docs-content",
-    "build": "node ../scripts/analytics-routes.mjs --check && node ../scripts/analytics-runtime.mjs --check && next build",
+    "build": "node scripts/docs-search-index.mjs --check && node ../scripts/analytics-routes.mjs --check && node ../scripts/analytics-runtime.mjs --check && next build",
     "build:docs-content": "(cd ../docs && npm run build) && rm -rf public/docs && mkdir -p public/docs && cp -R ../docs/out/. public/docs/",
     "test": "node --test --experimental-strip-types src/**/*.test.mjs",
     "start": "next start"
