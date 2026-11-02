@@ -50,14 +50,14 @@ body {
 }
 
 /* ----------------------------------------------------------------------------
-   Layout: sidebar | page | TOC inside the same 1240px column as the site shell.
+   Layout: sidebar | page | TOC inside the same 1600px column as the site shell.
 ---------------------------------------------------------------------------- */
 html {
   scroll-padding-top: 84px;
 }
 
 #nd-docs-layout {
-  --fd-layout-width: min(1240px, 100vw);
+  --fd-layout-width: min(1600px, 100vw);
   --fd-docs-height: calc(100dvh - var(--site-header-h));
   min-height: calc(100dvh - var(--site-header-h));
   background: var(--dd-bg);
@@ -143,6 +143,7 @@ html {
 /* Phone docs bar (nav slot) */
 .docs-bar {
   grid-area: header;
+  display: flex;
   position: sticky;
   top: var(--site-header-h);
   z-index: 25;
@@ -164,7 +165,8 @@ html {
   display: flex;
   align-items: center;
   gap: 10px;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   min-height: 44px;
   padding: 0 16px;
   background: transparent;
@@ -395,15 +397,14 @@ html {
   font-family: var(--font-ui);
 }
 
-/* Header search button */
+/* Search button: full-width in the sidebar, icon-only in the phone docs bar */
 .sbtn {
   display: inline-flex;
   align-items: center;
   gap: 10px;
   padding: 6px 8px 6px 12px;
   min-height: 34px;
-  min-width: 196px;
-  margin-left: 8px;
+  width: 100%;
   border: 1px solid var(--dd-border-strong);
   border-radius: var(--r);
   background: var(--dd-bg-card);
@@ -422,18 +423,36 @@ html {
 .top .nav {
   margin-left: auto;
 }
+.sb-s {
+  margin-top: 10px;
+}
+.sb-f {
+  display: flex;
+}
+.sb-f .modetog {
+  width: 100%;
+  justify-content: center;
+}
+.sb-f .modetog .ml {
+  display: inline;
+}
+.docs-bar .sbtn {
+  width: auto;
+  min-width: 44px;
+  min-height: 44px;
+  justify-content: center;
+  padding: 0 14px;
+  border-width: 0 0 0 1px;
+  border-radius: 0;
+  background: transparent;
+}
+.docs-bar .sbtn .st,
+.docs-bar .sbtn kbd {
+  display: none;
+}
 @media (max-width: 720px) {
-  .top .sbtn {
-    min-width: 0;
+  .top .menu {
     margin-left: auto;
-    padding: 6px 10px;
-  }
-  .sbtn .st,
-  .sbtn kbd {
-    display: none;
-  }
-  .top .modetog {
-    margin-left: 0;
   }
 }
 

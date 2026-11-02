@@ -3,9 +3,10 @@
 import { useTreePath } from "fumadocs-ui/contexts/tree";
 import { useDocsLayout } from "fumadocs-ui/layouts/docs";
 import { ChevronDown } from "lucide-react";
+import { SearchButton } from "@/components/search-button";
 
 // Phone-width docs nav: one row under the site header that opens Fumadocs'
-// own sidebar drawer. Hidden from md up, where the sidebar is always shown.
+// own sidebar drawer, plus a search trigger. Theme lives in the drawer footer. Hidden from md up, where the sidebar is always shown.
 export function MobileDocsBar() {
   const { slots } = useDocsLayout();
   const Trigger = slots.sidebar.trigger;
@@ -20,6 +21,7 @@ export function MobileDocsBar() {
         <span className="docs-bar-cur">{label}</span>
         <ChevronDown className="docs-bar-cv" aria-hidden="true" />
       </Trigger>
+      <SearchButton />
     </header>
   );
 }

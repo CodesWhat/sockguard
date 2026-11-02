@@ -3,7 +3,8 @@
 import { useSearchContext } from "fumadocs-ui/contexts/search";
 import { Icon } from "@/components/icon";
 
-// Opens the Fumadocs search dialog. Cmd/Ctrl+K is the RootProvider default
+// Opens the Fumadocs search dialog from the sidebar, or as an icon in the
+// phone docs bar. Cmd/Ctrl+K is the RootProvider default
 // hotkey, so the button and the shortcut drive the same dialog.
 export function SearchButton() {
   const { enabled, setOpenSearch } = useSearchContext();
