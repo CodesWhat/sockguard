@@ -4,6 +4,8 @@ import test from "node:test";
 import { SITE_CONFIG } from "../lib/site-config.ts";
 import { roadmap } from "../lib/site-content.ts";
 import {
+  COMPETITOR_VERSIONS,
+  COMPETITOR_VERSIONS_CHECKED_AT,
   comparisonCell,
   comparisonRows,
   MATRIX_FEATURES,
@@ -47,7 +49,7 @@ test("website features live in extracted data modules", () => {
 });
 
 test("website comparison rows live in extracted data modules", () => {
-  assert.equal(comparisonRows.length, 21);
+  assert.equal(comparisonRows.length, 22);
 
   const requestBodyRow = comparisonRows.find((row) => row.feature === "Request body inspection");
   assert.ok(requestBodyRow);
@@ -125,7 +127,7 @@ test("opt-in Sockguard capabilities are labelled opt-in", () => {
   // ALLOW_* vars are documented but dead in the config they ship. LinuxServer's
   // own README says the opposite for its ALLOW_* vars ("these options work
   // even when POST=0"), so only the Tecnativa cell carries the caveat.
-  const granular = comparisonRows.find((row) => row.feature === "Granular POST ops");
+  const granular = comparisonRows.find((row) => row.feature === "Granular container write ops");
   assert.ok(granular);
   assert.equal(granular.tecnativa, "Documented only (POST gate blocks them)");
   assert.equal(granular.linuxserver, "Partial (ALLOW_* vars)");
@@ -198,6 +200,88 @@ test("route pages and the compare matrix agree on Sockguard's column", () => {
   }
   assert.ok(checked > 20, `expected substantial overlap with the rows, checked ${checked}`);
   assert.equal(comparisonCell("Per-client policies", "sockguard"), "yes");
+});
+
+test("the versions-checked line is the same on the site and in the README", () => {
+  // WEB-6: the site said 2026-09-05 while README.md said 2026-10-02. The site
+  // constant is the one date the compare pages show, so the README line must
+  // carry the same date and the same competitor versions.
+  const readme = readFileSync(new URL("../../../README.md", import.meta.url), "utf8");
+  const line = readme.split("\n").find((candidate) => candidate.includes("Versions checked"));
+  assert.ok(line, "README.md must carry a Versions checked line");
+  assert.ok(
+    line.includes(`Versions checked ${COMPETITOR_VERSIONS_CHECKED_AT}:`),
+    `README date differs from COMPETITOR_VERSIONS_CHECKED_AT (${COMPETITOR_VERSIONS_CHECKED_AT})`,
+  );
+  for (const [tool, version] of Object.entries(COMPETITOR_VERSIONS)) {
+    assert.ok(line.includes(` ${version}`), `README line is missing ${tool} ${version}`);
+  }
+});
+
+test("the README comparison table carries the same rows and cells as the site", () => {
+  // The README table and comparison-rows.ts drifted twice: rows added to one
+  // surface only, and the same row labelled differently on each. The site data
+  // is the source, so the README must list every row, in order, with the same
+  // label and the same cell text. Only the presentation differs: README shows
+  // a leading Yes/No as a glyph and may link or code-format words.
+  const readme = readFileSync(new URL("../../../README.md", import.meta.url), "utf8");
+  const normalize = (cell) =>
+    cell
+      .trim()
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+      .replaceAll("`", "")
+      .replace(/^✅/, "Yes")
+      .replace(/^❌/, "No");
+  const lines = readme.split("\n");
+  const header = lines.findIndex((line) => line.startsWith("| Feature | Tecnativa |"));
+  assert.ok(header >= 0, "README.md must carry the comparison table");
+  const readmeRows = [];
+  for (let i = header + 2; i < lines.length && lines[i].startsWith("|"); i += 1) {
+    readmeRows.push(
+      lines[i]
+        .replace(/^\|\s*|\s*\|$/g, "")
+        .split(/ \| /)
+        .map(normalize),
+    );
+  }
+  assert.deepEqual(
+    readmeRows.map((cells) => cells[0]),
+    comparisonRows.map((row) => row.feature),
+    "README rows must match comparison-rows.ts in label and order",
+  );
+  for (const [index, row] of comparisonRows.entries()) {
+    assert.deepEqual(
+      readmeRows[index],
+      [
+        row.feature,
+        row.tecnativa,
+        row.linuxserver,
+        row.wollomatic,
+        row.elevenNotes,
+        row.cetusguard,
+        row.sockguard,
+      ],
+      `README row "${row.feature}" differs from comparison-rows.ts`,
+    );
+  }
+});
+
+test("each compare page names itself an alternative in its title, H1 and lead", () => {
+  const dir = new URL("../lib/comparison-route-data/", import.meta.url);
+  const routeFiles = readdirSync(dir).filter((name) => name.endsWith(".tsx"));
+  assert.equal(routeFiles.length, 5);
+  for (const name of routeFiles) {
+    const source = readFileSync(new URL(name, dir), "utf8");
+    assert.match(source, /metadataTitle: "[^"]*alternative/, `${name} title`);
+    assert.match(source, /heroTitle: "[^"]*alternative/, `${name} H1`);
+    assert.match(
+      source,
+      /heroDescription: \(\s*<p>[\s\S]*?alternative[\s\S]*?<\/p>/,
+      `${name} lead`,
+    );
+    const head = source.slice(source.indexOf("metadataTitle"), source.indexOf("migrationTitle"));
+    assert.ok(!head.includes("\u2014"), `${name} title, description or lead has an em dash`);
+  }
 });
 
 test("roadmap data is valid and matches expected milestones", () => {
@@ -282,4 +366,30 @@ test("faqItems data is valid", () => {
       "each faq item must have a non-empty answer",
     );
   }
+});
+
+test("the hero stat snapshot is dated and the hero renders that date", async () => {
+  const { PROOF_SNAPSHOT } = await import("./data/proof.ts");
+  assert.match(PROOF_SNAPSHOT.checkedAt, /^\d{4}-\d{2}-\d{2}$/u);
+  assert.ok(!Number.isNaN(Date.parse(PROOF_SNAPSHOT.checkedAt)));
+  const hero = readFileSync(new URL("../components/hero.tsx", import.meta.url), "utf8");
+  assert.match(hero, /PROOF_SNAPSHOT\.checkedAt/u);
+});
+
+test("the home title names the category", () => {
+  assert.match(SITE_CONFIG.title, /Docker socket proxy/u);
+});
+
+test("theme provider follows the system preference until a stored choice exists", () => {
+  const provider = readFileSync(
+    new URL("../components/theme-provider.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(provider, /defaultTheme="system"/u);
+  assert.match(provider, /enableSystem/u);
+  // next-themes stores the choice under its default "theme" key. An override
+  // here would silently drop returning visitors' saved choice.
+  assert.doesNotMatch(provider, /storageKey/u);
+  const layout = readFileSync(new URL("./layout.tsx", import.meta.url), "utf8");
+  assert.match(layout, /suppressHydrationWarning/u);
 });

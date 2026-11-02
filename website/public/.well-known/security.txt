@@ -1,0 +1,5 @@
+Contact: mailto:security@getsockguard.com
+Expires: 2027-05-01T00:00:00.000Z
+Preferred-Languages: en
+Canonical: https://www.getsockguard.com/.well-known/security.txt
+Policy: https://github.com/CodesWhat/sockguard/blob/main/SECURITY.md

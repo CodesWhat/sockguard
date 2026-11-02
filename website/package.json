@@ -3,19 +3,17 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "dev": "node ../scripts/analytics-routes.mjs --check && node ../scripts/analytics-runtime.mjs --check && next dev --port 3001",
+    "dev": "node scripts/docs-search-index.mjs --check && node ../scripts/analytics-routes.mjs --check && node ../scripts/analytics-runtime.mjs --check && next dev --port 3001",
     "prebuild": "npm run build:docs-content",
-    "build": "node ../scripts/analytics-routes.mjs --check && node ../scripts/analytics-runtime.mjs --check && next build",
+    "build": "node scripts/docs-search-index.mjs --check && node ../scripts/analytics-routes.mjs --check && node ../scripts/analytics-runtime.mjs --check && next build",
     "build:docs-content": "(cd ../docs && npm run build) && rm -rf public/docs && mkdir -p public/docs && cp -R ../docs/out/. public/docs/",
     "test": "node --test --experimental-strip-types src/**/*.test.mjs",
+    "test:e2e": "playwright test",
     "start": "next start"
   },
   "dependencies": {
-    "@radix-ui/react-slot": "^1.2.4",
     "@tailwindcss/postcss": "^4.3.1",
-    "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "lucide-react": "^1.21.0",
     "next": "16.4.2",
     "next-themes": "^0.4.6",
     "postcss": "^8.5.24",
@@ -26,6 +24,7 @@
     "tailwindcss": "^4.3.1"
   },
   "devDependencies": {
+    "@playwright/test": "1.64.1",
     "@types/node": "26.6.5",
     "@types/react": "19.3.0",
     "typescript": "7.0.2"

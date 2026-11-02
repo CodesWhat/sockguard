@@ -1,36 +1,27 @@
 "use client";
 
-import { Moon, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
-import { useEffect, useState } from "react";
-import { iconButtonCn } from "@/lib/class-names";
+import { Icon } from "@/components/icon";
 
+// Server and client render identical markup: which icon and label show is
+// decided by CSS from <html data-mode>, which next-themes sets before first
+// paint. No mounted-state swap, so no hydration mismatch.
 export function ThemeToggle() {
   const { resolvedTheme, setTheme } = useTheme();
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => setMounted(true), []);
-
-  const isDark = resolvedTheme === "dark";
 
   return (
     <button
       type="button"
-      aria-label={
-        mounted ? (isDark ? "Switch to light theme" : "Switch to dark theme") : "Toggle theme"
-      }
-      onClick={() => setTheme(isDark ? "light" : "dark")}
-      className={iconButtonCn}
+      className="modetog"
+      aria-label="Switch between dark and light mode"
+      onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
     >
-      {mounted ? (
-        isDark ? (
-          <Sun className="h-5 w-5" />
-        ) : (
-          <Moon className="h-5 w-5" />
-        )
-      ) : (
-        <span className="block h-5 w-5" />
-      )}
+      <Icon name="moon" className="i-moon" />
+      <Icon name="sun" className="i-sun" />
+      <span className="ml">
+        <span className="ml-dark">Dark</span>
+        <span className="ml-light">Light</span>
+      </span>
     </button>
   );
 }

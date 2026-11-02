@@ -2,31 +2,34 @@ import { DocsLayout } from "fumadocs-ui/layouts/docs";
 import { RootProvider } from "fumadocs-ui/provider/next";
 import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
+import type { CSSProperties } from "react";
 import { AnalyticsPageview } from "@/components/analytics-pageview";
 import { Footer } from "@/components/footer";
-import { SiteBackground } from "@/components/site-background";
+import { MobileDocsBar } from "@/components/mobile-docs-bar";
+import { SidebarBrand } from "@/components/sidebar-brand";
 import { SiteHeader } from "@/components/site-header";
 import { BASE_PATH, BASE_URL, SITE_CONFIG } from "@/lib/site-config";
 import { source } from "@/lib/source";
 import "./globals.css";
 
-const ibmPlexSans = localFont({
+const spaceGrotesk = localFont({
   src: [
-    { path: "../fonts/ibm-plex-sans-latin-400-normal.woff2", weight: "400", style: "normal" },
-    { path: "../fonts/ibm-plex-sans-latin-500-normal.woff2", weight: "500", style: "normal" },
-    { path: "../fonts/ibm-plex-sans-latin-600-normal.woff2", weight: "600", style: "normal" },
-    { path: "../fonts/ibm-plex-sans-latin-700-normal.woff2", weight: "700", style: "normal" },
+    { path: "../fonts/space-grotesk-latin-500-normal.woff2", weight: "500", style: "normal" },
+    { path: "../fonts/space-grotesk-latin-700-normal.woff2", weight: "700", style: "normal" },
   ],
   display: "swap",
+  variable: "--font-space-grotesk",
 });
 
-const ibmPlexMono = localFont({
+const jetbrainsMono = localFont({
   src: [
-    { path: "../fonts/ibm-plex-mono-latin-400-normal.woff2", weight: "400", style: "normal" },
-    { path: "../fonts/ibm-plex-mono-latin-500-normal.woff2", weight: "500", style: "normal" },
+    { path: "../fonts/jetbrains-mono-latin-400-normal.woff2", weight: "400", style: "normal" },
+    { path: "../fonts/jetbrains-mono-latin-500-normal.woff2", weight: "500", style: "normal" },
+    { path: "../fonts/jetbrains-mono-latin-600-normal.woff2", weight: "600", style: "normal" },
+    { path: "../fonts/jetbrains-mono-latin-700-normal.woff2", weight: "700", style: "normal" },
   ],
   display: "swap",
-  variable: "--font-mono",
+  variable: "--font-jetbrains-mono",
 });
 
 // Bump this whenever the favicon/app icons change so browsers re-fetch them
@@ -35,8 +38,8 @@ const ICON_VERSION = "20260630";
 
 export const metadata: Metadata = {
   title: {
-    default: `${SITE_CONFIG.name} Docs`,
-    template: `%s | ${SITE_CONFIG.name} Docs`,
+    default: SITE_CONFIG.docsTitleSuffix,
+    template: `%s | ${SITE_CONFIG.docsTitleSuffix}`,
   },
   description: SITE_CONFIG.description,
   metadataBase: new URL(BASE_URL),
@@ -66,8 +69,8 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = {
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
-    { media: "(prefers-color-scheme: dark)", color: "#0a0a0a" },
+    { media: "(prefers-color-scheme: light)", color: "#eae4da" },
+    { media: "(prefers-color-scheme: dark)", color: "#2c2927" },
   ],
 };
 
@@ -77,29 +80,39 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" suppressHydrationWarning>
-      <body className={`${ibmPlexSans.className} ${ibmPlexMono.variable}`}>
+    <html
+      lang="en"
+      data-product="sockguard"
+      className={`${spaceGrotesk.variable} ${jetbrainsMono.variable}`}
+      suppressHydrationWarning
+    >
+      <body>
         {/*
-          fumadocs RootProvider includes next-themes (attribute="class") internally.
-          ThemeToggle uses useTheme from the same next-themes instance — no double
-          provider needed.
-
-          data-bg drives the aurora CSS variable palette (--au-* vars in globals.css).
+          RootProvider owns next-themes. `class` keeps Fumadocs' dark: variant
+          working, `data-mode` drives the skin tokens in skin.css, and the default
+          storage key matches the marketing site so the preference is shared.
         */}
-        <RootProvider>
-          <div data-bg={SITE_CONFIG.aurora} className="relative flex min-h-screen flex-col">
-            <SiteBackground />
+        <RootProvider
+          theme={{ attribute: ["class", "data-mode"] }}
+          search={{ options: { type: "static", api: `${BASE_PATH}/api/search` } }}
+        >
+          <div className="sg">
+            <a className="skip" href="#nd-page">
+              Skip to content
+            </a>
             <SiteHeader />
-            <main className="flex-1">
-              <DocsLayout
-                tree={source.pageTree}
-                nav={{ enabled: false }}
-                themeSwitch={{ enabled: false }}
-                searchToggle={{ enabled: false }}
-              >
-                {children}
-              </DocsLayout>
-            </main>
+            <DocsLayout
+              tree={source.pageTree}
+              nav={{ component: <MobileDocsBar /> }}
+              themeSwitch={{ enabled: false }}
+              searchToggle={{ enabled: false }}
+              sidebar={{ collapsible: false, banner: <SidebarBrand /> }}
+              containerProps={{
+                style: { "--fd-docs-row-1": "var(--site-header-h)" } as CSSProperties,
+              }}
+            >
+              {children}
+            </DocsLayout>
             <Footer />
           </div>
         </RootProvider>

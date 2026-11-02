@@ -1,57 +1,56 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { test } from "node:test";
 
-// The star chart is a committed first-party SVG pair (#303). Both previous
-// options — star-history.com and the Warpchart embed — failed silently at
-// HTTP 200, so this contract pins the replacement and keeps the retired
-// hosts from coming back, same pattern as the Go Report Card removal (#283).
+// The star chart is Star History's hosted /chart embed (ops rule X55). Earlier
+// hosted options failed silently at HTTP 200 (#303), so this contract pins the
+// exact embed forms and keeps the other retired hosts from coming back. It
+// cannot prove the remote image renders: that is checked by eye, signed out.
 
 const repoRoot = resolve(import.meta.dirname, "..");
-const readmePath = resolve(repoRoot, "README.md");
-const lightSvgPath = resolve(repoRoot, "website/public/star-history.svg");
-const darkSvgPath = resolve(repoRoot, "website/public/star-history-dark.svg");
+const readme = readFileSync(resolve(repoRoot, "README.md"), "utf8");
+const component = readFileSync(
+  resolve(repoRoot, "website/src/components/star-history.tsx"),
+  "utf8",
+);
 
-test("the committed star-history SVG pair exists and agrees with itself", () => {
-  // Both or neither, and drawn from the same data: a README <picture> whose
-  // light and dark charts disagree shows two different histories depending
-  // on who is looking, and neither is flagged as wrong.
-  assert.ok(existsSync(lightSvgPath), "website/public/star-history.svg must be committed");
-  assert.ok(existsSync(darkSvgPath), "website/public/star-history-dark.svg must be committed");
+const CHART =
+  "https://api.star-history.com/chart?repos=codeswhat/sockguard&type=date&legend=top-left";
+const PAGE = "https://www.star-history.com/?type=date&repos=CodesWhat%2Fsockguard";
 
-  const meta = (path) => {
-    const svg = readFileSync(path, "utf8");
-    const title = svg.match(/<title>Star history for ([^<]+) — (\d+) stars<\/title>/u);
-    assert.ok(title, `${path} must carry the generator's <title> metadata`);
-    return { repo: title[1], stars: title[2] };
-  };
-  const light = meta(lightSvgPath);
-  const dark = meta(darkSvgPath);
-  assert.equal(light.repo, "CodesWhat/sockguard");
-  assert.equal(dark.repo, light.repo);
-  assert.equal(dark.stars, light.stars, "light and dark charts must be from the same refresh");
-});
-
-test("the README embeds the pair through one contiguous <picture> block", () => {
-  const readme = readFileSync(readmePath, "utf8");
-
-  // <picture>, never <img>: a media query inside an <img>-embedded SVG
-  // resolves against the OS preference, not GitHub's theme toggle. One
-  // regex over the whole block so the pieces cannot drift apart.
+test("the README embeds Star History through one contiguous <picture> block", () => {
+  // <picture>, never a bare <img>, so GitHub's theme toggle picks the chart.
+  // One pattern over the whole block so the pieces cannot drift apart.
+  const escaped = (s) => s.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   assert.match(
     readme,
-    /<a href="https:\/\/github\.com\/CodesWhat\/sockguard\/stargazers">\s*<picture>\s*<source media="\(prefers-color-scheme: dark\)" srcset="website\/public\/star-history-dark\.svg">\s*<img [^>]*src="website\/public\/star-history\.svg"[^>]*>\s*<\/picture>\s*<\/a>/u,
+    new RegExp(
+      `<a href="${escaped(PAGE)}">\\s*<picture>\\s*` +
+        `<source media="\\(prefers-color-scheme: dark\\)" srcset="${escaped(CHART)}&theme=dark">\\s*` +
+        `<source media="\\(prefers-color-scheme: light\\)" srcset="${escaped(CHART)}">\\s*` +
+        `<img alt="Star History chart for CodesWhat/sockguard" src="${escaped(CHART)}"[^>]*>\\s*` +
+        `</picture>\\s*</a>`,
+      "u",
+    ),
   );
 });
 
-test("no tracked file reaches for a retired star-chart host", () => {
-  // Sweep every tracked file, case-insensitively, not a hand-picked list —
-  // a retired host reintroduced anywhere is the regression. Excluded:
-  // CHANGELOG.md (immutable history records the removal) and this test.
-  // Escaped literals in other tests (warpchart\.dev) don't match a
-  // strict-dot pattern, so they need no carve-out.
+test("the website component loads both themes from the same chart and keeps its name", () => {
+  assert.ok(
+    component.includes(`const CHART =\n  "${CHART}"`) ||
+      component.includes(`const CHART = "${CHART}"`),
+  );
+  assert.match(component, /className="sl"[\s\S]*?src=\{CHART\}/u);
+  assert.match(component, /className="sd"[\s\S]*?src=\{`\$\{CHART\}&theme=dark`\}/u);
+  assert.match(component, /aria-label="Star history chart for CodesWhat\/sockguard"/u);
+  assert.match(component, /ctaId="github_repository"/u);
+  assert.match(component, /placement="star_history"/u);
+});
+
+test("no tracked file reaches for a retired star-chart host or the old /svg form", () => {
+  // Excluded: CHANGELOG.md (immutable history) and this test.
   let hits = "";
   try {
     hits = execFileSync(
@@ -62,7 +61,7 @@ test("no tracked file reaches for a retired star-chart host", () => {
         "-e",
         "warpchart\\.dev",
         "-e",
-        "star-history\\.com",
+        "api\\.star-history\\.com/svg",
         "--",
         ":!CHANGELOG.md",
         ":!scripts/star-chart-contract.test.mjs",
@@ -73,5 +72,5 @@ test("no tracked file reaches for a retired star-chart host", () => {
     // git grep exits 1 on zero matches, which is the passing state.
     assert.equal(error.status, 1, error.stderr || error.message);
   }
-  assert.equal(hits, "", `retired star-chart hosts referenced in:\n${hits}`);
+  assert.equal(hits, "", `retired star-chart references in:\n${hits}`);
 });

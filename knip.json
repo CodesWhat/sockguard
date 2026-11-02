@@ -14,7 +14,6 @@
     },
     "website": {
       "entry": ["scripts/*.mjs"],
-      "ignore": ["src/components/ui/**"],
       "ignoreBinaries": ["magick"]
     }
   }

@@ -1,4 +1,3 @@
-import { Activity, Key, Layers, Shield, Users2, Zap } from "lucide-react";
 import type { ComparisonRouteRawConfig } from "@/lib/comparison-route-data/types";
 
 export const tecnativaComparisonRouteData = {
@@ -9,7 +8,7 @@ Config format|ENV vars (zero learning curve)|YAML config|competitor
 Community size|2.6k+ GitHub stars|Growing|competitor
 Production maturity|Maintained since 2017|Newer|competitor
 Request body inspection|No|Yes (12+ resource types, Docker + Podman build)|self
-Per-client policies|No|CIDR + labels + cert selectors + unix peer|self
+Per-client policies|No|Yes (CIDR + labels + cert selectors incl. SPKI + unix peer)|self
 Prometheus metrics|No|Yes (opt-in, finite-label socket-proxy metrics)|self
 Signed policy bundles|No|Yes (separate pinned trust, keyed + keyless)|self
 Rollout modes (enforce / warn / audit)|No|Yes (per-profile shadow mode)|self
@@ -27,16 +26,16 @@ zap|Rate Limits|Sockguard's per-profile token-bucket rate limiter and global pri
 activity|No Upstream Reliability Regressions|Tecnativa v0.5.0, the version compared here, has an open regression since 2026-07-30 where its HAProxy 3.2.4 to 3.4.2 bump hangs GET /version for the full 10-minute default timeout, breaking Traefik, docktail, and crowdsec discovery that polls it (tecnativa/docker-socket-proxy#180, still open). Sockguard's /version passthrough isn't affected by that upstream dependency bump.
 `,
   highlightIconMap: {
-    shield: Shield,
-    users: Users2,
-    key: Key,
-    activity: Activity,
-    layers: Layers,
-    zap: Zap,
+    shield: "shield-check",
+    users: "users-three",
+    key: "key",
+    activity: "heartbeat",
+    layers: "stack",
+    zap: "lightning",
   },
-  metadataTitle: "Tecnativa docker-socket-proxy vs Sockguard — Docker Socket Proxy Comparison",
+  metadataTitle: "Tecnativa docker-socket-proxy alternative: Sockguard vs Tecnativa",
   metadataDescription:
-    "Compare Tecnativa docker-socket-proxy and Sockguard. Tecnativa filters by ENV-var allow-lists — see how Sockguard adds request body inspection, per-client policies, signed bundles, and Prometheus metrics.",
+    "Sockguard as a Tecnativa docker-socket-proxy alternative. Tecnativa filters by ENV-var allow-lists; Sockguard adds request body inspection, per-client policies, signed bundles, and Prometheus metrics.",
   metadataKeywords: [
     "tecnativa docker-socket-proxy vs sockguard",
     "tecnativa alternative",
@@ -51,22 +50,23 @@ activity|No Upstream Reliability Regressions|Tecnativa v0.5.0, the version compa
   twitterDescription:
     "Compare Tecnativa docker-socket-proxy and Sockguard for Docker socket filtering.",
   competitorName: "Tecnativa",
-  heroTitle: "Tecnativa vs Sockguard",
+  competitorTool: "tecnativa",
+  heroTitle: "Sockguard: a Tecnativa docker-socket-proxy alternative",
   heroDescription: (
     <p>
-      Tecnativa&apos;s docker-socket-proxy is the community reference for ENV-var-based Docker
-      socket filtering — simple, battle-tested, and backed by the largest established community in
-      this category. Sockguard builds on that foundation with{" "}
-      <strong className="text-neutral-900 dark:text-neutral-200">
+      Looking for a Tecnativa docker-socket-proxy alternative? Tecnativa&apos;s proxy is the
+      community reference for ENV-var-based Docker socket filtering: simple, battle-tested, and
+      backed by the largest established community in this category. Sockguard builds on that
+      foundation with{" "}
+      <strong>
         request body inspection, per-client policies, signed policy bundles, and Prometheus metrics
-      </strong>{" "}
-      — without any SaaS layer.
+      </strong>
+      , without any SaaS layer.
     </p>
   ),
   migrationTitle: "Coming from Tecnativa?",
   migrationDescription:
     "Start with the compatible ENV allow-list, plus SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true, because a broad section grant such as CONTAINERS=1 covers the archive, export, log and attach endpoints and Sockguard fails startup rather than open them without an acknowledgment. Then map it to YAML before enabling signed policies, and drop the acknowledgment once the rules no longer need it. Signed mode rejects rule-generating compatibility variables so unsigned process state cannot modify verified rules. The socket mount stays the same.",
-  jsonLdName: "Tecnativa docker-socket-proxy vs Sockguard — Docker Socket Proxy Comparison",
-  jsonLdDescription:
-    "Compare Tecnativa docker-socket-proxy and Sockguard for Docker socket filtering.",
+  jsonLdName: "Tecnativa docker-socket-proxy alternative: Sockguard vs Tecnativa",
+  jsonLdDescription: "Sockguard as a Tecnativa docker-socket-proxy alternative.",
 } satisfies ComparisonRouteRawConfig;

@@ -1,15 +1,14 @@
-import { Activity, Eye, Fingerprint, Key, Shield, Users2 } from "lucide-react";
 import type { ComparisonRouteRawConfig } from "@/lib/comparison-route-data/types";
 
 export const elevenNotesComparisonRouteData = {
   slug: "11notes",
   comparisonTable: `
-Method filtering|Yes|Yes|tie
+Method + path filtering|Read-only by default (opt-in containers-only mode)|Yes|self
 Read-only focus|Yes (read-only by default; opt-in containers-only mode allows start/stop)|Configurable (read + controlled write)|competitor
 Zero-config|Yes (no file needed)|Partial (Tecnativa-compat env vars work with no file; YAML needed beyond that)|tie
 Attack surface|Minimal (read-only by default)|Broader (configurable)|competitor
 Request body inspection|No|Yes (12+ resource types)|self
-Per-client policies|No|CIDR + labels + cert selectors + unix peer|self
+Per-client policies|No|Yes (CIDR + labels + cert selectors incl. SPKI + unix peer)|self
 Write API control|Limited (blocks writes by default; opt-in mode allows container start/stop only)|Yes (default-deny + granular rules)|self
 Read-side redaction|Partial (targets 7 risky GETs; the image-export pattern misses both real export shapes; its image-inspect misfire, 11notes #12, was fixed in v2.1.6)|Full (visibility rules + JSON field redaction)|self
 Signed policy bundles|No|Yes (cosign keyed + keyless, Rekor)|self
@@ -22,21 +21,21 @@ Audit log schema|No|Yes (opt-in, JSON schema + reason codes)|self
 shield|Configurable Default-Deny|11notes is read-only by default, and its opt-in containers-only mode allows nothing beyond container start and stop. Sockguard starts default-deny and lets you open exactly the operations you need with explicit rules, so CI can run containers while monitoring only reads metrics.
 eye|Full Read-Side Redaction|11notes targets 7 risky GET endpoints, but its image-export pattern matches neither the single-image nor the multi-image export request shape, and the same style of pattern misfired on image inspect in 11notes issue #12 (fixed in v2.1.6). Sockguard goes further with visibility rules and JSON field redaction, so callers only see the labels, environment variables, and mount paths their policy allows.
 users|Per-Client Policies|11notes applies the same mode to every caller, read-only or containers-only. Sockguard assigns different policies per CIDR range, Docker label, TLS certificate selector, or Unix peer credential.
-fingerprint|Container Image Trust|Sockguard enforces image signatures at deployment time — blocking container or swarm-service creates whose images aren't signed or don't match a trusted digest. 11notes has no image-trust layer.
+fingerprint|Container Image Trust|Sockguard enforces image signatures at deployment time, blocking container or swarm-service creates whose images aren't signed or don't match a trusted digest. 11notes has no image-trust layer.
 key|Signed Policy Bundles|Sockguard verifies policy files with cosign keyed or keyless signatures and Rekor inclusion. Policy tampering is caught before any request is evaluated.
 activity|Prometheus Metrics|Sockguard exports socket-proxy request metrics, deny counts, and latency histograms. 11notes has no observability layer beyond container logs.
 `,
   highlightIconMap: {
-    shield: Shield,
-    eye: Eye,
-    users: Users2,
-    fingerprint: Fingerprint,
-    key: Key,
-    activity: Activity,
+    shield: "shield-check",
+    eye: "eye",
+    users: "users-three",
+    fingerprint: "fingerprint",
+    key: "key",
+    activity: "heartbeat",
   },
-  metadataTitle: "11notes docker-socket-proxy vs Sockguard — Docker Socket Proxy Comparison",
+  metadataTitle: "11notes docker-socket-proxy alternative: Sockguard vs 11notes",
   metadataDescription:
-    "Compare 11notes docker-socket-proxy and Sockguard. 11notes is read-only by default with an opt-in containers-only mode and almost no config; Sockguard adds a configurable default-deny policy engine, per-client policies, and signed bundles.",
+    "Sockguard as an 11notes docker-socket-proxy alternative. 11notes is read-only by default with an opt-in containers-only mode and almost no config; Sockguard adds a configurable default-deny policy engine, per-client policies, and signed bundles.",
   metadataKeywords: [
     "11notes docker-socket-proxy vs sockguard",
     "11notes alternative",
@@ -50,24 +49,21 @@ activity|Prometheus Metrics|Sockguard exports socket-proxy request metrics, deny
   twitterDescription:
     "Compare 11notes docker-socket-proxy and Sockguard for Docker socket filtering.",
   competitorName: "11notes",
-  heroTitle: "11notes vs Sockguard",
+  competitorTool: "elevenNotes",
+  heroTitle: "Sockguard: an 11notes docker-socket-proxy alternative",
   heroDescription: (
     <p>
+      Sockguard is an 11notes docker-socket-proxy alternative for when a fixed policy is too narrow.
       11notes takes the most opinionated approach to socket security: by default it allows most
       Docker API reads except a fixed set of sensitive endpoints and blocks every write, and an
       opt-in containers-only mode allows container start and stop and nothing else. Sockguard takes
-      a different approach: a{" "}
-      <strong className="text-neutral-900 dark:text-neutral-200">
-        configurable default-deny policy engine
-      </strong>{" "}
-      for reads and controlled writes, with per-client policies, signed bundles, and image trust
-      verification.
+      a different approach: a <strong>configurable default-deny policy engine</strong> for reads and
+      controlled writes, with per-client policies, signed bundles, and image trust verification.
     </p>
   ),
   migrationTitle: "Coming from 11notes?",
   migrationDescription:
     "Start with Sockguard's read-only preset, explicitly allow only the reads your client needs, then open write operations with rules scoped to trusted profiles. Unlike 11notes' fixed allow-most-reads policy, Sockguard requires you to choose the permitted surface.",
-  jsonLdName: "11notes docker-socket-proxy vs Sockguard — Docker Socket Proxy Comparison",
-  jsonLdDescription:
-    "Compare 11notes docker-socket-proxy and Sockguard for Docker socket filtering.",
+  jsonLdName: "11notes docker-socket-proxy alternative: Sockguard vs 11notes",
+  jsonLdDescription: "Sockguard as an 11notes docker-socket-proxy alternative.",
 } satisfies ComparisonRouteRawConfig;

@@ -9,8 +9,6 @@
 const githubOwner = "CodesWhat";
 const githubRepo = "sockguard";
 
-export type AuroraPalette = "ember" | "ocean" | "violet" | "forest" | "mono";
-
 export const SITE_CONFIG = {
   /** Brand name shown in the header, footer, and metadata. */
   name: "Sockguard",
@@ -25,11 +23,17 @@ export const SITE_CONFIG = {
   },
   /** Short product tagline used in page titles and OG metadata. */
   tagline: "Control what gets through",
+  /** Default <title>, OpenGraph and Twitter title. Carries the category for search. */
+  title: "Sockguard - Docker socket proxy that controls what gets through",
   /** Default meta / OpenGraph / Twitter description. */
   description:
     "We built a default-deny Docker socket proxy in Go. Filter Docker API requests by method, path, and body, then layer on signed policy bundles, per-profile rollout modes, rate limits, hot-reload, and Prometheus metrics.",
-  /** Production domain (no protocol, no trailing slash). */
-  domain: "getsockguard.com",
+  /**
+   * Production host (no protocol, no trailing slash). The apex getsockguard.com
+   * 307-redirects here, so this is the one canonical host for canonical links,
+   * og:url, JSON-LD, the sitemap, robots and security.txt.
+   */
+  domain: "www.getsockguard.com",
   /** GitHub owner/org. */
   githubOwner,
   /** GitHub repository name. */
@@ -54,8 +58,6 @@ export const SITE_CONFIG = {
   dockerImage: "codeswhat/sockguard",
   /** License link shown in the footer. */
   licenseUrl: "https://opensource.org/license/mit",
-  /** Aurora background palette token (see globals.css `[data-bg]`). */
-  aurora: "ember" as AuroraPalette,
   /** Prefix for localStorage keys (keeps multi-site deploys from colliding). */
   storagePrefix: "sg",
 } as const;

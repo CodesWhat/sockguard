@@ -1,177 +1,196 @@
 "use client";
 
-import { ShieldCheck, Terminal, TriangleAlert, Zap } from "lucide-react";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
-import { DockerRunSnippet } from "@/components/docker-run-snippet";
-import { SectionHeading } from "@/components/section-heading";
+import { type KeyboardEvent, type ReactNode, useState } from "react";
+import { Icon, type IconName } from "@/components/icon";
 import { TrackedLink } from "@/components/tracked-link";
-import { YamlBlock } from "@/components/yaml-block";
 import { captureCta } from "@/lib/analytics";
 import { SITE_CONFIG } from "@/lib/site-config";
 
 type Tab = "quick" | "secure";
 
-const TABS: { id: Tab; label: string; icon: typeof Zap }[] = [
-  { id: "quick", label: "Quick", icon: Zap },
-  { id: "secure", label: "Secure", icon: ShieldCheck },
+const TABS: { id: Tab; label: string; icon: IconName }[] = [
+  { id: "quick", label: "Quick", icon: "lightning" },
+  { id: "secure", label: "Secure", icon: "shield-check" },
 ];
 
-const dockerCompose = `services:
-  sockguard:
-    image: ${SITE_CONFIG.dockerImage}:latest
-    restart: unless-stopped
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro
-      - sockguard-socket:/var/run/sockguard
-    environment:
-      - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
+const K = ({ children }: { children: ReactNode }) => <span className="y-k">{children}</span>;
+const V = ({ children }: { children: ReactNode }) => <span className="y-v">{children}</span>;
+const C = ({ children }: { children: ReactNode }) => <span className="y-c">{children}</span>;
 
-  your-app:
-    depends_on:
-      - sockguard
-    volumes:
-      - sockguard-socket:/var/run/sockguard:ro
-    environment:
-      - DOCKER_HOST=unix:///var/run/sockguard/sockguard.sock
+function Quick() {
+  return (
+    <div className="code">
+      <div className="lab">
+        <Icon name="terminal-window" />
+        Quick start · docker run
+      </div>
+      <pre>
+        <code>
+          <C>$</C> <V>docker run</V> -d \{"\n"}
+          {"  "}--name sockguard \{"\n"}
+          {"  "}-v /var/run/docker.sock:/var/run/docker.sock:ro \{"\n"}
+          {"  "}-v /var/run/sockguard:/var/run/sockguard \{"\n"}
+          {"  "}-e SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock \{"\n"}
+          {"  "}
+          <V>{SITE_CONFIG.dockerImage}</V>
+        </code>
+      </pre>
+    </div>
+  );
+}
 
-volumes:
-  sockguard-socket:`;
+function ComposeFile() {
+  return (
+    <div className="code">
+      <div className="lab">
+        <Icon name="terminal-window" />
+        docker-compose.yml
+      </div>
+      <pre>
+        <code>
+          <K>services</K>:{"\n"}
+          {"  "}
+          <K>sockguard</K>:{"\n"}
+          {"    "}
+          <K>image</K>: <V>{SITE_CONFIG.dockerImage}:latest</V>
+          {"\n"}
+          {"    "}
+          <K>restart</K>: <V>unless-stopped</V>
+          {"\n"}
+          {"    "}
+          <K>volumes</K>:{"\n"}
+          {"      "}- /var/run/docker.sock:/var/run/docker.sock:ro{"\n"}
+          {"      "}- ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro{"\n"}
+          {"      "}- sockguard-socket:/var/run/sockguard{"\n"}
+          {"    "}
+          <K>environment</K>:{"\n"}
+          {"      "}- SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock{"\n"}
+          {"\n"}
+          {"  "}
+          <K>your-app</K>:{"\n"}
+          {"    "}
+          <K>depends_on</K>:{"\n"}
+          {"      "}- sockguard{"\n"}
+          {"    "}
+          <K>volumes</K>:{"\n"}
+          {"      "}- sockguard-socket:/var/run/sockguard:ro{"\n"}
+          {"    "}
+          <K>environment</K>:{"\n"}
+          {"      "}- DOCKER_HOST=unix:///var/run/sockguard/sockguard.sock{"\n"}
+          {"\n"}
+          <K>volumes</K>:{"\n"}
+          {"  "}
+          <K>sockguard-socket</K>:
+        </code>
+      </pre>
+    </div>
+  );
+}
 
-const sockguardYaml = `# Default-deny: any request not matched below gets a 403.
-rules:
-  - match: { method: GET, path: "/_ping" }
-    action: allow
-  - match: { method: GET, path: "/version" }
-    action: allow
-  - match: { method: GET, path: "/containers/json" }
-    action: allow
-  - match: { method: GET, path: "/containers/*/json" }
-    action: allow
-  - match: { method: GET, path: "/events" }
-    action: allow`;
+function PolicyFile() {
+  const rule = (path: string) => (
+    <>
+      {"  "}- match: {"{"} method: GET, path: <V>&quot;{path}&quot;</V> {"}"}
+      {"\n"}
+      {"    "}
+      <K>action</K>: <V>allow</V>
+      {"\n"}
+    </>
+  );
+  return (
+    <div className="code" style={{ marginTop: 12 }}>
+      <div className="lab">
+        <Icon name="file-code" />
+        sockguard.yaml
+      </div>
+      <pre>
+        <code>
+          <C># Default-deny: any request not matched below gets a 403.</C>
+          {"\n"}
+          <K>rules</K>:{"\n"}
+          {rule("/_ping")}
+          {rule("/version")}
+          {rule("/containers/json")}
+          {rule("/containers/*/json")}
+          {"  "}- match: {"{"} method: GET, path: <V>&quot;/events&quot;</V> {"}"}
+          {"\n"}
+          {"    "}
+          <K>action</K>: <V>allow</V>
+        </code>
+      </pre>
+    </div>
+  );
+}
 
 export function GetStarted() {
   const [tab, setTab] = useState<Tab>("quick");
   const pathname = usePathname();
 
-  const activateTab = (id: Tab) => {
+  const activate = (id: Tab, focus = false) => {
     setTab(id);
     captureCta(pathname, `install_${id}`, "get_started");
+    if (focus) document.getElementById(`tab-${id}`)?.focus();
+  };
+
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    const i = TABS.findIndex((t) => t.id === tab);
+    let next = -1;
+    if (e.key === "ArrowRight") next = (i + 1) % TABS.length;
+    else if (e.key === "ArrowLeft") next = (i - 1 + TABS.length) % TABS.length;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = TABS.length - 1;
+    if (next < 0) return;
+    e.preventDefault();
+    activate(TABS[next].id, true);
   };
 
   return (
-    <section className="border-t border-border/60 px-4 py-16">
-      <div className="mx-auto max-w-3xl">
-        <SectionHeading
-          eyebrow="Get running"
-          title="Get started in minutes"
-          subtitle="Add sockguard to your compose file and point your app at its scoped socket."
-          align="right"
-        />
-
-        {/* Quick / Secure tab toggle */}
-        <div className="mb-5 flex justify-center">
-          <div
-            role="tablist"
-            aria-label="Install method"
-            className="inline-flex gap-1 rounded-xl border border-neutral-200 bg-white/60 p-1 backdrop-blur-sm dark:border-neutral-800 dark:bg-neutral-900/60"
-            onKeyDown={(e) => {
-              const currentIndex = TABS.findIndex((t) => t.id === tab);
-              if (e.key === "ArrowRight") {
-                e.preventDefault();
-                activateTab(TABS[(currentIndex + 1) % TABS.length].id);
-              } else if (e.key === "ArrowLeft") {
-                e.preventDefault();
-                activateTab(TABS[(currentIndex - 1 + TABS.length) % TABS.length].id);
-              } else if (e.key === "Home") {
-                e.preventDefault();
-                activateTab(TABS[0].id);
-              } else if (e.key === "End") {
-                e.preventDefault();
-                activateTab(TABS[TABS.length - 1].id);
-              }
-            }}
+    <>
+      <div className="tabs" role="tablist" aria-label="Install method" onKeyDown={onKeyDown}>
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            id={`tab-${t.id}`}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.id}
+            aria-controls={`panel-${t.id}`}
+            tabIndex={tab === t.id ? 0 : -1}
+            onClick={() => activate(t.id)}
           >
-            {TABS.map(({ id, label, icon: Icon }) => {
-              const active = tab === id;
-              return (
-                <button
-                  key={id}
-                  id={`tab-${id}`}
-                  type="button"
-                  role="tab"
-                  aria-selected={active}
-                  aria-controls="get-started-panel"
-                  tabIndex={active ? 0 : -1}
-                  onClick={() => activateTab(id)}
-                  className={[
-                    "flex items-center gap-1.5 rounded-lg px-4 py-1.5 text-sm font-medium transition-colors",
-                    active
-                      ? "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900"
-                      : "text-neutral-500 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-neutral-100",
-                  ].join(" ")}
-                >
-                  <Icon className="h-3.5 w-3.5" />
-                  {label}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        <div role="tabpanel" id="get-started-panel" aria-labelledby={`tab-${tab}`}>
-          {tab === "quick" ? (
-            <DockerRunSnippet />
-          ) : (
-            <div className="space-y-4">
-              <div className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950 shadow-2xl">
-                <div className="flex items-center gap-2 border-b border-neutral-800 px-4 py-3">
-                  <Terminal className="h-4 w-4 text-neutral-500" />
-                  <span className="text-xs font-medium text-neutral-500">docker-compose.yml</span>
-                </div>
-                <YamlBlock
-                  code={dockerCompose}
-                  className="overflow-x-auto p-6 font-[family-name:var(--font-mono)] text-sm leading-relaxed text-neutral-300"
-                />
-              </div>
-              <div className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950 shadow-2xl">
-                <div className="flex items-center gap-2 border-b border-neutral-800 px-4 py-3">
-                  <ShieldCheck className="h-4 w-4 text-neutral-500" />
-                  <span className="text-xs font-medium text-neutral-500">sockguard.yaml</span>
-                </div>
-                <YamlBlock
-                  code={sockguardYaml}
-                  className="overflow-x-auto p-6 font-[family-name:var(--font-mono)] text-sm leading-relaxed text-neutral-300"
-                />
-              </div>
-            </div>
-          )}
-
-          <div className="mt-4 flex items-center justify-center gap-2 text-center text-sm">
-            {tab === "quick" ? (
-              <p className="flex items-center gap-2 text-neutral-500 dark:text-neutral-400">
-                <TriangleAlert className="h-4 w-4 shrink-0 text-amber-500" />
-                Mounts the Docker socket directly — fine for a local try, not for production.
-              </p>
-            ) : (
-              <p className="flex items-center gap-2 text-neutral-500 dark:text-neutral-400">
-                <ShieldCheck className="h-4 w-4 shrink-0 text-amber-500" />
-                We own the real socket. Your app only sees what you allow.{" "}
-                <TrackedLink
-                  href="/docs"
-                  ctaId="docs_root"
-                  placement="get_started"
-                  className="font-medium text-neutral-900 underline-offset-4 hover:underline dark:text-neutral-100"
-                >
-                  Full configuration docs →
-                </TrackedLink>
-              </p>
-            )}
-          </div>
-        </div>
+            <Icon name={t.icon} />
+            {t.label}
+          </button>
+        ))}
       </div>
-    </section>
+      <noscript>
+        <style>{"#panel-secure[hidden]{display:block;margin-top:24px}"}</style>
+      </noscript>
+      <div id="panel-quick" role="tabpanel" aria-labelledby="tab-quick" hidden={tab !== "quick"}>
+        <Quick />
+        <p className="note t-warning">
+          <span className="chip">
+            <Icon name="warning" />
+            Heads up
+          </span>
+          Mounts the Docker socket directly. Fine for a local try, not for production.
+        </p>
+      </div>
+      <div id="panel-secure" role="tabpanel" aria-labelledby="tab-secure" hidden={tab !== "secure"}>
+        <ComposeFile />
+        <PolicyFile />
+        <p className="note t-success">
+          <span className="chip">
+            <Icon name="shield-check" />
+            Scoped
+          </span>
+          We own the real socket. Your app only sees what you allow.{" "}
+          <TrackedLink href="/docs" ctaId="docs_root" placement="get_started">
+            Full configuration docs →
+          </TrackedLink>
+        </p>
+      </div>
+    </>
   );
 }

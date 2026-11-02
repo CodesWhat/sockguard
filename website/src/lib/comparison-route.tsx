@@ -1,7 +1,8 @@
-import { Check, type LucideIcon } from "lucide-react";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import type { ComparisonTool } from "@/app/data/comparison-rows";
 import { ComparisonPage, type ComparisonRow, type Highlight } from "@/components/comparison-page";
+import type { IconName } from "@/components/icon";
 import { BASE_URL, SITE_CONFIG } from "@/lib/site-config";
 
 type ComparisonMetadataConfig = {
@@ -28,6 +29,7 @@ export type ComparisonRouteConfig = {
   openGraphDescription?: string;
   twitterDescription?: string;
   competitorName: string;
+  competitorTool: Exclude<ComparisonTool, "sockguard">;
   heroTitle: string;
   heroDescription: ReactNode;
   comparisonData: ComparisonRow[];
@@ -36,22 +38,7 @@ export type ComparisonRouteConfig = {
   migrationDescription: string;
   jsonLdName: string;
   jsonLdDescription: string;
-  competitorBadge?: {
-    icon: LucideIcon;
-    label: string;
-    className: string;
-  };
-  selfBadge?: {
-    icon: LucideIcon;
-    label: string;
-    className: string;
-  };
 };
-
-const competitorBadgeClassName =
-  "bg-blue-100 px-3 py-1 text-sm text-blue-700 dark:bg-blue-900/50 dark:text-blue-400";
-const selfBadgeClassName =
-  "bg-amber-100 px-3 py-1 text-sm text-amber-700 dark:bg-amber-900/50 dark:text-amber-400";
 
 function buildComparisonMetadata({
   slug,
@@ -139,17 +126,6 @@ function buildComparisonJsonLd({
 }
 
 export function createComparisonRoute(config: ComparisonRouteConfig) {
-  const competitorBadge = config.competitorBadge ?? {
-    icon: Check,
-    label: `${config.competitorName} — Active`,
-    className: competitorBadgeClassName,
-  };
-  const selfBadge = config.selfBadge ?? {
-    icon: Check,
-    label: `${SITE_CONFIG.name} — Active`,
-    className: selfBadgeClassName,
-  };
-
   const metadata = buildComparisonMetadata({
     slug: config.slug,
     title: config.metadataTitle,
@@ -164,10 +140,9 @@ export function createComparisonRoute(config: ComparisonRouteConfig) {
     return (
       <ComparisonPage
         competitorName={config.competitorName}
+        competitorTool={config.competitorTool}
         heroTitle={config.heroTitle}
         heroDescription={config.heroDescription}
-        competitorBadge={competitorBadge}
-        selfBadge={selfBadge}
         comparisonData={config.comparisonData}
         highlights={config.highlights}
         migrationTitle={config.migrationTitle}
@@ -194,7 +169,7 @@ function row(
   return { feature, competitor, self, verdict };
 }
 
-function highlight(icon: LucideIcon, title: string, description: string): Highlight {
+function highlight(icon: IconName, title: string, description: string): Highlight {
   return { icon, title, description };
 }
 
@@ -223,7 +198,7 @@ export function rowsFromPipeTable(table: string): ComparisonRow[] {
 
 export function highlightsFromPipeTable(
   table: string,
-  iconMap: Record<string, LucideIcon>,
+  iconMap: Record<string, IconName>,
 ): Highlight[] {
   return parsePipeTableRows(table).map((columns, index) => {
     if (columns.length !== 3) {

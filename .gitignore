@@ -91,3 +91,7 @@ testssl-output.txt
 # output and should never be committed.
 conformance-*.json
 .codex/
+
+# Playwright (website/e2e) output
+website/playwright-report/
+website/test-results/
