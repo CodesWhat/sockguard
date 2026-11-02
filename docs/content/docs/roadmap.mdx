@@ -159,6 +159,27 @@ from source and a client-only request capture, not a live-daemon reproduction.
 | Proxy hardening | Socket cleanup is inode-owned, method-aware resource routing covers keyword names, generated response errors clear stale representation headers, inspected bodies retain deadlines through logging and metrics, and request metric labels have finite cardinality |
 | Release surfaces | README, docs, website, Helm metadata, verification assets, and migration guidance agree on v2.0.0; release blobs use sigstore bundles only and published metadata is read back before the release succeeds |
 
+## Shipped in v3.0.0
+
+v3.0.0 promotes [v3.0.0-rc.5](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0-rc.5)
+unchanged in behavior. It carries v2.4.3, which includes the v2.4 policy/security
+work. The insecure endpoint TLS setting and unverified `DOCKER_TLS` fallback
+deprecated in v2.1 are rejected. The [deprecation ledger](/deprecations) owns the
+exact contracts. All v2 lines retain those settings; the opaque BuildKit
+acknowledgment's removal version remains undecided.
+
+The module, imports, generated BuildKit descriptor options and release linker
+flags use `github.com/codeswhat/sockguard/v3`. The tag guard checks the module
+major; reproduction derives its linker package from the requested source. v2 tags
+keep `/v2`. See [migration](/migration#from-sockguard-v2-to-v3) for explicit
+image and Go installation commands and TLS configuration changes.
+
+The 2.4.x line remains supported for security fixes until v3.1 ships, through
+reviewed maintenance releases that preserve the current global latest channels.
+The v3 release candidates, rc.1 through rc.5, are recorded in the
+[CHANGELOG](https://github.com/CodesWhat/sockguard/blob/main/CHANGELOG.md) for
+history.
+
 ## Shipped in v2.4.3
 
 Completed attach, exec and BuildKit sessions are dropped from the listener's hijacked-connection tracker when their handler closes them; live sessions are still closed on shutdown. Keyless `subject_pattern` values must be a complete regexp on their own, so `a)|(b` no longer defeats the full-match anchor. Go coverage uploads to Codecov without gating merges, the Podman 5/6 nightly tracks Fedora major tags, and the Podman and governance docs are corrected.
@@ -203,27 +224,6 @@ mediated with syntax delegation disabled; arbitrary daemon frontend images,
 attestations and filesystem-loaded nested BuildOps remain denied. The Docker
 integration suite exercises the supported workflow with provenance disabled.
 See [Security](/security#standard-buildx-dockerfile-builds).
-
-## Shipped in v3.0.0
-
-v3.0.0 promotes [v3.0.0-rc.5](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0-rc.5)
-unchanged in behavior. It carries v2.4.3, which includes the v2.4 policy/security
-work. The insecure endpoint TLS setting and unverified `DOCKER_TLS` fallback
-deprecated in v2.1 are rejected. The [deprecation ledger](/deprecations) owns the
-exact contracts. All v2 lines retain those settings; the opaque BuildKit
-acknowledgment's removal version remains undecided.
-
-The module, imports, generated BuildKit descriptor options and release linker
-flags use `github.com/codeswhat/sockguard/v3`. The tag guard checks the module
-major; reproduction derives its linker package from the requested source. v2 tags
-keep `/v2`. See [migration](/migration#from-sockguard-v2-to-v3) for explicit
-image and Go installation commands and TLS configuration changes.
-
-The 2.4.x line remains supported for security fixes until v3.1 ships, through
-reviewed maintenance releases that preserve the current global latest channels.
-The v3 release candidates, rc.1 through rc.5, are recorded in the
-[CHANGELOG](https://github.com/CodesWhat/sockguard/blob/main/CHANGELOG.md) for
-history.
 
 ## Twelve-month direction
 

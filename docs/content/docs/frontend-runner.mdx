@@ -104,7 +104,7 @@ network, writable root filesystem, or host mounts need a different workflow.
 
 Interactive gateway containers and ExecProcess are denied, as are arbitrary daemon
 frontend requests, source-policy rewrites, explicit source-session overrides,
-and filesystem-loaded nested builds. The v2.4 candidate separately mediates ordinary Buildx requests for the built-in
+and filesystem-loaded nested builds. v2.4 and later separately mediate ordinary Buildx requests for the built-in
 Dockerfile compiler, with syntax delegation disabled. This runner does not
 permit an opaque frontend to run inside the daemon. A nested `# syntax=` selection is still subject to that denial; select
 the intended frontend image explicitly.
