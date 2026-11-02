@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Stop the Podman 5/6 nightly from breaking when quay purges the rebuilt Fedora base image. The matrix now tracks the Fedora 44 and 45 major tags instead of digests that expire within a day.
+- Stop completed attach, exec and BuildKit sessions from piling up in the listener's hijacked-connection tracker. net/http never reports a closed state for hijacked connections, so entries stayed until shutdown. The tracker now drops a connection when its handler closes it, and live sessions are still closed on shutdown.
 
 ## [2.4.2] - 2026-10-31
 
