@@ -168,6 +168,80 @@ jobs:
       fuzzers-json: >-
         ${{ needs.changes.outputs.docs_only != 'true' && (github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && '[{"name":"FuzzPathMatch","pkg":"./internal/filter/"},{"name":"FuzzGlobToRegex","pkg":"./internal/filter/"},{"name":"FuzzGlobToRegexString","pkg":"./internal/filter/"},{"name":"FuzzNormalizePath","pkg":"./internal/filter/"},{"name":"FuzzCompileRule","pkg":"./internal/filter/"},{"name":"FuzzBuild","pkg":"./internal/filter/"},{"name":"FuzzContainerCreate","pkg":"./internal/filter/"},{"name":"FuzzExec","pkg":"./internal/filter/"},{"name":"FuzzImagePull","pkg":"./internal/filter/"},{"name":"FuzzVolume","pkg":"./internal/filter/"},{"name":"FuzzSecret","pkg":"./internal/filter/"},{"name":"FuzzConfigWrite","pkg":"./internal/filter/"},{"name":"FuzzService","pkg":"./internal/filter/"},{"name":"FuzzSwarm","pkg":"./internal/filter/"},{"name":"FuzzPlugin","pkg":"./internal/filter/"},{"name":"FuzzNetwork","pkg":"./internal/filter/"},{"name":"FuzzReadUnaryGRPCMessage","pkg":"./internal/buildkitproxy/"},{"name":"FuzzControlRefFrame","pkg":"./internal/buildkitproxy/"},{"name":"FuzzEvaluateGatewayRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzFilterGatewayPong","pkg":"./internal/buildkitproxy/"},{"name":"FuzzEvaluateGetSecretRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzEvaluateSolveRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzEvaluateStatusRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzRewriteSessionAdvertisement","pkg":"./internal/buildkitproxy/"},{"name":"FuzzValidateUpgradeRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzFilterControlResponseMessage","pkg":"./internal/buildkitproxy/"},{"name":"FuzzDecode","pkg":"./internal/dockerfilters/"},{"name":"FuzzProxyHeadersAndBody","pkg":"./internal/proxy/"},{"name":"FuzzHijackHeadersAndBody","pkg":"./internal/proxy/"},{"name":"FuzzPathRoutingDifferential","pkg":"./internal/differential/"},{"name":"FuzzVisibilityFilter","pkg":"./internal/visibility/"},{"name":"FuzzLibpodPathIdentifiers","pkg":"./internal/visibility/"}]' || '[]' }}
 
+  # Coverage reporting split (Scott, 2026-11-02): Codecov reports coverage, Qlty
+  # Cloud grades maintainability. This job only reports. The vendor-free
+  # production coverage floor in scripts/ci/go-test.sh (COVERAGE_MIN) stays the
+  # gate, so a Codecov hiccup never flakes a required context. It reads the
+  # coverage.prod.txt profile the reusable Go test job already uploads in the
+  # go-test-<run>-<attempt> artifact, so shipping code is measured and the
+  # generated buildkitproto and test-only packages are not.
+  codecov:
+    name: "Coverage: Codecov Upload"
+    needs: [changes, go-ci]
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+
+    steps:
+      # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
+      - name: Harden Runner
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Resolve Go coverage artifact
+        id: coverage-artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COVERAGE_EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash scripts/ci/resolve-go-coverage.sh
+        continue-on-error: true
+
+      - name: Download Go test artifacts
+        id: coverage-download
+        if: steps.coverage-artifact.outcome == 'success'
+        # Resolve the actual producer attempt when only downstream jobs rerun.
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          artifact-ids: ${{ steps.coverage-artifact.outputs.artifact_id }}
+          merge-multiple: true
+          path: artifacts/go-test
+        continue-on-error: true
+
+      - name: Validate Go coverage profile
+        id: coverage-profile
+        if: steps.coverage-download.outcome == 'success'
+        run: |
+          if [ ! -s artifacts/go-test/coverage.prod.txt ]; then
+            echo "::error::Go coverage profile is missing or empty; Codecov upload skipped."
+            exit 1
+          fi
+        continue-on-error: true
+
+      - name: Upload coverage to Codecov
+        if: steps.coverage-profile.outcome == 'success'
+        # Tokenless OIDC upload: no Codecov credential to store or rotate, and
+        # skipped implicitly on fork PRs (no id-token grant). Non-gating by
+        # design.
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
+        with:
+          files: artifacts/go-test/coverage.prod.txt
+          # Search would also find the unfiltered coverage.txt and report it
+          # against the production floor.
+          disable_search: true
+          use_oidc: true
+          fail_ci_if_error: false
+        continue-on-error: true
+
   reproducible-build:
     name: "Reproducible Build (${{ matrix.goos }}/${{ matrix.goarch }})"
     needs: changes
