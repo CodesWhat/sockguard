@@ -47,10 +47,6 @@ export function HeaderMenu() {
           <Icon name="book-open" />
           Docs
         </TrackedAnchor>
-        <a href="/compare" onClick={close}>
-          <Icon name="arrows-clockwise" />
-          Compare
-        </a>
         <TrackedAnchor
           href={GITHUB_URL}
           ctaId="github_repository"
