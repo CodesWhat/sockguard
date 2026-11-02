@@ -18,8 +18,6 @@ const githubRepo = "sockguard";
  */
 export const BASE_PATH = "/docs";
 
-export type AuroraPalette = "ember" | "ocean" | "violet" | "forest" | "mono";
-
 export const SITE_CONFIG = {
   /** Brand name shown in the header, footer, and metadata. */
   name: "Sockguard",
@@ -42,14 +40,20 @@ export const SITE_CONFIG = {
   logoInvertOnDark: false,
   /** License link shown in the footer. */
   licenseUrl: "https://opensource.org/license/mit",
-  /** Aurora background palette token (see globals.css `[data-bg]`). */
-  aurora: "ember" as AuroraPalette,
+  /** Community Discord invite. */
+  discordUrl: "https://discord.gg/mWHCPJRzSx",
+  /** Docker Hub image, "owner/name". */
+  dockerImage: "codeswhat/sockguard",
+  /** Title suffix that carries the category on every docs page. */
+  docsTitleSuffix: "Sockguard Docker Socket Proxy Docs",
 } as const;
 
-/** "owner/repo" slug — intermediate value for GITHUB_URL. */
-const REPO_SLUG = `${SITE_CONFIG.githubOwner}/${SITE_CONFIG.githubRepo}`;
+/** "owner/repo" slug. */
+export const REPO_SLUG = `${SITE_CONFIG.githubOwner}/${SITE_CONFIG.githubRepo}`;
 /** Canonical GitHub repository URL. */
 export const GITHUB_URL = `https://github.com/${REPO_SLUG}`;
+/** Docker Hub repository URL. */
+export const DOCKER_HUB_URL = `https://hub.docker.com/r/${SITE_CONFIG.dockerImage}`;
 /** GitHub releases page. */
 export const GITHUB_RELEASES_URL = `${GITHUB_URL}/releases`;
 
