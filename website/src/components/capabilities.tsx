@@ -54,6 +54,11 @@ export function Capabilities() {
         <Icon name="magnifying-glass" />
         <input
           type="search"
+          role="combobox"
+          aria-expanded="true"
+          aria-controls="cap-list"
+          aria-autocomplete="list"
+          aria-activedescendant={sel >= 0 && visible[sel] ? `cap-opt-${visible[sel].n}` : undefined}
           placeholder="Search capabilities…"
           aria-label="Search capabilities"
           autoComplete="off"
@@ -70,14 +75,21 @@ export function Capabilities() {
         <b>sockguard capabilities</b>
         <span>{features.length} modules</span>
       </div>
-      <ul aria-label="Capabilities" ref={listRef}>
+      {/* biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: combobox listbox pattern; focus stays on the input */}
+      <ul id="cap-list" role="listbox" aria-label="Capabilities" ref={listRef}>
         {rows.map(({ f, n }) => {
           const shown = visibleIds.has(n);
           const idx = visible.findIndex((r) => r.n === n);
+          const selected = idx === sel && shown;
           return (
+            // biome-ignore lint/a11y/useFocusableInteractive: focus stays on the input (aria-activedescendant)
             <li
               key={f.title}
-              className={`it ${TONE[f.category]}${idx === sel && shown ? " sel" : ""}`}
+              id={`cap-opt-${n}`}
+              // biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: combobox listbox pattern
+              role="option"
+              aria-selected={selected}
+              className={`it ${TONE[f.category]}${selected ? " sel" : ""}`}
               hidden={!shown}
             >
               <span className="tn">
