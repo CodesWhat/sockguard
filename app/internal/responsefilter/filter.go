@@ -208,7 +208,7 @@ func isSuccessfulBodyResponse(statusCode int) bool {
 }
 
 func (f *Filter) modifyContainerInspect(resp *http.Response) error {
-	// Gate on the three options this function actually reads, not on
+	// Gate on the four options this function actually reads, not on
 	// Enabled(). Enabled() is the OR of all five, so gating on it sent an
 	// inspect body through the read-decode-re-encode round trip for a policy
 	// that cannot rewrite a single field of it, and turned a body this
@@ -216,7 +216,7 @@ func (f *Filter) modifyContainerInspect(resp *http.Response) error {
 	// document behind the first — into a 502 on a read no enabled option
 	// applied to. Every other handler in this file already gates on its own
 	// options; these two are the ones that did not.
-	if !f.opts.RedactContainerEnv && !f.opts.RedactMountPaths && !f.opts.RedactNetworkTopology {
+	if !f.opts.RedactContainerEnv && !f.opts.RedactMountPaths && !f.opts.RedactNetworkTopology && !f.opts.RedactSensitiveData {
 		return nil
 	}
 
@@ -227,6 +227,25 @@ func (f *Filter) modifyContainerInspect(resp *http.Response) error {
 
 	if f.opts.RedactContainerEnv {
 		if err := redactNestedValue(payload, "Config", "Env", []string{}); err != nil {
+			return rejectResponse(err)
+		}
+	}
+	// Podman's native inspect publishes Config.CreateCommand, the full
+	// `podman run` command line the container was created with, and
+	// Config.Secrets, the secrets mounted into it (libpod/define
+	// InspectContainerConfig, Podman v5 and v6). The command line repeats
+	// every -e value and every -v host path, so it is redacted under either
+	// option that protects those two things, and Secrets under
+	// redact_sensitive_data. dockerd has neither key and Podman omits Secrets
+	// when empty, so they are cleared only where present: a Docker body comes
+	// out byte-for-byte as before.
+	if f.opts.RedactContainerEnv || f.opts.RedactMountPaths {
+		if err := redactNestedValueIfPresent(payload, "Config", "CreateCommand", []string{}); err != nil {
+			return rejectResponse(err)
+		}
+	}
+	if f.opts.RedactSensitiveData {
+		if err := redactNestedValueIfPresent(payload, "Config", "Secrets", []any{}); err != nil {
 			return rejectResponse(err)
 		}
 	}
@@ -1659,6 +1678,24 @@ func redactNestedValue(payload map[string]any, objectKey, fieldKey string, repla
 		return fmt.Errorf("%s has unexpected type %T", objectKey, objectValue)
 	}
 	object[fieldKey] = replacement
+	return nil
+}
+
+// redactNestedValueIfPresent is redactNestedValue for a field the upstream may
+// not send at all: it replaces fieldKey only when the object already carries
+// it, so a daemon that has no such field gets none added.
+func redactNestedValueIfPresent(payload map[string]any, objectKey, fieldKey string, replacement any) error {
+	objectValue, ok := payload[objectKey]
+	if !ok || objectValue == nil {
+		return nil
+	}
+	object, ok := objectValue.(map[string]any)
+	if !ok {
+		return fmt.Errorf("%s has unexpected type %T", objectKey, objectValue)
+	}
+	if _, present := object[fieldKey]; present {
+		object[fieldKey] = replacement
+	}
 	return nil
 }
 
