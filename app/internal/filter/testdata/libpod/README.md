@@ -156,3 +156,16 @@ podman-remote lowers a `--log-opt` name before it reads it, so `--log-opt
 PATH=/var/log/sg-ctr.log` puts the same `path` on the wire. That one was
 recorded and not kept, since the body is `log_path.json` without the driver
 and the size.
+
+## Derived fixtures (not captured)
+
+Everything in `specgen/`, kept out of the top level because tests treat each
+top-level file as a capture: `volumes_from.json`, `cgroup_parent.json`, `groups.json`, `hostadd.json`,
+`oci_runtime.json`, `device_cgroup_rule.json`, `gpus.json` and `unmask.json`
+are `basic_create.json` with one key added. They were not captured off a
+daemon or a podman-remote client. The key, its type and its JSON tag come from
+`pkg/specgen/specgen.go` at Podman v5.8.1 and v6.1.4 (`volumes_from`,
+`cgroup_parent`, `groups`, `hostadd`, `oci_runtime`, `device_cgroup_rule` as
+`[]spec.LinuxDeviceCgroup`, `gpus` from v6 only, `unmask`), and
+`containerCreateCommand` carries the matching flag. Replace them with real
+captures when a client is at hand; the gate tests only read the added key.

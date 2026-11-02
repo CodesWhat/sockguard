@@ -580,6 +580,9 @@ func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 	unresolved := func(kind, reference, source string) string {
 		return fmt.Sprintf("libpod owner policy could not resolve %s %q referenced by %s", kind, reference, source)
 	}
+	// volumes_from is refused by the create inspector before owner isolation
+	// reads it, so the cases that carry one pin that order.
+	volumesFromRefused := "libpod container create denied: VolumesFrom is not allowed"
 	unreadable := func(create, field string) string {
 		return fmt.Sprintf("libpod owner policy denied %s with a %s reference it can't look up", create, field)
 	}
@@ -632,20 +635,18 @@ func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 			wantLookups: []string{alpine, "volumes/theirs-data"},
 		},
 		{
-			name:        "container with the volumes of another owner's container",
-			target:      containerURL,
-			body:        container(`"volumes_from":["theirs-ctr:ro"]`),
-			wantStatus:  http.StatusForbidden,
-			wantReason:  denied("container", "theirs-ctr", "container create volumes_from"),
-			wantLookups: []string{alpine, theirsCtr},
+			name:       "container with the volumes of another owner's container",
+			target:     containerURL,
+			body:       container(`"volumes_from":["theirs-ctr:ro"]`),
+			wantStatus: http.StatusForbidden,
+			wantReason: volumesFromRefused,
 		},
 		{
-			name:        "container with the volumes of another owner's container by ID prefix",
-			target:      containerURL,
-			body:        container(`"volumes_from":["bbbb"]`),
-			wantStatus:  http.StatusForbidden,
-			wantReason:  denied("container", "bbbb", "container create volumes_from"),
-			wantLookups: []string{alpine, "containers/bbbb"},
+			name:       "container with the volumes of another owner's container by ID prefix",
+			target:     containerURL,
+			body:       container(`"volumes_from":["bbbb"]`),
+			wantStatus: http.StatusForbidden,
+			wantReason: volumesFromRefused,
 		},
 		{
 			name:        "container on another owner's network",
@@ -743,13 +744,13 @@ func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 			wantLookups: []string{alpine},
 		},
 		{
-			// Podman 5.8.6 decodes devices_from and never reads it.
-			name:        "container with devices_from naming another owner's container",
-			target:      containerURL,
-			body:        container(`"devices_from":["theirs-ctr"]`),
-			wantStatus:  http.StatusCreated,
-			wantLookups: []string{alpine},
-			wantUses:    []string{},
+			// Podman 5.8.6 decodes devices_from and never reads it. The filter
+			// still refuses it outright as hardening, before any owner lookup.
+			name:       "container with devices_from naming another owner's container",
+			target:     containerURL,
+			body:       container(`"devices_from":["theirs-ctr"]`),
+			wantStatus: http.StatusForbidden,
+			wantReason: "libpod container create denied: devices_from is not allowed",
 		},
 
 		{
@@ -761,12 +762,11 @@ func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 			wantLookups: []string{alpine, "volumes/host-data"},
 		},
 		{
-			name:        "container with the volumes of a container nobody owns",
-			target:      containerURL,
-			body:        container(`"volumes_from":["host-ctr"]`),
-			wantStatus:  http.StatusForbidden,
-			wantReason:  denied("container", "host-ctr", "container create volumes_from"),
-			wantLookups: []string{alpine, "containers/host-ctr"},
+			name:       "container with the volumes of a container nobody owns",
+			target:     containerURL,
+			body:       container(`"volumes_from":["host-ctr"]`),
+			wantStatus: http.StatusForbidden,
+			wantReason: volumesFromRefused,
 		},
 		{
 			name:        "container on the default network by its own name",
@@ -840,18 +840,17 @@ func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 			wantLookups: []string{alpine, "networks/gone-net"},
 		},
 		{
-			name:        "container whose reference can't be looked up",
-			target:      containerURL,
-			body:        container(`"volumes_from":["broken-ctr"]`),
-			wantStatus:  http.StatusBadGateway,
-			wantReason:  lookupFailed,
-			wantLookups: []string{alpine, "containers/broken-ctr"},
+			name:       "container whose reference can't be looked up",
+			target:     containerURL,
+			body:       container(`"volumes_from":["broken-ctr"]`),
+			wantStatus: http.StatusForbidden,
+			wantReason: volumesFromRefused,
 		},
 
 		{
 			name:       "container with its own resources",
 			target:     containerURL,
-			body:       container(`"volumes":[{"Name":"mine-data","Dest":"/data"}],"volumes_from":["mine-ctr:ro"],"dependencyContainers":["mine-ctr"],"cgroupns":{"nsmode":"container","value":"mine-ctr"},"netns":{"nsmode":"bridge"},"Networks":{"mine-net":{}},` + imageVolume("sha256:"+createRefChainMineImageID)),
+			body:       container(`"volumes":[{"Name":"mine-data","Dest":"/data"}],"dependencyContainers":["mine-ctr"],"cgroupns":{"nsmode":"container","value":"mine-ctr"},"netns":{"nsmode":"bridge"},"Networks":{"mine-net":{}},` + imageVolume("sha256:"+createRefChainMineImageID)),
 			wantStatus: http.StatusCreated,
 			wantLookups: []string{
 				"containers/mine-ctr", alpine,
@@ -863,7 +862,6 @@ func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 				"image-volume mine-img (team-a)",
 				"network mine-net (team-a)",
 				"volume mine-data (team-a)",
-				"volumes-from mine-ctr (team-a)",
 			},
 		},
 		{
@@ -964,20 +962,18 @@ func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 		{
 			// Podman's decode fails on this, and it's refused here instead of
 			// being forwarded on the strength of that.
-			name:        "container with volumes_from that isn't a list",
-			target:      containerURL,
-			body:        container(`"volumes_from":"theirs-ctr"`),
-			wantStatus:  http.StatusForbidden,
-			wantReason:  unreadable("container create", "volumes_from"),
-			wantLookups: []string{alpine},
+			name:       "container with volumes_from that isn't a list",
+			target:     containerURL,
+			body:       container(`"volumes_from":"theirs-ctr"`),
+			wantStatus: http.StatusForbidden,
+			wantReason: "libpod container create denied: malformed JSON request body",
 		},
 		{
-			name:        "container with an empty volumes_from entry",
-			target:      containerURL,
-			body:        container(`"volumes_from":[":ro"]`),
-			wantStatus:  http.StatusForbidden,
-			wantReason:  unreadable("container create", "volumes_from"),
-			wantLookups: []string{alpine},
+			name:       "container with an empty volumes_from entry",
+			target:     containerURL,
+			body:       container(`"volumes_from":[":ro"]`),
+			wantStatus: http.StatusForbidden,
+			wantReason: volumesFromRefused,
 		},
 		{
 			name:        "container on a network with an empty name",
@@ -988,12 +984,11 @@ func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 			wantLookups: []string{alpine},
 		},
 		{
-			name:        "container naming more containers than owner isolation will look up",
-			target:      containerURL,
-			body:        container(`"volumes_from":[` + strings.Join(manyContainers, ",") + `]`),
-			wantStatus:  http.StatusForbidden,
-			wantReason:  "libpod owner policy denied container create that names more resources than it can authorize",
-			wantLookups: []string{alpine},
+			name:       "container naming more containers than owner isolation will look up",
+			target:     containerURL,
+			body:       container(`"volumes_from":[` + strings.Join(manyContainers, ",") + `]`),
+			wantStatus: http.StatusForbidden,
+			wantReason: volumesFromRefused,
 		},
 
 		{
@@ -1009,9 +1004,9 @@ func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 			name:       "another owner's resources without owner isolation",
 			owner:      "none",
 			target:     containerURL,
-			body:       container(`"volumes":[{"Name":"theirs-data","Dest":"/data"}],"volumes_from":["theirs-ctr"]`),
+			body:       container(`"volumes":[{"Name":"theirs-data","Dest":"/data"}],"dependencyContainers":["theirs-ctr"]`),
 			wantStatus: http.StatusCreated,
-			wantUses:   []string{"volume theirs-data (team-b)", "volumes-from theirs-ctr (team-b)"},
+			wantUses:   []string{"depends-on theirs-ctr (team-b)", "volume theirs-data (team-b)"},
 		},
 
 		{
