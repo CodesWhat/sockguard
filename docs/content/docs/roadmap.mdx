@@ -137,6 +137,7 @@ from source and a client-only request capture, not a live-daemon reproduction.
 | Operator checks | `sockguard verify` checks a loaded config against the daemon it will actually talk to, `server.shutdown_grace` replaces the hardcoded 30s drain, and a `SOCKGUARD_*` variable matching no configuration key warns at startup |
 | Rootless rule patterns rejected | A `match.path` without a leading `/` now fails config validation instead of loading and matching every rooted path; breaking for any config that used that spelling |
 | Per-request allocations | Route metric labels, the `/health` cache, visibility label injection, owner-label mutation, `POST /containers/create` decoding and query-string parsing stop repeating work on every request |
+| Release-job egress | The release workflows run `egress-policy: block` with curated allow-lists on every high-privilege job ([#471](https://github.com/CodesWhat/sockguard/pull/471)), keeping Sigstore, registry, provenance and SBOM publication working |
 
 ## Shipped in v2.1.0
 
@@ -237,9 +238,9 @@ Beyond the next planned line, work remains risk- and demand-driven:
 
 - continue mutation-test hardening of rule evaluation, request-body inspection,
   response redaction, and configuration validation;
-- add release-job egress restrictions without breaking Sigstore, registry,
-  provenance, or SBOM publication;
-- expand the CIS Docker Benchmark mapping and audit-ready policy examples;
+- move the remaining audit-mode quality and security workflows to
+  `egress-policy: block` (the release jobs already run it, shipped in v2.2.0);
+- broaden CIS Docker Benchmark coverage beyond the shipped Section 5 mapping;
 - consolidate the config-to-filter-to-policy translation layers behind one
   validated source of truth; and
 - evaluate named rule-path aliases and optional policy-extension mechanisms only
