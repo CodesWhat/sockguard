@@ -142,7 +142,7 @@ jobs:
       - name: Verify native socket is settled
         run: |
           streak=0
-          for _ in $(seq 1 60); do
+          for _ in $(seq 1 "${SOCKET_READY_ATTEMPTS:-60}"); do
             if curl --fail --silent --max-time 2 --unix-socket "$SOCKGUARD_TEST_PODMAN_SOCKET" \
               http://d/libpod/_ping >/dev/null; then
               streak=$((streak + 1))
