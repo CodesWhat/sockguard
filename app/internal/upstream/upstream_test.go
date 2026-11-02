@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/codeswhat/sockguard/v3/app/internal/testcert"
@@ -1757,167 +1758,175 @@ func TestResolverLoop_ZeroIntervalFallsThroughNegativeGuard(t *testing.T) {
 
 func TestResolver_Start_Idempotent(t *testing.T) {
 	t.Parallel()
-	var calls atomic.Int64
-	probe := func(_ context.Context, _ Endpoint) error {
-		calls.Add(1)
-		return nil
-	}
-	ep := Endpoint{Name: "/tmp/loop.sock", Network: "unix", Address: "/tmp/loop.sock"}
-	r, err := New([]Endpoint{ep}, Options{Probe: probe, Interval: -1})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		var calls atomic.Int64
+		probe := func(_ context.Context, _ Endpoint) error {
+			calls.Add(1)
+			return nil
+		}
+		ep := Endpoint{Name: "/tmp/loop.sock", Network: "unix", Address: "/tmp/loop.sock"}
+		r, err := New([]Endpoint{ep}, Options{Probe: probe, Interval: -1})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	r.Start(ctx)
-	r.Start(ctx) // second call must be a no-op
+		r.Start(ctx)
+		r.Start(ctx) // second call must be a no-op
 
-	// Wait briefly for the single startup probe.
-	time.Sleep(50 * time.Millisecond)
-	if calls.Load() != 1 {
-		t.Errorf("probe called %d times after two Start() calls with interval=-1, want 1", calls.Load())
-	}
+		// Wait until every goroutine in the bubble has finished or blocked:
+		// a duplicate loop would have run its startup probe by now.
+		synctest.Wait()
+		if calls.Load() != 1 {
+			t.Errorf("probe called %d times after two Start() calls with interval=-1, want 1", calls.Load())
+		}
+	})
 }
 
 func TestResolver_Start_ContextCancel_StopsLoop(t *testing.T) {
 	t.Parallel()
-	var calls atomic.Int64
-	probe := func(_ context.Context, _ Endpoint) error {
-		calls.Add(1)
-		return nil
-	}
-	ep := Endpoint{Name: "/tmp/cancel.sock", Network: "unix", Address: "/tmp/cancel.sock"}
-	r, err := New([]Endpoint{ep}, Options{
-		Probe:    probe,
-		Interval: 10 * time.Millisecond,
+	synctest.Test(t, func(t *testing.T) {
+		var calls atomic.Int64
+		probe := func(_ context.Context, _ Endpoint) error {
+			calls.Add(1)
+			return nil
+		}
+		ep := Endpoint{Name: "/tmp/cancel.sock", Network: "unix", Address: "/tmp/cancel.sock"}
+		r, err := New([]Endpoint{ep}, Options{
+			Probe:    probe,
+			Interval: 10 * time.Millisecond,
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		r.Start(ctx)
+
+		// Synthetic clock: 55ms covers the startup probe plus the ticks at
+		// 10, 20, 30, 40 and 50ms, exactly.
+		time.Sleep(55 * time.Millisecond)
+		synctest.Wait()
+		if got := calls.Load(); got != 6 {
+			t.Fatalf("probe calls before cancel = %d, want 6 (startup + 5 ticks)", got)
+		}
+
+		cancel()
+		synctest.Wait() // the loop goroutine has observed ctx.Done and exited
+
+		// Many tick intervals of synthetic time must add no further probes.
+		time.Sleep(500 * time.Millisecond)
+		synctest.Wait()
+		if got := calls.Load(); got != 6 {
+			t.Errorf("probe still running after ctx cancel: calls = %d, want 6", got)
+		}
 	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	r.Start(ctx)
-
-	// Let at least 2 probe ticks fire.
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-
-	snapshot := calls.Load()
-	if snapshot < 2 {
-		t.Errorf("expected at least 2 probe calls before cancel, got %d", snapshot)
-	}
-
-	// After cancel the count should not grow (allow a brief settle).
-	time.Sleep(30 * time.Millisecond)
-	after := calls.Load()
-	if after > snapshot+1 {
-		t.Errorf("probe still running after ctx cancel: before=%d after=%d", snapshot, after)
-	}
 }
 
 func TestResolver_Start_OnChange_Fires(t *testing.T) {
 	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		type change struct {
+			ep      Endpoint
+			healthy bool
+		}
+		changes := make(chan change, 10)
 
-	type change struct {
-		ep      Endpoint
-		healthy bool
-	}
-	changes := make(chan change, 10)
+		ep0 := Endpoint{Name: "ep0", Network: "unix", Address: "/tmp/onchange-ep0.sock"}
+		ep1 := Endpoint{Name: "ep1", Network: "unix", Address: "/tmp/onchange-ep1.sock"}
 
-	ep0 := Endpoint{Name: "ep0", Network: "unix", Address: "/tmp/onchange-ep0.sock"}
-	ep1 := Endpoint{Name: "ep1", Network: "unix", Address: "/tmp/onchange-ep1.sock"}
-
-	iteration := atomic.Int64{}
-	probe := func(_ context.Context, ep Endpoint) error {
-		// First round: ep0 healthy, ep1 unhealthy.
-		// Second round: ep0 unhealthy, ep1 healthy.
-		n := iteration.Load()
-		if n == 0 {
-			if ep.Name == "ep0" {
-				return nil
+		iteration := atomic.Int64{}
+		probe := func(_ context.Context, ep Endpoint) error {
+			// First round: ep0 healthy, ep1 unhealthy.
+			// Second round: ep0 unhealthy, ep1 healthy.
+			n := iteration.Load()
+			if n == 0 {
+				if ep.Name == "ep0" {
+					return nil
+				}
+				return errors.New("down")
 			}
-			return errors.New("down")
+			if ep.Name == "ep0" {
+				return errors.New("down")
+			}
+			return nil
 		}
-		if ep.Name == "ep0" {
-			return errors.New("down")
-		}
-		return nil
-	}
 
-	r, err := New([]Endpoint{ep0, ep1}, Options{
-		Probe:    probe,
-		Interval: 20 * time.Millisecond,
-		OnChange: func(ep Endpoint, healthy bool) {
-			changes <- change{ep: ep, healthy: healthy}
-		},
+		r, err := New([]Endpoint{ep0, ep1}, Options{
+			Probe:    probe,
+			Interval: 20 * time.Millisecond,
+			OnChange: func(ep Endpoint, healthy bool) {
+				changes <- change{ep: ep, healthy: healthy}
+			},
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		r.Start(ctx)
+
+		// drain returns the buffered OnChange events as endpoint-name -> healthy.
+		drain := func() map[string]bool {
+			got := map[string]bool{}
+			for {
+				select {
+				case c := <-changes:
+					got[c.ep.Name] = c.healthy
+				default:
+					return got
+				}
+			}
+		}
+
+		// Startup probe: ep0 up, ep1 down.
+		synctest.Wait()
+		got := drain()
+		if len(got) != 2 || !got["ep0"] || got["ep1"] {
+			t.Fatalf("startup OnChange events = %v, want ep0=true ep1=false", got)
+		}
+
+		// Flip state, then let exactly one tick (at 20ms) run.
+		iteration.Add(1)
+		time.Sleep(25 * time.Millisecond)
+		synctest.Wait()
+		got = drain()
+		if len(got) != 2 || got["ep0"] || !got["ep1"] {
+			t.Fatalf("state-flip OnChange events = %v, want ep0=false ep1=true", got)
+		}
 	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	r.Start(ctx)
-
-	// Collect the first two OnChange events (startup probe: ep0 up, ep1 down).
-	deadline := time.Now().Add(500 * time.Millisecond)
-	received := 0
-	for time.Now().Before(deadline) && received < 2 {
-		select {
-		case <-changes:
-			received++
-		default:
-			time.Sleep(5 * time.Millisecond)
-		}
-	}
-	if received < 2 {
-		t.Fatalf("expected 2 OnChange events from startup probe, got %d", received)
-	}
-
-	// Trigger a state flip in the next probe round.
-	iteration.Add(1)
-
-	// Collect the transition events (ep0 goes down, ep1 comes up).
-	received = 0
-	deadline = time.Now().Add(500 * time.Millisecond)
-	for time.Now().Before(deadline) && received < 2 {
-		select {
-		case <-changes:
-			received++
-		default:
-			time.Sleep(5 * time.Millisecond)
-		}
-	}
-	if received < 2 {
-		t.Fatalf("expected 2 OnChange events for state flip, got %d", received)
-	}
 }
 
 func TestResolver_OnChange_NoFire_WhenSameState(t *testing.T) {
 	t.Parallel()
-	var count atomic.Int64
-	ep := Endpoint{Name: "ep", Network: "unix", Address: "/tmp/nochange.sock"}
-	r, err := New([]Endpoint{ep}, Options{
-		Probe:    probeAlways(nil), // always healthy
-		Interval: 10 * time.Millisecond,
-		OnChange: func(_ Endpoint, _ bool) { count.Add(1) },
+	synctest.Test(t, func(t *testing.T) {
+		var count atomic.Int64
+		ep := Endpoint{Name: "ep", Network: "unix", Address: "/tmp/nochange.sock"}
+		r, err := New([]Endpoint{ep}, Options{
+			Probe:    probeAlways(nil), // always healthy
+			Interval: 10 * time.Millisecond,
+			OnChange: func(_ Endpoint, _ bool) { count.Add(1) },
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		r.Start(ctx)
+
+		// Let several probe ticks run on the synthetic clock.
+		time.Sleep(85 * time.Millisecond)
+		synctest.Wait()
+		cancel()
+		synctest.Wait()
+
+		// OnChange should fire exactly once: on the first known result.
+		if count.Load() != 1 {
+			t.Errorf("OnChange fired %d times, want 1 (only on first-known)", count.Load())
+		}
 	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	r.Start(ctx)
-
-	// Let several probe ticks run.
-	time.Sleep(80 * time.Millisecond)
-	cancel()
-
-	// OnChange should fire exactly once: on the first known result.
-	if count.Load() != 1 {
-		t.Errorf("OnChange fired %d times, want 1 (only on first-known)", count.Load())
-	}
 }
 
 // ── newTransport pool tunings ──────────────────────────────────────────────────
