@@ -122,6 +122,7 @@ jobs:
           - { name: FuzzFilterControlResponseMessage, pkg: ./internal/buildkitproxy/ }
           - { name: FuzzLibpodPathIdentifiers,        pkg: ./internal/visibility/ }
           - { name: FuzzDecodeLabels,                 pkg: ./internal/dockerresource/ }
+          - { name: FuzzCompileContainerLabelRules,   pkg: ./internal/clientacl/ }
 
     steps:
       # Stays audit for stage 1: this job already has an open, in-repo
