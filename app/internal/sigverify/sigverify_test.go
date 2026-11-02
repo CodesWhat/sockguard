@@ -508,3 +508,55 @@ func TestVerifyKeylessSuccess(t *testing.T) {
 		t.Fatalf("VerifyKeyless(matching identity) error = %v, want nil", err)
 	}
 }
+
+// TestCompileKeylessAnchoring pins the full-match contract: the subject must
+// match the operator's pattern in its entirety, and a pattern that only
+// compiles once wrapped by the anchor is rejected at config time.
+func TestCompileKeylessAnchoring(t *testing.T) {
+	valid := []struct {
+		name, pattern string
+		match, reject []string
+	}{
+		{"literal", `ci@acme\.com`, []string{"ci@acme.com"}, []string{"ci@acme.com.attacker.test", "x ci@acme.com"}},
+		{"alternation", `a|b`, []string{"a", "b"}, []string{"azzz", "zzb", "ab", ""}},
+		{"group alternation", `(a|b)c`, []string{"ac", "bc"}, []string{"acz", "zbc"}},
+		{"inline flag", `(?i)ci@acme\.com`, []string{"CI@ACME.COM"}, []string{"CI@ACME.COM.evil"}},
+		{"wildcard", `https://github\.com/acme/.+`, []string{"https://github.com/acme/x"}, []string{"zhttps://github.com/acme/x"}},
+	}
+	for _, tc := range valid {
+		t.Run(tc.name, func(t *testing.T) {
+			_, re, err := CompileKeyless("https://issuer.example", tc.pattern)
+			if err != nil {
+				t.Fatalf("CompileKeyless(%q) error = %v", tc.pattern, err)
+			}
+			for _, s := range tc.match {
+				if !re.MatchString(s) {
+					t.Errorf("pattern %q should match %q", tc.pattern, s)
+				}
+			}
+			for _, s := range tc.reject {
+				if re.MatchString(s) {
+					t.Errorf("pattern %q must not match %q", tc.pattern, s)
+				}
+			}
+		})
+	}
+
+	invalid := []struct{ name, pattern string }{
+		{"unbalanced paren bypass", `a)|(b`},
+		{"leading close paren", `a)(b`},
+		{"unterminated class", `[`},
+		{"unterminated group", `(a`},
+	}
+	for _, tc := range invalid {
+		t.Run("rejects "+tc.name, func(t *testing.T) {
+			_, re, err := CompileKeyless("https://issuer.example", tc.pattern)
+			if err == nil || !strings.Contains(err.Error(), "subject_pattern") {
+				t.Fatalf("CompileKeyless(%q) error = %v, want subject_pattern error", tc.pattern, err)
+			}
+			if re != nil {
+				t.Fatalf("CompileKeyless(%q) returned a regexp alongside error", tc.pattern)
+			}
+		})
+	}
+}

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Reject keyless `subject_pattern` values that are not a complete regexp on their own. A pattern like `a)|(b` used to compile to `^(?:a)|(b)$` and matched `azzz` and `zzb`, defeating the full-match anchor.
 - Stop the Podman 5/6 nightly from breaking when quay purges the rebuilt Fedora base image. The matrix now tracks the Fedora 44 and 45 major tags instead of digests that expire within a day.
 
 ## [2.4.2] - 2026-10-31
