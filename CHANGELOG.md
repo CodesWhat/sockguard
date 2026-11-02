@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Startup warning for create plus redaction.** `serve` and `validate` now warn when the effective rules (default or any client profile) allow `POST /containers/create` or `POST /libpod/containers/create` while `response.redact_container_env`, `response.redact_mount_paths` or `response.redact_network_topology` is on. The warning names the enabled keys and says clients that replay inspect output into create lose data. The drydock, watchtower, portwing and portainer presets stay silent.
+
 ### Fixed
 
 - **Portainer preset no longer redacts inspect output.** `portainer.yaml` (and the compose example copy) now sets `response.redact_mount_paths`, `redact_container_env` and `redact_network_topology` to `false`, like the drydock and watchtower presets. Portainer Recreate replays inspect output into container create, and with the default redactions the network disconnect 404ed on a redacted network ID, leaving the container stopped and renamed, while env and binds would have been lost.
