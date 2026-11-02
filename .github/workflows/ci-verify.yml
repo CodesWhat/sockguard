@@ -280,6 +280,55 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: bash scripts/ci/go-reproducible.sh
 
+  # Decodes the response filter's redacted output into the real Docker client
+  # types (moby/api and docker/docker). app/compat is its own module so those
+  # libraries never join the proxy's dependency graph. Deliberately not gated
+  # on `changes`: a docs-only PR runs it in about a minute, and a job that
+  # always reports can be made a required context later (a skipped job also
+  # satisfies the ruleset, but this one has no reason to skip).
+  client-compat:
+    name: "Client Compat (real Docker types)"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        with:
+          egress-policy: audit
+          disable-sudo: true
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: app/compat/go.sum
+
+      # -mod=readonly below fails with an opaque "updates to go.mod needed"
+      # when the root module moves (Renovate bumps it) and this nested module
+      # lags. Check drift first so the failure names the fix.
+      - name: Check app/compat go.mod is tidy
+        working-directory: app/compat
+        run: |
+          go mod tidy
+          if ! git diff --exit-code -- go.mod go.sum; then
+            echo "::error file=app/compat/go.mod::app/compat is out of sync with the root module. Run 'go mod tidy' in app/compat and commit go.mod and go.sum."
+            exit 1
+          fi
+
+      - name: Decode redacted responses into client types
+        working-directory: app/compat
+        env:
+          GOFLAGS: -mod=readonly
+        run: go test -count=1 ./...
+
   node-ci:
     name: "Node CI"
     if: github.event_name != 'schedule'
@@ -393,6 +442,12 @@ jobs:
 
       - name: Dependency Review
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294  # v5.0.0
+        with:
+          # Daemon-side advisories against github.com/docker/docker, which has no
+          # patched release (the module ends at v28.5.2; moby moved to new paths).
+          # Only the test-only app/compat module imports it, for its API data
+          # types, and runs no daemon code. Same IDs as the Qlty triage there.
+          allow-ghsas: GHSA-x86f-5xw2-fm2r, GHSA-rg2x-37c3-w2rh, GHSA-pxq6-2prw-chj9, GHSA-vp62-88p7-qqf5
 
   gitleaks:
     name: "Gitleaks"

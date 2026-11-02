@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add the `app/compat` test module and a `Client Compat (real Docker types)` CI job. It runs the response filter over daemon-shaped fixtures for every redacted endpoint under every redaction-flag combination, plus the visibility and ownership list filters, and decodes the output into the real `moby/moby/api` and `docker/docker` v28 types. A placeholder written into a non-string wire field now fails CI instead of a user's client. The module is separate from the proxy, so neither library enters the binary's dependencies.
+
 ### Fixed
 
 - Stop `response.redact_network_topology` from breaking typed Docker clients. IP and MAC address fields (`IPAddress`, `Gateway`, `IPv6Gateway`, `GlobalIPv6Address`, `LinkLocalIPv6Address`, `MacAddress` on container list, inspect and `/system/df` `NetworkSettings` and each `Networks` entry, plus service `VirtualIPs[].Addr`) now come back as `""` instead of `"<redacted>"`. Current moby API types decode them as `netip.Addr`, `netip.Prefix` and `HardwareAddr`, so clients like Traefik and Diun failed with errors like `ParseAddr("<redacted>")`. Plain string identifiers (`EndpointID`, `NetworkID`, `SandboxID`, `SandboxKey`, `Bridge`, `NetworkMode`) and node/swarm `Addr` strings still read `<redacted>`. The Traefik preset (`app/configs/traefik.yaml` and `examples/compose/traefik/sockguard.yaml`) now sets `response.redact_network_topology: false`, because Traefik routes to container IPs and cannot work with blanked addresses. The same fix covers byte fields: `CertIssuerSubject` and `CertIssuerPublicKey` in node, swarm and `/info` `TLSInfo`, and `Spec.Data` on configs and secrets, are `[]byte` (base64) in moby/api and docker/docker, so the `"<redacted>"` placeholder made every Go client fail to decode `/nodes`, `/nodes/{id}`, `/swarm` and `/info` on swarm managers. They now come back as `""`, which is valid empty base64. `TrustRoot` stays a string and still reads `<redacted>`.
