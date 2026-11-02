@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.3] - 2026-11-02
+
+v2.4.3 stops completed hijacked sessions from accumulating in the listener, rejects malformed keyless subject patterns, and adds Codecov reporting, docs corrections and Podman CI fixes. It carries v2.4.2.
+
 ### Changed
 
 - **Go coverage now uploads to Codecov.** A new non-gating `Coverage: Codecov Upload` job in `ci-verify.yml` reads the `coverage.prod.txt` profile the reusable Go test job already publishes and sends it with a tokenless OIDC upload (`id-token: write` on that job only, no stored credential). `codecov.yml` keeps both statuses informational, and the `COVERAGE_MIN` floor in `scripts/ci/go-test.sh` stays the merge gate. Qlty Cloud keeps grading maintainability.

@@ -459,4 +459,15 @@ export const roadmap: Milestone[] = [
       "CI retries and deadlines are bounded, local coverage matches CI, and maintenance releases preserve global latest channels",
     ],
   },
+  {
+    version: "v2.4.3",
+    title: "Session Cleanup & Pattern Validation",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Completed attach, exec and BuildKit sessions are dropped from the hijacked-connection tracker instead of accumulating until shutdown",
+      "Keyless subject patterns that are not a complete regexp on their own are rejected, closing an anchor bypass",
+      "Go coverage uploads to Codecov without gating merges, and Podman nightly CI tracks Fedora major tags",
+    ],
+  },
 ];
