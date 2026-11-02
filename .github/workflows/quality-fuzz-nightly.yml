@@ -113,6 +113,7 @@ jobs:
           - { name: FuzzCatalogReachability,       pkg: ./internal/cmd/ }
           - { name: FuzzFormBodyGuardCoversNetHTTP, pkg: ./internal/cmd/ }
           - { name: FuzzValidateServerShutdownGrace, pkg: ./internal/config/ }
+          - { name: FuzzCompileKeyless,            pkg: ./internal/sigverify/ }
 
     steps:
       # audit, not block. `block` on this job is what kills 3 to 5 legs a

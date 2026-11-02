@@ -110,6 +110,7 @@ jobs:
           - { name: FuzzCatalogReachability,       pkg: ./internal/cmd/ }
           - { name: FuzzFormBodyGuardCoversNetHTTP, pkg: ./internal/cmd/ }
           - { name: FuzzValidateServerShutdownGrace, pkg: ./internal/config/ }
+          - { name: FuzzCompileKeyless,            pkg: ./internal/sigverify/ }
 
     steps:
       # Stays audit for stage 1: this job already has an open, in-repo
