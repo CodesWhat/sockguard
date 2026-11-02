@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Match visibility `image_patterns` on the image name for container inspect, `/logs`, `/top` and `/stats`. Inspect reports the image ID (`sha256:...`) in the top-level `Image` field while the list reports the name, so a container visible in the list returned 404 on every single-container read. Sockguard now matches `Config.Image` (Docker and Podman compat) or `ImageName` (libpod) and falls back to `Image` only when both are empty. A body with no usable reference stays hidden.
+
 ## [2.4.3] - 2026-11-02
 
 v2.4.3 stops completed hijacked sessions from accumulating in the listener, rejects malformed keyless subject patterns, and adds Codecov reporting, docs corrections and Podman CI fixes. It carries v2.4.2.
