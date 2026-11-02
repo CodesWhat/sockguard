@@ -111,7 +111,7 @@ func TestWarnUnknownConfigKeysLogsOncePerKey(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
-	warnUnknownConfigKeys(logger, cfgPath, nil)
+	warnUnknownConfigKeys(logger, cfgPath, []byte(unknownKeysYAML))
 
 	if got := strings.Count(buf.String(), "unrecognized configuration key"); got != 2 {
 		t.Fatalf("want 2 warnings, got %d:\n%s", got, buf.String())
@@ -127,11 +127,12 @@ func TestWarnUnknownConfigKeysLogsOncePerKey(t *testing.T) {
 		t.Fatalf("bytes path: want 1 warning, got %d:\n%s", got, buf.String())
 	}
 
-	// Nil logger and missing file are quiet no-ops.
-	warnUnknownConfigKeys(nil, cfgPath, nil)
+	// Nil logger and nil bytes (missing file) are quiet no-ops, and the file
+	// at path is never re-read.
+	warnUnknownConfigKeys(nil, cfgPath, []byte(unknownKeysYAML))
 	buf.Reset()
-	warnUnknownConfigKeys(logger, filepath.Join(t.TempDir(), "none.yaml"), nil)
+	warnUnknownConfigKeys(logger, cfgPath, nil)
 	if buf.Len() != 0 {
-		t.Fatalf("missing file should warn nothing:\n%s", buf.String())
+		t.Fatalf("nil bytes should warn nothing:\n%s", buf.String())
 	}
 }

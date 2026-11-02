@@ -192,10 +192,11 @@ func (c *reloadCoordinator) reload() {
 	// diverted by a concurrent file swap (#8) or SOCKGUARD_* env vars (#16).
 	// Without a bundle, fall back to the normal file+env load.
 	var newCfg *config.Config
+	warnBytes := verifiedBytes
 	if verifiedBytes != nil {
 		newCfg, err = c.deps.loadConfigBytes(verifiedBytes)
 	} else {
-		newCfg, err = c.deps.loadConfig(c.cfgFile)
+		newCfg, warnBytes, err = loadConfigAndData(c.deps, c.cfgFile)
 	}
 	if err != nil {
 		c.logger.Warn("config reload rejected: load failed",
@@ -206,7 +207,7 @@ func (c *reloadCoordinator) reload() {
 		c.runtime.metrics.ObserveConfigReload("reject_load")
 		return
 	}
-	warnUnknownConfigKeys(c.logger, c.cfgFile, verifiedBytes)
+	warnUnknownConfigKeys(c.logger, c.cfgFile, warnBytes)
 	if c.bundleVerifier != nil {
 		pinPolicyBundleTrust(newCfg, c.bundleTrust)
 	}

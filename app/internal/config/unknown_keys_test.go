@@ -112,3 +112,18 @@ func TestShippedConfigsHaveNoUnknownKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadWithDataReturnsParsedBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "c.yaml")
+	body := []byte("zzz: 1\n")
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, data, err := LoadWithData(path)
+	if err != nil || cfg == nil || string(data) != string(body) {
+		t.Fatalf("LoadWithData = %v, %q, %v", cfg, data, err)
+	}
+	if _, data, err := LoadWithData(filepath.Join(t.TempDir(), "none.yaml")); err != nil || data != nil {
+		t.Fatalf("missing file: data=%q err=%v", data, err)
+	}
+}
