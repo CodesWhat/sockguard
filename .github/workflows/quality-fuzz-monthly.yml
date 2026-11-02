@@ -110,6 +110,26 @@ jobs:
           - { name: FuzzCatalogReachability,       pkg: ./internal/cmd/ }
           - { name: FuzzFormBodyGuardCoversNetHTTP, pkg: ./internal/cmd/ }
           - { name: FuzzValidateServerShutdownGrace, pkg: ./internal/config/ }
+          - { name: FuzzReadUnaryGRPCMessage,         pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzControlRefFrame,              pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzEvaluateGatewayRequest,       pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzFilterGatewayPong,            pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzEvaluateGetSecretRequest,     pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzEvaluateSolveRequest,         pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzEvaluateStatusRequest,        pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzRewriteSessionAdvertisement,  pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzValidateUpgradeRequest,       pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzFilterControlResponseMessage, pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzLibpodPathIdentifiers,        pkg: ./internal/visibility/ }
+          - { name: FuzzDecodeLabels,                 pkg: ./internal/dockerresource/ }
+          - { name: FuzzCompileContainerLabelRules,   pkg: ./internal/clientacl/ }
+          - { name: FuzzTlogEntryFromAnnotation,      pkg: ./internal/imagefetch/ }
+          - { name: FuzzPemCertToDER,                 pkg: ./internal/imagefetch/ }
+          - { name: FuzzBuildBundle,                  pkg: ./internal/imagefetch/ }
+          - { name: FuzzDockerfileInspect,            pkg: ./internal/dockerfileinspect/ }
+          - { name: FuzzCertificateURIStrings,        pkg: ./internal/certmatch/ }
+          - { name: FuzzNormalizeSubjectPublicKeySHA256Pin, pkg: ./internal/pkipin/ }
+          - { name: FuzzCompileKeyless,            pkg: ./internal/sigverify/ }
 
     steps:
       # Stays audit for stage 1: this job already has an open, in-repo

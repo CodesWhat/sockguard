@@ -66,6 +66,14 @@ func CompileKeyless(issuer, subjectPattern string) (string, *regexp.Regexp, erro
 	// match any SAN that merely *contains* it (e.g. "ci@acme.com.attacker.test"),
 	// letting a Fulcio cert for a different identity pass — both here and in
 	// sigstore-go's SANMatcher, which also matches on a substring basis.
+	//
+	// Compile the operator's pattern on its own first. Wrapping alone is not
+	// enough: an unbalanced pattern such as "a)|(b" turns into "^(?:a)|(b)$",
+	// which is valid but anchors only the outer halves ("azzz" and "zzb" both
+	// match). A pattern that is not a complete regexp by itself is rejected.
+	if _, err := regexp.Compile(pattern); err != nil {
+		return "", nil, fmt.Errorf("subject_pattern: %w", err)
+	}
 	re, err := regexp.Compile("^(?:" + pattern + ")$")
 	if err != nil {
 		return "", nil, fmt.Errorf("subject_pattern: %w", err)

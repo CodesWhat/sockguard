@@ -79,13 +79,17 @@ func TestBridgeIdleTimeoutTeardownDoesNotLeakGoroutines(t *testing.T) {
 
 	const iterations = 10
 	for i := 0; i < iterations; i++ {
-		runBridgeAndWaitClosed(t, EndpointGRPC, allowAllPolicy, limits, echoDaemonHandler(), func(_ *http.ClientConn) {
-			// Hold the connection idle past Limits.IdleTimeout so
-			// the HTTP/2 server's own idle machinery closes the tunnel,
-			// rather than the helper's client-initiated close winning
-			// the race — otherwise this measures the same teardown path
-			// TestBridgeSetupTeardownDoesNotLeakGoroutines already covers.
-			time.Sleep(4 * limits.IdleTimeout)
+		runBridgeLifecycle(t, EndpointGRPC, allowAllPolicy, limits, echoDaemonHandler(), func(_ *http.ClientConn, bridgeDone <-chan struct{}) {
+			// Wait for the bridge to finish on its own, with no client
+			// close, so the HTTP/2 server's idle machinery is what ends
+			// the tunnel. Closing the driver first would measure the same
+			// teardown path TestBridgeSetupTeardownDoesNotLeakGoroutines
+			// already covers.
+			select {
+			case <-bridgeDone:
+			case <-time.After(5 * time.Second):
+				t.Fatalf("iteration %d: runBridge did not finish on its own after Limits.IdleTimeout", i)
+			}
 		})
 	}
 }

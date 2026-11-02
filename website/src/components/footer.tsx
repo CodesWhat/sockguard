@@ -28,7 +28,7 @@ const projectLinks: FooterLink[] = [
   { label: "Docker Hub", href: DOCKER_HUB_URL, external: true },
   {
     label: "Go Reference",
-    href: `https://pkg.go.dev/github.com/${REPO_SLUG.toLowerCase()}/v2`,
+    href: `https://pkg.go.dev/github.com/${REPO_SLUG.toLowerCase()}/v3`,
     external: true,
   },
 ];

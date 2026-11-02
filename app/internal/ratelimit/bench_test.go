@@ -10,7 +10,6 @@ package ratelimit
 
 import (
 	"fmt"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -90,10 +89,8 @@ func BenchmarkLimiterAllowNHot(b *testing.B) {
 // Verifies that Limiter.Stop() can be called safely while AllowN calls are
 // running concurrently:
 //   - No panic (closed stopCh must not race with eviction goroutine reads)
-//   - No goroutine leak: the eviction goroutine exits within a bounded window
-//     after Stop returns
-//
-// Uses stdlib runtime.NumGoroutine polling — no external dependency.
+//   - No goroutine leak: Stop joins the limiter's own eviction goroutine, so
+//     it must return within a bounded window
 // ---------------------------------------------------------------------------
 
 func TestLimiterStop_MidFlightRace(t *testing.T) {
@@ -104,9 +101,6 @@ func TestLimiterStop_MidFlightRace(t *testing.T) {
 		stopAfterMs  = 10
 		drainTimeout = 3 * time.Second
 	)
-
-	// Snapshot goroutine count before we start so we can measure the delta.
-	goroutinesBefore := runtime.NumGoroutine()
 
 	l := newLimiterWithClock(65535, 65535, time.Now)
 
@@ -130,33 +124,33 @@ func TestLimiterStop_MidFlightRace(t *testing.T) {
 
 	// Let workers run briefly, then stop the limiter mid-flight.
 	time.Sleep(stopAfterMs * time.Millisecond)
-	l.Stop() // must not panic even with concurrent AllowN calls
+	// Stop joins the eviction goroutine via its WaitGroup, so returning
+	// within the bound is the per-limiter proof that the goroutine exited.
+	// No process-wide goroutine count is involved, so parallel tests can't
+	// perturb it.
+	stopReturned := make(chan struct{})
+	go func() {
+		defer close(stopReturned)
+		l.Stop() // must not panic even with concurrent AllowN calls
+	}()
+	select {
+	case <-stopReturned:
+	case <-time.After(drainTimeout):
+		t.Fatal("Limiter.Stop did not return within the drain timeout; eviction goroutine did not exit")
+	}
 	stopped.Store(true)
 	wg.Wait()
 
-	// Stop must be idempotent.
-	l.Stop()
-
-	// After Stop and all workers exiting, the eviction goroutine should have
-	// exited. Poll runtime.NumGoroutine to confirm no leak. We allow
-	// drainTimeout for the runtime to reclaim the goroutine stack.
-	deadline := time.Now().Add(drainTimeout)
-	for time.Now().Before(deadline) {
-		current := runtime.NumGoroutine()
-		// Allow a small buffer above the pre-test baseline for test runtime
-		// overhead (gc, finalizers, etc.), but the eviction goroutine (1 per
-		// Limiter) must not be among them.
-		if current <= goroutinesBefore+5 {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	// Final check with a helpful diagnostic.
-	current := runtime.NumGoroutine()
-	if current > goroutinesBefore+5 {
-		t.Errorf("possible goroutine leak after Limiter.Stop(): before=%d, after=%d (delta=%d, want ≤5)",
-			goroutinesBefore, current, current-goroutinesBefore)
+	// Stop must be idempotent and still return promptly.
+	secondStop := make(chan struct{})
+	go func() {
+		defer close(secondStop)
+		l.Stop()
+	}()
+	select {
+	case <-secondStop:
+	case <-time.After(drainTimeout):
+		t.Fatal("second Limiter.Stop did not return within the drain timeout")
 	}
 }
 
