@@ -130,6 +130,7 @@ jobs:
           - { name: FuzzPemCertToDER,                 pkg: ./internal/imagefetch/ }
           - { name: FuzzBuildBundle,                  pkg: ./internal/imagefetch/ }
           - { name: FuzzDockerfileInspect,            pkg: ./internal/dockerfileinspect/ }
+          - { name: FuzzCertificateURIStrings,        pkg: ./internal/certmatch/ }
 
     steps:
       # audit, not block. `block` on this job is what kills 3 to 5 legs a
