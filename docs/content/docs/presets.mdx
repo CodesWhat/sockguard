@@ -335,6 +335,8 @@ Every allowed path is a named list or required inspect endpoint rather than a
 `GET /containers/*/logs` or `GET /containers/*/archive` has to add that rule
 and the acknowledgment itself.
 
+The preset sets `response.redact_network_topology: false` because Traefik routes to container IPs, so blanked addresses would leave it with nothing to route to.
+
 ## Portainer (`portainer.yaml`)
 
 Full Docker API access for Portainer management UI.

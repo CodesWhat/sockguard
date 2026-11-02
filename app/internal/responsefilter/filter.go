@@ -1068,7 +1068,7 @@ func redactSecretPayload(payload map[string]any) error {
 	if err != nil || !found {
 		return err
 	}
-	redactStringField(spec, "Data")
+	redactByteField(spec, "Data")
 	return nil
 }
 
@@ -1077,7 +1077,7 @@ func redactConfigPayload(payload map[string]any) error {
 	if err != nil || !found {
 		return err
 	}
-	redactStringField(spec, "Data")
+	redactByteField(spec, "Data")
 	return nil
 }
 
@@ -1364,7 +1364,7 @@ func redactVirtualIPs(payload map[string]any, keys ...string) error {
 			return fmt.Errorf("%s entry has unexpected type %T", strings.Join(keys, "."), value)
 		}
 		redactStringField(object, "NetworkID")
-		redactStringField(object, "Addr")
+		redactTypedAddressFields(object, "Addr")
 	}
 	return nil
 }
@@ -1483,8 +1483,8 @@ func redactEnvVar(value string) string {
 
 func redactTLSInfo(payload map[string]any) {
 	redactStringField(payload, "TrustRoot")
-	redactStringField(payload, "CertIssuerSubject")
-	redactStringField(payload, "CertIssuerPublicKey")
+	redactByteField(payload, "CertIssuerSubject")
+	redactByteField(payload, "CertIssuerPublicKey")
 }
 
 // withResponseBody reads resp's body into a buffer borrowed from
@@ -1776,6 +1776,32 @@ func redactStringField(payload map[string]any, key string) {
 	payload[key] = redactedValue
 }
 
+// redactByteField blanks a field Docker clients decode as []byte (base64 on
+// the wire). "<redacted>" is not valid base64, so a Go client fails the whole
+// response; "" is valid empty base64 and decodes to a nil slice.
+func redactByteField(payload map[string]any, key string) {
+	value, ok := payload[key]
+	if !ok || value == nil {
+		return
+	}
+	payload[key] = ""
+}
+
+// redactTypedAddressFields blanks IP and MAC address fields to "". Current
+// Docker clients decode these as netip.Addr, netip.Prefix and HardwareAddr,
+// which reject the "<redacted>" placeholder and fail the whole response.
+// "" is what the daemon itself emits for an unset address, and every typed
+// decoder accepts it.
+func redactTypedAddressFields(payload map[string]any, keys ...string) {
+	for _, key := range keys {
+		value, ok := payload[key]
+		if !ok || value == nil {
+			continue
+		}
+		payload[key] = ""
+	}
+}
+
 func redactBindSpec(bind string) string {
 	source, rest := splitBindSpec(bind)
 	if !isSensitiveHostPath(source) {
@@ -1916,12 +1942,6 @@ func redactContainerNetworkTopology(payload map[string]any) error {
 		[]string{
 			"Bridge",
 			"EndpointID",
-			"Gateway",
-			"GlobalIPv6Address",
-			"IPAddress",
-			"IPv6Gateway",
-			"LinkLocalIPv6Address",
-			"MacAddress",
 			"SandboxID",
 			"SandboxKey",
 		},
@@ -1930,6 +1950,14 @@ func redactContainerNetworkTopology(payload map[string]any) error {
 			"IPPrefixLen",
 			"LinkLocalIPv6PrefixLen",
 		},
+	)
+	redactTypedAddressFields(networkSettings,
+		"Gateway",
+		"GlobalIPv6Address",
+		"IPAddress",
+		"IPv6Gateway",
+		"LinkLocalIPv6Address",
+		"MacAddress",
 	)
 	redactArrayField(networkSettings, "SecondaryIPAddresses")
 	redactArrayField(networkSettings, "SecondaryIPv6Addresses")
@@ -1959,17 +1987,20 @@ func redactContainerNetworkTopology(payload map[string]any) error {
 		redactNetworkAddressFields(network,
 			[]string{
 				"EndpointID",
-				"Gateway",
-				"GlobalIPv6Address",
-				"IPAddress",
-				"IPv6Gateway",
-				"MacAddress",
 				"NetworkID",
 			},
 			[]string{
 				"GlobalIPv6PrefixLen",
 				"IPPrefixLen",
 			},
+		)
+		redactTypedAddressFields(network,
+			"Gateway",
+			"GlobalIPv6Address",
+			"IPAddress",
+			"IPv6Gateway",
+			"LinkLocalIPv6Address",
+			"MacAddress",
 		)
 		// Docker's EndpointSettings stops at the scalar addresses above.
 		// Podman's InspectAdditionalNetwork embeds the same

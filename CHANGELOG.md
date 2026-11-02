@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Stop `response.redact_network_topology` from breaking typed Docker clients. IP and MAC address fields (`IPAddress`, `Gateway`, `IPv6Gateway`, `GlobalIPv6Address`, `LinkLocalIPv6Address`, `MacAddress` on container list, inspect and `/system/df` `NetworkSettings` and each `Networks` entry, plus service `VirtualIPs[].Addr`) now come back as `""` instead of `"<redacted>"`. Current moby API types decode them as `netip.Addr`, `netip.Prefix` and `HardwareAddr`, so clients like Traefik and Diun failed with errors like `ParseAddr("<redacted>")`. Plain string identifiers (`EndpointID`, `NetworkID`, `SandboxID`, `SandboxKey`, `Bridge`, `NetworkMode`) and node/swarm `Addr` strings still read `<redacted>`. The Traefik preset (`app/configs/traefik.yaml` and `examples/compose/traefik/sockguard.yaml`) now sets `response.redact_network_topology: false`, because Traefik routes to container IPs and cannot work with blanked addresses. The same fix covers byte fields: `CertIssuerSubject` and `CertIssuerPublicKey` in node, swarm and `/info` `TLSInfo`, and `Spec.Data` on configs and secrets, are `[]byte` (base64) in moby/api and docker/docker, so the `"<redacted>"` placeholder made every Go client fail to decode `/nodes`, `/nodes/{id}`, `/swarm` and `/info` on swarm managers. They now come back as `""`, which is valid empty base64. `TrustRoot` stays a string and still reads `<redacted>`.
+
 ## [2.4.3] - 2026-11-02
 
 v2.4.3 stops completed hijacked sessions from accumulating in the listener, rejects malformed keyless subject patterns, and adds Codecov reporting, docs corrections and Podman CI fixes. It carries v2.4.2.
