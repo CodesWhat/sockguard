@@ -20,7 +20,7 @@ export const comparisonRows: ComparisonRow[] = [
     sockguard: "Yes",
   },
   {
-    feature: "Granular POST ops",
+    feature: "Granular container write ops",
     tecnativa: "Documented only (POST gate blocks them)",
     linuxserver: "Partial (ALLOW_* vars)",
     wollomatic: "Via regex",
@@ -133,6 +133,15 @@ export const comparisonRows: ComparisonRow[] = [
     feature: "YAML config",
     tecnativa: "No",
     linuxserver: "No",
+    wollomatic: "No",
+    elevenNotes: "No",
+    cetusguard: "No",
+    sockguard: "Yes",
+  },
+  {
+    feature: "Tecnativa env compat",
+    tecnativa: "N/A",
+    linuxserver: "Yes",
     wollomatic: "No",
     elevenNotes: "No",
     cetusguard: "No",
@@ -289,12 +298,12 @@ export const PROJECT_HEALTH: Record<
 // This is the one "versions checked" date the site shows. README.md carries
 // the same line for the same check; page-data.test.mjs fails if the two stop
 // agreeing, so bump this and the README together.
-export const COMPETITOR_VERSIONS_CHECKED_AT = "2026-10-02";
+export const COMPETITOR_VERSIONS_CHECKED_AT = "2026-11-01";
 
 export const COMPETITOR_VERSIONS: Record<Exclude<ComparisonTool, "sockguard">, string> = {
   tecnativa: "v0.5.0",
-  linuxserver: "3.4.6-r0-ls100",
-  wollomatic: "1.13.1",
+  linuxserver: "3.4.7-r0-ls104",
+  wollomatic: "1.13.2",
   elevenNotes: "v2.2.0",
   cetusguard: "v1.1.4",
 };

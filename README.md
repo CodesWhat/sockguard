@@ -301,27 +301,32 @@ Rules can cover method/path filters, body-aware write inspection, declarative ad
 <details>
 <summary><strong>How does Sockguard compare to other Docker socket proxies?</strong></summary>
 
-How we stack up against other Docker socket proxies. Versions checked 2026-10-02: Tecnativa `docker-socket-proxy` v0.5.0, LinuxServer `docker-socket-proxy` 3.4.6-r0-ls100, wollomatic `socket-proxy` 1.13.1, 11notes `docker-socket-proxy` v2.2.0, hectorm `cetusguard` v1.1.4. Re-checked at every release cut, so a claim below is never more than one release stale.
+How we stack up against other Docker socket proxies. Versions checked 2026-11-01: Tecnativa `docker-socket-proxy` v0.5.0, LinuxServer `docker-socket-proxy` 3.4.7-r0-ls104, wollomatic `socket-proxy` 1.13.2, 11notes `docker-socket-proxy` v2.2.0, hectorm `cetusguard` v1.1.4. Re-checked at every release cut, so a claim below is never more than one release stale.
 
 | Feature | Tecnativa | LinuxServer | wollomatic | 11notes | CetusGuard | **Sockguard** |
 |---------|:---------:|:-----------:|:----------:|:-------:|:----------:|:-------------:|
 | Method + path filtering | ✅ | ✅ | ✅ (regex) | Read-only by default (opt-in containers-only mode) | ✅ (regex) | ✅ |
-| Granular container write ops | Documented only (POST gate blocks them) | Partial (`ALLOW_*`) | Via regex | Start/stop only (opt-in containers-only mode) | Via regex | ✅ |
-| Request inspection | ❌ | ❌ | Partial (bind-mount source restrictions) | ❌ | ❌ | ✅ (`container` create/update/exec/archive/remove query, `image` pull/load, Docker + Podman `build`, `volume`, `network` create/connect/disconnect, `secret`, `config`, `service`, `swarm` init/join/update/unlock, `node` update, `plugin`) |
-| Per-client admission / policy selection | ❌ | ❌ | Partial (IP/hostname + per-container labels) | ❌ | ❌ | ✅ (CIDR + labels + cert selectors incl. SPKI + unix peer profiles) |
-| Read-side visibility / redaction | ❌ | ❌ | ❌ | Partial (targets 7 risky GETs; the image-export pattern misses both real shapes; its image-inspect misfire, [11notes #12](https://github.com/11notes/docker-socket-proxy/issues/12), was fixed in v2.1.6) | ❌ | ✅ (visibility + protected JSON redaction) |
+| Granular container write ops | Documented only (POST gate blocks them) | Partial (ALLOW_* vars) | Via regex | Start/stop only (opt-in containers-only mode) | Via regex | ✅ |
+| Request body inspection | ❌ | ❌ | Partial (bind-mount restrictions) | ❌ | ❌ | ✅ (container, exec, image, build, volume, network, secret, config, service, swarm, node, plugin) |
+| Per-client policies | ❌ | ❌ | Partial (IP/hostname + labels) | ❌ | ❌ | ✅ (CIDR + labels + cert selectors incl. SPKI + unix peer) |
+| Resource owner labels | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (workload + control plane) |
 | Remote TCP mTLS (listener) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ (TLS 1.3) |
-| Remote daemon upstream (TLS) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ (failover) |
-| Podman native `/libpod` API | ❌ | ✅ | Via manual regex | ❌ | ✅ | ✅ (default-deny, incl. pod lifecycle) |
-| Multiple main listeners | ❌ | ❌ | ❌ | ✅ (Unix + TCP) | ✅ | ✅ (Unix and/or TCP, listener-scoped TLS + profiles) |
+| Remote daemon upstream (TLS) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ (active/passive failover) |
+| Read-side visibility / redaction | ❌ | ❌ | ❌ | Partial (targets 7 risky GETs; the image-export pattern misses both real shapes; its image-inspect misfire, [11notes #12](https://github.com/11notes/docker-socket-proxy/issues/12), was fixed in v2.1.6) | ❌ | ✅ (visibility + protected JSON redaction) |
 | Structured access logs | ❌ | ❌ | ✅ (JSON option) | ❌ | ❌ | ✅ (request + trace correlation) |
 | Dedicated audit log schema | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (opt-in, JSON schema + reason codes) |
-| Rate limits / concurrency caps | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (per-profile token-bucket + global priority gate) |
-| Rollout modes (audit/warn/enforce) | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (per-profile shadow + would_deny audit) |
-| Hot-reload + policy versioning | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (opt-in, fsnotify + SIGHUP, `/admin/policy/version`) |
-| Signed policy bundles | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (sigstore keyed + keyless) |
+| Prometheus metrics | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (opt-in, socket-proxy metrics) |
+| Active upstream watchdog | ❌ | ❌ | ✅ | ❌ | ❌ | ✅ (opt-in watchdog; /health answers by default) |
+| Trace/log correlation | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (W3C traceparent) |
 | YAML config | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | Tecnativa env compat | N/A | ✅ | ❌ | ❌ | ❌ | ✅ |
+| Rate limits / concurrency caps | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (per-profile token-bucket + global priority gate) |
+| Rollout modes (enforce / warn / audit) | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (per-profile shadow + would_deny audit) |
+| Signed policy bundles | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (cosign keyed + keyless, Rekor inclusion) |
+| Container image trust | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (cosign keyed + keyless, enforce / warn) |
+| Podman native libpod API | ❌ | ✅ | Via manual regex | ❌ | ✅ | ✅ (default-deny /libpod coverage incl. pod lifecycle) |
+| Multiple main listeners | ❌ | ❌ | ❌ | ✅ (Unix + TCP) | ✅ | ✅ (Unix and/or TCP, listener-scoped TLS + profiles) |
+| Hot-reload + admin API | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (opt-in, fsnotify/SIGHUP, validate endpoint, policy version) |
 
 `11notes/docker-socket-proxy` takes a deliberately narrow stance: it allows most Docker API reads, targets seven sensitive GET surfaces for blocking (its image-export pattern matches neither real export shape, and the same style of pattern misfired on image inspect in [11notes #12](https://github.com/11notes/docker-socket-proxy/issues/12), fixed in v2.1.6), and refuses writes by default. Its opt-in `SOCKET_PROXY_CONTAINERS_ONLY` mode (v2.2.0) instead allows only container start and stop and refuses reads. Sockguard instead starts from a configurable default deny, offers finer-grained redaction/visibility, and can authorize inspected writes. `hectorm/cetusguard` is the closest in spirit: default-deny regex rules plus frontend/backend mTLS, native libpod families, and multiple frontend addresses. Sockguard is stronger on request-body inspection, per-client profiles, ownership, read filtering, metrics, hot reload, and health-checked upstream failover; v1.6.0 closed the libpod and multi-listener gaps that were CetusGuard's remaining advantages. The full evidence and resulting priorities are in the [roadmap](https://getsockguard.com/docs/roadmap).
 

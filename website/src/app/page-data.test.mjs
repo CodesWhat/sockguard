@@ -49,7 +49,7 @@ test("website features live in extracted data modules", () => {
 });
 
 test("website comparison rows live in extracted data modules", () => {
-  assert.equal(comparisonRows.length, 21);
+  assert.equal(comparisonRows.length, 22);
 
   const requestBodyRow = comparisonRows.find((row) => row.feature === "Request body inspection");
   assert.ok(requestBodyRow);
@@ -127,7 +127,7 @@ test("opt-in Sockguard capabilities are labelled opt-in", () => {
   // ALLOW_* vars are documented but dead in the config they ship. LinuxServer's
   // own README says the opposite for its ALLOW_* vars ("these options work
   // even when POST=0"), so only the Tecnativa cell carries the caveat.
-  const granular = comparisonRows.find((row) => row.feature === "Granular POST ops");
+  const granular = comparisonRows.find((row) => row.feature === "Granular container write ops");
   assert.ok(granular);
   assert.equal(granular.tecnativa, "Documented only (POST gate blocks them)");
   assert.equal(granular.linuxserver, "Partial (ALLOW_* vars)");
@@ -215,6 +215,54 @@ test("the versions-checked line is the same on the site and in the README", () =
   );
   for (const [tool, version] of Object.entries(COMPETITOR_VERSIONS)) {
     assert.ok(line.includes(` ${version}`), `README line is missing ${tool} ${version}`);
+  }
+});
+
+test("the README comparison table carries the same rows and cells as the site", () => {
+  // The README table and comparison-rows.ts drifted twice: rows added to one
+  // surface only, and the same row labelled differently on each. The site data
+  // is the source, so the README must list every row, in order, with the same
+  // label and the same cell text. Only the presentation differs: README shows
+  // a leading Yes/No as a glyph and may link or code-format words.
+  const readme = readFileSync(new URL("../../../README.md", import.meta.url), "utf8");
+  const normalize = (cell) =>
+    cell
+      .trim()
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+      .replaceAll("`", "")
+      .replace(/^✅/, "Yes")
+      .replace(/^❌/, "No");
+  const lines = readme.split("\n");
+  const header = lines.findIndex((line) => line.startsWith("| Feature | Tecnativa |"));
+  assert.ok(header >= 0, "README.md must carry the comparison table");
+  const readmeRows = [];
+  for (let i = header + 2; i < lines.length && lines[i].startsWith("|"); i += 1) {
+    readmeRows.push(
+      lines[i]
+        .replace(/^\|\s*|\s*\|$/g, "")
+        .split(/ \| /)
+        .map(normalize),
+    );
+  }
+  assert.deepEqual(
+    readmeRows.map((cells) => cells[0]),
+    comparisonRows.map((row) => row.feature),
+    "README rows must match comparison-rows.ts in label and order",
+  );
+  for (const [index, row] of comparisonRows.entries()) {
+    assert.deepEqual(
+      readmeRows[index],
+      [
+        row.feature,
+        row.tecnativa,
+        row.linuxserver,
+        row.wollomatic,
+        row.elevenNotes,
+        row.cetusguard,
+        row.sockguard,
+      ],
+      `README row "${row.feature}" differs from comparison-rows.ts`,
+    );
   }
 });
 
