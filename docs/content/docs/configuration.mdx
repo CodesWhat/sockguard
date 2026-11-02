@@ -1212,6 +1212,30 @@ Everything else — `rules`, `clients.*`, `response.*`, `request_body.*`,
 fields are mutable; `socket`, `endpoints`, `failover`, and `flavor` are pinned)
 — is rebuilt and atomically applied on every successful reload.
 
+### Unrecognized keys
+
+A YAML key that maps to no configuration setting is ignored when the config
+loads (only the `mutations` block is strict), so a typo or a dead key would
+otherwise change nothing without saying so. Sockguard now reports each one as a
+dotted path, with list entries indexed, and the file it came from:
+
+```text
+level=WARN msg="ignoring unrecognized configuration key: it maps to no setting, so it has no effect" key=clients.profiles[1].response.redact_container_env file=/etc/sockguard/sockguard.yaml
+```
+
+- `sockguard validate` prints the warnings to stderr and still exits 0. Add
+  `--strict` to exit non-zero when any are present, for CI.
+- `sockguard serve` logs one warning per key at startup and keeps running.
+- Hot reload logs the same warnings for the file it just read and applies the
+  reload as usual.
+
+The check reads the YAML file only. `SOCKGUARD_*` variables, built-in defaults
+and Tecnativa compatibility variables are never reported here (unrecognized
+`SOCKGUARD_*` variables have their own warning, see
+[Environment Variables](#environment-variables)). Keys are reported in the
+lower case the loader matches them in. Warnings never change request handling
+and never make a config that loads today fail to load.
+
 ### Reload outcomes
 
 When `metrics.enabled: true`, two series track reload outcomes:

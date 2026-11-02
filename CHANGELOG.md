@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Unknown configuration keys are reported.** Config loading only decoded the `mutations` block strictly, so a typo'd or dead key anywhere else passed `sockguard validate` silently. `sockguard validate` now prints a warning per unrecognized key (dotted path plus file) and still exits 0; the new `--strict` flag exits non-zero instead. `sockguard serve` logs one warning per key at startup, and hot reload logs the same. The check reads only the YAML file, so `SOCKGUARD_*` and Tecnativa environment variables never show as unknown, and no config that loads today stops loading. `app/configs/multi-listener.yaml` dropped three dead `clients.profiles[].response.redact_*` keys it carried.
+
 ## [2.4.3] - 2026-11-02
 
 v2.4.3 stops completed hijacked sessions from accumulating in the listener, rejects malformed keyless subject patterns, and adds Codecov reporting, docs corrections and Podman CI fixes. It carries v2.4.2.

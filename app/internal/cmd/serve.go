@@ -76,7 +76,19 @@ func init() {
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
-	return runServeWithDeps(cmd, args, newServeDeps())
+	deps := newServeDeps()
+	deps.loadConfigData = config.LoadWithData
+	return runServeWithDeps(cmd, args, deps)
+}
+
+// loadConfigAndData loads the config through deps, returning the parsed YAML
+// bytes when the loader reports them (nil otherwise).
+func loadConfigAndData(deps *serveDeps, path string) (*config.Config, []byte, error) {
+	if deps.loadConfigData != nil {
+		return deps.loadConfigData(path)
+	}
+	cfg, err := deps.loadConfig(path)
+	return cfg, nil, err
 }
 
 func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error {
@@ -84,7 +96,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		return fmt.Errorf("config preflight: %w", err)
 	}
 
-	cfg, err := deps.loadConfig(cfgFile)
+	cfg, loadedBytes, err := loadConfigAndData(deps, cfgFile)
 	if err != nil {
 		return fmt.Errorf("config load: %w", err)
 	}
@@ -103,6 +115,10 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	var bundleVerifier policybundle.Verifier
 	var bundleResult *policybundle.VerifyResult
 	signedMode := trustPath != ""
+	if !signedMode {
+		// Unsigned: warn on the same bytes that were just loaded.
+		warnUnknownConfigKeys(bootstrapLogger, cfgFile, loadedBytes)
+	}
 	if !signedMode && cfg.PolicyBundle.Enabled {
 		return errors.New("policy_bundle.enabled in the candidate config cannot authenticate itself; provide --policy-bundle-trust-config with out-of-band trust material")
 	}
@@ -120,10 +136,14 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 			return fmt.Errorf("policy bundle verifier: %w", err)
 		}
 		var signedCfg *config.Config
-		bundleResult, signedCfg, err = verifyPolicyBundleAtStartup(cmd.Context(), cfg, cfgFile, deps, bundleVerifier, bootstrapLogger)
+		var verifiedBytes []byte
+		bundleResult, signedCfg, verifiedBytes, err = verifyPolicyBundleBytes(cmd.Context(), cfg, cfgFile, deps, bundleVerifier, bootstrapLogger)
 		if err != nil {
 			return fmt.Errorf("policy bundle: %w", err)
 		}
+		// Only verified bytes are ever inspected; the unverified candidate
+		// file is never re-read for this warning.
+		warnUnknownConfigKeys(bootstrapLogger, cfgFile, verifiedBytes)
 		if err := applyFlagOverrides(cmd, signedCfg); err != nil {
 			return fmt.Errorf("apply flag overrides: %w", err)
 		}
@@ -1194,6 +1214,39 @@ func warnUnknownEnvVars(logger *slog.Logger, configPath string, environ []string
 	}
 }
 
+// maxUnknownKeyWarnings caps how many unrecognized keys are listed
+// individually; the rest collapse into one summary line.
+const maxUnknownKeyWarnings = 50
+
+// warnUnknownConfigKeys emits one warning per YAML key that no configuration
+// field binds, named by dotted path with the file it came from. Load tolerates
+// such keys (only mutations is strict) so a typo'd or dead key is otherwise
+// silent; this is advisory and never changes what loads. It inspects only the
+// given bytes (the ones that were loaded, or the signature-verified ones), so a
+// nil or empty body warns nothing. Paths are shown lowercased: the YAML
+// decoder folds key case, so the original spelling is not recoverable here.
+func warnUnknownConfigKeys(logger *slog.Logger, path string, data []byte) {
+	if logger == nil || len(data) == 0 {
+		return
+	}
+	keys, err := config.UnknownKeysBytes(data)
+	if err != nil {
+		return
+	}
+	logUnknownKeys(logger, path, keys)
+}
+
+// logUnknownKeys logs at most maxUnknownKeyWarnings keys, then one summary.
+func logUnknownKeys(logger *slog.Logger, path string, keys []string) {
+	for i, key := range keys {
+		if i == maxUnknownKeyWarnings {
+			logger.Warn(fmt.Sprintf("and %d more unrecognized keys", len(keys)-maxUnknownKeyWarnings), "file", path)
+			break
+		}
+		logger.Warn("ignoring unrecognized configuration key: it maps to no setting, so it has no effect", "key", key, "file", path)
+	}
+}
+
 func warnIfDefaultProfileExcluded(cfg *config.Config, logger *slog.Logger) {
 	if cfg == nil || logger == nil || cfg.Clients.DefaultProfile == "" || len(cfg.Listeners) == 0 {
 		return
@@ -1489,28 +1542,42 @@ func verifyPolicyBundleAtStartup(
 	verifier policybundle.Verifier,
 	logger *slog.Logger,
 ) (*policybundle.VerifyResult, *config.Config, error) {
+	result, signedCfg, _, err := verifyPolicyBundleBytes(parent, cfg, cfgFile, deps, verifier, logger)
+	return result, signedCfg, err
+}
+
+// verifyPolicyBundleBytes is verifyPolicyBundleAtStartup that also returns the
+// YAML bytes that passed verification.
+func verifyPolicyBundleBytes(
+	parent context.Context,
+	cfg *config.Config,
+	cfgFile string,
+	deps *serveDeps,
+	verifier policybundle.Verifier,
+	logger *slog.Logger,
+) (*policybundle.VerifyResult, *config.Config, []byte, error) {
 	if !cfg.PolicyBundle.Enabled {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	if cfgFile == "" {
-		return nil, nil, errors.New("policy_bundle.enabled=true but no --config file was supplied; sockguard cannot verify an in-memory default")
+		return nil, nil, nil, errors.New("policy_bundle.enabled=true but no --config file was supplied; sockguard cannot verify an in-memory default")
 	}
 
 	yamlBytes, err := deps.readConfigBytes(cfgFile)
 	if err != nil {
-		return nil, nil, fmt.Errorf("read config YAML for verification: %w", err)
+		return nil, nil, nil, fmt.Errorf("read config YAML for verification: %w", err)
 	}
 	signedCfg, err := deps.loadConfigBytes(yamlBytes)
 	if err != nil {
-		return nil, nil, fmt.Errorf("parse verified config: %w", err)
+		return nil, nil, nil, fmt.Errorf("parse verified config: %w", err)
 	}
 	pinPolicyBundleTrust(signedCfg, cfg.PolicyBundle)
 	if signedCfg.PolicyBundle.SignaturePath == "" {
-		return nil, nil, errors.New("policy_bundle.signature_path is required when signed policy is enabled")
+		return nil, nil, nil, errors.New("policy_bundle.signature_path is required when signed policy is enabled")
 	}
 	entity, err := deps.loadBundleEntity(signedCfg.PolicyBundle.SignaturePath)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	if parent == nil {
@@ -1520,7 +1587,7 @@ func verifyPolicyBundleAtStartup(
 	defer cancel()
 	result, err := verifier.Verify(ctx, yamlBytes, entity)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	logger.Info("policy bundle verified",
@@ -1529,7 +1596,7 @@ func verifyPolicyBundleAtStartup(
 		"digest", result.DigestHex,
 		"elapsed_ms", result.ElapsedMS,
 	)
-	return &result, signedCfg, nil
+	return &result, signedCfg, yamlBytes, nil
 }
 
 func policyBundleTrustConfigPath(cmd *cobra.Command) string {

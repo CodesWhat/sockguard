@@ -54,6 +54,7 @@ export const DOCS_SEARCH_ITEMS: [page: number, heading: string, anchor: string][
   [2,"Policy Discovery Workflow","policy-discovery-workflow"],
   [2,"Hot Reload","hot-reload"],
   [2,"Immutable fields","immutable-fields"],
+  [2,"Unrecognized keys","unrecognized-keys"],
   [2,"Reload outcomes","reload-outcomes"],
   [2,"Admin Listener","admin-listener"],
   [2,"Signed Policy Bundles","signed-policy-bundles"],
