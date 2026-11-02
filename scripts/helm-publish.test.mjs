@@ -123,8 +123,14 @@ describe("publish-chart job gating", () => {
 
   it("uses block mode, a pinned runner action and retries on network steps", () => {
     assert.match(job, /egress-policy: block/);
-    assert.ok(words(job).includes("get.helm.sh:443"), "get.helm.sh:443 must be allowed");
-    assert.ok(words(job).includes("ghcr.io:443"), "ghcr.io:443 must be allowed");
+    assert.ok(
+      words(job).some((w) => w === "get.helm.sh:443"),
+      "get.helm.sh:443 must be allowed",
+    );
+    assert.ok(
+      words(job).some((w) => w === "ghcr.io:443"),
+      "ghcr.io:443 must be allowed",
+    );
     assert.match(job, /Checkout \(final retry\)/);
     assert.match(job, /retry_network curl/);
     for (const use of job.matchAll(/uses: ([^\s]+)/g)) {
