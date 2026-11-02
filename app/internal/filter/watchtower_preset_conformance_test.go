@@ -48,6 +48,9 @@ func TestWatchtowerPresetConformance(t *testing.T) {
 	if cfg.RequestBody.Network.AllowEndpointConfig {
 		t.Error("watchtower.yaml must not allow the whole endpoint config")
 	}
+	if !cfg.RequestBody.Network.AllowDisconnectForce {
+		t.Error("watchtower.yaml must allow force disconnect for containrrr's recreate flow")
+	}
 	endpointConfig := cfg.RequestBody.Network.EndpointConfig
 	if !endpointConfig.AllowStaticAddressing || !endpointConfig.AllowMACPinning {
 		t.Errorf("watchtower endpoint config = %#v, want only copied static addressing and MAC pinning allowed", endpointConfig)
@@ -117,6 +120,9 @@ func TestWatchtowerPresetConformance(t *testing.T) {
 		// Recreate attaches secondary networks but does not read or mutate the
 		// network collection otherwise.
 		{"network-connect", http.MethodPost, "/networks/net1/connect", `{"Container":"abc"}`, true},
+		{"network-disconnect", http.MethodPost, "/networks/net1/disconnect", `{"Container":"abc","Force":true}`, true},
+		{"network-disconnect-no-force", http.MethodPost, "/networks/net1/disconnect", `{"Container":"abc"}`, true},
+		{"container-kill", http.MethodPost, "/containers/abc/kill?signal=SIGTERM", "", true},
 
 		// Version prefixes normalize before matching.
 		{"v-prefixed-containers-list", http.MethodGet, "/v1.45/containers/json", "", true},
@@ -134,7 +140,6 @@ func TestWatchtowerPresetConformance(t *testing.T) {
 		{"container-top-denied", http.MethodGet, "/containers/abc/top", "", false},
 		{"container-changes-denied", http.MethodGet, "/containers/abc/changes", "", false},
 		{"container-restart-denied", http.MethodPost, "/containers/abc/restart", "", false},
-		{"container-kill-denied", http.MethodPost, "/containers/abc/kill", "", false},
 		{"container-wait-denied", http.MethodPost, "/containers/abc/wait", "", false},
 		{"container-pause-denied", http.MethodPost, "/containers/abc/pause", "", false},
 		{"container-unpause-denied", http.MethodPost, "/containers/abc/unpause", "", false},
@@ -151,7 +156,6 @@ func TestWatchtowerPresetConformance(t *testing.T) {
 		{"networks-list-denied", http.MethodGet, "/networks", "", false},
 		{"network-inspect-denied", http.MethodGet, "/networks/net1", "", false},
 		{"network-create-denied", http.MethodPost, "/networks/create", "", false},
-		{"network-disconnect-denied", http.MethodPost, "/networks/net1/disconnect", `{"Container":"abc"}`, false},
 		{"network-remove-denied", http.MethodDelete, "/networks/net1", "", false},
 		{"networks-prune-denied", http.MethodPost, "/networks/prune", "", false},
 		{"volumes-list-denied", http.MethodGet, "/volumes", "", false},
@@ -172,6 +176,32 @@ func TestWatchtowerPresetConformance(t *testing.T) {
 	cases = append(cases, exfilDenialCases...)
 
 	for _, c := range cases {
+		fireDrydockCase(t, handler, c)
+	}
+}
+
+// TestWatchtowerPresetContainrrrFlow replays the ordered recreate flow of
+// containrrr/watchtower v1.7.1 (pkg/container/client.go): inspect, kill
+// (StopContainer, client.go:196), create, disconnect of the default network
+// (StartContainer, client.go:278), connect of the copied networks, start, and
+// remove of the old container. It guards the preset against drifting back to a
+// nicholas-fedor-only surface.
+func TestWatchtowerPresetContainrrrFlow(t *testing.T) {
+	cfg, err := config.Load(filepath.Join("..", "..", "configs", "watchtower.yaml"))
+	if err != nil {
+		t.Fatalf("load preset watchtower.yaml: %v", err)
+	}
+	handler := drydockPresetHandlerFromConfig(t, cfg, func(*filter.PolicyConfig) {})
+
+	for _, c := range []presetCase{
+		{"flow-inspect", http.MethodGet, "/containers/abc/json", "", true},
+		{"flow-kill", http.MethodPost, "/containers/abc/kill?signal=SIGTERM", "", true},
+		{"flow-create", http.MethodPost, "/containers/create?name=app", watchtowerContainerCreateBody, true},
+		{"flow-disconnect-default", http.MethodPost, "/networks/bridge/disconnect", `{"Container":"new1","Force":true}`, true},
+		{"flow-connect-copied", http.MethodPost, "/networks/app-net/connect", `{"Container":"new1","EndpointConfig":{"Aliases":["watchtower-app"],"IPAddress":"172.20.0.10"}}`, true},
+		{"flow-start", http.MethodPost, "/containers/new1/start", "", true},
+		{"flow-remove-old", http.MethodDelete, "/containers/abc?force=true&v=true", "", true},
+	} {
 		fireDrydockCase(t, handler, c)
 	}
 }

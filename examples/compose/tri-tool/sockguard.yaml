@@ -38,6 +38,10 @@ request_body:
   container_remove:
     allow_force: true
   container_create:
+    # cgroup v1 hosts only (e.g. Synology): a recreate replays
+    # HostConfig.CgroupnsMode "host", which is denied by default. Uncommenting
+    # this widens create to the host cgroup namespace.
+    # allow_host_cgroupns: true
     allowed_bind_mounts: []
     allowed_runtimes:
       - runc
@@ -102,6 +106,8 @@ rules:
   - match: { method: GET, path: "/networks" }
     action: allow
   - match: { method: GET, path: "/networks/*" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/connect" }
     action: allow
 
   - match: { method: GET, path: "/volumes" }
