@@ -164,6 +164,16 @@ test("the actual workflow rejects missing and empty profiles while accepting a p
   );
 });
 
+test("the Codecov upload sends only the production profile", () => {
+  const workflow = fs.readFileSync(path.join(ROOT, ".github/workflows/ci-verify.yml"), "utf8");
+  const step = workflow
+    .split("      - name: Upload coverage to Codecov\n")[1]
+    ?.split("\n      - name:")[0];
+  assert.ok(step, "Codecov upload step is missing");
+  assert.match(step, /^ {10}files: artifacts\/go-test\/coverage\.prod\.txt$/mu);
+  assert.match(step, /^ {10}disable_search: true$/mu);
+});
+
 test("profile fixtures expose a guard that silently accepts missing coverage", (t) => {
   assert.throws(() => exerciseProfileGuard(t, "true"), /missing:/u);
 });

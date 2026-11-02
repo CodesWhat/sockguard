@@ -177,8 +177,8 @@ jobs:
   # generated buildkitproto and test-only packages are not.
   codecov:
     name: "Coverage: Codecov Upload"
-    needs: go-ci
-    if: ${{ !cancelled() }}
+    needs: [changes, go-ci]
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -235,6 +235,9 @@ jobs:
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
         with:
           files: artifacts/go-test/coverage.prod.txt
+          # Search would also find the unfiltered coverage.txt and report it
+          # against the production floor.
+          disable_search: true
           use_oidc: true
           fail_ci_if_error: false
         continue-on-error: true
