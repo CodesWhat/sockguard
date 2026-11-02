@@ -3,10 +3,11 @@ title: Roadmap
 description: Sockguard's shipped v1.7, v2.0, v2.1, v2.2, v2.3, and v2.4 work and later direction.
 ---
 
-Sockguard v2.4 is the current stable feature line, with v2.4.3 the latest
-release. It stops completed hijacked sessions from accumulating in the listener,
-rejects incomplete keyless subject patterns and fixes Podman nightly CI. It
-carries v2.4.2, v2.4.1 and everything
+Sockguard v2.4 is the current stable feature line, with v2.4.4 the latest
+release. It stops redaction placeholders from breaking typed Docker clients,
+fixes Portainer Recreate and the watchtower and portwing presets, and closes
+libpod create bypasses and inspect leaks. It
+carries v2.4.3, v2.4.2, v2.4.1 and everything
 through v2.3.3. The v2.3 line shipped as follows. v2.3.0 promotes `2.3.0-rc.9` unchanged in behavior and is the first
 release under the MIT license; 2.2.x and earlier remain Apache-2.0. v2.3.1 is a
 security patch that refuses a client-supplied container log path. v2.3.2 is a
@@ -156,6 +157,10 @@ from source and a client-only request capture, not a live-daemon reproduction.
 | BuildKit isolation | Caller identity comes from verified certificates or Unix peer credentials where available, session state is correlated by principal, profile, and session, Solve admission is atomic, and upgrade handshakes are bounded |
 | Proxy hardening | Socket cleanup is inode-owned, method-aware resource routing covers keyword names, generated response errors clear stale representation headers, inspected bodies retain deadlines through logging and metrics, and request metric labels have finite cardinality |
 | Release surfaces | README, docs, website, Helm metadata, verification assets, and migration guidance agree on v2.0.0; release blobs use sigstore bundles only and published metadata is read back before the release succeeds |
+
+## Shipped in v2.4.4
+
+Redaction placeholders no longer break typed Docker clients: IP and MAC address fields and byte fields come back as empty strings instead of `<redacted>`, and the Traefik preset turns network-topology redaction off. The Portainer preset stops redacting inspect output so Recreate works, visibility `image_patterns` match the image name on inspect, and the watchtower and portwing presets gain the kill, disconnect and network-connect rules they were missing. Slow container stop, restart, prune and `/system/df` calls are no longer cut at the upstream timeouts, and 429 bodies carry a `message`. libpod container create now gates `host_device_list`, `resource_limits.devices`, `volumes_from` and the other fields Docker create refuses, and libpod inspect no longer returns `CreateCommand` or `Secrets`. A `Client Compat (real Docker types)` CI job decodes filtered output into the real moby and docker types.
 
 ## Shipped in v2.4.3
 

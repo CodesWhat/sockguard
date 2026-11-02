@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.4] - 2026-11-03
+
+v2.4.4 fixes typed Docker clients such as Traefik and Diun breaking on redaction placeholders, Portainer Recreate under its preset, visibility image_patterns on inspect, watchtower and portwing preset rule gaps, and upstream timeouts on slow stop and prune calls and 429 bodies without a message. It closes libpod create bypasses (host_device_list, resource_limits.devices, volumes_from and others) and libpod inspect CreateCommand and Secrets leaks, and adds a real-Docker-types compat CI job. It carries v2.4.3.
+
 ### Added
 
 - Add the `app/compat` test module and a `Client Compat (real Docker types)` CI job. It runs the response filter over daemon-shaped fixtures for every redacted endpoint under every redaction-flag combination, plus the visibility and ownership list filters, and decodes the output into the real `moby/moby/api` and `docker/docker` v28 types. A placeholder written into a non-string wire field now fails CI instead of a user's client. The module is separate from the proxy, so neither library enters the binary's dependencies.
+- **`upstream.response_header_timeout` (default `"30s"`, `"off"` disables).** The wait for the daemon's response headers was hard-coded at 30s with no way to change it. The default keeps today's behavior. Env var `SOCKGUARD_UPSTREAM_RESPONSE_HEADER_TIMEOUT`; reload-immutable because it is bound into the upstream transport at startup.
+- **Startup warning for create plus redaction.** `serve` and `validate` now warn when the effective rules (default or any client profile) allow `POST /containers/create` or `POST /libpod/containers/create` while `response.redact_container_env`, `response.redact_mount_paths` or `response.redact_network_topology` is on. The warning is emitted once, names the enabled keys and the first allowing scope plus a count of others, and notes that only clients that replay inspect output into create (Portainer Recreate/Duplicate, drydock and watchtower updates) lose data. Top-level rules are skipped when `clients.default_profile` is set, since they are never reached. The drydock, watchtower, portwing and portainer presets stay silent.
 
 ### Fixed
 
@@ -22,11 +28,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Allow `POST /networks/*/connect` in `portwing.yaml` and `portwing-with-exec.yaml` (and the matching tri-tool and portwing compose examples), as `drydock.yaml` already does, so drydock behind Portwing can re-attach a recreated container's extra networks. The endpoint-config policy stays at the default, which admits Aliases only.
 - Add a commented, opt-in `request_body.container_create.allow_host_cgroupns: true` line to the Watchtower, Drydock and Portwing presets and their compose examples. Cgroup v1 hosts such as Synology replay `CgroupnsMode: "host"` on recreate, which create denies by default. Enabling it widens create to the host cgroup namespace.
 - Document in `homepage.yaml` and the presets page that Homepage's Swarm mode needs `response.redact_network_topology: false`. The default is unchanged.
-
-### Added
-
-- **`upstream.response_header_timeout` (default `"30s"`, `"off"` disables).** The wait for the daemon's response headers was hard-coded at 30s with no way to change it. The default keeps today's behavior. Env var `SOCKGUARD_UPSTREAM_RESPONSE_HEADER_TIMEOUT`; reload-immutable because it is bound into the upstream transport at startup.
-- **Startup warning for create plus redaction.** `serve` and `validate` now warn when the effective rules (default or any client profile) allow `POST /containers/create` or `POST /libpod/containers/create` while `response.redact_container_env`, `response.redact_mount_paths` or `response.redact_network_topology` is on. The warning is emitted once, names the enabled keys and the first allowing scope plus a count of others, and notes that only clients that replay inspect output into create (Portainer Recreate/Duplicate, drydock and watchtower updates) lose data. Top-level rules are skipped when `clients.default_profile` is set, since they are never reached. The drydock, watchtower, portwing and portainer presets stay silent.
 
 ### Security
 
