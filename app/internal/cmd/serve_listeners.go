@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"cmp"
 	"context"
 	"fmt"
@@ -111,6 +112,11 @@ type listenerMember struct {
 // intentionally does not close them, so listener-group shutdown must do so
 // explicitly to keep the single configured drain deadline (server.shutdown_grace)
 // meaningful.
+//
+// net/http treats StateHijacked as terminal and never reports StateClosed for
+// such a connection, so completion is observed instead through the conn the
+// handler receives from Hijack: the tracker's handler wrapper hands out a conn
+// whose Close unregisters the raw connection.
 type hijackedConnTracker struct {
 	mu     sync.Mutex
 	conns  map[net.Conn]struct{}
@@ -126,7 +132,80 @@ func trackHijackedConnections(server *http.Server) *hijackedConnTracker {
 		}
 		tracker.transition(conn, state)
 	}
+	if server.Handler != nil {
+		server.Handler = tracker.wrapHandler(server.Handler)
+	}
 	return tracker
+}
+
+// wrapHandler makes every conn obtained through Hijack unregister itself from
+// the tracker when closed, so completed sessions stop being retained.
+func (t *hijackedConnTracker) wrapHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(&hijackTrackingWriter{ResponseWriter: w, tracker: t}, r)
+	})
+}
+
+func (t *hijackedConnTracker) release(conn net.Conn) {
+	if t == nil || conn == nil {
+		return
+	}
+	t.mu.Lock()
+	delete(t.conns, conn)
+	t.mu.Unlock()
+}
+
+type hijackTrackingWriter struct {
+	http.ResponseWriter
+	tracker *hijackedConnTracker
+}
+
+func (w *hijackTrackingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// FlushError makes http.ResponseController.Flush report the underlying
+// writer's flush error. Without it the controller finds Flush first and the
+// error is lost.
+func (w *hijackTrackingWriter) FlushError() error {
+	return http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+func (w *hijackTrackingWriter) Flush() {
+	_ = w.FlushError()
+}
+
+func (w *hijackTrackingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	conn, buf, err := hj.Hijack()
+	if err != nil {
+		return conn, buf, err
+	}
+	// net/http runs the StateHijacked hook inside Hijack, so the raw conn is
+	// already registered (or already closed by a shut-down tracker) here.
+	return &releasingConn{Conn: conn, tracker: w.tracker}, buf, nil
+}
+
+// releasingConn unregisters its underlying conn from the tracker on first
+// Close. The embedded Conn.Close still runs on every call so a second close
+// keeps its usual error semantics.
+type releasingConn struct {
+	net.Conn
+	tracker *hijackedConnTracker
+	once    sync.Once
+}
+
+func (c *releasingConn) Close() error {
+	c.once.Do(func() { c.tracker.release(c.Conn) })
+	return c.Conn.Close()
+}
+
+func (c *releasingConn) CloseWrite() error {
+	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return nil
 }
 
 func (t *hijackedConnTracker) transition(conn net.Conn, state http.ConnState) {
