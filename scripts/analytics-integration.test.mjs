@@ -39,8 +39,10 @@ test("route generation is a checked build and development prerequisite", () => {
 
   for (const workspace of ["website", "docs"]) {
     const scripts = JSON.parse(source(`${workspace}/package.json`)).scripts;
-    assert.match(scripts.build, /^node \.\.\/scripts\/analytics-routes\.mjs --check && /u);
-    assert.match(scripts.dev, /^node \.\.\/scripts\/analytics-routes\.mjs --check && /u);
+    // The website runs its docs-search-index check first; the route check must
+    // still gate the build before `next` starts.
+    assert.match(scripts.build, /(?:^|&& )node \.\.\/scripts\/analytics-routes\.mjs --check && /u);
+    assert.match(scripts.dev, /(?:^|&& )node \.\.\/scripts\/analytics-routes\.mjs --check && /u);
   }
 });
 
@@ -127,8 +129,7 @@ test("the cookieless envelope keeps the fields PostHog's server hash requires", 
 
 test("all approved Sockguard marketing CTA families have exact annotations", () => {
   const header = source("website/src/components/site-header.tsx");
-  const buttons = source("website/src/components/cta-buttons.tsx");
-  const page = source("website/src/app/page.tsx");
+  const hero = source("website/src/components/hero.tsx");
   const comparison = source("website/src/components/comparison-page.tsx");
   const getStarted = source("website/src/components/get-started.tsx");
   const footer = source("website/src/components/footer.tsx");
@@ -136,11 +137,10 @@ test("all approved Sockguard marketing CTA families have exact annotations", () 
 
   assert.match(header, /ctaId="docs_root"\s+placement="header"/u);
   assert.match(header, /ctaId="github_repository"\s+placement="header"/u);
-  assert.match(buttons, /placement: "hero" \| "comparison"/u);
-  assert.match(buttons, /ctaId="github_repository"\s+placement=\{placement\}/u);
-  assert.match(buttons, /ctaId="docs_root"\s+placement=\{placement\}/u);
-  assert.match(page, /<CtaButtons[^>]*placement="hero"/u);
-  assert.match(comparison, /<CtaButtons[^>]*placement="comparison"/u);
+  assert.match(hero, /ctaId="github_repository"\s+placement="hero"/u);
+  assert.match(hero, /ctaId="docs_root" placement="hero"/u);
+  assert.match(comparison, /ctaId="github_repository"\s+placement="comparison"/u);
+  assert.match(comparison, /ctaId="docs_root" placement="comparison"/u);
   assert.match(getStarted, /captureCta\(pathname, `install_\$\{id\}`, "get_started"\)/u);
   assert.match(getStarted, /ctaId="docs_root"\s+placement="get_started"/u);
   assert.match(footer, /ctaId: "docs_root"/u);

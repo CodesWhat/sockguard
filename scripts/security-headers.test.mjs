@@ -45,7 +45,7 @@ describe("Vercel security headers", () => {
       "connect-src 'self' https://e.codeswhat.com",
       "font-src 'self' data:",
       "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data: https://github.com https://img.shields.io https://pkg.go.dev",
+      "img-src 'self' data: https://github.com https://img.shields.io https://qlty.sh https://www.bestpractices.dev",
     ]) {
       assert.match(
         csp,
@@ -54,6 +54,9 @@ describe("Vercel security headers", () => {
     }
 
     assert.doesNotMatch(csp, /'unsafe-eval'/);
+    // The Go Reference badge image is gone (footer text link only), so
+    // pkg.go.dev must not stay allowed as an image host.
+    assert.doesNotMatch(csp, /pkg\.go\.dev/u);
     // Retired star-chart hosts stay retired (#303): both failed silently at
     // HTTP 200, which is why the chart is a committed SVG now. Same pattern
     // as the Go Report Card removal in #283.
