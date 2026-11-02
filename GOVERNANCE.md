@@ -33,7 +33,10 @@ reports follow [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
 ## Change and release control
 
-Changes branch from and merge back into `main` through pull requests. CI runs
+Changes go through pull requests into the active `dev/vX.Y` branch. `main` advances
+through release promotion pull requests, and stable tags are cut from `main`.
+Prereleases are cut from the `dev/vX.Y` branch, and older supported patches from
+their `maintenance/X.Y.x` branch. CI runs
 race-enabled tests, linting, vulnerability analysis, integration tests,
 fuzzing, and release checks. Tagged releases are created by repository
 workflows and are signed and attested with GitHub Actions OIDC.
