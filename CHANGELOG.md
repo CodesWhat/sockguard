@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Helm chart published as a signed OCI artifact.** From v3.0.0, a stable tag cut from the default branch pushes the chart to `oci://ghcr.io/codeswhat/charts/sockguard`, with its image reference pinned to the release's multi-arch digest, signed keyless like the image, and verified by the QA-6 published-artifact job. Release candidates and maintenance patches publish no chart.
 - **Unknown configuration keys are reported.** Config loading only decoded the `mutations` block strictly, so a typo'd or dead key anywhere else passed `sockguard validate` silently. `sockguard validate` now prints a warning per unrecognized key (dotted path plus file) and still exits 0; the new `--strict` flag exits non-zero instead. `sockguard serve` logs one warning per key at startup, and hot reload logs the same. The check reads only the YAML file, so `SOCKGUARD_*` and Tecnativa environment variables never show as unknown, and no config that loads today stops loading. `app/configs/multi-listener.yaml` dropped three dead `clients.profiles[].response.redact_*` keys it carried.
 
 ## [2.4.3] - 2026-11-02

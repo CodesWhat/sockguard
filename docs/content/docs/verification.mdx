@@ -101,6 +101,38 @@ cosign verify \
 # image: ghcr.io/codeswhat/sockguard@sha256:...
 ```
 
+## Verifying the Helm chart
+
+From v3.0.0, stable releases also publish the Helm chart to
+`oci://ghcr.io/codeswhat/charts/sockguard`. It is signed by the same
+release workflow and identity as the image, so the verification command
+is the same one with the chart reference:
+
+```bash
+cosign verify \
+  --certificate-identity-regexp '^https://github.com/CodesWhat/sockguard/.github/workflows/release-from-tag.yml@refs/tags/.+$' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  ghcr.io/codeswhat/charts/sockguard:<TAG>
+```
+
+`<TAG>` is the release version without the leading `v` (for example
+`3.0.0`). The chart version, its `appVersion` and the release tag are
+always the same number. To install the exact artifact you verified,
+resolve its digest and install by digest:
+
+```bash
+digest=$(docker buildx imagetools inspect \
+  ghcr.io/codeswhat/charts/sockguard:<TAG> --format '{{json .Manifest.Digest}}' \
+  | tr -d '"')
+
+helm install sockguard "oci://ghcr.io/codeswhat/charts/sockguard@${digest}"
+```
+
+The chart's default `image.tag` is the release version pinned to that
+release's multi-arch image digest, so the installed image is the one
+signed by the same release. Release candidates and maintenance patches do
+not publish a chart.
+
 ## If verification fails
 
 **Do not run the image.** Treat a verification failure as a potential
