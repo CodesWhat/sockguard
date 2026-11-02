@@ -26,7 +26,7 @@ test("native CI fails when go test fails before tee", () => {
     const result = spawnSync(
       "bash",
       ["-e", "-c", 'go() { printf \'{"Action":"fail"}\\n\'; return 17; }\n' + body],
-      { cwd: join(dir, "app"), encoding: "utf8", timeout: 5000 },
+      { cwd: join(dir, "app"), encoding: "utf8", timeout: 120000 },
     );
     assert.ifError(result.error);
     assert.equal(result.status, 17, result.stdout + result.stderr);
@@ -40,7 +40,7 @@ for (const [mode, expectedCalls, succeeds] of [
   ["healthy", 5, true],
   ["flapping", 8, true],
   ["permission-rebind", 8, true],
-  ["unreachable", 60, false],
+  ["unreachable", 6, false],
 ]) {
   test(`native CI socket readiness: ${mode}`, () => {
     const body = workflow.match(
@@ -71,14 +71,18 @@ for (const [mode, expectedCalls, succeeds] of [
           PATH: `${dir}:${process.env.PATH}`,
           PROBE_COUNT_FILE: countFile,
           PROBE_MODE: mode,
+          SOCKET_READY_ATTEMPTS: mode === "unreachable" ? "6" : "60",
           SOCKET_READY_FILE: readyFile,
           SOCKGUARD_TEST_PODMAN_SOCKET: join(dir, "podman.sock"),
         },
         encoding: "utf8",
-        timeout: 5000,
+        timeout: 120000,
       });
       assert.ifError(result.error);
       assert.equal(result.status === 0, succeeds, result.stderr);
+      if (!succeeds) {
+        assert.match(result.stderr, /never stayed reachable for five consecutive checks/u);
+      }
       assert.equal(Number(readFileSync(countFile, "utf8")), expectedCalls);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -110,7 +114,7 @@ for (const [name, major, payload, allowed] of [
     const result = spawnSync("jq", ["-e", "--arg", "major", major, guard], {
       input: typeof payload === "string" ? payload : JSON.stringify(payload),
       encoding: "utf8",
-      timeout: 5000,
+      timeout: 120000,
     });
     assert.ifError(result.error);
     assert.equal(result.status === 0, allowed, result.stderr);

@@ -442,6 +442,7 @@ See [Helm in the getting-started guide](https://getsockguard.com/docs/getting-st
 ```bash
 sockguard serve                                     # Start proxy (default)
 sockguard validate -c sockguard.yaml                # Validate + print compiled rule table
+sockguard validate --strict -c sockguard.yaml       # Also fail on unrecognized config keys
 sockguard match -c sockguard.yaml -X GET --path /v1.45/containers/json
                                                     # Dry-run a single request through the rules
 sockguard verify -c sockguard.yaml                  # Runtime self-check against a live deployment

@@ -24,6 +24,16 @@ func ReadFile(path string) ([]byte, error) {
 // Load reads config from the given YAML file path, applies env var overrides,
 // and returns the merged Config. A missing file is OK; parse errors are not.
 func Load(configPath string) (*Config, error) {
+	cfg, _, err := LoadWithData(configPath)
+	return cfg, err
+}
+
+// LoadWithData is Load that also returns the exact YAML bytes it parsed (nil
+// for an empty path or a missing file), so a caller can inspect the same
+// bytes (for example UnknownKeysBytes) without a second read that could see a
+// different file.
+func LoadWithData(configPath string) (*Config, []byte, error) {
+	var fileData []byte
 	v := viper.New()
 
 	// Full config precedence across the serve path is:
@@ -41,12 +51,13 @@ func Load(configPath string) (*Config, error) {
 			if os.IsNotExist(err) {
 				// File doesn't exist — that's fine, use defaults
 			} else {
-				return nil, err
+				return nil, nil, err
 			}
 		} else {
+			fileData = data
 			v.SetConfigType("yaml")
 			if err := v.ReadConfig(bytes.NewReader(data)); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		}
 	}
@@ -56,18 +67,18 @@ func Load(configPath string) (*Config, error) {
 	v.AutomaticEnv()
 
 	if err := rejectRemovedUpstreamTLS(v); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var cfg Config
 	if err := v.Unmarshal(&cfg); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	applyCompatEnvAliases(&cfg)
 
 	if err := decodeMutationsStrict(v, &cfg); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if len(cfg.Rules) == 0 {
@@ -77,7 +88,7 @@ func Load(configPath string) (*Config, error) {
 	cfg.explicitLegacyListen = explicitLegacyListenFile(configPath)
 	applyEndpointConfigProvenance(&cfg, explicitEndpointConfigFile(configPath))
 
-	return &cfg, nil
+	return &cfg, fileData, nil
 }
 
 // legacyListenKeys are the dotted config paths under listen: whose presence

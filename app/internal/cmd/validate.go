@@ -19,7 +19,13 @@ var validateCmd = &cobra.Command{
 	RunE:  runValidate,
 }
 
+var validateStrict bool
+
+// validateLoadConfig is a seam so tests can observe the single config read.
+var validateLoadConfig = config.LoadWithData
+
 func init() {
+	validateCmd.Flags().BoolVar(&validateStrict, "strict", false, "exit non-zero when the configuration file has unrecognized keys")
 	rootCmd.AddCommand(validateCmd)
 }
 
@@ -42,12 +48,23 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	// stderr, leaving the report on stdout intact for anything parsing it.
 	warnUnknownEnvVars(slog.New(slog.NewTextHandler(errOut, nil)), cfgFile, os.Environ())
 
-	cfg, err := config.Load(cfgFile)
+	cfg, loadedBytes, err := validateLoadConfig(cfgFile)
 	if err != nil {
 		wrapped := fmt.Errorf("config load: %w", err)
 		printValidationFailure(errOut, stderrP, wrapped)
 		return wrapped
 	}
+
+	// Detection runs on the bytes Load parsed (no second read) and is purely
+	// advisory: a detection error never turns a passing validation into a
+	// failure.
+	var unknownKeys []string
+	if len(loadedBytes) > 0 {
+		if keys, kerr := config.UnknownKeysBytes(loadedBytes); kerr == nil {
+			unknownKeys = keys
+		}
+	}
+	logUnknownKeys(slog.New(slog.NewTextHandler(errOut, nil)), cfgFile, unknownKeys)
 
 	compatActive := config.ApplyCompat(cfg, discardLogger)
 
@@ -65,6 +82,11 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	printHeader(out, stdoutP, cfg, compatActive)
 	printRules(out, stdoutP, cfg, len(compiled))
 	printClientProfiles(out, stdoutP, cfg)
+	if validateStrict && len(unknownKeys) > 0 {
+		err := fmt.Errorf("%d unrecognized configuration key(s) (--strict)", len(unknownKeys))
+		printValidationFailure(errOut, stderrP, err)
+		return err
+	}
 	fmt.Fprintf(out, "  %s %s\n", stdoutP.Green(ui.Check), stdoutP.Green("validation passed"))
 	return nil
 }
