@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 v2.4.3 stops completed hijacked sessions from accumulating in the listener, rejects malformed keyless subject patterns, and adds Codecov reporting, docs corrections and Podman CI fixes. It carries v2.4.2.
 
+## [3.0.0-rc.5] - 2026-11-02
+
+This candidate carries v2.4.3 (the FlushError fix that stops completed hijacked sessions from accumulating in the listener) and the getsockguard.com website rebuild onto the v3 line. The v3 TLS compatibility changes are unchanged. Fresh exact-source soak, TLS/security and published-image conformance are required before GA.
+
 ### Changed
 
 - **Website rebuilt.** The getsockguard.com landing page is rebuilt with a refreshed compare matrix, a GitHub star-history chart, and the Go Reference footer link pointing at the `/v3` module. Playwright browser checks now run the site on Chromium, Firefox and WebKit in CI.
