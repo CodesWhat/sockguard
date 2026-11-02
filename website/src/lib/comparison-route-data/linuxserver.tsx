@@ -18,12 +18,12 @@ Hot-reload|No|Yes (opt-in, SIGHUP/fsnotify, validate endpoint)|self
 Audit log schema|No|Yes (opt-in, JSON schema + reason codes)|self
 `,
   highlightsTable: `
-shield|Request Body Inspection|LinuxServer filters by method and path only. Sockguard inspects request bodies — blocking exec commands by pattern, bind mounts by path, and more across 12+ resource types.
-users|Per-Client Policies|LinuxServer applies the same ENV-var rules to every caller. Sockguard assigns different policies per CIDR range, Docker label, TLS certificate selector, or Unix peer — so CI, monitoring, and admin clients can each have a tighter scope.
+shield|Request Body Inspection|LinuxServer filters by method and path only. Sockguard inspects request bodies, blocking exec commands by pattern, bind mounts by path, and more across 12+ resource types.
+users|Per-Client Policies|LinuxServer applies the same ENV-var rules to every caller. Sockguard assigns different policies per CIDR range, Docker label, TLS certificate selector, or Unix peer, so CI, monitoring, and admin clients can each have a tighter scope.
 key|Signed Policy Bundles|Sockguard verifies policy files with cosign keyed or keyless signatures and Rekor transparency log inclusion. An unsigned or tampered bundle is rejected before any request reaches the daemon.
 activity|Prometheus Metrics|Sockguard exports socket-proxy request metrics, deny counts, and latency histograms. LinuxServer has no built-in observability beyond container logs.
 layers|Rollout Modes|Sockguard's per-profile rollout modes (enforce / warn / audit) let you shadow-test a new policy before it blocks anything. Roll out strict rules without a maintenance window.
-eye|Read-Side Redaction|Sockguard can redact sensitive fields from GET responses — labels, environment variables, mount paths — so callers only see what their policy allows. LinuxServer has no response filtering.
+eye|Read-Side Redaction|Sockguard can redact sensitive fields from GET responses (labels, environment variables, mount paths) so callers only see what their policy allows. LinuxServer has no response filtering.
 `,
   highlightIconMap: {
     shield: "shield-check",
@@ -66,7 +66,7 @@ eye|Read-Side Redaction|Sockguard can redact sensitive fields from GET responses
   ),
   migrationTitle: "Coming from LinuxServer?",
   migrationDescription:
-    "Translate your ENV var allow-list to Sockguard YAML rules once. Sockguard mounts the same socket, speaks the same Docker API, and drops into your compose stack as a one-line service swap — then you can enable body inspection and per-client profiles at your own pace.",
+    "Translate your ENV var allow-list to Sockguard YAML rules once. Sockguard mounts the same socket, speaks the same Docker API, and drops into your compose stack as a one-line service swap, then you can enable body inspection and per-client profiles at your own pace.",
   jsonLdName: "LinuxServer docker-socket-proxy alternative: Sockguard vs LinuxServer",
   jsonLdDescription: "Sockguard as a LinuxServer docker-socket-proxy alternative.",
 } satisfies ComparisonRouteRawConfig;

@@ -18,10 +18,10 @@ Rate limits|No|Yes (per-profile token-bucket)|self
 Audit log schema|No|Yes (opt-in, JSON schema + reason codes)|self
 `,
   highlightsTable: `
-shield|Full Request Body Inspection|wollomatic can restrict bind mounts in request bodies. Sockguard goes further — inspecting container create, exec, image pull, volume, network, secret, config, service, swarm, node, and plugin requests for fine-grained control.
-users|Full Per-Client Policies|wollomatic supports IP/hostname and label-based client matching. Sockguard adds TLS certificate selectors (including SPKI pinning), unix peer credentials, and CIDR ranges — each profile carrying its own independent ruleset.
-key|Signed Policy Bundles|Sockguard verifies policy files with cosign keyed or keyless signatures and Rekor inclusion. wollomatic has no policy signing — anyone who can write the config file can change the rules.
-fingerprint|Container Image Trust|Sockguard enforces image signatures at deployment time — blocking container or swarm-service creates whose images aren't signed or don't match a trusted digest. wollomatic has no image-trust layer.
+shield|Full Request Body Inspection|wollomatic can restrict bind mounts in request bodies. Sockguard goes further: inspecting container create, exec, image pull, volume, network, secret, config, service, swarm, node, and plugin requests for fine-grained control.
+users|Full Per-Client Policies|wollomatic supports IP/hostname and label-based client matching. Sockguard adds TLS certificate selectors (including SPKI pinning), unix peer credentials, and CIDR ranges, each profile carrying its own independent ruleset.
+key|Signed Policy Bundles|Sockguard verifies policy files with cosign keyed or keyless signatures and Rekor inclusion. wollomatic has no policy signing. Anyone who can write the config file can change the rules.
+fingerprint|Container Image Trust|Sockguard enforces image signatures at deployment time, blocking container or swarm-service creates whose images aren't signed or don't match a trusted digest. wollomatic has no image-trust layer.
 activity|Prometheus Metrics|Sockguard exports socket-proxy request metrics, deny counts, and latency histograms. wollomatic has JSON logs but no metrics endpoint.
 layers|Rollout Modes|Sockguard's per-profile rollout modes (enforce / warn / audit) let you shadow-test strict rules before they block anything. wollomatic is enforce-only.
 `,
@@ -64,7 +64,7 @@ layers|Rollout Modes|Sockguard's per-profile rollout modes (enforce / warn / aud
   ),
   migrationTitle: "Coming from wollomatic?",
   migrationDescription:
-    "Your regex path rules translate into Sockguard's glob rule blocks, since Sockguard matches paths with a glob dialect compiled to specialised matchers, literal, match-all, trailing-deep or per-segment, with regex only as the fallback, rather than with operator-supplied regex. Body inspection rules replace the bind-mount filter with full coverage. The upstream watchdog is built in — and you get a /health endpoint and Prometheus metrics on top.",
+    "Your regex path rules translate into Sockguard's glob rule blocks, since Sockguard matches paths with a glob dialect compiled to specialised matchers, literal, match-all, trailing-deep or per-segment, with regex only as the fallback, rather than with operator-supplied regex. Body inspection rules replace the bind-mount filter with full coverage. The upstream watchdog is built in, and you get a /health endpoint and Prometheus metrics on top.",
   jsonLdName: "wollomatic socket-proxy alternative: Sockguard vs wollomatic",
   jsonLdDescription: "Sockguard as a wollomatic socket-proxy alternative.",
 } satisfies ComparisonRouteRawConfig;
