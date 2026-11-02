@@ -2,9 +2,11 @@ package filter_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/codeswhat/sockguard/v2/app/internal/config"
@@ -40,7 +42,7 @@ func TestPortainerPresetPassesInspectOutputThroughUnmodified(t *testing.T) {
 		RedactHostTopology:         cfg.Response.RedactHostTopology,
 		AllowAttestationStatements: cfg.Response.AllowAttestationStatements,
 	})
-	if string(got) != portainerInspectBody {
+	if !sameJSON(t, got, []byte(portainerInspectBody)) {
 		t.Fatalf("inspect body changed by portainer preset:\n got: %s\nwant: %s", got, portainerInspectBody)
 	}
 }
@@ -58,9 +60,23 @@ func TestDefaultRedactionRewritesPortainerInspectBody(t *testing.T) {
 		RedactHostTopology:         def.Response.RedactHostTopology,
 		AllowAttestationStatements: def.Response.AllowAttestationStatements,
 	})
-	if string(got) == portainerInspectBody {
+	if sameJSON(t, got, []byte(portainerInspectBody)) {
 		t.Fatalf("default redaction left the inspect body unchanged: %s", got)
 	}
+}
+
+// sameJSON compares decoded values: the filter re-encodes bodies it inspects,
+// so key order can differ even when no field changed.
+func sameJSON(t *testing.T, a, b []byte) bool {
+	t.Helper()
+	var av, bv any
+	if err := json.Unmarshal(a, &av); err != nil {
+		t.Fatalf("decode got: %v", err)
+	}
+	if err := json.Unmarshal(b, &bv); err != nil {
+		t.Fatalf("decode want: %v", err)
+	}
+	return reflect.DeepEqual(av, bv)
 }
 
 func filterInspectBody(t *testing.T, opts responsefilter.Options) []byte {
