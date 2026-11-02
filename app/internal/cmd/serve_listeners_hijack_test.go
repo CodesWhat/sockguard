@@ -2,8 +2,10 @@ package cmd
 
 import (
 	"bufio"
+	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -127,4 +129,44 @@ func TestHijackedConnTrackerConcurrentCompletionAndShutdown(t *testing.T) {
 	}
 	tracker.closeAll()
 	wg.Wait()
+}
+
+type flushErrWriter struct {
+	http.ResponseWriter
+	err error
+}
+
+func (w flushErrWriter) FlushError() error { return w.err }
+
+func TestHijackTrackingWriterPreservesFlushError(t *testing.T) {
+	want := errors.New("flush failed")
+	w := &hijackTrackingWriter{ResponseWriter: flushErrWriter{ResponseWriter: httptest.NewRecorder(), err: want}}
+	if got := http.NewResponseController(w).Flush(); !errors.Is(got, want) {
+		t.Fatalf("Flush error = %v, want %v", got, want)
+	}
+}
+
+func TestHijackTrackingWriterFlushUnsupported(t *testing.T) {
+	w := &hijackTrackingWriter{ResponseWriter: struct{ http.ResponseWriter }{httptest.NewRecorder()}}
+	if got := http.NewResponseController(w).Flush(); !errors.Is(got, http.ErrNotSupported) {
+		t.Fatalf("Flush error = %v, want ErrNotSupported", got)
+	}
+}
+
+func TestHijackTrackingWriterFlushSucceeds(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w := &hijackTrackingWriter{ResponseWriter: rec}
+	if err := http.NewResponseController(w).Flush(); err != nil {
+		t.Fatalf("Flush error = %v, want nil", err)
+	}
+	if !rec.Flushed {
+		t.Fatal("recorder not flushed through ResponseController")
+	}
+
+	rec = httptest.NewRecorder()
+	w = &hijackTrackingWriter{ResponseWriter: rec}
+	http.Flusher(w).Flush()
+	if !rec.Flushed {
+		t.Fatal("recorder not flushed through plain Flusher")
+	}
 }

@@ -3,10 +3,10 @@ title: Roadmap
 description: Sockguard's shipped v1.7, v2.0, v2.1, v2.2, v2.3, and v2.4 work and later direction.
 ---
 
-Sockguard v2.4 is the current stable feature line, with v2.4.2 the latest
-release. It tightens Podman engine and native-route isolation, permits safe
-volume filters on verified Podman 6+ endpoints and improves CI and maintenance
-publishing. It carries v2.4.2 and everything
+Sockguard v2.4 is the current stable feature line, with v2.4.3 the latest
+release. It stops completed hijacked sessions from accumulating in the listener,
+rejects incomplete keyless subject patterns and fixes Podman nightly CI. It
+carries v2.4.2, v2.4.1 and everything
 through v2.3.3. The v2.3 line shipped as follows. v2.3.0 promotes `2.3.0-rc.9` unchanged in behavior and is the first
 release under the MIT license; 2.2.x and earlier remain Apache-2.0. v2.3.1 is a
 security patch that refuses a client-supplied container log path. v2.3.2 is a
@@ -156,6 +156,10 @@ from source and a client-only request capture, not a live-daemon reproduction.
 | BuildKit isolation | Caller identity comes from verified certificates or Unix peer credentials where available, session state is correlated by principal, profile, and session, Solve admission is atomic, and upgrade handshakes are bounded |
 | Proxy hardening | Socket cleanup is inode-owned, method-aware resource routing covers keyword names, generated response errors clear stale representation headers, inspected bodies retain deadlines through logging and metrics, and request metric labels have finite cardinality |
 | Release surfaces | README, docs, website, Helm metadata, verification assets, and migration guidance agree on v2.0.0; release blobs use sigstore bundles only and published metadata is read back before the release succeeds |
+
+## Shipped in v2.4.3
+
+Completed attach, exec and BuildKit sessions are dropped from the listener's hijacked-connection tracker when their handler closes them; live sessions are still closed on shutdown. Keyless `subject_pattern` values must be a complete regexp on their own, so `a)|(b` no longer defeats the full-match anchor. Go coverage uploads to Codecov without gating merges, the Podman 5/6 nightly tracks Fedora major tags, and the Podman and governance docs are corrected.
 
 ## Shipped in v2.4.2
 

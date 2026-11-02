@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.3] - 2026-11-02
+
+v2.4.3 stops completed hijacked sessions from accumulating in the listener, rejects malformed keyless subject patterns, and adds Codecov reporting, docs corrections and Podman CI fixes. It carries v2.4.2.
+
 ### Changed
 
 - **Website rebuilt.** The getsockguard.com landing page is rebuilt with a refreshed compare matrix, a GitHub star-history chart, and the Go Reference footer link pointing at the `/v3` module. Playwright browser checks now run the site on Chromium, Firefox and WebKit in CI.
@@ -41,6 +45,7 @@ This candidate carries v2.4.2 and the later dev/v2.4 fixes and the release workf
 - Reject keyless `subject_pattern` values that are not a complete regexp on their own. A pattern like `a)|(b` used to compile to `^(?:a)|(b)$` and matched `azzz` and `zzb`, defeating the full-match anchor.
 - Stop the Podman 5/6 nightly from breaking when quay purges the rebuilt Fedora base image. The matrix now tracks the Fedora 44 and 45 major tags instead of digests that expire within a day.
 - Stop completed attach, exec and BuildKit sessions from piling up in the listener's hijacked-connection tracker. net/http never reports a closed state for hijacked connections, so entries stayed until shutdown. The tracker now drops a connection when its handler closes it, and live sessions are still closed on shutdown.
+- Keep flush errors visible through the hijack tracker. Its response writer implemented `Flush` but not `FlushError`, so `http.ResponseController.Flush` returned nil even when the underlying writer's flush failed.
 
 - Ignore inherited Git repository/index settings when inventorying generated files in the Go module checks, so a hook's alternate index cannot make a complete source tree appear empty.
 - **Release binary signing retries.** GoReleaser signs every archive with a parallel `cosign sign-blob`, and on 2.3.3's first attempt two of them raced on the Sigstore trust cache and the job failed. The release workflow now loads the trust root once before GoReleaser runs, and each signing call retries up to three times with a fresh key.
