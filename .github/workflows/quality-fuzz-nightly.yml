@@ -132,6 +132,7 @@ jobs:
           - { name: FuzzDockerfileInspect,            pkg: ./internal/dockerfileinspect/ }
           - { name: FuzzCertificateURIStrings,        pkg: ./internal/certmatch/ }
           - { name: FuzzNormalizeSubjectPublicKeySHA256Pin, pkg: ./internal/pkipin/ }
+          - { name: FuzzCompileKeyless,            pkg: ./internal/sigverify/ }
 
     steps:
       # audit, not block. `block` on this job is what kills 3 to 5 legs a

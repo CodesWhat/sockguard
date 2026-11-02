@@ -129,6 +129,7 @@ jobs:
           - { name: FuzzDockerfileInspect,            pkg: ./internal/dockerfileinspect/ }
           - { name: FuzzCertificateURIStrings,        pkg: ./internal/certmatch/ }
           - { name: FuzzNormalizeSubjectPublicKeySHA256Pin, pkg: ./internal/pkipin/ }
+          - { name: FuzzCompileKeyless,            pkg: ./internal/sigverify/ }
 
     steps:
       # Stays audit for stage 1: this job already has an open, in-repo
