@@ -27,13 +27,13 @@ MIT: https://opensource.org/license/mit
 
 ## Links
 
-- Website: https://getsockguard.com
+- Website: https://www.getsockguard.com
 - GitHub: https://github.com/CodesWhat/sockguard
 - Releases: https://github.com/CodesWhat/sockguard/releases
-- Documentation: https://getsockguard.com/docs
-- Compare to alternatives: https://getsockguard.com/compare
-- vs Tecnativa docker-socket-proxy: https://getsockguard.com/compare/tecnativa
-- vs LinuxServer docker-socket-proxy: https://getsockguard.com/compare/linuxserver
-- vs wollomatic socket-proxy: https://getsockguard.com/compare/wollomatic
-- vs 11notes docker-socket-proxy: https://getsockguard.com/compare/11notes
-- vs CetusGuard: https://getsockguard.com/compare/cetusguard
+- Documentation: https://www.getsockguard.com/docs
+- Compare to alternatives: https://www.getsockguard.com/compare
+- vs Tecnativa docker-socket-proxy: https://www.getsockguard.com/compare/tecnativa
+- vs LinuxServer docker-socket-proxy: https://www.getsockguard.com/compare/linuxserver
+- vs wollomatic socket-proxy: https://www.getsockguard.com/compare/wollomatic
+- vs 11notes docker-socket-proxy: https://www.getsockguard.com/compare/11notes
+- vs CetusGuard: https://www.getsockguard.com/compare/cetusguard

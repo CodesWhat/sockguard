@@ -23,11 +23,17 @@ export const SITE_CONFIG = {
   },
   /** Short product tagline used in page titles and OG metadata. */
   tagline: "Control what gets through",
+  /** Default <title>, OpenGraph and Twitter title. Carries the category for search. */
+  title: "Sockguard - Docker socket proxy that controls what gets through",
   /** Default meta / OpenGraph / Twitter description. */
   description:
     "We built a default-deny Docker socket proxy in Go. Filter Docker API requests by method, path, and body, then layer on signed policy bundles, per-profile rollout modes, rate limits, hot-reload, and Prometheus metrics.",
-  /** Production domain (no protocol, no trailing slash). */
-  domain: "getsockguard.com",
+  /**
+   * Production host (no protocol, no trailing slash). The apex getsockguard.com
+   * 307-redirects here, so this is the one canonical host for canonical links,
+   * og:url, JSON-LD, the sitemap, robots and security.txt.
+   */
+  domain: "www.getsockguard.com",
   /** GitHub owner/org. */
   githubOwner,
   /** GitHub repository name. */

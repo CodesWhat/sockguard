@@ -319,3 +319,29 @@ test("faqItems data is valid", () => {
     );
   }
 });
+
+test("the hero stat snapshot is dated and the hero renders that date", async () => {
+  const { PROOF_SNAPSHOT } = await import("./data/proof.ts");
+  assert.match(PROOF_SNAPSHOT.checkedAt, /^\d{4}-\d{2}-\d{2}$/u);
+  assert.ok(!Number.isNaN(Date.parse(PROOF_SNAPSHOT.checkedAt)));
+  const hero = readFileSync(new URL("../components/hero.tsx", import.meta.url), "utf8");
+  assert.match(hero, /PROOF_SNAPSHOT\.checkedAt/u);
+});
+
+test("the home title names the category", () => {
+  assert.match(SITE_CONFIG.title, /Docker socket proxy/u);
+});
+
+test("theme provider follows the system preference until a stored choice exists", () => {
+  const provider = readFileSync(
+    new URL("../components/theme-provider.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(provider, /defaultTheme="system"/u);
+  assert.match(provider, /enableSystem/u);
+  // next-themes stores the choice under its default "theme" key. An override
+  // here would silently drop returning visitors' saved choice.
+  assert.doesNotMatch(provider, /storageKey/u);
+  const layout = readFileSync(new URL("./layout.tsx", import.meta.url), "utf8");
+  assert.match(layout, /suppressHydrationWarning/u);
+});

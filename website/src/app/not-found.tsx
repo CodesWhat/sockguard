@@ -5,9 +5,23 @@ import { Icon } from "@/components/icon";
 import { MarketingShell } from "@/components/marketing-shell";
 import { NotFoundSearch } from "@/components/not-found-search";
 
+const NOT_FOUND_DESCRIPTION =
+  "No page lives at this path. Head back to the Sockguard Docker socket proxy docs or search them.";
+
 export const metadata: Metadata = {
   title: "Page not found",
+  description: NOT_FOUND_DESCRIPTION,
   robots: { index: false, follow: true },
+  openGraph: {
+    title: "Page not found | Sockguard",
+    description: NOT_FOUND_DESCRIPTION,
+    type: "website",
+  },
+  twitter: {
+    card: "summary",
+    title: "Page not found | Sockguard",
+    description: NOT_FOUND_DESCRIPTION,
+  },
 };
 
 export default function NotFound() {
