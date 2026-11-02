@@ -1,0 +1,48 @@
+# Sockguard config for Homarr — mirrors the shipped homarr preset.
+# Copy of app/configs/homarr.yaml; embedded here so the compose stack
+# is self-contained. Update both files together if you change rules.
+#
+# Optimized for Homarr dashboard with container management.
+# Allows: container list, inspect, stats, logs, start/stop/restart/remove.
+# Denies: exec, create, image/network/volume writes.
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+# Homarr reads container logs, which are an explicit read-exfiltration route.
+insecure_allow_read_exfiltration: true
+
+rules:
+  # Container reads
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/stats" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/logs" }
+    action: allow
+
+  # Container lifecycle
+  - match: { method: POST, path: "/containers/*/start" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/stop" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/restart" }
+    action: allow
+  - match: { method: DELETE, path: "/containers/*" }
+    action: allow
+
+  # Deny everything else
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by homarr preset"

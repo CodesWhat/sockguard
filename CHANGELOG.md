@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Compose examples for Homepage, Homarr, Diun and Autoheal.** `examples/compose/homepage/`, `homarr/`, `diun/` and `autoheal/` each pair the consumer with its bundled preset, and the compose sync test now guards their `sockguard.yaml` copies against drift.
+
+### Fixed
+
+- **The Diun preset no longer breaks Diun's container list.** The default network-topology redaction rewrote published-port IPs to `<redacted>`, and Diun failed with `ParseAddr("<redacted>"): unable to parse IP` on any host with a published port. `app/configs/diun.yaml` now sets `response.redact_network_topology: false`.
+
 ## [2.4.3] - 2026-11-02
 
 v2.4.3 stops completed hijacked sessions from accumulating in the listener, rejects malformed keyless subject patterns, and adds Codecov reporting, docs corrections and Podman CI fixes. It carries v2.4.2.

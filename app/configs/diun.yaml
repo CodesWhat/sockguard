@@ -45,6 +45,14 @@ health:
   enabled: true
   path: /health
 
+# Diun parses the published-port IPs in the container list response. With the
+# default network-topology redaction those IPs read "<redacted>", and Diun's
+# ContainerList fails with "ParseAddr(\"<redacted>\"): unable to parse IP" on
+# any host that has a container with a published port. Mount paths and
+# container env stay redacted, Diun reads neither.
+response:
+  redact_network_topology: false
+
 rules:
   # Health and metadata
   - match: { method: GET, path: "/_ping" }

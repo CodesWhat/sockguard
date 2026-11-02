@@ -1,0 +1,55 @@
+# examples/compose/diun/docker-compose.yml
+#
+# Sockguard + Diun — unix-socket mode, read-only diun preset.
+# Sockguard writes a filtered unix socket into a shared named volume;
+# Diun's Docker provider reads that socket instead of /var/run/docker.sock.
+#
+# Diun needs only the connection check, container list and image inspect.
+# Registry checks go straight from Diun to the registry, not through Docker.
+# Diun watches only containers labelled diun.enable=true by default
+# (DIUN_PROVIDERS_DOCKER_WATCHBYDEFAULT=false), so label the containers you
+# want tracked, or set WATCHBYDEFAULT=true to watch them all.
+#
+# Notifications are not configured here. Add a DIUN_NOTIF_* block (webhook,
+# Slack, ntfy, ...) for the channel you use.
+
+services:
+  sockguard:
+    image: codeswhat/sockguard:latest
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    group_add:
+      - "${DOCKER_SOCK_GID:?set to the GID of /var/run/docker.sock}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro
+      - sockguard-socket:/var/run/sockguard
+    environment:
+      - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
+
+  diun:
+    image: crazymax/diun:latest
+    restart: unless-stopped
+    depends_on:
+      - sockguard
+    command: serve
+    volumes:
+      - sockguard-socket:/var/run/sockguard:ro
+      - diun-data:/data
+    environment:
+      - TZ=UTC
+      - LOG_LEVEL=info
+      - DIUN_WATCH_WORKERS=10
+      - DIUN_WATCH_SCHEDULE=0 */6 * * *
+      - DIUN_PROVIDERS_DOCKER_ENDPOINT=unix:///var/run/sockguard/sockguard.sock
+      - DIUN_PROVIDERS_DOCKER_WATCHBYDEFAULT=false
+    labels:
+      - diun.enable=true
+
+volumes:
+  sockguard-socket:
+  diun-data:

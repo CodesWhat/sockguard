@@ -463,6 +463,11 @@ pattern narrow: `GET /images/get`, `GET /images/{name}/get` and
 the unused image-list call out of the surface. That is why this preset does
 **not** set `insecure_allow_read_exfiltration: true`.
 
+The preset sets `response.redact_network_topology: false`. Diun parses the
+published-port IPs in the container list, and the default redaction turns them
+into `<redacted>`, which makes Diun's container list fail on any host with a
+published port.
+
 ## Autoheal (`autoheal.yaml`)
 
 Minimal access for [docker-autoheal](https://github.com/willfarrell/docker-autoheal).

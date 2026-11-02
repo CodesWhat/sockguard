@@ -1,0 +1,4 @@
+# Homepage Docker integration. "sockguard" is the server name referenced by
+# the homepage.server label in docker-compose.yml.
+sockguard:
+  socket: /var/run/sockguard/sockguard.sock

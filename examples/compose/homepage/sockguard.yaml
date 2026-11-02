@@ -1,0 +1,58 @@
+# Sockguard config for Homepage — mirrors the shipped homepage preset.
+# Copy of app/configs/homepage.yaml; embedded here so the compose stack
+# is self-contained. Update both files together if you change rules.
+#
+# Read-only access for the Homepage dashboard (gethomepage.dev).
+#
+# Allows exactly the endpoints Homepage calls: container list, inspect and
+# stats, plus service list/inspect and task list for Swarm deployments.
+# Verified against gethomepage/homepage main — src/utils/config/service-helpers.js
+# (listContainers, listServices), src/pages/api/docker/status/[...service].js
+# (container.inspect, getService().inspect, listTasks) and
+# src/pages/api/docker/stats/[...service].js (container.stats, listTasks).
+# dockerode maps those to /containers/json, /containers/{id}/json,
+# /containers/{id}/stats, /services, /services/{id} and /tasks.
+#
+# Deliberately does NOT allow the read-exfiltration paths a "/containers/**"
+# or "/images/**" glob would swallow: /containers/{id}/archive,
+# /containers/{id}/export, /containers/{id}/logs, /containers/{id}/attach,
+# /images/get and /images/{name}/get. Homepage needs none of them, so this
+# preset needs no insecure_allow_read_exfiltration acknowledgment. A client
+# that genuinely needs container logs or archive has to add that rule AND set
+# insecure_allow_read_exfiltration: true itself.
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+rules:
+  # Container reads — list, inspect, stats. A single "*" matches one path
+  # segment, so the container-ID position cannot absorb a trailing
+  # /archive, /export, /logs or /attach.
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/stats" }
+    action: allow
+
+  # Swarm reads — service list + inspect, task list only
+  - match: { method: GET, path: "/services" }
+    action: allow
+  - match: { method: GET, path: "/services/*" }
+    action: allow
+  - match: { method: GET, path: "/tasks" }
+    action: allow
+
+  # Deny everything else
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by homepage preset — read-only access only"
