@@ -29,6 +29,7 @@ export const DOCS_SEARCH_ITEMS: [page: number, heading: string, anchor: string][
   [1,"Homebrew","homebrew"],
   [1,"Binary","binary"],
   [1,"Go install","go-install"],
+  [1,"Helm","helm"],
   [1,"Connecting Your Apps","connecting-your-apps"],
   [1,"CLI Commands","cli-commands"],
   [1,"Next Steps","next-steps"],

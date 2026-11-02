@@ -232,10 +232,10 @@ procedure. It defaults to committed `HEAD`, Linux/amd64 and the exact tag's vers
 bash scripts/ci/go-reproducible.sh
 ```
 
-For a particular release, pass its tag. For example, once v2.4.0 is published:
+For a particular release, pass its tag. For example, once v3.0.0 is published:
 
 ```bash
-GOOS=linux GOARCH=amd64 bash scripts/ci/go-reproducible.sh v2.4.0
+GOOS=linux GOARCH=amd64 bash scripts/ci/go-reproducible.sh v3.0.0
 ```
 
 The script exports the same committed tree into two different directories, uses

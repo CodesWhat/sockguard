@@ -102,6 +102,17 @@ before validating an existing configuration. The Docker, Homebrew, deb/rpm and
 binary channels above serve v3. The 2.4.x line remains supported for security
 fixes until v3.1 ships.
 
+### Helm
+
+The Helm chart lives at `chart/sockguard` in the repository. It is not published to a chart repository, so install it from a clone of the release tag:
+
+```bash
+git clone --branch v3.0.0 https://github.com/CodesWhat/sockguard.git
+helm install sockguard ./sockguard/chart/sockguard
+```
+
+Chart `version` and `appVersion` track the Sockguard release. See `chart/sockguard/values.yaml` for the available settings.
+
 ## Connecting Your Apps
 
 Point your Docker consumers at the proxy socket instead of `docker.sock`:
