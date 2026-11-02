@@ -370,6 +370,7 @@ func TestPortwingPresetConformance(t *testing.T) {
 			{http.MethodPost, "/containers/create", true},
 			{http.MethodGet, "/images/json", true},
 			{http.MethodGet, "/networks", true},
+			{http.MethodPost, "/networks/abc/connect", true},
 			{http.MethodGet, "/volumes", true},
 			{http.MethodGet, "/services", true},
 

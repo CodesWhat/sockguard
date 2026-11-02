@@ -73,6 +73,10 @@ request_body:
     allow_force: true
     allow_remove_volumes: true
   container_create:
+    # cgroup v1 hosts only (e.g. Synology): a recreate replays
+    # HostConfig.CgroupnsMode "host", which is denied by default. Uncommenting
+    # this widens create to the host cgroup namespace.
+    # allow_host_cgroupns: true
     allowed_bind_mounts: []
     allowed_runtimes:
       - runc

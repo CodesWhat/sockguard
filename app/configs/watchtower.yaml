@@ -11,8 +11,9 @@
 #     /containers/{id}/kill, client.go:196), then after ContainerCreate calls
 #     NetworkDisconnect (POST /networks/{id}/disconnect, client.go:278) for
 #     the default network before re-attaching the copied networks with
-#     NetworkConnect. This preset allows both routes; the kill route can only
-#     send a signal to a container Watchtower already manages.
+#     NetworkConnect. This preset allows both routes. Kill applies to any
+#     container unless owner labels are enabled, and allow_disconnect_force
+#     is global (any container, any network) unless owner labels are on.
 #   - nicholas-fedor stops with ContainerStop (POST /containers/{id}/stop) and
 #     does not use kill or disconnect.
 #   - nicholas-fedor issues POST /containers/{id}/update via SetNoRestartPolicy
@@ -76,6 +77,10 @@ request_body:
     allow_force: true
     allow_remove_volumes: true
   container_create:
+    # cgroup v1 hosts only (e.g. Synology): a recreate replays
+    # HostConfig.CgroupnsMode "host", which is denied by default. Uncommenting
+    # this widens create to the host cgroup namespace.
+    # allow_host_cgroupns: true
     allowed_bind_mounts: []
     allowed_runtimes:
       - runc

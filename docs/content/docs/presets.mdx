@@ -367,9 +367,15 @@ against both upstreams' container client code: the core recreate flow (list/insp
 create with copied network config, start, rename, exec lifecycle hooks, image pull/remove) is shared.
 containrrr stops containers with `POST /containers/{id}/kill` and disconnects the default network
 (`POST /networks/{id}/disconnect`, with `force`) after create, so the preset allows both and sets
-`request_body.network.allow_disconnect_force: true`. nicholas-fedor stops with `/stop` instead, and only
+`request_body.network.allow_disconnect_force: true`. Kill applies to any container, and forced disconnect
+applies to any container on any network, unless owner labels are enabled. nicholas-fedor stops with `/stop` instead, and only
 reads `GET /system/df` when its image disk-usage thresholds are set. That route is a commented-out rule
 in the preset; uncomment it if you use those thresholds.
+
+On cgroup v1 hosts (Synology, for example), a recreate replays `HostConfig.CgroupnsMode: "host"`, which
+container create denies by default. The Watchtower, Drydock and Portwing presets carry a commented
+`request_body.container_create.allow_host_cgroupns: true` line. Uncomment it on those hosts only, since it
+widens create to the host cgroup namespace.
 
 **Use for:** Watchtower v1.21.2 with lifecycle hooks and network-aware updates.
 
