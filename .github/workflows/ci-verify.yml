@@ -442,6 +442,12 @@ jobs:
 
       - name: Dependency Review
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294  # v5.0.0
+        with:
+          # Daemon-side advisories against github.com/docker/docker, which has no
+          # patched release (the module ends at v28.5.2; moby moved to new paths).
+          # Only the test-only app/compat module imports it, for its API data
+          # types, and runs no daemon code. Same IDs as the Qlty triage there.
+          allow-ghsas: GHSA-x86f-5xw2-fm2r, GHSA-rg2x-37c3-w2rh, GHSA-pxq6-2prw-chj9, GHSA-vp62-88p7-qqf5
 
   gitleaks:
     name: "Gitleaks"
