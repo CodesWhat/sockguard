@@ -126,6 +126,9 @@ jobs:
           - { name: FuzzLibpodPathIdentifiers,        pkg: ./internal/visibility/ }
           - { name: FuzzDecodeLabels,                 pkg: ./internal/dockerresource/ }
           - { name: FuzzCompileContainerLabelRules,   pkg: ./internal/clientacl/ }
+          - { name: FuzzTlogEntryFromAnnotation,      pkg: ./internal/imagefetch/ }
+          - { name: FuzzPemCertToDER,                 pkg: ./internal/imagefetch/ }
+          - { name: FuzzBuildBundle,                  pkg: ./internal/imagefetch/ }
 
     steps:
       # audit, not block. `block` on this job is what kills 3 to 5 legs a

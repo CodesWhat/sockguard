@@ -123,6 +123,9 @@ jobs:
           - { name: FuzzLibpodPathIdentifiers,        pkg: ./internal/visibility/ }
           - { name: FuzzDecodeLabels,                 pkg: ./internal/dockerresource/ }
           - { name: FuzzCompileContainerLabelRules,   pkg: ./internal/clientacl/ }
+          - { name: FuzzTlogEntryFromAnnotation,      pkg: ./internal/imagefetch/ }
+          - { name: FuzzPemCertToDER,                 pkg: ./internal/imagefetch/ }
+          - { name: FuzzBuildBundle,                  pkg: ./internal/imagefetch/ }
 
     steps:
       # Stays audit for stage 1: this job already has an open, in-repo
