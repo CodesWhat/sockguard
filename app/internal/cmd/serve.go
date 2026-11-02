@@ -98,6 +98,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	// process rejects it.
 	bootstrapLogger := slog.New(slog.NewTextHandler(cmd.ErrOrStderr(), nil))
 	warnUnknownEnvVars(bootstrapLogger, cfgFile, os.Environ())
+	warnUnknownConfigKeys(bootstrapLogger, cfgFile, nil)
 
 	trustPath := policyBundleTrustConfigPath(cmd)
 	var bundleVerifier policybundle.Verifier
@@ -1191,6 +1192,30 @@ func warnUnknownEnvVars(logger *slog.Logger, configPath string, environ []string
 			attrs = append(attrs, "did_you_mean", unknown.Suggestion)
 		}
 		logger.Warn("ignoring unrecognized SOCKGUARD_* environment variable: it maps to no configuration key, so the setting it looks like it carries is still at its config-file or default value", attrs...)
+	}
+}
+
+// warnUnknownConfigKeys emits one warning per YAML key that no configuration
+// field binds, named by dotted path with the file it came from. Load tolerates
+// such keys (only mutations is strict) so a typo'd or dead key is otherwise
+// silent; this is advisory and never changes what loads. When data is non-nil
+// it is inspected instead of re-reading path (the verified-bundle bytes).
+func warnUnknownConfigKeys(logger *slog.Logger, path string, data []byte) {
+	if logger == nil {
+		return
+	}
+	var keys []string
+	var err error
+	if data != nil {
+		keys, err = config.UnknownKeysBytes(data)
+	} else {
+		keys, err = config.UnknownKeys(path)
+	}
+	if err != nil {
+		return
+	}
+	for _, key := range keys {
+		logger.Warn("ignoring unrecognized configuration key: it maps to no setting, so it has no effect", "key", key, "file", path)
 	}
 }
 

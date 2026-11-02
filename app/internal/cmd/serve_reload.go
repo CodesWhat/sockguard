@@ -206,6 +206,7 @@ func (c *reloadCoordinator) reload() {
 		c.runtime.metrics.ObserveConfigReload("reject_load")
 		return
 	}
+	warnUnknownConfigKeys(c.logger, c.cfgFile, verifiedBytes)
 	if c.bundleVerifier != nil {
 		pinPolicyBundleTrust(newCfg, c.bundleTrust)
 	}

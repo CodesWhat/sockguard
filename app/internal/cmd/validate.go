@@ -19,7 +19,10 @@ var validateCmd = &cobra.Command{
 	RunE:  runValidate,
 }
 
+var validateStrict bool
+
 func init() {
+	validateCmd.Flags().BoolVar(&validateStrict, "strict", false, "exit non-zero when the configuration file has unrecognized keys")
 	rootCmd.AddCommand(validateCmd)
 }
 
@@ -49,6 +52,17 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		return wrapped
 	}
 
+	unknownKeys, err := config.UnknownKeys(cfgFile)
+	if err != nil {
+		wrapped := fmt.Errorf("config load: %w", err)
+		printValidationFailure(errOut, stderrP, wrapped)
+		return wrapped
+	}
+	unknownLogger := slog.New(slog.NewTextHandler(errOut, nil))
+	for _, key := range unknownKeys {
+		unknownLogger.Warn("ignoring unrecognized configuration key: it maps to no setting, so it has no effect", "key", key, "file", cfgFile)
+	}
+
 	compatActive := config.ApplyCompat(cfg, discardLogger)
 
 	compiled, err := newServeDeps().validateRules(cfg)
@@ -65,6 +79,11 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	printHeader(out, stdoutP, cfg, compatActive)
 	printRules(out, stdoutP, cfg, len(compiled))
 	printClientProfiles(out, stdoutP, cfg)
+	if validateStrict && len(unknownKeys) > 0 {
+		err := fmt.Errorf("%d unrecognized configuration key(s) (--strict)", len(unknownKeys))
+		printValidationFailure(errOut, stderrP, err)
+		return err
+	}
 	fmt.Fprintf(out, "  %s %s\n", stdoutP.Green(ui.Check), stdoutP.Green("validation passed"))
 	return nil
 }

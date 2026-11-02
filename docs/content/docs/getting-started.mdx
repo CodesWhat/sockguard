@@ -136,6 +136,9 @@ sockguard serve --config /etc/sockguard/sockguard.yaml --policy-bundle-trust-con
 # Validate configuration and print the compiled rule table
 sockguard validate -c /etc/sockguard/sockguard.yaml
 
+# Same, but exit non-zero if the file has unrecognized keys (CI gate)
+sockguard validate --strict -c /etc/sockguard/sockguard.yaml
+
 # Offline dry-run: evaluate a single request against the rules,
 # show which rule fires and why, without starting the proxy.
 sockguard match -c /etc/sockguard/sockguard.yaml \
