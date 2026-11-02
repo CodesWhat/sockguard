@@ -10,7 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Helm chart published as a signed OCI artifact.** From v3.0.0, a stable tag cut from the default branch pushes the chart to `oci://ghcr.io/codeswhat/charts/sockguard`, with its image reference pinned to the release's multi-arch digest, signed keyless like the image, and verified by the QA-6 published-artifact job. Release candidates and maintenance patches publish no chart.
+- **Compose examples for Homepage, Homarr, Diun and Autoheal.** `examples/compose/homepage/`, `homarr/`, `diun/` and `autoheal/` each pair the consumer with its bundled preset, and the compose sync test now guards their `sockguard.yaml` copies against drift.
+
 - **Unknown configuration keys are reported.** Config loading only decoded the `mutations` block strictly, so a typo'd or dead key anywhere else passed `sockguard validate` silently. `sockguard validate` now prints a warning per unrecognized key (dotted path plus file) and still exits 0; the new `--strict` flag exits non-zero instead. `sockguard serve` logs one warning per key at startup, and hot reload logs the same. The check reads only the YAML file, so `SOCKGUARD_*` and Tecnativa environment variables never show as unknown, and no config that loads today stops loading. `app/configs/multi-listener.yaml` dropped three dead `clients.profiles[].response.redact_*` keys it carried.
+
+### Fixed
+
+- **The Diun preset no longer breaks Diun's container list.** The default network-topology redaction rewrites `NetworkSettings.Networks[*].IPAddress`, `Gateway`, `GlobalIPv6Address`, `IPv6Gateway` and `MacAddress` (plus `NetworkMode` and network IDs) to the literal `<redacted>`, which typed Go Docker clients can't decode, so Diun failed with `ParseAddr("<redacted>"): unable to parse IP`. `app/configs/diun.yaml` now sets `response.redact_network_topology: false`, which also exposes `NetworkMode` and network IDs to Diun. A stable fix that writes type-valid empty values is in progress.
 
 ## [2.4.3] - 2026-11-02
 

@@ -463,6 +463,14 @@ pattern narrow: `GET /images/get`, `GET /images/{name}/get` and
 the unused image-list call out of the surface. That is why this preset does
 **not** set `insecure_allow_read_exfiltration: true`.
 
+The preset sets `response.redact_network_topology: false`. The default
+redaction rewrites `NetworkSettings.Networks[*].IPAddress`, `Gateway`,
+`GlobalIPv6Address`, `IPv6Gateway` and `MacAddress` (plus `NetworkMode` and
+network IDs) to the literal `<redacted>`. Typed Go Docker clients like Diun's
+can't decode that, so its container list fails. Disabling redaction also
+exposes `NetworkMode` and network IDs to Diun. A stable fix that writes
+type-valid empty values is in progress.
+
 ## Autoheal (`autoheal.yaml`)
 
 Minimal access for [docker-autoheal](https://github.com/willfarrell/docker-autoheal).

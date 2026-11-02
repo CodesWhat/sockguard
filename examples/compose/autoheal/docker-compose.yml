@@ -1,0 +1,58 @@
+# examples/compose/autoheal/docker-compose.yml
+#
+# Sockguard + Autoheal — unix-socket mode, restart-only autoheal preset.
+# Sockguard writes a filtered unix socket into a shared named volume;
+# Autoheal talks to that socket (DOCKER_SOCK) instead of /var/run/docker.sock.
+#
+# Autoheal needs container list and inspect to find unhealthy containers and
+# one write: POST /containers/{id}/restart. The autoheal preset allows exactly
+# that, so a compromised Autoheal cannot create, exec into or delete anything.
+#
+# Autoheal only acts on containers carrying the autoheal=true label (the
+# default AUTOHEAL_CONTAINER_LABEL). The `web` service below is a demo target
+# with a healthcheck; replace it with your own labelled services.
+
+services:
+  sockguard:
+    image: codeswhat/sockguard:latest
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    group_add:
+      - "${DOCKER_SOCK_GID:?set to the GID of /var/run/docker.sock}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro
+      - sockguard-socket:/var/run/sockguard
+    environment:
+      - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
+
+  autoheal:
+    image: willfarrell/autoheal:latest
+    restart: unless-stopped
+    depends_on:
+      - sockguard
+    volumes:
+      - sockguard-socket:/var/run/sockguard:ro
+    environment:
+      - DOCKER_SOCK=/var/run/sockguard/sockguard.sock
+      - AUTOHEAL_CONTAINER_LABEL=autoheal
+      - AUTOHEAL_INTERVAL=5
+      - AUTOHEAL_START_PERIOD=0
+
+  web:
+    image: nginx:stable-alpine
+    restart: unless-stopped
+    labels:
+      - autoheal=true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  sockguard-socket:

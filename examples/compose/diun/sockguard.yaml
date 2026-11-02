@@ -1,0 +1,85 @@
+# Sockguard config for Diun — mirrors the shipped diun preset.
+# Copy of app/configs/diun.yaml; embedded here so the compose stack
+# is self-contained. Update both files together if you change rules.
+#
+# Minimal read-only access for Diun (Docker Image Update Notifier).
+#
+# Allows exactly the endpoints Diun's Docker provider calls: the connection
+# check, container list, and image inspect. Registry checks are done directly
+# by Diun, not through Docker. Verified against crazy-max/diun master —
+# pkg/docker/client.go:60 (ServerVersion), internal/provider/docker/container.go:37,46
+# (ContainerList, ImageInspect). IsLocalImage, IsDanglingImage and IsDigest
+# are pure functions over the already-fetched inspect result, not API calls.
+# Diun never calls ContainerInspect on this path, so container inspect stays
+# denied.
+#
+# Image inspect uses "**", not "*", on purpose. Docker registers the route as
+# GET /images/{name:.*}/json, and {name:.*} spans slashes, so a registry-
+# qualified image such as ghcr.io/org/app:tag arrives as
+# GET /images/ghcr.io/org/app:tag/json — five path segments. A single "*"
+# matches one segment and would deny every image that is not a bare
+# library name. The "**" form is still safe here because it is anchored on a
+# literal /json suffix: GET /images/get, GET /images/{name}/get and
+# GET /images/{name}/history do not end in /json and stay denied. Because
+# "/**" can match nothing, an explicit earlier deny keeps GET /images/json
+# (the image list, which Diun does not call) out of the allowed surface.
+#
+# Deliberately does NOT allow the read-exfiltration paths a "/containers/**"
+# or "/images/**" glob would swallow: /containers/{id}/archive,
+# /containers/{id}/export, /containers/{id}/logs, /containers/{id}/attach,
+# /images/get and /images/{name}/get. Diun needs none of them, so this preset
+# needs no insecure_allow_read_exfiltration acknowledgment. A client that
+# genuinely needs container logs or archive has to add that rule AND set
+# insecure_allow_read_exfiltration: true itself.
+#
+# Diun's Swarm provider (internal/provider/swarm/service.go, ServiceList) is
+# not covered here and never was; add GET /services if you run it.
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+# Network-topology redaction rewrites NetworkSettings.Networks[*].IPAddress,
+# Gateway, GlobalIPv6Address, IPv6Gateway and MacAddress (plus NetworkMode and
+# network IDs) to the literal "<redacted>". Typed Go Docker clients such as
+# Diun's can't decode that, so its ContainerList fails with
+# "ParseAddr(\"<redacted>\"): unable to parse IP". Turning redaction off also
+# exposes NetworkMode and network IDs to Diun. A stable fix that writes
+# type-valid empty values instead is in progress; this setting goes away then.
+# Mount paths and container env stay redacted, Diun reads neither.
+response:
+  redact_network_topology: false
+
+rules:
+  # Health and metadata
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+
+  # Container list (discovery). Inspect is not called and stays denied.
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+
+  # Image inspect for local image metadata. See the header for why this is
+  # "**" and why the /json anchor plus preceding list deny keep it narrow.
+  - match: { method: GET, path: "/images/json" }
+    action: deny
+    reason: "Diun does not list images"
+  - match: { method: GET, path: "/images/**/json" }
+    action: allow
+
+  # Deny everything else
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by diun preset — read-only access only"

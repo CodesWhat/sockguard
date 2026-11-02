@@ -1,0 +1,52 @@
+# examples/compose/homepage/docker-compose.yml
+#
+# Sockguard + Homepage — unix-socket mode, read-only homepage preset.
+# Sockguard writes a filtered unix socket into a shared named volume;
+# Homepage reads that socket through the `socket:` entry in docker.yaml
+# instead of mounting /var/run/docker.sock.
+#
+# Homepage needs only container list, inspect and stats (plus Swarm
+# service/task reads). Zero writes, no logs, no archive.
+#
+# Homepage rejects requests whose Host header is not in HOMEPAGE_ALLOWED_HOSTS.
+# Change it if you reach the dashboard through another hostname.
+
+services:
+  sockguard:
+    image: codeswhat/sockguard:latest
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    group_add:
+      - "${DOCKER_SOCK_GID:?set to the GID of /var/run/docker.sock}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro
+      - sockguard-socket:/var/run/sockguard
+    environment:
+      - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
+
+  homepage:
+    image: ghcr.io/gethomepage/homepage:latest
+    restart: unless-stopped
+    depends_on:
+      - sockguard
+    ports:
+      - "3000:3000"
+    volumes:
+      - sockguard-socket:/var/run/sockguard:ro
+      - ./docker.yaml:/app/config/docker.yaml:ro
+    environment:
+      - HOMEPAGE_ALLOWED_HOSTS=localhost:3000,127.0.0.1:3000
+    labels:
+      - homepage.group=Infrastructure
+      - homepage.name=Homepage
+      - homepage.icon=homepage.png
+      - homepage.href=http://localhost:3000
+      - homepage.server=sockguard
+
+volumes:
+  sockguard-socket:

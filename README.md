@@ -285,7 +285,7 @@ Two more bundled configs ship alongside the workload presets and are not counted
 
 ### Ready-to-run compose examples
 
-[drydock](examples/compose/drydock/) · [Portwing](examples/compose/portwing/) · [Portwing + drydock (tri-tool)](examples/compose/tri-tool/) · [Traefik](examples/compose/traefik/) · [Portainer](examples/compose/portainer/) · [Watchtower](examples/compose/watchtower/) · [GitHub Actions self-hosted runner](examples/compose/github-actions-runner/) · [GitLab Runner](examples/compose/gitlab-runner/) · [CIS Docker Benchmark gate](examples/compose/cis-docker-benchmark/) · [multi-host failover](examples/compose/multi-host/)
+[drydock](examples/compose/drydock/) · [Portwing](examples/compose/portwing/) · [Portwing + drydock (tri-tool)](examples/compose/tri-tool/) · [Traefik](examples/compose/traefik/) · [Portainer](examples/compose/portainer/) · [Watchtower](examples/compose/watchtower/) · [Homepage](examples/compose/homepage/) · [Homarr](examples/compose/homarr/) · [Diun](examples/compose/diun/) · [Autoheal](examples/compose/autoheal/) · [GitHub Actions self-hosted runner](examples/compose/github-actions-runner/) · [GitLab Runner](examples/compose/gitlab-runner/) · [CIS Docker Benchmark gate](examples/compose/cis-docker-benchmark/) · [multi-host failover](examples/compose/multi-host/)
 
 Each example pairs a downstream Docker API consumer with a `sockguard.yaml` overlay and a short README covering audience, exposed API surface, and security tradeoffs.
 
