@@ -387,8 +387,8 @@ func TestModifyServiceInspect_RedactsPayload(t *testing.T) {
 	}
 	vips := nestedSliceForTest(t, got, "Endpoint", "VirtualIPs")
 	vip0, _ := vips[0].(map[string]any)
-	if v, _ := vip0["Addr"].(string); v != "<redacted>" {
-		t.Fatalf("VirtualIPs[0].Addr = %q, want <redacted>", v)
+	if v, ok := vip0["Addr"].(string); !ok || v != "" {
+		t.Fatalf("VirtualIPs[0].Addr = %q, want empty string", v)
 	}
 }
 

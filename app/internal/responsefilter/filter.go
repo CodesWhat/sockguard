@@ -1364,7 +1364,7 @@ func redactVirtualIPs(payload map[string]any, keys ...string) error {
 			return fmt.Errorf("%s entry has unexpected type %T", strings.Join(keys, "."), value)
 		}
 		redactStringField(object, "NetworkID")
-		redactStringField(object, "Addr")
+		redactTypedAddressFields(object, "Addr")
 	}
 	return nil
 }
@@ -1776,6 +1776,21 @@ func redactStringField(payload map[string]any, key string) {
 	payload[key] = redactedValue
 }
 
+// redactTypedAddressFields blanks IP and MAC address fields to "". Current
+// Docker clients decode these as netip.Addr, netip.Prefix and HardwareAddr,
+// which reject the "<redacted>" placeholder and fail the whole response.
+// "" is what the daemon itself emits for an unset address, and every typed
+// decoder accepts it.
+func redactTypedAddressFields(payload map[string]any, keys ...string) {
+	for _, key := range keys {
+		value, ok := payload[key]
+		if !ok || value == nil {
+			continue
+		}
+		payload[key] = ""
+	}
+}
+
 func redactBindSpec(bind string) string {
 	source, rest := splitBindSpec(bind)
 	if !isSensitiveHostPath(source) {
@@ -1916,12 +1931,6 @@ func redactContainerNetworkTopology(payload map[string]any) error {
 		[]string{
 			"Bridge",
 			"EndpointID",
-			"Gateway",
-			"GlobalIPv6Address",
-			"IPAddress",
-			"IPv6Gateway",
-			"LinkLocalIPv6Address",
-			"MacAddress",
 			"SandboxID",
 			"SandboxKey",
 		},
@@ -1930,6 +1939,14 @@ func redactContainerNetworkTopology(payload map[string]any) error {
 			"IPPrefixLen",
 			"LinkLocalIPv6PrefixLen",
 		},
+	)
+	redactTypedAddressFields(networkSettings,
+		"Gateway",
+		"GlobalIPv6Address",
+		"IPAddress",
+		"IPv6Gateway",
+		"LinkLocalIPv6Address",
+		"MacAddress",
 	)
 	redactArrayField(networkSettings, "SecondaryIPAddresses")
 	redactArrayField(networkSettings, "SecondaryIPv6Addresses")
@@ -1959,17 +1976,20 @@ func redactContainerNetworkTopology(payload map[string]any) error {
 		redactNetworkAddressFields(network,
 			[]string{
 				"EndpointID",
-				"Gateway",
-				"GlobalIPv6Address",
-				"IPAddress",
-				"IPv6Gateway",
-				"MacAddress",
 				"NetworkID",
 			},
 			[]string{
 				"GlobalIPv6PrefixLen",
 				"IPPrefixLen",
 			},
+		)
+		redactTypedAddressFields(network,
+			"Gateway",
+			"GlobalIPv6Address",
+			"IPAddress",
+			"IPv6Gateway",
+			"LinkLocalIPv6Address",
+			"MacAddress",
 		)
 		// Docker's EndpointSettings stops at the scalar addresses above.
 		// Podman's InspectAdditionalNetwork embeds the same

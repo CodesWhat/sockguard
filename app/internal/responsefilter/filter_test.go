@@ -731,16 +731,16 @@ func TestFilterModifyResponse_RedactsNetworkTopologyFromContainerAndNetworkReads
 		t.Fatalf("HostConfig.NetworkMode = %q, want %q", got, "<redacted>")
 	}
 	networkSettings, _ := containerInspect["NetworkSettings"].(map[string]any)
-	if got, _ := networkSettings["IPAddress"].(string); got != "<redacted>" {
-		t.Fatalf("NetworkSettings.IPAddress = %q, want %q", got, "<redacted>")
+	if got, ok := networkSettings["IPAddress"].(string); !ok || got != "" {
+		t.Fatalf("NetworkSettings.IPAddress = %q, want empty string", got)
 	}
-	if got, _ := networkSettings["Gateway"].(string); got != "<redacted>" {
-		t.Fatalf("NetworkSettings.Gateway = %q, want %q", got, "<redacted>")
+	if got, ok := networkSettings["Gateway"].(string); !ok || got != "" {
+		t.Fatalf("NetworkSettings.Gateway = %q, want empty string", got)
 	}
 	networks, _ := networkSettings["Networks"].(map[string]any)
 	defaultNetwork, _ := networks["default"].(map[string]any)
-	if got, _ := defaultNetwork["IPAddress"].(string); got != "<redacted>" {
-		t.Fatalf("NetworkSettings.Networks.default.IPAddress = %q, want %q", got, "<redacted>")
+	if got, ok := defaultNetwork["IPAddress"].(string); !ok || got != "" {
+		t.Fatalf("NetworkSettings.Networks.default.IPAddress = %q, want empty string", got)
 	}
 	if got, _ := defaultNetwork["NetworkID"].(string); got != "<redacted>" {
 		t.Fatalf("NetworkSettings.Networks.default.NetworkID = %q, want %q", got, "<redacted>")
@@ -814,8 +814,8 @@ func TestFilterModifyResponse_RedactsNetworkTopologyFromContainerListWithoutMoun
 	if got, _ := defaultNetwork["NetworkID"].(string); got != "<redacted>" {
 		t.Fatalf("NetworkSettings.Networks.default.NetworkID = %q, want %q", got, "<redacted>")
 	}
-	if got, _ := defaultNetwork["IPAddress"].(string); got != "<redacted>" {
-		t.Fatalf("NetworkSettings.Networks.default.IPAddress = %q, want %q", got, "<redacted>")
+	if got, ok := defaultNetwork["IPAddress"].(string); !ok || got != "" {
+		t.Fatalf("NetworkSettings.Networks.default.IPAddress = %q, want empty string", got)
 	}
 }
 
@@ -890,8 +890,8 @@ func TestFilterModifyResponse_RedactsExpandedControlPlaneReads(t *testing.T) {
 	if got, _ := firstVIP["NetworkID"].(string); got != "<redacted>" {
 		t.Fatalf("Service VirtualIPs[0].NetworkID = %q, want %q", got, "<redacted>")
 	}
-	if got, _ := firstVIP["Addr"].(string); got != "<redacted>" {
-		t.Fatalf("Service VirtualIPs[0].Addr = %q, want %q", got, "<redacted>")
+	if got, ok := firstVIP["Addr"].(string); !ok || got != "" {
+		t.Fatalf("Service VirtualIPs[0].Addr = %q, want empty string", got)
 	}
 
 	taskResp := newResponseForTest(t, http.MethodGet, "/v1.53/tasks/task-1", `{
