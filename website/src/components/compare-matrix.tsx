@@ -44,7 +44,7 @@ function cellFor(tool: Tool, feature: (typeof MATRIX_FEATURES)[number]): Compari
   return comparisonCell(feature.row, tool.key);
 }
 
-export function VersionsChecked() {
+function VersionsChecked() {
   return (
     <>
       Versions checked {COMPETITOR_VERSIONS_CHECKED_AT}:{" "}
