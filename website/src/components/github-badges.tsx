@@ -19,7 +19,7 @@ const quality: Badge[] = [
     // pkg.go.dev keys on the go.mod module path, which is lowercase, and is
     // case-sensitive: the GitHub-cased REPO_SLUG 404s there while still
     // rendering a valid-looking badge SVG. Since v2.3.0 that path carries the
-    // /v2 major suffix.
+    // /v3 major suffix.
     href: `https://pkg.go.dev/github.com/${REPO_SLUG.toLowerCase()}/v3`,
     src: `https://pkg.go.dev/badge/github.com/${REPO_SLUG.toLowerCase()}/v2.svg`,
     alt: "Go Reference",

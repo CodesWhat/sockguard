@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [3.0.0-rc.4] - 2026-11-02
 
-This candidate carries v2.4.2 and the release workflow fixes forward onto the v3 line, including the Podman isolation and dependency updates. The v3 TLS compatibility changes are unchanged. Fresh exact-source soak, TLS/security and published-image conformance are required before GA.
+This candidate carries v2.4.2 and the later dev/v2.4 fixes and the release workflow fixes forward onto the v3 line, including the Podman isolation and dependency updates. The v3 TLS compatibility changes are unchanged. Fresh exact-source soak, TLS/security and published-image conformance are required before GA.
 
 ### Security
 
