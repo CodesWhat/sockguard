@@ -26,7 +26,7 @@
   <a href="https://securityscorecards.dev/viewer/?uri=github.com/CodesWhat/sockguard"><img src="https://img.shields.io/ossf-scorecard/github.com/CodesWhat/sockguard?label=openssf+scorecard&style=flat" alt="OpenSSF Scorecard"></a>
   <a href="https://www.bestpractices.dev/projects/14030"><img src="https://www.bestpractices.dev/projects/14030/badge" alt="OpenSSF Best Practices"></a>
   <a href="https://qlty.sh/gh/CodesWhat/projects/sockguard"><img src="https://qlty.sh/badges/5a115b54-7404-4e0e-b09d-2652fb1816e5/maintainability.svg" alt="Maintainability"></a>
-  <a href="https://qlty.sh/gh/CodesWhat/projects/sockguard"><img src="https://qlty.sh/badges/5a115b54-7404-4e0e-b09d-2652fb1816e5/coverage.svg" alt="Coverage"></a>
+  <a href="https://codecov.io/gh/CodesWhat/sockguard"><img src="https://codecov.io/gh/CodesWhat/sockguard/graph/badge.svg" alt="Coverage"></a>
   <a href="https://github.com/CodesWhat/sockguard/actions/workflows/quality-mutation-monthly.yml"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/CodesWhat/sockguard/main/.github/badges/mutation-score.json" alt="Mutation score"></a>
   <br>
   <!-- row 3, social proof -->
