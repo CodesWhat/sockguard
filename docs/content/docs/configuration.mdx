@@ -381,6 +381,8 @@ The default listener is loopback TCP `127.0.0.1:2375`, which keeps the Docker AP
 
 `listeners:` runs more than one main (Docker-API) listener from a single Sockguard process, each with its own bind target and its own admission scope, instead of requiring one process per audience.
 
+This is a fragment: every profile named in `allowed_profiles` must also be defined under `clients.profiles`, or validation fails.
+
 ```yaml
 listeners:
   - name: ci
@@ -662,6 +664,8 @@ The bucket refills continuously at `tokens_per_second`; its capacity is `burst`
   `burst >= tokens_per_second`, the refill rate is implicitly bounded at 65535
   tokens/second as well.
 
+This is a fragment: the profile allows read-exfiltration endpoints, so validation also needs the top-level `insecure_allow_read_exfiltration: true` acknowledgment.
+
 ```yaml
 clients:
   profiles:
@@ -715,6 +719,8 @@ Each entry has:
 
 Rules are evaluated in declaration order; first match wins. Unmatched
 requests fall back to the default cost of `1`.
+
+This is a fragment: the `**` allow rule is body-blind for writes, so validation also needs the top-level `insecure_allow_body_blind_writes: true` acknowledgment.
 
 ```yaml
 clients:
@@ -796,6 +802,8 @@ profiles. The system-wide priority-aware fairness gate solves this.
 
 Enable it by setting a global cap and tagging each profile with a priority
 tier:
+
+This is a fragment: each profile also needs at least one rule under `rules`, or validation fails.
 
 ```yaml
 clients:
@@ -968,6 +976,8 @@ Exactly one of `inject_labels`/`remap_image` is required per rule — never both
 
 The `mutations` block uses a stricter config decode than the rest of this schema: unknown keys and YAML type-coercion (e.g. an unquoted `id: 0` silently becoming the string `"0"`) are both load-time errors here, not silently accepted.
 
+Every other block of the YAML schema tolerates unknown keys: a typo or a key that was removed from the schema loads silently, and `sockguard validate` still reports `validation passed`. Only unrecognized `SOCKGUARD_*` environment variables produce a warning. Check key names against this reference after editing a config.
+
 ## Rollout Modes
 
 Each named profile can set a `mode` field that controls how Sockguard applies
@@ -996,6 +1006,8 @@ doesn't stop an oversized body reaching the daemon.
 > reads also stay `enforce`; `warn` and `audit` cannot replace the global
 > `insecure_allow_read_exfiltration: true` acknowledgment. These gates are
 > unsafe to relax through rollout mode.
+
+This is a fragment: `sockguard validate` rejects it alone. The exec allow rule needs `request_body.exec.allowed_commands` (or the top-level `insecure_allow_body_blind_writes: true` acknowledgment).
 
 ```yaml filename="sockguard.yaml"
 clients:
@@ -1957,17 +1969,37 @@ multiple entries via the env var; e.g.
 For drop-in migration, sockguard accepts Tecnativa-style env vars:
 
 ```bash
-CONTAINERS=1      # Allow /containers/** (GET/HEAD when POST=0)
-IMAGES=1          # Allow /images/** (GET/HEAD when POST=0)
-SERVICES=1        # Allow /services/** (GET/HEAD when POST=0)
-SECRETS=0         # Deny /secrets/**
-EVENTS=1          # Allow /events (default)
-PING=1            # Allow /_ping (default)
-VERSION=1         # Allow /version (default)
+# Section variables (path each one allows; GET/HEAD only unless POST=1)
+AUTH=1            # /auth/**
+BUILD=1           # /build/**
+COMMIT=1          # /commit/**
+CONFIGS=1         # /configs/**
+CONTAINERS=1      # /containers/**
+DISTRIBUTION=1    # /distribution/**
+EXEC=1            # /exec/** and /containers/*/exec
+GRPC=1            # /grpc/**
+IMAGES=1          # /images/**
+INFO=1            # /info
+NETWORKS=1        # /networks/**
+NODES=1           # /nodes/**
+PLUGINS=1         # /plugins/**
+SECRETS=0         # /secrets/** (denied unless set)
+SERVICES=1        # /services/**
+SESSION=1         # /session/**
+SWARM=1           # /swarm/**
+SYSTEM=1          # /system/**
+TASKS=1           # /tasks/**
+VOLUMES=1         # /volumes/**
+# On by default
+EVENTS=1          # /events
+PING=1            # /_ping
+VERSION=1         # /version
 POST=0            # Read-only mode for section vars (default)
 SOCKET_PATH=/var/run/docker.sock
 LOG_LEVEL=warning
 ```
+
+Every section variable above is read by `app/internal/config/compat.go`; the table is the full list, not a sample. All of them default to off except `EVENTS`, `PING` and `VERSION`.
 
 Compat env vars only generate rules while the effective ruleset still matches Sockguard's built-in defaults. The check is on the rules themselves, not on whether you supplied a config file, so an explicit `rules:` block that happens to be byte-identical to the default still activates it; a `rules:` block that differs from the default wins outright and no compat rules are generated.
 
