@@ -149,7 +149,7 @@ This means an existing Docker CLI setup works with zero YAML changes — just po
 
 ## Reload immutability
 
-`upstream.endpoints`, `upstream.failover` and `upstream.flavor` are **reload-immutable**. Adding, removing, or changing endpoints requires a process restart, and so does changing which engine sockguard thinks it is talking to. `upstream.request_timeout` and `upstream.hijack_inactivity_timeout` are reload-mutable and take effect on hot reload without a restart. Only `request_timeout`'s **default** value changed in v1.5 (unlimited → `60s`); the field's mutability is unchanged.
+`upstream.endpoints`, `upstream.failover`, `upstream.flavor` and `upstream.response_header_timeout` are **reload-immutable**. Adding, removing, or changing endpoints requires a process restart, and so does changing which engine sockguard thinks it is talking to. `upstream.request_timeout` and `upstream.hijack_inactivity_timeout` are reload-mutable and take effect on hot reload without a restart. Only `request_timeout`'s **default** value changed in v1.5 (unlimited → `60s`); the field's mutability is unchanged.
 
 That is the same set `upstream.socket` belongs to, also pinned at startup. The upstream transport is bound to long-lived connection pools that cannot be swapped safely from within a running process.
 

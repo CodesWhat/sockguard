@@ -66,7 +66,7 @@ func (e Endpoint) dial(ctx context.Context) (net.Conn, error) {
 // match the historical single-socket proxy transport so per-endpoint behavior is
 // identical to the pre-multi-host proxy. TLS is handled inside dial, so the
 // transport itself carries no TLSClientConfig.
-func (e Endpoint) newTransport() *http.Transport {
+func (e Endpoint) newTransport(responseHeaderTimeout time.Duration) *http.Transport {
 	ep := e
 	return &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -75,13 +75,17 @@ func (e Endpoint) newTransport() *http.Transport {
 		MaxIdleConns:          defaultMaxIdleConns,
 		MaxIdleConnsPerHost:   defaultMaxIdleConnsPerHost,
 		IdleConnTimeout:       defaultIdleConnTimeout,
-		ResponseHeaderTimeout: defaultResponseHeaderTimeout,
+		ResponseHeaderTimeout: responseHeaderTimeout,
 	}
 }
 
 type endpointState struct {
 	ep        Endpoint
 	transport *http.Transport
+	// longTransport is the same endpoint without a response-header deadline. It
+	// serves requests marked long-lived (see MarkLongLived), whose daemon-side
+	// work (container stop, prune, system/df) sends no headers until it finishes.
+	longTransport *http.Transport
 	// mu serializes setHealth's swap-and-notify so a flapping endpoint never
 	// fires OnChange in an order that contradicts the final healthy value.
 	// Routing reads (healthy/known Load) stay lock-free.
@@ -92,6 +96,31 @@ type endpointState struct {
 	// in-flight goroutine per endpoint, so a dead endpoint under heavy traffic
 	// cannot spawn a goroutine/FD storm.
 	reprobing atomic.Bool
+}
+
+type longLivedKey struct{}
+
+// MarkLongLived returns a context that tells the Resolver to send the request
+// over the endpoint's transport without a response-header deadline. The proxy
+// marks requests whose daemon-side work legitimately sends no headers until it
+// completes (container stop/restart, prune, system/df, and the other
+// long-lived endpoints).
+func MarkLongLived(ctx context.Context) context.Context {
+	return context.WithValue(ctx, longLivedKey{}, true)
+}
+
+func isMarkedLongLived(ctx context.Context) bool {
+	v, _ := ctx.Value(longLivedKey{}).(bool)
+	return v
+}
+
+// transportFor picks the pooled transport for req: the header-deadline-free
+// one for long-lived requests, the bounded one otherwise.
+func (s *endpointState) transportFor(req *http.Request) *http.Transport {
+	if isMarkedLongLived(req.Context()) {
+		return s.longTransport
+	}
+	return s.transport
 }
 
 // Options configures a Resolver's health loop and observation hooks.
@@ -109,6 +138,10 @@ type Options struct {
 	// Probe overrides the default connect-level probe. The default dials the
 	// endpoint (completing the TLS handshake for TLS endpoints) and closes it.
 	Probe func(ctx context.Context, ep Endpoint) error
+	// ResponseHeaderTimeout bounds the wait for upstream response headers on
+	// ordinary requests. Zero uses defaultResponseHeaderTimeout (30s); negative
+	// disables the deadline. Requests marked long-lived always skip it.
+	ResponseHeaderTimeout time.Duration
 }
 
 // Resolver routes upstream connections to the first healthy endpoint in an
@@ -143,9 +176,20 @@ func New(endpoints []Endpoint, opts Options) (*Resolver, error) {
 	if len(endpoints) == 0 {
 		return nil, ErrNoEndpoints
 	}
+	headerTimeout := opts.ResponseHeaderTimeout
+	switch {
+	case headerTimeout == 0:
+		headerTimeout = defaultResponseHeaderTimeout
+	case headerTimeout < 0:
+		headerTimeout = 0
+	}
 	states := make([]*endpointState, len(endpoints))
 	for i, ep := range endpoints {
-		states[i] = &endpointState{ep: ep, transport: ep.newTransport()}
+		states[i] = &endpointState{
+			ep:            ep,
+			transport:     ep.newTransport(headerTimeout),
+			longTransport: ep.newTransport(0),
+		}
 	}
 
 	interval := opts.Interval
@@ -220,7 +264,7 @@ type endpointRoundTripper struct {
 }
 
 func (rt endpointRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	return rt.state.transport.RoundTrip(rt.state.ep.requestWithBasePath(req))
+	return rt.state.transportFor(req).RoundTrip(rt.state.ep.requestWithBasePath(req))
 }
 
 // CheckReachable probes every endpoint once, seeding their health state, and
@@ -290,7 +334,7 @@ func (r *Resolver) RoundTrip(req *http.Request) (*http.Response, error) {
 	if s == nil {
 		return nil, ErrNoEndpoints
 	}
-	resp, err := s.transport.RoundTrip(s.ep.requestWithBasePath(req))
+	resp, err := s.transportFor(req).RoundTrip(s.ep.requestWithBasePath(req))
 	if err != nil && !isRequestScopedError(err) {
 		r.demote(s)
 	}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/codeswhat/sockguard/v2/app/internal/filter"
 	"github.com/codeswhat/sockguard/v2/app/internal/logging"
+	"github.com/codeswhat/sockguard/v2/app/internal/upstream"
 )
 
 // WithRequestTimeout wraps next so that ordinary finite upstream requests are
@@ -40,7 +41,8 @@ import (
 // image pull/create/export/build/push, plugin create/pull/push/upgrade,
 // container export/get, container archive i.e. docker cp, websocket attach,
 // the BuildKit tunnel endpoints POST /session and POST /grpc, and the blocking
-// container wait) are exempt, because a deadline would sever a legitimately
+// container wait, container and pod stop/restart, the prune endpoints and
+// /system/df) are exempt, because a deadline would sever a legitimately
 // long response.
 // Hijacked endpoints
 // (attach, exec start) never reach this handler: HijackHandler short-circuits
@@ -68,6 +70,23 @@ func WithRequestTimeoutForFlavor(next http.Handler, timeout time.Duration, podma
 	})
 }
 
+// WithUpstreamDeadlines applies both upstream time bounds to next: the total
+// per-request deadline (WithRequestTimeoutForFlavor) and the response-header
+// deadline. Long-lived requests skip both; the header deadline lives on the
+// transport, so those requests are marked with upstream.MarkLongLived for the
+// resolver to route over its header-deadline-free transport. The mark is set
+// even when the request timeout is disabled, because the header deadline is a
+// separate setting.
+func WithUpstreamDeadlines(next http.Handler, requestTimeout time.Duration, podmanUpstream bool) http.Handler {
+	bounded := WithRequestTimeoutForFlavor(next, requestTimeout, podmanUpstream)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isLongLivedUpstreamRequestForFlavor(w, r, podmanUpstream) {
+			r = r.WithContext(upstream.MarkLongLived(r.Context()))
+		}
+		bounded.ServeHTTP(w, r)
+	})
+}
+
 // isLongLivedUpstreamRequest reports whether a proxied request is expected to
 // have an unbounded or very long response and therefore must not carry the
 // per-request upstream deadline. Docker API version prefixes (/v1.XX/) are
@@ -90,6 +109,10 @@ func isLongLivedUpstreamRequestForFlavor(w http.ResponseWriter, r *http.Request,
 	case http.MethodGet:
 		switch {
 		case path == "/events":
+			return true
+		case path == "/system/df":
+			// GET /system/df (and /libpod/system/df) walks every image,
+			// container and volume and sends no headers until it is done.
 			return true
 		case nativeLibpod && (matchContainerAction(path, "top") || matchPodAction(path, "top")):
 			return podmanBoolValue(r, "stream")
@@ -146,6 +169,16 @@ func isLongLivedUpstreamRequestForFlavor(w http.ResponseWriter, r *http.Request,
 		case matchContainerAction(path, "wait"):
 			// /containers/{id}/wait blocks until the container exits.
 			return true
+		case matchContainerAction(path, "stop") || matchContainerAction(path, "restart") ||
+			matchPodAction(path, "stop") || matchPodAction(path, "restart"):
+			// stop/restart send no headers until the container has stopped,
+			// which can take the whole ?t= grace period (docker stop -t 90),
+			// and Docker and libpod share the shape.
+			return true
+		case isPrunePath(path):
+			// Prune walks and deletes arbitrarily many objects before it
+			// replies.
+			return true
 		case filter.IsBuildkitTunnelPath(path):
 			// POST /session and POST /grpc are BuildKit's long-lived tunnel.
 			// When request_body.buildkit is configured the mediator claims
@@ -159,6 +192,17 @@ func isLongLivedUpstreamRequestForFlavor(w http.ResponseWriter, r *http.Request,
 			// drifting the way the container-only log match already did.
 			return true
 		}
+	}
+	return false
+}
+
+// isPrunePath reports whether path is one of the Docker or libpod prune
+// endpoints (libpod prefix already stripped).
+func isPrunePath(path string) bool {
+	switch path {
+	case "/containers/prune", "/images/prune", "/volumes/prune", "/networks/prune",
+		"/build/prune", "/pods/prune", "/system/prune":
+		return true
 	}
 	return false
 }

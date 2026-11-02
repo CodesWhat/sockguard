@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`upstream.response_header_timeout` (default `"30s"`, `"off"` disables).** The wait for the daemon's response headers was hard-coded at 30s with no way to change it. The default keeps today's behavior. Env var `SOCKGUARD_UPSTREAM_RESPONSE_HEADER_TIMEOUT`; reload-immutable because it is bound into the upstream transport at startup.
+
 ### Fixed
+
+- Stop cutting slow container stop/restart, prune and `/system/df` calls at the upstream timeouts. `docker stop -t 90` got a 504 at 60s from `request_timeout`, and anything past 30s got a 502 from the header deadline, because the daemon sends no headers until the stop finishes. Container and pod stop/restart (Docker and libpod), the prune endpoints and `GET /system/df` are now classified long-lived, so they skip both `request_timeout` and the header timeout. Ordinary requests keep both deadlines.
 
 - Add the Docker error-contract `message` field to rate-limit, concurrency and priority-floor 429 bodies, and send `Retry-After` on the concurrency and priority 429s too. The bodies carried only `reason`, so docker-py raised `KeyError: 'message'` and the moby client reported "provided no error-message" instead of the throttle reason. Existing fields are unchanged.
 
