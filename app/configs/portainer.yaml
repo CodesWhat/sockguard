@@ -47,6 +47,20 @@ request_body:
     allow_host_network: true
     allow_run_instructions: true
 
+# Portainer's container Recreate inspects the
+# container, then replays the inspect output into POST /containers/create
+# (verified against Portainer 2.45.3 api/docker/container.go: inspect, stop,
+# rename to <name>-old, NetworkDisconnect(network.NetworkID), then
+# ContainerCreate(container.Config, container.HostConfig, ...)). With the
+# default redactions, the disconnect 404s on a redacted NetworkID and the
+# container is left stopped and renamed, and the create would otherwise carry
+# Env=[], redacted Binds/Mounts and an empty NetworkMode. Disable the three
+# redactions that rewrite inspect output for this preset, same as the drydock
+# and watchtower presets. With them off, Portainer sees env values (including
+# secrets), host bind paths and network IDs in inspect output. This preset
+# already sets insecure_allow_read_exfiltration, so that is mostly not new.
+# If you don't use Recreate or Duplicate, set the three keys back to true.
+#
 # The broad "/images/**" allow rule below inherits GET
 # /images/{name}/attestations (Engine API 1.53+) without Portainer or this
 # preset ever having reasoned about it. allow_attestation_statements defaults
@@ -57,6 +71,9 @@ request_body:
 # value, including 1 and yes, does.
 response:
   allow_attestation_statements: false
+  redact_mount_paths: false
+  redact_container_env: false
+  redact_network_topology: false
 
 insecure_allow_body_blind_writes: true
 insecure_allow_read_exfiltration: true

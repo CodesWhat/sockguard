@@ -359,6 +359,19 @@ Full Docker API access for Portainer management UI.
 Portainer's cleanup path uses force removal and anonymous-volume removal, so
 both controls are enabled. Docker's legacy link-removal mode stays denied.
 
+The preset sets `response.redact_mount_paths`, `redact_container_env`, and
+`redact_network_topology` to `false`. Portainer's container Recreate inspects
+the container and replays the result into container create, and it disconnects
+networks by the inspected network ID. With the default redactions that
+disconnect fails and the container is left stopped and renamed, and env and
+binds would be lost on create. Keep these off for Portainer.
+
+With these off, Portainer sees env values (including secrets), host bind paths
+and network IDs in inspect output. The preset already sets
+`insecure_allow_read_exfiltration`, so this is mostly not new exposure.
+Operators who don't use Recreate or Duplicate can turn the three redactions
+back on.
+
 ## Watchtower (`watchtower.yaml`)
 
 Optimized for [nicholas-fedor/watchtower](https://github.com/nicholas-fedor/watchtower), the maintained
