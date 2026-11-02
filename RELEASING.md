@@ -161,14 +161,36 @@ The test accepts only an empty prepublication image tag or `<appVersion>@sha256:
 
 The `publish-chart` job pushes the chart to `oci://ghcr.io/codeswhat/charts/sockguard` for a stable tag cut from the default branch. It uses the same gate as the global `latest` tag and the Homebrew cask (`verify-ci`'s `latest` output), so prereleases and `maintenance/X.Y.x` tags publish nothing and an older patch can never move the chart channel.
 
+Chart publishing is isolated from the image release. No other job needs `publish-chart`: `verify-published` (QA-6), `verify-homebrew` and `pin-chart-digest` run whether or not the chart publishes, so a chart failure never skips or reddens the image and tarball checks, Homebrew or the pin. The chart's own checks are the `publish-chart` and `verify-chart` jobs.
+
 1. It waits for the `release` job, then re-resolves the image's multi-arch manifest-list digest from GHCR and refuses any digest the release job did not publish.
 2. The tagged tree still has the prepublication empty `image.tag`, because `pin-chart-digest` writes the pin to the development branch only after verification. `publish-chart` applies the same `scripts/pin-chart-image-digest.mjs` pin to its own throwaway checkout (nothing is committed), runs `helm lint` and `helm package`, then `scripts/assert-chart-release.mjs` reads Chart.yaml and values back out of the package and requires chart `version` == `appVersion` == the tag, and `image.tag` == `<version>@<digest>`.
-3. It refuses to push over a chart version that already exists, runs `helm push`, signs the pushed digest with cosign keyless (same workflow identity as the image), and verifies the signature.
-4. The `verify-published` job (QA-6) runs the documented `cosign verify` against the chart through `scripts/verify-published-release.sh --chart`. `pin-chart-digest` waits for QA-6, so a chart that does not verify holds the pin back.
+3. `scripts/ci/chart-oci.sh push` never overwrites a version. It treats only a definite "not found" as absent and fails on anything else (auth, rate limit, network). Between `helm push` attempts it looks for the version again, so a push that errored after landing is adopted, not repeated. It reads the registry digest from helm's `Digest:` line.
+4. `chart-oci.sh verify-contents` pulls the published version back and runs `assert-chart-release.mjs` on it, whether this run pushed it or found it already there. A version whose contents don't match the tag and image digest is the one real error.
+5. It checks, through the packages API, that the package is public and linked to `CodesWhat/sockguard` (the `org.opencontainers.image.source` annotation helm sets from `Chart.yaml`'s `sources` is what links it), and fails with the settings URL if not.
+6. It signs the digest with cosign keyless (same workflow identity as the image) and verifies the signature. If the version already existed and its signature already verifies, it signs nothing.
+7. The `verify-chart` job runs the documented `cosign verify` against the chart through `scripts/verify-published-release.sh --chart-only`.
 
-Helm is installed from a version-pinned tarball whose SHA-256 is checked in the workflow (`HELM_VERSION` and `HELM_SHA256` in the job); bump both together. Only this job and `release` hold `packages: write`.
+`.github/workflows/chart-publish-rehearsal.yml` rehearses steps 2 to 4 on every pull request that touches the chart, the release workflow or these scripts: it pushes to a `registry:2` service container through the same `chart-oci.sh`. It is path-filtered and is not a required check.
 
-If `publish-chart` fails after `helm push`, the chart version exists unsigned or unverified. Do not rerun the job (it refuses to overwrite). Sign the pushed digest by hand with `cosign sign`, or delete that one package version in GitHub and rerun the failed job.
+Helm is installed from a version-pinned tarball whose SHA-256 is checked in the workflow (`HELM_VERSION` and `HELM_SHA256` in both the release job and the rehearsal; a test keeps them equal); bump both together. Only this job and `release` hold `packages: write`.
+
+#### No chart if `main` moved past the tag
+
+`publish-chart` runs only when the tag's commit is the default branch HEAD (`verify-ci`'s `latest` output). If anything merged to `main` between the tag and the release workflow's check, `latest` is false and no chart publishes, with no failure to point at: `publish-chart` and `verify-chart` just show as skipped. The image and everything else still release. To recover, rerun the `release-from-tag.yml` run only if `main` is back at the tag commit; otherwise publish the chart by hand: with the chart pinned as in step 2, `helm push` it to `oci://ghcr.io/codeswhat/charts`, `cosign sign` the digest helm prints, and run `scripts/verify-published-release.sh --chart-only --tag <tag>`.
+
+#### First publish: package visibility
+
+A new GHCR package is created private and unlinked, and nothing in the push can change that. On the first chart publish, `publish-chart` fails at "Check the package is public and linked to the repository" with the exact settings URL. In `https://github.com/orgs/CodesWhat/packages/container/charts%2Fsockguard/settings`, set visibility to Public and connect the repository `CodesWhat/sockguard`, then rerun the failed job. If the packages API refuses the workflow token, the same step fails with the same instructions. Later releases reuse the package and only re-check it.
+
+#### Recovering a failed `publish-chart`
+
+Rerunning the job is safe. An existing version is never overwritten:
+
+- Pushed but visibility check failed: fix the settings above and rerun. The rerun adopts the pushed version, re-checks its contents and signs it.
+- Pushed but unsigned (job died before or during signing): rerun. It checks the contents of the existing version, signs that digest and verifies it.
+- Already signed and verifying: rerun succeeds without signing again.
+- Existing version whose contents don't match the tag and image digest: the rerun fails. Delete that one package version in GitHub, then rerun, or hand-publish as above.
 
 ---
 

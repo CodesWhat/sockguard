@@ -1156,9 +1156,10 @@ jobs:
     # release job pushed and re-resolved from GHCR, so the published chart
     # references the immutable image digest rather than a mutable tag.
     #
-    # It runs before verify-published, which verifies the chart signature as
-    # part of QA-6. pin-chart-digest waits on verify-published, so a chart
-    # that does not verify also holds the pin back.
+    # Chart publishing is isolated from the image release. Nothing else
+    # needs this job: verify-published (QA-6), verify-homebrew and
+    # pin-chart-digest do not wait on it, so a chart failure cannot skip or
+    # redden them. verify-chart is the chart's own signature check.
     #
     # Only this job holds packages: write; the release job's write access is
     # for the image, and the rest of the file stays at packages: read or less.
@@ -1373,66 +1374,112 @@ jobs:
 
           echo "path=${package}" >> "$GITHUB_OUTPUT"
 
-      - name: Push the chart to GHCR
-        id: push
+      # helm keeps its own registry credentials, so the docker/login-action
+      # step above is not relied on for it. The whole login, password included,
+      # runs inside the retried function: piping into retry_network would hand
+      # the password to the first attempt only and leave later ones an empty
+      # stdin.
+      - name: Log in to GHCR with Helm
         env:
           GH_TOKEN: ${{ github.token }}
           GH_ACTOR: ${{ github.actor }}
-          CHART_PACKAGE: ${{ steps.package.outputs.path }}
-          RELEASE_VERSION: ${{ steps.digest.outputs.version }}
         run: |
           set -euo pipefail
-          retry_network() {
-            local attempt
-            for attempt in 1 2 3 4 5; do
-              if "$@"; then
-                return 0
-              fi
-              if [ "${attempt}" -eq 5 ]; then
-                return 1
-              fi
-              sleep 5
-            done
+          helm_login() {
+            printf '%s' "${GH_TOKEN}" | helm registry login ghcr.io \
+              --username "${GH_ACTOR}" --password-stdin
           }
+          for attempt in 1 2 3 4 5; do
+            if helm_login; then
+              exit 0
+            fi
+            if [ "${attempt}" -eq 5 ]; then
+              echo "::error::helm registry login failed after 5 attempts"
+              exit 1
+            fi
+            sleep 5
+          done
 
+      # scripts/ci/chart-oci.sh is shared with chart-publish-rehearsal.yml. A
+      # chart version is a release, not a moving tag: it never pushes over an
+      # existing one. A definite not-found pushes; anything else fails; an
+      # existing version is adopted and checked below, so a rerun after a
+      # partial publish finishes the job instead of needing a human.
+      - name: Push the chart to GHCR
+        id: push
+        env:
+          CHART_PACKAGE: ${{ steps.package.outputs.path }}
+          CHART_VERSION: ${{ steps.digest.outputs.version }}
+        run: |
+          set -euo pipefail
           owner="$(printf '%s' "${GITHUB_REPOSITORY%%/*}" | tr '[:upper:]' '[:lower:]')"
-          registry="ghcr.io/${owner}/charts"
-          chart_ref="${registry}/sockguard"
+          CHART_REGISTRY="ghcr.io/${owner}/charts" bash scripts/ci/chart-oci.sh push
 
-          printf '%s' "${GH_TOKEN}" | retry_network helm registry login ghcr.io \
-            --username "${GH_ACTOR}" --password-stdin
+      - name: Check the published chart contents
+        env:
+          CHART_VERSION: ${{ steps.digest.outputs.version }}
+          CHART_DIGEST: ${{ steps.push.outputs.digest }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          IMAGE_DIGEST: ${{ steps.digest.outputs.value }}
+        run: |
+          set -euo pipefail
+          owner="$(printf '%s' "${GITHUB_REPOSITORY%%/*}" | tr '[:upper:]' '[:lower:]')"
+          CHART_REGISTRY="ghcr.io/${owner}/charts" bash scripts/ci/chart-oci.sh verify-contents
 
-          # A chart version is a release, not a moving tag. Refuse to push over
-          # one that is already published: a rerun after a partial publish
-          # needs a human to decide what the existing artifact is.
-          if helm show chart "oci://${chart_ref}" --version "${RELEASE_VERSION}" > /dev/null 2>&1; then
-            echo "::error::${chart_ref}:${RELEASE_VERSION} is already published; refusing to overwrite it."
+      # A new GHCR package is private and unlinked, and nothing in the push can
+      # change that. Operators and QA-6 pull it anonymously, so fail here with
+      # the manual fix rather than let verify-chart find out.
+      - name: Check the package is public and linked to the repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY%%/*}"
+          package_url="orgs/${owner}/packages/container/charts%2Fsockguard"
+          settings_url="https://github.com/orgs/${owner}/packages/container/charts%2Fsockguard/settings"
+
+          if ! info="$(gh api "${package_url}" --jq '[.visibility, (.repository.full_name // "")] | @tsv')"; then
+            echo "::error::Could not read ${package_url}. Check by hand at ${settings_url}: the package must be Public and linked to ${GITHUB_REPOSITORY}."
             exit 1
           fi
+          IFS=$'\t' read -r visibility linked <<< "${info}"
 
-          push_log="$(mktemp)"
-          push_chart() {
-            helm push "${CHART_PACKAGE}" "oci://${registry}" 2>&1 | tee "${push_log}"
-          }
-          retry_network push_chart
-
-          # awk reads to EOF so the pipeline never dies on SIGPIPE.
-          digest="$(awk '$1 == "Digest:" { d = $2 } END { print d }' "${push_log}")"
-          if ! [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "::error::helm push did not report a chart digest."
+          problems=""
+          if [ "${visibility}" != "public" ]; then
+            problems="visibility is '${visibility}', not public. "
+          fi
+          if [ "$(printf '%s' "${linked}" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')" ]; then
+            problems="${problems}linked repository is '${linked:-none}', not ${GITHUB_REPOSITORY}. "
+          fi
+          if [ -n "${problems}" ]; then
+            echo "::error::The chart package is not ready: ${problems}Fix it at ${settings_url} (Change visibility: Public; Connect repository: ${GITHUB_REPOSITORY}), then rerun this job. See RELEASING.md, \"Publishing the chart\"."
             exit 1
           fi
+          echo "Package is public and linked to ${linked}."
 
-          echo "ref=${chart_ref}" >> "$GITHUB_OUTPUT"
-          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
-          echo "Pushed ${chart_ref}:${RELEASE_VERSION} as ${digest}."
-
-      - name: Sign the chart
+      # A rerun that adopted an existing version signs it only if it is not
+      # already signed; a signed one just has its signature re-verified.
+      - name: Sign and verify the chart
         env:
           CHART_REF: ${{ steps.push.outputs.ref }}
           CHART_DIGEST: ${{ steps.push.outputs.digest }}
+          ALREADY_PUBLISHED: ${{ steps.push.outputs.exists }}
         run: |
           set -euo pipefail
+          identity_regex="^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-from-tag.yml@refs/tags/.+$"
+          issuer="https://token.actions.githubusercontent.com"
+          verify_signature() {
+            cosign verify \
+              --certificate-identity-regexp "${identity_regex}" \
+              --certificate-oidc-issuer "${issuer}" \
+              "${CHART_REF}@${CHART_DIGEST}" > /dev/null
+          }
+
+          if [ "${ALREADY_PUBLISHED}" = "true" ] && verify_signature; then
+            echo "${CHART_REF}@${CHART_DIGEST} is already signed and verifies; nothing to sign."
+            exit 0
+          fi
+
           # Rekor can store an upload and still time out, and cosign then gets
           # a 409 on the resend. A new cosign run signs with a fresh key and
           # certificate, so a retry can't hit the same entry.
@@ -1449,19 +1496,8 @@ jobs:
             sleep "${delay}"
           done
 
-      - name: Verify the chart signature
-        env:
-          CHART_REF: ${{ steps.push.outputs.ref }}
-          CHART_DIGEST: ${{ steps.push.outputs.digest }}
-        run: |
-          set -euo pipefail
-          identity_regex="^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-from-tag.yml@refs/tags/.+$"
-          issuer="https://token.actions.githubusercontent.com"
           for attempt in 1 2 3 4 5; do
-            if cosign verify \
-              --certificate-identity-regexp "${identity_regex}" \
-              --certificate-oidc-issuer "${issuer}" \
-              "${CHART_REF}@${CHART_DIGEST}" > /dev/null; then
+            if verify_signature; then
               exit 0
             fi
             if [ "${attempt}" -eq 5 ]; then
@@ -1476,6 +1512,7 @@ jobs:
         env:
           CHART_REF: ${{ steps.push.outputs.ref }}
           CHART_DIGEST: ${{ steps.push.outputs.digest }}
+          ALREADY_PUBLISHED: ${{ steps.push.outputs.exists }}
           RELEASE_VERSION: ${{ steps.digest.outputs.version }}
           IMAGE_DIGEST: ${{ steps.digest.outputs.value }}
         run: |
@@ -1486,9 +1523,98 @@ jobs:
             else
               echo "- Chart: \`oci://${CHART_REF}\` version \`${RELEASE_VERSION}\`"
               echo "- Chart digest: \`${CHART_DIGEST}\` (cosign keyless signed)"
+              echo "- Version already existed before this run: ${ALREADY_PUBLISHED}"
               echo "- Pins image: \`${RELEASE_VERSION}@${IMAGE_DIGEST}\`"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  verify-chart:
+    # Runs the documented `cosign verify` against the published chart. Its own
+    # job on purpose: a chart problem is its own red check and must not skip
+    # or fail verify-published (image + tarball QA-6), Homebrew, or the pin.
+    # `latest` and the chart's publish-chart both skip together, so a skipped
+    # publish-chart makes this a skip too.
+    name: "Release: Verify Published Helm Chart"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    needs: [publish-chart]
+    if: ${{ !cancelled() && needs.publish-chart.result == 'success' }}
+    permissions:
+      contents: read
+    steps:
+      # PKG-1: block mode. The cosign verify half of verify-published, for the
+      # ghcr.io chart only.
+      #   github.com, raw.githubusercontent.com, objects.githubusercontent.com,
+      #     release-assets.githubusercontent.com: Checkout and Install cosign
+      #   api.github.com: the cosign installer's release lookup
+      #   ghcr.io, pkg-containers.githubusercontent.com: the chart pull
+      #   tuf-repo-cdn.sigstore.dev: cosign's Sigstore TUF root refresh
+      #   *.actions.githubusercontent.com: Actions runtime and log upload
+      - name: Harden Runner
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            raw.githubusercontent.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            pkg-containers.githubusercontent.com:443
+            ghcr.io:443
+            tuf-repo-cdn.sigstore.dev:443
+            *.actions.githubusercontent.com:443
+
+      - name: Checkout
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Wait before Checkout retry
+        if: steps.checkout.outcome == 'failure'
+        run: sleep 30
+
+      - name: Checkout (retry)
+        id: checkout_retry
+        if: steps.checkout.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Wait before Checkout final retry
+        if: steps.checkout.outcome == 'failure' && steps.checkout_retry.outcome == 'failure'
+        run: sleep 60
+
+      - name: Checkout (final retry)
+        id: checkout_final
+        if: steps.checkout.outcome == 'failure' && steps.checkout_retry.outcome == 'failure'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+        with:
+          cosign-release: "v3.1.3"  # keep in lockstep with the goreleaser job's pin above
+
+      - name: Verify the published chart signature
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            if scripts/verify-published-release.sh --chart-only --tag "${RELEASE_TAG}"; then
+              exit 0
+            fi
+            if [ "${attempt}" -eq 5 ]; then
+              exit 1
+            fi
+            sleep 5
+          done
 
   verify-published:
     # QA-6 end-to-end signature verification: run the *exact* documented
@@ -1502,10 +1628,7 @@ jobs:
     name: "Release: Verify Published Artifacts (QA-6)"
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    needs: [verify-ci, release, publish-chart]
-    # publish-chart is skipped for prereleases and maintenance lines, which is
-    # not a failure; a failed or cancelled one still blocks QA-6.
-    if: ${{ always() && needs.release.result == 'success' && (needs.publish-chart.result == 'success' || needs.publish-chart.result == 'skipped') }}
+    needs: [release]
     permissions:
       contents: read   # gh release download
     steps:
@@ -1591,9 +1714,6 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
-          # The chart is published only when publish-chart ran (stable tag
-          # from the default branch), so verify it under the same condition.
-          VERIFY_CHART: ${{ needs.publish-chart.result == 'success' && 'true' || 'false' }}
         run: |
           set -euo pipefail
           retry_network() {
@@ -1609,24 +1729,17 @@ jobs:
             done
           }
 
-          verify_args=(--tag "${RELEASE_TAG}")
-          if [ "${VERIFY_CHART}" = "true" ]; then
-            verify_args+=(--chart)
-          fi
-
-          retry_network scripts/verify-published-release.sh "${verify_args[@]}"
+          retry_network scripts/verify-published-release.sh --tag "${RELEASE_TAG}"
 
       - name: Summarize
         if: always()
         env:
           RELEASE_TAG: ${{ github.ref_name }}
-          VERIFY_CHART: ${{ needs.publish-chart.result == 'success' && 'true' || 'false' }}
         run: |
           {
             echo "### QA-6: Published-artifact signature verification"
             echo "- Tag: \`${RELEASE_TAG}\`"
             echo "- Pulled \`ghcr.io\`, \`docker.io\`, \`quay.io\` image tags and ran the documented \`cosign verify\` against each"
-            echo "- Helm chart (\`oci://ghcr.io/codeswhat/charts/sockguard\`) verified with the documented \`cosign verify\`: ${VERIFY_CHART}"
             echo "- Downloaded the release tarball + .sigstore.json bundle and ran the documented \`cosign verify-blob\`"
             echo "- See \`docs/content/docs/verification.mdx\` for the canonical operator-facing invocation"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,167 @@
+name: Chart Publish Rehearsal
+
+# Rehearses release-from-tag.yml's publish-chart job against a throwaway
+# registry:2 service container: install Helm from the same pinned checksum,
+# package the chart with a fake image digest, push and read it back through
+# scripts/ci/chart-oci.sh (the script publish-chart runs), and run
+# assert-chart-release.mjs on the pulled chart. It exists because publish-chart
+# only ever runs on a real tag, where a mistake costs a published release.
+#
+# Deliberately NOT a required context. It is path-filtered, so on a PR that
+# touches none of these paths no check run is ever reported, and a required
+# context by this name could never be satisfied and would deadlock every such
+# merge. It is a rehearsal, not a gate.
+
+on:
+  pull_request:
+    paths:
+      - "chart/**"
+      - ".github/workflows/chart-publish-rehearsal.yml"
+      - ".github/workflows/release-from-tag.yml"
+      - "scripts/ci/chart-oci.sh"
+      - "scripts/assert-chart-release.mjs"
+      - "scripts/pin-chart-image-digest.mjs"
+      - "scripts/chart-image-tag.mjs"
+      - "scripts/helm-publish.test.mjs"
+
+permissions: {}
+
+concurrency:
+  group: chart-publish-rehearsal-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  rehearse:
+    name: "Rehearse chart publish"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
+    steps:
+      # Read-only job, so audit mode (DEP-19): it holds no write credential.
+      - name: Harden Runner
+        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node (for release scripts)
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      # Keep HELM_VERSION and HELM_SHA256 identical to release-from-tag.yml's
+      # publish-chart job; scripts/helm-publish.test.mjs enforces it.
+      - name: Install Helm
+        env:
+          HELM_VERSION: v4.3.1
+          HELM_SHA256: 0403a88ae20913d11b10a2467b50087721fea7581736da6b9d3992f5357fe54b
+        run: |
+          set -euo pipefail
+          download_dir="$(mktemp -d)"
+          archive="${download_dir}/helm.tar.gz"
+          curl --fail --silent --show-error --location --retry 5 \
+            --output "${archive}" \
+            "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_SHA256}  ${archive}" | sha256sum --check --strict -
+
+          bin_dir="${RUNNER_TEMP}/helm-bin"
+          mkdir -p "${bin_dir}"
+          tar -xzf "${archive}" -C "${bin_dir}" --strip-components=1 linux-amd64/helm
+          echo "${bin_dir}" >> "$GITHUB_PATH"
+          "${bin_dir}/helm" version --short
+
+      # The repo's chart may already carry a real digest pin, so rehearse on a
+      # copy with the prepublication (empty) image.tag the tagged tree has.
+      - name: Package the chart with a fake digest pin
+        id: package
+        run: |
+          set -euo pipefail
+          work="${RUNNER_TEMP}/rehearsal"
+          mkdir -p "${work}/out"
+          cp -R chart "${work}/chart"
+          sed -E -i 's/^  tag:.*/  tag: ""/' "${work}/chart/sockguard/values.yaml"
+
+          version="$(sed -n -E 's/^version:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' chart/sockguard/Chart.yaml)"
+          image_digest="sha256:$(printf 'a%.0s' $(seq 64))"
+          node scripts/pin-chart-image-digest.mjs \
+            --version "${version}" \
+            --digest "${image_digest}" \
+            --chart "${work}/chart/sockguard/Chart.yaml" \
+            --values "${work}/chart/sockguard/values.yaml"
+
+          helm lint "${work}/chart/sockguard"
+          helm package "${work}/chart/sockguard" --destination "${work}/out"
+
+          {
+            echo "version=${version}"
+            echo "image_digest=${image_digest}"
+            echo "path=${work}/out/sockguard-${version}.tgz"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Push through the release script
+        id: push
+        env:
+          CHART_REGISTRY: localhost:5000/charts
+          CHART_PLAIN_HTTP: "1"
+          CHART_PACKAGE: ${{ steps.package.outputs.path }}
+          CHART_VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          set -euo pipefail
+          bash scripts/ci/chart-oci.sh push
+          if [ "$(grep -c '^exists=false$' "$GITHUB_OUTPUT")" -ne 1 ]; then
+            echo "::error::A first push into an empty registry must report exists=false."
+            exit 1
+          fi
+
+      - name: Check the pulled chart
+        env:
+          CHART_REGISTRY: localhost:5000/charts
+          CHART_PLAIN_HTTP: "1"
+          CHART_VERSION: ${{ steps.package.outputs.version }}
+          CHART_DIGEST: ${{ steps.push.outputs.digest }}
+          RELEASE_TAG: v${{ steps.package.outputs.version }}
+          IMAGE_DIGEST: ${{ steps.package.outputs.image_digest }}
+        run: |
+          set -euo pipefail
+          bash scripts/ci/chart-oci.sh verify-contents
+
+          # The digest the script parsed out of helm's output is the one the
+          # registry actually holds, and the manifest carries the source
+          # annotation GHCR uses to link the package to the repository.
+          manifest_url="http://localhost:5000/v2/charts/sockguard/manifests/${CHART_VERSION}"
+          accept='Accept: application/vnd.oci.image.manifest.v1+json'
+          served="$(curl --fail --silent --head -H "${accept}" "${manifest_url}" | tr -d '\r' | awk 'tolower($1) == "docker-content-digest:" { print $2 }')"
+          if [ "${served}" != "${CHART_DIGEST}" ]; then
+            echo "::error::Registry serves ${served:-nothing} but the script parsed ${CHART_DIGEST}."
+            exit 1
+          fi
+          if ! curl --fail --silent -H "${accept}" "${manifest_url}" \
+            | grep -q '"org.opencontainers.image.source":"https://github.com/CodesWhat/sockguard"'; then
+            echo "::error::The pushed chart manifest has no org.opencontainers.image.source annotation."
+            exit 1
+          fi
+
+      - name: A rerun adopts the existing version instead of overwriting it
+        env:
+          CHART_REGISTRY: localhost:5000/charts
+          CHART_PLAIN_HTTP: "1"
+          CHART_PACKAGE: ${{ steps.package.outputs.path }}
+          CHART_VERSION: ${{ steps.package.outputs.version }}
+          FIRST_DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          out="$(mktemp)"
+          GITHUB_OUTPUT="${out}" bash scripts/ci/chart-oci.sh push
+          grep -qx 'exists=true' "${out}"
+          grep -qx "digest=${FIRST_DIGEST}" "${out}"

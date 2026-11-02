@@ -20,8 +20,9 @@
 #   scripts/verify-published-release.sh [--dry-run] --tag <vX.Y.Z>
 #
 # --chart also verifies the Helm chart OCI artifact that publish-chart pushed
-# (stable tags from the default branch only). The workflow passes it only
-# when that job ran.
+# (stable tags from the default branch only).
+# --chart-only verifies just that chart and nothing else; the verify-chart job
+# uses it so a chart problem stays out of the image/tarball QA-6 job.
 #
 # --dry-run prints the resolved plan (registries, identity regex,
 # issuer, tarball download path) and exits 0 without contacting any
@@ -33,6 +34,7 @@ set -euo pipefail
 
 DRY_RUN=0
 VERIFY_CHART=0
+CHART_ONLY=0
 RELEASE_TAG=""
 
 while [ $# -gt 0 ]; do
@@ -41,6 +43,8 @@ while [ $# -gt 0 ]; do
       DRY_RUN=1; shift ;;
     --chart)
       VERIFY_CHART=1; shift ;;
+    --chart-only)
+      VERIFY_CHART=1; CHART_ONLY=1; shift ;;
     --tag)
       RELEASE_TAG="${2:-}"; shift 2 ;;
     --tag=*)
@@ -114,9 +118,10 @@ verify-published-release.sh dry-run plan:
   repo:               ${REPO}
   identity regex:     ${IDENTITY_REGEX}
   issuer:             ${ISSUER}
+  chart only:         $([ "${CHART_ONLY}" -eq 1 ] && echo "yes (image tags and release assets below are skipped)" || echo no)
   image tags to verify:
 $(printf '    - %s\n' "${IMAGE_TAGS[@]}")
-  helm chart to verify (only with --chart):
+  helm chart to verify (only with --chart or --chart-only):
     - ${CHART_REF}
   release assets to download + verify:
 $(printf '    - %s\n' "${RELEASE_ASSETS[@]}")
@@ -125,7 +130,7 @@ $(printf '    - %s\n' "${RELEASE_ASSETS[@]}")
       --certificate-identity-regexp '${IDENTITY_REGEX}' \\
       --certificate-oidc-issuer '${ISSUER}' \\
       <image>
-  cosign chart command (--chart only):
+  cosign chart command (--chart or --chart-only):
     cosign verify \\
       --certificate-identity-regexp '${IDENTITY_REGEX}' \\
       --certificate-oidc-issuer '${ISSUER}' \\
@@ -145,7 +150,11 @@ EOF
   exit 0
 fi
 
-for tool in cosign gh sha256sum; do
+REQUIRED_TOOLS=(cosign gh sha256sum)
+if [ "${CHART_ONLY}" -eq 1 ]; then
+  REQUIRED_TOOLS=(cosign)
+fi
+for tool in "${REQUIRED_TOOLS[@]}"; do
   if ! command -v "${tool}" >/dev/null; then
     echo "verify-published-release.sh: ${tool} not found on PATH" >&2
     exit 1
@@ -172,14 +181,20 @@ verify_image() {
   done
 }
 
-for image in "${IMAGE_TAGS[@]}"; do
-  verify_image "${image}"
-done
+if [ "${CHART_ONLY}" -eq 0 ]; then
+  for image in "${IMAGE_TAGS[@]}"; do
+    verify_image "${image}"
+  done
+fi
 
 # A Helm chart is an OCI artifact, so the documented command is the same
 # cosign verify as the image's.
 if [ "${VERIFY_CHART}" -eq 1 ]; then
   verify_image "${CHART_REF}"
+fi
+
+if [ "${CHART_ONLY}" -eq 1 ]; then
+  exit 0
 fi
 
 WORK_DIR="$(mktemp -d)"

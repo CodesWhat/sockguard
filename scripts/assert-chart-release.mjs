@@ -10,11 +10,7 @@
 
 import { readFileSync } from "node:fs";
 import { extractChartImageConfig } from "./chart-image-tag.mjs";
-import {
-  normalizeDigest,
-  normalizeVersion,
-  readChartAppVersion,
-} from "./pin-chart-image-digest.mjs";
+import { normalizeDigest, normalizeVersion } from "./pin-chart-image-digest.mjs";
 
 export function readChartVersion(source) {
   const match = String(source ?? "").match(/^version:\s*"?([^"\s]+)"?\s*$/mu);
@@ -24,12 +20,22 @@ export function readChartVersion(source) {
   return match[1];
 }
 
+// The source Chart.yaml quotes appVersion, but `helm show chart` re-serializes
+// it unquoted, and this gate reads the latter.
+export function readPackagedAppVersion(source) {
+  const match = String(source ?? "").match(/^appVersion:\s*(?:"([^"]*)"|([^\s"#]+))\s*$/mu);
+  if (!match) {
+    throw new Error("Could not read appVersion from Chart.yaml");
+  }
+  return match[1] ?? match[2];
+}
+
 export function assertChartRelease({ chart, values, tag, digest }) {
   const version = normalizeVersion(tag);
   const pinnedDigest = normalizeDigest(digest);
 
   const chartVersion = readChartVersion(chart);
-  const appVersion = readChartAppVersion(chart);
+  const appVersion = readPackagedAppVersion(chart);
   if (chartVersion !== version || appVersion !== version) {
     throw new Error(
       `Chart version ${JSON.stringify(chartVersion)} and appVersion ${JSON.stringify(appVersion)} must both equal the tag version ${JSON.stringify(version)}`,
