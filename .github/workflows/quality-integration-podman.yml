@@ -65,9 +65,9 @@ jobs:
       matrix:
         include:
           - major: '5'
-            fedora: quay.io/fedora/fedora:44@sha256:b414c09be79dd1f32529b55b096b6bb30435d82ee16fbdbbabf8985eb5f86db0
+            fedora: quay.io/fedora/fedora:44
           - major: '6'
-            fedora: quay.io/fedora/fedora:45@sha256:cfe939b2661e4a8b5215878bc3f132b0b5e3d0a46bb7146c85e95b2471ed487e
+            fedora: quay.io/fedora/fedora:45
     env:
       PODMAN_MAJOR: ${{ matrix.major }}
       SOCKGUARD_TEST_PODMAN_SOCKET: /tmp/sockguard-podman-major/podman.sock
@@ -91,6 +91,9 @@ jobs:
       # Fedora 44 retains Podman 5; Fedora 45 ships Podman 6 and its matching
       # Netavark/Aardvark dependencies. Assert the live engine major below so
       # a repository transition cannot silently erase a compatibility leg.
+      # The matrix uses major tags, not digests: quay rebuilds these tags daily
+      # and purges the replaced manifests, so a digest pin breaks within about
+      # a day. The major tag plus the live-major assertion is the guard.
       - name: Build engine test image
         env:
           FEDORA_IMAGE: ${{ matrix.fedora }}

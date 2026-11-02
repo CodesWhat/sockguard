@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Stop the Podman 5/6 nightly from breaking when quay purges the rebuilt Fedora base image. The matrix now tracks the Fedora 44 and 45 major tags instead of digests that expire within a day.
+
 ## [2.4.2] - 2026-10-31
 
 v2.4.2 tightens Podman engine identification and unscoped native routes, permits safe volume filters on verified Podman 6+ endpoints, and carries frontend cleanup, CI reliability and maintenance-release fixes. It carries v2.4.1.
