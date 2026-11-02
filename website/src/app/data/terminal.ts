@@ -4,9 +4,9 @@ export type TerminalEvent = { k: "cmd" | "out" | "note"; s: string; p?: string }
 export type TerminalScene = { id: string; title: string; events: TerminalEvent[] };
 export const TERMINAL = {
   product: "sockguard",
-  version: "2.3.1",
-  commit: "bb4f886",
-  date: "2026-10-29",
+  version: "2.4.2",
+  commit: "f3a332f",
+  date: "2026-11-01",
   scenes: [
     {
       id: "audit",
@@ -18,7 +18,7 @@ export const TERMINAL = {
         },
         {
           k: "out",
-          s: '{"time":"2026-10-29T09:39:41.531575-04:00","level":"INFO","msg":"upstream flavor resolved","flavor":"docker","probed":true,"endpoints":1}',
+          s: '{"time":"2026-11-01T22:10:01.289517-05:00","level":"INFO","msg":"upstream flavor resolved","flavor":"docker","probed":true,"endpoints":1,"podman_conjunctive_volume_filters":false}',
         },
         {
           k: "out",
@@ -134,7 +134,7 @@ export const TERMINAL = {
         },
         {
           k: "out",
-          s: "  sockguard 2.3.1  (commit bb4f886, built 2026-10-29, go1.27.3)",
+          s: "  sockguard 2.4.2  (commit f3a332f, built 2026-11-01, go1.27.3)",
         },
         {
           k: "out",
@@ -158,11 +158,11 @@ export const TERMINAL = {
         },
         {
           k: "out",
-          s: '{"time":"2026-10-29T09:39:41.53384-04:00","level":"INFO","msg":"sockguard started","version":"2.3.1","listeners":["discovery unix:/tmp/sg/sockguard.sock"],"upstream":"/tmp/dsw/run/docker.sock","rules":1,"log_level":"info","upstream_request_timeout":"60s"}',
+          s: '{"time":"2026-11-01T22:10:01.290541-05:00","level":"INFO","msg":"sockguard started","version":"2.4.2","listeners":["discovery unix:/tmp/sg/sockguard.sock"],"upstream":"/tmp/dsw/run/docker.sock","rules":1,"log_level":"info","upstream_request_timeout":"60s"}',
         },
         {
           k: "out",
-          s: '{"time":"2026-10-29T09:39:41.53402-04:00","level":"INFO","msg":"upstream endpoint health changed","endpoint":"unix:///tmp/dsw/run/docker.sock","healthy":true}',
+          s: '{"time":"2026-11-01T22:10:01.290654-05:00","level":"INFO","msg":"upstream endpoint health changed","endpoint":"unix:///tmp/dsw/run/docker.sock","healthy":true}',
         },
         {
           k: "cmd",
@@ -175,11 +175,11 @@ export const TERMINAL = {
         },
         {
           k: "out",
-          s: '{"time":"2026-10-29T09:39:43.839377-04:00","level":"INFO","msg":"request_would_deny","method":"GET","path":"/_ping","request_id":"ebc5dd69db3e7d99f07aa0768e278724","listener_name":"discovery","normalized_path":"/_ping","decision":"would_deny","rule":0,"profile":"discovery","rollout_mode":"audit","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","trace_id":"02825bb39e1faf682320842f0f4d14e1","trace_span_id":"e0ff38edb4273a4b","trace_sampled":false,"status":200,"latency_ms":0.826,"bytes":2,"client":"unix"}',
+          s: '{"time":"2026-11-01T22:10:03.617695-05:00","level":"INFO","msg":"request_would_deny","method":"GET","path":"/_ping","request_id":"4933d7bab426c83b79504310a7e24ad1","listener_name":"discovery","normalized_path":"/_ping","decision":"would_deny","rule":0,"profile":"discovery","rollout_mode":"audit","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","trace_id":"a2db93b7f7fba3d8d0484a5a0ce5ffef","trace_span_id":"ab80355548653bd1","trace_sampled":false,"status":200,"latency_ms":0.981,"bytes":2,"client":"unix"}',
         },
         {
           k: "out",
-          s: '{"event_type":"http_request","timestamp":"2026-10-29T13:39:43.839368Z","request_id":"ebc5dd69db3e7d99f07aa0768e278724","client_request_id":"","trace_id":"02825bb39e1faf682320842f0f4d14e1","trace_parent_id":"","trace_span_id":"e0ff38edb4273a4b","trace_sampled":false,"method":"GET","raw_path":"/_ping","normalized_path":"/_ping","decision":"would_deny","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","matched_rule":0,"selected_profile":"discovery","rollout_mode":"audit","status":200,"actor_remote_addr":"","actor_source_ip":"","transport_listener":"tcp","transport_scheme":"http","transport_protocol":"HTTP/1.1","ownership":{"enabled":false,"owner":"","label_key":"com.sockguard.owner"},"listener_name":"discovery"}',
+          s: '{"event_type":"http_request","timestamp":"2026-11-02T03:10:03.617684Z","request_id":"4933d7bab426c83b79504310a7e24ad1","client_request_id":"","trace_id":"a2db93b7f7fba3d8d0484a5a0ce5ffef","trace_parent_id":"","trace_span_id":"ab80355548653bd1","trace_sampled":false,"method":"GET","raw_path":"/_ping","normalized_path":"/_ping","decision":"would_deny","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","matched_rule":0,"selected_profile":"discovery","rollout_mode":"audit","status":200,"actor_remote_addr":"","actor_source_ip":"","transport_listener":"tcp","transport_scheme":"http","transport_protocol":"HTTP/1.1","ownership":{"enabled":false,"owner":"","label_key":"com.sockguard.owner"},"listener_name":"discovery"}',
         },
         {
           k: "cmd",
@@ -192,11 +192,11 @@ export const TERMINAL = {
         },
         {
           k: "out",
-          s: '{"time":"2026-10-29T09:39:44.658915-04:00","level":"INFO","msg":"request_would_deny","method":"GET","path":"/v1.45/containers/json","request_id":"5001c3df5aa11a300875f291473485ac","listener_name":"discovery","normalized_path":"/containers/json","decision":"would_deny","rule":0,"profile":"discovery","rollout_mode":"audit","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","trace_id":"ba230326a9f48e83978942db70d2a63e","trace_span_id":"a0e6301146c6d726","trace_sampled":false,"status":200,"latency_ms":0.295,"bytes":2,"client":"unix"}',
+          s: '{"time":"2026-11-01T22:10:04.439007-05:00","level":"INFO","msg":"request_would_deny","method":"GET","path":"/v1.45/containers/json","request_id":"d777abd731eac19a1ee598d235827fe9","listener_name":"discovery","normalized_path":"/containers/json","decision":"would_deny","rule":0,"profile":"discovery","rollout_mode":"audit","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","trace_id":"c55aec00cb844557dbc8e9e57b3861d5","trace_span_id":"415e5410d7e221d9","trace_sampled":false,"status":200,"latency_ms":0.304,"bytes":2,"client":"unix"}',
         },
         {
           k: "out",
-          s: '{"event_type":"http_request","timestamp":"2026-10-29T13:39:44.658908Z","request_id":"5001c3df5aa11a300875f291473485ac","client_request_id":"","trace_id":"ba230326a9f48e83978942db70d2a63e","trace_parent_id":"","trace_span_id":"a0e6301146c6d726","trace_sampled":false,"method":"GET","raw_path":"/v1.45/containers/json","normalized_path":"/containers/json","decision":"would_deny","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","matched_rule":0,"selected_profile":"discovery","rollout_mode":"audit","status":200,"actor_remote_addr":"","actor_source_ip":"","transport_listener":"tcp","transport_scheme":"http","transport_protocol":"HTTP/1.1","ownership":{"enabled":false,"owner":"","label_key":"com.sockguard.owner"},"listener_name":"discovery"}',
+          s: '{"event_type":"http_request","timestamp":"2026-11-02T03:10:04.438999Z","request_id":"d777abd731eac19a1ee598d235827fe9","client_request_id":"","trace_id":"c55aec00cb844557dbc8e9e57b3861d5","trace_parent_id":"","trace_span_id":"415e5410d7e221d9","trace_sampled":false,"method":"GET","raw_path":"/v1.45/containers/json","normalized_path":"/containers/json","decision":"would_deny","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","matched_rule":0,"selected_profile":"discovery","rollout_mode":"audit","status":200,"actor_remote_addr":"","actor_source_ip":"","transport_listener":"tcp","transport_scheme":"http","transport_protocol":"HTTP/1.1","ownership":{"enabled":false,"owner":"","label_key":"com.sockguard.owner"},"listener_name":"discovery"}',
         },
         {
           k: "cmd",
@@ -209,11 +209,11 @@ export const TERMINAL = {
         },
         {
           k: "out",
-          s: '{"time":"2026-10-29T09:39:45.478991-04:00","level":"INFO","msg":"request_would_deny","method":"GET","path":"/containers/abc123/json","request_id":"78c14d575425a02a509c6afeca7f8deb","listener_name":"discovery","normalized_path":"/containers/abc123/json","decision":"would_deny","rule":0,"profile":"discovery","rollout_mode":"audit","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","trace_id":"0b434b069b48347e36bfd0e04b6cf36d","trace_span_id":"034ccfdd2c05ddda","trace_sampled":false,"status":200,"latency_ms":0.271,"bytes":2,"client":"unix"}',
+          s: '{"time":"2026-11-01T22:10:05.259236-05:00","level":"INFO","msg":"request_would_deny","method":"GET","path":"/containers/abc123/json","request_id":"81d0ed27a6f509c6586b18ce4c475bd1","listener_name":"discovery","normalized_path":"/containers/abc123/json","decision":"would_deny","rule":0,"profile":"discovery","rollout_mode":"audit","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","trace_id":"e6a6339a80f12943d2fb93ea465c671c","trace_span_id":"ccac9f8bdefe0577","trace_sampled":false,"status":200,"latency_ms":0.3,"bytes":2,"client":"unix"}',
         },
         {
           k: "out",
-          s: '{"event_type":"http_request","timestamp":"2026-10-29T13:39:45.478985Z","request_id":"78c14d575425a02a509c6afeca7f8deb","client_request_id":"","trace_id":"0b434b069b48347e36bfd0e04b6cf36d","trace_parent_id":"","trace_span_id":"034ccfdd2c05ddda","trace_sampled":false,"method":"GET","raw_path":"/containers/abc123/json","normalized_path":"/containers/abc123/json","decision":"would_deny","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","matched_rule":0,"selected_profile":"discovery","rollout_mode":"audit","status":200,"actor_remote_addr":"","actor_source_ip":"","transport_listener":"tcp","transport_scheme":"http","transport_protocol":"HTTP/1.1","ownership":{"enabled":false,"owner":"","label_key":"com.sockguard.owner"},"listener_name":"discovery"}',
+          s: '{"event_type":"http_request","timestamp":"2026-11-02T03:10:05.25923Z","request_id":"81d0ed27a6f509c6586b18ce4c475bd1","client_request_id":"","trace_id":"e6a6339a80f12943d2fb93ea465c671c","trace_parent_id":"","trace_span_id":"ccac9f8bdefe0577","trace_sampled":false,"method":"GET","raw_path":"/containers/abc123/json","normalized_path":"/containers/abc123/json","decision":"would_deny","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","matched_rule":0,"selected_profile":"discovery","rollout_mode":"audit","status":200,"actor_remote_addr":"","actor_source_ip":"","transport_listener":"tcp","transport_scheme":"http","transport_protocol":"HTTP/1.1","ownership":{"enabled":false,"owner":"","label_key":"com.sockguard.owner"},"listener_name":"discovery"}',
         },
         {
           k: "cmd",
@@ -226,11 +226,11 @@ export const TERMINAL = {
         },
         {
           k: "out",
-          s: '{"time":"2026-10-29T09:39:46.303974-04:00","level":"INFO","msg":"request_would_deny","method":"POST","path":"/containers/abc123/exec","request_id":"f0c5d95c2336b32bdec07a0c97a65f9a","listener_name":"discovery","normalized_path":"/containers/abc123/exec","decision":"would_deny","rule":0,"profile":"discovery","rollout_mode":"audit","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","trace_id":"19c95fd9d3ecf30533fb18f22dcc60a2","trace_span_id":"da31c88e772e29cf","trace_sampled":false,"status":200,"latency_ms":1.068,"bytes":2,"client":"unix"}',
+          s: '{"time":"2026-11-01T22:10:06.074123-05:00","level":"INFO","msg":"request_would_deny","method":"POST","path":"/containers/abc123/exec","request_id":"b217818700cf2d5c8708329747d49d80","listener_name":"discovery","normalized_path":"/containers/abc123/exec","decision":"would_deny","rule":0,"profile":"discovery","rollout_mode":"audit","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","trace_id":"adfea2b1d1c502c4b293876aafa20594","trace_span_id":"ada74f4ca7070457","trace_sampled":false,"status":200,"latency_ms":0.273,"bytes":2,"client":"unix"}',
         },
         {
           k: "out",
-          s: '{"event_type":"http_request","timestamp":"2026-10-29T13:39:46.303965Z","request_id":"f0c5d95c2336b32bdec07a0c97a65f9a","client_request_id":"","trace_id":"19c95fd9d3ecf30533fb18f22dcc60a2","trace_parent_id":"","trace_span_id":"da31c88e772e29cf","trace_sampled":false,"method":"POST","raw_path":"/containers/abc123/exec","normalized_path":"/containers/abc123/exec","decision":"would_deny","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","matched_rule":0,"selected_profile":"discovery","rollout_mode":"audit","status":200,"actor_remote_addr":"","actor_source_ip":"","transport_listener":"tcp","transport_scheme":"http","transport_protocol":"HTTP/1.1","ownership":{"enabled":false,"owner":"","label_key":"com.sockguard.owner"},"listener_name":"discovery"}',
+          s: '{"event_type":"http_request","timestamp":"2026-11-02T03:10:06.074115Z","request_id":"b217818700cf2d5c8708329747d49d80","client_request_id":"","trace_id":"adfea2b1d1c502c4b293876aafa20594","trace_parent_id":"","trace_span_id":"ada74f4ca7070457","trace_sampled":false,"method":"POST","raw_path":"/containers/abc123/exec","normalized_path":"/containers/abc123/exec","decision":"would_deny","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","matched_rule":0,"selected_profile":"discovery","rollout_mode":"audit","status":200,"actor_remote_addr":"","actor_source_ip":"","transport_listener":"tcp","transport_scheme":"http","transport_protocol":"HTTP/1.1","ownership":{"enabled":false,"owner":"","label_key":"com.sockguard.owner"},"listener_name":"discovery"}',
         },
         {
           k: "cmd",
@@ -243,11 +243,11 @@ export const TERMINAL = {
         },
         {
           k: "out",
-          s: '{"time":"2026-10-29T09:39:47.126078-04:00","level":"INFO","msg":"request_would_deny","method":"DELETE","path":"/images/sha256:abc","request_id":"6c7a7d00c247857e233b2824f733ebca","listener_name":"discovery","normalized_path":"/images/sha256:abc","decision":"would_deny","rule":0,"profile":"discovery","rollout_mode":"audit","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","trace_id":"c6d21163d5825473149309db0c03c6de","trace_span_id":"52178e2f1010ec6e","trace_sampled":false,"status":200,"latency_ms":0.295,"bytes":2,"client":"unix"}',
+          s: '{"time":"2026-11-01T22:10:06.894312-05:00","level":"INFO","msg":"request_would_deny","method":"DELETE","path":"/images/sha256:abc","request_id":"c5522f5fd55c0a0a3c87579c5604557f","listener_name":"discovery","normalized_path":"/images/sha256:abc","decision":"would_deny","rule":0,"profile":"discovery","rollout_mode":"audit","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","trace_id":"cf16f6fe14e7f65386f0d7ba175a319d","trace_span_id":"93208a3071532f03","trace_sampled":false,"status":200,"latency_ms":0.262,"bytes":2,"client":"unix"}',
         },
         {
           k: "out",
-          s: '{"event_type":"http_request","timestamp":"2026-10-29T13:39:47.126069Z","request_id":"6c7a7d00c247857e233b2824f733ebca","client_request_id":"","trace_id":"c6d21163d5825473149309db0c03c6de","trace_parent_id":"","trace_span_id":"52178e2f1010ec6e","trace_sampled":false,"method":"DELETE","raw_path":"/images/sha256:abc","normalized_path":"/images/sha256:abc","decision":"would_deny","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","matched_rule":0,"selected_profile":"discovery","rollout_mode":"audit","status":200,"actor_remote_addr":"","actor_source_ip":"","transport_listener":"tcp","transport_scheme":"http","transport_protocol":"HTTP/1.1","ownership":{"enabled":false,"owner":"","label_key":"com.sockguard.owner"},"listener_name":"discovery"}',
+          s: '{"event_type":"http_request","timestamp":"2026-11-02T03:10:06.894305Z","request_id":"c5522f5fd55c0a0a3c87579c5604557f","client_request_id":"","trace_id":"cf16f6fe14e7f65386f0d7ba175a319d","trace_parent_id":"","trace_span_id":"93208a3071532f03","trace_sampled":false,"method":"DELETE","raw_path":"/images/sha256:abc","normalized_path":"/images/sha256:abc","decision":"would_deny","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","matched_rule":0,"selected_profile":"discovery","rollout_mode":"audit","status":200,"actor_remote_addr":"","actor_source_ip":"","transport_listener":"tcp","transport_scheme":"http","transport_protocol":"HTTP/1.1","ownership":{"enabled":false,"owner":"","label_key":"com.sockguard.owner"},"listener_name":"discovery"}',
         },
       ],
     },
@@ -600,7 +600,7 @@ export const TERMINAL = {
         },
         {
           k: "out",
-          s: "Traceparent: 00-b199ceaea1275dc07fb8df471eed08f9-395567b3f3b2bf07-00",
+          s: "Traceparent: 00-c28e452f180ed5573e772e03cbfe88a8-80123d5cfd3d2573-00",
         },
         {
           k: "out",
@@ -608,11 +608,11 @@ export const TERMINAL = {
         },
         {
           k: "out",
-          s: "X-Request-Id: 0598d476e1ad08643a35351e75f52b6a",
+          s: "X-Request-Id: b8424691466b9aa4757a46941a7cc49a",
         },
         {
           k: "out",
-          s: "Date: Thu, 29 Oct 2026 13:39:50 GMT",
+          s: "Date: Mon, 02 Nov 2026 03:10:10 GMT",
         },
         {
           k: "out",
@@ -628,11 +628,11 @@ export const TERMINAL = {
         },
         {
           k: "out",
-          s: '{"time":"2026-10-29T09:39:50.369252-04:00","level":"WARN","msg":"request_denied","method":"POST","path":"/containers/abc123/exec","request_id":"0598d476e1ad08643a35351e75f52b6a","listener_name":"discovery","normalized_path":"/containers/abc123/exec","decision":"deny","rule":0,"profile":"discovery","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","trace_id":"b199ceaea1275dc07fb8df471eed08f9","trace_span_id":"395567b3f3b2bf07","trace_sampled":false,"status":403,"latency_ms":0.133,"bytes":49,"client":"unix"}',
+          s: '{"time":"2026-11-01T22:10:10.116774-05:00","level":"WARN","msg":"request_denied","method":"POST","path":"/containers/abc123/exec","request_id":"b8424691466b9aa4757a46941a7cc49a","listener_name":"discovery","normalized_path":"/containers/abc123/exec","decision":"deny","rule":0,"profile":"discovery","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","trace_id":"c28e452f180ed5573e772e03cbfe88a8","trace_span_id":"80123d5cfd3d2573","trace_sampled":false,"status":403,"latency_ms":0.09,"bytes":49,"client":"unix"}',
         },
         {
           k: "out",
-          s: '{"event_type":"http_request","timestamp":"2026-10-29T13:39:50.369234Z","request_id":"0598d476e1ad08643a35351e75f52b6a","client_request_id":"","trace_id":"b199ceaea1275dc07fb8df471eed08f9","trace_parent_id":"","trace_span_id":"395567b3f3b2bf07","trace_sampled":false,"method":"POST","raw_path":"/containers/abc123/exec","normalized_path":"/containers/abc123/exec","decision":"deny","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","matched_rule":0,"selected_profile":"discovery","rollout_mode":"enforce","status":403,"actor_remote_addr":"","actor_source_ip":"","transport_listener":"tcp","transport_scheme":"http","transport_protocol":"HTTP/1.1","ownership":{"enabled":false,"owner":"","label_key":"com.sockguard.owner"},"listener_name":"discovery"}',
+          s: '{"event_type":"http_request","timestamp":"2026-11-02T03:10:10.116763Z","request_id":"b8424691466b9aa4757a46941a7cc49a","client_request_id":"","trace_id":"c28e452f180ed5573e772e03cbfe88a8","trace_parent_id":"","trace_span_id":"80123d5cfd3d2573","trace_sampled":false,"method":"POST","raw_path":"/containers/abc123/exec","normalized_path":"/containers/abc123/exec","decision":"deny","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","matched_rule":0,"selected_profile":"discovery","rollout_mode":"enforce","status":403,"actor_remote_addr":"","actor_source_ip":"","transport_listener":"tcp","transport_scheme":"http","transport_protocol":"HTTP/1.1","ownership":{"enabled":false,"owner":"","label_key":"com.sockguard.owner"},"listener_name":"discovery"}',
         },
       ],
     },
