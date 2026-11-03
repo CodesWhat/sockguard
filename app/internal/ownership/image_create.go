@@ -423,7 +423,16 @@ func imagePullDestination(route imageDestinationRoute, name, tag string, naming 
 		repository, digest, digested, tag = name, tag, true, ""
 	}
 	if digested {
-		return nil, route.refusal(imagePullByDigestProblem(repository, digest, naming))
+		if refusal := route.refusal(imagePullByDigestProblem(repository, digest, naming)); refusal != "" {
+			return nil, refusal
+		}
+		// No name is written, so there is no destination to authorize. The
+		// reference is kept for the check after the pull, without the tag the
+		// engines drop.
+		if colon := strings.LastIndex(repository, ":"); colon > strings.LastIndex(repository, "/") {
+			repository = repository[:colon]
+		}
+		return &imageDestinationReferences{route: route, digests: []string{repository + "@" + digest}}, ""
 	}
 
 	carriesTag := strings.LastIndex(name, ":") > strings.LastIndex(name, "/")

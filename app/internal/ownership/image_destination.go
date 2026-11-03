@@ -98,6 +98,10 @@ func (route imageDestinationRoute) heldByAnotherOwner() string {
 type imageDestinationReferences struct {
 	route        imageDestinationRoute
 	destinations []imageDestination
+	// digests are the repository@digest references a pull by digest names. A
+	// pull by digest writes no destination to authorize, but the image it
+	// fetches is addressable by that reference and is checked after the pull.
+	digests []string
 }
 
 // add records dest once. A build can name the same reference twice, and one

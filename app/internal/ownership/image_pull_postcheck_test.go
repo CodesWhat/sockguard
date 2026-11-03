@@ -3,6 +3,8 @@ package ownership
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -36,7 +38,10 @@ type pullMockDaemon struct {
 	inspectFail map[string]bool
 	untagFail   bool
 	retagFail   bool
-	untagged    []string
+	listFail    bool
+	// listExtra pads the native list with that many unrelated images.
+	listExtra int
+	untagged  []string
 	// untagQueries is the raw query of each untag, in step with untagged.
 	untagQueries []string
 	// retagged is "path?query" of each restore.
@@ -44,6 +49,9 @@ type pullMockDaemon struct {
 	requests []string
 	// postInspects are the inspect targets requested after the pull.
 	postInspects []string
+	// onPostInspect runs under the lock after a post-pull inspect of key, so a
+	// test can move a name the way a concurrent pull would.
+	onPostInspect func(d *pullMockDaemon, key string)
 }
 
 func (d *pullMockDaemon) idOf(ref string) string { return d.ids[ref] }
@@ -73,12 +81,41 @@ func (d *pullMockDaemon) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	d.requests = append(d.requests, req.Method+" "+req.URL.Path)
 	switch {
+	case req.Method == http.MethodGet && req.URL.Path == "/libpod/images/json":
+		if d.listFail {
+			rec.WriteHeader(http.StatusInternalServerError)
+			break
+		}
+		var filters map[string][]string
+		_ = json.Unmarshal([]byte(req.URL.Query().Get("filters")), &filters)
+		want := filters["reference"][0]
+		wantRepo, wantTag, _ := splitNameTag(want)
+		byID := map[string][]string{}
+		for ref, id := range d.ids {
+			repo, tag, ok := splitNameTag(ref)
+			if _, held := d.labels[ref]; held && ok && tag == wantTag && (repo == wantRepo || strings.HasSuffix(repo, "/"+wantRepo)) {
+				byID[id] = append(byID[id], ref)
+			}
+		}
+		var entries []map[string]any
+		for id, names := range byID {
+			sort.Strings(names)
+			entries = append(entries, map[string]any{"Id": strings.TrimPrefix(id, "sha256:"), "Names": names})
+		}
+		for i := 0; i < d.listExtra; i++ {
+			entries = append(entries, map[string]any{"Id": fmt.Sprintf("%064d", i), "Names": []string{fmt.Sprintf("other/img%d:v2", i)}})
+		}
+		out, _ := json.Marshal(entries)
+		_, _ = rec.Write(out)
 	case req.Method == http.MethodGet && strings.HasSuffix(req.URL.Path, "/json"):
 		key := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(req.URL.Path, "/libpod"), "/images/"), "/json")
 		if d.pulled {
 			d.postInspects = append(d.postInspects, key)
 		}
 		ref, ok := d.lookup(key)
+		if d.pulled && d.onPostInspect != nil {
+			defer d.onPostInspect(d, key)
+		}
 		switch {
 		case d.pulled && d.inspectFail[key]:
 			rec.WriteHeader(http.StatusInternalServerError)
@@ -464,19 +501,90 @@ func TestPullWithAnErrorLineIsNotReportedUnverified(t *testing.T) {
 	}
 }
 
-// A pull by digest writes no name, so there is nothing to check or inspect.
-func TestPullByDigestIsNotChecked(t *testing.T) {
+const pullDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+// A pull by digest writes no name, but the image is addressable by
+// repository@digest, so that reference is checked after the pull. It is only
+// ever reported: a digest pins its content and a delete could drop an image
+// other names hold.
+func TestPullByDigestReportsAForeignImage(t *testing.T) {
 	t.Parallel()
-	const digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	for _, target := range []string{
-		"/images/create?fromImage=" + url.QueryEscape("team/app@"+digest),
-		"/images/create?fromImage=team%2Fapp&tag=" + url.QueryEscape(digest),
-		"/v5.0.0/libpod/images/pull?reference=" + url.QueryEscape("quay.io/team/app@"+digest),
-	} {
-		daemon := &pullMockDaemon{written: map[string]map[string]string{"team/app@" + digest: {testOwnerKey: "victim"}}}
-		rec, _ := runPull(t, daemon, target, http.StatusOK)
-		if rec.Body.String() != pullProgress || len(daemon.untagged) != 0 || len(daemon.postInspects) != 0 {
-			t.Fatalf("%s: body = %q untagged = %v inspects = %v, want the stream and store untouched", target, rec.Body.String(), daemon.untagged, daemon.postInspects)
+	const kept = "carries another owner's label; it was left in place because a digest reference pins its content"
+	tests := []struct {
+		name       string
+		target     string
+		ref        string
+		flavor     upstreamflavor.Flavor
+		probed     bool
+		failInspec bool
+		existed    bool
+		wantLine   string
+	}{
+		{
+			name: "compat pull", target: "/images/create?fromImage=" + url.QueryEscape("team/app@"+pullDigest),
+			ref: "team/app@" + pullDigest, flavor: upstreamflavor.Docker, probed: true,
+			wantLine: "owner policy: pulled image team/app@" + pullDigest + " " + kept,
+		},
+		{
+			name: "compat pull with the digest in tag", target: "/images/create?fromImage=team%2Fapp%3Av1&tag=" + url.QueryEscape(pullDigest),
+			ref: "team/app@" + pullDigest, flavor: upstreamflavor.Docker, probed: true,
+			wantLine: "owner policy: pulled image team/app@" + pullDigest + " " + kept,
+		},
+		{
+			name: "libpod pull", target: "/v5.0.0/libpod/images/pull?reference=" + url.QueryEscape("quay.io/team/app@"+pullDigest),
+			ref: "quay.io/team/app@" + pullDigest, flavor: upstreamflavor.Podman,
+			wantLine: "owner policy: pulled image quay.io/team/app@" + pullDigest + " " + kept,
+		},
+		{
+			name: "reference that existed before the pull", target: "/images/create?fromImage=" + url.QueryEscape("team/app@"+pullDigest),
+			ref: "team/app@" + pullDigest, flavor: upstreamflavor.Docker, probed: true, existed: true,
+			wantLine: "owner policy: pulled image team/app@" + pullDigest + " " + kept,
+		},
+		{
+			name: "failed inspect is reported unverified", target: "/images/create?fromImage=" + url.QueryEscape("team/app@"+pullDigest),
+			ref: "team/app@" + pullDigest, flavor: upstreamflavor.Docker, probed: true, failInspec: true,
+			wantLine: "owner policy could not verify pulled image team/app@" + pullDigest,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			daemon := &pullMockDaemon{
+				written:     map[string]map[string]string{tt.ref: {testOwnerKey: "victim"}},
+				inspectFail: map[string]bool{tt.ref: tt.failInspec},
+			}
+			if tt.existed {
+				daemon.labels = map[string]map[string]string{tt.ref: {testOwnerKey: "victim"}}
+				daemon.ids = map[string]string{tt.ref: newImageID}
+			}
+			rec, logs := servePull(t, daemon, pullRun{target: tt.target, status: http.StatusOK, stream: pullProgress, flavor: tt.flavor, probedDocker: tt.probed})
+			for _, req := range daemon.requests {
+				if strings.HasPrefix(req, http.MethodDelete+" ") {
+					t.Fatalf("requests = %v, want no DELETE for a pull by digest", daemon.requests)
+				}
+			}
+			if len(daemon.untagged) != 0 {
+				t.Fatalf("untagged = %v, want none", daemon.untagged)
+			}
+			tail := strings.TrimPrefix(rec.Body.String(), pullProgress)
+			if strings.Count(tail, "\n") != 1 || !strings.Contains(tail, tt.wantLine) {
+				t.Fatalf("tail = %q, want one error line containing %q", tail, tt.wantLine)
+			}
+			if !strings.Contains(logs, "level=WARN") {
+				t.Fatalf("logs = %q, want a warning", logs)
+			}
+		})
+	}
+}
+
+func TestPullByDigestLeavesOwnAndUnlabelledImages(t *testing.T) {
+	t.Parallel()
+	ref := "team/app@" + pullDigest
+	for _, labels := range []map[string]string{{testOwnerKey: "job-123"}, {"other": "x"}} {
+		daemon := &pullMockDaemon{written: map[string]map[string]string{ref: labels}}
+		rec, _ := servePull(t, daemon, pullRun{target: "/images/create?fromImage=" + url.QueryEscape(ref), status: http.StatusOK, stream: pullProgress, flavor: upstreamflavor.Docker, probedDocker: true})
+		if rec.Body.String() != pullProgress || len(daemon.untagged) != 0 || !slices.Contains(daemon.postInspects, ref) {
+			t.Fatalf("labels %v: body = %q untagged = %v inspects = %v", labels, rec.Body.String(), daemon.untagged, daemon.postInspects)
 		}
 	}
 }
@@ -507,9 +615,11 @@ func TestPullFollowsReportedImageIDsOnPodman(t *testing.T) {
 	report := pullProgress + `{"images":["` + id + `"],"id":"` + id + `"}` + "\n"
 	target := "/v5.0.0/libpod/images/pull?reference=team%2Fapp%3Av2"
 
-	t.Run("foreign image under a name outside the computed refs", func(t *testing.T) {
+	t.Run("pre-existing foreign image under a name outside the computed refs", func(t *testing.T) {
 		t.Parallel()
 		daemon := &pullMockDaemon{
+			labels:     map[string]map[string]string{"quay.io/team/app:v2": {testOwnerKey: "victim"}},
+			ids:        map[string]string{"quay.io/team/app:v2": id},
 			written:    map[string]map[string]string{"quay.io/team/app:v2": {testOwnerKey: "victim"}},
 			writtenIDs: map[string]string{"quay.io/team/app:v2": id},
 		}
@@ -526,9 +636,11 @@ func TestPullFollowsReportedImageIDsOnPodman(t *testing.T) {
 		}
 	})
 
-	t.Run("foreign image also under a computed name", func(t *testing.T) {
+	t.Run("pre-existing foreign image also under a computed name", func(t *testing.T) {
 		t.Parallel()
 		daemon := &pullMockDaemon{
+			labels: map[string]map[string]string{"quay.io/team/app:v2": {testOwnerKey: "victim"}},
+			ids:    map[string]string{"quay.io/team/app:v2": id},
 			written: map[string]map[string]string{
 				"quay.io/team/app:v2":   {testOwnerKey: "victim"},
 				"localhost/team/app:v2": {testOwnerKey: "victim"},
@@ -568,4 +680,129 @@ func TestPullFollowsReportedImageIDsOnPodman(t *testing.T) {
 			t.Fatalf("body = %q, want the unverified line", rec.Body.String())
 		}
 	})
+}
+
+// A name registries.conf resolved a short name to, on an image the pull
+// created, is this pull's and is removed. The same name on an image that
+// existed before the pull is only reported.
+func TestPullRemovesResolvedNamesOnlyFromNewImages(t *testing.T) {
+	t.Parallel()
+	const id = "1234567890ab1234567890ab1234567890ab1234567890ab1234567890ab1234"
+	report := pullProgress + `{"images":["` + id + `"],"id":"` + id + `"}` + "\n"
+	target := "/v5.0.0/libpod/images/pull?reference=team%2Fapp%3Av2"
+	const resolved = "quay.io/team/app:v2"
+	foreign := func() map[string]map[string]string {
+		return map[string]map[string]string{resolved: {testOwnerKey: "victim"}}
+	}
+
+	t.Run("new image is untagged", func(t *testing.T) {
+		t.Parallel()
+		daemon := &pullMockDaemon{written: foreign(), writtenIDs: map[string]string{resolved: id}}
+		rec, _ := servePull(t, daemon, pullRun{target: target, status: http.StatusOK, stream: report, flavor: upstreamflavor.Podman})
+		if len(daemon.untagged) != 1 || daemon.untagged[0] != "/libpod/images/"+resolved || daemon.untagQueries[0] != "" {
+			t.Fatalf("untagged = %v %v, want the resolved name untagged without force", daemon.untagged, daemon.untagQueries)
+		}
+		if tail := strings.TrimPrefix(rec.Body.String(), report); !strings.Contains(tail, "owner policy removed pulled image "+resolved+": it carries another owner's label") {
+			t.Fatalf("tail = %q", tail)
+		}
+	})
+
+	t.Run("pre-existing image is report-only", func(t *testing.T) {
+		t.Parallel()
+		daemon := &pullMockDaemon{labels: foreign(), ids: map[string]string{resolved: "sha256:" + id}, written: foreign(), writtenIDs: map[string]string{resolved: "sha256:" + id}}
+		rec, _ := servePull(t, daemon, pullRun{target: target, status: http.StatusOK, stream: report, flavor: upstreamflavor.Podman})
+		if len(daemon.untagged) != 0 {
+			t.Fatalf("untagged = %v, want a pre-existing image left alone", daemon.untagged)
+		}
+		if tail := strings.TrimPrefix(rec.Body.String(), report); !strings.Contains(tail, "could not remove pulled image "+resolved) {
+			t.Fatalf("tail = %q, want the report-only line", tail)
+		}
+	})
+
+	for _, tt := range []struct {
+		name   string
+		daemon *pullMockDaemon
+	}{
+		{"list over the cap is report-only", &pullMockDaemon{listExtra: maxPrePullImages + 1}},
+		{"list that fails is report-only", &pullMockDaemon{listFail: true}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tt.daemon.written, tt.daemon.writtenIDs = foreign(), map[string]string{resolved: id}
+			rec, _ := servePull(t, tt.daemon, pullRun{target: target, status: http.StatusOK, stream: report, flavor: upstreamflavor.Podman})
+			if len(tt.daemon.untagged) != 0 {
+				t.Fatalf("untagged = %v, want report-only when the pre-pull list is not trusted", tt.daemon.untagged)
+			}
+			if tail := strings.TrimPrefix(rec.Body.String(), report); !strings.Contains(tail, "could not remove pulled image "+resolved) {
+				t.Fatalf("tail = %q", tail)
+			}
+		})
+	}
+
+	t.Run("name on a new image outside the requested reference is report-only", func(t *testing.T) {
+		t.Parallel()
+		other := map[string]map[string]string{"quay.io/other/thing:v9": {testOwnerKey: "victim"}}
+		daemon := &pullMockDaemon{written: other, writtenIDs: map[string]string{"quay.io/other/thing:v9": id}}
+		_, _ = servePull(t, daemon, pullRun{target: target, status: http.StatusOK, stream: report, flavor: upstreamflavor.Podman})
+		if len(daemon.untagged) != 0 {
+			t.Fatalf("untagged = %v, want a name the request did not ask for left alone", daemon.untagged)
+		}
+	})
+}
+
+// Another pull can move a name between the first inspect and the untag. The
+// name is then not this pull's, and is reported instead of untagged.
+func TestPullSkipsANameThatMovedBeforeTheUntag(t *testing.T) {
+	t.Parallel()
+	const id = "1234567890ab1234567890ab1234567890ab1234567890ab1234567890ab1234"
+	const otherID = "fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321"
+	const resolved = "quay.io/team/app:v2"
+	report := pullProgress + `{"images":["` + id + `"],"id":"` + id + `"}` + "\n"
+	daemon := &pullMockDaemon{
+		written:    map[string]map[string]string{resolved: {testOwnerKey: "victim"}},
+		writtenIDs: map[string]string{resolved: id},
+	}
+	daemon.onPostInspect = func(d *pullMockDaemon, key string) {
+		if key == id {
+			d.ids[resolved] = otherID
+			d.onPostInspect = nil
+		}
+	}
+	rec, _ := servePull(t, daemon, pullRun{target: "/v5.0.0/libpod/images/pull?reference=team%2Fapp%3Av2", status: http.StatusOK, stream: report, flavor: upstreamflavor.Podman})
+	if len(daemon.untagged) != 0 {
+		t.Fatalf("untagged = %v, want a moved name left alone", daemon.untagged)
+	}
+	if tail := strings.TrimPrefix(rec.Body.String(), report); !strings.Contains(tail, "owner policy left "+resolved+" in place") || strings.Count(tail, "\n") != 1 {
+		t.Fatalf("tail = %q, want one line saying the name moved", tail)
+	}
+}
+
+func TestNamesRequestedReference(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		dest string
+		got  string
+		want bool
+	}{
+		{"same name", "app:v1", "app:v1", true},
+		{"registry prefix", "app:v1", "quay.io/app:v1", true},
+		{"app vs notapp", "app:v1", "notapp:v1", false},
+		{"team/app vs xteam/app", "team/app:v1", "xteam/app:v1", false},
+		{"team/app under a registry with a port", "team/app:v1", "host:5000/team/app:v1", true},
+		{"other repo on a port registry", "app:v1", "host:5000/other:v1", false},
+		{"tag mismatch", "app:v1", "quay.io/app:v2", false},
+		{"name without a tag", "app:v1", "quay.io/app", false},
+		{"empty repo", ":v1", "quay.io/app:v1", false},
+		{"empty repo and name", ":v1", ":v1", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			refs := &imageDestinationReferences{destinations: []imageDestination{{target: tt.dest}}}
+			if got := namesRequestedReference(refs, tt.got); got != tt.want {
+				t.Fatalf("namesRequestedReference(%q, %q) = %v, want %v", tt.dest, tt.got, got, tt.want)
+			}
+		})
+	}
 }

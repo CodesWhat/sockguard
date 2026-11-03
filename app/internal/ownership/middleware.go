@@ -233,7 +233,7 @@ func middlewareWithClient(client *http.Client, logger *slog.Logger, opts Options
 	// The check after a pull inspects what the pull just wrote, so it takes
 	// the unmemoized inspect.
 	return middlewareWithPullCheck(logger, opts, inspectResource, inspector.inspectExec,
-		&postPullChecks{inspect: inspector.inspectPulledImage, untag: inspector.untagImage, retag: inspector.retagImage})
+		&postPullChecks{inspect: inspector.inspectPulledImage, untag: inspector.untagImage, retag: inspector.retagImage, list: inspector.listImages})
 }
 
 // reuseRequestInspect serves an inspect from the result visibility left on the

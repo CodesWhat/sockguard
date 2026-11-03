@@ -617,7 +617,7 @@ holds it, the caller's own image holds it, or an unlabeled one does and
 | `POST /commit`, `POST /libpod/commit` | `repo` and `tag` | Checked after the container. No `repo` names nothing. |
 | `POST /build`, `POST /libpod/build` | every `t` value | No `t` names nothing. `outputs` that name an image and `manifest` are refused. |
 | `POST /images/create` with `fromSrc`, `POST /libpod/images/import` | `repo` and `tag`, or `reference` | No name is an unnamed image. |
-| `POST /images/create` with `fromImage`, `POST /libpod/images/pull` | `fromImage` and `tag`, or `reference` | A tag or a digest is required. A pull by digest writes no tag and is not checked, with or without a tag beside the digest. |
+| `POST /images/create` with `fromImage`, `POST /libpod/images/pull` | `fromImage` and `tag`, or `reference` | A tag or a digest is required. A pull by digest writes no tag, so it is inspected after the pull under `repo@digest`, with or without a tag beside the digest, and reported, not removed, when its image carries another owner's label. |
 | `POST /images/load`, `POST /libpod/images/load` | the archive's `RepoTags` and OCI name annotations | Read by `request_body.image_load` and handed to ownership. A name by digest (`name@sha256:...`) is checked as written. |
 
 A commit and a build stamp the image they make, so taking a name with one
@@ -649,9 +649,23 @@ plain delete, since Podman's `force` removes the containers too. If the pull rep
 stream gets `owner policy could not verify pulled image <ref>` and the proxy logs
 a warning. Podman's native pull reports the IDs of the images it pulled, and
 Sockguard inspects those too: a foreign-labeled image loses the names this pull
-computed, and any other name on it is named in an error line and left alone. This
-runs in enforce rollout only. Warn and audit leave the pulled image alone, and a
-pull by digest writes no tag to check.
+computed. It also loses the names that match the requested reference (a short
+name `registries.conf` resolved to `quay.io/...`) when the image didn't exist
+before the pull, which a bounded list of the images under that reference, taken
+before the pull, tells. Any other name on it, and every name when that list fails
+or holds more than 256 images, is named in an error line and left alone. Before
+a name found by ID is untagged it is inspected again, and it is skipped, with a
+line in the stream, if it no longer points at the image the pull reported. That
+leaves one race: two tenants pulling the same image at the same moment can see
+the check report a name instead of untagging it. A pull by digest writes no tag,
+so `repo@sha256:...` is inspected after the pull instead. It is reported, never
+removed: a digest reference pins its content, so a client can't make a victim's
+reference resolve to other bytes, and removing by digest could drop an image
+other names still hold. An image with another owner's label gets `owner policy:
+pulled image <ref> carries another owner's label; it was left in place because a
+digest reference pins its content`, and an inspect that fails gets the
+`could not verify` line. This runs in enforce rollout only. Warn and audit leave
+the pulled image alone.
 
 Pulling over an existing name is ordinary Docker behavior and stays allowed
 wherever it takes nothing from another owner. `docker pull nginx:latest`
@@ -670,7 +684,7 @@ docker-py and dockerode send the name as the caller wrote it and default the
 tag to `latest` (docker-py since 4.4.0, dockerode since 3.0), so with those an
 untagged pull comes only from `all_tags=True` or `pullAll`.
 
-A pull by digest writes no tag and is not checked. That covers a pinned
+A pull by digest writes no tag and is not checked before it runs; the result is reported afterward. That covers a pinned
 reference that carries a tag beside the digest, in both shapes a client sends
 it: `fromImage=nginx:1.27@sha256:...`, and `fromImage=nginx:1.27` with the
 digest in `tag`, which is how docker-py and dockerode split it. Both engines
