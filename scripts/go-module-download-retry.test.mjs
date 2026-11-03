@@ -46,6 +46,7 @@ if (process.argv.includes("-json")) {
   const env = {
     ...process.env,
     PATH: `${fixture}:${process.env.PATH}`,
+    GO_LIST_RETRY_DELAY_MS: "0",
     GO_TEST_CALLS: calls,
     GO_TEST_PLAN: plan,
     GO_TEST_MODULE: modulePath,
