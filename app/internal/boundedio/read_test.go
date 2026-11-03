@@ -122,10 +122,10 @@ type zeroThenEOFFile struct {
 
 func (z *zeroThenEOFFile) Read(p []byte) (int, error) {
 	z.reads++
-	switch {
-	case z.reads == 1:
+	switch z.reads {
+	case 1:
 		return copy(p, z.payload), nil
-	case z.reads == 2:
+	case 2:
 		return 0, nil
 	default:
 		return 0, io.EOF
