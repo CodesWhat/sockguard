@@ -134,6 +134,16 @@ jobs:
           - { name: FuzzCertificateURIStrings,        pkg: ./internal/certmatch/ }
           - { name: FuzzNormalizeSubjectPublicKeySHA256Pin, pkg: ./internal/pkipin/ }
           - { name: FuzzCompileKeyless,            pkg: ./internal/sigverify/ }
+          - { name: FuzzRegistryAuthHeader,                  pkg: ./internal/filter/ }
+          - { name: FuzzRegistryConfigHeader,                pkg: ./internal/filter/ }
+          - { name: FuzzLibpodPodCreate,                     pkg: ./internal/filter/ }
+          - { name: FuzzLibpodVolumeCreate,                  pkg: ./internal/filter/ }
+          - { name: FuzzLibpodNetworkCreate,                 pkg: ./internal/filter/ }
+          - { name: FuzzValidateFsutilPath,                  pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzParseGRPCPath,                       pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzReadGRPCFrame,                       pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzValidateFileSyncRequestPacket,       pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzDecode,                              pkg: ./internal/dockerfilters/ }
 
     steps:
       # audit, not block. `block` on this job is what kills 3 to 5 legs a

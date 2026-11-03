@@ -89,8 +89,10 @@ Notes:
   never vtprotobuf's `protoc-gen-go-vtproto`, and adding a dependency on
   vtprotobuf's extension descriptor for an annotation nothing here consumes
   would be a pointless supply-chain addition on a path the #185 sign-off
-  scoped to exactly `golang.org/x/net/http2` (phase 2) and
-  `google.golang.org/protobuf` — nothing else, ever.
+  scoped to `google.golang.org/protobuf` — nothing else, ever. (The sign-off
+  originally also named `golang.org/x/net/http2` for the phase 2 transport;
+  that transport now runs on `net/http` through `internal/h2conn`, so
+  `golang.org/x/net` is only an indirect dependency.)
 - Every vendored `.proto` file's `go_package` option points into this
   module (`github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/...`)
   rather than upstream's own module path — see "Why every file's
