@@ -314,7 +314,10 @@ func (c *reloadCoordinator) reload() {
 		c.logger.Info("config reload enabled allow_host_cgroupns_on_cgroup_v1; probing upstream cgroup version",
 			"path", c.cfgFile,
 		)
-		c.runtime.cgroupV1.refresh(c.rootCtx)
+		if c.runtime.cgroupV1.refresh(c.rootCtx) {
+			// The probe errored; have the run loop retry on its backoff.
+			c.runtime.cgroupV1.kick()
+		}
 	}
 
 	newHandler, newTeardown, newLimiterStateActive := buildServeHandlerChainWithRuntime(serveHandlerBuild{

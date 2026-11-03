@@ -191,6 +191,7 @@ jobs:
           go test -run='^$' \
             -fuzz="^${FUZZER}\$" \
             -fuzztime="${FUZZTIME}" \
+            -fuzzminimizetime=5s \
             -timeout="${TEST_TIMEOUT}" \
             "${PKG}"
 

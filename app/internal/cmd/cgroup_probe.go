@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,21 +27,46 @@ type cgroupV1Tracker struct {
 	logger *slog.Logger
 	res    *upstream.Resolver
 
-	v1     atomic.Bool
-	wanted atomic.Bool
+	// state packs the wanted and v1 bits into one word so a probe result is
+	// published only if the option is still wanted, in a single CAS.
+	state atomic.Uint32
 	// mu serializes refreshes so a slow periodic probe cannot overwrite the
 	// result of a later one.
 	mu     sync.Mutex
 	kickCh chan struct{}
+
+	// probe and the retry bounds are fields so tests can drive them.
+	probe     cgroupEndpointProber
+	retryBase time.Duration
+	retryMax  time.Duration
 }
 
+const (
+	cgroupStateWanted uint32 = 1 << iota
+	cgroupStateV1
+)
+
+const (
+	// cgroupV1RetryBase and cgroupV1RetryMax bound the backoff retry run after
+	// a probe error: 1s, 2s, 4s, 8s, then every 30s until the next tick.
+	cgroupV1RetryBase = time.Second
+	cgroupV1RetryMax  = 30 * time.Second
+)
+
+// cgroupEndpointProber probes one endpoint's cgroup version.
+type cgroupEndpointProber func(ctx context.Context, rt http.RoundTripper, ep upstream.Endpoint) cgroupProbeOutcome
+
 func newCgroupV1Tracker(deps *serveDeps, res *upstream.Resolver, logger *slog.Logger) *cgroupV1Tracker {
-	return &cgroupV1Tracker{deps: deps, res: res, logger: logger, kickCh: make(chan struct{}, 1)}
+	t := &cgroupV1Tracker{deps: deps, res: res, logger: logger, kickCh: make(chan struct{}, 1), retryBase: cgroupV1RetryBase, retryMax: cgroupV1RetryMax}
+	t.probe = func(ctx context.Context, rt http.RoundTripper, ep upstream.Endpoint) cgroupProbeOutcome {
+		return probeEndpointCgroup(ctx, deps, rt, ep, logger)
+	}
+	return t
 }
 
 // isV1 is the per-request read.
 func (t *cgroupV1Tracker) isV1() bool {
-	return t != nil && t.v1.Load()
+	return t != nil && t.state.Load()&cgroupStateV1 != 0
 }
 
 // isV1Func returns the reader for the filter options, or nil for a nil
@@ -57,8 +83,14 @@ func (t *cgroupV1Tracker) seed(wanted, v1 bool) {
 	if t == nil {
 		return
 	}
-	t.wanted.Store(wanted)
-	t.v1.Store(wanted && v1)
+	var st uint32
+	if wanted {
+		st |= cgroupStateWanted
+		if v1 {
+			st |= cgroupStateV1
+		}
+	}
+	t.state.Store(st)
 }
 
 // setWanted records whether any policy sets the option and reports whether it
@@ -68,11 +100,43 @@ func (t *cgroupV1Tracker) setWanted(wanted bool) (enabled bool) {
 	if t == nil {
 		return false
 	}
-	was := t.wanted.Swap(wanted)
-	if !wanted || !was {
-		t.v1.Store(false)
+	for {
+		old := t.state.Load()
+		was := old&cgroupStateWanted != 0
+		var next uint32
+		if wanted {
+			next = cgroupStateWanted
+			if was {
+				next |= old & cgroupStateV1
+			}
+		}
+		if t.state.CompareAndSwap(old, next) {
+			return wanted && !was
+		}
 	}
-	return wanted && !was
+}
+
+func (t *cgroupV1Tracker) isWanted() bool {
+	return t.state.Load()&cgroupStateWanted != 0
+}
+
+// publish stores a probe result only while the option is still wanted, so a
+// result that lands after a reload switched the option off cannot reopen the
+// gate. It returns the previous v1 bit and whether the result was stored.
+func (t *cgroupV1Tracker) publish(v1 bool) (prev bool, ok bool) {
+	for {
+		old := t.state.Load()
+		if old&cgroupStateWanted == 0 {
+			return false, false
+		}
+		next := old &^ cgroupStateV1
+		if v1 {
+			next |= cgroupStateV1
+		}
+		if t.state.CompareAndSwap(old, next) {
+			return old&cgroupStateV1 != 0, true
+		}
+	}
 }
 
 // kick asks the refresh loop for an immediate re-probe without blocking. It is
@@ -89,49 +153,106 @@ func (t *cgroupV1Tracker) kick() {
 
 // refresh re-probes every endpoint's GET /info and stores the result. It does
 // nothing (and sends the daemon nothing) while the option is unset. Any probe
-// failure, or any endpoint that is not v1, closes the gate.
-func (t *cgroupV1Tracker) refresh(ctx context.Context) {
-	if t == nil || !t.wanted.Load() {
-		return
+// failure, or any endpoint that is not v1, closes the gate. It reports whether
+// the gate is closed because a probe errored, which is the only case worth a
+// short retry; a clean "not v1" answer is final until the next tick.
+func (t *cgroupV1Tracker) refresh(ctx context.Context) (retry bool) {
+	if t == nil || !t.isWanted() {
+		return false
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if !t.wanted.Load() {
-		return
+	if !t.isWanted() {
+		return false
 	}
 	endpoints := t.res.Endpoints()
 	v1 := len(endpoints) > 0
+	failed := false
 	for i, ep := range endpoints {
 		rt, err := t.res.EndpointRoundTripper(i)
 		if err != nil {
 			t.logger.Warn("cgroup version re-probe failed; allow_host_cgroupns_on_cgroup_v1 stays closed", "error", err, "endpoint", ep.String())
-			v1 = false
+			v1, failed = false, true
 			break
 		}
-		if !endpointIsCgroupV1(ctx, t.deps, rt, ep, t.logger) {
-			v1 = false
+		outcome := t.probe(ctx, rt, ep)
+		if outcome != cgroupProbeV1 {
+			v1, failed = false, outcome == cgroupProbeFailed
 			break
 		}
 	}
-	// A reload may have switched the option off while the probes ran.
-	v1 = v1 && t.wanted.Load()
-	if prev := t.v1.Swap(v1); prev != v1 {
+	// A reload may have switched the option off while the probes ran; publish
+	// refuses the result in that case.
+	prev, ok := t.publish(v1)
+	if !ok {
+		return false
+	}
+	if prev != v1 {
 		t.logger.Warn("upstream cgroup version result changed", "upstream_cgroup_v1", v1, "was", prev)
 	}
+	return failed && ctx.Err() == nil
 }
 
-// run re-probes every interval and on every kick until ctx ends.
+// nextCgroupRetryDelay returns the next backoff delay (doubling from base,
+// capped at max) and false when that retry would land at or after the next
+// regular tick, which re-probes anyway.
+func nextCgroupRetryDelay(prev, base, max time.Duration, now, nextTick time.Time) (time.Duration, bool) {
+	delay := base
+	if prev > 0 {
+		delay = min(prev*2, max)
+	}
+	if !now.Add(delay).Before(nextTick) {
+		return 0, false
+	}
+	return delay, true
+}
+
+// run re-probes every interval and on every kick until ctx ends. A probe that
+// errors is retried on a short bounded backoff until the next tick.
 func (t *cgroupV1Tracker) run(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	nextTick := time.Now().Add(interval)
+	var (
+		timer  *time.Timer
+		retryC <-chan time.Time
+		delay  time.Duration
+	)
+	stopTimer := func() {
+		if timer != nil {
+			timer.Stop()
+			timer = nil
+		}
+		retryC = nil
+	}
+	defer stopTimer()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			nextTick = time.Now().Add(interval)
+			stopTimer()
+			delay = 0
 		case <-t.kickCh:
+			stopTimer()
+			delay = 0
+		case <-retryC:
+			retryC = nil
+			timer = nil
 		}
-		t.refresh(ctx)
+		if !t.refresh(ctx) {
+			delay = 0
+			continue
+		}
+		d, ok := nextCgroupRetryDelay(delay, t.retryBase, t.retryMax, time.Now(), nextTick)
+		if !ok {
+			delay = 0
+			continue
+		}
+		delay = d
+		timer = time.NewTimer(d)
+		retryC = timer.C
 	}
 }
 

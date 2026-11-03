@@ -1,11 +1,14 @@
 package cmd
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/codeswhat/sockguard/v3/app/internal/config"
 	"github.com/codeswhat/sockguard/v3/app/internal/filter"
@@ -142,5 +145,47 @@ func TestWithFilterCarriesUpstreamCgroupV1(t *testing.T) {
 		if rec.Code != tt.want {
 			t.Fatalf("upstream v1=%v: status = %d, want %d (%s)", tt.v1, rec.Code, tt.want, rec.Body.String())
 		}
+	}
+}
+
+// A startup probe that errors (as opposed to answering "not v1") kicks the
+// tracker, so the loop retries on its backoff instead of waiting out the
+// 5-minute tick.
+func TestStartupCgroupProbeFailureStartsRetry(t *testing.T) {
+	t.Parallel()
+	addr, _ := cgroupDaemon(t, http.StatusOK, `{"CgroupVersion":"1"}`)
+	var calls atomic.Int64
+	deps := newServeDeps()
+	deps.probeCgroupVersion = func(context.Context, *http.Client) (string, error) {
+		if calls.Add(1) == 1 {
+			return "", errors.New("transient /info failure")
+		}
+		return "1", nil
+	}
+	logger, _ := flavorTestLogger()
+	res := multiEndpointResolver(t, addr)
+	tracker := newCgroupV1Tracker(deps, res, logger)
+	tracker.retryBase = 5 * time.Millisecond
+	tracker.retryMax = 20 * time.Millisecond
+	rt := &serveRuntime{resolver: res, cgroupV1: tracker}
+
+	if err := resolveUpstreamFlavorForRuntime(t.Context(), deps, rt, cgroupTestConfig(true), logger); err != nil {
+		t.Fatalf("resolveUpstreamFlavorForRuntime() error = %v", err)
+	}
+	if tracker.isV1() {
+		t.Fatal("gate must be closed after a failed startup probe")
+	}
+	go tracker.run(t.Context(), time.Hour)
+	waitForCgroup(t, "startup retry to open the gate", tracker.isV1)
+}
+
+// A clean "not v1" startup answer does not kick a retry.
+func TestStartupCgroupNotV1DoesNotRetry(t *testing.T) {
+	t.Parallel()
+	addr, _ := cgroupDaemon(t, http.StatusOK, `{"CgroupVersion":"2"}`)
+	logger, _ := flavorTestLogger()
+	caps, err := resolveUpstreamCapabilities(t.Context(), newServeDeps(), cgroupTestConfig(true), multiEndpointResolver(t, addr), logger)
+	if err != nil || caps.CgroupV1 || caps.CgroupV1ProbeFailed {
+		t.Fatalf("caps = %+v, err = %v, want closed gate with no probe failure", caps, err)
 	}
 }

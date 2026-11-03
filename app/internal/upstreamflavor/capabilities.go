@@ -20,6 +20,10 @@ type Capabilities struct {
 	// CgroupV1 is true only when GET /info reported CgroupVersion "1" on
 	// every upstream endpoint. Unknown, unprobed and mixed all stay false.
 	CgroupV1 bool
+	// CgroupV1ProbeFailed is set when a cgroup version probe errored (as
+	// opposed to answering that the daemon is not v1), so the caller can start
+	// the short retry instead of waiting for the next regular tick.
+	CgroupV1ProbeFailed bool
 	// ProbedDocker is set only when GET /version positively identified
 	// dockerd without error. Flavor can say Docker with no probe behind it
 	// (an explicit upstream.flavor: docker, or a zero value), and that is not
