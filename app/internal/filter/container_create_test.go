@@ -349,6 +349,39 @@ func TestContainerCreatePolicyInspectCgroupNamespaceModeGate(t *testing.T) {
 	}
 }
 
+func TestContainerCreatePolicyInspectCgroupNamespaceHostOnCgroupV1(t *testing.T) {
+	const denyReason = "container create denied: host cgroup namespace mode is not allowed"
+	const pathReason = "container create denied: cgroup namespace joined by path is not allowed"
+	const host = `{"HostConfig":{"CgroupnsMode":"host"}}`
+
+	tests := []struct {
+		name       string
+		opts       ContainerCreateOptions
+		body       string
+		wantReason string
+	}{
+		{name: "opt-in on, upstream v1", opts: ContainerCreateOptions{AllowHostCgroupNSOnCgroupV1: true, UpstreamCgroupV1: true}, body: host},
+		{name: "opt-in on, upstream v2 or unknown", opts: ContainerCreateOptions{AllowHostCgroupNSOnCgroupV1: true}, body: host, wantReason: denyReason},
+		{name: "opt-in off, upstream v1", opts: ContainerCreateOptions{UpstreamCgroupV1: true}, body: host, wantReason: denyReason},
+		{name: "opt-in off, upstream unknown", body: host, wantReason: denyReason},
+		{name: "opt-in on, upstream v1, ns path still denied", opts: ContainerCreateOptions{AllowHostCgroupNSOnCgroupV1: true, UpstreamCgroupV1: true}, body: `{"HostConfig":{"CgroupnsMode":"ns:/proc/1/ns/cgroup"}}`, wantReason: pathReason},
+		{name: "unconditional allow still works on unknown upstream", opts: ContainerCreateOptions{AllowHostCgroupNS: true}, body: host},
+		{name: "opt-in does not open other host namespaces", opts: ContainerCreateOptions{AllowHostCgroupNSOnCgroupV1: true, UpstreamCgroupV1: true}, body: `{"HostConfig":{"PidMode":"host"}}`, wantReason: "container create denied: host PID mode is not allowed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(tt.body))
+			reason, err := newContainerCreatePolicy(tt.opts).inspect(nil, req, "/containers/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
 func TestContainerCreatePolicyInspectDeniesNetworkModeHost(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(`{"HostConfig":{"NetworkMode":"host"}}`))
 	reason, err := newContainerCreatePolicy(ContainerCreateOptions{}).inspect(nil, req, "/containers/create")

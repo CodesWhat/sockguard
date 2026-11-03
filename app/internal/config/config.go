@@ -644,6 +644,12 @@ type ContainerCreateRequestBodyConfig struct {
 	DenyUnconfinedAppArmor  bool     `mapstructure:"deny_unconfined_apparmor"`
 	AllowHostUserNS         bool     `mapstructure:"allow_host_userns"`
 	AllowHostCgroupNS       bool     `mapstructure:"allow_host_cgroupns"`
+	// AllowHostCgroupNSOnCgroupV1 allows HostConfig.CgroupnsMode=host (not
+	// ns:<path>) only when the upstream daemon reports CgroupVersion "1" in
+	// GET /info, read once at startup from every endpoint. On cgroup v1 "host"
+	// is the daemon default that docker inspect reports and recreate tools
+	// replay. Unknown or mixed versions deny. Default false.
+	AllowHostCgroupNSOnCgroupV1 bool `mapstructure:"allow_host_cgroupns_on_cgroup_v1"`
 	// RestrictNamespaceSharing gates HostConfig.NetworkMode/PidMode/IpcMode/
 	// UTSMode/UsernsMode/CgroupnsMode values of the form "container:<ref>"
 	// (join another container's namespace) against

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`request_body.container_create.allow_host_cgroupns_on_cgroup_v1` (default `false`).** On cgroup v1 daemons such as Synology, `docker inspect` reports `HostConfig.CgroupnsMode: "host"` and recreate tools (Watchtower, Drydock, Portwing) replay it, so create was denied unless `allow_host_cgroupns: true`, which also opens host cgroup namespaces on cgroup v2 hosts where that is a real widening. The new option allows `"host"` only when `GET /info` reports `CgroupVersion: "1"`. Sockguard reads it once at startup from every upstream endpoint (and only when the option is set), so there is no per-request `/info` call; a failover set must be v1 end to end, and a v2, unknown or unreadable result keeps the denial. `ns:<path>` stays denied. Env var `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_HOST_CGROUPNS_ON_CGROUP_V1`. The Watchtower, Drydock and Portwing presets and example copies now carry it (commented) in place of `allow_host_cgroupns: true`.
+
+### Changed
+
+- **The Diun preset turns `response.redact_network_topology` back on.** Topology redaction now writes type-valid empty addresses and leaves `NetworkMode` and network IDs alone, so Diun's container list decodes cleanly with it enabled. `app/configs/diun.yaml`, `examples/compose/diun/sockguard.yaml`, its README and the presets docs drop the `false` override.
+
 ## [3.0.0-rc.6] - 2026-11-03
 
 This candidate carries v2.4.4 (the client compatibility sweep and libpod create hardening). It narrows `response.redact_network_topology` to addresses, so opaque IDs pass through and a mount `Source` is kept only for named mount types, with `MaskedPaths` and `ReadonlyPaths` untouched. It adds libpod gates for `unified`, `env_host` and `pod`, reports unknown config keys, and adds compose examples for Homepage, Homarr, Diun and Autoheal. The Helm chart will publish as a signed OCI artifact from v3.0.0, and the hand-rolled star chart is removed. These are candidate-only behavior changes, so the 14-day bake window restarts: GA is no earlier than 2026-11-17. Fresh exact-source soak, TLS/security and published-image conformance are required before GA.

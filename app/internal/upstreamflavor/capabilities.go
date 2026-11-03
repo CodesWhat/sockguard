@@ -17,6 +17,9 @@ import (
 type Capabilities struct {
 	Flavor                         Flavor
 	PodmanConjunctiveVolumeFilters bool
+	// CgroupV1 is true only when GET /info reported CgroupVersion "1" on
+	// every upstream endpoint. Unknown, unprobed and mixed all stay false.
+	CgroupV1 bool
 }
 
 // Probe reads identity from /version and the Libpod product in Server headers.

@@ -389,8 +389,11 @@ in the preset; uncomment it if you use those thresholds.
 
 On cgroup v1 hosts (Synology, for example), a recreate replays `HostConfig.CgroupnsMode: "host"`, which
 container create denies by default. The Watchtower, Drydock and Portwing presets carry a commented
-`request_body.container_create.allow_host_cgroupns: true` line. Uncomment it on those hosts only, since it
-widens create to the host cgroup namespace.
+`request_body.container_create.allow_host_cgroupns_on_cgroup_v1: true` line. Uncomment it on those hosts.
+Sockguard reads `CgroupVersion` from the daemon's `GET /info` once at startup, from every upstream
+endpoint, and allows `CgroupnsMode: "host"` only when all of them report `"1"`. On a cgroup v2 host, or
+when `/info` can't be read, create still denies it. `ns:<path>` stays denied either way. Use the
+unconditional `allow_host_cgroupns: true` only if you want host cgroup namespaces on a cgroup v2 daemon.
 
 **Use for:** Watchtower v1.21.2 with lifecycle hooks and network-aware updates.
 
@@ -490,10 +493,12 @@ pattern narrow: `GET /images/get`, `GET /images/{name}/get` and
 the unused image-list call out of the surface. That is why this preset does
 **not** set `insecure_allow_read_exfiltration: true`.
 
-The preset sets `response.redact_network_topology: false`. The default
-redaction rewrites `NetworkSettings.Networks[*].IPAddress`, `Gateway`,
-`GlobalIPv6Address`, `IPv6Gateway` and `MacAddress` to type-valid empty values.
-Network IDs and `NetworkMode` are no longer redacted.
+The preset leaves `response.redact_network_topology` at its default (on).
+Redaction rewrites `NetworkSettings.Networks[*].IPAddress`, `Gateway`,
+`GlobalIPv6Address`, `IPv6Gateway` and `MacAddress` to type-valid empty values,
+and Network IDs and `NetworkMode` are not redacted, so Diun decodes the
+container list without errors. Diun doesn't read container addresses. Set
+`response.redact_network_topology: false` if you want them.
 
 ## Autoheal (`autoheal.yaml`)
 
