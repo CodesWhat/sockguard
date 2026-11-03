@@ -118,6 +118,16 @@ type libpodContainerCreateRequest struct {
 	DeviceCgroupRule []libpodDeviceCgroupRule `json:"device_cgroup_rule"`
 	GPUs             []string                 `json:"gpus"`
 	Unmask           []string                 `json:"unmask"`
+
+	// Unified is SpecGenerator's "unified" map: raw cgroup v2 controller
+	// knobs Podman writes into the container's cgroup. See
+	// denyUnifiedCgroupReason in libpod_container_create_residual.go.
+	Unified map[string]string `json:"unified"`
+
+	// Pod is the pod this container joins. It shares the pod's infra
+	// namespaces, so it follows restrictNamespaceSharing. See
+	// denyPodJoinReason.
+	Pod string `json:"pod"`
 }
 
 // libpodDeviceCgroupRule is one entry of "device_cgroup_rule", the OCI

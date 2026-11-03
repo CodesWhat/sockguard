@@ -514,9 +514,6 @@
     .top .wrap {
       gap: 8px;
     }
-    .top .modetog {
-      margin-left: auto;
-    }
     .fgrid {
       grid-template-columns: 1fr 1fr;
     }
@@ -560,7 +557,7 @@
     letter-spacing: var(--ui-ls-sm, 0.06em);
     text-transform: var(--ui-tt, uppercase);
     cursor: pointer;
-    min-height: 34px;
+    min-height: 44px;
   }
   .modetog:hover {
     background: var(--dd-bg-elevated);

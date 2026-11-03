@@ -5,7 +5,7 @@
 # its ruleset answers a direct push with "Changes must be made through a pull
 # request", which is how run 34041041301 died in the mutation badge job's
 # "Commit badge JSON" step. `dev/*` takes direct pushes — Renovate, the
-# `-s ours` reconcile merges and starchart.yml all push there.
+# `-s ours` reconcile merges all push there.
 #
 # renovate.json's baseBranchPatterns is the only place the active development
 # branch is written down, and release-cut.yml's "Assert Renovate targets
