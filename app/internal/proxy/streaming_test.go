@@ -25,6 +25,13 @@ func TestIsStreamingRequest(t *testing.T) {
 		{"stats default streams", http.MethodGet, "/containers/abc/stats", true},
 		{"stats stream true", http.MethodGet, "/containers/abc/stats?stream=1", true},
 		{"stats one-shot", http.MethodGet, "/containers/abc/stats?stream=0", false},
+		{"service logs follow", http.MethodGet, "/services/abc/logs?follow=1", true},
+		{"service logs no follow", http.MethodGet, "/services/abc/logs", false},
+		{"task logs follow", http.MethodGet, "/tasks/abc/logs?follow=true", true},
+		{"libpod container top stream", http.MethodGet, "/libpod/containers/abc/top?stream=true", true},
+		{"libpod pod top stream", http.MethodGet, "/libpod/pods/abc/top?stream=true", true},
+		{"libpod top one-shot", http.MethodGet, "/libpod/containers/abc/top", false},
+		{"docker top stream ignored", http.MethodGet, "/containers/abc/top?stream=true", false},
 		{"wait", http.MethodPost, "/containers/abc/wait", true},
 		{"libpod wait", http.MethodPost, "/libpod/containers/abc/wait", true},
 		{"attach", http.MethodPost, "/containers/abc/attach", true},
@@ -58,5 +65,48 @@ func TestIsStreamingRequest(t *testing.T) {
 	}
 	if IsStreamingRequest(httptest.NewRecorder(), nil) {
 		t.Fatal("nil request must not be a stream")
+	}
+}
+
+func TestIsStreamingRequestForFlavorPodman(t *testing.T) {
+	t.Parallel()
+	for target, want := range map[string]bool{
+		"/containers/abc/top?stream=true":  true,
+		"/containers/abc/top?stream=false": false,
+		"/containers/abc/top":              false,
+	} {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		if got := IsStreamingRequestForFlavor(httptest.NewRecorder(), req, true); got != want {
+			t.Errorf("IsStreamingRequestForFlavor(podman, %s) = %v, want %v", target, got, want)
+		}
+	}
+}
+
+// Every genuine open-ended stream the deadline classifier exempts must also be
+// a stream for the concurrency caps. Finite heavy transfers are excluded on
+// purpose (see IsStreamingRequest).
+func TestIsStreamingRequestParityWithLongLived(t *testing.T) {
+	t.Parallel()
+	for _, podman := range []bool{false, true} {
+		for _, target := range []string{
+			"/events",
+			"/libpod/events",
+			"/containers/abc/logs?follow=1",
+			"/services/abc/logs?follow=1",
+			"/tasks/abc/logs?follow=1",
+			"/containers/abc/stats",
+			"/containers/abc/top?stream=true",
+			"/libpod/containers/abc/top?stream=true",
+			"/libpod/pods/abc/top?stream=true",
+			"/containers/abc/attach/ws",
+		} {
+			req := httptest.NewRequest(http.MethodGet, target, nil)
+			if !longLivedClassification(httptest.NewRecorder(), req, podman) {
+				continue
+			}
+			if !IsStreamingRequestForFlavor(httptest.NewRecorder(), req, podman) {
+				t.Errorf("podman=%v %s is long-lived but not a stream", podman, target)
+			}
+		}
 	}
 }
