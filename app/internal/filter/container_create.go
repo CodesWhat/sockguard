@@ -504,7 +504,7 @@ func verifyImageTrust(ctx context.Context, logger *slog.Logger, f imageTrustFiel
 	}
 	// Signature discovery dials the registry named in the reference, so scope
 	// it before any request leaves the proxy.
-	if reason := f.registry.denyReasonForReference(imageRef, subject); reason != "" {
+	if reason := f.registry.denyReasonForTrustReference(imageRef, subject); reason != "" {
 		return reason, ""
 	}
 	if f.timeout > 0 {

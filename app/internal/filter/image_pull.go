@@ -9,6 +9,7 @@ import (
 
 	"github.com/codeswhat/sockguard/v3/app/internal/logging"
 	"github.com/codeswhat/sockguard/v3/app/internal/queryparam"
+	"github.com/google/go-containerregistry/pkg/name"
 )
 
 // ImagePullOptions configures query inspection for POST /images/create.
@@ -325,6 +326,34 @@ func (p imagePullPolicy) denyReasonForReference(fromImage, subject string) strin
 	}
 
 	return fmt.Sprintf("%s denied: registry %q is not allowlisted", subject, ref.registry)
+}
+
+// denyReasonForTrustReference scopes image-trust signature discovery. Unlike
+// denyReasonForReference it derives the registry with name.ParseReference, the
+// parser the signature fetcher dials from, and fails closed: a reference that
+// parser rejects is denied rather than waved through, so a shape the loose
+// splitter above cannot read (empty path segments) cannot skip the scope.
+func (p imagePullPolicy) denyReasonForTrustReference(imageRef, subject string) string {
+	ref, err := name.ParseReference(strings.TrimSpace(imageRef))
+	if err != nil {
+		return fmt.Sprintf("%s denied: image reference %q is not a valid image reference for image trust verification", subject, imageRef)
+	}
+	registry := strings.ToLower(ref.Context().RegistryStr())
+	if registry == "index.docker.io" {
+		registry = "docker.io"
+	}
+	if p.allowAllRegistries {
+		return ""
+	}
+	if p.allowOfficial && registry == "docker.io" {
+		if repo, ok := strings.CutPrefix(ref.Context().RepositoryStr(), "library/"); ok && repo != "" && !strings.Contains(repo, "/") {
+			return ""
+		}
+	}
+	if slices.Contains(p.allowedRegistries, registry) {
+		return ""
+	}
+	return fmt.Sprintf("%s denied: registry %q is not allowlisted", subject, registry)
 }
 
 type parsedImageReference struct {

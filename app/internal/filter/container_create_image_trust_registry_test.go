@@ -43,6 +43,9 @@ func TestVerifyImageTrustScopesRegistryBeforeFetching(t *testing.T) {
 		{"listed host fetched", newImagePullPolicy(ImagePullOptions{AllowedRegistries: []string{"ghcr.io"}}), "ghcr.io/org/app:1.0", "", 1},
 		{"allow all fetched", allowAllRegistryPolicy(), "10.0.0.5:8080/admin/internal:latest", "", 1},
 		{"zero policy fails closed", imagePullPolicy{}, "ghcr.io/org/app:1.0", `registry "ghcr.io" is not allowlisted`, 0},
+		{"empty segment after port", newImagePullPolicy(ImagePullOptions{AllowedRegistries: []string{"ghcr.io"}}), "10.0.0.5:8080//x", "", -1},
+		{"empty middle segment", newImagePullPolicy(ImagePullOptions{AllowedRegistries: []string{"ghcr.io"}}), "host:5000/x//y", "", -1},
+		{"trailing slash", newImagePullPolicy(ImagePullOptions{AllowedRegistries: []string{"ghcr.io"}}), "host/x/", "", -1},
 		{"official allowed", newImagePullPolicy(ImagePullOptions{AllowOfficial: true}), "nginx:1", "", 1},
 	}
 	for _, tt := range tests {
@@ -56,6 +59,12 @@ func TestVerifyImageTrustScopesRegistryBeforeFetching(t *testing.T) {
 				registry: tt.registry,
 			}
 			reason, _ := verifyImageTrust(context.Background(), nil, fields, tt.image, "container create")
+			if tt.calls == -1 {
+				if reason == "" || fetcher.calls.Load() != 0 {
+					t.Fatalf("reason = %q fetch calls = %d, want denial before any fetch", reason, fetcher.calls.Load())
+				}
+				return
+			}
 			if tt.want == "" && reason != "" {
 				t.Fatalf("reason = %q, want allow", reason)
 			}
