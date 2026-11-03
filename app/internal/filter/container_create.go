@@ -2187,7 +2187,6 @@ func validMountSubpath(subpath string) bool {
 // allowTmpfsPrivilegedOptions is set.
 func (p containerCreatePolicy) denyTmpfsOptionsReason(mounts []containerCreateMount) string {
 	for _, mount := range mounts {
-		var tokens []string
 		if mount.TmpfsOptions != nil {
 			switch verdict, option := checkStructuredTmpfsOptions(mount.TmpfsOptions.Options); verdict {
 			case tmpfsStructuredMalformed:
@@ -2196,9 +2195,6 @@ func (p containerCreatePolicy) denyTmpfsOptionsReason(mounts []containerCreateMo
 				if !p.allowTmpfsPrivilegedOptions {
 					return fmt.Sprintf("container create denied: tmpfs mount option %q is not allowed", option)
 				}
-			}
-			for _, option := range mount.TmpfsOptions.Options {
-				tokens = append(tokens, strings.Join(option, "="))
 			}
 		}
 		// Podman's compat handler forwards only tmpfs-size and tmpfs-mode of a
