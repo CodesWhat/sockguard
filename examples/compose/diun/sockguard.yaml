@@ -47,14 +47,13 @@ health:
   enabled: true
   path: /health
 
-# Network-topology redaction rewrites NetworkSettings.Networks[*].IPAddress,
-# Gateway, GlobalIPv6Address, IPv6Gateway and MacAddress (plus NetworkMode and
-# network IDs) to the literal "<redacted>". Typed Go Docker clients such as
-# Diun's can't decode that, so its ContainerList fails with
-# "ParseAddr(\"<redacted>\"): unable to parse IP". Turning redaction off also
-# exposes NetworkMode and network IDs to Diun. A stable fix that writes
-# type-valid empty values instead is in progress; this setting goes away then.
-# Mount paths and container env stay redacted, Diun reads neither.
+# This preset keeps redact_network_topology: false. Since v3.0, topology
+# redaction writes type-valid empty values (IPAddress, Gateway,
+# GlobalIPv6Address, IPv6Gateway, MacAddress) instead of "<redacted>", and it no
+# longer touches NetworkMode or network IDs, so it doesn't break Diun's
+# ContainerList decoding. Operators can turn it back on; the cost is that
+# container addresses come back empty. Mount paths and container env stay
+# redacted, Diun reads neither.
 response:
   redact_network_topology: false
 

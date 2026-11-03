@@ -46,7 +46,7 @@ health:
 
 # Drydock's update flow inspects the running container, then submits the
 # inspect payload back to dockerd via POST /containers/create. If sockguard
-# redacts HostConfig.Binds / Config.Env / NetworkSettings to "<redacted>" in
+# redacts HostConfig.Binds / Config.Env to "<redacted>" in
 # the inspect response, drydock faithfully forwards that placeholder string
 # into the create body and dockerd rejects it (400 "includes invalid
 # characters for a local volume name"). Disable all three response

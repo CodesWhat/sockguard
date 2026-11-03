@@ -13,7 +13,7 @@
 | Writes | None — every non-GET/HEAD is denied |
 | Allowed calls | `/_ping`, `/version`, `GET /containers/json`, image inspect |
 | Container inspect, image list, logs, archive | Denied |
-| Network topology redaction | Off — redaction writes `<redacted>` into typed network fields Diun can't decode; this also exposes `NetworkMode` and network IDs to Diun. A stable fix writing type-valid empty values is in progress |
+| Network topology redaction | Off in this preset. Since v3.0 turning it on no longer breaks Diun's decoding (addresses read as type-valid empty values; `NetworkMode` and network IDs are not redacted), so you can enable it if you don't need container addresses |
 | Mount path and container env redaction | On (default) |
 
 ## Usage
