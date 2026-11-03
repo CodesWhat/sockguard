@@ -2,12 +2,14 @@ package boundedio
 
 import (
 	"errors"
+	"io"
 	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestReadFileEnforcesLimit(t *testing.T) {
@@ -81,7 +83,7 @@ func TestReadFileKeepsTheFirstErrorWhenCloseAlsoFails(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	openReadOnly = func(p string) (*os.File, error) {
+	openReadOnly = func(p string) (readableFile, error) {
 		f, err := original(p)
 		if err != nil {
 			return nil, err
@@ -106,5 +108,59 @@ func TestReadFileKeepsTheFirstErrorWhenCloseAlsoFails(t *testing.T) {
 	if pathErr.Op != "stat" {
 		t.Fatalf("ReadFile() reported the %q failure (%v); want the stat failure that stopped the read, not the close failure that followed it",
 			pathErr.Op, err)
+	}
+}
+
+// zeroThenEOFFile serves its payload, then reports (0, nil) once, then EOF.
+// io.Reader permits a zero-byte read with no error; the lookahead must treat
+// it as "no data yet", not as proof the file is oversized.
+type zeroThenEOFFile struct {
+	payload []byte
+	size    int64
+	reads   int
+}
+
+func (z *zeroThenEOFFile) Read(p []byte) (int, error) {
+	z.reads++
+	switch {
+	case z.reads == 1:
+		return copy(p, z.payload), nil
+	case z.reads == 2:
+		return 0, nil
+	default:
+		return 0, io.EOF
+	}
+}
+
+func (z *zeroThenEOFFile) Close() error { return nil }
+
+func (z *zeroThenEOFFile) Stat() (fs.FileInfo, error) {
+	return fakeRegularInfo{size: z.size}, nil
+}
+
+type fakeRegularInfo struct{ size int64 }
+
+func (fakeRegularInfo) Name() string       { return "fake" }
+func (i fakeRegularInfo) Size() int64      { return i.size }
+func (fakeRegularInfo) Mode() fs.FileMode  { return 0o600 }
+func (fakeRegularInfo) ModTime() time.Time { return time.Time{} }
+func (fakeRegularInfo) IsDir() bool        { return false }
+func (fakeRegularInfo) Sys() any           { return nil }
+
+func TestReadFileTreatsAZeroByteLookaheadReadAsNoData(t *testing.T) {
+	original := openReadOnly
+	t.Cleanup(func() { openReadOnly = original })
+
+	payload := []byte("12345")
+	openReadOnly = func(string) (readableFile, error) {
+		return &zeroThenEOFFile{payload: payload, size: int64(len(payload))}, nil
+	}
+
+	data, err := ReadFile("ignored", 16)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v, want the payload", err)
+	}
+	if string(data) != string(payload) {
+		t.Fatalf("ReadFile() = %q, want %q", data, payload)
 	}
 }
