@@ -79,3 +79,43 @@ func TestLibpodPodCreateOptionsWithContainerCarriesTheContainerBlock(t *testing.
 		t.Fatalf("options = %+v, want both blocks carried", opts)
 	}
 }
+
+func TestLibpodPodCreateInheritedVolumeFieldsUseTheContainerGates(t *testing.T) {
+	tests := []struct {
+		name         string
+		container    LibpodContainerCreateOptions
+		body         string
+		wantContains string
+	}{
+		{name: "overlay volume source off the allowlist", body: `{"overlay_volumes":[{"source":"/etc","destination":"/o"}]}`, wantContains: `libpod pod create denied: overlay volume source "/etc" is not allowlisted`},
+		{name: "overlay volume source on the allowlist", container: LibpodContainerCreateOptions{AllowedBindMounts: []string{"/srv"}}, body: `{"overlay_volumes":[{"source":"/srv/a","destination":"/o"}]}`},
+		{name: "overlay volume upperdir off the allowlist", container: LibpodContainerCreateOptions{AllowedBindMounts: []string{"/srv"}}, body: `{"overlay_volumes":[{"source":"/srv/a","destination":"/o","options":["upperdir=/etc"]}]}`, wantContains: "libpod pod create denied"},
+		{name: "named volume overlay upperdir off the allowlist", body: `{"volumes":[{"Name":"v","Dest":"/v","Options":["O","upperdir=/etc","workdir=/etc"]}]}`, wantContains: "libpod pod create denied"},
+		{name: "named volume without host options", body: `{"volumes":[{"Name":"v","Dest":"/v"}]}`},
+		{name: "volumes_from refused", body: `{"volumes_from":["other"]}`, wantContains: "libpod pod create denied: VolumesFrom is not allowed"},
+		{name: "cgroup_parent refused", body: `{"cgroup_parent":"/system.slice"}`, wantContains: "libpod pod create denied: custom cgroup parent is not allowed"},
+		{name: "device cgroup rule in resource_limits refused", body: `{"resource_limits":{"devices":[{"allow":true,"type":"a","access":"rwm"}]}}`, wantContains: "libpod resource_limits.devices"},
+		{name: "memory limit required", container: LibpodContainerCreateOptions{RequireMemoryLimit: true}, body: `{"name":"p"}`, wantContains: "libpod pod create denied: a memory limit is required"},
+		{name: "memory limit set", container: LibpodContainerCreateOptions{RequireMemoryLimit: true}, body: `{"resource_limits":{"memory":{"limit":1048576}}}`},
+		{name: "pids limit required", container: LibpodContainerCreateOptions{RequirePidsLimit: true}, body: `{"resource_limits":{}}`, wantContains: "libpod pod create denied: a PIDs limit is required"},
+		{name: "image volume refused with allowed_images", container: LibpodContainerCreateOptions{AllowedImages: []string{"docker.io/library/alpine:3"}}, body: `{"image_volumes":[{"source":"x","destination":"/i"}]}`, wantContains: "libpod pod create denied: image volumes are not supported with allowed_images"},
+		{name: "image mount refused with allowed_images", container: LibpodContainerCreateOptions{AllowedImages: []string{"docker.io/library/alpine:3"}}, body: `{"mounts":[{"type":"image","source":"x","destination":"/i"}]}`, wantContains: "libpod pod create denied: mount type \"image\" is not supported"},
+		{name: "image volume passes without allowed_images", body: `{"image_volumes":[{"source":"x","destination":"/i"}]}`},
+		{name: "systempaths=unconfined denied", container: LibpodContainerCreateOptions{DenyUnconfinedSystemPaths: true}, body: `{"security_opt":["systempaths=unconfined"]}`, wantContains: "systempaths=unconfined (unmask) is not allowed"},
+		{name: "systempaths colon spelling denied", container: LibpodContainerCreateOptions{DenyUnconfinedSystemPaths: true}, body: `{"security_opt":["systempaths:Unconfined"]}`, wantContains: "systempaths=unconfined"},
+		{name: "systempaths=unconfined without the gate", body: `{"security_opt":["systempaths=unconfined"]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := newLibpodPodCreatePolicy(LibpodPodCreateOptions{Container: tt.container})
+			req := httptest.NewRequest(http.MethodPost, "/libpod/pods/create", strings.NewReader(tt.body))
+			reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if tt.wantContains == "" && reason != "" || !strings.Contains(reason, tt.wantContains) {
+				t.Fatalf("inspect() reason = %q, want it to contain %q", reason, tt.wantContains)
+			}
+		})
+	}
+}

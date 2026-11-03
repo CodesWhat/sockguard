@@ -98,7 +98,8 @@ func (p libpodContainerCreatePolicy) denyStorageOptsReason(storageOpts map[strin
 // run.oci.* (keep_original_groups, handler, systemd.force_cgroup_v1, and the
 // like). Any other key is plain metadata and passes.
 //
-// io.podman.annotations.* is deliberately not gated. Podman writes those keys
+// Most of io.podman.annotations.* is deliberately not gated (podmanActedAnnotations
+// holds the exceptions). Podman writes those keys
 // itself as descriptive markers of options the create already carries
 // (userns, pids-limit, seccomp, apparmor, label, init, autoremove, ...) and
 // reads them back for inspect, and podman-remote sends them on ordinary
@@ -108,6 +109,18 @@ func (p libpodContainerCreatePolicy) denyStorageOptsReason(storageOpts map[strin
 // with comes from the fields those markers describe, which have their own
 // gates.
 const runtimeAnnotationPrefix = "run.oci."
+
+// podmanActedAnnotations are the io.podman.annotations.* keys Podman acts on
+// instead of only reading back. cid-file names a host path Podman removes
+// with os.Remove when the container is removed, and autoremove and
+// autoremove-image make Podman remove the container, and its image, when it
+// exits. They are refused with the run.oci. keys; the rest of
+// io.podman.annotations.* passes.
+var podmanActedAnnotations = [...]string{
+	"io.podman.annotations.cid-file",
+	"io.podman.annotations.autoremove",
+	"io.podman.annotations.autoremove-image",
+}
 
 // denyRuntimeAnnotationsReason refuses an annotation key under
 // runtimeAnnotationPrefix unless allowRuntimeAnnotations is set. The
@@ -124,7 +137,8 @@ func (p libpodContainerCreatePolicy) denyRuntimeAnnotationsReason(annotations ma
 	}
 	slices.Sort(keys)
 	for _, key := range keys {
-		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(key)), runtimeAnnotationPrefix) {
+		folded := strings.ToLower(strings.TrimSpace(key))
+		if strings.HasPrefix(folded, runtimeAnnotationPrefix) || slices.Contains(podmanActedAnnotations[:], folded) {
 			return fmt.Sprintf("libpod container create denied: runtime annotation %q is not allowed (set allow_runtime_annotations: true)", key)
 		}
 	}

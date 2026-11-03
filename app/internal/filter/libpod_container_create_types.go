@@ -3,6 +3,7 @@ package filter
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -203,15 +204,42 @@ func (n *libpodNamespace) UnmarshalJSON(data []byte) error {
 	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
 		return nil
 	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keys); err != nil {
+		return fmt.Errorf("namespace object: %w", err)
+	}
+	for key := range keys {
+		if !strings.EqualFold(key, "nsmode") && !strings.EqualFold(key, "value") {
+			return &libpodNamespaceKeyError{key: key}
+		}
+	}
 	type plain libpodNamespace
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
 	var decoded plain
-	if err := dec.Decode(&decoded); err != nil {
+	if err := json.Unmarshal(data, &decoded); err != nil {
 		return fmt.Errorf("namespace object: %w", err)
 	}
 	*n = libpodNamespace(decoded)
 	return nil
+}
+
+// libpodNamespaceKeyError is the refusal of a namespace object holding a key
+// other than nsmode and value. It carries the key so the deny reason can name
+// it.
+type libpodNamespaceKeyError struct{ key string }
+
+func (e *libpodNamespaceKeyError) Error() string {
+	return fmt.Sprintf("namespace object has unknown key %q", e.key)
+}
+
+// libpodNamespaceKeyReason returns the deny reason for err when it is, or
+// wraps, a libpodNamespaceKeyError, and "" otherwise. subject is the request
+// ("libpod container create" or "libpod pod create").
+func libpodNamespaceKeyReason(subject string, err error) string {
+	var keyErr *libpodNamespaceKeyError
+	if !errors.As(err, &keyErr) {
+		return ""
+	}
+	return fmt.Sprintf("%s denied: %s (only nsmode and value are allowed)", subject, keyErr.Error())
 }
 
 // isHost reports whether this namespace object selects the host namespace.

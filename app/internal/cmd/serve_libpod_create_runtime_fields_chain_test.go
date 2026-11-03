@@ -77,6 +77,18 @@ func TestServeChainLibpodContainerCreateGatesStorageOptsAndRuntimeAnnotations(t 
 			open:       func(c *config.LibpodContainerCreateRequestBodyConfig) { c.AllowRuntimeAnnotations = true },
 			wantReason: `libpod container create denied: runtime annotation "Run.OCI.Handler" is not allowed (set allow_runtime_annotations: true)`,
 		},
+		{
+			name:       "io.podman.annotations.cid-file",
+			body:       `{"image":"alpine","systemd":"false","annotations":{"io.podman.annotations.cid-file":"/etc/passwd"}}`,
+			open:       func(c *config.LibpodContainerCreateRequestBodyConfig) { c.AllowRuntimeAnnotations = true },
+			wantReason: `libpod container create denied: runtime annotation "io.podman.annotations.cid-file" is not allowed`,
+		},
+		{
+			name:       "io.podman.annotations.autoremove-image",
+			body:       `{"image":"alpine","systemd":"false","annotations":{"io.podman.annotations.autoremove-image":"true"}}`,
+			open:       func(c *config.LibpodContainerCreateRequestBodyConfig) { c.AllowRuntimeAnnotations = true },
+			wantReason: `libpod container create denied: runtime annotation "io.podman.annotations.autoremove-image" is not allowed`,
+		},
 	}
 	tests = append(tests, struct {
 		name       string

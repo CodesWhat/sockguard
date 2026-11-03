@@ -321,6 +321,9 @@ func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Reques
 
 	var createReq libpodContainerCreateRequest
 	if err := json.Unmarshal(body, &createReq); err != nil {
+		if reason := libpodNamespaceKeyReason("libpod container create", err); reason != "" {
+			return reason, nil
+		}
 		logRequestError(logger, r, slog.LevelDebug, "libpod container create request body is not valid JSON; denying", err)
 		return "libpod container create denied: malformed JSON request body", nil
 	}

@@ -53,6 +53,7 @@ func TestServeChainLibpodPodCreateAppliesTheContainerGatesToInheritedFields(t *t
 		name       string
 		body       string
 		open       func(*config.LibpodContainerCreateRequestBodyConfig)
+		setup      func(*config.LibpodContainerCreateRequestBodyConfig)
 		wantReason string
 	}{
 		{
@@ -84,6 +85,52 @@ func TestServeChainLibpodPodCreateAppliesTheContainerGatesToInheritedFields(t *t
 			body:       `{"name":"p","idmappings":{"UIDMap":[{"container_id":0,"host_id":0,"size":65536}]}}`,
 			open:       func(c *config.LibpodContainerCreateRequestBodyConfig) { c.AllowCustomIDMappings = true },
 			wantReason: "libpod pod create denied: custom UID/GID mappings are not allowed",
+		},
+		{
+			name:       "systempaths unconfined",
+			body:       `{"name":"p","security_opt":["systempaths:unconfined"]}`,
+			open:       func(c *config.LibpodContainerCreateRequestBodyConfig) { c.DenyUnconfinedSystemPaths = false },
+			wantReason: "libpod pod create denied: systempaths=unconfined (unmask) is not allowed",
+		},
+		{
+			name:       "overlay volume source",
+			body:       `{"name":"p","overlay_volumes":[{"source":"/etc","destination":"/o"}]}`,
+			open:       func(c *config.LibpodContainerCreateRequestBodyConfig) { c.AllowedBindMounts = []string{"/etc"} },
+			wantReason: `libpod pod create denied: overlay volume source "/etc" is not allowlisted`,
+		},
+		{
+			name:       "named volume overlay directories",
+			body:       `{"name":"p","volumes":[{"Name":"v","Dest":"/v","Options":["O","upperdir=/etc","workdir=/etc"]}]}`,
+			open:       func(c *config.LibpodContainerCreateRequestBodyConfig) { c.AllowedBindMounts = []string{"/etc"} },
+			wantReason: "libpod pod create denied",
+		},
+		{
+			name:       "cgroup parent",
+			body:       `{"name":"p","cgroup_parent":"/system.slice"}`,
+			wantReason: "libpod pod create denied: custom cgroup parent is not allowed",
+		},
+		{
+			name:       "volumes from",
+			body:       `{"name":"p","volumes_from":["other"]}`,
+			wantReason: "libpod pod create denied: VolumesFrom is not allowed",
+		},
+		{
+			name:       "device rule in resource limits",
+			body:       `{"name":"p","resource_limits":{"devices":[{"allow":true,"type":"a","access":"rwm"}]}}`,
+			open:       func(c *config.LibpodContainerCreateRequestBodyConfig) { c.AllowDeviceCgroupRules = true },
+			wantReason: "libpod resource_limits.devices",
+		},
+		{
+			name:       "missing memory limit",
+			body:       `{"name":"p"}`,
+			setup:      func(c *config.LibpodContainerCreateRequestBodyConfig) { c.RequireMemoryLimit = true },
+			open:       func(c *config.LibpodContainerCreateRequestBodyConfig) { c.RequireMemoryLimit = false },
+			wantReason: "libpod pod create denied: a memory limit is required",
+		},
+		{
+			name:       "unknown key in a namespace object",
+			body:       `{"name":"p","netns":{"nsmode":"private","nsMod":"host"}}`,
+			wantReason: `libpod pod create denied: namespace object has unknown key "nsMod"`,
 		},
 		{
 			name:       "unconfined seccomp",
@@ -126,6 +173,7 @@ func TestServeChainLibpodPodCreateAppliesTheContainerGatesToInheritedFields(t *t
 				c.DenyUnconfinedAppArmor = true
 				c.DenySelinuxDisable = true
 				c.RestrictNamespaceSharing = true
+				c.DenyUnconfinedSystemPaths = true
 			}
 			for _, opened := range []bool{false, true} {
 				if opened && tt.open == nil {
@@ -136,6 +184,9 @@ func TestServeChainLibpodPodCreateAppliesTheContainerGatesToInheritedFields(t *t
 					cfg.Response.DenyVerbosity = "verbose"
 					c := &cfg.RequestBody.LibpodContainerCreate
 					closed(c)
+					if tt.setup != nil {
+						tt.setup(c)
+					}
 					if opened {
 						tt.open(c)
 					}

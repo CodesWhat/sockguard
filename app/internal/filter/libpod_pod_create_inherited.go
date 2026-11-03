@@ -47,6 +47,9 @@ func (p libpodPodCreatePolicy) denyInheritedFieldsReason(req libpodPodCreateRequ
 	if reason := p.container.denyIDMappingsReason(req.IDMappings); reason != "" {
 		return podCreateReason(reason)
 	}
+	if reason := p.denyInheritedVolumesReason(req); reason != "" {
+		return reason
+	}
 	if !p.container.allowSysctls && len(req.Sysctl) > 0 {
 		return "libpod pod create denied: setting sysctls is not allowed"
 	}
@@ -57,6 +60,43 @@ func (p libpodPodCreatePolicy) denyInheritedFieldsReason(req libpodPodCreateRequ
 		UserNS: req.UserNS,
 		UtsNS:  req.UtsNS,
 	}))
+}
+
+// denyInheritedVolumesReason holds the pod's volume fields, which are copied
+// onto the infra container and inherited by its members, to the container
+// create gates: overlay_volumes sources and overlay directories against
+// allowed_bind_mounts, volumes options (the overlay upper and work
+// directories), volumes_from, cgroup_parent and resource_limits devices and
+// the require_* limits through the Docker-parity gate, and image mounts while
+// allowed_images is set. Image volumes carry no host path and the base has no
+// tmpfs rule for them, so nothing else is checked on them here. Owner
+// references in volumes, image_volumes and volumes_from are checked by the
+// ownership layer when isolation is on (libpodPodCreateReferences).
+func (p libpodPodCreatePolicy) denyInheritedVolumesReason(req libpodPodCreateRequest) string {
+	if reason := p.container.denyOverlayVolumeReason(req.OverlayVolumes); reason != "" {
+		return podCreateReason(reason)
+	}
+	if reason := p.container.denyNamedVolumeOverlayReason(req.Volumes); reason != "" {
+		return podCreateReason(reason)
+	}
+	if len(p.container.allowedImages) > 0 {
+		if len(req.ImageVolumes) > 0 {
+			return "libpod pod create denied: image volumes are not supported with allowed_images"
+		}
+		for _, mount := range req.Mounts {
+			if strings.EqualFold(mount.Type, "image") {
+				return "libpod pod create denied: image mounts are not supported with allowed_images"
+			}
+		}
+	}
+	if reason := p.container.denyDockerParityReason(libpodContainerCreateRequest{
+		VolumesFrom:    req.VolumesFrom,
+		CgroupParent:   req.CgroupParent,
+		ResourceLimits: req.ResourceLimits,
+	}); reason != "" {
+		return podCreateReason(reason)
+	}
+	return podCreateReason(p.container.denyResourceLimitReason(req.ResourceLimits))
 }
 
 // denySecurityOptReason maps the pod's security_opt strings, the CLI
@@ -84,6 +124,11 @@ func (p libpodPodCreatePolicy) denySecurityOptReason(opts []string) string {
 		case "label":
 			if reason := p.container.denySelinuxReason([]string{value}); reason != "" {
 				return reason
+			}
+		case "systempaths":
+			// systempaths=unconfined is Podman's spelling of unmask=ALL.
+			if p.container.denyUnconfinedSystemPaths && strings.EqualFold(value, "unconfined") {
+				return "libpod container create denied: systempaths=unconfined (unmask) is not allowed"
 			}
 		case "unmask":
 			if p.container.denyUnconfinedSystemPaths {

@@ -803,3 +803,19 @@ func TestLibpodNamespaceObjectsRefuseUnknownKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestLibpodNamespaceUnknownKeyRefusalNamesTheKey(t *testing.T) {
+	body := `{"systemd":"false","netns":{"nsmode":"private","nsMod":"host"}}`
+	reason := inspectLibpod(t, newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{}), []byte(body))
+	if want := `libpod container create denied: namespace object has unknown key "nsMod" (only nsmode and value are allowed)`; reason != want {
+		t.Fatalf("container reason = %q, want %q", reason, want)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/libpod/pods/create", strings.NewReader(`{"utsns":{"nsmode":"private","x":1}}`))
+	reason, err := newLibpodPodCreatePolicy(LibpodPodCreateOptions{}).inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `libpod pod create denied: namespace object has unknown key "x" (only nsmode and value are allowed)`; reason != want {
+		t.Fatalf("pod reason = %q, want %q", reason, want)
+	}
+}
