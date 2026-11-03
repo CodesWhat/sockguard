@@ -267,8 +267,8 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 				return
 			}
 
-			normPath := resolveNormalizedPath(meta, r)
-			action, ruleIndex, reason, normPath := evaluateRequestPolicy(activePolicy.rules, r, normPath)
+			normPath, scpRoutePath, encodedScp := resolveNormalizedRoute(meta, r)
+			action, ruleIndex, reason, normPath := evaluateRequestPolicy(activePolicy.rules, r, normPath, scpRoutePath, encodedScp)
 			denyStatus := http.StatusForbidden
 			reasonCode := ruleDecisionReasonCode(action, reason)
 			stampDecisionOnMeta(meta, action, ruleIndex, reasonCode, reason, normPath)
@@ -384,13 +384,21 @@ func resolveActivePolicy(opts Options, profilePolicies map[string]runtimePolicy,
 // already produced it; otherwise it normalizes once and lets the meta carry
 // the value forward to downstream layers.
 func resolveNormalizedPath(meta *logging.RequestMeta, r *http.Request) string {
+	normPath, _, _ := resolveNormalizedRoute(meta, r)
+	return normPath
+}
+
+// resolveNormalizedRoute is resolveNormalizedPath plus the libpod image-SCP
+// classification it computed, so evaluateRequestPolicy does not repeat it.
+// For an encoded SCP route the normalized path is the route path itself.
+func resolveNormalizedRoute(meta *logging.RequestMeta, r *http.Request) (normPath, scpRoutePath string, encodedScp bool) {
 	if routePath, ok := normalizedLibpodImageScpRoutePath(r); ok {
-		return routePath
+		return routePath, routePath, true
 	}
 	if meta != nil && meta.NormPath != "" {
-		return meta.NormPath
+		return meta.NormPath, "", false
 	}
-	return NormalizePath(r.URL.Path)
+	return NormalizePath(r.URL.Path), "", false
 }
 
 func stampDecisionOnMeta(meta *logging.RequestMeta, action Action, ruleIndex int, reasonCode, reason, normPath string) {
