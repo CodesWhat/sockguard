@@ -59,8 +59,8 @@ func TestSystemDataUsageRedactionCoversTheLegacyShape(t *testing.T) {
 	}
 
 	bridge := nestedMapForTest(t, container, "NetworkSettings", "Networks", "bridge")
-	if got, _ := bridge["NetworkID"].(string); got != "<redacted>" {
-		t.Fatalf("Containers[0].NetworkSettings.Networks.bridge.NetworkID = %q, want %q", got, "<redacted>")
+	if got, _ := bridge["NetworkID"].(string); got != "net-123" {
+		t.Fatalf("Containers[0].NetworkSettings.Networks.bridge.NetworkID = %q, want %q", got, "net-123")
 	}
 
 	volumes, _ := payload["Volumes"].([]any)

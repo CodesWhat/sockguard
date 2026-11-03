@@ -364,12 +364,12 @@ both controls are enabled. Docker's legacy link-removal mode stays denied.
 The preset sets `response.redact_mount_paths`, `redact_container_env`, and
 `redact_network_topology` to `false`. Portainer's container Recreate inspects
 the container and replays the result into container create, and it disconnects
-networks by the inspected network ID. With the default redactions that
-disconnect fails and the container is left stopped and renamed, and env and
-binds would be lost on create. Keep these off for Portainer.
+networks by the inspected network ID. Network IDs are no longer redacted, but
+with the default redactions env and binds would be lost on create. Keep these
+off for Portainer.
 
 With these off, Portainer sees env values (including secrets), host bind paths
-and network IDs in inspect output. The preset already sets
+and network addresses in inspect output. The preset already sets
 `insecure_allow_read_exfiltration`, so this is mostly not new exposure.
 Operators who don't use Recreate or Duplicate can turn the three redactions
 back on.
@@ -449,12 +449,6 @@ Every allowed path is a named list, inspect or stats endpoint rather than a
 `GET /containers/*/logs` or `GET /containers/*/archive` has to add that rule
 and the acknowledgment itself.
 
-Homepage's Swarm mode (`swarm:` in `docker.yaml`) reads task and network data
-that the default `response.redact_network_topology` masks, so it needs
-`redact_network_topology: false` until the v3 line narrows that redaction. The
-preset carries the setting as a commented-out `response:` block; uncomment it
-only if you use Swarm mode.
-
 ## Homarr (`homarr.yaml`)
 
 Optimized for [Homarr](https://homarr.dev) dashboard with container management.
@@ -498,11 +492,8 @@ the unused image-list call out of the surface. That is why this preset does
 
 The preset sets `response.redact_network_topology: false`. The default
 redaction rewrites `NetworkSettings.Networks[*].IPAddress`, `Gateway`,
-`GlobalIPv6Address`, `IPv6Gateway` and `MacAddress` (plus `NetworkMode` and
-network IDs) to the literal `<redacted>`. Typed Go Docker clients like Diun's
-can't decode that, so its container list fails. Disabling redaction also
-exposes `NetworkMode` and network IDs to Diun. A stable fix that writes
-type-valid empty values is in progress.
+`GlobalIPv6Address`, `IPv6Gateway` and `MacAddress` to type-valid empty values.
+Network IDs and `NetworkMode` are no longer redacted.
 
 ## Autoheal (`autoheal.yaml`)
 

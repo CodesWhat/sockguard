@@ -49,7 +49,7 @@ var typedAddressKeys = []string{
 	"Gateway", "IPv6Gateway", "IPAddress", "GlobalIPv6Address", "LinkLocalIPv6Address",
 }
 
-var typedOpaqueKeys = []string{"EndpointID", "NetworkID", "SandboxID", "SandboxKey", "Bridge"}
+var typedOpaqueKeys = []string{"SandboxID", "SandboxKey", "Bridge"}
 
 func assertTypedAddressObject(t *testing.T, where string, obj map[string]any) {
 	t.Helper()
@@ -199,8 +199,8 @@ func TestRedactNetworkTopology_AddressFieldsStayTypeValid(t *testing.T) {
 				if vip["Addr"] != "" {
 					t.Errorf("VirtualIPs[0].Addr = %#v, want empty string", vip["Addr"])
 				}
-				if vip["NetworkID"] != "<redacted>" {
-					t.Errorf("VirtualIPs[0].NetworkID = %#v, want <redacted>", vip["NetworkID"])
+				if vip["NetworkID"] != "net-1" {
+					t.Errorf("VirtualIPs[0].NetworkID = %#v, want net-1", vip["NetworkID"])
 				}
 			},
 		},
