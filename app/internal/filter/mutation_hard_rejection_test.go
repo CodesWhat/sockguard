@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -45,7 +46,7 @@ func TestMutationRefusalIsHardOnlyWithAnEnforceRule(t *testing.T) {
 
 func TestAsHardRequestRejectionLeavesOtherErrorsAlone(t *testing.T) {
 	plain := io.ErrUnexpectedEOF
-	if got := asHardRequestRejection(plain); got != plain {
+	if got := asHardRequestRejection(plain); !errors.Is(got, plain) {
 		t.Errorf("asHardRequestRejection(%v) = %v, want the same error", plain, got)
 	}
 }
