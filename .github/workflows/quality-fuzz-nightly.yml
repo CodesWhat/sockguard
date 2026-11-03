@@ -96,6 +96,7 @@ jobs:
           - { name: FuzzSecret,                    pkg: ./internal/filter/ }
           - { name: FuzzConfigWrite,               pkg: ./internal/filter/ }
           - { name: FuzzService,                   pkg: ./internal/filter/ }
+          - { name: FuzzLogDriverPolicy,           pkg: ./internal/filter/ }
           - { name: FuzzSwarm,                     pkg: ./internal/filter/ }
           - { name: FuzzPlugin,                    pkg: ./internal/filter/ }
           - { name: FuzzNetwork,                   pkg: ./internal/filter/ }

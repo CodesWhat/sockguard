@@ -188,6 +188,16 @@ type ContainerCreateOptions struct {
 	// denyLogPathReason.
 	AllowLogPath bool
 
+	// AllowedLogDrivers is an opt-in allowlist for HostConfig.LogConfig.Type
+	// (and a "driver" entry in LogConfig.Config, which a Podman upstream reads
+	// as the driver). Empty, the default, enforces nothing. An empty Type
+	// selects the daemon default and is always allowed. While it is set, the
+	// destination options in logEndpointOptionKeys (syslog-address and the
+	// like) are refused unless AllowedLogEndpointOptions lists them. See
+	// logDriverPolicy.
+	AllowedLogDrivers         []string
+	AllowedLogEndpointOptions []string
+
 	// AllowEndpointConfig permits static IP, MAC address, Links, and
 	// DriverOpts in NetworkingConfig.EndpointsConfig entries carried on
 	// POST /containers/create. Docker connects every entry here the same way
@@ -254,6 +264,7 @@ type containerCreatePolicy struct {
 
 	allowTmpfsPrivilegedOptions bool
 	allowLogPath                bool
+	logDrivers                  logDriverPolicy
 
 	allowEndpointConfig bool
 	endpointConfig      EndpointConfigOptions
@@ -349,6 +360,7 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		denyUnconfinedSystemPaths:         opts.DenyUnconfinedSystemPaths,
 		allowTmpfsPrivilegedOptions:       opts.AllowTmpfsPrivilegedOptions,
 		allowLogPath:                      opts.AllowLogPath,
+		logDrivers:                        newLogDriverPolicy(opts.AllowedLogDrivers, opts.AllowedLogEndpointOptions),
 		allowEndpointConfig:               opts.AllowEndpointConfig,
 		endpointConfig:                    opts.EndpointConfig,
 	}
@@ -1383,6 +1395,9 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 		return denyReason, nil
 	}
 	if denyReason := p.denyLogPathReason(createReq.HostConfig.LogConfig); denyReason != "" {
+		return denyReason, nil
+	}
+	if denyReason := p.logDrivers.denyMapReason("container create", createReq.HostConfig.LogConfig.Type, createReq.HostConfig.LogConfig.Config); denyReason != "" {
 		return denyReason, nil
 	}
 	if denyReason := p.denyNetworkingConfigReason(createReq.NetworkingConfig); denyReason != "" {

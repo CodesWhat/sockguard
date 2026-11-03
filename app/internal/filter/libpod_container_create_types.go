@@ -159,13 +159,17 @@ func (r libpodDeviceCgroupRule) docker() string {
 }
 
 // libpodLogConfiguration mirrors SpecGenerator's "log_configuration" object
-// (specgen.LogConfig), narrowed to the field the policy inspects. driver,
-// size, labels and options aren't decoded: none of them names a host path.
+// (specgen.LogConfig), narrowed to the fields the policy inspects. Path is the
+// host path allow_log_path gates; Driver and Options are what
+// allowed_log_drivers checks. size and labels aren't decoded: neither names a
+// host path or a destination.
 // podman-remote sends the object empty unless --log-driver or --log-opt was
 // passed, and reads "--log-opt path=" into the path field itself; see
 // basic_create.json and log_path.json.
 type libpodLogConfiguration struct {
-	Path string `json:"path"`
+	Driver  string            `json:"driver"`
+	Path    string            `json:"path"`
+	Options map[string]string `json:"options"`
 }
 
 // libpodNamespace is the uniform shape SpecGenerator uses for every
