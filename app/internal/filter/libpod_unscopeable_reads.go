@@ -14,7 +14,10 @@ package filter
 //
 // LibpodGenerateSystemdPath is a named compound read whose pod/container
 // reference checks are not implemented. It is refused until every referenced
-// resource can be checked.
+// resource can be checked. The generate/kube pair (LibpodGenerateKubePath and
+// its alias LibpodKubeGeneratePath) is refused for the same reason: the names
+// resolve to pods, containers or volumes with no owner check and the YAML
+// carries the resource definition, environment included.
 //
 // LibpodSecretListPath also does not meet the first condition. Its items carry
 // Spec.Labels, so a response-side filter of the /system/df kind could scope
@@ -123,6 +126,17 @@ const (
 
 // LibpodGenerateSystemdPath represents Podman's dynamic systemd generation route.
 const LibpodGenerateSystemdPath = "/libpod/generate/sockguard-test/systemd"
+
+const (
+	LibpodGenerateKubePath = "/libpod/generate/kube"
+	LibpodKubeGeneratePath = "/libpod/kube/generate"
+)
+
+// LibpodGenerateKubeDenyReason explains the refusal of both kube generation spellings.
+const LibpodGenerateKubeDenyReason = "libpod kube generation denied: " +
+	"GET /libpod/generate/kube resolves each name as a pod, container or volume with no owner check, " +
+	"and the generated YAML carries the resource definition including environment; " +
+	"no compound reference check scopes it to one caller"
 
 const (
 	LibpodQuadletFilePath        = "/libpod/quadlets/sockguard-test.container/file"
@@ -281,6 +295,8 @@ var (
 
 var libpodUnscopeableReads = []LibpodUnscopeableRead{
 	libpodGenerateSystemdRead,
+	{Path: LibpodGenerateKubePath, ReasonCodeStem: "generate_kube", Reason: LibpodGenerateKubeDenyReason},
+	{Path: LibpodKubeGeneratePath, ReasonCodeStem: "kube_generate", Reason: LibpodGenerateKubeDenyReason},
 	{Path: "/libpod/quadlets/json", ReasonCodeStem: "quadlet_list", Reason: LibpodQuadletReadDenyReason},
 	{Path: LibpodQuadletFilePath, ReasonCodeStem: "quadlet_file", Reason: LibpodQuadletReadDenyReason},
 	{Path: LibpodQuadletExistsPath, ReasonCodeStem: "quadlet_exists", Reason: LibpodQuadletReadDenyReason},

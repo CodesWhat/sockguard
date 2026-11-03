@@ -43,6 +43,21 @@ func TestLookupLibpodUnscopeableReadDoesNotMatchOtherManifestPaths(t *testing.T)
 	}
 }
 
+func TestKubeGenerationRefusalMatchesOnlyItsNativeRoutes(t *testing.T) {
+	t.Parallel()
+	for path, stem := range map[string]string{"/libpod/generate/kube": "generate_kube", "/libpod/kube/generate": "kube_generate"} {
+		read, ok := LookupLibpodUnscopeableRead(path)
+		if !ok || read.ReasonCodeStem != stem {
+			t.Fatalf("%s: read=%#v matched=%v", path, read, ok)
+		}
+	}
+	for _, path := range []string{"/libpod/generate/kube/extra", "/generate/kube", "/libpod/kube/generate/extra"} {
+		if _, ok := LookupLibpodUnscopeableRead(path); ok {
+			t.Fatalf("neighbor %s matched", path)
+		}
+	}
+}
+
 func TestSystemdGenerationRefusalMatchesOnlyItsNativeRoute(t *testing.T) {
 	t.Parallel()
 	for _, path := range []string{"/libpod/generate/tenant/systemd", "/libpod/generate/group/member/systemd"} {
@@ -51,7 +66,7 @@ func TestSystemdGenerationRefusalMatchesOnlyItsNativeRoute(t *testing.T) {
 			t.Fatalf("%s: read=%#v matched=%v", path, read, ok)
 		}
 	}
-	for _, path := range []string{"/libpod/generate/kube", "/libpod/generate/tenant/systemd/extra", "/generate/tenant/systemd", "/libpod/generate/systemd"} {
+	for _, path := range []string{"/libpod/generate/tenant/systemd/extra", "/generate/tenant/systemd", "/libpod/generate/systemd"} {
 		if _, ok := LookupLibpodUnscopeableRead(path); ok {
 			t.Fatalf("neighbor %s matched", path)
 		}

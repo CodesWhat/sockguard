@@ -1020,6 +1020,8 @@ var wantVisibilityUnscopeableReasonCodes = map[string]string{
 	filter.LibpodArtifactJSONPath:    "visibility_libpod_artifact_json_unscopeable",
 	filter.LibpodArtifactExtractPath: "visibility_libpod_artifact_extract_unscopeable",
 	filter.LibpodGenerateSystemdPath: "visibility_libpod_generate_systemd_unscopeable",
+	filter.LibpodGenerateKubePath:    "visibility_libpod_generate_kube_unscopeable",
+	filter.LibpodKubeGeneratePath:    "visibility_libpod_kube_generate_unscopeable",
 	filter.LibpodShowMountedPath:     "visibility_libpod_show_mounted_unscopeable",
 	filter.LibpodContainerStatsPath:  "visibility_libpod_container_stats_unscopeable",
 	filter.LibpodPodStatsPath:        "visibility_libpod_pod_stats_unscopeable",

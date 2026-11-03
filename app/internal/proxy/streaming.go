@@ -8,8 +8,9 @@ import (
 )
 
 // IsStreamingRequest reports whether r is an open-ended stream that holds a
-// connection for as long as a client cares to keep it: events, followed logs,
-// streaming stats, wait, attach, and exec start (which hijacks). The
+// connection for as long as a client cares to keep it: events, followed
+// container, service and task logs, streaming stats, Podman top?stream, wait,
+// attach, and exec start (which hijacks). The
 // rate-limit middleware exempts these from the concurrency caps and bounds
 // them with the separate stream cap instead.
 //
@@ -19,6 +20,13 @@ import (
 // run at once, so they keep counting. Libpod paths are normalized to their
 // Docker form before matching.
 func IsStreamingRequest(w http.ResponseWriter, r *http.Request) bool {
+	return IsStreamingRequestForFlavor(w, r, false)
+}
+
+// IsStreamingRequestForFlavor is IsStreamingRequest with the upstream flavor
+// known. A Podman upstream also streams the compat GET /containers/{id}/top
+// when stream is true, which a Docker daemon ignores.
+func IsStreamingRequestForFlavor(w http.ResponseWriter, r *http.Request, podmanUpstream bool) bool {
 	if r == nil {
 		return false
 	}
@@ -26,13 +34,23 @@ func IsStreamingRequest(w http.ResponseWriter, r *http.Request) bool {
 	if filter.IsHijackCandidatePath(r.Method, path) {
 		return true
 	}
-	path = strings.TrimPrefix(path, "/libpod")
+	nativeLibpod := false
+	if nativePath, ok := strings.CutPrefix(path, "/libpod"); ok {
+		path = nativePath
+		nativeLibpod = true
+	}
 	switch r.Method {
 	case http.MethodGet:
 		switch {
 		case path == "/events":
 			return true
+		case nativeLibpod && (matchContainerAction(path, "top") || matchPodAction(path, "top")):
+			return podmanBoolValue(r, "stream")
+		case podmanUpstream && matchContainerAction(path, "top"):
+			return podmanCompatBoolValue(r, "stream")
 		case matchContainerAction(path, "logs"):
+			return dockerBoolValue(r, "follow")
+		case matchResourceAction(path, "services", "logs"), matchResourceAction(path, "tasks", "logs"):
 			return dockerBoolValue(r, "follow")
 		case matchContainerAction(path, "stats"):
 			return dockerBoolValueOrDefault(r, "stream", true)

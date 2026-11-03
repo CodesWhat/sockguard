@@ -30,15 +30,6 @@ const hijackBufSize = 64 * 1024
 const hijackDialTimeout = 5 * time.Second
 const hijackHandshakeTimeout = 30 * time.Second
 
-// hijackInactivityTimeout is the default connection-wide inactivity deadline
-// for hijacked (attach/exec-start) connections, used by HijackHandler (the
-// socket-only entry point, not wired into the production serve chain) and as
-// upstream.hijack_inactivity_timeout's default. HijackHandlerWithDialer — the
-// entry point production wiring uses — takes the effective timeout as an
-// explicit parameter instead, so a configured override never touches this
-// constant.
-const hijackInactivityTimeout = 10 * time.Minute
-
 type bytePool interface {
 	Get() any
 	Put(any)
@@ -48,14 +39,6 @@ var hijackBufferPool bytePool = &sync.Pool{
 	New: func() any {
 		return make([]byte, hijackBufSize)
 	},
-}
-
-// Test hook — do not use t.Parallel() in tests that swap this.
-var dialUpstreamWithTimeoutHook func(string, string, time.Duration) (net.Conn, error) = net.DialTimeout
-
-// Test hook — do not use t.Parallel() in tests that swap this.
-var dialUpstreamHook = func(network, address string) (net.Conn, error) {
-	return dialUpstreamWithTimeoutHook(network, address, hijackDialTimeout)
 }
 
 // Test hook — do not use t.Parallel() in tests that swap this.
@@ -155,23 +138,12 @@ type hijackUpgradeState struct {
 	path         string
 }
 
-// HijackHandler wraps a standard handler and intercepts Docker API endpoints
-// that use HTTP connection upgrades (attach, exec start). For these endpoints,
-// it dials the upstream Docker socket directly and performs a native bidirectional
-// hijack with optimized buffers and proper TCP half-close signaling, rather than
-// relying on the stdlib reverse proxy's generic upgrade handling.
-func HijackHandler(upstreamSocket string, logger *slog.Logger, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !isHijackRequest(w, r) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		handleHijack(w, r, upstreamSocket, logger)
-	})
-}
-
-// HijackHandlerWithDialer is HijackHandler over an upstream.RequestDialer (typically an
-// *upstream.Resolver), so the hijack path dials the same active endpoint — local
+// HijackHandlerWithDialer wraps a standard handler and intercepts Docker API
+// endpoints that use HTTP connection upgrades (attach, exec start). For these
+// endpoints it dials the upstream directly through an upstream.RequestDialer
+// (typically an *upstream.Resolver) and performs a native bidirectional hijack
+// with optimized buffers and proper TCP half-close signaling, rather than
+// relying on the stdlib reverse proxy's generic upgrade handling. The hijack path dials the same active endpoint — local
 // socket or remote TCP+TLS — and fails over together with the rest of the proxy.
 //
 // inactivityTimeout bounds how long a hijacked connection may pass no bytes
@@ -186,21 +158,6 @@ func HijackHandlerWithDialer(dialer upstream.RequestDialer, inactivityTimeout ti
 		}
 		handleHijackDialer(w, r, dialer, inactivityTimeout, logger)
 	})
-}
-
-// isHijackEndpoint returns true if the request targets a Docker API endpoint
-// that upgrades to a raw TCP stream via 101 Switching Protocols.
-//
-// Matched endpoints:
-//   - POST /containers/{id}/attach
-//   - POST /exec/{id}/start
-//   - POST /libpod/containers/{id}/attach (Podman's native libpod API, #148)
-//   - POST /libpod/exec/{id}/start
-//
-// Docker API version prefixes (/v1.XX/, or Podman's three-part /v5.0.0/) are
-// stripped before matching.
-func isHijackEndpoint(method, path string) bool {
-	return filter.IsHijackCandidatePath(method, filter.NormalizePath(path))
 }
 
 func isHijackRequest(w http.ResponseWriter, r *http.Request) bool {
@@ -228,15 +185,6 @@ func writeHijackBadGateway(w http.ResponseWriter, logger *slog.Logger, path, mes
 	}
 }
 
-func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string, logger *slog.Logger) {
-	session, ok := upgradeHijackConnection(w, r, upstreamSocket, logger)
-	if !ok {
-		return
-	}
-
-	proxyHijackStreams(session, hijackInactivityTimeout, logger)
-}
-
 func handleHijackDialer(w http.ResponseWriter, r *http.Request, dialer upstream.RequestDialer, inactivityTimeout time.Duration, logger *slog.Logger) {
 	session, ok := upgradeHijackConnectionDialer(w, r, dialer, logger)
 	if !ok {
@@ -246,24 +194,17 @@ func handleHijackDialer(w http.ResponseWriter, r *http.Request, dialer upstream.
 	proxyHijackStreams(session, inactivityTimeout, logger)
 }
 
-func upgradeHijackConnection(w http.ResponseWriter, r *http.Request, upstreamSocket string, logger *slog.Logger) (*hijackSession, bool) {
-	reqPath := r.URL.Path
-
-	// Dial upstream Docker socket
-	upstreamConn, err := dialUpstreamHook("unix", upstreamSocket)
-	if err != nil {
-		logger.Error("hijack: upstream dial failed", "error", logging.SafeString(err.Error()), "path", logging.SafeString(reqPath))
-		writeHijackBadGateway(w, logger, reqPath, "upstream Docker socket unreachable")
-		return nil, false
-	}
-
-	return finishHijackUpgrade(w, r, upstreamConn, newUpstreamHijackRequest(r, r.URL.Path), logger)
-}
-
-// upgradeHijackConnectionDialer is upgradeHijackConnection over an
-// upstream.RequestDialer: it atomically dials the active endpoint and rewrites
-// the request with that same endpoint's base path, then shares the post-dial
-// upgrade logic.
+// upgradeHijackConnectionDialer atomically dials the active endpoint through an
+// upstream.RequestDialer and rewrites the request with that same endpoint's
+// base path, then runs the post-dial upgrade logic.
+//
+// #194: the wire path is the client's ORIGINAL request path, version prefix
+// and all, not the normalized/stripped form. That mirrors the non-hijack
+// reverse-proxy path (proxy.go's Rewrite touches only Scheme/Host and leaves
+// Path untouched): real Podman requires the version prefix (/v5.x.y/libpod/...)
+// on every route but the bare _ping, while dockerd accepts a versioned path
+// too, so preserving it doesn't regress docker-compat. The normalized form is
+// used only for endpoint matching and logging.
 func upgradeHijackConnectionDialer(w http.ResponseWriter, r *http.Request, dialer upstream.RequestDialer, logger *slog.Logger) (*hijackSession, bool) {
 	reqPath := r.URL.Path
 
@@ -436,22 +377,6 @@ func waitForHijackInactivity(activity *hijackActivity, timeout time.Duration, do
 		}
 		timer.Reset(remaining)
 	}
-}
-
-func writeHijackUpstreamRequest(upstreamConn net.Conn, w http.ResponseWriter, r *http.Request, logger *slog.Logger) bool {
-	// We remove client-controlled hop-by-hop metadata and emit a fixed Docker
-	// upgrade hint, only when the client asked for an upgrade, so upstream sees
-	// only proxy-controlled connection semantics.
-	//
-	// #194: the wire path is the client's ORIGINAL request path — version
-	// prefix and all — not the normalized/stripped form. That mirrors the
-	// non-hijack reverse-proxy path (proxy.go's Rewrite touches only
-	// Scheme/Host and leaves Path untouched): real Podman requires the
-	// version prefix (/v5.x.y/libpod/...) on every route but the bare
-	// _ping, while dockerd accepts a versioned path too, so preserving it
-	// doesn't regress docker-compat. logPath stays the normalized form used
-	// everywhere else in the proxy for endpoint matching and logging.
-	return writePreparedHijackUpstreamRequest(upstreamConn, w, r, newUpstreamHijackRequest(r, r.URL.Path), logger)
 }
 
 func writePreparedHijackUpstreamRequest(upstreamConn net.Conn, w http.ResponseWriter, r, upstreamReq *http.Request, logger *slog.Logger) bool {
@@ -658,7 +583,7 @@ func newUpstreamHijackRequest(r *http.Request, path string) *http.Request {
 	if path == "" && r.URL != nil {
 		// Defensive fallback for callers that don't have a path handy (e.g.
 		// direct unit tests): use the client's original path, not a
-		// normalized one — #194, see writeHijackUpstreamRequest.
+		// normalized one — #194, see upgradeHijackConnectionDialer.
 		path = r.URL.Path
 	}
 	if r.URL != nil {

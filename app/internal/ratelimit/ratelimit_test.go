@@ -844,3 +844,35 @@ func TestAuditSampler_Race(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// Eviction must not refund a drained burst: a bucket that has not refilled to
+// burst survives until refill has filled it.
+func TestLimiter_EvictKeepsDrainedBucketUntilFull(t *testing.T) {
+	t.Parallel()
+	clk := newFixedClock(time.Unix(0, 0))
+	l := newLimiterWithClock(0.01, 20, clk.Now)
+	defer l.Stop()
+	for i := 0; i < 20; i++ {
+		l.Allow("c") //nolint:errcheck
+	}
+	clk.Advance(limiterEvictTTL + time.Second) // 601s: refill = 6.01 tokens
+	l.evict(limiterEvictTTL)
+	if _, ok := l.buckets.Load("c"); !ok {
+		t.Fatal("drained bucket must survive eviction until refilled to burst")
+	}
+	admitted := 0
+	for i := 0; i < 20; i++ {
+		if ok, _ := l.Allow("c"); ok {
+			admitted++
+		}
+	}
+	if admitted != 6 {
+		t.Fatalf("admitted %d after 601s idle at 0.01 t/s, want 6", admitted)
+	}
+	// Let it refill fully (20 tokens / 0.01 t/s = 2000s) and go idle past TTL.
+	clk.Advance(2000*time.Second + limiterEvictTTL)
+	l.evict(limiterEvictTTL)
+	if _, ok := l.buckets.Load("c"); ok {
+		t.Fatal("full idle bucket should be evicted")
+	}
+}

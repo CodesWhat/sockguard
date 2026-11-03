@@ -228,6 +228,7 @@ type libpodContainerCreatePolicy struct {
 	imageFetcher       signatureFetcher
 	imageTrustCfg      imagetrust.Config
 	imageTrustTimeout  time.Duration
+	imageTrustRegistry imagePullPolicy
 	imageTrustInitErr  error
 }
 
@@ -297,11 +298,12 @@ func newLibpodContainerCreatePolicy(opts LibpodContainerCreateOptions) libpodCon
 		allowRuntimeAnnotations:    opts.AllowRuntimeAnnotations,
 	}
 
-	itf := buildImageTrustFields(opts.ImageTrust)
+	itf := buildImageTrustFields(opts.ImageTrust, opts.AllowedImages)
 	p.imageTrustVerifier = itf.verifier
 	p.imageFetcher = itf.fetcher
 	p.imageTrustCfg = itf.cfg
 	p.imageTrustTimeout = itf.timeout
+	p.imageTrustRegistry = itf.registry
 	p.imageTrustInitErr = itf.initErr
 
 	return p
@@ -437,6 +439,7 @@ func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Reques
 			fetcher:  p.imageFetcher,
 			cfg:      p.imageTrustCfg,
 			timeout:  p.imageTrustTimeout,
+			registry: p.imageTrustRegistry,
 		}
 		denyReason, verifiedDigest := verifyImageTrust(r.Context(), logger, fields, imageRef, "libpod container create")
 		if denyReason != "" {

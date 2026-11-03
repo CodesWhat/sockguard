@@ -947,14 +947,23 @@ func newVisibilityDepsClient(client *http.Client) visibilityDeps {
 	}
 	return visibilityDeps{
 		inspectResource: func(ctx context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
-			if kind == dockerresource.KindContainer || kind == dockerresource.KindImage {
-				details, found, err := lookupDetails(ctx, kind, identifier)
-				if err != nil || !found {
-					return nil, found, err
+			labels, found, err := func() (map[string]string, bool, error) {
+				if kind == dockerresource.KindContainer || kind == dockerresource.KindImage {
+					details, found, err := lookupDetails(ctx, kind, identifier)
+					if err != nil || !found {
+						return nil, found, err
+					}
+					return details.labels, true, nil
 				}
-				return details.labels, true, nil
+				return labelCache.Lookup(ctx, string(kind), identifier)
+			}()
+			if err == nil {
+				// Leave the successful result on the request for owner
+				// isolation, which runs next and reads the same labels from
+				// the same inspect. Errors are never recorded.
+				logging.Meta(ctx).RecordInspectedLabels(string(kind), identifier, labels, found)
 			}
-			return labelCache.Lookup(ctx, string(kind), identifier)
+			return labels, found, err
 		},
 		inspectExec: inspector.inspectExec,
 		inspectResourceMeta: func(ctx context.Context, kind dockerresource.Kind, identifier string) (*resourceMeta, bool, error) {

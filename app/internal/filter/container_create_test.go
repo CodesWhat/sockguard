@@ -1086,6 +1086,7 @@ func TestContainerCreatePolicyInspectDeniesImageMountUnderEnforce(t *testing.T) 
 		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
 		imageTrustVerifier:     mv,
+		imageTrustRegistry:     allowAllRegistryPolicy(),
 		imageFetcher:           oneCandidateFetcher(),
 		imageTrustCfg:          imagetrust.Config{Mode: imagetrust.ModeEnforce},
 	}
@@ -2268,6 +2269,7 @@ func TestImageTrust_Enforce_VerifierCalledWithImageRef(t *testing.T) {
 		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
 		imageTrustVerifier:     mv,
+		imageTrustRegistry:     allowAllRegistryPolicy(),
 		imageFetcher:           oneCandidateFetcher(),
 		imageTrustCfg:          cfg,
 		imageTrustTimeout:      0,
@@ -2300,6 +2302,7 @@ func TestImageTrust_Enforce_DeniesOnVerifierError(t *testing.T) {
 		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
 		imageTrustVerifier:     mv,
+		imageTrustRegistry:     allowAllRegistryPolicy(),
 		imageFetcher:           oneCandidateFetcher(),
 		imageTrustCfg:          cfg,
 	}
@@ -2335,6 +2338,7 @@ func TestImageTrust_Warn_AllowsOnVerifierError(t *testing.T) {
 		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
 		imageTrustVerifier:     mv,
+		imageTrustRegistry:     allowAllRegistryPolicy(),
 		imageFetcher:           oneCandidateFetcher(),
 		imageTrustCfg:          cfg,
 	}
@@ -2365,6 +2369,7 @@ func TestImageTrust_EmptyImage_DeniedWhenVerifierConfigured(t *testing.T) {
 		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
 		imageTrustVerifier:     mv,
+		imageTrustRegistry:     allowAllRegistryPolicy(),
 		imageFetcher:           oneCandidateFetcher(),
 		imageTrustCfg:          cfg,
 	}
@@ -2399,6 +2404,7 @@ func TestImageTrust_BodyInspectedWhenVerifierPresent(t *testing.T) {
 		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
 		imageTrustVerifier:     mv,
+		imageTrustRegistry:     allowAllRegistryPolicy(),
 		imageFetcher:           oneCandidateFetcher(),
 		imageTrustCfg:          cfg,
 	}
@@ -2431,6 +2437,7 @@ func TestImageTrust_Enforce_PinsVerifiedDigest(t *testing.T) {
 		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
 		imageTrustVerifier:     &mockImageVerifier{},
+		imageTrustRegistry:     allowAllRegistryPolicy(),
 		imageFetcher:           &mockSignatureFetcher{candidates: []imagetrust.Candidate{{DigestHex: "00", ImageDigest: digest}}},
 		imageTrustCfg:          imagetrust.Config{Mode: imagetrust.ModeEnforce},
 	}
@@ -2473,6 +2480,7 @@ func TestImageTrust_Enforce_DeniesWhenVerifiedDigestCannotBePinned(t *testing.T)
 		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
 		imageTrustVerifier:     &mockImageVerifier{},
+		imageTrustRegistry:     allowAllRegistryPolicy(),
 		imageFetcher:           &mockSignatureFetcher{candidates: []imagetrust.Candidate{{DigestHex: "00", ImageDigest: "notadigest"}}},
 		imageTrustCfg:          imagetrust.Config{Mode: imagetrust.ModeEnforce},
 	}
@@ -2509,6 +2517,7 @@ func TestImageTrust_TimeoutGateRespectsZero(t *testing.T) {
 		mv := &ctxRecordingImageVerifier{}
 		policy := containerCreatePolicy{
 			imageTrustVerifier: mv,
+			imageTrustRegistry: allowAllRegistryPolicy(),
 			imageFetcher:       oneCandidateFetcher(),
 			imageTrustCfg:      imagetrust.Config{Mode: imagetrust.ModeEnforce},
 			imageTrustTimeout:  0,
@@ -2529,6 +2538,7 @@ func TestImageTrust_TimeoutGateRespectsZero(t *testing.T) {
 		mv := &ctxRecordingImageVerifier{}
 		policy := containerCreatePolicy{
 			imageTrustVerifier: mv,
+			imageTrustRegistry: allowAllRegistryPolicy(),
 			imageFetcher:       oneCandidateFetcher(),
 			imageTrustCfg:      imagetrust.Config{Mode: imagetrust.ModeEnforce},
 			imageTrustTimeout:  10 * time.Second,
@@ -3495,7 +3505,7 @@ func TestBuildImageTrustFieldsOffMode(t *testing.T) {
 	// mode="" and mode="off" both return the zero value (inactive).
 	for _, mode := range []string{"", "off"} {
 		t.Run("mode="+mode, func(t *testing.T) {
-			f := buildImageTrustFields(ImageTrustOptions{Mode: mode})
+			f := buildImageTrustFields(ImageTrustOptions{Mode: mode}, nil)
 			if f.verifier != nil {
 				t.Error("expected nil verifier for off mode")
 			}
@@ -3516,7 +3526,7 @@ func TestBuildImageTrustFieldsInvalidKeyFails(t *testing.T) {
 		AllowedSigningKeys: []SigningKeyOptions{
 			{PEM: "not-a-valid-pem"},
 		},
-	})
+	}, nil)
 	if f.initErr == nil {
 		t.Fatal("expected initErr for invalid PEM key, got nil")
 	}
@@ -3548,7 +3558,7 @@ func TestBuildImageTrustFieldsKeylessTrustRootFailureFailsClosed(t *testing.T) {
 		AllowedKeyless: []KeylessOptions{
 			{Issuer: "https://accounts.google.com", SubjectPattern: ".*@example.com"},
 		},
-	})
+	}, nil)
 
 	if calls != 1 {
 		t.Fatalf("trust root load calls = %d, want 1", calls)

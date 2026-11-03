@@ -235,6 +235,9 @@ func (c ImageTrustConfig) toFilterOptions() filter.ImageTrustOptions {
 		AllowedKeyless:        kl,
 		RequireRekorInclusion: c.RequireRekorInclusion,
 		VerifyTimeout:         c.VerifyTimeout,
+		AllowAllRegistries:    c.AllowAllRegistries,
+		AllowOfficial:         c.AllowOfficial,
+		AllowedRegistries:     c.AllowedRegistries,
 	}
 }
 

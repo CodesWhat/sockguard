@@ -6,11 +6,14 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/codeswhat/sockguard/v3/app/internal/config"
 	"github.com/codeswhat/sockguard/v3/app/internal/proxy"
+	"github.com/codeswhat/sockguard/v3/app/internal/upstream"
 )
 
 // TestHijackedConnTrackerReleasesNonUpgradeRawStream drives the real hijack
@@ -42,7 +45,7 @@ func TestHijackedConnTrackerReleasesNonUpgradeRawStream(t *testing.T) {
 
 	server := &http.Server{
 		ReadHeaderTimeout: time.Second,
-		Handler:           proxy.PassClientUpgrade(proxy.HijackHandler(socketPath, slog.New(slog.NewTextHandler(io.Discard, nil)), http.NotFoundHandler())),
+		Handler:           proxy.PassClientUpgrade(proxy.HijackHandlerWithDialer(upstream.NewSingleSocket(socketPath), 10*time.Minute, slog.New(slog.NewTextHandler(io.Discard, nil)), http.NotFoundHandler())),
 	}
 	tracker := trackHijackedConnections(server)
 	clientLn, err := net.Listen("tcp", "127.0.0.1:0")
@@ -135,12 +138,84 @@ func TestHijackedConnTrackerReleasesWhenRawStreamHeadWriteFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proxy.PassClientUpgrade(proxy.HijackHandler(socketPath, slog.New(slog.NewTextHandler(io.Discard, nil)), http.NotFoundHandler())).ServeHTTP(w, req)
+	proxy.PassClientUpgrade(proxy.HijackHandlerWithDialer(upstream.NewSingleSocket(socketPath), 10*time.Minute, slog.New(slog.NewTextHandler(io.Discard, nil)), http.NotFoundHandler())).ServeHTTP(w, req)
 
 	waitForTracked(t, tracker, 0)
 	select {
 	case <-upstreamClosed:
 	case <-time.After(3 * time.Second):
 		t.Fatal("upstream conn was not closed")
+	}
+}
+
+// TestWithHijackPassesClientUpgradeChoiceOnProbedDocker drives the handler
+// serve.go builds for attach/exec. On a probed Docker upstream a client that
+// sends no Upgrade header must reach the daemon without one and get the 200
+// raw stream back; on any other upstream the daemon is always asked to
+// upgrade. Dropping PassClientUpgrade from withHijack fails the first case.
+func TestWithHijackPassesClientUpgradeChoiceOnProbedDocker(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		probedDocker bool
+		wantUpgrade  bool
+	}{
+		{name: "probed docker passes the plain form", probedDocker: true, wantUpgrade: false},
+		{name: "other upstreams are always asked to upgrade", probedDocker: false, wantUpgrade: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			socketPath := shortSocketPath(t, "hijack-passthrough")
+			ln, err := net.Listen("unix", socketPath)
+			if err != nil {
+				t.Fatalf("listen upstream: %v", err)
+			}
+			t.Cleanup(func() { _ = ln.Close() })
+			gotUpgrade := make(chan string, 1)
+			go func() {
+				conn, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+				req, err := http.ReadRequest(bufio.NewReader(conn))
+				if err != nil {
+					return
+				}
+				_ = req.Body.Close()
+				gotUpgrade <- req.Header.Get("Upgrade")
+				_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.docker.raw-stream\r\n\r\nhello")
+			}()
+
+			cfg := config.Defaults()
+			cfg.Upstream.Socket = socketPath
+			handler := withHijack(&cfg, upstream.NewSingleSocket(socketPath), slog.New(slog.NewTextHandler(io.Discard, nil)), tc.probedDocker)(http.NotFoundHandler())
+			server := httptest.NewServer(handler)
+			t.Cleanup(server.Close)
+
+			conn, err := net.Dial("tcp", server.Listener.Addr().String())
+			if err != nil {
+				t.Fatalf("dial: %v", err)
+			}
+			defer conn.Close()
+			_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+			if _, err := io.WriteString(conn, "POST /containers/abc/attach HTTP/1.1\r\nHost: x\r\n\r\n"); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			br := bufio.NewReader(conn)
+			resp, err := http.ReadResponse(br, nil)
+			if err != nil {
+				t.Fatalf("read response: %v", err)
+			}
+			upgrade := <-gotUpgrade
+			if tc.wantUpgrade != (upgrade != "") {
+				t.Fatalf("upstream Upgrade header = %q, wantUpgrade %v", upgrade, tc.wantUpgrade)
+			}
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200 raw stream", resp.StatusCode)
+			}
+			got := make([]byte, 5)
+			if _, err := io.ReadFull(br, got); err != nil || string(got) != "hello" {
+				t.Fatalf("stream = %q, %v", got, err)
+			}
+		})
 	}
 }

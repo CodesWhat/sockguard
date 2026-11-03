@@ -20,6 +20,8 @@ import (
 
 	"github.com/codeswhat/sockguard/v3/app/internal/imagefetch"
 	"github.com/codeswhat/sockguard/v3/app/internal/imagetrust"
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 )
 
@@ -43,6 +45,13 @@ type ImageTrustOptions struct {
 	RequireRekorInclusion bool
 	// VerifyTimeout overrides the default end-to-end image-trust deadline.
 	VerifyTimeout string
+	// AllowAllRegistries permits signature discovery against any registry the
+	// client names.
+	AllowAllRegistries bool
+	// AllowOfficial permits Docker Hub official images (docker.io/library/*).
+	AllowOfficial bool
+	// AllowedRegistries lists registry hosts signature discovery may contact.
+	AllowedRegistries []string
 }
 
 // SigningKeyOptions is one allowed signing key entry.
@@ -300,6 +309,7 @@ type containerCreatePolicy struct {
 	imageFetcher       signatureFetcher
 	imageTrustCfg      imagetrust.Config
 	imageTrustTimeout  time.Duration
+	imageTrustRegistry imagePullPolicy
 	// imageTrustInitErr holds any error that occurred while building the image
 	// trust verifier at policy construction time. When non-nil, inspect returns
 	// a denial reason so that a misconfigured trust policy fails closed rather
@@ -397,11 +407,12 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 	// Build image trust verifier. Errors are stored in imageTrustInitErr so
 	// that inspect can return a denial reason instead of silently allowing
 	// requests through (fail-closed rather than fail-open).
-	itf := buildImageTrustFields(opts.ImageTrust)
+	itf := buildImageTrustFields(opts.ImageTrust, opts.AllowedImages)
 	p.imageTrustVerifier = itf.verifier
 	p.imageFetcher = itf.fetcher
 	p.imageTrustCfg = itf.cfg
 	p.imageTrustTimeout = itf.timeout
+	p.imageTrustRegistry = itf.registry
 	p.imageTrustInitErr = itf.initErr
 
 	return p
@@ -415,6 +426,8 @@ type imageTrustFields struct {
 	cfg      imagetrust.Config
 	timeout  time.Duration
 	initErr  error
+	// registry scopes which registries signature discovery may contact.
+	registry imagePullPolicy
 }
 
 // loadLiveTrustedRoot fetches the TUF-backed Sigstore trust root for keyless
@@ -429,7 +442,13 @@ var loadLiveTrustedRoot = imagetrust.LoadLiveTrustedRoot
 // the given options. Any construction error is returned in initErr so callers
 // fail closed (deny) rather than silently allowing unverified images. When the
 // mode is off/empty the zero value is returned (inactive).
-func buildImageTrustFields(opts ImageTrustOptions) imageTrustFields {
+//
+// Signature discovery contacts whatever registry the client's image reference
+// names, so it is scoped by the registry allowlist fields. A non-empty
+// allowedImages (the caller's exact image allowlist, already enforced before
+// verification) pins every reference to an operator-named registry and
+// stands in for the registry scope.
+func buildImageTrustFields(opts ImageTrustOptions, allowedImages []string) imageTrustFields {
 	var f imageTrustFields
 	if mode := imagetrust.Mode(opts.Mode); mode == imagetrust.ModeOff || mode == "" {
 		return f
@@ -457,7 +476,12 @@ func buildImageTrustFields(opts ImageTrustOptions) imageTrustFields {
 		return f
 	}
 	f.verifier = v
-	f.fetcher = imagefetch.NewFetcher()
+	f.registry = newImagePullPolicy(ImagePullOptions{
+		AllowAllRegistries: opts.AllowAllRegistries || (len(allowedImages) > 0 && !opts.AllowOfficial && len(opts.AllowedRegistries) == 0),
+		AllowOfficial:      opts.AllowOfficial,
+		AllowedRegistries:  opts.AllowedRegistries,
+	})
+	f.fetcher = imagefetch.NewGuardedFetcher(trustDialAllowlist(opts.AllowedRegistries, allowedImages))
 	f.cfg = cfg
 	f.timeout = cfg.VerifyTimeout
 	if f.timeout == 0 {
@@ -478,6 +502,11 @@ func verifyImageTrust(ctx context.Context, logger *slog.Logger, f imageTrustFiel
 		// explicit deny preserves fail-closed behavior at the Sockguard layer
 		// and avoids skipping the verifier call entirely.
 		return fmt.Sprintf("%s denied: image field is required when image trust is configured", subject), ""
+	}
+	// Signature discovery dials the registry named in the reference, so scope
+	// it before any request leaves the proxy.
+	if reason := f.registry.denyReasonForTrustReference(imageRef, subject); reason != "" {
+		return reason, ""
 	}
 	if f.timeout > 0 {
 		var cancel context.CancelFunc
@@ -500,9 +529,40 @@ func verifyImageTrust(ctx context.Context, logger *slog.Logger, f imageTrustFiel
 	}
 	outcome := imagetrust.VerifyCandidatesWithMode(ctx, f.verifier, f.cfg, logger, imageRef, candidates, fetchErr)
 	if !outcome.Allowed {
-		return fmt.Sprintf("%s denied: image trust verification failed for %s: %s", subject, imageRef, outcome.FailureMsg), ""
+		return fmt.Sprintf("%s denied: image trust verification failed for %s: %s", subject, imageRef, clientSafeTrustFailure(fetchErr, outcome.FailureMsg)), ""
 	}
 	return "", outcome.VerifiedDigest
+}
+
+// trustDialAllowlist is the set of hosts signature discovery may reach even if
+// they resolve to a private address: the operator's allowed_registries plus the
+// registry of every exact allowed_images entry, both of which the operator
+// named. Everything else must resolve to a public address at dial time.
+func trustDialAllowlist(allowedRegistries, allowedImages []string) []string {
+	hosts := make([]string, 0, len(allowedRegistries)+len(allowedImages))
+	for _, r := range allowedRegistries {
+		if host, ok := normalizeRegistryHost(r); ok {
+			hosts = append(hosts, host)
+		}
+	}
+	for _, image := range allowedImages {
+		if ref, err := name.ParseReference(strings.TrimSpace(image)); err == nil {
+			hosts = append(hosts, strings.ToLower(ref.Context().RegistryStr()))
+		}
+	}
+	return hosts
+}
+
+// clientSafeTrustFailure keeps a registry's response body out of the deny
+// reason. An HTTP error from signature discovery carries the registry's own
+// error text, which for a client-named host is attacker-chosen or internal
+// content. The full error is logged by imagetrust.VerifyCandidatesWithMode.
+func clientSafeTrustFailure(fetchErr error, msg string) string {
+	var terr *transport.Error
+	if errors.As(fetchErr, &terr) {
+		return fmt.Sprintf("registry returned HTTP %d during signature discovery", terr.StatusCode)
+	}
+	return msg
 }
 
 // rewriteJSONImageField returns body with its (case-insensitive) "Image" field
@@ -1463,6 +1523,7 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 			fetcher:  p.imageFetcher,
 			cfg:      p.imageTrustCfg,
 			timeout:  p.imageTrustTimeout,
+			registry: p.imageTrustRegistry,
 		}
 		denyReason, verifiedDigest := verifyImageTrust(r.Context(), logger, fields, imageRef, "container create")
 		if denyReason != "" {

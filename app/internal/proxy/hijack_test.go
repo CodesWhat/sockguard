@@ -71,46 +71,15 @@ func waitForGoroutineDrain(t *testing.T, baseline int, timeout time.Duration) {
 func restoreHijackHooks(t *testing.T) {
 	t.Helper()
 	savedPool := hijackBufferPool
-	savedDialWithTimeout := dialUpstreamWithTimeoutHook
 	savedDial := dialUpstreamHook
 	savedRead := readResponseHook
 	savedCopy := copyBufferHook
 	t.Cleanup(func() {
 		hijackBufferPool = savedPool
-		dialUpstreamWithTimeoutHook = savedDialWithTimeout
 		dialUpstreamHook = savedDial
 		readResponseHook = savedRead
 		copyBufferHook = savedCopy
 	})
-}
-
-func TestDefaultDialHijackUpstreamUsesFiveSecondTimeout(t *testing.T) {
-	restoreHijackHooks(t)
-
-	var gotNetwork, gotAddress string
-	var gotTimeout time.Duration
-	wantErr := errors.New("dial boom")
-
-	dialUpstreamWithTimeoutHook = func(network, address string, timeout time.Duration) (net.Conn, error) {
-		gotNetwork = network
-		gotAddress = address
-		gotTimeout = timeout
-		return nil, wantErr
-	}
-
-	_, err := dialUpstreamHook("unix", "/tmp/docker.sock")
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("error = %v, want %v", err, wantErr)
-	}
-	if gotNetwork != "unix" {
-		t.Fatalf("network = %q, want %q", gotNetwork, "unix")
-	}
-	if gotAddress != "/tmp/docker.sock" {
-		t.Fatalf("address = %q, want %q", gotAddress, "/tmp/docker.sock")
-	}
-	if gotTimeout != hijackDialTimeout {
-		t.Fatalf("timeout = %v, want %v", gotTimeout, hijackDialTimeout)
-	}
 }
 
 type erroringResponseWriter struct {
@@ -3199,9 +3168,6 @@ func TestHijackConstantsArePinned(t *testing.T) {
 	}
 	if hijackHandshakeTimeout != 30*time.Second {
 		t.Errorf("hijackHandshakeTimeout = %v, want 30s", hijackHandshakeTimeout)
-	}
-	if hijackInactivityTimeout != 10*time.Minute {
-		t.Errorf("hijackInactivityTimeout = %v, want 10m", hijackInactivityTimeout)
 	}
 }
 

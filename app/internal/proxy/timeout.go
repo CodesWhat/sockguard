@@ -13,8 +13,8 @@ import (
 	"github.com/codeswhat/sockguard/v3/app/internal/upstream"
 )
 
-// WithRequestTimeout wraps next so that ordinary finite upstream requests are
-// bounded by a total per-request deadline. When the deadline fires, the proxy
+// WithRequestTimeoutForFlavor wraps next so that ordinary finite upstream
+// requests are bounded by a total per-request deadline. When the deadline fires, the proxy
 // transport aborts the upstream connection. This is the body-phase backstop
 // that ResponseHeaderTimeout cannot provide: a daemon that sends headers
 // promptly and then hangs the body would otherwise pin the request until the
@@ -48,16 +48,12 @@ import (
 // max(timeout, grace+30s), grace being the clamped (at most 1h) ?t= value
 // (default 10s). GET /system/df skips only the response-header deadline.
 // Hijacked endpoints
-// (attach, exec start) never reach this handler: HijackHandler short-circuits
-// them earlier in the chain.
-func WithRequestTimeout(next http.Handler, timeout time.Duration) http.Handler {
-	return WithRequestTimeoutForFlavor(next, timeout, false)
-}
-
-// WithRequestTimeoutForFlavor is WithRequestTimeout with an explicit upstream
-// engine classification. podmanUpstream must be true only when the upstream
-// has been resolved as Podman; Docker-compatible top can stream on Podman but
-// is always finite on Docker.
+// (attach, exec start) never reach this handler: HijackHandlerWithDialer
+// short-circuits them earlier in the chain.
+//
+// podmanUpstream must be true only when the upstream has been resolved as
+// Podman; Docker-compatible top can stream on Podman but is always finite on
+// Docker.
 func WithRequestTimeoutForFlavor(next http.Handler, timeout time.Duration, podmanUpstream bool) http.Handler {
 	if timeout <= 0 {
 		return next
@@ -96,14 +92,6 @@ func WithUpstreamDeadlines(next http.Handler, requestTimeout time.Duration, podm
 		}
 		bounded.ServeHTTP(w, r)
 	})
-}
-
-// isLongLivedUpstreamRequest reports whether a proxied request is expected to
-// have an unbounded or very long response and therefore must not carry the
-// per-request upstream deadline. Docker API version prefixes (/v1.XX/) are
-// stripped before matching.
-func isLongLivedUpstreamRequest(w http.ResponseWriter, r *http.Request) bool {
-	return isLongLivedUpstreamRequestForFlavor(w, r, false)
 }
 
 func isLongLivedUpstreamRequestForFlavor(w http.ResponseWriter, r *http.Request, podmanUpstream bool) bool {

@@ -598,7 +598,9 @@ every Docker-compat exfiltration surface, plus the libpod-only entries below:
   registers this as a `GET` that dumps an existing pod's or container's
   definition to YAML, which can include environment variables and other
   resource data. It is a read/export surface, not a write, so it lives in
-  this catalog rather than the blind-write one above.
+  this catalog rather than the blind-write one above. Under owner isolation
+  or a visibility policy it (and its alias `GET /libpod/kube/generate`) is
+  refused outright, because the names it resolves carry no owner check.
 - `POST /libpod/containers/*/checkpoint` — a `POST`, but with `?export=1`
   the response body is a tar.gz of the container's CRIU checkpoint: the
   process memory dump plus root-filesystem changes, so every secret the
@@ -1193,8 +1195,9 @@ land):
 - Full body modeling for `play/kube` and `kube/apply` — these stay behind
   the blind-write acknowledgment described above rather than getting a real
   inspector. (`generate/kube` is not part of this list: it is a `GET`
-  read-exfiltration endpoint and remains gated by
-  `insecure_allow_read_exfiltration`, as described earlier.)
+  read-exfiltration endpoint gated by
+  `insecure_allow_read_exfiltration`, and refused under either isolation
+  layer, as described earlier.)
 - Narrower policy for `POST /libpod/local/build`,
   `POST /libpod/local/images/load`, and `POST /libpod/images/scp/*` — all
   three name their input outside the request (a daemon-host path, or an SSH

@@ -1156,3 +1156,46 @@ func TestRewriteServiceImage(t *testing.T) {
 	}
 
 }
+
+func TestServiceInspectDeniesStoredRollbackWithAllowedImages(t *testing.T) {
+	const body = `{"TaskTemplate":{"ContainerSpec":{"Image":"docker.io/library/alpine:3.22"}}}`
+	policy := newServicePolicy(ServiceOptions{AllowedImages: []string{"docker.io/library/alpine:3.22"}, AllowAllRegistries: true})
+	req := httptest.NewRequest(http.MethodPost, "/services/app/update?version=1&rollback=previous", strings.NewReader(body))
+	reason, err := policy.inspect(testLogger(), req, NormalizePath(req.URL.Path))
+	if err != nil || reason != "service denied: stored rollback is not supported with allowed_images" {
+		t.Fatalf("inspect = %q, %v", reason, err)
+	}
+
+	// Without allowed_images the same request is not denied by this gate.
+	open := newServicePolicy(ServiceOptions{AllowAllRegistries: true})
+	req = httptest.NewRequest(http.MethodPost, "/services/app/update?version=1&rollback=previous", strings.NewReader(body))
+	if reason, err := open.inspect(testLogger(), req, NormalizePath(req.URL.Path)); err != nil || reason != "" {
+		t.Fatalf("inspect without allowed_images = %q, %v", reason, err)
+	}
+}
+
+func TestServiceInspectDeniesAutomaticRollbackWithAllowedImages(t *testing.T) {
+	policy := newServicePolicy(ServiceOptions{AllowedImages: []string{"docker.io/library/alpine:3.22"}, AllowAllRegistries: true})
+	open := newServicePolicy(ServiceOptions{AllowAllRegistries: true})
+	bodyFor := func(action string) string {
+		return `{"TaskTemplate":{"ContainerSpec":{"Image":"docker.io/library/alpine:3.22"}},"UpdateConfig":{"FailureAction":"` + action + `"}}`
+	}
+	for _, action := range []string{"rollback", " ROLLBACK "} {
+		req := httptest.NewRequest(http.MethodPost, "/services/app/update?version=1", strings.NewReader(bodyFor(action)))
+		reason, err := policy.inspect(testLogger(), req, NormalizePath(req.URL.Path))
+		if err != nil || reason != "service denied: automatic rollback is not supported with allowed_images" {
+			t.Fatalf("action %q: inspect = %q, %v", action, reason, err)
+		}
+
+		// Without allowed_images the same request is not denied by this gate.
+		req = httptest.NewRequest(http.MethodPost, "/services/app/update?version=1", strings.NewReader(bodyFor(action)))
+		if reason, err := open.inspect(testLogger(), req, NormalizePath(req.URL.Path)); err != nil || reason != "" {
+			t.Fatalf("action %q without allowed_images: inspect = %q, %v", action, reason, err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/services/app/update?version=1", strings.NewReader(bodyFor("pause")))
+	if reason, err := policy.inspect(testLogger(), req, NormalizePath(req.URL.Path)); err != nil || reason != "" {
+		t.Fatalf("pause: inspect = %q, %v", reason, err)
+	}
+}

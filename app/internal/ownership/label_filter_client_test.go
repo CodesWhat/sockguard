@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codeswhat/sockguard/v3/app/internal/filter"
 	"github.com/codeswhat/sockguard/v3/app/internal/upstreamflavor"
 	"github.com/codeswhat/sockguard/v3/app/internal/visibility"
 )
@@ -227,7 +228,7 @@ func TestListLabelFilterManyClientSelectors(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodGet, "/containers/json?filters="+url.QueryEscape(string(encoded)), nil)
-	if err := addOwnerLabelFilter(req, ownerLabelForTest, "team-a", false); err != nil {
+	if err := addOwnerLabelFilter(req, filter.NormalizePath(req.URL.Path), ownerLabelForTest, "team-a", false); err != nil {
 		t.Fatal(err)
 	}
 	got := decodeFiltersForTest(t, req.URL.Query().Get("filters"))["label"]
