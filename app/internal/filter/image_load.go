@@ -456,6 +456,13 @@ func (io_ ioDeps) extractImageLoadArchiveFromTar(tr *tar.Reader, preferOCI bool)
 		if name == ".." || strings.HasPrefix(name, "../") {
 			return imageLoadArchiveInspection{}, fmt.Errorf("image archive entry %q escapes archive root", header.Name)
 		}
+		if header.Typeflag != tar.TypeReg && isImageLoadConfigFilePath(name) {
+			// A link, device, directory or any other non-regular entry at a
+			// config path carries no body, and a regular entry before it must
+			// not be read as the file the archive ends up with. The daemon
+			// applies entries in order, so the later one wins.
+			io_.discardImageLoadConfigFile(&controls, name)
+		}
 		if header.Typeflag == tar.TypeSymlink || header.Typeflag == tar.TypeLink {
 			if name == "manifest.json" {
 				return imageLoadArchiveInspection{}, fmt.Errorf("image archive control file %s is not a regular file", name)
@@ -469,7 +476,7 @@ func (io_ ioDeps) extractImageLoadArchiveFromTar(tr *tar.Reader, preferOCI bool)
 			controls.seenLegacyRepositories = true
 			continue
 		}
-		if header.Typeflag == tar.TypeReg && strings.HasSuffix(name, ".json") && name != "manifest.json" && name != "index.json" {
+		if header.Typeflag == tar.TypeReg && isImageLoadConfigFilePath(name) {
 			if err := io_.retainImageLoadConfigFile(&controls, name, header, tr); err != nil {
 				return imageLoadArchiveInspection{}, err
 			}
@@ -520,6 +527,33 @@ func (io_ ioDeps) extractImageLoadArchiveFromTar(tr *tar.Reader, preferOCI bool)
 			controls.ociLayout = body
 		}
 	}
+}
+
+// isImageLoadConfigFilePath reports whether name is a path
+// retainImageLoadConfigFile keeps the body of: a .json entry that is not a
+// control file.
+func isImageLoadConfigFilePath(name string) bool {
+	return strings.HasSuffix(name, ".json") && name != "manifest.json" && name != "index.json"
+}
+
+// discardImageLoadConfigFile marks a config path as not retained, which is
+// how a later lookup of it fails closed. It is what a non-regular entry at the
+// path does to a copy kept from an earlier regular one, and to a path that
+// was never retained.
+func (io_ ioDeps) discardImageLoadConfigFile(controls *imageLoadArchiveControlFiles, name string) {
+	if controls.configFilesOverflow {
+		return
+	}
+	if controls.configFiles == nil {
+		controls.configFiles = make(map[string][]byte)
+	}
+	previous, seen := controls.configFiles[name]
+	if !seen && len(controls.configFiles) >= maxImageLoadConfigFiles {
+		controls.configFilesOverflow = true
+		return
+	}
+	controls.configFilesBytes -= int64(len(previous))
+	controls.configFiles[name] = nil
 }
 
 // retainImageLoadConfigFile keeps the body of a .json entry for the

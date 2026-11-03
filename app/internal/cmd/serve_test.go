@@ -28,6 +28,7 @@ import (
 	"github.com/codeswhat/sockguard/v3/app/internal/health"
 	"github.com/codeswhat/sockguard/v3/app/internal/logging"
 	"github.com/codeswhat/sockguard/v3/app/internal/metrics"
+	"github.com/codeswhat/sockguard/v3/app/internal/ownership"
 	"github.com/codeswhat/sockguard/v3/app/internal/testcert"
 )
 
@@ -2017,4 +2018,32 @@ func isWildcardTCPBind(address string) bool {
 
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsUnspecified()
+}
+
+// The label key the load inspector reads is the one the ownership middleware
+// enforces with. Ownership is one owner and one key for the whole proxy, so
+// no profile carries its own, and servePolicyConfig (shared by the default
+// policy and every profile's) reads only that key.
+func TestServePolicyConfigImageLoadOwnerLabelKeyFollowsOwnership(t *testing.T) {
+	tests := []struct {
+		name  string
+		owner string
+		key   string
+		want  string
+	}{
+		{name: "no owner reads no labels", owner: "", key: "com.example.owner", want: ""},
+		{name: "configured key", owner: "job-123", key: "com.example.owner", want: "com.example.owner"},
+		{name: "empty key falls back to the default the middleware uses", owner: "job-123", key: "", want: ownership.DefaultLabelKey},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Ownership.Owner = tt.owner
+			cfg.Ownership.LabelKey = tt.key
+
+			if got := servePolicyConfig(&cfg, nil).ImageLoad.OwnerLabelKey; got != tt.want {
+				t.Fatalf("ImageLoad.OwnerLabelKey = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }

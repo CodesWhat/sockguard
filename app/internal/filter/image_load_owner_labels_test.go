@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -186,6 +187,78 @@ func TestImageLoadOwnerLabelsFailClosedPastBounds(t *testing.T) {
 		labels, unreadable := imageLoadOwnerLabels(archive, ownerLabelTestKey)
 		if unreadable || !slices.Equal(labels, []string{"victim"}) {
 			t.Fatalf("labels = %v unreadable = %v, want [victim]", labels, unreadable)
+		}
+	})
+}
+
+// A non-regular entry at a config path replaces what an earlier regular entry
+// put there, and carries no body to read, so the lookup has to refuse.
+func TestImageLoadNonRegularEntryAtConfigPathFailsClosed(t *testing.T) {
+	name := fmt.Sprintf("%064d.json", 0)
+	manifest := fmt.Sprintf(`[{"Config":%q,"RepoTags":["mine/app:v1"]}]`, name)
+	for _, typeflag := range []byte{tar.TypeSymlink, tar.TypeLink, tar.TypeChar, tar.TypeFifo, tar.TypeDir} {
+		t.Run(fmt.Sprintf("typeflag %q after a regular entry", typeflag), func(t *testing.T) {
+			var buf bytes.Buffer
+			tw := tar.NewWriter(&buf)
+			config := ownerLabelConfig(map[string]string{ownerLabelTestKey: "mine"})
+			if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(config)), Typeflag: tar.TypeReg}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tw.Write([]byte(config)); err != nil {
+				t.Fatal(err)
+			}
+			hdr := &tar.Header{Name: name, Mode: 0o644, Typeflag: typeflag}
+			if typeflag == tar.TypeSymlink || typeflag == tar.TypeLink {
+				hdr.Linkname = "elsewhere.json"
+			}
+			if err := tw.WriteHeader(hdr); err != nil {
+				t.Fatal(err)
+			}
+			if err := tw.WriteHeader(&tar.Header{Name: "manifest.json", Mode: 0o644, Size: int64(len(manifest)), Typeflag: tar.TypeReg}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := tw.Write([]byte(manifest)); err != nil {
+				t.Fatal(err)
+			}
+			if err := tw.Close(); err != nil {
+				t.Fatal(err)
+			}
+			archive, err := (ioDeps{ReadAllLimited: defaultIODeps().ReadAllLimited}).extractImageLoadArchiveFromTar(tar.NewReader(&buf), false)
+			if errors.Is(err, errImageLoadOCIUninspectable) {
+				return // links refuse the whole archive as uninspectable
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, unreadable := imageLoadOwnerLabels(archive, ownerLabelTestKey); !unreadable {
+				t.Fatal("want unreadable after a non-regular entry at a retained config path")
+			}
+		})
+	}
+	t.Run("symlink at a path never retained", func(t *testing.T) {
+		var buf bytes.Buffer
+		tw := tar.NewWriter(&buf)
+		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Typeflag: tar.TypeSymlink, Linkname: "elsewhere.json"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := tw.WriteHeader(&tar.Header{Name: "manifest.json", Mode: 0o644, Size: int64(len(manifest)), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(manifest)); err != nil {
+			t.Fatal(err)
+		}
+		if err := tw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		archive, err := (ioDeps{ReadAllLimited: defaultIODeps().ReadAllLimited}).extractImageLoadArchiveFromTar(tar.NewReader(&buf), false)
+		if errors.Is(err, errImageLoadOCIUninspectable) {
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, unreadable := imageLoadOwnerLabels(archive, ownerLabelTestKey); !unreadable {
+			t.Fatal("want unreadable")
 		}
 	})
 }
