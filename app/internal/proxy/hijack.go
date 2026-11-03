@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/codeswhat/sockguard/v3/app/internal/apipath"
 	"github.com/codeswhat/sockguard/v3/app/internal/filter"
 	"github.com/codeswhat/sockguard/v3/app/internal/httpjson"
 	"github.com/codeswhat/sockguard/v3/app/internal/logging"
@@ -322,7 +323,16 @@ type passClientUpgradeKey struct{}
 // `Connection: Upgrade` / `Upgrade: tcp` request and its 101 answer.
 func PassClientUpgrade(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), passClientUpgradeKey{}, true)))
+		// Only Docker container attach and exec start are touched. Every other
+		// request, BuildKit's /session and /grpc (Upgrade: h2c) included, goes
+		// through with the very same *http.Request, so the wrapper cannot
+		// change how they are handled.
+		if r != nil && r.Method == http.MethodPost {
+			if p := requestHijackPath(w, r); apipath.IsContainerAttachPath(p) || apipath.IsExecStartPath(p) {
+				r = r.WithContext(context.WithValue(r.Context(), passClientUpgradeKey{}, true))
+			}
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 

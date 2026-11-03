@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -387,4 +388,52 @@ func TestHijackForcesUpgradeWithoutPassthrough(t *testing.T) {
 	}
 	_ = conn.(*net.TCPConn).CloseWrite()
 	_, _ = io.ReadAll(br)
+}
+
+// PassClientUpgrade must be invisible to everything but Docker attach and exec
+// start: BuildKit's /session and /grpc (Upgrade: h2c), libpod routes and
+// ordinary requests reach the next handler as the identical *http.Request,
+// with the same headers and no passthrough marker in the context.
+func TestPassClientUpgradeLeavesOtherRoutesUntouched(t *testing.T) {
+	cases := []struct {
+		method, path string
+		wantMarked   bool
+	}{
+		{http.MethodPost, "/session", false},
+		{http.MethodPost, "/v1.47/session", false},
+		{http.MethodPost, "/grpc", false},
+		{http.MethodGet, "/session", false},
+		{http.MethodPost, "/libpod/exec/abc/start", false},
+		{http.MethodGet, "/containers/abc/attach/ws", false},
+		{http.MethodPost, "/build", false},
+		{http.MethodPost, "/containers/abc/attach", true},
+		{http.MethodPost, "/v1.47/exec/abc/start", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			req, err := http.NewRequest(tc.method, "http://x"+tc.path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Connection", "Upgrade")
+			req.Header.Set("Upgrade", "h2c")
+
+			var got *http.Request
+			PassClientUpgrade(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { got = r })).
+				ServeHTTP(httptest.NewRecorder(), req)
+
+			if got == nil {
+				t.Fatal("next handler not called")
+			}
+			if marked := passClientUpgrade(got); marked != tc.wantMarked {
+				t.Errorf("marked = %v, want %v", marked, tc.wantMarked)
+			}
+			if !tc.wantMarked && got != req {
+				t.Error("request was replaced for a route the wrapper must not touch")
+			}
+			if got.Header.Get("Upgrade") != "h2c" || got.Header.Get("Connection") != "Upgrade" {
+				t.Errorf("headers rewritten: Upgrade=%q Connection=%q", got.Header.Get("Upgrade"), got.Header.Get("Connection"))
+			}
+		})
+	}
 }
