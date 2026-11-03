@@ -1352,6 +1352,10 @@ land):
   to name one reference and get one check. A short `repo` Podman cannot store
   under `localhost/` is refused with a `403` before anything is inspected: one
   whose first component has an upper-case letter, and one over 245 characters.
+  A `repo` with no slash is refused past 237 characters on a Podman upstream:
+  its Docker-compatible lookup completes the name to `docker.io/library/{repo}`,
+  and Podman rejects a reference over 255 characters, which used to surface as a
+  `502`. A dockerd upstream allows 247.
   A registry-qualified `repo`, and every retag on a dockerd upstream, is
   inspected once.
 
