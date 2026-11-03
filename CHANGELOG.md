@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A libpod container update can no longer clear a required limit through `unified`.** `{"memory":{"limit":N},"unified":{"memory.max":"max"}}` passed `require_memory_limit` because the resource-limit guard overlaid only `memory.limit`, `cpu` and `pids`, while the OCI runtime writes the `unified` cgroup map after them and `max` clears the limit. The guard now applies `memory.max`, `cpu.max` and `pids.max` from `unified` to the effective state, so `require_memory_limit`, `require_cpu_limit`, `require_cpu_limit_hard` and `require_pids_limit` see what the container would end up with. Found by source reading of runc's fs2 manager, not on a live Podman.
 - **Admission mutation no longer skips an enforce rule on an ambiguous body under `warn` and `audit`.** A body the engine refuses as `request_body_ambiguous` (a label key spelled with U+0130, say) was forwarded to the daemon with the client's bytes under a warn or audit profile, so a required `inject_labels` or `remap_image` rule never ran on it. When an `enforce` rule covers the surface, any refusal by the mutation engine is now a hard error in every rollout mode. A surface with only `warn` or `audit` rules is unchanged.
 
 ## [3.0.0-rc.6] - 2026-11-03
