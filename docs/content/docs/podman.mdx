@@ -347,7 +347,12 @@ injects extra mount fields: `{"Mounts":[{"Type":"bind","Target":"/h,source=/etc"
 binds the host's `/etc`, and `{"Type":"tmpfs","Target":"/scratch,exec,suid,dev"}`
 makes an exec/suid/dev tmpfs. A comma in any of those fields is refused. dockerd
 reads the structured mount and never rebuilds that string, so nothing a Docker
-client normally sends is affected.
+client normally sends is affected. The refusal follows the upstream engine: when
+every upstream endpoint's `GET /version` positively identified dockerd, a comma
+in those fields is a literal character and the create is forwarded. An explicit
+`upstream.flavor: docker` doesn't count on its own: if the probe failed or
+didn't recognise the engine, or one endpoint of a failover set couldn't be
+probed, the refusal stays.
 
 The Docker-compatible create reaches the same log path through
 `HostConfig.LogConfig`. It has no path field. Podman turns each entry of
@@ -1375,6 +1380,10 @@ land):
   to name one reference and get one check. A short `repo` Podman cannot store
   under `localhost/` is refused with a `403` before anything is inspected: one
   whose first component has an upper-case letter, and one over 245 characters.
+  A `repo` with no slash is refused past 237 characters on a Podman upstream:
+  its Docker-compatible lookup completes the name to `docker.io/library/{repo}`,
+  and Podman rejects a reference over 255 characters, which used to surface as a
+  `502`. A dockerd upstream allows 247.
   A registry-qualified `repo`, and every retag on a dockerd upstream, is
   inspected once.
 

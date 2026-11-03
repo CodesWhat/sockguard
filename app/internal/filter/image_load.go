@@ -681,6 +681,14 @@ func imageLoadOCIIndexReferences(descriptors []imageLoadOCIIndexDescriptor) ([]s
 			hasUntagged = true
 			continue
 		}
+		// A name that carries a digest has to carry the digest of the
+		// manifest it is attached to. A containerd-store dockerd records the
+		// name as an image record of its own without comparing the two, so a
+		// mismatch is a record no by-digest inspect resolves, and a later load
+		// of the same name replaces it unseen.
+		if _, digest, ok := strings.Cut(reference, "@"); ok && digest != descriptor.Digest {
+			return nil, false, fmt.Errorf("OCI image archive name %q carries a digest that is not its manifest digest %q", reference, descriptor.Digest)
+		}
 		references = append(references, reference)
 	}
 	return references, hasUntagged, nil

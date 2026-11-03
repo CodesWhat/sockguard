@@ -199,6 +199,7 @@ func resolveUpstreamCapabilities(ctx context.Context, deps *serveDeps, cfg *conf
 	detected := make([]upstreamflavor.Flavor, len(endpoints))
 	conjunctiveVolumes := true
 	cgroupV1 := cgroupV1OptInConfigured(cfg)
+	allProbedDocker := true
 	for i, ep := range endpoints {
 		rt, err := res.EndpointRoundTripper(i)
 		if err != nil {
@@ -219,6 +220,7 @@ func resolveUpstreamCapabilities(ctx context.Context, deps *serveDeps, cfg *conf
 			observed = upstreamflavor.Capabilities{Flavor: configured}
 		}
 		detected[i] = observed.Flavor
+		allProbedDocker = allProbedDocker && observed.ProbedDocker
 		conjunctiveVolumes = conjunctiveVolumes && observed.Flavor == upstreamflavor.Podman && observed.PodmanConjunctiveVolumeFilters
 		if cgroupV1 {
 			cgroupV1 = endpointIsCgroupV1(ctx, deps, rt, ep, logger)
@@ -226,7 +228,7 @@ func resolveUpstreamCapabilities(ctx context.Context, deps *serveDeps, cfg *conf
 	}
 	if configured != upstreamflavor.Auto {
 		logger.Info("upstream flavor resolved", "flavor", string(configured), "probed", true, "endpoints", len(endpoints), "podman_conjunctive_volume_filters", configured == upstreamflavor.Podman && conjunctiveVolumes)
-		return upstreamflavor.Capabilities{Flavor: configured, PodmanConjunctiveVolumeFilters: configured == upstreamflavor.Podman && conjunctiveVolumes, CgroupV1: cgroupV1}, nil
+		return upstreamflavor.Capabilities{Flavor: configured, PodmanConjunctiveVolumeFilters: configured == upstreamflavor.Podman && conjunctiveVolumes, CgroupV1: cgroupV1, ProbedDocker: configured == upstreamflavor.Docker && allProbedDocker}, nil
 	}
 	for i := 1; i < len(detected); i++ {
 		if detected[i] != detected[0] {
@@ -234,7 +236,7 @@ func resolveUpstreamCapabilities(ctx context.Context, deps *serveDeps, cfg *conf
 		}
 	}
 	logger.Info("upstream flavor resolved", "flavor", string(detected[0]), "probed", true, "endpoints", len(endpoints), "podman_conjunctive_volume_filters", conjunctiveVolumes)
-	return upstreamflavor.Capabilities{Flavor: detected[0], PodmanConjunctiveVolumeFilters: conjunctiveVolumes, CgroupV1: cgroupV1}, nil
+	return upstreamflavor.Capabilities{Flavor: detected[0], PodmanConjunctiveVolumeFilters: conjunctiveVolumes, CgroupV1: cgroupV1, ProbedDocker: detected[0] == upstreamflavor.Docker && allProbedDocker}, nil
 }
 
 // cgroupV1OptInConfigured reports whether the global request_body or any
@@ -303,6 +305,7 @@ func resolveUpstreamFlavorForRuntime(ctx context.Context, deps *serveDeps, runti
 		runtime.upstreamFlavor = capabilities.Flavor
 		runtime.upstreamPodmanConjunctiveVolumeFilters = capabilities.PodmanConjunctiveVolumeFilters
 		runtime.upstreamCgroupV1 = capabilities.CgroupV1
+		runtime.upstreamProbedDocker = capabilities.ProbedDocker
 	}
 	return nil
 }
@@ -360,6 +363,7 @@ func runtimeUpstreamCapabilities(runtime *serveRuntime) upstreamflavor.Capabilit
 	if runtime != nil {
 		capabilities.PodmanConjunctiveVolumeFilters = runtime.upstreamPodmanConjunctiveVolumeFilters
 		capabilities.CgroupV1 = runtime.upstreamCgroupV1
+		capabilities.ProbedDocker = runtime.upstreamProbedDocker
 	}
 	return capabilities
 }
