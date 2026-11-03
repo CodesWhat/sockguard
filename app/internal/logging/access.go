@@ -77,6 +77,10 @@ type RequestMeta struct {
 	// other request, and on a load the inspector did not let through. Set
 	// only by filter's imageLoadPolicy.inspect.
 	ImageLoad *ImageLoadRecord
+	// inspectedLabels memoizes successful single-resource inspects for this
+	// request only. Written and read through RecordInspectedLabels and
+	// InspectedLabels.
+	inspectedLabels map[string]InspectedLabelsRecord
 	// queryRaw / queryValues / queryErr memoize one url.ParseQuery of the
 	// request's query string so the middlewares and inspectors that each
 	// read it pay for a single parse. Written and read only through

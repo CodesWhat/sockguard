@@ -219,7 +219,18 @@ func middlewareWithClient(client *http.Client, logger *slog.Logger, opts Options
 	// authorize a different resource after a delete/recreate or retag. Inspect
 	// every request instead; per-request embedded references are deduplicated
 	// before reaching this boundary.
-	return middlewareWithDeps(logger, opts, inspector.inspectResource, inspector.inspectExec)
+	//
+	// The one reuse allowed is within a single request: visibility, which runs
+	// first, leaves its successful inspect result on the request meta, and
+	// reading it back is the same inspect-then-proxy window the request
+	// already has. Cross-request caching stays forbidden.
+	inspectResource := func(ctx context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
+		if labels, found, ok := logging.Meta(ctx).InspectedLabels(string(kind), identifier); ok {
+			return labels, found, nil
+		}
+		return inspector.inspectResource(ctx, kind, identifier)
+	}
+	return middlewareWithDeps(logger, opts, inspectResource, inspector.inspectExec)
 }
 
 func middlewareWithDeps(
