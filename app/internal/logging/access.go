@@ -111,6 +111,16 @@ type ImageLoadRecord struct {
 	// not read it. So References is not the names that daemon assigns. The
 	// filter lets the archive through only where every registry is allowed.
 	LegacyNames bool
+	// OwnerLabelKey is the label key OwnerLabels was read under. Empty means
+	// the filter was not told ownership is active and read nothing, which
+	// owner isolation treats as unread rather than as no labels.
+	OwnerLabelKey string
+	// OwnerLabels are the non-empty values of OwnerLabelKey across every image
+	// config the archive carries. An image with no such label adds nothing.
+	OwnerLabels []string
+	// ConfigsUnreadable reports that an image config the archive references
+	// could not be read, so OwnerLabels may be missing a value.
+	ConfigsUnreadable bool
 }
 
 // Decision values written into RequestMeta.Decision. Allow is not stamped

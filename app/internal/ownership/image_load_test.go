@@ -28,66 +28,66 @@ func TestImageLoadDestinations(t *testing.T) {
 		want       []imageDestination
 		wantReason string
 	}{
-		{name: "archive that names nothing", record: &logging.ImageLoadRecord{}, path: imageLoadPath},
-		{name: "unnamed entries name nothing", record: &logging.ImageLoadRecord{References: []string{"", imageLoadUntaggedName}}, path: imageLoadPath},
-		{name: "repo tag", record: &logging.ImageLoadRecord{References: []string{"team/app:v1"}}, path: imageLoadPath, want: []imageDestination{{target: "team/app:v1"}}},
+		{name: "archive that names nothing", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner"}, path: imageLoadPath},
+		{name: "unnamed entries name nothing", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"", imageLoadUntaggedName}}, path: imageLoadPath},
+		{name: "repo tag", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"team/app:v1"}}, path: imageLoadPath, want: []imageDestination{{target: "team/app:v1"}}},
 		{
-			name: "both spellings a containerd-store save writes", record: &logging.ImageLoadRecord{References: []string{"app:v1", "docker.io/library/app:v1"}}, path: imageLoadPath,
+			name: "both spellings a containerd-store save writes", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"app:v1", "docker.io/library/app:v1"}}, path: imageLoadPath,
 			want: []imageDestination{{target: "app:v1"}, {target: "docker.io/library/app:v1"}},
 		},
-		{name: "a repeated name is checked once", record: &logging.ImageLoadRecord{References: []string{"team/app:v1", "team/app:v1"}}, path: imageLoadPath, want: []imageDestination{{target: "team/app:v1"}}},
-		{name: "name with no tag", record: &logging.ImageLoadRecord{References: []string{"team/app"}}, path: imageLoadPath, want: []imageDestination{{target: "team/app:latest"}}},
+		{name: "a repeated name is checked once", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"team/app:v1", "team/app:v1"}}, path: imageLoadPath, want: []imageDestination{{target: "team/app:v1"}}},
+		{name: "name with no tag", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"team/app"}}, path: imageLoadPath, want: []imageDestination{{target: "team/app:latest"}}},
 		{
-			name: "name by digest is checked as the daemon holds it", record: &logging.ImageLoadRecord{References: []string{"docker.io/library/app@" + testDigestSHA256}}, path: imageLoadPath,
+			name: "name by digest is checked as the daemon holds it", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"docker.io/library/app@" + testDigestSHA256}}, path: imageLoadPath,
 			want: []imageDestination{{target: "docker.io/library/app@" + testDigestSHA256}},
 		},
 		{
-			name: "short name by digest", record: &logging.ImageLoadRecord{References: []string{"team/app@" + testDigestSHA256}}, path: imageLoadPath,
+			name: "short name by digest", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"team/app@" + testDigestSHA256}}, path: imageLoadPath,
 			want: []imageDestination{{target: "team/app@" + testDigestSHA256}},
 		},
 		{
-			name: "name by digest beside the same name by tag", record: &logging.ImageLoadRecord{References: []string{"team/app:latest", "team/app@" + testDigestSHA256}}, path: imageLoadPath,
+			name: "name by digest beside the same name by tag", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"team/app:latest", "team/app@" + testDigestSHA256}}, path: imageLoadPath,
 			want: []imageDestination{{target: "team/app:latest"}, {target: "team/app@" + testDigestSHA256}},
 		},
 		{
-			name: "podman compat short name by digest is checked under both names", record: &logging.ImageLoadRecord{References: []string{"team/app@" + testDigestSHA256}}, path: imageLoadPath, flavor: upstreamflavor.Podman,
+			name: "podman compat short name by digest is checked under both names", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"team/app@" + testDigestSHA256}}, path: imageLoadPath, flavor: upstreamflavor.Podman,
 			want: []imageDestination{{target: "team/app@" + testDigestSHA256, storedTarget: "localhost/team/app@" + testDigestSHA256}},
 		},
 		{
-			name: "native route checks the stored name by digest", record: &logging.ImageLoadRecord{References: []string{"team/app@" + testDigestSHA256}}, path: libpodImageLoadPath,
+			name: "native route checks the stored name by digest", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"team/app@" + testDigestSHA256}}, path: libpodImageLoadPath,
 			want: []imageDestination{{target: "localhost/team/app@" + testDigestSHA256}},
 		},
 		{
-			name: "native route keeps a name by digest with a registry", record: &logging.ImageLoadRecord{References: []string{"quay.io/team/app@" + testDigestSHA256}}, path: libpodImageLoadPath,
+			name: "native route keeps a name by digest with a registry", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"quay.io/team/app@" + testDigestSHA256}}, path: libpodImageLoadPath,
 			want: []imageDestination{{target: "quay.io/team/app@" + testDigestSHA256}},
 		},
 		{
-			name: "podman compat short name is checked under both names", record: &logging.ImageLoadRecord{References: []string{"team/app:v1"}}, path: imageLoadPath, flavor: upstreamflavor.Podman,
+			name: "podman compat short name is checked under both names", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"team/app:v1"}}, path: imageLoadPath, flavor: upstreamflavor.Podman,
 			want: []imageDestination{{target: "team/app:v1", storedTarget: "localhost/team/app:v1"}},
 		},
-		{name: "native route checks the stored name", record: &logging.ImageLoadRecord{References: []string{"team/app:v1"}}, path: libpodImageLoadPath, want: []imageDestination{{target: "localhost/team/app:v1"}}},
-		{name: "native route keeps a name with a registry", record: &logging.ImageLoadRecord{References: []string{"quay.io/team/app:v1"}}, path: libpodImageLoadPath, want: []imageDestination{{target: "quay.io/team/app:v1"}}},
+		{name: "native route checks the stored name", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"team/app:v1"}}, path: libpodImageLoadPath, want: []imageDestination{{target: "localhost/team/app:v1"}}},
+		{name: "native route keeps a name with a registry", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"quay.io/team/app:v1"}}, path: libpodImageLoadPath, want: []imageDestination{{target: "quay.io/team/app:v1"}}},
 
 		{name: "archive nobody inspected", path: imageLoadPath, wantReason: imageLoadDenyUninspected},
-		{name: "archive in neither format", record: &logging.ImageLoadRecord{Unreadable: true}, path: imageLoadPath, wantReason: imageLoadDenyUnreadable},
-		{name: "legacy repositories file beside names that were read", record: &logging.ImageLoadRecord{References: []string{"team/app:v1"}, LegacyNames: true}, path: imageLoadPath, wantReason: imageLoadDenyLegacyNames},
-		{name: "legacy repositories file and no other name", record: &logging.ImageLoadRecord{LegacyNames: true}, path: imageLoadPath, wantReason: imageLoadDenyLegacyNames},
-		{name: "legacy repositories file on a podman upstream's compat route", record: &logging.ImageLoadRecord{References: []string{"team/app:v1"}, LegacyNames: true}, path: imageLoadPath, flavor: upstreamflavor.Podman, wantReason: imageLoadDenyLegacyNames},
-		{name: "legacy repositories file in an archive in neither format", record: &logging.ImageLoadRecord{Unreadable: true, LegacyNames: true}, path: imageLoadPath, wantReason: imageLoadDenyUnreadable},
+		{name: "archive in neither format", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", Unreadable: true}, path: imageLoadPath, wantReason: imageLoadDenyUnreadable},
+		{name: "legacy repositories file beside names that were read", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"team/app:v1"}, LegacyNames: true}, path: imageLoadPath, wantReason: imageLoadDenyLegacyNames},
+		{name: "legacy repositories file and no other name", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", LegacyNames: true}, path: imageLoadPath, wantReason: imageLoadDenyLegacyNames},
+		{name: "legacy repositories file on a podman upstream's compat route", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"team/app:v1"}, LegacyNames: true}, path: imageLoadPath, flavor: upstreamflavor.Podman, wantReason: imageLoadDenyLegacyNames},
+		{name: "legacy repositories file in an archive in neither format", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", Unreadable: true, LegacyNames: true}, path: imageLoadPath, wantReason: imageLoadDenyUnreadable},
 		{
 			// Podman never reads the file, and only Podman serves this route.
-			name: "legacy repositories file on the native route", record: &logging.ImageLoadRecord{References: []string{"team/app:v1"}, LegacyNames: true}, path: libpodImageLoadPath,
+			name: "legacy repositories file on the native route", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"team/app:v1"}, LegacyNames: true}, path: libpodImageLoadPath,
 			want: []imageDestination{{target: "localhost/team/app:v1"}},
 		},
-		{name: "too many names", record: &logging.ImageLoadRecord{References: tooMany}, path: imageLoadPath, wantReason: imageLoadDenyTooManyNames},
-		{name: "name outside the grammar", record: &logging.ImageLoadRecord{References: []string{"Team/App:v1"}}, path: imageLoadPath, wantReason: "owner policy denied image load with a name outside the image reference grammar"},
-		{name: "name with surrounding space", record: &logging.ImageLoadRecord{References: []string{" team/app:v1"}}, path: imageLoadPath, wantReason: "owner policy denied image load with a name outside the image reference grammar"},
-		{name: "tag outside the grammar", record: &logging.ImageLoadRecord{References: []string{"team/app:-v1"}}, path: imageLoadPath, wantReason: "owner policy denied image load with a tag outside the image reference grammar"},
-		{name: "tag and digest", record: &logging.ImageLoadRecord{References: []string{"team/app:v1@" + testDigestSHA256}}, path: imageLoadPath, wantReason: "owner policy denied image load that names both a tag and a digest"},
-		{name: "digest outside the grammar", record: &logging.ImageLoadRecord{References: []string{"team/app@sha256:abc"}}, path: imageLoadPath, wantReason: "owner policy denied image load with a digest outside the digest grammar"},
-		{name: "digest algorithm name", record: &logging.ImageLoadRecord{References: []string{"sha256:v1"}}, path: imageLoadPath, wantReason: "owner policy denied image load whose name is a digest algorithm name: the engines read such a reference as an image ID"},
-		{name: "digest algorithm name by digest", record: &logging.ImageLoadRecord{References: []string{"sha256@" + testDigestSHA256}}, path: imageLoadPath, wantReason: "owner policy denied image load whose name is a digest algorithm name: the engines read such a reference as an image ID"},
-		{name: "name outside the grammar by digest", record: &logging.ImageLoadRecord{References: []string{"Team/App@" + testDigestSHA256}}, path: imageLoadPath, wantReason: "owner policy denied image load with a name outside the image reference grammar"},
+		{name: "too many names", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: tooMany}, path: imageLoadPath, wantReason: imageLoadDenyTooManyNames},
+		{name: "name outside the grammar", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"Team/App:v1"}}, path: imageLoadPath, wantReason: "owner policy denied image load with a name outside the image reference grammar"},
+		{name: "name with surrounding space", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{" team/app:v1"}}, path: imageLoadPath, wantReason: "owner policy denied image load with a name outside the image reference grammar"},
+		{name: "tag outside the grammar", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"team/app:-v1"}}, path: imageLoadPath, wantReason: "owner policy denied image load with a tag outside the image reference grammar"},
+		{name: "tag and digest", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"team/app:v1@" + testDigestSHA256}}, path: imageLoadPath, wantReason: "owner policy denied image load that names both a tag and a digest"},
+		{name: "digest outside the grammar", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"team/app@sha256:abc"}}, path: imageLoadPath, wantReason: "owner policy denied image load with a digest outside the digest grammar"},
+		{name: "digest algorithm name", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"sha256:v1"}}, path: imageLoadPath, wantReason: "owner policy denied image load whose name is a digest algorithm name: the engines read such a reference as an image ID"},
+		{name: "digest algorithm name by digest", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"sha256@" + testDigestSHA256}}, path: imageLoadPath, wantReason: "owner policy denied image load whose name is a digest algorithm name: the engines read such a reference as an image ID"},
+		{name: "name outside the grammar by digest", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"Team/App@" + testDigestSHA256}}, path: imageLoadPath, wantReason: "owner policy denied image load with a name outside the image reference grammar"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -127,24 +127,24 @@ func TestImageLoadAuthorizesTheNamesItAssigns(t *testing.T) {
 		wantStatus   int
 		wantReason   string
 	}{
-		{name: "name another owner's image holds", path: "/images/load", record: &logging.ImageLoadRecord{References: []string{"theirs/app:v1"}}, wantStatus: http.StatusForbidden, wantReason: heldByAnotherOwner},
-		{name: "second name another owner's image holds", path: "/v1.45/images/load", record: &logging.ImageLoadRecord{References: []string{"mine/app:latest", "theirs/app:v1"}}, wantStatus: http.StatusForbidden, wantReason: heldByAnotherOwner},
-		{name: "name an unlabeled image holds", path: "/images/load", record: &logging.ImageLoadRecord{References: []string{"shared/base:latest"}}, wantStatus: http.StatusForbidden, wantReason: heldByAnotherOwner},
-		{name: "name an unlabeled image holds with unowned images allowed", path: "/images/load", record: &logging.ImageLoadRecord{References: []string{"shared/base:latest"}}, allowUnowned: true, wantStatus: http.StatusOK},
-		{name: "name by digest another owner's image holds", path: "/images/load", record: &logging.ImageLoadRecord{References: []string{"theirs/app@" + testDigestSHA256}}, wantStatus: http.StatusForbidden, wantReason: heldByAnotherOwner},
-		{name: "name by digest behind one of the caller's own", path: "/images/load", record: &logging.ImageLoadRecord{References: []string{"mine/app:latest", "theirs/app@" + testDigestSHA256}}, wantStatus: http.StatusForbidden, wantReason: heldByAnotherOwner},
-		{name: "name by digest an unlabeled image holds", path: "/images/load", record: &logging.ImageLoadRecord{References: []string{"shared/base@" + testDigestSHA256}}, wantStatus: http.StatusForbidden, wantReason: heldByAnotherOwner},
-		{name: "name by digest an unlabeled image holds with unowned images allowed", path: "/images/load", record: &logging.ImageLoadRecord{References: []string{"shared/base@" + testDigestSHA256}}, allowUnowned: true, wantStatus: http.StatusOK},
-		{name: "name by digest the caller's image holds", path: "/images/load", record: &logging.ImageLoadRecord{References: []string{"mine/app@" + testDigestSHA256}}, wantStatus: http.StatusOK},
-		{name: "name by digest nothing holds", path: "/images/load", record: &logging.ImageLoadRecord{References: []string{"mine/new@" + testDigestSHA256}}, wantStatus: http.StatusOK},
-		{name: "native name by digest another owner's image holds", path: "/v5.0.0/libpod/images/load", record: &logging.ImageLoadRecord{References: []string{"theirs/app@" + testDigestSHA256}}, wantStatus: http.StatusForbidden, wantReason: "libpod " + heldByAnotherOwner},
-		{name: "name the caller's image holds", path: "/images/load", record: &logging.ImageLoadRecord{References: []string{"mine/app:latest"}}, wantStatus: http.StatusOK},
-		{name: "name nothing holds", path: "/images/load", record: &logging.ImageLoadRecord{References: []string{"mine/new:v2"}}, wantStatus: http.StatusOK},
-		{name: "no names", path: "/images/load", record: &logging.ImageLoadRecord{}, wantStatus: http.StatusOK},
+		{name: "name another owner's image holds", path: "/images/load", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"theirs/app:v1"}}, wantStatus: http.StatusForbidden, wantReason: heldByAnotherOwner},
+		{name: "second name another owner's image holds", path: "/v1.45/images/load", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"mine/app:latest", "theirs/app:v1"}}, wantStatus: http.StatusForbidden, wantReason: heldByAnotherOwner},
+		{name: "name an unlabeled image holds", path: "/images/load", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"shared/base:latest"}}, wantStatus: http.StatusForbidden, wantReason: heldByAnotherOwner},
+		{name: "name an unlabeled image holds with unowned images allowed", path: "/images/load", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"shared/base:latest"}}, allowUnowned: true, wantStatus: http.StatusOK},
+		{name: "name by digest another owner's image holds", path: "/images/load", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"theirs/app@" + testDigestSHA256}}, wantStatus: http.StatusForbidden, wantReason: heldByAnotherOwner},
+		{name: "name by digest behind one of the caller's own", path: "/images/load", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"mine/app:latest", "theirs/app@" + testDigestSHA256}}, wantStatus: http.StatusForbidden, wantReason: heldByAnotherOwner},
+		{name: "name by digest an unlabeled image holds", path: "/images/load", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"shared/base@" + testDigestSHA256}}, wantStatus: http.StatusForbidden, wantReason: heldByAnotherOwner},
+		{name: "name by digest an unlabeled image holds with unowned images allowed", path: "/images/load", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"shared/base@" + testDigestSHA256}}, allowUnowned: true, wantStatus: http.StatusOK},
+		{name: "name by digest the caller's image holds", path: "/images/load", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"mine/app@" + testDigestSHA256}}, wantStatus: http.StatusOK},
+		{name: "name by digest nothing holds", path: "/images/load", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"mine/new@" + testDigestSHA256}}, wantStatus: http.StatusOK},
+		{name: "native name by digest another owner's image holds", path: "/v5.0.0/libpod/images/load", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"theirs/app@" + testDigestSHA256}}, wantStatus: http.StatusForbidden, wantReason: "libpod " + heldByAnotherOwner},
+		{name: "name the caller's image holds", path: "/images/load", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"mine/app:latest"}}, wantStatus: http.StatusOK},
+		{name: "name nothing holds", path: "/images/load", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"mine/new:v2"}}, wantStatus: http.StatusOK},
+		{name: "no names", path: "/images/load", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner"}, wantStatus: http.StatusOK},
 		{name: "archive nobody inspected", path: "/images/load", wantStatus: http.StatusForbidden, wantReason: imageLoadDenyUninspected},
-		{name: "legacy repositories file beside the caller's own name", path: "/images/load", record: &logging.ImageLoadRecord{References: []string{"mine/app:latest"}, LegacyNames: true}, wantStatus: http.StatusForbidden, wantReason: imageLoadDenyLegacyNames},
-		{name: "native legacy repositories file beside a name nothing holds", path: "/v5.0.0/libpod/images/load", record: &logging.ImageLoadRecord{References: []string{"mine/new:v2"}, LegacyNames: true}, wantStatus: http.StatusOK},
-		{name: "native name another owner's image holds", path: "/v5.0.0/libpod/images/load", record: &logging.ImageLoadRecord{References: []string{"theirs/app:v1"}}, wantStatus: http.StatusForbidden, wantReason: "libpod " + heldByAnotherOwner},
+		{name: "legacy repositories file beside the caller's own name", path: "/images/load", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"mine/app:latest"}, LegacyNames: true}, wantStatus: http.StatusForbidden, wantReason: imageLoadDenyLegacyNames},
+		{name: "native legacy repositories file beside a name nothing holds", path: "/v5.0.0/libpod/images/load", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"mine/new:v2"}, LegacyNames: true}, wantStatus: http.StatusOK},
+		{name: "native name another owner's image holds", path: "/v5.0.0/libpod/images/load", record: &logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: []string{"theirs/app:v1"}}, wantStatus: http.StatusForbidden, wantReason: "libpod " + heldByAnotherOwner},
 		{name: "native archive nobody inspected", path: "/v5.0.0/libpod/images/load", wantStatus: http.StatusForbidden, wantReason: "libpod " + imageLoadDenyUninspected},
 		{name: "host path load is left to the blind-write acknowledgment", path: "/v5.0.0/libpod/local/images/load", wantStatus: http.StatusOK},
 	}
@@ -186,6 +186,48 @@ func TestImageLoadAuthorizesTheNamesItAssigns(t *testing.T) {
 			}
 			if tt.wantReason != "" && meta.Reason != tt.wantReason {
 				t.Fatalf("reason = %q, want %q", meta.Reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestImageLoadRefusesForgedOwnerLabels(t *testing.T) {
+	t.Parallel()
+	const key = "com.sockguard.owner"
+	tests := []struct {
+		name       string
+		record     *logging.ImageLoadRecord
+		wantReason string
+	}{
+		{name: "another owner's label", record: &logging.ImageLoadRecord{OwnerLabelKey: key, References: []string{"mine/new:v2"}, OwnerLabels: []string{"job-999"}}, wantReason: imageLoadDenyForeignOwner},
+		{name: "own label then another owner's", record: &logging.ImageLoadRecord{OwnerLabelKey: key, References: []string{"mine/new:v2"}, OwnerLabels: []string{"job-123", "job-999"}}, wantReason: imageLoadDenyForeignOwner},
+		{name: "own label", record: &logging.ImageLoadRecord{OwnerLabelKey: key, References: []string{"mine/new:v2"}, OwnerLabels: []string{"job-123"}}},
+		{name: "no label", record: &logging.ImageLoadRecord{OwnerLabelKey: key, References: []string{"mine/new:v2"}}},
+		{name: "unreadable config", record: &logging.ImageLoadRecord{OwnerLabelKey: key, References: []string{"mine/new:v2"}, ConfigsUnreadable: true}, wantReason: imageLoadDenyConfigUnread},
+		{name: "filter read no labels", record: &logging.ImageLoadRecord{References: []string{"mine/new:v2"}}, wantReason: imageLoadDenyConfigUnread},
+		{name: "filter read another key", record: &logging.ImageLoadRecord{OwnerLabelKey: "other", References: []string{"mine/new:v2"}}, wantReason: imageLoadDenyConfigUnread},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fi := fakeInspector{}
+			handler := middlewareWithDeps(testLogger(), Options{Owner: "job-123", LabelKey: key}, fi.inspectResource, fi.inspectExec)(
+				http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+			for _, path := range []string{"/images/load", "/v5.0.0/libpod/images/load"} {
+				meta := &logging.RequestMeta{RolloutMode: "enforce", ImageLoad: tt.record}
+				req := httptest.NewRequest(http.MethodPost, path, strings.NewReader("archive"))
+				req = req.WithContext(logging.WithMeta(req.Context(), meta))
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+				if tt.wantReason == "" {
+					if rec.Code != http.StatusOK {
+						t.Fatalf("%s: status = %d, want 200; body: %s", path, rec.Code, rec.Body.String())
+					}
+					continue
+				}
+				if rec.Code != http.StatusForbidden || !strings.Contains(meta.Reason, tt.wantReason) {
+					t.Fatalf("%s: status = %d reason = %q, want 403 with %q", path, rec.Code, meta.Reason, tt.wantReason)
+				}
 			}
 		})
 	}

@@ -186,6 +186,11 @@ type Options struct {
 	// TestServeChainPassesResolvedFlavorToOwnership is the wiring proof, and
 	// TestServeChainImageTagChecksTheLocalhostNameOnPodman is a second one.
 	UpstreamFlavor upstreamflavor.Flavor
+	// UpstreamProbedDocker is true only when GET /version positively
+	// identified dockerd on every endpoint. Flavor can read Docker with no
+	// probe behind it, and the pull untag sends force=1 only on this evidence,
+	// because on Podman force removes the containers using the image.
+	UpstreamProbedDocker bool
 	// PodmanConjunctiveVolumeFilters is true only when all upstream endpoints
 	// positively report a released Podman version with AND across volume filter keys.
 	PodmanConjunctiveVolumeFilters bool
@@ -225,7 +230,10 @@ func middlewareWithClient(client *http.Client, logger *slog.Logger, opts Options
 	// reading it back is the same inspect-then-proxy window the request
 	// already has. Cross-request caching stays forbidden.
 	inspectResource := reuseRequestInspect(inspector.inspectResource)
-	return middlewareWithDeps(logger, opts, inspectResource, inspector.inspectExec)
+	// The check after a pull inspects what the pull just wrote, so it takes
+	// the unmemoized inspect.
+	return middlewareWithPullCheck(logger, opts, inspectResource, inspector.inspectExec,
+		&postPullChecks{inspect: inspector.inspectPulledImage, untag: inspector.untagImage, retag: inspector.retagImage})
 }
 
 // reuseRequestInspect serves an inspect from the result visibility left on the
@@ -249,6 +257,19 @@ func middlewareWithDeps(
 	opts Options,
 	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
 	inspectExec func(context.Context, string) (string, bool, error),
+) func(http.Handler) http.Handler {
+	return middlewareWithPullCheck(logger, opts, inspectResource, inspectExec, nil)
+}
+
+// middlewareWithPullCheck is middlewareWithDeps with the check that follows a
+// pull. A nil post leaves pulls unchecked, which is what a test that stubs
+// only the request-side inspects gets.
+func middlewareWithPullCheck(
+	logger *slog.Logger,
+	opts Options,
+	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
+	inspectExec func(context.Context, string) (string, bool, error),
+	post *postPullChecks,
 ) func(http.Handler) http.Handler {
 	opts = opts.normalized()
 	if opts.Owner == "" {
@@ -370,6 +391,12 @@ func middlewareWithDeps(
 				return
 			}
 			if !verdict.denied() {
+				// Warn and audit rollouts forward what enforce would refuse, so
+				// they do not untag either.
+				if pull, libpod := isImagePullDestinations(refsImageDestinations(refs)); pull && post != nil && !logging.MetaForRequest(w, r).AllowsPassThrough() {
+					servePullWithOwnerCheck(logger, next, w, r, refs.imageDestinations, libpod, opts, post)
+					return
+				}
 				serveOwnershipAllowed(logger, next, w, r, normPath, opts)
 				return
 			}
@@ -425,7 +452,7 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 	case isImageCreateRoutePath(r.Method, normPath):
 		return mutateImageCreateOwnershipRequest(r, normPath, opts)
 	case isImageLoadRoutePath(r.Method, normPath):
-		return imageLoadOwnershipReferences(r, normPath, opts.UpstreamFlavor), nil
+		return imageLoadOwnershipReferences(r, normPath, opts), nil
 	case r.Method == http.MethodPost && isCommitPath(normPath):
 		return mutateCommitOwnershipRequest(r, normPath, opts)
 	case r.Method == http.MethodPost && (normPath == "/build" || normPath == libpodPrefix+"build"):

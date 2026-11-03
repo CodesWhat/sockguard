@@ -627,6 +627,32 @@ the other owner's own, so the other owner goes on to run the client's content.
 That is why a load and an import are checked even though both are off by
 default (`request_body.image_load` and `request_body.image_pull.allow_imports`).
 
+A load is also refused when an image in the archive carries another owner's
+owner label, even under a name nothing holds: that image would pass the other
+owner's ownership checks and put the client's content in its namespace. The
+filter reads the label out of every image config in the archive (Docker
+`manifest.json` configs and OCI `index.json` manifests), and a config it can't
+read refuses the load. An image with no owner label follows
+`allow_unowned_images`, and one labeled with the caller's own owner is allowed.
+
+A pull can't be read before it runs, so it is checked after. Once the daemon
+finishes the pull, Sockguard inspects each reference it wrote, and an image
+carrying another owner's label is untagged and named in a final error line on
+the progress stream (`owner policy removed pulled image <ref>`). An inspect that
+fails is treated the same way. If the requester already held that name, the
+image ID it pointed at is read before the pull is forwarded, and the name is put
+back on it after the untag (`POST /images/{id}/tag`, or its `/libpod/` twin on
+Podman), so a pull can't strip a caller's own tag. On an upstream probed as dockerd the untag is sent
+with `force=1&noprune=1`, which removes just that name even when a container
+uses the image. Podman, and an upstream the startup probe didn't identify as dockerd, gets a
+plain delete, since Podman's `force` removes the containers too. If the pull reported success and the name still isn't there, the
+stream gets `owner policy could not verify pulled image <ref>` and the proxy logs
+a warning. Podman's native pull reports the IDs of the images it pulled, and
+Sockguard inspects those too: a foreign-labeled image loses the names this pull
+computed, and any other name on it is named in an error line and left alone. This
+runs in enforce rollout only. Warn and audit leave the pulled image alone, and a
+pull by digest writes no tag to check.
+
 Pulling over an existing name is ordinary Docker behavior and stays allowed
 wherever it takes nothing from another owner. `docker pull nginx:latest`
 refreshes a name an unlabeled image holds, which the default
