@@ -1,7 +1,9 @@
 package filter
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -181,6 +183,29 @@ type libpodLogConfiguration struct {
 type libpodNamespace struct {
 	NSMode string `json:"nsmode"`
 	Value  string `json:"value"`
+}
+
+// UnmarshalJSON decodes the object strictly: a key other than nsmode and
+// value is an error, so the body is refused. Podman 6 decodes the request with
+// jsoniter, which for a struct of ten or fewer all-lowercase names compares a
+// 64-bit hash of each key instead of the key itself (v1.1.12), so a key this
+// inspector reads as unknown could still bind to nsmode or value in Podman.
+// Every namespace gate reads these two fields, so no unknown key is allowed to
+// sit beside them. Key case is not part of this: encoding/json already folds
+// it, and the divergent-key guard refuses a body whose case variants disagree.
+func (n *libpodNamespace) UnmarshalJSON(data []byte) error {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return nil
+	}
+	type plain libpodNamespace
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	var decoded plain
+	if err := dec.Decode(&decoded); err != nil {
+		return fmt.Errorf("namespace object: %w", err)
+	}
+	*n = libpodNamespace(decoded)
+	return nil
 }
 
 // isHost reports whether this namespace object selects the host namespace.

@@ -119,7 +119,9 @@ Under `enforce`, a key given twice is refused before any gate reads the body, an
 holding a character Podman 6's decoder and Go's `encoding/json` match
 differently (see [Security](/security)). `warn` and `audit` log the would-deny and forward the body. A namespace field that isn't an
 object, or an `nsmode` that isn't a string, is refused as malformed whatever
-the gates say.
+the gates say. So is a namespace object holding any key besides `nsmode` and
+`value`: Podman 6 matches the keys of a struct that small by a hash of the key,
+so a key Sockguard reads as unknown could still bind to one of them there.
 
 The gates read what the request asks for. They don't move the daemon's
 default, and the default isn't always a private namespace. A rootful Podman

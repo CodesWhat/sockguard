@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Namespace objects refuse unknown keys.** On Podman 6 the daemon's decoder compares a 64-bit hash of each key for a struct with ten or fewer lowercase names, so a key Sockguard read as unknown inside a `netns`, `pidns`, `ipcns`, `userns`, `utsns` or `cgroupns` object could still bind to `nsmode` or `value` there, under every host-namespace gate. `POST /libpod/containers/create` and `POST /libpod/pods/create` now refuse a namespace object with any key besides those two.
 - **Pod prune needs `allow_remove_volumes`.** `POST /libpod/pods/prune` removed every stopped pod and deleted its containers' anonymous volumes with no remove gate, so a rule allowing the route was enough. It now needs `request_body.container_remove.allow_remove_volumes`, the same gate pod removal and kube down use. Owner isolation still refuses the route outright.
 - **Quadlet install and kube down join the blind-write catalog.** `POST /libpod/quadlets`, `DELETE /libpod/play/kube` and its `DELETE /libpod/kube/play` alias carry a body Sockguard never parses (a quadlet unit file, or the Kubernetes YAML a kube down tears down), but they were not in the startup catalog, so a rule allowing them passed without `insecure_allow_body_blind_writes`. Startup now refuses an allow rule that reaches either one until that flag is set. Configs that already allow these routes fail validation until they add it.
 
