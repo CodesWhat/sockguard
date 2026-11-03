@@ -120,6 +120,11 @@ type LibpodContainerCreateOptions struct {
 	// the daemon host. Default false. See denyLogPathReason.
 	AllowLogPath bool
 
+	// AllowTmpfsPrivilegedOptions permits mounts[] entries of type tmpfs whose
+	// options end with exec, dev or suid enabled. Last option wins, as it does
+	// for ContainerCreateOptions.AllowTmpfsPrivilegedOptions. Default false.
+	AllowTmpfsPrivilegedOptions bool
+
 	// AllowedRuntimes allowlists oci_runtime values, mirroring
 	// ContainerCreateOptions.AllowedRuntimes: an empty oci_runtime selects
 	// the daemon default and is always permitted.
@@ -164,6 +169,8 @@ type libpodContainerCreatePolicy struct {
 	allowMountSourceMutation bool
 	allowAllDevices          bool
 	allowedDevices           []string
+
+	allowTmpfsPrivilegedOptions bool
 
 	restrictNamespaceSharing          bool
 	allowedNamespaceSharingContainers []string
@@ -259,6 +266,7 @@ func newLibpodContainerCreatePolicy(opts LibpodContainerCreateOptions) libpodCon
 		allowSystemdMode:                  opts.AllowSystemdMode,
 		allowCustomIDMappings:             opts.AllowCustomIDMappings,
 		allowLogPath:                      opts.AllowLogPath,
+		allowTmpfsPrivilegedOptions:       opts.AllowTmpfsPrivilegedOptions,
 		allowedRuntimes:                   normalizeStringList(opts.AllowedRuntimes),
 		allowDeviceCgroupRules:            opts.AllowDeviceCgroupRules,
 		allowedDeviceCgroupRules:          canonicalDeviceCgroupAllowlist(opts.AllowedDeviceCgroupRules),
@@ -571,6 +579,9 @@ func (p libpodContainerCreatePolicy) denyBindMountReason(mounts []libpodMount) s
 	for _, mount := range mounts {
 		if reason := denyMountSourceMutationReason(mount.Options, mount.Type == "tmpfs", p.allowMountSourceMutation, "libpod container create"); reason != "" {
 			return reason
+		}
+		if strings.EqualFold(mount.Type, "tmpfs") && !p.allowTmpfsPrivilegedOptions && tmpfsPostureOfList(mount.Options...).enablesPrivilege() {
+			return "libpod container create denied: tmpfs mount enables exec, dev, or suid (set allow_tmpfs_privileged_options: true)"
 		}
 		bind := strings.EqualFold(mount.Type, "bind") || slices.Contains(mount.Options, "bind") || slices.Contains(mount.Options, "rbind")
 		if !bind {
