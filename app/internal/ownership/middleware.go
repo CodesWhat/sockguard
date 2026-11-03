@@ -1108,11 +1108,6 @@ func mutateServiceOwnershipBody(r *http.Request, labelKey, owner string) (*owner
 	return refs, err
 }
 
-func serviceEmbeddedOwnershipReferences(decoded map[string]any) []embeddedOwnershipReference {
-	refs, _ := collectServiceEmbeddedReferences(decoded)
-	return refs
-}
-
 func collectServiceEmbeddedReferences(decoded map[string]any) ([]embeddedOwnershipReference, bool) {
 	refs := &embeddedRefCollector{}
 	for _, taskTemplate := range filter.FoldedObjects(decoded, "TaskTemplate") {
