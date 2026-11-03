@@ -13,6 +13,10 @@ type requestRejectionError struct {
 	// request_body_* vocabulary even where the HTTP status overlaps (e.g.
 	// mutation_request_too_large vs request_body_too_large, both 413).
 	reasonCode string
+	// hard marks a refusal that warn and audit rollout modes must not turn
+	// into a pass-through, because forwarding the request would skip a
+	// mandatory rewrite (an enforce-mode admission mutation).
+	hard bool
 }
 
 func (e *requestRejectionError) Error() string {
@@ -28,6 +32,17 @@ func newRequestRejectionError(status int, reason string) error {
 // described by requestRejectionReasonCode's status-only mapping.
 func newRequestRejectionErrorWithCode(status int, reasonCode, reason string) error {
 	return &requestRejectionError{status: status, reason: reason, reasonCode: reasonCode}
+}
+
+// asHardRequestRejection returns err as a hard rejection when it is a
+// requestRejectionError, and err unchanged otherwise.
+func asHardRequestRejection(err error) error {
+	rejection, ok := requestRejectionFromError(err)
+	if !ok {
+		return err
+	}
+	rejection.hard = true
+	return &rejection
 }
 
 func requestRejectionFromError(err error) (requestRejectionError, bool) {

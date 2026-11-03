@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Admission mutation no longer skips an enforce rule on an ambiguous body under `warn` and `audit`.** A body the engine refuses as `request_body_ambiguous` (a label key spelled with U+0130, say) was forwarded to the daemon with the client's bytes under a warn or audit profile, so a required `inject_labels` or `remap_image` rule never ran on it. When an `enforce` rule covers the surface, any refusal by the mutation engine is now a hard error in every rollout mode. A surface with only `warn` or `audit` rules is unchanged.
+
 ## [3.0.0-rc.6] - 2026-11-03
 
 This candidate carries v2.4.4 (the client compatibility sweep and libpod create hardening). It narrows `response.redact_network_topology` to addresses, so opaque IDs pass through and a mount `Source` is kept only for named mount types, with `MaskedPaths` and `ReadonlyPaths` untouched. It adds libpod gates for `unified`, `env_host` and `pod`, reports unknown config keys, and adds compose examples for Homepage, Homarr, Diun and Autoheal. The Helm chart will publish as a signed OCI artifact from v3.0.0, and the hand-rolled star chart is removed. These are candidate-only behavior changes, so the 14-day bake window restarts: GA is no earlier than 2026-11-17. Fresh exact-source soak, TLS/security and published-image conformance are required before GA.

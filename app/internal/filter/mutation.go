@@ -212,6 +212,23 @@ func newServiceMutationPolicy(engine *mutationEngine) mutationPolicy {
 // this in the same severity bucket and has never heard of "mutation": it
 // just re-reads whatever bytes are in r.Body.
 func (p mutationPolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
+	reason, err := p.inspectRules(logger, r, normalizedPath)
+	if err == nil {
+		return reason, nil
+	}
+	// A refusal while an enforce rule is configured is hard: warn and audit
+	// would forward the client's bytes with the mandatory rewrite skipped,
+	// which is not what was inspected. A surface with only warn or audit
+	// rules has nothing to skip.
+	for _, rule := range p.engine.rulesFor(p.surface(normalizedPath)) {
+		if rule.mode == "enforce" {
+			return reason, asHardRequestRejection(err)
+		}
+	}
+	return reason, err
+}
+
+func (p mutationPolicy) inspectRules(logger *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
 	if r == nil || r.Method != http.MethodPost || r.Body == nil {
 		return "", nil
 	}
