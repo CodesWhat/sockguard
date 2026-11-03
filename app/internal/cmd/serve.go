@@ -620,7 +620,10 @@ type serveRuntime struct {
 	// the same reason the resolver is: upstream.socket, upstream.endpoints
 	// and upstream.flavor are all reload-immutable, so no reload can point
 	// sockguard at a different daemon or restate which engine this one is.
-	upstreamFlavor                         upstreamflavor.Flavor
+	upstreamFlavor upstreamflavor.Flavor
+	// upstreamProbedDocker is set only when every endpoint's GET /version
+	// positively identified dockerd. See upstreamflavor.Capabilities.
+	upstreamProbedDocker                   bool
 	upstreamPodmanConjunctiveVolumeFilters bool
 }
 
@@ -833,7 +836,7 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 		namedServeHandlerLayer("withResourceLimitGuard", withResourceLimitGuard(cfg, resolver, logger, clientProfiles)),
 		namedServeHandlerLayer("withOwnership", withOwnership(cfg, resolver, logger, runtimeUpstreamCapabilities(runtime))),
 		namedServeHandlerLayer("withVisibility", withVisibility(cfg, resolver, logger, runtimeUpstreamCapabilities(runtime))),
-		namedServeHandlerLayer("withFilter", withFilter(cfg, resolver, logger, rules, clientProfiles, runtimeUpstreamFlavor(runtime))),
+		namedServeHandlerLayer("withFilter", withFilter(cfg, resolver, logger, rules, clientProfiles, runtimeUpstreamFlavor(runtime), runtimeUpstreamCapabilities(runtime).ProbedDocker)),
 		// withFormBodyGuard is appended right AFTER withFilter so it executes
 		// immediately BEFORE it. Every layer above reads request parameters
 		// from the URL query, and both engines also read them from a form
@@ -1156,16 +1159,16 @@ func withVisibility(cfg *config.Config, res *upstream.Resolver, logger *slog.Log
 	})
 }
 
-func withFilter(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, rules []*filter.CompiledRule, clientProfiles map[string]filter.Policy, flavor upstreamflavor.Flavor) func(http.Handler) http.Handler {
+func withFilter(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, rules []*filter.CompiledRule, clientProfiles map[string]filter.Policy, flavor upstreamflavor.Flavor, probedDocker bool) func(http.Handler) http.Handler {
 	warnIfBodyBlindWritesEnabled(cfg, logger)
 	warnIfReadExfiltrationEnabled(cfg, rules, clientProfiles, logger)
 	opts := serveFilterOptions(cfg, res, clientProfiles)
 	opts.Build.PodmanUpstream = flavor == upstreamflavor.Podman
-	opts.ContainerCreate.DockerUpstream = flavor == upstreamflavor.Docker
+	opts.ContainerCreate.DockerUpstream = probedDocker
 	profiles := make(map[string]filter.Policy, len(opts.Profiles))
 	for name, profile := range opts.Profiles {
 		profile.Build.PodmanUpstream = flavor == upstreamflavor.Podman
-		profile.ContainerCreate.DockerUpstream = flavor == upstreamflavor.Docker
+		profile.ContainerCreate.DockerUpstream = probedDocker
 		profiles[name] = profile
 	}
 	opts.Profiles = profiles

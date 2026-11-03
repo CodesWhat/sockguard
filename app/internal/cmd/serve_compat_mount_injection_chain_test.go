@@ -397,10 +397,12 @@ func TestServeChainCompatMountCommaFollowsTheUpstreamFlavor(t *testing.T) {
 		name       string
 		flavor     string
 		docker     bool
+		failProbe  bool
 		wantStatus int
 		wantSeen   int
 	}{
 		{name: "docker upstream forwards the literal comma", flavor: "docker", docker: true, wantStatus: http.StatusCreated, wantSeen: 1},
+		{name: "explicit docker with a failed probe keeps the refusal", flavor: "docker", docker: true, failProbe: true, wantStatus: http.StatusForbidden},
 		{name: "podman upstream refuses it", flavor: "podman", wantStatus: http.StatusForbidden},
 		{name: "probed podman-shaped daemon refuses it", flavor: "auto", wantStatus: http.StatusForbidden},
 	}
@@ -408,6 +410,7 @@ func TestServeChainCompatMountCommaFollowsTheUpstreamFlavor(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			daemon := newLibpodRootfsChainDaemon()
 			daemon.docker = tt.docker
+			daemon.versionFails = tt.failProbe
 			addr := newEngineChain(t, "compatcomma", daemon, func(cfg *config.Config) {
 				cfg.Upstream.Flavor = tt.flavor
 				cfg.Rules = []config.RuleConfig{

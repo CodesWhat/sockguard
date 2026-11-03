@@ -197,6 +197,7 @@ func resolveUpstreamCapabilities(ctx context.Context, deps *serveDeps, cfg *conf
 	}
 	detected := make([]upstreamflavor.Flavor, len(endpoints))
 	conjunctiveVolumes := true
+	allProbedDocker := true
 	for i, ep := range endpoints {
 		rt, err := res.EndpointRoundTripper(i)
 		if err != nil {
@@ -217,11 +218,12 @@ func resolveUpstreamCapabilities(ctx context.Context, deps *serveDeps, cfg *conf
 			observed = upstreamflavor.Capabilities{Flavor: configured}
 		}
 		detected[i] = observed.Flavor
+		allProbedDocker = allProbedDocker && observed.ProbedDocker
 		conjunctiveVolumes = conjunctiveVolumes && observed.Flavor == upstreamflavor.Podman && observed.PodmanConjunctiveVolumeFilters
 	}
 	if configured != upstreamflavor.Auto {
 		logger.Info("upstream flavor resolved", "flavor", string(configured), "probed", true, "endpoints", len(endpoints), "podman_conjunctive_volume_filters", configured == upstreamflavor.Podman && conjunctiveVolumes)
-		return upstreamflavor.Capabilities{Flavor: configured, PodmanConjunctiveVolumeFilters: configured == upstreamflavor.Podman && conjunctiveVolumes}, nil
+		return upstreamflavor.Capabilities{Flavor: configured, PodmanConjunctiveVolumeFilters: configured == upstreamflavor.Podman && conjunctiveVolumes, ProbedDocker: configured == upstreamflavor.Docker && allProbedDocker}, nil
 	}
 	for i := 1; i < len(detected); i++ {
 		if detected[i] != detected[0] {
@@ -229,7 +231,7 @@ func resolveUpstreamCapabilities(ctx context.Context, deps *serveDeps, cfg *conf
 		}
 	}
 	logger.Info("upstream flavor resolved", "flavor", string(detected[0]), "probed", true, "endpoints", len(endpoints), "podman_conjunctive_volume_filters", conjunctiveVolumes)
-	return upstreamflavor.Capabilities{Flavor: detected[0], PodmanConjunctiveVolumeFilters: conjunctiveVolumes}, nil
+	return upstreamflavor.Capabilities{Flavor: detected[0], PodmanConjunctiveVolumeFilters: conjunctiveVolumes, ProbedDocker: detected[0] == upstreamflavor.Docker && allProbedDocker}, nil
 }
 
 // describeEndpointFlavors renders each endpoint's address alongside its
@@ -256,6 +258,7 @@ func resolveUpstreamFlavorForRuntime(ctx context.Context, deps *serveDeps, runti
 	if runtime != nil {
 		runtime.upstreamFlavor = capabilities.Flavor
 		runtime.upstreamPodmanConjunctiveVolumeFilters = capabilities.PodmanConjunctiveVolumeFilters
+		runtime.upstreamProbedDocker = capabilities.ProbedDocker
 	}
 	return nil
 }
@@ -312,6 +315,7 @@ func runtimeUpstreamCapabilities(runtime *serveRuntime) upstreamflavor.Capabilit
 	capabilities := upstreamflavor.Capabilities{Flavor: runtimeUpstreamFlavor(runtime)}
 	if runtime != nil {
 		capabilities.PodmanConjunctiveVolumeFilters = runtime.upstreamPodmanConjunctiveVolumeFilters
+		capabilities.ProbedDocker = runtime.upstreamProbedDocker
 	}
 	return capabilities
 }

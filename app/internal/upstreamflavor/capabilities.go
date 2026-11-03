@@ -17,6 +17,12 @@ import (
 type Capabilities struct {
 	Flavor                         Flavor
 	PodmanConjunctiveVolumeFilters bool
+	// ProbedDocker is set only when GET /version positively identified
+	// dockerd without error. Flavor can say Docker with no probe behind it
+	// (an explicit upstream.flavor: docker, or a zero value), and that is not
+	// the evidence a gate that loosens for Docker needs. For a set of
+	// endpoints it is true only when every one probed as Docker.
+	ProbedDocker bool
 }
 
 // Probe reads identity from /version and the Libpod product in Server headers.
@@ -83,6 +89,7 @@ func Probe(ctx context.Context, client *http.Client) (Capabilities, error) {
 		return observed, nil
 	}
 	observed.Flavor = flavor
+	observed.ProbedDocker = err == nil && flavor == Docker
 	return observed, err
 }
 

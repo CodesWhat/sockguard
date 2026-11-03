@@ -94,3 +94,48 @@ func TestConfiguredDockerCannotHidePodmanFailover(t *testing.T) {
 		t.Fatalf("Docker primary hid Podman failover: error=%v calls=(%d,%d)", err, first.calls.Load(), second.calls.Load())
 	}
 }
+
+// TestProbedDockerNeedsEveryEndpointToProbeAsDocker pins the evidence the
+// gates that loosen for dockerd rely on: every endpoint positively probed as
+// Docker. An explicit upstream.flavor: docker is a setting, not a probe, so a
+// failed or unrecognised probe, or one endpoint that couldn't be probed in a
+// failover set, leaves the flag off.
+func TestProbedDockerNeedsEveryEndpointToProbeAsDocker(t *testing.T) {
+	t.Parallel()
+	type server struct {
+		status int
+		body   string
+	}
+	docker := server{http.StatusOK, flavorTestDockerVersionBody}
+	for _, test := range []struct {
+		name, configured string
+		servers          []server
+		want             bool
+	}{
+		{"auto, one docker endpoint", "auto", []server{docker}, true},
+		{"explicit docker, one docker endpoint", "docker", []server{docker}, true},
+		{"explicit docker, two docker endpoints", "docker", []server{docker, docker}, true},
+		{"explicit docker, failed probe", "docker", []server{{503, `unavailable`}}, false},
+		{"explicit docker, unrecognised engine", "docker", []server{{http.StatusOK, `{"Components":[{"Name":"Mystery Engine"}]}`}}, false},
+		{"explicit docker, malformed body", "docker", []server{{http.StatusOK, `{`}}, false},
+		{"explicit docker, docker then failed probe", "docker", []server{docker, {503, `unavailable`}}, false},
+		{"explicit docker, failed probe then docker", "docker", []server{{503, `unavailable`}, docker}, false},
+		{"explicit podman, podman endpoint", "podman", []server{{http.StatusOK, flavorTestPodmanVersionBody}}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			addrs := make([]string, len(test.servers))
+			for i, s := range test.servers {
+				addrs[i] = newVersionServer(t, s.status, s.body).addr()
+			}
+			logger, _ := flavorTestLogger()
+			got, err := resolveUpstreamCapabilities(t.Context(), newServeDeps(), flavorTestConfig(test.configured), multiEndpointResolver(t, addrs...), logger)
+			if err != nil {
+				t.Fatalf("error = %v", err)
+			}
+			if got.ProbedDocker != test.want {
+				t.Fatalf("ProbedDocker = %v, want %v (capabilities %+v)", got.ProbedDocker, test.want, got)
+			}
+		})
+	}
+}
