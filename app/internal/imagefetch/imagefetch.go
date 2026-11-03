@@ -112,7 +112,8 @@ type Fetcher struct {
 	nameOpts   []name.Option
 }
 
-// NewFetcher returns a Fetcher that authenticates to registries using the
+// NewFetcher returns a Fetcher with no dial-time address guard (production
+// uses NewGuardedFetcher) that authenticates to registries using the
 // ambient Docker keychain (mounted config.json), falling back to anonymous
 // access for public images.
 func NewFetcher() *Fetcher {

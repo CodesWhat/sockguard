@@ -124,3 +124,12 @@ func TestClientSafeTrustFailureHidesRegistryBody(t *testing.T) {
 		t.Fatalf("nil error rewrote message: %q", got)
 	}
 }
+
+func TestTrustDialAllowlist(t *testing.T) {
+	t.Parallel()
+	got := trustDialAllowlist([]string{"Registry.Internal:5000", "https://bad"}, []string{"10.0.0.5:8080/org/app:1", "ghcr.io/o/a:1", "::bad::"})
+	want := []string{"registry.internal:5000", "10.0.0.5:8080", "ghcr.io"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("trustDialAllowlist = %v, want %v", got, want)
+	}
+}

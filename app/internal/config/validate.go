@@ -2199,7 +2199,7 @@ func validateImageTrustConfig(prefix string, cfg ImageTrustConfig, allowedImages
 	// the registry of every reference.
 	if len(allowedImages) == 0 && !cfg.AllowAllRegistries && !cfg.AllowOfficial && len(cfg.AllowedRegistries) == 0 {
 		errs = append(errs,
-			prefix+": allow_all_registries, allow_official, or allowed_registries is required when mode is not off so signature discovery cannot be pointed at arbitrary hosts",
+			prefix+": allow_all_registries, allow_official, or allowed_registries is required when mode is not off so signature discovery cannot be pointed at arbitrary hosts (for example allowed_registries: [ghcr.io], or pin exact images with allowed_images: [ghcr.io/org/app:1.0])",
 		)
 	}
 	errs = append(errs, validateRegistryHostEntries(prefix, "allowed_registries", cfg.AllowedRegistries)...)

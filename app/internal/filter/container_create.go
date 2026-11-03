@@ -20,6 +20,7 @@ import (
 
 	"github.com/codeswhat/sockguard/v3/app/internal/imagefetch"
 	"github.com/codeswhat/sockguard/v3/app/internal/imagetrust"
+	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 )
@@ -480,7 +481,7 @@ func buildImageTrustFields(opts ImageTrustOptions, allowedImages []string) image
 		AllowOfficial:      opts.AllowOfficial,
 		AllowedRegistries:  opts.AllowedRegistries,
 	})
-	f.fetcher = imagefetch.NewFetcher()
+	f.fetcher = imagefetch.NewGuardedFetcher(trustDialAllowlist(opts.AllowedRegistries, allowedImages))
 	f.cfg = cfg
 	f.timeout = cfg.VerifyTimeout
 	if f.timeout == 0 {
@@ -531,6 +532,25 @@ func verifyImageTrust(ctx context.Context, logger *slog.Logger, f imageTrustFiel
 		return fmt.Sprintf("%s denied: image trust verification failed for %s: %s", subject, imageRef, clientSafeTrustFailure(fetchErr, outcome.FailureMsg)), ""
 	}
 	return "", outcome.VerifiedDigest
+}
+
+// trustDialAllowlist is the set of hosts signature discovery may reach even if
+// they resolve to a private address: the operator's allowed_registries plus the
+// registry of every exact allowed_images entry, both of which the operator
+// named. Everything else must resolve to a public address at dial time.
+func trustDialAllowlist(allowedRegistries, allowedImages []string) []string {
+	hosts := make([]string, 0, len(allowedRegistries)+len(allowedImages))
+	for _, r := range allowedRegistries {
+		if host, ok := normalizeRegistryHost(r); ok {
+			hosts = append(hosts, host)
+		}
+	}
+	for _, image := range allowedImages {
+		if ref, err := name.ParseReference(strings.TrimSpace(image)); err == nil {
+			hosts = append(hosts, strings.ToLower(ref.Context().RegistryStr()))
+		}
+	}
+	return hosts
 }
 
 // clientSafeTrustFailure keeps a registry's response body out of the deny
