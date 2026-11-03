@@ -49,7 +49,7 @@ var typedAddressKeys = []string{
 	"Gateway", "IPv6Gateway", "IPAddress", "GlobalIPv6Address", "LinkLocalIPv6Address",
 }
 
-var typedOpaqueKeys = []string{"SandboxID", "SandboxKey", "Bridge"}
+var typedOpaqueKeys = []string{"SandboxKey", "Bridge"}
 
 func assertTypedAddressObject(t *testing.T, where string, obj map[string]any) {
 	t.Helper()

@@ -1715,8 +1715,9 @@ func redactMountObjects(payload map[string]any, field string) error {
 	return nil
 }
 
-// redactBindMountObjects is redactMountObjects limited to entries whose Type is
-// "bind". HostConfig.Mounts carries the create-time spec, where a volume's
+// redactBindMountObjects is redactMountObjects except that entries whose Type is
+// volume, tmpfs, image or cluster keep their Source. Every other Type, including
+// a missing one, is redacted. HostConfig.Mounts carries the create-time spec, where a volume's
 // Source is its name rather than a host path.
 func redactBindMountObjects(payload map[string]any, field string) error {
 	mountsValue, ok := payload[field]
@@ -1734,7 +1735,11 @@ func redactBindMountObjects(payload map[string]any, field string) error {
 		if !ok {
 			return fmt.Errorf("mount entry has unexpected type %T", mountValue)
 		}
-		if mountType, _ := mount["Type"].(string); mountType == "bind" {
+		switch mountType, _ := mount["Type"].(string); mountType {
+		case "volume", "tmpfs", "image", "cluster":
+			// Source is a name or empty, not a host path.
+		default:
+			// bind, npipe, a missing Type and anything unknown fail closed.
 			redactStringField(mount, "Source")
 		}
 	}
@@ -1748,8 +1753,9 @@ func redactBindMountObjects(payload map[string]any, field string) error {
 // (docker run --mount type=bind,source=...) surfaces the host source under
 // HostConfig.Mounts, a distinct field from the top-level runtime Mounts list,
 // so it must be redacted here too or the host path leaks despite RedactMountPaths.
-// Only Type "bind" entries are redacted: a volume mount's Source is the volume
-// name, not a host path. MaskedPaths/ReadonlyPaths are left intact. They are
+// Entries of Type volume, tmpfs, image and cluster keep their Source (a volume's
+// is its name, not a host path); bind, npipe, a missing Type and unknown types
+// are redacted. MaskedPaths/ReadonlyPaths are left intact. They are
 // not mount paths, and emptying them breaks replay: moby applies the default
 // masked and read-only paths only when the field is nil, so an inspect-to-create
 // replay of "[]" disables the container's masking.
@@ -1994,8 +2000,6 @@ func redactContainerNetworkTopology(payload map[string]any) error {
 	redactNetworkAddressFields(networkSettings,
 		[]string{
 			"Bridge",
-			"EndpointID",
-			"SandboxID",
 			"SandboxKey",
 		},
 		[]string{

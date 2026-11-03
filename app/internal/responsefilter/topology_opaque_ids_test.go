@@ -140,3 +140,54 @@ func TestContainerInspectKeepsOpaqueIDsAndRedactsAddresses(t *testing.T) {
 		t.Errorf("IPAddress/MacAddress = %#v/%#v, want empty strings", network["IPAddress"], network["MacAddress"])
 	}
 }
+
+func TestHostConfigMountsFailClosedOnType(t *testing.T) {
+	t.Parallel()
+	filter := New(defaultRedactionOptions())
+
+	resp := newResponseForTest(t, http.MethodGet, "/v1.53/containers/abc/json", `{
+		"Id":"abc",
+		"HostConfig":{"Mounts":[
+			{"Type":"bind","Source":"/host/a"},
+			{"Source":"/host/no-type"},
+			{"Type":"","Source":"/host/empty-type"},
+			{"Type":"npipe","Source":"\\\\.\\pipe\\docker_engine"},
+			{"Type":"mystery","Source":"/host/unknown"},
+			{"Type":"volume","Source":"data-vol"},
+			{"Type":"tmpfs","Source":""},
+			{"Type":"image","Source":"alpine:3"},
+			{"Type":"cluster","Source":"cluster-vol"}
+		]}
+	}`)
+	if err := filter.ModifyResponse(resp); err != nil {
+		t.Fatalf("ModifyResponse error = %v", err)
+	}
+	mounts := nestedSliceForTest(t, decodeBodyForTest(t, resp), "HostConfig", "Mounts")
+	want := []string{"<redacted>", "<redacted>", "<redacted>", "<redacted>", "<redacted>", "data-vol", "", "alpine:3", "cluster-vol"}
+	for i, w := range want {
+		got, _ := mounts[i].(map[string]any)["Source"].(string)
+		if got != w {
+			t.Errorf("Mounts[%d].Source = %q, want %q", i, got, w)
+		}
+	}
+}
+
+func TestLegacyNetworkSettingsKeepsOpaqueIDs(t *testing.T) {
+	t.Parallel()
+	filter := New(defaultRedactionOptions())
+
+	resp := newResponseForTest(t, http.MethodGet, "/v1.53/containers/abc/json", `{
+		"Id":"abc",
+		"NetworkSettings":{"Bridge":"docker0","EndpointID":"ep-top","SandboxID":"sb-top","SandboxKey":"/var/run/docker/netns/abc"}
+	}`)
+	if err := filter.ModifyResponse(resp); err != nil {
+		t.Fatalf("ModifyResponse error = %v", err)
+	}
+	settings := nestedMapForTest(t, decodeBodyForTest(t, resp), "NetworkSettings")
+	if settings["EndpointID"] != "ep-top" || settings["SandboxID"] != "sb-top" {
+		t.Errorf("EndpointID/SandboxID = %#v/%#v, want preserved", settings["EndpointID"], settings["SandboxID"])
+	}
+	if settings["Bridge"] != "<redacted>" || settings["SandboxKey"] != "<redacted>" {
+		t.Errorf("Bridge/SandboxKey = %#v/%#v, want <redacted>", settings["Bridge"], settings["SandboxKey"])
+	}
+}
