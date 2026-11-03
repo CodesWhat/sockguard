@@ -666,6 +666,10 @@ contract that docker-py and the moby client read, and a `Retry-After` header.
 Concurrency and priority-floor denials send `Retry-After: 1` and omit
 `retry_after_seconds`, since capacity frees when other requests finish.
 
+`/_ping` (and `/libpod/_ping`) costs no tokens, because every Docker client
+sends one ahead of its real call and charging for it would spend budget on each
+command. It is still subject to the concurrency caps.
+
 - `tokens_per_second` (required): refill rate; must be `> 0`.
 - `burst` (optional, default `= tokens_per_second`): bucket capacity. Must be
   `>= tokens_per_second` when explicitly set. Set to `0` to accept the default
@@ -1642,6 +1646,30 @@ warning until the catalog is updated. Provenance is embedded in
 `python3 scripts/update-route-catalog.py`, reviewing the pinned source revisions
 and generated diff. BuildKit RPC entries come from the vendored definitions and
 method registry. Podman stubs explicitly returning unsupported are excluded.
+
+### Rule sets without `GET /_ping`
+
+At startup and during `sockguard validate`, Sockguard warns when the default
+rules or a client profile do not allow `GET /_ping`. The Docker CLI and SDKs
+ping the daemon before most calls (the CLI tries `HEAD` and falls back to
+`GET`, docker-py uses `GET`), so a custom profile that forgets the rule makes
+every client see an unreachable daemon instead of a policy denial. Add both
+allow rules:
+
+```yaml
+rules:
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+```
+
+The warning names the rule set (`rules` or `clients.profiles[<name>].rules`).
+It is not a configuration error, empty rule sets are skipped, and the top-level
+rules are skipped when `clients.default_profile` makes them unreachable. A
+`HEAD`-only rule set is reported because docker-py needs `GET`; a `GET`-only
+one is not, since the CLI falls back to it. Hot reload does not repeat the
+warning.
 
 ### Path Patterns
 

@@ -429,6 +429,14 @@ func (h *throttleHandler) serve(w http.ResponseWriter, r *http.Request, next htt
 	next.ServeHTTP(w, r)
 }
 
+// isPingPath reports whether the normalized path is the daemon liveness probe.
+// Every Docker client pings before its real call, so charging tokens for it
+// would burn budget on each command and, with a small burst, deny the ping
+// itself. Pings stay under the concurrency caps.
+func isPingPath(normPath string) bool {
+	return normPath == "/_ping" || normPath == "/libpod/_ping"
+}
+
 // checkRateLimit applies the token-bucket gate. Returns true when the request
 // was denied (handler should stop), false to continue.
 //
@@ -438,6 +446,9 @@ func (h *throttleHandler) serve(w http.ResponseWriter, r *http.Request, next htt
 // is admitted and the access log decision becomes would_deny instead of deny.
 func (h *throttleHandler) checkRateLimit(w http.ResponseWriter, r *http.Request, cp *compiledProfile, clientID, normPath string) (denied bool) {
 	if cp == nil || cp.limiter == nil {
+		return false
+	}
+	if isPingPath(normPath) {
 		return false
 	}
 	cost := cp.costFor(r.Method, normPath)

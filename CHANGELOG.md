@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Startup and `sockguard validate` warn when a rule set doesn't allow `GET /_ping`.** The Docker CLI and SDKs ping the daemon before most calls, so a custom profile without the rule makes every client report an unreachable daemon. The warning names the default rules or the profile (`scope`), skips empty rule sets and top-level rules shadowed by `clients.default_profile`, and doesn't reject the config. A GET-only rule set passes, since the CLI falls back from HEAD to GET. A few shipped example configs (`discovery`, `homarr`, `homepage`, `multi-listener`) don't allow it and now log the warning.
+
 ### Fixed
 
+- **`/_ping` no longer spends rate-limit tokens.** It's exempt from `limits.rate`, including `endpoint_costs`, so the ping that precedes each Docker call can't drain a small bucket or get denied itself. It still counts against the concurrency caps.
 - **Long-lived streams no longer use up the concurrency cap.** `limits.concurrency.max_inflight` and `clients.global_concurrency` counted `docker events`, `logs -f`, stats streaming, `wait`, image pulls and the other fully long-lived requests for their whole lifetime, so a client with a few open streams got `429 concurrency_cap` on ordinary calls. Those requests now skip both gates. Stop/restart and `GET /system/df` still count. To keep that from opening an unbounded number of streams, `limits.concurrency.max_streams` (default `32` per client, `0` disables) caps them separately and answers `429` with reason `stream_cap`. Streams still cost rate-limit tokens. A plain `POST /containers/{id}/attach` is hijacked rather than classified long-lived and still counts against `max_inflight`.
 
 ## [3.0.0-rc.6] - 2026-11-03

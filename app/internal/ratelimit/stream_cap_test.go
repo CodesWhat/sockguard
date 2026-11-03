@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func isEventsStream(_ http.ResponseWriter, r *http.Request) bool {
@@ -259,4 +260,68 @@ func TestStreamCap_WarnRolloutAdmitsOverCap(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("warn-mode over-cap stream: got %d, want 200", rec.Code)
 	}
+}
+
+func TestRateLimit_PingCostsNoTokens(t *testing.T) {
+	t.Parallel()
+	clk := newFixedClock(time.Unix(0, 0))
+	opts := MiddlewareOptions{
+		Profiles: map[string]ProfileOptions{
+			// Burst of 1 and a catch-all cost of 1: one real call uses the budget.
+			"ci": {Rate: &RateOptions{TokensPerSecond: 1, Burst: 1, EndpointCosts: []EndpointCost{{PathGlob: "/**", Cost: 1}}}},
+		},
+		ResolveProfile: resolveProfileFn("ci"),
+		Now:            clk.Now,
+	}
+	h := mustMiddleware(t, newTestLogger(), nil, nil, opts)(okHandler)
+	do := func(method, target string) int {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(method, target, nil))
+		return rec.Code
+	}
+	for _, target := range []string{"/_ping", "/v1.45/_ping", "/libpod/_ping"} {
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
+			if code := do(method, target); code != http.StatusOK {
+				t.Fatalf("%s %s: got %d, want 200", method, target, code)
+			}
+		}
+	}
+	if code := do(http.MethodGet, "/containers/json"); code != http.StatusOK {
+		t.Fatalf("first real call after pings: got %d, want 200 (pings must not spend tokens)", code)
+	}
+	if code := do(http.MethodGet, "/containers/json"); code != http.StatusTooManyRequests {
+		t.Fatalf("second real call: got %d, want 429", code)
+	}
+}
+
+func TestConcurrency_PingStillCounts(t *testing.T) {
+	t.Parallel()
+	enter := make(chan struct{})
+	release := make(chan struct{})
+	opts := MiddlewareOptions{
+		Profiles: map[string]ProfileOptions{
+			"ci": {Concurrency: &ConcurrencyOptions{MaxInflight: 1}},
+		},
+		ResolveProfile: resolveProfileFn("ci"),
+	}
+	h := mustMiddleware(t, newTestLogger(), nil, nil, opts)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/containers/json" {
+			enter <- struct{}{}
+			<-release
+		}
+	}))
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/containers/json", nil))
+	}()
+	<-enter
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/_ping", nil))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("ping over the concurrency cap: got %d, want 429", rec.Code)
+	}
+	close(release)
+	wg.Wait()
 }
