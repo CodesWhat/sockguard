@@ -661,7 +661,7 @@ leaves one race: two tenants pulling the same image at the same moment can see
 the check report a name instead of untagging it, and a concurrent pull of the same reference that writes the name after the list but before the check can still get it untagged, which is the accepted residual. A pull by digest writes no tag,
 so `repo@sha256:...` is inspected after the pull instead. It is reported and left in place: a digest reference pins its content, so a client can't make a victim's
 reference resolve to other bytes, and removing by digest could drop an image
-other names still hold. The exception is a reference a `404` inspect showed absent before the pull, on the Docker-compat route against an upstream probed as dockerd, which is deleted with `force=1&noprune=1`; Podman, `auto`, an unprobed upstream, a pre-pull inspect error and a reference already present stay report-only. An image with another owner's label gets `owner policy:
+other names still hold. A foreign-labelled image pulled by digest stays in place with an error line, which is accepted: Sockguard can't prove it's new without risking another tenant's image. An image with another owner's label gets `owner policy:
 pulled image <ref> carries another owner's label; it was left in place because a
 digest reference pins its content`, and an inspect that fails gets the
 `could not verify` line. This runs in enforce rollout only. Warn and audit leave
