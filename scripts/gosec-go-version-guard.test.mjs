@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const workflow = readFileSync(new URL("../.github/workflows/security-grype.yml", import.meta.url), "utf8");
+const workflow = readFileSync(
+  new URL("../.github/workflows/security-grype.yml", import.meta.url),
+  "utf8",
+);
 const goMod = readFileSync(new URL("../go.mod", import.meta.url), "utf8");
 
 const versionParts = (version) => version.split(".").map(Number);
@@ -28,5 +31,8 @@ test("declared gosec image Go covers go.mod's go directive", () => {
   const required = goMod.match(/^go (\d+(?:\.\d+)+)$/m)?.[1];
   assert.ok(declared, "GOSEC_IMAGE_GO is not declared");
   assert.ok(required, "go.mod has no go directive");
-  assert.ok(atLeast(declared, required), `gosec image Go ${declared} is older than go.mod's ${required}`);
+  assert.ok(
+    atLeast(declared, required),
+    `gosec image Go ${declared} is older than go.mod's ${required}`,
+  );
 });
