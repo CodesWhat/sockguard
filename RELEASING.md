@@ -193,6 +193,17 @@ Rerunning the job is safe. An existing version is never overwritten:
 
 ---
 
+## Recovering a partially published release
+
+If the GoReleaser step dies mid-upload (network drop, runner shutdown, a 5xx from GitHub), the tag and a GitHub release with some assets can exist while others are missing. Don't delete the release or move the tag. After a release is published, rerun failed jobs only, never "Re-run all jobs", because that would replace archives whose digests users may already have verified.
+
+1. Open the failed `release-from-tag` run and confirm the `goreleaser` job is the one that failed, not signing or the Docker publish.
+2. Rerun the failed jobs on the same run, using "Re-run failed jobs" only. Never use "Re-run all jobs" once a release is published: `replace_existing_artifacts` would replace archives whose digests users may already have verified. GoReleaser is configured with `release.replace_existing_artifacts: true` (and `replace_existing_draft: true`), so it replaces assets that already exist under the same name instead of failing on them, and uploads the missing ones. A rerun replays the original tag commit, so it publishes the same source.
+3. Compare the release's asset list with the previous release's, or run `scripts/verify-published-release.sh --tag <tag>`, before announcing anything.
+4. If a rerun can't recover it (for example the release was deleted by hand), recreate the release from the tag and rerun, or build the missing assets locally from the tag with `goreleaser release --clean --release-notes=../release-notes.md` in `app/` and upload them with `gh release upload <tag> <files> --clobber`. Re-sign anything you upload by hand so the checksum and bundle files still match.
+
+---
+
 ## If something goes wrong
 
 Do not delete the bad release or the tag — that breaks `go install` version pinning and any existing image digests. Instead:
