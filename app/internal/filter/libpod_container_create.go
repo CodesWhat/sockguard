@@ -126,6 +126,11 @@ type LibpodContainerCreateOptions struct {
 	AllowedLogDrivers         []string
 	AllowedLogEndpointOptions []string
 
+	// AllowTmpfsPrivilegedOptions permits mounts[] entries of type tmpfs whose
+	// options end with exec, dev or suid enabled. Last option wins, as it does
+	// for ContainerCreateOptions.AllowTmpfsPrivilegedOptions. Default false.
+	AllowTmpfsPrivilegedOptions bool
+
 	// AllowedRuntimes allowlists oci_runtime values, mirroring
 	// ContainerCreateOptions.AllowedRuntimes: an empty oci_runtime selects
 	// the daemon default and is always permitted.
@@ -170,6 +175,8 @@ type libpodContainerCreatePolicy struct {
 	allowMountSourceMutation bool
 	allowAllDevices          bool
 	allowedDevices           []string
+
+	allowTmpfsPrivilegedOptions bool
 
 	restrictNamespaceSharing          bool
 	allowedNamespaceSharingContainers []string
@@ -267,6 +274,7 @@ func newLibpodContainerCreatePolicy(opts LibpodContainerCreateOptions) libpodCon
 		allowCustomIDMappings:             opts.AllowCustomIDMappings,
 		allowLogPath:                      opts.AllowLogPath,
 		logDrivers:                        newLogDriverPolicy(opts.AllowedLogDrivers, opts.AllowedLogEndpointOptions),
+		allowTmpfsPrivilegedOptions:       opts.AllowTmpfsPrivilegedOptions,
 		allowedRuntimes:                   normalizeStringList(opts.AllowedRuntimes),
 		allowDeviceCgroupRules:            opts.AllowDeviceCgroupRules,
 		allowedDeviceCgroupRules:          canonicalDeviceCgroupAllowlist(opts.AllowedDeviceCgroupRules),
@@ -348,6 +356,9 @@ func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Reques
 	}
 	if denyReason := p.denyNamespaceSharingReason(createReq); denyReason != "" {
 		return denyReason, nil
+	}
+	if !p.allowTmpfsPrivilegedOptions && strings.EqualFold(strings.TrimSpace(createReq.ImageVolumeMode), "tmpfs") {
+		return "libpod container create denied: image_volume_mode \"tmpfs\" mounts the image's volumes as executable tmpfs; use \"bind\" or \"ignore\", or set request_body.libpod_container_create.allow_tmpfs_privileged_options", nil
 	}
 	if denyReason := p.denyBindMountReason(createReq.Mounts); denyReason != "" {
 		return denyReason, nil
@@ -582,6 +593,17 @@ func (p libpodContainerCreatePolicy) denyBindMountReason(mounts []libpodMount) s
 	for _, mount := range mounts {
 		if reason := denyMountSourceMutationReason(mount.Options, mount.Type == "tmpfs", p.allowMountSourceMutation, "libpod container create"); reason != "" {
 			return reason
+		}
+		if strings.EqualFold(mount.Type, "tmpfs") && !p.allowTmpfsPrivilegedOptions {
+			posture := tmpfsPostureOfList(mount.Options...)
+			if posture.enablesPrivilege() {
+				return "libpod container create denied: tmpfs mount enables exec, dev, or suid (set " + tmpfsOptionKeyLibpod + ": true)"
+			}
+			// Podman mounts a tmpfs executable, and gives /dev no default
+			// options, so a tmpfs here is only safe when it says so itself.
+			if !posture.podmanSafe(mount.Destination) {
+				return "libpod container create denied: " + tmpfsPodmanRefusal(mount.Destination, "request_body.libpod_container_create.allow_tmpfs_privileged_options")
+			}
 		}
 		bind := strings.EqualFold(mount.Type, "bind") || slices.Contains(mount.Options, "bind") || slices.Contains(mount.Options, "rbind")
 		if !bind {

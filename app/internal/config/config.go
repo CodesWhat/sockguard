@@ -828,6 +828,12 @@ type LibpodContainerCreateRequestBodyConfig struct {
 	AllowedLogDrivers         []string `mapstructure:"allowed_log_drivers"`
 	AllowedLogEndpointOptions []string `mapstructure:"allowed_log_endpoint_options"`
 
+	// AllowTmpfsPrivilegedOptions permits a mounts[] entry of type tmpfs
+	// whose options re-enable exec, dev or suid (last option wins). Same
+	// name as container_create.allow_tmpfs_privileged_options, and neither
+	// opens the other's route. Default false.
+	AllowTmpfsPrivilegedOptions bool `mapstructure:"allow_tmpfs_privileged_options"`
+
 	// AllowedRuntimes, AllowDeviceCgroupRules, AllowedDeviceCgroupRules,
 	// AllowDeviceRequests and DenyUnconfinedSystemPaths are the libpod
 	// spellings of the same-named container_create fields, gating

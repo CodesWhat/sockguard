@@ -207,6 +207,7 @@ func TestServeChainCompatMountFieldsNeedTheAllowlist(t *testing.T) {
 		{
 			name:        "compat tmpfs mount with no injected options reaches the daemon",
 			send:        mounts(`{"Type":"tmpfs","Target":"/scratch"}`),
+			configure:   func(body *config.RequestBodyConfig) { body.ContainerCreate.AllowTmpfsPrivilegedOptions = true },
 			wantStatus:  http.StatusCreated,
 			wantCreated: created("tmpfs=/scratch"),
 		},

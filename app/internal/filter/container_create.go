@@ -183,6 +183,16 @@ type ContainerCreateOptions struct {
 	// last-wins ordering, so "exec,noexec" remains allowed.
 	AllowTmpfsPrivilegedOptions bool
 
+	// PodmanUpstream is set from the resolved upstream flavor, not from
+	// config. Podman leaves a tmpfs executable and gives /dev no default
+	// options, so on a Podman upstream with AllowTmpfsPrivilegedOptions off a
+	// tmpfs (HostConfig.Tmpfs) must carry the bare option noexec, and a /dev
+	// tmpfs noexec,nosuid,nodev, since Podman adds nosuid,nodev itself
+	// elsewhere. A Mounts tmpfs entry is refused outright, because Podman's
+	// compat handler drops its TmpfsOptions.Options. dockerd already defaults
+	// every tmpfs to noexec,nosuid,nodev.
+	PodmanUpstream bool
+
 	// AllowLogPath permits a HostConfig.LogConfig.Config key a Podman
 	// upstream reads as the container's log path. Default false. See
 	// denyLogPathReason.
@@ -263,6 +273,7 @@ type containerCreatePolicy struct {
 	denyUnconfinedSystemPaths bool
 
 	allowTmpfsPrivilegedOptions bool
+	podmanUpstream              bool
 	allowLogPath                bool
 	logDrivers                  logDriverPolicy
 
@@ -359,6 +370,7 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		denySelinuxLabelOverride:          opts.DenySelinuxLabelOverride,
 		denyUnconfinedSystemPaths:         opts.DenyUnconfinedSystemPaths,
 		allowTmpfsPrivilegedOptions:       opts.AllowTmpfsPrivilegedOptions,
+		podmanUpstream:                    opts.PodmanUpstream,
 		allowLogPath:                      opts.AllowLogPath,
 		logDrivers:                        newLogDriverPolicy(opts.AllowedLogDrivers, opts.AllowedLogEndpointOptions),
 		allowEndpointConfig:               opts.AllowEndpointConfig,
@@ -2080,6 +2092,9 @@ func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHos
 			if denyReason := denyLocalVolumeBindDeviceReason(driverConfig.Name, driverConfig.Options, p.allowedBindMounts, "container create"); denyReason != "" {
 				return denyReason
 			}
+			if denyReason := denyLocalVolumeTmpfsPrivilegeReason(driverConfig.Name, driverConfig.Options, p.allowTmpfsPrivilegedOptions, "container create", tmpfsOptionKeyCompat); denyReason != "" {
+				return denyReason
+			}
 		}
 
 		// Podman's compat handler calls os.MkdirAll on a volume-type Source
@@ -2199,16 +2214,6 @@ func validMountSubpath(subpath string) bool {
 	return cleaned != ".." && !strings.HasPrefix(cleaned, "../")
 }
 
-// tmpfsPrivilegeEscalatingOptions are the tmpfs mount option keywords that
-// override Docker's default noexec/nodev/nosuid tmpfs posture. Matched
-// case-insensitively against the first token of each
-// TmpfsOptions.Options entry.
-var tmpfsPrivilegeEscalatingOptions = map[string]bool{
-	"exec": true,
-	"dev":  true,
-	"suid": true,
-}
-
 // denyTmpfsOptionsReason validates HostConfig.Mounts[].TmpfsOptions.Options
 // (Engine API 1.46+): each entry must be a well-formed 1-or-2-element token
 // list (malformed entries are rejected fail-closed rather than silently
@@ -2216,17 +2221,21 @@ var tmpfsPrivilegeEscalatingOptions = map[string]bool{
 // allowTmpfsPrivilegedOptions is set.
 func (p containerCreatePolicy) denyTmpfsOptionsReason(mounts []containerCreateMount) string {
 	for _, mount := range mounts {
-		if mount.TmpfsOptions == nil {
-			continue
-		}
-		for _, option := range mount.TmpfsOptions.Options {
-			if len(option) == 0 || len(option) > 2 || strings.TrimSpace(option[0]) == "" {
+		if mount.TmpfsOptions != nil {
+			switch verdict, option := checkStructuredTmpfsOptions(mount.TmpfsOptions.Options); verdict {
+			case tmpfsStructuredMalformed:
 				return "container create denied: malformed tmpfs mount option"
+			case tmpfsStructuredPrivileged:
+				if !p.allowTmpfsPrivilegedOptions {
+					return fmt.Sprintf("container create denied: tmpfs mount option %q is not allowed", option)
+				}
 			}
-			key := strings.ToLower(strings.TrimSpace(option[0]))
-			if tmpfsPrivilegeEscalatingOptions[key] && !p.allowTmpfsPrivilegedOptions {
-				return fmt.Sprintf("container create denied: tmpfs mount option %q is not allowed", option[0])
-			}
+		}
+		// Podman's compat handler forwards only tmpfs-size and tmpfs-mode of a
+		// Mounts tmpfs entry, so options listed here never reach the mount and
+		// it comes up executable whatever they say.
+		if p.podmanUpstream && !p.allowTmpfsPrivilegedOptions && strings.EqualFold(mount.Type, "tmpfs") {
+			return "container create denied: a Mounts tmpfs entry on a Podman upstream ignores TmpfsOptions.Options and mounts executable; use HostConfig.Tmpfs with noexec (for example /run:noexec) or set request_body.container_create.allow_tmpfs_privileged_options"
 		}
 	}
 	return ""
@@ -2239,42 +2248,41 @@ func (p containerCreatePolicy) denyTmpfsOptionsReason(mounts []containerCreateMo
 // comes from the key when the key has a colon and from the value otherwise.
 // So the whole value, that key segment, and the value up to its first colon are
 // each judged on their own, and a privileged option in any of them denies.
+//
+// A Podman upstream reads one of those: the key segment when the key holds a
+// colon, the value head otherwise. That list must end with noexec, nosuid and
+// nodev, because Podman leaves a tmpfs executable and gives /dev no default
+// options at all.
 func (p containerCreatePolicy) denyLegacyTmpfsOptionsReason(mounts map[string]string) string {
 	if p.allowTmpfsPrivilegedOptions {
 		return ""
 	}
 	for dest, options := range mounts {
-		_, keyOptions, _ := strings.Cut(dest, ":")
+		_, keyOptions, hasKeyColon := strings.Cut(dest, ":")
 		keyOptions, _, _ = strings.Cut(keyOptions, ":") // Podman drops everything after the second colon
 		valueHead, _, _ := strings.Cut(options, ":")    // Podman's option list when the key has no colon
 		if legacyTmpfsOptionsEnablePrivilege(keyOptions) || legacyTmpfsOptionsEnablePrivilege(options) || legacyTmpfsOptionsEnablePrivilege(valueHead) {
 			return "container create denied: legacy tmpfs mount enables exec, dev, or suid"
+		}
+		if p.podmanUpstream {
+			podmanOptions := valueHead
+			if hasKeyColon {
+				podmanOptions = keyOptions
+			}
+			podmanDest, _, _ := strings.Cut(dest, ":")
+			if !tmpfsPostureOfList(podmanOptions).podmanSafe(podmanDest) {
+				return "container create denied: " + tmpfsPodmanRefusal(podmanDest, "request_body.container_create.allow_tmpfs_privileged_options")
+			}
 		}
 	}
 	return ""
 }
 
 // legacyTmpfsOptionsEnablePrivilege reports whether a comma-separated tmpfs
-// option string ends with exec, dev, or suid enabled (last option wins).
+// option string ends with exec, dev, or suid enabled (last option wins). See
+// tmpfsPosture for how a token is read, "suid=1" included.
 func legacyTmpfsOptionsEnablePrivilege(options string) bool {
-	var exec, dev, suid bool
-	for option := range strings.SplitSeq(options, ",") {
-		switch option {
-		case "exec":
-			exec = true
-		case "noexec":
-			exec = false
-		case "dev":
-			dev = true
-		case "nodev":
-			dev = false
-		case "suid":
-			suid = true
-		case "nosuid":
-			suid = false
-		}
-	}
-	return exec || dev || suid
+	return tmpfsPostureOfList(options).enablesPrivilege()
 }
 
 // denyLogPathReason refuses a HostConfig.LogConfig.Config key that a Podman

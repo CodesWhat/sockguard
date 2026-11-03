@@ -159,7 +159,7 @@ func TestContainerCreateVolumeMountInlineBind(t *testing.T) {
 		},
 		{
 			name: "non-bind local options are untouched",
-			body: `{"HostConfig":{"Mounts":[{"Type":"volume","Source":"vol","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"tmpfs","o":"size=100m","device":"tmpfs"}}}}]}}`,
+			body: `{"HostConfig":{"Mounts":[{"Type":"volume","Source":"vol","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"tmpfs","o":"size=100m,noexec,nosuid,nodev","device":"tmpfs"}}}}]}}`,
 		},
 		{
 			name: "non-local driver is untouched",
@@ -237,7 +237,7 @@ func TestServiceMountInlineBind(t *testing.T) {
 		{
 			name: "non-bind local options are untouched",
 			path: "/services/create",
-			body: `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Mounts":[{"Type":"volume","Source":"vol","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"tmpfs","o":"size=100m","device":"tmpfs"}}}}]}}}`,
+			body: `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Mounts":[{"Type":"volume","Source":"vol","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"tmpfs","o":"size=100m,noexec,nosuid,nodev","device":"tmpfs"}}}}]}}}`,
 		},
 		{
 			name: "non-local driver is untouched",
@@ -310,7 +310,7 @@ func TestVolumeCreateInlineBind(t *testing.T) {
 		{
 			name: "non-bind local options are untouched",
 			opts: VolumeOptions{AllowDriverOpts: true, AllowedBindMounts: []string{"/safe"}},
-			body: `{"Name":"vol","Driver":"local","DriverOpts":{"type":"tmpfs","o":"size=100m","device":"tmpfs"}}`,
+			body: `{"Name":"vol","Driver":"local","DriverOpts":{"type":"tmpfs","o":"size=100m,noexec,nosuid,nodev","device":"tmpfs"}}`,
 		},
 		{
 			name: "non-local driver is untouched",
@@ -359,7 +359,7 @@ func TestLibpodVolumeCreateInlineBind(t *testing.T) {
 		{
 			name: "non-bind local options are untouched",
 			opts: VolumeOptions{AllowDriverOpts: true, AllowedBindMounts: []string{"/safe"}},
-			body: `{"Name":"vol","Driver":"local","Options":{"type":"tmpfs","o":"size=100m"}}`,
+			body: `{"Name":"vol","Driver":"local","Options":{"type":"tmpfs","o":"size=100m,noexec,nosuid,nodev"}}`,
 		},
 	}
 
@@ -994,7 +994,7 @@ func TestLocalVolumeHostFilesystemEntryPoints(t *testing.T) {
 		},
 		{
 			name:    "a tmpfs quota volume still passes",
-			options: `{"type":"tmpfs","o":"size=100m"}`,
+			options: `{"type":"tmpfs","o":"size=100m,noexec,nosuid,nodev"}`,
 		},
 	}
 

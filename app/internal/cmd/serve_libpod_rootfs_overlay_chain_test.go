@@ -711,7 +711,7 @@ func TestServeChainLibpodRootfsAndOverlayNeedTheBindMountAllowlist(t *testing.T)
 		},
 		{
 			name:        "libpod tmpfs mount reaches the daemon",
-			send:        libpod(`"image":"alpine","mounts":[{"type":"tmpfs","source":"tmpfs","destination":"/tmp/x"}]`),
+			send:        libpod(`"image":"alpine","mounts":[{"type":"tmpfs","source":"tmpfs","destination":"/tmp/x","options":["noexec","nosuid","nodev"]}]`),
 			wantStatus:  http.StatusCreated,
 			wantCreated: created("tmpfs=tmpfs:/tmp/x"),
 		},

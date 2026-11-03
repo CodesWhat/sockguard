@@ -1171,10 +1171,12 @@ func withFilter(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger,
 	opts := serveFilterOptions(cfg, res, clientProfiles)
 	opts.Build.PodmanUpstream = flavor == upstreamflavor.Podman
 	opts.ContainerCreate.UpstreamCgroupV1 = upstreamCgroupV1
+	opts.ContainerCreate.PodmanUpstream = flavor == upstreamflavor.Podman
 	profiles := make(map[string]filter.Policy, len(opts.Profiles))
 	for name, profile := range opts.Profiles {
 		profile.Build.PodmanUpstream = flavor == upstreamflavor.Podman
 		profile.ContainerCreate.UpstreamCgroupV1 = upstreamCgroupV1
+		profile.ContainerCreate.PodmanUpstream = flavor == upstreamflavor.Podman
 		profiles[name] = profile
 	}
 	opts.Profiles = profiles

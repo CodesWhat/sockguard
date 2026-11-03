@@ -29,10 +29,15 @@ func (c RequestBodyConfig) ToFilterOptions() filter.PolicyConfig {
 	// operator could widen and then forget. The libpod volume inspector is
 	// wired the same way from libpod_container_create.allowed_bind_mounts,
 	// keeping each API family on its own allowlist.
+	service := c.Service.ToFilterOptions()
+	service.AllowTmpfsPrivilegedOptions = c.ContainerCreate.AllowTmpfsPrivilegedOptions
+
 	volume := c.Volume.ToFilterOptions()
 	volume.AllowedBindMounts = c.ContainerCreate.AllowedBindMounts
+	volume.AllowTmpfsPrivilegedOptions = c.ContainerCreate.AllowTmpfsPrivilegedOptions
 	libpodVolume := c.LibpodVolume.ToFilterOptions()
 	libpodVolume.AllowedBindMounts = c.LibpodContainerCreate.AllowedBindMounts
+	libpodVolume.AllowTmpfsPrivilegedOptions = c.LibpodContainerCreate.AllowTmpfsPrivilegedOptions
 
 	return filter.PolicyConfig{
 		ContainerCreate:       containerCreate,
@@ -48,7 +53,7 @@ func (c RequestBodyConfig) ToFilterOptions() filter.PolicyConfig {
 		Network:               c.Network.ToFilterOptions(),
 		Secret:                c.Secret.ToFilterOptions(),
 		Config:                c.Config.ToFilterOptions(),
-		Service:               c.Service.ToFilterOptions(),
+		Service:               service,
 		Swarm:                 c.Swarm.ToFilterOptions(),
 		Node:                  c.Node.ToFilterOptions(),
 		Plugin:                c.Plugin.ToFilterOptions(),
@@ -190,6 +195,7 @@ func (c LibpodContainerCreateRequestBodyConfig) ToFilterOptions() filter.LibpodC
 		ImageTrust:                        c.ImageTrust.toFilterOptions(),
 		AllowSystemdMode:                  c.AllowSystemdMode,
 		AllowCustomIDMappings:             c.AllowCustomIDMappings,
+		AllowTmpfsPrivilegedOptions:       c.AllowTmpfsPrivilegedOptions,
 		AllowLogPath:                      c.AllowLogPath,
 		AllowedLogDrivers:                 c.AllowedLogDrivers,
 		AllowedLogEndpointOptions:         c.AllowedLogEndpointOptions,
