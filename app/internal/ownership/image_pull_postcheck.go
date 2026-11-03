@@ -45,8 +45,9 @@ import (
 //
 // A pull by digest has no destination name, and the image it fetches is
 // addressable by repository@digest. That reference is inspected after the pull
-// and removed when its image is another owner's, unless the reference existed
-// before the pull, which is only reported.
+// and only reported when its image is another owner's. A digest reference pins
+// its content, so a client cannot make a victim's reference resolve to other
+// bytes, and removing by digest could drop an image other names still hold.
 
 const (
 	// imagePullPostCheckTimeout bounds the inspects and untags that follow a
@@ -71,7 +72,8 @@ const (
 	// the names found by ID after the pull stay report-only.
 	maxPrePullImages = 256
 
-	imagePullPreexistingFormat = "owner policy found another owner's label on %s, which existed before this pull, and left it in place"
+	imagePullDigestKeptFormat = "owner policy: pulled image %s carries another owner's label; it was left in place because a digest reference pins its content"
+	imagePullMovedFormat      = "owner policy left %s in place: it no longer names the image this pull reported"
 )
 
 // pulledImage is what an image inspect gives the check after a pull.
@@ -274,7 +276,7 @@ func namesRequestedReference(refs *imageDestinationReferences, name string) bool
 	}
 	for _, dest := range refs.destinations {
 		repo, tag, ok := splitNameTag(dest.target)
-		if ok && tag == nameTag && (nameRepo == repo || strings.HasSuffix(nameRepo, "/"+repo)) {
+		if ok && repo != "" && tag == nameTag && (nameRepo == repo || strings.HasSuffix(nameRepo, "/"+repo)) {
 			return true
 		}
 	}
@@ -345,13 +347,6 @@ func servePullWithOwnerCheck(logger *slog.Logger, next http.Handler, w http.Resp
 			c.before[ref] = image.id
 		}
 	}
-	// A digest reference that already resolves, or whose state cannot be read,
-	// is not this pull's to remove.
-	digestExisted := map[string]bool{}
-	for _, ref := range refs.digests {
-		_, found, err := post.inspect(snapshotCtx, ref)
-		digestExisted[ref] = err != nil || found
-	}
 	if libpod && post.list != nil {
 		c.snapshotLibpodImages(snapshotCtx, refs)
 	}
@@ -372,7 +367,7 @@ func servePullWithOwnerCheck(logger *slog.Logger, next http.Handler, w http.Resp
 		found[ref] = c.checkReference(ctx, ref)
 	}
 	for _, ref := range refs.digests {
-		c.checkDigest(ctx, ref, digestExisted[ref])
+		c.checkDigest(ctx, ref)
 	}
 	idChecked := libpod && c.checkReportedImages(ctx, refs, pw.images)
 	if pw.succeeded() && !idChecked {
@@ -428,31 +423,22 @@ func (c *pullCheck) snapshotLibpodImages(ctx context.Context, refs *imageDestina
 	c.preIDs, c.preKnown = ids, true
 }
 
-// checkDigest inspects the reference a pull by digest named. An image that
-// carries another owner's label, or that cannot be read, is removed under that
-// reference, unless the reference resolved before the pull, which is reported.
-func (c *pullCheck) checkDigest(ctx context.Context, ref string, existed bool) {
+// checkDigest inspects the reference a pull by digest named. It never removes
+// anything: an image that carries another owner's label is reported, and one
+// that cannot be read is reported as unverified.
+func (c *pullCheck) checkDigest(ctx context.Context, ref string) {
 	image, found, err := c.post.inspect(ctx, ref)
-	reason := imagePullForeignLabelReason
 	switch {
 	case err != nil:
-		reason = imagePullUnverifiedReason
-	case !found:
-		return
-	case !c.foreign(image.labels):
-		return
+		c.logger.WarnContext(ctx, "owner policy could not verify pulled image",
+			"reference", logging.SafeString(ref), "error", logging.SafeString(err.Error()), "path", logging.SafeString(c.r.URL.Path))
+		c.report(fmt.Sprintf(imagePullNotVerifiedFormat, ref))
+	case !found, !c.foreign(image.labels):
+	default:
+		c.logger.WarnContext(ctx, "owner policy found a pulled-by-digest image with another owner's label and left it in place",
+			"reference", logging.SafeString(ref), "path", logging.SafeString(c.r.URL.Path))
+		c.report(fmt.Sprintf(imagePullDigestKeptFormat, ref))
 	}
-	if existed {
-		c.logger.ErrorContext(ctx, "owner policy found a pulled-by-digest image with another owner's label that existed before the pull",
-			"reference", logging.SafeString(ref), "reason", reason, "path", logging.SafeString(c.r.URL.Path))
-		if err != nil {
-			c.report(fmt.Sprintf(imagePullNotVerifiedFormat, ref))
-		} else {
-			c.report(fmt.Sprintf(imagePullPreexistingFormat, ref))
-		}
-		return
-	}
-	c.remove(ctx, ref, reason)
 }
 
 // checkReference inspects one reference a pull wrote and, when its image is
@@ -550,8 +536,12 @@ func (c *pullCheck) checkReportedImages(ctx context.Context, refs *imageDestinat
 			}
 			_, written := ours[name]
 			_, existed := c.preIDs[bareImageID(image.id)]
-			if written || (c.preKnown && !existed && image.id != "" && namesRequestedReference(refs, name)) {
+			if written {
 				c.remove(ctx, name, imagePullForeignLabelReason)
+				continue
+			}
+			if c.preKnown && !existed && image.id != "" && namesRequestedReference(refs, name) {
+				c.removeIfUnchanged(ctx, name, image.id)
 				continue
 			}
 			c.logger.ErrorContext(ctx, "owner policy found a pulled image with another owner's label under a name it did not compute",
@@ -560,6 +550,21 @@ func (c *pullCheck) checkReportedImages(ctx context.Context, refs *imageDestinat
 		}
 	}
 	return checked
+}
+
+// removeIfUnchanged untags name only if it still points at the image ID this
+// pull reported. Another pull can move the name between the first inspect and
+// the untag, and the name is then not this pull's to remove. An inspect that
+// fails or no longer finds the name leaves it in place.
+func (c *pullCheck) removeIfUnchanged(ctx context.Context, name, wantID string) {
+	current, found, err := c.post.inspect(ctx, name)
+	if err != nil || !found || bareImageID(current.id) != bareImageID(wantID) {
+		c.logger.WarnContext(ctx, "owner policy left a name in place that no longer names the reported image",
+			"reference", logging.SafeString(name), "image", logging.SafeString(wantID), "path", logging.SafeString(c.r.URL.Path))
+		c.report(fmt.Sprintf(imagePullMovedFormat, name))
+		return
+	}
+	c.remove(ctx, name, imagePullForeignLabelReason)
 }
 
 // imagePullProgressError is one error line in the shape the route's progress
