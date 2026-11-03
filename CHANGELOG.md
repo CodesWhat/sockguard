@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The compat-create mount comma refusal applies to Podman upstreams only.** A comma in a `HostConfig.Mounts` `Type`, `Source`, `Target`, `Consistency`, `BindOptions.Propagation` or `VolumeOptions.Subpath` is only a field separator to Podman, which rebuilds the mount into a `--mount` string. On a dockerd upstream it is a literal character, so the create is now forwarded instead of refused. A Podman upstream refuses it as before.
+
 ### Security
 
 - **Owner isolation caps the resources one compat create names.** `POST /containers/create` and service create/update collected their volume, network, image, secret and config references with a linear duplicate scan and no bound, so a body with tens of thousands of binds cost quadratic CPU. Duplicates now collapse through a map, and a body that names more than 256 distinct resources is refused with the owner-policy `403`.

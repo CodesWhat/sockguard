@@ -344,7 +344,10 @@ injects extra mount fields: `{"Mounts":[{"Type":"bind","Target":"/h,source=/etc"
 binds the host's `/etc`, and `{"Type":"tmpfs","Target":"/scratch,exec,suid,dev"}`
 makes an exec/suid/dev tmpfs. A comma in any of those fields is refused. dockerd
 reads the structured mount and never rebuilds that string, so nothing a Docker
-client normally sends is affected.
+client normally sends is affected. The refusal follows the upstream engine: when
+the upstream is dockerd (`upstream.flavor: docker`, or `auto` resolved to
+Docker), a comma in those fields is a literal character and the create is
+forwarded.
 
 The Docker-compatible create reaches the same log path through
 `HostConfig.LogConfig`. It has no path field. Podman turns each entry of

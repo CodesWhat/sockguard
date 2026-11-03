@@ -180,6 +180,14 @@ type ContainerCreateOptions struct {
 	// denyLogPathReason.
 	AllowLogPath bool
 
+	// DockerUpstream is set when the upstream is known to be dockerd, which
+	// never rebuilds a mount into the comma-joined string a Podman upstream
+	// re-splits. It turns off the Podman-only comma refusal on HostConfig.Mounts
+	// fields (denyCompatMountFieldInjectionReason). The zero value keeps the
+	// refusal on, so a construction site that doesn't know the engine stays
+	// closed. The server sets it from the resolved upstream flavor.
+	DockerUpstream bool
+
 	// AllowEndpointConfig permits static IP, MAC address, Links, and
 	// DriverOpts in NetworkingConfig.EndpointsConfig entries carried on
 	// POST /containers/create. Docker connects every entry here the same way
@@ -244,6 +252,7 @@ type containerCreatePolicy struct {
 
 	allowTmpfsPrivilegedOptions bool
 	allowLogPath                bool
+	dockerUpstream              bool
 
 	allowEndpointConfig bool
 	endpointConfig      EndpointConfigOptions
@@ -337,6 +346,7 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		denyUnconfinedSystemPaths:         opts.DenyUnconfinedSystemPaths,
 		allowTmpfsPrivilegedOptions:       opts.AllowTmpfsPrivilegedOptions,
 		allowLogPath:                      opts.AllowLogPath,
+		dockerUpstream:                    opts.DockerUpstream,
 		allowEndpointConfig:               opts.AllowEndpointConfig,
 		endpointConfig:                    opts.EndpointConfig,
 	}
@@ -1342,8 +1352,10 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if denyReason := p.denyDeviceReason(createReq.HostConfig); denyReason != "" {
 		return denyReason, nil
 	}
-	if denyReason := denyCompatMountFieldInjectionReason(createReq.HostConfig.Mounts, "container create"); denyReason != "" {
-		return denyReason, nil
+	if !p.dockerUpstream {
+		if denyReason := denyCompatMountFieldInjectionReason(createReq.HostConfig.Mounts, "container create"); denyReason != "" {
+			return denyReason, nil
+		}
 	}
 	if denyReason := p.denyBindMountReason(createReq.HostConfig); denyReason != "" {
 		return denyReason, nil

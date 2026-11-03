@@ -76,6 +76,9 @@ import (
 type libpodRootfsChainDaemon struct {
 	mu      sync.Mutex
 	created []string
+	// docker makes GET /version answer as dockerd. Every other route is the
+	// same, so a test can send the same body to either engine's identity.
+	docker bool
 }
 
 // libpodRootfsChainDaemonDir is the working directory the daemon resolves a
@@ -93,7 +96,7 @@ func (d *libpodRootfsChainDaemon) ServeHTTP(w http.ResponseWriter, r *http.Reque
 	var create func(io.Reader) error
 	switch {
 	case r.Method == http.MethodGet && normPath == "/version":
-		_ = json.NewEncoder(w).Encode(engineChainVersion(true))
+		_ = json.NewEncoder(w).Encode(engineChainVersion(!d.docker))
 		return
 	case r.Method == http.MethodPost && normPath == "/libpod/containers/create" && versioned:
 		create = d.createLibpodContainer

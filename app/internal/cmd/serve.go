@@ -1161,9 +1161,11 @@ func withFilter(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger,
 	warnIfReadExfiltrationEnabled(cfg, rules, clientProfiles, logger)
 	opts := serveFilterOptions(cfg, res, clientProfiles)
 	opts.Build.PodmanUpstream = flavor == upstreamflavor.Podman
+	opts.ContainerCreate.DockerUpstream = flavor == upstreamflavor.Docker
 	profiles := make(map[string]filter.Policy, len(opts.Profiles))
 	for name, profile := range opts.Profiles {
 		profile.Build.PodmanUpstream = flavor == upstreamflavor.Podman
+		profile.ContainerCreate.DockerUpstream = flavor == upstreamflavor.Docker
 		profiles[name] = profile
 	}
 	opts.Profiles = profiles
