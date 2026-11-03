@@ -642,10 +642,10 @@ the progress stream (`owner policy removed pulled image <ref>`). An inspect that
 fails is treated the same way. If the requester already held that name, the
 image ID it pointed at is read before the pull is forwarded, and the name is put
 back on it after the untag (`POST /images/{id}/tag`, or its `/libpod/` twin on
-Podman), so a pull can't strip a caller's own tag. On dockerd the untag is sent
+Podman), so a pull can't strip a caller's own tag. On an upstream probed as dockerd the untag is sent
 with `force=1&noprune=1`, which removes just that name even when a container
-uses the image. Podman gets a plain delete, since its `force` removes the
-containers too. If the pull reported success and the name still isn't there, the
+uses the image. Podman, and an upstream the startup probe didn't identify as dockerd, gets a
+plain delete, since Podman's `force` removes the containers too. If the pull reported success and the name still isn't there, the
 stream gets `owner policy could not verify pulled image <ref>` and the proxy logs
 a warning. Podman's native pull reports the IDs of the images it pulled, and
 Sockguard inspects those too: a foreign-labeled image loses the names this pull

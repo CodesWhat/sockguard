@@ -1178,6 +1178,7 @@ func withOwnership(cfg *config.Config, res *upstream.Resolver, logger *slog.Logg
 		AllowUnownedImages:              cfg.Ownership.AllowUnownedImages,
 		AllowCrossOwnerNamespaceSharing: cfg.Ownership.AllowCrossOwnerNamespaceSharing,
 		UpstreamFlavor:                  capabilities.Flavor,
+		UpstreamProbedDocker:            capabilities.ProbedDocker,
 		PodmanConjunctiveVolumeFilters:  capabilities.PodmanConjunctiveVolumeFilters,
 	})
 }

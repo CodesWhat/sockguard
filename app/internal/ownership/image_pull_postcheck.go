@@ -15,7 +15,6 @@ import (
 
 	"github.com/codeswhat/sockguard/v3/app/internal/dockerresource"
 	"github.com/codeswhat/sockguard/v3/app/internal/logging"
-	"github.com/codeswhat/sockguard/v3/app/internal/upstreamflavor"
 )
 
 // image_pull_postcheck.go closes the pull half of a forged owner label.
@@ -224,7 +223,8 @@ type pullCheck struct {
 	// force sends the untag with force=1. On dockerd that lets removing a
 	// reference succeed when a container uses the image, and still removes
 	// only that name. On Podman force also removes the containers using the
-	// image, so it is not sent there or on the native route.
+	// image, so it is sent only on a positive Docker probe, never on Podman,
+	// an unresolved or auto flavor, or the native route.
 	force  bool
 	opts   Options
 	post   *postPullChecks
@@ -263,7 +263,7 @@ func servePullWithOwnerCheck(logger *slog.Logger, next http.Handler, w http.Resp
 		logger:  logger,
 		r:       r,
 		libpod:  libpod,
-		force:   !libpod && opts.UpstreamFlavor != upstreamflavor.Podman,
+		force:   !libpod && opts.UpstreamProbedDocker,
 		opts:    opts,
 		post:    post,
 		before:  map[string]string{},

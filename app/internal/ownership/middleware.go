@@ -186,6 +186,11 @@ type Options struct {
 	// TestServeChainPassesResolvedFlavorToOwnership is the wiring proof, and
 	// TestServeChainImageTagChecksTheLocalhostNameOnPodman is a second one.
 	UpstreamFlavor upstreamflavor.Flavor
+	// UpstreamProbedDocker is true only when GET /version positively
+	// identified dockerd on every endpoint. Flavor can read Docker with no
+	// probe behind it, and the pull untag sends force=1 only on this evidence,
+	// because on Podman force removes the containers using the image.
+	UpstreamProbedDocker bool
 	// PodmanConjunctiveVolumeFilters is true only when all upstream endpoints
 	// positively report a released Podman version with AND across volume filter keys.
 	PodmanConjunctiveVolumeFilters bool

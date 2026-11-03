@@ -159,6 +159,8 @@ type pullRun struct {
 	status int
 	stream string
 	flavor upstreamflavor.Flavor
+	// probedDocker is the startup probe having positively identified dockerd.
+	probedDocker bool
 	// cancelAtEnd cancels the request context as the pull's last line is
 	// written, the way a client that hangs up as the pull ends does.
 	cancelAtEnd bool
@@ -170,7 +172,7 @@ func servePull(t *testing.T, daemon *pullMockDaemon, run pullRun) (*httptest.Res
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	handler := MiddlewareWithRoundTripper(daemon, logger, Options{Owner: "job-123", LabelKey: "com.sockguard.owner", UpstreamFlavor: run.flavor})(
+	handler := MiddlewareWithRoundTripper(daemon, logger, Options{Owner: "job-123", LabelKey: "com.sockguard.owner", UpstreamFlavor: run.flavor, UpstreamProbedDocker: run.probedDocker})(
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			daemon.pull()
 			w.WriteHeader(run.status)
@@ -189,7 +191,7 @@ func servePull(t *testing.T, daemon *pullMockDaemon, run pullRun) (*httptest.Res
 
 func runPull(t *testing.T, daemon *pullMockDaemon, target string, upstreamStatus int) (*httptest.ResponseRecorder, string) {
 	t.Helper()
-	return servePull(t, daemon, pullRun{target: target, status: upstreamStatus, stream: pullProgress})
+	return servePull(t, daemon, pullRun{target: target, status: upstreamStatus, stream: pullProgress, flavor: upstreamflavor.Docker, probedDocker: true})
 }
 
 func TestPullUntagsAnImageWithAnotherOwnersLabel(t *testing.T) {
@@ -435,6 +437,17 @@ func TestPullUntagSendsNoForceToPodman(t *testing.T) {
 	t.Parallel()
 	daemon := &pullMockDaemon{written: map[string]map[string]string{"localhost/team/app:v2": {testOwnerKey: "victim"}}}
 	servePull(t, daemon, pullRun{target: "/images/create?fromImage=team%2Fapp&tag=v2", status: http.StatusOK, stream: pullProgress, flavor: upstreamflavor.Podman})
+	if len(daemon.untagged) != 1 || daemon.untagQueries[0] != "" {
+		t.Fatalf("untagged = %v queries = %q, want one untag with no query", daemon.untagged, daemon.untagQueries)
+	}
+}
+
+// An auto or unresolved flavor is not a Docker identification, so the untag
+// is a plain delete there too.
+func TestPullUntagSendsNoForceToAutoFlavor(t *testing.T) {
+	t.Parallel()
+	daemon := &pullMockDaemon{written: map[string]map[string]string{"team/app:v2": {testOwnerKey: "victim"}}}
+	servePull(t, daemon, pullRun{target: "/images/create?fromImage=team%2Fapp&tag=v2", status: http.StatusOK, stream: pullProgress, flavor: upstreamflavor.Auto})
 	if len(daemon.untagged) != 1 || daemon.untagQueries[0] != "" {
 		t.Fatalf("untagged = %v queries = %q, want one untag with no query", daemon.untagged, daemon.untagQueries)
 	}
