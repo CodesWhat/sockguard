@@ -288,3 +288,65 @@ func TestHijackRawStreamInactivityTimeout(t *testing.T) {
 		t.Fatal("upstream connection was not closed after idle timeout")
 	}
 }
+
+// closeRecordingConn wraps a net.Conn and records Close.
+type closeRecordingConn struct {
+	net.Conn
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (c *closeRecordingConn) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return c.Conn.Close()
+}
+
+type closedClientWriter struct {
+	header http.Header
+	conn   net.Conn
+}
+
+func (w *closedClientWriter) Header() http.Header         { return w.header }
+func (w *closedClientWriter) Write(p []byte) (int, error) { return len(p), nil }
+func (w *closedClientWriter) WriteHeader(int)             {}
+func (w *closedClientWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return w.conn, bufio.NewReadWriter(bufio.NewReader(w.conn), bufio.NewWriter(w.conn)), nil
+}
+
+// TestHijackRawStreamHeadWriteFailureClosesBothConns: the client is gone by the
+// time the 200 head is written, so the write fails; both the client conn and
+// the upstream conn must be closed rather than left half-open.
+func TestHijackRawStreamHeadWriteFailureClosesBothConns(t *testing.T) {
+	socketPath, daemon := startPassthroughDaemon(t)
+
+	clientEnd, peer := net.Pipe()
+	_ = peer.Close()
+	client := &closeRecordingConn{Conn: clientEnd, closed: make(chan struct{})}
+	w := &closedClientWriter{header: http.Header{}, conn: client}
+
+	req, err := http.NewRequest(http.MethodPost, "http://x/exec/abc/start", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		HijackHandler(socketPath, slog.New(slog.NewTextHandler(io.Discard, nil)), http.NotFoundHandler()).ServeHTTP(w, req)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler did not return after head write failure")
+	}
+	select {
+	case <-client.closed:
+	default:
+		t.Error("client conn was not closed")
+	}
+	select {
+	case <-daemon.done:
+	case <-time.After(3 * time.Second):
+		t.Error("upstream conn was not closed")
+	}
+}
