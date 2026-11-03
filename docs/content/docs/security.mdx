@@ -433,6 +433,16 @@ write, so it can't see a name change hands between the lookup and Podman's own:
 the caller would have to delete its secret and another owner create one under
 the same name inside that moment.
 
+A request that targets a secret by path (`GET`, `DELETE` and the rest of
+`/secrets/{name}` and `/libpod/secrets/{name}`) is refused on Podman for the same
+reason when `{name}` could be an ID prefix: lowercase hex of fewer than 25
+characters. The daemon resolves the reference again when the request reaches it,
+and two deletes of a caller's own secret named after a foreign ID prefix sent at
+once both pass the inspect, which finds the caller's secret by name. The first
+removes it and the second falls through to the other owner's secret. A full
+25-character ID and any name that isn't all hex digits are unaffected, so a
+secret named `cafe` has to be addressed by its ID.
+
 `secret_env` is refused whenever it names anything, whoever's secret that is.
 Podman copies a mounted secret into the container once, while it creates it. It
 doesn't copy an environment secret anywhere: it keeps the secret's name and

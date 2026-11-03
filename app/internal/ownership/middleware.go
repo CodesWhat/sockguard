@@ -593,6 +593,9 @@ func allowPathOwnershipRequest(
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindTask, identifier, opts, false)
 	}
 	if identifier, ok := secretIdentifier(method, normPath); ok {
+		if reason := refuseShadowableSecretName(identifier, opts); reason != "" {
+			return verdictDeny, reason, nil
+		}
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindSecret, identifier, opts, false)
 	}
 	if identifier, ok := configIdentifier(method, normPath); ok {
@@ -654,6 +657,9 @@ func allowPathOwnershipRequest(
 		return checkOwnedImageRoute(ctx, inspectResource, identifier, opts, refs, method, normPath)
 	}
 	if identifier, ok := libpodSecretIdentifier(method, normPath); ok {
+		if reason := refuseShadowableSecretName(identifier, opts); reason != "" {
+			return verdictDeny, reason, nil
+		}
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindSecret, identifier, opts, false)
 	}
 	return verdictPassThrough, "", nil
