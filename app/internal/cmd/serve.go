@@ -839,7 +839,7 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 		// relative order doesn't affect correctness, only which one a
 		// reader sees "closer to the wire" in this slice.
 		namedServeHandlerLayer("withBuildkitMediator", withBuildkitMediator(cfg, resolver, logger, runtimeUpstreamFlavor(runtime))),
-		namedServeHandlerLayer("withHijack", withHijack(cfg, resolver, logger)),
+		namedServeHandlerLayer("withHijack", withHijack(cfg, resolver, logger, runtimeUpstreamCapabilities(runtime).ProbedDocker)),
 		// #152: inserted between hijack and ownership in APPEND order. Later
 		// appends wrap (execute before) earlier ones, so this yields runtime
 		// order ...filter -> visibility -> ownership -> resource-limit guard
@@ -1001,12 +1001,20 @@ func namedServeHandlerLayer(name string, with func(http.Handler) http.Handler) s
 	return serveHandlerLayer{name: name, with: with}
 }
 
-func withHijack(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger) func(http.Handler) http.Handler {
+func withHijack(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, probedDocker bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		// Hijack handler: intercepts attach/exec endpoints for native bidirectional
 		// streaming with optimized buffers and TCP half-close signaling. Dials the
 		// same active upstream endpoint as the rest of the proxy.
-		return proxy.HijackHandlerWithDialer(res, effectiveHijackInactivityTimeout(cfg), logger, next)
+		//
+		// Only a positively probed Docker upstream gets the client's upgrade
+		// choice passed through (200 raw stream without Upgrade, 101 with it);
+		// anything else, Podman included, is always asked to upgrade.
+		h := proxy.HijackHandlerWithDialer(res, effectiveHijackInactivityTimeout(cfg), logger, next)
+		if probedDocker {
+			h = proxy.PassClientUpgrade(h)
+		}
+		return h
 	}
 }
 

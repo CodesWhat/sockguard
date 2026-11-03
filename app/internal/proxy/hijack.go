@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/codeswhat/sockguard/v3/app/internal/apipath"
 	"github.com/codeswhat/sockguard/v3/app/internal/filter"
 	"github.com/codeswhat/sockguard/v3/app/internal/httpjson"
 	"github.com/codeswhat/sockguard/v3/app/internal/logging"
@@ -296,7 +297,7 @@ func finishHijackUpgrade(w http.ResponseWriter, r *http.Request, upstreamConn ne
 
 	ok = false
 	var session *hijackSession
-	if resp.StatusCode == http.StatusSwitchingProtocols {
+	if resp.StatusCode == http.StatusSwitchingProtocols || isRawStreamHijackResponse(r, resp) {
 		session, ok = finalizeHijackUpgrade(w, logger, hijackUpgradeState{
 			resp:         resp,
 			upstreamConn: upstreamConn,
@@ -311,6 +312,56 @@ func finishHijackUpgrade(w http.ResponseWriter, r *http.Request, upstreamConn ne
 	}
 
 	return session, ok
+}
+
+type passClientUpgradeKey struct{}
+
+// PassClientUpgrade wraps a hijack handler so it forwards the client's upgrade
+// choice instead of always asking the upstream to upgrade. Only a positively
+// probed Docker daemon is known to answer the plain form with a 200 raw stream;
+// Podman's libpod endpoints don't, so every other upstream keeps the forced
+// `Connection: Upgrade` / `Upgrade: tcp` request and its 101 answer.
+func PassClientUpgrade(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Only Docker container attach and exec start are touched. Every other
+		// request, BuildKit's /session and /grpc (Upgrade: h2c) included, goes
+		// through with the very same *http.Request, so the wrapper cannot
+		// change how they are handled.
+		if r != nil && r.Method == http.MethodPost {
+			if p := requestHijackPath(w, r); apipath.IsContainerAttachPath(p) || apipath.IsExecStartPath(p) {
+				r = r.WithContext(context.WithValue(r.Context(), passClientUpgradeKey{}, true))
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func passClientUpgrade(r *http.Request) bool {
+	v, _ := r.Context().Value(passClientUpgradeKey{}).(bool)
+	return v
+}
+
+// clientRequestedUpgrade reports whether the client asked for a connection
+// upgrade. moby's exec start and attach handlers branch on the mere presence of
+// the Upgrade header: with it they answer 101 Switching Protocols, without it
+// they answer 200 OK and then stream raw bytes (docker-py and some other
+// clients use that form).
+func clientRequestedUpgrade(r *http.Request) bool {
+	_, ok := r.Header["Upgrade"]
+	return ok
+}
+
+// isRawStreamHijackResponse reports whether the upstream answered a request
+// that carried no Upgrade header with the non-upgrade stream form: a 200 whose
+// body has no declared length (no Content-Length, not chunked), i.e. a raw
+// stream that runs until the connection closes. A 200 with a declared length
+// is an ordinary response and goes through the normal forwarding path.
+func isRawStreamHijackResponse(r *http.Request, resp *http.Response) bool {
+	return passClientUpgrade(r) &&
+		!clientRequestedUpgrade(r) &&
+		resp.StatusCode == http.StatusOK &&
+		resp.ContentLength < 0 &&
+		len(resp.TransferEncoding) == 0
 }
 
 func proxyHijackStreams(session *hijackSession, inactivityTimeout time.Duration, logger *slog.Logger) {
@@ -389,7 +440,8 @@ func waitForHijackInactivity(activity *hijackActivity, timeout time.Duration, do
 
 func writeHijackUpstreamRequest(upstreamConn net.Conn, w http.ResponseWriter, r *http.Request, logger *slog.Logger) bool {
 	// We remove client-controlled hop-by-hop metadata and emit a fixed Docker
-	// upgrade hint so upstream sees only proxy-controlled connection semantics.
+	// upgrade hint, only when the client asked for an upgrade, so upstream sees
+	// only proxy-controlled connection semantics.
 	//
 	// #194: the wire path is the client's ORIGINAL request path — version
 	// prefix and all — not the normalized/stripped form. That mirrors the
@@ -530,16 +582,16 @@ func finalizeHijackUpgrade(w http.ResponseWriter, logger *slog.Logger, state hij
 		return nil, false
 	}
 
-	if err := state.resp.Write(clientBuf); err != nil {
+	if err := writeHijackResponseHead(clientBuf, state.resp); err != nil {
 		closeConn(logger, clientConn, "client connection", state.path)
 		closeConn(logger, state.upstreamConn, "upstream connection", state.path)
-		logger.Error("hijack: write 101 to client failed", "error", logging.SafeString(err.Error()), "path", logging.SafeString(state.path))
+		logger.Error("hijack: write 101 to client failed", "status", state.resp.StatusCode, "error", logging.SafeString(err.Error()), "path", logging.SafeString(state.path))
 		return nil, false
 	}
 	if err := clientBuf.Flush(); err != nil {
 		closeConn(logger, clientConn, "client connection", state.path)
 		closeConn(logger, state.upstreamConn, "upstream connection", state.path)
-		logger.Error("hijack: flush 101 to client failed", "error", logging.SafeString(err.Error()), "path", logging.SafeString(state.path))
+		logger.Error("hijack: flush 101 to client failed", "status", state.resp.StatusCode, "error", logging.SafeString(err.Error()), "path", logging.SafeString(state.path))
 		return nil, false
 	}
 
@@ -550,6 +602,24 @@ func finalizeHijackUpgrade(w http.ResponseWriter, logger *slog.Logger, state hij
 		clientConn:   clientConn,
 		clientBuf:    clientBuf,
 	}, true
+}
+
+// writeHijackResponseHead writes the upstream's status line and headers, and no
+// body, to the hijacked client connection. A 101 has no body so resp.Write is
+// exact. A raw-stream 200 has an unbounded body that the relay carries, so
+// resp.Write must not be allowed to drain it.
+func writeHijackResponseHead(w io.Writer, resp *http.Response) error {
+	if resp.StatusCode == http.StatusSwitchingProtocols {
+		return resp.Write(w)
+	}
+	if _, err := fmt.Fprintf(w, "HTTP/%d.%d %d %s\r\n", resp.ProtoMajor, resp.ProtoMinor, resp.StatusCode, http.StatusText(resp.StatusCode)); err != nil {
+		return err
+	}
+	if err := resp.Header.Write(w); err != nil {
+		return err
+	}
+	_, err := io.WriteString(w, "\r\n")
+	return err
 }
 
 func startHijackCopy(
@@ -626,8 +696,14 @@ func newUpstreamHijackRequest(r *http.Request, path string) *http.Request {
 	upstreamReq.TransferEncoding = nil
 	upstreamReq.Trailer = nil
 	upstreamReq.Close = false
-	upstreamReq.Header.Set("Connection", "Upgrade")
-	upstreamReq.Header.Set("Upgrade", "tcp")
+	// With passthrough on (probed Docker only), pass the client's choice
+	// through: the daemon answers 101 only when asked
+	// to upgrade and a plain 200 stream otherwise, and clients expect the form
+	// they asked for. The Upgrade value stays proxy-controlled.
+	if !passClientUpgrade(r) || clientRequestedUpgrade(r) {
+		upstreamReq.Header.Set("Connection", "Upgrade")
+		upstreamReq.Header.Set("Upgrade", "tcp")
+	}
 
 	return upstreamReq
 }
