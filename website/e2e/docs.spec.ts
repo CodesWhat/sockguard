@@ -1,3 +1,4 @@
+import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
 
 test.describe("docs search", () => {
@@ -69,6 +70,8 @@ test.describe("docs header and sidebar controls", () => {
 
 test.describe("docs mobile drawer at 375px", () => {
   test.use({ viewport: { width: 375, height: 812 } });
+  const drawerOf = (page: Page) =>
+    page.locator("#nd-sidebar-mobile, [data-state='open'] #nd-sidebar, #nd-sidebar").first();
 
   test("opens from the docs bar, navigates and closes", async ({ page }) => {
     await page.goto("/docs/getting-started");
@@ -94,5 +97,39 @@ test.describe("docs mobile drawer at 375px", () => {
     await page.goto("/docs/getting-started");
     await page.locator(".docs-bar").getByRole("button", { name: "Search docs" }).click();
     await expect(page.getByRole("dialog")).toBeVisible();
+  });
+
+  test("header stays clean and search hint is platform-aware", async ({ page }) => {
+    await page.goto("/docs/getting-started");
+    const header = page.locator("header.top");
+    await expect(header.getByRole("button", { name: /dark and light/ })).toHaveCount(0);
+    await expect(header.getByRole("button", { name: "Search docs" })).toHaveCount(0);
+    await expect(
+      page.locator(".docs-bar").getByRole("button", { name: "Search docs" }),
+    ).toBeVisible();
+    await page.locator(".docs-bar-btn").click();
+    const hint = drawerOf(page).locator(".sk").first();
+    await expect(hint).toHaveText(/^(Ctrl K|\u2318K)$/);
+  });
+
+  test("drawer theme toggle is a 44px touch target", async ({ page }) => {
+    await page.goto("/docs/getting-started");
+    await page.locator(".docs-bar-btn").click();
+    const toggle = drawerOf(page).getByRole("button", {
+      name: "Switch between dark and light mode",
+    });
+    await expect(toggle).toBeVisible();
+    const box = await toggle.boundingBox();
+    expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+  });
+
+  test("search opened from the drawer focuses the input", async ({ page }) => {
+    await page.goto("/docs/getting-started");
+    await page.locator(".docs-bar-btn").click();
+    await drawerOf(page).getByRole("button", { name: "Search docs" }).click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+    const input = dialog.getByRole("combobox").or(dialog.getByRole("searchbox")).first();
+    await expect(input).toBeFocused();
   });
 });
