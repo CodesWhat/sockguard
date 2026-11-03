@@ -13,6 +13,7 @@ const (
 	buildOutputsQueryField  = "outputs"
 	buildManifestQueryField = "manifest"
 	buildPullQueryField     = "pull"
+	buildPullPolicyField    = "pullpolicy"
 
 	// buildMaxTags bounds the names one build is checked for. Each costs up
 	// to two inspects, and the query is the client's to fill. It is the bound
@@ -97,6 +98,10 @@ var buildOutputTransports = map[string]struct{}{
 //     build context, which the owner layer never reads (the request-body
 //     inspector does, in a different package and for different purposes), so
 //     the pull is refused instead of checked.
+//   - A `pullpolicy` parameter other than missing, never or a switched-off
+//     value, for the same reason. Unlike `pull`, `missing` and `never` are
+//     policy names there and don't pull. They are not for `pull`: dockerd
+//     reads `pull=never` as true.
 //   - A `manifest` parameter in any spelling. Podman adds the built image to
 //     the manifest list of that name and creates the list when nothing holds
 //     it, on both routes. A manifest list is not an image this layer can
@@ -120,6 +125,10 @@ func buildImageDestinations(rawQuery, normPath string, flavor upstreamflavor.Fla
 		switch {
 		case strings.EqualFold(field.Key, buildPullQueryField):
 			if buildPullEnabled(field.Value) {
+				return nil, buildDenyPull
+			}
+		case strings.EqualFold(field.Key, buildPullPolicyField):
+			if buildPullPolicyPulls(field.Value) {
 				return nil, buildDenyPull
 			}
 		case strings.EqualFold(field.Key, buildManifestQueryField):
@@ -152,6 +161,22 @@ func buildImageDestinations(rawQuery, normPath string, flavor upstreamflavor.Fla
 		return nil, ""
 	}
 	return refs, ""
+}
+
+// buildPullPolicyPulls reports whether a pullpolicy parameter can make the
+// build pull. Podman's native build reads it through buildah's PolicyMap
+// (missing, always, never, ifnewer; exact case, and a name not in the map is
+// the zero value, "missing"), and its compat build reads only `pull`. dockerd
+// has no such parameter. "missing" and "never" don't pull a base image that's
+// already there, so they pass, with the empty and switched-off spellings.
+// Everything else is refused, always and ifnewer included.
+func buildPullPolicyPulls(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "missing", "never", "0", "false", "no", "none":
+		return false
+	default:
+		return true
+	}
 }
 
 // buildPullEnabled reports whether a pull parameter's value asks for a pull.
