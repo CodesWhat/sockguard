@@ -119,6 +119,11 @@ type ContainerCreateOptions struct {
 	// probe: true only when every upstream endpoint reported CgroupVersion
 	// "1". It is not a config key.
 	UpstreamCgroupV1 bool
+	// UpstreamCgroupV1Func, when set, is read on every container create in
+	// place of UpstreamCgroupV1 so the serve layer can refresh the probe result
+	// (periodic re-probe, health change, hot reload) without rebuilding the
+	// policy. It must be safe for concurrent use and cheap.
+	UpstreamCgroupV1Func func() bool
 	// RestrictNamespaceSharing gates HostConfig.NetworkMode/PidMode/IpcMode/
 	// UTSMode/UsernsMode/CgroupnsMode values of the form "container:<ref>"
 	// (join another container's namespace) against
@@ -269,6 +274,7 @@ type containerCreatePolicy struct {
 	allowHostCgroupNS                 bool
 	allowHostCgroupNSOnCgroupV1       bool
 	upstreamCgroupV1                  bool
+	upstreamCgroupV1Func              func() bool
 	restrictNamespaceSharing          bool
 	allowedNamespaceSharingContainers []string
 	denyNamespacePathMode             bool
@@ -369,6 +375,7 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		allowHostCgroupNS:                 opts.AllowHostCgroupNS,
 		allowHostCgroupNSOnCgroupV1:       opts.AllowHostCgroupNSOnCgroupV1,
 		upstreamCgroupV1:                  opts.UpstreamCgroupV1,
+		upstreamCgroupV1Func:              opts.UpstreamCgroupV1Func,
 		restrictNamespaceSharing:          opts.RestrictNamespaceSharing,
 		allowedNamespaceSharingContainers: normalizeStringList(opts.AllowedNamespaceSharingContainers),
 		denyNamespacePathMode:             opts.DenyNamespacePathMode,
@@ -1356,7 +1363,7 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	// docker inspect reports it, so a recreate tool replaying it asks for
 	// nothing new. The opt-in therefore only opens while every upstream
 	// endpoint is confirmed cgroup v1; unknown stays denied.
-	if !p.allowHostCgroupNS && (!p.allowHostCgroupNSOnCgroupV1 || !p.upstreamCgroupV1) && isHostNamespaceMode(createReq.HostConfig.CgroupnsMode) {
+	if !p.allowHostCgroupNS && (!p.allowHostCgroupNSOnCgroupV1 || !p.isUpstreamCgroupV1()) && isHostNamespaceMode(createReq.HostConfig.CgroupnsMode) {
 		return "container create denied: host cgroup namespace mode is not allowed", nil
 	}
 	if denyReason := p.denyNamespacePathReason(createReq.HostConfig); denyReason != "" {
@@ -2764,4 +2771,13 @@ func normalizeStringList(values []string) []string {
 
 func isASCIILetter(c byte) bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+// isUpstreamCgroupV1 reports the current cgroup v1 confirmation, preferring
+// the live func over the static snapshot.
+func (p containerCreatePolicy) isUpstreamCgroupV1() bool {
+	if p.upstreamCgroupV1Func != nil {
+		return p.upstreamCgroupV1Func()
+	}
+	return p.upstreamCgroupV1
 }
