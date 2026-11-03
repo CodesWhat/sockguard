@@ -43,6 +43,8 @@ jobs:
     name: "Integration (Engine ${{ matrix.engine }})"
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      DOCKERHUB_LOGIN: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
 
     strategy:
       # One Engine failing must not hide how the others fared — drift usually
@@ -111,6 +113,16 @@ jobs:
             echo "live restore must be disabled for isolated Swarm tests; got ${live_restore}" >&2
             exit 1
           fi
+
+      - name: Log in to Docker Hub
+        # Authenticated pulls avoid Docker Hub's anonymous toomanyrequests
+        # limit on shared runner IPs. Skipped unless both credentials are
+        # present (fork PRs, Dependabot).
+        if: ${{ env.DOCKERHUB_LOGIN == 'true' }}
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       # Same digest-pin sourcing as quality-integration.yml: dockerd will not
       # pull-on-create for a digest ref that isn't already local, and the
