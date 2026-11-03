@@ -429,7 +429,7 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 
 func extractNetworkMembershipOwnershipReferences(r *http.Request) (*ownershipRequestReferences, error) {
 	refs := &ownershipRequestReferences{}
-	err := mutateJSONBody(r, func(decoded map[string]any) error {
+	err := inspectJSONBody(r, func(decoded map[string]any) error {
 		for _, identifier := range filter.FoldedStrings(decoded, "Container") {
 			appendEmbeddedOwnershipReference(&refs.embeddedResources, dockerresource.KindContainer, identifier, "network membership Container")
 		}
@@ -1436,9 +1436,48 @@ func isNegatedSelector(selector string) bool {
 	return strings.HasSuffix(strings.TrimSpace(key), "!")
 }
 
+// mutateJSONBody decodes the request body, runs mutate on the decoded object,
+// and replaces the body with the re-marshaled result.
 func mutateJSONBody(r *http.Request, mutate func(map[string]any) error) error {
+	_, decoded, err := decodeOwnershipJSONBody(r)
+	if err != nil {
+		return err
+	}
+	if err := mutate(decoded); err != nil {
+		return err
+	}
+
+	encoded, err := json.Marshal(decoded)
+	if err != nil {
+		return fmt.Errorf("encode request body: %w", err)
+	}
+	r.ContentLength = int64(len(encoded))
+	r.Body = io.NopCloser(bytes.NewReader(encoded))
+	return nil
+}
+
+// inspectJSONBody runs the same read, decode and ambiguity checks as
+// mutateJSONBody for a read-only callback, then restores the original bytes
+// so the daemon receives the body exactly as the client sent it.
+func inspectJSONBody(r *http.Request, inspect func(map[string]any) error) error {
+	body, decoded, err := decodeOwnershipJSONBody(r)
+	if err != nil {
+		return err
+	}
+	if err := inspect(decoded); err != nil {
+		return err
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.ContentLength = int64(len(body))
+	return nil
+}
+
+// decodeOwnershipJSONBody reads the bounded request body and decodes it into
+// an object, refusing ambiguous keys. It returns the raw bytes alongside the
+// decoded tree.
+func decodeOwnershipJSONBody(r *http.Request) ([]byte, map[string]any, error) {
 	if r.Body == nil {
-		return fmt.Errorf("request body is required")
+		return nil, nil, fmt.Errorf("request body is required")
 	}
 	// Read one byte past the limit so we can distinguish at-limit from
 	// over-limit without giving the client room to OOM the proxy.
@@ -1447,13 +1486,13 @@ func mutateJSONBody(r *http.Request, mutate func(map[string]any) error) error {
 		err = closeErr
 	}
 	if err != nil {
-		return fmt.Errorf("read request body: %w", err)
+		return nil, nil, fmt.Errorf("read request body: %w", err)
 	}
 	if int64(len(body)) > maxOwnershipBodyBytes {
-		return fmt.Errorf("request body exceeds %d byte limit", maxOwnershipBodyBytes)
+		return nil, nil, fmt.Errorf("request body exceeds %d byte limit", maxOwnershipBodyBytes)
 	}
 	if len(body) == 0 {
-		return fmt.Errorf("request body is required")
+		return nil, nil, fmt.Errorf("request body is required")
 	}
 	// UseNumber preserves JSON numbers as json.Number (underlying string)
 	// instead of coercing them to float64. That matters because the default
@@ -1465,14 +1504,14 @@ func mutateJSONBody(r *http.Request, mutate func(map[string]any) error) error {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 	if err := dec.Decode(&decoded); err != nil {
-		return fmt.Errorf("decode request body: %w", err)
+		return nil, nil, fmt.Errorf("decode request body: %w", err)
 	}
 	// json.Decode into map[string]any does not error on a JSON null literal —
 	// it simply leaves the map as nil. Reject it explicitly: a null body is
 	// not a valid Docker API payload, and passing nil to the mutate callback
 	// would panic when it tries to write into the map.
 	if decoded == nil {
-		return fmt.Errorf("decode request body: JSON null is not a valid object")
+		return nil, nil, fmt.Errorf("decode request body: JSON null is not a valid object")
 	}
 	// Owner-label stamping re-marshals the whole body through a map, and
 	// json.Marshal re-sorts the keys — so a duplicate case-variant key (e.g.
@@ -1492,7 +1531,7 @@ func mutateJSONBody(r *http.Request, mutate func(map[string]any) error) error {
 	// would decide which of the two that decoder honors.
 	repeated, divergent := filter.InspectJSONValueKeys(decoded)
 	if repeated != nil {
-		return fmt.Errorf("ambiguous request body: %w", repeated)
+		return nil, nil, fmt.Errorf("ambiguous request body: %w", repeated)
 	}
 	// The same walk finds a key holding a character the engines' JSON
 	// decoders match to a field name differently. Stamping doesn't make such
@@ -1517,23 +1556,13 @@ func mutateJSONBody(r *http.Request, mutate func(map[string]any) error) error {
 		// which is where imageLoadOwnershipReferences reads it too.
 		meta := logging.Meta(r.Context())
 		if !meta.AllowsPassThrough() {
-			return refusal
+			return nil, nil, refusal
 		}
 		meta.Decision = logging.DecisionWouldDeny
 		meta.ReasonCode = filter.ReasonCodeRequestBodyAmbiguous
 		meta.Reason = refusal.reason
 	}
-	if err := mutate(decoded); err != nil {
-		return err
-	}
-
-	encoded, err := json.Marshal(decoded)
-	if err != nil {
-		return fmt.Errorf("encode request body: %w", err)
-	}
-	r.ContentLength = int64(len(encoded))
-	r.Body = io.NopCloser(bytes.NewReader(encoded))
-	return nil
+	return body, decoded, nil
 }
 
 // ambiguousBodyKeyError is the refusal of a body for a key holding a

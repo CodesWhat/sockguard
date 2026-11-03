@@ -1446,6 +1446,40 @@ func TestMiddlewareDeniesCrossOwnerNetworkMembershipChanges(t *testing.T) {
 	}
 }
 
+func TestMiddlewareForwardsNetworkMembershipBodyUnchanged(t *testing.T) {
+	t.Parallel()
+	const body = `{"EndpointConfig": {"z":1,"a":2},  "Container": "web"}`
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+	fi := &recordingInspector{
+		resources: map[string]map[string]inspectResult{
+			"networks": {
+				"team-net": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+			},
+			"containers": {
+				"web": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+			},
+		},
+	}
+	var gotBody string
+	var gotLength int64
+	handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		gotBody = string(raw)
+		gotLength = r.ContentLength
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/networks/team-net/connect", strings.NewReader(body)))
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	if gotBody != body || gotLength != int64(len(body)) {
+		t.Fatalf("upstream body = %q (len %d), want %q (len %d)", gotBody, gotLength, body, len(body))
+	}
+}
+
 func TestMiddlewareFailsClosedWhenNetworkMembershipContainerIsUnresolved(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
