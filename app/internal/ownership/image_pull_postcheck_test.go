@@ -504,9 +504,9 @@ func TestPullWithAnErrorLineIsNotReportedUnverified(t *testing.T) {
 const pullDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 // A pull by digest writes no name, but the image is addressable by
-// repository@digest, so that reference is checked after the pull. It is only
-// ever reported: a digest pins its content and a delete could drop an image
-// other names hold.
+// repository@digest, so that reference is checked after the pull. It is
+// only reported, never deleted: a digest pins its content and a delete could
+// drop an image other names or containers hold.
 func TestPullByDigestReportsAForeignImage(t *testing.T) {
 	t.Parallel()
 	const kept = "carries another owner's label; it was left in place because a digest reference pins its content"
@@ -521,13 +521,18 @@ func TestPullByDigestReportsAForeignImage(t *testing.T) {
 		wantLine   string
 	}{
 		{
-			name: "compat pull", target: "/images/create?fromImage=" + url.QueryEscape("team/app@"+pullDigest),
-			ref: "team/app@" + pullDigest, flavor: upstreamflavor.Docker, probed: true,
+			name: "compat pull on an unprobed upstream", target: "/images/create?fromImage=" + url.QueryEscape("team/app@"+pullDigest),
+			ref: "team/app@" + pullDigest, flavor: upstreamflavor.Docker,
 			wantLine: "owner policy: pulled image team/app@" + pullDigest + " " + kept,
 		},
 		{
-			name: "compat pull with the digest in tag", target: "/images/create?fromImage=team%2Fapp%3Av1&tag=" + url.QueryEscape(pullDigest),
-			ref: "team/app@" + pullDigest, flavor: upstreamflavor.Docker, probed: true,
+			name: "compat pull on an auto flavor", target: "/images/create?fromImage=" + url.QueryEscape("team/app@"+pullDigest),
+			ref: "team/app@" + pullDigest, flavor: upstreamflavor.Auto,
+			wantLine: "owner policy: pulled image team/app@" + pullDigest + " " + kept,
+		},
+		{
+			name: "compat pull on podman", target: "/images/create?fromImage=" + url.QueryEscape("team/app@"+pullDigest),
+			ref: "team/app@" + pullDigest, flavor: upstreamflavor.Podman,
 			wantLine: "owner policy: pulled image team/app@" + pullDigest + " " + kept,
 		},
 		{
@@ -774,6 +779,32 @@ func TestPullSkipsANameThatMovedBeforeTheUntag(t *testing.T) {
 	}
 	if tail := strings.TrimPrefix(rec.Body.String(), report); !strings.Contains(tail, "owner policy left "+resolved+" in place") || strings.Count(tail, "\n") != 1 {
 		t.Fatalf("tail = %q, want one line saying the name moved", tail)
+	}
+}
+
+// A name the pre-pull list already held is not removed even when the pull
+// reports a new foreign image and the name now points at it: the name could be
+// the requester's own, and a pull that moved it cannot be told from a forged one.
+func TestPullLeavesANameThePrePullListHeld(t *testing.T) {
+	t.Parallel()
+	const id = "1234567890ab1234567890ab1234567890ab1234567890ab1234567890ab1234"
+	const oldID = "fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321"
+	const resolved = "quay.io/victim/app:v2"
+	report := pullProgress + `{"images":["` + id + `"],"id":"` + id + `"}` + "\n"
+	daemon := &pullMockDaemon{
+		labels:     map[string]map[string]string{resolved: {testOwnerKey: "job-123"}},
+		ids:        map[string]string{resolved: oldID},
+		written:    map[string]map[string]string{resolved: {testOwnerKey: "victim"}},
+		writtenIDs: map[string]string{resolved: id},
+	}
+	rec, _ := servePull(t, daemon, pullRun{target: "/v5.0.0/libpod/images/pull?reference=app%3Av2", status: http.StatusOK, stream: report, flavor: upstreamflavor.Podman})
+	for _, req := range daemon.requests {
+		if strings.HasPrefix(req, http.MethodDelete+" ") {
+			t.Fatalf("requests = %v, want no DELETE for a name the list held", daemon.requests)
+		}
+	}
+	if tail := strings.TrimPrefix(rec.Body.String(), report); !strings.Contains(tail, "could not remove pulled image "+resolved) {
+		t.Fatalf("tail = %q, want the report-only line", tail)
 	}
 }
 

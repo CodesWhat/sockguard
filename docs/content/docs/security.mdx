@@ -652,16 +652,16 @@ Sockguard inspects those too: a foreign-labeled image loses the names this pull
 computed. It also loses the names that match the requested reference (a short
 name `registries.conf` resolved to `quay.io/...`) when the image didn't exist
 before the pull, which a bounded list of the images under that reference, taken
-before the pull, tells. Any other name on it, and every name when that list fails
+before the pull, tells. A name that list already held is never untagged, even on a
+new image. Any other name on it, and every name when that list fails
 or holds more than 256 images, is named in an error line and left alone. Before
 a name found by ID is untagged it is inspected again, and it is skipped, with a
 line in the stream, if it no longer points at the image the pull reported. That
 leaves one race: two tenants pulling the same image at the same moment can see
-the check report a name instead of untagging it. A pull by digest writes no tag,
-so `repo@sha256:...` is inspected after the pull instead. It is reported, never
-removed: a digest reference pins its content, so a client can't make a victim's
+the check report a name instead of untagging it, and a concurrent pull of the same reference that writes the name after the list but before the check can still get it untagged, which is the accepted residual. A pull by digest writes no tag,
+so `repo@sha256:...` is inspected after the pull instead. It is reported and left in place: a digest reference pins its content, so a client can't make a victim's
 reference resolve to other bytes, and removing by digest could drop an image
-other names still hold. An image with another owner's label gets `owner policy:
+other names still hold. A foreign-labelled image pulled by digest stays in place with an error line, which is accepted: Sockguard can't prove it's new without risking another tenant's image. An image with another owner's label gets `owner policy:
 pulled image <ref> carries another owner's label; it was left in place because a
 digest reference pins its content`, and an inspect that fails gets the
 `could not verify` line. This runs in enforce rollout only. Warn and audit leave
