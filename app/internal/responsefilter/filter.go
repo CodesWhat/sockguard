@@ -1044,8 +1044,6 @@ func (f *Filter) redactTaskPayload(payload map[string]any) error {
 		}
 	}
 	if f.opts.RedactNetworkTopology {
-		redactStringField(payload, "ServiceID")
-		redactStringField(payload, "NodeID")
 		if err := redactTaskStatus(payload); err != nil {
 			return err
 		}
@@ -1212,7 +1210,6 @@ func (f *Filter) redactInfoPayload(payload map[string]any) error {
 		return err
 	}
 	if f.opts.RedactNetworkTopology {
-		redactStringField(swarmInfo, "NodeID")
 		redactStringField(swarmInfo, "NodeAddr")
 		redactArrayField(swarmInfo, "RemoteManagers")
 		if cluster, found, err := nestedMapValue(swarmInfo, "Cluster"); err != nil {
@@ -1382,7 +1379,6 @@ func redactVirtualIPs(payload map[string]any, keys ...string) error {
 		if !ok {
 			return fmt.Errorf("%s entry has unexpected type %T", strings.Join(keys, "."), value)
 		}
-		redactStringField(object, "NetworkID")
 		redactTypedAddressFields(object, "Addr")
 	}
 	return nil
@@ -1420,7 +1416,6 @@ func redactTaskStatus(payload map[string]any) error {
 	if err != nil || !found {
 		return err
 	}
-	redactStringField(containerStatus, "ContainerID")
 	redactNumberField(containerStatus, "PID")
 	return nil
 }
@@ -1443,7 +1438,6 @@ func redactTaskNetworkAttachments(payload map[string]any) error {
 		if network, found, err := nestedMapValue(attachment, "Network"); err != nil {
 			return err
 		} else if found {
-			redactStringField(network, "ID")
 			if ipam, found, err := nestedMapValue(network, "IPAMOptions"); err != nil {
 				return err
 			} else if found {
@@ -1721,15 +1715,50 @@ func redactMountObjects(payload map[string]any, field string) error {
 	return nil
 }
 
+// redactBindMountObjects is redactMountObjects except that entries whose Type is
+// volume, tmpfs, image or cluster keep their Source. Every other Type, including
+// a missing one, is redacted. HostConfig.Mounts carries the create-time spec, where a volume's
+// Source is its name rather than a host path.
+func redactBindMountObjects(payload map[string]any, field string) error {
+	mountsValue, ok := payload[field]
+	if !ok || mountsValue == nil {
+		return nil
+	}
+
+	mounts, ok := mountsValue.([]any)
+	if !ok {
+		return fmt.Errorf("%s has unexpected type %T", field, mountsValue)
+	}
+
+	for _, mountValue := range mounts {
+		mount, ok := mountValue.(map[string]any)
+		if !ok {
+			return fmt.Errorf("mount entry has unexpected type %T", mountValue)
+		}
+		switch mountType, _ := mount["Type"].(string); mountType {
+		case "volume", "tmpfs", "image", "cluster":
+			// Source is a name or empty, not a host path.
+		default:
+			// bind, npipe, a missing Type and anything unknown fail closed.
+			redactStringField(mount, "Source")
+		}
+	}
+
+	return nil
+}
+
 // redactHostConfigMountSources redacts host-path leaks from a container's
 // HostConfig: both the legacy string Binds ("/host/src:/ctr/dst") and the
 // structured Mounts array (each entry's "Source"). The structured Mounts API
 // (docker run --mount type=bind,source=...) surfaces the host source under
 // HostConfig.Mounts, a distinct field from the top-level runtime Mounts list,
 // so it must be redacted here too or the host path leaks despite RedactMountPaths.
-// MaskedPaths/ReadonlyPaths (the container's masked/read-only filesystem-path
-// hardening) are emptied too: they expose the exact security-hardening shape of
-// the container, which a read-side consumer under RedactMountPaths shouldn't see.
+// Entries of Type volume, tmpfs, image and cluster keep their Source (a volume's
+// is its name, not a host path); bind, npipe, a missing Type and unknown types
+// are redacted. MaskedPaths/ReadonlyPaths are left intact. They are
+// not mount paths, and emptying them breaks replay: moby applies the default
+// masked and read-only paths only when the field is nil, so an inspect-to-create
+// replay of "[]" disables the container's masking.
 func redactHostConfigMountSources(payload map[string]any) error {
 	hostConfigValue, ok := payload["HostConfig"]
 	if !ok || hostConfigValue == nil {
@@ -1741,12 +1770,9 @@ func redactHostConfigMountSources(payload map[string]any) error {
 		return fmt.Errorf("HostConfig has unexpected type %T", hostConfigValue)
 	}
 
-	if err := redactMountObjects(hostConfig, "Mounts"); err != nil {
+	if err := redactBindMountObjects(hostConfig, "Mounts"); err != nil {
 		return err
 	}
-
-	redactArrayField(hostConfig, "MaskedPaths")
-	redactArrayField(hostConfig, "ReadonlyPaths")
 
 	bindsValue, ok := hostConfig["Binds"]
 	if !ok || bindsValue == nil {
@@ -1962,10 +1988,6 @@ func isNodeInspectPath(normPath string) bool {
 }
 
 func redactContainerNetworkTopology(payload map[string]any) error {
-	if err := redactNestedStringValue(payload, "HostConfig", "NetworkMode"); err != nil {
-		return err
-	}
-
 	networkSettingsValue, ok := payload["NetworkSettings"]
 	if !ok || networkSettingsValue == nil {
 		return nil
@@ -1978,8 +2000,6 @@ func redactContainerNetworkTopology(payload map[string]any) error {
 	redactNetworkAddressFields(networkSettings,
 		[]string{
 			"Bridge",
-			"EndpointID",
-			"SandboxID",
 			"SandboxKey",
 		},
 		[]string{
@@ -2022,10 +2042,7 @@ func redactContainerNetworkTopology(payload map[string]any) error {
 			return fmt.Errorf("NetworkSettings.Networks[%s] has unexpected type %T", name, networkValue)
 		}
 		redactNetworkAddressFields(network,
-			[]string{
-				"EndpointID",
-				"NetworkID",
-			},
+			nil,
 			[]string{
 				"GlobalIPv6PrefixLen",
 				"IPPrefixLen",
@@ -2093,20 +2110,6 @@ func redactNetworkTopology(payload map[string]any) error {
 		payload["Peers"] = []any{}
 	}
 
-	return nil
-}
-
-func redactNestedStringValue(payload map[string]any, objectKey, fieldKey string) error {
-	objectValue, ok := payload[objectKey]
-	if !ok || objectValue == nil {
-		return nil
-	}
-
-	object, ok := objectValue.(map[string]any)
-	if !ok {
-		return fmt.Errorf("%s has unexpected type %T", objectKey, objectValue)
-	}
-	redactStringField(object, fieldKey)
 	return nil
 }
 

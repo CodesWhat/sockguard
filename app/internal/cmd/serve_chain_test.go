@@ -565,8 +565,8 @@ func TestBuildServeHandlerExercisesClientACLVisibilityFilterAndResponseFilter(t 
 	}
 
 	hostConfig, _ := payload["HostConfig"].(map[string]any)
-	if got, _ := hostConfig["NetworkMode"].(string); got != "<redacted>" {
-		t.Fatalf("HostConfig.NetworkMode = %q, want %q", got, "<redacted>")
+	if got, _ := hostConfig["NetworkMode"].(string); got != "bridge" {
+		t.Fatalf("HostConfig.NetworkMode = %q, want %q", got, "bridge")
 	}
 	binds, _ := hostConfig["Binds"].([]any)
 	if got, _ := binds[0].(string); got != "<redacted>:/run/secrets:ro" {
@@ -585,8 +585,8 @@ func TestBuildServeHandlerExercisesClientACLVisibilityFilterAndResponseFilter(t 
 	}
 	networks, _ := networkSettings["Networks"].(map[string]any)
 	bridge, _ := networks["bridge"].(map[string]any)
-	if got, _ := bridge["NetworkID"].(string); got != "<redacted>" {
-		t.Fatalf("NetworkSettings.Networks[bridge].NetworkID = %q, want %q", got, "<redacted>")
+	if got, _ := bridge["NetworkID"].(string); got != "deadbeef" {
+		t.Fatalf("NetworkSettings.Networks[bridge].NetworkID = %q, want %q", got, "deadbeef")
 	}
 
 	mu.Lock()

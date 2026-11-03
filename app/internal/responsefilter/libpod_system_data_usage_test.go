@@ -152,7 +152,7 @@ func TestLibpodSystemDataUsageHasNothingToRedact(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read body: %v", err)
 		}
-		for _, secret := range []string{"/host/secret", "net-1", "172.17.0.2", "/var/lib/docker/volumes/vol-a/_data"} {
+		for _, secret := range []string{"/host/secret", "172.17.0.2", "/var/lib/docker/volumes/vol-a/_data"} {
 			if strings.Contains(string(body), secret) {
 				t.Fatalf("compat redaction is not running, so the libpod sub-test proves nothing: %q survived in %s", secret, body)
 			}

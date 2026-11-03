@@ -321,11 +321,8 @@ func TestLibpodContainerInspectIsRedacted(t *testing.T) {
 			"libpod-env-secret",
 			"/host/team-a-secrets",
 			"/host/team-a-binds",
-			"container:ctr-b-netns",
 			"podman1",
-			"sandbox-abcdef",
 			"/run/netns/netns-abcdef",
-			"endpoint-abcdef",
 			"10.89.0.1",
 			"10.89.0.7",
 			"10.89.0.9",
@@ -333,11 +330,11 @@ func TestLibpodContainerInspectIsRedacted(t *testing.T) {
 			"aa:bb:cc:00:00:07",
 			"aa:bb:cc:00:00:08",
 			"aa:bb:cc:00:00:0a",
-			"net-team-a",
 		)
 		// The response is redacted, not emptied: identity and the owner label
 		// a monitoring client actually reads must survive.
-		assertPresent(t, "libpod container inspect", body, `"ctr-a"`, `"team-a"`, "team-a-net")
+		assertPresent(t, "libpod container inspect", body, `"ctr-a"`, `"team-a"`, "team-a-net",
+			"container:ctr-b-netns", "net-team-a", "sandbox-abcdef", "endpoint-abcdef")
 	})
 
 	t.Run("compat is still redacted", func(t *testing.T) {
@@ -345,7 +342,7 @@ func TestLibpodContainerInspectIsRedacted(t *testing.T) {
 		body := libpodBodyForTest(t, allRedactions, "/v1.51/containers/ctr-a/json", libpodCompatContainerInspectUpstream)
 		assertAbsent(t, "compat container inspect", body,
 			"compat-env-secret", "/host/compat-secrets", "/host/compat-binds",
-			"container:other", "docker0", "172.17.0.4", "compat-net",
+			"docker0", "172.17.0.4",
 		)
 	})
 }

@@ -727,8 +727,8 @@ func TestFilterModifyResponse_RedactsNetworkTopologyFromContainerAndNetworkReads
 
 	containerInspect := decodeBodyForTest(t, containerInspectResp)
 	hostConfig, _ := containerInspect["HostConfig"].(map[string]any)
-	if got, _ := hostConfig["NetworkMode"].(string); got != "<redacted>" {
-		t.Fatalf("HostConfig.NetworkMode = %q, want %q", got, "<redacted>")
+	if got, _ := hostConfig["NetworkMode"].(string); got != "bridge" {
+		t.Fatalf("HostConfig.NetworkMode = %q, want %q", got, "bridge")
 	}
 	networkSettings, _ := containerInspect["NetworkSettings"].(map[string]any)
 	if got, ok := networkSettings["IPAddress"].(string); !ok || got != "" {
@@ -742,8 +742,8 @@ func TestFilterModifyResponse_RedactsNetworkTopologyFromContainerAndNetworkReads
 	if got, ok := defaultNetwork["IPAddress"].(string); !ok || got != "" {
 		t.Fatalf("NetworkSettings.Networks.default.IPAddress = %q, want empty string", got)
 	}
-	if got, _ := defaultNetwork["NetworkID"].(string); got != "<redacted>" {
-		t.Fatalf("NetworkSettings.Networks.default.NetworkID = %q, want %q", got, "<redacted>")
+	if got, _ := defaultNetwork["NetworkID"].(string); got != "network-123" {
+		t.Fatalf("NetworkSettings.Networks.default.NetworkID = %q, want %q", got, "network-123")
 	}
 
 	networkInspectResp := newResponseForTest(t, http.MethodGet, "/v1.53/networks/net-123", `{
@@ -811,8 +811,8 @@ func TestFilterModifyResponse_RedactsNetworkTopologyFromContainerListWithoutMoun
 	networkSettings, _ := containers[0]["NetworkSettings"].(map[string]any)
 	networks, _ := networkSettings["Networks"].(map[string]any)
 	defaultNetwork, _ := networks["default"].(map[string]any)
-	if got, _ := defaultNetwork["NetworkID"].(string); got != "<redacted>" {
-		t.Fatalf("NetworkSettings.Networks.default.NetworkID = %q, want %q", got, "<redacted>")
+	if got, _ := defaultNetwork["NetworkID"].(string); got != "network-123" {
+		t.Fatalf("NetworkSettings.Networks.default.NetworkID = %q, want %q", got, "network-123")
 	}
 	if got, ok := defaultNetwork["IPAddress"].(string); !ok || got != "" {
 		t.Fatalf("NetworkSettings.Networks.default.IPAddress = %q, want empty string", got)
@@ -887,8 +887,8 @@ func TestFilterModifyResponse_RedactsExpandedControlPlaneReads(t *testing.T) {
 	}
 	virtualIPs := nestedSliceForTest(t, services[0], "Endpoint", "VirtualIPs")
 	firstVIP, _ := virtualIPs[0].(map[string]any)
-	if got, _ := firstVIP["NetworkID"].(string); got != "<redacted>" {
-		t.Fatalf("Service VirtualIPs[0].NetworkID = %q, want %q", got, "<redacted>")
+	if got, _ := firstVIP["NetworkID"].(string); got != "net-123" {
+		t.Fatalf("Service VirtualIPs[0].NetworkID = %q, want %q", got, "net-123")
 	}
 	if got, ok := firstVIP["Addr"].(string); !ok || got != "" {
 		t.Fatalf("Service VirtualIPs[0].Addr = %q, want empty string", got)
@@ -929,15 +929,15 @@ func TestFilterModifyResponse_RedactsExpandedControlPlaneReads(t *testing.T) {
 	if got, _ := taskMount["Source"].(string); got != "<redacted>" {
 		t.Fatalf("Task Mounts[0].Source = %q, want %q", got, "<redacted>")
 	}
-	if got, _ := task["ServiceID"].(string); got != "<redacted>" {
-		t.Fatalf("Task ServiceID = %q, want %q", got, "<redacted>")
+	if got, _ := task["ServiceID"].(string); got != "service-1" {
+		t.Fatalf("Task ServiceID = %q, want %q", got, "service-1")
 	}
-	if got, _ := task["NodeID"].(string); got != "<redacted>" {
-		t.Fatalf("Task NodeID = %q, want %q", got, "<redacted>")
+	if got, _ := task["NodeID"].(string); got != "node-1" {
+		t.Fatalf("Task NodeID = %q, want %q", got, "node-1")
 	}
 	containerStatus := nestedMapForTest(t, task, "Status", "ContainerStatus")
-	if got, _ := containerStatus["ContainerID"].(string); got != "<redacted>" {
-		t.Fatalf("Task Status.ContainerStatus.ContainerID = %q, want %q", got, "<redacted>")
+	if got, _ := containerStatus["ContainerID"].(string); got != "ctr-123" {
+		t.Fatalf("Task Status.ContainerStatus.ContainerID = %q, want %q", got, "ctr-123")
 	}
 	if got, _ := containerStatus["PID"].(float64); got != 0 {
 		t.Fatalf("Task Status.ContainerStatus.PID = %v, want 0", got)
@@ -949,8 +949,8 @@ func TestFilterModifyResponse_RedactsExpandedControlPlaneReads(t *testing.T) {
 		t.Fatalf("Task NetworksAttachments[0].Addresses = %#v, want empty redacted array", firstAttachment["Addresses"])
 	}
 	taskNetwork, _ := firstAttachment["Network"].(map[string]any)
-	if got, _ := taskNetwork["ID"].(string); got != "<redacted>" {
-		t.Fatalf("Task NetworksAttachments[0].Network.ID = %q, want %q", got, "<redacted>")
+	if got, _ := taskNetwork["ID"].(string); got != "net-123" {
+		t.Fatalf("Task NetworksAttachments[0].Network.ID = %q, want %q", got, "net-123")
 	}
 }
 
@@ -1096,8 +1096,8 @@ func TestFilterModifyResponse_RedactsSensitivePlatformMetadata(t *testing.T) {
 	}
 	info := decodeBodyForTest(t, infoResp)
 	swarmInfo := nestedMapForTest(t, info, "Swarm")
-	if got, _ := swarmInfo["NodeID"].(string); got != "<redacted>" {
-		t.Fatalf("Info Swarm.NodeID = %q, want %q", got, "<redacted>")
+	if got, _ := swarmInfo["NodeID"].(string); got != "node-1" {
+		t.Fatalf("Info Swarm.NodeID = %q, want %q", got, "node-1")
 	}
 	if got, _ := swarmInfo["NodeAddr"].(string); got != "<redacted>" {
 		t.Fatalf("Info Swarm.NodeAddr = %q, want %q", got, "<redacted>")
@@ -1133,8 +1133,8 @@ func TestFilterModifyResponse_RedactsSensitivePlatformMetadata(t *testing.T) {
 		t.Fatalf("SystemDF ContainerUsage.Items[0].Mounts[0].Source = %q, want %q", got, "<redacted>")
 	}
 	containerNetworks := nestedMapForTest(t, firstContainer, "NetworkSettings", "Networks", "bridge")
-	if got, _ := containerNetworks["NetworkID"].(string); got != "<redacted>" {
-		t.Fatalf("SystemDF ContainerUsage.Items[0].NetworkSettings.Networks.bridge.NetworkID = %q, want %q", got, "<redacted>")
+	if got, _ := containerNetworks["NetworkID"].(string); got != "net-123" {
+		t.Fatalf("SystemDF ContainerUsage.Items[0].NetworkSettings.Networks.bridge.NetworkID = %q, want %q", got, "net-123")
 	}
 	volumeItems := nestedSliceForTest(t, systemDF, "VolumeUsage", "Items")
 	firstVolume, _ := volumeItems[0].(map[string]any)

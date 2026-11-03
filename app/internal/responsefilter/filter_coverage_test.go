@@ -445,11 +445,11 @@ func TestModifyTaskList_RedactsPayload(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	if v, _ := tasks[0]["ServiceID"].(string); v != "<redacted>" {
-		t.Fatalf("ServiceID = %q, want <redacted>", v)
+	if v, _ := tasks[0]["ServiceID"].(string); v != "svc-1" {
+		t.Fatalf("ServiceID = %q, want svc-1 (opaque IDs are not redacted)", v)
 	}
-	if v, _ := tasks[0]["NodeID"].(string); v != "<redacted>" {
-		t.Fatalf("NodeID = %q, want <redacted>", v)
+	if v, _ := tasks[0]["NodeID"].(string); v == "<redacted>" || v == "" {
+		t.Fatalf("NodeID = %q, want the original value (opaque IDs are not redacted)", v)
 	}
 	containerSpec := nestedMapForTest(t, tasks[0], "Spec", "ContainerSpec")
 	if env, _ := containerSpec["Env"].([]any); len(env) != 0 {
@@ -1262,15 +1262,6 @@ func TestRedactContainerNetworkTopology_WrongNetworkEntryType(t *testing.T) {
 	}
 }
 
-func TestRedactContainerNetworkTopology_WrongHostConfigType(t *testing.T) {
-	t.Parallel()
-	payload := map[string]any{"HostConfig": "bad"}
-	err := redactContainerNetworkTopology(payload)
-	if err == nil {
-		t.Fatal("want error for wrong HostConfig type in nested string redact, got nil")
-	}
-}
-
 // ─── redactNetworkTopology – error paths ─────────────────────────────────────
 
 func TestRedactNetworkTopology_WrongIPAMType(t *testing.T) {
@@ -1336,17 +1327,6 @@ func TestRedactNetworkTopology_NilStatusSkipped(t *testing.T) {
 	}
 	if payload["Status"] != nil {
 		t.Fatalf("Status = %v, want nil preserved", payload["Status"])
-	}
-}
-
-// ─── redactNestedStringValue – wrong type ────────────────────────────────────
-
-func TestRedactNestedStringValue_WrongType(t *testing.T) {
-	t.Parallel()
-	payload := map[string]any{"HostConfig": "bad"}
-	err := redactNestedStringValue(payload, "HostConfig", "NetworkMode")
-	if err == nil {
-		t.Fatal("want error for wrong type, got nil")
 	}
 }
 
@@ -2870,8 +2850,8 @@ func TestRedactTaskNetworkAttachments_WithIPAMOptions(t *testing.T) {
 		t.Fatalf("Addresses = %v, want empty", addr)
 	}
 	network := a0["Network"].(map[string]any)
-	if v, _ := network["ID"].(string); v != "<redacted>" {
-		t.Fatalf("Network.ID = %q, want <redacted>", v)
+	if v, _ := network["ID"].(string); v != "net-1" {
+		t.Fatalf("Network.ID = %q, want net-1 (opaque IDs are not redacted)", v)
 	}
 	ipam := network["IPAMOptions"].(map[string]any)
 	if cfg, _ := ipam["Configs"].([]any); len(cfg) != 0 {

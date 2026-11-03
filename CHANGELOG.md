@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`response.redact_network_topology` redacts addresses, not opaque IDs.** It no longer rewrites `HostConfig.NetworkMode`, `NetworkSettings.Networks[*].NetworkID` and `EndpointID`, top-level `NetworkSettings.EndpointID` and `SandboxID`, service `Endpoint.VirtualIPs[].NetworkID`, task `ServiceID`, `NodeID`, `Status.ContainerStatus.ContainerID` and `NetworksAttachments[].Network.ID`, or `Info.Swarm.NodeID`. Clients use these as join keys (Traefik's Swarm provider matches `VirtualIPs[].NetworkID` and inspects `task.NodeID`, Homepage's Swarm mode matches `task.ServiceID`, Portainer disconnects by `NetworkID`, Traefik's Docker provider branches on `NetworkMode`), and they hid nothing the network name in the `Networks` map didn't already show. Clients that can't list networks, such as the Homepage preset reading `/tasks` and `/services`, now see opaque network, service, node and container IDs; names were already visible to them. IP and MAC addresses, `SandboxKey`, `Status.Addr` and `NodeAddr` are still redacted. If you relied on the old behavior to hide these IDs, they are visible now. Also, `response.redact_mount_paths` stops emptying `HostConfig.MaskedPaths` and `HostConfig.ReadonlyPaths` (they aren't mount paths, and an empty array replayed into create disables masking, because the daemon applies its defaults only when the field is absent), and keeps `HostConfig.Mounts[].Source` only for `volume`, `tmpfs`, `image` and `cluster` mounts, whose source is a name; `bind`, `npipe`, a missing type and unknown types stay redacted. The Homepage preset no longer needs a Swarm override.
 - **The hand-rolled star chart is gone.** The README and website already embed Star History, so the dispatch-only `starchart.yml` workflow, the committed `star-history*.svg` pair, the star-chart contract test and the "dispatch starchart" step in `RELEASING.md` are removed. Nothing in the release cut read the chart.
 
 ### Security
@@ -24,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **The Diun preset no longer breaks Diun's container list.** The default network-topology redaction rewrites `NetworkSettings.Networks[*].IPAddress`, `Gateway`, `GlobalIPv6Address`, `IPv6Gateway` and `MacAddress` (plus `NetworkMode` and network IDs) to the literal `<redacted>`, which typed Go Docker clients can't decode, so Diun failed with `ParseAddr("<redacted>"): unable to parse IP`. `app/configs/diun.yaml` now sets `response.redact_network_topology: false`, which also exposes `NetworkMode` and network IDs to Diun. A stable fix that writes type-valid empty values is in progress.
+- **The Diun preset no longer breaks Diun's container list.** The default network-topology redaction rewrites `NetworkSettings.Networks[*].IPAddress`, `Gateway`, `GlobalIPv6Address`, `IPv6Gateway` and `MacAddress` to the literal `<redacted>`, which typed Go Docker clients can't decode, so Diun failed with `ParseAddr("<redacted>"): unable to parse IP`. `app/configs/diun.yaml` now sets `response.redact_network_topology: false`.
 
 ## [2.4.4] - 2026-11-03
 
