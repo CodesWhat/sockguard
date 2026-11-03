@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -379,6 +380,27 @@ func TestContainerCreatePolicyInspectCgroupNamespaceHostOnCgroupV1(t *testing.T)
 				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
 			}
 		})
+	}
+}
+
+func TestContainerCreatePolicyCgroupV1FuncIsReadPerRequest(t *testing.T) {
+	var v1 atomic.Bool
+	v1.Store(true)
+	policy := newContainerCreatePolicy(ContainerCreateOptions{AllowHostCgroupNSOnCgroupV1: true, UpstreamCgroupV1Func: v1.Load})
+	create := func() string {
+		req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(`{"HostConfig":{"CgroupnsMode":"host"}}`))
+		reason, err := policy.inspect(nil, req, "/containers/create")
+		if err != nil {
+			t.Fatalf("inspect() error = %v", err)
+		}
+		return reason
+	}
+	if reason := create(); reason != "" {
+		t.Fatalf("v1 upstream: reason = %q, want allow", reason)
+	}
+	v1.Store(false)
+	if reason := create(); reason != "container create denied: host cgroup namespace mode is not allowed" {
+		t.Fatalf("after v1->v2: reason = %q, want deny", reason)
 	}
 }
 

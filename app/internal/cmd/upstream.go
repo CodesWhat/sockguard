@@ -304,7 +304,7 @@ func resolveUpstreamFlavorForRuntime(ctx context.Context, deps *serveDeps, runti
 	if runtime != nil {
 		runtime.upstreamFlavor = capabilities.Flavor
 		runtime.upstreamPodmanConjunctiveVolumeFilters = capabilities.PodmanConjunctiveVolumeFilters
-		runtime.upstreamCgroupV1 = capabilities.CgroupV1
+		runtime.cgroupV1.seed(cgroupV1OptInConfigured(cfg), capabilities.CgroupV1)
 		runtime.upstreamProbedDocker = capabilities.ProbedDocker
 	}
 	return nil
@@ -358,11 +358,20 @@ func upstreamLabel(res *upstream.Resolver) string {
 	}
 }
 
+// runtimeCgroupV1Func returns the live cgroup v1 reader for the filter, nil
+// (static false) for a runtime without a tracker.
+func runtimeCgroupV1Func(runtime *serveRuntime) func() bool {
+	if runtime == nil {
+		return nil
+	}
+	return runtime.cgroupV1.isV1Func()
+}
+
 func runtimeUpstreamCapabilities(runtime *serveRuntime) upstreamflavor.Capabilities {
 	capabilities := upstreamflavor.Capabilities{Flavor: runtimeUpstreamFlavor(runtime)}
 	if runtime != nil {
 		capabilities.PodmanConjunctiveVolumeFilters = runtime.upstreamPodmanConjunctiveVolumeFilters
-		capabilities.CgroupV1 = runtime.upstreamCgroupV1
+		capabilities.CgroupV1 = runtime.cgroupV1.isV1()
 		capabilities.ProbedDocker = runtime.upstreamProbedDocker
 	}
 	return capabilities

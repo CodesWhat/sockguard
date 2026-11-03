@@ -307,12 +307,14 @@ func (c *reloadCoordinator) reload() {
 		return
 	}
 
-	if cgroupV1OptInConfigured(newCfg) {
-		c.logger.Info("config reload reuses the startup cgroup version probe for allow_host_cgroupns_on_cgroup_v1",
+	// A reload that switches allow_host_cgroupns_on_cgroup_v1 on has no probe
+	// result yet: setWanted closes the gate, and the probe runs before the new
+	// chain goes live so the option works from the first request after the swap.
+	if c.runtime.cgroupV1.setWanted(cgroupV1OptInConfigured(newCfg)) {
+		c.logger.Info("config reload enabled allow_host_cgroupns_on_cgroup_v1; probing upstream cgroup version",
 			"path", c.cfgFile,
-			"upstream_cgroup_v1", c.runtime.upstreamCgroupV1,
-			"note", "GET /info is not re-read on reload; restart sockguard after migrating the daemon between cgroup v1 and v2",
 		)
+		c.runtime.cgroupV1.refresh(c.rootCtx)
 	}
 
 	newHandler, newTeardown, newLimiterStateActive := buildServeHandlerChainWithRuntime(serveHandlerBuild{

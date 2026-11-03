@@ -2148,3 +2148,32 @@ func TestNewTransportResponseHeaderTimeout(t *testing.T) {
 		})
 	}
 }
+
+func TestResolver_SetOnChange_ChainsAfterOptionsCallback(t *testing.T) {
+	t.Parallel()
+	var order []string
+	r, err := New([]Endpoint{{Name: "a", Network: "unix", Address: "/nonexistent-a.sock"}}, Options{
+		Interval: -1,
+		OnChange: func(Endpoint, bool) { order = append(order, "options") },
+		Probe:    func(context.Context, Endpoint) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.SetOnChange(func(Endpoint, bool) { order = append(order, "set") })
+	r.probeAll(t.Context())
+	if len(order) != 2 || order[0] != "options" || order[1] != "set" {
+		t.Fatalf("callback order = %v, want [options set]", order)
+	}
+
+	bare, err := New([]Endpoint{{Name: "b", Network: "unix", Address: "/nonexistent-b.sock"}}, Options{Interval: -1, Probe: func(context.Context, Endpoint) error { return nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fired bool
+	bare.SetOnChange(func(Endpoint, bool) { fired = true })
+	bare.probeAll(t.Context())
+	if !fired {
+		t.Fatal("SetOnChange on a resolver without Options.OnChange never fired")
+	}
+}
