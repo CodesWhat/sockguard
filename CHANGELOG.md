@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-11-17
+
+v3.0.0 promotes v3.0.0-rc.6 unchanged in behavior. It is the first release on the `github.com/codeswhat/sockguard/v3` Go module and removes the two insecure TLS settings deprecated in v2.1. It carries everything through v2.4.4: the v2.3 BuildKit frontend mediation and MIT license, and the v2.4 image admission, create launch-field policy, Podman isolation, exec target protection, session cleanup and client compatibility work. Stable Docker, Homebrew, deb/rpm and binary channels move to v3 with this release, and 2.4.x stays supported for security fixes until v3.1 ships.
+
+### Breaking changes
+
+- **The Go module is `github.com/codeswhat/sockguard/v3`.** Go consumers must change Sockguard import prefixes from `/v2` to `/v3`, and install with `go install github.com/codeswhat/sockguard/v3/app/cmd/sockguard@v3.0.0`. Generated BuildKit bindings and descriptor options, release and Docker linker flags, and coverage checks use `/v3`. v2 tags keep `/v2`. Docker, Homebrew, deb/rpm and downloaded binaries need no import change.
+- **`upstream.endpoints[].insecure_skip_tls_verify` is rejected at any value,** including `false` and `null`. Remove the key and set `tls.ca_file` to the daemon's issuing CA, keeping any required client certificate, key and `tls.server_name`.
+- **Non-empty `DOCKER_TLS` without non-empty `DOCKER_TLS_VERIFY` is rejected** for TCP Docker hosts. Set `DOCKER_TLS_VERIFY=1`. Any non-empty verification value, including `0` or `false`, still verifies the server.
+- **`response.redact_network_topology` redacts addresses, not opaque IDs.** Network, endpoint, sandbox, service, node and container IDs, `HostConfig.NetworkMode` and the `Info.Swarm.NodeID` field now pass through, because clients use them as join keys (Traefik's Swarm provider, Homepage's Swarm mode, Portainer's network disconnect) and they hid nothing the network name didn't already show. A mount `Source` is kept only for named mount types, and `MaskedPaths` and `ReadonlyPaths` are untouched. See the 3.0.0-rc.6 entry below for the field list.
+- **Native container create denies more SpecGenerator fields by default.** `unified` and `env_host` need `request_body.libpod_container_create.allow_unified_cgroup_settings` and `allow_env_host`, and a non-empty `pod` is denied while `restrict_namespace_sharing` is on. A client that sets any of them, such as `podman run --cgroup-conf` or `--env-host`, is refused until you opt in.
+
+### Added
+
+- **Helm chart published as a signed OCI artifact.** A stable tag cut from the default branch pushes the chart to `oci://ghcr.io/codeswhat/charts/sockguard`, with its image reference pinned to the release's multi-arch digest, signed keyless like the image, and verified by the published-artifact job. Release candidates and maintenance patches publish no chart.
+- **Unknown configuration keys are reported.** `sockguard validate` prints a warning per unrecognized key (dotted path plus file) and exits 0; the new `--strict` flag exits non-zero instead. `sockguard serve` and hot reload log one warning per key. The check reads only the YAML file, so `SOCKGUARD_*` and Tecnativa environment variables never show as unknown, and no config that loads today stops loading.
+- **Compose examples for Homepage, Homarr, Diun and Autoheal,** each paired with its bundled preset and guarded against drift by the compose sync test.
+- Carries the v2.4.4 additions: the `app/compat` real-Docker-types CI job, `upstream.response_header_timeout` and the create-plus-redaction startup warning.
+
+### Migration
+
+- Run `sockguard validate --config <file>` with the v3 binary before restarting. Startup and CLI validation reject the removed settings with migration guidance, and a rejected hot reload keeps the active policy serving. Add `--strict` to fail on unknown keys.
+- Verified TLS precedence, certificate-directory lookup, Unix sockets, explicit endpoints and acknowledged plain TCP (`insecure_allow_plain_tcp`) are unchanged. Unix Docker hosts ignore TCP-only TLS environment variables.
+- `insecure_accept_opaque_buildkit_tunnels` remains accepted with its startup warning. Its removal has no chosen version and is not part of v3.0.0.
+- All v2 release lines, including v2.4.x, keep accepting the removed settings. You can move to verified TLS on v2 first. See the [migration guide](https://getsockguard.com/docs/migration#from-sockguard-v2-to-v3) and the [deprecation ledger](https://getsockguard.com/docs/deprecations).
+- Clients that read Swarm tasks and services without listing networks, such as the Homepage preset, now see opaque IDs where they saw placeholders before. That is the intended behavior.
+
+### Security
+
+- Carries the v2.4.0 to v2.4.4 security work: exact image admission, native Podman mount, device and RUN-control checks, protected-label exec refusal, Podman engine identity and unscoped native route refusals, the libpod create bypass closures (`host_device_list`, `resource_limits.devices`, `volumes_from` and the other libpod spellings), the libpod inspect `CreateCommand` and `Secrets` redaction, and the CA bundle and `golang.org/x/net` updates.
+- Gates the libpod `unified`, `env_host` and `pod` create fields as described above.
+- Carries v2.4.3's rejection of keyless `subject_pattern` values that are not a complete regexp on their own, and its fix for completed hijacked sessions accumulating in the listener.
+
+### Changed
+
+- The development snapshot version is `3.0.0-dev`, so local builds no longer inherit a v2 version from the nearest older tag. Release validation checks the tag against the Go module major, and reproducible builds derive their linker package from the requested source ref.
+- **Website rebuilt.** The getsockguard.com landing page has a refreshed compare matrix, and the Go Reference footer link points at the `/v3` module. Playwright browser checks run the site on Chromium, Firefox and WebKit in CI. The docs layout is wider, with search and the theme toggle in the sidebar.
+- The hand-rolled star chart workflow and committed SVGs are removed; the README and website embed Star History.
+
+### Fixed
+
+- The Diun preset sets `response.redact_network_topology: false`, so Diun's typed container list no longer fails on placeholder addresses.
+- Carries the v2.4.4 fixes for typed Docker clients, the Portainer, watchtower and portwing presets, visibility `image_patterns` on inspect, slow stop and prune timeouts, and 429 bodies without a `message`.
+
+The release candidates are kept below: rc.1 introduced the module path and TLS removals, rc.2 and rc.3 carried v2.4.0 forward, rc.4 carried v2.4.2, rc.5 carried v2.4.3 and the site rebuild, and rc.6 carried v2.4.4 and added the changes listed above.
+
 ## [3.0.0-rc.6] - 2026-11-03
 
 This candidate carries v2.4.4 (the client compatibility sweep and libpod create hardening). It narrows `response.redact_network_topology` to addresses, so opaque IDs pass through and a mount `Source` is kept only for named mount types, with `MaskedPaths` and `ReadonlyPaths` untouched. It adds libpod gates for `unified`, `env_host` and `pod`, reports unknown config keys, and adds compose examples for Homepage, Homarr, Diun and Autoheal. The Helm chart will publish as a signed OCI artifact from v3.0.0, and the hand-rolled star chart is removed. These are candidate-only behavior changes, so the 14-day bake window restarts: GA is no earlier than 2026-11-17. Fresh exact-source soak, TLS/security and published-image conformance are required before GA.

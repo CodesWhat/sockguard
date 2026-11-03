@@ -485,12 +485,13 @@ export const roadmap: Milestone[] = [
     version: "v3.0.0",
     title: "Verified TLS Compatibility Boundary",
     emoji: "🔐",
-    status: "candidate",
+    status: "released",
     items: [
-      "Published v3.0.0-rc.6 candidate; select its image or /v3 Go tag explicitly. Includes v2.4.4 client compatibility and libpod hardening, v2.4.3 session cleanup, v2.4.2 Podman isolation and dependency updates, exec target protection and the v2.4 policy/security work",
+      "Promotes v3.0.0-rc.6 unchanged in behavior; carries v2.4.4 client compatibility and libpod hardening, v2.4.3 session cleanup, v2.4.2 Podman isolation and dependency updates, exec target protection and the v2.4 policy/security work",
       "Rejects the deprecated endpoint skip-verification setting and unverified Docker TLS fallback; configure the daemon CA and verified TLS",
-      "Go imports, generated descriptors and release builds use /v3; stable channels serve v2.4.4",
-      "GA requires fresh candidate soak, TLS/security checks and published-image conformance; no earlier than 2026-11-17, 14 days after rc.6. Candidate-only behavior changes in rc.6 restarted the window. Candidate-only behavior fixes restart the window; opaque BuildKit removal remains undecided",
+      "Network-topology redaction covers addresses only, unknown config keys are reported by validate (--strict fails on them), and the Helm chart is published as a signed OCI artifact",
+      "Go imports, generated descriptors and release builds use /v3; v2 tags keep /v2",
+      "2.4.x remains supported for security fixes until v3.1 ships; opaque BuildKit removal remains undecided",
     ],
   },
 ];
