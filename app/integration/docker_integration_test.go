@@ -4,12 +4,14 @@ package integration_test
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +20,7 @@ import (
 	"github.com/codeswhat/sockguard/v3/app/internal/filter"
 	"github.com/codeswhat/sockguard/v3/app/internal/health"
 	"github.com/codeswhat/sockguard/v3/app/internal/ownership"
+	"github.com/codeswhat/sockguard/v3/app/internal/proxy"
 )
 
 func TestProxyAllowsDockerPing(t *testing.T) {
@@ -229,65 +232,201 @@ func TestProxyEnforcesContainerOwnerLabelsAgainstRealDocker(t *testing.T) {
 	}
 }
 
-func TestProxyAllowsDockerAttachEndToEndHijack(t *testing.T) {
-	socketPath := dockerSocketForIntegration(t)
-	containerID := createDockerContainer(t, socketPath, dockerContainerCreateRequest{
-		Image:        busyboxPinnedRef,
-		Cmd:          []string{"sh", "-c", "sleep 1; printf hello; sleep 1"},
-		AttachStdout: true,
-		AttachStderr: true,
-		Tty:          false,
-	})
-	startDockerContainer(t, socketPath, containerID)
-	waitForDockerContainerRunning(t, socketPath, containerID)
+// dockerHijackProxy serves handler with the client's upgrade choice passed
+// through, as production does for an upstream probed as Docker.
+func dockerHijackProxy(t *testing.T, handler http.Handler) (string, func()) {
+	t.Helper()
+	return startIntegrationProxyServer(t, proxy.PassClientUpgrade(handler))
+}
 
-	handler := newIntegrationProxyHandler(t, socketPath, []config.RuleConfig{
-		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/containers/*/attach"}, Action: "allow"},
-		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "no matching allow rule"},
-	})
-	addr, waitForRequest := startIntegrationProxyServer(t, handler)
+// readDockerHijackResponse sends rawRequest to the proxy and returns the
+// parsed response head and the reader positioned at the stream.
+func readDockerHijackResponse(t *testing.T, addr, rawRequest string) (net.Conn, *http.Response, *bufio.Reader) {
+	t.Helper()
 
 	clientConn, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatalf("dial proxy server: %v", err)
 	}
-	defer clientConn.Close()
-
-	reqPath := "/containers/" + containerID + "/attach?stream=1&stdin=1&stdout=1&stderr=1"
-	reqStr := "POST " + reqPath + " HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"
-	if _, err := clientConn.Write([]byte(reqStr)); err != nil {
-		t.Fatalf("write attach request: %v", err)
+	t.Cleanup(func() { _ = clientConn.Close() })
+	if _, err := clientConn.Write([]byte(rawRequest)); err != nil {
+		t.Fatalf("write hijack request: %v", err)
 	}
-
-	clientConn.SetDeadline(time.Now().Add(5 * time.Second))
+	if err := clientConn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("set deadline: %v", err)
+	}
 	clientBuf := bufio.NewReader(clientConn)
 	resp, err := http.ReadResponse(clientBuf, nil)
 	if err != nil {
-		t.Fatalf("read attach response: %v", err)
+		t.Fatalf("read hijack response: %v", err)
+	}
+	return clientConn, resp, clientBuf
+}
+
+// assertDockerHijackHead checks the daemon's answer matches the client's
+// choice: 101 with Upgrade headers when it asked, a plain 200 raw stream when
+// it did not.
+func assertDockerHijackHead(t *testing.T, resp *http.Response, upgrade bool) {
+	t.Helper()
+
+	if !upgrade {
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		if resp.Header.Get("Upgrade") != "" {
+			t.Fatalf("unexpected Upgrade header %q on a 200 stream", resp.Header.Get("Upgrade"))
+		}
+		return
 	}
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusSwitchingProtocols)
 	}
-	if upgrade := resp.Header.Get("Upgrade"); upgrade != "tcp" {
-		t.Fatalf("upgrade header = %q, want %q", upgrade, "tcp")
+	if upgradeHdr := resp.Header.Get("Upgrade"); upgradeHdr != "tcp" {
+		t.Fatalf("upgrade header = %q, want %q", upgradeHdr, "tcp")
 	}
 	if connection := resp.Header.Get("Connection"); connection != "Upgrade" {
 		t.Fatalf("connection header = %q, want %q", connection, "Upgrade")
 	}
+}
 
-	stream, echoed := readDockerHijackFrame(t, clientBuf)
-	if stream != 1 {
-		t.Fatalf("frame stream = %d, want %d", stream, 1)
-	}
-	if string(echoed) != "hello" {
-		t.Fatalf("frame payload = %q, want %q", string(echoed), "hello")
-	}
+const dockerUpgradeRequestHeaders = "Connection: Upgrade\r\nUpgrade: tcp\r\n"
 
-	if err := clientConn.Close(); err != nil {
-		t.Fatalf("close proxy client connection: %v", err)
-	}
+func TestProxyAllowsDockerAttachEndToEndHijack(t *testing.T) {
+	for _, upgrade := range []bool{true, false} {
+		name := "without Upgrade"
+		if upgrade {
+			name = "with Upgrade"
+		}
+		t.Run(name, func(t *testing.T) {
+			socketPath := dockerSocketForIntegration(t)
+			containerID := createDockerContainer(t, socketPath, dockerContainerCreateRequest{
+				Image:        busyboxPinnedRef,
+				Cmd:          []string{"sh", "-c", "sleep 1; printf hello; sleep 1"},
+				AttachStdout: true,
+				AttachStderr: true,
+				Tty:          false,
+			})
+			startDockerContainer(t, socketPath, containerID)
+			waitForDockerContainerRunning(t, socketPath, containerID)
 
-	waitForRequest()
+			handler := newIntegrationProxyHandler(t, socketPath, []config.RuleConfig{
+				{Match: config.MatchConfig{Method: http.MethodPost, Path: "/containers/*/attach"}, Action: "allow"},
+				{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "no matching allow rule"},
+			})
+			addr, waitForRequest := dockerHijackProxy(t, handler)
+
+			reqPath := "/containers/" + containerID + "/attach?stream=1&stdin=1&stdout=1&stderr=1"
+			reqStr := "POST " + reqPath + " HTTP/1.1\r\nHost: localhost\r\n"
+			if upgrade {
+				reqStr += dockerUpgradeRequestHeaders
+			}
+			reqStr += "Content-Length: 0\r\n\r\n"
+			clientConn, resp, clientBuf := readDockerHijackResponse(t, addr, reqStr)
+			assertDockerHijackHead(t, resp, upgrade)
+
+			stream, echoed := readDockerHijackFrame(t, clientBuf)
+			if stream != 1 {
+				t.Fatalf("frame stream = %d, want %d", stream, 1)
+			}
+			if string(echoed) != "hello" {
+				t.Fatalf("frame payload = %q, want %q", string(echoed), "hello")
+			}
+
+			if err := clientConn.Close(); err != nil {
+				t.Fatalf("close proxy client connection: %v", err)
+			}
+
+			waitForRequest()
+		})
+	}
+}
+
+func TestProxyAllowsDockerExecStartEndToEndHijack(t *testing.T) {
+	for _, upgrade := range []bool{true, false} {
+		name := "without Upgrade"
+		if upgrade {
+			name = "with Upgrade"
+		}
+		t.Run(name, func(t *testing.T) {
+			socketPath := dockerSocketForIntegration(t)
+			containerID := createDockerContainer(t, socketPath, dockerContainerCreateRequest{
+				Image: busyboxPinnedRef,
+				Cmd:   []string{"sleep", "60"},
+			})
+			startDockerContainer(t, socketPath, containerID)
+			waitForDockerContainerRunning(t, socketPath, containerID)
+
+			execID := createDockerExec(t, socketPath, containerID, []string{"printf", "hello"})
+
+			handler := newIntegrationProxyHandlerWithOptions(t, socketPath, []config.RuleConfig{
+				{Match: config.MatchConfig{Method: http.MethodPost, Path: "/exec/*/start"}, Action: "allow"},
+				{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "no matching allow rule"},
+			}, filter.Options{PolicyConfig: filter.PolicyConfig{Exec: filter.ExecOptions{
+				AllowedCommands: [][]string{{"printf", "hello"}},
+				InspectStart:    filter.NewDockerExecInspector(socketPath),
+			}}}, ownership.Options{})
+			addr, waitForRequest := dockerHijackProxy(t, handler)
+
+			body := `{"Detach":false,"Tty":false}`
+			reqStr := "POST /exec/" + url.PathEscape(execID) + "/start HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n"
+			if upgrade {
+				reqStr += dockerUpgradeRequestHeaders
+			}
+			reqStr += "Content-Length: " + strconv.Itoa(len(body)) + "\r\n\r\n" + body
+			clientConn, resp, clientBuf := readDockerHijackResponse(t, addr, reqStr)
+			assertDockerHijackHead(t, resp, upgrade)
+
+			stream, payload := readDockerHijackFrame(t, clientBuf)
+			if stream != 1 {
+				t.Fatalf("frame stream = %d, want %d (stdout)", stream, 1)
+			}
+			if string(payload) != "hello" {
+				t.Fatalf("frame payload = %q, want %q", string(payload), "hello")
+			}
+
+			if err := clientConn.Close(); err != nil {
+				t.Fatalf("close proxy client connection: %v", err)
+			}
+
+			waitForRequest()
+		})
+	}
+}
+
+func createDockerExec(t *testing.T, socketPath, containerID string, cmd []string) string {
+	t.Helper()
+
+	client, closeIdle := dockerHTTPClient(socketPath)
+	defer closeIdle()
+
+	payload, err := json.Marshal(map[string]any{"Cmd": cmd, "User": "nobody", "AttachStdout": true, "AttachStderr": true})
+	if err != nil {
+		t.Fatalf("marshal exec create: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, "http://docker/containers/"+url.PathEscape(containerID)+"/exec", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("new exec create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("exec create request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		out, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		t.Fatalf("exec create status = %d, want %d; body: %s", resp.StatusCode, http.StatusCreated, strings.TrimSpace(string(out)))
+	}
+	var created struct {
+		ID string `json:"Id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode exec create: %v", err)
+	}
+	if created.ID == "" {
+		t.Fatal("exec create response missing Id")
+	}
+	return created.ID
 }
 
 func TestHealthEndpointReportsHealthyAgainstDocker(t *testing.T) {

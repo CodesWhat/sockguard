@@ -313,6 +313,24 @@ func finishHijackUpgrade(w http.ResponseWriter, r *http.Request, upstreamConn ne
 	return session, ok
 }
 
+type passClientUpgradeKey struct{}
+
+// PassClientUpgrade wraps a hijack handler so it forwards the client's upgrade
+// choice instead of always asking the upstream to upgrade. Only a positively
+// probed Docker daemon is known to answer the plain form with a 200 raw stream;
+// Podman's libpod endpoints don't, so every other upstream keeps the forced
+// `Connection: Upgrade` / `Upgrade: tcp` request and its 101 answer.
+func PassClientUpgrade(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), passClientUpgradeKey{}, true)))
+	})
+}
+
+func passClientUpgrade(r *http.Request) bool {
+	v, _ := r.Context().Value(passClientUpgradeKey{}).(bool)
+	return v
+}
+
 // clientRequestedUpgrade reports whether the client asked for a connection
 // upgrade. moby's exec start and attach handlers branch on the mere presence of
 // the Upgrade header: with it they answer 101 Switching Protocols, without it
@@ -329,7 +347,8 @@ func clientRequestedUpgrade(r *http.Request) bool {
 // stream that runs until the connection closes. A 200 with a declared length
 // is an ordinary response and goes through the normal forwarding path.
 func isRawStreamHijackResponse(r *http.Request, resp *http.Response) bool {
-	return !clientRequestedUpgrade(r) &&
+	return passClientUpgrade(r) &&
+		!clientRequestedUpgrade(r) &&
 		resp.StatusCode == http.StatusOK &&
 		resp.ContentLength < 0 &&
 		len(resp.TransferEncoding) == 0
@@ -667,10 +686,11 @@ func newUpstreamHijackRequest(r *http.Request, path string) *http.Request {
 	upstreamReq.TransferEncoding = nil
 	upstreamReq.Trailer = nil
 	upstreamReq.Close = false
-	// Pass the client's choice through: the daemon answers 101 only when asked
+	// With passthrough on (probed Docker only), pass the client's choice
+	// through: the daemon answers 101 only when asked
 	// to upgrade and a plain 200 stream otherwise, and clients expect the form
 	// they asked for. The Upgrade value stays proxy-controlled.
-	if clientRequestedUpgrade(r) {
+	if !passClientUpgrade(r) || clientRequestedUpgrade(r) {
 		upstreamReq.Header.Set("Connection", "Upgrade")
 		upstreamReq.Header.Set("Upgrade", "tcp")
 	}

@@ -68,9 +68,9 @@ func FuzzHijackHeadersAndBody(f *testing.F) {
 	rawSocketPath := startFuzzRawStreamUpstream(f)
 	// One persistent client-facing server on a unix socket: per-iteration TCP
 	// listeners exhaust ephemeral ports at fuzz exec rates.
-	rawClientAddr := startFuzzHijackClientServer(f, HijackHandler(rawSocketPath, testLogger(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	rawClientAddr := startFuzzHijackClientServer(f, PassClientUpgrade(HijackHandler(rawSocketPath, testLogger(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "next handler should not be called for hijack endpoints", http.StatusInternalServerError)
-	})))
+	}))))
 
 	// upgrade sets or omits the client Upgrade header; rawStream selects the
 	// mock upstream that answers 101 when asked to upgrade and otherwise a

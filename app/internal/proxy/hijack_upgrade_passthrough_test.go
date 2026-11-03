@@ -109,9 +109,9 @@ func TestHijackUpgradePassthrough(t *testing.T) {
 				})
 				var handler http.Handler
 				if mode == "socket" {
-					handler = HijackHandler(socketPath, logger, next)
+					handler = PassClientUpgrade(HijackHandler(socketPath, logger, next))
 				} else {
-					handler = HijackHandlerWithDialer(unixSocketDialer{socketPath: socketPath}, time.Minute, logger, next)
+					handler = PassClientUpgrade(HijackHandlerWithDialer(unixSocketDialer{socketPath: socketPath}, time.Minute, logger, next))
 				}
 				addr := serveHijackHandler(t, handler)
 
@@ -222,7 +222,7 @@ func TestHijackNonStreamResponsesForwardedNormally(t *testing.T) {
 				}
 			}()
 
-			handler := HijackHandler(socketPath, slog.New(slog.NewTextHandler(io.Discard, nil)), http.NotFoundHandler())
+			handler := PassClientUpgrade(HijackHandler(socketPath, slog.New(slog.NewTextHandler(io.Discard, nil)), http.NotFoundHandler()))
 			addr := serveHijackHandler(t, handler)
 			conn, err := net.Dial("tcp", addr)
 			if err != nil {
@@ -253,8 +253,8 @@ func TestHijackNonStreamResponsesForwardedNormally(t *testing.T) {
 // down by the same inactivity deadline as the 101 form.
 func TestHijackRawStreamInactivityTimeout(t *testing.T) {
 	socketPath, daemon := startPassthroughDaemon(t)
-	handler := HijackHandlerWithDialer(unixSocketDialer{socketPath: socketPath}, 150*time.Millisecond,
-		slog.New(slog.NewTextHandler(io.Discard, nil)), http.NotFoundHandler())
+	handler := PassClientUpgrade(HijackHandlerWithDialer(unixSocketDialer{socketPath: socketPath}, 150*time.Millisecond,
+		slog.New(slog.NewTextHandler(io.Discard, nil)), http.NotFoundHandler()))
 	addr := serveHijackHandler(t, handler)
 
 	conn, err := net.Dial("tcp", addr)
@@ -331,7 +331,7 @@ func TestHijackRawStreamHeadWriteFailureClosesBothConns(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		HijackHandler(socketPath, slog.New(slog.NewTextHandler(io.Discard, nil)), http.NotFoundHandler()).ServeHTTP(w, req)
+		PassClientUpgrade(HijackHandler(socketPath, slog.New(slog.NewTextHandler(io.Discard, nil)), http.NotFoundHandler())).ServeHTTP(w, req)
 	}()
 
 	select {
@@ -349,4 +349,42 @@ func TestHijackRawStreamHeadWriteFailureClosesBothConns(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Error("upstream conn was not closed")
 	}
+}
+
+// Without PassClientUpgrade (any upstream not probed as Docker, Podman
+// included) the upstream is always asked to upgrade and the client gets the 101
+// even when it sent no Upgrade header.
+func TestHijackForcesUpgradeWithoutPassthrough(t *testing.T) {
+	// The mock answers 200 raw-stream to a request without Upgrade. If the
+	// proxy forwarded the client's choice the client would see that 200.
+	socketPath, daemon := startPassthroughDaemon(t)
+	handler := HijackHandler(socketPath, slog.New(slog.NewTextHandler(io.Discard, nil)), http.NotFoundHandler())
+	addr := serveHijackHandler(t, handler)
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := io.WriteString(conn, "POST /exec/abc/start HTTP/1.1\r\nHost: localhost\r\n\r\n"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("status = %d, want 101", resp.StatusCode)
+	}
+	if c, u := func() (string, string) {
+		a, _ := daemon.header("Connection")
+		b, _ := daemon.header("Upgrade")
+		return a, b
+	}(); c != "Upgrade" || u != "tcp" {
+		t.Errorf("upstream Connection/Upgrade = %q/%q, want Upgrade/tcp", c, u)
+	}
+	_ = conn.(*net.TCPConn).CloseWrite()
+	_, _ = io.ReadAll(br)
 }
