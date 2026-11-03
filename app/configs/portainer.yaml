@@ -52,12 +52,12 @@ request_body:
 # (verified against Portainer 2.45.3 api/docker/container.go: inspect, stop,
 # rename to <name>-old, NetworkDisconnect(network.NetworkID), then
 # ContainerCreate(container.Config, container.HostConfig, ...)). With the
-# default redactions, the disconnect 404s on a redacted NetworkID and the
-# container is left stopped and renamed, and the create would otherwise carry
-# Env=[], redacted Binds/Mounts and an empty NetworkMode. Disable the three
-# redactions that rewrite inspect output for this preset, same as the drydock
-# and watchtower presets. With them off, Portainer sees env values (including
-# secrets), host bind paths and network IDs in inspect output. This preset
+# default redactions, the create would otherwise carry Env=[] and redacted
+# Binds/Mounts. Network IDs and NetworkMode are no longer redacted (v3.0), so
+# the disconnect works either way. Disable the three redactions that rewrite
+# inspect output for this preset, same as the drydock and watchtower presets.
+# With them off, Portainer sees env values (including secrets), host bind
+# paths and container addresses in inspect output. This preset
 # already sets insecure_allow_read_exfiltration, so that is mostly not new.
 # If you don't use Recreate or Duplicate, set the three keys back to true.
 #
