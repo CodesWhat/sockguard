@@ -425,7 +425,7 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 	case isImageCreateRoutePath(r.Method, normPath):
 		return mutateImageCreateOwnershipRequest(r, normPath, opts)
 	case isImageLoadRoutePath(r.Method, normPath):
-		return imageLoadOwnershipReferences(r, normPath, opts.UpstreamFlavor), nil
+		return imageLoadOwnershipReferences(r, normPath, opts), nil
 	case r.Method == http.MethodPost && isCommitPath(normPath):
 		return mutateCommitOwnershipRequest(r, normPath, opts)
 	case r.Method == http.MethodPost && (normPath == "/build" || normPath == libpodPrefix+"build"):

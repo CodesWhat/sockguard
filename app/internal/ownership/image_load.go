@@ -23,6 +23,8 @@ const (
 	imageLoadDenyUninspected  = "owner policy denied image load whose archive was not inspected for image names: request_body.image_load reads them"
 	imageLoadDenyUnreadable   = "owner policy denied image load of an archive in no format its image names can be read from"
 	imageLoadDenyTooManyNames = "owner policy denied image load of an archive with more image names than it can authorize"
+	imageLoadDenyConfigUnread = "owner policy denied image load whose image configs could not be read for an owner label: an archive's config is where a client could forge another owner's label"
+	imageLoadDenyForeignOwner = "owner policy denied image load of an image labeled as another owner's: the owner label on a loaded image is the requester's own or absent"
 	imageLoadDenyLegacyNames  = "owner policy denied image load of an archive with a legacy repositories file and no manifest.json: dockerd before 29 can take image names from that file, and nobody read them"
 )
 
@@ -47,13 +49,41 @@ func isImageLoadRoutePath(method, normPath string) bool {
 // image-load inspector has already spooled and parsed on the way here. It
 // leaves what it read on the request metadata, and this reads that instead of
 // the body. See logging.ImageLoadRecord.
-func imageLoadOwnershipReferences(r *http.Request, normPath string, flavor upstreamflavor.Flavor) *ownershipRequestReferences {
+func imageLoadOwnershipReferences(r *http.Request, normPath string, opts Options) *ownershipRequestReferences {
 	var record *logging.ImageLoadRecord
 	if meta := logging.Meta(r.Context()); meta != nil {
 		record = meta.ImageLoad
 	}
-	destinations, denyReason := imageLoadDestinations(record, normPath, flavor)
+	destinations, denyReason := imageLoadDestinations(record, normPath, opts.UpstreamFlavor)
+	if denyReason == "" {
+		denyReason = imageLoadOwnerLabelDenial(record, opts)
+	}
 	return &ownershipRequestReferences{imageDestinations: destinations, denyReason: denyReason}
+}
+
+// imageLoadOwnerLabelDenial refuses a load whose archive carries an image
+// labeled as another owner's. The destination check only covers a name another
+// owner holds. A client can also load under a new name an image whose config
+// already says owner=victim, and that image then passes the victim's ownership
+// checks, so the client has planted content in the victim's namespace. An
+// image with no owner label is left to allow_unowned_images, and one labeled
+// with the requester's own owner is theirs.
+//
+// A record the filter read without ownership's label key, or one with a config
+// it could not read, is refused: nothing says what the labels are.
+func imageLoadOwnerLabelDenial(record *logging.ImageLoadRecord, opts Options) string {
+	if record == nil || record.Unreadable {
+		return ""
+	}
+	if record.OwnerLabelKey != opts.LabelKey || record.ConfigsUnreadable {
+		return imageLoadDenyConfigUnread
+	}
+	for _, owner := range record.OwnerLabels {
+		if owner != opts.Owner {
+			return imageLoadDenyForeignOwner
+		}
+	}
+	return ""
 }
 
 // imageLoadDestinations builds the references a load writes from the names

@@ -32,6 +32,14 @@ const maxImageLoadOCITrackedBlobs = 4096
 const maxImageLoadOCIMetadataBytes = 16 << 20 // 16 MiB
 const maxImageLoadOCIDescriptorVisits = 4096
 
+// maxImageLoadConfigFiles bounds the .json entries of a Docker archive kept
+// for the owner-label read, and maxImageLoadConfigs bounds the distinct image
+// configs one archive is read for. The second matches the bound owner
+// isolation puts on the names of one load: an archive with more images than
+// that fails closed rather than being read in full.
+const maxImageLoadConfigFiles = 4096
+const maxImageLoadConfigs = 256
+
 // errImageLoadDecompressedTooLarge is the loud sentinel returned when
 // gzip decompression or logical OCI blob content exceeds the inspection limit.
 var errImageLoadDecompressedTooLarge = errors.New("decompressed image archive exceeds byte limit")
@@ -85,11 +93,17 @@ type ImageLoadOptions struct {
 	// block; internal/cmd/serve.go's attachRuntimeInspectors sets it, the
 	// same way it does for BuildOptions and ExecOptions.
 	AllowBlindWrites bool
+	// OwnerLabelKey is the label owner isolation reads an image's owner from.
+	// Set only when ownership is active: the inspector then reads that label
+	// out of every image config the archive carries and hands the values to
+	// the ownership layer on the request metadata. Empty reads nothing.
+	OwnerLabelKey string
 }
 
 type imageLoadPolicy struct {
 	allowUntagged    bool
 	allowBlindWrites bool
+	ownerLabelKey    string
 	imagePolicy      imagePullPolicy
 	io               ioDeps
 }
@@ -98,6 +112,7 @@ func newImageLoadPolicy(opts ImageLoadOptions) imageLoadPolicy {
 	return imageLoadPolicy{
 		allowUntagged:    opts.AllowUntagged,
 		allowBlindWrites: opts.AllowBlindWrites,
+		ownerLabelKey:    opts.OwnerLabelKey,
 		imagePolicy: newImagePullPolicy(ImagePullOptions{
 			AllowAllRegistries: opts.AllowAllRegistries,
 			AllowOfficial:      opts.AllowOfficial,
@@ -127,7 +142,7 @@ func (p imageLoadPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath
 		return "image load denied: loading image archives is not allowed", nil
 	}
 	if r.Body == nil {
-		recordImageLoad(r, imageLoadArchiveInspection{format: imageLoadArchiveDocker})
+		p.recordImageLoad(r, imageLoadArchiveInspection{format: imageLoadArchiveDocker})
 		return "", nil
 	}
 	if p.io.CreateTempFile == nil {
@@ -142,7 +157,7 @@ func (p imageLoadPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath
 		return "", err
 	}
 	if spool == nil || size == 0 {
-		recordImageLoad(r, imageLoadArchiveInspection{format: imageLoadArchiveDocker})
+		p.recordImageLoad(r, imageLoadArchiveInspection{format: imageLoadArchiveDocker})
 		return "", nil
 	}
 
@@ -188,7 +203,7 @@ func (p imageLoadPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath
 		return "image load denied: archive names images in a legacy repositories file that is not inspected", nil
 	}
 
-	recordImageLoad(r, archive)
+	p.recordImageLoad(r, archive)
 	return "", nil
 }
 
@@ -205,16 +220,61 @@ func (p imageLoadPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath
 // admits it without anyone having read a name out of it. A request with no
 // metadata on its context (a caller outside the middleware chain) records
 // nothing.
-func recordImageLoad(r *http.Request, archive imageLoadArchiveInspection) {
+//
+// Under ownership it also records the owner label of every image config the
+// archive carries, which is the one label a client must not choose. See
+// logging.ImageLoadRecord.OwnerLabels.
+func (p imageLoadPolicy) recordImageLoad(r *http.Request, archive imageLoadArchiveInspection) {
 	meta := logging.Meta(r.Context())
 	if meta == nil {
 		return
 	}
-	meta.ImageLoad = &logging.ImageLoadRecord{
+	record := &logging.ImageLoadRecord{
 		References:  archive.references,
 		Unreadable:  archive.format == imageLoadArchiveUnknown,
 		LegacyNames: archive.legacyNames,
 	}
+	if p.ownerLabelKey != "" {
+		record.OwnerLabelKey = p.ownerLabelKey
+		record.OwnerLabels, record.ConfigsUnreadable = imageLoadOwnerLabels(archive, p.ownerLabelKey)
+	}
+	meta.ImageLoad = record
+}
+
+// imageLoadOwnerLabels reads the value of labelKey out of each image config
+// the archive carries. A config that is missing, over the retention bounds, or
+// not a config object makes the whole read unreadable, and the ownership layer
+// refuses on that. An image with no such label, or an empty one, adds nothing:
+// owner isolation treats it as unowned.
+func imageLoadOwnerLabels(archive imageLoadArchiveInspection, labelKey string) ([]string, bool) {
+	if archive.configsUnreadable {
+		return nil, true
+	}
+	var values []string
+	for _, body := range archive.configs {
+		var config struct {
+			Config struct {
+				Labels map[string]string `json:"Labels"`
+			} `json:"config"`
+			ContainerConfig struct {
+				Labels map[string]string `json:"Labels"`
+			} `json:"container_config"`
+		}
+		if err := json.Unmarshal(body, &config); err != nil {
+			return nil, true
+		}
+		// The ownership layer reads an image's labels from its inspect, which
+		// falls back to container_config when config carries none
+		// (dockerresource.DecodeLabels), so this reads them the same way.
+		labels := config.Config.Labels
+		if len(labels) == 0 {
+			labels = config.ContainerConfig.Labels
+		}
+		if value := labels[labelKey]; value != "" {
+			values = append(values, value)
+		}
+	}
+	return values, false
 }
 
 func (p imageLoadPolicy) allowsAnyImageLoad() bool {
@@ -279,6 +339,11 @@ type imageLoadArchiveInspection struct {
 	// legacyNames reports a top-level `repositories` entry in an archive with
 	// no manifest.json. See imageLoadLegacyRepositoriesFile.
 	legacyNames bool
+	// configs are the image config blobs the archive's manifests reference,
+	// and configsUnreadable reports one that could not be read. See
+	// collectImageLoadConfigs.
+	configs           [][]byte
+	configsUnreadable bool
 }
 
 type imageLoadOCIIndex struct {
@@ -315,6 +380,14 @@ type imageLoadArchiveControlFiles struct {
 	// seenLegacyRepositories is set by an entry of any type at the path
 	// imageLoadLegacyRepositoriesFile names. Its content is not read.
 	seenLegacyRepositories bool
+
+	// configFiles holds the bodies of the archive's .json entries, which is
+	// where a Docker archive keeps an image config. A nil body is an entry
+	// that was not retained. configFilesOverflow is set when entries past the
+	// bound were dropped, after which no config lookup is trusted.
+	configFiles         map[string][]byte
+	configFilesBytes    int64
+	configFilesOverflow bool
 }
 
 type imageLoadOCIBlob struct {
@@ -396,6 +469,12 @@ func (io_ ioDeps) extractImageLoadArchiveFromTar(tr *tar.Reader, preferOCI bool)
 			controls.seenLegacyRepositories = true
 			continue
 		}
+		if header.Typeflag == tar.TypeReg && strings.HasSuffix(name, ".json") && name != "manifest.json" && name != "index.json" {
+			if err := io_.retainImageLoadConfigFile(&controls, name, header, tr); err != nil {
+				return imageLoadArchiveInspection{}, err
+			}
+			continue
+		}
 		if isImageLoadOCIBlobPath(name) {
 			if controls.ociContentErr == nil {
 				controls.ociContentErr = io_.recordImageLoadOCIBlob(&controls, name, header, tr)
@@ -441,6 +520,37 @@ func (io_ ioDeps) extractImageLoadArchiveFromTar(tr *tar.Reader, preferOCI bool)
 			controls.ociLayout = body
 		}
 	}
+}
+
+// retainImageLoadConfigFile keeps the body of a .json entry for the
+// owner-label read, within the same per-entry and aggregate bounds the OCI
+// metadata blobs get. An entry past a bound is remembered as not retained, so
+// a later lookup of it fails closed instead of reading a stale earlier copy of
+// the same path.
+func (io_ ioDeps) retainImageLoadConfigFile(controls *imageLoadArchiveControlFiles, name string, header *tar.Header, reader io.Reader) error {
+	if controls.configFilesOverflow {
+		return nil
+	}
+	if controls.configFiles == nil {
+		controls.configFiles = make(map[string][]byte)
+	}
+	previous, seen := controls.configFiles[name]
+	if !seen && len(controls.configFiles) >= maxImageLoadConfigFiles {
+		controls.configFilesOverflow = true
+		return nil
+	}
+	if header.Size < 0 || header.Size > maxImageLoadManifestBytes || controls.configFilesBytes-int64(len(previous))+header.Size > maxImageLoadOCIMetadataBytes {
+		controls.configFilesBytes -= int64(len(previous))
+		controls.configFiles[name] = nil
+		return nil
+	}
+	body, err := io_.ReadAllLimited(reader, maxImageLoadManifestBytes+1)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", name, err)
+	}
+	controls.configFilesBytes += int64(len(body)) - int64(len(previous))
+	controls.configFiles[name] = body
+	return nil
 }
 
 func (io_ ioDeps) recordImageLoadOCIBlob(controls *imageLoadArchiveControlFiles, name string, header *tar.Header, reader io.Reader) error {
@@ -524,7 +634,158 @@ func parseImageLoadArchiveControlFiles(controls imageLoadArchiveControlFiles, pr
 		return archive, err
 	}
 	archive.legacyNames = controls.seenLegacyRepositories && !controls.seenDocker
+	if archive.format != imageLoadArchiveUnknown {
+		archive.configs, archive.configsUnreadable = collectImageLoadConfigs(controls)
+	}
 	return archive, nil
+}
+
+// collectImageLoadConfigs gathers the image config every manifest in the
+// archive points at: manifest.json's Config for a Docker archive, and the
+// config of every manifest reachable from index.json for an OCI one. An
+// archive carrying both is read as both, since either can be the one the
+// daemon loads. It reports unreadable when a config the archive references
+// cannot be read, is past the retention bounds, or the archive references more
+// than maxImageLoadConfigs of them.
+//
+// An OCI descriptor whose blob is not in the archive is skipped: a
+// containerd-store save lists manifests it holds no content for, and a daemon
+// has no image to build from one. A manifest that is present with its config
+// absent is unreadable.
+func collectImageLoadConfigs(controls imageLoadArchiveControlFiles) ([][]byte, bool) {
+	c := imageLoadConfigCollector{controls: controls, seen: map[string]struct{}{}, visited: map[string]struct{}{}}
+	if controls.seenDocker {
+		c.collectDocker()
+	}
+	if controls.seenOCIIndex && !c.unreadable {
+		c.collectOCIIndex()
+	}
+	if c.unreadable {
+		return nil, true
+	}
+	return c.configs, false
+}
+
+type imageLoadConfigCollector struct {
+	controls   imageLoadArchiveControlFiles
+	configs    [][]byte
+	seen       map[string]struct{}
+	visited    map[string]struct{}
+	visits     int
+	unreadable bool
+}
+
+func (c *imageLoadConfigCollector) add(key string, body []byte) {
+	if _, dup := c.seen[key]; dup {
+		return
+	}
+	if len(c.configs) >= maxImageLoadConfigs || body == nil {
+		c.unreadable = true
+		return
+	}
+	c.seen[key] = struct{}{}
+	c.configs = append(c.configs, body)
+}
+
+func (c *imageLoadConfigCollector) collectDocker() {
+	var manifest []struct {
+		Config string `json:"Config"`
+	}
+	if err := json.Unmarshal(c.controls.dockerManifest, &manifest); err != nil {
+		c.unreadable = true
+		return
+	}
+	for _, entry := range manifest {
+		name := normalizeImageLoadArchivePath(entry.Config)
+		if name == "" || c.controls.configFilesOverflow {
+			c.unreadable = true
+			return
+		}
+		body, ok := c.controls.configFiles[name]
+		if !ok {
+			blob, found := c.controls.ociBlobs[name]
+			body, ok = blob.body, found
+		}
+		if !ok || body == nil {
+			c.unreadable = true
+			return
+		}
+		c.add(name, body)
+		if c.unreadable {
+			return
+		}
+	}
+}
+
+func (c *imageLoadConfigCollector) collectOCIIndex() {
+	var index imageLoadOCIIndex
+	if err := json.Unmarshal(c.controls.ociIndex, &index); err != nil {
+		// A Docker half beside an index the daemon cannot decode loads through
+		// the Docker half, which was read above.
+		c.unreadable = !c.controls.seenDocker
+		return
+	}
+	for _, descriptor := range index.Manifests {
+		c.walk(descriptor, 0)
+		if c.unreadable {
+			return
+		}
+	}
+}
+
+func (c *imageLoadConfigCollector) walk(descriptor imageLoadOCIIndexDescriptor, depth int) {
+	if c.visits++; c.visits > maxImageLoadOCIDescriptorVisits || depth > 16 {
+		c.unreadable = true
+		return
+	}
+	if _, done := c.visited[descriptor.Digest]; done {
+		return
+	}
+	c.visited[descriptor.Digest] = struct{}{}
+	path, _, _, ok := imageLoadOCIDigestDetails(descriptor.Digest)
+	if !ok {
+		c.unreadable = true
+		return
+	}
+	blob, present := c.controls.ociBlobs[path]
+	if !present {
+		return
+	}
+	if !blob.digestMatch || blob.body == nil {
+		c.unreadable = true
+		return
+	}
+	var node struct {
+		Manifests []imageLoadOCIIndexDescriptor `json:"manifests"`
+		Config    *imageLoadOCIIndexDescriptor  `json:"config"`
+	}
+	if err := json.Unmarshal(blob.body, &node); err != nil {
+		c.unreadable = true
+		return
+	}
+	switch {
+	case node.Manifests != nil:
+		for _, child := range node.Manifests {
+			c.walk(child, depth+1)
+			if c.unreadable {
+				return
+			}
+		}
+	case node.Config != nil:
+		configPath, _, _, ok := imageLoadOCIDigestDetails(node.Config.Digest)
+		if !ok {
+			c.unreadable = true
+			return
+		}
+		config, present := c.controls.ociBlobs[configPath]
+		if !present || !config.digestMatch {
+			c.unreadable = true
+			return
+		}
+		c.add(configPath, config.body)
+	default:
+		c.unreadable = true
+	}
 }
 
 func parseImageLoadArchiveFormats(controls imageLoadArchiveControlFiles, preferOCI bool) (imageLoadArchiveInspection, error) {

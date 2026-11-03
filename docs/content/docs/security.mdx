@@ -627,6 +627,14 @@ the other owner's own, so the other owner goes on to run the client's content.
 That is why a load and an import are checked even though both are off by
 default (`request_body.image_load` and `request_body.image_pull.allow_imports`).
 
+A load is also refused when an image in the archive carries another owner's
+owner label, even under a name nothing holds: that image would pass the other
+owner's ownership checks and put the client's content in its namespace. The
+filter reads the label out of every image config in the archive (Docker
+`manifest.json` configs and OCI `index.json` manifests), and a config it can't
+read refuses the load. An image with no owner label follows
+`allow_unowned_images`, and one labeled with the caller's own owner is allowed.
+
 Pulling over an existing name is ordinary Docker behavior and stays allowed
 wherever it takes nothing from another owner. `docker pull nginx:latest`
 refreshes a name an unlabeled image holds, which the default

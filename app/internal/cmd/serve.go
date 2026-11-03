@@ -765,6 +765,16 @@ func attachRuntimeInspectors(cfg *config.Config, res *upstream.Resolver, policy 
 	// POST /libpod/local/images/load names its archive by daemon-host path,
 	// so there is no body to inspect and only the acknowledgment admits it.
 	policy.ImageLoad.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
+	// Under ownership the inspector also reads the owner label out of every
+	// image config in the archive, for the ownership layer to refuse a load
+	// carrying another owner's label. The key is ownership's, not a profile's.
+	policy.ImageLoad.OwnerLabelKey = ""
+	if cfg.Ownership.Owner != "" {
+		policy.ImageLoad.OwnerLabelKey = cfg.Ownership.LabelKey
+		if policy.ImageLoad.OwnerLabelKey == "" {
+			policy.ImageLoad.OwnerLabelKey = ownership.DefaultLabelKey
+		}
+	}
 	policy.ContainerUpdate.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
 	return policy
 }
