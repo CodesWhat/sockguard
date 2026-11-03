@@ -887,6 +887,59 @@ func TestMiddlewareDeniesClientContainerLabelRuleMiss(t *testing.T) {
 	}
 }
 
+func TestMiddlewareLabelRuleMissRolloutModes(t *testing.T) {
+	run := func(t *testing.T, mode string) (*httptest.ResponseRecorder, *logging.RequestMeta, int) {
+		t.Helper()
+		var nextCalls int
+		handler := middlewareWithDeps(testLogger(), Options{
+			ContainerLabels: ContainerLabelOptions{
+				Enabled:     true,
+				LabelPrefix: "com.sockguard.allow.",
+			},
+		}, fakeResolver{
+			found: true,
+			client: resolvedClient{
+				Labels: map[string]string{
+					"com.sockguard.allow.get": "/events",
+				},
+			},
+		}.resolveClient)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			nextCalls++
+			w.WriteHeader(http.StatusOK)
+		}))
+
+		req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
+		req.RemoteAddr = "172.18.0.5:45678"
+		meta := &logging.RequestMeta{RolloutMode: mode}
+		req = req.WithContext(logging.WithMeta(req.Context(), meta))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec, meta, nextCalls
+	}
+
+	for _, mode := range []string{"warn", "audit"} {
+		t.Run(mode, func(t *testing.T) {
+			rec, meta, nextCalls := run(t, mode)
+			if rec.Code != http.StatusOK || nextCalls != 1 {
+				t.Fatalf("status = %d, next calls = %d; want 200 and 1", rec.Code, nextCalls)
+			}
+			if meta.Decision != logging.DecisionWouldDeny || meta.ReasonCode != reasonCodeClientLabelPolicyDenied {
+				t.Fatalf("meta = %+v, want would_deny/%s", meta, reasonCodeClientLabelPolicyDenied)
+			}
+		})
+	}
+
+	t.Run("enforce", func(t *testing.T) {
+		rec, meta, nextCalls := run(t, "enforce")
+		if rec.Code != http.StatusForbidden || nextCalls != 0 {
+			t.Fatalf("status = %d, next calls = %d; want 403 and 0", rec.Code, nextCalls)
+		}
+		if meta.Decision != logging.DecisionDeny || meta.ReasonCode != reasonCodeClientLabelPolicyDenied {
+			t.Fatalf("meta = %+v, want deny/%s", meta, reasonCodeClientLabelPolicyDenied)
+		}
+	})
+}
+
 func TestMiddlewarePassesThroughWhenResolvedContainerHasNoACLLabels(t *testing.T) {
 	handler := middlewareWithDeps(testLogger(), Options{
 		ContainerLabels: ContainerLabelOptions{
