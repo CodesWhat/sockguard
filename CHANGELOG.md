@@ -83,6 +83,14 @@ This candidate carries v2.4.4 (the client compatibility sweep and libpod create 
 
 - **Native container create gates two more SpecGenerator fields.** `POST /libpod/containers/create` forwarded a non-empty `unified` map, raw cgroup v2 control values Podman writes into the container's cgroup, and `env_host: true`, which copies the Podman daemon's environment into the container (it was only refused while an environment allow or deny list was set). Both are now denied unless `request_body.libpod_container_create.allow_unified_cgroup_settings` or `allow_env_host` is on (`SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_UNIFIED_CGROUP_SETTINGS` and `..._ALLOW_ENV_HOST`). This is a default-deny change for a client that sets either, such as `podman run --cgroup-conf` or `--env-host`. A non-empty `pod` (which joins the pod's infra namespaces) is now denied while `restrict_namespace_sharing` is on, the same switch that governs `container:<ref>` joins; it passes with that off, as before. `r_limits` stays ungated like the Docker-compat `Ulimits`, and when owner isolation is enabled `pod` and `dependencyContainers` are also owner-checked.
 
+## [2.4.5] - 2026-11-03
+
+v2.4.5 is a security release. A numeric user with a sign prefix such as `+0` was not treated as root, so `request_body.exec.allow_root_user: false` and `require_non_root_user` could be bypassed to run as UID 0 on Docker and Podman. It carries v2.4.4.
+
+### Security
+
+- Signed numeric user IDs such as `+0`, `-0`, `+00` and `+0:0` were not treated as root. dockerd and Podman parse a numeric user with `strconv.Atoi`, which accepts a sign, but the filter used `ParseUint`, which does not. A container create, libpod create or exec create with `"User":"+0"` therefore got past `require_non_root_user` and `request_body.exec.allow_root_user: false` and ran as UID 0. The filter now parses the user the way the engines do. A value that overflows is a user name to the engines too, so it is still looked up by name and never wraps to 0.
+
 ## [2.4.4] - 2026-11-03
 
 v2.4.4 fixes typed Docker clients such as Traefik and Diun breaking on redaction placeholders, Portainer Recreate under its preset, visibility image_patterns on inspect, watchtower and portwing preset rule gaps, and upstream timeouts on slow stop and prune calls and 429 bodies without a message. It closes libpod create bypasses (host_device_list, resource_limits.devices, volumes_from and others) and libpod inspect CreateCommand and Secrets leaks, and adds a real-Docker-types compat CI job. It carries v2.4.3.

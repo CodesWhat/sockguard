@@ -7,10 +7,10 @@ description: Upgrade to stable v2.4, evaluate the v3 release candidate, or migra
 
 | Line | Availability | Upgrade guidance |
 | --- | --- | --- |
-| v2.4.4 | Published stable | Keep normal Docker, Homebrew, deb/rpm and binary release channels. |
+| v2.4.5 | Published stable | Keep normal Docker, Homebrew, deb/rpm and binary release channels. |
 | v2.3.3 | End of life | The last v2.3 patch. It no longer receives security fixes, so upgrade to v2.4. |
 | v2.2.11 | End of life | Upgrade to v2.4 for security fixes. |
-| v3.0.0-rc.6 | Published candidate | Select its image or `/v3` Go tag explicitly and migrate the removed TLS settings below. It carries v2.4.4, and its validation and bake window are independent of v2.4. Stable channels serve v2.4.4. |
+| v3.0.0-rc.6 | Published candidate | Select its image or `/v3` Go tag explicitly and migrate the removed TLS settings below. It carries v2.4.4, and its validation and bake window are independent of v2.4. Stable channels serve v2.4.5. |
 
 ## From Sockguard v2.1 to v2.2
 
@@ -47,9 +47,9 @@ before enabling external frontend execution.
 
 ## Upgrading to v2.4
 
-v2.4 is the current stable line. Pull `codeswhat/sockguard:2.4.4` or the
+v2.4 is the current stable line. Pull `codeswhat/sockguard:2.4.5` or the
 `latest` tag, install through Homebrew, deb/rpm or the release binaries, or run
-`go install github.com/codeswhat/sockguard/v2/app/cmd/sockguard@v2.4.4`. Go
+`go install github.com/codeswhat/sockguard/v2/app/cmd/sockguard@v2.4.5`. Go
 source builds require Go 1.27. Don't copy v2.4-only settings into an older
 binary.
 
@@ -92,7 +92,7 @@ go install github.com/codeswhat/sockguard/v3/app/cmd/sockguard@v3.0.0-rc.6
 
 The candidate module is `github.com/codeswhat/sockguard/v3`. Go consumers must
 change Sockguard import prefixes from `/v2` to `/v3`. Published v2 install commands retain `/v2`; stable Docker and Homebrew channels
-serve v2.4.4.
+serve v2.4.5.
 
 V3 has an independent validation and bake window. GA requires fresh exact-source
 four-hour soak and TLS/security checks, published-candidate image conformance,

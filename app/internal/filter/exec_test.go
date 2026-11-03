@@ -157,6 +157,23 @@ func TestMiddlewareDeniesPrivilegedAndRootExecCreate(t *testing.T) {
 			want:    "root",
 		},
 		{
+			// dockerd resolves a numeric exec User with strconv.Atoi, so a
+			// sign prefix still means UID 0.
+			name:    "signed +0 user exec",
+			payload: `{"Cmd":["/usr/local/bin/pre-update"],"User":"+0"}`,
+			want:    "root",
+		},
+		{
+			name:    "signed -0 user exec",
+			payload: `{"Cmd":["/usr/local/bin/pre-update"],"User":"-0"}`,
+			want:    "root",
+		},
+		{
+			name:    "signed +0 with group exec",
+			payload: `{"Cmd":["/usr/local/bin/pre-update"],"User":"+0:0"}`,
+			want:    "root",
+		},
+		{
 			// Omitting User makes Docker run the exec as the container's
 			// configured user (commonly root); it must not bypass AllowRootUser=false.
 			name:    "omitted user exec defaults to root",
@@ -1679,5 +1696,42 @@ func TestExecEnvDenyReasonAllowedEnvVarsEmptyDoesNotDenyEverything(t *testing.T)
 	reason := policy.denyReason(ExecInspectResult{Command: []string{"/bin/sh"}, Env: []string{"PATH=/usr/bin"}})
 	if reason != "" {
 		t.Fatalf("denyReason() = %q, want empty (AllowedEnvVars unset must not deny every entry)", reason)
+	}
+}
+
+func TestMiddlewareDeniesSignedRootUserOnLibpodExecCreate(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/libpod/containers/*/exec", Action: ActionAllow, Index: 0})
+	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	rules := []*CompiledRule{r1, r2}
+
+	for _, user := range []string{"+0", "-0", "+00", "+0:0"} {
+		t.Run(user, func(t *testing.T) {
+			handler := MiddlewareWithOptions(rules, testLogger(), Options{
+				PolicyConfig: PolicyConfig{
+					DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+					Exec: ExecOptions{
+						AllowedCommands: [][]string{{"/usr/local/bin/pre-update"}},
+					},
+				},
+			})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("expected libpod exec create to be denied")
+			}))
+
+			payload := `{"Cmd":["/usr/local/bin/pre-update"],"User":"` + user + `"}`
+			req := httptest.NewRequest(http.MethodPost, "/libpod/containers/abc123/exec", strings.NewReader(payload))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+			}
+			var body DenialResponse
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if !strings.Contains(body.Reason, "root") {
+				t.Fatalf("reason = %q, want substring %q", body.Reason, "root")
+			}
+		})
 	}
 }
