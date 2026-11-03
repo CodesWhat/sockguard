@@ -120,6 +120,12 @@ type LibpodContainerCreateOptions struct {
 	// the daemon host. Default false. See denyLogPathReason.
 	AllowLogPath bool
 
+	// AllowedLogDrivers and AllowedLogEndpointOptions are the libpod
+	// spelling of the same-named ContainerCreateOptions fields, checked
+	// against log_configuration.driver and .options. Default empty: off.
+	AllowedLogDrivers         []string
+	AllowedLogEndpointOptions []string
+
 	// AllowedRuntimes allowlists oci_runtime values, mirroring
 	// ContainerCreateOptions.AllowedRuntimes: an empty oci_runtime selects
 	// the daemon default and is always permitted.
@@ -190,6 +196,7 @@ type libpodContainerCreatePolicy struct {
 	allowSystemdMode      bool
 	allowCustomIDMappings bool
 	allowLogPath          bool
+	logDrivers            logDriverPolicy
 
 	allowedRuntimes           []string
 	allowDeviceCgroupRules    bool
@@ -259,6 +266,7 @@ func newLibpodContainerCreatePolicy(opts LibpodContainerCreateOptions) libpodCon
 		allowSystemdMode:                  opts.AllowSystemdMode,
 		allowCustomIDMappings:             opts.AllowCustomIDMappings,
 		allowLogPath:                      opts.AllowLogPath,
+		logDrivers:                        newLogDriverPolicy(opts.AllowedLogDrivers, opts.AllowedLogEndpointOptions),
 		allowedRuntimes:                   normalizeStringList(opts.AllowedRuntimes),
 		allowDeviceCgroupRules:            opts.AllowDeviceCgroupRules,
 		allowedDeviceCgroupRules:          canonicalDeviceCgroupAllowlist(opts.AllowedDeviceCgroupRules),
@@ -345,6 +353,9 @@ func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Reques
 		return denyReason, nil
 	}
 	if denyReason := p.denyHostPathReason(createReq); denyReason != "" {
+		return denyReason, nil
+	}
+	if denyReason := p.logDrivers.denyMapReason("libpod container create", createReq.LogConfiguration.Driver, createReq.LogConfiguration.Options); denyReason != "" {
 		return denyReason, nil
 	}
 	if denyReason := p.denyDeviceReason(createReq.Devices); denyReason != "" {

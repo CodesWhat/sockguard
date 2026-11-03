@@ -365,6 +365,20 @@ takes a `path` option, so a Docker upstream is only affected if a logging
 plugin there takes one. The compat create can't set `healthLogDestination`.
 Podman pins it to `local` on that route.
 
+The log driver itself is a separate, opt-in control. Set
+`request_body.container_create.allowed_log_drivers` and
+`request_body.libpod_container_create.allowed_log_drivers` to refuse any other
+driver, including one smuggled in as a `driver` entry of `LogConfig.Config`
+(Podman lets that entry replace `Type`). While a list is set, the options that
+name a log destination (`syslog-address`, `gelf-address`, `fluentd-address`,
+`loki-url`, `splunk-url`, `awslogs-endpoint`) are refused unless
+`allowed_log_endpoint_options` names them. `allow_log_path` keeps its own gate
+and neither opens the other: a log path needs `allow_log_path` and a listed
+driver. `request_body.libpod_play_kube.allowed_log_drivers` applies the same
+list to the `logDriver` and `logOptions` query parameters of `POST
+/libpod/play/kube`. It reads the query string only; see the next section for
+what stays uninspected.
+
 ### What a Working Client Hits
 
 - `podman --remote run --rootfs /path`, until `/path` is covered by
@@ -480,6 +494,13 @@ reads none of these query parameters, so a Docker client is never affected;
 the check only matters on a Podman upstream, where sending `volume`,
 `additionalbuildcontexts`, or `rusagelogfile` to `/build` used to reach the
 daemon unexamined.
+
+The two query parameters that pick a log driver are the exception to "no
+inspection": with `request_body.libpod_play_kube.allowed_log_drivers` set,
+`logDriver` and `logOptions` are checked on both spellings, in any letter case
+and on every repeat. That block does not count as body inspection, so the
+acknowledgment above is still required, and a log driver named inside the YAML
+is not seen.
 
 Treat `play/kube` with more caution than a typical blind write. A single
 request can carry a **multi-container, multi-pod** Kubernetes manifest —

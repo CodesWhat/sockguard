@@ -78,6 +78,14 @@ type ServiceOptions struct {
 	// reads them.
 	RequireCPULimit     bool
 	RequireCPULimitHard bool
+
+	// AllowedLogDrivers allowlists TaskTemplate.LogDriver.Name, and
+	// AllowedLogEndpointOptions lists the destination options
+	// (logEndpointOptionKeys) it may carry. Default empty: off. An empty
+	// LogDriver selects the swarm default and is always allowed. See
+	// logDriverPolicy.
+	AllowedLogDrivers         []string
+	AllowedLogEndpointOptions []string
 }
 
 type servicePolicy struct {
@@ -98,6 +106,7 @@ type servicePolicy struct {
 	denySelinuxDisable         bool
 	denySelinuxLabelOverride   bool
 	imageTrust                 imageTrustFields
+	logDrivers                 logDriverPolicy
 }
 
 type serviceRequest struct {
@@ -112,6 +121,8 @@ type serviceRequest struct {
 		// checked for a "host" Target or the host-network deny can be
 		// bypassed by using this field instead of the deprecated one.
 		Networks []serviceNetwork `json:"Networks"`
+		// LogDriver is the task's log driver (moby TaskSpec.LogDriver).
+		LogDriver *serviceLogDriver `json:"LogDriver"`
 	} `json:"TaskTemplate"`
 	// Networks is the deprecated top-level ServiceSpec.Networks location.
 	Networks []serviceNetwork `json:"Networks"`
@@ -198,6 +209,12 @@ type serviceMountVolumeDriverConfig struct {
 	Options map[string]string `json:"Options"`
 }
 
+// serviceLogDriver mirrors swarm TaskSpec.LogDriver (moby swarm.Driver).
+type serviceLogDriver struct {
+	Name    string            `json:"Name"`
+	Options map[string]string `json:"Options"`
+}
+
 type serviceNetwork struct {
 	Target string `json:"Target"`
 }
@@ -234,6 +251,7 @@ func newServicePolicy(opts ServiceOptions) servicePolicy {
 		denySelinuxDisable:         opts.DenySelinuxDisable,
 		denySelinuxLabelOverride:   opts.DenySelinuxLabelOverride,
 		imageTrust:                 buildImageTrustFields(opts.ImageTrust),
+		logDrivers:                 newLogDriverPolicy(opts.AllowedLogDrivers, opts.AllowedLogEndpointOptions),
 	}
 }
 
@@ -445,6 +463,12 @@ func (p servicePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedP
 
 	if denyReason := p.denyImageMountReason(req.TaskTemplate.ContainerSpec.Mounts); denyReason != "" {
 		return denyReason, nil
+	}
+
+	if logDriver := req.TaskTemplate.LogDriver; logDriver != nil {
+		if denyReason := p.logDrivers.denyMapReason("service", logDriver.Name, logDriver.Options); denyReason != "" {
+			return denyReason, nil
+		}
 	}
 
 	// Identity/privilege rails: ContainerSpec carries swarm equivalents of the

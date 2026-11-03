@@ -1767,6 +1767,7 @@ func validateRequestBodyConfig(prefix string, cfg RequestBodyConfig) []string {
 	errs = append(errs, validateSwarmConfig(prefix, cfg.Swarm)...)
 	errs = append(errs, validatePluginConfig(prefix, cfg.Plugin)...)
 	errs = append(errs, validateLibpodPodCreateConfig(prefix, cfg.LibpodPodCreate)...)
+	errs = append(errs, validateLogDriverEntries(prefix, "libpod_play_kube", cfg.LibpodPlayKube.AllowedLogDrivers, cfg.LibpodPlayKube.AllowedLogEndpointOptions)...)
 	errs = append(errs, validateBuildkitConfig(prefix, cfg.Buildkit)...)
 	return errs
 }
@@ -1839,6 +1840,14 @@ func validateBuildkitOpaqueEntries(prefix, entries string, values []string) []st
 	return errs
 }
 
+// validateLogDriverEntries flags empty or whitespace-padded entries in a
+// block's allowed_log_drivers and allowed_log_endpoint_options. Driver names
+// are compared exactly, so padding can never match.
+func validateLogDriverEntries(prefix, block string, drivers, endpointOptions []string) []string {
+	errs := validateBuildkitOpaqueEntries(prefix, block+".allowed_log_drivers", drivers)
+	return append(errs, validateBuildkitOpaqueEntries(prefix, block+".allowed_log_endpoint_options", endpointOptions)...)
+}
+
 // validateLibpodPodCreateConfig validates request_body.libpod_pod_create.
 // libpod_volume/libpod_network/libpod_secret reuse
 // Volume/Network/SecretRequestBodyConfig verbatim, which today have no
@@ -1882,6 +1891,7 @@ func validateContainerCreateConfig(prefix string, cfg ContainerCreateRequestBody
 	errs = append(errs, validateCreateImageAllowlist(prefix+".container_create.allowed_images", cfg.AllowedImages)...)
 	errs = append(errs, validateHostPathEntries(prefix, "container_create.allowed_bind_mounts", cfg.AllowedBindMounts)...)
 	errs = append(errs, validateHostPathEntries(prefix, "container_create.allowed_devices", cfg.AllowedDevices)...)
+	errs = append(errs, validateLogDriverEntries(prefix, "container_create", cfg.AllowedLogDrivers, cfg.AllowedLogEndpointOptions)...)
 	for i, entry := range cfg.AllowedDeviceRequests {
 		if strings.TrimSpace(entry.Driver) == "" {
 			errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d].driver is required", prefix, i))
@@ -1916,6 +1926,7 @@ func validateLibpodContainerCreateConfig(prefix string, cfg LibpodContainerCreat
 	errs = append(errs, validateCreateImageAllowlist(prefix+".libpod_container_create.allowed_images", cfg.AllowedImages)...)
 	errs = append(errs, validateHostPathEntries(prefix, "libpod_container_create.allowed_bind_mounts", cfg.AllowedBindMounts)...)
 	errs = append(errs, validateHostPathEntries(prefix, "libpod_container_create.allowed_devices", cfg.AllowedDevices)...)
+	errs = append(errs, validateLogDriverEntries(prefix, "libpod_container_create", cfg.AllowedLogDrivers, cfg.AllowedLogEndpointOptions)...)
 	for _, entry := range cfg.AllowedNamespaceSharingContainers {
 		if entry != "" && entry == strings.TrimSpace(entry) {
 			continue
@@ -1964,6 +1975,7 @@ func validateServiceConfig(prefix string, cfg ServiceRequestBodyConfig) []string
 	errs = append(errs, validateCreateImageAllowlist(prefix+".service.allowed_images", cfg.AllowedImages)...)
 	errs = append(errs, validateHostPathEntries(prefix, "service.allowed_bind_mounts", cfg.AllowedBindMounts)...)
 	errs = append(errs, validateRegistryHostEntries(prefix, "service.allowed_registries", cfg.AllowedRegistries)...)
+	errs = append(errs, validateLogDriverEntries(prefix, "service", cfg.AllowedLogDrivers, cfg.AllowedLogEndpointOptions)...)
 	return errs
 }
 

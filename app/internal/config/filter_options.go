@@ -53,6 +53,7 @@ func (c RequestBodyConfig) ToFilterOptions() filter.PolicyConfig {
 		Node:                  c.Node.ToFilterOptions(),
 		Plugin:                c.Plugin.ToFilterOptions(),
 		LibpodPodCreate:       c.LibpodPodCreate.ToFilterOptions(),
+		LibpodPlayKube:        c.LibpodPlayKube.ToFilterOptions(),
 		LibpodVolume:          libpodVolume,
 		LibpodNetwork:         c.LibpodNetwork.ToFilterOptions(),
 		LibpodSecret:          c.LibpodSecret.ToFilterOptions(),
@@ -71,6 +72,15 @@ func (c ContainerRemoveRequestBodyConfig) ToFilterOptions() filter.ContainerRemo
 		AllowForce:         c.AllowForce,
 		AllowRemoveVolumes: c.AllowRemoveVolumes,
 		AllowRemoveLinks:   c.AllowRemoveLinks,
+	}
+}
+
+// ToFilterOptions converts libpod_play_kube config into filter middleware
+// options.
+func (c LibpodPlayKubeRequestBodyConfig) ToFilterOptions() filter.LibpodPlayKubeOptions {
+	return filter.LibpodPlayKubeOptions{
+		AllowedLogDrivers:         c.AllowedLogDrivers,
+		AllowedLogEndpointOptions: c.AllowedLogEndpointOptions,
 	}
 }
 
@@ -136,6 +146,8 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 		DenyUnconfinedSystemPaths:         c.DenyUnconfinedSystemPaths,
 		AllowTmpfsPrivilegedOptions:       c.AllowTmpfsPrivilegedOptions,
 		AllowLogPath:                      c.AllowLogPath,
+		AllowedLogDrivers:                 c.AllowedLogDrivers,
+		AllowedLogEndpointOptions:         c.AllowedLogEndpointOptions,
 	}
 }
 
@@ -178,6 +190,8 @@ func (c LibpodContainerCreateRequestBodyConfig) ToFilterOptions() filter.LibpodC
 		AllowSystemdMode:                  c.AllowSystemdMode,
 		AllowCustomIDMappings:             c.AllowCustomIDMappings,
 		AllowLogPath:                      c.AllowLogPath,
+		AllowedLogDrivers:                 c.AllowedLogDrivers,
+		AllowedLogEndpointOptions:         c.AllowedLogEndpointOptions,
 		AllowedRuntimes:                   c.AllowedRuntimes,
 		AllowDeviceCgroupRules:            c.AllowDeviceCgroupRules,
 		AllowedDeviceCgroupRules:          c.AllowedDeviceCgroupRules,
@@ -359,6 +373,8 @@ func (c ServiceRequestBodyConfig) ToFilterOptions() filter.ServiceOptions {
 		ImageTrust:                 c.ImageTrust.toFilterOptions(),
 		RequireCPULimit:            c.RequireCPULimit,
 		RequireCPULimitHard:        c.RequireCPULimitHard,
+		AllowedLogDrivers:          c.AllowedLogDrivers,
+		AllowedLogEndpointOptions:  c.AllowedLogEndpointOptions,
 	}
 }
 

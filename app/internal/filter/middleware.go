@@ -104,6 +104,10 @@ type PolicyConfig struct {
 	// LibpodPodCreate configures request-body inspection for
 	// POST /libpod/pods/create. #148.
 	LibpodPodCreate LibpodPodCreateOptions
+	// LibpodPlayKube configures the log driver allowlist for the logDriver and
+	// logOptions query parameters of POST /libpod/play/kube. The YAML body is
+	// not inspected.
+	LibpodPlayKube LibpodPlayKubeOptions
 	// LibpodVolume configures request-body inspection for
 	// POST /libpod/volumes/create. #148.
 	LibpodVolume VolumeOptions
@@ -478,6 +482,7 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		// again here: matchesExecInspection above already covers both the
 		// Docker-compat and libpod exec paths against the single shared
 		// execPolicy entry (design doc decision C3).
+		{http.MethodPost, matchesLibpodPlayKubeInspection, inspectSeverityHigh, newLibpodPlayKubePolicy(cfg.LibpodPlayKube).inspect, "failed to inspect libpod kube play query", "unable to inspect libpod kube play query"},
 		{http.MethodPost, matchesLibpodPodCreateInspection, inspectSeverityCritical, newLibpodPodCreatePolicy(cfg.LibpodPodCreate).inspect, "failed to inspect libpod pod create request body", "unable to inspect libpod pod create request body"},
 		{http.MethodPost, matchesLibpodVolumeInspection, inspectSeverityMedium, newVolumePolicy(cfg.LibpodVolume).inspectLibpod, "failed to inspect libpod volume create request body", "unable to inspect libpod volume create request body"},
 		{http.MethodPost, matchesLibpodNetworkInspection, inspectSeverityHigh, newNetworkPolicy(cfg.LibpodNetwork).inspectLibpod, "failed to inspect libpod network request body", "unable to inspect libpod network request body"},
@@ -622,6 +627,10 @@ func matchesPluginInspection(normalizedPath string) bool {
 
 func matchesLibpodPodCreateInspection(normalizedPath string) bool {
 	return isLibpodPodCreatePath(normalizedPath)
+}
+
+func matchesLibpodPlayKubeInspection(normalizedPath string) bool {
+	return isLibpodPlayKubeCreatePath(normalizedPath)
 }
 
 func matchesLibpodVolumeInspection(normalizedPath string) bool {

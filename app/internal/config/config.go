@@ -532,6 +532,11 @@ type RequestBodyConfig struct {
 	// equivalent, so this is its own top-level key rather than reusing
 	// container_create). #148.
 	LibpodPodCreate LibpodPodCreateRequestBodyConfig `mapstructure:"libpod_pod_create"`
+	// LibpodPlayKube configures the log driver allowlist for the logDriver and
+	// logOptions query parameters of POST /libpod/play/kube (and its
+	// /libpod/kube/play alias). The YAML body is not inspected, so this block
+	// does not stand in for insecure_allow_body_blind_writes.
+	LibpodPlayKube LibpodPlayKubeRequestBodyConfig `mapstructure:"libpod_play_kube"`
 	// LibpodVolume, LibpodNetwork, and LibpodSecret configure body/query
 	// inspection for the libpod-native volume/network/secret create
 	// endpoints (POST /libpod/volumes/create, /libpod/networks/create,
@@ -561,6 +566,16 @@ type ContainerRemoveRequestBodyConfig struct {
 	AllowForce         bool `mapstructure:"allow_force"`
 	AllowRemoveVolumes bool `mapstructure:"allow_remove_volumes"`
 	AllowRemoveLinks   bool `mapstructure:"allow_remove_links"`
+}
+
+// LibpodPlayKubeRequestBodyConfig configures query inspection for
+// POST /libpod/play/kube.
+type LibpodPlayKubeRequestBodyConfig struct {
+	// AllowedLogDrivers allowlists the logDriver query parameter and
+	// AllowedLogEndpointOptions lists the destination options logOptions may
+	// carry. Same semantics as the container_create fields. Default off.
+	AllowedLogDrivers         []string `mapstructure:"allowed_log_drivers"`
+	AllowedLogEndpointOptions []string `mapstructure:"allowed_log_endpoint_options"`
 }
 
 // LibpodPodCreateRequestBodyConfig configures body inspection for
@@ -681,6 +696,15 @@ type ContainerCreateRequestBodyConfig struct {
 	// alone or ahead of an "=". Podman writes the container's output to that
 	// path on the daemon host. dockerd has no such option. Default false.
 	AllowLogPath bool `mapstructure:"allow_log_path"`
+
+	// AllowedLogDrivers is an opt-in allowlist for HostConfig.LogConfig.Type (and a "driver" entry in LogConfig.Config). Empty, the default,
+	// enforces nothing. An empty driver selects the daemon default and is always
+	// allowed. While it is set, the log destination options (syslog-address,
+	// gelf-address, fluentd-address, loki-url, splunk-url, awslogs-endpoint,
+	// awslogs-credentials-endpoint) are refused unless AllowedLogEndpointOptions
+	// lists them. allow_log_path stays a separate gate.
+	AllowedLogDrivers         []string `mapstructure:"allowed_log_drivers"`
+	AllowedLogEndpointOptions []string `mapstructure:"allowed_log_endpoint_options"`
 }
 
 // LibpodContainerCreateRequestBodyConfig configures body inspection for
@@ -761,6 +785,15 @@ type LibpodContainerCreateRequestBodyConfig struct {
 	// Same name as container_create.allow_log_path, and neither opens the
 	// other's route. Default false.
 	AllowLogPath bool `mapstructure:"allow_log_path"`
+
+	// AllowedLogDrivers is an opt-in allowlist for log_configuration.driver and .options. Empty, the default,
+	// enforces nothing. An empty driver selects the daemon default and is always
+	// allowed. While it is set, the log destination options (syslog-address,
+	// gelf-address, fluentd-address, loki-url, splunk-url, awslogs-endpoint,
+	// awslogs-credentials-endpoint) are refused unless AllowedLogEndpointOptions
+	// lists them. allow_log_path stays a separate gate.
+	AllowedLogDrivers         []string `mapstructure:"allowed_log_drivers"`
+	AllowedLogEndpointOptions []string `mapstructure:"allowed_log_endpoint_options"`
 
 	// AllowedRuntimes, AllowDeviceCgroupRules, AllowedDeviceCgroupRules,
 	// AllowDeviceRequests and DenyUnconfinedSystemPaths are the libpod
@@ -1104,6 +1137,15 @@ type ServiceRequestBodyConfig struct {
 	// require RequireCPULimit. Both default false (opt-in).
 	RequireCPULimit     bool `mapstructure:"require_cpu_limit"`
 	RequireCPULimitHard bool `mapstructure:"require_cpu_limit_hard"`
+
+	// AllowedLogDrivers is an opt-in allowlist for TaskTemplate.LogDriver. Empty, the default,
+	// enforces nothing. An empty driver selects the daemon default and is always
+	// allowed. While it is set, the log destination options (syslog-address,
+	// gelf-address, fluentd-address, loki-url, splunk-url, awslogs-endpoint,
+	// awslogs-credentials-endpoint) are refused unless AllowedLogEndpointOptions
+	// lists them. allow_log_path stays a separate gate.
+	AllowedLogDrivers         []string `mapstructure:"allowed_log_drivers"`
+	AllowedLogEndpointOptions []string `mapstructure:"allowed_log_endpoint_options"`
 }
 
 // SwarmRequestBodyConfig configures inspection for swarm writes.
