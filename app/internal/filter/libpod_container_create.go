@@ -414,7 +414,7 @@ func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Reques
 	if p.requireReadonlyRootfs && !createReq.ReadOnlyFilesystem {
 		return "libpod container create denied: read-only root filesystem is required (set read_only_filesystem to true)", nil
 	}
-	if denyReason := p.denyResourceLimitReason(createReq.ResourceLimits); denyReason != "" {
+	if denyReason := p.denyResourceLimitReason(overlayLibpodCreateUnified(createReq.ResourceLimits, createReq.Unified)); denyReason != "" {
 		return denyReason, nil
 	}
 	if !p.allowSysctls && len(createReq.Sysctl) > 0 {
@@ -716,6 +716,29 @@ func (p libpodContainerCreatePolicy) denySelinuxReason(opts []string) string {
 		}
 	}
 	return ""
+}
+
+// overlayLibpodCreateUnified applies the cgroup v2 files of a create's
+// `unified` map to its resource limits. With allow_unified_cgroup_settings on,
+// Podman writes the map after the typed limits, so memory.max, cpu.max and
+// pids.max here have the last word, and "max" clears the limit a
+// require_* check would otherwise have counted. Without that option a
+// non-empty map is already refused.
+func overlayLibpodCreateUnified(limits libpodResourceLimits, unified map[string]string) libpodResourceLimits {
+	if value, ok := unified["memory.max"]; ok {
+		limits.Memory.Limit = parseCgroupLimit(value)
+	}
+	if value, ok := unified["pids.max"]; ok {
+		limits.Pids.Limit = parseCgroupLimit(value)
+	}
+	if value, ok := unified["cpu.max"]; ok {
+		quota, period, _ := strings.Cut(strings.TrimSpace(value), " ")
+		limits.CPU.Quota = parseCgroupLimit(quota)
+		if period = strings.TrimSpace(period); period != "" {
+			limits.CPU.Period = uint64(max(parseCgroupLimit(period), 0)) // #nosec G115 -- parseCgroupLimit never returns a negative value
+		}
+	}
+	return limits
 }
 
 // denyResourceLimitReason enforces requireMemoryLimit/requireCPULimit/

@@ -280,12 +280,13 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			}
 
 			if action == ActionAllow {
-				denyReason, denyReasonCode, status := runAllowedInspection(activePolicy, logger, w, r, normPath)
+				denyReason, denyReasonCode, status, hardInspection := runAllowedInspectionDetail(activePolicy, logger, w, r, normPath)
 				if removeSpooledBody := closeSpooledRequestBody(logger, r); removeSpooledBody != nil {
 					defer removeSpooledBody()
 				}
 				if denyReason != "" {
 					action = ActionDeny
+					hardDeny = hardDeny || hardInspection
 					reasonCode = denyReasonCode
 					reason = denyReason
 					if status != 0 {
@@ -412,15 +413,22 @@ func stampDecisionOnMeta(meta *logging.RequestMeta, action Action, ruleIndex int
 // apply), ERROR for the clear (a lingering deadline on a proxied connection
 // can kill a streaming response mid-body).
 func runAllowedInspection(activePolicy runtimePolicy, logger *slog.Logger, w http.ResponseWriter, r *http.Request, normPath string) (string, string, int) {
+	reason, code, status, _ := runAllowedInspectionDetail(activePolicy, logger, w, r, normPath)
+	return reason, code, status
+}
+
+// runAllowedInspectionDetail is runAllowedInspection plus whether the refusal
+// is hard, one warn and audit rollout must not pass through.
+func runAllowedInspectionDetail(activePolicy runtimePolicy, logger *slog.Logger, w http.ResponseWriter, r *http.Request, normPath string) (string, string, int, bool) {
 	rc := http.NewResponseController(w)
 	if err := rc.SetReadDeadline(time.Now().Add(bodyReadTimeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
 		logger.Debug("filter: slowloris read deadline not applied", "error", err)
 	}
-	denyReason, denyReasonCode, status := activePolicy.inspectAllowedRequest(logger, r, normPath)
+	denyReason, denyReasonCode, status, hard := activePolicy.inspectAllowedRequestDetail(logger, r, normPath)
 	if err := rc.SetReadDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
 		logger.Error("filter: failed to clear slowloris read deadline", "error", err)
 	}
-	return denyReason, denyReasonCode, status
+	return denyReason, denyReasonCode, status, hard
 }
 
 func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *mutationEngine) runtimePolicy {
@@ -710,6 +718,13 @@ func groupInspectPoliciesByMethod(all []requestInspectPolicy) map[string][]reque
 type inspectBuckets [3][inspectBucketCapacity]*requestInspectPolicy
 
 func (p runtimePolicy) inspectAllowedRequest(logger *slog.Logger, r *http.Request, normalizedPath string) (string, string, int) {
+	reason, code, status, _ := p.inspectAllowedRequestDetail(logger, r, normalizedPath)
+	return reason, code, status
+}
+
+// inspectAllowedRequestDetail is inspectAllowedRequest plus whether the
+// refusal is hard, one warn and audit rollout must not pass through.
+func (p runtimePolicy) inspectAllowedRequestDetail(logger *slog.Logger, r *http.Request, normalizedPath string) (string, string, int, bool) {
 	var buckets inspectBuckets
 	var counts [3]int
 
@@ -739,18 +754,18 @@ func (p runtimePolicy) inspectAllowedRequest(logger *slog.Logger, r *http.Reques
 					if code == "" {
 						code = requestRejectionReasonCode(rejection.status)
 					}
-					return rejection.reason, code, rejection.status
+					return rejection.reason, code, rejection.status, rejection.hard
 				}
 				logRequestError(logger, r, slog.LevelError, policy.errorLogMessage, err)
-				return policy.denyReasonOnError, reasonCodeRequestBodyInspectionFailed, http.StatusForbidden
+				return policy.denyReasonOnError, reasonCodeRequestBodyInspectionFailed, http.StatusForbidden, isHardInspectionError(err)
 			}
 			if denyReason != "" {
-				return denyReason, reasonCodeRequestBodyPolicyDenied, http.StatusForbidden
+				return denyReason, reasonCodeRequestBodyPolicyDenied, http.StatusForbidden, false
 			}
 		}
-		return "", "", 0
+		return "", "", 0, false
 	}
-	return "", "", 0
+	return "", "", 0, false
 }
 
 func denyWithReasonCode(w http.ResponseWriter, r *http.Request, logger *slog.Logger, reasonCode, reason string, verbosity DenyResponseVerbosity) {

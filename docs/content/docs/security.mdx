@@ -210,9 +210,9 @@ The check reads every key and not only field names, because Sockguard models par
 
 A key given twice in one object is refused the same way, because which value survives depends on who decodes it. `encoding/json` merges two objects under one key and lets a later `null` reset a pointer but not a struct, json-iterator also clears a string a later `null` follows, and a map decode keeps only the last. `{"HostConfig": {"Memory": 268435456}, "HostConfig": null}` is a host config with a memory limit to a struct and no host config to dockerd's pointer. Two keys that differ only in letter case count as the same key. The entries of a client-filled map are exempt (labels, annotations, sysctls, driver options, Podman's `env` and `Networks`), so `http_proxy` and `HTTP_PROXY` together are two entries. No Docker or Podman client sends a field twice.
 
-Three layers read such a body, and each one refuses it. The request-body inspectors come first. Behind them, owner isolation decodes a create body to stamp its label, and the resource-limit guard decodes a container update or service write to check its `require_*` options. All three report `request_body_ambiguous` and follow the profile's [rollout mode](/configuration#rollout-modes): `enforce` answers `400`, and `warn` and `audit` record `would_deny` and forward the request. An inspector forwards the body as the client sent it, so no admission mutation or image pin is applied to it. Owner isolation stamps it like any other, and writes the label under the route's own label key whatever spelling the client used, so every decoder binds it. The guard goes on to check its requirements, and its lookup and stale-version failures stay hard errors. The inspectors and owner isolation name the key in the reason, escaped and cut at 64 bytes. The resource-limit guard and the admission-mutation engine don't, because neither repeats anything from a body in what it reports.
+Three layers read such a body, and each one refuses it. The request-body inspectors come first. Behind them, owner isolation decodes a create body to stamp its label, and the resource-limit guard decodes a container update or service write to check its `require_*` options. All three report `request_body_ambiguous` and follow the profile's [rollout mode](/configuration#rollout-modes): `enforce` answers `400`, and `warn` and `audit` record `would_deny` and forward the request. An inspector forwards the body as the client sent it. The admission-mutation engine is the exception: when an `enforce` rule applies to the surface, its refusal is a hard error in every rollout mode, because forwarding the body would skip the rewrite the rule requires. With only `warn` or `audit` rules the engine follows the rollout mode like the other inspectors. Owner isolation stamps it like any other, and writes the label under the route's own label key whatever spelling the client used, so every decoder binds it. The guard goes on to check its requirements, and its lookup and stale-version failures stay hard errors. The inspectors and owner isolation name the key in the reason, escaped and cut at 64 bytes. The resource-limit guard and the admission-mutation engine don't, because neither repeats anything from a body in what it reports.
 
-Some of these bodies are refused in every rollout mode, under the code of the layer that can't act on them. Owner isolation forwards a body with its keys sorted, and when an engine reads two keys as one field the order decides which it honors. So it refuses two keys that differ only in letter case, as it always has, and a key next to the same key spelled with U+0130, which Podman 6 reads as one field. Both are `owner_request_invalid`. The resource-limit guard refuses a repeated key on a container update with `resource_limit_request_invalid`, as it has since it shipped. Under `enforce` an inspector answers such a request first, with `request_body_ambiguous`, so these two codes are mostly seen on a `warn` or `audit` profile.
+Some of these bodies are refused in every rollout mode, under the code of the layer that can't act on them. Owner isolation forwards a body with its keys sorted, and when an engine reads two keys as one field the order decides which it honors. So it refuses two keys that differ only in letter case, as it always has, and a key next to the same key spelled with U+0130, which Podman 6 reads as one field. Both are `owner_request_invalid`. The resource-limit guard refuses a repeated key on a container update with `resource_limit_request_invalid`, as it has since it shipped. The admission-mutation engine refuses with its own reason code (`request_body_ambiguous` for this case) in every mode while an `enforce` rule covers the surface. Under `enforce` an inspector answers such a request first, with `request_body_ambiguous`, so these two codes are mostly seen on a `warn` or `audit` profile.
 
 The Podman 6 behavior was read from its source and from json-iterator's, and checked against a replica of the key matching. It hasn't been run against a live Podman 6.
 
@@ -400,9 +400,12 @@ nothing. So while either flag might be set, the named secret has to be absent
 or carry the caller's owner label. Another owner's secret, or one with no owner
 label, is a `403`, a name nobody holds goes through as a normal create, and a
 failed lookup is a `502`. Podman matches the name against secret names and
-full IDs, and so does the lookup. The lookup also resolves a unique ID prefix,
-which Podman's create doesn't, so a new secret whose name is a short hex string
-that prefixes another owner's secret ID is refused too. The check is a lookup
+full IDs, and so does the lookup. The secret inspect it goes through also
+resolves a unique ID prefix, which Podman's create doesn't, so the lookup
+accepts a secret only when its ID or name is the one the request named and
+reads a prefix-only match as absent. On a Podman upstream a create whose name is lowercase hex of fewer than 25
+characters is refused outright, so the answer doesn't reveal which hex strings
+begin an ID. The check is a lookup
 before the write, so another owner's proxy, or anything writing to the socket
 directly, can still create the name in between. One sockguard has one owner, so
 nothing going through the same instance can. A flag counts as set unless Podman would read
@@ -444,6 +447,16 @@ write, so it can't see a name change hands between the lookup and Podman's own:
 the caller would have to delete its secret and another owner create one under
 the same name inside that moment.
 
+A request that targets a secret by path (`GET`, `DELETE` and the rest of
+`/secrets/{name}` and `/libpod/secrets/{name}`) is refused on Podman for the same
+reason when `{name}` could be an ID prefix: lowercase hex of fewer than 25
+characters. The daemon resolves the reference again when the request reaches it,
+and two deletes of a caller's own secret named after a foreign ID prefix sent at
+once both pass the inspect, which finds the caller's secret by name. The first
+removes it and the second falls through to the other owner's secret. A full
+25-character ID and any name that isn't all hex digits are unaffected, so a
+secret named `cafe` has to be addressed by its ID. A secret create with such a name is refused for the same reason.
+
 `secret_env` is refused whenever it names anything, whoever's secret that is.
 Podman copies a mounted secret into the container once, while it creates it. It
 doesn't copy an environment secret anywhere: it keeps the secret's name and
@@ -461,7 +474,7 @@ play reads the secrets its YAML names by name as well, and sockguard doesn't
 parse that YAML, which is one reason it stays behind
 `insecure_allow_body_blind_writes`.
 
-The same boundary applies to references embedded inside container and service payloads, not only the resource named by the URL. Container creates authorize the requested image, named volumes, custom network mode, every endpoint-config network, and every `container:<ref>` namespace-sharing target. A Podman-native container create also authorizes the pod it joins and the secrets it mounts. Service creates and updates authorize the task image, named volumes, networks, secrets, and configs. A foreign label or unresolved workload dependency is denied before Docker sees the request; only an image that successfully resolves and is genuinely unlabeled can use `allow_unowned_images`. Create new volumes, networks, secrets, and configs through their owner-stamping endpoints before attaching them to a workload. This turns one shared Docker socket into N isolated identity views without leaving workload dependencies as an ownership side door.
+The same boundary applies to references embedded inside container and service payloads, not only the resource named by the URL. Container creates authorize the requested image, named volumes, custom network mode, every endpoint-config network, and every `container:<ref>` namespace-sharing target. A Podman-native container create also authorizes the pod it joins and the secrets it mounts. On a Podman upstream the Docker-compatible create also looks up a network named `ingress` or `docker_gwbridge` in `HostConfig.NetworkMode` or as an endpoint-config key, because Podman reads those as ordinary network names. Only a network labeled for a different owner is refused; an unlabeled or missing one goes through. `bridge`, `host`, `none` and `default` are never looked up. Service creates and updates authorize the task image, named volumes, networks, secrets, and configs. A foreign label or unresolved workload dependency is denied before Docker sees the request; only an image that successfully resolves and is genuinely unlabeled can use `allow_unowned_images`. Create new volumes, networks, secrets, and configs through their owner-stamping endpoints before attaching them to a workload. This turns one shared Docker socket into N isolated identity views without leaving workload dependencies as an ownership side door.
 
 Network membership changes apply that boundary to both sides of the relationship. On Docker-compatible and native libpod connect/disconnect requests, Sockguard checks the network named by the URL and the body `Container` reference. A foreign resource is denied, and an unresolved body container fails closed before the daemon receives the write. The ownership check reads and restores the bounded request body, so an allowed request reaches the daemon unchanged.
 

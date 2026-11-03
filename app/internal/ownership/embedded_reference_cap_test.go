@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/codeswhat/sockguard/v3/app/internal/upstreamflavor"
 )
 
 func binds(n int, distinct bool) string {
@@ -38,7 +40,7 @@ func TestContainerCreateEmbeddedReferencesAreCapped(t *testing.T) {
 			t.Parallel()
 			body := `{"HostConfig":{"Binds":[` + tt.binds + `]}}`
 			req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(body))
-			refs, err := mutateContainerCreateOwnershipBody(req, DefaultLabelKey, "job-123")
+			refs, err := mutateContainerCreateOwnershipBody(req, DefaultLabelKey, "job-123", upstreamflavor.Docker)
 			if err != nil {
 				t.Fatal(err)
 			}

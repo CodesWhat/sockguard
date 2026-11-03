@@ -250,6 +250,17 @@ volume as much as for a host path. A relative directory is refused whatever
 the list holds, because Podman resolves it under the container's own storage
 directory and `../` walks back out.
 
+On a Podman upstream, secret operations that name a secret by a short ID prefix are refused: a request to `/secrets/{name}` or `/libpod/secrets/{name}`, or a create, whose name is lowercase hex of fewer than 25 characters gets a `403` under owner isolation. Use the full 25-character ID, or a secret name with a non-hex character (`db-password`, not `cafe`).
+
+A named `volumes` entry can carry host paths in a second way. When the volume
+doesn't exist, Podman creates it and turns every option that starts with
+`volume-opt` into a driver option, so `volume-opt=type=none`,
+`volume-opt=o=bind` and `volume-opt=device=/etc` bind the host's `/etc` into
+the new volume. Those options are held to the same rules as
+`POST /libpod/volumes/create`: a bind, a device or a host-filesystem type has
+to fall inside `allowed_bind_mounts`. Options that name no host path, such as
+`volume-opt=size=64m`, pass.
+
 Podman writes an overlay's source and both directories into one
 comma-separated option string, so a `,` in a path starts a new mount option
 and a `\` escapes whatever follows it. An `overlay_volumes` source, a `rootfs`
@@ -561,7 +572,7 @@ archive and **creates a container from it**, so one allowed call provisions a
 container whose spec — privileged, mounts, capabilities, devices — travels
 inside a gzipped tar as `spec.dump` and never passes through `containers/create`
 on either surface. The `?pod` parameter also joins the restored container to a
-pod. Nothing in Sockguard reads that archive, so an allow rule for the path
+pod, and under owner isolation that pod is looked up like the `pod` of a create: another owner's pod is a `403`, and a repeated or re-cased `pod` parameter is refused. Nothing in Sockguard reads that archive, so an allow rule for the path
 requires `insecure_allow_body_blind_writes: true`, exactly like `play/kube`.
 
 ## Read-Exfiltration Additions
