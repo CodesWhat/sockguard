@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **`redact_container_env` now covers image history.** `GET /images/{name}/history` and `GET /libpod/images/{name}/history` returned each layer's `CreatedBy` verbatim, so `ENV KEY=value` and `ARG KEY=value` layers handed a read-only client the values image inspect already hides (the `podman-readonly` preset allows `/images/**/history`). With the toggle on, those entries read `ENV <redacted>` or `ARG <redacted>`; every other layer is untouched, and a body that can't be parsed fails closed with a 502.
 - **`GET /libpod/generate/kube` and `GET /libpod/kube/generate` are refused under owner isolation and visibility policy.** They resolve each name as a pod, container or volume with no owner check and return the definition, environment included, so a tenant holding `insecure_allow_read_exfiltration` could dump another tenant's by name. Reason codes are `owner_libpod_generate_kube_unscopeable`, `owner_libpod_kube_generate_unscopeable` and the `visibility_` equivalents. With neither layer active nothing changes.
 
 ### Changed

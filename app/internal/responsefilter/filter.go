@@ -179,6 +179,8 @@ func (f *Filter) ModifyResponse(resp *http.Response) error {
 		return f.modifyContainerInspect(resp)
 	case isImageInspectPath(normPath):
 		return f.modifyImageInspect(resp)
+	case isImageHistoryPath(normPath):
+		return f.modifyImageHistory(resp)
 	case normPath == "/containers/json":
 		return f.modifyContainerList(resp)
 	case normPath == "/networks":
@@ -345,6 +347,47 @@ func (f *Filter) modifyImageInspect(resp *http.Response) error {
 	}
 
 	return writeResponseBody(resp, payload)
+}
+
+// modifyImageHistory rewrites GET /images/{name}/history (and the libpod
+// spelling). Each entry's CreatedBy is the instruction that built the layer,
+// so an ENV (or ARG) layer carries KEY=value pairs that redact_container_env
+// already empties on image inspect. Those instructions are replaced with
+// "ENV <redacted>" / "ARG <redacted>"; every other entry is left alone.
+func (f *Filter) modifyImageHistory(resp *http.Response) error {
+	if !f.opts.RedactContainerEnv {
+		return nil
+	}
+	return streamArrayResponse(resp, func(entry map[string]any) error {
+		createdBy, ok := entry["CreatedBy"].(string)
+		if !ok {
+			return nil
+		}
+		if keyword := historyEnvInstruction(createdBy); keyword != "" {
+			entry["CreatedBy"] = keyword + " <redacted>"
+		}
+		return nil
+	}, "CreatedBy")
+}
+
+// historyEnvInstruction returns "ENV" or "ARG" when createdBy is that
+// Dockerfile instruction, tolerating the classic builder's
+// "/bin/sh -c #(nop)" prefix and BuildKit's trailing " # buildkit".
+func historyEnvInstruction(createdBy string) string {
+	s := strings.TrimSpace(createdBy)
+	s = strings.TrimSpace(strings.TrimSuffix(s, "# buildkit"))
+	if rest, ok := strings.CutPrefix(s, "/bin/sh -c #(nop)"); ok {
+		s = strings.TrimSpace(rest)
+	}
+	for _, keyword := range [...]string{"ENV", "ARG"} {
+		if len(s) > len(keyword) && strings.EqualFold(s[:len(keyword)], keyword) {
+			switch s[len(keyword)] {
+			case ' ', '\t', '\n':
+				return keyword
+			}
+		}
+	}
+	return ""
 }
 
 func (f *Filter) modifyContainerList(resp *http.Response) error {
@@ -632,6 +675,25 @@ func isImageInspectPath(normPath string) bool {
 		return false
 	}
 	return rest[idx+1:] == "json"
+}
+
+// isImageHistoryPath reports whether normPath is /images/{name}/history. The
+// name may contain slashes, so it anchors on the last segment like
+// isImageInspectPath does.
+func isImageHistoryPath(normPath string) bool {
+	return hasImageNameSuffix(normPath, "/images/", "history")
+}
+
+func hasImageNameSuffix(normPath, prefix, last string) bool {
+	rest, ok := strings.CutPrefix(normPath, prefix)
+	if !ok {
+		return false
+	}
+	idx := strings.LastIndex(rest, "/")
+	if idx <= 0 {
+		return false
+	}
+	return rest[idx+1:] == last
 }
 
 // denyAttestationStatement reports whether resp is a
