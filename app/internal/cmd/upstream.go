@@ -262,22 +262,36 @@ func cgroupV1OptInConfigured(cfg *config.Config) bool {
 // safe reading for a failover set: whichever endpoint ends up serving a
 // create, it is cgroup v1.
 func endpointIsCgroupV1(ctx context.Context, deps *serveDeps, rt http.RoundTripper, ep upstream.Endpoint, logger *slog.Logger) bool {
+	return probeEndpointCgroup(ctx, deps, rt, ep, logger) == cgroupProbeV1
+}
+
+// cgroupProbeOutcome separates "the daemon answered and is not v1" (final)
+// from "the probe itself failed" (worth retrying shortly).
+type cgroupProbeOutcome int
+
+const (
+	cgroupProbeNotV1 cgroupProbeOutcome = iota
+	cgroupProbeV1
+	cgroupProbeFailed
+)
+
+func probeEndpointCgroup(ctx context.Context, deps *serveDeps, rt http.RoundTripper, ep upstream.Endpoint, logger *slog.Logger) cgroupProbeOutcome {
 	if deps.probeCgroupVersion == nil {
 		logger.Warn("cgroup version probe unavailable; allow_host_cgroupns_on_cgroup_v1 stays closed", "endpoint", ep.String())
-		return false
+		return cgroupProbeNotV1
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, upstreamflavor.DetectTimeout)
 	defer cancel()
 	version, err := deps.probeCgroupVersion(probeCtx, dockerclient.NewWithRoundTripper(rt))
 	if err != nil {
 		logger.Warn("cgroup version probe failed; allow_host_cgroupns_on_cgroup_v1 stays closed", "error", err, "endpoint", ep.String())
-		return false
+		return cgroupProbeFailed
 	}
 	if version != "1" {
 		logger.Info("upstream endpoint is not cgroup v1; allow_host_cgroupns_on_cgroup_v1 stays closed", "cgroup_version", version, "endpoint", ep.String())
-		return false
+		return cgroupProbeNotV1
 	}
-	return true
+	return cgroupProbeV1
 }
 
 // describeEndpointFlavors renders each endpoint's address alongside its

@@ -31,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A transient `/info` failure no longer holds `allow_host_cgroupns_on_cgroup_v1` closed until the next 5-minute tick.** When the cgroup version probe errors while the option is set, sockguard retries on a short backoff (1s, 2s, 4s, 8s, then every 30s) until the next regular probe, and stops on shutdown. A clean answer that the daemon isn't cgroup v1 is not retried. A probe result that arrives after a reload turned the option off is now discarded, so it can't reopen the gate.
 - **Followed swarm service and task logs and Podman `top?stream` count against the stream cap.** They were exempt from the request deadline as open-ended streams but still held a `max_inflight` slot for their whole life. The rate limiter's stream check now agrees with the deadline classifier for these routes.
 - **`clients.global_concurrency.max_inflight: 1` no longer denies every normal and low priority request.** The per-tier share rounded down to 0 at a cap that small, so only a `high` profile could ever be admitted. A positive cap now admits at least one request of every tier.
 - **Idle-bucket eviction no longer refunds a drained burst early.** A rate-limit bucket idle for more than 10 minutes was dropped and came back full, so with a low `tokens_per_second` and a larger `burst` a quiet client got its whole burst back regardless of the configured rate. Eviction now only drops buckets that have refilled to burst.
