@@ -479,7 +479,7 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		// again here: matchesExecInspection above already covers both the
 		// Docker-compat and libpod exec paths against the single shared
 		// execPolicy entry (design doc decision C3).
-		{http.MethodPost, matchesLibpodPodCreateInspection, inspectSeverityCritical, newLibpodPodCreatePolicy(cfg.LibpodPodCreate).inspect, "failed to inspect libpod pod create request body", "unable to inspect libpod pod create request body"},
+		{http.MethodPost, matchesLibpodPodCreateInspection, inspectSeverityCritical, newLibpodPodCreatePolicy(libpodPodCreateOptionsWithContainer(cfg)).inspect, "failed to inspect libpod pod create request body", "unable to inspect libpod pod create request body"},
 		{http.MethodPost, matchesLibpodVolumeInspection, inspectSeverityMedium, newVolumePolicy(cfg.LibpodVolume).inspectLibpod, "failed to inspect libpod volume create request body", "unable to inspect libpod volume create request body"},
 		{http.MethodPost, matchesLibpodNetworkInspection, inspectSeverityHigh, newNetworkPolicy(cfg.LibpodNetwork).inspectLibpod, "failed to inspect libpod network request body", "unable to inspect libpod network request body"},
 		{http.MethodPost, matchesLibpodSecretInspection, inspectSeverityMedium, newLibpodSecretPolicy(cfg.LibpodSecret).inspect, "failed to inspect libpod secret create request", "unable to inspect libpod secret create request"},
@@ -814,4 +814,14 @@ func redactDeniedPath(requestPath string) string {
 	default:
 		return requestPath
 	}
+}
+
+// libpodPodCreateOptionsWithContainer hands the pod create inspector the
+// libpod container create options, so a pod's inherited mounts, devices,
+// security options, sysctls and joined namespaces are held to the same lists
+// a container is.
+func libpodPodCreateOptionsWithContainer(cfg PolicyConfig) LibpodPodCreateOptions {
+	opts := cfg.LibpodPodCreate
+	opts.Container = cfg.LibpodContainerCreate
+	return opts
 }
