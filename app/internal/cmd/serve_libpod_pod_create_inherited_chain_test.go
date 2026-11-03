@@ -80,6 +80,12 @@ func TestServeChainLibpodPodCreateAppliesTheContainerGatesToInheritedFields(t *t
 			wantReason: "libpod pod create denied: setting sysctls is not allowed",
 		},
 		{
+			name:       "uid mapping",
+			body:       `{"name":"p","idmappings":{"UIDMap":[{"container_id":0,"host_id":0,"size":65536}]}}`,
+			open:       func(c *config.LibpodContainerCreateRequestBodyConfig) { c.AllowCustomIDMappings = true },
+			wantReason: "libpod pod create denied: custom UID/GID mappings are not allowed",
+		},
+		{
 			name:       "unconfined seccomp",
 			body:       `{"name":"p","security_opt":["seccomp=unconfined"]}`,
 			open:       func(c *config.LibpodContainerCreateRequestBodyConfig) { c.DenyUnconfinedSeccomp = false },

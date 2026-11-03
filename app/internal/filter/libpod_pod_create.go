@@ -106,6 +106,7 @@ type libpodPodCreateRequest struct {
 	Devices     []string          `json:"pod_devices"`
 	SecurityOpt []string          `json:"security_opt"`
 	Sysctl      map[string]string `json:"sysctl"`
+	IDMappings  libpodIDMappings  `json:"idmappings"`
 }
 
 func newLibpodPodCreatePolicy(opts LibpodPodCreateOptions) libpodPodCreatePolicy {

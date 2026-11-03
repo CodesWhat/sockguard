@@ -6,7 +6,7 @@ import (
 
 // libpod_pod_create_inherited.go holds the pod create gates for the fields
 // Podman copies onto the pod's infra container and that the pod's members then
-// inherit: mounts, pod_devices, security_opt and sysctl, plus a namespace
+// inherit: mounts, pod_devices, security_opt, sysctl and idmappings, plus a namespace
 // joined by container reference. Without them a rule that allows
 // POST /libpod/pods/create got around the container block's
 // allowed_bind_mounts, allowed_devices, allow_sysctls, seccomp, AppArmor and
@@ -42,6 +42,9 @@ func (p libpodPodCreatePolicy) denyInheritedFieldsReason(req libpodPodCreateRequ
 		}
 	}
 	if reason := p.denySecurityOptReason(req.SecurityOpt); reason != "" {
+		return podCreateReason(reason)
+	}
+	if reason := p.container.denyIDMappingsReason(req.IDMappings); reason != "" {
 		return podCreateReason(reason)
 	}
 	if !p.container.allowSysctls && len(req.Sysctl) > 0 {
