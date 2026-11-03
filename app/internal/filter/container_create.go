@@ -2058,6 +2058,9 @@ func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHos
 			if denyReason := denyLocalVolumeBindDeviceReason(driverConfig.Name, driverConfig.Options, p.allowedBindMounts, "container create"); denyReason != "" {
 				return denyReason
 			}
+			if denyReason := denyLocalVolumeTmpfsPrivilegeReason(driverConfig.Name, driverConfig.Options, p.allowTmpfsPrivilegedOptions, "container create"); denyReason != "" {
+				return denyReason
+			}
 		}
 
 		// Podman's compat handler calls os.MkdirAll on a volume-type Source

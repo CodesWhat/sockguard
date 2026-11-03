@@ -34,8 +34,10 @@ func (c RequestBodyConfig) ToFilterOptions() filter.PolicyConfig {
 
 	volume := c.Volume.ToFilterOptions()
 	volume.AllowedBindMounts = c.ContainerCreate.AllowedBindMounts
+	volume.AllowTmpfsPrivilegedOptions = c.ContainerCreate.AllowTmpfsPrivilegedOptions
 	libpodVolume := c.LibpodVolume.ToFilterOptions()
 	libpodVolume.AllowedBindMounts = c.LibpodContainerCreate.AllowedBindMounts
+	libpodVolume.AllowTmpfsPrivilegedOptions = c.LibpodContainerCreate.AllowTmpfsPrivilegedOptions
 
 	return filter.PolicyConfig{
 		ContainerCreate:       containerCreate,
