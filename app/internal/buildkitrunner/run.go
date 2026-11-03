@@ -19,10 +19,18 @@ import (
 
 // Run executes one pinned frontend. The proxy remains the authority for every
 // operation; operation reports never grant execution or change policy.
+// serveH2 is h2conn.Serve; tests replace it to inject a serve failure.
+var serveH2 = h2conn.Serve
+
 func Run(ctx context.Context, opts Options) (retErr error) {
 	if _, err := frontendArgs(opts, "validation", "[]"); err != nil {
 		return err
 	}
+	// A serve goroutine that fails cancels ctx with its error as the cause, so
+	// the waits below end at once with that error instead of running out the
+	// timeout.
+	ctx, cancelCause := context.WithCancelCause(ctx)
+	defer cancelCause(nil)
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 	var id [16]byte
@@ -52,7 +60,10 @@ func Run(ctx context.Context, opts Options) (retErr error) {
 	var sessionErr error
 	go func() {
 		defer close(sessionDone)
-		sessionErr = h2conn.Serve(ctx, sessionConn, h2conn.ServerConfig{Handler: http.HandlerFunc(serveSession), MaxConcurrentStreams: 8})
+		sessionErr = serveH2(ctx, sessionConn, h2conn.ServerConfig{Handler: http.HandlerFunc(serveSession), MaxConcurrentStreams: 8})
+		if sessionErr != nil {
+			cancelCause(fmt.Errorf("serve session: %w", sessionErr))
+		}
 	}()
 	defer func() {
 		_ = sessionConn.Close()
@@ -101,7 +112,10 @@ func Run(ctx context.Context, opts Options) (retErr error) {
 	relay := &gatewayRelay{client: client, build: build, report: newOperationReporter(opts.Operations)}
 	go func() {
 		defer close(served)
-		serveErr = h2conn.Serve(ctx, process.conn, h2conn.ServerConfig{Handler: relay, MaxConcurrentStreams: 16, MaxHeaderBytes: 64 << 10, PrefaceTimeout: 10 * time.Second})
+		serveErr = serveH2(ctx, process.conn, h2conn.ServerConfig{Handler: relay, MaxConcurrentStreams: 16, MaxHeaderBytes: 64 << 10, PrefaceTimeout: 10 * time.Second})
+		if serveErr != nil {
+			cancelCause(fmt.Errorf("serve frontend gateway: %w", serveErr))
+		}
 	}()
 	defer func() {
 		_ = process.conn.Close()
@@ -113,7 +127,7 @@ func Run(ctx context.Context, opts Options) (retErr error) {
 
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return context.Cause(ctx)
 	case <-process.done:
 		if process.err != nil {
 			return fmt.Errorf("frontend process failed: %w", process.err)
@@ -123,7 +137,7 @@ func Run(ctx context.Context, opts Options) (retErr error) {
 		select {
 		case <-process.done:
 		case <-ctx.Done():
-			return ctx.Err()
+			return context.Cause(ctx)
 		case <-time.After(30 * time.Second):
 			return errors.New("frontend did not exit after root Solve completed")
 		}
@@ -138,7 +152,7 @@ func Run(ctx context.Context, opts Options) (retErr error) {
 	case <-rootDone:
 		return rootErr
 	case <-ctx.Done():
-		return ctx.Err()
+		return context.Cause(ctx)
 	case <-time.After(30 * time.Second):
 		return errors.New("frontend exited without completing root Solve")
 	}
