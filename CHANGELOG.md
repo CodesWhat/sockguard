@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Swarm service tmpfs mount options are gated.** `serviceMount` didn't decode `TmpfsOptions`, so service create and update passed a tmpfs mount's options unread. `TmpfsOptions.Options` now answers to `container_create.allow_tmpfs_privileged_options`, with the same malformed-entry refusal container create has. Container create also reads a `suid=1` or comma-joined token in a structured entry now, not only a bare `suid` key.
 - **Native container create reads tmpfs mount options.** `POST /libpod/containers/create` decoded `mounts[].options` and never read them, so a tmpfs mount could turn on `exec`, `suid` or `dev` past `allow_tmpfs_privileged_options`. A `tmpfs` entry whose options end with any of those on is now refused, last option wins, comma-joined elements and `key=1` style tokens included. New key `request_body.libpod_container_create.allow_tmpfs_privileged_options` (env `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_TMPFS_PRIVILEGED_OPTIONS`, default `false`) lifts it for the native route only.
 
 ## [3.0.0-rc.6] - 2026-11-03

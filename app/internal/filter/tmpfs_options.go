@@ -92,3 +92,43 @@ func tmpfsPostureOfList(lists ...string) tmpfsPosture {
 	}
 	return posture
 }
+
+// tmpfsStructuredVerdict is what reading a structured TmpfsOptions.Options
+// list found.
+type tmpfsStructuredVerdict uint8
+
+const (
+	tmpfsStructuredOK tmpfsStructuredVerdict = iota
+	tmpfsStructuredMalformed
+	tmpfsStructuredPrivileged
+)
+
+// tmpfsPrivilegeEscalatingOptions are the tmpfs mount option keywords that
+// override Docker's default noexec/nodev/nosuid tmpfs posture. Matched
+// case-insensitively against the first token of each
+// TmpfsOptions.Options entry.
+var tmpfsPrivilegeEscalatingOptions = map[string]bool{
+	"exec": true,
+	"dev":  true,
+	"suid": true,
+}
+
+// checkStructuredTmpfsOptions reads a Mount.TmpfsOptions.Options list (Engine
+// API 1.46+, and the swarm ContainerSpec mount): each entry must be a
+// well-formed 1-or-2-element list (a malformed one is refused fail-closed
+// rather than ignored), and an entry that names exec, dev or suid as its key,
+// or whose comma-joined text ends with one on, is privileged. Entries are
+// judged one at a time, so a later "noexec" entry doesn't clear an earlier
+// "exec". The returned string is the entry's first element, for the denial.
+func checkStructuredTmpfsOptions(options [][]string) (tmpfsStructuredVerdict, string) {
+	for _, option := range options {
+		if len(option) == 0 || len(option) > 2 || strings.TrimSpace(option[0]) == "" {
+			return tmpfsStructuredMalformed, ""
+		}
+		key := strings.ToLower(strings.TrimSpace(option[0]))
+		if tmpfsPrivilegeEscalatingOptions[key] || tmpfsPostureOfList(strings.Join(option, "=")).enablesPrivilege() {
+			return tmpfsStructuredPrivileged, option[0]
+		}
+	}
+	return tmpfsStructuredOK, ""
+}

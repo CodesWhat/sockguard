@@ -37,3 +37,31 @@ func TestTmpfsPostureEnablesPrivilege(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckStructuredTmpfsOptions(t *testing.T) {
+	tests := []struct {
+		name    string
+		options [][]string
+		want    tmpfsStructuredVerdict
+	}{
+		{"none", nil, tmpfsStructuredOK},
+		{"size", [][]string{{"size", "64m"}}, tmpfsStructuredOK},
+		{"noexec", [][]string{{"noexec"}}, tmpfsStructuredOK},
+		{"exec key", [][]string{{"exec"}}, tmpfsStructuredPrivileged},
+		{"exec key with falsy value is still refused", [][]string{{"exec", "0"}}, tmpfsStructuredPrivileged},
+		{"later noexec entry does not clear exec", [][]string{{"exec"}, {"noexec"}}, tmpfsStructuredPrivileged},
+		{"suid=1 in one element", [][]string{{"suid=1"}}, tmpfsStructuredPrivileged},
+		{"comma list ending in dev", [][]string{{"nosuid,dev"}}, tmpfsStructuredPrivileged},
+		{"comma list restricted last", [][]string{{"exec,noexec"}}, tmpfsStructuredOK},
+		{"empty entry", [][]string{{}}, tmpfsStructuredMalformed},
+		{"three elements", [][]string{{"a", "b", "c"}}, tmpfsStructuredMalformed},
+		{"blank key", [][]string{{" "}}, tmpfsStructuredMalformed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got, _ := checkStructuredTmpfsOptions(tt.options); got != tt.want {
+				t.Errorf("checkStructuredTmpfsOptions(%q) = %d, want %d", tt.options, got, tt.want)
+			}
+		})
+	}
+}

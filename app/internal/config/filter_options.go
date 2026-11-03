@@ -29,6 +29,9 @@ func (c RequestBodyConfig) ToFilterOptions() filter.PolicyConfig {
 	// operator could widen and then forget. The libpod volume inspector is
 	// wired the same way from libpod_container_create.allowed_bind_mounts,
 	// keeping each API family on its own allowlist.
+	service := c.Service.ToFilterOptions()
+	service.AllowTmpfsPrivilegedOptions = c.ContainerCreate.AllowTmpfsPrivilegedOptions
+
 	volume := c.Volume.ToFilterOptions()
 	volume.AllowedBindMounts = c.ContainerCreate.AllowedBindMounts
 	libpodVolume := c.LibpodVolume.ToFilterOptions()
@@ -48,7 +51,7 @@ func (c RequestBodyConfig) ToFilterOptions() filter.PolicyConfig {
 		Network:               c.Network.ToFilterOptions(),
 		Secret:                c.Secret.ToFilterOptions(),
 		Config:                c.Config.ToFilterOptions(),
-		Service:               c.Service.ToFilterOptions(),
+		Service:               service,
 		Swarm:                 c.Swarm.ToFilterOptions(),
 		Node:                  c.Node.ToFilterOptions(),
 		Plugin:                c.Plugin.ToFilterOptions(),

@@ -2168,16 +2168,6 @@ func validMountSubpath(subpath string) bool {
 	return cleaned != ".." && !strings.HasPrefix(cleaned, "../")
 }
 
-// tmpfsPrivilegeEscalatingOptions are the tmpfs mount option keywords that
-// override Docker's default noexec/nodev/nosuid tmpfs posture. Matched
-// case-insensitively against the first token of each
-// TmpfsOptions.Options entry.
-var tmpfsPrivilegeEscalatingOptions = map[string]bool{
-	"exec": true,
-	"dev":  true,
-	"suid": true,
-}
-
 // denyTmpfsOptionsReason validates HostConfig.Mounts[].TmpfsOptions.Options
 // (Engine API 1.46+): each entry must be a well-formed 1-or-2-element token
 // list (malformed entries are rejected fail-closed rather than silently
@@ -2188,13 +2178,12 @@ func (p containerCreatePolicy) denyTmpfsOptionsReason(mounts []containerCreateMo
 		if mount.TmpfsOptions == nil {
 			continue
 		}
-		for _, option := range mount.TmpfsOptions.Options {
-			if len(option) == 0 || len(option) > 2 || strings.TrimSpace(option[0]) == "" {
-				return "container create denied: malformed tmpfs mount option"
-			}
-			key := strings.ToLower(strings.TrimSpace(option[0]))
-			if tmpfsPrivilegeEscalatingOptions[key] && !p.allowTmpfsPrivilegedOptions {
-				return fmt.Sprintf("container create denied: tmpfs mount option %q is not allowed", option[0])
+		switch verdict, option := checkStructuredTmpfsOptions(mount.TmpfsOptions.Options); verdict {
+		case tmpfsStructuredMalformed:
+			return "container create denied: malformed tmpfs mount option"
+		case tmpfsStructuredPrivileged:
+			if !p.allowTmpfsPrivilegedOptions {
+				return fmt.Sprintf("container create denied: tmpfs mount option %q is not allowed", option)
 			}
 		}
 	}
