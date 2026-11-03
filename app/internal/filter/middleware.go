@@ -455,6 +455,7 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		{http.MethodPost, matchesBuildInspection, inspectSeverityCritical, newBuildPolicy(cfg.Build).inspect, "failed to inspect build request", "unable to inspect build request"},
 		{http.MethodPost, matchesContainerUpdateInspection, inspectSeverityHigh, newContainerUpdatePolicy(cfg.ContainerUpdate).inspect, "failed to inspect container update request body", "unable to inspect container update request body"},
 		{http.MethodDelete, matchesContainerRemoveInspection, inspectSeverityMedium, newContainerRemovePolicy(cfg.ContainerRemove).inspect, "failed to inspect container remove query", "unable to inspect container remove query"},
+		{http.MethodPost, matchesLibpodPodPruneInspection, inspectSeverityMedium, newContainerRemovePolicy(cfg.ContainerRemove).inspectPodPrune, "failed to inspect libpod pod prune request", "unable to inspect libpod pod prune request"},
 		// matchesContainerArchiveInspection covers the Docker-compat AND the
 		// libpod spelling from one predicate. Podman registers both on the
 		// identical compat.Archive handler, so one policy over one wire
@@ -483,7 +484,7 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		// Docker-compat and libpod exec paths against the single shared
 		// execPolicy entry (design doc decision C3).
 		{http.MethodPost, matchesLibpodPlayKubeInspection, inspectSeverityHigh, newLibpodPlayKubePolicy(cfg.LibpodPlayKube).inspect, "failed to inspect libpod kube play query", "unable to inspect libpod kube play query"},
-		{http.MethodPost, matchesLibpodPodCreateInspection, inspectSeverityCritical, newLibpodPodCreatePolicy(cfg.LibpodPodCreate).inspect, "failed to inspect libpod pod create request body", "unable to inspect libpod pod create request body"},
+		{http.MethodPost, matchesLibpodPodCreateInspection, inspectSeverityCritical, newLibpodPodCreatePolicy(libpodPodCreateOptionsWithContainer(cfg)).inspect, "failed to inspect libpod pod create request body", "unable to inspect libpod pod create request body"},
 		{http.MethodPost, matchesLibpodVolumeInspection, inspectSeverityMedium, newVolumePolicy(cfg.LibpodVolume).inspectLibpod, "failed to inspect libpod volume create request body", "unable to inspect libpod volume create request body"},
 		{http.MethodPost, matchesLibpodNetworkInspection, inspectSeverityHigh, newNetworkPolicy(cfg.LibpodNetwork).inspectLibpod, "failed to inspect libpod network request body", "unable to inspect libpod network request body"},
 		{http.MethodPost, matchesLibpodSecretInspection, inspectSeverityMedium, newLibpodSecretPolicy(cfg.LibpodSecret).inspect, "failed to inspect libpod secret create request", "unable to inspect libpod secret create request"},
@@ -569,6 +570,10 @@ func matchesContainerUpdateInspection(normalizedPath string) bool {
 func matchesContainerRemoveInspection(normalizedPath string) bool {
 	_, ok := containerRemoveRouteFor(normalizedPath)
 	return ok
+}
+
+func matchesLibpodPodPruneInspection(normalizedPath string) bool {
+	return normalizedPath == LibpodPodPrunePath
 }
 
 func matchesContainerArchiveInspection(normalizedPath string) bool {
@@ -818,4 +823,14 @@ func redactDeniedPath(requestPath string) string {
 	default:
 		return requestPath
 	}
+}
+
+// libpodPodCreateOptionsWithContainer hands the pod create inspector the
+// libpod container create options, so a pod's inherited mounts, devices,
+// security options, sysctls and joined namespaces are held to the same lists
+// a container is.
+func libpodPodCreateOptionsWithContainer(cfg PolicyConfig) LibpodPodCreateOptions {
+	opts := cfg.LibpodPodCreate
+	opts.Container = cfg.LibpodContainerCreate
+	return opts
 }

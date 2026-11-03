@@ -732,3 +732,90 @@ func TestLibpodContainerCreateCapturedBodiesAndTheUTSAndCgroupGates(t *testing.T
 		t.Fatalf("found %d of the %d host UTS and cgroup fixtures", seen, len(wantRefused))
 	}
 }
+
+// TestLibpodNamespaceObjectsRefuseUnknownKeys pins the strict decode of the
+// {"nsmode","value"} objects. Podman 6 binds the keys of a struct this small by
+// a 64-bit hash (jsoniter v1.1.12), so a key sockguard reads as unknown could
+// still bind to nsmode or value there. The body is refused instead, on every
+// namespace field of container create and pod create.
+func TestLibpodNamespaceObjectsRefuseUnknownKeys(t *testing.T) {
+	containerFields := []string{"netns", "pidns", "ipcns", "userns", "utsns", "cgroupns"}
+	podFields := []string{"netns", "pidns", "ipcns", "userns", "utsns"}
+	bodies := []struct {
+		name    string
+		object  string
+		wantDen bool
+	}{
+		{"exact keys", `{"nsmode":"private","value":""}`, false},
+		{"nsmode only", `{"nsmode":"private"}`, false},
+		{"empty object", `{}`, false},
+		{"null object", `null`, false},
+		{"letter-case variant of a known key", `{"NSMode":"private"}`, false},
+		{"unknown key", `{"nsmode":"private","other":"x"}`, true},
+		{"near-miss key", `{"nsmode":"private","nsmod":"host"}`, true},
+		{"unknown key alone", `{"mode":"host"}`, true},
+		{"unknown key with an object value", `{"nsmode":"private","x":{"nsmode":"host"}}`, true},
+	}
+	run := func(t *testing.T, path, field, object string, inspect func(*http.Request) (string, error)) (string, error) {
+		t.Helper()
+		// "systemd":"false" is SpecGenerator's own default and keeps the
+		// container create's systemd gate out of the way.
+		body := `{"systemd":"false","` + field + `":` + object + `}`
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		return inspect(req)
+	}
+	for _, field := range containerFields {
+		for _, b := range bodies {
+			t.Run("container "+field+" "+b.name, func(t *testing.T) {
+				policy := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{})
+				reason, err := run(t, "/libpod/containers/create", field, b.object, func(r *http.Request) (string, error) {
+					return policy.inspect(nil, r, NormalizePath(r.URL.Path))
+				})
+				if err != nil {
+					t.Fatalf("inspect() error = %v", err)
+				}
+				if b.wantDen && reason == "" {
+					t.Fatal("inspect() reason = empty, want a refusal")
+				}
+				if !b.wantDen && reason != "" {
+					t.Fatalf("inspect() reason = %q, want empty", reason)
+				}
+			})
+		}
+	}
+	for _, field := range podFields {
+		for _, b := range bodies {
+			t.Run("pod "+field+" "+b.name, func(t *testing.T) {
+				policy := newLibpodPodCreatePolicy(LibpodPodCreateOptions{})
+				reason, err := run(t, "/libpod/pods/create", field, b.object, func(r *http.Request) (string, error) {
+					return policy.inspect(nil, r, NormalizePath(r.URL.Path))
+				})
+				if err != nil {
+					t.Fatalf("inspect() error = %v", err)
+				}
+				if b.wantDen && reason == "" {
+					t.Fatal("inspect() reason = empty, want a refusal")
+				}
+				if !b.wantDen && reason != "" {
+					t.Fatalf("inspect() reason = %q, want empty", reason)
+				}
+			})
+		}
+	}
+}
+
+func TestLibpodNamespaceUnknownKeyRefusalNamesTheKey(t *testing.T) {
+	body := `{"systemd":"false","netns":{"nsmode":"private","nsMod":"host"}}`
+	reason := inspectLibpod(t, newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{}), []byte(body))
+	if want := `libpod container create denied: namespace object has unknown key "nsMod" (only nsmode and value are allowed)`; reason != want {
+		t.Fatalf("container reason = %q, want %q", reason, want)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/libpod/pods/create", strings.NewReader(`{"utsns":{"nsmode":"private","x":1}}`))
+	reason, err := newLibpodPodCreatePolicy(LibpodPodCreateOptions{}).inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `libpod pod create denied: namespace object has unknown key "x" (only nsmode and value are allowed)`; reason != want {
+		t.Fatalf("pod reason = %q, want %q", reason, want)
+	}
+}

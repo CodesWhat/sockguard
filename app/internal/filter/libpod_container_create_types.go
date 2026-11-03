@@ -1,7 +1,10 @@
 package filter
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -127,6 +130,12 @@ type libpodContainerCreateRequest struct {
 	// denyUnifiedCgroupReason in libpod_container_create_residual.go.
 	Unified map[string]string `json:"unified"`
 
+	// StorageOpts and Annotations are the container's storage options and
+	// the key-value options handed to the OCI runtime. See
+	// denyStorageOptsReason and denyRuntimeAnnotationsReason.
+	StorageOpts map[string]string `json:"storage_opts"`
+	Annotations map[string]string `json:"annotations"`
+
 	// Pod is the pod this container joins. It shares the pod's infra
 	// namespaces, so it follows restrictNamespaceSharing. See
 	// denyPodJoinReason.
@@ -188,6 +197,56 @@ type libpodLogConfiguration struct {
 type libpodNamespace struct {
 	NSMode string `json:"nsmode"`
 	Value  string `json:"value"`
+}
+
+// UnmarshalJSON decodes the object strictly: a key other than nsmode and
+// value is an error, so the body is refused. Podman 6 decodes the request with
+// jsoniter, which for a struct of ten or fewer all-lowercase names compares a
+// 64-bit hash of each key instead of the key itself (v1.1.12), so a key this
+// inspector reads as unknown could still bind to nsmode or value in Podman.
+// Every namespace gate reads these two fields, so no unknown key is allowed to
+// sit beside them. Key case is not part of this: encoding/json already folds
+// it, and the divergent-key guard refuses a body whose case variants disagree.
+func (n *libpodNamespace) UnmarshalJSON(data []byte) error {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return nil
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keys); err != nil {
+		return fmt.Errorf("namespace object: %w", err)
+	}
+	for key := range keys {
+		if !strings.EqualFold(key, "nsmode") && !strings.EqualFold(key, "value") {
+			return &libpodNamespaceKeyError{key: key}
+		}
+	}
+	type plain libpodNamespace
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return fmt.Errorf("namespace object: %w", err)
+	}
+	*n = libpodNamespace(decoded)
+	return nil
+}
+
+// libpodNamespaceKeyError is the refusal of a namespace object holding a key
+// other than nsmode and value. It carries the key so the deny reason can name
+// it.
+type libpodNamespaceKeyError struct{ key string }
+
+func (e *libpodNamespaceKeyError) Error() string {
+	return fmt.Sprintf("namespace object has unknown key %q", e.key)
+}
+
+// libpodNamespaceKeyReason returns the deny reason for err when it is, or
+// wraps, a libpodNamespaceKeyError, and "" otherwise. subject is the request
+// ("libpod container create" or "libpod pod create").
+func libpodNamespaceKeyReason(subject string, err error) string {
+	var keyErr *libpodNamespaceKeyError
+	if !errors.As(err, &keyErr) {
+		return ""
+	}
+	return fmt.Sprintf("%s denied: %s (only nsmode and value are allowed)", subject, keyErr.Error())
 }
 
 // isHost reports whether this namespace object selects the host namespace.
