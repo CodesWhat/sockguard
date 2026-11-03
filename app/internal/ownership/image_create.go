@@ -129,6 +129,11 @@ func addOwnerLabelToImportQuery(r *http.Request, query url.Values, labelKey, own
 			return fmt.Errorf("image import changes parameter is spelled %q: the engines disagree on whether it applies", key)
 		}
 	}
+	for _, change := range query[imageImportChangesQueryField] {
+		if reason := imageImportChangeRefusal(change, labelKey); reason != "" {
+			return fmt.Errorf("image import changes entry refused: %s", reason)
+		}
+	}
 	instruction, ok := dockerfileLabelInstruction(labelKey, owner)
 	if !ok {
 		return fmt.Errorf("image import can't stamp an owner label whose key or value holds a control character")
@@ -136,6 +141,68 @@ func addOwnerLabelToImportQuery(r *http.Request, query url.Values, labelKey, own
 	query[imageImportChangesQueryField] = append(query[imageImportChangesQueryField], instruction)
 	r.URL.RawQuery = query.Encode()
 	return nil
+}
+
+// imageImportChangeRefusal returns why a client `changes` entry can't be
+// ordered safely ahead of the owner stamp, or "" when it can.
+//
+// dockerd joins every entry with "\n" into one Dockerfile and parses that, so
+// an entry is not a line of its own: one ending in a backslash continues onto
+// the stamp, an unterminated quote runs through it (`LABEL z='\`), a parser
+// directive changes how the rest is read (`# escape=`), and a CR or LF inside
+// an entry adds lines the client chose. Any of those can swallow the stamp
+// appended after it, which is why the stamp's position isn't enough on its
+// own. Podman does not join: util.DecodeChanges splits each entry on "\n" and
+// parses the lines one by one (v6.1.3, pkg/util/changes.go, used by the compat
+// and native imports), so there a continuation or quote can't reach the next
+// entry. The rules are the same on both, because the engine behind the
+// socket isn't always known and a legitimate client sends one plain
+// instruction per entry.
+//
+// A LABEL naming the owner label key is refused outright as well, in any
+// quoting (quotes and backslashes are dropped before the key is looked for).
+// The stamp would overwrite it, but a client has no reason to set it.
+func imageImportChangeRefusal(change, labelKey string) string {
+	if strings.ContainsAny(change, "\r\n") {
+		return "it holds a line break"
+	}
+	trimmed := strings.TrimSpace(change)
+	switch {
+	case strings.HasPrefix(trimmed, "#"):
+		return "it starts with # (a comment or parser directive)"
+	case strings.HasSuffix(trimmed, "\\"):
+		return "it ends with a backslash"
+	case !quotesBalanced(trimmed):
+		return "it has an unterminated quote"
+	}
+	if commitChangeInstruction(trimmed) == "LABEL" {
+		bare := strings.NewReplacer("\"", "", "'", "", "\\", "").Replace(trimmed)
+		if strings.Contains(bare, labelKey) {
+			return "it sets the owner label"
+		}
+	}
+	return ""
+}
+
+// quotesBalanced reports whether every ' and " in s that isn't escaped opens
+// a quote that closes before the end. A backslash escapes the next character
+// outside single quotes, the way the Dockerfile word parser reads it.
+func quotesBalanced(s string) bool {
+	var quote rune
+	escaped := false
+	for _, r := range s {
+		switch {
+		case escaped:
+			escaped = false
+		case r == '\\' && quote != '\'':
+			escaped = true
+		case quote == 0 && (r == '"' || r == '\''):
+			quote = r
+		case r == quote:
+			quote = 0
+		}
+	}
+	return quote == 0
 }
 
 // dockerfileLabelInstruction spells `LABEL key=value` so the Dockerfile

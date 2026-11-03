@@ -193,21 +193,19 @@ func TestServeChainImportChecksTheStoredNameOnPodman(t *testing.T) {
 	}
 }
 
-// TestServeChainImportStampsTheOwnerOverForgedLabels sends imports whose
-// `changes` forge another owner's label onto a name nothing holds. The image an
-// import makes has only the labels the client gave it, so without the stamp the
-// forged owner label would stand and that owner would go on to use the name.
-func TestServeChainImportStampsTheOwnerOverForgedLabels(t *testing.T) {
-	forged := url.QueryEscape("LABEL " + imageTagChainLabelKey + "=team-b")
+// TestServeChainImportStampsTheOwner sends imports with benign `changes` and
+// checks the image carries the caller's owner label. The stamp is a LABEL
+// appended after the client's own entries.
+func TestServeChainImportStampsTheOwner(t *testing.T) {
 	tests := []struct {
 		name      string
 		target    string
 		reference string
 		podman    bool
 	}{
-		{name: "compat import", target: "/v1.45/images/create?fromSrc=-&repo=mine%2Fnew&tag=v2&changes=" + forged, reference: "mine/new:v2"},
-		{name: "compat import with the forged label last", target: "/v1.45/images/create?fromSrc=-&repo=mine%2Fnew&tag=v2&changes=ENV+A%3Db&changes=" + forged, reference: "mine/new:v2"},
-		{name: "native import", target: "/v5.0.0/libpod/images/import?reference=mine%2Fnew%3Av2&changes=" + forged, reference: "localhost/mine/new:v2", podman: true},
+		{name: "compat import", target: "/v1.45/images/create?fromSrc=-&repo=mine%2Fnew&tag=v2", reference: "mine/new:v2"},
+		{name: "compat import with changes", target: "/v1.45/images/create?fromSrc=-&repo=mine%2Fnew&tag=v2&changes=ENV+A%3Db&changes=LABEL+x%3Dy", reference: "mine/new:v2"},
+		{name: "native import", target: "/v5.0.0/libpod/images/import?reference=mine%2Fnew%3Av2&changes=ENV+A%3Db", reference: "localhost/mine/new:v2", podman: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -230,5 +228,51 @@ func TestServeChainImportStampsTheOwnerOverForgedLabels(t *testing.T) {
 				t.Errorf("%s carries owner label %q, want %q; daemon saw %v", tt.reference, got, imageTagChainOwner, daemon.requests)
 			}
 		})
+	}
+}
+
+// TestServeChainImportRefusesChangesThatCouldSwallowTheStamp sends the
+// payloads that, once dockerd joins `changes` with newlines into one
+// Dockerfile, continue or quote their way over the owner stamp appended after
+// them, plus a forged owner label. Each is refused with a 400 on both import
+// routes, and nothing reaches the daemon.
+func TestServeChainImportRefusesChangesThatCouldSwallowTheStamp(t *testing.T) {
+	payloads := []string{
+		`LABEL z=\`,
+		`LABEL z='\`,
+		`LABEL z="open`,
+		"LABEL a=b\nLABEL " + imageTagChainLabelKey + "=team-b",
+		"# escape=`",
+		"# syntax=evil/frontend",
+		"LABEL " + imageTagChainLabelKey + "=team-b",
+		`LABEL "` + imageTagChainLabelKey + `"='team-b'`,
+	}
+	routes := []struct {
+		name, target string
+		podman       bool
+		path         string
+	}{
+		{name: "compat", target: "/v1.45/images/create?fromSrc=-&repo=mine%2Fnew&tag=v2&changes=", path: "/images/create"},
+		{name: "native", target: "/v5.0.0/libpod/images/import?reference=mine%2Fnew%3Av2&changes=", podman: true, path: "/libpod/images/import"},
+	}
+	for _, route := range routes {
+		for _, payload := range payloads {
+			t.Run(route.name+"/"+payload, func(t *testing.T) {
+				daemon := newImageImportChainDaemon()
+				if route.podman {
+					daemon.shortNameAliases = map[string]string{}
+					daemon.enforceDockerHubOff = true
+				}
+				addr := newImageNameChain(t, daemon, nil)
+
+				runImageNameChainStep(t, addr, daemon, imageNameChainStep{
+					name: payload, target: route.target + url.QueryEscape(payload), body: []byte("rootfs"), contentType: "application/x-tar",
+					wantStatus: http.StatusBadRequest,
+				})
+				if daemon.sawRequest(http.MethodPost, route.path) {
+					t.Errorf("the import reached the daemon; daemon saw %v", daemon.requests)
+				}
+			})
+		}
 	}
 }

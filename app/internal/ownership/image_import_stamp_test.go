@@ -22,8 +22,10 @@ func TestMutateImageCreateStampsImports(t *testing.T) {
 	}{
 		{name: "compat import", path: "/images/create", rawQuery: "fromSrc=-&repo=mine", wantChanges: []string{ownerStamp}},
 		{name: "compat import with empty fromImage", path: "/images/create", rawQuery: "fromImage=&fromSrc=-&repo=mine", wantChanges: []string{ownerStamp}},
-		{name: "client label comes before the stamp", path: "/images/create", rawQuery: "fromSrc=-&repo=mine&changes=" + url.QueryEscape(forged) + "&changes=ENV+A%3Db", wantChanges: []string{forged, "ENV A=b", ownerStamp}},
-		{name: "native import", path: "/libpod/images/import", rawQuery: "reference=mine&changes=" + url.QueryEscape(forged), wantChanges: []string{forged, ownerStamp}},
+		{name: "client changes come before the stamp", path: "/images/create", rawQuery: "fromSrc=-&repo=mine&changes=" + url.QueryEscape("LABEL a=b") + "&changes=ENV+A%3Db", wantChanges: []string{"LABEL a=b", "ENV A=b", ownerStamp}},
+		{name: "native import", path: "/libpod/images/import", rawQuery: "reference=mine&changes=" + url.QueryEscape("LABEL a=b"), wantChanges: []string{"LABEL a=b", ownerStamp}},
+		{name: "forged owner label is refused", path: "/images/create", rawQuery: "fromSrc=-&repo=mine&changes=" + url.QueryEscape(forged), wantErr: true},
+		{name: "forged owner label on the native route is refused", path: "/libpod/images/import", rawQuery: "reference=mine&changes=" + url.QueryEscape(forged), wantErr: true},
 		{name: "case-variant changes is refused", path: "/images/create", rawQuery: "fromSrc=-&repo=mine&Changes=" + url.QueryEscape(forged), wantErr: true},
 		{name: "compat pull is not stamped", path: "/images/create", rawQuery: "fromImage=nginx&tag=1"},
 		{name: "native pull is not stamped", path: "/libpod/images/pull", rawQuery: "reference=nginx%3A1"},
@@ -59,6 +61,51 @@ func TestDockerfileLabelInstructionQuoting(t *testing.T) {
 		}
 		if _, ok := dockerfileLabelInstruction(bad, "v"); ok {
 			t.Fatalf("key %q was spelled, want refusal", bad)
+		}
+	}
+}
+
+func TestImageImportChangeRefusal(t *testing.T) {
+	t.Parallel()
+	const key = "com.sockguard.owner"
+	refused := []string{
+		"LABEL z=\\",
+		"LABEL z='\\",
+		"LABEL z=\\   ",
+		"LABEL z='open",
+		`LABEL z="open`,
+		`LABEL z="a\"`,
+		"ENV A=it's",
+		"LABEL a=b\nLABEL c=d",
+		"LABEL a=b\rLABEL c=d",
+		"# escape=`",
+		"  # syntax=evil/frontend",
+		"LABEL com.sockguard.owner=team-b",
+		`LABEL "com.sockguard.owner"="team-b"`,
+		`LABEL 'com.sockguard.owner'=team-b`,
+		`LABEL com.sock"guard".owner=x`,
+		`LABEL com.sockguard.\owner=x`,
+		"label=com.sockguard.owner=x",
+		"LABEL a=b com.sockguard.owner=x",
+	}
+	for _, change := range refused {
+		if reason := imageImportChangeRefusal(change, key); reason == "" {
+			t.Errorf("%q was accepted", change)
+		}
+	}
+	accepted := []string{
+		"ENV A=b",
+		"CMD=/bin/sh",
+		`LABEL a="b c" d='e f'`,
+		`LABEL a="it's"`,
+		`LABEL a=it\'s`,
+		`ENV com.sockguard.owner=x`,
+		`LABEL a=b\\ c`,
+		"",
+	}
+	for _, change := range accepted {
+		if reason := imageImportChangeRefusal(change, key); reason != "" {
+			t.Errorf("%q was refused: %s", change, reason)
 		}
 	}
 }
