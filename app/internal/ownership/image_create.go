@@ -159,6 +159,14 @@ func addOwnerLabelToImportQuery(r *http.Request, query url.Values, labelKey, own
 // socket isn't always known and a legitimate client sends one plain
 // instruction per entry.
 //
+// Three more shapes are refused because they act on the stamp without
+// ending in a backslash or a quote: `<<` anywhere (`ONBUILD RUN <<'<stamp>'`
+// opens a heredoc whose terminator is the stamp line, which it then consumes),
+// any ONBUILD instruction, and a LABEL holding `$` or `{` (`ENV K=<key>` then
+// `LABEL ${K}=x` sets the owner label with no literal key). The LABEL check
+// covers the whole entry, values included, since telling a key from a value
+// means parsing the quoting.
+//
 // A LABEL naming the owner label key is refused outright as well, in any
 // quoting (quotes and backslashes are dropped before the key is looked for).
 // The stamp would overwrite it, but a client has no reason to set it.
@@ -168,6 +176,12 @@ func imageImportChangeRefusal(change, labelKey string) string {
 	}
 	trimmed := strings.TrimSpace(change)
 	switch {
+	case strings.Contains(trimmed, "<<"):
+		return "it holds <<, which opens a heredoc that can end on the owner stamp"
+	case commitChangeInstruction(trimmed) == "ONBUILD":
+		return "it is an ONBUILD instruction"
+	case commitChangeInstruction(trimmed) == "LABEL" && strings.ContainsAny(trimmed, "${"):
+		return "its LABEL holds $ or {, which can spell the owner label key through a variable"
 	case strings.HasPrefix(trimmed, "#"):
 		return "it starts with # (a comment or parser directive)"
 	case strings.HasSuffix(trimmed, "\\"):

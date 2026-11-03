@@ -86,6 +86,12 @@ func TestImageImportChangeRefusal(t *testing.T) {
 		`LABEL com.sock"guard".owner=x`,
 		`LABEL com.sockguard.\owner=x`,
 		"label=com.sockguard.owner=x",
+		`ONBUILD RUN <<'LABEL "com.sockguard.owner"="me"'`,
+		"onbuild LABEL a=b",
+		"RUN cat <<EOF",
+		"LABEL ${K}=victim",
+		"LABEL $K=victim",
+		"LABEL a=b {",
 		"LABEL a=b com.sockguard.owner=x",
 	}
 	for _, change := range refused {
@@ -100,6 +106,7 @@ func TestImageImportChangeRefusal(t *testing.T) {
 		`LABEL a="it's"`,
 		`LABEL a=it\'s`,
 		`ENV com.sockguard.owner=x`,
+		`ENV K=com.sockguard.owner`,
 		`LABEL a=b\\ c`,
 		"",
 	}

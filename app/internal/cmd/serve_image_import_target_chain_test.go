@@ -242,11 +242,28 @@ func TestServeChainImportRefusesChangesThatCouldSwallowTheStamp(t *testing.T) {
 		`LABEL z='\`,
 		`LABEL z="open`,
 		"LABEL a=b\nLABEL " + imageTagChainLabelKey + "=team-b",
+		`ONBUILD RUN <<'LABEL "` + imageTagChainLabelKey + `"="me"'`,
+		"LABEL ${K}=victim",
+		"LABEL $K=victim",
+		"ONBUILD LABEL a=b",
+		"RUN cat <<EOF",
 		"# escape=`",
 		"# syntax=evil/frontend",
 		"LABEL " + imageTagChainLabelKey + "=team-b",
 		`LABEL "` + imageTagChainLabelKey + `"='team-b'`,
 	}
+	// The variable route needs the ENV entry beside the LABEL; the ENV alone
+	// is an ordinary change and the LABEL alone sets nothing, so this one is
+	// sent whole and counts as refused because its LABEL is.
+	payloadSets := make([][]string, 0, len(payloads)+1)
+	for _, payload := range payloads {
+		payloadSets = append(payloadSets, []string{payload})
+	}
+	payloadSets = append(payloadSets, []string{
+		`ONBUILD RUN <<'LABEL "` + imageTagChainLabelKey + `"="me"'`,
+		"ENV K=" + imageTagChainLabelKey,
+		"LABEL ${K}=victim",
+	})
 	routes := []struct {
 		name, target string
 		podman       bool
@@ -256,7 +273,8 @@ func TestServeChainImportRefusesChangesThatCouldSwallowTheStamp(t *testing.T) {
 		{name: "native", target: "/v5.0.0/libpod/images/import?reference=mine%2Fnew%3Av2&changes=", podman: true, path: "/libpod/images/import"},
 	}
 	for _, route := range routes {
-		for _, payload := range payloads {
+		for _, set := range payloadSets {
+			payload := strings.Join(set, " | ")
 			t.Run(route.name+"/"+payload, func(t *testing.T) {
 				daemon := newImageImportChainDaemon()
 				if route.podman {
@@ -266,7 +284,7 @@ func TestServeChainImportRefusesChangesThatCouldSwallowTheStamp(t *testing.T) {
 				addr := newImageNameChain(t, daemon, nil)
 
 				runImageNameChainStep(t, addr, daemon, imageNameChainStep{
-					name: payload, target: route.target + url.QueryEscape(payload), body: []byte("rootfs"), contentType: "application/x-tar",
+					name: payload, target: route.target + strings.Join(escapeAll(set), "&changes="), body: []byte("rootfs"), contentType: "application/x-tar",
 					wantStatus: http.StatusBadRequest,
 				})
 				if daemon.sawRequest(http.MethodPost, route.path) {
@@ -275,4 +293,12 @@ func TestServeChainImportRefusesChangesThatCouldSwallowTheStamp(t *testing.T) {
 			})
 		}
 	}
+}
+
+func escapeAll(values []string) []string {
+	out := make([]string, len(values))
+	for i, v := range values {
+		out[i] = url.QueryEscape(v)
+	}
+	return out
 }
