@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -381,7 +382,7 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 		}
 		return &ownershipRequestReferences{imageBatch: batch}, nil
 	case r.Method == http.MethodPost && normPath == "/containers/create":
-		return mutateContainerCreateOwnershipBody(r, opts.LabelKey, opts.Owner)
+		return mutateContainerCreateOwnershipBody(r, opts.LabelKey, opts.Owner, opts.UpstreamFlavor)
 	case r.Method == http.MethodPost && isNetworkMembershipChangePath(normPath):
 		return extractNetworkMembershipOwnershipReferences(r)
 	case r.Method == http.MethodPost && (normPath == "/networks/create" || normPath == "/volumes/create" || normPath == "/secrets/create" || normPath == "/configs/create"):
@@ -404,6 +405,8 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 		return mutateBuildOwnershipRequest(r, normPath, opts)
 	case r.Method == http.MethodPost && normPath == libpodContainerCreatePath:
 		return mutateLibpodContainerCreateOwnershipBody(r, opts.LabelKey, opts.Owner)
+	case r.Method == http.MethodPost && isLibpodContainerRestorePath(normPath):
+		return libpodContainerRestoreOwnershipReferences(r.URL.Query()), nil
 	case r.Method == http.MethodPost && normPath == libpodPodCreatePath:
 		return mutateLibpodPodCreateOwnershipBody(r, opts.LabelKey, opts.Owner)
 	case r.Method == http.MethodPost && normPath == libpodNetworkCreatePath:
@@ -850,14 +853,14 @@ func addOwnerLabelToBody(r *http.Request, labelKey, owner string) error {
 // Production uses mutateContainerCreateOwnershipBody so the same decode also
 // returns non-namespace Docker resource references for authorization.
 func addOwnerLabelToContainerCreateBody(r *http.Request, labelKey, owner string) ([]string, error) {
-	refs, err := mutateContainerCreateOwnershipBody(r, labelKey, owner)
+	refs, err := mutateContainerCreateOwnershipBody(r, labelKey, owner, upstreamflavor.Docker)
 	if refs == nil {
 		return nil, err
 	}
 	return refs.namespaceContainers, err
 }
 
-func mutateContainerCreateOwnershipBody(r *http.Request, labelKey, owner string) (*ownershipRequestReferences, error) {
+func mutateContainerCreateOwnershipBody(r *http.Request, labelKey, owner string, flavor upstreamflavor.Flavor) (*ownershipRequestReferences, error) {
 	refs := &ownershipRequestReferences{}
 	err := mutateJSONBody(r, func(decoded map[string]any) error {
 		labels, err := filter.NestedObject(decoded, "Labels")
@@ -867,9 +870,54 @@ func mutateContainerCreateOwnershipBody(r *http.Request, labelKey, owner string)
 		labels[labelKey] = owner
 		refs.namespaceContainers = containerCreateNamespaceRefs(decoded)
 		refs.embeddedResources = containerCreateEmbeddedOwnershipReferences(decoded)
+		if flavor == upstreamflavor.Podman {
+			refs.existingResources = containerCreatePodmanNetworkNameReferences(decoded)
+		}
 		return nil
 	})
 	return refs, err
+}
+
+// podmanNetworkNames are the names isCustomNetworkMode leaves alone because
+// dockerd reads them as modes or as Swarm's own networks. Podman reads them
+// differently. A HostConfig.NetworkMode it doesn't know as one of its modes
+// (bridge, none, host, default, private, pasta, slirp4netns, container:, ns:)
+// is a network name, so ingress and docker_gwbridge are names there. And every
+// NetworkingConfig.EndpointsConfig key is a network name, so bridge, host and
+// none are as well (Podman 5.8.1 pkg/api/handlers/compat/containers_create.go
+// and specgen.ParseNetworkFlag). Anyone can create a network with one of
+// them, so a create naming one is looked up.
+var podmanNetworkModeNames = [...]string{"ingress", "docker_gwbridge"}
+var podmanEndpointKeyNames = [...]string{"bridge", "host", "none", "ingress", "docker_gwbridge"}
+
+// containerCreatePodmanNetworkNameReferences returns the networks a
+// Docker-compatible create names under one of podmanNetworkModeNames or
+// podmanEndpointKeyNames. They are existing resources rather than embedded
+// references: a name nothing holds is no denial, because on a Podman host
+// that never made a network called "bridge" the Docker CLI's habit of sending
+// that endpoint key is routine.
+func containerCreatePodmanNetworkNameReferences(decoded map[string]any) []embeddedOwnershipReference {
+	var refs []embeddedOwnershipReference
+	add := func(name, source string) {
+		appendEmbeddedOwnershipReference(&refs, dockerresource.KindNetwork, name, source)
+	}
+	for _, hostConfig := range filter.FoldedObjects(decoded, "HostConfig") {
+		for _, mode := range filter.FoldedStrings(hostConfig, "NetworkMode") {
+			if name := strings.TrimSpace(mode); slices.Contains(podmanNetworkModeNames[:], name) {
+				add(name, "container HostConfig.NetworkMode")
+			}
+		}
+	}
+	for _, networkingConfig := range filter.FoldedObjects(decoded, "NetworkingConfig") {
+		for _, endpoints := range filter.FoldedObjects(networkingConfig, "EndpointsConfig") {
+			for _, name := range slices.Sorted(maps.Keys(endpoints)) {
+				if slices.Contains(podmanEndpointKeyNames[:], name) {
+					add(name, "container NetworkingConfig.EndpointsConfig")
+				}
+			}
+		}
+	}
+	return refs
 }
 
 func containerCreateEmbeddedOwnershipReferences(decoded map[string]any) []embeddedOwnershipReference {
