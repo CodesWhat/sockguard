@@ -37,7 +37,9 @@ const (
 	// limiterEvictTTL is the lifetime of an unaccessed token bucket before
 	// eviction. Buckets are keyed today by configured profile name (low
 	// cardinality), but eviction is wired in as defense-in-depth so future
-	// changes to the key space cannot create an OOM vector.
+	// changes to the key space cannot create an OOM vector. Eviction is
+	// additionally gated on the bucket being full, so dropping it never
+	// refunds a drained burst early.
 	limiterEvictTTL = 10 * time.Minute
 )
 
@@ -250,6 +252,24 @@ func (b *bucket) idleSince(now time.Time) time.Duration {
 	return now.Sub(time.Unix(0, lastNs))
 }
 
+// full reports whether the bucket, refilled to now, would hold its full
+// burst. Eviction only drops full buckets so that re-creation at full burst
+// (newBucket) is indistinguishable from the bucket having lived on.
+func (b *bucket) full(now time.Time) bool {
+	old := b.state.Load()
+	tokenFP := uint64(unpackTokenFP(old))
+	if tokenFP >= b.burstFP {
+		return true
+	}
+	// #nosec G115 -- same intentional mod-2^32 ms truncation and signed modular diff as AllowN.
+	elapsedMS := int32(uint32(now.UnixMilli()) - unpackMS(old)) //nolint:gosec
+	if elapsedMS <= 0 {
+		return false
+	}
+	// #nosec G115 -- bounded product fits int64 (see AllowN).
+	return tokenFP+uint64(int64(elapsedMS)*int64(b.tpsFP))/1000 >= b.burstFP //nolint:gosec
+}
+
 // Limiter maintains per-client token buckets, lazily created on first use.
 //
 // Buckets that go idle for longer than limiterEvictTTL are dropped by a
@@ -308,12 +328,15 @@ func (l *Limiter) Stop() {
 	l.wg.Wait()
 }
 
-// evict removes buckets idle for longer than ttl. Exposed for tests.
+// evict removes buckets idle for longer than ttl. A bucket that is idle but
+// not yet refilled to burst is kept so eviction cannot hand an idle client its
+// burst back early; it is dropped on a later tick once refill has filled it.
+// Retention is bounded by burst/tokens_per_second per key. Exposed for tests.
 func (l *Limiter) evict(ttl time.Duration) {
 	now := l.now()
 	l.buckets.Range(func(key, val any) bool {
 		b := val.(*bucket)
-		if b.idleSince(now) > ttl {
+		if b.idleSince(now) > ttl && b.full(now) {
 			l.buckets.Delete(key)
 		}
 		return true
