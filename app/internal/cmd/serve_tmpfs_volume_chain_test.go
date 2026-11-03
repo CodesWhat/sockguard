@@ -42,10 +42,14 @@ func TestServeChainTmpfsVolumeOptionsNeedTheirOption(t *testing.T) {
 
 	runTmpfsChainCases(t, []tmpfsChainCase{
 		// Controls.
-		{name: "tmpfs volume with a size reaches the daemon", path: volumeCreate, body: driverOpts(`{"type":"tmpfs","device":"tmpfs","o":"size=64m,uid=1000"}`), configure: driverOptsOn, wantReach: true},
+		{name: "tmpfs volume with a size and all three reaches the daemon", path: volumeCreate, body: driverOpts(`{"type":"tmpfs","device":"tmpfs","o":"size=64m,uid=1000,noexec,nosuid,nodev"}`), configure: driverOptsOn, wantReach: true},
+		{name: "tmpfs volume with a size only is refused, the kernel default is exec", path: volumeCreate, body: driverOpts(`{"type":"tmpfs","device":"tmpfs","o":"size=64m"}`), configure: driverOptsOn, wantReason: "unless o lists noexec,nosuid,nodev"},
+		{name: "tmpfs volume with no o is refused", path: volumeCreate, body: driverOpts(`{"type":"tmpfs","device":"tmpfs"}`), configure: driverOptsOn, wantReason: "unless o lists noexec,nosuid,nodev"},
+		{name: "tmpfs volume with noexec only is refused", path: volumeCreate, body: driverOpts(`{"type":"tmpfs","device":"tmpfs","o":"noexec"}`), configure: driverOptsOn, wantReason: "unless o lists noexec,nosuid,nodev"},
+		{name: "tmpfs volume with no o reaches the daemon with the option on", path: volumeCreate, body: driverOpts(`{"type":"tmpfs","device":"tmpfs"}`), configure: allOn, wantReach: true},
 		{name: "tmpfs volume with noexec,nosuid,nodev reaches the daemon", path: volumeCreate, body: driverOpts(`{"type":"tmpfs","device":"tmpfs","o":"noexec,nosuid,nodev"}`), configure: driverOptsOn, wantReach: true},
 		{name: "exec,suid,dev on an nfs volume is not a tmpfs", path: volumeCreate, body: driverOpts(`{"type":"nfs","device":":/x","o":"addr=1.2.3.4,exec,suid,dev"}`), configure: driverOptsOn, wantReach: true},
-		{name: "exec on a tmpfs volume with last noexec reaches the daemon", path: volumeCreate, body: driverOpts(`{"type":"tmpfs","device":"tmpfs","o":"exec,noexec"}`), configure: driverOptsOn, wantReach: true},
+		{name: "exec on a tmpfs volume with last noexec reaches the daemon", path: volumeCreate, body: driverOpts(`{"type":"tmpfs","device":"tmpfs","o":"exec,noexec,nosuid,nodev"}`), configure: driverOptsOn, wantReach: true},
 
 		// POST /volumes/create.
 		{name: "volume create exec is refused", path: volumeCreate, body: driverOpts(`{"type":"tmpfs","device":"tmpfs","o":"size=1m,exec"}`), configure: driverOptsOn, wantReason: denied},
@@ -60,6 +64,7 @@ func TestServeChainTmpfsVolumeOptionsNeedTheirOption(t *testing.T) {
 
 		// POST /libpod/volumes/create.
 		{name: "libpod volume create exec is refused", podman: true, path: libpodVolume, body: libpodOpts(`{"type":"tmpfs","device":"tmpfs","o":"exec"}`), configure: driverOptsOn, wantReason: denied},
+		{name: "libpod volume create with no o is refused", podman: true, path: libpodVolume, body: libpodOpts(`{"type":"tmpfs","device":"tmpfs"}`), configure: driverOptsOn, wantReason: "unless o lists noexec,nosuid,nodev"},
 		{name: "libpod volume create noexec reaches the daemon", podman: true, path: libpodVolume, body: libpodOpts(`{"type":"tmpfs","device":"tmpfs","o":"noexec,nosuid,nodev"}`), configure: driverOptsOn, wantReach: true},
 		{name: "libpod volume create exec reaches the daemon with the option on", podman: true, path: libpodVolume, body: libpodOpts(`{"type":"tmpfs","device":"tmpfs","o":"exec"}`), configure: allOn, wantReach: true},
 		{name: "the compat option does not open the libpod volume route", podman: true, path: libpodVolume, body: libpodOpts(`{"type":"tmpfs","device":"tmpfs","o":"exec"}`),
@@ -70,7 +75,8 @@ func TestServeChainTmpfsVolumeOptionsNeedTheirOption(t *testing.T) {
 
 		// A volume created through the mount that names its driver.
 		{name: "container create DriverConfig exec is refused", path: containerRun, body: container(`{"type":"tmpfs","device":"tmpfs","o":"exec"}`), wantReason: denied},
-		{name: "container create DriverConfig noexec reaches the daemon", path: containerRun, body: container(`{"type":"tmpfs","device":"tmpfs","o":"noexec"}`), wantReach: true},
+		{name: "container create DriverConfig noexec alone is refused", path: containerRun, body: container(`{"type":"tmpfs","device":"tmpfs","o":"noexec"}`), wantReason: "unless o lists noexec,nosuid,nodev"},
+		{name: "container create DriverConfig all three reaches the daemon", path: containerRun, body: container(`{"type":"tmpfs","device":"tmpfs","o":"noexec,nosuid,nodev"}`), wantReach: true},
 		{name: "container create DriverConfig exec reaches the daemon with the option on", path: containerRun, body: container(`{"type":"tmpfs","device":"tmpfs","o":"exec"}`), configure: allOn, wantReach: true},
 		{name: "service DriverConfig exec is refused", path: serviceMake, body: service(`{"type":"tmpfs","device":"tmpfs","o":"exec"}`), wantReason: denied},
 		{name: "service DriverConfig exec reaches the daemon with the option on", path: serviceMake, body: service(`{"type":"tmpfs","device":"tmpfs","o":"exec"}`), configure: allOn, wantReach: true},

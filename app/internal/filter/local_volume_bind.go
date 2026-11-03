@@ -421,9 +421,18 @@ func denyLocalVolumeTmpfsPrivilegeReason(driver string, options map[string]strin
 	if !tmpfs {
 		return ""
 	}
+	// With no "o" at all the kernel's tmpfs defaults apply: exec, suid and
+	// dev all on. So the list has to say noexec, nosuid and nodev itself.
+	if len(lists) == 0 {
+		lists = []string{""}
+	}
 	for _, list := range lists {
-		if tmpfsPostureOfList(list).enablesPrivilege() {
+		posture := tmpfsPostureOfList(list)
+		if posture.enablesPrivilege() {
 			return subject + " denied: local tmpfs volume options enable exec, dev, or suid (set allow_tmpfs_privileged_options: true)"
+		}
+		if !posture.fullyRestricted() {
+			return subject + " denied: a local tmpfs volume mounts exec, suid and dev unless o lists noexec,nosuid,nodev (or set allow_tmpfs_privileged_options: true)"
 		}
 	}
 	return ""
