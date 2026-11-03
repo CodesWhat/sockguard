@@ -56,6 +56,7 @@ log:
 
 response:
   deny_verbosity: minimal  # minimal (default, production) or verbose (dev/rule-authoring)
+  max_buffered_body: 8MiB  # largest response sockguard buffers to filter or redact; raise for big hosts (max 256MiB)
   redact_container_env: true
   redact_mount_paths: true
   redact_network_topology: true
@@ -668,6 +669,10 @@ contract that docker-py and the moby client read, and a `Retry-After` header.
 Concurrency and priority-floor denials send `Retry-After: 1` and omit
 `retry_after_seconds`, since capacity frees when other requests finish.
 
+`/_ping` (and `/libpod/_ping`) costs no tokens, because every Docker client
+sends one ahead of its real call and charging for it would spend budget on each
+command. It is still subject to the concurrency caps.
+
 - `tokens_per_second` (required): refill rate; must be `> 0`.
 - `burst` (optional, default `= tokens_per_second`): bucket capacity. Must be
   `>= tokens_per_second` when explicitly set. Set to `0` to accept the default
@@ -787,6 +792,47 @@ clients:
           action: deny
 ```
 
+#### Streams and `max_streams`
+
+Open-ended streams do not hold a `max_inflight` slot, and they skip the
+`clients.global_concurrency` gate too. The exempt operations are exactly these
+(libpod equivalents included):
+
+- `GET /events`
+- `GET /containers/{id}/logs` with `follow` on
+- `GET /containers/{id}/stats` unless `stream=0`
+- `POST /containers/{id}/wait`
+- `POST /containers/{id}/attach` and `GET /containers/{id}/attach/ws`
+- `POST /exec/{id}/start`
+
+Without this, a client with a handful of `docker events` or `docker logs -f`
+sessions used up its whole cap and got `429` on ordinary calls. Everything else
+keeps counting against `max_inflight` and the global gate, including `build`,
+the prune endpoints, image pull/push/load, container and image export/archive,
+`logs` without `follow`, stop/restart and `GET /system/df`. Those are finite
+and heavy, and `max_inflight` is what bounds how many run at once. Streams still
+cost rate-limit tokens.
+
+Exempting streams from `max_inflight` would otherwise let an untrusted client
+open an unbounded number of them, so they have their own cap:
+
+```yaml
+limits:
+  concurrency:
+    max_inflight: 16
+    max_streams: 32   # default; 0 disables the stream cap
+```
+
+`max_streams` counts streams per profile. Clients that share a profile, and
+callers with no resolved profile (the shared anonymous bucket), share one
+budget, and total streams are bounded per profile rather than globally. Over the
+cap the request is denied with `429` and `{"reason":"stream_cap"}`, and a
+`Retry-After: 1` header. Leave it unset for the default of `32`; `0` means
+unlimited. When only `clients.global_concurrency` is configured (a profile has
+no `concurrency` block), the default of `32` streams per profile still applies.
+Under `warn` and `audit` rollout the over-cap stream is admitted and logged as
+`would_deny`.
+
 ### Combining both mechanisms
 
 Rate limiting and concurrency caps can coexist on the same profile. The rate
@@ -891,6 +937,7 @@ violated (fail-closed, never silent-disable):
 - `limits.rate.endpoint_costs[].cost` must be `>= 1` and `<= effective burst`
 - `limits.rate.endpoint_costs[].methods[]` must not contain empty strings
 - `limits.concurrency.max_inflight` must be `> 0`
+- `limits.concurrency.max_streams` must be `>= 0` when set (`0` disables the stream cap)
 - `clients.global_concurrency.max_inflight` must be `> 0` when set
 - `limits.priority` must be one of `low`, `normal`, or `high`
 
@@ -901,7 +948,7 @@ series appear:
 
 - `sockguard_throttle_requests_total{profile, reason_code, mode}` — counter incremented on every
   denial by this subsystem. `reason_code` is one of `rate_limit_exceeded`,
-  `concurrency_cap`, or `priority_floor`.
+  `concurrency_cap`, `stream_cap`, or `priority_floor`.
 - `sockguard_inflight_requests{profile}` — gauge tracking the current in-flight
   count for profiles that have `max_inflight` configured.
 
@@ -1613,6 +1660,30 @@ warning until the catalog is updated. Provenance is embedded in
 and generated diff. BuildKit RPC entries come from the vendored definitions and
 method registry. Podman stubs explicitly returning unsupported are excluded.
 
+### Rule sets without `GET /_ping`
+
+At startup and during `sockguard validate`, Sockguard warns when the default
+rules or a client profile do not allow `GET /_ping`. The Docker CLI and SDKs
+ping the daemon before most calls (the CLI tries `HEAD` and falls back to
+`GET`, docker-py uses `GET`), so a custom profile that forgets the rule makes
+every client see an unreachable daemon instead of a policy denial. Add both
+allow rules:
+
+```yaml
+rules:
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+```
+
+The warning names the rule set (`rules` or `clients.profiles[<name>].rules`).
+It is not a configuration error, empty rule sets are skipped, and the top-level
+rules are skipped when `clients.default_profile` makes them unreachable. A
+`HEAD`-only rule set is reported because docker-py needs `GET`; a `GET`-only
+one is not, since the CLI falls back to it. Hot reload does not repeat the
+warning.
+
 ### Path Patterns
 
 | Pattern | Matches | Does Not Match |
@@ -1750,6 +1821,39 @@ never flagged.
 | `SOCKGUARD_RESPONSE_REDACT_SENSITIVE_DATA`     | `response.redact_sensitive_data`      | `true`                          | Redact config payloads, swarm join/unlock and CA material, and node/swarm TLS metadata.                      |
 | `SOCKGUARD_RESPONSE_REDACT_HOST_TOPOLOGY`      | `response.redact_host_topology`       | `false`                         | Redact `GET /info` container-runtime plumbing fields (`Containerd`, `FirewallBackend`, `DiscoveredDevices`, `NRI`). Opt-in.  |
 | `SOCKGUARD_RESPONSE_ALLOW_ATTESTATION_STATEMENTS` | `response.allow_attestation_statements` | `false`                    | Allow a truthy `statement` query on `GET /images/{name}/attestations` to return full content. Empty, `0`, `no`, `false`, and `none` are false; every other non-empty value is true. |
+| `SOCKGUARD_RESPONSE_MAX_BUFFERED_BODY`         | `response.max_buffered_body`          | `8MiB`                          | Largest upstream response body Sockguard will buffer to filter or redact (container and image lists, inspect bodies, `/system/df`). Size string (`32MiB`, `512KiB`, `1GiB`) or a byte count; between `1MiB` and `256MiB`. Applied on hot reload. See [Large hosts and the buffered body limit](#large-hosts-and-the-buffered-body-limit). |
+
+#### Large hosts and the buffered body limit
+
+Response filtering reads the whole upstream body before it can rewrite it, so
+Sockguard caps what it will buffer. The default is `8MiB`. A host with thousands
+of containers or images can produce a `GET /containers/json` or
+`GET /images/json` larger than that, and the request used to fail with a 502.
+The limit is now `response.max_buffered_body`:
+
+```yaml
+response:
+  max_buffered_body: 32MiB
+```
+
+It takes a size string with a binary unit (`KiB`, `MiB`, `GiB`; case-insensitive)
+or a plain byte count, and must be between `1MiB` and `256MiB`. Decimal units
+such as `MB` are rejected rather than guessed. The ceiling exists because every
+buffered body lives in memory, and several can be in flight at once, so size the
+limit against the memory you are willing to give the proxy times your expected
+concurrent list calls. The same limit covers the visibility and owner-isolation
+list filters, `GET /system/df`, inspect bodies, and the lookups the client ACL and
+resource-limit guard make against the daemon. It also bounds decompressed bytes
+when an intermediary compresses a response.
+
+A response over the limit is still refused, fail-closed, with `502 Bad Gateway`.
+The Docker-style `{"message": ...}` body now says why instead of a bare
+rejection: `upstream response too large to filter: it exceeds
+response.max_buffered_body (8MiB); raise that setting (maximum 256MiB) to filter
+responses this size`. The audit reason code is `upstream_response_too_large`
+(`visibility_response_too_large` and `owner_response_too_large` from those two
+layers). A hot reload applies a changed value to the requests after it; an
+invalid value rejects the reload like any other validation error.
 
 ### Insecure opt-ins
 

@@ -686,3 +686,39 @@ func TestPatternListHeadOverRealServerRefusesNotModified(t *testing.T) {
 		t.Errorf("body = %q, want nothing forwarded for a HEAD refusal", body)
 	}
 }
+
+// Serial on purpose: response.max_buffered_body is a process-wide setting.
+func TestFilterWriterHonorsConfiguredBufferLimit(t *testing.T) {
+	t.Cleanup(func() { filter.SetResponseBodyLimit(0) })
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	item := `{"Names":["/c"],"Image":"alpine"}`
+	count := (filter.MaxResponseBodyBytes / len(item)) + 1000
+	big := "[" + strings.Repeat(item+",", count) + item + "]"
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, big)
+	})
+	handler := middlewareWithDeps(logger, Options{NamePatterns: []string{"*"}}, visibilityDeps{})(upstream)
+	get := func() *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1.53/containers/json", nil))
+		return rec
+	}
+
+	filter.SetResponseBodyLimit(0)
+	rec := get()
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("default limit: status = %d, want 502", rec.Code)
+	}
+	for _, want := range []string{"response.max_buffered_body", "8MiB"} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("502 body %q should mention %q", rec.Body.String(), want)
+		}
+	}
+
+	filter.SetResponseBodyLimit(32 << 20)
+	if rec := get(); rec.Code != http.StatusOK {
+		t.Fatalf("32MiB limit: status = %d, want 200", rec.Code)
+	}
+}

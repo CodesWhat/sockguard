@@ -75,11 +75,10 @@ const (
 // what answered the request.
 const notModifiedRefusalMessage = "upstream returned 304 Not Modified for a filtered read"
 
-// responseTooLargeMessage is the client-facing reason for both size refusals:
-// a raw body that overran the buffer, and a compressed one whose decoded form
-// overran the same cap. They are one verdict reached at two points, so they
-// read the same to a client and carry the same reason code.
-const responseTooLargeMessage = "upstream response too large to filter"
+// filter.ResponseTooLargeMessage is the client-facing reason for both size
+// refusals: a raw body that overran the buffer, and a compressed one whose
+// decoded form overran the same cap. They are one verdict reached at two
+// points, so they read the same to a client and carry the same reason code.
 
 // errNotModifiedUnfilterable marks the 304 refusal so
 // filterResponseThroughWriter can give it its own reason code instead of the
@@ -455,10 +454,10 @@ func filterResponseThroughWriter(logger *slog.Logger, next http.Handler, w http.
 	next.ServeHTTP(interceptingW, r)
 	if interceptingW.overflow {
 		logger.ErrorContext(r.Context(), "visibility response filter: upstream response exceeds size limit",
-			"limit_bytes", filter.MaxResponseBodyBytes, "method", logging.SafeString(r.Method), "path", logging.SafeString(r.URL.Path))
-		logging.SetDeniedWithCode(w, r, reasonCodeVisibilityResponseTooLarge, responseTooLargeMessage, nil)
+			"limit_bytes", filter.ResponseBodyLimit(), "method", logging.SafeString(r.Method), "path", logging.SafeString(r.URL.Path))
+		logging.SetDeniedWithCode(w, r, reasonCodeVisibilityResponseTooLarge, filter.ResponseTooLargeMessage(), nil)
 		clearUpstreamRepresentationHeaders(w.Header())
-		_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: responseTooLargeMessage})
+		_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: filter.ResponseTooLargeMessage()})
 		return
 	}
 	if err := flush(interceptingW); err != nil {
@@ -480,7 +479,7 @@ func filterResponseThroughWriter(logger *slog.Logger, next http.Handler, w http.
 			// the overflow branch above returns, reached one step later
 			// because the raw bytes fit and the decoded ones do not.
 			case errors.Is(err, bodycodec.ErrTooLarge):
-				reasonCode, message = reasonCodeVisibilityResponseTooLarge, responseTooLargeMessage
+				reasonCode, message = reasonCodeVisibilityResponseTooLarge, filter.ResponseTooLargeMessage()
 			}
 			logging.SetDeniedWithCode(w, r, reasonCode, message, nil)
 			clearUpstreamRepresentationHeaders(w.Header())
@@ -639,7 +638,7 @@ func (p *patternFilterWriter) WriteHeader(code int) { p.statusCode = code }
 // it into a 502 once the copy finishes.
 func (p *patternFilterWriter) Write(b []byte) (int, error) {
 	if !p.overflow {
-		if int64(p.body.Len())+int64(len(b)) > filter.MaxResponseBodyBytes {
+		if int64(p.body.Len())+int64(len(b)) > filter.ResponseBodyLimit() {
 			p.overflow = true
 		} else {
 			return p.body.Write(b)
@@ -737,7 +736,7 @@ func (p *patternFilterWriter) commitFilteredBody(body []byte) error {
 // what the client receives. On the rewrite path commitFilteredBody clears the
 // header along with the rest of the upstream's representation metadata.
 func (p *patternFilterWriter) decodedBody() ([]byte, error) {
-	return bodycodec.Bytes(p.header, p.body.Bytes(), filter.MaxResponseBodyBytes)
+	return bodycodec.Bytes(p.header, p.body.Bytes(), filter.ResponseBodyLimit())
 }
 
 // flushFiltered filters the buffered JSON array response by pattern axes and

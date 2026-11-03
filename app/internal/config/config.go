@@ -3,7 +3,10 @@ package config
 import (
 	"os"
 	"regexp"
+	"strings"
 
+	"github.com/codeswhat/sockguard/v3/app/internal/bytesize"
+	"github.com/codeswhat/sockguard/v3/app/internal/filter"
 	"github.com/codeswhat/sockguard/v3/app/internal/upstreamflavor"
 )
 
@@ -490,6 +493,30 @@ type ResponseConfig struct {
 	// layer without knowing it exists, so this response-layer gate closes
 	// that gap independent of the rule set. Default false.
 	AllowAttestationStatements bool `mapstructure:"allow_attestation_statements"`
+	// MaxBufferedBody caps the upstream response bodies sockguard buffers to
+	// filter or redact them: container, image and other list responses, inspect
+	// bodies and GET /system/df. A body over the cap is refused with a 502 that
+	// names this setting. A size string ("8MiB", "32MiB", "1GiB") or a byte
+	// count; default 8MiB, maximum 256MiB. Large hosts with thousands of
+	// containers or images need it raised.
+	MaxBufferedBody string `mapstructure:"max_buffered_body"`
+}
+
+// DefaultMaxBufferedBody is the response.max_buffered_body default, in the
+// spelling the config file would use.
+const DefaultMaxBufferedBody = "8MiB"
+
+// MaxBufferedBodyBytes returns response.max_buffered_body in bytes. An unset or
+// unparseable value (validation rejects the latter) yields the default.
+func (r ResponseConfig) MaxBufferedBodyBytes() int64 {
+	if strings.TrimSpace(r.MaxBufferedBody) == "" {
+		return filter.MaxResponseBodyBytes
+	}
+	n, err := bytesize.Parse(r.MaxBufferedBody)
+	if err != nil {
+		return filter.MaxResponseBodyBytes
+	}
+	return n
 }
 
 // RequestBodyConfig configures request-body inspection policies.
@@ -1500,6 +1527,16 @@ type ConcurrencyConfig struct {
 	// MaxInflight is the maximum number of simultaneous in-flight requests
 	// allowed for a single client. Must be > 0.
 	MaxInflight int64 `mapstructure:"max_inflight"`
+	// MaxStreams caps the open-ended streams (events, followed logs, streaming
+	// stats, wait, attach, exec start) one profile may hold open at once. Those
+	// requests skip max_inflight and the global gate so a few `docker events`
+	// or `logs -f` sessions cannot exhaust them, which makes this the bound on
+	// them instead. Build, prune, pull/push/load and export/archive are not
+	// streams and keep counting against max_inflight. The count is per profile,
+	// so clients sharing a profile (or the anonymous bucket) share the cap, and
+	// total streams are bounded per profile rather than globally. Unset
+	// defaults to 32; 0 disables the cap.
+	MaxStreams *int64 `mapstructure:"max_streams"`
 }
 
 // ClientProfileResponseConfig configures per-profile visibility control on
@@ -1831,6 +1868,7 @@ func Defaults() Config {
 			// (even with `/secrets/*` and `/swarm/unlockkey` redacted) that
 			// a honest security product should not hand a denied caller.
 			DenyVerbosity:         "minimal",
+			MaxBufferedBody:       DefaultMaxBufferedBody,
 			RedactContainerEnv:    true,
 			RedactMountPaths:      true,
 			RedactNetworkTopology: true,

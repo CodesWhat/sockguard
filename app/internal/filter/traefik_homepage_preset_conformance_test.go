@@ -183,9 +183,9 @@ func TestHomepagePresetConformance(t *testing.T) {
 	handler := buildDrydockPresetHandler(t, "homepage.yaml")
 
 	cases := []presetCase{
-		// Homepage does not use Docker health or metadata endpoints.
-		{"ping-get-denied", http.MethodGet, "/_ping", "", false},
-		{"ping-head-denied", http.MethodHead, "/_ping", "", false},
+		// Ping is allowed (clients ping first); version and info stay denied.
+		{"ping-get", http.MethodGet, "/_ping", "", true},
+		{"ping-head", http.MethodHead, "/_ping", "", true},
 		{"version-denied", http.MethodGet, "/version", "", false},
 		{"info-denied", http.MethodGet, "/info", "", false},
 		{"events-denied", http.MethodGet, "/events", "", false},

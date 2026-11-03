@@ -124,3 +124,26 @@ func TestConfigLimitsToRateLimitOptions_UnrecognizedPriorityLogsWarn(t *testing.
 		t.Errorf("Priority = %v, want PriorityNormal", opts.Priority)
 	}
 }
+
+func TestConfigLimitsToRateLimitOptions_MaxStreams(t *testing.T) {
+	zero, eight := int64(0), int64(8)
+	tests := []struct {
+		name string
+		in   *int64
+		want int64
+	}{
+		{"unset defaults to 32", nil, ratelimit.DefaultMaxStreams},
+		{"zero disables the cap", &zero, 0},
+		{"explicit value", &eight, 8},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := configLimitsToRateLimitOptions("p", config.LimitsConfig{
+				Concurrency: &config.ConcurrencyConfig{MaxInflight: 4, MaxStreams: tc.in},
+			}, newDiscardLogger())
+			if opts.Concurrency == nil || opts.Concurrency.MaxStreams != tc.want {
+				t.Fatalf("MaxStreams = %+v, want %d", opts.Concurrency, tc.want)
+			}
+		})
+	}
+}

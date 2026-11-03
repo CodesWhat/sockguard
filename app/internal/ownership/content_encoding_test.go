@@ -256,7 +256,7 @@ func TestSystemDataUsageRefusesAnExpandingGzipBody(t *testing.T) {
 	if meta.ReasonCode != reasonCodeOwnerResponseTooLarge {
 		t.Fatalf("meta.ReasonCode = %q, want %q", meta.ReasonCode, reasonCodeOwnerResponseTooLarge)
 	}
-	if got := rec.Body.String(); !strings.Contains(got, ownerResponseTooLargeMessage) {
+	if got := rec.Body.String(); !strings.Contains(got, filter.ResponseTooLargeMessage()) {
 		t.Fatalf("body = %s, want the size refusal", got)
 	}
 }

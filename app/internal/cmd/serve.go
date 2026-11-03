@@ -202,6 +202,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	warnIfDefaultProfileExcluded(cfg, logger)
 	warnIfRulesMatchNoKnownRoute(cfg, logger)
 	warnIfCreateAllowedWithResponseRedaction(cfg, logger)
+	warnIfPingNotAllowed(cfg, logger)
 	warnIfMainListenerPlaintext(cfg, logger)
 	runtime, err := newServeRuntime(cfg, logger, deps)
 	if err != nil {
@@ -581,6 +582,10 @@ type serveHandlerBuild struct {
 // the rate-limit middleware is installed; see
 // buildServeHandlerLayersWithRuntime.
 func buildServeHandlerChainWithRuntime(b serveHandlerBuild) (http.Handler, func(), bool) {
+	// response.max_buffered_body is a process-wide limit read by every buffering
+	// layer. Setting it as part of the chain build applies it at startup and on
+	// every hot reload, the same moment the other response settings take effect.
+	filter.SetResponseBodyLimit(b.Cfg.Response.MaxBufferedBodyBytes())
 	resolver := runtimeResolver(b.Runtime, b.Cfg)
 	clientProfiles, err := buildServeClientProfiles(b.Cfg, resolver)
 	if err != nil {
@@ -975,6 +980,7 @@ func buildRateLimitMiddleware(cfg *config.Config, logger *slog.Logger, runtime *
 		Profiles:          profiles,
 		ResolveProfile:    clientacl.RequestProfile,
 		GlobalConcurrency: globalConc,
+		IsStreaming:       proxy.IsStreamingRequest,
 	})
 	stop := func() {
 		stopLimiters()

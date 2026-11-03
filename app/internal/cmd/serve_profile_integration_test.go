@@ -154,7 +154,7 @@ func TestBuildServeHandlerAppliesAssignedProfileRateLimit(t *testing.T) {
 
 	var upstreamCalls atomic.Int32
 	startUnixHTTPUpstream(t, socketPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/_ping" {
+		if r.Method != http.MethodGet || r.URL.Path != "/version" {
 			http.Error(w, "unexpected upstream request", http.StatusNotFound)
 			return
 		}
@@ -168,14 +168,14 @@ func TestBuildServeHandlerAppliesAssignedProfileRateLimit(t *testing.T) {
 	cfg.Health.Enabled = false
 	cfg.Log.AccessLog = false
 	cfg.Rules = []config.RuleConfig{
-		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/_ping"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/version"}, Action: "allow"},
 		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
 	}
 	cfg.Clients.Profiles = []config.ClientProfileConfig{
 		{
 			Name: "limited",
 			Rules: []config.RuleConfig{
-				{Match: config.MatchConfig{Method: http.MethodGet, Path: "/_ping"}, Action: "allow"},
+				{Match: config.MatchConfig{Method: http.MethodGet, Path: "/version"}, Action: "allow"},
 				{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
 			},
 			Limits: config.LimitsConfig{
@@ -195,7 +195,7 @@ func TestBuildServeHandlerAppliesAssignedProfileRateLimit(t *testing.T) {
 
 	request := func(remoteAddr string) *httptest.ResponseRecorder {
 		t.Helper()
-		req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+		req := httptest.NewRequest(http.MethodGet, "/version", nil)
 		req.RemoteAddr = remoteAddr
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)

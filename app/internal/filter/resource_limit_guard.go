@@ -842,12 +842,13 @@ func NewDockerServiceInspectorWithRoundTripper(rt http.RoundTripper) ServiceInsp
 // MaxResponseBodyBytes+1, rejecting oversized payloads rather than risking
 // unbounded memory use on an inspect response.
 func readBoundedResponseBody(resp *http.Response) ([]byte, error) {
-	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBodyBytes+1))
+	limit := ResponseBodyLimit()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(body)) > MaxResponseBodyBytes {
-		return nil, fmt.Errorf("inspect response exceeds %d byte limit", MaxResponseBodyBytes)
+	if int64(len(body)) > limit {
+		return nil, fmt.Errorf("inspect response exceeds %d byte limit", limit)
 	}
 	return body, nil
 }
