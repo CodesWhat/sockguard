@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -94,5 +95,26 @@ func TestPingWarningSilent(t *testing.T) {
 	}
 	if got := pingWarningOutput(nil); got != "" {
 		t.Fatalf("nil config warned: %q", got)
+	}
+}
+
+// Shipped presets must not trip the warning: they are the configs most
+// operators copy, so a warning there reads as a defect in the preset.
+func TestShippedPresetsDoNotTriggerPingWarning(t *testing.T) {
+	paths, err := filepath.Glob(filepath.Join("..", "..", "configs", "*.yaml"))
+	if err != nil || len(paths) == 0 {
+		t.Fatalf("glob presets: %v (%d found)", err, len(paths))
+	}
+	for _, path := range paths {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			clearSockguardEnv(t)
+			cfg, err := config.Load(path)
+			if err != nil {
+				t.Fatalf("Load(%s): %v", path, err)
+			}
+			if got := pingWarningOutput(cfg); got != "" {
+				t.Fatalf("%s triggers the ping warning: %s", path, got)
+			}
+		})
 	}
 }
