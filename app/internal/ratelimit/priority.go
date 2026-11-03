@@ -69,7 +69,7 @@ func priorityShare(p Priority) float64 {
 
 // priorityThreshold computes the integer in-flight ceiling for a priority
 // tier against a global cap. Rounded down so a profile cannot exceed its
-// share by even one request.
+// share by even one request, but never below 1 for a positive cap.
 func priorityThreshold(p Priority, globalMax int64) int64 {
 	if globalMax <= 0 {
 		return 0
@@ -77,13 +77,12 @@ func priorityThreshold(p Priority, globalMax int64) int64 {
 	share := priorityShare(p)
 	t := int64(math.Floor(float64(globalMax) * share))
 	if t < 1 {
-		// A non-zero global cap should always admit at least one high-tier
-		// request; floor() can return 0 for a very small cap × small share.
-		// Forcing a 1-floor for high keeps the budget useful at the edges.
-		if p == PriorityHigh {
-			return 1
-		}
-		return 0
+		// A non-zero global cap must admit at least one request of every
+		// tier; floor() returns 0 for a very small cap x small share
+		// (e.g. max_inflight: 1 at the 0.8 normal share), which would deny
+		// that tier unconditionally even on an idle proxy. Tier ordering
+		// still holds for caps >= 2.
+		return 1
 	}
 	return t
 }
