@@ -10,6 +10,12 @@ const rootModule = new URL("../go.mod", import.meta.url);
 const nestedModule = new URL("../app/go.mod", import.meta.url);
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
+// The retry backoff is injectable so the retry tests do not wait on a real clock.
+const retryDelayMs = (attempt) => {
+  const override = Object.fromEntries(Object.entries(process.env)).GO_LIST_RETRY_DELAY_MS;
+  return override === undefined ? attempt * 1_000 : Number(override);
+};
+
 function goList(args) {
   for (let attempt = 1; ; attempt++) {
     try {
@@ -39,7 +45,7 @@ function goList(args) {
         throw error;
       }
       console.error(`Go download failed; retrying go list (${attempt + 1}/3)`);
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, attempt * 1_000);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, retryDelayMs(attempt));
     }
   }
 }

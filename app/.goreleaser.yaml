@@ -99,6 +99,11 @@ changelog:
 release:
   draft: false
   prerelease: auto  # RC tags marked as prerelease
+  # A rerun after a partial upload replaces same-named assets instead of
+  # failing on them (see RELEASING.md, "Recovering a partially published
+  # release"). replace_existing_draft only matters if draft is ever enabled.
+  replace_existing_draft: true
+  replace_existing_artifacts: true
   make_latest: '{{ eq (index .Env "RELEASE_LATEST") "true" }}'
 
 homebrew_casks:

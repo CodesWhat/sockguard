@@ -48,7 +48,7 @@ inputs (#289 item 2).
 
 ## Running it
 
-```
+```bash
 scripts/tri-tool-conformance/run-matrix.sh --row current-standard
 scripts/tri-tool-conformance/run-matrix.sh --row current-edge \
   --portwing-version 0.9.2 --drydock-version 1.6.0

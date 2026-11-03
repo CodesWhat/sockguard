@@ -40,19 +40,34 @@ RELEASE_TAG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run)
-      DRY_RUN=1; shift ;;
+      DRY_RUN=1
+      shift
+      ;;
     --chart)
-      VERIFY_CHART=1; shift ;;
+      VERIFY_CHART=1
+      shift
+      ;;
     --chart-only)
-      VERIFY_CHART=1; CHART_ONLY=1; shift ;;
+      VERIFY_CHART=1
+      CHART_ONLY=1
+      shift
+      ;;
     --tag)
-      RELEASE_TAG="${2:-}"; shift 2 ;;
+      RELEASE_TAG="${2:-}"
+      shift 2
+      ;;
     --tag=*)
-      RELEASE_TAG="${1#--tag=}"; shift ;;
-    -h|--help)
-      sed -n '1,30p' "$0"; exit 0 ;;
+      RELEASE_TAG="${1#--tag=}"
+      shift
+      ;;
+    -h | --help)
+      sed -n '1,30p' "$0"
+      exit 0
+      ;;
     *)
-      echo "verify-published-release.sh: unknown flag $1" >&2; exit 2 ;;
+      echo "verify-published-release.sh: unknown flag $1" >&2
+      exit 2
+      ;;
   esac
 done
 

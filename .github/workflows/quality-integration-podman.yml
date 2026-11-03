@@ -131,11 +131,19 @@ jobs:
           ' artifacts/podman/version.json
 
       - name: Pre-pull busybox sentinel image
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           ref=$(sed -nE 's/^[[:space:]]*const[[:space:]]+busyboxPinnedRef[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' app/integration/helpers_test.go)
           if [[ ! "$ref" =~ ^busybox:[[:alnum:]_.-]+@sha256:[0-9a-f]{64}$ ]]; then
             echo "invalid or unpinned busyboxPinnedRef: ${ref}" >&2
             exit 1
+          fi
+          # Authenticated pull avoids Docker Hub's anonymous rate limit; skipped
+          # when credentials are absent (fork PRs, Dependabot).
+          if [[ -n "${DOCKERHUB_USERNAME}" && -n "${DOCKERHUB_TOKEN}" ]]; then
+            printf '%s' "${DOCKERHUB_TOKEN}" | docker exec -i sockguard-podman-major podman --storage-driver=vfs --cgroup-manager=cgroupfs --events-backend=file login --username "${DOCKERHUB_USERNAME}" --password-stdin docker.io
           fi
           docker exec sockguard-podman-major podman --storage-driver=vfs --cgroup-manager=cgroupfs --events-backend=file pull "docker.io/library/${ref}"
 
@@ -317,6 +325,9 @@ jobs:
       # the same way dockerd does, so the same pinned digest keeps both
       # suites reproducible from the same registry content.
       - name: Pre-pull busybox sentinel image
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           ref=$(sed -nE 's/^[[:space:]]*const[[:space:]]+busyboxPinnedRef[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' app/integration/helpers_test.go)
           if [[ ! "$ref" =~ ^busybox:[[:alnum:]_.-]+@sha256:[0-9a-f]{64}$ ]]; then
@@ -324,6 +335,11 @@ jobs:
             exit 1
           fi
           echo "Pre-pulling pinned sentinel image (rootful): ${ref}"
+          # Authenticated pull avoids Docker Hub's anonymous rate limit; skipped
+          # when credentials are absent (fork PRs, Dependabot).
+          if [[ -n "${DOCKERHUB_USERNAME}" && -n "${DOCKERHUB_TOKEN}" ]]; then
+            printf '%s' "${DOCKERHUB_TOKEN}" | sudo podman -r --url unix:///run/podman/podman.sock login --username "${DOCKERHUB_USERNAME}" --password-stdin docker.io
+          fi
           sudo podman -r --url unix:///run/podman/podman.sock pull "${ref}"
 
       # Cheap insurance directly ahead of the suite: the pre-pull above is
@@ -447,6 +463,9 @@ jobs:
           echo "rootless podman service ready on ${runtime_dir}/podman/podman.sock"
 
       - name: Pre-pull busybox sentinel image
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           ref=$(sed -nE 's/^[[:space:]]*const[[:space:]]+busyboxPinnedRef[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' app/integration/helpers_test.go)
           if [[ ! "$ref" =~ ^busybox:[[:alnum:]_.-]+@sha256:[0-9a-f]{64}$ ]]; then
@@ -454,6 +473,11 @@ jobs:
             exit 1
           fi
           echo "Pre-pulling pinned sentinel image (rootless): ${ref}"
+          # Authenticated pull avoids Docker Hub's anonymous rate limit; skipped
+          # when credentials are absent (fork PRs, Dependabot).
+          if [[ -n "${DOCKERHUB_USERNAME}" && -n "${DOCKERHUB_TOKEN}" ]]; then
+            printf '%s' "${DOCKERHUB_TOKEN}" | podman --url "unix://${XDG_RUNTIME_DIR}/podman/podman.sock" login --username "${DOCKERHUB_USERNAME}" --password-stdin docker.io
+          fi
           podman --url "unix://${XDG_RUNTIME_DIR}/podman/podman.sock" pull "${ref}"
 
       - name: Run podman integration suite (rootless)

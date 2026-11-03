@@ -31,15 +31,15 @@ The `upstream.endpoints` list is an **ordered active/passive failover set**, not
 
 3. Start the stack:
 
-```bash
-docker compose up -d
-```
+   ```bash
+   docker compose up -d
+   ```
 
 4. Exec into the `docker-cli` container to verify connectivity:
 
-```bash
-docker compose exec docker-cli docker info
-docker compose exec docker-cli docker ps
-```
+   ```bash
+   docker compose exec docker-cli docker info
+   docker compose exec docker-cli docker ps
+   ```
 
 Sockguard logs (`format: json`) appear under the `sockguard` service. The `/health` endpoint is available inside the stack at `http://sockguard/health` for external liveness probes.

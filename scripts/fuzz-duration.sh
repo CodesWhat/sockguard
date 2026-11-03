@@ -8,12 +8,12 @@ fuzz_duration_to_seconds() {
   local rest="${1:-}"
   local total=0
 
-  if [[ -z "$rest" ]]; then
+  if [[ -z $rest ]]; then
     return 1
   fi
 
-  while [[ -n "$rest" ]]; do
-    if [[ "$rest" =~ ^([0-9]+)(h|m|s)(.*)$ ]]; then
+  while [[ -n $rest ]]; do
+    if [[ $rest =~ ^([0-9]+)(h|m|s)(.*)$ ]]; then
       local value="${BASH_REMATCH[1]}"
       local unit="${BASH_REMATCH[2]}"
       rest="${BASH_REMATCH[3]}"
@@ -36,7 +36,7 @@ fuzz_seconds_to_go_duration() {
   local hours minutes remainder out
 
   case "$seconds" in
-    ''|*[!0-9]*) return 1 ;;
+    '' | *[!0-9]*) return 1 ;;
   esac
 
   hours=$((seconds / 3600))
@@ -45,13 +45,13 @@ fuzz_seconds_to_go_duration() {
   remainder=$((remainder % 60))
   out=""
 
-  if [[ "$hours" -gt 0 ]]; then
+  if [[ $hours -gt 0 ]]; then
     out+="${hours}h"
   fi
-  if [[ "$minutes" -gt 0 ]]; then
+  if [[ $minutes -gt 0 ]]; then
     out+="${minutes}m"
   fi
-  if [[ "$remainder" -gt 0 || -z "$out" ]]; then
+  if [[ $remainder -gt 0 || -z $out ]]; then
     out+="${remainder}s"
   fi
 
