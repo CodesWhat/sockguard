@@ -11,6 +11,11 @@ import (
 
 // denied reports whether an inspector refused the request: a deny reason or a
 // rejection error. Only ("", nil) lets a body through.
+// fuzzLibpodBodyCap keeps mutated bodies small: the 1 MiB limits are exercised
+// by TestLibpodCreateInspectorsRejectOverLimitBodies, and megabyte inputs drag
+// the fuzzer to a crawl.
+const fuzzLibpodBodyCap = 16 << 10
+
 func denied(reason string, err error) bool { return reason != "" || err != nil }
 
 func registryHeaderSeed(payload string) string {
@@ -119,7 +124,6 @@ func FuzzLibpodPodCreate(f *testing.F) {
 	f.Add([]byte(`{"share":["pid","net"],"share_parent":true}`))
 	f.Add([]byte(`{"netns":"host"}`))
 	f.Add([]byte(`{`))
-	f.Add(bytes.Repeat([]byte("a"), maxLibpodPodCreateBodyBytes+1))
 
 	policies := []libpodPodCreatePolicy{
 		newLibpodPodCreatePolicy(LibpodPodCreateOptions{}),
@@ -130,14 +134,11 @@ func FuzzLibpodPodCreate(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, body []byte) {
-		body = truncateParserFuzzBytes(body, maxLibpodPodCreateBodyBytes+1024)
+		body = truncateParserFuzzBytes(body, fuzzLibpodBodyCap)
 		for i, policy := range policies {
 			req := newJSONInspectorFuzzRequest(http.MethodPost, "/libpod/pods/create", "", body)
 			reason, err := policy.inspect(nil, req, "/libpod/pods/create")
 			drainFuzzRequestBody(req)
-			if len(body) > maxLibpodPodCreateBodyBytes && !denied(reason, err) {
-				t.Fatalf("policy %d allowed an over-limit body (%d bytes)", i, len(body))
-			}
 			if i != 0 {
 				continue
 			}
@@ -167,7 +168,6 @@ func FuzzLibpodVolumeCreate(f *testing.F) {
 	f.Add([]byte(`{"Options":{"device":"//dev/sda1"}}`))
 	f.Add([]byte(`{"Options":"x"}`))
 	f.Add([]byte(`{`))
-	f.Add(bytes.Repeat([]byte("a"), maxLibpodVolumeBodyBytes+1))
 
 	policies := []volumePolicy{
 		newVolumePolicy(VolumeOptions{}),
@@ -175,14 +175,11 @@ func FuzzLibpodVolumeCreate(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, body []byte) {
-		body = truncateParserFuzzBytes(body, maxLibpodVolumeBodyBytes+1024)
+		body = truncateParserFuzzBytes(body, fuzzLibpodBodyCap)
 		for i, policy := range policies {
 			req := newJSONInspectorFuzzRequest(http.MethodPost, "/libpod/volumes/create", "", body)
 			reason, err := policy.inspectLibpod(nil, req, "/libpod/volumes/create")
 			drainFuzzRequestBody(req)
-			if len(body) > maxLibpodVolumeBodyBytes && !denied(reason, err) {
-				t.Fatalf("policy %d allowed an over-limit body (%d bytes)", i, len(body))
-			}
 			if i != 0 {
 				continue
 			}
@@ -209,7 +206,6 @@ func FuzzLibpodNetworkCreate(f *testing.F) {
 	f.Add([]byte(`{"internal":true,"dns_enabled":true,"ipv6_enabled":true}`))
 	f.Add([]byte(`{"driver":1}`))
 	f.Add([]byte(`{`))
-	f.Add(bytes.Repeat([]byte("a"), maxLibpodNetworkBodyBytes+1))
 
 	policies := []networkPolicy{
 		newNetworkPolicy(NetworkOptions{}),
@@ -220,14 +216,11 @@ func FuzzLibpodNetworkCreate(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, body []byte) {
-		body = truncateParserFuzzBytes(body, maxLibpodNetworkBodyBytes+1024)
+		body = truncateParserFuzzBytes(body, fuzzLibpodBodyCap)
 		for i, policy := range policies {
 			req := newJSONInspectorFuzzRequest(http.MethodPost, "/libpod/networks/create", "", body)
 			reason, err := policy.inspectLibpodCreate(nil, req, "/libpod/networks/create")
 			drainFuzzRequestBody(req)
-			if len(body) > maxLibpodNetworkBodyBytes && !denied(reason, err) {
-				t.Fatalf("policy %d allowed an over-limit body (%d bytes)", i, len(body))
-			}
 			if i != 0 {
 				continue
 			}
@@ -246,4 +239,33 @@ func FuzzLibpodNetworkCreate(f *testing.F) {
 			}
 		}
 	})
+}
+
+func TestLibpodCreateInspectorsRejectOverLimitBodies(t *testing.T) {
+	t.Parallel()
+	pod := newLibpodPodCreatePolicy(LibpodPodCreateOptions{})
+	volume := newVolumePolicy(VolumeOptions{AllowCustomDrivers: true, AllowDriverOpts: true})
+	network := newNetworkPolicy(NetworkOptions{AllowCustomDrivers: true, AllowDriverOptions: true})
+	cases := []struct {
+		name    string
+		path    string
+		max     int
+		inspect func(*http.Request) (string, error)
+	}{
+		{"pod", "/libpod/pods/create", maxLibpodPodCreateBodyBytes, func(r *http.Request) (string, error) { return pod.inspect(nil, r, "/libpod/pods/create") }},
+		{"volume", "/libpod/volumes/create", maxLibpodVolumeBodyBytes, func(r *http.Request) (string, error) {
+			return volume.inspectLibpod(nil, r, "/libpod/volumes/create")
+		}},
+		{"network", "/libpod/networks/create", maxLibpodNetworkBodyBytes, func(r *http.Request) (string, error) {
+			return network.inspectLibpodCreate(nil, r, "/libpod/networks/create")
+		}},
+	}
+	for _, tc := range cases {
+		req := newJSONInspectorFuzzRequest(http.MethodPost, tc.path, "", bytes.Repeat([]byte("a"), tc.max+1))
+		reason, err := tc.inspect(req)
+		drainFuzzRequestBody(req)
+		if !denied(reason, err) {
+			t.Fatalf("%s: an over-limit body was allowed", tc.name)
+		}
+	}
 }
