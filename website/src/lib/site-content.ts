@@ -481,4 +481,14 @@ export const roadmap: Milestone[] = [
       "libpod create bypasses (host_device_list, resource_limits.devices, volumes_from and others) and inspect CreateCommand and Secrets leaks are closed",
     ],
   },
+  {
+    version: "v2.4.5",
+    title: "Signed Root UID Fix",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "A numeric user with a sign prefix such as +0 is now treated as root on Docker and Podman",
+      "request_body.exec.allow_root_user: false and require_non_root_user can no longer be bypassed to run as UID 0",
+    ],
+  },
 ];
