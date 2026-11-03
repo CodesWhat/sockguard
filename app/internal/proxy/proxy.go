@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httputil"
 
+	"github.com/codeswhat/sockguard/v3/app/internal/bodycodec"
+	"github.com/codeswhat/sockguard/v3/app/internal/filter"
 	"github.com/codeswhat/sockguard/v3/app/internal/httpjson"
 	"github.com/codeswhat/sockguard/v3/app/internal/logging"
 	"github.com/codeswhat/sockguard/v3/app/internal/responsefilter"
@@ -16,6 +18,7 @@ import (
 const (
 	reasonCodeUpstreamSocketUnreachable = "upstream_socket_unreachable"
 	reasonCodeUpstreamResponseRejected  = "upstream_response_rejected_by_policy"
+	reasonCodeUpstreamResponseTooLarge  = "upstream_response_too_large"
 	reasonCodeUpstreamRequestTimeout    = "upstream_request_timeout"
 )
 
@@ -80,6 +83,12 @@ func NewWithTransport(rt http.RoundTripper, logger *slog.Logger, opts Options) *
 			reasonCode := reasonCodeUpstreamSocketUnreachable
 			status := http.StatusBadGateway
 			switch {
+			case errors.Is(err, responsefilter.ErrResponseTooLarge), errors.Is(err, bodycodec.ErrTooLarge):
+				// Name the setting to raise instead of the generic rejection
+				// text, so the operator doesn't have to guess why a large host
+				// 502s on a list.
+				message = filter.ResponseTooLargeMessage()
+				reasonCode = reasonCodeUpstreamResponseTooLarge
 			case errors.Is(err, responsefilter.ErrResponseRejected):
 				message = "upstream Docker response rejected by sockguard policy"
 				reasonCode = reasonCodeUpstreamResponseRejected

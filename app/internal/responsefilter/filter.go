@@ -41,6 +41,17 @@ const (
 // response because a protected payload could not be sanitized safely.
 var ErrResponseRejected = errors.New("upstream Docker response rejected by sockguard policy")
 
+// ErrResponseTooLarge marks a rejection because the upstream body was bigger
+// than response.max_buffered_body. It rides inside ErrResponseRejected, so
+// code that only asks "was this rejected" still works, and the proxy error
+// handler uses it to tell the client which setting to raise.
+var ErrResponseTooLarge = errors.New("upstream Docker response exceeds the buffered body limit")
+
+// responseTooLargeError builds the over-limit error with the limit in force.
+func responseTooLargeError() error {
+	return fmt.Errorf("%w: response body exceeds %d bytes", ErrResponseTooLarge, requestfilter.ResponseBodyLimit())
+}
+
 // Options configures response-side redaction policy.
 type Options struct {
 	RedactContainerEnv    bool
@@ -866,11 +877,11 @@ func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error,
 		return rejectResponse(err)
 	}
 
-	// Enforce the same 8 MiB cap as withResponseBody. It counts decoded
+	// Enforce the same response.max_buffered_body cap as withResponseBody. It counts decoded
 	// bytes, so on a compressed body it is also the gzip-bomb guard.
 	limited := &io.LimitedReader{
 		R: decoded,
-		N: requestfilter.MaxResponseBodyBytes + 1,
+		N: requestfilter.ResponseBodyLimit() + 1,
 	}
 	dec := newJSONDecoder(limited)
 
@@ -903,7 +914,7 @@ func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error,
 		// we surface as a rejection. We add an explicit check here so that we
 		// can emit the same "response body exceeds N bytes" message.
 		if limited.N <= 0 {
-			return rejectResponse(fmt.Errorf("response body exceeds %d bytes", requestfilter.MaxResponseBodyBytes))
+			return rejectResponse(responseTooLargeError())
 		}
 
 		var elem map[string]any
@@ -964,7 +975,7 @@ func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error,
 
 	// Re-check the limit after consuming the closing token.
 	if limited.N <= 0 {
-		return rejectResponse(fmt.Errorf("response body exceeds %d bytes", requestfilter.MaxResponseBodyBytes))
+		return rejectResponse(responseTooLargeError())
 	}
 
 	// Clone the body out of the pooled buffer: ReverseProxy reads resp.Body
@@ -1545,12 +1556,13 @@ func withPooledResponseBody(resp *http.Response, get func() any, put func(any), 
 	buf := acquirePooledBuffer(get)
 	defer put(buf)
 
-	reader := &io.LimitedReader{R: decoded, N: requestfilter.MaxResponseBodyBytes + 1}
+	limit := requestfilter.ResponseBodyLimit()
+	reader := &io.LimitedReader{R: decoded, N: limit + 1}
 	if _, err := buf.ReadFrom(reader); err != nil {
 		return err
 	}
-	if int64(buf.Len()) > requestfilter.MaxResponseBodyBytes {
-		return fmt.Errorf("response body exceeds %d bytes", requestfilter.MaxResponseBodyBytes)
+	if int64(buf.Len()) > limit {
+		return responseTooLargeError()
 	}
 	return use(buf.Bytes())
 }

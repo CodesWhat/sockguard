@@ -56,6 +56,7 @@ log:
 
 response:
   deny_verbosity: minimal  # minimal (default, production) or verbose (dev/rule-authoring)
+  max_buffered_body: 8MiB  # largest response sockguard buffers to filter or redact; raise for big hosts (max 256MiB)
   redact_container_env: true
   redact_mount_paths: true
   redact_network_topology: true
@@ -1808,6 +1809,39 @@ never flagged.
 | `SOCKGUARD_RESPONSE_REDACT_SENSITIVE_DATA`     | `response.redact_sensitive_data`      | `true`                          | Redact config payloads, swarm join/unlock and CA material, and node/swarm TLS metadata.                      |
 | `SOCKGUARD_RESPONSE_REDACT_HOST_TOPOLOGY`      | `response.redact_host_topology`       | `false`                         | Redact `GET /info` container-runtime plumbing fields (`Containerd`, `FirewallBackend`, `DiscoveredDevices`, `NRI`). Opt-in.  |
 | `SOCKGUARD_RESPONSE_ALLOW_ATTESTATION_STATEMENTS` | `response.allow_attestation_statements` | `false`                    | Allow a truthy `statement` query on `GET /images/{name}/attestations` to return full content. Empty, `0`, `no`, `false`, and `none` are false; every other non-empty value is true. |
+| `SOCKGUARD_RESPONSE_MAX_BUFFERED_BODY`         | `response.max_buffered_body`          | `8MiB`                          | Largest upstream response body Sockguard will buffer to filter or redact (container and image lists, inspect bodies, `/system/df`). Size string (`32MiB`, `512KiB`, `1GiB`) or a byte count; between `1MiB` and `256MiB`. Applied on hot reload. See [Large hosts and the buffered body limit](#large-hosts-and-the-buffered-body-limit). |
+
+#### Large hosts and the buffered body limit
+
+Response filtering reads the whole upstream body before it can rewrite it, so
+Sockguard caps what it will buffer. The default is `8MiB`. A host with thousands
+of containers or images can produce a `GET /containers/json` or
+`GET /images/json` larger than that, and the request used to fail with a 502.
+The limit is now `response.max_buffered_body`:
+
+```yaml
+response:
+  max_buffered_body: 32MiB
+```
+
+It takes a size string with a binary unit (`KiB`, `MiB`, `GiB`; case-insensitive)
+or a plain byte count, and must be between `1MiB` and `256MiB`. Decimal units
+such as `MB` are rejected rather than guessed. The ceiling exists because every
+buffered body lives in memory, and several can be in flight at once, so size the
+limit against the memory you are willing to give the proxy times your expected
+concurrent list calls. The same limit covers the visibility and owner-isolation
+list filters, `GET /system/df`, inspect bodies, and the lookups the client ACL and
+resource-limit guard make against the daemon. It also bounds decompressed bytes
+when an intermediary compresses a response.
+
+A response over the limit is still refused, fail-closed, with `502 Bad Gateway`.
+The Docker-style `{"message": ...}` body now says why instead of a bare
+rejection: `upstream response too large to filter: it exceeds
+response.max_buffered_body (8MiB); raise that setting (maximum 256MiB) to filter
+responses this size`. The audit reason code is `upstream_response_too_large`
+(`visibility_response_too_large` and `owner_response_too_large` from those two
+layers). A hot reload applies a changed value to the requests after it; an
+invalid value rejects the reload like any other validation error.
 
 ### Insecure opt-ins
 

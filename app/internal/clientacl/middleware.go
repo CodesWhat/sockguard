@@ -1095,7 +1095,7 @@ func (r upstreamResolver) resolveClient(ctx context.Context, addr netip.Addr) (r
 	}
 
 	var containers []listedContainer
-	if err := json.NewDecoder(io.LimitReader(resp.Body, filter.MaxResponseBodyBytes)).Decode(&containers); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, filter.ResponseBodyLimit())).Decode(&containers); err != nil {
 		return resolvedClient{}, false, err
 	}
 
@@ -1176,7 +1176,7 @@ func (r upstreamResolver) containerOwnsAddr(ctx context.Context, id string, addr
 	}
 
 	var inspected inspectedContainer
-	if err := json.NewDecoder(io.LimitReader(resp.Body, filter.MaxResponseBodyBytes)).Decode(&inspected); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, filter.ResponseBodyLimit())).Decode(&inspected); err != nil {
 		return false
 	}
 	return inspectedContainerHasIP(inspected, addr)

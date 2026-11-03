@@ -6,12 +6,53 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync/atomic"
+
+	"github.com/codeswhat/sockguard/v3/app/internal/bytesize"
 )
 
-// MaxResponseBodyBytes is the upper bound for Docker API response bodies that
-// sockguard inspects and optionally redacts. Responses larger than this limit
-// are rejected to avoid unbounded memory allocation.
+// MaxResponseBodyBytes is the default upper bound for Docker API response
+// bodies that sockguard inspects and optionally redacts. Responses larger than
+// the limit in force are rejected to avoid unbounded memory allocation. The
+// limit in force is ResponseBodyLimit, which response.max_buffered_body sets.
 const MaxResponseBodyBytes = 8 << 20 // 8 MiB
+
+// MaxResponseBodyBytesCeiling is the largest response.max_buffered_body the
+// config validator accepts. Every buffered response is held in memory, so the
+// cap stays well under anything that could take the proxy down.
+const MaxResponseBodyBytesCeiling = 256 << 20 // 256 MiB
+
+// responseBodyLimit holds the configured limit; zero means the default.
+var responseBodyLimit atomic.Int64
+
+// ResponseBodyLimit returns the byte limit for buffered response bodies:
+// response.max_buffered_body, or MaxResponseBodyBytes when it is unset.
+func ResponseBodyLimit() int64 {
+	if n := responseBodyLimit.Load(); n > 0 {
+		return n
+	}
+	return MaxResponseBodyBytes
+}
+
+// SetResponseBodyLimit sets the buffered response body limit. A value that is
+// not positive restores the default. The handler chain build calls it on
+// startup and on every hot reload, so a reload applies a changed limit to the
+// requests that follow it.
+func SetResponseBodyLimit(n int64) {
+	if n < 0 {
+		n = 0
+	}
+	responseBodyLimit.Store(n)
+}
+
+// ResponseTooLargeMessage is the client-facing text for a response that was too
+// big to buffer. It names the setting that governs the limit, because the
+// alternative is a bare 502 and an operator guessing at what to raise.
+func ResponseTooLargeMessage() string {
+	return "upstream response too large to filter: it exceeds response.max_buffered_body (" +
+		bytesize.Format(ResponseBodyLimit()) + "); raise that setting (maximum " +
+		bytesize.Format(MaxResponseBodyBytesCeiling) + ") to filter responses this size"
+}
 
 type bodyTooLargeError struct {
 	limit int64

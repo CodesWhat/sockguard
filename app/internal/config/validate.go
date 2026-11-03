@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codeswhat/sockguard/v3/app/internal/bytesize"
 	"github.com/codeswhat/sockguard/v3/app/internal/filter"
 	"github.com/codeswhat/sockguard/v3/app/internal/glob"
 	"github.com/codeswhat/sockguard/v3/app/internal/pkipin"
@@ -549,8 +550,29 @@ func validateResponse(cfg *Config) []string {
 	default:
 		errs = append(errs, enumValueError("response.deny_verbosity", cfg.Response.DenyVerbosity, "minimal", "verbose"))
 	}
+	errs = append(errs, validateMaxBufferedBody(cfg.Response.MaxBufferedBody)...)
 	errs = append(errs, validateVisibleResourceLabels("response.visible_resource_labels", cfg.Response.VisibleResourceLabels, ownerReservedLabelKey(cfg))...)
 	return errs
+}
+
+// validateMaxBufferedBody checks response.max_buffered_body parses as a size
+// and stays within [1MiB, 256MiB]. Every buffered response is held in memory,
+// so the ceiling bounds what one request can make the proxy allocate; below
+// 1MiB a routine container list would be refused.
+func validateMaxBufferedBody(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	n, err := bytesize.Parse(value)
+	if err != nil {
+		return []string{fmt.Sprintf("response.max_buffered_body: %v", err)}
+	}
+	const floor = 1 << 20
+	if n < floor || n > filter.MaxResponseBodyBytesCeiling {
+		return []string{fmt.Sprintf("response.max_buffered_body must be between %s and %s, got %q",
+			bytesize.Format(floor), bytesize.Format(filter.MaxResponseBodyBytesCeiling), value)}
+	}
+	return nil
 }
 
 func validateHealthMetrics(cfg *Config) []string {
