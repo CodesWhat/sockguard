@@ -22,6 +22,7 @@ docs/
 # Repo-root scripts, docs, and config not read by the Go build
 scripts/
 benchmarks/
+app/compat/
 chart/
 examples/
 dist/

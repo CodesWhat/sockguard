@@ -53,11 +53,19 @@ func (r *profileReleaser) done() {
 	profileReleaserPool.Put(r)
 }
 
+// defaultCapacityRetryAfter is the Retry-After (seconds) sent on concurrency
+// and priority-floor 429s, where capacity frees when other requests finish and
+// no bucket math yields a wait time.
+const defaultCapacityRetryAfter = "1"
+
 // ThrottleResponse is the JSON body returned on every 429 throttle response.
 // RetryAfterSeconds is included only for rate-limit denials (where the bucket
 // math yields a meaningful wait time); concurrency and priority-floor denials
-// omit it because the available capacity depends on other clients finishing.
+// omit it from the body because the available capacity depends on other
+// clients finishing, but still send a Retry-After: 1 header.
 type ThrottleResponse struct {
+	// Message is the Docker error-contract field; docker-py and moby read it.
+	Message           string `json:"message"`
 	Reason            string `json:"reason"`
 	RetryAfterSeconds int    `json:"retry_after_seconds,omitempty"`
 }
@@ -418,6 +426,7 @@ func (h *throttleHandler) checkRateLimit(w http.ResponseWriter, r *http.Request,
 	logging.SetDeniedWithCode(w, r, string(ReasonRateLimit), "rate limit exceeded", apipath.NormalizePath)
 	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 	_ = httpjson.Write(w, http.StatusTooManyRequests, ThrottleResponse{
+		Message:           "sockguard: rate limit exceeded",
 		Reason:            string(ReasonRateLimit),
 		RetryAfterSeconds: retryAfter,
 	})
@@ -466,8 +475,10 @@ func (h *throttleHandler) checkGlobalPriority(w http.ResponseWriter, r *http.Req
 		return true, true
 	}
 	logging.SetDeniedWithCode(w, r, string(ReasonPriorityFloor), "priority floor exceeded", apipath.NormalizePath)
+	w.Header().Set("Retry-After", defaultCapacityRetryAfter)
 	_ = httpjson.Write(w, http.StatusTooManyRequests, ThrottleResponse{
-		Reason: string(ReasonPriorityFloor),
+		Message: "sockguard: priority floor exceeded",
+		Reason:  string(ReasonPriorityFloor),
 	})
 	return false, false
 }
@@ -497,8 +508,10 @@ func (h *throttleHandler) checkProfileConcurrency(w http.ResponseWriter, r *http
 			return nil, true
 		}
 		logging.SetDeniedWithCode(w, r, string(ReasonConcurrency), "concurrency cap exceeded", apipath.NormalizePath)
+		w.Header().Set("Retry-After", defaultCapacityRetryAfter)
 		_ = httpjson.Write(w, http.StatusTooManyRequests, ThrottleResponse{
-			Reason: string(ReasonConcurrency),
+			Message: "sockguard: concurrency cap exceeded",
+			Reason:  string(ReasonConcurrency),
 		})
 		return nil, false
 	}

@@ -149,6 +149,23 @@ set.ignored = true
 match.rules = ["osv-scanner:GO-2026-5932"]
 set.ignored = true
 
+# app/compat pins github.com/docker/docker v28.5.2 on purpose, to prove the
+# redaction output decodes into the last pre-moby/moby/api client types. The
+# advisories (CVE-2026-33997, -34040, -41567, -41568, -42306) are daemon-side
+# defects in dockerd. The module imports only api/types data structs in
+# _test.go files, no daemon or client code runs, and the module is not part of
+# the shipped binary's dependency graph.
+[[triage]]
+match.rules = [
+  "osv-scanner:CVE-2026-33997",
+  "osv-scanner:CVE-2026-34040",
+  "osv-scanner:CVE-2026-41567",
+  "osv-scanner:CVE-2026-41568",
+  "osv-scanner:CVE-2026-42306",
+]
+match.file_patterns = ["app/compat/go.mod"]
+set.ignored = true
+
 # chart/sockguard/values.yaml deliberately nests commented-out example keys
 # under an empty `{}`/`[]` collection (policyBundleTrust.secretRef,
 # resources, tolerations) to show the shape a user would fill in. yamllint's

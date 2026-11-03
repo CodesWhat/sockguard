@@ -47,7 +47,7 @@ jobs:
     steps:
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       - name: Harden Runner
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: audit
           disable-sudo: true
@@ -189,7 +189,7 @@ jobs:
     steps:
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       - name: Harden Runner
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: audit
 
@@ -257,7 +257,7 @@ jobs:
         goarch: [amd64, arm64]
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1  # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: audit
           disable-sudo: true
@@ -279,6 +279,55 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: bash scripts/ci/go-reproducible.sh
+
+  # Decodes the response filter's redacted output into the real Docker client
+  # types (moby/api and docker/docker). app/compat is its own module so those
+  # libraries never join the proxy's dependency graph. Deliberately not gated
+  # on `changes`: a docs-only PR runs it in about a minute, and a job that
+  # always reports can be made a required context later (a skipped job also
+  # satisfies the ruleset, but this one has no reason to skip).
+  client-compat:
+    name: "Client Compat (real Docker types)"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        with:
+          egress-policy: audit
+          disable-sudo: true
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: app/compat/go.sum
+
+      # -mod=readonly below fails with an opaque "updates to go.mod needed"
+      # when the root module moves (Renovate bumps it) and this nested module
+      # lags. Check drift first so the failure names the fix.
+      - name: Check app/compat go.mod is tidy
+        working-directory: app/compat
+        run: |
+          go mod tidy
+          if ! git diff --exit-code -- go.mod go.sum; then
+            echo "::error file=app/compat/go.mod::app/compat is out of sync with the root module. Run 'go mod tidy' in app/compat and commit go.mod and go.sum."
+            exit 1
+          fi
+
+      - name: Decode redacted responses into client types
+        working-directory: app/compat
+        env:
+          GOFLAGS: -mod=readonly
+        run: go test -count=1 ./...
 
   node-ci:
     name: "Node CI"
@@ -307,7 +356,7 @@ jobs:
     steps:
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       - name: Harden Runner
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: audit
           disable-sudo: true
@@ -338,7 +387,7 @@ jobs:
       # and drydock (the org's own harden-runner precedent) keeps its CodeQL
       # job on audit for the same reason. Revisit in stage 2.
       - name: Harden Runner
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: audit
 
@@ -348,7 +397,7 @@ jobs:
           persist-credentials: false
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d  # v4.38.3
+        uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee  # v4.39.0
         with:
           languages: actions, go, javascript-typescript
           queries: security-and-quality
@@ -364,7 +413,7 @@ jobs:
         working-directory: app
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d  # v4.38.3
+        uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee  # v4.39.0
 
   dependency-review:
     name: "Dependency Review"
@@ -381,7 +430,7 @@ jobs:
     steps:
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       - name: Harden Runner
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: audit
           disable-sudo: true
@@ -393,6 +442,12 @@ jobs:
 
       - name: Dependency Review
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294  # v5.0.0
+        with:
+          # Daemon-side advisories against github.com/docker/docker, which has no
+          # patched release (the module ends at v28.5.2; moby moved to new paths).
+          # Only the test-only app/compat module imports it, for its API data
+          # types, and runs no daemon code. Same IDs as the Qlty triage there.
+          allow-ghsas: GHSA-x86f-5xw2-fm2r, GHSA-rg2x-37c3-w2rh, GHSA-pxq6-2prw-chj9, GHSA-vp62-88p7-qqf5
 
   gitleaks:
     name: "Gitleaks"
@@ -413,7 +468,7 @@ jobs:
     steps:
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       - name: Harden Runner
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: audit
           disable-sudo: true
@@ -449,7 +504,7 @@ jobs:
       # GitHub-release binary fetch, none of which resolve to a single
       # documented endpoint set. Revisit in stage 2.
       - name: Harden Runner
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: audit
 
@@ -470,7 +525,7 @@ jobs:
     steps:
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       - name: Harden Runner
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: audit
           disable-sudo: true
@@ -555,7 +610,7 @@ jobs:
       # Chainguard's CDN endpoints — not a fixed set. Same reasoning as
       # security-grype.yml's grype-image job. Revisit in stage 2.
       - name: Harden Runner
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: audit
 
@@ -598,7 +653,7 @@ jobs:
       - name: Upload Grype SARIF to code scanning
         # Code scanning uploads require GHAS, not available on free private repos.
         if: always() && github.event.repository.visibility == 'public'
-        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d  # v4.38.3
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee  # v4.39.0
         with:
           sarif_file: ${{ steps.grype.outputs.sarif }}
           category: grype-image

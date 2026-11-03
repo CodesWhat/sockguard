@@ -34,6 +34,14 @@ request_body:
     allow_host_network: true
     allow_run_instructions: true
 
+# Portainer's container Recreate replays inspect output into container create,
+# so the response redactions that rewrite inspect output are off. See
+# app/configs/portainer.yaml for the full explanation.
+response:
+  redact_mount_paths: false
+  redact_container_env: false
+  redact_network_topology: false
+
 insecure_allow_body_blind_writes: true
 insecure_allow_read_exfiltration: true
 

@@ -138,8 +138,21 @@ func buildUpstreamResolver(cfg *config.Config, logger *slog.Logger, lookupEnv fu
 		Interval: durationOrZero(cfg.Upstream.Failover.HealthInterval),
 		Timeout:  durationOrZero(cfg.Upstream.Failover.HealthTimeout),
 		Logger:   logger,
+		// Zero keeps the resolver's 30s default; a negative value disables it.
+		ResponseHeaderTimeout: effectiveResponseHeaderTimeout(cfg),
 	})
 	return res, legacy, err
+}
+
+// effectiveResponseHeaderTimeout resolves upstream.response_header_timeout to
+// the resolver's convention: negative disables the deadline, zero means the
+// built-in default (also the fallback for an unparseable value, which
+// validation has already rejected in normal operation).
+func effectiveResponseHeaderTimeout(cfg *config.Config) time.Duration {
+	if cfg.Upstream.ResponseHeaderTimeoutDisabled() {
+		return -1
+	}
+	return durationOrZero(cfg.Upstream.ResponseHeaderTimeout)
 }
 
 // durationOrZero parses a Go duration, returning 0 for empty or invalid input

@@ -1,25 +1,34 @@
 # Sockguard — Watchtower Preset
 #
-# Optimized for nicholas-fedor/watchtower v1.21.2, the maintained continuation
-# of the archived containrrr/watchtower. Verified against both upstreams'
-# pkg/container/client.go: the core recreate flow (container list/inspect,
-# stop, force-remove, create with copied network config via NetworkConnect,
-# start, rename, exec lifecycle hooks, image pull/remove) is identical, so
-# this preset covers containrrr/watchtower drop-ins too.
+# Covers both Watchtower forks: containrrr/watchtower (archived, v1.7.1) and
+# its maintained continuation nicholas-fedor/watchtower (v1.21.2). Verified
+# against each fork's pkg/container/client.go. The shared recreate flow
+# (container list/inspect, force-remove, create with copied network config,
+# start, rename, exec lifecycle hooks, image inspect/pull/remove) is identical.
+# The forks differ in a few calls:
 #
-# nicholas-fedor's fork added one call containrrr never made: SetNoRestartPolicy
-# issues POST /containers/{id}/update to set RestartPolicy.Name="no" on the
-# shutdown and failed-self-update paths. This preset grants that route for the
-# fork; against original containrrr/watchtower the grant is simply unused, not
-# harmful. The fork's client also defines a generic UpdateContainer that would
-# submit Resources on that same route, but nothing in its update flow calls it
-# (only SetNoRestartPolicy is called, and it never sets Resources) — so
-# request_body.container_update below allows only the restart-policy field and
-# leaves allow_resource_updates unset (denied), matching what watchtower
-# actually sends rather than what the route could theoretically carry.
+#   - containrrr stops a container with ContainerKill (POST
+#     /containers/{id}/kill, client.go:196), then after ContainerCreate calls
+#     NetworkDisconnect (POST /networks/{id}/disconnect, client.go:278) for
+#     the default network before re-attaching the copied networks with
+#     NetworkConnect. This preset allows both routes. Kill applies to any
+#     container unless owner labels are enabled, and allow_disconnect_force
+#     is global (any container, any network) unless owner labels are on.
+#   - nicholas-fedor stops with ContainerStop (POST /containers/{id}/stop) and
+#     does not use kill or disconnect.
+#   - nicholas-fedor issues POST /containers/{id}/update via SetNoRestartPolicy
+#     to set RestartPolicy.Name="no" on the shutdown and failed-self-update
+#     paths. containrrr never calls it, so the grant is simply unused there.
+#     The fork's client also defines a generic UpdateContainer that would
+#     submit Resources on that same route, but nothing in its update flow calls
+#     it, so request_body.container_update below allows only the restart-policy
+#     field and leaves allow_resource_updates unset (denied).
+#   - nicholas-fedor reads GET /system/df (GetImageDiskUsage) only when its
+#     image disk-usage thresholds are configured. That route is left commented
+#     out below; enable it if you set those thresholds.
 #
 # Allows: ping/info, container list/inspect/lifecycle/recreate, image
-#         inspect/pull/remove, exec lifecycle hooks, and network connect.
+#         inspect/pull/remove, exec lifecycle hooks, and network connect/disconnect.
 # Denies: unused container/image/network reads and writes, volumes,
 #         distribution, build, swarm, secrets, configs, and plugins.
 
@@ -68,6 +77,10 @@ request_body:
     allow_force: true
     allow_remove_volumes: true
   container_create:
+    # cgroup v1 hosts only (e.g. Synology): a recreate replays
+    # HostConfig.CgroupnsMode "host", which is denied by default. Uncommenting
+    # this widens create to the host cgroup namespace.
+    # allow_host_cgroupns: true
     allowed_bind_mounts: []
     allowed_runtimes:
       - runc
@@ -79,6 +92,9 @@ request_body:
   image_pull:
     allow_all_registries: true
   network:
+    # containrrr force-disconnects the new container's default network
+    # (NetworkDisconnect(..., force=true), client.go:278) before re-attaching.
+    allow_disconnect_force: true
     endpoint_config:
       allow_static_addressing: true
       allow_mac_pinning: true
@@ -106,6 +122,9 @@ rules:
   - match: { method: POST, path: "/containers/*/start" }
     action: allow
   - match: { method: POST, path: "/containers/*/stop" }
+    action: allow
+  # containrrr/watchtower stops containers with kill instead of stop.
+  - match: { method: POST, path: "/containers/*/kill" }
     action: allow
   - match: { method: POST, path: "/containers/*/rename" }
     action: allow
@@ -136,9 +155,18 @@ rules:
   - match: { method: DELETE, path: "/images/*" }
     action: allow
 
-  # Preserve secondary network attachments during recreate.
+  # Preserve secondary network attachments during recreate. containrrr
+  # disconnects the default network from the new container before connecting
+  # the copied ones.
   - match: { method: POST, path: "/networks/*/connect" }
     action: allow
+  - match: { method: POST, path: "/networks/*/disconnect" }
+    action: allow
+
+  # Optional: nicholas-fedor/watchtower reads image disk usage only when disk
+  # thresholds are configured. Uncomment to allow it.
+  # - match: { method: GET, path: "/system/df" }
+  #   action: allow
 
   # Deny everything else
   - match: { method: "*", path: "/**" }
