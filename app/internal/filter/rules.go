@@ -214,7 +214,8 @@ func (cr *CompiledRule) matchesNormalizedUpperWithBit(upperMethod string, method
 // Evaluate evaluates a request against an ordered list of compiled rules.
 // Returns the action and the matched rule index. If no rule matches, returns deny.
 func Evaluate(rules []*CompiledRule, r *http.Request) (Action, int, string) {
-	action, index, reason, _ := evaluateRequestPolicy(rules, r, NormalizePath(r.URL.Path))
+	routePath, encodedScp := normalizedLibpodImageScpRoutePath(r)
+	action, index, reason, _ := evaluateRequestPolicy(rules, r, NormalizePath(r.URL.Path), routePath, encodedScp)
 	return action, index, reason
 }
 
@@ -225,8 +226,10 @@ func Evaluate(rules []*CompiledRule, r *http.Request) (Action, int, string) {
 // also preventing an encoded alias from bypassing a canonical decoded deny.
 // The rejecting view owns denial metadata; when both allow, the encoded route
 // view owns metadata and the path handed to request inspectors.
-func evaluateRequestPolicy(rules []*CompiledRule, r *http.Request, normalizedPath string) (Action, int, string, string) {
-	routePath, encodedScp := normalizedLibpodImageScpRoutePath(r)
+//
+// routePath and encodedScp come from the caller's single
+// normalizedLibpodImageScpRoutePath classification of the request.
+func evaluateRequestPolicy(rules []*CompiledRule, r *http.Request, normalizedPath, routePath string, encodedScp bool) (Action, int, string, string) {
 	if !encodedScp {
 		action, index, reason := evaluateNormalized(rules, r.Method, normalizedPath)
 		return action, index, reason, normalizedPath

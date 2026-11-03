@@ -24,6 +24,7 @@ import (
 	"github.com/codeswhat/sockguard/v3/app/internal/filter"
 	"github.com/codeswhat/sockguard/v3/app/internal/ownership"
 	"github.com/codeswhat/sockguard/v3/app/internal/proxy"
+	"github.com/codeswhat/sockguard/v3/app/internal/upstream"
 )
 
 const defaultDockerSocket = "/var/run/docker.sock"
@@ -129,7 +130,7 @@ func newIntegrationProxyHandlerWithOptions(t *testing.T, socketPath string, rule
 	logger := newIntegrationLogger()
 
 	var handler http.Handler = proxy.NewWithOptions(socketPath, logger, proxy.Options{})
-	handler = proxy.HijackHandler(socketPath, logger, handler)
+	handler = proxy.HijackHandlerWithDialer(upstream.NewSingleSocket(socketPath), 10*time.Minute, logger, handler)
 	dockerTransport := dockerSocketRoundTripper(socketPath)
 	handler = filter.ResourceLimitGuardWithOptions(logger, filter.ResourceLimitGuardOptions{
 		PolicyConfig:     filterOpts.PolicyConfig,
