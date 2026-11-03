@@ -482,6 +482,16 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
+    version: "v2.4.5",
+    title: "Signed Root UID Fix",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "A numeric user with a sign prefix such as +0 is now treated as root on Docker and Podman",
+      "request_body.exec.allow_root_user: false and require_non_root_user can no longer be bypassed to run as UID 0",
+    ],
+  },
+  {
     version: "v3.0.0",
     title: "Verified TLS Compatibility Boundary",
     emoji: "🔐",
