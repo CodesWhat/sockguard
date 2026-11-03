@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - **Owner isolation caps the resources one compat create names.** `POST /containers/create` and service create/update collected their volume, network, image, secret and config references with a linear duplicate scan and no bound, so a body with tens of thousands of binds cost quadratic CPU. Duplicates now collapse through a map, and a body that names more than 256 distinct resources is refused with the owner-policy `403`.
+- **Owner isolation refuses `POST /build?pull=1`.** The daemon pulls each `FROM` image and rebinds its name to what the registry serves, so a pulling build over a base image another owner held took the name from it. The `FROM` names are in the build context, which the owner layer doesn't read, so the pull is refused (`403`) instead of checked. `pull=0` and builds with no `pull` are unchanged.
 
 ## [3.0.0-rc.6] - 2026-11-03
 
