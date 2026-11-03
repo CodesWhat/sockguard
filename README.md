@@ -43,7 +43,7 @@
 <hr>
 
 > [!NOTE]
-> **v2.4.4 is the latest stable release.** It stops redaction placeholders from breaking typed Docker clients such as Traefik and Diun, fixes Portainer Recreate and the watchtower and portwing presets, and closes libpod create bypasses and inspect leaks. It also fixes upstream timeouts on slow stop and prune calls and adds a real-Docker-types compat CI job. It carries v2.4.3. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
+> **v2.4.5 is the latest stable release.** It is a security release: a numeric user with a sign prefix such as `+0` was not treated as root, so `request_body.exec.allow_root_user: false` and `require_non_root_user` could be bypassed to run as UID 0 on Docker and Podman. It carries v2.4.4. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
 <h2 align="center">Contents</h2>
 
@@ -527,6 +527,7 @@ Added in 2.2.11: native Podman container and pod creates refuse caller-selected 
 | **v2.4.2** ✅ | Podman Isolation & Release Reliability | Engine identity checks, version-aware volume filter scoping, unscoped native-route refusals, bounded CI retries and protected maintenance chart pins. |
 | **v2.4.3** ✅ | Session Cleanup & Pattern Validation | Completed hijacked sessions are dropped from the listener tracker, incomplete keyless subject patterns are rejected, and Podman nightly CI tracks Fedora major tags. |
 | **v2.4.4** ✅ | Client Compatibility & libpod Hardening | Redaction placeholders no longer break typed Docker clients, preset gaps for Portainer, watchtower and portwing are closed, slow stop and prune calls get the right timeouts, and libpod create bypasses and inspect leaks are closed. |
+| **v2.4.5** ✅ | Signed Root UID Fix | A numeric user with a sign prefix such as `+0` is now treated as root, closing the `allow_root_user: false` and `require_non_root_user` bypass on Docker and Podman. |
 | **v2.x** | Supply Chain | `egress-policy: block` with curated allow-lists on high-privilege release jobs |
 | **v2.x** | Policy Refinement | Named rule path aliases and further response-policy refinement |
 | **v2.x** | Internals | Container-create ownership reference collectors are separated into bind, mount and endpoint helpers with the same isolation checks. Code-review backlog: collapse the config → filter-options → policy translation layers behind a single source of truth; profiling-gated JSON redaction fast path |

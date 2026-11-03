@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.5] - 2026-11-03
+
+v2.4.5 is a security release. A numeric user with a sign prefix such as `+0` was not treated as root, so `request_body.exec.allow_root_user: false` and `require_non_root_user` could be bypassed to run as UID 0 on Docker and Podman. It carries v2.4.4.
+
 ### Security
 
 - Signed numeric user IDs such as `+0`, `-0`, `+00` and `+0:0` were not treated as root. dockerd and Podman parse a numeric user with `strconv.Atoi`, which accepts a sign, but the filter used `ParseUint`, which does not. A container create, libpod create or exec create with `"User":"+0"` therefore got past `require_non_root_user` and `request_body.exec.allow_root_user: false` and ran as UID 0. The filter now parses the user the way the engines do. A value that overflows is a user name to the engines too, so it is still looked up by name and never wraps to 0.
