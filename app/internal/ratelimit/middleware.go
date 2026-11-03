@@ -240,7 +240,8 @@ type MiddlewareOptions struct {
 	// Nil disables it, in which case per-profile priorities have no effect.
 	GlobalConcurrency *GlobalConcurrencyOptions
 	// IsStreaming reports whether a request is an open-ended stream (events,
-	// followed logs, streaming stats, wait, attach, exec start). Such requests
+	// followed container/service/task logs, streaming stats, Podman
+	// top?stream, wait, attach, exec start). Such requests
 	// skip the concurrency caps and are bounded by the separate per-profile
 	// stream cap instead. Finite heavy operations such as build and prune must
 	// not match. Nil disables the exemption.

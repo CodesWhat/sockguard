@@ -63,17 +63,18 @@ func TestPriorityThreshold_HardcodedShares(t *testing.T) {
 		// Rounded down (floor)
 		{PriorityNormal, 11, 8}, // 11 * 0.8 = 8.8 → 8
 		{PriorityLow, 11, 5},    // 11 * 0.5 = 5.5 → 5
-		// Tiny caps: high gets at least 1
+		// Tiny caps: every tier gets at least 1
 		{PriorityHigh, 1, 1},
-		{PriorityLow, 1, 0}, // 1 * 0.5 = 0.5 → 0 floor
+		{PriorityNormal, 1, 1}, // 1 * 0.8 = 0.8 → floored to 1
+		{PriorityLow, 1, 1},    // 1 * 0.5 = 0.5 → floored to 1
 		// Disabled gate → 0
 		{PriorityNormal, 0, 0},
 		{PriorityHigh, -1, 0},
 		// globalMax == 0 is the exact <= boundary on the disabled-gate guard.
 		// Without this case a mutant that weakens "globalMax <= 0" to
-		// "globalMax < 0" still lands on 0 for PriorityNormal (it falls through
-		// to the t < 1 floor-forcing branch), so only PriorityHigh — whose
-		// floor-forcing branch returns 1 instead of 0 — exposes the mutant.
+		// "globalMax < 0" the floor branch returns 1 for every tier, so both
+		// cases expose the mutant.
+		{PriorityNormal, 0, 0},
 		{PriorityHigh, 0, 0},
 		// share=0.8, globalMax=2 → floor(1.6)=1 exactly. This pins the t < 1
 		// boundary: t == 1 must fall through to "return t" (1), not get
@@ -290,6 +291,41 @@ func TestMiddleware_GlobalConcurrency_LowProfileHitsPriorityFloor(t *testing.T) 
 		release <- struct{}{}
 	}
 	wg.Wait()
+}
+
+func TestMiddleware_GlobalConcurrency_MaxInflightOneAdmitsNormalProfile(t *testing.T) {
+	t.Parallel()
+	enter := make(chan struct{})
+	release := make(chan struct{})
+	blocking := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		enter <- struct{}{}
+		<-release
+		w.WriteHeader(http.StatusOK)
+	})
+	opts := MiddlewareOptions{
+		Profiles:          map[string]ProfileOptions{"p": {}},
+		ResolveProfile:    resolveProfileFn("p"),
+		GlobalConcurrency: &GlobalConcurrencyOptions{MaxInflight: 1},
+	}
+	h := mustMiddleware(t, newTestLogger(), nil, nil, opts)(blocking)
+
+	done := make(chan int, 1)
+	go func() {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/containers/json", nil))
+		done <- rec.Code
+	}()
+	<-enter
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/containers/json", nil))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("second concurrent request: got %d, want 429", rec.Code)
+	}
+	release <- struct{}{}
+	if code := <-done; code != http.StatusOK {
+		t.Fatalf("first request: got %d, want 200", code)
+	}
 }
 
 func TestMiddleware_GlobalConcurrency_HighProfilePassesBelowGlobalCap(t *testing.T) {

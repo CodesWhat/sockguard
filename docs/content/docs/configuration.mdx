@@ -902,6 +902,8 @@ Each priority tier has a hardcoded share of the global cap:
 | `normal` (default) | 80% | denied above 80 in-flight |
 | `high` | 100% | denied above 100 in-flight |
 
+Shares are rounded down but never below 1, so any positive `max_inflight` admits at least one request of every tier. Tier ordering (high before normal before low) only holds with `max_inflight` of 2 or more. At 1, all tiers share the single slot first-come.
+
 When total in-flight crosses the floor for a request's priority, the request
 is denied with `429 Too Many Requests` and `{"reason":"priority_floor"}`.
 Per-profile concurrency caps still apply on top — a `low` profile with
