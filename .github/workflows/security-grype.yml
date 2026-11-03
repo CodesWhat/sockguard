@@ -311,6 +311,29 @@ jobs:
       # Go 1.27. A docker:// step is not an option: the repository's
       # allowed-actions policy rejects it and the whole workflow fails to
       # start.
+      # The pin comment above is only prose. This step makes it a gate: gosec's
+      # image runs GOTOOLCHAIN=local, so a go.mod `go` line newer than the
+      # image's Go makes gosec scan nothing and still exit with an empty SARIF.
+      # GOSEC_IMAGE_GO is the Go the pinned image above was built with; raise it
+      # in the same change that moves the pin.
+      - name: Guard gosec image Go version
+        shell: bash
+        env:
+          GOSEC_IMAGE_GO: "1.27.0"
+        run: |
+          set -euo pipefail
+          mod_go="$(awk '$1 == "go" {print $2; exit}' go.mod)"
+          if [ -z "${mod_go}" ]; then
+            echo "::error::could not read the go directive from go.mod"
+            exit 1
+          fi
+          newest="$(printf '%s\n%s\n' "${mod_go}" "${GOSEC_IMAGE_GO}" | sort -V | tail -n 1)"
+          if [ "${newest}" != "${GOSEC_IMAGE_GO}" ]; then
+            echo "::error::go.mod requires Go ${mod_go} but the pinned gosec image ships Go ${GOSEC_IMAGE_GO}; gosec would load no packages and report a clean empty scan. Move the securego/gosec pin to an action commit whose image has Go ${mod_go} or newer, then raise GOSEC_IMAGE_GO."
+            exit 1
+          fi
+          echo "go.mod Go ${mod_go} <= gosec image Go ${GOSEC_IMAGE_GO}"
+
       - name: Run Gosec
         uses: securego/gosec@57f161386e11e13e4c8a37255bc1a6502993d079  # action.yml pins the 2.29.0 image
         with:

@@ -9,9 +9,9 @@
 //
 // This package must never import grpc-go or anything from
 // app/internal/buildkitproto's generated code that would require it: the
-// #185 sign-off's dependency exception is golang.org/x/net/http2 (phase 2)
-// and google.golang.org/protobuf (buildkitproto), nothing else, and this
-// package's job — classifying a (endpoint, service, method) triple — needs
+// #185 sign-off's dependency exception is google.golang.org/protobuf
+// (buildkitproto), nothing else (the HTTP/2 transport runs on net/http through
+// internal/h2conn, so it adds no module), and this package's job — classifying a (endpoint, service, method) triple — needs
 // neither.
 package buildkitproxy
 

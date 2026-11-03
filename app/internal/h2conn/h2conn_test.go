@@ -444,3 +444,54 @@ func TestSingleConnListener(t *testing.T) {
 		t.Fatal("second Accept stayed blocked after Close")
 	}
 }
+
+func TestProbeHTTP2ServerAcceptsADefaultRuntime(t *testing.T) {
+	if err := probeHTTP2Server(); err != nil {
+		t.Fatalf("probeHTTP2Server() = %v, want nil with HTTP/2 enabled", err)
+	}
+}
+
+func TestProbeHTTP2ServerDetectsGODEBUGOff(t *testing.T) {
+	t.Setenv("GODEBUG", "http2server=0")
+	if err := probeHTTP2Server(); !errors.Is(err, ErrHTTP2ServerDisabled) {
+		t.Fatalf("probeHTTP2Server() = %v, want ErrHTTP2ServerDisabled under GODEBUG=http2server=0", err)
+	}
+}
+
+func TestServeReturnsTheDisabledErrorAndClosesTheConn(t *testing.T) {
+	original := http2ServerCheck
+	t.Cleanup(func() { http2ServerCheck = original })
+	http2ServerCheck = func() error { return ErrHTTP2ServerDisabled }
+
+	serverSide, clientSide := net.Pipe()
+	defer clientSide.Close()
+	err := Serve(context.Background(), serverSide, ServerConfig{Handler: http.NotFoundHandler()})
+	if !errors.Is(err, ErrHTTP2ServerDisabled) {
+		t.Fatalf("Serve() = %v, want ErrHTTP2ServerDisabled", err)
+	}
+	if _, werr := serverSide.Write([]byte("x")); !errors.Is(werr, io.ErrClosedPipe) {
+		t.Fatalf("write after Serve returned: err = %v, want io.ErrClosedPipe", werr)
+	}
+}
+
+func TestServeReturnsNilWhenThePeerGoesAway(t *testing.T) {
+	serverSide, clientSide := net.Pipe()
+	result := make(chan error, 1)
+	go func() {
+		result <- Serve(context.Background(), serverSide, ServerConfig{Handler: http.NotFoundHandler()})
+	}()
+	client, err := NewClientConn(clientSide, nil)
+	if err != nil {
+		t.Fatalf("NewClientConn: %v", err)
+	}
+	roundTrip(t, client, newRequest(t, http.MethodGet, "http://tunnel/", ""))
+	_ = client.Close()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("Serve() = %v, want nil on an ordinary disconnect", err)
+		}
+	case <-time.After(testWait):
+		t.Fatal("Serve did not return")
+	}
+}

@@ -17,6 +17,7 @@ package h2conn
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"sync"
@@ -103,14 +104,61 @@ type ServerConfig struct {
 // the peer went away, a timeout fired, or something closed conn. conn is
 // closed by the time Serve returns.
 //
+// Serve returns nil when the connection ended in the ordinary ways and
+// ErrHTTP2ServerDisabled when net/http's HTTP/2 server is switched off
+// (GODEBUG=http2server=0), so the caller can tear the tunnel down with a
+// reason instead of an empty connection that closed for no stated cause.
+//
 // ctx is the base context for every request and is not a cancellation
 // signal for the connection; close conn to stop serving.
 //
 // The peer must send the client preface before Serve writes anything, which
 // every prior-knowledge client does. A connection that sends something else,
 // or nothing within PrefaceTimeout, is closed without a response.
-func Serve(ctx context.Context, conn net.Conn, config ServerConfig) {
+func Serve(ctx context.Context, conn net.Conn, config ServerConfig) error {
 	defer conn.Close()
+
+	if err := http2ServerCheck(); err != nil {
+		return err
+	}
+	return serve(ctx, conn, config)
+}
+
+// ErrHTTP2ServerDisabled is returned by Serve when net/http's HTTP/2 server is
+// turned off, which GODEBUG=http2server=0 does for the whole process. With it
+// off, net/http answers the HTTP/2 preface as HTTP/1.1 and closes, so a tunnel
+// would end with no frame served and no error anywhere.
+var ErrHTTP2ServerDisabled = errors.New("h2conn: net/http's HTTP/2 server is disabled (GODEBUG=http2server=0)")
+
+// http2ServerCheck runs the probe once per process. It is a variable so a test
+// can substitute a failing check without changing GODEBUG for the whole run.
+var http2ServerCheck = sync.OnceValue(probeHTTP2Server)
+
+// probeHTTP2Server serves one throwaway in-memory connection and checks that
+// net/http answers the client preface with an HTTP/2 SETTINGS frame. An
+// HTTP/1 answer means the HTTP/2 server is off.
+func probeHTTP2Server() error {
+	server, client := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer server.Close()
+		_ = serve(context.Background(), server, ServerConfig{Handler: http.NotFoundHandler(), PrefaceTimeout: 2 * time.Second})
+	}()
+	defer func() { _ = client.Close(); <-done }()
+
+	_ = client.SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := client.Write([]byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")); err != nil {
+		return ErrHTTP2ServerDisabled
+	}
+	var frame [9]byte
+	if _, err := io.ReadFull(client, frame[:]); err != nil || frame[3] != 0x4 {
+		return ErrHTTP2ServerDisabled
+	}
+	return nil
+}
+
+func serve(ctx context.Context, conn net.Conn, config ServerConfig) error {
 
 	var protocols http.Protocols
 	protocols.SetUnencryptedHTTP2(true)
@@ -146,8 +194,12 @@ func Serve(ctx context.Context, conn net.Conn, config ServerConfig) {
 		},
 	}
 	// Serve returns once the listener reports closed, which finish arranges
-	// when the one connection reaches a terminal state.
-	_ = server.Serve(listener)
+	// when the one connection reaches a terminal state, and Serve reports that
+	// as a closed listener, which is the normal end here.
+	if err := server.Serve(listener); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
 }
 
 // plainConn narrows a connection to the net.Conn method set. net/http treats

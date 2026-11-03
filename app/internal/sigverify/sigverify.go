@@ -8,6 +8,9 @@ package sigverify
 import (
 	"context"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
@@ -35,6 +38,14 @@ func CompileKey(pem string) (sigsig.Verifier, string, error) {
 	pubKey, err := cryptoutils.UnmarshalPEMToPublicKey([]byte(pem))
 	if err != nil {
 		return nil, "", fmt.Errorf("pem: %w", err)
+	}
+	// sigsig.LoadVerifier also loads ML-DSA keys, but the bundle verification
+	// this verifier feeds only handles RSA, ECDSA and Ed25519 keys, so an
+	// ML-DSA key would pass config load and then fail every verification.
+	switch pubKey.(type) {
+	case *rsa.PublicKey, *ecdsa.PublicKey, ed25519.PublicKey:
+	default:
+		return nil, "", fmt.Errorf("pem: unsupported public key type %T (use RSA, ECDSA or Ed25519)", pubKey)
 	}
 	verifier, err := sigsig.LoadVerifier(pubKey, crypto.SHA256)
 	if err != nil {

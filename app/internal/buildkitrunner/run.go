@@ -49,11 +49,18 @@ func Run(ctx context.Context, opts Options) (retErr error) {
 	}
 	defer sessionConn.Close()
 	sessionDone := make(chan struct{})
+	var sessionErr error
 	go func() {
 		defer close(sessionDone)
-		h2conn.Serve(ctx, sessionConn, h2conn.ServerConfig{Handler: http.HandlerFunc(serveSession), MaxConcurrentStreams: 8})
+		sessionErr = h2conn.Serve(ctx, sessionConn, h2conn.ServerConfig{Handler: http.HandlerFunc(serveSession), MaxConcurrentStreams: 8})
 	}()
-	defer func() { _ = sessionConn.Close(); <-sessionDone }()
+	defer func() {
+		_ = sessionConn.Close()
+		<-sessionDone
+		if sessionErr != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("serve session: %w", sessionErr))
+		}
+	}()
 
 	root := &control.SolveRequest{Ref: build, Session: session, Cache: &control.CacheOptions{}}
 	if opts.ExportName != "" {
@@ -90,12 +97,19 @@ func Run(ctx context.Context, opts Options) (retErr error) {
 	}
 	defer func() { retErr = errors.Join(retErr, process.close()) }()
 	served := make(chan struct{})
+	var serveErr error
 	relay := &gatewayRelay{client: client, build: build, report: newOperationReporter(opts.Operations)}
 	go func() {
 		defer close(served)
-		h2conn.Serve(ctx, process.conn, h2conn.ServerConfig{Handler: relay, MaxConcurrentStreams: 16, MaxHeaderBytes: 64 << 10, PrefaceTimeout: 10 * time.Second})
+		serveErr = h2conn.Serve(ctx, process.conn, h2conn.ServerConfig{Handler: relay, MaxConcurrentStreams: 16, MaxHeaderBytes: 64 << 10, PrefaceTimeout: 10 * time.Second})
 	}()
-	defer func() { _ = process.conn.Close(); <-served }()
+	defer func() {
+		_ = process.conn.Close()
+		<-served
+		if serveErr != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("serve frontend gateway: %w", serveErr))
+		}
+	}()
 
 	select {
 	case <-ctx.Done():
