@@ -33,12 +33,16 @@ reports follow [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
 ## Change and release control
 
-Current-line changes go through pull requests into the active `dev/vX.Y` branch.
-Fixes for an older supported line go into the matching `maintenance/X.Y.x` branch.
-`main` advances through release promotion pull requests. Stable tags are cut from
-`main`, or from the matching `maintenance/X.Y.x` branch for older supported patches.
+Feature and fix branches start from the active `dev/vX.Y` branch and open a
+pull request back into it. Those PRs get a subagent diff review and merge once
+required checks pass. `dev/vX.Y` is promoted to `main` through a release
+promotion pull request, which gets a CodeRabbit review and two approvals. Tags
+are cut from `main` with the `release-cut.yml` workflow. After GA, patch lines
+live on `maintenance/X.Y.x`: fixes branch from and merge into the matching
+maintenance branch, and older supported patches are tagged from it.
 Prereleases are cut from the `dev/vX.Y` branch or the matching
-maintenance branch. CI runs
+maintenance branch. See [`CONTRIBUTING.md`](CONTRIBUTING.md) and
+[`RELEASING.md`](RELEASING.md) for the full procedure. CI runs
 race-enabled tests, linting, vulnerability analysis, integration tests,
 fuzzing, and release checks. Tagged releases are created by repository
 workflows and are signed and attested with GitHub Actions OIDC.
