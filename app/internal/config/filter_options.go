@@ -178,6 +178,8 @@ func (c LibpodContainerCreateRequestBodyConfig) ToFilterOptions() filter.LibpodC
 		AllowSystemdMode:                  c.AllowSystemdMode,
 		AllowCustomIDMappings:             c.AllowCustomIDMappings,
 		AllowLogPath:                      c.AllowLogPath,
+		AllowUnifiedCgroupSettings:        c.AllowUnifiedCgroupSettings,
+		AllowEnvHost:                      c.AllowEnvHost,
 	}
 }
 

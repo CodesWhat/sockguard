@@ -119,6 +119,16 @@ type LibpodContainerCreateOptions struct {
 	// that names a directory, the two log destinations a create can put on
 	// the daemon host. Default false. See denyLogPathReason.
 	AllowLogPath bool
+
+	// AllowUnifiedCgroupSettings permits a non-empty "unified" map, raw
+	// cgroup v2 knobs written straight into the container's cgroup. Default
+	// false. See denyUnifiedCgroupReason.
+	AllowUnifiedCgroupSettings bool
+
+	// AllowEnvHost permits "env_host": true, which copies the Podman
+	// daemon's own environment into the container. Default false. See
+	// denyEnvHostReason.
+	AllowEnvHost bool
 }
 
 type libpodContainerCreatePolicy struct {
@@ -161,6 +171,9 @@ type libpodContainerCreatePolicy struct {
 	allowSystemdMode      bool
 	allowCustomIDMappings bool
 	allowLogPath          bool
+
+	allowUnifiedCgroupSettings bool
+	allowEnvHost               bool
 
 	imageTrustVerifier imageVerifier
 	imageFetcher       signatureFetcher
@@ -221,6 +234,9 @@ func newLibpodContainerCreatePolicy(opts LibpodContainerCreateOptions) libpodCon
 		allowSystemdMode:                  opts.AllowSystemdMode,
 		allowCustomIDMappings:             opts.AllowCustomIDMappings,
 		allowLogPath:                      opts.AllowLogPath,
+
+		allowUnifiedCgroupSettings: opts.AllowUnifiedCgroupSettings,
+		allowEnvHost:               opts.AllowEnvHost,
 	}
 
 	itf := buildImageTrustFields(opts.ImageTrust)
@@ -332,6 +348,9 @@ func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Reques
 		return denyReason, nil
 	}
 	if denyReason := p.denyIDMappingsReason(createReq.IDMapping); denyReason != "" {
+		return denyReason, nil
+	}
+	if denyReason := p.denyResidualFieldsReason(createReq); denyReason != "" {
 		return denyReason, nil
 	}
 

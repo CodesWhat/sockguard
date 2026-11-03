@@ -92,6 +92,16 @@ type libpodContainerCreateRequest struct {
 	Sysctl             map[string]string `json:"sysctl"`
 	ReadOnlyFilesystem bool              `json:"read_only_filesystem"`
 	Systemd            string            `json:"systemd"`
+
+	// Unified is SpecGenerator's "unified" map: raw cgroup v2 controller
+	// knobs Podman writes into the container's cgroup. See
+	// denyUnifiedCgroupReason in libpod_container_create_residual.go.
+	Unified map[string]string `json:"unified"`
+
+	// Pod is the pod this container joins. It shares the pod's infra
+	// namespaces, so it follows restrictNamespaceSharing. See
+	// denyPodJoinReason.
+	Pod string `json:"pod"`
 }
 
 // libpodLogConfiguration mirrors SpecGenerator's "log_configuration" object

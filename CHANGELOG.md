@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The hand-rolled star chart is gone.** The README and website already embed Star History, so the dispatch-only `starchart.yml` workflow, the committed `star-history*.svg` pair, the star-chart contract test and the "dispatch starchart" step in `RELEASING.md` are removed. Nothing in the release cut read the chart.
 
+### Security
+
+- **Native container create gates two more SpecGenerator fields.** `POST /libpod/containers/create` forwarded a non-empty `unified` map, raw cgroup v2 control values Podman writes into the container's cgroup, and `env_host: true`, which copies the Podman daemon's environment into the container (it was only refused while an environment allow or deny list was set). Both are now denied unless `request_body.libpod_container_create.allow_unified_cgroup_settings` or `allow_env_host` is on (`SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_UNIFIED_CGROUP_SETTINGS` and `..._ALLOW_ENV_HOST`). This is a default-deny change for a client that sets either, such as `podman run --cgroup-conf` or `--env-host`. A non-empty `pod` (which joins the pod's infra namespaces) is now denied while `restrict_namespace_sharing` is on, the same switch that governs `container:<ref>` joins; it passes with that off, as before. `r_limits` stays ungated like the Docker-compat `Ulimits`, and when owner isolation is enabled `pod` and `dependencyContainers` are also owner-checked.
+
 ### Fixed
 
 - **The Diun preset no longer breaks Diun's container list.** The default network-topology redaction rewrites `NetworkSettings.Networks[*].IPAddress`, `Gateway`, `GlobalIPv6Address`, `IPv6Gateway` and `MacAddress` (plus `NetworkMode` and network IDs) to the literal `<redacted>`, which typed Go Docker clients can't decode, so Diun failed with `ParseAddr("<redacted>"): unable to parse IP`. `app/configs/diun.yaml` now sets `response.redact_network_topology: false`, which also exposes `NetworkMode` and network IDs to Diun. A stable fix that writes type-valid empty values is in progress.
