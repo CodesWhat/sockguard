@@ -10,7 +10,7 @@ description: Upgrade to stable v2.4, evaluate the v3 release candidate, or migra
 | v2.4.4 | Published stable | Keep normal Docker, Homebrew, deb/rpm and binary release channels. |
 | v2.3.3 | End of life | The last v2.3 patch. It no longer receives security fixes, so upgrade to v2.4. |
 | v2.2.11 | End of life | Upgrade to v2.4 for security fixes. |
-| v3.0.0-rc.5 | Published candidate | Select its image or `/v3` Go tag explicitly and migrate the removed TLS settings below. It carries v2.4.3, and its validation and bake window are independent of v2.4. Stable channels serve v2.4.4. |
+| v3.0.0-rc.6 | Published candidate | Select its image or `/v3` Go tag explicitly and migrate the removed TLS settings below. It carries v2.4.4, and its validation and bake window are independent of v2.4. Stable channels serve v2.4.4. |
 
 ## From Sockguard v2.1 to v2.2
 
@@ -62,8 +62,8 @@ identity remains a documented limit; use distinct UID/GID client profiles.
 
 ## From Sockguard v2 to v3 (release candidate)
 
-The current candidate, [v3.0.0-rc.5](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0-rc.5),
-is published. It carries v2.4.3 and includes the v2.4 policy/security work and the TLS removals below.
+The current candidate, [v3.0.0-rc.6](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0-rc.6),
+is published. It carries v2.4.4 and includes the v2.4 policy/security work and the TLS removals below.
 All v2 release lines retain their accepted settings.
 Before testing the v3 candidate:
 
@@ -83,11 +83,11 @@ Docker environment's existing plaintext behavior when neither TLS variable is
 set. The opaque BuildKit acknowledgment remains accepted; its removal target is
 still undecided.
 
-Select `ghcr.io/codeswhat/sockguard:3.0.0-rc.5` explicitly, download a platform
+Select `ghcr.io/codeswhat/sockguard:3.0.0-rc.6` explicitly, download a platform
 binary from the release, or install with Go 1.27:
 
 ```bash
-go install github.com/codeswhat/sockguard/v3/app/cmd/sockguard@v3.0.0-rc.5
+go install github.com/codeswhat/sockguard/v3/app/cmd/sockguard@v3.0.0-rc.6
 ```
 
 The candidate module is `github.com/codeswhat/sockguard/v3`. Go consumers must
@@ -96,8 +96,8 @@ serve v2.4.4.
 
 V3 has an independent validation and bake window. GA requires fresh exact-source
 four-hour soak and TLS/security checks, published-candidate image conformance,
-and at least 14 days after the first candidate's 2026-10-17 publication at
-16:08:58 UTC. GA is no earlier than 2026-10-31 at 16:08:58 UTC. Candidate-only
+and at least 14 days after rc.6's 2026-11-03 publication. GA is no earlier
+than 2026-11-17. Candidate-only
 behavior fixes restart that window; v2.3/v2.4 validation doesn't replace it.
 
 ## Deprecation schedule

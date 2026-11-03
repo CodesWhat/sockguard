@@ -487,10 +487,10 @@ export const roadmap: Milestone[] = [
     emoji: "🔐",
     status: "candidate",
     items: [
-      "Published v3.0.0-rc.5 candidate; select its image or /v3 Go tag explicitly. Includes v2.4.3 session cleanup, v2.4.2 Podman isolation and dependency updates, exec target protection and the v2.4 policy/security work",
+      "Published v3.0.0-rc.6 candidate; select its image or /v3 Go tag explicitly. Includes v2.4.4 client compatibility and libpod hardening, v2.4.3 session cleanup, v2.4.2 Podman isolation and dependency updates, exec target protection and the v2.4 policy/security work",
       "Rejects the deprecated endpoint skip-verification setting and unverified Docker TLS fallback; configure the daemon CA and verified TLS",
       "Go imports, generated descriptors and release builds use /v3; stable channels serve v2.4.4",
-      "GA requires fresh candidate soak, TLS/security checks and published-image conformance; no earlier than 2026-10-31 at 16:08:58 UTC. rc.5 only carries fixes already released in v2.4.3 plus site changes, so that floor stands, with a fresh soak required on rc.5. Candidate-only behavior fixes restart the window; opaque BuildKit removal remains undecided",
+      "GA requires fresh candidate soak, TLS/security checks and published-image conformance; no earlier than 2026-11-17, 14 days after rc.6. Candidate-only behavior changes in rc.6 restarted the window. Candidate-only behavior fixes restart the window; opaque BuildKit removal remains undecided",
     ],
   },
 ];

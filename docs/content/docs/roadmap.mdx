@@ -209,8 +209,8 @@ See [Security](/security#standard-buildx-dockerfile-builds).
 
 ## v3 compatibility boundary
 
-The current candidate, [v3.0.0-rc.5](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0-rc.5),
-is published and carries v2.4.3, which includes the v2.4 policy/security work. The insecure endpoint
+The current candidate, [v3.0.0-rc.6](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0-rc.6),
+is published and carries v2.4.4, which includes the v2.4 policy/security work. The insecure endpoint
 TLS setting and unverified `DOCKER_TLS` fallback deprecated in v2.1 are rejected.
 The [deprecation ledger](/deprecations) owns the exact contracts. All v2 lines
 retain those settings; the opaque BuildKit acknowledgment's removal version
@@ -225,10 +225,9 @@ image and Go installation commands and TLS configuration changes.
 
 This candidate needs fresh four-hour soak and TLS/security checks on its exact
 source, conformance against its published image, and at least 14 days after
-the first candidate's publication at 2026-10-17 16:08:58 UTC before GA, so
-promotion is no earlier than 2026-10-31 at 16:08:58 UTC. rc.5 only carries
-fixes already released in v2.4.3 plus site changes, so that floor stands, and rc.5
-needs a fresh soak. Candidate-only behavior fixes restart the window.
+rc.6's 2026-11-03 publication before GA, so promotion is no earlier than
+2026-11-17. rc.6 carries candidate-only behavior changes, which restarted the
+window.
 The v2.3 and v2.4 clocks don't cover v3; those candidate sources, stable channels
 and their existing validation remain separate.
 
