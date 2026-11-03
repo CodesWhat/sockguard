@@ -98,7 +98,7 @@ func TestConfiguredDockerCannotHidePodmanFailover(t *testing.T) {
 // TestProbedDockerNeedsEveryEndpointToProbeAsDocker pins the evidence the
 // gates that loosen for dockerd rely on: every endpoint positively probed as
 // Docker. An explicit upstream.flavor: docker is a setting, not a probe, so a
-// failed or unrecognised probe, or one endpoint that couldn't be probed in a
+// failed or unrecognized probe, or one endpoint that couldn't be probed in a
 // failover set, leaves the flag off.
 func TestProbedDockerNeedsEveryEndpointToProbeAsDocker(t *testing.T) {
 	t.Parallel()
@@ -116,7 +116,7 @@ func TestProbedDockerNeedsEveryEndpointToProbeAsDocker(t *testing.T) {
 		{"explicit docker, one docker endpoint", "docker", []server{docker}, true},
 		{"explicit docker, two docker endpoints", "docker", []server{docker, docker}, true},
 		{"explicit docker, failed probe", "docker", []server{{503, `unavailable`}}, false},
-		{"explicit docker, unrecognised engine", "docker", []server{{http.StatusOK, `{"Components":[{"Name":"Mystery Engine"}]}`}}, false},
+		{"explicit docker, unrecognized engine", "docker", []server{{http.StatusOK, `{"Components":[{"Name":"Mystery Engine"}]}`}}, false},
 		{"explicit docker, malformed body", "docker", []server{{http.StatusOK, `{`}}, false},
 		{"explicit docker, docker then failed probe", "docker", []server{docker, {503, `unavailable`}}, false},
 		{"explicit docker, failed probe then docker", "docker", []server{{503, `unavailable`}, docker}, false},

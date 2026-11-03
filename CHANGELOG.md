@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **The compat-create mount comma refusal applies to Podman upstreams only.** A comma in a `HostConfig.Mounts` `Type`, `Source`, `Target`, `Consistency`, `BindOptions.Propagation` or `VolumeOptions.Subpath` is only a field separator to Podman, which rebuilds the mount into a `--mount` string. On a dockerd upstream it is a literal character, so the create is now forwarded instead of refused. The refusal stays unless every upstream endpoint's `GET /version` positively identified dockerd: an explicit `upstream.flavor: docker` with a failed or unrecognised probe, or a failover set with one endpoint that couldn't be probed, keeps it. A Podman upstream refuses it as before.
+- **The compat-create mount comma refusal applies to Podman upstreams only.** A comma in a `HostConfig.Mounts` `Type`, `Source`, `Target`, `Consistency`, `BindOptions.Propagation` or `VolumeOptions.Subpath` is only a field separator to Podman, which rebuilds the mount into a `--mount` string. On a dockerd upstream it is a literal character, so the create is now forwarded instead of refused. The refusal stays unless every upstream endpoint's `GET /version` positively identified dockerd: an explicit `upstream.flavor: docker` with a failed or unrecognized probe, or a failover set with one endpoint that couldn't be probed, keeps it. A Podman upstream refuses it as before.
 
 ### Fixed
 
