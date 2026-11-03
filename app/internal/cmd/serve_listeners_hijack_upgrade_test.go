@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/codeswhat/sockguard/v3/app/internal/proxy"
+	"github.com/codeswhat/sockguard/v3/app/internal/upstream"
 )
 
 // TestHijackedConnTrackerReleasesNonUpgradeRawStream drives the real hijack
@@ -42,7 +43,7 @@ func TestHijackedConnTrackerReleasesNonUpgradeRawStream(t *testing.T) {
 
 	server := &http.Server{
 		ReadHeaderTimeout: time.Second,
-		Handler:           proxy.PassClientUpgrade(proxy.HijackHandler(socketPath, slog.New(slog.NewTextHandler(io.Discard, nil)), http.NotFoundHandler())),
+		Handler:           proxy.PassClientUpgrade(proxy.HijackHandlerWithDialer(upstream.NewSingleSocket(socketPath), 10*time.Minute, slog.New(slog.NewTextHandler(io.Discard, nil)), http.NotFoundHandler())),
 	}
 	tracker := trackHijackedConnections(server)
 	clientLn, err := net.Listen("tcp", "127.0.0.1:0")
@@ -135,7 +136,7 @@ func TestHijackedConnTrackerReleasesWhenRawStreamHeadWriteFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proxy.PassClientUpgrade(proxy.HijackHandler(socketPath, slog.New(slog.NewTextHandler(io.Discard, nil)), http.NotFoundHandler())).ServeHTTP(w, req)
+	proxy.PassClientUpgrade(proxy.HijackHandlerWithDialer(upstream.NewSingleSocket(socketPath), 10*time.Minute, slog.New(slog.NewTextHandler(io.Discard, nil)), http.NotFoundHandler())).ServeHTTP(w, req)
 
 	waitForTracked(t, tracker, 0)
 	select {
