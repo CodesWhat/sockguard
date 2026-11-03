@@ -132,6 +132,9 @@ request_body:
           subject_pattern: "^https://github.com/my-org/my-repo/.github/workflows/release\\.yml@refs/heads/main$"
       require_rekor_inclusion: true       # additionally require a Rekor transparency log entry (default: true)
       verify_timeout: 10s                 # end-to-end image-trust deadline (default: 10s)
+      allowed_registries: [ghcr.io]       # registries signature discovery may contact; required with warn/enforce unless allowed_images is set
+      allow_official: false               # also permit Docker Hub official images (docker.io/library/*)
+      allow_all_registries: false         # permit any registry the client names (default: false)
   libpod_container_create:                # POST /libpod/containers/create — Podman's native SpecGenerator body, path-exclusive from container_create above
     allow_privileged: false      # deny top-level privileged=true (default)
     allow_host_network: false    # deny netns.nsmode=host and path (default)
@@ -1931,6 +1934,9 @@ the gates below are denied before the request reaches Docker.
 | *(YAML-only)*                                                         | `request_body.container_create.image_trust.allowed_signing_keys` | *empty* | List of PEM public keys (ECDSA/RSA/ed25519) trusted to sign images. At least one key or keyless entry required when mode is not `off`. |
 | *(YAML-only)*                                                         | `request_body.container_create.image_trust.allowed_keyless` | *empty* | List of Fulcio keyless identities; each entry has `issuer` (exact OIDC URL) and `subject_pattern` (regex matched against the cert SAN). |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_IMAGE_TRUST_REQUIRE_REKOR_INCLUSION` | `request_body.container_create.image_trust.require_rekor_inclusion` | `true` | Require a Rekor transparency log entry for keyless bundles. |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_IMAGE_TRUST_ALLOW_ALL_REGISTRIES` | `request_body.container_create.image_trust.allow_all_registries` | `false` | Image trust contacts the registry the client's image reference names, so it must be scoped. Permit any registry. |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_IMAGE_TRUST_ALLOW_OFFICIAL` | `request_body.container_create.image_trust.allow_official` | `false` | Permit Docker Hub official images (`docker.io/library/*`) for signature discovery. |
+| *(YAML-only)* | `request_body.container_create.image_trust.allowed_registries` | *empty* | Registry hosts signature discovery may contact. With `mode` `warn` or `enforce`, one of the three registry settings is required unless `allowed_images` is set (an exact image list already names the registry). A reference to any other host is denied before a request leaves the proxy. |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_IMAGE_TRUST_VERIFY_TIMEOUT`  | `request_body.container_create.image_trust.verify_timeout` | `10s` | End-to-end image-trust deadline, including registry fetching, with cooperative checks around local crypto. Must be a positive Go duration string (e.g. `5s`, `30s`). |
 
 ### `libpod_container_create`

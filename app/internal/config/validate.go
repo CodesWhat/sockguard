@@ -1944,7 +1944,7 @@ func validateContainerCreateConfig(prefix string, cfg ContainerCreateRequestBody
 		}
 		errs = append(errs, fmt.Sprintf("%s.container_create.allowed_namespace_sharing_containers entries must be non-empty container ID or name values, got %q", prefix, entry))
 	}
-	errs = append(errs, validateImageTrustConfig(prefix+".container_create.image_trust", cfg.ImageTrust)...)
+	errs = append(errs, validateImageTrustConfig(prefix+".container_create.image_trust", cfg.ImageTrust, cfg.AllowedImages)...)
 	return errs
 }
 
@@ -1966,7 +1966,7 @@ func validateLibpodContainerCreateConfig(prefix string, cfg LibpodContainerCreat
 		}
 		errs = append(errs, fmt.Sprintf("%s.libpod_container_create.allowed_namespace_sharing_containers entries must be non-empty container ID or name values, got %q", prefix, entry))
 	}
-	errs = append(errs, validateImageTrustConfig(prefix+".libpod_container_create.image_trust", cfg.ImageTrust)...)
+	errs = append(errs, validateImageTrustConfig(prefix+".libpod_container_create.image_trust", cfg.ImageTrust, cfg.AllowedImages)...)
 	return errs
 }
 
@@ -2175,7 +2175,7 @@ func validPluginCapability(value string) bool {
 	return strings.TrimSpace(value) != ""
 }
 
-func validateImageTrustConfig(prefix string, cfg ImageTrustConfig) []string {
+func validateImageTrustConfig(prefix string, cfg ImageTrustConfig, allowedImages []string) []string {
 	switch cfg.Mode {
 	case "", "off":
 		// nothing to validate when feature is disabled
@@ -2193,6 +2193,16 @@ func validateImageTrustConfig(prefix string, cfg ImageTrustConfig) []string {
 			prefix+": at least one allowed_signing_keys or allowed_keyless entry is required when mode is not off",
 		)
 	}
+
+	// Signature discovery contacts the registry the client's image reference
+	// names, so it must be scoped. An exact allowed_images list already pins
+	// the registry of every reference.
+	if len(allowedImages) == 0 && !cfg.AllowAllRegistries && !cfg.AllowOfficial && len(cfg.AllowedRegistries) == 0 {
+		errs = append(errs,
+			prefix+": allow_all_registries, allow_official, or allowed_registries is required when mode is not off so signature discovery cannot be pointed at arbitrary hosts",
+		)
+	}
+	errs = append(errs, validateRegistryHostEntries(prefix, "allowed_registries", cfg.AllowedRegistries)...)
 
 	keys := make([]signingKeyEntry, len(cfg.AllowedSigningKeys))
 	for i, k := range cfg.AllowedSigningKeys {
