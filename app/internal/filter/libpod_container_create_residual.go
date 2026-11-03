@@ -1,5 +1,7 @@
 package filter
 
+import "strings"
+
 // libpod_container_create_residual.go holds the gates for the SpecGenerator
 // fields that had none: "unified" and "env_host". Field names and types are
 // pinned against Podman pkg/specgen/specgen.go (v5.8.1, checked against 6.1).
@@ -9,17 +11,35 @@ package filter
 //   - "r_limits" (POSIX rlimits) is left ungated. The Docker-compat create
 //     gates no HostConfig.Ulimits either, and rlimits only cap the
 //     container's own processes against limits the runtime already bounds.
-//   - "pod" and "dependencyContainers" name other resources, so they are
-//     owner-checked by internal/ownership (libpod.go and
-//     libpod_create_references.go) when owner isolation is on. There is
-//     nothing for a body inspector to add.
+//   - "dependencyContainers" only orders startup, so it is left ungated here.
+//     When owner isolation is enabled, internal/ownership owner-checks it
+//     (libpod_create_references.go).
+//   - "pod" joins the pod's infra namespaces, so denyPodJoinReason holds it to
+//     restrictNamespaceSharing, the same switch that governs container:<ref>
+//     namespace joins. When owner isolation is enabled it is also owner-checked
+//     (libpod.go).
 
 // denyResidualFieldsReason runs the gates in this file.
 func (p libpodContainerCreatePolicy) denyResidualFieldsReason(req libpodContainerCreateRequest) string {
 	if reason := p.denyUnifiedCgroupReason(req.Unified); reason != "" {
 		return reason
 	}
+	if reason := p.denyPodJoinReason(req.Pod); reason != "" {
+		return reason
+	}
 	return p.denyEnvHostReason(req.EnvHost)
+}
+
+// denyPodJoinReason refuses a non-empty "pod" while restrictNamespaceSharing
+// is on. Joining a pod shares its infra container's namespaces, which is the
+// same exposure as a {"nsmode":"container"} join, and a pod name can't be
+// vouched for by allowedNamespaceSharingContainers, which lists containers.
+// With the option off it passes, as container joins do.
+func (p libpodContainerCreatePolicy) denyPodJoinReason(pod string) string {
+	if !p.restrictNamespaceSharing || strings.TrimSpace(pod) == "" {
+		return ""
+	}
+	return "libpod container create denied: joining a pod is not allowed while namespace sharing is restricted"
 }
 
 // denyUnifiedCgroupReason refuses a non-empty "unified" map unless

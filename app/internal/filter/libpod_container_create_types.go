@@ -97,6 +97,11 @@ type libpodContainerCreateRequest struct {
 	// knobs Podman writes into the container's cgroup. See
 	// denyUnifiedCgroupReason in libpod_container_create_residual.go.
 	Unified map[string]string `json:"unified"`
+
+	// Pod is the pod this container joins. It shares the pod's infra
+	// namespaces, so it follows restrictNamespaceSharing. See
+	// denyPodJoinReason.
+	Pod string `json:"pod"`
 }
 
 // libpodLogConfiguration mirrors SpecGenerator's "log_configuration" object
