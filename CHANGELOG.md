@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.5] - 2026-11-03
+
+v2.4.5 is a security release. A numeric user with a sign prefix such as `+0` was not treated as root, so `request_body.exec.allow_root_user: false` and `require_non_root_user` could be bypassed to run as UID 0 on Docker and Podman. It carries v2.4.4.
+
+### Security
+
+- Signed numeric user IDs such as `+0`, `-0`, `+00` and `+0:0` were not treated as root. dockerd and Podman parse a numeric user with `strconv.Atoi`, which accepts a sign, but the filter used `ParseUint`, which does not. A container create, libpod create or exec create with `"User":"+0"` therefore got past `require_non_root_user` and `request_body.exec.allow_root_user: false` and ran as UID 0. The filter now parses the user the way the engines do. A value that overflows is a user name to the engines too, so it is still looked up by name and never wraps to 0.
+
 ## [2.4.4] - 2026-11-03
 
 v2.4.4 fixes typed Docker clients such as Traefik and Diun breaking on redaction placeholders, Portainer Recreate under its preset, visibility image_patterns on inspect, watchtower and portwing preset rule gaps, and upstream timeouts on slow stop and prune calls and 429 bodies without a message. It closes libpod create bypasses (host_device_list, resource_limits.devices, volumes_from and others) and libpod inspect CreateCommand and Secrets leaks, and adds a real-Docker-types compat CI job. It carries v2.4.3.
