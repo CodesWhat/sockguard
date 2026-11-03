@@ -635,6 +635,13 @@ filter reads the label out of every image config in the archive (Docker
 read refuses the load. An image with no owner label follows
 `allow_unowned_images`, and one labeled with the caller's own owner is allowed.
 
+A pull can't be read before it runs, so it is checked after. Once the daemon
+finishes the pull, Sockguard inspects each reference it wrote, and an image
+carrying another owner's label is untagged and named in a final error line on
+the progress stream (`owner policy removed pulled image <ref>`). An inspect that
+fails is treated the same way. This runs in enforce rollout only. Warn and audit
+leave the pulled image alone, and a pull by digest writes no tag to check.
+
 Pulling over an existing name is ordinary Docker behavior and stays allowed
 wherever it takes nothing from another owner. `docker pull nginx:latest`
 refreshes a name an unlabeled image holds, which the default

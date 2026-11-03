@@ -225,7 +225,10 @@ func middlewareWithClient(client *http.Client, logger *slog.Logger, opts Options
 	// reading it back is the same inspect-then-proxy window the request
 	// already has. Cross-request caching stays forbidden.
 	inspectResource := reuseRequestInspect(inspector.inspectResource)
-	return middlewareWithDeps(logger, opts, inspectResource, inspector.inspectExec)
+	// The check after a pull inspects what the pull just wrote, so it takes
+	// the unmemoized inspect.
+	return middlewareWithPullCheck(logger, opts, inspectResource, inspector.inspectExec,
+		&postPullChecks{inspect: inspector.inspectResource, untag: inspector.untagImage})
 }
 
 // reuseRequestInspect serves an inspect from the result visibility left on the
@@ -249,6 +252,19 @@ func middlewareWithDeps(
 	opts Options,
 	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
 	inspectExec func(context.Context, string) (string, bool, error),
+) func(http.Handler) http.Handler {
+	return middlewareWithPullCheck(logger, opts, inspectResource, inspectExec, nil)
+}
+
+// middlewareWithPullCheck is middlewareWithDeps with the check that follows a
+// pull. A nil post leaves pulls unchecked, which is what a test that stubs
+// only the request-side inspects gets.
+func middlewareWithPullCheck(
+	logger *slog.Logger,
+	opts Options,
+	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
+	inspectExec func(context.Context, string) (string, bool, error),
+	post *postPullChecks,
 ) func(http.Handler) http.Handler {
 	opts = opts.normalized()
 	if opts.Owner == "" {
@@ -370,6 +386,12 @@ func middlewareWithDeps(
 				return
 			}
 			if !verdict.denied() {
+				// Warn and audit rollouts forward what enforce would refuse, so
+				// they do not untag either.
+				if pull, libpod := isImagePullDestinations(refsImageDestinations(refs)); pull && post != nil && !logging.MetaForRequest(w, r).AllowsPassThrough() {
+					servePullWithOwnerCheck(logger, next, w, r, refs.imageDestinations, libpod, opts, post)
+					return
+				}
 				serveOwnershipAllowed(logger, next, w, r, normPath, opts)
 				return
 			}
