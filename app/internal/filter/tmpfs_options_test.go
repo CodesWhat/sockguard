@@ -14,7 +14,7 @@ func TestTmpfsPostureEnablesPrivilege(t *testing.T) {
 		{"exec", []string{"exec"}, true},
 		{"suid", []string{"suid"}, true},
 		{"dev", []string{"dev"}, true},
-		{"exec in capitals", []string{"EXEC"}, true},
+		{"exec in capitals is no option", []string{"EXEC"}, false},
 		{"last wins restricts", []string{"exec,noexec"}, false},
 		{"last wins enables", []string{"noexec,exec"}, true},
 		{"last wins across elements", []string{"exec", "noexec"}, false},
@@ -26,8 +26,9 @@ func TestTmpfsPostureEnablesPrivilege(t *testing.T) {
 		{"suid=off restricts", []string{"suid=off"}, false},
 		{"noexec=0 enables exec", []string{"noexec=0"}, true},
 		{"noexec=1 restricts", []string{"noexec=1"}, false},
-		{"spaces around tokens", []string{" nosuid , dev "}, true},
+		{"padded token is no option", []string{" nosuid , dev "}, false},
 		{"capital NOEXEC restricts nothing", []string{"exec,NOEXEC"}, true},
+		{"dev with value 1", []string{"dev=1"}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -61,6 +62,32 @@ func TestCheckStructuredTmpfsOptions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got, _ := checkStructuredTmpfsOptions(tt.options); got != tt.want {
 				t.Errorf("checkStructuredTmpfsOptions(%q) = %d, want %d", tt.options, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTmpfsPostureFullyRestricted(t *testing.T) {
+	tests := []struct {
+		name string
+		opts string
+		want bool
+	}{
+		{"empty", "", false},
+		{"noexec only", "noexec", false},
+		{"missing nodev", "noexec,nosuid", false},
+		{"all three", "nosuid,nodev,noexec", true},
+		{"all three with a size", "rw,noexec,nosuid,nodev,size=64m", true},
+		{"exec after all three", "noexec,nosuid,nodev,exec", false},
+		{"exec before all three", "exec,noexec,nosuid,nodev", true},
+		{"suid=1 after all three", "noexec,nosuid,nodev,suid=1", false},
+		{"nosuid=0 after all three", "noexec,nodev,nosuid,nosuid=0", false},
+		{"capital NOEXEC does not count", "NOEXEC,nosuid,nodev", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tmpfsPostureOfList(tt.opts).fullyRestricted(); got != tt.want {
+				t.Errorf("tmpfsPostureOfList(%q).fullyRestricted() = %t, want %t", tt.opts, got, tt.want)
 			}
 		})
 	}

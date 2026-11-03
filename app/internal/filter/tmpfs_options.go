@@ -26,25 +26,22 @@ type tmpfsPosture struct {
 }
 
 // apply folds one option token into the posture. A token is "key" or
-// "key=value". An enabling key (exec, dev, suid) is read case-insensitively,
-// so an odd spelling can't hide one, and it enables unless its value is
-// explicitly falsy: "suid=1", "suid=true" and a bare "suid=" all enable. A
-// restricting key (noexec, nodev, nosuid) counts only in its exact lowercase
-// spelling, because a spelling the daemon doesn't recognize restricts nothing,
-// and "noexec=0" is read as enabling exec.
+// "key=value", matched exactly: the runtimes look a flag up by its lowercase
+// name, so "EXEC" and " dev" are options they reject and not ones they apply.
+// An enabling key (exec, dev, suid) enables unless its value is explicitly
+// falsy, so "suid=1", "suid=true" and a bare "suid=" all enable. A
+// restricting key (noexec, nodev, nosuid) restricts, except that "noexec=0"
+// is read as enabling exec.
 func (t *tmpfsPosture) apply(token string) {
-	name, value, hasValue := strings.Cut(strings.TrimSpace(token), "=")
-	name = strings.TrimSpace(name)
+	name, value, hasValue := strings.Cut(token, "=")
 	falsy := hasValue && tmpfsValueIsFalsy(value)
-	switch strings.ToLower(name) {
+	switch name {
 	case "exec":
 		t.exec = tmpfsEnablingState(falsy)
 	case "dev":
 		t.dev = tmpfsEnablingState(falsy)
 	case "suid":
 		t.suid = tmpfsEnablingState(falsy)
-	}
-	switch name {
 	case "noexec":
 		t.exec = tmpfsRestrictingState(hasValue, falsy)
 	case "nodev":
@@ -132,3 +129,13 @@ func checkStructuredTmpfsOptions(options [][]string) (tmpfsStructuredVerdict, st
 	}
 	return tmpfsStructuredOK, ""
 }
+
+// fullyRestricted reports whether the list explicitly ends with noexec, nodev
+// and nosuid all set. Podman mounts a tmpfs executable, and gives /dev no
+// default options at all, so on a Podman upstream only an explicit list is
+// safe.
+func (t tmpfsPosture) fullyRestricted() bool {
+	return t.exec == tmpfsFlagRestricted && t.dev == tmpfsFlagRestricted && t.suid == tmpfsFlagRestricted
+}
+
+const tmpfsPodmanRequirement = "a tmpfs on a Podman upstream must set noexec, nosuid and nodev (set allow_tmpfs_privileged_options: true to opt out)"

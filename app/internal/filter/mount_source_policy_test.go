@@ -14,7 +14,7 @@ func TestNativeMountTypesCannotBypassHostPathPolicy(t *testing.T) {
 			{"device filesystem", `{"type":"ext4","source":"/dev/sda","destination":"/h"}`, true},
 			{"unknown filesystem", `{"type":"newfs","source":"/etc","destination":"/h"}`, true},
 			{"allowlisted bind", `{"type":"none","source":"/srv/data","destination":"/h","options":["rbind"]}`, false},
-			{"virtual tmpfs", `{"type":"tmpfs","source":"tmpfs","destination":"/h"}`, false},
+			{"virtual tmpfs", `{"type":"tmpfs","source":"tmpfs","destination":"/h","options":["noexec","nosuid","nodev"]}`, false},
 			{"virtual proc", `{"type":"proc","source":"proc","destination":"/p"}`, false},
 		} {
 			t.Run(path+"/"+tc.name, func(t *testing.T) {
@@ -43,5 +43,5 @@ func TestMountSourceMutationDeniedByDefault(t *testing.T) {
 	} {
 		assertFilterCreateRoundTrip(t, "/v5.0.0/libpod/containers/create", `{"systemd":"false",`+fields+`}`, PolicyConfig{LibpodContainerCreate: LibpodContainerCreateOptions{AllowedBindMounts: []string{"/srv/data"}}}, true)
 	}
-	assertFilterCreateRoundTrip(t, "/libpod/containers/create", `{"systemd":"false","mounts":[{"type":"tmpfs","source":"tmpfs","destination":"/d","options":["U"]}]}`, PolicyConfig{}, false)
+	assertFilterCreateRoundTrip(t, "/libpod/containers/create", `{"systemd":"false","mounts":[{"type":"tmpfs","source":"tmpfs","destination":"/d","options":["U","noexec","nosuid","nodev"]}]}`, PolicyConfig{}, false)
 }
