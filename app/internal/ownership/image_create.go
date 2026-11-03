@@ -1,7 +1,9 @@
 package ownership
 
 import (
+	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -14,6 +16,7 @@ const (
 	libpodImageImportPath = libpodPrefix + "images/import"
 	libpodImagePullPath   = libpodPrefix + "images/pull"
 
+	imageImportChangesQueryField   = "changes"
 	imageCreateFromImageQueryField = "fromImage"
 	imageCreatePlatformQueryField  = "platform"
 	libpodImageReferenceQueryField = "reference"
@@ -83,6 +86,81 @@ func imageCreateOwnershipReferences(r *http.Request, normPath string, flavor ups
 		destinations, denyReason = imageCreateDestination(query, flavor)
 	}
 	return &ownershipRequestReferences{imageDestinations: destinations, denyReason: denyReason}
+}
+
+// mutateImageCreateOwnershipRequest reads the name an image create names, and
+// stamps the owner label on the image an import makes.
+//
+// An import makes an image from the body, and `changes` carries Dockerfile
+// instructions applied to its config, a LABEL among them. The image carries no
+// other labels, so the client chose all of them, the owner label included: it
+// could import under a name nothing held, labeled as another owner's, and that
+// owner would go on to use the name (build, tag or run it) and get the
+// client's content. The check on the name only covers a name something holds.
+// So the stamp goes on every import, held name or not: a
+// `LABEL <key>=<owner>` appended after the client's own `changes`, which both
+// engines apply in order, so it overwrites any LABEL of the same key.
+//
+// dockerd reads the values of the exact key `changes` and Podman's compat and
+// native imports read every spelling of it. A spelling dockerd would ignore and
+// Podman would read, or one that could land after the stamp, is refused instead
+// of ordered.
+//
+// A pull is not stamped. The labels of a pulled image come from the registry's
+// copy and the route has no parameter that sets them, so the owner label can't
+// be written there, and a load takes its labels from the archive. Read from
+// moby 28.5.1 and Podman 5.8.6 (compat CreateImageFromSrc, libpod ImagesImport).
+func mutateImageCreateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ownershipRequestReferences, error) {
+	refs := imageCreateOwnershipReferences(r, normPath, opts.UpstreamFlavor)
+	query := r.URL.Query()
+	isImport := normPath == libpodImageImportPath || (normPath == imageCreatePath && query.Get(imageCreateFromImageQueryField) == "")
+	if !isImport {
+		return refs, nil
+	}
+	if err := addOwnerLabelToImportQuery(r, query, opts.LabelKey, opts.Owner); err != nil {
+		return nil, err
+	}
+	return refs, nil
+}
+
+func addOwnerLabelToImportQuery(r *http.Request, query url.Values, labelKey, owner string) error {
+	for key := range query {
+		if key != imageImportChangesQueryField && strings.EqualFold(key, imageImportChangesQueryField) {
+			return fmt.Errorf("image import changes parameter is spelled %q: the engines disagree on whether it applies", key)
+		}
+	}
+	instruction, ok := dockerfileLabelInstruction(labelKey, owner)
+	if !ok {
+		return fmt.Errorf("image import can't stamp an owner label whose key or value holds a control character")
+	}
+	query[imageImportChangesQueryField] = append(query[imageImportChangesQueryField], instruction)
+	r.URL.RawQuery = query.Encode()
+	return nil
+}
+
+// dockerfileLabelInstruction spells `LABEL key=value` so the Dockerfile
+// parser reads back exactly key and value. Both are double-quoted, with the
+// three characters the parser treats specially inside the quotes escaped (\,
+// " and $, which it would otherwise expand as a variable). A control character
+// can't be spelled on one line.
+func dockerfileLabelInstruction(key, value string) (string, bool) {
+	quoted := make([]string, 0, 2)
+	for _, word := range [...]string{key, value} {
+		var b strings.Builder
+		b.WriteByte('"')
+		for _, r := range word {
+			if r < 0x20 || r == 0x7f {
+				return "", false
+			}
+			if r == '\\' || r == '"' || r == '$' {
+				b.WriteByte('\\')
+			}
+			b.WriteRune(r)
+		}
+		b.WriteByte('"')
+		quoted = append(quoted, b.String())
+	}
+	return "LABEL " + quoted[0] + "=" + quoted[1], true
 }
 
 // imageCreateDestination reads the name POST /images/create writes, or

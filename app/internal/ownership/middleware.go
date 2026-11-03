@@ -395,7 +395,7 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 	case isImageTagRoutePath(r.Method, normPath):
 		return imageTagOwnershipReferences(r, normPath, opts.UpstreamFlavor), nil
 	case isImageCreateRoutePath(r.Method, normPath):
-		return imageCreateOwnershipReferences(r, normPath, opts.UpstreamFlavor), nil
+		return mutateImageCreateOwnershipRequest(r, normPath, opts)
 	case isImageLoadRoutePath(r.Method, normPath):
 		return imageLoadOwnershipReferences(r, normPath, opts.UpstreamFlavor), nil
 	case r.Method == http.MethodPost && isCommitPath(normPath):
