@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -344,12 +345,12 @@ func (f *Filter) modifyContainerList(resp *http.Response) error {
 	// the two option groups reach disjoint halves of an entry. With only
 	// redact_mount_paths on, NetworkSettings is the largest block in the body
 	// and nothing looks at it.
-	itemFields := make([]string, 0, 3)
+	itemFields := make([]string, 0, 4)
 	if f.opts.RedactMountPaths {
 		itemFields = append(itemFields, "Mounts")
 	}
 	if f.opts.RedactNetworkTopology {
-		itemFields = append(itemFields, "HostConfig", "NetworkSettings")
+		itemFields = append(itemFields, "HostConfig", "NetworkSettings", "Ports")
 	}
 	return streamArrayResponse(resp, func(container map[string]any) error {
 		if f.opts.RedactMountPaths {
@@ -1194,6 +1195,9 @@ func (f *Filter) redactSwarmPayload(payload map[string]any) error {
 	}
 	if f.opts.RedactNetworkTopology {
 		redactArrayField(payload, "DefaultAddrPool")
+		if err := redactAddressPoolBases(payload); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1202,6 +1206,12 @@ func (f *Filter) redactInfoPayload(payload map[string]any) error {
 	if f.opts.RedactHostTopology {
 		for _, key := range []string{"Containerd", "FirewallBackend", "DiscoveredDevices", "NRI"} {
 			redactFieldAnyShape(payload, key)
+		}
+	}
+
+	if f.opts.RedactNetworkTopology {
+		if err := redactAddressPoolBases(payload); err != nil {
+			return err
 		}
 	}
 
@@ -1216,6 +1226,9 @@ func (f *Filter) redactInfoPayload(payload map[string]any) error {
 			return err
 		} else if found {
 			redactArrayField(cluster, "DefaultAddrPool")
+			if err := redactAddressPoolBases(cluster); err != nil {
+				return err
+			}
 		}
 	}
 	if f.opts.RedactSensitiveData {
@@ -1988,6 +2001,11 @@ func isNodeInspectPath(normPath string) bool {
 }
 
 func redactContainerNetworkTopology(payload map[string]any) error {
+	// Ports[].IP on a list entry is the host bind address, a netip.Addr in
+	// current Docker clients, so it reads "" like the other typed addresses.
+	if err := redactPortSummaryIPs(payload); err != nil {
+		return err
+	}
 	networkSettingsValue, ok := payload["NetworkSettings"]
 	if !ok || networkSettingsValue == nil {
 		return nil
@@ -2016,6 +2034,9 @@ func redactContainerNetworkTopology(payload map[string]any) error {
 		"LinkLocalIPv6Address",
 		"MacAddress",
 	)
+	if err := redactPortBindingHostIPs(networkSettings); err != nil {
+		return err
+	}
 	redactArrayField(networkSettings, "SecondaryIPAddresses")
 	redactArrayField(networkSettings, "SecondaryIPv6Addresses")
 	// AdditionalMACAddresses is a libpod-only field. Podman's
@@ -2072,7 +2093,7 @@ func redactContainerNetworkTopology(payload map[string]any) error {
 // indexes into. It sits here rather than at the /networks call site so a key
 // added to the function below is added a line away from the list that has to
 // name it.
-var networkTopologyItemFields = []string{"IPAM", "Status", "Containers", "Peers"}
+var networkTopologyItemFields = []string{"IPAM", "Status", "Containers", "Peers", "Services"}
 
 func redactNetworkTopology(payload map[string]any) error {
 	ipamValue, ok := payload["IPAM"]
@@ -2101,6 +2122,26 @@ func redactNetworkTopology(payload map[string]any) error {
 			return fmt.Errorf("containers field has unexpected type %T", containersValue)
 		}
 		payload["Containers"] = map[string]any{}
+	}
+
+	// Services is only present on GET /networks/{id}?verbose=true. Each entry
+	// carries the service VIP and every task's endpoint IP, both netip.Addr in
+	// current Docker clients. The map keys are service names and stay.
+	if servicesValue, ok := payload["Services"]; ok && servicesValue != nil {
+		services, ok := servicesValue.(map[string]any)
+		if !ok {
+			return fmt.Errorf("services field has unexpected type %T", servicesValue)
+		}
+		for name, serviceValue := range services {
+			service, ok := serviceValue.(map[string]any)
+			if !ok {
+				return fmt.Errorf("services entry %q has unexpected type %T", name, serviceValue)
+			}
+			redactTypedAddressFields(service, "VIP")
+			if err := redactObjectArrayTypedAddresses(service, "Tasks", "EndpointIP"); err != nil {
+				return fmt.Errorf("services entry %q: %w", name, err)
+			}
+		}
 	}
 
 	if peersValue, ok := payload["Peers"]; ok && peersValue != nil {
@@ -2148,4 +2189,101 @@ func rejectResponse(err error) error {
 		return ErrResponseRejected
 	}
 	return fmt.Errorf("%w: %w", ErrResponseRejected, err)
+}
+
+// redactObjectArrayTypedAddresses blanks the named typed-address keys on every
+// object of payload[field]. A missing or null field is fine; any other shape
+// fails closed.
+func redactObjectArrayTypedAddresses(payload map[string]any, field string, keys ...string) error {
+	return mapObjectArray(payload, field, func(object map[string]any) error {
+		redactTypedAddressFields(object, keys...)
+		return nil
+	})
+}
+
+func mapObjectArray(payload map[string]any, field string, fn func(map[string]any) error) error {
+	value, ok := payload[field]
+	if !ok || value == nil {
+		return nil
+	}
+	items, ok := value.([]any)
+	if !ok {
+		return fmt.Errorf("%s has unexpected type %T", field, value)
+	}
+	for _, item := range items {
+		object, ok := item.(map[string]any)
+		if !ok {
+			return fmt.Errorf("%s entry has unexpected type %T", field, item)
+		}
+		if err := fn(object); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// unspecifyBindAddress replaces a published-port bind address with the
+// unspecified address of the same family. docker/cli only prints
+// host:public->private when the port IP is valid, so "" would collapse every
+// mapping to a bare container port. 0.0.0.0 and :: keep the mapping display
+// and hide which host interface is bound. An empty string is left as the
+// daemon sent it; anything unparseable fails closed.
+func unspecifyBindAddress(object map[string]any, key string) error {
+	value, ok := object[key]
+	if !ok || value == nil {
+		return nil
+	}
+	text, ok := value.(string)
+	if !ok {
+		return fmt.Errorf("%s has unexpected type %T", key, value)
+	}
+	if text == "" {
+		return nil
+	}
+	addr, err := netip.ParseAddr(text)
+	if err != nil {
+		return fmt.Errorf("%s is not an IP address", key)
+	}
+	if addr.Is4() {
+		object[key] = "0.0.0.0"
+	} else {
+		object[key] = "::"
+	}
+	return nil
+}
+
+// redactPortSummaryIPs rewrites Ports[].IP, the host bind address on container
+// list entries. PublicPort and PrivatePort stay: clients build links from them.
+func redactPortSummaryIPs(payload map[string]any) error {
+	return mapObjectArray(payload, "Ports", func(port map[string]any) error {
+		return unspecifyBindAddress(port, "IP")
+	})
+}
+
+// redactPortBindingHostIPs rewrites HostIp in NetworkSettings.Ports, a map of
+// "port/proto" to a (possibly null) list of {HostIp, HostPort} bindings.
+func redactPortBindingHostIPs(networkSettings map[string]any) error {
+	portsValue, ok := networkSettings["Ports"]
+	if !ok || portsValue == nil {
+		return nil
+	}
+	ports, ok := portsValue.(map[string]any)
+	if !ok {
+		return fmt.Errorf("NetworkSettings.Ports has unexpected type %T", portsValue)
+	}
+	for port := range ports {
+		err := mapObjectArray(ports, port, func(binding map[string]any) error {
+			return unspecifyBindAddress(binding, "HostIp")
+		})
+		if err != nil {
+			return fmt.Errorf("NetworkSettings.Ports: %w", err)
+		}
+	}
+	return nil
+}
+
+// redactAddressPoolBases blanks Base (a netip.Prefix in current Docker
+// clients) on each DefaultAddressPools entry.
+func redactAddressPoolBases(payload map[string]any) error {
+	return redactObjectArrayTypedAddresses(payload, "DefaultAddressPools", "Base")
 }

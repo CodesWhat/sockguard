@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`response.redact_network_topology` now covers the remaining address leaks.** Swarm network inspect (`GET /networks/{id}?verbose=true`) `Services[*].VIP` and `Services[*].Tasks[].EndpointIP`, and `DefaultAddressPools[].Base` on `GET /info` (also under `Swarm.Cluster`) and `GET /swarm`, now read `""`, the same type-valid empty value the other address fields use. `Swarm.Cluster.DefaultAddrPool` on `/info` was already emptied. Published-port bind addresses (container list `Ports[].IP`, container inspect `NetworkSettings.Ports[*][].HostIp`) keep their mapping and show the unspecified address of the same family, `0.0.0.0` or `::`, so `docker ps` still prints `host:public->private` while the bound host interface stays hidden. A bind address that isn't an IP fails the response closed. Ports, `PublicPort`, `PrivatePort`, `Type`, `HostPort` and the service and task names stay.
+
 ## [3.0.0-rc.6] - 2026-11-03
 
 This candidate carries v2.4.4 (the client compatibility sweep and libpod create hardening). It narrows `response.redact_network_topology` to addresses, so opaque IDs pass through and a mount `Source` is kept only for named mount types, with `MaskedPaths` and `ReadonlyPaths` untouched. It adds libpod gates for `unified`, `env_host` and `pod`, reports unknown config keys, and adds compose examples for Homepage, Homarr, Diun and Autoheal. The Helm chart will publish as a signed OCI artifact from v3.0.0, and the hand-rolled star chart is removed. These are candidate-only behavior changes, so the 14-day bake window restarts: GA is no earlier than 2026-11-17. Fresh exact-source soak, TLS/security and published-image conformance are required before GA.
