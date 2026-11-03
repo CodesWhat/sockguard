@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Owner isolation caps the resources one compat create names.** `POST /containers/create` and service create/update collected their volume, network, image, secret and config references with a linear duplicate scan and no bound, so a body with tens of thousands of binds cost quadratic CPU. Duplicates now collapse through a map, and a body that names more than 256 distinct resources is refused with the owner-policy `403`.
+
 ## [3.0.0-rc.6] - 2026-11-03
 
 This candidate carries v2.4.4 (the client compatibility sweep and libpod create hardening). It narrows `response.redact_network_topology` to addresses, so opaque IDs pass through and a mount `Source` is kept only for named mount types, with `MaskedPaths` and `ReadonlyPaths` untouched. It adds libpod gates for `unified`, `env_host` and `pod`, reports unknown config keys, and adds compose examples for Homepage, Homarr, Diun and Autoheal. The Helm chart will publish as a signed OCI artifact from v3.0.0, and the hand-rolled star chart is removed. These are candidate-only behavior changes, so the 14-day bake window restarts: GA is no earlier than 2026-11-17. Fresh exact-source soak, TLS/security and published-image conformance are required before GA.

@@ -853,35 +853,44 @@ func mutateContainerCreateOwnershipBody(r *http.Request, labelKey, owner string)
 		}
 		labels[labelKey] = owner
 		refs.namespaceContainers = containerCreateNamespaceRefs(decoded)
-		refs.embeddedResources = containerCreateEmbeddedOwnershipReferences(decoded)
+		var overflow bool
+		refs.embeddedResources, overflow = collectContainerCreateEmbeddedReferences(decoded)
+		if overflow {
+			refs.denyReason = fmt.Sprintf(embeddedReferencesDenyTooMany, "container create")
+		}
 		return nil
 	})
 	return refs, err
 }
 
 func containerCreateEmbeddedOwnershipReferences(decoded map[string]any) []embeddedOwnershipReference {
-	var refs []embeddedOwnershipReference
+	refs, _ := collectContainerCreateEmbeddedReferences(decoded)
+	return refs
+}
+
+func collectContainerCreateEmbeddedReferences(decoded map[string]any) ([]embeddedOwnershipReference, bool) {
+	refs := &embeddedRefCollector{}
 	for _, image := range filter.FoldedStrings(decoded, "Image") {
-		appendEmbeddedOwnershipReference(&refs, dockerresource.KindImage, image, "container Image")
+		refs.add(dockerresource.KindImage, image, "container Image")
 	}
 
 	for _, hostConfig := range filter.FoldedObjects(decoded, "HostConfig") {
-		appendContainerBindOwnershipReferences(&refs, hostConfig)
-		appendContainerMountOwnershipReferences(&refs, hostConfig)
+		appendContainerBindOwnershipReferences(refs, hostConfig)
+		appendContainerMountOwnershipReferences(refs, hostConfig)
 
 		for _, mode := range filter.FoldedStrings(hostConfig, "NetworkMode") {
 			if !isCustomNetworkMode(mode) {
 				continue
 			}
-			appendEmbeddedOwnershipReference(&refs, dockerresource.KindNetwork, mode, "container HostConfig.NetworkMode")
+			refs.add(dockerresource.KindNetwork, mode, "container HostConfig.NetworkMode")
 		}
 	}
 
-	appendContainerNetworkEndpointReferences(&refs, decoded)
-	return refs
+	appendContainerNetworkEndpointReferences(refs, decoded)
+	return refs.list, refs.overflow
 }
 
-func appendContainerBindOwnershipReferences(refs *[]embeddedOwnershipReference, hostConfig map[string]any) {
+func appendContainerBindOwnershipReferences(refs *embeddedRefCollector, hostConfig map[string]any) {
 	for _, binds := range filter.FoldedArrays(hostConfig, "Binds") {
 		for _, value := range binds {
 			bind, ok := value.(string)
@@ -893,12 +902,12 @@ func appendContainerBindOwnershipReferences(refs *[]embeddedOwnershipReference, 
 			if !ok || source == "" || strings.HasPrefix(source, "/") {
 				continue
 			}
-			appendEmbeddedOwnershipReference(refs, dockerresource.KindVolume, source, "container HostConfig.Binds")
+			refs.add(dockerresource.KindVolume, source, "container HostConfig.Binds")
 		}
 	}
 }
 
-func appendContainerMountOwnershipReferences(refs *[]embeddedOwnershipReference, hostConfig map[string]any) {
+func appendContainerMountOwnershipReferences(refs *embeddedRefCollector, hostConfig map[string]any) {
 	for _, mounts := range filter.FoldedArrays(hostConfig, "Mounts") {
 		for _, value := range mounts {
 			mount, ok := value.(map[string]any)
@@ -906,13 +915,13 @@ func appendContainerMountOwnershipReferences(refs *[]embeddedOwnershipReference,
 				continue
 			}
 			for _, source := range filter.FoldedStrings(mount, "Source") {
-				appendEmbeddedOwnershipReference(refs, dockerresource.KindVolume, source, "container HostConfig.Mounts")
+				refs.add(dockerresource.KindVolume, source, "container HostConfig.Mounts")
 			}
 		}
 	}
 }
 
-func appendContainerNetworkEndpointReferences(refs *[]embeddedOwnershipReference, decoded map[string]any) {
+func appendContainerNetworkEndpointReferences(refs *embeddedRefCollector, decoded map[string]any) {
 	for _, networkingConfig := range filter.FoldedObjects(decoded, "NetworkingConfig") {
 		for _, endpoints := range filter.FoldedObjects(networkingConfig, "EndpointsConfig") {
 			appendContainerEndpointMapReferences(refs, endpoints)
@@ -920,7 +929,7 @@ func appendContainerNetworkEndpointReferences(refs *[]embeddedOwnershipReference
 	}
 }
 
-func appendContainerEndpointMapReferences(refs *[]embeddedOwnershipReference, endpoints map[string]any) {
+func appendContainerEndpointMapReferences(refs *embeddedRefCollector, endpoints map[string]any) {
 	names := make([]string, 0, len(endpoints))
 	for name := range endpoints {
 		names = append(names, name)
@@ -928,14 +937,14 @@ func appendContainerEndpointMapReferences(refs *[]embeddedOwnershipReference, en
 	slices.Sort(names)
 	for _, name := range names {
 		if isCustomNetworkMode(name) {
-			appendEmbeddedOwnershipReference(refs, dockerresource.KindNetwork, name, "container NetworkingConfig.EndpointsConfig")
+			refs.add(dockerresource.KindNetwork, name, "container NetworkingConfig.EndpointsConfig")
 		}
 		endpoint, ok := endpoints[name].(map[string]any)
 		if !ok {
 			continue
 		}
 		for _, networkID := range filter.FoldedStrings(endpoint, "NetworkID") {
-			appendEmbeddedOwnershipReference(refs, dockerresource.KindNetwork, networkID, "container NetworkingConfig.EndpointsConfig.NetworkID")
+			refs.add(dockerresource.KindNetwork, networkID, "container NetworkingConfig.EndpointsConfig.NetworkID")
 		}
 	}
 }
@@ -1008,6 +1017,49 @@ func appendEmbeddedOwnershipReference(refs *[]embeddedOwnershipReference, kind d
 	*refs = append(*refs, embeddedOwnershipReference{kind: kind, identifier: identifier, source: source})
 }
 
+// embeddedReferencesMax bounds the resources one compat container create or
+// service spec is checked for. Each costs an inspect and the body is the
+// client's to fill, the same bound libpod creates and builds have.
+const embeddedReferencesMax = libpodCreateMaxReferences
+
+const embeddedReferencesDenyTooMany = "owner policy denied %s that names more resources than it can authorize"
+
+type embeddedRefKey struct {
+	kind       dockerresource.Kind
+	identifier string
+}
+
+// embeddedRefCollector gathers a body's embedded references in first-seen
+// order, deduplicated through a map, and stops growing at
+// embeddedReferencesMax distinct entries. overflow reports that a further
+// distinct reference was dropped, so the caller refuses the request instead of
+// authorizing a prefix of it.
+type embeddedRefCollector struct {
+	list     []embeddedOwnershipReference
+	seen     map[embeddedRefKey]struct{}
+	overflow bool
+}
+
+func (c *embeddedRefCollector) add(kind dockerresource.Kind, identifier, source string) {
+	identifier = strings.TrimSpace(identifier)
+	if identifier == "" {
+		return
+	}
+	key := embeddedRefKey{kind: kind, identifier: identifier}
+	if _, dup := c.seen[key]; dup {
+		return
+	}
+	if len(c.list) >= embeddedReferencesMax {
+		c.overflow = true
+		return
+	}
+	if c.seen == nil {
+		c.seen = make(map[embeddedRefKey]struct{})
+	}
+	c.seen[key] = struct{}{}
+	c.list = append(c.list, embeddedOwnershipReference{kind: kind, identifier: identifier, source: source})
+}
+
 func isCustomNetworkMode(raw string) bool {
 	mode := strings.TrimSpace(raw)
 	if mode == "" {
@@ -1046,18 +1098,27 @@ func mutateServiceOwnershipBody(r *http.Request, labelKey, owner string) (*owner
 			return err
 		}
 		containerLabels[labelKey] = owner
-		refs.embeddedResources = serviceEmbeddedOwnershipReferences(decoded)
+		var overflow bool
+		refs.embeddedResources, overflow = collectServiceEmbeddedReferences(decoded)
+		if overflow {
+			refs.denyReason = fmt.Sprintf(embeddedReferencesDenyTooMany, "service spec")
+		}
 		return nil
 	})
 	return refs, err
 }
 
 func serviceEmbeddedOwnershipReferences(decoded map[string]any) []embeddedOwnershipReference {
-	var refs []embeddedOwnershipReference
+	refs, _ := collectServiceEmbeddedReferences(decoded)
+	return refs
+}
+
+func collectServiceEmbeddedReferences(decoded map[string]any) ([]embeddedOwnershipReference, bool) {
+	refs := &embeddedRefCollector{}
 	for _, taskTemplate := range filter.FoldedObjects(decoded, "TaskTemplate") {
 		for _, containerSpec := range filter.FoldedObjects(taskTemplate, "ContainerSpec") {
 			for _, image := range filter.FoldedStrings(containerSpec, "Image") {
-				appendEmbeddedOwnershipReference(&refs, dockerresource.KindImage, image, "service TaskTemplate.ContainerSpec.Image")
+				refs.add(dockerresource.KindImage, image, "service TaskTemplate.ContainerSpec.Image")
 			}
 
 			for _, mounts := range filter.FoldedArrays(containerSpec, "Mounts") {
@@ -1067,13 +1128,13 @@ func serviceEmbeddedOwnershipReferences(decoded map[string]any) []embeddedOwners
 						continue
 					}
 					for _, source := range filter.FoldedStrings(mount, "Source") {
-						appendEmbeddedOwnershipReference(&refs, dockerresource.KindVolume, source, "service TaskTemplate.ContainerSpec.Mounts")
+						refs.add(dockerresource.KindVolume, source, "service TaskTemplate.ContainerSpec.Mounts")
 					}
 				}
 			}
 
-			appendServiceObjectReferences(&refs, containerSpec, "Secrets", "SecretID", "SecretName", dockerresource.KindSecret)
-			appendServiceObjectReferences(&refs, containerSpec, "Configs", "ConfigID", "ConfigName", dockerresource.KindConfig)
+			appendServiceObjectReferences(refs, containerSpec, "Secrets", "SecretID", "SecretName", dockerresource.KindSecret)
+			appendServiceObjectReferences(refs, containerSpec, "Configs", "ConfigID", "ConfigName", dockerresource.KindConfig)
 		}
 	}
 
@@ -1085,16 +1146,16 @@ func serviceEmbeddedOwnershipReferences(decoded map[string]any) []embeddedOwners
 			}
 			for _, target := range filter.FoldedStrings(network, "Target") {
 				if isCustomNetworkMode(target) {
-					appendEmbeddedOwnershipReference(&refs, dockerresource.KindNetwork, target, "service Networks.Target")
+					refs.add(dockerresource.KindNetwork, target, "service Networks.Target")
 				}
 			}
 		}
 	}
-	return refs
+	return refs.list, refs.overflow
 }
 
 func appendServiceObjectReferences(
-	refs *[]embeddedOwnershipReference,
+	refs *embeddedRefCollector,
 	containerSpec map[string]any,
 	arrayKey, idKey, nameKey string,
 	kind dockerresource.Kind,
@@ -1112,7 +1173,7 @@ func appendServiceObjectReferences(
 				identifiers = filter.FoldedStrings(object, nameKey)
 			}
 			for _, identifier := range identifiers {
-				appendEmbeddedOwnershipReference(refs, kind, identifier, "service TaskTemplate.ContainerSpec."+arrayKey)
+				refs.add(kind, identifier, "service TaskTemplate.ContainerSpec."+arrayKey)
 			}
 		}
 	}
