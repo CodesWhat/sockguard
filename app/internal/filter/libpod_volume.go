@@ -57,7 +57,7 @@ func (p volumePolicy) inspectLibpod(logger *slog.Logger, r *http.Request, normal
 	if denyReason := denyLocalVolumeBindDeviceReason(req.Driver, req.Options, p.allowedBindMounts, "libpod volume create"); denyReason != "" {
 		return denyReason, nil
 	}
-	if denyReason := denyLocalVolumeTmpfsPrivilegeReason(req.Driver, req.Options, p.allowTmpfsPrivilegedOptions, "libpod volume create"); denyReason != "" {
+	if denyReason := denyLocalVolumeTmpfsPrivilegeReason(req.Driver, req.Options, p.allowTmpfsPrivilegedOptions, "libpod volume create", tmpfsOptionKeyLibpod); denyReason != "" {
 		return denyReason, nil
 	}
 

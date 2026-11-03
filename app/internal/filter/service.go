@@ -448,7 +448,7 @@ func (p servicePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedP
 			if denyReason := denyLocalVolumeBindDeviceReason(driverConfig.Name, driverConfig.Options, p.allowedBindMounts, "service"); denyReason != "" {
 				return denyReason, nil
 			}
-			if denyReason := denyLocalVolumeTmpfsPrivilegeReason(driverConfig.Name, driverConfig.Options, p.allowTmpfsPrivilegedOptions, "service"); denyReason != "" {
+			if denyReason := denyLocalVolumeTmpfsPrivilegeReason(driverConfig.Name, driverConfig.Options, p.allowTmpfsPrivilegedOptions, "service", tmpfsOptionKeyCompat); denyReason != "" {
 				return denyReason, nil
 			}
 		}

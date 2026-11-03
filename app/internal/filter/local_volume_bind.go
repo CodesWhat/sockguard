@@ -399,7 +399,7 @@ func denyLocalVolumeBindDeviceReason(driver string, options map[string]string, a
 // option wins, "suid=1" style tokens enable. Keys are matched
 // case-insensitively and every "o" key is judged on its own, because the
 // daemons don't agree on which of two spellings they keep.
-func denyLocalVolumeTmpfsPrivilegeReason(driver string, options map[string]string, allowTmpfsPrivileged bool, subject string) string {
+func denyLocalVolumeTmpfsPrivilegeReason(driver string, options map[string]string, allowTmpfsPrivileged bool, subject, optionKey string) string {
 	if allowTmpfsPrivileged || len(options) == 0 {
 		return ""
 	}
@@ -429,11 +429,18 @@ func denyLocalVolumeTmpfsPrivilegeReason(driver string, options map[string]strin
 	for _, list := range lists {
 		posture := tmpfsPostureOfList(list)
 		if posture.enablesPrivilege() {
-			return subject + " denied: local tmpfs volume options enable exec, dev, or suid (set allow_tmpfs_privileged_options: true)"
+			return subject + " denied: local tmpfs volume options enable exec, dev, or suid (set " + optionKey + ": true)"
 		}
 		if !posture.fullyRestricted() {
-			return subject + " denied: a local tmpfs volume mounts exec, suid and dev unless o lists noexec,nosuid,nodev (or set allow_tmpfs_privileged_options: true)"
+			return subject + " denied: a local tmpfs volume mounts exec, suid and dev unless o lists noexec,nosuid,nodev (or set " + optionKey + ": true)"
 		}
 	}
 	return ""
 }
+
+// The full config keys a tmpfs denial tells the operator to set, one per API
+// family. Compat container create, service and volume routes share the first.
+const (
+	tmpfsOptionKeyCompat = "request_body.container_create.allow_tmpfs_privileged_options"
+	tmpfsOptionKeyLibpod = "request_body.libpod_container_create.allow_tmpfs_privileged_options"
+)

@@ -178,8 +178,11 @@ type ContainerCreateOptions struct {
 	// PodmanUpstream is set from the resolved upstream flavor, not from
 	// config. Podman leaves a tmpfs executable and gives /dev no default
 	// options, so on a Podman upstream with AllowTmpfsPrivilegedOptions off a
-	// tmpfs mount (Mounts[type=tmpfs] and HostConfig.Tmpfs) must carry noexec,
-	// nosuid and nodev explicitly. dockerd already defaults to all three.
+	// tmpfs (HostConfig.Tmpfs) must carry the bare option noexec, and a /dev
+	// tmpfs noexec,nosuid,nodev, since Podman adds nosuid,nodev itself
+	// elsewhere. A Mounts tmpfs entry is refused outright, because Podman's
+	// compat handler drops its TmpfsOptions.Options. dockerd already defaults
+	// every tmpfs to noexec,nosuid,nodev.
 	PodmanUpstream bool
 
 	// AllowLogPath permits a HostConfig.LogConfig.Config key a Podman
@@ -2058,7 +2061,7 @@ func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHos
 			if denyReason := denyLocalVolumeBindDeviceReason(driverConfig.Name, driverConfig.Options, p.allowedBindMounts, "container create"); denyReason != "" {
 				return denyReason
 			}
-			if denyReason := denyLocalVolumeTmpfsPrivilegeReason(driverConfig.Name, driverConfig.Options, p.allowTmpfsPrivilegedOptions, "container create"); denyReason != "" {
+			if denyReason := denyLocalVolumeTmpfsPrivilegeReason(driverConfig.Name, driverConfig.Options, p.allowTmpfsPrivilegedOptions, "container create", tmpfsOptionKeyCompat); denyReason != "" {
 				return denyReason
 			}
 		}

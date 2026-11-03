@@ -586,7 +586,7 @@ func (p libpodContainerCreatePolicy) denyBindMountReason(mounts []libpodMount) s
 		if strings.EqualFold(mount.Type, "tmpfs") && !p.allowTmpfsPrivilegedOptions {
 			posture := tmpfsPostureOfList(mount.Options...)
 			if posture.enablesPrivilege() {
-				return "libpod container create denied: tmpfs mount enables exec, dev, or suid (set allow_tmpfs_privileged_options: true)"
+				return "libpod container create denied: tmpfs mount enables exec, dev, or suid (set " + tmpfsOptionKeyLibpod + ": true)"
 			}
 			// Podman mounts a tmpfs executable, and gives /dev no default
 			// options, so a tmpfs here is only safe when it says so itself.

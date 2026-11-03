@@ -89,7 +89,7 @@ request_body:
     allowed_device_cgroup_rules:  # structured cgroup-device allowlist (empty = deny all)
       - "c 1:3 rwm"   # /dev/null (char major 1, minor 3)
       - "c 226:* rwm" # /dev/dri/* GPU class (char major 226, any minor)
-    allow_tmpfs_privileged_options: false # deny privilege-escalating tmpfs options (dev, suid, exec); on a Podman upstream also require noexec,nosuid,nodev on every tmpfs (default)
+    allow_tmpfs_privileged_options: false # deny privilege-escalating tmpfs options (dev, suid, exec); on a Podman upstream also require the bare noexec on every tmpfs, and noexec,nosuid,nodev on /dev (default)
     allow_log_path: false                 # deny a HostConfig.LogConfig.Config "path" option, the file a Podman upstream writes the container's log to on the daemon host (default)
     require_no_new_privileges: false      # require HostConfig.SecurityOpt to include "no-new-privileges:true"
     require_non_root_user: false          # require Config.User to be a non-zero UID / non-root name
@@ -140,7 +140,7 @@ request_body:
       - /srv/containers
     # conmon_pid_file (a host path the daemon writes conmon's PID to) has no option: it's refused whenever set
     # base_hosts_file accepts only empty, image or none; client-selected host paths have no opt-in
-    allow_tmpfs_privileged_options: false # deny a tmpfs mounts[] entry that turns on exec, dev or suid, and require noexec,nosuid,nodev on it (default)
+    allow_tmpfs_privileged_options: false # deny a tmpfs mounts[] entry that turns on exec, dev or suid, and require the bare noexec on it, noexec,nosuid,nodev for /dev (default)
     allow_log_path: false         # deny log_configuration.path and a healthLogDestination directory, the host paths the daemon writes logs to (default)
     allowed_runtimes: []          # allowlist for non-empty oci_runtime values; an empty/unset oci_runtime selects the daemon default and is always permitted
     allow_device_cgroup_rules: false     # allow any device_cgroup_rule entry (default: denied)

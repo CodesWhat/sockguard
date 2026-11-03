@@ -155,7 +155,7 @@ func (p volumePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPa
 		if denyReason := denyLocalVolumeBindDeviceReason(req.Driver, options, p.allowedBindMounts, "volume create"); denyReason != "" {
 			return denyReason, nil
 		}
-		if denyReason := denyLocalVolumeTmpfsPrivilegeReason(req.Driver, options, p.allowTmpfsPrivilegedOptions, "volume create"); denyReason != "" {
+		if denyReason := denyLocalVolumeTmpfsPrivilegeReason(req.Driver, options, p.allowTmpfsPrivilegedOptions, "volume create", tmpfsOptionKeyCompat); denyReason != "" {
 			return denyReason, nil
 		}
 	}
