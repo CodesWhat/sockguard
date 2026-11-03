@@ -12,14 +12,14 @@ Maintenance releases publish their versioned assets, Go module, chart digest and
 
    Use the active `dev/vX.Y` branch, or a `maintenance/X.Y.x` branch, for a prerelease. Use `main` for the current stable line. An older supported line uses its exact `maintenance/X.Y.x` branch head.
 
-   ```
+   ```bash
    git status            # must be clean
    git log --oneline -3  # confirm HEAD is what you intend to tag
    ```
 
 2. **Go checks**
 
-   ```
+   ```bash
    cd app
    go test ./...
    golangci-lint run
@@ -27,7 +27,7 @@ Maintenance releases publish their versioned assets, Go module, chart digest and
 
 3. **Vulnerability scan** — zero reachable vulnerabilities required before tagging
 
-   ```
+   ```bash
    # Install once: go install golang.org/x/vuln/cmd/govulncheck@latest
    cd app && govulncheck ./...
    ```
@@ -46,7 +46,7 @@ Maintenance releases publish their versioned assets, Go module, chart digest and
 
 6. **Sync release metadata** — sockguard does not hardcode its binary version in source. The binary's `sockguard version` output is injected at build time via goreleaser ldflags:
 
-   ```
+   ```text
    -X github.com/codeswhat/sockguard/v3/app/internal/version.Version={{.Version}}
    -X github.com/codeswhat/sockguard/v3/app/internal/version.Commit={{.FullCommit}}
    -X github.com/codeswhat/sockguard/v3/app/internal/version.BuildDate={{.CommitDate}}
@@ -92,7 +92,7 @@ This automatically triggers `release-from-tag.yml`.
 
 **Manual path** (fallback if you can't use the workflow):
 
-```
+```bash
 git tag -a v<version> -m "v<version>"
 git push origin v<version>
 ```
@@ -210,4 +210,4 @@ Do not delete the bad release or the tag — that breaks `go install` version pi
 
 1. Revert the merge commit that introduced the bug: `git revert <merge-sha>`
 2. Tag a patch release following the normal process
-3. Edit the bad release on GitHub: prepend a warning to the release notes and link to the patched version (e.g. _"⚠️ This release contains a known issue — upgrade to v<patch>."_)
+3. Edit the bad release on GitHub: prepend a warning to the release notes and link to the patched version (e.g. *"⚠️ This release contains a known issue — upgrade to v<patch>."*)

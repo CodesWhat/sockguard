@@ -41,12 +41,12 @@ record_result() {
 wait_until() {
   local timeout="$1" interval="$2" check_fn="$3"
   local waited=0
-  while (( waited < timeout )); do
+  while ((waited < timeout)); do
     if "$check_fn"; then
       return 0
     fi
     sleep "$interval"
-    waited=$(( waited + interval ))
+    waited=$((waited + interval))
   done
   return 1
 }
@@ -175,12 +175,12 @@ access_log_stream_has_route() {
 wait_for_access_log_route() {
   local method="$1" decision="$2" path_regex="$3" timeout="${4:-30}"
   local waited=0
-  while (( waited < timeout )); do
+  while ((waited < timeout)); do
     if sockguard_access_log | access_log_stream_has_route "$method" "$decision" "$path_regex"; then
       return 0
     fi
     sleep 2
-    waited=$(( waited + 2 ))
+    waited=$((waited + 2))
   done
   return 1
 }
@@ -193,12 +193,12 @@ wait_for_access_log_route() {
 wait_for_log_line() {
   local service="$1" pattern="$2" timeout="${3:-30}"
   local waited=0
-  while (( waited < timeout )); do
+  while ((waited < timeout)); do
     if compose logs --no-color --no-log-prefix "$service" 2>/dev/null | grep -Ec "$pattern" >/dev/null; then
       return 0
     fi
     sleep 2
-    waited=$(( waited + 2 ))
+    waited=$((waited + 2))
   done
   return 1
 }
@@ -210,12 +210,12 @@ wait_for_log_line() {
 wait_for_container_log_line() {
   local container="$1" pattern="$2" timeout="${3:-30}"
   local waited=0
-  while (( waited < timeout )); do
+  while ((waited < timeout)); do
     if docker logs "$container" 2>&1 | grep -Eiq "$pattern"; then
       return 0
     fi
     sleep 2
-    waited=$(( waited + 2 ))
+    waited=$((waited + 2))
   done
   return 1
 }
@@ -227,13 +227,13 @@ wait_for_container_log_line() {
 wait_for_container_log_count() {
   local container="$1" pattern="$2" min_count="$3" timeout="${4:-30}"
   local waited=0 count
-  while (( waited < timeout )); do
+  while ((waited < timeout)); do
     count="$(docker logs "$container" 2>&1 | grep -Eic "$pattern" || true)"
     if [ "$count" -ge "$min_count" ]; then
       return 0
     fi
     sleep 2
-    waited=$(( waited + 2 ))
+    waited=$((waited + 2))
   done
   return 1
 }

@@ -9,7 +9,7 @@ if [ -z "${release_version}" ]; then
   release_version="$(git -C "${repo_root}" describe --tags --exact-match "${source_commit}" 2>/dev/null || echo v0.0.0-repro)"
   release_version="${release_version#v}"
 fi
-if [[ ! "${release_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][A-Za-z0-9.+-]+)?$ ]]; then
+if [[ ! ${release_version} =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][A-Za-z0-9.+-]+)?$ ]]; then
   echo "Version must be a semantic version without a leading v" >&2
   exit 2
 fi
@@ -35,14 +35,14 @@ for build_copy in first second; do
   git -C "${repo_root}" archive "${source_commit}" | tar -x -C "${scratch_dir}/${build_copy}"
 done
 required_toolchain="$(sed -n 's/^toolchain //p' "${scratch_dir}/first/go.mod")"
-if [[ ! "${required_toolchain}" =~ ^go[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+if [[ ! ${required_toolchain} =~ ^go[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "Source must pin an exact Go toolchain in go.mod" >&2
   exit 2
 fi
 printf 'Source: %s\nVersion: %s\nBuild date: %s\nTarget: %s/%s\nToolchain: %s\n' \
   "${source_commit}" "${release_version}" "${build_date}" "${build_os}" "${build_arch}" "${required_toolchain}"
 module_path="$(sed -n 's/^module //p' "${scratch_dir}/first/go.mod")"
-if [[ ! "${module_path}" =~ ^github\.com/codeswhat/sockguard/v[0-9]+$ ]]; then
+if [[ ! ${module_path} =~ ^github\.com/codeswhat/sockguard/v[0-9]+$ ]]; then
   echo "Source must declare the versioned Sockguard module in go.mod" >&2
   exit 2
 fi

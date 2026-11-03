@@ -1022,7 +1022,7 @@ now gets `403` and `owner_podman_secret_list_unscopeable` or
 patterns-only visibility policy injects nothing there and is forwarded
 untouched, and a Docker upstream keeps the conjunctive injection unchanged.
 
-Denial reasons from the libpod-only inspectors carry a `libpod ` prefix:
+Denial reasons from the libpod-only inspectors carry a `libpod` prefix:
 `libpod container create denied: …`, `libpod network connect denied: …`,
 `libpod image pull denied: …`. The inspectors shared with the Docker-compat
 surface do not, because one policy and one code path serves both spellings.

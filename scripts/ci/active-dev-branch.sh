@@ -38,7 +38,7 @@ if [ -z "${branch}" ]; then
   exit 1
 fi
 
-if ! [[ "${branch}" =~ ^(dev/v[0-9]+\.[0-9]+|maintenance/[0-9]+\.[0-9]+\.x)$ ]]; then
+if ! [[ ${branch} =~ ^(dev/v[0-9]+\.[0-9]+|maintenance/[0-9]+\.[0-9]+\.x)$ ]]; then
   echo "::error::${config} baseBranchPatterns resolves to '${branch}', which is not a single dev/vX.Y or maintenance/X.Y.x branch" >&2
   exit 1
 fi

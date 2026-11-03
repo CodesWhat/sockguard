@@ -38,7 +38,7 @@ heading_texts=()
 recognized_minors=()
 
 while IFS= read -r line; do
-  [[ "${line}" == '<h2'* ]] || continue
+  [[ ${line} == '<h2'* ]] || continue
 
   text="$(printf '%s' "${line}" | sed -E 's/<[^>]+>//g' | tr -s '[:space:]' ' ')"
   text="$(printf '%s' "${text}" | sed -E 's/^ +//; s/ +$//')"
@@ -46,7 +46,7 @@ while IFS= read -r line; do
   # HEADING_VERSIONS: any heading containing a v1.NN-shaped token, whatever
   # its casing or the rest of the wording. This is the "what does the page
   # actually say the newest minor is" signal.
-  if [[ "${text}" =~ [vV]1\.([0-9]+) ]]; then
+  if [[ ${text} =~ [vV]1\.([0-9]+) ]]; then
     heading_minors+=("${BASH_REMATCH[1]}")
     heading_texts+=("${text}")
   fi
@@ -54,10 +54,10 @@ while IFS= read -r line; do
   # RECOGNIZED: only headings in the exact wording this script knows how to
   # trust. Deliberately case-sensitive on the leading "v" and the literal
   # "API changes" suffix — this is the narrow match, not the permissive one.
-  if [[ "${text}" =~ ^v1\.([0-9]+)\ API\ changes$ ]]; then
+  if [[ ${text} =~ ^v1\.([0-9]+)\ API\ changes$ ]]; then
     recognized_minors+=("${BASH_REMATCH[1]}")
   fi
-done <<< "${BLOCKS}"
+done <<<"${BLOCKS}"
 
 if [ "${#heading_minors[@]}" -eq 0 ]; then
   echo "::error::no version heading found; page layout may have changed" >&2
@@ -68,7 +68,7 @@ heading_max=-1
 heading_max_text=""
 for i in "${!heading_minors[@]}"; do
   minor="${heading_minors[${i}]}"
-  if (( 10#${minor} > heading_max )); then
+  if ((10#${minor} > heading_max)); then
     heading_max=$((10#${minor}))
     heading_max_text="${heading_texts[${i}]}"
   fi
@@ -76,7 +76,7 @@ done
 
 recognized_max=-1
 for minor in "${recognized_minors[@]}"; do
-  if (( 10#${minor} > recognized_max )); then
+  if ((10#${minor} > recognized_max)); then
     recognized_max=$((10#${minor}))
   fi
 done
