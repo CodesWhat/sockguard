@@ -2663,12 +2663,17 @@ func isNonRootUser(user string) bool {
 	return true
 }
 
-// isNumericRootUID reports whether userPart parses as the numeric UID 0.
-// Docker resolves a numeric Config.User with strconv, so "00", "000", and any
-// other zero-padded form all run as root — an exact "0" string compare would
-// miss them and let require_non_root_user / allow_root_user:false be bypassed.
+// isNumericRootUID reports whether userPart is the numeric UID 0. It parses
+// with strconv.Atoi on purpose: dockerd and Podman resolve Config.User and exec
+// User through moby/sys/user, whose parseNumeric is strconv.Atoi. That accepts
+// a sign prefix and zero padding, so "+0", "-0", "00", and "+00" all run as
+// root. ParseUint rejects the sign and let "+0" past require_non_root_user and
+// allow_root_user:false. A value Atoi rejects (overflow, "abc") is a name to the
+// engines too and goes through the image's passwd lookup. Sockguard doesn't
+// read that file, so a name other than "root" is accepted as non-root even
+// though the image could map it to UID 0.
 func isNumericRootUID(userPart string) bool {
-	n, err := strconv.ParseUint(userPart, 10, 32)
+	n, err := strconv.Atoi(userPart)
 	return err == nil && n == 0
 }
 

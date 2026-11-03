@@ -476,6 +476,19 @@ func TestLibpodContainerCreateNonRootUserGate(t *testing.T) {
 	}
 }
 
+func TestLibpodContainerCreateDeniesSignedRootUser(t *testing.T) {
+	require := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{RequireNonRootUser: true, AllowSystemdMode: true})
+	for _, user := range []string{"+0", "-0", "+00", "+0:0"} {
+		body := []byte(`{"image":"alpine","user":"` + user + `"}`)
+		if reason := inspectLibpod(t, require, body); reason == "" {
+			t.Fatalf("want deny: user %q is UID 0 with require_non_root_user", user)
+		}
+	}
+	if reason := inspectLibpod(t, require, []byte(`{"image":"alpine","user":"+1000"}`)); reason != "" {
+		t.Fatalf("want allow: +1000 is non-root, got deny %q", reason)
+	}
+}
+
 func TestLibpodContainerCreateResourceLimitGates(t *testing.T) {
 	full := loadLibpodFixture(t, "resource_limits.json")                  // memory+cpu(quota/period)+pids
 	sharesOnly := loadLibpodFixture(t, "resource_limits_cpu_shares.json") // cpu.shares only
