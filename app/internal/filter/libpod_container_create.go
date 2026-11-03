@@ -138,6 +138,16 @@ type LibpodContainerCreateOptions struct {
 	// DenyUnconfinedSystemPaths denies unmask, the libpod spelling of
 	// systempaths=unconfined. Mirrors ContainerCreateOptions.
 	DenyUnconfinedSystemPaths bool
+
+	// AllowUnifiedCgroupSettings permits a non-empty "unified" map, raw
+	// cgroup v2 knobs written straight into the container's cgroup. Default
+	// false. See denyUnifiedCgroupReason.
+	AllowUnifiedCgroupSettings bool
+
+	// AllowEnvHost permits "env_host": true, which copies the Podman
+	// daemon's own environment into the container. Default false. See
+	// denyEnvHostReason.
+	AllowEnvHost bool
 }
 
 type libpodContainerCreatePolicy struct {
@@ -186,6 +196,9 @@ type libpodContainerCreatePolicy struct {
 	allowedDeviceCgroupRules  []string
 	allowDeviceRequests       bool
 	denyUnconfinedSystemPaths bool
+
+	allowUnifiedCgroupSettings bool
+	allowEnvHost               bool
 
 	imageTrustVerifier imageVerifier
 	imageFetcher       signatureFetcher
@@ -251,6 +264,9 @@ func newLibpodContainerCreatePolicy(opts LibpodContainerCreateOptions) libpodCon
 		allowedDeviceCgroupRules:          canonicalDeviceCgroupAllowlist(opts.AllowedDeviceCgroupRules),
 		allowDeviceRequests:               opts.AllowDeviceRequests,
 		denyUnconfinedSystemPaths:         opts.DenyUnconfinedSystemPaths,
+
+		allowUnifiedCgroupSettings: opts.AllowUnifiedCgroupSettings,
+		allowEnvHost:               opts.AllowEnvHost,
 	}
 
 	itf := buildImageTrustFields(opts.ImageTrust)
@@ -371,6 +387,9 @@ func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Reques
 		return denyReason, nil
 	}
 	if denyReason := p.denyIDMappingsReason(createReq.IDMapping); denyReason != "" {
+		return denyReason, nil
+	}
+	if denyReason := p.denyResidualFieldsReason(createReq); denyReason != "" {
 		return denyReason, nil
 	}
 

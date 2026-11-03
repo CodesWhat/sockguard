@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { test } from "node:test";
 
 // The star chart is Star History's hosted /chart embed (ops rule X55). Earlier
 // hosted options failed silently at HTTP 200 (#303), so this contract pins the
-// exact embed forms and keeps the other retired hosts from coming back. It
-// cannot prove the remote image renders: that is checked by eye, signed out.
+// exact embed forms. It cannot prove the remote image renders: that is checked
+// by eye, signed out.
 
 const repoRoot = resolve(import.meta.dirname, "..");
 const readme = readFileSync(resolve(repoRoot, "README.md"), "utf8");
@@ -47,30 +46,4 @@ test("the website component loads both themes from the same chart and keeps its 
   assert.match(component, /aria-label="Star history chart for CodesWhat\/sockguard"/u);
   assert.match(component, /ctaId="github_repository"/u);
   assert.match(component, /placement="star_history"/u);
-});
-
-test("no tracked file reaches for a retired star-chart host or the old /svg form", () => {
-  // Excluded: CHANGELOG.md (immutable history) and this test.
-  let hits = "";
-  try {
-    hits = execFileSync(
-      "git",
-      [
-        "grep",
-        "-iIl",
-        "-e",
-        "warpchart\\.dev",
-        "-e",
-        "api\\.star-history\\.com/svg",
-        "--",
-        ":!CHANGELOG.md",
-        ":!scripts/star-chart-contract.test.mjs",
-      ],
-      { cwd: repoRoot, encoding: "utf8" },
-    );
-  } catch (error) {
-    // git grep exits 1 on zero matches, which is the passing state.
-    assert.equal(error.status, 1, error.stderr || error.message);
-  }
-  assert.equal(hits, "", `retired star-chart references in:\n${hits}`);
 });

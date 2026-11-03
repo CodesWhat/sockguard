@@ -183,6 +183,8 @@ func (c LibpodContainerCreateRequestBodyConfig) ToFilterOptions() filter.LibpodC
 		AllowedDeviceCgroupRules:          c.AllowedDeviceCgroupRules,
 		AllowDeviceRequests:               c.AllowDeviceRequests,
 		DenyUnconfinedSystemPaths:         c.DenyUnconfinedSystemPaths,
+		AllowUnifiedCgroupSettings:        c.AllowUnifiedCgroupSettings,
+		AllowEnvHost:                      c.AllowEnvHost,
 	}
 }
 

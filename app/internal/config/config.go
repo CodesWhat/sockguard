@@ -772,6 +772,16 @@ type LibpodContainerCreateRequestBodyConfig struct {
 	AllowedDeviceCgroupRules  []string `mapstructure:"allowed_device_cgroup_rules"`
 	AllowDeviceRequests       bool     `mapstructure:"allow_device_requests"`
 	DenyUnconfinedSystemPaths bool     `mapstructure:"deny_unconfined_system_paths"`
+
+	// AllowUnifiedCgroupSettings permits a non-empty "unified" map, raw
+	// cgroup v2 knobs Podman writes straight into the container's cgroup.
+	// No Docker Engine API analog. Default false.
+	AllowUnifiedCgroupSettings bool `mapstructure:"allow_unified_cgroup_settings"`
+
+	// AllowEnvHost permits "env_host": true, which copies the Podman
+	// daemon's environment into the container. No Docker Engine API analog.
+	// Default false.
+	AllowEnvHost bool `mapstructure:"allow_env_host"`
 }
 
 // ImageTrustConfig configures cosign signature verification for images
