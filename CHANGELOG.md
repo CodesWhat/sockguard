@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`GET /libpod/generate/kube` and `GET /libpod/kube/generate` are refused under owner isolation and visibility policy.** They resolve each name as a pod, container or volume with no owner check and return the definition, environment included, so a tenant holding `insecure_allow_read_exfiltration` could dump another tenant's by name. Reason codes are `owner_libpod_generate_kube_unscopeable`, `owner_libpod_kube_generate_unscopeable` and the `visibility_` equivalents. With neither layer active nothing changes.
+
 ### Changed
 
 - **The cgroup version probe behind `allow_host_cgroupns_on_cgroup_v1` now refreshes.** It was a startup-only snapshot, so a daemon migrated from cgroup v1 to v2 without restarting sockguard kept host cgroup namespaces open, and a hot reload that turned the option on never probed. Sockguard now re-probes `GET /info` every 5 minutes, whenever an upstream endpoint changes health state, and during a reload that enables the option (the gate stays closed until that probe finishes). The result is stored atomically and read per request, so policies are not rebuilt. Any probe error or non-v1 answer closes the gate, nothing is probed while the option is unset, and the reload log line saying the startup result is reused is gone. `POST /libpod/containers/create` is still not covered.
