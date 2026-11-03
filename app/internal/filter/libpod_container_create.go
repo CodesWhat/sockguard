@@ -349,6 +349,9 @@ func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Reques
 	if denyReason := p.denyNamespaceSharingReason(createReq); denyReason != "" {
 		return denyReason, nil
 	}
+	if !p.allowTmpfsPrivilegedOptions && strings.EqualFold(strings.TrimSpace(createReq.ImageVolumeMode), "tmpfs") {
+		return "libpod container create denied: image_volume_mode \"tmpfs\" mounts the image's volumes as executable tmpfs; use \"bind\" or \"ignore\", or set request_body.libpod_container_create.allow_tmpfs_privileged_options", nil
+	}
 	if denyReason := p.denyBindMountReason(createReq.Mounts); denyReason != "" {
 		return denyReason, nil
 	}
@@ -587,8 +590,8 @@ func (p libpodContainerCreatePolicy) denyBindMountReason(mounts []libpodMount) s
 			}
 			// Podman mounts a tmpfs executable, and gives /dev no default
 			// options, so a tmpfs here is only safe when it says so itself.
-			if !posture.fullyRestricted() {
-				return "libpod container create denied: " + tmpfsPodmanRequirement
+			if !posture.podmanSafe(mount.Destination) {
+				return "libpod container create denied: " + tmpfsPodmanRefusal(mount.Destination, "request_body.libpod_container_create.allow_tmpfs_privileged_options")
 			}
 		}
 		bind := strings.EqualFold(mount.Type, "bind") || slices.Contains(mount.Options, "bind") || slices.Contains(mount.Options, "rbind")

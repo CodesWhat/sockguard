@@ -2201,8 +2201,11 @@ func (p containerCreatePolicy) denyTmpfsOptionsReason(mounts []containerCreateMo
 				tokens = append(tokens, strings.Join(option, "="))
 			}
 		}
-		if p.podmanUpstream && !p.allowTmpfsPrivilegedOptions && strings.EqualFold(mount.Type, "tmpfs") && !tmpfsPostureOfList(tokens...).fullyRestricted() {
-			return "container create denied: " + tmpfsPodmanRequirement
+		// Podman's compat handler forwards only tmpfs-size and tmpfs-mode of a
+		// Mounts tmpfs entry, so options listed here never reach the mount and
+		// it comes up executable whatever they say.
+		if p.podmanUpstream && !p.allowTmpfsPrivilegedOptions && strings.EqualFold(mount.Type, "tmpfs") {
+			return "container create denied: a Mounts tmpfs entry on a Podman upstream ignores TmpfsOptions.Options and mounts executable; use HostConfig.Tmpfs with noexec (for example /run:noexec) or set request_body.container_create.allow_tmpfs_privileged_options"
 		}
 	}
 	return ""
@@ -2236,8 +2239,9 @@ func (p containerCreatePolicy) denyLegacyTmpfsOptionsReason(mounts map[string]st
 			if hasKeyColon {
 				podmanOptions = keyOptions
 			}
-			if !tmpfsPostureOfList(podmanOptions).fullyRestricted() {
-				return "container create denied: " + tmpfsPodmanRequirement
+			podmanDest, _, _ := strings.Cut(dest, ":")
+			if !tmpfsPostureOfList(podmanOptions).podmanSafe(podmanDest) {
+				return "container create denied: " + tmpfsPodmanRefusal(podmanDest, "request_body.container_create.allow_tmpfs_privileged_options")
 			}
 		}
 	}

@@ -92,3 +92,28 @@ func TestTmpfsPostureFullyRestricted(t *testing.T) {
 		})
 	}
 }
+
+func TestTmpfsPostureYieldsPodmanSafe(t *testing.T) {
+	tests := []struct {
+		name, dest, opts string
+		want             bool
+	}{
+		{"bare noexec", "/run", "noexec", true},
+		{"nothing", "/run", "", false},
+		{"exec=0 is not the bare token", "/run", "exec=0", false},
+		{"noexec=1 is not the bare token", "/run", "noexec=1", false},
+		{"exec after noexec", "/run", "noexec,exec", false},
+		{"noexec after exec", "/run", "exec,noexec", true},
+		{"/dev with only noexec", "/dev", "noexec", false},
+		{"/dev with all three", "/dev", "noexec,nosuid,nodev", true},
+		{"/dev/ with a trailing slash", "/dev/", "noexec", false},
+		{"/dev/shm is not /dev", "/dev/shm", "noexec", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tmpfsPostureOfList(tt.opts).podmanSafe(tt.dest); got != tt.want {
+				t.Errorf("podmanSafe(%q) for %q = %t, want %t", tt.dest, tt.opts, got, tt.want)
+			}
+		})
+	}
+}

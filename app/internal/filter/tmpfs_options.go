@@ -1,6 +1,10 @@
 package filter
 
-import "strings"
+import (
+	"fmt"
+	"path"
+	"strings"
+)
 
 // tmpfs_options.go holds the one reading of tmpfs mount option text that every
 // tmpfs gate shares: HostConfig.Tmpfs, HostConfig.Mounts[].TmpfsOptions, the
@@ -23,6 +27,9 @@ const (
 // flags in.
 type tmpfsPosture struct {
 	exec, dev, suid tmpfsFlagState
+	// execBare is set when the last token to touch exec was the bare
+	// "noexec", the spelling Podman's own tmpfs parsing recognizes.
+	execBare bool
 }
 
 // apply folds one option token into the posture. A token is "key" or
@@ -38,12 +45,14 @@ func (t *tmpfsPosture) apply(token string) {
 	switch name {
 	case "exec":
 		t.exec = tmpfsEnablingState(falsy)
+		t.execBare = false
 	case "dev":
 		t.dev = tmpfsEnablingState(falsy)
 	case "suid":
 		t.suid = tmpfsEnablingState(falsy)
 	case "noexec":
 		t.exec = tmpfsRestrictingState(hasValue, falsy)
+		t.execBare = !hasValue
 	case "nodev":
 		t.dev = tmpfsRestrictingState(hasValue, falsy)
 	case "nosuid":
@@ -138,4 +147,27 @@ func (t tmpfsPosture) fullyRestricted() bool {
 	return t.exec == tmpfsFlagRestricted && t.dev == tmpfsFlagRestricted && t.suid == tmpfsFlagRestricted
 }
 
-const tmpfsPodmanRequirement = "a tmpfs on a Podman upstream must set noexec, nosuid and nodev (set allow_tmpfs_privileged_options: true to opt out)"
+// podmanSafe reports whether a tmpfs at dest is safe on a Podman upstream.
+// Podman mounts a tmpfs executable, so the bare token noexec is required (a
+// "noexec=1" or "exec=0" spelling is not what its parser looks for). It adds
+// nosuid and nodev itself everywhere but /dev, which gets no default options,
+// so only /dev has to spell those out.
+func (t tmpfsPosture) podmanSafe(dest string) bool {
+	if t.exec != tmpfsFlagRestricted || !t.execBare {
+		return false
+	}
+	if path.Clean("/"+dest) == "/dev" {
+		return t.dev == tmpfsFlagRestricted && t.suid == tmpfsFlagRestricted
+	}
+	return true
+}
+
+// tmpfsPodmanRefusal names what a Podman tmpfs at dest has to add, and the
+// key that opts out.
+func tmpfsPodmanRefusal(dest, optOutKey string) string {
+	fix := "noexec"
+	if path.Clean("/"+dest) == "/dev" {
+		fix = "noexec,nosuid,nodev"
+	}
+	return fmt.Sprintf("a tmpfs on a Podman upstream must set %s: use --tmpfs %s:%s or set %s", fix, dest, fix, optOutKey)
+}

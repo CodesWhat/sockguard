@@ -44,9 +44,12 @@ type libpodContainerCreateRequest struct {
 	Name         string            `json:"name"`
 	Image        string            `json:"image"`
 	ImageVolumes []json.RawMessage `json:"image_volumes"`
-	User         string            `json:"user"`
-	Labels       map[string]string `json:"labels"`
-	Privileged   bool              `json:"privileged"`
+	// ImageVolumeMode is how the image's declared VOLUMEs are mounted:
+	// "bind" (default), "tmpfs" or "ignore". "tmpfs" mounts them executable.
+	ImageVolumeMode string            `json:"image_volume_mode"`
+	User            string            `json:"user"`
+	Labels          map[string]string `json:"labels"`
+	Privileged      bool              `json:"privileged"`
 
 	NetNS     libpodNamespace  `json:"netns"`
 	PidNS     libpodNamespace  `json:"pidns"`
