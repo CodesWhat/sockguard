@@ -386,9 +386,12 @@ nothing. So while either flag might be set, the named secret has to be absent
 or carry the caller's owner label. Another owner's secret, or one with no owner
 label, is a `403`, a name nobody holds goes through as a normal create, and a
 failed lookup is a `502`. Podman matches the name against secret names and
-full IDs, and so does the lookup. The lookup also resolves a unique ID prefix,
-which Podman's create doesn't, so a new secret whose name is a short hex string
-that prefixes another owner's secret ID is refused too. The check is a lookup
+full IDs, and so does the lookup. The secret inspect it goes through also
+resolves a unique ID prefix, which Podman's create doesn't, so the lookup
+accepts a secret only when its ID or name is the one the request named and
+reads a prefix-only match as absent. A new secret whose name is a short hex
+string that prefixes another owner's secret ID is created like any other, so
+the answer doesn't reveal which hex strings begin an ID. The check is a lookup
 before the write, so another owner's proxy, or anything writing to the socket
 directly, can still create the name in between. One sockguard has one owner, so
 nothing going through the same instance can. A flag counts as set unless Podman would read

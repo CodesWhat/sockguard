@@ -709,7 +709,14 @@ func checkExistingOwnershipReferences(
 ) (ownershipVerdict, string, error) {
 	strictest := verdictPassThrough
 	for _, ref := range refs {
-		labels, found, err := inspectResource(ctx, ref.kind, ref.identifier)
+		lookupCtx := ctx
+		if ref.kind == dockerresource.KindSecret {
+			// A create acts on a secret only if Store matches it, and Store
+			// matches an exact name or ID, never the ID prefix the inspect
+			// falls back to.
+			lookupCtx = withExactSecretLookup(ctx)
+		}
+		labels, found, err := inspectResource(lookupCtx, ref.kind, ref.identifier)
 		if err != nil {
 			return verdictPassThrough, "", err
 		}
@@ -1433,13 +1440,20 @@ func (u upstreamInspector) inspectResource(ctx context.Context, kind dockerresou
 	}
 	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
 
+	exact := kind == dockerresource.KindSecret && exactSecretLookup(ctx)
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, false, nil
 	}
 	if resp.StatusCode != http.StatusOK {
+		if exact && secretLookupAmbiguousPrefix(resp.Body) {
+			return nil, false, nil
+		}
 		return nil, false, fmt.Errorf("inspect %s %q: upstream returned %s", kind, identifier, resp.Status)
 	}
 
+	if exact {
+		return decodeExactSecret(resp.Body, identifier)
+	}
 	labels, err := dockerresource.DecodeLabels(resp.Body, kind)
 	if err != nil {
 		return nil, false, err

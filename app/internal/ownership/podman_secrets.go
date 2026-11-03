@@ -86,8 +86,11 @@ func mutateLibpodSecretCreateOwnershipRequest(r *http.Request, opts Options) (*o
 // caller's own. Store matches the name against every secret's exact name and
 // exact ID, and the inspect owner isolation makes resolves exact matches the
 // same way first, so it answers for the secret Store would act on. The
-// inspect then falls back to a unique ID prefix, which Store doesn't, so a
-// name that is only a prefix of another owner's ID is refused as well.
+// inspect then falls back to a unique ID prefix, which Store doesn't, so this
+// lookup (see withExactSecretLookup) reports a secret only when its ID or
+// name is the one the request named, and reads an ambiguous prefix as absent.
+// Otherwise a name that began another owner's ID would be refused, and one
+// that began two IDs would fail, while a name that began none was created.
 //
 // The libpod handler decodes the flags with gorilla/schema's own bool
 // converter: "on" and whatever strconv.ParseBool reads as true are true, an
