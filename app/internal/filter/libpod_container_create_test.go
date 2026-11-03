@@ -740,6 +740,7 @@ func TestLibpodImageTrustEnforceDeniesOnVerifierError(t *testing.T) {
 		allowSystemdMode:      true,
 		allowCustomIDMappings: true,
 		imageTrustVerifier:    mv,
+		imageTrustRegistry:    allowAllRegistryPolicy(),
 		imageFetcher:          oneCandidateFetcher(),
 		imageTrustCfg:         imagetrust.Config{Mode: imagetrust.ModeEnforce},
 	}
@@ -766,6 +767,7 @@ func TestLibpodImageTrustEmptyImageDeniedWhenConfigured(t *testing.T) {
 		allowSystemdMode:      true,
 		allowCustomIDMappings: true,
 		imageTrustVerifier:    mv,
+		imageTrustRegistry:    allowAllRegistryPolicy(),
 		imageFetcher:          oneCandidateFetcher(),
 		imageTrustCfg:         imagetrust.Config{Mode: imagetrust.ModeEnforce},
 	}
@@ -792,6 +794,7 @@ func TestLibpodImageTrustEnforcePinsVerifiedDigest(t *testing.T) {
 		allowSystemdMode:      true,
 		allowCustomIDMappings: true,
 		imageTrustVerifier:    &mockImageVerifier{},
+		imageTrustRegistry:    allowAllRegistryPolicy(),
 		imageFetcher:          &mockSignatureFetcher{candidates: []imagetrust.Candidate{{DigestHex: "00", ImageDigest: digest}}},
 		imageTrustCfg:         imagetrust.Config{Mode: imagetrust.ModeEnforce},
 	}

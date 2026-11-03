@@ -297,6 +297,7 @@ request_body:
   container_create:
     image_trust:
       mode: enforce
+      allowed_registries: [ghcr.io]
       allowed_signing_keys:
         - pem: "-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----\n"
 `
@@ -319,6 +320,7 @@ request_body:
   container_create:
     image_trust:
       mode: enforce
+      allowed_registries: [ghcr.io]
       allowed_keyless:
         - issuer: https://accounts.google.com
           subject_pattern: ".*@example.com$"

@@ -179,6 +179,8 @@ func (f *Filter) ModifyResponse(resp *http.Response) error {
 		return f.modifyContainerInspect(resp)
 	case isImageInspectPath(normPath):
 		return f.modifyImageInspect(resp)
+	case isImageHistoryPath(normPath):
+		return f.modifyImageHistory(resp)
 	case normPath == "/containers/json":
 		return f.modifyContainerList(resp)
 	case normPath == "/networks":
@@ -345,6 +347,96 @@ func (f *Filter) modifyImageInspect(resp *http.Response) error {
 	}
 
 	return writeResponseBody(resp, payload)
+}
+
+// modifyImageHistory rewrites GET /images/{name}/history (and the libpod
+// spelling). Each entry's CreatedBy is the instruction that built the layer,
+// so an ENV (or ARG) layer carries KEY=value pairs that redact_container_env
+// already empties on image inspect. Those instructions are replaced with
+// "ENV <redacted>" / "ARG <redacted>"; every other entry is left alone.
+func (f *Filter) modifyImageHistory(resp *http.Response) error {
+	if !f.opts.RedactContainerEnv {
+		return nil
+	}
+	// No itemFields: Podman's native history spells the key differently from
+	// Docker's (createdBy vs CreatedBy), so each entry is decoded whole and the
+	// key matched case-insensitively.
+	return streamArrayResponse(resp, func(entry map[string]any) error {
+		for key, value := range entry {
+			if !isCreatedByKey(key) {
+				continue
+			}
+			if createdBy, ok := value.(string); ok {
+				entry[key] = redactHistoryCreatedBy(createdBy)
+			}
+		}
+		return nil
+	})
+}
+
+func isCreatedByKey(key string) bool {
+	return strings.EqualFold(strings.ReplaceAll(key, "_", ""), "createdby")
+}
+
+// redactHistoryCreatedBy hides the values an image build baked into a layer's
+// CreatedBy: ENV and ARG instructions become "ENV <redacted>" / "ARG
+// <redacted>", and the "|N KEY=value ..." build-arg prefix of a RUN layer
+// (classic "|1 K=v /bin/sh -c ..." and BuildKit "RUN |1 K=v /bin/sh -c ...")
+// keeps its keys and command but loses the values. Anything else is returned
+// unchanged.
+func redactHistoryCreatedBy(createdBy string) string {
+	s := strings.TrimSpace(createdBy)
+	body := strings.TrimSpace(strings.TrimSuffix(s, "# buildkit"))
+	if rest, ok := strings.CutPrefix(body, "/bin/sh -c #(nop)"); ok {
+		body = strings.TrimSpace(rest)
+	}
+	for _, keyword := range [...]string{"ENV", "ARG"} {
+		if len(body) > len(keyword) && strings.EqualFold(body[:len(keyword)], keyword) {
+			switch body[len(keyword)] {
+			case ' ', '\t', '\n':
+				return keyword + " <redacted>"
+			}
+		}
+	}
+
+	// Build-arg prefix: optional "RUN ", then "|N ".
+	prefix := ""
+	rest := s
+	if r, ok := strings.CutPrefix(rest, "RUN "); ok {
+		prefix, rest = "RUN ", r
+	}
+	if len(rest) < 3 || rest[0] != '|' {
+		return createdBy
+	}
+	digits := 1
+	for digits < len(rest) && rest[digits] >= '0' && rest[digits] <= '9' {
+		digits++
+	}
+	if digits == 1 || digits >= len(rest) || rest[digits] != ' ' {
+		return createdBy
+	}
+	count, args := rest[:digits], rest[digits+1:]
+	cmdAt := strings.Index(args, "/bin/sh -c")
+	var argSegment, tail string
+	if cmdAt >= 0 {
+		argSegment, tail = args[:cmdAt], args[cmdAt:]
+	} else {
+		argSegment = args
+	}
+	var keys []string
+	for _, tok := range strings.Fields(argSegment) {
+		if k, _, ok := strings.Cut(tok, "="); ok && k != "" {
+			keys = append(keys, k+"=<redacted>")
+		}
+	}
+	if len(keys) == 0 {
+		keys = []string{"<redacted>"}
+	}
+	out := prefix + count + " " + strings.Join(keys, " ")
+	if tail != "" {
+		out += " " + tail
+	}
+	return out
 }
 
 func (f *Filter) modifyContainerList(resp *http.Response) error {
@@ -632,6 +724,25 @@ func isImageInspectPath(normPath string) bool {
 		return false
 	}
 	return rest[idx+1:] == "json"
+}
+
+// isImageHistoryPath reports whether normPath is /images/{name}/history. The
+// name may contain slashes, so it anchors on the last segment like
+// isImageInspectPath does.
+func isImageHistoryPath(normPath string) bool {
+	return hasImageNameSuffix(normPath, "/images/", "history")
+}
+
+func hasImageNameSuffix(normPath, prefix, last string) bool {
+	rest, ok := strings.CutPrefix(normPath, prefix)
+	if !ok {
+		return false
+	}
+	idx := strings.LastIndex(rest, "/")
+	if idx <= 0 {
+		return false
+	}
+	return rest[idx+1:] == last
 }
 
 // denyAttestationStatement reports whether resp is a

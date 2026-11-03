@@ -426,6 +426,7 @@ func imageTrustEnforcePolicy() containerCreatePolicy {
 	policy := newContainerCreatePolicy(ContainerCreateOptions{})
 	policy.imageTrustVerifier = refImageVerifier{}
 	policy.imageFetcher = oneCandidateFetcher()
+	policy.imageTrustRegistry = allowAllRegistryPolicy()
 	policy.imageTrustCfg = imagetrust.Config{Mode: imagetrust.ModeEnforce}
 	return policy
 }

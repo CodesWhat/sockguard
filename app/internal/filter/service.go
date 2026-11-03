@@ -267,7 +267,7 @@ func newServicePolicy(opts ServiceOptions) servicePolicy {
 		denyUnconfinedAppArmor:     opts.DenyUnconfinedAppArmor,
 		denySelinuxDisable:         opts.DenySelinuxDisable,
 		denySelinuxLabelOverride:   opts.DenySelinuxLabelOverride,
-		imageTrust:                 buildImageTrustFields(opts.ImageTrust),
+		imageTrust:                 buildImageTrustFields(opts.ImageTrust, nil),
 		logDrivers:                 newLogDriverPolicy(opts.AllowedLogDrivers, opts.AllowedLogEndpointOptions),
 	}
 }
@@ -532,7 +532,13 @@ func (p servicePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedP
 	}
 	if p.imageTrust.verifier != nil {
 		imageRef := strings.TrimSpace(req.TaskTemplate.ContainerSpec.Image)
-		denyReason, verifiedDigest := verifyImageTrust(r.Context(), logger, p.imageTrust, imageRef, "service")
+		// A service is scoped by its own registry policy (allow_all_registries,
+		// allow_official, allowed_registries), the same one that gates the
+		// image above, so signature discovery contacts only a registry that
+		// policy already admits.
+		trustFields := p.imageTrust
+		trustFields.registry = p.imagePolicy
+		denyReason, verifiedDigest := verifyImageTrust(r.Context(), logger, trustFields, imageRef, "service")
 		if denyReason != "" {
 			return denyReason, nil
 		}

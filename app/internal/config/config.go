@@ -883,6 +883,13 @@ type ImageTrustConfig struct {
 	RequireRekorInclusion bool `mapstructure:"require_rekor_inclusion"`
 	// VerifyTimeout overrides the default 10s end-to-end image-trust deadline.
 	VerifyTimeout string `mapstructure:"verify_timeout"`
+	// AllowAllRegistries permits signature discovery against any registry the
+	// client names. Default false.
+	AllowAllRegistries bool `mapstructure:"allow_all_registries"`
+	// AllowOfficial permits Docker Hub official images (docker.io/library/*).
+	AllowOfficial bool `mapstructure:"allow_official"`
+	// AllowedRegistries lists registry hosts signature discovery may contact.
+	AllowedRegistries []string `mapstructure:"allowed_registries"`
 }
 
 // SigningKeyConfig is one entry in image_trust.allowed_signing_keys.

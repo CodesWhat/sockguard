@@ -83,14 +83,16 @@ func TestCreateImageAllowlistWithImageTrust(t *testing.T) {
 			case "container":
 				p := newContainerCreatePolicy(ContainerCreateOptions{AllowedImages: []string{image}})
 				p.imageTrustVerifier, p.imageFetcher, p.imageTrustCfg = verifier, fetcher, trust
+				p.imageTrustRegistry = allowAllRegistryPolicy()
 				inspect = p.inspect
 			case "libpod":
 				p := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowedImages: []string{image}})
 				p.imageTrustVerifier, p.imageFetcher, p.imageTrustCfg = verifier, fetcher, trust
+				p.imageTrustRegistry = allowAllRegistryPolicy()
 				inspect, path, body = p.inspect, "/libpod/containers/create", `{"image":"`+image+`","systemd":"false"}`
 			case "service":
 				p := newServicePolicy(ServiceOptions{AllowedImages: []string{image}, AllowAllRegistries: true})
-				p.imageTrust = imageTrustFields{verifier: verifier, fetcher: fetcher, cfg: trust}
+				p.imageTrust = imageTrustFields{verifier: verifier, fetcher: fetcher, cfg: trust, registry: allowAllRegistryPolicy()}
 				inspect, path, body = p.inspect, "/services/create", `{"TaskTemplate":{"ContainerSpec":{"Image":"`+image+`"}}}`
 			}
 			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
