@@ -28,3 +28,16 @@ ignore:
     package:
       name: golang.org/x/crypto
       type: go-module
+
+  # github.com/docker/docker is imported only by the test-only app/compat module,
+  # for its v28 API data types (the compat suite decodes sockguard's filtered
+  # responses into them). It runs no daemon code, is never linked into the
+  # shipped binary (app/compat is its own module, excluded from the Docker build
+  # context), and the module has no patched release: it ends at v28.5.2 and moby
+  # moved to github.com/moby/moby/*. Scoped by location so a docker/docker
+  # dependency anywhere else still fails the scan. Same reasoning as the Qlty
+  # triage and the dependency-review allow list for that module.
+  - package:
+      name: github.com/docker/docker
+      type: go-module
+      location: "**/app/compat/go.mod"

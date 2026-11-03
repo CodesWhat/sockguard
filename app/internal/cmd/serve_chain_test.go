@@ -580,8 +580,8 @@ func TestBuildServeHandlerExercisesClientACLVisibilityFilterAndResponseFilter(t 
 	}
 
 	networkSettings, _ := payload["NetworkSettings"].(map[string]any)
-	if got, _ := networkSettings["IPAddress"].(string); got != "<redacted>" {
-		t.Fatalf("NetworkSettings.IPAddress = %q, want %q", got, "<redacted>")
+	if got, ok := networkSettings["IPAddress"].(string); !ok || got != "" {
+		t.Fatalf("NetworkSettings.IPAddress = %q, want empty string", got)
 	}
 	networks, _ := networkSettings["Networks"].(map[string]any)
 	bridge, _ := networks["bridge"].(map[string]any)

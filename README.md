@@ -43,7 +43,7 @@
 <hr>
 
 > [!NOTE]
-> **v2.4.3 is the latest stable release.** It stops completed attach, exec and BuildKit sessions from piling up in the listener, rejects keyless subject patterns that are not a complete regexp, and fixes Podman nightly CI. It also adds Codecov coverage reporting and corrects the Podman and governance docs. It carries v2.4.2. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
+> **v2.4.4 is the latest stable release.** It stops redaction placeholders from breaking typed Docker clients such as Traefik and Diun, fixes Portainer Recreate and the watchtower and portwing presets, and closes libpod create bypasses and inspect leaks. It also fixes upstream timeouts on slow stop and prune calls and adds a real-Docker-types compat CI job. It carries v2.4.3. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
 <h2 align="center">Contents</h2>
 
@@ -540,6 +540,7 @@ Added in 2.2.11: native Podman container and pod creates refuse caller-selected 
 | **v2.4.1** ✅ | Exec Target Protection & CA Refresh | Protected container labels block Docker and Podman exec create/start, including in the proxy itself. Exec-create pins the inspected ID; the CA bundle is refreshed and published-image Grype no longer sets up a builder. |
 | **v2.4.2** ✅ | Podman Isolation & Release Reliability | Engine identity checks, version-aware volume filter scoping, unscoped native-route refusals, bounded CI retries and protected maintenance chart pins. |
 | **v2.4.3** ✅ | Session Cleanup & Pattern Validation | Completed hijacked sessions are dropped from the listener tracker, incomplete keyless subject patterns are rejected, and Podman nightly CI tracks Fedora major tags. |
+| **v2.4.4** ✅ | Client Compatibility & libpod Hardening | Redaction placeholders no longer break typed Docker clients, preset gaps for Portainer, watchtower and portwing are closed, slow stop and prune calls get the right timeouts, and libpod create bypasses and inspect leaks are closed. |
 | **v2.x** | Supply Chain | `egress-policy: block` with curated allow-lists on high-privilege release jobs |
 | **v2.x** | Policy Refinement | Named rule path aliases and further response-policy refinement |
 | **v2.x** | Internals | Container-create ownership reference collectors are separated into bind, mount and endpoint helpers with the same isolation checks. Code-review backlog: collapse the config → filter-options → policy translation layers behind a single source of truth; profiling-gated JSON redaction fast path |

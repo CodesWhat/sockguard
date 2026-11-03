@@ -279,14 +279,7 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		allowedDevices = append(allowedDevices, normalized)
 	}
 
-	allowedDeviceCgroupRules := make([]string, 0, len(opts.AllowedDeviceCgroupRules))
-	for _, rule := range opts.AllowedDeviceCgroupRules {
-		canonical, ok := canonicalizeDeviceCgroupRule(rule)
-		if !ok || slices.Contains(allowedDeviceCgroupRules, canonical) {
-			continue
-		}
-		allowedDeviceCgroupRules = append(allowedDeviceCgroupRules, canonical)
-	}
+	allowedDeviceCgroupRules := canonicalDeviceCgroupAllowlist(opts.AllowedDeviceCgroupRules)
 
 	allowedDeviceRequests := make([]allowedDeviceRequestEntry, 0, len(opts.AllowedDeviceRequests))
 	for _, entry := range opts.AllowedDeviceRequests {
@@ -1725,6 +1718,20 @@ func canonicalizeAllowedCapabilitySets(sets [][]string) [][]string {
 	out := make([][]string, 0, len(sets))
 	for _, set := range sets {
 		canonical := canonicalizeCapabilitySet(set)
+		out = append(out, canonical)
+	}
+	return out
+}
+
+// canonicalDeviceCgroupAllowlist canonicalizes and de-duplicates the configured
+// allowed_device_cgroup_rules, dropping entries that do not parse.
+func canonicalDeviceCgroupAllowlist(rules []string) []string {
+	out := make([]string, 0, len(rules))
+	for _, rule := range rules {
+		canonical, ok := canonicalizeDeviceCgroupRule(rule)
+		if !ok || slices.Contains(out, canonical) {
+			continue
+		}
 		out = append(out, canonical)
 	}
 	return out

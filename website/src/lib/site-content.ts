@@ -471,6 +471,17 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
+    version: "v2.4.4",
+    title: "Client Compatibility & libpod Hardening",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Redaction placeholders no longer break typed Docker clients such as Traefik and Diun, and the Portainer, watchtower and portwing presets cover Recreate and update flows",
+      "Slow stop, restart and prune calls get the right upstream timeouts, and 429 bodies carry a message",
+      "libpod create bypasses (host_device_list, resource_limits.devices, volumes_from and others) and inspect CreateCommand and Secrets leaks are closed",
+    ],
+  },
+  {
     version: "v3.0.0",
     title: "Verified TLS Compatibility Boundary",
     emoji: "🔐",

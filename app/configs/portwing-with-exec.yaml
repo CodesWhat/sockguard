@@ -81,6 +81,10 @@ request_body:
   container_remove:
     allow_force: true
   container_create:
+    # cgroup v1 hosts only (e.g. Synology): a recreate replays
+    # HostConfig.CgroupnsMode "host", which is denied by default. Uncommenting
+    # this widens create to the host cgroup namespace.
+    # allow_host_cgroupns: true
     allowed_bind_mounts: []
     allowed_runtimes:
       - runc
@@ -167,10 +171,18 @@ rules:
   - match: { method: DELETE, path: "/images/**" }
     action: allow
 
-  # Network read — list + inspect only.
+  # Network read — list + inspect. Plus connect: drydock (behind Portwing)
+  # re-attaches a recreated container's extra networks via
+  # POST /networks/{id}/connect. The endpoint-config policy is the default
+  # (Aliases only): static IPs, MAC pinning, links, driver options and
+  # gateway priority in the connect body are denied unless
+  # request_body.network is widened. Network create/disconnect/remove stay
+  # denied.
   - match: { method: GET, path: "/networks" }
     action: allow
   - match: { method: GET, path: "/networks/*" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/connect" }
     action: allow
 
   # Volume read — list + inspect only.

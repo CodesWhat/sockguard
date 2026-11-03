@@ -23,6 +23,10 @@ request_body:
   container_remove:
     allow_force: true
   container_create:
+    # cgroup v1 hosts only (e.g. Synology): a recreate replays
+    # HostConfig.CgroupnsMode "host", which is denied by default. Uncommenting
+    # this widens create to the host cgroup namespace.
+    # allow_host_cgroupns: true
     allowed_bind_mounts: []
     # Mirror app/configs/drydock.yaml: drydock recreates from the inspect spec,
     # which carries HostConfig.Runtime "runc" on most daemons, so allowlist it

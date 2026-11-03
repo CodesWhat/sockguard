@@ -36,6 +36,9 @@ var ImmutableFields = []string{
 	// and change nothing, which is the silently-ignored-config failure the
 	// immutable gate exists to turn into a loud "restart required".
 	"upstream.flavor",
+	// upstream.response_header_timeout is baked into the Resolver's transports
+	// at startup, so a reload could not apply it.
+	"upstream.response_header_timeout",
 	"log",
 	"health",
 	"metrics",
@@ -96,6 +99,9 @@ func ImmutableDiff(oldCfg, newCfg *config.Config) []string {
 	}
 	if oldCfg.Upstream.Flavor != newCfg.Upstream.Flavor {
 		changed = append(changed, "upstream.flavor")
+	}
+	if oldCfg.Upstream.ResponseHeaderTimeout != newCfg.Upstream.ResponseHeaderTimeout {
+		changed = append(changed, "upstream.response_header_timeout")
 	}
 	if !reflect.DeepEqual(oldCfg.Log, newCfg.Log) {
 		changed = append(changed, "log")

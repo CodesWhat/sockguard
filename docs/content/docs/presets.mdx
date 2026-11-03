@@ -181,7 +181,9 @@ any remote Docker agent that needs lifecycle control, image pull, and event stre
 # Container removal permits Portwing's force option; anonymous-volume and
 # legacy-link deletion stay denied
 # Allows: image read, pull, remove
-# Allows: network read, volume read, distribution, Swarm service reads
+# Allows: network read, network connect (Aliases-only endpoint config, so drydock
+#         can re-attach extra networks on recreate), volume read, distribution,
+#         Swarm service reads
 # Denies: exec, build, swarm writes, secrets, plugins, raw archive/export/attach streams
 # insecure_allow_read_exfiltration=true — required because GET /containers/*/logs and
 # GET /containers/*/top are allowed (Portwing's GetContainerLogs() and process view); logs can
@@ -335,6 +337,8 @@ Every allowed path is a named list or required inspect endpoint rather than a
 `GET /containers/*/logs` or `GET /containers/*/archive` has to add that rule
 and the acknowledgment itself.
 
+The preset sets `response.redact_network_topology: false` because Traefik routes to container IPs, so blanked addresses would leave it with nothing to route to.
+
 ## Portainer (`portainer.yaml`)
 
 Full Docker API access for Portainer management UI.
@@ -357,20 +361,43 @@ Full Docker API access for Portainer management UI.
 Portainer's cleanup path uses force removal and anonymous-volume removal, so
 both controls are enabled. Docker's legacy link-removal mode stays denied.
 
+The preset sets `response.redact_mount_paths`, `redact_container_env`, and
+`redact_network_topology` to `false`. Portainer's container Recreate inspects
+the container and replays the result into container create, and it disconnects
+networks by the inspected network ID. With the default redactions that
+disconnect fails and the container is left stopped and renamed, and env and
+binds would be lost on create. Keep these off for Portainer.
+
+With these off, Portainer sees env values (including secrets), host bind paths
+and network IDs in inspect output. The preset already sets
+`insecure_allow_read_exfiltration`, so this is mostly not new exposure.
+Operators who don't use Recreate or Duplicate can turn the three redactions
+back on.
+
 ## Watchtower (`watchtower.yaml`)
 
-Optimized for [nicholas-fedor/watchtower](https://github.com/nicholas-fedor/watchtower), the maintained
-continuation of the archived `containrrr/watchtower`. The preset was checked against both upstreams'
-container client code: the core recreate flow (list/inspect, stop, force-remove, create with copied
-network config, start, rename, exec lifecycle hooks, image pull/remove) is identical between them, so
-this preset works as a drop-in for `containrrr/watchtower` too.
+Covers both Watchtower forks: [nicholas-fedor/watchtower](https://github.com/nicholas-fedor/watchtower),
+the maintained continuation, and the archived `containrrr/watchtower` (v1.7.1). The preset was checked
+against both upstreams' container client code: the core recreate flow (list/inspect, force-remove,
+create with copied network config, start, rename, exec lifecycle hooks, image pull/remove) is shared.
+containrrr stops containers with `POST /containers/{id}/kill` and disconnects the default network
+(`POST /networks/{id}/disconnect`, with `force`) after create, so the preset allows both and sets
+`request_body.network.allow_disconnect_force: true`. Kill applies to any container, and forced disconnect
+applies to any container on any network, unless owner labels are enabled. nicholas-fedor stops with `/stop` instead, and only
+reads `GET /system/df` when its image disk-usage thresholds are set. That route is a commented-out rule
+in the preset; uncomment it if you use those thresholds.
+
+On cgroup v1 hosts (Synology, for example), a recreate replays `HostConfig.CgroupnsMode: "host"`, which
+container create denies by default. The Watchtower, Drydock and Portwing presets carry a commented
+`request_body.container_create.allow_host_cgroupns: true` line. Uncomment it on those hosts only, since it
+widens create to the host cgroup namespace.
 
 **Use for:** Watchtower v1.21.2 with lifecycle hooks and network-aware updates.
 
 ```yaml
-# Allows: ping/info; container list, inspect, start, stop, rename, update,
-#         remove and create; image inspect, pull and remove; lifecycle-hook
-#         exec; network connect
+# Allows: ping/info; container list, inspect, start, stop, kill, rename,
+#         update, remove and create; image inspect, pull and remove;
+#         lifecycle-hook exec; network connect and disconnect
 # Denies: every unused container/image/network route, all volume and
 #         distribution routes, read-exfiltration routes, build, swarm,
 #         secrets, configs and plugins
@@ -421,6 +448,12 @@ Every allowed path is a named list, inspect or stats endpoint rather than a
 `insecure_allow_read_exfiltration: true`. A client that genuinely needs
 `GET /containers/*/logs` or `GET /containers/*/archive` has to add that rule
 and the acknowledgment itself.
+
+Homepage's Swarm mode (`swarm:` in `docker.yaml`) reads task and network data
+that the default `response.redact_network_topology` masks, so it needs
+`redact_network_topology: false` until the v3 line narrows that redaction. The
+preset carries the setting as a commented-out `response:` block; uncomment it
+only if you use Swarm mode.
 
 ## Homarr (`homarr.yaml`)
 

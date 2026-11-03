@@ -46,12 +46,12 @@ var routeOptionCases = []routeOptionCase{
 		relevant:  Options{RedactContainerEnv: true},
 	},
 	{
-		name:      "container inspect, sensitive data only",
+		name:      "container inspect, mount paths",
 		method:    http.MethodGet,
 		path:      "/v1.53/containers/abc123/json",
 		upstream:  "{\n\t\"Id\": \"abc123\",\n\t\"Mounts\": [{\"Source\": \"/srv/host-secret\"}]\n}",
 		sentinel:  "/srv/host-secret",
-		unrelated: Options{RedactSensitiveData: true},
+		unrelated: Options{RedactHostTopology: true},
 		relevant:  Options{RedactMountPaths: true},
 	},
 	{
