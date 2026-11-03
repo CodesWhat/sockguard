@@ -224,13 +224,24 @@ func middlewareWithClient(client *http.Client, logger *slog.Logger, opts Options
 	// first, leaves its successful inspect result on the request meta, and
 	// reading it back is the same inspect-then-proxy window the request
 	// already has. Cross-request caching stays forbidden.
-	inspectResource := func(ctx context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
-		if labels, found, ok := logging.Meta(ctx).InspectedLabels(string(kind), identifier); ok {
+	inspectResource := reuseRequestInspect(inspector.inspectResource)
+	return middlewareWithDeps(logger, opts, inspectResource, inspector.inspectExec)
+}
+
+// reuseRequestInspect serves an inspect from the result visibility left on the
+// request meta, and dials through inspect otherwise.
+func reuseRequestInspect(
+	inspect func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
+) func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
+	return func(ctx context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
+		// An embedded secret reference needs the exact-ID lookup, and the
+		// result visibility recorded may be prefix-resolved, so never reuse it.
+		skipMemo := kind == dockerresource.KindSecret && exactSecretLookup(ctx)
+		if labels, found, ok := logging.Meta(ctx).InspectedLabels(string(kind), identifier); ok && !skipMemo {
 			return labels, found, nil
 		}
-		return inspector.inspectResource(ctx, kind, identifier)
+		return inspect(ctx, kind, identifier)
 	}
-	return middlewareWithDeps(logger, opts, inspectResource, inspector.inspectExec)
 }
 
 func middlewareWithDeps(

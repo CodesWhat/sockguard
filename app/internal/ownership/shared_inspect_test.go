@@ -1,6 +1,7 @@
 package ownership
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/codeswhat/sockguard/v3/app/internal/dockerresource"
 	"github.com/codeswhat/sockguard/v3/app/internal/logging"
 	"github.com/codeswhat/sockguard/v3/app/internal/visibility"
 )
@@ -87,5 +89,32 @@ func TestOwnershipInspectsWhenNothingWasRecorded(t *testing.T) {
 	}
 	if got := daemon.count("GET /containers/web/json"); got != 1 {
 		t.Fatalf("daemon saw %d inspects, want 1; paths: %v", got, daemon.paths)
+	}
+}
+
+func TestReuseRequestInspectSkipsMemoForExactSecretLookup(t *testing.T) {
+	t.Parallel()
+	meta := &logging.RequestMeta{}
+	meta.RecordInspectedLabels(string(dockerresource.KindSecret), "X", map[string]string{"com.sockguard.owner": "job-123"}, true)
+	ctx := logging.WithMeta(context.Background(), meta)
+
+	var dials int
+	inspect := reuseRequestInspect(func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
+		dials++
+		return nil, false, nil
+	})
+
+	// A plain (prefix-capable) secret lookup reuses what visibility recorded.
+	if labels, found, err := inspect(ctx, dockerresource.KindSecret, "X"); err != nil || !found || labels["com.sockguard.owner"] != "job-123" || dials != 0 {
+		t.Fatalf("plain lookup = %v, %v, %v, dials %d; want the recorded result and no dial", labels, found, err, dials)
+	}
+	// An embedded exact reference to the same secret must do its own lookup.
+	if _, found, err := inspect(withExactSecretLookup(ctx), dockerresource.KindSecret, "X"); err != nil || found || dials != 1 {
+		t.Fatalf("exact lookup = found %v, err %v, dials %d; want its own dial", found, err, dials)
+	}
+	// Other kinds keep reusing the memo even under an exact-secret context.
+	meta.RecordInspectedLabels(string(dockerresource.KindContainer), "web", map[string]string{"a": "b"}, true)
+	if _, found, _ := inspect(withExactSecretLookup(ctx), dockerresource.KindContainer, "web"); !found || dials != 1 {
+		t.Fatalf("container lookup dialed (dials %d)", dials)
 	}
 }
