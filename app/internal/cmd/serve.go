@@ -622,6 +622,9 @@ type serveRuntime struct {
 	// sockguard at a different daemon or restate which engine this one is.
 	upstreamFlavor                         upstreamflavor.Flavor
 	upstreamPodmanConjunctiveVolumeFilters bool
+	// upstreamCgroupV1 is true when every upstream endpoint reported
+	// CgroupVersion "1" at startup. Process-scoped like the flavor.
+	upstreamCgroupV1 bool
 }
 
 func newServeRuntime(cfg *config.Config, logger *slog.Logger, deps *serveDeps) (*serveRuntime, error) {
@@ -833,7 +836,7 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 		namedServeHandlerLayer("withResourceLimitGuard", withResourceLimitGuard(cfg, resolver, logger, clientProfiles)),
 		namedServeHandlerLayer("withOwnership", withOwnership(cfg, resolver, logger, runtimeUpstreamCapabilities(runtime))),
 		namedServeHandlerLayer("withVisibility", withVisibility(cfg, resolver, logger, runtimeUpstreamCapabilities(runtime))),
-		namedServeHandlerLayer("withFilter", withFilter(cfg, resolver, logger, rules, clientProfiles, runtimeUpstreamFlavor(runtime))),
+		namedServeHandlerLayer("withFilter", withFilter(cfg, resolver, logger, rules, clientProfiles, runtimeUpstreamFlavor(runtime), runtimeUpstreamCapabilities(runtime).CgroupV1)),
 		// withFormBodyGuard is appended right AFTER withFilter so it executes
 		// immediately BEFORE it. Every layer above reads request parameters
 		// from the URL query, and both engines also read them from a form
@@ -1156,14 +1159,16 @@ func withVisibility(cfg *config.Config, res *upstream.Resolver, logger *slog.Log
 	})
 }
 
-func withFilter(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, rules []*filter.CompiledRule, clientProfiles map[string]filter.Policy, flavor upstreamflavor.Flavor) func(http.Handler) http.Handler {
+func withFilter(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, rules []*filter.CompiledRule, clientProfiles map[string]filter.Policy, flavor upstreamflavor.Flavor, upstreamCgroupV1 bool) func(http.Handler) http.Handler {
 	warnIfBodyBlindWritesEnabled(cfg, logger)
 	warnIfReadExfiltrationEnabled(cfg, rules, clientProfiles, logger)
 	opts := serveFilterOptions(cfg, res, clientProfiles)
 	opts.Build.PodmanUpstream = flavor == upstreamflavor.Podman
+	opts.ContainerCreate.UpstreamCgroupV1 = upstreamCgroupV1
 	profiles := make(map[string]filter.Policy, len(opts.Profiles))
 	for name, profile := range opts.Profiles {
 		profile.Build.PodmanUpstream = flavor == upstreamflavor.Podman
+		profile.ContainerCreate.UpstreamCgroupV1 = upstreamCgroupV1
 		profiles[name] = profile
 	}
 	opts.Profiles = profiles

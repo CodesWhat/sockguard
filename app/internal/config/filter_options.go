@@ -124,6 +124,7 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 		DenyUnconfinedAppArmor:            c.DenyUnconfinedAppArmor,
 		AllowHostUserNS:                   c.AllowHostUserNS,
 		AllowHostCgroupNS:                 c.AllowHostCgroupNS,
+		AllowHostCgroupNSOnCgroupV1:       c.AllowHostCgroupNSOnCgroupV1,
 		RestrictNamespaceSharing:          c.RestrictNamespaceSharing,
 		AllowedNamespaceSharingContainers: c.AllowedNamespaceSharingContainers,
 		DenyNamespacePathMode:             c.DenyNamespacePathMode,

@@ -307,6 +307,14 @@ func (c *reloadCoordinator) reload() {
 		return
 	}
 
+	if cgroupV1OptInConfigured(newCfg) {
+		c.logger.Info("config reload reuses the startup cgroup version probe for allow_host_cgroupns_on_cgroup_v1",
+			"path", c.cfgFile,
+			"upstream_cgroup_v1", c.runtime.upstreamCgroupV1,
+			"note", "GET /info is not re-read on reload; restart sockguard after migrating the daemon between cgroup v1 and v2",
+		)
+	}
+
 	newHandler, newTeardown, newLimiterStateActive := buildServeHandlerChainWithRuntime(serveHandlerBuild{
 		Cfg:         newCfg,
 		Logger:      c.logger,

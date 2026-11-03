@@ -111,6 +111,14 @@ type ContainerCreateOptions struct {
 	DenyUnconfinedAppArmor  bool
 	AllowHostUserNS         bool
 	AllowHostCgroupNS       bool
+	// AllowHostCgroupNSOnCgroupV1 allows CgroupnsMode "host" (not ns:<path>)
+	// only while UpstreamCgroupV1 is true. Ignored when AllowHostCgroupNS is
+	// already set.
+	AllowHostCgroupNSOnCgroupV1 bool
+	// UpstreamCgroupV1 is set by the serve layer from the startup GET /info
+	// probe: true only when every upstream endpoint reported CgroupVersion
+	// "1". It is not a config key.
+	UpstreamCgroupV1 bool
 	// RestrictNamespaceSharing gates HostConfig.NetworkMode/PidMode/IpcMode/
 	// UTSMode/UsernsMode/CgroupnsMode values of the form "container:<ref>"
 	// (join another container's namespace) against
@@ -231,6 +239,8 @@ type containerCreatePolicy struct {
 	denyUnconfinedAppArmor            bool
 	allowHostUserNS                   bool
 	allowHostCgroupNS                 bool
+	allowHostCgroupNSOnCgroupV1       bool
+	upstreamCgroupV1                  bool
 	restrictNamespaceSharing          bool
 	allowedNamespaceSharingContainers []string
 	denyNamespacePathMode             bool
@@ -326,6 +336,8 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		denyUnconfinedAppArmor:            opts.DenyUnconfinedAppArmor,
 		allowHostUserNS:                   opts.AllowHostUserNS,
 		allowHostCgroupNS:                 opts.AllowHostCgroupNS,
+		allowHostCgroupNSOnCgroupV1:       opts.AllowHostCgroupNSOnCgroupV1,
+		upstreamCgroupV1:                  opts.UpstreamCgroupV1,
 		restrictNamespaceSharing:          opts.RestrictNamespaceSharing,
 		allowedNamespaceSharingContainers: normalizeStringList(opts.AllowedNamespaceSharingContainers),
 		denyNamespacePathMode:             opts.DenyNamespacePathMode,
@@ -1306,7 +1318,11 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if !p.allowHostUserNS && isHostNamespaceMode(createReq.HostConfig.UsernsMode) {
 		return "container create denied: host user namespace mode is not allowed", nil
 	}
-	if !p.allowHostCgroupNS && isHostNamespaceMode(createReq.HostConfig.CgroupnsMode) {
+	// On a cgroup v1 daemon "host" is the default cgroup namespace mode and
+	// docker inspect reports it, so a recreate tool replaying it asks for
+	// nothing new. The opt-in therefore only opens while every upstream
+	// endpoint is confirmed cgroup v1; unknown stays denied.
+	if !p.allowHostCgroupNS && (!p.allowHostCgroupNSOnCgroupV1 || !p.upstreamCgroupV1) && isHostNamespaceMode(createReq.HostConfig.CgroupnsMode) {
 		return "container create denied: host cgroup namespace mode is not allowed", nil
 	}
 	if denyReason := p.denyNamespacePathReason(createReq.HostConfig); denyReason != "" {

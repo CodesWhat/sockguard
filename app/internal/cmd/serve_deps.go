@@ -60,7 +60,11 @@ type serveDeps struct {
 	// TestServeDepsBindTheRealUpstreamFlavorProbe), and tests that only care
 	// about listener lifecycle stub it rather than standing up a fake daemon.
 	// It probes every endpoint, including explicit-flavor configurations.
-	probeUpstream       func(context.Context, *http.Client) (upstreamflavor.Capabilities, error)
+	probeUpstream func(context.Context, *http.Client) (upstreamflavor.Capabilities, error)
+	// probeCgroupVersion reads the daemon's CgroupVersion from GET /info. It
+	// only runs when a cgroup-v1 opt-in is configured. Nil is treated as
+	// "unknown" so a bare serveDeps in a test fails closed.
+	probeCgroupVersion  func(context.Context, *http.Client) (string, error)
 	chown               func(string, int, int) error
 	buildBundleVerifier func(config.PolicyBundleConfig) (policybundle.Verifier, error)
 	loadBundleEntity    func(string) (verify.SignedEntity, error)
@@ -91,6 +95,7 @@ func newServeDeps() *serveDeps {
 		isAddrInUse:         isAddrInUse,
 		probeUnixSocket:     defaultProbeUnixSocket,
 		probeUpstream:       upstreamflavor.Probe,
+		probeCgroupVersion:  upstreamflavor.ProbeCgroupVersion,
 		chown:               os.Chown,
 		buildBundleVerifier: defaultBuildBundleVerifier,
 		loadBundleEntity:    policybundle.LoadBundle,

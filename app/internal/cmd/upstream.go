@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 
@@ -197,6 +198,7 @@ func resolveUpstreamCapabilities(ctx context.Context, deps *serveDeps, cfg *conf
 	}
 	detected := make([]upstreamflavor.Flavor, len(endpoints))
 	conjunctiveVolumes := true
+	cgroupV1 := cgroupV1OptInConfigured(cfg)
 	for i, ep := range endpoints {
 		rt, err := res.EndpointRoundTripper(i)
 		if err != nil {
@@ -218,10 +220,13 @@ func resolveUpstreamCapabilities(ctx context.Context, deps *serveDeps, cfg *conf
 		}
 		detected[i] = observed.Flavor
 		conjunctiveVolumes = conjunctiveVolumes && observed.Flavor == upstreamflavor.Podman && observed.PodmanConjunctiveVolumeFilters
+		if cgroupV1 {
+			cgroupV1 = endpointIsCgroupV1(ctx, deps, rt, ep, logger)
+		}
 	}
 	if configured != upstreamflavor.Auto {
 		logger.Info("upstream flavor resolved", "flavor", string(configured), "probed", true, "endpoints", len(endpoints), "podman_conjunctive_volume_filters", configured == upstreamflavor.Podman && conjunctiveVolumes)
-		return upstreamflavor.Capabilities{Flavor: configured, PodmanConjunctiveVolumeFilters: configured == upstreamflavor.Podman && conjunctiveVolumes}, nil
+		return upstreamflavor.Capabilities{Flavor: configured, PodmanConjunctiveVolumeFilters: configured == upstreamflavor.Podman && conjunctiveVolumes, CgroupV1: cgroupV1}, nil
 	}
 	for i := 1; i < len(detected); i++ {
 		if detected[i] != detected[0] {
@@ -229,7 +234,48 @@ func resolveUpstreamCapabilities(ctx context.Context, deps *serveDeps, cfg *conf
 		}
 	}
 	logger.Info("upstream flavor resolved", "flavor", string(detected[0]), "probed", true, "endpoints", len(endpoints), "podman_conjunctive_volume_filters", conjunctiveVolumes)
-	return upstreamflavor.Capabilities{Flavor: detected[0], PodmanConjunctiveVolumeFilters: conjunctiveVolumes}, nil
+	return upstreamflavor.Capabilities{Flavor: detected[0], PodmanConjunctiveVolumeFilters: conjunctiveVolumes, CgroupV1: cgroupV1}, nil
+}
+
+// cgroupV1OptInConfigured reports whether the global request_body or any
+// client profile sets container_create.allow_host_cgroupns_on_cgroup_v1. The
+// GET /info probe only runs when it does, so a deployment that never opts in
+// sends the daemon nothing new.
+func cgroupV1OptInConfigured(cfg *config.Config) bool {
+	if cfg.RequestBody.ContainerCreate.AllowHostCgroupNSOnCgroupV1 {
+		return true
+	}
+	for _, profile := range cfg.Clients.Profiles {
+		if profile.RequestBody.ContainerCreate.AllowHostCgroupNSOnCgroupV1 {
+			return true
+		}
+	}
+	return false
+}
+
+// endpointIsCgroupV1 reads CgroupVersion from one endpoint's GET /info. Every
+// failure (no probe wired, transport error, missing or unrecognized value)
+// answers false, so the opt-in never widens on an endpoint sockguard could not
+// confirm. Resolution requires this to hold for every endpoint, which is the
+// safe reading for a failover set: whichever endpoint ends up serving a
+// create, it is cgroup v1.
+func endpointIsCgroupV1(ctx context.Context, deps *serveDeps, rt http.RoundTripper, ep upstream.Endpoint, logger *slog.Logger) bool {
+	if deps.probeCgroupVersion == nil {
+		logger.Warn("cgroup version probe unavailable; allow_host_cgroupns_on_cgroup_v1 stays closed", "endpoint", ep.String())
+		return false
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, upstreamflavor.DetectTimeout)
+	defer cancel()
+	version, err := deps.probeCgroupVersion(probeCtx, dockerclient.NewWithRoundTripper(rt))
+	if err != nil {
+		logger.Warn("cgroup version probe failed; allow_host_cgroupns_on_cgroup_v1 stays closed", "error", err, "endpoint", ep.String())
+		return false
+	}
+	if version != "1" {
+		logger.Info("upstream endpoint is not cgroup v1; allow_host_cgroupns_on_cgroup_v1 stays closed", "cgroup_version", version, "endpoint", ep.String())
+		return false
+	}
+	return true
 }
 
 // describeEndpointFlavors renders each endpoint's address alongside its
@@ -256,6 +302,7 @@ func resolveUpstreamFlavorForRuntime(ctx context.Context, deps *serveDeps, runti
 	if runtime != nil {
 		runtime.upstreamFlavor = capabilities.Flavor
 		runtime.upstreamPodmanConjunctiveVolumeFilters = capabilities.PodmanConjunctiveVolumeFilters
+		runtime.upstreamCgroupV1 = capabilities.CgroupV1
 	}
 	return nil
 }
@@ -312,6 +359,7 @@ func runtimeUpstreamCapabilities(runtime *serveRuntime) upstreamflavor.Capabilit
 	capabilities := upstreamflavor.Capabilities{Flavor: runtimeUpstreamFlavor(runtime)}
 	if runtime != nil {
 		capabilities.PodmanConjunctiveVolumeFilters = runtime.upstreamPodmanConjunctiveVolumeFilters
+		capabilities.CgroupV1 = runtime.upstreamCgroupV1
 	}
 	return capabilities
 }
