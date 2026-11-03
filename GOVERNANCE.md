@@ -34,10 +34,10 @@ reports follow [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 ## Change and release control
 
 Feature and fix branches start from the active `dev/vX.Y` branch and open a
-pull request back into it. Those PRs get a subagent diff review and merge once
-required checks pass. `dev/vX.Y` is promoted to `main` through a release
-promotion pull request, which gets a CodeRabbit review and two approvals. Tags
-are cut from `main` with the `release-cut.yml` workflow. After GA, patch lines
+pull request back into it, where they are reviewed and merge once checks pass.
+`dev/vX.Y` is promoted to `main` through a release promotion pull request, which
+needs two approvals and the required checks on `main`. Stable tags are cut
+from `main` with the `release-cut.yml` workflow. After GA, patch lines
 live on `maintenance/X.Y.x`: fixes branch from and merge into the matching
 maintenance branch, and older supported patches are tagged from it.
 Prereleases are cut from the `dev/vX.Y` branch or the matching
