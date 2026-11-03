@@ -382,3 +382,49 @@ func containerRemoveTestHandler(t *testing.T, cfg PolicyConfig) http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 }
+
+// TestLibpodPodPruneAppliesTheVolumesGate pins allow_remove_volumes on
+// POST /libpod/pods/prune. Prune removes every pod whose containers are all
+// stopped and deletes their anonymous volumes with no flag to keep them, the
+// step pod removal is gated for.
+func TestLibpodPodPruneAppliesTheVolumesGate(t *testing.T) {
+	const volumesReason = "libpod pod prune denied: pruning pods deletes their containers' anonymous volumes and is not allowed"
+	allow, err := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/**", Action: ActionAllow, Index: 0})
+	if err != nil {
+		t.Fatalf("compile allow rule: %v", err)
+	}
+	tests := []struct {
+		name               string
+		allowForce         bool
+		allowRemoveVolumes bool
+		path               string
+		wantCode           int
+		wantReason         string
+	}{
+		{name: "default", path: "/v5.8.6/libpod/pods/prune", wantCode: http.StatusForbidden, wantReason: volumesReason},
+		{name: "unversioned", path: "/libpod/pods/prune", wantCode: http.StatusForbidden, wantReason: volumesReason},
+		{name: "force alone does not open it", allowForce: true, path: "/v5.8.6/libpod/pods/prune", wantCode: http.StatusForbidden, wantReason: volumesReason},
+		{name: "volumes opt in allows it", allowRemoveVolumes: true, path: "/v5.8.6/libpod/pods/prune", wantCode: http.StatusNoContent},
+		{name: "pod create is not a prune", path: "/v5.8.6/libpod/pods/create", wantCode: http.StatusNoContent},
+		{name: "container prune is not a pod prune", path: "/v5.8.6/libpod/containers/prune", wantCode: http.StatusNoContent},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := PolicyConfig{
+				DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+				ContainerRemove:       ContainerRemoveOptions{AllowForce: tt.allowForce, AllowRemoveVolumes: tt.allowRemoveVolumes},
+			}
+			handler := MiddlewareWithOptions([]*CompiledRule{allow}, testLogger(), Options{PolicyConfig: cfg})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, tt.path, nil))
+			if rec.Code != tt.wantCode {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, tt.wantCode, rec.Body.String())
+			}
+			if tt.wantReason != "" && !strings.Contains(rec.Body.String(), tt.wantReason) {
+				t.Fatalf("body = %s, want a reason containing %q", rec.Body.String(), tt.wantReason)
+			}
+		})
+	}
+}

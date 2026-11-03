@@ -13,6 +13,10 @@ type requestRejectionError struct {
 	// request_body_* vocabulary even where the HTTP status overlaps (e.g.
 	// mutation_request_too_large vs request_body_too_large, both 413).
 	reasonCode string
+	// hard marks a refusal that warn and audit rollout modes must not turn
+	// into a pass-through, because forwarding the request would skip a
+	// mandatory rewrite (an enforce-mode admission mutation).
+	hard bool
 }
 
 func (e *requestRejectionError) Error() string {
@@ -30,10 +34,34 @@ func newRequestRejectionErrorWithCode(status int, reasonCode, reason string) err
 	return &requestRejectionError{status: status, reason: reason, reasonCode: reasonCode}
 }
 
+// asHardRequestRejection returns err as a hard rejection when it is a
+// requestRejectionError, and wrapped as a hardInspectionError otherwise, so an
+// inspector failure such as a body read error is hard too.
+func asHardRequestRejection(err error) error {
+	rejection, ok := requestRejectionFromError(err)
+	if !ok {
+		return &hardInspectionError{err: err}
+	}
+	rejection.hard = true
+	return &rejection
+}
+
 func requestRejectionFromError(err error) (requestRejectionError, bool) {
 	var target *requestRejectionError
 	if !errors.As(err, &target) {
 		return requestRejectionError{}, false
 	}
 	return *target, true
+}
+
+// hardInspectionError marks an inspector failure that is not a rejection
+// (a body read error, say) as one warn and audit rollout must not pass through.
+type hardInspectionError struct{ err error }
+
+func (e *hardInspectionError) Error() string { return e.err.Error() }
+func (e *hardInspectionError) Unwrap() error { return e.err }
+
+func isHardInspectionError(err error) bool {
+	var target *hardInspectionError
+	return errors.As(err, &target)
 }

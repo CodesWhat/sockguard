@@ -126,6 +126,11 @@ type LibpodContainerCreateOptions struct {
 	AllowedLogDrivers         []string
 	AllowedLogEndpointOptions []string
 
+	// AllowTmpfsPrivilegedOptions permits mounts[] entries of type tmpfs whose
+	// options end with exec, dev or suid enabled. Last option wins, as it does
+	// for ContainerCreateOptions.AllowTmpfsPrivilegedOptions. Default false.
+	AllowTmpfsPrivilegedOptions bool
+
 	// AllowedRuntimes allowlists oci_runtime values, mirroring
 	// ContainerCreateOptions.AllowedRuntimes: an empty oci_runtime selects
 	// the daemon default and is always permitted.
@@ -154,6 +159,14 @@ type LibpodContainerCreateOptions struct {
 	// daemon's own environment into the container. Default false. See
 	// denyEnvHostReason.
 	AllowEnvHost bool
+
+	// AllowStorageOpts permits a non-empty "storage_opts" map. Default false.
+	// See denyStorageOptsReason.
+	AllowStorageOpts bool
+
+	// AllowRuntimeAnnotations permits "annotations" keys under run.oci.
+	// Default false. See denyRuntimeAnnotationsReason.
+	AllowRuntimeAnnotations bool
 }
 
 type libpodContainerCreatePolicy struct {
@@ -170,6 +183,8 @@ type libpodContainerCreatePolicy struct {
 	allowMountSourceMutation bool
 	allowAllDevices          bool
 	allowedDevices           []string
+
+	allowTmpfsPrivilegedOptions bool
 
 	restrictNamespaceSharing          bool
 	allowedNamespaceSharingContainers []string
@@ -206,6 +221,8 @@ type libpodContainerCreatePolicy struct {
 
 	allowUnifiedCgroupSettings bool
 	allowEnvHost               bool
+	allowStorageOpts           bool
+	allowRuntimeAnnotations    bool
 
 	imageTrustVerifier imageVerifier
 	imageFetcher       signatureFetcher
@@ -267,6 +284,7 @@ func newLibpodContainerCreatePolicy(opts LibpodContainerCreateOptions) libpodCon
 		allowCustomIDMappings:             opts.AllowCustomIDMappings,
 		allowLogPath:                      opts.AllowLogPath,
 		logDrivers:                        newLogDriverPolicy(opts.AllowedLogDrivers, opts.AllowedLogEndpointOptions),
+		allowTmpfsPrivilegedOptions:       opts.AllowTmpfsPrivilegedOptions,
 		allowedRuntimes:                   normalizeStringList(opts.AllowedRuntimes),
 		allowDeviceCgroupRules:            opts.AllowDeviceCgroupRules,
 		allowedDeviceCgroupRules:          canonicalDeviceCgroupAllowlist(opts.AllowedDeviceCgroupRules),
@@ -275,6 +293,8 @@ func newLibpodContainerCreatePolicy(opts LibpodContainerCreateOptions) libpodCon
 
 		allowUnifiedCgroupSettings: opts.AllowUnifiedCgroupSettings,
 		allowEnvHost:               opts.AllowEnvHost,
+		allowStorageOpts:           opts.AllowStorageOpts,
+		allowRuntimeAnnotations:    opts.AllowRuntimeAnnotations,
 	}
 
 	itf := buildImageTrustFields(opts.ImageTrust)
@@ -317,6 +337,9 @@ func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Reques
 
 	var createReq libpodContainerCreateRequest
 	if err := json.Unmarshal(body, &createReq); err != nil {
+		if reason := libpodNamespaceKeyReason("libpod container create", err); reason != "" {
+			return reason, nil
+		}
 		logRequestError(logger, r, slog.LevelDebug, "libpod container create request body is not valid JSON; denying", err)
 		return "libpod container create denied: malformed JSON request body", nil
 	}
@@ -348,6 +371,9 @@ func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Reques
 	}
 	if denyReason := p.denyNamespaceSharingReason(createReq); denyReason != "" {
 		return denyReason, nil
+	}
+	if !p.allowTmpfsPrivilegedOptions && strings.EqualFold(strings.TrimSpace(createReq.ImageVolumeMode), "tmpfs") {
+		return "libpod container create denied: image_volume_mode \"tmpfs\" mounts the image's volumes as executable tmpfs; use \"bind\" or \"ignore\", or set request_body.libpod_container_create.allow_tmpfs_privileged_options", nil
 	}
 	if denyReason := p.denyBindMountReason(createReq.Mounts); denyReason != "" {
 		return denyReason, nil
@@ -388,7 +414,7 @@ func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Reques
 	if p.requireReadonlyRootfs && !createReq.ReadOnlyFilesystem {
 		return "libpod container create denied: read-only root filesystem is required (set read_only_filesystem to true)", nil
 	}
-	if denyReason := p.denyResourceLimitReason(createReq.ResourceLimits); denyReason != "" {
+	if denyReason := p.denyResourceLimitReason(overlayLibpodCreateUnified(createReq.ResourceLimits, createReq.Unified)); denyReason != "" {
 		return denyReason, nil
 	}
 	if !p.allowSysctls && len(createReq.Sysctl) > 0 {
@@ -583,6 +609,17 @@ func (p libpodContainerCreatePolicy) denyBindMountReason(mounts []libpodMount) s
 		if reason := denyMountSourceMutationReason(mount.Options, mount.Type == "tmpfs", p.allowMountSourceMutation, "libpod container create"); reason != "" {
 			return reason
 		}
+		if strings.EqualFold(mount.Type, "tmpfs") && !p.allowTmpfsPrivilegedOptions {
+			posture := tmpfsPostureOfList(mount.Options...)
+			if posture.enablesPrivilege() {
+				return "libpod container create denied: tmpfs mount enables exec, dev, or suid (set " + tmpfsOptionKeyLibpod + ": true)"
+			}
+			// Podman mounts a tmpfs executable, and gives /dev no default
+			// options, so a tmpfs here is only safe when it says so itself.
+			if !posture.podmanSafe(mount.Destination) {
+				return "libpod container create denied: " + tmpfsPodmanRefusal(mount.Destination, "request_body.libpod_container_create.allow_tmpfs_privileged_options")
+			}
+		}
 		bind := strings.EqualFold(mount.Type, "bind") || slices.Contains(mount.Options, "bind") || slices.Contains(mount.Options, "rbind")
 		if !bind {
 			switch mount.Type {
@@ -679,6 +716,29 @@ func (p libpodContainerCreatePolicy) denySelinuxReason(opts []string) string {
 		}
 	}
 	return ""
+}
+
+// overlayLibpodCreateUnified applies the cgroup v2 files of a create's
+// `unified` map to its resource limits. With allow_unified_cgroup_settings on,
+// Podman writes the map after the typed limits, so memory.max, cpu.max and
+// pids.max here have the last word, and "max" clears the limit a
+// require_* check would otherwise have counted. Without that option a
+// non-empty map is already refused.
+func overlayLibpodCreateUnified(limits libpodResourceLimits, unified map[string]string) libpodResourceLimits {
+	if value, ok := unified["memory.max"]; ok {
+		limits.Memory.Limit = parseCgroupLimit(value)
+	}
+	if value, ok := unified["pids.max"]; ok {
+		limits.Pids.Limit = parseCgroupLimit(value)
+	}
+	if value, ok := unified["cpu.max"]; ok {
+		quota, period, _ := strings.Cut(strings.TrimSpace(value), " ")
+		limits.CPU.Quota = parseCgroupLimit(quota)
+		if period = strings.TrimSpace(period); period != "" {
+			limits.CPU.Period = uint64(max(parseCgroupLimit(period), 0)) // #nosec G115 -- parseCgroupLimit never returns a negative value
+		}
+	}
+	return limits
 }
 
 // denyResourceLimitReason enforces requireMemoryLimit/requireCPULimit/

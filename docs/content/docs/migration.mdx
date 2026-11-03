@@ -421,6 +421,7 @@ wollomatic already does more than a basic path gate: regex allowlists per method
 | `-proxysocketendpoint=/tmp/filtered.sock` | `listen.socket: /tmp/filtered.sock` |
 
 Key differences:
+
 - Sockguard auto-strips API version prefixes — no need for `(v[0-9.]+/)?` in patterns
 - Glob patterns (`*`, `**`) instead of regex, in rule paths and in container-label values alike. A wollomatic regex copied across unchanged is read as a glob, so translate it: `.*` becomes `/**`, `^/containers/.*$` becomes `/containers/**`
 - That last translation is a slight widening, not an exact match: `^/containers/.*$` requires the literal `/containers/` to appear, so it does not match the bare path `/containers`, while sockguard's `/containers/**` does match `/containers` on its own, with nothing after the trailing slash
@@ -499,6 +500,7 @@ CetusGuard is the closest in spirit to Sockguard — a zero-dependency, default-
 | builtin `/_ping`, `/info`, `/version` rules | Allow them explicitly — Sockguard has no implicit allows |
 
 Key differences:
+
 - Sockguard auto-strips Docker API version prefixes (`/v1.45/…`) before matching, so patterns never account for them
 - Glob patterns (`*`, `**`) with auto-anchoring instead of regex
 - CetusGuard filters on method + path only; Sockguard adds request-body inspection, named per-client profiles, owner isolation, read-side visibility/redaction, rate limits, and metrics on top

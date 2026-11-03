@@ -28,12 +28,12 @@ WOLLO_SOCK="/tmp/sg-bench-wollomatic.sock"
 WOLLO_BIN="${WOLLO_BIN:-/tmp/socket-proxy}"
 
 echo "==> Building sockguard, mockdocker, loadgen"
-(cd "${REPO_ROOT}/app"    && go build -o "${BUILD_DIR}/sockguard"   ./cmd/sockguard/)
-(cd "${BENCH_DIR}"        && go build -o "${BUILD_DIR}/mockdocker" ./cmd/mockdocker/)
-(cd "${BENCH_DIR}"        && go build -o "${BUILD_DIR}/loadgen"    ./cmd/loadgen/)
+(cd "${REPO_ROOT}/app" && go build -o "${BUILD_DIR}/sockguard" ./cmd/sockguard/)
+(cd "${BENCH_DIR}" && go build -o "${BUILD_DIR}/mockdocker" ./cmd/mockdocker/)
+(cd "${BENCH_DIR}" && go build -o "${BUILD_DIR}/loadgen" ./cmd/loadgen/)
 
 MOCK_LOG="${BENCH_DIR}/mockdocker.log"
-: > "${MOCK_LOG}"
+: >"${MOCK_LOG}"
 
 echo "==> Starting mockdocker on ${MOCK_SOCK}"
 rm -f "${MOCK_SOCK}"
@@ -53,7 +53,7 @@ if [ ! -S "${MOCK_SOCK}" ]; then
 fi
 
 SG_LOG="${BENCH_DIR}/sockguard.log"
-: > "${SG_LOG}"
+: >"${SG_LOG}"
 
 echo "==> Starting sockguard on ${PROXY_SOCK}"
 rm -f "${PROXY_SOCK}"
@@ -75,7 +75,7 @@ fi
 # regression check. Skipped if the binary is missing.
 WOLLO_PID=""
 WOLLO_LOG="${BENCH_DIR}/wollomatic.log"
-: > "${WOLLO_LOG}"
+: >"${WOLLO_LOG}"
 if [ -x "${WOLLO_BIN}" ]; then
   echo "==> Starting wollomatic/socket-proxy on ${WOLLO_SOCK}"
   rm -f "${WOLLO_SOCK}"
@@ -92,13 +92,16 @@ if [ -x "${WOLLO_BIN}" ]; then
     [ -S "${WOLLO_SOCK}" ] && break
     sleep 0.2
   done
-  [ -S "${WOLLO_SOCK}" ] || { echo "wollomatic socket never appeared (see ${WOLLO_LOG})"; WOLLO_PID=""; }
+  [ -S "${WOLLO_SOCK}" ] || {
+    echo "wollomatic socket never appeared (see ${WOLLO_LOG})"
+    WOLLO_PID=""
+  }
 else
   echo "==> wollomatic binary not found at ${WOLLO_BIN}; skipping wollomatic scenarios"
 fi
 
 RESULTS="${BENCH_DIR}/results.jsonl"
-: > "${RESULTS}"
+: >"${RESULTS}"
 
 run_one() {
   local label="$1" socket="$2" method="$3" path="$4" concurrency="$5"
@@ -108,7 +111,7 @@ run_one() {
     -path "${path}" \
     -concurrency "${concurrency}" \
     -duration "${DURATION}" \
-    -scenario "${label}" >> "${RESULTS}"
+    -scenario "${label}" >>"${RESULTS}"
 }
 
 # Short warmup so connection pools are primed.
@@ -121,22 +124,22 @@ echo "==> Benchmarking"
 # Scenario grid: (endpoint, expected-action) × concurrency
 for conc in 10 50 200; do
   # Baseline — direct to mock (no proxy in the path at all).
-  run_one "ping_baseline"          "${MOCK_SOCK}"   GET  /_ping           "${conc}"
-  run_one "containers_baseline"    "${MOCK_SOCK}"   GET  /containers/json "${conc}"
-  run_one "exec_baseline"          "${MOCK_SOCK}"   POST /exec/x/start    "${conc}"
+  run_one "ping_baseline" "${MOCK_SOCK}" GET /_ping "${conc}"
+  run_one "containers_baseline" "${MOCK_SOCK}" GET /containers/json "${conc}"
+  run_one "exec_baseline" "${MOCK_SOCK}" POST /exec/x/start "${conc}"
 
   # Through sockguard — allow path.
-  run_one "ping_sockguard_allow"       "${PROXY_SOCK}" GET  /_ping           "${conc}"
-  run_one "containers_sockguard_allow" "${PROXY_SOCK}" GET  /containers/json "${conc}"
+  run_one "ping_sockguard_allow" "${PROXY_SOCK}" GET /_ping "${conc}"
+  run_one "containers_sockguard_allow" "${PROXY_SOCK}" GET /containers/json "${conc}"
   # Through sockguard — deny path. exec/*/start is denied by config.yaml.
-  run_one "exec_sockguard_deny"        "${PROXY_SOCK}" POST /exec/x/start    "${conc}"
+  run_one "exec_sockguard_deny" "${PROXY_SOCK}" POST /exec/x/start "${conc}"
 
   # Through wollomatic/socket-proxy — same scenarios, for a same-class
   # (Go-based) head-to-head regression check.
   if [ -n "${WOLLO_PID}" ]; then
-    run_one "ping_wollomatic_allow"       "${WOLLO_SOCK}" GET  /_ping           "${conc}"
-    run_one "containers_wollomatic_allow" "${WOLLO_SOCK}" GET  /containers/json "${conc}"
-    run_one "exec_wollomatic_deny"        "${WOLLO_SOCK}" POST /exec/x/start    "${conc}"
+    run_one "ping_wollomatic_allow" "${WOLLO_SOCK}" GET /_ping "${conc}"
+    run_one "containers_wollomatic_allow" "${WOLLO_SOCK}" GET /containers/json "${conc}"
+    run_one "exec_wollomatic_deny" "${WOLLO_SOCK}" POST /exec/x/start "${conc}"
   fi
 done
 

@@ -133,7 +133,7 @@ func TestWithFilterCarriesUpstreamCgroupV1(t *testing.T) {
 		want int
 	}{{true, http.StatusNoContent}, {false, http.StatusForbidden}} {
 		logger, _ := flavorTestLogger()
-		handler := withFilter(cgroupTestConfig(true), nil, logger, []*filter.CompiledRule{rule}, map[string]filter.Policy{}, upstreamflavor.Docker, tt.v1)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handler := withFilter(cgroupTestConfig(true), nil, logger, []*filter.CompiledRule{rule}, map[string]filter.Policy{}, upstreamflavor.Docker, tt.v1, false)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 		}))
 		req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(`{"Image":"x","HostConfig":{"CgroupnsMode":"host"}}`))

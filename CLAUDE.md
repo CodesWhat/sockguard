@@ -45,7 +45,7 @@ docker build -t sockguard:dev .
 
 The proxy is a middleware chain built on `net/http`:
 
-```
+```text
 Listener (Unix socket or TCP)
   → Access Logger
   → Health Interceptor (/health)

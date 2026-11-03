@@ -55,6 +55,7 @@ const (
 	imageDestinationHasDigest
 	imageDestinationTaggedTwice
 	imageDestinationBadName
+	imageDestinationNameTooLong
 	imageDestinationBadTag
 	imageDestinationDigestName
 	imageDestinationTagAndDigest
@@ -71,6 +72,8 @@ func (route imageDestinationRoute) refusal(problem imageDestinationProblem) stri
 		return denied + " whose " + route.field + " already carries a tag beside a tag parameter"
 	case imageDestinationBadName:
 		return denied + " with a " + route.field + " outside the image reference grammar"
+	case imageDestinationNameTooLong:
+		return denied + " with a " + route.field + " too long for Podman to complete to docker.io/library/<name>: spell a registry or shorten it"
 	case imageDestinationBadTag:
 		return denied + " with a tag outside the image reference grammar"
 	case imageDestinationDigestName:
@@ -182,6 +185,14 @@ func imageDestinationFor(repo, tag string, naming imageTagNaming) (imageDestinat
 
 	if len(name) > imageTagRepoMaxLen || (len(name) > imageTagBareRepoMaxLen && !strings.Contains(name, "/")) {
 		return imageDestination{}, imageDestinationBadName
+	}
+	// Podman's Docker-compatible lookup of a name with no slash completes it
+	// to docker.io/library/<name>, which is 18 characters, not the 8 of
+	// dockerd's library/<name>. A name past what is left of the 255 reaches
+	// the daemon as an invalid reference, and the inspect answers with an
+	// error that surfaces as a 502.
+	if naming == imageTagNamedEitherWay && len(name) > imageTagPodmanBareRepoMaxLen && !strings.Contains(name, "/") {
+		return imageDestination{}, imageDestinationNameTooLong
 	}
 	match := imageTagRepoName.FindStringSubmatch(name)
 	switch {

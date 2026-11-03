@@ -828,6 +828,12 @@ type LibpodContainerCreateRequestBodyConfig struct {
 	AllowedLogDrivers         []string `mapstructure:"allowed_log_drivers"`
 	AllowedLogEndpointOptions []string `mapstructure:"allowed_log_endpoint_options"`
 
+	// AllowTmpfsPrivilegedOptions permits a mounts[] entry of type tmpfs
+	// whose options re-enable exec, dev or suid (last option wins). Same
+	// name as container_create.allow_tmpfs_privileged_options, and neither
+	// opens the other's route. Default false.
+	AllowTmpfsPrivilegedOptions bool `mapstructure:"allow_tmpfs_privileged_options"`
+
 	// AllowedRuntimes, AllowDeviceCgroupRules, AllowedDeviceCgroupRules,
 	// AllowDeviceRequests and DenyUnconfinedSystemPaths are the libpod
 	// spellings of the same-named container_create fields, gating
@@ -848,6 +854,17 @@ type LibpodContainerCreateRequestBodyConfig struct {
 	// daemon's environment into the container. No Docker Engine API analog.
 	// Default false.
 	AllowEnvHost bool `mapstructure:"allow_env_host"`
+
+	// AllowStorageOpts permits a non-empty "storage_opts" map, the
+	// container's own storage options (a rootfs size quota, for one).
+	// Default false.
+	AllowStorageOpts bool `mapstructure:"allow_storage_opts"`
+
+	// AllowRuntimeAnnotations permits "annotations" keys under run.oci., which
+	// switch OCI runtime behavior on. Other annotation keys, including the
+	// io.podman.annotations. markers podman-remote sends, are not gated.
+	// Default false.
+	AllowRuntimeAnnotations bool `mapstructure:"allow_runtime_annotations"`
 }
 
 // ImageTrustConfig configures cosign signature verification for images

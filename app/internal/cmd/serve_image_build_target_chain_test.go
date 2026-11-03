@@ -121,6 +121,13 @@ func TestServeChainBuildAuthorizesTheNamesItAssigns(t *testing.T) {
 		{name: "unlabeled holder follows allow_unowned_images", step: imageBuildChainStep("", "/v1.45/build?t=shared%2Fbase", "shared/base:latest", "", http.StatusOK)},
 		{name: "new name is created", step: imageBuildChainStep("", "/v1.45/build?t=mine%2Fnew%3Av2", "mine/new:v2", "", http.StatusOK)},
 		{name: "caller rebuilds its own name", step: imageBuildChainStep("", "/v1.45/build?t=mine%3Astable&t=mine%2Fnew", "mine:stable", "", http.StatusOK)},
+		// The daemon pulls each FROM image and rebinds its name; the FROM names
+		// sit in the build context, which the owner layer doesn't read.
+		{name: "pull of the base images", step: imageBuildChainStep("", "/v1.45/build?pull=1&t=mine%2Fnew", "", "", http.StatusForbidden)},
+		{name: "pull under another spelling of the key", step: imageBuildChainStep("", "/build?Pull=true", "", "", http.StatusForbidden)},
+		{name: "pullpolicy always", step: imageBuildChainStep("", "/v1.45/build?pullpolicy=always&t=mine%2Fnew", "", "", http.StatusForbidden)},
+		{name: "pullpolicy missing", step: imageBuildChainStep("", "/v1.45/build?pullpolicy=missing&t=mine%2Fnew", "mine/new:latest", "", http.StatusOK)},
+		{name: "pull switched off", step: imageBuildChainStep("", "/v1.45/build?pull=0&t=mine%2Fnew", "mine/new:latest", "", http.StatusOK)},
 		{name: "build that names nothing", step: imageBuildChainStep("", "/v1.45/build", "", "", http.StatusOK)},
 		{name: "output that names nothing", step: imageBuildChainStep("", "/v1.45/build?version=2"+outputs(`[{"Type":"local","Attrs":{}}]`), "", "", http.StatusOK)},
 	}

@@ -3,6 +3,8 @@ package cmd
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/codeswhat/sockguard/v3/app/internal/config"
@@ -30,7 +32,16 @@ func (d *imageNameChainDaemon) serveImport(w http.ResponseWriter, r *http.Reques
 	d.record(r, normPath)
 	w.Header().Set("Content-Type", "application/json")
 
-	id := d.newImage(nil)
+	// Both engines apply the Dockerfile instructions in `changes` in order, so
+	// a later LABEL of the same key wins.
+	labels := map[string]string{}
+	_ = r.ParseForm()
+	for _, instruction := range r.Form["changes"] {
+		if key, value, ok := importChainLabel(instruction); ok {
+			labels[key] = value
+		}
+	}
+	id := d.newImage(labels)
 	name := d.param(r, "reference")
 	if normPath == "/images/create" {
 		name = d.param(r, "repo")
@@ -46,6 +57,43 @@ func (d *imageNameChainDaemon) serveImport(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": id})
 	return true
+}
+
+// importChainLabel reads a `LABEL "key"="value"` or `LABEL key=value` change,
+// undoing the backslash escapes of the quoted form.
+func importChainLabel(instruction string) (key, value string, ok bool) {
+	rest, ok := strings.CutPrefix(strings.TrimSpace(instruction), "LABEL ")
+	if !ok {
+		return "", "", false
+	}
+	word := func(s string) (string, string) {
+		var b strings.Builder
+		quoted := strings.HasPrefix(s, `"`)
+		if quoted {
+			s = s[1:]
+		}
+		for i := 0; i < len(s); i++ {
+			switch {
+			case quoted && s[i] == '\\' && i+1 < len(s):
+				i++
+				b.WriteByte(s[i])
+			case quoted && s[i] == '"':
+				return b.String(), s[i+1:]
+			case !quoted && s[i] == '=':
+				return b.String(), s[i:]
+			default:
+				b.WriteByte(s[i])
+			}
+		}
+		return b.String(), ""
+	}
+	key, rest = word(rest)
+	rest, ok = strings.CutPrefix(rest, "=")
+	if !ok {
+		return "", "", false
+	}
+	value, _ = word(rest)
+	return key, value, true
 }
 
 func newImageImportChainDaemon() *imageNameChainDaemon {
@@ -143,4 +191,114 @@ func TestServeChainImportChecksTheStoredNameOnPodman(t *testing.T) {
 			runImageNameChainStep(t, addr, daemon, tt.step)
 		})
 	}
+}
+
+// TestServeChainImportStampsTheOwner sends imports with benign `changes` and
+// checks the image carries the caller's owner label. The stamp is a LABEL
+// appended after the client's own entries.
+func TestServeChainImportStampsTheOwner(t *testing.T) {
+	tests := []struct {
+		name      string
+		target    string
+		reference string
+		podman    bool
+	}{
+		{name: "compat import", target: "/v1.45/images/create?fromSrc=-&repo=mine%2Fnew&tag=v2", reference: "mine/new:v2"},
+		{name: "compat import with changes", target: "/v1.45/images/create?fromSrc=-&repo=mine%2Fnew&tag=v2&changes=ENV+A%3Db&changes=LABEL+x%3Dy", reference: "mine/new:v2"},
+		{name: "native import", target: "/v5.0.0/libpod/images/import?reference=mine%2Fnew%3Av2&changes=ENV+A%3Db", reference: "localhost/mine/new:v2", podman: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			daemon := newImageImportChainDaemon()
+			if tt.podman {
+				daemon.shortNameAliases = map[string]string{}
+				daemon.enforceDockerHubOff = true
+			}
+			addr := newImageNameChain(t, daemon, nil)
+
+			runImageNameChainStep(t, addr, daemon, imageNameChainStep{
+				name: tt.name, target: tt.target, body: []byte("rootfs"), contentType: "application/x-tar",
+				reference: tt.reference, wantStatus: http.StatusOK,
+			})
+
+			daemon.mu.Lock()
+			defer daemon.mu.Unlock()
+			got := daemon.labels[daemon.names[tt.reference]][imageTagChainLabelKey]
+			if got != imageTagChainOwner {
+				t.Errorf("%s carries owner label %q, want %q; daemon saw %v", tt.reference, got, imageTagChainOwner, daemon.requests)
+			}
+		})
+	}
+}
+
+// TestServeChainImportRefusesChangesThatCouldSwallowTheStamp sends the
+// payloads that, once dockerd joins `changes` with newlines into one
+// Dockerfile, continue or quote their way over the owner stamp appended after
+// them, plus a forged owner label. Each is refused with a 400 on both import
+// routes, and nothing reaches the daemon.
+func TestServeChainImportRefusesChangesThatCouldSwallowTheStamp(t *testing.T) {
+	payloads := []string{
+		`LABEL z=\`,
+		`LABEL z='\`,
+		`LABEL z="open`,
+		"LABEL a=b\nLABEL " + imageTagChainLabelKey + "=team-b",
+		`ONBUILD RUN <<'LABEL "` + imageTagChainLabelKey + `"="me"'`,
+		"LABEL ${K}=victim",
+		"LABEL $K=victim",
+		"ONBUILD LABEL a=b",
+		"RUN cat <<EOF",
+		"# escape=`",
+		"# syntax=evil/frontend",
+		"LABEL " + imageTagChainLabelKey + "=team-b",
+		`LABEL "` + imageTagChainLabelKey + `"='team-b'`,
+	}
+	// The variable route needs the ENV entry beside the LABEL; the ENV alone
+	// is an ordinary change and the LABEL alone sets nothing, so this one is
+	// sent whole and counts as refused because its LABEL is.
+	payloadSets := make([][]string, 0, len(payloads)+1)
+	for _, payload := range payloads {
+		payloadSets = append(payloadSets, []string{payload})
+	}
+	payloadSets = append(payloadSets, []string{
+		`ONBUILD RUN <<'LABEL "` + imageTagChainLabelKey + `"="me"'`,
+		"ENV K=" + imageTagChainLabelKey,
+		"LABEL ${K}=victim",
+	})
+	routes := []struct {
+		name, target string
+		podman       bool
+		path         string
+	}{
+		{name: "compat", target: "/v1.45/images/create?fromSrc=-&repo=mine%2Fnew&tag=v2&changes=", path: "/images/create"},
+		{name: "native", target: "/v5.0.0/libpod/images/import?reference=mine%2Fnew%3Av2&changes=", podman: true, path: "/libpod/images/import"},
+	}
+	for _, route := range routes {
+		for _, set := range payloadSets {
+			payload := strings.Join(set, " | ")
+			t.Run(route.name+"/"+payload, func(t *testing.T) {
+				daemon := newImageImportChainDaemon()
+				if route.podman {
+					daemon.shortNameAliases = map[string]string{}
+					daemon.enforceDockerHubOff = true
+				}
+				addr := newImageNameChain(t, daemon, nil)
+
+				runImageNameChainStep(t, addr, daemon, imageNameChainStep{
+					name: payload, target: route.target + strings.Join(escapeAll(set), "&changes="), body: []byte("rootfs"), contentType: "application/x-tar",
+					wantStatus: http.StatusBadRequest,
+				})
+				if daemon.sawRequest(http.MethodPost, route.path) {
+					t.Errorf("the import reached the daemon; daemon saw %v", daemon.requests)
+				}
+			})
+		}
+	}
+}
+
+func escapeAll(values []string) []string {
+	out := make([]string, len(values))
+	for i, v := range values {
+		out[i] = url.QueryEscape(v)
+	}
+	return out
 }

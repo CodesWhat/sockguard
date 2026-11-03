@@ -17,6 +17,7 @@ package h2conn
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"sync"
@@ -103,14 +104,128 @@ type ServerConfig struct {
 // the peer went away, a timeout fired, or something closed conn. conn is
 // closed by the time Serve returns.
 //
+// Serve returns nil when the connection ended in the ordinary ways and
+// ErrHTTP2ServerDisabled when net/http's HTTP/2 server is switched off
+// (GODEBUG=http2server=0), so the caller can tear the tunnel down with a
+// reason instead of an empty connection that closed for no stated cause.
+//
 // ctx is the base context for every request and is not a cancellation
 // signal for the connection; close conn to stop serving.
 //
 // The peer must send the client preface before Serve writes anything, which
 // every prior-knowledge client does. A connection that sends something else,
 // or nothing within PrefaceTimeout, is closed without a response.
-func Serve(ctx context.Context, conn net.Conn, config ServerConfig) {
+func Serve(ctx context.Context, conn net.Conn, config ServerConfig) error {
 	defer conn.Close()
+
+	if err := http2ServerCheck(); err != nil {
+		return err
+	}
+	return serve(ctx, conn, config)
+}
+
+// ErrHTTP2ServerDisabled is returned by Serve when net/http's HTTP/2 server is
+// turned off, which GODEBUG=http2server=0 does for the whole process. With it
+// off, net/http answers the HTTP/2 preface as HTTP/1.1 and closes, so a tunnel
+// would end with no frame served and no error anywhere.
+var ErrHTTP2ServerDisabled = errors.New("h2conn: net/http's HTTP/2 server is disabled (GODEBUG=http2server=0)")
+
+// http2ServerCheck reports ErrHTTP2ServerDisabled once the probe has
+// definitively seen net/http answer the HTTP/2 preface as HTTP/1. It is a
+// variable so a test can substitute a failing check without changing GODEBUG
+// for the whole run.
+var http2ServerCheck = (&http2Checker{probe: probeHTTP2Server}).check
+
+type probeState int
+
+const (
+	// probeUnknown means the probe could not tell (timeout, I/O error, early
+	// close). It is never cached and never blocks Serve.
+	probeUnknown probeState = iota
+	probeEnabled
+	probeDisabled
+)
+
+// http2Checker caches only a definitive probe result. An inconclusive probe,
+// such as a stall on a loaded host, lets Serve proceed and is retried by the
+// next call.
+type http2Checker struct {
+	probe func() probeState
+	mu    sync.Mutex
+	state probeState
+}
+
+func (c *http2Checker) check() error {
+	c.mu.Lock()
+	state := c.state
+	c.mu.Unlock()
+	if state == probeUnknown {
+		state = c.probe()
+		if state != probeUnknown {
+			c.mu.Lock()
+			c.state = state
+			c.mu.Unlock()
+		}
+	}
+	if state == probeDisabled {
+		return ErrHTTP2ServerDisabled
+	}
+	return nil
+}
+
+const probeTimeout = 2 * time.Second
+
+// probeHTTP2Server serves one throwaway in-memory connection and classifies
+// net/http's answer to the client preface.
+func probeHTTP2Server() probeState {
+	server, client := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer server.Close()
+		_ = serve(context.Background(), server, ServerConfig{Handler: http.NotFoundHandler(), PrefaceTimeout: probeTimeout})
+	}()
+	defer func() { _ = client.Close(); <-done }()
+	return classifyHTTP2Answer(client, probeTimeout)
+}
+
+// classifyHTTP2Answer writes the HTTP/2 client preface to conn and reads the
+// first 9 bytes back. Only a positive signal reports probeDisabled: bytes that
+// start an HTTP/1 status line, a first frame that is not SETTINGS, or the peer
+// closing the connection without a byte (what net/http does with HTTP/2 off).
+// A deadline, or any other write or read error, is probeUnknown.
+func classifyHTTP2Answer(conn net.Conn, timeout time.Duration) probeState {
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+	if _, err := conn.Write([]byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")); err != nil {
+		if errors.Is(err, io.ErrClosedPipe) {
+			// The only closer of the probe's in-memory pipe is the server
+			// side, and with HTTP/2 off net/http drops the connection before
+			// reading the preface. A deadline or any other error says nothing.
+			return probeDisabled
+		}
+		return probeUnknown
+	}
+	var frame [9]byte
+	n, err := io.ReadFull(conn, frame[:])
+	if n >= 5 && string(frame[:5]) == "HTTP/" {
+		return probeDisabled
+	}
+	if n == 0 && errors.Is(err, io.EOF) {
+		// net/http with HTTP/2 off reads the preface as an HTTP/1 request line
+		// it will not serve and closes without a byte. An active close is a
+		// positive answer; silence until the deadline is not.
+		return probeDisabled
+	}
+	if err != nil {
+		return probeUnknown
+	}
+	if frame[3] != 0x4 {
+		return probeDisabled
+	}
+	return probeEnabled
+}
+
+func serve(ctx context.Context, conn net.Conn, config ServerConfig) error {
 
 	var protocols http.Protocols
 	protocols.SetUnencryptedHTTP2(true)
@@ -146,8 +261,12 @@ func Serve(ctx context.Context, conn net.Conn, config ServerConfig) {
 		},
 	}
 	// Serve returns once the listener reports closed, which finish arranges
-	// when the one connection reaches a terminal state.
-	_ = server.Serve(listener)
+	// when the one connection reaches a terminal state, and Serve reports that
+	// as a closed listener, which is the normal end here.
+	if err := server.Serve(listener); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
 }
 
 // plainConn narrows a connection to the net.Conn method set. net/http treats

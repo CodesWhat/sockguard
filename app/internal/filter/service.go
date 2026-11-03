@@ -19,12 +19,17 @@ const maxServiceBodyBytes = 1 << 20 // 1 MiB
 // ServiceOptions configures request-body inspection for service create/update.
 type ServiceOptions struct {
 	// AllowedImages is an opt-in exact image reference allowlist.
-	AllowedImages      []string
-	AllowHostNetwork   bool
-	AllowedBindMounts  []string
-	AllowAllRegistries bool
-	AllowOfficial      bool
-	AllowedRegistries  []string
+	AllowedImages     []string
+	AllowHostNetwork  bool
+	AllowedBindMounts []string
+	// AllowTmpfsPrivilegedOptions permits ContainerSpec tmpfs mounts whose
+	// TmpfsOptions.Options turn on exec, dev or suid. It is not a key of its
+	// own: ToFilterOptions cross-wires container_create's, since a service
+	// mount carries the same flags. Default false.
+	AllowTmpfsPrivilegedOptions bool
+	AllowAllRegistries          bool
+	AllowOfficial               bool
+	AllowedRegistries           []string
 	// AllowAllCapabilities / AllowedCapabilities mirror the container-create
 	// CapabilityAdd allowlist for swarm task containers (ContainerSpec).
 	AllowAllCapabilities bool
@@ -89,24 +94,25 @@ type ServiceOptions struct {
 }
 
 type servicePolicy struct {
-	allowedImages              createImageAllowlist
-	allowHostNetwork           bool
-	allowedBindMounts          []string
-	imagePolicy                imagePullPolicy
-	allowAllCapabilities       bool
-	allowedCapabilities        []string
-	allowSysctls               bool
-	requireNonRootUser         bool
-	requireNoNewPrivileges     bool
-	requireReadonlyRootfs      bool
-	requireDropAllCapabilities bool
-	denyUnconfinedSeccomp      bool
-	denyCustomSeccompProfiles  bool
-	denyUnconfinedAppArmor     bool
-	denySelinuxDisable         bool
-	denySelinuxLabelOverride   bool
-	imageTrust                 imageTrustFields
-	logDrivers                 logDriverPolicy
+	allowedImages               createImageAllowlist
+	allowHostNetwork            bool
+	allowedBindMounts           []string
+	allowTmpfsPrivilegedOptions bool
+	imagePolicy                 imagePullPolicy
+	allowAllCapabilities        bool
+	allowedCapabilities         []string
+	allowSysctls                bool
+	requireNonRootUser          bool
+	requireNoNewPrivileges      bool
+	requireReadonlyRootfs       bool
+	requireDropAllCapabilities  bool
+	denyUnconfinedSeccomp       bool
+	denyCustomSeccompProfiles   bool
+	denyUnconfinedAppArmor      bool
+	denySelinuxDisable          bool
+	denySelinuxLabelOverride    bool
+	imageTrust                  imageTrustFields
+	logDrivers                  logDriverPolicy
 }
 
 type serviceRequest struct {
@@ -193,6 +199,16 @@ type serviceMount struct {
 	// which checks the device against the same allowlist a Type: "bind" mount
 	// is checked against.
 	VolumeOptions *serviceMountVolumeOptions `json:"VolumeOptions"`
+	// TmpfsOptions.Options are the mount flags of a tmpfs mount, in the same
+	// 1-or-2-element entry shape as container create's, and answer to the
+	// same allow_tmpfs_privileged_options gate.
+	TmpfsOptions *serviceMountTmpfsOptions `json:"TmpfsOptions"`
+}
+
+// serviceMountTmpfsOptions mirrors the swarm ContainerSpec Mount.TmpfsOptions
+// object, narrowed to the field the policy inspects.
+type serviceMountTmpfsOptions struct {
+	Options [][]string `json:"Options"`
 }
 
 // serviceMountVolumeOptions mirrors the swarm ContainerSpec Mount.VolumeOptions
@@ -230,9 +246,10 @@ func newServicePolicy(opts ServiceOptions) servicePolicy {
 	}
 
 	return servicePolicy{
-		allowedImages:     newCreateImageAllowlist(opts.AllowedImages),
-		allowHostNetwork:  opts.AllowHostNetwork,
-		allowedBindMounts: allowed,
+		allowedImages:               newCreateImageAllowlist(opts.AllowedImages),
+		allowHostNetwork:            opts.AllowHostNetwork,
+		allowedBindMounts:           allowed,
+		allowTmpfsPrivilegedOptions: opts.AllowTmpfsPrivilegedOptions,
 		imagePolicy: newImagePullPolicy(ImagePullOptions{
 			AllowAllRegistries: opts.AllowAllRegistries,
 			AllowOfficial:      opts.AllowOfficial,
@@ -448,6 +465,20 @@ func (p servicePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedP
 			driverConfig := mount.VolumeOptions.DriverConfig
 			if denyReason := denyLocalVolumeBindDeviceReason(driverConfig.Name, driverConfig.Options, p.allowedBindMounts, "service"); denyReason != "" {
 				return denyReason, nil
+			}
+			if denyReason := denyLocalVolumeTmpfsPrivilegeReason(driverConfig.Name, driverConfig.Options, p.allowTmpfsPrivilegedOptions, "service", tmpfsOptionKeyCompat); denyReason != "" {
+				return denyReason, nil
+			}
+		}
+
+		if mount.TmpfsOptions != nil {
+			switch verdict, option := checkStructuredTmpfsOptions(mount.TmpfsOptions.Options); verdict {
+			case tmpfsStructuredMalformed:
+				return "service denied: malformed tmpfs mount option", nil
+			case tmpfsStructuredPrivileged:
+				if !p.allowTmpfsPrivilegedOptions {
+					return fmt.Sprintf("service denied: tmpfs mount option %q is not allowed", option), nil
+				}
 			}
 		}
 

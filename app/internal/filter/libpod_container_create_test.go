@@ -260,7 +260,10 @@ func TestLibpodContainerCreateBindMountGate(t *testing.T) {
 		t.Fatal("want deny: bind source not allowlisted")
 	}
 
-	allow := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowedBindMounts: []string{"/tmp/bindsrc"}, AllowSystemdMode: true})
+	// The fixture's tmpfs mount carries no options, which the tmpfs gate
+	// refuses on its own; allow_tmpfs_privileged_options keeps this test on
+	// the bind source.
+	allow := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowedBindMounts: []string{"/tmp/bindsrc"}, AllowSystemdMode: true, AllowTmpfsPrivilegedOptions: true})
 	if reason := inspectLibpod(t, allow, body); reason != "" {
 		t.Fatalf("want allow: bind source allowlisted, got deny %q", reason)
 	}
@@ -840,8 +843,8 @@ func TestLibpodContainerCreateHostPathGatesLeaveFixturesAllowed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read fixture dir: %v", err)
 	}
-	policy := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{})
-	anyPath := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowedBindMounts: []string{"/"}})
+	policy := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowTmpfsPrivilegedOptions: true})
+	anyPath := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowedBindMounts: []string{"/"}, AllowTmpfsPrivilegedOptions: true})
 	wantRefused := map[string]string{
 		"log_path.json":               "libpod container create denied: setting log_configuration.path is not allowed (set allow_log_path: true)",
 		"health_log_destination.json": `libpod container create denied: setting healthLogDestination to a host directory is not allowed (set allow_log_path: true, or use "local" or "events_logger")`,
@@ -1336,11 +1339,11 @@ func TestLibpodContainerCreateOverlayAndBindSourceGates(t *testing.T) {
 		// others name a filesystem, and their source isn't a path at all.
 		{
 			name:   "tmpfs mount with its usual source",
-			fields: `"image":"a","mounts":[{"type":"tmpfs","source":"tmpfs","destination":"/tmp/x"}]`,
+			fields: `"image":"a","mounts":[{"type":"tmpfs","source":"tmpfs","destination":"/tmp/x","options":["noexec","nosuid","nodev"]}]`,
 		},
 		{
 			name:   "tmpfs mount with no source",
-			fields: `"image":"a","mounts":[{"type":"tmpfs","destination":"/tmp/x","options":["size=64m"]}]`,
+			fields: `"image":"a","mounts":[{"type":"tmpfs","destination":"/tmp/x","options":["size=64m","noexec","nosuid","nodev"]}]`,
 		},
 		{
 			name:   "ramfs mount",

@@ -12,6 +12,8 @@ const (
 	buildTagQueryField      = "t"
 	buildOutputsQueryField  = "outputs"
 	buildManifestQueryField = "manifest"
+	buildPullQueryField     = "pull"
+	buildPullPolicyField    = "pullpolicy"
 
 	// buildMaxTags bounds the names one build is checked for. Each costs up
 	// to two inspects, and the query is the client's to fill. It is the bound
@@ -24,6 +26,7 @@ const (
 	buildDenyTransport       = "owner policy denied build whose t parameter starts with an image transport name: Podman's builder writes such an output outside the name it spells"
 	buildDenyOutputs         = "owner policy denied build with an outputs parameter that cannot be decoded"
 	buildDenyOutputName      = "owner policy denied build whose outputs parameter names an image: name the image in t"
+	buildDenyPull            = "owner policy denied build with a pull parameter: pulling the FROM image rebinds its name over an image another owner may hold, and the Dockerfile is not read here to check it"
 	buildDenyManifest        = "owner policy denied build with a manifest parameter: Podman adds the image to the manifest list it names"
 )
 
@@ -88,6 +91,17 @@ var buildOutputTransports = map[string]struct{}{
 //   - On an upstream that is or may be Podman, a value whose text before the
 //     first colon is an image transport. See buildTagIsTransport.
 //   - An `outputs` value that names an image. See buildOutputsNameImage.
+//   - A `pull` parameter that asks for a pull, in any spelling of the key.
+//     The daemon pulls each FROM image the Dockerfile names and rebinds that
+//     name to what the registry serves, so `pull=1` over a base another
+//     owner's image holds takes the name from it. The FROM names live in the
+//     build context, which the owner layer never reads (the request-body
+//     inspector does, in a different package and for different purposes), so
+//     the pull is refused instead of checked.
+//   - A `pullpolicy` parameter other than missing, never or a switched-off
+//     value, for the same reason. Unlike `pull`, `missing` and `never` are
+//     policy names there and don't pull. They are not for `pull`: dockerd
+//     reads `pull=never` as true.
 //   - A `manifest` parameter in any spelling. Podman adds the built image to
 //     the manifest list of that name and creates the list when nothing holds
 //     it, on both routes. A manifest list is not an image this layer can
@@ -109,6 +123,14 @@ func buildImageDestinations(rawQuery, normPath string, flavor upstreamflavor.Fla
 	tags := 0
 	for _, field := range query {
 		switch {
+		case strings.EqualFold(field.Key, buildPullQueryField):
+			if buildPullEnabled(field.Value) {
+				return nil, buildDenyPull
+			}
+		case strings.EqualFold(field.Key, buildPullPolicyField):
+			if buildPullPolicyPulls(field.Value) {
+				return nil, buildDenyPull
+			}
 		case strings.EqualFold(field.Key, buildManifestQueryField):
 			if field.Value != "" {
 				return nil, buildDenyManifest
@@ -139,6 +161,36 @@ func buildImageDestinations(rawQuery, normPath string, flavor upstreamflavor.Fla
 		return nil, ""
 	}
 	return refs, ""
+}
+
+// buildPullPolicyPulls reports whether a pullpolicy parameter can make the
+// build pull. Podman's native build reads it through buildah's PolicyMap
+// (missing, always, never, ifnewer; exact case, and a name not in the map is
+// the zero value, "missing"), and its compat build reads only `pull`. dockerd
+// has no such parameter. "missing" and "never" don't pull a base image that's
+// already there, so they pass, with the empty and switched-off spellings.
+// Everything else is refused, always and ifnewer included.
+func buildPullPolicyPulls(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "missing", "never", "0", "false", "no", "none":
+		return false
+	default:
+		return true
+	}
+}
+
+// buildPullEnabled reports whether a pull parameter's value asks for a pull.
+// dockerd reads the parameter with httputils.BoolValue: everything but empty,
+// "0", "no", "false" and "none" (any case, trimmed) is true. Podman reads it
+// as a bool or a policy name, and none of those four mean pull under either
+// engine.
+func buildPullEnabled(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "0", "no", "false", "none":
+		return false
+	default:
+		return true
+	}
 }
 
 // buildTagIsTransport reports whether Podman's builder reads tag as a

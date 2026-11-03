@@ -47,7 +47,7 @@ GOBIN="${GOBIN}" go install "github.com/bufbuild/buf/cmd/buf@${BUF_VERSION}"
 export PATH="${GOBIN}:${PATH}"
 
 echo "Running buf generate against ${PROTO_DIR}..."
-( cd "${PROTO_DIR}" && buf generate )
+(cd "${PROTO_DIR}" && buf generate)
 
 GEN_ROOT="${PROTO_DIR}/gen"
 
