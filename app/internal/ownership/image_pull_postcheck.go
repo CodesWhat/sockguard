@@ -45,9 +45,13 @@ import (
 //
 // A pull by digest has no destination name, and the image it fetches is
 // addressable by repository@digest. That reference is inspected after the pull
-// and only reported when its image is another owner's. A digest reference pins
-// its content, so a client cannot make a victim's reference resolve to other
+// and reported when its image is another owner's. A digest reference pins its
+// content, so a client cannot make a victim's reference resolve to other
 // bytes, and removing by digest could drop an image other names still hold.
+// It is removed only when it provably came with this pull: the upstream was
+// positively probed as dockerd, the route is not libpod, and an inspect of the
+// reference before the pull found nothing (a 404, not an error). Anything else
+// stays report-only.
 
 const (
 	// imagePullPostCheckTimeout bounds the inspects and untags that follow a
@@ -263,6 +267,12 @@ type pullCheck struct {
 	// taken, and every image is then treated as one that was already there.
 	preIDs   map[string]struct{}
 	preKnown bool
+	// preNames are the names that list held before the pull. A name found by ID
+	// is untagged only when it was not among them.
+	preNames map[string]struct{}
+	// digestAbsent holds the digest references a pre-pull inspect positively
+	// found nothing for.
+	digestAbsent map[string]struct{}
 }
 
 // namesRequestedReference reports whether name is the requested reference
@@ -327,6 +337,8 @@ func servePullWithOwnerCheck(logger *slog.Logger, next http.Handler, w http.Resp
 		post:    post,
 		before:  map[string]string{},
 		handled: map[string]struct{}{},
+
+		digestAbsent: map[string]struct{}{},
 	}
 	var names []string
 	for _, dest := range refs.destinations {
@@ -345,6 +357,11 @@ func servePullWithOwnerCheck(logger *slog.Logger, next http.Handler, w http.Resp
 	for _, ref := range names {
 		if image, found, err := post.inspect(snapshotCtx, ref); err == nil && found && image.id != "" {
 			c.before[ref] = image.id
+		}
+	}
+	for _, ref := range refs.digests {
+		if _, found, err := post.inspect(snapshotCtx, ref); err == nil && !found {
+			c.digestAbsent[ref] = struct{}{}
 		}
 	}
 	if libpod && post.list != nil {
@@ -404,6 +421,7 @@ func servePullWithOwnerCheck(logger *slog.Logger, next http.Handler, w http.Resp
 // leaves the snapshot unknown.
 func (c *pullCheck) snapshotLibpodImages(ctx context.Context, refs *imageDestinationReferences) {
 	ids := map[string]struct{}{}
+	listed := map[string]struct{}{}
 	for _, dest := range refs.destinations {
 		images, err := c.post.list(ctx, dest.target)
 		if err != nil || len(images) > maxPrePullImages {
@@ -414,18 +432,21 @@ func (c *pullCheck) snapshotLibpodImages(ctx context.Context, refs *imageDestina
 		for _, image := range images {
 			ids[bareImageID(image.id)] = struct{}{}
 			for _, name := range image.names {
+				listed[name] = struct{}{}
 				if _, held := c.before[name]; !held {
 					c.before[name] = image.id
 				}
 			}
 		}
 	}
-	c.preIDs, c.preKnown = ids, true
+	c.preIDs, c.preNames, c.preKnown = ids, listed, true
 }
 
-// checkDigest inspects the reference a pull by digest named. It never removes
-// anything: an image that carries another owner's label is reported, and one
-// that cannot be read is reported as unverified.
+// checkDigest inspects the reference a pull by digest named. An image that
+// carries another owner's label is reported, and one that cannot be read is
+// reported as unverified. The reference is also removed, under enforce, when the
+// upstream is probed dockerd on the compat route and the reference was
+// positively absent before the pull, so the pull is what put it there.
 func (c *pullCheck) checkDigest(ctx context.Context, ref string) {
 	image, found, err := c.post.inspect(ctx, ref)
 	switch {
@@ -435,6 +456,10 @@ func (c *pullCheck) checkDigest(ctx context.Context, ref string) {
 		c.report(fmt.Sprintf(imagePullNotVerifiedFormat, ref))
 	case !found, !c.foreign(image.labels):
 	default:
+		if _, absent := c.digestAbsent[ref]; absent && !c.libpod && c.opts.UpstreamProbedDocker {
+			c.remove(ctx, ref, imagePullForeignLabelReason)
+			return
+		}
 		c.logger.WarnContext(ctx, "owner policy found a pulled-by-digest image with another owner's label and left it in place",
 			"reference", logging.SafeString(ref), "path", logging.SafeString(c.r.URL.Path))
 		c.report(fmt.Sprintf(imagePullDigestKeptFormat, ref))
@@ -536,11 +561,12 @@ func (c *pullCheck) checkReportedImages(ctx context.Context, refs *imageDestinat
 			}
 			_, written := ours[name]
 			_, existed := c.preIDs[bareImageID(image.id)]
+			_, listed := c.preNames[name]
 			if written {
 				c.remove(ctx, name, imagePullForeignLabelReason)
 				continue
 			}
-			if c.preKnown && !existed && image.id != "" && namesRequestedReference(refs, name) {
+			if c.preKnown && !existed && !listed && image.id != "" && namesRequestedReference(refs, name) {
 				c.removeIfUnchanged(ctx, name, image.id)
 				continue
 			}
