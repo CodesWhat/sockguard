@@ -26,7 +26,7 @@ type streamHarness struct {
 func newStreamHarness(t *testing.T, opts MiddlewareOptions) *streamHarness {
 	t.Helper()
 	sh := &streamHarness{entered: make(chan struct{}, 128), release: make(chan struct{})}
-	opts.IsLongLived = isEventsStream
+	opts.IsStreaming = isEventsStream
 	if opts.ResolveProfile == nil {
 		opts.ResolveProfile = resolveProfileFn("ci")
 	}
@@ -90,7 +90,7 @@ func TestStreamCap_NonStreamsStillCountAgainstMaxInflight(t *testing.T) {
 			"ci": {Concurrency: &ConcurrencyOptions{MaxInflight: 1, MaxStreams: 8}},
 		},
 		ResolveProfile: resolveProfileFn("ci"),
-		IsLongLived:    isEventsStream,
+		IsStreaming:    isEventsStream,
 	}
 	h := mustMiddleware(t, newTestLogger(), nil, nil, opts)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		enter <- struct{}{}

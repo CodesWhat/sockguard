@@ -106,15 +106,6 @@ func isLongLivedUpstreamRequest(w http.ResponseWriter, r *http.Request) bool {
 	return isLongLivedUpstreamRequestForFlavor(w, r, false)
 }
 
-// IsLongLivedRequest reports whether r is a fully long-lived request (events,
-// logs follow, attach, wait, stats stream, image pull and the like) that skips
-// both upstream deadlines. Grace-bound (stop/restart) and header-only
-// (system df) requests are not. The rate-limit middleware uses it to keep these
-// requests from holding a concurrency slot for their whole lifetime.
-func IsLongLivedRequest(w http.ResponseWriter, r *http.Request, podmanUpstream bool) bool {
-	return isLongLivedUpstreamRequestForFlavor(w, r, podmanUpstream)
-}
-
 func isLongLivedUpstreamRequestForFlavor(w http.ResponseWriter, r *http.Request, podmanUpstream bool) bool {
 	mode, _ := upstreamExemptionForFlavor(w, r, podmanUpstream)
 	return mode == exemptFull

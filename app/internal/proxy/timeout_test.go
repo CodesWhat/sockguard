@@ -553,37 +553,3 @@ func TestRequestNormalizedPathFallsBackWhenMetaNormPathEmpty(t *testing.T) {
 		t.Fatalf("requestNormalizedPath() = %q, want fallback %q when meta.NormPath is empty", got, want)
 	}
 }
-
-// IsLongLivedRequest feeds the stream-cap exemption in the rate-limit
-// middleware: only fully long-lived requests skip the concurrency caps.
-// Grace-bound (stop/restart) and header-only (system df) requests keep their
-// slot.
-func TestIsLongLivedRequestExemptsOnlyFullyLongLived(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name   string
-		method string
-		target string
-		want   bool
-	}{
-		{"events", http.MethodGet, "/events", true},
-		{"logs follow", http.MethodGet, "/containers/abc/logs?follow=1", true},
-		{"logs without follow", http.MethodGet, "/containers/abc/logs", false},
-		{"stats stream", http.MethodGet, "/containers/abc/stats", true},
-		{"stats one-shot", http.MethodGet, "/containers/abc/stats?stream=0", false},
-		{"wait", http.MethodPost, "/containers/abc/wait", true},
-		{"stop is grace-bound", http.MethodPost, "/containers/abc/stop?t=60", false},
-		{"restart is grace-bound", http.MethodPost, "/containers/abc/restart", false},
-		{"system df is header-only", http.MethodGet, "/system/df", false},
-		{"container list", http.MethodGet, "/containers/json", false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			req := httptest.NewRequest(tc.method, tc.target, nil)
-			if got := IsLongLivedRequest(httptest.NewRecorder(), req, false); got != tc.want {
-				t.Fatalf("IsLongLivedRequest(%s %s) = %v, want %v", tc.method, tc.target, got, tc.want)
-			}
-		})
-	}
-}

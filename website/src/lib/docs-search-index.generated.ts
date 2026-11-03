@@ -44,7 +44,7 @@ export const DOCS_SEARCH_ITEMS: [page: number, heading: string, anchor: string][
   [2,"Token-bucket rate limiting","token-bucket-rate-limiting"],
   [2,"Endpoint cost weighting","endpoint-cost-weighting"],
   [2,"Concurrency caps","concurrency-caps"],
-  [2,"Long-lived streams and max_streams","long-lived-streams-and-max_streams"],
+  [2,"Streams and max_streams","streams-and-max_streams"],
   [2,"Combining both mechanisms","combining-both-mechanisms"],
   [2,"Priority / fairness controls","priority--fairness-controls"],
   [2,"Reload resets limiter state","reload-resets-limiter-state"],

@@ -239,11 +239,12 @@ type MiddlewareOptions struct {
 	// GlobalConcurrency enables the system-wide priority-aware fairness gate.
 	// Nil disables it, in which case per-profile priorities have no effect.
 	GlobalConcurrency *GlobalConcurrencyOptions
-	// IsLongLived reports whether a request is fully long-lived (events, logs
-	// follow, attach, wait, stats stream and the like). Such requests skip the
-	// concurrency caps and are bounded by the separate stream cap instead. Nil
-	// disables the exemption.
-	IsLongLived func(w http.ResponseWriter, r *http.Request) bool
+	// IsStreaming reports whether a request is an open-ended stream (events,
+	// followed logs, streaming stats, wait, attach, exec start). Such requests
+	// skip the concurrency caps and are bounded by the separate per-profile
+	// stream cap instead. Finite heavy operations such as build and prune must
+	// not match. Nil disables the exemption.
+	IsStreaming func(w http.ResponseWriter, r *http.Request) bool
 	// Now overrides the time source for every per-profile Limiter created by
 	// this Middleware. Tests that need deterministic refill behavior inject a
 	// fixed-clock function; production code leaves this nil to use time.Now.
@@ -318,7 +319,7 @@ func Middleware(
 		globalTracker: globalTracker,
 		globalMax:     globalMax,
 		resolve:       opts.ResolveProfile,
-		isLongLived:   opts.IsLongLived,
+		isStreaming:   opts.IsStreaming,
 	}
 
 	mw = func(next http.Handler) http.Handler {
@@ -343,7 +344,7 @@ type throttleHandler struct {
 	globalTracker *GlobalInflightTracker
 	globalMax     int64
 	resolve       func(*http.Request) (string, bool)
-	isLongLived   func(w http.ResponseWriter, r *http.Request) bool
+	isStreaming   func(w http.ResponseWriter, r *http.Request) bool
 	// streamTracker counts long-lived streams per client, separately from the
 	// in-flight cap they skip.
 	streamTracker InflightTracker
@@ -388,10 +389,10 @@ func (h *throttleHandler) serve(w http.ResponseWriter, r *http.Request, next htt
 		return
 	}
 
-	// Fully long-lived requests (events, logs follow, attach, wait, stats
-	// stream) would hold a concurrency slot for their whole life, so they skip
-	// both caps and answer to the stream cap instead.
-	if h.isLongLived != nil && (cp != nil && cp.tracker != nil || h.globalTracker != nil) && h.isLongLived(w, r) {
+	// Streams (events, followed logs, attach, wait, streaming stats) would hold
+	// a concurrency slot for their whole life, so they skip both caps and
+	// answer to the stream cap instead.
+	if h.isStreaming != nil && (cp != nil && cp.tracker != nil || h.globalTracker != nil) && h.isStreaming(w, r) {
 		rel, ok := h.checkStreamCap(w, r, cp, effectiveID, normPath)
 		if !ok {
 			return

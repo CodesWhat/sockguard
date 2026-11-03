@@ -1521,11 +1521,15 @@ type ConcurrencyConfig struct {
 	// MaxInflight is the maximum number of simultaneous in-flight requests
 	// allowed for a single client. Must be > 0.
 	MaxInflight int64 `mapstructure:"max_inflight"`
-	// MaxStreams caps the long-lived streams (events, logs follow, attach,
-	// wait, stats stream, and the other fully long-lived requests) a single
-	// client may hold open at once. Those requests skip max_inflight so a few
-	// `docker events` or `logs -f` sessions cannot exhaust it, which makes
-	// this the bound on them instead. Unset defaults to 32; 0 disables the cap.
+	// MaxStreams caps the open-ended streams (events, followed logs, streaming
+	// stats, wait, attach, exec start) one profile may hold open at once. Those
+	// requests skip max_inflight and the global gate so a few `docker events`
+	// or `logs -f` sessions cannot exhaust them, which makes this the bound on
+	// them instead. Build, prune, pull/push/load and export/archive are not
+	// streams and keep counting against max_inflight. The count is per profile,
+	// so clients sharing a profile (or the anonymous bucket) share the cap, and
+	// total streams are bounded per profile rather than globally. Unset
+	// defaults to 32; 0 disables the cap.
 	MaxStreams *int64 `mapstructure:"max_streams"`
 }
 
