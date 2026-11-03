@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Long-lived streams no longer use up the concurrency cap.** `limits.concurrency.max_inflight` and `clients.global_concurrency` counted `docker events`, `logs -f`, stats streaming, `wait`, image pulls and the other fully long-lived requests for their whole lifetime, so a client with a few open streams got `429 concurrency_cap` on ordinary calls. Those requests now skip both gates. Stop/restart and `GET /system/df` still count. To keep that from opening an unbounded number of streams, `limits.concurrency.max_streams` (default `32` per client, `0` disables) caps them separately and answers `429` with reason `stream_cap`. Streams still cost rate-limit tokens. A plain `POST /containers/{id}/attach` is hijacked rather than classified long-lived and still counts against `max_inflight`.
+
 ## [3.0.0-rc.6] - 2026-11-03
 
 This candidate carries v2.4.4 (the client compatibility sweep and libpod create hardening). It narrows `response.redact_network_topology` to addresses, so opaque IDs pass through and a mount `Source` is kept only for named mount types, with `MaskedPaths` and `ReadonlyPaths` untouched. It adds libpod gates for `unified`, `env_host` and `pod`, reports unknown config keys, and adds compose examples for Homepage, Homarr, Diun and Autoheal. The Helm chart will publish as a signed OCI artifact from v3.0.0, and the hand-rolled star chart is removed. These are candidate-only behavior changes, so the 14-day bake window restarts: GA is no earlier than 2026-11-17. Fresh exact-source soak, TLS/security and published-image conformance are required before GA.

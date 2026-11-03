@@ -429,6 +429,9 @@ const (
 	// global concurrency cap. Distinguished from ReasonConcurrency so operators
 	// can tune the global cap and per-profile caps independently.
 	ReasonPriorityFloor ThrottleReason = "priority_floor"
+	// ReasonStreamCap is emitted when a client holds more long-lived streams
+	// (events, logs follow, attach, wait) than its stream cap allows.
+	ReasonStreamCap ThrottleReason = "stream_cap"
 )
 
 // clientReasonKey is the deduplication key for audit-event sampling.

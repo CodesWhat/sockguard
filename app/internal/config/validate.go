@@ -1715,6 +1715,9 @@ func validateLimitsConfig(prefix string, cfg LimitsConfig) []string {
 		if cfg.Concurrency.MaxInflight <= 0 {
 			errs = append(errs, fmt.Sprintf("%s.concurrency.max_inflight must be > 0, got %d", prefix, cfg.Concurrency.MaxInflight))
 		}
+		if cfg.Concurrency.MaxStreams != nil && *cfg.Concurrency.MaxStreams < 0 {
+			errs = append(errs, fmt.Sprintf("%s.concurrency.max_streams must be >= 0 (0 disables the cap), got %d", prefix, *cfg.Concurrency.MaxStreams))
+		}
 	}
 
 	return errs

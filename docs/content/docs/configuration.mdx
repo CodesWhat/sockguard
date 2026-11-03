@@ -785,6 +785,37 @@ clients:
           action: deny
 ```
 
+#### Long-lived streams and `max_streams`
+
+Fully long-lived requests do not hold a `max_inflight` slot, and they skip the
+`clients.global_concurrency` gate too. That covers the requests sockguard
+already exempts from the upstream request timeout: `GET /events`,
+`logs?follow=1`, `stats` with streaming on, `/attach/ws`, `POST
+/containers/{id}/wait`, image pull/push/load, build and prune. Without this,
+a client with a handful of `docker events` or `docker logs -f` sessions used up
+its whole cap and got `429` on ordinary calls. Stop and restart (bounded by
+their grace period) and `GET /system/df` still count, and so does a plain
+`POST /containers/{id}/attach`, which is hijacked and not classified as
+long-lived. Streams still cost rate-limit tokens.
+
+Exempting streams from `max_inflight` would otherwise let an untrusted client
+open an unbounded number of them, so they have their own cap:
+
+```yaml
+limits:
+  concurrency:
+    max_inflight: 16
+    max_streams: 32   # default; 0 disables the stream cap
+```
+
+`max_streams` is per client and counts only long-lived streams. Over the cap
+the request is denied with `429` and `{"reason":"stream_cap"}`, and a
+`Retry-After: 1` header. Leave it unset for the default of `32`; `0` means
+unlimited. When only `clients.global_concurrency` is configured (a profile has
+no `concurrency` block), the default of `32` streams per client still applies.
+Under `warn` and `audit` rollout the over-cap stream is admitted and logged as
+`would_deny`.
+
 ### Combining both mechanisms
 
 Rate limiting and concurrency caps can coexist on the same profile. The rate
@@ -889,6 +920,7 @@ violated (fail-closed, never silent-disable):
 - `limits.rate.endpoint_costs[].cost` must be `>= 1` and `<= effective burst`
 - `limits.rate.endpoint_costs[].methods[]` must not contain empty strings
 - `limits.concurrency.max_inflight` must be `> 0`
+- `limits.concurrency.max_streams` must be `>= 0` when set (`0` disables the stream cap)
 - `clients.global_concurrency.max_inflight` must be `> 0` when set
 - `limits.priority` must be one of `low`, `normal`, or `high`
 
@@ -899,7 +931,7 @@ series appear:
 
 - `sockguard_throttle_requests_total{profile, reason_code, mode}` — counter incremented on every
   denial by this subsystem. `reason_code` is one of `rate_limit_exceeded`,
-  `concurrency_cap`, or `priority_floor`.
+  `concurrency_cap`, `stream_cap`, or `priority_floor`.
 - `sockguard_inflight_requests{profile}` — gauge tracking the current in-flight
   count for profiles that have `max_inflight` configured.
 

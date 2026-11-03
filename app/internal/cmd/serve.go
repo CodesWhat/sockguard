@@ -967,11 +967,15 @@ func buildRateLimitMiddleware(cfg *config.Config, logger *slog.Logger, runtime *
 
 	warnAssignedProfilesWithoutLimits(cfg, profiles, logger)
 
+	podmanUpstream := runtimeUpstreamFlavor(runtime) == upstreamflavor.Podman
 	sampler, stopSampler := ratelimit.NewAuditSampler()
 	mw, stopLimiters := ratelimit.Middleware(logger, runtime.metrics, sampler, ratelimit.MiddlewareOptions{
 		Profiles:          profiles,
 		ResolveProfile:    clientacl.RequestProfile,
 		GlobalConcurrency: globalConc,
+		IsLongLived: func(w http.ResponseWriter, r *http.Request) bool {
+			return proxy.IsLongLivedRequest(w, r, podmanUpstream)
+		},
 	})
 	stop := func() {
 		stopLimiters()
