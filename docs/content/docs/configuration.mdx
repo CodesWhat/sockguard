@@ -66,7 +66,7 @@ response:
 request_body:
   container_remove:
     allow_force: false             # deny force-killing a running container (default)
-    allow_remove_volumes: false    # deny deleting attached anonymous volumes, libpod `depend`, pod removal and kube down (default)
+    allow_remove_volumes: false    # deny deleting attached anonymous volumes, libpod `depend`, pod removal, pod prune and kube down (default)
     allow_remove_links: false      # deny Docker's legacy link-removal mode (default)
   container_create:
     allow_privileged: false      # deny HostConfig.Privileged=true (default)
@@ -1913,7 +1913,7 @@ multiple entries via the env var; e.g.
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_UPDATE_REQUIRE_CPU_LIMIT_HARD`   | `request_body.container_update.require_cpu_limit_hard`  | `false` | Require an effective `NanoCpus` or `CpuQuota` specifically; `CpuShares` alone does not satisfy this stricter check. Enforced only when `allow_resource_updates: true`. |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_UPDATE_REQUIRE_PIDS_LIMIT`       | `request_body.container_update.require_pids_limit`      | `false` | Require an effective `HostConfig.PidsLimit > 0` after merge; a submitted `PidsLimit` of `0` or `-1` is an explicit clear, not a no-op. Enforced only when `allow_resource_updates: true`. |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_REMOVE_ALLOW_FORCE`          | `request_body.container_remove.allow_force`             | `false` | Allow `DELETE /containers/**` and `DELETE /libpod/containers/**` to force-kill a running container before removal, `DELETE /libpod/pods/*` to send `force`, and kube down. |
-| `SOCKGUARD_REQUEST_BODY_CONTAINER_REMOVE_ALLOW_REMOVE_VOLUMES` | `request_body.container_remove.allow_remove_volumes`    | `false` | Allow `DELETE /containers/**` and `DELETE /libpod/containers/**` to delete attached anonymous volumes, including libpod `depend`, and allow `DELETE /libpod/pods/*` and kube down. |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_REMOVE_ALLOW_REMOVE_VOLUMES` | `request_body.container_remove.allow_remove_volumes`    | `false` | Allow `DELETE /containers/**` and `DELETE /libpod/containers/**` to delete attached anonymous volumes, including libpod `depend`, and allow `DELETE /libpod/pods/*`, `POST /libpod/pods/prune` and kube down. |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_REMOVE_ALLOW_REMOVE_LINKS`   | `request_body.container_remove.allow_remove_links`      | `false` | Allow Docker's legacy container-link removal mode, including slash-bearing link names. |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_ARCHIVE_ALLOWED_PATHS`       | `request_body.container_archive.allowed_paths`          | _empty_ | Comma-separated container paths allowed for `PUT /containers/*/archive` and `PUT /libpod/containers/*/archive`.     |
 | `SOCKGUARD_REQUEST_BODY_IMAGE_LOAD_ALLOW_UNTAGGED`             | `request_body.image_load.allow_untagged`                | `false` | Allow Docker or OCI load archives containing untagged images.                |

@@ -451,6 +451,7 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		{http.MethodPost, matchesBuildInspection, inspectSeverityCritical, newBuildPolicy(cfg.Build).inspect, "failed to inspect build request", "unable to inspect build request"},
 		{http.MethodPost, matchesContainerUpdateInspection, inspectSeverityHigh, newContainerUpdatePolicy(cfg.ContainerUpdate).inspect, "failed to inspect container update request body", "unable to inspect container update request body"},
 		{http.MethodDelete, matchesContainerRemoveInspection, inspectSeverityMedium, newContainerRemovePolicy(cfg.ContainerRemove).inspect, "failed to inspect container remove query", "unable to inspect container remove query"},
+		{http.MethodPost, matchesLibpodPodPruneInspection, inspectSeverityMedium, newContainerRemovePolicy(cfg.ContainerRemove).inspectPodPrune, "failed to inspect libpod pod prune request", "unable to inspect libpod pod prune request"},
 		// matchesContainerArchiveInspection covers the Docker-compat AND the
 		// libpod spelling from one predicate. Podman registers both on the
 		// identical compat.Archive handler, so one policy over one wire
@@ -564,6 +565,10 @@ func matchesContainerUpdateInspection(normalizedPath string) bool {
 func matchesContainerRemoveInspection(normalizedPath string) bool {
 	_, ok := containerRemoveRouteFor(normalizedPath)
 	return ok
+}
+
+func matchesLibpodPodPruneInspection(normalizedPath string) bool {
+	return normalizedPath == LibpodPodPrunePath
 }
 
 func matchesContainerArchiveInspection(normalizedPath string) bool {
