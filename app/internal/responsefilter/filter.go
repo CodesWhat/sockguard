@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -2194,6 +2195,13 @@ func rejectResponse(err error) error {
 // object of payload[field]. A missing or null field is fine; any other shape
 // fails closed.
 func redactObjectArrayTypedAddresses(payload map[string]any, field string, keys ...string) error {
+	return mapObjectArray(payload, field, func(object map[string]any) error {
+		redactTypedAddressFields(object, keys...)
+		return nil
+	})
+}
+
+func mapObjectArray(payload map[string]any, field string, fn func(map[string]any) error) error {
 	value, ok := payload[field]
 	if !ok || value == nil {
 		return nil
@@ -2207,18 +2215,52 @@ func redactObjectArrayTypedAddresses(payload map[string]any, field string, keys 
 		if !ok {
 			return fmt.Errorf("%s entry has unexpected type %T", field, item)
 		}
-		redactTypedAddressFields(object, keys...)
+		if err := fn(object); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-// redactPortSummaryIPs blanks Ports[].IP, the host bind address on container
-// list entries. PublicPort and PrivatePort stay: clients build links from them.
-func redactPortSummaryIPs(payload map[string]any) error {
-	return redactObjectArrayTypedAddresses(payload, "Ports", "IP")
+// unspecifyBindAddress replaces a published-port bind address with the
+// unspecified address of the same family. docker/cli only prints
+// host:public->private when the port IP is valid, so "" would collapse every
+// mapping to a bare container port. 0.0.0.0 and :: keep the mapping display
+// and hide which host interface is bound. An empty string is left as the
+// daemon sent it; anything unparseable fails closed.
+func unspecifyBindAddress(object map[string]any, key string) error {
+	value, ok := object[key]
+	if !ok || value == nil {
+		return nil
+	}
+	text, ok := value.(string)
+	if !ok {
+		return fmt.Errorf("%s has unexpected type %T", key, value)
+	}
+	if text == "" {
+		return nil
+	}
+	addr, err := netip.ParseAddr(text)
+	if err != nil {
+		return fmt.Errorf("%s is not an IP address", key)
+	}
+	if addr.Is4() {
+		object[key] = "0.0.0.0"
+	} else {
+		object[key] = "::"
+	}
+	return nil
 }
 
-// redactPortBindingHostIPs blanks HostIp in NetworkSettings.Ports, a map of
+// redactPortSummaryIPs rewrites Ports[].IP, the host bind address on container
+// list entries. PublicPort and PrivatePort stay: clients build links from them.
+func redactPortSummaryIPs(payload map[string]any) error {
+	return mapObjectArray(payload, "Ports", func(port map[string]any) error {
+		return unspecifyBindAddress(port, "IP")
+	})
+}
+
+// redactPortBindingHostIPs rewrites HostIp in NetworkSettings.Ports, a map of
 // "port/proto" to a (possibly null) list of {HostIp, HostPort} bindings.
 func redactPortBindingHostIPs(networkSettings map[string]any) error {
 	portsValue, ok := networkSettings["Ports"]
@@ -2230,7 +2272,10 @@ func redactPortBindingHostIPs(networkSettings map[string]any) error {
 		return fmt.Errorf("NetworkSettings.Ports has unexpected type %T", portsValue)
 	}
 	for port := range ports {
-		if err := redactObjectArrayTypedAddresses(ports, port, "HostIp"); err != nil {
+		err := mapObjectArray(ports, port, func(binding map[string]any) error {
+			return unspecifyBindAddress(binding, "HostIp")
+		})
+		if err != nil {
 			return fmt.Errorf("NetworkSettings.Ports: %w", err)
 		}
 	}

@@ -102,31 +102,40 @@ func TestRedactNetworkTopology_RemainingAddressLeaks(t *testing.T) {
 		{
 			name: "container list Ports",
 			path: "/v1.53/containers/json",
-			body: `[{"Id":"abc","Ports":[{"IP":"192.168.1.10","PrivatePort":80,"PublicPort":8080,"Type":"tcp"},{"PrivatePort":9000,"Type":"tcp"}]}]`,
+			body: `[{"Id":"abc","Ports":[{"IP":"192.168.1.10","PrivatePort":80,"PublicPort":8080,"Type":"tcp"},{"IP":"fd00::5","PrivatePort":80,"PublicPort":8080,"Type":"tcp"},{"IP":"0.0.0.0","PrivatePort":81,"PublicPort":8081,"Type":"tcp"},{"IP":"::","PrivatePort":81,"PublicPort":8081,"Type":"tcp"},{"PrivatePort":9000,"Type":"tcp"}]}]`,
 			check: func(t *testing.T, got any) {
 				ports := got.([]any)[0].(map[string]any)["Ports"].([]any)
 				first := ports[0].(map[string]any)
-				if first["IP"] != "" {
-					t.Errorf("Ports[0].IP = %#v, want empty string", first["IP"])
+				if len(ports) != 5 {
+					t.Fatalf("Ports has %d entries, want 5", len(ports))
+				}
+				for i, want := range []string{"0.0.0.0", "::", "0.0.0.0", "::"} {
+					if got := ports[i].(map[string]any)["IP"]; got != want {
+						t.Errorf("Ports[%d].IP = %#v, want %q", i, got, want)
+					}
 				}
 				if first["PublicPort"] != float64(8080) || first["PrivatePort"] != float64(80) || first["Type"] != "tcp" {
 					t.Errorf("Ports[0] lost non-address fields: %#v", first)
 				}
-				if _, present := ports[1].(map[string]any)["IP"]; present {
-					t.Errorf("Ports[1] gained an IP key")
+				if _, present := ports[4].(map[string]any)["IP"]; present {
+					t.Errorf("Ports[4] gained an IP key")
 				}
 			},
 		},
 		{
 			name: "container inspect NetworkSettings.Ports",
 			path: "/v1.53/containers/abc/json",
-			body: `{"Id":"abc","NetworkSettings":{"Ports":{"80/tcp":[{"HostIp":"192.168.1.10","HostPort":"8080"},{"HostIp":"::","HostPort":"8080"}],"443/tcp":null}}}`,
+			body: `{"Id":"abc","NetworkSettings":{"Ports":{"80/tcp":[{"HostIp":"192.168.1.10","HostPort":"8080"},{"HostIp":"fd00::7","HostPort":"8080"}],"443/tcp":null}}}`,
 			check: func(t *testing.T, got any) {
 				ports := got.(map[string]any)["NetworkSettings"].(map[string]any)["Ports"].(map[string]any)
-				for i, raw := range ports["80/tcp"].([]any) {
-					b := raw.(map[string]any)
-					if b["HostIp"] != "" || b["HostPort"] != "8080" {
-						t.Errorf("80/tcp[%d] = %#v, want HostIp empty and HostPort kept", i, b)
+				bindings := ports["80/tcp"].([]any)
+				if len(bindings) != 2 {
+					t.Fatalf("80/tcp has %d bindings, want 2", len(bindings))
+				}
+				for i, want := range []string{"0.0.0.0", "::"} {
+					b := bindings[i].(map[string]any)
+					if b["HostIp"] != want || b["HostPort"] != "8080" {
+						t.Errorf("80/tcp[%d] = %#v, want HostIp %q and HostPort kept", i, b, want)
 					}
 				}
 				if ports["443/tcp"] != nil {
@@ -144,7 +153,7 @@ func TestRedactNetworkTopology_RemainingAddressLeaks(t *testing.T) {
 				t.Fatalf("ModifyResponse() error = %v", err)
 			}
 			body := readBodyForTest(t, resp)
-			for _, leaked := range []string{"10.0.9.", "10.20.0", "fd00:1", "10.30.0", "192.168.1.10", "10.0.0.0/8"} {
+			for _, leaked := range []string{"10.0.9.", "10.20.0", "fd00:1", "10.30.0", "192.168.1.10", "10.0.0.0/8", "fd00::5", "fd00::7"} {
 				if strings.Contains(string(body), leaked) {
 					t.Errorf("redacted body still contains %q: %s", leaked, body)
 				}
@@ -163,6 +172,9 @@ func TestRedactNetworkTopology_RemainingLeaksRejectBadShapes(t *testing.T) {
 		{"tasks not array", "/v1.53/networks/n", `{"Services":{"a":{"Tasks":{}}}}`},
 		{"pools not array", "/v1.53/info", `{"DefaultAddressPools":{}}`},
 		{"container ports not array", "/v1.53/containers/abc/json", `{"Ports":{}}`},
+		{"port ip not an address", "/v1.53/containers/json", `[{"Ports":[{"IP":"eth0"}]}]`},
+		{"port ip not a string", "/v1.53/containers/json", `[{"Ports":[{"IP":7}]}]`},
+		{"host ip not an address", "/v1.53/containers/abc/json", `{"NetworkSettings":{"Ports":{"80/tcp":[{"HostIp":"nope"}]}}}`},
 		{"settings ports not map", "/v1.53/containers/abc/json", `{"NetworkSettings":{"Ports":[]}}`},
 	}
 	for _, tt := range tests {
