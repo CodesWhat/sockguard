@@ -358,36 +358,85 @@ func (f *Filter) modifyImageHistory(resp *http.Response) error {
 	if !f.opts.RedactContainerEnv {
 		return nil
 	}
+	// No itemFields: Podman's native history spells the key differently from
+	// Docker's (createdBy vs CreatedBy), so each entry is decoded whole and the
+	// key matched case-insensitively.
 	return streamArrayResponse(resp, func(entry map[string]any) error {
-		createdBy, ok := entry["CreatedBy"].(string)
-		if !ok {
-			return nil
-		}
-		if keyword := historyEnvInstruction(createdBy); keyword != "" {
-			entry["CreatedBy"] = keyword + " <redacted>"
+		for key, value := range entry {
+			if !isCreatedByKey(key) {
+				continue
+			}
+			if createdBy, ok := value.(string); ok {
+				entry[key] = redactHistoryCreatedBy(createdBy)
+			}
 		}
 		return nil
-	}, "CreatedBy")
+	})
 }
 
-// historyEnvInstruction returns "ENV" or "ARG" when createdBy is that
-// Dockerfile instruction, tolerating the classic builder's
-// "/bin/sh -c #(nop)" prefix and BuildKit's trailing " # buildkit".
-func historyEnvInstruction(createdBy string) string {
+func isCreatedByKey(key string) bool {
+	return strings.EqualFold(strings.ReplaceAll(key, "_", ""), "createdby")
+}
+
+// redactHistoryCreatedBy hides the values an image build baked into a layer's
+// CreatedBy: ENV and ARG instructions become "ENV <redacted>" / "ARG
+// <redacted>", and the "|N KEY=value ..." build-arg prefix of a RUN layer
+// (classic "|1 K=v /bin/sh -c ..." and BuildKit "RUN |1 K=v /bin/sh -c ...")
+// keeps its keys and command but loses the values. Anything else is returned
+// unchanged.
+func redactHistoryCreatedBy(createdBy string) string {
 	s := strings.TrimSpace(createdBy)
-	s = strings.TrimSpace(strings.TrimSuffix(s, "# buildkit"))
-	if rest, ok := strings.CutPrefix(s, "/bin/sh -c #(nop)"); ok {
-		s = strings.TrimSpace(rest)
+	body := strings.TrimSpace(strings.TrimSuffix(s, "# buildkit"))
+	if rest, ok := strings.CutPrefix(body, "/bin/sh -c #(nop)"); ok {
+		body = strings.TrimSpace(rest)
 	}
 	for _, keyword := range [...]string{"ENV", "ARG"} {
-		if len(s) > len(keyword) && strings.EqualFold(s[:len(keyword)], keyword) {
-			switch s[len(keyword)] {
+		if len(body) > len(keyword) && strings.EqualFold(body[:len(keyword)], keyword) {
+			switch body[len(keyword)] {
 			case ' ', '\t', '\n':
-				return keyword
+				return keyword + " <redacted>"
 			}
 		}
 	}
-	return ""
+
+	// Build-arg prefix: optional "RUN ", then "|N ".
+	prefix := ""
+	rest := s
+	if r, ok := strings.CutPrefix(rest, "RUN "); ok {
+		prefix, rest = "RUN ", r
+	}
+	if len(rest) < 3 || rest[0] != '|' {
+		return createdBy
+	}
+	digits := 1
+	for digits < len(rest) && rest[digits] >= '0' && rest[digits] <= '9' {
+		digits++
+	}
+	if digits == 1 || digits >= len(rest) || rest[digits] != ' ' {
+		return createdBy
+	}
+	count, args := rest[:digits], rest[digits+1:]
+	cmdAt := strings.Index(args, "/bin/sh -c")
+	var argSegment, tail string
+	if cmdAt >= 0 {
+		argSegment, tail = args[:cmdAt], args[cmdAt:]
+	} else {
+		argSegment = args
+	}
+	var keys []string
+	for _, tok := range strings.Fields(argSegment) {
+		if k, _, ok := strings.Cut(tok, "="); ok && k != "" {
+			keys = append(keys, k+"=<redacted>")
+		}
+	}
+	if len(keys) == 0 {
+		keys = []string{"<redacted>"}
+	}
+	out := prefix + count + " " + strings.Join(keys, " ")
+	if tail != "" {
+		out += " " + tail
+	}
+	return out
 }
 
 func (f *Filter) modifyContainerList(resp *http.Response) error {
