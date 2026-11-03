@@ -38,7 +38,15 @@ import (
 //
 // Podman's native pull reports the IDs of the images it pulled in its final
 // stream object. A short name that registries.conf resolved to a registry the
-// computed references do not spell is caught through those IDs.
+// computed references do not spell is caught through those IDs. The names on
+// such an image are removed when the image did not exist before the pull, which
+// a list of the images under the requested reference, taken before the pull,
+// tells. A name on an image that was already there is only reported.
+//
+// A pull by digest has no destination name, and the image it fetches is
+// addressable by repository@digest. That reference is inspected after the pull
+// and removed when its image is another owner's, unless the reference existed
+// before the pull, which is only reported.
 
 const (
 	// imagePullPostCheckTimeout bounds the inspects and untags that follow a
@@ -57,6 +65,13 @@ const (
 	// maxPulledImageIDs the image IDs a libpod pull report is followed for.
 	pullStreamLineLimit = 1 << 20
 	maxPulledImageIDs   = 64
+
+	// maxPrePullImages bounds the images the list taken before a libpod pull
+	// may hold. A longer list is not trusted as a record of what existed, and
+	// the names found by ID after the pull stay report-only.
+	maxPrePullImages = 256
+
+	imagePullPreexistingFormat = "owner policy found another owner's label on %s, which existed before this pull, and left it in place"
 )
 
 // pulledImage is what an image inspect gives the check after a pull.
@@ -66,6 +81,12 @@ type pulledImage struct {
 	repoTags []string
 }
 
+// listedImage is one entry of the list taken before a libpod pull.
+type listedImage struct {
+	id    string
+	names []string
+}
+
 // postPullChecks are the upstream calls the check after a pull makes. All go
 // through the same transport as the proxied request. inspect is not the
 // request-memoized one: the pull has just changed what the names point at.
@@ -73,6 +94,9 @@ type postPullChecks struct {
 	inspect func(ctx context.Context, reference string) (pulledImage, bool, error)
 	untag   func(ctx context.Context, reference string, libpod, force bool) error
 	retag   func(ctx context.Context, imageID, reference string, libpod bool) error
+	// list returns the images whose names match a reference, or an error when
+	// the answer is longer than maxPrePullImages or cannot be read.
+	list func(ctx context.Context, reference string) ([]listedImage, error)
 }
 
 func refsImageDestinations(refs *ownershipRequestReferences) *imageDestinationReferences {
@@ -85,7 +109,7 @@ func refsImageDestinations(refs *ownershipRequestReferences) *imageDestinationRe
 // isImagePullDestinations reports whether refs came from a pull, and whether
 // from Podman's native route.
 func isImagePullDestinations(refs *imageDestinationReferences) (pull, libpod bool) {
-	if refs == nil || len(refs.destinations) == 0 {
+	if refs == nil || (len(refs.destinations) == 0 && len(refs.digests) == 0) {
 		return false, false
 	}
 	switch refs.route {
@@ -232,7 +256,40 @@ type pullCheck struct {
 	// handled holds the names a removal was attempted on.
 	handled map[string]struct{}
 	lines   []string
+	// preIDs are the image IDs the list taken before a libpod pull held, bare
+	// of any "sha256:" prefix. preKnown is false when that list could not be
+	// taken, and every image is then treated as one that was already there.
+	preIDs   map[string]struct{}
+	preKnown bool
 }
+
+// namesRequestedReference reports whether name is the requested reference
+// spelled out by a registry: the same tag, and a repository the requested one
+// is a path suffix of. It is how libimage reads the reference filter of its
+// list, and what a name registries.conf resolved a short name to looks like.
+func namesRequestedReference(refs *imageDestinationReferences, name string) bool {
+	nameRepo, nameTag, ok := splitNameTag(name)
+	if !ok {
+		return false
+	}
+	for _, dest := range refs.destinations {
+		repo, tag, ok := splitNameTag(dest.target)
+		if ok && tag == nameTag && (nameRepo == repo || strings.HasSuffix(nameRepo, "/"+repo)) {
+			return true
+		}
+	}
+	return false
+}
+
+func splitNameTag(ref string) (repo, tag string, ok bool) {
+	colon := strings.LastIndex(ref, ":")
+	if colon <= strings.LastIndex(ref, "/") {
+		return "", "", false
+	}
+	return ref[:colon], ref[colon+1:], true
+}
+
+func bareImageID(id string) string { return strings.TrimPrefix(id, "sha256:") }
 
 func (c *pullCheck) foreign(labels map[string]string) bool {
 	value := labels[c.opts.LabelKey]
@@ -288,6 +345,16 @@ func servePullWithOwnerCheck(logger *slog.Logger, next http.Handler, w http.Resp
 			c.before[ref] = image.id
 		}
 	}
+	// A digest reference that already resolves, or whose state cannot be read,
+	// is not this pull's to remove.
+	digestExisted := map[string]bool{}
+	for _, ref := range refs.digests {
+		_, found, err := post.inspect(snapshotCtx, ref)
+		digestExisted[ref] = err != nil || found
+	}
+	if libpod && post.list != nil {
+		c.snapshotLibpodImages(snapshotCtx, refs)
+	}
 	snapshotCancel()
 
 	pw := &pullStreamWriter{ResponseWriter: w}
@@ -303,6 +370,9 @@ func servePullWithOwnerCheck(logger *slog.Logger, next http.Handler, w http.Resp
 	found := map[string]bool{}
 	for _, ref := range names {
 		found[ref] = c.checkReference(ctx, ref)
+	}
+	for _, ref := range refs.digests {
+		c.checkDigest(ctx, ref, digestExisted[ref])
 	}
 	idChecked := libpod && c.checkReportedImages(ctx, refs, pw.images)
 	if pw.succeeded() && !idChecked {
@@ -331,6 +401,58 @@ func servePullWithOwnerCheck(logger *slog.Logger, next http.Handler, w http.Resp
 		}
 	}
 	pw.Flush()
+}
+
+// snapshotLibpodImages records the IDs of the images under each destination
+// before a libpod pull, and the images the names on them pointed at, so a name
+// the pull moves can be put back. One list that fails or runs past the cap
+// leaves the snapshot unknown.
+func (c *pullCheck) snapshotLibpodImages(ctx context.Context, refs *imageDestinationReferences) {
+	ids := map[string]struct{}{}
+	for _, dest := range refs.destinations {
+		images, err := c.post.list(ctx, dest.target)
+		if err != nil || len(images) > maxPrePullImages {
+			c.logger.WarnContext(ctx, "owner policy could not list the images present before a pull",
+				"reference", logging.SafeString(dest.target), "path", logging.SafeString(c.r.URL.Path))
+			return
+		}
+		for _, image := range images {
+			ids[bareImageID(image.id)] = struct{}{}
+			for _, name := range image.names {
+				if _, held := c.before[name]; !held {
+					c.before[name] = image.id
+				}
+			}
+		}
+	}
+	c.preIDs, c.preKnown = ids, true
+}
+
+// checkDigest inspects the reference a pull by digest named. An image that
+// carries another owner's label, or that cannot be read, is removed under that
+// reference, unless the reference resolved before the pull, which is reported.
+func (c *pullCheck) checkDigest(ctx context.Context, ref string, existed bool) {
+	image, found, err := c.post.inspect(ctx, ref)
+	reason := imagePullForeignLabelReason
+	switch {
+	case err != nil:
+		reason = imagePullUnverifiedReason
+	case !found:
+		return
+	case !c.foreign(image.labels):
+		return
+	}
+	if existed {
+		c.logger.ErrorContext(ctx, "owner policy found a pulled-by-digest image with another owner's label that existed before the pull",
+			"reference", logging.SafeString(ref), "reason", reason, "path", logging.SafeString(c.r.URL.Path))
+		if err != nil {
+			c.report(fmt.Sprintf(imagePullNotVerifiedFormat, ref))
+		} else {
+			c.report(fmt.Sprintf(imagePullPreexistingFormat, ref))
+		}
+		return
+	}
+	c.remove(ctx, ref, reason)
 }
 
 // checkReference inspects one reference a pull wrote and, when its image is
@@ -385,7 +507,9 @@ func (c *pullCheck) remove(ctx context.Context, ref, reason string) {
 // references do not spell. On a foreign image, the names it carries that are
 // computed destinations (or their localhost/ forms) were written by this pull
 // and are removed. Any other name on it is not this pull's to remove, and is
-// reported. It returns whether any reported image resolved.
+// reported, unless the image did not exist before the pull, when the names on
+// it are this pull's and are removed too. It returns whether any reported image
+// resolved.
 func (c *pullCheck) checkReportedImages(ctx context.Context, refs *imageDestinationReferences, ids []string) bool {
 	ours := map[string]struct{}{}
 	for _, dest := range refs.destinations {
@@ -424,7 +548,9 @@ func (c *pullCheck) checkReportedImages(ctx context.Context, refs *imageDestinat
 			if _, done := c.handled[name]; done {
 				continue
 			}
-			if _, written := ours[name]; written {
+			_, written := ours[name]
+			_, existed := c.preIDs[bareImageID(image.id)]
+			if written || (c.preKnown && !existed && image.id != "" && namesRequestedReference(refs, name)) {
 				c.remove(ctx, name, imagePullForeignLabelReason)
 				continue
 			}
@@ -500,6 +626,51 @@ func (u upstreamInspector) inspectPulledImage(ctx context.Context, reference str
 		return pulledImage{}, false, err
 	}
 	return pulledImage{id: payload.ID, labels: labels, repoTags: payload.RepoTags}, true, nil
+}
+
+// listImages returns the images whose names match a reference, through the
+// native list filtered by reference. A list past maxPrePullImages is an error.
+func (u upstreamInspector) listImages(ctx context.Context, reference string) ([]listedImage, error) {
+	filters, err := json.Marshal(map[string][]string{"reference": {reference}})
+	if err != nil {
+		return nil, fmt.Errorf("build list filters: %w", err)
+	}
+	target := libpodPrefix + "images/json?" + url.Values{"filters": {string(filters)}}.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker"+target, nil) // #nosec G704 -- the filter is JSON built from a name this layer already parsed against the image reference grammar.
+	if err != nil {
+		return nil, fmt.Errorf("build list images request: %w", err)
+	}
+	resp, err := u.client.Do(req) // #nosec G704 -- the inspector client targets the local container-engine socket, not the URL host.
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("list images %q: upstream returned %s", reference, resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, pulledImageInspectLimit+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > pulledImageInspectLimit {
+		return nil, fmt.Errorf("list images %q: response exceeds %d bytes", reference, pulledImageInspectLimit)
+	}
+	var payload []struct {
+		ID       string   `json:"Id"`
+		Names    []string `json:"Names"`
+		RepoTags []string `json:"RepoTags"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, err
+	}
+	if len(payload) > maxPrePullImages {
+		return nil, fmt.Errorf("list images %q: %d images, over the %d the check follows", reference, len(payload), maxPrePullImages)
+	}
+	images := make([]listedImage, 0, len(payload))
+	for _, entry := range payload {
+		images = append(images, listedImage{id: entry.ID, names: append(entry.Names, entry.RepoTags...)})
+	}
+	return images, nil
 }
 
 // pulledImageInspectLimit bounds an image inspect body read after a pull.
