@@ -120,6 +120,25 @@ type LibpodContainerCreateOptions struct {
 	// the daemon host. Default false. See denyLogPathReason.
 	AllowLogPath bool
 
+	// AllowedRuntimes allowlists oci_runtime values, mirroring
+	// ContainerCreateOptions.AllowedRuntimes: an empty oci_runtime selects
+	// the daemon default and is always permitted.
+	AllowedRuntimes []string
+
+	// AllowDeviceCgroupRules/AllowedDeviceCgroupRules gate device_cgroup_rule,
+	// and AllowDeviceRequests gates gpus, each mirroring the same-named
+	// ContainerCreateOptions field. There is no structured form for gpus
+	// (the body carries no driver, count or capability sets to match an
+	// AllowedDeviceRequests entry against), so only the blanket opt-in
+	// permits it.
+	AllowDeviceCgroupRules   bool
+	AllowedDeviceCgroupRules []string
+	AllowDeviceRequests      bool
+
+	// DenyUnconfinedSystemPaths denies unmask, the libpod spelling of
+	// systempaths=unconfined. Mirrors ContainerCreateOptions.
+	DenyUnconfinedSystemPaths bool
+
 	// AllowUnifiedCgroupSettings permits a non-empty "unified" map, raw
 	// cgroup v2 knobs written straight into the container's cgroup. Default
 	// false. See denyUnifiedCgroupReason.
@@ -171,6 +190,12 @@ type libpodContainerCreatePolicy struct {
 	allowSystemdMode      bool
 	allowCustomIDMappings bool
 	allowLogPath          bool
+
+	allowedRuntimes           []string
+	allowDeviceCgroupRules    bool
+	allowedDeviceCgroupRules  []string
+	allowDeviceRequests       bool
+	denyUnconfinedSystemPaths bool
 
 	allowUnifiedCgroupSettings bool
 	allowEnvHost               bool
@@ -234,6 +259,11 @@ func newLibpodContainerCreatePolicy(opts LibpodContainerCreateOptions) libpodCon
 		allowSystemdMode:                  opts.AllowSystemdMode,
 		allowCustomIDMappings:             opts.AllowCustomIDMappings,
 		allowLogPath:                      opts.AllowLogPath,
+		allowedRuntimes:                   normalizeStringList(opts.AllowedRuntimes),
+		allowDeviceCgroupRules:            opts.AllowDeviceCgroupRules,
+		allowedDeviceCgroupRules:          canonicalDeviceCgroupAllowlist(opts.AllowedDeviceCgroupRules),
+		allowDeviceRequests:               opts.AllowDeviceRequests,
+		denyUnconfinedSystemPaths:         opts.DenyUnconfinedSystemPaths,
 
 		allowUnifiedCgroupSettings: opts.AllowUnifiedCgroupSettings,
 		allowEnvHost:               opts.AllowEnvHost,
@@ -320,6 +350,15 @@ func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Reques
 	if denyReason := p.denyDeviceReason(createReq.Devices); denyReason != "" {
 		return denyReason, nil
 	}
+	if denyReason := p.denyDeviceReason(createReq.HostDeviceList); denyReason != "" {
+		return strings.Replace(denyReason, "device ", "host_device_list entry ", 1), nil
+	}
+	if len(createReq.DevicesFrom) > 0 {
+		return "libpod container create denied: devices_from is not allowed", nil
+	}
+	if denyReason := p.denyDockerParityReason(createReq); denyReason != "" {
+		return denyReason, nil
+	}
 	if denyReason := capabilityAddDenyReason(createReq.CapAdd, p.allowAllCapabilities, p.allowedCapabilities, "libpod container create"); denyReason != "" {
 		return denyReason, nil
 	}
@@ -383,6 +422,64 @@ func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Reques
 	}
 
 	return "", nil
+}
+
+// denyDockerParityReason holds the libpod spellings of the fields
+// container_create denies or gates to the same posture and, where Docker takes
+// an opt-in, the same opt-in. The reasons are Docker's with the libpod prefix.
+func (p libpodContainerCreatePolicy) denyDockerParityReason(req libpodContainerCreateRequest) string {
+	if len(req.VolumesFrom) > 0 {
+		return "libpod container create denied: VolumesFrom is not allowed"
+	}
+	if strings.TrimSpace(req.CgroupParent) != "" {
+		return "libpod container create denied: custom cgroup parent is not allowed"
+	}
+	if len(req.Groups) > 0 {
+		return "libpod container create denied: supplemental group IDs are not allowed"
+	}
+	if len(req.HostAdd) > 0 {
+		return "libpod container create denied: ExtraHosts is not allowed"
+	}
+	if runtime := strings.TrimSpace(req.OCIRuntime); runtime != "" && !slices.Contains(p.allowedRuntimes, runtime) {
+		return fmt.Sprintf("libpod container create denied: runtime %q is not allowlisted", runtime)
+	}
+	if len(req.DeviceCgroupRule) > 0 {
+		rules := make([]string, 0, len(req.DeviceCgroupRule))
+		for _, rule := range req.DeviceCgroupRule {
+			rules = append(rules, rule.docker())
+		}
+		shared := containerCreatePolicy{
+			allowDeviceCgroupRules:   p.allowDeviceCgroupRules,
+			allowedDeviceCgroupRules: p.allowedDeviceCgroupRules,
+		}
+		if reason := shared.denyCgroupRulesReason(rules); reason != "" {
+			return "libpod " + reason
+		}
+	}
+	if len(req.ResourceLimits.Devices) > 0 {
+		rules := make([]string, 0, len(req.ResourceLimits.Devices))
+		for _, rule := range req.ResourceLimits.Devices {
+			if rule.Allow {
+				rules = append(rules, rule.docker())
+			}
+		}
+		shared := containerCreatePolicy{
+			allowDeviceCgroupRules:   p.allowDeviceCgroupRules,
+			allowedDeviceCgroupRules: p.allowedDeviceCgroupRules,
+		}
+		if len(rules) > 0 {
+			if reason := shared.denyCgroupRulesReason(rules); reason != "" {
+				return "libpod resource_limits.devices: " + reason
+			}
+		}
+	}
+	if len(req.GPUs) > 0 && !p.allowDeviceRequests {
+		return "libpod container create denied: device requests are not allowed"
+	}
+	if p.denyUnconfinedSystemPaths && len(req.Unmask) > 0 {
+		return "libpod container create denied: unmask (systempaths=unconfined equivalent) is not allowed"
+	}
+	return ""
 }
 
 // denyHostNamespaceReason holds netns, pidns, ipcns, userns, utsns and

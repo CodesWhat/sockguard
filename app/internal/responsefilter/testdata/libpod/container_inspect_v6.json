@@ -1,0 +1,78 @@
+{
+  "Id": "3f1c2a9b7d41e8c05a66b0d2f4e9a1c37b58d6e0914a2c7f8e3b5d1a9c0e4f62",
+  "Created": "2026-11-02T10:15:04.123456789Z",
+  "Path": "sleep",
+  "Args": ["600"],
+  "State": {
+    "Status": "running",
+    "Running": true,
+    "Pid": 4242,
+    "ConmonPid": 4240
+  },
+  "Image": "7e0aa2d69a153215c5fabb3a02a4c1b8a1dbc5d1e3b7a0e1c6e5d4f3a2b1c0d9",
+  "ImageName": "docker.io/library/alpine:latest",
+  "Rootfs": "",
+  "ResolvConfPath": "/run/user/1000/containers/overlay-containers/3f1c/userdata/resolv.conf",
+  "HostnamePath": "/run/user/1000/containers/overlay-containers/3f1c/userdata/hostname",
+  "HostsPath": "/run/user/1000/containers/overlay-containers/3f1c/userdata/hosts",
+  "StaticDir": "/home/alice/.local/share/containers/storage/overlay-containers/3f1c/userdata",
+  "OCIConfigPath": "/home/alice/.local/share/containers/storage/overlay-containers/3f1c/userdata/config.json",
+  "OCIRuntime": "crun",
+  "ConmonPidFile": "/run/user/1000/containers/overlay-containers/3f1c/userdata/conmon.pid",
+  "Name": "db-client",
+  "Mounts": [
+    {
+      "Type": "bind",
+      "Source": "/srv/secret",
+      "Destination": "/data",
+      "Driver": "",
+      "Mode": "",
+      "Options": ["rbind"],
+      "RW": true,
+      "Propagation": "rprivate"
+    }
+  ],
+  "Config": {
+    "Hostname": "3f1c2a9b7d41",
+    "Domainname": "",
+    "User": "",
+    "Env": [
+      "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+      "DB_PASSWORD=hunter2",
+      "HOME=/root"
+    ],
+    "Cmd": ["sleep", "600"],
+    "Image": "docker.io/library/alpine:latest",
+    "Labels": {
+      "owner": "team-a"
+    },
+    "CreateCommand": [
+      "podman",
+      "run",
+      "-d",
+      "--name",
+      "db-client",
+      "-e",
+      "DB_PASSWORD=hunter2",
+      "-v",
+      "/srv/secret:/data",
+      "alpine",
+      "sleep",
+      "600"
+    ],
+    "Secrets": [
+      {
+        "Name": "db-credential",
+        "ID": "0b6e5c1f9a",
+        "UID": 0,
+        "GID": 0,
+        "Mode": 292
+      }
+    ],
+    "Umask": "0022"
+  },
+  "HostConfig": {
+    "Binds": ["/srv/secret:/data:rw,rprivate,rbind"],
+    "NetworkMode": "pasta"
+  }
+}

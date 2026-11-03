@@ -87,6 +87,9 @@ func TestMiddleware_RateLimit_AllowAndDeny(t *testing.T) {
 	if body.Reason != string(ReasonRateLimit) {
 		t.Fatalf("expected reason=%q, got %q", ReasonRateLimit, body.Reason)
 	}
+	if body.Message == "" {
+		t.Fatal("expected non-empty message for the Docker error contract")
+	}
 	if body.RetryAfterSeconds <= 0 {
 		t.Fatalf("expected retry_after_seconds > 0, got %d", body.RetryAfterSeconds)
 	}
@@ -149,6 +152,12 @@ func TestMiddleware_ConcurrencyCap_AllowAndDeny(t *testing.T) {
 	}
 	if body.Reason != string(ReasonConcurrency) {
 		t.Fatalf("expected reason=%q, got %q", ReasonConcurrency, body.Reason)
+	}
+	if body.Message == "" {
+		t.Fatal("expected non-empty message for the Docker error contract")
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Fatal("concurrency 429 should set Retry-After")
 	}
 	if body.RetryAfterSeconds != 0 {
 		t.Fatalf("concurrency 429 should omit retry_after_seconds, got %d", body.RetryAfterSeconds)

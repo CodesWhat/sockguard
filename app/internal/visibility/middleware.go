@@ -1629,10 +1629,12 @@ func decodeResourceDetails(body io.Reader, kind dockerresource.Kind) (*resourceD
 	switch kind {
 	case dockerresource.KindContainer:
 		var payload struct {
-			Name   string   `json:"Name"`
-			Names  []string `json:"Names"`
-			Image  string   `json:"Image"`
-			Config struct {
+			Name      string   `json:"Name"`
+			Names     []string `json:"Names"`
+			Image     string   `json:"Image"`
+			ImageName string   `json:"ImageName"`
+			Config    struct {
+				Image  string            `json:"Image"`
 				Labels map[string]string `json:"Labels"`
 			} `json:"Config"`
 		}
@@ -1645,7 +1647,7 @@ func decodeResourceDetails(body io.Reader, kind dockerresource.Kind) (*resourceD
 		}
 		return &resourceDetails{
 			labels: payload.Config.Labels,
-			meta:   &resourceMeta{names: names, image: payload.Image},
+			meta:   &resourceMeta{names: names, image: inspectContainerImageRef(payload.Config.Image, payload.ImageName, payload.Image)},
 		}, nil
 	case dockerresource.KindImage:
 		var payload struct {
@@ -1673,13 +1675,34 @@ func decodeResourceDetails(body io.Reader, kind dockerresource.Kind) (*resourceD
 	}
 }
 
+// inspectContainerImageRef picks the image reference image_patterns match on
+// an inspect-shaped container body. Docker and Podman compat inspect set the
+// top-level Image to the image ID (sha256:...) while the container list
+// reports the name, so the name comes from Config.Image (the reference given
+// at create, the same source the list uses) or, for libpod, ImageName. The
+// top-level Image is only a fallback when neither is present. An empty result
+// matches no pattern, so a body with no usable reference stays hidden.
+func inspectContainerImageRef(configImage, imageName, image string) string {
+	if configImage != "" {
+		return configImage
+	}
+	if imageName != "" {
+		return imageName
+	}
+	return image
+}
+
 func decodeResourceMeta(body io.Reader, kind dockerresource.Kind) (*resourceMeta, error) {
 	switch kind {
 	case dockerresource.KindContainer:
 		var payload struct {
-			Name  string   `json:"Name"`
-			Names []string `json:"Names"`
-			Image string   `json:"Image"`
+			Name      string   `json:"Name"`
+			Names     []string `json:"Names"`
+			Image     string   `json:"Image"`
+			ImageName string   `json:"ImageName"`
+			Config    struct {
+				Image string `json:"Image"`
+			} `json:"Config"`
 		}
 		if err := json.NewDecoder(body).Decode(&payload); err != nil {
 			return nil, err
@@ -1688,7 +1711,7 @@ func decodeResourceMeta(body io.Reader, kind dockerresource.Kind) (*resourceMeta
 		if len(names) == 0 && payload.Name != "" {
 			names = []string{payload.Name}
 		}
-		return &resourceMeta{names: names, image: payload.Image}, nil
+		return &resourceMeta{names: names, image: inspectContainerImageRef(payload.Config.Image, payload.ImageName, payload.Image)}, nil
 	case dockerresource.KindImage:
 		var payload struct {
 			RepoTags []string `json:"RepoTags"`

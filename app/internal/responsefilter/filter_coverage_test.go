@@ -387,8 +387,8 @@ func TestModifyServiceInspect_RedactsPayload(t *testing.T) {
 	}
 	vips := nestedSliceForTest(t, got, "Endpoint", "VirtualIPs")
 	vip0, _ := vips[0].(map[string]any)
-	if v, _ := vip0["Addr"].(string); v != "<redacted>" {
-		t.Fatalf("VirtualIPs[0].Addr = %q, want <redacted>", v)
+	if v, ok := vip0["Addr"].(string); !ok || v != "" {
+		t.Fatalf("VirtualIPs[0].Addr = %q, want empty string", v)
 	}
 }
 
@@ -499,8 +499,8 @@ func TestModifySecretList_RedactsData(t *testing.T) {
 	}
 
 	spec, _ := secrets[0]["Spec"].(map[string]any)
-	if v, _ := spec["Data"].(string); v != "<redacted>" {
-		t.Fatalf("Spec.Data = %q, want <redacted>", v)
+	if v, _ := spec["Data"].(string); v != "" {
+		t.Fatalf("Spec.Data = %q, want empty", v)
 	}
 	if v, _ := spec["Name"].(string); v != "mysecret" {
 		t.Fatalf("Spec.Name = %q, want mysecret (unchanged)", v)
@@ -542,8 +542,8 @@ func TestModifySecretInspect_RedactsData(t *testing.T) {
 
 	got := decodeBodyForTest(t, resp)
 	spec, _ := got["Spec"].(map[string]any)
-	if v, _ := spec["Data"].(string); v != "<redacted>" {
-		t.Fatalf("Spec.Data = %q, want <redacted>", v)
+	if v, _ := spec["Data"].(string); v != "" {
+		t.Fatalf("Spec.Data = %q, want empty", v)
 	}
 }
 
@@ -598,8 +598,8 @@ func TestModifyConfigList_RedactsData(t *testing.T) {
 	}
 
 	spec, _ := configs[0]["Spec"].(map[string]any)
-	if v, _ := spec["Data"].(string); v != "<redacted>" {
-		t.Fatalf("Spec.Data = %q, want <redacted>", v)
+	if v, _ := spec["Data"].(string); v != "" {
+		t.Fatalf("Spec.Data = %q, want empty", v)
 	}
 }
 
@@ -749,8 +749,8 @@ func TestRedactSecretPayload_RedactsData(t *testing.T) {
 		t.Fatalf("error: %v", err)
 	}
 	spec, _ := payload["Spec"].(map[string]any)
-	if v, _ := spec["Data"].(string); v != "<redacted>" {
-		t.Fatalf("Data = %q, want <redacted>", v)
+	if v, _ := spec["Data"].(string); v != "" {
+		t.Fatalf("Data = %q, want empty", v)
 	}
 	if v, _ := spec["Name"].(string); v != "mysecret" {
 		t.Fatalf("Name = %q, want unchanged", v)

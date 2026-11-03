@@ -1402,6 +1402,8 @@ func FuzzLibpodContainerCreate(f *testing.F) {
 	f.Add(bytes.Repeat([]byte("a"), maxContainerCreateBodyBytes+1))
 	f.Add([]byte(``))
 	f.Add([]byte(`{"netns":{"nsmode":"container","value":""}}`))
+	f.Add([]byte(`{"pod":"p","devices":[],"host_device_list":[{"path":"/dev/sda"}],"devices_from":["x"]}`))
+	f.Add([]byte(`{"resource_limits":{"devices":[{"allow":true,"type":"a","major":-1,"access":"rwm"}]}}`))
 	f.Add([]byte(`{"unified":{"memory.max":"max"},"env_host":true,"r_limits":[{"type":"RLIMIT_NOFILE","soft":1,"hard":2}],"pod":"p","dependencyContainers":["c"]}`))
 	f.Add([]byte(`{"pod":"p","netns":{"nsmode":"container","value":"c"}}`))
 	f.Add([]byte(`{"Unified":null,"ENV_HOST":false}`))

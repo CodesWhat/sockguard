@@ -340,9 +340,10 @@ func TestPortwingPresetConformance(t *testing.T) {
 			{http.MethodPost, "/exec/abc/resize", false},
 			{http.MethodGet, "/exec/abc/json", false},
 
-			// No network/volume write surface, no build.
+			// Network connect only (drydock multi-network recreate); no other
+			// network/volume write surface, no build.
 			{http.MethodPost, "/networks/create", false},
-			{http.MethodPost, "/networks/abc/connect", false},
+			{http.MethodPost, "/networks/abc/connect", true},
 			{http.MethodDelete, "/networks/abc", false},
 			{http.MethodPost, "/networks/abc/disconnect", false},
 			{http.MethodPost, "/volumes/create", false},
@@ -369,6 +370,7 @@ func TestPortwingPresetConformance(t *testing.T) {
 			{http.MethodPost, "/containers/create", true},
 			{http.MethodGet, "/images/json", true},
 			{http.MethodGet, "/networks", true},
+			{http.MethodPost, "/networks/abc/connect", true},
 			{http.MethodGet, "/volumes", true},
 			{http.MethodGet, "/services", true},
 

@@ -1024,7 +1024,7 @@ handler runs. Where they don't, the libpod field names are pinned separately:
 
 | libpod read | Option | What is redacted |
 |---|---|---|
-| `GET /libpod/containers/{id}/json` | `redact_container_env`, `redact_mount_paths`, `redact_network_topology` | `Config.Env`; `Mounts[].Source`, `HostConfig.Binds`, the daemon storage paths `LogPath` and every value under `GraphDriver.Data`, and the native host paths `Rootfs`, `ResolvConfPath`, `HostnamePath`, `HostsPath`, `StaticDir`, `OCIConfigPath`, `ConmonPidFile`, and `PidFile`; `HostConfig.NetworkMode`, the `NetworkSettings` address block and each `Networks` entry — the remaining fields use Docker's json tags, plus libpod's own `AdditionalMACAddresses` list, which has no compat counterpart |
+| `GET /libpod/containers/{id}/json` | `redact_container_env`, `redact_mount_paths`, `redact_network_topology`, `redact_sensitive_data` | `Config.Env`; `Config.CreateCommand`, the whole `podman run` command line with every `-e` value and `-v` host path in it, under `redact_container_env` or `redact_mount_paths`; `Config.Secrets` under `redact_sensitive_data`; `Mounts[].Source`, `HostConfig.Binds`, the daemon storage paths `LogPath` and every value under `GraphDriver.Data`, and the native host paths `Rootfs`, `ResolvConfPath`, `HostnamePath`, `HostsPath`, `StaticDir`, `OCIConfigPath`, `ConmonPidFile`, and `PidFile`; `HostConfig.NetworkMode`, the `NetworkSettings` address block and each `Networks` entry — the remaining fields use Docker's json tags, plus libpod's own `AdditionalMACAddresses` list, which has no compat counterpart |
 | `GET /libpod/images/{name}/json` | `redact_container_env`, `redact_mount_paths` | `Config.Env` and every value under `GraphDriver.Data`. `*libimage.ImageData`'s `Config` field is `*ociv1.ImageConfig`, whose `Env` carries the identical json tag Docker's compat handler uses, and its `GraphDriver` field is the same `{Name, Data}` shape container inspect redacts, so the same handler runs on both routes. There is no `Mounts`, `HostConfig`, or `NetworkSettings` on this shape, so `redact_network_topology` has nothing to do here. The list route `GET /libpod/images/json` is unaffected — `ImageSummary` has neither field |
 | `GET /libpod/volumes/json`, `GET /libpod/volumes/{name}/json` | `redact_mount_paths` | `Mountpoint`. The list body is a bare array, not Docker's `{"Volumes": [...]}` envelope |
 | `GET /libpod/networks/json`, `GET /libpod/networks/{id}/json`, `GET /libpod/networks/{id}` | `redact_network_topology` | Podman v4 and later: `subnets`, `routes`, `network_dns_servers`, `network_interface`, and inspect's `containers` map. Podman v2.2.1-v3.4.4: the raw CNI plugin's host `bridge` or macvlan `master`; plugin-level and IPAM-nested `dns.nameservers`, `dns.domain`, and `dns.search`; plus IPAM `routes`, `ranges`, static `addresses`, and backward-compatible flat `subnet`, `gateway`, `rangeStart`, and `rangeEnd`. List's top-level and per-plugin `Bytes` fields are removed because they are base64 copies of the complete raw conflist/plugin and would retain the same topology |
@@ -1184,12 +1184,13 @@ land):
   instead of an enforced distinction.
 - Range-overlap analysis for `idmappings` — `allow_custom_id_mappings` is a
   blunt allow/deny gate for this release, not a range-aware check.
-- Response redaction for `GET /libpod/pods/{id}/json`. Pods have no
-  Docker-compat equivalent, so there is no existing handler to route the
-  path to, and `InspectPodData` is not a renamed container body:
-  it spells its bind-mount array as lowercase `mounts` and carries the infra
-  container's network configuration under `InfraConfig`. Under
-  `redact_mount_paths` or `redact_network_topology`, a pod inspect still
+- Field-level response redaction for `GET /libpod/pods/{id}/json` beyond
+  `CreateCommand`. `CreateCommand`, the `podman pod create` command line, is
+  cleared to `[]` under `redact_container_env` or `redact_mount_paths`, like a
+  container's `Config.CreateCommand`. The rest of `InspectPodData` is not a
+  renamed container body: it spells its bind-mount array as lowercase `mounts`
+  and carries the infra container's network configuration under `InfraConfig`.
+  Under `redact_mount_paths` or `redact_network_topology`, a pod inspect still
   returns host bind-mount sources and the infra container's addresses. Owner
   isolation and visibility policy do cover the path, so a caller only sees
   its own pods; what is missing is the field-level rewrite inside a pod it
@@ -1256,9 +1257,22 @@ land):
   tracked as its own follow-up rather than folded in here.
 - Podman remote/SSH transport (`podman --remote` over SSH rather than a
   local/proxied socket) is out of scope.
-- `AllowedRuntimes` has no libpod equivalent — `request_body.container_create.allowed_runtimes`
-  gates the Docker-compat `HostConfig.Runtime` field, but
-  `libpod_container_create` has no matching hook today.
+- `request_body.libpod_container_create.allowed_runtimes` gates `oci_runtime`
+  the way `request_body.container_create.allowed_runtimes` gates
+  `HostConfig.Runtime`. The same block gates the other libpod spellings of
+  fields the compat create refuses: `volumes_from`, `cgroup_parent`, `groups`
+  and `hostadd` are always denied, `device_cgroup_rule`, `gpus` and `unmask`
+  follow `allow_device_cgroup_rules`/`allowed_device_cgroup_rules`,
+  `allow_device_requests` and `deny_unconfined_system_paths`.
+  `host_device_list` (which Podman uses as the device list when the container
+  joins a pod and `devices` is empty) is checked against the same
+  `allowed_devices`/`allow_all_devices` list as `devices`, and any
+  `devices_from` value is denied. `resource_limits.devices` entries with
+  `allow: true` follow `allow_device_cgroup_rules`/`allowed_device_cgroup_rules`
+  like `device_cgroup_rule`; `allow: false` entries always pass. A client that
+  passes `--volumes-from`, `--cgroup-parent`, `--group-add` or `--add-host`
+  through an allowed `/libpod/containers/create` is now denied, as it already
+  was through `/containers/create`.
 - **There is no owner-scoped form of the collection stats reads to offer you.**
   `GET /libpod/containers/stats` and `GET /libpod/pods/stats` are refused
   outright under owner isolation or a visibility policy, so a single-tenant

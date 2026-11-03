@@ -279,6 +279,12 @@ func TestMiddleware_GlobalConcurrency_LowProfileHitsPriorityFloor(t *testing.T) 
 	if body.Reason != string(ReasonPriorityFloor) {
 		t.Fatalf("expected reason=%q, got %q", ReasonPriorityFloor, body.Reason)
 	}
+	if body.Message == "" {
+		t.Fatal("expected non-empty message for the Docker error contract")
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Fatal("priority-floor 429 should set Retry-After")
+	}
 
 	for range 5 {
 		release <- struct{}{}

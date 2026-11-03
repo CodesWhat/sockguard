@@ -42,7 +42,7 @@ jobs:
       #   release-assets.githubusercontent.com: that same tarball, current host
       #   *.actions.githubusercontent.com: Actions runtime and log upload
       - name: Harden Runner
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -250,7 +250,7 @@ jobs:
       #   *.actions.githubusercontent.com: Upload release notes, plus the
       #     Actions runtime and log upload
       - name: Harden Runner
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -400,7 +400,7 @@ jobs:
       #   *.actions.githubusercontent.com: Download release notes, the OIDC token
       #     endpoint keyless signing and attestation need, and the runtime
       - name: Harden Runner
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -546,7 +546,7 @@ jobs:
         run: cosign initialize
 
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94  # v7.2.3
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de  # v7.3.0
         with:
           distribution: goreleaser
           version: ${{ env.GORELEASER_VERSION }}
@@ -648,7 +648,7 @@ jobs:
       #   *.actions.githubusercontent.com: the OIDC endpoint keyless signing
       #     needs, the cache results receiver, and the Actions runtime
       - name: Harden Runner
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1113,7 +1113,7 @@ jobs:
 
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1653,7 +1653,7 @@ jobs:
       #     GitHub TUF root and the attestation bundle it then fetches
       #   *.actions.githubusercontent.com: Actions runtime and log upload
       - name: Harden Runner
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1789,7 +1789,7 @@ jobs:
       #   grype.anchore.io: grype's vulnerability database download
       #   *.actions.githubusercontent.com: Actions runtime and log upload
       - name: Harden Runner
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -1883,7 +1883,7 @@ jobs:
 
       - name: Upload Grype SARIF to code scanning
         if: always() && github.event.repository.visibility == 'public'
-        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d  # v4.38.3
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee  # v4.39.0
         with:
           sarif_file: ${{ steps.grype.outputs.sarif }}
           category: grype-release-${{ matrix.slug }}
@@ -1952,7 +1952,7 @@ jobs:
       #     Resolve the published manifest-list digest
       #   *.actions.githubusercontent.com: Actions runtime and log upload
       - name: Harden Runner
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: block
           allowed-endpoints: >

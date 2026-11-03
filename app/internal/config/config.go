@@ -323,6 +323,17 @@ type UpstreamConfig struct {
 	// values bypass Viper's env-emptiness gate. Prefer "off" in both
 	// channels.
 	RequestTimeout string `mapstructure:"request_timeout"`
+	// ResponseHeaderTimeout bounds how long sockguard waits for the daemon's
+	// response headers on ordinary requests, as a Go duration string (e.g.
+	// "30s"). Default is "30s", the value that was hard-coded before this field
+	// existed. Set "off" to disable the deadline. Container stop/restart (Docker
+	// and libpod), the prune endpoints, /system/df and the other long-lived
+	// endpoints skip it, because the daemon sends no headers until that work
+	// finishes. Any other value must parse as a positive Go duration; unlike
+	// RequestTimeout there is no legacy empty-string spelling, so an empty value
+	// is rejected. Reload-immutable: it is bound into the upstream transport at
+	// startup.
+	ResponseHeaderTimeout string `mapstructure:"response_header_timeout"`
 	// HijackInactivityTimeout bounds how long a hijacked connection (docker
 	// attach, exec start) may sit idle in either direction — no bytes read
 	// or written — before sockguard tears it down, as a Go duration string
@@ -383,6 +394,12 @@ type UpstreamConfig struct {
 // fails validation.
 func (u UpstreamConfig) RequestTimeoutDisabled() bool {
 	return u.RequestTimeout == "" || u.RequestTimeout == "off"
+}
+
+// ResponseHeaderTimeoutDisabled reports whether the response-header deadline
+// is explicitly disabled with the "off" sentinel (exact case).
+func (u UpstreamConfig) ResponseHeaderTimeoutDisabled() bool {
+	return u.ResponseHeaderTimeout == "off"
 }
 
 // UpstreamEndpoint is one daemon in an ordered failover set.
@@ -744,6 +761,17 @@ type LibpodContainerCreateRequestBodyConfig struct {
 	// Same name as container_create.allow_log_path, and neither opens the
 	// other's route. Default false.
 	AllowLogPath bool `mapstructure:"allow_log_path"`
+
+	// AllowedRuntimes, AllowDeviceCgroupRules, AllowedDeviceCgroupRules,
+	// AllowDeviceRequests and DenyUnconfinedSystemPaths are the libpod
+	// spellings of the same-named container_create fields, gating
+	// oci_runtime, device_cgroup_rule, gpus and unmask. Defaults match the
+	// Docker side: runtimes, cgroup rules and gpus denied, unmask allowed.
+	AllowedRuntimes           []string `mapstructure:"allowed_runtimes"`
+	AllowDeviceCgroupRules    bool     `mapstructure:"allow_device_cgroup_rules"`
+	AllowedDeviceCgroupRules  []string `mapstructure:"allowed_device_cgroup_rules"`
+	AllowDeviceRequests       bool     `mapstructure:"allow_device_requests"`
+	DenyUnconfinedSystemPaths bool     `mapstructure:"deny_unconfined_system_paths"`
 
 	// AllowUnifiedCgroupSettings permits a non-empty "unified" map, raw
 	// cgroup v2 knobs Podman writes straight into the container's cgroup.
@@ -1612,6 +1640,7 @@ func (cfg AdminListenConfig) Configured() bool {
 // When Enabled, sockguard watches the config file via fsnotify and reloads
 // on SIGHUP. A reload that mutates any immutable field — listen.*, server.*,
 // upstream.socket, upstream.endpoints, upstream.failover, upstream.flavor,
+// upstream.response_header_timeout,
 // log.*, health.*, metrics.*, admin.* — is rejected; the running config is
 // preserved and the operator must restart sockguard to pick the new values up.
 // (The endpoint set, failover policy, and flavor are pinned because the
@@ -1767,6 +1796,9 @@ func Defaults() Config {
 			// "off" (or the legacy "") to disable. See RequestTimeout's doc
 			// comment for the full migration story.
 			RequestTimeout: "60s",
+			// 30s matches the transport value that was hard-coded before
+			// response_header_timeout existed; see its doc comment.
+			ResponseHeaderTimeout: "30s",
 			// 10m matches hijack.go's pre-existing hardcoded default; see
 			// HijackInactivityTimeout's doc comment.
 			HijackInactivityTimeout: "10m",

@@ -29,6 +29,14 @@ health:
   enabled: true
   path: /health
 
+# Traefik routes to container IP addresses, so it needs the real values from
+# /containers/json and /containers/{id}/json. Network-topology redaction would
+# blank them (and moby-typed clients cannot route to an empty address anyway),
+# so turn it off for this preset. Mount, env and sensitive-data redaction stay
+# at their defaults.
+response:
+  redact_network_topology: false
+
 rules:
   # Health and metadata
   - match: { method: GET, path: "/_ping" }
