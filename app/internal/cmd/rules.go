@@ -199,6 +199,19 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	{method: http.MethodPost, path: "/libpod/play/kube"},
 	{method: http.MethodPost, path: "/libpod/kube/play"},
 	{method: http.MethodPost, path: "/libpod/kube/apply"},
+	// Kube down (DELETE on the play/kube spelling and its kube/play alias)
+	// takes the same unparsed Kubernetes YAML in its body and tears down every
+	// pod it names, plus the secrets it lists and, with force, its named
+	// volumes. The remove gates (allow_force, allow_remove_volumes) cover the
+	// containers and anonymous volumes, but nothing reads the YAML, so a rule
+	// admitting it needs the same acknowledgment as kube play.
+	{method: http.MethodDelete, path: "/libpod/play/kube"},
+	{method: http.MethodDelete, path: "/libpod/kube/play"},
+	// Quadlet install writes a unit file the caller supplies; the file can
+	// carry Secret= and other references nothing parses. Owner isolation
+	// already refuses the route, so this is the path with no ownership
+	// configured. It has no case in bodyInspectionConfiguredForEndpoint.
+	{method: http.MethodPost, path: "/libpod/quadlets"},
 	{method: http.MethodPost, path: "/libpod/manifests/create"},
 	{
 		method:          http.MethodPost,

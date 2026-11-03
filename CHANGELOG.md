@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Quadlet install and kube down join the blind-write catalog.** `POST /libpod/quadlets`, `DELETE /libpod/play/kube` and its `DELETE /libpod/kube/play` alias carry a body Sockguard never parses (a quadlet unit file, or the Kubernetes YAML a kube down tears down), but they were not in the startup catalog, so a rule allowing them passed without `insecure_allow_body_blind_writes`. Startup now refuses an allow rule that reaches either one until that flag is set. Configs that already allow these routes fail validation until they add it.
+
 ## [3.0.0-rc.6] - 2026-11-03
 
 This candidate carries v2.4.4 (the client compatibility sweep and libpod create hardening). It narrows `response.redact_network_topology` to addresses, so opaque IDs pass through and a mount `Source` is kept only for named mount types, with `MaskedPaths` and `ReadonlyPaths` untouched. It adds libpod gates for `unified`, `env_host` and `pod`, reports unknown config keys, and adds compose examples for Homepage, Homarr, Diun and Autoheal. The Helm chart will publish as a signed OCI artifact from v3.0.0, and the hand-rolled star chart is removed. These are candidate-only behavior changes, so the 14-day bake window restarts: GA is no earlier than 2026-11-17. Fresh exact-source soak, TLS/security and published-image conformance are required before GA.

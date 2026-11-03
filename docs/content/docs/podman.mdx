@@ -434,7 +434,9 @@ built from an image.
 ## The Uninspected Blind-Write Surface: `play/kube` and Manifests
 
 `POST /libpod/play/kube` (and its identically-handled `/libpod/kube/play`
-alias), `POST /libpod/kube/apply`, and `POST`/`PUT /libpod/manifests/*` have
+alias), `POST /libpod/kube/apply`, kube down (`DELETE /libpod/play/kube` and
+its `DELETE /libpod/kube/play` alias), `POST /libpod/quadlets` (quadlet
+install), and `POST`/`PUT /libpod/manifests/*` have
 **no** request-body inspector in this release — full Kubernetes-YAML/PodSpec
 modeling is out of scope for this release. Admitting any of them requires the same
 `insecure_allow_body_blind_writes: true` acknowledgment that covers
