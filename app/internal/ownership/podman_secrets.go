@@ -62,6 +62,9 @@ func denyPodmanCompatSecretList(w http.ResponseWriter, r *http.Request) {
 // arrived, before the stamp rewrites it.
 func mutateLibpodSecretCreateOwnershipRequest(r *http.Request, opts Options) (*ownershipRequestReferences, error) {
 	refs := libpodSecretCreateOwnershipReferences(r.URL.Query())
+	if name, _, ok := queryparam.Scalar(r.URL.Query(), "name"); ok && refuseShadowableSecretName(name, opts) != "" {
+		refs = &ownershipRequestReferences{denyReason: podmanSecretCreateDenyShadowableName}
+	}
 	if err := addOwnerLabelToBuildQuery(r, opts.LabelKey, opts.Owner); err != nil {
 		return nil, err
 	}
@@ -333,4 +336,28 @@ func refuseShadowableSecretName(identifier string, opts Options) string {
 		return ""
 	}
 	return "owner policy denied access to a secret named like a secret ID prefix; name it by its full ID or a name that isn't all hex digits"
+}
+
+const podmanSecretCreateDenyShadowableName = "owner policy denied secret create with a name that could be a secret ID prefix; use a name that isn't all lowercase hex digits, or 25 characters or more"
+
+// mutateCompatSecretCreateOwnershipRequest stamps the owner label on
+// POST /secrets/create and, on a Podman upstream, refuses a name that
+// refuseShadowableSecretName would refuse on every later request, since the
+// secret couldn't be addressed by name afterwards.
+func mutateCompatSecretCreateOwnershipRequest(r *http.Request, opts Options) (*ownershipRequestReferences, error) {
+	refs := &ownershipRequestReferences{}
+	err := mutateJSONBody(r, func(decoded map[string]any) error {
+		labels, err := filter.NestedObject(decoded, "Labels")
+		if err != nil {
+			return err
+		}
+		labels[opts.LabelKey] = opts.Owner
+		for _, name := range filter.FoldedStrings(decoded, "Name") {
+			if refuseShadowableSecretName(name, opts) != "" {
+				refs.denyReason = podmanSecretCreateDenyShadowableName
+			}
+		}
+		return nil
+	})
+	return refs, err
 }

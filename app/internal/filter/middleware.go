@@ -743,7 +743,7 @@ func (p runtimePolicy) inspectAllowedRequestDetail(logger *slog.Logger, r *http.
 					return rejection.reason, code, rejection.status, rejection.hard
 				}
 				logRequestError(logger, r, slog.LevelError, policy.errorLogMessage, err)
-				return policy.denyReasonOnError, reasonCodeRequestBodyInspectionFailed, http.StatusForbidden, false
+				return policy.denyReasonOnError, reasonCodeRequestBodyInspectionFailed, http.StatusForbidden, isHardInspectionError(err)
 			}
 			if denyReason != "" {
 				return denyReason, reasonCodeRequestBodyPolicyDenied, http.StatusForbidden, false

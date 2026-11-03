@@ -247,6 +247,8 @@ volume as much as for a host path. A relative directory is refused whatever
 the list holds, because Podman resolves it under the container's own storage
 directory and `../` walks back out.
 
+On a Podman upstream, secret operations that name a secret by a short ID prefix are refused: a request to `/secrets/{name}` or `/libpod/secrets/{name}`, or a create, whose name is lowercase hex of fewer than 25 characters gets a `403` under owner isolation. Use the full 25-character ID, or a secret name with a non-hex character (`db-password`, not `cafe`).
+
 A named `volumes` entry can carry host paths in a second way. When the volume
 doesn't exist, Podman creates it and turns every option that starts with
 `volume-opt` into a driver option, so `volume-opt=type=none`,

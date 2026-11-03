@@ -181,26 +181,32 @@ func secretPrefixChain(t *testing.T, daemon http.Handler) string {
 	})
 }
 
-// TestServeChainLibpodSecretCreateIgnoresIDPrefixOracle creates secrets with
-// replace=true whose names are only a prefix of another owner's secret ID.
+// TestServeChainLibpodSecretCreateIgnoresIDPrefixOracle creates secrets whose
+// names are lowercase hex of fewer than 25 characters, some of them a prefix of
+// another owner's secret ID.
 //
-// Store matches an exact name or ID, so none of these collide with anything and
-// Podman just creates them. The owner lookup goes through Lookup, which also
-// resolves a unique ID prefix, so a name that was a prefix of team-b's ID got a
-// 403 and one that was a prefix of two IDs got a 502, while a name matching
-// nothing was created. The three answers told team-a which hex strings begin a
-// team-b secret ID. The lookup now accepts a secret only when its ID or name is
-// what the request named, so a prefix-only match reads as absent and all three
-// answer alike.
+// Store matches an exact name or ID, so none of these collide with anything.
+// The owner lookup goes through Lookup, which also resolves a unique ID prefix,
+// so a name that was a prefix of team-b's ID got a 403 and one that was a
+// prefix of two IDs got a 502, while a name matching nothing was created. The
+// three answers told team-a which hex strings begin a team-b secret ID. A name
+// like that can't be addressed afterwards either (path-targeted routes refuse
+// it, see TestServeChainLibpodSecretDeleteNameCannotFallThroughToForeignID), so
+// the create refuses all of them alike. A name that isn't such a string goes
+// through, and a prefix-only match on it reads as absent.
 func TestServeChainLibpodSecretCreateIgnoresIDPrefixOracle(t *testing.T) {
 	tests := []struct {
-		name  string
-		query string
+		name       string
+		query      string
+		wantStatus int
 	}{
-		{"prefix of one foreign ID", "name=b0b0&replace=true"},
-		{"prefix of two foreign IDs", "name=b0b&replace=true"},
-		{"prefix of nothing", "name=d0d0&replace=true"},
-		{"prefix of one foreign ID with ignore", "name=b0b0&ignore=true"},
+		{"prefix of one foreign ID", "name=b0b0&replace=true", http.StatusForbidden},
+		{"prefix of two foreign IDs", "name=b0b&replace=true", http.StatusForbidden},
+		{"prefix of nothing", "name=d0d0&replace=true", http.StatusForbidden},
+		{"prefix of one foreign ID with ignore", "name=b0b0&ignore=true", http.StatusForbidden},
+		{"prefix of one foreign ID without a flag", "name=b0b0", http.StatusForbidden},
+		{"short name with a non-hex letter", "name=b0b0z&replace=true", http.StatusOK},
+		{"name of 25 hex digits nobody holds", "name=d0d0d0d0d0d0d0d0d0d0d0d09&replace=true", http.StatusOK},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -208,8 +214,8 @@ func TestServeChainLibpodSecretCreateIgnoresIDPrefixOracle(t *testing.T) {
 			before := daemon.snapshot()
 			addr := secretPrefixChain(t, daemon)
 			status := secretPrefixChainRequest(t, http.MethodPost, "http://"+addr+"/v5.0.0/libpod/secrets/create?"+tt.query, "x")
-			if status != http.StatusOK {
-				t.Errorf("status = %d, want %d", status, http.StatusOK)
+			if status != tt.wantStatus {
+				t.Errorf("status = %d, want %d", status, tt.wantStatus)
 			}
 			after := daemon.snapshot()
 			for name, secret := range before {

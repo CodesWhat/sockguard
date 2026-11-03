@@ -68,7 +68,7 @@ func TestContainerCreatePodmanNetworkNameReferences(t *testing.T) {
 	decoded := map[string]any{
 		"HostConfig": map[string]any{"NetworkMode": "ingress"},
 		"NetworkingConfig": map[string]any{"EndpointsConfig": map[string]any{
-			"bridge": map[string]any{}, "mine": map[string]any{}, "docker_gwbridge": map[string]any{},
+			"bridge": map[string]any{}, "host": map[string]any{}, "mine": map[string]any{}, "docker_gwbridge": map[string]any{},
 		}},
 	}
 	var got []string
@@ -77,7 +77,6 @@ func TestContainerCreatePodmanNetworkNameReferences(t *testing.T) {
 	}
 	want := []string{
 		"container HostConfig.NetworkMode:ingress",
-		"container NetworkingConfig.EndpointsConfig:bridge",
 		"container NetworkingConfig.EndpointsConfig:docker_gwbridge",
 	}
 	if len(got) != len(want) {

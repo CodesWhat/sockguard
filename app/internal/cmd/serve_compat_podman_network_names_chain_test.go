@@ -57,15 +57,13 @@ func (d *compatNetworkNamesChainDaemon) ServeHTTP(w http.ResponseWriter, r *http
 // Docker-compatible container creates naming a network the Docker modes would
 // have skipped.
 //
-// Owner isolation skipped the names bridge, host, none, ingress and
-// docker_gwbridge on a container create, because on dockerd they're modes or
-// Swarm's own networks. Podman reads a NetworkMode other than its own modes
-// (bridge, none, host, default, private, pasta, slirp4netns, container:, ns:) as
-// a network name, and reads every EndpointsConfig key as one, so there
-// ingress and docker_gwbridge are ordinary names anyone can create, and so are
-// bridge, host and none as endpoint keys. A create joining another owner's
-// network under one of them passed unchecked. On a Podman upstream those
-// names are now looked up, and a name nothing holds goes through as before.
+// Owner isolation skipped ingress and docker_gwbridge on a container
+// create, because on dockerd they're Swarm's own networks. Podman reads them as
+// ordinary names anyone can create, so a create joining another owner's network
+// under one of them passed unchecked. On a Podman upstream they're now looked
+// up, and only a network labeled for a different owner is refused: an unlabeled
+// or missing one passes. bridge, host, none and default are never looked up,
+// since Podman resolves "bridge" to its unlabeled default network.
 func TestServeChainCompatCreateChecksDockerModeNamesOnPodman(t *testing.T) {
 	endpoints := func(name string) string {
 		return `{"Image":"alpine","NetworkingConfig":{"EndpointsConfig":{"` + name + `":{}}}}`
@@ -82,17 +80,23 @@ func TestServeChainCompatCreateChecksDockerModeNamesOnPodman(t *testing.T) {
 	}{
 		{"endpoint ingress held by another owner", true, map[string]string{"ingress": "team-b"}, endpoints("ingress"), http.StatusForbidden},
 		{"endpoint docker_gwbridge held by another owner", true, map[string]string{"docker_gwbridge": "team-b"}, endpoints("docker_gwbridge"), http.StatusForbidden},
-		{"endpoint bridge held by another owner", true, map[string]string{"bridge": "team-b"}, endpoints("bridge"), http.StatusForbidden},
-		{"endpoint host held by another owner", true, map[string]string{"host": "team-b"}, endpoints("host"), http.StatusForbidden},
-		{"endpoint none held by another owner", true, map[string]string{"none": "team-b"}, endpoints("none"), http.StatusForbidden},
 		{"network mode ingress held by another owner", true, map[string]string{"ingress": "team-b"}, mode("ingress"), http.StatusForbidden},
 		{"network mode docker_gwbridge held by another owner", true, map[string]string{"docker_gwbridge": "team-b"}, mode("docker_gwbridge"), http.StatusForbidden},
 		{"endpoint ingress held by the caller", true, map[string]string{"ingress": "team-a"}, endpoints("ingress"), http.StatusCreated},
+		{"endpoint ingress unlabeled", true, map[string]string{"ingress": ""}, endpoints("ingress"), http.StatusCreated},
 		{"endpoint ingress nobody holds", true, map[string]string{}, endpoints("ingress"), http.StatusCreated},
-		{"endpoint bridge nobody holds", true, map[string]string{}, endpoints("bridge"), http.StatusCreated},
-		{"network mode bridge is Podman's own mode", true, map[string]string{"bridge": "team-b"}, mode("bridge"), http.StatusCreated},
-		{"network mode default is Podman's own mode", true, map[string]string{"default": "team-b"}, mode("default"), http.StatusCreated},
-		{"network mode none is Podman's own mode", true, map[string]string{"none": "team-b"}, mode("none"), http.StatusCreated},
+		// Podman resolves the name "bridge" to its unlabeled default network,
+		// and the Docker CLI sends that endpoint key on every default-mode
+		// create. Neither is ever looked up.
+		{"endpoint bridge resolving to the unlabeled default network", true, map[string]string{"bridge": ""}, endpoints("bridge"), http.StatusCreated},
+		{"endpoint bridge named for another owner", true, map[string]string{"bridge": "team-b"}, endpoints("bridge"), http.StatusCreated},
+		{"endpoint host", true, map[string]string{"host": "team-b"}, endpoints("host"), http.StatusCreated},
+		{"endpoint none", true, map[string]string{"none": "team-b"}, endpoints("none"), http.StatusCreated},
+		{"endpoint default", true, map[string]string{"default": "team-b"}, endpoints("default"), http.StatusCreated},
+		{"network mode bridge on the unlabeled default network", true, map[string]string{"bridge": ""}, mode("bridge"), http.StatusCreated},
+		{"network mode default", true, map[string]string{"default": "team-b"}, mode("default"), http.StatusCreated},
+		{"network mode none", true, map[string]string{"none": "team-b"}, mode("none"), http.StatusCreated},
+		{"docker CLI default-mode create", true, map[string]string{"bridge": ""}, `{"Image":"alpine","HostConfig":{"NetworkMode":"bridge"},"NetworkingConfig":{"EndpointsConfig":{"bridge":{}}}}`, http.StatusCreated},
 		{"endpoint ingress on dockerd is Swarm's", false, map[string]string{"ingress": "team-b"}, endpoints("ingress"), http.StatusCreated},
 	}
 	for _, tt := range tests {

@@ -35,11 +35,12 @@ func newRequestRejectionErrorWithCode(status int, reasonCode, reason string) err
 }
 
 // asHardRequestRejection returns err as a hard rejection when it is a
-// requestRejectionError, and err unchanged otherwise.
+// requestRejectionError, and wrapped as a hardInspectionError otherwise, so an
+// inspector failure such as a body read error is hard too.
 func asHardRequestRejection(err error) error {
 	rejection, ok := requestRejectionFromError(err)
 	if !ok {
-		return err
+		return &hardInspectionError{err: err}
 	}
 	rejection.hard = true
 	return &rejection
@@ -51,4 +52,16 @@ func requestRejectionFromError(err error) (requestRejectionError, bool) {
 		return requestRejectionError{}, false
 	}
 	return *target, true
+}
+
+// hardInspectionError marks an inspector failure that is not a rejection
+// (a body read error, say) as one warn and audit rollout must not pass through.
+type hardInspectionError struct{ err error }
+
+func (e *hardInspectionError) Error() string { return e.err.Error() }
+func (e *hardInspectionError) Unwrap() error { return e.err }
+
+func isHardInspectionError(err error) bool {
+	var target *hardInspectionError
+	return errors.As(err, &target)
 }

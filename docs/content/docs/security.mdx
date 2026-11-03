@@ -389,9 +389,9 @@ failed lookup is a `502`. Podman matches the name against secret names and
 full IDs, and so does the lookup. The secret inspect it goes through also
 resolves a unique ID prefix, which Podman's create doesn't, so the lookup
 accepts a secret only when its ID or name is the one the request named and
-reads a prefix-only match as absent. A new secret whose name is a short hex
-string that prefixes another owner's secret ID is created like any other, so
-the answer doesn't reveal which hex strings begin an ID. The check is a lookup
+reads a prefix-only match as absent. On a Podman upstream a create whose name is lowercase hex of fewer than 25
+characters is refused outright, so the answer doesn't reveal which hex strings
+begin an ID. The check is a lookup
 before the write, so another owner's proxy, or anything writing to the socket
 directly, can still create the name in between. One sockguard has one owner, so
 nothing going through the same instance can. A flag counts as set unless Podman would read
@@ -441,7 +441,7 @@ and two deletes of a caller's own secret named after a foreign ID prefix sent at
 once both pass the inspect, which finds the caller's secret by name. The first
 removes it and the second falls through to the other owner's secret. A full
 25-character ID and any name that isn't all hex digits are unaffected, so a
-secret named `cafe` has to be addressed by its ID.
+secret named `cafe` has to be addressed by its ID. A secret create with such a name is refused for the same reason.
 
 `secret_env` is refused whenever it names anything, whoever's secret that is.
 Podman copies a mounted secret into the container once, while it creates it. It
@@ -460,7 +460,7 @@ play reads the secrets its YAML names by name as well, and sockguard doesn't
 parse that YAML, which is one reason it stays behind
 `insecure_allow_body_blind_writes`.
 
-The same boundary applies to references embedded inside container and service payloads, not only the resource named by the URL. Container creates authorize the requested image, named volumes, custom network mode, every endpoint-config network, and every `container:<ref>` namespace-sharing target. A Podman-native container create also authorizes the pod it joins and the secrets it mounts. On a Podman upstream the Docker-compatible create also looks up a network named `ingress` or `docker_gwbridge` in `HostConfig.NetworkMode`, and one named `bridge`, `host`, `none`, `ingress` or `docker_gwbridge` as an endpoint-config key, because Podman reads those as ordinary network names; a name nothing holds goes through. Service creates and updates authorize the task image, named volumes, networks, secrets, and configs. A foreign label or unresolved workload dependency is denied before Docker sees the request; only an image that successfully resolves and is genuinely unlabeled can use `allow_unowned_images`. Create new volumes, networks, secrets, and configs through their owner-stamping endpoints before attaching them to a workload. This turns one shared Docker socket into N isolated identity views without leaving workload dependencies as an ownership side door.
+The same boundary applies to references embedded inside container and service payloads, not only the resource named by the URL. Container creates authorize the requested image, named volumes, custom network mode, every endpoint-config network, and every `container:<ref>` namespace-sharing target. A Podman-native container create also authorizes the pod it joins and the secrets it mounts. On a Podman upstream the Docker-compatible create also looks up a network named `ingress` or `docker_gwbridge` in `HostConfig.NetworkMode` or as an endpoint-config key, because Podman reads those as ordinary network names. Only a network labeled for a different owner is refused; an unlabeled or missing one goes through. `bridge`, `host`, `none` and `default` are never looked up. Service creates and updates authorize the task image, named volumes, networks, secrets, and configs. A foreign label or unresolved workload dependency is denied before Docker sees the request; only an image that successfully resolves and is genuinely unlabeled can use `allow_unowned_images`. Create new volumes, networks, secrets, and configs through their owner-stamping endpoints before attaching them to a workload. This turns one shared Docker socket into N isolated identity views without leaving workload dependencies as an ownership side door.
 
 Network membership changes apply that boundary to both sides of the relationship. On Docker-compatible and native libpod connect/disconnect requests, Sockguard checks the network named by the URL and the body `Container` reference. A foreign resource is denied, and an unresolved body container fails closed before the daemon receives the write. The ownership check reads and restores the bounded request body, so an allowed request reaches the daemon unchanged.
 

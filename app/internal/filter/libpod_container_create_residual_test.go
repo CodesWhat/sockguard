@@ -1,6 +1,9 @@
 package filter
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -36,6 +39,34 @@ func TestLibpodContainerCreateResidualFieldGates(t *testing.T) {
 			got := inspectLibpod(t, newLibpodContainerCreatePolicy(tc.opts), []byte(tc.body))
 			if got != tc.want {
 				t.Fatalf("reason = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLibpodCreateUnifiedCannotClearRequiredLimits(t *testing.T) {
+	opts := LibpodContainerCreateOptions{AllowUnifiedCgroupSettings: true, AllowSystemdMode: true, RequireMemoryLimit: true, RequirePidsLimit: true, RequireCPULimitHard: true}
+	tests := []struct {
+		name string
+		body string
+		deny string
+	}{
+		{"limits kept", `{"image":"alpine","resource_limits":{"memory":{"limit":1048576},"pids":{"limit":10},"cpu":{"quota":50000}}}`, ""},
+		{"memory cleared by unified", `{"image":"alpine","resource_limits":{"memory":{"limit":1048576},"pids":{"limit":10},"cpu":{"quota":50000}},"unified":{"memory.max":"max"}}`, "a memory limit is required"},
+		{"pids cleared by unified", `{"image":"alpine","resource_limits":{"memory":{"limit":1048576},"pids":{"limit":10},"cpu":{"quota":50000}},"unified":{"pids.max":"max"}}`, "a PIDs limit is required"},
+		{"cpu cleared by unified", `{"image":"alpine","resource_limits":{"memory":{"limit":1048576},"pids":{"limit":10},"cpu":{"quota":50000}},"unified":{"cpu.max":"max 100000"}}`, "a hard CPU cap is required"},
+		{"limits supplied by unified", `{"image":"alpine","unified":{"memory.max":"1048576","pids.max":"10","cpu.max":"50000 100000"}}`, ""},
+		{"memory.high does not clear", `{"image":"alpine","resource_limits":{"memory":{"limit":1048576},"pids":{"limit":10},"cpu":{"quota":50000}},"unified":{"memory.high":"1"}}`, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/libpod/containers/create", strings.NewReader(strings.Replace(tt.body, `"image":"alpine",`, `"image":"alpine","systemd":"false",`, 1)))
+			reason, err := newLibpodContainerCreatePolicy(opts).inspect(testLogger(), req, "/libpod/containers/create")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (tt.deny == "") != (reason == "") || (tt.deny != "" && !strings.Contains(reason, tt.deny)) {
+				t.Errorf("reason = %q, want %q", reason, tt.deny)
 			}
 		})
 	}

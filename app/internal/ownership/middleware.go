@@ -141,6 +141,9 @@ type ownershipRequestReferences struct {
 	// reference, one the daemon can't resolve is no denial: the request then
 	// creates it. See checkExistingOwnershipReferences.
 	existingResources []embeddedOwnershipReference
+	// existingSharedResources are existingResources an unlabeled resource may
+	// satisfy, so only one labeled for a different owner is refused.
+	existingSharedResources []embeddedOwnershipReference
 	// libpodCreate carries what a libpod container or pod create names besides
 	// its image, its pod and its namespace targets: other containers,
 	// networks, named volumes and image volumes, or the reason the body is
@@ -385,7 +388,9 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 		return mutateContainerCreateOwnershipBody(r, opts.LabelKey, opts.Owner, opts.UpstreamFlavor)
 	case r.Method == http.MethodPost && isNetworkMembershipChangePath(normPath):
 		return extractNetworkMembershipOwnershipReferences(r)
-	case r.Method == http.MethodPost && (normPath == "/networks/create" || normPath == "/volumes/create" || normPath == "/secrets/create" || normPath == "/configs/create"):
+	case r.Method == http.MethodPost && normPath == "/secrets/create":
+		return mutateCompatSecretCreateOwnershipRequest(r, opts)
+	case r.Method == http.MethodPost && (normPath == "/networks/create" || normPath == "/volumes/create" || normPath == "/configs/create"):
 		return nil, addOwnerLabelToBody(r, opts.LabelKey, opts.Owner)
 	case r.Method == http.MethodPost && (normPath == "/services/create" || isServiceUpdatePath(normPath)):
 		return mutateServiceOwnershipBody(r, opts.LabelKey, opts.Owner)
@@ -512,7 +517,15 @@ func allowOwnershipRequestUnprefixed(
 			strictest = verdictAllow
 		}
 
-		verdict, reason, err = checkExistingOwnershipReferences(ctx, inspectResource, refs.existingResources, opts)
+		verdict, reason, err = checkExistingOwnershipReferences(ctx, inspectResource, refs.existingResources, false, opts)
+		if err != nil || verdict.denied() {
+			return verdict, reason, err
+		}
+		if verdict == verdictAllow {
+			strictest = verdictAllow
+		}
+
+		verdict, reason, err = checkExistingOwnershipReferences(ctx, inspectResource, refs.existingSharedResources, true, opts)
 		if err != nil || verdict.denied() {
 			return verdict, reason, err
 		}
@@ -714,6 +727,7 @@ func checkExistingOwnershipReferences(
 	ctx context.Context,
 	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
 	refs []embeddedOwnershipReference,
+	allowUnowned bool,
 	opts Options,
 ) (ownershipVerdict, string, error) {
 	strictest := verdictPassThrough
@@ -732,7 +746,7 @@ func checkExistingOwnershipReferences(
 		if !found {
 			continue
 		}
-		if !ownerMatches(labels, opts.LabelKey, opts.Owner, false) {
+		if !ownerMatches(labels, opts.LabelKey, opts.Owner, allowUnowned) {
 			return verdictDeny, fmt.Sprintf(
 				"owner policy denied access to %s %q referenced by %s",
 				singularResource(ref.kind),
@@ -871,31 +885,31 @@ func mutateContainerCreateOwnershipBody(r *http.Request, labelKey, owner string,
 		refs.namespaceContainers = containerCreateNamespaceRefs(decoded)
 		refs.embeddedResources = containerCreateEmbeddedOwnershipReferences(decoded)
 		if flavor == upstreamflavor.Podman {
-			refs.existingResources = containerCreatePodmanNetworkNameReferences(decoded)
+			refs.existingSharedResources = containerCreatePodmanNetworkNameReferences(decoded)
 		}
 		return nil
 	})
 	return refs, err
 }
 
-// podmanNetworkNames are the names isCustomNetworkMode leaves alone because
-// dockerd reads them as modes or as Swarm's own networks. Podman reads them
-// differently. A HostConfig.NetworkMode it doesn't know as one of its modes
-// (bridge, none, host, default, private, pasta, slirp4netns, container:, ns:)
-// is a network name, so ingress and docker_gwbridge are names there. And every
-// NetworkingConfig.EndpointsConfig key is a network name, so bridge, host and
-// none are as well (Podman 5.8.1 pkg/api/handlers/compat/containers_create.go
-// and specgen.ParseNetworkFlag). Anyone can create a network with one of
-// them, so a create naming one is looked up.
-var podmanNetworkModeNames = [...]string{"ingress", "docker_gwbridge"}
-var podmanEndpointKeyNames = [...]string{"bridge", "host", "none", "ingress", "docker_gwbridge"}
+// podmanSwarmNetworkNames are the names isCustomNetworkMode leaves alone
+// because dockerd reads them as Swarm's own networks. Podman has no such
+// networks: a HostConfig.NetworkMode it doesn't know as one of its modes is a
+// network name, and so is every NetworkingConfig.EndpointsConfig key, so
+// ingress and docker_gwbridge are ordinary names anyone can create there.
+//
+// bridge, host, none and default are never looked up. Podman's compat layer
+// maps the name "bridge" to the default network ("podman"), which carries no
+// owner label, and the Docker CLI sends a "bridge" endpoint key on every
+// default-mode create, so a lookup would refuse them all (Podman 5.8.1 and
+// 6.1.1 pkg/api/handlers/compat/networks.go and containers_create.go).
+var podmanSwarmNetworkNames = [...]string{"ingress", "docker_gwbridge"}
 
 // containerCreatePodmanNetworkNameReferences returns the networks a
-// Docker-compatible create names under one of podmanNetworkModeNames or
-// podmanEndpointKeyNames. They are existing resources rather than embedded
-// references: a name nothing holds is no denial, because on a Podman host
-// that never made a network called "bridge" the Docker CLI's habit of sending
-// that endpoint key is routine.
+// Docker-compatible create names as ingress or docker_gwbridge. They are
+// existing, shared resources rather than embedded references, and an unlabeled one
+// passes: a name nothing holds is no denial, and an unlabeled network is not
+// another owner's. Only a network labeled for a different owner is refused.
 func containerCreatePodmanNetworkNameReferences(decoded map[string]any) []embeddedOwnershipReference {
 	var refs []embeddedOwnershipReference
 	add := func(name, source string) {
@@ -903,7 +917,7 @@ func containerCreatePodmanNetworkNameReferences(decoded map[string]any) []embedd
 	}
 	for _, hostConfig := range filter.FoldedObjects(decoded, "HostConfig") {
 		for _, mode := range filter.FoldedStrings(hostConfig, "NetworkMode") {
-			if name := strings.TrimSpace(mode); slices.Contains(podmanNetworkModeNames[:], name) {
+			if name := strings.TrimSpace(mode); slices.Contains(podmanSwarmNetworkNames[:], name) {
 				add(name, "container HostConfig.NetworkMode")
 			}
 		}
@@ -911,7 +925,7 @@ func containerCreatePodmanNetworkNameReferences(decoded map[string]any) []embedd
 	for _, networkingConfig := range filter.FoldedObjects(decoded, "NetworkingConfig") {
 		for _, endpoints := range filter.FoldedObjects(networkingConfig, "EndpointsConfig") {
 			for _, name := range slices.Sorted(maps.Keys(endpoints)) {
-				if slices.Contains(podmanEndpointKeyNames[:], name) {
+				if slices.Contains(podmanSwarmNetworkNames[:], name) {
 					add(name, "container NetworkingConfig.EndpointsConfig")
 				}
 			}

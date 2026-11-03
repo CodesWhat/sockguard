@@ -44,7 +44,7 @@ func TestMutationRefusalIsHardOnlyWithAnEnforceRule(t *testing.T) {
 	}
 }
 
-func TestAsHardRequestRejectionLeavesOtherErrorsAlone(t *testing.T) {
+func TestAsHardRequestRejectionWrapsOtherErrors(t *testing.T) {
 	plain := io.ErrUnexpectedEOF
 	if got := asHardRequestRejection(plain); !errors.Is(got, plain) {
 		t.Errorf("asHardRequestRejection(%v) = %v, want the same error", plain, got)
@@ -71,6 +71,36 @@ func TestDenyNamedVolumeDriverOptionsReason(t *testing.T) {
 			got := denyNamedVolumeDriverOptionsReason(tt.options, tt.allowed)
 			if (got != "") != tt.denied {
 				t.Errorf("denyNamedVolumeDriverOptionsReason(%q) = %q, denied want %v", tt.options, got, tt.denied)
+			}
+		})
+	}
+}
+
+type failingBody struct{}
+
+func (failingBody) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+func (failingBody) Close() error             { return nil }
+
+// TestMutationBodyReadErrorIsHardWithAnEnforceRule pins that a body that can't
+// be read isn't forwarded by warn or audit rollout when an enforce rule needs
+// to rewrite it, and still follows the mode when only warn rules are set.
+func TestMutationBodyReadErrorIsHardWithAnEnforceRule(t *testing.T) {
+	for mode, wantHard := range map[string]bool{"enforce": true, "warn": false} {
+		t.Run(mode, func(t *testing.T) {
+			policy := runtimePolicy{inspectPoliciesByMethod: map[string][]requestInspectPolicy{http.MethodPost: {{
+				method:            http.MethodPost,
+				severity:          inspectSeverityCritical,
+				inspect:           newContainerCreateMutationPolicy(newMutationEngine(MutationOptions{Rules: []MutationRuleOptions{{ID: "label", Mode: mode, Surfaces: []string{mutationSurfaceContainerCreate}, InjectLabels: &InjectLabelsMutationOptions{Labels: map[string]string{"a": "b"}}}}})).inspect,
+				errorLogMessage:   "x",
+				denyReasonOnError: "unable to apply",
+			}}}}
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", failingBody{})
+			reason, code, _, hard := policy.inspectAllowedRequestDetail(testLogger(), req, "/containers/create")
+			if reason == "" || code != reasonCodeRequestBodyInspectionFailed {
+				t.Fatalf("reason %q code %q, want an inspection failure", reason, code)
+			}
+			if hard != wantHard {
+				t.Errorf("hard = %v, want %v", hard, wantHard)
 			}
 		})
 	}

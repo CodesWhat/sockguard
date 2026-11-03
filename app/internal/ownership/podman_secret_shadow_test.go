@@ -1,6 +1,7 @@
 package ownership
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 
@@ -26,6 +27,34 @@ func TestRefuseShadowableSecretName(t *testing.T) {
 			got := refuseShadowableSecretName(tt.identifier, Options{UpstreamFlavor: tt.flavor})
 			if (got != "") != tt.refused {
 				t.Errorf("refuseShadowableSecretName(%q) = %q, refused want %v", tt.identifier, got, tt.refused)
+			}
+		})
+	}
+}
+
+func TestMutateCompatSecretCreateOwnershipRequest(t *testing.T) {
+	tests := []struct {
+		name   string
+		flavor upstreamflavor.Flavor
+		body   string
+		deny   bool
+	}{
+		{"short hex name on Podman", upstreamflavor.Podman, `{"Name":"cafe"}`, true},
+		{"short hex name on Docker", upstreamflavor.Docker, `{"Name":"cafe"}`, false},
+		{"ordinary name on Podman", upstreamflavor.Podman, `{"Name":"db-password"}`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodPost, "http://docker/secrets/create", strings.NewReader(tt.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			refs, err := mutateCompatSecretCreateOwnershipRequest(req, Options{Owner: "team-a", LabelKey: DefaultLabelKey, UpstreamFlavor: tt.flavor})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (refs.denyReason != "") != tt.deny {
+				t.Errorf("denyReason = %q, deny want %v", refs.denyReason, tt.deny)
 			}
 		})
 	}
