@@ -41,6 +41,7 @@ func TestLogDriverPolicyArgs(t *testing.T) {
 		{name: "driver option with no value", driver: "json-file", args: []string{"driver"}, want: `x denied: log driver "" is not allowed (see allowed_log_drivers)`},
 		{name: "syslog address", driver: "json-file", args: []string{"syslog-address=tcp://evil:514"}, want: `x denied: log option "syslog-address" sets a log destination and is not allowed (see allowed_log_endpoint_options)`},
 		{name: "gelf address in capitals", driver: "json-file", args: []string{"GELF-ADDRESS=udp://evil:12201"}, want: `x denied: log option "gelf-address" sets a log destination and is not allowed (see allowed_log_endpoint_options)`},
+		{name: "loki proxy url", driver: "json-file", args: []string{"loki-proxy-url=http://evil"}, want: `x denied: log option "loki-proxy-url" sets a log destination and is not allowed (see allowed_log_endpoint_options)`},
 		{name: "loki url", driver: "", args: []string{"loki-url=https://evil"}, want: `x denied: log option "loki-url" sets a log destination and is not allowed (see allowed_log_endpoint_options)`},
 		{name: "splunk url", driver: "json-file", args: []string{"splunk-url=https://evil"}, want: `x denied: log option "splunk-url" sets a log destination and is not allowed (see allowed_log_endpoint_options)`},
 		{name: "awslogs endpoint", driver: "json-file", args: []string{"awslogs-endpoint=https://evil"}, want: `x denied: log option "awslogs-endpoint" sets a log destination and is not allowed (see allowed_log_endpoint_options)`},
@@ -296,7 +297,7 @@ func FuzzLogDriverPolicy(f *testing.F) {
 	f.Add("json-file", "max-size=10m\nmax-file=3", "")
 	f.Add("syslog", "syslog-address=tcp://evil:514", "logDriver=syslog&logOptions=syslog-address%3Dx")
 	f.Add("", "driver=gelf\nGELF-ADDRESS=udp://evil:1", "LOGDRIVER=gelf")
-	f.Add("json-file ", "driver=gelf=x", "logOptions=driver%3Djson-file&logOptions=loki-url%3Dx")
+	f.Add("json-file ", "driver=json-file", "logOptions=driver%3Djson-file&logOptions=loki-url%3Dx")
 	f.Add("local", "=path\n=\nsplunk-url", "logDriver=%zz")
 
 	enabled := newLogDriverPolicy([]string{"json-file", "local"}, []string{"fluentd-address"})

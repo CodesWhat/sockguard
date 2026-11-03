@@ -1845,7 +1845,15 @@ func validateBuildkitOpaqueEntries(prefix, entries string, values []string) []st
 // are compared exactly, so padding can never match.
 func validateLogDriverEntries(prefix, block string, drivers, endpointOptions []string) []string {
 	errs := validateBuildkitOpaqueEntries(prefix, block+".allowed_log_drivers", drivers)
-	return append(errs, validateBuildkitOpaqueEntries(prefix, block+".allowed_log_endpoint_options", endpointOptions)...)
+	errs = append(errs, validateBuildkitOpaqueEntries(prefix, block+".allowed_log_endpoint_options", endpointOptions)...)
+	known := filter.LogEndpointOptionKeys()
+	for _, option := range endpointOptions {
+		if option != strings.TrimSpace(option) || option == "" || slices.Contains(known, option) {
+			continue
+		}
+		errs = append(errs, fmt.Sprintf("%s.%s.allowed_log_endpoint_options entry %q is not a log destination option; valid entries: %s", prefix, block, option, strings.Join(known, ", ")))
+	}
+	return errs
 }
 
 // validateLibpodPodCreateConfig validates request_body.libpod_pod_create.

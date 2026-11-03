@@ -173,3 +173,17 @@ func set(field string, drivers, endpoints *[]string, value string) {
 	}
 	*endpoints = []string{value}
 }
+
+func TestLogEndpointOptionsMustBeKnownKeys(t *testing.T) {
+	cfg := Defaults()
+	cfg.RequestBody.ContainerCreate.AllowedLogDrivers = []string{"syslog"}
+	cfg.RequestBody.ContainerCreate.AllowedLogEndpointOptions = []string{"syslog-addr"}
+	err := Validate(&cfg)
+	if err == nil || !strings.Contains(err.Error(), `"syslog-addr" is not a log destination option`) || !strings.Contains(err.Error(), "loki-proxy-url") {
+		t.Fatalf("Validate() error = %v, want unknown key error listing the valid ones", err)
+	}
+	cfg.RequestBody.ContainerCreate.AllowedLogEndpointOptions = []string{"syslog-address", "loki-proxy-url"}
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("Validate() with known keys: %v", err)
+	}
+}

@@ -21,9 +21,21 @@ var logEndpointOptionKeys = map[string]struct{}{
 	"gelf-address":                 {},
 	"fluentd-address":              {},
 	"loki-url":                     {},
+	"loki-proxy-url":               {},
 	"splunk-url":                   {},
 	"awslogs-endpoint":             {},
 	"awslogs-credentials-endpoint": {},
+}
+
+// LogEndpointOptionKeys returns the destination option names, sorted, that
+// allowed_log_endpoint_options may list.
+func LogEndpointOptionKeys() []string {
+	keys := make([]string, 0, len(logEndpointOptionKeys))
+	for key := range logEndpointOptionKeys {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // logDriverPolicy is the opt-in log driver allowlist shared by the surfaces
