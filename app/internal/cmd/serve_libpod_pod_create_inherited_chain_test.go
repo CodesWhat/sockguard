@@ -53,7 +53,6 @@ func TestServeChainLibpodPodCreateAppliesTheContainerGatesToInheritedFields(t *t
 		name       string
 		body       string
 		open       func(*config.LibpodContainerCreateRequestBodyConfig)
-		setup      func(*config.LibpodContainerCreateRequestBodyConfig)
 		wantReason string
 	}{
 		{
@@ -121,13 +120,6 @@ func TestServeChainLibpodPodCreateAppliesTheContainerGatesToInheritedFields(t *t
 			wantReason: "libpod resource_limits.devices",
 		},
 		{
-			name:       "missing memory limit",
-			body:       `{"name":"p"}`,
-			setup:      func(c *config.LibpodContainerCreateRequestBodyConfig) { c.RequireMemoryLimit = true },
-			open:       func(c *config.LibpodContainerCreateRequestBodyConfig) { c.RequireMemoryLimit = false },
-			wantReason: "libpod pod create denied: a memory limit is required",
-		},
-		{
 			name:       "unknown key in a namespace object",
 			body:       `{"name":"p","netns":{"nsmode":"private","nsMod":"host"}}`,
 			wantReason: `libpod pod create denied: namespace object has unknown key "nsMod"`,
@@ -184,9 +176,6 @@ func TestServeChainLibpodPodCreateAppliesTheContainerGatesToInheritedFields(t *t
 					cfg.Response.DenyVerbosity = "verbose"
 					c := &cfg.RequestBody.LibpodContainerCreate
 					closed(c)
-					if tt.setup != nil {
-						tt.setup(c)
-					}
 					if opened {
 						tt.open(c)
 					}
@@ -222,5 +211,29 @@ func TestServeChainLibpodPodCreateAppliesTheContainerGatesToInheritedFields(t *t
 				}
 			}
 		})
+	}
+}
+
+// TestServeChainLibpodPodCreateDoesNotRequireLimits pins that the
+// require_*_limit options are not applied to a pod create: a pod is an
+// optional cgroup parent and its member containers are checked on container
+// create.
+func TestServeChainLibpodPodCreateDoesNotRequireLimits(t *testing.T) {
+	daemon := &libpodPodCreateCounterDaemon{}
+	addr := newEngineChain(t, "libpod-pod-limits", daemon, func(cfg *config.Config) {
+		c := &cfg.RequestBody.LibpodContainerCreate
+		c.RequireMemoryLimit, c.RequireCPULimit, c.RequirePidsLimit = true, true, true
+		cfg.Rules = []config.RuleConfig{
+			{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/pods/create"}, Action: "allow"},
+			{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+		}
+	})
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Post("http://"+addr+"/v5.8.6/libpod/pods/create", "application/json", strings.NewReader(`{"name":"p"}`))
+	if err != nil {
+		t.Fatalf("POST pod create: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated || daemon.created.Load() != 1 {
+		t.Errorf("status = %d, daemon creates = %d, want 201 and 1", resp.StatusCode, daemon.created.Load())
 	}
 }

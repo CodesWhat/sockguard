@@ -66,8 +66,8 @@ func (p libpodPodCreatePolicy) denyInheritedFieldsReason(req libpodPodCreateRequ
 // onto the infra container and inherited by its members, to the container
 // create gates: overlay_volumes sources and overlay directories against
 // allowed_bind_mounts, volumes options (the overlay upper and work
-// directories), volumes_from, cgroup_parent and resource_limits devices and
-// the require_* limits through the Docker-parity gate, and image mounts while
+// directories), volumes_from, cgroup_parent and resource_limits device
+// rules through the Docker-parity gate, and image mounts while
 // allowed_images is set. Image volumes carry no host path and the base has no
 // tmpfs rule for them, so nothing else is checked on them here. Owner
 // references in volumes, image_volumes and volumes_from are checked by the
@@ -96,7 +96,11 @@ func (p libpodPodCreatePolicy) denyInheritedVolumesReason(req libpodPodCreateReq
 	}); reason != "" {
 		return podCreateReason(reason)
 	}
-	return podCreateReason(p.container.denyResourceLimitReason(req.ResourceLimits))
+	// The require_*_limit options are not applied: a pod is an optional
+	// cgroup parent, and the member containers carry their own limits and
+	// are checked on container create. The container policy has no ceiling
+	// options, so resource_limits is held to its device rules only.
+	return ""
 }
 
 // denySecurityOptReason maps the pod's security_opt strings, the CLI
