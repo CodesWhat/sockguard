@@ -185,6 +185,8 @@ func (c LibpodContainerCreateRequestBodyConfig) ToFilterOptions() filter.LibpodC
 		DenyUnconfinedSystemPaths:         c.DenyUnconfinedSystemPaths,
 		AllowUnifiedCgroupSettings:        c.AllowUnifiedCgroupSettings,
 		AllowEnvHost:                      c.AllowEnvHost,
+		AllowStorageOpts:                  c.AllowStorageOpts,
+		AllowRuntimeAnnotations:           c.AllowRuntimeAnnotations,
 	}
 }
 

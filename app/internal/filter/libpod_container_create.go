@@ -148,6 +148,14 @@ type LibpodContainerCreateOptions struct {
 	// daemon's own environment into the container. Default false. See
 	// denyEnvHostReason.
 	AllowEnvHost bool
+
+	// AllowStorageOpts permits a non-empty "storage_opts" map. Default false.
+	// See denyStorageOptsReason.
+	AllowStorageOpts bool
+
+	// AllowRuntimeAnnotations permits "annotations" keys under run.oci.
+	// Default false. See denyRuntimeAnnotationsReason.
+	AllowRuntimeAnnotations bool
 }
 
 type libpodContainerCreatePolicy struct {
@@ -199,6 +207,8 @@ type libpodContainerCreatePolicy struct {
 
 	allowUnifiedCgroupSettings bool
 	allowEnvHost               bool
+	allowStorageOpts           bool
+	allowRuntimeAnnotations    bool
 
 	imageTrustVerifier imageVerifier
 	imageFetcher       signatureFetcher
@@ -267,6 +277,8 @@ func newLibpodContainerCreatePolicy(opts LibpodContainerCreateOptions) libpodCon
 
 		allowUnifiedCgroupSettings: opts.AllowUnifiedCgroupSettings,
 		allowEnvHost:               opts.AllowEnvHost,
+		allowStorageOpts:           opts.AllowStorageOpts,
+		allowRuntimeAnnotations:    opts.AllowRuntimeAnnotations,
 	}
 
 	itf := buildImageTrustFields(opts.ImageTrust)

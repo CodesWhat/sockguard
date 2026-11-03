@@ -126,6 +126,12 @@ type libpodContainerCreateRequest struct {
 	// denyUnifiedCgroupReason in libpod_container_create_residual.go.
 	Unified map[string]string `json:"unified"`
 
+	// StorageOpts and Annotations are the container's storage options and
+	// the key-value options handed to the OCI runtime. See
+	// denyStorageOptsReason and denyRuntimeAnnotationsReason.
+	StorageOpts map[string]string `json:"storage_opts"`
+	Annotations map[string]string `json:"annotations"`
+
 	// Pod is the pod this container joins. It shares the pod's infra
 	// namespaces, so it follows restrictNamespaceSharing. See
 	// denyPodJoinReason.
