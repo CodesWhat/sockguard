@@ -2611,7 +2611,9 @@ func isNonRootUser(user string) bool {
 // a sign prefix and zero padding, so "+0", "-0", "00", and "+00" all run as
 // root. ParseUint rejects the sign and let "+0" past require_non_root_user and
 // allow_root_user:false. A value Atoi rejects (overflow, "abc") is a name to the
-// engines too and goes through a passwd lookup, so it is never root here.
+// engines too and goes through the image's passwd lookup. Sockguard doesn't
+// read that file, so a name other than "root" is accepted as non-root even
+// though the image could map it to UID 0.
 func isNumericRootUID(userPart string) bool {
 	n, err := strconv.Atoi(userPart)
 	return err == nil && n == 0
