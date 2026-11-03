@@ -421,7 +421,7 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 	case r.Method == http.MethodPost && normPath == libpodSecretCreatePath:
 		return mutateLibpodSecretCreateOwnershipRequest(r, opts)
 	case needsOwnerFilter(r.Method, normPath), libpodNeedsOwnerFilter(r.Method, normPath):
-		return nil, addOwnerLabelFilter(r, opts.LabelKey, opts.Owner, opts.UpstreamFlavor == upstreamflavor.Podman)
+		return nil, addOwnerLabelFilter(r, normPath, opts.LabelKey, opts.Owner, opts.UpstreamFlavor == upstreamflavor.Podman)
 	default:
 		return nil, nil
 	}
@@ -1327,13 +1327,12 @@ func addOwnerLabelToBuildQuery(r *http.Request, labelKey, owner string) error {
 	return nil
 }
 
-func addOwnerLabelFilter(r *http.Request, labelKey, owner string, podmanUpstream bool) error {
+func addOwnerLabelFilter(r *http.Request, normPath, labelKey, owner string, podmanUpstream bool) error {
 	query := r.URL.Query()
 	filters, err := dockerfilters.Decode(query.Get("filters"))
 	if err != nil {
 		return err
 	}
-	normPath := filter.NormalizePath(r.URL.Path)
 	filterKey := ownerFilterKey(normPath)
 	label := labelKey + "=" + owner
 	// Which client-supplied values under this key survive:
