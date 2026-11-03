@@ -199,6 +199,7 @@ func resolveUpstreamCapabilities(ctx context.Context, deps *serveDeps, cfg *conf
 	detected := make([]upstreamflavor.Flavor, len(endpoints))
 	conjunctiveVolumes := true
 	cgroupV1 := cgroupV1OptInConfigured(cfg)
+	cgroupV1ProbeFailed := false
 	allProbedDocker := true
 	for i, ep := range endpoints {
 		rt, err := res.EndpointRoundTripper(i)
@@ -223,12 +224,14 @@ func resolveUpstreamCapabilities(ctx context.Context, deps *serveDeps, cfg *conf
 		allProbedDocker = allProbedDocker && observed.ProbedDocker
 		conjunctiveVolumes = conjunctiveVolumes && observed.Flavor == upstreamflavor.Podman && observed.PodmanConjunctiveVolumeFilters
 		if cgroupV1 {
-			cgroupV1 = endpointIsCgroupV1(ctx, deps, rt, ep, logger)
+			outcome := probeEndpointCgroup(ctx, deps, rt, ep, logger)
+			cgroupV1 = outcome == cgroupProbeV1
+			cgroupV1ProbeFailed = outcome == cgroupProbeFailed
 		}
 	}
 	if configured != upstreamflavor.Auto {
 		logger.Info("upstream flavor resolved", "flavor", string(configured), "probed", true, "endpoints", len(endpoints), "podman_conjunctive_volume_filters", configured == upstreamflavor.Podman && conjunctiveVolumes)
-		return upstreamflavor.Capabilities{Flavor: configured, PodmanConjunctiveVolumeFilters: configured == upstreamflavor.Podman && conjunctiveVolumes, CgroupV1: cgroupV1, ProbedDocker: configured == upstreamflavor.Docker && allProbedDocker}, nil
+		return upstreamflavor.Capabilities{Flavor: configured, PodmanConjunctiveVolumeFilters: configured == upstreamflavor.Podman && conjunctiveVolumes, CgroupV1: cgroupV1, CgroupV1ProbeFailed: cgroupV1ProbeFailed, ProbedDocker: configured == upstreamflavor.Docker && allProbedDocker}, nil
 	}
 	for i := 1; i < len(detected); i++ {
 		if detected[i] != detected[0] {
@@ -236,7 +239,7 @@ func resolveUpstreamCapabilities(ctx context.Context, deps *serveDeps, cfg *conf
 		}
 	}
 	logger.Info("upstream flavor resolved", "flavor", string(detected[0]), "probed", true, "endpoints", len(endpoints), "podman_conjunctive_volume_filters", conjunctiveVolumes)
-	return upstreamflavor.Capabilities{Flavor: detected[0], PodmanConjunctiveVolumeFilters: conjunctiveVolumes, CgroupV1: cgroupV1, ProbedDocker: detected[0] == upstreamflavor.Docker && allProbedDocker}, nil
+	return upstreamflavor.Capabilities{Flavor: detected[0], PodmanConjunctiveVolumeFilters: conjunctiveVolumes, CgroupV1: cgroupV1, CgroupV1ProbeFailed: cgroupV1ProbeFailed, ProbedDocker: detected[0] == upstreamflavor.Docker && allProbedDocker}, nil
 }
 
 // cgroupV1OptInConfigured reports whether the global request_body or any
@@ -253,16 +256,6 @@ func cgroupV1OptInConfigured(cfg *config.Config) bool {
 		}
 	}
 	return false
-}
-
-// endpointIsCgroupV1 reads CgroupVersion from one endpoint's GET /info. Every
-// failure (no probe wired, transport error, missing or unrecognized value)
-// answers false, so the opt-in never widens on an endpoint sockguard could not
-// confirm. Resolution requires this to hold for every endpoint, which is the
-// safe reading for a failover set: whichever endpoint ends up serving a
-// create, it is cgroup v1.
-func endpointIsCgroupV1(ctx context.Context, deps *serveDeps, rt http.RoundTripper, ep upstream.Endpoint, logger *slog.Logger) bool {
-	return probeEndpointCgroup(ctx, deps, rt, ep, logger) == cgroupProbeV1
 }
 
 // cgroupProbeOutcome separates "the daemon answered and is not v1" (final)
@@ -319,6 +312,11 @@ func resolveUpstreamFlavorForRuntime(ctx context.Context, deps *serveDeps, runti
 		runtime.upstreamFlavor = capabilities.Flavor
 		runtime.upstreamPodmanConjunctiveVolumeFilters = capabilities.PodmanConjunctiveVolumeFilters
 		runtime.cgroupV1.seed(cgroupV1OptInConfigured(cfg), capabilities.CgroupV1)
+		if capabilities.CgroupV1ProbeFailed {
+			// kickCh is buffered, so this survives until startCgroupV1Refresh
+			// launches the loop, which then re-probes and starts the backoff.
+			runtime.cgroupV1.kick()
+		}
 		runtime.upstreamProbedDocker = capabilities.ProbedDocker
 	}
 	return nil

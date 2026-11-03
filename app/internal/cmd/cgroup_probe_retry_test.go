@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codeswhat/sockguard/v3/app/internal/config"
 	"github.com/codeswhat/sockguard/v3/app/internal/upstream"
 )
 
@@ -204,5 +205,28 @@ func TestCgroupV1TrackerCancelStopsRetry(t *testing.T) {
 	time.Sleep(60 * time.Millisecond)
 	if got := f.calls.Load(); got != n {
 		t.Fatalf("probing continued after cancel: %d -> %d", n, got)
+	}
+}
+
+// A reload that enables the option while /info errors kicks the run loop, which
+// retries on its backoff and opens the gate long before the regular tick.
+func TestReloadCgroupProbeFailureRetriesBeforeTick(t *testing.T) {
+	f := &fakeCgroupProber{outcomes: []cgroupProbeOutcome{cgroupProbeFailed, cgroupProbeV1}}
+	tracker := newFakeProbeTracker(t, f)
+	tracker.seed(false, false)
+
+	initial := config.Defaults()
+	fx := newReloadCoordinatorFixture(t, &initial)
+	fx.coordinator.runtime.cgroupV1 = tracker
+	go tracker.run(t.Context(), time.Hour)
+
+	reloaded := initial
+	reloaded.RequestBody.ContainerCreate.AllowHostCgroupNSOnCgroupV1 = true
+	fx.loadCfg = &reloaded
+	fx.coordinator.reload()
+
+	waitForCgroup(t, "reload retry to open the gate", tracker.isV1)
+	if n := f.calls.Load(); n != 2 {
+		t.Fatalf("probe calls = %d, want 2", n)
 	}
 }
