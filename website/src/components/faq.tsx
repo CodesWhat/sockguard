@@ -13,6 +13,15 @@ export function FAQ() {
           </summary>
           <div className="a">
             <p>{item.answer}</p>
+            {item.links && (
+              <ul>
+                {item.links.map((link) => (
+                  <li key={link.href}>
+                    <a href={link.href}>{link.label}</a>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </details>
       ))}
