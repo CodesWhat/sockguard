@@ -2024,6 +2024,9 @@
     color: var(--tx-primary);
     text-underline-offset: 3px;
   }
+  .faq .a a {
+    text-decoration: underline;
+  }
   .modetog .i-sun {
     display: none;
   }

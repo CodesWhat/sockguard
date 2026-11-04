@@ -166,6 +166,9 @@ test.describe("faq", () => {
     const repository = item.getByRole("link", { name: "CodesWhat/sockguard", exact: true });
     await expect(website).toHaveAttribute("href", "https://www.getsockguard.com");
     await expect(repository).toHaveAttribute("href", "https://github.com/CodesWhat/sockguard");
+    await expect(website).toHaveCSS("text-decoration-line", "underline");
+    await expect(repository).toHaveCSS("text-decoration-line", "underline");
+    await expect(website).toHaveCSS("text-underline-offset", "3px");
     await website.focus();
     await expect(website).toBeFocused();
     const nextLink = browserName === "webkit" && process.platform === "darwin" ? "Alt+Tab" : "Tab";
