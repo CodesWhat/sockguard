@@ -1,5 +1,10 @@
 export const faqItems: Array<{ question: string; answer: string }> = [
   {
+    question: "Is this the same project as Buildkite's Sockguard?",
+    answer:
+      "CodesWhat develops and maintains this Sockguard at getsockguard.com, with source code at github.com/CodesWhat/sockguard. Buildkite's Sockguard is a separate project that was archived in 2021. The documentation, releases, and container images on this site belong to CodesWhat's project.",
+  },
+  {
     question: "What is Sockguard and how does the default-deny model work?",
     answer:
       "Sockguard is a Docker socket proxy we built in Go. Every Docker API request is blocked unless an explicit rule in your YAML config allows it — method, path, and request body are all evaluated before the request reaches the daemon. A client that connects without a matching allow rule gets a 403; there is no fallback to 'pass everything'. This posture means a compromised container or CI job can only do what you deliberately permitted.",
