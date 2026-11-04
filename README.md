@@ -42,6 +42,9 @@
 
 <hr>
 
+CodesWhat develops and maintains Sockguard at [getsockguard.com](https://www.getsockguard.com/).
+This is a separate project from [Buildkite's Sockguard](https://github.com/buildkite/sockguard), which was archived in 2021.
+
 > [!NOTE]
 > **v2.4.5 is the latest stable release.** It is a security release: a numeric user with a sign prefix such as `+0` was not treated as root, so `request_body.exec.allow_root_user: false` and `require_non_root_user` could be bypassed to run as UID 0 on Docker and Podman. It carries v2.4.4. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
