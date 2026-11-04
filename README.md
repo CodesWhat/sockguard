@@ -86,7 +86,7 @@ This is a separate project from [Buildkite's Sockguard](https://github.com/build
 | Security Model | [Security Model](https://getsockguard.com/docs/security) |
 | Image Verification | [Image Verification](https://getsockguard.com/docs/verification) |
 | Changelog | [`CHANGELOG.md`](CHANGELOG.md) |
-| Contributing | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
+| Contributing | [Setup, local website/docs servers, and production routing checks](CONTRIBUTING.md#development-setup) |
 | Code of Conduct | [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) |
 | Governance | [`GOVERNANCE.md`](GOVERNANCE.md) |
 | Security Assurance | [`SECURITY-ASSURANCE.md`](SECURITY-ASSURANCE.md) |

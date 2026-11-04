@@ -155,6 +155,24 @@ test.describe("terminal replay", () => {
 });
 
 test.describe("faq", () => {
+  test("ownership references are navigable by keyboard", async ({ page, browserName }) => {
+    await page.goto("/");
+    const item = page.locator(".faq details.fq").filter({
+      has: page.getByText("Is this the same project as Buildkite's Sockguard?", { exact: true }),
+    });
+    await item.locator("summary").click();
+
+    const website = item.getByRole("link", { name: "Sockguard website", exact: true });
+    const repository = item.getByRole("link", { name: "CodesWhat/sockguard", exact: true });
+    await expect(website).toHaveAttribute("href", "https://www.getsockguard.com");
+    await expect(repository).toHaveAttribute("href", "https://github.com/CodesWhat/sockguard");
+    await website.focus();
+    await expect(website).toBeFocused();
+    const nextLink = browserName === "webkit" && process.platform === "darwin" ? "Alt+Tab" : "Tab";
+    await page.keyboard.press(nextLink);
+    await expect(repository).toBeFocused();
+  });
+
   test("opens one answer at a time", async ({ page }) => {
     await page.goto("/");
     const items = page.locator(".faq details.fq");
