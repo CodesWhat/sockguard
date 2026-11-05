@@ -49,6 +49,34 @@ const dockerVersionBody = `{
   "ApiVersion": "1.52"
 }`
 
+func TestClassifyVersionBodies(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		body    string
+		want    Flavor
+		wantErr bool
+	}{
+		{name: "docker", body: dockerVersionBody, want: Docker},
+		{name: "podman", body: podmanVersionBody, want: Podman},
+		{name: "ambiguous", body: `{"Components":[{"Name":"Engine"},{"Name":"Podman Engine"}]}`, wantErr: true},
+		{name: "unrecognized", body: `{"Components":[{"Name":"Containerd"}]}`, wantErr: true},
+		{name: "malformed", body: `{"Components":[{"Name":`, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := classify([]byte(tt.body))
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("classify() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Fatalf("classify() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDetectClassifiesVersionResponses(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

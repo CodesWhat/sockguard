@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Add mutation regressions for compressed responses, BuildKit and owner isolation, engine identification, CLI reports and reachability budgets, and HEAD visibility refusals.
+
 - Make the ownership FAQ's website and repository references clickable and keyboard accessible. Document the separate website/docs development servers and exported-site checks, and ignore Next.js's generated website instructions file.
 
 - Identify CodesWhat as Sockguard's maintainer in the README, docs introduction and website, and explain the distinction from Buildkite's archived project in the homepage FAQ.
