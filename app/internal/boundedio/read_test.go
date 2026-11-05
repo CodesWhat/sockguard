@@ -115,9 +115,11 @@ func TestReadFileKeepsTheFirstErrorWhenCloseAlsoFails(t *testing.T) {
 // io.Reader permits a zero-byte read with no error; the lookahead must treat
 // it as "no data yet", not as proof the file is oversized.
 type zeroThenEOFFile struct {
-	payload []byte
-	size    int64
-	reads   int
+	payload      []byte
+	size         int64
+	reads        int
+	lookaheadErr error
+	closeErr     error
 }
 
 func (z *zeroThenEOFFile) Read(p []byte) (int, error) {
@@ -126,13 +128,13 @@ func (z *zeroThenEOFFile) Read(p []byte) (int, error) {
 	case 1:
 		return copy(p, z.payload), nil
 	case 2:
-		return 0, nil
+		return 0, z.lookaheadErr
 	default:
 		return 0, io.EOF
 	}
 }
 
-func (z *zeroThenEOFFile) Close() error { return nil }
+func (z *zeroThenEOFFile) Close() error { return z.closeErr }
 
 func (z *zeroThenEOFFile) Stat() (fs.FileInfo, error) {
 	return fakeRegularInfo{size: z.size}, nil
@@ -156,11 +158,40 @@ func TestReadFileTreatsAZeroByteLookaheadReadAsNoData(t *testing.T) {
 		return &zeroThenEOFFile{payload: payload, size: int64(len(payload))}, nil
 	}
 
-	data, err := ReadFile("ignored", 16)
+	data, err := ReadFile("ignored", int64(len(payload)))
 	if err != nil {
 		t.Fatalf("ReadFile() error = %v, want the payload", err)
 	}
 	if string(data) != string(payload) {
 		t.Fatalf("ReadFile() = %q, want %q", data, payload)
+	}
+}
+
+func TestReadFilePreservesLookaheadError(t *testing.T) {
+	readErr := errors.New("lookahead failed")
+	for _, closeErr := range []error{nil, errors.New("close failed")} {
+		name := "read error"
+		if closeErr != nil {
+			name = "read and close errors"
+		}
+		t.Run(name, func(t *testing.T) {
+			original := openReadOnly
+			t.Cleanup(func() { openReadOnly = original })
+			payload := []byte("12345")
+			openReadOnly = func(string) (readableFile, error) {
+				return &zeroThenEOFFile{
+					payload: payload, size: int64(len(payload)),
+					lookaheadErr: readErr, closeErr: closeErr,
+				}, nil
+			}
+
+			data, err := ReadFile("ignored", int64(len(payload)))
+			if !errors.Is(err, readErr) {
+				t.Fatalf("ReadFile() error = %v, want lookahead error %v", err, readErr)
+			}
+			if data != nil {
+				t.Fatalf("ReadFile() data = %q, want nil after failed lookahead", data)
+			}
+		})
 	}
 }
