@@ -3,12 +3,16 @@ title: Roadmap
 description: Sockguard's shipped v1.7, v2.0, v2.1, v2.2, v2.3, and v2.4 work and later direction.
 ---
 
-Sockguard v2.4 is the current stable feature line, with v2.4.5 the latest
-release. It is a security release that treats a numeric user with a sign prefix
-such as `+0` as root, closing an `allow_root_user: false` and
-`require_non_root_user` bypass. It
-carries v2.4.4, v2.4.3, v2.4.2, v2.4.1 and everything
-through v2.3.3. The v2.3 line shipped as follows. v2.3.0 promotes `2.3.0-rc.9` unchanged in behavior and is the first
+Sockguard v3.0 is the current stable feature line, with v3.0.0 the latest
+release. It promotes `3.0.0-rc.6` with the published v2.4.5 signed root UID fix, moves the Go module to
+`/v3`, rejects the insecure endpoint TLS settings deprecated in v2.1, and carries
+everything through v2.4.5. The v2.4 line stays supported for security fixes until
+v3.1 ships. v2.4.5 treats signed numeric users such as `+0` as root in policy checks. v2.4.4 stops redaction placeholders from breaking typed Docker
+clients, fixes Portainer Recreate and the watchtower and portwing presets, and
+closes libpod create bypasses and inspect leaks. It carries v2.4.3, v2.4.2,
+v2.4.1 and everything through v2.3.3.
+
+The v2.3 line shipped as follows. v2.3.0 promotes `2.3.0-rc.9` unchanged in behavior and is the first
 release under the MIT license; 2.2.x and earlier remain Apache-2.0. v2.3.1 is a
 security patch that refuses a client-supplied container log path. v2.3.2 is a
 security patch that tightens Podman filter scoping under ownership and
@@ -137,6 +141,7 @@ from source and a client-only request capture, not a live-daemon reproduction.
 | Operator checks | `sockguard verify` checks a loaded config against the daemon it will actually talk to, `server.shutdown_grace` replaces the hardcoded 30s drain, and a `SOCKGUARD_*` variable matching no configuration key warns at startup |
 | Rootless rule patterns rejected | A `match.path` without a leading `/` now fails config validation instead of loading and matching every rooted path; breaking for any config that used that spelling |
 | Per-request allocations | Route metric labels, the `/health` cache, visibility label injection, owner-label mutation, `POST /containers/create` decoding and query-string parsing stop repeating work on every request |
+| Release-job egress | The release workflows run `egress-policy: block` with curated allow-lists on every high-privilege job ([#471](https://github.com/CodesWhat/sockguard/pull/471)), keeping Sigstore, registry, provenance and SBOM publication working |
 
 ## Shipped in v2.1.0
 
@@ -157,10 +162,6 @@ from source and a client-only request capture, not a live-daemon reproduction.
 | BuildKit isolation | Caller identity comes from verified certificates or Unix peer credentials where available, session state is correlated by principal, profile, and session, Solve admission is atomic, and upgrade handshakes are bounded |
 | Proxy hardening | Socket cleanup is inode-owned, method-aware resource routing covers keyword names, generated response errors clear stale representation headers, inspected bodies retain deadlines through logging and metrics, and request metric labels have finite cardinality |
 | Release surfaces | README, docs, website, Helm metadata, verification assets, and migration guidance agree on v2.0.0; release blobs use sigstore bundles only and published metadata is read back before the release succeeds |
-
-## Shipped in v2.4.5
-
-A numeric user with a sign prefix such as `+0`, `-0` or `+0:0` is now treated as root. dockerd and Podman parse the user with `strconv.Atoi`, which accepts a sign, while the filter did not, so `request_body.exec.allow_root_user: false` and `require_non_root_user` could be bypassed to run as UID 0 on Docker and Podman.
 
 ## Shipped in v2.4.4
 
@@ -213,27 +214,25 @@ See [Security](/security#standard-buildx-dockerfile-builds).
 
 ## v3 compatibility boundary
 
-The current candidate, [v3.0.0-rc.6](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0-rc.6),
-is published and carries v2.4.4, which includes the v2.4 policy/security work. The insecure endpoint
-TLS setting and unverified `DOCKER_TLS` fallback deprecated in v2.1 are rejected.
-The [deprecation ledger](/deprecations) owns the exact contracts. All v2 lines
+[v3.0.0](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0) is the
+first release on the v3 line. It carries v2.4.5, which includes the v2.4
+policy/security work. The insecure endpoint TLS setting and unverified
+`DOCKER_TLS` fallback deprecated in v2.1 are rejected. The
+[deprecation ledger](/deprecations) owns the exact contracts. All v2 lines
 retain those settings; the opaque BuildKit acknowledgment's removal version
 remains undecided.
 
 The module, imports, generated BuildKit descriptor options and release linker
 flags use `github.com/codeswhat/sockguard/v3`. The tag guard checks the module
-major; reproduction derives its linker package from the requested source.
-Candidate release routing targets `dev/v3.0`. See
-[migration](/migration#from-sockguard-v2-to-v3-release-candidate) for explicit
-image and Go installation commands and TLS configuration changes.
+major; reproduction derives its linker package from the requested source. v2
+tags keep `/v2`. See [migration](/migration#from-sockguard-v2-to-v3) for image
+and Go installation commands and TLS configuration changes.
 
-This candidate needs fresh four-hour soak and TLS/security checks on its exact
-source, conformance against its published image, and at least 14 days after
-rc.6's 2026-11-03 publication before GA, so promotion is no earlier than
-2026-11-17. rc.6 carries candidate-only behavior changes, which restarted the
-window.
-The v2.3 and v2.4 clocks don't cover v3; those candidate sources, stable channels
-and their existing validation remain separate.
+Also in v3.0.0: `response.redact_network_topology` redacts addresses and leaves
+opaque IDs alone, `sockguard validate` reports unknown configuration keys
+(`--strict` exits non-zero on them), native container create gates `unified`,
+`env_host` and `pod`, and the Helm chart is published as a signed OCI artifact
+at `oci://ghcr.io/codeswhat/charts/sockguard`.
 
 ## Twelve-month direction
 
@@ -241,9 +240,9 @@ Beyond the next planned line, work remains risk- and demand-driven:
 
 - continue mutation-test hardening of rule evaluation, request-body inspection,
   response redaction, and configuration validation;
-- add release-job egress restrictions without breaking Sigstore, registry,
-  provenance, or SBOM publication;
-- expand the CIS Docker Benchmark mapping and audit-ready policy examples;
+- move the remaining audit-mode quality and security workflows to
+  `egress-policy: block` (the release jobs already run it, shipped in v2.2.0);
+- broaden CIS Docker Benchmark coverage beyond the shipped Section 5 mapping;
 - consolidate the config-to-filter-to-policy translation layers behind one
   validated source of truth; and
 - evaluate named rule-path aliases and optional policy-extension mechanisms only

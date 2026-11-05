@@ -1,16 +1,16 @@
 ---
 title: Migration
-description: Upgrade to stable v2.4, evaluate the v3 release candidate, or migrate from another Docker socket proxy.
+description: Upgrade to stable v3.0, stay on the maintained v2.4 line, or migrate from another Docker socket proxy.
 ---
 
 ## Release availability
 
 | Line | Availability | Upgrade guidance |
 | --- | --- | --- |
-| v2.4.5 | Published stable | Keep normal Docker, Homebrew, deb/rpm and binary release channels. |
+| v3.0.0 | Published stable | Normal Docker, Homebrew, deb/rpm and binary release channels serve v3. Migrate the removed TLS settings below and change Go import prefixes to `/v3`. |
+| v2.4.5 | Maintained | Receives security fixes through `maintenance/2.4.x` until v3.1 ships. |
 | v2.3.3 | End of life | The last v2.3 patch. It no longer receives security fixes, so upgrade to v2.4. |
 | v2.2.11 | End of life | Upgrade to v2.4 for security fixes. |
-| v3.0.0-rc.6 | Published candidate | Select its image or `/v3` Go tag explicitly and migrate the removed TLS settings below. It carries v2.4.4, and its validation and bake window are independent of v2.4. Stable channels serve v2.4.5. |
 
 ## From Sockguard v2.1 to v2.2
 
@@ -31,7 +31,7 @@ CLI invocations are unchanged.
 
 ## Upgrading to v2.3
 
-v2.3 is the previous stable line. It adds the frontend runner and the
+v2.3 is end of life. Upgrade to v2.4 or v3 to keep receiving security fixes. It adds the frontend runner and the
 `request_body.buildkit.control.solve.allow_frontend_gateway` /
 `allowed_exec_digests` settings, which aren't available in v2.2.
 
@@ -47,8 +47,7 @@ before enabling external frontend execution.
 
 ## Upgrading to v2.4
 
-v2.4 is the current stable line. Pull `codeswhat/sockguard:2.4.5` or the
-`latest` tag, install through Homebrew, deb/rpm or the release binaries, or run
+v2.4 is a maintained line. Pull `codeswhat/sockguard:2.4.4`, download the 2.4.4 release binaries, or run
 `go install github.com/codeswhat/sockguard/v2/app/cmd/sockguard@v2.4.5`. Go
 source builds require Go 1.27. Don't copy v2.4-only settings into an older
 binary.
@@ -60,12 +59,12 @@ CHANGELOG. Built-in Buildx Dockerfile builds now use the mediated gateway;
 see [Security](/security#standard-buildx-dockerfile-builds). Unix container-label
 identity remains a documented limit; use distinct UID/GID client profiles.
 
-## From Sockguard v2 to v3 (release candidate)
+## From Sockguard v2 to v3
 
-The current candidate, [v3.0.0-rc.6](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0-rc.6),
-is published. It carries v2.4.4 and includes the v2.4 policy/security work and the TLS removals below.
+[v3.0.0](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0) is published.
+It carries v2.4.5 and includes the v2.4 policy/security work and the TLS removals below.
 All v2 release lines retain their accepted settings.
-Before testing the v3 candidate:
+Before upgrading to v3:
 
 - Remove `upstream.endpoints[].insecure_skip_tls_verify` entirely, including
   explicit `false` or `null` values. Set `tls.ca_file` to the daemon's issuing CA
@@ -73,7 +72,7 @@ Before testing the v3 candidate:
 - For a TCP `DOCKER_HOST`, set `DOCKER_TLS_VERIFY=1` when `DOCKER_TLS` is non-empty.
   Any non-empty verification value, including `0` or `false`, still verifies the
   server. Certificate-directory precedence and optional client pairs are unchanged.
-- Validate with the exact v3 candidate binary before restarting. Startup and CLI validation
+- Validate with the exact v3 binary before restarting. Startup and CLI validation
   reject the old settings with migration guidance; rejected config reloads keep
   the active policy serving. Unix Docker hosts ignore TCP-only TLS environment
   variables, and explicit YAML endpoints still take precedence over Docker env.
@@ -83,22 +82,28 @@ Docker environment's existing plaintext behavior when neither TLS variable is
 set. The opaque BuildKit acknowledgment remains accepted; its removal target is
 still undecided.
 
-Select `ghcr.io/codeswhat/sockguard:3.0.0-rc.6` explicitly, download a platform
-binary from the release, or install with Go 1.27:
+Pull `ghcr.io/codeswhat/sockguard:3.0.0` (or the `latest` tag), download a
+platform binary from the release, or install with Go 1.27:
 
 ```bash
-go install github.com/codeswhat/sockguard/v3/app/cmd/sockguard@v3.0.0-rc.6
+go install github.com/codeswhat/sockguard/v3/app/cmd/sockguard@v3.0.0
 ```
 
-The candidate module is `github.com/codeswhat/sockguard/v3`. Go consumers must
-change Sockguard import prefixes from `/v2` to `/v3`. Published v2 install commands retain `/v2`; stable Docker and Homebrew channels
-serve v2.4.5.
+The module is `github.com/codeswhat/sockguard/v3`. Go consumers must change
+Sockguard import prefixes from `/v2` to `/v3`. v2 tags keep `/v2`.
 
-V3 has an independent validation and bake window. GA requires fresh exact-source
-four-hour soak and TLS/security checks, published-candidate image conformance,
-and at least 14 days after rc.6's 2026-11-03 publication. GA is no earlier
-than 2026-11-17. Candidate-only
-behavior fixes restart that window; v2.3/v2.4 validation doesn't replace it.
+Three behavior changes ship with v3.0.0 beyond the TLS removals:
+
+- `response.redact_network_topology` redacts addresses only. Network, endpoint,
+  sandbox, service, node and container IDs pass through, so clients that join on
+  them (Traefik's Swarm provider, Homepage's Swarm mode, Portainer's network
+  disconnect) work under the default redaction.
+- Native container create denies `unified`, `env_host` and a non-empty `pod` by
+  default. Opt in with `request_body.libpod_container_create.allow_unified_cgroup_settings`,
+  `allow_env_host`, or by turning `restrict_namespace_sharing` off.
+- Unknown configuration keys are reported. `sockguard validate` prints a warning
+  per key and exits 0; `sockguard validate --strict` exits non-zero. `serve` and
+  hot reload log the same warnings.
 
 ## Deprecation schedule
 
