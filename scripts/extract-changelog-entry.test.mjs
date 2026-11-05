@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -126,8 +126,9 @@ describe("extractChangelogEntry", () => {
     assert.equal(entry, entry.trim());
   });
 
-  it("prints an entry from the CLI", () => {
+  it("prints an entry from the CLI", (t) => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "sockguard-changelog-"));
+    t.after(() => rmSync(tempDir, { recursive: true, force: true }));
     const changelogPath = path.join(tempDir, "CHANGELOG.md");
     writeFileSync(changelogPath, SAMPLE_CHANGELOG, "utf8");
 
@@ -162,8 +163,9 @@ describe("extractChangelogEntry", () => {
     assert.match(result.stderr, /Missing value for argument: --file/);
   });
 
-  it("fails from the CLI when version is missing", () => {
+  it("fails from the CLI when version is missing", (t) => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "sockguard-changelog-"));
+    t.after(() => rmSync(tempDir, { recursive: true, force: true }));
     const changelogPath = path.join(tempDir, "CHANGELOG.md");
     writeFileSync(changelogPath, SAMPLE_CHANGELOG, "utf8");
 
@@ -175,8 +177,9 @@ describe("extractChangelogEntry", () => {
     assert.match(result.stderr, /--version is required/);
   });
 
-  it("uses CHANGELOG.md by default from the working directory", () => {
+  it("uses CHANGELOG.md by default from the working directory", (t) => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "sockguard-changelog-"));
+    t.after(() => rmSync(tempDir, { recursive: true, force: true }));
     writeFileSync(path.join(tempDir, "CHANGELOG.md"), SAMPLE_CHANGELOG, "utf8");
 
     const result = spawnSync(process.execPath, [scriptPath, "--version", "1.0.0"], {
@@ -192,8 +195,9 @@ describe("extractChangelogEntry", () => {
     assert.equal(formatCLIError("plain failure"), "plain failure");
   });
 
-  it("prints an entry unchanged from the CLI when under --max-bytes", () => {
+  it("prints an entry unchanged from the CLI when under --max-bytes", (t) => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "sockguard-changelog-"));
+    t.after(() => rmSync(tempDir, { recursive: true, force: true }));
     const changelogPath = path.join(tempDir, "CHANGELOG.md");
     writeFileSync(changelogPath, SAMPLE_CHANGELOG, "utf8");
 
@@ -208,12 +212,13 @@ describe("extractChangelogEntry", () => {
     assert.ok(!result.stdout.includes(TRUNCATION_FOOTER));
   });
 
-  it("truncates from the CLI when over --max-bytes", () => {
+  it("truncates from the CLI when over --max-bytes", (t) => {
     const longLine = "- Note about the release.".repeat(20);
     const longChangelog = `# Changelog\n\n## [1.2.0] - 2026-03-20\n\n### Added\n\n${longLine
       .match(/.{1,60}/g)
       .join("\n")}\n`;
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "sockguard-changelog-"));
+    t.after(() => rmSync(tempDir, { recursive: true, force: true }));
     const changelogPath = path.join(tempDir, "CHANGELOG.md");
     writeFileSync(changelogPath, longChangelog, "utf8");
 
@@ -229,8 +234,9 @@ describe("extractChangelogEntry", () => {
     assert.ok(Buffer.byteLength(result.stdout, "utf8") <= 200 + 1);
   });
 
-  it("fails from the CLI when --max-bytes is not a positive integer", () => {
+  it("fails from the CLI when --max-bytes is not a positive integer", (t) => {
     const tempDir = mkdtempSync(path.join(os.tmpdir(), "sockguard-changelog-"));
+    t.after(() => rmSync(tempDir, { recursive: true, force: true }));
     const changelogPath = path.join(tempDir, "CHANGELOG.md");
     writeFileSync(changelogPath, SAMPLE_CHANGELOG, "utf8");
 
