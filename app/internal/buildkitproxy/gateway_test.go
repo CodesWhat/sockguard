@@ -170,6 +170,53 @@ func TestGatewayBindsCallsToActiveRootPolicy(t *testing.T) {
 	}
 }
 
+func TestGatewayPongCacheImportCapabilities(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		importTypes []string
+		enabled     bool
+		wantIDs     string
+	}{
+		{name: "cache imports disabled", enabled: true, wantIDs: "solve.base"},
+		{name: "cache imports permitted", importTypes: []string{"registry"}, enabled: true, wantIDs: "solve.base,importcaches"},
+		{name: "disabled advertised capability", importTypes: []string{"registry"}, wantIDs: "solve.base"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			policy := allowAllPolicy
+			policy.Control.Solve.AllowedCacheImportTypes = tc.importTypes
+			pong := &gateway.PongResponse{FrontendAPICaps: []*caps.APICap{
+				{ID: "solve.base", Enabled: true},
+				{ID: "importcaches", Enabled: tc.enabled},
+				{ID: "unknown.capability", Enabled: true},
+			}}
+			frame, denial := filterGatewayPong(bytes.NewReader(grpcFrame(mustMarshal(t, pong))), DefaultLimits().MaxMessageBytes, policy)
+			if denial != nil {
+				t.Fatalf("filterGatewayPong() denied: %v", denial)
+			}
+			_, payload, err := readGRPCFrame(bytes.NewReader(frame), DefaultLimits().MaxMessageBytes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var filtered gateway.PongResponse
+			if err := proto.Unmarshal(payload, &filtered); err != nil {
+				t.Fatal(err)
+			}
+			var ids []string
+			for _, capability := range filtered.FrontendAPICaps {
+				if !capability.Enabled {
+					t.Fatalf("disabled capability %q retained", capability.ID)
+				}
+				ids = append(ids, capability.ID)
+			}
+			if got := strings.Join(ids, ","); got != tc.wantIDs {
+				t.Fatalf("capabilities = %q, want %q", got, tc.wantIDs)
+			}
+		})
+	}
+}
+
 func TestGatewayRequestPolicy(t *testing.T) {
 	for _, tc := range []struct {
 		method  string

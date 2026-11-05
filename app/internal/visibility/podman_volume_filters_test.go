@@ -58,6 +58,28 @@ func TestPodmanVolumeListRefusesNonLabelFilters(t *testing.T) {
 	}
 }
 
+func TestPodmanVolumeListHeadRefusesNonLabelFilters(t *testing.T) {
+	t.Parallel()
+	for _, path := range podmanVolumeListPaths {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			reached := false
+			meta := &logging.RequestMeta{RolloutMode: "warn"}
+			req := httptest.NewRequest(http.MethodHead, path+"?filters="+url.QueryEscape(`{"driver":["local"]}`), nil)
+			req = req.WithContext(logging.WithMeta(req.Context(), meta))
+			rec := httptest.NewRecorder()
+			podmanVolumeVisibilityHandler(upstreamflavor.Podman, &reached).ServeHTTP(rec, req)
+
+			if reached || rec.Code != http.StatusForbidden {
+				t.Fatalf("HEAD reached = %v status = %d, want refused with 403", reached, rec.Code)
+			}
+			if meta.ReasonCode != reasonCodeVisibilityPodmanVolumeFilter {
+				t.Fatalf("reason code = %q, want %q", meta.ReasonCode, reasonCodeVisibilityPodmanVolumeFilter)
+			}
+		})
+	}
+}
+
 func TestPodmanVolumeListAllowsLabelOnlyOrNoFilters(t *testing.T) {
 	t.Parallel()
 	for _, path := range podmanVolumeListPaths {

@@ -54,6 +54,43 @@ func catalogBoundEndpointShape(t *testing.T, path string) catalogIdentifierShape
 	return 0
 }
 
+func TestCatalogAllowWitnessHonorsBudgets(t *testing.T) {
+	t.Parallel()
+	catalog, err := compileCatalogMachine("/containers/json", catalogIdentifierSegment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule, err := compileCatalogRuleMachine("/containers/**", "allow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	machines := []catalogRuleMachine{catalog, rule}
+	tests := []struct {
+		name   string
+		budget catalogReachabilityBudget
+		want   catalogReachability
+	}{
+		{name: "unspent", want: catalogReachable},
+		{name: "transition budget exhausted", budget: catalogReachabilityBudget{transitions: maxCatalogReachabilityTransitions}, want: catalogReachabilityIndeterminate},
+		{name: "state budget exhausted", budget: catalogReachabilityBudget{states: maxCatalogReachabilityStates}, want: catalogReachabilityIndeterminate},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			witness, got := catalogAllowWitness(machines, &tt.budget)
+			if got != tt.want {
+				t.Fatalf("witness result = %v, want %v (witness %q)", got, tt.want, witness)
+			}
+			if got == catalogReachable && witness != "/containers/json" {
+				t.Fatalf("witness = %q, want /containers/json", witness)
+			}
+			if got == catalogReachabilityIndeterminate && witness != "" {
+				t.Fatalf("exhausted budget returned witness %q", witness)
+			}
+		})
+	}
+}
+
 // TestValidateAndCompileRulesBoundsLongPatterns pins that an unbounded rule
 // pattern cannot turn one validation into seconds of CPU. Rule patterns are
 // user input and /admin/validate repeats the whole walk per request, so the
