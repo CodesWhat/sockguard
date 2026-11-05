@@ -29,8 +29,9 @@
 #     redact_mount_paths: true
 #     redact_container_env: true
 #
-# redact_network_topology is also disabled for the same reason: drydock's clone
-# logic reconstructs NetworkMode from the inspect spec.
+# redact_network_topology is also disabled so drydock sees the real attached
+# addresses in the inspect spec. NetworkMode and network IDs are not redacted
+# in v3.0 either way.
 #
 # Exec: this preset denies all exec paths. To allow interactive exec sessions
 # through Portwing (e.g. for a terminal-over-websocket feature), use the

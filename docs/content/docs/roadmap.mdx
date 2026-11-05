@@ -4,10 +4,10 @@ description: Sockguard's shipped v1.7, v2.0, v2.1, v2.2, v2.3, and v2.4 work and
 ---
 
 Sockguard v3.0 is the current stable feature line, with v3.0.0 the latest
-release. It promotes `3.0.0-rc.6` unchanged in behavior, moves the Go module to
+release. It promotes `3.0.0-rc.6` with the published v2.4.5 signed root UID fix, moves the Go module to
 `/v3`, rejects the insecure endpoint TLS settings deprecated in v2.1, and carries
-everything through v2.4.4. The v2.4 line stays supported for security fixes until
-v3.1 ships. v2.4.4 stops redaction placeholders from breaking typed Docker
+everything through v2.4.5. The v2.4 line stays supported for security fixes until
+v3.1 ships. v2.4.5 treats signed numeric users such as `+0` as root in policy checks. v2.4.4 stops redaction placeholders from breaking typed Docker
 clients, fixes Portainer Recreate and the watchtower and portwing presets, and
 closes libpod create bypasses and inspect leaks. It carries v2.4.3, v2.4.2,
 v2.4.1 and everything through v2.3.3.
@@ -215,7 +215,7 @@ See [Security](/security#standard-buildx-dockerfile-builds).
 ## v3 compatibility boundary
 
 [v3.0.0](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0) is the
-first release on the v3 line. It carries v2.4.4, which includes the v2.4
+first release on the v3 line. It carries v2.4.5, which includes the v2.4
 policy/security work. The insecure endpoint TLS setting and unverified
 `DOCKER_TLS` fallback deprecated in v2.1 are rejected. The
 [deprecation ledger](/deprecations) owns the exact contracts. All v2 lines

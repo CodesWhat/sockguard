@@ -9,7 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [3.0.0] - 2026-11-17
 
-v3.0.0 promotes v3.0.0-rc.6 unchanged in behavior. It is the first release on the `github.com/codeswhat/sockguard/v3` Go module and removes the two insecure TLS settings deprecated in v2.1. It carries everything through v2.4.4: the v2.3 BuildKit frontend mediation and MIT license, and the v2.4 image admission, create launch-field policy, Podman isolation, exec target protection, session cleanup and client compatibility work. Stable Docker, Homebrew, deb/rpm and binary channels move to v3 with this release, and 2.4.x stays supported for security fixes until v3.1 ships.
+Prepared and unpublished. November 17 is the earliest release date; final release checks and publication are still required.
+
+v3.0.0 promotes v3.0.0-rc.6 and includes the published v2.4.5 signed root UID fix. It is the first release on the `github.com/codeswhat/sockguard/v3` Go module and removes the two insecure TLS settings deprecated in v2.1. It carries everything through v2.4.5: the v2.3 BuildKit frontend mediation and MIT license, and the v2.4 image admission, create launch-field policy, Podman isolation, exec target protection, session cleanup and client compatibility work. Stable Docker, Homebrew, deb/rpm and binary channels move to v3 with this release, and 2.4.x stays supported for security fixes until v3.1 ships.
 
 ### Breaking changes
 
@@ -48,6 +50,8 @@ v3.0.0 promotes v3.0.0-rc.6 unchanged in behavior. It is the first release on th
 
 ### Fixed
 
+- Includes the v2.4.5 fix that treats signed numeric user IDs such as `+0` as root for Docker and Podman root-user policy checks.
+
 - The Diun preset sets `response.redact_network_topology: false`, so Diun's typed container list no longer fails on placeholder addresses.
 - Carries the v2.4.4 fixes for typed Docker clients, the Portainer, watchtower and portwing presets, visibility `image_patterns` on inspect, slow stop and prune timeouts, and 429 bodies without a `message`.
 
@@ -75,6 +79,14 @@ This candidate carries v2.4.4 (the client compatibility sweep and libpod create 
 ### Security
 
 - **Native container create gates two more SpecGenerator fields.** `POST /libpod/containers/create` forwarded a non-empty `unified` map, raw cgroup v2 control values Podman writes into the container's cgroup, and `env_host: true`, which copies the Podman daemon's environment into the container (it was only refused while an environment allow or deny list was set). Both are now denied unless `request_body.libpod_container_create.allow_unified_cgroup_settings` or `allow_env_host` is on (`SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_UNIFIED_CGROUP_SETTINGS` and `..._ALLOW_ENV_HOST`). This is a default-deny change for a client that sets either, such as `podman run --cgroup-conf` or `--env-host`. A non-empty `pod` (which joins the pod's infra namespaces) is now denied while `restrict_namespace_sharing` is on, the same switch that governs `container:<ref>` joins; it passes with that off, as before. `r_limits` stays ungated like the Docker-compat `Ulimits`, and when owner isolation is enabled `pod` and `dependencyContainers` are also owner-checked.
+
+## [2.4.5] - 2026-11-03
+
+v2.4.5 is a security release. A numeric user with a sign prefix such as `+0` was not treated as root, so `request_body.exec.allow_root_user: false` and `require_non_root_user` could be bypassed to run as UID 0 on Docker and Podman. It carries v2.4.4.
+
+### Security
+
+- Signed numeric user IDs such as `+0`, `-0`, `+00` and `+0:0` were not treated as root. dockerd and Podman parse a numeric user with `strconv.Atoi`, which accepts a sign, but the filter used `ParseUint`, which does not. A container create, libpod create or exec create with `"User":"+0"` therefore got past `require_non_root_user` and `request_body.exec.allow_root_user: false` and ran as UID 0. The filter now parses the user the way the engines do. A value that overflows is a user name to the engines too, so it is still looked up by name and never wraps to 0.
 
 ## [2.4.4] - 2026-11-03
 
