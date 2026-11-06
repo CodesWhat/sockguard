@@ -523,6 +523,8 @@ Rate-limit eviction regressions cover exact refill times and millisecond-clock w
 
 Mutation regressions cover empty mount options before overlay directory restrictions. Route-analysis tests cover the exact instruction budgets for known-route diagnostics and body-sensitive rule reachability. Reachability tests also cover valid Unicode identifiers around the surrogate block and at the maximum scalar value.
 
+Inline-volume privilege tests cover default and explicit driver selection.
+
 Mutation regressions also cover native named-volume bind options, native and Swarm tmpfs privilege checks, pods without image volumes under an image allowlist, and saturation of unsigned resource limits.
 
 Pull progress checks parse the final line even without a newline and retain exact-limit and split-chunk size bounds. HTTP status boundary tests keep post-checks and tag restoration within successful responses. Pull regressions cover reported-ID and pre-pull snapshot count boundaries. Native integration tests probe network-name and manifest-list ID stability against the live engine.
