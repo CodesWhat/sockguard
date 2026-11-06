@@ -525,7 +525,7 @@ Mutation regressions also cover native named-volume bind options, native and Swa
 
 Pull progress checks parse the final line even without a newline and retain exact-limit and split-chunk size bounds. Native integration tests probe network-name and manifest-list ID stability against the live engine.
 
-Native Podman network label decoding accepts only JSON whitespace around inspect objects and arrays, and rejects form feed and Unicode whitespace, with the original failing fuzz input retained as a regression seed.
+Native Podman network label decoding accepts only JSON whitespace around inspect objects and arrays, and rejects form feed and Unicode whitespace, with the original failing fuzz input retained as a regression seed. The gRPC frame fuzzer bounds allocations on its unlimited-parser lane while retaining malformed-header and configured-limit rejection coverage.
 
 CLI tests remove their temporary changelog files and release-history repositories when each test finishes.
 
