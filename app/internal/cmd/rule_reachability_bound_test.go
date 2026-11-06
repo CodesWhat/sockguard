@@ -281,3 +281,26 @@ func TestCatalogRulesAtInstructionBudget(t *testing.T) {
 		})
 	}
 }
+
+func TestCatalogReachabilityUnicodeIdentifiers(t *testing.T) {
+	t.Parallel()
+	const endpoint = "/containers/sockguard-test/exec"
+	shape := catalogBoundEndpointShape(t, endpoint)
+	for _, tt := range []struct {
+		name, identifier string
+	}{
+		{name: "before surrogate block", identifier: "\uD7FF"},
+		{name: "after surrogate block", identifier: "\uE000"},
+		{name: "before maximum scalar", identifier: "\U0010FFFE"},
+		{name: "maximum scalar", identifier: "\U0010FFFF"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			pattern := "/containers/" + tt.identifier + "/exec"
+			rules := []config.RuleConfig{{Action: "allow", Match: config.MatchConfig{Method: "POST", Path: pattern}}}
+			witness, got := firstAllowedCatalogPath("POST", endpoint, shape, nil, rules)
+			if got != catalogReachable || witness != pattern {
+				t.Fatalf("reachability=%v, witness=%q; want reachable with literal %q", got, witness, pattern)
+			}
+		})
+	}
+}

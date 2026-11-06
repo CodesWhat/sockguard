@@ -521,7 +521,7 @@ Image-build and image-load ownership tests cover the exact supported name budget
 
 Rate-limit eviction regressions cover exact refill times and millisecond-clock wrap without waiting on wall time.
 
-Mutation regressions cover empty mount options before overlay directory restrictions. Route-analysis tests cover the exact instruction budgets for known-route diagnostics and body-sensitive rule reachability.
+Mutation regressions cover empty mount options before overlay directory restrictions. Route-analysis tests cover the exact instruction budgets for known-route diagnostics and body-sensitive rule reachability. Reachability tests also cover valid Unicode identifiers around the surrogate block and at the maximum scalar value.
 
 Mutation regressions also cover native named-volume bind options, native and Swarm tmpfs privilege checks, pods without image volumes under an image allowlist, and saturation of unsigned resource limits.
 
