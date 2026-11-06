@@ -171,6 +171,8 @@ func TestRedactNetworkTopology_RemainingLeaksRejectBadShapes(t *testing.T) {
 		{"service not object", "/v1.53/networks/n", `{"Services":{"a":1}}`},
 		{"tasks not array", "/v1.53/networks/n", `{"Services":{"a":{"Tasks":{}}}}`},
 		{"pools not array", "/v1.53/info", `{"DefaultAddressPools":{}}`},
+		{"swarm pools not array", "/v1.53/swarm", `{"DefaultAddressPools":{"Base":"10.20.0.0/16"}}`},
+		{"nested swarm pools not array", "/v1.53/info", `{"Swarm":{"Cluster":{"DefaultAddressPools":{"Base":"10.20.0.0/16"}}}}`},
 		{"container ports not array", "/v1.53/containers/abc/json", `{"Ports":{}}`},
 		{"port ip not an address", "/v1.53/containers/json", `[{"Ports":[{"IP":"eth0"}]}]`},
 		{"port ip not a string", "/v1.53/containers/json", `[{"Ports":[{"IP":7}]}]`},
