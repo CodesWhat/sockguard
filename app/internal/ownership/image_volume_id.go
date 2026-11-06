@@ -26,13 +26,12 @@ func imageVolumeID(ctx context.Context) bool {
 // platform instance. Delayed volume lookup is safe only when the inspected
 // image's own config ID equals the full ID recorded in the create body.
 func decodeImageVolumeID(body io.Reader, identifier string) (map[string]string, bool, error) {
-	const maxBody = 1 << 20
-	data, err := io.ReadAll(io.LimitReader(body, maxBody+1))
+	data, err := io.ReadAll(io.LimitReader(body, maxOwnershipBodyBytes+1))
 	if err != nil {
 		return nil, false, err
 	}
-	if len(data) > maxBody {
-		return nil, false, fmt.Errorf("image volume inspect response exceeds %d bytes", maxBody)
+	if len(data) > maxOwnershipBodyBytes {
+		return nil, false, fmt.Errorf("image volume inspect response exceeds %d bytes", maxOwnershipBodyBytes)
 	}
 	var payload struct {
 		ID string `json:"Id"`

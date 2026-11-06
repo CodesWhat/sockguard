@@ -19,17 +19,16 @@ func networkDeleteName(ctx context.Context) bool {
 }
 
 // Podman stores network names on containers but compares the delete argument
-// literally when checking whether a network is in use. Native ID deletion can
+// literally when checking whether a network is in use. Deletion by ID can
 // leave those references behind. Require the canonical name so the daemon's
 // in-use check runs before it removes a network.
 func decodeNetworkDeleteName(body io.Reader, identifier string) (map[string]string, bool, error) {
-	const maxBody = 1 << 20
-	data, err := io.ReadAll(io.LimitReader(body, maxBody+1))
+	data, err := io.ReadAll(io.LimitReader(body, maxOwnershipBodyBytes+1))
 	if err != nil {
 		return nil, false, err
 	}
-	if len(data) > maxBody {
-		return nil, false, fmt.Errorf("network inspect response exceeds %d bytes", maxBody)
+	if len(data) > maxOwnershipBodyBytes {
+		return nil, false, fmt.Errorf("network inspect response exceeds %d bytes", maxOwnershipBodyBytes)
 	}
 	var payload struct {
 		Name   string            `json:"Name"`

@@ -14,6 +14,7 @@ import (
 	"github.com/codeswhat/sockguard/v3/app/internal/config"
 	"github.com/codeswhat/sockguard/v3/app/internal/filter"
 	"github.com/codeswhat/sockguard/v3/app/internal/ownership"
+	"github.com/codeswhat/sockguard/v3/app/internal/upstreamflavor"
 	"strings"
 	"testing"
 	"time"
@@ -74,7 +75,18 @@ func (p podmanReferenceProbe) json(method, path string, body any) []byte {
 }
 
 func TestPodmanNetworkReferenceStability(t *testing.T) {
+	for _, family := range []string{"native", "compat"} {
+		t.Run(family, func(t *testing.T) { probePodmanNetworkReferenceStability(t, family) })
+	}
+}
+
+func probePodmanNetworkReferenceStability(t *testing.T, family string) {
+	t.Helper()
 	p := newPodmanReferenceProbe(t)
+	removePrefix := p.prefix
+	if family == "compat" {
+		removePrefix = "/v1.40"
+	}
 	name := fmt.Sprintf("sockguard-ref-%d", time.Now().UnixNano())
 	networkPath := p.prefix + "/networks/" + name
 	created := p.json(http.MethodPost, p.prefix+"/networks/create", map[string]any{"name": name, "labels": map[string]string{"fixture": "original", "com.sockguard.owner": "job-123"}})
@@ -107,20 +119,21 @@ func TestPodmanNetworkReferenceStability(t *testing.T) {
 	}
 	handler := newIntegrationProxyHandlerWithOptions(t, podmanSocketForIntegration(t), []config.RuleConfig{
 		{Match: config.MatchConfig{Method: http.MethodDelete, Path: "/libpod/networks/**"}, Action: "allow"},
-	}, filter.Options{}, ownership.Options{Owner: "job-123", LabelKey: "com.sockguard.owner"})
+		{Match: config.MatchConfig{Method: http.MethodDelete, Path: "/networks/**"}, Action: "allow"},
+	}, filter.Options{}, ownership.Options{Owner: "job-123", LabelKey: "com.sockguard.owner", UpstreamFlavor: upstreamflavor.Podman})
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, p.prefix+"/networks/"+network.ID, nil))
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, removePrefix+"/networks/"+network.ID, nil))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("proxy network ID delete: status=%d body=%s, want 404", rec.Code, rec.Body.String())
 	}
 	if status, data := p.request(http.MethodGet, networkPath+"/json", "", nil); status != http.StatusOK {
 		t.Fatalf("proxy removed network: status=%d body=%s", status, data)
 	}
-	nameStatus, _ := p.request(http.MethodDelete, networkPath, "", nil)
+	nameStatus, _ := p.request(http.MethodDelete, removePrefix+"/networks/"+name, "", nil)
 	if status, body := p.request(http.MethodGet, networkPath+"/json", "", nil); status != http.StatusOK {
 		t.Fatalf("name deletion removed an in-use network: delete=%d inspect=%d body=%s", nameStatus, status, body)
 	}
-	idStatus, _ := p.request(http.MethodDelete, p.prefix+"/networks/"+network.ID, "", nil)
+	idStatus, _ := p.request(http.MethodDelete, removePrefix+"/networks/"+network.ID, "", nil)
 	status, data := p.request(http.MethodGet, networkPath+"/json", "", nil)
 	if status == http.StatusOK {
 		t.Logf("network reference: name delete=%d ID delete=%d; engine retains in-use network", nameStatus, idStatus)
