@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Test build-context rejection of an empty zstd skippable frame at the exact eight-byte header boundary.
+
 - Bound gRPC frame fuzz allocations when exercising the parser without a configured limit, including later frames in a stream.
 
 - Verify unified CPU periods preserve, supply or clear the configured soft-limit intent without treating a period as a hard CPU cap.
