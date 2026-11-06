@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Update the application and Docker client compatibility modules to `github.com/klauspost/compress` 1.20.2 for GO-2026-6865 / CVE-2026-116591, a panic on malformed zstd frames.
+
 ### Changed
 
 - Exercise the zero-byte lookahead in bounded-file tests, preserve lookahead errors across close failures, and cover inline local tmpfs privilege checks on container create.

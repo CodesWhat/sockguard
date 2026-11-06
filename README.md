@@ -517,6 +517,8 @@ The next release work is v3 candidate validation and GA, followed by the remaini
 
 CLI tests remove their temporary changelog files and release-history repositories when each test finishes.
 
+The next unreleased line includes the compression dependency update for GO-2026-6865 / CVE-2026-116591.
+
 The frontend runner waits within a bounded cleanup deadline for Docker to confirm its container is absent, including when automatic removal is already in progress. A timed-out inspection remains a verification error even when an earlier query found the container.
 
 Maintenance patches advance a floating major image tag only from that major's newest minor line recorded in `SECURITY.md`. A 2.4 patch can keep `:2` current after v3 ships, while an older minor cannot move a major tag backward.
