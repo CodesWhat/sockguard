@@ -15,6 +15,7 @@ func TestLibpodPodCreateInheritedFieldsUseTheContainerGates(t *testing.T) {
 		wantReason string
 	}{
 		{name: "no inherited fields", body: `{"name":"p"}`},
+		{name: "image allowlist without image volumes", container: LibpodContainerCreateOptions{AllowedImages: []string{"alpine:3"}}, body: `{"name":"p"}`},
 		{name: "bind mount refused by default", body: `{"mounts":[{"type":"bind","source":"/etc","destination":"/h"}]}`, wantReason: `libpod pod create denied: bind mount source "/etc" is not allowlisted`},
 		{name: "bind mount on the allowlist", container: LibpodContainerCreateOptions{AllowedBindMounts: []string{"/srv"}}, body: `{"mounts":[{"type":"bind","source":"/srv/data","destination":"/d"}]}`},
 		{name: "bind mount off the allowlist", container: LibpodContainerCreateOptions{AllowedBindMounts: []string{"/srv"}}, body: `{"mounts":[{"type":"bind","source":"/etc","destination":"/d"}]}`, wantReason: `libpod pod create denied: bind mount source "/etc" is not allowlisted`},

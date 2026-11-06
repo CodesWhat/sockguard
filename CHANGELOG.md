@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Add mutation regressions for native named-volume bind options, native and Swarm tmpfs privilege checks, empty pod image-volume lists, and unsigned resource-limit saturation.
+
 - Cover unterminated image-pull progress and exact/split line limits, and add real-Podman network-name and manifest-list ID stability probes.
 
 - Exercise the zero-byte lookahead in bounded-file tests, preserve lookahead errors across close failures, and cover inline local tmpfs privilege checks on container create.

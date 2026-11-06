@@ -1199,3 +1199,25 @@ func TestServiceInspectDeniesAutomaticRollbackWithAllowedImages(t *testing.T) {
 		t.Fatalf("pause: inspect = %q, %v", reason, err)
 	}
 }
+
+func TestServiceTmpfsVolumePrivilegeBoundary(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, options string
+		grant         bool
+		want          string
+	}{
+		{name: "restricted", options: "noexec,nosuid,nodev"},
+		{name: "executable", options: "exec,nosuid,nodev", want: "service denied: local tmpfs volume options enable exec, dev, or suid (set request_body.container_create.allow_tmpfs_privileged_options: true)"},
+		{name: "explicit grant", options: "exec,nosuid,nodev", grant: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := newServicePolicy(ServiceOptions{AllowedRegistries: []string{"docker.io"}, AllowTmpfsPrivilegedOptions: tt.grant})
+			req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(`{"TaskTemplate":{"ContainerSpec":{"Image":"alpine:3","Mounts":[{"Type":"volume","Source":"data","Target":"/data","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"tmpfs","o":"`+tt.options+`"}}}}]}}}`))
+			reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+			if err != nil || reason != tt.want {
+				t.Fatalf("inspect=(%q,%v), want %q", reason, err, tt.want)
+			}
+		})
+	}
+}
