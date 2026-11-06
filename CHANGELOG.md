@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Cover empty OCI blobs, exact retained-body limits and the tracked-blob ceiling before the next blob is read.
+
 - Check archive owner-label retention at exact config-file and byte budgets, including config replacement that must release its previous byte charge.
 
 - Retain dangling object-key, array and string prefixes as admission-scanner fuzz seeds, with named boundary subtests for image references and gRPC headers.
