@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Align candidate migration guidance and stable install examples with published v2.4.6 channels.
+
 ### Security
 
 - Carry the compression dependency update to 1.20.2 for GO-2026-6865 / CVE-2026-116591 into v3.
