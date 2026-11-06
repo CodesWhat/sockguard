@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Exercise the zero-byte lookahead in bounded-file tests and verify that lookahead read errors survive a later close failure.
+- Exercise the zero-byte lookahead in bounded-file tests, preserve lookahead errors across close failures, and cover inline local tmpfs privilege checks on container create.
 
 - Clean up temporary changelog and release-history fixtures after CLI tests, including failed assertions.
 

@@ -1094,3 +1094,36 @@ func TestSplitOverlayDirList(t *testing.T) {
 		})
 	}
 }
+
+func TestContainerCreateInlineTmpfsPrivilegePolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		options    string
+		allow      bool
+		wantReason string
+	}{
+		{name: "restricted tmpfs", options: "noexec,nosuid,nodev"},
+		{name: "exec overrides noexec", options: "noexec,nosuid,nodev,exec", wantReason: "local tmpfs volume options enable"},
+		{name: "suid overrides nosuid", options: "noexec,nosuid,nodev,suid", wantReason: "local tmpfs volume options enable"},
+		{name: "dev overrides nodev", options: "noexec,nosuid,nodev,dev", wantReason: "local tmpfs volume options enable"},
+		{name: "kernel defaults are privileged", options: "size=16m", wantReason: "unless o lists noexec,nosuid,nodev"},
+		{name: "explicit privilege grant", options: "exec,suid,dev", allow: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"HostConfig":{"Mounts":[{"Type":"volume","Source":"data","Target":"/data","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"tmpfs","device":"tmpfs","o":"` + tc.options + `"}}}}]}}`
+			policy := newContainerCreatePolicy(ContainerCreateOptions{AllowTmpfsPrivilegedOptions: tc.allow})
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(body))
+			reason, err := policy.inspect(testLogger(), req, "/containers/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if tc.wantReason == "" {
+				if reason != "" {
+					t.Fatalf("inspect() denied allowed inline tmpfs: %s", reason)
+				}
+			} else if !strings.Contains(reason, tc.wantReason) {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tc.wantReason)
+			}
+		})
+	}
+}
