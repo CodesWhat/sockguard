@@ -242,3 +242,42 @@ func TestCatalogReachabilityStepBudgetKeepsMeasuredHeadroom(t *testing.T) {
 			maxCatalogReachabilitySteps, headroom, catalogHeaviestPresetSteps, maxHeadroom)
 	}
 }
+
+func TestCatalogRulesAtInstructionBudget(t *testing.T) {
+	t.Parallel()
+	const endpoint = "/images/create"
+	shape := catalogBoundEndpointShape(t, endpoint)
+	catalog, err := compileCatalogMachine(endpoint, shape)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name  string
+		delta int
+		want  catalogReachability
+	}{
+		{name: "below", delta: -1, want: catalogUnreachable},
+		{name: "exact", want: catalogUnreachable},
+		{name: "above", delta: 1, want: catalogReachabilityIndeterminate},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			count := maxCatalogReachabilityInstructions + tt.delta
+			pattern := "/" + strings.Repeat("x", count-len(catalog.program.Inst)-3)
+			machine, err := compileCatalogRuleMachine(pattern, "allow")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := len(catalog.program.Inst) + len(machine.program.Inst); got != count {
+				t.Fatalf("compiled instructions=%d, want %d", got, count)
+			}
+			rules := []config.RuleConfig{{Action: "allow", Match: config.MatchConfig{Method: "POST", Path: pattern}}}
+			witness, got := firstAllowedCatalogPath("POST", endpoint, shape, nil, rules)
+			if got != tt.want {
+				t.Fatalf("reachability=%v for %d instructions, want %v (witness %q)", got, count, tt.want, witness)
+			}
+			if got == catalogUnreachable && witness != "" {
+				t.Fatalf("unreachable rule returned witness %q", witness)
+			}
+		})
+	}
+}

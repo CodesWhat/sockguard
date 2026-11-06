@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Pin exact instruction budgets for known-route diagnostics and body-sensitive rule reachability, including the conservative result above each limit.
+
 - Cover leading and repeated empty bind-mount options before overlay directory restrictions.
 
 - Verify key-based image trust initializes while the keyless trust-root service is unavailable, without contacting that service.
