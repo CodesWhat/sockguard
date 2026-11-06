@@ -521,6 +521,8 @@ Image-build and image-load ownership tests cover the exact supported name budget
 
 Rate-limit eviction regressions cover exact refill times and millisecond-clock wrap without waiting on wall time.
 
+Mutation regressions cover empty mount options before overlay directory restrictions.
+
 Mutation regressions also cover native named-volume bind options, native and Swarm tmpfs privilege checks, pods without image volumes under an image allowlist, and saturation of unsigned resource limits.
 
 Pull progress checks parse the final line even without a newline and retain exact-limit and split-chunk size bounds. HTTP status boundary tests keep post-checks and tag restoration within successful responses. Native integration tests probe network-name and manifest-list ID stability against the live engine.
