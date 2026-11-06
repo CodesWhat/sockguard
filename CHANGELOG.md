@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.6] - 2026-11-06
+
+v2.4.6 updates the compression dependency to fix a panic on malformed zstd frames. It carries v2.4.5.
+
+### Security
+
+- Update `github.com/klauspost/compress` from 1.19.2 to 1.20.2 in the application and Docker client compatibility modules to fix GO-2026-6865 / CVE-2026-116591, a panic when decoding malformed zstd frames.
+
 ## [2.4.5] - 2026-11-03
 
 v2.4.5 is a security release. A numeric user with a sign prefix such as `+0` was not treated as root, so `request_body.exec.allow_root_user: false` and `require_non_root_user` could be bypassed to run as UID 0 on Docker and Podman. It carries v2.4.4.
