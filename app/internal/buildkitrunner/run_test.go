@@ -101,6 +101,7 @@ func TestRunOrchestration(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			log := installRunnerFixture(t, tc.name)
+			sessionFailureInjected := make(chan struct{})
 			if tc.name == "serve-error" || tc.name == "session-serve-error" {
 				original := serveH2
 				t.Cleanup(func() { serveH2 = original })
@@ -109,6 +110,7 @@ func TestRunOrchestration(t *testing.T) {
 						return errors.New("injected serve failure")
 					}
 					if tc.name == "session-serve-error" && config.MaxConcurrentStreams == 8 {
+						close(sessionFailureInjected)
 						return errors.New("injected session serve failure")
 					}
 					return original(ctx, conn, config)
@@ -178,6 +180,12 @@ func TestRunOrchestration(t *testing.T) {
 				h2conn.Serve(fixtureCtx, upgraded, h2conn.ServerConfig{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					payload, err := readMessage(r.Body)
 					if err != nil {
+						// Session startup failure can cancel a control request mid-read.
+						select {
+						case <-sessionFailureInjected:
+							return
+						default:
+						}
 						t.Error(err)
 						rpcError(w, "3", "bad fixture request")
 						return

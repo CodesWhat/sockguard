@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Avoid a false test failure when an injected session-start failure cancels a mock-daemon control request.
+
 - Cover graceful tunnel disconnects, policy-specific image-mount and ordered overlay denials, and pull checks for stored short names and reported image IDs.
 
 - Verify compiled route-search closures retain their start states and candidate enumeration spends the shared work budget.
