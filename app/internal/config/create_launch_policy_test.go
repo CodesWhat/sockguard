@@ -200,6 +200,12 @@ func TestCreateLaunchValidationEntryPositions(t *testing.T) {
 				if err == nil || !strings.Contains(err.Error(), want) {
 					t.Fatalf("validation error=%v, want second-entry diagnostic %q", err, want)
 				}
+				for _, position := range []string{"1", "3"} {
+					unexpected := "request_body." + group + "." + tt.field + " entry " + position + " "
+					if strings.Contains(err.Error(), unexpected) {
+						t.Fatalf("validation error=%v, unexpected diagnostic %q", err, unexpected)
+					}
+				}
 			})
 		}
 	}
