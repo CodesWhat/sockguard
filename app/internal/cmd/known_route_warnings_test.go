@@ -110,3 +110,36 @@ func TestStartupKnownRouteWarningsRemainAdvisoryAndBounded(t *testing.T) {
 		t.Fatal("diagnostics changed policy")
 	}
 }
+
+func TestKnownRouteWarningsAtInstructionBudget(t *testing.T) {
+	t.Parallel()
+	routes, err := loadKnownAPIRoutes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name  string
+		delta int
+		want  bool
+	}{
+		{name: "below", delta: -1},
+		{name: "exact"},
+		{name: "above", delta: 1, want: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			count := maxCatalogReachabilityInstructions + tt.delta
+			pattern := "/" + strings.Repeat("x", count-3)
+			machine, err := compileCatalogRuleMachine(pattern, "allow")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(machine.program.Inst) != count {
+				t.Fatalf("compiled instructions=%d, want %d", len(machine.program.Inst), count)
+			}
+			rule := config.RuleConfig{Action: "allow", Match: config.MatchConfig{Method: "POST", Path: pattern}}
+			if got := ruleMatchesKnownAPIRoute(rule, routes); got != tt.want {
+				t.Fatalf("known-route match=%v for %d instructions, want %v", got, count, tt.want)
+			}
+		})
+	}
+}

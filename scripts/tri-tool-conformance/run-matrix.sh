@@ -1259,6 +1259,7 @@ assert_identity_acceptance() {
     -e AGENT_NAME=tri-tool-identity-agent \
     -e AUTHORIZED_KEYS=/run/identity/authorized_keys \
     -e ENROLLMENT_TOKEN_FILE=/run/identity/enrollment_secret \
+    -e ALLOW_INSECURE_ENROLLMENT=true \
     "$PORTWING_IMAGE_RESOLVED" >"${SCRATCH_DIR}/identity-agent.cid" 2>"${SCRATCH_DIR}/identity-agent.err"; then
     record_result "identity-enrollment" FAIL "could not start the published Portwing identity agent: $(cat "${SCRATCH_DIR}/identity-agent.err")"
     skip_detail="identity agent startup failed"

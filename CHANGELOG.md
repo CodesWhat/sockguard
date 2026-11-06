@@ -19,6 +19,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Cover graceful tunnel disconnects, policy-specific image-mount and ordered overlay denials, and pull checks for stored short names and reported image IDs.
+
+- Verify compiled route-search closures retain their start states and candidate enumeration spends the shared work budget.
+
+- Explicitly opt the isolated conformance identity agent into HTTP enrollment on its private test network for Portwing 1.2 compatibility.
+
+- Cover minimum-rune boundaries in the conservative route-language model and verify logged Podman volume-filter capabilities.
+
+- Verify deployment checks preserve the command cancellation context while probing a healthy fixture.
+
+- Verify the runtime concurrency limiter applies engine-specific streaming behavior to container top requests.
+
+- Verify readiness probes publish metrics and cgroup retries update the live runtime callback.
+
+- Exercise frontend, inspect and pull subprocess cleanup when an exited command leaves inherited output pipes open.
+
+- Verify empty ordinary attach responses stay hop-terminated and strip connection-scoped headers.
+
+- Verify frontend runner upgrades retain the configured authority and choose HTTP or HTTPS default ports before a canceled dial.
+
+- Test route witnesses with exactly enough shared state, transition and instruction-work budgets, plus one unit below and above.
+
+- Test prompt runner cancellation after a session-server failure and process-error reporting after a successful frontend Return.
+
+- Verify owner labels are stamped on image configuration forwarded by frontend gateway Return calls.
+
+- Cover engine-specific reserved network names and distinct resource kinds that share an identifier during container creation.
+
+- Test frontend scratch-result validation, independent sibling build completion and gateway denial-budget behavior.
+
+- Verify route reachability for long container names outside the preferred witness characters.
+
+- Cover exact inspect-response byte limits for canonical Podman network deletion and image-volume ID checks.
+
+- Cover digest-only pulls of bare repository names through Docker and Podman-compatible ownership post-checks.
+
+- Verify secret replacement distinguishes an unrelated ID-prefix inspect result from an exact foreign-owned secret.
+
+- Cover FileSync EOF at the exact retained-frame overhead cap before inspected data is released.
+
+- Cover frontend gateway build-reference and file-path length boundaries.
+
+- Cover default and explicit driver selection in inline tmpfs privilege checks.
+
+- Cover reported-image-ID and pre-pull snapshot count limits, including duplicate and empty reported IDs.
+
+- Verify create-policy validation reports the correct list entry for invalid commands, entrypoints and environment values.
+
+- Cover malformed Swarm address-pool shapes on direct Swarm responses and the nested Swarm cluster in `/info`.
+
+- Exercise failed startup cgroup-probe recovery through the production refresh-loop starter and its stop function.
+
+- Verify cgroup-version migration warnings report the previous and new results once per transition while the policy gate tracks each probe.
+
+- Cover valid Unicode identifiers around the surrogate block and at the maximum scalar value in route reachability.
+
+- Pin exact instruction budgets for known-route diagnostics and body-sensitive rule reachability, including the conservative result above each limit.
+
+- Cover leading and repeated empty bind-mount options before overlay directory restrictions.
+
+- Verify key-based image trust initializes while the keyless trust-root service is unavailable, without contacting that service.
+
+- Synchronize the reload polling test with its initial file snapshot so delayed event-loop startup cannot hide the test mutation.
+
+- Test HTTP/2 capability detection with an exact five-byte HTTP status prefix and shorter or unrelated partial replies.
+
+- Test image-pull post-checks and tag restoration at the HTTP success-status boundaries through Docker-compatible and native retag routes.
+
+- Test build-context rejection of an empty zstd skippable frame at the exact eight-byte header boundary.
+
 - Distinguish named-profile authorization from the global policy in engine-flavor tests and cover UTF-8 bytes in gRPC error headers.
 
 - Bound gRPC frame fuzz allocations when exercising the parser without a configured limit, including later frames in a stream.

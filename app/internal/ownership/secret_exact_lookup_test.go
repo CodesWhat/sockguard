@@ -2,9 +2,54 @@ package ownership
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/codeswhat/sockguard/v3/app/internal/upstreamflavor"
 )
+
+func TestSecretCreateDistinguishesIDPrefixFromExactForeignSecret(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name         string
+		existingName string
+		wantStatus   int
+	}{
+		{"ID prefix only", "other-secret", http.StatusAccepted},
+		{"exact name", "cafez", http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			inspects := 0
+			transport := buildImageTransport(func(r *http.Request) (*http.Response, error) {
+				inspects++
+				if r.Method != http.MethodGet || r.URL.Path != "/secrets/cafez" {
+					t.Errorf("unexpected inspect: %s %s", r.Method, r.URL.Path)
+				}
+				body := `{"ID":"cafez11111111111111111111","Spec":{"Name":"` + tc.existingName + `","Labels":{"` + DefaultLabelKey + `":"team-b"}}}`
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+			})
+			forwarded := false
+			handler := MiddlewareWithRoundTripper(transport, testLogger(), Options{Owner: "team-a", LabelKey: DefaultLabelKey, UpstreamFlavor: upstreamflavor.Podman})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				forwarded = true
+				var labels map[string]string
+				if err := json.Unmarshal([]byte(r.URL.Query().Get("labels")), &labels); err != nil || labels[DefaultLabelKey] != "team-a" {
+					t.Errorf("forwarded labels = %v, error = %v", labels, err)
+				}
+				w.WriteHeader(http.StatusAccepted)
+			}))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/libpod/secrets/create?name=cafez&replace=true", strings.NewReader("payload")))
+			if rec.Code != tc.wantStatus || forwarded != (tc.wantStatus == http.StatusAccepted) || inspects != 1 {
+				t.Fatalf("status=%d forwarded=%v inspects=%d; want status=%d; body=%s", rec.Code, forwarded, inspects, tc.wantStatus, rec.Body.String())
+			}
+		})
+	}
+}
 
 func TestExactSecretLookupContext(t *testing.T) {
 	if exactSecretLookup(context.Background()) {

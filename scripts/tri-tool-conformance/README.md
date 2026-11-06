@@ -82,6 +82,9 @@ sentinel containers and negative-auth-probe containers) via an `EXIT` trap.
    ever touches the row's real containers.
 3. **Identity lifecycle** — `current-standard` starts an isolated second
    published Portwing + drydock pairing on the row's real sockguard socket.
+   This ephemeral agent explicitly sets `ALLOW_INSECURE_ENROLLMENT=true` for
+   the HTTP enrollment probe on the row’s private Compose network. Its port
+   is not published to the host. Portwing’s production TLS default stays in place.
    A wrong enrollment credential is denied without burning the single-use
    credential; the enrolled key authenticates a real controller; reuse is
    denied. The agent then hot-reloads an overlapping replacement key on

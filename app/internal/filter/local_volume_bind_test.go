@@ -1127,3 +1127,46 @@ func TestContainerCreateInlineTmpfsPrivilegePolicy(t *testing.T) {
 		})
 	}
 }
+
+func TestContainerCreateTmpfsDriverSelection(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, driver string
+		deny         bool
+	}{
+		{name: "default local driver", deny: true},
+		{name: "explicit local driver", driver: "local", deny: true},
+		{name: "other driver", driver: "custom"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			body := `{"HostConfig":{"Mounts":[{"Type":"volume","Source":"data","Target":"/data","VolumeOptions":{"DriverConfig":{"Name":"` + tt.driver + `","Options":{"type":"tmpfs","o":"exec,suid,dev"}}}}]}}`
+			policy := newContainerCreatePolicy(ContainerCreateOptions{})
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(body))
+			reason, err := policy.inspect(testLogger(), req, "/containers/create")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.deny {
+				if !strings.Contains(reason, "local tmpfs volume options enable") {
+					t.Fatalf("local driver reason=%q, want tmpfs privilege refusal", reason)
+				}
+			} else if reason != "" {
+				t.Fatalf("non-local driver received local-driver refusal: %s", reason)
+			}
+		})
+	}
+}
+
+func TestLocalVolumeOverlayDenialOrder(t *testing.T) {
+	for _, tt := range []struct{ options, want string }{
+		{"lowerdir=/z:/a", `volume create denied: local volume lowerdir path "/a" is not allowlisted`},
+		{"upperdir=/a,lowerdir=/z", `volume create denied: local volume lowerdir path "/z" is not allowlisted`},
+	} {
+		t.Run(tt.options, func(t *testing.T) {
+			got := denyLocalVolumeBindDeviceReason("local", map[string]string{"type": "overlay", "device": "/safe/overlay", "o": tt.options}, []string{"/safe"}, "volume create")
+			if got != tt.want {
+				t.Fatalf("denial=%q, want %q", got, tt.want)
+			}
+		})
+	}
+}

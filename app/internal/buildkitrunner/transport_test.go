@@ -18,6 +18,9 @@ import (
 
 func TestUpgradeAndUnaryTrailers(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if want := r.Context().Value(http.LocalAddrContextKey).(net.Addr).String(); r.Host != want {
+			t.Errorf("upgrade host = %q, want configured authority %q", r.Host, want)
+		}
 		if r.Method != "POST" || r.URL.Path != "/grpc" || r.Header.Get("Upgrade") != "h2c" {
 			t.Error("invalid upgrade request")
 			return
@@ -63,6 +66,29 @@ func TestUpgradeAndUnaryTrailers(t *testing.T) {
 	_, err = unary(ctx, cc, "/"+gatewayService+"/Ping", "build", &gateway.PingRequest{})
 	if err == nil || err.Error() != "gateway RPC failed (7): operation denied" {
 		t.Fatalf("trailers lost: %v", err)
+	}
+}
+
+func TestUpgradeDefaultPortsBeforeCanceledDial(t *testing.T) {
+	for _, tc := range []struct{ host, address string }{
+		{"http://127.0.0.1", "127.0.0.1:80"},
+		{"https://127.0.0.1", "127.0.0.1:443"},
+		{"https://[::1]", "[::1]:443"},
+		{"https://127.0.0.1:8443", "127.0.0.1:8443"},
+	} {
+		t.Run(tc.host, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			conn, err := dialUpgrade(ctx, Options{Host: tc.host}, "/grpc", nil)
+			if conn != nil {
+				conn.Close()
+				t.Fatal("canceled dial returned a connection")
+			}
+			var dialErr *net.OpError
+			if !errors.Is(err, context.Canceled) || !errors.As(err, &dialErr) || dialErr.Addr == nil || dialErr.Addr.String() != tc.address {
+				t.Fatalf("canceled dial = %v, want canceled connection to %s", err, tc.address)
+			}
+		})
 	}
 }
 

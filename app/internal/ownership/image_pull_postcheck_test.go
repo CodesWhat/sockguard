@@ -521,6 +521,16 @@ func TestPullByDigestReportsAForeignImage(t *testing.T) {
 		wantLine   string
 	}{
 		{
+			name: "bare repository digest on Docker", target: "/images/create?fromImage=" + url.QueryEscape("alpine@"+pullDigest),
+			ref: "alpine@" + pullDigest, flavor: upstreamflavor.Docker,
+			wantLine: "owner policy: pulled image alpine@" + pullDigest + " " + kept,
+		},
+		{
+			name: "bare repository digest on Podman compat", target: "/images/create?fromImage=" + url.QueryEscape("alpine@"+pullDigest),
+			ref: "alpine@" + pullDigest, flavor: upstreamflavor.Podman,
+			wantLine: "owner policy: pulled image alpine@" + pullDigest + " " + kept,
+		},
+		{
 			name: "compat pull on an unprobed upstream", target: "/images/create?fromImage=" + url.QueryEscape("team/app@"+pullDigest),
 			ref: "team/app@" + pullDigest, flavor: upstreamflavor.Docker,
 			wantLine: "owner policy: pulled image team/app@" + pullDigest + " " + kept,
@@ -934,5 +944,129 @@ func TestPrePullListAtImageCountBudget(t *testing.T) {
 				t.Fatalf("list returned %d images, error=%v, want %d images", len(images), err, maxPrePullImages+delta)
 			}
 		})
+	}
+}
+
+func TestPullPostCheckOnlyRunsForSuccessfulStatus(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{http.StatusOK, 299, http.StatusMultipleChoices, http.StatusBadRequest} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			const ref = "team/app:v2"
+			daemon := &pullMockDaemon{written: map[string]map[string]string{
+				ref: {"com.sockguard.owner": "another-owner"},
+			}}
+			rec, _ := runPull(t, daemon, "/images/create?fromImage=team%2Fapp&tag=v2", status)
+			if rec.Code != status {
+				t.Fatalf("response status=%d, want %d", rec.Code, status)
+			}
+			if status < http.StatusMultipleChoices {
+				if !slices.Equal(daemon.untagged, []string{"/images/" + ref}) {
+					t.Fatalf("successful pull untagged=%v, want foreign image removed", daemon.untagged)
+				}
+			} else if len(daemon.postInspects) != 0 || len(daemon.untagged) != 0 {
+				t.Fatalf("non-successful pull inspected=%v, untagged=%v", daemon.postInspects, daemon.untagged)
+			}
+		})
+	}
+}
+
+func TestPullStreamReportedIDCountBudget(t *testing.T) {
+	t.Parallel()
+	ids := make([]string, maxPulledImageIDs+1)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("%064x", i+1)
+	}
+	reported := append([]string{"", ids[0]}, ids...)
+	body, err := json.Marshal(map[string][]string{"images": reported})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = append(body, '\n')
+	rec := httptest.NewRecorder()
+	writer := &pullStreamWriter{ResponseWriter: rec}
+	if n, err := writer.Write(body); err != nil || n != len(body) {
+		t.Fatalf("Write=(%d,%v), want %d bytes", n, err, len(body))
+	}
+	writer.finish()
+	if !slices.Equal(writer.images, ids[:maxPulledImageIDs]) {
+		t.Fatalf("retained %d IDs, want the first %d unique nonempty IDs in report order", len(writer.images), maxPulledImageIDs)
+	}
+	if !writer.succeeded() || !bytes.Equal(rec.Body.Bytes(), body) {
+		t.Fatal("valid report was rejected or its forwarded bytes changed")
+	}
+}
+
+func TestPullNewImageRemovalAtSnapshotBudget(t *testing.T) {
+	t.Parallel()
+	const id = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	const resolved = "quay.io/team/app:v2"
+	for _, delta := range []int{-1, 0, 1} {
+		t.Run(fmt.Sprintf("limit%+d", delta), func(t *testing.T) {
+			daemon := &pullMockDaemon{
+				labels:     map[string]map[string]string{},
+				ids:        map[string]string{},
+				written:    map[string]map[string]string{resolved: {testOwnerKey: "victim"}},
+				writtenIDs: map[string]string{resolved: id},
+			}
+			for i := 0; i < maxPrePullImages+delta; i++ {
+				name := fmt.Sprintf("registry-%03d.example/team/app:v2", i)
+				daemon.labels[name] = map[string]string{testOwnerKey: "job-123"}
+				daemon.ids[name] = fmt.Sprintf("%064x", i+1)
+			}
+			report := pullProgress + `{"images":["` + id + `"]}` + "\n"
+			rec, _ := servePull(t, daemon, pullRun{target: "/libpod/images/pull?reference=team%2Fapp%3Av2", status: http.StatusOK, stream: report, flavor: upstreamflavor.Podman})
+			if delta <= 0 {
+				if !slices.Equal(daemon.untagged, []string{"/libpod/images/" + resolved}) {
+					t.Fatalf("within-budget snapshot untagged=%v, want new foreign name removed", daemon.untagged)
+				}
+			} else if len(daemon.untagged) != 0 || !strings.Contains(rec.Body.String(), "could not remove pulled image "+resolved) {
+				t.Fatalf("over-budget snapshot untagged=%v, response=%s; want report-only", daemon.untagged, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestPullAcceptsOwnedStoredShortNameWithoutFalseWarning(t *testing.T) {
+	t.Parallel()
+	daemon := &pullMockDaemon{written: map[string]map[string]string{
+		"localhost/team/app:v2": {testOwnerKey: "job-123"},
+	}}
+	rec, logs := servePull(t, daemon, pullRun{
+		target: "/images/create?fromImage=team%2Fapp&tag=v2",
+		status: http.StatusOK, stream: pullProgress, flavor: upstreamflavor.Podman,
+	})
+	if rec.Body.String() != pullProgress || len(daemon.untagged) != 0 || strings.Contains(logs, "could not verify") {
+		t.Fatalf("body=%q, untagged=%v, logs=%s", rec.Body.String(), daemon.untagged, logs)
+	}
+	if !slices.Contains(daemon.postInspects, "localhost/team/app:v2") {
+		t.Fatalf("stored short name was not inspected: %v", daemon.postInspects)
+	}
+}
+
+func TestPullReportedIDRemovesComputedNameAppearingAfterInspect(t *testing.T) {
+	t.Parallel()
+	const id = "1234567890ab1234567890ab1234567890ab1234567890ab1234567890ab1234"
+	const ref = "quay.io/team/app:v2"
+	daemon := &pullMockDaemon{
+		labels:   map[string]map[string]string{"quay.io/keep/app:v2": {testOwnerKey: "victim"}},
+		ids:      map[string]string{"quay.io/keep/app:v2": id},
+		listFail: true,
+		onPostInspect: func(d *pullMockDaemon, key string) {
+			if key == ref {
+				d.labels[ref] = map[string]string{testOwnerKey: "victim"}
+				d.ids[ref] = id
+			}
+		},
+	}
+	report := pullProgress + `{"images":["` + id + `"]}` + "\n"
+	rec, _ := servePull(t, daemon, pullRun{
+		target: "/libpod/images/pull?reference=quay.io%2Fteam%2Fapp%3Av2",
+		status: http.StatusOK, stream: report, flavor: upstreamflavor.Podman,
+	})
+	if len(daemon.untagged) != 1 || daemon.untagged[0] != "/libpod/images/"+ref {
+		t.Fatalf("untagged=%v, want computed foreign name removed through reported ID; body=%q", daemon.untagged, rec.Body.String())
+	}
+	if _, kept := daemon.labels["quay.io/keep/app:v2"]; !kept {
+		t.Fatal("unrelated pre-existing image name was removed")
 	}
 }

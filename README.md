@@ -517,19 +517,27 @@ The next release work is v3 candidate validation and GA, followed by the remaini
 
 Owner-scoped Podman network deletion on native and Docker-compatible routes requires the canonical network name so the engine's in-use check applies. Image volumes require an inspect that resolves to the same full config ID, rejecting mutable manifest-list aliases.
 
-Image-build and image-load ownership tests cover the exact supported name budgets as well as overflow. Named-profile engine-flavor tests require the profile to authorize each request and check Podman refusal reasons. gRPC error header tests cover UTF-8 byte escaping.
+Image-build and image-load ownership tests cover the exact supported name budgets as well as overflow. Build-context tests also reject an empty zstd skippable frame at its exact eight-byte header boundary. Named-profile engine-flavor tests require the profile to authorize each request and check Podman refusal reasons. gRPC error header tests cover UTF-8 byte escaping. Gateway tests cover build reference and file path length limits. FileSync regressions check that data is released at the exact retained-frame overhead cap.
 
-Rate-limit eviction regressions cover exact refill times and millisecond-clock wrap without waiting on wall time.
+Empty ordinary attach responses retain normal hop-by-hop header stripping. Rate-limit eviction regressions cover exact refill times and millisecond-clock wrap without waiting on wall time.
+
+Runner regressions cover prompt session-failure cancellation, frontend process failures after Return, configured upgrade authorities and default HTTP/HTTPS ports. Subprocess tests retain inherited output pipes after command exit and verify bounded cleanup for frontend, inspect and pull commands. Gateway regressions cover scratch-result validation, independent sibling build completion, forwarded image owner-label stamping and the distinction between policy-denial abuse and solve quotas. Mutation regressions cover empty mount options before overlay directory restrictions. Route-analysis tests cover the exact instruction budgets for known-route diagnostics and body-sensitive rule reachability, plus exact shared search budgets for states, transitions and work. Reachability tests also cover long container names outside the preferred witness characters and valid Unicode identifiers around the surrogate block and at the maximum scalar value. Route-language tests include the minimum scalar as a conservative analysis case and verify closure membership and monotonic work accounting. Capability tests check that startup logs agree with verified Podman volume-filter support. The published-image identity harness explicitly opts its private test agent into HTTP enrollment for Portwing 1.2. Graceful tunnel disconnects return without a fault. Denial diagnostics identify the active image-mount policy and consistently order forbidden overlay paths. Pull checks accept owned stored short names and remove computed foreign names found through reported image IDs after a name lookup misses.
+
+Inline-volume privilege tests cover default and explicit driver selection.
 
 Mutation regressions also cover native named-volume bind options, native and Swarm tmpfs privilege checks, pods without image volumes under an image allowlist, and saturation of unsigned resource limits.
 
-Pull progress checks parse the final line even without a newline and retain exact-limit and split-chunk size bounds. Native integration tests probe network-name and manifest-list ID stability against the live engine.
+Pull progress checks parse the final line even without a newline and retain exact-limit and split-chunk size bounds. HTTP status boundary tests keep post-checks and tag restoration within successful responses. Pull regressions cover reported-ID and pre-pull snapshot count boundaries, plus digest-only pulls of bare repository names. Native integration tests probe network-name and manifest-list ID stability against the live engine.
+
+Response-topology regressions reject malformed Swarm address pools on direct and nested cluster responses. Canonical network and image-volume ownership checks cover their exact inspect-response byte limits. Container-create tests keep resource kinds distinct when image and pod names match, and check Docker reserved network names against the configured engine flavor. Secret replacement tests permit a new name that matches only another secret’s ID prefix while refusing an exact foreign-owned name.
 
 Native Podman network label decoding accepts only JSON whitespace around inspect objects and arrays, and rejects form feed and Unicode whitespace, with the original failing fuzz input retained as a regression seed. The gRPC frame fuzzer bounds allocations on its unlimited-parser lane while retaining malformed-header and configured-limit rejection coverage.
 
-CLI tests remove their temporary changelog files and release-history repositories when each test finishes.
+CLI tests remove their temporary changelog files and release-history repositories when each test finishes. Deployment verification tests preserve command cancellation during live probe checks. Create-policy validation tests check list entry positions for Docker-compatible and native Podman policies. The reload polling regression waits for the event loop to take its initial file snapshot before changing the watched file. Image-trust tests verify that key-based policies initialize without a keyless trust-root download. Cgroup migration tests check the gate state and transition warnings, including quiet repeated probes. The startup retry regression uses the production refresh-loop starter and live runtime callback. Readiness tests verify successful probes reach the metrics endpoint. Runtime concurrency tests use the configured engine flavor for streaming top requests.
 
 The v3 development line carries the published v2.4.6 compression dependency fix for GO-2026-6865 / CVE-2026-116591.
+
+HTTP/2 capability tests distinguish an exact HTTP status prefix from incomplete or unrelated replies.
 
 The frontend runner waits within a bounded cleanup deadline for Docker to confirm its container is absent, including when automatic removal is already in progress. A timed-out inspection remains a verification error even when an earlier query found the container.
 

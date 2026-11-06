@@ -91,6 +91,89 @@ func TestCatalogAllowWitnessHonorsBudgets(t *testing.T) {
 	}
 }
 
+func TestReachabilityClosureMembershipAndWorkAccounting(t *testing.T) {
+	t.Parallel()
+	const endpoint = "/containers/sockguard-test/exec"
+	catalog, err := compileCatalogMachine(endpoint, catalogBoundEndpointShape(t, endpoint))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule, err := compileCatalogRuleMachine("/**", "allow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	machines := []catalogRuleMachine{catalog, rule}
+	product := newReachabilityProduct(machines)
+	state := make([]uint64, product.words)
+	var budget catalogReachabilityBudget
+	for i, machine := range machines {
+		closure := product.state(state, i)
+		reachabilityAddClosure(machine.program, closure, machine.program.Start, &budget)
+		if !reachabilityHas(closure, machine.program.Start) {
+			t.Fatal("compiled program start missing from its closure")
+		}
+	}
+	before := budget.steps
+	var working reachabilityCandidates
+	if candidates := reachabilityCandidateRunes(product, state, &working, &budget); len(candidates) == 0 {
+		t.Fatal("live compiled programs yielded no candidate runes")
+	}
+	if budget.steps <= before {
+		t.Fatal("candidate enumeration did not spend the shared work budget")
+	}
+}
+
+func TestCatalogAllowWitnessAtSharedBudgetBoundary(t *testing.T) {
+	t.Parallel()
+	catalog, err := compileCatalogMachine("/containers/json", catalogIdentifierSegment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule, err := compileCatalogRuleMachine("/containers/**", "allow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	machines := []catalogRuleMachine{catalog, rule}
+	var cost catalogReachabilityBudget
+	witness, result := catalogAllowWitness(machines, &cost)
+	if result != catalogReachable || witness != "/containers/json" {
+		t.Fatalf("unspent search = %q, %v", witness, result)
+	}
+	for _, resource := range []struct {
+		name        string
+		limit, used int
+		set         func(*catalogReachabilityBudget, int)
+	}{
+		{"states", maxCatalogReachabilityStates, cost.states, func(b *catalogReachabilityBudget, n int) { b.states = n }},
+		{"transitions", maxCatalogReachabilityTransitions, cost.transitions, func(b *catalogReachabilityBudget, n int) { b.transitions = n }},
+		{"steps", maxCatalogReachabilitySteps, cost.steps, func(b *catalogReachabilityBudget, n int) { b.steps = n }},
+	} {
+		t.Run(resource.name, func(t *testing.T) {
+			for _, boundary := range []struct {
+				name     string
+				headroom int
+			}{
+				{"one short", -1},
+				{"exact", 0},
+				{"one spare", 1},
+			} {
+				t.Run(boundary.name, func(t *testing.T) {
+					var budget catalogReachabilityBudget
+					resource.set(&budget, resource.limit-resource.used-boundary.headroom)
+					got, result := catalogAllowWitness(machines, &budget)
+					if boundary.headroom < 0 {
+						if result != catalogReachabilityIndeterminate || got != "" {
+							t.Fatalf("insufficient shared budget = %q, %v", got, result)
+						}
+					} else if result != catalogReachable || got != witness {
+						t.Fatalf("sufficient shared budget = %q, %v, want %q reachable", got, result, witness)
+					}
+				})
+			}
+		})
+	}
+}
+
 // TestValidateAndCompileRulesBoundsLongPatterns pins that an unbounded rule
 // pattern cannot turn one validation into seconds of CPU. Rule patterns are
 // user input and /admin/validate repeats the whole walk per request, so the
@@ -240,5 +323,69 @@ func TestCatalogReachabilityStepBudgetKeepsMeasuredHeadroom(t *testing.T) {
 	if headroom > maxHeadroom {
 		t.Fatalf("maxCatalogReachabilitySteps = %d, %.1fx the %d steps the heaviest shipped policy spends, want at most %dx so the long-pattern test keeps its margin under CI's -race -covermode=atomic run",
 			maxCatalogReachabilitySteps, headroom, catalogHeaviestPresetSteps, maxHeadroom)
+	}
+}
+
+func TestCatalogRulesAtInstructionBudget(t *testing.T) {
+	t.Parallel()
+	const endpoint = "/images/create"
+	shape := catalogBoundEndpointShape(t, endpoint)
+	catalog, err := compileCatalogMachine(endpoint, shape)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name  string
+		delta int
+		want  catalogReachability
+	}{
+		{name: "below", delta: -1, want: catalogUnreachable},
+		{name: "exact", want: catalogUnreachable},
+		{name: "above", delta: 1, want: catalogReachabilityIndeterminate},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			count := maxCatalogReachabilityInstructions + tt.delta
+			pattern := "/" + strings.Repeat("x", count-len(catalog.program.Inst)-3)
+			machine, err := compileCatalogRuleMachine(pattern, "allow")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := len(catalog.program.Inst) + len(machine.program.Inst); got != count {
+				t.Fatalf("compiled instructions=%d, want %d", got, count)
+			}
+			rules := []config.RuleConfig{{Action: "allow", Match: config.MatchConfig{Method: "POST", Path: pattern}}}
+			witness, got := firstAllowedCatalogPath("POST", endpoint, shape, nil, rules)
+			if got != tt.want {
+				t.Fatalf("reachability=%v for %d instructions, want %v (witness %q)", got, count, tt.want, witness)
+			}
+			if got == catalogUnreachable && witness != "" {
+				t.Fatalf("unreachable rule returned witness %q", witness)
+			}
+		})
+	}
+}
+
+func TestCatalogReachabilityUnicodeIdentifiers(t *testing.T) {
+	t.Parallel()
+	const endpoint = "/containers/sockguard-test/exec"
+	shape := catalogBoundEndpointShape(t, endpoint)
+	for _, tt := range []struct {
+		name, identifier string
+	}{
+		{name: "minimum scalar", identifier: "\x00"},
+		{name: "long identifier", identifier: strings.Repeat("q", 80)},
+		{name: "before surrogate block", identifier: "\uD7FF"},
+		{name: "after surrogate block", identifier: "\uE000"},
+		{name: "before maximum scalar", identifier: "\U0010FFFE"},
+		{name: "maximum scalar", identifier: "\U0010FFFF"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			pattern := "/containers/" + tt.identifier + "/exec"
+			rules := []config.RuleConfig{{Action: "allow", Match: config.MatchConfig{Method: "POST", Path: pattern}}}
+			witness, got := firstAllowedCatalogPath("POST", endpoint, shape, nil, rules)
+			if got != catalogReachable || witness != pattern {
+				t.Fatalf("reachability=%v, witness=%q; want reachable with literal %q", got, witness, pattern)
+			}
+		})
 	}
 }

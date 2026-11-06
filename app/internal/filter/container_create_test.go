@@ -3581,6 +3581,27 @@ func TestBuildImageTrustFieldsKeylessTrustRootFailureFailsClosed(t *testing.T) {
 	}
 }
 
+func TestBuildImageTrustFieldsKeyedOnlySkipsTrustRoot(t *testing.T) {
+	original := loadLiveTrustedRoot
+	t.Cleanup(func() { loadLiveTrustedRoot = original })
+	calls := 0
+	loadLiveTrustedRoot = func() (root.TrustedMaterial, error) {
+		calls++
+		return nil, errors.New("trust root unavailable")
+	}
+	f := buildImageTrustFields(ImageTrustOptions{
+		Mode:               "enforce",
+		AllowedSigningKeys: []SigningKeyOptions{{PEM: generateTestECDSAPEM(t)}},
+		AllowedRegistries:  []string{"registry.example"},
+	}, nil)
+	if calls != 0 {
+		t.Errorf("keyed-only policy loaded keyless trust root %d times", calls)
+	}
+	if f.initErr != nil || f.verifier == nil {
+		t.Fatalf("keyed-only policy initialization: verifier=%v, error=%v", f.verifier, f.initErr)
+	}
+}
+
 func TestContainerCreateUnknownMountType(t *testing.T) {
 	tests := []struct {
 		name       string

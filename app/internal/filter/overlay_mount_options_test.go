@@ -182,6 +182,19 @@ func TestContainerCreateBindOverlayOptions(t *testing.T) {
 		{name: "allowlisted host path with propagation", allowed: []string{"/srv/data"}, binds: `"/srv/data:/d:rshared,Z"`},
 		{name: "allowlisted host path whose name holds a comma", allowed: []string{"/srv/data"}, binds: `"/srv/data/a,b:/d:ro"`},
 
+		{
+			name:       "leading empty option before forbidden overlay directory",
+			allowed:    []string{"/srv/roots"},
+			binds:      `"myvol:/d:,O,upperdir=/etc,workdir=/srv/roots/work"`,
+			wantReason: `container create denied: overlay option "upperdir=/etc" is not allowlisted (add its directory to allowed_bind_mounts)`,
+		},
+		{
+			name:       "repeated separator before forbidden overlay directory",
+			allowed:    []string{"/srv/roots"},
+			binds:      `"myvol:/d:O,,upperdir=/etc,workdir=/srv/roots/work"`,
+			wantReason: `container create denied: overlay option "upperdir=/etc" is not allowlisted (add its directory to allowed_bind_mounts)`,
+		},
+
 		// A plain overlay, and one whose directories are allowlisted.
 		{name: "named volume overlay", binds: `"myvol:/d:O"`},
 		{name: "allowlisted host path overlay", allowed: []string{"/srv/data"}, binds: `"/srv/data:/d:O"`},

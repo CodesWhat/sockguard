@@ -57,13 +57,27 @@ func TestVolumeCapabilityRequiresEveryFailoverEndpoint(t *testing.T) {
 			t.Parallel()
 			first := newVersionServer(t, 200, `{"Components":[{"Name":"Podman Engine","Version":"`+test.first+`"}]}`)
 			second := newVersionServer(t, 200, `{"Components":[{"Name":"Podman Engine","Version":"`+test.second+`"}]}`)
-			logger, _ := flavorTestLogger()
+			logger, collector := flavorTestLogger()
 			got, err := resolveUpstreamCapabilities(t.Context(), newServeDeps(), flavorTestConfig(test.configured), multiEndpointResolver(t, first.addr(), second.addr()), logger)
 			if (err != nil) != test.wantErr || got.PodmanConjunctiveVolumeFilters != test.want {
 				t.Fatalf("capabilities=%+v err=%v, want volume=%v error=%v", got, err, test.want, test.wantErr)
 			}
 			if !test.wantErr && (first.calls.Load() != 1 || second.calls.Load() != 1) {
 				t.Fatal("not every endpoint was probed")
+			}
+			if !test.wantErr {
+				logged := false
+				for _, record := range collector.Records() {
+					if record.Message == "upstream flavor resolved" {
+						logged = true
+						if got, ok := record.Attrs["podman_conjunctive_volume_filters"].(bool); !ok || got != test.want {
+							t.Errorf("logged volume capability = %v, want %v", record.Attrs, test.want)
+						}
+					}
+				}
+				if !logged {
+					t.Fatal("resolved capability log missing")
+				}
 			}
 		})
 	}
