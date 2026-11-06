@@ -1025,3 +1025,48 @@ func TestPullNewImageRemovalAtSnapshotBudget(t *testing.T) {
 		})
 	}
 }
+
+func TestPullAcceptsOwnedStoredShortNameWithoutFalseWarning(t *testing.T) {
+	t.Parallel()
+	daemon := &pullMockDaemon{written: map[string]map[string]string{
+		"localhost/team/app:v2": {testOwnerKey: "job-123"},
+	}}
+	rec, logs := servePull(t, daemon, pullRun{
+		target: "/images/create?fromImage=team%2Fapp&tag=v2",
+		status: http.StatusOK, stream: pullProgress, flavor: upstreamflavor.Podman,
+	})
+	if rec.Body.String() != pullProgress || len(daemon.untagged) != 0 || strings.Contains(logs, "could not verify") {
+		t.Fatalf("body=%q, untagged=%v, logs=%s", rec.Body.String(), daemon.untagged, logs)
+	}
+	if !slices.Contains(daemon.postInspects, "localhost/team/app:v2") {
+		t.Fatalf("stored short name was not inspected: %v", daemon.postInspects)
+	}
+}
+
+func TestPullReportedIDRemovesComputedNameAppearingAfterInspect(t *testing.T) {
+	t.Parallel()
+	const id = "1234567890ab1234567890ab1234567890ab1234567890ab1234567890ab1234"
+	const ref = "quay.io/team/app:v2"
+	daemon := &pullMockDaemon{
+		labels:   map[string]map[string]string{"quay.io/keep/app:v2": {testOwnerKey: "victim"}},
+		ids:      map[string]string{"quay.io/keep/app:v2": id},
+		listFail: true,
+		onPostInspect: func(d *pullMockDaemon, key string) {
+			if key == ref {
+				d.labels[ref] = map[string]string{testOwnerKey: "victim"}
+				d.ids[ref] = id
+			}
+		},
+	}
+	report := pullProgress + `{"images":["` + id + `"]}` + "\n"
+	rec, _ := servePull(t, daemon, pullRun{
+		target: "/libpod/images/pull?reference=quay.io%2Fteam%2Fapp%3Av2",
+		status: http.StatusOK, stream: report, flavor: upstreamflavor.Podman,
+	})
+	if len(daemon.untagged) != 1 || daemon.untagged[0] != "/libpod/images/"+ref {
+		t.Fatalf("untagged=%v, want computed foreign name removed through reported ID; body=%q", daemon.untagged, rec.Body.String())
+	}
+	if _, kept := daemon.labels["quay.io/keep/app:v2"]; !kept {
+		t.Fatal("unrelated pre-existing image name was removed")
+	}
+}

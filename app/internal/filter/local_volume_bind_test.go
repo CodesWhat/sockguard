@@ -1156,3 +1156,17 @@ func TestContainerCreateTmpfsDriverSelection(t *testing.T) {
 		})
 	}
 }
+
+func TestLocalVolumeOverlayDenialOrder(t *testing.T) {
+	for _, tt := range []struct{ options, want string }{
+		{"lowerdir=/z:/a", `volume create denied: local volume lowerdir path "/a" is not allowlisted`},
+		{"upperdir=/a,lowerdir=/z", `volume create denied: local volume lowerdir path "/z" is not allowlisted`},
+	} {
+		t.Run(tt.options, func(t *testing.T) {
+			got := denyLocalVolumeBindDeviceReason("local", map[string]string{"type": "overlay", "device": "/safe/overlay", "o": tt.options}, []string{"/safe"}, "volume create")
+			if got != tt.want {
+				t.Fatalf("denial=%q, want %q", got, tt.want)
+			}
+		})
+	}
+}

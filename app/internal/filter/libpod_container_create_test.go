@@ -1441,3 +1441,22 @@ func FuzzLibpodContainerCreate(f *testing.F) {
 		}
 	})
 }
+
+func TestLibpodImageMountDenialExplainsActivePolicy(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		images []string
+		want   string
+	}{
+		{"unrestricted images", nil, `libpod container create denied: mount type "image" is not supported; use a constrained bind or overlay_volumes mount`},
+		{"allowlisted images", []string{"docker.io/library/alpine:3"}, "libpod container create denied: image mounts are not supported with allowed_images"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowedImages: tt.images})
+			body := []byte(`{"image":"docker.io/library/alpine:3","systemd":"false","mounts":[{"type":"image","source":"other","destination":"/image"}]}`)
+			if got := inspectLibpod(t, policy, body); got != tt.want {
+				t.Fatalf("denial=%q, want %q", got, tt.want)
+			}
+		})
+	}
+}
