@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Cover zero failover health timeouts as invalid configuration.
+
 - Verify global and named policies receive the resolved engine flavor for tmpfs and build-network restrictions.
 
 - Pin gRPC error-message escaping at the printable ASCII boundaries, including DEL and percent signs.
