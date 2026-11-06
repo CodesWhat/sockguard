@@ -3,9 +3,11 @@ package buildkitproxy
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -193,5 +195,48 @@ func TestGatewayIncomingCancellationStopsForwarding(t *testing.T) {
 	b.handleStream(httptest.NewRecorder(), req)
 	if !called {
 		t.Fatal("active request did not reach daemon transport")
+	}
+}
+
+func TestGatewayBuildRefLengthBudget(t *testing.T) {
+	t.Parallel()
+	for _, delta := range []int{-1, 0, 1} {
+		t.Run(fmt.Sprintf("limit%+d", delta), func(t *testing.T) {
+			ref := strings.Repeat("r", maxBuildkitRefBytes+delta)
+			called := false
+			wantForwardedRef := ""
+			leg := gatewayLifecycleLeg(func(req *http.Request) (*http.Response, error) {
+				called = true
+				if req.Header.Get(gatewayBuildHeader) != wantForwardedRef {
+					t.Error("gateway did not forward the scoped build ref")
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/grpc"}, "Grpc-Status": {"0"}}, Body: io.NopCloser(bytes.NewReader(grpcFrame(nil)))}, nil
+			})
+			b := newUnitTestBridge(t, leg)
+			wantForwardedRef = daemonBuildRef(b.session.Key, ref)
+			b.policy.Control.Solve.AllowFrontendGateway = true
+			t.Cleanup(func() { b.closeAll(nil) })
+			if delta <= 0 {
+				g, d := b.registry.beginGatewayBuild(t.Context(), b.session, ref, testBuildkitSessionID, b.policy)
+				if d != nil {
+					t.Fatal(d)
+				}
+				t.Cleanup(func() { b.registry.endGatewayBuild(g) })
+				if admission := b.registry.admitSolve(b.session, testBuildkitSessionID, ref, nil, 0, 0); admission != solveAdmissionSucceeded {
+					t.Fatalf("valid ref admission=%v", admission)
+				}
+			}
+			req := newFramedGRPCRequest(t, "/"+gatewayService+"/Ping", &gateway.PingRequest{})
+			req.Header.Set(gatewayBuildHeader, ref)
+			rec := httptest.NewRecorder()
+			b.handleStream(rec, req)
+			want := "0"
+			if delta > 0 {
+				want = "3"
+			}
+			if got := rec.Header().Get("Grpc-Status"); got != want || called != (delta <= 0) {
+				t.Fatalf("status=%q forwarded=%v, want status=%q forwarded=%v", got, called, want, delta <= 0)
+			}
+		})
 	}
 }

@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Cover frontend gateway build-reference and file-path length boundaries.
+
 - Cover default and explicit driver selection in inline tmpfs privilege checks.
 
 - Cover reported-image-ID and pre-pull snapshot count limits, including duplicate and empty reported IDs.

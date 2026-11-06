@@ -517,7 +517,7 @@ The next release work is v3 candidate validation and GA, followed by the remaini
 
 Owner-scoped Podman network deletion on native and Docker-compatible routes requires the canonical network name so the engine's in-use check applies. Image volumes require an inspect that resolves to the same full config ID, rejecting mutable manifest-list aliases.
 
-Image-build and image-load ownership tests cover the exact supported name budgets as well as overflow. Build-context tests also reject an empty zstd skippable frame at its exact eight-byte header boundary. Named-profile engine-flavor tests require the profile to authorize each request and check Podman refusal reasons. gRPC error header tests cover UTF-8 byte escaping.
+Image-build and image-load ownership tests cover the exact supported name budgets as well as overflow. Build-context tests also reject an empty zstd skippable frame at its exact eight-byte header boundary. Named-profile engine-flavor tests require the profile to authorize each request and check Podman refusal reasons. gRPC error header tests cover UTF-8 byte escaping. Gateway tests cover build reference and file path length limits.
 
 Rate-limit eviction regressions cover exact refill times and millisecond-clock wrap without waiting on wall time.
 
