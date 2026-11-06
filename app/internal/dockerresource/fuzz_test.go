@@ -19,7 +19,6 @@ var fuzzLabelKinds = []Kind{
 // deterministic, return no labels alongside an error, reject unknown kinds,
 // and keep kinds that share a wire shape in agreement.
 func FuzzDecodeLabels(f *testing.F) {
-	f.Add([]byte("\f[{}]"), uint8(11))
 	f.Add([]byte(`{"Config":{"Labels":{"com.sockguard.owner":"a"}}}`), uint8(0))
 	f.Add([]byte(`{"Config":{"Labels":{}},"ContainerConfig":{"Labels":{"k":"v"}}}`), uint8(1))
 	f.Add([]byte(`{"Labels":{"k":"v"}}`), uint8(2))

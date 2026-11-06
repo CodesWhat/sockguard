@@ -501,12 +501,12 @@ volume has to be named by its full image ID, and then follows
 `allow_cross_owner_namespace_sharing` opens the namespace targets, `cgroupns`
 included, and nothing else in the list.
 
-Native network deletion under owner isolation requires the canonical network
-name. ID and ID-prefix aliases return `404`, even when the network belongs to
-the caller. Podman compares the delete argument to stored network names for
+Network deletion on a Podman upstream under owner isolation requires the
+canonical network name on both Docker-compatible and native routes. ID and
+ID-prefix aliases return `404`, even when the network belongs to the caller. Podman compares the delete argument to stored network names for
 its in-use check; deleting by ID can leave a container pointing at a name
-that another owner can recreate. Docker-compatible deletion and native reads
-still accept IDs.
+that another owner can recreate. Deletion on Docker upstreams and native
+network reads still accept IDs.
 
 A few of those answers are worth knowing before you put a Podman client behind
 owner isolation:

@@ -641,6 +641,9 @@ func allowPathOwnershipRequest(
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindContainer, containerID, opts, false)
 	}
 	if identifier, ok := networkIdentifier(method, normPath); ok {
+		if opts.UpstreamFlavor == upstreamflavor.Podman && method == http.MethodDelete {
+			ctx = withNetworkDeleteName(ctx)
+		}
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindNetwork, identifier, opts, false)
 	}
 	if identifier, ok := volumeIdentifier(method, normPath); ok {
