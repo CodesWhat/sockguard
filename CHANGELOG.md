@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Verify key-based image trust initializes while the keyless trust-root service is unavailable, without contacting that service.
+
 - Synchronize the reload polling test with its initial file snapshot so delayed event-loop startup cannot hide the test mutation.
 
 - Test HTTP/2 capability detection with an exact five-byte HTTP status prefix and shorter or unrelated partial replies.
