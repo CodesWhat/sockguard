@@ -43,7 +43,7 @@
 <hr>
 
 > [!NOTE]
-> **v2.4.5 is the latest stable release.** It is a security release: a numeric user with a sign prefix such as `+0` was not treated as root, so `request_body.exec.allow_root_user: false` and `require_non_root_user` could be bypassed to run as UID 0 on Docker and Podman. It carries v2.4.4. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
+> **v2.4.6 is the latest stable release.** It updates the compression dependency for GO-2026-6865 / CVE-2026-116591, a panic when decoding malformed zstd frames. It carries v2.4.5. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
 The prepared v3 security update includes the compression dependency fix for GO-2026-6865 / CVE-2026-116591.
 
@@ -544,6 +544,7 @@ Added in 2.2.11: native Podman container and pod creates refuse caller-selected 
 | **v2.4.3** ✅ | Session Cleanup & Pattern Validation | Completed hijacked sessions are dropped from the listener tracker, incomplete keyless subject patterns are rejected, and Podman nightly CI tracks Fedora major tags. |
 | **v2.4.4** ✅ | Client Compatibility & libpod Hardening | Redaction placeholders no longer break typed Docker clients, preset gaps for Portainer, watchtower and portwing are closed, slow stop and prune calls get the right timeouts, and libpod create bypasses and inspect leaks are closed. |
 | **v2.4.5** ✅ | Signed Root UID Fix | A numeric user with a sign prefix such as `+0` is now treated as root, closing the `allow_root_user: false` and `require_non_root_user` bypass on Docker and Podman. |
+| **v2.4.6** ✅ | zstd Decoder Security Fix | Updates the compression dependency to fix GO-2026-6865 / CVE-2026-116591, a panic on malformed zstd input. |
 | **v2.x** | Supply Chain | `egress-policy: block` with curated allow-lists on high-privilege release jobs |
 | **v2.x** | Policy Refinement | Named rule path aliases and further response-policy refinement |
 | **v2.x** | Internals | Container-create ownership reference collectors are separated into bind, mount and endpoint helpers with the same isolation checks. Code-review backlog: collapse the config → filter-options → policy translation layers behind a single source of truth; profiling-gated JSON redaction fast path |
