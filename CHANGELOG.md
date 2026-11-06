@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Verify compiled route-search closures retain their start states and candidate enumeration spends the shared work budget.
+
 - Explicitly opt the isolated conformance identity agent into HTTP enrollment on its private test network for Portwing 1.2 compatibility.
 
 - Cover minimum-rune boundaries in the conservative route-language model and verify logged Podman volume-filter capabilities.

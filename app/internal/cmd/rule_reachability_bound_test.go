@@ -91,6 +91,38 @@ func TestCatalogAllowWitnessHonorsBudgets(t *testing.T) {
 	}
 }
 
+func TestReachabilityClosureMembershipAndWorkAccounting(t *testing.T) {
+	t.Parallel()
+	const endpoint = "/containers/sockguard-test/exec"
+	catalog, err := compileCatalogMachine(endpoint, catalogBoundEndpointShape(t, endpoint))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule, err := compileCatalogRuleMachine("/**", "allow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	machines := []catalogRuleMachine{catalog, rule}
+	product := newReachabilityProduct(machines)
+	state := make([]uint64, product.words)
+	var budget catalogReachabilityBudget
+	for i, machine := range machines {
+		closure := product.state(state, i)
+		reachabilityAddClosure(machine.program, closure, machine.program.Start, &budget)
+		if !reachabilityHas(closure, machine.program.Start) {
+			t.Fatal("compiled program start missing from its closure")
+		}
+	}
+	before := budget.steps
+	var working reachabilityCandidates
+	if candidates := reachabilityCandidateRunes(product, state, &working, &budget); len(candidates) == 0 {
+		t.Fatal("live compiled programs yielded no candidate runes")
+	}
+	if budget.steps <= before {
+		t.Fatal("candidate enumeration did not spend the shared work budget")
+	}
+}
+
 func TestCatalogAllowWitnessAtSharedBudgetBoundary(t *testing.T) {
 	t.Parallel()
 	catalog, err := compileCatalogMachine("/containers/json", catalogIdentifierSegment)
