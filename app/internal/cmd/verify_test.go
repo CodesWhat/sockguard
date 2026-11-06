@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -182,6 +183,33 @@ rules:
   - match: { method: "*", path: "/**" }
     action: deny
 `, env.listenSocket, env.upstreamSocket)
+}
+
+func TestVerifyReportPreservesCommandCancellation(t *testing.T) {
+	clearDockerEnv(t)
+	env := newVerifyEnv(t)
+	startFakeDockerDaemon(t, env.upstreamSocket)
+	startFakeSockguardListener(t, env.listenSocket, http.StatusOK)
+	writeVerifyConfig(t, env.dir, baseVerifyConfig(env))
+	command := &cobra.Command{Use: "verify"}
+	command.SetContext(t.Context())
+	deps := newServeDeps()
+	if report := buildVerifyReport(command, deps); verifyStatusByName(t, report)[verifyCheckNameUpstream] != verifyStatusOK {
+		t.Fatalf("healthy upstream control failed: %+v", report)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	command.SetContext(ctx)
+	report := buildVerifyReport(command, deps)
+	for _, check := range report.Checks {
+		if check.Name == verifyCheckNameUpstream {
+			if check.Status != verifyStatusFail || !strings.Contains(check.Detail, "context canceled") {
+				t.Fatalf("canceled upstream check = %+v", check)
+			}
+			return
+		}
+	}
+	t.Fatal("upstream check missing")
 }
 
 // TestRunVerifyChecks is the table over the five checks: a live fake upstream,
