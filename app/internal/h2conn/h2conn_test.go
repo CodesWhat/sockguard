@@ -507,6 +507,24 @@ func TestClassifyHTTP2Answer(t *testing.T) {
 	}
 }
 
+func TestClassifyHTTP2PartialStatusPrefix(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, reply string
+		want        probeState
+	}{
+		{name: "exact HTTP prefix", reply: "HTTP/", want: probeDisabled},
+		{name: "incomplete HTTP prefix", reply: "HTTP", want: probeUnknown},
+		{name: "other five bytes", reply: "OTHER", want: probeUnknown},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyWithReply(t, []byte(tt.reply), 200*time.Millisecond); got != tt.want {
+				t.Fatalf("partial answer %q=%v, want %v", tt.reply, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHTTP2CheckerCachesOnlyDefinitiveResults(t *testing.T) {
 	results := []probeState{probeUnknown, probeUnknown, probeDisabled}
 	calls := 0
