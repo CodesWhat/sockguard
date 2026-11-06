@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -254,8 +254,8 @@ describe("release-next-version CLI", () => {
     assert.match(result.stderr, /--from is required when --bump auto/);
   });
 
-  it("computes an auto bump from git history", () => {
-    const repoDir = createTempGitRepo();
+  it("computes an auto bump from git history", (t) => {
+    const repoDir = createTempGitRepo(t);
     writeFileSync(path.join(repoDir, "README.md"), "initial\n", "utf8");
     git(repoDir, ["add", "README.md"]);
     git(repoDir, ["commit", "-m", "chore: initial"]);
@@ -280,8 +280,8 @@ describe("release-next-version CLI", () => {
     assert.match(result.stdout, /next_version=1\.2\.4/);
   });
 
-  it("computes an auto bump with an explicit to ref", () => {
-    const repoDir = createTempGitRepo();
+  it("computes an auto bump with an explicit to ref", (t) => {
+    const repoDir = createTempGitRepo(t);
     writeFileSync(path.join(repoDir, "README.md"), "initial\n", "utf8");
     git(repoDir, ["add", "README.md"]);
     git(repoDir, ["commit", "-m", "chore: initial"]);
@@ -307,8 +307,8 @@ describe("release-next-version CLI", () => {
     assert.match(result.stdout, /next_version=1\.3\.0/);
   });
 
-  it("fails when auto bump finds no releasable commits", () => {
-    const repoDir = createTempGitRepo();
+  it("fails when auto bump finds no releasable commits", (t) => {
+    const repoDir = createTempGitRepo(t);
     writeFileSync(path.join(repoDir, "README.md"), "initial\n", "utf8");
     git(repoDir, ["add", "README.md"]);
     git(repoDir, ["commit", "-m", "chore: initial"]);
@@ -337,8 +337,9 @@ describe("release-next-version CLI", () => {
   });
 });
 
-function createTempGitRepo() {
+function createTempGitRepo(t) {
   const repoDir = mkdtempSync(path.join(os.tmpdir(), "sockguard-release-"));
+  t.after(() => rmSync(repoDir, { recursive: true, force: true }));
   git(repoDir, ["init"]);
   git(repoDir, ["config", "user.name", "Sockguard Tests"]);
   git(repoDir, ["config", "user.email", "sockguard-tests@example.com"]);
