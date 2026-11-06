@@ -66,9 +66,12 @@ func runFixtureFrontend() error {
 	if err != nil {
 		return err
 	}
-	if os.Getenv("RUNNER_FIXTURE_CASE") == "root-first" {
+	if scenario := os.Getenv("RUNNER_FIXTURE_CASE"); scenario == "root-first" || scenario == "root-first-process-error" {
 		// A frontend may still be finishing after the root reply arrives.
 		time.Sleep(75 * time.Millisecond)
+	}
+	if os.Getenv("RUNNER_FIXTURE_CASE") == "root-first-process-error" {
+		return errors.New("fixture frontend failed after Return")
 	}
 	return nil
 }
@@ -81,6 +84,7 @@ func TestRunOrchestration(t *testing.T) {
 	}{
 		{"success", "", true},
 		{"root-first", "", true},
+		{"root-first-process-error", "frontend process failed", true},
 		{"root-error", "root denied", true},
 		{"process-error", "frontend process failed", true},
 		{"cleanup-error", "verify frontend container cleanup", true},
@@ -93,15 +97,19 @@ func TestRunOrchestration(t *testing.T) {
 		{"session-refused", "proxy refused /session upgrade", false},
 		{"upgrade-refused", "proxy refused /grpc upgrade", false},
 		{"serve-error", "injected serve failure", true},
+		{"session-serve-error", "injected session serve failure", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			log := installRunnerFixture(t, tc.name)
-			if tc.name == "serve-error" {
+			if tc.name == "serve-error" || tc.name == "session-serve-error" {
 				original := serveH2
 				t.Cleanup(func() { serveH2 = original })
 				serveH2 = func(ctx context.Context, conn net.Conn, config h2conn.ServerConfig) error {
-					if config.MaxConcurrentStreams == 16 {
+					if tc.name == "serve-error" && config.MaxConcurrentStreams == 16 {
 						return errors.New("injected serve failure")
+					}
+					if tc.name == "session-serve-error" && config.MaxConcurrentStreams == 8 {
+						return errors.New("injected session serve failure")
 					}
 					return original(ctx, conn, config)
 				}
@@ -149,7 +157,9 @@ func TestRunOrchestration(t *testing.T) {
 					}
 					cc, err := h2conn.NewClientConn(upgraded, nil)
 					if err != nil {
-						t.Error(err)
+						if tc.name != "session-serve-error" {
+							t.Error(err)
+						}
 						return
 					}
 					defer func() { _ = cc.Close() }()
@@ -278,7 +288,7 @@ func TestRunOrchestration(t *testing.T) {
 			if strings.HasPrefix(tc.name, "canceled") && !errors.Is(err, context.Canceled) {
 				t.Errorf("lost cancellation outcome: %v", err)
 			}
-			if tc.name == "serve-error" {
+			if tc.name == "serve-error" || tc.name == "session-serve-error" {
 				if elapsed := time.Since(started); elapsed > 3*time.Second {
 					t.Errorf("Run took %v after the serve failure, want a prompt return", elapsed)
 				}
