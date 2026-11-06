@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Exercise image-build and image-load ownership name budgets just below, at and above their limits on Docker and Podman routes.
+
 - Pin rate-limit bucket fullness at creation, exact refill, backward-clock and millisecond-wrap boundaries.
 
 - Add mutation regressions for native named-volume bind options, native and Swarm tmpfs privilege checks, empty pod image-volume lists, and unsigned resource-limit saturation.
