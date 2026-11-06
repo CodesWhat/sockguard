@@ -519,7 +519,7 @@ Owner-scoped Podman network deletion on native and Docker-compatible routes requ
 
 Image-build and image-load ownership tests cover the exact supported name budgets as well as overflow. Build-context tests also reject an empty zstd skippable frame at its exact eight-byte header boundary. Named-profile engine-flavor tests require the profile to authorize each request and check Podman refusal reasons. gRPC error header tests cover UTF-8 byte escaping. Gateway tests cover build reference and file path length limits. FileSync regressions check that data is released at the exact retained-frame overhead cap.
 
-Rate-limit eviction regressions cover exact refill times and millisecond-clock wrap without waiting on wall time.
+Empty ordinary attach responses retain normal hop-by-hop header stripping. Rate-limit eviction regressions cover exact refill times and millisecond-clock wrap without waiting on wall time.
 
 Runner regressions cover prompt session-failure cancellation, frontend process failures after Return, configured upgrade authorities and default HTTP/HTTPS ports. Gateway regressions cover scratch-result validation, independent sibling build completion, forwarded image owner-label stamping and the distinction between policy-denial abuse and solve quotas. Mutation regressions cover empty mount options before overlay directory restrictions. Route-analysis tests cover the exact instruction budgets for known-route diagnostics and body-sensitive rule reachability, plus exact shared search budgets for states, transitions and work. Reachability tests also cover long container names outside the preferred witness characters and valid Unicode identifiers around the surrogate block and at the maximum scalar value.
 

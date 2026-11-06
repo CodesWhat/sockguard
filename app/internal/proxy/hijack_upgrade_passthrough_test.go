@@ -200,6 +200,7 @@ func TestHijackNonStreamResponsesForwardedNormally(t *testing.T) {
 		{"404 without upgrade", false, "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: 17\r\n\r\n{\"message\":\"nf\"}\n", 404, "{\"message\":\"nf\"}\n"},
 		{"404 with upgrade", true, "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: 17\r\n\r\n{\"message\":\"nf\"}\n", 404, "{\"message\":\"nf\"}\n"},
 		{"200 with length without upgrade", false, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}", 200, "{}"},
+		{"empty 200 stays hop-terminated", false, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: X-Daemon-Hop\r\nX-Daemon-Hop: private\r\n\r\n", 200, ""},
 		{"200 chunked without upgrade", false, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nhi\r\n0\r\n\r\n", 200, "hi"},
 	}
 	for _, tc := range cases {
@@ -243,6 +244,9 @@ func TestHijackNonStreamResponsesForwardedNormally(t *testing.T) {
 				t.Fatalf("read response: %v", err)
 			}
 			body, _ := io.ReadAll(resp.Body)
+			if got := resp.Header.Get("X-Daemon-Hop"); got != "" {
+				t.Fatalf("ordinary response leaked hop-by-hop header: %q", got)
+			}
 			if resp.StatusCode != tc.status || string(body) != tc.body {
 				t.Fatalf("got %d %q, want %d %q", resp.StatusCode, body, tc.status, tc.body)
 			}
