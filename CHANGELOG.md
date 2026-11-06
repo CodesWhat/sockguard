@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Run admission-scanner fuzz seeds without spare buffer capacity so truncated-key slice overruns cannot hide in unused backing storage.
+
 - Pin OCI graph depth and descriptor-visit budgets in both archive validation and owner-label collection.
 
 - Cover empty OCI blobs, exact retained-body limits and the tracked-blob ceiling before the next blob is read.
