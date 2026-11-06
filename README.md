@@ -523,7 +523,7 @@ Rate-limit eviction regressions cover exact refill times and millisecond-clock w
 
 Mutation regressions also cover native named-volume bind options, native and Swarm tmpfs privilege checks, pods without image volumes under an image allowlist, and saturation of unsigned resource limits.
 
-Pull progress checks parse the final line even without a newline and retain exact-limit and split-chunk size bounds. Native integration tests probe network-name and manifest-list ID stability against the live engine.
+Pull progress checks parse the final line even without a newline and retain exact-limit and split-chunk size bounds. HTTP status boundary tests keep post-checks and tag restoration within successful responses. Native integration tests probe network-name and manifest-list ID stability against the live engine.
 
 Native Podman network label decoding accepts only JSON whitespace around inspect objects and arrays, and rejects form feed and Unicode whitespace, with the original failing fuzz input retained as a regression seed. The gRPC frame fuzzer bounds allocations on its unlimited-parser lane while retaining malformed-header and configured-limit rejection coverage.
 

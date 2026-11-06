@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Test image-pull post-checks and tag restoration at the HTTP success-status boundaries through Docker-compatible and native retag routes.
+
 - Test build-context rejection of an empty zstd skippable frame at the exact eight-byte header boundary.
 
 - Bound gRPC frame fuzz allocations when exercising the parser without a configured limit, including later frames in a stream.

@@ -936,3 +936,26 @@ func TestPrePullListAtImageCountBudget(t *testing.T) {
 		})
 	}
 }
+
+func TestPullPostCheckOnlyRunsForSuccessfulStatus(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{http.StatusOK, 299, http.StatusMultipleChoices, http.StatusBadRequest} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			const ref = "team/app:v2"
+			daemon := &pullMockDaemon{written: map[string]map[string]string{
+				ref: {"com.sockguard.owner": "another-owner"},
+			}}
+			rec, _ := runPull(t, daemon, "/images/create?fromImage=team%2Fapp&tag=v2", status)
+			if rec.Code != status {
+				t.Fatalf("response status=%d, want %d", rec.Code, status)
+			}
+			if status < http.StatusMultipleChoices {
+				if !slices.Equal(daemon.untagged, []string{"/images/" + ref}) {
+					t.Fatalf("successful pull untagged=%v, want foreign image removed", daemon.untagged)
+				}
+			} else if len(daemon.postInspects) != 0 || len(daemon.untagged) != 0 {
+				t.Fatalf("non-successful pull inspected=%v, untagged=%v", daemon.postInspects, daemon.untagged)
+			}
+		})
+	}
+}

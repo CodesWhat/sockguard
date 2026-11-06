@@ -1,11 +1,36 @@
 package ownership
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 )
+
+func TestRetagImageAcceptsOnlySuccessfulStatus(t *testing.T) {
+	t.Parallel()
+	for _, native := range []bool{false, true} {
+		for _, status := range []int{199, http.StatusOK, 299, http.StatusMultipleChoices} {
+			t.Run(fmt.Sprintf("native=%v/status=%d", native, status), func(t *testing.T) {
+				inspector := upstreamInspector{client: &http.Client{Transport: buildImageTransport(func(req *http.Request) (*http.Response, error) {
+					prefix := "/images/"
+					if native {
+						prefix = "/libpod/images/"
+					}
+					if req.Method != http.MethodPost || req.URL.Path != prefix+"image-id/tag" || req.URL.Query().Get("repo") != "team/app" || req.URL.Query().Get("tag") != "v2" {
+						t.Errorf("retag request=%s %s", req.Method, req.URL)
+					}
+					return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(""))}, nil
+				})}}
+				err := inspector.retagImage(t.Context(), "sha256:image-id", "team/app:v2", native)
+				if wantError := status < http.StatusOK || status >= http.StatusMultipleChoices; (err != nil) != wantError {
+					t.Fatalf("status %d returned error=%v, want error=%v", status, err, wantError)
+				}
+			})
+		}
+	}
+}
 
 func TestSplitImageNameTagBoundaries(t *testing.T) {
 	t.Parallel()
