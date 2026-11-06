@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Keep image-history redaction safe on bare instructions and truncated build-argument prefixes, and cover prefixes ending in digit nine.
+
 - Cover exact output frame budgets, framing overhead and disabled limits across BuildKit Dockerfile, image ownership, capability and scoped-reference rewrites.
 
 - Check that competing Docker and Podman stop-grace query keys use the larger grace period and repeated keys use their last value.

@@ -76,12 +76,18 @@ func TestImageHistoryMalformedBodyFailsClosed(t *testing.T) {
 func TestRedactHistoryCreatedByBuildArgShapes(t *testing.T) {
 	t.Parallel()
 	for in, want := range map[string]string{
-		"|1 K=v a b /bin/sh -c echo":  "|1 K=<redacted> /bin/sh -c echo",
-		"|1 K=v /usr/bin/zsh -c echo": "|1 K=<redacted>",
-		"|0 /bin/sh -c echo":          "|0 <redacted> /bin/sh -c echo",
-		"| not a prefix":              "| not a prefix",
-		"RUN echo |1 K=v":             "RUN echo |1 K=v",
-		"COPY . /app # buildkit":      "COPY . /app # buildkit",
+		"ENV":                               "ENV",
+		"ARG":                               "ARG",
+		"|":                                 "|",
+		"|1":                                "|1",
+		"|12":                               "|12",
+		"|9 API_KEY=secret /bin/sh -c echo": "|9 API_KEY=<redacted> /bin/sh -c echo",
+		"|1 K=v a b /bin/sh -c echo":        "|1 K=<redacted> /bin/sh -c echo",
+		"|1 K=v /usr/bin/zsh -c echo":       "|1 K=<redacted>",
+		"|0 /bin/sh -c echo":                "|0 <redacted> /bin/sh -c echo",
+		"| not a prefix":                    "| not a prefix",
+		"RUN echo |1 K=v":                   "RUN echo |1 K=v",
+		"COPY . /app # buildkit":            "COPY . /app # buildkit",
 	} {
 		if got := redactHistoryCreatedBy(in); got != want {
 			t.Errorf("redactHistoryCreatedBy(%q) = %q, want %q", in, got, want)
