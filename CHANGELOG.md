@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Verify create-policy validation reports the correct list entry for invalid commands, entrypoints and environment values.
+
 - Cover malformed Swarm address-pool shapes on direct Swarm responses and the nested Swarm cluster in `/info`.
 
 - Exercise failed startup cgroup-probe recovery through the production refresh-loop starter and its stop function.
