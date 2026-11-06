@@ -10,20 +10,22 @@ import (
 func TestSplitImageNameTagBoundaries(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		reference, repo, tag string
-		ok                   bool
+		name, reference, repo, tag string
+		ok                         bool
 	}{
-		{reference: ""},
-		{reference: "app"},
-		{reference: "registry.example/team/app"},
-		{reference: "localhost:5000/app"},
-		{reference: "app:v1", repo: "app", tag: "v1", ok: true},
-		{reference: "localhost:5000/app:v1", repo: "localhost:5000/app", tag: "v1", ok: true},
+		{name: "empty", reference: ""},
+		{name: "short untagged", reference: "app"},
+		{name: "qualified untagged", reference: "registry.example/team/app"},
+		{name: "registry port without tag", reference: "localhost:5000/app"},
+		{name: "short tagged", reference: "app:v1", repo: "app", tag: "v1", ok: true},
+		{name: "registry port with tag", reference: "localhost:5000/app:v1", repo: "localhost:5000/app", tag: "v1", ok: true},
 	} {
-		repo, tag, ok := splitNameTag(tt.reference)
-		if repo != tt.repo || tag != tt.tag || ok != tt.ok {
-			t.Fatalf("splitNameTag(%q)=(%q,%q,%v), want (%q,%q,%v)", tt.reference, repo, tag, ok, tt.repo, tt.tag, tt.ok)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			repo, tag, ok := splitNameTag(tt.reference)
+			if repo != tt.repo || tag != tt.tag || ok != tt.ok {
+				t.Fatalf("splitNameTag(%q)=(%q,%q,%v), want (%q,%q,%v)", tt.reference, repo, tag, ok, tt.repo, tt.tag, tt.ok)
+			}
+		})
 	}
 }
 
