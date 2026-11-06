@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Verify secret replacement distinguishes an unrelated ID-prefix inspect result from an exact foreign-owned secret.
+
 - Cover FileSync EOF at the exact retained-frame overhead cap before inspected data is released.
 
 - Cover frontend gateway build-reference and file-path length boundaries.
