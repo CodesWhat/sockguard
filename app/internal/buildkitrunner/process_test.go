@@ -3,13 +3,124 @@ package buildkitrunner
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestFrontendCommandsBoundInheritedOutputPipes(t *testing.T) {
+	for _, mode := range []string{"frontend", "inspect", "pull"} {
+		t.Run(mode, func(t *testing.T) {
+			dir := t.TempDir()
+			childPath := filepath.Join(dir, "child-pid")
+			script := `#!/bin/sh
+hold_output() {
+  sleep 60 &
+  printf '%s' "$!" > "$FRONTEND_WAIT_CHILD"
+}
+shift 2
+case "$1 $2" in
+  'image inspect')
+    case "$FRONTEND_WAIT_CASE" in
+      inspect) echo 0; hold_output;;
+      pull) exit 1;;
+      *) echo 0;;
+    esac;;
+  'pull '*)
+    if [ "$FRONTEND_WAIT_CASE" = pull ]; then hold_output; else exit 1; fi;;
+  'run '*) hold_output;;
+  'rm '*|'container ls') :;;
+  *) exit 2;;
+esac
+`
+			if err := os.WriteFile(filepath.Join(dir, "docker"), []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv("FRONTEND_WAIT_CHILD", childPath)
+			t.Setenv("FRONTEND_WAIT_CASE", mode)
+			childKilled := false
+			killChild := func() {
+				if childKilled {
+					return
+				}
+				data, err := os.ReadFile(childPath)
+				if errors.Is(err, os.ErrNotExist) {
+					return
+				}
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				pid, err := strconv.Atoi(string(data))
+				if err != nil || pid <= 0 {
+					t.Errorf("invalid fixture child PID %q: %v", data, err)
+					return
+				}
+				childKilled = true
+				if process, err := os.FindProcess(pid); err != nil {
+					t.Error(err)
+				} else {
+					if err := process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+						t.Errorf("kill fixture child: %v", err)
+					}
+					_ = process.Release()
+				}
+			}
+			t.Cleanup(killChild)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			opts := Options{Image: "example/frontend@sha256:" + strings.Repeat("a", 64), RuntimeContext: "isolated", Stderr: io.Discard}
+			type result struct {
+				process *frontendProcess
+				err     error
+			}
+			done := make(chan result, 1)
+			started := time.Now()
+			go func() {
+				if mode != "frontend" {
+					done <- result{err: preflightFrontendImage(ctx, opts)}
+					return
+				}
+				process, err := startFrontend(ctx, opts, "sockguard-pipe-test", "[]")
+				if err == nil {
+					<-process.done
+					err = process.err
+				}
+				done <- result{process, err}
+			}()
+			var out result
+			select {
+			case out = <-done:
+			case <-time.After(5 * time.Second):
+				killChild()
+				out = <-done
+				t.Error("command exceeded its inherited-pipe cleanup bound")
+			}
+			killChild()
+			if out.process != nil {
+				if err := out.process.close(); err != nil {
+					t.Errorf("frontend cleanup: %v", err)
+				}
+			}
+			if _, err := os.Stat(childPath); err != nil || time.Since(started) < time.Second {
+				t.Fatalf("fixture did not hold an inherited output pipe: %v", err)
+			}
+			if mode == "inspect" {
+				if out.err == nil || !strings.Contains(out.err.Error(), "pull frontend image") {
+					t.Fatalf("inspect timeout did not reach pull failure: %v", out.err)
+				}
+			} else if !errors.Is(out.err, exec.ErrWaitDelay) {
+				t.Fatalf("command error = %v, want inherited-pipe wait expiry", out.err)
+			}
+		})
+	}
+}
 
 func TestFrontendCommandIsolation(t *testing.T) {
 	opts := Options{Image: "docker.io/example/frontend@sha256:" + strings.Repeat("a", 64), RuntimeContext: "isolated", FrontendOptions: []string{"context=https://example.com/context", "build-arg:MESSAGE=hello world"}}

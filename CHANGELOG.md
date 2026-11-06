@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Exercise frontend, inspect and pull subprocess cleanup when an exited command leaves inherited output pipes open.
+
 - Verify empty ordinary attach responses stay hop-terminated and strip connection-scoped headers.
 
 - Verify frontend runner upgrades retain the configured authority and choose HTTP or HTTPS default ports before a canceled dial.
