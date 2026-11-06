@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Pin OCI graph depth and descriptor-visit budgets in both archive validation and owner-label collection.
+
 - Cover empty OCI blobs, exact retained-body limits and the tracked-blob ceiling before the next blob is read.
 
 - Check archive owner-label retention at exact config-file and byte budgets, including config replacement that must release its previous byte charge.
