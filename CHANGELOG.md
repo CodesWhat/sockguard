@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Reject non-JSON whitespace around native Podman network inspect responses instead of stripping it before label decoding.
+- Reject non-JSON whitespace around native Podman network inspect responses instead of stripping it before label decoding, and retain the original minimized fuzz input as a corpus regression.
 
 ### Changed
 
