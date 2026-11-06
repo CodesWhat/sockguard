@@ -837,3 +837,43 @@ func TestNamesRequestedReference(t *testing.T) {
 		})
 	}
 }
+
+func TestPullStreamFinalLine(t *testing.T) {
+	t.Parallel()
+	idLine := `{"images":["image-a"]}`
+	tests := []struct {
+		name                     string
+		chunks                   []string
+		wantImages               []string
+		wantFailed, wantUnparsed bool
+	}{
+		{name: "image without newline", chunks: []string{idLine}, wantImages: []string{"image-a"}},
+		{name: "split image without newline", chunks: []string{idLine[:8], idLine[8:]}, wantImages: []string{"image-a"}},
+		{name: "error without newline", chunks: []string{`{"error":"pull failed"}`}, wantFailed: true},
+		{name: "malformed final line", chunks: []string{`{"images":`}, wantUnparsed: true},
+		{name: "exact line limit", chunks: []string{strings.Repeat(" ", pullStreamLineLimit-len(idLine)), idLine}, wantImages: []string{"image-a"}},
+		{name: "split oversized final line", chunks: []string{strings.Repeat(" ", pullStreamLineLimit), idLine}, wantUnparsed: true},
+		{name: "oversized line then valid final line", chunks: []string{strings.Repeat(" ", pullStreamLineLimit+1), "\n" + idLine}, wantImages: []string{"image-a"}, wantUnparsed: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			writer := &pullStreamWriter{ResponseWriter: rec}
+			for _, chunk := range tt.chunks {
+				if n, err := io.WriteString(writer, chunk); err != nil || n != len(chunk) {
+					t.Fatalf("Write = (%d, %v), want %d bytes", n, err, len(chunk))
+				}
+			}
+			writer.finish()
+			if !slices.Equal(writer.images, tt.wantImages) || writer.failed != tt.wantFailed || writer.unparsed != tt.wantUnparsed {
+				t.Fatalf("images=%v failed=%v unparsed=%v; want %v, %v, %v", writer.images, writer.failed, writer.unparsed, tt.wantImages, tt.wantFailed, tt.wantUnparsed)
+			}
+			if writer.succeeded() != (!tt.wantFailed && !tt.wantUnparsed) {
+				t.Fatalf("succeeded = %v", writer.succeeded())
+			}
+			if rec.Body.String() != strings.Join(tt.chunks, "") {
+				t.Fatal("progress stream changed")
+			}
+		})
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1742,5 +1743,28 @@ func TestResourceLimitGuardKeepsItsHardDenialsForAnAmbiguousBody(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestResourceLimitReportSaturatesUnsignedValues(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		value uint64
+		want  int64
+	}{
+		{name: "zero"},
+		{name: "ordinary value", value: 42, want: 42},
+		{name: "below signed maximum", value: math.MaxInt64 - 1, want: math.MaxInt64 - 1},
+		{name: "signed maximum", value: math.MaxInt64, want: math.MaxInt64},
+		{name: "first unsigned overflow", value: uint64(math.MaxInt64) + 1, want: math.MaxInt64},
+		{name: "unsigned maximum", value: math.MaxUint64, want: math.MaxInt64},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := boundedUint64AsInt64(tt.value); got != tt.want {
+				t.Fatalf("reported limit for %d = %d, want %d", tt.value, got, tt.want)
+			}
+		})
 	}
 }

@@ -242,9 +242,11 @@ func reuseRequestInspect(
 	inspect func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
 ) func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
 	return func(ctx context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
-		// An embedded secret reference needs the exact-ID lookup, and the
-		// result visibility recorded may be prefix-resolved, so never reuse it.
-		skipMemo := kind == dockerresource.KindSecret && exactSecretLookup(ctx)
+		// Exact reference checks need identity data that the label-only memo
+		// does not retain. Fetch their inspect instead of reusing labels.
+		skipMemo := (kind == dockerresource.KindSecret && exactSecretLookup(ctx)) ||
+			(kind == dockerresource.KindNetwork && networkDeleteName(ctx)) ||
+			(kind == dockerresource.KindImage && imageVolumeID(ctx))
 		if labels, found, ok := logging.Meta(ctx).InspectedLabels(string(kind), identifier); ok && !skipMemo {
 			return labels, found, nil
 		}
@@ -639,6 +641,9 @@ func allowPathOwnershipRequest(
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindContainer, containerID, opts, false)
 	}
 	if identifier, ok := networkIdentifier(method, normPath); ok {
+		if opts.UpstreamFlavor == upstreamflavor.Podman && method == http.MethodDelete {
+			ctx = withNetworkDeleteName(ctx)
+		}
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindNetwork, identifier, opts, false)
 	}
 	if identifier, ok := volumeIdentifier(method, normPath); ok {
@@ -699,6 +704,9 @@ func allowPathOwnershipRequest(
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindLibpodPod, identifier, opts, false)
 	}
 	if identifier, ok := libpodNetworkIdentifier(method, normPath); ok {
+		if method == http.MethodDelete {
+			ctx = withNetworkDeleteName(ctx)
+		}
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindNetwork, identifier, opts, false)
 	}
 	if identifier, ok := libpodVolumeIdentifier(method, normPath); ok {
@@ -1654,6 +1662,12 @@ func (u upstreamInspector) inspectResource(ctx context.Context, kind dockerresou
 
 	if exact {
 		return decodeExactSecret(resp.Body, identifier)
+	}
+	if kind == dockerresource.KindNetwork && networkDeleteName(ctx) {
+		return decodeNetworkDeleteName(resp.Body, identifier)
+	}
+	if kind == dockerresource.KindImage && imageVolumeID(ctx) {
+		return decodeImageVolumeID(resp.Body, identifier)
 	}
 	labels, err := dockerresource.DecodeLabels(resp.Body, kind)
 	if err != nil {

@@ -696,11 +696,19 @@ same way they cover Docker-compat:
   up, and so does a create with no `--network` at all. `--volumes-from`,
   `--requires` and `--network <name>` need a container or network of the
   caller's own. An image volume has to name its image by full ID
-  (`--mount type=image,source=<id>`), because Podman looks the source up
-  again at every start, and an artifact volume (`--mount type=artifact`) is
+  (`--mount type=image,source=<id>`), and its inspect must return that same
+  config ID. A manifest-list ID that resolves to a platform image is refused
+  with `404`, because changing the list could change a later start's mount.
+  An artifact volume (`--mount type=artifact`) is
   refused, because an artifact carries no labels. See
   [Owner Label Isolation](/security#layer-6-owner-label-isolation) for the
   rest.
+- With owner isolation enforced, both native and Docker-compatible network deletion
+  require the network's
+  canonical name. `DELETE /libpod/networks/{id}` and ID-prefix aliases return
+  `404`; use the canonical name on `/libpod/networks/{name}` or
+  `/networks/{name}`. Podman compares that argument to
+  stored network names when checking whether containers still use it.
 - Every filter-capable libpod list and every path-targeted read for containers,
   images, pods, networks, volumes, and secrets is owner-filtered and
   visibility-filtered, so switching a client from Docker-compat to a native

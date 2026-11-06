@@ -7,7 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Require canonical names for owner-scoped Podman network deletion through either API family and matching config IDs for image-volume references, preventing delayed references from following recreated networks or mutable manifest lists.
+
+- Update the application and Docker client compatibility modules to `github.com/klauspost/compress` 1.20.2 for GO-2026-6865 / CVE-2026-116591, a panic on malformed zstd frames.
+
+### Fixed
+
+- Reject non-JSON whitespace around native Podman network inspect responses instead of stripping it before label decoding, and retain the original minimized fuzz input as a corpus regression.
+
 ### Changed
+
+- Align candidate migration guidance and stable install examples with published v2.4.6 channels.
+
+- Add mutation regressions for native named-volume bind options, native and Swarm tmpfs privilege checks, empty pod image-volume lists, and unsigned resource-limit saturation.
+
+- Cover unterminated image-pull progress and exact/split line limits, and add real-Podman network-name and manifest-list ID stability probes.
+
+- Exercise the zero-byte lookahead in bounded-file tests, preserve lookahead errors across close failures, and cover inline local tmpfs privilege checks on container create.
 
 - Clean up temporary changelog and release-history fixtures after CLI tests, including failed assertions.
 
@@ -103,6 +121,14 @@ This candidate carries v2.4.4 (the client compatibility sweep and libpod create 
 ### Security
 
 - **Native container create gates two more SpecGenerator fields.** `POST /libpod/containers/create` forwarded a non-empty `unified` map, raw cgroup v2 control values Podman writes into the container's cgroup, and `env_host: true`, which copies the Podman daemon's environment into the container (it was only refused while an environment allow or deny list was set). Both are now denied unless `request_body.libpod_container_create.allow_unified_cgroup_settings` or `allow_env_host` is on (`SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_UNIFIED_CGROUP_SETTINGS` and `..._ALLOW_ENV_HOST`). This is a default-deny change for a client that sets either, such as `podman run --cgroup-conf` or `--env-host`. A non-empty `pod` (which joins the pod's infra namespaces) is now denied while `restrict_namespace_sharing` is on, the same switch that governs `container:<ref>` joins; it passes with that off, as before. `r_limits` stays ungated like the Docker-compat `Ulimits`, and when owner isolation is enabled `pod` and `dependencyContainers` are also owner-checked.
+
+## [2.4.6] - 2026-11-06
+
+v2.4.6 updates the compression dependency to fix a panic on malformed zstd frames. It carries v2.4.5.
+
+### Security
+
+- Update `github.com/klauspost/compress` from 1.19.2 to 1.20.2 in the application and Docker client compatibility modules to fix GO-2026-6865 / CVE-2026-116591, a panic when decoding malformed zstd frames.
 
 ## [2.4.5] - 2026-11-03
 
