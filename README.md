@@ -525,7 +525,7 @@ Mutation regressions cover empty mount options before overlay directory restrict
 
 Mutation regressions also cover native named-volume bind options, native and Swarm tmpfs privilege checks, pods without image volumes under an image allowlist, and saturation of unsigned resource limits.
 
-Pull progress checks parse the final line even without a newline and retain exact-limit and split-chunk size bounds. HTTP status boundary tests keep post-checks and tag restoration within successful responses. Native integration tests probe network-name and manifest-list ID stability against the live engine.
+Pull progress checks parse the final line even without a newline and retain exact-limit and split-chunk size bounds. HTTP status boundary tests keep post-checks and tag restoration within successful responses. Pull regressions cover reported-ID and pre-pull snapshot count boundaries. Native integration tests probe network-name and manifest-list ID stability against the live engine.
 
 Response-topology regressions reject malformed Swarm address pools on direct and nested cluster responses.
 

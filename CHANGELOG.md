@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Cover reported-image-ID and pre-pull snapshot count limits, including duplicate and empty reported IDs.
+
 - Verify create-policy validation reports the correct list entry for invalid commands, entrypoints and environment values.
 
 - Cover malformed Swarm address-pool shapes on direct Swarm responses and the nested Swarm cluster in `/info`.

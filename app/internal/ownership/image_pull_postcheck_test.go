@@ -959,3 +959,59 @@ func TestPullPostCheckOnlyRunsForSuccessfulStatus(t *testing.T) {
 		})
 	}
 }
+
+func TestPullStreamReportedIDCountBudget(t *testing.T) {
+	t.Parallel()
+	ids := make([]string, maxPulledImageIDs+1)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("%064x", i+1)
+	}
+	reported := append([]string{"", ids[0]}, ids...)
+	body, err := json.Marshal(map[string][]string{"images": reported})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = append(body, '\n')
+	rec := httptest.NewRecorder()
+	writer := &pullStreamWriter{ResponseWriter: rec}
+	if n, err := writer.Write(body); err != nil || n != len(body) {
+		t.Fatalf("Write=(%d,%v), want %d bytes", n, err, len(body))
+	}
+	writer.finish()
+	if !slices.Equal(writer.images, ids[:maxPulledImageIDs]) {
+		t.Fatalf("retained %d IDs, want the first %d unique nonempty IDs in report order", len(writer.images), maxPulledImageIDs)
+	}
+	if !writer.succeeded() || !bytes.Equal(rec.Body.Bytes(), body) {
+		t.Fatal("valid report was rejected or its forwarded bytes changed")
+	}
+}
+
+func TestPullNewImageRemovalAtSnapshotBudget(t *testing.T) {
+	t.Parallel()
+	const id = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	const resolved = "quay.io/team/app:v2"
+	for _, delta := range []int{-1, 0, 1} {
+		t.Run(fmt.Sprintf("limit%+d", delta), func(t *testing.T) {
+			daemon := &pullMockDaemon{
+				labels:     map[string]map[string]string{},
+				ids:        map[string]string{},
+				written:    map[string]map[string]string{resolved: {testOwnerKey: "victim"}},
+				writtenIDs: map[string]string{resolved: id},
+			}
+			for i := 0; i < maxPrePullImages+delta; i++ {
+				name := fmt.Sprintf("registry-%03d.example/team/app:v2", i)
+				daemon.labels[name] = map[string]string{testOwnerKey: "job-123"}
+				daemon.ids[name] = fmt.Sprintf("%064x", i+1)
+			}
+			report := pullProgress + `{"images":["` + id + `"]}` + "\n"
+			rec, _ := servePull(t, daemon, pullRun{target: "/libpod/images/pull?reference=team%2Fapp%3Av2", status: http.StatusOK, stream: report, flavor: upstreamflavor.Podman})
+			if delta <= 0 {
+				if !slices.Equal(daemon.untagged, []string{"/libpod/images/" + resolved}) {
+					t.Fatalf("within-budget snapshot untagged=%v, want new foreign name removed", daemon.untagged)
+				}
+			} else if len(daemon.untagged) != 0 || !strings.Contains(rec.Body.String(), "could not remove pulled image "+resolved) {
+				t.Fatalf("over-budget snapshot untagged=%v, response=%s; want report-only", daemon.untagged, rec.Body.String())
+			}
+		})
+	}
+}
