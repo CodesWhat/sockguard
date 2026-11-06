@@ -877,3 +877,62 @@ func TestPullStreamFinalLine(t *testing.T) {
 		})
 	}
 }
+
+func TestPullInspectAndListAtResponseBudget(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []string{"inspect", "list"} {
+		t.Run(operation, func(t *testing.T) {
+			document := `{"Id":"image-id","Config":{"Labels":{"owner":"alice"}},"RepoTags":["registry.example/app:latest"]}`
+			if operation == "list" {
+				document = `[{"Id":"image-id","Names":["registry.example/app:latest"]}]`
+			}
+			for _, delta := range []int{-1, 0, 1} {
+				t.Run(fmt.Sprintf("limit%+d", delta), func(t *testing.T) {
+					body := document + strings.Repeat(" ", pulledImageInspectLimit+delta-len(document))
+					inspector := upstreamInspector{client: &http.Client{Transport: buildImageTransport(func(*http.Request) (*http.Response, error) {
+						return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
+					})}}
+					var err error
+					if operation == "inspect" {
+						var image pulledImage
+						var found bool
+						image, found, err = inspector.inspectPulledImage(t.Context(), "registry.example/app:latest")
+						if err == nil && (!found || image.id != "image-id" || image.labels["owner"] != "alice" || !slices.Equal(image.repoTags, []string{"registry.example/app:latest"})) {
+							t.Fatalf("inspect returned %+v, found=%v", image, found)
+						}
+					} else {
+						var images []listedImage
+						images, err = inspector.listImages(t.Context(), "registry.example/app:latest")
+						if err == nil && (len(images) != 1 || images[0].id != "image-id" || !slices.Equal(images[0].names, []string{"registry.example/app:latest"})) {
+							t.Fatalf("list returned %+v", images)
+						}
+					}
+					if delta > 0 {
+						if err == nil || !strings.Contains(err.Error(), "exceeds") {
+							t.Fatalf("over-budget response error=%v, want size refusal", err)
+						}
+					} else if err != nil {
+						t.Fatalf("within-budget response refused: %v", err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestPrePullListAtImageCountBudget(t *testing.T) {
+	t.Parallel()
+	for _, delta := range []int{-1, 0, 1} {
+		t.Run(fmt.Sprintf("limit%+d", delta), func(t *testing.T) {
+			inspector := upstreamInspector{client: &http.Client{Transport: &pullMockDaemon{listExtra: maxPrePullImages + delta}}}
+			images, err := inspector.listImages(t.Context(), "registry.example/app:latest")
+			if delta > 0 {
+				if err == nil || len(images) != 0 || !strings.Contains(err.Error(), "over the") {
+					t.Fatalf("list returned %d images, error=%v, want count refusal", len(images), err)
+				}
+			} else if err != nil || len(images) != maxPrePullImages+delta {
+				t.Fatalf("list returned %d images, error=%v, want %d images", len(images), err, maxPrePullImages+delta)
+			}
+		})
+	}
+}

@@ -1,6 +1,9 @@
 package bytesize
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestParse(t *testing.T) {
 	tests := []struct {
@@ -52,5 +55,31 @@ func TestFormatRoundTrips(t *testing.T) {
 	}
 	if got := Format(1536); got != "1536B" {
 		t.Errorf("Format(1536) = %q, want 1536B", got)
+	}
+}
+
+func TestParseLargestWholeUnitValues(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name, input string
+		want        int64
+		wantErr     bool
+	}{
+		{name: "largest plain bytes", input: "9223372036854775807", want: math.MaxInt64},
+		{name: "largest explicit bytes", input: "9223372036854775807B", want: math.MaxInt64},
+		{name: "largest KiB", input: "9007199254740991KiB", want: 9223372036854774784},
+		{name: "first KiB overflow", input: "9007199254740992KiB", wantErr: true},
+		{name: "largest MiB", input: "8796093022207MiB", want: 9223372036853727232},
+		{name: "first MiB overflow", input: "8796093022208MiB", wantErr: true},
+		{name: "largest GiB", input: "8589934591GiB", want: 9223372035781033984},
+		{name: "first GiB overflow", input: "8589934592GiB", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Parse(tt.input)
+			if (err != nil) != tt.wantErr || got != tt.want {
+				t.Fatalf("Parse(%q)=(%d,%v), want %d error=%v", tt.input, got, err, tt.want, tt.wantErr)
+			}
+		})
 	}
 }

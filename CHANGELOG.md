@@ -19,6 +19,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Distinguish named-profile authorization from the global policy in engine-flavor tests and cover UTF-8 bytes in gRPC error headers.
+
+- Bound gRPC frame fuzz allocations when exercising the parser without a configured limit, including later frames in a stream.
+
+- Verify unified CPU periods preserve, supply or clear the configured soft-limit intent without treating a period as a hard CPU cap.
+
+- Cover the first and last ASCII drive letters and denial-key echo limits, including UTF-8 boundaries and malformed continuation bytes.
+
+- Run admission-scanner fuzz seeds without spare buffer capacity so truncated-key slice overruns cannot hide in unused backing storage.
+
+- Pin OCI graph depth and descriptor-visit budgets in both archive validation and owner-label collection.
+
+- Cover empty OCI blobs, exact retained-body limits and the tracked-blob ceiling before the next blob is read.
+
+- Check archive owner-label retention at exact config-file and byte budgets, including config replacement that must release its previous byte charge.
+
+- Retain dangling object-key, array and string prefixes as admission-scanner fuzz seeds, with named boundary subtests for image references and gRPC headers.
+
+- Cover untagged image references in pull matching and reject retagging them before contacting the engine.
+
+- Cover zero failover health timeouts as invalid configuration.
+
+- Verify global and named policies receive the resolved engine flavor for tmpfs and build-network restrictions.
+
+- Pin gRPC error-message escaping at the printable ASCII boundaries, including DEL and percent signs.
+
+- Exercise exact response-size and pre-pull image-count budgets for image ownership checks.
+
+- Keep image-history redaction safe on bare instructions and truncated build-argument prefixes, and cover prefixes ending in digit nine.
+
+- Cover exact output frame budgets, framing overhead and disabled limits across BuildKit Dockerfile, image ownership, capability and scoped-reference rewrites.
+
+- Check that competing Docker and Podman stop-grace query keys use the larger grace period and repeated keys use their last value.
+
+- Cover maximum byte-size inputs, the exact cgroup response limit, and positive Docker identity probe requirements.
+
+- Exercise image-build and image-load ownership name budgets just below, at and above their limits on Docker and Podman routes.
+
+- Pin rate-limit bucket fullness at creation, exact refill, backward-clock and millisecond-wrap boundaries.
+
 - Align candidate migration guidance and stable install examples with published v2.4.6 channels.
 
 - Add mutation regressions for native named-volume bind options, native and Swarm tmpfs privilege checks, empty pod image-volume lists, and unsigned resource-limit saturation.

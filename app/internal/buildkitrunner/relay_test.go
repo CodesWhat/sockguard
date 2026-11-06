@@ -69,3 +69,24 @@ func TestRelayRejectsMalformedSolveBeforeUpstream(t *testing.T) {
 		t.Fatal("malformed graph reached upstream")
 	}
 }
+
+func TestRPCErrorEscapesHeaderBoundaries(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct{ name, message, want string }{
+		{name: "control before space", message: "\x1f", want: "%1F"},
+		{name: "space", message: " ", want: " "},
+		{name: "last printable", message: "~", want: "~"},
+		{name: "DEL", message: "\x7f", want: "%7F"},
+		{name: "high byte", message: "\x80", want: "%80"},
+		{name: "UTF-8", message: "é", want: "%C3%A9"},
+		{name: "percent", message: "%", want: "%25"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			rpcError(rec, "7", tt.message)
+			if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "application/grpc" || rec.Header().Get("Grpc-Status") != "7" || rec.Header().Get("Grpc-Message") != tt.want {
+				t.Fatalf("rpcError(%q) returned status=%d headers=%v, want message=%q", tt.message, rec.Code, rec.Header(), tt.want)
+			}
+		})
+	}
+}

@@ -110,3 +110,26 @@ func TestLibpodCreateUnifiedCannotClearRequiredLimits(t *testing.T) {
 		})
 	}
 }
+
+func TestLibpodUnifiedCPUPeriodPreservesLimitIntent(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, body       string
+		hard, wantDenied bool
+	}{
+		{name: "unified period supplies intent", body: `{"image":"alpine","unified":{"cpu.max":"max 100000"}}`},
+		{name: "missing unified period keeps explicit period", body: `{"image":"alpine","resource_limits":{"cpu":{"period":100000}},"unified":{"cpu.max":"max"}}`},
+		{name: "explicit zero period clears intent", body: `{"image":"alpine","resource_limits":{"cpu":{"period":100000}},"unified":{"cpu.max":"max 0"}}`, wantDenied: true},
+		{name: "no period supplies no intent", body: `{"image":"alpine","unified":{"cpu.max":"max"}}`, wantDenied: true},
+		{name: "period alone is no hard cap", body: `{"image":"alpine","unified":{"cpu.max":"max 100000"}}`, hard: true, wantDenied: true},
+		{name: "quota and period supply hard cap", body: `{"image":"alpine","unified":{"cpu.max":"50000 100000"}}`, hard: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowSystemdMode: true, AllowUnifiedCgroupSettings: true, RequireCPULimit: !tt.hard, RequireCPULimitHard: tt.hard})
+			reason := inspectLibpod(t, policy, []byte(tt.body))
+			if (reason != "") != tt.wantDenied || (tt.wantDenied && !strings.Contains(reason, "CPU")) {
+				t.Fatalf("inspection=%q, want CPU refusal=%v", reason, tt.wantDenied)
+			}
+		})
+	}
+}

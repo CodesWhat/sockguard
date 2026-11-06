@@ -16,6 +16,7 @@ func TestValidateUpstreamFlavorAndFailoverTimings(t *testing.T) {
 		{"health interval not a duration", func(c *Config) { c.Upstream.Failover.HealthInterval = "soon" }, "health_interval must be a Go duration"},
 		{"health interval zero", func(c *Config) { c.Upstream.Failover.HealthInterval = "0s" }, "health_interval must be non-zero"},
 		{"health timeout not a duration", func(c *Config) { c.Upstream.Failover.HealthTimeout = "soon" }, "health_timeout must be a positive duration"},
+		{"health timeout zero", func(c *Config) { c.Upstream.Failover.HealthTimeout = "0s" }, "health_timeout must be a positive duration"},
 		{"health timeout not positive", func(c *Config) { c.Upstream.Failover.HealthTimeout = "-1s" }, "health_timeout must be a positive duration"},
 	}
 	for _, tc := range tests {

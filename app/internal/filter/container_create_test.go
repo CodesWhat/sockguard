@@ -946,6 +946,10 @@ func TestContainerCreatePolicyDenyBindMountReasonRejectsWindowsHostPathSources(t
 		wantReason string
 	}{
 		{name: "drive root", bind: `c:/:/h`, wantReason: `container create denied: bind mount source "c" is a Windows drive letter path`},
+		{name: "first lowercase drive", bind: `a:/:/h`, wantReason: `container create denied: bind mount source "a" is a Windows drive letter path`},
+		{name: "last lowercase drive", bind: `z:/:/h`, wantReason: `container create denied: bind mount source "z" is a Windows drive letter path`},
+		{name: "first uppercase drive", bind: `A:/:/h`, wantReason: `container create denied: bind mount source "A" is a Windows drive letter path`},
+		{name: "last uppercase drive", bind: `Z:/:/h`, wantReason: `container create denied: bind mount source "Z" is a Windows drive letter path`},
 		{name: "drive traversal", bind: `c:/../../etc:/h`, wantReason: `container create denied: bind mount source "c" is a Windows drive letter path`},
 		{name: "drive with option", bind: `c:/x:/h:ro`, wantReason: `container create denied: bind mount source "c" is a Windows drive letter path`},
 		{name: "drive backslash", bind: `c:\x:/h`, wantReason: `container create denied: bind mount source "c" is a Windows drive letter path`},

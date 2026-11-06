@@ -1,6 +1,7 @@
 package ownership
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -226,5 +227,37 @@ func TestBuildNameDenialFollowsRolloutModes(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestBuildImageDestinationsAtNameBudget(t *testing.T) {
+	t.Parallel()
+	for _, route := range []struct {
+		name, path string
+		flavor     upstreamflavor.Flavor
+	}{
+		{name: "Docker", path: "/build", flavor: upstreamflavor.Docker},
+		{name: "Podman", path: "/libpod/build", flavor: upstreamflavor.Podman},
+	} {
+		t.Run(route.name, func(t *testing.T) {
+			for _, n := range []int{buildMaxTags - 1, buildMaxTags, buildMaxTags + 1} {
+				t.Run(fmt.Sprint(n), func(t *testing.T) {
+					query := url.Values{}
+					for i := range n {
+						query.Add("t", fmt.Sprintf("registry.example/team/app:v%d", i))
+					}
+					refs, reason := buildImageDestinations(query.Encode(), route.path, route.flavor)
+					if n > buildMaxTags {
+						if refs != nil || reason != buildDenyTooManyTags {
+							t.Fatalf("overflow = (%v,%q)", refs, reason)
+						}
+						return
+					}
+					if reason != "" || refs == nil || len(refs.destinations) != n {
+						t.Fatalf("%d valid names: refs=%v reason=%q", n, refs, reason)
+					}
+				})
+			}
+		})
 	}
 }

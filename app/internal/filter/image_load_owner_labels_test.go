@@ -262,3 +262,148 @@ func TestImageLoadNonRegularEntryAtConfigPathFailsClosed(t *testing.T) {
 		}
 	})
 }
+
+func TestImageLoadOwnerLabelRetentionBudgets(t *testing.T) {
+	t.Parallel()
+	configAtSize := func(size int, owner string) string {
+		body := ownerLabelConfig(map[string]string{ownerLabelTestKey: owner})
+		return body + strings.Repeat(" ", size-len(body))
+	}
+	check := func(t *testing.T, entries []containerArchiveTestEntry, selected []string, wantUnreadable bool) {
+		t.Helper()
+		var manifests []string
+		for _, name := range selected {
+			manifests = append(manifests, fmt.Sprintf(`{"Config":%q,"RepoTags":["mine/app:v1"]}`, name))
+		}
+		entries = append(entries, containerArchiveTestEntry{name: "manifest.json", body: "[" + strings.Join(manifests, ",") + "]"})
+		body := mustContainerArchiveTar(t, entries...)
+		archive, err := defaultIODeps().extractImageLoadArchiveFromTar(tar.NewReader(bytes.NewReader(body)), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		labels, unreadable := imageLoadOwnerLabels(archive, ownerLabelTestKey)
+		if unreadable != wantUnreadable {
+			t.Fatalf("owner labels=%v unreadable=%v, want unreadable=%v", labels, unreadable, wantUnreadable)
+		}
+		if !wantUnreadable {
+			want := make([]string, len(selected))
+			for i := range want {
+				want[i] = "mine"
+			}
+			if !slices.Equal(labels, want) {
+				t.Fatalf("owner labels=%v, want %v", labels, want)
+			}
+		}
+	}
+	for _, mode := range []string{"regular", "discarded"} {
+		for _, delta := range []int{-1, 0, 1} {
+			t.Run(fmt.Sprintf("%s config count limit%+d", mode, delta), func(t *testing.T) {
+				entries := []containerArchiveTestEntry{{name: "target.json", body: ownerLabelConfig(map[string]string{ownerLabelTestKey: "mine"})}}
+				for i := 1; i < maxImageLoadConfigFiles+delta; i++ {
+					entry := containerArchiveTestEntry{name: fmt.Sprintf("extra%04d.json", i), body: `{}`}
+					if mode == "discarded" {
+						entry.typ, entry.body = tar.TypeDir, ""
+					}
+					entries = append(entries, entry)
+				}
+				check(t, entries, []string{"target.json"}, delta > 0)
+			})
+		}
+	}
+	for _, delta := range []int{-1, 0, 1} {
+		t.Run(fmt.Sprintf("per-file bytes limit%+d", delta), func(t *testing.T) {
+			check(t, []containerArchiveTestEntry{{name: "target.json", body: configAtSize(maxImageLoadManifestBytes+delta, "mine")}}, []string{"target.json"}, delta > 0)
+		})
+		t.Run(fmt.Sprintf("aggregate bytes limit%+d", delta), func(t *testing.T) {
+			var entries []containerArchiveTestEntry
+			for i := range 15 {
+				entries = append(entries, containerArchiveTestEntry{name: fmt.Sprintf("extra%02d.json", i), body: configAtSize(maxImageLoadManifestBytes, "mine")})
+			}
+			entries = append(entries, containerArchiveTestEntry{name: "padding.json", body: configAtSize(maxImageLoadManifestBytes-256, "mine")}, containerArchiveTestEntry{name: "target.json", body: configAtSize(256+delta, "mine")})
+			check(t, entries, []string{"target.json"}, delta > 0)
+		})
+	}
+	t.Run("replacement releases previous bytes", func(t *testing.T) {
+		var entries []containerArchiveTestEntry
+		for i := range 15 {
+			entries = append(entries, containerArchiveTestEntry{name: fmt.Sprintf("extra%02d.json", i), body: configAtSize(maxImageLoadManifestBytes, "mine")})
+		}
+		entries = append(entries,
+			containerArchiveTestEntry{name: "padding.json", body: configAtSize(maxImageLoadManifestBytes-512, "mine")},
+			containerArchiveTestEntry{name: "target.json", body: configAtSize(256, "victim")},
+			containerArchiveTestEntry{name: "target.json", body: configAtSize(256, "mine")},
+			containerArchiveTestEntry{name: "after.json", body: configAtSize(256, "mine")},
+		)
+		check(t, entries, []string{"target.json", "after.json"}, false)
+	})
+}
+
+func TestImageLoadOCIGraphBoundaries(t *testing.T) {
+	t.Parallel()
+	const manifestType = "application/vnd.oci.image.manifest.v1+json"
+	const indexType = "application/vnd.oci.image.index.v1+json"
+	for _, tt := range []struct {
+		name           string
+		depth, members int
+		wantErr        string
+	}{
+		{name: "below depth limit", depth: 15, members: 1},
+		{name: "exact depth limit", depth: 16, members: 1},
+		{name: "above depth limit", depth: 17, members: 1, wantErr: "16 levels"},
+		{name: "below visit limit", depth: 1, members: maxImageLoadOCIDescriptorVisits - 2},
+		{name: "exact visit limit", depth: 1, members: maxImageLoadOCIDescriptorVisits - 1},
+		{name: "above visit limit", depth: 1, members: maxImageLoadOCIDescriptorVisits, wantErr: "descriptor visit limit"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			controls := imageLoadArchiveControlFiles{seenOCIIndex: true}
+			entries := []containerArchiveTestEntry{{name: "oci-layout", body: `{"imageLayoutVersion":"1.0.0"}`}}
+			add := func(body string, mediaType string) imageLoadOCIIndexDescriptor {
+				t.Helper()
+				digest, name := ownerLabelDigest(body)
+				entries = append(entries, containerArchiveTestEntry{name: name, body: body})
+				if err := defaultIODeps().recordImageLoadOCIBlob(&controls, name, &tar.Header{Typeflag: tar.TypeReg, Size: int64(len(body))}, strings.NewReader(body)); err != nil {
+					t.Fatal(err)
+				}
+				return imageLoadOCIIndexDescriptor{Digest: digest, Size: int64(len(body)), MediaType: mediaType}
+			}
+			config := add(ownerLabelConfig(map[string]string{ownerLabelTestKey: "mine"}), "application/vnd.oci.image.config.v1+json")
+			descriptor := add(fmt.Sprintf(`{"schemaVersion":2,"mediaType":%q,"config":{"mediaType":%q,"digest":%q,"size":%d},"layers":[]}`, manifestType, config.MediaType, config.Digest, config.Size), manifestType)
+			for level := range tt.depth {
+				members := 1
+				if level == 0 {
+					members = tt.members
+				}
+				child := fmt.Sprintf(`{"mediaType":%q,"digest":%q,"size":%d}`, descriptor.MediaType, descriptor.Digest, descriptor.Size)
+				children := strings.TrimSuffix(strings.Repeat(child+",", members), ",")
+				descriptor = add(fmt.Sprintf(`{"schemaVersion":2,"mediaType":%q,"manifests":[%s]}`, indexType, children), indexType)
+			}
+			controls.ociIndex = []byte(fmt.Sprintf(`{"schemaVersion":2,"manifests":[{"mediaType":%q,"digest":%q,"size":%d,"annotations":{"org.opencontainers.image.ref.name":"mine/app:v1"}}]}`, descriptor.MediaType, descriptor.Digest, descriptor.Size))
+			entries = append(entries, containerArchiveTestEntry{name: "index.json", body: string(controls.ociIndex)})
+			t.Run("config collection", func(t *testing.T) {
+				configs, unreadable := collectImageLoadConfigs(controls)
+				labels, labelsUnreadable := imageLoadOwnerLabels(imageLoadArchiveInspection{configs: configs, configsUnreadable: unreadable}, ownerLabelTestKey)
+				if tt.wantErr != "" {
+					if !unreadable || !labelsUnreadable || len(labels) != 0 {
+						t.Fatalf("over-budget configs readable: unreadable=%v labels=%v labelsUnreadable=%v", unreadable, labels, labelsUnreadable)
+					}
+				} else if unreadable || labelsUnreadable || !slices.Equal(labels, []string{"mine"}) {
+					t.Fatalf("within-budget configs: unreadable=%v labels=%v labelsUnreadable=%v", unreadable, labels, labelsUnreadable)
+				}
+			})
+			t.Run("archive validation", func(t *testing.T) {
+				payload := mustContainerArchiveTar(t, entries...)
+				archive, err := defaultIODeps().extractImageLoadArchiveFromTar(tar.NewReader(bytes.NewReader(payload)), false)
+				if tt.wantErr != "" {
+					if !errors.Is(err, errImageLoadOCIUninspectable) || !strings.Contains(err.Error(), tt.wantErr) {
+						t.Fatalf("over-budget error=%v, want graph budget refusal", err)
+					}
+					return
+				}
+				labels, unreadable := imageLoadOwnerLabels(archive, ownerLabelTestKey)
+				if err != nil || unreadable || !slices.Equal(labels, []string{"mine"}) {
+					t.Fatalf("within-budget archive: error=%v unreadable=%v labels=%v", err, unreadable, labels)
+				}
+			})
+		})
+	}
+}

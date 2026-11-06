@@ -232,3 +232,35 @@ func TestImageLoadRefusesForgedOwnerLabels(t *testing.T) {
 		})
 	}
 }
+
+func TestImageLoadDestinationsAtNameBudget(t *testing.T) {
+	t.Parallel()
+	for _, route := range []struct {
+		name, path string
+		flavor     upstreamflavor.Flavor
+	}{
+		{name: "Docker", path: "/images/load", flavor: upstreamflavor.Docker},
+		{name: "Podman", path: "/libpod/images/load", flavor: upstreamflavor.Podman},
+	} {
+		t.Run(route.name, func(t *testing.T) {
+			for _, n := range []int{imageLoadMaxNames - 1, imageLoadMaxNames, imageLoadMaxNames + 1} {
+				t.Run(fmt.Sprint(n), func(t *testing.T) {
+					names := make([]string, n)
+					for i := range names {
+						names[i] = fmt.Sprintf("registry.example/team/app:v%d", i)
+					}
+					refs, reason := imageLoadDestinations(&logging.ImageLoadRecord{OwnerLabelKey: "com.sockguard.owner", References: names}, route.path, route.flavor)
+					if n > imageLoadMaxNames {
+						if refs != nil || reason != imageLoadDenyTooManyNames {
+							t.Fatalf("overflow = (%v,%q)", refs, reason)
+						}
+						return
+					}
+					if reason != "" || refs == nil || len(refs.destinations) != n {
+						t.Fatalf("%d valid names: refs=%v reason=%q", n, refs, reason)
+					}
+				})
+			}
+		})
+	}
+}
