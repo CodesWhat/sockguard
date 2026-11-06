@@ -529,7 +529,7 @@ Mutation regressions also cover native named-volume bind options, native and Swa
 
 Pull progress checks parse the final line even without a newline and retain exact-limit and split-chunk size bounds. HTTP status boundary tests keep post-checks and tag restoration within successful responses. Pull regressions cover reported-ID and pre-pull snapshot count boundaries, plus digest-only pulls of bare repository names. Native integration tests probe network-name and manifest-list ID stability against the live engine.
 
-Response-topology regressions reject malformed Swarm address pools on direct and nested cluster responses. Canonical network and image-volume ownership checks cover their exact inspect-response byte limits. Secret replacement tests permit a new name that matches only another secret’s ID prefix while refusing an exact foreign-owned name.
+Response-topology regressions reject malformed Swarm address pools on direct and nested cluster responses. Canonical network and image-volume ownership checks cover their exact inspect-response byte limits. Container-create tests keep resource kinds distinct when image and pod names match, and check Docker reserved network names against the configured engine flavor. Secret replacement tests permit a new name that matches only another secret’s ID prefix while refusing an exact foreign-owned name.
 
 Native Podman network label decoding accepts only JSON whitespace around inspect objects and arrays, and rejects form feed and Unicode whitespace, with the original failing fuzz input retained as a regression seed. The gRPC frame fuzzer bounds allocations on its unlimited-parser lane while retaining malformed-header and configured-limit rejection coverage.
 
