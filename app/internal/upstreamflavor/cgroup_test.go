@@ -75,3 +75,33 @@ func rewriteClient(srv *httptest.Server) *http.Client {
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestProbeCgroupVersionAtResponseLimit(t *testing.T) {
+	t.Parallel()
+	const document = `{"CgroupVersion":"1"}`
+	for _, tt := range []struct {
+		name    string
+		size    int
+		wantErr bool
+	}{
+		{name: "below limit", size: maxInfoBodyBytes - 1},
+		{name: "exact limit", size: maxInfoBodyBytes},
+		{name: "over limit", size: maxInfoBodyBytes + 1, wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			body := document + strings.Repeat(" ", tt.size-len(document))
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(body)) }))
+			defer srv.Close()
+			version, err := ProbeCgroupVersion(t.Context(), rewriteClient(srv))
+			if tt.wantErr {
+				if err == nil || version != "" || !strings.Contains(err.Error(), "exceeds") {
+					t.Fatalf("probe=(%q,%v), want size refusal", version, err)
+				}
+				return
+			}
+			if err != nil || version != "1" {
+				t.Fatalf("probe=(%q,%v), want cgroup v1", version, err)
+			}
+		})
+	}
+}
