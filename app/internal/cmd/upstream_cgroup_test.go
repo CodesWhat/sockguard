@@ -172,12 +172,16 @@ func TestStartupCgroupProbeFailureStartsRetry(t *testing.T) {
 	if err := resolveUpstreamFlavorForRuntime(t.Context(), deps, rt, cgroupTestConfig(true), logger); err != nil {
 		t.Fatalf("resolveUpstreamFlavorForRuntime() error = %v", err)
 	}
-	if tracker.isV1() {
+	liveV1 := runtimeCgroupV1Func(rt)
+	if liveV1 == nil {
+		t.Fatal("runtime did not expose its live cgroup probe")
+	}
+	if liveV1() {
 		t.Fatal("gate must be closed after a failed startup probe")
 	}
 	stop := rt.startCgroupV1Refresh(t.Context())
 	t.Cleanup(stop)
-	waitForCgroup(t, "startup retry to open the gate", tracker.isV1)
+	waitForCgroup(t, "startup retry to open the gate", liveV1)
 }
 
 // A clean "not v1" startup answer does not kick a retry.
