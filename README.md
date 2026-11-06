@@ -517,6 +517,8 @@ The next release work is v3 candidate validation and GA, followed by the remaini
 
 Owner-scoped native Podman network deletion requires the canonical network name so the engine's in-use check applies. Image volumes require an inspect that resolves to the same full config ID, rejecting mutable manifest-list aliases.
 
+Rate-limit eviction regressions cover exact refill times and millisecond-clock wrap without waiting on wall time.
+
 Mutation regressions also cover native named-volume bind options, native and Swarm tmpfs privilege checks, pods without image volumes under an image allowlist, and saturation of unsigned resource limits.
 
 Pull progress checks parse the final line even without a newline and retain exact-limit and split-chunk size bounds. Native integration tests probe network-name and manifest-list ID stability against the live engine.
