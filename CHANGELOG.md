@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Cover unterminated image-pull progress and exact/split line limits, and add real-Podman network-name and manifest-list ID stability probes.
+
 - Exercise the zero-byte lookahead in bounded-file tests, preserve lookahead errors across close failures, and cover inline local tmpfs privilege checks on container create.
 
 - Clean up temporary changelog and release-history fixtures after CLI tests, including failed assertions.
