@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Align candidate migration guidance and stable install examples with published v2.4.6 channels.
+
 - Add mutation regressions for native named-volume bind options, native and Swarm tmpfs privilege checks, empty pod image-volume lists, and unsigned resource-limit saturation.
 
 - Cover unterminated image-pull progress and exact/split line limits, and add real-Podman network-name and manifest-list ID stability probes.
