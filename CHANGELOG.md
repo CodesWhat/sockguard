@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Cover untagged image references in pull matching and reject retagging them before contacting the engine.
+
 - Cover zero failover health timeouts as invalid configuration.
 
 - Verify global and named policies receive the resolved engine flavor for tmpfs and build-network restrictions.
