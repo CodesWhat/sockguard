@@ -224,3 +224,44 @@ func TestDecodeLibpodLabelsNetworkEdgeCases(t *testing.T) {
 		})
 	}
 }
+
+func TestDecodeLibpodNetworkJSONWhitespace(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		whitespace string
+		wantErr    bool
+	}{
+		{name: "JSON whitespace", whitespace: " \t\r\n"},
+		{name: "form feed", whitespace: "\f", wantErr: true},
+		{name: "vertical tab", whitespace: "\v", wantErr: true},
+		{name: "nonbreaking space", whitespace: "\u00a0", wantErr: true},
+		{name: "Unicode line separator", whitespace: "\u2028", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, shape := range []struct{ name, body string }{
+				{"object", `{"labels":{"owner":"a"}}`},
+				{"array", `[{"labels":{"owner":"a"}}]`},
+			} {
+				t.Run(shape.name, func(t *testing.T) {
+					for _, side := range []struct{ name, body string }{
+						{"leading", tt.whitespace + shape.body},
+						{"trailing", shape.body + tt.whitespace},
+					} {
+						t.Run(side.name, func(t *testing.T) {
+							labels, err := DecodeLabels(strings.NewReader(side.body), KindLibpodNetwork)
+							if tt.wantErr {
+								if err == nil || labels != nil {
+									t.Fatalf("DecodeLabels(%q) = (%v, %v), want error without labels", side.body, labels, err)
+								}
+							} else if err != nil || labels["owner"] != "a" {
+								t.Fatalf("DecodeLabels(%q) = (%v, %v), want owner a", side.body, labels, err)
+							}
+						})
+					}
+				})
+			}
+		})
+	}
+}
