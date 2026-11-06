@@ -78,6 +78,7 @@ func TestRPCErrorEscapesHeaderBoundaries(t *testing.T) {
 		{name: "last printable", message: "~", want: "~"},
 		{name: "DEL", message: "\x7f", want: "%7F"},
 		{name: "high byte", message: "\x80", want: "%80"},
+		{name: "UTF-8", message: "é", want: "%C3%A9"},
 		{name: "percent", message: "%", want: "%25"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
