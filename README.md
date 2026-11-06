@@ -515,6 +515,8 @@ The full roadmap, with compatibility evidence and scope boundaries, is on the [d
 
 The next release work is v3 candidate validation and GA, followed by the remaining Podman isolation fixes. The 2.4.x line will receive security fixes until v3.1 ships, through reviewed maintenance releases that preserve the current global latest channels. Native API integration CI covers Podman 5 and 6 as well as the distro rootful/rootless jobs, with a live daemon version check and a settled-socket check for each major. Successful socket probes leave permissions untouched so a rebind resets the success streak. An explicitly configured missing engine socket fails the integration run instead of silently skipping it. Native CI preserves failed test status while collecting its result artifacts. Image-history conformance loads a local fixture and checks ENV/ARG redaction through both the Docker-compatible and native APIs. Bounded-file regressions cover zero-byte lookahead and preservation of read errors when close also fails.
 
+CLI tests remove their temporary changelog files and release-history repositories when each test finishes.
+
 The frontend runner waits within a bounded cleanup deadline for Docker to confirm its container is absent, including when automatic removal is already in progress. A timed-out inspection remains a verification error even when an earlier query found the container.
 
 Maintenance patches advance a floating major image tag only from that major's newest minor line recorded in `SECURITY.md`. A 2.4 patch can keep `:2` current after v3 ships, while an older minor cannot move a major tag backward.

@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Exercise the zero-byte lookahead in bounded-file tests and verify that lookahead read errors survive a later close failure.
 
+- Clean up temporary changelog and release-history fixtures after CLI tests, including failed assertions.
+
 - Add real-Podman image-history conformance for the Docker-compatible and native APIs. The test records actual instruction field names and checks ENV/ARG redaction against a local fixture image without pulling or running it.
 
 - Add mutation regressions for compressed responses, BuildKit and owner isolation, engine identification, CLI reports and reachability budgets, and HEAD visibility refusals.
