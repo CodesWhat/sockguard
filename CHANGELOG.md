@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Check that competing Docker and Podman stop-grace query keys use the larger grace period and repeated keys use their last value.
+
 - Cover maximum byte-size inputs, the exact cgroup response limit, and positive Docker identity probe requirements.
 
 - Exercise image-build and image-load ownership name budgets just below, at and above their limits on Docker and Podman routes.
