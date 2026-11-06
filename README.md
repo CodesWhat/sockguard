@@ -527,7 +527,7 @@ Inline-volume privilege tests cover default and explicit driver selection.
 
 Mutation regressions also cover native named-volume bind options, native and Swarm tmpfs privilege checks, pods without image volumes under an image allowlist, and saturation of unsigned resource limits.
 
-Pull progress checks parse the final line even without a newline and retain exact-limit and split-chunk size bounds. HTTP status boundary tests keep post-checks and tag restoration within successful responses. Pull regressions cover reported-ID and pre-pull snapshot count boundaries. Native integration tests probe network-name and manifest-list ID stability against the live engine.
+Pull progress checks parse the final line even without a newline and retain exact-limit and split-chunk size bounds. HTTP status boundary tests keep post-checks and tag restoration within successful responses. Pull regressions cover reported-ID and pre-pull snapshot count boundaries, plus digest-only pulls of bare repository names. Native integration tests probe network-name and manifest-list ID stability against the live engine.
 
 Response-topology regressions reject malformed Swarm address pools on direct and nested cluster responses. Secret replacement tests permit a new name that matches only another secret’s ID prefix while refusing an exact foreign-owned name.
 

@@ -521,6 +521,16 @@ func TestPullByDigestReportsAForeignImage(t *testing.T) {
 		wantLine   string
 	}{
 		{
+			name: "bare repository digest on Docker", target: "/images/create?fromImage=" + url.QueryEscape("alpine@"+pullDigest),
+			ref: "alpine@" + pullDigest, flavor: upstreamflavor.Docker,
+			wantLine: "owner policy: pulled image alpine@" + pullDigest + " " + kept,
+		},
+		{
+			name: "bare repository digest on Podman compat", target: "/images/create?fromImage=" + url.QueryEscape("alpine@"+pullDigest),
+			ref: "alpine@" + pullDigest, flavor: upstreamflavor.Podman,
+			wantLine: "owner policy: pulled image alpine@" + pullDigest + " " + kept,
+		},
+		{
 			name: "compat pull on an unprobed upstream", target: "/images/create?fromImage=" + url.QueryEscape("team/app@"+pullDigest),
 			ref: "team/app@" + pullDigest, flavor: upstreamflavor.Docker,
 			wantLine: "owner policy: pulled image team/app@" + pullDigest + " " + kept,
