@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Verify unified CPU periods preserve, supply or clear the configured soft-limit intent without treating a period as a hard CPU cap.
+
 - Cover the first and last ASCII drive letters and denial-key echo limits, including UTF-8 boundaries and malformed continuation bytes.
 
 - Run admission-scanner fuzz seeds without spare buffer capacity so truncated-key slice overruns cannot hide in unused backing storage.
