@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Test frontend scratch-result validation, independent sibling build completion and gateway denial-budget behavior.
+
 - Verify route reachability for long container names outside the preferred witness characters.
 
 - Cover exact inspect-response byte limits for canonical Podman network deletion and image-volume ID checks.

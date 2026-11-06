@@ -240,6 +240,8 @@ func TestGatewayRequestPolicy(t *testing.T) {
 		{"Inputs", &gateway.InputsRequest{}, true},
 		{"Warn", &gateway.WarnRequest{Short: []byte("warning")}, true},
 		{"Return", &gateway.ReturnRequest{Result: &gateway.Result{Result: &gateway.Result_Ref{Ref: &gateway.Ref{Id: "result"}}}}, true},
+		{"Return", &gateway.ReturnRequest{Result: &gateway.Result{Result: &gateway.Result_Ref{Ref: &gateway.Ref{}}}}, true},
+		{"Return", &gateway.ReturnRequest{Result: &gateway.Result{Result: &gateway.Result_Ref{Ref: &gateway.Ref{Id: "bad\nref"}}}}, false},
 		{"Return", &gateway.ReturnRequest{}, false},
 		{"Solve", &gateway.SolveRequest{Frontend: "gateway.v0"}, false},
 		{"Solve", &gateway.SolveRequest{Final: true}, false},
