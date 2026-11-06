@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Verify the runtime concurrency limiter applies engine-specific streaming behavior to container top requests.
+
 - Verify readiness probes publish metrics and cgroup retries update the live runtime callback.
 
 - Exercise frontend, inspect and pull subprocess cleanup when an exited command leaves inherited output pipes open.
