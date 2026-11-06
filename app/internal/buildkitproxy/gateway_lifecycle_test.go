@@ -3,6 +3,7 @@ package buildkitproxy
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -116,6 +117,51 @@ func TestGatewayCompletingSiblingPreservesActiveBuild(t *testing.T) {
 	b.handleStream(rec, req)
 	if !forwarded || rec.Header().Get("Grpc-Status") != "0" {
 		t.Fatalf("active sibling was lost: forwarded=%v status=%q", forwarded, rec.Header().Get("Grpc-Status"))
+	}
+}
+
+func TestGatewayReturnStampsForwardedImageConfig(t *testing.T) {
+	forwarded := false
+	leg := gatewayLifecycleLeg(func(r *http.Request) (*http.Response, error) {
+		_, payload, err := readUnaryGRPCMessage(r.Body, DefaultLimits().MaxMessageBytes)
+		if err != nil {
+			return nil, err
+		}
+		var returned gateway.ReturnRequest
+		if err := proto.Unmarshal(payload, &returned); err != nil {
+			return nil, err
+		}
+		var config struct {
+			Config struct{ Labels map[string]string }
+		}
+		if err := json.Unmarshal(returned.GetResult().GetMetadata()[imageConfigKey], &config); err != nil {
+			return nil, err
+		}
+		if config.Config.Labels["owner"] != "team-a" || config.Config.Labels["keep"] != "yes" {
+			t.Errorf("forwarded image labels = %v, want stamped owner and retained metadata", config.Config.Labels)
+		}
+		forwarded = true
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/grpc"}, "Grpc-Status": {"0"}}, Body: io.NopCloser(bytes.NewReader(grpcFrame(nil)))}, nil
+	})
+	b := newUnitTestBridge(t, leg)
+	b.policy.Control.Solve.AllowFrontendGateway = true
+	b.policy.ImageOwnership = ImageOwnershipPolicy{Owner: "team-a", LabelKey: "owner", RequireConfig: true}
+	t.Cleanup(func() { b.registry.Close(b.session.ID); b.closeAll(nil) })
+	if _, d := b.registry.beginGatewayBuild(t.Context(), b.session, "build", testBuildkitSessionID, b.policy); d != nil {
+		t.Fatal(d)
+	}
+	if result := b.registry.admitSolve(b.session, testBuildkitSessionID, "build", nil, 0, 0); result != solveAdmissionSucceeded {
+		t.Fatal(result)
+	}
+	req := newFramedGRPCRequest(t, "/"+gatewayService+"/Return", &gateway.ReturnRequest{Result: &gateway.Result{
+		Result:   &gateway.Result_Ref{Ref: &gateway.Ref{Id: "result"}},
+		Metadata: map[string][]byte{imageConfigKey: []byte(`{"config":{"Labels":{"owner":"forged","keep":"yes"}}}`)},
+	}})
+	req.Header.Set(gatewayBuildHeader, "build")
+	rec := httptest.NewRecorder()
+	b.handleStream(rec, req)
+	if !forwarded || rec.Header().Get("Grpc-Status") != "0" {
+		t.Fatalf("Return not forwarded: forwarded=%v status=%q", forwarded, rec.Header().Get("Grpc-Status"))
 	}
 }
 

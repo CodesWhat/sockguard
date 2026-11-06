@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Verify owner labels are stamped on image configuration forwarded by frontend gateway Return calls.
+
 - Cover engine-specific reserved network names and distinct resource kinds that share an identifier during container creation.
 
 - Test frontend scratch-result validation, independent sibling build completion and gateway denial-budget behavior.

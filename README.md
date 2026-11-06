@@ -521,7 +521,7 @@ Image-build and image-load ownership tests cover the exact supported name budget
 
 Rate-limit eviction regressions cover exact refill times and millisecond-clock wrap without waiting on wall time.
 
-Gateway regressions cover scratch-result validation, independent sibling build completion and the distinction between policy-denial abuse and solve quotas. Mutation regressions cover empty mount options before overlay directory restrictions. Route-analysis tests cover the exact instruction budgets for known-route diagnostics and body-sensitive rule reachability. Reachability tests also cover long container names outside the preferred witness characters and valid Unicode identifiers around the surrogate block and at the maximum scalar value.
+Gateway regressions cover scratch-result validation, independent sibling build completion, forwarded image owner-label stamping and the distinction between policy-denial abuse and solve quotas. Mutation regressions cover empty mount options before overlay directory restrictions. Route-analysis tests cover the exact instruction budgets for known-route diagnostics and body-sensitive rule reachability. Reachability tests also cover long container names outside the preferred witness characters and valid Unicode identifiers around the surrogate block and at the maximum scalar value.
 
 Inline-volume privilege tests cover default and explicit driver selection.
 
