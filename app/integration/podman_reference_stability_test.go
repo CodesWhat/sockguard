@@ -9,6 +9,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
+
+	"github.com/codeswhat/sockguard/v3/app/internal/config"
+	"github.com/codeswhat/sockguard/v3/app/internal/filter"
+	"github.com/codeswhat/sockguard/v3/app/internal/ownership"
 	"strings"
 	"testing"
 	"time"
@@ -72,7 +77,7 @@ func TestPodmanNetworkReferenceStability(t *testing.T) {
 	p := newPodmanReferenceProbe(t)
 	name := fmt.Sprintf("sockguard-ref-%d", time.Now().UnixNano())
 	networkPath := p.prefix + "/networks/" + name
-	created := p.json(http.MethodPost, p.prefix+"/networks/create", map[string]any{"name": name, "labels": map[string]string{"fixture": "original"}})
+	created := p.json(http.MethodPost, p.prefix+"/networks/create", map[string]any{"name": name, "labels": map[string]string{"fixture": "original", "com.sockguard.owner": "job-123"}})
 	var network struct {
 		ID string `json:"id"`
 	}
@@ -99,6 +104,17 @@ func TestPodmanNetworkReferenceStability(t *testing.T) {
 	}
 	if _, ok := inspect.NetworkSettings.Networks[name]; !ok {
 		t.Fatalf("created container does not retain network name %q: %s", name, data)
+	}
+	handler := newIntegrationProxyHandlerWithOptions(t, podmanSocketForIntegration(t), []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodDelete, Path: "/libpod/networks/**"}, Action: "allow"},
+	}, filter.Options{}, ownership.Options{Owner: "job-123", LabelKey: "com.sockguard.owner"})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, p.prefix+"/networks/"+network.ID, nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("proxy network ID delete: status=%d body=%s, want 404", rec.Code, rec.Body.String())
+	}
+	if status, data := p.request(http.MethodGet, networkPath+"/json", "", nil); status != http.StatusOK {
+		t.Fatalf("proxy removed network: status=%d body=%s", status, data)
 	}
 	nameStatus, _ := p.request(http.MethodDelete, networkPath, "", nil)
 	if status, body := p.request(http.MethodGet, networkPath+"/json", "", nil); status != http.StatusOK {
@@ -146,7 +162,7 @@ func TestPodmanManifestFullIDReferenceStability(t *testing.T) {
 		ids, refs = append(ids, id), append(refs, ref)
 	}
 	name := "localhost/sockguard-ref-list:" + nonce
-	created := p.json(http.MethodPost, p.prefix+"/manifests/"+name, map[string]any{"images": []string{refs[0]}})
+	created := p.json(http.MethodPost, p.prefix+"/manifests/"+name, map[string]any{"images": []string{"containers-storage:" + refs[0]}})
 	var list struct {
 		ID string `json:"Id"`
 	}
@@ -155,7 +171,7 @@ func TestPodmanManifestFullIDReferenceStability(t *testing.T) {
 	}
 	t.Cleanup(func() { p.request(http.MethodDelete, p.prefix+"/manifests/"+name, "", nil) })
 	inspectID := func() string {
-		data := p.json(http.MethodGet, "/v1.40/images/"+list.ID+"/json", nil)
+		data := p.json(http.MethodGet, p.prefix+"/images/"+list.ID+"/json", nil)
 		var image struct {
 			ID string `json:"Id"`
 		}
@@ -176,7 +192,7 @@ func TestPodmanManifestFullIDReferenceStability(t *testing.T) {
 	}
 	for _, change := range []map[string]any{
 		{"operation": "remove", "images": []string{manifest.Manifests[0].Digest}},
-		{"operation": "update", "images": []string{refs[1]}},
+		{"operation": "update", "images": []string{"containers-storage:" + refs[1]}},
 	} {
 		data := p.json(http.MethodPut, p.prefix+"/manifests/"+list.ID, change)
 		var changed struct {

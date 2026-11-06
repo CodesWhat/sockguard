@@ -515,6 +515,8 @@ The full roadmap, with compatibility evidence and scope boundaries, is on the [d
 
 The next release work is v3 candidate validation and GA, followed by the remaining Podman isolation fixes. The 2.4.x line will receive security fixes until v3.1 ships, through reviewed maintenance releases that preserve the current global latest channels. Native API integration CI covers Podman 5 and 6 as well as the distro rootful/rootless jobs, with a live daemon version check and a settled-socket check for each major. Successful socket probes leave permissions untouched so a rebind resets the success streak. An explicitly configured missing engine socket fails the integration run instead of silently skipping it. Native CI preserves failed test status while collecting its result artifacts. Image-history conformance loads a local fixture and checks ENV/ARG redaction through both the Docker-compatible and native APIs. Bounded-file regressions cover zero-byte lookahead and preservation of read errors when close also fails. Inline tmpfs volume regressions cover privilege refusals and the explicit opt-in.
 
+Owner-scoped native Podman network deletion requires the canonical network name so the engine's in-use check applies. Image volumes require an inspect that resolves to the same full config ID, rejecting mutable manifest-list aliases.
+
 Pull progress checks parse the final line even without a newline and retain exact-limit and split-chunk size bounds. Native integration tests probe network-name and manifest-list ID stability against the live engine.
 
 Native Podman network label decoding accepts only JSON whitespace around inspect objects and arrays, and rejects form feed and Unicode whitespace.

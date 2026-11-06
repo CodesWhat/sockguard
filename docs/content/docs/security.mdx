@@ -501,6 +501,13 @@ volume has to be named by its full image ID, and then follows
 `allow_cross_owner_namespace_sharing` opens the namespace targets, `cgroupns`
 included, and nothing else in the list.
 
+Native network deletion under owner isolation requires the canonical network
+name. ID and ID-prefix aliases return `404`, even when the network belongs to
+the caller. Podman compares the delete argument to stored network names for
+its in-use check; deleting by ID can leave a container pointing at a name
+that another owner can recreate. Docker-compatible deletion and native reads
+still accept IDs.
+
 A few of those answers are worth knowing before you put a Podman client behind
 owner isolation:
 
@@ -527,9 +534,11 @@ owner isolation:
   create says nothing about what a later start mounts. A client could tag an
   image of its own `abc`, create a container that mounts `abc`, untag it, and
   have the next start mount whichever image has an ID starting with `abc`. A
-  full image ID (64 lowercase hex digits, with or without `sha256:`) only ever
-  resolves to that one image, so that's the only source accepted. A name, a
-  tag or a short ID is refused with a `403`, whoever's image it is today. Get
+  full config ID (64 lowercase hex digits, with or without `sha256:`) is
+  required, and the inspect must return that same ID. A manifest list has a
+  full storage ID but can resolve to a different platform image after an
+  update, so it is refused with `404`. A name, a tag or a short ID is refused
+  with a `403`, whoever's image it is today. Get
   the ID with `podman image inspect -f '{{.Id}}' <name>`.
 - `artifact_volumes` is refused whenever it lists anything. Podman looks an
   artifact up by name at every start too, and an artifact carries no labels,

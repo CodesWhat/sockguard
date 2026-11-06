@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Require canonical names for owner-scoped native Podman network deletion and matching config IDs for image-volume references, preventing delayed references from following recreated networks or mutable manifest lists.
+
 - Update the application and Docker client compatibility modules to `github.com/klauspost/compress` 1.20.2 for GO-2026-6865 / CVE-2026-116591, a panic on malformed zstd frames.
 
 ### Fixed
