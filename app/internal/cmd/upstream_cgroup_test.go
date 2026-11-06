@@ -175,7 +175,8 @@ func TestStartupCgroupProbeFailureStartsRetry(t *testing.T) {
 	if tracker.isV1() {
 		t.Fatal("gate must be closed after a failed startup probe")
 	}
-	go tracker.run(t.Context(), time.Hour)
+	stop := rt.startCgroupV1Refresh(t.Context())
+	t.Cleanup(stop)
 	waitForCgroup(t, "startup retry to open the gate", tracker.isV1)
 }
 

@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Exercise failed startup cgroup-probe recovery through the production refresh-loop starter and its stop function.
+
 - Verify cgroup-version migration warnings report the previous and new results once per transition while the policy gate tracks each probe.
 
 - Cover valid Unicode identifiers around the surrogate block and at the maximum scalar value in route reachability.
