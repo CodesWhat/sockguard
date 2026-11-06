@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Cover minimum-rune boundaries in the conservative route-language model and verify logged Podman volume-filter capabilities.
+
 - Verify deployment checks preserve the command cancellation context while probing a healthy fixture.
 
 - Verify the runtime concurrency limiter applies engine-specific streaming behavior to container top requests.
