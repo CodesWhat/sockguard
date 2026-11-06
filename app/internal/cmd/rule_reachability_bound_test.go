@@ -91,6 +91,57 @@ func TestCatalogAllowWitnessHonorsBudgets(t *testing.T) {
 	}
 }
 
+func TestCatalogAllowWitnessAtSharedBudgetBoundary(t *testing.T) {
+	t.Parallel()
+	catalog, err := compileCatalogMachine("/containers/json", catalogIdentifierSegment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule, err := compileCatalogRuleMachine("/containers/**", "allow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	machines := []catalogRuleMachine{catalog, rule}
+	var cost catalogReachabilityBudget
+	witness, result := catalogAllowWitness(machines, &cost)
+	if result != catalogReachable || witness != "/containers/json" {
+		t.Fatalf("unspent search = %q, %v", witness, result)
+	}
+	for _, resource := range []struct {
+		name        string
+		limit, used int
+		set         func(*catalogReachabilityBudget, int)
+	}{
+		{"states", maxCatalogReachabilityStates, cost.states, func(b *catalogReachabilityBudget, n int) { b.states = n }},
+		{"transitions", maxCatalogReachabilityTransitions, cost.transitions, func(b *catalogReachabilityBudget, n int) { b.transitions = n }},
+		{"steps", maxCatalogReachabilitySteps, cost.steps, func(b *catalogReachabilityBudget, n int) { b.steps = n }},
+	} {
+		t.Run(resource.name, func(t *testing.T) {
+			for _, boundary := range []struct {
+				name     string
+				headroom int
+			}{
+				{"one short", -1},
+				{"exact", 0},
+				{"one spare", 1},
+			} {
+				t.Run(boundary.name, func(t *testing.T) {
+					var budget catalogReachabilityBudget
+					resource.set(&budget, resource.limit-resource.used-boundary.headroom)
+					got, result := catalogAllowWitness(machines, &budget)
+					if boundary.headroom < 0 {
+						if result != catalogReachabilityIndeterminate || got != "" {
+							t.Fatalf("insufficient shared budget = %q, %v", got, result)
+						}
+					} else if result != catalogReachable || got != witness {
+						t.Fatalf("sufficient shared budget = %q, %v, want %q reachable", got, result, witness)
+					}
+				})
+			}
+		})
+	}
+}
+
 // TestValidateAndCompileRulesBoundsLongPatterns pins that an unbounded rule
 // pattern cannot turn one validation into seconds of CPU. Rule patterns are
 // user input and /admin/validate repeats the whole walk per request, so the
