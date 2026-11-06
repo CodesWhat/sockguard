@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Verify cgroup-version migration warnings report the previous and new results once per transition while the policy gate tracks each probe.
+
 - Cover valid Unicode identifiers around the surrogate block and at the maximum scalar value in route reachability.
 
 - Pin exact instruction budgets for known-route diagnostics and body-sensitive rule reachability, including the conservative result above each limit.

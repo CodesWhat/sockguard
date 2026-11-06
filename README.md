@@ -529,7 +529,7 @@ Pull progress checks parse the final line even without a newline and retain exac
 
 Native Podman network label decoding accepts only JSON whitespace around inspect objects and arrays, and rejects form feed and Unicode whitespace, with the original failing fuzz input retained as a regression seed. The gRPC frame fuzzer bounds allocations on its unlimited-parser lane while retaining malformed-header and configured-limit rejection coverage.
 
-CLI tests remove their temporary changelog files and release-history repositories when each test finishes. The reload polling regression waits for the event loop to take its initial file snapshot before changing the watched file. Image-trust tests verify that key-based policies initialize without a keyless trust-root download.
+CLI tests remove their temporary changelog files and release-history repositories when each test finishes. The reload polling regression waits for the event loop to take its initial file snapshot before changing the watched file. Image-trust tests verify that key-based policies initialize without a keyless trust-root download. Cgroup migration tests check the gate state and transition warnings, including quiet repeated probes.
 
 The v3 development line carries the published v2.4.6 compression dependency fix for GO-2026-6865 / CVE-2026-116591.
 

@@ -201,3 +201,41 @@ func TestReloadEnablingCgroupV1OptionProbes(t *testing.T) {
 		t.Fatal("stale reuse log line still present")
 	}
 }
+
+func TestCgroupV1TrackerLogsOnlyResultTransitions(t *testing.T) {
+	t.Parallel()
+	d := newSwitchableCgroupDaemon(t, cgroupInfoV1)
+	logger, collector := flavorTestLogger()
+	tracker := newCgroupV1Tracker(newServeDeps(), multiEndpointResolver(t, d.addr), logger)
+	tracker.seed(true, true)
+	for _, tt := range []struct {
+		name, body string
+		v1         bool
+		warnings   int
+	}{
+		{name: "stable v1", body: cgroupInfoV1, v1: true},
+		{name: "migrated to v2", body: cgroupInfoV2, warnings: 1},
+		{name: "stable v2", body: cgroupInfoV2, warnings: 1},
+		{name: "migrated back to v1", body: cgroupInfoV1, v1: true, warnings: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			d.body.Store(tt.body)
+			if retry := tracker.refresh(t.Context()); retry {
+				t.Fatal("successful cgroup probe requested a retry")
+			}
+			if got := tracker.isV1(); got != tt.v1 {
+				t.Fatalf("v1 gate=%v, want %v", got, tt.v1)
+			}
+			records := collector.FindMessage("upstream cgroup version result changed")
+			if len(records) != tt.warnings {
+				t.Fatalf("transition warnings=%d, want %d", len(records), tt.warnings)
+			}
+			if len(records) > 0 {
+				attrs := records[len(records)-1].Attrs
+				if attrs["was"] != !tt.v1 || attrs["upstream_cgroup_v1"] != tt.v1 {
+					t.Fatalf("transition attributes=%v, want was=%v and upstream_cgroup_v1=%v", attrs, !tt.v1, tt.v1)
+				}
+			}
+		})
+	}
+}
