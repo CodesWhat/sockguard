@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.6] - 2026-11-06
+
+v2.4.6 updates the compression dependency to fix a panic on malformed zstd frames. It carries v2.4.5.
+
 ### Security
 
 - Update `github.com/klauspost/compress` from 1.19.2 to 1.20.2 in the application and Docker client compatibility modules to fix GO-2026-6865 / CVE-2026-116591, a panic when decoding malformed zstd frames.

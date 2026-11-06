@@ -491,4 +491,13 @@ export const roadmap: Milestone[] = [
       "request_body.exec.allow_root_user: false and require_non_root_user can no longer be bypassed to run as UID 0",
     ],
   },
+  {
+    version: "v2.4.6",
+    title: "zstd Decoder Security Fix",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Updates the compression dependency to 1.20.2 for GO-2026-6865 / CVE-2026-116591, a panic when decoding malformed zstd frames",
+    ],
+  },
 ];
