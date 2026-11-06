@@ -212,6 +212,7 @@ export const DOCS_SEARCH_ITEMS: [page: number, heading: string, anchor: string][
   [12,"Shipped in v2.2.0","shipped-in-v220"],
   [12,"Shipped in v2.1.0","shipped-in-v210"],
   [12,"Shipped in v2.0.0","shipped-in-v200"],
+  [12,"Shipped in v2.4.6","shipped-in-v246"],
   [12,"Shipped in v2.4.5","shipped-in-v245"],
   [12,"Shipped in v2.4.4","shipped-in-v244"],
   [12,"Shipped in v2.4.3","shipped-in-v243"],
