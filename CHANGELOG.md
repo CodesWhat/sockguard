@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Verify frontend runner upgrades retain the configured authority and choose HTTP or HTTPS default ports before a canceled dial.
+
 - Test route witnesses with exactly enough shared state, transition and instruction-work budgets, plus one unit below and above.
 
 - Test prompt runner cancellation after a session-server failure and process-error reporting after a successful frontend Return.
