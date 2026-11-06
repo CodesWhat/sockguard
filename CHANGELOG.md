@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Explicitly opt the isolated conformance identity agent into HTTP enrollment on its private test network for Portwing 1.2 compatibility.
+
 - Cover digest-only pulls of bare repository names through Docker and Podman-compatible ownership post-checks.
 
 - Verify secret replacement distinguishes an unrelated ID-prefix inspect result from an exact foreign-owned secret.
