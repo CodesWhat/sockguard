@@ -262,3 +262,78 @@ func TestImageLoadNonRegularEntryAtConfigPathFailsClosed(t *testing.T) {
 		}
 	})
 }
+
+func TestImageLoadOwnerLabelRetentionBudgets(t *testing.T) {
+	t.Parallel()
+	configAtSize := func(size int, owner string) string {
+		body := ownerLabelConfig(map[string]string{ownerLabelTestKey: owner})
+		return body + strings.Repeat(" ", size-len(body))
+	}
+	check := func(t *testing.T, entries []containerArchiveTestEntry, selected []string, wantUnreadable bool) {
+		t.Helper()
+		var manifests []string
+		for _, name := range selected {
+			manifests = append(manifests, fmt.Sprintf(`{"Config":%q,"RepoTags":["mine/app:v1"]}`, name))
+		}
+		entries = append(entries, containerArchiveTestEntry{name: "manifest.json", body: "[" + strings.Join(manifests, ",") + "]"})
+		body := mustContainerArchiveTar(t, entries...)
+		archive, err := defaultIODeps().extractImageLoadArchiveFromTar(tar.NewReader(bytes.NewReader(body)), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		labels, unreadable := imageLoadOwnerLabels(archive, ownerLabelTestKey)
+		if unreadable != wantUnreadable {
+			t.Fatalf("owner labels=%v unreadable=%v, want unreadable=%v", labels, unreadable, wantUnreadable)
+		}
+		if !wantUnreadable {
+			want := make([]string, len(selected))
+			for i := range want {
+				want[i] = "mine"
+			}
+			if !slices.Equal(labels, want) {
+				t.Fatalf("owner labels=%v, want %v", labels, want)
+			}
+		}
+	}
+	for _, mode := range []string{"regular", "discarded"} {
+		for _, delta := range []int{-1, 0, 1} {
+			t.Run(fmt.Sprintf("%s config count limit%+d", mode, delta), func(t *testing.T) {
+				entries := []containerArchiveTestEntry{{name: "target.json", body: ownerLabelConfig(map[string]string{ownerLabelTestKey: "mine"})}}
+				for i := 1; i < maxImageLoadConfigFiles+delta; i++ {
+					entry := containerArchiveTestEntry{name: fmt.Sprintf("extra%04d.json", i), body: `{}`}
+					if mode == "discarded" {
+						entry.typ, entry.body = tar.TypeDir, ""
+					}
+					entries = append(entries, entry)
+				}
+				check(t, entries, []string{"target.json"}, delta > 0)
+			})
+		}
+	}
+	for _, delta := range []int{-1, 0, 1} {
+		t.Run(fmt.Sprintf("per-file bytes limit%+d", delta), func(t *testing.T) {
+			check(t, []containerArchiveTestEntry{{name: "target.json", body: configAtSize(maxImageLoadManifestBytes+delta, "mine")}}, []string{"target.json"}, delta > 0)
+		})
+		t.Run(fmt.Sprintf("aggregate bytes limit%+d", delta), func(t *testing.T) {
+			var entries []containerArchiveTestEntry
+			for i := range 15 {
+				entries = append(entries, containerArchiveTestEntry{name: fmt.Sprintf("extra%02d.json", i), body: configAtSize(maxImageLoadManifestBytes, "mine")})
+			}
+			entries = append(entries, containerArchiveTestEntry{name: "padding.json", body: configAtSize(maxImageLoadManifestBytes-256, "mine")}, containerArchiveTestEntry{name: "target.json", body: configAtSize(256+delta, "mine")})
+			check(t, entries, []string{"target.json"}, delta > 0)
+		})
+	}
+	t.Run("replacement releases previous bytes", func(t *testing.T) {
+		var entries []containerArchiveTestEntry
+		for i := range 15 {
+			entries = append(entries, containerArchiveTestEntry{name: fmt.Sprintf("extra%02d.json", i), body: configAtSize(maxImageLoadManifestBytes, "mine")})
+		}
+		entries = append(entries,
+			containerArchiveTestEntry{name: "padding.json", body: configAtSize(maxImageLoadManifestBytes-512, "mine")},
+			containerArchiveTestEntry{name: "target.json", body: configAtSize(256, "victim")},
+			containerArchiveTestEntry{name: "target.json", body: configAtSize(256, "mine")},
+			containerArchiveTestEntry{name: "after.json", body: configAtSize(256, "mine")},
+		)
+		check(t, entries, []string{"target.json", "after.json"}, false)
+	})
+}
