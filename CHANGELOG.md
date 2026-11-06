@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Pin gRPC error-message escaping at the printable ASCII boundaries, including DEL and percent signs.
+
 - Exercise exact response-size and pre-pull image-count budgets for image ownership checks.
 
 - Keep image-history redaction safe on bare instructions and truncated build-argument prefixes, and cover prefixes ending in digit nine.
