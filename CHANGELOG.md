@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Carry the compression dependency update to 1.20.2 for GO-2026-6865 / CVE-2026-116591 into v3.
+
 ## [3.0.0-rc.6] - 2026-11-03
 
 This candidate carries v2.4.4 (the client compatibility sweep and libpod create hardening). It narrows `response.redact_network_topology` to addresses, so opaque IDs pass through and a mount `Source` is kept only for named mount types, with `MaskedPaths` and `ReadonlyPaths` untouched. It adds libpod gates for `unified`, `env_host` and `pod`, reports unknown config keys, and adds compose examples for Homepage, Homarr, Diun and Autoheal. The Helm chart will publish as a signed OCI artifact from v3.0.0, and the hand-rolled star chart is removed. These are candidate-only behavior changes, so the 14-day bake window restarts: GA is no earlier than 2026-11-17. Fresh exact-source soak, TLS/security and published-image conformance are required before GA.

@@ -45,6 +45,8 @@
 > [!NOTE]
 > **v2.4.5 is the latest stable release.** It is a security release: a numeric user with a sign prefix such as `+0` was not treated as root, so `request_body.exec.allow_root_user: false` and `require_non_root_user` could be bypassed to run as UID 0 on Docker and Podman. It carries v2.4.4. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
+The prepared v3 security update includes the compression dependency fix for GO-2026-6865 / CVE-2026-116591.
+
 <h2 align="center">Contents</h2>
 
 - [Documentation](#documentation)
