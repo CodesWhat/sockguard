@@ -289,6 +289,7 @@ func TestCatalogReachabilityUnicodeIdentifiers(t *testing.T) {
 	for _, tt := range []struct {
 		name, identifier string
 	}{
+		{name: "long identifier", identifier: strings.Repeat("q", 80)},
 		{name: "before surrogate block", identifier: "\uD7FF"},
 		{name: "after surrogate block", identifier: "\uE000"},
 		{name: "before maximum scalar", identifier: "\U0010FFFE"},
