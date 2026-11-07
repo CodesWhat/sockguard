@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Compare all published chart file paths and contents with the locally built package before signing an adopted version. Require the expected package in both release and rehearsal verification.
+
 - Fail closed on OCI nodes carrying both index and manifest config shapes, and keep `.json` entries under OCI blob paths subject to unreferenced-blob validation.
 
 - Redact verbose-network task host-IP metadata and host namespace paths in container network modes when network-topology redaction is enabled.
@@ -20,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Update the application and Docker client compatibility modules to `github.com/klauspost/compress` 1.20.2 for GO-2026-6865 / CVE-2026-116591, a panic on malformed zstd frames.
 
 ### Fixed
+
+- Run the chart release CLI gate through symlinked or space-containing paths instead of silently skipping validation.
 
 - Correct the raw-stream response deadline, first TLS-removal candidate, current-stable tag source, numeric-UID security scope, allowed quoted heredocs and Podman empty-option tmpfs documentation. Warn that the unchanged published rc.6 predates the v2.4.5 and v2.4.6 security fixes.
 
