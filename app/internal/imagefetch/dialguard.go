@@ -71,7 +71,7 @@ var registryNAT64Prefix = netip.MustParsePrefix("64:ff9b::/96")
 
 // blockedAddr reports whether a is not a publicly routable unicast address.
 func blockedAddr(a netip.Addr) bool {
-	a = a.Unmap()
+	a = a.WithZone("").Unmap()
 	if registryNAT64Prefix.Contains(a) {
 		raw := a.As16()
 		a = netip.AddrFrom4([4]byte{raw[12], raw[13], raw[14], raw[15]})

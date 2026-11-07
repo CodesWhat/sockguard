@@ -5,8 +5,11 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestDialGuard(t *testing.T) {
@@ -55,6 +58,10 @@ func TestDialGuard(t *testing.T) {
 		{"translated private", nil, "[64:ff9b::a00:1]:443", true},
 		{"translated shared metadata", nil, "[64:ff9b::6464:64c8]:443", true},
 		{"translated public", nil, "[64:ff9b::808:808]:443", false},
+		{"zoned local NAT64", nil, "[64:ff9b:1::a00:1%eth0]:443", true},
+		{"zoned translated private", nil, "[64:ff9b::a00:1%eth0]:443", true},
+		{"zoned translated public", nil, "[64:ff9b::808:808%eth0]:443", false},
+		{"listed zoned local NAT64", []string{"64:ff9b:1::a00:1%eth0"}, "[64:ff9b:1::a00:1%eth0]:443", false},
 		{"local NAT64 lower boundary", nil, "[64:ff9b:1::]:443", true},
 		{"local NAT64 private destination", nil, "[64:ff9b:1::a00:1]:443", true},
 		{"local NAT64 upper boundary", nil, "[64:ff9b:1:ffff:ffff:ffff:ffff:ffff]:443", true},
@@ -135,5 +142,33 @@ func TestDialGuardTransportBypassesEnvironmentProxy(t *testing.T) {
 	}
 	if transport.Proxy != nil {
 		t.Fatal("proxy can resolve registry redirects outside the dial guard")
+	}
+}
+
+func TestDialGuardBlocksZonedNAT64Redirect(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://[64:ff9b:1::a00:1%25eth0]/private", http.StatusFound)
+	}))
+	defer server.Close()
+	initial := server.Listener.Addr().String()
+	guard := newDialGuard([]string{initial})
+	var redirectedDials atomic.Int32
+	guard.dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if addr != initial {
+			redirectedDials.Add(1)
+			return nil, errors.New("redirect reached the dialer")
+		}
+		return (&net.Dialer{}).DialContext(ctx, network, addr)
+	}
+	transport := guard.transport().(*http.Transport)
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: 2 * time.Second}
+	response, err := client.Get(server.URL)
+	if response != nil {
+		response.Body.Close()
+	}
+	if !errors.Is(err, errBlockedAddress) || redirectedDials.Load() != 0 {
+		t.Fatalf("redirect err=%v, private dials=%d; want address refusal before dial", err, redirectedDials.Load())
 	}
 }
