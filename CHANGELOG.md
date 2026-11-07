@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Prepared and unpublished. November 17 is the earliest release date; final release checks and publication are still required.
 
-v3.0.0 promotes v3.0.0-rc.6 and includes the published v2.4.5 signed root UID fix. It is the first release on the `github.com/codeswhat/sockguard/v3` Go module and removes the two insecure TLS settings deprecated in v2.1. It carries everything through v2.4.5: the v2.3 BuildKit frontend mediation and MIT license, and the v2.4 image admission, create launch-field policy, Podman isolation, exec target protection, session cleanup and client compatibility work. Stable Docker, Homebrew, deb/rpm and binary channels move to v3 with this release, and 2.4.x stays supported for security fixes until v3.1 ships.
+v3.0.0 promotes v3.0.0-rc.6 and includes the published v2.4.5 signed root UID fix and v2.4.6 compression decoder fix. It is the first release on the `github.com/codeswhat/sockguard/v3` Go module and removes the two insecure TLS settings deprecated in v2.1. It carries everything through v2.4.6: the v2.3 BuildKit frontend mediation and MIT license, and the v2.4 image admission, create launch-field policy, Podman isolation, exec target protection, session cleanup and client compatibility work. Stable Docker, Homebrew, deb/rpm and binary channels move to v3 with this release, and 2.4.x stays supported for security fixes until v3.1 ships.
 
 ### Breaking changes
 
@@ -38,6 +38,7 @@ v3.0.0 promotes v3.0.0-rc.6 and includes the published v2.4.5 signed root UID fi
 
 ### Security
 
+- Carries the v2.4.6 compression dependency update to 1.20.2 for GO-2026-6865 / CVE-2026-116591, a panic on malformed zstd frames.
 - Carries the v2.4.0 to v2.4.4 security work: exact image admission, native Podman mount, device and RUN-control checks, protected-label exec refusal, Podman engine identity and unscoped native route refusals, the libpod create bypass closures (`host_device_list`, `resource_limits.devices`, `volumes_from` and the other libpod spellings), the libpod inspect `CreateCommand` and `Secrets` redaction, and the CA bundle and `golang.org/x/net` updates.
 - Gates the libpod `unified`, `env_host` and `pod` create fields as described above.
 - Carries v2.4.3's rejection of keyless `subject_pattern` values that are not a complete regexp on their own, and its fix for completed hijacked sessions accumulating in the listener.
@@ -79,6 +80,14 @@ This candidate carries v2.4.4 (the client compatibility sweep and libpod create 
 ### Security
 
 - **Native container create gates two more SpecGenerator fields.** `POST /libpod/containers/create` forwarded a non-empty `unified` map, raw cgroup v2 control values Podman writes into the container's cgroup, and `env_host: true`, which copies the Podman daemon's environment into the container (it was only refused while an environment allow or deny list was set). Both are now denied unless `request_body.libpod_container_create.allow_unified_cgroup_settings` or `allow_env_host` is on (`SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_UNIFIED_CGROUP_SETTINGS` and `..._ALLOW_ENV_HOST`). This is a default-deny change for a client that sets either, such as `podman run --cgroup-conf` or `--env-host`. A non-empty `pod` (which joins the pod's infra namespaces) is now denied while `restrict_namespace_sharing` is on, the same switch that governs `container:<ref>` joins; it passes with that off, as before. `r_limits` stays ungated like the Docker-compat `Ulimits`, and when owner isolation is enabled `pod` and `dependencyContainers` are also owner-checked.
+
+## [2.4.6] - 2026-11-06
+
+v2.4.6 updates the compression dependency to fix a panic on malformed zstd frames. It carries v2.4.5.
+
+### Security
+
+- Update `github.com/klauspost/compress` from 1.19.2 to 1.20.2 in the application and Docker client compatibility modules to fix GO-2026-6865 / CVE-2026-116591, a panic when decoding malformed zstd frames.
 
 ## [2.4.5] - 2026-11-03
 

@@ -107,6 +107,9 @@ test("v3.0.0 is a released milestone and the current stable version", () => {
   const v245 = roadmap.find((milestone) => milestone.version === "v2.4.5");
   assert.equal(v245?.status, "released");
   assert.ok(v245.items.some((item) => item.includes("sign prefix")));
+  const v246 = roadmap.find((milestone) => milestone.version === "v2.4.6");
+  assert.equal(v246?.status, "released");
+  assert.ok(v246.items.some((item) => item.includes("zstd")));
   const v300 = roadmap.find((milestone) => milestone.version === "v3.0.0");
   assert.equal(v300?.status, "released");
   assert.ok(v300.items.some((item) => item.includes("/v3")));

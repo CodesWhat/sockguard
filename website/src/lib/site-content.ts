@@ -492,12 +492,21 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
+    version: "v2.4.6",
+    title: "zstd Decoder Security Fix",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Updates the compression dependency to 1.20.2 for GO-2026-6865 / CVE-2026-116591, a panic when decoding malformed zstd frames",
+    ],
+  },
+  {
     version: "v3.0.0",
     title: "Verified TLS Compatibility Boundary",
     emoji: "🔐",
     status: "released",
     items: [
-      "Promotes v3.0.0-rc.6 with the published v2.4.5 signed root UID fix; carries v2.4.4 client compatibility and libpod hardening, v2.4.3 session cleanup, v2.4.2 Podman isolation and dependency updates, exec target protection and the v2.4 policy/security work",
+      "Promotes v3.0.0-rc.6 with the published v2.4.5 signed root UID fix and v2.4.6 compression decoder fix; carries v2.4.4 client compatibility and libpod hardening, v2.4.3 session cleanup, v2.4.2 Podman isolation and dependency updates, exec target protection and the v2.4 policy/security work",
       "Rejects the deprecated endpoint skip-verification setting and unverified Docker TLS fallback; configure the daemon CA and verified TLS",
       "Network-topology redaction covers addresses only, unknown config keys are reported by validate (--strict fails on them), and the Helm chart is published as a signed OCI artifact",
       "Go imports, generated descriptors and release builds use /v3; v2 tags keep /v2",
