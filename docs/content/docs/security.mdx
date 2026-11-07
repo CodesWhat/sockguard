@@ -1066,3 +1066,21 @@ filtering of the stream content. Restrict these paths in your rules to only
 the profiles and callers that genuinely need them, and treat the redaction
 toggles as a guarantee for *Docker's structured metadata only* — not for
 arbitrary workload output.
+
+## CI runner-access exception
+
+The shared `Go CI / Workflow Security` job is pinned to
+[`CodesWhat/.github` at `5094cf2f`](https://github.com/CodesWhat/.github/blob/5094cf2f723fe22303b8944658e972bc9ec898a6/.github/workflows/go-ci.yml).
+That workflow exposes no caller input to disable sudo or container access for
+this job, so those runner capabilities remain available. It runs on an
+ephemeral GitHub-hosted Ubuntu runner with only `actions: read` and
+`contents: read`, disables persisted checkout credentials, and runs a pinned
+zizmor action with online audits disabled. This job scans repository files;
+it executes no repository scripts from the pull request.
+
+The local Shellcheck, dependency-review, Gitleaks, commit-message, Govulncheck
+and dependency-Grype jobs disable both sudo and container access. Jobs that
+build or test containers retain the engine access they need. The shared-job
+exception is captured in `scripts/testdata/shared-workflow-security.json` and
+checked by `scripts/ci-runner-access.test.mjs`; changing the upstream pin
+requires checking its inputs and job permissions again.

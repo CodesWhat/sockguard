@@ -148,6 +148,9 @@ jobs:
       go-cache-dependency-path: go.sum
       lint-check-name: Go Lint
       test-check-name: Go Test
+      # The pinned shared scanner exposes no sudo/container-disable input.
+      # Its read-only/offline exception is source-bound in the security docs
+      # and scripts/testdata/shared-workflow-security.json.
       run-workflow-security: true
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       workflow-security-egress-policy: audit
@@ -429,7 +432,7 @@ jobs:
         uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: audit
-          disable-sudo: true
+          disable-sudo-and-containers: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -503,7 +506,7 @@ jobs:
         uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: audit
-          disable-sudo: true
+          disable-sudo-and-containers: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -541,7 +544,7 @@ jobs:
         uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: audit
-          disable-sudo: true
+          disable-sudo-and-containers: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -598,7 +601,7 @@ jobs:
         uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: audit
-          disable-sudo: true
+          disable-sudo-and-containers: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -741,6 +744,9 @@ jobs:
         run: |
           set -euo pipefail
 
+          consumer_image="curlimages/curl:8.12.1@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6"
+          docker pull "${consumer_image}" >/dev/null
+
           runtime_volume="sockguard-ci-runtime-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           runtime_container="sockguard-ci-runtime-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           socket_gid="$(stat -c '%g' /var/run/docker.sock)"
@@ -774,3 +780,7 @@ jobs:
           test "$(sudo stat -c '%u:%g %a' "${runtime_socket}")" = "65532:65532 600"
           test "$(sudo curl --fail --silent --show-error \
             --unix-socket "${runtime_socket}" http://localhost/_ping)" = "OK"
+          test "$(docker run --rm --user 65532:65532 \
+            --volume "${runtime_volume}:/var/run/sockguard:ro" \
+            "${consumer_image}" --fail --silent --show-error --max-time 10 \
+            --unix-socket /var/run/sockguard/sockguard.sock http://localhost/_ping)" = "OK"

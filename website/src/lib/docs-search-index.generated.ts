@@ -245,6 +245,7 @@ export const DOCS_SEARCH_ITEMS: [page: number, heading: string, anchor: string][
   [13,"Policy specification decision","policy-specification-decision"],
   [13,"Known Limitations","known-limitations"],
   [13,"Unix container-label identity","unix-container-label-identity"],
+  [13,"CI runner-access exception","ci-runner-access-exception"],
   [14,"",""],
   [14,"What cosign verifies","what-cosign-verifies"],
   [14,"Prerequisites","prerequisites"],

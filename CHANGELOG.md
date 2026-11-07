@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Disable both sudo and container access in six local scanner/check jobs that need neither. Document and test the pinned shared offline scanner's existing read-only runner-access exception.
+
 - Refuse byte-identical repeated JSON control keys before ownership callbacks in every rollout mode, using the original bounded body instead of the collapsed map. Preserve decoder-divergent key diagnostics and their rollout behavior.
 
 - Compare all published chart file paths and contents with the locally built package before signing an adopted version. Require the expected package in both release and rehearsal verification.
@@ -24,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Update the application and Docker client compatibility modules to `github.com/klauspost/compress` 1.20.2 for GO-2026-6865 / CVE-2026-116591, a panic on malformed zstd frames.
 
 ### Fixed
+
+- Probe the fresh shared socket from a UID/GID 65532 consumer using a digest-pinned image. Preserve the fuzz matrix's parallelism cap without stale cross-repository job totals.
 
 - Cover service host-network refusal and its explicit opt-in for both network locations on create and update requests.
 
