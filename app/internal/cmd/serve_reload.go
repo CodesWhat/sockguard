@@ -330,6 +330,8 @@ func (c *reloadCoordinator) reload() {
 		Versioner:   c.versioner,
 	})
 
+	warnIfCreateAllowedWithResponseRedaction(newCfg, c.logger)
+
 	// buildRateLimitMiddleware constructs a brand-new sampler and Limiter
 	// set on every call — there is no carry-over of consumed quota or
 	// in-flight concurrency counts across a reload (see its doc comment).

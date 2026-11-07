@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Limit replay-client redaction warnings to assigned profiles, explain that disabling redaction affects every readable client scope, and warn before a validated configuration reload swaps handlers.
+
 - Report unknown YAML keys with null or empty-map values during validation and reload diagnostics, including `validate --strict`, while preserving known empty values and dotted or case-insensitive keys.
 
 - Scope container signature discovery to the registries named by exact image allowlists, and pass Swarm service image and registry scopes into its signature dial guard.
