@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -295,8 +296,10 @@ func TestMiddleware_GlobalConcurrency_LowProfileHitsPriorityFloor(t *testing.T) 
 
 func TestMiddleware_GlobalConcurrency_MaxInflightOneAdmitsNormalProfile(t *testing.T) {
 	t.Parallel()
-	enter := make(chan struct{})
+	enter := make(chan struct{}, 2)
 	release := make(chan struct{})
+	releaseAll := sync.OnceFunc(func() { close(release) })
+	var workers sync.WaitGroup
 	blocking := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		enter <- struct{}{}
 		<-release
@@ -308,23 +311,44 @@ func TestMiddleware_GlobalConcurrency_MaxInflightOneAdmitsNormalProfile(t *testi
 		GlobalConcurrency: &GlobalConcurrencyOptions{MaxInflight: 1},
 	}
 	h := mustMiddleware(t, newTestLogger(), nil, nil, opts)(blocking)
-
-	done := make(chan int, 1)
-	go func() {
+	t.Cleanup(func() { releaseAll(); workers.Wait() })
+	firstDone := make(chan int, 1)
+	workers.Go(func() {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/containers/json", nil))
-		done <- rec.Code
-	}()
-	<-enter
-
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/containers/json", nil))
-	if rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("second concurrent request: got %d, want 429", rec.Code)
+		firstDone <- rec.Code
+	})
+	select {
+	case <-enter:
+	case code := <-firstDone:
+		t.Fatalf("first request rejected before handler entry: %d", code)
+	case <-time.After(3 * time.Second):
+		t.Fatal("first request did not enter or return")
 	}
-	release <- struct{}{}
-	if code := <-done; code != http.StatusOK {
-		t.Fatalf("first request: got %d, want 200", code)
+	secondDone := make(chan int, 1)
+	workers.Go(func() {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/containers/json", nil))
+		secondDone <- rec.Code
+	})
+	select {
+	case code := <-secondDone:
+		if code != http.StatusTooManyRequests {
+			t.Fatalf("second concurrent request: got %d, want 429", code)
+		}
+	case <-enter:
+		t.Fatal("second request was admitted while the first held the only slot")
+	case <-time.After(3 * time.Second):
+		t.Fatal("second request did not reject or enter")
+	}
+	releaseAll()
+	select {
+	case code := <-firstDone:
+		if code != http.StatusOK {
+			t.Fatalf("first request: got %d, want 200", code)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("first request did not finish after release")
 	}
 }
 

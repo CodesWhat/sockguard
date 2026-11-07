@@ -88,7 +88,7 @@ func TestBridgeIdleTimeoutTeardownDoesNotLeakGoroutines(t *testing.T) {
 			select {
 			case <-bridgeDone:
 			case <-time.After(5 * time.Second):
-				t.Fatalf("iteration %d: runBridge did not finish on its own after Limits.IdleTimeout", i)
+				t.Errorf("iteration %d: runBridge did not finish on its own after Limits.IdleTimeout", i)
 			}
 		})
 	}

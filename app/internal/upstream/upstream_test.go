@@ -1803,6 +1803,7 @@ func TestResolver_Start_ContextCancel_StopsLoop(t *testing.T) {
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 		r.Start(ctx)
 
 		// Synthetic clock: 55ms covers the startup probe plus the ticks at
