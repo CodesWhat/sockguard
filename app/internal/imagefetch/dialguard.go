@@ -56,6 +56,7 @@ func (g *dialGuard) isAllowed(host, port string) bool {
 }
 
 var blockedRegistryRanges = [...]netip.Prefix{
+	netip.MustParsePrefix("64:ff9b:1::/48"),
 	netip.MustParsePrefix("0.0.0.0/8"),
 	netip.MustParsePrefix("100.64.0.0/10"),
 	netip.MustParsePrefix("192.0.0.0/24"),
