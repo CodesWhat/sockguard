@@ -115,7 +115,8 @@ test("the shared scanner exception stays bound to its reviewed upstream contract
   assert.doesNotMatch(contract.job, /: write|secrets: inherit/);
   assert.match(contract.job, /persist-credentials: false/);
   assert.match(contract.job, /online-audits: false/);
-  assert.doesNotMatch(contract.job, /^ +run:|disable-sudo/m);
+  assert.doesNotMatch(contract.job, /^ +run:/m);
+  assert.doesNotMatch(contract.job, /disable-sudo/);
   const docs = readFileSync(join(root, "docs/content/docs/security.mdx"), "utf8");
   assert.ok(docs.includes(contract.source.split("@")[1]));
   assert.ok(docs.includes("those runner capabilities remain available"));
