@@ -2275,7 +2275,7 @@ func redactNetworkTopology(payload map[string]any) error {
 				if value, present := task["Info"]; present && value != nil {
 					info, ok := value.(map[string]any)
 					if !ok {
-						return fmt.Errorf("Info has unexpected type %T", value)
+						return fmt.Errorf("task info has unexpected type %T", value)
 					}
 					redactTypedAddressFields(info, "Host IP")
 				}
