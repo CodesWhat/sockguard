@@ -39,48 +39,31 @@ func TestServiceInspectDeniesBindMountSource(t *testing.T) {
 }
 
 func TestServiceInspectDeniesHostNetwork(t *testing.T) {
-	policy := newServicePolicy(ServiceOptions{})
-
-	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(`{
-		"TaskTemplate": {
-			"ContainerSpec": {
-				"Image": "nginx:latest"
+	t.Parallel()
+	for _, tt := range []struct{ name, path, body string }{
+		{"top-level create", "/services/create", `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest"}},"Networks":[{"Target":"host"}]}`},
+		{"nested create", "/services/create", `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest"},"Networks":[{"Target":"host"}]}}`},
+		{"top-level update", "/services/id/update", `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest"}},"Networks":[{"Target":"host"}]}`},
+		{"nested update", "/services/id/update", `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest"},"Networks":[{"Target":"host"}]}}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			for _, allowed := range []bool{false, true} {
+				policy := newServicePolicy(ServiceOptions{AllowHostNetwork: allowed, AllowedRegistries: []string{"docker.io"}})
+				req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+				reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := "service denied: host network is not allowed"
+				if allowed {
+					want = ""
+				}
+				if reason != want {
+					t.Errorf("allow_host_network=%v: reason=%q, want %q", allowed, reason, want)
+				}
 			}
-		},
-		"Networks": [
-			{"Target": "host"}
-		]
-	}`))
-
-	denyReason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
-	if err != nil {
-		t.Fatalf("inspect() error = %v", err)
-	}
-	if denyReason != "service denied: host network is not allowed" {
-		t.Fatalf("denyReason = %q, want host network denial", denyReason)
-	}
-}
-
-func TestServiceInspectDeniesHostNetworkUnderTaskTemplate(t *testing.T) {
-	policy := newServicePolicy(ServiceOptions{})
-
-	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(`{
-		"TaskTemplate": {
-			"ContainerSpec": {
-				"Image": "nginx:latest"
-			},
-			"Networks": [
-				{"Target": "host"}
-			]
-		}
-	}`))
-
-	denyReason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
-	if err != nil {
-		t.Fatalf("inspect() error = %v", err)
-	}
-	if denyReason != "service denied: host network is not allowed" {
-		t.Fatalf("denyReason = %q, want host network denial", denyReason)
+		})
 	}
 }
 
