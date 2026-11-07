@@ -8,8 +8,10 @@ import { test } from "node:test";
 const root = resolve(import.meta.dirname, "..");
 const workflow = readFileSync(join(root, ".github/workflows/ci-verify.yml"), "utf8");
 const job = workflow.match(/^ {2}commit-message:\n([\s\S]*?)(?=^ {2}[\w-]+:)/m)?.[1];
-const run = job
-  ?.match(/ {8}run: \|\n([\s\S]*)/)[1]
+assert.ok(job, "commit-message job not found in ci-verify.yml");
+const runMatch = job.match(/ {8}run: \|\n([\s\S]*)/);
+assert.ok(runMatch, "commit-message run block not found in ci-verify.yml");
+const run = runMatch[1]
   .split("\n")
   .map((line) => line.replace(/^ {10}/, ""))
   .join("\n");

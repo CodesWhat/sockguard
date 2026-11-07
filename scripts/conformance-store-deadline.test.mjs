@@ -9,7 +9,7 @@ const root = resolve(import.meta.dirname, "..");
 const source = readFileSync(join(root, "scripts/tri-tool-conformance/run-matrix.sh"), "utf8");
 const start = source.indexOf('  local doc="" dd_id="" dd_agent="" remaining');
 const end = source.indexOf('  dd_id="$(jq', start);
-assert.ok(start > 0 && end > start);
+assert.ok(start > 0 && end > start, "store-poll anchors moved in run-matrix.sh");
 const polling = source.slice(start, end);
 
 for (const [label, delay, expected] of [

@@ -227,7 +227,8 @@ function workflowNameEmoji(source, file = "fixture.yml") {
     ) {
       offenders.push(`${file}:${i + 1} ${line.trim()}`);
     }
-    if (/^\s*(?:name|run-name):\s*[>|][+-]?(?:\s+#.*)?$/u.test(line)) blockIndent = indent;
+    if (/^\s*(?:name|run-name):\s*[>|](?:[1-9][+-]?|[+-][1-9]?)?(?:\s+#.*)?$/u.test(line))
+      blockIndent = indent;
   });
   return offenders;
 }
@@ -243,4 +244,15 @@ it("checks folded and literal name continuations without scanning unrelated step
     workflowNameEmoji("run-name: >-\n  Build\n\njobs:\n  test:\n    run: echo 🚀\n"),
     [],
   );
+});
+
+it("checks indentation indicators in either block scalar header order", () => {
+  for (const key of ["name", "run-name"]) {
+    for (const scalar of [">2", ">2-", ">-2", "|2", "|2+", "|+2"]) {
+      assert.deepEqual(
+        workflowNameEmoji(`${key}: ${scalar}\n  Build\n  🚀\njobs:\n  test:\n    run: echo 🚀\n`),
+        ["fixture.yml:3 🚀"],
+      );
+    }
+  }
 });

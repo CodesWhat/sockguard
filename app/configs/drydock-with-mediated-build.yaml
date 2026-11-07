@@ -95,8 +95,8 @@ health:
 # Drydock's update flow inspects the running container, then submits the
 # inspect payload back to dockerd via POST /containers/create. If sockguard
 # clears Config.Env in the inspect response, the recreated container loses
-# its original environment. Mount-path redaction replaces each HostConfig.Binds
-# source with ""; replaying that bind makes dockerd reject the create with 400
+# its original environment. Mount-path redaction replaces sensitive HostConfig.Binds
+# sources with "<redacted>"; replaying that bind makes dockerd reject the create with 400
 # ("includes invalid characters for a local volume name"). Disable all three response
 # redactions for this preset — they are mutually exclusive with the
 # auto-updater use case this preset is designed for.

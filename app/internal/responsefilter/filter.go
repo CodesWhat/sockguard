@@ -380,10 +380,10 @@ func isCreatedByKey(key string) bool {
 
 // redactHistoryCreatedBy hides the values an image build baked into a layer's
 // CreatedBy: ENV and ARG instructions become "ENV <redacted>" / "ARG
-// <redacted>", and the "|N KEY=value ..." build-arg prefix of a RUN layer
+// <redacted>". Entries with a "|N KEY=value ..." build-arg prefix
 // (classic "|1 K=v /bin/sh -c ..." and BuildKit "RUN |1 K=v /bin/sh -c ...")
-// keeps its keys and command but loses the values. Anything else is returned
-// unchanged.
+// are replaced in full because the argument and command boundary is ambiguous.
+// Anything else is returned unchanged.
 func redactHistoryCreatedBy(createdBy string) string {
 	s := strings.TrimSpace(createdBy)
 	body := strings.TrimSpace(strings.TrimSuffix(s, "# buildkit"))
@@ -409,7 +409,7 @@ func redactHistoryCreatedBy(createdBy string) string {
 	for digits < len(rest) && rest[digits] >= '0' && rest[digits] <= '9' {
 		digits++
 	}
-	if digits == 1 || (digits < len(rest) && rest[digits] != ' ') {
+	if digits == 1 || (digits < len(rest) && rest[digits] != ' ' && rest[digits] != '\t' && rest[digits] != '\n') {
 		return createdBy
 	}
 	return "<redacted>"

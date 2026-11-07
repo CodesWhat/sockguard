@@ -68,3 +68,23 @@ test("access route wait caps its last sleep at the elapsed deadline", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout.trim(), "1 3");
 });
+
+test("access route wait refuses a matching log response after its deadline", () => {
+  const result = spawnSync(
+    "bash",
+    [
+      "-c",
+      `
+    set -uo pipefail
+    source scripts/tri-tool-conformance/lib.sh
+    sockguard_access_log() { sleep 1.2; printf '{}\\n'; }
+    access_log_stream_has_route() { cat >/dev/null; return 0; }
+    wait_for_access_log_route GET allow '^/containers/json$' 1
+    printf '%s\\n' "$?"
+  `,
+    ],
+    { cwd: root, encoding: "utf8", timeout: 5000 },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), "1");
+});

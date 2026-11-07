@@ -142,6 +142,14 @@ esac
       },
     });
     assert.equal(result.status, expected, result.stdout + result.stderr);
-    if (expected) assert.match(result.stderr, /differ|regular|duplicate|CHART_PACKAGE/);
+    if (expected) {
+      const pattern =
+        {
+          "symbolic link": /regular file/,
+          "duplicate path": /duplicate chart path/,
+          "missing expected package": /CHART_PACKAGE/,
+        }[label] ?? /differ/;
+      assert.match(result.stderr, pattern);
+    }
   });
 }

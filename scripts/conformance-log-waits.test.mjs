@@ -34,9 +34,9 @@ for (const [label, producer, expected] of [
 }
 
 const source = readFileSync(resolve(root, "scripts/tri-tool-conformance/run-matrix.sh"), "utf8");
-const wrongSecretPattern = source.match(
-  /wait_for_container_log_line "\$bad_container" '([^']+)'/,
-)[1];
+const wrongSecretMatch = source.match(/wait_for_container_log_line "\$bad_container" '([^']+)'/);
+assert.ok(wrongSecretMatch, "wrong-secret pattern not found in run-matrix.sh");
+const wrongSecretPattern = wrongSecretMatch[1];
 for (const [line, expected] of [
   ["Request failed with status code 401", 0],
   ["HTTP status: 401 Unauthorized", 0],
