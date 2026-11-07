@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Cover service host-network refusal and its explicit opt-in for both network locations on create and update requests.
+
 - Correct preset redaction comments, image-load ownership wording, tiny-cap priority ordering, refusal-code guidance and Podman secret-list visibility scope. List concrete native image-trust environment variables, preserve curl failures in the admin validation example, and document the harness sudo prerequisite.
 
 - Run the chart release CLI gate through symlinked or space-containing paths instead of silently skipping validation.
