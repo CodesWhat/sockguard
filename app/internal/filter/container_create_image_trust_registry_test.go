@@ -166,3 +166,31 @@ func TestServiceTrustDiscoveryUsesServiceRegistryScopes(t *testing.T) {
 		})
 	}
 }
+
+func TestServiceTrustDiscoveryBlocksUnlistedPrivateRegistry(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+	ref := strings.TrimPrefix(server.URL, "http://") + "/app:1"
+	policy := newServicePolicy(ServiceOptions{
+		AllowAllRegistries: true,
+		ImageTrust:         ImageTrustOptions{Mode: "warn", AllowedSigningKeys: []SigningKeyOptions{{PEM: generateTestECDSAPEM(t)}}},
+	})
+	if policy.imageTrust.initErr != nil {
+		t.Fatal(policy.imageTrust.initErr)
+	}
+	if reason := policy.imageTrust.registry.denyReasonForReference(ref, "test"); reason != "" {
+		t.Fatalf("registry scope unexpectedly refused the reference: %s", reason)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := policy.imageTrust.fetcher.FetchCandidates(ctx, slog.Default(), ref); err == nil {
+		t.Fatal("signature discovery unexpectedly accepted an unlisted private registry")
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("signature discovery contacted the unlisted private registry %d times", got)
+	}
+}
