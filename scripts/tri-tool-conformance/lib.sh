@@ -211,7 +211,7 @@ wait_for_container_log_line() {
   local container="$1" pattern="$2" timeout="${3:-30}"
   local waited=0
   while ((waited < timeout)); do
-    if docker logs "$container" 2>&1 | grep -Eiq "$pattern"; then
+    if docker logs "$container" 2>&1 | grep -Eic "$pattern" >/dev/null; then
       return 0
     fi
     sleep 2

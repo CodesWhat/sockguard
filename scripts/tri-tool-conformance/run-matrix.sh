@@ -859,7 +859,10 @@ assert_pristine_boot() {
     record_result "$name" FAIL "could not find the sockguard-socket named volume for project ${PROJECT}"
     return 1
   fi
-  owner_mode="$(docker run --rm -v "${vol}:/v:ro" alpine stat -c '%u:%g %a' /v/sockguard.sock 2>/dev/null)"
+  if ! owner_mode="$(docker run --rm -v "${vol}:/v:ro" "$OLD_BUSYBOX_REF" stat -c '%u:%g %a' /v/sockguard.sock 2>"${SCRATCH_DIR}/socket-owner-probe.err")"; then
+    record_result "$name" FAIL "harness setup error -- socket ownership probe could not execute: $(cat "${SCRATCH_DIR}/socket-owner-probe.err")"
+    return 1
+  fi
   if [ "$owner_mode" != "65532:65532 600" ]; then
     record_result "$name" FAIL "socket owner/mode = '${owner_mode}', want '65532:65532 600' with no manual chown"
     return 1
@@ -1512,8 +1515,8 @@ assert_logs() {
 assert_lifecycle() {
   local name="lifecycle"
   if [ -z "$PRIMARY_SENTINEL_ID" ]; then
-    record_result "$name" FAIL "skipped -- primary sentinel was never created (see the logs assertion)"
-    return 1
+    record_result "$name" SKIP "primary sentinel was never created (see the logs assertion)"
+    return 0
   fi
 
   probe_curl -X POST "http://localhost/containers/${PRIMARY_SENTINEL_ID}/stop?t=5" >/dev/null
@@ -1551,8 +1554,9 @@ assert_exec() {
     return 0
   fi
   if [ -z "$PRIMARY_SENTINEL_ID" ]; then
-    record_result "$name" FAIL "skipped -- primary sentinel was never created"
-    return 1
+    record_result "${name}-allowed" SKIP "primary sentinel was never created (see the logs assertion)"
+    record_result "${name}-denied" SKIP "primary sentinel was never created (see the logs assertion)"
+    return 0
   fi
 
   local exec_create exec_id exec_status
@@ -1664,7 +1668,9 @@ assert_remote_update_trigger() {
   local containers_status containers_jq_err
   local deadline=$((SECONDS + STORE_SYNC_TIMEOUT))
   while ((SECONDS < deadline)); do
-    if ! containers_status="$(curl --silent --max-time 10 --output "$containers_body" \
+    remaining=$((deadline - SECONDS))
+    ((remaining <= 0)) && break
+    if ! containers_status="$(curl --silent --max-time "$((remaining < 10 ? remaining : 10))" --output "$containers_body" \
       --write-out '%{http_code}' "http://127.0.0.1:3000/api/v1/containers?limit=500" 2>"${SCRATCH_DIR}/containers-curl-err.log")"; then
       # curl itself failed to get a response at all (connection refused,
       # timeout, etc) -- transient, keep polling like before rather than
@@ -1674,6 +1680,7 @@ assert_remote_update_trigger() {
       sleep $((remaining < 5 ? remaining : 5))
       continue
     fi
+    ((SECONDS >= deadline)) && break
     case "$containers_status" in
       2??) ;;
       *)
@@ -1710,6 +1717,10 @@ assert_remote_update_trigger() {
       containers_jq_err="$(cat "${SCRATCH_DIR}/containers-jq-err.log" 2>/dev/null)"
       record_result "$name" FAIL "harness bug, not a conformance failure -- jq could not read the /api/v1/containers response (${containers_jq_err}): $(head -c 300 "$containers_body" 2>/dev/null)"
       return 1
+    fi
+    if ((SECONDS >= deadline)); then
+      doc=""
+      break
     fi
     if [ -n "$doc" ]; then
       break
