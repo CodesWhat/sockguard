@@ -1417,6 +1417,7 @@ jobs:
 
       - name: Check the published chart contents
         env:
+          CHART_PACKAGE: ${{ steps.package.outputs.path }}
           CHART_VERSION: ${{ steps.digest.outputs.version }}
           CHART_DIGEST: ${{ steps.push.outputs.digest }}
           RELEASE_TAG: ${{ github.ref_name }}
