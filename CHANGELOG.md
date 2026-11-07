@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Correct preset redaction comments, image-load ownership wording, tiny-cap priority ordering, refusal-code guidance and Podman secret-list visibility scope. List concrete native image-trust environment variables, preserve curl failures in the admin validation example, and document the harness sudo prerequisite.
+
 - Run the chart release CLI gate through symlinked or space-containing paths instead of silently skipping validation.
 
 - Correct the raw-stream response deadline, first TLS-removal candidate, current-stable tag source, numeric-UID security scope, allowed quoted heredocs and Podman empty-option tmpfs documentation. Warn that the unchanged published rc.6 predates the v2.4.5 and v2.4.6 security fixes.

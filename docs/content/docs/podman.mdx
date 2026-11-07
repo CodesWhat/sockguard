@@ -1286,22 +1286,15 @@ land):
   (`GET /libpod/**` reaches it) needs
   `insecure_allow_read_exfiltration: true` to pass startup validation, because
   the path is in the read-exfiltration catalog.
-- **Neither spelling of the secret list has a scoped form under either
-  isolation layer.** `GET /libpod/secrets/json` and, on a Podman upstream, the
-  Docker-compat `GET /secrets` are one handler. Podman's secret filter grammar
-  accepts only `name` and `id` and answers `500` for any other key, so the
-  label filter that scopes every other list cannot be pushed upstream, and both
-  layers refuse the path. The
-  gap is narrower than the stats one: the report items carry `Spec.Labels`, so
-  a response-side filter over that field could scope this list the way
-  `GET /system/df` is scoped, and building it is what would lift the refusal.
-  Building it for one spelling alone is what is ruled out, not the filter
-  itself: it would leave one handler answering `403` on its native path and a
-  filtered list on its compat path off the same policy.
-  Until then, `GET /libpod/secrets/{name}/json` is the scoped read, since it
-  names one secret and both layers resolve it normally, and a deployment that wants
-  the whole list has to run without owner isolation and without a visibility
-  policy. The rule left `podman-readonly.yaml` in v2.1 for that reason.
+- **Secret-list scoping depends on the route and selector.** The native
+  `GET /libpod/secrets/json` is refused under owner isolation or visibility.
+  On a Podman upstream, Docker-compatible `GET /secrets` is refused under
+  owner isolation or visibility with label selectors. A patterns-only
+  visibility policy forwards the compatibility path unchanged. Podman's
+  shared handler accepts only `name` and `id` filters, so a label selector
+  cannot safely scope that list. `GET /libpod/secrets/{name}/json` names one
+  secret and both isolation layers resolve it normally. See the route-specific
+  coverage above before enabling a whole-list rule.
 - Tecnativa-style env-var compatibility for the libpod surface — the
   existing `CONTAINERS=1`/`POST=0`-style compat env vars only ever generate
   rules against literal Docker-compat paths (`/containers/**`, and similar),
