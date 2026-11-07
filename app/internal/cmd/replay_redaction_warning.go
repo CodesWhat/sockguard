@@ -13,7 +13,7 @@ import (
 var replayCreatePaths = []string{"/containers/create", "/libpod/containers/create"}
 
 // warnIfCreateAllowedWithResponseRedaction warns when any rule set (the
-// default rules or a client profile) allows container create while a response
+// default rules or a selectable client profile) allows container create while a response
 // redaction that rewrites inspect output is on. Clients that replay inspect
 // output into create (Portainer Recreate, drydock, watchtower) write the
 // redaction placeholders back into the new container and silently lose the
@@ -44,7 +44,11 @@ func warnIfCreateAllowedWithResponseRedaction(cfg *config.Config, logger *slog.L
 	if strings.TrimSpace(cfg.Clients.DefaultProfile) == "" && rulesAllowReplayCreate(cfg.Rules) {
 		scopes = append(scopes, "rules")
 	}
+	assigned := replayAssignedProfiles(cfg.Clients)
 	for _, profile := range cfg.Clients.Profiles {
+		if _, ok := assigned[strings.TrimSpace(profile.Name)]; !ok {
+			continue
+		}
 		if rulesAllowReplayCreate(profile.Rules) {
 			scopes = append(scopes, "clients.profiles["+profile.Name+"].rules")
 		}
@@ -53,7 +57,7 @@ func warnIfCreateAllowedWithResponseRedaction(cfg *config.Config, logger *slog.L
 		return
 	}
 
-	logger.Warn("container create is allowed while response redaction is on: clients that replay container inspect output into create (Portainer Recreate/Duplicate, drydock and watchtower updates) will lose the redacted Env, Binds/Mounts and network fields, which are written back into the new container as placeholders or empty values; other clients can ignore this. Set these keys to false for replaying clients, or use their shipped presets",
+	logger.Warn("container create is allowed while response redaction is on: replaying inspect responses into create copies placeholders or empty Env, mount and network values into recreated containers. These redaction settings are global; disabling them exposes the original fields to every client allowed to read them. Use a dedicated instance and the shipped replay-client presets when other clients still need redaction",
 		"keys", strings.Join(keys, ", "),
 		"allowed_by", scopes[0],
 		"other_allowing_scopes", len(scopes)-1,
@@ -74,4 +78,21 @@ func rulesAllowReplayCreate(rules []config.RuleConfig) bool {
 		}
 	}
 	return false
+}
+
+func replayAssignedProfiles(clients config.ClientsConfig) map[string]struct{} {
+	assigned := make(map[string]struct{}, len(clients.Profiles))
+	if name := strings.TrimSpace(clients.DefaultProfile); name != "" {
+		assigned[name] = struct{}{}
+	}
+	for _, assignment := range clients.ClientCertificateProfiles {
+		assigned[strings.TrimSpace(assignment.Profile)] = struct{}{}
+	}
+	for _, assignment := range clients.UnixPeerProfiles {
+		assigned[strings.TrimSpace(assignment.Profile)] = struct{}{}
+	}
+	for _, assignment := range clients.SourceIPProfiles {
+		assigned[strings.TrimSpace(assignment.Profile)] = struct{}{}
+	}
+	return assigned
 }

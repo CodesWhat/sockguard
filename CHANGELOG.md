@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Limit replay-client redaction warnings to assigned profiles, explain that disabling redaction affects every readable client scope, and warn before a validated configuration reload swaps handlers.
+
 - Report unknown YAML keys with null or empty-map values during validation and reload diagnostics, including `validate --strict`, while preserving known empty values and dotted or case-insensitive keys.
 
 - Reject non-JSON whitespace around native Podman network inspect responses instead of stripping it before label decoding, and retain the original minimized fuzz input as a corpus regression.
