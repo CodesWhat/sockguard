@@ -477,9 +477,9 @@ func buildImageTrustFields(opts ImageTrustOptions, allowedImages []string) image
 	}
 	f.verifier = v
 	f.registry = newImagePullPolicy(ImagePullOptions{
-		AllowAllRegistries: opts.AllowAllRegistries || (len(allowedImages) > 0 && !opts.AllowOfficial && len(opts.AllowedRegistries) == 0),
+		AllowAllRegistries: opts.AllowAllRegistries,
 		AllowOfficial:      opts.AllowOfficial,
-		AllowedRegistries:  opts.AllowedRegistries,
+		AllowedRegistries:  trustDialAllowlist(opts.AllowedRegistries, allowedImages),
 	})
 	f.fetcher = imagefetch.NewGuardedFetcher(trustDialAllowlist(opts.AllowedRegistries, allowedImages))
 	f.cfg = cfg

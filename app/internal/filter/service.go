@@ -245,6 +245,11 @@ func newServicePolicy(opts ServiceOptions) servicePolicy {
 		allowed = append(allowed, normalized)
 	}
 
+	trustOpts := opts.ImageTrust
+	trustOpts.AllowAllRegistries = opts.AllowAllRegistries
+	trustOpts.AllowOfficial = opts.AllowOfficial
+	trustOpts.AllowedRegistries = opts.AllowedRegistries
+
 	return servicePolicy{
 		allowedImages:               newCreateImageAllowlist(opts.AllowedImages),
 		allowHostNetwork:            opts.AllowHostNetwork,
@@ -267,7 +272,7 @@ func newServicePolicy(opts ServiceOptions) servicePolicy {
 		denyUnconfinedAppArmor:     opts.DenyUnconfinedAppArmor,
 		denySelinuxDisable:         opts.DenySelinuxDisable,
 		denySelinuxLabelOverride:   opts.DenySelinuxLabelOverride,
-		imageTrust:                 buildImageTrustFields(opts.ImageTrust, nil),
+		imageTrust:                 buildImageTrustFields(trustOpts, opts.AllowedImages),
 		logDrivers:                 newLogDriverPolicy(opts.AllowedLogDrivers, opts.AllowedLogEndpointOptions),
 	}
 }
