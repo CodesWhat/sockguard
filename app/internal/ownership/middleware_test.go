@@ -3584,9 +3584,8 @@ func TestMiddlewareOverwritesClientSuppliedOwnerLabel(t *testing.T) {
 }
 
 // TestMutateJSONBodyRejectsAmbiguousBodyBeforeMutating locks the fail-closed
-// guard on duplicate case-variant keys after it moved off the raw bytes and
-// onto the decoded tree. Same verdict, same wording, and the mutate callback
-// still never sees the body.
+// guard on duplicate case-variant keys. The mutate callback never sees an
+// ambiguous body.
 func TestMutateJSONBodyRejectsAmbiguousBodyBeforeMutating(t *testing.T) {
 	t.Parallel()
 	body := `{"HostConfig":{"NetworkMode":"bridge"},"hostconfig":{"NetworkMode":"container:victim"}}`
@@ -3652,5 +3651,33 @@ func TestMutateJSONBodyRejectsNonObjectBodies(t *testing.T) {
 				t.Fatalf("mutateJSONBody(%s) err = nil, want an error", tt.body)
 			}
 		})
+	}
+}
+
+func TestOwnershipJSONGuardsRetainRepeatedRawKeys(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"enforce", "warn", "audit"} {
+		for _, body := range []string{
+			`{"pidns":{"nsmode":"private"},"pidns":{"nsmode":"host"}}`,
+			`{"HostConfig":{"Memory":4096},"HostConfig":{}}`,
+			`{"spec":{"user":"1000","user":null}}`,
+			"{\"\u0130\":0,\"pidns\":{},\"pidns\":{}}",
+		} {
+			t.Run(mode+"/"+body, func(t *testing.T) {
+				t.Parallel()
+				for _, guard := range []struct {
+					name  string
+					apply func(*http.Request, func(map[string]any) error) error
+				}{{"mutate", mutateJSONBody}, {"inspect", inspectJSONBody}} {
+					req := httptest.NewRequest(http.MethodPost, "/libpod/pods/create", strings.NewReader(body))
+					req = req.WithContext(logging.WithMeta(req.Context(), &logging.RequestMeta{RolloutMode: mode}))
+					called := false
+					err := guard.apply(req, func(map[string]any) error { called = true; return nil })
+					if err == nil || called || !strings.Contains(err.Error(), "ambiguous request body") {
+						t.Errorf("%s: err=%v callback=%v, want raw-key refusal before callback", guard.name, err, called)
+					}
+				}
+			})
+		}
 	}
 }
