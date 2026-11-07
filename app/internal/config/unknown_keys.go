@@ -1,8 +1,8 @@
 package config
 
 import (
-	"bytes"
 	"os"
+	"reflect"
 	"slices"
 
 	mapstructure "github.com/go-viper/mapstructure/v2"
@@ -43,9 +43,21 @@ func UnknownKeysBytes(data []byte) ([]string, error) {
 	if len(data) == 0 {
 		return nil, nil
 	}
+	codec, err := viper.NewCodecRegistry().Decoder("yaml")
+	if err != nil {
+		return nil, err
+	}
+	raw := make(map[string]any)
+	if err := codec.Decode(data, raw); err != nil {
+		return nil, err
+	}
+	// Viper's settings normalization drops nulls and empty maps. Retain their
+	// keys for diagnostics, then restore a typed zero during schema decoding.
+	for key, value := range raw {
+		raw[key] = preserveEmptyConfigValue(value)
+	}
 	v := viper.New()
-	v.SetConfigType("yaml")
-	if err := v.ReadConfig(bytes.NewReader(data)); err != nil {
+	if err := v.MergeConfigMap(raw); err != nil {
 		return nil, err
 	}
 
@@ -53,6 +65,13 @@ func UnknownKeysBytes(data []byte) ([]string, error) {
 	var cfg Config
 	if err := v.Unmarshal(&cfg, func(c *mapstructure.DecoderConfig) {
 		c.Metadata = &md
+		hook := c.DecodeHook
+		c.DecodeHook = func(from, to reflect.Value) (any, error) {
+			if from.Type() == reflect.TypeFor[emptyConfigValue]() {
+				return reflect.Zero(to.Type()).Interface(), nil
+			}
+			return mapstructure.DecodeHookExec(hook, from, to)
+		}
 	}); err != nil {
 		return nil, err
 	}
@@ -60,4 +79,28 @@ func UnknownKeysBytes(data []byte) ([]string, error) {
 	unused := slices.Clone(md.Unused)
 	slices.Sort(unused)
 	return slices.Compact(unused), nil
+}
+
+type emptyConfigValue struct{}
+
+func preserveEmptyConfigValue(value any) any {
+	switch object := value.(type) {
+	case nil:
+		return emptyConfigValue{}
+	case map[string]any:
+		if len(object) == 0 {
+			return emptyConfigValue{}
+		}
+		for key, child := range object {
+			object[key] = preserveEmptyConfigValue(child)
+		}
+	case map[any]any:
+		if len(object) == 0 {
+			return emptyConfigValue{}
+		}
+		for key, child := range object {
+			object[key] = preserveEmptyConfigValue(child)
+		}
+	}
+	return value
 }

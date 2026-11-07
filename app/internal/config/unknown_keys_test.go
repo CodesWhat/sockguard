@@ -16,6 +16,13 @@ func TestUnknownKeysBytes(t *testing.T) {
 		{"empty", "", nil},
 		{"clean", "log:\n  level: debug\n", nil},
 		{"top level", "bogus: 1\n", []string{"bogus"}},
+		{"null unknown", "bogus: null\n", []string{"bogus"}},
+		{"empty map unknown", "bogus: {}\n", []string{"bogus"}},
+		{"nested null unknown", "log:\n  nope: null\n", []string{"log.nope"}},
+		{"list null unknown", "clients:\n  profiles:\n    - name: a\n      nope: null\n", []string{"clients.profiles[0].nope"}},
+		{"known null and empty", "log: null\nresponse: {}\nclients:\n  profiles: null\n", nil},
+		{"dotted known field", "log.level: debug\n", nil},
+		{"case insensitive known fields", "LOG:\n  LEVEL: debug\n", nil},
 		{"nested", "log:\n  level: debug\n  nope: 1\n", []string{"log.nope"}},
 		{
 			"list of structs",

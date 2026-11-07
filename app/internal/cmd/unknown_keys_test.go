@@ -136,3 +136,28 @@ func TestWarnUnknownConfigKeysLogsOncePerKey(t *testing.T) {
 		t.Fatalf("nil bytes should warn nothing:\n%s", buf.String())
 	}
 }
+
+func TestValidateStrictRejectsUnknownEmptyValues(t *testing.T) {
+	for _, value := range []string{"null", "{}"} {
+		t.Run(value, func(t *testing.T) {
+			clearSockguardEnv(t)
+			cfgPath := filepath.Join(t.TempDir(), "sockguard.yaml")
+			if err := os.WriteFile(cfgPath, []byte("upstream:\n  socket: /var/run/docker.sock\nbogus: "+value+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			oldCfg, oldStrict := cfgFile, validateStrict
+			cfgFile, validateStrict = cfgPath, true
+			t.Cleanup(func() { cfgFile, validateStrict = oldCfg, oldStrict })
+			var out, errOut bytes.Buffer
+			command := &cobra.Command{Use: "validate"}
+			command.SetOut(&out)
+			command.SetErr(&errOut)
+			if err := runValidate(command, nil); err == nil {
+				t.Fatal("strict validation accepted unknown empty value")
+			}
+			if !strings.Contains(errOut.String(), "key=bogus") || strings.Contains(out.String(), "validation passed") {
+				t.Fatalf("unexpected diagnostics: stdout=%s stderr=%s", out.String(), errOut.String())
+			}
+		})
+	}
+}
