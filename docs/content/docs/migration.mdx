@@ -64,6 +64,8 @@ identity remains a documented limit; use distinct UID/GID client profiles.
 
 The current candidate, [v3.0.0-rc.6](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0-rc.6),
 is published. It carries v2.4.4 and includes the v2.4 policy/security work and the TLS removals below.
+The published rc.6 predates the signed numeric-UID fix in v2.4.5 and the malformed-zstd fix in v2.4.6. Use v2.4.6 for security-sensitive deployments while candidate validation continues. These fixes are forward-ported to the development branches; the published rc.6 image is unchanged.
+
 All v2 release lines retain their accepted settings.
 Before testing the v3 candidate:
 

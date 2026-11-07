@@ -488,7 +488,7 @@ export const roadmap: Milestone[] = [
     status: "released",
     items: [
       "A numeric user with a sign prefix such as +0 is now treated as root on Docker and Podman",
-      "request_body.exec.allow_root_user: false and require_non_root_user can no longer be bypassed to run as UID 0",
+      "request_body.exec.allow_root_user: false and require_non_root_user reject signed and padded numeric UID 0 forms; named users are resolved by the daemon against the image and may still map to UID 0",
     ],
   },
   {
