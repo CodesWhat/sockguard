@@ -9,15 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Fail closed on OCI nodes carrying both index and manifest config shapes, and keep `.json` entries under OCI blob paths subject to unreferenced-blob validation.
+
+- Redact verbose-network task host-IP metadata and host namespace paths in container network modes when network-topology redaction is enabled.
+
+- Keep registry signature discovery inside the dial guard when proxy environment variables are set, and reject shared, reserved, documentation, translated non-public IPv4 and local-use NAT64 addresses, including zoned IPv6 spellings, unless the operator explicitly lists the destination.
+
 - Require canonical names for owner-scoped Podman network deletion through either API family and matching config IDs for image-volume references, preventing delayed references from following recreated networks or mutable manifest lists.
 
 - Update the application and Docker client compatibility modules to `github.com/klauspost/compress` 1.20.2 for GO-2026-6865 / CVE-2026-116591, a panic on malformed zstd frames.
 
 ### Fixed
 
+- Cover service signature discovery with an unlisted private registry even when all registry scopes are allowed, verifying that the address guard prevents any request.
+
+- Limit replay-client redaction warnings to assigned profiles, explain that disabling redaction affects every readable client scope, and warn before a validated configuration reload swaps handlers.
+
+- Report unknown YAML keys with null or empty-map values during validation and reload diagnostics, including `validate --strict`, while preserving known empty values and dotted or case-insensitive keys.
+
+- Scope container signature discovery to the registries named by exact image allowlists, and pass Swarm service image and registry scopes into its signature dial guard.
+
 - Reject non-JSON whitespace around native Podman network inspect responses instead of stripping it before label decoding, and retain the original minimized fuzz input as a corpus regression.
 
 ### Changed
+
+- Ensure bridge, resolver and limiter test fixtures release their resources when assertions fail, and make concurrency admission regressions fail promptly.
+
+- Close the v3.1 mutation target with the November 6 measurement: 97.9821% test efficacy across all 43 packages at the source tree merged as `7dbc523f`, above the unchanged 97.8% target, with timeouts separate from kills.
 
 - Avoid a false test failure when an injected session-start failure cancels a mock-daemon control request.
 

@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/codeswhat/sockguard/v3/app/internal/imagetrust"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
@@ -88,6 +90,9 @@ func TestBuildImageTrustFieldsRegistryScope(t *testing.T) {
 		allowed       bool
 	}{
 		{"no scope", ImageTrustOptions{}, nil, "ghcr.io/o/a:1", false},
+		{"exact image augments registry scope", ImageTrustOptions{AllowedRegistries: []string{"ghcr.io"}}, []string{"registry.internal/app:1"}, "registry.internal/app:1", true},
+		{"exact image does not allow other registries", ImageTrustOptions{}, []string{"registry.internal/app:1"}, "other.example/app:1", false},
+		{"exact image augments official scope", ImageTrustOptions{AllowOfficial: true}, []string{"registry.internal/app:1"}, "registry.internal/app:1", true},
 		{"allowed_images pins registry", ImageTrustOptions{}, []string{"ghcr.io/o/a:1"}, "ghcr.io/o/a:1", true},
 		{"allowed_registries hit", ImageTrustOptions{AllowedRegistries: []string{"ghcr.io"}}, nil, "ghcr.io/o/a:1", true},
 		{"allowed_registries miss", ImageTrustOptions{AllowedRegistries: []string{"ghcr.io"}}, []string{"ghcr.io/o/a:1"}, "evil.example/o/a:1", false},
@@ -131,5 +136,61 @@ func TestTrustDialAllowlist(t *testing.T) {
 	want := []string{"registry.internal:5000", "10.0.0.5:8080", "ghcr.io"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("trustDialAllowlist = %v, want %v", got, want)
+	}
+}
+
+func TestServiceTrustDiscoveryUsesServiceRegistryScopes(t *testing.T) {
+	for _, exactImage := range []bool{false, true} {
+		t.Run(fmt.Sprintf("exact_image_%v", exactImage), func(t *testing.T) {
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests.Add(1); w.WriteHeader(http.StatusNotFound) }))
+			defer server.Close()
+			host := strings.TrimPrefix(server.URL, "http://")
+			ref := host + "/app:1"
+			opts := ServiceOptions{ImageTrust: ImageTrustOptions{Mode: "warn", AllowedSigningKeys: []SigningKeyOptions{{PEM: generateTestECDSAPEM(t)}}}}
+			if exactImage {
+				opts.AllowedImages = []string{ref}
+			} else {
+				opts.AllowedRegistries = []string{host}
+			}
+			policy := newServicePolicy(opts)
+			if policy.imageTrust.initErr != nil {
+				t.Fatal(policy.imageTrust.initErr)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_, _ = policy.imageTrust.fetcher.FetchCandidates(ctx, slog.Default(), ref)
+			if requests.Load() == 0 {
+				t.Fatal("signature discovery never reached the operator-listed private registry")
+			}
+		})
+	}
+}
+
+func TestServiceTrustDiscoveryBlocksUnlistedPrivateRegistry(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+	ref := strings.TrimPrefix(server.URL, "http://") + "/app:1"
+	policy := newServicePolicy(ServiceOptions{
+		AllowAllRegistries: true,
+		ImageTrust:         ImageTrustOptions{Mode: "warn", AllowedSigningKeys: []SigningKeyOptions{{PEM: generateTestECDSAPEM(t)}}},
+	})
+	if policy.imageTrust.initErr != nil {
+		t.Fatal(policy.imageTrust.initErr)
+	}
+	if reason := policy.imageTrust.registry.denyReasonForReference(ref, "test"); reason != "" {
+		t.Fatalf("registry scope unexpectedly refused the reference: %s", reason)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := policy.imageTrust.fetcher.FetchCandidates(ctx, slog.Default(), ref); err == nil {
+		t.Fatal("signature discovery unexpectedly accepted an unlisted private registry")
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("signature discovery contacted the unlisted private registry %d times", got)
 	}
 }

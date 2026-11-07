@@ -31,7 +31,7 @@ func TestRedactNetworkTopology_RemainingAddressLeaks(t *testing.T) {
 		{
 			name: "network inspect verbose services",
 			path: "/v1.53/networks/net-1?verbose=true",
-			body: `{"Id":"net-1","Services":{"web":{"VIP":"10.0.9.2","Ports":["80/tcp"],"LocalLBIndex":3,"Tasks":[{"Name":"web.1","EndpointID":"ep-1","EndpointIP":"10.0.9.3","Info":{"k":"v"}},{"Name":"web.2","EndpointID":"ep-2","EndpointIP":"10.0.9.4","Info":{}}]},"db":{"VIP":"10.0.9.9","Ports":null,"LocalLBIndex":4,"Tasks":null}}}`,
+			body: `{"Id":"net-1","Services":{"web":{"VIP":"10.0.9.2","Ports":["80/tcp"],"LocalLBIndex":3,"Tasks":[{"Name":"web.1","EndpointID":"ep-1","EndpointIP":"10.0.9.3","Info":{"k":"v","Host IP":"192.168.1.10"}},{"Name":"web.2","EndpointID":"ep-2","EndpointIP":"10.0.9.4","Info":{}}]},"db":{"VIP":"10.0.9.9","Ports":null,"LocalLBIndex":4,"Tasks":null}}}`,
 			check: func(t *testing.T, got any) {
 				svcs := got.(map[string]any)["Services"].(map[string]any)
 				web := svcs["web"].(map[string]any)
@@ -45,6 +45,11 @@ func TestRedactNetworkTopology_RemainingAddressLeaks(t *testing.T) {
 					task := raw.(map[string]any)
 					if task["EndpointIP"] != "" {
 						t.Errorf("Tasks[%d].EndpointIP = %#v, want empty string", i, task["EndpointIP"])
+					}
+					if info, ok := task["Info"].(map[string]any); ok && info["k"] == "v" {
+						if info["Host IP"] != "" {
+							t.Errorf("task host address retained: %#v", info)
+						}
 					}
 					if task["EndpointID"] == "" || task["Name"] == "" {
 						t.Errorf("Tasks[%d] lost opaque fields: %#v", i, task)
@@ -169,6 +174,8 @@ func TestRedactNetworkTopology_RemainingLeaksRejectBadShapes(t *testing.T) {
 	tests := []struct{ name, path, body string }{
 		{"services not object", "/v1.53/networks/n", `{"Services":[]}`},
 		{"service not object", "/v1.53/networks/n", `{"Services":{"a":1}}`},
+		{"task info not object", "/v1.53/networks/n", `{"Services":{"a":{"Tasks":[{"Info":[]}]}}}`},
+		{"namespace host config not object", "/containers/c/json", `{"HostConfig":[]}`},
 		{"tasks not array", "/v1.53/networks/n", `{"Services":{"a":{"Tasks":{}}}}`},
 		{"pools not array", "/v1.53/info", `{"DefaultAddressPools":{}}`},
 		{"swarm pools not array", "/v1.53/swarm", `{"DefaultAddressPools":{"Base":"10.20.0.0/16"}}`},
@@ -199,5 +206,26 @@ func TestRedactNetworkTopology_OffLeavesPortsAndServices(t *testing.T) {
 	}
 	if !strings.Contains(string(readBodyForTest(t, resp)), "192.168.1.10") {
 		t.Error("Ports IP redacted with redact_network_topology off")
+	}
+}
+
+func TestRedactNetworkTopologyNamespacePath(t *testing.T) {
+	t.Parallel()
+	for _, path := range []string{"/containers/c/json", "/containers/json", "/v5.0.0/libpod/containers/c/json"} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			body := `{"HostConfig":{"NetworkMode":"ns:/run/netns/private"}}`
+			if strings.HasSuffix(path, "/containers/json") {
+				body = "[" + body + "]"
+			}
+			resp := newResponseForTest(t, http.MethodGet, path, body)
+			if err := New(Options{RedactNetworkTopology: true}).ModifyResponse(resp); err != nil {
+				t.Fatal(err)
+			}
+			output := string(readBodyForTest(t, resp))
+			if strings.Contains(output, "/run/netns/private") {
+				t.Fatalf("host namespace path leaked: %s", output)
+			}
+		})
 	}
 }

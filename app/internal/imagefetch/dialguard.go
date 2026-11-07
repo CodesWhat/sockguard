@@ -55,11 +55,42 @@ func (g *dialGuard) isAllowed(host, port string) bool {
 	return ok
 }
 
+var blockedRegistryRanges = [...]netip.Prefix{
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("0.0.0.0/8"),
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"),
+	netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+}
+
+var registryNAT64Prefix = netip.MustParsePrefix("64:ff9b::/96")
+
 // blockedAddr reports whether a is not a publicly routable unicast address.
 func blockedAddr(a netip.Addr) bool {
-	a = a.Unmap()
-	return !a.IsValid() || a.IsLoopback() || a.IsPrivate() || a.IsLinkLocalUnicast() ||
-		a.IsLinkLocalMulticast() || a.IsInterfaceLocalMulticast() || a.IsMulticast() || a.IsUnspecified()
+	a = a.WithZone("").Unmap()
+	if registryNAT64Prefix.Contains(a) {
+		raw := a.As16()
+		a = netip.AddrFrom4([4]byte{raw[12], raw[13], raw[14], raw[15]})
+	}
+	if !a.IsValid() || a.IsLoopback() || a.IsPrivate() || a.IsLinkLocalUnicast() ||
+		a.IsLinkLocalMulticast() || a.IsInterfaceLocalMulticast() || a.IsMulticast() || a.IsUnspecified() {
+		return true
+	}
+	// IANA marks these two anycast assignments globally reachable inside the
+	// otherwise non-public 192.0.0.0/24 protocol-assignment block.
+	if a == netip.AddrFrom4([4]byte{192, 0, 0, 9}) || a == netip.AddrFrom4([4]byte{192, 0, 0, 10}) {
+		return false
+	}
+	for _, prefix := range blockedRegistryRanges {
+		if prefix.Contains(a) {
+			return true
+		}
+	}
+	return false
 }
 
 // DialContext resolves addr, refuses it if any resolved address is blocked
@@ -108,13 +139,15 @@ func (g *dialGuard) transport() http.RoundTripper {
 	}
 	t := base.Clone()
 	t.DialContext = g.DialContext
+	t.Proxy = nil
 	return t
 }
 
 // NewGuardedFetcher is NewFetcher with a dial-time address guard. Hosts in
 // allowedHosts ("host" or "host:port", the allowed_registries spelling) may
 // resolve to private addresses; every other destination, including token
-// realms and blob redirects, must resolve to public addresses only.
+// realms and blob redirects, must resolve to public addresses only. Environment
+// proxies are disabled so the guard checks each actual destination.
 func NewGuardedFetcher(allowedHosts []string) *Fetcher {
 	f := NewFetcher()
 	f.transport = newDialGuard(allowedHosts).transport()
