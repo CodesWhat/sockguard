@@ -220,6 +220,7 @@ export const DOCS_SEARCH_ITEMS: [page: number, heading: string, anchor: string][
   [12,"Shipped in v2.4.1","shipped-in-v241"],
   [12,"Shipped in v2.4.0","shipped-in-v240"],
   [12,"v3 compatibility boundary","v3-compatibility-boundary"],
+  [12,"v3.1 development validation","v31-development-validation"],
   [12,"Twelve-month direction","twelve-month-direction"],
   [12,"Shipped in v1.7","shipped-in-v17"],
   [12,"Compatibility boundary","compatibility-boundary"],
