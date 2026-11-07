@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Refuse byte-identical repeated JSON control keys before ownership callbacks in every rollout mode, using the original bounded body instead of the collapsed map. Preserve decoder-divergent key diagnostics and their rollout behavior.
+
 - Compare all published chart file paths and contents with the locally built package before signing an adopted version. Require the expected package in both release and rehearsal verification.
 
 - Fail closed on OCI nodes carrying both index and manifest config shapes, and keep `.json` entries under OCI blob paths subject to unreferenced-blob validation.

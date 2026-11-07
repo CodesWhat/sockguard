@@ -777,6 +777,13 @@ func scanBodyKeys(body []byte) (repeated, divergent error) {
 	return repeated, s.divergent
 }
 
+// RejectRepeatedJSONKeys checks the original bytes for repeated struct-level
+// keys while leaving decoder-divergent keys to the caller's rollout policy.
+func RejectRepeatedJSONKeys(body []byte) error {
+	repeated, _ := scanBodyKeys(body)
+	return repeated
+}
+
 // scanValue consumes exactly one JSON value, as json.Decoder.Decode does,
 // ignoring whatever follows it. depth counts the containers already open, and
 // skip is checkDuplicateCaseVariantKeys' skipKeyCheck: set for the value of a

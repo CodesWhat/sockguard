@@ -1576,15 +1576,12 @@ func decodeOwnershipJSONBody(r *http.Request) ([]byte, map[string]any, error) {
 	// already cleared past its check. Reject such a body fail-closed before we
 	// touch it. See filter.RejectDuplicateCaseVariantJSONKeys.
 	//
-	// The check runs against the tree decoded just above rather than against
-	// the raw bytes. The byte-taking form parses the body into a second,
-	// identical map[string]any that it walks and throws away, which measured
-	// as 39% of this pass's allocated bytes and 43% of its allocations on a
-	// realistic container-create body. Same walk, same verdict, one decode.
-	//
-	// A key Podman 6's decoder lowercases onto its sibling is refused with
-	// those, in every rollout mode like them, for the same reason: the sort
-	// would decide which of the two that decoder honors.
+	// Scan the original bytes because decoding into a map collapses identical
+	// repeated keys. Keep the decoded-tree check for decoder-divergent key
+	// diagnostics, preserving their ordering and rollout behavior.
+	if repeated := filter.RejectRepeatedJSONKeys(body); repeated != nil {
+		return nil, nil, fmt.Errorf("ambiguous request body: %w", repeated)
+	}
 	repeated, divergent := filter.InspectJSONValueKeys(decoded)
 	if repeated != nil {
 		return nil, nil, fmt.Errorf("ambiguous request body: %w", repeated)
