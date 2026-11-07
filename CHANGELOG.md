@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Keep registry signature discovery inside the dial guard when proxy environment variables are set, and reject shared, reserved, documentation and translated non-public IPv4 addresses unless the operator explicitly lists the destination.
+
 - Require canonical names for owner-scoped Podman network deletion through either API family and matching config IDs for image-volume references, preventing delayed references from following recreated networks or mutable manifest lists.
 
 - Update the application and Docker client compatibility modules to `github.com/klauspost/compress` 1.20.2 for GO-2026-6865 / CVE-2026-116591, a panic on malformed zstd frames.
@@ -18,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reject non-JSON whitespace around native Podman network inspect responses instead of stripping it before label decoding, and retain the original minimized fuzz input as a corpus regression.
 
 ### Changed
+
+- Close the v3.1 mutation target with the November 6 measurement: 97.9821% test efficacy across all 43 packages at the source tree merged as `7dbc523f`, above the unchanged 97.8% target, with timeouts separate from kills.
 
 - Avoid a false test failure when an injected session-start failure cancels a mock-daemon control request.
 

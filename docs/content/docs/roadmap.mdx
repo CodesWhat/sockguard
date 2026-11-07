@@ -242,6 +242,15 @@ window.
 The v2.3 and v2.4 clocks don't cover v3; those candidate sources, stable channels
 and their existing validation remain separate.
 
+## v3.1 development validation
+
+The [November 6 mutation run](https://github.com/CodesWhat/sockguard/actions/runs/42288257125)
+completed all 43 packages at the source tree merged as `7dbc523f`. Its test
+efficacy was 97.9821%, above the unchanged 97.8% target: 6,361 killed and 131
+surviving mutants. The report also records 2,219 uncovered mutants and 62
+timeouts; timeouts are separate from kills. This is development-branch evidence,
+not a published v3.1 release or a statement-coverage score.
+
 ## Twelve-month direction
 
 Beyond the next planned line, work remains risk- and demand-driven:
