@@ -399,44 +399,20 @@ func redactHistoryCreatedBy(createdBy string) string {
 		}
 	}
 
-	// Build-arg prefix: optional "RUN ", then "|N ".
-	prefix := ""
-	rest := s
-	if r, ok := strings.CutPrefix(rest, "RUN "); ok {
-		prefix, rest = "RUN ", r
-	}
-	if len(rest) < 3 || rest[0] != '|' {
+	// BuildKit joins raw argument values and command text with spaces, so
+	// their boundary cannot be recovered reliably. Redact the whole entry.
+	rest := strings.TrimPrefix(s, "RUN ")
+	if len(rest) < 2 || rest[0] != '|' {
 		return createdBy
 	}
 	digits := 1
 	for digits < len(rest) && rest[digits] >= '0' && rest[digits] <= '9' {
 		digits++
 	}
-	if digits == 1 || digits >= len(rest) || rest[digits] != ' ' {
+	if digits == 1 || (digits < len(rest) && rest[digits] != ' ') {
 		return createdBy
 	}
-	count, args := rest[:digits], rest[digits+1:]
-	cmdAt := strings.Index(args, "/bin/sh -c")
-	var argSegment, tail string
-	if cmdAt >= 0 {
-		argSegment, tail = args[:cmdAt], args[cmdAt:]
-	} else {
-		argSegment = args
-	}
-	var keys []string
-	for _, tok := range strings.Fields(argSegment) {
-		if k, _, ok := strings.Cut(tok, "="); ok && k != "" {
-			keys = append(keys, k+"=<redacted>")
-		}
-	}
-	if len(keys) == 0 {
-		keys = []string{"<redacted>"}
-	}
-	out := prefix + count + " " + strings.Join(keys, " ")
-	if tail != "" {
-		out += " " + tail
-	}
-	return out
+	return "<redacted>"
 }
 
 func (f *Filter) modifyContainerList(resp *http.Response) error {

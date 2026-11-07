@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Redact complete build-argument-prefixed image history entries when environment redaction is enabled, preventing shell-looking argument values from exposing secrets through a guessed command boundary. Ordinary RUN history remains visible.
+
 - Disable both sudo and container access in six local scanner/check jobs that need neither. Document and test the pinned shared offline scanner's existing read-only runner-access exception.
 
 - Refuse byte-identical repeated JSON control keys before ownership callbacks in every rollout mode, using the original bounded body instead of the collapsed map. Preserve decoder-divergent key diagnostics and their rollout behavior.
