@@ -905,7 +905,7 @@ Each priority tier has a hardcoded share of the global cap:
 | `normal` (default) | 80% | denied above 80 in-flight |
 | `high` | 100% | denied above 100 in-flight |
 
-Shares are rounded down but never below 1, so any positive `max_inflight` admits at least one request of every tier. Tier ordering (high before normal before low) only holds with `max_inflight` of 2 or more. At 1, all tiers share the single slot first-come.
+Shares are rounded down but never below 1, so any positive `max_inflight` admits at least one request of every tier. Tier ordering (high before normal before low) holds with `max_inflight` of 3 or more. At 2, low and normal share the first slot, so either can deny the other; high can use the second slot. At 1, all tiers share the single slot first-come.
 
 When total in-flight crosses the floor for a request's priority, the request
 is denied with `429 Too Many Requests` and `{"reason":"priority_floor"}`.
@@ -1991,7 +1991,9 @@ Podman's native `POST /libpod/containers/create` counterpart to `container_creat
 | `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_ENV_HOST` | `request_body.libpod_container_create.allow_env_host` | `false` | Allow `env_host: true`, which copies the Podman daemon's environment into the container. Still refused while `allowed_env_vars`, `denied_env_vars` or `allowed_env_values` is set. |
 | `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_STORAGE_OPTS` | `request_body.libpod_container_create.allow_storage_opts` | `false` | Allow a non-empty `storage_opts` map, per-container storage driver options such as a rootfs size quota. |
 | `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_RUNTIME_ANNOTATIONS` | `request_body.libpod_container_create.allow_runtime_annotations` | `false` | Allow `annotations` keys under `run.oci.` and `io.podman.annotations.cid-file`, `.autoremove` and `.autoremove-image`, which Podman acts on. Other annotation keys, including the rest of the `io.podman.annotations.` markers podman-remote sends, are not gated. |
-| `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_IMAGE_TRUST_*`         | `request_body.libpod_container_create.image_trust.*`         | see `container_create.image_trust` above | Cosign signature verification on the `image` field. Identical semantics and sub-fields to `container_create.image_trust`. The three scalar sub-fields take env vars; `allowed_signing_keys` and `allowed_keyless` are YAML-only. |
+| `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_IMAGE_TRUST_MODE` | `request_body.libpod_container_create.image_trust.mode` | `"off"` | Cosign verification on the native `image` field: `off`, `warn`, or `enforce`. |
+| `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_IMAGE_TRUST_REQUIRE_REKOR_INCLUSION` | `request_body.libpod_container_create.image_trust.require_rekor_inclusion` | `true` | Require a Rekor transparency log entry for keyless bundles. |
+| `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_IMAGE_TRUST_VERIFY_TIMEOUT` | `request_body.libpod_container_create.image_trust.verify_timeout` | `10s` | Positive end-to-end verification deadline, including registry fetching and local crypto checks. `allowed_signing_keys` and `allowed_keyless` remain YAML-only. |
 
 ### Other request-body inspectors
 

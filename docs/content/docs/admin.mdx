@@ -175,13 +175,14 @@ value. A parse failure returns a single `parse: ...` entry instead.
 ### CI gate usage
 
 ```bash
+set -o pipefail
 curl --silent --fail-with-body \
   --data-binary @candidate.yaml \
   http://sockguard:2375/admin/validate | jq .
 ```
 
-Exit code is non-zero on HTTP errors, so the pattern works as a pre-promote gate
-in CI without extra scripting. Use `--fail-with-body` (curl 7.76 or later) and
+Bash preserves curl's non-zero status through `jq` because `pipefail` is enabled,
+so an HTTP validation error fails this pre-promote gate. Use `--fail-with-body` (curl 7.76 or later) and
 not plain `--fail`: `--fail` throws the response body away on any status at or
 above 400, which is exactly the `422` case the gate exists for, so the job would
 fail without ever printing which validation error caused it.

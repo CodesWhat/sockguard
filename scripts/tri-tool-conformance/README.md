@@ -56,10 +56,10 @@ scripts/tri-tool-conformance/run-matrix.sh --self-test   # jq + awk only, no Doc
 ```
 
 Needs `bash`, `curl`, `jq`, `docker`, `docker compose`, and `openssl` on
-`PATH`, plus a real Docker daemon at `/var/run/docker.sock` (the GitHub-hosted
-`ubuntu-latest` runner ships all of this; there is no dind container, no
-special privileges — the harness measures what a real deployment would
-actually see, same rationale as `quality-integration.yml`).
+`PATH`, passwordless `sudo` for generated-secret ownership and permission
+setup, and a real Docker daemon at `/var/run/docker.sock`. The GitHub-hosted
+`ubuntu-latest` runner provides these tools and daemon. The harness uses the
+host engine rather than a dind container, matching `quality-integration.yml`.
 
 Each row is fully independent: fresh named volumes and fresh secrets every
 run (`docker compose down -v` guard plus a unique project name), a fresh

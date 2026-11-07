@@ -641,8 +641,10 @@ owner label, even under a name nothing holds: that image would pass the other
 owner's ownership checks and put the client's content in its namespace. The
 filter reads the label out of every image config in the archive (Docker
 `manifest.json` configs and OCI `index.json` manifests), and a config it can't
-read refuses the load. An image with no owner label follows
-`allow_unowned_images`, and one labeled with the caller's own owner is allowed.
+read refuses the load. An unlabeled archive image passes this archive-label
+check, as does one labeled with the caller's own owner. The independent
+destination check applies `allow_unowned_images` when a loaded name or digest
+already resolves to an existing unlabeled image.
 
 A pull can't be read before it runs, so it is checked after. Once the daemon
 finishes the pull, Sockguard inspects each reference it wrote, and an image
