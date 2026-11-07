@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Share one elapsed-time deadline across inventory list/inspect checks and cap access-log retry sleeps at the remaining window.
+
+- Require an authentication-error log message for the wrong-secret probe instead of accepting `401` in unrelated timestamps, ports or byte counts.
+
 - Record dependent lifecycle and exec assertions as skipped after sentinel creation fails, preserving the original failure without duplicating it.
 
 - Reuse the prepared digest-pinned BusyBox image for the conformance socket ownership probe, distinguishing probe setup errors from incorrect ownership.
