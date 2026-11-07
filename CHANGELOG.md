@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Correct the raw-stream response deadline, first TLS-removal candidate, current-stable tag source, numeric-UID security scope, allowed quoted heredocs and Podman empty-option tmpfs documentation. Warn that the unchanged published rc.6 predates the v2.4.5 and v2.4.6 security fixes.
+
 - Share one elapsed-time deadline across inventory list/inspect checks and cap access-log retry sleeps at the remaining window.
 
 - Require an authentication-error log message for the wrong-secret probe instead of accepting `401` in unrelated timestamps, ports or byte counts.
