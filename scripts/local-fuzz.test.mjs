@@ -163,8 +163,11 @@ describe("local-fuzz.sh", () => {
     const result = runLocalFuzz(["--dry-run", "--suite", "ultra", "--fuzztime", "1s"]);
 
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /FuzzFilterModifyResponse/);
-    assert.match(result.stdout, /FuzzHijackBidirectionalStream/);
+    const all = runLocalFuzz(["--dry-run", "--suite", "all", "--fuzztime", "1s"]);
+    assert.equal(all.status, 0, all.stderr);
+    const fuzzers = (output) => output.split("\n").filter((line) => line.startsWith("[Fuzz"));
+    assert.ok(fuzzers(all.stdout).length > 2);
+    assert.deepEqual(fuzzers(result.stdout), fuzzers(all.stdout));
   });
 
   it("keeps the Docker fuzzer runtime command in a single branch", () => {

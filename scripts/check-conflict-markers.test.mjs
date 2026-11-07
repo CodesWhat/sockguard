@@ -90,3 +90,15 @@ test("the tracked tree contains no unresolved conflict markers", () => {
       .join("\n")}`,
   );
 });
+
+test("detects markers in CR-only and mixed line endings", () => {
+  for (const ending of ["\r", "\r\n", "\n"]) {
+    assert.deepEqual(findConflictMarkers(["text", `${OURS} HEAD`, "tail"].join(ending)), [
+      { line: 2, text: `${OURS} HEAD` },
+    ]);
+  }
+  assert.deepEqual(
+    findConflictMarkers(`text\r${BASE} base\n${THEIRS} end\r\n`).map((hit) => hit.line),
+    [2, 3],
+  );
+});

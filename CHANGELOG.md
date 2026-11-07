@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Record dependent lifecycle and exec assertions as skipped after sentinel creation fails, preserving the original failure without duplicating it.
+
+- Reuse the prepared digest-pinned BusyBox image for the conformance socket ownership probe, distinguishing probe setup errors from incorrect ownership.
+
+- Enforce the no-emoji commit subject rule through the same validator locally and in CI, with executable regressions for fork promotion exemptions.
+
+- Detect conflict markers in CR-only text, compare every fuzzer in the `ultra` alias, and drain negative-auth probe logs before returning a match, and cap store polling requests at the remaining deadline.
+
 - Limit replay-client redaction warnings to assigned profiles, explain that disabling redaction affects every readable client scope, and warn before a validated configuration reload swaps handlers.
 
 - Report unknown YAML keys with null or empty-map values during validation and reload diagnostics, including `validate --strict`, while preserving known empty values and dotted or case-insensitive keys.
