@@ -65,13 +65,10 @@ jobs:
 
     strategy:
       fail-fast: false
-      # The org is on the Free plan: 20 concurrent jobs across every repo.
-      # This matrix is 28 on its own, and portwing's Deep Fuzz is also
-      # `30 9 * * *` and asks for 7 at the same minute, so 35 jobs contend
-      # for 20 slots. 12 leaves portwing's 7 intact inside the ceiling with
-      # a slot to spare, so a leg waits for a runner instead of being
-      # starved of one. Do not raise this past 13 while the plan is Free and
-      # portwing shares the minute.
+      # Keep this shared-org matrix at 12 concurrent legs. The fuzzer
+      # inventory grows independently of peer workflows, so static totals
+      # become stale. Recheck the current organization runner limit and
+      # peer schedules before raising this cap; leave capacity for them.
       #
       # Corrected 2026-09-06: the "reclaimed with 'The runner has received a
       # shutdown signal'" kills this cap was originally written to fix are
