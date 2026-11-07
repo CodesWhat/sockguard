@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Ensure bridge, resolver and limiter test fixtures release their resources when assertions fail, and make concurrency admission regressions fail promptly.
+
 - Avoid a false test failure when an injected session-start failure cancels a mock-daemon control request.
 
 - Cover graceful tunnel disconnects, policy-specific image-mount and ordered overlay denials, and pull checks for stored short names and reported image IDs.
