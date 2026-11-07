@@ -2124,6 +2124,15 @@ func isNodeInspectPath(normPath string) bool {
 }
 
 func redactContainerNetworkTopology(payload map[string]any) error {
+	if value, present := payload["HostConfig"]; present && value != nil {
+		host, ok := value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("HostConfig has unexpected type %T", value)
+		}
+		if mode, ok := host["NetworkMode"].(string); ok && strings.HasPrefix(mode, "ns:") {
+			host["NetworkMode"] = ""
+		}
+	}
 	// Ports[].IP on a list entry is the host bind address, a netip.Addr in
 	// current Docker clients, so it reads "" like the other typed addresses.
 	if err := redactPortSummaryIPs(payload); err != nil {
@@ -2261,7 +2270,17 @@ func redactNetworkTopology(payload map[string]any) error {
 				return fmt.Errorf("services entry %q has unexpected type %T", name, serviceValue)
 			}
 			redactTypedAddressFields(service, "VIP")
-			if err := redactObjectArrayTypedAddresses(service, "Tasks", "EndpointIP"); err != nil {
+			if err := mapObjectArray(service, "Tasks", func(task map[string]any) error {
+				redactTypedAddressFields(task, "EndpointIP")
+				if value, present := task["Info"]; present && value != nil {
+					info, ok := value.(map[string]any)
+					if !ok {
+						return fmt.Errorf("Info has unexpected type %T", value)
+					}
+					redactTypedAddressFields(info, "Host IP")
+				}
+				return nil
+			}); err != nil {
 				return fmt.Errorf("services entry %q: %w", name, err)
 			}
 		}

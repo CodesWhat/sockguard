@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Redact verbose-network task host-IP metadata and host namespace paths in container network modes when network-topology redaction is enabled.
+
 - Keep registry signature discovery inside the dial guard when proxy environment variables are set, and reject shared, reserved, documentation and translated non-public IPv4 addresses unless the operator explicitly lists the destination.
 
 - Require canonical names for owner-scoped Podman network deletion through either API family and matching config IDs for image-volume references, preventing delayed references from following recreated networks or mutable manifest lists.
