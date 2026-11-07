@@ -174,13 +174,17 @@ access_log_stream_has_route() {
 
 wait_for_access_log_route() {
   local method="$1" decision="$2" path_regex="$3" timeout="${4:-30}"
-  local waited=0
-  while ((waited < timeout)); do
+  local deadline=$((SECONDS + timeout)) remaining
+  while ((SECONDS < deadline)); do
     if sockguard_access_log | access_log_stream_has_route "$method" "$decision" "$path_regex"; then
-      return 0
+      if ((SECONDS < deadline)); then
+        return 0
+      fi
+      return 1
     fi
-    sleep 2
-    waited=$((waited + 2))
+    remaining=$((deadline - SECONDS))
+    ((remaining <= 0)) && break
+    sleep $((remaining < 2 ? remaining : 2))
   done
   return 1
 }

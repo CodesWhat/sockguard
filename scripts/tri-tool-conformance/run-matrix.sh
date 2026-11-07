@@ -905,7 +905,7 @@ assert_standard_wrong_secret_probe() {
   fi
 
   local ok=1
-  wait_for_container_log_line "$bad_container" '401' 30 && ok=0
+  wait_for_container_log_line "$bad_container" '(status([[:space:]]+code)?[[:space:]:=]+401([^0-9]|$)|unauthori[sz]ed)' 30 && ok=0
   docker rm -f "$bad_container" >/dev/null 2>&1 || true
   rm -f "$wrong_secret_file"
 
@@ -1423,11 +1423,15 @@ assert_inventory_inspect() {
   # for genuinely slow first polls; the scan is cumulative so a healthy
   # row still passes on its first iteration.
   local name="inventory-inspect"
-  local list_ok=1 inspect_ok=1
+  local list_ok=1 inspect_ok=1 remaining
+  local deadline=$((SECONDS + 120))
   wait_for_access_log_route GET allow '^/containers/json$' 120 && list_ok=0
-  wait_for_access_log_route GET allow '^/containers/[^/]+/json$' 120 && inspect_ok=0
+  remaining=$((deadline - SECONDS))
+  if ((remaining > 0)); then
+    wait_for_access_log_route GET allow '^/containers/[^/]+/json$' "$remaining" && inspect_ok=0
+  fi
 
-  if [ "$list_ok" -eq 0 ] && [ "$inspect_ok" -eq 0 ]; then
+  if ((SECONDS < deadline)) && [ "$list_ok" -eq 0 ] && [ "$inspect_ok" -eq 0 ]; then
     record_result "$name" PASS "Portwing's own list+inspect polling reached sockguard (allowed GET /containers/json and GET /containers/*/json observed)"
   else
     record_result "$name" FAIL "did not observe both an allowed GET /containers/json and GET /containers/*/json in sockguard's access log within 120s"
