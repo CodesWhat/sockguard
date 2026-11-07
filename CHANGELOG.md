@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Fail closed on OCI nodes carrying both index and manifest config shapes, and keep `.json` entries under OCI blob paths subject to unreferenced-blob validation.
+
 - Redact verbose-network task host-IP metadata and host namespace paths in container network modes when network-topology redaction is enabled.
 
 - Keep registry signature discovery inside the dial guard when proxy environment variables are set, and reject shared, reserved, documentation and translated non-public IPv4 addresses unless the operator explicitly lists the destination.

@@ -533,7 +533,7 @@ func (io_ ioDeps) extractImageLoadArchiveFromTar(tr *tar.Reader, preferOCI bool)
 // retainImageLoadConfigFile keeps the body of: a .json entry that is not a
 // control file.
 func isImageLoadConfigFilePath(name string) bool {
-	return strings.HasSuffix(name, ".json") && name != "manifest.json" && name != "index.json"
+	return strings.HasSuffix(name, ".json") && name != "manifest.json" && name != "index.json" && !isImageLoadOCIBlobPath(name)
 }
 
 // discardImageLoadConfigFile marks a config path as not retained, which is
@@ -798,6 +798,9 @@ func (c *imageLoadConfigCollector) walk(descriptor imageLoadOCIIndexDescriptor, 
 		return
 	}
 	switch {
+	case node.Manifests != nil && node.Config != nil:
+		c.unreadable = true
+		return
 	case node.Manifests != nil:
 		for _, child := range node.Manifests {
 			c.walk(child, depth+1)

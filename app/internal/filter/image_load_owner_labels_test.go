@@ -407,3 +407,37 @@ func TestImageLoadOCIGraphBoundaries(t *testing.T) {
 		})
 	}
 }
+
+func TestImageLoadOCIConfigShapeAndBlobRetention(t *testing.T) {
+	for _, extraBlob := range []bool{false, true} {
+		t.Run(fmt.Sprintf("extra_json_blob_%v", extraBlob), func(t *testing.T) {
+			config := ownerLabelConfig(map[string]string{ownerLabelTestKey: "victim"})
+			configDigest, configPath := ownerLabelDigest(config)
+			extraShape := `,"manifests":[]`
+			if extraBlob {
+				extraShape = ""
+			}
+			manifest := fmt.Sprintf(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":%q,"size":%d},"layers":[]%s}`, configDigest, len(config), extraShape)
+			manifestDigest, manifestPath := ownerLabelDigest(manifest)
+			index := fmt.Sprintf(`{"schemaVersion":2,"manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":%q,"size":%d,"annotations":{"org.opencontainers.image.ref.name":"mine/app:v1"}}]}`, manifestDigest, len(manifest))
+			entries := []ownerLabelTarEntry{{"oci-layout", `{"imageLayoutVersion":"1.0.0"}`}, {"index.json", index}, {manifestPath, manifest}, {configPath, config}}
+			if extraBlob {
+				entries = append(entries, ownerLabelTarEntry{"blobs/sha256/extra.json", `{}`})
+			}
+			meta := &logging.RequestMeta{}
+			req := httptest.NewRequest(http.MethodPost, "/images/load", bytes.NewReader(ownerLabelTar(t, entries...)))
+			req = req.WithContext(logging.WithMeta(req.Context(), meta))
+			policy := newImageLoadPolicy(ImageLoadOptions{AllowAllRegistries: true, AllowUntagged: true, OwnerLabelKey: ownerLabelTestKey})
+			reason, err := policy.inspect(nil, req, "/images/load")
+			if err != nil || reason != "" {
+				return
+			}
+			if extraBlob {
+				t.Fatal("unreferenced OCI blob with .json suffix was accepted")
+			}
+			if meta.ImageLoad == nil || (!meta.ImageLoad.ConfigsUnreadable && !slices.Contains(meta.ImageLoad.OwnerLabels, "victim")) {
+				t.Fatalf("foreign config skipped: %+v", meta.ImageLoad)
+			}
+		})
+	}
+}
