@@ -35,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Correct the Watchtower preset note to distinguish clearing environment values from redacting sensitive bind sources.
+
 - Check workflow-name block scalars with trailing whitespace and CRLF headers.
 
 - Probe the fresh shared socket from a UID/GID 65532 consumer using a digest-pinned image. Preserve the fuzz matrix's parallelism cap without stale cross-repository job totals.
