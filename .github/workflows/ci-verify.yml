@@ -47,7 +47,7 @@ jobs:
     steps:
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
           disable-sudo: true
@@ -189,7 +189,7 @@ jobs:
     steps:
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
@@ -257,7 +257,7 @@ jobs:
         goarch: [amd64, arm64]
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
           disable-sudo: true
@@ -294,7 +294,7 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
           disable-sudo: true
@@ -356,7 +356,7 @@ jobs:
     steps:
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
           disable-sudo: true
@@ -387,7 +387,7 @@ jobs:
       # and drydock (the org's own harden-runner precedent) keeps its CodeQL
       # job on audit for the same reason. Revisit in stage 2.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
@@ -397,7 +397,7 @@ jobs:
           persist-credentials: false
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee  # v4.39.0
+        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370  # v4.39.1
         with:
           languages: actions, go, javascript-typescript
           queries: security-and-quality
@@ -413,7 +413,7 @@ jobs:
         working-directory: app
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee  # v4.39.0
+        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370  # v4.39.1
 
   dependency-review:
     name: "Dependency Review"
@@ -430,7 +430,7 @@ jobs:
     steps:
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
           disable-sudo: true
@@ -468,7 +468,7 @@ jobs:
     steps:
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
           disable-sudo: true
@@ -504,7 +504,7 @@ jobs:
       # GitHub-release binary fetch, none of which resolve to a single
       # documented endpoint set. Revisit in stage 2.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
@@ -525,7 +525,7 @@ jobs:
     steps:
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
           disable-sudo: true
@@ -610,7 +610,7 @@ jobs:
       # Chainguard's CDN endpoints — not a fixed set. Same reasoning as
       # security-grype.yml's grype-image job. Revisit in stage 2.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
@@ -653,7 +653,7 @@ jobs:
       - name: Upload Grype SARIF to code scanning
         # Code scanning uploads require GHAS, not available on free private repos.
         if: always() && github.event.repository.visibility == 'public'
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee  # v4.39.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370  # v4.39.1
         with:
           sarif_file: ${{ steps.grype.outputs.sarif }}
           category: grype-image
