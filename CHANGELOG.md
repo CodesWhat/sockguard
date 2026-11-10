@@ -33,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Check workflow-name block scalars with trailing whitespace and CRLF headers.
+
 - Probe the fresh shared socket from a UID/GID 65532 consumer using a digest-pinned image. Preserve the fuzz matrix's parallelism cap without stale cross-repository job totals.
 
 - Cover service host-network refusal and its explicit opt-in for both network locations on create and update requests.

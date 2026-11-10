@@ -227,7 +227,7 @@ function workflowNameEmoji(source, file = "fixture.yml") {
     ) {
       offenders.push(`${file}:${i + 1} ${line.trim()}`);
     }
-    if (/^\s*(?:name|run-name):\s*[>|](?:[1-9][+-]?|[+-][1-9]?)?(?:\s+#.*)?$/u.test(line))
+    if (/^\s*(?:name|run-name):\s*[>|](?:[1-9][+-]?|[+-][1-9]?)?(?:\s+#.*)?\s*$/u.test(line))
       blockIndent = indent;
   });
   return offenders;
@@ -252,6 +252,17 @@ it("checks indentation indicators in either block scalar header order", () => {
       assert.deepEqual(
         workflowNameEmoji(`${key}: ${scalar}\n  Build\n  🚀\njobs:\n  test:\n    run: echo 🚀\n`),
         ["fixture.yml:3 🚀"],
+      );
+    }
+  }
+});
+
+it("checks name block headers with trailing whitespace and CRLF", () => {
+  for (const key of ["name", "run-name"]) {
+    for (const header of ["> ", "|2-\t", ">-2\r", "|+2  # folded name\r"]) {
+      assert.deepEqual(
+        workflowNameEmoji(`${key}: ${header}\n  🚀\njobs:\n  test:\n    run: echo 🚀\n`),
+        ["fixture.yml:2 🚀"],
       );
     }
   }
