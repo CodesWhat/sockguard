@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Pin Grype to v0.121.0 in all scanner calls so its release installer fails on archive checksum mismatches instead of continuing with the action's older default.
+
+- Recognize space, tab and newline separators after counted build-argument history prefixes.
+
+- Redact complete build-argument-prefixed image history entries when environment redaction is enabled, preventing shell-looking argument values from exposing secrets through a guessed command boundary. Ordinary RUN history remains visible.
+
+- Disable both sudo and container access in six local scanner/check jobs that need neither. Document and test the pinned shared offline scanner's existing read-only runner-access exception.
+
+- Refuse byte-identical repeated JSON control keys before ownership callbacks in every rollout mode, using the original bounded body instead of the collapsed map. Preserve decoder-divergent key diagnostics and their rollout behavior.
+
+- Compare all published chart file paths and contents with the locally built package before signing an adopted version. Require the expected package in both release and rehearsal verification.
+
 - Fail closed on OCI nodes carrying both index and manifest config shapes, and keep `.json` entries under OCI blob paths subject to unreferenced-blob validation.
 
 - Redact verbose-network task host-IP metadata and host namespace paths in container network modes when network-topology redaction is enabled.
@@ -21,6 +33,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Check workflow-name block scalars with trailing whitespace and CRLF headers.
+
+- Probe the fresh shared socket from a UID/GID 65532 consumer using a digest-pinned image. Preserve the fuzz matrix's parallelism cap without stale cross-repository job totals.
+
+- Cover service host-network refusal and its explicit opt-in for both network locations on create and update requests.
+
+- Correct preset redaction comments, image-load ownership wording, tiny-cap priority ordering, refusal-code guidance and Podman secret-list visibility scope. List concrete native image-trust environment variables, preserve curl failures in the admin validation example, and document the harness sudo prerequisite.
+
+- Run the chart release CLI gate through symlinked or space-containing paths instead of silently skipping validation.
+
+- Correct the raw-stream response deadline, first TLS-removal candidate, current-stable tag source, numeric-UID security scope, allowed quoted heredocs and Podman empty-option tmpfs documentation. Warn that the unchanged published rc.6 predates the v2.4.5 and v2.4.6 security fixes.
+
+- Share one elapsed-time deadline across inventory list/inspect checks and cap access-log retry sleeps at the remaining window.
+
+- Require an authentication-error log message for the wrong-secret probe instead of accepting `401` in unrelated timestamps, ports or byte counts.
+
+- Record dependent lifecycle and exec assertions as skipped after sentinel creation fails, preserving the original failure without duplicating it.
+
+- Reuse the prepared digest-pinned BusyBox image for the conformance socket ownership probe, distinguishing probe setup errors from incorrect ownership.
+
+- Enforce the no-emoji commit subject rule through the same validator locally and in CI, with executable regressions for fork promotion exemptions.
+
+- Detect conflict markers in CR-only text, compare every fuzzer in the `ultra` alias, and drain negative-auth probe logs before returning a match, and cap store polling requests at the remaining deadline.
+
 - Cover service signature discovery with an unlisted private registry even when all registry scopes are allowed, verifying that the address guard prevents any request.
 
 - Limit replay-client redaction warnings to assigned profiles, explain that disabling redaction affects every readable client scope, and warn before a validated configuration reload swaps handlers.
@@ -32,6 +68,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reject non-JSON whitespace around native Podman network inspect responses instead of stripping it before label decoding, and retain the original minimized fuzz input as a corpus regression.
 
 ### Changed
+
+- Refresh the docs compiler's indirect magic-string dependency to 1.4.5 after the 14-day release-age window, satisfying the unchanged lockfile-dedupe gate.
 
 - Ensure bridge, resolver and limiter test fixtures release their resources when assertions fail, and make concurrency admission regressions fail promptly.
 

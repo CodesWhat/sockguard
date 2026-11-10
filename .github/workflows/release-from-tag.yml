@@ -1417,6 +1417,7 @@ jobs:
 
       - name: Check the published chart contents
         env:
+          CHART_PACKAGE: ${{ steps.package.outputs.path }}
           CHART_VERSION: ${{ steps.digest.outputs.version }}
           CHART_DIGEST: ${{ steps.push.outputs.digest }}
           RELEASE_TAG: ${{ github.ref_name }}
@@ -1876,6 +1877,7 @@ jobs:
         uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439  # v7.4.2
         id: grype
         with:
+          grype-version: v0.121.0
           image: ${{ steps.platform_digest.outputs.ref }}
           severity-cutoff: high
           fail-build: true

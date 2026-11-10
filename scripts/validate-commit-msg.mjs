@@ -46,7 +46,10 @@ if (isMerge || isRevert || isAutosquash) {
 const typePattern = `(?:${ALLOWED_TYPES.join("|")})`;
 const pattern = new RegExp(`^${typePattern}(\\([\\w-]+\\))?!?: .+$`);
 
-if (!pattern.test(msg)) {
+if (
+  !pattern.test(msg) ||
+  /(?:\p{Extended_Pictographic}|\p{Regional_Indicator}|\u20e3)/u.test(msg)
+) {
   console.error("");
   console.error("AI_ACTION_REQUIRED: Commit message does not follow convention.");
   console.error("");

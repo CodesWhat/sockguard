@@ -32,7 +32,7 @@ func TestImageHistoryRedactsEnvInstructions(t *testing.T) {
 				t.Fatalf("decode: %v: %s", err, body)
 			}
 			want := []string{"ENV <redacted>", "ENV <redacted>", "ARG <redacted>", "RUN apt-get update # buildkit", "/bin/sh -c #(nop)  ENVIRONMENT=x",
-				"|2 API_KEY=<redacted> DB_PASS=<redacted> /bin/sh -c make build", "RUN |1 TOKEN_X=<redacted> /bin/sh -c make # buildkit"}
+				"<redacted>", "<redacted>"}
 			if len(got) != len(want) {
 				t.Fatalf("len = %d, want %d", len(got), len(want))
 			}
@@ -79,12 +79,15 @@ func TestRedactHistoryCreatedByBuildArgShapes(t *testing.T) {
 		"ENV":                               "ENV",
 		"ARG":                               "ARG",
 		"|":                                 "|",
-		"|1":                                "|1",
-		"|12":                               "|12",
-		"|9 API_KEY=secret /bin/sh -c echo": "|9 API_KEY=<redacted> /bin/sh -c echo",
-		"|1 K=v a b /bin/sh -c echo":        "|1 K=<redacted> /bin/sh -c echo",
-		"|1 K=v /usr/bin/zsh -c echo":       "|1 K=<redacted>",
-		"|0 /bin/sh -c echo":                "|0 <redacted> /bin/sh -c echo",
+		"|1":                                "<redacted>",
+		"|1\tSECRET=x /bin/sh -c cmd":       "<redacted>",
+		"|1\nSECRET=x /bin/sh -c cmd":       "<redacted>",
+		"RUN |1\tSECRET=x":                  "<redacted>",
+		"|12":                               "<redacted>",
+		"|9 API_KEY=secret /bin/sh -c echo": "<redacted>",
+		"|1 K=v a b /bin/sh -c echo":        "<redacted>",
+		"|1 K=v /usr/bin/zsh -c echo":       "<redacted>",
+		"|0 /bin/sh -c echo":                "<redacted>",
 		"| not a prefix":                    "| not a prefix",
 		"RUN echo |1 K=v":                   "RUN echo |1 K=v",
 		"COPY . /app # buildkit":            "COPY . /app # buildkit",
@@ -108,8 +111,42 @@ func TestLibpodImageHistoryRedactsCamelCaseKey(t *testing.T) {
 		if err := json.Unmarshal(raw, &got); err != nil {
 			t.Fatal(err)
 		}
-		if got[0][key] != "ENV <redacted>" || got[1][key] != "|1 K=<redacted> /bin/sh -c x" {
+		if got[0][key] != "ENV <redacted>" || got[1][key] != "<redacted>" {
 			t.Fatalf("key %s: body = %s", key, raw)
+		}
+	}
+}
+
+func TestImageHistoryHidesAmbiguousArgumentAndCommandBoundaries(t *testing.T) {
+	t.Parallel()
+	for _, createdBy := range []string{
+		"|1 SECRET=before /bin/sh -c secret-tail /bin/sh -c real-command",
+		"RUN |1 SECRET=before /bin/sh -c secret-tail /bin/sh -c real-command # buildkit",
+		"|2 FIRST=a value with spaces SECOND=tail /bin/sh -c true",
+		"|1 SECRET=single' double\" quotes /bin/sh -c private tail",
+		"|1 SECRET=first\nsecond /bin/sh -c command",
+	} {
+		for _, path := range []string{"/images/app/history", "/libpod/images/app/history"} {
+			t.Run(path+"/"+createdBy, func(t *testing.T) {
+				t.Parallel()
+				original := []map[string]any{{"CreatedBy": createdBy, "Id": "image", "Size": 7}}
+				raw, err := json.Marshal(original)
+				if err != nil {
+					t.Fatal(err)
+				}
+				resp := newResponseForTest(t, http.MethodGet, path, string(raw))
+				if err := New(Options{RedactContainerEnv: true}).ModifyResponse(resp); err != nil {
+					t.Fatal(err)
+				}
+				var entries []map[string]any
+				if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
+					t.Fatal(err)
+				}
+				resp.Body.Close()
+				if entries[0]["CreatedBy"] != "<redacted>" || entries[0]["Id"] != "image" || entries[0]["Size"] != float64(7) {
+					t.Fatalf("history entry = %#v", entries[0])
+				}
+			})
 		}
 	}
 }

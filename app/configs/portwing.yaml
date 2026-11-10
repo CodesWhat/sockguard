@@ -20,9 +20,10 @@
 # Redaction posture — redact_mount_paths and redact_container_env are DISABLED
 # here because in the production tri-tool topology (sockguard → Portwing → drydock)
 # Portwing forwards container inspect data to drydock whose update detection reads
-# HostConfig.Binds and Config.Env to recreate containers. If sockguard redacts
-# those fields to "<redacted>", drydock faithfully forwards the placeholder into
-# POST /containers/create and dockerd rejects with 400. Operators running Portwing
+# HostConfig.Binds and Config.Env to recreate containers. Environment redaction
+# clears Config.Env, so recreation loses the original environment. Mount-path
+# redaction replaces sensitive host-path bind sources with "<redacted>"; replaying those binds into
+# POST /containers/create makes dockerd reject the create with 400. Operators running Portwing
 # in standalone mode (not paired with drydock) can safely flip both to true:
 #
 #   response:

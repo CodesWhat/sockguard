@@ -16,7 +16,7 @@
 #   CHART_VERSION      chart version (the tag without its leading v)
 #   CHART_NAME         chart name (default sockguard)
 #   CHART_PLAIN_HTTP   1 for an http registry (the rehearsal's service container)
-#   CHART_PACKAGE      push: path of the packaged .tgz
+#   CHART_PACKAGE      push/verify-contents: expected locally packaged .tgz
 #   CHART_DIGEST       verify-contents: digest `push` reported
 #   RELEASE_TAG        verify-contents: the release tag, e.g. v3.0.0
 #   IMAGE_DIGEST       verify-contents: the image digest the chart must pin
@@ -134,6 +134,7 @@ cmd_push() {
 }
 
 cmd_verify_contents() {
+  : "${CHART_PACKAGE:?CHART_PACKAGE is required}"
   : "${CHART_DIGEST:?CHART_DIGEST is required}"
   : "${RELEASE_TAG:?RELEASE_TAG is required}"
   : "${IMAGE_DIGEST:?IMAGE_DIGEST is required}"
@@ -152,6 +153,7 @@ cmd_verify_contents() {
     return 1
   fi
 
+  python3 "${SCRIPT_DIR}/../compare-chart-packages.py" "${CHART_PACKAGE}" "${package}"
   helm show chart "${package}" >"${pull_dir}/Chart.yaml"
   helm show values "${package}" >"${pull_dir}/values.yaml"
   node "${ASSERT_SCRIPT}" \

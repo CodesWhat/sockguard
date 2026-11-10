@@ -1286,22 +1286,15 @@ land):
   (`GET /libpod/**` reaches it) needs
   `insecure_allow_read_exfiltration: true` to pass startup validation, because
   the path is in the read-exfiltration catalog.
-- **Neither spelling of the secret list has a scoped form under either
-  isolation layer.** `GET /libpod/secrets/json` and, on a Podman upstream, the
-  Docker-compat `GET /secrets` are one handler. Podman's secret filter grammar
-  accepts only `name` and `id` and answers `500` for any other key, so the
-  label filter that scopes every other list cannot be pushed upstream, and both
-  layers refuse the path. The
-  gap is narrower than the stats one: the report items carry `Spec.Labels`, so
-  a response-side filter over that field could scope this list the way
-  `GET /system/df` is scoped, and building it is what would lift the refusal.
-  Building it for one spelling alone is what is ruled out, not the filter
-  itself: it would leave one handler answering `403` on its native path and a
-  filtered list on its compat path off the same policy.
-  Until then, `GET /libpod/secrets/{name}/json` is the scoped read, since it
-  names one secret and both layers resolve it normally, and a deployment that wants
-  the whole list has to run without owner isolation and without a visibility
-  policy. The rule left `podman-readonly.yaml` in v2.1 for that reason.
+- **Secret-list scoping depends on the route and selector.** The native
+  `GET /libpod/secrets/json` is refused under owner isolation or visibility.
+  On a Podman upstream, Docker-compatible `GET /secrets` is refused under
+  owner isolation or visibility with label selectors. A patterns-only
+  visibility policy forwards the compatibility path unchanged. Podman's
+  shared handler accepts only `name` and `id` filters, so a label selector
+  cannot safely scope that list. `GET /libpod/secrets/{name}/json` names one
+  secret and both isolation layers resolve it normally. See the route-specific
+  coverage above before enabling a whole-list rule.
 - Tecnativa-style env-var compatibility for the libpod surface — the
   existing `CONTAINERS=1`/`POST=0`-style compat env vars only ever generate
   rules against literal Docker-compat paths (`/containers/**`, and similar),
@@ -1440,7 +1433,7 @@ land):
   or carries no host-side privilege — but "the libpod network write surface
   is inspected" means every endpoint is routed at an inspector, not that
   every field in it is gated.
-- **v3.1:** A tmpfs is executable by default on Podman, so the option only worked as an `exec`/`suid`/`dev` deny on dockerd. With `allow_tmpfs_privileged_options` off, Sockguard now refuses a Podman tmpfs that doesn't carry the bare option `noexec`; a `/dev` tmpfs, which gets no default options, needs `noexec,nosuid,nodev`. Podman adds `nosuid,nodev` itself elsewhere. That covers `HostConfig.Tmpfs` (judged on the options Podman reads: the key segment after a colon, otherwise the value up to its first colon) and the native `mounts[]` array, so `podman run --tmpfs /run` is refused until it becomes `--tmpfs /run:noexec`, and `exec=0` or `noexec=1` don't count. Podman's compat handler forwards only the size and mode of a `HostConfig.Mounts` tmpfs entry and drops its `TmpfsOptions.Options`, so that entry is refused outright; use `HostConfig.Tmpfs`. A native `image_volume_mode: "tmpfs"` is refused as well. Tokens such as `suid=1` and `dev=true` read as enabling. Set `allow_tmpfs_privileged_options: true` (`request_body.libpod_container_create.allow_tmpfs_privileged_options` for the native route) to opt out. A Docker upstream is unchanged, because dockerd already mounts a tmpfs `noexec,nosuid,nodev`.
+- **v3.1:** Sockguard requires explicit tmpfs protections on Podman. On Podman v5.5.2, a plain empty-option `HostConfig.Tmpfs` outside `/dev` remains executable: the engine adds `nosuid,nodev`, but not `noexec`. With `allow_tmpfs_privileged_options` off, Sockguard now refuses a Podman tmpfs that doesn't carry the bare option `noexec`; a `/dev` tmpfs, which gets no default options, needs `noexec,nosuid,nodev`. Podman adds `nosuid,nodev` itself elsewhere. That covers `HostConfig.Tmpfs` (judged on the options Podman reads: the key segment after a colon, otherwise the value up to its first colon) and the native `mounts[]` array, so `podman run --tmpfs /run` is refused until it becomes `--tmpfs /run:noexec`, and `exec=0` or `noexec=1` don't count. Podman's compat handler forwards only the size and mode of a `HostConfig.Mounts` tmpfs entry and drops its `TmpfsOptions.Options`, so that entry is refused outright; use `HostConfig.Tmpfs`. A native `image_volume_mode: "tmpfs"` is refused as well. Tokens such as `suid=1` and `dev=true` read as enabling. Set `allow_tmpfs_privileged_options: true` (`request_body.libpod_container_create.allow_tmpfs_privileged_options` for the native route) to opt out, permitting executable tmpfs mounts. A Docker upstream is unchanged, because dockerd already mounts a tmpfs `noexec,nosuid,nodev`.
 
 ### Native operations without an isolation model
 

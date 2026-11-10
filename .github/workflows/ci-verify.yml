@@ -148,6 +148,9 @@ jobs:
       go-cache-dependency-path: go.sum
       lint-check-name: Go Lint
       test-check-name: Go Test
+      # The pinned shared scanner exposes no sudo/container-disable input.
+      # Its read-only/offline exception is source-bound in the security docs
+      # and scripts/testdata/shared-workflow-security.json.
       run-workflow-security: true
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       workflow-security-egress-policy: audit
@@ -429,7 +432,7 @@ jobs:
         uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: audit
-          disable-sudo: true
+          disable-sudo-and-containers: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -503,7 +506,7 @@ jobs:
         uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: audit
-          disable-sudo: true
+          disable-sudo-and-containers: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -541,7 +544,7 @@ jobs:
         uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: audit
-          disable-sudo: true
+          disable-sudo-and-containers: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -598,7 +601,7 @@ jobs:
         uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: audit
-          disable-sudo: true
+          disable-sudo-and-containers: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -639,24 +642,20 @@ jobs:
             esac
           fi
 
-          types='feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert'
-          pattern="^(${types})(\\(\\w[\\w-]*\\))?!?:\\s.+\$"
-
+          msg_file="$(mktemp)"
+          trap 'rm -f "$msg_file"' EXIT
           failed=0
+          subjects="$(git log --format=%s "origin/${BASE_REF}..HEAD")"
           while IFS= read -r msg; do
-            first_line="$(echo "${msg}" | head -n1)"
-            # Merge, revert, and fixup!/squash! autosquash commits are exempt.
-            if echo "${first_line}" | grep -qP '^(Merge |Revert |fixup! |squash! )'; then
-              continue
-            fi
-            if ! echo "${first_line}" | grep -qP "${pattern}"; then
-              echo "::error::Non-conventional commit: ${first_line}"
+            [ -n "$msg" ] || continue
+            printf '%s\n' "$msg" > "$msg_file"
+            if ! node scripts/validate-commit-msg.mjs "$msg_file"; then
               failed=1
             fi
-          done < <(git log --format=%s "origin/${BASE_REF}..HEAD")
+          done <<< "$subjects"
 
           if [ "${failed}" -eq 1 ]; then
-            echo "::error::Some commits don't follow Conventional Commits format. Expected: <type>(scope): description — no emoji. Allowed types: ${types//|/, }"
+            echo "::error::Some commits don't follow the commit message convention."
             exit 1
           fi
 
@@ -727,6 +726,7 @@ jobs:
         uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439  # v7.4.2
         id: grype
         with:
+          grype-version: v0.121.0
           image: sockguard:ci
           severity-cutoff: high
           fail-build: true
@@ -744,6 +744,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          consumer_image="curlimages/curl:8.12.1@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6"
+          docker pull "${consumer_image}" >/dev/null
 
           runtime_volume="sockguard-ci-runtime-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           runtime_container="sockguard-ci-runtime-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
@@ -778,3 +781,7 @@ jobs:
           test "$(sudo stat -c '%u:%g %a' "${runtime_socket}")" = "65532:65532 600"
           test "$(sudo curl --fail --silent --show-error \
             --unix-socket "${runtime_socket}" http://localhost/_ping)" = "OK"
+          test "$(docker run --rm --user 65532:65532 \
+            --volume "${runtime_volume}:/var/run/sockguard:ro" \
+            "${consumer_image}" --fail --silent --show-error --max-time 10 \
+            --unix-socket /var/run/sockguard/sockguard.sock http://localhost/_ping)" = "OK"
