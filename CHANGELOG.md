@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Refresh age-eligible Docker login and daemon setup actions, CodeQL and Cosign pins for the next release.
+
 - Pin Grype to v0.121.0 in all scanner calls so its release installer fails on archive checksum mismatches instead of continuing with the action's older default.
 
 - Recognize space, tab and newline separators after counted build-argument history prefixes.
