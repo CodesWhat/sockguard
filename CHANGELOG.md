@@ -69,6 +69,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Refresh the docs compiler's indirect magic-string dependency to 1.4.5 after the 14-day release-age window, satisfying the unchanged lockfile-dedupe gate.
+
 - Ensure bridge, resolver and limiter test fixtures release their resources when assertions fail, and make concurrency admission regressions fail promptly.
 
 - Close the v3.1 mutation target with the November 6 measurement: 97.9821% test efficacy across all 43 packages at the source tree merged as `7dbc523f`, above the unchanged 97.8% target, with timeouts separate from kills.
