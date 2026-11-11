@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Build with Go 1.27.4, including the digest-pinned container builder, for GO-2026-6859 / CVE-2026-97054, an HTTP/1 header race in the standard library.
+
 - Refresh age-eligible Docker login and daemon setup actions, CodeQL and Cosign pins for the next release.
 
 - Pin Grype to v0.121.0 in all scanner calls so its release installer fails on archive checksum mismatches instead of continuing with the action's older default.
