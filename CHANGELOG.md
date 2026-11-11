@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Build with Go 1.27.4, including the digest-pinned container builder, for GO-2026-6859 / CVE-2026-97054, an HTTP/1 header race in the standard library.
+
 - Carry the compression dependency update to 1.20.2 for GO-2026-6865 / CVE-2026-116591 into v3.
 
 ## [3.0.0-rc.6] - 2026-11-03
