@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Refuse owner-scoped Podman builds through Docker-compatible, native and daemon-host routes in every rollout mode. Base-image archive imports can replace another owner's image names even with `pullpolicy=never`. Docker builds and Podman builds without owner isolation retain their existing checks.
+
 - Build with Go 1.27.4, including the digest-pinned container builder, for GO-2026-6859 / CVE-2026-97054, an HTTP/1 header race in the standard library.
 
 - Refresh age-eligible Docker login and daemon setup actions, CodeQL and Cosign pins for the next release.

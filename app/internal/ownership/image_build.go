@@ -20,6 +20,7 @@ const (
 	// the image batch routes already use (imageselector's reference limit).
 	buildMaxTags = 256
 
+	buildDenyPodman          = "owner policy denied Podman build: base-image imports can replace image names outside this owner, including with pullpolicy=never"
 	buildDenyUnreadableQuery = "owner policy denied build with a query that cannot be parsed cleanly"
 	buildDenyAmbiguousTag    = "owner policy denied build with a t parameter spelled in another case: the engines disagree on whether it names the image"
 	buildDenyTooManyTags     = "owner policy denied build with more t parameters than it can authorize"

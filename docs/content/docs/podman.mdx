@@ -633,6 +633,16 @@ pod top and every other exfiltration-gated route denied.
 
 ## Ownership and Visibility Coverage
 
+With `ownership.owner` configured, Podman builds are refused with `403` on
+`POST /build`, `POST /libpod/build` and `POST /libpod/local/build`, including
+version-prefixed paths and warn/audit rollouts. Buildah can import a base image
+from an archive without passing through its registry pull-policy check, so
+`pullpolicy=never` does not prevent a build from replacing another owner's
+image name. Neither the blind-write acknowledgment nor an owned output tag
+makes these imports safe. Docker builds retain their destination checks.
+Without an owner policy, Podman builds retain the rules and body controls
+described on this page.
+
 Owner-label isolation and read-side visibility cover the libpod surface the
 same way they cover Docker-compat:
 
@@ -781,19 +791,16 @@ same way they cover Docker-compat:
   authorized on its source image alone: Podman removes a name only from the
   image the path resolves, so `repo` and `tag` cannot reach another image.
 - The other native routes that name an image are checked on that name.
-  `POST /libpod/commit` (`repo` and `tag`), `POST /libpod/build` (every `t`),
+  `POST /libpod/commit` (`repo` and `tag`),
   `POST /libpod/images/import` (`reference`), `POST /libpod/images/pull`
   (`reference`) and `POST /libpod/images/load` (the names in the archive) each
   write a reference Podman moves off whatever image held it, so owner
-  isolation authorizes it like a retag target. Build, import and load tag
+  isolation authorizes it like a retag target. Import and load tag
   without a lookup, so a name with no registry is checked under `localhost/`.
   A commit and a pull resolve the name against local images first, so they are
-  checked as written and under `localhost/`. A build tag that starts with an
-  image transport (`containers-storage:app`, `oci-archive:out`,
-  `dir:5000/out`) is refused, because Podman's builder writes such an output
-  to that transport instead of to the name it spells, and so is a build with a
-  `manifest` parameter. A pull with `allTags`, or of a bare name with no tag,
-  is refused. See [Owner Label Isolation](/security#layer-6-owner-label-isolation).
+  checked as written and under `localhost/`. A pull with `allTags`, or of a
+  bare name with no tag, is refused. See
+  [Owner Label Isolation](/security#layer-6-owner-label-isolation).
 - Query-selected native image batches are checked too. Sockguard decodes every
   repeated `references` value on `GET /libpod/images/export` and every repeated
   `images` value on `DELETE /libpod/images/remove`, then resolves all of them
@@ -1196,6 +1203,10 @@ back to your own config if you run single-tenant with neither isolation layer
 on.
 
 ## Known Limitations
+
+- Owner-scoped Podman builds are refused until base-image imports can be
+  authorized from the build context. This includes native, Docker-compatible
+  and daemon-host builds, even with `pullpolicy=never`.
 
 **Deferred past this release** (see the [roadmap](/roadmap) for where these
 land):

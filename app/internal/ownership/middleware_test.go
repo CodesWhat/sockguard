@@ -3041,7 +3041,7 @@ func TestMiddlewareRefusesOwnerStampStrippingBuild(t *testing.T) {
 		handler := middlewareWithDeps(testLogger(), opts, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 			forwarded = true
 		}))
-		req := httptest.NewRequest(http.MethodPost, "/libpod/build?unsetlabel=com.sockguard.owner", nil)
+		req := httptest.NewRequest(http.MethodPost, "/build?unsetlabel=com.sockguard.owner", nil)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusBadRequest {
