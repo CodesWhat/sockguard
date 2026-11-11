@@ -163,11 +163,9 @@ func TestServeChainBuildStampsTheImageItNames(t *testing.T) {
 	}
 }
 
-// TestServeChainBuildChecksTheStoredNameOnPodman replays the build on a
-// Podman-shaped store, where a tag that names no registry is stored under
-// localhost/ on the native route, and on the compat one once
-// compat_api_enforce_docker_hub is off.
-func TestServeChainBuildChecksTheStoredNameOnPodman(t *testing.T) {
+// TestServeChainRefusesOwnerScopedPodmanBuilds checks the production chain
+// against a Podman-shaped store, including requests whose output names are safe.
+func TestServeChainRefusesOwnerScopedPodmanBuilds(t *testing.T) {
 	tests := []struct {
 		name string
 		step imageNameChainStep
@@ -181,7 +179,9 @@ func TestServeChainBuildChecksTheStoredNameOnPodman(t *testing.T) {
 			step: imageBuildChainStep("", "/v5.0.0/libpod/build?t=containers-storage%3Anginx%3Aprod", "localhost/nginx:prod", imageTagChainVictimID, http.StatusForbidden),
 		},
 		{name: "native build with a manifest list name", step: imageBuildChainStep("", "/v5.0.0/libpod/build?t=mine%2Fnew&manifest=nginx%3Aprod", "localhost/nginx:prod", imageTagChainVictimID, http.StatusForbidden)},
-		{name: "native build onto a name nothing holds", step: imageBuildChainStep("", "/v5.0.0/libpod/build?t=mine%2Fnew%3Av2&nsoptions=%5B%7B%22Name%22%3A%22network%22%7D%5D", "localhost/mine/new:v2", "", http.StatusOK)},
+		{name: "native build onto a name nothing holds", step: imageBuildChainStep("", "/v5.0.0/libpod/build?t=mine%2Fnew%3Av2&nsoptions=%5B%7B%22Name%22%3A%22network%22%7D%5D", "", "", http.StatusForbidden)},
+		{name: "compat build with pullpolicy never", step: imageBuildChainStep("", "/build?pullpolicy=never", "", "", http.StatusForbidden)},
+		{name: "daemon host build with blind writes acknowledged", step: imageBuildChainStep("", "/libpod/local/build?pullpolicy=never", "", "", http.StatusForbidden)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -193,10 +193,21 @@ func TestServeChainBuildChecksTheStoredNameOnPodman(t *testing.T) {
 			}
 			daemon.shortNameAliases = map[string]string{"nginx": "docker.io/library/nginx"}
 			daemon.enforceDockerHubOff = true
-			addr := newImageNameChain(t, daemon, nil)
+			addr := newImageNameChain(t, daemon, func(cfg *config.Config) {
+				cfg.InsecureAllowBodyBlindWrites = true
+				cfg.Rules = append([]config.RuleConfig{{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/local/build"}, Action: "allow"}}, cfg.Rules...)
+			})
 			tt.step.name = tt.name
 
 			runImageNameChainStep(t, addr, daemon, tt.step)
+			for _, path := range []string{"/build", "/libpod/build", "/libpod/local/build"} {
+				if daemon.sawRequest(http.MethodPost, path) {
+					t.Errorf("refused build reached daemon at %s", path)
+				}
+			}
+			if got := daemon.nameTarget("localhost/mine/new:v2"); got != "" {
+				t.Errorf("refused build created an image name: %q", got)
+			}
 		})
 	}
 }
