@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Normalize the docs compiler's age-eligible magic-string dependency to 1.4.5 so the release line passes the existing lockfile-deduplication gate.
+
 - Align candidate migration guidance and stable install examples with published v2.4.6 channels.
 
 ### Security
