@@ -73,6 +73,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Include the remaining chart and CodeQL runner pins in the Harden Runner v2.22.3 refresh.
+
 - Refresh direct Harden Runner action pins to age-eligible v2.22.3, retaining the existing runner-access and egress policies.
 
 - Refresh the docs compiler's indirect magic-string dependency to 1.4.5 after the 14-day release-age window, satisfying the unchanged lockfile-dedupe gate.
