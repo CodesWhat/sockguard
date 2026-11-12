@@ -38,12 +38,16 @@ v3.0.0 promotes v3.0.0-rc.6 and includes the published v2.4.5 signed root UID fi
 
 ### Security
 
+- Build with Go 1.27.4, including the digest-pinned container builder, for GO-2026-6859 / CVE-2026-97054, an HTTP/1 header race in the standard library.
+
 - Carries the v2.4.6 compression dependency update to 1.20.2 for GO-2026-6865 / CVE-2026-116591, a panic on malformed zstd frames.
 - Carries the v2.4.0 to v2.4.4 security work: exact image admission, native Podman mount, device and RUN-control checks, protected-label exec refusal, Podman engine identity and unscoped native route refusals, the libpod create bypass closures (`host_device_list`, `resource_limits.devices`, `volumes_from` and the other libpod spellings), the libpod inspect `CreateCommand` and `Secrets` redaction, and the CA bundle and `golang.org/x/net` updates.
 - Gates the libpod `unified`, `env_host` and `pod` create fields as described above.
 - Carries v2.4.3's rejection of keyless `subject_pattern` values that are not a complete regexp on their own, and its fix for completed hijacked sessions accumulating in the listener.
 
 ### Changed
+
+- Normalize the docs compiler's age-eligible magic-string dependency to 1.4.5 so the release line passes the existing lockfile-deduplication gate.
 
 - The development snapshot version is `3.0.0-dev`, so local builds no longer inherit a v2 version from the nearest older tag. Release validation checks the tag against the Go module major, and reproducible builds derive their linker package from the requested source ref.
 - **Website rebuilt.** The getsockguard.com landing page has a refreshed compare matrix, and the Go Reference footer link points at the `/v3` module. Playwright browser checks run the site on Chromium, Firefox and WebKit in CI. The docs layout is wider, with search and the theme toggle in the sidebar.
