@@ -703,6 +703,16 @@ pull by the digest and drop the tag. A `fromImage` that carries a digest next
 to any `tag` parameter, or a tag next to a `tag` parameter naming another tag,
 is refused, because the engines build different references out of the two.
 
+Owner isolation refuses Podman builds on `POST /build`, `POST /libpod/build`
+and `POST /libpod/local/build`, including version-prefixed routes, before
+ownership inspects or rewrites the request. The refusal applies in enforce,
+warn and audit mode, even with the blind-write acknowledgment. Buildah's
+archive-import path does not receive the registry pull policy, so
+`pullpolicy=never` cannot prevent a base-image import from replacing another
+owner's image name. An owned output tag cannot authorize those base-image
+side effects. Docker builds and Podman builds without an owner policy retain
+their existing checks.
+
 These routes refuse the same unreadable names a retag does: a repeated
 parameter or one spelled in another case, a query with a semicolon or a bad
 percent escape, a name carrying a digest on a commit, a build or an import, a
@@ -718,7 +728,7 @@ on `POST /images/load` whose archive carries a top-level `repositories` file
 and no `manifest.json`, whatever `request_body.image_load` allows: Docker's
 classic image store before Docker 29 names the images from that file, and
 Sockguard does not read it. On a Podman upstream a name with no registry is
-checked where Podman stores it: under `localhost/` on the native build, import
+checked where Podman stores it: under `localhost/` on the native import
 and load routes, and under both `{name}` and `localhost/{name}` on the compat
 routes and on a native commit or pull. See
 [Known Limitations](/podman#known-limitations).
@@ -734,11 +744,12 @@ These ways of writing an image name are not covered:
   pulls the base image and re-tags it locally, the same overwrite a pull on
   `POST /images/create` is checked for, and the base image names are in the
   Dockerfile inside the build context, which owner isolation does not read.
-- Podman's daemon-host routes `POST /libpod/local/build` and
-  `POST /libpod/local/images/load` read their input from a path on the daemon
-  host and are left to the `insecure_allow_body_blind_writes` acknowledgment.
-  With that acknowledgment set under `ownership.owner`, the names they assign
-  are not checked against the image holding them.
+- Podman's daemon-host `POST /libpod/local/images/load` reads its input from
+  a path on the daemon host and is left to the
+  `insecure_allow_body_blind_writes` acknowledgment. With that acknowledgment
+  set under `ownership.owner`, the names it assigns are not checked against
+  the image holding them. The daemon-host build route is refused under owner
+  isolation as described above.
 
 `POST /libpod/images/{name}/untag` takes the same two parameters and needs no
 second check. Podman removes a name only from the image the path resolves, so

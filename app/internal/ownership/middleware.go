@@ -338,6 +338,15 @@ func middlewareWithPullCheck(
 				return
 			}
 
+			// Buildah can import a FROM archive outside the registry pull-policy
+			// path, so even pullpolicy=never cannot constrain its naming effects.
+			// Refuse before mutation or inspection, including warn/audit rollouts.
+			if r.Method == http.MethodPost && (normPath == libpodPrefix+"build" || normPath == libpodPrefix+"local/build" || (podmanUpstream && normPath == "/build")) {
+				logging.SetDeniedWithCode(w, r, reasonCodeOwnerPolicyDeniedAccess, buildDenyPodman, nil)
+				_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: buildDenyPodman})
+				return
+			}
+
 			ownerFilterApplies := needsOwnerFilter(r.Method, normPath) || libpodNeedsOwnerFilter(r.Method, normPath)
 			if ownerFilterApplies && refuseInvalidFilterKeys(w, r) {
 				return

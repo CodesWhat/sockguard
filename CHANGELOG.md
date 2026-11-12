@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- Refuse owner-scoped Podman builds through Docker-compatible, native and daemon-host routes in every rollout mode. Base-image archive imports can replace another owner's image names even with `pullpolicy=never`. Docker builds and Podman builds without owner isolation retain their existing checks.
+
+- Build with Go 1.27.4, including the digest-pinned container builder, for GO-2026-6859 / CVE-2026-97054, an HTTP/1 header race in the standard library.
+
 - Refresh age-eligible Docker login and daemon setup actions, CodeQL and Cosign pins for the next release.
 
 - Pin Grype to v0.121.0 in all scanner calls so its release installer fails on archive checksum mismatches instead of continuing with the action's older default.
@@ -34,6 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Update the application and Docker client compatibility modules to `github.com/klauspost/compress` 1.20.2 for GO-2026-6865 / CVE-2026-116591, a panic on malformed zstd frames.
 
 ### Fixed
+
+- Correct the Watchtower preset note to distinguish clearing environment values from redacting sensitive bind sources.
 
 - Check workflow-name block scalars with trailing whitespace and CRLF headers.
 
@@ -70,6 +76,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reject non-JSON whitespace around native Podman network inspect responses instead of stripping it before label decoding, and retain the original minimized fuzz input as a corpus regression.
 
 ### Changed
+
+- Include the remaining chart and CodeQL runner pins in the Harden Runner v2.22.3 refresh.
+
+- Refresh direct Harden Runner action pins to age-eligible v2.22.3, retaining the existing runner-access and egress policies.
 
 - Refresh the docs compiler's indirect magic-string dependency to 1.4.5 after the 14-day release-age window, satisfying the unchanged lockfile-dedupe gate.
 
