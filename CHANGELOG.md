@@ -9,9 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Normalize the docs compiler's age-eligible magic-string dependency to 1.4.5 so the release line passes the existing lockfile-deduplication gate.
+
 - Align candidate migration guidance and stable install examples with published v2.4.6 channels.
 
 ### Security
+
+- Build with Go 1.27.4, including the digest-pinned container builder, for GO-2026-6859 / CVE-2026-97054, an HTTP/1 header race in the standard library.
 
 - Carry the compression dependency update to 1.20.2 for GO-2026-6865 / CVE-2026-116591 into v3.
 
