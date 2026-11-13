@@ -702,7 +702,7 @@ command. It is still subject to the concurrency caps.
   `burst >= tokens_per_second`, the refill rate is implicitly bounded at 65535
   tokens/second as well.
 
-This is a fragment: the profile allows read-exfiltration endpoints, so validation also needs the top-level `insecure_allow_read_exfiltration: true` acknowledgment.
+This is a fragment. The `ci-agent` profile's wildcard rule admits body-blind writes, read-exfiltration endpoints and opaque BuildKit tunnels. Validating this fragment as written also requires the top-level `insecure_allow_body_blind_writes: true`, `insecure_allow_read_exfiltration: true` and `insecure_accept_opaque_buildkit_tunnels: true` acknowledgments.
 
 ```yaml
 clients:
@@ -758,7 +758,7 @@ Each entry has:
 Rules are evaluated in declaration order; first match wins. Unmatched
 requests fall back to the default cost of `1`.
 
-This is a fragment: the `**` allow rule is body-blind for writes, so validation also needs the top-level `insecure_allow_body_blind_writes: true` acknowledgment.
+This is a fragment. The wildcard allow rule admits body-blind writes, read-exfiltration endpoints and opaque BuildKit tunnels. Validating this fragment as written also requires the top-level `insecure_allow_body_blind_writes: true`, `insecure_allow_read_exfiltration: true` and `insecure_accept_opaque_buildkit_tunnels: true` acknowledgments.
 
 ```yaml
 clients:
@@ -1090,7 +1090,7 @@ doesn't stop an oversized body reaching the daemon.
 > `insecure_allow_read_exfiltration: true` acknowledgment. These gates are
 > unsafe to relax through rollout mode.
 
-This is a fragment: `sockguard validate` rejects it alone. The exec allow rule needs `request_body.exec.allowed_commands` (or the top-level `insecure_allow_body_blind_writes: true` acknowledgment).
+This is a fragment: `sockguard validate` rejects it alone. The exec allow rule needs `request_body.exec.allowed_commands` (or the top-level `insecure_allow_body_blind_writes: true` acknowledgment). The `GET /containers/**` allow rule also needs the top-level `insecure_allow_read_exfiltration: true` acknowledgment.
 
 ```yaml filename="sockguard.yaml"
 clients:
