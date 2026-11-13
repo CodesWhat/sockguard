@@ -100,14 +100,20 @@ test("website comparison rows live in extracted data modules", () => {
   assert.equal(comparisonRows.at(-1)?.feature, "Hot-reload + admin API");
 });
 
-test("v2.4.6 is a released milestone and the current stable version", () => {
+test("v3.0.0 is a released milestone and the current stable version", () => {
+  const v244 = roadmap.find((milestone) => milestone.version === "v2.4.4");
+  assert.equal(v244?.status, "released");
+  assert.ok(v244.items.some((item) => item.includes("host_device_list")));
   const v245 = roadmap.find((milestone) => milestone.version === "v2.4.5");
   assert.equal(v245?.status, "released");
   assert.ok(v245.items.some((item) => item.includes("sign prefix")));
   const v246 = roadmap.find((milestone) => milestone.version === "v2.4.6");
   assert.equal(v246?.status, "released");
   assert.ok(v246.items.some((item) => item.includes("zstd")));
-  assert.equal(SITE_CONFIG.version, "2.4.6");
+  const v300 = roadmap.find((milestone) => milestone.version === "v3.0.0");
+  assert.equal(v300?.status, "released");
+  assert.ok(v300.items.some((item) => item.includes("/v3")));
+  assert.equal(SITE_CONFIG.version, "3.0.0");
 });
 
 test("opt-in Sockguard capabilities are labelled opt-in", () => {
@@ -290,11 +296,11 @@ test("each compare page names itself an alternative in its title, H1 and lead", 
 test("roadmap data is valid and matches expected milestones", () => {
   assert.ok(roadmap.length > 0, "roadmap must be non-empty");
 
-  // v2.4.6 is the latest stable release.
+  // v3.0.0 is the latest stable release.
   const releasedMilestones = roadmap.filter((m) => m.status === "released");
   assert.ok(releasedMilestones.length > 0, "must have at least one released milestone");
   const latestReleased = releasedMilestones[releasedMilestones.length - 1];
-  assert.equal(latestReleased.version, "v2.4.6", "latest released milestone must be v2.4.6");
+  assert.equal(latestReleased.version, "v3.0.0", "latest released milestone must be v3.0.0");
   assert.equal(latestReleased.status, "released");
 
   // Must retain the previous stable milestones.

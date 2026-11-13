@@ -7,9 +7,315 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-11-27
+
+Prepared and unpublished. The rc.7 publication receipt is 2026-11-13T17:15:03Z; GA is blocked until 2026-11-27T17:15:03+00:00 and the final release checks/reviews pass.
+
+v3.0.0 promotes v3.0.0-rc.7 and includes the published v2.4.5 signed root UID fix and v2.4.6 compression decoder fix. It is the first release on the `github.com/codeswhat/sockguard/v3` Go module and removes the two insecure TLS settings deprecated in v2.1. It carries everything through v2.4.6: the v2.3 BuildKit frontend mediation and MIT license, and the v2.4 image admission, create launch-field policy, Podman isolation, exec target protection, session cleanup and client compatibility work. Stable Docker, Homebrew, deb/rpm and binary channels move to v3 with this release, and 2.4.x stays supported for security fixes until v3.1 ships.
+
+### Breaking changes
+
+- **The Go module is `github.com/codeswhat/sockguard/v3`.** Go consumers must change Sockguard import prefixes from `/v2` to `/v3`, and install with `go install github.com/codeswhat/sockguard/v3/app/cmd/sockguard@v3.0.0`. Generated BuildKit bindings and descriptor options, release and Docker linker flags, and coverage checks use `/v3`. v2 tags keep `/v2`. Docker, Homebrew, deb/rpm and downloaded binaries need no import change.
+- **`upstream.endpoints[].insecure_skip_tls_verify` is rejected at any value,** including `false` and `null`. Remove the key and set `tls.ca_file` to the daemon's issuing CA, keeping any required client certificate, key and `tls.server_name`.
+- **Non-empty `DOCKER_TLS` without non-empty `DOCKER_TLS_VERIFY` is rejected** for TCP Docker hosts. Set `DOCKER_TLS_VERIFY=1`. Any non-empty verification value, including `0` or `false`, still verifies the server.
+- **`response.redact_network_topology` redacts addresses, not opaque IDs.** Network, endpoint, sandbox, service, node and container IDs, `HostConfig.NetworkMode` and the `Info.Swarm.NodeID` field now pass through, because clients use them as join keys (Traefik's Swarm provider, Homepage's Swarm mode, Portainer's network disconnect) and they hid nothing the network name didn't already show. A mount `Source` is kept only for named mount types, and `MaskedPaths` and `ReadonlyPaths` are untouched. See the 3.0.0-rc.6 entry below for the field list.
+- **Native container create denies more SpecGenerator fields by default.** `unified` and `env_host` need `request_body.libpod_container_create.allow_unified_cgroup_settings` and `allow_env_host`, and a non-empty `pod` is denied while `restrict_namespace_sharing` is on. A client that sets any of them, such as `podman run --cgroup-conf` or `--env-host`, is refused until you opt in.
+
+- **Owner-scoped Podman builds are refused on every supported build route, including warn/audit.** Archive imports can replace another owner's names even with `pullpolicy=never`. Docker builds and Podman builds without owner isolation retain their existing checks.
+- **Environment redaction removes complete build-argument-prefixed image history entries.** Their command boundary can be ambiguous; ordinary RUN history remains visible.
+
+### Added
+
+- **Helm chart published as a signed OCI artifact.** A stable tag cut from the default branch pushes the chart to `oci://ghcr.io/codeswhat/charts/sockguard`, with its image reference pinned to the release's multi-arch digest, signed keyless like the image, and verified by the published-artifact job. Release candidates and maintenance patches publish no chart.
+- **Unknown configuration keys are reported.** `sockguard validate` prints a warning per unrecognized key (dotted path plus file) and exits 0; the new `--strict` flag exits non-zero instead. `sockguard serve` and hot reload log one warning per key. The check reads only the YAML file, so `SOCKGUARD_*` and Tecnativa environment variables never show as unknown, and no config that loads today stops loading.
+- **Compose examples for Homepage, Homarr, Diun and Autoheal,** each paired with its bundled preset and guarded against drift by the compose sync test.
+- Carries the v2.4.4 additions: the `app/compat` real-Docker-types CI job, `upstream.response_header_timeout` and the create-plus-redaction startup warning.
+
+### Migration
+
+- Run `sockguard validate --config <file>` with the v3 binary before restarting. Startup and CLI validation reject the removed settings with migration guidance, and a rejected hot reload keeps the active policy serving. Add `--strict` to fail on unknown keys.
+- Verified TLS precedence, certificate-directory lookup, Unix sockets, explicit endpoints and acknowledged plain TCP (`insecure_allow_plain_tcp`) are unchanged. Unix Docker hosts ignore TCP-only TLS environment variables.
+- `insecure_accept_opaque_buildkit_tunnels` remains accepted with its startup warning. Its removal has no chosen version and is not part of v3.0.0.
+- All v2 release lines, including v2.4.x, keep accepting the removed settings. You can move to verified TLS on v2 first. See the [migration guide](https://getsockguard.com/docs/migration#from-sockguard-v2-to-v3) and the [deprecation ledger](https://getsockguard.com/docs/deprecations).
+- Clients that read Swarm tasks and services without listing networks, such as the Homepage preset, now see opaque IDs where they saw placeholders before. That is the intended behavior.
+
+### Security
+
+- Refuse owner-scoped Podman builds through Docker-compatible, native and daemon-host routes in every rollout mode. Base-image archive imports can replace another owner's image names even with `pullpolicy=never`. Docker builds and Podman builds without owner isolation retain their existing checks.
+
+- Build with Go 1.27.4, including the digest-pinned container builder, for GO-2026-6859 / CVE-2026-97054, an HTTP/1 header race in the standard library.
+
+- Refresh age-eligible Docker login and daemon setup actions, CodeQL and Cosign pins for the next release.
+
+- Pin Grype to v0.121.0 in all scanner calls so its release installer fails on archive checksum mismatches instead of continuing with the action's older default.
+
+- Recognize space, tab and newline separators after counted build-argument history prefixes.
+
+- Redact complete build-argument-prefixed image history entries when environment redaction is enabled, preventing shell-looking argument values from exposing secrets through a guessed command boundary. Ordinary RUN history remains visible.
+
+- Disable both sudo and container access in six local scanner/check jobs that need neither. Document and test the pinned shared offline scanner's existing read-only runner-access exception.
+
+- Refuse byte-identical repeated JSON control keys before ownership callbacks in every rollout mode, using the original bounded body instead of the collapsed map. Preserve decoder-divergent key diagnostics and their rollout behavior.
+
+- Compare all published chart file paths and contents with the locally built package before signing an adopted version. Require the expected package in both release and rehearsal verification.
+
+- Fail closed on OCI nodes carrying both index and manifest config shapes, and keep `.json` entries under OCI blob paths subject to unreferenced-blob validation.
+
+- Redact verbose-network task host-IP metadata and host namespace paths in container network modes when network-topology redaction is enabled.
+
+- Keep registry signature discovery inside the dial guard when proxy environment variables are set, and reject shared, reserved, documentation, translated non-public IPv4 and local-use NAT64 addresses, including zoned IPv6 spellings, unless the operator explicitly lists the destination.
+
+- Require canonical names for owner-scoped Podman network deletion through either API family and matching config IDs for image-volume references, preventing delayed references from following recreated networks or mutable manifest lists.
+
+- Update the application and Docker client compatibility modules to `github.com/klauspost/compress` 1.20.2 for GO-2026-6865 / CVE-2026-116591, a panic on malformed zstd frames.
+
 ### Fixed
 
+- List the acknowledgments required by the profile-local configuration fragments, including opaque BuildKit access through wildcard rules.
+
+- Keep the maintained v2 migration-table entry aligned with the published v2.4.6 security patch and point configuration guidance at the GA migration heading.
+
 - Probe the identity conformance agent with Portwing's native healthcheck command, preserving unhealthy results on shell-less published images.
+
+- Correct the Watchtower preset note to distinguish clearing environment values from redacting sensitive bind sources.
+
+- Check workflow-name block scalars with trailing whitespace and CRLF headers.
+
+- Probe the fresh shared socket from a UID/GID 65532 consumer using a digest-pinned image. Preserve the fuzz matrix's parallelism cap without stale cross-repository job totals.
+
+- Cover service host-network refusal and its explicit opt-in for both network locations on create and update requests.
+
+- Correct preset redaction comments, image-load ownership wording, tiny-cap priority ordering, refusal-code guidance and Podman secret-list visibility scope. List concrete native image-trust environment variables, preserve curl failures in the admin validation example, and document the harness sudo prerequisite.
+
+- Run the chart release CLI gate through symlinked or space-containing paths instead of silently skipping validation.
+
+- Correct the raw-stream response deadline, first TLS-removal candidate, current-stable tag source, numeric-UID security scope, allowed quoted heredocs and Podman empty-option tmpfs documentation. Warn that the unchanged published rc.6 predates the v2.4.5 and v2.4.6 security fixes.
+
+- Share one elapsed-time deadline across inventory list/inspect checks and cap access-log retry sleeps at the remaining window.
+
+- Require an authentication-error log message for the wrong-secret probe instead of accepting `401` in unrelated timestamps, ports or byte counts.
+
+- Record dependent lifecycle and exec assertions as skipped after sentinel creation fails, preserving the original failure without duplicating it.
+
+- Reuse the prepared digest-pinned BusyBox image for the conformance socket ownership probe, distinguishing probe setup errors from incorrect ownership.
+
+- Enforce the no-emoji commit subject rule through the same validator locally and in CI, with executable regressions for fork promotion exemptions.
+
+- Detect conflict markers in CR-only text, compare every fuzzer in the `ultra` alias, and drain negative-auth probe logs before returning a match, and cap store polling requests at the remaining deadline.
+
+- Cover service signature discovery with an unlisted private registry even when all registry scopes are allowed, verifying that the address guard prevents any request.
+
+- Limit replay-client redaction warnings to assigned profiles, explain that disabling redaction affects every readable client scope, and warn before a validated configuration reload swaps handlers.
+
+- Report unknown YAML keys with null or empty-map values during validation and reload diagnostics, including `validate --strict`, while preserving known empty values and dotted or case-insensitive keys.
+
+- Scope container signature discovery to the registries named by exact image allowlists, and pass Swarm service image and registry scopes into its signature dial guard.
+
+- Reject non-JSON whitespace around native Podman network inspect responses instead of stripping it before label decoding, and retain the original minimized fuzz input as a corpus regression.
+
+### Changed
+
+- Include the remaining chart and CodeQL runner pins in the Harden Runner v2.22.3 refresh.
+
+- Refresh direct Harden Runner action pins to age-eligible v2.22.3, retaining the existing runner-access and egress policies.
+
+- Refresh the docs compiler's indirect magic-string dependency to 1.4.5 after the 14-day release-age window, satisfying the unchanged lockfile-dedupe gate.
+
+- Ensure bridge, resolver and limiter test fixtures release their resources when assertions fail, and make concurrency admission regressions fail promptly.
+
+- Meet the mutation target with the November 6 measurement: 97.9821% test efficacy across all 43 packages at the source tree merged as `7dbc523f`, above the unchanged 97.8% target, with timeouts separate from kills.
+
+- Avoid a false test failure when an injected session-start failure cancels a mock-daemon control request.
+
+- Cover graceful tunnel disconnects, policy-specific image-mount and ordered overlay denials, and pull checks for stored short names and reported image IDs.
+
+- Verify compiled route-search closures retain their start states and candidate enumeration spends the shared work budget.
+
+- Explicitly opt the isolated conformance identity agent into HTTP enrollment on its private test network for Portwing 1.2 compatibility.
+
+- Cover minimum-rune boundaries in the conservative route-language model and verify logged Podman volume-filter capabilities.
+
+- Verify deployment checks preserve the command cancellation context while probing a healthy fixture.
+
+- Verify the runtime concurrency limiter applies engine-specific streaming behavior to container top requests.
+
+- Verify readiness probes publish metrics and cgroup retries update the live runtime callback.
+
+- Exercise frontend, inspect and pull subprocess cleanup when an exited command leaves inherited output pipes open.
+
+- Verify empty ordinary attach responses stay hop-terminated and strip connection-scoped headers.
+
+- Verify frontend runner upgrades retain the configured authority and choose HTTP or HTTPS default ports before a canceled dial.
+
+- Test route witnesses with exactly enough shared state, transition and instruction-work budgets, plus one unit below and above.
+
+- Test prompt runner cancellation after a session-server failure and process-error reporting after a successful frontend Return.
+
+- Verify owner labels are stamped on image configuration forwarded by frontend gateway Return calls.
+
+- Cover engine-specific reserved network names and distinct resource kinds that share an identifier during container creation.
+
+- Test frontend scratch-result validation, independent sibling build completion and gateway denial-budget behavior.
+
+- Verify route reachability for long container names outside the preferred witness characters.
+
+- Cover exact inspect-response byte limits for canonical Podman network deletion and image-volume ID checks.
+
+- Cover digest-only pulls of bare repository names through Docker and Podman-compatible ownership post-checks.
+
+- Verify secret replacement distinguishes an unrelated ID-prefix inspect result from an exact foreign-owned secret.
+
+- Cover FileSync EOF at the exact retained-frame overhead cap before inspected data is released.
+
+- Cover frontend gateway build-reference and file-path length boundaries.
+
+- Cover default and explicit driver selection in inline tmpfs privilege checks.
+
+- Cover reported-image-ID and pre-pull snapshot count limits, including duplicate and empty reported IDs.
+
+- Verify create-policy validation reports the correct list entry for invalid commands, entrypoints and environment values.
+
+- Cover malformed Swarm address-pool shapes on direct Swarm responses and the nested Swarm cluster in `/info`.
+
+- Exercise failed startup cgroup-probe recovery through the production refresh-loop starter and its stop function.
+
+- Verify cgroup-version migration warnings report the previous and new results once per transition while the policy gate tracks each probe.
+
+- Cover valid Unicode identifiers around the surrogate block and at the maximum scalar value in route reachability.
+
+- Pin exact instruction budgets for known-route diagnostics and body-sensitive rule reachability, including the conservative result above each limit.
+
+- Cover leading and repeated empty bind-mount options before overlay directory restrictions.
+
+- Verify key-based image trust initializes while the keyless trust-root service is unavailable, without contacting that service.
+
+- Synchronize the reload polling test with its initial file snapshot so delayed event-loop startup cannot hide the test mutation.
+
+- Test HTTP/2 capability detection with an exact five-byte HTTP status prefix and shorter or unrelated partial replies.
+
+- Test image-pull post-checks and tag restoration at the HTTP success-status boundaries through Docker-compatible and native retag routes.
+
+- Test build-context rejection of an empty zstd skippable frame at the exact eight-byte header boundary.
+
+- Distinguish named-profile authorization from the global policy in engine-flavor tests and cover UTF-8 bytes in gRPC error headers.
+
+- Bound gRPC frame fuzz allocations when exercising the parser without a configured limit, including later frames in a stream.
+
+- Verify unified CPU periods preserve, supply or clear the configured soft-limit intent without treating a period as a hard CPU cap.
+
+- Cover the first and last ASCII drive letters and denial-key echo limits, including UTF-8 boundaries and malformed continuation bytes.
+
+- Run admission-scanner fuzz seeds without spare buffer capacity so truncated-key slice overruns cannot hide in unused backing storage.
+
+- Pin OCI graph depth and descriptor-visit budgets in both archive validation and owner-label collection.
+
+- Cover empty OCI blobs, exact retained-body limits and the tracked-blob ceiling before the next blob is read.
+
+- Check archive owner-label retention at exact config-file and byte budgets, including config replacement that must release its previous byte charge.
+
+- Retain dangling object-key, array and string prefixes as admission-scanner fuzz seeds, with named boundary subtests for image references and gRPC headers.
+
+- Cover untagged image references in pull matching and reject retagging them before contacting the engine.
+
+- Cover zero failover health timeouts as invalid configuration.
+
+- Verify global and named policies receive the resolved engine flavor for tmpfs and build-network restrictions.
+
+- Pin gRPC error-message escaping at the printable ASCII boundaries, including DEL and percent signs.
+
+- Exercise exact response-size and pre-pull image-count budgets for image ownership checks.
+
+- Keep image-history redaction safe on bare instructions and truncated build-argument prefixes, and cover prefixes ending in digit nine.
+
+- Cover exact output frame budgets, framing overhead and disabled limits across BuildKit Dockerfile, image ownership, capability and scoped-reference rewrites.
+
+- Check that competing Docker and Podman stop-grace query keys use the larger grace period and repeated keys use their last value.
+
+- Cover maximum byte-size inputs, the exact cgroup response limit, and positive Docker identity probe requirements.
+
+- Exercise image-build and image-load ownership name budgets just below, at and above their limits on Docker and Podman routes.
+
+- Pin rate-limit bucket fullness at creation, exact refill, backward-clock and millisecond-wrap boundaries.
+
+- Align candidate migration guidance and stable install examples with published v2.4.6 channels.
+
+- Add mutation regressions for native named-volume bind options, native and Swarm tmpfs privilege checks, empty pod image-volume lists, and unsigned resource-limit saturation.
+
+- Cover unterminated image-pull progress and exact/split line limits, and add real-Podman network-name and manifest-list ID stability probes.
+
+- Exercise the zero-byte lookahead in bounded-file tests, preserve lookahead errors across close failures, and cover inline local tmpfs privilege checks on container create.
+
+- Clean up temporary changelog and release-history fixtures after CLI tests, including failed assertions.
+
+- Add real-Podman image-history conformance for the Docker-compatible and native APIs. The test records actual instruction field names and checks ENV/ARG redaction against a local fixture image without pulling or running it.
+
+- Add mutation regressions for compressed responses, BuildKit and owner isolation, engine identification, CLI reports and reachability budgets, and HEAD visibility refusals.
+
+- Make the ownership FAQ's website and repository references clickable and keyboard accessible. Document the separate website/docs development servers and exported-site checks, and ignore Next.js's generated website instructions file.
+
+- Identify CodesWhat as Sockguard's maintainer in the README, docs introduction and website, and explain the distinction from Buildkite's archived project in the homepage FAQ.
+
+- **The cgroup version probe behind `allow_host_cgroupns_on_cgroup_v1` now refreshes.** It was a startup-only snapshot, so a daemon migrated from cgroup v1 to v2 without restarting sockguard kept host cgroup namespaces open, and a hot reload that turned the option on never probed. Sockguard now re-probes `GET /info` every 5 minutes, whenever an upstream endpoint changes health state, and during a reload that enables the option (the gate stays closed until that probe finishes). The result is stored atomically and read per request, so policies are not rebuilt. Any probe error or non-v1 answer closes the gate, nothing is probed while the option is unset, and the reload log line saying the startup result is reused is gone. `POST /libpod/containers/create` is still not covered.
+- **The compat-create mount comma refusal applies to Podman upstreams only.** A comma in a `HostConfig.Mounts` `Type`, `Source`, `Target`, `Consistency`, `BindOptions.Propagation` or `VolumeOptions.Subpath` is only a field separator to Podman, which rebuilds the mount into a `--mount` string. On a dockerd upstream it is a literal character, so the create is now forwarded instead of refused. The refusal stays unless every upstream endpoint's `GET /version` positively identified dockerd: an explicit `upstream.flavor: docker` with a failed or unrecognized probe, or a failover set with one endpoint that couldn't be probed, keeps it. A Podman upstream refuses it as before.
+- **BREAKING (Podman upstream): a tmpfs without `noexec` is refused.** `podman run --tmpfs /run` is refused until it adds `:noexec`. Podman mounts a tmpfs executable, so `allow_tmpfs_privileged_options: false` could only stop `suid` and `dev` there. With the option off, a Podman tmpfs (`HostConfig.Tmpfs` and native `mounts[]`) must carry the bare option `noexec`, and a `/dev` tmpfs must carry `noexec,nosuid,nodev`; the denial names the fix. `exec=0` and `noexec=1` don't count. A compat `Mounts` tmpfs entry is refused outright (use `HostConfig.Tmpfs`). Set `allow_tmpfs_privileged_options: true` (`libpod_container_create.allow_tmpfs_privileged_options` for the native route) to opt out. A Docker upstream is unchanged.
+- **BREAKING: a local `tmpfs` volume must list `noexec,nosuid,nodev` in `o`.** The kernel's tmpfs default is exec, suid and dev, so a local-driver volume of `type` `tmpfs` with no `o`, or an `o` without all three, is now refused unless `allow_tmpfs_privileged_options` is on. This replaces the narrower refusal of `exec`/`suid`/`dev` in `o` on the same routes, and only matters where driver options are reachable.
+- **A BuildKit tunnel reports why it ended when net/http's HTTP/2 server is off.** `h2conn.Serve` now returns an error, and with `GODEBUG=http2server=0` it is `ErrHTTP2ServerDisabled`. The bridge and the frontend runner record it as the tunnel's failure, where before the tunnel closed with only an info log.
+- **`response.redact_network_topology` now covers the remaining address leaks.** Swarm network inspect (`GET /networks/{id}?verbose=true`) `Services[*].VIP` and `Services[*].Tasks[].EndpointIP`, and `DefaultAddressPools[].Base` on `GET /info` (also under `Swarm.Cluster`) and `GET /swarm`, now read `""`, the same type-valid empty value the other address fields use. `Swarm.Cluster.DefaultAddrPool` on `/info` was already emptied. Published-port bind addresses (container list `Ports[].IP`, container inspect `NetworkSettings.Ports[*][].HostIp`) keep their mapping and show the unspecified address of the same family, `0.0.0.0` or `::`, so `docker ps` still prints `host:public->private` while the bound host interface stays hidden. A bind address that isn't an IP fails the response closed. Ports, `PublicPort`, `PrivatePort`, `Type`, `HostPort` and the service and task names stay.
+- **The Diun preset turns `response.redact_network_topology` back on.** Topology redaction now writes type-valid empty addresses and leaves `NetworkMode` and network IDs alone, so Diun's container list decodes cleanly with it enabled. `app/configs/diun.yaml`, `examples/compose/diun/sockguard.yaml`, its README and the presets docs drop the `false` override.
+- **Renovate is capped at 3 open PRs and 5 branches, and CodeRabbit no longer auto-applies the `second-opinion` label.** The org's 20-concurrent-job ceiling made a Renovate burst queue every other PR. Greptile still runs when a human adds the label. `renovate.json` is read from `main`, so the limits take effect at the next promotion.
+- **The remaining Docker Hub pulls in CI log in first.** The `Docker Build` job, both Docker integration suites and the three Podman legs authenticate with the existing `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` secrets when they are present, so shared runner IPs stop hitting the anonymous `toomanyrequests` limit. Fork PRs skip the login and pull anonymously as before.
+- **GoReleaser replaces same-named assets on a rerun.** `release.replace_existing_artifacts` and `replace_existing_draft` are on, so rerunning a release that died mid-upload completes it instead of failing on the assets already there. `RELEASING.md` has the recovery steps.
+- **Visibility and owner isolation share one inspect per request.** With both configured, a single-resource read (`GET /containers/{id}/json` and the network, volume and image twins) dialed the daemon once for each layer. Visibility now leaves its successful result on the request and owner isolation reads it back, so the daemon sees one inspect before the proxied call. Nothing is cached across requests, and an inspect error is never reused.
+- **Network connect and disconnect bodies reach the daemon byte for byte.** Owner isolation read `Container` out of the body and then re-encoded it, sorting keys and stripping whitespace. It now checks the body as before, including the ambiguous-key refusal, and forwards the original bytes and `Content-Length`.
+
+### Added
+
+- **`request_body.container_create.allow_host_cgroupns_on_cgroup_v1` (default `false`).** On cgroup v1 daemons such as Synology, `docker inspect` reports `HostConfig.CgroupnsMode: "host"` and recreate tools (Watchtower, Drydock, Portwing) replay it, so create was denied unless `allow_host_cgroupns: true`, which also opens host cgroup namespaces on cgroup v2 hosts where that is a real widening. The new option allows `"host"` only when `GET /info` reports `CgroupVersion: "1"`. Sockguard reads it from every upstream endpoint (and only when the option is set; see Changed for the refresh), so there is no per-request `/info` call; a failover set must be v1 end to end, and a v2, unknown or unreadable result keeps the denial. `ns:<path>` stays denied, and `POST /libpod/containers/create` is not covered. Env var `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_HOST_CGROUPNS_ON_CGROUP_V1`. The Watchtower, Drydock and Portwing presets and example copies now carry it (commented) in place of `allow_host_cgroupns: true`.
+- **Startup and `sockguard validate` warn when a rule set doesn't allow `GET /_ping`.** The Docker CLI and SDKs ping the daemon before most calls, so a custom profile without the rule makes every client report an unreachable daemon. The warning names the default rules or the profile (`scope`), skips empty rule sets and top-level rules shadowed by `clients.default_profile`, and doesn't reject the config. A GET-only rule set passes, since the CLI falls back from HEAD to GET.
+- **`response.max_buffered_body` raises the 8 MiB cap on buffered responses.** Response filtering buffers a body before it can redact or filter it, and the fixed 8 MiB limit made `GET /containers/json` and `GET /images/json` fail with a 502 on hosts with thousands of containers or images. The limit is now configurable (size string like `32MiB` or a byte count, default `8MiB`, between `1MiB` and `256MiB`, `SOCKGUARD_RESPONSE_MAX_BUFFERED_BODY`), applies to the response filter, visibility and owner list filters, `/system/df`, inspect bodies and the daemon lookups behind the client ACL and resource-limit guard, and takes effect on hot reload. An over-limit response is still refused with a 502, but the Docker-style `message` now names `response.max_buffered_body` and the limit in force instead of a bare rejection, and the proxy-level refusal gets reason code `upstream_response_too_large`.
+- **Opt-in log driver allowlist.** `allowed_log_drivers` restricts the log driver on `request_body.container_create` (`HostConfig.LogConfig.Type`, and a `driver` entry in `LogConfig.Config`, which a Podman upstream reads in place of `Type`), `request_body.libpod_container_create` (`log_configuration.driver` and `.options`), `request_body.service` (`TaskTemplate.LogDriver`, which service create and update never looked at) and the new `request_body.libpod_play_kube` block (the `logDriver` and `logOptions` query parameters of `POST /libpod/play/kube` and `/libpod/kube/play`, in any letter case and on every repeat). While a list is set, the options that name a log destination (`syslog-address`, `gelf-address`, `fluentd-address`, `loki-url`, `loki-proxy-url`, `splunk-url`, `awslogs-endpoint`, `awslogs-credentials-endpoint`) are refused unless `allowed_log_endpoint_options` lists them, so a client can't point a container's output at a collector it controls. Both lists default to empty, which changes nothing, and an empty driver (the daemon default) always passes. `allow_log_path` is unchanged and stays its own gate. The play/kube block reads the query string only, so the route still needs `insecure_allow_body_blind_writes` and a driver chosen inside the YAML body isn't seen. Env vars follow the usual `SOCKGUARD_REQUEST_BODY_<BLOCK>_ALLOWED_LOG_DRIVERS` and `..._ALLOWED_LOG_ENDPOINT_OPTIONS` pattern.
+
+### Fixed
+
+- **A transient `/info` failure no longer holds `allow_host_cgroupns_on_cgroup_v1` closed until the next 5-minute tick.** When the cgroup version probe errors while the option is set, sockguard retries on a short backoff (doubles from 1s up to a 30s cap) until the next regular probe, and stops on shutdown. The retry also starts when the probe fails at startup or during a reload that enables the option. A clean answer that the daemon isn't cgroup v1 is not retried. A probe result that arrives after a reload turned the option off is now discarded, so it can't reopen the gate.
+- **Followed swarm service and task logs and Podman `top?stream` count against the stream cap.** They were exempt from the request deadline as open-ended streams but still held a `max_inflight` slot for their whole life. The rate limiter's stream check now agrees with the deadline classifier for these routes.
+- **`clients.global_concurrency.max_inflight: 1` no longer denies every normal and low priority request.** The per-tier share rounded down to 0 at a cap that small, so only a `high` profile could ever be admitted. A positive cap now admits at least one request of every tier.
+- **Idle-bucket eviction no longer refunds a drained burst early.** A rate-limit bucket idle for more than 10 minutes was dropped and came back full, so with a low `tokens_per_second` and a larger `burst` a quiet client got its whole burst back regardless of the configured rate. Eviction now only drops buckets that have refilled to burst.
+- **Attach and exec start pass the client's upgrade choice through.** Sockguard always sent `Connection: Upgrade` and `Upgrade: tcp` upstream, so a client that didn't ask for an upgrade (docker-py and some other clients use the plain form) got a `101` where the daemon would have answered `200 OK` and streamed raw. On an upstream positively probed as Docker, the headers are now forwarded only when the client sent `Upgrade`; every other upstream, Podman included, is still always asked to upgrade. Without it the daemon's `200` raw stream is relayed with the same bidirectional copy, half-close, inactivity timeout and hijacked-connection tracking as the `101` form. A `200` that declares a length or is chunked, and any other status, is forwarded as an ordinary response.
+- **The `discovery`, `homarr`, `homepage` and `multi-listener` presets now allow `GET` and `HEAD /_ping`.** They didn't, so they tripped the new missing-ping warning and Docker clients that ping first would have seen an unreachable daemon. `/_ping` returns only `OK` and the API version header. The Homarr and Homepage compose copies match, and a test loads every `app/configs/*.yaml` and fails if any of them triggers the warning.
+- **`/_ping` no longer spends rate-limit tokens.** It's exempt from `limits.rate`, including `endpoint_costs`, so the ping that precedes each Docker call can't drain a small bucket or get denied itself. It still counts against the concurrency caps.
+- **Streams no longer use up the concurrency cap.** `limits.concurrency.max_inflight` and `clients.global_concurrency` counted `docker events`, `logs -f` and the like for their whole lifetime, so a client with a few open streams got `429 concurrency_cap` on ordinary calls. These now skip both gates: `GET /events`, `GET /containers/{id}/logs` with `follow`, `GET /containers/{id}/stats` unless `stream=0`, `POST /containers/{id}/wait`, `POST /containers/{id}/attach`, `GET /containers/{id}/attach/ws` and `POST /exec/{id}/start`, plus their libpod forms. Build, prune, image pull/push/load, export/archive, `logs` without `follow`, stop/restart and `/system/df` still count against `max_inflight`. To keep the exemption from opening unlimited streams, `limits.concurrency.max_streams` (default `32`, `0` disables) caps them per profile and answers `429` with reason `stream_cap`. The count is per profile, so clients sharing a profile or the anonymous bucket share it, and total streams are bounded per profile, not globally. Streams still cost rate-limit tokens.
+- **A 238 to 245 character bare image name on a Podman upstream gets a `403`, not a `502`.** Podman's compat lookup completes a name with no slash to `docker.io/library/<name>`, so a bare name past 237 characters is an invalid reference and the ownership inspect of it answered with an error. Owner isolation now refuses it up front with a message that names the limit, on image tag, build, import, load and pull.
+- **An ML-DSA key in `image_trust` or a signed policy bundle is rejected at config load.** `sigverify.CompileKey` accepted it, but bundle verification only handles RSA, ECDSA and Ed25519 keys, so enforce mode would have denied every image. The error now names the unsupported key type.
+- **Three Podman create and restore references now go through the allowlists and owner checks.** `volumes[].Options` on a libpod container create (`volume-opt=o=bind`, `volume-opt=device=/etc`) made Podman create a named volume bound to a host path with no check, so those options are now held to `allowed_bind_mounts` like `POST /libpod/volumes/create`. `POST /libpod/containers/{name}/restore?pod=` joined the restored container to a pod without looking it up; under owner isolation the pod is now checked like a create's `pod`. On a Podman upstream, a Docker-compatible create naming a network `ingress` or `docker_gwbridge` as its `NetworkMode` or as an endpoint-config key was skipped by owner isolation as a Swarm network; Podman reads those as ordinary names, so they are now looked up and refused only when the network carries a different owner's label (an unlabeled or missing one passes). `bridge`, `host`, `none` and `default` are never looked up, because Podman resolves `bridge` to its unlabeled default network and the Docker CLI sends that key on every default-mode create. A drift test now pins the SpecGenerator root fields (`app/testdata/podman-api/spec-generator-root-fields.json`) and fails when Podman adds one that owner isolation hasn't classified.
+- **A secret named like a foreign ID prefix can no longer fall through to that secret on Podman.** Podman resolves a secret reference by exact name or ID and then by unique ID prefix, and resolves it again when the request reaches the daemon. Two concurrent deletes of a caller's own secret named after the start of another owner's secret ID both passed owner isolation's inspect; the first removed the caller's secret and the second removed the other owner's. Path-targeted secret routes (`/secrets/{name}`, `/libpod/secrets/{name}`) on a Podman upstream now refuse a reference that is lowercase hex of fewer than 25 characters, and a secret create (`POST /libpod/secrets/create`, `POST /secrets/create`) refuses such a name, since it couldn't be addressed afterwards. Short-ID-prefix secret operations on Podman are refused; use the full 25-character ID or a name with a non-hex character.
+- **A libpod secret create no longer answers differently for a name that prefixes another owner's secret ID.** With `replace` or `ignore` set, the owner lookup used the secret inspect, which resolves a unique ID prefix that Podman's create doesn't. A name like `b0b0` got `403` when it began one team-b secret ID and `502` when it began two, while a name beginning none was created, so the three answers listed the hex strings that start a foreign secret ID. The lookup now accepts a secret only when its ID or `Spec.Name` equals the requested name, and reads a prefix-only match as absent; on Podman a short lowercase-hex name is refused alike (see the next entry).
+- **A libpod container update can no longer clear a required limit through `unified`.** `{"memory":{"limit":N},"unified":{"memory.max":"max"}}` passed `require_memory_limit` because the resource-limit guard overlaid only `memory.limit`, `cpu` and `pids`, while the OCI runtime writes the `unified` cgroup map after them and `max` clears the limit. The guard now applies `memory.max`, `cpu.max` and `pids.max` from `unified` to the effective state, so `require_memory_limit`, `require_cpu_limit`, `require_cpu_limit_hard` and `require_pids_limit` see what the container would end up with. The libpod container create applies the same overlay to `resource_limits` when `allow_unified_cgroup_settings` is on. Found by source reading of runc's fs2 manager, not on a live Podman.
+- **Admission mutation no longer skips an enforce rule on an ambiguous body under `warn` and `audit`.** A body the engine refuses as `request_body_ambiguous` (a label key spelled with U+0130, say) was forwarded to the daemon with the client's bytes under a warn or audit profile, so a required `inject_labels` or `remap_image` rule never ran on it. When an `enforce` rule covers the surface, any refusal by the mutation engine, including a body read error, is now a hard error in every rollout mode. A surface with only `warn` or `audit` rules is unchanged.
+
+### Security
+
+- **Owner isolation untags a pulled image that carries another owner's owner label.** A registry image's labels can't be read before the pull, so a client could pull one labeled `owner=victim` under a name nothing held and it would pass the victim's ownership checks. With ownership active (enforce rollout), `POST /images/create` and `POST /libpod/images/pull` now inspect each reference the pull wrote once the daemon finishes. An image with another owner's label is untagged through the same upstream transport, logged at warn, and named in a final error line on the progress stream: `errorDetail` and `error` on the Docker route, `error` on Podman's. A failed inspect is treated as a foreign label. Images with no owner label or the caller's own are untouched. A pull by digest writes no tag, so `repo@sha256:...` is inspected after the pull and, when its image is another owner's, reported (`owner policy: pulled image <ref> carries another owner's label; it was left in place because a digest reference pins its content`) and left in place, since a delete by digest could drop an image other names still hold. A foreign-labelled image pulled by digest stays in place with an error line, which is accepted: Sockguard can't prove it's new without risking another tenant's image. A failed post-pull inspect gets the `could not verify` line. A name the caller already held is put back on the image it pointed at before the pull, the untag is sent with `force=1&noprune=1` only when the startup probe identified dockerd (Podman, `auto` and an unresolved flavor get a plain delete, since Podman's force removes the containers too) so a container using the image can't block it, a pull that reported success but left the name missing gets an `owner policy could not verify pulled image` line and a warning, and Podman's native pull is also checked through the image IDs its report names, which catches a short name `registries.conf` resolved to a registry the computed references don't spell. The names that resolved on a foreign image that didn't exist before the pull are untagged, judged by a bounded list of the images under the requested reference taken before the pull; names on an image that was already there, names that list already held, or every name when that list fails or runs past 256 images, are reported and left alone. A name found by ID is inspected again right before its untag and skipped, with a report, if it no longer points at the reported image; two tenants pulling the same image at the same moment can therefore see the check report a name rather than untag it.
+- **Owner isolation refuses an image load whose images carry another owner's owner label.** The destination check only covers a name another owner holds, so a client could load an archive under a new name whose image config already said `owner=victim`, and the image then passed the victim's ownership checks. With ownership active, the image-load inspector now reads the owner label out of every image config in the archive (Docker `manifest.json` configs and OCI `index.json` manifests, with the same per-blob caps and a 256-config bound) and the load is refused when any value isn't the caller's own. A config that can't be read refuses the load, and so does a device, FIFO, directory or other non-regular tar entry at a config path (links already refused the archive). Images with no owner label still follow `allow_unowned_images`.
+- **BREAKING: `image_trust` in `warn` or `enforce` mode must be scoped to registries, and signature discovery refuses non-public addresses.** Signature discovery dialed whatever registry the client's image reference named, so a client could point sockguard at an internal host (`10.0.0.5:8080/x/y`) and read the registry's error text back in the deny reason. `container_create.image_trust` and `libpod_container_create.image_trust` gain `allowed_registries`, `allow_official` and `allow_all_registries`. With mode `warn` or `enforce`, one of them is required unless the same section sets `allowed_images` (an exact image list already names the registry), and `serve` and `validate` refuse the config otherwise. The registry is read with the same parser the fetcher uses, and a reference that parser rejects is denied. Independently of the allowlist, the fetcher now refuses at dial time (after DNS resolution, so token realms and blob redirects are covered) to connect to loopback, private (RFC 1918 and ULA), link-local, multicast or unspecified addresses, unless the host is listed in `allowed_registries` or is the registry of an `allowed_images` entry. Internal registries therefore need to be listed. A configured HTTP proxy is dialed through the same guard. Swarm services keep using their own `service.allowed_registries` scope. A registry HTTP error now reads `registry returned HTTP <status> during signature discovery` in the deny reason instead of echoing the body; the full error stays in the log.
+- **`redact_container_env` now covers image history.** `GET /images/{name}/history` and `GET /libpod/images/{name}/history` returned each layer's `CreatedBy` verbatim, so `ENV KEY=value` and `ARG KEY=value` layers handed a read-only client the values image inspect already hides (the `podman-readonly` preset allows `/images/**/history`). With the toggle on, those entries read `ENV <redacted>` or `ARG <redacted>`, and the `|N KEY=value` build-arg prefix on `RUN` layers keeps its keys and command but loses the values (Podman's `createdBy` spelling is covered too); every other layer is untouched, and a body that can't be parsed fails closed with a 502.
+- **`GET /libpod/generate/kube` and `GET /libpod/kube/generate` are refused under owner isolation and visibility policy.** They resolve each name as a pod, container or volume with no owner check and return the definition, environment included, so a tenant holding `insecure_allow_read_exfiltration` could dump another tenant's by name. Reason codes are `owner_libpod_generate_kube_unscopeable`, `owner_libpod_kube_generate_unscopeable` and the `visibility_` equivalents. With neither layer active nothing changes.
+- **A local `tmpfs` volume answers to `allow_tmpfs_privileged_options`.** The local volume driver passes `type` and `o` to mount(2), so `{"type":"tmpfs","o":"exec,suid,dev"}` made a tmpfs with the flags the option refuses, and the option never read it. A local-driver volume whose `type` is `tmpfs` and whose `o` ends with `exec`, `suid` or `dev` on is now refused on `POST /volumes/create`, `POST /libpod/volumes/create`, and a mount's `VolumeOptions.DriverConfig` on container create and service create and update. The volume routes use the same key as their container create counterpart (`container_create` for compat, `libpod_container_create` for native), and it only matters where `allow_driver_opts` is on.
+- **Podman tmpfs bypass closed: `Mounts` tmpfs and `image_volume_mode`.** Podman's compat handler forwards only `tmpfs-size` and `tmpfs-mode` of a `HostConfig.Mounts` tmpfs entry and drops its `TmpfsOptions.Options`, so a listed `noexec` never reaches the mount. And `image_volume_mode: "tmpfs"` on a native create mounts the image's volumes as executable tmpfs. Both are refused on a Podman upstream unless `allow_tmpfs_privileged_options` is on. The gate also reads `suid=1`, `dev=true` and `exec=yes` style tokens as enabling.
+- **Swarm service tmpfs mount options are gated.** `serviceMount` didn't decode `TmpfsOptions`, so service create and update passed a tmpfs mount's options unread. `TmpfsOptions.Options` now answers to `container_create.allow_tmpfs_privileged_options`, with the same malformed-entry refusal container create has. Container create also reads a `suid=1` or comma-joined token in a structured entry now, not only a bare `suid` key.
+- **Native container create reads tmpfs mount options.** `POST /libpod/containers/create` decoded `mounts[].options` and never read them, so a tmpfs mount could turn on `exec`, `suid` or `dev` past `allow_tmpfs_privileged_options`. A `tmpfs` entry whose options end with any of those on is now refused, last option wins, comma-joined elements and `key=1` style tokens included. New key `request_body.libpod_container_create.allow_tmpfs_privileged_options` (env `SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_TMPFS_PRIVILEGED_OPTIONS`, default `false`) lifts it for the native route only.
+- **Upgrade note: configs allowing `DELETE /libpod/**` or `POST /libpod/**` now fail startup.** Kube down (`DELETE /libpod/play/kube`, `DELETE /libpod/kube/play`) and quadlet install (`POST /libpod/quadlets`) joined the blind-write catalog, so any allow rule that reaches them, a broad `/libpod/**` one included, is refused at startup until `insecure_allow_body_blind_writes` is set or the rule is narrowed to exclude those routes.
+- **Pod create gates the volume, cgroup and resource fields the infra container inherits.** `overlay_volumes` sources and overlay directories, `volumes` options, `volumes_from`, `cgroup_parent` and `resource_limits` device rules now go through the container create gates, and `security_opt` `systempaths=unconfined` follows `deny_unconfined_system_paths` like `unmask`. The `require_*_limit` options are not applied to a pod create; its member containers are checked on container create. Owner references in `volumes`, `image_volumes` and `networks` are still checked by owner isolation; `volumes_from` is refused outright, as on a container create.
+- **Pod create gates `idmappings`.** `POST /libpod/pods/create` passed a UID or GID map or an auto user namespace request in `idmappings` ungated, and the infra container and every pod member inherit it. It now follows `request_body.libpod_container_create.allow_custom_id_mappings`, the gate native container create already had, so a pod create with a custom mapping is refused until that is set.
+- **Native container create gates `storage_opts`, `run.oci.*` annotations and the Podman annotations that act.** `POST /libpod/containers/create` forwarded a non-empty `storage_opts` map (per-container storage driver options such as a rootfs size quota) and `annotations` keys under `run.oci.` (what crun reads to change runtime behavior) with every option off, and so did `io.podman.annotations.cid-file`, `.autoremove` and `.autoremove-image`, which Podman acts on (it removes the named host file, or the container and its image). Each is now refused unless `request_body.libpod_container_create.allow_storage_opts` or `allow_runtime_annotations` is set. Both default to false; other annotation keys are not gated, including the `io.podman.annotations.` markers podman-remote sends on ordinary creates.
+- **Pod create applies the container create gates to the fields its infra container inherits.** `POST /libpod/pods/create` passed `mounts`, `pod_devices`, `security_opt` and `sysctl` ungated, and Podman copies them onto the infra container that every member of the pod inherits, so a rule allowing the route got around `allowed_bind_mounts`, `allowed_devices`, `allow_sysctls` and the seccomp, AppArmor and SELinux options. It also let a pod join another container's namespace (`nsmode: container`) with `restrict_namespace_sharing` on. Pod create now reads those from `request_body.libpod_container_create`, so no new option is needed, but a pod create with a host bind, a device or a sysctl is refused until that block allows it.
+- **Namespace objects refuse unknown keys.** On Podman 6 the daemon's decoder compares a 64-bit hash of each key for a struct with ten or fewer lowercase names, so a key Sockguard read as unknown inside a `netns`, `pidns`, `ipcns`, `userns`, `utsns` or `cgroupns` object could still bind to `nsmode` or `value` there, under every host-namespace gate. `POST /libpod/containers/create` and `POST /libpod/pods/create` now refuse a namespace object with any key besides those two, and the refusal names the key.
+- **Pod prune needs `allow_remove_volumes`.** `POST /libpod/pods/prune` removed every stopped pod and deleted its containers' anonymous volumes with no remove gate, so a rule allowing the route was enough. It now needs `request_body.container_remove.allow_remove_volumes`, the same gate pod removal and kube down use. Owner isolation still refuses the route outright.
+- **Quadlet install and kube down join the blind-write catalog.** `POST /libpod/quadlets`, `DELETE /libpod/play/kube` and its `DELETE /libpod/kube/play` alias carry a body Sockguard never parses (a quadlet unit file, or the Kubernetes YAML a kube down tears down), but they were not in the startup catalog, so a rule allowing them passed without `insecure_allow_body_blind_writes`. Startup now refuses an allow rule that reaches either one until that flag is set. Configs that already allow these routes fail validation until they add it.
+- **Owner isolation caps the resources one compat create names.** `POST /containers/create` and service create/update collected their volume, network, image, secret and config references with a linear duplicate scan and no bound, so a body with tens of thousands of binds cost quadratic CPU. Duplicates now collapse through a map, and a body that names more than 256 distinct resources is refused with the owner-policy `403`.
+- **Owner isolation refuses `POST /build?pull=1`.** The daemon pulls each `FROM` image and rebinds its name to what the registry serves, so a pulling build over a base image another owner held took the name from it. The `FROM` names are in the build context, which the owner layer doesn't read, so the pull is refused (`403`) instead of checked. `pull=0` and builds with no `pull` are unchanged. Podman's `pullpolicy` is refused the same way unless it is `missing`, `never` or switched off.
+- **Owner isolation stamps image imports over client `changes=LABEL`.** An import made an image with only the labels the client gave it, so it could import under a name nothing held, labeled as another owner's, and that owner would then use the name. `POST /images/create` (no `fromImage`) and `POST /libpod/images/import` now get a `LABEL` of the caller's owner appended to `changes`, which overwrites a client `LABEL` of the same key. A `changes` key in another case is refused (`400`), and so is a client entry that holds a line break, ends in a backslash, has an unterminated quote, starts with `#`, holds `<<`, is an `ONBUILD` instruction, is a `LABEL` holding `$` or `{`, or sets the owner label, since dockerd joins the entries into one Dockerfile and those could swallow the stamp. Pulls and loads can't be stamped (their labels come from the registry or the archive).
+- **Image load refuses an OCI archive name whose digest isn't its manifest's.** An entry named `repo@sha256:X` whose manifest digest isn't X made a record no by-digest inspect resolves, which a later load of the same name replaced unseen. The load now fails the inspection instead.
 
 ## [3.0.0-rc.7] - 2026-11-13
 

@@ -264,10 +264,10 @@ procedure. It defaults to committed `HEAD`, Linux/amd64 and the exact tag's vers
 bash scripts/ci/go-reproducible.sh
 ```
 
-For a particular release, pass its tag. For example, once v2.4.0 is published:
+For a particular release, pass its tag. For example, once v3.0.0 is published:
 
 ```bash
-GOOS=linux GOARCH=amd64 bash scripts/ci/go-reproducible.sh v2.4.0
+GOOS=linux GOARCH=amd64 bash scripts/ci/go-reproducible.sh v3.0.0
 ```
 
 The script exports the same committed tree into two different directories, uses
@@ -279,7 +279,7 @@ is derived from that exported tree's module declaration, so the v3 procedure als
 rebuilds v2.4 refs with their `/v2` version package.
 
 The [GoReleaser configuration](https://github.com/CodesWhat/sockguard/blob/dev/v2.4/app/.goreleaser.yaml)
-defines the v2.4 contract; the [v3 candidate configuration](https://github.com/CodesWhat/sockguard/blob/v3.0.0-rc.6/app/.goreleaser.yaml)
+defines the v2.4 contract; the [v3 configuration](https://github.com/CodesWhat/sockguard/blob/v3.0.0/app/.goreleaser.yaml)
 uses the corresponding `/v3` linker package. Both and the reproduction command use `CGO_ENABLED=0`, `-trimpath`, `-buildvcs=false`,
 `-s -w`, and explicit version, full source commit and UTC commit-time metadata.
 `BuildDate` now means the source commit date, not the release workflow's start time.
