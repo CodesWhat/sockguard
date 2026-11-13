@@ -185,7 +185,7 @@ export const DOCS_SEARCH_ITEMS: [page: number, heading: string, anchor: string][
   [10,"Upgrading to v2.3","upgrading-to-v23"],
   [10,"Upgrading to v2.4","upgrading-to-v24"],
   [10,"From Sockguard v2 to v3 (release candidate)","from-sockguard-v2-to-v3-release-candidate"],
-  [10,"Combined candidate preparation","combined-candidate-preparation"],
+  [10,"Combined candidate","combined-candidate"],
   [10,"Deprecation schedule","deprecation-schedule"],
   [10,"From Sockguard v1.4 to v1.5","from-sockguard-v14-to-v15"],
   [10,"From Sockguard v1.6 to v1.7","from-sockguard-v16-to-v17"],

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Probe the identity conformance agent with Portwing's native healthcheck command, preserving unhealthy results on shell-less published images.
+
 ## [3.0.0-rc.7] - 2026-11-13
 
 Combines the reviewed v3 compatibility changes and hardening work into one
