@@ -3,13 +3,18 @@ package buildkitproxy
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/codeswhat/sockguard/v3/app/internal/buildkitproto/gateway"
+
+	"google.golang.org/protobuf/proto"
 )
 
 type gatewayCompletionDaemon struct {
@@ -82,7 +87,131 @@ func TestGatewayReturnCompletionRace(t *testing.T) {
 type gatewayLifecycleLeg func(*http.Request) (*http.Response, error)
 
 func (f gatewayLifecycleLeg) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-func (f gatewayLifecycleLeg) Close() error                                      { return nil }
+
+func TestGatewayCompletingSiblingPreservesActiveBuild(t *testing.T) {
+	forwarded := false
+	leg := gatewayLifecycleLeg(func(r *http.Request) (*http.Response, error) {
+		forwarded = true
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/grpc"}, "Grpc-Status": {"0"}}, Body: io.NopCloser(bytes.NewReader(grpcFrame(nil)))}, nil
+	})
+	b := newUnitTestBridge(t, leg)
+	b.policy.Control.Solve.AllowFrontendGateway = true
+	t.Cleanup(func() { b.registry.Close(b.session.ID); b.closeAll(nil) })
+	var first *gatewayBuild
+	for _, ref := range []string{"first", "second"} {
+		g, d := b.registry.beginGatewayBuild(t.Context(), b.session, ref, testBuildkitSessionID, b.policy)
+		if d != nil {
+			t.Fatal(d)
+		}
+		if result := b.registry.admitSolve(b.session, testBuildkitSessionID, ref, nil, 0, 0); result != solveAdmissionSucceeded {
+			t.Fatal(result)
+		}
+		if ref == "first" {
+			first = g
+		}
+	}
+	b.registry.endGatewayBuild(first)
+	req := newFramedGRPCRequest(t, "/"+gatewayService+"/Ping", &gateway.PingRequest{})
+	req.Header.Set(gatewayBuildHeader, "second")
+	rec := httptest.NewRecorder()
+	b.handleStream(rec, req)
+	if !forwarded || rec.Header().Get("Grpc-Status") != "0" {
+		t.Fatalf("active sibling was lost: forwarded=%v status=%q", forwarded, rec.Header().Get("Grpc-Status"))
+	}
+}
+
+func TestGatewayReturnStampsForwardedImageConfig(t *testing.T) {
+	forwarded := false
+	leg := gatewayLifecycleLeg(func(r *http.Request) (*http.Response, error) {
+		_, payload, err := readUnaryGRPCMessage(r.Body, DefaultLimits().MaxMessageBytes)
+		if err != nil {
+			return nil, err
+		}
+		var returned gateway.ReturnRequest
+		if err := proto.Unmarshal(payload, &returned); err != nil {
+			return nil, err
+		}
+		var config struct {
+			Config struct{ Labels map[string]string }
+		}
+		if err := json.Unmarshal(returned.GetResult().GetMetadata()[imageConfigKey], &config); err != nil {
+			return nil, err
+		}
+		if config.Config.Labels["owner"] != "team-a" || config.Config.Labels["keep"] != "yes" {
+			t.Errorf("forwarded image labels = %v, want stamped owner and retained metadata", config.Config.Labels)
+		}
+		forwarded = true
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/grpc"}, "Grpc-Status": {"0"}}, Body: io.NopCloser(bytes.NewReader(grpcFrame(nil)))}, nil
+	})
+	b := newUnitTestBridge(t, leg)
+	b.policy.Control.Solve.AllowFrontendGateway = true
+	b.policy.ImageOwnership = ImageOwnershipPolicy{Owner: "team-a", LabelKey: "owner", RequireConfig: true}
+	t.Cleanup(func() { b.registry.Close(b.session.ID); b.closeAll(nil) })
+	if _, d := b.registry.beginGatewayBuild(t.Context(), b.session, "build", testBuildkitSessionID, b.policy); d != nil {
+		t.Fatal(d)
+	}
+	if result := b.registry.admitSolve(b.session, testBuildkitSessionID, "build", nil, 0, 0); result != solveAdmissionSucceeded {
+		t.Fatal(result)
+	}
+	req := newFramedGRPCRequest(t, "/"+gatewayService+"/Return", &gateway.ReturnRequest{Result: &gateway.Result{
+		Result:   &gateway.Result_Ref{Ref: &gateway.Ref{Id: "result"}},
+		Metadata: map[string][]byte{imageConfigKey: []byte(`{"config":{"Labels":{"owner":"forged","keep":"yes"}}}`)},
+	}})
+	req.Header.Set(gatewayBuildHeader, "build")
+	rec := httptest.NewRecorder()
+	b.handleStream(rec, req)
+	if !forwarded || rec.Header().Get("Grpc-Status") != "0" {
+		t.Fatalf("Return not forwarded: forwarded=%v status=%q", forwarded, rec.Header().Get("Grpc-Status"))
+	}
+}
+
+func TestGatewayDenialsRespectAbuseBudget(t *testing.T) {
+	for _, quota := range []bool{false, true} {
+		name := "policy denial"
+		if quota {
+			name = "solve quota"
+		}
+		t.Run(name, func(t *testing.T) {
+			b := newUnitTestBridge(t, &fakeClientLeg{})
+			b.policy.Control.Solve.AllowFrontendGateway = true
+			b.guard = newStreamAbuseGuard(Limits{DeniedStreamBudget: 1, DeniedStreamWindow: time.Minute})
+			t.Cleanup(func() { b.registry.Close(b.session.ID); b.closeAll(nil) })
+			g, d := b.registry.beginGatewayBuild(t.Context(), b.session, "build", testBuildkitSessionID, b.policy)
+			if d != nil {
+				t.Fatal(d)
+			}
+			if result := b.registry.admitSolve(b.session, testBuildkitSessionID, "build", nil, 0, 0); result != solveAdmissionSucceeded {
+				t.Fatal(result)
+			}
+			if quota {
+				for range maxGatewaySolvesPerBuild {
+					if !b.registry.admitGatewaySolve(g) {
+						t.Fatal("solve quota exhausted early")
+					}
+				}
+			}
+			for i := range 2 {
+				method, status := "Return", "7"
+				var message proto.Message = &gateway.ReturnRequest{}
+				if quota {
+					method, status, message = "Solve", "8", &gateway.SolveRequest{}
+				}
+				req := newFramedGRPCRequest(t, "/"+gatewayService+"/"+method, message)
+				req.Header.Set(gatewayBuildHeader, "build")
+				rec := httptest.NewRecorder()
+				b.handleStream(rec, req)
+				if got := rec.Header().Get("Grpc-Status"); got != status {
+					t.Fatalf("denial status=%q, want %q", got, status)
+				}
+				open := b.finalErr() == nil
+				if want := quota || i == 0; open != want {
+					t.Fatalf("tunnel open=%v after denial %d, want %v", open, i+1, want)
+				}
+			}
+		})
+	}
+}
+func (f gatewayLifecycleLeg) Close() error { return nil }
 
 type gatewayEOFBody struct {
 	io.ReadCloser
@@ -193,5 +322,48 @@ func TestGatewayIncomingCancellationStopsForwarding(t *testing.T) {
 	b.handleStream(httptest.NewRecorder(), req)
 	if !called {
 		t.Fatal("active request did not reach daemon transport")
+	}
+}
+
+func TestGatewayBuildRefLengthBudget(t *testing.T) {
+	t.Parallel()
+	for _, delta := range []int{-1, 0, 1} {
+		t.Run(fmt.Sprintf("limit%+d", delta), func(t *testing.T) {
+			ref := strings.Repeat("r", maxBuildkitRefBytes+delta)
+			called := false
+			wantForwardedRef := ""
+			leg := gatewayLifecycleLeg(func(req *http.Request) (*http.Response, error) {
+				called = true
+				if req.Header.Get(gatewayBuildHeader) != wantForwardedRef {
+					t.Error("gateway did not forward the scoped build ref")
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/grpc"}, "Grpc-Status": {"0"}}, Body: io.NopCloser(bytes.NewReader(grpcFrame(nil)))}, nil
+			})
+			b := newUnitTestBridge(t, leg)
+			wantForwardedRef = daemonBuildRef(b.session.Key, ref)
+			b.policy.Control.Solve.AllowFrontendGateway = true
+			t.Cleanup(func() { b.closeAll(nil) })
+			if delta <= 0 {
+				g, d := b.registry.beginGatewayBuild(t.Context(), b.session, ref, testBuildkitSessionID, b.policy)
+				if d != nil {
+					t.Fatal(d)
+				}
+				t.Cleanup(func() { b.registry.endGatewayBuild(g) })
+				if admission := b.registry.admitSolve(b.session, testBuildkitSessionID, ref, nil, 0, 0); admission != solveAdmissionSucceeded {
+					t.Fatalf("valid ref admission=%v", admission)
+				}
+			}
+			req := newFramedGRPCRequest(t, "/"+gatewayService+"/Ping", &gateway.PingRequest{})
+			req.Header.Set(gatewayBuildHeader, ref)
+			rec := httptest.NewRecorder()
+			b.handleStream(rec, req)
+			want := "0"
+			if delta > 0 {
+				want = "3"
+			}
+			if got := rec.Header().Get("Grpc-Status"); got != want || called != (delta <= 0) {
+				t.Fatalf("status=%q forwarded=%v, want status=%q forwarded=%v", got, called, want, delta <= 0)
+			}
+		})
 	}
 }

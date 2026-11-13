@@ -170,6 +170,9 @@ var caseVariantScanBodies = []string{
 	`{"a":{}} trailing`,
 	`{"A":1,"a":2}{"ignored":true}`,
 	`{"a":1,`,
+	`{"a"`,
+	`[`,
+	`"`,
 	`{bad}`,
 	`{"a":01}`,
 	`{"A":1,"a":2}`,
@@ -358,6 +361,8 @@ func FuzzDuplicateCaseVariantKeyScan(f *testing.F) {
 	f.Add([]byte(benchCaseVariantContainerUpdateBody))
 
 	f.Fuzz(func(t *testing.T, body []byte) {
+		// Spare capacity must not hide a slice extending past the input.
+		body = body[:len(body):len(body)]
 		scanErr := RejectDuplicateCaseVariantJSONKeys(body)
 
 		duplicate, decodeErr := decodeCaseVariantOracle(body)

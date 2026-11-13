@@ -12,14 +12,14 @@ Maintenance releases publish their versioned assets, Go module, chart digest and
 
    Use the active `dev/vX.Y` branch, or a `maintenance/X.Y.x` branch, for a prerelease. Use `main` for the current stable line. An older supported line uses its exact `maintenance/X.Y.x` branch head.
 
-   ```
+   ```bash
    git status            # must be clean
    git log --oneline -3  # confirm HEAD is what you intend to tag
    ```
 
 2. **Go checks**
 
-   ```
+   ```bash
    cd app
    go test ./...
    golangci-lint run
@@ -27,7 +27,7 @@ Maintenance releases publish their versioned assets, Go module, chart digest and
 
 3. **Vulnerability scan** — zero reachable vulnerabilities required before tagging
 
-   ```
+   ```bash
    # Install once: go install golang.org/x/vuln/cmd/govulncheck@latest
    cd app && govulncheck ./...
    ```
@@ -46,7 +46,7 @@ Maintenance releases publish their versioned assets, Go module, chart digest and
 
 6. **Sync release metadata** — sockguard does not hardcode its binary version in source. The binary's `sockguard version` output is injected at build time via goreleaser ldflags:
 
-   ```
+   ```text
    -X github.com/codeswhat/sockguard/v3/app/internal/version.Version={{.Version}}
    -X github.com/codeswhat/sockguard/v3/app/internal/version.Commit={{.FullCommit}}
    -X github.com/codeswhat/sockguard/v3/app/internal/version.BuildDate={{.CommitDate}}
@@ -92,7 +92,7 @@ This automatically triggers `release-from-tag.yml`.
 
 **Manual path** (fallback if you can't use the workflow):
 
-```
+```bash
 git tag -a v<version> -m "v<version>"
 git push origin v<version>
 ```
@@ -165,7 +165,7 @@ Chart publishing is isolated from the image release. No other job needs `publish
 1. It waits for the `release` job, then re-resolves the image's multi-arch manifest-list digest from GHCR and refuses any digest the release job did not publish.
 2. The tagged tree still has the prepublication empty `image.tag`, because `pin-chart-digest` writes the pin to the development branch only after verification. `publish-chart` applies the same `scripts/pin-chart-image-digest.mjs` pin to its own throwaway checkout (nothing is committed), runs `helm lint` and `helm package`, then `scripts/assert-chart-release.mjs` reads Chart.yaml and values back out of the package and requires chart `version` == `appVersion` == the tag, and `image.tag` == `<version>@<digest>`.
 3. `scripts/ci/chart-oci.sh push` never overwrites a version. It treats only a definite "not found" as absent and fails on anything else (auth, rate limit, network). Between `helm push` attempts it looks for the version again, so a push that errored after landing is adopted, not repeated. It reads the registry digest from helm's `Digest:` line.
-4. `chart-oci.sh verify-contents` pulls the published version back and runs `assert-chart-release.mjs` on it, whether this run pushed it or found it already there. A version whose contents don't match the tag and image digest is the one real error.
+4. `chart-oci.sh verify-contents` requires `CHART_PACKAGE` to point to this run's locally built package. It pulls the published version and compares every regular file path and its contents with that package, ignoring archive timestamps and compression metadata. Extra, missing, changed, duplicate or linked files fail before signing. It then runs `assert-chart-release.mjs` on the pulled chart to check the tag and image digest, whether this run pushed it or found it already there.
 5. It checks, through the packages API, that the package is public and linked to `CodesWhat/sockguard` (the `org.opencontainers.image.source` annotation helm sets from `Chart.yaml`'s `sources` is what links it), and fails with the settings URL if not.
 6. It signs the digest with cosign keyless (same workflow identity as the image) and verifies the signature. If the version already existed and its signature already verifies, it signs nothing.
 7. The `verify-chart` job runs the documented `cosign verify` against the chart through `scripts/verify-published-release.sh --chart-only`.
@@ -189,7 +189,18 @@ Rerunning the job is safe. An existing version is never overwritten:
 - Pushed but visibility check failed: fix the settings above and rerun. The rerun adopts the pushed version, re-checks its contents and signs it.
 - Pushed but unsigned (job died before or during signing): rerun. It checks the contents of the existing version, signs that digest and verifies it.
 - Already signed and verifying: rerun succeeds without signing again.
-- Existing version whose contents don't match the tag and image digest: the rerun fails. Delete that one package version in GitHub, then rerun, or hand-publish as above.
+- Existing version whose file contents differ from the locally built package or whose tag/image pin is wrong: the rerun fails. Delete that one package version in GitHub, then rerun, or hand-publish as above.
+
+---
+
+## Recovering a partially published release
+
+If the GoReleaser step dies mid-upload (network drop, runner shutdown, a 5xx from GitHub), the tag and a GitHub release with some assets can exist while others are missing. Don't delete the release or move the tag. After a release is published, rerun failed jobs only, never "Re-run all jobs", because that would replace archives whose digests users may already have verified.
+
+1. Open the failed `release-from-tag` run and confirm the `goreleaser` job is the one that failed, not signing or the Docker publish.
+2. Rerun the failed jobs on the same run, using "Re-run failed jobs" only. Never use "Re-run all jobs" once a release is published: `replace_existing_artifacts` would replace archives whose digests users may already have verified. GoReleaser is configured with `release.replace_existing_artifacts: true` (and `replace_existing_draft: true`), so it replaces assets that already exist under the same name instead of failing on them, and uploads the missing ones. A rerun replays the original tag commit, so it publishes the same source.
+3. Compare the release's asset list with the previous release's, or run `scripts/verify-published-release.sh --tag <tag>`, before announcing anything.
+4. If a rerun can't recover it (for example the release was deleted by hand), recreate the release from the tag and rerun, or build the missing assets locally from the tag with `goreleaser release --clean --release-notes=../release-notes.md` in `app/` and upload them with `gh release upload <tag> <files> --clobber`. Re-sign anything you upload by hand so the checksum and bundle files still match.
 
 ---
 
@@ -199,4 +210,4 @@ Do not delete the bad release or the tag — that breaks `go install` version pi
 
 1. Revert the merge commit that introduced the bug: `git revert <merge-sha>`
 2. Tag a patch release following the normal process
-3. Edit the bad release on GitHub: prepend a warning to the release notes and link to the patched version (e.g. _"⚠️ This release contains a known issue — upgrade to v<patch>."_)
+3. Edit the bad release on GitHub: prepend a warning to the release notes and link to the patched version (e.g. *"⚠️ This release contains a known issue — upgrade to v<patch>."*)

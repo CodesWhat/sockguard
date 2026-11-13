@@ -31,6 +31,11 @@ const (
 	// the eight characters come out of what the client may spell.
 	imageTagBareRepoMaxLen = imageTagRepoMaxLen - len("library/")
 
+	// imageTagPodmanBareRepoMaxLen is that bound on a Podman upstream's
+	// Docker-compatible routes, where a name with no slash completes to
+	// docker.io/library/<name> before the lookup.
+	imageTagPodmanBareRepoMaxLen = imageTagRepoMaxLen - len("docker.io/library/")
+
 	imageTagDenyNoRepo        = "owner policy denied image tag without a repo parameter: there is no target reference to authorize"
 	imageTagDenyAmbiguous     = "owner policy denied image tag with an ambiguous repo or tag parameter"
 	imageTagDenyDigest        = "owner policy denied image tag whose repo carries a digest"

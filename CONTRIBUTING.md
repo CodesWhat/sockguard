@@ -58,6 +58,18 @@ npm run dev --workspace=docs       # Dev server
 npm run build --workspace=docs     # Production build
 ```
 
+The website dev server runs at `http://localhost:3001`. Use the separate docs
+dev server at `http://localhost:3002/docs` when editing documentation. The
+website build copies the docs static export into `website/public/docs`, but
+the website dev server does not resolve those exported directory indexes like
+the production host does. A `/docs` 404 there does not indicate a docs build failure.
+
+For production routing checks, run `npm run build` from the repository root,
+then `npm run test:e2e --workspace=website`. Playwright starts its own static
+server against `website/out`, including the copied docs export and hosting headers.
+Next.js may generate `website/AGENTS.md` during development; that generated file
+is ignored, while the repository's instructions remain tracked.
+
 ## Adding a config field (Go proxy)
 
 New fields in `internal/config/config.go` need:

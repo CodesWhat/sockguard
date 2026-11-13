@@ -233,6 +233,7 @@ func TestSyntaxFrontendBuildKitFormats(t *testing.T) {
 		{"JSON key upper case", `{"SYNTAX":"` + frontend + `"}`, frontend},
 		{"JSON key mixed case", `{"sYnTaX":"` + frontend + `"}`, frontend},
 		{"JSON mixed case key after empty exact key", `{"syntax":"","SYNTAX":"` + frontend + `"}`, frontend},
+		{"JSON mixed case key after nonstring exact key", `{"syntax":42,"SYNTAX":"` + frontend + `"}`, frontend},
 		{"JSON nonstring mixed case key", `{"Syntax":42}`, ""},
 		{"JSON sibling number out of float range", `{"syntax":"` + frontend + `","x":1e999}`, frontend},
 		{"JSON syntax repeated as null", `{"syntax":"` + frontend + `","syntax":null}`, frontend},

@@ -39,6 +39,11 @@ func TestRunnerFixtureProcess(t *testing.T) {
 }
 
 func runFixtureFrontend() error {
+	if os.Getenv("RUNNER_FIXTURE_CASE") == "serve-error" {
+		// Never answers: only the serve failure can end the run early.
+		time.Sleep(30 * time.Second)
+		return nil
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	cc, err := h2conn.NewClientConn(&pipeConn{read: os.Stdin, write: os.Stdout}, nil)
@@ -61,9 +66,12 @@ func runFixtureFrontend() error {
 	if err != nil {
 		return err
 	}
-	if os.Getenv("RUNNER_FIXTURE_CASE") == "root-first" {
+	if scenario := os.Getenv("RUNNER_FIXTURE_CASE"); scenario == "root-first" || scenario == "root-first-process-error" {
 		// A frontend may still be finishing after the root reply arrives.
 		time.Sleep(75 * time.Millisecond)
+	}
+	if os.Getenv("RUNNER_FIXTURE_CASE") == "root-first-process-error" {
+		return errors.New("fixture frontend failed after Return")
 	}
 	return nil
 }
@@ -76,6 +84,7 @@ func TestRunOrchestration(t *testing.T) {
 	}{
 		{"success", "", true},
 		{"root-first", "", true},
+		{"root-first-process-error", "frontend process failed", true},
 		{"root-error", "root denied", true},
 		{"process-error", "frontend process failed", true},
 		{"cleanup-error", "verify frontend container cleanup", true},
@@ -87,9 +96,26 @@ func TestRunOrchestration(t *testing.T) {
 		{"image-rejected", "declares volumes", false},
 		{"session-refused", "proxy refused /session upgrade", false},
 		{"upgrade-refused", "proxy refused /grpc upgrade", false},
+		{"serve-error", "injected serve failure", true},
+		{"session-serve-error", "injected session serve failure", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			log := installRunnerFixture(t, tc.name)
+			sessionFailureInjected := make(chan struct{})
+			if tc.name == "serve-error" || tc.name == "session-serve-error" {
+				original := serveH2
+				t.Cleanup(func() { serveH2 = original })
+				serveH2 = func(ctx context.Context, conn net.Conn, config h2conn.ServerConfig) error {
+					if tc.name == "serve-error" && config.MaxConcurrentStreams == 16 {
+						return errors.New("injected serve failure")
+					}
+					if tc.name == "session-serve-error" && config.MaxConcurrentStreams == 8 {
+						close(sessionFailureInjected)
+						return errors.New("injected session serve failure")
+					}
+					return original(ctx, conn, config)
+				}
+			}
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			fixtureCtx, stopFixture := context.WithCancel(t.Context())
@@ -133,7 +159,9 @@ func TestRunOrchestration(t *testing.T) {
 					}
 					cc, err := h2conn.NewClientConn(upgraded, nil)
 					if err != nil {
-						t.Error(err)
+						if tc.name != "session-serve-error" {
+							t.Error(err)
+						}
 						return
 					}
 					defer func() { _ = cc.Close() }()
@@ -152,6 +180,12 @@ func TestRunOrchestration(t *testing.T) {
 				h2conn.Serve(fixtureCtx, upgraded, h2conn.ServerConfig{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					payload, err := readMessage(r.Body)
 					if err != nil {
+						// Session startup failure can cancel a control request mid-read.
+						select {
+						case <-sessionFailureInjected:
+							return
+						default:
+						}
 						t.Error(err)
 						rpcError(w, "3", "bad fixture request")
 						return
@@ -251,6 +285,7 @@ func TestRunOrchestration(t *testing.T) {
 			}))
 			defer func() { stopFixture(); server.Close(); connections.Wait() }()
 			var operations, stderr bytes.Buffer
+			started := time.Now()
 			err := Run(ctx, Options{Host: server.URL, Image: "example/frontend@sha256:" + strings.Repeat("a", 64), RuntimeContext: "isolated", ExportName: "example/output:fixture", Operations: &operations, Stderr: &stderr})
 			if tc.wantErr == "" && err != nil {
 				t.Fatalf("Run error = %v; frontend: %s", err, &stderr)
@@ -261,7 +296,11 @@ func TestRunOrchestration(t *testing.T) {
 			if strings.HasPrefix(tc.name, "canceled") && !errors.Is(err, context.Canceled) {
 				t.Errorf("lost cancellation outcome: %v", err)
 			}
-			if tc.launched {
+			if tc.name == "serve-error" || tc.name == "session-serve-error" {
+				if elapsed := time.Since(started); elapsed > 3*time.Second {
+					t.Errorf("Run took %v after the serve failure, want a prompt return", elapsed)
+				}
+			} else if tc.launched {
 				var record operationRecord
 				if err := json.NewDecoder(&operations).Decode(&record); err != nil || !strings.HasPrefix(record.Digest, "sha256:") {
 					t.Fatalf("missing operation evidence: %v, %+v", err, record)
@@ -281,6 +320,14 @@ func TestRunOrchestration(t *testing.T) {
 			calls, readErr := os.ReadFile(log)
 			if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
 				t.Fatal(readErr)
+			}
+			if tc.name == "serve-error" {
+				// The failure cancels the run, which can kill the fake docker
+				// before it logs; only the cleanup calls are certain.
+				if !strings.Contains(string(calls), "\trm\t-f\t") {
+					t.Errorf("missing cleanup evidence: %s", calls)
+				}
+				return
 			}
 			if got := strings.Contains(string(calls), "\trun\t"); got != tc.launched {
 				t.Errorf("launched=%v, want %v: %s", got, tc.launched, calls)

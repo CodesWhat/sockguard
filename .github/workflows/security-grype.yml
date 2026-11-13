@@ -47,7 +47,7 @@ jobs:
       # github.com/actions endpoints are the entire footprint. Stays audit
       # like the rest of this file's jobs pending stage 2 review.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
@@ -107,10 +107,10 @@ jobs:
     steps:
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
-          disable-sudo: true
+          disable-sudo-and-containers: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -164,7 +164,7 @@ jobs:
       # Chainguard's CDN endpoints — not a fixed set. Same reasoning as
       # ci-verify.yml's "Docker Build" job. Revisit in stage 2.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
@@ -181,7 +181,7 @@ jobs:
         # Docker Hub's toomanyrequests limit on shared runner IPs. Skipped
         # unless both credentials are present (fork PRs, Dependabot).
         if: ${{ env.DOCKERHUB_LOGIN == 'true' }}
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -200,6 +200,7 @@ jobs:
         uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439  # v7.4.2
         id: grype
         with:
+          grype-version: v0.121.0
           image: sockguard:grype-scan
           severity-cutoff: high
           fail-build: true
@@ -208,7 +209,7 @@ jobs:
       - name: Upload Grype SARIF to code scanning
         # Code scanning uploads require GHAS, not available on free private repos.
         if: always() && github.event.repository.visibility == 'public'
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee  # v4.39.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370  # v4.39.1
         with:
           sarif_file: ${{ steps.grype.outputs.sarif }}
           category: grype-image
@@ -234,10 +235,10 @@ jobs:
     steps:
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
-          disable-sudo: true
+          disable-sudo-and-containers: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -252,6 +253,7 @@ jobs:
         uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439  # v7.4.2
         id: grype-deps
         with:
+          grype-version: v0.121.0
           path: .
           severity-cutoff: high
           fail-build: true
@@ -259,7 +261,7 @@ jobs:
 
       - name: Upload Grype dependency SARIF
         if: always() && github.event.repository.visibility == 'public'
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee  # v4.39.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370  # v4.39.1
         with:
           sarif_file: ${{ steps.grype-deps.outputs.sarif }}
           category: grype-deps
@@ -292,7 +294,7 @@ jobs:
       # domain in the harden-runner log to show why. Revisit in stage 2,
       # when the container jobs get their egress characterised properly.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
@@ -311,6 +313,29 @@ jobs:
       # Go 1.27. A docker:// step is not an option: the repository's
       # allowed-actions policy rejects it and the whole workflow fails to
       # start.
+      # The pin comment above is only prose. This step makes it a gate: gosec's
+      # image runs GOTOOLCHAIN=local, so a go.mod `go` line newer than the
+      # image's Go makes gosec scan nothing and still exit with an empty SARIF.
+      # GOSEC_IMAGE_GO is the Go the pinned image above was built with; raise it
+      # in the same change that moves the pin.
+      - name: Guard gosec image Go version
+        shell: bash
+        env:
+          GOSEC_IMAGE_GO: "1.27.0"
+        run: |
+          set -euo pipefail
+          mod_go="$(awk '$1 == "go" {print $2; exit}' go.mod)"
+          if [ -z "${mod_go}" ]; then
+            echo "::error::could not read the go directive from go.mod"
+            exit 1
+          fi
+          newest="$(printf '%s\n%s\n' "${mod_go}" "${GOSEC_IMAGE_GO}" | sort -V | tail -n 1)"
+          if [ "${newest}" != "${GOSEC_IMAGE_GO}" ]; then
+            echo "::error::go.mod requires Go ${mod_go} but the pinned gosec image ships Go ${GOSEC_IMAGE_GO}; gosec would load no packages and report a clean empty scan. Move the securego/gosec pin to an action commit whose image has Go ${mod_go} or newer, then raise GOSEC_IMAGE_GO."
+            exit 1
+          fi
+          echo "go.mod Go ${mod_go} <= gosec image Go ${GOSEC_IMAGE_GO}"
+
       - name: Run Gosec
         uses: securego/gosec@57f161386e11e13e4c8a37255bc1a6502993d079  # action.yml pins the 2.29.0 image
         with:
@@ -318,7 +343,7 @@ jobs:
 
       - name: Upload Gosec SARIF
         if: always() && github.event.repository.visibility == 'public'
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee  # v4.39.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370  # v4.39.1
         with:
           sarif_file: gosec-results.sarif
           category: gosec
@@ -350,7 +375,7 @@ jobs:
       # same permanent-audit posture for the same reason: it queries a live,
       # third-party analysis surface).
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
@@ -369,7 +394,7 @@ jobs:
         # Docker Hub's toomanyrequests limit on shared runner IPs. Skipped
         # unless both credentials are present (fork PRs, Dependabot).
         if: ${{ env.DOCKERHUB_LOGIN == 'true' }}
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -421,7 +446,7 @@ jobs:
       version: ${{ steps.latest_release.outputs.version }}
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
@@ -462,7 +487,7 @@ jobs:
       # Stays audit, same reasoning as grype-image above: pulls a published
       # image from GHCR, no fixed allowlist yet.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
@@ -470,7 +495,7 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
 
       - name: Log in to GHCR
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -505,6 +530,7 @@ jobs:
         uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439  # v7.4.2
         id: grype
         with:
+          grype-version: v0.121.0
           image: ${{ steps.platform_digest.outputs.ref }}
           severity-cutoff: high
           fail-build: true
@@ -512,7 +538,7 @@ jobs:
 
       - name: Upload Grype SARIF to code scanning
         if: always() && github.event.repository.visibility == 'public'
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee  # v4.39.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370  # v4.39.1
         with:
           sarif_file: ${{ steps.grype.outputs.sarif }}
           category: grype-published-release-${{ matrix.slug }}

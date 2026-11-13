@@ -29,10 +29,15 @@ func (c RequestBodyConfig) ToFilterOptions() filter.PolicyConfig {
 	// operator could widen and then forget. The libpod volume inspector is
 	// wired the same way from libpod_container_create.allowed_bind_mounts,
 	// keeping each API family on its own allowlist.
+	service := c.Service.ToFilterOptions()
+	service.AllowTmpfsPrivilegedOptions = c.ContainerCreate.AllowTmpfsPrivilegedOptions
+
 	volume := c.Volume.ToFilterOptions()
 	volume.AllowedBindMounts = c.ContainerCreate.AllowedBindMounts
+	volume.AllowTmpfsPrivilegedOptions = c.ContainerCreate.AllowTmpfsPrivilegedOptions
 	libpodVolume := c.LibpodVolume.ToFilterOptions()
 	libpodVolume.AllowedBindMounts = c.LibpodContainerCreate.AllowedBindMounts
+	libpodVolume.AllowTmpfsPrivilegedOptions = c.LibpodContainerCreate.AllowTmpfsPrivilegedOptions
 
 	return filter.PolicyConfig{
 		ContainerCreate:       containerCreate,
@@ -48,11 +53,12 @@ func (c RequestBodyConfig) ToFilterOptions() filter.PolicyConfig {
 		Network:               c.Network.ToFilterOptions(),
 		Secret:                c.Secret.ToFilterOptions(),
 		Config:                c.Config.ToFilterOptions(),
-		Service:               c.Service.ToFilterOptions(),
+		Service:               service,
 		Swarm:                 c.Swarm.ToFilterOptions(),
 		Node:                  c.Node.ToFilterOptions(),
 		Plugin:                c.Plugin.ToFilterOptions(),
 		LibpodPodCreate:       c.LibpodPodCreate.ToFilterOptions(),
+		LibpodPlayKube:        c.LibpodPlayKube.ToFilterOptions(),
 		LibpodVolume:          libpodVolume,
 		LibpodNetwork:         c.LibpodNetwork.ToFilterOptions(),
 		LibpodSecret:          c.LibpodSecret.ToFilterOptions(),
@@ -71,6 +77,15 @@ func (c ContainerRemoveRequestBodyConfig) ToFilterOptions() filter.ContainerRemo
 		AllowForce:         c.AllowForce,
 		AllowRemoveVolumes: c.AllowRemoveVolumes,
 		AllowRemoveLinks:   c.AllowRemoveLinks,
+	}
+}
+
+// ToFilterOptions converts libpod_play_kube config into filter middleware
+// options.
+func (c LibpodPlayKubeRequestBodyConfig) ToFilterOptions() filter.LibpodPlayKubeOptions {
+	return filter.LibpodPlayKubeOptions{
+		AllowedLogDrivers:         c.AllowedLogDrivers,
+		AllowedLogEndpointOptions: c.AllowedLogEndpointOptions,
 	}
 }
 
@@ -124,6 +139,7 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 		DenyUnconfinedAppArmor:            c.DenyUnconfinedAppArmor,
 		AllowHostUserNS:                   c.AllowHostUserNS,
 		AllowHostCgroupNS:                 c.AllowHostCgroupNS,
+		AllowHostCgroupNSOnCgroupV1:       c.AllowHostCgroupNSOnCgroupV1,
 		RestrictNamespaceSharing:          c.RestrictNamespaceSharing,
 		AllowedNamespaceSharingContainers: c.AllowedNamespaceSharingContainers,
 		DenyNamespacePathMode:             c.DenyNamespacePathMode,
@@ -136,6 +152,8 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 		DenyUnconfinedSystemPaths:         c.DenyUnconfinedSystemPaths,
 		AllowTmpfsPrivilegedOptions:       c.AllowTmpfsPrivilegedOptions,
 		AllowLogPath:                      c.AllowLogPath,
+		AllowedLogDrivers:                 c.AllowedLogDrivers,
+		AllowedLogEndpointOptions:         c.AllowedLogEndpointOptions,
 	}
 }
 
@@ -177,7 +195,10 @@ func (c LibpodContainerCreateRequestBodyConfig) ToFilterOptions() filter.LibpodC
 		ImageTrust:                        c.ImageTrust.toFilterOptions(),
 		AllowSystemdMode:                  c.AllowSystemdMode,
 		AllowCustomIDMappings:             c.AllowCustomIDMappings,
+		AllowTmpfsPrivilegedOptions:       c.AllowTmpfsPrivilegedOptions,
 		AllowLogPath:                      c.AllowLogPath,
+		AllowedLogDrivers:                 c.AllowedLogDrivers,
+		AllowedLogEndpointOptions:         c.AllowedLogEndpointOptions,
 		AllowedRuntimes:                   c.AllowedRuntimes,
 		AllowDeviceCgroupRules:            c.AllowDeviceCgroupRules,
 		AllowedDeviceCgroupRules:          c.AllowedDeviceCgroupRules,
@@ -185,6 +206,8 @@ func (c LibpodContainerCreateRequestBodyConfig) ToFilterOptions() filter.LibpodC
 		DenyUnconfinedSystemPaths:         c.DenyUnconfinedSystemPaths,
 		AllowUnifiedCgroupSettings:        c.AllowUnifiedCgroupSettings,
 		AllowEnvHost:                      c.AllowEnvHost,
+		AllowStorageOpts:                  c.AllowStorageOpts,
+		AllowRuntimeAnnotations:           c.AllowRuntimeAnnotations,
 	}
 }
 
@@ -212,6 +235,9 @@ func (c ImageTrustConfig) toFilterOptions() filter.ImageTrustOptions {
 		AllowedKeyless:        kl,
 		RequireRekorInclusion: c.RequireRekorInclusion,
 		VerifyTimeout:         c.VerifyTimeout,
+		AllowAllRegistries:    c.AllowAllRegistries,
+		AllowOfficial:         c.AllowOfficial,
+		AllowedRegistries:     c.AllowedRegistries,
 	}
 }
 
@@ -359,6 +385,8 @@ func (c ServiceRequestBodyConfig) ToFilterOptions() filter.ServiceOptions {
 		ImageTrust:                 c.ImageTrust.toFilterOptions(),
 		RequireCPULimit:            c.RequireCPULimit,
 		RequireCPULimitHard:        c.RequireCPULimitHard,
+		AllowedLogDrivers:          c.AllowedLogDrivers,
+		AllowedLogEndpointOptions:  c.AllowedLogEndpointOptions,
 	}
 }
 

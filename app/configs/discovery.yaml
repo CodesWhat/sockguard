@@ -51,6 +51,10 @@ clients:
     - name: discovery
       mode: audit
       rules:
+        - match: { method: GET, path: "/_ping" }
+          action: allow
+        - match: { method: HEAD, path: "/_ping" }
+          action: allow
         - match: { method: "*", path: "/**" }
           action: deny
           reason: "discovery preset — logged only, not enforced"

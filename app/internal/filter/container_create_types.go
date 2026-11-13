@@ -140,9 +140,11 @@ type containerCreateHostConfig struct {
 }
 
 // containerCreateLogConfig mirrors the Docker API HostConfig.LogConfig object,
-// narrowed to the option map the policy inspects. Type, the driver name, isn't
-// decoded: the one option the policy refuses is refused under every driver.
+// narrowed to the fields the policy inspects. The log path gate refuses its
+// option under every driver, so it reads Config alone; Type is the driver name
+// allowed_log_drivers checks.
 type containerCreateLogConfig struct {
+	Type   string            `json:"Type"`
 	Config map[string]string `json:"Config"`
 }
 
@@ -352,6 +354,7 @@ func (r *containerCreateRequest) resetForReuse() {
 	h.Runtime = ""
 	h.MaskedPaths = nil
 	h.ReadonlyPaths = nil
+	h.LogConfig.Type = ""
 	clear(h.LogConfig.Config)
 }
 

@@ -36,7 +36,7 @@ names=()
 while IFS= read -r -d '' dir; do
   rel="${dir#internal/}"
   case "${rel}" in
-    */testdata|*/testdata/*|testdata|testdata/*) continue ;;
+    */testdata | */testdata/* | testdata | testdata/*) continue ;;
   esac
   # Matrix name: the path with / turned into -, so admin stays admin and
   # buildkitproto/pb becomes buildkitproto-pb. The badge job strips the

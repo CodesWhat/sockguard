@@ -2,6 +2,7 @@ package filter
 
 import (
 	"fmt"
+	"strings"
 )
 
 // libpod_container_create_rootfs.go gates the host-filesystem fields of
@@ -155,6 +156,39 @@ func (p libpodContainerCreatePolicy) denyOverlayVolumeReason(volumes []libpodOve
 	return ""
 }
 
+// denyNamedVolumeDriverOptionsReason holds the "volume-opt" options of a
+// volumes entry to the same host-path rules as POST /libpod/volumes/create.
+//
+// When a container names a volume that doesn't exist, Podman creates it and
+// turns every option that starts with "volume-opt" into a driver option, split
+// on the first two "=" (libpod/runtime_ctr.go, util.ParseDriverOpts). The
+// prefix is not followed by "=" in the check, so "volume-optx=device=/etc"
+// counts. On the local driver those options are mount options, so
+// "volume-opt=o=bind" and "volume-opt=device=/etc" bind the host's /etc into
+// the new volume. An option Podman can't split is an error on its side and is
+// left to it.
+func denyNamedVolumeDriverOptionsReason(options []string, allowedBindMounts []string) string {
+	var driverOpts map[string]string
+	for _, option := range options {
+		if !strings.HasPrefix(option, "volume-opt") {
+			continue
+		}
+		_, rest, _ := strings.Cut(option, "=")
+		key, value, ok := strings.Cut(rest, "=")
+		if !ok {
+			continue
+		}
+		if driverOpts == nil {
+			driverOpts = make(map[string]string)
+		}
+		driverOpts[key] = value
+	}
+	if len(driverOpts) == 0 {
+		return ""
+	}
+	return denyLocalVolumeBindDeviceReason("", driverOpts, allowedBindMounts, "libpod container create")
+}
+
 // denyNamedVolumeOverlayReason holds every upper and work directory a volumes
 // entry names in its Options to allowedBindMounts. The volume itself is named,
 // not a host path, and stays unchecked here, but Podman overlays it when one of
@@ -168,6 +202,9 @@ func (p libpodContainerCreatePolicy) denyNamedVolumeOverlayReason(volumes []libp
 			return reason
 		}
 		if denyReason := denyOverlayDirOptionsReason(volume.Options, p.allowedBindMounts, "libpod container create"); denyReason != "" {
+			return denyReason
+		}
+		if denyReason := denyNamedVolumeDriverOptionsReason(volume.Options, p.allowedBindMounts); denyReason != "" {
 			return denyReason
 		}
 	}

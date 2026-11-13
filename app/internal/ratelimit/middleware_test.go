@@ -843,6 +843,11 @@ func TestGlobalInflight_CountsPassThroughInWarnMode(t *testing.T) {
 			// Use a GlobalInflightTracker directly so we can assert Current()
 			// while a request is in flight through the throttleHandler.
 			tracker := &GlobalInflightTracker{}
+			// Pre-hold one slot so the low floor (floor(2*0.5) = 1) is already
+			// reached when the request under test arrives.
+			if ok, _, _ := tracker.Acquire(PriorityHigh, 2); !ok {
+				t.Fatal("setup: high acquire denied")
+			}
 
 			enter := make(chan struct{})
 			leave := make(chan struct{})
@@ -861,10 +866,10 @@ func TestGlobalInflight_CountsPassThroughInWarnMode(t *testing.T) {
 				compiled: map[string]*compiledProfile{
 					"scraper": {priority: PriorityLow},
 				},
-				// globalMax=1, low priority threshold = floor(1*0.5) = 0, so ANY
-				// in-flight request already exceeds the low floor and the gate denies.
+				// globalMax=2, low priority threshold = floor(2*0.5) = 1, and one
+				// slot is already held, so the gate denies.
 				globalTracker: tracker,
-				globalMax:     1,
+				globalMax:     2,
 				resolve:       resolveProfileFn("scraper"),
 			}
 
@@ -883,18 +888,18 @@ func TestGlobalInflight_CountsPassThroughInWarnMode(t *testing.T) {
 			// request is in-flight at this point.
 			<-enter
 
-			// The global gauge MUST be 1 during the pass-through.
-			if got := tracker.Current(); got != 1 {
-				t.Errorf("mode=%s: global inflight during pass-through = %d, want 1", mode, got)
+			// The global gauge MUST count the pass-through (held slot + request).
+			if got := tracker.Current(); got != 2 {
+				t.Errorf("mode=%s: global inflight during pass-through = %d, want 2", mode, got)
 			}
 
 			// Release the handler and wait for the goroutine to finish.
 			close(leave)
 			<-done
 
-			// After the request completes the gauge must return to 0.
-			if got := tracker.Current(); got != 0 {
-				t.Errorf("mode=%s: global inflight after completion = %d, want 0", mode, got)
+			// After the request completes only the pre-held slot remains.
+			if got := tracker.Current(); got != 1 {
+				t.Errorf("mode=%s: global inflight after completion = %d, want 1", mode, got)
 			}
 
 			// The request should have passed through (200) with a would_deny decision.

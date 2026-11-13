@@ -1,12 +1,15 @@
 package ownership
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 
+	"github.com/codeswhat/sockguard/v3/app/internal/dockerresource"
 	"github.com/codeswhat/sockguard/v3/app/internal/logging"
 	"github.com/codeswhat/sockguard/v3/app/internal/upstreamflavor"
 )
@@ -50,6 +53,18 @@ func TestBuildImageDestinations(t *testing.T) {
 		{name: "native route keeps a name with a registry", query: "t=quay.io%2Fteam%2Fapp", path: "/libpod/build", want: []imageDestination{{target: "quay.io/team/app:latest"}}},
 		{name: "output that names nothing", query: outputs(`[{"Type":"local","Attrs":{"dest":"-"}}]`), path: "/build"},
 		{name: "empty outputs", query: "outputs=", path: "/build"},
+		{name: "pull switched off", query: "pull=0&pull=false&pull=&pull=none&pull=No", path: "/build"},
+		{name: "pull requested", query: "pull=1", path: "/build", wantReason: buildDenyPull},
+		{name: "pull requested on the native route", query: "t=a&pull=true", path: "/libpod/build", wantReason: buildDenyPull},
+		{name: "pull requested under another spelling", query: "PULL=yes", path: "/build", wantReason: buildDenyPull},
+		{name: "pull requested behind a switched-off one", query: "pull=0&pull=1", path: "/build", wantReason: buildDenyPull},
+		{name: "pullpolicy that doesn't pull", query: "pullpolicy=missing&PullPolicy=never&pullpolicy=&pullpolicy=false", path: "/libpod/build"},
+		{name: "pullpolicy always", query: "pullpolicy=always", path: "/libpod/build", wantReason: buildDenyPull},
+		{name: "pullpolicy ifnewer", query: "pullpolicy=ifnewer", path: "/libpod/build", wantReason: buildDenyPull},
+		{name: "pullpolicy newer", query: "pullpolicy=newer", path: "/libpod/build", wantReason: buildDenyPull},
+		{name: "pullpolicy true", query: "PullPolicy=true", path: "/build", wantReason: buildDenyPull},
+		{name: "pullpolicy always behind a missing one", query: "pullpolicy=missing&pullpolicy=Always", path: "/libpod/build", wantReason: buildDenyPull},
+		{name: "pull=never is a pull on dockerd", query: "pull=never", path: "/build", wantReason: buildDenyPull},
 		{name: "empty manifest", query: "manifest=", path: "/libpod/build"},
 
 		{name: "semicolon separator", query: "t=mine;t=theirs", path: "/build", wantReason: buildDenyUnreadableQuery},
@@ -118,7 +133,7 @@ func TestBuildAuthorizesTheNamesItAssigns(t *testing.T) {
 		{name: "name the caller's image holds", path: "/build", query: "t=mine%2Fapp", wantStatus: http.StatusOK},
 		{name: "name nothing holds", path: "/build", query: "t=mine%2Fnew%3Av2", wantStatus: http.StatusOK},
 		{name: "no name", path: "/build", query: "q=1", wantStatus: http.StatusOK},
-		{name: "native route denial carries the libpod prefix", path: "/v5.0.0/libpod/build", query: "t=theirs%2Fapp%3Av1", wantStatus: http.StatusForbidden, wantReason: "libpod " + heldByAnotherOwner},
+		{name: "native build is refused before destination lookup", path: "/v5.0.0/libpod/build", query: "t=theirs%2Fapp%3Av1", wantStatus: http.StatusForbidden, wantReason: buildDenyPodman},
 		{name: "unreadable name", path: "/build", query: "T=theirs%2Fapp", wantStatus: http.StatusForbidden, wantReason: buildDenyAmbiguousTag},
 	}
 	for _, tt := range tests {
@@ -214,5 +229,117 @@ func TestBuildNameDenialFollowsRolloutModes(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestBuildImageDestinationsAtNameBudget(t *testing.T) {
+	t.Parallel()
+	for _, route := range []struct {
+		name, path string
+		flavor     upstreamflavor.Flavor
+	}{
+		{name: "Docker", path: "/build", flavor: upstreamflavor.Docker},
+		{name: "Podman", path: "/libpod/build", flavor: upstreamflavor.Podman},
+	} {
+		t.Run(route.name, func(t *testing.T) {
+			for _, n := range []int{buildMaxTags - 1, buildMaxTags, buildMaxTags + 1} {
+				t.Run(fmt.Sprint(n), func(t *testing.T) {
+					query := url.Values{}
+					for i := range n {
+						query.Add("t", fmt.Sprintf("registry.example/team/app:v%d", i))
+					}
+					refs, reason := buildImageDestinations(query.Encode(), route.path, route.flavor)
+					if n > buildMaxTags {
+						if refs != nil || reason != buildDenyTooManyTags {
+							t.Fatalf("overflow = (%v,%q)", refs, reason)
+						}
+						return
+					}
+					if reason != "" || refs == nil || len(refs.destinations) != n {
+						t.Fatalf("%d valid names: refs=%v reason=%q", n, refs, reason)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestOwnerScopedPodmanBuildsRefuseBeforeSideEffects(t *testing.T) {
+	t.Parallel()
+	routes := []struct {
+		name, path string
+		flavor     upstreamflavor.Flavor
+	}{
+		{"compat", "/build", upstreamflavor.Podman},
+		{"versioned compat", "/v1.45/build", upstreamflavor.Podman},
+		{"native", "/libpod/build", upstreamflavor.Podman},
+		{"daemon host", "/libpod/local/build", upstreamflavor.Podman},
+		{"versioned native", "/v6.2.0/libpod/build", upstreamflavor.Podman},
+		{"native path without flavor hint", "/libpod/build", upstreamflavor.Docker},
+	}
+	for _, route := range routes {
+		for _, mode := range []string{"enforce", "warn", "audit"} {
+			for _, query := range []string{"", "pullpolicy=never", "pullpolicy=missing&platform=linux%2Farm64", "pull=0&t=mine%2Fapp", "labels=not-json&manifest=mine"} {
+				t.Run(route.name+"/"+mode+"/"+query, func(t *testing.T) {
+					t.Parallel()
+					fi := fakeInspector{}
+					forwarded := false
+					inspections := 0
+					handler := middlewareWithDeps(testLogger(), Options{Owner: "job-123", UpstreamFlavor: route.flavor},
+						func(ctx context.Context, kind dockerresource.Kind, name string) (map[string]string, bool, error) {
+							inspections++
+							return fi.inspectResource(ctx, kind, name)
+						}, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						forwarded = true
+						w.WriteHeader(http.StatusAccepted)
+					}))
+					body := strings.NewReader("FROM docker-archive:base.tar\n")
+					req := httptest.NewRequest(http.MethodPost, route.path+"?"+query, body)
+					meta := &logging.RequestMeta{RolloutMode: mode}
+					req = req.WithContext(logging.WithMeta(req.Context(), meta))
+					rec := httptest.NewRecorder()
+					handler.ServeHTTP(rec, req)
+					if rec.Code != http.StatusForbidden || forwarded || inspections != 0 {
+						t.Fatalf("status=%d forwarded=%v inspections=%d; want 403 without upstream access; body: %s", rec.Code, forwarded, inspections, rec.Body.String())
+					}
+					if req.URL.RawQuery != query || body.Len() != len("FROM docker-archive:base.tar\n") {
+						t.Fatal("refused build mutated its query or consumed its context")
+					}
+					if meta.ReasonCode != reasonCodeOwnerPolicyDeniedAccess || !strings.Contains(meta.Reason, "Podman build") || meta.Decision != logging.DecisionDeny {
+						t.Fatalf("refusal metadata = %+v", meta)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestPodmanBuildRefusalPreservesSupportedBuilds(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, path, owner string
+		flavor            upstreamflavor.Flavor
+	}{
+		{"Docker owner", "/build", "job-123", upstreamflavor.Docker},
+		{"versioned Docker owner", "/v1.45/build", "job-123", upstreamflavor.Docker},
+		{"Podman compat without owner", "/build", "", upstreamflavor.Podman},
+		{"Podman native without owner", "/libpod/build", "", upstreamflavor.Podman},
+		{"Podman daemon host without owner", "/libpod/local/build", "", upstreamflavor.Podman},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			forwarded := false
+			fi := fakeInspector{}
+			handler := middlewareWithDeps(testLogger(), Options{Owner: tt.owner, UpstreamFlavor: tt.flavor}, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				forwarded = true
+				w.WriteHeader(http.StatusAccepted)
+			}))
+			req := httptest.NewRequest(http.MethodPost, tt.path+"?pull=0", strings.NewReader("FROM scratch\n"))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusAccepted || !forwarded {
+				t.Fatalf("status=%d forwarded=%v, want accepted by ownership; body: %s", rec.Code, forwarded, rec.Body.String())
+			}
+		})
 	}
 }

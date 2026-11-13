@@ -207,6 +207,7 @@ func TestServeChainCompatMountFieldsNeedTheAllowlist(t *testing.T) {
 		{
 			name:        "compat tmpfs mount with no injected options reaches the daemon",
 			send:        mounts(`{"Type":"tmpfs","Target":"/scratch"}`),
+			configure:   func(body *config.RequestBodyConfig) { body.ContainerCreate.AllowTmpfsPrivilegedOptions = true },
 			wantStatus:  http.StatusCreated,
 			wantCreated: created("tmpfs=/scratch"),
 		},
@@ -380,6 +381,51 @@ func TestServeChainCompatMountFieldsNeedTheAllowlist(t *testing.T) {
 				if err := json.Unmarshal(body, &denial); err != nil || denial.Reason != tt.wantReason {
 					t.Errorf("body = %s, want reason %q", body, tt.wantReason)
 				}
+			}
+		})
+	}
+}
+
+// TestServeChainCompatMountCommaFollowsTheUpstreamFlavor pins that the comma
+// refusal on HostConfig.Mounts fields is a Podman-only gate. dockerd reads the
+// structured Mount and never rebuilds the string Podman re-splits, so a comma
+// in a destination is a literal character there and the create is forwarded.
+// A Podman upstream, and the flavor left to the probe against a Podman-shaped
+// daemon, still refuse it.
+func TestServeChainCompatMountCommaFollowsTheUpstreamFlavor(t *testing.T) {
+	const body = `{"Image":"alpine","HostConfig":{"Mounts":[{"Type":"tmpfs","Target":"/scratch,exec,suid,dev"}]}}`
+	tests := []struct {
+		name       string
+		flavor     string
+		docker     bool
+		failProbe  bool
+		wantStatus int
+		wantSeen   int
+	}{
+		{name: "docker upstream forwards the literal comma", flavor: "docker", docker: true, wantStatus: http.StatusCreated, wantSeen: 1},
+		{name: "explicit docker with a failed probe keeps the refusal", flavor: "docker", docker: true, failProbe: true, wantStatus: http.StatusForbidden},
+		{name: "podman upstream refuses it", flavor: "podman", wantStatus: http.StatusForbidden},
+		{name: "probed podman-shaped daemon refuses it", flavor: "auto", wantStatus: http.StatusForbidden},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			daemon := newLibpodRootfsChainDaemon()
+			daemon.docker = tt.docker
+			daemon.versionFails = tt.failProbe
+			addr := newEngineChain(t, "compatcomma", daemon, func(cfg *config.Config) {
+				cfg.Upstream.Flavor = tt.flavor
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/containers/create"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			})
+
+			status, resp := sendNamespaceChainRequest(t, "http://"+addr+"/v1.41/containers/create", body)
+			if status != tt.wantStatus {
+				t.Errorf("status = %d, want %d; body: %s", status, tt.wantStatus, resp)
+			}
+			if got := len(daemon.seen()); got != tt.wantSeen {
+				t.Errorf("daemon created %d containers, want %d", got, tt.wantSeen)
 			}
 		})
 	}

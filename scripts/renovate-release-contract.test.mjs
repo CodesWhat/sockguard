@@ -141,6 +141,15 @@ function runResolver(baseBranchPatterns, defaultBranch = "main") {
   });
 }
 
+describe("Renovate concurrency limits", () => {
+  it("caps open PRs and branches so Renovate cannot flood the runner pool", () => {
+    const config = renovateConfig();
+    assert.ok(Number.isInteger(config.prConcurrentLimit) && config.prConcurrentLimit > 0);
+    assert.ok(Number.isInteger(config.branchConcurrentLimit) && config.branchConcurrentLimit > 0);
+    assert.ok(config.branchConcurrentLimit >= config.prConcurrentLimit);
+  });
+});
+
 describe("active development branch resolution", () => {
   it("resolves the repository's own configured branch", () => {
     const result = spawnSync("bash", [resolve(repoRoot, "scripts/ci/active-dev-branch.sh")], {

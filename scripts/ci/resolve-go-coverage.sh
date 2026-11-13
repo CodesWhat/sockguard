@@ -2,8 +2,8 @@
 set -euo pipefail
 
 fail() {
-	echo "::error::$1" >&2
-	exit 1
+  echo "::error::$1" >&2
+  exit 1
 }
 
 coverage_repository="${GITHUB_REPOSITORY:?}"
@@ -17,17 +17,17 @@ coverage_sha="${COVERAGE_EXPECTED_SHA:?}"
 
 coverage_metadata="$(gh api "repos/${coverage_repository}/actions/runs/${coverage_run}")"
 if ! jq -e --arg run "$coverage_run" --arg sha "$coverage_sha" \
-	'(.id | tostring) == $run and .head_sha == $sha' <<<"$coverage_metadata" >/dev/null; then
-	fail "Run identity does not match the intended coverage commit"
+  '(.id | tostring) == $run and .head_sha == $sha' <<<"$coverage_metadata" >/dev/null; then
+  fail "Run identity does not match the intended coverage commit"
 fi
 
 # A selected-job rerun can reuse Build & Test from an earlier attempt. Its
 # immutable artifact still belongs to that producer attempt, not this job's.
 coverage_pages="$(gh api --paginate --slurp \
-	"repos/${coverage_repository}/actions/runs/${coverage_run}/artifacts?per_page=100")"
+  "repos/${coverage_repository}/actions/runs/${coverage_run}/artifacts?per_page=100")"
 coverage_selection="$(jq -r \
-	--arg run "$coverage_run" --arg sha "$coverage_sha" \
-	--arg prefix "go-test-${coverage_run}-" --argjson current "$coverage_attempt" '
+  --arg run "$coverage_run" --arg sha "$coverage_sha" \
+  --arg prefix "go-test-${coverage_run}-" --argjson current "$coverage_attempt" '
 	[.[] | .artifacts[]
 	 | select(.expired == false)
 	 | select((.workflow_run.id | tostring) == $run and .workflow_run.head_sha == $sha)
@@ -43,13 +43,13 @@ IFS=$'\t' read -r coverage_id coverage_name coverage_producer <<<"$coverage_sele
 [[ $coverage_id =~ ^[1-9][0-9]*$ ]] || fail "Invalid resolved artifact ID"
 
 {
-	printf 'artifact_id=%s\n' "$coverage_id"
-	printf 'artifact_name=%s\n' "$coverage_name"
-	printf 'producer_attempt=%s\n' "$coverage_producer"
+  printf 'artifact_id=%s\n' "$coverage_id"
+  printf 'artifact_name=%s\n' "$coverage_name"
+  printf 'producer_attempt=%s\n' "$coverage_producer"
 } >>"${GITHUB_OUTPUT:?}"
 printf 'Go coverage: %s, producer attempt %s, head %s\n' \
-	"$coverage_name" "$coverage_producer" "$coverage_sha"
+  "$coverage_name" "$coverage_producer" "$coverage_sha"
 if [[ -n ${GITHUB_STEP_SUMMARY:-} ]]; then
-	printf 'Go coverage artifact: %s (ID %s), producer attempt %s, head %s.\n' \
-		"$coverage_name" "$coverage_id" "$coverage_producer" "$coverage_sha" >>"$GITHUB_STEP_SUMMARY"
+  printf 'Go coverage artifact: %s (ID %s), producer attempt %s, head %s.\n' \
+    "$coverage_name" "$coverage_id" "$coverage_producer" "$coverage_sha" >>"$GITHUB_STEP_SUMMARY"
 fi

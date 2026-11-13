@@ -34,8 +34,9 @@ const (
 // It is its own field of ownershipRequestReferences, with its own refusal,
 // so that nothing else reading the same body can overwrite it.
 type libpodCreateReferences struct {
-	denyReason string
-	resources  []embeddedOwnershipReference
+	denyReason     string
+	resources      []embeddedOwnershipReference
+	imageVolumeIDs map[string]bool
 }
 
 // count is how much of libpodCreateMaxReferences the create has used. A nil
@@ -178,7 +179,13 @@ func checkLibpodCreateReferences(
 	if refs.denyReason != "" {
 		return verdictDeny, refs.denyReason, nil
 	}
-	return checkEmbeddedOwnershipReferences(ctx, inspectResource, refs.resources, opts)
+	inspect := func(ctx context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
+		if kind == dockerresource.KindImage && refs.imageVolumeIDs[identifier] {
+			ctx = withImageVolumeID(ctx)
+		}
+		return inspectResource(ctx, kind, identifier)
+	}
+	return checkEmbeddedOwnershipReferences(ctx, inspect, refs.resources, opts)
 }
 
 // libpodCreateReferenceReader collects the references of one create body.
@@ -410,13 +417,11 @@ func (r *libpodCreateReferenceReader) namedVolumes(decoded map[string]any, field
 // libpod/container_internal_common.go:504-510, and go.podman.io/common
 // v0.67.1 libimage/runtime.go:274-345.
 //
-// A full image ID has none of that. The lookup matches it against image IDs
-// and nothing else, and an ID is derived from the image's config, labels
-// included, so it can only ever resolve to the image it resolved to here. So
-// a source has to be a full ID, and anything else is refused, whoever's image
-// it names today. The ID is then checked like the image a container is
-// created from: the caller's own passes, and an unlabeled one follows
-// allow_unowned_images.
+// Require a full config ID and verify that the inspect resolves to that same
+// ID. A manifest list also has a full storage ID, but libimage can resolve it
+// to a different platform image after the list is modified. The exact-ID
+// inspect rejects those aliases before checking labels. An immutable image
+// owned by the caller passes; an unlabeled one follows allow_unowned_images.
 func (r *libpodCreateReferenceReader) imageVolumes(decoded map[string]any, field string) {
 	value, ok := libpodCreateField(decoded, field)
 	volumes, isList := libpodCreateObjectList(value)
@@ -437,6 +442,10 @@ func (r *libpodCreateReferenceReader) imageVolumes(decoded map[string]any, field
 		if !r.add(dockerresource.KindImage, source, field) {
 			return
 		}
+		if r.refs.imageVolumeIDs == nil {
+			r.refs.imageVolumeIDs = make(map[string]bool)
+		}
+		r.refs.imageVolumeIDs[source] = true
 	}
 }
 

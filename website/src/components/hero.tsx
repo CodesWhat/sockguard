@@ -57,9 +57,10 @@ export function Hero() {
               <span>Control what</span> <span className="mut">gets through</span>
             </h1>
             <p className="lede">
-              We put a default-deny proxy in front of your Docker socket. Every request is filtered
-              by method, path, and body before it reaches the daemon, then we layer on signed policy
-              bundles, per-profile rollout modes, rate limits, hot-reload, and Prometheus metrics.
+              Sockguard is CodesWhat&apos;s default-deny Docker socket proxy. Every request is
+              filtered by method, path, and body before it reaches the daemon, then we layer on
+              signed policy bundles, per-profile rollout modes, rate limits, hot-reload, and
+              Prometheus metrics.
             </p>
             <div className="ctas">
               <TrackedLink

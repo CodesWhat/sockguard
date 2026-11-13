@@ -181,9 +181,17 @@ func (cp *compiledProfile) costFor(method, normPath string) float64 {
 	return 1
 }
 
+// DefaultMaxStreams is the per-client cap on long-lived streams applied when a
+// profile does not set one, and when only the global gate is configured.
+const DefaultMaxStreams = 32
+
 // ConcurrencyOptions configures the concurrency cap.
 type ConcurrencyOptions struct {
 	MaxInflight int64
+	// MaxStreams caps the long-lived streams one client may hold open. Those
+	// requests skip MaxInflight and the global gate so a few of them cannot
+	// exhaust it. 0 disables the stream cap; the caller resolves the default.
+	MaxStreams int64
 }
 
 // compiledProfile holds the runtime state for a single profile's limits.
@@ -231,6 +239,13 @@ type MiddlewareOptions struct {
 	// GlobalConcurrency enables the system-wide priority-aware fairness gate.
 	// Nil disables it, in which case per-profile priorities have no effect.
 	GlobalConcurrency *GlobalConcurrencyOptions
+	// IsStreaming reports whether a request is an open-ended stream (events,
+	// followed container/service/task logs, streaming stats, Podman
+	// top?stream, wait, attach, exec start). Such requests
+	// skip the concurrency caps and are bounded by the separate per-profile
+	// stream cap instead. Finite heavy operations such as build and prune must
+	// not match. Nil disables the exemption.
+	IsStreaming func(w http.ResponseWriter, r *http.Request) bool
 	// Now overrides the time source for every per-profile Limiter created by
 	// this Middleware. Tests that need deterministic refill behavior inject a
 	// fixed-clock function; production code leaves this nil to use time.Now.
@@ -305,6 +320,7 @@ func Middleware(
 		globalTracker: globalTracker,
 		globalMax:     globalMax,
 		resolve:       opts.ResolveProfile,
+		isStreaming:   opts.IsStreaming,
 	}
 
 	mw = func(next http.Handler) http.Handler {
@@ -329,6 +345,10 @@ type throttleHandler struct {
 	globalTracker *GlobalInflightTracker
 	globalMax     int64
 	resolve       func(*http.Request) (string, bool)
+	isStreaming   func(w http.ResponseWriter, r *http.Request) bool
+	// streamTracker counts long-lived streams per client, separately from the
+	// in-flight cap they skip.
+	streamTracker InflightTracker
 }
 
 func (h *throttleHandler) serve(w http.ResponseWriter, r *http.Request, next http.Handler) {
@@ -370,6 +390,21 @@ func (h *throttleHandler) serve(w http.ResponseWriter, r *http.Request, next htt
 		return
 	}
 
+	// Streams (events, followed logs, attach, wait, streaming stats) would hold
+	// a concurrency slot for their whole life, so they skip both caps and
+	// answer to the stream cap instead.
+	if h.isStreaming != nil && (cp != nil && cp.tracker != nil || h.globalTracker != nil) && h.isStreaming(w, r) {
+		rel, ok := h.checkStreamCap(w, r, cp, effectiveID, normPath)
+		if !ok {
+			return
+		}
+		if rel {
+			defer h.streamTracker.Release(effectiveID)
+		}
+		next.ServeHTTP(w, r)
+		return
+	}
+
 	// Global priority gate. Returns (admitted, needsRelease): when admitted
 	// and needsRelease is true, the global counter was incremented and must be
 	// decremented on exit. We call h.globalTracker.Release() directly rather
@@ -396,6 +431,14 @@ func (h *throttleHandler) serve(w http.ResponseWriter, r *http.Request, next htt
 	next.ServeHTTP(w, r)
 }
 
+// isPingPath reports whether the normalized path is the daemon liveness probe.
+// Every Docker client pings before its real call, so charging tokens for it
+// would burn budget on each command and, with a small burst, deny the ping
+// itself. Pings stay under the concurrency caps.
+func isPingPath(normPath string) bool {
+	return normPath == "/_ping" || normPath == "/libpod/_ping"
+}
+
 // checkRateLimit applies the token-bucket gate. Returns true when the request
 // was denied (handler should stop), false to continue.
 //
@@ -405,6 +448,9 @@ func (h *throttleHandler) serve(w http.ResponseWriter, r *http.Request, next htt
 // is admitted and the access log decision becomes would_deny instead of deny.
 func (h *throttleHandler) checkRateLimit(w http.ResponseWriter, r *http.Request, cp *compiledProfile, clientID, normPath string) (denied bool) {
 	if cp == nil || cp.limiter == nil {
+		return false
+	}
+	if isPingPath(normPath) {
 		return false
 	}
 	cost := cp.costFor(r.Method, normPath)
@@ -517,6 +563,43 @@ func (h *throttleHandler) checkProfileConcurrency(w http.ResponseWriter, r *http
 	}
 	h.registry.SetInflight(clientID, current)
 	return getProfileReleaser(cp, clientID, h.registry), true
+}
+
+// checkStreamCap applies the per-client long-lived stream cap. The cap comes
+// from the profile's concurrency block; with no such block the global gate is
+// the only concurrency limit, and its default cap keeps the exemption from
+// opening unlimited streams. Returns (true, true) when a slot was taken and
+// must be released, (false, true) when no slot was taken, and (_, false) on
+// denial.
+func (h *throttleHandler) checkStreamCap(w http.ResponseWriter, r *http.Request, cp *compiledProfile, clientID, normPath string) (acquired bool, ok bool) {
+	maxStreams := int64(DefaultMaxStreams)
+	if cp != nil && cp.concurrency != nil {
+		maxStreams = cp.concurrency.MaxStreams
+	}
+	if maxStreams <= 0 {
+		return false, true
+	}
+	admitted, current := h.streamTracker.Acquire(clientID, maxStreams)
+	if admitted {
+		return true, true
+	}
+	meta := logging.MetaForRequest(w, r)
+	h.registry.ObserveThrottle(clientID, string(ReasonStreamCap), rolloutModeOf(meta))
+	h.emitThrottleAudit(r, clientID, ReasonStreamCap, normPath,
+		slog.Int64("current_streams", current),
+		slog.Int64("max_streams", maxStreams),
+	)
+	if meta.AllowsPassThrough() {
+		logging.SetWouldDenyWithCode(w, r, string(ReasonStreamCap), "stream cap exceeded", apipath.NormalizePath)
+		return false, true
+	}
+	logging.SetDeniedWithCode(w, r, string(ReasonStreamCap), "stream cap exceeded", apipath.NormalizePath)
+	w.Header().Set("Retry-After", defaultCapacityRetryAfter)
+	_ = httpjson.Write(w, http.StatusTooManyRequests, ThrottleResponse{
+		Message: "sockguard: stream cap exceeded",
+		Reason:  string(ReasonStreamCap),
+	})
+	return false, false
 }
 
 // emitThrottleAudit writes one throttle record through the sampler. The

@@ -307,6 +307,19 @@ func (c *reloadCoordinator) reload() {
 		return
 	}
 
+	// A reload that switches allow_host_cgroupns_on_cgroup_v1 on has no probe
+	// result yet: setWanted closes the gate, and the probe runs before the new
+	// chain goes live so the option works from the first request after the swap.
+	if c.runtime.cgroupV1.setWanted(cgroupV1OptInConfigured(newCfg)) {
+		c.logger.Info("config reload enabled allow_host_cgroupns_on_cgroup_v1; probing upstream cgroup version",
+			"path", c.cfgFile,
+		)
+		if c.runtime.cgroupV1.refresh(c.rootCtx) {
+			// The probe errored; have the run loop retry on its backoff.
+			c.runtime.cgroupV1.kick()
+		}
+	}
+
 	newHandler, newTeardown, newLimiterStateActive := buildServeHandlerChainWithRuntime(serveHandlerBuild{
 		Cfg:         newCfg,
 		Logger:      c.logger,
@@ -316,6 +329,8 @@ func (c *reloadCoordinator) reload() {
 		Runtime:     c.runtime,
 		Versioner:   c.versioner,
 	})
+
+	warnIfCreateAllowedWithResponseRedaction(newCfg, c.logger)
 
 	// buildRateLimitMiddleware constructs a brand-new sampler and Limiter
 	// set on every call — there is no carry-over of consumed quota or

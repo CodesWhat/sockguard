@@ -20,6 +20,8 @@ import (
 
 	"github.com/codeswhat/sockguard/v3/app/internal/imagefetch"
 	"github.com/codeswhat/sockguard/v3/app/internal/imagetrust"
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 )
 
@@ -43,6 +45,13 @@ type ImageTrustOptions struct {
 	RequireRekorInclusion bool
 	// VerifyTimeout overrides the default end-to-end image-trust deadline.
 	VerifyTimeout string
+	// AllowAllRegistries permits signature discovery against any registry the
+	// client names.
+	AllowAllRegistries bool
+	// AllowOfficial permits Docker Hub official images (docker.io/library/*).
+	AllowOfficial bool
+	// AllowedRegistries lists registry hosts signature discovery may contact.
+	AllowedRegistries []string
 }
 
 // SigningKeyOptions is one allowed signing key entry.
@@ -111,6 +120,19 @@ type ContainerCreateOptions struct {
 	DenyUnconfinedAppArmor  bool
 	AllowHostUserNS         bool
 	AllowHostCgroupNS       bool
+	// AllowHostCgroupNSOnCgroupV1 allows CgroupnsMode "host" (not ns:<path>)
+	// only while UpstreamCgroupV1 is true. Ignored when AllowHostCgroupNS is
+	// already set.
+	AllowHostCgroupNSOnCgroupV1 bool
+	// UpstreamCgroupV1 is set by the serve layer from the startup GET /info
+	// probe: true only when every upstream endpoint reported CgroupVersion
+	// "1". It is not a config key.
+	UpstreamCgroupV1 bool
+	// UpstreamCgroupV1Func, when set, is read on every container create in
+	// place of UpstreamCgroupV1 so the serve layer can refresh the probe result
+	// (periodic re-probe, health change, hot reload) without rebuilding the
+	// policy. It must be safe for concurrent use and cheap.
+	UpstreamCgroupV1Func func() bool
 	// RestrictNamespaceSharing gates HostConfig.NetworkMode/PidMode/IpcMode/
 	// UTSMode/UsernsMode/CgroupnsMode values of the form "container:<ref>"
 	// (join another container's namespace) against
@@ -175,10 +197,38 @@ type ContainerCreateOptions struct {
 	// last-wins ordering, so "exec,noexec" remains allowed.
 	AllowTmpfsPrivilegedOptions bool
 
+	// PodmanUpstream is set from the resolved upstream flavor, not from
+	// config. Podman leaves a tmpfs executable and gives /dev no default
+	// options, so on a Podman upstream with AllowTmpfsPrivilegedOptions off a
+	// tmpfs (HostConfig.Tmpfs) must carry the bare option noexec, and a /dev
+	// tmpfs noexec,nosuid,nodev, since Podman adds nosuid,nodev itself
+	// elsewhere. A Mounts tmpfs entry is refused outright, because Podman's
+	// compat handler drops its TmpfsOptions.Options. dockerd already defaults
+	// every tmpfs to noexec,nosuid,nodev.
+	PodmanUpstream bool
+
 	// AllowLogPath permits a HostConfig.LogConfig.Config key a Podman
 	// upstream reads as the container's log path. Default false. See
 	// denyLogPathReason.
 	AllowLogPath bool
+
+	// AllowedLogDrivers is an opt-in allowlist for HostConfig.LogConfig.Type
+	// (and a "driver" entry in LogConfig.Config, which a Podman upstream reads
+	// as the driver). Empty, the default, enforces nothing. An empty Type
+	// selects the daemon default and is always allowed. While it is set, the
+	// destination options in logEndpointOptionKeys (syslog-address and the
+	// like) are refused unless AllowedLogEndpointOptions lists them. See
+	// logDriverPolicy.
+	AllowedLogDrivers         []string
+	AllowedLogEndpointOptions []string
+
+	// DockerUpstream is set when the upstream is known to be dockerd, which
+	// never rebuilds a mount into the comma-joined string a Podman upstream
+	// re-splits. It turns off the Podman-only comma refusal on HostConfig.Mounts
+	// fields (denyCompatMountFieldInjectionReason). The zero value keeps the
+	// refusal on, so a construction site that doesn't know the engine stays
+	// closed. The server sets it from the resolved upstream flavor.
+	DockerUpstream bool
 
 	// AllowEndpointConfig permits static IP, MAC address, Links, and
 	// DriverOpts in NetworkingConfig.EndpointsConfig entries carried on
@@ -231,6 +281,9 @@ type containerCreatePolicy struct {
 	denyUnconfinedAppArmor            bool
 	allowHostUserNS                   bool
 	allowHostCgroupNS                 bool
+	allowHostCgroupNSOnCgroupV1       bool
+	upstreamCgroupV1                  bool
+	upstreamCgroupV1Func              func() bool
 	restrictNamespaceSharing          bool
 	allowedNamespaceSharingContainers []string
 	denyNamespacePathMode             bool
@@ -243,7 +296,10 @@ type containerCreatePolicy struct {
 	denyUnconfinedSystemPaths bool
 
 	allowTmpfsPrivilegedOptions bool
+	podmanUpstream              bool
 	allowLogPath                bool
+	logDrivers                  logDriverPolicy
+	dockerUpstream              bool
 
 	allowEndpointConfig bool
 	endpointConfig      EndpointConfigOptions
@@ -253,6 +309,7 @@ type containerCreatePolicy struct {
 	imageFetcher       signatureFetcher
 	imageTrustCfg      imagetrust.Config
 	imageTrustTimeout  time.Duration
+	imageTrustRegistry imagePullPolicy
 	// imageTrustInitErr holds any error that occurred while building the image
 	// trust verifier at policy construction time. When non-nil, inspect returns
 	// a denial reason so that a misconfigured trust policy fails closed rather
@@ -326,6 +383,9 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		denyUnconfinedAppArmor:            opts.DenyUnconfinedAppArmor,
 		allowHostUserNS:                   opts.AllowHostUserNS,
 		allowHostCgroupNS:                 opts.AllowHostCgroupNS,
+		allowHostCgroupNSOnCgroupV1:       opts.AllowHostCgroupNSOnCgroupV1,
+		upstreamCgroupV1:                  opts.UpstreamCgroupV1,
+		upstreamCgroupV1Func:              opts.UpstreamCgroupV1Func,
 		restrictNamespaceSharing:          opts.RestrictNamespaceSharing,
 		allowedNamespaceSharingContainers: normalizeStringList(opts.AllowedNamespaceSharingContainers),
 		denyNamespacePathMode:             opts.DenyNamespacePathMode,
@@ -336,7 +396,10 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		denySelinuxLabelOverride:          opts.DenySelinuxLabelOverride,
 		denyUnconfinedSystemPaths:         opts.DenyUnconfinedSystemPaths,
 		allowTmpfsPrivilegedOptions:       opts.AllowTmpfsPrivilegedOptions,
+		podmanUpstream:                    opts.PodmanUpstream,
 		allowLogPath:                      opts.AllowLogPath,
+		logDrivers:                        newLogDriverPolicy(opts.AllowedLogDrivers, opts.AllowedLogEndpointOptions),
+		dockerUpstream:                    opts.DockerUpstream,
 		allowEndpointConfig:               opts.AllowEndpointConfig,
 		endpointConfig:                    opts.EndpointConfig,
 	}
@@ -344,11 +407,12 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 	// Build image trust verifier. Errors are stored in imageTrustInitErr so
 	// that inspect can return a denial reason instead of silently allowing
 	// requests through (fail-closed rather than fail-open).
-	itf := buildImageTrustFields(opts.ImageTrust)
+	itf := buildImageTrustFields(opts.ImageTrust, opts.AllowedImages)
 	p.imageTrustVerifier = itf.verifier
 	p.imageFetcher = itf.fetcher
 	p.imageTrustCfg = itf.cfg
 	p.imageTrustTimeout = itf.timeout
+	p.imageTrustRegistry = itf.registry
 	p.imageTrustInitErr = itf.initErr
 
 	return p
@@ -362,6 +426,8 @@ type imageTrustFields struct {
 	cfg      imagetrust.Config
 	timeout  time.Duration
 	initErr  error
+	// registry scopes which registries signature discovery may contact.
+	registry imagePullPolicy
 }
 
 // loadLiveTrustedRoot fetches the TUF-backed Sigstore trust root for keyless
@@ -376,7 +442,13 @@ var loadLiveTrustedRoot = imagetrust.LoadLiveTrustedRoot
 // the given options. Any construction error is returned in initErr so callers
 // fail closed (deny) rather than silently allowing unverified images. When the
 // mode is off/empty the zero value is returned (inactive).
-func buildImageTrustFields(opts ImageTrustOptions) imageTrustFields {
+//
+// Signature discovery contacts whatever registry the client's image reference
+// names, so it is scoped by the registry allowlist fields. A non-empty
+// allowedImages (the caller's exact image allowlist, already enforced before
+// verification) pins every reference to an operator-named registry and
+// stands in for the registry scope.
+func buildImageTrustFields(opts ImageTrustOptions, allowedImages []string) imageTrustFields {
 	var f imageTrustFields
 	if mode := imagetrust.Mode(opts.Mode); mode == imagetrust.ModeOff || mode == "" {
 		return f
@@ -404,7 +476,12 @@ func buildImageTrustFields(opts ImageTrustOptions) imageTrustFields {
 		return f
 	}
 	f.verifier = v
-	f.fetcher = imagefetch.NewFetcher()
+	f.registry = newImagePullPolicy(ImagePullOptions{
+		AllowAllRegistries: opts.AllowAllRegistries,
+		AllowOfficial:      opts.AllowOfficial,
+		AllowedRegistries:  trustDialAllowlist(opts.AllowedRegistries, allowedImages),
+	})
+	f.fetcher = imagefetch.NewGuardedFetcher(trustDialAllowlist(opts.AllowedRegistries, allowedImages))
 	f.cfg = cfg
 	f.timeout = cfg.VerifyTimeout
 	if f.timeout == 0 {
@@ -425,6 +502,11 @@ func verifyImageTrust(ctx context.Context, logger *slog.Logger, f imageTrustFiel
 		// explicit deny preserves fail-closed behavior at the Sockguard layer
 		// and avoids skipping the verifier call entirely.
 		return fmt.Sprintf("%s denied: image field is required when image trust is configured", subject), ""
+	}
+	// Signature discovery dials the registry named in the reference, so scope
+	// it before any request leaves the proxy.
+	if reason := f.registry.denyReasonForTrustReference(imageRef, subject); reason != "" {
+		return reason, ""
 	}
 	if f.timeout > 0 {
 		var cancel context.CancelFunc
@@ -447,9 +529,40 @@ func verifyImageTrust(ctx context.Context, logger *slog.Logger, f imageTrustFiel
 	}
 	outcome := imagetrust.VerifyCandidatesWithMode(ctx, f.verifier, f.cfg, logger, imageRef, candidates, fetchErr)
 	if !outcome.Allowed {
-		return fmt.Sprintf("%s denied: image trust verification failed for %s: %s", subject, imageRef, outcome.FailureMsg), ""
+		return fmt.Sprintf("%s denied: image trust verification failed for %s: %s", subject, imageRef, clientSafeTrustFailure(fetchErr, outcome.FailureMsg)), ""
 	}
 	return "", outcome.VerifiedDigest
+}
+
+// trustDialAllowlist is the set of hosts signature discovery may reach even if
+// they resolve to a private address: the operator's allowed_registries plus the
+// registry of every exact allowed_images entry, both of which the operator
+// named. Everything else must resolve to a public address at dial time.
+func trustDialAllowlist(allowedRegistries, allowedImages []string) []string {
+	hosts := make([]string, 0, len(allowedRegistries)+len(allowedImages))
+	for _, r := range allowedRegistries {
+		if host, ok := normalizeRegistryHost(r); ok {
+			hosts = append(hosts, host)
+		}
+	}
+	for _, image := range allowedImages {
+		if ref, err := name.ParseReference(strings.TrimSpace(image)); err == nil {
+			hosts = append(hosts, strings.ToLower(ref.Context().RegistryStr()))
+		}
+	}
+	return hosts
+}
+
+// clientSafeTrustFailure keeps a registry's response body out of the deny
+// reason. An HTTP error from signature discovery carries the registry's own
+// error text, which for a client-named host is attacker-chosen or internal
+// content. The full error is logged by imagetrust.VerifyCandidatesWithMode.
+func clientSafeTrustFailure(fetchErr error, msg string) string {
+	var terr *transport.Error
+	if errors.As(fetchErr, &terr) {
+		return fmt.Sprintf("registry returned HTTP %d during signature discovery", terr.StatusCode)
+	}
+	return msg
 }
 
 // rewriteJSONImageField returns body with its (case-insensitive) "Image" field
@@ -662,6 +775,13 @@ func scanBodyKeys(body []byte) (repeated, divergent error) {
 	s := caseVariantKeyScanner{body: body, deferDivergent: true}
 	repeated = s.scanValue(0, false)
 	return repeated, s.divergent
+}
+
+// RejectRepeatedJSONKeys checks the original bytes for repeated struct-level
+// keys while leaving decoder-divergent keys to the caller's rollout policy.
+func RejectRepeatedJSONKeys(body []byte) error {
+	repeated, _ := scanBodyKeys(body)
+	return repeated
 }
 
 // scanValue consumes exactly one JSON value, as json.Decoder.Decode does,
@@ -1306,7 +1426,11 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if !p.allowHostUserNS && isHostNamespaceMode(createReq.HostConfig.UsernsMode) {
 		return "container create denied: host user namespace mode is not allowed", nil
 	}
-	if !p.allowHostCgroupNS && isHostNamespaceMode(createReq.HostConfig.CgroupnsMode) {
+	// On a cgroup v1 daemon "host" is the default cgroup namespace mode and
+	// docker inspect reports it, so a recreate tool replaying it asks for
+	// nothing new. The opt-in therefore only opens while every upstream
+	// endpoint is confirmed cgroup v1; unknown stays denied.
+	if !p.allowHostCgroupNS && (!p.allowHostCgroupNSOnCgroupV1 || !p.isUpstreamCgroupV1()) && isHostNamespaceMode(createReq.HostConfig.CgroupnsMode) {
 		return "container create denied: host cgroup namespace mode is not allowed", nil
 	}
 	if denyReason := p.denyNamespacePathReason(createReq.HostConfig); denyReason != "" {
@@ -1342,8 +1466,10 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if denyReason := p.denyDeviceReason(createReq.HostConfig); denyReason != "" {
 		return denyReason, nil
 	}
-	if denyReason := denyCompatMountFieldInjectionReason(createReq.HostConfig.Mounts, "container create"); denyReason != "" {
-		return denyReason, nil
+	if !p.dockerUpstream {
+		if denyReason := denyCompatMountFieldInjectionReason(createReq.HostConfig.Mounts, "container create"); denyReason != "" {
+			return denyReason, nil
+		}
 	}
 	if denyReason := p.denyBindMountReason(createReq.HostConfig); denyReason != "" {
 		return denyReason, nil
@@ -1367,6 +1493,9 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 		return denyReason, nil
 	}
 	if denyReason := p.denyLogPathReason(createReq.HostConfig.LogConfig); denyReason != "" {
+		return denyReason, nil
+	}
+	if denyReason := p.logDrivers.denyMapReason("container create", createReq.HostConfig.LogConfig.Type, createReq.HostConfig.LogConfig.Config); denyReason != "" {
 		return denyReason, nil
 	}
 	if denyReason := p.denyNetworkingConfigReason(createReq.NetworkingConfig); denyReason != "" {
@@ -1401,6 +1530,7 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 			fetcher:  p.imageFetcher,
 			cfg:      p.imageTrustCfg,
 			timeout:  p.imageTrustTimeout,
+			registry: p.imageTrustRegistry,
 		}
 		denyReason, verifiedDigest := verifyImageTrust(r.Context(), logger, fields, imageRef, "container create")
 		if denyReason != "" {
@@ -2049,6 +2179,9 @@ func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHos
 			if denyReason := denyLocalVolumeBindDeviceReason(driverConfig.Name, driverConfig.Options, p.allowedBindMounts, "container create"); denyReason != "" {
 				return denyReason
 			}
+			if denyReason := denyLocalVolumeTmpfsPrivilegeReason(driverConfig.Name, driverConfig.Options, p.allowTmpfsPrivilegedOptions, "container create", tmpfsOptionKeyCompat); denyReason != "" {
+				return denyReason
+			}
 		}
 
 		// Podman's compat handler calls os.MkdirAll on a volume-type Source
@@ -2168,16 +2301,6 @@ func validMountSubpath(subpath string) bool {
 	return cleaned != ".." && !strings.HasPrefix(cleaned, "../")
 }
 
-// tmpfsPrivilegeEscalatingOptions are the tmpfs mount option keywords that
-// override Docker's default noexec/nodev/nosuid tmpfs posture. Matched
-// case-insensitively against the first token of each
-// TmpfsOptions.Options entry.
-var tmpfsPrivilegeEscalatingOptions = map[string]bool{
-	"exec": true,
-	"dev":  true,
-	"suid": true,
-}
-
 // denyTmpfsOptionsReason validates HostConfig.Mounts[].TmpfsOptions.Options
 // (Engine API 1.46+): each entry must be a well-formed 1-or-2-element token
 // list (malformed entries are rejected fail-closed rather than silently
@@ -2185,17 +2308,21 @@ var tmpfsPrivilegeEscalatingOptions = map[string]bool{
 // allowTmpfsPrivilegedOptions is set.
 func (p containerCreatePolicy) denyTmpfsOptionsReason(mounts []containerCreateMount) string {
 	for _, mount := range mounts {
-		if mount.TmpfsOptions == nil {
-			continue
-		}
-		for _, option := range mount.TmpfsOptions.Options {
-			if len(option) == 0 || len(option) > 2 || strings.TrimSpace(option[0]) == "" {
+		if mount.TmpfsOptions != nil {
+			switch verdict, option := checkStructuredTmpfsOptions(mount.TmpfsOptions.Options); verdict {
+			case tmpfsStructuredMalformed:
 				return "container create denied: malformed tmpfs mount option"
+			case tmpfsStructuredPrivileged:
+				if !p.allowTmpfsPrivilegedOptions {
+					return fmt.Sprintf("container create denied: tmpfs mount option %q is not allowed", option)
+				}
 			}
-			key := strings.ToLower(strings.TrimSpace(option[0]))
-			if tmpfsPrivilegeEscalatingOptions[key] && !p.allowTmpfsPrivilegedOptions {
-				return fmt.Sprintf("container create denied: tmpfs mount option %q is not allowed", option[0])
-			}
+		}
+		// Podman's compat handler forwards only tmpfs-size and tmpfs-mode of a
+		// Mounts tmpfs entry, so options listed here never reach the mount and
+		// it comes up executable whatever they say.
+		if p.podmanUpstream && !p.allowTmpfsPrivilegedOptions && strings.EqualFold(mount.Type, "tmpfs") {
+			return "container create denied: a Mounts tmpfs entry on a Podman upstream ignores TmpfsOptions.Options and mounts executable; use HostConfig.Tmpfs with noexec (for example /run:noexec) or set request_body.container_create.allow_tmpfs_privileged_options"
 		}
 	}
 	return ""
@@ -2208,42 +2335,41 @@ func (p containerCreatePolicy) denyTmpfsOptionsReason(mounts []containerCreateMo
 // comes from the key when the key has a colon and from the value otherwise.
 // So the whole value, that key segment, and the value up to its first colon are
 // each judged on their own, and a privileged option in any of them denies.
+//
+// A Podman upstream reads one of those: the key segment when the key holds a
+// colon, the value head otherwise. That list must end with noexec, nosuid and
+// nodev, because Podman leaves a tmpfs executable and gives /dev no default
+// options at all.
 func (p containerCreatePolicy) denyLegacyTmpfsOptionsReason(mounts map[string]string) string {
 	if p.allowTmpfsPrivilegedOptions {
 		return ""
 	}
 	for dest, options := range mounts {
-		_, keyOptions, _ := strings.Cut(dest, ":")
+		_, keyOptions, hasKeyColon := strings.Cut(dest, ":")
 		keyOptions, _, _ = strings.Cut(keyOptions, ":") // Podman drops everything after the second colon
 		valueHead, _, _ := strings.Cut(options, ":")    // Podman's option list when the key has no colon
 		if legacyTmpfsOptionsEnablePrivilege(keyOptions) || legacyTmpfsOptionsEnablePrivilege(options) || legacyTmpfsOptionsEnablePrivilege(valueHead) {
 			return "container create denied: legacy tmpfs mount enables exec, dev, or suid"
+		}
+		if p.podmanUpstream {
+			podmanOptions := valueHead
+			if hasKeyColon {
+				podmanOptions = keyOptions
+			}
+			podmanDest, _, _ := strings.Cut(dest, ":")
+			if !tmpfsPostureOfList(podmanOptions).podmanSafe(podmanDest) {
+				return "container create denied: " + tmpfsPodmanRefusal(podmanDest, "request_body.container_create.allow_tmpfs_privileged_options")
+			}
 		}
 	}
 	return ""
 }
 
 // legacyTmpfsOptionsEnablePrivilege reports whether a comma-separated tmpfs
-// option string ends with exec, dev, or suid enabled (last option wins).
+// option string ends with exec, dev, or suid enabled (last option wins). See
+// tmpfsPosture for how a token is read, "suid=1" included.
 func legacyTmpfsOptionsEnablePrivilege(options string) bool {
-	var exec, dev, suid bool
-	for option := range strings.SplitSeq(options, ",") {
-		switch option {
-		case "exec":
-			exec = true
-		case "noexec":
-			exec = false
-		case "dev":
-			dev = true
-		case "nodev":
-			dev = false
-		case "suid":
-			suid = true
-		case "nosuid":
-			suid = false
-		}
-	}
-	return exec || dev || suid
+	return tmpfsPostureOfList(options).enablesPrivilege()
 }
 
 // denyLogPathReason refuses a HostConfig.LogConfig.Config key that a Podman
@@ -2718,4 +2844,13 @@ func normalizeStringList(values []string) []string {
 
 func isASCIILetter(c byte) bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+// isUpstreamCgroupV1 reports the current cgroup v1 confirmation, preferring
+// the live func over the static snapshot.
+func (p containerCreatePolicy) isUpstreamCgroupV1() bool {
+	if p.upstreamCgroupV1Func != nil {
+		return p.upstreamCgroupV1Func()
+	}
+	return p.upstreamCgroupV1
 }

@@ -147,12 +147,16 @@ func runBridge(ctx context.Context, legs bridgeLegs, session *Session, policy Po
 	}
 	b.clientLeg = cc
 
-	h2conn.Serve(ctx, legs.serverConn, h2conn.ServerConfig{
+	if err := h2conn.Serve(ctx, legs.serverConn, h2conn.ServerConfig{
 		Handler:              http.HandlerFunc(b.handleStream),
 		MaxConcurrentStreams: int(limits.MaxConcurrentStreams),
 		IdleTimeout:          limits.IdleTimeout,
 		ReadIdleTimeout:      limits.ReadIdleTimeout,
-	})
+	}); err != nil {
+		// A server that could not run (GODEBUG=http2server=0) is a fault, not
+		// a graceful end: record it so runBridge returns it instead of nil.
+		b.closeAll(fmt.Errorf("buildkitproxy: serve tunnel: %w", err))
+	}
 
 	return b.finalErr()
 }

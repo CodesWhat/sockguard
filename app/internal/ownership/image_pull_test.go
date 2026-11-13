@@ -56,6 +56,8 @@ func TestImagePullDestination(t *testing.T) {
 
 		{name: "no tag", path: imageCreatePath, query: "fromImage=team%2Fapp", wantReason: imagePullDenyNoTag},
 		{name: "no tag on podman", path: imageCreatePath, query: "fromImage=team%2Fapp", flavor: upstreamflavor.Podman, wantReason: imagePullDenyNoTag},
+		{name: "bare name without a tag on docker", path: imageCreatePath, query: "fromImage=alpine", flavor: upstreamflavor.Docker, wantReason: imagePullDenyNoTag},
+		{name: "bare name without a tag on podman", path: imageCreatePath, query: "fromImage=alpine", flavor: upstreamflavor.Podman, wantReason: imagePullDenyNoTag},
 		{name: "empty tag", path: imageCreatePath, query: "fromImage=team%2Fapp&tag=", wantReason: imagePullDenyNoTag},
 		{name: "trailing colon", path: imageCreatePath, query: "fromImage=team%2Fapp%3A", wantReason: "owner policy denied image pull with a tag outside the image reference grammar"},
 		{name: "tag in fromImage beside a tag parameter", path: imageCreatePath, query: "fromImage=team%2Fapp%3Av1&tag=v2", wantReason: "owner policy denied image pull whose fromImage already carries a tag beside a tag parameter"},
@@ -161,6 +163,7 @@ func TestImagePullAuthorizesTheNameItOverwrites(t *testing.T) {
 		{name: "another owner's name by digest", target: "/images/create?fromImage=theirs%2Fapp%40" + testDigestQuery, wantStatus: http.StatusOK},
 		{name: "another owner's name by tag and digest", target: "/images/create?fromImage=theirs%2Fapp%3Av1%40" + testDigestQuery, wantStatus: http.StatusOK},
 		{name: "every tag of a repository", target: "/images/create?fromImage=theirs%2Fapp", wantStatus: http.StatusForbidden, wantReason: imagePullDenyNoTag},
+		{name: "every tag of a bare repository", target: "/images/create?fromImage=alpine", wantStatus: http.StatusForbidden, wantReason: imagePullDenyNoTag},
 		{name: "native name another owner's image holds", target: "/v5.0.0/libpod/images/pull?reference=theirs%2Fapp%3Av1", wantStatus: http.StatusForbidden, wantReason: "libpod " + heldByAnotherOwner},
 		{name: "native name only the stored spelling of which is held", target: "/v5.0.0/libpod/images/pull?reference=theirs%2Ftool%3Av1", wantStatus: http.StatusForbidden, wantReason: "libpod " + heldByAnotherOwner},
 		{name: "native name nothing holds", target: "/v5.0.0/libpod/images/pull?reference=fresh%2Fapp%3A1", wantStatus: http.StatusOK},

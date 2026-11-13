@@ -2,11 +2,13 @@ package ownership
 
 import (
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 
 	"github.com/codeswhat/sockguard/v3/app/internal/dockerresource"
 	"github.com/codeswhat/sockguard/v3/app/internal/filter"
+	"github.com/codeswhat/sockguard/v3/app/internal/queryparam"
 )
 
 // libpod.go holds the owner-label mutation and cross-owner reference
@@ -190,3 +192,36 @@ func addOwnerLabelToLibpodBody(r *http.Request, labelKey, owner, labelField stri
 		return nil
 	})
 }
+
+// isLibpodContainerRestorePath reports whether normPath is
+// POST /libpod/containers/{name}/restore.
+func isLibpodContainerRestorePath(normPath string) bool {
+	name, ok := strings.CutPrefix(normPath, libpodPrefix+"containers/")
+	if !ok {
+		return false
+	}
+	name, ok = strings.CutSuffix(name, "/restore")
+	return ok && name != "" && !strings.Contains(name, "/")
+}
+
+// libpodContainerRestoreOwnershipReferences returns the pod a restore would
+// put the container in. Restore takes `pod` from the query and hands it to
+// RestoreOptions.Pod, so the container joins that pod whoever owns it, the
+// same reference a create's `pod` field is. The container in the path is
+// checked as for any container route. `pod` is decoded by gorilla/schema, so a
+// repeated or re-cased parameter is refused rather than guessed at. Read from
+// Podman 5.8.1 pkg/api/handlers/libpod/containers.go Restore.
+func libpodContainerRestoreOwnershipReferences(query url.Values) *ownershipRequestReferences {
+	pod, _, ok := queryparam.Scalar(query, "pod")
+	switch {
+	case !ok:
+		return &ownershipRequestReferences{denyReason: libpodRestoreDenyAmbiguousPod}
+	case pod == "":
+		return nil
+	}
+	refs := &ownershipRequestReferences{}
+	appendEmbeddedOwnershipReference(&refs.embeddedResources, dockerresource.KindLibpodPod, pod, "libpod container restore pod")
+	return refs
+}
+
+const libpodRestoreDenyAmbiguousPod = "owner policy denied container restore with an ambiguous pod parameter"

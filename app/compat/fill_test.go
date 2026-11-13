@@ -122,6 +122,10 @@ func stringFor(name, parent string) string {
 		return "SECRET_KEY=fixture-secret"
 	case name == "Type" && parent == "Mount":
 		return "bind"
+	case name == "HostIp", name == "HostIP", name == "IP" && parent == "Port":
+		// Published-port bind addresses are string-typed in docker v28 and
+		// the filter fails closed on a non-IP.
+		return "192.0.2.10"
 	}
 	return "fixture-" + name
 }

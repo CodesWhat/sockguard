@@ -1,6 +1,9 @@
 package filter
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -36,6 +39,96 @@ func TestLibpodContainerCreateResidualFieldGates(t *testing.T) {
 			got := inspectLibpod(t, newLibpodContainerCreatePolicy(tc.opts), []byte(tc.body))
 			if got != tc.want {
 				t.Fatalf("reason = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLibpodContainerCreateStorageOptsAndRuntimeAnnotationGates(t *testing.T) {
+	const storageDeny = "libpod container create denied: storage_opts is not allowed (set allow_storage_opts: true)"
+	annotationDeny := func(key string) string {
+		return `libpod container create denied: runtime annotation "` + key + `" is not allowed (set allow_runtime_annotations: true)`
+	}
+	cases := []struct {
+		name string
+		opts LibpodContainerCreateOptions
+		body string
+		want string
+	}{
+		{"storage_opts denied by default", LibpodContainerCreateOptions{}, `{"image":"alpine","systemd":"false","storage_opts":{"size":"1T"}}`, storageDeny},
+		{"storage_opts allowed with opt-in", LibpodContainerCreateOptions{AllowStorageOpts: true}, `{"image":"alpine","systemd":"false","storage_opts":{"size":"1T"}}`, ""},
+		{"storage_opts spelled in another case is denied", LibpodContainerCreateOptions{}, `{"image":"alpine","systemd":"false","Storage_Opts":{"size":"1T"}}`, storageDeny},
+		{"empty storage_opts passes", LibpodContainerCreateOptions{}, `{"image":"alpine","systemd":"false","storage_opts":{}}`, ""},
+		{"null storage_opts passes", LibpodContainerCreateOptions{}, `{"image":"alpine","systemd":"false","storage_opts":null}`, ""},
+		{"run.oci annotation denied", LibpodContainerCreateOptions{}, `{"image":"alpine","systemd":"false","annotations":{"run.oci.keep_original_groups":"1"}}`, annotationDeny("run.oci.keep_original_groups")},
+		{"run.oci annotation in another case is denied", LibpodContainerCreateOptions{}, `{"image":"alpine","systemd":"false","annotations":{"RUN.OCI.handler":"wasm"}}`, annotationDeny("RUN.OCI.handler")},
+		{"io.podman.annotations markers pass, podman-remote sends them", LibpodContainerCreateOptions{}, `{"image":"alpine","systemd":"false","annotations":{"io.podman.annotations.seccomp":"unconfined","io.podman.annotations.userns":"private","io.podman.annotations.pids-limit":"100"}}`, ""},
+		{"first sorted runtime key is reported", LibpodContainerCreateOptions{}, `{"image":"alpine","systemd":"false","annotations":{"run.oci.b":"1","run.oci.a":"1","org.example":"x"}}`, annotationDeny("run.oci.a")},
+		{"cid-file annotation denied", LibpodContainerCreateOptions{}, `{"image":"alpine","systemd":"false","annotations":{"io.podman.annotations.cid-file":"/etc/passwd"}}`, annotationDeny("io.podman.annotations.cid-file")},
+		{"autoremove annotation denied", LibpodContainerCreateOptions{}, `{"image":"alpine","systemd":"false","annotations":{"io.podman.annotations.autoremove":"TRUE"}}`, annotationDeny("io.podman.annotations.autoremove")},
+		{"autoremove-image annotation denied in another case", LibpodContainerCreateOptions{}, `{"image":"alpine","systemd":"false","annotations":{"IO.Podman.Annotations.Autoremove-Image":"true"}}`, annotationDeny("IO.Podman.Annotations.Autoremove-Image")},
+		{"acted annotations allowed with opt-in", LibpodContainerCreateOptions{AllowRuntimeAnnotations: true}, `{"image":"alpine","systemd":"false","annotations":{"io.podman.annotations.cid-file":"/x","io.podman.annotations.autoremove":"true"}}`, ""},
+		{"runtime annotations allowed with opt-in", LibpodContainerCreateOptions{AllowRuntimeAnnotations: true}, `{"image":"alpine","systemd":"false","annotations":{"run.oci.keep_original_groups":"1"}}`, ""},
+		{"plain annotation passes", LibpodContainerCreateOptions{}, `{"image":"alpine","systemd":"false","annotations":{"org.example.team":"a","io.podman":"x","run.ocix":"y"}}`, ""},
+		{"empty annotations pass", LibpodContainerCreateOptions{}, `{"image":"alpine","systemd":"false","annotations":{}}`, ""},
+		{"storage_opts opt-in does not open annotations", LibpodContainerCreateOptions{AllowStorageOpts: true}, `{"image":"alpine","systemd":"false","annotations":{"run.oci.handler":"x"}}`, annotationDeny("run.oci.handler")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := inspectLibpod(t, newLibpodContainerCreatePolicy(tc.opts), []byte(tc.body))
+			if got != tc.want {
+				t.Fatalf("reason = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLibpodCreateUnifiedCannotClearRequiredLimits(t *testing.T) {
+	opts := LibpodContainerCreateOptions{AllowUnifiedCgroupSettings: true, AllowSystemdMode: true, RequireMemoryLimit: true, RequirePidsLimit: true, RequireCPULimitHard: true}
+	tests := []struct {
+		name string
+		body string
+		deny string
+	}{
+		{"limits kept", `{"image":"alpine","resource_limits":{"memory":{"limit":1048576},"pids":{"limit":10},"cpu":{"quota":50000}}}`, ""},
+		{"memory cleared by unified", `{"image":"alpine","resource_limits":{"memory":{"limit":1048576},"pids":{"limit":10},"cpu":{"quota":50000}},"unified":{"memory.max":"max"}}`, "a memory limit is required"},
+		{"pids cleared by unified", `{"image":"alpine","resource_limits":{"memory":{"limit":1048576},"pids":{"limit":10},"cpu":{"quota":50000}},"unified":{"pids.max":"max"}}`, "a PIDs limit is required"},
+		{"cpu cleared by unified", `{"image":"alpine","resource_limits":{"memory":{"limit":1048576},"pids":{"limit":10},"cpu":{"quota":50000}},"unified":{"cpu.max":"max 100000"}}`, "a hard CPU cap is required"},
+		{"limits supplied by unified", `{"image":"alpine","unified":{"memory.max":"1048576","pids.max":"10","cpu.max":"50000 100000"}}`, ""},
+		{"memory.high does not clear", `{"image":"alpine","resource_limits":{"memory":{"limit":1048576},"pids":{"limit":10},"cpu":{"quota":50000}},"unified":{"memory.high":"1"}}`, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/libpod/containers/create", strings.NewReader(strings.Replace(tt.body, `"image":"alpine",`, `"image":"alpine","systemd":"false",`, 1)))
+			reason, err := newLibpodContainerCreatePolicy(opts).inspect(testLogger(), req, "/libpod/containers/create")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (tt.deny == "") != (reason == "") || (tt.deny != "" && !strings.Contains(reason, tt.deny)) {
+				t.Errorf("reason = %q, want %q", reason, tt.deny)
+			}
+		})
+	}
+}
+
+func TestLibpodUnifiedCPUPeriodPreservesLimitIntent(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, body       string
+		hard, wantDenied bool
+	}{
+		{name: "unified period supplies intent", body: `{"image":"alpine","unified":{"cpu.max":"max 100000"}}`},
+		{name: "missing unified period keeps explicit period", body: `{"image":"alpine","resource_limits":{"cpu":{"period":100000}},"unified":{"cpu.max":"max"}}`},
+		{name: "explicit zero period clears intent", body: `{"image":"alpine","resource_limits":{"cpu":{"period":100000}},"unified":{"cpu.max":"max 0"}}`, wantDenied: true},
+		{name: "no period supplies no intent", body: `{"image":"alpine","unified":{"cpu.max":"max"}}`, wantDenied: true},
+		{name: "period alone is no hard cap", body: `{"image":"alpine","unified":{"cpu.max":"max 100000"}}`, hard: true, wantDenied: true},
+		{name: "quota and period supply hard cap", body: `{"image":"alpine","unified":{"cpu.max":"50000 100000"}}`, hard: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := newLibpodContainerCreatePolicy(LibpodContainerCreateOptions{AllowSystemdMode: true, AllowUnifiedCgroupSettings: true, RequireCPULimit: !tt.hard, RequireCPULimitHard: tt.hard})
+			reason := inspectLibpod(t, policy, []byte(tt.body))
+			if (reason != "") != tt.wantDenied || (tt.wantDenied && !strings.Contains(reason, "CPU")) {
+				t.Fatalf("inspection=%q, want CPU refusal=%v", reason, tt.wantDenied)
 			}
 		})
 	}

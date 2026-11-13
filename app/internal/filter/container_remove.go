@@ -234,6 +234,31 @@ func (p containerRemovePolicy) inspect(_ *slog.Logger, r *http.Request, normaliz
 	return "", nil
 }
 
+// libpodPodPruneRequirements are what every POST /libpod/pods/prune needs. It
+// takes no parameters. PrunePods removes each pod whose containers are all
+// stopped, containers included, and the same removal deletes the anonymous
+// volumes of every one of them with no flag to keep them
+// (libpod/runtime_pod_common.go:256-273), the step DELETE /libpod/pods/{name}
+// is gated for. Prune never forces, so allow_force isn't read. Under owner
+// isolation the route is refused outright (LibpodPodPruneDenyReason), so this
+// is the gate for a deployment without it.
+var libpodPodPruneRequirements = [...]containerRemoveRequirement{
+	{gate: containerRemoveGateVolumes, reason: "libpod pod prune denied: pruning pods deletes their containers' anonymous volumes and is not allowed"},
+}
+
+// inspectPodPrune applies allow_remove_volumes to POST /libpod/pods/prune.
+func (p containerRemovePolicy) inspectPodPrune(_ *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
+	if r == nil || r.Method != http.MethodPost || normalizedPath != LibpodPodPrunePath {
+		return "", nil
+	}
+	for _, requirement := range libpodPodPruneRequirements {
+		if !p.allows(requirement.gate) {
+			return requirement.reason, nil
+		}
+	}
+	return "", nil
+}
+
 func isContainerRemovePath(normalizedPath string) bool {
 	return strings.HasPrefix(normalizedPath, "/containers/") && len(normalizedPath) > len("/containers/")
 }

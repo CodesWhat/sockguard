@@ -4,8 +4,11 @@ import (
 	"context"
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/mldsa"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
@@ -31,6 +34,43 @@ import (
 // rely on for audit logs.
 func TestCompileKey(t *testing.T) {
 	t.Parallel()
+	t.Run("ML-DSA key is rejected", func(t *testing.T) {
+		key, err := mldsa.GenerateKey(mldsa.MLDSA44())
+		if err != nil {
+			t.Fatalf("GenerateKey: %v", err)
+		}
+		der, err := x509.MarshalPKIXPublicKey(key.PublicKey())
+		if err != nil {
+			t.Fatalf("MarshalPKIXPublicKey: %v", err)
+		}
+		pemKey := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+		_, _, err = CompileKey(pemKey)
+		if err == nil || !strings.Contains(err.Error(), "unsupported public key type") {
+			t.Fatalf("CompileKey(ML-DSA) error = %v, want unsupported-public-key-type", err)
+		}
+	})
+
+	t.Run("Ed25519 and RSA keys are still accepted", func(t *testing.T) {
+		edPub, _, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatalf("ed25519.GenerateKey: %v", err)
+		}
+		rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatalf("rsa.GenerateKey: %v", err)
+		}
+		for name, pub := range map[string]any{"ed25519": edPub, "rsa": &rsaKey.PublicKey} {
+			der, err := x509.MarshalPKIXPublicKey(pub)
+			if err != nil {
+				t.Fatalf("%s: MarshalPKIXPublicKey: %v", name, err)
+			}
+			pemKey := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+			if _, fp, err := CompileKey(pemKey); err != nil || fp == "" {
+				t.Fatalf("%s: CompileKey = (%q, %v), want success", name, fp, err)
+			}
+		}
+	})
+
 	t.Run("empty pem after trim is rejected", func(t *testing.T) {
 		_, _, err := CompileKey("   \n\t  ")
 		if err == nil || !strings.Contains(err.Error(), "pem is empty") {

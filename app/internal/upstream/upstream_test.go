@@ -1803,6 +1803,7 @@ func TestResolver_Start_ContextCancel_StopsLoop(t *testing.T) {
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 		r.Start(ctx)
 
 		// Synthetic clock: 55ms covers the startup probe plus the ticks at
@@ -2146,5 +2147,34 @@ func TestNewTransportResponseHeaderTimeout(t *testing.T) {
 				t.Error("marked request should use the long-lived transport")
 			}
 		})
+	}
+}
+
+func TestResolver_SetOnChange_ChainsAfterOptionsCallback(t *testing.T) {
+	t.Parallel()
+	var order []string
+	r, err := New([]Endpoint{{Name: "a", Network: "unix", Address: "/nonexistent-a.sock"}}, Options{
+		Interval: -1,
+		OnChange: func(Endpoint, bool) { order = append(order, "options") },
+		Probe:    func(context.Context, Endpoint) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.SetOnChange(func(Endpoint, bool) { order = append(order, "set") })
+	r.probeAll(t.Context())
+	if len(order) != 2 || order[0] != "options" || order[1] != "set" {
+		t.Fatalf("callback order = %v, want [options set]", order)
+	}
+
+	bare, err := New([]Endpoint{{Name: "b", Network: "unix", Address: "/nonexistent-b.sock"}}, Options{Interval: -1, Probe: func(context.Context, Endpoint) error { return nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fired bool
+	bare.SetOnChange(func(Endpoint, bool) { fired = true })
+	bare.probeAll(t.Context())
+	if !fired {
+		t.Fatal("SetOnChange on a resolver without Options.OnChange never fired")
 	}
 }

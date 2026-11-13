@@ -524,10 +524,11 @@ func TestBodiesRealClientsSendStillReachTheDaemon(t *testing.T) {
 	podmanBuild, podmanBuildType := mustMultipartFields(t, map[string]string{"MainContext": string(buildContext)})
 
 	tests := []struct {
-		name       string
-		request    formBodyRequest
-		wantStatus int
-		wantPath   string
+		name         string
+		request      formBodyRequest
+		wantStatus   int
+		withoutOwner bool
+		wantPath     string
 		// wantBody is compared with what the daemon received when non-nil.
 		wantBody []byte
 		check    func(*testing.T, daemonFormRead)
@@ -627,11 +628,12 @@ func TestBodiesRealClientsSendStillReachTheDaemon(t *testing.T) {
 		},
 		{
 			// podman-remote build with additional contexts. The filter's
-			// own blind-write acknowledgment still governs it.
-			name:       "multipart body on Podman's native build",
-			wantStatus: http.StatusOK,
-			wantPath:   "/libpod/build",
-			wantBody:   podmanBuild,
+			// own blind-write acknowledgment still governs it when no owner policy is active.
+			name:         "multipart body on Podman's native build without owner policy",
+			withoutOwner: true,
+			wantStatus:   http.StatusOK,
+			wantPath:     "/libpod/build",
+			wantBody:     podmanBuild,
 			request: formBodyRequest{
 				method: http.MethodPost, target: "/v5.8.0/libpod/build?t=app%3Adev&nsoptions=%5B%7B%22Name%22%3A%22network%22%7D%5D",
 				contentTypes: []string{podmanBuildType}, body: podmanBuild,
@@ -644,9 +646,16 @@ func TestBodiesRealClientsSendStillReachTheDaemon(t *testing.T) {
 	})
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			readsBefore := len(chain.daemonReads())
+			testChain := chain
+			if tt.withoutOwner {
+				testChain = newFormBodyChain(t, func(cfg *config.Config) {
+					cfg.InsecureAllowBodyBlindWrites = true
+					cfg.Ownership.Owner = ""
+				})
+			}
+			readsBefore := len(testChain.daemonReads())
 
-			resp, payload := chain.do(t, tt.request)
+			resp, payload := testChain.do(t, tt.request)
 			if resp.StatusCode != tt.wantStatus {
 				t.Fatalf("status = %d, want %d; body: %s", resp.StatusCode, tt.wantStatus, payload)
 			}
@@ -654,7 +663,7 @@ func TestBodiesRealClientsSendStillReachTheDaemon(t *testing.T) {
 			// Ownership's own inspect lookups are GETs to other paths; only
 			// the forwarded client request is under test.
 			var reads []daemonFormRead
-			for _, read := range chain.daemonReads()[readsBefore:] {
+			for _, read := range testChain.daemonReads()[readsBefore:] {
 				if read.method == tt.request.method && read.path == tt.wantPath {
 					reads = append(reads, read)
 				}

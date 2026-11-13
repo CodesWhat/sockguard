@@ -720,3 +720,29 @@ func TestBridgeForwardResponseCopyGenericErrorTerminatesTunnel(t *testing.T) {
 		t.Fatalf("closeErr = %v, want a genuine transport error, not the size-cap sentinel", b.closeErr)
 	}
 }
+
+func TestBridgeGracefulDisconnectReturnsNoFault(t *testing.T) {
+	for _, endpoint := range []Endpoint{EndpointGRPC, EndpointSession} {
+		t.Run(map[Endpoint]string{EndpointGRPC: "control", EndpointSession: "session"}[endpoint], func(t *testing.T) {
+			tb := newTestBridge(t, endpoint, allowAllPolicy, DefaultLimits(), echoDaemonHandler())
+			resp, err := tb.driver.RoundTrip(newGRPCRequest(t, "/grpc.health.v1.Health/Check", "healthy"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if err != nil || string(body) != "healthy" {
+				t.Fatalf("health response=%q, error=%v", body, err)
+			}
+			_ = tb.driver.Close()
+			select {
+			case <-tb.done:
+				if tb.err != nil {
+					t.Fatalf("graceful disconnect returned a tunnel fault: %v", tb.err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("bridge did not finish after graceful disconnect")
+			}
+		})
+	}
+}

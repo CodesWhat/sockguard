@@ -65,13 +65,10 @@ jobs:
 
     strategy:
       fail-fast: false
-      # The org is on the Free plan: 20 concurrent jobs across every repo.
-      # This matrix is 28 on its own, and portwing's Deep Fuzz is also
-      # `30 9 * * *` and asks for 7 at the same minute, so 35 jobs contend
-      # for 20 slots. 12 leaves portwing's 7 intact inside the ceiling with
-      # a slot to spare, so a leg waits for a runner instead of being
-      # starved of one. Do not raise this past 13 while the plan is Free and
-      # portwing shares the minute.
+      # Keep this shared-org matrix at 12 concurrent legs. The fuzzer
+      # inventory grows independently of peer workflows, so static totals
+      # become stale. Recheck the current organization runner limit and
+      # peer schedules before raising this cap; leave capacity for them.
       #
       # Corrected 2026-09-06: the "reclaimed with 'The runner has received a
       # shutdown signal'" kills this cap was originally written to fix are
@@ -96,6 +93,7 @@ jobs:
           - { name: FuzzSecret,                    pkg: ./internal/filter/ }
           - { name: FuzzConfigWrite,               pkg: ./internal/filter/ }
           - { name: FuzzService,                   pkg: ./internal/filter/ }
+          - { name: FuzzLogDriverPolicy,           pkg: ./internal/filter/ }
           - { name: FuzzSwarm,                     pkg: ./internal/filter/ }
           - { name: FuzzPlugin,                    pkg: ./internal/filter/ }
           - { name: FuzzNetwork,                   pkg: ./internal/filter/ }
@@ -133,6 +131,16 @@ jobs:
           - { name: FuzzCertificateURIStrings,        pkg: ./internal/certmatch/ }
           - { name: FuzzNormalizeSubjectPublicKeySHA256Pin, pkg: ./internal/pkipin/ }
           - { name: FuzzCompileKeyless,            pkg: ./internal/sigverify/ }
+          - { name: FuzzRegistryAuthHeader,                  pkg: ./internal/filter/ }
+          - { name: FuzzRegistryConfigHeader,                pkg: ./internal/filter/ }
+          - { name: FuzzLibpodPodCreate,                     pkg: ./internal/filter/ }
+          - { name: FuzzLibpodVolumeCreate,                  pkg: ./internal/filter/ }
+          - { name: FuzzLibpodNetworkCreate,                 pkg: ./internal/filter/ }
+          - { name: FuzzValidateFsutilPath,                  pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzParseGRPCPath,                       pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzReadGRPCFrame,                       pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzValidateFileSyncRequestPacket,       pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzDecode,                              pkg: ./internal/dockerfilters/ }
 
     steps:
       # audit, not block. `block` on this job is what kills 3 to 5 legs a
@@ -162,7 +170,7 @@ jobs:
       # holds contents: read and no persisted credential, so audit costs
       # detection only; block stays on the short and write-capable jobs.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
           disable-sudo: true
@@ -216,6 +224,7 @@ jobs:
             go test -run='^$' \
               -fuzz="^${FUZZER}\$" \
               -fuzztime="${FUZZTIME}" \
+              -fuzzminimizetime=5s \
               -timeout="${TEST_TIMEOUT}" \
               "${PKG}" 2>&1 | tee "${LOG}"
             return "${PIPESTATUS[0]}"

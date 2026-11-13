@@ -58,6 +58,50 @@ func TestBytesDecodesGzip(t *testing.T) {
 	}
 }
 
+func TestCompressedBodyAtInputLimit(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		plain string
+	}{
+		{name: "empty", plain: ""},
+		{name: "small JSON", plain: `[]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			raw := gzipBytes(t, tt.plain)
+			limit := int64(len(raw))
+			t.Run("bytes", func(t *testing.T) {
+				t.Parallel()
+				got, err := Bytes(headerWithCoding("gzip"), raw, limit)
+				if err != nil {
+					t.Fatalf("Bytes() at compressed input limit: %v", err)
+				}
+				if string(got) != tt.plain {
+					t.Fatalf("Bytes() = %q, want %q", got, tt.plain)
+				}
+			})
+			t.Run("reader", func(t *testing.T) {
+				t.Parallel()
+				reader, err := Reader(headerWithCoding("gzip"), bytes.NewReader(raw), limit)
+				if err != nil {
+					t.Fatalf("Reader() at compressed input limit: %v", err)
+				}
+				got, err := io.ReadAll(reader)
+				if err != nil {
+					t.Fatalf("ReadAll() at compressed input limit: %v", err)
+				}
+				if string(got) != tt.plain {
+					t.Fatalf("Reader() = %q, want %q", got, tt.plain)
+				}
+			})
+		})
+	}
+}
+
 // TestBytesReturnsIdentityBodyUncopied pins the hot path. A real daemon never
 // compresses, so the common case has to cost a header lookup and no copy.
 func TestBytesReturnsIdentityBodyUncopied(t *testing.T) {

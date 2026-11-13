@@ -488,7 +488,7 @@ export const roadmap: Milestone[] = [
     status: "released",
     items: [
       "A numeric user with a sign prefix such as +0 is now treated as root on Docker and Podman",
-      "request_body.exec.allow_root_user: false and require_non_root_user can no longer be bypassed to run as UID 0",
+      "request_body.exec.allow_root_user: false and require_non_root_user reject signed and padded numeric UID 0 forms; named users are resolved by the daemon against the image and may still map to UID 0",
     ],
   },
   {
@@ -502,14 +502,15 @@ export const roadmap: Milestone[] = [
   },
   {
     version: "v3.0.0",
-    title: "Verified TLS Compatibility Boundary",
+    title: "Verified TLS and Security Hardening",
     emoji: "🔐",
     status: "candidate",
     items: [
       "Published v3.0.0-rc.6 candidate; select its image or /v3 Go tag explicitly. Includes v2.4.4 client compatibility and libpod hardening, v2.4.3 session cleanup, v2.4.2 Podman isolation and dependency updates, exec target protection and the v2.4 policy/security work",
       "Rejects the deprecated endpoint skip-verification setting and unverified Docker TLS fallback; configure the daemon CA and verified TLS",
       "Go imports, generated descriptors and release builds use /v3; stable channels serve v2.4.6",
-      "GA requires fresh candidate soak, TLS/security checks and published-image conformance; no earlier than 2026-11-17, 14 days after rc.6. Candidate-only behavior changes in rc.6 restarted the window. Candidate-only behavior fixes restart the window; opaque BuildKit removal remains undecided",
+      "Preparing v3.0.0-rc.7 with the completed hardening work, v2.4.5/v2.4.6 security fixes and Go 1.27.4; owner-scoped Podman builds are refused and build-argument history entries are fully redacted when environment redaction is enabled",
+      "The combined candidate needs fresh exact-source soak, TLS/security checks, published-image conformance and a new 14-day bake from publication. The previous November 17 floor does not cover it; opaque BuildKit removal remains undecided",
     ],
   },
 ];

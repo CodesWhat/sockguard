@@ -62,6 +62,7 @@ node_modules/
 .turbo/
 out/
 *.tsbuildinfo
+/website/AGENTS.md
 
 # Generated at build time: docs/out/ is copied into website/public/docs/
 # by website/package.json's `build:docs-content` script so the Fumadocs

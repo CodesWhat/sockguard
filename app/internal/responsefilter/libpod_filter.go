@@ -209,6 +209,8 @@ func (f *Filter) modifyLibpodResponse(method, normPath string, resp *http.Respon
 		// Checked against both source files rather than assumed; reusing
 		// modifyImageInspect is a verified decision, not the default.
 		return f.modifyImageInspect(resp)
+	case hasImageNameSuffix(normPath, LibpodPathPrefix+"/images/", "history"):
+		return f.modifyImageHistory(resp)
 	case normPath == libpodVolumeListPath:
 		return f.modifyLibpodVolumeList(resp)
 	case normPath == libpodNetworkListPath:
