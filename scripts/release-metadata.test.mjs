@@ -52,6 +52,22 @@ test("the current stable version is the roadmap HEAD", () => {
   );
 });
 
+test("candidate migration examples select the same image and Go release", () => {
+  const migration = read("docs/content/docs/migration.mdx");
+  const image = migration.match(/Select `ghcr\.io\/codeswhat\/sockguard:(\d+\.\d+\.\d+-rc\.\d+)`/u);
+  const go = migration.match(
+    /go install github\.com\/codeswhat\/sockguard\/v\d+\/app\/cmd\/sockguard@v(\d+\.\d+\.\d+-rc\.\d+)/u,
+  );
+
+  if (!image && !go) return;
+
+  assert.ok(image && go, "candidate installation needs both image and Go examples");
+  assert.equal(image[1], go[1], "Docker and Go users must select the same candidate");
+  const current = migration.match(/The current candidate, \[v(\d+\.\d+\.\d+-rc\.\d+)\]/u);
+  assert.ok(current, "candidate examples need a declared current candidate");
+  assert.equal(image[1], current[1]);
+});
+
 test("README workflow badges reference existing workflow files", () => {
   const readme = read("README.md");
   const workflowBadges = [...readme.matchAll(/\/actions\/workflows\/([^/]+\.ya?ml)\/badge\.svg/g)];

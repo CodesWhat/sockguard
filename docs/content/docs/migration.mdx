@@ -10,7 +10,7 @@ description: Upgrade to stable v2.4, evaluate the v3 release candidate, or migra
 | v2.4.6 | Published stable | Keep normal Docker, Homebrew, deb/rpm and binary release channels. |
 | v2.3.3 | End of life | The last v2.3 patch. It no longer receives security fixes, so upgrade to v2.4. |
 | v2.2.11 | End of life | Upgrade to v2.4 for security fixes. |
-| v3.0.0-rc.6 | Published candidate | Select its image or `/v3` Go tag explicitly and migrate the removed TLS settings below. It carries v2.4.4, and its validation and bake window are independent of v2.4. Stable channels serve v2.4.6. |
+| v3.0.0-rc.7 | Published candidate | Select its image or `/v3` Go tag explicitly and migrate the removed TLS settings below. It carries the combined compatibility/hardening work and v2.4.5/v2.4.6 security fixes; its bake and validation are independent of v2.4. Stable channels serve v2.4.6. |
 
 ## From Sockguard v2.1 to v2.2
 
@@ -62,9 +62,9 @@ identity remains a documented limit; use distinct UID/GID client profiles.
 
 ## From Sockguard v2 to v3 (release candidate)
 
-The current candidate, [v3.0.0-rc.6](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0-rc.6),
-is published. It carries v2.4.4 and includes the v2.4 policy/security work and the TLS removals below.
-The published rc.6 predates the signed numeric-UID fix in v2.4.5 and the malformed-zstd fix in v2.4.6. Use v2.4.6 for security-sensitive deployments while candidate validation continues. These fixes are forward-ported to the development branches; the published rc.6 image is unchanged.
+The current candidate, [v3.0.0-rc.7](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0-rc.7),
+is published. It combines the compatibility and hardening work, including v2.4.5/v2.4.6 security fixes and Go 1.27.4, with the TLS removals below.
+Use stable v2.4.6 for security-sensitive deployments while candidate validation continues. Published rc.6 retains its original identity; the combined fixes are in rc.7.
 
 All v2 release lines retain their accepted settings.
 Before testing the v3 candidate:
@@ -85,22 +85,21 @@ Docker environment's existing plaintext behavior when neither TLS variable is
 set. The opaque BuildKit acknowledgment remains accepted; its removal target is
 still undecided.
 
-Select `ghcr.io/codeswhat/sockguard:3.0.0-rc.6` explicitly, download a platform
+Select `ghcr.io/codeswhat/sockguard:3.0.0-rc.7` explicitly, download a platform
 binary from the release, or install with Go 1.27:
 
 ```bash
-go install github.com/codeswhat/sockguard/v3/app/cmd/sockguard@v3.0.0-rc.6
+go install github.com/codeswhat/sockguard/v3/app/cmd/sockguard@v3.0.0-rc.7
 ```
 
 The candidate module is `github.com/codeswhat/sockguard/v3`. Go consumers must
 change Sockguard import prefixes from `/v2` to `/v3`. Published v2 install commands retain `/v2`; stable Docker and Homebrew channels
 serve v2.4.6.
 
-### Combined candidate preparation
+### Combined candidate
 
-`v3.0.0-rc.7` is being prepared with the compatibility and hardening work in one
-release. It includes the v2.4.5/v2.4.6 security fixes and Go 1.27.4. Wait for its
-published release and verification evidence before selecting its tag.
+`v3.0.0-rc.7` is published with the compatibility and hardening work in one
+release. It includes the v2.4.5/v2.4.6 security fixes and Go 1.27.4.
 
 - Owner-scoped Podman builds are refused on Docker-compatible, native and
   daemon-host routes in every rollout mode. `pullpolicy=never` cannot prevent
@@ -124,9 +123,9 @@ for the exact option scopes and the additional tmpfs and ownership restrictions.
 
 The combined candidate requires fresh exact-source four-hour soak and TLS/security
 checks, published-image conformance and a fresh 14-day bake from publication.
-The November 17 floor belonged to rc.6 and does not cover this source. The new
-GA floor will be recorded after publication; v2.3/v2.4 validation does not replace
-the combined candidate's evidence.
+Publication at 2026-11-13T17:15:03Z gives a GA floor of 2026-11-27T17:15:03Z.
+Final release gates still apply; v2.3/v2.4 validation does not replace the
+combined candidate's evidence.
 
 ## Deprecation schedule
 
