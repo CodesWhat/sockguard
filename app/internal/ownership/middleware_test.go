@@ -1446,6 +1446,40 @@ func TestMiddlewareDeniesCrossOwnerNetworkMembershipChanges(t *testing.T) {
 	}
 }
 
+func TestMiddlewareForwardsNetworkMembershipBodyUnchanged(t *testing.T) {
+	t.Parallel()
+	const body = `{"EndpointConfig": {"z":1,"a":2},  "Container": "web"}`
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+	fi := &recordingInspector{
+		resources: map[string]map[string]inspectResult{
+			"networks": {
+				"team-net": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+			},
+			"containers": {
+				"web": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+			},
+		},
+	}
+	var gotBody string
+	var gotLength int64
+	handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		gotBody = string(raw)
+		gotLength = r.ContentLength
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/networks/team-net/connect", strings.NewReader(body)))
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	if gotBody != body || gotLength != int64(len(body)) {
+		t.Fatalf("upstream body = %q (len %d), want %q (len %d)", gotBody, gotLength, body, len(body))
+	}
+}
+
 func TestMiddlewareFailsClosedWhenNetworkMembershipContainerIsUnresolved(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -3007,7 +3041,7 @@ func TestMiddlewareRefusesOwnerStampStrippingBuild(t *testing.T) {
 		handler := middlewareWithDeps(testLogger(), opts, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 			forwarded = true
 		}))
-		req := httptest.NewRequest(http.MethodPost, "/libpod/build?unsetlabel=com.sockguard.owner", nil)
+		req := httptest.NewRequest(http.MethodPost, "/build?unsetlabel=com.sockguard.owner", nil)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusBadRequest {
@@ -3083,7 +3117,7 @@ func TestAddOwnerLabelToBodyAndFilterHelpers(t *testing.T) {
 	}
 
 	filterReq := httptest.NewRequest(http.MethodGet, "/containers/json?filters=%7B%22label%22%3A%5B%22com.sockguard.owner%3Djob-123%22%5D%7D", nil)
-	if err := addOwnerLabelFilter(filterReq, "com.sockguard.owner", "job-123", false); err != nil {
+	if err := addOwnerLabelFilter(filterReq, filter.NormalizePath(filterReq.URL.Path), "com.sockguard.owner", "job-123", false); err != nil {
 		t.Fatalf("addOwnerLabelFilter() error = %v", err)
 	}
 	var filters map[string][]string
@@ -3095,12 +3129,12 @@ func TestAddOwnerLabelToBodyAndFilterHelpers(t *testing.T) {
 	}
 
 	badFilterReq := httptest.NewRequest(http.MethodGet, "/containers/json?filters=%7B%22label%22%3A%22bad%22%7D", nil)
-	if err := addOwnerLabelFilter(badFilterReq, "com.sockguard.owner", "job-123", false); err == nil {
+	if err := addOwnerLabelFilter(badFilterReq, filter.NormalizePath(badFilterReq.URL.Path), "com.sockguard.owner", "job-123", false); err == nil {
 		t.Fatal("expected invalid filters error")
 	}
 
 	taskFilterReq := httptest.NewRequest(http.MethodGet, "/tasks", nil)
-	if err := addOwnerLabelFilter(taskFilterReq, "com.sockguard.owner", "job-123", false); err != nil {
+	if err := addOwnerLabelFilter(taskFilterReq, filter.NormalizePath(taskFilterReq.URL.Path), "com.sockguard.owner", "job-123", false); err != nil {
 		t.Fatalf("addOwnerLabelFilter(task) error = %v", err)
 	}
 	var taskFilters map[string][]string
@@ -3112,7 +3146,7 @@ func TestAddOwnerLabelToBodyAndFilterHelpers(t *testing.T) {
 	}
 
 	nodeFilterReq := httptest.NewRequest(http.MethodGet, "/nodes", nil)
-	if err := addOwnerLabelFilter(nodeFilterReq, "com.sockguard.owner", "job-123", false); err != nil {
+	if err := addOwnerLabelFilter(nodeFilterReq, filter.NormalizePath(nodeFilterReq.URL.Path), "com.sockguard.owner", "job-123", false); err != nil {
 		t.Fatalf("addOwnerLabelFilter(nodes) error = %v", err)
 	}
 	var nodeFilters map[string][]string
@@ -3550,9 +3584,8 @@ func TestMiddlewareOverwritesClientSuppliedOwnerLabel(t *testing.T) {
 }
 
 // TestMutateJSONBodyRejectsAmbiguousBodyBeforeMutating locks the fail-closed
-// guard on duplicate case-variant keys after it moved off the raw bytes and
-// onto the decoded tree. Same verdict, same wording, and the mutate callback
-// still never sees the body.
+// guard on duplicate case-variant keys. The mutate callback never sees an
+// ambiguous body.
 func TestMutateJSONBodyRejectsAmbiguousBodyBeforeMutating(t *testing.T) {
 	t.Parallel()
 	body := `{"HostConfig":{"NetworkMode":"bridge"},"hostconfig":{"NetworkMode":"container:victim"}}`
@@ -3618,5 +3651,33 @@ func TestMutateJSONBodyRejectsNonObjectBodies(t *testing.T) {
 				t.Fatalf("mutateJSONBody(%s) err = nil, want an error", tt.body)
 			}
 		})
+	}
+}
+
+func TestOwnershipJSONGuardsRetainRepeatedRawKeys(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"enforce", "warn", "audit"} {
+		for _, body := range []string{
+			`{"pidns":{"nsmode":"private"},"pidns":{"nsmode":"host"}}`,
+			`{"HostConfig":{"Memory":4096},"HostConfig":{}}`,
+			`{"spec":{"user":"1000","user":null}}`,
+			"{\"\u0130\":0,\"pidns\":{},\"pidns\":{}}",
+		} {
+			t.Run(mode+"/"+body, func(t *testing.T) {
+				t.Parallel()
+				for _, guard := range []struct {
+					name  string
+					apply func(*http.Request, func(map[string]any) error) error
+				}{{"mutate", mutateJSONBody}, {"inspect", inspectJSONBody}} {
+					req := httptest.NewRequest(http.MethodPost, "/libpod/pods/create", strings.NewReader(body))
+					req = req.WithContext(logging.WithMeta(req.Context(), &logging.RequestMeta{RolloutMode: mode}))
+					called := false
+					err := guard.apply(req, func(map[string]any) error { called = true; return nil })
+					if err == nil || called || !strings.Contains(err.Error(), "ambiguous request body") {
+						t.Errorf("%s: err=%v callback=%v, want raw-key refusal before callback", guard.name, err, called)
+					}
+				}
+			})
+		}
 	}
 }

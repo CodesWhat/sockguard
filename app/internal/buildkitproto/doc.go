@@ -12,8 +12,8 @@
 // This package is intentionally free of any non-protobuf runtime
 // dependency: only google.golang.org/protobuf and the Go standard library.
 // It must never import grpc-go — the #185 sign-off's dependency exception
-// covers google.golang.org/protobuf (this package) and golang.org/x/net/http2
-// (the phase 2 transport, elsewhere), nothing else.
+// covers google.golang.org/protobuf (this package), nothing else; the HTTP/2
+// transport runs on net/http through internal/h2conn.
 //
 //go:generate bash ../../../scripts/generate-buildkit-proto.sh
 package buildkitproto

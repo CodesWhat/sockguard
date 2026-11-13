@@ -182,6 +182,10 @@ clients:
 # reaching either listener's allowed_profiles check. Kept as an explicit
 # backstop rather than relying on that upstream denial alone.
 rules:
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
   - match: { method: "*", path: "/**" }
     action: deny
     reason: "no matching client profile for this listener"

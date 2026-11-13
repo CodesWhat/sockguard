@@ -1,4 +1,17 @@
-export const faqItems: Array<{ question: string; answer: string }> = [
+export const faqItems: Array<{
+  question: string;
+  answer: string;
+  links?: Array<{ label: string; href: string }>;
+}> = [
+  {
+    question: "Is this the same project as Buildkite's Sockguard?",
+    answer:
+      "CodesWhat develops and maintains this Sockguard at getsockguard.com, with source code at github.com/CodesWhat/sockguard. Buildkite's Sockguard is a separate project that was archived in 2021. The documentation, releases, and container images on this site belong to CodesWhat's project.",
+    links: [
+      { label: "Sockguard website", href: "https://www.getsockguard.com" },
+      { label: "CodesWhat/sockguard", href: "https://github.com/CodesWhat/sockguard" },
+    ],
+  },
   {
     question: "What is Sockguard and how does the default-deny model work?",
     answer:

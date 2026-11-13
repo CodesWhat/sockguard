@@ -1161,6 +1161,7 @@ func TestBuildPolicyInspectRefusesCompressedBodyThatIsNotAGzipTar(t *testing.T) 
 		{name: "bzip2", body: append([]byte("BZh91AY&SY"), bytes.Repeat([]byte{0x01}, 64)...)},
 		{name: "xz", body: append([]byte{0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00}, bytes.Repeat([]byte{0x01}, 64)...)},
 		{name: "zstd", body: append([]byte{0x28, 0xB5, 0x2F, 0xFD}, bytes.Repeat([]byte{0x01}, 64)...)},
+		{name: "empty zstd skippable frame", body: []byte{0x5A, 0x2A, 0x4D, 0x18, 0, 0, 0, 0}},
 		{name: "zstd skippable frame", body: append([]byte{0x5A, 0x2A, 0x4D, 0x18, 0x04, 0x00, 0x00, 0x00}, bytes.Repeat([]byte{0x01}, 64)...)},
 	}
 	for _, tt := range tests {

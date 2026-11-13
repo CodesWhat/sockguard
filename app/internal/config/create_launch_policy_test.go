@@ -181,3 +181,32 @@ func TestCreateLaunchPolicyLegacyDockerStrings(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateLaunchValidationEntryPositions(t *testing.T) {
+	t.Parallel()
+	for _, group := range []string{"container_create", "libpod_container_create"} {
+		for _, tt := range []struct{ field, entries string }{
+			{field: "allowed_commands", entries: `[["/app/start"], [], ["/app/other"]]`},
+			{field: "allowed_entrypoints", entries: `[["/app/init"], [""], ["/app/other-init"]]`},
+			{field: "allowed_env_values", entries: `["FIRST=1", "INVALID", "THIRD=3"]`},
+		} {
+			t.Run(group+"/"+tt.field, func(t *testing.T) {
+				cfg, err := LoadBytes([]byte(fmt.Sprintf("request_body:\n  %s: {%s: %s}\n", group, tt.field, tt.entries)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				err = ValidateStructural(cfg)
+				want := "request_body." + group + "." + tt.field + " entry 2 "
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("validation error=%v, want second-entry diagnostic %q", err, want)
+				}
+				for _, position := range []string{"1", "3"} {
+					unexpected := "request_body." + group + "." + tt.field + " entry " + position + " "
+					if strings.Contains(err.Error(), unexpected) {
+						t.Fatalf("validation error=%v, unexpected diagnostic %q", err, unexpected)
+					}
+				}
+			})
+		}
+	}
+}

@@ -72,6 +72,7 @@ jobs:
           - { name: FuzzSecret,                    pkg: ./internal/filter/ }
           - { name: FuzzConfigWrite,               pkg: ./internal/filter/ }
           - { name: FuzzService,                   pkg: ./internal/filter/ }
+          - { name: FuzzLogDriverPolicy,           pkg: ./internal/filter/ }
           - { name: FuzzSwarm,                     pkg: ./internal/filter/ }
           - { name: FuzzPlugin,                    pkg: ./internal/filter/ }
           - { name: FuzzNetwork,                   pkg: ./internal/filter/ }
@@ -130,6 +131,16 @@ jobs:
           - { name: FuzzCertificateURIStrings,        pkg: ./internal/certmatch/ }
           - { name: FuzzNormalizeSubjectPublicKeySHA256Pin, pkg: ./internal/pkipin/ }
           - { name: FuzzCompileKeyless,            pkg: ./internal/sigverify/ }
+          - { name: FuzzRegistryAuthHeader,                  pkg: ./internal/filter/ }
+          - { name: FuzzRegistryConfigHeader,                pkg: ./internal/filter/ }
+          - { name: FuzzLibpodPodCreate,                     pkg: ./internal/filter/ }
+          - { name: FuzzLibpodVolumeCreate,                  pkg: ./internal/filter/ }
+          - { name: FuzzLibpodNetworkCreate,                 pkg: ./internal/filter/ }
+          - { name: FuzzValidateFsutilPath,                  pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzParseGRPCPath,                       pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzReadGRPCFrame,                       pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzValidateFileSyncRequestPacket,       pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzDecode,                              pkg: ./internal/dockerfilters/ }
 
     steps:
       # Stays audit for stage 1: this job already has an open, in-repo
@@ -140,7 +151,7 @@ jobs:
       # with the otherwise-identical quality-fuzz-nightly.yml job.
       - name: Harden Runner
         if: ${{ inputs.skip_harden_runner != true }}
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
@@ -180,6 +191,7 @@ jobs:
           go test -run='^$' \
             -fuzz="^${FUZZER}\$" \
             -fuzztime="${FUZZTIME}" \
+            -fuzzminimizetime=5s \
             -timeout="${TEST_TIMEOUT}" \
             "${PKG}"
 

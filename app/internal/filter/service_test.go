@@ -39,48 +39,31 @@ func TestServiceInspectDeniesBindMountSource(t *testing.T) {
 }
 
 func TestServiceInspectDeniesHostNetwork(t *testing.T) {
-	policy := newServicePolicy(ServiceOptions{})
-
-	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(`{
-		"TaskTemplate": {
-			"ContainerSpec": {
-				"Image": "nginx:latest"
+	t.Parallel()
+	for _, tt := range []struct{ name, path, body string }{
+		{"top-level create", "/services/create", `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest"}},"Networks":[{"Target":"host"}]}`},
+		{"nested create", "/services/create", `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest"},"Networks":[{"Target":"host"}]}}`},
+		{"top-level update", "/services/id/update", `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest"}},"Networks":[{"Target":"host"}]}`},
+		{"nested update", "/services/id/update", `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest"},"Networks":[{"Target":"host"}]}}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			for _, allowed := range []bool{false, true} {
+				policy := newServicePolicy(ServiceOptions{AllowHostNetwork: allowed, AllowedRegistries: []string{"docker.io"}})
+				req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+				reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := "service denied: host network is not allowed"
+				if allowed {
+					want = ""
+				}
+				if reason != want {
+					t.Errorf("allow_host_network=%v: reason=%q, want %q", allowed, reason, want)
+				}
 			}
-		},
-		"Networks": [
-			{"Target": "host"}
-		]
-	}`))
-
-	denyReason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
-	if err != nil {
-		t.Fatalf("inspect() error = %v", err)
-	}
-	if denyReason != "service denied: host network is not allowed" {
-		t.Fatalf("denyReason = %q, want host network denial", denyReason)
-	}
-}
-
-func TestServiceInspectDeniesHostNetworkUnderTaskTemplate(t *testing.T) {
-	policy := newServicePolicy(ServiceOptions{})
-
-	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(`{
-		"TaskTemplate": {
-			"ContainerSpec": {
-				"Image": "nginx:latest"
-			},
-			"Networks": [
-				{"Target": "host"}
-			]
-		}
-	}`))
-
-	denyReason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
-	if err != nil {
-		t.Fatalf("inspect() error = %v", err)
-	}
-	if denyReason != "service denied: host network is not allowed" {
-		t.Fatalf("denyReason = %q, want host network denial", denyReason)
+		})
 	}
 }
 
@@ -1155,4 +1138,69 @@ func TestRewriteServiceImage(t *testing.T) {
 		})
 	}
 
+}
+
+func TestServiceInspectDeniesStoredRollbackWithAllowedImages(t *testing.T) {
+	const body = `{"TaskTemplate":{"ContainerSpec":{"Image":"docker.io/library/alpine:3.22"}}}`
+	policy := newServicePolicy(ServiceOptions{AllowedImages: []string{"docker.io/library/alpine:3.22"}, AllowAllRegistries: true})
+	req := httptest.NewRequest(http.MethodPost, "/services/app/update?version=1&rollback=previous", strings.NewReader(body))
+	reason, err := policy.inspect(testLogger(), req, NormalizePath(req.URL.Path))
+	if err != nil || reason != "service denied: stored rollback is not supported with allowed_images" {
+		t.Fatalf("inspect = %q, %v", reason, err)
+	}
+
+	// Without allowed_images the same request is not denied by this gate.
+	open := newServicePolicy(ServiceOptions{AllowAllRegistries: true})
+	req = httptest.NewRequest(http.MethodPost, "/services/app/update?version=1&rollback=previous", strings.NewReader(body))
+	if reason, err := open.inspect(testLogger(), req, NormalizePath(req.URL.Path)); err != nil || reason != "" {
+		t.Fatalf("inspect without allowed_images = %q, %v", reason, err)
+	}
+}
+
+func TestServiceInspectDeniesAutomaticRollbackWithAllowedImages(t *testing.T) {
+	policy := newServicePolicy(ServiceOptions{AllowedImages: []string{"docker.io/library/alpine:3.22"}, AllowAllRegistries: true})
+	open := newServicePolicy(ServiceOptions{AllowAllRegistries: true})
+	bodyFor := func(action string) string {
+		return `{"TaskTemplate":{"ContainerSpec":{"Image":"docker.io/library/alpine:3.22"}},"UpdateConfig":{"FailureAction":"` + action + `"}}`
+	}
+	for _, action := range []string{"rollback", " ROLLBACK "} {
+		req := httptest.NewRequest(http.MethodPost, "/services/app/update?version=1", strings.NewReader(bodyFor(action)))
+		reason, err := policy.inspect(testLogger(), req, NormalizePath(req.URL.Path))
+		if err != nil || reason != "service denied: automatic rollback is not supported with allowed_images" {
+			t.Fatalf("action %q: inspect = %q, %v", action, reason, err)
+		}
+
+		// Without allowed_images the same request is not denied by this gate.
+		req = httptest.NewRequest(http.MethodPost, "/services/app/update?version=1", strings.NewReader(bodyFor(action)))
+		if reason, err := open.inspect(testLogger(), req, NormalizePath(req.URL.Path)); err != nil || reason != "" {
+			t.Fatalf("action %q without allowed_images: inspect = %q, %v", action, reason, err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/services/app/update?version=1", strings.NewReader(bodyFor("pause")))
+	if reason, err := policy.inspect(testLogger(), req, NormalizePath(req.URL.Path)); err != nil || reason != "" {
+		t.Fatalf("pause: inspect = %q, %v", reason, err)
+	}
+}
+
+func TestServiceTmpfsVolumePrivilegeBoundary(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, options string
+		grant         bool
+		want          string
+	}{
+		{name: "restricted", options: "noexec,nosuid,nodev"},
+		{name: "executable", options: "exec,nosuid,nodev", want: "service denied: local tmpfs volume options enable exec, dev, or suid (set request_body.container_create.allow_tmpfs_privileged_options: true)"},
+		{name: "explicit grant", options: "exec,nosuid,nodev", grant: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := newServicePolicy(ServiceOptions{AllowedRegistries: []string{"docker.io"}, AllowTmpfsPrivilegedOptions: tt.grant})
+			req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(`{"TaskTemplate":{"ContainerSpec":{"Image":"alpine:3","Mounts":[{"Type":"volume","Source":"data","Target":"/data","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"tmpfs","o":"`+tt.options+`"}}}}]}}}`))
+			reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+			if err != nil || reason != tt.want {
+				t.Fatalf("inspect=(%q,%v), want %q", reason, err, tt.want)
+			}
+		})
+	}
 }

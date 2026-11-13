@@ -105,3 +105,31 @@ func TestProbeDoesNotFollowRedirectsThatHideIdentity(t *testing.T) {
 		t.Fatal("Probe mutated its shared client's redirect policy")
 	}
 }
+
+func TestProbeDockerIdentityRequiresSuccessfulDockerClassification(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, body, header string
+		status             int
+		want, wantErr      bool
+	}{
+		{name: "Docker", body: dockerVersionBody, status: http.StatusOK, want: true},
+		{name: "Podman", body: `{"Components":[{"Name":"Podman Engine","Version":"6.1.3"}]}`, status: http.StatusOK},
+		{name: "unrecognized", body: `{}`, status: http.StatusOK, wantErr: true},
+		{name: "failed Docker response", body: dockerVersionBody, status: http.StatusServiceUnavailable, wantErr: true},
+		{name: "conflicting header", body: dockerVersionBody, header: "Libpod/6.1.3", status: http.StatusOK, wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Server", tt.header)
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+			got, err := Probe(t.Context(), clientFor(srv.Listener.Addr().String()))
+			if (err != nil) != tt.wantErr || got.ProbedDocker != tt.want {
+				t.Fatalf("Probe=%+v error=%v, want proved Docker=%v error=%v", got, err, tt.want, tt.wantErr)
+			}
+		})
+	}
+}

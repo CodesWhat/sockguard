@@ -100,11 +100,11 @@ func newImageLoadChainDaemon() *imageNameChainDaemon {
 // carries labels.
 func imageLoadChainArchive(t *testing.T, labels map[string]string, repoTags ...string) []byte {
 	t.Helper()
-	manifest, err := json.Marshal([]map[string][]string{{"RepoTags": repoTags}})
+	manifest, err := json.Marshal([]map[string]any{{"Config": "config.json", "RepoTags": repoTags}})
 	if err != nil {
 		t.Fatalf("encode manifest: %v", err)
 	}
-	config, err := json.Marshal(labels)
+	config, err := json.Marshal(map[string]any{"config": map[string]any{"Labels": labels}})
 	if err != nil {
 		t.Fatalf("encode config: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestServeChainLoadRefusesNamesInALegacyRepositoriesFile(t *testing.T) {
 			name string
 			body []byte
 		}{
-			{"manifest.json", []byte(`[{"RepoTags":["mine/new:v2"]}]`)},
+			{"manifest.json", []byte(`[{"Config":"config.json","RepoTags":["mine/new:v2"]}]`)},
 			{"config.json", []byte(`{}`)},
 			{"repositories", legacy["repositories"]},
 		} {
@@ -328,6 +328,10 @@ func TestServeChainLoadAuthorizesTheNamesItAssigns(t *testing.T) {
 			repoTags: []string{"theirs/app:v1"}, target: "/v1.45/images/load", reference: "theirs/app:v1", wantImage: imageTagChainVictimID, wantStatus: http.StatusForbidden,
 		},
 		{name: "archive that names nothing", configure: func(cfg *config.Config) { cfg.RequestBody.ImageLoad.AllowUntagged = true }, target: "/v1.45/images/load", wantStatus: http.StatusOK},
+		// The name is held by nothing, so only the label on the loaded image can
+		// refuse it. No reference: the step checks the status alone.
+		{name: "new name under another owner's label", labels: forged, repoTags: []string{"mine/new:v2"}, target: "/v1.45/images/load", wantStatus: http.StatusForbidden},
+		{name: "native new name under another owner's label", podman: true, labels: forged, repoTags: []string{"mine/new:v2"}, target: "/v5.0.0/libpod/images/load", wantStatus: http.StatusForbidden},
 		{name: "native load onto a short name", podman: true, labels: forged, repoTags: []string{"theirs/app:latest"}, target: "/v5.0.0/libpod/images/load", reference: "localhost/theirs/app:latest", wantImage: imageTagChainVictimID, wantStatus: http.StatusForbidden},
 		{name: "compat load onto a short name on podman", podman: true, repoTags: []string{"theirs/app:latest"}, target: "/v1.41/images/load", reference: "localhost/theirs/app:latest", wantImage: imageTagChainVictimID, wantStatus: http.StatusForbidden},
 		{name: "native load onto a name nothing holds", podman: true, repoTags: []string{"mine/new:v2"}, target: "/v5.0.0/libpod/images/load", reference: "localhost/mine/new:v2", wantStatus: http.StatusOK},

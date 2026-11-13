@@ -4,7 +4,7 @@ description: Sockguard's shipped v1.7, v2.0, v2.1, v2.2, v2.3, and v2.4 work and
 ---
 
 Sockguard v3.0 is the current stable feature line, with v3.0.0 the latest
-release. It promotes `3.0.0-rc.6` with the published v2.4.5 signed root UID fix and v2.4.6 compression decoder fix, moves the Go module to
+release. It promotes `3.0.0-rc.7` with the published v2.4.5 signed root UID fix and v2.4.6 compression decoder fix, moves the Go module to
 `/v3`, rejects the insecure endpoint TLS settings deprecated in v2.1, and carries
 everything through v2.4.6. The v2.4 line stays supported for security fixes until
 v3.1 ships. v2.4.5 treats signed numeric users such as `+0` as root in policy checks. v2.4.4 stops redaction placeholders from breaking typed Docker
@@ -244,6 +244,21 @@ opaque IDs alone, `sockguard validate` reports unknown configuration keys
 (`--strict` exits non-zero on them), native container create gates `unified`,
 `env_host` and `pod`, and the Helm chart is published as a signed OCI artifact
 at `oci://ghcr.io/codeswhat/charts/sockguard`.
+
+The combined release includes the completed hardening work, v2.4.5/v2.4.6
+security fixes, Go 1.27.4, owner-scoped Podman build refusals and complete
+build-argument history redaction. Its prepared GA remains held until
+2026-11-27T17:15:03+00:00 and the fresh exact-source soak, TLS/security,
+published-image conformance and final release gates pass.
+
+## Combined v3 development validation
+
+The [November 6 mutation run](https://github.com/CodesWhat/sockguard/actions/runs/42288257125)
+completed all 43 packages at the source tree merged as `7dbc523f`. Its test
+efficacy was 97.9821%, above the unchanged 97.8% target: 6,361 killed and 131
+surviving mutants. The report also records 2,219 uncovered mutants and 62
+timeouts; timeouts are separate from kills. This is development-branch evidence,
+not a published release or a statement-coverage score.
 
 ## Twelve-month direction
 

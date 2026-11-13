@@ -525,6 +525,26 @@ func TestReadBoundedBodyRefusesAmbiguousKeys(t *testing.T) {
 		wantReason string
 	}{
 		{
+			name:       "below the key echo limit",
+			body:       "{\"" + strings.Repeat("a", 61) + "\u0130\":1}",
+			wantReason: `request body denied: ambiguous JSON object key "` + strings.Repeat("a", 61) + `\u0130": U+0130 matches a field name in some JSON decoders and not in others`,
+		},
+		{
+			name:       "at the key echo limit",
+			body:       "{\"" + strings.Repeat("a", 62) + "\u0130\":1}",
+			wantReason: `request body denied: ambiguous JSON object key "` + strings.Repeat("a", 62) + `\u0130": U+0130 matches a field name in some JSON decoders and not in others`,
+		},
+		{
+			name:       "a rune crossing the key echo limit",
+			body:       "{\"" + strings.Repeat("a", 63) + "\u0130\":1}",
+			wantReason: `request body denied: ambiguous JSON object key "` + strings.Repeat("a", 63) + `...": U+0130 matches a field name in some JSON decoders and not in others`,
+		},
+		{
+			name:       "invalid continuation prefix at the key echo limit",
+			body:       "{\"" + strings.Repeat("\x80", 65) + "\u0130\":1}",
+			wantReason: `request body denied: ambiguous JSON object key "...": U+0130 matches a field name in some JSON decoders and not in others`,
+		},
+		{
 			name:       "a key holding U+0130",
 			body:       "{\"image\":\"alpine\",\"pr\u0130v\u0130leged\":true}",
 			wantReason: `request body denied: ambiguous JSON object key "pr\u0130v\u0130leged": U+0130 matches a field name in some JSON decoders and not in others`,

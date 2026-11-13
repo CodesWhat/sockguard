@@ -123,7 +123,7 @@ func decodeLibpodNetworkLabels(body io.Reader) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	data = bytes.TrimSpace(data)
+	data = bytes.Trim(data, " \t\r\n")
 	if bytes.Equal(data, []byte("null")) {
 		return nil, errors.New("decode libpod network inspect object: object is null")
 	}
@@ -135,7 +135,7 @@ func decodeLibpodNetworkLabels(body io.Reader) (map[string]string, error) {
 		if len(arr) != 1 {
 			return nil, fmt.Errorf("decode libpod network inspect array: expected one object, got %d", len(arr))
 		}
-		data = bytes.TrimSpace(arr[0])
+		data = bytes.Trim(arr[0], " \t\r\n")
 		if bytes.Equal(data, []byte("null")) {
 			return nil, errors.New("decode libpod network inspect array: object is null")
 		}

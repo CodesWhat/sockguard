@@ -59,7 +59,7 @@ jobs:
       # 10–24 minutes (step-security/harden-runner#679). Audit mode retains
       # runtime telemetry while allowing the four-hour gate to finish.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2; step-security/harden-runner#679
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3; step-security/harden-runner#679
         with:
           egress-policy: audit
           disable-sudo: true

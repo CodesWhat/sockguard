@@ -633,3 +633,33 @@ func TestServeChainImageTagInspectsTheTargetOnceOnDockerd(t *testing.T) {
 		})
 	}
 }
+
+// TestServeChainImageTagRefusesABareNamePodmanCannotComplete sends a retag onto
+// a bare name of 238 characters. Podman's compat lookup completes a name with
+// no slash to docker.io/library/<name>, which is past the 255 the reference
+// grammar allows, so the name never resolves and the answer used to be an
+// error from the inspect. dockerd completes it to library/<name> and takes the
+// same name.
+func TestServeChainImageTagRefusesABareNamePodmanCannotComplete(t *testing.T) {
+	target := "/v1.41/images/mine:1/tag?repo=" + strings.Repeat("a", 238)
+	tests := []struct {
+		name       string
+		podman     bool
+		wantStatus int
+	}{
+		{name: "podman upstream", podman: true, wantStatus: http.StatusForbidden},
+		{name: "docker upstream", wantStatus: http.StatusCreated},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			daemon := newImageTagChainDaemon()
+			daemon.names = map[string]string{"mine:1": imageTagChainOwnID, "localhost/mine:1": imageTagChainOwnID}
+			if tt.podman {
+				daemon.shortNameAliases = map[string]string{}
+			}
+			addr := newImageTagChain(t, daemon, nil)
+
+			runImageTagChainSteps(t, addr, daemon, []imageTagChainStep{{name: tt.name, target: target, wantStatus: tt.wantStatus}})
+		})
+	}
+}

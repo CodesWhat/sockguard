@@ -844,3 +844,73 @@ func TestAuditSampler_Race(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// Eviction must not refund a drained burst: a bucket that has not refilled to
+// burst survives until refill has filled it.
+func TestLimiter_EvictKeepsDrainedBucketUntilFull(t *testing.T) {
+	t.Parallel()
+	clk := newFixedClock(time.Unix(0, 0))
+	l := newLimiterWithClock(0.01, 20, clk.Now)
+	defer l.Stop()
+	for i := 0; i < 20; i++ {
+		l.Allow("c") //nolint:errcheck
+	}
+	clk.Advance(limiterEvictTTL + time.Second) // 601s: refill = 6.01 tokens
+	l.evict(limiterEvictTTL)
+	if _, ok := l.buckets.Load("c"); !ok {
+		t.Fatal("drained bucket must survive eviction until refilled to burst")
+	}
+	admitted := 0
+	for i := 0; i < 20; i++ {
+		if ok, _ := l.Allow("c"); ok {
+			admitted++
+		}
+	}
+	if admitted != 6 {
+		t.Fatalf("admitted %d after 601s idle at 0.01 t/s, want 6", admitted)
+	}
+	// Let it refill fully (20 tokens / 0.01 t/s = 2000s) and go idle past TTL.
+	clk.Advance(2000*time.Second + limiterEvictTTL)
+	l.evict(limiterEvictTTL)
+	if _, ok := l.buckets.Load("c"); ok {
+		t.Fatal("full idle bucket should be evicted")
+	}
+}
+
+func TestBucketFullAtRefillBoundaries(t *testing.T) {
+	t.Parallel()
+	for _, start := range []struct {
+		name string
+		at   time.Time
+	}{
+		{name: "ordinary clock", at: time.Unix(100, 0)},
+		{name: "millisecond wrap", at: time.UnixMilli((1 << 32) - 500)},
+	} {
+		t.Run(start.name, func(t *testing.T) {
+			b := newBucket(1, 1, func() time.Time { return start.at })
+			if !b.full(start.at) || !b.full(start.at.Add(-time.Second)) {
+				t.Fatal("an unused bucket must remain full even if the clock hasn't advanced")
+			}
+			if allowed, _ := b.AllowN(1); !allowed {
+				t.Fatal("initial burst was unavailable")
+			}
+			for _, tt := range []struct {
+				name    string
+				elapsed time.Duration
+				want    bool
+			}{
+				{name: "clock moves backward", elapsed: -time.Second},
+				{name: "same millisecond"},
+				{name: "just before refill", elapsed: 999 * time.Millisecond},
+				{name: "exact refill", elapsed: time.Second, want: true},
+				{name: "after refill", elapsed: 1001 * time.Millisecond, want: true},
+			} {
+				t.Run(tt.name, func(t *testing.T) {
+					if got := b.full(start.at.Add(tt.elapsed)); got != tt.want {
+						t.Fatalf("full after %v = %v, want %v", tt.elapsed, got, tt.want)
+					}
+				})
+			}
+		})
+	}
+}

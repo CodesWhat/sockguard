@@ -95,7 +95,7 @@ all default to `false`, so existing deployments stay quiet until you opt in.
 | `sockguard_upstream_watchdog_checks_total`   | counter   | `result`                                                | `result` ∈ `{connected, unreachable}`. Increments every interval; ratio is your error budget.      |
 | `sockguard_upstream_api_up`                  | gauge     | —                                                       | `1` the Docker API answered the readiness probe, `0` it did not. Only emitted when `health.readiness.enabled` is true. |
 | `sockguard_upstream_readiness_checks_total`  | counter   | `result`                                                | `result` ∈ `{ready, unreachable}`. One per readiness probe interval; `unreachable` covers transport errors and non-2xx API responses. |
-| `sockguard_throttle_requests_total`          | counter   | `profile`, `reason_code`, `mode`                        | Throttle denials. `reason_code` ∈ `{rate_limit_exceeded, concurrency_cap, priority_floor}`. `mode` ∈ `{enforce, warn, audit}`. |
+| `sockguard_throttle_requests_total`          | counter   | `profile`, `reason_code`, `mode`                        | Throttle denials. `reason_code` ∈ `{rate_limit_exceeded, concurrency_cap, stream_cap, priority_floor}`. `mode` ∈ `{enforce, warn, audit}`. |
 | `sockguard_inflight_requests`                | gauge     | `profile`                                               | In-flight count for profiles with `max_inflight` configured. Reflects real concurrency, including `warn`/`audit`-mode requests that would have been denied. |
 | `sockguard_policy_version`                   | gauge     | —                                                       | Monotonic policy generation counter. Ticks once at startup and once per successful hot reload. Matches the `version` field in `GET /admin/policy/version`. |
 | `sockguard_config_reload_total`              | counter   | `result`                                                | Hot-reload outcomes. `result` ∈ `{ok, reject_load, reject_validation, reject_immutable, reject_signature, reject_compat}`. |
@@ -131,10 +131,12 @@ operator editing the config.
 wider than one list: every layer that can deny a request contributes its own
 codes, and there are dozens in total. The families are rule evaluation
 (`matched_deny_rule`, `no_matching_allow_rule`, `request_body_policy_denied`,
-`request_body_too_large`, `request_body_ambiguous`, ...; the ownership layer, the
-admission-mutation engine and the resource-limit guard emit
-`request_body_ambiguous` too, when the body they read holds a repeated key or
-a key with U+0130, U+017F or U+212A), client ACL (`client_ip_not_allowed`,
+`request_body_too_large`, `request_body_ambiguous`, ...). Decoder-divergent keys
+such as U+0130, U+017F or U+212A also produce `request_body_ambiguous` in
+ownership, admission mutation and the resource-limit guard. Repeated-key
+refusals use `owner_request_invalid` in ownership and
+`resource_limit_request_invalid` in the container-update resource guard;
+service-write guards use `request_body_ambiguous`. Other families are client ACL (`client_ip_not_allowed`,
 `client_label_policy_denied_request`, ...), ownership (`owner_*`), visibility
 (`visibility_*`), resource limits (`resource_limit_*`), request mutation
 (`mutation_*`), throttling (`rate_limit_exceeded`, `concurrency_cap`,

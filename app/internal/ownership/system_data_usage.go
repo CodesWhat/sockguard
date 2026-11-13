@@ -29,12 +29,6 @@ const (
 // same in an audit sink; only the reason code says which one refused.
 const ownerNotModifiedRefusalMessage = "upstream returned 304 Not Modified for an owner-filtered read"
 
-// ownerResponseTooLargeMessage is the client-facing reason for both size
-// refusals: a raw body that overran the buffer, and a compressed one whose
-// decoded form overran the same cap. They are one verdict reached at two
-// points, so they read the same to a client and carry the same reason code.
-const ownerResponseTooLargeMessage = "upstream response too large to filter"
-
 // errNotModifiedUnfilterable marks the 304 refusal so
 // filterSystemDataUsageResponse can give it its own reason code rather than
 // the generic filter-failure one. See flushOwned.
@@ -182,10 +176,10 @@ func filterSystemDataUsageResponse(logger *slog.Logger, next http.Handler, w htt
 
 	if interceptingW.overflow {
 		logger.ErrorContext(r.Context(), "owner response filter: upstream response exceeds size limit",
-			"limit_bytes", filter.MaxResponseBodyBytes, "method", logging.SafeString(r.Method), "path", logging.SafeString(r.URL.Path))
-		logging.SetDeniedWithCode(w, r, reasonCodeOwnerResponseTooLarge, ownerResponseTooLargeMessage, nil)
+			"limit_bytes", filter.ResponseBodyLimit(), "method", logging.SafeString(r.Method), "path", logging.SafeString(r.URL.Path))
+		logging.SetDeniedWithCode(w, r, reasonCodeOwnerResponseTooLarge, filter.ResponseTooLargeMessage(), nil)
 		responsefilter.ClearUpstreamRepresentationHeaders(w.Header())
-		_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: ownerResponseTooLargeMessage})
+		_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: filter.ResponseTooLargeMessage()})
 		return
 	}
 
@@ -211,7 +205,7 @@ func filterSystemDataUsageResponse(logger *slog.Logger, next http.Handler, w htt
 			// the overflow branch above returns, reached one step later
 			// because the raw bytes fit and the decoded ones do not.
 			case errors.Is(err, bodycodec.ErrTooLarge):
-				reasonCode, message = reasonCodeOwnerResponseTooLarge, ownerResponseTooLargeMessage
+				reasonCode, message = reasonCodeOwnerResponseTooLarge, filter.ResponseTooLargeMessage()
 			}
 			logging.SetDeniedWithCode(w, r, reasonCode, message, nil)
 			responsefilter.ClearUpstreamRepresentationHeaders(w.Header())
@@ -256,7 +250,7 @@ func (o *ownerFilterWriter) WriteHeader(code int) { o.statusCode = code }
 // 502 path.
 func (o *ownerFilterWriter) Write(b []byte) (int, error) {
 	if !o.overflow {
-		if int64(o.body.Len())+int64(len(b)) > filter.MaxResponseBodyBytes {
+		if int64(o.body.Len())+int64(len(b)) > filter.ResponseBodyLimit() {
 			o.overflow = true
 		} else {
 			return o.body.Write(b)
@@ -311,7 +305,7 @@ func (o *ownerFilterWriter) flushOwned(opts Options) ([]string, error) {
 	// keep the coding they arrived with — those bodies are forwarded rather
 	// than rewritten. On this path the clear below drops Content-Encoding with
 	// the rest of the upstream's representation metadata.
-	body, err := bodycodec.Bytes(o.underlying.Header(), o.body.Bytes(), filter.MaxResponseBodyBytes)
+	body, err := bodycodec.Bytes(o.underlying.Header(), o.body.Bytes(), filter.ResponseBodyLimit())
 	if err != nil {
 		return nil, err
 	}

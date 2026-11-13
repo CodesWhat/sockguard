@@ -3,6 +3,7 @@ package filter
 import (
 	"archive/tar"
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -177,6 +178,79 @@ func TestImageLoadSparseCompatibility(t *testing.T) {
 					}
 				})
 			}
+		}
+	}
+}
+
+func TestImageLoadOCIBlobRetentionBoundaries(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name                 string
+		size                 int
+		prefix, wantRetained bool
+	}{
+		{name: "empty blob", size: 0, wantRetained: true},
+		{name: "below per-file limit", size: maxImageLoadManifestBytes - 1, wantRetained: true},
+		{name: "exact per-file limit", size: maxImageLoadManifestBytes, wantRetained: true},
+		{name: "above per-file limit", size: maxImageLoadManifestBytes + 1},
+		{name: "below aggregate limit", size: 255, prefix: true, wantRetained: true},
+		{name: "exact aggregate limit", size: 256, prefix: true, wantRetained: true},
+		{name: "above aggregate limit", size: 257, prefix: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var controls imageLoadArchiveControlFiles
+			add := func(body []byte) (string, error) {
+				name := fmt.Sprintf("blobs/sha256/%x", sha256.Sum256(body))
+				err := defaultIODeps().recordImageLoadOCIBlob(&controls, name, &tar.Header{Typeflag: tar.TypeReg, Size: int64(len(body))}, bytes.NewReader(body))
+				return name, err
+			}
+			var prefixBytes int64
+			if tt.prefix {
+				prefixBytes = maxImageLoadOCIMetadataBytes - 256
+				for remaining, i := prefixBytes, 1; remaining > 0; i++ {
+					size := min(remaining, maxImageLoadManifestBytes)
+					if _, err := add(bytes.Repeat([]byte{byte(i)}, int(size))); err != nil {
+						t.Fatal(err)
+					}
+					remaining -= size
+				}
+			}
+			payload := bytes.Repeat([]byte{'x'}, tt.size)
+			name, err := add(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			blob, present := controls.ociBlobs[name]
+			var wantBody []byte
+			wantMetadata := prefixBytes
+			if tt.wantRetained {
+				wantBody = payload
+				wantMetadata += int64(len(payload))
+			}
+			if !present || blob.size != int64(len(payload)) || !blob.digestMatch || !bytes.Equal(blob.body, wantBody) || controls.ociMetadata != wantMetadata {
+				t.Fatalf("recorded present=%v size=%d digest=%v retained=%d metadata=%d, want size=%d retained=%d metadata=%d", present, blob.size, blob.digestMatch, len(blob.body), controls.ociMetadata, len(payload), len(wantBody), wantMetadata)
+			}
+		})
+	}
+}
+
+func TestImageLoadTrackedBlobBudget(t *testing.T) {
+	t.Parallel()
+	var controls imageLoadArchiveControlFiles
+	for i := range maxImageLoadOCITrackedBlobs + 1 {
+		body := []byte(strconv.Itoa(i))
+		name := fmt.Sprintf("blobs/sha256/%x", sha256.Sum256(body))
+		reader := io.Reader(bytes.NewReader(body))
+		if i == maxImageLoadOCITrackedBlobs {
+			reader = imageLoadUnreadableBlob{t}
+		}
+		err := defaultIODeps().recordImageLoadOCIBlob(&controls, name, &tar.Header{Typeflag: tar.TypeReg, Size: int64(len(body))}, reader)
+		if i == maxImageLoadOCITrackedBlobs {
+			if !errors.Is(err, errImageLoadOCIUninspectable) || len(controls.ociBlobs) != maxImageLoadOCITrackedBlobs {
+				t.Fatalf("extra blob: error=%v count=%d, want count refusal before reading", err, len(controls.ociBlobs))
+			}
+		} else if err != nil || !controls.ociBlobs[name].digestMatch {
+			t.Fatalf("blob %d within budget: error=%v, want verified content", i, err)
 		}
 	}
 }

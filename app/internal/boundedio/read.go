@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
 )
 
 // ErrTooLarge identifies a file rejected before its full contents were read.
@@ -18,7 +20,24 @@ var ErrNotRegular = errors.New("path is not a regular file")
 // imagetrust.newLiveTrustedRootFactory, so a test can substitute a descriptor
 // whose Stat, Read or Close fails and reach ReadFile's error branches. A real
 // file on a healthy filesystem does not fail those calls on demand.
-var openReadOnly = openReadOnlyFile
+var openReadOnly = func(path string) (readableFile, error) {
+	f, err := openReadOnlyFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+// readableFile is the slice of *os.File that ReadFile uses. Typing the seam as
+// an interface lets a test hand back a descriptor whose Read returns
+// (0, nil), which a real file never does.
+type readableFile interface {
+	io.Reader
+	io.Closer
+	Stat() (fs.FileInfo, error)
+}
+
+var _ readableFile = (*os.File)(nil)
 
 // ReadFile reads at most maxBytes from path and fails closed when more data is
 // present. The one-byte lookahead distinguishes an exact-limit file from an

@@ -41,7 +41,7 @@ release notes unless you prefer to stay anonymous.
 
 ## Scope
 
-**In scope**
+### In scope
 
 - The Go proxy at `app/` — filter engine, ownership middleware, client
   ACLs, hijack/upgrade handling, access log, `/health` endpoint, config
@@ -51,7 +51,7 @@ release notes unless you prefer to stay anonymous.
 - Any compiled binary distributed via a GitHub release tagged
   `v0.x.x` or `v1.x.x` or later.
 
-**Out of scope**
+### Out of scope
 
 - The marketing website under `website/` and anything served from
   `getsockguard.com`. Report bugs here via a regular GitHub issue.

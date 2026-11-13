@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -184,6 +185,33 @@ rules:
 `, env.listenSocket, env.upstreamSocket)
 }
 
+func TestVerifyReportPreservesCommandCancellation(t *testing.T) {
+	clearDockerEnv(t)
+	env := newVerifyEnv(t)
+	startFakeDockerDaemon(t, env.upstreamSocket)
+	startFakeSockguardListener(t, env.listenSocket, http.StatusOK)
+	writeVerifyConfig(t, env.dir, baseVerifyConfig(env))
+	command := &cobra.Command{Use: "verify"}
+	command.SetContext(t.Context())
+	deps := newServeDeps()
+	if report := buildVerifyReport(command, deps); verifyStatusByName(t, report)[verifyCheckNameUpstream] != verifyStatusOK {
+		t.Fatalf("healthy upstream control failed: %+v", report)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	command.SetContext(ctx)
+	report := buildVerifyReport(command, deps)
+	for _, check := range report.Checks {
+		if check.Name == verifyCheckNameUpstream {
+			if check.Status != verifyStatusFail || !strings.Contains(check.Detail, "context canceled") {
+				t.Fatalf("canceled upstream check = %+v", check)
+			}
+			return
+		}
+	}
+	t.Fatal("upstream check missing")
+}
+
 // TestRunVerifyChecks is the table over the five checks: a live fake upstream,
 // a live and a dead sockguard listener, missing TLS material, and an
 // image-trust trust root that will not load.
@@ -297,6 +325,7 @@ request_body:
   container_create:
     image_trust:
       mode: enforce
+      allowed_registries: [ghcr.io]
       allowed_signing_keys:
         - pem: "-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----\n"
 `
@@ -319,6 +348,7 @@ request_body:
   container_create:
     image_trust:
       mode: enforce
+      allowed_registries: [ghcr.io]
       allowed_keyless:
         - issuer: https://accounts.google.com
           subject_pattern: ".*@example.com$"

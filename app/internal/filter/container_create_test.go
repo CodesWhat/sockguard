@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -346,6 +347,60 @@ func TestContainerCreatePolicyInspectCgroupNamespaceModeGate(t *testing.T) {
 				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
 			}
 		})
+	}
+}
+
+func TestContainerCreatePolicyInspectCgroupNamespaceHostOnCgroupV1(t *testing.T) {
+	const denyReason = "container create denied: host cgroup namespace mode is not allowed"
+	const pathReason = "container create denied: cgroup namespace joined by path is not allowed"
+	const host = `{"HostConfig":{"CgroupnsMode":"host"}}`
+
+	tests := []struct {
+		name       string
+		opts       ContainerCreateOptions
+		body       string
+		wantReason string
+	}{
+		{name: "opt-in on, upstream v1", opts: ContainerCreateOptions{AllowHostCgroupNSOnCgroupV1: true, UpstreamCgroupV1: true}, body: host},
+		{name: "opt-in on, upstream v2 or unknown", opts: ContainerCreateOptions{AllowHostCgroupNSOnCgroupV1: true}, body: host, wantReason: denyReason},
+		{name: "opt-in off, upstream v1", opts: ContainerCreateOptions{UpstreamCgroupV1: true}, body: host, wantReason: denyReason},
+		{name: "opt-in off, upstream unknown", body: host, wantReason: denyReason},
+		{name: "opt-in on, upstream v1, ns path still denied", opts: ContainerCreateOptions{AllowHostCgroupNSOnCgroupV1: true, UpstreamCgroupV1: true}, body: `{"HostConfig":{"CgroupnsMode":"ns:/proc/1/ns/cgroup"}}`, wantReason: pathReason},
+		{name: "unconditional allow still works on unknown upstream", opts: ContainerCreateOptions{AllowHostCgroupNS: true}, body: host},
+		{name: "opt-in does not open other host namespaces", opts: ContainerCreateOptions{AllowHostCgroupNSOnCgroupV1: true, UpstreamCgroupV1: true}, body: `{"HostConfig":{"PidMode":"host"}}`, wantReason: "container create denied: host PID mode is not allowed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(tt.body))
+			reason, err := newContainerCreatePolicy(tt.opts).inspect(nil, req, "/containers/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestContainerCreatePolicyCgroupV1FuncIsReadPerRequest(t *testing.T) {
+	var v1 atomic.Bool
+	v1.Store(true)
+	policy := newContainerCreatePolicy(ContainerCreateOptions{AllowHostCgroupNSOnCgroupV1: true, UpstreamCgroupV1Func: v1.Load})
+	create := func() string {
+		req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(`{"HostConfig":{"CgroupnsMode":"host"}}`))
+		reason, err := policy.inspect(nil, req, "/containers/create")
+		if err != nil {
+			t.Fatalf("inspect() error = %v", err)
+		}
+		return reason
+	}
+	if reason := create(); reason != "" {
+		t.Fatalf("v1 upstream: reason = %q, want allow", reason)
+	}
+	v1.Store(false)
+	if reason := create(); reason != "container create denied: host cgroup namespace mode is not allowed" {
+		t.Fatalf("after v1->v2: reason = %q, want deny", reason)
 	}
 }
 
@@ -891,6 +946,10 @@ func TestContainerCreatePolicyDenyBindMountReasonRejectsWindowsHostPathSources(t
 		wantReason string
 	}{
 		{name: "drive root", bind: `c:/:/h`, wantReason: `container create denied: bind mount source "c" is a Windows drive letter path`},
+		{name: "first lowercase drive", bind: `a:/:/h`, wantReason: `container create denied: bind mount source "a" is a Windows drive letter path`},
+		{name: "last lowercase drive", bind: `z:/:/h`, wantReason: `container create denied: bind mount source "z" is a Windows drive letter path`},
+		{name: "first uppercase drive", bind: `A:/:/h`, wantReason: `container create denied: bind mount source "A" is a Windows drive letter path`},
+		{name: "last uppercase drive", bind: `Z:/:/h`, wantReason: `container create denied: bind mount source "Z" is a Windows drive letter path`},
 		{name: "drive traversal", bind: `c:/../../etc:/h`, wantReason: `container create denied: bind mount source "c" is a Windows drive letter path`},
 		{name: "drive with option", bind: `c:/x:/h:ro`, wantReason: `container create denied: bind mount source "c" is a Windows drive letter path`},
 		{name: "drive backslash", bind: `c:\x:/h`, wantReason: `container create denied: bind mount source "c" is a Windows drive letter path`},
@@ -1031,6 +1090,7 @@ func TestContainerCreatePolicyInspectDeniesImageMountUnderEnforce(t *testing.T) 
 		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
 		imageTrustVerifier:     mv,
+		imageTrustRegistry:     allowAllRegistryPolicy(),
 		imageFetcher:           oneCandidateFetcher(),
 		imageTrustCfg:          imagetrust.Config{Mode: imagetrust.ModeEnforce},
 	}
@@ -2213,6 +2273,7 @@ func TestImageTrust_Enforce_VerifierCalledWithImageRef(t *testing.T) {
 		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
 		imageTrustVerifier:     mv,
+		imageTrustRegistry:     allowAllRegistryPolicy(),
 		imageFetcher:           oneCandidateFetcher(),
 		imageTrustCfg:          cfg,
 		imageTrustTimeout:      0,
@@ -2245,6 +2306,7 @@ func TestImageTrust_Enforce_DeniesOnVerifierError(t *testing.T) {
 		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
 		imageTrustVerifier:     mv,
+		imageTrustRegistry:     allowAllRegistryPolicy(),
 		imageFetcher:           oneCandidateFetcher(),
 		imageTrustCfg:          cfg,
 	}
@@ -2280,6 +2342,7 @@ func TestImageTrust_Warn_AllowsOnVerifierError(t *testing.T) {
 		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
 		imageTrustVerifier:     mv,
+		imageTrustRegistry:     allowAllRegistryPolicy(),
 		imageFetcher:           oneCandidateFetcher(),
 		imageTrustCfg:          cfg,
 	}
@@ -2310,6 +2373,7 @@ func TestImageTrust_EmptyImage_DeniedWhenVerifierConfigured(t *testing.T) {
 		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
 		imageTrustVerifier:     mv,
+		imageTrustRegistry:     allowAllRegistryPolicy(),
 		imageFetcher:           oneCandidateFetcher(),
 		imageTrustCfg:          cfg,
 	}
@@ -2344,6 +2408,7 @@ func TestImageTrust_BodyInspectedWhenVerifierPresent(t *testing.T) {
 		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
 		imageTrustVerifier:     mv,
+		imageTrustRegistry:     allowAllRegistryPolicy(),
 		imageFetcher:           oneCandidateFetcher(),
 		imageTrustCfg:          cfg,
 	}
@@ -2376,6 +2441,7 @@ func TestImageTrust_Enforce_PinsVerifiedDigest(t *testing.T) {
 		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
 		imageTrustVerifier:     &mockImageVerifier{},
+		imageTrustRegistry:     allowAllRegistryPolicy(),
 		imageFetcher:           &mockSignatureFetcher{candidates: []imagetrust.Candidate{{DigestHex: "00", ImageDigest: digest}}},
 		imageTrustCfg:          imagetrust.Config{Mode: imagetrust.ModeEnforce},
 	}
@@ -2418,6 +2484,7 @@ func TestImageTrust_Enforce_DeniesWhenVerifiedDigestCannotBePinned(t *testing.T)
 		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
 		imageTrustVerifier:     &mockImageVerifier{},
+		imageTrustRegistry:     allowAllRegistryPolicy(),
 		imageFetcher:           &mockSignatureFetcher{candidates: []imagetrust.Candidate{{DigestHex: "00", ImageDigest: "notadigest"}}},
 		imageTrustCfg:          imagetrust.Config{Mode: imagetrust.ModeEnforce},
 	}
@@ -2454,6 +2521,7 @@ func TestImageTrust_TimeoutGateRespectsZero(t *testing.T) {
 		mv := &ctxRecordingImageVerifier{}
 		policy := containerCreatePolicy{
 			imageTrustVerifier: mv,
+			imageTrustRegistry: allowAllRegistryPolicy(),
 			imageFetcher:       oneCandidateFetcher(),
 			imageTrustCfg:      imagetrust.Config{Mode: imagetrust.ModeEnforce},
 			imageTrustTimeout:  0,
@@ -2474,6 +2542,7 @@ func TestImageTrust_TimeoutGateRespectsZero(t *testing.T) {
 		mv := &ctxRecordingImageVerifier{}
 		policy := containerCreatePolicy{
 			imageTrustVerifier: mv,
+			imageTrustRegistry: allowAllRegistryPolicy(),
 			imageFetcher:       oneCandidateFetcher(),
 			imageTrustCfg:      imagetrust.Config{Mode: imagetrust.ModeEnforce},
 			imageTrustTimeout:  10 * time.Second,
@@ -3440,7 +3509,7 @@ func TestBuildImageTrustFieldsOffMode(t *testing.T) {
 	// mode="" and mode="off" both return the zero value (inactive).
 	for _, mode := range []string{"", "off"} {
 		t.Run("mode="+mode, func(t *testing.T) {
-			f := buildImageTrustFields(ImageTrustOptions{Mode: mode})
+			f := buildImageTrustFields(ImageTrustOptions{Mode: mode}, nil)
 			if f.verifier != nil {
 				t.Error("expected nil verifier for off mode")
 			}
@@ -3461,7 +3530,7 @@ func TestBuildImageTrustFieldsInvalidKeyFails(t *testing.T) {
 		AllowedSigningKeys: []SigningKeyOptions{
 			{PEM: "not-a-valid-pem"},
 		},
-	})
+	}, nil)
 	if f.initErr == nil {
 		t.Fatal("expected initErr for invalid PEM key, got nil")
 	}
@@ -3493,7 +3562,7 @@ func TestBuildImageTrustFieldsKeylessTrustRootFailureFailsClosed(t *testing.T) {
 		AllowedKeyless: []KeylessOptions{
 			{Issuer: "https://accounts.google.com", SubjectPattern: ".*@example.com"},
 		},
-	})
+	}, nil)
 
 	if calls != 1 {
 		t.Fatalf("trust root load calls = %d, want 1", calls)
@@ -3509,6 +3578,27 @@ func TestBuildImageTrustFieldsKeylessTrustRootFailureFailsClosed(t *testing.T) {
 	}
 	if f.verifier != nil {
 		t.Error("verifier built on top of a trust root that never loaded")
+	}
+}
+
+func TestBuildImageTrustFieldsKeyedOnlySkipsTrustRoot(t *testing.T) {
+	original := loadLiveTrustedRoot
+	t.Cleanup(func() { loadLiveTrustedRoot = original })
+	calls := 0
+	loadLiveTrustedRoot = func() (root.TrustedMaterial, error) {
+		calls++
+		return nil, errors.New("trust root unavailable")
+	}
+	f := buildImageTrustFields(ImageTrustOptions{
+		Mode:               "enforce",
+		AllowedSigningKeys: []SigningKeyOptions{{PEM: generateTestECDSAPEM(t)}},
+		AllowedRegistries:  []string{"registry.example"},
+	}, nil)
+	if calls != 0 {
+		t.Errorf("keyed-only policy loaded keyless trust root %d times", calls)
+	}
+	if f.initErr != nil || f.verifier == nil {
+		t.Fatalf("keyed-only policy initialization: verifier=%v, error=%v", f.verifier, f.initErr)
 	}
 }
 

@@ -488,7 +488,7 @@ export const roadmap: Milestone[] = [
     status: "released",
     items: [
       "A numeric user with a sign prefix such as +0 is now treated as root on Docker and Podman",
-      "request_body.exec.allow_root_user: false and require_non_root_user can no longer be bypassed to run as UID 0",
+      "request_body.exec.allow_root_user: false and require_non_root_user reject signed and padded numeric UID 0 forms; named users are resolved by the daemon against the image and may still map to UID 0",
     ],
   },
   {
@@ -502,15 +502,17 @@ export const roadmap: Milestone[] = [
   },
   {
     version: "v3.0.0",
-    title: "Verified TLS Compatibility Boundary",
+    title: "Verified TLS and Security Hardening",
     emoji: "🔐",
     status: "released",
     items: [
-      "Promotes v3.0.0-rc.6 with the published v2.4.5 signed root UID fix and v2.4.6 compression decoder fix; carries v2.4.4 client compatibility and libpod hardening, v2.4.3 session cleanup, v2.4.2 Podman isolation and dependency updates, exec target protection and the v2.4 policy/security work",
+      "Promotes v3.0.0-rc.7 with the published v2.4.5 signed root UID fix and v2.4.6 compression decoder fix; carries v2.4.4 client compatibility and libpod hardening, v2.4.3 session cleanup, v2.4.2 Podman isolation and dependency updates, exec target protection and the v2.4 policy/security work",
       "Rejects the deprecated endpoint skip-verification setting and unverified Docker TLS fallback; configure the daemon CA and verified TLS",
       "Network-topology redaction covers addresses only, unknown config keys are reported by validate (--strict fails on them), and the Helm chart is published as a signed OCI artifact",
       "Go imports, generated descriptors and release builds use /v3; v2 tags keep /v2",
       "2.4.x remains supported for security fixes until v3.1 ships; opaque BuildKit removal remains undecided",
+      "Includes the completed rc.7 hardening work, v2.4.5/v2.4.6 security fixes and Go 1.27.4; owner-scoped Podman builds are refused and build-argument history entries are fully redacted when environment redaction is enabled",
+      "Prepared GA remains held until 2026-11-27T17:15:03+00:00 plus exact-source soak, TLS/security, published-image conformance and final release gates; opaque BuildKit removal remains undecided",
     ],
   },
 ];

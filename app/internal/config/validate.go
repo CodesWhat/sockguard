@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codeswhat/sockguard/v3/app/internal/bytesize"
 	"github.com/codeswhat/sockguard/v3/app/internal/filter"
 	"github.com/codeswhat/sockguard/v3/app/internal/glob"
 	"github.com/codeswhat/sockguard/v3/app/internal/pkipin"
@@ -549,8 +550,29 @@ func validateResponse(cfg *Config) []string {
 	default:
 		errs = append(errs, enumValueError("response.deny_verbosity", cfg.Response.DenyVerbosity, "minimal", "verbose"))
 	}
+	errs = append(errs, validateMaxBufferedBody(cfg.Response.MaxBufferedBody)...)
 	errs = append(errs, validateVisibleResourceLabels("response.visible_resource_labels", cfg.Response.VisibleResourceLabels, ownerReservedLabelKey(cfg))...)
 	return errs
+}
+
+// validateMaxBufferedBody checks response.max_buffered_body parses as a size
+// and stays within [1MiB, 256MiB]. Every buffered response is held in memory,
+// so the ceiling bounds what one request can make the proxy allocate; below
+// 1MiB a routine container list would be refused.
+func validateMaxBufferedBody(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	n, err := bytesize.Parse(value)
+	if err != nil {
+		return []string{fmt.Sprintf("response.max_buffered_body: %v", err)}
+	}
+	const floor = 1 << 20
+	if n < floor || n > filter.MaxResponseBodyBytesCeiling {
+		return []string{fmt.Sprintf("response.max_buffered_body must be between %s and %s, got %q",
+			bytesize.Format(floor), bytesize.Format(filter.MaxResponseBodyBytesCeiling), value)}
+	}
+	return nil
 }
 
 func validateHealthMetrics(cfg *Config) []string {
@@ -1715,6 +1737,9 @@ func validateLimitsConfig(prefix string, cfg LimitsConfig) []string {
 		if cfg.Concurrency.MaxInflight <= 0 {
 			errs = append(errs, fmt.Sprintf("%s.concurrency.max_inflight must be > 0, got %d", prefix, cfg.Concurrency.MaxInflight))
 		}
+		if cfg.Concurrency.MaxStreams != nil && *cfg.Concurrency.MaxStreams < 0 {
+			errs = append(errs, fmt.Sprintf("%s.concurrency.max_streams must be >= 0 (0 disables the cap), got %d", prefix, *cfg.Concurrency.MaxStreams))
+		}
 	}
 
 	return errs
@@ -1767,6 +1792,7 @@ func validateRequestBodyConfig(prefix string, cfg RequestBodyConfig) []string {
 	errs = append(errs, validateSwarmConfig(prefix, cfg.Swarm)...)
 	errs = append(errs, validatePluginConfig(prefix, cfg.Plugin)...)
 	errs = append(errs, validateLibpodPodCreateConfig(prefix, cfg.LibpodPodCreate)...)
+	errs = append(errs, validateLogDriverEntries(prefix, "libpod_play_kube", cfg.LibpodPlayKube.AllowedLogDrivers, cfg.LibpodPlayKube.AllowedLogEndpointOptions)...)
 	errs = append(errs, validateBuildkitConfig(prefix, cfg.Buildkit)...)
 	return errs
 }
@@ -1839,6 +1865,22 @@ func validateBuildkitOpaqueEntries(prefix, entries string, values []string) []st
 	return errs
 }
 
+// validateLogDriverEntries flags empty or whitespace-padded entries in a
+// block's allowed_log_drivers and allowed_log_endpoint_options. Driver names
+// are compared exactly, so padding can never match.
+func validateLogDriverEntries(prefix, block string, drivers, endpointOptions []string) []string {
+	errs := validateBuildkitOpaqueEntries(prefix, block+".allowed_log_drivers", drivers)
+	errs = append(errs, validateBuildkitOpaqueEntries(prefix, block+".allowed_log_endpoint_options", endpointOptions)...)
+	known := filter.LogEndpointOptionKeys()
+	for _, option := range endpointOptions {
+		if option != strings.TrimSpace(option) || option == "" || slices.Contains(known, option) {
+			continue
+		}
+		errs = append(errs, fmt.Sprintf("%s.%s.allowed_log_endpoint_options entry %q is not a log destination option; valid entries: %s", prefix, block, option, strings.Join(known, ", ")))
+	}
+	return errs
+}
+
 // validateLibpodPodCreateConfig validates request_body.libpod_pod_create.
 // libpod_volume/libpod_network/libpod_secret reuse
 // Volume/Network/SecretRequestBodyConfig verbatim, which today have no
@@ -1882,6 +1924,7 @@ func validateContainerCreateConfig(prefix string, cfg ContainerCreateRequestBody
 	errs = append(errs, validateCreateImageAllowlist(prefix+".container_create.allowed_images", cfg.AllowedImages)...)
 	errs = append(errs, validateHostPathEntries(prefix, "container_create.allowed_bind_mounts", cfg.AllowedBindMounts)...)
 	errs = append(errs, validateHostPathEntries(prefix, "container_create.allowed_devices", cfg.AllowedDevices)...)
+	errs = append(errs, validateLogDriverEntries(prefix, "container_create", cfg.AllowedLogDrivers, cfg.AllowedLogEndpointOptions)...)
 	for i, entry := range cfg.AllowedDeviceRequests {
 		if strings.TrimSpace(entry.Driver) == "" {
 			errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d].driver is required", prefix, i))
@@ -1901,7 +1944,7 @@ func validateContainerCreateConfig(prefix string, cfg ContainerCreateRequestBody
 		}
 		errs = append(errs, fmt.Sprintf("%s.container_create.allowed_namespace_sharing_containers entries must be non-empty container ID or name values, got %q", prefix, entry))
 	}
-	errs = append(errs, validateImageTrustConfig(prefix+".container_create.image_trust", cfg.ImageTrust)...)
+	errs = append(errs, validateImageTrustConfig(prefix+".container_create.image_trust", cfg.ImageTrust, cfg.AllowedImages)...)
 	return errs
 }
 
@@ -1916,13 +1959,14 @@ func validateLibpodContainerCreateConfig(prefix string, cfg LibpodContainerCreat
 	errs = append(errs, validateCreateImageAllowlist(prefix+".libpod_container_create.allowed_images", cfg.AllowedImages)...)
 	errs = append(errs, validateHostPathEntries(prefix, "libpod_container_create.allowed_bind_mounts", cfg.AllowedBindMounts)...)
 	errs = append(errs, validateHostPathEntries(prefix, "libpod_container_create.allowed_devices", cfg.AllowedDevices)...)
+	errs = append(errs, validateLogDriverEntries(prefix, "libpod_container_create", cfg.AllowedLogDrivers, cfg.AllowedLogEndpointOptions)...)
 	for _, entry := range cfg.AllowedNamespaceSharingContainers {
 		if entry != "" && entry == strings.TrimSpace(entry) {
 			continue
 		}
 		errs = append(errs, fmt.Sprintf("%s.libpod_container_create.allowed_namespace_sharing_containers entries must be non-empty container ID or name values, got %q", prefix, entry))
 	}
-	errs = append(errs, validateImageTrustConfig(prefix+".libpod_container_create.image_trust", cfg.ImageTrust)...)
+	errs = append(errs, validateImageTrustConfig(prefix+".libpod_container_create.image_trust", cfg.ImageTrust, cfg.AllowedImages)...)
 	return errs
 }
 
@@ -1964,6 +2008,7 @@ func validateServiceConfig(prefix string, cfg ServiceRequestBodyConfig) []string
 	errs = append(errs, validateCreateImageAllowlist(prefix+".service.allowed_images", cfg.AllowedImages)...)
 	errs = append(errs, validateHostPathEntries(prefix, "service.allowed_bind_mounts", cfg.AllowedBindMounts)...)
 	errs = append(errs, validateRegistryHostEntries(prefix, "service.allowed_registries", cfg.AllowedRegistries)...)
+	errs = append(errs, validateLogDriverEntries(prefix, "service", cfg.AllowedLogDrivers, cfg.AllowedLogEndpointOptions)...)
 	return errs
 }
 
@@ -2130,7 +2175,7 @@ func validPluginCapability(value string) bool {
 	return strings.TrimSpace(value) != ""
 }
 
-func validateImageTrustConfig(prefix string, cfg ImageTrustConfig) []string {
+func validateImageTrustConfig(prefix string, cfg ImageTrustConfig, allowedImages []string) []string {
 	switch cfg.Mode {
 	case "", "off":
 		// nothing to validate when feature is disabled
@@ -2148,6 +2193,16 @@ func validateImageTrustConfig(prefix string, cfg ImageTrustConfig) []string {
 			prefix+": at least one allowed_signing_keys or allowed_keyless entry is required when mode is not off",
 		)
 	}
+
+	// Signature discovery contacts the registry the client's image reference
+	// names, so it must be scoped. An exact allowed_images list already pins
+	// the registry of every reference.
+	if len(allowedImages) == 0 && !cfg.AllowAllRegistries && !cfg.AllowOfficial && len(cfg.AllowedRegistries) == 0 {
+		errs = append(errs,
+			prefix+": allow_all_registries, allow_official, or allowed_registries is required when mode is not off so signature discovery cannot be pointed at arbitrary hosts (for example allowed_registries: [ghcr.io], or pin exact images with allowed_images: [ghcr.io/org/app:1.0])",
+		)
+	}
+	errs = append(errs, validateRegistryHostEntries(prefix, "allowed_registries", cfg.AllowedRegistries)...)
 
 	keys := make([]signingKeyEntry, len(cfg.AllowedSigningKeys))
 	for i, k := range cfg.AllowedSigningKeys {

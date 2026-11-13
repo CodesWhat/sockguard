@@ -3,7 +3,10 @@ package config
 import (
 	"os"
 	"regexp"
+	"strings"
 
+	"github.com/codeswhat/sockguard/v3/app/internal/bytesize"
+	"github.com/codeswhat/sockguard/v3/app/internal/filter"
 	"github.com/codeswhat/sockguard/v3/app/internal/upstreamflavor"
 )
 
@@ -490,6 +493,30 @@ type ResponseConfig struct {
 	// layer without knowing it exists, so this response-layer gate closes
 	// that gap independent of the rule set. Default false.
 	AllowAttestationStatements bool `mapstructure:"allow_attestation_statements"`
+	// MaxBufferedBody caps the upstream response bodies sockguard buffers to
+	// filter or redact them: container, image and other list responses, inspect
+	// bodies and GET /system/df. A body over the cap is refused with a 502 that
+	// names this setting. A size string ("8MiB", "32MiB", "1GiB") or a byte
+	// count; default 8MiB, maximum 256MiB. Large hosts with thousands of
+	// containers or images need it raised.
+	MaxBufferedBody string `mapstructure:"max_buffered_body"`
+}
+
+// DefaultMaxBufferedBody is the response.max_buffered_body default, in the
+// spelling the config file would use.
+const DefaultMaxBufferedBody = "8MiB"
+
+// MaxBufferedBodyBytes returns response.max_buffered_body in bytes. An unset or
+// unparseable value (validation rejects the latter) yields the default.
+func (r ResponseConfig) MaxBufferedBodyBytes() int64 {
+	if strings.TrimSpace(r.MaxBufferedBody) == "" {
+		return filter.MaxResponseBodyBytes
+	}
+	n, err := bytesize.Parse(r.MaxBufferedBody)
+	if err != nil {
+		return filter.MaxResponseBodyBytes
+	}
+	return n
 }
 
 // RequestBodyConfig configures request-body inspection policies.
@@ -532,6 +559,11 @@ type RequestBodyConfig struct {
 	// equivalent, so this is its own top-level key rather than reusing
 	// container_create). #148.
 	LibpodPodCreate LibpodPodCreateRequestBodyConfig `mapstructure:"libpod_pod_create"`
+	// LibpodPlayKube configures the log driver allowlist for the logDriver and
+	// logOptions query parameters of POST /libpod/play/kube (and its
+	// /libpod/kube/play alias). The YAML body is not inspected, so this block
+	// does not stand in for insecure_allow_body_blind_writes.
+	LibpodPlayKube LibpodPlayKubeRequestBodyConfig `mapstructure:"libpod_play_kube"`
 	// LibpodVolume, LibpodNetwork, and LibpodSecret configure body/query
 	// inspection for the libpod-native volume/network/secret create
 	// endpoints (POST /libpod/volumes/create, /libpod/networks/create,
@@ -561,6 +593,16 @@ type ContainerRemoveRequestBodyConfig struct {
 	AllowForce         bool `mapstructure:"allow_force"`
 	AllowRemoveVolumes bool `mapstructure:"allow_remove_volumes"`
 	AllowRemoveLinks   bool `mapstructure:"allow_remove_links"`
+}
+
+// LibpodPlayKubeRequestBodyConfig configures query inspection for
+// POST /libpod/play/kube.
+type LibpodPlayKubeRequestBodyConfig struct {
+	// AllowedLogDrivers allowlists the logDriver query parameter and
+	// AllowedLogEndpointOptions lists the destination options logOptions may
+	// carry. Same semantics as the container_create fields. Default off.
+	AllowedLogDrivers         []string `mapstructure:"allowed_log_drivers"`
+	AllowedLogEndpointOptions []string `mapstructure:"allowed_log_endpoint_options"`
 }
 
 // LibpodPodCreateRequestBodyConfig configures body inspection for
@@ -644,6 +686,12 @@ type ContainerCreateRequestBodyConfig struct {
 	DenyUnconfinedAppArmor  bool     `mapstructure:"deny_unconfined_apparmor"`
 	AllowHostUserNS         bool     `mapstructure:"allow_host_userns"`
 	AllowHostCgroupNS       bool     `mapstructure:"allow_host_cgroupns"`
+	// AllowHostCgroupNSOnCgroupV1 allows HostConfig.CgroupnsMode=host (not
+	// ns:<path>) only when the upstream daemon reports CgroupVersion "1" in
+	// GET /info, read once at startup from every endpoint. On cgroup v1 "host"
+	// is the daemon default that docker inspect reports and recreate tools
+	// replay. Unknown or mixed versions deny. Default false.
+	AllowHostCgroupNSOnCgroupV1 bool `mapstructure:"allow_host_cgroupns_on_cgroup_v1"`
 	// RestrictNamespaceSharing gates HostConfig.NetworkMode/PidMode/IpcMode/
 	// UTSMode/UsernsMode/CgroupnsMode values of the form "container:<ref>"
 	// (join another container's namespace) against
@@ -681,6 +729,15 @@ type ContainerCreateRequestBodyConfig struct {
 	// alone or ahead of an "=". Podman writes the container's output to that
 	// path on the daemon host. dockerd has no such option. Default false.
 	AllowLogPath bool `mapstructure:"allow_log_path"`
+
+	// AllowedLogDrivers is an opt-in allowlist for HostConfig.LogConfig.Type (and a "driver" entry in LogConfig.Config). Empty, the default,
+	// enforces nothing. An empty driver selects the daemon default and is always
+	// allowed. While it is set, the log destination options (syslog-address,
+	// gelf-address, fluentd-address, loki-url, splunk-url, awslogs-endpoint,
+	// awslogs-credentials-endpoint) are refused unless AllowedLogEndpointOptions
+	// lists them. allow_log_path stays a separate gate.
+	AllowedLogDrivers         []string `mapstructure:"allowed_log_drivers"`
+	AllowedLogEndpointOptions []string `mapstructure:"allowed_log_endpoint_options"`
 }
 
 // LibpodContainerCreateRequestBodyConfig configures body inspection for
@@ -762,6 +819,21 @@ type LibpodContainerCreateRequestBodyConfig struct {
 	// other's route. Default false.
 	AllowLogPath bool `mapstructure:"allow_log_path"`
 
+	// AllowedLogDrivers is an opt-in allowlist for log_configuration.driver and .options. Empty, the default,
+	// enforces nothing. An empty driver selects the daemon default and is always
+	// allowed. While it is set, the log destination options (syslog-address,
+	// gelf-address, fluentd-address, loki-url, splunk-url, awslogs-endpoint,
+	// awslogs-credentials-endpoint) are refused unless AllowedLogEndpointOptions
+	// lists them. allow_log_path stays a separate gate.
+	AllowedLogDrivers         []string `mapstructure:"allowed_log_drivers"`
+	AllowedLogEndpointOptions []string `mapstructure:"allowed_log_endpoint_options"`
+
+	// AllowTmpfsPrivilegedOptions permits a mounts[] entry of type tmpfs
+	// whose options re-enable exec, dev or suid (last option wins). Same
+	// name as container_create.allow_tmpfs_privileged_options, and neither
+	// opens the other's route. Default false.
+	AllowTmpfsPrivilegedOptions bool `mapstructure:"allow_tmpfs_privileged_options"`
+
 	// AllowedRuntimes, AllowDeviceCgroupRules, AllowedDeviceCgroupRules,
 	// AllowDeviceRequests and DenyUnconfinedSystemPaths are the libpod
 	// spellings of the same-named container_create fields, gating
@@ -782,6 +854,17 @@ type LibpodContainerCreateRequestBodyConfig struct {
 	// daemon's environment into the container. No Docker Engine API analog.
 	// Default false.
 	AllowEnvHost bool `mapstructure:"allow_env_host"`
+
+	// AllowStorageOpts permits a non-empty "storage_opts" map, the
+	// container's own storage options (a rootfs size quota, for one).
+	// Default false.
+	AllowStorageOpts bool `mapstructure:"allow_storage_opts"`
+
+	// AllowRuntimeAnnotations permits "annotations" keys under run.oci., which
+	// switch OCI runtime behavior on. Other annotation keys, including the
+	// io.podman.annotations. markers podman-remote sends, are not gated.
+	// Default false.
+	AllowRuntimeAnnotations bool `mapstructure:"allow_runtime_annotations"`
 }
 
 // ImageTrustConfig configures cosign signature verification for images
@@ -800,6 +883,13 @@ type ImageTrustConfig struct {
 	RequireRekorInclusion bool `mapstructure:"require_rekor_inclusion"`
 	// VerifyTimeout overrides the default 10s end-to-end image-trust deadline.
 	VerifyTimeout string `mapstructure:"verify_timeout"`
+	// AllowAllRegistries permits signature discovery against any registry the
+	// client names. Default false.
+	AllowAllRegistries bool `mapstructure:"allow_all_registries"`
+	// AllowOfficial permits Docker Hub official images (docker.io/library/*).
+	AllowOfficial bool `mapstructure:"allow_official"`
+	// AllowedRegistries lists registry hosts signature discovery may contact.
+	AllowedRegistries []string `mapstructure:"allowed_registries"`
 }
 
 // SigningKeyConfig is one entry in image_trust.allowed_signing_keys.
@@ -1104,6 +1194,15 @@ type ServiceRequestBodyConfig struct {
 	// require RequireCPULimit. Both default false (opt-in).
 	RequireCPULimit     bool `mapstructure:"require_cpu_limit"`
 	RequireCPULimitHard bool `mapstructure:"require_cpu_limit_hard"`
+
+	// AllowedLogDrivers is an opt-in allowlist for TaskTemplate.LogDriver. Empty, the default,
+	// enforces nothing. An empty driver selects the daemon default and is always
+	// allowed. While it is set, the log destination options (syslog-address,
+	// gelf-address, fluentd-address, loki-url, splunk-url, awslogs-endpoint,
+	// awslogs-credentials-endpoint) are refused unless AllowedLogEndpointOptions
+	// lists them. allow_log_path stays a separate gate.
+	AllowedLogDrivers         []string `mapstructure:"allowed_log_drivers"`
+	AllowedLogEndpointOptions []string `mapstructure:"allowed_log_endpoint_options"`
 }
 
 // SwarmRequestBodyConfig configures inspection for swarm writes.
@@ -1494,6 +1593,16 @@ type ConcurrencyConfig struct {
 	// MaxInflight is the maximum number of simultaneous in-flight requests
 	// allowed for a single client. Must be > 0.
 	MaxInflight int64 `mapstructure:"max_inflight"`
+	// MaxStreams caps the open-ended streams (events, followed logs, streaming
+	// stats, wait, attach, exec start) one profile may hold open at once. Those
+	// requests skip max_inflight and the global gate so a few `docker events`
+	// or `logs -f` sessions cannot exhaust them, which makes this the bound on
+	// them instead. Build, prune, pull/push/load and export/archive are not
+	// streams and keep counting against max_inflight. The count is per profile,
+	// so clients sharing a profile (or the anonymous bucket) share the cap, and
+	// total streams are bounded per profile rather than globally. Unset
+	// defaults to 32; 0 disables the cap.
+	MaxStreams *int64 `mapstructure:"max_streams"`
 }
 
 // ClientProfileResponseConfig configures per-profile visibility control on
@@ -1825,6 +1934,7 @@ func Defaults() Config {
 			// (even with `/secrets/*` and `/swarm/unlockkey` redacted) that
 			// a honest security product should not hand a denied caller.
 			DenyVerbosity:         "minimal",
+			MaxBufferedBody:       DefaultMaxBufferedBody,
 			RedactContainerEnv:    true,
 			RedactMountPaths:      true,
 			RedactNetworkTopology: true,

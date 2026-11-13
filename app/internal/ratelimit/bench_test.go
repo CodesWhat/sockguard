@@ -122,6 +122,11 @@ func TestLimiterStop_MidFlightRace(t *testing.T) {
 		}(w)
 	}
 
+	defer func() {
+		stopped.Store(true)
+		wg.Wait()
+	}()
+
 	// Let workers run briefly, then stop the limiter mid-flight.
 	time.Sleep(stopAfterMs * time.Millisecond)
 	// Stop joins the eviction goroutine via its WaitGroup, so returning

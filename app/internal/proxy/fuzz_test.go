@@ -65,25 +65,48 @@ func FuzzProxyHeadersAndBody(f *testing.F) {
 
 func FuzzHijackHeadersAndBody(f *testing.F) {
 	socketPath := startFuzzEchoUpstream(f)
+	rawSocketPath := startFuzzRawStreamUpstream(f)
+	// One persistent client-facing server on a unix socket: per-iteration TCP
+	// listeners exhaust ephemeral ports at fuzz exec rates.
+	rawClientAddr := startFuzzHijackClientServer(f, PassClientUpgrade(HijackHandler(rawSocketPath, testLogger(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "next handler should not be called for hijack endpoints", http.StatusInternalServerError)
+	}))))
 
-	f.Add("trace", "alpha", []byte("stdin"))
-	f.Add("stream", "1", []byte(`{"stdin":true,"stdout":true}`))
-	f.Add("exec", "start", []byte{})
-	f.Add("body", "tabs\tallowed", []byte("binary\x00payload"))
+	// upgrade sets or omits the client Upgrade header; rawStream selects the
+	// mock upstream that answers 101 when asked to upgrade and otherwise a
+	// 200 with no length (moby's raw-stream shape), echoing the request body.
+	f.Add("trace", "alpha", []byte("stdin"), true, false)
+	f.Add("stream", "1", []byte(`{"stdin":true,"stdout":true}`), false, false)
+	f.Add("exec", "start", []byte{}, true, false)
+	f.Add("body", "tabs\tallowed", []byte("binary\x00payload"), false, false)
+	f.Add("trace", "alpha", []byte("stdin"), true, true)
+	f.Add("stream", "1", []byte(`{"stdin":true,"stdout":true}`), false, true)
+	f.Add("exec", "start", []byte{}, false, true)
+	f.Add("body", "tabs\tallowed", []byte("binary\x00payload"), true, true)
 
-	f.Fuzz(func(t *testing.T, headerSuffix, headerValue string, body []byte) {
+	f.Fuzz(func(t *testing.T, headerSuffix, headerValue string, body []byte, upgrade, rawStream bool) {
 		startFuzzForensicsSampler(t, "FuzzHijackHeadersAndBody")
 
-		handler := HijackHandler(socketPath, testLogger(), http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 			t.Fatal("next handler should not be called for hijack endpoints")
-		}))
+		})
 
 		body = truncateFuzzBody(body)
 		headerName := fuzzHeaderName(headerSuffix)
 		headerValue = sanitizeHeaderValue(headerValue)
 
+		if rawStream {
+			fuzzHijackRawStream(t, rawClientAddr, headerName, headerValue, body, upgrade)
+			return
+		}
+
+		handler := HijackHandler(socketPath, testLogger(), next)
 		req := httptest.NewRequest(http.MethodPost, "/containers/abc/attach", bytes.NewReader(body))
 		req.Header.Set(headerName, headerValue)
+		if upgrade {
+			req.Header.Set("Connection", "Upgrade")
+			req.Header.Set("Upgrade", "tcp")
+		}
 
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
@@ -94,6 +117,122 @@ func FuzzHijackHeadersAndBody(f *testing.F) {
 
 		assertFuzzEchoResponse(t, rec, http.MethodPost, "/containers/abc/attach", headerName, expectedForwardedHeaderValue(headerValue), body)
 	})
+}
+
+// fuzzHijackRawStream drives the hijack handler over a real unix connection (the recorder
+// can't be hijacked) and asserts the relayed bytes equal the request body in
+// both the 101 and the 200 raw-stream forms.
+func fuzzHijackRawStream(t *testing.T, clientAddr, headerName, headerValue string, body []byte, upgrade bool) {
+	t.Helper()
+
+	conn, err := net.Dial("unix", clientAddr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+
+	req, err := http.NewRequest(http.MethodPost, "http://docker/containers/abc/attach", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set(headerName, headerValue)
+	if upgrade {
+		req.Header.Set("Connection", "Upgrade")
+		req.Header.Set("Upgrade", "tcp")
+	}
+	if err := req.Write(conn); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	if uc, ok := conn.(*net.UnixConn); ok {
+		_ = uc.CloseWrite()
+	}
+
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	wantStatus := http.StatusOK
+	if upgrade {
+		wantStatus = http.StatusSwitchingProtocols
+	}
+	if resp.StatusCode != wantStatus {
+		t.Fatalf("status = %d, want %d (upgrade=%v)", resp.StatusCode, wantStatus, upgrade)
+	}
+	got, err := io.ReadAll(br)
+	if err != nil {
+		t.Fatalf("read relayed stream: %v", err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatalf("relayed %d bytes, want %d (upgrade=%v)", len(got), len(body), upgrade)
+	}
+}
+
+func startFuzzHijackClientServer(f *testing.F, handler http.Handler) string {
+	f.Helper()
+
+	socketPath := fmt.Sprintf("/tmp/sockguard-fuzz-client-%d-%d.sock", os.Getpid(), time.Now().UnixNano())
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		f.Fatalf("listen unix socket: %v", err)
+	}
+	srv := &http.Server{Handler: handler}
+	go func() { _ = srv.Serve(ln) }()
+	f.Cleanup(func() {
+		_ = srv.Close()
+		_ = os.Remove(socketPath)
+	})
+	return socketPath
+}
+
+// startFuzzRawStreamUpstream is a mock daemon over a unix socket. For each
+// connection it reads the request and its body, answers 101 when the request
+// carries Upgrade and otherwise a 200 with no length, then writes the body
+// back as the raw stream and closes.
+func startFuzzRawStreamUpstream(f *testing.F) string {
+	f.Helper()
+
+	socketPath := fmt.Sprintf("/tmp/sockguard-fuzz-raw-%d-%d.sock", os.Getpid(), time.Now().UnixNano())
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		f.Fatalf("listen unix socket: %v", err)
+	}
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+				req, err := http.ReadRequest(bufio.NewReader(conn))
+				if err != nil {
+					return
+				}
+				defer req.Body.Close()
+				body, err := io.ReadAll(io.LimitReader(req.Body, maxFuzzBodyBytes))
+				if err != nil {
+					return
+				}
+				if _, ok := req.Header["Upgrade"]; ok {
+					_, _ = io.WriteString(conn, "HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
+				} else {
+					_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.docker.raw-stream\r\n\r\n")
+				}
+				_, _ = conn.Write(body)
+			}()
+		}
+	}()
+
+	f.Cleanup(func() {
+		_ = ln.Close()
+		_ = os.Remove(socketPath)
+	})
+
+	return socketPath
 }
 
 func FuzzHijackBidirectionalStream(f *testing.F) {

@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/codeswhat/sockguard/v3/app/internal/config"
+	"github.com/codeswhat/sockguard/v3/app/internal/logging"
 	"github.com/codeswhat/sockguard/v3/app/internal/upstream"
 )
 
@@ -154,7 +157,7 @@ func TestBuildServeHandlerAppliesAssignedProfileRateLimit(t *testing.T) {
 
 	var upstreamCalls atomic.Int32
 	startUnixHTTPUpstream(t, socketPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/_ping" {
+		if r.Method != http.MethodGet || r.URL.Path != "/version" {
 			http.Error(w, "unexpected upstream request", http.StatusNotFound)
 			return
 		}
@@ -168,14 +171,14 @@ func TestBuildServeHandlerAppliesAssignedProfileRateLimit(t *testing.T) {
 	cfg.Health.Enabled = false
 	cfg.Log.AccessLog = false
 	cfg.Rules = []config.RuleConfig{
-		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/_ping"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/version"}, Action: "allow"},
 		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
 	}
 	cfg.Clients.Profiles = []config.ClientProfileConfig{
 		{
 			Name: "limited",
 			Rules: []config.RuleConfig{
-				{Match: config.MatchConfig{Method: http.MethodGet, Path: "/_ping"}, Action: "allow"},
+				{Match: config.MatchConfig{Method: http.MethodGet, Path: "/version"}, Action: "allow"},
 				{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
 			},
 			Limits: config.LimitsConfig{
@@ -195,7 +198,7 @@ func TestBuildServeHandlerAppliesAssignedProfileRateLimit(t *testing.T) {
 
 	request := func(remoteAddr string) *httptest.ResponseRecorder {
 		t.Helper()
-		req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+		req := httptest.NewRequest(http.MethodGet, "/version", nil)
 		req.RemoteAddr = remoteAddr
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
@@ -213,5 +216,45 @@ func TestBuildServeHandlerAppliesAssignedProfileRateLimit(t *testing.T) {
 	}
 	if got := upstreamCalls.Load(); got != 2 {
 		t.Fatalf("upstream calls = %d, want first assigned plus unassigned requests", got)
+	}
+}
+
+func TestBuildkitMediatorDeniesWhenClientIdentityLookupFails(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = shortSocketPath(t, "buildkit-identity-upstream")
+	cfg.RequestBody.Buildkit.Control.AllowInfo = true // policy.Configured() must be true so the mediator does not fall through
+	resolver := upstream.NewSingleSocket(cfg.Upstream.Socket)
+	var nextCalls atomic.Int32
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		nextCalls.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := withBuildkitMediator(&cfg, resolver, newDiscardLogger(), "docker")(next)
+
+	for _, path := range []string{"/grpc", "/session"} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, path, nil)
+			req.RemoteAddr = "192.0.2.10:4000"
+			// A verified leaf with no encoded form makes clientacl.RequestPrincipal return an error.
+			req.TLS = &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{&x509.Certificate{}}}}
+			meta := &logging.RequestMeta{}
+			req = req.WithContext(logging.WithMeta(req.Context(), meta))
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d, want 502; body: %s", rec.Code, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "client identity lookup failed") {
+				t.Fatalf("body = %s", rec.Body.String())
+			}
+			if meta.Decision != logging.DecisionDeny || meta.ReasonCode != "client_identity_lookup_failed" {
+				t.Fatalf("meta = %+v", meta)
+			}
+			if nextCalls.Load() != 0 {
+				t.Fatal("inner handler ran on identity failure")
+			}
+		})
 	}
 }

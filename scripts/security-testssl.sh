@@ -26,11 +26,17 @@ DRY_RUN=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run)
-      DRY_RUN=1; shift ;;
-    -h|--help)
-      sed -n '1,25p' "$0"; exit 0 ;;
+      DRY_RUN=1
+      shift
+      ;;
+    -h | --help)
+      sed -n '1,25p' "$0"
+      exit 0
+      ;;
     *)
-      echo "security-testssl.sh: unknown flag $1" >&2; exit 2 ;;
+      echo "security-testssl.sh: unknown flag $1" >&2
+      exit 2
+      ;;
   esac
 done
 
@@ -86,7 +92,7 @@ trap 'rm -rf "${WORK_DIR}"' EXIT
 
 echo "==> Building sockguard, mockdocker"
 (cd "${REPO_ROOT}/app" && go build -o "${WORK_DIR}/sockguard" ./cmd/sockguard/)
-(cd "${BENCH_DIR}"     && go build -o "${WORK_DIR}/mockdocker" ./cmd/mockdocker/)
+(cd "${BENCH_DIR}" && go build -o "${WORK_DIR}/mockdocker" ./cmd/mockdocker/)
 
 echo "==> Generating ECDSA P-256 CA + server certificate"
 # CA. ECDSA P-256, valid 1 hour — long enough for the scan, short enough
@@ -190,8 +196,8 @@ docker run --rm --network=host \
   "${TESTSSL_IMAGE}" \
   --color 0 \
   --jsonfile /work/testssl.json \
-  "${LISTEN_HOST}:${LISTEN_PORT}" \
-  | tee "${TESTSSL_LOG}" || true
+  "${LISTEN_HOST}:${LISTEN_PORT}" |
+  tee "${TESTSSL_LOG}" || true
 
 if [ ! -s "${TESTSSL_JSON}" ]; then
   echo "testssl.sh produced no JSON output (see ${TESTSSL_LOG})" >&2
@@ -225,5 +231,5 @@ fi
 
 # Copy the JSON next to the working dir before the cleanup trap fires.
 cp "${TESTSSL_JSON}" "${REPO_ROOT}/testssl-output.json"
-cp "${TESTSSL_LOG}"  "${REPO_ROOT}/testssl-output.txt"
+cp "${TESTSSL_LOG}" "${REPO_ROOT}/testssl-output.txt"
 echo "==> Wrote ${REPO_ROOT}/testssl-output.json and testssl-output.txt"

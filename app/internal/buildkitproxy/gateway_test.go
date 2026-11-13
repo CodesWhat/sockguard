@@ -170,6 +170,53 @@ func TestGatewayBindsCallsToActiveRootPolicy(t *testing.T) {
 	}
 }
 
+func TestGatewayPongCacheImportCapabilities(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		importTypes []string
+		enabled     bool
+		wantIDs     string
+	}{
+		{name: "cache imports disabled", enabled: true, wantIDs: "solve.base"},
+		{name: "cache imports permitted", importTypes: []string{"registry"}, enabled: true, wantIDs: "solve.base,importcaches"},
+		{name: "disabled advertised capability", importTypes: []string{"registry"}, wantIDs: "solve.base"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			policy := allowAllPolicy
+			policy.Control.Solve.AllowedCacheImportTypes = tc.importTypes
+			pong := &gateway.PongResponse{FrontendAPICaps: []*caps.APICap{
+				{ID: "solve.base", Enabled: true},
+				{ID: "importcaches", Enabled: tc.enabled},
+				{ID: "unknown.capability", Enabled: true},
+			}}
+			frame, denial := filterGatewayPong(bytes.NewReader(grpcFrame(mustMarshal(t, pong))), DefaultLimits().MaxMessageBytes, policy)
+			if denial != nil {
+				t.Fatalf("filterGatewayPong() denied: %v", denial)
+			}
+			_, payload, err := readGRPCFrame(bytes.NewReader(frame), DefaultLimits().MaxMessageBytes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var filtered gateway.PongResponse
+			if err := proto.Unmarshal(payload, &filtered); err != nil {
+				t.Fatal(err)
+			}
+			var ids []string
+			for _, capability := range filtered.FrontendAPICaps {
+				if !capability.Enabled {
+					t.Fatalf("disabled capability %q retained", capability.ID)
+				}
+				ids = append(ids, capability.ID)
+			}
+			if got := strings.Join(ids, ","); got != tc.wantIDs {
+				t.Fatalf("capabilities = %q, want %q", got, tc.wantIDs)
+			}
+		})
+	}
+}
+
 func TestGatewayRequestPolicy(t *testing.T) {
 	for _, tc := range []struct {
 		method  string
@@ -193,6 +240,8 @@ func TestGatewayRequestPolicy(t *testing.T) {
 		{"Inputs", &gateway.InputsRequest{}, true},
 		{"Warn", &gateway.WarnRequest{Short: []byte("warning")}, true},
 		{"Return", &gateway.ReturnRequest{Result: &gateway.Result{Result: &gateway.Result_Ref{Ref: &gateway.Ref{Id: "result"}}}}, true},
+		{"Return", &gateway.ReturnRequest{Result: &gateway.Result{Result: &gateway.Result_Ref{Ref: &gateway.Ref{}}}}, true},
+		{"Return", &gateway.ReturnRequest{Result: &gateway.Result{Result: &gateway.Result_Ref{Ref: &gateway.Ref{Id: "bad\nref"}}}}, false},
 		{"Return", &gateway.ReturnRequest{}, false},
 		{"Solve", &gateway.SolveRequest{Frontend: "gateway.v0"}, false},
 		{"Solve", &gateway.SolveRequest{Final: true}, false},
@@ -207,6 +256,35 @@ func TestGatewayRequestPolicy(t *testing.T) {
 				if d := evaluateGatewayRequest(tc.method, mustMarshal(t, tc.request), allowAllPolicy); d == nil {
 					t.Fatal("unknown frontend fields were admitted")
 				}
+			}
+		})
+	}
+}
+
+func TestGatewayFileRequestPathBudget(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []struct {
+		method  string
+		request func(string) proto.Message
+	}{
+		{method: "ReadFile", request: func(path string) proto.Message { return &gateway.ReadFileRequest{Ref: "result", FilePath: path} }},
+		{method: "ReadDir", request: func(path string) proto.Message { return &gateway.ReadDirRequest{Ref: "result", DirPath: path} }},
+		{method: "StatFile", request: func(path string) proto.Message { return &gateway.StatFileRequest{Ref: "result", Path: path} }},
+	} {
+		for _, delta := range []int{-1, 0, 1} {
+			t.Run(fmt.Sprintf("%s/limit%+d", operation.method, delta), func(t *testing.T) {
+				size := DefaultLimits().MaxFileSyncPathLength + delta
+				path := strings.Repeat("d/", (size-1)/2)
+				path += strings.Repeat("f", size-len(path))
+				d := evaluateGatewayRequest(operation.method, mustMarshal(t, operation.request(path)), allowAllPolicy)
+				if (d == nil) != (delta <= 0) {
+					t.Fatalf("%d-byte path denial=%v, want allowed=%v", len(path), d, delta <= 0)
+				}
+			})
+		}
+		t.Run(operation.method+"/NUL", func(t *testing.T) {
+			if d := evaluateGatewayRequest(operation.method, mustMarshal(t, operation.request("safe\x00path")), allowAllPolicy); d == nil {
+				t.Fatal("NUL-bearing path admitted")
 			}
 		})
 	}

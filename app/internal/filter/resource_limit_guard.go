@@ -213,6 +213,10 @@ type libpodContainerUpdateResourcePatch struct {
 	Pids *struct {
 		Limit int64 `json:"limit"`
 	} `json:"pids"`
+	// Unified is the cgroup v2 file map. The OCI runtime writes it after the
+	// typed resources above, key by key, so memory.max, cpu.max and pids.max
+	// here have the last word on the limit.
+	Unified map[string]string `json:"unified"`
 }
 
 // containerUpdateIdentifier extracts the {id} or {name} path segment from a
@@ -394,6 +398,43 @@ func overlayLibpodContainerUpdateResources(effective *containerCreateHostConfig,
 		limit := patch.Pids.Limit
 		effective.PidsLimit = &limit
 	}
+	overlayLibpodUnifiedResources(effective, patch.Unified)
+}
+
+// overlayLibpodUnifiedResources applies the cgroup v2 files of an update's
+// `unified` map the way the runtime does, after the typed resources. "max"
+// clears a limit. A value the runtime would reject is treated as clearing it,
+// so the guard never credits a limit that was not set.
+func overlayLibpodUnifiedResources(effective *containerCreateHostConfig, unified map[string]string) {
+	if value, ok := unified["memory.max"]; ok {
+		effective.Memory = parseCgroupLimit(value)
+	}
+	if value, ok := unified["pids.max"]; ok {
+		limit := parseCgroupLimit(value)
+		if limit == 0 {
+			limit = -1
+		}
+		effective.PidsLimit = &limit
+	}
+	if value, ok := unified["cpu.max"]; ok {
+		quota, period, _ := strings.Cut(strings.TrimSpace(value), " ")
+		effective.CpuQuota = parseCgroupLimit(quota)
+		if period = strings.TrimSpace(period); period != "" {
+			effective.CpuPeriod = parseCgroupLimit(period)
+		}
+		// NanoCpus is derived from CpuQuota/CpuPeriod, as above.
+		effective.NanoCpus = 0
+	}
+}
+
+// parseCgroupLimit reads a cgroup v2 limit file value: a positive decimal, or
+// "max" for none. Anything else reads as none (0).
+func parseCgroupLimit(value string) int64 {
+	n, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 func boundedUint64AsInt64(value uint64) int64 {
@@ -842,12 +883,13 @@ func NewDockerServiceInspectorWithRoundTripper(rt http.RoundTripper) ServiceInsp
 // MaxResponseBodyBytes+1, rejecting oversized payloads rather than risking
 // unbounded memory use on an inspect response.
 func readBoundedResponseBody(resp *http.Response) ([]byte, error) {
-	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponseBodyBytes+1))
+	limit := ResponseBodyLimit()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(body)) > MaxResponseBodyBytes {
-		return nil, fmt.Errorf("inspect response exceeds %d byte limit", MaxResponseBodyBytes)
+	if int64(len(body)) > limit {
+		return nil, fmt.Errorf("inspect response exceeds %d byte limit", limit)
 	}
 	return body, nil
 }

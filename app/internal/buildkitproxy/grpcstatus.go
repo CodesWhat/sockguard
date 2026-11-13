@@ -9,8 +9,8 @@ import (
 // gRPC status codes this package needs to synthesize. Subset of
 // google.golang.org/grpc/codes, reproduced here as untyped constants rather
 // than importing grpc-go — the #185 sign-off's dependency exception is
-// golang.org/x/net/http2 and google.golang.org/protobuf, explicitly NOT
-// grpc-go (see registry.go's package doc), and grpc-go's codes package pulls
+// google.golang.org/protobuf (the HTTP/2 transport runs on net/http through
+// internal/h2conn), explicitly NOT grpc-go (see registry.go's package doc), and grpc-go's codes package pulls
 // in the rest of the grpc-go module graph as a transitive consequence of
 // living in the same module.
 //

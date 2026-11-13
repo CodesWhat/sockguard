@@ -442,9 +442,8 @@ func TestLibpodContainerCreateLooksUpTheSecretsItNames(t *testing.T) {
 }
 
 // TestLibpodContainerCreateChecksTheSecretsItForwards pins the two ways a body
-// can name `secrets` twice. Spelled in two letter cases, Podman's decode would
-// take whichever comes later, so the body is refused. Spelled the same way
-// twice, the later one is the one that's checked and the only one forwarded.
+// can name `secrets` twice. Both spellings are refused before lookup or
+// forwarding; canonical bodies still check the exact secret they forward.
 func TestLibpodContainerCreateChecksTheSecretsItForwards(t *testing.T) {
 	t.Parallel()
 	secrets := map[string]inspectResult{
@@ -460,8 +459,10 @@ func TestLibpodContainerCreateChecksTheSecretsItForwards(t *testing.T) {
 		{body: `{"secrets":[{"Source":"mine"}],"Secrets":[{"Source":"theirs"}]}`, wantStatus: http.StatusBadRequest},
 		{body: `{"secrets":[{"Source":"mine","source":"theirs"}]}`, wantStatus: http.StatusBadRequest},
 		{body: `{"secret_env":{},"SECRET_ENV":{"K":"theirs"}}`, wantStatus: http.StatusBadRequest},
-		{body: `{"secrets":[{"Source":"mine"}],"secrets":[{"Source":"theirs"}]}`, wantStatus: http.StatusForbidden, wantLookups: []string{"theirs"}},
-		{body: `{"secrets":[{"Source":"theirs"}],"secrets":[{"Source":"mine"}]}`, wantStatus: http.StatusAccepted, wantLookups: []string{"mine"}, wantForwarded: []string{"mine"}},
+		{body: `{"secrets":[{"Source":"mine"}],"secrets":[{"Source":"theirs"}]}`, wantStatus: http.StatusBadRequest},
+		{body: `{"secrets":[{"Source":"theirs"}],"secrets":[{"Source":"mine"}]}`, wantStatus: http.StatusBadRequest},
+		{body: `{"secrets":[{"Source":"mine"}]}`, wantStatus: http.StatusAccepted, wantLookups: []string{"mine"}, wantForwarded: []string{"mine"}},
+		{body: `{"secrets":[{"Source":"theirs"}]}`, wantStatus: http.StatusForbidden, wantLookups: []string{"theirs"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.body, func(t *testing.T) {

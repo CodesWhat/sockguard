@@ -111,7 +111,7 @@ func TestIsLongLivedUpstreamRequest(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			req := httptest.NewRequest(tc.method, tc.target, nil)
-			if got := isLongLivedUpstreamRequest(httptest.NewRecorder(), req); got != tc.want {
+			if got := isLongLivedUpstreamRequestForFlavor(httptest.NewRecorder(), req, false); got != tc.want {
 				t.Fatalf("isLongLivedUpstreamRequest(%s %s) = %v, want %v", tc.method, tc.target, got, tc.want)
 			}
 		})
@@ -153,7 +153,7 @@ func TestIsLongLivedUpstreamRequestPodmanTopStream(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			req := httptest.NewRequest(http.MethodGet, tc.target, nil)
-			if got := isLongLivedUpstreamRequest(httptest.NewRecorder(), req); got != tc.want {
+			if got := isLongLivedUpstreamRequestForFlavor(httptest.NewRecorder(), req, false); got != tc.want {
 				t.Fatalf("isLongLivedUpstreamRequest(GET %s) = %v, want %v", tc.target, got, tc.want)
 			}
 		})
@@ -259,7 +259,7 @@ func TestWithRequestTimeout_AppliesDeadlineToFiniteRequest(t *testing.T) {
 	next := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		_, hasDeadline = r.Context().Deadline()
 	})
-	WithRequestTimeout(next, 50*time.Millisecond).
+	WithRequestTimeoutForFlavor(next, 50*time.Millisecond, false).
 		ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/containers/json", nil))
 	if !hasDeadline {
 		t.Fatal("expected a context deadline on a finite request")
@@ -272,7 +272,7 @@ func TestWithRequestTimeout_SkipsDeadlineForLongLivedRequest(t *testing.T) {
 	next := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		_, hasDeadline = r.Context().Deadline()
 	})
-	WithRequestTimeout(next, 50*time.Millisecond).
+	WithRequestTimeoutForFlavor(next, 50*time.Millisecond, false).
 		ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/events", nil))
 	if hasDeadline {
 		t.Fatal("expected no context deadline on a long-lived /events request")
@@ -285,7 +285,7 @@ func TestWithRequestTimeout_DisabledLeavesRequestUnbounded(t *testing.T) {
 	next := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
 		_, hasDeadline = r.Context().Deadline()
 	})
-	WithRequestTimeout(next, 0).
+	WithRequestTimeoutForFlavor(next, 0, false).
 		ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/containers/json", nil))
 	if hasDeadline {
 		t.Fatal("expected no deadline when the request timeout is disabled")
@@ -309,7 +309,7 @@ func TestWithRequestTimeout_HungUpstreamReturnsGatewayTimeout(t *testing.T) {
 		srv.Close()
 	})
 
-	wrapped := WithRequestTimeout(NewWithOptions(socketPath, testLogger(), Options{}), 75*time.Millisecond)
+	wrapped := WithRequestTimeoutForFlavor(NewWithOptions(socketPath, testLogger(), Options{}), 75*time.Millisecond, false)
 	front := httptest.NewServer(wrapped)
 	t.Cleanup(front.Close)
 
@@ -415,7 +415,7 @@ func TestWithRequestTimeout_DoesNotSeverLiveStream(t *testing.T) {
 
 			rt := &streamingRoundTripper{interval: streamInterval, chunks: totalChunks}
 			rp := NewWithTransport(rt, testLogger(), Options{})
-			handler := WithRequestTimeout(rp, requestTimeout)
+			handler := WithRequestTimeoutForFlavor(rp, requestTimeout, false)
 			srv := httptest.NewServer(handler)
 			t.Cleanup(srv.Close)
 
@@ -451,7 +451,7 @@ func TestWithRequestTimeout_DoesNotSeverLiveStream(t *testing.T) {
 		t.Parallel()
 
 		rp := NewWithTransport(hangingRoundTripper{}, testLogger(), Options{})
-		handler := WithRequestTimeout(rp, 100*time.Millisecond)
+		handler := WithRequestTimeoutForFlavor(rp, 100*time.Millisecond, false)
 		srv := httptest.NewServer(handler)
 		t.Cleanup(srv.Close)
 
@@ -503,7 +503,7 @@ func TestWithRequestTimeout_BodyPhaseTruncatesRatherThanReturning504(t *testing.
 		srv.Close()
 	})
 
-	wrapped := WithRequestTimeout(NewWithOptions(socketPath, testLogger(), Options{}), 75*time.Millisecond)
+	wrapped := WithRequestTimeoutForFlavor(NewWithOptions(socketPath, testLogger(), Options{}), 75*time.Millisecond, false)
 	front := httptest.NewServer(wrapped)
 	t.Cleanup(front.Close)
 

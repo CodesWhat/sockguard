@@ -47,7 +47,7 @@ jobs:
     steps:
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
           disable-sudo: true
@@ -148,6 +148,9 @@ jobs:
       go-cache-dependency-path: go.sum
       lint-check-name: Go Lint
       test-check-name: Go Test
+      # The pinned shared scanner exposes no sudo/container-disable input.
+      # Its read-only/offline exception is source-bound in the security docs
+      # and scripts/testdata/shared-workflow-security.json.
       run-workflow-security: true
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       workflow-security-egress-policy: audit
@@ -189,7 +192,7 @@ jobs:
     steps:
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
@@ -257,7 +260,7 @@ jobs:
         goarch: [amd64, arm64]
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
           disable-sudo: true
@@ -294,7 +297,7 @@ jobs:
       contents: read
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
           disable-sudo: true
@@ -365,7 +368,7 @@ jobs:
       # apt-installs the system libraries Firefox and WebKit need, which takes
       # sudo and reaches the Ubuntu archive plus Playwright's CDN.
       - name: Harden Runner
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
@@ -426,10 +429,10 @@ jobs:
     steps:
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
-          disable-sudo: true
+          disable-sudo-and-containers: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -457,7 +460,7 @@ jobs:
       # and drydock (the org's own harden-runner precedent) keeps its CodeQL
       # job on audit for the same reason. Revisit in stage 2.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
@@ -467,7 +470,7 @@ jobs:
           persist-credentials: false
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee  # v4.39.0
+        uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370  # v4.39.1
         with:
           languages: actions, go, javascript-typescript
           queries: security-and-quality
@@ -483,7 +486,7 @@ jobs:
         working-directory: app
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee  # v4.39.0
+        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370  # v4.39.1
 
   dependency-review:
     name: "Dependency Review"
@@ -500,10 +503,10 @@ jobs:
     steps:
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
-          disable-sudo: true
+          disable-sudo-and-containers: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -538,10 +541,10 @@ jobs:
     steps:
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
-          disable-sudo: true
+          disable-sudo-and-containers: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -574,7 +577,7 @@ jobs:
       # GitHub-release binary fetch, none of which resolve to a single
       # documented endpoint set. Revisit in stage 2.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
@@ -595,10 +598,10 @@ jobs:
     steps:
       # Audit mode: block mode intermittently refused allow-listed hosts on hosted runners (DEP-19). Release workflows keep block.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
-          disable-sudo: true
+          disable-sudo-and-containers: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -639,24 +642,20 @@ jobs:
             esac
           fi
 
-          types='feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert'
-          pattern="^(${types})(\\(\\w[\\w-]*\\))?!?:\\s.+\$"
-
+          msg_file="$(mktemp)"
+          trap 'rm -f "$msg_file"' EXIT
           failed=0
+          subjects="$(git log --format=%s "origin/${BASE_REF}..HEAD")"
           while IFS= read -r msg; do
-            first_line="$(echo "${msg}" | head -n1)"
-            # Merge, revert, and fixup!/squash! autosquash commits are exempt.
-            if echo "${first_line}" | grep -qP '^(Merge |Revert |fixup! |squash! )'; then
-              continue
-            fi
-            if ! echo "${first_line}" | grep -qP "${pattern}"; then
-              echo "::error::Non-conventional commit: ${first_line}"
+            [ -n "$msg" ] || continue
+            printf '%s\n' "$msg" > "$msg_file"
+            if ! node scripts/validate-commit-msg.mjs "$msg_file"; then
               failed=1
             fi
-          done < <(git log --format=%s "origin/${BASE_REF}..HEAD")
+          done <<< "$subjects"
 
           if [ "${failed}" -eq 1 ]; then
-            echo "::error::Some commits don't follow Conventional Commits format. Expected: <type>(scope): description — no emoji. Allowed types: ${types//|/, }"
+            echo "::error::Some commits don't follow the commit message convention."
             exit 1
           fi
 
@@ -671,6 +670,8 @@ jobs:
     if: ${{ !cancelled() && github.event_name != 'schedule' && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      DOCKERHUB_LOGIN: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
     permissions:
       contents: read
       security-events: write
@@ -680,7 +681,7 @@ jobs:
       # Chainguard's CDN endpoints — not a fixed set. Same reasoning as
       # security-grype.yml's grype-image job. Revisit in stage 2.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
@@ -691,6 +692,16 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+
+      - name: Log in to Docker Hub
+        # Authenticated pulls avoid Docker Hub's anonymous toomanyrequests
+        # limit on shared runner IPs. Skipped unless both credentials are
+        # present (fork PRs, Dependabot).
+        if: ${{ env.DOCKERHUB_LOGIN == 'true' }}
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       # Single-arch build to verify Dockerfile builds correctly.
       # Multi-arch (amd64 + arm64) is handled by the release workflow.
@@ -715,6 +726,7 @@ jobs:
         uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439  # v7.4.2
         id: grype
         with:
+          grype-version: v0.121.0
           image: sockguard:ci
           severity-cutoff: high
           fail-build: true
@@ -723,7 +735,7 @@ jobs:
       - name: Upload Grype SARIF to code scanning
         # Code scanning uploads require GHAS, not available on free private repos.
         if: always() && github.event.repository.visibility == 'public'
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee  # v4.39.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370  # v4.39.1
         with:
           sarif_file: ${{ steps.grype.outputs.sarif }}
           category: grype-image
@@ -732,6 +744,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          consumer_image="curlimages/curl:8.12.1@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6"
+          docker pull "${consumer_image}" >/dev/null
 
           runtime_volume="sockguard-ci-runtime-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           runtime_container="sockguard-ci-runtime-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
@@ -766,3 +781,7 @@ jobs:
           test "$(sudo stat -c '%u:%g %a' "${runtime_socket}")" = "65532:65532 600"
           test "$(sudo curl --fail --silent --show-error \
             --unix-socket "${runtime_socket}" http://localhost/_ping)" = "OK"
+          test "$(docker run --rm --user 65532:65532 \
+            --volume "${runtime_volume}:/var/run/sockguard:ro" \
+            "${consumer_image}" --fail --silent --show-error --max-time 10 \
+            --unix-socket /var/run/sockguard/sockguard.sock http://localhost/_ping)" = "OK"

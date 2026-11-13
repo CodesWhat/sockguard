@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/codeswhat/sockguard/v3/app/internal/apipath"
 	"github.com/codeswhat/sockguard/v3/app/internal/filter"
 	"github.com/codeswhat/sockguard/v3/app/internal/httpjson"
 	"github.com/codeswhat/sockguard/v3/app/internal/logging"
@@ -29,15 +30,6 @@ const hijackBufSize = 64 * 1024
 const hijackDialTimeout = 5 * time.Second
 const hijackHandshakeTimeout = 30 * time.Second
 
-// hijackInactivityTimeout is the default connection-wide inactivity deadline
-// for hijacked (attach/exec-start) connections, used by HijackHandler (the
-// socket-only entry point, not wired into the production serve chain) and as
-// upstream.hijack_inactivity_timeout's default. HijackHandlerWithDialer — the
-// entry point production wiring uses — takes the effective timeout as an
-// explicit parameter instead, so a configured override never touches this
-// constant.
-const hijackInactivityTimeout = 10 * time.Minute
-
 type bytePool interface {
 	Get() any
 	Put(any)
@@ -47,14 +39,6 @@ var hijackBufferPool bytePool = &sync.Pool{
 	New: func() any {
 		return make([]byte, hijackBufSize)
 	},
-}
-
-// Test hook — do not use t.Parallel() in tests that swap this.
-var dialUpstreamWithTimeoutHook func(string, string, time.Duration) (net.Conn, error) = net.DialTimeout
-
-// Test hook — do not use t.Parallel() in tests that swap this.
-var dialUpstreamHook = func(network, address string) (net.Conn, error) {
-	return dialUpstreamWithTimeoutHook(network, address, hijackDialTimeout)
 }
 
 // Test hook — do not use t.Parallel() in tests that swap this.
@@ -154,23 +138,12 @@ type hijackUpgradeState struct {
 	path         string
 }
 
-// HijackHandler wraps a standard handler and intercepts Docker API endpoints
-// that use HTTP connection upgrades (attach, exec start). For these endpoints,
-// it dials the upstream Docker socket directly and performs a native bidirectional
-// hijack with optimized buffers and proper TCP half-close signaling, rather than
-// relying on the stdlib reverse proxy's generic upgrade handling.
-func HijackHandler(upstreamSocket string, logger *slog.Logger, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !isHijackRequest(w, r) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		handleHijack(w, r, upstreamSocket, logger)
-	})
-}
-
-// HijackHandlerWithDialer is HijackHandler over an upstream.RequestDialer (typically an
-// *upstream.Resolver), so the hijack path dials the same active endpoint — local
+// HijackHandlerWithDialer wraps a standard handler and intercepts Docker API
+// endpoints that use HTTP connection upgrades (attach, exec start). For these
+// endpoints it dials the upstream directly through an upstream.RequestDialer
+// (typically an *upstream.Resolver) and performs a native bidirectional hijack
+// with optimized buffers and proper TCP half-close signaling, rather than
+// relying on the stdlib reverse proxy's generic upgrade handling. The hijack path dials the same active endpoint — local
 // socket or remote TCP+TLS — and fails over together with the rest of the proxy.
 //
 // inactivityTimeout bounds how long a hijacked connection may pass no bytes
@@ -185,21 +158,6 @@ func HijackHandlerWithDialer(dialer upstream.RequestDialer, inactivityTimeout ti
 		}
 		handleHijackDialer(w, r, dialer, inactivityTimeout, logger)
 	})
-}
-
-// isHijackEndpoint returns true if the request targets a Docker API endpoint
-// that upgrades to a raw TCP stream via 101 Switching Protocols.
-//
-// Matched endpoints:
-//   - POST /containers/{id}/attach
-//   - POST /exec/{id}/start
-//   - POST /libpod/containers/{id}/attach (Podman's native libpod API, #148)
-//   - POST /libpod/exec/{id}/start
-//
-// Docker API version prefixes (/v1.XX/, or Podman's three-part /v5.0.0/) are
-// stripped before matching.
-func isHijackEndpoint(method, path string) bool {
-	return filter.IsHijackCandidatePath(method, filter.NormalizePath(path))
 }
 
 func isHijackRequest(w http.ResponseWriter, r *http.Request) bool {
@@ -227,15 +185,6 @@ func writeHijackBadGateway(w http.ResponseWriter, logger *slog.Logger, path, mes
 	}
 }
 
-func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string, logger *slog.Logger) {
-	session, ok := upgradeHijackConnection(w, r, upstreamSocket, logger)
-	if !ok {
-		return
-	}
-
-	proxyHijackStreams(session, hijackInactivityTimeout, logger)
-}
-
 func handleHijackDialer(w http.ResponseWriter, r *http.Request, dialer upstream.RequestDialer, inactivityTimeout time.Duration, logger *slog.Logger) {
 	session, ok := upgradeHijackConnectionDialer(w, r, dialer, logger)
 	if !ok {
@@ -245,24 +194,17 @@ func handleHijackDialer(w http.ResponseWriter, r *http.Request, dialer upstream.
 	proxyHijackStreams(session, inactivityTimeout, logger)
 }
 
-func upgradeHijackConnection(w http.ResponseWriter, r *http.Request, upstreamSocket string, logger *slog.Logger) (*hijackSession, bool) {
-	reqPath := r.URL.Path
-
-	// Dial upstream Docker socket
-	upstreamConn, err := dialUpstreamHook("unix", upstreamSocket)
-	if err != nil {
-		logger.Error("hijack: upstream dial failed", "error", logging.SafeString(err.Error()), "path", logging.SafeString(reqPath))
-		writeHijackBadGateway(w, logger, reqPath, "upstream Docker socket unreachable")
-		return nil, false
-	}
-
-	return finishHijackUpgrade(w, r, upstreamConn, newUpstreamHijackRequest(r, r.URL.Path), logger)
-}
-
-// upgradeHijackConnectionDialer is upgradeHijackConnection over an
-// upstream.RequestDialer: it atomically dials the active endpoint and rewrites
-// the request with that same endpoint's base path, then shares the post-dial
-// upgrade logic.
+// upgradeHijackConnectionDialer atomically dials the active endpoint through an
+// upstream.RequestDialer and rewrites the request with that same endpoint's
+// base path, then runs the post-dial upgrade logic.
+//
+// #194: the wire path is the client's ORIGINAL request path, version prefix
+// and all, not the normalized/stripped form. That mirrors the non-hijack
+// reverse-proxy path (proxy.go's Rewrite touches only Scheme/Host and leaves
+// Path untouched): real Podman requires the version prefix (/v5.x.y/libpod/...)
+// on every route but the bare _ping, while dockerd accepts a versioned path
+// too, so preserving it doesn't regress docker-compat. The normalized form is
+// used only for endpoint matching and logging.
 func upgradeHijackConnectionDialer(w http.ResponseWriter, r *http.Request, dialer upstream.RequestDialer, logger *slog.Logger) (*hijackSession, bool) {
 	reqPath := r.URL.Path
 
@@ -296,7 +238,7 @@ func finishHijackUpgrade(w http.ResponseWriter, r *http.Request, upstreamConn ne
 
 	ok = false
 	var session *hijackSession
-	if resp.StatusCode == http.StatusSwitchingProtocols {
+	if resp.StatusCode == http.StatusSwitchingProtocols || isRawStreamHijackResponse(r, resp) {
 		session, ok = finalizeHijackUpgrade(w, logger, hijackUpgradeState{
 			resp:         resp,
 			upstreamConn: upstreamConn,
@@ -311,6 +253,56 @@ func finishHijackUpgrade(w http.ResponseWriter, r *http.Request, upstreamConn ne
 	}
 
 	return session, ok
+}
+
+type passClientUpgradeKey struct{}
+
+// PassClientUpgrade wraps a hijack handler so it forwards the client's upgrade
+// choice instead of always asking the upstream to upgrade. Only a positively
+// probed Docker daemon is known to answer the plain form with a 200 raw stream;
+// Podman's libpod endpoints don't, so every other upstream keeps the forced
+// `Connection: Upgrade` / `Upgrade: tcp` request and its 101 answer.
+func PassClientUpgrade(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Only Docker container attach and exec start are touched. Every other
+		// request, BuildKit's /session and /grpc (Upgrade: h2c) included, goes
+		// through with the very same *http.Request, so the wrapper cannot
+		// change how they are handled.
+		if r != nil && r.Method == http.MethodPost {
+			if p := requestHijackPath(w, r); apipath.IsContainerAttachPath(p) || apipath.IsExecStartPath(p) {
+				r = r.WithContext(context.WithValue(r.Context(), passClientUpgradeKey{}, true))
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func passClientUpgrade(r *http.Request) bool {
+	v, _ := r.Context().Value(passClientUpgradeKey{}).(bool)
+	return v
+}
+
+// clientRequestedUpgrade reports whether the client asked for a connection
+// upgrade. moby's exec start and attach handlers branch on the mere presence of
+// the Upgrade header: with it they answer 101 Switching Protocols, without it
+// they answer 200 OK and then stream raw bytes (docker-py and some other
+// clients use that form).
+func clientRequestedUpgrade(r *http.Request) bool {
+	_, ok := r.Header["Upgrade"]
+	return ok
+}
+
+// isRawStreamHijackResponse reports whether the upstream answered a request
+// that carried no Upgrade header with the non-upgrade stream form: a 200 whose
+// body has no declared length (no Content-Length, not chunked), i.e. a raw
+// stream that runs until the connection closes. A 200 with a declared length
+// is an ordinary response and goes through the normal forwarding path.
+func isRawStreamHijackResponse(r *http.Request, resp *http.Response) bool {
+	return passClientUpgrade(r) &&
+		!clientRequestedUpgrade(r) &&
+		resp.StatusCode == http.StatusOK &&
+		resp.ContentLength < 0 &&
+		len(resp.TransferEncoding) == 0
 }
 
 func proxyHijackStreams(session *hijackSession, inactivityTimeout time.Duration, logger *slog.Logger) {
@@ -385,21 +377,6 @@ func waitForHijackInactivity(activity *hijackActivity, timeout time.Duration, do
 		}
 		timer.Reset(remaining)
 	}
-}
-
-func writeHijackUpstreamRequest(upstreamConn net.Conn, w http.ResponseWriter, r *http.Request, logger *slog.Logger) bool {
-	// We remove client-controlled hop-by-hop metadata and emit a fixed Docker
-	// upgrade hint so upstream sees only proxy-controlled connection semantics.
-	//
-	// #194: the wire path is the client's ORIGINAL request path — version
-	// prefix and all — not the normalized/stripped form. That mirrors the
-	// non-hijack reverse-proxy path (proxy.go's Rewrite touches only
-	// Scheme/Host and leaves Path untouched): real Podman requires the
-	// version prefix (/v5.x.y/libpod/...) on every route but the bare
-	// _ping, while dockerd accepts a versioned path too, so preserving it
-	// doesn't regress docker-compat. logPath stays the normalized form used
-	// everywhere else in the proxy for endpoint matching and logging.
-	return writePreparedHijackUpstreamRequest(upstreamConn, w, r, newUpstreamHijackRequest(r, r.URL.Path), logger)
 }
 
 func writePreparedHijackUpstreamRequest(upstreamConn net.Conn, w http.ResponseWriter, r, upstreamReq *http.Request, logger *slog.Logger) bool {
@@ -530,16 +507,16 @@ func finalizeHijackUpgrade(w http.ResponseWriter, logger *slog.Logger, state hij
 		return nil, false
 	}
 
-	if err := state.resp.Write(clientBuf); err != nil {
+	if err := writeHijackResponseHead(clientBuf, state.resp); err != nil {
 		closeConn(logger, clientConn, "client connection", state.path)
 		closeConn(logger, state.upstreamConn, "upstream connection", state.path)
-		logger.Error("hijack: write 101 to client failed", "error", logging.SafeString(err.Error()), "path", logging.SafeString(state.path))
+		logger.Error("hijack: write 101 to client failed", "status", state.resp.StatusCode, "error", logging.SafeString(err.Error()), "path", logging.SafeString(state.path))
 		return nil, false
 	}
 	if err := clientBuf.Flush(); err != nil {
 		closeConn(logger, clientConn, "client connection", state.path)
 		closeConn(logger, state.upstreamConn, "upstream connection", state.path)
-		logger.Error("hijack: flush 101 to client failed", "error", logging.SafeString(err.Error()), "path", logging.SafeString(state.path))
+		logger.Error("hijack: flush 101 to client failed", "status", state.resp.StatusCode, "error", logging.SafeString(err.Error()), "path", logging.SafeString(state.path))
 		return nil, false
 	}
 
@@ -550,6 +527,24 @@ func finalizeHijackUpgrade(w http.ResponseWriter, logger *slog.Logger, state hij
 		clientConn:   clientConn,
 		clientBuf:    clientBuf,
 	}, true
+}
+
+// writeHijackResponseHead writes the upstream's status line and headers, and no
+// body, to the hijacked client connection. A 101 has no body so resp.Write is
+// exact. A raw-stream 200 has an unbounded body that the relay carries, so
+// resp.Write must not be allowed to drain it.
+func writeHijackResponseHead(w io.Writer, resp *http.Response) error {
+	if resp.StatusCode == http.StatusSwitchingProtocols {
+		return resp.Write(w)
+	}
+	if _, err := fmt.Fprintf(w, "HTTP/%d.%d %d %s\r\n", resp.ProtoMajor, resp.ProtoMinor, resp.StatusCode, http.StatusText(resp.StatusCode)); err != nil {
+		return err
+	}
+	if err := resp.Header.Write(w); err != nil {
+		return err
+	}
+	_, err := io.WriteString(w, "\r\n")
+	return err
 }
 
 func startHijackCopy(
@@ -588,7 +583,7 @@ func newUpstreamHijackRequest(r *http.Request, path string) *http.Request {
 	if path == "" && r.URL != nil {
 		// Defensive fallback for callers that don't have a path handy (e.g.
 		// direct unit tests): use the client's original path, not a
-		// normalized one — #194, see writeHijackUpstreamRequest.
+		// normalized one — #194, see upgradeHijackConnectionDialer.
 		path = r.URL.Path
 	}
 	if r.URL != nil {
@@ -626,8 +621,14 @@ func newUpstreamHijackRequest(r *http.Request, path string) *http.Request {
 	upstreamReq.TransferEncoding = nil
 	upstreamReq.Trailer = nil
 	upstreamReq.Close = false
-	upstreamReq.Header.Set("Connection", "Upgrade")
-	upstreamReq.Header.Set("Upgrade", "tcp")
+	// With passthrough on (probed Docker only), pass the client's choice
+	// through: the daemon answers 101 only when asked
+	// to upgrade and a plain 200 stream otherwise, and clients expect the form
+	// they asked for. The Upgrade value stays proxy-controlled.
+	if !passClientUpgrade(r) || clientRequestedUpgrade(r) {
+		upstreamReq.Header.Set("Connection", "Upgrade")
+		upstreamReq.Header.Set("Upgrade", "tcp")
+	}
 
 	return upstreamReq
 }

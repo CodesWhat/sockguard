@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -140,6 +141,9 @@ type ownershipRequestReferences struct {
 	// reference, one the daemon can't resolve is no denial: the request then
 	// creates it. See checkExistingOwnershipReferences.
 	existingResources []embeddedOwnershipReference
+	// existingSharedResources are existingResources an unlabeled resource may
+	// satisfy, so only one labeled for a different owner is refused.
+	existingSharedResources []embeddedOwnershipReference
 	// libpodCreate carries what a libpod container or pod create names besides
 	// its image, its pod and its namespace targets: other containers,
 	// networks, named volumes and image volumes, or the reason the body is
@@ -182,6 +186,11 @@ type Options struct {
 	// TestServeChainPassesResolvedFlavorToOwnership is the wiring proof, and
 	// TestServeChainImageTagChecksTheLocalhostNameOnPodman is a second one.
 	UpstreamFlavor upstreamflavor.Flavor
+	// UpstreamProbedDocker is true only when GET /version positively
+	// identified dockerd on every endpoint. Flavor can read Docker with no
+	// probe behind it, and the pull untag sends force=1 only on this evidence,
+	// because on Podman force removes the containers using the image.
+	UpstreamProbedDocker bool
 	// PodmanConjunctiveVolumeFilters is true only when all upstream endpoints
 	// positively report a released Podman version with AND across volume filter keys.
 	PodmanConjunctiveVolumeFilters bool
@@ -215,7 +224,34 @@ func middlewareWithClient(client *http.Client, logger *slog.Logger, opts Options
 	// authorize a different resource after a delete/recreate or retag. Inspect
 	// every request instead; per-request embedded references are deduplicated
 	// before reaching this boundary.
-	return middlewareWithDeps(logger, opts, inspector.inspectResource, inspector.inspectExec)
+	//
+	// The one reuse allowed is within a single request: visibility, which runs
+	// first, leaves its successful inspect result on the request meta, and
+	// reading it back is the same inspect-then-proxy window the request
+	// already has. Cross-request caching stays forbidden.
+	inspectResource := reuseRequestInspect(inspector.inspectResource)
+	// The check after a pull inspects what the pull just wrote, so it takes
+	// the unmemoized inspect.
+	return middlewareWithPullCheck(logger, opts, inspectResource, inspector.inspectExec,
+		&postPullChecks{inspect: inspector.inspectPulledImage, untag: inspector.untagImage, retag: inspector.retagImage, list: inspector.listImages})
+}
+
+// reuseRequestInspect serves an inspect from the result visibility left on the
+// request meta, and dials through inspect otherwise.
+func reuseRequestInspect(
+	inspect func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
+) func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
+	return func(ctx context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
+		// Exact reference checks need identity data that the label-only memo
+		// does not retain. Fetch their inspect instead of reusing labels.
+		skipMemo := (kind == dockerresource.KindSecret && exactSecretLookup(ctx)) ||
+			(kind == dockerresource.KindNetwork && networkDeleteName(ctx)) ||
+			(kind == dockerresource.KindImage && imageVolumeID(ctx))
+		if labels, found, ok := logging.Meta(ctx).InspectedLabels(string(kind), identifier); ok && !skipMemo {
+			return labels, found, nil
+		}
+		return inspect(ctx, kind, identifier)
+	}
 }
 
 func middlewareWithDeps(
@@ -223,6 +259,19 @@ func middlewareWithDeps(
 	opts Options,
 	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
 	inspectExec func(context.Context, string) (string, bool, error),
+) func(http.Handler) http.Handler {
+	return middlewareWithPullCheck(logger, opts, inspectResource, inspectExec, nil)
+}
+
+// middlewareWithPullCheck is middlewareWithDeps with the check that follows a
+// pull. A nil post leaves pulls unchecked, which is what a test that stubs
+// only the request-side inspects gets.
+func middlewareWithPullCheck(
+	logger *slog.Logger,
+	opts Options,
+	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
+	inspectExec func(context.Context, string) (string, bool, error),
+	post *postPullChecks,
 ) func(http.Handler) http.Handler {
 	opts = opts.normalized()
 	if opts.Owner == "" {
@@ -289,6 +338,15 @@ func middlewareWithDeps(
 				return
 			}
 
+			// Buildah can import a FROM archive outside the registry pull-policy
+			// path, so even pullpolicy=never cannot constrain its naming effects.
+			// Refuse before mutation or inspection, including warn/audit rollouts.
+			if r.Method == http.MethodPost && (normPath == libpodPrefix+"build" || normPath == libpodPrefix+"local/build" || (podmanUpstream && normPath == "/build")) {
+				logging.SetDeniedWithCode(w, r, reasonCodeOwnerPolicyDeniedAccess, buildDenyPodman, nil)
+				_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: buildDenyPodman})
+				return
+			}
+
 			ownerFilterApplies := needsOwnerFilter(r.Method, normPath) || libpodNeedsOwnerFilter(r.Method, normPath)
 			if ownerFilterApplies && refuseInvalidFilterKeys(w, r) {
 				return
@@ -344,6 +402,12 @@ func middlewareWithDeps(
 				return
 			}
 			if !verdict.denied() {
+				// Warn and audit rollouts forward what enforce would refuse, so
+				// they do not untag either.
+				if pull, libpod := isImagePullDestinations(refsImageDestinations(refs)); pull && post != nil && !logging.MetaForRequest(w, r).AllowsPassThrough() {
+					servePullWithOwnerCheck(logger, next, w, r, refs.imageDestinations, libpod, opts, post)
+					return
+				}
 				serveOwnershipAllowed(logger, next, w, r, normPath, opts)
 				return
 			}
@@ -381,10 +445,12 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 		}
 		return &ownershipRequestReferences{imageBatch: batch}, nil
 	case r.Method == http.MethodPost && normPath == "/containers/create":
-		return mutateContainerCreateOwnershipBody(r, opts.LabelKey, opts.Owner)
+		return mutateContainerCreateOwnershipBody(r, opts.LabelKey, opts.Owner, opts.UpstreamFlavor)
 	case r.Method == http.MethodPost && isNetworkMembershipChangePath(normPath):
 		return extractNetworkMembershipOwnershipReferences(r)
-	case r.Method == http.MethodPost && (normPath == "/networks/create" || normPath == "/volumes/create" || normPath == "/secrets/create" || normPath == "/configs/create"):
+	case r.Method == http.MethodPost && normPath == "/secrets/create":
+		return mutateCompatSecretCreateOwnershipRequest(r, opts)
+	case r.Method == http.MethodPost && (normPath == "/networks/create" || normPath == "/volumes/create" || normPath == "/configs/create"):
 		return nil, addOwnerLabelToBody(r, opts.LabelKey, opts.Owner)
 	case r.Method == http.MethodPost && (normPath == "/services/create" || isServiceUpdatePath(normPath)):
 		return mutateServiceOwnershipBody(r, opts.LabelKey, opts.Owner)
@@ -395,15 +461,17 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 	case isImageTagRoutePath(r.Method, normPath):
 		return imageTagOwnershipReferences(r, normPath, opts.UpstreamFlavor), nil
 	case isImageCreateRoutePath(r.Method, normPath):
-		return imageCreateOwnershipReferences(r, normPath, opts.UpstreamFlavor), nil
+		return mutateImageCreateOwnershipRequest(r, normPath, opts)
 	case isImageLoadRoutePath(r.Method, normPath):
-		return imageLoadOwnershipReferences(r, normPath, opts.UpstreamFlavor), nil
+		return imageLoadOwnershipReferences(r, normPath, opts), nil
 	case r.Method == http.MethodPost && isCommitPath(normPath):
 		return mutateCommitOwnershipRequest(r, normPath, opts)
 	case r.Method == http.MethodPost && (normPath == "/build" || normPath == libpodPrefix+"build"):
 		return mutateBuildOwnershipRequest(r, normPath, opts)
 	case r.Method == http.MethodPost && normPath == libpodContainerCreatePath:
 		return mutateLibpodContainerCreateOwnershipBody(r, opts.LabelKey, opts.Owner)
+	case r.Method == http.MethodPost && isLibpodContainerRestorePath(normPath):
+		return libpodContainerRestoreOwnershipReferences(r.URL.Query()), nil
 	case r.Method == http.MethodPost && normPath == libpodPodCreatePath:
 		return mutateLibpodPodCreateOwnershipBody(r, opts.LabelKey, opts.Owner)
 	case r.Method == http.MethodPost && normPath == libpodNetworkCreatePath:
@@ -413,7 +481,7 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 	case r.Method == http.MethodPost && normPath == libpodSecretCreatePath:
 		return mutateLibpodSecretCreateOwnershipRequest(r, opts)
 	case needsOwnerFilter(r.Method, normPath), libpodNeedsOwnerFilter(r.Method, normPath):
-		return nil, addOwnerLabelFilter(r, opts.LabelKey, opts.Owner, opts.UpstreamFlavor == upstreamflavor.Podman)
+		return nil, addOwnerLabelFilter(r, normPath, opts.LabelKey, opts.Owner, opts.UpstreamFlavor == upstreamflavor.Podman)
 	default:
 		return nil, nil
 	}
@@ -421,7 +489,7 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 
 func extractNetworkMembershipOwnershipReferences(r *http.Request) (*ownershipRequestReferences, error) {
 	refs := &ownershipRequestReferences{}
-	err := mutateJSONBody(r, func(decoded map[string]any) error {
+	err := inspectJSONBody(r, func(decoded map[string]any) error {
 		for _, identifier := range filter.FoldedStrings(decoded, "Container") {
 			appendEmbeddedOwnershipReference(&refs.embeddedResources, dockerresource.KindContainer, identifier, "network membership Container")
 		}
@@ -509,7 +577,15 @@ func allowOwnershipRequestUnprefixed(
 			strictest = verdictAllow
 		}
 
-		verdict, reason, err = checkExistingOwnershipReferences(ctx, inspectResource, refs.existingResources, opts)
+		verdict, reason, err = checkExistingOwnershipReferences(ctx, inspectResource, refs.existingResources, false, opts)
+		if err != nil || verdict.denied() {
+			return verdict, reason, err
+		}
+		if verdict == verdictAllow {
+			strictest = verdictAllow
+		}
+
+		verdict, reason, err = checkExistingOwnershipReferences(ctx, inspectResource, refs.existingSharedResources, true, opts)
 		if err != nil || verdict.denied() {
 			return verdict, reason, err
 		}
@@ -574,6 +650,9 @@ func allowPathOwnershipRequest(
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindContainer, containerID, opts, false)
 	}
 	if identifier, ok := networkIdentifier(method, normPath); ok {
+		if opts.UpstreamFlavor == upstreamflavor.Podman && method == http.MethodDelete {
+			ctx = withNetworkDeleteName(ctx)
+		}
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindNetwork, identifier, opts, false)
 	}
 	if identifier, ok := volumeIdentifier(method, normPath); ok {
@@ -593,6 +672,9 @@ func allowPathOwnershipRequest(
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindTask, identifier, opts, false)
 	}
 	if identifier, ok := secretIdentifier(method, normPath); ok {
+		if reason := refuseShadowableSecretName(identifier, opts); reason != "" {
+			return verdictDeny, reason, nil
+		}
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindSecret, identifier, opts, false)
 	}
 	if identifier, ok := configIdentifier(method, normPath); ok {
@@ -631,6 +713,9 @@ func allowPathOwnershipRequest(
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindLibpodPod, identifier, opts, false)
 	}
 	if identifier, ok := libpodNetworkIdentifier(method, normPath); ok {
+		if method == http.MethodDelete {
+			ctx = withNetworkDeleteName(ctx)
+		}
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindNetwork, identifier, opts, false)
 	}
 	if identifier, ok := libpodVolumeIdentifier(method, normPath); ok {
@@ -654,6 +739,9 @@ func allowPathOwnershipRequest(
 		return checkOwnedImageRoute(ctx, inspectResource, identifier, opts, refs, method, normPath)
 	}
 	if identifier, ok := libpodSecretIdentifier(method, normPath); ok {
+		if reason := refuseShadowableSecretName(identifier, opts); reason != "" {
+			return verdictDeny, reason, nil
+		}
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindSecret, identifier, opts, false)
 	}
 	return verdictPassThrough, "", nil
@@ -705,18 +793,26 @@ func checkExistingOwnershipReferences(
 	ctx context.Context,
 	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
 	refs []embeddedOwnershipReference,
+	allowUnowned bool,
 	opts Options,
 ) (ownershipVerdict, string, error) {
 	strictest := verdictPassThrough
 	for _, ref := range refs {
-		labels, found, err := inspectResource(ctx, ref.kind, ref.identifier)
+		lookupCtx := ctx
+		if ref.kind == dockerresource.KindSecret {
+			// A create acts on a secret only if Store matches it, and Store
+			// matches an exact name or ID, never the ID prefix the inspect
+			// falls back to.
+			lookupCtx = withExactSecretLookup(ctx)
+		}
+		labels, found, err := inspectResource(lookupCtx, ref.kind, ref.identifier)
 		if err != nil {
 			return verdictPassThrough, "", err
 		}
 		if !found {
 			continue
 		}
-		if !ownerMatches(labels, opts.LabelKey, opts.Owner, false) {
+		if !ownerMatches(labels, opts.LabelKey, opts.Owner, allowUnowned) {
 			return verdictDeny, fmt.Sprintf(
 				"owner policy denied access to %s %q referenced by %s",
 				singularResource(ref.kind),
@@ -837,14 +933,14 @@ func addOwnerLabelToBody(r *http.Request, labelKey, owner string) error {
 // Production uses mutateContainerCreateOwnershipBody so the same decode also
 // returns non-namespace Docker resource references for authorization.
 func addOwnerLabelToContainerCreateBody(r *http.Request, labelKey, owner string) ([]string, error) {
-	refs, err := mutateContainerCreateOwnershipBody(r, labelKey, owner)
+	refs, err := mutateContainerCreateOwnershipBody(r, labelKey, owner, upstreamflavor.Docker)
 	if refs == nil {
 		return nil, err
 	}
 	return refs.namespaceContainers, err
 }
 
-func mutateContainerCreateOwnershipBody(r *http.Request, labelKey, owner string) (*ownershipRequestReferences, error) {
+func mutateContainerCreateOwnershipBody(r *http.Request, labelKey, owner string, flavor upstreamflavor.Flavor) (*ownershipRequestReferences, error) {
 	refs := &ownershipRequestReferences{}
 	err := mutateJSONBody(r, func(decoded map[string]any) error {
 		labels, err := filter.NestedObject(decoded, "Labels")
@@ -853,35 +949,89 @@ func mutateContainerCreateOwnershipBody(r *http.Request, labelKey, owner string)
 		}
 		labels[labelKey] = owner
 		refs.namespaceContainers = containerCreateNamespaceRefs(decoded)
-		refs.embeddedResources = containerCreateEmbeddedOwnershipReferences(decoded)
+		var overflow bool
+		refs.embeddedResources, overflow = collectContainerCreateEmbeddedReferences(decoded)
+		if overflow {
+			refs.denyReason = fmt.Sprintf(embeddedReferencesDenyTooMany, "container create")
+		}
+		if flavor == upstreamflavor.Podman {
+			refs.existingSharedResources = containerCreatePodmanNetworkNameReferences(decoded)
+		}
 		return nil
 	})
 	return refs, err
 }
 
-func containerCreateEmbeddedOwnershipReferences(decoded map[string]any) []embeddedOwnershipReference {
+// podmanSwarmNetworkNames are the names isCustomNetworkMode leaves alone
+// because dockerd reads them as Swarm's own networks. Podman has no such
+// networks: a HostConfig.NetworkMode it doesn't know as one of its modes is a
+// network name, and so is every NetworkingConfig.EndpointsConfig key, so
+// ingress and docker_gwbridge are ordinary names anyone can create there.
+//
+// bridge, host, none and default are never looked up. Podman's compat layer
+// maps the name "bridge" to the default network ("podman"), which carries no
+// owner label, and the Docker CLI sends a "bridge" endpoint key on every
+// default-mode create, so a lookup would refuse them all (Podman 5.8.1 and
+// 6.1.1 pkg/api/handlers/compat/networks.go and containers_create.go).
+var podmanSwarmNetworkNames = [...]string{"ingress", "docker_gwbridge"}
+
+// containerCreatePodmanNetworkNameReferences returns the networks a
+// Docker-compatible create names as ingress or docker_gwbridge. They are
+// existing, shared resources rather than embedded references, and an unlabeled one
+// passes: a name nothing holds is no denial, and an unlabeled network is not
+// another owner's. Only a network labeled for a different owner is refused.
+func containerCreatePodmanNetworkNameReferences(decoded map[string]any) []embeddedOwnershipReference {
 	var refs []embeddedOwnershipReference
+	add := func(name, source string) {
+		appendEmbeddedOwnershipReference(&refs, dockerresource.KindNetwork, name, source)
+	}
+	for _, hostConfig := range filter.FoldedObjects(decoded, "HostConfig") {
+		for _, mode := range filter.FoldedStrings(hostConfig, "NetworkMode") {
+			if name := strings.TrimSpace(mode); slices.Contains(podmanSwarmNetworkNames[:], name) {
+				add(name, "container HostConfig.NetworkMode")
+			}
+		}
+	}
+	for _, networkingConfig := range filter.FoldedObjects(decoded, "NetworkingConfig") {
+		for _, endpoints := range filter.FoldedObjects(networkingConfig, "EndpointsConfig") {
+			for _, name := range slices.Sorted(maps.Keys(endpoints)) {
+				if slices.Contains(podmanSwarmNetworkNames[:], name) {
+					add(name, "container NetworkingConfig.EndpointsConfig")
+				}
+			}
+		}
+	}
+	return refs
+}
+
+func containerCreateEmbeddedOwnershipReferences(decoded map[string]any) []embeddedOwnershipReference {
+	refs, _ := collectContainerCreateEmbeddedReferences(decoded)
+	return refs
+}
+
+func collectContainerCreateEmbeddedReferences(decoded map[string]any) ([]embeddedOwnershipReference, bool) {
+	refs := &embeddedRefCollector{}
 	for _, image := range filter.FoldedStrings(decoded, "Image") {
-		appendEmbeddedOwnershipReference(&refs, dockerresource.KindImage, image, "container Image")
+		refs.add(dockerresource.KindImage, image, "container Image")
 	}
 
 	for _, hostConfig := range filter.FoldedObjects(decoded, "HostConfig") {
-		appendContainerBindOwnershipReferences(&refs, hostConfig)
-		appendContainerMountOwnershipReferences(&refs, hostConfig)
+		appendContainerBindOwnershipReferences(refs, hostConfig)
+		appendContainerMountOwnershipReferences(refs, hostConfig)
 
 		for _, mode := range filter.FoldedStrings(hostConfig, "NetworkMode") {
 			if !isCustomNetworkMode(mode) {
 				continue
 			}
-			appendEmbeddedOwnershipReference(&refs, dockerresource.KindNetwork, mode, "container HostConfig.NetworkMode")
+			refs.add(dockerresource.KindNetwork, mode, "container HostConfig.NetworkMode")
 		}
 	}
 
-	appendContainerNetworkEndpointReferences(&refs, decoded)
-	return refs
+	appendContainerNetworkEndpointReferences(refs, decoded)
+	return refs.list, refs.overflow
 }
 
-func appendContainerBindOwnershipReferences(refs *[]embeddedOwnershipReference, hostConfig map[string]any) {
+func appendContainerBindOwnershipReferences(refs *embeddedRefCollector, hostConfig map[string]any) {
 	for _, binds := range filter.FoldedArrays(hostConfig, "Binds") {
 		for _, value := range binds {
 			bind, ok := value.(string)
@@ -893,12 +1043,12 @@ func appendContainerBindOwnershipReferences(refs *[]embeddedOwnershipReference, 
 			if !ok || source == "" || strings.HasPrefix(source, "/") {
 				continue
 			}
-			appendEmbeddedOwnershipReference(refs, dockerresource.KindVolume, source, "container HostConfig.Binds")
+			refs.add(dockerresource.KindVolume, source, "container HostConfig.Binds")
 		}
 	}
 }
 
-func appendContainerMountOwnershipReferences(refs *[]embeddedOwnershipReference, hostConfig map[string]any) {
+func appendContainerMountOwnershipReferences(refs *embeddedRefCollector, hostConfig map[string]any) {
 	for _, mounts := range filter.FoldedArrays(hostConfig, "Mounts") {
 		for _, value := range mounts {
 			mount, ok := value.(map[string]any)
@@ -906,13 +1056,13 @@ func appendContainerMountOwnershipReferences(refs *[]embeddedOwnershipReference,
 				continue
 			}
 			for _, source := range filter.FoldedStrings(mount, "Source") {
-				appendEmbeddedOwnershipReference(refs, dockerresource.KindVolume, source, "container HostConfig.Mounts")
+				refs.add(dockerresource.KindVolume, source, "container HostConfig.Mounts")
 			}
 		}
 	}
 }
 
-func appendContainerNetworkEndpointReferences(refs *[]embeddedOwnershipReference, decoded map[string]any) {
+func appendContainerNetworkEndpointReferences(refs *embeddedRefCollector, decoded map[string]any) {
 	for _, networkingConfig := range filter.FoldedObjects(decoded, "NetworkingConfig") {
 		for _, endpoints := range filter.FoldedObjects(networkingConfig, "EndpointsConfig") {
 			appendContainerEndpointMapReferences(refs, endpoints)
@@ -920,7 +1070,7 @@ func appendContainerNetworkEndpointReferences(refs *[]embeddedOwnershipReference
 	}
 }
 
-func appendContainerEndpointMapReferences(refs *[]embeddedOwnershipReference, endpoints map[string]any) {
+func appendContainerEndpointMapReferences(refs *embeddedRefCollector, endpoints map[string]any) {
 	names := make([]string, 0, len(endpoints))
 	for name := range endpoints {
 		names = append(names, name)
@@ -928,14 +1078,14 @@ func appendContainerEndpointMapReferences(refs *[]embeddedOwnershipReference, en
 	slices.Sort(names)
 	for _, name := range names {
 		if isCustomNetworkMode(name) {
-			appendEmbeddedOwnershipReference(refs, dockerresource.KindNetwork, name, "container NetworkingConfig.EndpointsConfig")
+			refs.add(dockerresource.KindNetwork, name, "container NetworkingConfig.EndpointsConfig")
 		}
 		endpoint, ok := endpoints[name].(map[string]any)
 		if !ok {
 			continue
 		}
 		for _, networkID := range filter.FoldedStrings(endpoint, "NetworkID") {
-			appendEmbeddedOwnershipReference(refs, dockerresource.KindNetwork, networkID, "container NetworkingConfig.EndpointsConfig.NetworkID")
+			refs.add(dockerresource.KindNetwork, networkID, "container NetworkingConfig.EndpointsConfig.NetworkID")
 		}
 	}
 }
@@ -1008,6 +1158,49 @@ func appendEmbeddedOwnershipReference(refs *[]embeddedOwnershipReference, kind d
 	*refs = append(*refs, embeddedOwnershipReference{kind: kind, identifier: identifier, source: source})
 }
 
+// embeddedReferencesMax bounds the resources one compat container create or
+// service spec is checked for. Each costs an inspect and the body is the
+// client's to fill, the same bound libpod creates and builds have.
+const embeddedReferencesMax = libpodCreateMaxReferences
+
+const embeddedReferencesDenyTooMany = "owner policy denied %s that names more resources than it can authorize"
+
+type embeddedRefKey struct {
+	kind       dockerresource.Kind
+	identifier string
+}
+
+// embeddedRefCollector gathers a body's embedded references in first-seen
+// order, deduplicated through a map, and stops growing at
+// embeddedReferencesMax distinct entries. overflow reports that a further
+// distinct reference was dropped, so the caller refuses the request instead of
+// authorizing a prefix of it.
+type embeddedRefCollector struct {
+	list     []embeddedOwnershipReference
+	seen     map[embeddedRefKey]struct{}
+	overflow bool
+}
+
+func (c *embeddedRefCollector) add(kind dockerresource.Kind, identifier, source string) {
+	identifier = strings.TrimSpace(identifier)
+	if identifier == "" {
+		return
+	}
+	key := embeddedRefKey{kind: kind, identifier: identifier}
+	if _, dup := c.seen[key]; dup {
+		return
+	}
+	if len(c.list) >= embeddedReferencesMax {
+		c.overflow = true
+		return
+	}
+	if c.seen == nil {
+		c.seen = make(map[embeddedRefKey]struct{})
+	}
+	c.seen[key] = struct{}{}
+	c.list = append(c.list, embeddedOwnershipReference{kind: kind, identifier: identifier, source: source})
+}
+
 func isCustomNetworkMode(raw string) bool {
 	mode := strings.TrimSpace(raw)
 	if mode == "" {
@@ -1046,18 +1239,22 @@ func mutateServiceOwnershipBody(r *http.Request, labelKey, owner string) (*owner
 			return err
 		}
 		containerLabels[labelKey] = owner
-		refs.embeddedResources = serviceEmbeddedOwnershipReferences(decoded)
+		var overflow bool
+		refs.embeddedResources, overflow = collectServiceEmbeddedReferences(decoded)
+		if overflow {
+			refs.denyReason = fmt.Sprintf(embeddedReferencesDenyTooMany, "service spec")
+		}
 		return nil
 	})
 	return refs, err
 }
 
-func serviceEmbeddedOwnershipReferences(decoded map[string]any) []embeddedOwnershipReference {
-	var refs []embeddedOwnershipReference
+func collectServiceEmbeddedReferences(decoded map[string]any) ([]embeddedOwnershipReference, bool) {
+	refs := &embeddedRefCollector{}
 	for _, taskTemplate := range filter.FoldedObjects(decoded, "TaskTemplate") {
 		for _, containerSpec := range filter.FoldedObjects(taskTemplate, "ContainerSpec") {
 			for _, image := range filter.FoldedStrings(containerSpec, "Image") {
-				appendEmbeddedOwnershipReference(&refs, dockerresource.KindImage, image, "service TaskTemplate.ContainerSpec.Image")
+				refs.add(dockerresource.KindImage, image, "service TaskTemplate.ContainerSpec.Image")
 			}
 
 			for _, mounts := range filter.FoldedArrays(containerSpec, "Mounts") {
@@ -1067,13 +1264,13 @@ func serviceEmbeddedOwnershipReferences(decoded map[string]any) []embeddedOwners
 						continue
 					}
 					for _, source := range filter.FoldedStrings(mount, "Source") {
-						appendEmbeddedOwnershipReference(&refs, dockerresource.KindVolume, source, "service TaskTemplate.ContainerSpec.Mounts")
+						refs.add(dockerresource.KindVolume, source, "service TaskTemplate.ContainerSpec.Mounts")
 					}
 				}
 			}
 
-			appendServiceObjectReferences(&refs, containerSpec, "Secrets", "SecretID", "SecretName", dockerresource.KindSecret)
-			appendServiceObjectReferences(&refs, containerSpec, "Configs", "ConfigID", "ConfigName", dockerresource.KindConfig)
+			appendServiceObjectReferences(refs, containerSpec, "Secrets", "SecretID", "SecretName", dockerresource.KindSecret)
+			appendServiceObjectReferences(refs, containerSpec, "Configs", "ConfigID", "ConfigName", dockerresource.KindConfig)
 		}
 	}
 
@@ -1085,16 +1282,16 @@ func serviceEmbeddedOwnershipReferences(decoded map[string]any) []embeddedOwners
 			}
 			for _, target := range filter.FoldedStrings(network, "Target") {
 				if isCustomNetworkMode(target) {
-					appendEmbeddedOwnershipReference(&refs, dockerresource.KindNetwork, target, "service Networks.Target")
+					refs.add(dockerresource.KindNetwork, target, "service Networks.Target")
 				}
 			}
 		}
 	}
-	return refs
+	return refs.list, refs.overflow
 }
 
 func appendServiceObjectReferences(
-	refs *[]embeddedOwnershipReference,
+	refs *embeddedRefCollector,
 	containerSpec map[string]any,
 	arrayKey, idKey, nameKey string,
 	kind dockerresource.Kind,
@@ -1112,7 +1309,7 @@ func appendServiceObjectReferences(
 				identifiers = filter.FoldedStrings(object, nameKey)
 			}
 			for _, identifier := range identifiers {
-				appendEmbeddedOwnershipReference(refs, kind, identifier, "service TaskTemplate.ContainerSpec."+arrayKey)
+				refs.add(kind, identifier, "service TaskTemplate.ContainerSpec."+arrayKey)
 			}
 		}
 	}
@@ -1196,13 +1393,12 @@ func addOwnerLabelToBuildQuery(r *http.Request, labelKey, owner string) error {
 	return nil
 }
 
-func addOwnerLabelFilter(r *http.Request, labelKey, owner string, podmanUpstream bool) error {
+func addOwnerLabelFilter(r *http.Request, normPath, labelKey, owner string, podmanUpstream bool) error {
 	query := r.URL.Query()
 	filters, err := dockerfilters.Decode(query.Get("filters"))
 	if err != nil {
 		return err
 	}
-	normPath := filter.NormalizePath(r.URL.Path)
 	filterKey := ownerFilterKey(normPath)
 	label := labelKey + "=" + owner
 	// Which client-supplied values under this key survive:
@@ -1305,9 +1501,48 @@ func isNegatedSelector(selector string) bool {
 	return strings.HasSuffix(strings.TrimSpace(key), "!")
 }
 
+// mutateJSONBody decodes the request body, runs mutate on the decoded object,
+// and replaces the body with the re-marshaled result.
 func mutateJSONBody(r *http.Request, mutate func(map[string]any) error) error {
+	_, decoded, err := decodeOwnershipJSONBody(r)
+	if err != nil {
+		return err
+	}
+	if err := mutate(decoded); err != nil {
+		return err
+	}
+
+	encoded, err := json.Marshal(decoded)
+	if err != nil {
+		return fmt.Errorf("encode request body: %w", err)
+	}
+	r.ContentLength = int64(len(encoded))
+	r.Body = io.NopCloser(bytes.NewReader(encoded))
+	return nil
+}
+
+// inspectJSONBody runs the same read, decode and ambiguity checks as
+// mutateJSONBody for a read-only callback, then restores the original bytes
+// so the daemon receives the body exactly as the client sent it.
+func inspectJSONBody(r *http.Request, inspect func(map[string]any) error) error {
+	body, decoded, err := decodeOwnershipJSONBody(r)
+	if err != nil {
+		return err
+	}
+	if err := inspect(decoded); err != nil {
+		return err
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.ContentLength = int64(len(body))
+	return nil
+}
+
+// decodeOwnershipJSONBody reads the bounded request body and decodes it into
+// an object, refusing ambiguous keys. It returns the raw bytes alongside the
+// decoded tree.
+func decodeOwnershipJSONBody(r *http.Request) ([]byte, map[string]any, error) {
 	if r.Body == nil {
-		return fmt.Errorf("request body is required")
+		return nil, nil, fmt.Errorf("request body is required")
 	}
 	// Read one byte past the limit so we can distinguish at-limit from
 	// over-limit without giving the client room to OOM the proxy.
@@ -1316,13 +1551,13 @@ func mutateJSONBody(r *http.Request, mutate func(map[string]any) error) error {
 		err = closeErr
 	}
 	if err != nil {
-		return fmt.Errorf("read request body: %w", err)
+		return nil, nil, fmt.Errorf("read request body: %w", err)
 	}
 	if int64(len(body)) > maxOwnershipBodyBytes {
-		return fmt.Errorf("request body exceeds %d byte limit", maxOwnershipBodyBytes)
+		return nil, nil, fmt.Errorf("request body exceeds %d byte limit", maxOwnershipBodyBytes)
 	}
 	if len(body) == 0 {
-		return fmt.Errorf("request body is required")
+		return nil, nil, fmt.Errorf("request body is required")
 	}
 	// UseNumber preserves JSON numbers as json.Number (underlying string)
 	// instead of coercing them to float64. That matters because the default
@@ -1334,14 +1569,14 @@ func mutateJSONBody(r *http.Request, mutate func(map[string]any) error) error {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 	if err := dec.Decode(&decoded); err != nil {
-		return fmt.Errorf("decode request body: %w", err)
+		return nil, nil, fmt.Errorf("decode request body: %w", err)
 	}
 	// json.Decode into map[string]any does not error on a JSON null literal —
 	// it simply leaves the map as nil. Reject it explicitly: a null body is
 	// not a valid Docker API payload, and passing nil to the mutate callback
 	// would panic when it tries to write into the map.
 	if decoded == nil {
-		return fmt.Errorf("decode request body: JSON null is not a valid object")
+		return nil, nil, fmt.Errorf("decode request body: JSON null is not a valid object")
 	}
 	// Owner-label stamping re-marshals the whole body through a map, and
 	// json.Marshal re-sorts the keys — so a duplicate case-variant key (e.g.
@@ -1350,18 +1585,15 @@ func mutateJSONBody(r *http.Request, mutate func(map[string]any) error) error {
 	// already cleared past its check. Reject such a body fail-closed before we
 	// touch it. See filter.RejectDuplicateCaseVariantJSONKeys.
 	//
-	// The check runs against the tree decoded just above rather than against
-	// the raw bytes. The byte-taking form parses the body into a second,
-	// identical map[string]any that it walks and throws away, which measured
-	// as 39% of this pass's allocated bytes and 43% of its allocations on a
-	// realistic container-create body. Same walk, same verdict, one decode.
-	//
-	// A key Podman 6's decoder lowercases onto its sibling is refused with
-	// those, in every rollout mode like them, for the same reason: the sort
-	// would decide which of the two that decoder honors.
+	// Scan the original bytes because decoding into a map collapses identical
+	// repeated keys. Keep the decoded-tree check for decoder-divergent key
+	// diagnostics, preserving their ordering and rollout behavior.
+	if repeated := filter.RejectRepeatedJSONKeys(body); repeated != nil {
+		return nil, nil, fmt.Errorf("ambiguous request body: %w", repeated)
+	}
 	repeated, divergent := filter.InspectJSONValueKeys(decoded)
 	if repeated != nil {
-		return fmt.Errorf("ambiguous request body: %w", repeated)
+		return nil, nil, fmt.Errorf("ambiguous request body: %w", repeated)
 	}
 	// The same walk finds a key holding a character the engines' JSON
 	// decoders match to a field name differently. Stamping doesn't make such
@@ -1386,23 +1618,13 @@ func mutateJSONBody(r *http.Request, mutate func(map[string]any) error) error {
 		// which is where imageLoadOwnershipReferences reads it too.
 		meta := logging.Meta(r.Context())
 		if !meta.AllowsPassThrough() {
-			return refusal
+			return nil, nil, refusal
 		}
 		meta.Decision = logging.DecisionWouldDeny
 		meta.ReasonCode = filter.ReasonCodeRequestBodyAmbiguous
 		meta.Reason = refusal.reason
 	}
-	if err := mutate(decoded); err != nil {
-		return err
-	}
-
-	encoded, err := json.Marshal(decoded)
-	if err != nil {
-		return fmt.Errorf("encode request body: %w", err)
-	}
-	r.ContentLength = int64(len(encoded))
-	r.Body = io.NopCloser(bytes.NewReader(encoded))
-	return nil
+	return body, decoded, nil
 }
 
 // ambiguousBodyKeyError is the refusal of a body for a key holding a
@@ -1433,13 +1655,26 @@ func (u upstreamInspector) inspectResource(ctx context.Context, kind dockerresou
 	}
 	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
 
+	exact := kind == dockerresource.KindSecret && exactSecretLookup(ctx)
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, false, nil
 	}
 	if resp.StatusCode != http.StatusOK {
+		if exact && secretLookupAmbiguousPrefix(resp.Body) {
+			return nil, false, nil
+		}
 		return nil, false, fmt.Errorf("inspect %s %q: upstream returned %s", kind, identifier, resp.Status)
 	}
 
+	if exact {
+		return decodeExactSecret(resp.Body, identifier)
+	}
+	if kind == dockerresource.KindNetwork && networkDeleteName(ctx) {
+		return decodeNetworkDeleteName(resp.Body, identifier)
+	}
+	if kind == dockerresource.KindImage && imageVolumeID(ctx) {
+		return decodeImageVolumeID(resp.Body, identifier)
+	}
 	labels, err := dockerresource.DecodeLabels(resp.Body, kind)
 	if err != nil {
 		return nil, false, err

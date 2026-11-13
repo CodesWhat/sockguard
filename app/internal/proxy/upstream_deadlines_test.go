@@ -121,6 +121,9 @@ func TestStopGraceFromQueryAndDeadline(t *testing.T) {
 		{"garbage t", "/containers/x/stop?t=abc", 10 * time.Second, 60 * time.Second},
 		{"libpod timeout key", "/libpod/containers/x/stop?timeout=120", 120 * time.Second, 150 * time.Second},
 		{"libpod pod t", "/libpod/pods/x/stop?t=200", 200 * time.Second, 230 * time.Second},
+		{"both grace keys choose larger", "/libpod/containers/x/stop?t=10&timeout=90", 90 * time.Second, 120 * time.Second},
+		{"zero does not replace larger grace", "/libpod/containers/x/stop?t=90&timeout=0", 90 * time.Second, 120 * time.Second},
+		{"last repeated grace value wins", "/containers/x/stop?t=90&t=5", 5 * time.Second, 60 * time.Second},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

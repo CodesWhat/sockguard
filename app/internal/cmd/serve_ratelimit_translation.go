@@ -84,8 +84,13 @@ func configLimitsToRateLimitOptions(profileName string, cfg config.LimitsConfig,
 		}
 	}
 	if cfg.Concurrency != nil {
+		maxStreams := int64(ratelimit.DefaultMaxStreams)
+		if cfg.Concurrency.MaxStreams != nil {
+			maxStreams = *cfg.Concurrency.MaxStreams
+		}
 		opts.Concurrency = &ratelimit.ConcurrencyOptions{
 			MaxInflight: cfg.Concurrency.MaxInflight,
+			MaxStreams:  maxStreams,
 		}
 	}
 	return opts

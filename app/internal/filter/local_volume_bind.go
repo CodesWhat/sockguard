@@ -390,3 +390,57 @@ func denyLocalVolumeBindDeviceReason(driver string, options map[string]string, a
 
 	return ""
 }
+
+// denyLocalVolumeTmpfsPrivilegeReason is the tmpfs half of the local volume
+// gate. The local driver forwards type and o to mount(2), so
+// {"type":"tmpfs","o":"exec,suid,dev"} is a tmpfs volume with the flags
+// allow_tmpfs_privileged_options exists to refuse, reached as a volume instead
+// of a tmpfs mount. The "o" list is read the way a tmpfs mount's is: last
+// option wins, "suid=1" style tokens enable. Keys are matched
+// case-insensitively and every "o" key is judged on its own, because the
+// daemons don't agree on which of two spellings they keep.
+func denyLocalVolumeTmpfsPrivilegeReason(driver string, options map[string]string, allowTmpfsPrivileged bool, subject, optionKey string) string {
+	if allowTmpfsPrivileged || len(options) == 0 {
+		return ""
+	}
+	if name := strings.TrimSpace(driver); name != "" && !strings.EqualFold(name, localVolumeDriverName) {
+		return ""
+	}
+	tmpfs := false
+	var lists []string
+	for key, value := range options {
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "type":
+			if strings.EqualFold(strings.TrimSpace(value), "tmpfs") {
+				tmpfs = true
+			}
+		case "o":
+			lists = append(lists, value)
+		}
+	}
+	if !tmpfs {
+		return ""
+	}
+	// With no "o" at all the kernel's tmpfs defaults apply: exec, suid and
+	// dev all on. So the list has to say noexec, nosuid and nodev itself.
+	if len(lists) == 0 {
+		lists = []string{""}
+	}
+	for _, list := range lists {
+		posture := tmpfsPostureOfList(list)
+		if posture.enablesPrivilege() {
+			return subject + " denied: local tmpfs volume options enable exec, dev, or suid (set " + optionKey + ": true)"
+		}
+		if !posture.fullyRestricted() {
+			return subject + " denied: a local tmpfs volume mounts exec, suid and dev unless o lists noexec,nosuid,nodev (or set " + optionKey + ": true)"
+		}
+	}
+	return ""
+}
+
+// The full config keys a tmpfs denial tells the operator to set, one per API
+// family. Compat container create, service and volume routes share the first.
+const (
+	tmpfsOptionKeyCompat = "request_body.container_create.allow_tmpfs_privileged_options"
+	tmpfsOptionKeyLibpod = "request_body.libpod_container_create.allow_tmpfs_privileged_options"
+)

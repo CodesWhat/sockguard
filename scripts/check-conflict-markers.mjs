@@ -22,7 +22,7 @@ const MARKER_RE = /^(?:<{7,}|\|{7,}|>{7,})(?: .*)?$/;
 
 export function findConflictMarkers(text) {
   const hits = [];
-  const lines = text.split(/\r?\n/);
+  const lines = text.split(/\r\n|[\r\n]/);
   for (let i = 0; i < lines.length; i += 1) {
     if (MARKER_RE.test(lines[i])) {
       hits.push({ line: i + 1, text: lines[i] });

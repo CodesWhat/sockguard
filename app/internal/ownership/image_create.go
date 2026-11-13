@@ -1,7 +1,9 @@
 package ownership
 
 import (
+	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -14,6 +16,7 @@ const (
 	libpodImageImportPath = libpodPrefix + "images/import"
 	libpodImagePullPath   = libpodPrefix + "images/pull"
 
+	imageImportChangesQueryField   = "changes"
 	imageCreateFromImageQueryField = "fromImage"
 	imageCreatePlatformQueryField  = "platform"
 	libpodImageReferenceQueryField = "reference"
@@ -83,6 +86,162 @@ func imageCreateOwnershipReferences(r *http.Request, normPath string, flavor ups
 		destinations, denyReason = imageCreateDestination(query, flavor)
 	}
 	return &ownershipRequestReferences{imageDestinations: destinations, denyReason: denyReason}
+}
+
+// mutateImageCreateOwnershipRequest reads the name an image create names, and
+// stamps the owner label on the image an import makes.
+//
+// An import makes an image from the body, and `changes` carries Dockerfile
+// instructions applied to its config, a LABEL among them. The image carries no
+// other labels, so the client chose all of them, the owner label included: it
+// could import under a name nothing held, labeled as another owner's, and that
+// owner would go on to use the name (build, tag or run it) and get the
+// client's content. The check on the name only covers a name something holds.
+// So the stamp goes on every import, held name or not: a
+// `LABEL <key>=<owner>` appended after the client's own `changes`, which both
+// engines apply in order, so it overwrites any LABEL of the same key.
+//
+// dockerd reads the values of the exact key `changes` and Podman's compat and
+// native imports read every spelling of it. A spelling dockerd would ignore and
+// Podman would read, or one that could land after the stamp, is refused instead
+// of ordered.
+//
+// A pull is not stamped. The labels of a pulled image come from the registry's
+// copy and the route has no parameter that sets them, so the owner label can't
+// be written there, and a load takes its labels from the archive. Read from
+// moby 28.5.1 and Podman 5.8.6 (compat CreateImageFromSrc, libpod ImagesImport).
+func mutateImageCreateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ownershipRequestReferences, error) {
+	refs := imageCreateOwnershipReferences(r, normPath, opts.UpstreamFlavor)
+	query := r.URL.Query()
+	isImport := normPath == libpodImageImportPath || (normPath == imageCreatePath && query.Get(imageCreateFromImageQueryField) == "")
+	if !isImport {
+		return refs, nil
+	}
+	if err := addOwnerLabelToImportQuery(r, query, opts.LabelKey, opts.Owner); err != nil {
+		return nil, err
+	}
+	return refs, nil
+}
+
+func addOwnerLabelToImportQuery(r *http.Request, query url.Values, labelKey, owner string) error {
+	for key := range query {
+		if key != imageImportChangesQueryField && strings.EqualFold(key, imageImportChangesQueryField) {
+			return fmt.Errorf("image import changes parameter is spelled %q: the engines disagree on whether it applies", key)
+		}
+	}
+	for _, change := range query[imageImportChangesQueryField] {
+		if reason := imageImportChangeRefusal(change, labelKey); reason != "" {
+			return fmt.Errorf("image import changes entry refused: %s", reason)
+		}
+	}
+	instruction, ok := dockerfileLabelInstruction(labelKey, owner)
+	if !ok {
+		return fmt.Errorf("image import can't stamp an owner label whose key or value holds a control character")
+	}
+	query[imageImportChangesQueryField] = append(query[imageImportChangesQueryField], instruction)
+	r.URL.RawQuery = query.Encode()
+	return nil
+}
+
+// imageImportChangeRefusal returns why a client `changes` entry can't be
+// ordered safely ahead of the owner stamp, or "" when it can.
+//
+// dockerd joins every entry with "\n" into one Dockerfile and parses that, so
+// an entry is not a line of its own: one ending in a backslash continues onto
+// the stamp, an unterminated quote runs through it (`LABEL z='\`), a parser
+// directive changes how the rest is read (`# escape=`), and a CR or LF inside
+// an entry adds lines the client chose. Any of those can swallow the stamp
+// appended after it, which is why the stamp's position isn't enough on its
+// own. Podman does not join: util.DecodeChanges splits each entry on "\n" and
+// parses the lines one by one (v6.1.3, pkg/util/changes.go, used by the compat
+// and native imports), so there a continuation or quote can't reach the next
+// entry. The rules are the same on both, because the engine behind the
+// socket isn't always known and a legitimate client sends one plain
+// instruction per entry.
+//
+// Three more shapes are refused because they act on the stamp without
+// ending in a backslash or a quote: `<<` anywhere (`ONBUILD RUN <<'<stamp>'`
+// opens a heredoc whose terminator is the stamp line, which it then consumes),
+// any ONBUILD instruction, and a LABEL holding `$` or `{` (`ENV K=<key>` then
+// `LABEL ${K}=x` sets the owner label with no literal key). The LABEL check
+// covers the whole entry, values included, since telling a key from a value
+// means parsing the quoting.
+//
+// A LABEL naming the owner label key is refused outright as well, in any
+// quoting (quotes and backslashes are dropped before the key is looked for).
+// The stamp would overwrite it, but a client has no reason to set it.
+func imageImportChangeRefusal(change, labelKey string) string {
+	if strings.ContainsAny(change, "\r\n") {
+		return "it holds a line break"
+	}
+	trimmed := strings.TrimSpace(change)
+	switch {
+	case strings.Contains(trimmed, "<<"):
+		return "it holds <<, which opens a heredoc that can end on the owner stamp"
+	case commitChangeInstruction(trimmed) == "ONBUILD":
+		return "it is an ONBUILD instruction"
+	case commitChangeInstruction(trimmed) == "LABEL" && strings.ContainsAny(trimmed, "${"):
+		return "its LABEL holds $ or {, which can spell the owner label key through a variable"
+	case strings.HasPrefix(trimmed, "#"):
+		return "it starts with # (a comment or parser directive)"
+	case strings.HasSuffix(trimmed, "\\"):
+		return "it ends with a backslash"
+	case !quotesBalanced(trimmed):
+		return "it has an unterminated quote"
+	}
+	if commitChangeInstruction(trimmed) == "LABEL" {
+		bare := strings.NewReplacer("\"", "", "'", "", "\\", "").Replace(trimmed)
+		if strings.Contains(bare, labelKey) {
+			return "it sets the owner label"
+		}
+	}
+	return ""
+}
+
+// quotesBalanced reports whether every ' and " in s that isn't escaped opens
+// a quote that closes before the end. A backslash escapes the next character
+// outside single quotes, the way the Dockerfile word parser reads it.
+func quotesBalanced(s string) bool {
+	var quote rune
+	escaped := false
+	for _, r := range s {
+		switch {
+		case escaped:
+			escaped = false
+		case r == '\\' && quote != '\'':
+			escaped = true
+		case quote == 0 && (r == '"' || r == '\''):
+			quote = r
+		case r == quote:
+			quote = 0
+		}
+	}
+	return quote == 0
+}
+
+// dockerfileLabelInstruction spells `LABEL key=value` so the Dockerfile
+// parser reads back exactly key and value. Both are double-quoted, with the
+// three characters the parser treats specially inside the quotes escaped (\,
+// " and $, which it would otherwise expand as a variable). A control character
+// can't be spelled on one line.
+func dockerfileLabelInstruction(key, value string) (string, bool) {
+	quoted := make([]string, 0, 2)
+	for _, word := range [...]string{key, value} {
+		var b strings.Builder
+		b.WriteByte('"')
+		for _, r := range word {
+			if r < 0x20 || r == 0x7f {
+				return "", false
+			}
+			if r == '\\' || r == '"' || r == '$' {
+				b.WriteByte('\\')
+			}
+			b.WriteRune(r)
+		}
+		b.WriteByte('"')
+		quoted = append(quoted, b.String())
+	}
+	return "LABEL " + quoted[0] + "=" + quoted[1], true
 }
 
 // imageCreateDestination reads the name POST /images/create writes, or
@@ -264,7 +423,16 @@ func imagePullDestination(route imageDestinationRoute, name, tag string, naming 
 		repository, digest, digested, tag = name, tag, true, ""
 	}
 	if digested {
-		return nil, route.refusal(imagePullByDigestProblem(repository, digest, naming))
+		if refusal := route.refusal(imagePullByDigestProblem(repository, digest, naming)); refusal != "" {
+			return nil, refusal
+		}
+		// No name is written, so there is no destination to authorize. The
+		// reference is kept for the check after the pull, without the tag the
+		// engines drop.
+		if colon := strings.LastIndex(repository, ":"); colon > strings.LastIndex(repository, "/") {
+			repository = repository[:colon]
+		}
+		return &imageDestinationReferences{route: route, digests: []string{repository + "@" + digest}}, ""
 	}
 
 	carriesTag := strings.LastIndex(name, ":") > strings.LastIndex(name, "/")

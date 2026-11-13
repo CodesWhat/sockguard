@@ -240,18 +240,18 @@ func TestRedactedResponsesDecodeIntoClientTypes(t *testing.T) {
 // every flag on. A path is dot-separated; "[]" takes the first array element
 // and "*" the only value of a map. Derived from responsefilter/filter.go.
 var expectedRedactions = map[string][]string{
-	"container inspect": {"Config.Env", "Mounts.[].Source", "LogPath", "NetworkSettings.Networks.*.IPAddress", "NetworkSettings.SandboxKey"},
-	"container list":    {"[].Mounts.[].Source", "[].NetworkSettings.Networks.*.IPAddress"},
+	"container inspect": {"Config.Env", "Mounts.[].Source", "LogPath", "NetworkSettings.Networks.*.IPAddress", "NetworkSettings.SandboxKey", "NetworkSettings.Ports.*.[].HostIp"},
+	"container list":    {"[].Mounts.[].Source", "[].NetworkSettings.Networks.*.IPAddress", "[].Ports.[].IP"},
 	"image inspect":     {"Config.Env"},
 	"network list":      {"[].IPAM.Config"},
-	"network inspect":   {"IPAM.Config"},
+	"network inspect":   {"IPAM.Config", "Services.*.VIP", "Services.*.Tasks.[].EndpointIP"},
 	"volume list":       {"Volumes.[].Mountpoint"},
 	"volume inspect":    {"Mountpoint"},
 	"plugin list":       {"[].Settings.Env", "[].Config.PropagatedMount"},
 	"plugin inspect":    {"Settings.Env", "Config.PropagatedMount"},
 	"system df":         {"VolumeUsage.Items.[].Mountpoint", "ContainerUsage.Items.[].Mounts.[].Source"},
-	"info manager":      {"Swarm.NodeAddr", "Containerd"},
-	"info worker":       {"Swarm.NodeAddr", "Containerd"},
+	"info manager":      {"Swarm.NodeAddr", "Containerd", "DefaultAddressPools.[].Base"},
+	"info worker":       {"Swarm.NodeAddr", "Containerd", "DefaultAddressPools.[].Base"},
 	"service list":      {"[].Spec.TaskTemplate.ContainerSpec.Env", "[].Endpoint.VirtualIPs"},
 	"service inspect":   {"Spec.TaskTemplate.ContainerSpec.Env", "Endpoint.VirtualIPs"},
 	"task list":         {"[].Spec.ContainerSpec.Env", "[].NetworksAttachments.[].Addresses"},

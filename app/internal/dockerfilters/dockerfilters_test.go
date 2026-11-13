@@ -170,7 +170,25 @@ func FuzzDecode(f *testing.F) {
 		if len(encoded) > MaxEncodedBytes+1 {
 			t.Skip()
 		}
-		_, _ = Decode(encoded)
+		filters, err := Decode(encoded)
+		if len(encoded) > MaxEncodedBytes && err == nil {
+			t.Fatalf("Decode accepted %d bytes, over the %d cap", len(encoded), MaxEncodedBytes)
+		}
+		if err != nil {
+			return
+		}
+		// Decoded text comes from the input; the one growth is an invalid
+		// byte or lone surrogate becoming a 3-byte U+FFFD, so 3x bounds it.
+		total := 0
+		for key, values := range filters {
+			total += len(key)
+			for _, v := range values {
+				total += len(v)
+			}
+		}
+		if total > 3*len(encoded) {
+			t.Fatalf("decoded %d bytes from %d encoded", total, len(encoded))
+		}
 	})
 }
 

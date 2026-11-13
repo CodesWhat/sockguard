@@ -62,7 +62,7 @@ identity remains a documented limit; use distinct UID/GID client profiles.
 ## From Sockguard v2 to v3
 
 [v3.0.0](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0) is published.
-It carries v2.4.5 and includes the v2.4 policy/security work and the TLS removals below.
+It carries v2.4.5/v2.4.6, Go 1.27.4 and the combined hardening work, and includes the v2.4 policy/security work and the TLS removals below.
 All v2 release lines retain their accepted settings.
 Before upgrading to v3:
 
@@ -104,6 +104,34 @@ Three behavior changes ship with v3.0.0 beyond the TLS removals:
 - Unknown configuration keys are reported. `sockguard validate` prints a warning
   per key and exits 0; `sockguard validate --strict` exits non-zero. `serve` and
   hot reload log the same warnings.
+
+### Additional hardening
+
+v3.0.0 includes the following hardening from rc.7:
+
+- Owner-scoped Podman builds are refused on Docker-compatible, native and
+  daemon-host routes in every rollout mode. `pullpolicy=never` cannot prevent
+  archive imports from replacing another owner's image names. Docker builds
+  and Podman builds without an owner policy keep their existing checks.
+- Environment redaction removes complete build-argument-prefixed image history
+  entries. Ordinary RUN history remains visible.
+- `response.max_buffered_body` defaults to `8MiB`, with a maximum of `256MiB`.
+  Inspected responses over the configured cap fail with `502`; large inventories
+  may need a higher cap.
+- Log-driver and log-destination allowlists are opt-in and separate from
+  `allow_log_path`. Kube play query checks do not inspect its YAML body.
+- Native storage options and OCI `run.oci.` annotations need their respective
+  default-off grants. The cgroup-v1 recreation exception needs a positively
+  identified cgroup-v1 upstream; unknown or mixed versions fail closed.
+- `max_streams` defaults to 32 per profile; explicit zero disables that cap.
+  Clients sharing a profile share its stream allowance.
+
+See the [configuration reference](/configuration) and [Podman guide](/podman)
+for the exact option scopes and the additional tmpfs and ownership restrictions.
+
+The rc.7 candidate has its own exact-source soak, TLS/security, published-image
+conformance and 14-day bake requirements. The prepared GA remains held until
+2026-11-27T17:15:03+00:00 and all final release gates pass.
 
 ## Deprecation schedule
 
@@ -426,6 +454,7 @@ wollomatic already does more than a basic path gate: regex allowlists per method
 | `-proxysocketendpoint=/tmp/filtered.sock` | `listen.socket: /tmp/filtered.sock` |
 
 Key differences:
+
 - Sockguard auto-strips API version prefixes — no need for `(v[0-9.]+/)?` in patterns
 - Glob patterns (`*`, `**`) instead of regex, in rule paths and in container-label values alike. A wollomatic regex copied across unchanged is read as a glob, so translate it: `.*` becomes `/**`, `^/containers/.*$` becomes `/containers/**`
 - That last translation is a slight widening, not an exact match: `^/containers/.*$` requires the literal `/containers/` to appear, so it does not match the bare path `/containers`, while sockguard's `/containers/**` does match `/containers` on its own, with nothing after the trailing slash
@@ -504,6 +533,7 @@ CetusGuard is the closest in spirit to Sockguard — a zero-dependency, default-
 | builtin `/_ping`, `/info`, `/version` rules | Allow them explicitly — Sockguard has no implicit allows |
 
 Key differences:
+
 - Sockguard auto-strips Docker API version prefixes (`/v1.45/…`) before matching, so patterns never account for them
 - Glob patterns (`*`, `**`) with auto-anchoring instead of regex
 - CetusGuard filters on method + path only; Sockguard adds request-body inspection, named per-client profiles, owner isolation, read-side visibility/redaction, rate limits, and metrics on top

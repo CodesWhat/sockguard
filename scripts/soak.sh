@@ -38,35 +38,68 @@ DRY_RUN=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --duration)
-      [ $# -ge 2 ] || { echo "soak.sh: --duration needs a value" >&2; exit 2; }
-      DURATION="$2"; shift 2 ;;
+      [ $# -ge 2 ] || {
+        echo "soak.sh: --duration needs a value" >&2
+        exit 2
+      }
+      DURATION="$2"
+      shift 2
+      ;;
     --concurrency)
-      [ $# -ge 2 ] || { echo "soak.sh: --concurrency needs a value" >&2; exit 2; }
-      CONCURRENCY="$2"; shift 2 ;;
+      [ $# -ge 2 ] || {
+        echo "soak.sh: --concurrency needs a value" >&2
+        exit 2
+      }
+      CONCURRENCY="$2"
+      shift 2
+      ;;
     --rss-growth-threshold-bytes)
-      [ $# -ge 2 ] || { echo "soak.sh: --rss-growth-threshold-bytes needs a value" >&2; exit 2; }
-      RSS_GROWTH_THRESHOLD_BYTES="$2"; shift 2 ;;
+      [ $# -ge 2 ] || {
+        echo "soak.sh: --rss-growth-threshold-bytes needs a value" >&2
+        exit 2
+      }
+      RSS_GROWTH_THRESHOLD_BYTES="$2"
+      shift 2
+      ;;
     --dry-run)
-      DRY_RUN=1; shift ;;
-    -h|--help)
-      sed -n '1,30p' "$0"; exit 0 ;;
+      DRY_RUN=1
+      shift
+      ;;
+    -h | --help)
+      sed -n '1,30p' "$0"
+      exit 0
+      ;;
     *)
-      echo "soak.sh: unknown flag $1" >&2; exit 2 ;;
+      echo "soak.sh: unknown flag $1" >&2
+      exit 2
+      ;;
   esac
 done
 
 # Validate flags before doing anything expensive — the test relies on
 # this firing in dry-run too.
 case "${DURATION}" in
-  *[0-9]s|*[0-9]m|*[0-9]h) ;;
-  *) echo "soak.sh: --duration must end in s/m/h (got: ${DURATION})" >&2; exit 2 ;;
+  *[0-9]s | *[0-9]m | *[0-9]h) ;;
+  *)
+    echo "soak.sh: --duration must end in s/m/h (got: ${DURATION})" >&2
+    exit 2
+    ;;
 esac
 case "${CONCURRENCY}" in
-  ''|*[!0-9]*) echo "soak.sh: --concurrency must be a positive integer" >&2; exit 2 ;;
-  0) echo "soak.sh: --concurrency must be > 0" >&2; exit 2 ;;
+  '' | *[!0-9]*)
+    echo "soak.sh: --concurrency must be a positive integer" >&2
+    exit 2
+    ;;
+  0)
+    echo "soak.sh: --concurrency must be > 0" >&2
+    exit 2
+    ;;
 esac
 case "${RSS_GROWTH_THRESHOLD_BYTES}" in
-  ''|*[!0-9]*) echo "soak.sh: --rss-growth-threshold-bytes must be a non-negative integer" >&2; exit 2 ;;
+  '' | *[!0-9]*)
+    echo "soak.sh: --rss-growth-threshold-bytes must be a non-negative integer" >&2
+    exit 2
+    ;;
 esac
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -96,8 +129,8 @@ trap 'rm -rf "${BUILD_DIR}"; rm -f "${SAMPLES_TSV}"' EXIT
 
 echo "==> Building sockguard, mockdocker, loadgen"
 (cd "${REPO_ROOT}/app" && go build -o "${BUILD_DIR}/sockguard" ./cmd/sockguard/)
-(cd "${BENCH_DIR}"     && go build -o "${BUILD_DIR}/mockdocker" ./cmd/mockdocker/)
-(cd "${BENCH_DIR}"     && go build -o "${BUILD_DIR}/loadgen"    ./cmd/loadgen/)
+(cd "${BENCH_DIR}" && go build -o "${BUILD_DIR}/mockdocker" ./cmd/mockdocker/)
+(cd "${BENCH_DIR}" && go build -o "${BUILD_DIR}/loadgen" ./cmd/loadgen/)
 
 echo "==> Starting mockdocker on ${MOCK_SOCK}"
 rm -f "${MOCK_SOCK}"
@@ -174,8 +207,8 @@ duration_to_seconds() {
   local value="${raw%?}"
   case "${suffix}" in
     s) echo "${value}" ;;
-    m) echo "$(( value * 60 ))" ;;
-    h) echo "$(( value * 3600 ))" ;;
+    m) echo "$((value * 60))" ;;
+    h) echo "$((value * 3600))" ;;
   esac
 }
 TOTAL_SECONDS="$(duration_to_seconds "${DURATION}")"
@@ -211,7 +244,7 @@ run_worker() {
     -concurrency "${CONCURRENCY}" \
     -duration "${DURATION}" \
     -scenario "${label}" \
-    > "${WORKER_LOG_DIR}/${label}.json" &
+    >"${WORKER_LOG_DIR}/${label}.json" &
   WORKER_PIDS+=("$!")
 }
 
@@ -230,12 +263,12 @@ wait_for_workers() {
 }
 
 echo "==> Soaking for ${DURATION} (concurrency ${CONCURRENCY}/worker)"
-run_worker "soak_ping"        GET  /_ping
-run_worker "soak_containers"  GET  /containers/json
-run_worker "soak_exec_deny"   POST /exec/x/start
+run_worker "soak_ping" GET /_ping
+run_worker "soak_containers" GET /containers/json
+run_worker "soak_exec_deny" POST /exec/x/start
 
-echo "elapsed_s	rss_kb	threads" > "${SAMPLES_TSV}"
-SAMPLE_END="$(( $(date +%s) + TOTAL_SECONDS ))"
+echo "elapsed_s	rss_kb	threads" >"${SAMPLES_TSV}"
+SAMPLE_END="$(($(date +%s) + TOTAL_SECONDS))"
 SAMPLE_START="$(date +%s)"
 while [ "$(date +%s)" -lt "${SAMPLE_END}" ]; do
   sleep "${SAMPLE_INTERVAL_SECONDS}"
@@ -244,23 +277,23 @@ while [ "$(date +%s)" -lt "${SAMPLE_END}" ]; do
     exit 1
   fi
   printf '%s\t%s\t%s\n' \
-    "$(( $(date +%s) - SAMPLE_START ))" \
+    "$(($(date +%s) - SAMPLE_START))" \
     "$(read_rss_kb "${PROXY_PID}")" \
     "$(read_threads "${PROXY_PID}")" \
-    >> "${SAMPLES_TSV}"
+    >>"${SAMPLES_TSV}"
 done
 
 wait_for_workers
 
 FINAL_RSS_KB="$(read_rss_kb "${PROXY_PID}")"
 FINAL_THREADS="$(read_threads "${PROXY_PID}")"
-RSS_DELTA_KB=$(( FINAL_RSS_KB - BASELINE_RSS_KB ))
-RSS_DELTA_BYTES=$(( RSS_DELTA_KB * 1024 ))
+RSS_DELTA_KB=$((FINAL_RSS_KB - BASELINE_RSS_KB))
+RSS_DELTA_BYTES=$((RSS_DELTA_KB * 1024))
 
 echo "==> Soak complete"
 echo "    baseline: RSS=${BASELINE_RSS_KB}KB threads=${BASELINE_THREADS}"
 echo "    final:    RSS=${FINAL_RSS_KB}KB threads=${FINAL_THREADS}"
-echo "    delta:    RSS=+${RSS_DELTA_KB}KB (${RSS_DELTA_BYTES} bytes) threads=$(( FINAL_THREADS - BASELINE_THREADS ))"
+echo "    delta:    RSS=+${RSS_DELTA_KB}KB (${RSS_DELTA_BYTES} bytes) threads=$((FINAL_THREADS - BASELINE_THREADS))"
 echo "    samples written to ${SAMPLES_TSV}"
 
 if [ "${RSS_DELTA_BYTES}" -gt "${RSS_GROWTH_THRESHOLD_BYTES}" ]; then
