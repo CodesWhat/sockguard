@@ -71,6 +71,8 @@ v3.0.0 promotes v3.0.0-rc.7 and includes the published v2.4.5 signed root UID fi
 
 ### Fixed
 
+- Keep the maintained v2 migration-table entry aligned with the published v2.4.6 security patch.
+
 - Probe the identity conformance agent with Portwing's native healthcheck command, preserving unhealthy results on shell-less published images.
 
 - Correct the Watchtower preset note to distinguish clearing environment values from redacting sensitive bind sources.
