@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,6 +41,17 @@ const (
 // ErrResponseRejected indicates Sockguard intentionally rejected an upstream
 // response because a protected payload could not be sanitized safely.
 var ErrResponseRejected = errors.New("upstream Docker response rejected by sockguard policy")
+
+// ErrResponseTooLarge marks a rejection because the upstream body was bigger
+// than response.max_buffered_body. It rides inside ErrResponseRejected, so
+// code that only asks "was this rejected" still works, and the proxy error
+// handler uses it to tell the client which setting to raise.
+var ErrResponseTooLarge = errors.New("upstream Docker response exceeds the buffered body limit")
+
+// responseTooLargeError builds the over-limit error with the limit in force.
+func responseTooLargeError() error {
+	return fmt.Errorf("%w: response body exceeds %d bytes", ErrResponseTooLarge, requestfilter.ResponseBodyLimit())
+}
 
 // Options configures response-side redaction policy.
 type Options struct {
@@ -167,6 +179,8 @@ func (f *Filter) ModifyResponse(resp *http.Response) error {
 		return f.modifyContainerInspect(resp)
 	case isImageInspectPath(normPath):
 		return f.modifyImageInspect(resp)
+	case isImageHistoryPath(normPath):
+		return f.modifyImageHistory(resp)
 	case normPath == "/containers/json":
 		return f.modifyContainerList(resp)
 	case normPath == "/networks":
@@ -335,6 +349,72 @@ func (f *Filter) modifyImageInspect(resp *http.Response) error {
 	return writeResponseBody(resp, payload)
 }
 
+// modifyImageHistory rewrites GET /images/{name}/history (and the libpod
+// spelling). Each entry's CreatedBy is the instruction that built the layer,
+// so an ENV (or ARG) layer carries KEY=value pairs that redact_container_env
+// already empties on image inspect. Those instructions are replaced with
+// "ENV <redacted>" / "ARG <redacted>"; every other entry is left alone.
+func (f *Filter) modifyImageHistory(resp *http.Response) error {
+	if !f.opts.RedactContainerEnv {
+		return nil
+	}
+	// No itemFields: Podman's native history spells the key differently from
+	// Docker's (createdBy vs CreatedBy), so each entry is decoded whole and the
+	// key matched case-insensitively.
+	return streamArrayResponse(resp, func(entry map[string]any) error {
+		for key, value := range entry {
+			if !isCreatedByKey(key) {
+				continue
+			}
+			if createdBy, ok := value.(string); ok {
+				entry[key] = redactHistoryCreatedBy(createdBy)
+			}
+		}
+		return nil
+	})
+}
+
+func isCreatedByKey(key string) bool {
+	return strings.EqualFold(strings.ReplaceAll(key, "_", ""), "createdby")
+}
+
+// redactHistoryCreatedBy hides the values an image build baked into a layer's
+// CreatedBy: ENV and ARG instructions become "ENV <redacted>" / "ARG
+// <redacted>". Entries with a "|N KEY=value ..." build-arg prefix
+// (classic "|1 K=v /bin/sh -c ..." and BuildKit "RUN |1 K=v /bin/sh -c ...")
+// are replaced in full because the argument and command boundary is ambiguous.
+// Anything else is returned unchanged.
+func redactHistoryCreatedBy(createdBy string) string {
+	s := strings.TrimSpace(createdBy)
+	body := strings.TrimSpace(strings.TrimSuffix(s, "# buildkit"))
+	if rest, ok := strings.CutPrefix(body, "/bin/sh -c #(nop)"); ok {
+		body = strings.TrimSpace(rest)
+	}
+	for _, keyword := range [...]string{"ENV", "ARG"} {
+		if len(body) > len(keyword) && strings.EqualFold(body[:len(keyword)], keyword) {
+			switch body[len(keyword)] {
+			case ' ', '\t', '\n':
+				return keyword + " <redacted>"
+			}
+		}
+	}
+
+	// BuildKit joins raw argument values and command text with spaces, so
+	// their boundary cannot be recovered reliably. Redact the whole entry.
+	rest := strings.TrimPrefix(s, "RUN ")
+	if len(rest) < 2 || rest[0] != '|' {
+		return createdBy
+	}
+	digits := 1
+	for digits < len(rest) && rest[digits] >= '0' && rest[digits] <= '9' {
+		digits++
+	}
+	if digits == 1 || (digits < len(rest) && rest[digits] != ' ' && rest[digits] != '\t' && rest[digits] != '\n') {
+		return createdBy
+	}
+	return "<redacted>"
+}
+
 func (f *Filter) modifyContainerList(resp *http.Response) error {
 	if !f.opts.RedactMountPaths && !f.opts.RedactNetworkTopology {
 		return nil
@@ -344,12 +424,12 @@ func (f *Filter) modifyContainerList(resp *http.Response) error {
 	// the two option groups reach disjoint halves of an entry. With only
 	// redact_mount_paths on, NetworkSettings is the largest block in the body
 	// and nothing looks at it.
-	itemFields := make([]string, 0, 3)
+	itemFields := make([]string, 0, 4)
 	if f.opts.RedactMountPaths {
 		itemFields = append(itemFields, "Mounts")
 	}
 	if f.opts.RedactNetworkTopology {
-		itemFields = append(itemFields, "HostConfig", "NetworkSettings")
+		itemFields = append(itemFields, "HostConfig", "NetworkSettings", "Ports")
 	}
 	return streamArrayResponse(resp, func(container map[string]any) error {
 		if f.opts.RedactMountPaths {
@@ -622,6 +702,25 @@ func isImageInspectPath(normPath string) bool {
 	return rest[idx+1:] == "json"
 }
 
+// isImageHistoryPath reports whether normPath is /images/{name}/history. The
+// name may contain slashes, so it anchors on the last segment like
+// isImageInspectPath does.
+func isImageHistoryPath(normPath string) bool {
+	return hasImageNameSuffix(normPath, "/images/", "history")
+}
+
+func hasImageNameSuffix(normPath, prefix, last string) bool {
+	rest, ok := strings.CutPrefix(normPath, prefix)
+	if !ok {
+		return false
+	}
+	idx := strings.LastIndex(rest, "/")
+	if idx <= 0 {
+		return false
+	}
+	return rest[idx+1:] == last
+}
+
 // denyAttestationStatement reports whether resp is a
 // GET /images/{name}/attestations?statement=true response that must be
 // rejected under the current AllowAttestationStatements policy.
@@ -866,11 +965,11 @@ func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error,
 		return rejectResponse(err)
 	}
 
-	// Enforce the same 8 MiB cap as withResponseBody. It counts decoded
+	// Enforce the same response.max_buffered_body cap as withResponseBody. It counts decoded
 	// bytes, so on a compressed body it is also the gzip-bomb guard.
 	limited := &io.LimitedReader{
 		R: decoded,
-		N: requestfilter.MaxResponseBodyBytes + 1,
+		N: requestfilter.ResponseBodyLimit() + 1,
 	}
 	dec := newJSONDecoder(limited)
 
@@ -903,7 +1002,7 @@ func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error,
 		// we surface as a rejection. We add an explicit check here so that we
 		// can emit the same "response body exceeds N bytes" message.
 		if limited.N <= 0 {
-			return rejectResponse(fmt.Errorf("response body exceeds %d bytes", requestfilter.MaxResponseBodyBytes))
+			return rejectResponse(responseTooLargeError())
 		}
 
 		var elem map[string]any
@@ -964,7 +1063,7 @@ func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error,
 
 	// Re-check the limit after consuming the closing token.
 	if limited.N <= 0 {
-		return rejectResponse(fmt.Errorf("response body exceeds %d bytes", requestfilter.MaxResponseBodyBytes))
+		return rejectResponse(responseTooLargeError())
 	}
 
 	// Clone the body out of the pooled buffer: ReverseProxy reads resp.Body
@@ -1194,6 +1293,9 @@ func (f *Filter) redactSwarmPayload(payload map[string]any) error {
 	}
 	if f.opts.RedactNetworkTopology {
 		redactArrayField(payload, "DefaultAddrPool")
+		if err := redactAddressPoolBases(payload); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1202,6 +1304,12 @@ func (f *Filter) redactInfoPayload(payload map[string]any) error {
 	if f.opts.RedactHostTopology {
 		for _, key := range []string{"Containerd", "FirewallBackend", "DiscoveredDevices", "NRI"} {
 			redactFieldAnyShape(payload, key)
+		}
+	}
+
+	if f.opts.RedactNetworkTopology {
+		if err := redactAddressPoolBases(payload); err != nil {
+			return err
 		}
 	}
 
@@ -1216,6 +1324,9 @@ func (f *Filter) redactInfoPayload(payload map[string]any) error {
 			return err
 		} else if found {
 			redactArrayField(cluster, "DefaultAddrPool")
+			if err := redactAddressPoolBases(cluster); err != nil {
+				return err
+			}
 		}
 	}
 	if f.opts.RedactSensitiveData {
@@ -1545,12 +1656,13 @@ func withPooledResponseBody(resp *http.Response, get func() any, put func(any), 
 	buf := acquirePooledBuffer(get)
 	defer put(buf)
 
-	reader := &io.LimitedReader{R: decoded, N: requestfilter.MaxResponseBodyBytes + 1}
+	limit := requestfilter.ResponseBodyLimit()
+	reader := &io.LimitedReader{R: decoded, N: limit + 1}
 	if _, err := buf.ReadFrom(reader); err != nil {
 		return err
 	}
-	if int64(buf.Len()) > requestfilter.MaxResponseBodyBytes {
-		return fmt.Errorf("response body exceeds %d bytes", requestfilter.MaxResponseBodyBytes)
+	if int64(buf.Len()) > limit {
+		return responseTooLargeError()
 	}
 	return use(buf.Bytes())
 }
@@ -1988,6 +2100,20 @@ func isNodeInspectPath(normPath string) bool {
 }
 
 func redactContainerNetworkTopology(payload map[string]any) error {
+	if value, present := payload["HostConfig"]; present && value != nil {
+		host, ok := value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("HostConfig has unexpected type %T", value)
+		}
+		if mode, ok := host["NetworkMode"].(string); ok && strings.HasPrefix(mode, "ns:") {
+			host["NetworkMode"] = ""
+		}
+	}
+	// Ports[].IP on a list entry is the host bind address, a netip.Addr in
+	// current Docker clients, so it reads "" like the other typed addresses.
+	if err := redactPortSummaryIPs(payload); err != nil {
+		return err
+	}
 	networkSettingsValue, ok := payload["NetworkSettings"]
 	if !ok || networkSettingsValue == nil {
 		return nil
@@ -2016,6 +2142,9 @@ func redactContainerNetworkTopology(payload map[string]any) error {
 		"LinkLocalIPv6Address",
 		"MacAddress",
 	)
+	if err := redactPortBindingHostIPs(networkSettings); err != nil {
+		return err
+	}
 	redactArrayField(networkSettings, "SecondaryIPAddresses")
 	redactArrayField(networkSettings, "SecondaryIPv6Addresses")
 	// AdditionalMACAddresses is a libpod-only field. Podman's
@@ -2072,7 +2201,7 @@ func redactContainerNetworkTopology(payload map[string]any) error {
 // indexes into. It sits here rather than at the /networks call site so a key
 // added to the function below is added a line away from the list that has to
 // name it.
-var networkTopologyItemFields = []string{"IPAM", "Status", "Containers", "Peers"}
+var networkTopologyItemFields = []string{"IPAM", "Status", "Containers", "Peers", "Services"}
 
 func redactNetworkTopology(payload map[string]any) error {
 	ipamValue, ok := payload["IPAM"]
@@ -2101,6 +2230,36 @@ func redactNetworkTopology(payload map[string]any) error {
 			return fmt.Errorf("containers field has unexpected type %T", containersValue)
 		}
 		payload["Containers"] = map[string]any{}
+	}
+
+	// Services is only present on GET /networks/{id}?verbose=true. Each entry
+	// carries the service VIP and every task's endpoint IP, both netip.Addr in
+	// current Docker clients. The map keys are service names and stay.
+	if servicesValue, ok := payload["Services"]; ok && servicesValue != nil {
+		services, ok := servicesValue.(map[string]any)
+		if !ok {
+			return fmt.Errorf("services field has unexpected type %T", servicesValue)
+		}
+		for name, serviceValue := range services {
+			service, ok := serviceValue.(map[string]any)
+			if !ok {
+				return fmt.Errorf("services entry %q has unexpected type %T", name, serviceValue)
+			}
+			redactTypedAddressFields(service, "VIP")
+			if err := mapObjectArray(service, "Tasks", func(task map[string]any) error {
+				redactTypedAddressFields(task, "EndpointIP")
+				if value, present := task["Info"]; present && value != nil {
+					info, ok := value.(map[string]any)
+					if !ok {
+						return fmt.Errorf("task info has unexpected type %T", value)
+					}
+					redactTypedAddressFields(info, "Host IP")
+				}
+				return nil
+			}); err != nil {
+				return fmt.Errorf("services entry %q: %w", name, err)
+			}
+		}
 	}
 
 	if peersValue, ok := payload["Peers"]; ok && peersValue != nil {
@@ -2148,4 +2307,101 @@ func rejectResponse(err error) error {
 		return ErrResponseRejected
 	}
 	return fmt.Errorf("%w: %w", ErrResponseRejected, err)
+}
+
+// redactObjectArrayTypedAddresses blanks the named typed-address keys on every
+// object of payload[field]. A missing or null field is fine; any other shape
+// fails closed.
+func redactObjectArrayTypedAddresses(payload map[string]any, field string, keys ...string) error {
+	return mapObjectArray(payload, field, func(object map[string]any) error {
+		redactTypedAddressFields(object, keys...)
+		return nil
+	})
+}
+
+func mapObjectArray(payload map[string]any, field string, fn func(map[string]any) error) error {
+	value, ok := payload[field]
+	if !ok || value == nil {
+		return nil
+	}
+	items, ok := value.([]any)
+	if !ok {
+		return fmt.Errorf("%s has unexpected type %T", field, value)
+	}
+	for _, item := range items {
+		object, ok := item.(map[string]any)
+		if !ok {
+			return fmt.Errorf("%s entry has unexpected type %T", field, item)
+		}
+		if err := fn(object); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// unspecifyBindAddress replaces a published-port bind address with the
+// unspecified address of the same family. docker/cli only prints
+// host:public->private when the port IP is valid, so "" would collapse every
+// mapping to a bare container port. 0.0.0.0 and :: keep the mapping display
+// and hide which host interface is bound. An empty string is left as the
+// daemon sent it; anything unparseable fails closed.
+func unspecifyBindAddress(object map[string]any, key string) error {
+	value, ok := object[key]
+	if !ok || value == nil {
+		return nil
+	}
+	text, ok := value.(string)
+	if !ok {
+		return fmt.Errorf("%s has unexpected type %T", key, value)
+	}
+	if text == "" {
+		return nil
+	}
+	addr, err := netip.ParseAddr(text)
+	if err != nil {
+		return fmt.Errorf("%s is not an IP address", key)
+	}
+	if addr.Is4() {
+		object[key] = "0.0.0.0"
+	} else {
+		object[key] = "::"
+	}
+	return nil
+}
+
+// redactPortSummaryIPs rewrites Ports[].IP, the host bind address on container
+// list entries. PublicPort and PrivatePort stay: clients build links from them.
+func redactPortSummaryIPs(payload map[string]any) error {
+	return mapObjectArray(payload, "Ports", func(port map[string]any) error {
+		return unspecifyBindAddress(port, "IP")
+	})
+}
+
+// redactPortBindingHostIPs rewrites HostIp in NetworkSettings.Ports, a map of
+// "port/proto" to a (possibly null) list of {HostIp, HostPort} bindings.
+func redactPortBindingHostIPs(networkSettings map[string]any) error {
+	portsValue, ok := networkSettings["Ports"]
+	if !ok || portsValue == nil {
+		return nil
+	}
+	ports, ok := portsValue.(map[string]any)
+	if !ok {
+		return fmt.Errorf("NetworkSettings.Ports has unexpected type %T", portsValue)
+	}
+	for port := range ports {
+		err := mapObjectArray(ports, port, func(binding map[string]any) error {
+			return unspecifyBindAddress(binding, "HostIp")
+		})
+		if err != nil {
+			return fmt.Errorf("NetworkSettings.Ports: %w", err)
+		}
+	}
+	return nil
+}
+
+// redactAddressPoolBases blanks Base (a netip.Prefix in current Docker
+// clients) on each DefaultAddressPools entry.
+func redactAddressPoolBases(payload map[string]any) error {
+	return redactObjectArrayTypedAddresses(payload, "DefaultAddressPools", "Base")
 }

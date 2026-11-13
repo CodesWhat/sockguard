@@ -444,3 +444,158 @@ func TestSingleConnListener(t *testing.T) {
 		t.Fatal("second Accept stayed blocked after Close")
 	}
 }
+
+func TestProbeHTTP2ServerAcceptsADefaultRuntime(t *testing.T) {
+	if got := probeHTTP2Server(); got != probeEnabled {
+		t.Fatalf("probeHTTP2Server() = %v, want probeEnabled with HTTP/2 on", got)
+	}
+}
+
+func TestProbeHTTP2ServerDetectsGODEBUGOff(t *testing.T) {
+	t.Setenv("GODEBUG", "http2server=0")
+	if got := probeHTTP2Server(); got != probeDisabled {
+		t.Fatalf("probeHTTP2Server() = %v, want probeDisabled under GODEBUG=http2server=0", got)
+	}
+}
+
+// classifyWithReply answers the preface with reply (nothing when nil) and then
+// holds the pipe open until the test ends.
+func classifyWithReply(t *testing.T, reply []byte, timeout time.Duration) probeState {
+	t.Helper()
+	a, b := net.Pipe()
+	t.Cleanup(func() { _ = a.Close(); _ = b.Close() })
+	go func() {
+		buf := make([]byte, 24)
+		_, _ = io.ReadFull(b, buf)
+		if reply != nil {
+			_, _ = b.Write(reply)
+		}
+	}()
+	return classifyHTTP2Answer(a, timeout)
+}
+
+func TestClassifyHTTP2Answer(t *testing.T) {
+	settings := []byte{0, 0, 0, 4, 0, 0, 0, 0, 0}
+	if got := classifyWithReply(t, settings, testWait); got != probeEnabled {
+		t.Fatalf("SETTINGS frame = %v, want probeEnabled", got)
+	}
+	if got := classifyWithReply(t, []byte("HTTP/1.1 505 HTTP Version Not Supported\r\n"), testWait); got != probeDisabled {
+		t.Fatalf("HTTP/1 answer = %v, want probeDisabled", got)
+	}
+	if got := classifyWithReply(t, []byte{0, 0, 0, 7, 0, 0, 0, 0, 0}, testWait); got != probeDisabled {
+		t.Fatalf("non-SETTINGS first frame = %v, want probeDisabled", got)
+	}
+	// The peer reads the preface and closes without a byte.
+	a, b := net.Pipe()
+	go func() { buf := make([]byte, 24); _, _ = io.ReadFull(b, buf); _ = b.Close() }()
+	if got := classifyHTTP2Answer(a, testWait); got != probeDisabled {
+		t.Fatalf("close without a byte = %v, want probeDisabled", got)
+	}
+	if got := classifyWithReply(t, nil, 50*time.Millisecond); got != probeUnknown {
+		t.Fatalf("silence = %v, want probeUnknown", got)
+	}
+	c, d := net.Pipe()
+	_ = d.Close()
+	if got := classifyHTTP2Answer(c, testWait); got != probeDisabled {
+		t.Fatalf("peer closed before the preface = %v, want probeDisabled", got)
+	}
+	// Nobody reads, so the write stalls to its deadline: inconclusive.
+	e, f := net.Pipe()
+	t.Cleanup(func() { _ = e.Close(); _ = f.Close() })
+	if got := classifyHTTP2Answer(e, 50*time.Millisecond); got != probeUnknown {
+		t.Fatalf("write timeout = %v, want probeUnknown", got)
+	}
+}
+
+func TestClassifyHTTP2PartialStatusPrefix(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, reply string
+		want        probeState
+	}{
+		{name: "exact HTTP prefix", reply: "HTTP/", want: probeDisabled},
+		{name: "incomplete HTTP prefix", reply: "HTTP", want: probeUnknown},
+		{name: "other five bytes", reply: "OTHER", want: probeUnknown},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyWithReply(t, []byte(tt.reply), 200*time.Millisecond); got != tt.want {
+				t.Fatalf("partial answer %q=%v, want %v", tt.reply, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHTTP2CheckerCachesOnlyDefinitiveResults(t *testing.T) {
+	results := []probeState{probeUnknown, probeUnknown, probeDisabled}
+	calls := 0
+	c := &http2Checker{probe: func() probeState {
+		r := results[calls]
+		calls++
+		return r
+	}}
+	for i := 0; i < 2; i++ {
+		if err := c.check(); err != nil {
+			t.Fatalf("inconclusive probe %d blocked Serve: %v", i, err)
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("probe calls = %d, want 2 (an inconclusive result must not be cached)", calls)
+	}
+	for i := 0; i < 3; i++ {
+		if err := c.check(); !errors.Is(err, ErrHTTP2ServerDisabled) {
+			t.Fatalf("check %d = %v, want ErrHTTP2ServerDisabled", i, err)
+		}
+	}
+	if calls != 3 {
+		t.Fatalf("probe calls = %d, want 3 (a disabled result is cached)", calls)
+	}
+
+	calls = 0
+	ok := &http2Checker{probe: func() probeState { calls++; return probeEnabled }}
+	for i := 0; i < 3; i++ {
+		if err := ok.check(); err != nil {
+			t.Fatalf("enabled check = %v", err)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("enabled probe calls = %d, want 1 (cached)", calls)
+	}
+}
+
+func TestServeReturnsTheDisabledErrorAndClosesTheConn(t *testing.T) {
+	original := http2ServerCheck
+	t.Cleanup(func() { http2ServerCheck = original })
+	http2ServerCheck = func() error { return ErrHTTP2ServerDisabled }
+
+	serverSide, clientSide := net.Pipe()
+	defer clientSide.Close()
+	err := Serve(context.Background(), serverSide, ServerConfig{Handler: http.NotFoundHandler()})
+	if !errors.Is(err, ErrHTTP2ServerDisabled) {
+		t.Fatalf("Serve() = %v, want ErrHTTP2ServerDisabled", err)
+	}
+	if _, werr := serverSide.Write([]byte("x")); !errors.Is(werr, io.ErrClosedPipe) {
+		t.Fatalf("write after Serve returned: err = %v, want io.ErrClosedPipe", werr)
+	}
+}
+
+func TestServeReturnsNilWhenThePeerGoesAway(t *testing.T) {
+	serverSide, clientSide := net.Pipe()
+	result := make(chan error, 1)
+	go func() {
+		result <- Serve(context.Background(), serverSide, ServerConfig{Handler: http.NotFoundHandler()})
+	}()
+	client, err := NewClientConn(clientSide, nil)
+	if err != nil {
+		t.Fatalf("NewClientConn: %v", err)
+	}
+	roundTrip(t, client, newRequest(t, http.MethodGet, "http://tunnel/", ""))
+	_ = client.Close()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("Serve() = %v, want nil on an ordinary disconnect", err)
+		}
+	case <-time.After(testWait):
+		t.Fatal("Serve did not return")
+	}
+}

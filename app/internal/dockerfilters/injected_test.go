@@ -97,3 +97,43 @@ func TestRecordInjectedSelectorsNoOpInputs(t *testing.T) {
 		t.Fatalf("InjectedSelectors(nil) = %v, want nil", got)
 	}
 }
+
+func TestRecordSoleValueFilterAccumulatesPerKey(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodGet, "/events", nil)
+	if RequiresSoleValue(req, "label") {
+		t.Fatal("RequiresSoleValue on a fresh request = true, want false")
+	}
+
+	first := RecordSoleValueFilter(req, "label")
+	second := RecordSoleValueFilter(first, "node.label")
+
+	if !RequiresSoleValue(second, "label") || !RequiresSoleValue(second, "node.label") {
+		t.Fatal("a later record dropped an earlier sole-value key")
+	}
+	if RequiresSoleValue(first, "node.label") {
+		t.Fatal("recording on a derived request leaked into its parent")
+	}
+	if RequiresSoleValue(second, "other") {
+		t.Fatal("RequiresSoleValue reported a key nobody recorded")
+	}
+}
+
+func TestSoleValueHelpersTolerateNilAndEmpty(t *testing.T) {
+	t.Parallel()
+
+	if got := RecordSoleValueFilter(nil, "label"); got != nil {
+		t.Fatalf("RecordSoleValueFilter(nil) = %v, want nil", got)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/events", nil)
+	if got := RecordSoleValueFilter(req, ""); got != req {
+		t.Fatal("RecordSoleValueFilter with an empty key must return the request unchanged")
+	}
+	if RequiresSoleValue(nil, "label") {
+		t.Fatal("RequiresSoleValue(nil) = true, want false")
+	}
+	if got := InjectedSelectors(nil, "label"); got != nil {
+		t.Fatalf("InjectedSelectors(nil) = %v, want nil", got)
+	}
+}

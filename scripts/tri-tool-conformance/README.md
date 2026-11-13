@@ -48,7 +48,7 @@ inputs (#289 item 2).
 
 ## Running it
 
-```
+```bash
 scripts/tri-tool-conformance/run-matrix.sh --row current-standard
 scripts/tri-tool-conformance/run-matrix.sh --row current-edge \
   --portwing-version 0.9.2 --drydock-version 1.6.0
@@ -56,10 +56,10 @@ scripts/tri-tool-conformance/run-matrix.sh --self-test   # jq + awk only, no Doc
 ```
 
 Needs `bash`, `curl`, `jq`, `docker`, `docker compose`, and `openssl` on
-`PATH`, plus a real Docker daemon at `/var/run/docker.sock` (the GitHub-hosted
-`ubuntu-latest` runner ships all of this; there is no dind container, no
-special privileges — the harness measures what a real deployment would
-actually see, same rationale as `quality-integration.yml`).
+`PATH`, passwordless `sudo` for generated-secret ownership and permission
+setup, and a real Docker daemon at `/var/run/docker.sock`. The GitHub-hosted
+`ubuntu-latest` runner provides these tools and daemon. The harness uses the
+host engine rather than a dind container, matching `quality-integration.yml`.
 
 Each row is fully independent: fresh named volumes and fresh secrets every
 run (`docker compose down -v` guard plus a unique project name), a fresh
@@ -82,6 +82,9 @@ sentinel containers and negative-auth-probe containers) via an `EXIT` trap.
    ever touches the row's real containers.
 3. **Identity lifecycle** — `current-standard` starts an isolated second
    published Portwing + drydock pairing on the row's real sockguard socket.
+   This ephemeral agent explicitly sets `ALLOW_INSECURE_ENROLLMENT=true` for
+   the HTTP enrollment probe on the row’s private Compose network. Its port
+   is not published to the host. Portwing’s production TLS default stays in place.
    A wrong enrollment credential is denied without burning the single-use
    credential; the enrolled key authenticates a real controller; reuse is
    denied. The agent then hot-reloads an overlapping replacement key on

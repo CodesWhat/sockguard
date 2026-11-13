@@ -48,14 +48,15 @@ on.
 
 | libpod endpoint | Config key | Notes |
 |---|---|---|
-| `POST /libpod/containers/create` | `request_body.libpod_container_create` | Podman's native SpecGenerator create body. Field names mirror `container_create` where the semantics map across (privileged, host netns/pidns/ipcns/userns/cgroupns, bind-mount/device allowlists, capabilities, seccomp/AppArmor, `image_trust`), plus three libpod-only gates: `allow_host_uts`, `allow_systemd_mode` and `allow_custom_id_mappings`. The six host namespace gates cover `nsmode` `host` and `path`; see [Namespace Modes and the Host Gates](#namespace-modes-and-the-host-gates). The host-filesystem fields `rootfs`, `overlay_volumes` sources, overlay `upperdir`/`workdir` options and `init_path` are held to `allowed_bind_mounts`, a `mounts` bind source has to be an absolute path, and `conmon_pid_file` is refused outright, and a log path (`log_configuration.path`, or a `healthLogDestination` directory) needs `allow_log_path`. `base_hosts_file` accepts only empty, `image` or `none`; see [Host-Filesystem Fields on a Native Create](#host-filesystem-fields-on-a-native-create). A non-empty `unified` map (raw cgroup v2 settings) needs `allow_unified_cgroup_settings`, and `env_host: true` (inherit the daemon's environment) needs `allow_env_host`; both default to deny. A non-empty `pod` is denied while `restrict_namespace_sharing` is on. `r_limits` is not gated, like the Docker-compat `Ulimits`, and when ownership isolation is enabled `pod` and `dependencyContainers` are also owner-checked. |
-| `POST /libpod/pods/create` | `request_body.libpod_pod_create` | Pods have no Docker-compat equivalent. Covers the pod's five namespaces, each with `nsmode` `host` or `path` behind its own gate (`allow_host_network` for `netns`, `allow_host_pid` for `pidns`, `allow_host_ipc` for `ipcns`, `allow_host_userns` for `userns`, `allow_host_uts` for `utsns`), shared PID namespace (`allow_shared_pid_namespace`), and the infra image's registry (`allowed_infra_image_registries`). `infra_conmon_pid_file` is refused outright, like a container create's `conmon_pid_file`. `hostsFile` accepts only empty, `image` or `none`; see [Host-Filesystem Fields on a Native Create](#host-filesystem-fields-on-a-native-create). |
+| `POST /libpod/containers/create` | `request_body.libpod_container_create` | Podman's native SpecGenerator create body. Field names mirror `container_create` where the semantics map across (privileged, host netns/pidns/ipcns/userns/cgroupns, bind-mount/device allowlists, capabilities, seccomp/AppArmor, `image_trust`), plus three libpod-only gates: `allow_host_uts`, `allow_systemd_mode` and `allow_custom_id_mappings`. The six host namespace gates cover `nsmode` `host` and `path`; see [Namespace Modes and the Host Gates](#namespace-modes-and-the-host-gates). The host-filesystem fields `rootfs`, `overlay_volumes` sources, overlay `upperdir`/`workdir` options and `init_path` are held to `allowed_bind_mounts`, a `mounts` bind source has to be an absolute path, and `conmon_pid_file` is refused outright, and a log path (`log_configuration.path`, or a `healthLogDestination` directory) needs `allow_log_path`. `base_hosts_file` accepts only empty, `image` or `none`; see [Host-Filesystem Fields on a Native Create](#host-filesystem-fields-on-a-native-create). A non-empty `unified` map (raw cgroup v2 settings) needs `allow_unified_cgroup_settings`, and `env_host: true` (inherit the daemon's environment) needs `allow_env_host`; both default to deny. A non-empty `storage_opts` map needs `allow_storage_opts`, and an `annotations` key under `run.oci.`, or `io.podman.annotations.cid-file`, `.autoremove` or `.autoremove-image` (matched in any letter case), which Podman acts on (runtime switches, removing a host file, removing the container or its image), needs `allow_runtime_annotations`. Both default to deny; other annotation keys pass, including the other `io.podman.annotations.` markers podman-remote sends on ordinary creates. A non-empty `pod` is denied while `restrict_namespace_sharing` is on. `r_limits` is not gated, like the Docker-compat `Ulimits`, and when ownership isolation is enabled `pod` and `dependencyContainers` are also owner-checked. |
+| `POST /libpod/pods/create` | `request_body.libpod_pod_create` | Pods have no Docker-compat equivalent. Covers the pod's five namespaces, each with `nsmode` `host` or `path` behind its own gate (`allow_host_network` for `netns`, `allow_host_pid` for `pidns`, `allow_host_ipc` for `ipcns`, `allow_host_userns` for `userns`, `allow_host_uts` for `utsns`), shared PID namespace (`allow_shared_pid_namespace`), and the infra image's registry (`allowed_infra_image_registries`). `infra_conmon_pid_file` is refused outright, like a container create's `conmon_pid_file`. The fields the infra container and the pod's members inherit follow the `request_body.libpod_container_create` block, not a second set of lists: `mounts` against `allowed_bind_mounts`, `pod_devices` against `allowed_devices` and `allow_all_devices`, `sysctl` against `allow_sysctls`, `idmappings` against `allow_custom_id_mappings`, `overlay_volumes` and the overlay directories in `volumes` options against `allowed_bind_mounts`, `volumes_from` and `cgroup_parent` (refused, as on a container), `resource_limits` device rules (the `require_*_limit` options are not applied to a pod, which is an optional cgroup parent; its member containers are checked on container create), image volumes and image mounts while `allowed_images` is set, `security_opt` (`seccomp=`, `apparmor=`, `label=`, `unmask=` and `systempaths=unconfined`) against the seccomp, AppArmor, SELinux and unconfined-system-paths options, and a namespace joined with `nsmode` `container` against `restrict_namespace_sharing`. `hostsFile` accepts only empty, `image` or `none`; see [Host-Filesystem Fields on a Native Create](#host-filesystem-fields-on-a-native-create). |
 | `POST /libpod/build` | `request_body.build`, shared with Docker `POST /build` | Covers primary remote contexts, URL/image `additionalbuildcontexts`, `networkmode=host`, and Dockerfiles containing `RUN`, read from `Containerfile` and `Dockerfile` or from every file a JSON-array `dockerfile` names. Host/local/multipart and resource-usage host-file controls require the global blind-write acknowledgment. Direct and version-prefixed requests use the same tar/gzip bounds and body-sensitive startup validation as Docker's classic builder. |
 | `POST /libpod/containers/{name}/exec`, `POST /libpod/exec/{id}/start` | `request_body.exec` — **shared with Docker-compat** | libpod exec bodies use Docker's own field names on the wire, so there is deliberately no separate `libpod_exec` block. One `allowed_commands`/`allow_privileged`/`allow_root_user`/env-var policy governs exec on both surfaces, so nothing can be configured for one path family and forgotten for the other. |
 | `PUT /libpod/containers/{name}/archive` | `request_body.container_archive` — **shared with Docker-compat** | Podman routes this and Docker's `PUT /containers/{name}/archive` to a single `compat.Archive` handler, so one matcher covers both spellings. The inspector requires one nonempty, unambiguous `path`, matches Podman's case-insensitive field name, refuses relative targets when `allowed_paths` is configured because Podman resolves them against the container WorkingDir, and refuses a nonempty or ambiguous `rename` because Podman applies that transformation after reading the tar headers. `allowed_paths`, `allow_setid`, `allow_device_nodes` and `allow_escaping_links` otherwise apply identically on either path. |
 | `POST /libpod/containers/{name}/update` | `request_body.container_update` — **shared with Docker-compat** | The same `allow_*` gates as the Docker-compat update, read against libpod's own shape rather than Docker's. The body is `UpdateEntities`, whose embedded OCI `specs.LinuxResources` flattens to root-level `memory`/`cpu`/`pids`/`blockIO`/`devices`/`unified` instead of Docker's PascalCase, there is no `HostConfig`/`Resources` nesting, and the restart policy arrives in the `restartPolicy`/`restartRetries` **query string** rather than the body — so `allow_restart_policy` is enforced against the query here, with the key folded and every repeated value checked, because Podman decodes it with gorilla/schema. `devices` rides `allow_all_devices`; the OCI resource keys, the per-device IO throttles (`DeviceReadBPs` and friends) and `r_limits` ride `allow_resource_updates`; `health_on_failure`, `no_healthcheck` and `health_startup_retries` ride `allow_restart_policy`, since all three configure what the daemon does to the container on its own initiative. `allow_privileged` and `allow_capabilities` are inert on this path: `UpdateEntities` has no field for either, so a container cannot be made privileged through it. `health_cmd` and `health_startup_cmd`, `Env`/`UnsetEnv`, and `health_log_destination` are refused outright. Health timing and log-retention fields can create high-frequency checks or infinite daemon logs, so they require the global `insecure_allow_body_blind_writes: true` acknowledgment; the outright denials stay in force even with that acknowledgment. The opt-in `require_memory_limit`, `require_cpu_limit`, `require_cpu_limit_hard`, and `require_pids_limit` ratchets also cover this native path after ownership, applying Podman's partial lowercase resource overlay and explicit-zero clears to the inspected current state. An `UpdateEntities` root key sockguard does not recognize is **allowed**, not denied. Podman discards a body field its own build does not define, so deny-on-unknown would refuse working requests on the first Podman minor that adds a field — including fields Podman itself ignores — while buying nothing, since a key this build cannot name is a key it cannot gate either. The trade is that somebody has to notice when the upstream body grows, so the field set the gates were reviewed against is pinned in `app/testdata/podman-api/update-entities-root-fields.json`: a test fails when that snapshot and the gate lists disagree in either direction, a monthly CI job re-derives the snapshot from Podman's own source and fails when upstream has grown a field, and at runtime an unrecognized root key is named in a debug-level log line. |
 | `DELETE /libpod/containers/{name}` | `request_body.container_remove`, **shared with Docker-compat** | Podman serves this and Docker's `DELETE /containers/{name}` from one `compat.RemoveContainer` handler, which reads a different set of flags on each. `allow_force` gates `force` on both. On this path the handler takes the volumes flag from `volumes`, not `v`, so `allow_remove_volumes` gates `volumes`, and also `v`, which the route's API docs list and Podman 5.8.6 ignores. `depend` is behind `allow_remove_volumes` too: it removes every container that depends on the one named, and when that one is a pod's infra container or a kube service container it removes the pod, whose containers' anonymous volumes Podman deletes whatever `volumes` says. `depend` never stops a running workload container, since the dependents are removed with the request's own `force`. A pod's infra container can be stopped, but only once every workload container in the pod is already stopped. With `allow_remove_volumes` off, that means `podman --remote rm --all` (which always sends `depend`) and the cleanup podman-remote sends after `run --rm` (`volumes=true`) are refused. For `run --rm`, Podman's own exit cleanup still removes the container and its volumes server-side, so the visible effect is an error line from the client. Turn on `allow_remove_volumes` for clients that use them. `timeout` and `ignore` aren't gated, and `link` isn't read here. Each flag is read once under its exact lowercase spelling, the same as on the compat path. |
 | `DELETE /libpod/pods/{name}` | `request_body.container_remove` | Removing a pod removes every container in it, and once they're gone Podman deletes the anonymous volumes of all of them. No parameter keeps the volumes, so every pod removal needs `allow_remove_volumes`, the same step `depend` needs on the container route. Without `force`, Podman refuses the removal if a workload container is running or paused, though the stopped ones are still removed. `force` stops the running ones, so it needs `allow_force` as well. With `allow_remove_volumes` off, that means `podman --remote pod rm` is refused. Turn on `allow_remove_volumes` for clients that remove pods, and `allow_force` for ones that send `pod rm --force`. `timeout` isn't gated. `force` is read once under its exact lowercase spelling, and podman-remote sends `force=false` on every removal. Owner isolation checks the pod the path names. |
+| `POST /libpod/pods/prune` | `request_body.container_remove` | Prune removes every pod whose containers are all stopped, and Podman deletes the anonymous volumes of all their containers with it. No parameter keeps them, so the route needs `allow_remove_volumes`, the same step pod removal needs. It never forces, so `allow_force` isn't read. Under owner isolation the route is refused outright (see below), so this gate is the one that applies without it. |
 | `DELETE /libpod/play/kube`, `DELETE /libpod/kube/play` | `request_body.container_remove` | Kube down, which Podman serves from one handler under both spellings. It stops every pod the YAML in the request body names and force-removes them whatever the query says, so it stops their running containers and deletes their anonymous volumes. Every request needs both `allow_force` and `allow_remove_volumes`. Its `force` parameter also deletes the named volumes the YAML lists (PersistentVolumeClaims, and the volumes behind ConfigMap and Secret mounts), which is covered once `allow_remove_volumes` is open. It deletes the secrets the YAML names whatever `force` says, and no remove gate covers secrets. Sockguard doesn't parse the YAML, so opening both gates lets the client delete any pod or secret it can name, and with `force` any named volume that isn't in use. For the same reason owner isolation refuses kube down outright; see Ownership and Visibility Coverage below. |
 | `POST /libpod/volumes/create` | `request_body.libpod_volume` | Reuses the `volume` config shape, decoded against libpod's wire format (driver options live under `Options`, not `DriverOpts`). |
 | `POST /libpod/networks/create` | `request_body.libpod_network` | Reuses the `network` config shape, decoded against libpod's wire format (snake_case fields, no swarm/ingress/attachable/config-only concepts — libpod predates and is independent of Docker's swarm mode). |
@@ -118,7 +119,9 @@ Under `enforce`, a key given twice is refused before any gate reads the body, an
 holding a character Podman 6's decoder and Go's `encoding/json` match
 differently (see [Security](/security)). `warn` and `audit` log the would-deny and forward the body. A namespace field that isn't an
 object, or an `nsmode` that isn't a string, is refused as malformed whatever
-the gates say.
+the gates say. So is a namespace object holding any key besides `nsmode` and
+`value`: Podman 6 matches the keys of a struct that small by a hash of the key,
+so a key Sockguard reads as unknown could still bind to one of them there.
 
 The gates read what the request asks for. They don't move the daemon's
 default, and the default isn't always a private namespace. A rootful Podman
@@ -247,6 +250,17 @@ volume as much as for a host path. A relative directory is refused whatever
 the list holds, because Podman resolves it under the container's own storage
 directory and `../` walks back out.
 
+On a Podman upstream, secret operations that name a secret by a short ID prefix are refused: a request to `/secrets/{name}` or `/libpod/secrets/{name}`, or a create, whose name is lowercase hex of fewer than 25 characters gets a `403` under owner isolation. Use the full 25-character ID, or a secret name with a non-hex character (`db-password`, not `cafe`).
+
+A named `volumes` entry can carry host paths in a second way. When the volume
+doesn't exist, Podman creates it and turns every option that starts with
+`volume-opt` into a driver option, so `volume-opt=type=none`,
+`volume-opt=o=bind` and `volume-opt=device=/etc` bind the host's `/etc` into
+the new volume. Those options are held to the same rules as
+`POST /libpod/volumes/create`: a bind, a device or a host-filesystem type has
+to fall inside `allowed_bind_mounts`. Options that name no host path, such as
+`volume-opt=size=64m`, pass.
+
 Podman writes an overlay's source and both directories into one
 comma-separated option string, so a `,` in a path starts a new mount option
 and a `\` escapes whatever follows it. An `overlay_volumes` source, a `rootfs`
@@ -344,7 +358,12 @@ injects extra mount fields: `{"Mounts":[{"Type":"bind","Target":"/h,source=/etc"
 binds the host's `/etc`, and `{"Type":"tmpfs","Target":"/scratch,exec,suid,dev"}`
 makes an exec/suid/dev tmpfs. A comma in any of those fields is refused. dockerd
 reads the structured mount and never rebuilds that string, so nothing a Docker
-client normally sends is affected.
+client normally sends is affected. The refusal follows the upstream engine: when
+every upstream endpoint's `GET /version` positively identified dockerd, a comma
+in those fields is a literal character and the create is forwarded. An explicit
+`upstream.flavor: docker` doesn't count on its own: if the probe failed or
+didn't recognise the engine, or one endpoint of a failover set couldn't be
+probed, the refusal stays.
 
 The Docker-compatible create reaches the same log path through
 `HostConfig.LogConfig`. It has no path field. Podman turns each entry of
@@ -364,6 +383,20 @@ ignores. dockerd picks the log file itself and none of its built-in drivers
 takes a `path` option, so a Docker upstream is only affected if a logging
 plugin there takes one. The compat create can't set `healthLogDestination`.
 Podman pins it to `local` on that route.
+
+The log driver itself is a separate, opt-in control. Set
+`request_body.container_create.allowed_log_drivers` and
+`request_body.libpod_container_create.allowed_log_drivers` to refuse any other
+driver, including one smuggled in as a `driver` entry of `LogConfig.Config`
+(Podman lets that entry replace `Type`). While a list is set, the options that
+name a log destination (`syslog-address`, `gelf-address`, `fluentd-address`,
+`loki-url`, `splunk-url`, `awslogs-endpoint`) are refused unless
+`allowed_log_endpoint_options` names them. `allow_log_path` keeps its own gate
+and neither opens the other: a log path needs `allow_log_path` and a listed
+driver. `request_body.libpod_play_kube.allowed_log_drivers` applies the same
+list to the `logDriver` and `logOptions` query parameters of `POST
+/libpod/play/kube`. It reads the query string only; see the next section for
+what stays uninspected.
 
 ### What a Working Client Hits
 
@@ -434,7 +467,9 @@ built from an image.
 ## The Uninspected Blind-Write Surface: `play/kube` and Manifests
 
 `POST /libpod/play/kube` (and its identically-handled `/libpod/kube/play`
-alias), `POST /libpod/kube/apply`, and `POST`/`PUT /libpod/manifests/*` have
+alias), `POST /libpod/kube/apply`, kube down (`DELETE /libpod/play/kube` and
+its `DELETE /libpod/kube/play` alias), `POST /libpod/quadlets` (quadlet
+install), and `POST`/`PUT /libpod/manifests/*` have
 **no** request-body inspector in this release — full Kubernetes-YAML/PodSpec
 modeling is out of scope for this release. Admitting any of them requires the same
 `insecure_allow_body_blind_writes: true` acknowledgment that covers
@@ -480,6 +515,13 @@ reads none of these query parameters, so a Docker client is never affected;
 the check only matters on a Podman upstream, where sending `volume`,
 `additionalbuildcontexts`, or `rusagelogfile` to `/build` used to reach the
 daemon unexamined.
+
+The two query parameters that pick a log driver are the exception to "no
+inspection": with `request_body.libpod_play_kube.allowed_log_drivers` set,
+`logDriver` and `logOptions` are checked on both spellings, in any letter case
+and on every repeat. That block does not count as body inspection, so the
+acknowledgment above is still required, and a log driver named inside the YAML
+is not seen.
 
 Treat `play/kube` with more caution than a typical blind write. A single
 request can carry a **multi-container, multi-pod** Kubernetes manifest —
@@ -530,7 +572,7 @@ archive and **creates a container from it**, so one allowed call provisions a
 container whose spec — privileged, mounts, capabilities, devices — travels
 inside a gzipped tar as `spec.dump` and never passes through `containers/create`
 on either surface. The `?pod` parameter also joins the restored container to a
-pod. Nothing in Sockguard reads that archive, so an allow rule for the path
+pod, and under owner isolation that pod is looked up like the `pod` of a create: another owner's pod is a `403`, and a repeated or re-cased `pod` parameter is refused. Nothing in Sockguard reads that archive, so an allow rule for the path
 requires `insecure_allow_body_blind_writes: true`, exactly like `play/kube`.
 
 ## Read-Exfiltration Additions
@@ -556,7 +598,9 @@ every Docker-compat exfiltration surface, plus the libpod-only entries below:
   registers this as a `GET` that dumps an existing pod's or container's
   definition to YAML, which can include environment variables and other
   resource data. It is a read/export surface, not a write, so it lives in
-  this catalog rather than the blind-write one above.
+  this catalog rather than the blind-write one above. Under owner isolation
+  or a visibility policy it (and its alias `GET /libpod/kube/generate`) is
+  refused outright, because the names it resolves carry no owner check.
 - `POST /libpod/containers/*/checkpoint` — a `POST`, but with `?export=1`
   the response body is a tar.gz of the container's CRIU checkpoint: the
   process memory dump plus root-filesystem changes, so every secret the
@@ -588,6 +632,16 @@ for process monitoring, so it carries the acknowledgment while leaving native
 pod top and every other exfiltration-gated route denied.
 
 ## Ownership and Visibility Coverage
+
+With `ownership.owner` configured, Podman builds are refused with `403` on
+`POST /build`, `POST /libpod/build` and `POST /libpod/local/build`, including
+version-prefixed paths and warn/audit rollouts. Buildah can import a base image
+from an archive without passing through its registry pull-policy check, so
+`pullpolicy=never` does not prevent a build from replacing another owner's
+image name. Neither the blind-write acknowledgment nor an owned output tag
+makes these imports safe. Docker builds retain their destination checks.
+Without an owner policy, Podman builds retain the rules and body controls
+described on this page.
 
 Owner-label isolation and read-side visibility cover the libpod surface the
 same way they cover Docker-compat:
@@ -652,11 +706,19 @@ same way they cover Docker-compat:
   up, and so does a create with no `--network` at all. `--volumes-from`,
   `--requires` and `--network <name>` need a container or network of the
   caller's own. An image volume has to name its image by full ID
-  (`--mount type=image,source=<id>`), because Podman looks the source up
-  again at every start, and an artifact volume (`--mount type=artifact`) is
+  (`--mount type=image,source=<id>`), and its inspect must return that same
+  config ID. A manifest-list ID that resolves to a platform image is refused
+  with `404`, because changing the list could change a later start's mount.
+  An artifact volume (`--mount type=artifact`) is
   refused, because an artifact carries no labels. See
   [Owner Label Isolation](/security#layer-6-owner-label-isolation) for the
   rest.
+- With owner isolation enforced, both native and Docker-compatible network deletion
+  require the network's
+  canonical name. `DELETE /libpod/networks/{id}` and ID-prefix aliases return
+  `404`; use the canonical name on `/libpod/networks/{name}` or
+  `/networks/{name}`. Podman compares that argument to
+  stored network names when checking whether containers still use it.
 - Every filter-capable libpod list and every path-targeted read for containers,
   images, pods, networks, volumes, and secrets is owner-filtered and
   visibility-filtered, so switching a client from Docker-compat to a native
@@ -729,19 +791,16 @@ same way they cover Docker-compat:
   authorized on its source image alone: Podman removes a name only from the
   image the path resolves, so `repo` and `tag` cannot reach another image.
 - The other native routes that name an image are checked on that name.
-  `POST /libpod/commit` (`repo` and `tag`), `POST /libpod/build` (every `t`),
+  `POST /libpod/commit` (`repo` and `tag`),
   `POST /libpod/images/import` (`reference`), `POST /libpod/images/pull`
   (`reference`) and `POST /libpod/images/load` (the names in the archive) each
   write a reference Podman moves off whatever image held it, so owner
-  isolation authorizes it like a retag target. Build, import and load tag
+  isolation authorizes it like a retag target. Import and load tag
   without a lookup, so a name with no registry is checked under `localhost/`.
   A commit and a pull resolve the name against local images first, so they are
-  checked as written and under `localhost/`. A build tag that starts with an
-  image transport (`containers-storage:app`, `oci-archive:out`,
-  `dir:5000/out`) is refused, because Podman's builder writes such an output
-  to that transport instead of to the name it spells, and so is a build with a
-  `manifest` parameter. A pull with `allTags`, or of a bare name with no tag,
-  is refused. See [Owner Label Isolation](/security#layer-6-owner-label-isolation).
+  checked as written and under `localhost/`. A pull with `allTags`, or of a
+  bare name with no tag, is refused. See
+  [Owner Label Isolation](/security#layer-6-owner-label-isolation).
 - Query-selected native image batches are checked too. Sockguard decodes every
   repeated `references` value on `GET /libpod/images/export` and every repeated
   `images` value on `DELETE /libpod/images/remove`, then resolves all of them
@@ -1001,7 +1060,7 @@ now gets `403` and `owner_podman_secret_list_unscopeable` or
 patterns-only visibility policy injects nothing there and is forwarded
 untouched, and a Docker upstream keeps the conjunctive injection unchanged.
 
-Denial reasons from the libpod-only inspectors carry a `libpod ` prefix:
+Denial reasons from the libpod-only inspectors carry a `libpod` prefix:
 `libpod container create denied: …`, `libpod network connect denied: …`,
 `libpod image pull denied: …`. The inspectors shared with the Docker-compat
 surface do not, because one policy and one code path serves both spellings.
@@ -1145,14 +1204,19 @@ on.
 
 ## Known Limitations
 
+- Owner-scoped Podman builds are refused until base-image imports can be
+  authorized from the build context. This includes native, Docker-compatible
+  and daemon-host builds, even with `pullpolicy=never`.
+
 **Deferred past this release** (see the [roadmap](/roadmap) for where these
 land):
 
 - Full body modeling for `play/kube` and `kube/apply` — these stay behind
   the blind-write acknowledgment described above rather than getting a real
   inspector. (`generate/kube` is not part of this list: it is a `GET`
-  read-exfiltration endpoint and remains gated by
-  `insecure_allow_read_exfiltration`, as described earlier.)
+  read-exfiltration endpoint gated by
+  `insecure_allow_read_exfiltration`, and refused under either isolation
+  layer, as described earlier.)
 - Narrower policy for `POST /libpod/local/build`,
   `POST /libpod/local/images/load`, and `POST /libpod/images/scp/*` — all
   three name their input outside the request (a daemon-host path, or an SSH
@@ -1233,22 +1297,15 @@ land):
   (`GET /libpod/**` reaches it) needs
   `insecure_allow_read_exfiltration: true` to pass startup validation, because
   the path is in the read-exfiltration catalog.
-- **Neither spelling of the secret list has a scoped form under either
-  isolation layer.** `GET /libpod/secrets/json` and, on a Podman upstream, the
-  Docker-compat `GET /secrets` are one handler. Podman's secret filter grammar
-  accepts only `name` and `id` and answers `500` for any other key, so the
-  label filter that scopes every other list cannot be pushed upstream, and both
-  layers refuse the path. The
-  gap is narrower than the stats one: the report items carry `Spec.Labels`, so
-  a response-side filter over that field could scope this list the way
-  `GET /system/df` is scoped, and building it is what would lift the refusal.
-  Building it for one spelling alone is what is ruled out, not the filter
-  itself: it would leave one handler answering `403` on its native path and a
-  filtered list on its compat path off the same policy.
-  Until then, `GET /libpod/secrets/{name}/json` is the scoped read, since it
-  names one secret and both layers resolve it normally, and a deployment that wants
-  the whole list has to run without owner isolation and without a visibility
-  policy. The rule left `podman-readonly.yaml` in v2.1 for that reason.
+- **Secret-list scoping depends on the route and selector.** The native
+  `GET /libpod/secrets/json` is refused under owner isolation or visibility.
+  On a Podman upstream, Docker-compatible `GET /secrets` is refused under
+  owner isolation or visibility with label selectors. A patterns-only
+  visibility policy forwards the compatibility path unchanged. Podman's
+  shared handler accepts only `name` and `id` filters, so a label selector
+  cannot safely scope that list. `GET /libpod/secrets/{name}/json` names one
+  secret and both isolation layers resolve it normally. See the route-specific
+  coverage above before enabling a whole-list rule.
 - Tecnativa-style env-var compatibility for the libpod surface — the
   existing `CONTAINERS=1`/`POST=0`-style compat env vars only ever generate
   rules against literal Docker-compat paths (`/containers/**`, and similar),
@@ -1349,6 +1406,10 @@ land):
   to name one reference and get one check. A short `repo` Podman cannot store
   under `localhost/` is refused with a `403` before anything is inspected: one
   whose first component has an upper-case letter, and one over 245 characters.
+  A `repo` with no slash is refused past 237 characters on a Podman upstream:
+  its Docker-compatible lookup completes the name to `docker.io/library/{repo}`,
+  and Podman rejects a reference over 255 characters, which used to surface as a
+  `502`. A dockerd upstream allows 247.
   A registry-qualified `repo`, and every retag on a dockerd upstream, is
   inspected once.
 
@@ -1383,7 +1444,7 @@ land):
   or carries no host-side privilege — but "the libpod network write surface
   is inspected" means every endpoint is routed at an inspector, not that
   every field in it is gated.
-- A tmpfs is executable by default on Podman, and `allow_tmpfs_privileged_options` can't change that. The option denies tmpfs options that turn on `exec`, `dev` or `suid`, which is the whole job on dockerd because it mounts a tmpfs `noexec,nosuid,nodev` unless asked otherwise. Podman mounts one `nosuid,nodev` but leaves it executable, so `{"HostConfig":{"Tmpfs":{"/scratch":""}}}` is already an executable mount and carries no option text for Sockguard to deny. With the option off, `suid` and `dev` are still refused on a Podman upstream. On Podman, don't rely on this option to keep tmpfs mounts non-executable.
+- **v3.1:** Sockguard requires explicit tmpfs protections on Podman. On Podman v5.5.2, a plain empty-option `HostConfig.Tmpfs` outside `/dev` remains executable: the engine adds `nosuid,nodev`, but not `noexec`. With `allow_tmpfs_privileged_options` off, Sockguard now refuses a Podman tmpfs that doesn't carry the bare option `noexec`; a `/dev` tmpfs, which gets no default options, needs `noexec,nosuid,nodev`. Podman adds `nosuid,nodev` itself elsewhere. That covers `HostConfig.Tmpfs` (judged on the options Podman reads: the key segment after a colon, otherwise the value up to its first colon) and the native `mounts[]` array, so `podman run --tmpfs /run` is refused until it becomes `--tmpfs /run:noexec`, and `exec=0` or `noexec=1` don't count. Podman's compat handler forwards only the size and mode of a `HostConfig.Mounts` tmpfs entry and drops its `TmpfsOptions.Options`, so that entry is refused outright; use `HostConfig.Tmpfs`. A native `image_volume_mode: "tmpfs"` is refused as well. Tokens such as `suid=1` and `dev=true` read as enabling. Set `allow_tmpfs_privileged_options: true` (`request_body.libpod_container_create.allow_tmpfs_privileged_options` for the native route) to opt out, permitting executable tmpfs mounts. A Docker upstream is unchanged, because dockerd already mounts a tmpfs `noexec,nosuid,nodev`.
 
 ### Native operations without an isolation model
 

@@ -132,9 +132,12 @@ describe("tri-tool-conformance/run-matrix.sh --self-test", () => {
   it("protects and removes raw keygen output on success and failure", () => {
     const script = readFileSync(scriptPath, "utf8");
 
-    assert.match(script, /umask 077; docker run --rm/);
+    assert.match(script, /umask 077\n\s+docker run --rm/);
     assert.match(script, /rm -f -- "\$raw_file" "\$\{raw_file\}\.err"/);
-    assert.match(script, /if ! \(umask 077; sed[\s\S]*rm -f -- "\$raw_file" "\$\{raw_file\}\.err"/);
+    assert.match(
+      script,
+      /if ! \(\s*umask 077\s+sed[\s\S]*rm -f -- "\$raw_file" "\$\{raw_file\}\.err"/,
+    );
   });
 
   it("can remove credentials after assigning them to container UIDs", () => {

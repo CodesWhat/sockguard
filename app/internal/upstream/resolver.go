@@ -215,6 +215,21 @@ func New(endpoints []Endpoint, opts Options) (*Resolver, error) {
 	}, nil
 }
 
+// SetOnChange installs the endpoint health transition callback after
+// construction, chained after any Options.OnChange. It must be called before
+// Start and the callback must be non-blocking.
+func (r *Resolver) SetOnChange(fn func(ep Endpoint, healthy bool)) {
+	prev := r.onChange
+	if prev == nil {
+		r.onChange = fn
+		return
+	}
+	r.onChange = func(ep Endpoint, healthy bool) {
+		prev(ep, healthy)
+		fn(ep, healthy)
+	}
+}
+
 // NewSingleSocket returns a Resolver with one local unix-socket endpoint and no
 // continuous health probing — a drop-in for the historical single-socket dial
 // path used by the legacy constructors and by tests. Its Active endpoint is

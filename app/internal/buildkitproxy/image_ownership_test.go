@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
@@ -112,6 +113,50 @@ func TestBridgeBuildImageOwnership(t *testing.T) {
 			}
 			if !reflect.DeepEqual(checked, want) {
 				t.Fatalf("checked %v, want %v", checked, want)
+			}
+		})
+	}
+}
+
+func TestOwnedSolveExporterNameLimit(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name           string
+		exporterCounts []int
+		denied         bool
+	}{
+		{name: "one exporter at limit", exporterCounts: []int{256}},
+		{name: "one exporter over limit", exporterCounts: []int{257}, denied: true},
+		{name: "two exporters at limit", exporterCounts: []int{128, 128}},
+		{name: "two exporters over limit", exporterCounts: []int{128, 129}, denied: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			checked := 0
+			policy := allowAllPolicy
+			policy.ImageOwnership = ImageOwnershipPolicy{Owner: "team-a", LabelKey: "owner", Authorize: func(context.Context, string) error {
+				checked++
+				return nil
+			}}
+			req := &control.SolveRequest{Frontend: "dockerfile.v0"}
+			index := 0
+			for _, count := range tc.exporterCounts {
+				names := make([]string, count)
+				for i := range names {
+					names[i] = fmt.Sprintf("mine/app:v%d", index)
+					index++
+				}
+				req.Exporters = append(req.Exporters, &control.Exporter{Type: "image", Attrs: map[string]string{"name": strings.Join(names, ",")}})
+			}
+			denial := applySolveImageOwnership(t.Context(), req, policy)
+			if (denial != nil) != tc.denied {
+				t.Fatalf("denial = %v, want denied = %v", denial, tc.denied)
+			}
+			if tc.denied && denial.reasonCode != "buildkit_image_owner_denied" {
+				t.Fatalf("reason = %q, want image owner denial", denial.reasonCode)
+			}
+			if checked != 256 {
+				t.Fatalf("authorized %d names, want 256", checked)
 			}
 		})
 	}

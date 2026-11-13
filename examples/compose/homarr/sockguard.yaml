@@ -22,6 +22,12 @@ health:
 insecure_allow_read_exfiltration: true
 
 rules:
+  # Docker clients ping the daemon first; /_ping returns only "OK" and the API version header.
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+
   # Container reads
   - match: { method: GET, path: "/containers/json" }
     action: allow

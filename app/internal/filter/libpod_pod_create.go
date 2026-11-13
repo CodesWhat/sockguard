@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -45,6 +46,12 @@ type LibpodPodCreateOptions struct {
 	// (Podman's built-in default pause image) is always allowed regardless
 	// of this list. Default empty: any explicit infra_image is denied.
 	AllowedInfraImageRegistries []string
+	// Container is the libpod_container_create policy the pod's inherited
+	// host-affecting fields (mounts, pod_devices, security_opt, sysctl, and
+	// a container-joined namespace) are held to. The infra container and
+	// every member inherit them, so they get the container create gates, not
+	// a second set of lists. Its ImageTrust is not read here.
+	Container LibpodContainerCreateOptions
 }
 
 type libpodPodCreatePolicy struct {
@@ -55,6 +62,9 @@ type libpodPodCreatePolicy struct {
 	allowHostUTS                bool
 	allowSharedPIDNamespace     bool
 	allowedInfraImageRegistries []string
+	// container supplies the container create gates the pod's inherited
+	// fields are checked with. See LibpodPodCreateOptions.Container.
+	container libpodContainerCreatePolicy
 }
 
 // The pod-create decode reuses libpodNamespace from
@@ -89,6 +99,24 @@ type libpodPodCreateRequest struct {
 	InfraImage         string          `json:"infra_image"`
 	InfraConmonPidFile string          `json:"infra_conmon_pid_file"`
 	HostsFile          string          `json:"hostsFile"`
+
+	// Mounts, Devices, SecurityOpt and Sysctl land on the infra container
+	// and are inherited by the pod's members. See
+	// libpod_pod_create_inherited.go.
+	Mounts      []libpodMount     `json:"mounts"`
+	Devices     []string          `json:"pod_devices"`
+	SecurityOpt []string          `json:"security_opt"`
+	Sysctl      map[string]string `json:"sysctl"`
+	IDMappings  libpodIDMappings  `json:"idmappings"`
+
+	// OverlayVolumes, Volumes, ImageVolumes, VolumesFrom, CgroupParent and
+	// ResourceLimits are copied onto the infra container the same way.
+	OverlayVolumes []libpodOverlayVolume `json:"overlay_volumes"`
+	Volumes        []libpodVolume        `json:"volumes"`
+	ImageVolumes   []json.RawMessage     `json:"image_volumes"`
+	VolumesFrom    []string              `json:"volumes_from"`
+	CgroupParent   string                `json:"cgroup_parent"`
+	ResourceLimits libpodResourceLimits  `json:"resource_limits"`
 }
 
 func newLibpodPodCreatePolicy(opts LibpodPodCreateOptions) libpodPodCreatePolicy {
@@ -101,6 +129,9 @@ func newLibpodPodCreatePolicy(opts LibpodPodCreateOptions) libpodPodCreatePolicy
 		allowed = append(allowed, normalized)
 	}
 
+	containerOpts := opts.Container
+	containerOpts.ImageTrust = ImageTrustOptions{}
+
 	return libpodPodCreatePolicy{
 		allowHostNetwork:            opts.AllowHostNetwork,
 		allowHostPID:                opts.AllowHostPID,
@@ -109,6 +140,7 @@ func newLibpodPodCreatePolicy(opts LibpodPodCreateOptions) libpodPodCreatePolicy
 		allowHostUTS:                opts.AllowHostUTS,
 		allowSharedPIDNamespace:     opts.AllowSharedPIDNamespace,
 		allowedInfraImageRegistries: allowed,
+		container:                   newLibpodContainerCreatePolicy(containerOpts),
 	}
 }
 
@@ -131,11 +163,17 @@ func (p libpodPodCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 
 	var req libpodPodCreateRequest
 	if err := decodePolicySubsetJSON(body, &req); err != nil {
+		if reason := libpodNamespaceKeyReason("libpod pod create", err); reason != "" {
+			return reason, nil
+		}
 		logRequestError(logger, r, slog.LevelDebug, "libpod pod create request body could not be decoded for Sockguard policy inspection; deferring to Podman validation", err)
 		return "libpod pod create denied: request body could not be inspected", nil
 	}
 
 	if denyReason := p.denyHostNamespaceReason(req); denyReason != "" {
+		return denyReason, nil
+	}
+	if denyReason := p.denyInheritedFieldsReason(req); denyReason != "" {
 		return denyReason, nil
 	}
 	if !p.allowSharedPIDNamespace && slices.ContainsFunc(req.SharedNamespaces, isSharedPIDNamespaceEntry) {

@@ -783,14 +783,12 @@ func TestMiddlewareLibpodPodCreateWithoutAnInfraContainer(t *testing.T) {
 		{
 			name:       "the key given twice, true last",
 			body:       `{"no_infra":false,` + theirs + `,"no_infra":true}`,
-			wantStatus: http.StatusAccepted,
+			wantStatus: http.StatusBadRequest,
 		},
 		{
-			name:        "the key given twice, false last",
-			body:        `{"no_infra":true,"volumes_from":["theirs"],"no_infra":false}`,
-			wantStatus:  http.StatusForbidden,
-			wantReason:  `libpod owner policy denied access to container "theirs" referenced by pod create volumes_from`,
-			wantLookups: []resourceInspectCall{{kind: dockerresource.KindContainer, id: "theirs"}},
+			name:       "the key given twice, false last",
+			body:       `{"no_infra":true,"volumes_from":["theirs"],"no_infra":false}`,
+			wantStatus: http.StatusBadRequest,
 		},
 		{
 			// Two spellings of one key: nothing here can say which Podman

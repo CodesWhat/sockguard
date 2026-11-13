@@ -16,7 +16,7 @@
 #   CHART_VERSION      chart version (the tag without its leading v)
 #   CHART_NAME         chart name (default sockguard)
 #   CHART_PLAIN_HTTP   1 for an http registry (the rehearsal's service container)
-#   CHART_PACKAGE      push: path of the packaged .tgz
+#   CHART_PACKAGE      push/verify-contents: expected locally packaged .tgz
 #   CHART_DIGEST       verify-contents: digest `push` reported
 #   RELEASE_TAG        verify-contents: the release tag, e.g. v3.0.0
 #   IMAGE_DIGEST       verify-contents: the image digest the chart must pin
@@ -40,7 +40,7 @@ fi
 emit() {
   echo "$1"
   if [ -n "${GITHUB_OUTPUT:-}" ]; then
-    echo "$1" >> "${GITHUB_OUTPUT}"
+    echo "$1" >>"${GITHUB_OUTPUT}"
   fi
 }
 
@@ -73,12 +73,15 @@ pull_version() {
   local dest="$1" log
   log="$(mktemp)"
   helm pull "oci://${CHART_REF}" --version "${CHART_VERSION}" --destination "${dest}" \
-    ${plain[@]+"${plain[@]}"} > "${log}" 2>&1 || { cat "${log}" >&2; return 1; }
+    ${plain[@]+"${plain[@]}"} >"${log}" 2>&1 || {
+    cat "${log}" >&2
+    return 1
+  }
   parse_digest "${log}"
 }
 
 valid_digest() {
-  [[ "$1" =~ ^sha256:[0-9a-f]{64}$ ]]
+  [[ $1 =~ ^sha256:[0-9a-f]{64}$ ]]
 }
 
 cmd_push() {
@@ -96,7 +99,7 @@ cmd_push() {
     push_log="$(mktemp)"
     digest=""
     for attempt in 1 2 3 4 5; do
-      if helm push "${CHART_PACKAGE}" "oci://${CHART_REGISTRY}" ${plain[@]+"${plain[@]}"} > "${push_log}" 2>&1; then
+      if helm push "${CHART_PACKAGE}" "oci://${CHART_REGISTRY}" ${plain[@]+"${plain[@]}"} >"${push_log}" 2>&1; then
         cat "${push_log}"
         digest="$(parse_digest "${push_log}")"
         break
@@ -131,6 +134,7 @@ cmd_push() {
 }
 
 cmd_verify_contents() {
+  : "${CHART_PACKAGE:?CHART_PACKAGE is required}"
   : "${CHART_DIGEST:?CHART_DIGEST is required}"
   : "${RELEASE_TAG:?RELEASE_TAG is required}"
   : "${IMAGE_DIGEST:?IMAGE_DIGEST is required}"
@@ -149,8 +153,9 @@ cmd_verify_contents() {
     return 1
   fi
 
-  helm show chart "${package}" > "${pull_dir}/Chart.yaml"
-  helm show values "${package}" > "${pull_dir}/values.yaml"
+  python3 "${SCRIPT_DIR}/../compare-chart-packages.py" "${CHART_PACKAGE}" "${package}"
+  helm show chart "${package}" >"${pull_dir}/Chart.yaml"
+  helm show values "${package}" >"${pull_dir}/values.yaml"
   node "${ASSERT_SCRIPT}" \
     --tag "${RELEASE_TAG}" \
     --digest "${IMAGE_DIGEST}" \
@@ -163,5 +168,6 @@ case "${1:-}" in
   verify-contents) cmd_verify_contents ;;
   *)
     echo "usage: chart-oci.sh push|verify-contents" >&2
-    exit 2 ;;
+    exit 2
+    ;;
 esac

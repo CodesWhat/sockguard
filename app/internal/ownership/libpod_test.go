@@ -149,28 +149,25 @@ func TestMiddlewareStampsOwnerLabelOnLibpodSecretCreateQueryParam(t *testing.T) 
 	}
 }
 
-func TestMiddlewareStampsOwnerLabelOnlyOnLibpodBuildPost(t *testing.T) {
+func TestMiddlewareRefusesOwnerScopedLibpodBuildPost(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name        string
-		method      string
-		target      string
-		wantStamped bool
-		wantStatus  int
+		name       string
+		method     string
+		target     string
+		wantStatus int
 	}{
 		{
-			name:        "direct build",
-			method:      http.MethodPost,
-			target:      `/libpod/build?cachefrom=base&labels=%7B%22existing%22%3A%22value%22%2C%22com.sockguard.owner%22%3A%22attacker%22%7D`,
-			wantStamped: true,
-			wantStatus:  http.StatusAccepted,
+			name:       "direct build",
+			method:     http.MethodPost,
+			target:     `/libpod/build?cachefrom=base&labels=%7B%22existing%22%3A%22value%22%2C%22com.sockguard.owner%22%3A%22attacker%22%7D`,
+			wantStatus: http.StatusForbidden,
 		},
 		{
-			name:        "versioned build",
-			method:      http.MethodPost,
-			target:      `/v5.0.0/libpod/build?cachefrom=base&labels=%7B%22existing%22%3A%22value%22%2C%22com.sockguard.owner%22%3A%22attacker%22%7D`,
-			wantStamped: true,
-			wantStatus:  http.StatusAccepted,
+			name:       "versioned build",
+			method:     http.MethodPost,
+			target:     `/v5.0.0/libpod/build?cachefrom=base&labels=%7B%22existing%22%3A%22value%22%2C%22com.sockguard.owner%22%3A%22attacker%22%7D`,
+			wantStatus: http.StatusForbidden,
 		},
 		{
 			name:       "get build is untouched",
@@ -188,7 +185,7 @@ func TestMiddlewareStampsOwnerLabelOnlyOnLibpodBuildPost(t *testing.T) {
 			name:       "malformed labels fail closed",
 			method:     http.MethodPost,
 			target:     `/libpod/build?labels=not-json`,
-			wantStatus: http.StatusBadRequest,
+			wantStatus: http.StatusForbidden,
 		},
 	}
 
@@ -203,7 +200,7 @@ func TestMiddlewareStampsOwnerLabelOnlyOnLibpodBuildPost(t *testing.T) {
 				fakeInspector{}.inspectExec,
 			)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				forwarded = true
-				if got := r.URL.Query().Get("cachefrom"); got != "base" && tt.wantStatus != http.StatusBadRequest {
+				if got := r.URL.Query().Get("cachefrom"); got != "base" && tt.wantStatus == http.StatusAccepted {
 					t.Fatalf("cachefrom = %q, want base", got)
 				}
 				var labels map[string]string
@@ -211,9 +208,6 @@ func TestMiddlewareStampsOwnerLabelOnlyOnLibpodBuildPost(t *testing.T) {
 					t.Fatalf("decode forwarded labels: %v", err)
 				}
 				wantOwner := "attacker"
-				if tt.wantStamped {
-					wantOwner = "job-123"
-				}
 				if got := labels["com.sockguard.owner"]; got != wantOwner {
 					t.Fatalf("owner label = %q, want %q", got, wantOwner)
 				}
@@ -230,8 +224,8 @@ func TestMiddlewareStampsOwnerLabelOnlyOnLibpodBuildPost(t *testing.T) {
 			if rec.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d; body: %s", rec.Code, tt.wantStatus, rec.Body.String())
 			}
-			if got := forwarded; got != (tt.wantStatus != http.StatusBadRequest) {
-				t.Fatalf("forwarded = %v, want %v", got, tt.wantStatus != http.StatusBadRequest)
+			if got := forwarded; got != (tt.wantStatus == http.StatusAccepted) {
+				t.Fatalf("forwarded = %v, want %v", got, tt.wantStatus == http.StatusAccepted)
 			}
 		})
 	}

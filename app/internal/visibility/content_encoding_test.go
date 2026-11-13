@@ -314,7 +314,7 @@ func TestVisibilityFiltersRefuseAnExpandingGzipBody(t *testing.T) {
 	if meta.ReasonCode != reasonCodeVisibilityResponseTooLarge {
 		t.Fatalf("meta.ReasonCode = %q, want %q", meta.ReasonCode, reasonCodeVisibilityResponseTooLarge)
 	}
-	if got := rec.Body.String(); !strings.Contains(got, responseTooLargeMessage) {
+	if got := rec.Body.String(); !strings.Contains(got, filter.ResponseTooLargeMessage()) {
 		t.Fatalf("body = %s, want the size refusal", got)
 	}
 }

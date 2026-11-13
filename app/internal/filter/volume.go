@@ -24,6 +24,11 @@ type VolumeOptions struct {
 	// cross-wires it. Only consulted when AllowDriverOpts is true, since
 	// otherwise every driver options map is already denied outright.
 	AllowedBindMounts []string
+	// AllowTmpfsPrivilegedOptions is the tmpfs knob, cross-wired like
+	// AllowedBindMounts: a local-driver volume of type tmpfs carries the same
+	// exec/suid/dev flags a tmpfs mount does, in "o". Only consulted when
+	// AllowDriverOpts is true. Default false.
+	AllowTmpfsPrivilegedOptions bool
 	// AllowClusterVolumeSecrets permits ClusterVolumeSpec.Secrets on
 	// PUT /volumes/{name}. Default false, and deliberately its own knob
 	// rather than a reuse of AllowDriverOpts: driver options are a routine
@@ -41,11 +46,12 @@ type VolumeOptions struct {
 }
 
 type volumePolicy struct {
-	allowCustomDrivers        bool
-	allowDriverOpts           bool
-	allowedBindMounts         []string
-	allowClusterVolumeSecrets bool
-	allowClusterVolumeUpdates bool
+	allowCustomDrivers          bool
+	allowDriverOpts             bool
+	allowedBindMounts           []string
+	allowTmpfsPrivilegedOptions bool
+	allowClusterVolumeSecrets   bool
+	allowClusterVolumeUpdates   bool
 }
 
 type volumeCreateRequest struct {
@@ -105,11 +111,12 @@ func newVolumePolicy(opts VolumeOptions) volumePolicy {
 	}
 
 	return volumePolicy{
-		allowCustomDrivers:        opts.AllowCustomDrivers,
-		allowDriverOpts:           opts.AllowDriverOpts,
-		allowedBindMounts:         allowed,
-		allowClusterVolumeSecrets: opts.AllowClusterVolumeSecrets,
-		allowClusterVolumeUpdates: opts.AllowClusterVolumeUpdates,
+		allowCustomDrivers:          opts.AllowCustomDrivers,
+		allowDriverOpts:             opts.AllowDriverOpts,
+		allowedBindMounts:           allowed,
+		allowTmpfsPrivilegedOptions: opts.AllowTmpfsPrivilegedOptions,
+		allowClusterVolumeSecrets:   opts.AllowClusterVolumeSecrets,
+		allowClusterVolumeUpdates:   opts.AllowClusterVolumeUpdates,
 	}
 }
 
@@ -146,6 +153,9 @@ func (p volumePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPa
 
 	for _, options := range []map[string]string{req.DriverOpts, req.Opts} {
 		if denyReason := denyLocalVolumeBindDeviceReason(req.Driver, options, p.allowedBindMounts, "volume create"); denyReason != "" {
+			return denyReason, nil
+		}
+		if denyReason := denyLocalVolumeTmpfsPrivilegeReason(req.Driver, options, p.allowTmpfsPrivilegedOptions, "volume create", tmpfsOptionKeyCompat); denyReason != "" {
 			return denyReason, nil
 		}
 	}

@@ -76,6 +76,11 @@ import (
 type libpodRootfsChainDaemon struct {
 	mu      sync.Mutex
 	created []string
+	// docker makes GET /version answer as dockerd. Every other route is the
+	// same, so a test can send the same body to either engine's identity.
+	docker bool
+	// versionFails makes GET /version answer 503, so the flavor probe fails.
+	versionFails bool
 }
 
 // libpodRootfsChainDaemonDir is the working directory the daemon resolves a
@@ -93,7 +98,11 @@ func (d *libpodRootfsChainDaemon) ServeHTTP(w http.ResponseWriter, r *http.Reque
 	var create func(io.Reader) error
 	switch {
 	case r.Method == http.MethodGet && normPath == "/version":
-		_ = json.NewEncoder(w).Encode(engineChainVersion(true))
+		if d.versionFails {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(engineChainVersion(!d.docker))
 		return
 	case r.Method == http.MethodPost && normPath == "/libpod/containers/create" && versioned:
 		create = d.createLibpodContainer
@@ -711,7 +720,7 @@ func TestServeChainLibpodRootfsAndOverlayNeedTheBindMountAllowlist(t *testing.T)
 		},
 		{
 			name:        "libpod tmpfs mount reaches the daemon",
-			send:        libpod(`"image":"alpine","mounts":[{"type":"tmpfs","source":"tmpfs","destination":"/tmp/x"}]`),
+			send:        libpod(`"image":"alpine","mounts":[{"type":"tmpfs","source":"tmpfs","destination":"/tmp/x","options":["noexec","nosuid","nodev"]}]`),
 			wantStatus:  http.StatusCreated,
 			wantCreated: created("tmpfs=tmpfs:/tmp/x"),
 		},

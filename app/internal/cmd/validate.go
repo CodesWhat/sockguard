@@ -80,6 +80,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	warnLogger := slog.New(slog.NewTextHandler(errOut, nil))
 	warnIfRulesMatchNoKnownRoute(cfg, warnLogger)
 	warnIfCreateAllowedWithResponseRedaction(cfg, warnLogger)
+	warnIfPingNotAllowed(cfg, warnLogger)
 
 	printHeader(out, stdoutP, cfg, compatActive)
 	printRules(out, stdoutP, cfg, len(compiled))

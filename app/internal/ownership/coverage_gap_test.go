@@ -637,3 +637,25 @@ func TestAddOwnerLabelToServiceBodyNoTaskTemplate(t *testing.T) {
 		t.Fatalf("owner label = %#v, want job-123", cl["com.sockguard.owner"])
 	}
 }
+
+// TestAllowOwnershipRequestUnprefixedEmptyReferencesStayPassThrough pins the
+// other direction of the strictest-verdict accumulation: with a non-nil but
+// empty reference set and a path the ownership check does not recognize, no
+// step sees an owned resource, so the combined verdict must stay
+// verdictPassThrough. A reference step that promoted its own passthrough to
+// verdictAllow would report an authorized, owned target for a request that
+// names none.
+func TestAllowOwnershipRequestUnprefixedEmptyReferencesStayPassThrough(t *testing.T) {
+	t.Parallel()
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+	fi := fakeInspector{}
+	refs := &ownershipRequestReferences{}
+
+	verdict, reason, err := allowOwnershipRequestUnprefixed(context.Background(), http.MethodPost, "/containers/create", "/containers/create", opts, fi.inspectResource, fi.inspectExec, refs)
+	if err != nil {
+		t.Fatalf("allowOwnershipRequestUnprefixed() error = %v", err)
+	}
+	if verdict != verdictPassThrough || reason != "" {
+		t.Fatalf("allowOwnershipRequestUnprefixed() = (%v, %q), want (verdictPassThrough, \"\")", verdict, reason)
+	}
+}

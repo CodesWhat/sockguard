@@ -52,9 +52,9 @@ func TestHomarrPresetConformance(t *testing.T) {
 		{"v-prefixed-container-remove", http.MethodDelete, "/v1.45/containers/abc", "", true},
 		{"v-prefixed-container-remove-force-denied", http.MethodDelete, "/v1.45/containers/abc?force=1", "", false},
 
-		// Homarr does not call Docker metadata endpoints.
-		{"ping-get-denied", http.MethodGet, "/_ping", "", false},
-		{"ping-head-denied", http.MethodHead, "/_ping", "", false},
+		// Ping is allowed (clients ping first); version and info stay denied.
+		{"ping-get", http.MethodGet, "/_ping", "", true},
+		{"ping-head", http.MethodHead, "/_ping", "", true},
 		{"version-denied", http.MethodGet, "/version", "", false},
 		{"info-denied", http.MethodGet, "/info", "", false},
 		{"events-denied", http.MethodGet, "/events", "", false},

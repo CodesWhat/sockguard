@@ -32,6 +32,12 @@ health:
   path: /health
 
 rules:
+  # Docker clients ping the daemon first; /_ping returns only "OK" and the API version header.
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+
   # Container reads — list, inspect, stats. A single "*" matches one path
   # segment, so the container-ID position cannot absorb a trailing
   # /archive, /export, /logs or /attach.

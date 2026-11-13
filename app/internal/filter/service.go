@@ -19,12 +19,17 @@ const maxServiceBodyBytes = 1 << 20 // 1 MiB
 // ServiceOptions configures request-body inspection for service create/update.
 type ServiceOptions struct {
 	// AllowedImages is an opt-in exact image reference allowlist.
-	AllowedImages      []string
-	AllowHostNetwork   bool
-	AllowedBindMounts  []string
-	AllowAllRegistries bool
-	AllowOfficial      bool
-	AllowedRegistries  []string
+	AllowedImages     []string
+	AllowHostNetwork  bool
+	AllowedBindMounts []string
+	// AllowTmpfsPrivilegedOptions permits ContainerSpec tmpfs mounts whose
+	// TmpfsOptions.Options turn on exec, dev or suid. It is not a key of its
+	// own: ToFilterOptions cross-wires container_create's, since a service
+	// mount carries the same flags. Default false.
+	AllowTmpfsPrivilegedOptions bool
+	AllowAllRegistries          bool
+	AllowOfficial               bool
+	AllowedRegistries           []string
 	// AllowAllCapabilities / AllowedCapabilities mirror the container-create
 	// CapabilityAdd allowlist for swarm task containers (ContainerSpec).
 	AllowAllCapabilities bool
@@ -78,26 +83,36 @@ type ServiceOptions struct {
 	// reads them.
 	RequireCPULimit     bool
 	RequireCPULimitHard bool
+
+	// AllowedLogDrivers allowlists TaskTemplate.LogDriver.Name, and
+	// AllowedLogEndpointOptions lists the destination options
+	// (logEndpointOptionKeys) it may carry. Default empty: off. An empty
+	// LogDriver selects the swarm default and is always allowed. See
+	// logDriverPolicy.
+	AllowedLogDrivers         []string
+	AllowedLogEndpointOptions []string
 }
 
 type servicePolicy struct {
-	allowedImages              createImageAllowlist
-	allowHostNetwork           bool
-	allowedBindMounts          []string
-	imagePolicy                imagePullPolicy
-	allowAllCapabilities       bool
-	allowedCapabilities        []string
-	allowSysctls               bool
-	requireNonRootUser         bool
-	requireNoNewPrivileges     bool
-	requireReadonlyRootfs      bool
-	requireDropAllCapabilities bool
-	denyUnconfinedSeccomp      bool
-	denyCustomSeccompProfiles  bool
-	denyUnconfinedAppArmor     bool
-	denySelinuxDisable         bool
-	denySelinuxLabelOverride   bool
-	imageTrust                 imageTrustFields
+	allowedImages               createImageAllowlist
+	allowHostNetwork            bool
+	allowedBindMounts           []string
+	allowTmpfsPrivilegedOptions bool
+	imagePolicy                 imagePullPolicy
+	allowAllCapabilities        bool
+	allowedCapabilities         []string
+	allowSysctls                bool
+	requireNonRootUser          bool
+	requireNoNewPrivileges      bool
+	requireReadonlyRootfs       bool
+	requireDropAllCapabilities  bool
+	denyUnconfinedSeccomp       bool
+	denyCustomSeccompProfiles   bool
+	denyUnconfinedAppArmor      bool
+	denySelinuxDisable          bool
+	denySelinuxLabelOverride    bool
+	imageTrust                  imageTrustFields
+	logDrivers                  logDriverPolicy
 }
 
 type serviceRequest struct {
@@ -112,6 +127,8 @@ type serviceRequest struct {
 		// checked for a "host" Target or the host-network deny can be
 		// bypassed by using this field instead of the deprecated one.
 		Networks []serviceNetwork `json:"Networks"`
+		// LogDriver is the task's log driver (moby TaskSpec.LogDriver).
+		LogDriver *serviceLogDriver `json:"LogDriver"`
 	} `json:"TaskTemplate"`
 	// Networks is the deprecated top-level ServiceSpec.Networks location.
 	Networks []serviceNetwork `json:"Networks"`
@@ -182,6 +199,16 @@ type serviceMount struct {
 	// which checks the device against the same allowlist a Type: "bind" mount
 	// is checked against.
 	VolumeOptions *serviceMountVolumeOptions `json:"VolumeOptions"`
+	// TmpfsOptions.Options are the mount flags of a tmpfs mount, in the same
+	// 1-or-2-element entry shape as container create's, and answer to the
+	// same allow_tmpfs_privileged_options gate.
+	TmpfsOptions *serviceMountTmpfsOptions `json:"TmpfsOptions"`
+}
+
+// serviceMountTmpfsOptions mirrors the swarm ContainerSpec Mount.TmpfsOptions
+// object, narrowed to the field the policy inspects.
+type serviceMountTmpfsOptions struct {
+	Options [][]string `json:"Options"`
 }
 
 // serviceMountVolumeOptions mirrors the swarm ContainerSpec Mount.VolumeOptions
@@ -194,6 +221,12 @@ type serviceMountVolumeOptions struct {
 // Mount.VolumeOptions.DriverConfig object. An empty Name selects the daemon's
 // default driver, which is the local one.
 type serviceMountVolumeDriverConfig struct {
+	Name    string            `json:"Name"`
+	Options map[string]string `json:"Options"`
+}
+
+// serviceLogDriver mirrors swarm TaskSpec.LogDriver (moby swarm.Driver).
+type serviceLogDriver struct {
 	Name    string            `json:"Name"`
 	Options map[string]string `json:"Options"`
 }
@@ -212,10 +245,16 @@ func newServicePolicy(opts ServiceOptions) servicePolicy {
 		allowed = append(allowed, normalized)
 	}
 
+	trustOpts := opts.ImageTrust
+	trustOpts.AllowAllRegistries = opts.AllowAllRegistries
+	trustOpts.AllowOfficial = opts.AllowOfficial
+	trustOpts.AllowedRegistries = opts.AllowedRegistries
+
 	return servicePolicy{
-		allowedImages:     newCreateImageAllowlist(opts.AllowedImages),
-		allowHostNetwork:  opts.AllowHostNetwork,
-		allowedBindMounts: allowed,
+		allowedImages:               newCreateImageAllowlist(opts.AllowedImages),
+		allowHostNetwork:            opts.AllowHostNetwork,
+		allowedBindMounts:           allowed,
+		allowTmpfsPrivilegedOptions: opts.AllowTmpfsPrivilegedOptions,
 		imagePolicy: newImagePullPolicy(ImagePullOptions{
 			AllowAllRegistries: opts.AllowAllRegistries,
 			AllowOfficial:      opts.AllowOfficial,
@@ -233,7 +272,8 @@ func newServicePolicy(opts ServiceOptions) servicePolicy {
 		denyUnconfinedAppArmor:     opts.DenyUnconfinedAppArmor,
 		denySelinuxDisable:         opts.DenySelinuxDisable,
 		denySelinuxLabelOverride:   opts.DenySelinuxLabelOverride,
-		imageTrust:                 buildImageTrustFields(opts.ImageTrust),
+		imageTrust:                 buildImageTrustFields(trustOpts, opts.AllowedImages),
+		logDrivers:                 newLogDriverPolicy(opts.AllowedLogDrivers, opts.AllowedLogEndpointOptions),
 	}
 }
 
@@ -431,6 +471,20 @@ func (p servicePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedP
 			if denyReason := denyLocalVolumeBindDeviceReason(driverConfig.Name, driverConfig.Options, p.allowedBindMounts, "service"); denyReason != "" {
 				return denyReason, nil
 			}
+			if denyReason := denyLocalVolumeTmpfsPrivilegeReason(driverConfig.Name, driverConfig.Options, p.allowTmpfsPrivilegedOptions, "service", tmpfsOptionKeyCompat); denyReason != "" {
+				return denyReason, nil
+			}
+		}
+
+		if mount.TmpfsOptions != nil {
+			switch verdict, option := checkStructuredTmpfsOptions(mount.TmpfsOptions.Options); verdict {
+			case tmpfsStructuredMalformed:
+				return "service denied: malformed tmpfs mount option", nil
+			case tmpfsStructuredPrivileged:
+				if !p.allowTmpfsPrivilegedOptions {
+					return fmt.Sprintf("service denied: tmpfs mount option %q is not allowed", option), nil
+				}
+			}
 		}
 
 		if !strings.EqualFold(mount.Type, "bind") {
@@ -445,6 +499,12 @@ func (p servicePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedP
 
 	if denyReason := p.denyImageMountReason(req.TaskTemplate.ContainerSpec.Mounts); denyReason != "" {
 		return denyReason, nil
+	}
+
+	if logDriver := req.TaskTemplate.LogDriver; logDriver != nil {
+		if denyReason := p.logDrivers.denyMapReason("service", logDriver.Name, logDriver.Options); denyReason != "" {
+			return denyReason, nil
+		}
 	}
 
 	// Identity/privilege rails: ContainerSpec carries swarm equivalents of the
@@ -477,7 +537,13 @@ func (p servicePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedP
 	}
 	if p.imageTrust.verifier != nil {
 		imageRef := strings.TrimSpace(req.TaskTemplate.ContainerSpec.Image)
-		denyReason, verifiedDigest := verifyImageTrust(r.Context(), logger, p.imageTrust, imageRef, "service")
+		// A service is scoped by its own registry policy (allow_all_registries,
+		// allow_official, allowed_registries), the same one that gates the
+		// image above, so signature discovery contacts only a registry that
+		// policy already admits.
+		trustFields := p.imageTrust
+		trustFields.registry = p.imagePolicy
+		denyReason, verifiedDigest := verifyImageTrust(r.Context(), logger, trustFields, imageRef, "service")
 		if denyReason != "" {
 			return denyReason, nil
 		}

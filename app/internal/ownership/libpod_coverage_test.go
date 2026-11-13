@@ -647,6 +647,8 @@ var wantOwnerUnscopeableReasonCodes = map[string]string{
 	filter.LibpodArtifactJSONPath:    "owner_libpod_artifact_json_unscopeable",
 	filter.LibpodArtifactExtractPath: "owner_libpod_artifact_extract_unscopeable",
 	filter.LibpodGenerateSystemdPath: "owner_libpod_generate_systemd_unscopeable",
+	filter.LibpodGenerateKubePath:    "owner_libpod_generate_kube_unscopeable",
+	filter.LibpodKubeGeneratePath:    "owner_libpod_kube_generate_unscopeable",
 	filter.LibpodShowMountedPath:     "owner_libpod_show_mounted_unscopeable",
 	filter.LibpodContainerStatsPath:  "owner_libpod_container_stats_unscopeable",
 	filter.LibpodPodStatsPath:        "owner_libpod_pod_stats_unscopeable",
@@ -827,6 +829,8 @@ func TestLibpodUnscopeableReadsWereNotCoveredByTheExistingIdentifiers(t *testing
 		wantOK         bool
 	}{
 		{path: filter.LibpodGenerateSystemdPath, classify: libpodContainerIdentifier, wantIdentifier: "", wantOK: false},
+		{path: filter.LibpodGenerateKubePath, classify: libpodContainerIdentifier, wantIdentifier: "", wantOK: false},
+		{path: filter.LibpodKubeGeneratePath, classify: libpodContainerIdentifier, wantIdentifier: "", wantOK: false},
 		{path: "/libpod/quadlets/json", classify: libpodContainerIdentifier, wantIdentifier: "", wantOK: false},
 		{path: filter.LibpodQuadletFilePath, classify: libpodContainerIdentifier, wantIdentifier: "", wantOK: false},
 		{path: filter.LibpodQuadletExistsPath, classify: libpodContainerIdentifier, wantIdentifier: "", wantOK: false},

@@ -2169,6 +2169,33 @@ func TestValidateConcurrency_BoundaryEqualities(t *testing.T) {
 	})
 }
 
+func TestValidateConcurrency_MaxStreams(t *testing.T) {
+	neg, zero, ok := int64(-1), int64(0), int64(32)
+	tests := []struct {
+		name    string
+		streams *int64
+		wantErr bool
+	}{
+		{"unset", nil, false},
+		{"zero means unlimited", &zero, false},
+		{"positive", &ok, false},
+		{"negative rejected", &neg, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := validateLimitsConfig("clients.profiles[0].limits", LimitsConfig{
+				Concurrency: &ConcurrencyConfig{MaxInflight: 4, MaxStreams: tc.streams},
+			})
+			if tc.wantErr != (len(errs) > 0) {
+				t.Fatalf("errs = %v, wantErr %v", errs, tc.wantErr)
+			}
+			if tc.wantErr && !strings.Contains(errs[0], "max_streams") {
+				t.Fatalf("error should name max_streams: %v", errs)
+			}
+		})
+	}
+}
+
 // Negative burst must surface its own error rather than collide with the
 // burst<tokens_per_second message; the burst<0 case is mutually exclusive
 // with the burst<tokens_per_second case in validateLimitsConfig.

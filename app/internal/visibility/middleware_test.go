@@ -2895,3 +2895,54 @@ func TestResourceVisibleNotFound(t *testing.T) {
 		t.Error("resourceVisible() = false for not-found resource, want true (treat as visible)")
 	}
 }
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type failingInspectRoundTripper struct{}
+
+func (failingInspectRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("daemon unreachable")
+}
+
+func TestInspectResourceRecordsOnlySuccessfulLookups(t *testing.T) {
+	ctxWithMeta := func() (context.Context, *logging.RequestMeta) {
+		meta := &logging.RequestMeta{}
+		return logging.WithMeta(context.Background(), meta), meta
+	}
+
+	t.Run("error is never recorded", func(t *testing.T) {
+		deps := newVisibilityDepsClient(&http.Client{Transport: failingInspectRoundTripper{}})
+		ctx, meta := ctxWithMeta()
+		for _, kind := range []dockerresource.Kind{dockerresource.KindContainer, dockerresource.KindNetwork} {
+			if _, _, err := deps.inspectResource(ctx, kind, "web"); err == nil {
+				t.Fatalf("%s: expected an inspect error", kind)
+			}
+			if _, _, ok := meta.InspectedLabels(string(kind), "web"); ok {
+				t.Fatalf("%s: failed inspect was recorded on the request", kind)
+			}
+		}
+	})
+
+	t.Run("success is recorded", func(t *testing.T) {
+		deps := newVisibilityDepsClient(&http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{},
+				Body:       io.NopCloser(strings.NewReader(`{"Config":{"Labels":{"env":"prod"}},"Labels":{"env":"prod"}}`)),
+				Request:    r,
+			}, nil
+		})})
+		ctx, meta := ctxWithMeta()
+		for _, kind := range []dockerresource.Kind{dockerresource.KindContainer, dockerresource.KindNetwork} {
+			if _, _, err := deps.inspectResource(ctx, kind, "web"); err != nil {
+				t.Fatalf("%s: %v", kind, err)
+			}
+			labels, found, ok := meta.InspectedLabels(string(kind), "web")
+			if !ok || !found || labels["env"] != "prod" {
+				t.Fatalf("%s: recorded = %v, %v, %v", kind, labels, found, ok)
+			}
+		}
+	})
+}

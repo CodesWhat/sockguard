@@ -65,5 +65,5 @@ func PinIdentityAcceptEncoding(header http.Header) {
 // ownership middlewares read their buffered bodies through, so the three
 // layers cannot drift on the size cap or on which codings they accept.
 func decodedResponseReader(resp *http.Response) (io.Reader, error) {
-	return bodycodec.Reader(resp.Header, resp.Body, requestfilter.MaxResponseBodyBytes)
+	return bodycodec.Reader(resp.Header, resp.Body, requestfilter.ResponseBodyLimit())
 }

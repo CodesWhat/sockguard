@@ -45,15 +45,12 @@ health:
   enabled: true
   path: /health
 
-# This preset keeps redact_network_topology: false. Since v3.0, topology
-# redaction writes type-valid empty values (IPAddress, Gateway,
-# GlobalIPv6Address, IPv6Gateway, MacAddress) instead of "<redacted>", and it no
-# longer touches NetworkMode or network IDs, so it doesn't break Diun's
-# ContainerList decoding. Operators can turn it back on; the cost is that
-# container addresses come back empty. Mount paths and container env stay
-# redacted, Diun reads neither.
-response:
-  redact_network_topology: false
+# Network topology redaction stays on (the default). It writes type-valid
+# empty values (IPAddress, Gateway, GlobalIPv6Address, IPv6Gateway,
+# MacAddress) instead of "<redacted>" and leaves NetworkMode and network IDs
+# alone, so Diun's ContainerList decoding works. Container addresses come back
+# empty, which Diun does not read. Mount paths and container env stay redacted
+# too (Diun reads neither).
 
 rules:
   # Health and metadata

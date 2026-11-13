@@ -10,8 +10,10 @@ package ownership
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -22,6 +24,37 @@ func makeBodyRequest(body []byte) *http.Request {
 	req.ContentLength = int64(len(body))
 	req.Body = io.NopCloser(bytes.NewReader(body))
 	return req
+}
+
+// assertOwnerStamped fails unless the JSON object at path inside raw carries
+// exactly one key folding to "Labels" and that object holds labelKey=owner.
+func assertOwnerStamped(t *testing.T, raw []byte, labelKey, owner string, path []string) {
+	t.Helper()
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("stamped body is not a JSON object: %v: %s", err, raw)
+	}
+	cur := decoded
+	for _, k := range path {
+		next, ok := cur[k].(map[string]any)
+		if !ok {
+			t.Fatalf("missing object at %q in %s", k, raw)
+		}
+		cur = next
+	}
+	variants := 0
+	for k := range cur {
+		if strings.EqualFold(k, "Labels") {
+			variants++
+		}
+	}
+	if variants != 1 {
+		t.Fatalf("%d keys fold to Labels, want 1: %s", variants, raw)
+	}
+	labels, ok := cur["Labels"].(map[string]any)
+	if !ok || labels[labelKey] != owner {
+		t.Fatalf("owner label not stamped: %s", raw)
+	}
 }
 
 // FuzzOwnershipMutateBody targets addOwnerLabelToBody, which is the widest
@@ -54,10 +87,15 @@ func FuzzOwnershipMutateBody(f *testing.F) {
 	f.Add([]byte(`{"Memory":9223372036854775807,"Labels":{}}`))
 
 	f.Fuzz(func(t *testing.T, body []byte) {
-		// We only care that no panic occurs; errors are acceptable.
 		req := makeBodyRequest(body)
-		//nolint:errcheck
-		_ = addOwnerLabelToBody(req, "com.sockguard.owner", "fuzz-owner")
+		if err := addOwnerLabelToBody(req, "com.sockguard.owner", "fuzz-owner"); err != nil {
+			return // errors are acceptable; the middleware denies on them
+		}
+		raw, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("read stamped body: %v", err)
+		}
+		assertOwnerStamped(t, raw, "com.sockguard.owner", "fuzz-owner", nil)
 	})
 }
 
@@ -77,7 +115,14 @@ func FuzzOwnershipMutateServiceBody(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, body []byte) {
 		req := makeBodyRequest(body)
-		//nolint:errcheck
-		_ = addOwnerLabelToServiceBody(req, "com.sockguard.owner", "fuzz-owner")
+		if err := addOwnerLabelToServiceBody(req, "com.sockguard.owner", "fuzz-owner"); err != nil {
+			return // errors are acceptable; the middleware denies on them
+		}
+		raw, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("read stamped body: %v", err)
+		}
+		assertOwnerStamped(t, raw, "com.sockguard.owner", "fuzz-owner", nil)
+		assertOwnerStamped(t, raw, "com.sockguard.owner", "fuzz-owner", []string{"TaskTemplate", "ContainerSpec"})
 	})
 }

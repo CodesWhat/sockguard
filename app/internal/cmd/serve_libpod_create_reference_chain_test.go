@@ -583,6 +583,7 @@ func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 	// volumes_from is refused by the create inspector before owner isolation
 	// reads it, so the cases that carry one pin that order.
 	volumesFromRefused := "libpod container create denied: VolumesFrom is not allowed"
+	podVolumesFromRefused := "libpod pod create denied: VolumesFrom is not allowed"
 	unreadable := func(create, field string) string {
 		return fmt.Sprintf("libpod owner policy denied %s with a %s reference it can't look up", create, field)
 	}
@@ -1018,12 +1019,13 @@ func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 			wantLookups: []string{"volumes/theirs-data"},
 		},
 		{
-			name:        "pod with the volumes of another owner's container",
-			target:      podURL,
-			body:        pod(`"volumes_from":["theirs-ctr"]`),
-			wantStatus:  http.StatusForbidden,
-			wantReason:  denied("container", "theirs-ctr", "pod create volumes_from"),
-			wantLookups: []string{theirsCtr},
+			name:       "pod with the volumes of another owner's container",
+			target:     podURL,
+			body:       pod(`"volumes_from":["theirs-ctr"]`),
+			wantStatus: http.StatusForbidden,
+			// Like a container create's, a pod's volumes_from is refused by
+			// the create inspector before owner isolation reads it.
+			wantReason: podVolumesFromRefused,
 		},
 		{
 			name:        "pod on another owner's network",
@@ -1083,7 +1085,7 @@ func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 		{
 			name:       "pod with its own resources",
 			target:     podURL,
-			body:       pod(`"volumes":[{"Name":"mine-data","Dest":"/data"}],"volumes_from":["mine-ctr"],"serviceContainerID":"mine-ctr","netns":{"nsmode":"bridge"},"Networks":{"mine-net":{}},` + imageVolume(createRefChainMineImageID)),
+			body:       pod(`"volumes":[{"Name":"mine-data","Dest":"/data"}],"serviceContainerID":"mine-ctr","netns":{"nsmode":"bridge"},"Networks":{"mine-net":{}},` + imageVolume(createRefChainMineImageID)),
 			wantStatus: http.StatusCreated,
 			wantLookups: []string{
 				"containers/mine-ctr", "networks/mine-net", "volumes/mine-data", "images/" + createRefChainMineImageID,
@@ -1093,7 +1095,6 @@ func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 				"network mine-net (team-a)",
 				"service-container mine-ctr (team-a)",
 				"volume mine-data (team-a)",
-				"volumes-from mine-ctr (team-a)",
 			},
 		},
 		{
@@ -1102,7 +1103,7 @@ func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 			// to check.
 			name:       "pod with no infra container naming another owner's resources",
 			target:     podURL,
-			body:       pod(`"no_infra":true,"volumes":[{"Name":"theirs-data","Dest":"/data"}],"volumes_from":["theirs-ctr"],"cni_networks":["theirs-net"],` + imageVolume("theirs-img")),
+			body:       pod(`"no_infra":true,"volumes":[{"Name":"theirs-data","Dest":"/data"}],"cni_networks":["theirs-net"],` + imageVolume("theirs-img")),
 			wantStatus: http.StatusCreated,
 			wantUses:   []string{},
 		},
@@ -1149,7 +1150,7 @@ func TestServeChainLibpodCreateReferencesAreOwnerChecked(t *testing.T) {
 		{
 			name:        "pod with no infra container and its own service container",
 			target:      podURL,
-			body:        pod(`"no_infra":true,"serviceContainerID":"mine-ctr","volumes_from":["theirs-ctr"]`),
+			body:        pod(`"no_infra":true,"serviceContainerID":"mine-ctr"`),
 			wantStatus:  http.StatusCreated,
 			wantLookups: []string{"containers/mine-ctr"},
 			wantUses:    []string{"service-container mine-ctr (team-a)"},

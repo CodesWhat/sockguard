@@ -74,6 +74,17 @@ func (f *fakeWatcher) Close() error {
 func (f *fakeWatcher) Events() <-chan fsnotify.Event { return f.events }
 func (f *fakeWatcher) Errors() <-chan error          { return f.errors }
 
+type pollReadyWatcher struct {
+	*fakeWatcher
+	ready chan struct{}
+	once  sync.Once
+}
+
+func (f *pollReadyWatcher) Events() <-chan fsnotify.Event {
+	f.once.Do(func() { close(f.ready) })
+	return f.fakeWatcher.Events()
+}
+
 // emit sends an event into the channel — blocking is fine for tests since
 // the buffer is sized generously.
 func (f *fakeWatcher) emit(ev fsnotify.Event) {
@@ -822,7 +833,7 @@ func TestPollFallbackFiresOnMtimeChange(t *testing.T) {
 		t.Fatalf("write cfg: %v", err)
 	}
 
-	fw := newFakeWatcher()
+	fw := &pollReadyWatcher{fakeWatcher: newFakeWatcher(), ready: make(chan struct{})}
 	reloadCount := atomic.Int64{}
 	fired := make(chan struct{}, 4)
 
@@ -850,27 +861,14 @@ func TestPollFallbackFiresOnMtimeChange(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); _ = r.Run(ctx) }()
 
-	// Wait until the poll-fallback goroutine has seeded its baseline snapshot
-	// before we mutate the file. The baseline is set synchronously inside
-	// loop() before the for-select starts, so we only need the Run goroutine
-	// to be scheduled past that point.
-	//
-	// Replaced time.Sleep(40ms) with a poll loop (5ms ticks, 2s cap) so this
-	// step exits quickly on fast machines and stays reliable on slow CI without
-	// a fixed-duration bet. We wait for at least 2×PollInterval to guarantee
-	// at least one poller tick has fired and the baseline is firmly seeded.
-	{
-		const warmup = 2 * 20 * time.Millisecond // 2 × PollInterval
-		deadline := time.Now().Add(2 * time.Second)
-		start := time.Now()
-		tick := time.NewTicker(5 * time.Millisecond)
-		defer tick.Stop()
-		for time.Since(start) < warmup {
-			if time.Now().After(deadline) {
-				break
-			}
-			<-tick.C
-		}
+	t.Cleanup(func() { cancel(); <-done })
+
+	// Events is first evaluated by loop's select after setupPoller seeds the
+	// baseline. Wait for that point before changing the file.
+	select {
+	case <-fw.ready:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reload loop did not reach its first select")
 	}
 
 	// Rewrite the file with new content + advance mtime so size, mtime, and

@@ -20,6 +20,7 @@ on:
       - ".github/workflows/release-from-tag.yml"
       - "scripts/ci/chart-oci.sh"
       - "scripts/assert-chart-release.mjs"
+      - "scripts/compare-chart-packages.py"
       - "scripts/pin-chart-image-digest.mjs"
       - "scripts/chart-image-tag.mjs"
       - "scripts/helm-publish.test.mjs"
@@ -45,7 +46,7 @@ jobs:
     steps:
       # Read-only job, so audit mode (DEP-19): it holds no write credential.
       - name: Harden Runner
-        uses: step-security/harden-runner@ccd8616d44fd3846e67624a50d5aad6d37bf2d25  # v2.22.1
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
@@ -126,6 +127,7 @@ jobs:
 
       - name: Check the pulled chart
         env:
+          CHART_PACKAGE: ${{ steps.package.outputs.path }}
           CHART_REGISTRY: localhost:5000/charts
           CHART_PLAIN_HTTP: "1"
           CHART_VERSION: ${{ steps.package.outputs.version }}

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"net/http"
 	"testing"
+
+	"github.com/codeswhat/sockguard/v3/app/internal/upstreamflavor"
 )
 
 // benchmarkContainerCreateBody is a realistic ~3.9 KB POST /containers/create
@@ -59,7 +61,7 @@ func BenchmarkMutateContainerCreateOwnershipBody(b *testing.B) {
 	b.SetBytes(int64(len(body)))
 	for b.Loop() {
 		req := benchmarkCreateRequest(reader, body)
-		if _, err := mutateContainerCreateOwnershipBody(req, DefaultLabelKey, "job-123"); err != nil {
+		if _, err := mutateContainerCreateOwnershipBody(req, DefaultLabelKey, "job-123", upstreamflavor.Docker); err != nil {
 			b.Fatalf("mutateContainerCreateOwnershipBody() error = %v", err)
 		}
 	}
@@ -82,7 +84,7 @@ func TestMutateContainerCreateOwnershipBodyDecodesTheBodyOnce(t *testing.T) {
 
 	got := testing.AllocsPerRun(50, func() {
 		req := benchmarkCreateRequest(reader, body)
-		if _, err := mutateContainerCreateOwnershipBody(req, DefaultLabelKey, "job-123"); err != nil {
+		if _, err := mutateContainerCreateOwnershipBody(req, DefaultLabelKey, "job-123", upstreamflavor.Docker); err != nil {
 			t.Fatalf("mutateContainerCreateOwnershipBody() error = %v", err)
 		}
 	})

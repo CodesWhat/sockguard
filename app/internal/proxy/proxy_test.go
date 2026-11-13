@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codeswhat/sockguard/v3/app/internal/bodycodec"
 	"github.com/codeswhat/sockguard/v3/app/internal/httpjson"
 	"github.com/codeswhat/sockguard/v3/app/internal/logging"
 	"github.com/codeswhat/sockguard/v3/app/internal/responsefilter"
@@ -988,5 +989,38 @@ func TestNew_ClientCancelMidResponsePropagates(t *testing.T) {
 	case <-upstreamCtx:
 	case <-time.After(3 * time.Second):
 		t.Fatal("upstream handler did not observe client cancellation within 3s")
+	}
+}
+
+func TestNew_ErrorHandlerNamesBufferedBodySettingWhenResponseTooLarge(t *testing.T) {
+	t.Parallel()
+	rp := NewWithOptions("/tmp/does-not-matter.sock", testLogger(), Options{})
+
+	for _, cause := range []error{
+		fmt.Errorf("%w: %w", responsefilter.ErrResponseRejected, responsefilter.ErrResponseTooLarge),
+		fmt.Errorf("%w: %w", responsefilter.ErrResponseRejected, bodycodec.ErrTooLarge),
+	} {
+		meta := &logging.RequestMeta{Decision: "allow", ReasonCode: "matched_allow_rule", Reason: "allow"}
+		req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
+		req = req.WithContext(logging.WithMeta(req.Context(), meta))
+		rec := httptest.NewRecorder()
+
+		rp.ErrorHandler(rec, req, cause)
+
+		if rec.Code != http.StatusBadGateway {
+			t.Fatalf("status = %d, want 502", rec.Code)
+		}
+		if meta.ReasonCode != reasonCodeUpstreamResponseTooLarge {
+			t.Fatalf("ReasonCode = %q, want %q", meta.ReasonCode, reasonCodeUpstreamResponseTooLarge)
+		}
+		var body struct {
+			Message string `json:"message"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if !strings.Contains(body.Message, "response.max_buffered_body") {
+			t.Fatalf("message %q should name response.max_buffered_body", body.Message)
+		}
 	}
 }

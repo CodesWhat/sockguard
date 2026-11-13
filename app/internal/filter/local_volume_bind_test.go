@@ -159,7 +159,7 @@ func TestContainerCreateVolumeMountInlineBind(t *testing.T) {
 		},
 		{
 			name: "non-bind local options are untouched",
-			body: `{"HostConfig":{"Mounts":[{"Type":"volume","Source":"vol","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"tmpfs","o":"size=100m","device":"tmpfs"}}}}]}}`,
+			body: `{"HostConfig":{"Mounts":[{"Type":"volume","Source":"vol","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"tmpfs","o":"size=100m,noexec,nosuid,nodev","device":"tmpfs"}}}}]}}`,
 		},
 		{
 			name: "non-local driver is untouched",
@@ -237,7 +237,7 @@ func TestServiceMountInlineBind(t *testing.T) {
 		{
 			name: "non-bind local options are untouched",
 			path: "/services/create",
-			body: `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Mounts":[{"Type":"volume","Source":"vol","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"tmpfs","o":"size=100m","device":"tmpfs"}}}}]}}}`,
+			body: `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Mounts":[{"Type":"volume","Source":"vol","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"tmpfs","o":"size=100m,noexec,nosuid,nodev","device":"tmpfs"}}}}]}}}`,
 		},
 		{
 			name: "non-local driver is untouched",
@@ -310,7 +310,7 @@ func TestVolumeCreateInlineBind(t *testing.T) {
 		{
 			name: "non-bind local options are untouched",
 			opts: VolumeOptions{AllowDriverOpts: true, AllowedBindMounts: []string{"/safe"}},
-			body: `{"Name":"vol","Driver":"local","DriverOpts":{"type":"tmpfs","o":"size=100m","device":"tmpfs"}}`,
+			body: `{"Name":"vol","Driver":"local","DriverOpts":{"type":"tmpfs","o":"size=100m,noexec,nosuid,nodev","device":"tmpfs"}}`,
 		},
 		{
 			name: "non-local driver is untouched",
@@ -359,7 +359,7 @@ func TestLibpodVolumeCreateInlineBind(t *testing.T) {
 		{
 			name: "non-bind local options are untouched",
 			opts: VolumeOptions{AllowDriverOpts: true, AllowedBindMounts: []string{"/safe"}},
-			body: `{"Name":"vol","Driver":"local","Options":{"type":"tmpfs","o":"size=100m"}}`,
+			body: `{"Name":"vol","Driver":"local","Options":{"type":"tmpfs","o":"size=100m,noexec,nosuid,nodev"}}`,
 		},
 	}
 
@@ -994,7 +994,7 @@ func TestLocalVolumeHostFilesystemEntryPoints(t *testing.T) {
 		},
 		{
 			name:    "a tmpfs quota volume still passes",
-			options: `{"type":"tmpfs","o":"size=100m"}`,
+			options: `{"type":"tmpfs","o":"size=100m,noexec,nosuid,nodev"}`,
 		},
 	}
 
@@ -1090,6 +1090,82 @@ func TestSplitOverlayDirList(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := splitOverlayDirList(tt.value); !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("splitOverlayDirList(%q) = %#v, want %#v", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestContainerCreateInlineTmpfsPrivilegePolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		options    string
+		allow      bool
+		wantReason string
+	}{
+		{name: "restricted tmpfs", options: "noexec,nosuid,nodev"},
+		{name: "exec overrides noexec", options: "noexec,nosuid,nodev,exec", wantReason: "local tmpfs volume options enable"},
+		{name: "suid overrides nosuid", options: "noexec,nosuid,nodev,suid", wantReason: "local tmpfs volume options enable"},
+		{name: "dev overrides nodev", options: "noexec,nosuid,nodev,dev", wantReason: "local tmpfs volume options enable"},
+		{name: "kernel defaults are privileged", options: "size=16m", wantReason: "unless o lists noexec,nosuid,nodev"},
+		{name: "explicit privilege grant", options: "exec,suid,dev", allow: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"HostConfig":{"Mounts":[{"Type":"volume","Source":"data","Target":"/data","VolumeOptions":{"DriverConfig":{"Name":"local","Options":{"type":"tmpfs","device":"tmpfs","o":"` + tc.options + `"}}}}]}}`
+			policy := newContainerCreatePolicy(ContainerCreateOptions{AllowTmpfsPrivilegedOptions: tc.allow})
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(body))
+			reason, err := policy.inspect(testLogger(), req, "/containers/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if tc.wantReason == "" {
+				if reason != "" {
+					t.Fatalf("inspect() denied allowed inline tmpfs: %s", reason)
+				}
+			} else if !strings.Contains(reason, tc.wantReason) {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tc.wantReason)
+			}
+		})
+	}
+}
+
+func TestContainerCreateTmpfsDriverSelection(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, driver string
+		deny         bool
+	}{
+		{name: "default local driver", deny: true},
+		{name: "explicit local driver", driver: "local", deny: true},
+		{name: "other driver", driver: "custom"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			body := `{"HostConfig":{"Mounts":[{"Type":"volume","Source":"data","Target":"/data","VolumeOptions":{"DriverConfig":{"Name":"` + tt.driver + `","Options":{"type":"tmpfs","o":"exec,suid,dev"}}}}]}}`
+			policy := newContainerCreatePolicy(ContainerCreateOptions{})
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(body))
+			reason, err := policy.inspect(testLogger(), req, "/containers/create")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.deny {
+				if !strings.Contains(reason, "local tmpfs volume options enable") {
+					t.Fatalf("local driver reason=%q, want tmpfs privilege refusal", reason)
+				}
+			} else if reason != "" {
+				t.Fatalf("non-local driver received local-driver refusal: %s", reason)
+			}
+		})
+	}
+}
+
+func TestLocalVolumeOverlayDenialOrder(t *testing.T) {
+	for _, tt := range []struct{ options, want string }{
+		{"lowerdir=/z:/a", `volume create denied: local volume lowerdir path "/a" is not allowlisted`},
+		{"upperdir=/a,lowerdir=/z", `volume create denied: local volume lowerdir path "/z" is not allowlisted`},
+	} {
+		t.Run(tt.options, func(t *testing.T) {
+			got := denyLocalVolumeBindDeviceReason("local", map[string]string{"type": "overlay", "device": "/safe/overlay", "o": tt.options}, []string{"/safe"}, "volume create")
+			if got != tt.want {
+				t.Fatalf("denial=%q, want %q", got, tt.want)
 			}
 		})
 	}

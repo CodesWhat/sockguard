@@ -202,6 +202,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	warnIfDefaultProfileExcluded(cfg, logger)
 	warnIfRulesMatchNoKnownRoute(cfg, logger)
 	warnIfCreateAllowedWithResponseRedaction(cfg, logger)
+	warnIfPingNotAllowed(cfg, logger)
 	warnIfMainListenerPlaintext(cfg, logger)
 	runtime, err := newServeRuntime(cfg, logger, deps)
 	if err != nil {
@@ -329,6 +330,8 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	upstreamName := upstreamLabel(runtime.resolver)
 	stopResolver := runtime.startResolver(cmd.Context())
 	defer stopResolver()
+	stopCgroupV1 := runtime.startCgroupV1Refresh(cmd.Context())
+	defer stopCgroupV1()
 	stopWatchdog := runtime.startWatchdog(cmd.Context(), cfg)
 	defer stopWatchdog()
 	stopReadiness := runtime.startReadiness(cmd.Context(), cfg)
@@ -581,6 +584,10 @@ type serveHandlerBuild struct {
 // the rate-limit middleware is installed; see
 // buildServeHandlerLayersWithRuntime.
 func buildServeHandlerChainWithRuntime(b serveHandlerBuild) (http.Handler, func(), bool) {
+	// response.max_buffered_body is a process-wide limit read by every buffering
+	// layer. Setting it as part of the chain build applies it at startup and on
+	// every hot reload, the same moment the other response settings take effect.
+	filter.SetResponseBodyLimit(b.Cfg.Response.MaxBufferedBodyBytes())
 	resolver := runtimeResolver(b.Runtime, b.Cfg)
 	clientProfiles, err := buildServeClientProfiles(b.Cfg, resolver)
 	if err != nil {
@@ -620,8 +627,15 @@ type serveRuntime struct {
 	// the same reason the resolver is: upstream.socket, upstream.endpoints
 	// and upstream.flavor are all reload-immutable, so no reload can point
 	// sockguard at a different daemon or restate which engine this one is.
-	upstreamFlavor                         upstreamflavor.Flavor
+	upstreamFlavor upstreamflavor.Flavor
+	// upstreamProbedDocker is set only when every endpoint's GET /version
+	// positively identified dockerd. See upstreamflavor.Capabilities.
+	upstreamProbedDocker                   bool
 	upstreamPodmanConjunctiveVolumeFilters bool
+	// cgroupV1 holds the live cgroup version probe result, re-probed
+	// periodically and on upstream health changes. Process-scoped like the
+	// flavor.
+	cgroupV1 *cgroupV1Tracker
 }
 
 func newServeRuntime(cfg *config.Config, logger *slog.Logger, deps *serveDeps) (*serveRuntime, error) {
@@ -637,6 +651,8 @@ func newServeRuntime(cfg *config.Config, logger *slog.Logger, deps *serveDeps) (
 	runtime.resolver = resolver
 	runtime.legacyUpstreamSocket = legacy
 	label := upstreamLabel(resolver)
+	runtime.cgroupV1 = newCgroupV1Tracker(deps, resolver, logger)
+	resolver.SetOnChange(func(upstream.Endpoint, bool) { runtime.cgroupV1.kick() })
 
 	if cfg.Health.Enabled || cfg.Health.Watchdog.Enabled {
 		runtime.health = health.NewMonitorWithDialer(label, resolver, deps.now(), logger)
@@ -749,6 +765,16 @@ func attachRuntimeInspectors(cfg *config.Config, res *upstream.Resolver, policy 
 	// POST /libpod/local/images/load names its archive by daemon-host path,
 	// so there is no body to inspect and only the acknowledgment admits it.
 	policy.ImageLoad.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
+	// Under ownership the inspector also reads the owner label out of every
+	// image config in the archive, for the ownership layer to refuse a load
+	// carrying another owner's label. The key is ownership's, not a profile's.
+	policy.ImageLoad.OwnerLabelKey = ""
+	if cfg.Ownership.Owner != "" {
+		policy.ImageLoad.OwnerLabelKey = cfg.Ownership.LabelKey
+		if policy.ImageLoad.OwnerLabelKey == "" {
+			policy.ImageLoad.OwnerLabelKey = ownership.DefaultLabelKey
+		}
+	}
 	policy.ContainerUpdate.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
 	return policy
 }
@@ -823,7 +849,7 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 		// relative order doesn't affect correctness, only which one a
 		// reader sees "closer to the wire" in this slice.
 		namedServeHandlerLayer("withBuildkitMediator", withBuildkitMediator(cfg, resolver, logger, runtimeUpstreamFlavor(runtime))),
-		namedServeHandlerLayer("withHijack", withHijack(cfg, resolver, logger)),
+		namedServeHandlerLayer("withHijack", withHijack(cfg, resolver, logger, runtimeUpstreamCapabilities(runtime).ProbedDocker)),
 		// #152: inserted between hijack and ownership in APPEND order. Later
 		// appends wrap (execute before) earlier ones, so this yields runtime
 		// order ...filter -> visibility -> ownership -> resource-limit guard
@@ -833,7 +859,7 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 		namedServeHandlerLayer("withResourceLimitGuard", withResourceLimitGuard(cfg, resolver, logger, clientProfiles)),
 		namedServeHandlerLayer("withOwnership", withOwnership(cfg, resolver, logger, runtimeUpstreamCapabilities(runtime))),
 		namedServeHandlerLayer("withVisibility", withVisibility(cfg, resolver, logger, runtimeUpstreamCapabilities(runtime))),
-		namedServeHandlerLayer("withFilter", withFilter(cfg, resolver, logger, rules, clientProfiles, runtimeUpstreamFlavor(runtime))),
+		namedServeHandlerLayer("withFilter", withFilter(cfg, resolver, logger, rules, clientProfiles, runtimeUpstreamFlavor(runtime), runtimeCgroupV1Func(runtime), runtimeUpstreamCapabilities(runtime).ProbedDocker)),
 		// withFormBodyGuard is appended right AFTER withFilter so it executes
 		// immediately BEFORE it. Every layer above reads request parameters
 		// from the URL query, and both engines also read them from a form
@@ -967,11 +993,15 @@ func buildRateLimitMiddleware(cfg *config.Config, logger *slog.Logger, runtime *
 
 	warnAssignedProfilesWithoutLimits(cfg, profiles, logger)
 
+	podmanUpstream := runtimeUpstreamFlavor(runtime) == upstreamflavor.Podman
 	sampler, stopSampler := ratelimit.NewAuditSampler()
 	mw, stopLimiters := ratelimit.Middleware(logger, runtime.metrics, sampler, ratelimit.MiddlewareOptions{
 		Profiles:          profiles,
 		ResolveProfile:    clientacl.RequestProfile,
 		GlobalConcurrency: globalConc,
+		IsStreaming: func(w http.ResponseWriter, r *http.Request) bool {
+			return proxy.IsStreamingRequestForFlavor(w, r, podmanUpstream)
+		},
 	})
 	stop := func() {
 		stopLimiters()
@@ -984,12 +1014,20 @@ func namedServeHandlerLayer(name string, with func(http.Handler) http.Handler) s
 	return serveHandlerLayer{name: name, with: with}
 }
 
-func withHijack(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger) func(http.Handler) http.Handler {
+func withHijack(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, probedDocker bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		// Hijack handler: intercepts attach/exec endpoints for native bidirectional
 		// streaming with optimized buffers and TCP half-close signaling. Dials the
 		// same active upstream endpoint as the rest of the proxy.
-		return proxy.HijackHandlerWithDialer(res, effectiveHijackInactivityTimeout(cfg), logger, next)
+		//
+		// Only a positively probed Docker upstream gets the client's upgrade
+		// choice passed through (200 raw stream without Upgrade, 101 with it);
+		// anything else, Podman included, is always asked to upgrade.
+		h := proxy.HijackHandlerWithDialer(res, effectiveHijackInactivityTimeout(cfg), logger, next)
+		if probedDocker {
+			h = proxy.PassClientUpgrade(h)
+		}
+		return h
 	}
 }
 
@@ -1140,6 +1178,7 @@ func withOwnership(cfg *config.Config, res *upstream.Resolver, logger *slog.Logg
 		AllowUnownedImages:              cfg.Ownership.AllowUnownedImages,
 		AllowCrossOwnerNamespaceSharing: cfg.Ownership.AllowCrossOwnerNamespaceSharing,
 		UpstreamFlavor:                  capabilities.Flavor,
+		UpstreamProbedDocker:            capabilities.ProbedDocker,
 		PodmanConjunctiveVolumeFilters:  capabilities.PodmanConjunctiveVolumeFilters,
 	})
 }
@@ -1156,14 +1195,20 @@ func withVisibility(cfg *config.Config, res *upstream.Resolver, logger *slog.Log
 	})
 }
 
-func withFilter(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, rules []*filter.CompiledRule, clientProfiles map[string]filter.Policy, flavor upstreamflavor.Flavor) func(http.Handler) http.Handler {
+func withFilter(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, rules []*filter.CompiledRule, clientProfiles map[string]filter.Policy, flavor upstreamflavor.Flavor, upstreamCgroupV1 func() bool, probedDocker bool) func(http.Handler) http.Handler {
 	warnIfBodyBlindWritesEnabled(cfg, logger)
 	warnIfReadExfiltrationEnabled(cfg, rules, clientProfiles, logger)
 	opts := serveFilterOptions(cfg, res, clientProfiles)
 	opts.Build.PodmanUpstream = flavor == upstreamflavor.Podman
+	opts.ContainerCreate.UpstreamCgroupV1Func = upstreamCgroupV1
+	opts.ContainerCreate.PodmanUpstream = flavor == upstreamflavor.Podman
+	opts.ContainerCreate.DockerUpstream = probedDocker
 	profiles := make(map[string]filter.Policy, len(opts.Profiles))
 	for name, profile := range opts.Profiles {
 		profile.Build.PodmanUpstream = flavor == upstreamflavor.Podman
+		profile.ContainerCreate.UpstreamCgroupV1Func = upstreamCgroupV1
+		profile.ContainerCreate.PodmanUpstream = flavor == upstreamflavor.Podman
+		profile.ContainerCreate.DockerUpstream = probedDocker
 		profiles[name] = profile
 	}
 	opts.Profiles = profiles

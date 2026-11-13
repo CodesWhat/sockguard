@@ -27,7 +27,7 @@ export const SITE_CONFIG = {
   title: "Sockguard - Docker socket proxy that controls what gets through",
   /** Default meta / OpenGraph / Twitter description. */
   description:
-    "We built a default-deny Docker socket proxy in Go. Filter Docker API requests by method, path, and body, then layer on signed policy bundles, per-profile rollout modes, rate limits, hot-reload, and Prometheus metrics.",
+    "Sockguard is CodesWhat's default-deny Docker socket proxy, built in Go. Filter Docker API requests by method, path, and body, then layer on signed policy bundles, per-profile rollout modes, rate limits, hot-reload, and Prometheus metrics.",
   /**
    * Production host (no protocol, no trailing slash). The apex getsockguard.com
    * 307-redirects here, so this is the one canonical host for canonical links,

@@ -146,3 +146,31 @@ func TestFileSyncRetainedOverheadMessageAllowance(t *testing.T) {
 		})
 	}
 }
+
+func TestFileSyncRetainedOverheadExactBoundary(t *testing.T) {
+	t.Parallel()
+	data := framedPackets(t, dataPacket(0, []byte("#")))
+	eof := framedPackets(t, dataEOFPacket(0))
+	stat := framedPackets(t, statPacket("Dockerfile"))
+	stream := append(bytes.Clone(stat), data...)
+	stream = append(stream, eof...)
+	charge := len(data) - 1 + len(eof) + 2*int(fileSyncFrameBookkeepingBytes)
+	messageAllowance := int64(charge - grpcMessageHeaderLen - int(fileSyncFrameBookkeepingBytes))
+	for _, delta := range []int64{-1, 0, 1} {
+		t.Run(fmt.Sprintf("allowance%+d", delta), func(t *testing.T) {
+			s := newFileSyncRespRelay(true, 10, 1024, 1, 1)
+			w := httptest.NewRecorder()
+			d, err := s.relay(w, bytes.NewReader(stream), messageAllowance+delta)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if delta < 0 {
+				if d == nil || d.code != grpcCodeResourceExhausted || d.reasonCode != "buildkit_file_limit_exceeded" || !bytes.Equal(w.Body.Bytes(), stat) {
+					t.Fatalf("overhead over cap: denial=%v, forwarded=%x; want resource refusal with only STAT forwarded", d, w.Body.Bytes())
+				}
+			} else if d != nil || !bytes.Equal(w.Body.Bytes(), stream) {
+				t.Fatalf("within overhead cap: denial=%v, replay matches=%v", d, bytes.Equal(w.Body.Bytes(), stream))
+			}
+		})
+	}
+}

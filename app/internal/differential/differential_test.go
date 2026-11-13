@@ -24,9 +24,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/codeswhat/sockguard/v3/app/internal/filter"
 	"github.com/codeswhat/sockguard/v3/app/internal/proxy"
+	"github.com/codeswhat/sockguard/v3/app/internal/upstream"
 )
 
 // recordedRequest captures one request as the stand-in daemon received it —
@@ -157,7 +159,7 @@ func buildChain(t *testing.T, socketPath string, rules ...filter.Rule) http.Hand
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	var h http.Handler = proxy.NewWithOptions(socketPath, logger, proxy.Options{})
-	h = proxy.HijackHandler(socketPath, logger, h)
+	h = proxy.HijackHandlerWithDialer(upstream.NewSingleSocket(socketPath), 10*time.Minute, logger, h)
 	h = filter.MiddlewareWithOptions(compiled, logger, filter.Options{})(h)
 	return h
 }

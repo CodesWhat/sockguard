@@ -140,3 +140,25 @@ func TestLibpodVolumeInspectLibpodBodyTooLarge(t *testing.T) {
 		t.Fatalf("rejection.status = %d, want %d", rejection.status, http.StatusRequestEntityTooLarge)
 	}
 }
+
+func TestLibpodVolumeTmpfsPrivilegeBoundary(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, options string
+		grant         bool
+		want          string
+	}{
+		{name: "restricted", options: "noexec,nosuid,nodev"},
+		{name: "executable", options: "exec,nosuid,nodev", want: "libpod volume create denied: local tmpfs volume options enable exec, dev, or suid (set request_body.libpod_container_create.allow_tmpfs_privileged_options: true)"},
+		{name: "explicit grant", options: "exec,nosuid,nodev", grant: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := newVolumePolicy(VolumeOptions{AllowDriverOpts: true, AllowTmpfsPrivilegedOptions: tt.grant})
+			req := httptest.NewRequest(http.MethodPost, "/libpod/volumes/create", strings.NewReader(`{"name":"data","driver":"local","options":{"type":"tmpfs","o":"`+tt.options+`"}}`))
+			reason, err := policy.inspectLibpod(nil, req, NormalizePath(req.URL.Path))
+			if err != nil || reason != tt.want {
+				t.Fatalf("inspect=(%q,%v), want %q", reason, err, tt.want)
+			}
+		})
+	}
+}

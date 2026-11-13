@@ -43,6 +43,8 @@ jobs:
     name: "Integration (Engine ${{ matrix.engine }})"
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      DOCKERHUB_LOGIN: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
 
     strategy:
       # One Engine failing must not hide how the others fared — drift usually
@@ -60,7 +62,7 @@ jobs:
       # the busybox sentinel image from Docker Hub — same variable-CDN
       # reasoning as quality-integration.yml. Revisit in stage 2.
       - name: Harden Runner
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
@@ -76,7 +78,7 @@ jobs:
           cache-dependency-path: go.sum
 
       - name: Setup Docker Engine ${{ matrix.engine }}
-        uses: docker/setup-docker-action@2bf61fb9464cc67f0cbdeabed6aa0380accd1c70  # v5.5.0
+        uses: docker/setup-docker-action@7ec28a010822b4626af4874f9448a4b05ac6f3e5  # v5.6.0
         with:
           version: ${{ matrix.engine }}
           # Merged over the hosted daemon config, preserving DNS and other settings.
@@ -111,6 +113,16 @@ jobs:
             echo "live restore must be disabled for isolated Swarm tests; got ${live_restore}" >&2
             exit 1
           fi
+
+      - name: Log in to Docker Hub
+        # Authenticated pulls avoid Docker Hub's anonymous toomanyrequests
+        # limit on shared runner IPs. Skipped unless both credentials are
+        # present (fork PRs, Dependabot).
+        if: ${{ env.DOCKERHUB_LOGIN == 'true' }}
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6  # v4.7.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       # Same digest-pin sourcing as quality-integration.yml: dockerd will not
       # pull-on-create for a digest ref that isn't already local, and the

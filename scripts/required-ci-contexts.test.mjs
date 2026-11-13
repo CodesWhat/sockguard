@@ -208,14 +208,62 @@ describe("required CI contexts", () => {
     const dir = resolve(import.meta.dirname, "../.github/workflows");
     const offenders = [];
     for (const file of readdirSync(dir).filter((f) => f.endsWith(".yml"))) {
-      const lines = readFileSync(resolve(dir, file), "utf8").split("\n");
-      lines.forEach((line, i) => {
-        if (!/^\s*(name|run-name):/u.test(line)) return;
-        if (/\p{Extended_Pictographic}/u.test(line)) {
-          offenders.push(`${file}:${i + 1} ${line.trim()}`);
-        }
-      });
+      offenders.push(...workflowNameEmoji(readFileSync(resolve(dir, file), "utf8"), file));
     }
     assert.deepEqual(offenders, [], `emoji in workflow names:\n${offenders.join("\n")}`);
   });
+});
+
+function workflowNameEmoji(source, file = "fixture.yml") {
+  const offenders = [];
+  let blockIndent = null;
+  source.split("\n").forEach((line, i) => {
+    const indent = line.match(/^\s*/u)[0].length;
+    if (line.trim() && blockIndent !== null && indent <= blockIndent) blockIndent = null;
+    const name = /^\s*(?:name|run-name):/u.test(line);
+    if (
+      (name || (blockIndent !== null && line.trim())) &&
+      /\p{Extended_Pictographic}/u.test(line)
+    ) {
+      offenders.push(`${file}:${i + 1} ${line.trim()}`);
+    }
+    if (/^\s*(?:name|run-name):\s*[>|](?:[1-9][+-]?|[+-][1-9]?)?(?:\s+#.*)?\s*$/u.test(line))
+      blockIndent = indent;
+  });
+  return offenders;
+}
+
+it("checks folded and literal name continuations without scanning unrelated steps", () => {
+  for (const scalar of [">", ">-", "|", "|+"]) {
+    assert.deepEqual(
+      workflowNameEmoji(`run-name: ${scalar}\n  Build\n  🚀\njobs:\n  test:\n    run: echo 🚀\n`),
+      ["fixture.yml:3 🚀"],
+    );
+  }
+  assert.deepEqual(
+    workflowNameEmoji("run-name: >-\n  Build\n\njobs:\n  test:\n    run: echo 🚀\n"),
+    [],
+  );
+});
+
+it("checks indentation indicators in either block scalar header order", () => {
+  for (const key of ["name", "run-name"]) {
+    for (const scalar of [">2", ">2-", ">-2", "|2", "|2+", "|+2"]) {
+      assert.deepEqual(
+        workflowNameEmoji(`${key}: ${scalar}\n  Build\n  🚀\njobs:\n  test:\n    run: echo 🚀\n`),
+        ["fixture.yml:3 🚀"],
+      );
+    }
+  }
+});
+
+it("checks name block headers with trailing whitespace and CRLF", () => {
+  for (const key of ["name", "run-name"]) {
+    for (const header of ["> ", "|2-\t", ">-2\r", "|+2  # folded name\r"]) {
+      assert.deepEqual(
+        workflowNameEmoji(`${key}: ${header}\n  🚀\njobs:\n  test:\n    run: echo 🚀\n`),
+        ["fixture.yml:2 🚀"],
+      );
+    }
+  }
 });

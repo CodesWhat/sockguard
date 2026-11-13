@@ -27,6 +27,7 @@ import (
 	"github.com/codeswhat/sockguard/v3/app/internal/proxy"
 	"github.com/codeswhat/sockguard/v3/app/internal/testcert"
 	"github.com/codeswhat/sockguard/v3/app/internal/testhelp"
+	"github.com/codeswhat/sockguard/v3/app/internal/upstream"
 )
 
 func TestBuildServeHandlerLibpodNetworkConnectUsesProductionUpstreamAndOwnership(t *testing.T) {
@@ -892,7 +893,7 @@ func newFullProxyChainHandler(t *testing.T, socketPath string, rules []config.Ru
 	logger := testhelp.NewTeeLogger(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}), collector)
 
 	var handler http.Handler = proxy.NewWithOptions(socketPath, logger, proxy.Options{})
-	handler = proxy.HijackHandler(socketPath, logger, handler)
+	handler = proxy.HijackHandlerWithDialer(upstream.NewSingleSocket(socketPath), 10*time.Minute, logger, handler)
 	handler = filter.MiddlewareWithOptions(compiled, logger, filter.Options{})(handler)
 	handler = logging.AccessLogMiddleware(logger)(handler)
 

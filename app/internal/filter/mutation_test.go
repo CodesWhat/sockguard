@@ -180,6 +180,7 @@ func TestMutationChainImageTrustEvaluatesRemappedTarget(t *testing.T) {
 		allowDeviceCgroupRules: true,
 		allowSysctls:           true,
 		imageTrustVerifier:     verifier,
+		imageTrustRegistry:     allowAllRegistryPolicy(),
 		imageFetcher:           oneCandidateFetcher(),
 		imageTrustCfg:          imagetrust.Config{Mode: imagetrust.ModeEnforce},
 	}

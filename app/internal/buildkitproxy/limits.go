@@ -57,7 +57,7 @@ type Limits struct {
 
 	// IdleTimeout closes a bridged tunnel connection that has carried no
 	// stream activity for this long. Matches the value sockguard's existing
-	// attach/exec hijack path uses (internal/proxy's hijackInactivityTimeout)
+	// attach/exec hijack path uses (upstream.hijack_inactivity_timeout, 10m by default)
 	// so operators see one consistent inactivity convention across every
 	// long-lived connection sockguard terminates.
 	IdleTimeout time.Duration

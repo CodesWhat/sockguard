@@ -8,7 +8,8 @@
 // A chart that falls back to a mutable tag, or one pinned to a different
 // digest than the image this pipeline pushed, fails before anything is pushed.
 
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { extractChartImageConfig } from "./chart-image-tag.mjs";
 import { normalizeDigest, normalizeVersion } from "./pin-chart-image-digest.mjs";
 
@@ -81,7 +82,10 @@ function main() {
   console.log(`Chart ${result.version} pins image.tag ${result.imageTag}`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (
+  process.argv[1] &&
+  realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))
+) {
   try {
     main();
   } catch (error) {

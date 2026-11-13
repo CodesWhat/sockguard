@@ -104,6 +104,10 @@ type PolicyConfig struct {
 	// LibpodPodCreate configures request-body inspection for
 	// POST /libpod/pods/create. #148.
 	LibpodPodCreate LibpodPodCreateOptions
+	// LibpodPlayKube configures the log driver allowlist for the logDriver and
+	// logOptions query parameters of POST /libpod/play/kube. The YAML body is
+	// not inspected.
+	LibpodPlayKube LibpodPlayKubeOptions
 	// LibpodVolume configures request-body inspection for
 	// POST /libpod/volumes/create. #148.
 	LibpodVolume VolumeOptions
@@ -263,8 +267,8 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 				return
 			}
 
-			normPath := resolveNormalizedPath(meta, r)
-			action, ruleIndex, reason, normPath := evaluateRequestPolicy(activePolicy.rules, r, normPath)
+			normPath, scpRoutePath, encodedScp := resolveNormalizedRoute(meta, r)
+			action, ruleIndex, reason, normPath := evaluateRequestPolicy(activePolicy.rules, r, normPath, scpRoutePath, encodedScp)
 			denyStatus := http.StatusForbidden
 			reasonCode := ruleDecisionReasonCode(action, reason)
 			stampDecisionOnMeta(meta, action, ruleIndex, reasonCode, reason, normPath)
@@ -276,12 +280,13 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			}
 
 			if action == ActionAllow {
-				denyReason, denyReasonCode, status := runAllowedInspection(activePolicy, logger, w, r, normPath)
+				denyReason, denyReasonCode, status, hardInspection := runAllowedInspectionDetail(activePolicy, logger, w, r, normPath)
 				if removeSpooledBody := closeSpooledRequestBody(logger, r); removeSpooledBody != nil {
 					defer removeSpooledBody()
 				}
 				if denyReason != "" {
 					action = ActionDeny
+					hardDeny = hardDeny || hardInspection
 					reasonCode = denyReasonCode
 					reason = denyReason
 					if status != 0 {
@@ -379,13 +384,21 @@ func resolveActivePolicy(opts Options, profilePolicies map[string]runtimePolicy,
 // already produced it; otherwise it normalizes once and lets the meta carry
 // the value forward to downstream layers.
 func resolveNormalizedPath(meta *logging.RequestMeta, r *http.Request) string {
+	normPath, _, _ := resolveNormalizedRoute(meta, r)
+	return normPath
+}
+
+// resolveNormalizedRoute is resolveNormalizedPath plus the libpod image-SCP
+// classification it computed, so evaluateRequestPolicy does not repeat it.
+// For an encoded SCP route the normalized path is the route path itself.
+func resolveNormalizedRoute(meta *logging.RequestMeta, r *http.Request) (normPath, scpRoutePath string, encodedScp bool) {
 	if routePath, ok := normalizedLibpodImageScpRoutePath(r); ok {
-		return routePath
+		return routePath, routePath, true
 	}
 	if meta != nil && meta.NormPath != "" {
-		return meta.NormPath
+		return meta.NormPath, "", false
 	}
-	return NormalizePath(r.URL.Path)
+	return NormalizePath(r.URL.Path), "", false
 }
 
 func stampDecisionOnMeta(meta *logging.RequestMeta, action Action, ruleIndex int, reasonCode, reason, normPath string) {
@@ -408,15 +421,22 @@ func stampDecisionOnMeta(meta *logging.RequestMeta, action Action, ruleIndex int
 // apply), ERROR for the clear (a lingering deadline on a proxied connection
 // can kill a streaming response mid-body).
 func runAllowedInspection(activePolicy runtimePolicy, logger *slog.Logger, w http.ResponseWriter, r *http.Request, normPath string) (string, string, int) {
+	reason, code, status, _ := runAllowedInspectionDetail(activePolicy, logger, w, r, normPath)
+	return reason, code, status
+}
+
+// runAllowedInspectionDetail is runAllowedInspection plus whether the refusal
+// is hard, one warn and audit rollout must not pass through.
+func runAllowedInspectionDetail(activePolicy runtimePolicy, logger *slog.Logger, w http.ResponseWriter, r *http.Request, normPath string) (string, string, int, bool) {
 	rc := http.NewResponseController(w)
 	if err := rc.SetReadDeadline(time.Now().Add(bodyReadTimeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
 		logger.Debug("filter: slowloris read deadline not applied", "error", err)
 	}
-	denyReason, denyReasonCode, status := activePolicy.inspectAllowedRequest(logger, r, normPath)
+	denyReason, denyReasonCode, status, hard := activePolicy.inspectAllowedRequestDetail(logger, r, normPath)
 	if err := rc.SetReadDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
 		logger.Error("filter: failed to clear slowloris read deadline", "error", err)
 	}
-	return denyReason, denyReasonCode, status
+	return denyReason, denyReasonCode, status, hard
 }
 
 func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *mutationEngine) runtimePolicy {
@@ -451,6 +471,7 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		{http.MethodPost, matchesBuildInspection, inspectSeverityCritical, newBuildPolicy(cfg.Build).inspect, "failed to inspect build request", "unable to inspect build request"},
 		{http.MethodPost, matchesContainerUpdateInspection, inspectSeverityHigh, newContainerUpdatePolicy(cfg.ContainerUpdate).inspect, "failed to inspect container update request body", "unable to inspect container update request body"},
 		{http.MethodDelete, matchesContainerRemoveInspection, inspectSeverityMedium, newContainerRemovePolicy(cfg.ContainerRemove).inspect, "failed to inspect container remove query", "unable to inspect container remove query"},
+		{http.MethodPost, matchesLibpodPodPruneInspection, inspectSeverityMedium, newContainerRemovePolicy(cfg.ContainerRemove).inspectPodPrune, "failed to inspect libpod pod prune request", "unable to inspect libpod pod prune request"},
 		// matchesContainerArchiveInspection covers the Docker-compat AND the
 		// libpod spelling from one predicate. Podman registers both on the
 		// identical compat.Archive handler, so one policy over one wire
@@ -478,7 +499,8 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		// again here: matchesExecInspection above already covers both the
 		// Docker-compat and libpod exec paths against the single shared
 		// execPolicy entry (design doc decision C3).
-		{http.MethodPost, matchesLibpodPodCreateInspection, inspectSeverityCritical, newLibpodPodCreatePolicy(cfg.LibpodPodCreate).inspect, "failed to inspect libpod pod create request body", "unable to inspect libpod pod create request body"},
+		{http.MethodPost, matchesLibpodPlayKubeInspection, inspectSeverityHigh, newLibpodPlayKubePolicy(cfg.LibpodPlayKube).inspect, "failed to inspect libpod kube play query", "unable to inspect libpod kube play query"},
+		{http.MethodPost, matchesLibpodPodCreateInspection, inspectSeverityCritical, newLibpodPodCreatePolicy(libpodPodCreateOptionsWithContainer(cfg)).inspect, "failed to inspect libpod pod create request body", "unable to inspect libpod pod create request body"},
 		{http.MethodPost, matchesLibpodVolumeInspection, inspectSeverityMedium, newVolumePolicy(cfg.LibpodVolume).inspectLibpod, "failed to inspect libpod volume create request body", "unable to inspect libpod volume create request body"},
 		{http.MethodPost, matchesLibpodNetworkInspection, inspectSeverityHigh, newNetworkPolicy(cfg.LibpodNetwork).inspectLibpod, "failed to inspect libpod network request body", "unable to inspect libpod network request body"},
 		{http.MethodPost, matchesLibpodSecretInspection, inspectSeverityMedium, newLibpodSecretPolicy(cfg.LibpodSecret).inspect, "failed to inspect libpod secret create request", "unable to inspect libpod secret create request"},
@@ -566,6 +588,10 @@ func matchesContainerRemoveInspection(normalizedPath string) bool {
 	return ok
 }
 
+func matchesLibpodPodPruneInspection(normalizedPath string) bool {
+	return normalizedPath == LibpodPodPrunePath
+}
+
 func matchesContainerArchiveInspection(normalizedPath string) bool {
 	return isContainerArchivePath(normalizedPath)
 }
@@ -622,6 +648,10 @@ func matchesPluginInspection(normalizedPath string) bool {
 
 func matchesLibpodPodCreateInspection(normalizedPath string) bool {
 	return isLibpodPodCreatePath(normalizedPath)
+}
+
+func matchesLibpodPlayKubeInspection(normalizedPath string) bool {
+	return isLibpodPlayKubeCreatePath(normalizedPath)
 }
 
 func matchesLibpodVolumeInspection(normalizedPath string) bool {
@@ -696,6 +726,13 @@ func groupInspectPoliciesByMethod(all []requestInspectPolicy) map[string][]reque
 type inspectBuckets [3][inspectBucketCapacity]*requestInspectPolicy
 
 func (p runtimePolicy) inspectAllowedRequest(logger *slog.Logger, r *http.Request, normalizedPath string) (string, string, int) {
+	reason, code, status, _ := p.inspectAllowedRequestDetail(logger, r, normalizedPath)
+	return reason, code, status
+}
+
+// inspectAllowedRequestDetail is inspectAllowedRequest plus whether the
+// refusal is hard, one warn and audit rollout must not pass through.
+func (p runtimePolicy) inspectAllowedRequestDetail(logger *slog.Logger, r *http.Request, normalizedPath string) (string, string, int, bool) {
 	var buckets inspectBuckets
 	var counts [3]int
 
@@ -725,18 +762,18 @@ func (p runtimePolicy) inspectAllowedRequest(logger *slog.Logger, r *http.Reques
 					if code == "" {
 						code = requestRejectionReasonCode(rejection.status)
 					}
-					return rejection.reason, code, rejection.status
+					return rejection.reason, code, rejection.status, rejection.hard
 				}
 				logRequestError(logger, r, slog.LevelError, policy.errorLogMessage, err)
-				return policy.denyReasonOnError, reasonCodeRequestBodyInspectionFailed, http.StatusForbidden
+				return policy.denyReasonOnError, reasonCodeRequestBodyInspectionFailed, http.StatusForbidden, isHardInspectionError(err)
 			}
 			if denyReason != "" {
-				return denyReason, reasonCodeRequestBodyPolicyDenied, http.StatusForbidden
+				return denyReason, reasonCodeRequestBodyPolicyDenied, http.StatusForbidden, false
 			}
 		}
-		return "", "", 0
+		return "", "", 0, false
 	}
-	return "", "", 0
+	return "", "", 0, false
 }
 
 func denyWithReasonCode(w http.ResponseWriter, r *http.Request, logger *slog.Logger, reasonCode, reason string, verbosity DenyResponseVerbosity) {
@@ -809,4 +846,14 @@ func redactDeniedPath(requestPath string) string {
 	default:
 		return requestPath
 	}
+}
+
+// libpodPodCreateOptionsWithContainer hands the pod create inspector the
+// libpod container create options, so a pod's inherited mounts, devices,
+// security options, sysctls and joined namespaces are held to the same lists
+// a container is.
+func libpodPodCreateOptionsWithContainer(cfg PolicyConfig) LibpodPodCreateOptions {
+	opts := cfg.LibpodPodCreate
+	opts.Container = cfg.LibpodContainerCreate
+	return opts
 }
