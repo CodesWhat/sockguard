@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/codeswhat/sockguard/v3/app/internal/config"
 	"github.com/codeswhat/sockguard/v3/app/internal/httpjson"
 	"github.com/codeswhat/sockguard/v3/app/internal/logging"
 )
@@ -20,13 +21,15 @@ import (
 // only ticks on a successful apply, so a stable Version across two scrapes
 // means the running policy genuinely did not move.
 type PolicySnapshot struct {
-	Version      int64     `json:"version"`
-	LoadedAt     time.Time `json:"loaded_at"`
-	Rules        int       `json:"rules"`
-	Profiles     int       `json:"profiles"`
-	CompatActive bool      `json:"compat_active"`
-	Source       string    `json:"source"` // "startup" or "reload"
-	ConfigSHA256 string    `json:"config_sha256,omitempty"`
+	// Config is immutable after publication and never enters the version JSON.
+	Config       *config.Config `json:"-"`
+	Version      int64          `json:"version"`
+	LoadedAt     time.Time      `json:"loaded_at"`
+	Rules        int            `json:"rules"`
+	Profiles     int            `json:"profiles"`
+	CompatActive bool           `json:"compat_active"`
+	Source       string         `json:"source"` // "startup" or "reload"
+	ConfigSHA256 string         `json:"config_sha256,omitempty"`
 	// BundleSource is the basename (filename only, no directory component) of
 	// the sigstore bundle file that vouched for the running policy, or ""
 	// when policy_bundle.enabled=false. The basename is sufficient to tell

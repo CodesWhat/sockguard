@@ -617,6 +617,26 @@ func validateHealthMetrics(cfg *Config) []string {
 
 func validateAdmin(cfg *Config, mode validateMode) []string {
 	var errs []string
+	if !strings.HasPrefix(cfg.Admin.PolicyDiffPath, "/") {
+		errs = append(errs, "admin.policy_diff_path must start with /")
+	} else {
+		endpoints := []struct {
+			name    string
+			path    string
+			enabled bool
+		}{
+			{"admin.path", cfg.Admin.Path, true},
+			{"admin.policy_version_path", cfg.Admin.PolicyVersionPath, true},
+			{"health.path", cfg.Health.Path, cfg.Health.Enabled},
+			{"metrics.path", cfg.Metrics.Path, cfg.Metrics.Enabled},
+			{"health.readiness.path", cfg.Health.Readiness.Path, cfg.Health.Readiness.Enabled},
+		}
+		for _, endpoint := range endpoints {
+			if endpoint.enabled && path.Clean(cfg.Admin.PolicyDiffPath) == path.Clean(endpoint.path) {
+				errs = append(errs, "admin.policy_diff_path must not equal "+endpoint.name)
+			}
+		}
+	}
 	if !strings.HasPrefix(cfg.Admin.Path, "/") {
 		errs = append(errs, fmt.Sprintf("admin.path must start with /, got %q", cfg.Admin.Path))
 	}

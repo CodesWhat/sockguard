@@ -1332,7 +1332,8 @@ When `metrics.enabled: true`, two series track reload outcomes:
 
 ## Admin Listener
 
-The admin endpoints (`POST /admin/validate` and `GET /admin/policy/version`)
+The admin endpoints (`POST /admin/validate`, `GET /admin/policy/version` and,
+in the next v3.1 release, `POST /admin/policy/diff`)
 can run on a separate listener, keeping admin traffic entirely off the main
 Docker-API data plane.
 
@@ -1823,6 +1824,7 @@ never flagged.
 | `SOCKGUARD_ADMIN_ENABLED`                      | `admin.enabled`                       | `false`                         | Serve the in-band `POST <admin.path>` candidate-config validation endpoint on the main listener.             |
 | `SOCKGUARD_ADMIN_PATH`                         | `admin.path`                          | `/admin/validate`               | Admin endpoint path. Must start with `/` and must differ from `health.path` and `metrics.path` when enabled. |
 | `SOCKGUARD_ADMIN_POLICY_VERSION_PATH`          | `admin.policy_version_path`           | `/admin/policy/version`         | Path of the read-only policy-version endpoint. Must start with `/` and not collide with other endpoint paths. |
+| `SOCKGUARD_ADMIN_POLICY_DIFF_PATH` | `admin.policy_diff_path` | `/admin/policy/diff` | Next v3.1: read-only comparison against the active generation, with field paths and change kinds only. |
 | `SOCKGUARD_ADMIN_MAX_REQUEST_BYTES`            | `admin.max_request_bytes`             | `524288`                        | Hard cap on candidate-YAML body size. Bodies above this return `413`.                                        |
 | `SOCKGUARD_ADMIN_LISTEN_SOCKET`                | `admin.listen.socket`                 | *(unset)*                       | Serve admin endpoints on a dedicated unix socket instead of the main listener.                               |
 | `SOCKGUARD_ADMIN_LISTEN_ADDRESS`               | `admin.listen.address`                | *(unset)*                       | Serve admin endpoints on a dedicated TCP listener (mTLS via `admin.listen.tls.*`).                           |

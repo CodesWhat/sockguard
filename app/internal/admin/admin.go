@@ -1,6 +1,6 @@
 // Package admin implements sockguard's in-band admin HTTP endpoints.
 //
-// The admin surface exposes two endpoints:
+// The admin surface exposes three endpoints:
 //
 //	POST <admin.path>                 parse + validate + compile a candidate
 //	                                  YAML config and return a structured JSON
@@ -11,7 +11,10 @@
 //	                                  rule/profile counts, load timestamp, and
 //	                                  optional bundle provenance metadata).
 //
-// Both endpoints are opt-in (admin.enabled=false by default) and can either
+// POST <admin.policy_diff_path> compares a candidate with one active generation
+// without returning configuration values.
+//
+// The endpoints are opt-in (admin.enabled=false by default) and can either
 // ride the main listener or be bound to a dedicated admin.listen socket.
 // When riding the main listener they inherit its CIDR allowlist, mTLS
 // posture, and the per-profile rate-limit / concurrency gates configured
