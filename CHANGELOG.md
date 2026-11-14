@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add read-only admin policy comparison for the next v3.1 release, with generation-bound field paths and change kinds, values omitted, structural validation, unknown-key counts and reload-immutable change reporting. The endpoint shares existing admin access controls and request-body limits, never applies candidates and never reads candidate TLS files.
+
 ### Security
+
+- Update the OpenTelemetry API, metric and trace modules to 1.47.0 in the application and compatibility module for CVE-2026-128085 / GHSA-q7gw-24fr-5p69, which bypasses attribute value length limits in auto-instrumented tracing.
 
 - Refuse owner-scoped Podman builds through Docker-compatible, native and daemon-host routes in every rollout mode. Base-image archive imports can replace another owner's image names even with `pullpolicy=never`. Docker builds and Podman builds without owner isolation retain their existing checks.
 

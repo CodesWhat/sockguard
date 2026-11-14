@@ -174,6 +174,7 @@ export const DOCS_SEARCH_ITEMS: [page: number, heading: string, anchor: string][
   [9,"Response codes","response-codes"],
   [9,"Response body","response-body"],
   [9,"CI gate usage","ci-gate-usage"],
+  [9,"POST /admin/policy/diff","post-adminpolicydiff"],
   [9,"GET /admin/policy/version","get-adminpolicyversion"],
   [9,"Request","request-1"],
   [9,"Response codes","response-codes-1"],

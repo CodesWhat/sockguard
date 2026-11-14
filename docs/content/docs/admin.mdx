@@ -1,12 +1,14 @@
 ---
 title: Admin API
-description: Sockguard's optional admin endpoints — config dry-run validation and policy version introspection. Deploy on a dedicated listener to keep admin traffic off the Docker-API data plane.
+description: Sockguard's optional admin endpoints — config validation, policy comparison and generation introspection. Deploy on a dedicated listener to keep admin traffic off the Docker-API data plane.
 ---
 
-Sockguard exposes two admin endpoints: `POST /admin/validate` runs a
+Sockguard exposes opt-in admin endpoints: `POST /admin/validate` runs a
 parse/validate/compile dry-run against a candidate YAML body without touching
 the running policy, and `GET /admin/policy/version` returns a snapshot of the
-currently active policy. Both are opt-in and disabled by default.
+currently active policy. The next v3.1 release adds `POST /admin/policy/diff`
+for comparing a candidate with one active generation. Admin endpoints are
+disabled by default.
 
 ## Enabling the admin API
 
@@ -19,8 +21,8 @@ admin:
   # mount_on: edge                     # names the listener carrying /admin/*; required with 2+ listeners
 ```
 
-Both endpoints share the `admin.enabled` gate. When disabled, Sockguard never
-wires the admin layers into the handler chain, so a request to either path
+The endpoints share the `admin.enabled` gate. When disabled, Sockguard never
+wires the admin layers into the handler chain, so a request to an admin path
 falls through to the normal rule evaluator and is denied per the active
 policy — `403` default-deny (`no_matching_allow_rule`) unless some other rule
 happens to match the path first. A call that carries a form `Content-Type`, as
@@ -194,6 +196,64 @@ before the form-body check, and without it the request falls through to the
 proxy chain, which refuses form bodies. Check that `admin.enabled` is `true`,
 and that the request goes to the admin listener: the dedicated `admin.listen`
 address if you set one, or the listener named by `admin.mount_on`.
+
+## POST /admin/policy/diff
+
+Available in the next v3.1 release. Submit a complete candidate YAML file to
+compare its effective configuration with one published policy generation.
+This endpoint is read-only: it neither installs the candidate nor reloads the
+proxy, and a comparison never advances the generation counter.
+
+The default path is `/admin/policy/diff`. Change it with
+`admin.policy_diff_path` or `SOCKGUARD_ADMIN_POLICY_DIFF_PATH`; the path must
+start with `/` and must not overlap validation, policy-version, health,
+readiness or metrics endpoints. The existing admin listener, CIDR, mTLS,
+mount selection and request-body limit apply. Prefer the dedicated admin
+listener for operators who need access to the running policy.
+
+```bash
+curl --unix-socket /var/run/sockguard-admin/admin.sock -H 'Content-Type: application/yaml' --data-binary @candidate.yaml http://localhost/admin/policy/diff
+```
+
+```json
+{
+  "ok": true,
+  "base_version": 7,
+  "changed": true,
+  "changes": [
+    {"path": "response.redact_container_env", "kind": "modified"}
+  ],
+  "validation": "structural",
+  "restart_required": false
+}
+```
+
+`base_version` identifies the observed active generation. If a reload races
+with the request, the comparison still uses one complete generation. An
+unchanged configuration returns `changed: false` and `changes: []`.
+
+Changes contain field paths and `added`, `removed` or `modified` kinds.
+Values are always omitted, including credentials, key paths and policy
+strings. Ordered lists use numeric positions, such as
+`clients.profiles[0].rules[1]` or `listeners[0].allowed_profiles[0]`.
+Map changes identify the whole map field without exposing its keys. YAML
+formatting, comments and map order do not count as changes.
+
+Candidates use built-in defaults and the same Tecnativa compatibility
+expansion as `/admin/validate`. They do not inherit `SOCKGUARD_*` environment
+or CLI overrides; the active side includes the overrides already applied by
+the process. `unknown_keys`, when present, counts ignored configuration keys
+without echoing their names or values.
+
+Validation is structural, including rule compilation. Candidate TLS files
+are not opened, and policy-bundle signatures are not verified here.
+`restart_required` reports differences in reload-immutable settings; a
+false value does not prove that a reload will succeed. Actual startup and
+reload retain their filesystem, signature and bootstrap-trust checks.
+
+Invalid YAML or policy returns `422` with a generic error and no supplied
+values. Wrong methods return `405` with `Allow: POST`; oversized bodies
+return `413`. An unavailable active configuration returns `503`.
 
 ## GET /admin/policy/version
 

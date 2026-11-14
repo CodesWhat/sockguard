@@ -488,6 +488,7 @@ func shutdownServers(ctx context.Context, deps *serveDeps, cfg *config.Config, m
 // operators. Bundle fields stay zero unless verification succeeded.
 func buildInitialPolicySnapshot(deps *serveDeps, cfg *config.Config, rules []*filter.CompiledRule, compatActive bool, bundleResult *policybundle.VerifyResult) admin.PolicySnapshot {
 	snap := admin.PolicySnapshot{
+		Config:       cfg,
 		LoadedAt:     deps.now(),
 		Rules:        len(rules),
 		Profiles:     len(cfg.Clients.Profiles),
@@ -889,6 +890,7 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 	// them, otherwise the same path resolves on both listeners and operators
 	// lose the isolation they explicitly opted in to.
 	if cfg.Admin.Enabled && !cfg.Admin.Listen.Configured() {
+		layers = append(layers, namedServeHandlerLayer("withPolicyDiffEndpoint", mountOnGate(cfg, withPolicyDiffEndpoint(cfg, logger, versioner))))
 		if versioner != nil {
 			layers = append(layers, namedServeHandlerLayer("withPolicyVersionEndpoint", mountOnGate(cfg, withPolicyVersionEndpoint(cfg, logger, versioner))))
 		}
@@ -2014,6 +2016,7 @@ func buildAdminHandlerChain(cfg *config.Config, logger *slog.Logger, auditLogger
 	})
 
 	var h http.Handler = terminal
+	h = withPolicyDiffEndpoint(cfg, logger, versioner)(h)
 	h = withAdminEndpoint(cfg, logger)(h)
 	if versioner != nil {
 		h = withPolicyVersionEndpoint(cfg, logger, versioner)(h)

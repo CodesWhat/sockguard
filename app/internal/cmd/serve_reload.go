@@ -393,6 +393,7 @@ func (c *reloadCoordinator) reload() {
 	var newVersion int64
 	if c.versioner != nil {
 		snap := admin.PolicySnapshot{
+			Config:       newCfg,
 			LoadedAt:     c.deps.now(),
 			Rules:        len(newRules),
 			Profiles:     len(newCfg.Clients.Profiles),

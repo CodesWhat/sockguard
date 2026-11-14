@@ -1672,8 +1672,8 @@ type MetricsConfig struct {
 }
 
 // AdminConfig configures the admin HTTP endpoints (POST <path> for
-// candidate-config validation, GET <policy_version_path> for the active
-// policy generation counter).
+// candidate-config validation, POST <policy_diff_path> for a read-only
+// comparison, GET <policy_version_path> for the active generation counter).
 //
 // By default the admin endpoints ride the main listener and therefore
 // inherit its CIDR allowlist, mTLS, and rate-limit posture. When Listen is
@@ -1699,6 +1699,9 @@ type AdminConfig struct {
 	// /admin/policy/version. Must differ from Path, health.path, and
 	// metrics.path when those endpoints are enabled.
 	PolicyVersionPath string `mapstructure:"policy_version_path"`
+	// PolicyDiffPath shares the admin access boundary and body limit. Its
+	// normalized path must not collide with another enabled endpoint.
+	PolicyDiffPath string `mapstructure:"policy_diff_path"`
 	// Listen optionally moves the admin endpoints to a dedicated listener
 	// instead of sharing the main proxy listener. Configure either Socket
 	// (unix) or Address (TCP, optionally wrapped in TLS). When unset, the
@@ -2016,6 +2019,7 @@ func Defaults() Config {
 			Path:              "/admin/validate",
 			MaxRequestBytes:   524288,
 			PolicyVersionPath: "/admin/policy/version",
+			PolicyDiffPath:    "/admin/policy/diff",
 			Listen: AdminListenConfig{
 				ListenConfig: ListenConfig{
 					// Socket and Address both default to "" so the admin endpoints
