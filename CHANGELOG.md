@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.7] - 2026-11-14
+
+v2.4.7 updates OpenTelemetry and the Go toolchain for security fixes. It carries v2.4.6.
+
+### Security
+
+- Update the linked OpenTelemetry API, metric, trace and log modules to 1.47.0 for GHSA-q7gw-24fr-5p69 / CVE-2026-128085, an attribute value length limit bypass involving valid replacement characters. Trace is linked through Sigstore; the advisory's affected tracing path has not been demonstrated in Sockguard.
+- Build with Go 1.27.4 for GO-2026-6859 / CVE-2026-97054, a net/http header race that can crash an HTTP/1 server when a request exceeds a body limit while response headers are written concurrently. Update the pinned builder image and all module toolchain directives together.
+
 ## [2.4.6] - 2026-11-06
 
 v2.4.6 updates the compression dependency to fix a panic on malformed zstd frames. It carries v2.4.5.
