@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0-rc.8] - 2026-11-14
+
+Security update to rc.7 with OpenTelemetry 1.47.0. This candidate requires fresh
+exact-source soak, TLS/security and published-image conformance, followed by a
+14-day bake from its publication. Rc.7 validation and its November 27 floor do
+not cover this source. Stable channels stay on the current v2.4 release.
+
+### Security
+
+- Update the linked OpenTelemetry API, metric, trace and log modules to 1.47.0 for GHSA-q7gw-24fr-5p69 / CVE-2026-128085, an attribute value length limit bypass involving valid replacement characters. Trace is linked through Sigstore; the advisory's affected tracing path has not been demonstrated in Sockguard.
+
 ### Fixed
 
 - Probe the identity conformance agent with Portwing's native healthcheck command, preserving unhealthy results on shell-less published images.
