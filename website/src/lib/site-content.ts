@@ -500,4 +500,14 @@ export const roadmap: Milestone[] = [
       "Updates the compression dependency to 1.20.2 for GO-2026-6865 / CVE-2026-116591, a panic when decoding malformed zstd frames",
     ],
   },
+  {
+    version: "v2.4.7",
+    title: "OpenTelemetry and Go Security Fixes",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Updates OpenTelemetry to 1.47.0 for the attribute value length limit bypass in GHSA-q7gw-24fr-5p69",
+      "Builds with Go 1.27.4 for the net/http header race in GO-2026-6859",
+    ],
+  },
 ];
