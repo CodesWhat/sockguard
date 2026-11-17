@@ -15,12 +15,12 @@ export const SITE_CONFIG = {
   /** Brand name shown in the header, footer, and metadata. */
   name: "Sockguard",
   /** Current release version shown in the hero badge. */
-  version: "2.4.6",
+  version: "2.4.7",
   /** Explicit placeholders and real toolchain version used by the hand-rendered CLI demo. */
   cliDemo: {
     commit: "<sha>",
     built: "<rfc3339>",
-    goVersion: "go1.27.3",
+    goVersion: "go1.27.4",
     logTime: "<rfc3339>",
   },
   /** Short product tagline used in page titles and OG metadata. */
