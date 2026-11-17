@@ -21,7 +21,7 @@ const VALID_ENV = {
 
 test("PostHog options pin the privacy posture and cookieless web vitals", () => {
   assert.equal(typeof createDocsAnalyticsRuntime, "function");
-  const options = createPostHogOptions("phc_public-token_123", ROUTES);
+  const options = createPostHogOptions("phc_public-token_123", ROUTES, () => false);
 
   assert.deepEqual(
     { ...options, before_send: "function" },
@@ -67,7 +67,10 @@ test("PostHog options pin the privacy posture and cookieless web vitals", () => 
   assert.equal("disable_external_dependency_loading" in options, false);
   assert.equal(typeof options.before_send, "function");
   assert.deepEqual(
-    { ...createDocsPostHogOptions("phc_public-token_123", ROUTES), before_send: "function" },
+    {
+      ...createDocsPostHogOptions("phc_public-token_123", ROUTES, () => false),
+      before_send: "function",
+    },
     { ...options, before_send: "function" },
   );
 });
@@ -86,7 +89,7 @@ test("valid initialization queues until the SDK is ready and emits canonical eve
   const runtime = createAnalyticsRuntime({
     env: VALID_ENV,
     routes: ROUTES,
-    getDoNotTrack: () => null,
+    hasPrivacyOptOut: () => false,
     loadPostHog: () =>
       new Promise((resolve) => {
         finishLoading = () => resolve(posthog);
@@ -132,7 +135,7 @@ test("captures queued before initialization use canonical paths for their surfac
   const runtime = createAnalyticsRuntime({
     env: VALID_ENV,
     routes: ROUTES,
-    getDoNotTrack: () => null,
+    hasPrivacyOptOut: () => false,
     loadPostHog: async () => ({
       init(token) {
         calls.push(["init", token]);
@@ -169,24 +172,24 @@ test("captures queued before initialization use canonical paths for their surfac
   ]);
 });
 
-test("missing, partial, malformed, and DNT environments never load or capture", async () => {
-  for (const { env, dnt } of [
-    { env: {}, dnt: null },
-    { env: { NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN: "phc_partial" }, dnt: null },
+test("missing, partial, malformed, DNT, and GPC environments never load or capture", async () => {
+  for (const { env, optOut } of [
+    { env: {}, optOut: false },
+    { env: { NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN: "phc_partial" }, optOut: false },
     {
       env: {
         ...VALID_ENV,
         NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN: "private-token",
       },
-      dnt: null,
+      optOut: false,
     },
-    { env: VALID_ENV, dnt: "1" },
+    { env: VALID_ENV, optOut: true },
   ]) {
     let loadCount = 0;
     const runtime = createAnalyticsRuntime({
       env,
       routes: ROUTES,
-      getDoNotTrack: () => dnt,
+      hasPrivacyOptOut: () => optOut,
       loadPostHog: async () => {
         loadCount += 1;
         throw new Error("must not load");
@@ -205,7 +208,7 @@ test("SDK load failures fail closed without leaking queued events", async () => 
   const runtime = createAnalyticsRuntime({
     env: VALID_ENV,
     routes: ROUTES,
-    getDoNotTrack: () => null,
+    hasPrivacyOptOut: () => false,
     loadPostHog: async () => {
       loadCount += 1;
       throw new Error("provider unavailable");
@@ -226,7 +229,7 @@ test("separate client bundles share one initialized browser runtime", async () =
   const options = {
     env: VALID_ENV,
     routes: ROUTES,
-    getDoNotTrack: () => null,
+    hasPrivacyOptOut: () => false,
     loadPostHog: async () => {
       loadCount += 1;
       return {
@@ -255,4 +258,49 @@ test("separate client bundles share one initialized browser runtime", async () =
       { path: "/", surface: "marketing", $current_url: "https://getsockguard.com/" },
     ],
   ]);
+});
+
+test("opt-out signals gate initialization, and before_send re-checks them at send time", async () => {
+  for (const [name, createRuntime, createOptions] of [
+    ["website", createAnalyticsRuntime, createPostHogOptions],
+    ["docs", createDocsAnalyticsRuntime, createDocsPostHogOptions],
+  ]) {
+    let optedOut = false;
+    let initOptions = null;
+    const runtime = createRuntime({
+      env: VALID_ENV,
+      routes: ROUTES,
+      hasPrivacyOptOut: () => optedOut,
+      loadPostHog: async () => ({
+        init(_token, options) {
+          initOptions = options;
+        },
+        capture() {},
+      }),
+    });
+
+    await runtime.initialize();
+    assert.notEqual(initOptions, null, name);
+
+    const event = {
+      uuid: "00000000-0000-4000-8000-000000000000",
+      event: "$pageview",
+      properties: {
+        path: "/",
+        surface: "marketing",
+        $current_url: "https://getsockguard.com/",
+        $raw_user_agent: "Mozilla/5.0",
+        $host: "getsockguard.com",
+      },
+    };
+    const passed = initOptions.before_send(structuredClone(event));
+    assert.notEqual(passed, null, name);
+    assert.equal(passed.event, "$pageview", name);
+
+    optedOut = true;
+    assert.equal(initOptions.before_send(structuredClone(event)), null, name);
+
+    const direct = createOptions("phc_public-token_123", ROUTES, () => true);
+    assert.equal(direct.before_send(structuredClone(event)), null, name);
+  }
 });

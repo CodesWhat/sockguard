@@ -8,7 +8,13 @@ const runtime = getOrCreateAnalyticsRuntime({
     NEXT_PUBLIC_POSTHOG_UI_HOST: process.env.NEXT_PUBLIC_POSTHOG_UI_HOST,
   },
   routes: ANALYTICS_ROUTES,
-  getDoNotTrack: () => (typeof navigator === "undefined" ? null : navigator.doNotTrack),
+  hasPrivacyOptOut: () =>
+    (typeof navigator !== "undefined" &&
+      (navigator.doNotTrack === "1" ||
+        (navigator as Navigator & { globalPrivacyControl?: boolean }).globalPrivacyControl ===
+          true)) ||
+    (typeof window !== "undefined" &&
+      (window as Window & { doNotTrack?: string | null }).doNotTrack === "1"),
   loadPostHog: async () => (await import("posthog-js")).default,
 });
 

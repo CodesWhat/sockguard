@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Site and docs analytics now honor Global Privacy Control as well as Do Not Track, and re-check both before each send, since posthog-js's cookieless mode skips its own DNT check.
 - Probe the identity conformance agent with Portwing's native healthcheck command, preserving unhealthy results on shell-less published images.
 
 ## [3.0.0-rc.7] - 2026-11-13

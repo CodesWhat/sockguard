@@ -60,13 +60,19 @@ type QueuedCapture = [event: string, properties: AnalyticsProperties];
 type AnalyticsRuntimeOptions = {
   env: AnalyticsEnvironment;
   routes: ReadonlySet<string>;
-  getDoNotTrack: () => string | null | undefined;
+  hasPrivacyOptOut: () => boolean;
   loadPostHog: () => Promise<PostHogClient>;
 };
 
 const ANALYTICS_RUNTIME_KEY = Symbol.for("codeswhat.sockguard.analytics-runtime");
 
-export function createPostHogOptions(token: string, routes: ReadonlySet<string>): PostHogOptions {
+export function createPostHogOptions(
+  token: string,
+  routes: ReadonlySet<string>,
+  hasPrivacyOptOut: () => boolean,
+): PostHogOptions {
+  const beforeSend = createBeforeSend(token, routes);
+
   return {
     api_host: POSTHOG_API_HOST,
     ui_host: POSTHOG_UI_HOST,
@@ -100,14 +106,17 @@ export function createPostHogOptions(token: string, routes: ReadonlySet<string>)
       web_vitals_allowed_metrics: ["CLS", "FCP", "INP", "LCP"],
       web_vitals_attribution: false,
     },
-    before_send: createBeforeSend(token, routes),
+    // posthog-js's is_capturing() returns true in cookieless_mode "always"
+    // before it looks at respect_dnt, so re-check DNT and GPC on every send.
+    before_send: (input: Parameters<typeof beforeSend>[0]) =>
+      hasPrivacyOptOut() ? null : beforeSend(input),
   } satisfies PostHogOptions & Partial<PostHogConfig>;
 }
 
 export function createAnalyticsRuntime({
   env,
   routes,
-  getDoNotTrack,
+  hasPrivacyOptOut,
   loadPostHog,
 }: AnalyticsRuntimeOptions) {
   let state: "idle" | "loading" | "ready" | "disabled" = "idle";
@@ -152,7 +161,7 @@ export function createAnalyticsRuntime({
     }
 
     const config = getAnalyticsConfig(env);
-    if (config === null || getDoNotTrack() === "1") {
+    if (config === null || hasPrivacyOptOut()) {
       state = "disabled";
       initialization = Promise.resolve();
       return initialization;
@@ -161,7 +170,10 @@ export function createAnalyticsRuntime({
     state = "loading";
     initialization = loadPostHog()
       .then((loadedClient) => {
-        loadedClient.init(config.token, createPostHogOptions(config.token, routes));
+        loadedClient.init(
+          config.token,
+          createPostHogOptions(config.token, routes, hasPrivacyOptOut),
+        );
         client = loadedClient;
         state = "ready";
         for (const [event, properties] of queue.splice(0)) {
