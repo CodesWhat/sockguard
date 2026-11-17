@@ -13,6 +13,8 @@ v2.4.7 updates OpenTelemetry and the Go toolchain for security fixes. It carries
 
 ### Security
 
+- Update the static website and docs build to Next.js 16.4.5 for GHSA-vc7v-qv4w-wrv8 and GHSA-mfr8-8qww-v76h. These cache advisories require a running Next.js server; both sites use static export. Record the unpatched picomatch advisory CVE-2026-112366 as a package-lock-only Qlty exception: glob patterns come from the trusted repository build, and npm packages are absent from the shipped Go binary and container.
+
 - Update the linked OpenTelemetry API, metric, trace and log modules to 1.47.0 for GHSA-q7gw-24fr-5p69 / CVE-2026-128085, an attribute value length limit bypass involving valid replacement characters. Trace is linked through Sigstore; the advisory's affected tracing path has not been demonstrated in Sockguard.
 - Build with Go 1.27.4 for GO-2026-6859 / CVE-2026-97054, a net/http header race that can crash an HTTP/1 server when a request exceeds a body limit while response headers are written concurrently. Update the pinned builder image and all module toolchain directives together.
 
