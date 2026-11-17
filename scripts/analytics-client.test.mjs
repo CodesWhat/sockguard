@@ -4,10 +4,12 @@ import { test } from "node:test";
 import {
   createAnalyticsRuntime as createDocsAnalyticsRuntime,
   createPostHogOptions as createDocsPostHogOptions,
+  detectPrivacyOptOut as detectDocsPrivacyOptOut,
 } from "../docs/src/lib/analytics-client.ts";
 import {
   createAnalyticsRuntime,
   createPostHogOptions,
+  detectPrivacyOptOut,
   getOrCreateAnalyticsRuntime,
 } from "../website/src/lib/analytics-client.ts";
 import { POSTHOG_API_HOST, POSTHOG_UI_HOST } from "../website/src/lib/analytics-contract.ts";
@@ -302,5 +304,20 @@ test("opt-out signals gate initialization, and before_send re-checks them at sen
 
     const direct = createOptions("phc_public-token_123", ROUTES, () => true);
     assert.equal(direct.before_send(structuredClone(event)), null, name);
+  }
+});
+
+test("detectPrivacyOptOut reads GPC, navigator DNT, and window DNT", () => {
+  for (const detect of [detectPrivacyOptOut, detectDocsPrivacyOptOut]) {
+    for (const { nav, win, expected } of [
+      { nav: { globalPrivacyControl: true }, win: undefined, expected: true },
+      { nav: { globalPrivacyControl: false }, win: {}, expected: false },
+      { nav: { doNotTrack: "1" }, win: undefined, expected: true },
+      { nav: { doNotTrack: "0" }, win: { doNotTrack: "0" }, expected: false },
+      { nav: { doNotTrack: null }, win: { doNotTrack: "1" }, expected: true },
+      { nav: undefined, win: undefined, expected: false },
+    ]) {
+      assert.equal(detect(nav, win), expected, JSON.stringify({ nav, win }));
+    }
   }
 });
