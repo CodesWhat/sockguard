@@ -66,6 +66,13 @@ type AnalyticsRuntimeOptions = {
 
 const ANALYTICS_RUNTIME_KEY = Symbol.for("codeswhat.sockguard.analytics-runtime");
 
+export function detectPrivacyOptOut(
+  nav?: { doNotTrack?: string | null; globalPrivacyControl?: boolean },
+  win?: { doNotTrack?: string | null },
+): boolean {
+  return nav?.doNotTrack === "1" || win?.doNotTrack === "1" || nav?.globalPrivacyControl === true;
+}
+
 export function createPostHogOptions(
   token: string,
   routes: ReadonlySet<string>,

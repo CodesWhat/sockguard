@@ -1,4 +1,4 @@
-import { getOrCreateAnalyticsRuntime } from "./analytics-client.ts";
+import { detectPrivacyOptOut, getOrCreateAnalyticsRuntime } from "./analytics-client.ts";
 import { ANALYTICS_ROUTES } from "./analytics-routes.generated.ts";
 
 const runtime = getOrCreateAnalyticsRuntime({
@@ -9,12 +9,10 @@ const runtime = getOrCreateAnalyticsRuntime({
   },
   routes: ANALYTICS_ROUTES,
   hasPrivacyOptOut: () =>
-    (typeof navigator !== "undefined" &&
-      (navigator.doNotTrack === "1" ||
-        (navigator as Navigator & { globalPrivacyControl?: boolean }).globalPrivacyControl ===
-          true)) ||
-    (typeof window !== "undefined" &&
-      (window as Window & { doNotTrack?: string | null }).doNotTrack === "1"),
+    detectPrivacyOptOut(
+      typeof navigator === "undefined" ? undefined : navigator,
+      typeof window === "undefined" ? undefined : (window as { doNotTrack?: string | null }),
+    ),
   loadPostHog: async () => (await import("posthog-js")).default,
 });
 
