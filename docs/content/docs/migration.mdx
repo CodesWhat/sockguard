@@ -1,21 +1,22 @@
 ---
 title: Migration
-description: Upgrade to stable v2.4, keep a v2.2 deployment patched, or migrate from another Docker socket proxy.
+description: Upgrade to stable v2.4 or migrate from another Docker socket proxy.
 ---
 
 ## Release availability
 
 | Line | Availability | Upgrade guidance |
 | --- | --- | --- |
-| v2.4.6 | Published stable | Keep normal Docker, Homebrew, deb/rpm and binary release channels. |
+| v2.4.7 | Published stable | Keep normal Docker, Homebrew, deb/rpm and binary release channels. |
 | v2.3.3 | End of life | The last v2.3 patch. It no longer receives security fixes, so upgrade to v2.4. |
-| v2.2.11 | Maintenance patch | The latest patch on the v2.2 line, for deployments that haven't moved to v2.3. |
+| v2.2.11 | End of life | The last v2.2 patch. It no longer receives security fixes, so upgrade to v2.4.7. |
 
 ## From Sockguard v2.1 to v2.2
 
-Upgrade to the latest v2.2 patch, currently v2.2.11, and validate the deployed
-configuration before switching images. v2.2 retains the configuration surface,
-but intentional security fixes can deny requests that older patches forwarded:
+The v2.2 line is retired. Upgrade to v2.4.7 and validate the deployed
+configuration before switching images. The v2.2 upgrade notes below are historical.
+That line retained the configuration surface, but intentional security fixes
+could deny requests that older patches forwarded:
 Podman host-path and image-name handling, ambiguous body keys and form bodies,
 Dockerfile syntax/continuations/heredocs, and pod infra PID-file writes.
 Review the [CHANGELOG](https://github.com/CodesWhat/sockguard/blob/main/CHANGELOG.md)

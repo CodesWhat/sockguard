@@ -166,6 +166,17 @@ match.rules = [
 match.file_patterns = ["app/compat/go.mod"]
 set.ignored = true
 
+# CVE-2026-112366 / GHSA-fc5q-39xc-vjpf has no patched picomatch release
+# as of 2026-11-17. Its ReDoS requires attacker-supplied glob patterns.
+# Here picomatch is used by Knip and Fumadocs/tinyglobby on trusted repository
+# build patterns. Both Next.js apps export static files; no glob-matching
+# server is deployed, and the Go binary/container contains no npm packages.
+# Revisit when a fixed release is published or the static build boundary changes.
+[[triage]]
+match.rules = ["osv-scanner:CVE-2026-112366"]
+match.file_patterns = ["package-lock.json"]
+set.ignored = true
+
 # chart/sockguard/values.yaml deliberately nests commented-out example keys
 # under an empty `{}`/`[]` collection (policyBundleTrust.secretRef,
 # resources, tolerations) to show the shape a user would fill in. yamllint's
