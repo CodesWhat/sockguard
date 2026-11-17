@@ -43,7 +43,7 @@
 <hr>
 
 > [!NOTE]
-> **v2.4.7 is the latest stable release.** It updates OpenTelemetry to 1.47.0 and Go to 1.27.4 for security fixes. It carries v2.4.6. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
+> **v2.4.7 is the latest stable release.** It updates OpenTelemetry to 1.47.0 and Go to 1.27.4 for security fixes, plus Next.js to 16.4.5 for the static site build. It carries v2.4.6. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
 <h2 align="center">Contents</h2>
 
