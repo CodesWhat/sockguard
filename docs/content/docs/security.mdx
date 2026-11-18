@@ -353,6 +353,12 @@ perform that action. A container, network, volume, service, secret, or config
 named `create`, `prune`, `json`, or another reused keyword still receives the
 normal owner check on inspect and trailing-action paths.
 
+Docker-compat network routes take the whole network name, which may contain
+slashes (`POST /networks/a/b/connect` names the network `a/b`). Owner isolation
+authorizes that full name, and on connect and disconnect it authorizes the
+body's `Container` as well. Podman's native `/libpod/networks` routes keep a
+single-segment name.
+
 Once a path is classified as targeting a specific resource, owner isolation
 must prove that resource exists before the request can continue, and the two
 ways that can fail get different answers. In `enforce` mode a resource the
