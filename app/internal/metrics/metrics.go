@@ -67,6 +67,12 @@ type Registry struct {
 
 	startedAt time.Time
 
+	// otlpStats, when set, supplies the OTLP exporter counters at scrape time.
+	// The exporter lives in its own package (which imports this one for
+	// RouteCategory), so the registry pulls a plain snapshot through a func
+	// instead of importing it.
+	otlpStats atomic.Pointer[func() OTLPStats]
+
 	// inflight tracks current per-profile in-flight request counts under a
 	// concurrency cap. SetInflight is called twice per admitted request on
 	// the rate-limit hot path; per-profile *atomic.Int64 keeps it lock-free.
@@ -268,6 +274,27 @@ func (r *Registry) ObserveConfigReload(result string) {
 		r.configReloadLastNanos.Store(uint64(ts))
 		r.configReloadLastKnown.Store(true)
 	}
+}
+
+// OTLPStats is a snapshot of the OTLP trace exporter's counters.
+type OTLPStats struct {
+	Exported            uint64
+	DroppedQueueFull    uint64
+	DroppedExportFailed uint64
+	DroppedShutdown     uint64
+	RequestsSuccess     uint64
+	RequestsRetryable   uint64
+	RequestsPermanent   uint64
+}
+
+// SetOTLPStats registers the snapshot source for the sockguard_otlp_*
+// series. The series stay absent until a source is registered, so a build
+// with the exporter disabled exposes nothing new. Nil-safe.
+func (r *Registry) SetOTLPStats(fn func() OTLPStats) {
+	if r == nil || fn == nil {
+		return
+	}
+	r.otlpStats.Store(&fn)
 }
 
 // SetPolicyVersion publishes the current monotonic policy generation
@@ -611,6 +638,23 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 		fmt.Fprintln(w, "# TYPE sockguard_config_reload_last_success_timestamp_seconds gauge")
 		fmt.Fprintf(w, "sockguard_config_reload_last_success_timestamp_seconds %s\n",
 			strconv.FormatFloat(float64(reloadLastNanos)/1e9, 'f', -1, 64))
+	}
+
+	if src := r.otlpStats.Load(); src != nil {
+		st := (*src)()
+		fmt.Fprintln(w, "# HELP sockguard_otlp_spans_exported_total Spans accepted by the OTLP collector.")
+		fmt.Fprintln(w, "# TYPE sockguard_otlp_spans_exported_total counter")
+		fmt.Fprintf(w, "sockguard_otlp_spans_exported_total %d\n", st.Exported)
+		fmt.Fprintln(w, "# HELP sockguard_otlp_spans_dropped_total Spans dropped by the OTLP exporter. reason is queue_full, export_failed or shutdown.")
+		fmt.Fprintln(w, "# TYPE sockguard_otlp_spans_dropped_total counter")
+		fmt.Fprintf(w, "sockguard_otlp_spans_dropped_total{reason=\"export_failed\"} %d\n", st.DroppedExportFailed)
+		fmt.Fprintf(w, "sockguard_otlp_spans_dropped_total{reason=\"queue_full\"} %d\n", st.DroppedQueueFull)
+		fmt.Fprintf(w, "sockguard_otlp_spans_dropped_total{reason=\"shutdown\"} %d\n", st.DroppedShutdown)
+		fmt.Fprintln(w, "# HELP sockguard_otlp_export_requests_total OTLP export HTTP attempts. result is success, retryable_error or permanent_error.")
+		fmt.Fprintln(w, "# TYPE sockguard_otlp_export_requests_total counter")
+		fmt.Fprintf(w, "sockguard_otlp_export_requests_total{result=\"permanent_error\"} %d\n", st.RequestsPermanent)
+		fmt.Fprintf(w, "sockguard_otlp_export_requests_total{result=\"retryable_error\"} %d\n", st.RequestsRetryable)
+		fmt.Fprintf(w, "sockguard_otlp_export_requests_total{result=\"success\"} %d\n", st.RequestsSuccess)
 	}
 
 	if policyVersionKnown {
