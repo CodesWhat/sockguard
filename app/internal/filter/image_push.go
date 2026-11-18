@@ -86,7 +86,13 @@ func newImagePushPolicy(opts ImagePushOptions) imagePushPolicy {
 		for from, to := range opts.RegistryAliases {
 			from, okFrom := normalizeRegistryHost(from)
 			to, okTo := normalizeRegistryHost(to)
-			if !okFrom || !okTo || from == to || IsBuiltinRegistryAlias(from) {
+			if !okFrom || !okTo || IsBuiltinRegistryAlias(from) {
+				continue
+			}
+			if builtin, isBuiltin := builtinRegistryAliases[to]; isBuiltin {
+				to = builtin
+			}
+			if from == to {
 				continue
 			}
 			p.aliases[from] = to

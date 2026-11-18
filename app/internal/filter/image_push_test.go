@@ -386,3 +386,18 @@ func TestImagePushParserNeverPanicsOnOddInput(t *testing.T) {
 		_ = p.denyReasonForDestination(s, true)
 	}
 }
+
+func TestImagePushAliasTargetUsesBuiltinDockerHubHost(t *testing.T) {
+	for _, target := range []string{"registry-1.docker.io", "registry.hub.docker.com", "index.docker.io"} {
+		p := newImagePushPolicy(ImagePushOptions{
+			AllowedRegistries: []string{"docker.io"},
+			RegistryAliases:   map[string]string{"hub-mirror.example": target},
+		})
+		if got := p.resolveHost("hub-mirror.example"); got != "docker.io" {
+			t.Fatalf("alias to %s resolved to %q, want docker.io", target, got)
+		}
+		if got := inspectPush(t, p, http.MethodPost, "/images/hub-mirror.example/team/app/push", nil); got != "" {
+			t.Fatalf("alias to %s denied: %q", target, got)
+		}
+	}
+}
