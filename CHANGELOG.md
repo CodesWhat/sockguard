@@ -36,6 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `POST /containers/{name}/start` now allows a short fixed-length body again. Portainer's UI posts `{}` with every start, and the blanket body refusal made Start return `403` through the portainer preset. The proxy now matches Moby's own limit: an empty body or a fixed-length body of at most 7 bytes passes, and a longer or chunked body is still refused, so no `HostConfig` can ride along.
 - Shutdown now waits for hijacked exec and attach handlers to return, within the shared shutdown deadline, before closing the audit and log sinks, so a long session's only audit event is no longer lost. Shutdown signals the hijack relay directly so it closes both legs even when the session is quiet, and a drain that hits the deadline is logged with the number of handlers still running.
 - A transient write error no longer silences file-backed access and audit logs for the rest of the process. The sticky buffered writer is replaced by a bounded pending buffer that retries unwritten bytes without duplicating them, audit events are encoded fresh per record so a failed write cannot poison later ones, records actually lost are counted, and sink failures print a rate-limited diagnostic to stderr.
 - Site and docs analytics now honor Global Privacy Control as well as Do Not Track, and re-check both before each send, since posthog-js's cookieless mode skips its own DNT check.

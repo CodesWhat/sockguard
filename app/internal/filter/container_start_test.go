@@ -58,7 +58,7 @@ func startThroughMiddleware(t *testing.T, method, path string, body io.Reader, c
 	return rec.Code, reached
 }
 
-func TestContainerStartRefusesAnyBody(t *testing.T) {
+func TestContainerStartBodyFraming(t *testing.T) {
 	const hostConfig = `{"Privileged":true,"Binds":["/:/host"]}`
 	denied := []struct {
 		name    string
@@ -70,8 +70,9 @@ func TestContainerStartRefusesAnyBody(t *testing.T) {
 		{"modern prefix", "/v1.45/containers/abc/start", hostConfig, false},
 		{"unversioned", "/containers/abc/start", hostConfig, false},
 		{"chunked", "/v1.23/containers/abc/start", hostConfig, true},
-		{"empty object", "/containers/abc/start", `{}`, false},
-		{"whitespace", "/containers/abc/start", ` `, false},
+		{"chunked empty object", "/containers/abc/start", `{}`, true},
+		{"eight bytes", "/containers/abc/start", `{      }`, false},
+		{"eight byte whitespace", "/containers/abc/start", `        `, false},
 		{"slash-bearing name", "/v1.23/containers/a/b/start", hostConfig, false},
 		{"escaped slash in name", "/v1.23/containers/a%2Fb/start", hostConfig, false},
 		{"over the read bound", "/containers/abc/start", strings.Repeat("x", maxContainerStartBodyBytes+10), false},
@@ -92,6 +93,11 @@ func TestContainerStartRefusesAnyBody(t *testing.T) {
 	}{
 		{"no body", "/v1.23/containers/abc/start", nil},
 		{"empty reader", "/containers/abc/start", strings.NewReader("")},
+		{"fixed-length empty object", "/containers/abc/start", strings.NewReader(`{}`)},
+		{"fixed-length empty object, old API", "/v1.23/containers/abc/start", strings.NewReader(`{}`)},
+		{"fixed-length null", "/containers/abc/start", strings.NewReader(`null`)},
+		{"short whitespace", "/containers/abc/start", strings.NewReader(` `)},
+		{"seven bytes", "/containers/abc/start", strings.NewReader(`{     }`)},
 		{"slash-bearing name without a body", "/containers/a/b/start", nil},
 		{"stop with a body is not a start", "/containers/abc/stop", strings.NewReader(`{}`)},
 	}
