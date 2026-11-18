@@ -57,11 +57,20 @@ func mutateVolumeCreateOwnershipBody(r *http.Request, labelKey, owner, labelFiel
 // authority, so a success whose owner label is not this proxy's is replaced by
 // a refusal and the foreign metadata is dropped unread.
 func serveVolumeCreateOwned(logger *slog.Logger, next http.Handler, w http.ResponseWriter, r *http.Request, opts Options) {
+	serveCreateResponseOwned(logger, next, w, r, "volume", volumeCreateForeignResponseReason, func(header http.Header, raw []byte) (bool, error) {
+		return volumeCreateResponseOwned(header, raw, opts)
+	})
+}
+
+// serveCreateResponseOwned is the buffer-and-verify core shared by the volume
+// and native network create: kind names the resource in log lines, reason is
+// the refusal message, and owned decides from the buffered response.
+func serveCreateResponseOwned(logger *slog.Logger, next http.Handler, w http.ResponseWriter, r *http.Request, kind, reason string, owned func(http.Header, []byte) (bool, error)) {
 	interceptingW := newOwnerFilterWriter(w)
 	next.ServeHTTP(interceptingW, r)
 
 	if interceptingW.overflow {
-		logger.ErrorContext(r.Context(), "owner volume create check: upstream response exceeds size limit",
+		logger.ErrorContext(r.Context(), "owner "+kind+" create check: upstream response exceeds size limit",
 			"limit_bytes", filter.ResponseBodyLimit(), "method", logging.SafeString(r.Method), "path", logging.SafeString(r.URL.Path))
 		logging.SetDeniedWithCode(w, r, reasonCodeOwnerResponseTooLarge, filter.ResponseTooLargeMessage(), nil)
 		responsefilter.ClearUpstreamRepresentationHeaders(w.Header())
@@ -71,21 +80,21 @@ func serveVolumeCreateOwned(logger *slog.Logger, next http.Handler, w http.Respo
 
 	status := interceptingW.statusCode
 	if status >= http.StatusOK && status < http.StatusMultipleChoices && status != http.StatusNoContent {
-		owned, err := volumeCreateResponseOwned(w.Header(), interceptingW.body.Bytes(), opts)
+		ok, err := owned(w.Header(), interceptingW.body.Bytes())
 		if err != nil {
-			logger.ErrorContext(r.Context(), "owner volume create check failed", "error", logging.SafeString(err.Error()))
+			logger.ErrorContext(r.Context(), "owner "+kind+" create check failed", "error", logging.SafeString(err.Error()))
 			logging.SetDeniedWithCode(w, r, reasonCodeOwnerResponseFilterFail, "owner response filter failed", nil)
 			responsefilter.ClearUpstreamRepresentationHeaders(w.Header())
 			_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "owner response filter failed"})
 			return
 		}
-		if !owned {
+		if !ok {
 			if meta := logging.MetaForRequest(w, r); meta.AllowsPassThrough() {
-				logging.SetWouldDenyWithCode(w, r, reasonCodeOwnerPolicyDeniedAccess, volumeCreateForeignResponseReason, nil)
+				logging.SetWouldDenyWithCode(w, r, reasonCodeOwnerPolicyDeniedAccess, reason, nil)
 			} else {
-				logging.SetDeniedWithCode(w, r, reasonCodeOwnerPolicyDeniedAccess, volumeCreateForeignResponseReason, nil)
+				logging.SetDeniedWithCode(w, r, reasonCodeOwnerPolicyDeniedAccess, reason, nil)
 				responsefilter.ClearUpstreamRepresentationHeaders(w.Header())
-				_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: volumeCreateForeignResponseReason})
+				_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: reason})
 				return
 			}
 		}
@@ -112,4 +121,60 @@ func volumeCreateResponseOwned(header http.Header, raw []byte, opts Options) (bo
 		return false, fmt.Errorf("decode volume create response: %w", err)
 	}
 	return volume.Labels[opts.LabelKey] == opts.Owner, nil
+}
+
+const networkCreateForeignResponseReason = "owner policy denied access to network"
+
+// mutateLibpodNetworkCreateOwnershipBody stamps the owner label into a native
+// network create and returns the network the body names, if any.
+//
+// With ignoreIfExists=true, Podman answers a create over an existing network
+// with that network and a 200, labels and topology included, so stamping the
+// body alone let a tenant read another owner's network by naming it. The name
+// goes to the existing-resource check, which passes a name nothing holds and
+// denies one another owner or nobody holds. Podman decodes the body's keys
+// case-insensitively, so every case variant of name is collected.
+func mutateLibpodNetworkCreateOwnershipBody(r *http.Request, labelKey, owner string) (*ownershipRequestReferences, error) {
+	refs := &ownershipRequestReferences{}
+	err := mutateJSONBody(r, func(decoded map[string]any) error {
+		labels, err := filter.NestedObject(decoded, "labels")
+		if err != nil {
+			return err
+		}
+		labels[labelKey] = owner
+		for _, name := range filter.FoldedStrings(decoded, "name") {
+			appendEmbeddedOwnershipReference(&refs.existingResources, dockerresource.KindNetwork, name, "network create name")
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return refs, nil
+}
+
+// serveLibpodNetworkCreateOwned forwards a native network create and releases
+// the response only when the returned network carries this proxy's owner
+// label, closing the window between the preflight lookup and the create.
+func serveLibpodNetworkCreateOwned(logger *slog.Logger, next http.Handler, w http.ResponseWriter, r *http.Request, opts Options) {
+	serveCreateResponseOwned(logger, next, w, r, "network", networkCreateForeignResponseReason, func(header http.Header, raw []byte) (bool, error) {
+		return libpodNetworkCreateResponseOwned(header, raw, opts)
+	})
+}
+
+// libpodNetworkCreateResponseOwned reports whether the created network's own
+// labels carry this proxy's owner label. The native handler answers with
+// types.Network, whose labels key is lowercase.
+func libpodNetworkCreateResponseOwned(header http.Header, raw []byte, opts Options) (bool, error) {
+	body, err := bodycodec.Bytes(header, raw, filter.ResponseBodyLimit())
+	if err != nil {
+		return false, err
+	}
+	var network struct {
+		Labels map[string]string `json:"labels"`
+	}
+	if err := json.NewDecoder(strings.NewReader(string(body))).Decode(&network); err != nil {
+		return false, fmt.Errorf("decode network create response: %w", err)
+	}
+	return network.Labels[opts.LabelKey] == opts.Owner, nil
 }

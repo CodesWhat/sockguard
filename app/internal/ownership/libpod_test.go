@@ -63,6 +63,7 @@ func TestMiddlewareStampsOwnerLabelOnLibpodCreateEndpoints(t *testing.T) {
 					}
 				}
 				w.WriteHeader(http.StatusAccepted)
+				_, _ = io.WriteString(w, `{"name":"n","labels":{"com.sockguard.owner":"job-123"}}`)
 			}))
 
 			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))

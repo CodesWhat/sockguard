@@ -494,7 +494,7 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 	case r.Method == http.MethodPost && normPath == libpodPodCreatePath:
 		return mutateLibpodPodCreateOwnershipBody(r, opts.LabelKey, opts.Owner)
 	case r.Method == http.MethodPost && normPath == libpodNetworkCreatePath:
-		return nil, addOwnerLabelToLibpodBody(r, opts.LabelKey, opts.Owner, "labels")
+		return mutateLibpodNetworkCreateOwnershipBody(r, opts.LabelKey, opts.Owner)
 	case r.Method == http.MethodPost && normPath == libpodVolumeCreatePath:
 		return mutateVolumeCreateOwnershipBody(r, opts.LabelKey, opts.Owner, "Labels")
 	case r.Method == http.MethodPost && normPath == libpodSecretCreatePath:

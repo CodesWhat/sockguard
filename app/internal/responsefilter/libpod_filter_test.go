@@ -785,6 +785,13 @@ func TestLibpodNetworkTopologyIsRedacted(t *testing.T) {
 		assertPresent(t, "libpod network inspect", body, `"team-a-net"`, `"net-team-a"`, "host-local", `"team-a"`)
 	})
 
+	t.Run("libpod create", func(t *testing.T) {
+		t.Parallel()
+		body := libpodBodyForMethodTest(t, allRedactions, http.MethodPost, "/v5.8.1/libpod/networks/create", libpodNetworkInspectUpstream)
+		assertAbsent(t, "libpod network create", body, libpodNetworkTopologySentinels...)
+		assertPresent(t, "libpod network create", body, `"team-a-net"`, `"team-a"`)
+	})
+
 	t.Run("libpod inspect, single-element array envelope", func(t *testing.T) {
 		t.Parallel()
 		upstream := "[" + libpodNetworkInspectUpstream + "]"
@@ -837,16 +844,12 @@ func TestLibpodNetworkTopologyIsRedacted(t *testing.T) {
 	})
 
 	// The bare-path alias must not swallow the collection-level routes that
-	// share its shape. POST /libpod/networks/create answers with a full
-	// types.Network (abi.NetworkCreate returns the filled-in network), so
-	// treating it as an inspect would strip the subnet out of the reply to the
-	// client that just chose it.
+	// share its shape. Prune and remove answer with reports, not networks.
+	// POST /libpod/networks/create is redacted as an inspect on its own route
+	// because ignoreIfExists answers with an existing network.
 	t.Run("collection routes are not the bare inspect alias", func(t *testing.T) {
 		t.Parallel()
-		const created = `{"name":"team-a-net","id":"net-team-a","network_interface":"podman1",` +
-			`"subnets":[{"subnet":"10.89.0.0/24","gateway":"10.89.0.1"}]}`
 		for _, tc := range []struct{ method, path, upstream string }{
-			{http.MethodPost, "/v5.8.1/libpod/networks/create", created},
 			{http.MethodPost, "/v5.8.1/libpod/networks/prune", `[{"Id":"net-team-a","Err":null}]`},
 			{http.MethodDelete, "/v5.8.1/libpod/networks/net-team-a", `[{"Name":"team-a-net","Err":null}]`},
 		} {
@@ -919,7 +922,6 @@ func TestLibpodLegacyCNINetworkTopologyIsRedacted(t *testing.T) {
 	t.Run("legacy write responses pass through", func(t *testing.T) {
 		t.Parallel()
 		for _, tc := range []struct{ method, path string }{
-			{http.MethodPost, "/v3.4.4/libpod/networks/create"},
 			{http.MethodPost, "/libpod/networks/prune"},
 			{http.MethodDelete, "/v3.4.4/libpod/networks/team-a-net"},
 		} {
@@ -1125,7 +1127,6 @@ func TestLibpodLegacyCNIStaticIPAMTopologyIsRedacted(t *testing.T) {
 	t.Run("write and delete responses pass through", func(t *testing.T) {
 		t.Parallel()
 		for _, tc := range []struct{ method, path string }{
-			{http.MethodPost, "/v3.4.4/libpod/networks/create"},
 			{http.MethodPost, "/libpod/networks/prune"},
 			{http.MethodDelete, "/v3.4.4/libpod/networks/team-a-static-ipam"},
 		} {
