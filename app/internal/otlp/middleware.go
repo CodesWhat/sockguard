@@ -17,7 +17,7 @@ func RootSampler(ratio float64) func() bool {
 	case ratio >= 1:
 		return func() bool { return true }
 	default:
-		return func() bool { return rand.Float64() < ratio }
+		return func() bool { return rand.Float64() < ratio } // #nosec G404 -- trace sampling, not a security decision
 	}
 }
 
