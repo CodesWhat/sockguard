@@ -71,6 +71,9 @@ type PolicyConfig struct {
 	Exec ExecOptions
 	// ImagePull configures request/query inspection for POST /images/create.
 	ImagePull ImagePullOptions
+	// ImagePush configures the registry allowlist for image, plugin and
+	// manifest pushes. Inactive unless AllowedRegistries is non-empty.
+	ImagePush ImagePushOptions
 	// Build configures request-body/query inspection for POST /build.
 	Build BuildOptions
 	// ContainerUpdate configures request-body inspection for
@@ -468,6 +471,10 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		// inspector; when no allowlist is configured the inspector is a no-op,
 		// so an unrestricted deployment pays only a path prefix/suffix check.
 		{http.MethodGet, matchesDistributionInspection, inspectSeverityHigh, newImagePullPolicy(cfg.ImagePull).inspectDistribution, "failed to inspect distribution request", "unable to inspect distribution request"},
+		// Pushes send a local image, plugin or manifest to a registry the caller
+		// names. Critical so no other matched entry can shadow it; the inspector
+		// is a no-op unless request_body.image_push has an allowlist.
+		{http.MethodPost, matchesImagePushInspection, inspectSeverityCritical, newImagePushPolicy(cfg.ImagePush).inspect, "failed to inspect image push request", "unable to inspect image push request"},
 		{http.MethodPost, matchesBuildInspection, inspectSeverityCritical, newBuildPolicy(cfg.Build).inspect, "failed to inspect build request", "unable to inspect build request"},
 		{http.MethodPost, matchesContainerUpdateInspection, inspectSeverityHigh, newContainerUpdatePolicy(cfg.ContainerUpdate).inspect, "failed to inspect container update request body", "unable to inspect container update request body"},
 		{http.MethodDelete, matchesContainerRemoveInspection, inspectSeverityMedium, newContainerRemovePolicy(cfg.ContainerRemove).inspect, "failed to inspect container remove query", "unable to inspect container remove query"},

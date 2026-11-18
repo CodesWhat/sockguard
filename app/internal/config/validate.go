@@ -1808,6 +1808,7 @@ func validateRequestBodyConfig(prefix string, cfg RequestBodyConfig) []string {
 	errs = append(errs, validateLibpodContainerCreateConfig(prefix, cfg.LibpodContainerCreate)...)
 	errs = append(errs, validateExecConfig(prefix, cfg.Exec)...)
 	errs = append(errs, validateImagePullConfig(prefix, cfg.ImagePull)...)
+	errs = append(errs, validateImagePushConfig(prefix, cfg.ImagePush)...)
 	errs = append(errs, validateServiceConfig(prefix, cfg.Service)...)
 	errs = append(errs, validateSwarmConfig(prefix, cfg.Swarm)...)
 	errs = append(errs, validatePluginConfig(prefix, cfg.Plugin)...)
@@ -2021,6 +2022,58 @@ func validateExecConfig(prefix string, cfg ExecRequestBodyConfig) []string {
 
 func validateImagePullConfig(prefix string, cfg ImagePullRequestBodyConfig) []string {
 	return validateRegistryHostEntries(prefix, "image_pull.allowed_registries", cfg.AllowedRegistries)
+}
+
+// validateImagePushConfig checks request_body.image_push. Aliases are single
+// level: a target may not itself be an alias, which rules out chains and
+// cycles, and an alias with no allowlist is refused because it would do
+// nothing. The list form keeps dotted hosts out of Viper's key splitting.
+func validateImagePushConfig(prefix string, cfg ImagePushRequestBodyConfig) []string {
+	errs := validateRegistryHostEntries(prefix, "image_push.allowed_registries", cfg.AllowedRegistries)
+	if len(cfg.RegistryAliases) == 0 {
+		return errs
+	}
+	field := prefix + ".image_push.registry_aliases"
+	if len(cfg.AllowedRegistries) == 0 {
+		return append(errs, field+" requires image_push.allowed_registries (the policy is inactive without it, so an alias would do nothing)")
+	}
+
+	normalized := make(map[string]string, len(cfg.RegistryAliases))
+	for i, alias := range cfg.RegistryAliases {
+		from, to := alias.From, alias.To
+		entry := fmt.Sprintf("%s[%d]", field, i)
+		normFrom, okFrom := normalizeAllowedRegistryHost(from)
+		normTo, okTo := normalizeAllowedRegistryHost(to)
+		if !okFrom {
+			errs = append(errs, fmt.Sprintf("%s.from must be a bare registry host, got %q", entry, from))
+		}
+		if !okTo {
+			errs = append(errs, fmt.Sprintf("%s.to must be a bare registry host, got %q", entry, to))
+		}
+		if !okFrom || !okTo {
+			continue
+		}
+		if filter.IsBuiltinRegistryAlias(from) || filter.IsBuiltinRegistryAlias(normFrom) {
+			errs = append(errs, fmt.Sprintf("%s.from %q is a built-in Docker Hub alias and cannot be redefined", entry, from))
+			continue
+		}
+		if normFrom == normTo {
+			errs = append(errs, fmt.Sprintf("%s.from %q must differ from its target", entry, from))
+			continue
+		}
+		if existing, dup := normalized[normFrom]; dup {
+			errs = append(errs, fmt.Sprintf("%s.from %q is a duplicate (already maps to %q)", entry, from, existing))
+			continue
+		}
+		normalized[normFrom] = normTo
+	}
+	for from, to := range normalized {
+		if _, chained := normalized[to]; chained {
+			errs = append(errs, fmt.Sprintf("%s target %q (from %q) is itself an alias; chains are not followed", field, to, from))
+		}
+	}
+	slices.Sort(errs)
+	return errs
 }
 
 func validateServiceConfig(prefix string, cfg ServiceRequestBodyConfig) []string {
