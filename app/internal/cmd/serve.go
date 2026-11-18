@@ -31,6 +31,7 @@ import (
 	"github.com/codeswhat/sockguard/v3/app/internal/inbound"
 	"github.com/codeswhat/sockguard/v3/app/internal/logging"
 	"github.com/codeswhat/sockguard/v3/app/internal/metrics"
+	"github.com/codeswhat/sockguard/v3/app/internal/otlp"
 	"github.com/codeswhat/sockguard/v3/app/internal/ownership"
 	"github.com/codeswhat/sockguard/v3/app/internal/policybundle"
 	"github.com/codeswhat/sockguard/v3/app/internal/proxy"
@@ -208,6 +209,10 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	if err != nil {
 		return fmt.Errorf("upstream: %w", err)
 	}
+	// Deferred so it runs after shutdownServers has drained the listeners
+	// (spans from in-flight requests are already enqueued by then) and on
+	// every early error return below.
+	defer runtime.closeOTLP(deps.shutdownGracePeriod)
 	if err := verifyUpstreamReachableForRuntime(cmd.Context(), deps, runtime, cfg, logger); err != nil {
 		return err
 	}
@@ -637,6 +642,10 @@ type serveRuntime struct {
 	// periodically and on upstream health changes. Process-scoped like the
 	// flavor.
 	cgroupV1 *cgroupV1Tracker
+	// otlp is the opt-in trace exporter (nil unless otlp.enabled). Process-
+	// scoped like the metrics registry: otlp.* is reload-immutable, so every
+	// reloaded chain shares the one exporter.
+	otlp *otlp.Exporter
 }
 
 func newServeRuntime(cfg *config.Config, logger *slog.Logger, deps *serveDeps) (*serveRuntime, error) {
@@ -644,9 +653,18 @@ func newServeRuntime(cfg *config.Config, logger *slog.Logger, deps *serveDeps) (
 	if cfg.Metrics.Enabled {
 		runtime.metrics = metrics.NewRegistry()
 	}
+	if cfg.OTLP.Enabled {
+		exporter, err := newOTLPExporter(cfg.OTLP)
+		if err != nil {
+			return nil, fmt.Errorf("otlp: %w", err)
+		}
+		runtime.otlp = exporter
+		runtime.metrics.SetOTLPStats(func() metrics.OTLPStats { return metrics.OTLPStats(exporter.Stats()) })
+	}
 
 	resolver, legacy, err := buildUpstreamResolver(cfg, logger, os.LookupEnv)
 	if err != nil {
+		runtime.closeOTLP(0)
 		return nil, err
 	}
 	runtime.resolver = resolver
@@ -940,8 +958,18 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 	if runtime.metrics != nil {
 		layers = append(layers, namedServeHandlerLayer("withMetrics", withMetrics(runtime.metrics)))
 	}
+	// withOTLP sits inside withTraceContext and withRequestID (it reads their
+	// IDs) and outside withMetrics, so it sees the final decision and status.
+	// Main chain only: the admin chain is not instrumented.
+	if runtime.otlp != nil {
+		layers = append(layers, namedServeHandlerLayer("withOTLP", otlp.Middleware(runtime.otlp)))
+	}
+	traceContext := withTraceContext()
+	if runtime.otlp != nil {
+		traceContext = logging.TraceContextMiddlewareWithRootSampler(otlp.RootSampler(cfg.OTLP.SampleRatio))
+	}
 	layers = append(layers,
-		namedServeHandlerLayer("withTraceContext", withTraceContext()),
+		namedServeHandlerLayer("withTraceContext", traceContext),
 		namedServeHandlerLayer("withRequestID", withRequestID()),
 	)
 	if cfg.Log.Audit.Enabled && auditLogger != nil {
@@ -1788,6 +1816,42 @@ func splitValidationError(err error) []string {
 		return out
 	}
 	return []string{err.Error()}
+}
+
+// newOTLPExporter converts the validated otlp.* block into exporter options.
+func newOTLPExporter(c config.OTLPConfig) (*otlp.Exporter, error) {
+	timeout, err := time.ParseDuration(c.Timeout)
+	if err != nil {
+		return nil, errors.New("invalid otlp.timeout")
+	}
+	flush, err := time.ParseDuration(c.FlushInterval)
+	if err != nil {
+		return nil, errors.New("invalid otlp.flush_interval")
+	}
+	return otlp.New(otlp.Options{
+		Endpoint:           c.Endpoint,
+		Headers:            c.Headers,
+		Timeout:            timeout,
+		FlushInterval:      flush,
+		QueueSize:          int(c.QueueSize),
+		BatchSize:          int(c.BatchSize),
+		ServiceName:        c.ServiceName,
+		ServiceVersion:     version.Version,
+		CAFile:             c.TLS.CAFile,
+		InsecureSkipVerify: c.TLS.InsecureSkipVerify,
+	})
+}
+
+// closeOTLP flushes and stops the exporter, bounded by min(5s, grace). A
+// non-positive grace gives the exporter no time to flush, which is what the
+// startup-failure path wants.
+func (r *serveRuntime) closeOTLP(grace time.Duration) {
+	if r == nil || r.otlp == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), min(5*time.Second, max(grace, 0)))
+	defer cancel()
+	_ = r.otlp.Close(ctx)
 }
 
 func withRequestID() func(http.Handler) http.Handler {
