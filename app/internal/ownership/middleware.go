@@ -1381,6 +1381,19 @@ func collectServiceEmbeddedReferencesWithTemplates(decoded map[string]any) ([]em
 	return refs.list, refs.overflow, refs.templated
 }
 
+// isServiceNetworkReference reports whether a service network Target names a
+// resource that needs an ownership check. Swarm resolves service targets by
+// exact name, so "Default", "None", "INGRESS" and "docker_gwbridge" are
+// ordinary (creatable) overlays, not the built-ins container modes exempt by
+// case-insensitive match. Only the exact, lowercase "host" and "bridge" are
+// skipped; every other non-empty target is a network reference.
+func isServiceNetworkReference(target string) bool {
+	if strings.TrimSpace(target) == "" {
+		return false
+	}
+	return target != "host" && target != "bridge"
+}
+
 func appendServiceNetworkReferences(refs *embeddedRefCollector, parent map[string]any, source string) {
 	for _, networks := range filter.FoldedArrays(parent, "Networks") {
 		for _, value := range networks {
@@ -1390,7 +1403,7 @@ func appendServiceNetworkReferences(refs *embeddedRefCollector, parent map[strin
 			}
 			for _, target := range filter.FoldedStrings(network, "Target") {
 				refs.refuseTemplated(target, source)
-				if isCustomNetworkMode(target) {
+				if isServiceNetworkReference(target) {
 					refs.add(dockerresource.KindNetwork, target, source)
 				}
 			}

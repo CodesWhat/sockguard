@@ -191,3 +191,52 @@ func TestMiddlewareRefusesTemplatedServiceVolumeAndNetworkNames(t *testing.T) {
 		}
 	})
 }
+
+// TestServiceNetworkTargetsExemptOnlyExactHostAndBridge pins that Swarm's
+// exact-name resolution makes case variants and the other container-mode
+// built-ins ordinary networks a tenant must own.
+func TestServiceNetworkTargetsExemptOnlyExactHostAndBridge(t *testing.T) {
+	t.Parallel()
+	for _, target := range []string{"host", "bridge"} {
+		decoded := map[string]any{"TaskTemplate": map[string]any{"Networks": []any{map[string]any{"Target": target}}}}
+		got, overflow := collectServiceEmbeddedReferences(decoded)
+		if overflow || len(got) != 0 {
+			t.Errorf("exact %q produced refs %v (overflow %v), want none", target, got, overflow)
+		}
+	}
+	for _, target := range []string{"Host", "BRIDGE", "default", "Default", "None", "none", "INGRESS", "ingress", "docker_gwbridge"} {
+		decoded := map[string]any{"Networks": []any{map[string]any{"Target": target}}}
+		got, _ := collectServiceEmbeddedReferences(decoded)
+		if len(got) != 1 || got[0].kind != dockerresource.KindNetwork || got[0].identifier != target {
+			t.Errorf("target %q refs = %v, want one network ref", target, got)
+		}
+	}
+}
+
+func TestMiddlewareChecksBuiltinNamedServiceNetworks(t *testing.T) {
+	t.Parallel()
+	for _, target := range []string{"Default", "None", "docker_gwbridge", "INGRESS"} {
+		body := `{"TaskTemplate":{"Networks":[{"Target":"` + target + `"}]}}`
+		for _, tc := range []struct{ name, path string }{
+			{"create", "/services/create"},
+			{"owned update", "/v1.45/services/svc/update"},
+		} {
+			t.Run(target+" "+tc.name, func(t *testing.T) {
+				t.Parallel()
+				res := map[string]map[string]inspectResult{
+					"networks": {target: ownerLabel("job-999")},
+					"services": {"svc": ownerLabel("job-123")},
+				}
+				code, forwarded, _ := embeddedTestRun(t, Options{}, res, http.MethodPost, tc.path, body)
+				if code != http.StatusForbidden || forwarded {
+					t.Fatalf("foreign: status = %d forwarded = %v, want 403", code, forwarded)
+				}
+				res["networks"][target] = ownerLabel("job-123")
+				code, forwarded, _ = embeddedTestRun(t, Options{}, res, http.MethodPost, tc.path, body)
+				if code != http.StatusOK || !forwarded {
+					t.Fatalf("owned: status = %d forwarded = %v, want 200 forwarded", code, forwarded)
+				}
+			})
+		}
+	}
+}
