@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Scope the unpatched picomatch advisory GHSA-fc5q-39xc-vjpf out of the Grype dependency scan with a package-lock-only ignore, matching the Qlty exception: glob patterns come from the trusted repository build, and npm packages are absent from the shipped Go binary and container.
 - Update the linked OpenTelemetry API, metric, trace and log modules to 1.47.0 for GHSA-q7gw-24fr-5p69 / CVE-2026-128085, an attribute value length limit bypass involving valid replacement characters. Trace is linked through Sigstore; the advisory's affected tracing path has not been demonstrated in Sockguard.
 - Owner isolation now authorizes networks named in a service's `TaskTemplate.Networks`, not only the top-level `Networks` field. Docker prefers the task template list, so a tenant could attach a service to another owner's overlay network through it.
+- Owner isolation now authorizes the source of a `Type: image` container mount (Docker API 1.48+) against the caller's images, so a tenant can't read another owner's image filesystem through its own container. Podman and any upstream not identified as Docker refuse image mounts under ownership.
 
 ### Fixed
 

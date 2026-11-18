@@ -950,9 +950,16 @@ func mutateContainerCreateOwnershipBody(r *http.Request, labelKey, owner string,
 		labels[labelKey] = owner
 		refs.namespaceContainers = containerCreateNamespaceRefs(decoded)
 		var overflow bool
-		refs.embeddedResources, overflow = collectContainerCreateEmbeddedReferences(decoded)
-		if overflow {
+		var hasImageMount bool
+		refs.embeddedResources, overflow, hasImageMount = collectContainerCreateEmbeddedReferencesWithImageMounts(decoded)
+		switch {
+		case overflow:
 			refs.denyReason = fmt.Sprintf(embeddedReferencesDenyTooMany, "container create")
+		case hasImageMount && flavor != upstreamflavor.Docker:
+			// Podman, or an upstream not positively identified as Docker, may
+			// resolve an image mount through a mutable name the preflight
+			// lookup cannot pin, so it is refused outright.
+			refs.denyReason = "owner policy denied image mounts on an upstream not identified as Docker"
 		}
 		if flavor == upstreamflavor.Podman {
 			refs.existingSharedResources = containerCreatePodmanNetworkNameReferences(decoded)
@@ -1010,14 +1017,25 @@ func containerCreateEmbeddedOwnershipReferences(decoded map[string]any) []embedd
 }
 
 func collectContainerCreateEmbeddedReferences(decoded map[string]any) ([]embeddedOwnershipReference, bool) {
+	list, overflow, _ := collectContainerCreateEmbeddedReferencesWithImageMounts(decoded)
+	return list, overflow
+}
+
+// collectContainerCreateEmbeddedReferencesWithImageMounts also reports whether
+// the body carries a Type=image mount, which only a Docker upstream can have
+// authorized through the image references collected here.
+func collectContainerCreateEmbeddedReferencesWithImageMounts(decoded map[string]any) ([]embeddedOwnershipReference, bool, bool) {
 	refs := &embeddedRefCollector{}
+	hasImageMount := false
 	for _, image := range filter.FoldedStrings(decoded, "Image") {
 		refs.add(dockerresource.KindImage, image, "container Image")
 	}
 
 	for _, hostConfig := range filter.FoldedObjects(decoded, "HostConfig") {
 		appendContainerBindOwnershipReferences(refs, hostConfig)
-		appendContainerMountOwnershipReferences(refs, hostConfig)
+		if appendContainerMountOwnershipReferences(refs, hostConfig) {
+			hasImageMount = true
+		}
 
 		for _, mode := range filter.FoldedStrings(hostConfig, "NetworkMode") {
 			if !isCustomNetworkMode(mode) {
@@ -1028,7 +1046,7 @@ func collectContainerCreateEmbeddedReferences(decoded map[string]any) ([]embedde
 	}
 
 	appendContainerNetworkEndpointReferences(refs, decoded)
-	return refs.list, refs.overflow
+	return refs.list, refs.overflow, hasImageMount
 }
 
 func appendContainerBindOwnershipReferences(refs *embeddedRefCollector, hostConfig map[string]any) {
@@ -1048,18 +1066,33 @@ func appendContainerBindOwnershipReferences(refs *embeddedRefCollector, hostConf
 	}
 }
 
-func appendContainerMountOwnershipReferences(refs *embeddedRefCollector, hostConfig map[string]any) {
+// appendContainerMountOwnershipReferences collects volume mount sources as
+// volume references and image mount sources (Docker API 1.48+ Type=image) as
+// image references, and reports whether it saw an image mount. An image mount
+// exposes another image's filesystem read-only, so it needs the same owner
+// check as the container's own Image.
+func appendContainerMountOwnershipReferences(refs *embeddedRefCollector, hostConfig map[string]any) bool {
+	hasImageMount := false
 	for _, mounts := range filter.FoldedArrays(hostConfig, "Mounts") {
 		for _, value := range mounts {
 			mount, ok := value.(map[string]any)
-			if !ok || !filter.FoldedStringEquals(mount, "Type", "volume") {
+			if !ok {
 				continue
 			}
-			for _, source := range filter.FoldedStrings(mount, "Source") {
-				refs.add(dockerresource.KindVolume, source, "container HostConfig.Mounts")
+			switch {
+			case filter.FoldedStringEquals(mount, "Type", "volume"):
+				for _, source := range filter.FoldedStrings(mount, "Source") {
+					refs.add(dockerresource.KindVolume, source, "container HostConfig.Mounts")
+				}
+			case filter.FoldedStringEquals(mount, "Type", "image"):
+				hasImageMount = true
+				for _, source := range filter.FoldedStrings(mount, "Source") {
+					refs.add(dockerresource.KindImage, source, "container HostConfig.Mounts image source")
+				}
 			}
 		}
 	}
+	return hasImageMount
 }
 
 func appendContainerNetworkEndpointReferences(refs *embeddedRefCollector, decoded map[string]any) {
