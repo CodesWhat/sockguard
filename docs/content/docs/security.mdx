@@ -122,6 +122,8 @@ Sockguard's own endpoints are answered before this check and never reach the dae
 
 `POST /containers/create` bodies are parsed on every request and denied when they contain dangerous configuration:
 
+`POST /containers/{name}/start` is refused whenever it carries a body, whatever the API version prefix or transfer encoding, and the match takes the daemon's slash-bearing name form (`/containers/a/b/start`). Docker 24.x, and 25.x with `DOCKER_MIN_API_VERSION` at 1.23 or lower, apply a body sent with start below API 1.24 as the container's `HostConfig`, which would replace the checked create-time configuration after every check above had passed. Docker 26 and newer reject such a body themselves, and a real start request has none, so there is no opt-out. These two refusals (top-level `HostConfig` fields on create, and a start body) close the old-engine paths at the proxy, so no minimum Docker Engine version is required for them.
+
 - Any `HostConfig` or `Resources` field name (`Privileged`, `Binds`, `Devices`, `Memory`, `Cpuset` and the rest of Moby 26.1.5's inventory) at the top level of the body, in any letter case or JSON escape, whatever its value. Docker 24.x through 26.x read those fields from the top level when the nested `HostConfig` is absent or null, which skipped every check below. Docker 27 removed that decoder, and no current client sends the shape, so the refusal costs nothing there. It applies to every upstream and has no opt-out.
 - `HostConfig.Privileged: true`
 - `HostConfig.NetworkMode: host`

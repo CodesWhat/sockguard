@@ -219,3 +219,25 @@ func TestPresetChainDrydockRefusesRootLevelHostConfig(t *testing.T) {
 		t.Errorf("nested create: status = %d, creates = %d, body = %s, want 201 and 1", status, daemon.created.Load(), out)
 	}
 }
+
+// TestPresetChainDrydockRefusesStartBody pins that the shipped drydock preset
+// refuses a start request that carries a body, which Docker 24 applies as the
+// container's HostConfig below API 1.24, and that a plain start still passes.
+func TestPresetChainDrydockRefusesStartBody(t *testing.T) {
+	const hostConfig = `{"Privileged":true,"Binds":["/:/host"]}`
+	daemon := &presetCreateDaemon{}
+	addr := newPresetChain(t, "preset-start", "drydock.yaml", daemon, nil)
+	for _, path := range []string{"/containers/abc/start", "/v1.23/containers/abc/start", "/v1.45/containers/abc/start"} {
+		status, out := presetChainPost(t, addr, path, hostConfig)
+		if status != http.StatusForbidden || !strings.Contains(out, "container start denied") {
+			t.Errorf("%s: status = %d, body = %s, want 403 naming the start body", path, status, out)
+		}
+	}
+	if daemon.started.Load() != 0 {
+		t.Fatalf("daemon starts = %d, want 0", daemon.started.Load())
+	}
+	status, out := presetChainPost(t, addr, "/v1.23/containers/abc/start", "")
+	if status != http.StatusNoContent || daemon.started.Load() != 1 {
+		t.Errorf("plain start: status = %d, starts = %d, body = %s, want 204 and 1", status, daemon.started.Load(), out)
+	}
+}
