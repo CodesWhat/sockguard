@@ -42,6 +42,7 @@ var ImmutableFields = []string{
 	"log",
 	"health",
 	"metrics",
+	"otlp",
 	"admin",
 	"policy_bundle.enabled",
 	"policy_bundle.allowed_signing_keys",
@@ -111,6 +112,9 @@ func ImmutableDiff(oldCfg, newCfg *config.Config) []string {
 	}
 	if !reflect.DeepEqual(oldCfg.Metrics, newCfg.Metrics) {
 		changed = append(changed, "metrics")
+	}
+	if !reflect.DeepEqual(oldCfg.OTLP, newCfg.OTLP) {
+		changed = append(changed, "otlp")
 	}
 	if !reflect.DeepEqual(oldCfg.Admin, newCfg.Admin) {
 		changed = append(changed, "admin")

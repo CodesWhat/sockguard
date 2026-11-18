@@ -5,9 +5,11 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"os"
 	"path"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -93,6 +95,7 @@ func validateBasic(cfg *Config, mode validateMode) []string {
 	errs = append(errs, validateLogging(cfg)...)
 	errs = append(errs, validateResponse(cfg)...)
 	errs = append(errs, validateHealthMetrics(cfg)...)
+	errs = append(errs, validateOTLP(cfg)...)
 	if cfg.Admin.Enabled {
 		errs = append(errs, validateAdmin(cfg, mode)...)
 	}
@@ -2352,4 +2355,71 @@ func validateCreateLaunchConfig(prefix string, commands, entrypoints [][]string,
 		}
 	}
 	return errs
+}
+
+// validateOTLP checks the otlp.* block. A disabled block is not validated
+// beyond its types.
+func validateOTLP(cfg *Config) []string {
+	o := cfg.OTLP
+	if !o.Enabled {
+		return nil
+	}
+	var errs []string
+	// Error messages never echo the endpoint or header values: both can carry
+	// secrets (userinfo, query keys).
+	if u, err := url.Parse(o.Endpoint); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		errs = append(errs, "otlp.endpoint must be an absolute http or https URL with a host")
+	} else if u.User != nil {
+		errs = append(errs, "otlp.endpoint must not contain userinfo; use otlp.headers")
+	}
+	if d, err := time.ParseDuration(o.Timeout); err != nil || d <= 0 {
+		errs = append(errs, fmt.Sprintf("otlp.timeout must be a positive duration, got %q", o.Timeout))
+	}
+	if d, err := time.ParseDuration(o.FlushInterval); err != nil || d <= 0 {
+		errs = append(errs, fmt.Sprintf("otlp.flush_interval must be a positive duration, got %q", o.FlushInterval))
+	}
+	if o.QueueSize < 1 || o.QueueSize > 65536 {
+		errs = append(errs, fmt.Sprintf("otlp.queue_size must be between 1 and 65536, got %d", o.QueueSize))
+	}
+	if o.BatchSize < 1 || o.BatchSize > o.QueueSize {
+		errs = append(errs, fmt.Sprintf("otlp.batch_size must be between 1 and otlp.queue_size, got %d", o.BatchSize))
+	}
+	if !(o.SampleRatio >= 0 && o.SampleRatio <= 1) {
+		errs = append(errs, fmt.Sprintf("otlp.sample_ratio must be between 0 and 1, got %v", o.SampleRatio))
+	}
+	hnames := make([]string, 0, len(o.Headers))
+	for hn := range o.Headers {
+		hnames = append(hnames, hn)
+	}
+	sort.Strings(hnames)
+	for _, hn := range hnames {
+		if !validOTLPHeaderName(hn) {
+			errs = append(errs, fmt.Sprintf("otlp.headers has an invalid header name %q", hn))
+		}
+	}
+	if o.TLS.CAFile != "" {
+		if f, err := os.Open(o.TLS.CAFile); err != nil {
+			errs = append(errs, "otlp.tls.ca_file must be a readable file")
+		} else {
+			_ = f.Close()
+		}
+	}
+	return errs
+}
+
+// validOTLPHeaderName reports whether name is an RFC 7230 token.
+func validOTLPHeaderName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0:
+		default:
+			return false
+		}
+	}
+	return true
 }
