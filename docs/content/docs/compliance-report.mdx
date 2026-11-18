@@ -22,9 +22,15 @@ sockguard -c /etc/sockguard/sockguard.yaml report -o markdown    # table plus ev
 
 `report` loads the config the same way `match` and `validate` do: the
 `SOCKGUARD_*` overlay, Tecnativa compatibility expansion, then full validation
-and rule compilation. An invalid config or a config path that doesn't exist
-exits non-zero and prints no report, so a green report never describes a config
-that `serve` would refuse.
+and rule compilation. An invalid config, or a `-c` path that doesn't exist or
+can't be read, exits non-zero and prints no report. Without `-c`, a missing
+default file falls back to the built-in defaults, as it does for `match`.
+`report` takes no positional arguments; pass the file with `-c`.
+
+A successful report does not mean `serve` will accept the config. `report`
+doesn't check signed-policy startup requirements, so with
+`policy_bundle.enabled: true` it adds a report note saying so: the out-of-band
+trust config and the bundle signature are only checked when `serve` starts.
 
 The output has no timestamps, hostnames or file paths, and the same config
 always produces the same bytes. That makes `diff` between two reports a usable
@@ -38,7 +44,8 @@ tie it to the exact file reviewed.
 | `configured` | The control's knobs are set to the benchmark-aligned values in every effective scope |
 | `partial` | Satisfied in some scopes but not all |
 | `not_configured` | Not satisfied in any scope |
-| `always_on` | Enforced structurally with no knob (5.20, 5.24), or by deployment shape (5.31) |
+| `always_on` | Enforced structurally with no knob (5.20, 5.24) in every scope |
+| `needs_evidence` | Depends on how workloads are deployed, which no config can show (5.31) |
 | `outside_scope` | Lives above or below the Docker API; Sockguard can't see it |
 
 Every control also carries a category: `enforced`, `influenced` or
@@ -46,9 +53,18 @@ Every control also carries a category: `enforced`, `influenced` or
 rows keep the group IDs used there (`1.x`, `2.x` and so on) and name the
 recommended companion check.
 
-5.31 is reported `always_on` with a note: it only holds if workloads reach
-Docker through Sockguard. A workload that mounts the real Docker socket bypasses
-it.
+5.20 and 5.24 are ordinary denials, so a client profile in `warn` or `audit`
+mode forwards the request. They are `always_on` only when every scope enforces,
+and `partial` otherwise, with a note saying the request is forwarded.
+
+5.31 is `needs_evidence`, never `always_on`. Sockguard can't see whether a
+workload mounts the real Docker socket instead of the proxy socket, and its own
+container-create check admits a socket bind that `allowed_bind_mounts` covers.
+The control carries one boolean per scope: whether any `allowed_bind_mounts`
+entry covers a Docker or Podman socket path (`/var/run/docker.sock`,
+`/run/docker.sock`, a Podman socket, a parent directory, `/`, or any `*.sock`
+entry). Attach deployment evidence, such as compose or orchestrator specs, for
+the rest.
 
 ## Scope semantics
 
@@ -65,9 +81,12 @@ as satisfying a control.
 
 A few controls have their own rules:
 
-- **`insecure_allow_body_blind_writes: true`** turns every request-body-dependent
-  control into `not_configured`, with a note naming the flag. Bodies on
-  body-sensitive endpoints aren't inspected in that mode.
+- **`insecure_allow_body_blind_writes: true`** doesn't change any mapped
+  control's status. The flag only lets exec run without a command allowlist and
+  relaxes Podman build controls, image load and container update fields that
+  bodies can't be checked for. Container-create checks and the privileged and
+  root-user exec checks still apply. The report carries a note naming the flag,
+  and the exec controls (5.22, 5.23, 5.22/5.23) list it as evidence.
 - **2.6** is `configured` when every TCP listener (the legacy `listen` block and
   each `listeners[]` entry) sets `tls.client_ca_file`. A config with only unix
   sockets is `configured` with the note "no TCP listeners".

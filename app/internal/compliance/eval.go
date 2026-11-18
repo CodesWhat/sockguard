@@ -120,20 +120,12 @@ func trustCheck(path string, informational bool, get func(*config.RequestBodyCon
 	}
 }
 
-const blindWritesNote = "insecure_allow_body_blind_writes is true, so request bodies on body-sensitive endpoints are not inspected and this control is not enforced."
-
 // bodyControl builds an evaluator over request_body scopes. A control is
 // configured when every scope satisfies all non-informational checks,
 // partial when some do, not_configured when none do.
 func bodyControl(extraNotes []string, checks ...check) func(*config.Config) ControlResult {
 	return func(cfg *config.Config) ControlResult {
 		res := ControlResult{Evidence: []Evidence{}, Notes: append([]string{}, extraNotes...)}
-		if cfg.InsecureAllowBodyBlindWrites {
-			res.Status = StatusNotConfigured
-			res.Evidence = append(res.Evidence, Evidence{Path: "insecure_allow_body_blind_writes", Expected: "false", Observed: "true"})
-			res.Notes = append(res.Notes, blindWritesNote)
-			return res
-		}
 		scopes := scopesOf(cfg)
 		satisfied, relaxedMode := 0, false
 		for _, s := range scopes {
@@ -177,9 +169,104 @@ func tally(satisfied, total int) Status {
 	}
 }
 
-func alwaysOn(note string) func(*config.Config) ControlResult {
-	return func(*config.Config) ControlResult {
-		return ControlResult{Status: StatusAlwaysOn, Evidence: []Evidence{}, Notes: []string{note}}
+// structuralControl is for the controls Sockguard denies with no knob (5.20,
+// 5.24). The denial is an ordinary one, so a client profile in warn or audit
+// mode forwards the request after logging it: the control is always_on only
+// when every scope enforces, and partial otherwise (the global scope always
+// enforces, so it is never zero).
+func structuralControl(note string) func(*config.Config) ControlResult {
+	return func(cfg *config.Config) ControlResult {
+		res := ControlResult{Evidence: []Evidence{}, Notes: []string{note}}
+		scopes := scopesOf(cfg)
+		enforcing := 0
+		for _, s := range scopes {
+			if s.enforced {
+				enforcing++
+				continue
+			}
+			res.Evidence = append(res.Evidence, Evidence{Path: s.modePath, Expected: "enforce", Observed: s.modeEnum})
+		}
+		switch tally(enforcing, len(scopes)) {
+		case StatusConfigured:
+			res.Status = StatusAlwaysOn
+		case StatusPartial:
+			res.Status = StatusPartial
+			res.Notes = append(res.Notes,
+				fmt.Sprintf("Enforced in %d of %d scopes (global plus each client profile).", enforcing, len(scopes)),
+				"A client profile in warn or audit mode logs the denial and forwards the request to the daemon.")
+		default:
+			res.Status = StatusNotConfigured
+		}
+		return res
+	}
+}
+
+// dockerSocketPaths are the well-known container runtime socket locations a
+// workload bind would target.
+var dockerSocketPaths = []string{
+	"/var/run/docker.sock",
+	"/run/docker.sock",
+	"/run/podman/podman.sock",
+	"/var/run/podman/podman.sock",
+}
+
+// bindCoversSocket mirrors the container-create allowlist match (filter.bindPathAllowed:
+// "/" or the path itself or anything under it) for the well-known socket paths, and
+// also flags any entry that names a *.sock path.
+func bindCoversSocket(entries []string) bool {
+	for _, e := range entries {
+		e = strings.TrimRight(strings.TrimSpace(e), "/")
+		if e == "" {
+			return true // "/" trimmed
+		}
+		if strings.HasSuffix(e, ".sock") {
+			return true
+		}
+		for _, sock := range dockerSocketPaths {
+			if sock == e || strings.HasPrefix(sock, e+"/") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// dockerSocketControl implements 5.31. Sockguard can't see whether a workload
+// mounts the real Docker socket around it, and its own container-create
+// inspector admits a socket bind that allowed_bind_mounts covers, so the control
+// always needs deployment evidence. The proxy-side evidence is only a boolean.
+func dockerSocketControl(cfg *config.Config) ControlResult {
+	res := ControlResult{Status: StatusNeedsEvidence, Evidence: []Evidence{}, Notes: []string{}}
+	covered := false
+	for _, s := range scopesOf(cfg) {
+		c := bindCoversSocket(s.body.ContainerCreate.AllowedBindMounts)
+		covered = covered || c
+		res.Evidence = append(res.Evidence, Evidence{
+			Path:     s.bodyPath + ".container_create.allowed_bind_mounts",
+			Expected: "false (no entry covers a Docker or Podman socket path)",
+			Observed: boolStr(c),
+		})
+	}
+	if covered {
+		res.Notes = append(res.Notes, "An allowed_bind_mounts entry covers a Docker or Podman socket path, so Sockguard itself admits a workload mounting the real socket.")
+	}
+	res.Notes = append(res.Notes,
+		"Sockguard can't see whether workloads mount the real Docker socket instead of the proxy socket. Collect deployment evidence, such as compose or orchestrator specs showing workloads mount only the Sockguard socket.")
+	return res
+}
+
+// execBlindWritesNote annotates the exec controls when
+// insecure_allow_body_blind_writes is true. The flag only skips the empty
+// allowed_commands gate (filter.execPolicy.denyReason); privileged, root-user
+// and env checks still run, so the status is unchanged.
+func execBlindWritesNote(inner func(*config.Config) ControlResult) func(*config.Config) ControlResult {
+	return func(cfg *config.Config) ControlResult {
+		res := inner(cfg)
+		if cfg.InsecureAllowBodyBlindWrites {
+			res.Evidence = append(res.Evidence, Evidence{Path: "insecure_allow_body_blind_writes", Expected: "false", Observed: "true"})
+			res.Notes = append(res.Notes, "insecure_allow_body_blind_writes is true, so exec runs without a command allowlist. The privileged and root-user checks still apply.")
+		}
+		return res
 	}
 }
 

@@ -27,6 +27,9 @@ const (
 	StatusNotConfigured Status = "not_configured"
 	StatusPartial       Status = "partial"
 	StatusAlwaysOn      Status = "always_on"
+	// StatusNeedsEvidence marks a control Sockguard cannot verify from its own
+	// config: it depends on how workloads are deployed.
+	StatusNeedsEvidence Status = "needs_evidence"
 	StatusOutsideScope  Status = "outside_scope"
 )
 
@@ -58,6 +61,7 @@ type Summary struct {
 	NotConfigured int `json:"not_configured"`
 	Partial       int `json:"partial"`
 	AlwaysOn      int `json:"always_on"`
+	NeedsEvidence int `json:"needs_evidence"`
 	OutsideScope  int `json:"outside_scope"`
 }
 
@@ -69,5 +73,6 @@ type Report struct {
 	ConfigSHA256     string          `json:"config_sha256"`
 	Disclaimer       string          `json:"disclaimer"`
 	Summary          Summary         `json:"summary"`
+	Notes            []string        `json:"notes"`
 	Controls         []ControlResult `json:"controls"`
 }

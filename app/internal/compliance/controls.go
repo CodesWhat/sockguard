@@ -45,7 +45,7 @@ var controls = []Control{
 		[]string{"Either require_cpu_limit or require_cpu_limit_hard satisfies this control."},
 		check{
 			path:     "container_create.require_cpu_limit",
-			expected: "true",
+			expected: "true (require_cpu_limit or require_cpu_limit_hard)",
 			eval: func(rb *config.RequestBodyConfig) (bool, string) {
 				v := cc(rb).RequireCPULimit
 				return v || cc(rb).RequireCPULimitHard, boolStr(v)
@@ -53,7 +53,7 @@ var controls = []Control{
 		},
 		check{
 			path:          "container_create.require_cpu_limit_hard",
-			expected:      "true or require_cpu_limit true",
+			expected:      "true (require_cpu_limit or require_cpu_limit_hard)",
 			informational: true,
 			eval: func(rb *config.RequestBodyConfig) (bool, string) {
 				v := cc(rb).RequireCPULimitHard
@@ -74,19 +74,19 @@ var controls = []Control{
 		boolCheck("container_create.allow_all_devices", false, func(rb *config.RequestBodyConfig) bool { return cc(rb).AllowAllDevices }),
 		emptyCheck("container_create.allowed_devices", func(rb *config.RequestBodyConfig) int { return len(cc(rb).AllowedDevices) }),
 	)},
-	{ID: "5.20", Title: "Host UTS namespace not shared", Category: CategoryEnforced, Evaluate: alwaysOn(
-		"Always on, no knob: HostConfig.UTSMode host is rejected structurally.")},
+	{ID: "5.20", Title: "Host UTS namespace not shared", Category: CategoryEnforced, Evaluate: structuralControl(
+		"No knob: HostConfig.UTSMode host is rejected structurally.")},
 	{ID: "5.21", Title: "Default seccomp profile not disabled", Category: CategoryEnforced, Evaluate: bodyControl(nil,
 		boolCheck("container_create.deny_unconfined_seccomp", true, func(rb *config.RequestBodyConfig) bool { return cc(rb).DenyUnconfinedSeccomp }),
 	)},
-	{ID: "5.22", Title: "Docker exec without --privileged", Category: CategoryEnforced, Evaluate: bodyControl([]string{execNote},
+	{ID: "5.22", Title: "Docker exec without --privileged", Category: CategoryEnforced, Evaluate: execBlindWritesNote(bodyControl([]string{execNote},
 		boolCheck("exec.allow_privileged", false, func(rb *config.RequestBodyConfig) bool { return rb.Exec.AllowPrivileged }),
-	)},
-	{ID: "5.23", Title: "Docker exec without --user=root", Category: CategoryEnforced, Evaluate: bodyControl([]string{execNote},
+	))},
+	{ID: "5.23", Title: "Docker exec without --user=root", Category: CategoryEnforced, Evaluate: execBlindWritesNote(bodyControl([]string{execNote},
 		boolCheck("exec.allow_root_user", false, func(rb *config.RequestBodyConfig) bool { return rb.Exec.AllowRootUser }),
-	)},
-	{ID: "5.24", Title: "Cgroup usage confirmed", Category: CategoryEnforced, Evaluate: alwaysOn(
-		"Always on, no knob: a non-empty HostConfig.CgroupParent is rejected structurally.")},
+	))},
+	{ID: "5.24", Title: "Cgroup usage confirmed", Category: CategoryEnforced, Evaluate: structuralControl(
+		"No knob: a non-empty HostConfig.CgroupParent is rejected structurally.")},
 	{ID: "5.25", Title: "Acquiring additional privileges restricted", Category: CategoryEnforced, Evaluate: bodyControl(nil,
 		boolCheck("container_create.require_no_new_privileges", true, func(rb *config.RequestBodyConfig) bool { return cc(rb).RequireNoNewPrivileges }),
 	)},
@@ -96,8 +96,7 @@ var controls = []Control{
 	{ID: "5.30", Title: "Host user namespace not shared", Category: CategoryEnforced, Evaluate: bodyControl(nil,
 		boolCheck("container_create.allow_host_userns", false, func(rb *config.RequestBodyConfig) bool { return cc(rb).AllowHostUserNS }),
 	)},
-	{ID: "5.31", Title: "Docker socket not mounted inside containers", Category: CategoryEnforced, Evaluate: alwaysOn(
-		"Holds only if workloads reach Docker through Sockguard; a workload that mounts the real Docker socket bypasses it.")},
+	{ID: "5.31", Title: "Docker socket not mounted inside containers", Category: CategoryEnforced, Evaluate: dockerSocketControl},
 
 	{ID: "2.6", Title: "TLS authentication for Docker daemon", Category: CategoryInfluenced, Evaluate: tlsListenersControl},
 	{ID: "4.5", Title: "Content trust for Docker", Category: CategoryInfluenced, Evaluate: bodyControl(
@@ -106,10 +105,10 @@ var controls = []Control{
 		trustCheck("libpod_container_create.image_trust.mode", true, func(rb *config.RequestBodyConfig) string { return rb.LibpodContainerCreate.ImageTrust.Mode }),
 		trustCheck("service.image_trust.mode", true, func(rb *config.RequestBodyConfig) string { return rb.Service.ImageTrust.Mode }),
 	)},
-	{ID: "5.22/5.23", Title: "Exec hardening", Category: CategoryInfluenced, Evaluate: bodyControl([]string{execNote},
+	{ID: "5.22/5.23", Title: "Exec hardening", Category: CategoryInfluenced, Evaluate: execBlindWritesNote(bodyControl([]string{execNote},
 		boolCheck("exec.allow_privileged", false, func(rb *config.RequestBodyConfig) bool { return rb.Exec.AllowPrivileged }),
 		boolCheck("exec.allow_root_user", false, func(rb *config.RequestBodyConfig) bool { return rb.Exec.AllowRootUser }),
-	)},
+	))},
 	{ID: "7.x", Title: "Swarm controls (operations)", Category: CategoryInfluenced, Evaluate: swarmControl},
 
 	{ID: "1.x", Title: "Host configuration", Category: CategoryOutsideScope,

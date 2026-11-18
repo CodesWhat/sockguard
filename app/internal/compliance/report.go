@@ -18,6 +18,7 @@ func Generate(cfg *config.Config, configBytes []byte) Report {
 		SockguardVersion: version.Version,
 		ConfigSHA256:     hex.EncodeToString(sum[:]),
 		Disclaimer:       Disclaimer,
+		Notes:            reportNotes(cfg),
 		Controls:         make([]ControlResult, 0, len(controls)),
 	}
 	for _, c := range controls {
@@ -45,9 +46,22 @@ func Generate(cfg *config.Config, configBytes []byte) Report {
 			r.Summary.Partial++
 		case StatusAlwaysOn:
 			r.Summary.AlwaysOn++
+		case StatusNeedsEvidence:
+			r.Summary.NeedsEvidence++
 		case StatusOutsideScope:
 			r.Summary.OutsideScope++
 		}
 	}
 	return r
+}
+
+func reportNotes(cfg *config.Config) []string {
+	notes := []string{}
+	if cfg.PolicyBundle.Enabled {
+		notes = append(notes, "policy_bundle.enabled is true. This report validates the config only; it does not check signed-policy startup requirements (the out-of-band trust config and the bundle signature), so serve can still refuse this config.")
+	}
+	if cfg.InsecureAllowBodyBlindWrites {
+		notes = append(notes, "insecure_allow_body_blind_writes is true. It lets exec run without a command allowlist and relaxes Podman build controls, image load and container update fields that bodies can't be checked for. None of the mapped Section 5 knobs are relaxed: container create, privileged exec and root exec checks still apply.")
+	}
+	return notes
 }

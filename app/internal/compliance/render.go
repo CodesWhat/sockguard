@@ -57,6 +57,12 @@ func WriteMarkdown(w io.Writer, r Report) error {
 			fmt.Fprintf(&b, "- %s\n", n)
 		}
 	}
+	if len(r.Notes) > 0 {
+		b.WriteString("\n## Report notes\n\n")
+		for _, n := range r.Notes {
+			fmt.Fprintf(&b, "- %s\n", n)
+		}
+	}
 	fmt.Fprintf(&b, "\n## Disclaimer\n\n%s\n", r.Disclaimer)
 	_, err := io.WriteString(w, b.String())
 	return err
@@ -71,6 +77,7 @@ func summaryRows(s Summary) []summaryRow {
 	return []summaryRow{
 		{string(StatusConfigured), s.Configured},
 		{string(StatusAlwaysOn), s.AlwaysOn},
+		{string(StatusNeedsEvidence), s.NeedsEvidence},
 		{string(StatusPartial), s.Partial},
 		{string(StatusNotConfigured), s.NotConfigured},
 		{string(StatusOutsideScope), s.OutsideScope},
@@ -86,7 +93,7 @@ func WriteText(w io.Writer, r Report) error {
 		switch s {
 		case StatusConfigured, StatusAlwaysOn:
 			return p.Green(text)
-		case StatusPartial:
+		case StatusPartial, StatusNeedsEvidence:
 			return p.Cyan(text)
 		case StatusNotConfigured:
 			return p.Red(text)
@@ -110,6 +117,9 @@ func WriteText(w io.Writer, r Report) error {
 		for _, n := range c.Notes {
 			fmt.Fprintf(&b, "    note: %s\n", n)
 		}
+	}
+	for _, n := range r.Notes {
+		fmt.Fprintf(&b, "\nnote: %s\n", n)
 	}
 	fmt.Fprintf(&b, "\n%s\n", r.Disclaimer)
 	_, err := io.WriteString(w, b.String())

@@ -81,7 +81,7 @@ the violating field; the structured access log in
 | **5.25** | Acquiring additional privileges restricted | `require_no_new_privileges: true`: `HostConfig.SecurityOpt` must include `no-new-privileges:true` |
 | **5.28** | PIDs cgroup limit used | `require_pids_limit: true`: `HostConfig.PidsLimit` must be a positive value; Docker's `-1` (unlimited) is non-zero but still rejected |
 | **5.30** | Host user namespace not shared | `allow_host_userns: false`: rejects `UsernsMode: "host"` |
-| **5.31** | Docker socket not mounted inside containers | Satisfied **structurally** by deploying sockguard. Workloads see the proxy socket, not the real `/var/run/docker.sock` |
+| **5.31** | Docker socket not mounted inside containers | Reduced by deploying sockguard: workloads see the proxy socket, not the real `/var/run/docker.sock`. This holds only if no workload mounts the real socket and no `allowed_bind_mounts` entry covers it, so [`sockguard report`](/compliance-report) lists it as needing deployment evidence |
 
 > **CPU priority vs. a hard cap.** CIS 5.11 only requires that *some* CPU
 > constraint be set — `CpuShares` (a relative scheduling weight) satisfies

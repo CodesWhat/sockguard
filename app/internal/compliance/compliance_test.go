@@ -51,13 +51,17 @@ func TestCISPresetEnforcedControlsAreSatisfied(t *testing.T) {
 		if c.Category != CategoryEnforced {
 			continue
 		}
+		// 5.31 depends on how workloads are deployed, which no config can show.
+		if c.ID == "5.31" {
+			continue
+		}
 		if c.Status != StatusConfigured && c.Status != StatusAlwaysOn {
 			t.Errorf("preset control %s status = %s, want configured or always_on", c.ID, c.Status)
 		}
 	}
 	got := statuses(r)
 	for id, want := range map[string]Status{
-		"5.20": StatusAlwaysOn, "5.24": StatusAlwaysOn, "5.31": StatusAlwaysOn,
+		"5.20": StatusAlwaysOn, "5.24": StatusAlwaysOn, "5.31": StatusNeedsEvidence,
 		"7.x": StatusConfigured, "5.22/5.23": StatusConfigured,
 		// The preset ships image_trust off and a default TCP listener with no mTLS.
 		"4.5": StatusNotConfigured, "2.6": StatusNotConfigured,
@@ -79,7 +83,7 @@ func TestDefaultsStatuses(t *testing.T) {
 		"5.17": StatusConfigured, "5.20": StatusAlwaysOn, "5.21": StatusNotConfigured,
 		"5.22": StatusConfigured, "5.23": StatusConfigured, "5.24": StatusAlwaysOn,
 		"5.25": StatusNotConfigured, "5.28": StatusNotConfigured, "5.30": StatusConfigured,
-		"5.31": StatusAlwaysOn,
+		"5.31": StatusNeedsEvidence,
 		"2.6":  StatusNotConfigured, "4.5": StatusNotConfigured, "5.22/5.23": StatusConfigured,
 		"7.x": StatusConfigured,
 		"1.x": StatusOutsideScope, "2.x": StatusOutsideScope, "3.x": StatusOutsideScope,
@@ -122,13 +126,19 @@ func TestScopeSemantics(t *testing.T) {
 			relaxedPriv(c)
 			c.RequestBody.ContainerCreate.AllowPrivileged = true
 		}, map[string]Status{"5.4": StatusNotConfigured}},
-		{"blind writes disable every body control", func(c *config.Config) {
+		{"blind writes leave the mapped knobs alone", func(c *config.Config) {
 			c.InsecureAllowBodyBlindWrites = true
 		}, map[string]Status{
-			"5.3": StatusNotConfigured, "5.4": StatusNotConfigured, "5.22": StatusNotConfigured,
-			"4.5": StatusNotConfigured, "5.22/5.23": StatusNotConfigured,
-			"5.20": StatusAlwaysOn, "5.31": StatusAlwaysOn, "7.x": StatusConfigured,
+			"5.3": StatusConfigured, "5.4": StatusConfigured, "5.5": StatusConfigured,
+			"5.10": StatusConfigured, "5.21": StatusConfigured, "5.25": StatusConfigured,
+			"5.22": StatusConfigured, "5.23": StatusConfigured, "5.22/5.23": StatusConfigured,
+			"5.20": StatusAlwaysOn, "5.24": StatusAlwaysOn, "5.31": StatusNeedsEvidence,
+			"7.x": StatusConfigured,
 		}},
+		{"blind writes do not excuse a relaxed privileged exec", func(c *config.Config) {
+			c.InsecureAllowBodyBlindWrites = true
+			c.RequestBody.Exec.AllowPrivileged = true
+		}, map[string]Status{"5.22": StatusNotConfigured, "5.23": StatusConfigured, "5.22/5.23": StatusNotConfigured}},
 		{"cpu hard limit satisfies 5.11", func(c *config.Config) {
 			c.RequestBody.ContainerCreate.RequireCPULimit = false
 			c.RequestBody.ContainerCreate.RequireCPULimitHard = true
@@ -154,15 +164,144 @@ func TestScopeSemantics(t *testing.T) {
 	}
 }
 
-func TestBlindWritesNoteNamesFlag(t *testing.T) {
+func TestBlindWritesAnnotatesOnlyExecControls(t *testing.T) {
 	cfg, data := loadPreset(t)
 	cfg.InsecureAllowBodyBlindWrites = true
-	c := control(t, Generate(cfg, data), "5.4")
-	if len(c.Notes) == 0 || !strings.Contains(strings.Join(c.Notes, " "), "insecure_allow_body_blind_writes") {
-		t.Fatalf("notes = %v, want flag named", c.Notes)
+	r := Generate(cfg, data)
+	flagEvidence := func(c ControlResult) bool {
+		for _, e := range c.Evidence {
+			if e.Path == "insecure_allow_body_blind_writes" && e.Observed == "true" {
+				return true
+			}
+		}
+		return false
 	}
-	if len(c.Evidence) != 1 || c.Evidence[0].Path != "insecure_allow_body_blind_writes" {
-		t.Fatalf("evidence = %+v", c.Evidence)
+	affected := map[string]bool{"5.22": true, "5.23": true, "5.22/5.23": true}
+	for _, c := range r.Controls {
+		if got := flagEvidence(c); got != affected[c.ID] {
+			t.Errorf("%s: blind-write flag evidence = %v, want %v", c.ID, got, affected[c.ID])
+		}
+		if affected[c.ID] && !strings.Contains(strings.Join(c.Notes, " "), "insecure_allow_body_blind_writes") {
+			t.Errorf("%s: notes = %v, want the flag named", c.ID, c.Notes)
+		}
+	}
+	if len(r.Notes) != 1 || !strings.Contains(r.Notes[0], "insecure_allow_body_blind_writes") {
+		t.Fatalf("report notes = %v, want one note naming the flag", r.Notes)
+	}
+}
+
+func TestPolicyBundleNote(t *testing.T) {
+	cfg, data := loadPreset(t)
+	if r := Generate(cfg, data); len(r.Notes) != 0 {
+		t.Fatalf("notes without a policy bundle = %v", r.Notes)
+	}
+	cfg.PolicyBundle.Enabled = true
+	r := Generate(cfg, data)
+	if len(r.Notes) != 1 || !strings.Contains(r.Notes[0], "signed-policy startup requirements") {
+		t.Fatalf("notes = %v", r.Notes)
+	}
+	for name, s := range renderAll(t, r) {
+		if !strings.Contains(s, "signed-policy startup requirements") {
+			t.Errorf("%s output is missing the policy bundle note", name)
+		}
+	}
+}
+
+func TestStructuralControlsFollowRolloutMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		profiles []config.ClientProfileConfig
+		want     Status
+	}{
+		{"no profiles", nil, StatusAlwaysOn},
+		{"enforce profile", []config.ClientProfileConfig{{Name: "p", Mode: "enforce"}}, StatusAlwaysOn},
+		{"default mode profile", []config.ClientProfileConfig{{Name: "p"}}, StatusAlwaysOn},
+		{"warn profile", []config.ClientProfileConfig{{Name: "p", Mode: "warn"}}, StatusPartial},
+		{"audit profile", []config.ClientProfileConfig{{Name: "p", Mode: "audit"}}, StatusPartial},
+		{"enforce and audit profiles", []config.ClientProfileConfig{{Name: "a"}, {Name: "b", Mode: "audit"}}, StatusPartial},
+	}
+	for _, id := range []string{"5.20", "5.24"} {
+		for _, tt := range tests {
+			t.Run(id+" "+tt.name, func(t *testing.T) {
+				cfg, data := loadPreset(t)
+				cfg.Clients.Profiles = tt.profiles
+				c := control(t, Generate(cfg, data), id)
+				if c.Status != tt.want {
+					t.Fatalf("status = %s, want %s", c.Status, tt.want)
+				}
+				if tt.want == StatusPartial {
+					joined := strings.Join(c.Notes, " ")
+					if !strings.Contains(joined, "forwards the request") {
+						t.Errorf("notes = %v, want the forwarding note", c.Notes)
+					}
+					if len(c.Evidence) != 1 || c.Evidence[0].Path != "clients.profiles[0].mode" && c.Evidence[0].Path != "clients.profiles[1].mode" {
+						t.Errorf("evidence = %+v, want the profile mode", c.Evidence)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestDockerSocketNeedsEvidence(t *testing.T) {
+	tests := []struct {
+		name  string
+		binds []string
+		want  string
+	}{
+		{"none", nil, "false"},
+		{"unrelated path", []string{"/srv/data"}, "false"},
+		{"docker socket", []string{"/var/run/docker.sock"}, "true"},
+		{"run docker socket", []string{"/run/docker.sock"}, "true"},
+		{"podman socket", []string{"/run/podman/podman.sock"}, "true"},
+		{"parent directory", []string{"/var/run"}, "true"},
+		{"parent directory trailing slash", []string{"/run/"}, "true"},
+		{"root", []string{"/"}, "true"},
+		{"other sock path", []string{"/opt/custom/engine.sock"}, "true"},
+		{"sibling prefix is not a parent", []string{"/var/runner"}, "false"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, data := loadPreset(t)
+			cfg.RequestBody.ContainerCreate.AllowedBindMounts = tt.binds
+			c := control(t, Generate(cfg, data), "5.31")
+			if c.Status != StatusNeedsEvidence {
+				t.Fatalf("status = %s, want needs_evidence", c.Status)
+			}
+			if len(c.Evidence) != 1 || c.Evidence[0].Observed != tt.want {
+				t.Fatalf("evidence = %+v, want observed %s", c.Evidence, tt.want)
+			}
+			if got := strings.Contains(strings.Join(c.Notes, " "), "covers a Docker or Podman socket"); got != (tt.want == "true") {
+				t.Errorf("socket note present = %v for observed %s", got, tt.want)
+			}
+		})
+	}
+
+	t.Run("profile bind is checked too", func(t *testing.T) {
+		cfg, data := loadPreset(t)
+		body := cfg.RequestBody
+		body.ContainerCreate.AllowedBindMounts = []string{"/var/run/docker.sock"}
+		cfg.Clients.Profiles = []config.ClientProfileConfig{{Name: "p", RequestBody: body}}
+		c := control(t, Generate(cfg, data), "5.31")
+		if len(c.Evidence) != 2 || c.Evidence[0].Observed != "false" || c.Evidence[1].Observed != "true" {
+			t.Fatalf("evidence = %+v", c.Evidence)
+		}
+	})
+}
+
+func TestCPUEvidenceStatesTheAlternative(t *testing.T) {
+	cfg, data := loadPreset(t)
+	c := control(t, Generate(cfg, data), "5.11")
+	if len(c.Evidence) != 2 {
+		t.Fatalf("evidence = %+v, want two rows", c.Evidence)
+	}
+	for _, e := range c.Evidence {
+		if !strings.Contains(e.Expected, "require_cpu_limit or require_cpu_limit_hard") {
+			t.Errorf("expected = %q, want the OR stated", e.Expected)
+		}
+	}
+	if c.Evidence[0].Observed != "true" || c.Evidence[1].Observed != "false" {
+		t.Errorf("observed = %q, %q", c.Evidence[0].Observed, c.Evidence[1].Observed)
 	}
 }
 
@@ -284,7 +423,7 @@ func sensitiveConfig() *config.Config {
 	}
 	cfg.Rules = []config.RuleConfig{{Match: config.MatchConfig{Method: "GET", Path: "/" + sentinel}, Action: "allow", Reason: sentinel}}
 	cc := &cfg.RequestBody.ContainerCreate
-	cc.AllowedBindMounts = []string{"/" + sentinel + "/data", sentinel}
+	cc.AllowedBindMounts = []string{"/" + sentinel + "/data", sentinel, "/" + sentinel + "/x.sock"}
 	cc.AllowedDevices = []string{"/dev/" + sentinel}
 	cc.AllowedCapabilities = []string{sentinel}
 	cc.RequiredLabels = []string{"owner=" + sentinel}
@@ -341,7 +480,7 @@ func TestOutputNeverContainsConfigValues(t *testing.T) {
 		t.Errorf("5.5 = %s, want not_configured", got)
 	}
 	ev := control(t, r, "5.5").Evidence
-	if len(ev) == 0 || ev[0].Observed != "2 entries" {
+	if len(ev) == 0 || ev[0].Observed != "3 entries" {
 		t.Errorf("5.5 evidence = %+v, want a length-only observation", ev)
 	}
 }
@@ -386,7 +525,7 @@ func TestReportShape(t *testing.T) {
 		t.Fatalf("header = %+v", r)
 	}
 	sum := r.Summary
-	if sum.Total != len(r.Controls) || sum.Total != sum.Configured+sum.NotConfigured+sum.Partial+sum.AlwaysOn+sum.OutsideScope {
+	if sum.Total != len(r.Controls) || sum.Total != sum.Configured+sum.NotConfigured+sum.Partial+sum.AlwaysOn+sum.NeedsEvidence+sum.OutsideScope {
 		t.Fatalf("summary does not add up: %+v", sum)
 	}
 	var buf bytes.Buffer

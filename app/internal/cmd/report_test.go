@@ -2,12 +2,14 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/codeswhat/sockguard/v3/app/internal/compliance"
+	"github.com/codeswhat/sockguard/v3/app/internal/config"
 )
 
 func TestExecuteReportJSONOnCISPreset(t *testing.T) {
@@ -23,7 +25,7 @@ func TestExecuteReportJSONOnCISPreset(t *testing.T) {
 		t.Fatalf("unexpected header: %+v", report)
 	}
 	for _, c := range report.Controls {
-		if c.Category == compliance.CategoryEnforced &&
+		if c.Category == compliance.CategoryEnforced && c.ID != "5.31" &&
 			c.Status != compliance.StatusConfigured && c.Status != compliance.StatusAlwaysOn {
 			t.Errorf("%s = %s on the CIS preset", c.ID, c.Status)
 		}
@@ -75,5 +77,56 @@ func TestExecuteReportFailures(t *testing.T) {
 				t.Errorf("a failed report must not emit a report, got:\n%s", stdout)
 			}
 		})
+	}
+}
+
+func TestExecuteReportRejectsPositionalArguments(t *testing.T) {
+	stdout, _, err := executeRootCommand(t, "-c", "../../configs/cis-docker-benchmark.yaml", "report", "candidate.yaml")
+	if err == nil {
+		t.Fatalf("expected an error for a positional argument, got stdout:\n%s", stdout)
+	}
+	if strings.Contains(stdout, compliance.Disclaimer) {
+		t.Errorf("no report should be emitted, got:\n%s", stdout)
+	}
+}
+
+// A selected config that vanishes after the preflight stat makes LoadWithData
+// fall back to defaults; report must refuse rather than describe defaults.
+func TestExecuteReportRejectsSelectedConfigThatVanishes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gone.yaml")
+	if err := os.WriteFile(path, []byte("log:\n  level: info\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	orig := reportLoadConfig
+	t.Cleanup(func() { reportLoadConfig = orig })
+	reportLoadConfig = func(string) (*config.Config, []byte, error) {
+		cfg := config.Defaults()
+		return &cfg, nil, nil // what LoadWithData returns when the file is missing
+	}
+	stdout, _, err := executeRootCommand(t, "-c", path, "report", "-o", "json")
+	if err == nil || !strings.Contains(err.Error(), "could not be read") {
+		t.Fatalf("error = %v, want a could-not-be-read error", err)
+	}
+	if strings.Contains(stdout, compliance.Disclaimer) {
+		t.Errorf("no report should be emitted, got:\n%s", stdout)
+	}
+}
+
+func TestExecuteReportLoadErrorPropagates(t *testing.T) {
+	orig := reportLoadConfig
+	t.Cleanup(func() { reportLoadConfig = orig })
+	reportLoadConfig = func(string) (*config.Config, []byte, error) { return nil, nil, errors.New("boom") }
+	if _, _, err := executeRootCommand(t, "-c", "../../configs/cis-docker-benchmark.yaml", "report", "-o", "json"); err == nil {
+		t.Fatal("expected the load error")
+	}
+}
+
+func TestExecuteReportEmptyConfigFileIsStillAFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "empty.yaml")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, err := executeRootCommand(t, "-c", path, "report", "-o", "json"); err != nil {
+		t.Fatalf("an existing empty config should report on defaults: %v\n%s", err, stderr)
 	}
 }
