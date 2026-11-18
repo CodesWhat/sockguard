@@ -16,17 +16,18 @@ export function SearchButton() {
   // command glyph once on the client.
   const isMac = useSyncExternalStore(subscribe, isMacClient, () => false);
   if (!enabled) return null;
+  const shortcut = isMac ? "\u2318K" : "Ctrl K";
 
   return (
     <button
       type="button"
       className="sbtn"
-      aria-label="Search docs"
+      aria-label={`Search docs ${shortcut}`}
       onClick={() => setOpenSearch(true)}
     >
       <Icon name="magnifying-glass" />
       <span className="st">Search docs...</span>
-      <kbd className="sk">{isMac ? "\u2318K" : "Ctrl K"}</kbd>
+      <kbd className="sk">{shortcut}</kbd>
     </button>
   );
 }
