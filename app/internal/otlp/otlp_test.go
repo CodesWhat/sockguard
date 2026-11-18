@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/codeswhat/sockguard/v3/app/internal/logging"
 )
@@ -606,6 +607,48 @@ func TestSampling(t *testing.T) {
 				t.Errorf("traceparent %q, want flags %s", tp, tt.wantFlags)
 			}
 		})
+	}
+}
+
+func TestSpanStringsAreCapped(t *testing.T) {
+	c := newCollector(t, nil)
+	e := newTestExporter(t, testOptions(c.srv.URL))
+	h := chain(e, RootSampler(0), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		logging.SetDeniedWithCode(w, r, "rule_deny", "no", func(p string) string { return p })
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	// 255 ASCII bytes then a 3-byte rune straddles the 256-byte boundary.
+	path := "/containers/" + strings.Repeat("a", 243) + strings.Repeat("\u20ac", 70000/3)
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	req.URL.Path = path
+	req.Header.Set("Traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	closeExporter(t, e)
+	spans := decodeSpans(t, c)
+	if len(spans) != 1 {
+		t.Fatalf("spans = %d, want 1", len(spans))
+	}
+	if len(spans[0].Name) > maxSpanString || !utf8.ValidString(spans[0].Name) {
+		t.Errorf("span name not capped/valid: %d bytes", len(spans[0].Name))
+	}
+	if _, ok := spans[0].Attrs["sockguard.normalized_path"]; !ok {
+		t.Error("normalized_path attribute missing")
+	}
+	for k, v := range spans[0].Attrs {
+		if len(v) > maxSpanString || !utf8.ValidString(v) {
+			t.Errorf("attribute %s: %d bytes, valid=%v", k, len(v), utf8.ValidString(v))
+		}
+	}
+}
+
+func TestCapString(t *testing.T) {
+	in := strings.Repeat("a", 255) + "\u20ac" + "tail"
+	got := capString(in)
+	if got != strings.Repeat("a", 255) {
+		t.Errorf("got %d bytes, want cut at rune boundary 255", len(got))
+	}
+	if capString("short") != "short" {
+		t.Error("short string changed")
 	}
 }
 

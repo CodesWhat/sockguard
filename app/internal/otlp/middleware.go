@@ -3,6 +3,8 @@ package otlp
 import (
 	"math/rand/v2"
 	"net/http"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/codeswhat/sockguard/v3/app/internal/logging"
 	"github.com/codeswhat/sockguard/v3/app/internal/metrics"
@@ -47,6 +49,23 @@ var knownMethods = map[string]bool{
 	http.MethodOptions: true, http.MethodTrace: true,
 }
 
+// maxSpanString bounds every string attribute value and the span name, so a
+// client-sized path or header cannot pin memory in the export queue.
+const maxSpanString = 256
+
+// capString returns s cut to at most maxSpanString bytes at a rune boundary.
+// A cut value is cloned so it does not keep the original backing array alive.
+func capString(s string) string {
+	if len(s) <= maxSpanString {
+		return s
+	}
+	n := maxSpanString
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return strings.Clone(s[:n])
+}
+
 // buildSpan copies an allowlisted set of fields into a Span. Nothing outside
 // this function reaches the wire: no query string, headers, bodies, free-text
 // reason or client-supplied request ID.
@@ -84,11 +103,17 @@ func buildSpan(s logging.RequestSummary) Span {
 	add("network.peer.address", s.PeerHost)
 	add("sockguard.request_id", s.RequestID)
 
+	for i := range attrs {
+		if !attrs[i].IsInt {
+			attrs[i].Str = capString(attrs[i].Str)
+		}
+	}
+
 	return Span{
 		TraceID:      s.TraceID,
 		SpanID:       s.SpanID,
 		ParentSpanID: s.ParentSpanID,
-		Name:         method + " " + route,
+		Name:         capString(method + " " + route),
 		Start:        s.Start,
 		End:          s.End,
 		Error:        s.Status >= 500,
