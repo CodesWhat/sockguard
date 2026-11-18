@@ -48,6 +48,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/codeswhat/sockguard/v3/app/internal/apipath"
 	"github.com/codeswhat/sockguard/v3/app/internal/dockerresource"
 	"github.com/codeswhat/sockguard/v3/app/internal/httpjson"
 	"github.com/codeswhat/sockguard/v3/app/internal/logging"
@@ -222,11 +223,13 @@ type libpodContainerUpdateResourcePatch struct {
 // containerUpdateIdentifier extracts the {id} or {name} path segment from a
 // normalized Docker-compatible or libpod-native container update path.
 func containerUpdateIdentifier(normalizedPath string) (string, bool) {
-	prefix := "/containers/"
-	if strings.HasPrefix(normalizedPath, libpodPathPrefix+"containers/") {
-		prefix = libpodPathPrefix + "containers/"
+	if !strings.HasPrefix(normalizedPath, libpodPathPrefix+"containers/") {
+		// Docker's {name:.*} is slash-permissive, so the name is everything
+		// before the suffix. Podman's single-segment grammar stays below.
+		id, ok := apipath.DockerContainerAction(normalizedPath, "update")
+		return id, ok && id != ""
 	}
-	id, tail, ok := strings.Cut(strings.TrimPrefix(normalizedPath, prefix), "/")
+	id, tail, ok := strings.Cut(strings.TrimPrefix(normalizedPath, libpodPathPrefix+"containers/"), "/")
 	if !ok || id == "" || tail != "update" {
 		return "", false
 	}

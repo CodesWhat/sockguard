@@ -67,11 +67,18 @@ func identifierExcluded(excluded []string, identifier string) bool {
 var (
 	createPruneExcluded = []string{"create", "prune"}
 	createExcluded      = []string{"create"}
-	jsonExcluded        = []string{"json"}
 )
 
+// containerIdentifier extracts the container name from a Docker-compat path.
+// dockerd registers every container route as /containers/{name:.*}/<action>,
+// so the name can hold slashes (a legacy link registers "/A/x" as an alias of
+// the linked container). The whole name before the registered action suffix is
+// authorized, never just the first segment, or a request for "A/x" would be
+// checked as "A". Podman's own grammar stays single-segment, see
+// libpodContainerIdentifier.
 func containerIdentifier(method, normPath string) (string, bool) {
-	return resourceIdentifier(method, normPath, "/containers/", createPruneExcluded, jsonExcluded)
+	name, _, ok := apipath.DockerContainerRoute(method, normPath)
+	return name, ok
 }
 
 func execIdentifier(normPath string) (string, bool) {
