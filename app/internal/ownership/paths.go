@@ -67,11 +67,18 @@ func identifierExcluded(excluded []string, identifier string) bool {
 var (
 	createPruneExcluded = []string{"create", "prune"}
 	createExcluded      = []string{"create"}
-	jsonExcluded        = []string{"json"}
 )
 
+// containerIdentifier extracts the container name from a Docker-compat path.
+// dockerd registers every container route as /containers/{name:.*}/<action>,
+// so the name can hold slashes (a legacy link registers "/A/x" as an alias of
+// the linked container). The whole name before the registered action suffix is
+// authorized, never just the first segment, or a request for "A/x" would be
+// checked as "A". Podman's own grammar stays single-segment, see
+// libpodContainerIdentifier.
 func containerIdentifier(method, normPath string) (string, bool) {
-	return resourceIdentifier(method, normPath, "/containers/", createPruneExcluded, jsonExcluded)
+	name, _, ok := apipath.DockerContainerRoute(method, normPath)
+	return name, ok
 }
 
 func execIdentifier(normPath string) (string, bool) {
@@ -178,8 +185,16 @@ func isNodeUpdatePath(normPath string) bool {
 	return apipath.IsNodeUpdatePath(normPath)
 }
 
+// isSwarmPath matches the Swarm-state operations that act on the swarm itself:
+// inspect, the unlock key read and leave. Leave with force=1 takes a manager
+// out of the swarm, so none of them can be left to a path rule alone.
 func isSwarmPath(normPath string) bool {
-	return normPath == "/swarm"
+	switch normPath {
+	case "/swarm", "/swarm/unlockkey", "/swarm/leave":
+		return true
+	default:
+		return false
+	}
 }
 
 func isSwarmUpdatePath(normPath string) bool {

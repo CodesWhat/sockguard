@@ -25,7 +25,7 @@ func TestRewrittenFramesAtMessageBudget(t *testing.T) {
 			return frame, denial != nil
 		}},
 		{name: "owned image", rewrite: func(limit int64) ([]byte, bool) {
-			policy := Policy{ImageOwnership: ImageOwnershipPolicy{Owner: "alice", LabelKey: "owner", RequireConfig: true}}
+			policy := Policy{ImageOwnership: ImageOwnershipPolicy{sourcesAuthorized: true, Owner: "alice", LabelKey: "owner", RequireConfig: true}}
 			frame, denial := rewriteGatewayImageOwnership(image, policy, limit)
 			return frame, denial != nil
 		}},
