@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Owner isolation now authorizes the whole container name on Docker container routes. dockerd accepts slash-bearing names, and a legacy `HostConfig.Links` entry registers `/A/x` as an alias of the linked container, so `POST /containers/A/x/stop`, `kill`, `archive` or `DELETE` acted on another owner's container while ownership checked only `A`. The `HostConfig.Links` sources are now authorized too, and the exec, attach, update, archive and inspect-redaction matchers read the same full name. Podman's single-segment grammar is unchanged.
 - Owner isolation now refuses a SwarmKit template (`{{`) in a service volume mount source or network target. SwarmKit expands it after the literal text was checked, so `{{"victim-vol"}}` could name another owner's volume.
 
+### Changed
+
+- Publish the Homebrew cask to a per-release `sockguard-<version>` branch on CodesWhat/homebrew-tap instead of pushing to its main branch. The tap merges it through a checked pull request, and the post-release Homebrew install check waits up to eight minutes for tap main to carry the new version.
+
 ### Fixed
 
 - Shutdown now waits for hijacked exec and attach handlers to return, within the shared shutdown deadline, before closing the audit and log sinks, so a long session's only audit event is no longer lost. Shutdown signals the hijack relay directly so it closes both legs even when the session is quiet, and a drain that hits the deadline is logged with the number of handlers still running.

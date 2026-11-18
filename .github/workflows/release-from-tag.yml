@@ -1128,6 +1128,22 @@ jobs:
           RELEASE_VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          # GoReleaser pushes the cask to a per-release tap branch and the tap
+          # merges it into main through a checked PR. Wait (bounded, under the
+          # hardened runner's job budget) for tap main to carry this version.
+          want="${RELEASE_VERSION#v}"
+          cask_url="https://raw.githubusercontent.com/CodesWhat/homebrew-tap/main/Casks/sockguard.rb"
+          for attempt in $(seq 1 16); do
+            have="$(curl -fsSL "$cask_url" | sed -n 's/^  version "\(.*\)"$/\1/p' || true)"
+            if [ "$have" = "$want" ]; then
+              break
+            fi
+            if [ "$attempt" -eq 16 ]; then
+              echo "::error::Tap main still has sockguard ${have:-unknown}, not ${want}, after 8 minutes. Check the sockguard-${want} tap PR."
+              exit 1
+            fi
+            sleep 30
+          done
           brew tap CodesWhat/tap https://github.com/CodesWhat/homebrew-tap.git
           brew install --cask codeswhat/tap/sockguard
           if xattr -p com.apple.quarantine "$(command -v sockguard)" >/dev/null 2>&1; then
