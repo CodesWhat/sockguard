@@ -480,6 +480,11 @@ type ResponseConfig struct {
 	// does not match at least one pattern are hidden. Empty means no image-based
 	// filtering.
 	ImagePatterns []string `mapstructure:"image_patterns"`
+	// VisibleNetworks is a list of exact, case-sensitive network names. A
+	// container is visible only if it is attached to at least one of them.
+	// Applies to containers only and is ANDed with the other axes. Empty means
+	// no network-based filtering.
+	VisibleNetworks []string `mapstructure:"visible_networks"`
 	// RedactHostTopology redacts GET /info fields that fingerprint the host's
 	// container runtime plumbing: Containerd, FirewallBackend,
 	// DiscoveredDevices, and NRI. Separate from RedactNetworkTopology (which
@@ -1615,6 +1620,9 @@ type ClientProfileResponseConfig struct {
 	// ImagePatterns is a per-profile glob pattern list matched against container
 	// Image fields and image RepoTags. See ResponseConfig.ImagePatterns.
 	ImagePatterns []string `mapstructure:"image_patterns"`
+	// VisibleNetworks is a per-profile network-name list. See
+	// ResponseConfig.VisibleNetworks.
+	VisibleNetworks []string `mapstructure:"visible_networks"`
 }
 
 // OwnershipConfig configures per-proxy resource ownership labeling and

@@ -41,17 +41,21 @@ func FuzzVisibilityFilter(f *testing.F) {
 	// Seeds cover the parse, refusal, and overflow paths.
 	f.Add("/containers/json", []byte(`[{"Names":["/web"],"Image":"nginx"},{"Names":["/db"],"Image":"postgres"}]`))
 	f.Add("/containers/json", []byte(`[]`))
-	f.Add("/containers/json", []byte(`[{"Names":["/web"],"Names":["/db"],"Image":"nginx"}]`)) // duplicate keys
-	f.Add("/containers/json", []byte(`[{"NAMES":["/web"],"image":"nginx"}]`))                 // case variance
-	f.Add("/containers/json", []byte(`[{"Names":null,"Image":""}]`))                          // nulls / empties
-	f.Add("/containers/json", []byte(`{"not":"an array"}`))                                   // refused, not forwarded
-	f.Add("/containers/json", []byte(`[{"Names":["/web"],"Image":"nginx"}`))                  // truncated array
-	f.Add("/containers/json", []byte(`[{"Names":["/web"],"Image":"nginx"},`))                 // trailing comma
-	f.Add("/containers/json", []byte(`[`))                                                    // bare open bracket
-	f.Add("/containers/json", []byte(`[{`))                                                   // unclosed object inside
-	f.Add("/containers/json", []byte(`[{"Names":["/web"]}]garbage`))                          // trailing garbage
-	f.Add("/containers/json", []byte(`[{"Names":["/web"]}] [{"Names":["/db"]}]`))             // a second array follows
-	f.Add("/containers/json", []byte("[{\"Names\":[\"/web\"]}]   \n"))                        // trailing whitespace, still valid
+	f.Add("/containers/json", []byte(`[{"Names":["/web"],"Names":["/db"],"Image":"nginx"}]`))                             // duplicate keys
+	f.Add("/containers/json", []byte(`[{"NAMES":["/web"],"image":"nginx"}]`))                                             // case variance
+	f.Add("/containers/json", []byte(`[{"Names":null,"Image":""}]`))                                                      // nulls / empties
+	f.Add("/containers/json", []byte(`{"not":"an array"}`))                                                               // refused, not forwarded
+	f.Add("/containers/json", []byte(`[{"Names":["/web"],"Image":"nginx"}`))                                              // truncated array
+	f.Add("/containers/json", []byte(`[{"Names":["/web"],"Image":"nginx"},`))                                             // trailing comma
+	f.Add("/containers/json", []byte(`[`))                                                                                // bare open bracket
+	f.Add("/containers/json", []byte(`[{`))                                                                               // unclosed object inside
+	f.Add("/containers/json", []byte(`[{"Names":["/web"]}]garbage`))                                                      // trailing garbage
+	f.Add("/containers/json", []byte(`[{"Names":["/web"]}] [{"Names":["/db"]}]`))                                         // a second array follows
+	f.Add("/containers/json", []byte("[{\"Names\":[\"/web\"]}]   \n"))                                                    // trailing whitespace, still valid
+	f.Add("/containers/json", []byte(`[{"Names":["/web"],"Image":"nginx","NetworkSettings":{"Networks":{"proxy":{}}}}]`)) // docker networks
+	f.Add("/libpod/containers/json", []byte(`[{"Names":["web"],"Networks":["proxy"]}]`))                                  // libpod networks
+	f.Add("/containers/json", []byte(`[{"Names":["/web"],"NetworkSettings":{"Networks":null},"Networks":null}]`))         // null networks
+	f.Add("/containers/json", []byte(`[{"Names":["/web"],"NetworkSettings":[],"Networks":{}}]`))                          // wrong network types
 	f.Add("/images/json", []byte(`[{"RepoTags":["docker.io/library/alpine:latest"]}]`))
 	f.Add("/images/json", []byte(`[{"RepoTags":null},{"RepoTags":[]}]`))
 	f.Add("/v1.53/containers/json", []byte(`[{"Names":["/web"],"Image":"nginx"}]`))           // normPath drift
@@ -63,6 +67,7 @@ func FuzzVisibilityFilter(f *testing.F) {
 	// one bare — so the fuzzer probes both the filter-and-rewrite path
 	// and the no-axis path on every input.
 	policyWithPatterns := compiledPolicyOrPanic([]string{"*"}, []string{"*"})
+	policyWithNetworks := &compiledPolicy{networks: []string{"proxy"}}
 	policyEmpty := &compiledPolicy{}
 
 	f.Fuzz(func(t *testing.T, normPath string, body []byte) {
@@ -72,7 +77,7 @@ func FuzzVisibilityFilter(f *testing.F) {
 			body = body[:filter.MaxResponseBodyBytes]
 		}
 
-		for _, policy := range []*compiledPolicy{policyWithPatterns, policyEmpty} {
+		for _, policy := range []*compiledPolicy{policyWithPatterns, policyWithNetworks, policyEmpty} {
 			rec := httptest.NewRecorder()
 			fw := newPatternFilterWriter(rec)
 
