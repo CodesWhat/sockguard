@@ -1134,7 +1134,7 @@ jobs:
           want="${RELEASE_VERSION#v}"
           cask_url="https://raw.githubusercontent.com/CodesWhat/homebrew-tap/main/Casks/sockguard.rb"
           for attempt in $(seq 1 16); do
-            have="$(curl -fsSL "$cask_url" | sed -n 's/^  version "\(.*\)"$/\1/p' || true)"
+            have="$(curl -fsSL --connect-timeout 5 --max-time 10 "$cask_url" | sed -n 's/^  version "\(.*\)"$/\1/p' || true)"
             if [ "$have" = "$want" ]; then
               break
             fi
