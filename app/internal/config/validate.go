@@ -95,7 +95,7 @@ func validateBasic(cfg *Config, mode validateMode) []string {
 	errs = append(errs, validateLogging(cfg)...)
 	errs = append(errs, validateResponse(cfg)...)
 	errs = append(errs, validateHealthMetrics(cfg)...)
-	errs = append(errs, validateOTLP(cfg)...)
+	errs = append(errs, validateOTLP(cfg, mode)...)
 	if cfg.Admin.Enabled {
 		errs = append(errs, validateAdmin(cfg, mode)...)
 	}
@@ -2358,8 +2358,9 @@ func validateCreateLaunchConfig(prefix string, commands, entrypoints [][]string,
 }
 
 // validateOTLP checks the otlp.* block. A disabled block is not validated
-// beyond its types.
-func validateOTLP(cfg *Config) []string {
+// beyond its types. The ca_file readability check is skipped in structural
+// mode, which never touches the filesystem.
+func validateOTLP(cfg *Config, mode validateMode) []string {
 	o := cfg.OTLP
 	if !o.Enabled {
 		return nil
@@ -2397,7 +2398,7 @@ func validateOTLP(cfg *Config) []string {
 			errs = append(errs, fmt.Sprintf("otlp.headers has an invalid header name %q", hn))
 		}
 	}
-	if o.TLS.CAFile != "" {
+	if o.TLS.CAFile != "" && mode != validateStructural {
 		if f, err := os.Open(o.TLS.CAFile); err != nil {
 			errs = append(errs, "otlp.tls.ca_file must be a readable file")
 		} else {

@@ -158,3 +158,15 @@ func TestOTLPHeaderValuesNeverRendered(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateOTLPCAFileHonorsMode(t *testing.T) {
+	cfg := enabledOTLP()
+	cfg.OTLP.TLS.CAFile = filepath.Join(t.TempDir(), "missing.pem")
+	if err := ValidateStructural(&cfg); err != nil {
+		t.Fatalf("structural mode must not open ca_file: %v", err)
+	}
+	err := Validate(&cfg)
+	if err == nil || !strings.Contains(err.Error(), "otlp.tls.ca_file") {
+		t.Fatalf("full mode must reject a missing ca_file, got %v", err)
+	}
+}
