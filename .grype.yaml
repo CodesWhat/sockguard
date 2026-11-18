@@ -41,3 +41,18 @@ ignore:
       name: github.com/docker/docker
       type: go-module
       location: "**/app/compat/go.mod"
+
+  # GHSA-fc5q-39xc-vjpf (CVE-2026-112366) — picomatch ReDoS, affects <= 4.0.7 and
+  # has no patched release as of 2026-11-17. It needs attacker-supplied glob
+  # patterns. picomatch is reached only by Knip and Fumadocs/tinyglobby, which
+  # match trusted repository build patterns. Both Next.js apps export static
+  # files, no glob-matching server is deployed, and the Go binary and container
+  # carry no npm packages. Scoped to the root package-lock.json so a picomatch
+  # finding anywhere else still fails the scan. Same reasoning as the Qlty
+  # exception in .qlty/qlty.toml; revisit when a fixed release is published or the
+  # static build boundary changes.
+  - vulnerability: GHSA-fc5q-39xc-vjpf
+    package:
+      name: picomatch
+      type: npm
+      location: "/package-lock.json"
