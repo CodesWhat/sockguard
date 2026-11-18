@@ -80,7 +80,7 @@ func TestDefaultsStatuses(t *testing.T) {
 		"5.22": StatusConfigured, "5.23": StatusConfigured, "5.24": StatusAlwaysOn,
 		"5.25": StatusNotConfigured, "5.28": StatusNotConfigured, "5.30": StatusConfigured,
 		"5.31": StatusAlwaysOn,
-		"2.6": StatusNotConfigured, "4.5": StatusNotConfigured, "5.22/5.23": StatusConfigured,
+		"2.6":  StatusNotConfigured, "4.5": StatusNotConfigured, "5.22/5.23": StatusConfigured,
 		"7.x": StatusConfigured,
 		"1.x": StatusOutsideScope, "2.x": StatusOutsideScope, "3.x": StatusOutsideScope,
 		"4.x": StatusOutsideScope, "5.x": StatusOutsideScope, "6.x": StatusOutsideScope,
