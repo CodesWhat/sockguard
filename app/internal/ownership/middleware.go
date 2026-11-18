@@ -1252,6 +1252,18 @@ type embeddedRefCollector struct {
 	list     []embeddedOwnershipReference
 	seen     map[embeddedRefKey]struct{}
 	overflow bool
+	// templated is the source of the first service value holding a SwarmKit
+	// template. SwarmKit expands "{{...}}" in volume sources after the
+	// request is authorized, so the literal text says nothing about which
+	// volume or network the service ends up on.
+	templated string
+}
+
+// refuseTemplated records source when value holds a SwarmKit template.
+func (c *embeddedRefCollector) refuseTemplated(value, source string) {
+	if c.templated == "" && strings.Contains(value, "{{") {
+		c.templated = source
+	}
 }
 
 func (c *embeddedRefCollector) add(kind dockerresource.Kind, identifier, source string) {
@@ -1313,9 +1325,13 @@ func mutateServiceOwnershipBody(r *http.Request, labelKey, owner string) (*owner
 		}
 		containerLabels[labelKey] = owner
 		var overflow bool
-		refs.embeddedResources, overflow = collectServiceEmbeddedReferences(decoded)
-		if overflow {
+		var templated string
+		refs.embeddedResources, overflow, templated = collectServiceEmbeddedReferencesWithTemplates(decoded)
+		switch {
+		case overflow:
 			refs.denyReason = fmt.Sprintf(embeddedReferencesDenyTooMany, "service spec")
+		case templated != "":
+			refs.denyReason = fmt.Sprintf("owner policy denied SwarmKit template in %s: templates expand after authorization", templated)
 		}
 		return nil
 	})
@@ -1323,6 +1339,13 @@ func mutateServiceOwnershipBody(r *http.Request, labelKey, owner string) (*owner
 }
 
 func collectServiceEmbeddedReferences(decoded map[string]any) ([]embeddedOwnershipReference, bool) {
+	list, overflow, _ := collectServiceEmbeddedReferencesWithTemplates(decoded)
+	return list, overflow
+}
+
+// collectServiceEmbeddedReferencesWithTemplates also returns where a templated
+// volume source or network target was found, or "".
+func collectServiceEmbeddedReferencesWithTemplates(decoded map[string]any) ([]embeddedOwnershipReference, bool, string) {
 	refs := &embeddedRefCollector{}
 	for _, taskTemplate := range filter.FoldedObjects(decoded, "TaskTemplate") {
 		for _, containerSpec := range filter.FoldedObjects(taskTemplate, "ContainerSpec") {
@@ -1337,6 +1360,7 @@ func collectServiceEmbeddedReferences(decoded map[string]any) ([]embeddedOwnersh
 						continue
 					}
 					for _, source := range filter.FoldedStrings(mount, "Source") {
+						refs.refuseTemplated(source, "service TaskTemplate.ContainerSpec.Mounts")
 						refs.add(dockerresource.KindVolume, source, "service TaskTemplate.ContainerSpec.Mounts")
 					}
 				}
@@ -1354,7 +1378,7 @@ func collectServiceEmbeddedReferences(decoded map[string]any) ([]embeddedOwnersh
 		// named only here is attached the same way.
 		appendServiceNetworkReferences(refs, taskTemplate, "service TaskTemplate.Networks.Target")
 	}
-	return refs.list, refs.overflow
+	return refs.list, refs.overflow, refs.templated
 }
 
 func appendServiceNetworkReferences(refs *embeddedRefCollector, parent map[string]any, source string) {
@@ -1365,6 +1389,7 @@ func appendServiceNetworkReferences(refs *embeddedRefCollector, parent map[strin
 				continue
 			}
 			for _, target := range filter.FoldedStrings(network, "Target") {
+				refs.refuseTemplated(target, source)
 				if isCustomNetworkMode(target) {
 					refs.add(dockerresource.KindNetwork, target, source)
 				}

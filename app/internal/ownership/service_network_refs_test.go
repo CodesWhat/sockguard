@@ -153,3 +153,41 @@ func TestMiddlewareChecksServiceTaskTemplateNetworks(t *testing.T) {
 		})
 	}
 }
+
+// TestMiddlewareRefusesTemplatedServiceVolumeAndNetworkNames pins that a
+// SwarmKit template in a volume source or network target is refused: it expands
+// after the literal text is authorized and can name another owner's resource.
+func TestMiddlewareRefusesTemplatedServiceVolumeAndNetworkNames(t *testing.T) {
+	t.Parallel()
+	bodies := map[string]string{
+		"volume source":       `{"TaskTemplate":{"ContainerSpec":{"Mounts":[{"Type":"volume","Source":"{{\"victim-vol\"}}","Target":"/d"}]}}}`,
+		"volume source mixed": `{"TaskTemplate":{"ContainerSpec":{"Mounts":[{"Type":"volume","Source":"vol-{{.Task.Slot}}"}]}}}`,
+		"lowercase keys":      `{"tasktemplate":{"containerspec":{"mounts":[{"type":"volume","source":"{{\"v\"}}"}]}}}`,
+		"template network":    `{"TaskTemplate":{"Networks":[{"Target":"{{\"victim-net\"}}"}]}}`,
+		"top-level network":   `{"Networks":[{"Target":"{{\"victim-net\"}}"}]}`,
+	}
+	for name, body := range bodies {
+		for _, path := range []string{"/services/create", "/services/svc/update"} {
+			t.Run(name+" "+path, func(t *testing.T) {
+				t.Parallel()
+				res := map[string]map[string]inspectResult{"services": {"svc": ownerLabel("job-123")}}
+				code, forwarded, _ := embeddedTestRun(t, Options{}, res, http.MethodPost, path, body)
+				if code != http.StatusForbidden || forwarded {
+					t.Fatalf("status = %d forwarded = %v, want a 403 refusal", code, forwarded)
+				}
+			})
+		}
+	}
+	t.Run("plain names still pass", func(t *testing.T) {
+		t.Parallel()
+		res := map[string]map[string]inspectResult{
+			"volumes":  {"mine": ownerLabel("job-123")},
+			"networks": {"mine-net": ownerLabel("job-123")},
+		}
+		body := `{"TaskTemplate":{"ContainerSpec":{"Mounts":[{"Type":"volume","Source":"mine"}]},"Networks":[{"Target":"mine-net"}]}}`
+		code, forwarded, _ := embeddedTestRun(t, Options{}, res, http.MethodPost, "/services/create", body)
+		if code != http.StatusOK || !forwarded {
+			t.Fatalf("status = %d forwarded = %v", code, forwarded)
+		}
+	})
+}
