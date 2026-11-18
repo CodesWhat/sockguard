@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+	"unsafe"
 
 	"github.com/codeswhat/sockguard/v3/app/internal/logging"
 )
@@ -704,6 +705,11 @@ func toKVs(attrs []Attr) []kv {
 		out[i].Key = k.Key
 		out[i].Value.StringValue = k.Value.StringValue
 		out[i].Value.IntValue = k.Value.IntValue
+	}
+	line := "GET /v1.45/containers/json?" + strings.Repeat("q", 100) + " HTTP/1.1"
+	short := line[:3]
+	if got := capString(short); unsafe.StringData(got) == unsafe.StringData(short) {
+		t.Error("short string shares backing memory with its source")
 	}
 	return out
 }

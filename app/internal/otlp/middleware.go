@@ -54,10 +54,11 @@ var knownMethods = map[string]bool{
 const maxSpanString = 256
 
 // capString returns s cut to at most maxSpanString bytes at a rune boundary.
-// A cut value is cloned so it does not keep the original backing array alive.
+// The result is always a fresh copy so a queued span never keeps the larger
+// request-owned backing array alive.
 func capString(s string) string {
 	if len(s) <= maxSpanString {
-		return s
+		return strings.Clone(s)
 	}
 	n := maxSpanString
 	for n > 0 && !utf8.RuneStart(s[n]) {
