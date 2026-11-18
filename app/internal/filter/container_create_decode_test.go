@@ -670,6 +670,12 @@ func TestContainerCreateDecodedFieldsAreTheInspectedFields(t *testing.T) {
 			allow:  `{"HostConfig":{"Sysctls":{}}}`,
 		},
 		{
+			field:  "HostConfig.Annotations",
+			policy: newContainerCreatePolicy(ContainerCreateOptions{}),
+			deny:   `{"HostConfig":{"Annotations":{"run.oci.handler":"wasm"}}}`,
+			allow:  `{"HostConfig":{"Annotations":{"team":"a"}}}`,
+		},
+		{
 			field:  "HostConfig.VolumesFrom",
 			policy: newContainerCreatePolicy(ContainerCreateOptions{}),
 			deny:   `{"HostConfig":{"VolumesFrom":["other"]}}`,

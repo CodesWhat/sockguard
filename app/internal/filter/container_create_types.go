@@ -123,6 +123,11 @@ type containerCreateHostConfig struct {
 	GroupAdd          []string                `json:"GroupAdd"`
 	ExtraHosts        []string                `json:"ExtraHosts"`
 	Runtime           string                  `json:"Runtime"`
+	// Annotations is HostConfig.Annotations (Engine API 1.43+). A Podman
+	// upstream maps it into the container's annotations, the same map
+	// POST /libpod/containers/create reads, so it takes the same refusals.
+	// See runtimeAnnotationsDenyReason.
+	Annotations map[string]string `json:"Annotations"`
 	// MaskedPaths overrides the default set of paths that Docker masks inside
 	// the container. An empty slice signals systempaths=unconfined intent
 	// delivered via the direct API path (the Docker CLI converts
@@ -346,6 +351,7 @@ func (r *containerCreateRequest) resetForReuse() {
 	h.CpuShares = 0
 	h.PidsLimit = nil
 	clear(h.Sysctls)
+	clear(h.Annotations)
 	h.VolumesFrom = h.VolumesFrom[:0]
 	h.UTSMode = ""
 	h.CgroupParent = ""
@@ -377,6 +383,7 @@ func (r *containerCreateRequest) oversizedForReuse() bool {
 		len(r.Labels) > containerCreateReuseCap ||
 		len(r.Volumes) > containerCreateReuseCap ||
 		len(h.Sysctls) > containerCreateReuseCap ||
+		len(h.Annotations) > containerCreateReuseCap ||
 		len(h.Tmpfs) > containerCreateReuseCap ||
 		len(h.LogConfig.Config) > containerCreateReuseCap ||
 		len(r.NetworkingConfig.EndpointsConfig) > containerCreateReuseCap

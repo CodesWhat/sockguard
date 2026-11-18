@@ -212,6 +212,12 @@ type ContainerCreateOptions struct {
 	// denyLogPathReason.
 	AllowLogPath bool
 
+	// AllowRuntimeAnnotations permits HostConfig.Annotations keys under run.oci.
+	// and the io.podman.annotations. keys Podman acts on. It only matters when
+	// the upstream is not known to be dockerd. Default false. See
+	// denyRuntimeAnnotationsReason.
+	AllowRuntimeAnnotations bool
+
 	// AllowedLogDrivers is an opt-in allowlist for HostConfig.LogConfig.Type
 	// (and a "driver" entry in LogConfig.Config, which a Podman upstream reads
 	// as the driver). Empty, the default, enforces nothing. An empty Type
@@ -298,6 +304,7 @@ type containerCreatePolicy struct {
 	allowTmpfsPrivilegedOptions bool
 	podmanUpstream              bool
 	allowLogPath                bool
+	allowRuntimeAnnotations     bool
 	logDrivers                  logDriverPolicy
 	dockerUpstream              bool
 
@@ -398,6 +405,7 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		allowTmpfsPrivilegedOptions:       opts.AllowTmpfsPrivilegedOptions,
 		podmanUpstream:                    opts.PodmanUpstream,
 		allowLogPath:                      opts.AllowLogPath,
+		allowRuntimeAnnotations:           opts.AllowRuntimeAnnotations,
 		logDrivers:                        newLogDriverPolicy(opts.AllowedLogDrivers, opts.AllowedLogEndpointOptions),
 		dockerUpstream:                    opts.DockerUpstream,
 		allowEndpointConfig:               opts.AllowEndpointConfig,
@@ -1468,6 +1476,13 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	}
 	if !p.dockerUpstream {
 		if denyReason := denyCompatMountFieldInjectionReason(createReq.HostConfig.Mounts, "container create"); denyReason != "" {
+			return denyReason, nil
+		}
+	}
+	// dockerd keeps annotations as plain metadata, and Podman acts on some of
+	// them, so the gate stays on unless the upstream is known to be dockerd.
+	if !p.dockerUpstream {
+		if denyReason := runtimeAnnotationsDenyReason(createReq.HostConfig.Annotations, p.allowRuntimeAnnotations, "container create"); denyReason != "" {
 			return denyReason, nil
 		}
 	}

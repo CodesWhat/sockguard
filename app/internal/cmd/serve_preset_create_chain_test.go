@@ -17,9 +17,12 @@ import (
 // presetCreateDaemon counts the container creates and starts that reach it. A
 // request that arrives has been accepted by the whole chain.
 type presetCreateDaemon struct {
-	podman  bool
-	created atomic.Int32
-	started atomic.Int32
+	podman bool
+	// silentVersion answers GET /version without naming an engine, which the
+	// flavor probe reads as an unknown upstream.
+	silentVersion bool
+	created       atomic.Int32
+	started       atomic.Int32
 }
 
 func (d *presetCreateDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -27,6 +30,10 @@ func (d *presetCreateDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	switch {
 	case r.Method == http.MethodGet && normPath == "/version":
+		if d.silentVersion {
+			_, _ = w.Write([]byte(`{}`))
+			return
+		}
 		_ = json.NewEncoder(w).Encode(engineChainVersion(d.podman))
 	case r.Method == http.MethodPost && normPath == "/containers/create":
 		_, _ = io.Copy(io.Discard, r.Body)
@@ -128,5 +135,54 @@ func TestPresetChainCISRefusesInlineSeccomp(t *testing.T) {
 	status, body = presetChainPost(t, addr, "/containers/create", `{"Image":"alpine","HostConfig":{`+cisCompliantHostConfig+`,"SecurityOpt":["no-new-privileges:true"]}}`)
 	if status != http.StatusCreated || daemon.created.Load() != 1 {
 		t.Errorf("compliant create: status = %d, creates = %d, body = %s, want 201 and 1", status, daemon.created.Load(), body)
+	}
+}
+
+// TestPresetChainDrydockRefusesCompatAnnotationsOnPodman pins that the shipped
+// drydock preset refuses the compat HostConfig.Annotations keys Podman acts on
+// (run.oci.* and io.podman.annotations.cid-file, which Podman removes as a
+// host path when the container is deleted), and that an upstream whose flavor is pinned
+// rather than probed is held to the same refusal. A known Docker upstream keeps
+// annotations as plain metadata and still passes.
+func TestPresetChainDrydockRefusesCompatAnnotationsOnPodman(t *testing.T) {
+	bodies := map[string]string{
+		"cid-file": `{"Image":"alpine","HostConfig":{"Annotations":{"io.podman.annotations.cid-file":"/etc/hostname"}}}`,
+		"run.oci":  `{"Image":"alpine","HostConfig":{"Annotations":{"run.oci.keep_original_groups":"1"}}}`,
+	}
+	for name, body := range bodies {
+		t.Run(name+" podman", func(t *testing.T) {
+			daemon := &presetCreateDaemon{podman: true}
+			addr := newPresetChain(t, "preset-ann-podman", "drydock.yaml", daemon, nil)
+			for _, path := range []string{"/containers/create", "/v5.8.6/containers/create"} {
+				status, out := presetChainPost(t, addr, path, body)
+				if status != http.StatusForbidden || !strings.Contains(out, "runtime annotation") {
+					t.Errorf("%s: status = %d, body = %s, want 403 naming the annotation", path, status, out)
+				}
+			}
+			if daemon.created.Load() != 0 {
+				t.Errorf("daemon creates = %d, want 0", daemon.created.Load())
+			}
+		})
+		t.Run(name+" unprobed flavor", func(t *testing.T) {
+			// An operator-pinned flavor is not a probe result, so the gate
+			// stays on even when the pin says docker.
+			daemon := &presetCreateDaemon{silentVersion: true}
+			addr := newPresetChain(t, "preset-ann-unprobed", "drydock.yaml", daemon, func(cfg *config.Config) { cfg.Upstream.Flavor = "docker" })
+			status, out := presetChainPost(t, addr, "/containers/create", body)
+			if status != http.StatusForbidden || !strings.Contains(out, "runtime annotation") {
+				t.Errorf("status = %d, body = %s, want 403 naming the annotation", status, out)
+			}
+			if daemon.created.Load() != 0 {
+				t.Errorf("daemon creates = %d, want 0", daemon.created.Load())
+			}
+		})
+		t.Run(name+" docker", func(t *testing.T) {
+			daemon := &presetCreateDaemon{}
+			addr := newPresetChain(t, "preset-ann-docker", "drydock.yaml", daemon, nil)
+			status, out := presetChainPost(t, addr, "/containers/create", body)
+			if status != http.StatusCreated || daemon.created.Load() != 1 {
+				t.Errorf("status = %d, creates = %d, body = %s, want 201 and 1", status, daemon.created.Load(), out)
+			}
+		})
 	}
 }
