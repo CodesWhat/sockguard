@@ -105,3 +105,14 @@ request_body:
 		t.Fatalf("ImagePush options = %#v", opts)
 	}
 }
+
+func TestLoadImagePushAllowedRegistriesFromEnv(t *testing.T) {
+	t.Setenv("SOCKGUARD_REQUEST_BODY_IMAGE_PUSH_ALLOWED_REGISTRIES", "ghcr.io,registry.internal:5000")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := strings.Join(cfg.RequestBody.ImagePush.AllowedRegistries, "|"); got != "ghcr.io|registry.internal:5000" {
+		t.Fatalf("allowed_registries = %q", got)
+	}
+}
