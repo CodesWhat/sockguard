@@ -1218,6 +1218,7 @@ func withVisibility(cfg *config.Config, res *upstream.Resolver, logger *slog.Log
 		VisibleResourceLabels:          cfg.Response.VisibleResourceLabels,
 		NamePatterns:                   cfg.Response.NamePatterns,
 		ImagePatterns:                  cfg.Response.ImagePatterns,
+		Networks:                       cfg.Response.VisibleNetworks,
 		Profiles:                       clientVisibilityProfiles(cfg.Clients.Profiles),
 		ResolveProfile:                 clientacl.RequestProfile,
 		UpstreamFlavor:                 capabilities.Flavor,
@@ -2052,6 +2053,7 @@ func clientVisibilityProfiles(values []config.ClientProfileConfig) map[string]vi
 			VisibleResourceLabels: value.Response.VisibleResourceLabels,
 			NamePatterns:          value.Response.NamePatterns,
 			ImagePatterns:         value.Response.ImagePatterns,
+			Networks:              value.Response.VisibleNetworks,
 		}
 	}
 	return profiles

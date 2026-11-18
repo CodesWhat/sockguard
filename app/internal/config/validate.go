@@ -555,6 +555,7 @@ func validateResponse(cfg *Config) []string {
 	}
 	errs = append(errs, validateMaxBufferedBody(cfg.Response.MaxBufferedBody)...)
 	errs = append(errs, validateVisibleResourceLabels("response.visible_resource_labels", cfg.Response.VisibleResourceLabels, ownerReservedLabelKey(cfg))...)
+	errs = append(errs, validateVisibleNetworks("response.visible_networks", cfg.Response.VisibleNetworks)...)
 	return errs
 }
 
@@ -1705,6 +1706,7 @@ func validateClientProfile(index int, profile ClientProfileConfig, profilesByNam
 	}
 
 	errs = append(errs, validateVisibleResourceLabels(prefix+".response.visible_resource_labels", profile.Response.VisibleResourceLabels, reservedLabelKey)...)
+	errs = append(errs, validateVisibleNetworks(prefix+".response.visible_networks", profile.Response.VisibleNetworks)...)
 	errs = append(errs, validateRequestBodyConfig(prefix+".request_body", profile.RequestBody)...)
 	errs = append(errs, validateRuleConfigs(profile.Rules, prefix+".rules")...)
 	errs = append(errs, validateLimitsConfig(prefix+".limits", profile.Limits)...)
@@ -2306,6 +2308,25 @@ func validateVisibleResourceLabels(prefix string, values []string, reservedLabel
 		}
 		if hasValue && strings.TrimSpace(selected) == "" {
 			errs = append(errs, fmt.Sprintf("%s entries with '=' must include a non-empty value, got %q", prefix, raw))
+		}
+	}
+	return errs
+}
+
+// validateVisibleNetworks checks one visible_networks list. Entries are exact
+// network names, so an entry that is blank, padded, or carries a glob
+// metacharacter or a comma is almost certainly a mistaken pattern that would
+// silently match nothing. Errors name the index only, never the value.
+func validateVisibleNetworks(field string, values []string) []string {
+	var errs []string
+	for i, value := range values {
+		switch {
+		case strings.TrimSpace(value) == "":
+			errs = append(errs, fmt.Sprintf("%s[%d] must be non-empty", field, i))
+		case strings.ContainsAny(value, "*?["):
+			errs = append(errs, fmt.Sprintf("%s[%d] must be an exact network name without glob characters (*, ?, [)", field, i))
+		case strings.Contains(value, ","):
+			errs = append(errs, fmt.Sprintf("%s[%d] must not contain commas", field, i))
 		}
 	}
 	return errs

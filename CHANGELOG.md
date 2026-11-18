@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Add opt-in OTLP/HTTP JSON trace export (`otlp.*`, off by default). One span per request on the main listener goes to a collector through a bounded, non-blocking queue, so a slow or dead collector never delays a request. Spans carry an allowlist of fields (no query strings, headers, bodies or free-text reasons), sampling follows the W3C sampled flag, and `sockguard_otlp_*` metrics report exports and drops. The exporter is stdlib-only, and the block is reload-immutable.
-
+- Add `response.visible_networks` (root and per client profile), a visibility axis that is neither a label nor a name/image glob. A container is visible only if it is attached to at least one listed network, by exact case-sensitive network name. It is ANDed with the label, `name_patterns` and `image_patterns` axes, profile lists add to the root list, and it covers container lists (Docker and libpod), inspect, every container sub-read, exec via its parent container and the containers section of `GET /system/df`. It does not apply to images, networks or volumes and cannot narrow `GET /events`, which gets the same startup warning as patterns without a label selector. It works with `redact_network_topology` on, since only network names are read.
 - Add read-only admin policy comparison for the next v3.1 release, with generation-bound field paths and change kinds, values omitted, structural validation, unknown-key counts and reload-immutable change reporting. The endpoint shares existing admin access controls and request-body limits, never applies candidates and never reads candidate TLS files.
 
 ### Security
