@@ -18,6 +18,7 @@ import (
 	"github.com/codeswhat/sockguard/v3/app/internal/health"
 	"github.com/codeswhat/sockguard/v3/app/internal/inbound"
 	"github.com/codeswhat/sockguard/v3/app/internal/metrics"
+	"github.com/codeswhat/sockguard/v3/app/internal/proxy"
 	"github.com/codeswhat/sockguard/v3/app/internal/reload"
 )
 
@@ -121,14 +122,29 @@ type listenerMember struct {
 // such a connection, so completion is observed instead through the conn the
 // handler receives from Hijack: the tracker's handler wrapper hands out a conn
 // whose Close unregisters the raw connection.
+//
+// It also tracks the HANDLERS of hijacked requests. net/http's Shutdown does
+// not wait for them either, and the audit middleware only emits its event
+// after the handler returns, so shutdown must join them before the audit and
+// log sinks close or a long exec/attach session's only audit record is lost.
 type hijackedConnTracker struct {
 	mu     sync.Mutex
 	conns  map[net.Conn]struct{}
 	closed bool
+	// handlers maps each live hijacked handler to the cancel func of the
+	// request context it runs under. Entries live from a successful Hijack
+	// until the handler returns from the full middleware chain, independent of
+	// when its connection is closed or released.
+	handlers map[uint64]func()
+	nextID   uint64
+	idle     chan struct{} // closed-and-cleared when handlers drains to empty
 }
 
 func trackHijackedConnections(server *http.Server) *hijackedConnTracker {
-	tracker := &hijackedConnTracker{conns: make(map[net.Conn]struct{})}
+	tracker := &hijackedConnTracker{
+		conns:    make(map[net.Conn]struct{}),
+		handlers: make(map[uint64]func()),
+	}
 	previous := server.ConnState
 	server.ConnState = func(conn net.Conn, state http.ConnState) {
 		if previous != nil {
@@ -146,8 +162,79 @@ func trackHijackedConnections(server *http.Server) *hijackedConnTracker {
 // the tracker when closed, so completed sessions stop being retained.
 func (t *hijackedConnTracker) wrapHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(&hijackTrackingWriter{ResponseWriter: w, tracker: t}, r)
+		// A per-request shutdown channel lets closeAll tell a hijacked
+		// session's relay to stop. It is deliberately not request-context
+		// cancellation: net/http cancels that on any client EOF, and a client
+		// half-closing stdin must not kill a session still producing output.
+		stop := make(chan struct{})
+		var once sync.Once
+		cancel := func() { once.Do(func() { close(stop) }) }
+		tw := &hijackTrackingWriter{ResponseWriter: w, tracker: t, cancel: cancel}
+		defer tw.finish()
+		next.ServeHTTP(tw, r.WithContext(proxy.WithHijackShutdown(r.Context(), stop)))
 	})
+}
+
+// beginHandler registers a hijacked handler. It returns 0 and cancels at once
+// when shutdown already started, so a late hijack still unwinds promptly.
+func (t *hijackedConnTracker) beginHandler(cancel func()) uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed {
+		cancel()
+		return 0
+	}
+	if t.handlers == nil {
+		t.handlers = make(map[uint64]func())
+	}
+	t.nextID++
+	id := t.nextID
+	t.handlers[id] = cancel
+	return id
+}
+
+func (t *hijackedConnTracker) endHandler(id uint64) {
+	if id == 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.handlers, id)
+	if len(t.handlers) == 0 && t.idle != nil {
+		close(t.idle)
+		t.idle = nil
+	}
+}
+
+// waitHandlers blocks until every hijacked handler has returned or ctx ends.
+// On expiry it returns how many were still running.
+func (t *hijackedConnTracker) waitHandlers(ctx context.Context) (remaining int, err error) {
+	if t == nil {
+		return 0, nil
+	}
+	for {
+		t.mu.Lock()
+		if len(t.handlers) == 0 {
+			t.mu.Unlock()
+			return 0, nil
+		}
+		if t.idle == nil {
+			t.idle = make(chan struct{})
+		}
+		idle := t.idle
+		t.mu.Unlock()
+		select {
+		case <-idle:
+		case <-ctx.Done():
+			t.mu.Lock()
+			remaining = len(t.handlers)
+			t.mu.Unlock()
+			if remaining == 0 {
+				return 0, nil
+			}
+			return remaining, ctx.Err()
+		}
+	}
 }
 
 func (t *hijackedConnTracker) release(conn net.Conn) {
@@ -162,6 +249,21 @@ func (t *hijackedConnTracker) release(conn net.Conn) {
 type hijackTrackingWriter struct {
 	http.ResponseWriter
 	tracker *hijackedConnTracker
+	cancel  func()
+
+	mu        sync.Mutex
+	handlerID uint64
+	hijacked  bool
+}
+
+// finish deregisters the handler once the full middleware chain has returned.
+func (w *hijackTrackingWriter) finish() {
+	w.mu.Lock()
+	id, hijacked := w.handlerID, w.hijacked
+	w.mu.Unlock()
+	if hijacked {
+		w.tracker.endHandler(id)
+	}
 }
 
 func (w *hijackTrackingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
@@ -188,6 +290,12 @@ func (w *hijackTrackingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	}
 	// net/http runs the StateHijacked hook inside Hijack, so the raw conn is
 	// already registered (or already closed by a shut-down tracker) here.
+	w.mu.Lock()
+	if !w.hijacked {
+		w.hijacked = true
+		w.handlerID = w.tracker.beginHandler(w.cancel)
+	}
+	w.mu.Unlock()
 	return &releasingConn{Conn: conn, tracker: w.tracker}, buf, nil
 }
 
@@ -236,12 +344,19 @@ func (t *hijackedConnTracker) closeAll() {
 	}
 	t.mu.Lock()
 	t.closed = true
+	cancels := make([]func(), 0, len(t.handlers))
+	for _, cancel := range t.handlers {
+		cancels = append(cancels, cancel)
+	}
 	connections := make([]net.Conn, 0, len(t.conns))
 	for conn := range t.conns {
 		connections = append(connections, conn)
 	}
 	clear(t.conns)
 	t.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
 	for _, conn := range connections {
 		_ = conn.Close()
 	}
@@ -447,6 +562,14 @@ func shutdownMainListeners(ctx context.Context, deps *serveDeps, members []*list
 				}
 			}
 			member.hijacked.closeAll()
+			// Join hijacked handlers inside the shared shutdown deadline: the
+			// audit and log sinks close right after shutdownServers returns,
+			// and a handler still running would emit its audit event into a
+			// closed sink.
+			if remaining, err := member.hijacked.waitHandlers(ctx); err != nil {
+				logger.Error("hijacked handlers did not finish before the shutdown deadline; their audit events may be lost",
+					"listener", member.identity.Name, "remaining", remaining, "error", err)
+			}
 		}()
 	}
 	wg.Wait()
