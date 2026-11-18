@@ -1856,6 +1856,7 @@ func withResourceLimitGuard(cfg *config.Config, res *upstream.Resolver, logger *
 		ResolveProfile:   clientacl.RequestProfile,
 		InspectContainer: filter.NewDockerContainerUpdateInspectorWithRoundTripper(rt),
 		InspectService:   filter.NewDockerServiceInspectorWithRoundTripper(rt),
+		InspectNetwork:   filter.NewDockerNetworkInspectorWithRoundTripper(rt),
 	})
 }
 
