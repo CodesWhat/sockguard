@@ -35,9 +35,14 @@ type AuditLogger struct {
 	wg          sync.WaitGroup
 	w           io.Writer
 	scratch     bytes.Buffer
-	now         func() string
-	dropped     atomic.Uint64
-	lastWarn    atomic.Int64
+	// partial is set when the sink took part of a record and then failed, so
+	// it holds an unterminated JSON prefix. The next write terminates it with
+	// a newline first, or the next event would be glued onto the fragment and
+	// neither line would parse. Only the run/drain goroutine touches it.
+	partial  bool
+	now      func() string
+	dropped  atomic.Uint64
+	lastWarn atomic.Int64
 	// lost counts events that were dequeued but never reached the sink:
 	// serialization failures and failed or short writes.
 	lost         atomic.Uint64
@@ -381,13 +386,22 @@ func (l *AuditLogger) write(event auditEvent) {
 		l.recordLoss(fmt.Errorf("encode: %w", err))
 		return
 	}
-	n, err := l.w.Write(l.scratch.Bytes())
-	if err == nil && n < l.scratch.Len() {
+	record := l.scratch.Bytes()
+	if l.partial {
+		record = append([]byte{'\n'}, record...)
+	}
+	n, err := l.w.Write(record)
+	if err == nil && n < len(record) {
 		err = io.ErrShortWrite
 	}
-	if err != nil {
-		l.recordLoss(err)
+	if err == nil {
+		l.partial = false
+		return
 	}
+	if n > 0 && n < len(record) {
+		l.partial = true
+	}
+	l.recordLoss(err)
 }
 
 func (l *AuditLogger) recordLoss(err error) {
