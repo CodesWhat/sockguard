@@ -123,6 +123,9 @@ recommended companion tool.
 | **5.x runtime, uninspectable** | 5.6 SSH not running in container (image-level), 5.7/5.8 ports (network-level), 5.13 traffic binding, 5.14 restart policy, 5.18 ulimit override, 5.19 mount propagation, 5.26 healthcheck at runtime, 5.27 updated image, 5.29 default bridge | image scanner + dockerd flags + container-runtime audit |
 | **6.x, Security operations** | image lifecycle policy | registry-side governance |
 
+`sockguard report` turns any config into a control-by-control record of what it
+configures and what it leaves out; see [Compliance report](/compliance-report).
+
 For a complete CIS posture, run the preset above plus
 `docker-bench-security` periodically against the host. The two are
 complementary: sockguard catches runtime violations as they happen,

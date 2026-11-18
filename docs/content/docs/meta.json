@@ -9,6 +9,7 @@
     "presets",
     "podman",
     "cis-docker-benchmark",
+    "compliance-report",
     "observability",
     "admin",
     "migration",

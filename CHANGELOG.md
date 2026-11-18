@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add `sockguard report`, which generates a deterministic CIS Docker Benchmark v1.6.0 configuration report from a config as text, JSON or Markdown. Each control carries a status (`configured`, `partial`, `not_configured`, `always_on`, `outside_scope`) and config-path evidence limited to booleans, enum modes and list lengths. Global request-body policy and every client profile are evaluated as separate scopes. It reports configuration only and is not a CIS certification.
+
 - Add read-only admin policy comparison for the next v3.1 release, with generation-bound field paths and change kinds, values omitted, structural validation, unknown-key counts and reload-immutable change reporting. The endpoint shares existing admin access controls and request-body limits, never applies candidates and never reads candidate TLS files.
 
 ### Security

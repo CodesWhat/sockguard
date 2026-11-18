@@ -39,6 +39,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
       "presets",
       "podman",
       "cis-docker-benchmark",
+      "compliance-report",
       "observability",
       "admin",
       "migration",
