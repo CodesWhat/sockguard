@@ -102,7 +102,7 @@ func New(opts Options) (*Exporter, error) {
 	// HTTPS_PROXY / NO_PROXY apply to the export request like any other
 	// stdlib client.
 	transport = transport.Clone()
-	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: opts.InsecureSkipVerify} //nolint:gosec // operator-controlled opt-in
+	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: opts.InsecureSkipVerify} // #nosec G402 -- operator opt-in via otlp.tls.insecure_skip_verify, off by default
 	if opts.CAFile != "" {
 		pem, err := os.ReadFile(opts.CAFile)
 		if err != nil {
