@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Update the linked OpenTelemetry API, metric, trace and log modules to 1.47.0 for GHSA-q7gw-24fr-5p69 / CVE-2026-128085, an attribute value length limit bypass involving valid replacement characters. Trace is linked through Sigstore; the advisory's affected tracing path has not been demonstrated in Sockguard.
 - Owner isolation now authorizes networks named in a service's `TaskTemplate.Networks`, not only the top-level `Networks` field. Docker prefers the task template list, so a tenant could attach a service to another owner's overlay network through it.
 - Owner isolation now authorizes the source of a `Type: image` container mount (Docker API 1.48+) against the caller's images, so a tenant can't read another owner's image filesystem through its own container. Podman and any upstream not identified as Docker refuse image mounts under ownership.
+- Owner isolation now covers `POST /swarm/leave` and `GET /swarm/unlockkey`. They used to skip the swarm ownership check, so a Portainer-style `/swarm/**` allow rule let a non-owner take a manager out of the swarm with `force=1`.
 
 ### Fixed
 
