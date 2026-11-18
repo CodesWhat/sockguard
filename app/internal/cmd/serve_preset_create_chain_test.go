@@ -150,7 +150,8 @@ func TestPresetChainCISRefusesInlineSeccomp(t *testing.T) {
 // (run.oci.* and io.podman.annotations.cid-file, which Podman removes as a
 // host path when the container is deleted), and that an upstream whose flavor is pinned
 // rather than probed is held to the same refusal. A known Docker upstream keeps
-// annotations as plain metadata and still passes.
+// io.podman.annotations.* keys as plain metadata and still passes them, but
+// refuses run.oci.* because dockerd forwards it to the OCI runtime.
 func TestPresetChainDrydockRefusesCompatAnnotationsOnPodman(t *testing.T) {
 	bodies := map[string]string{
 		"cid-file": `{"Image":"alpine","HostConfig":{"Annotations":{"io.podman.annotations.cid-file":"/etc/hostname"}}}`,
@@ -187,6 +188,14 @@ func TestPresetChainDrydockRefusesCompatAnnotationsOnPodman(t *testing.T) {
 			daemon := &presetCreateDaemon{}
 			addr := newPresetChain(t, "preset-ann-docker", "drydock.yaml", daemon, nil)
 			status, out := presetChainPost(t, addr, "/containers/create", body)
+			if name == "run.oci" {
+				// dockerd forwards run.oci.* into the OCI spec, so Docker
+				// upstreams refuse it too.
+				if status != http.StatusForbidden || !strings.Contains(out, "runtime annotation") || daemon.created.Load() != 0 {
+					t.Errorf("status = %d, creates = %d, body = %s, want 403 naming the annotation and no create", status, daemon.created.Load(), out)
+				}
+				return
+			}
 			if status != http.StatusCreated || daemon.created.Load() != 1 {
 				t.Errorf("status = %d, creates = %d, body = %s, want 201 and 1", status, daemon.created.Load(), out)
 			}

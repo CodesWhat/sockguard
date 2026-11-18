@@ -28,6 +28,10 @@ func TestContainerCreateRuntimeAnnotations(t *testing.T) {
 		{"null map", ContainerCreateOptions{}, `{"HostConfig":{"Annotations":null}}`, ""},
 		{"opt-in allows", ContainerCreateOptions{AllowRuntimeAnnotations: true}, `{"HostConfig":{"Annotations":{"io.podman.annotations.cid-file":"/x"}}}`, ""},
 		{"known docker upstream skips the gate", ContainerCreateOptions{DockerUpstream: true}, `{"HostConfig":{"Annotations":{"io.podman.annotations.cid-file":"/x"}}}`, ""},
+		{"known docker upstream still refuses run.oci", ContainerCreateOptions{DockerUpstream: true}, `{"HostConfig":{"Annotations":{"run.oci.seccomp_bpf_data":"x"}}}`, deny("run.oci.seccomp_bpf_data")},
+		{"known docker upstream still refuses run.oci in another case", ContainerCreateOptions{DockerUpstream: true}, `{"HostConfig":{"Annotations":{"Run.OCI.Handler":"wasm"}}}`, deny("Run.OCI.Handler")},
+		{"known docker upstream passes harmless metadata", ContainerCreateOptions{DockerUpstream: true}, `{"HostConfig":{"Annotations":{"team":"a"}}}`, ""},
+		{"known docker upstream with opt-in allows run.oci", ContainerCreateOptions{DockerUpstream: true, AllowRuntimeAnnotations: true}, `{"HostConfig":{"Annotations":{"run.oci.seccomp_bpf_data":"x"}}}`, ""},
 		{"podman upstream is gated", ContainerCreateOptions{PodmanUpstream: true}, `{"HostConfig":{"Annotations":{"run.oci.handler":"wasm"}}}`, deny("run.oci.handler")},
 	}
 	for _, tt := range tests {

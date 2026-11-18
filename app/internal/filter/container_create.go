@@ -213,9 +213,10 @@ type ContainerCreateOptions struct {
 	AllowLogPath bool
 
 	// AllowRuntimeAnnotations permits HostConfig.Annotations keys under run.oci.
-	// and the io.podman.annotations. keys Podman acts on. It only matters when
-	// the upstream is not known to be dockerd. Default false. See
-	// denyRuntimeAnnotationsReason.
+	// (refused on every upstream, since dockerd forwards them to the OCI
+	// runtime) and the io.podman.annotations. keys Podman acts on (refused
+	// unless the upstream is known to be dockerd). Default false. See
+	// runtimeAnnotationsDenyReason.
 	AllowRuntimeAnnotations bool
 
 	// AllowedLogDrivers is an opt-in allowlist for HostConfig.LogConfig.Type
@@ -1490,12 +1491,11 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 			return denyReason, nil
 		}
 	}
-	// dockerd keeps annotations as plain metadata, and Podman acts on some of
-	// them, so the gate stays on unless the upstream is known to be dockerd.
-	if !p.dockerUpstream {
-		if denyReason := runtimeAnnotationsDenyReason(createReq.HostConfig.Annotations, p.allowRuntimeAnnotations, "container create"); denyReason != "" {
-			return denyReason, nil
-		}
+	// dockerd forwards HostConfig.Annotations into the OCI spec, where crun
+	// honors run.oci.* keys, so those are refused on every upstream. Only the
+	// Podman-specific io.podman.annotations.* keys are exempt on dockerd.
+	if denyReason := runtimeAnnotationsDenyReason(createReq.HostConfig.Annotations, p.allowRuntimeAnnotations, p.dockerUpstream, "container create"); denyReason != "" {
+		return denyReason, nil
 	}
 	if denyReason := p.denyBindMountReason(createReq.HostConfig); denyReason != "" {
 		return denyReason, nil

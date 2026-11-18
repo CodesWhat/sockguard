@@ -128,13 +128,18 @@ var podmanActedAnnotations = [...]string{
 // act on is refused too. Keys are checked in sorted order so the reason is
 // stable.
 func (p libpodContainerCreatePolicy) denyRuntimeAnnotationsReason(annotations map[string]string) string {
-	return runtimeAnnotationsDenyReason(annotations, p.allowRuntimeAnnotations, "libpod container create")
+	return runtimeAnnotationsDenyReason(annotations, p.allowRuntimeAnnotations, false, "libpod container create")
 }
 
 // runtimeAnnotationsDenyReason is the shared annotation gate. The native
 // SpecGenerator.Annotations and the Docker-compat HostConfig.Annotations both
 // end up in the same Podman container annotations, so both are held to it.
-func runtimeAnnotationsDenyReason(annotations map[string]string, allow bool, subject string) string {
+//
+// run.oci.* is refused on every upstream: dockerd copies HostConfig.Annotations
+// into the OCI runtime spec and crun reads keys such as run.oci.seccomp_bpf_data
+// from it. dockerUpstream only exempts the io.podman.annotations.* keys that
+// Podman alone acts on.
+func runtimeAnnotationsDenyReason(annotations map[string]string, allow, dockerUpstream bool, subject string) string {
 	if allow || len(annotations) == 0 {
 		return ""
 	}
@@ -145,7 +150,7 @@ func runtimeAnnotationsDenyReason(annotations map[string]string, allow bool, sub
 	slices.Sort(keys)
 	for _, key := range keys {
 		folded := strings.ToLower(strings.TrimSpace(key))
-		if strings.HasPrefix(folded, runtimeAnnotationPrefix) || slices.Contains(podmanActedAnnotations[:], folded) {
+		if strings.HasPrefix(folded, runtimeAnnotationPrefix) || (!dockerUpstream && slices.Contains(podmanActedAnnotations[:], folded)) {
 			return fmt.Sprintf("%s denied: runtime annotation %q is not allowed (set allow_runtime_annotations: true)", subject, key)
 		}
 	}
