@@ -183,12 +183,12 @@ func TestImagePushPolicyRoutes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := inspectPush(t, pushTestPolicy(tt.podman), http.MethodPost, tt.target, nil)
-			switch {
-			case tt.want == "":
+			switch tt.want {
+			case "":
 				if got != "" {
 					t.Fatalf("POST %s denied: %q", tt.target, got)
 				}
-			case tt.want == "<not matched>":
+			case "<not matched>":
 				if got != tt.want {
 					t.Fatalf("POST %s = %q, want the path left unmatched", tt.target, got)
 				}

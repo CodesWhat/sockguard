@@ -15,11 +15,11 @@ func TestValidateImagePushConfig(t *testing.T) {
 		{name: "allowlist only", cfg: ImagePushRequestBodyConfig{AllowedRegistries: []string{"ghcr.io", "registry.internal:5000", "[::1]:5000", "localhost:5000"}}},
 		{name: "valid alias", cfg: ImagePushRequestBodyConfig{
 			AllowedRegistries: []string{"registry.internal:5000"},
-			RegistryAliases: []ImagePushRegistryAlias{{From: "mirror.corp.example", To: "registry.internal:5000"}},
+			RegistryAliases:   []ImagePushRegistryAlias{{From: "mirror.corp.example", To: "registry.internal:5000"}},
 		}},
 		{name: "alias to docker.io", cfg: ImagePushRequestBodyConfig{
 			AllowedRegistries: []string{"docker.io"},
-			RegistryAliases: []ImagePushRegistryAlias{{From: "hub.corp.example", To: "docker.io"}},
+			RegistryAliases:   []ImagePushRegistryAlias{{From: "hub.corp.example", To: "docker.io"}},
 		}},
 		{name: "allowlist entry with scheme", cfg: ImagePushRequestBodyConfig{AllowedRegistries: []string{"https://ghcr.io"}}, wantErr: "image_push.allowed_registries"},
 		{name: "allowlist entry with path", cfg: ImagePushRequestBodyConfig{AllowedRegistries: []string{"ghcr.io/acme"}}, wantErr: "image_push.allowed_registries"},
@@ -29,35 +29,35 @@ func TestValidateImagePushConfig(t *testing.T) {
 		}, wantErr: "requires image_push.allowed_registries"},
 		{name: "alias key with scheme", cfg: ImagePushRequestBodyConfig{
 			AllowedRegistries: []string{"b.example"},
-			RegistryAliases: []ImagePushRegistryAlias{{From: "https://a.example", To: "b.example"}},
+			RegistryAliases:   []ImagePushRegistryAlias{{From: "https://a.example", To: "b.example"}},
 		}, wantErr: ".from must be a bare registry host"},
 		{name: "alias value with path", cfg: ImagePushRequestBodyConfig{
 			AllowedRegistries: []string{"b.example"},
-			RegistryAliases: []ImagePushRegistryAlias{{From: "a.example", To: "b.example/x"}},
+			RegistryAliases:   []ImagePushRegistryAlias{{From: "a.example", To: "b.example/x"}},
 		}, wantErr: ".to must be a bare registry host"},
 		{name: "alias to itself", cfg: ImagePushRequestBodyConfig{
 			AllowedRegistries: []string{"a.example"},
-			RegistryAliases: []ImagePushRegistryAlias{{From: "a.example", To: "A.EXAMPLE"}},
+			RegistryAliases:   []ImagePushRegistryAlias{{From: "a.example", To: "A.EXAMPLE"}},
 		}, wantErr: "must differ from its target"},
 		{name: "alias chain", cfg: ImagePushRequestBodyConfig{
 			AllowedRegistries: []string{"c.example"},
-			RegistryAliases: []ImagePushRegistryAlias{{From: "a.example", To: "b.example"}, {From: "b.example", To: "c.example"}},
+			RegistryAliases:   []ImagePushRegistryAlias{{From: "a.example", To: "b.example"}, {From: "b.example", To: "c.example"}},
 		}, wantErr: "chains are not followed"},
 		{name: "alias cycle", cfg: ImagePushRequestBodyConfig{
 			AllowedRegistries: []string{"a.example"},
-			RegistryAliases: []ImagePushRegistryAlias{{From: "a.example", To: "b.example"}, {From: "b.example", To: "a.example"}},
+			RegistryAliases:   []ImagePushRegistryAlias{{From: "a.example", To: "b.example"}, {From: "b.example", To: "a.example"}},
 		}, wantErr: "chains are not followed"},
 		{name: "duplicate keys after normalization", cfg: ImagePushRequestBodyConfig{
 			AllowedRegistries: []string{"c.example"},
-			RegistryAliases: []ImagePushRegistryAlias{{From: "A.example", To: "c.example"}, {From: "a.example", To: "c.example"}},
+			RegistryAliases:   []ImagePushRegistryAlias{{From: "A.example", To: "c.example"}, {From: "a.example", To: "c.example"}},
 		}, wantErr: "is a duplicate"},
 		{name: "built-in alias key", cfg: ImagePushRequestBodyConfig{
 			AllowedRegistries: []string{"c.example"},
-			RegistryAliases: []ImagePushRegistryAlias{{From: "registry-1.docker.io", To: "c.example"}},
+			RegistryAliases:   []ImagePushRegistryAlias{{From: "registry-1.docker.io", To: "c.example"}},
 		}, wantErr: "built-in Docker Hub alias"},
 		{name: "docker.io key", cfg: ImagePushRequestBodyConfig{
 			AllowedRegistries: []string{"c.example"},
-			RegistryAliases: []ImagePushRegistryAlias{{From: "docker.io", To: "c.example"}},
+			RegistryAliases:   []ImagePushRegistryAlias{{From: "docker.io", To: "c.example"}},
 		}, wantErr: "built-in Docker Hub alias"},
 	}
 	for _, tt := range tests {
