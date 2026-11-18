@@ -123,3 +123,52 @@ func TestServeChainServiceHostNetworkByID(t *testing.T) {
 		})
 	}
 }
+
+// TestServeChainServiceMountTemplates pins that the portainer preset refuses
+// SwarmKit template expressions that would expand into a host path after the
+// request was judged, while a templated volume name still reaches the daemon.
+func TestServeChainServiceMountTemplates(t *testing.T) {
+	svc := func(mount string) string {
+		return `{"Name":"web","TaskTemplate":{"ContainerSpec":{"Image":"alpine","Mounts":[` + mount + `]}}}`
+	}
+	nfsVolume := func(options string) string {
+		return `{"Type":"volume","Source":"data","Target":"/d","VolumeOptions":{"DriverConfig":{"Name":"local","Options":` + options + `}}}`
+	}
+	const (
+		create = "/v1.45/services/create"
+		update = "/v1.45/services/web/update?version=1"
+	)
+	tests := []struct {
+		name       string
+		path       string
+		body       string
+		wantReason string // empty means it reaches the daemon
+	}{
+		{name: "bind source template", path: create, body: svc(`{"Type":"bind","Source":"{{print \"/\"}}","Target":"/h"}`), wantReason: "template expressions"},
+		{name: "allowlisted prefix expanding to root", path: create, body: svc(`{"Type":"bind","Source":"/srv/data/{{\"..\"}}/{{\"..\"}}","Target":"/h"}`), wantReason: "template expressions"},
+		{name: "allowlisted prefix expanding to root on update", path: update, body: svc(`{"Type":"bind","Source":"/srv/data/{{\"..\"}}/{{\"..\"}}","Target":"/h"}`), wantReason: "template expressions"},
+		{name: "nfs o template hides a bind of root", path: create, body: svc(nfsVolume(`{"type":"nfs","o":"{{\"bind\"}}","device":"/"}`)), wantReason: "template expressions"},
+		{name: "relative bind source", path: create, body: svc(`{"Type":"bind","Source":"etc","Target":"/h"}`), wantReason: "absolute path"},
+		{name: "allowlisted bind reaches the daemon", path: create, body: svc(`{"Type":"bind","Source":"/srv/data/app","Target":"/h"}`)},
+		{name: "templated volume name reaches the daemon", path: create, body: svc(`{"Type":"volume","Source":"{{.Service.Name}}-{{.Task.Slot}}","Target":"/d"}`)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			daemon := &serviceChainDaemon{}
+			addr := portainerPresetChain(t, daemon, func(cfg *config.Config) {
+				cfg.RequestBody.Service.AllowAllRegistries = true
+				cfg.RequestBody.Service.AllowedBindMounts = []string{"/srv/data"}
+			})
+			status, reason := postServiceThroughChain(t, addr, tt.path, tt.body)
+			if tt.wantReason == "" {
+				if status != http.StatusCreated || daemon.reached.Load() != 1 {
+					t.Fatalf("status = %d reason = %q reached = %d, want 201 reaching the daemon", status, reason, daemon.reached.Load())
+				}
+				return
+			}
+			if status != http.StatusForbidden || !strings.Contains(reason, tt.wantReason) || daemon.reached.Load() != 0 {
+				t.Fatalf("status = %d reason = %q reached = %d, want 403 containing %q", status, reason, daemon.reached.Load(), tt.wantReason)
+			}
+		})
+	}
+}
