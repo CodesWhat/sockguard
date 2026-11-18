@@ -1786,7 +1786,7 @@ func (cfg AdminListenConfig) Configured() bool {
 // on SIGHUP. A reload that mutates any immutable field — listen.*, server.*,
 // upstream.socket, upstream.endpoints, upstream.failover, upstream.flavor,
 // upstream.response_header_timeout,
-// log.*, health.*, metrics.*, admin.* — is rejected; the running config is
+// log.*, health.*, metrics.*, otlp.*, admin.* — is rejected; the running config is
 // preserved and the operator must restart sockguard to pick the new values up.
 // (The endpoint set, failover policy, and flavor are pinned because the
 // long-lived Resolver and engine-specific handler chain are built once at

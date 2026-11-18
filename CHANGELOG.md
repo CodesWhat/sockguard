@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Add opt-in OTLP/HTTP JSON trace export (`otlp.*`, off by default). One span per request on the main listener goes to a collector through a bounded, non-blocking queue, so a slow or dead collector never delays a request. Spans carry an allowlist of fields (no query strings, headers, bodies or free-text reasons), sampling follows the W3C sampled flag, and `sockguard_otlp_*` metrics report exports and drops. The exporter is stdlib-only, and the block is reload-immutable.
+
 - Add read-only admin policy comparison for the next v3.1 release, with generation-bound field paths and change kinds, values omitted, structural validation, unknown-key counts and reload-immutable change reporting. The endpoint shares existing admin access controls and request-body limits, never applies candidates and never reads candidate TLS files.
 
 ### Security

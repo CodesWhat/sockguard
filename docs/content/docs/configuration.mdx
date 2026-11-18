@@ -309,6 +309,20 @@ metrics:
   enabled: false
   path: /metrics
 
+otlp:
+  enabled: false         # opt-in OTLP/HTTP JSON trace export
+  endpoint: ""           # full URL incl. path, e.g. https://collector:4318/v1/traces
+  headers: {}            # secrets: sent on every export, never logged or rendered
+  timeout: 5s            # per export request
+  queue_size: 2048       # 1..65536
+  batch_size: 256        # 1..queue_size
+  flush_interval: 2s
+  sample_ratio: 1.0      # 0..1, new root traces only
+  service_name: sockguard
+  tls:
+    ca_file: ""
+    insecure_skip_verify: false
+
 admin:
   enabled: false
   path: /admin/validate
@@ -359,6 +373,7 @@ The default listener is loopback TCP `127.0.0.1:2375`, which keeps the Docker AP
   - `sockguard validate` and every other config-only path never probe, so validation works with no daemon present.
   - The configured flavor and derived capabilities are reload-immutable, alongside `upstream.socket` and `upstream.endpoints`. Restart Sockguard as part of an upstream engine/version change. Probes run only at startup.
 - `metrics.enabled` is opt-in and serves Prometheus text metrics at `metrics.path` on the same listener. The endpoint is local to Sockguard, is never forwarded to Docker, bypasses Docker API allow rules like `/health`, and remains behind listener security plus `clients.allowed_cidrs`. Every scrape also exports a `sockguard_build_info{version,commit,build_date,go_version}` gauge and a `sockguard_start_time_seconds` gauge for version panels and uptime alerts. Request labels are finite: known methods keep their uppercase name, all other methods use `OTHER`, known route families use bounded templates, and every unknown family uses `unknown`. When the active watchdog is enabled, metrics also include `sockguard_upstream_socket_up` and `sockguard_upstream_watchdog_checks_total`; when the readiness probe is enabled, they also include `sockguard_upstream_api_up` and `sockguard_upstream_readiness_checks_total`.
+- `otlp.enabled` is opt-in and exports one span per proxied request on the main listener to an OTLP/HTTP collector as JSON (`otlp.endpoint` is the full URL including the path). `endpoint` must be an absolute `http` or `https` URL with a host and no userinfo; `http` is allowed but sends `otlp.headers` in cleartext. `timeout` and `flush_interval` are positive durations, `queue_size` is 1 to 65536, `batch_size` is 1 to `queue_size`, and `sample_ratio` is 0 to 1. Header values are secrets and are never written to logs, validation errors, or the policy diff. Viper lower-cases header names from YAML, which is harmless because HTTP header names are case-insensitive. The whole `otlp.*` block is immutable across hot reload. The admin listener is not instrumented. See [Observability](./observability#opt-in-otlp-trace-export) for what is and is never exported.
 - `admin.enabled` is opt-in and exposes a single `POST <admin.path>` endpoint (default `/admin/validate`) that runs the same parse + validate + compile pipeline as the offline `sockguard validate` command against a YAML body in the request payload. Useful as a CI gate before promoting a candidate config to production. Running policy is never mutated. The endpoint rides the main listener, so the listener's CIDR allowlist, mTLS posture, and per-profile rate-limit / concurrency caps all apply. Bodies are hard-capped at `admin.max_request_bytes` (default 512 KiB) via `http.MaxBytesReader` and return `413` on overflow. Non-POST methods return `405` with `Allow: POST`. The response body is a structured JSON report: `{"ok": bool, "rules": int, "profiles": int, "compat_active": bool, "errors": [...]?}`. A failing candidate returns `422` with the validator's per-issue error list; a passing candidate returns `200`. `admin.path` must start with `/` and must not collide with `health.path` or `metrics.path` when those endpoints are also enabled.
 - `reload.enabled` is opt-in and turns on hot reload at runtime. Sockguard watches the candidate through `fsnotify` and also reloads on `SIGHUP`; `reload.debounce` collapses a burst of editor events. The pipeline parses, validates, compiles, and atomically swaps the handler chain on success. In-flight requests finish on the previous chain and new requests use the new one. Any load, validation, immutable-field, signature, or signed-compatibility failure preserves the active policy. Unsigned mode applies Tecnativa rule generation normally. Signed mode verifies with pinned bootstrap trust and rejects rule-generating compatibility variables with `reject_compat`. Listener, upstream endpoint, log, health, metrics, and admin fields require a restart; the signed candidate's `policy_bundle.signature_path` remains reloadable while bootstrap trust cannot be changed in process. Reload metrics use the finite result set `ok|reject_load|reject_validation|reject_immutable|reject_signature|reject_compat`. Enabling reload changes `SIGHUP` from process termination to reload.
 - W3C trace/log correlation is always on and has no config knob. Sockguard preserves valid incoming `traceparent` trace IDs and sampled flags, replaces the parent span with a proxy-local span ID for the forwarded request, and generates fresh local context when the caller does not send valid trace context.
@@ -1279,6 +1294,7 @@ with `changed_fields=...`:
 - `log.*` — log level, format, and output sink
 - `health.*` — health endpoint path, watchdog, and readiness probe config
 - `metrics.*` — metrics endpoint and path
+- `otlp.*` — OTLP trace exporter settings
 - `admin.*` — admin config (including `admin.listen.*`)
 - signed-policy trust material selected by `--policy-bundle-trust-config` is
   pinned outside the candidate and cannot be changed by hot reload
@@ -1821,6 +1837,16 @@ never flagged.
 | `SOCKGUARD_HEALTH_READINESS_TIMEOUT`           | `health.readiness.timeout`            | `5s`                            | Per-probe deadline for the readiness API call. Must be a positive Go duration.                               |
 | `SOCKGUARD_METRICS_ENABLED`                    | `metrics.enabled`                     | `false`                         | Serve Prometheus text metrics on the proxy listener. See the [Observability page](./observability) for the full metric reference. |
 | `SOCKGUARD_METRICS_PATH`                       | `metrics.path`                        | `/metrics`                      | Scrape path. Must start with `/` and differ from `health.path` when both endpoints are enabled.              |
+| `SOCKGUARD_OTLP_ENABLED`                       | `otlp.enabled`                        | `false`                         | Export spans to an OTLP/HTTP collector. See [Observability](./observability#opt-in-otlp-trace-export).       |
+| `SOCKGUARD_OTLP_ENDPOINT`                      | `otlp.endpoint`                       | *(unset)*                       | Full collector URL including path. Required when enabled; absolute `http`/`https`, no userinfo.             |
+| `SOCKGUARD_OTLP_TIMEOUT`                       | `otlp.timeout`                        | `5s`                            | Per export request timeout. Must be a positive Go duration.                                                  |
+| `SOCKGUARD_OTLP_QUEUE_SIZE`                    | `otlp.queue_size`                     | `2048`                          | Bounded span queue, 1 to 65536. A full queue drops spans.                                                   |
+| `SOCKGUARD_OTLP_BATCH_SIZE`                    | `otlp.batch_size`                     | `256`                           | Max spans per export request, 1 to `queue_size`.                                                             |
+| `SOCKGUARD_OTLP_FLUSH_INTERVAL`                | `otlp.flush_interval`                 | `2s`                            | How long the worker waits to fill a batch. Must be a positive Go duration.                                   |
+| `SOCKGUARD_OTLP_SAMPLE_RATIO`                  | `otlp.sample_ratio`                   | `1`                             | Fraction of new root traces exported, 0 to 1.                                                                |
+| `SOCKGUARD_OTLP_SERVICE_NAME`                  | `otlp.service_name`                   | `sockguard`                     | `service.name` resource attribute.                                                                           |
+| `SOCKGUARD_OTLP_TLS_CA_FILE`                   | `otlp.tls.ca_file`                    | *(unset)*                       | Extra CA bundle for the collector.                                                                           |
+| `SOCKGUARD_OTLP_TLS_INSECURE_SKIP_VERIFY`      | `otlp.tls.insecure_skip_verify`       | `false`                         | Skip collector certificate verification. Leave off outside a lab.                                            |
 | `SOCKGUARD_ADMIN_ENABLED`                      | `admin.enabled`                       | `false`                         | Serve the in-band `POST <admin.path>` candidate-config validation endpoint on the main listener.             |
 | `SOCKGUARD_ADMIN_PATH`                         | `admin.path`                          | `/admin/validate`               | Admin endpoint path. Must start with `/` and must differ from `health.path` and `metrics.path` when enabled. |
 | `SOCKGUARD_ADMIN_POLICY_VERSION_PATH`          | `admin.policy_version_path`           | `/admin/policy/version`         | Path of the read-only policy-version endpoint. Must start with `/` and not collide with other endpoint paths. |
