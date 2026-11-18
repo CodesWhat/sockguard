@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -183,11 +184,19 @@ func TestServeChainExportsOTLPSpansForAllowAndDeny(t *testing.T) {
 	for _, want := range []string{
 		"sockguard_otlp_spans_exported_total 2",
 		`sockguard_otlp_spans_dropped_total{reason="queue_full"} 0`,
-		`sockguard_otlp_export_requests_total{result="success"} 1`,
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Errorf("metrics missing %q", want)
 		}
+	}
+	// The two spans may land in one batch or two, so require at least one
+	// successful export request rather than exactly one.
+	const successPrefix = `sockguard_otlp_export_requests_total{result="success"} `
+	_, after, found := strings.Cut(rec.Body.String(), successPrefix)
+	if !found {
+		t.Errorf("metrics missing %q", successPrefix)
+	} else if v, err := strconv.Atoi(strings.Fields(after)[0]); err != nil || v < 1 {
+		t.Errorf("success export requests = %q, want >= 1", strings.Fields(after)[0])
 	}
 }
 
