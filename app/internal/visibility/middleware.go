@@ -95,7 +95,11 @@ type Options struct {
 	// ImagePatterns is a list of glob patterns matched against the container
 	// Image field and image RepoTags full references. When non-empty, a
 	// resource must match at least one pattern to be visible.
-	ImagePatterns  []string
+	ImagePatterns []string
+	// Networks is a list of exact network names. When non-empty, a container
+	// must be attached to at least one of them to be visible. It applies to
+	// containers only; images, networks, volumes and the rest are untouched.
+	Networks       []string
 	Profiles       map[string]Policy
 	ResolveProfile func(*http.Request) (string, bool)
 	// UpstreamFlavor is the engine behind the upstream socket, resolved at
@@ -123,6 +127,8 @@ type Policy struct {
 	NamePatterns []string
 	// ImagePatterns is a per-profile glob pattern list. See Options.ImagePatterns.
 	ImagePatterns []string
+	// Networks is a per-profile network-name list. See Options.Networks.
+	Networks []string
 }
 
 type compiledSelector struct {
@@ -138,11 +144,49 @@ type compiledPolicy struct {
 	selectors     []compiledSelector
 	namePatterns  []compiledPattern
 	imagePatterns []compiledPattern
+	// networks holds exact network names. Matching is case-sensitive and
+	// applies to containers only.
+	networks []string
 }
 
-// hasPatternAxes reports whether either the name or image pattern axis is set.
+// hasPatternAxes reports whether any response-derived axis (name, image or
+// network) is set. Every one of them is read from a list item or an inspect
+// body rather than pushed upstream as a label filter.
 func (p *compiledPolicy) hasPatternAxes() bool {
+	return p.hasNameOrImagePatterns() || len(p.networks) > 0
+}
+
+// hasNameOrImagePatterns reports whether the name or image glob axis is set.
+func (p *compiledPolicy) hasNameOrImagePatterns() bool {
 	return len(p.namePatterns) > 0 || len(p.imagePatterns) > 0
+}
+
+// hasMetaAxes reports whether any non-label axis applies to the given
+// resource kind. Name and image globs cover containers and images; the
+// network axis covers containers only.
+func (p *compiledPolicy) hasMetaAxes(kind dockerresource.Kind) bool {
+	switch kind {
+	case dockerresource.KindContainer:
+		return p.hasPatternAxes()
+	case dockerresource.KindImage:
+		return p.hasNameOrImagePatterns()
+	}
+	return false
+}
+
+// networkAxisMatches reports whether any attached network is listed. An empty
+// networks axis means no restriction; a container attached to nothing (or whose
+// body carries no network info) fails a non-empty axis.
+func (p *compiledPolicy) networkAxisMatches(attached []string) bool {
+	if len(p.networks) == 0 {
+		return true
+	}
+	for _, name := range attached {
+		if slices.Contains(p.networks, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // resourceMeta holds name and image reference metadata fetched from Docker for
@@ -155,6 +199,9 @@ type resourceMeta struct {
 	image string
 	// repoTags is the image's RepoTags (e.g. ["traefik:latest"]).
 	repoTags []string
+	// networks holds the names of the networks a container is attached to.
+	// Only populated for containers; nil means attached to none.
+	networks []string
 }
 
 type resourceDetails struct {
@@ -331,16 +378,18 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 // after logging when any compilation fails so the caller can install the
 // misconfigured-middleware fallback.
 func compileVisibilityPolicies(logger *slog.Logger, opts Options) (compiledPolicy, map[string]compiledPolicy, bool) {
-	defaultPolicy, err := compilePolicy(opts.VisibleResourceLabels, opts.NamePatterns, opts.ImagePatterns)
+	defaultPolicy, err := compilePolicy(opts.VisibleResourceLabels, opts.NamePatterns, opts.ImagePatterns, opts.Networks)
 	if err != nil {
 		logger.Error("invalid visibility config", "error", err)
 		return compiledPolicy{}, nil, false
 	}
 	warnPatternsWithoutSelectors(logger, "default", defaultPolicy)
-	defaultWarned := defaultPolicy.hasPatternAxes() && len(defaultPolicy.selectors) == 0
+	warnNetworksWithoutSelectors(logger, "default", defaultPolicy)
+	defaultWarned := defaultPolicy.hasNameOrImagePatterns() && len(defaultPolicy.selectors) == 0
+	defaultNetworksWarned := len(defaultPolicy.networks) > 0 && len(defaultPolicy.selectors) == 0
 	merged := make(map[string]compiledPolicy, len(opts.Profiles))
 	for name, policy := range opts.Profiles {
-		compiled, err := compilePolicy(policy.VisibleResourceLabels, policy.NamePatterns, policy.ImagePatterns)
+		compiled, err := compilePolicy(policy.VisibleResourceLabels, policy.NamePatterns, policy.ImagePatterns, policy.Networks)
 		if err != nil {
 			logger.Error("invalid visibility profile config", "profile", name, "error", err)
 			return compiledPolicy{}, nil, false
@@ -349,12 +398,16 @@ func compileVisibilityPolicies(logger *slog.Logger, opts Options) (compiledPolic
 			selectors:     appendUniqueSelectors(slices.Clone(defaultPolicy.selectors), compiled.selectors...),
 			namePatterns:  append(slices.Clone(defaultPolicy.namePatterns), compiled.namePatterns...),
 			imagePatterns: append(slices.Clone(defaultPolicy.imagePatterns), compiled.imagePatterns...),
+			networks:      appendUniqueStrings(slices.Clone(defaultPolicy.networks), compiled.networks...),
 		}
 		// Skip the per-profile warning when the default already warned — every
 		// profile inherits the default's pattern axes, so it would just repeat
 		// the same root cause N times.
 		if !defaultWarned {
 			warnPatternsWithoutSelectors(logger, "profile "+name, mergedPolicy)
+		}
+		if !defaultNetworksWarned {
+			warnNetworksWithoutSelectors(logger, "profile "+name, mergedPolicy)
 		}
 		merged[name] = mergedPolicy
 	}
@@ -370,12 +423,27 @@ func compileVisibilityPolicies(logger *slog.Logger, opts Options) (compiledPolic
 // filter. So a patterns-only policy silently leaves /events (and /networks,
 // /volumes, /services, …) unrestricted.
 func warnPatternsWithoutSelectors(logger *slog.Logger, scope string, policy compiledPolicy) {
-	if logger == nil || !policy.hasPatternAxes() || len(policy.selectors) > 0 {
+	if logger == nil || !policy.hasNameOrImagePatterns() || len(policy.selectors) > 0 {
 		return
 	}
 	logger.Warn("visibility name/image patterns are set without any visible_resource_labels selector; "+
 		"pattern filtering only applies to containers and images (/containers/json, /libpod/containers/json, /images/json, /libpod/images/json, and the "+
 		"matching sections of /system/df), so /events and the other list endpoints stay unrestricted. "+
+		"Add a label selector to constrain them",
+		"scope", scope)
+}
+
+// warnNetworksWithoutSelectors is the visible_networks sibling of
+// warnPatternsWithoutSelectors. The network axis is read from container list
+// items and inspect bodies only, so /events and every non-container list stay
+// unrestricted unless a label selector constrains them.
+func warnNetworksWithoutSelectors(logger *slog.Logger, scope string, policy compiledPolicy) {
+	if logger == nil || len(policy.networks) == 0 || len(policy.selectors) > 0 {
+		return
+	}
+	logger.Warn("visibility visible_networks is set without any visible_resource_labels selector; "+
+		"the network axis only applies to containers (/containers/json, /libpod/containers/json, per-container reads, and the "+
+		"containers section of /system/df), so /events and the other list endpoints stay unrestricted. "+
 		"Add a label selector to constrain them",
 		"scope", scope)
 }
@@ -430,7 +498,7 @@ func handleVisibilityListRequest(logger *slog.Logger, next http.Handler, w http.
 	// exist to narrow, so the length counts the containers or images this
 	// policy hides and the ETag fingerprints them. See
 	// forwardHeadWithoutUpstreamRepresentation.
-	if hasPatterns && needsPatternResponseFilter(normPath) {
+	if hasPatterns && needsPatternResponseFilter(normPath) && policy.patternFilterApplies(normPath) {
 		if r.Method == http.MethodHead {
 			forwardHeadWithoutUpstreamRepresentation(logger, next, w, r)
 			return
@@ -594,6 +662,19 @@ func handleVisibilityInspectRequest(logger *slog.Logger, next http.Handler, deps
 func needsPatternResponseFilter(normPath string) bool {
 	return normPath == "/containers/json" || normPath == libpodPrefix+"containers/json" ||
 		normPath == "/images/json" || normPath == libpodPrefix+"images/json"
+}
+
+// patternFilterApplies reports whether the policy has an axis that the list
+// response filter can act on for normPath. A networks-only policy has nothing
+// to say about image lists, so they are forwarded without being buffered.
+func (p *compiledPolicy) patternFilterApplies(normPath string) bool {
+	switch normPath {
+	case "/containers/json", libpodPrefix + "containers/json":
+		return p.hasPatternAxes()
+	case "/images/json", libpodPrefix + "images/json":
+		return p.hasNameOrImagePatterns()
+	}
+	return false
 }
 
 // patternFilterWriter is a response-intercepting http.ResponseWriter that
@@ -853,6 +934,15 @@ func containerItemVisibleByPatterns(raw json.RawMessage, policy *compiledPolicy)
 	if err := json.Unmarshal(raw, &item); err != nil {
 		return false, fmt.Errorf("decode container list item: %w", err)
 	}
+	if len(policy.networks) > 0 {
+		attached, err := containerListItemNetworks(raw)
+		if err != nil {
+			return false, err
+		}
+		if !policy.networkAxisMatches(attached) {
+			return false, nil
+		}
+	}
 	if len(policy.namePatterns) > 0 {
 		name := containerNameFromNames(item.Names)
 		if !matchesAnyPattern(name, policy.namePatterns) {
@@ -865,6 +955,43 @@ func containerItemVisibleByPatterns(raw json.RawMessage, policy *compiledPolicy)
 		}
 	}
 	return true, nil
+}
+
+// containerListItemNetworks reads the networks a container list item is
+// attached to. Docker's ContainerSummary carries NetworkSettings.Networks as
+// an object keyed by network name; Podman's libpod ListContainer carries a
+// top-level Networks array of names. Both spellings are read and unioned so
+// the same decoder serves /containers/json, /libpod/containers/json and the
+// /system/df containers section. Missing or null fields read as no networks.
+func containerListItemNetworks(raw json.RawMessage) ([]string, error) {
+	var item struct {
+		NetworkSettings *struct {
+			Networks map[string]json.RawMessage `json:"Networks"`
+		} `json:"NetworkSettings"`
+		Networks []string `json:"Networks"`
+	}
+	if err := json.Unmarshal(raw, &item); err != nil {
+		return nil, fmt.Errorf("decode container list item networks: %w", err)
+	}
+	out := item.Networks
+	if item.NetworkSettings != nil {
+		for name := range item.NetworkSettings.Networks {
+			out = append(out, name)
+		}
+	}
+	return out, nil
+}
+
+// networkNames returns the keys of a NetworkSettings.Networks object.
+func networkNames(networks map[string]json.RawMessage) []string {
+	if len(networks) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(networks))
+	for name := range networks {
+		out = append(out, name)
+	}
+	return out
 }
 
 func imageItemVisibleByPatterns(raw json.RawMessage, policy *compiledPolicy) (bool, error) {
@@ -977,7 +1104,7 @@ func newVisibilityDepsClient(client *http.Client) visibilityDeps {
 	}
 }
 
-func compilePolicy(labels []string, nameGlobs []string, imageGlobs []string) (compiledPolicy, error) {
+func compilePolicy(labels []string, nameGlobs []string, imageGlobs []string, networks []string) (compiledPolicy, error) {
 	compiled := compiledPolicy{
 		selectors: make([]compiledSelector, 0, len(labels)),
 	}
@@ -997,7 +1124,22 @@ func compilePolicy(labels []string, nameGlobs []string, imageGlobs []string) (co
 	if err != nil {
 		return compiledPolicy{}, fmt.Errorf("image_patterns: %w", err)
 	}
+	for _, network := range networks {
+		if network == "" {
+			return compiledPolicy{}, fmt.Errorf("visible_networks: entries must not be empty")
+		}
+	}
+	compiled.networks = appendUniqueStrings(nil, networks...)
 	return compiled, nil
+}
+
+func appendUniqueStrings(dst []string, values ...string) []string {
+	for _, value := range values {
+		if !slices.Contains(dst, value) {
+			dst = append(dst, value)
+		}
+	}
+	return dst
 }
 
 func appendUniqueSelectors(dst []compiledSelector, selectors ...compiledSelector) []compiledSelector {
@@ -1269,7 +1411,8 @@ func resourceVisibleWithPolicy(ctx context.Context, deps visibilityDeps, kind do
 // separately so callers can choose whether a missing resource is safe to pass
 // through or must fail closed.
 func lookupResourceVisibilityWithPolicy(ctx context.Context, deps visibilityDeps, kind dockerresource.Kind, identifier string, policy *compiledPolicy) (visible, found bool, err error) {
-	if len(policy.selectors) > 0 && policy.hasPatternAxes() && deps.inspectResourceDetails != nil {
+	hasMeta := policy.hasMetaAxes(kind)
+	if len(policy.selectors) > 0 && hasMeta && deps.inspectResourceDetails != nil {
 		details, found, err := deps.inspectResourceDetails(ctx, kind, identifier)
 		if err != nil {
 			return false, false, err
@@ -1296,7 +1439,7 @@ func lookupResourceVisibilityWithPolicy(ctx context.Context, deps visibilityDeps
 		}
 	}
 	// Check pattern axes if configured.
-	if policy.hasPatternAxes() {
+	if hasMeta {
 		if deps.inspectResourceMeta == nil {
 			// No meta inspector configured (e.g. in tests without pattern deps).
 			return true, true, nil
@@ -1330,6 +1473,9 @@ func resourceMetaMatchesPatterns(meta *resourceMeta, kind dockerresource.Kind, p
 }
 
 func containerMetaMatchesPatterns(meta *resourceMeta, policy *compiledPolicy) bool {
+	if len(policy.networks) > 0 && !policy.networkAxisMatches(meta.networks) {
+		return false
+	}
 	if len(policy.namePatterns) > 0 {
 		if !matchesAnyPattern(containerNameFromNames(meta.names), policy.namePatterns) {
 			return false
@@ -1645,6 +1791,9 @@ func decodeResourceDetails(body io.Reader, kind dockerresource.Kind) (*resourceD
 				Image  string            `json:"Image"`
 				Labels map[string]string `json:"Labels"`
 			} `json:"Config"`
+			NetworkSettings *struct {
+				Networks map[string]json.RawMessage `json:"Networks"`
+			} `json:"NetworkSettings"`
 		}
 		if err := json.NewDecoder(body).Decode(&payload); err != nil {
 			return nil, err
@@ -1655,7 +1804,7 @@ func decodeResourceDetails(body io.Reader, kind dockerresource.Kind) (*resourceD
 		}
 		return &resourceDetails{
 			labels: payload.Config.Labels,
-			meta:   &resourceMeta{names: names, image: inspectContainerImageRef(payload.Config.Image, payload.ImageName, payload.Image)},
+			meta:   &resourceMeta{names: names, image: inspectContainerImageRef(payload.Config.Image, payload.ImageName, payload.Image), networks: inspectNetworkNames(payload.NetworkSettings)},
 		}, nil
 	case dockerresource.KindImage:
 		var payload struct {
@@ -1700,6 +1849,19 @@ func inspectContainerImageRef(configImage, imageName, image string) string {
 	return image
 }
 
+// inspectNetworkNames reads the network names off an inspect body's
+// NetworkSettings. Docker and Podman (compat and libpod) all key
+// NetworkSettings.Networks by network name; a missing NetworkSettings or a null
+// Networks reads as attached to nothing.
+func inspectNetworkNames(settings *struct {
+	Networks map[string]json.RawMessage `json:"Networks"`
+}) []string {
+	if settings == nil {
+		return nil
+	}
+	return networkNames(settings.Networks)
+}
+
 func decodeResourceMeta(body io.Reader, kind dockerresource.Kind) (*resourceMeta, error) {
 	switch kind {
 	case dockerresource.KindContainer:
@@ -1711,6 +1873,9 @@ func decodeResourceMeta(body io.Reader, kind dockerresource.Kind) (*resourceMeta
 			Config    struct {
 				Image string `json:"Image"`
 			} `json:"Config"`
+			NetworkSettings *struct {
+				Networks map[string]json.RawMessage `json:"Networks"`
+			} `json:"NetworkSettings"`
 		}
 		if err := json.NewDecoder(body).Decode(&payload); err != nil {
 			return nil, err
@@ -1719,7 +1884,7 @@ func decodeResourceMeta(body io.Reader, kind dockerresource.Kind) (*resourceMeta
 		if len(names) == 0 && payload.Name != "" {
 			names = []string{payload.Name}
 		}
-		return &resourceMeta{names: names, image: inspectContainerImageRef(payload.Config.Image, payload.ImageName, payload.Image)}, nil
+		return &resourceMeta{names: names, image: inspectContainerImageRef(payload.Config.Image, payload.ImageName, payload.Image), networks: inspectNetworkNames(payload.NetworkSettings)}, nil
 	case dockerresource.KindImage:
 		var payload struct {
 			RepoTags []string `json:"RepoTags"`

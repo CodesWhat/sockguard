@@ -107,7 +107,7 @@ func BenchmarkPatternFilterImageList(b *testing.B) {
 // BenchmarkResourceMetaMatchesPatterns measures the hot path for per-request
 // pattern matching on a compiledPolicy with realistic patterns.
 func BenchmarkResourceMetaMatchesPatterns(b *testing.B) {
-	policy, err := compilePolicy(nil, []string{"traefik", "portainer"}, []string{"traefik:*"})
+	policy, err := compilePolicy(nil, []string{"traefik", "portainer"}, []string{"traefik:*"}, nil)
 	if err != nil {
 		b.Fatalf("compilePolicy: %v", err)
 	}
