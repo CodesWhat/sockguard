@@ -19,7 +19,10 @@ const serviceChainHostNetworkID = "9f1c5b7d2a0e4c3b8d6a1f2e3c4b5a69aa00112233445
 // unknown. It counts the service writes that reach it.
 type serviceChainDaemon struct {
 	netLookupFails bool
-	reached        atomic.Int32
+	// netLookupFailStatus is the status a failing lookup answers with, with a
+	// JSON error body. Zero means 500.
+	netLookupFailStatus int
+	reached             atomic.Int32
 }
 
 func (d *serviceChainDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -30,7 +33,8 @@ func (d *serviceChainDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(engineChainVersion(false))
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/networks/"):
 		if d.netLookupFails {
-			w.WriteHeader(http.StatusInternalServerError)
+			w.WriteHeader(d.netLookupStatus())
+			_, _ = w.Write([]byte(`{"message":"boom"}`))
 			return
 		}
 		switch strings.TrimPrefix(path, "/networks/") {
@@ -48,6 +52,13 @@ func (d *serviceChainDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
+}
+
+func (d *serviceChainDaemon) netLookupStatus() int {
+	if d.netLookupFailStatus != 0 {
+		return d.netLookupFailStatus
+	}
+	return http.StatusInternalServerError
 }
 
 // portainerPresetChain serves daemon behind the shipped portainer preset.
@@ -101,20 +112,24 @@ func TestServeChainServiceHostNetworkByID(t *testing.T) {
 		path       string
 		body       string
 		failLookup bool
+		failStatus int
 		wantStatus int
 		wantReach  bool
 	}{
 		{name: "full ID create", path: "/v1.45/services/create", body: svc(`{"Target":"` + serviceChainHostNetworkID + `"}`), wantStatus: http.StatusForbidden},
 		{name: "ID prefix create", path: "/v1.45/services/create", body: svc(`{"Target":"` + serviceChainHostNetworkID[:12] + `"}`), wantStatus: http.StatusForbidden},
 		{name: "full ID update", path: "/v1.45/services/web/update?version=1", body: svc(`{"Target":"` + serviceChainHostNetworkID + `"}`), wantStatus: http.StatusForbidden},
+		{name: "create with rollback=previous full ID", path: "/v1.45/services/create?rollback=previous", body: svc(`{"Target":"` + serviceChainHostNetworkID + `"}`), wantStatus: http.StatusForbidden},
 		{name: "literal host create", path: "/v1.45/services/create", body: svc(`{"Target":"host"}`), wantStatus: http.StatusForbidden},
 		{name: "overlay by name reaches the daemon", path: "/v1.45/services/create", body: svc(`{"Target":"app-net"}`), wantStatus: http.StatusCreated, wantReach: true},
 		{name: "unknown network reaches the daemon", path: "/v1.45/services/create", body: svc(`{"Target":"nope"}`), wantStatus: http.StatusCreated, wantReach: true},
 		{name: "lookup error fails closed", path: "/v1.45/services/create", body: svc(`{"Target":"app-net"}`), failLookup: true, wantStatus: http.StatusBadGateway},
+		{name: "lookup 503 fails closed", path: "/v1.45/services/create", body: svc(`{"Target":"app-net"}`), failLookup: true, failStatus: http.StatusServiceUnavailable, wantStatus: http.StatusBadGateway},
+		{name: "lookup 401 fails closed", path: "/v1.45/services/create", body: svc(`{"Target":"app-net"}`), failLookup: true, failStatus: http.StatusUnauthorized, wantStatus: http.StatusBadGateway},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			daemon := &serviceChainDaemon{netLookupFails: tt.failLookup}
+			daemon := &serviceChainDaemon{netLookupFails: tt.failLookup, netLookupFailStatus: tt.failStatus}
 			addr := portainerPresetChain(t, daemon, nil)
 			status, reason := postServiceThroughChain(t, addr, tt.path, tt.body)
 			if status != tt.wantStatus || (daemon.reached.Load() > 0) != tt.wantReach {

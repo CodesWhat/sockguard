@@ -350,3 +350,47 @@ func TestPresetChainRefusesLegacyLinks(t *testing.T) {
 		})
 	}
 }
+
+// TestPresetChainPortainerStartAllowsEmptyObjectBody pins that Portainer's UI,
+// which posts `{}` with every start, still reaches dockerd through the shipped
+// portainer preset, while a HostConfig-sized body stays refused.
+func TestPresetChainPortainerStartAllowsEmptyObjectBody(t *testing.T) {
+	daemon := &presetCreateDaemon{}
+	addr := newPresetChain(t, "preset-portainer-start", "portainer.yaml", daemon, nil)
+	for _, path := range []string{"/containers/abc/start", "/v1.45/containers/abc/start"} {
+		status, out := presetChainPost(t, addr, path, `{}`)
+		if status != http.StatusNoContent {
+			t.Errorf("%s: status = %d, body = %s, want 204", path, status, out)
+		}
+	}
+	if daemon.started.Load() != 2 {
+		t.Fatalf("daemon starts = %d, want 2", daemon.started.Load())
+	}
+	status, out := presetChainPost(t, addr, "/v1.23/containers/abc/start", `{"Privileged":true,"Binds":["/:/host"]}`)
+	if status != http.StatusForbidden || !strings.Contains(out, "container start denied") || daemon.started.Load() != 2 {
+		t.Errorf("hostconfig start: status = %d, starts = %d, body = %s, want 403 and no new start", status, daemon.started.Load(), out)
+	}
+}
+
+// TestPresetChainDrydockAllowsCompatAnnotationsWhenOpened pins that
+// request_body.container_create.allow_runtime_annotations lifts the refusal on
+// a Podman upstream, so the option is wired from config through the shipped
+// drydock preset's chain.
+func TestPresetChainDrydockAllowsCompatAnnotationsWhenOpened(t *testing.T) {
+	bodies := map[string]string{
+		"cid-file": `{"Image":"alpine","HostConfig":{"Annotations":{"io.podman.annotations.cid-file":"/etc/hostname"}}}`,
+		"run.oci":  `{"Image":"alpine","HostConfig":{"Annotations":{"run.oci.keep_original_groups":"1"}}}`,
+	}
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			daemon := &presetCreateDaemon{podman: true}
+			addr := newPresetChain(t, "preset-ann-open", "drydock.yaml", daemon, func(cfg *config.Config) {
+				cfg.RequestBody.ContainerCreate.AllowRuntimeAnnotations = true
+			})
+			status, out := presetChainPost(t, addr, "/containers/create", body)
+			if status != http.StatusCreated || daemon.created.Load() != 1 {
+				t.Errorf("status = %d, creates = %d, body = %s, want 201 and 1", status, daemon.created.Load(), out)
+			}
+		})
+	}
+}
