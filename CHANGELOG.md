@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - Update the static website and docs build to Next.js 16.4.5 for GHSA-vc7v-qv4w-wrv8 and GHSA-mfr8-8qww-v76h. These cache advisories require a running Next.js server; both sites use static export. Record the unpatched picomatch advisory CVE-2026-112366 as a package-lock-only Qlty exception: glob patterns come from the trusted repository build, and npm packages are absent from the shipped Go binary and container.
+- Scope the unpatched picomatch advisory GHSA-fc5q-39xc-vjpf out of the Grype dependency scan with a package-lock-only ignore, matching the Qlty exception: glob patterns come from the trusted repository build, and npm packages are absent from the shipped Go binary and container.
 
 - Update the OpenTelemetry API, metric and trace modules to 1.47.0 in the application and compatibility module for CVE-2026-128085 / GHSA-q7gw-24fr-5p69, which bypasses attribute value length limits in auto-instrumented tracing.
 
