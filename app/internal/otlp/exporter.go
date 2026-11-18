@@ -156,24 +156,31 @@ func (e *Exporter) Enqueue(s Span) {
 	if e == nil {
 		return
 	}
+	// Counters move under the lock; the log call runs after it is released so
+	// a blocked log sink cannot stall Close or later Enqueue calls.
+	reason := e.admit(s)
+	if reason != "" {
+		e.warn("otlp spans dropped", "reason", reason)
+	}
+}
+
+// admit queues s and returns a drop reason, or "" when it was queued.
+func (e *Exporter) admit(s Span) string {
 	e.admissionMu.RLock()
 	defer e.admissionMu.RUnlock()
 	select {
 	case <-e.done:
-		e.drop(&e.droppedShutdown, 1, "exporter closed")
-		return
+		e.droppedShutdown.Add(1)
+		return "exporter closed"
 	default:
 	}
 	select {
 	case e.queue <- s:
+		return ""
 	default:
-		e.drop(&e.droppedQueueFull, 1, "queue full")
+		e.droppedQueueFull.Add(1)
+		return "queue full"
 	}
-}
-
-func (e *Exporter) drop(counter *atomic.Uint64, n uint64, reason string) {
-	counter.Add(n)
-	e.warn("otlp spans dropped", "reason", reason)
 }
 
 // warn emits at most one WARN per minute. Attributes must never carry the

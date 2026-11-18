@@ -457,6 +457,27 @@ func TestRetryAfterHonoredAndCapped(t *testing.T) {
 		return true
 	}
 	e.Enqueue(Span{TraceID: strings.Repeat("a", 32), SpanID: strings.Repeat("b", 16), Name: "GET x", Start: time.Now(), End: time.Now()})
+func TestEnqueueDropLogsOutsideAdmissionLock(t *testing.T) {
+	e := newTestExporter(t, testOptions("http://127.0.0.1:1"))
+	closeExporter(t, e)
+	// After close every Enqueue drops. The lock must be free afterwards.
+	e.Enqueue(Span{})
+	done := make(chan struct{})
+	go func() {
+		e.admissionMu.Lock()
+		e.admissionMu.Unlock() //nolint:staticcheck // probing that the lock is free
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("admissionMu still held after Enqueue returned")
+	}
+	if got := e.Stats().DroppedShutdown; got == 0 {
+		t.Errorf("DroppedShutdown = %d, want >0", got)
+	}
+}
+
 	closeExporter(t, e)
 	mu.Lock()
 	defer mu.Unlock()
