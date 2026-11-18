@@ -764,3 +764,73 @@ func FuzzNetworkConnectEndpointConfigGates(f *testing.F) {
 		}
 	})
 }
+
+// TestNetworkActionPathTakesTheWholeIdentifier pins the Docker routing of
+// /networks/{id:.*}/connect: the identifier is everything before the final
+// action, slashes included, so a network named a/b is gated like any other.
+func TestNetworkActionPathTakesTheWholeIdentifier(t *testing.T) {
+	tests := []struct {
+		path   string
+		action string
+		want   bool
+	}{
+		{"/networks/app/connect", "connect", true},
+		{"/networks/a/b/connect", "connect", true},
+		{"/networks/a/b/c/disconnect", "disconnect", true},
+		{"/networks/connect/connect", "connect", true},
+		{"/networks/a/connect/connect", "connect", true},
+		{"/networks/connect", "connect", false},
+		{"/networks//connect", "connect", false},
+		{"/networks/a/b/disconnect", "connect", false},
+		{"/networks/a/b/connect/extra", "connect", false},
+		{"/networks/create", "connect", false},
+		{"/libpod/networks/a/connect", "connect", false},
+	}
+	for _, tt := range tests {
+		if got := isNetworkActionPath(tt.path, tt.action); got != tt.want {
+			t.Errorf("isNetworkActionPath(%q, %q) = %v, want %v", tt.path, tt.action, got, tt.want)
+		}
+	}
+	// The libpod spelling is single-segment and stays that way.
+	if isNetworkActionPathUnder("/libpod/networks/", "/libpod/networks/a/b/connect", "connect") {
+		t.Error("libpod connect matched a multi-segment identifier")
+	}
+}
+
+func TestNetworkInspectGatesSlashBearingNetworkNames(t *testing.T) {
+	policy := newNetworkPolicy(NetworkOptions{})
+	tests := []struct {
+		name       string
+		path       string
+		body       string
+		wantReason string
+	}{
+		{"static ip", "/networks/a/b/connect", `{"Container":"c","EndpointConfig":{"IPAMConfig":{"IPv4Address":"10.0.0.9"}}}`, "network connect denied: endpoint static IP configuration is not allowed"},
+		{"mac", "/v1.53/networks/a/b/connect", `{"Container":"c","EndpointConfig":{"MacAddress":"02:42:ac:11:00:02"}}`, "network connect denied: endpoint MAC address is not allowed"},
+		{"links", "/networks/a/b/connect", `{"Container":"c","EndpointConfig":{"Links":["x"]}}`, "network connect denied: endpoint links are not allowed"},
+		{"driver opts", "/networks/a/b/connect", `{"Container":"c","EndpointConfig":{"DriverOpts":{"k":"v"}}}`, "network connect denied: endpoint driver options are not allowed"},
+		{"force disconnect", "/networks/a/b/disconnect", `{"Container":"c","Force":true}`, "network disconnect denied: force disconnect is not allowed"},
+		{"plain connect passes", "/networks/a/b/connect", `{"Container":"c"}`, ""},
+		{"plain disconnect passes", "/networks/a/b/disconnect", `{"Container":"c"}`, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+			reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+
+	allowing := newNetworkPolicy(NetworkOptions{AllowEndpointConfig: true, AllowDisconnectForce: true})
+	for _, tt := range tests[:5] {
+		req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+		if reason, err := allowing.inspect(nil, req, NormalizePath(req.URL.Path)); err != nil || reason != "" {
+			t.Errorf("%s with the allowances on: reason = %q, err = %v, want allowed", tt.name, reason, err)
+		}
+	}
+}
