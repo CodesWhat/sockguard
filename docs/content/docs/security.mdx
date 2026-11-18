@@ -122,6 +122,7 @@ Sockguard's own endpoints are answered before this check and never reach the dae
 
 `POST /containers/create` bodies are parsed on every request and denied when they contain dangerous configuration:
 
+- Any `HostConfig` or `Resources` field name (`Privileged`, `Binds`, `Devices`, `Memory`, `Cpuset` and the rest of Moby 26.1.5's inventory) at the top level of the body, in any letter case or JSON escape, whatever its value. Docker 24.x through 26.x read those fields from the top level when the nested `HostConfig` is absent or null, which skipped every check below. Docker 27 removed that decoder, and no current client sends the shape, so the refusal costs nothing there. It applies to every upstream and has no opt-out.
 - `HostConfig.Privileged: true`
 - `HostConfig.NetworkMode: host`
 - `HostConfig.PidMode: host`

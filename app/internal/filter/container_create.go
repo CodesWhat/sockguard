@@ -1401,6 +1401,14 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 		return p.allowedImages.denyReason("", "container create"), nil
 	}
 
+	// Docker 24.x-26.x read HostConfig fields from the top level of the body
+	// when the nested HostConfig is absent, so the nested object this
+	// inspector reads is not the whole picture there. See
+	// legacyRootHostConfigKeys.
+	if reason := denyLegacyRootHostConfigReason(body); reason != "" {
+		return reason, nil
+	}
+
 	createReq := acquireContainerCreateRequest()
 	defer releaseContainerCreateRequest(createReq)
 	if err := json.Unmarshal(body, createReq); err != nil {
