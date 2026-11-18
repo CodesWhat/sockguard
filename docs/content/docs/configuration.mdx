@@ -667,7 +667,18 @@ view because its name resembles a collection operation.
             - "ghcr.io/myorg/**"
   ```
 
-- Hidden resources disappear from `GET /containers/json`, `/images/json`, `/networks`, `/volumes`, `/services`, `/tasks`, `/secrets`, `/configs`, `/nodes`, and `GET /events`, while hidden inspect/log-style targets such as `GET /services/*`, `GET /services/*/logs`, `GET /tasks/*`, `GET /tasks/*/logs`, `GET /secrets/*`, `GET /configs/*`, `GET /nodes/*`, and `GET /swarm` return `404` instead of exposing a policy-specific deny body.
+- `response.visible_networks` and `clients.profiles[].response.visible_networks` add a network axis for containers. It is the first selector that is neither a Docker label nor a name/image glob: a container is visible only if it is attached to at least one listed network. Entries are exact, case-sensitive network names (no globs, no commas), the axis is ANDed with labels, `name_patterns` and `image_patterns`, and profile entries are added to the root list with duplicates dropped. Sockguard reads the attached networks from `NetworkSettings.Networks` (the keys) on Docker list, inspect and `GET /system/df` container items, and from the `Networks` array on Podman libpod list items, so it covers `/containers/json`, `/libpod/containers/json`, container inspect and every container sub-read the other axes cover (logs, stats, top, changes, export, archive, exec via its parent container, libpod `exists` and `healthcheck`), plus the containers section of `GET /system/df`. It does not apply to images, networks, volumes or any other resource, and it cannot narrow `GET /events` (Sockguard logs a startup warning when `visible_networks` is set without a label selector, the same as for name/image patterns). A container with no network information in the body counts as attached to nothing and stays hidden. Containers on `network_mode: host` or `none` appear under the network names `host` and `none`, so they match only if you list those names. The axis reads network names only, so it keeps working with `redact_network_topology` on. Example — let Traefik see only containers on the `proxy` network:
+
+  ```yaml
+  clients:
+    profiles:
+      - name: traefik
+        response:
+          visible_networks:
+            - proxy
+  ```
+
+, `/images/json`, `/networks`, `/volumes`, `/services`, `/tasks`, `/secrets`, `/configs`, `/nodes`, and `GET /events`, while hidden inspect/log-style targets such as `GET /services/*`, `GET /services/*/logs`, `GET /tasks/*`, `GET /tasks/*/logs`, `GET /secrets/*`, `GET /configs/*`, `GET /nodes/*`, and `GET /swarm` return `404` instead of exposing a policy-specific deny body.
 
 ## Rate Limiting and Concurrency Caps
 
