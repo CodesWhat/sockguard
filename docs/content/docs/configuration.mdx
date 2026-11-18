@@ -1538,6 +1538,8 @@ Audit logs use a separate sink from the access logger:
 - `log.audit.format`: currently only `json` is accepted.
 - `log.audit.output`: same sink options as the main logger (`stderr`, `stdout`, or `file:/absolute/path`).
 
+File sinks (`log.output` and `log.audit.output` set to a path) buffer in memory and survive transient write errors such as a full disk. Unwritten bytes stay in a bounded 4 MiB pending buffer and are retried on the next flush, so records land once and in order after storage recovers. If the buffer fills during a long outage, new records are refused whole and counted. Sockguard prints a rate-limited line (at most one a minute) to stderr, independent of the failing sink, when a write fails and when it recovers. Audit events that never reach the sink are counted separately from queue drops (`AuditLogger.LostEvents`), and a failed final flush at shutdown is reported by the close error with the number of bytes lost.
+
 Every audit event includes an `ownership` object with `enabled`, `owner`, and `label_key`. When `ownership.owner` is set, that owner identifier appears in every audit event, including requests that do not touch owned resources. Treat it as an operator-visible tenant or workload identifier, not a secret.
 
 Audit events intentionally preserve both the proxy-generated canonical `request_id` and any caller-supplied `client_request_id`. Upstream proxy failures rewrite the audit `reason_code` to bounded terminal values such as `upstream_socket_unreachable` or `upstream_response_rejected_by_policy` so the final outcome is explicit even after a request was policy-allowed.

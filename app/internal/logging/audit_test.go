@@ -277,7 +277,7 @@ func TestAuditLoggerDrainWritesQueuedEvents(t *testing.T) {
 	var buf bytes.Buffer
 	logger := &AuditLogger{
 		events: make(chan auditEvent, 1),
-		enc:    json.NewEncoder(&buf),
+		w:      &buf,
 	}
 	logger.events <- auditEvent{EventType: "drained"}
 

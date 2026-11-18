@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A transient write error no longer silences file-backed access and audit logs for the rest of the process. The sticky buffered writer is replaced by a bounded pending buffer that retries unwritten bytes without duplicating them, audit events are encoded fresh per record so a failed write cannot poison later ones, records actually lost are counted, and sink failures print a rate-limited diagnostic to stderr.
 - Site and docs analytics now honor Global Privacy Control as well as Do Not Track, and re-check both before each send, since posthog-js's cookieless mode skips its own DNT check.
 - Probe the identity conformance agent with Portwing's native healthcheck command, preserving unhealthy results on shell-less published images.
 
