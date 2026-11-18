@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -101,11 +102,18 @@ func (g *resourceLimitGuard) guardServiceNetworks(w http.ResponseWriter, r *http
 	if policy.Service.AllowHostNetwork {
 		return true
 	}
-	if _, isUpdate := serviceUpdateIdentifier(normalizedPath); isUpdate {
+	if id, isUpdate := serviceUpdateIdentifier(normalizedPath); isUpdate {
 		if manual, _ := serviceManualRollbackQuery(r); manual {
-			// The daemon ignores the body and re-applies the stored PreviousSpec.
-			// Only an update does: create ignores rollback and reads the body.
-			return true
+			// The daemon ignores the body and re-applies the stored PreviousSpec,
+			// so that is what gets resolved. Only an update does: create
+			// ignores rollback and reads the body.
+			if serviceRequirementsList(policy.Service) != "" {
+				// guardServiceRollbackTarget inspects the service for the
+				// resource requirements anyway and resolves these same
+				// targets from that one snapshot.
+				return true
+			}
+			return g.guardServiceRollbackNetworks(w, r, id, policy)
 		}
 	}
 	body, err := readBoundedBodyUnchecked(r, maxServiceBodyBytes)
@@ -126,31 +134,82 @@ func (g *resourceLimitGuard) guardServiceNetworks(w http.ResponseWriter, r *http
 		return true
 	}
 
-	for _, target := range req.targets() {
+	return g.guardNetworkTargets(w, r, req.targets(), policy.DenyResponseVerbosity)
+}
+
+// guardServiceRollbackNetworks resolves the networks of the service's stored
+// PreviousSpec, which ?rollback=previous re-applies in place of the body. A
+// missing inspector or a failed lookup fails closed with 502.
+func (g *resourceLimitGuard) guardServiceRollbackNetworks(w http.ResponseWriter, r *http.Request, id string, policy PolicyConfig) bool {
+	if g.inspectService == nil {
+		g.denyServiceNetwork(w, r, http.StatusBadGateway, reasonCodeRequestBodyInspectionFailed,
+			"service denied: network verification unavailable", policy.DenyResponseVerbosity)
+		return false
+	}
+	current, found, err := g.inspectService(r.Context(), id)
+	if err != nil {
+		logRequestError(g.logger, r, slog.LevelError, "failed to inspect service for rollback host-network guard", err)
+		g.denyServiceNetwork(w, r, http.StatusBadGateway, reasonCodeRequestBodyInspectionFailed,
+			"service denied: network verification unavailable", policy.DenyResponseVerbosity)
+		return false
+	}
+	if !found {
+		// The daemon will itself 404 an unknown service.
+		return true
+	}
+	// Pin the targets resolved here to the version the caller sent, so a
+	// service that changed since the caller inspected it is refused rather
+	// than judged on a PreviousSpec the caller never saw.
+	if version, ok := serviceVersionQuery(r); ok && version != current.Version {
+		g.denyServiceNetwork(w, r, http.StatusConflict, reasonCodeResourceLimitPolicyStateChanged,
+			"service update denied: the service state changed since it was inspected; retry with the current version", policy.DenyResponseVerbosity)
+		return false
+	}
+	return g.guardNetworkTargets(w, r, current.PreviousSpecNetworkTargets, policy.DenyResponseVerbosity)
+}
+
+// errNetworkVerificationUnavailable marks a host-network check that could not
+// be completed, so the caller fails closed.
+var errNetworkVerificationUnavailable = errors.New("network verification unavailable")
+
+// resolvesToHostNetwork reports whether any target is, or resolves to, the
+// host network. A target the daemon doesn't know is skipped, since the daemon
+// rejects it itself. A missing inspector or a failed lookup is an error.
+func (g *resourceLimitGuard) resolvesToHostNetwork(r *http.Request, targets []string) (bool, error) {
+	for _, target := range targets {
 		if strings.EqualFold(target, "host") {
-			return !g.denyServiceNetwork(w, r, http.StatusForbidden, reasonCodeRequestBodyPolicyDenied,
-				"service denied: host network is not allowed", policy.DenyResponseVerbosity)
+			return true, nil
 		}
 		if g.inspectNetwork == nil {
-			g.denyServiceNetwork(w, r, http.StatusBadGateway, reasonCodeRequestBodyInspectionFailed,
-				"service denied: network verification unavailable", policy.DenyResponseVerbosity)
-			return false
+			return false, errNetworkVerificationUnavailable
 		}
 		network, found, err := g.inspectNetwork(r.Context(), target)
 		if err != nil {
 			logRequestError(g.logger, r, slog.LevelError, "failed to inspect service network for host-network guard", err)
-			g.denyServiceNetwork(w, r, http.StatusBadGateway, reasonCodeRequestBodyInspectionFailed,
-				"service denied: network verification unavailable", policy.DenyResponseVerbosity)
-			return false
+			return false, err
 		}
 		if !found {
-			// The daemon will itself reject the unknown network.
 			continue
 		}
 		if strings.EqualFold(strings.TrimSpace(network.Driver), "host") || strings.EqualFold(strings.TrimSpace(network.Name), "host") {
-			return !g.denyServiceNetwork(w, r, http.StatusForbidden, reasonCodeRequestBodyPolicyDenied,
-				"service denied: host network is not allowed", policy.DenyResponseVerbosity)
+			return true, nil
 		}
+	}
+	return false, nil
+}
+
+// guardNetworkTargets denies when any target is, or resolves to, the host
+// network. It returns false when a response was written.
+func (g *resourceLimitGuard) guardNetworkTargets(w http.ResponseWriter, r *http.Request, targets []string, verbosity DenyResponseVerbosity) bool {
+	host, err := g.resolvesToHostNetwork(r, targets)
+	if err != nil {
+		g.denyServiceNetwork(w, r, http.StatusBadGateway, reasonCodeRequestBodyInspectionFailed,
+			"service denied: network verification unavailable", verbosity)
+		return false
+	}
+	if host {
+		return !g.denyServiceNetwork(w, r, http.StatusForbidden, reasonCodeRequestBodyPolicyDenied,
+			"service denied: host network is not allowed", verbosity)
 	}
 	return true
 }

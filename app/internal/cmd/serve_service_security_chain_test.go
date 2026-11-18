@@ -22,6 +22,11 @@ type serviceChainDaemon struct {
 	// netLookupFailStatus is the status a failing lookup answers with, with a
 	// JSON error body. Zero means 500.
 	netLookupFailStatus int
+	// previousTarget, when set, is the network target of the stored
+	// PreviousSpec that GET /services/{id} reports, at version index 1.
+	previousTarget string
+	// serviceInspectFails makes GET /services/{id} answer 500.
+	serviceInspectFails bool
 	reached             atomic.Int32
 }
 
@@ -31,6 +36,17 @@ func (d *serviceChainDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && path == "/version":
 		_ = json.NewEncoder(w).Encode(engineChainVersion(false))
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/services/"):
+		if d.serviceInspectFails {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"message":"boom"}`))
+			return
+		}
+		doc := map[string]any{"ID": "web", "Version": map[string]int{"Index": 1}, "Spec": map[string]any{}}
+		if d.previousTarget != "" {
+			doc["PreviousSpec"] = map[string]any{"TaskTemplate": map[string]any{"Networks": []map[string]string{{"Target": d.previousTarget}}}}
+		}
+		_ = json.NewEncoder(w).Encode(doc)
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/networks/"):
 		if d.netLookupFails {
 			w.WriteHeader(d.netLookupStatus())
@@ -113,13 +129,21 @@ func TestServeChainServiceHostNetworkByID(t *testing.T) {
 		body       string
 		failLookup bool
 		failStatus int
-		wantStatus int
-		wantReach  bool
+		// previous is the stored PreviousSpec network target the daemon reports.
+		previous string
+		// failInspect makes the service inspect fail.
+		failInspect bool
+		wantStatus  int
+		wantReach   bool
 	}{
 		{name: "full ID create", path: "/v1.45/services/create", body: svc(`{"Target":"` + serviceChainHostNetworkID + `"}`), wantStatus: http.StatusForbidden},
 		{name: "ID prefix create", path: "/v1.45/services/create", body: svc(`{"Target":"` + serviceChainHostNetworkID[:12] + `"}`), wantStatus: http.StatusForbidden},
 		{name: "full ID update", path: "/v1.45/services/web/update?version=1", body: svc(`{"Target":"` + serviceChainHostNetworkID + `"}`), wantStatus: http.StatusForbidden},
 		{name: "create with rollback=previous full ID", path: "/v1.45/services/create?rollback=previous", body: svc(`{"Target":"` + serviceChainHostNetworkID + `"}`), wantStatus: http.StatusForbidden},
+		{name: "manual rollback to a PreviousSpec on the host network ID", path: "/v1.45/services/web/update?version=1&rollback=previous", body: `{}`, previous: serviceChainHostNetworkID, wantStatus: http.StatusForbidden},
+		{name: "manual rollback to a PreviousSpec on an overlay reaches the daemon", path: "/v1.45/services/web/update?version=1&rollback=previous", body: `{}`, previous: "app-net", wantStatus: http.StatusCreated, wantReach: true},
+		{name: "manual rollback fails closed when the service inspect fails", path: "/v1.45/services/web/update?version=1&rollback=previous", body: `{}`, failInspect: true, wantStatus: http.StatusBadGateway},
+		{name: "manual rollback fails closed when the network lookup fails", path: "/v1.45/services/web/update?version=1&rollback=previous", body: `{}`, previous: "app-net", failLookup: true, wantStatus: http.StatusBadGateway},
 		{name: "literal host create", path: "/v1.45/services/create", body: svc(`{"Target":"host"}`), wantStatus: http.StatusForbidden},
 		{name: "overlay by name reaches the daemon", path: "/v1.45/services/create", body: svc(`{"Target":"app-net"}`), wantStatus: http.StatusCreated, wantReach: true},
 		{name: "unknown network reaches the daemon", path: "/v1.45/services/create", body: svc(`{"Target":"nope"}`), wantStatus: http.StatusCreated, wantReach: true},
@@ -129,7 +153,7 @@ func TestServeChainServiceHostNetworkByID(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			daemon := &serviceChainDaemon{netLookupFails: tt.failLookup, netLookupFailStatus: tt.failStatus}
+			daemon := &serviceChainDaemon{netLookupFails: tt.failLookup, netLookupFailStatus: tt.failStatus, previousTarget: tt.previous, serviceInspectFails: tt.failInspect}
 			addr := portainerPresetChain(t, daemon, nil)
 			status, reason := postServiceThroughChain(t, addr, tt.path, tt.body)
 			if status != tt.wantStatus || (daemon.reached.Load() > 0) != tt.wantReach {
