@@ -150,7 +150,7 @@ func TestBuildAuthorizesTheNamesItAssigns(t *testing.T) {
 			}}
 			var forwardedLabels string
 			forwarded := false
-			handler := middlewareWithDeps(testLogger(), Options{Owner: "job-123", LabelKey: "com.sockguard.owner", AllowUnownedImages: tt.allowUnowned}, fi.inspectResource, fi.inspectExec)(
+			handler := middlewareWithDeps(testLogger(), Options{Owner: "job-123", LabelKey: "com.sockguard.owner", AllowUnownedImages: tt.allowUnowned, buildSourcesAuthorized: true}, fi.inspectResource, fi.inspectExec)(
 				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					forwarded = true
 					forwardedLabels = r.URL.Query().Get("labels")
@@ -205,7 +205,7 @@ func TestBuildNameDenialFollowsRolloutModes(t *testing.T) {
 				}}
 				var forwardedLabels string
 				forwarded := false
-				handler := middlewareWithDeps(testLogger(), Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}, fi.inspectResource, fi.inspectExec)(
+				handler := middlewareWithDeps(testLogger(), Options{Owner: "job-123", LabelKey: "com.sockguard.owner", buildSourcesAuthorized: true}, fi.inspectResource, fi.inspectExec)(
 					http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						forwarded = true
 						forwardedLabels = r.URL.Query().Get("labels")
@@ -320,8 +320,6 @@ func TestPodmanBuildRefusalPreservesSupportedBuilds(t *testing.T) {
 		name, path, owner string
 		flavor            upstreamflavor.Flavor
 	}{
-		{"Docker owner", "/build", "job-123", upstreamflavor.Docker},
-		{"versioned Docker owner", "/v1.45/build", "job-123", upstreamflavor.Docker},
 		{"Podman compat without owner", "/build", "", upstreamflavor.Podman},
 		{"Podman native without owner", "/libpod/build", "", upstreamflavor.Podman},
 		{"Podman daemon host without owner", "/libpod/local/build", "", upstreamflavor.Podman},
@@ -339,6 +337,49 @@ func TestPodmanBuildRefusalPreservesSupportedBuilds(t *testing.T) {
 			handler.ServeHTTP(rec, req)
 			if rec.Code != http.StatusAccepted || !forwarded {
 				t.Fatalf("status=%d forwarded=%v, want accepted by ownership; body: %s", rec.Code, forwarded, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestDockerBuildIsRefusedUnderOwnership pins the interim refusal: a Docker
+// build can use another owner's local image as its FROM source and the owner
+// stamp then labels the copy as the caller's, so no Docker build passes while
+// ownership is active. Without an owner nothing changes.
+func TestDockerBuildIsRefusedUnderOwnership(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, target string
+		flavor       upstreamflavor.Flavor
+	}{
+		{"unversioned", "/build?t=mine%2Fnew", upstreamflavor.Docker},
+		{"versioned", "/v1.45/build?t=mine%2Fnew", upstreamflavor.Docker},
+		{"pull absent", "/build", upstreamflavor.Docker},
+		{"pull switched off", "/build?pull=0", upstreamflavor.Docker},
+		{"no tag", "/v1.45/build?pull=false&q=1", upstreamflavor.Docker},
+		{"unresolved flavor", "/build?pull=0", ""},
+		{"buildkit version", "/v1.45/build?version=2&t=mine%2Fnew", upstreamflavor.Docker},
+		{"buildkit local output", "/v1.45/build?version=2&outputs=%5B%7B%22Type%22%3A%22local%22%7D%5D", upstreamflavor.Docker},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			for _, mode := range []string{"enforce", "warn", "audit"} {
+				forwarded := false
+				fi := &recordingInspector{}
+				handler := middlewareWithDeps(testLogger(), Options{Owner: "job-123", LabelKey: "com.sockguard.owner", UpstreamFlavor: tt.flavor}, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+					forwarded = true
+				}))
+				meta := &logging.RequestMeta{RolloutMode: mode}
+				req := httptest.NewRequest(http.MethodPost, tt.target, strings.NewReader("FROM theirs/private:latest\n"))
+				req = req.WithContext(logging.WithMeta(req.Context(), meta))
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+				if rec.Code != http.StatusForbidden || forwarded {
+					t.Fatalf("mode %s: status = %d forwarded = %v, want a refusal", mode, rec.Code, forwarded)
+				}
+				if meta.Reason != buildDenyOwned || len(fi.calls) != 0 {
+					t.Fatalf("mode %s: reason = %q, inspects = %v", mode, meta.Reason, fi.calls)
+				}
 			}
 		})
 	}

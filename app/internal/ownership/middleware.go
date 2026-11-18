@@ -186,6 +186,12 @@ type Options struct {
 	// TestServeChainPassesResolvedFlavorToOwnership is the wiring proof, and
 	// TestServeChainImageTagChecksTheLocalhostNameOnPodman is a second one.
 	UpstreamFlavor upstreamflavor.Flavor
+
+	// buildSourcesAuthorized lifts the refusal of Docker builds under
+	// ownership. Nothing sets it in production: it exists so the build name
+	// authorization this package still implements stays under test until
+	// build sources can be authorized and the refusal is removed.
+	buildSourcesAuthorized bool
 	// UpstreamProbedDocker is true only when GET /version positively
 	// identified dockerd on every endpoint. Flavor can read Docker with no
 	// probe behind it, and the pull untag sends force=1 only on this evidence,
@@ -344,6 +350,17 @@ func middlewareWithPullCheck(
 			if r.Method == http.MethodPost && (normPath == libpodPrefix+"build" || normPath == libpodPrefix+"local/build" || (podmanUpstream && normPath == "/build")) {
 				logging.SetDeniedWithCode(w, r, reasonCodeOwnerPolicyDeniedAccess, buildDenyPodman, nil)
 				_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: buildDenyPodman})
+				return
+			}
+
+			// A Docker build can use any local image as a FROM source, and the
+			// owner stamp then labels the copy as this owner's. Nothing reads
+			// the Dockerfile's sources, so a build under ownership is refused
+			// until they can be authorized. An upstream not identified as
+			// Podman is treated as Docker, which fails closed.
+			if r.Method == http.MethodPost && normPath == "/build" && !opts.buildSourcesAuthorized {
+				logging.SetDeniedWithCode(w, r, reasonCodeOwnerPolicyDeniedAccess, buildDenyOwned, nil)
+				_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: buildDenyOwned})
 				return
 			}
 
