@@ -1,4 +1,4 @@
-import { getOrCreateAnalyticsRuntime } from "./analytics-client.ts";
+import { detectPrivacyOptOut, getOrCreateAnalyticsRuntime } from "./analytics-client.ts";
 import { ANALYTICS_ROUTES } from "./analytics-routes.generated.ts";
 
 const runtime = getOrCreateAnalyticsRuntime({
@@ -8,7 +8,11 @@ const runtime = getOrCreateAnalyticsRuntime({
     NEXT_PUBLIC_POSTHOG_UI_HOST: process.env.NEXT_PUBLIC_POSTHOG_UI_HOST,
   },
   routes: ANALYTICS_ROUTES,
-  getDoNotTrack: () => (typeof navigator === "undefined" ? null : navigator.doNotTrack),
+  hasPrivacyOptOut: () =>
+    detectPrivacyOptOut(
+      typeof navigator === "undefined" ? undefined : navigator,
+      typeof window === "undefined" ? undefined : (window as { doNotTrack?: string | null }),
+    ),
   loadPostHog: async () => (await import("posthog-js")).default,
 });
 

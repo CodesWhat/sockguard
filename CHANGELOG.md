@@ -47,6 +47,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Site and docs analytics now honor Global Privacy Control as well as Do Not Track, and re-check both before each send, since posthog-js's cookieless mode skips its own DNT check.
+
 - Correct the Watchtower preset note to distinguish clearing environment values from redacting sensitive bind sources.
 
 - Check workflow-name block scalars with trailing whitespace and CRLF headers.
