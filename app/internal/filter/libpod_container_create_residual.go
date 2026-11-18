@@ -128,7 +128,14 @@ var podmanActedAnnotations = [...]string{
 // act on is refused too. Keys are checked in sorted order so the reason is
 // stable.
 func (p libpodContainerCreatePolicy) denyRuntimeAnnotationsReason(annotations map[string]string) string {
-	if p.allowRuntimeAnnotations || len(annotations) == 0 {
+	return runtimeAnnotationsDenyReason(annotations, p.allowRuntimeAnnotations, "libpod container create")
+}
+
+// runtimeAnnotationsDenyReason is the shared annotation gate. The native
+// SpecGenerator.Annotations and the Docker-compat HostConfig.Annotations both
+// end up in the same Podman container annotations, so both are held to it.
+func runtimeAnnotationsDenyReason(annotations map[string]string, allow bool, subject string) string {
+	if allow || len(annotations) == 0 {
 		return ""
 	}
 	keys := make([]string, 0, len(annotations))
@@ -139,7 +146,7 @@ func (p libpodContainerCreatePolicy) denyRuntimeAnnotationsReason(annotations ma
 	for _, key := range keys {
 		folded := strings.ToLower(strings.TrimSpace(key))
 		if strings.HasPrefix(folded, runtimeAnnotationPrefix) || slices.Contains(podmanActedAnnotations[:], folded) {
-			return fmt.Sprintf("libpod container create denied: runtime annotation %q is not allowed (set allow_runtime_annotations: true)", key)
+			return fmt.Sprintf("%s denied: runtime annotation %q is not allowed (set allow_runtime_annotations: true)", subject, key)
 		}
 	}
 	return ""

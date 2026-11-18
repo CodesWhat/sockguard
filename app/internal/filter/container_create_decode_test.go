@@ -142,6 +142,8 @@ var containerCreateDecodeCorpus = []string{
 	`{"HostConfig":{"SecurityOpt":["seccomp=unconfined","apparmor=unconfined","label=disable","systempaths=unconfined"],"CapAdd":["SYS_ADMIN"],"CapDrop":["ALL"]}}`,
 	`{"HostConfig":{"Memory":67108864,"MemoryReservation":1024,"NanoCpus":500000000,"CpuQuota":50000,"CpuPeriod":100000,"CpuShares":512,"PidsLimit":256}}`,
 	`{"HostConfig":{"Sysctls":{"net.ipv4.ip_forward":"1"},"UTSMode":"host","CgroupParent":"/custom","Runtime":"kata","ReadonlyRootfs":true}}`,
+	`{"HostConfig":{"Links":["victim:x","other:y"],"Annotations":{"run.oci.handler":"wasm","team":"a"}}}`,
+	`{"HostConfig":{"Links":null,"Annotations":null}}`,
 	`{"HostConfig":{"MaskedPaths":[],"ReadonlyPaths":[]}}`,
 	`{"HostConfig":{"MaskedPaths":["/proc/kcore"],"ReadonlyPaths":["/proc/sys"]}}`,
 	`{"HostConfig":{"Binds":null,"Labels":null,"PidsLimit":null,"Sysctls":null}}`,
@@ -670,6 +672,12 @@ func TestContainerCreateDecodedFieldsAreTheInspectedFields(t *testing.T) {
 			allow:  `{"HostConfig":{"Sysctls":{}}}`,
 		},
 		{
+			field:  "HostConfig.Annotations",
+			policy: newContainerCreatePolicy(ContainerCreateOptions{}),
+			deny:   `{"HostConfig":{"Annotations":{"run.oci.handler":"wasm"}}}`,
+			allow:  `{"HostConfig":{"Annotations":{"team":"a"}}}`,
+		},
+		{
 			field:  "HostConfig.VolumesFrom",
 			policy: newContainerCreatePolicy(ContainerCreateOptions{}),
 			deny:   `{"HostConfig":{"VolumesFrom":["other"]}}`,
@@ -692,6 +700,12 @@ func TestContainerCreateDecodedFieldsAreTheInspectedFields(t *testing.T) {
 			policy: newContainerCreatePolicy(ContainerCreateOptions{}),
 			deny:   `{"HostConfig":{"GroupAdd":["docker"]}}`,
 			allow:  `{"HostConfig":{"GroupAdd":[]}}`,
+		},
+		{
+			field:  "HostConfig.Links",
+			policy: newContainerCreatePolicy(ContainerCreateOptions{}),
+			deny:   `{"HostConfig":{"Links":["victim:x"]}}`,
+			allow:  `{"HostConfig":{"Links":[]}}`,
 		},
 		{
 			field:  "HostConfig.ExtraHosts",
