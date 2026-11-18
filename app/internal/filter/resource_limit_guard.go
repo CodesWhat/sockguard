@@ -151,7 +151,7 @@ func (g *resourceLimitGuard) serve(w http.ResponseWriter, r *http.Request, next 
 	case isLibpodContainerUpdatePath(normPath):
 		g.guardContainerUpdate(w, r, normPath, policy, true, next)
 	case isServiceWritePath(normPath):
-		if !g.guardServiceNetworks(w, r, policy) {
+		if !g.guardServiceNetworks(w, r, normPath, policy) {
 			return
 		}
 		g.guardServiceWrite(w, r, normPath, policy, next)

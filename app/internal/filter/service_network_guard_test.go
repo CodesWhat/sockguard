@@ -49,6 +49,8 @@ func TestServiceNetworkGuardResolvesHostNetwork(t *testing.T) {
 		{name: "nil inspector fails closed when a network is named", path: "/services/create", body: `{"TaskTemplate":{"Networks":[{"Target":"tenant-net"}]}}`, inspect: nil, wantStatus: http.StatusBadGateway},
 		{name: "no networks needs no lookup", path: "/services/create", body: `{"TaskTemplate":{}}`, inspect: nil, wantStatus: guardedRequestAllowedStatus, wantForwards: 1},
 		{name: "allow_host_network skips the guard", path: "/services/create", body: `{"TaskTemplate":{"Networks":[{"Target":"` + hostNetworkID + `"}]}}`, allowHost: true, inspect: nil, wantStatus: guardedRequestAllowedStatus, wantForwards: 1},
+		{name: "create with rollback=previous still checks a host ID", path: "/services/create?rollback=previous", body: `{"TaskTemplate":{"Networks":[{"Target":"` + hostNetworkID + `"}]}}`, inspect: inspect, wantStatus: http.StatusForbidden},
+		{name: "create with rollback=previous still denies literal host", path: "/services/create?rollback=previous", body: `{"TaskTemplate":{"Networks":[{"Target":"host"}]}}`, inspect: nil, wantStatus: http.StatusForbidden},
 		{name: "manual rollback ignores body", path: "/services/svc1/update?version=3&rollback=previous", body: `{"Networks":[{"Target":"` + hostNetworkID + `"}]}`, inspect: nil, wantStatus: guardedRequestAllowedStatus, wantForwards: 1},
 	}
 	for _, tt := range tests {

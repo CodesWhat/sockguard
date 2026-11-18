@@ -97,13 +97,16 @@ func (req serviceNetworkTargets) targets() []string {
 
 // guardServiceNetworks denies a service create/update whose network targets
 // resolve to the host network. It returns false when a response was written.
-func (g *resourceLimitGuard) guardServiceNetworks(w http.ResponseWriter, r *http.Request, policy PolicyConfig) bool {
+func (g *resourceLimitGuard) guardServiceNetworks(w http.ResponseWriter, r *http.Request, normalizedPath string, policy PolicyConfig) bool {
 	if policy.Service.AllowHostNetwork {
 		return true
 	}
-	if manual, _ := serviceManualRollbackQuery(r); manual {
-		// The daemon ignores the body and re-applies the stored PreviousSpec.
-		return true
+	if _, isUpdate := serviceUpdateIdentifier(normalizedPath); isUpdate {
+		if manual, _ := serviceManualRollbackQuery(r); manual {
+			// The daemon ignores the body and re-applies the stored PreviousSpec.
+			// Only an update does: create ignores rollback and reads the body.
+			return true
+		}
 	}
 	body, err := readBoundedBodyUnchecked(r, maxServiceBodyBytes)
 	if err != nil {
