@@ -297,11 +297,18 @@ func (e *Exporter) send(batch []Span) {
 		return
 	}
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		retryable, retryAfter, ok, reason := e.post(body)
+		retryable, retryAfter, ok, reason, rejected := e.post(body)
 		switch {
 		case ok:
 			e.reqSuccess.Add(1)
-			e.exported.Add(n)
+			// A 2xx with partialSuccess is not retried; the rejected spans
+			// are counted as dropped and the rest as exported.
+			rejected = min(rejected, n)
+			e.exported.Add(n - rejected)
+			if rejected > 0 {
+				e.droppedExportFailed.Add(rejected)
+				e.warn("otlp collector rejected spans", "rejected", rejected)
+			}
 			return
 		case !retryable:
 			e.reqPermanent.Add(1)
@@ -348,10 +355,10 @@ func (e *Exporter) encode(batch []Span) ([]byte, error) {
 
 // post performs one HTTP attempt. reason is a short classification safe to
 // log: it never contains the URL, headers or response body.
-func (e *Exporter) post(body []byte) (retryable bool, retryAfter time.Duration, ok bool, reason string) {
+func (e *Exporter) post(body []byte) (retryable bool, retryAfter time.Duration, ok bool, reason string, rejected uint64) {
 	req, err := http.NewRequestWithContext(e.runCtx, http.MethodPost, e.opts.Endpoint, bytes.NewReader(body))
 	if err != nil {
-		return false, 0, false, "bad request"
+		return false, 0, false, "bad request", 0
 	}
 	for k, v := range e.opts.Headers {
 		req.Header.Set(k, v)
@@ -363,24 +370,45 @@ func (e *Exporter) post(body []byte) (retryable bool, retryAfter time.Duration, 
 		// url.Error embeds the full URL; report only the cause class.
 		var ue *url.Error
 		if errors.As(err, &ue) && ue.Timeout() {
-			return true, 0, false, "timeout"
+			return true, 0, false, "timeout", 0
 		}
-		return true, 0, false, "network error"
+		return true, 0, false, "network error", 0
 	}
 	defer func() { _ = resp.Body.Close() }()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBodyBytes))
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
 
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
-		return false, 0, true, ""
+		return false, 0, true, "", parseRejectedSpans(data)
 	case resp.StatusCode == http.StatusTooManyRequests,
 		resp.StatusCode == http.StatusBadGateway,
 		resp.StatusCode == http.StatusServiceUnavailable,
 		resp.StatusCode == http.StatusGatewayTimeout:
-		return true, parseRetryAfter(resp.Header.Get("Retry-After")), false, fmt.Sprintf("http %d", resp.StatusCode)
+		return true, parseRetryAfter(resp.Header.Get("Retry-After")), false, fmt.Sprintf("http %d", resp.StatusCode), 0
 	default:
-		return false, 0, false, fmt.Sprintf("http %d", resp.StatusCode)
+		return false, 0, false, fmt.Sprintf("http %d", resp.StatusCode), 0
 	}
+}
+
+// parseRejectedSpans reads partialSuccess.rejectedSpans from a 2xx body. It
+// accepts a JSON number or a decimal string. Anything undecodable, truncated
+// by the size bound, or negative counts as 0, so a bad body never fails the
+// export. The collector's errorMessage is never read.
+func parseRejectedSpans(data []byte) uint64 {
+	var resp struct {
+		PartialSuccess struct {
+			RejectedSpans json.RawMessage `json:"rejectedSpans"`
+		} `json:"partialSuccess"`
+	}
+	if len(data) == 0 || json.Unmarshal(data, &resp) != nil {
+		return 0
+	}
+	raw := string(bytes.Trim(resp.PartialSuccess.RejectedSpans, " \t\r\n\""))
+	n, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // parseRetryAfter reads delta-seconds or an HTTP-date; anything else is 0.

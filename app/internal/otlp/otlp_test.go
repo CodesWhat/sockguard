@@ -423,6 +423,61 @@ func TestRetryBehavior(t *testing.T) {
 	}
 }
 
+func TestPartialSuccessCountsRejectedSpans(t *testing.T) {
+	tests := []struct {
+		name         string
+		body         string
+		wantExported uint64
+		wantFailed   uint64
+	}{
+		{"numeric", `{"partialSuccess":{"rejectedSpans":1,"errorMessage":"secret-msg"}}`, 1, 1},
+		{"string", `{"partialSuccess":{"rejectedSpans":"1"}}`, 1, 1},
+		{"more than batch is clamped", `{"partialSuccess":{"rejectedSpans":"99"}}`, 0, 2},
+		{"undecodable counts as exported", `not json`, 2, 0},
+		{"empty partialSuccess", `{"partialSuccess":{}}`, 2, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newCollector(t, func(w http.ResponseWriter, r *http.Request, n int) {
+				_, _ = w.Write([]byte(tt.body))
+			})
+			e := newTestExporter(t, testOptions(c.srv.URL))
+			e.send([]Span{
+				{TraceID: strings.Repeat("a", 32), SpanID: strings.Repeat("b", 16), Name: "a", Start: time.Now(), End: time.Now()},
+				{TraceID: strings.Repeat("c", 32), SpanID: strings.Repeat("d", 16), Name: "b", Start: time.Now(), End: time.Now()},
+			})
+			s := e.Stats()
+			if c.requests() != 1 {
+				t.Errorf("requests = %d, want 1 (no retry)", c.requests())
+			}
+			if s.Exported != tt.wantExported || s.DroppedExportFailed != tt.wantFailed || s.RequestsSuccess != 1 {
+				t.Errorf("stats = %+v", s)
+			}
+		})
+	}
+}
+
+func TestEnqueueDropLogsOutsideAdmissionLock(t *testing.T) {
+	e := newTestExporter(t, testOptions("http://127.0.0.1:1"))
+	closeExporter(t, e)
+	// After close every Enqueue drops. The lock must be free afterwards.
+	e.Enqueue(Span{})
+	done := make(chan struct{})
+	go func() {
+		e.admissionMu.Lock()
+		e.admissionMu.Unlock() //nolint:staticcheck // probing that the lock is free
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("admissionMu still held after Enqueue returned")
+	}
+	if got := e.Stats().DroppedShutdown; got == 0 {
+		t.Errorf("DroppedShutdown = %d, want >0", got)
+	}
+}
+
 func TestConnectionRefusedDropsAfterAttempts(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	endpoint := srv.URL
@@ -457,27 +512,6 @@ func TestRetryAfterHonoredAndCapped(t *testing.T) {
 		return true
 	}
 	e.Enqueue(Span{TraceID: strings.Repeat("a", 32), SpanID: strings.Repeat("b", 16), Name: "GET x", Start: time.Now(), End: time.Now()})
-func TestEnqueueDropLogsOutsideAdmissionLock(t *testing.T) {
-	e := newTestExporter(t, testOptions("http://127.0.0.1:1"))
-	closeExporter(t, e)
-	// After close every Enqueue drops. The lock must be free afterwards.
-	e.Enqueue(Span{})
-	done := make(chan struct{})
-	go func() {
-		e.admissionMu.Lock()
-		e.admissionMu.Unlock() //nolint:staticcheck // probing that the lock is free
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("admissionMu still held after Enqueue returned")
-	}
-	if got := e.Stats().DroppedShutdown; got == 0 {
-		t.Errorf("DroppedShutdown = %d, want >0", got)
-	}
-}
-
 	closeExporter(t, e)
 	mu.Lock()
 	defer mu.Unlock()
@@ -672,6 +706,11 @@ func TestCapString(t *testing.T) {
 	if capString("short") != "short" {
 		t.Error("short string changed")
 	}
+	line := "GET /v1.45/containers/json?" + strings.Repeat("q", 100) + " HTTP/1.1"
+	short := line[:3]
+	if got := capString(short); unsafe.StringData(got) == unsafe.StringData(short) {
+		t.Error("short string shares backing memory with its source")
+	}
 }
 
 func TestRootSamplerFractional(t *testing.T) {
@@ -713,7 +752,7 @@ func TestErrorsNeverLeakEndpointOrHeaders(t *testing.T) {
 	opts := testOptions(endpoint)
 	opts.Headers = map[string]string{"X-Key": "header-secret"}
 	e := newTestExporter(t, opts)
-	_, _, _, reason := e.post([]byte("{}"))
+	_, _, _, reason, _ := e.post([]byte("{}"))
 	if strings.Contains(reason, "endpoint-secret") || strings.Contains(reason, "header-secret") || strings.Contains(reason, "127.0.0.1") {
 		t.Errorf("reason leaks: %q", reason)
 	}
@@ -726,11 +765,6 @@ func toKVs(attrs []Attr) []kv {
 		out[i].Key = k.Key
 		out[i].Value.StringValue = k.Value.StringValue
 		out[i].Value.IntValue = k.Value.IntValue
-	}
-	line := "GET /v1.45/containers/json?" + strings.Repeat("q", 100) + " HTTP/1.1"
-	short := line[:3]
-	if got := capString(short); unsafe.StringData(got) == unsafe.StringData(short) {
-		t.Error("short string shares backing memory with its source")
 	}
 	return out
 }
