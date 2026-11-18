@@ -2578,6 +2578,12 @@ func (p containerCreatePolicy) denySecurityOptReason(hostConfig containerCreateH
 			if p.denyUnconfinedSeccomp && strings.EqualFold(value, "unconfined") {
 				return "container create denied: unconfined seccomp profile is not allowed"
 			}
+			// A value that is a JSON document is an inline profile, which
+			// dockerd (and Podman 6.2) load as given, so "{}" or an allow-all
+			// document disables seccomp without being spelled "unconfined".
+			if p.denyUnconfinedSeccomp && isInlineSeccompProfile(value) {
+				return "container create denied: an inline seccomp profile is not allowed while deny_unconfined_seccomp is set"
+			}
 			if len(p.allowedSeccompProfiles) > 0 && !slices.Contains(p.allowedSeccompProfiles, value) {
 				return fmt.Sprintf("container create denied: seccomp profile %q is not in the allowed list", value)
 			}
@@ -2624,6 +2630,14 @@ func (p containerCreatePolicy) denySecurityOptReason(hostConfig containerCreateH
 		}
 	}
 	return ""
+}
+
+// isInlineSeccompProfile reports whether a seccomp= SecurityOpt value is
+// profile content rather than a name or path: a JSON object or array, or the
+// JSON null.
+func isInlineSeccompProfile(value string) bool {
+	value = strings.TrimSpace(value)
+	return strings.HasPrefix(value, "{") || strings.HasPrefix(value, "[") || value == "null"
 }
 
 // denyWritableCgroupsReason refuses the writable-cgroups SecurityOpt (moby 28+),

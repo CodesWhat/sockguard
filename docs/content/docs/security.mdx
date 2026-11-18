@@ -128,6 +128,7 @@ Sockguard's own endpoints are answered before this check and never reach the dae
 - `HostConfig.IpcMode: host`
 - `HostConfig.UsernsMode: host`
 - A non-empty `HostConfig.Sysctls` map (kernel parameter tuning), unless `request_body.container_create.allow_sysctls` is set
+- With `request_body.container_create.deny_unconfined_seccomp` set, a `seccomp=` `HostConfig.SecurityOpt` value that is an inline JSON profile (`{}`, an allow-all document, `null`), which dockerd and Podman 6.2 load as given. On `POST /libpod/containers/create` the same switch refuses any non-empty `seccomp_profile`, the inline profile Podman 6.2 reads ahead of `seccomp_profile_path`. With a profile allowlist active, an inline profile must be listed verbatim.
 - A `writable-cgroups` `HostConfig.SecurityOpt` entry (Docker 28 and newer), bare or with any value `strconv.ParseBool` reads as true. It makes a non-privileged container's cgroup mount writable, and there is no opt-out. An explicit `writable-cgroups=false` passes.
 - A non-empty `HostConfig.Runtime` value not present in `request_body.container_create.allowed_runtimes` (defends against runtime-escape via alternative OCI runtimes; an empty/unset runtime selects the daemon default and is always permitted)
 - Any bind mount whose source is outside `request_body.container_create.allowed_bind_mounts`, including a `Mounts` entry of type `volume` whose `VolumeOptions.DriverConfig` asks the local driver for a bind (`{"type":"none","o":"bind","device":"/host/path"}`) — the device is checked against the same allowlist
