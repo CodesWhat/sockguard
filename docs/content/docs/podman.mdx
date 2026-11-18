@@ -600,6 +600,7 @@ path segment. Only the `docker://` transport is accepted, so `oci:`, `dir:`,
 denied because Podman resolves it through `registries.conf`, which sockguard
 cannot read. Podman's Docker-compatible `POST /images/*/push` on a Podman
 upstream is held to the same rule for an unqualified name.
+
 - `POST /libpod/images/scp/*` — transfers a local image to another host
   over SSH, to a destination the caller picks. It is also in the blind-write
   catalog because the same call can pull an image *in* from a remote host;
