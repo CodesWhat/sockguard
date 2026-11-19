@@ -172,3 +172,36 @@ func TestPresetChainDrydockRefusesCompatAnnotations(t *testing.T) {
 		}
 	})
 }
+
+// TestPresetChainDrydockRefusesRootLevelHostConfig pins that the shipped
+// drydock preset refuses a create whose HostConfig fields sit at the top of
+// the body, where Docker 24 to 26 read them from, before dockerd sees it.
+func TestPresetChainDrydockRefusesRootLevelHostConfig(t *testing.T) {
+	bodies := map[string]string{
+		"no HostConfig":    `{"Image":"alpine","Privileged":true,"Binds":["/:/host"]}`,
+		"null HostConfig":  `{"Image":"alpine","HostConfig":null,"Privileged":true,"Binds":["/:/host"]}`,
+		"empty HostConfig": `{"Image":"alpine","HostConfig":{},"binds":["/:/host"]}`,
+		"escaped key":      `{"Image":"alpine","\u0050rivileged":true}`,
+	}
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			daemon := &presetCreateDaemon{}
+			addr := newPresetChain(t, "preset-rootcfg", "drydock.yaml", daemon, nil)
+			for _, path := range []string{"/containers/create", "/v1.45/containers/create", "/v1.23/containers/create"} {
+				status, out := presetChainPost(t, addr, path, body)
+				if status != http.StatusForbidden || !strings.Contains(out, "top level") {
+					t.Errorf("%s: status = %d, body = %s, want 403 naming the top-level field", path, status, out)
+				}
+			}
+			if daemon.created.Load() != 0 {
+				t.Errorf("daemon creates = %d, want 0", daemon.created.Load())
+			}
+		})
+	}
+	daemon := &presetCreateDaemon{}
+	addr := newPresetChain(t, "preset-rootcfg-ok", "drydock.yaml", daemon, nil)
+	status, out := presetChainPost(t, addr, "/containers/create", `{"Image":"alpine","HostConfig":{"ReadonlyRootfs":true}}`)
+	if status != http.StatusCreated || daemon.created.Load() != 1 {
+		t.Errorf("nested create: status = %d, creates = %d, body = %s, want 201 and 1", status, daemon.created.Load(), out)
+	}
+}
