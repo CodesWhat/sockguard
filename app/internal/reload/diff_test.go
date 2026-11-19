@@ -2,6 +2,7 @@ package reload
 
 import (
 	"reflect"
+	"slices"
 	"sort"
 	"testing"
 
@@ -123,6 +124,27 @@ func TestImmutableDiffDetectsMetricsChange(t *testing.T) {
 	got := ImmutableDiff(&a, &b)
 	if !equalUnordered(got, []string{"metrics"}) {
 		t.Fatalf("ImmutableDiff(metrics change) = %v, want [metrics]", got)
+	}
+}
+
+func TestImmutableDiffDetectsOTLPChange(t *testing.T) {
+	t.Parallel()
+	a := config.Defaults()
+	for name, mutate := range map[string]func(*config.Config){
+		"enabled":  func(c *config.Config) { c.OTLP.Enabled = true },
+		"endpoint": func(c *config.Config) { c.OTLP.Endpoint = "https://collector.example/v1/traces" },
+		"headers":  func(c *config.Config) { c.OTLP.Headers = map[string]string{"authorization": "x"} },
+		"ratio":    func(c *config.Config) { c.OTLP.SampleRatio = 0.5 },
+	} {
+		b := a
+		mutate(&b)
+		got := ImmutableDiff(&a, &b)
+		if !equalUnordered(got, []string{"otlp"}) {
+			t.Fatalf("ImmutableDiff(otlp %s change) = %v, want [otlp]", name, got)
+		}
+	}
+	if !slices.Contains(ImmutableFields, "otlp") {
+		t.Fatal("ImmutableFields does not contain otlp")
 	}
 }
 

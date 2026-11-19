@@ -108,6 +108,7 @@ See `lefthook.yml` for exact commands. The pre-push pipeline is piped (sequentia
 ## Key Constraints
 
 - The proxy's request hot path — filtering, proxying, logging — uses only the Go stdlib. The binary's direct external dependencies are Cobra+Viper (CLI/config), fsnotify (config hot-reload), and sigstore/sigstore-go (image-trust and signed-policy-bundle verification).
+- `internal/otlp` is stdlib-only: the OTLP trace exporter hand-rolls the OTLP/HTTP JSON encoding, so enabling it adds no third-party code to the request path.
 - Container image is **Chainguard's distroless `static` base** (built from Wolfi packages, no shell, no package manager) for near-zero CVEs and built-in SBOM/provenance.
 - Biome is a direct devDependency in the root workspace for TS/JS linting.
 - `.planning/` is gitignored — local-only working notes; never reference its contents in committed files.

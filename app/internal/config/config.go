@@ -100,6 +100,7 @@ type Config struct {
 	Ownership                     OwnershipConfig    `mapstructure:"ownership"`
 	Health                        HealthConfig       `mapstructure:"health"`
 	Metrics                       MetricsConfig      `mapstructure:"metrics"`
+	OTLP                          OTLPConfig         `mapstructure:"otlp"`
 	Admin                         AdminConfig        `mapstructure:"admin"`
 	Reload                        ReloadConfig       `mapstructure:"reload"`
 	PolicyBundle                  PolicyBundleConfig `mapstructure:"policy_bundle"`
@@ -1706,6 +1707,38 @@ type MetricsConfig struct {
 	Path    string `mapstructure:"path"`
 }
 
+// OTLPConfig configures the opt-in OTLP/HTTP JSON trace exporter. The whole
+// otlp.* block is reload-immutable. Header values are secrets: every surface
+// that renders config redacts them (keys are kept).
+type OTLPConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+	// Endpoint is the full collector URL including the path, e.g.
+	// https://collector:4318/v1/traces.
+	Endpoint string `mapstructure:"endpoint"`
+	// Headers are sent on every export request. Values are secrets.
+	Headers map[string]string `mapstructure:"headers"`
+	// Timeout bounds each export HTTP request (Go duration).
+	Timeout string `mapstructure:"timeout"`
+	// QueueSize bounds the in-memory span queue.
+	QueueSize int64 `mapstructure:"queue_size"`
+	// BatchSize is the maximum number of spans per export request.
+	BatchSize int64 `mapstructure:"batch_size"`
+	// FlushInterval is how long the worker waits to fill a batch (Go duration).
+	FlushInterval string `mapstructure:"flush_interval"`
+	// SampleRatio in [0,1] applies to new root traces only.
+	SampleRatio float64 `mapstructure:"sample_ratio"`
+	// ServiceName is the service.name resource attribute.
+	ServiceName string        `mapstructure:"service_name"`
+	TLS         OTLPTLSConfig `mapstructure:"tls"`
+}
+
+// OTLPTLSConfig is the client-side TLS configuration for the OTLP exporter.
+type OTLPTLSConfig struct {
+	// CAFile verifies the collector's certificate. Empty uses the system roots.
+	CAFile             string `mapstructure:"ca_file"`
+	InsecureSkipVerify bool   `mapstructure:"insecure_skip_verify"`
+}
+
 // AdminConfig configures the admin HTTP endpoints (POST <path> for
 // candidate-config validation, POST <policy_diff_path> for a read-only
 // comparison, GET <policy_version_path> for the active generation counter).
@@ -1788,7 +1821,7 @@ func (cfg AdminListenConfig) Configured() bool {
 // on SIGHUP. A reload that mutates any immutable field — listen.*, server.*,
 // upstream.socket, upstream.endpoints, upstream.failover, upstream.flavor,
 // upstream.response_header_timeout,
-// log.*, health.*, metrics.*, admin.* — is rejected; the running config is
+// log.*, health.*, metrics.*, otlp.*, admin.* — is rejected; the running config is
 // preserved and the operator must restart sockguard to pick the new values up.
 // (The endpoint set, failover policy, and flavor are pinned because the
 // long-lived Resolver and engine-specific handler chain are built once at
@@ -2048,6 +2081,16 @@ func Defaults() Config {
 		Metrics: MetricsConfig{
 			Enabled: false,
 			Path:    "/metrics",
+		},
+		OTLP: OTLPConfig{
+			Enabled:       false,
+			Headers:       map[string]string{},
+			Timeout:       "5s",
+			QueueSize:     2048,
+			BatchSize:     256,
+			FlushInterval: "2s",
+			SampleRatio:   1.0,
+			ServiceName:   "sockguard",
 		},
 		Admin: AdminConfig{
 			Enabled:           false,

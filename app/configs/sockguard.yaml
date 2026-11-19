@@ -27,6 +27,20 @@ metrics:
   path: /metrics
   # Opt-in Prometheus text metrics. Served locally and never forwarded to Docker.
 
+otlp:
+  enabled: false                 # Opt-in OTLP/HTTP JSON trace export (restart required)
+  endpoint: ""                   # Full URL including path, e.g. https://collector:4318/v1/traces
+  headers: {}                    # Sent on every export. Values are secrets; names arrive lower-cased
+  timeout: 5s                    # Per export HTTP request
+  queue_size: 2048               # Bounded span queue; a full queue drops spans, never blocks requests
+  batch_size: 256                # Max spans per export request (<= queue_size)
+  flush_interval: 2s
+  sample_ratio: 1.0              # 0..1, applied to new root traces; an incoming traceparent's flag wins
+  service_name: sockguard
+  tls:
+    ca_file: ""                  # Extra CA bundle for the collector; empty uses system roots
+    insecure_skip_verify: false
+
 admin:
   enabled: false                 # Opt-in: POST <path> validates a candidate YAML config
   path: /admin/validate          # Must not collide with health.path or metrics.path
@@ -41,7 +55,7 @@ reload:
   debounce: 250ms                # Coalesce a burst of fsnotify events into one reload
   # When enabled, sockguard watches THIS file via fsnotify and reloads on SIGHUP.
   # A reload that would mutate any IMMUTABLE field — listen.*, upstream.socket,
-  # log.*, health.*, metrics.*, admin.* — is rejected; restart sockguard to apply
+  # log.*, health.*, metrics.*, otlp.*, admin.* — is rejected; restart sockguard to apply
   # those. Everything else (rules, clients.profiles, response.*, request_body.*,
   # ownership.*) is rebuilt and atomically swapped without dropping in-flight
   # requests. NOTE: enabling this changes SIGHUP semantics — historically SIGHUP
