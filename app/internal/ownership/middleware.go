@@ -1077,7 +1077,18 @@ func serviceEmbeddedOwnershipReferences(decoded map[string]any) []embeddedOwners
 		}
 	}
 
-	for _, networks := range filter.FoldedArrays(decoded, "Networks") {
+	appendServiceNetworkReferences(&refs, decoded, "service Networks.Target")
+	for _, taskTemplate := range filter.FoldedObjects(decoded, "TaskTemplate") {
+		// Docker prefers TaskTemplate.Networks over the deprecated top-level
+		// Networks and resolves its targets before scheduling, so an overlay
+		// named only here is attached the same way.
+		appendServiceNetworkReferences(&refs, taskTemplate, "service TaskTemplate.Networks.Target")
+	}
+	return refs
+}
+
+func appendServiceNetworkReferences(refs *[]embeddedOwnershipReference, parent map[string]any, source string) {
+	for _, networks := range filter.FoldedArrays(parent, "Networks") {
 		for _, value := range networks {
 			network, ok := value.(map[string]any)
 			if !ok {
@@ -1085,12 +1096,11 @@ func serviceEmbeddedOwnershipReferences(decoded map[string]any) []embeddedOwners
 			}
 			for _, target := range filter.FoldedStrings(network, "Target") {
 				if isCustomNetworkMode(target) {
-					appendEmbeddedOwnershipReference(&refs, dockerresource.KindNetwork, target, "service Networks.Target")
+					appendEmbeddedOwnershipReference(refs, dockerresource.KindNetwork, target, source)
 				}
 			}
 		}
 	}
-	return refs
 }
 
 func appendServiceObjectReferences(
