@@ -50,8 +50,9 @@ func runReport(cmd *cobra.Command, args []string) error {
 	}
 
 	// Like match, report is a check tool: a config path that does not exist
-	// must not silently report on the built-in defaults.
-	if cfgFile != "" {
+	// must not silently report on the built-in defaults. The default path is
+	// not selected, so a missing default still falls back to the defaults.
+	if cfgFile != "" && configFlagChanged(cmd) {
 		if _, err := os.Stat(cfgFile); err != nil {
 			return fmt.Errorf("config file: %w", err)
 		}

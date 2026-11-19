@@ -130,3 +130,32 @@ func TestExecuteReportEmptyConfigFileIsStillAFile(t *testing.T) {
 		t.Fatalf("an existing empty config should report on defaults: %v\n%s", err, stderr)
 	}
 }
+
+func TestExecuteReportMissingDefaultConfigFallsBackToDefaults(t *testing.T) {
+	// Cobra keeps Changed from earlier runs; this run must not select a path.
+	flag := rootCmd.PersistentFlags().Lookup("config")
+	wasChanged := flag.Changed
+	flag.Changed = false
+	t.Cleanup(func() { flag.Changed = wasChanged })
+
+	orig := reportLoadConfig
+	t.Cleanup(func() { reportLoadConfig = orig })
+	reportLoadConfig = func(string) (*config.Config, []byte, error) {
+		cfg := config.Defaults()
+		return &cfg, nil, nil // what LoadWithData returns for a missing file
+	}
+
+	// executeRootCommand restores cfgFile on cleanup, so pointing it at a
+	// missing path here simulates an unset --config with an absent default.
+	oldCfg := cfgFile
+	t.Cleanup(func() { cfgFile = oldCfg })
+	cfgFile = filepath.Join(t.TempDir(), "absent.yaml")
+
+	stdout, stderr, err := executeRootCommand(t, "report", "-o", "json")
+	if err != nil {
+		t.Fatalf("a missing default config must fall back to defaults, got %v\nstderr:\n%s", err, stderr)
+	}
+	if !strings.Contains(stdout, compliance.Disclaimer) {
+		t.Errorf("expected a report, got:\n%s", stdout)
+	}
+}
