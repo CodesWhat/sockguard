@@ -1670,7 +1670,7 @@ func TestProxyHijackStreamsClosesConnections(t *testing.T) {
 		},
 	}
 
-	proxyHijackStreams(&hijackSession{
+	proxyHijackStreams(nil, &hijackSession{
 		path:         "/containers/abc/attach",
 		upstreamConn: upstreamConn,
 		upstreamBuf:  bufio.NewReader(strings.NewReader("")),
@@ -1705,7 +1705,7 @@ func TestProxyHijackStreamsWrapperClosesConnections(t *testing.T) {
 	clientConn := &funcConn{}
 	upstreamConn := &funcConn{}
 
-	proxyHijackStreams(&hijackSession{
+	proxyHijackStreams(nil, &hijackSession{
 		path:         "/containers/abc/attach",
 		upstreamConn: upstreamConn,
 		upstreamBuf:  bufio.NewReader(strings.NewReader("")),
@@ -1737,7 +1737,7 @@ func TestProxyHijackStreamsHalfClosesOnCopyPanic(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		proxyHijackStreams(&hijackSession{
+		proxyHijackStreams(nil, &hijackSession{
 			path:         "/containers/abc/attach",
 			upstreamConn: upstreamConn,
 			upstreamBuf:  bufio.NewReader(strings.NewReader("")),
@@ -1788,7 +1788,7 @@ func TestProxyHijackStreamsTornDownAfterConfiguredInactivityTimeout(t *testing.T
 
 	done := make(chan struct{})
 	go func() {
-		proxyHijackStreams(&hijackSession{
+		proxyHijackStreams(nil, &hijackSession{
 			path:         "/containers/abc/attach",
 			upstreamConn: upstreamConn,
 			upstreamBuf:  bufio.NewReader(upstreamConn),
@@ -1832,7 +1832,7 @@ func TestProxyHijackStreamsNotTornDownWhileEitherDirectionActive(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		proxyHijackStreams(&hijackSession{
+		proxyHijackStreams(nil, &hijackSession{
 			path:         "/containers/abc/attach",
 			upstreamConn: upstreamConn,
 			upstreamBuf:  bufio.NewReader(upstreamConn),
@@ -3219,5 +3219,50 @@ func TestNewProxyTransportTunings(t *testing.T) {
 	}
 	if _, ok := rp.Transport.(*upstream.Resolver); !ok {
 		t.Fatalf("Transport type = %T, want *upstream.Resolver", rp.Transport)
+	}
+}
+
+// TestProxyHijackStreamsClosesQuietSessionOnShutdown pins that the shutdown
+// signal reaches the relay: with no bytes flowing in either direction and
+// a long inactivity timeout, closing the shutdown channel must still close
+// both legs and return promptly.
+func TestProxyHijackStreamsClosesQuietSessionOnShutdown(t *testing.T) {
+	restoreHijackHooks(t)
+
+	upstreamConn, upstreamPeer := net.Pipe()
+	clientConn, clientPeer := net.Pipe()
+	defer upstreamPeer.Close()
+	defer clientPeer.Close()
+
+	shutdown := make(chan struct{})
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	done := make(chan struct{})
+	go func() {
+		proxyHijackStreams(shutdown, &hijackSession{
+			path:         "/containers/abc/attach",
+			upstreamConn: upstreamConn,
+			upstreamBuf:  bufio.NewReader(upstreamConn),
+			clientConn:   clientConn,
+			clientBuf:    bufio.NewReadWriter(bufio.NewReader(clientConn), bufio.NewWriter(clientConn)),
+		}, time.Hour, logger)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("session returned before cancellation")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(shutdown)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("quiet session did not close after shutdown signal")
+	}
+	if _, err := clientPeer.Read(make([]byte, 1)); err == nil {
+		t.Fatal("client leg stayed open after shutdown")
+	}
+	if _, err := upstreamPeer.Read(make([]byte, 1)); err == nil {
+		t.Fatal("upstream leg stayed open after shutdown")
 	}
 }
