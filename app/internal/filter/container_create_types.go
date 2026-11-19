@@ -122,7 +122,15 @@ type containerCreateHostConfig struct {
 	CgroupParent      string                  `json:"CgroupParent"`
 	GroupAdd          []string                `json:"GroupAdd"`
 	ExtraHosts        []string                `json:"ExtraHosts"`
-	Runtime           string                  `json:"Runtime"`
+	// Links is the legacy HostConfig.Links ("container:alias"). dockerd
+	// registers each one as a container name under the linking container, so
+	// a link to a foreign container makes /<linker>/<alias> an alias the
+	// victim answers to on every container route that takes a slash-bearing
+	// name, and on Docker 28 and older it injects the target's environment
+	// into the linker. Podman rejects the field. See the Links refusal in
+	// containerCreatePolicy.inspect.
+	Links   []string `json:"Links"`
+	Runtime string   `json:"Runtime"`
 	// Annotations is HostConfig.Annotations (Engine API 1.43+). A Podman
 	// upstream maps it into the container's annotations, the same map
 	// POST /libpod/containers/create reads, so it takes the same refusals.
@@ -331,6 +339,7 @@ func (r *containerCreateRequest) resetForReuse() {
 	clear(h.VolumesFrom)
 	clear(h.GroupAdd)
 	clear(h.ExtraHosts)
+	clear(h.Links)
 	h.Binds = h.Binds[:0]
 	h.Mounts = nil
 	clear(h.Tmpfs)
@@ -355,6 +364,7 @@ func (r *containerCreateRequest) resetForReuse() {
 	h.CgroupParent = ""
 	h.GroupAdd = h.GroupAdd[:0]
 	h.ExtraHosts = h.ExtraHosts[:0]
+	h.Links = h.Links[:0]
 	h.Runtime = ""
 	h.MaskedPaths = nil
 	h.ReadonlyPaths = nil
@@ -377,6 +387,7 @@ func (r *containerCreateRequest) oversizedForReuse() bool {
 		overContainerCreateReuseCap(h.VolumesFrom) ||
 		overContainerCreateReuseCap(h.GroupAdd) ||
 		overContainerCreateReuseCap(h.ExtraHosts) ||
+		overContainerCreateReuseCap(h.Links) ||
 		len(r.Labels) > containerCreateReuseCap ||
 		len(r.Volumes) > containerCreateReuseCap ||
 		len(h.Sysctls) > containerCreateReuseCap ||

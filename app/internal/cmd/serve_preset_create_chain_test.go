@@ -314,3 +314,25 @@ func TestNetworkMembershipCatalogEntriesTakeSlashBearingIdentifiers(t *testing.T
 		}
 	}
 }
+
+// TestPresetChainRefusesLegacyLinks pins that the shipped Portainer and Drydock
+// presets refuse HostConfig.Links on create. A link to a foreign container
+// registers /<linker>/<alias> as a name the victim answers to, which every
+// slash-bearing container route then resolves to the victim.
+func TestPresetChainRefusesLegacyLinks(t *testing.T) {
+	for _, preset := range []string{"portainer.yaml", "drydock.yaml"} {
+		t.Run(preset, func(t *testing.T) {
+			daemon := &presetCreateDaemon{}
+			addr := newPresetChain(t, "preset-links", preset, daemon, nil)
+			for _, path := range []string{"/containers/create", "/v1.45/containers/create"} {
+				status, out := presetChainPost(t, addr, path, `{"Image":"alpine","HostConfig":{"Links":["victim:x"]}}`)
+				if status != http.StatusForbidden || !strings.Contains(out, "legacy container links") {
+					t.Errorf("%s: status = %d, body = %s, want 403 naming legacy links", path, status, out)
+				}
+			}
+			if daemon.created.Load() != 0 {
+				t.Errorf("daemon creates = %d, want 0", daemon.created.Load())
+			}
+		})
+	}
+}

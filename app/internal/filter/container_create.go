@@ -1351,6 +1351,9 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if len(createReq.HostConfig.ExtraHosts) > 0 {
 		return "container create denied: ExtraHosts is not allowed", nil
 	}
+	if len(createReq.HostConfig.Links) > 0 {
+		return "container create denied: legacy container links (HostConfig.Links) are not allowed", nil
+	}
 	if runtime := strings.TrimSpace(createReq.HostConfig.Runtime); runtime != "" && !slices.Contains(p.allowedRuntimes, runtime) {
 		return fmt.Sprintf("container create denied: runtime %q is not allowlisted", runtime), nil
 	}
