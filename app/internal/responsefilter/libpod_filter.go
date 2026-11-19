@@ -217,7 +217,10 @@ func (f *Filter) modifyLibpodResponse(method, normPath string, resp *http.Respon
 		return f.modifyLibpodVolumeList(resp)
 	case normPath == libpodNetworkListPath:
 		return f.modifyLibpodNetworkList(resp)
-	case isLibpodNetworkInspectPath(method, normPath):
+	case isLibpodNetworkInspectPath(method, normPath),
+		method == http.MethodPost && normPath == LibpodPathPrefix+"/networks/create":
+		// Create answers with the network, the existing one when
+		// ignoreIfExists names a taken name, in the same shape as an inspect.
 		return f.modifyLibpodNetworkInspect(resp)
 	case isLibpodInspectPath(normPath, "secrets"):
 		return f.modifyLibpodSecretInspect(resp)
