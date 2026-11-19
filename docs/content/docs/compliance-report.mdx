@@ -21,8 +21,10 @@ sockguard -c /etc/sockguard/sockguard.yaml report -o markdown    # table plus ev
 ```
 
 `report` loads the config the same way `match` and `validate` do: the
-`SOCKGUARD_*` overlay, Tecnativa compatibility expansion, then full validation
-and rule compilation. An invalid config, or a `-c` path that doesn't exist or
+`SOCKGUARD_*` overlay, Tecnativa compatibility expansion, then config
+validation and rule compilation. It doesn't check the `DOCKER_HOST`,
+`DOCKER_TLS` or `DOCKER_TLS_VERIFY` upstream settings that `validate` checks,
+so `validate` can reject an environment that `report` accepts. An invalid config, or a `-c` path that doesn't exist or
 can't be read, exits non-zero and prints no report. Without `-c`, a missing
 default file falls back to the built-in defaults, as it does for `match`.
 `report` takes no positional arguments; pass the file with `-c`.
