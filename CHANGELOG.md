@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - Apply reloaded `clients.allowed_cidrs` to the dedicated admin listener. It kept the startup allowlist, so a reload that removed a source left it admitted to the admin endpoints. The admin chain is now rebuilt from the same validated config on every successful reload, and a rejected reload changes neither chain.
+- Container create now refuses the `writable-cgroups` security option (Docker 28 and newer), bare or set to any true value. Before this the option passed every create gate, including on the shipped Drydock preset, and left the container's cgroup mount writable. An explicit `writable-cgroups=false` still passes.
 
 ## [2.4.7] - 2026-11-14
 

@@ -2436,6 +2436,9 @@ func (p containerCreatePolicy) denySecurityOptReason(hostConfig containerCreateH
 	seenSeccomp := false
 	seenAppArmor := false
 	for _, raw := range hostConfig.SecurityOpt {
+		if reason := denyWritableCgroupsReason(raw); reason != "" {
+			return reason
+		}
 		kind, value, ok := parseSecurityOpt(raw)
 		if !ok {
 			continue
@@ -2495,6 +2498,25 @@ func (p containerCreatePolicy) denySecurityOptReason(hostConfig containerCreateH
 		}
 	}
 	return ""
+}
+
+// denyWritableCgroupsReason refuses the writable-cgroups SecurityOpt (moby 28+),
+// which removes the read-only flag from a non-privileged container's cgroup
+// mount. dockerd accepts the bare word as true and parses a value with
+// strconv.ParseBool, so every enabling spelling is refused, whatever later
+// entries say. An explicit false passes. A value ParseBool can't read is
+// refused too, since the daemon's reading of it is not ours to guess.
+func denyWritableCgroupsReason(raw string) string {
+	key, value, hasValue := splitSecurityOptKV(strings.TrimSpace(raw))
+	if !strings.EqualFold(strings.TrimSpace(key), "writable-cgroups") {
+		return ""
+	}
+	if hasValue {
+		if enabled, err := strconv.ParseBool(strings.TrimSpace(value)); err == nil && !enabled {
+			return ""
+		}
+	}
+	return "container create denied: writable-cgroups security option is not allowed"
 }
 
 // denySystemPathsReason rejects requests that set MaskedPaths or ReadonlyPaths
