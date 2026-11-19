@@ -115,6 +115,13 @@ func (g *resourceLimitGuard) guardServiceNetworks(w http.ResponseWriter, r *http
 			return false
 		}
 		if manual {
+			if _, ok := serviceVersionQuery(r); !ok && !ownedByRequirements {
+				// Without exactly one numeric version the rollback target can't be
+				// pinned to the state the caller inspected.
+				g.denyServiceNetwork(w, r, http.StatusBadRequest, reasonCodeResourceLimitRequestInvalid,
+					"service update denied: a single numeric version query parameter is required", policy.DenyResponseVerbosity)
+				return false
+			}
 			// The daemon ignores the body and re-applies the stored PreviousSpec,
 			// so that is what gets resolved. Only an update does: create
 			// ignores rollback and reads the body.
