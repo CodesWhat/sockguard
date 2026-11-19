@@ -834,3 +834,35 @@ func TestEnqueueDoesNotBlockOnSlowLogSink(t *testing.T) {
 		t.Error("expected queue-full drops to be counted")
 	}
 }
+
+func TestCloseReturnsByDeadlineWithStuckLogSink(t *testing.T) {
+	h := newBlockingHandler()
+	t.Cleanup(func() { close(h.release) })
+	c := newCollector(t, func(w http.ResponseWriter, r *http.Request, _ int) {
+		w.WriteHeader(http.StatusBadRequest) // permanent failure: the worker logs
+	})
+	opts := testOptions(c.srv.URL)
+	opts.Logger = slog.New(h)
+	e, err := New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		e.Enqueue(Span{TraceID: strings.Repeat("a", 32), SpanID: strings.Repeat("b", 16), Name: "x", Start: time.Now(), End: time.Now()})
+	}
+	select {
+	case <-h.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker warning never reached the log sink")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	done := make(chan error, 1)
+	go func() { done <- e.Close(ctx) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Close still blocked %v after start with a stuck log sink", time.Since(start))
+	}
+}

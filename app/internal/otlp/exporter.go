@@ -252,9 +252,9 @@ func (e *Exporter) Stats() Stats {
 }
 
 // Close stops admitting spans, flushes what is queued, and returns once the
-// worker is done or ctx expires. On expiry in-flight exports are aborted and
-// the remaining spans are dropped (counted as shutdown drops) and ctx.Err()
-// is returned. Safe to call more than once and on a nil Exporter.
+// worker is done or ctx expires. On expiry in-flight exports are aborted, the
+// worker is left to wind down on its own (remaining spans are counted as
+// shutdown drops) and ctx.Err() is returned without waiting for it. Safe to call more than once and on a nil Exporter.
 func (e *Exporter) Close(ctx context.Context) error {
 	if e == nil {
 		return nil
@@ -268,8 +268,6 @@ func (e *Exporter) Close(ctx context.Context) error {
 	select {
 	case <-e.finished:
 	case <-ctx.Done():
-		e.cancelRun()
-		<-e.finished
 		err = ctx.Err()
 	}
 	e.cancelRun()
