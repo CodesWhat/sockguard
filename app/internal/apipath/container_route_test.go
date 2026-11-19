@@ -24,6 +24,10 @@ func TestDockerContainerRoute(t *testing.T) {
 		{http.MethodPost, "/containers/A/x/update", "A/x", "update", true},
 		{http.MethodDelete, "/containers/A/x", "A/x", "", true},
 		{http.MethodDelete, "/containers/web", "web", "", true},
+		{http.MethodDelete, "/containers/web/checkpoints/cp", "web", "checkpoints", true},
+		{http.MethodDelete, "/containers/a/b/checkpoints/cp", "a/b", "checkpoints", true},
+		{http.MethodDelete, "/containers/a/checkpoints/cp/extra", "a/checkpoints/cp/extra", "", true},
+		{http.MethodDelete, "/containers/a/checkpoints/", "a/checkpoints/", "", true},
 		{http.MethodGet, "/containers/web", "web", "", true},
 		// A name that is itself an action word still resolves like dockerd.
 		{http.MethodPost, "/containers/create/start", "create", "start", true},
