@@ -20,6 +20,8 @@ type presetCreateDaemon struct {
 	podman  bool
 	created atomic.Int32
 	started atomic.Int32
+	// networkOps counts the network connect and disconnect requests that reach it.
+	networkOps atomic.Int32
 }
 
 func (d *presetCreateDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -37,6 +39,11 @@ func (d *presetCreateDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		d.started.Add(1)
 		w.WriteHeader(http.StatusNoContent)
+	case r.Method == http.MethodPost && strings.HasPrefix(normPath, "/networks/") &&
+		(strings.HasSuffix(normPath, "/connect") || strings.HasSuffix(normPath, "/disconnect")):
+		_, _ = io.Copy(io.Discard, r.Body)
+		d.networkOps.Add(1)
+		w.WriteHeader(http.StatusOK)
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
@@ -225,5 +232,85 @@ func TestPresetChainDrydockRefusesStartBody(t *testing.T) {
 	status, out := presetChainPost(t, addr, "/v1.23/containers/abc/start", "")
 	if status != http.StatusNoContent || daemon.started.Load() != 1 {
 		t.Errorf("plain start: status = %d, starts = %d, body = %s, want 204 and 1", status, daemon.started.Load(), out)
+	}
+}
+
+// TestPresetChainPortainerGatesSlashBearingNetworkNames pins that a network
+// whose name holds a slash is held to the same endpoint-config and
+// force-disconnect gates as any other. Docker registers connect and
+// disconnect as /networks/{id:.*}/..., so POST /networks/a/b/connect names the
+// network "a/b", and a matcher that stopped at the first slash skipped the
+// gates for it. The shipped Portainer preset allows /networks/** and leaves the
+// gates at their defaults.
+func TestPresetChainPortainerGatesSlashBearingNetworkNames(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		body string
+		want string
+	}{
+		{"static ip", "/networks/a/b/connect", `{"Container":"c","EndpointConfig":{"IPAMConfig":{"IPv4Address":"10.0.0.9"}}}`, "static IP"},
+		{"mac pinning", "/v1.45/networks/a/b/connect", `{"Container":"c","EndpointConfig":{"MacAddress":"02:42:ac:11:00:02"}}`, "MAC address"},
+		{"links", "/networks/a/b/c/connect", `{"Container":"c","EndpointConfig":{"Links":["x"]}}`, "links"},
+		{"driver opts", "/networks/a/b/connect", `{"Container":"c","EndpointConfig":{"DriverOpts":{"k":"v"}}}`, "driver options"},
+		{"force disconnect", "/v1.45/networks/a/b/disconnect", `{"Container":"c","Force":true}`, "force disconnect"},
+		{"escaped slash", "/networks/a%2Fb/connect", `{"Container":"c","EndpointConfig":{"Links":["x"]}}`, "links"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			daemon := &presetCreateDaemon{}
+			addr := newPresetChain(t, "preset-netslash", "portainer.yaml", daemon, nil)
+			status, out := presetChainPost(t, addr, tt.path, tt.body)
+			if status != http.StatusForbidden || !strings.Contains(out, tt.want) {
+				t.Errorf("status = %d, body = %s, want 403 naming %q", status, out, tt.want)
+			}
+			if daemon.networkOps.Load() != 0 {
+				t.Errorf("daemon network operations = %d, want 0", daemon.networkOps.Load())
+			}
+		})
+	}
+
+	daemon := &presetCreateDaemon{}
+	addr := newPresetChain(t, "preset-netslash-ok", "portainer.yaml", daemon, nil)
+	for _, path := range []string{"/networks/app/connect", "/networks/a/b/connect"} {
+		status, out := presetChainPost(t, addr, path, `{"Container":"c"}`)
+		if status != http.StatusOK {
+			t.Errorf("%s: plain connect status = %d, body = %s, want 200", path, status, out)
+		}
+	}
+	if daemon.networkOps.Load() != 2 {
+		t.Errorf("daemon network operations = %d, want 2", daemon.networkOps.Load())
+	}
+}
+
+// TestNetworkMembershipCatalogEntriesTakeSlashBearingIdentifiers pins that the
+// Docker connect and disconnect catalog rows carry the slash-bearing identifier
+// shape, since moby registers both as /networks/{id:.*}/..., while the libpod
+// rows stay single-segment like Podman's own {name} placeholder.
+func TestNetworkMembershipCatalogEntriesTakeSlashBearingIdentifiers(t *testing.T) {
+	want := map[string]catalogIdentifierShape{
+		"/networks/sockguard-test/connect":    catalogIdentifierPath,
+		"/networks/sockguard-test/disconnect": catalogIdentifierPath,
+	}
+	seen := map[string]bool{}
+	for _, endpoint := range bodySensitiveWriteEndpoints {
+		shape, ok := want[endpoint.path]
+		if !ok {
+			continue
+		}
+		seen[endpoint.path] = true
+		if endpoint.identifierShape != shape {
+			t.Errorf("%s identifierShape = %v, want %v", endpoint.path, endpoint.identifierShape, shape)
+		}
+	}
+	for path := range want {
+		if !seen[path] {
+			t.Errorf("catalog is missing %s", path)
+		}
+	}
+	for _, endpoint := range bodySensitiveWriteEndpoints {
+		if strings.HasPrefix(endpoint.path, "/libpod/networks/sockguard-test/") && endpoint.identifierShape == catalogIdentifierPath {
+			t.Errorf("%s must stay single-segment", endpoint.path)
+		}
 	}
 }
