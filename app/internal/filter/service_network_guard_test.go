@@ -3,6 +3,7 @@ package filter
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -101,11 +102,19 @@ func TestNewDockerNetworkInspector(t *testing.T) {
 	if err != nil || !found || got.Name != "host" || got.Driver != "host" {
 		t.Fatalf("got %+v found=%v err=%v", got, found, err)
 	}
-	if _, found, err := NewDockerNetworkInspectorWithRoundTripper(respond(404, ``))(context.Background(), "abc"); err != nil || found {
+	if _, found, err := NewDockerNetworkInspectorWithRoundTripper(respond(404, `{"message":"network abc not found"}`))(context.Background(), "abc"); err != nil || found {
 		t.Fatalf("404: found=%v err=%v", found, err)
 	}
-	if _, _, err := NewDockerNetworkInspectorWithRoundTripper(respond(500, ``))(context.Background(), "abc"); err == nil {
-		t.Fatal("500 must be an error")
+	// The error bodies are valid JSON that decodes without error, so only the
+	// status check itself can turn them into failures.
+	for _, status := range []int{401, 500, 503} {
+		got, found, err := NewDockerNetworkInspectorWithRoundTripper(respond(status, `{"message":"boom"}`))(context.Background(), "abc")
+		if err == nil || found || got != (NetworkInspectResult{}) {
+			t.Fatalf("status %d: got %+v found=%v err=%v, want an error and no result", status, got, found, err)
+		}
+		if want := fmt.Sprintf("status %d", status); !strings.Contains(err.Error(), want) {
+			t.Fatalf("status %d: err = %v, want it to name %q", status, err, want)
+		}
 	}
 	if _, _, err := NewDockerNetworkInspectorWithRoundTripper(respond(200, `{`))(context.Background(), "abc"); err == nil {
 		t.Fatal("bad JSON must be an error")
