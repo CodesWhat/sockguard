@@ -463,12 +463,12 @@ func (b *bridge) forwardControlMediated(w http.ResponseWriter, r *http.Request, 
 		var req *control.StatusRequest
 		req, d = evaluateStatusRequest(payload)
 		if d == nil && !b.registry.OwnsRef(b.session.Key, req.GetRef()) {
-			admitted := false
-			if b.policy.ImageOwnership.Owner != "" {
-				ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-				admitted = b.registry.waitForRef(ctx, b.session.Key, req.GetRef())
-				cancel()
-			}
+			// Buildx opens Status concurrently with its Solve, so the Status
+			// can arrive before the Solve's ref is admitted. Wait briefly for
+			// that admission in every mode, not only under owner isolation.
+			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+			admitted := b.registry.waitForRef(ctx, b.session.Key, req.GetRef())
+			cancel()
 			if !admitted {
 				d = deny(grpcCodePermissionDenied, "buildkit_ref_not_owned", "this ref does not belong to an admitted Solve for this client/profile")
 			}
