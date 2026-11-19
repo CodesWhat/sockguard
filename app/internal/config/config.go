@@ -780,6 +780,15 @@ type LibpodContainerCreateRequestBodyConfig struct {
 	// other's route. Default false.
 	AllowLogPath bool `mapstructure:"allow_log_path"`
 
+	// AllowRuntimeAnnotations permits "annotations" keys under run.oci.,
+	// which switch OCI runtime behavior on, and the io.podman.annotations.
+	// keys Podman acts on (cid-file, autoremove, autoremove-image). Other
+	// annotation keys, including the io.podman.annotations. markers
+	// podman-remote sends, are not gated. Same name as
+	// container_create.allow_runtime_annotations, and neither opens the
+	// other's route. Default false.
+	AllowRuntimeAnnotations bool `mapstructure:"allow_runtime_annotations"`
+
 	// AllowedRuntimes, AllowDeviceCgroupRules, AllowedDeviceCgroupRules,
 	// AllowDeviceRequests and DenyUnconfinedSystemPaths are the libpod
 	// spellings of the same-named container_create fields, gating

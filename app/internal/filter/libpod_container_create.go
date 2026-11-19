@@ -120,6 +120,11 @@ type LibpodContainerCreateOptions struct {
 	// the daemon host. Default false. See denyLogPathReason.
 	AllowLogPath bool
 
+	// AllowRuntimeAnnotations permits "annotations" keys under run.oci. and
+	// the io.podman.annotations. keys Podman acts on (cid-file, autoremove,
+	// autoremove-image). Default false. See runtimeAnnotationsDenyReason.
+	AllowRuntimeAnnotations bool
+
 	// AllowedRuntimes allowlists oci_runtime values, mirroring
 	// ContainerCreateOptions.AllowedRuntimes: an empty oci_runtime selects
 	// the daemon default and is always permitted.
@@ -180,6 +185,8 @@ type libpodContainerCreatePolicy struct {
 	allowSystemdMode      bool
 	allowCustomIDMappings bool
 	allowLogPath          bool
+
+	allowRuntimeAnnotations bool
 
 	allowedRuntimes           []string
 	allowDeviceCgroupRules    bool
@@ -246,6 +253,7 @@ func newLibpodContainerCreatePolicy(opts LibpodContainerCreateOptions) libpodCon
 		allowSystemdMode:                  opts.AllowSystemdMode,
 		allowCustomIDMappings:             opts.AllowCustomIDMappings,
 		allowLogPath:                      opts.AllowLogPath,
+		allowRuntimeAnnotations:           opts.AllowRuntimeAnnotations,
 		allowedRuntimes:                   normalizeStringList(opts.AllowedRuntimes),
 		allowDeviceCgroupRules:            opts.AllowDeviceCgroupRules,
 		allowedDeviceCgroupRules:          canonicalDeviceCgroupAllowlist(opts.AllowedDeviceCgroupRules),
@@ -344,6 +352,12 @@ func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Reques
 		return denyReason, nil
 	}
 	if denyReason := capabilityAddDenyReason(createReq.CapAdd, p.allowAllCapabilities, p.allowedCapabilities, "libpod container create"); denyReason != "" {
+		return denyReason, nil
+	}
+	// SpecGenerator.Annotations reaches the OCI runtime, where crun honors
+	// run.oci.*, and Podman acts on its cid-file and autoremove keys, the same
+	// keys the Docker-compat create refuses in HostConfig.Annotations.
+	if denyReason := runtimeAnnotationsDenyReason(createReq.Annotations, p.allowRuntimeAnnotations, "libpod container create"); denyReason != "" {
 		return denyReason, nil
 	}
 	if denyReason := p.denySeccompInlineReason(createReq.SeccompProfile); denyReason != "" {

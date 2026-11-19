@@ -41,6 +41,11 @@ type libpodContainerCreateRequest struct {
 	EnvSecrets json.RawMessage   `json:"secret_env"`
 	EnvMerge   []string          `json:"envmerge"`
 
+	// Annotations is SpecGenerator.Annotations, "key-value options passed
+	// into the container runtime that can be used to trigger special
+	// behavior". See runtimeAnnotationsDenyReason.
+	Annotations map[string]string `json:"annotations"`
+
 	Name         string            `json:"name"`
 	Image        string            `json:"image"`
 	ImageVolumes []json.RawMessage `json:"image_volumes"`
