@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Container create now refuses a body that carries `HostConfig` or `Resources` fields at its top level. Docker 24.x through 26.x decode the body with an embedded host config and use those top-level fields when the nested `HostConfig` is absent or null, so `{"Image":"x","Privileged":true,"Binds":["/:/host"]}` skipped every create check, including on the shipped Drydock preset. The refusal covers Moby 26.1.5's whole field inventory plus `Cpuset`, in any letter case, and nested `HostConfig` requests are unchanged. Docker 27 and newer, and Podman, never read the shape, so no minimum engine version is needed for this fix.
 - Owner isolation now authorizes networks named in a service's `TaskTemplate.Networks`, not only the top-level `Networks` field. Docker prefers the task template list, so a tenant could attach a service to another owner's overlay network through it.
 - Owner isolation now authorizes the source of a `Type: image` container mount (Docker API 1.48+) against the caller's images, so a tenant can't read another owner's image filesystem through its own container. Podman and any upstream not identified as Docker refuse image mounts under ownership.
+- Owner isolation now covers `POST /swarm/leave` and `GET /swarm/unlockkey`. They used to skip the swarm ownership check, so a Portainer-style `/swarm/**` allow rule let a non-owner take a manager out of the swarm with `force=1`.
 
 ## [2.4.7] - 2026-11-14
 

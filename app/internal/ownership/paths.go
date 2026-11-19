@@ -178,8 +178,16 @@ func isNodeUpdatePath(normPath string) bool {
 	return apipath.IsNodeUpdatePath(normPath)
 }
 
+// isSwarmPath matches the Swarm-state operations that act on the swarm itself:
+// inspect, the unlock key read and leave. Leave with force=1 takes a manager
+// out of the swarm, so none of them can be left to a path rule alone.
 func isSwarmPath(normPath string) bool {
-	return normPath == "/swarm"
+	switch normPath {
+	case "/swarm", "/swarm/unlockkey", "/swarm/leave":
+		return true
+	default:
+		return false
+	}
 }
 
 func isSwarmUpdatePath(normPath string) bool {
