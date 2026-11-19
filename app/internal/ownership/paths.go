@@ -85,16 +85,47 @@ func execIdentifier(normPath string) (string, bool) {
 	return resourceIdentifier("", normPath, "/exec/", nil, nil)
 }
 
+// networkIdentifier extracts the network name from a Docker-compat path.
+// dockerd registers the network routes as /networks/{id:.*}, with connect and
+// disconnect as /networks/{id:.*}/{action}, so a network named "a/b" is
+// addressable and the whole name is authorized, never just its first segment.
+// DELETE and GET take the complete remainder; connect and disconnect strip
+// only the final action. Podman's native /libpod/networks routes keep their
+// single-segment grammar and are handled by the libpod extractors.
 func networkIdentifier(method, normPath string) (string, bool) {
-	return resourceIdentifier(method, normPath, "/networks/", createPruneExcluded, nil)
+	rest, ok := strings.CutPrefix(normPath, "/networks/")
+	if !ok || rest == "" {
+		return "", false
+	}
+	if !strings.Contains(rest, "/") {
+		return resourceIdentifier(method, normPath, "/networks/", createPruneExcluded, nil)
+	}
+	if method == http.MethodPost {
+		if name, ok := dockerNetworkActionName(rest); ok {
+			return name, true
+		}
+	}
+	return rest, true
+}
+
+// dockerNetworkActionName returns the network name in "{name}/connect" or
+// "{name}/disconnect", where name may itself contain slashes.
+func dockerNetworkActionName(rest string) (string, bool) {
+	for _, action := range []string{"/connect", "/disconnect"} {
+		if name, ok := strings.CutSuffix(rest, action); ok && name != "" {
+			return name, true
+		}
+	}
+	return "", false
 }
 
 func isNetworkMembershipChangePath(normPath string) bool {
-	for _, prefix := range []string{"/networks/", libpodPrefix + "networks/"} {
-		if !strings.HasPrefix(normPath, prefix) {
-			continue
-		}
-		identifier, action, ok := strings.Cut(strings.TrimPrefix(normPath, prefix), "/")
+	if rest, ok := strings.CutPrefix(normPath, "/networks/"); ok {
+		_, ok := dockerNetworkActionName(rest)
+		return ok
+	}
+	if rest, ok := strings.CutPrefix(normPath, libpodPrefix+"networks/"); ok {
+		identifier, action, ok := strings.Cut(rest, "/")
 		return ok && identifier != "" && (action == "connect" || action == "disconnect")
 	}
 	return false
