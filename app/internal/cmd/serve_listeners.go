@@ -132,9 +132,10 @@ type hijackedConnTracker struct {
 	conns  map[net.Conn]struct{}
 	closed bool
 	// handlers maps each live hijacked handler to the cancel func of the
-	// request context it runs under. Entries live from a successful Hijack
-	// until the handler returns from the full middleware chain, independent of
-	// when its connection is closed or released.
+	// request context it runs under. Entries are reserved before the
+	// underlying Hijack is attempted (rolled back if it fails) and live until
+	// the handler returns from the full middleware chain, independent of when
+	// its connection is closed or released.
 	handlers map[uint64]func()
 	nextID   uint64
 	idle     chan struct{} // closed-and-cleared when handlers drains to empty
@@ -175,21 +176,23 @@ func (t *hijackedConnTracker) wrapHandler(next http.Handler) http.Handler {
 	})
 }
 
-// beginHandler registers a hijacked handler. It returns 0 and cancels at once
-// when shutdown already started, so a late hijack still unwinds promptly.
+// beginHandler reserves a slot for a handler about to hijack and returns its
+// non-zero id. When shutdown already started the reservation is still counted,
+// so the join waits for the handler, and cancel runs at once so a late hijack
+// unwinds promptly.
 func (t *hijackedConnTracker) beginHandler(cancel func()) uint64 {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.closed {
-		cancel()
-		return 0
-	}
 	if t.handlers == nil {
 		t.handlers = make(map[uint64]func())
 	}
 	t.nextID++
 	id := t.nextID
 	t.handlers[id] = cancel
+	closed := t.closed
+	t.mu.Unlock()
+	if closed {
+		cancel()
+	}
 	return id
 }
 
@@ -252,18 +255,16 @@ type hijackTrackingWriter struct {
 	cancel  func()
 
 	mu        sync.Mutex
-	handlerID uint64
-	hijacked  bool
+	handlerID uint64 // non-zero while a handler slot is reserved
 }
 
 // finish deregisters the handler once the full middleware chain has returned.
 func (w *hijackTrackingWriter) finish() {
 	w.mu.Lock()
-	id, hijacked := w.handlerID, w.hijacked
+	id := w.handlerID
+	w.handlerID = 0
 	w.mu.Unlock()
-	if hijacked {
-		w.tracker.endHandler(id)
-	}
+	w.tracker.endHandler(id)
 }
 
 func (w *hijackTrackingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
@@ -284,18 +285,28 @@ func (w *hijackTrackingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	if !ok {
 		return nil, nil, http.ErrNotSupported
 	}
+	// Reserve the handler slot before the underlying Hijack so shutdown's join
+	// can never miss a session whose connection is already out of net/http's
+	// hands. A second Hijack call reuses the first reservation.
+	w.mu.Lock()
+	var reserved uint64
+	if w.handlerID == 0 {
+		reserved = w.tracker.beginHandler(w.cancel)
+		w.handlerID = reserved
+	}
+	w.mu.Unlock()
 	conn, buf, err := hj.Hijack()
 	if err != nil {
+		if reserved != 0 {
+			w.mu.Lock()
+			w.handlerID = 0
+			w.mu.Unlock()
+			w.tracker.endHandler(reserved)
+		}
 		return conn, buf, err
 	}
 	// net/http runs the StateHijacked hook inside Hijack, so the raw conn is
 	// already registered (or already closed by a shut-down tracker) here.
-	w.mu.Lock()
-	if !w.hijacked {
-		w.hijacked = true
-		w.handlerID = w.tracker.beginHandler(w.cancel)
-	}
-	w.mu.Unlock()
 	return &releasingConn{Conn: conn, tracker: w.tracker}, buf, nil
 }
 
@@ -554,6 +565,11 @@ func shutdownMainListeners(ctx context.Context, deps *serveDeps, members []*list
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// Signal and close hijacked sessions first. Server.Shutdown blocks
+			// on any open streaming request (GET /events) until the grace
+			// period ends, so doing this afterwards left the sessions no time
+			// to unwind and emit their audit events inside the shared deadline.
+			member.hijacked.closeAll()
 			if err := deps.shutdownServer(member.server, ctx); err != nil {
 				logger.Error("shutdown error", "listener", member.identity.Name, "error", err)
 				if ctx.Err() != nil {
@@ -561,7 +577,6 @@ func shutdownMainListeners(ctx context.Context, deps *serveDeps, members []*list
 					_ = member.listener.Close()
 				}
 			}
-			member.hijacked.closeAll()
 			// Join hijacked handlers inside the shared shutdown deadline: the
 			// audit and log sinks close right after shutdownServers returns,
 			// and a handler still running would emit its audit event into a
