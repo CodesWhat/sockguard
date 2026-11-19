@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -169,6 +170,53 @@ func FuzzImagePull(f *testing.F) {
 		req := httptest.NewRequest(http.MethodPost, "/images/create", nil)
 		req.URL = &url.URL{Path: "/images/create", RawQuery: rawQuery}
 		_, _ = policy.inspect(nil, req, "/images/create")
+	})
+}
+
+// FuzzImagePush drives the push inspector and destination parser with
+// arbitrary paths, queries, registry-auth headers and destination strings. It
+// asserts that nothing panics, that the inspector never errors, and that the
+// parser only accepts a lowercase host and never a value carrying a byte a
+// reference cannot hold, so a destination it cannot read is never allowed.
+func FuzzImagePush(f *testing.F) {
+	f.Add("/images/ghcr.io/acme/app/push", "tag=latest", "", "ghcr.io/acme/app:v1")
+	f.Add("/libpod/images/x/push", "destination=docker://ghcr.io/acme/app", "", "docker://ghcr.io/a")
+	f.Add("/libpod/images/x/push", "destination=oci:/tmp/x", "", "oci:/tmp/x")
+	f.Add("/libpod/manifests/l/registry/ghcr.io%2Facme%2Fapp", "", "", "[::1]:5000/a")
+	f.Add("/libpod/manifests/l/registry/ghcr.io%252Facme%252Fapp", "", "", "Evil/app")
+	f.Add("/libpod/manifests/l/push", "destination=%5B::1%5D:5000/a", "", "a@sha256:"+strings.Repeat("a", 64))
+	f.Add("/plugins/ghcr.io/acme/p/push", "", "eyJzZXJ2ZXJhZGRyZXNzIjoicXVheS5pbyJ9", "")
+	f.Add("/v1.45/images/Evil/app/push", "destination=a&destination=b", "!!", "a:b/c")
+
+	policy := newImagePushPolicy(ImagePushOptions{
+		AllowedRegistries: []string{"ghcr.io", "localhost:5000", "[::1]:5000"},
+		RegistryAliases:   map[string]string{"mirror.example": "ghcr.io"},
+	})
+
+	f.Fuzz(func(t *testing.T, path, rawQuery, auth, destination string) {
+		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		req.URL = &url.URL{Path: path, RawQuery: rawQuery}
+		if auth != "" {
+			req.Header.Set("X-Registry-Auth", auth)
+		}
+		if _, err := policy.inspect(nil, req, NormalizePath(req.URL.Path)); err != nil {
+			t.Fatalf("inspect returned an error: %v", err)
+		}
+
+		for _, libpod := range []bool{false, true} {
+			dest := parsePushDestination(destination, libpod)
+			if dest.problem == pushDestinationOK {
+				if dest.host == "" || dest.host != strings.ToLower(dest.host) {
+					t.Fatalf("parsePushDestination(%q) accepted with host %q", destination, dest.host)
+				}
+				if strings.ContainsAny(destination, " \t\r\n%\\\x00") {
+					t.Fatalf("parsePushDestination(%q) accepted a value with a forbidden byte", destination)
+				}
+			}
+			if reason := policy.denyReasonForDestination(destination, libpod); reason == "" && dest.problem != pushDestinationOK {
+				t.Fatalf("denyReasonForDestination(%q) allowed a destination that did not parse", destination)
+			}
+		}
 	})
 }
 

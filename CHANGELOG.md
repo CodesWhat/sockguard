@@ -10,8 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Add opt-in OTLP/HTTP JSON trace export (`otlp.*`, off by default). One span per request on the main listener goes to a collector through a bounded, non-blocking queue, so a slow or dead collector never delays a request. Spans carry an allowlist of fields (no query strings, headers, bodies or free-text reasons), sampling follows the W3C sampled flag, and `sockguard_otlp_*` metrics report exports and drops. The exporter is stdlib-only, and the block is reload-immutable.
+- Add `sockguard report`, which generates a deterministic CIS Docker Benchmark v1.6.0 configuration report from a config as text, JSON or Markdown. Each control carries a status (`configured`, `partial`, `not_configured`, `always_on`, `needs_evidence`, `outside_scope`) and config-path evidence limited to booleans, enum modes and list lengths. Global request-body policy and every client profile are evaluated as separate scopes. It reports configuration only and is not a CIS certification.
 - Add `response.visible_networks` (root and per client profile), a visibility axis that is neither a label nor a name/image glob. A container is visible only if it is attached to at least one listed network, by exact case-sensitive network name. It is ANDed with the label, `name_patterns` and `image_patterns` axes, profile lists add to the root list, and it covers container lists (Docker and libpod), inspect, every container sub-read, exec via its parent container and the containers section of `GET /system/df`. It does not apply to images, networks or volumes and cannot narrow `GET /events`, which gets the same startup warning as patterns without a label selector. It works with `redact_network_topology` on, since only network names are read.
 - Add read-only admin policy comparison for the next v3.1 release, with generation-bound field paths and change kinds, values omitted, structural validation, unknown-key counts and reload-immutable change reporting. The endpoint shares existing admin access controls and request-body limits, never applies candidates and never reads candidate TLS files.
+
+- Add `request_body.image_push` to hold image, plugin and manifest pushes (`POST /images/*/push`, `POST /plugins/*/push`, `POST /libpod/images/*/push`, `POST /libpod/manifests/*/registry/*` and `POST /libpod/manifests/*/push`) to an `allowed_registries` list. The policy is off until the list is non-empty. A destination that does not parse strictly is denied, only the `docker://` transport is accepted, a name with no registry is refused on Podman and on native libpod routes, `registry_aliases` (a list of `from`/`to` pairs) resolve one level before the check, and an `X-Registry-Auth` header naming another registry is refused. Docker Hub spellings resolve to `docker.io`. Pushes still need `insecure_allow_read_exfiltration`. BuildKit exporter pushes keep `allowed_exporter_registries`.
 
 ### Changed
 
@@ -148,6 +151,8 @@ for rc.6 does not cover this source. Stable channels remain on v2.4.6.
 - Scope container signature discovery to the registries named by exact image allowlists, and pass Swarm service image and registry scopes into its signature dial guard.
 
 - Reject non-JSON whitespace around native Podman network inspect responses instead of stripping it before label decoding, and retain the original minimized fuzz input as a corpus regression.
+
+- Correct the documentation of `X-Registry-Auth` on pushes. It said `POST /images/*/push` decodes the header and checks it, but no push route had an inspector and only the pull paths ever decoded it. Pushes now decode it and hold its `serveraddress` to `request_body.image_push.allowed_registries` when that list is set. The older 2.x entry stays as released.
 
 ### Changed
 

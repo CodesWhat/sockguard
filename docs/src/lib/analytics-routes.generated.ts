@@ -10,6 +10,7 @@ const routes = [
   "/docs",
   "/docs/admin",
   "/docs/cis-docker-benchmark",
+  "/docs/compliance-report",
   "/docs/configuration",
   "/docs/deprecations",
   "/docs/frontend-runner",
