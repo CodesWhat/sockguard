@@ -689,6 +689,16 @@ type ContainerCreateRequestBodyConfig struct {
 	// alone or ahead of an "=". Podman writes the container's output to that
 	// path on the daemon host. dockerd has no such option. Default false.
 	AllowLogPath bool `mapstructure:"allow_log_path"`
+
+	// AllowRuntimeAnnotations permits HostConfig.Annotations keys under
+	// run.oci., which switch OCI runtime behavior on, and the three
+	// io.podman.annotations. keys Podman acts on (cid-file, autoremove,
+	// autoremove-image). Podman maps HostConfig.Annotations into the
+	// container's annotations, and removes the cid-file path when the
+	// container is removed, and dockerd copies the map into the OCI runtime
+	// spec, where crun honors run.oci.* keys. Applies to every upstream.
+	// Other annotation keys pass. Default false.
+	AllowRuntimeAnnotations bool `mapstructure:"allow_runtime_annotations"`
 }
 
 // LibpodContainerCreateRequestBodyConfig configures body inspection for

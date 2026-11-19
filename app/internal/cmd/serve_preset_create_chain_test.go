@@ -130,3 +130,45 @@ func TestPresetChainCISRefusesInlineSeccomp(t *testing.T) {
 		t.Errorf("compliant create: status = %d, creates = %d, body = %s, want 201 and 1", status, daemon.created.Load(), body)
 	}
 }
+
+// TestPresetChainDrydockRefusesCompatAnnotations pins that the shipped drydock
+// preset refuses the compat HostConfig.Annotations keys Podman acts on
+// (run.oci.* and io.podman.annotations.cid-file, which Podman removes as a host
+// path when the container is deleted). The create policy on this line has no
+// upstream flavor, so a Docker upstream, where dockerd copies the map into the
+// OCI runtime spec, gets the same refusal.
+func TestPresetChainDrydockRefusesCompatAnnotations(t *testing.T) {
+	bodies := map[string]string{
+		"cid-file": `{"Image":"alpine","HostConfig":{"Annotations":{"io.podman.annotations.cid-file":"/etc/hostname"}}}`,
+		"run.oci":  `{"Image":"alpine","HostConfig":{"Annotations":{"run.oci.keep_original_groups":"1"}}}`,
+	}
+	for name, body := range bodies {
+		for _, podman := range []bool{true, false} {
+			engine := "docker"
+			if podman {
+				engine = "podman"
+			}
+			t.Run(name+" "+engine, func(t *testing.T) {
+				daemon := &presetCreateDaemon{podman: podman}
+				addr := newPresetChain(t, "preset-ann-"+engine, "drydock.yaml", daemon, nil)
+				for _, path := range []string{"/containers/create", "/v1.45/containers/create"} {
+					status, out := presetChainPost(t, addr, path, body)
+					if status != http.StatusForbidden || !strings.Contains(out, "runtime annotation") {
+						t.Errorf("%s: status = %d, body = %s, want 403 naming the annotation", path, status, out)
+					}
+				}
+				if daemon.created.Load() != 0 {
+					t.Errorf("daemon creates = %d, want 0", daemon.created.Load())
+				}
+			})
+		}
+	}
+	t.Run("plain metadata passes", func(t *testing.T) {
+		daemon := &presetCreateDaemon{}
+		addr := newPresetChain(t, "preset-ann-plain", "drydock.yaml", daemon, nil)
+		status, out := presetChainPost(t, addr, "/containers/create", `{"Image":"alpine","HostConfig":{"Annotations":{"team":"a"}}}`)
+		if status != http.StatusCreated || daemon.created.Load() != 1 {
+			t.Errorf("status = %d, creates = %d, body = %s, want 201 and 1", status, daemon.created.Load(), out)
+		}
+	})
+}

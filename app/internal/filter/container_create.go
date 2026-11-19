@@ -180,6 +180,11 @@ type ContainerCreateOptions struct {
 	// denyLogPathReason.
 	AllowLogPath bool
 
+	// AllowRuntimeAnnotations permits HostConfig.Annotations keys under run.oci.
+	// and the io.podman.annotations. keys Podman acts on. Both are refused on
+	// every upstream by default. See runtimeAnnotationsDenyReason.
+	AllowRuntimeAnnotations bool
+
 	// AllowEndpointConfig permits static IP, MAC address, Links, and
 	// DriverOpts in NetworkingConfig.EndpointsConfig entries carried on
 	// POST /containers/create. Docker connects every entry here the same way
@@ -244,6 +249,7 @@ type containerCreatePolicy struct {
 
 	allowTmpfsPrivilegedOptions bool
 	allowLogPath                bool
+	allowRuntimeAnnotations     bool
 
 	allowEndpointConfig bool
 	endpointConfig      EndpointConfigOptions
@@ -337,6 +343,7 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		denyUnconfinedSystemPaths:         opts.DenyUnconfinedSystemPaths,
 		allowTmpfsPrivilegedOptions:       opts.AllowTmpfsPrivilegedOptions,
 		allowLogPath:                      opts.AllowLogPath,
+		allowRuntimeAnnotations:           opts.AllowRuntimeAnnotations,
 		allowEndpointConfig:               opts.AllowEndpointConfig,
 		endpointConfig:                    opts.EndpointConfig,
 	}
@@ -1343,6 +1350,13 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 		return denyReason, nil
 	}
 	if denyReason := denyCompatMountFieldInjectionReason(createReq.HostConfig.Mounts, "container create"); denyReason != "" {
+		return denyReason, nil
+	}
+	// Podman acts on run.oci.* and a few io.podman.annotations.* keys, and
+	// dockerd copies HostConfig.Annotations into the OCI runtime spec, where
+	// crun honors run.oci.* too. This line has no upstream flavor in the
+	// create policy, so the gate holds on every upstream.
+	if denyReason := runtimeAnnotationsDenyReason(createReq.HostConfig.Annotations, p.allowRuntimeAnnotations, "container create"); denyReason != "" {
 		return denyReason, nil
 	}
 	if denyReason := p.denyBindMountReason(createReq.HostConfig); denyReason != "" {
