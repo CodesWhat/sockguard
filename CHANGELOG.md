@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add read-only admin policy comparison for the next v3.1 release, with generation-bound field paths and change kinds, values omitted, structural validation, unknown-key counts and reload-immutable change reporting. The endpoint shares existing admin access controls and request-body limits, never applies candidates and never reads candidate TLS files.
 
 - Add `request_body.image_push` to hold image, plugin and manifest pushes (`POST /images/*/push`, `POST /plugins/*/push`, `POST /libpod/images/*/push`, `POST /libpod/manifests/*/registry/*` and `POST /libpod/manifests/*/push`) to an `allowed_registries` list. The policy is off until the list is non-empty. A destination that does not parse strictly is denied, only the `docker://` transport is accepted, a name with no registry is refused on Podman and on native libpod routes, `registry_aliases` (a list of `from`/`to` pairs) resolve one level before the check, and an `X-Registry-Auth` header naming another registry is refused. Docker Hub spellings resolve to `docker.io`. Pushes still need `insecure_allow_read_exfiltration`. BuildKit exporter pushes keep `allowed_exporter_registries`.
+
 ### Changed
 
 - Close the v3.1 mutation target with the November 6 measurement: 97.9821% test efficacy across all 43 packages at the source tree merged as `7dbc523f`, above the unchanged 97.8% target, with timeouts separate from kills.
@@ -63,6 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.4.7] - 2026-11-14
 
 v2.4.7 updates OpenTelemetry and the Go toolchain for security fixes. It carries v2.4.6.
+
 ### Security
 
 - Update the static website and docs build to Next.js 16.4.5 for GHSA-vc7v-qv4w-wrv8 and GHSA-mfr8-8qww-v76h. These cache advisories require a running Next.js server; both sites use static export. Record the unpatched picomatch advisory CVE-2026-112366 as a package-lock-only Qlty exception: glob patterns come from the trusted repository build, and npm packages are absent from the shipped Go binary and container.
