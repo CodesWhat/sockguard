@@ -85,8 +85,8 @@ func LoadWithData(configPath string) (*Config, []byte, error) {
 		cfg.Rules = defaults.Rules
 	}
 
-	cfg.explicitLegacyListen = explicitLegacyListenFile(configPath)
-	applyEndpointConfigProvenance(&cfg, explicitEndpointConfigFile(configPath))
+	cfg.explicitLegacyListen = explicitLegacyListenFile(fileData)
+	applyEndpointConfigProvenance(&cfg, explicitEndpointConfigFile(fileData))
 
 	return &cfg, fileData, nil
 }
@@ -118,17 +118,16 @@ var legacyListenKeys = []string{
 }
 
 // explicitLegacyListenFile reports whether any legacyListenKeys entry was
-// set via the YAML file at configPath or a SOCKGUARD_LISTEN_* environment
+// set in fileData (the YAML bytes LoadWithData already read, so a file
+// replaced after that read cannot change the answer) or a SOCKGUARD_LISTEN_* environment
 // variable. It uses a second, defaults-free Viper instance so
 // registerDefaults' leaf registrations (which would make every key
 // unconditionally "set") cannot mask the answer.
-func explicitLegacyListenFile(configPath string) bool {
+func explicitLegacyListenFile(fileData []byte) bool {
 	pv := viper.New()
-	if configPath != "" {
-		if data, err := ReadFile(configPath); err == nil {
-			pv.SetConfigType("yaml")
-			_ = pv.ReadConfig(bytes.NewReader(data))
-		}
+	if fileData != nil {
+		pv.SetConfigType("yaml")
+		_ = pv.ReadConfig(bytes.NewReader(fileData))
 	}
 	pv.SetEnvPrefix("SOCKGUARD")
 	pv.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
@@ -221,17 +220,15 @@ type endpointConfigPresenceDocument struct {
 
 // explicitEndpointConfigFile is explicitLegacyListenFile's #186 counterpart:
 // reports, for each endpoint_config group, whether any of its keys was set
-// via the YAML file at configPath or a matching SOCKGUARD_* environment
+// in fileData (the bytes LoadWithData already read) or a matching SOCKGUARD_* environment
 // variable, using a second, defaults-free Viper instance so registerDefaults'
 // leaf registrations cannot mask the answer. Both groups are answered from
 // one pass so the file is read once.
-func explicitEndpointConfigFile(configPath string) endpointConfigProvenance {
+func explicitEndpointConfigFile(fileData []byte) endpointConfigProvenance {
 	pv := viper.New()
-	if configPath != "" {
-		if data, err := ReadFile(configPath); err == nil {
-			pv.SetConfigType("yaml")
-			_ = pv.ReadConfig(bytes.NewReader(data))
-		}
+	if fileData != nil {
+		pv.SetConfigType("yaml")
+		_ = pv.ReadConfig(bytes.NewReader(fileData))
 	}
 	pv.SetEnvPrefix("SOCKGUARD")
 	pv.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))

@@ -1,0 +1,124 @@
+---
+title: Compliance report
+description: Generate an audit-ready CIS Docker Benchmark v1.6.0 configuration report from a Sockguard config with sockguard report, as text, JSON or Markdown.
+---
+
+`sockguard report` reads a Sockguard config and says, control by control, which
+parts of the [CIS Docker Benchmark](/cis-docker-benchmark) that config sets up.
+It is the machine-readable form of the mapping tables on that page, in a shape
+you can attach to an audit ticket or diff between releases.
+
+It describes configuration only. It is not a CIS certification and it does not
+prove runtime enforcement. Controls outside the Docker API request path need
+separate evidence.
+
+## Usage
+
+```bash
+sockguard -c /etc/sockguard/sockguard.yaml report                # text
+sockguard -c /etc/sockguard/sockguard.yaml report -o json        # indented JSON
+sockguard -c /etc/sockguard/sockguard.yaml report -o markdown    # table plus evidence
+```
+
+`report` loads the config the same way `match` and `validate` do: the
+`SOCKGUARD_*` overlay, Tecnativa compatibility expansion, then config
+validation and rule compilation. It doesn't check the `DOCKER_HOST`,
+`DOCKER_TLS` or `DOCKER_TLS_VERIFY` upstream settings that `validate` checks,
+so `validate` can reject an environment that `report` accepts. An invalid config, or a `-c` path that doesn't exist or
+can't be read, exits non-zero and prints no report. Without `-c`, a missing
+default file falls back to the built-in defaults, as it does for `match`.
+`report` takes no positional arguments; pass the file with `-c`.
+
+A successful report does not mean `serve` will accept the config. `report`
+doesn't check signed-policy startup requirements, so with
+`policy_bundle.enabled: true` it adds a report note saying so: the out-of-band
+trust config and the bundle signature are only checked when `serve` starts.
+
+The output has no timestamps, hostnames or file paths, and the same config
+always produces the same bytes. That makes `diff` between two reports a usable
+change record. The report carries a SHA-256 of the config file bytes so you can
+tie it to the exact file reviewed.
+
+## Statuses
+
+| Status | Meaning |
+|---|---|
+| `configured` | The control's knobs are set to the benchmark-aligned values in every effective scope |
+| `partial` | Satisfied in some scopes but not all |
+| `not_configured` | Not satisfied in any scope |
+| `always_on` | Enforced structurally with no knob (5.20, 5.24) in every scope |
+| `needs_evidence` | Depends on how workloads are deployed, which no config can show (5.31) |
+| `outside_scope` | Lives above or below the Docker API; Sockguard can't see it |
+
+Every control also carries a category: `enforced`, `influenced` or
+`outside_scope`, matching the three tables on the CIS page. The outside-scope
+rows keep the group IDs used there (`1.x`, `2.x` and so on) and name the
+recommended companion check.
+
+5.20 and 5.24 are ordinary denials, so a client profile in `warn` or `audit`
+mode forwards the request. They are `always_on` only when every scope enforces,
+and `partial` otherwise, with a note saying the request is forwarded.
+
+5.31 is `needs_evidence`, never `always_on`. Sockguard can't see whether a
+workload mounts the real Docker socket instead of the proxy socket, and its own
+container-create check admits a socket bind that `allowed_bind_mounts` covers.
+The control carries one boolean per scope: whether any `allowed_bind_mounts`
+entry covers a Docker or Podman socket path (`/var/run/docker.sock`,
+`/run/docker.sock`, a Podman socket, a parent directory, `/`, or any `*.sock`
+entry). Attach deployment evidence, such as compose or orchestrator specs, for
+the rest.
+
+## Scope semantics
+
+A client profile's `request_body` and `rules` do not inherit from or merge with
+the global ones. When a request resolves to a profile, that profile's policy
+replaces the global policy for the request. So the global `request_body` and
+every entry in `clients.profiles` are each an independent scope, and a profile
+that omits `request_body` runs with zero-valued body config, not the global one.
+
+A control is `configured` only if it holds in every scope. It is `partial` if
+it holds in some and `not_configured` if it holds in none. A profile with
+`mode: warn` or `mode: audit` lets denied requests through, so it never counts
+as satisfying a control.
+
+A few controls have their own rules:
+
+- **`insecure_allow_body_blind_writes: true`** doesn't change any mapped
+  control's status. The flag only lets exec run without a command allowlist and
+  relaxes Podman build controls, image load and container update fields that
+  bodies can't be checked for. Container-create checks and the privileged and
+  root-user exec checks still apply. The report carries a note naming the flag,
+  and the exec controls (5.22, 5.23, 5.22/5.23) list it as evidence.
+- **2.6** is `configured` when every TCP listener (the legacy `listen` block and
+  each `listeners[]` entry) sets `tls.client_ca_file`. A config with only unix
+  sockets is `configured` with the note "no TCP listeners".
+- **4.5** is `configured` when `image_trust.mode` is `enforce` on
+  `container_create`. Libpod and service image trust show up as evidence but
+  don't change the status.
+- **7.x** runs GET and POST probes against each of `/swarm/**`, `/services/**`,
+  `/nodes/**`, `/configs/**` and `/secrets/**` through the same rule matcher
+  `sockguard match` uses. It is `configured` when every probe is denied, in the
+  global rules and in each profile's rules. The probes are representative, not an
+  exhaustive path walk.
+
+## What the evidence contains
+
+Each control lists the config paths it looked at, what it expected and what it
+observed. Paths are dotted config paths, and client profiles are addressed by
+index, for example `clients.profiles[1].request_body.container_create.allow_privileged`.
+
+Observed values are limited to booleans, enum modes (`enforce`, `warn`, `off`)
+and list lengths such as `0 entries` or `3 entries`. The report never includes
+list contents, file paths, keys, certificate names, profile names, label values
+or map keys, so it is safe to attach to a ticket without scrubbing.
+
+## Disclaimer
+
+Every report, in every format, carries this text:
+
+> This report describes Sockguard configuration only. It is not a CIS
+> certification and does not prove runtime enforcement; controls outside the
+> Docker API request path need separate evidence.
+
+For runtime evidence, use the structured access log described in
+[Observability](/observability) and run `docker-bench-security` against the host.
