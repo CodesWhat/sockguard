@@ -28,6 +28,8 @@ test("GoReleaser publishes the sockguard binary to the CodesWhat Homebrew tap", 
   assert.ok(config.includes('make_latest: \'{{ eq (index .Env "RELEASE_LATEST") "true" }}\''));
   assert.match(config, /^ {6}owner: CodesWhat$/m);
   assert.match(config, /^ {6}name: homebrew-tap$/m);
+  assert.match(config, /^ {6}branch: sockguard-\{\{ \.Version \}\}$/m);
+  assert.doesNotMatch(config, /^ {6}branch: main$/m);
   assert.match(config, /^ {6}token: "{{ \.Env\.HOMEBREW_TAP_TOKEN }}"$/m);
   assert.match(config, /^ {4}custom_block: \|\n {6}postflight_steps do\n {8}on_macos do$/m);
   assert.doesNotMatch(config, /^ {4}hooks:/m);
@@ -59,6 +61,7 @@ test("global latest releases publish and smoke-test the Homebrew cask", () => {
   assert.match(verifyHomebrew, /^ {4}runs-on: macos-15$/m);
   assert.match(verifyHomebrew, /^ {6}HOMEBREW_CASK_OPTS: ""$/m);
   assert.match(verifyHomebrew, /brew install --cask codeswhat\/tap\/sockguard/);
+  assert.match(verifyHomebrew, /homebrew-tap\/main\/Casks\/sockguard\.rb/);
   assert.match(verifyHomebrew, /^ {10}RELEASE_VERSION: \$\{\{ github\.ref_name \}\}$/m);
   assert.match(verifyHomebrew, /sockguard version -o json/);
   assert.match(verifyHomebrew, /\.version == \$version/);
