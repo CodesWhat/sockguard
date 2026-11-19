@@ -5,6 +5,9 @@ import "testing"
 // Provenance must come from the bytes LoadWithData already read, never from a
 // second read of the path, so a file replaced between reads can't change it.
 func TestFileProvenanceReadsTheGivenBytes(t *testing.T) {
+	clearProvenanceEnv(t, legacyListenKeys)
+	clearProvenanceEnv(t, networkEndpointConfigKeys)
+	clearProvenanceEnv(t, libpodNetworkEndpointConfigKeys)
 	if explicitLegacyListenFile(nil) {
 		t.Fatal("nil bytes must not mark listen explicit")
 	}
