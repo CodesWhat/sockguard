@@ -69,6 +69,12 @@ func TestValidateOTLP(t *testing.T) {
 		{"ratio zero ok", func(c *Config) { c.OTLP.SampleRatio = 0 }, ""},
 		{"header name space", func(c *Config) { c.OTLP.Headers = map[string]string{"bad name": "v"} }, "invalid header name"},
 		{"header name empty", func(c *Config) { c.OTLP.Headers = map[string]string{"": "v"} }, "invalid header name"},
+		{"header value LF", func(c *Config) { c.OTLP.Headers = map[string]string{"authorization": "Bearer t\n"} }, "has an invalid header value"},
+		{"header value CR", func(c *Config) { c.OTLP.Headers = map[string]string{"authorization": "a\rb"} }, "has an invalid header value"},
+		{"header value NUL", func(c *Config) { c.OTLP.Headers = map[string]string{"authorization": "a\x00b"} }, "has an invalid header value"},
+		{"header value DEL", func(c *Config) { c.OTLP.Headers = map[string]string{"authorization": "a\x7fb"} }, "has an invalid header value"},
+		{"header value tab ok", func(c *Config) { c.OTLP.Headers = map[string]string{"x-a": "a\tb"} }, ""},
+		{"disabled skips header value", func(c *Config) { c.OTLP.Enabled = false; c.OTLP.Headers = map[string]string{"x-a": "a\nb"} }, ""},
 		{"header name colon", func(c *Config) { c.OTLP.Headers = map[string]string{"a:b": "v"} }, "invalid header name"},
 		{"missing ca file", func(c *Config) { c.OTLP.TLS.CAFile = "/nonexistent/secret-path/ca.pem" }, "otlp.tls.ca_file must be a readable file"},
 	}
@@ -93,13 +99,13 @@ func TestValidateOTLP(t *testing.T) {
 func TestValidateOTLPErrorsNeverEchoSecrets(t *testing.T) {
 	cfg := enabledOTLP()
 	cfg.OTLP.Endpoint = "https://user:endpoint-secret@collector/v1/traces?key=query-secret"
-	cfg.OTLP.Headers = map[string]string{"bad name": "header-value-secret"}
+	cfg.OTLP.Headers = map[string]string{"bad name": "header-value-secret", "x-key": "value-secret\n"}
 	cfg.OTLP.QueueSize = 0
 	err := Validate(&cfg)
 	if err == nil {
 		t.Fatal("expected validation errors")
 	}
-	for _, secret := range []string{"endpoint-secret", "query-secret", "header-value-secret"} {
+	for _, secret := range []string{"endpoint-secret", "query-secret", "header-value-secret", "value-secret"} {
 		if strings.Contains(err.Error(), secret) {
 			t.Errorf("validation error leaks %q: %v", secret, err)
 		}

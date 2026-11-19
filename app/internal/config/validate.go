@@ -2417,6 +2417,10 @@ func validateOTLP(cfg *Config, mode validateMode) []string {
 	for _, hn := range hnames {
 		if !validOTLPHeaderName(hn) {
 			errs = append(errs, fmt.Sprintf("otlp.headers has an invalid header name %q", hn))
+			continue
+		}
+		if !validOTLPHeaderValue(o.Headers[hn]) {
+			errs = append(errs, fmt.Sprintf("otlp.headers[%q] has an invalid header value", hn))
 		}
 	}
 	if o.TLS.CAFile != "" && mode != validateStructural {
@@ -2427,6 +2431,19 @@ func validateOTLP(cfg *Config, mode validateMode) []string {
 		}
 	}
 	return errs
+}
+
+// validOTLPHeaderValue applies the net/http outgoing rule: no control
+// characters (CR, LF, NUL and the rest of 0x00-0x1f except tab) and no DEL.
+// An invalid value would fail every request as a transport error, so it is
+// rejected up front. The value itself is never echoed.
+func validOTLPHeaderValue(v string) bool {
+	for i := 0; i < len(v); i++ {
+		if c := v[i]; c != '\t' && (c < 0x20 || c == 0x7f) {
+			return false
+		}
+	}
+	return true
 }
 
 // validOTLPHeaderName reports whether name is an RFC 7230 token.
