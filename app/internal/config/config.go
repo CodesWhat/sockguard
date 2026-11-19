@@ -480,6 +480,11 @@ type ResponseConfig struct {
 	// does not match at least one pattern are hidden. Empty means no image-based
 	// filtering.
 	ImagePatterns []string `mapstructure:"image_patterns"`
+	// VisibleNetworks is a list of exact, case-sensitive network names. A
+	// container is visible only if it is attached to at least one of them.
+	// Applies to containers only and is ANDed with the other axes. Empty means
+	// no network-based filtering.
+	VisibleNetworks []string `mapstructure:"visible_networks"`
 	// RedactHostTopology redacts GET /info fields that fingerprint the host's
 	// container runtime plumbing: Containerd, FirewallBackend,
 	// DiscoveredDevices, and NRI. Separate from RedactNetworkTopology (which
@@ -730,6 +735,14 @@ type ContainerCreateRequestBodyConfig struct {
 	// alone or ahead of an "=". Podman writes the container's output to that
 	// path on the daemon host. dockerd has no such option. Default false.
 	AllowLogPath bool `mapstructure:"allow_log_path"`
+	// AllowRuntimeAnnotations permits HostConfig.Annotations keys under
+	// run.oci., which switch OCI runtime behavior on, and the three
+	// io.podman.annotations. keys Podman acts on (cid-file, autoremove,
+	// autoremove-image). Podman maps HostConfig.Annotations into the
+	// container's annotations, and removes the cid-file path when the
+	// container is removed. Applies to a Podman upstream and to one that
+	// is not known to be Docker. Other annotation keys pass. Default false.
+	AllowRuntimeAnnotations bool `mapstructure:"allow_runtime_annotations"`
 
 	// AllowedLogDrivers is an opt-in allowlist for HostConfig.LogConfig.Type (and a "driver" entry in LogConfig.Config). Empty, the default,
 	// enforces nothing. An empty driver selects the daemon default and is always
@@ -1634,6 +1647,9 @@ type ClientProfileResponseConfig struct {
 	// ImagePatterns is a per-profile glob pattern list matched against container
 	// Image fields and image RepoTags. See ResponseConfig.ImagePatterns.
 	ImagePatterns []string `mapstructure:"image_patterns"`
+	// VisibleNetworks is a per-profile network-name list. See
+	// ResponseConfig.VisibleNetworks.
+	VisibleNetworks []string `mapstructure:"visible_networks"`
 }
 
 // OwnershipConfig configures per-proxy resource ownership labeling and

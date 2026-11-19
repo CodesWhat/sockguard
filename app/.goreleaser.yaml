@@ -129,7 +129,10 @@ homebrew_casks:
     repository:
       owner: CodesWhat
       name: homebrew-tap
-      branch: main
+      # Publish to a per-release tap branch. The tap's own workflow opens the
+      # PR into main, runs cask-ci and auto-merges it, so tap main only moves
+      # through a checked PR.
+      branch: sockguard-{{ .Version }}
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     commit_author:
       name: goreleaserbot

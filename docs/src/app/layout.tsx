@@ -6,6 +6,7 @@ import type { CSSProperties } from "react";
 import { AnalyticsPageview } from "@/components/analytics-pageview";
 import { Footer } from "@/components/footer";
 import { MobileDocsBar } from "@/components/mobile-docs-bar";
+import { NoNavTitle } from "@/components/no-nav-title";
 import { SearchButton } from "@/components/search-button";
 import { SidebarBrand } from "@/components/sidebar-brand";
 import { SiteHeader } from "@/components/site-header";
@@ -106,6 +107,7 @@ export default function RootLayout({
             <DocsLayout
               tree={source.pageTree}
               nav={{ component: <MobileDocsBar /> }}
+              slots={{ navTitle: NoNavTitle }}
               themeSwitch={{ enabled: false }}
               searchToggle={{ enabled: false }}
               sidebar={{

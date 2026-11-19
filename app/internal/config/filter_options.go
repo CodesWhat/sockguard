@@ -153,6 +153,7 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 		DenyUnconfinedSystemPaths:         c.DenyUnconfinedSystemPaths,
 		AllowTmpfsPrivilegedOptions:       c.AllowTmpfsPrivilegedOptions,
 		AllowLogPath:                      c.AllowLogPath,
+		AllowRuntimeAnnotations:           c.AllowRuntimeAnnotations,
 		AllowedLogDrivers:                 c.AllowedLogDrivers,
 		AllowedLogEndpointOptions:         c.AllowedLogEndpointOptions,
 	}

@@ -1,7 +1,6 @@
 package logging
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,7 +11,7 @@ import (
 	"time"
 )
 
-// logBufferSize is the size of the bufio.Writer used when logging to a file.
+// logBufferSize is the flush threshold of the buffer used when logging to a file.
 // stderr and stdout are left unbuffered so dev/debug output appears immediately.
 // 64 KiB keeps busy hosts from flushing (and holding the writer mutex) every
 // dozen access-log lines; logFlushInterval still bounds record staleness.
@@ -91,34 +90,131 @@ func outputWriter(output string) (io.Writer, io.Closer, error) {
 	}
 }
 
-// bufferedFileWriter wraps a *bufio.Writer over an *os.File with a periodic
-// flush goroutine so log records do not sit in the in-memory buffer
-// indefinitely on low-throughput hosts. The mutex serializes Write and the
-// periodic flush, since bufio.Writer is not concurrency-safe.
+// maxPendingBytes bounds the bytes a file sink holds while the file refuses
+// writes (disk full, I/O error). Past this, new records are refused and
+// counted instead of growing memory without limit.
+const maxPendingBytes = 4 * 1024 * 1024
+
+// sinkDiagnosticInterval spaces the stderr diagnostics a failing file sink
+// emits, so a dead disk produces one line a minute rather than one per record.
+const sinkDiagnosticInterval = time.Minute
+
+// bufferedFileWriter buffers log records in memory and flushes them to a file
+// when the buffer reaches flushSize and on a periodic tick, so records do not
+// sit in memory indefinitely on low-throughput hosts.
+//
+// Unlike a bufio.Writer, a failed write is not sticky. The unwritten suffix
+// stays in the pending buffer and the next flush retries it, so bytes are
+// neither lost nor duplicated once storage recovers. The buffer is bounded by
+// maxPending; a record that would not fit is refused whole (never split) and
+// counted.
 type bufferedFileWriter struct {
-	mu       sync.Mutex
-	buf      *bufio.Writer
-	file     *os.File
+	mu          sync.Mutex
+	out         io.WriteCloser
+	pending     []byte
+	flushSize   int
+	maxPending  int
+	droppedRecs uint64
+	droppedByte uint64
+	failing     bool
+
+	diagInterval time.Duration
+	diagNow      func() time.Time
+	diagOut      io.Writer
+	lastDiag     time.Time
+	diagSent     bool
+
 	stop     chan struct{}
 	done     chan struct{}
 	stopOnce sync.Once
 }
 
 func newBufferedFileWriter(f *os.File, size int, flushInterval time.Duration) *bufferedFileWriter {
+	return newBufferedWriter(f, size, maxPendingBytes, flushInterval)
+}
+
+func newBufferedWriter(out io.WriteCloser, flushSize, maxPending int, flushInterval time.Duration) *bufferedFileWriter {
 	w := &bufferedFileWriter{
-		buf:  bufio.NewWriterSize(f, size),
-		file: f,
-		stop: make(chan struct{}),
-		done: make(chan struct{}),
+		out:          out,
+		flushSize:    flushSize,
+		maxPending:   maxPending,
+		diagInterval: sinkDiagnosticInterval,
+		diagNow:      time.Now,
+		diagOut:      os.Stderr,
+		stop:         make(chan struct{}),
+		done:         make(chan struct{}),
 	}
 	go w.flushLoop(flushInterval)
 	return w
 }
 
+// Write queues p. It is all-or-nothing: either the whole record is buffered
+// (nil error, even when the file is currently failing, because it will be
+// retried) or the buffer is full and the record is refused with an error and
+// counted as dropped.
 func (w *bufferedFileWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return w.buf.Write(p)
+	if len(w.pending)+len(p) > w.maxPending {
+		// Try to make room first; the file may have recovered.
+		_ = w.flushLocked()
+	}
+	if len(w.pending)+len(p) > w.maxPending {
+		w.droppedRecs++
+		w.droppedByte += uint64(len(p))
+		w.diagnoseLocked(fmt.Errorf("pending buffer full (%d bytes), dropping records", len(w.pending)))
+		return 0, fmt.Errorf("log sink buffer full: dropped %d bytes", len(p))
+	}
+	w.pending = append(w.pending, p...)
+	if len(w.pending) >= w.flushSize {
+		_ = w.flushLocked()
+	}
+	return len(p), nil
+}
+
+// flushLocked writes pending to the file, removing whatever was written
+// (including a partial prefix) and keeping the rest for the next attempt.
+func (w *bufferedFileWriter) flushLocked() error {
+	for len(w.pending) > 0 {
+		n, err := w.out.Write(w.pending)
+		if n > 0 {
+			w.pending = w.pending[:copy(w.pending, w.pending[n:])]
+		}
+		if err == nil && n == 0 {
+			err = io.ErrShortWrite
+		}
+		if err != nil {
+			w.failing = true
+			w.diagnoseLocked(err)
+			return err
+		}
+	}
+	if w.failing {
+		w.failing = false
+		w.lastDiag = time.Time{}
+		w.emitLocked("log sink recovered")
+	}
+	return nil
+}
+
+// diagnoseLocked emits a rate-limited stderr line about a sink failure. It
+// writes to stderr directly, independent of the logger being served, because
+// that logger is the thing that is failing.
+func (w *bufferedFileWriter) diagnoseLocked(err error) {
+	now := w.diagNow()
+	if w.diagSent && now.Sub(w.lastDiag) < w.diagInterval {
+		return
+	}
+	w.lastDiag = now
+	w.diagSent = true
+	w.emitLocked(fmt.Sprintf("log sink write failed: %v (pending_bytes=%d dropped_records=%d dropped_bytes=%d)",
+		err, len(w.pending), w.droppedRecs, w.droppedByte))
+}
+
+func (w *bufferedFileWriter) emitLocked(msg string) {
+	if w.diagOut != nil {
+		_, _ = fmt.Fprintf(w.diagOut, "sockguard: %s\n", msg)
+	}
 }
 
 func (w *bufferedFileWriter) flushLoop(interval time.Duration) {
@@ -129,7 +225,7 @@ func (w *bufferedFileWriter) flushLoop(interval time.Duration) {
 		select {
 		case <-ticker.C:
 			w.mu.Lock()
-			_ = w.buf.Flush()
+			_ = w.flushLocked()
 			w.mu.Unlock()
 		case <-w.stop:
 			return
@@ -142,9 +238,12 @@ func (w *bufferedFileWriter) Close() error {
 	<-w.done
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	flushErr := w.buf.Flush()
-	closeErr := w.file.Close()
+	flushErr := w.flushLocked()
+	closeErr := w.out.Close()
 	if flushErr != nil {
+		if len(w.pending) > 0 {
+			flushErr = fmt.Errorf("%w (%d unflushed bytes lost)", flushErr, len(w.pending))
+		}
 		return flushErr
 	}
 	return closeErr

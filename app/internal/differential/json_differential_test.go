@@ -216,11 +216,13 @@ func TestJSONDifferentialContainerCreateNoDecoderBypass(t *testing.T) {
 			true,
 		},
 		{
-			// Privileged lives under HostConfig. At the top level it is an
-			// unknown field — ignored by sockguard and by the daemon alike.
-			"privileged at the top level is not a host-config field",
+			// Privileged lives under HostConfig, but Docker 24.x-26.x also
+			// read it from the top level of the body when the nested
+			// HostConfig is absent, so sockguard refuses the root-level
+			// spelling instead of treating it as an unknown field.
+			"privileged at the top level is refused",
 			`{"Privileged":true}`,
-			true,
+			false,
 		},
 
 		// --- privileged, encoded every way encoding/json accepts ---

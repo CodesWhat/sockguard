@@ -145,7 +145,7 @@ func TestGatewayReturnStampsForwardedImageConfig(t *testing.T) {
 	})
 	b := newUnitTestBridge(t, leg)
 	b.policy.Control.Solve.AllowFrontendGateway = true
-	b.policy.ImageOwnership = ImageOwnershipPolicy{Owner: "team-a", LabelKey: "owner", RequireConfig: true}
+	b.policy.ImageOwnership = ImageOwnershipPolicy{sourcesAuthorized: true, Owner: "team-a", LabelKey: "owner", RequireConfig: true}
 	t.Cleanup(func() { b.registry.Close(b.session.ID); b.closeAll(nil) })
 	if _, d := b.registry.beginGatewayBuild(t.Context(), b.session, "build", testBuildkitSessionID, b.policy); d != nil {
 		t.Fatal(d)

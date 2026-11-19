@@ -1031,7 +1031,7 @@ IDENTITY_CONTROLLER_DIR=""
 
 # shellcheck disable=SC2317,SC2329 # invoked indirectly via wait_until
 identity_agent_ready() {
-  docker exec "$IDENTITY_AGENT" wget -q --spider http://127.0.0.1:4100/health >/dev/null 2>&1
+  docker exec "$IDENTITY_AGENT" /usr/bin/portwing healthcheck >/dev/null 2>&1
 }
 
 identity_generate_key() {

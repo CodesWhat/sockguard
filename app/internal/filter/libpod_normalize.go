@@ -186,10 +186,10 @@ func containerSubresourcePath(normalizedPath string, subresource string) (libpod
 	if found {
 		libpod = true
 	} else {
-		rest, found = strings.CutPrefix(normalizedPath, "/containers/")
-		if !found {
-			return false, false
-		}
+		// Docker's {name:.*} is slash-permissive, so the name is everything
+		// before the suffix. Podman's single-segment grammar stays below.
+		_, ok = apipath.DockerContainerAction(normalizedPath, subresource)
+		return false, ok
 	}
 	_, tail, hasTail := strings.Cut(rest, "/")
 	return libpod, hasTail && tail == subresource
