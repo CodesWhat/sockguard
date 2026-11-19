@@ -1120,14 +1120,37 @@ func mutateServiceOwnershipBody(r *http.Request, labelKey, owner string) (*owner
 			return err
 		}
 		containerLabels[labelKey] = owner
-		refs.embeddedResources = serviceEmbeddedOwnershipReferences(decoded)
+		var templated string
+		refs.embeddedResources, templated = collectServiceEmbeddedReferencesWithTemplates(decoded)
+		if templated != "" {
+			refs.denyReason = fmt.Sprintf("owner policy denied SwarmKit template in %s: templates expand after authorization", templated)
+		}
 		return nil
 	})
 	return refs, err
 }
 
 func serviceEmbeddedOwnershipReferences(decoded map[string]any) []embeddedOwnershipReference {
+	refs, _ := collectServiceEmbeddedReferencesWithTemplates(decoded)
+	return refs
+}
+
+// refuseServiceTemplate records source in *templated when value holds a
+// SwarmKit template and nothing was recorded yet. SwarmKit expands "{{...}}"
+// in volume sources and network targets after the request is authorized, so
+// the literal text says nothing about which volume or network the service
+// ends up on.
+func refuseServiceTemplate(templated *string, value, source string) {
+	if *templated == "" && strings.Contains(value, "{{") {
+		*templated = source
+	}
+}
+
+// collectServiceEmbeddedReferencesWithTemplates also returns where a templated
+// volume source or network target was found, or "".
+func collectServiceEmbeddedReferencesWithTemplates(decoded map[string]any) ([]embeddedOwnershipReference, string) {
 	var refs []embeddedOwnershipReference
+	var templated string
 	for _, taskTemplate := range filter.FoldedObjects(decoded, "TaskTemplate") {
 		for _, containerSpec := range filter.FoldedObjects(taskTemplate, "ContainerSpec") {
 			for _, image := range filter.FoldedStrings(containerSpec, "Image") {
@@ -1141,6 +1164,7 @@ func serviceEmbeddedOwnershipReferences(decoded map[string]any) []embeddedOwners
 						continue
 					}
 					for _, source := range filter.FoldedStrings(mount, "Source") {
+						refuseServiceTemplate(&templated, source, "service TaskTemplate.ContainerSpec.Mounts")
 						appendEmbeddedOwnershipReference(&refs, dockerresource.KindVolume, source, "service TaskTemplate.ContainerSpec.Mounts")
 					}
 				}
@@ -1151,17 +1175,17 @@ func serviceEmbeddedOwnershipReferences(decoded map[string]any) []embeddedOwners
 		}
 	}
 
-	appendServiceNetworkReferences(&refs, decoded, "service Networks.Target")
+	appendServiceNetworkReferences(&refs, &templated, decoded, "service Networks.Target")
 	for _, taskTemplate := range filter.FoldedObjects(decoded, "TaskTemplate") {
 		// Docker prefers TaskTemplate.Networks over the deprecated top-level
 		// Networks and resolves its targets before scheduling, so an overlay
 		// named only here is attached the same way.
-		appendServiceNetworkReferences(&refs, taskTemplate, "service TaskTemplate.Networks.Target")
+		appendServiceNetworkReferences(&refs, &templated, taskTemplate, "service TaskTemplate.Networks.Target")
 	}
-	return refs
+	return refs, templated
 }
 
-func appendServiceNetworkReferences(refs *[]embeddedOwnershipReference, parent map[string]any, source string) {
+func appendServiceNetworkReferences(refs *[]embeddedOwnershipReference, templated *string, parent map[string]any, source string) {
 	for _, networks := range filter.FoldedArrays(parent, "Networks") {
 		for _, value := range networks {
 			network, ok := value.(map[string]any)
@@ -1169,6 +1193,7 @@ func appendServiceNetworkReferences(refs *[]embeddedOwnershipReference, parent m
 				continue
 			}
 			for _, target := range filter.FoldedStrings(network, "Target") {
+				refuseServiceTemplate(templated, target, source)
 				if isCustomNetworkMode(target) {
 					appendEmbeddedOwnershipReference(refs, dockerresource.KindNetwork, target, source)
 				}
