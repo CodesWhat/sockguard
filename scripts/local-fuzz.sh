@@ -189,6 +189,7 @@ add_filter_entries() {
   add_entry "FuzzContainerCreate" "./internal/filter/"
   add_entry "FuzzExec" "./internal/filter/"
   add_entry "FuzzImagePull" "./internal/filter/"
+  add_entry "FuzzImagePush" "./internal/filter/"
   add_entry "FuzzVolume" "./internal/filter/"
   add_entry "FuzzSecret" "./internal/filter/"
   add_entry "FuzzConfigWrite" "./internal/filter/"

@@ -44,6 +44,7 @@ func (c RequestBodyConfig) ToFilterOptions() filter.PolicyConfig {
 		LibpodContainerCreate: c.LibpodContainerCreate.ToFilterOptions(),
 		Exec:                  c.Exec.ToFilterOptions(),
 		ImagePull:             c.ImagePull.ToFilterOptions(),
+		ImagePush:             c.ImagePush.ToFilterOptions(),
 		Build:                 c.Build.ToFilterOptions(),
 		ContainerUpdate:       c.ContainerUpdate.ToFilterOptions(),
 		ContainerRemove:       c.ContainerRemove.ToFilterOptions(),
@@ -259,6 +260,24 @@ func (c ImagePullRequestBodyConfig) ToFilterOptions() filter.ImagePullOptions {
 		AllowAllRegistries: c.AllowAllRegistries,
 		AllowOfficial:      c.AllowOfficial,
 		AllowedRegistries:  c.AllowedRegistries,
+	}
+}
+
+func (c ImagePushRequestBodyConfig) ToFilterOptions() filter.ImagePushOptions {
+	var aliases map[string]string
+	if len(c.RegistryAliases) > 0 {
+		aliases = make(map[string]string, len(c.RegistryAliases))
+		for _, alias := range c.RegistryAliases {
+			// Validation refuses a repeated key; keeping the first is only a
+			// guard for a config that skipped it.
+			if _, dup := aliases[alias.From]; !dup {
+				aliases[alias.From] = alias.To
+			}
+		}
+	}
+	return filter.ImagePushOptions{
+		AllowedRegistries: c.AllowedRegistries,
+		RegistryAliases:   aliases,
 	}
 }
 

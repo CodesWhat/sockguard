@@ -538,6 +538,7 @@ type RequestBodyConfig struct {
 	// doc, decision C3).
 	Exec             ExecRequestBodyConfig             `mapstructure:"exec"`
 	ImagePull        ImagePullRequestBodyConfig        `mapstructure:"image_pull"`
+	ImagePush        ImagePushRequestBodyConfig        `mapstructure:"image_push"`
 	Build            BuildRequestBodyConfig            `mapstructure:"build"`
 	ContainerUpdate  ContainerUpdateRequestBodyConfig  `mapstructure:"container_update"`
 	ContainerRemove  ContainerRemoveRequestBodyConfig  `mapstructure:"container_remove"`
@@ -964,6 +965,24 @@ type ImagePullRequestBodyConfig struct {
 	AllowAllRegistries bool     `mapstructure:"allow_all_registries"`
 	AllowOfficial      bool     `mapstructure:"allow_official"`
 	AllowedRegistries  []string `mapstructure:"allowed_registries"`
+}
+
+// ImagePushRequestBodyConfig configures the registry allowlist for image,
+// plugin and manifest pushes. It is active only when AllowedRegistries is
+// non-empty; absent or empty leaves pushes as they were.
+type ImagePushRequestBodyConfig struct {
+	AllowedRegistries []string `mapstructure:"allowed_registries"`
+	// RegistryAliases maps a host a client may name to the host the daemon
+	// reaches for it. The target is what AllowedRegistries is checked against.
+	// It is a list of pairs rather than a map: Viper splits map keys on "."
+	// and registry hosts are full of dots, so a host-keyed map does not load.
+	RegistryAliases []ImagePushRegistryAlias `mapstructure:"registry_aliases"`
+}
+
+// ImagePushRegistryAlias is one registry_aliases entry.
+type ImagePushRegistryAlias struct {
+	From string `mapstructure:"from"`
+	To   string `mapstructure:"to"`
 }
 
 // BuildRequestBodyConfig configures inspection for POST /build.
