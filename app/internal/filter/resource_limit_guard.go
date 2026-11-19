@@ -89,6 +89,11 @@ type ResourceLimitGuardOptions struct {
 	// ?rollback=previous or an automatic-rollback-capable update; a nil value
 	// with an active requirement fails closed (does not panic).
 	InspectService ServiceInspectFunc
+	// InspectNetwork resolves a service's network targets (ID, ID prefix or
+	// name) so allow_host_network: false also holds for the host network
+	// named by ID. A nil value fails closed (502) for any service that
+	// names a network.
+	InspectNetwork NetworkInspectFunc
 }
 
 // ResourceLimitGuardWithOptions returns the #152 resource-limit guard
@@ -101,6 +106,7 @@ func ResourceLimitGuardWithOptions(logger *slog.Logger, opts ResourceLimitGuardO
 		resolveProfile:   opts.ResolveProfile,
 		inspectContainer: opts.InspectContainer,
 		inspectService:   opts.InspectService,
+		inspectNetwork:   opts.InspectNetwork,
 		logger:           logger,
 	}
 	return func(next http.Handler) http.Handler {
@@ -116,6 +122,7 @@ type resourceLimitGuard struct {
 	resolveProfile   func(*http.Request) (string, bool)
 	inspectContainer ContainerUpdateInspectFunc
 	inspectService   ServiceInspectFunc
+	inspectNetwork   NetworkInspectFunc
 	logger           *slog.Logger
 }
 
@@ -143,6 +150,9 @@ func (g *resourceLimitGuard) serve(w http.ResponseWriter, r *http.Request, next 
 	case isLibpodContainerUpdatePath(normPath):
 		g.guardContainerUpdate(w, r, normPath, policy, true, next)
 	case isServiceWritePath(normPath):
+		if !g.guardServiceNetworks(w, r, policy) {
+			return
+		}
 		g.guardServiceWrite(w, r, normPath, policy, next)
 	default:
 		next.ServeHTTP(w, r)
