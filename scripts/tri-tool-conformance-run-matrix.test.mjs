@@ -103,6 +103,40 @@ describe("tri-tool-conformance/run-matrix.sh --self-test", () => {
     );
   });
 
+  for (const probeStatus of [0, 7]) {
+    it(`checks identity readiness with the shell-less agent and probe status ${probeStatus}`, () => {
+      const script = readFileSync(scriptPath, "utf8");
+      const readiness = extractShellFunction(
+        script,
+        "identity_agent_ready",
+        "identity_generate_key",
+      );
+      const result = spawnSync(
+        "bash",
+        [
+          "-c",
+          `IDENTITY_AGENT=published-identity-agent
+docker() {
+  if [ "$#" -ne 4 ] || [ "$1" != exec ] || [ "$2" != "$IDENTITY_AGENT" ] ||
+     [ "$3" != /usr/bin/portwing ] || [ "$4" != healthcheck ]; then
+    return 127
+  fi
+  return "$PROBE_STATUS"
+}
+${readiness}
+identity_agent_ready`,
+        ],
+        { encoding: "utf8", env: { ...process.env, PROBE_STATUS: String(probeStatus) } },
+      );
+
+      assert.equal(
+        result.status,
+        probeStatus,
+        "readiness must use the published image's native probe and preserve an unhealthy result",
+      );
+    });
+  }
+
   it("keeps the live registry readable by the rotation harness", () => {
     const script = readFileSync(scriptPath, "utf8");
 

@@ -191,7 +191,7 @@ func handleHijackDialer(w http.ResponseWriter, r *http.Request, dialer upstream.
 		return
 	}
 
-	proxyHijackStreams(session, inactivityTimeout, logger)
+	proxyHijackStreams(HijackShutdown(r.Context()), session, inactivityTimeout, logger)
 }
 
 // upgradeHijackConnectionDialer atomically dials the active endpoint through an
@@ -255,6 +255,25 @@ func finishHijackUpgrade(w http.ResponseWriter, r *http.Request, upstreamConn ne
 	return session, ok
 }
 
+type hijackShutdownKey struct{}
+
+// WithHijackShutdown returns a context carrying a channel that is closed when
+// the server begins shutting down. Hijacked sessions watch it to close both
+// legs promptly. It is a dedicated signal rather than request-context
+// cancellation because net/http cancels a request context on any client EOF,
+// which would wrongly kill a session whose client merely half-closed stdin
+// while the container is still producing output.
+func WithHijackShutdown(ctx context.Context, done <-chan struct{}) context.Context {
+	return context.WithValue(ctx, hijackShutdownKey{}, done)
+}
+
+// HijackShutdown returns the shutdown channel installed by WithHijackShutdown,
+// or nil (which never fires) when none is present.
+func HijackShutdown(ctx context.Context) <-chan struct{} {
+	done, _ := ctx.Value(hijackShutdownKey{}).(<-chan struct{})
+	return done
+}
+
 type passClientUpgradeKey struct{}
 
 // PassClientUpgrade wraps a hijack handler so it forwards the client's upgrade
@@ -305,7 +324,7 @@ func isRawStreamHijackResponse(r *http.Request, resp *http.Response) bool {
 		len(resp.TransferEncoding) == 0
 }
 
-func proxyHijackStreams(session *hijackSession, inactivityTimeout time.Duration, logger *slog.Logger) {
+func proxyHijackStreams(shutdown <-chan struct{}, session *hijackSession, inactivityTimeout time.Duration, logger *slog.Logger) {
 	// Bidirectional copy with proper half-close signaling.
 	// When one direction reaches EOF, we signal the other side via CloseWrite
 	// so it knows no more data is coming (critical for stdin EOF → container stop).
@@ -344,6 +363,19 @@ func proxyHijackStreams(session *hijackSession, inactivityTimeout time.Duration,
 	go func() {
 		wg.Wait()
 		close(copyDone)
+	}()
+
+	// Server shutdown closes both legs so even a quiet session, with no bytes
+	// flowing in either direction, unblocks its copies and returns promptly
+	// instead of waiting out the inactivity timer. A nil channel never fires.
+	go func() {
+		select {
+		case <-shutdown:
+			logger.Debug("hijack: closing session on server shutdown", "path", logging.SafeString(reqPath))
+			closeConn(logger, session.clientConn, "client connection", reqPath)
+			closeConn(logger, session.upstreamConn, "upstream connection", reqPath)
+		case <-copyDone:
+		}
 	}()
 
 	if waitForHijackInactivity(activity, inactivityTimeout, copyDone) {

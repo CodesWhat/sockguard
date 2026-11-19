@@ -212,6 +212,13 @@ type ContainerCreateOptions struct {
 	// denyLogPathReason.
 	AllowLogPath bool
 
+	// AllowRuntimeAnnotations permits HostConfig.Annotations keys under run.oci.
+	// (refused on every upstream, since dockerd forwards them to the OCI
+	// runtime) and the io.podman.annotations. keys Podman acts on (refused
+	// unless the upstream is known to be dockerd). Default false. See
+	// runtimeAnnotationsDenyReason.
+	AllowRuntimeAnnotations bool
+
 	// AllowedLogDrivers is an opt-in allowlist for HostConfig.LogConfig.Type
 	// (and a "driver" entry in LogConfig.Config, which a Podman upstream reads
 	// as the driver). Empty, the default, enforces nothing. An empty Type
@@ -298,6 +305,7 @@ type containerCreatePolicy struct {
 	allowTmpfsPrivilegedOptions bool
 	podmanUpstream              bool
 	allowLogPath                bool
+	allowRuntimeAnnotations     bool
 	logDrivers                  logDriverPolicy
 	dockerUpstream              bool
 
@@ -398,6 +406,7 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		allowTmpfsPrivilegedOptions:       opts.AllowTmpfsPrivilegedOptions,
 		podmanUpstream:                    opts.PodmanUpstream,
 		allowLogPath:                      opts.AllowLogPath,
+		allowRuntimeAnnotations:           opts.AllowRuntimeAnnotations,
 		logDrivers:                        newLogDriverPolicy(opts.AllowedLogDrivers, opts.AllowedLogEndpointOptions),
 		dockerUpstream:                    opts.DockerUpstream,
 		allowEndpointConfig:               opts.AllowEndpointConfig,
@@ -1393,6 +1402,14 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 		return p.allowedImages.denyReason("", "container create"), nil
 	}
 
+	// Docker 24.x-26.x read HostConfig fields from the top level of the body
+	// when the nested HostConfig is absent, so the nested object this
+	// inspector reads is not the whole picture there. See
+	// legacyRootHostConfigKeys.
+	if reason := denyLegacyRootHostConfigReason(body); reason != "" {
+		return reason, nil
+	}
+
 	createReq := acquireContainerCreateRequest()
 	defer releaseContainerCreateRequest(createReq)
 	if err := json.Unmarshal(body, createReq); err != nil {
@@ -1460,6 +1477,9 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if len(createReq.HostConfig.ExtraHosts) > 0 {
 		return "container create denied: ExtraHosts is not allowed", nil
 	}
+	if len(createReq.HostConfig.Links) > 0 {
+		return "container create denied: legacy container links (HostConfig.Links) are not allowed", nil
+	}
 	if runtime := strings.TrimSpace(createReq.HostConfig.Runtime); runtime != "" && !slices.Contains(p.allowedRuntimes, runtime) {
 		return fmt.Sprintf("container create denied: runtime %q is not allowlisted", runtime), nil
 	}
@@ -1470,6 +1490,12 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 		if denyReason := denyCompatMountFieldInjectionReason(createReq.HostConfig.Mounts, "container create"); denyReason != "" {
 			return denyReason, nil
 		}
+	}
+	// dockerd forwards HostConfig.Annotations into the OCI spec, where crun
+	// honors run.oci.* keys, so those are refused on every upstream. Only the
+	// Podman-specific io.podman.annotations.* keys are exempt on dockerd.
+	if denyReason := runtimeAnnotationsDenyReason(createReq.HostConfig.Annotations, p.allowRuntimeAnnotations, p.dockerUpstream, "container create"); denyReason != "" {
+		return denyReason, nil
 	}
 	if denyReason := p.denyBindMountReason(createReq.HostConfig); denyReason != "" {
 		return denyReason, nil
@@ -2562,6 +2588,9 @@ func (p containerCreatePolicy) denySecurityOptReason(hostConfig containerCreateH
 	seenSeccomp := false
 	seenAppArmor := false
 	for _, raw := range hostConfig.SecurityOpt {
+		if reason := denyWritableCgroupsReason(raw); reason != "" {
+			return reason
+		}
 		kind, value, ok := parseSecurityOpt(raw)
 		if !ok {
 			continue
@@ -2574,6 +2603,12 @@ func (p containerCreatePolicy) denySecurityOptReason(hostConfig containerCreateH
 			// overridden by an allowlist that happens to include "unconfined".
 			if p.denyUnconfinedSeccomp && strings.EqualFold(value, "unconfined") {
 				return "container create denied: unconfined seccomp profile is not allowed"
+			}
+			// A value that is a JSON document is an inline profile, which
+			// dockerd (and Podman 6.2) load as given, so "{}" or an allow-all
+			// document disables seccomp without being spelled "unconfined".
+			if p.denyUnconfinedSeccomp && isInlineSeccompProfile(value) {
+				return "container create denied: an inline seccomp profile is not allowed while deny_unconfined_seccomp is set"
 			}
 			if len(p.allowedSeccompProfiles) > 0 && !slices.Contains(p.allowedSeccompProfiles, value) {
 				return fmt.Sprintf("container create denied: seccomp profile %q is not in the allowed list", value)
@@ -2621,6 +2656,33 @@ func (p containerCreatePolicy) denySecurityOptReason(hostConfig containerCreateH
 		}
 	}
 	return ""
+}
+
+// isInlineSeccompProfile reports whether a seccomp= SecurityOpt value is
+// profile content rather than a name or path: a JSON object or array, or the
+// JSON null.
+func isInlineSeccompProfile(value string) bool {
+	value = strings.TrimSpace(value)
+	return strings.HasPrefix(value, "{") || strings.HasPrefix(value, "[") || value == "null"
+}
+
+// denyWritableCgroupsReason refuses the writable-cgroups SecurityOpt (moby 28+),
+// which removes the read-only flag from a non-privileged container's cgroup
+// mount. dockerd accepts the bare word as true and parses a value with
+// strconv.ParseBool, so every enabling spelling is refused, whatever later
+// entries say. An explicit false passes. A value ParseBool can't read is
+// refused too, since the daemon's reading of it is not ours to guess.
+func denyWritableCgroupsReason(raw string) string {
+	key, value, hasValue := splitSecurityOptKV(strings.TrimSpace(raw))
+	if !strings.EqualFold(strings.TrimSpace(key), "writable-cgroups") {
+		return ""
+	}
+	if hasValue {
+		if enabled, err := strconv.ParseBool(strings.TrimSpace(value)); err == nil && !enabled {
+			return ""
+		}
+	}
+	return "container create denied: writable-cgroups security option is not allowed"
 }
 
 // denySystemPathsReason rejects requests that set MaskedPaths or ReadonlyPaths

@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -1110,6 +1111,7 @@ func TestResourceLimitGuardServiceManualRollback(t *testing.T) {
 		{name: "duplicate rollback values invalid", target: "/services/svc/update?version=7&rollback=previous&rollback=previous", body: safeBody, inspect: ServiceInspectResult{Version: 7, HasPreviousSpec: true, PreviousSpecNanoCPUs: 1}, found: true, wantStatus: http.StatusBadRequest, wantCode: reasonCodeResourceLimitRequestInvalid, wantResult: "invalid"},
 		{name: "conflicting rollback values invalid", target: "/services/svc/update?version=7&rollback=previous&rollback=none", body: safeBody, inspect: ServiceInspectResult{Version: 7, HasPreviousSpec: true, PreviousSpecNanoCPUs: 1}, found: true, wantStatus: http.StatusBadRequest, wantCode: reasonCodeResourceLimitRequestInvalid, wantResult: "invalid"},
 		{name: "missing version invalid", target: "/services/svc/update?rollback=previous", body: safeBody, inspect: ServiceInspectResult{Version: 7, HasPreviousSpec: true, PreviousSpecNanoCPUs: 1}, found: true, wantStatus: http.StatusBadRequest, wantCode: reasonCodeResourceLimitRequestInvalid, wantResult: "invalid"},
+		{name: "host PreviousSpec network denies even with a compliant CPU limit", target: "/services/svc/update?version=7&rollback=previous", body: safeBody, inspect: ServiceInspectResult{Version: 7, HasPreviousSpec: true, PreviousSpecNanoCPUs: 1, PreviousSpecNetworkTargets: []string{"host"}}, found: true, wantStatus: http.StatusForbidden, wantCode: reasonCodeResourceLimitPolicyDenied, wantResult: "deny"},
 		{name: "inspect 404 passes through", target: "/services/svc/update?version=7&rollback=previous", body: safeBody, found: false, wantStatus: guardedRequestAllowedStatus, wantForward: 1, wantResult: "allow"},
 		{name: "inspect failure fails closed", target: "/services/svc/update?version=7&rollback=previous", body: safeBody, inspectErr: errors.New("daemon unavailable"), wantStatus: http.StatusBadGateway, wantCode: reasonCodeResourceLimitPolicyLookupFailed, wantResult: "lookup_failed"},
 		{name: "nil inspector fails closed", target: "/services/svc/update?version=7&rollback=previous", body: safeBody, nilInspector: true, wantStatus: http.StatusBadGateway, wantCode: reasonCodeResourceLimitPolicyLookupFailed, wantResult: "lookup_failed"},
@@ -1216,6 +1218,19 @@ func TestDockerServiceInspectorBoundsAndDecodesState(t *testing.T) {
 		}
 		if got.Version != 7 || got.SpecNanoCPUs != 1 || !got.HasPreviousSpec || got.PreviousSpecNanoCPUs != 2 {
 			t.Fatalf("inspect result = %#v", got)
+		}
+	})
+
+	t.Run("decodes PreviousSpec network targets", func(t *testing.T) {
+		inspector := NewDockerServiceInspectorWithRoundTripper(roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return dockerInspectResponse(http.StatusOK, `{"Version":{"Index":7},"Spec":{"TaskTemplate":{"Networks":[{"Target":"current"}]}},"PreviousSpec":{"Networks":[{"Target":"legacy"}],"TaskTemplate":{"Networks":[{"Target":"abc123"},{"Target":" "}]}}}`), nil
+		}))
+		got, found, err := inspector(context.Background(), "svc")
+		if err != nil || !found {
+			t.Fatalf("inspect = (%#v, %v, %v), want found", got, found, err)
+		}
+		if want := []string{"legacy", "abc123"}; !reflect.DeepEqual(got.PreviousSpecNetworkTargets, want) {
+			t.Fatalf("PreviousSpecNetworkTargets = %v, want %v", got.PreviousSpecNetworkTargets, want)
 		}
 	})
 

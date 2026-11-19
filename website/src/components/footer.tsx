@@ -111,7 +111,7 @@ export function Footer() {
       <div className="wrap">
         <div className="fgrid">
           <div>
-            <Link className="brand" href="/">
+            <Link className="brand" href="/" aria-label={`${SITE_CONFIG.name} home`}>
               <Image src="/img/dog-64.webp" alt="" width={28} height={28} unoptimized />
               <span>{SITE_CONFIG.name}</span>
             </Link>

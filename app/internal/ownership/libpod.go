@@ -170,29 +170,6 @@ func libpodNamespaceContainerRef(ns map[string]any) (string, bool) {
 	return "", false
 }
 
-// addOwnerLabelToLibpodBody injects the owner label into a libpod
-// network/volume create body under labelField — the exact wire key to use,
-// since the two endpoints disagree on casing: lowercase "labels" for
-// network create (go.podman.io/common's libnetwork/types.Network carries a
-// `json:"labels,omitempty"` tag), capitalized "Labels" for volume create
-// (entities.VolumeCreateOptions carries no json tags at all, so
-// encoding/json falls back to the Go field name — see libpod_volume.go's
-// libpodVolumeCreateRequest doc comment, which pins the same behavior for
-// its "Driver"/"Options" fields). Neither body carries a cross-owner
-// reference worth extracting (no image, container, or pod field), so this
-// never returns *ownershipRequestReferences the way the container/pod
-// mutators do.
-func addOwnerLabelToLibpodBody(r *http.Request, labelKey, owner, labelField string) error {
-	return mutateJSONBody(r, func(decoded map[string]any) error {
-		labels, err := filter.NestedObject(decoded, labelField)
-		if err != nil {
-			return err
-		}
-		labels[labelKey] = owner
-		return nil
-	})
-}
-
 // isLibpodContainerRestorePath reports whether normPath is
 // POST /libpod/containers/{name}/restore.
 func isLibpodContainerRestorePath(normPath string) bool {
