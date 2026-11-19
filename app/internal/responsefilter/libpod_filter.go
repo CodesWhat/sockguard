@@ -197,6 +197,10 @@ func (f *Filter) modifyLibpodResponse(method, normPath string, resp *http.Respon
 		return f.modifyContainerInspect(resp)
 	case isLibpodInspectPath(normPath, "volumes"):
 		return f.modifyVolumeInspect(resp)
+	case method == http.MethodPost && normPath == LibpodPathPrefix+"/volumes/create":
+		// Create answers with the volume, including the existing one when the
+		// name is taken, in the same shape as an inspect.
+		return f.modifyVolumeInspect(resp)
 	case isLibpodInspectPath(normPath, "pods"):
 		return f.modifyLibpodPodInspect(resp)
 	case isLibpodImageInspectPath(normPath):

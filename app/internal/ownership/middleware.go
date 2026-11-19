@@ -384,7 +384,9 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 		return mutateContainerCreateOwnershipBody(r, opts.LabelKey, opts.Owner, opts.UpstreamFlavor)
 	case r.Method == http.MethodPost && isNetworkMembershipChangePath(normPath):
 		return extractNetworkMembershipOwnershipReferences(r)
-	case r.Method == http.MethodPost && (normPath == "/networks/create" || normPath == "/volumes/create" || normPath == "/secrets/create" || normPath == "/configs/create"):
+	case r.Method == http.MethodPost && normPath == "/volumes/create":
+		return mutateVolumeCreateOwnershipBody(r, opts.LabelKey, opts.Owner, "Labels")
+	case r.Method == http.MethodPost && (normPath == "/networks/create" || normPath == "/secrets/create" || normPath == "/configs/create"):
 		return nil, addOwnerLabelToBody(r, opts.LabelKey, opts.Owner)
 	case r.Method == http.MethodPost && (normPath == "/services/create" || isServiceUpdatePath(normPath)):
 		return mutateServiceOwnershipBody(r, opts.LabelKey, opts.Owner)
@@ -409,7 +411,7 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 	case r.Method == http.MethodPost && normPath == libpodNetworkCreatePath:
 		return nil, addOwnerLabelToLibpodBody(r, opts.LabelKey, opts.Owner, "labels")
 	case r.Method == http.MethodPost && normPath == libpodVolumeCreatePath:
-		return nil, addOwnerLabelToLibpodBody(r, opts.LabelKey, opts.Owner, "Labels")
+		return mutateVolumeCreateOwnershipBody(r, opts.LabelKey, opts.Owner, "Labels")
 	case r.Method == http.MethodPost && normPath == libpodSecretCreatePath:
 		return mutateLibpodSecretCreateOwnershipRequest(r, opts)
 	case needsOwnerFilter(r.Method, normPath), libpodNeedsOwnerFilter(r.Method, normPath):

@@ -340,6 +340,13 @@ func TestLibpodContainerInspectIsRedacted(t *testing.T) {
 		assertPresent(t, "libpod container inspect", body, `"ctr-a"`, `"team-a"`, "team-a-net")
 	})
 
+	t.Run("libpod create", func(t *testing.T) {
+		t.Parallel()
+		body := libpodBodyForMethodTest(t, allRedactions, http.MethodPost, "/v5.8.1/libpod/volumes/create", libpodVolumeInspectUpstream)
+		assertAbsent(t, "libpod volume create", body, "/var/lib/containers/storage/volumes/vol-a/_data")
+		assertPresent(t, "libpod volume create", body, `"vol-a"`, `"team-a"`)
+	})
+
 	t.Run("compat is still redacted", func(t *testing.T) {
 		t.Parallel()
 		body := libpodBodyForTest(t, allRedactions, "/v1.51/containers/ctr-a/json", libpodCompatContainerInspectUpstream)

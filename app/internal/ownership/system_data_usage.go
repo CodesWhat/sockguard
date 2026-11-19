@@ -79,6 +79,10 @@ func serveOwnershipAllowed(logger *slog.Logger, next http.Handler, w http.Respon
 			return
 		}
 	}
+	if r.Method == http.MethodPost && (normPath == "/volumes/create" || normPath == libpodVolumeCreatePath) {
+		serveVolumeCreateOwned(logger, next, w, r, opts)
+		return
+	}
 	if (r.Method == http.MethodGet || r.Method == http.MethodHead) && normPath == responsefilter.LibpodSystemDataUsagePath {
 		denyLibpodSystemDataUsage(w, r)
 		return
