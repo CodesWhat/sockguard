@@ -149,6 +149,15 @@ func TestScopeSemantics(t *testing.T) {
 		{"libpod privileged create breaks 5.4", func(c *config.Config) {
 			c.RequestBody.LibpodContainerCreate.AllowPrivileged = true
 		}, map[string]Status{"5.4": StatusNotConfigured}},
+		{"device requests allowed breaks 5.17", func(c *config.Config) {
+			c.RequestBody.ContainerCreate.AllowDeviceRequests = true
+		}, map[string]Status{"5.17": StatusNotConfigured}},
+		{"device request allowlist breaks 5.17", func(c *config.Config) {
+			c.RequestBody.ContainerCreate.AllowedDeviceRequests = []config.AllowedDeviceRequest{{}}
+		}, map[string]Status{"5.17": StatusNotConfigured}},
+		{"libpod device requests break 5.17", func(c *config.Config) {
+			c.RequestBody.LibpodContainerCreate.AllowDeviceRequests = true
+		}, map[string]Status{"5.17": StatusNotConfigured}},
 		{"libpod trust alone does not satisfy 4.5", func(c *config.Config) {
 			c.RequestBody.LibpodContainerCreate.ImageTrust.Mode = "enforce"
 		}, map[string]Status{"4.5": StatusNotConfigured}},

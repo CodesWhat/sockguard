@@ -74,6 +74,9 @@ var controls = []Control{
 	{ID: "5.17", Title: "Host devices not directly exposed", Category: CategoryEnforced, Evaluate: bodyControl(nil,
 		boolCheck("container_create.allow_all_devices", false, func(rb *config.RequestBodyConfig) bool { return cc(rb).AllowAllDevices }),
 		emptyCheck("container_create.allowed_devices", func(rb *config.RequestBodyConfig) int { return len(cc(rb).AllowedDevices) }),
+		boolCheck("container_create.allow_device_requests", false, func(rb *config.RequestBodyConfig) bool { return cc(rb).AllowDeviceRequests }),
+		emptyCheck("container_create.allowed_device_requests", func(rb *config.RequestBodyConfig) int { return len(cc(rb).AllowedDeviceRequests) }),
+		boolCheck("libpod_container_create.allow_device_requests", false, func(rb *config.RequestBodyConfig) bool { return rb.LibpodContainerCreate.AllowDeviceRequests }),
 	)},
 	{ID: "5.20", Title: "Host UTS namespace not shared", Category: CategoryEnforced, Evaluate: structuralControl(
 		"No knob: HostConfig.UTSMode host is rejected structurally.")},
