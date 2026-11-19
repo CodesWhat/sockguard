@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0-rc.8] - 2026-11-19
+
 ### Security
 
 - The service host-network guard no longer skips `POST /services/create?rollback=previous`. The guard treated any `rollback=previous` as a manual rollback and returned before reading the body, but Docker's create ignores that parameter and reads the body, so a create naming the host network by ID bypassed the check. The skip now applies only to `POST /services/{id}/update`, and even there a manual `rollback=previous` is no longer waved through: the daemon re-applies the stored `PreviousSpec`, so sockguard inspects the service and runs the same host resolution on the `PreviousSpec.TaskTemplate.Networks` and `PreviousSpec.Networks` targets. A target that resolves to the host network is denied with `403`, and a failed service or network lookup returns `502`. A repeated `rollback` value on an update, or a manual rollback whose `version` is not exactly one numeric value, is refused with `400` instead of being treated as an ordinary update. `request_body.service.allow_host_network: true` skips it.
@@ -47,6 +49,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A transient write error no longer silences file-backed access and audit logs for the rest of the process. The sticky buffered writer is replaced by a bounded pending buffer that retries unwritten bytes without duplicating them, audit events are encoded fresh per record so a failed write cannot poison later ones, records actually lost are counted, and sink failures print a rate-limited diagnostic to stderr.
 - Site and docs analytics now honor Global Privacy Control as well as Do Not Track, and re-check both before each send, since posthog-js's cookieless mode skips its own DNT check.
 - Probe the identity conformance agent with Portwing's native healthcheck command, preserving unhealthy results on shell-less published images.
+
+## [2.4.7] - 2026-11-14
+
+v2.4.7 updates OpenTelemetry and the Go toolchain for security fixes. It carries v2.4.6.
+
+### Security
+
+- Update the static website and docs build to Next.js 16.4.5 for GHSA-vc7v-qv4w-wrv8 and GHSA-mfr8-8qww-v76h. These cache advisories require a running Next.js server; both sites use static export. Record the unpatched picomatch advisory CVE-2026-112366 as a package-lock-only Qlty exception: glob patterns come from the trusted repository build, and npm packages are absent from the shipped Go binary and container.
+
+- Update the linked OpenTelemetry API, metric, trace and log modules to 1.47.0 for GHSA-q7gw-24fr-5p69 / CVE-2026-128085, an attribute value length limit bypass involving valid replacement characters. Trace is linked through Sigstore; the advisory's affected tracing path has not been demonstrated in Sockguard.
+- Build with Go 1.27.4 for GO-2026-6859 / CVE-2026-97054, a net/http header race that can crash an HTTP/1 server when a request exceeds a body limit while response headers are written concurrently. Update the pinned builder image and all module toolchain directives together.
 
 ## [3.0.0-rc.7] - 2026-11-13
 
@@ -330,6 +343,14 @@ for rc.6 does not cover this source. Stable channels remain on v2.4.6.
 - **Owner isolation stamps image imports over client `changes=LABEL`.** An import made an image with only the labels the client gave it, so it could import under a name nothing held, labeled as another owner's, and that owner would then use the name. `POST /images/create` (no `fromImage`) and `POST /libpod/images/import` now get a `LABEL` of the caller's owner appended to `changes`, which overwrites a client `LABEL` of the same key. A `changes` key in another case is refused (`400`), and so is a client entry that holds a line break, ends in a backslash, has an unterminated quote, starts with `#`, holds `<<`, is an `ONBUILD` instruction, is a `LABEL` holding `$` or `{`, or sets the owner label, since dockerd joins the entries into one Dockerfile and those could swallow the stamp. Pulls and loads can't be stamped (their labels come from the registry or the archive).
 - **Image load refuses an OCI archive name whose digest isn't its manifest's.** An entry named `repo@sha256:X` whose manifest digest isn't X made a record no by-digest inspect resolves, which a later load of the same name replaced unseen. The load now fails the inspection instead.
 
+## [2.4.6] - 2026-11-06
+
+v2.4.6 updates the compression dependency to fix a panic on malformed zstd frames. It carries v2.4.5.
+
+### Security
+
+- Update `github.com/klauspost/compress` from 1.19.2 to 1.20.2 in the application and Docker client compatibility modules to fix GO-2026-6865 / CVE-2026-116591, a panic when decoding malformed zstd frames.
+
 ## [3.0.0-rc.6] - 2026-11-03
 
 This candidate carries v2.4.4 (the client compatibility sweep and libpod create hardening). It narrows `response.redact_network_topology` to addresses, so opaque IDs pass through and a mount `Source` is kept only for named mount types, with `MaskedPaths` and `ReadonlyPaths` untouched. It adds libpod gates for `unified`, `env_host` and `pod`, reports unknown config keys, and adds compose examples for Homepage, Homarr, Diun and Autoheal. The Helm chart will publish as a signed OCI artifact from v3.0.0, and the hand-rolled star chart is removed. These are candidate-only behavior changes, so the 14-day bake window restarts: GA is no earlier than 2026-11-17. Fresh exact-source soak, TLS/security and published-image conformance are required before GA.
@@ -352,14 +373,6 @@ This candidate carries v2.4.4 (the client compatibility sweep and libpod create 
 ### Security
 
 - **Native container create gates two more SpecGenerator fields.** `POST /libpod/containers/create` forwarded a non-empty `unified` map, raw cgroup v2 control values Podman writes into the container's cgroup, and `env_host: true`, which copies the Podman daemon's environment into the container (it was only refused while an environment allow or deny list was set). Both are now denied unless `request_body.libpod_container_create.allow_unified_cgroup_settings` or `allow_env_host` is on (`SOCKGUARD_REQUEST_BODY_LIBPOD_CONTAINER_CREATE_ALLOW_UNIFIED_CGROUP_SETTINGS` and `..._ALLOW_ENV_HOST`). This is a default-deny change for a client that sets either, such as `podman run --cgroup-conf` or `--env-host`. A non-empty `pod` (which joins the pod's infra namespaces) is now denied while `restrict_namespace_sharing` is on, the same switch that governs `container:<ref>` joins; it passes with that off, as before. `r_limits` stays ungated like the Docker-compat `Ulimits`, and when owner isolation is enabled `pod` and `dependencyContainers` are also owner-checked.
-
-## [2.4.6] - 2026-11-06
-
-v2.4.6 updates the compression dependency to fix a panic on malformed zstd frames. It carries v2.4.5.
-
-### Security
-
-- Update `github.com/klauspost/compress` from 1.19.2 to 1.20.2 in the application and Docker client compatibility modules to fix GO-2026-6865 / CVE-2026-116591, a panic when decoding malformed zstd frames.
 
 ## [2.4.5] - 2026-11-03
 

@@ -225,6 +225,7 @@ export const DOCS_SEARCH_ITEMS: [page: number, heading: string, anchor: string][
   [12,"Twelve-month direction","twelve-month-direction"],
   [12,"Shipped in v1.7","shipped-in-v17"],
   [12,"Compatibility boundary","compatibility-boundary"],
+  [12,"Shipped in v2.4.7","shipped-in-v247"],
   [13,"",""],
   [13,"Why Socket Proxying Matters","why-socket-proxying-matters"],
   [13,"Defense in Depth","defense-in-depth"],
