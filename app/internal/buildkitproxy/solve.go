@@ -243,6 +243,15 @@ func registryHostFromImageRef(ref string) (host string, ok bool) {
 // ref-registry admission) and a nil denial on success, or a nil request and
 // non-nil denial on the first check that fails.
 func evaluateSolveRequest(payload []byte, policy Policy) (*control.SolveRequest, *mediationDenial) {
+	// Builds are unavailable under owner isolation. A solve can read any local
+	// image as a source (a FROM, an image:// LLB source, a gateway resolve)
+	// and the exporter then stamps the caller's owner label over the copy, so
+	// without source authorization a build is a way to take another owner's
+	// image. Refused before the payload is read, whatever its frontend,
+	// definition or exporters, since local and tar outputs disclose sources too.
+	if policy.ImageOwnership.Owner != "" && !policy.ImageOwnership.sourcesAuthorized {
+		return nil, deny(grpcCodePermissionDenied, "buildkit_build_denied_under_ownership", buildkitBuildDeniedUnderOwnership)
+	}
 	req := &control.SolveRequest{}
 	if err := proto.Unmarshal(payload, req); err != nil {
 		return nil, deny(grpcCodeInvalidArgument, "buildkit_protocol_error", "malformed SolveRequest")
@@ -623,3 +632,7 @@ func evaluateStatusRequest(payload []byte) (*control.StatusRequest, *mediationDe
 	}
 	return req, nil
 }
+
+// buildkitBuildDeniedUnderOwnership is the message for a Solve refused because
+// owner isolation is active. See evaluateSolveRequest.
+const buildkitBuildDeniedUnderOwnership = "image builds are unavailable while owner isolation is enabled: build sources are not owner-checked"

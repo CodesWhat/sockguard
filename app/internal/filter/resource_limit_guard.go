@@ -48,6 +48,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/codeswhat/sockguard/v3/app/internal/apipath"
 	"github.com/codeswhat/sockguard/v3/app/internal/dockerresource"
 	"github.com/codeswhat/sockguard/v3/app/internal/httpjson"
 	"github.com/codeswhat/sockguard/v3/app/internal/logging"
@@ -89,6 +90,11 @@ type ResourceLimitGuardOptions struct {
 	// ?rollback=previous or an automatic-rollback-capable update; a nil value
 	// with an active requirement fails closed (does not panic).
 	InspectService ServiceInspectFunc
+	// InspectNetwork resolves a service's network targets (ID, ID prefix or
+	// name) so allow_host_network: false also holds for the host network
+	// named by ID. A nil value fails closed (502) for any service that
+	// names a network.
+	InspectNetwork NetworkInspectFunc
 }
 
 // ResourceLimitGuardWithOptions returns the #152 resource-limit guard
@@ -101,6 +107,7 @@ func ResourceLimitGuardWithOptions(logger *slog.Logger, opts ResourceLimitGuardO
 		resolveProfile:   opts.ResolveProfile,
 		inspectContainer: opts.InspectContainer,
 		inspectService:   opts.InspectService,
+		inspectNetwork:   opts.InspectNetwork,
 		logger:           logger,
 	}
 	return func(next http.Handler) http.Handler {
@@ -116,6 +123,7 @@ type resourceLimitGuard struct {
 	resolveProfile   func(*http.Request) (string, bool)
 	inspectContainer ContainerUpdateInspectFunc
 	inspectService   ServiceInspectFunc
+	inspectNetwork   NetworkInspectFunc
 	logger           *slog.Logger
 }
 
@@ -143,6 +151,9 @@ func (g *resourceLimitGuard) serve(w http.ResponseWriter, r *http.Request, next 
 	case isLibpodContainerUpdatePath(normPath):
 		g.guardContainerUpdate(w, r, normPath, policy, true, next)
 	case isServiceWritePath(normPath):
+		if !g.guardServiceNetworks(w, r, normPath, policy) {
+			return
+		}
 		g.guardServiceWrite(w, r, normPath, policy, next)
 	default:
 		next.ServeHTTP(w, r)
@@ -222,11 +233,13 @@ type libpodContainerUpdateResourcePatch struct {
 // containerUpdateIdentifier extracts the {id} or {name} path segment from a
 // normalized Docker-compatible or libpod-native container update path.
 func containerUpdateIdentifier(normalizedPath string) (string, bool) {
-	prefix := "/containers/"
-	if strings.HasPrefix(normalizedPath, libpodPathPrefix+"containers/") {
-		prefix = libpodPathPrefix + "containers/"
+	if !strings.HasPrefix(normalizedPath, libpodPathPrefix+"containers/") {
+		// Docker's {name:.*} is slash-permissive, so the name is everything
+		// before the suffix. Podman's single-segment grammar stays below.
+		id, ok := apipath.DockerContainerAction(normalizedPath, "update")
+		return id, ok && id != ""
 	}
-	id, tail, ok := strings.Cut(strings.TrimPrefix(normalizedPath, prefix), "/")
+	id, tail, ok := strings.Cut(strings.TrimPrefix(normalizedPath, libpodPathPrefix+"containers/"), "/")
 	if !ok || id == "" || tail != "update" {
 		return "", false
 	}
@@ -780,6 +793,22 @@ func (g *resourceLimitGuard) guardServiceRollbackTarget(w http.ResponseWriter, r
 		return false
 	}
 
+	if stateSource == "previous_spec" && !svc.AllowHostNetwork {
+		// The daemon re-applies the stored PreviousSpec whole, so its networks
+		// get the same host resolution a submitted body would.
+		host, err := g.resolvesToHostNetwork(r, current.PreviousSpecNetworkTargets)
+		if err != nil {
+			g.respondHardDeny(w, r, http.StatusBadGateway, reasonCodeResourceLimitPolicyLookupFailed,
+				"service update denied: resource requirement verification unavailable", verbosity, rp)
+			return false
+		}
+		if host {
+			rp.Violation = "host_network"
+			g.respondPolicyDenied(w, r, next, "service denied: host network is not allowed", verbosity, rp)
+			return false
+		}
+	}
+
 	nanoCPUs := selectNanoCPUs(current)
 	if stateSource == "previous_spec" && !current.HasPreviousSpec {
 		nanoCPUs = 0
@@ -805,6 +834,9 @@ type ServiceInspectResult struct {
 	SpecNanoCPUs         int64
 	HasPreviousSpec      bool
 	PreviousSpecNanoCPUs int64
+	// PreviousSpecNetworkTargets lists PreviousSpec.TaskTemplate.Networks and
+	// PreviousSpec.Networks targets, which a manual rollback re-applies.
+	PreviousSpecNetworkTargets []string
 }
 
 // ServiceInspectFunc looks up a service's current version/spec/previous-spec
@@ -870,6 +902,15 @@ func NewDockerServiceInspectorWithRoundTripper(rt http.RoundTripper) ServiceInsp
 		if decoded.PreviousSpec != nil {
 			result.HasPreviousSpec = true
 			result.PreviousSpecNanoCPUs = decoded.PreviousSpec.TaskTemplate.Resources.Limits.NanoCPUs
+			var networks struct {
+				PreviousSpec *serviceNetworkTargets `json:"PreviousSpec"`
+			}
+			if err := json.Unmarshal(body, &networks); err != nil {
+				return ServiceInspectResult{}, false, err
+			}
+			if networks.PreviousSpec != nil {
+				result.PreviousSpecNetworkTargets = networks.PreviousSpec.targets()
+			}
 		}
 		return result, true, nil
 	}

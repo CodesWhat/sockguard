@@ -400,8 +400,22 @@ func isNetworkWritePath(normalizedPath string) bool {
 		isNetworkActionPath(normalizedPath, "disconnect")
 }
 
+// isNetworkActionPath matches the Docker-compat /networks/{id}/{action}.
+// Docker registers it as /networks/{id:.*}/{action} (api/server/router/network),
+// so the identifier is everything between /networks/ and the final /{action}
+// and may contain slashes. A network named a/b is created freely by
+// POST /networks/create, and a request naming it connects and disconnects
+// through that route, so a matcher that stopped at the first slash left those
+// requests outside the endpoint-config and force-disconnect gates. Podman
+// routes its own spellings with a single-segment {name}; see
+// isNetworkActionPathUnder, which libpod keeps using.
 func isNetworkActionPath(normalizedPath string, action string) bool {
-	return isNetworkActionPathUnder("/networks/", normalizedPath, action)
+	rest, ok := strings.CutPrefix(normalizedPath, "/networks/")
+	if !ok {
+		return false
+	}
+	networkID, ok := strings.CutSuffix(rest, "/"+action)
+	return ok && networkID != ""
 }
 
 // isNetworkActionPathUnder matches <prefix>{id}/{action}: exactly one

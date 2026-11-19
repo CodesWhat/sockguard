@@ -277,7 +277,7 @@ func TestAuditLoggerDrainWritesQueuedEvents(t *testing.T) {
 	var buf bytes.Buffer
 	logger := &AuditLogger{
 		events: make(chan auditEvent, 1),
-		enc:    json.NewEncoder(&buf),
+		w:      &buf,
 	}
 	logger.events <- auditEvent{EventType: "drained"}
 
@@ -650,4 +650,39 @@ func (w *blockingAuditWriter) releaseWrites() {
 	w.releaseOnce.Do(func() {
 		close(w.release)
 	})
+}
+
+// TestAuditLoggerTerminatesPartialRecordBeforeNextEvent pins that a sink which
+// took part of a record and failed doesn't get the next event glued onto the
+// fragment: the next event must land on its own parseable line.
+func TestAuditLoggerTerminatesPartialRecordBeforeNextEvent(t *testing.T) {
+	f := &flakyFile{partial: 3}
+	logger := &AuditLogger{w: f}
+
+	logger.write(auditEvent{EventType: "torn"})
+	if got := logger.LostEvents(); got != 1 {
+		t.Fatalf("LostEvents() = %d, want 1 after the partial write", got)
+	}
+	logger.write(auditEvent{EventType: "intact"})
+	if got := logger.LostEvents(); got != 1 {
+		t.Fatalf("LostEvents() = %d, want 1 after recovery", got)
+	}
+	logger.write(auditEvent{EventType: "after"})
+
+	lines := strings.Split(strings.TrimSuffix(f.String(), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("lines = %q, want fragment plus two events", lines)
+	}
+	if json.Valid([]byte(lines[0])) {
+		t.Fatalf("fragment %q parses, want an unterminated prefix", lines[0])
+	}
+	for i, want := range []string{"intact", "after"} {
+		var event map[string]any
+		if err := json.Unmarshal([]byte(lines[i+1]), &event); err != nil {
+			t.Fatalf("line %d does not parse on its own: %v\n%q", i+1, err, lines[i+1])
+		}
+		if event["event_type"] != want {
+			t.Fatalf("line %d event_type = %#v, want %q", i+1, event["event_type"], want)
+		}
+	}
 }

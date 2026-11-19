@@ -460,6 +460,10 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		// crafted body can never reach the wrong family's gates regardless
 		// of which shape it carries.
 		{http.MethodPost, matchesLibpodContainerCreateInspection, inspectSeverityCritical, newLibpodContainerCreatePolicy(cfg.LibpodContainerCreate).inspect, "failed to inspect libpod container create request body", "unable to inspect libpod container create request body"},
+		// Docker 24 applies a HostConfig sent as the start body below API 1.24,
+		// after every create check has passed, so a start body is refused
+		// outright. It is not a create inspector and shares no config.
+		{http.MethodPost, matchesContainerStartInspection, inspectSeverityCritical, newContainerStartPolicy().inspect, "failed to inspect container start request body", "unable to inspect container start request body"},
 		{http.MethodPost, matchesExecInspection, inspectSeverityHigh, newExecPolicy(cfg.Exec).inspect, "failed to inspect exec request body", "unable to inspect exec request body"},
 		{http.MethodPost, matchesImagePullInspection, inspectSeverityHigh, newImagePullPolicy(cfg.ImagePull).inspect, "failed to inspect image pull request", "unable to inspect image pull request"},
 		// GET /distribution/{name}/json makes the daemon contact the registry

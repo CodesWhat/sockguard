@@ -13,6 +13,7 @@ condition = "AND"
 regexes = ['''SWMKEY-1-secret''']
 paths = [
   '''^app/internal/filter/swarm_test\.go$''',
+  '''^app/internal/cmd/serve_swarm_leave_chain_test\.go$''',
 ]
 
 [[allowlists]]
