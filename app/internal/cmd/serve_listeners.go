@@ -18,6 +18,7 @@ import (
 	"github.com/codeswhat/sockguard/v2/app/internal/health"
 	"github.com/codeswhat/sockguard/v2/app/internal/inbound"
 	"github.com/codeswhat/sockguard/v2/app/internal/metrics"
+	"github.com/codeswhat/sockguard/v2/app/internal/reload"
 )
 
 // listenerStatusBoard tracks each configured listener's lifecycle state
@@ -105,6 +106,9 @@ type listenerMember struct {
 	// guards shutdown-time removal: a socket path is only unlinked if it
 	// still resolves to the exact inode this process created.
 	socketIdentity socketIdentity
+	// adminSwappable fronts the dedicated admin listener's handler chain so a
+	// reload can republish it. Nil for main listeners.
+	adminSwappable *reload.SwappableHandler
 }
 
 // hijackedConnTracker owns connections removed from net/http's lifecycle by

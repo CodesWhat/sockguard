@@ -528,7 +528,7 @@ Malformed selectors (invalid IPs, malformed URIs, non-hex SPKI pins, pins that a
 
 ## Per-Client ACLs And Profiles
 
-`clients.allowed_cidrs` is a coarse TCP-client gate evaluated before the global rule set. Requests whose source IP is outside every configured CIDR are denied with `403` and never reach the health handler or the rule evaluator.
+`clients.allowed_cidrs` is a coarse TCP-client gate evaluated before the global rule set. Requests whose source IP is outside every configured CIDR are denied with `403` and never reach the health handler or the rule evaluator. The allowlist is hot-reloadable and applies to the dedicated admin listener as well: a successful reload swaps the main and admin chains together, and a rejected reload changes neither.
 
 When `clients.container_labels.enabled` is `true`, Sockguard resolves bridge-network callers by source IP through the Docker API and looks for per-client allow labels on the calling container. Each `clients.container_labels.label_prefix + <method>` label is interpreted as a comma-separated Sockguard glob allowlist for that HTTP method:
 

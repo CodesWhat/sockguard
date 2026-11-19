@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Apply reloaded `clients.allowed_cidrs` to the dedicated admin listener. It kept the startup allowlist, so a reload that removed a source left it admitted to the admin endpoints. The admin chain is now rebuilt from the same validated config on every successful reload, and a rejected reload changes neither chain.
+
 ## [2.4.7] - 2026-11-14
 
 v2.4.7 updates OpenTelemetry and the Go toolchain for security fixes. It carries v2.4.6.
