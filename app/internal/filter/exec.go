@@ -439,12 +439,10 @@ func isRootUser(user string) bool {
 }
 
 func isExecCreatePath(normalizedPath string) bool {
-	if !strings.HasPrefix(normalizedPath, "/containers/") {
-		return false
-	}
-	rest := strings.TrimPrefix(normalizedPath, "/containers/")
-	_, tail, ok := strings.Cut(rest, "/")
-	return ok && tail == "exec"
+	// dockerd's {name:.*} is slash-permissive, so the container name is
+	// everything before the suffix, not the first segment.
+	_, ok := apipath.DockerContainerAction(normalizedPath, "exec")
+	return ok
 }
 
 // isExecStartPath is a thin wrapper over apipath.IsExecStartPath, which owns
