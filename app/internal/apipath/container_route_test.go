@@ -70,3 +70,21 @@ func TestDockerContainerAction(t *testing.T) {
 		}
 	}
 }
+
+// TestDockerContainerRouteUnknownMethodReadsGetActions pins the fallback for a
+// method with no registered action list: it reads the GET actions, so a
+// slash-bearing name in front of a read action is still split at that action
+// and anything else is taken whole, never cut to its first segment.
+func TestDockerContainerRouteUnknownMethodReadsGetActions(t *testing.T) {
+	for _, tt := range []struct {
+		path, wantName, wantAction string
+	}{
+		{"/containers/a/b/json", "a/b", "json"},
+		{"/containers/a/b/stop", "a/b/stop", ""},
+	} {
+		name, action, ok := DockerContainerRoute("PATCH", tt.path)
+		if !ok || name != tt.wantName || action != tt.wantAction {
+			t.Errorf("DockerContainerRoute(PATCH, %q) = %q, %q, %v; want %q, %q, true", tt.path, name, action, ok, tt.wantName, tt.wantAction)
+		}
+	}
+}

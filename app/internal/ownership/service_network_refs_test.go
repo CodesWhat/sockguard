@@ -219,3 +219,15 @@ func TestMiddlewareChecksBuiltinNamedServiceNetworks(t *testing.T) {
 		}
 	}
 }
+
+// TestServiceNetworkReferenceSkipsBlankTargets pins that an empty or
+// whitespace-only Target names nothing to authorize, while the case variants
+// of the built-ins do.
+func TestServiceNetworkReferenceSkipsBlankTargets(t *testing.T) {
+	t.Parallel()
+	for target, want := range map[string]bool{"": false, "   ": false, "host": false, "bridge": false, "Host": true, "overlay-a": true} {
+		if got := isServiceNetworkReference(target); got != want {
+			t.Errorf("isServiceNetworkReference(%q) = %v, want %v", target, got, want)
+		}
+	}
+}
