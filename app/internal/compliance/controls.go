@@ -31,6 +31,7 @@ var controls = []Control{
 	)},
 	{ID: "5.4", Title: "Privileged containers not used", Category: CategoryEnforced, Evaluate: bodyControl(nil,
 		boolCheck("container_create.allow_privileged", false, func(rb *config.RequestBodyConfig) bool { return cc(rb).AllowPrivileged }),
+		boolCheck("libpod_container_create.allow_privileged", false, func(rb *config.RequestBodyConfig) bool { return rb.LibpodContainerCreate.AllowPrivileged }),
 	)},
 	{ID: "5.5", Title: "Sensitive host directories not mounted", Category: CategoryEnforced, Evaluate: bodyControl(nil,
 		emptyCheck("container_create.allowed_bind_mounts", func(rb *config.RequestBodyConfig) int { return len(cc(rb).AllowedBindMounts) }),

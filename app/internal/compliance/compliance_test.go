@@ -146,6 +146,9 @@ func TestScopeSemantics(t *testing.T) {
 		{"image trust enforce", func(c *config.Config) {
 			c.RequestBody.ContainerCreate.ImageTrust.Mode = "enforce"
 		}, map[string]Status{"4.5": StatusConfigured}},
+		{"libpod privileged create breaks 5.4", func(c *config.Config) {
+			c.RequestBody.LibpodContainerCreate.AllowPrivileged = true
+		}, map[string]Status{"5.4": StatusNotConfigured}},
 		{"libpod trust alone does not satisfy 4.5", func(c *config.Config) {
 			c.RequestBody.LibpodContainerCreate.ImageTrust.Mode = "enforce"
 		}, map[string]Status{"4.5": StatusNotConfigured}},
@@ -317,12 +320,14 @@ func TestPartialEvidencePathsUseProfileIndex(t *testing.T) {
 	}
 	want := []string{
 		"request_body.container_create.allow_privileged",
+		"request_body.libpod_container_create.allow_privileged",
 		"clients.profiles[0].request_body.container_create.allow_privileged",
+		"clients.profiles[0].request_body.libpod_container_create.allow_privileged",
 	}
 	if strings.Join(paths, ",") != strings.Join(want, ",") {
 		t.Fatalf("paths = %v, want %v", paths, want)
 	}
-	if c.Evidence[1].Observed != "true" || c.Evidence[0].Observed != "false" {
+	if c.Evidence[2].Observed != "true" || c.Evidence[0].Observed != "false" {
 		t.Fatalf("evidence = %+v", c.Evidence)
 	}
 }
