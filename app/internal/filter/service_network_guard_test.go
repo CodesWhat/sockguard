@@ -65,6 +65,8 @@ func TestServiceNetworkGuardResolvesHostNetwork(t *testing.T) {
 		{name: "manual rollback service inspect failure fails closed", path: "/services/svc1/update?version=3&rollback=previous", body: `{}`, inspect: inspect, inspectServiceErr: true, wantStatus: http.StatusBadGateway},
 		{name: "manual rollback without a service inspector fails closed", path: "/services/svc1/update?version=3&rollback=previous", body: `{}`, inspect: inspect, wantStatus: http.StatusBadGateway},
 		{name: "manual rollback with a stale version is a conflict", path: "/services/svc1/update?version=2&rollback=previous", body: `{}`, inspect: inspect, previous: &ServiceInspectResult{Version: 3, HasPreviousSpec: true, PreviousSpecNetworkTargets: []string{"tenant-net"}}, wantStatus: http.StatusConflict},
+		{name: "repeated rollback value is refused, not treated as an ordinary update", path: "/services/svc1/update?version=3&rollback=previous&rollback=previous", body: `{}`, inspect: inspect, previous: &ServiceInspectResult{Version: 3, HasPreviousSpec: true, PreviousSpecNetworkTargets: []string{hostNetworkID}}, wantStatus: http.StatusBadRequest},
+		{name: "repeated rollback value with differing values is refused", path: "/services/svc1/update?version=3&rollback=previous&rollback=other", body: `{}`, inspect: inspect, wantStatus: http.StatusBadRequest},
 		{name: "manual rollback with allow_host_network skips the guard", path: "/services/svc1/update?version=3&rollback=previous", body: `{}`, allowHost: true, wantStatus: guardedRequestAllowedStatus, wantForwards: 1},
 	}
 	for _, tt := range tests {

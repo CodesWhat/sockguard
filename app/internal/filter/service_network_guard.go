@@ -103,7 +103,18 @@ func (g *resourceLimitGuard) guardServiceNetworks(w http.ResponseWriter, r *http
 		return true
 	}
 	if id, isUpdate := serviceUpdateIdentifier(normalizedPath); isUpdate {
-		if manual, _ := serviceManualRollbackQuery(r); manual {
+		manual, valid := serviceManualRollbackQuery(r)
+		// With a resource requirement configured, guardServiceWrite runs next
+		// and refuses these same cases with its policy metadata attached.
+		ownedByRequirements := serviceRequirementsList(policy.Service) != ""
+		if !valid && !ownedByRequirements {
+			// A repeated rollback value is ambiguous, so it can't be treated as
+			// an ordinary update that skips the stored-spec check.
+			g.denyServiceNetwork(w, r, http.StatusBadRequest, reasonCodeResourceLimitRequestInvalid,
+				"service update denied: rollback query parameter must have exactly one value", policy.DenyResponseVerbosity)
+			return false
+		}
+		if manual {
 			// The daemon ignores the body and re-applies the stored PreviousSpec,
 			// so that is what gets resolved. Only an update does: create
 			// ignores rollback and reads the body.
