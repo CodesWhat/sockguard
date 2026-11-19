@@ -1,12 +1,14 @@
 package logging
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,10 +33,15 @@ type AuditLogger struct {
 	done        chan struct{}
 	closeOnce   sync.Once
 	wg          sync.WaitGroup
-	enc         *json.Encoder
+	w           io.Writer
+	scratch     bytes.Buffer
 	now         func() string
 	dropped     atomic.Uint64
 	lastWarn    atomic.Int64
+	// lost counts events that were dequeued but never reached the sink:
+	// serialization failures and failed or short writes.
+	lost         atomic.Uint64
+	lastLostWarn atomic.Int64
 }
 
 const auditLogBufferSize = 1024
@@ -42,12 +49,10 @@ const auditDropWarningInterval = time.Minute
 
 // NewAuditLogger constructs a dedicated JSON audit logger.
 func NewAuditLogger(w io.Writer) *AuditLogger {
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(false)
 	logger := &AuditLogger{
 		events: make(chan auditEvent, auditLogBufferSize),
 		done:   make(chan struct{}),
-		enc:    enc,
+		w:      w,
 		now: func() string {
 			return time.Now().UTC().Format(time.RFC3339Nano)
 		},
@@ -325,6 +330,16 @@ func (l *AuditLogger) DroppedEvents() uint64 {
 	return l.dropped.Load()
 }
 
+// LostEvents reports events that were accepted and dequeued but never reached
+// the sink because serialization or the sink write failed. It is separate from
+// DroppedEvents, which counts events refused before they were queued.
+func (l *AuditLogger) LostEvents() uint64 {
+	if l == nil {
+		return 0
+	}
+	return l.lost.Load()
+}
+
 // Close drains queued audit events before returning. It does not close the
 // underlying writer; callers that own the sink should close that separately.
 func (l *AuditLogger) Close() error {
@@ -345,7 +360,7 @@ func (l *AuditLogger) run() {
 	for {
 		select {
 		case event := <-l.events:
-			_ = l.enc.Encode(event)
+			l.write(event)
 		case <-l.done:
 			l.drain()
 			return
@@ -353,11 +368,48 @@ func (l *AuditLogger) run() {
 	}
 }
 
+// write serializes one event into a scratch buffer and hands it to the sink as
+// a single Write. A fresh encode per event means a failed write can never
+// poison later ones (json.Encoder retains its first write error forever), and
+// a failure is counted and reported instead of discarded. Only the run/drain
+// goroutine calls this, so scratch needs no lock.
+func (l *AuditLogger) write(event auditEvent) {
+	l.scratch.Reset()
+	enc := json.NewEncoder(&l.scratch)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(event); err != nil {
+		l.recordLoss(fmt.Errorf("encode: %w", err))
+		return
+	}
+	n, err := l.w.Write(l.scratch.Bytes())
+	if err == nil && n < l.scratch.Len() {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		l.recordLoss(err)
+	}
+}
+
+func (l *AuditLogger) recordLoss(err error) {
+	total := l.lost.Add(1)
+	now := time.Now().UnixNano()
+	last := l.lastLostWarn.Load()
+	if last != 0 && now-last < auditDropWarningInterval.Nanoseconds() {
+		return
+	}
+	if !l.lastLostWarn.CompareAndSwap(last, now) {
+		return
+	}
+	// Direct stderr write: the audit sink is the thing that failed, and the
+	// slog default may itself be routed there.
+	_, _ = fmt.Fprintf(os.Stderr, "sockguard: audit event lost: %v (lost_total=%d)\n", err, total)
+}
+
 func (l *AuditLogger) drain() {
 	for {
 		select {
 		case event := <-l.events:
-			_ = l.enc.Encode(event)
+			l.write(event)
 		default:
 			return
 		}
