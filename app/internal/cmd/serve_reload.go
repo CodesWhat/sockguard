@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -59,12 +60,16 @@ type reloadCoordinator struct {
 	// Bindings that live for the whole process lifetime. None of these
 	// change across reloads — the immutable-field gate rejects any
 	// reload whose YAML would mutate these inputs.
-	swappable   *reload.SwappableHandler
-	cfgFile     string
-	logger      *slog.Logger
-	auditLogger *logging.AuditLogger
-	deps        *serveDeps
-	runtime     *serveRuntime
+	swappable *reload.SwappableHandler
+	// adminSwappable fronts the dedicated admin listener's chain. Nil when no
+	// dedicated admin listener is bound. Guarded by mu; set once by
+	// setAdminSwappable before reload watching starts.
+	adminSwappable *reload.SwappableHandler
+	cfgFile        string
+	logger         *slog.Logger
+	auditLogger    *logging.AuditLogger
+	deps           *serveDeps
+	runtime        *serveRuntime
 	// versioner is shared with the admin policy-version handler. Updating it
 	// after a successful swap is what makes the new generation visible to
 	// GET /admin/policy/version and to sockguard_policy_version. Nil-safe so
@@ -142,6 +147,15 @@ func newReloadCoordinator(p reloadCoordinatorParams) *reloadCoordinator {
 		coordinator.bundleTrust.SignaturePath = ""
 	}
 	return coordinator
+}
+
+// setAdminSwappable registers the dedicated admin listener's swappable handler
+// so successful reloads republish the admin chain (clients.allowed_cidrs is
+// reloadable and the admin chain compiles it).
+func (c *reloadCoordinator) setAdminSwappable(h *reload.SwappableHandler) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.adminSwappable = h
 }
 
 // stop halts the current chain's goroutines. Idempotent so it is safe
@@ -330,6 +344,14 @@ func (c *reloadCoordinator) reload() {
 		Versioner:   c.versioner,
 	})
 
+	// Build the dedicated admin chain from the same validated candidate before
+	// anything is published, so a reload can never leave the admin listener
+	// enforcing a stale clients.allowed_cidrs.
+	var newAdminHandler http.Handler
+	if c.adminSwappable != nil {
+		newAdminHandler = buildAdminHandlerChain(newCfg, c.logger, c.auditLogger, c.versioner)
+	}
+
 	warnIfCreateAllowedWithResponseRedaction(newCfg, c.logger)
 
 	// buildRateLimitMiddleware constructs a brand-new sampler and Limiter
@@ -368,6 +390,9 @@ func (c *reloadCoordinator) reload() {
 	// during that window — tearing them down after the swap is safe
 	// because they perform no per-request work for in-flight calls.
 	c.swappable.Swap(newHandler)
+	if newAdminHandler != nil {
+		c.adminSwappable.Swap(newAdminHandler)
+	}
 
 	// Delete gauge series for profiles removed from the new config. This
 	// runs after Swap so new requests are already dispatched to the new

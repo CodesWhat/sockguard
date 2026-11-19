@@ -138,6 +138,7 @@ func TestIsContainerAttachPathRequiresTail(t *testing.T) {
 	}{
 		{name: "valid", path: "/containers/abc/attach", want: true},
 		{name: "empty id", path: "/containers//attach", want: true},
+		{name: "slash-bearing name", path: "/containers/A/x/attach", want: true},
 		{name: "wrong tail", path: "/containers/abc/exec", want: false},
 		{name: "no tail at all", path: "/containers/abc", want: false},
 		{name: "collection route", path: "/containers", want: false},

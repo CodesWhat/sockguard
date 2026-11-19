@@ -98,6 +98,9 @@ type libpodContainerCreateRequest struct {
 	CapAdd  []string `json:"cap_add"`
 	CapDrop []string `json:"cap_drop"`
 
+	// SeccompProfile is the inline seccomp profile (Podman 6.2+), a JSON
+	// document read ahead of seccomp_profile_path. See denySeccompReason.
+	SeccompProfile     string   `json:"seccomp_profile"`
 	SeccompProfilePath string   `json:"seccomp_profile_path"`
 	ApparmorProfile    string   `json:"apparmor_profile"`
 	SelinuxOpts        []string `json:"selinux_opts"`

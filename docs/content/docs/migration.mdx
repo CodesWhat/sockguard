@@ -7,16 +7,17 @@ description: Upgrade to stable v2.4, evaluate the v3 release candidate, or migra
 
 | Line | Availability | Upgrade guidance |
 | --- | --- | --- |
-| v2.4.6 | Published stable | Keep normal Docker, Homebrew, deb/rpm and binary release channels. |
+| v2.4.7 | Published stable | Keep normal Docker, Homebrew, deb/rpm and binary release channels. |
 | v2.3.3 | End of life | The last v2.3 patch. It no longer receives security fixes, so upgrade to v2.4. |
-| v2.2.11 | End of life | Upgrade to v2.4 for security fixes. |
-| v3.0.0-rc.6 | Published candidate | Select its image or `/v3` Go tag explicitly and migrate the removed TLS settings below. It carries v2.4.4, and its validation and bake window are independent of v2.4. Stable channels serve v2.4.6. |
+| v2.2.11 | End of life | The last v2.2 patch. It no longer receives security fixes, so upgrade to v2.4.7. |
+| v3.0.0-rc.8 | Published candidate | Select its image or `/v3` Go tag explicitly and migrate the removed TLS settings below. It carries the combined compatibility/hardening work and v2.4.5, v2.4.6 and v2.4.7 security fixes; its bake and validation are independent of v2.4. Stable channels serve v2.4.7. |
 
 ## From Sockguard v2.1 to v2.2
 
-Upgrade to the latest v2.2 patch, currently v2.2.11, and validate the deployed
-configuration before switching images. v2.2 retains the configuration surface,
-but intentional security fixes can deny requests that older patches forwarded:
+The v2.2 line is retired. Upgrade to v2.4.7 and validate the deployed
+configuration before switching images. The v2.2 upgrade notes below are historical.
+That line retained the configuration surface, but intentional security fixes
+could deny requests that older patches forwarded:
 Podman host-path and image-name handling, ambiguous body keys and form bodies,
 Dockerfile syntax/continuations/heredocs, and pod infra PID-file writes.
 Review the [CHANGELOG](https://github.com/CodesWhat/sockguard/blob/main/CHANGELOG.md)
@@ -47,9 +48,9 @@ before enabling external frontend execution.
 
 ## Upgrading to v2.4
 
-v2.4 is the current stable line. Pull `codeswhat/sockguard:2.4.6` or the
+v2.4 is the current stable line. Pull `codeswhat/sockguard:2.4.7` or the
 `latest` tag, install through Homebrew, deb/rpm or the release binaries, or run
-`go install github.com/codeswhat/sockguard/v2/app/cmd/sockguard@v2.4.6`. Go
+`go install github.com/codeswhat/sockguard/v2/app/cmd/sockguard@v2.4.7`. Go
 source builds require Go 1.27. Don't copy v2.4-only settings into an older
 binary.
 
@@ -62,9 +63,9 @@ identity remains a documented limit; use distinct UID/GID client profiles.
 
 ## From Sockguard v2 to v3 (release candidate)
 
-The current candidate, [v3.0.0-rc.6](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0-rc.6),
-is published. It carries v2.4.4 and includes the v2.4 policy/security work and the TLS removals below.
-The published rc.6 predates the signed numeric-UID fix in v2.4.5 and the malformed-zstd fix in v2.4.6. Use v2.4.6 for security-sensitive deployments while candidate validation continues. These fixes are forward-ported to the development branches; the published rc.6 image is unchanged.
+The current candidate, [v3.0.0-rc.8](https://github.com/CodesWhat/sockguard/releases/tag/v3.0.0-rc.8),
+is published. It combines the compatibility and hardening work, including v2.4.5, v2.4.6 and v2.4.7 security fixes and Go 1.27.4, with the TLS removals below.
+Use stable v2.4.7 for security-sensitive deployments while candidate validation continues. Published rc.6 retains its original identity; the combined fixes are in rc.8.
 
 All v2 release lines retain their accepted settings.
 Before testing the v3 candidate:
@@ -85,22 +86,47 @@ Docker environment's existing plaintext behavior when neither TLS variable is
 set. The opaque BuildKit acknowledgment remains accepted; its removal target is
 still undecided.
 
-Select `ghcr.io/codeswhat/sockguard:3.0.0-rc.6` explicitly, download a platform
+Select `ghcr.io/codeswhat/sockguard:3.0.0-rc.8` explicitly, download a platform
 binary from the release, or install with Go 1.27:
 
 ```bash
-go install github.com/codeswhat/sockguard/v3/app/cmd/sockguard@v3.0.0-rc.6
+go install github.com/codeswhat/sockguard/v3/app/cmd/sockguard@v3.0.0-rc.8
 ```
 
 The candidate module is `github.com/codeswhat/sockguard/v3`. Go consumers must
 change Sockguard import prefixes from `/v2` to `/v3`. Published v2 install commands retain `/v2`; stable Docker and Homebrew channels
-serve v2.4.6.
+serve v2.4.7.
 
-V3 has an independent validation and bake window. GA requires fresh exact-source
-four-hour soak and TLS/security checks, published-candidate image conformance,
-and at least 14 days after rc.6's 2026-11-03 publication. GA is no earlier
-than 2026-11-17. Candidate-only
-behavior fixes restart that window; v2.3/v2.4 validation doesn't replace it.
+### Combined candidate
+
+`v3.0.0-rc.8` is published with the compatibility and hardening work in one
+release. It includes the v2.4.5, v2.4.6 and v2.4.7 security fixes and Go 1.27.4.
+
+- Owner-scoped Podman builds are refused on Docker-compatible, native and
+  daemon-host routes in every rollout mode. `pullpolicy=never` cannot prevent
+  archive imports from replacing another owner's image names. Docker builds
+  and Podman builds without an owner policy keep their existing checks.
+- Environment redaction removes complete build-argument-prefixed image history
+  entries. Ordinary RUN history remains visible.
+- `response.max_buffered_body` defaults to `8MiB`, with a maximum of `256MiB`.
+  Inspected responses over the configured cap fail with `502`; large inventories
+  may need a higher cap.
+- Log-driver and log-destination allowlists are opt-in and separate from
+  `allow_log_path`. Kube play query checks do not inspect its YAML body.
+- Native storage options and OCI `run.oci.` annotations need their respective
+  default-off grants. The cgroup-v1 recreation exception needs a positively
+  identified cgroup-v1 upstream; unknown or mixed versions fail closed.
+- `max_streams` defaults to 32 per profile; explicit zero disables that cap.
+  Clients sharing a profile share its stream allowance.
+
+See the [configuration reference](/configuration) and [Podman guide](/podman)
+for the exact option scopes and the additional tmpfs and ownership restrictions.
+
+The combined candidate requires fresh exact-source four-hour soak and TLS/security
+checks, published-image conformance and a fresh 14-day bake from publication.
+GA is no earlier than 14 days after rc.8 publishes.
+Final release gates still apply; v2.3/v2.4 validation does not replace the
+combined candidate's evidence.
 
 ## Deprecation schedule
 

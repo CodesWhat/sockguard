@@ -501,15 +501,26 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
+    version: "v2.4.7",
+    title: "OpenTelemetry and Go Security Fixes",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Updates OpenTelemetry to 1.47.0 for the attribute value length limit bypass in GHSA-q7gw-24fr-5p69",
+      "Builds with Go 1.27.4 for the net/http header race in GO-2026-6859",
+    ],
+  },
+  {
     version: "v3.0.0",
-    title: "Verified TLS Compatibility Boundary",
+    title: "Verified TLS and Security Hardening",
     emoji: "🔐",
     status: "candidate",
     items: [
-      "Published v3.0.0-rc.6 candidate; select its image or /v3 Go tag explicitly. Includes v2.4.4 client compatibility and libpod hardening, v2.4.3 session cleanup, v2.4.2 Podman isolation and dependency updates, exec target protection and the v2.4 policy/security work",
+      "Published v3.0.0-rc.8 candidate; select its image or /v3 Go tag explicitly. Includes the combined compatibility/hardening work, v2.4.5, v2.4.6 and v2.4.7 security fixes and Go 1.27.4",
       "Rejects the deprecated endpoint skip-verification setting and unverified Docker TLS fallback; configure the daemon CA and verified TLS",
-      "Go imports, generated descriptors and release builds use /v3; stable channels serve v2.4.6",
-      "GA requires fresh candidate soak, TLS/security checks and published-image conformance; no earlier than 2026-11-17, 14 days after rc.6. Candidate-only behavior changes in rc.6 restarted the window. Candidate-only behavior fixes restart the window; opaque BuildKit removal remains undecided",
+      "Go imports, generated descriptors and release builds use /v3; stable channels serve v2.4.7",
+      "The combined rc.8 includes the completed hardening work, v2.4.5, v2.4.6 and v2.4.7 security fixes and Go 1.27.4; owner-scoped Podman builds are refused and build-argument history entries are fully redacted when environment redaction is enabled",
+      "The combined candidate needs fresh exact-source soak, TLS/security checks, published-image conformance and a new 14-day bake from publication. GA is no earlier than 14 days after rc.8 publishes, plus final release gates; opaque BuildKit removal remains undecided",
     ],
   },
 ];

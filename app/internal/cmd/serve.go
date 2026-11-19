@@ -292,6 +292,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	}
 	allMembers := append([]*listenerMember(nil), members...)
 	if adminMember != nil {
+		coordinator.setAdminSwappable(adminMember.adminSwappable)
 		allMembers = append(allMembers, adminMember)
 	}
 	defer func() {
@@ -418,13 +419,16 @@ func bindAdminServer(
 	}
 	warnIfAdminListenerWideOpen(cfg, logger)
 	identity := inbound.Identity{Name: config.AdminListenerName, Role: inbound.RoleAdmin, Network: networkFor(cfg.Admin.Listen.ListenConfig)}
-	server := newAdminHTTPServer(buildAdminHandlerChain(cfg, logger, auditLogger, versioner))
+	adminSwappable := reload.NewSwappableHandler(buildAdminHandlerChain(cfg, logger, auditLogger, versioner))
+	server := newAdminHTTPServer(adminSwappable)
 	server.ConnContext = inbound.ConnContext(identity, server.ConnContext)
 	member := &listenerMember{
 		identity:   identity,
 		listener:   ln,
 		server:     server,
 		socketPath: cfg.Admin.Listen.Socket,
+
+		adminSwappable: adminSwappable,
 	}
 	if member.socketPath != "" {
 		member.socketIdentity = statSocketIdentity(deps.lstatPath, member.socketPath)
@@ -1923,6 +1927,7 @@ func withResourceLimitGuard(cfg *config.Config, res *upstream.Resolver, logger *
 		ResolveProfile:   clientacl.RequestProfile,
 		InspectContainer: filter.NewDockerContainerUpdateInspectorWithRoundTripper(rt),
 		InspectService:   filter.NewDockerServiceInspectorWithRoundTripper(rt),
+		InspectNetwork:   filter.NewDockerNetworkInspectorWithRoundTripper(rt),
 	})
 }
 

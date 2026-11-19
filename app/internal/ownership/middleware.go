@@ -186,6 +186,12 @@ type Options struct {
 	// TestServeChainPassesResolvedFlavorToOwnership is the wiring proof, and
 	// TestServeChainImageTagChecksTheLocalhostNameOnPodman is a second one.
 	UpstreamFlavor upstreamflavor.Flavor
+
+	// buildSourcesAuthorized lifts the refusal of Docker builds under
+	// ownership. Nothing sets it in production: it exists so the build name
+	// authorization this package still implements stays under test until
+	// build sources can be authorized and the refusal is removed.
+	buildSourcesAuthorized bool
 	// UpstreamProbedDocker is true only when GET /version positively
 	// identified dockerd on every endpoint. Flavor can read Docker with no
 	// probe behind it, and the pull untag sends force=1 only on this evidence,
@@ -347,6 +353,17 @@ func middlewareWithPullCheck(
 				return
 			}
 
+			// A Docker build can use any local image as a FROM source, and the
+			// owner stamp then labels the copy as this owner's. Nothing reads
+			// the Dockerfile's sources, so a build under ownership is refused
+			// until they can be authorized. An upstream not identified as
+			// Podman is treated as Docker, which fails closed.
+			if r.Method == http.MethodPost && normPath == "/build" && !opts.buildSourcesAuthorized {
+				logging.SetDeniedWithCode(w, r, reasonCodeOwnerPolicyDeniedAccess, buildDenyOwned, nil)
+				_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: buildDenyOwned})
+				return
+			}
+
 			ownerFilterApplies := needsOwnerFilter(r.Method, normPath) || libpodNeedsOwnerFilter(r.Method, normPath)
 			if ownerFilterApplies && refuseInvalidFilterKeys(w, r) {
 				return
@@ -450,7 +467,9 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 		return extractNetworkMembershipOwnershipReferences(r)
 	case r.Method == http.MethodPost && normPath == "/secrets/create":
 		return mutateCompatSecretCreateOwnershipRequest(r, opts)
-	case r.Method == http.MethodPost && (normPath == "/networks/create" || normPath == "/volumes/create" || normPath == "/configs/create"):
+	case r.Method == http.MethodPost && normPath == "/volumes/create":
+		return mutateVolumeCreateOwnershipBody(r, opts.LabelKey, opts.Owner, "Labels")
+	case r.Method == http.MethodPost && (normPath == "/networks/create" || normPath == "/configs/create"):
 		return nil, addOwnerLabelToBody(r, opts.LabelKey, opts.Owner)
 	case r.Method == http.MethodPost && (normPath == "/services/create" || isServiceUpdatePath(normPath)):
 		return mutateServiceOwnershipBody(r, opts.LabelKey, opts.Owner)
@@ -475,9 +494,9 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 	case r.Method == http.MethodPost && normPath == libpodPodCreatePath:
 		return mutateLibpodPodCreateOwnershipBody(r, opts.LabelKey, opts.Owner)
 	case r.Method == http.MethodPost && normPath == libpodNetworkCreatePath:
-		return nil, addOwnerLabelToLibpodBody(r, opts.LabelKey, opts.Owner, "labels")
+		return mutateLibpodNetworkCreateOwnershipBody(r, opts.LabelKey, opts.Owner)
 	case r.Method == http.MethodPost && normPath == libpodVolumeCreatePath:
-		return nil, addOwnerLabelToLibpodBody(r, opts.LabelKey, opts.Owner, "Labels")
+		return mutateVolumeCreateOwnershipBody(r, opts.LabelKey, opts.Owner, "Labels")
 	case r.Method == http.MethodPost && normPath == libpodSecretCreatePath:
 		return mutateLibpodSecretCreateOwnershipRequest(r, opts)
 	case needsOwnerFilter(r.Method, normPath), libpodNeedsOwnerFilter(r.Method, normPath):
@@ -950,9 +969,16 @@ func mutateContainerCreateOwnershipBody(r *http.Request, labelKey, owner string,
 		labels[labelKey] = owner
 		refs.namespaceContainers = containerCreateNamespaceRefs(decoded)
 		var overflow bool
-		refs.embeddedResources, overflow = collectContainerCreateEmbeddedReferences(decoded)
-		if overflow {
+		var hasImageMount bool
+		refs.embeddedResources, overflow, hasImageMount = collectContainerCreateEmbeddedReferencesWithImageMounts(decoded)
+		switch {
+		case overflow:
 			refs.denyReason = fmt.Sprintf(embeddedReferencesDenyTooMany, "container create")
+		case hasImageMount && flavor != upstreamflavor.Docker:
+			// Podman, or an upstream not positively identified as Docker, may
+			// resolve an image mount through a mutable name the preflight
+			// lookup cannot pin, so it is refused outright.
+			refs.denyReason = "owner policy denied image mounts on an upstream not identified as Docker"
 		}
 		if flavor == upstreamflavor.Podman {
 			refs.existingSharedResources = containerCreatePodmanNetworkNameReferences(decoded)
@@ -1010,14 +1036,26 @@ func containerCreateEmbeddedOwnershipReferences(decoded map[string]any) []embedd
 }
 
 func collectContainerCreateEmbeddedReferences(decoded map[string]any) ([]embeddedOwnershipReference, bool) {
+	list, overflow, _ := collectContainerCreateEmbeddedReferencesWithImageMounts(decoded)
+	return list, overflow
+}
+
+// collectContainerCreateEmbeddedReferencesWithImageMounts also reports whether
+// the body carries a Type=image mount, which only a Docker upstream can have
+// authorized through the image references collected here.
+func collectContainerCreateEmbeddedReferencesWithImageMounts(decoded map[string]any) ([]embeddedOwnershipReference, bool, bool) {
 	refs := &embeddedRefCollector{}
+	hasImageMount := false
 	for _, image := range filter.FoldedStrings(decoded, "Image") {
 		refs.add(dockerresource.KindImage, image, "container Image")
 	}
 
 	for _, hostConfig := range filter.FoldedObjects(decoded, "HostConfig") {
 		appendContainerBindOwnershipReferences(refs, hostConfig)
-		appendContainerMountOwnershipReferences(refs, hostConfig)
+		if appendContainerMountOwnershipReferences(refs, hostConfig) {
+			hasImageMount = true
+		}
+		appendContainerLinkOwnershipReferences(refs, hostConfig)
 
 		for _, mode := range filter.FoldedStrings(hostConfig, "NetworkMode") {
 			if !isCustomNetworkMode(mode) {
@@ -1028,7 +1066,7 @@ func collectContainerCreateEmbeddedReferences(decoded map[string]any) ([]embedde
 	}
 
 	appendContainerNetworkEndpointReferences(refs, decoded)
-	return refs.list, refs.overflow
+	return refs.list, refs.overflow, hasImageMount
 }
 
 func appendContainerBindOwnershipReferences(refs *embeddedRefCollector, hostConfig map[string]any) {
@@ -1048,18 +1086,53 @@ func appendContainerBindOwnershipReferences(refs *embeddedRefCollector, hostConf
 	}
 }
 
-func appendContainerMountOwnershipReferences(refs *embeddedRefCollector, hostConfig map[string]any) {
+// appendContainerLinkOwnershipReferences collects the source container of each
+// legacy HostConfig.Links entry ("name" or "name:alias"). dockerd resolves the
+// source at create and registers "/<this container>/<alias>" as a name the
+// source answers to, so the link reads another container's environment and
+// lets every slash-bearing container route address it. The source is authorized
+// like any other container reference. dockerd resolves a leading "/" the same
+// as none and takes everything before the first ":" as the name.
+func appendContainerLinkOwnershipReferences(refs *embeddedRefCollector, hostConfig map[string]any) {
+	for _, links := range filter.FoldedArrays(hostConfig, "Links") {
+		for _, value := range links {
+			link, ok := value.(string)
+			if !ok {
+				continue
+			}
+			source, _, _ := strings.Cut(link, ":")
+			refs.add(dockerresource.KindContainer, strings.TrimPrefix(strings.TrimSpace(source), "/"), "container HostConfig.Links")
+		}
+	}
+}
+
+// appendContainerMountOwnershipReferences collects volume mount sources as
+// volume references and image mount sources (Docker API 1.48+ Type=image) as
+// image references, and reports whether it saw an image mount. An image mount
+// exposes another image's filesystem read-only, so it needs the same owner
+// check as the container's own Image.
+func appendContainerMountOwnershipReferences(refs *embeddedRefCollector, hostConfig map[string]any) bool {
+	hasImageMount := false
 	for _, mounts := range filter.FoldedArrays(hostConfig, "Mounts") {
 		for _, value := range mounts {
 			mount, ok := value.(map[string]any)
-			if !ok || !filter.FoldedStringEquals(mount, "Type", "volume") {
+			if !ok {
 				continue
 			}
-			for _, source := range filter.FoldedStrings(mount, "Source") {
-				refs.add(dockerresource.KindVolume, source, "container HostConfig.Mounts")
+			switch {
+			case filter.FoldedStringEquals(mount, "Type", "volume"):
+				for _, source := range filter.FoldedStrings(mount, "Source") {
+					refs.add(dockerresource.KindVolume, source, "container HostConfig.Mounts")
+				}
+			case filter.FoldedStringEquals(mount, "Type", "image"):
+				hasImageMount = true
+				for _, source := range filter.FoldedStrings(mount, "Source") {
+					refs.add(dockerresource.KindImage, source, "container HostConfig.Mounts image source")
+				}
 			}
 		}
 	}
+	return hasImageMount
 }
 
 func appendContainerNetworkEndpointReferences(refs *embeddedRefCollector, decoded map[string]any) {
@@ -1179,6 +1252,18 @@ type embeddedRefCollector struct {
 	list     []embeddedOwnershipReference
 	seen     map[embeddedRefKey]struct{}
 	overflow bool
+	// templated is the source of the first service value holding a SwarmKit
+	// template. SwarmKit expands "{{...}}" in volume sources after the
+	// request is authorized, so the literal text says nothing about which
+	// volume or network the service ends up on.
+	templated string
+}
+
+// refuseTemplated records source when value holds a SwarmKit template.
+func (c *embeddedRefCollector) refuseTemplated(value, source string) {
+	if c.templated == "" && strings.Contains(value, "{{") {
+		c.templated = source
+	}
 }
 
 func (c *embeddedRefCollector) add(kind dockerresource.Kind, identifier, source string) {
@@ -1240,9 +1325,13 @@ func mutateServiceOwnershipBody(r *http.Request, labelKey, owner string) (*owner
 		}
 		containerLabels[labelKey] = owner
 		var overflow bool
-		refs.embeddedResources, overflow = collectServiceEmbeddedReferences(decoded)
-		if overflow {
+		var templated string
+		refs.embeddedResources, overflow, templated = collectServiceEmbeddedReferencesWithTemplates(decoded)
+		switch {
+		case overflow:
 			refs.denyReason = fmt.Sprintf(embeddedReferencesDenyTooMany, "service spec")
+		case templated != "":
+			refs.denyReason = fmt.Sprintf("owner policy denied SwarmKit template in %s: templates expand after authorization", templated)
 		}
 		return nil
 	})
@@ -1250,6 +1339,13 @@ func mutateServiceOwnershipBody(r *http.Request, labelKey, owner string) (*owner
 }
 
 func collectServiceEmbeddedReferences(decoded map[string]any) ([]embeddedOwnershipReference, bool) {
+	list, overflow, _ := collectServiceEmbeddedReferencesWithTemplates(decoded)
+	return list, overflow
+}
+
+// collectServiceEmbeddedReferencesWithTemplates also returns where a templated
+// volume source or network target was found, or "".
+func collectServiceEmbeddedReferencesWithTemplates(decoded map[string]any) ([]embeddedOwnershipReference, bool, string) {
 	refs := &embeddedRefCollector{}
 	for _, taskTemplate := range filter.FoldedObjects(decoded, "TaskTemplate") {
 		for _, containerSpec := range filter.FoldedObjects(taskTemplate, "ContainerSpec") {
@@ -1264,6 +1360,7 @@ func collectServiceEmbeddedReferences(decoded map[string]any) ([]embeddedOwnersh
 						continue
 					}
 					for _, source := range filter.FoldedStrings(mount, "Source") {
+						refs.refuseTemplated(source, "service TaskTemplate.ContainerSpec.Mounts")
 						refs.add(dockerresource.KindVolume, source, "service TaskTemplate.ContainerSpec.Mounts")
 					}
 				}
@@ -1274,20 +1371,44 @@ func collectServiceEmbeddedReferences(decoded map[string]any) ([]embeddedOwnersh
 		}
 	}
 
-	for _, networks := range filter.FoldedArrays(decoded, "Networks") {
+	appendServiceNetworkReferences(refs, decoded, "service Networks.Target")
+	for _, taskTemplate := range filter.FoldedObjects(decoded, "TaskTemplate") {
+		// Docker prefers TaskTemplate.Networks over the deprecated top-level
+		// Networks and resolves its targets before scheduling, so an overlay
+		// named only here is attached the same way.
+		appendServiceNetworkReferences(refs, taskTemplate, "service TaskTemplate.Networks.Target")
+	}
+	return refs.list, refs.overflow, refs.templated
+}
+
+// isServiceNetworkReference reports whether a service network Target names a
+// resource that needs an ownership check. Swarm resolves service targets by
+// exact name, so "Default", "None", "INGRESS" and "docker_gwbridge" are
+// ordinary (creatable) overlays, not the built-ins container modes exempt by
+// case-insensitive match. Only the exact, lowercase "host" and "bridge" are
+// skipped; every other non-empty target is a network reference.
+func isServiceNetworkReference(target string) bool {
+	if strings.TrimSpace(target) == "" {
+		return false
+	}
+	return target != "host" && target != "bridge"
+}
+
+func appendServiceNetworkReferences(refs *embeddedRefCollector, parent map[string]any, source string) {
+	for _, networks := range filter.FoldedArrays(parent, "Networks") {
 		for _, value := range networks {
 			network, ok := value.(map[string]any)
 			if !ok {
 				continue
 			}
 			for _, target := range filter.FoldedStrings(network, "Target") {
-				if isCustomNetworkMode(target) {
-					refs.add(dockerresource.KindNetwork, target, "service Networks.Target")
+				refs.refuseTemplated(target, source)
+				if isServiceNetworkReference(target) {
+					refs.add(dockerresource.KindNetwork, target, source)
 				}
 			}
 		}
 	}
-	return refs.list, refs.overflow
 }
 
 func appendServiceObjectReferences(

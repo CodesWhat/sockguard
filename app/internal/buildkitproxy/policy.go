@@ -27,6 +27,11 @@ type ImageOwnershipPolicy struct {
 	LabelKey      string
 	Authorize     func(context.Context, string) error
 	RequireConfig bool
+
+	// sourcesAuthorized lifts the refusal of every Solve under owner
+	// isolation. Nothing sets it in production: it keeps the destination and
+	// config stamping below under test until build sources can be authorized.
+	sourcesAuthorized bool
 }
 
 // Configured reports whether p was set to anything other than every field
