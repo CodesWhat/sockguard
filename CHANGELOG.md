@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0-rc.8] - 2026-11-19
+
 ### Security
 
 - The service host-network guard no longer skips `POST /services/create?rollback=previous`. The guard treated any `rollback=previous` as a manual rollback and returned before reading the body, but Docker's create ignores that parameter and reads the body, so a create naming the host network by ID bypassed the check. The skip now applies only to `POST /services/{id}/update`, and even there a manual `rollback=previous` is no longer waved through: the daemon re-applies the stored `PreviousSpec`, so sockguard inspects the service and runs the same host resolution on the `PreviousSpec.TaskTemplate.Networks` and `PreviousSpec.Networks` targets. A target that resolves to the host network is denied with `403`, and a failed service or network lookup returns `502`. A repeated `rollback` value on an update, or a manual rollback whose `version` is not exactly one numeric value, is refused with `400` instead of being treated as an ordinary update. `request_body.service.allow_host_network: true` skips it.
