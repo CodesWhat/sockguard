@@ -229,7 +229,7 @@ func TestHijackAfterShutdownIsCanceled(t *testing.T) {
 }
 
 // An open streaming request (GET /events) keeps http.Server.Shutdown blocked
-// for the whole grace period. Hijacked sessions must be signalled when
+// for the whole grace period. Hijacked sessions must be signaled when
 // shutdown starts, not after Shutdown returns, or they get no time to unwind
 // and their audit records are lost.
 func TestShutdownUnwindsHijackedSessionWhileStreamingRequestHoldsShutdown(t *testing.T) {
