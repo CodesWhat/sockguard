@@ -13,6 +13,7 @@ import (
 const hostNetworkID = "9f1c5b7d2a0e4c3b8d6a1f2e3c4b5a69"
 
 func TestServiceNetworkGuardResolvesHostNetwork(t *testing.T) {
+	previousSpec := ServiceInspectResult{Version: 3, HasPreviousSpec: true}
 	inspect := func(_ context.Context, target string) (NetworkInspectResult, bool, error) {
 		switch target {
 		case hostNetworkID, hostNetworkID[:12]:
@@ -31,13 +32,17 @@ func TestServiceNetworkGuardResolvesHostNetwork(t *testing.T) {
 	}
 
 	tests := []struct {
-		name         string
-		path         string
-		body         string
-		allowHost    bool
-		inspect      NetworkInspectFunc
-		wantStatus   int
-		wantForwards int
+		name      string
+		path      string
+		body      string
+		allowHost bool
+		inspect   NetworkInspectFunc
+		// previous is the stored PreviousSpec the service inspector reports;
+		// nil leaves the service inspector unset unless inspectServiceErr.
+		previous          *ServiceInspectResult
+		inspectServiceErr bool
+		wantStatus        int
+		wantForwards      int
 	}{
 		{name: "full ID in TaskTemplate", path: "/services/create", body: `{"TaskTemplate":{"Networks":[{"Target":"` + hostNetworkID + `"}]}}`, inspect: inspect, wantStatus: http.StatusForbidden},
 		{name: "ID prefix in TaskTemplate", path: "/services/create", body: `{"TaskTemplate":{"Networks":[{"Target":"` + hostNetworkID[:12] + `"}]}}`, inspect: inspect, wantStatus: http.StatusForbidden},
@@ -52,11 +57,27 @@ func TestServiceNetworkGuardResolvesHostNetwork(t *testing.T) {
 		{name: "allow_host_network skips the guard", path: "/services/create", body: `{"TaskTemplate":{"Networks":[{"Target":"` + hostNetworkID + `"}]}}`, allowHost: true, inspect: nil, wantStatus: guardedRequestAllowedStatus, wantForwards: 1},
 		{name: "create with rollback=previous still checks a host ID", path: "/services/create?rollback=previous", body: `{"TaskTemplate":{"Networks":[{"Target":"` + hostNetworkID + `"}]}}`, inspect: inspect, wantStatus: http.StatusForbidden},
 		{name: "create with rollback=previous still denies literal host", path: "/services/create?rollback=previous", body: `{"TaskTemplate":{"Networks":[{"Target":"host"}]}}`, inspect: nil, wantStatus: http.StatusForbidden},
-		{name: "manual rollback ignores body", path: "/services/svc1/update?version=3&rollback=previous", body: `{"Networks":[{"Target":"` + hostNetworkID + `"}]}`, inspect: nil, wantStatus: guardedRequestAllowedStatus, wantForwards: 1},
+		{name: "manual rollback ignores body", path: "/services/svc1/update?version=3&rollback=previous", body: `{"Networks":[{"Target":"` + hostNetworkID + `"}]}`, inspect: nil, previous: &previousSpec, wantStatus: guardedRequestAllowedStatus, wantForwards: 1},
+		{name: "manual rollback to a host-ID PreviousSpec target", path: "/services/svc1/update?version=3&rollback=previous", body: `{}`, inspect: inspect, previous: &ServiceInspectResult{Version: 3, HasPreviousSpec: true, PreviousSpecNetworkTargets: []string{"tenant-net", hostNetworkID}}, wantStatus: http.StatusForbidden},
+		{name: "manual rollback to a literal host PreviousSpec target", path: "/services/svc1/update?version=3&rollback=previous", body: `{}`, inspect: nil, previous: &ServiceInspectResult{Version: 3, HasPreviousSpec: true, PreviousSpecNetworkTargets: []string{"host"}}, wantStatus: http.StatusForbidden},
+		{name: "manual rollback to an overlay-only PreviousSpec", path: "/services/svc1/update?version=3&rollback=previous", body: `{}`, inspect: inspect, previous: &ServiceInspectResult{Version: 3, HasPreviousSpec: true, PreviousSpecNetworkTargets: []string{"tenant-net"}}, wantStatus: guardedRequestAllowedStatus, wantForwards: 1},
+		{name: "manual rollback network lookup failure fails closed", path: "/services/svc1/update?version=3&rollback=previous", body: `{}`, inspect: inspect, previous: &ServiceInspectResult{Version: 3, HasPreviousSpec: true, PreviousSpecNetworkTargets: []string{"boom"}}, wantStatus: http.StatusBadGateway},
+		{name: "manual rollback service inspect failure fails closed", path: "/services/svc1/update?version=3&rollback=previous", body: `{}`, inspect: inspect, inspectServiceErr: true, wantStatus: http.StatusBadGateway},
+		{name: "manual rollback without a service inspector fails closed", path: "/services/svc1/update?version=3&rollback=previous", body: `{}`, inspect: inspect, wantStatus: http.StatusBadGateway},
+		{name: "manual rollback with a stale version is a conflict", path: "/services/svc1/update?version=2&rollback=previous", body: `{}`, inspect: inspect, previous: &ServiceInspectResult{Version: 3, HasPreviousSpec: true, PreviousSpecNetworkTargets: []string{"tenant-net"}}, wantStatus: http.StatusConflict},
+		{name: "manual rollback with allow_host_network skips the guard", path: "/services/svc1/update?version=3&rollback=previous", body: `{}`, allowHost: true, wantStatus: guardedRequestAllowedStatus, wantForwards: 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			opts := ResourceLimitGuardOptions{InspectNetwork: tt.inspect}
+			if tt.previous != nil {
+				result := *tt.previous
+				opts.InspectService = func(context.Context, string) (ServiceInspectResult, bool, error) { return result, true, nil }
+			} else if tt.inspectServiceErr {
+				opts.InspectService = func(context.Context, string) (ServiceInspectResult, bool, error) {
+					return ServiceInspectResult{}, false, errors.New("daemon down")
+				}
+			}
 			opts.Service.AllowHostNetwork = tt.allowHost
 			out := runResourceGuardRequest(t, opts, http.MethodPost, tt.path, tt.body, "")
 			if out.status != tt.wantStatus || out.forwarded != tt.wantForwards {

@@ -752,6 +752,22 @@ func (g *resourceLimitGuard) guardServiceRollbackTarget(w http.ResponseWriter, r
 		return false
 	}
 
+	if stateSource == "previous_spec" && !svc.AllowHostNetwork {
+		// The daemon re-applies the stored PreviousSpec whole, so its networks
+		// get the same host resolution a submitted body would.
+		host, err := g.resolvesToHostNetwork(r, current.PreviousSpecNetworkTargets)
+		if err != nil {
+			g.respondHardDeny(w, r, http.StatusBadGateway, reasonCodeResourceLimitPolicyLookupFailed,
+				"service update denied: resource requirement verification unavailable", verbosity, rp)
+			return false
+		}
+		if host {
+			rp.Violation = "host_network"
+			g.respondPolicyDenied(w, r, next, "service denied: host network is not allowed", verbosity, rp)
+			return false
+		}
+	}
+
 	nanoCPUs := selectNanoCPUs(current)
 	if stateSource == "previous_spec" && !current.HasPreviousSpec {
 		nanoCPUs = 0
@@ -777,6 +793,9 @@ type ServiceInspectResult struct {
 	SpecNanoCPUs         int64
 	HasPreviousSpec      bool
 	PreviousSpecNanoCPUs int64
+	// PreviousSpecNetworkTargets lists PreviousSpec.TaskTemplate.Networks and
+	// PreviousSpec.Networks targets, which a manual rollback re-applies.
+	PreviousSpecNetworkTargets []string
 }
 
 // ServiceInspectFunc looks up a service's current version/spec/previous-spec
@@ -842,6 +861,15 @@ func NewDockerServiceInspectorWithRoundTripper(rt http.RoundTripper) ServiceInsp
 		if decoded.PreviousSpec != nil {
 			result.HasPreviousSpec = true
 			result.PreviousSpecNanoCPUs = decoded.PreviousSpec.TaskTemplate.Resources.Limits.NanoCPUs
+			var networks struct {
+				PreviousSpec *serviceNetworkTargets `json:"PreviousSpec"`
+			}
+			if err := json.Unmarshal(body, &networks); err != nil {
+				return ServiceInspectResult{}, false, err
+			}
+			if networks.PreviousSpec != nil {
+				result.PreviousSpecNetworkTargets = networks.PreviousSpec.targets()
+			}
 		}
 		return result, true, nil
 	}
