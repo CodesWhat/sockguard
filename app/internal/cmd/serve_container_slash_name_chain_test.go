@@ -64,6 +64,7 @@ func TestServeChainOwnerChecksSlashBearingContainerNames(t *testing.T) {
 	cfg.Upstream.Socket = socketPath
 	cfg.Health.Enabled = false
 	cfg.Log.AccessLog = false
+	cfg.Response.DenyVerbosity = "verbose"
 	cfg.Ownership.Owner = "job-123"
 	cfg.Ownership.LabelKey = "com.sockguard.owner"
 	cfg.Rules = []config.RuleConfig{
@@ -79,7 +80,7 @@ func TestServeChainOwnerChecksSlashBearingContainerNames(t *testing.T) {
 	addr, _ := startProxyChainServer(t, handler)
 	client := &http.Client{Timeout: 2 * time.Second}
 
-	do := func(method, path, body string) int {
+	doBody := func(method, path, body string) (int, string) {
 		t.Helper()
 		req, err := http.NewRequest(method, "http://"+addr+path, strings.NewReader(body))
 		if err != nil {
@@ -90,9 +91,14 @@ func TestServeChainOwnerChecksSlashBearingContainerNames(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s %s: %v", method, path, err)
 		}
-		_, _ = io.Copy(io.Discard, resp.Body)
+		out, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		return resp.StatusCode
+		return resp.StatusCode, string(out)
+	}
+	do := func(method, path, body string) int {
+		t.Helper()
+		status, _ := doBody(method, path, body)
+		return status
 	}
 
 	for _, req := range []struct{ method, path string }{
@@ -121,8 +127,16 @@ func TestServeChainOwnerChecksSlashBearingContainerNames(t *testing.T) {
 	}
 
 	// A create that links the victim is refused before it reaches the daemon.
-	if status := do(http.MethodPost, "/v1.45/containers/create", `{"Image":"alpine","HostConfig":{"Links":["victim:x"]}}`); status != http.StatusForbidden {
+	status, body := doBody(http.MethodPost, "/v1.45/containers/create", `{"Image":"alpine","HostConfig":{"Links":["victim:x"]}}`)
+	if status != http.StatusForbidden {
 		t.Errorf("create linking a foreign container status = %d, want 403", status)
+	}
+	// The filter's container-create body inspector refuses HostConfig.Links
+	// outright, ahead of ownership's own check of the link sources, so this
+	// denial names the filter layer. A 403 from ownership would carry a
+	// different reason and would mean the filter refusal had regressed.
+	if !strings.Contains(body, "legacy container links (HostConfig.Links) are not allowed") {
+		t.Errorf("create linking a foreign container body = %s, want the filter's HostConfig.Links refusal", body)
 	}
 	mu.Lock()
 	defer mu.Unlock()
