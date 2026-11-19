@@ -10,7 +10,7 @@ import (
 )
 
 func TestGatewayReturnStampsEveryImageConfig(t *testing.T) {
-	owner := ImageOwnershipPolicy{Owner: "team-a", LabelKey: "owner", RequireConfig: true, Authorize: func(context.Context, string) error { return nil }}
+	owner := ImageOwnershipPolicy{sourcesAuthorized: true, Owner: "team-a", LabelKey: "owner", RequireConfig: true, Authorize: func(context.Context, string) error { return nil }}
 	for _, tc := range []struct {
 		name     string
 		metadata map[string][]byte
@@ -67,7 +67,7 @@ func TestGatewayReturnStampsEveryImageConfig(t *testing.T) {
 
 func TestOwnedGatewayReturnRejectsMalformedAndOversizedResults(t *testing.T) {
 	policy := allowAllPolicy
-	policy.ImageOwnership = ImageOwnershipPolicy{Owner: "team-a", LabelKey: "owner", RequireConfig: true}
+	policy.ImageOwnership = ImageOwnershipPolicy{sourcesAuthorized: true, Owner: "team-a", LabelKey: "owner", RequireConfig: true}
 	if _, d := rewriteGatewayImageOwnership([]byte{0x08}, policy, 4096); d == nil {
 		t.Fatal("malformed Return admitted")
 	}

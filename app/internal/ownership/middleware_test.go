@@ -2999,7 +2999,7 @@ func TestAddOwnerLabelToBuildQueryResistsOwnerStampStripping(t *testing.T) {
 // the forwarded query carries the owner once and no shadow key.
 func TestMiddlewareRefusesOwnerStampStrippingBuild(t *testing.T) {
 	t.Parallel()
-	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner", buildSourcesAuthorized: true}
 
 	t.Run("unsetlabel owner is refused", func(t *testing.T) {
 		t.Parallel()

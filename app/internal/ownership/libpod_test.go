@@ -199,7 +199,7 @@ func TestMiddlewareStampsOwnerLabelOnlyOnLibpodBuildPost(t *testing.T) {
 			forwarded := false
 			handler := middlewareWithDeps(
 				testLogger(),
-				Options{Owner: "job-123", LabelKey: "com.sockguard.owner"},
+				Options{Owner: "job-123", LabelKey: "com.sockguard.owner", buildSourcesAuthorized: true},
 				fakeInspector{}.inspectResource,
 				fakeInspector{}.inspectExec,
 			)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

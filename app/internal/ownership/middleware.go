@@ -182,6 +182,12 @@ type Options struct {
 	// TestServeChainPassesResolvedFlavorToOwnership is the wiring proof, and
 	// TestServeChainImageTagChecksTheLocalhostNameOnPodman is a second one.
 	UpstreamFlavor upstreamflavor.Flavor
+
+	// buildSourcesAuthorized lifts the refusal of builds under ownership.
+	// Nothing sets it in production: it exists so the build name
+	// authorization this package still implements stays under test until
+	// build sources can be authorized and the refusal is removed.
+	buildSourcesAuthorized bool
 	// PodmanConjunctiveVolumeFilters is true only when all upstream endpoints
 	// positively report a released Podman version with AND across volume filter keys.
 	PodmanConjunctiveVolumeFilters bool
@@ -286,6 +292,18 @@ func middlewareWithDeps(
 			// measurement is worth nothing once the pods are gone.
 			if write, ok := filter.LookupLibpodUnscopeableWrite(r.Method, normPath); ok {
 				denyUnscopeableLibpodWrite(w, r, write)
+				return
+			}
+
+			// A build can use any local image as a FROM source, and the owner
+			// stamp then labels the copy as this owner's. Nothing reads the
+			// Dockerfile's sources, so a build under ownership is refused until
+			// they can be authorized, on Docker's /build and on Podman's
+			// /libpod/build and /libpod/local/build alike. Refused before
+			// mutation or inspection, in every rollout mode.
+			if r.Method == http.MethodPost && isOwnedBuildPath(normPath) && !opts.buildSourcesAuthorized {
+				logging.SetDeniedWithCode(w, r, reasonCodeOwnerPolicyDeniedAccess, buildDenyOwned, nil)
+				_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: buildDenyOwned})
 				return
 			}
 

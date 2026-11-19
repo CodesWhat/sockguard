@@ -123,9 +123,11 @@ func TestServeChainRemovesTheSpooledBody(t *testing.T) {
 		{name: "load onto another owner's name", target: "/v1.45/images/load", body: archive, contentType: "application/x-tar", reference: "theirs/app:latest", wantStatus: http.StatusForbidden},
 		{name: "build onto another owner's name", target: "/v1.45/build?t=theirs%2Fapp%3Alatest", body: dockerfile, contentType: "text/plain", wantStatus: http.StatusForbidden},
 		{name: "load whose owner lookup fails", target: "/v1.45/images/load", body: archive, contentType: "application/x-tar", reference: "mine/new:v2", failInspects: true, wantStatus: http.StatusBadGateway},
-		{name: "build whose owner lookup fails", target: "/v1.45/build?t=mine%2Fnew%3Av2", body: dockerfile, contentType: "text/plain", failInspects: true, wantStatus: http.StatusBadGateway},
+		// A build is refused under ownership before any lookup, so a failing
+		// lookup and an otherwise fine build are both a 403 now.
+		{name: "build whose owner lookup fails", target: "/v1.45/build?t=mine%2Fnew%3Av2", body: dockerfile, contentType: "text/plain", failInspects: true, wantStatus: http.StatusForbidden},
 		{name: "allowed load", target: "/v1.45/images/load", body: archive, contentType: "application/x-tar", reference: "mine/new:v2", wantStatus: http.StatusOK},
-		{name: "allowed build", target: "/v1.45/build?t=mine%2Fnew%3Av2", body: dockerfile, contentType: "text/plain", wantStatus: http.StatusOK},
+		{name: "build under ownership", target: "/v1.45/build?t=mine%2Fnew%3Av2", body: dockerfile, contentType: "text/plain", wantStatus: http.StatusForbidden},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
