@@ -906,6 +906,7 @@ func collectContainerCreateEmbeddedReferencesWithImageMounts(decoded map[string]
 		if appendContainerMountOwnershipReferences(&refs, hostConfig) {
 			hasImageMount = true
 		}
+		appendContainerLinkOwnershipReferences(&refs, hostConfig)
 
 		for _, mode := range filter.FoldedStrings(hostConfig, "NetworkMode") {
 			if !isCustomNetworkMode(mode) {
@@ -932,6 +933,26 @@ func appendContainerBindOwnershipReferences(refs *[]embeddedOwnershipReference, 
 				continue
 			}
 			appendEmbeddedOwnershipReference(refs, dockerresource.KindVolume, source, "container HostConfig.Binds")
+		}
+	}
+}
+
+// appendContainerLinkOwnershipReferences collects the source container of each
+// legacy HostConfig.Links entry ("name" or "name:alias"). dockerd resolves the
+// source at create and registers "/<this container>/<alias>" as a name the
+// source answers to, so the link reads another container's environment and
+// lets every slash-bearing container route address it. The source is authorized
+// like any other container reference. dockerd resolves a leading "/" the same
+// as none and takes everything before the first ":" as the name.
+func appendContainerLinkOwnershipReferences(refs *[]embeddedOwnershipReference, hostConfig map[string]any) {
+	for _, links := range filter.FoldedArrays(hostConfig, "Links") {
+		for _, value := range links {
+			link, ok := value.(string)
+			if !ok {
+				continue
+			}
+			source, _, _ := strings.Cut(link, ":")
+			appendEmbeddedOwnershipReference(refs, dockerresource.KindContainer, strings.TrimPrefix(strings.TrimSpace(source), "/"), "container HostConfig.Links")
 		}
 	}
 }

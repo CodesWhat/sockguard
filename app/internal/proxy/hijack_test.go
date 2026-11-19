@@ -218,7 +218,9 @@ func TestIsHijackEndpoint(t *testing.T) {
 		// Negative: wrong segment count
 		{"POST", "/containers/attach", false},
 		{"POST", "/exec/start", false},
-		{"POST", "/containers/a/b/attach", false},
+		// dockerd's {name:.*} routes a slash-bearing name (a legacy link
+		// alias) to attach, so it is a hijack endpoint too.
+		{"POST", "/containers/a/b/attach", true},
 		{"POST", "containers/abc123/attach", false},
 		{"POST", "/", false},
 		// Negative: other endpoints
