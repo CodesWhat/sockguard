@@ -336,3 +336,24 @@ func TestPresetChainRefusesLegacyLinks(t *testing.T) {
 		})
 	}
 }
+
+// TestPresetChainPortainerStartAllowsEmptyObjectBody pins that Portainer's UI,
+// which posts `{}` with every start, still reaches dockerd through the shipped
+// portainer preset, while a HostConfig-sized body stays refused.
+func TestPresetChainPortainerStartAllowsEmptyObjectBody(t *testing.T) {
+	daemon := &presetCreateDaemon{}
+	addr := newPresetChain(t, "preset-portainer-start", "portainer.yaml", daemon, nil)
+	for _, path := range []string{"/containers/abc/start", "/v1.45/containers/abc/start"} {
+		status, out := presetChainPost(t, addr, path, `{}`)
+		if status != http.StatusNoContent {
+			t.Errorf("%s: status = %d, body = %s, want 204", path, status, out)
+		}
+	}
+	if daemon.started.Load() != 2 {
+		t.Fatalf("daemon starts = %d, want 2", daemon.started.Load())
+	}
+	status, out := presetChainPost(t, addr, "/v1.23/containers/abc/start", `{"Privileged":true,"Binds":["/:/host"]}`)
+	if status != http.StatusForbidden || !strings.Contains(out, "container start denied") || daemon.started.Load() != 2 {
+		t.Errorf("hostconfig start: status = %d, starts = %d, body = %s, want 403 and no new start", status, daemon.started.Load(), out)
+	}
+}
