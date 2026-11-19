@@ -25,7 +25,7 @@ func TestDockerContainerRoute(t *testing.T) {
 		{http.MethodDelete, "/containers/A/x", "A/x", "", true},
 		{http.MethodDelete, "/containers/web", "web", "", true},
 		{http.MethodDelete, "/containers/web/checkpoints/cp", "web", "checkpoints", true},
-		{http.MethodDelete, "/containers/a/b/checkpoints/cp", "a/b", "checkpoints", true},
+		{http.MethodDelete, "/containers/a/b/checkpoints/cp", "a/b/checkpoints/cp", "", true},
 		{http.MethodDelete, "/containers/a/checkpoints/cp/extra", "a/checkpoints/cp/extra", "", true},
 		{http.MethodDelete, "/containers/a/checkpoints/", "a/checkpoints/", "", true},
 		{http.MethodGet, "/containers/web", "web", "", true},
