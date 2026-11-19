@@ -639,7 +639,8 @@ version-prefixed paths and warn/audit rollouts. Buildah can import a base image
 from an archive without passing through its registry pull-policy check, so
 `pullpolicy=never` does not prevent a build from replacing another owner's
 image name. Neither the blind-write acknowledgment nor an owned output tag
-makes these imports safe. Docker builds retain their destination checks.
+makes these imports safe. Docker builds and BuildKit solves are refused
+under `ownership.owner` too, because build sources are not owner-checked yet.
 Without an owner policy, Podman builds retain the rules and body controls
 described on this page.
 
