@@ -1101,7 +1101,7 @@ jobs:
     needs: [verify-ci, release]
     if: ${{ needs.verify-ci.outputs.latest == 'true' }}
     runs-on: macos-15
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: read
     env:
