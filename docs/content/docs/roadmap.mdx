@@ -3,10 +3,10 @@ title: Roadmap
 description: Sockguard's shipped v1.7, v2.0, v2.1, v2.2, v2.3, and v2.4 work and later direction.
 ---
 
-Sockguard v2.4 is the current stable feature line, with v2.4.7 the latest
-release. It updates OpenTelemetry to 1.47.0 for GHSA-q7gw-24fr-5p69 and
-builds with Go 1.27.4 for GO-2026-6859. It carries v2.4.6, including the
-malformed zstd frame fix, and all earlier v2.4 work.
+Sockguard v2.4 is the current stable feature line, with v2.4.8 the latest
+release. It backports request-filter, owner-isolation, audit-log and shutdown
+security fixes and fixes random Buildx build failures. It carries v2.4.7,
+including the OpenTelemetry and Go security updates, and all earlier v2.4 work.
 
 The v2.3 line shipped as follows. v2.3.0 promotes `2.3.0-rc.9` unchanged in behavior and is the first
 release under the MIT license; 2.2.x and earlier remain Apache-2.0. v2.3.1 is a
@@ -311,3 +311,9 @@ visible.
 
 - OpenTelemetry 1.47.0 fixes the attribute value length limit bypass in GHSA-q7gw-24fr-5p69 / CVE-2026-128085. The affected tracing path has not been demonstrated in Sockguard.
 - Go 1.27.4 fixes GO-2026-6859 / CVE-2026-97054, a net/http header race that can crash an HTTP/1 server.
+
+## Shipped in v2.4.8
+
+- Security backports from the v2.5 work: reloaded `clients.allowed_cidrs` now reach the admin listener, container create refuses `writable-cgroups`, inline seccomp profiles and top-level `HostConfig` fields, service create and update resolve host-network targets and refuse SwarmKit templates, and owner isolation covers more network, container, swarm, volume and build routes.
+- Audit and access log sinks recover from a transient write error, and shutdown waits for hijacked exec and attach sessions before closing them.
+- A mediated Buildx build no longer fails at random with an unadmitted Solve ref.

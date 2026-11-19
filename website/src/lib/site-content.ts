@@ -510,4 +510,14 @@ export const roadmap: Milestone[] = [
       "Builds with Go 1.27.4 for the net/http header race in GO-2026-6859",
     ],
   },
+  {
+    version: "v2.4.8",
+    title: "Security Backports",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Backports request-filter, owner-isolation, audit-log and shutdown security fixes to the v2.4 line",
+      "Fixes random Buildx build failures caused by early Control/Status and gateway calls",
+    ],
+  },
 ];
