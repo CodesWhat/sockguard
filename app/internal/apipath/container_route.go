@@ -35,9 +35,9 @@ var dockerContainerActions = map[string][]string{
 // GET /containers/json, POST /containers/create and POST /containers/prune.
 //
 // DELETE takes the complete remainder as the name, the way dockerd's
-// DELETE /containers/{name:.*} does, except for the final
-// /checkpoints/<one segment> suffix, which is a checkpoint delete on the
-// container before it. A path whose last segment is not a
+// DELETE /containers/{name:.*} does, except for
+// /<one segment>/checkpoints/<one segment>, which is a checkpoint delete on
+// the single-segment container before it. A path whose last segment is not a
 // registered action for the method also takes the whole remainder as the
 // name, so a slash-bearing name is looked up as itself and fails closed
 // instead of being cut to its first segment.
@@ -56,9 +56,11 @@ func DockerContainerRoute(method, normPath string) (name, action string, ok bool
 		return rest, "", true
 	}
 	if method == http.MethodDelete {
-		// DELETE /containers/{name:.*}/checkpoints/{checkpoint} acts on the
-		// container, not on a container named after the whole remainder.
-		if i := strings.LastIndex(rest, "/checkpoints/"); i > 0 {
+		// DELETE /containers/{name}/checkpoints/{checkpoint} acts on the
+		// container, but dockerd registers it with a single-segment name. A
+		// slash-bearing name before /checkpoints/ never matches that route and
+		// reaches generic deletion with the whole remainder as the name.
+		if i := strings.LastIndex(rest, "/checkpoints/"); i > 0 && !strings.Contains(rest[:i], "/") {
 			if cp := rest[i+len("/checkpoints/"):]; cp != "" && !strings.Contains(cp, "/") {
 				return rest[:i], "checkpoints", true
 			}

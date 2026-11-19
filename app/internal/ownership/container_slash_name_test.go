@@ -32,7 +32,7 @@ func TestContainerIdentifierAuthorizesTheWholeSlashBearingName(t *testing.T) {
 		{http.MethodDelete, "/containers/A/x", "A/x", true},
 		{http.MethodDelete, "/containers/web", "web", true},
 		{http.MethodDelete, "/containers/web/checkpoints/cp", "web", true},
-		{http.MethodDelete, "/containers/A/x/checkpoints/cp", "A/x", true},
+		{http.MethodDelete, "/containers/A/x/checkpoints/cp", "A/x/checkpoints/cp", true},
 		{http.MethodPost, "/containers/create/start", "create", true},
 		{http.MethodGet, "/containers/json/json", "json", true},
 		{http.MethodPost, "/containers/create", "", false},
@@ -69,7 +69,7 @@ func TestMiddlewareChecksTheFullNameOfASlashBearingContainerRoute(t *testing.T) 
 		{http.MethodGet, "/containers/A/x/attach/ws", "A/x"},
 		{http.MethodDelete, "/containers/A/x?force=1", "A/x"},
 		{http.MethodDelete, "/containers/web/checkpoints/cp", "web"},
-		{http.MethodDelete, "/containers/A/x/checkpoints/cp?dir=/tmp", "A/x"},
+		{http.MethodDelete, "/containers/A/x/checkpoints/cp?dir=/tmp", "A/x/checkpoints/cp"},
 		{http.MethodPost, "/containers/web/stop", "web"},
 		{http.MethodDelete, "/containers/web", "web"},
 	}
