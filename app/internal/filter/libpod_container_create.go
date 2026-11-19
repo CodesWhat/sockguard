@@ -346,8 +346,17 @@ func (p libpodContainerCreatePolicy) inspect(logger *slog.Logger, r *http.Reques
 	if denyReason := capabilityAddDenyReason(createReq.CapAdd, p.allowAllCapabilities, p.allowedCapabilities, "libpod container create"); denyReason != "" {
 		return denyReason, nil
 	}
-	if denyReason := p.denySeccompReason(createReq.SeccompProfilePath); denyReason != "" {
+	if denyReason := p.denySeccompInlineReason(createReq.SeccompProfile); denyReason != "" {
 		return denyReason, nil
+	}
+	// An inline profile that got past the gate above replaces the default an
+	// empty path would otherwise be read as, so the path gate has nothing to
+	// say about it.
+	inlineOnly := createReq.SeccompProfile != "" && strings.TrimSpace(createReq.SeccompProfilePath) == ""
+	if !inlineOnly {
+		if denyReason := p.denySeccompReason(createReq.SeccompProfilePath); denyReason != "" {
+			return denyReason, nil
+		}
 	}
 	if denyReason := p.denyAppArmorReason(createReq.ApparmorProfile); denyReason != "" {
 		return denyReason, nil
@@ -608,6 +617,25 @@ func (p libpodContainerCreatePolicy) denySeccompReason(profilePath string) strin
 	}
 	if !slices.Contains(p.allowedSeccompProfiles, effective) {
 		return fmt.Sprintf("libpod container create denied: seccomp profile %q is not in the allowed list", effective)
+	}
+	return ""
+}
+
+// denySeccompInlineReason gates seccomp_profile, the inline profile Podman 6.2
+// reads ahead of seccomp_profile_path. With the path omitted the allowlist
+// would otherwise see the default sentinel while Podman loads the inline
+// document, which can allow every syscall. Any non-empty value is refused
+// while deny_unconfined_seccomp is on, and while an allowlist is active unless
+// it lists that exact content. Podman 5.x reads the field as a file name.
+func (p libpodContainerCreatePolicy) denySeccompInlineReason(inline string) string {
+	if inline == "" {
+		return ""
+	}
+	if p.denyUnconfinedSeccomp {
+		return "libpod container create denied: an inline seccomp profile (seccomp_profile) is not allowed while deny_unconfined_seccomp is set"
+	}
+	if len(p.allowedSeccompProfiles) > 0 && !slices.Contains(p.allowedSeccompProfiles, strings.TrimSpace(inline)) {
+		return "libpod container create denied: an inline seccomp profile (seccomp_profile) is not in the allowed list"
 	}
 	return ""
 }

@@ -100,3 +100,33 @@ func TestPresetChainDrydockRefusesWritableCgroups(t *testing.T) {
 		})
 	}
 }
+
+// cisCompliantHostConfig satisfies every hardening rail the CIS preset
+// requires, so a test can vary one field and see only that field refused.
+const cisCompliantHostConfig = `"CapDrop":["ALL"],"ReadonlyRootfs":true,"Memory":1048576,"NanoCpus":1000000000,"PidsLimit":100`
+
+// TestPresetChainCISRefusesInlineSeccomp pins that the shipped CIS preset,
+// which sets deny_unconfined_seccomp without a profile allowlist, refuses an
+// inline seccomp document before it reaches dockerd.
+func TestPresetChainCISRefusesInlineSeccomp(t *testing.T) {
+	inline := `{\"defaultAction\":\"SCMP_ACT_ALLOW\"}`
+	daemon := &presetCreateDaemon{}
+	addr := newPresetChain(t, "preset-cis-seccomp", "cis-docker-benchmark.yaml", daemon, nil)
+
+	status, body := presetChainPost(t, addr, "/v1.53/containers/create", `{"Image":"alpine","HostConfig":{`+cisCompliantHostConfig+`,"SecurityOpt":["no-new-privileges:true","seccomp=`+inline+`"]}}`)
+	if status != http.StatusForbidden || !strings.Contains(body, "inline seccomp") {
+		t.Errorf("inline seccomp: status = %d, body = %s, want 403 naming the inline profile", status, body)
+	}
+	status, body = presetChainPost(t, addr, "/containers/create", `{"Image":"alpine","HostConfig":{`+cisCompliantHostConfig+`,"SecurityOpt":["no-new-privileges:true","seccomp={}"]}}`)
+	if status != http.StatusForbidden || !strings.Contains(body, "inline seccomp") {
+		t.Errorf("empty inline seccomp: status = %d, body = %s, want 403 naming the inline profile", status, body)
+	}
+	if daemon.created.Load() != 0 {
+		t.Fatalf("daemon creates = %d, want 0", daemon.created.Load())
+	}
+
+	status, body = presetChainPost(t, addr, "/containers/create", `{"Image":"alpine","HostConfig":{`+cisCompliantHostConfig+`,"SecurityOpt":["no-new-privileges:true"]}}`)
+	if status != http.StatusCreated || daemon.created.Load() != 1 {
+		t.Errorf("compliant create: status = %d, creates = %d, body = %s, want 201 and 1", status, daemon.created.Load(), body)
+	}
+}
