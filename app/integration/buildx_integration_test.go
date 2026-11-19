@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -62,13 +63,17 @@ func TestBuildxBuiltinDockerfileRealDaemon(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	policy := cfg.RequestBody.Buildkit.ToPolicy(cfg.RequestBody.Build)
-	policy.ImageOwnership = buildkitproxy.ImageOwnershipPolicy{Owner: "team-a", LabelKey: "com.sockguard.owner", Authorize: ownership.NewBuildkitImageAuthorizer(dockerSocketRoundTripper(socket), ownership.Options{Owner: "team-a", LabelKey: "com.sockguard.owner"})}
+	plain := cfg.RequestBody.Buildkit.ToPolicy(cfg.RequestBody.Build)
+	owned := plain
+	owned.ImageOwnership = buildkitproxy.ImageOwnershipPolicy{Owner: "team-a", LabelKey: "com.sockguard.owner", Authorize: ownership.NewBuildkitImageAuthorizer(dockerSocketRoundTripper(socket), ownership.Options{Owner: "team-a", LabelKey: "com.sockguard.owner"})}
+	var active atomic.Pointer[buildkitproxy.Policy]
+	active.Store(&owned)
 	logger := newIntegrationLogger()
 	mediator := buildkitproxy.NewMediator(llbDaemonDialer{socket}, logger)
 	ordinary := proxy.NewWithOptions(socket, logger, proxy.Options{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		key := buildkitproxy.SessionKey{ClientIdentity: "buildx-integration", Profile: "builder"}
+		policy := *active.Load()
 		switch r.URL.Path {
 		case "/grpc":
 			mediator.ServeGRPC(w, r, policy, key)
@@ -92,19 +97,22 @@ func TestBuildxBuiltinDockerfileRealDaemon(t *testing.T) {
 		return docker(host, nil, "buildx", "build", "--builder", "default", "--progress=plain", "--provenance=false", "--load", "--tag", tag, directory)
 	}
 	const source = "FROM scratch\nLABEL com.sockguard.owner=forged\nCOPY marker /marker\n"
-	if output, err := build(source, mine); err != nil {
-		t.Fatalf("Buildx failed: %v: %s", err, output)
-	}
-	label, err := docker(direct, nil, "image", "inspect", "--format", `{{index .Config.Labels "com.sockguard.owner"}}`, mine)
-	if err != nil || strings.TrimSpace(label) != "team-a" {
-		t.Fatalf("owner label=%q error=%v", label, err)
-	}
-	if output, err := build(source, foreign); err == nil || !strings.Contains(output, "image export cannot satisfy owner isolation") {
-		t.Fatalf("foreign destination: %v: %s", err, output)
+	// Under owner isolation every mediated solve is refused, because build
+	// sources (FROM images) are not owner-checked yet.
+	for _, tag := range []string{mine, foreign} {
+		if output, err := build(source, tag); err == nil || !strings.Contains(output, "image builds are unavailable while owner isolation is enabled") {
+			t.Fatalf("owner-scoped build of %s was not refused: %v: %s", tag, err, output)
+		}
 	}
 	after, err := docker(direct, nil, "image", "inspect", "--format", "{{.Id}}", foreign)
 	if err != nil || after != before {
 		t.Fatal("foreign image changed")
+	}
+	// Without owner isolation the mediated build runs and the policy still
+	// refuses forbidden Dockerfile content.
+	active.Store(&plain)
+	if output, err := build(source, mine); err != nil {
+		t.Fatalf("Buildx failed: %v: %s", err, output)
 	}
 	for _, tc := range []struct{ file, reason string }{
 		{"FROM scratch\nRUN echo forbidden\n", "RUN instructions are not allowed"},

@@ -237,6 +237,45 @@ func newServicePolicy(opts ServiceOptions) servicePolicy {
 	}
 }
 
+// serviceMountIsBind reports whether SwarmKit treats a mount of this Type as a
+// bind. The daemon maps the Type string through an upper-cased enum lookup in
+// which BIND is the zero value, so an empty or unrecognized Type is a bind.
+func serviceMountIsBind(mountType string) bool {
+	switch strings.ToLower(strings.TrimSpace(mountType)) {
+	case "volume", "tmpfs", "image", "cluster", "npipe":
+		return false
+	default:
+		return true
+	}
+}
+
+// serviceTemplateMarker opens a Go template action. SwarmKit expands those in
+// mount fields when it schedules a task, after sockguard has judged the
+// request, so a templated bind source or local-driver option can name a host
+// path the allowlist never saw. {{.Task.Slot}}-style expansions are harmless in
+// a volume NAME (the daemon validates the expanded name) and stay allowed
+// there; anything that reaches a host path is refused.
+const serviceTemplateMarker = "{{"
+
+// denyServiceMountTemplateReason denies a template action in a bind Source or
+// in any key or value of VolumeOptions.DriverConfig.Options. The local driver
+// forwards those options to mount(2), so {"o":"{{\"bind\"}}"} or a source
+// of /srv/data/{{".."}}/{{".."}} reaches the host root after expansion.
+func denyServiceMountTemplateReason(mount serviceMount) string {
+	if serviceMountIsBind(mount.Type) && strings.Contains(mount.Source, serviceTemplateMarker) {
+		return "service denied: template expressions are not allowed in a bind mount source"
+	}
+	if mount.VolumeOptions == nil || mount.VolumeOptions.DriverConfig == nil {
+		return ""
+	}
+	for key, value := range mount.VolumeOptions.DriverConfig.Options {
+		if strings.Contains(key, serviceTemplateMarker) || strings.Contains(value, serviceTemplateMarker) {
+			return "service denied: template expressions are not allowed in volume driver options"
+		}
+	}
+	return ""
+}
+
 // denyImageMountReason denies any ContainerSpec.Mounts entry of Type "image"
 // when image trust enforcement is active for this request — the swarm
 // equivalent of containerCreatePolicy.denyImageMountReason. Docker API 1.48+
@@ -426,6 +465,9 @@ func (p servicePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedP
 	}
 
 	for _, mount := range req.TaskTemplate.ContainerSpec.Mounts {
+		if denyReason := denyServiceMountTemplateReason(mount); denyReason != "" {
+			return denyReason, nil
+		}
 		if mount.VolumeOptions != nil && mount.VolumeOptions.DriverConfig != nil {
 			driverConfig := mount.VolumeOptions.DriverConfig
 			if denyReason := denyLocalVolumeBindDeviceReason(driverConfig.Name, driverConfig.Options, p.allowedBindMounts, "service"); denyReason != "" {
@@ -433,11 +475,17 @@ func (p servicePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedP
 			}
 		}
 
-		if !strings.EqualFold(mount.Type, "bind") {
+		if !serviceMountIsBind(mount.Type) {
 			continue
 		}
 		source, ok := normalizeBindMount(mount.Source)
-		if !ok || bindPathAllowed(source, p.allowedBindMounts) {
+		if !ok {
+			// SwarmKit requires an absolute bind source, so a relative or empty
+			// one is not a named volume here; the daemon will reject it, and
+			// the policy must not read "cannot normalize" as "nothing to check".
+			return fmt.Sprintf("service denied: bind mount source %q must be an absolute path", mount.Source), nil
+		}
+		if bindPathAllowed(source, p.allowedBindMounts) {
 			continue
 		}
 		return fmt.Sprintf("service denied: bind mount source %q is not allowlisted", source), nil

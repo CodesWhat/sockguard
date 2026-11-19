@@ -18,6 +18,7 @@ const (
 	// the image batch routes already use (imageselector's reference limit).
 	buildMaxTags = 256
 
+	buildDenyOwned           = "owner policy denied build: image builds are unavailable under owner isolation because build sources are not owner-checked"
 	buildDenyUnreadableQuery = "owner policy denied build with a query that cannot be parsed cleanly"
 	buildDenyAmbiguousTag    = "owner policy denied build with a t parameter spelled in another case: the engines disagree on whether it names the image"
 	buildDenyTooManyTags     = "owner policy denied build with more t parameters than it can authorize"
@@ -201,4 +202,10 @@ func buildOutputsNameImage(value string) string {
 		}
 	}
 	return ""
+}
+
+// isOwnedBuildPath reports whether normPath is one of the build routes refused
+// under owner isolation. See buildDenyOwned.
+func isOwnedBuildPath(normPath string) bool {
+	return normPath == "/build" || normPath == libpodPrefix+"build" || normPath == libpodPrefix+"local/build"
 }

@@ -1687,6 +1687,9 @@ func TestContainerInspectRedactsLogPathAndGraphDriverData(t *testing.T) {
 	}{
 		{name: "docker", path: "/v1.53/containers/abc123/json"},
 		{name: "libpod", path: "/v5.8.1/libpod/containers/abc123/json"},
+		// dockerd's {name:.*} routes a legacy-link alias such as /A/x to the
+		// linked container's inspect, so its body is redacted the same.
+		{name: "docker slash-bearing name", path: "/v1.53/containers/A/x/json"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

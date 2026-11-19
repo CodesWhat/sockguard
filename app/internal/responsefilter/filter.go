@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/codeswhat/sockguard/v2/app/internal/apipath"
 	requestfilter "github.com/codeswhat/sockguard/v2/app/internal/filter"
 )
 
@@ -1888,12 +1889,10 @@ func isWindowsAbsolutePath(value string) bool {
 }
 
 func isContainerInspectPath(normPath string) bool {
-	if !strings.HasPrefix(normPath, "/containers/") {
-		return false
-	}
-	rest := strings.TrimPrefix(normPath, "/containers/")
-	identifier, tail, ok := strings.Cut(rest, "/")
-	return ok && identifier != "" && tail == "json"
+	// dockerd's {name:.*} is slash-permissive, so the name is everything
+	// before the suffix, not the first segment.
+	_, ok := apipath.DockerContainerAction(normPath, "json")
+	return ok
 }
 
 func isVolumeInspectPath(normPath string) bool {

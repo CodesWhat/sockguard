@@ -51,6 +51,9 @@ func TestContainerSubresourcePath(t *testing.T) {
 		{"wrong subresource", "/libpod/containers/abc/archive", "update", true, false},
 		{"docker path is not a libpod path", "/containers/abc/update", "archive", false, false},
 		{"gorilla mux never routes a slashed id", "/libpod/containers/abc/def/archive", "archive", true, false},
+		// dockerd's {name:.*} routes a slash-bearing name, Podman's does not.
+		{"docker slash-bearing name archive", "/containers/A/x/archive", "archive", false, true},
+		{"docker slash-bearing name update", "/containers/A/x/update", "update", false, true},
 		{"no subresource at all", "/libpod/containers/abc", "archive", false, false},
 		{"unrelated libpod path", "/libpod/pods/create", "archive", false, false},
 		{"unrelated docker path", "/images/create", "archive", false, false},
@@ -763,5 +766,30 @@ func assertLibpodWriteOutcome(t *testing.T, rec *httptest.ResponseRecorder, want
 	}
 	if !strings.Contains(body.Reason, wantReason) {
 		t.Fatalf("reason = %q, want it to mention %q", body.Reason, wantReason)
+	}
+}
+
+// TestDockerSlashBearingContainerNamesReachTheirInspectors pins the matchers
+// that decide whether a container route is inspected. A legacy link registers
+// "/A/x" as an alias of the linked container and dockerd routes it through the
+// same handlers, so a matcher that cuts at the first segment never fires for
+// it and the request goes uninspected.
+func TestDockerSlashBearingContainerNamesReachTheirInspectors(t *testing.T) {
+	for _, path := range []string{"/containers/A/x/exec", "/containers/A/x/y/exec"} {
+		if !isExecCreatePath(path) {
+			t.Errorf("isExecCreatePath(%q) = false", path)
+		}
+	}
+	if isLibpodExecCreatePath("/libpod/containers/A/x/exec") {
+		t.Error("Podman's single-segment grammar must not match a slash-bearing libpod exec path")
+	}
+	if !isContainerUpdatePath("/containers/A/x/update") || !isContainerArchivePath("/containers/A/x/archive") {
+		t.Error("update and archive matchers must match a slash-bearing Docker name")
+	}
+	if id, ok := containerUpdateIdentifier("/containers/A/x/update"); !ok || id != "A/x" {
+		t.Errorf("containerUpdateIdentifier = (%q, %v), want (A/x, true)", id, ok)
+	}
+	if _, ok := containerUpdateIdentifier("/libpod/containers/A/x/update"); ok {
+		t.Error("containerUpdateIdentifier must keep Podman's single-segment grammar")
 	}
 }

@@ -83,16 +83,34 @@ func imageBuildChainStep(name, target, reference, wantImage string, wantStatus i
 	}
 }
 
-// TestServeChainBuildAuthorizesTheNamesItAssigns sends builds through the
+// expectOwnedBuildRefused turns a build step into the refusal every build gets
+// under owner isolation. A step whose name nothing held, an unlabeled image
+// held or the caller's own can only check the refusal, so the name is compared
+// before and after instead.
+func expectOwnedBuildRefused(t *testing.T, daemon *imageNameChainDaemon, step *imageNameChainStep) {
+	t.Helper()
+	step.wantStatus = http.StatusForbidden
+	if step.wantImage != "" {
+		return
+	}
+	reference := step.reference
+	before := daemon.nameTarget(reference)
+	step.reference = ""
+	t.Cleanup(func() {
+		if reference != "" && daemon.nameTarget(reference) != before {
+			t.Errorf("refused build moved %s from %q to %q", reference, before, daemon.nameTarget(reference))
+		}
+	})
+}
+
+// TestServeChainRefusesOwnerScopedDockerBuilds sends builds through the
 // production handler chain to a daemon-shaped image store.
 //
-// A build names its image in `t`, as often as the client likes, and the daemon
-// moves each of those names off whatever image holds it. Owner isolation
-// stamped the new image and never read the names, so `docker build -t` onto a
-// name another owner's image held took the name from it. Every case asserts on
-// the daemon's state: the name the request targets either still points where
-// it did or was moved.
-func TestServeChainBuildAuthorizesTheNamesItAssigns(t *testing.T) {
+// A build can take any local image as its FROM source, and the owner stamp
+// then labels the copy as the caller's, so no build is admitted while owner
+// isolation is active, whatever it names, pulls or exports. Every case asserts
+// on the daemon's state: the build never reached it and no name moved.
+func TestServeChainRefusesOwnerScopedDockerBuilds(t *testing.T) {
 	denyUnowned := func(cfg *config.Config) { cfg.Ownership.AllowUnownedImages = false }
 	outputs := func(value string) string { return "&outputs=" + url.QueryEscape(value) }
 
@@ -129,38 +147,21 @@ func TestServeChainBuildAuthorizesTheNamesItAssigns(t *testing.T) {
 			daemon := newImageBuildChainDaemon()
 			addr := newImageNameChain(t, daemon, tt.configure)
 			tt.step.name = tt.name
+			expectOwnedBuildRefused(t, daemon, &tt.step)
 
 			runImageNameChainStep(t, addr, daemon, tt.step)
 
-			wantForwarded := tt.step.wantStatus == http.StatusOK
-			if got := daemon.sawRequest(http.MethodPost, "/build"); got != wantForwarded {
-				t.Errorf("build reached the daemon = %v, want %v; daemon saw %v", got, wantForwarded, daemon.requests)
+			if daemon.sawRequest(http.MethodPost, "/build") {
+				t.Errorf("refused build reached the daemon; daemon saw %v", daemon.requests)
 			}
 		})
 	}
 }
 
-// TestServeChainBuildStampsTheImageItNames checks the two halves together: an
-// allowed build's image carries the caller's owner label, and the name points
-// at it.
-func TestServeChainBuildStampsTheImageItNames(t *testing.T) {
-	daemon := newImageBuildChainDaemon()
-	addr := newImageNameChain(t, daemon, nil)
-
-	runImageNameChainStep(t, addr, daemon, imageBuildChainStep("stamped build", "/v1.45/build?t=mine%2Fnew", "mine/new:latest", "", http.StatusOK))
-
-	daemon.mu.Lock()
-	defer daemon.mu.Unlock()
-	if got := daemon.labels[daemon.names["mine/new:latest"]][imageTagChainLabelKey]; got != imageTagChainOwner {
-		t.Errorf("owner label on the built image = %q, want %q", got, imageTagChainOwner)
-	}
-}
-
-// TestServeChainBuildChecksTheStoredNameOnPodman replays the build on a
-// Podman-shaped store, where a tag that names no registry is stored under
-// localhost/ on the native route, and on the compat one once
-// compat_api_enforce_docker_hub is off.
-func TestServeChainBuildChecksTheStoredNameOnPodman(t *testing.T) {
+// TestServeChainRefusesOwnerScopedPodmanBuilds replays the builds on a
+// Podman-shaped store, native and compat routes alike: every one is refused
+// under owner isolation and no name moves.
+func TestServeChainRefusesOwnerScopedPodmanBuilds(t *testing.T) {
 	tests := []struct {
 		name string
 		step imageNameChainStep
@@ -188,8 +189,13 @@ func TestServeChainBuildChecksTheStoredNameOnPodman(t *testing.T) {
 			daemon.enforceDockerHubOff = true
 			addr := newImageNameChain(t, daemon, nil)
 			tt.step.name = tt.name
+			expectOwnedBuildRefused(t, daemon, &tt.step)
 
 			runImageNameChainStep(t, addr, daemon, tt.step)
+
+			if daemon.sawRequest(http.MethodPost, "/build") || daemon.sawRequest(http.MethodPost, "/libpod/build") {
+				t.Errorf("refused build reached the daemon; daemon saw %v", daemon.requests)
+			}
 		})
 	}
 }

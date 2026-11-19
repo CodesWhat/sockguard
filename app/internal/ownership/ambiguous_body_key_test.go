@@ -31,6 +31,11 @@ func sendThroughOwnerIsolation(t *testing.T, mode, target, body string) ambiguou
 		}
 		out.forwarded = append(out.forwarded, string(got))
 		w.WriteHeader(http.StatusCreated)
+		if strings.HasSuffix(r.URL.Path, "/volumes/create") {
+			// A daemon answers a volume create with the volume, which the
+			// owner layer reads the label back from.
+			_, _ = io.WriteString(w, `{"Name":"n","Labels":{"`+DefaultLabelKey+`":"team-a"}}`)
+		}
 	}))
 
 	out.meta = &logging.RequestMeta{RolloutMode: mode}

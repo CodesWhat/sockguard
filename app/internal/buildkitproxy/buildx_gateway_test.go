@@ -50,7 +50,7 @@ func TestBuildxBuiltinDockerfileBridge(t *testing.T) {
 			b.policy.Control.Solve.AllowFrontendGateway = true
 			policy := b.policy
 			policy.Control.Solve.AllowFrontendGateway = true
-			policy.ImageOwnership = ImageOwnershipPolicy{Owner: owner, LabelKey: "owner"}
+			policy.ImageOwnership = ImageOwnershipPolicy{sourcesAuthorized: true, Owner: owner, LabelKey: "owner"}
 			g, d := b.registry.beginGatewayBuild(context.Background(), b.session, "build", testBuildkitSessionID, policy)
 			if d != nil {
 				t.Fatal(d)
