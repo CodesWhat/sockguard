@@ -107,6 +107,7 @@ func TestServeChainServiceHostNetworkByID(t *testing.T) {
 		{name: "full ID create", path: "/v1.45/services/create", body: svc(`{"Target":"` + serviceChainHostNetworkID + `"}`), wantStatus: http.StatusForbidden},
 		{name: "ID prefix create", path: "/v1.45/services/create", body: svc(`{"Target":"` + serviceChainHostNetworkID[:12] + `"}`), wantStatus: http.StatusForbidden},
 		{name: "full ID update", path: "/v1.45/services/web/update?version=1", body: svc(`{"Target":"` + serviceChainHostNetworkID + `"}`), wantStatus: http.StatusForbidden},
+		{name: "create with rollback=previous full ID", path: "/v1.45/services/create?rollback=previous", body: svc(`{"Target":"` + serviceChainHostNetworkID + `"}`), wantStatus: http.StatusForbidden},
 		{name: "literal host create", path: "/v1.45/services/create", body: svc(`{"Target":"host"}`), wantStatus: http.StatusForbidden},
 		{name: "overlay by name reaches the daemon", path: "/v1.45/services/create", body: svc(`{"Target":"app-net"}`), wantStatus: http.StatusCreated, wantReach: true},
 		{name: "unknown network reaches the daemon", path: "/v1.45/services/create", body: svc(`{"Target":"nope"}`), wantStatus: http.StatusCreated, wantReach: true},
