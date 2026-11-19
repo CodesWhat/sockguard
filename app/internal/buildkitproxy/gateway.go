@@ -31,7 +31,9 @@ func (b *bridge) forwardGatewayMediated(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	g := b.registry.gatewayBuild(b.session.Key, ids[0])
-	if g == nil && b.policy.ImageOwnership.Owner != "" {
+	// The frontend can call the gateway before its Solve is admitted; wait
+	// briefly for that admission in every mode, as Control/Status does.
+	if g == nil {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		if b.registry.waitForRef(ctx, b.session.Key, ids[0]) {
 			g = b.registry.gatewayBuild(b.session.Key, ids[0])

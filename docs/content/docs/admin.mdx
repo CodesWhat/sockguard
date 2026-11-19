@@ -45,7 +45,10 @@ traverses the Docker-API filter or the rate limiter, and Docker-API callers
 never see the admin surface at all. One gate carries over: a TCP admin listener
 still enforces `clients.allowed_cidrs`, since CIDRs are the only admission
 control the admin surface has when TLS isn't configured. Unix-socket admin
-listeners carry no meaningful client IP, so the guard is TCP-only.
+listeners carry no meaningful client IP, so the guard is TCP-only. The
+allowlist is hot-reloadable: a successful reload republishes the dedicated admin
+chain with the new `clients.allowed_cidrs` before the reload is reported as
+applied, and a rejected reload leaves both the admin and main chains unchanged.
 
 ```yaml filename="sockguard.yaml"
 admin:

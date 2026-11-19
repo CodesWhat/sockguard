@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/codeswhat/sockguard/v3/app/internal/imagetrust"
@@ -124,8 +125,11 @@ func TestInspectorRoutingIsPathExclusive(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if reason2 != "" {
-			t.Fatalf("want allow (HostConfig.Privileged=false): got deny %q — Docker inspector leaked the libpod \"privileged\" field", reason2)
+		// Docker 24-26 read a top-level "privileged" as HostConfig.Privileged,
+		// so the Docker inspector refuses the root-level spelling outright.
+		// What it must not do is read it as the privileged gate.
+		if reason2 != "" && !strings.HasPrefix(reason2, "container create denied: HostConfig field ") {
+			t.Fatalf("want allow or the root-level HostConfig refusal (HostConfig.Privileged=false): got deny %q — Docker inspector leaked the libpod \"privileged\" field", reason2)
 		}
 	})
 
