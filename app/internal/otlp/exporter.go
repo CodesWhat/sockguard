@@ -46,6 +46,14 @@ type Options struct {
 	// CAFile adds a PEM bundle to the trusted roots. Empty uses system roots.
 	CAFile             string
 	InsecureSkipVerify bool
+	// Logger receives the rate-limited drop warnings. Nil uses slog.Default.
+	Logger *slog.Logger
+}
+
+// logEvent is one queued warning for the reporter goroutine.
+type logEvent struct {
+	msg  string
+	args []any
 }
 
 // Stats is a point-in-time snapshot of the exporter's counters.
@@ -71,6 +79,10 @@ type Exporter struct {
 	closeOnce   sync.Once
 	runCtx      context.Context
 	cancelRun   context.CancelFunc
+
+	// warnCh feeds the reporter goroutine. Log I/O happens only there, so a
+	// slow log sink can never stall Enqueue, the worker, or Close.
+	warnCh chan logEvent
 
 	// sleep waits d or until ctx is done. Replaced in tests.
 	sleep func(ctx context.Context, d time.Duration) bool
@@ -134,8 +146,10 @@ func New(opts Options) (*Exporter, error) {
 		runCtx:    runCtx,
 		cancelRun: cancel,
 		sleep:     sleepCtx,
+		warnCh:    make(chan logEvent, 1),
 	}
 	go e.run()
+	go e.report()
 	return e, nil
 }
 
@@ -156,8 +170,8 @@ func (e *Exporter) Enqueue(s Span) {
 	if e == nil {
 		return
 	}
-	// Counters move under the lock; the log call runs after it is released so
-	// a blocked log sink cannot stall Close or later Enqueue calls.
+	// Counters move under the lock; warn only hands the event to the
+	// reporter goroutine, so Enqueue stays O(1) and non-blocking.
 	reason := e.admit(s)
 	if reason != "" {
 		e.warn("otlp spans dropped", "reason", reason)
@@ -183,8 +197,9 @@ func (e *Exporter) admit(s Span) string {
 	}
 }
 
-// warn emits at most one WARN per minute. Attributes must never carry the
-// endpoint, headers or raw transport errors.
+// warn queues at most one WARN per minute for the reporter goroutine and
+// never blocks: if the reporter is still busy the event is skipped.
+// Attributes must never carry the endpoint, headers or raw transport errors.
 func (e *Exporter) warn(msg string, args ...any) {
 	now := time.Now().UnixNano()
 	last := e.lastWarn.Load()
@@ -197,7 +212,27 @@ func (e *Exporter) warn(msg string, args ...any) {
 		"dropped_export_failed", s.DroppedExportFailed,
 		"dropped_shutdown", s.DroppedShutdown,
 	)
-	slog.Warn(msg, args...)
+	select {
+	case e.warnCh <- logEvent{msg: msg, args: args}:
+	default:
+	}
+}
+
+// report writes queued warnings to the logger. It exits when the exporter
+// is torn down; a stuck log sink only pins this goroutine.
+func (e *Exporter) report() {
+	for {
+		select {
+		case ev := <-e.warnCh:
+			l := e.opts.Logger
+			if l == nil {
+				l = slog.Default()
+			}
+			l.Warn(ev.msg, ev.args...)
+		case <-e.runCtx.Done():
+			return
+		}
+	}
 }
 
 // Stats returns a snapshot of the exporter counters. Nil-safe.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -767,4 +768,69 @@ func toKVs(attrs []Attr) []kv {
 		out[i].Value.IntValue = k.Value.IntValue
 	}
 	return out
+}
+
+// blockingHandler is a slog sink that parks every record until released.
+type blockingHandler struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newBlockingHandler() *blockingHandler {
+	return &blockingHandler{entered: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (h *blockingHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *blockingHandler) Handle(context.Context, slog.Record) error {
+	h.once.Do(func() { close(h.entered) })
+	<-h.release
+	return nil
+}
+func (h *blockingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *blockingHandler) WithGroup(string) slog.Handler      { return h }
+
+func TestEnqueueDoesNotBlockOnSlowLogSink(t *testing.T) {
+	h := newBlockingHandler()
+	t.Cleanup(func() { close(h.release) })
+	hold := make(chan struct{})
+	t.Cleanup(func() { close(hold) })
+	// A hanging collector pins the worker so the one-slot queue stays full.
+	c := newCollector(t, func(w http.ResponseWriter, r *http.Request, _ int) {
+		select {
+		case <-hold:
+		case <-r.Context().Done():
+		}
+	})
+	opts := testOptions(c.srv.URL)
+	opts.QueueSize = 1
+	opts.BatchSize = 1
+	opts.Logger = slog.New(h)
+	e := newTestExporter(t, opts)
+	e.Enqueue(Span{TraceID: strings.Repeat("a", 32), SpanID: strings.Repeat("b", 16)})
+	for c.requests() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	e.Enqueue(Span{TraceID: strings.Repeat("a", 32), SpanID: strings.Repeat("b", 16)})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 100; i++ {
+			e.Enqueue(Span{TraceID: strings.Repeat("a", 32), SpanID: strings.Repeat("b", 16)})
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Enqueue blocked behind a stuck log sink")
+	}
+	select {
+	case <-h.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the drop warning never reached the log sink")
+	}
+	if got := e.Stats().DroppedQueueFull; got == 0 {
+		t.Error("expected queue-full drops to be counted")
+	}
 }
