@@ -456,11 +456,14 @@ func newTenancyHarness(t *testing.T, podman bool, tweak func(*config.Config)) *t
 	startUnixHTTPUpstream(t, socketPath, daemon)
 
 	cfg := ownerScopesConfig(socketPath)
-	allow := []config.RuleConfig{{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "allow"}}
+	allow := []config.RuleConfig{
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "allow"},
+	}
 	cfg.Rules = allow
 	cfg.InsecureAllowBodyBlindWrites = true
 	cfg.InsecureAllowReadExfiltration = true
-	cfg.InsecureAcceptOpaqueBuildkitTunnels = true
+	// The allow-all rule reaches the BuildKit tunnel paths; BuildKit policy is not under test.
+	cfg.InsecureAcceptOpaqueBuildkitTunnels = true //nolint:staticcheck // SA1019: deprecated flag is the only way to admit /session in this fixture
 	for i := range cfg.Clients.Profiles {
 		cfg.Clients.Profiles[i].Rules = allow
 	}

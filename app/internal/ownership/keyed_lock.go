@@ -209,7 +209,7 @@ func lockKeysFor(refs *ownershipRequestReferences) []lockKey {
 	}
 	var keys []lockKey
 	for _, n := range refs.lockNames {
-		keys = append(keys, lockKey{kind: n.kind, name: n.name})
+		keys = append(keys, lockKey(n))
 	}
 	if refs.imageTag != nil {
 		for _, ref := range []string{refs.imageTag.target, refs.imageTag.storedTarget} {
