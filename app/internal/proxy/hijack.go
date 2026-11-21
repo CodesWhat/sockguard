@@ -132,6 +132,9 @@ func (w activityWriter) Write(p []byte) (int, error) {
 }
 
 type hijackUpgradeState struct {
+	// meta, when non-nil, receives the status of the response written to the
+	// hijacked connection. See logging.RequestMeta.SetHijackedStatus.
+	meta         *logging.RequestMeta
 	resp         *http.Response
 	upstreamConn net.Conn
 	upstreamBuf  *bufio.Reader
@@ -240,6 +243,7 @@ func finishHijackUpgrade(w http.ResponseWriter, r *http.Request, upstreamConn ne
 	var session *hijackSession
 	if resp.StatusCode == http.StatusSwitchingProtocols || isRawStreamHijackResponse(r, resp) {
 		session, ok = finalizeHijackUpgrade(w, logger, hijackUpgradeState{
+			meta:         logging.MetaForRequest(w, r),
 			resp:         resp,
 			upstreamConn: upstreamConn,
 			upstreamBuf:  upstreamBuf,
@@ -551,6 +555,11 @@ func finalizeHijackUpgrade(w http.ResponseWriter, logger *slog.Logger, state hij
 		logger.Error("hijack: flush 101 to client failed", "status", state.resp.StatusCode, "error", logging.SafeString(err.Error()), "path", logging.SafeString(state.path))
 		return nil, false
 	}
+
+	// The head went out on the hijacked connection, not through WriteHeader, so
+	// the capturing wrappers still hold their initial 200. Record what the
+	// client was actually sent, and only now that it was sent in full.
+	state.meta.SetHijackedStatus(state.resp.StatusCode)
 
 	return &hijackSession{
 		path:         state.path,

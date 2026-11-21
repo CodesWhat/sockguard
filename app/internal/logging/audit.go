@@ -278,7 +278,7 @@ func AuditLogMiddleware(logger *AuditLogger, opts AuditOptions) func(http.Handle
 				MatchedRule:       meta.Rule,
 				SelectedProfile:   meta.Profile,
 				RolloutMode:       meta.RolloutMode,
-				Status:            rc.status,
+				Status:            meta.EffectiveStatus(rc.status),
 				ActorRemoteAddr:   actorRemoteAddr,
 				ActorSourceIP:     actorSourceIP,
 				TransportListener: transportListener,
