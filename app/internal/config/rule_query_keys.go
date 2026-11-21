@@ -64,7 +64,9 @@ func restoreRuleListQueryKeys(rules []RuleConfig, rawRules any) {
 // rawQueryConstraints converts a raw YAML query map to the typed form with
 // Viper's weak decoding rules for scalars (a bare value is a one-element
 // list, numbers and booleans become their text). ok is false when any entry
-// has a shape that decoding would not have accepted either.
+// has a shape that decoding would not have accepted either. A null value, or
+// a null entry in a list, yields a nil pattern list so validation rejects it
+// instead of reading it as an empty-string pattern; a quoted "" stays valid.
 func rawQueryConstraints(query map[string]any) (map[string][]string, bool) {
 	if len(query) == 0 {
 		return nil, false
@@ -74,14 +76,24 @@ func rawQueryConstraints(query map[string]any) (map[string][]string, bool) {
 		switch v := value.(type) {
 		case []any:
 			patterns := make([]string, 0, len(v))
+			hasNull := false
 			for _, item := range v {
+				if item == nil {
+					hasNull = true
+					continue
+				}
 				text, ok := rawScalarText(item)
 				if !ok {
 					return nil, false
 				}
 				patterns = append(patterns, text)
 			}
+			if hasNull {
+				patterns = nil
+			}
 			out[key] = patterns
+		case nil:
+			out[key] = nil
 		default:
 			text, ok := rawScalarText(v)
 			if !ok {
@@ -95,8 +107,6 @@ func rawQueryConstraints(query map[string]any) (map[string][]string, bool) {
 
 func rawScalarText(value any) (string, bool) {
 	switch v := value.(type) {
-	case nil:
-		return "", true
 	case string:
 		return v, true
 	case bool, int, int64, uint64, float64:

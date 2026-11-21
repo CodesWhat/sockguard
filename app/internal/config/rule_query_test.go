@@ -131,3 +131,40 @@ func assertQueryValidation(t *testing.T, err error, wantFull, want string) {
 		t.Fatalf("Validate = %v, want error containing %q", err, wantFull)
 	}
 }
+
+func TestRuleQueryNullValuesRejected(t *testing.T) {
+	cases := map[string]string{
+		"null":       "signal: null",
+		"tilde":      "signal: ~",
+		"null array": "signal: [null]",
+		"mixed null": `signal: ["KILL", null]`,
+	}
+	for name, query := range cases {
+		for _, where := range []string{"top", "profile"} {
+			t.Run(name+"/"+where, func(t *testing.T) {
+				rule := `{ match: { method: POST, path: "/containers/*/kill", query: { ` + query + ` } }, action: deny }`
+				yaml := "rules:\n  - " + rule + "\n"
+				if where == "profile" {
+					yaml = "clients:\n  profiles:\n    - name: ci\n      rules:\n        - " + rule + "\n"
+				}
+				cfg, err := LoadBytes([]byte(yaml))
+				if err == nil {
+					err = Validate(cfg)
+				}
+				if err == nil || !strings.Contains(err.Error(), "needs at least one pattern") {
+					t.Fatalf("err = %v, want 'needs at least one pattern'", err)
+				}
+			})
+		}
+	}
+
+	cfg, err := LoadBytes([]byte(`rules:
+  - { match: { method: GET, path: "/a", query: { name: "" } }, action: deny }
+`))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if got := cfg.Rules[0].Match.Query["name"]; !reflect.DeepEqual(got, []string{""}) {
+		t.Fatalf("quoted empty = %#v, want [\"\"]", got)
+	}
+}
