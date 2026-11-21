@@ -8,7 +8,7 @@ image:
   # branch pins appVersion@sha256:<multi-arch manifest-list digest>; see
   # RELEASING.md's Helm chart section. Override with --set image.tag=… to
   # track a different tag.
-  tag: ""
+  tag: "2.4.8@sha256:58978165aaf3c3695afa03ad2a09a8629843ef0a84f5be2d38c1d95f29779bbd"
   pullPolicy: IfNotPresent
 
 # Path the liveness/readiness probes hit. Must match config.health.path below.
