@@ -39,6 +39,9 @@ type Rule struct {
 	Action  Action
 	Reason  string
 	Index   int
+	// Query constrains the request query: every key must be present and every
+	// occurrence of it must match one of its patterns. See CompiledRule.matchesQuery.
+	Query map[string][]string
 }
 
 type httpMethodMask uint16
@@ -76,6 +79,7 @@ type CompiledRule struct {
 	trailingPrefix  string
 	segmentPatterns []string
 	pattern         *regexp.Regexp
+	query           []queryConstraint
 	// Action is returned when this rule matches.
 	Action Action
 	// Reason is attached to the decision metadata when this rule matches.
@@ -125,7 +129,13 @@ func CompileRule(r Rule) (*CompiledRule, error) {
 		}
 	}
 
+	query, err := compileQueryConstraints(r.Query)
+	if err != nil {
+		return nil, err
+	}
+
 	cr := &CompiledRule{
+		query:           query,
 		methodMask:      methodMask,
 		unknownMethods:  unknownMethods,
 		matchAllMethods: matchAllMethods,
@@ -215,7 +225,8 @@ func (cr *CompiledRule) matchesNormalizedUpperWithBit(upperMethod string, method
 // Returns the action and the matched rule index. If no rule matches, returns deny.
 func Evaluate(rules []*CompiledRule, r *http.Request) (Action, int, string) {
 	routePath, encodedScp := normalizedLibpodImageScpRoutePath(r)
-	action, index, reason, _ := evaluateRequestPolicy(rules, r, NormalizePath(r.URL.Path), routePath, encodedScp)
+	q := &requestQuery{raw: r.URL.RawQuery}
+	action, index, reason, _ := evaluateRequestPolicyQuery(rules, r, q, NormalizePath(r.URL.Path), routePath, encodedScp)
 	return action, index, reason
 }
 
@@ -230,18 +241,24 @@ func Evaluate(rules []*CompiledRule, r *http.Request) (Action, int, string) {
 // routePath and encodedScp come from the caller's single
 // normalizedLibpodImageScpRoutePath classification of the request.
 func evaluateRequestPolicy(rules []*CompiledRule, r *http.Request, normalizedPath, routePath string, encodedScp bool) (Action, int, string, string) {
+	return evaluateRequestPolicyQuery(rules, r, &requestQuery{raw: r.URL.RawQuery}, normalizedPath, routePath, encodedScp)
+}
+
+// evaluateRequestPolicyQuery is evaluateRequestPolicy with the request's query
+// state shared across both path views, so the query parses at most once.
+func evaluateRequestPolicyQuery(rules []*CompiledRule, r *http.Request, q *requestQuery, normalizedPath, routePath string, encodedScp bool) (Action, int, string, string) {
 	if !encodedScp {
-		action, index, reason := evaluateNormalized(rules, r.Method, normalizedPath)
+		action, index, reason := evaluateNormalizedQuery(rules, r.Method, normalizedPath, q)
 		return action, index, reason, normalizedPath
 	}
 
 	decodedPath := NormalizePath(r.URL.Path)
-	action, index, reason := evaluateNormalized(rules, r.Method, decodedPath)
+	action, index, reason := evaluateNormalizedQuery(rules, r.Method, decodedPath, q)
 	if action != ActionAllow {
 		return action, index, reason, decodedPath
 	}
 
-	action, index, reason = evaluateNormalized(rules, r.Method, routePath)
+	action, index, reason = evaluateNormalizedQuery(rules, r.Method, routePath, q)
 	return action, index, reason, routePath
 }
 
@@ -305,10 +322,14 @@ func isLibpodImageScpRoutePath(routePath string) bool {
 }
 
 func evaluateNormalized(rules []*CompiledRule, method, normalizedPath string) (Action, int, string) {
+	return evaluateNormalizedQuery(rules, method, normalizedPath, &requestQuery{})
+}
+
+func evaluateNormalizedQuery(rules []*CompiledRule, method, normalizedPath string, q *requestQuery) (Action, int, string) {
 	upperMethod := upperHTTPMethodASCII(method)
 	methodBit := httpMethodBit(upperMethod)
 	for _, rule := range rules {
-		if rule.matchesNormalizedUpperWithBit(upperMethod, methodBit, normalizedPath) {
+		if rule.matchesNormalizedUpperWithBit(upperMethod, methodBit, normalizedPath) && rule.matchesQuery(q) {
 			return rule.Action, rule.Index, rule.Reason
 		}
 	}

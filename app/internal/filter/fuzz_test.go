@@ -2,6 +2,7 @@ package filter
 
 import (
 	"net/http"
+	"net/url"
 	pathpkg "path"
 	"regexp"
 	"strings"
@@ -719,6 +720,8 @@ func FuzzCompileRule(f *testing.F) {
 	for _, seed := range compileRuleFuzzSeeds() {
 		f.Add(seed.method, seed.pattern, seed.path)
 	}
+	f.Add("POST", "/x", "USR1,SIGUSR1")
+	f.Add("POST", "/x", "SIG*,,a b,%55=&;")
 
 	f.Fuzz(func(t *testing.T, method, patternSeed, pathSeed string) {
 		for _, pattern := range compileRuleFuzzPatterns(patternSeed) {
@@ -741,7 +744,93 @@ func FuzzCompileRule(f *testing.F) {
 
 			assertCompiledRuleAgreesWithItsRegex(t, pattern, compileRuleFuzzPathViews(pattern, pathSeed))
 		}
+
+		assertQueryConstraintOracle(t, pathSeed)
 	})
+}
+
+// assertQueryConstraintOracle is FuzzCompileRule's verdict oracle for
+// match.query. The seed is split on "," into listed patterns for two keys, so
+// the corpus can reach globs, empty patterns and bytes that need percent
+// encoding. The expected verdict comes from the contract, not from the
+// matcher: a request whose every occurrence of each constrained key equals a
+// listed pattern verbatim must match (a pattern is its own match, "*" included);
+// dropping a required key, or leaving only a differently cased spelling of it, must not; and when no pattern carries a "*", one
+// occurrence outside the list (under any letter case of the key) must not.
+func assertQueryConstraintOracle(t *testing.T, seed string) {
+	t.Helper()
+
+	patterns := strings.Split(seed, ",")
+	if len(patterns) > 4 {
+		patterns = patterns[:4]
+	}
+	rule, err := CompileRule(Rule{
+		Methods: []string{"*"},
+		Pattern: "/x",
+		Action:  ActionAllow,
+		Query:   map[string][]string{"k": patterns, "j": patterns[:1]},
+	})
+	if err != nil {
+		// Control characters are refused at compile time, which is the point.
+		return
+	}
+	rules := []*CompiledRule{rule}
+	eval := func(values url.Values) bool {
+		_, index, _ := Evaluate(rules, &http.Request{Method: "GET", URL: &url.URL{Path: "/x", RawQuery: values.Encode()}})
+		return index == 0
+	}
+
+	good := url.Values{"k": patterns, "j": {patterns[0]}}
+	if !eval(good) {
+		t.Fatalf("every occurrence equals a listed pattern, rule must match: patterns %q", patterns)
+	}
+	if eval(url.Values{"k": patterns}) {
+		t.Fatalf("required key j removed, rule must not match: patterns %q", patterns)
+	}
+	if eval(url.Values{"j": {patterns[0]}}) {
+		t.Fatalf("required key k removed, rule must not match: patterns %q", patterns)
+	}
+	// A differently cased spelling is an occurrence too: listed values still
+	// pass, but it can't stand in for the exact "k" an allow rule requires.
+	if !eval(url.Values{"k": patterns, "K": patterns, "j": {patterns[0]}}) {
+		t.Fatalf("case-variant occurrence equals a listed pattern, rule must match: patterns %q", patterns)
+	}
+	if eval(url.Values{"K": patterns, "j": {patterns[0]}}) {
+		t.Fatalf("only a case-variant of required key k, rule must not match: patterns %q", patterns)
+	}
+	// A deny rule matches when any occurrence matches a pattern, so a listed
+	// value hidden among unlisted ones, under either spelling, still hits it.
+	deny, err := CompileRule(Rule{
+		Methods: []string{"*"},
+		Pattern: "/x",
+		Action:  ActionDeny,
+		Query:   map[string][]string{"k": patterns},
+	})
+	if err != nil {
+		t.Fatalf("deny rule compiled as allow but not as deny: patterns %q: %v", patterns, err)
+	}
+	evalDeny := func(values url.Values) bool {
+		_, index, _ := Evaluate([]*CompiledRule{deny}, &http.Request{Method: "GET", URL: &url.URL{Path: "/x", RawQuery: values.Encode()}})
+		return index == 0
+	}
+	if !evalDeny(url.Values{"k": {"\x00unlisted", patterns[0]}}) {
+		t.Fatalf("deny rule must match when one occurrence is listed: patterns %q", patterns)
+	}
+	if !evalDeny(url.Values{"k": {"\x00unlisted"}, "K": {patterns[0]}}) {
+		t.Fatalf("deny rule must match a listed case-variant occurrence: patterns %q", patterns)
+	}
+	if !strings.Contains(strings.Join(patterns, ""), "*") {
+		if evalDeny(url.Values{"k": {"\x00unlisted"}, "K": {"\x00other"}}) {
+			t.Fatalf("deny rule must not match when no occurrence is listed: patterns %q", patterns)
+		}
+		if eval(url.Values{"k": patterns, "K": {"\x00unlisted"}, "j": {patterns[0]}}) {
+			t.Fatalf("case-variant occurrence outside the list, rule must not match: patterns %q", patterns)
+		}
+		bad := url.Values{"k": append(append([]string{}, patterns...), "\x00unlisted"), "j": {patterns[0]}}
+		if eval(bad) {
+			t.Fatalf("one occurrence outside the list, rule must not match: patterns %q", patterns)
+		}
+	}
 }
 
 // TestCompileRuleFuzzCorpusReachesEveryMatcherKind keeps FuzzCompileRule's

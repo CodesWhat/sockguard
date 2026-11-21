@@ -909,6 +909,7 @@ func compileRuleConfigsForTest(rules []config.RuleConfig) ([]*filter.CompiledRul
 			Action:  filter.Action(rule.Action),
 			Reason:  rule.Reason,
 			Index:   i,
+			Query:   rule.Match.Query,
 		}
 
 		compiledRule, err := filter.CompileRule(spec)

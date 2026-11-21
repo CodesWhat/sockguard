@@ -30,7 +30,7 @@ var (
 var matchCmd = &cobra.Command{
 	Use:   "match",
 	Short: "Evaluate one request against the configured rules",
-	Long:  "Load the effective configuration, normalize the request path, and report which rule would decide the request.",
+	Long:  "Load the effective configuration, normalize the request path, and report which rule would decide the request. A query string on --path (for example /containers/abc/kill?signal=USR1) is evaluated against rules that carry match.query constraints.",
 	RunE:  runMatch,
 }
 
@@ -38,6 +38,7 @@ type matchResult struct {
 	Config         string           `json:"config"`
 	Method         string           `json:"method"`
 	Path           string           `json:"path"`
+	Query          string           `json:"query,omitempty"`
 	NormalizedPath string           `json:"normalized_path"`
 	Decision       string           `json:"decision"`
 	Reason         string           `json:"reason,omitempty"`
@@ -49,8 +50,15 @@ type matchedRuleInfo struct {
 	Index  int    `json:"index"`
 	Method string `json:"method"`
 	Path   string `json:"path"`
-	Action string `json:"action"`
-	Reason string `json:"reason,omitempty"`
+	// Query holds the rule's match.query constraints. When it is set the rule
+	// decided this request, so every constraint held.
+	Query        map[string][]string `json:"query,omitempty"`
+	QueryMatched bool                `json:"query_matched,omitempty"`
+	// QueryParseError is set when the request's query string did not parse and
+	// a deny rule with constraints matched it fail-closed.
+	QueryParseError bool   `json:"query_parse_error,omitempty"`
+	Action          string `json:"action"`
+	Reason          string `json:"reason,omitempty"`
 }
 
 func init() {
@@ -111,9 +119,16 @@ func runMatch(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("config validation: %w", err)
 	}
 
+	// A request target carries its query after the first "?", so split it off
+	// the way the server would before any rule sees the path.
+	rawQuery := ""
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		path, rawQuery = path[:i], path[i+1:]
+	}
+
 	req := &http.Request{
 		Method: method,
-		URL:    &url.URL{Path: path},
+		URL:    &url.URL{Path: path, RawQuery: rawQuery},
 	}
 	decision, matchedRuleIndex, reason := filter.Evaluate(compiled, req)
 	normalizedPath := filter.NormalizePath(path)
@@ -134,19 +149,27 @@ func runMatch(cmd *cobra.Command, args []string) error {
 		Config:         cfgFile,
 		Method:         method,
 		Path:           path,
+		Query:          rawQuery,
 		NormalizedPath: normalizedPath,
 		Decision:       string(decision),
 		Reason:         reason,
 		CompatMode:     compatActive,
 	}
+	_, parseErr := url.ParseQuery(rawQuery)
 	if matchedRuleIndex >= 0 && matchedRuleIndex < len(cfg.Rules) {
 		rule := cfg.Rules[matchedRuleIndex]
 		result.MatchedRule = &matchedRuleInfo{
 			Index:  matchedRuleIndex + 1,
 			Method: rule.Match.Method,
 			Path:   rule.Match.Path,
-			Action: rule.Action,
-			Reason: rule.Reason,
+			Query:  rule.Match.Query,
+			// The rule decided the request, so any query constraints it
+			// carries were satisfied, unless the query did not parse: then a
+			// deny rule matched fail-closed without evaluating them.
+			QueryMatched:    len(rule.Match.Query) > 0 && parseErr == nil,
+			QueryParseError: len(rule.Match.Query) > 0 && parseErr != nil,
+			Action:          rule.Action,
+			Reason:          rule.Reason,
 		}
 	}
 
@@ -167,6 +190,9 @@ func writeMatchText(w io.Writer, result matchResult) {
 	fmt.Fprintf(w, "%s %s\n", label("Config:"), result.Config)
 	fmt.Fprintf(w, "%s %s\n", label("Method:"), result.Method)
 	fmt.Fprintf(w, "%s %s\n", label("Path:"), result.Path)
+	if result.Query != "" {
+		fmt.Fprintf(w, "%s %s\n", label("Query:"), result.Query)
+	}
 	fmt.Fprintf(w, "%s %s\n", label("Normalized path:"), result.NormalizedPath)
 	if result.CompatMode {
 		fmt.Fprintf(w, "%s %s\n", label("Mode:"), "tecnativa compatibility")
@@ -191,6 +217,13 @@ func writeMatchText(w io.Writer, result matchResult) {
 		}
 		fmt.Fprintf(w, "%s #%d\n", label("Matched rule:"), result.MatchedRule.Index)
 		fmt.Fprintf(w, "%s %s %s %s\n", label("Rule:"), action, result.MatchedRule.Method, result.MatchedRule.Path)
+		if q := filter.FormatQuery(result.MatchedRule.Query); q != "" {
+			note := "constraints matched"
+			if result.MatchedRule.QueryParseError {
+				note = "query failed to parse, rule matched fail-closed"
+			}
+			fmt.Fprintf(w, "%s %s (%s)\n", label("Rule query:"), q, note)
+		}
 	}
 	if result.Reason != "" {
 		fmt.Fprintf(w, "%s %s\n", label("Reason:"), result.Reason)

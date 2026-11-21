@@ -459,6 +459,10 @@ func TestSwarmRules(t *testing.T) {
 		{"services allowed", []config.RuleConfig{allow("/services/**"), denyAll}, nil, StatusNotConfigured},
 		{"get-only secrets allowed", []config.RuleConfig{{Match: config.MatchConfig{Method: "GET", Path: "/secrets"}, Action: "allow"}, denyAll}, nil, StatusNotConfigured},
 		{"allow everything", []config.RuleConfig{allow("/**")}, nil, StatusNotConfigured},
+		{"query-constrained services allow is still reachable", []config.RuleConfig{
+			{Match: config.MatchConfig{Method: "POST", Path: "/services/**", Query: map[string][]string{"x": {"1"}}}, Action: "allow"}, denyAll}, nil, StatusNotConfigured},
+		{"query-constrained services deny does not shadow", []config.RuleConfig{
+			{Match: config.MatchConfig{Method: "*", Path: "/services/**", Query: map[string][]string{"x": {"1"}}}, Action: "deny"}, allow("/services/**"), denyAll}, nil, StatusNotConfigured},
 		{"global allows, profile denies", []config.RuleConfig{allow("/swarm/**")},
 			[]config.ClientProfileConfig{{Name: "p", Rules: []config.RuleConfig{denyAll}}}, StatusPartial},
 		{"profile allows nodes", []config.RuleConfig{denyAll},
