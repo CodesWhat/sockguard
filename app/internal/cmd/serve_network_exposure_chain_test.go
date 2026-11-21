@@ -123,6 +123,7 @@ func TestServeChainNetworkExposure(t *testing.T) {
 		{name: "pod: other network", configure: on, path: "/v6.1.3/libpod/pods/create", body: `{"name":"p1","networks":{"backend":{}}}`, wantStatus: http.StatusForbidden},
 		{name: "pod: proxy network", configure: on, path: "/v6.1.3/libpod/pods/create", body: `{"name":"p1","networks":{"proxy":{}}}`, wantStatus: http.StatusCreated, wantSeen: []string{"POST /libpod/pods/create"}},
 		{name: "restore refused", configure: on, path: "/v6.1.3/libpod/containers/c1/restore?import=true", body: "", wantStatus: http.StatusForbidden},
+		{name: "quadlet install refused", configure: on, path: "/v6.1.3/libpod/quadlets", body: "[Container]\nPublishPort=80:80\n", wantStatus: http.StatusForbidden},
 		{name: "kube play refused", configure: on, path: "/v6.1.3/libpod/play/kube", body: "apiVersion: v1\nkind: Pod\n", wantStatus: http.StatusForbidden},
 		{name: "kube play alias refused", configure: on, path: "/v6.1.3/libpod/kube/play", body: "apiVersion: v1\nkind: Pod\n", wantStatus: http.StatusForbidden},
 		{name: "service: proxy network", configure: on, path: servicePath, body: service("proxy"), wantStatus: http.StatusCreated, wantSeen: []string{"POST /services/create"}},

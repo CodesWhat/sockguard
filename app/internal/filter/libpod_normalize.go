@@ -216,6 +216,12 @@ func isLibpodContainerRestorePath(normalizedPath string) bool {
 	return ok && libpod
 }
 
+// isLibpodQuadletInstallPath matches POST /libpod/quadlets, the only quadlet
+// write route in the catalog that installs a unit.
+func isLibpodQuadletInstallPath(normalizedPath string) bool {
+	return normalizedPath == libpodPathPrefix+"quadlets"
+}
+
 // isLibpodContainerRemovePath matches DELETE /libpod/containers/{name}, which
 // Podman 5.8.6 registers on the same compat.RemoveContainer handler as the
 // Docker-compatible DELETE /containers/{name}

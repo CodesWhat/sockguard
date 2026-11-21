@@ -876,3 +876,15 @@ func (g *resourceLimitGuard) guardRestoreExposure(w http.ResponseWriter, r *http
 	return !g.exposureDeny(w, r, http.StatusForbidden, reasonCodeRequestBodyPolicyDenied,
 		"libpod container restore denied: a checkpoint archive and publishPorts carry their own ports and networks, so a restore can't be held to the libpod port and network gates", policy.DenyResponseVerbosity)
 }
+
+// guardQuadletExposure refuses POST /libpod/quadlets while any libpod port or
+// network gate is set. The unit files it installs can carry PublishPort= and
+// Network=, and the containers they start are created by systemd, outside any
+// create sockguard sees. It returns false when a response was written.
+func (g *resourceLimitGuard) guardQuadletExposure(w http.ResponseWriter, r *http.Request, policy PolicyConfig) bool {
+	if !policy.LibpodContainerCreate.NetworkExposure.active() {
+		return true
+	}
+	return !g.exposureDeny(w, r, http.StatusForbidden, reasonCodeRequestBodyPolicyDenied,
+		"libpod quadlet install denied: a unit file can carry PublishPort= and Network=, so it can't be held to the libpod port and network gates", policy.DenyResponseVerbosity)
+}
