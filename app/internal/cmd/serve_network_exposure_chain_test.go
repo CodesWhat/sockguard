@@ -115,6 +115,11 @@ func TestServeChainNetworkExposure(t *testing.T) {
 		{name: "libpod: other network", configure: on, path: libpodPath, body: `{"systemd":"false","image":"alpine","networks":{"backend":{}}}`, wantStatus: http.StatusForbidden},
 		{name: "libpod: published port", configure: on, path: libpodPath, body: `{"systemd":"false","image":"alpine","networks":{"proxy":{}},"portmappings":[{"host_ip":"127.0.0.1","container_port":80,"host_port":80}]}`, wantStatus: http.StatusForbidden},
 
+		{name: "pod: published port", configure: on, path: "/v6.1.3/libpod/pods/create", body: `{"name":"p1","portmappings":[{"host_ip":"127.0.0.1","container_port":80,"host_port":80}],"networks":{"proxy":{}}}`, wantStatus: http.StatusForbidden},
+		{name: "pod: other network", configure: on, path: "/v6.1.3/libpod/pods/create", body: `{"name":"p1","networks":{"backend":{}}}`, wantStatus: http.StatusForbidden},
+		{name: "pod: proxy network", configure: on, path: "/v6.1.3/libpod/pods/create", body: `{"name":"p1","networks":{"proxy":{}}}`, wantStatus: http.StatusCreated, wantSeen: []string{"POST /libpod/pods/create"}},
+		{name: "kube play refused", configure: on, path: "/v6.1.3/libpod/play/kube", body: "apiVersion: v1\nkind: Pod\n", wantStatus: http.StatusForbidden},
+		{name: "kube play alias refused", configure: on, path: "/v6.1.3/libpod/kube/play", body: "apiVersion: v1\nkind: Pod\n", wantStatus: http.StatusForbidden},
 		{name: "service: proxy network", configure: on, path: servicePath, body: service("proxy"), wantStatus: http.StatusCreated, wantSeen: []string{"POST /services/create"}},
 		{name: "service: other network", configure: on, path: servicePath, body: service("backend"), wantStatus: http.StatusForbidden},
 		{name: "service: published port", configure: on, path: servicePath, body: `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest"}},"EndpointSpec":{"Ports":[{"TargetPort":80,"PublishedPort":80}]}}`, wantStatus: http.StatusForbidden},
@@ -134,6 +139,9 @@ func TestServeChainNetworkExposure(t *testing.T) {
 					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/containers/create"}, Action: "allow"},
 					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/create"}, Action: "allow"},
 					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/services/create"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/pods/create"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/play/kube"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/kube/play"}, Action: "allow"},
 					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/networks/*/connect"}, Action: "allow"},
 					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
 				}

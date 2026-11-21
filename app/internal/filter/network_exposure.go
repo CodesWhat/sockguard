@@ -539,3 +539,49 @@ func (g *resourceLimitGuard) guardServiceExposure(w http.ResponseWriter, r *http
 	return g.enforceExposure(w, r, subject, opts, published, bindings,
 		serviceNetworkRefs(current.SpecNetworkTargets), policy.Service.AllowHostNetwork, verbosity)
 }
+
+// guardPodCreateExposure holds POST /libpod/pods/create to the
+// libpod_container_create gates. A pod publishes ports and owns the network
+// namespace its member containers join, so leaving it out would let a caller
+// publish through the pod and then join a container to it. PodSpecGenerator
+// flattens the same portmappings, netns and networks keys a container spec
+// has, so the container decode reads it. The pod's own allow_host_network
+// answers for the host network. It returns false when a response was written.
+func (g *resourceLimitGuard) guardPodCreateExposure(w http.ResponseWriter, r *http.Request, policy PolicyConfig) bool {
+	opts := policy.LibpodContainerCreate.NetworkExposure
+	if !opts.active() {
+		return true
+	}
+	body, err := readBoundedBodyUnchecked(r, maxContainerCreateBodyBytes)
+	if err != nil {
+		if isBodyTooLargeError(err) {
+			g.exposureDeny(w, r, http.StatusRequestEntityTooLarge, reasonCodeRequestBodyTooLarge,
+				fmt.Sprintf("libpod pod create denied: request body exceeds %d byte limit", maxContainerCreateBodyBytes), policy.DenyResponseVerbosity)
+			return false
+		}
+		g.exposureDeny(w, r, http.StatusBadRequest, reasonCodeRequestBodyInspectionFailed,
+			"libpod pod create denied: request body could not be read", policy.DenyResponseVerbosity)
+		return false
+	}
+	var req exposureLibpodCreate
+	if json.Unmarshal(body, &req) != nil {
+		return true
+	}
+	published, bindings := req.ports()
+	return g.enforceExposure(w, r, "libpod pod create", opts, published, bindings, req.networks(),
+		policy.LibpodPodCreate.AllowHostNetwork, policy.DenyResponseVerbosity)
+}
+
+// guardPlayKubeExposure refuses POST /libpod/play/kube and its
+// /libpod/kube/play alias while any libpod port or network gate is set. The
+// pods and containers a kube YAML creates carry their own ports and networks,
+// and sockguard doesn't parse the YAML. The route is already behind
+// insecure_allow_body_blind_writes, so this only matters once an operator has
+// opened it. It returns false when a response was written.
+func (g *resourceLimitGuard) guardPlayKubeExposure(w http.ResponseWriter, r *http.Request, policy PolicyConfig) bool {
+	if !policy.LibpodContainerCreate.NetworkExposure.active() {
+		return true
+	}
+	return !g.exposureDeny(w, r, http.StatusForbidden, reasonCodeRequestBodyPolicyDenied,
+		"libpod play kube denied: the YAML body is not inspected, so it can't be held to the libpod port and network gates", policy.DenyResponseVerbosity)
+}

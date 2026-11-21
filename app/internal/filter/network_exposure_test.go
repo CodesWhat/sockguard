@@ -600,3 +600,92 @@ func FuzzNetworkExposure(f *testing.F) {
 		}
 	})
 }
+
+func TestNetworkExposurePodCreate(t *testing.T) {
+	const p = "/libpod/pods/create"
+	only := nets("proxy")
+	mapping := func(hostIP string) string {
+		return `{"name":"p1","portmappings":[{"host_ip":"` + hostIP + `","container_port":80,"host_port":8080}]}`
+	}
+	checkExposureCases(t, []exposureCase{
+		{name: "deny: no ports", path: p, body: `{"name":"p1"}`, opts: NetworkExposureOptions{DenyPublishedPorts: true}, wantStatus: ok},
+		{name: "deny: portmapping", path: p, body: mapping("127.0.0.1"), opts: NetworkExposureOptions{DenyPublishedPorts: true}, wantStatus: deny},
+		{name: "deny: versioned path", path: "/v6.1.3" + p, body: mapping(""), opts: NetworkExposureOptions{DenyPublishedPorts: true}, wantStatus: deny},
+		{name: "host ips: loopback", path: p, body: mapping("127.0.0.1"), opts: ports("127.0.0.1"), wantStatus: ok},
+		{name: "host ips: mapped loopback", path: p, body: mapping("::ffff:127.0.0.1"), opts: ports("127.0.0.1"), wantStatus: ok},
+		{name: "host ips: empty", path: p, body: mapping(""), opts: ports("127.0.0.1"), wantStatus: deny},
+		{name: "host ips: garbage", path: p, body: mapping("nope"), opts: ports("127.0.0.1"), wantStatus: deny},
+		{name: "net: listed", path: p, body: `{"networks":{"proxy":{}}}`, opts: only, wantStatus: ok, wantLookups: []string{"proxy"}},
+		{name: "net: by ID prefix", path: p, body: `{"networks":{"` + proxyNetworkID[:8] + `":{}}}`, opts: only, wantStatus: ok, wantLookups: []string{proxyNetworkID[:8]}},
+		{name: "net: unlisted", path: p, body: `{"networks":{"backend":{}}}`, opts: only, wantStatus: deny, wantLookups: []string{"backend"}},
+		{name: "net: no networks is the default network", path: p, body: `{"name":"p1"}`, opts: only, wantStatus: deny, wantLookups: []string{"podman"}},
+		{name: "net: none", path: p, body: `{"netns":{"nsmode":"none"}}`, opts: only, noInspector: true, wantStatus: ok},
+		{name: "net: pasta refused", path: p, body: `{"netns":{"nsmode":"pasta"}}`, opts: only, wantStatus: deny},
+		{name: "net: path ns refused", path: p, body: `{"netns":{"nsmode":"path","value":"/run/netns/x"}}`, opts: only, wantStatus: deny},
+		{name: "net: host refused while the pod host gate is off", path: p, body: `{"netns":{"nsmode":"host"}}`, opts: only, wantStatus: deny},
+		{name: "net: lookup failure", path: p, body: `{"networks":{"boom":{}}}`, opts: only, wantStatus: bad, wantLookups: []string{"boom"}},
+		{name: "off by default", path: p, body: mapping(""), opts: NetworkExposureOptions{}, wantStatus: ok},
+	}, applyLibpod)
+
+	// The pod's own allow_host_network answers for host.
+	opts := ResourceLimitGuardOptions{}
+	applyLibpod(&opts, only, false)
+	opts.LibpodPodCreate.AllowHostNetwork = true
+	if out := runResourceGuardRequest(t, opts, http.MethodPost, p, `{"netns":{"nsmode":"host"}}`, ""); out.status != ok {
+		t.Fatalf("host with the pod host gate on: status %d, want it forwarded", out.status)
+	}
+	// Only the libpod container list applies; the Docker one doesn't.
+	dockerOnly := ResourceLimitGuardOptions{}
+	applyDocker(&dockerOnly, NetworkExposureOptions{DenyPublishedPorts: true}, false)
+	if out := runResourceGuardRequest(t, dockerOnly, http.MethodPost, p, mapping("127.0.0.1"), ""); out.status != ok {
+		t.Fatalf("docker-only gates refused a pod create: status %d", out.status)
+	}
+}
+
+func TestNetworkExposurePlayKube(t *testing.T) {
+	const yaml = "apiVersion: v1\nkind: Pod\n"
+	for _, path := range []string{"/libpod/play/kube", "/v6.1.3/libpod/kube/play", "/libpod/play/kube?start=true"} {
+		for name, e := range map[string]NetworkExposureOptions{
+			"deny_published_ports":  {DenyPublishedPorts: true},
+			"allowed_port_host_ips": ports("127.0.0.1"),
+			"allowed_networks":      nets("proxy"),
+		} {
+			t.Run(path+"/"+name, func(t *testing.T) {
+				opts := ResourceLimitGuardOptions{}
+				applyLibpod(&opts, e, false)
+				out := runResourceGuardRequest(t, opts, http.MethodPost, path, yaml, "")
+				if out.status != deny || out.forwarded != 0 || !strings.Contains(out.body, "play kube denied") {
+					t.Fatalf("status %d forwarded %d body %s", out.status, out.forwarded, out.body)
+				}
+			})
+		}
+		t.Run(path+"/gates off", func(t *testing.T) {
+			if out := runResourceGuardRequest(t, ResourceLimitGuardOptions{}, http.MethodPost, path, yaml, ""); out.status != ok {
+				t.Fatalf("status %d, want it forwarded", out.status)
+			}
+		})
+		t.Run(path+"/docker gates only", func(t *testing.T) {
+			opts := ResourceLimitGuardOptions{}
+			applyDocker(&opts, NetworkExposureOptions{DenyPublishedPorts: true}, false)
+			if out := runResourceGuardRequest(t, opts, http.MethodPost, path, yaml, ""); out.status != ok {
+				t.Fatalf("status %d, want it forwarded", out.status)
+			}
+		})
+	}
+	for _, mode := range []string{"warn", "audit"} {
+		for _, path := range []string{"/libpod/play/kube", "/libpod/pods/create"} {
+			t.Run(mode+path, func(t *testing.T) {
+				opts := ResourceLimitGuardOptions{}
+				applyLibpod(&opts, NetworkExposureOptions{DenyPublishedPorts: true}, false)
+				body := `{"portmappings":[{"container_port":80}]}`
+				out := runResourceGuardRequest(t, opts, http.MethodPost, path, body, mode)
+				if out.status != ok || out.forwarded != 1 || out.forwardedBody != body {
+					t.Fatalf("status %d forwarded %d", out.status, out.forwarded)
+				}
+				if out.meta.Decision != logging.DecisionWouldDeny || out.meta.ReasonCode != reasonCodeRequestBodyPolicyDenied {
+					t.Fatalf("decision/reason code = %q/%q", out.meta.Decision, out.meta.ReasonCode)
+				}
+			})
+		}
+	}
+}
