@@ -119,7 +119,7 @@ func relayGRPCFramesPerMessageCap(dst io.Writer, src io.Reader, maxLen int64) er
 			return err
 		}
 		if copied, err := io.CopyN(dst, src, length); err != nil {
-			if errors.Is(err, io.EOF) && copied < length {
+			if (errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)) && copied < length {
 				return fmt.Errorf("%w: reading message payload: %w", errStreamFrameProtocolError, io.ErrUnexpectedEOF)
 			}
 			return err

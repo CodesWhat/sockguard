@@ -83,6 +83,16 @@ func TestRelayGRPCFramesPerMessageCap(t *testing.T) {
 		}
 	})
 
+	t.Run("an unexpected EOF mid-payload is a protocol error", func(t *testing.T) {
+		t.Parallel()
+		body := statusStreamBody(1, 40)
+		src := io.MultiReader(bytes.NewReader(body[:len(body)-7]), iotestErrReader{io.ErrUnexpectedEOF})
+		err := relayGRPCFramesPerMessageCap(io.Discard, src, 128)
+		if !errors.Is(err, errStreamFrameProtocolError) {
+			t.Fatalf("relay error = %v, want errStreamFrameProtocolError", err)
+		}
+	})
+
 	t.Run("an empty stream is a clean end", func(t *testing.T) {
 		t.Parallel()
 		if err := relayGRPCFramesPerMessageCap(io.Discard, strings.NewReader(""), 128); err != nil {
@@ -255,3 +265,9 @@ func TestBridgeStatusStreamSurvivesAggregateAboveTheMessageCap(t *testing.T) {
 	}
 	_ = again.Body.Close()
 }
+
+// iotestErrReader always fails with err, standing in for an HTTP/2 body that
+// ends short of its Content-Length.
+type iotestErrReader struct{ err error }
+
+func (r iotestErrReader) Read([]byte) (int, error) { return 0, r.err }
