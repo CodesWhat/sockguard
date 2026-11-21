@@ -754,6 +754,21 @@ type ContainerCreateRequestBodyConfig struct {
 	// lists them. allow_log_path stays a separate gate.
 	AllowedLogDrivers         []string `mapstructure:"allowed_log_drivers"`
 	AllowedLogEndpointOptions []string `mapstructure:"allowed_log_endpoint_options"`
+
+	// DenyPublishedPorts refuses a create that publishes a port: HostConfig.PortBindings with at least one binding, or HostConfig.PublishAllPorts.
+	// Default false.
+	DenyPublishedPorts bool `mapstructure:"deny_published_ports"`
+	// AllowedPortHostIPs, when set, requires every published port's host IP to
+	// be listed. An empty host IP binds every interface and counts as 0.0.0.0, so it passes only when 0.0.0.0 is listed. IPv4-mapped IPv6 addresses compare equal to their IPv4 form.
+	// Default empty: any host IP.
+	AllowedPortHostIPs []string `mapstructure:"allowed_port_host_ips"`
+	// AllowedNetworks, when set, requires every network the container joins to
+	// resolve, through the daemon, to a listed network name. A network named
+	// by ID or ID prefix is checked by the name it resolves to. "none" always
+	// passes, "host" stays under allow_host_network, and a mode that joins an
+	// existing namespace (container:<id>, ns:<path>, slirp4netns, pasta) is
+	// refused. POST /networks/{id}/connect is held to this list too. Default empty: any network.
+	AllowedNetworks []string `mapstructure:"allowed_networks"`
 }
 
 // LibpodContainerCreateRequestBodyConfig configures body inspection for
@@ -843,6 +858,21 @@ type LibpodContainerCreateRequestBodyConfig struct {
 	// lists them. allow_log_path stays a separate gate.
 	AllowedLogDrivers         []string `mapstructure:"allowed_log_drivers"`
 	AllowedLogEndpointOptions []string `mapstructure:"allowed_log_endpoint_options"`
+
+	// DenyPublishedPorts refuses a create that publishes a port: portmappings, or publish_image_ports: true.
+	// Default false.
+	DenyPublishedPorts bool `mapstructure:"deny_published_ports"`
+	// AllowedPortHostIPs, when set, requires every published port's host IP to
+	// be listed. An empty host IP binds every interface and counts as 0.0.0.0, so it passes only when 0.0.0.0 is listed. IPv4-mapped IPv6 addresses compare equal to their IPv4 form.
+	// Default empty: any host IP.
+	AllowedPortHostIPs []string `mapstructure:"allowed_port_host_ips"`
+	// AllowedNetworks, when set, requires every network the container joins to
+	// resolve, through the daemon, to a listed network name. A network named
+	// by ID or ID prefix is checked by the name it resolves to. "none" always
+	// passes, "host" stays under allow_host_network, and a mode that joins an
+	// existing namespace (container:<id>, ns:<path>, slirp4netns, pasta) is
+	// refused. POST /libpod/networks/{name}/connect is held to this list too. Default empty: any network.
+	AllowedNetworks []string `mapstructure:"allowed_networks"`
 
 	// AllowTmpfsPrivilegedOptions permits a mounts[] entry of type tmpfs
 	// whose options re-enable exec, dev or suid (last option wins). Same
@@ -1237,6 +1267,21 @@ type ServiceRequestBodyConfig struct {
 	// lists them. allow_log_path stays a separate gate.
 	AllowedLogDrivers         []string `mapstructure:"allowed_log_drivers"`
 	AllowedLogEndpointOptions []string `mapstructure:"allowed_log_endpoint_options"`
+
+	// DenyPublishedPorts refuses a create that publishes a port: any EndpointSpec.Ports entry, ingress or host mode.
+	// Default false.
+	DenyPublishedPorts bool `mapstructure:"deny_published_ports"`
+	// AllowedPortHostIPs, when set, requires every published port's host IP to
+	// be listed. A service has no host IP field and a published port binds every interface on every node, so with this set any published port is refused unless 0.0.0.0 is listed.
+	// Default empty: any host IP.
+	AllowedPortHostIPs []string `mapstructure:"allowed_port_host_ips"`
+	// AllowedNetworks, when set, requires every network the service joins to
+	// resolve, through the daemon, to a listed network name. A network named
+	// by ID or ID prefix is checked by the name it resolves to. "none" always
+	// passes, "host" stays under allow_host_network, and a mode that joins an
+	// existing namespace (container:<id>, ns:<path>, slirp4netns, pasta) is
+	// refused. On update, the spec a rollback would re-apply is checked as well. Default empty: any network.
+	AllowedNetworks []string `mapstructure:"allowed_networks"`
 }
 
 // SwarmRequestBodyConfig configures inspection for swarm writes.

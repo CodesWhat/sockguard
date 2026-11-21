@@ -237,6 +237,11 @@ type ContainerCreateOptions struct {
 	// closed. The server sets it from the resolved upstream flavor.
 	DockerUpstream bool
 
+	// NetworkExposure holds the opt-in published-port and network gates. They
+	// run in the resource-limit guard, which can ask the daemon what a network
+	// reference resolves to. Zero value: unrestricted.
+	NetworkExposure NetworkExposureOptions
+
 	// AllowEndpointConfig permits static IP, MAC address, Links, and
 	// DriverOpts in NetworkingConfig.EndpointsConfig entries carried on
 	// POST /containers/create. Docker connects every entry here the same way

@@ -84,6 +84,11 @@ type ServiceOptions struct {
 	RequireCPULimit     bool
 	RequireCPULimitHard bool
 
+	// NetworkExposure holds the opt-in published-port and network gates. They
+	// run in the resource-limit guard, which can ask the daemon what a network
+	// reference resolves to. Zero value: unrestricted.
+	NetworkExposure NetworkExposureOptions
+
 	// AllowedLogDrivers allowlists TaskTemplate.LogDriver.Name, and
 	// AllowedLogEndpointOptions lists the destination options
 	// (logEndpointOptionKeys) it may carry. Default empty: off. An empty

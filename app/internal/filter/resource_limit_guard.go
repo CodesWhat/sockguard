@@ -146,12 +146,27 @@ func (g *resourceLimitGuard) serve(w http.ResponseWriter, r *http.Request, next 
 	}
 
 	switch {
+	case matchesContainerCreateInspection(normPath):
+		if g.guardContainerCreateExposure(w, r, policy, false) {
+			next.ServeHTTP(w, r)
+		}
+	case isLibpodContainerCreatePath(normPath):
+		if g.guardContainerCreateExposure(w, r, policy, true) {
+			next.ServeHTTP(w, r)
+		}
+	case isNetworkActionPath(normPath, "connect"), isLibpodNetworkConnectPath(normPath):
+		if g.guardNetworkConnectExposure(w, r, normPath, policy) {
+			next.ServeHTTP(w, r)
+		}
 	case isContainerUpdatePath(normPath):
 		g.guardContainerUpdate(w, r, normPath, policy, false, next)
 	case isLibpodContainerUpdatePath(normPath):
 		g.guardContainerUpdate(w, r, normPath, policy, true, next)
 	case isServiceWritePath(normPath):
 		if !g.guardServiceNetworks(w, r, normPath, policy) {
+			return
+		}
+		if !g.guardServiceExposure(w, r, normPath, policy) {
 			return
 		}
 		g.guardServiceWrite(w, r, normPath, policy, next)
@@ -846,6 +861,11 @@ type ServiceInspectResult struct {
 	// Spec.Networks targets, which an automatic rollback re-applies when an
 	// update fails.
 	SpecNetworkTargets []string
+	// SpecPublishedPorts and PreviousSpecPublishedPorts count the entries of
+	// Spec.EndpointSpec.Ports and PreviousSpec.EndpointSpec.Ports, which the
+	// same two rollbacks re-apply.
+	SpecPublishedPorts         int
+	PreviousSpecPublishedPorts int
 }
 
 // ServiceInspectFunc looks up a service's current version/spec/previous-spec
@@ -909,18 +929,20 @@ func NewDockerServiceInspectorWithRoundTripper(rt http.RoundTripper) ServiceInsp
 			SpecNanoCPUs: decoded.Spec.TaskTemplate.Resources.Limits.NanoCPUs,
 		}
 		var networks struct {
-			Spec         serviceNetworkTargets  `json:"Spec"`
-			PreviousSpec *serviceNetworkTargets `json:"PreviousSpec"`
+			Spec         exposureServiceSpec  `json:"Spec"`
+			PreviousSpec *exposureServiceSpec `json:"PreviousSpec"`
 		}
 		if err := json.Unmarshal(body, &networks); err != nil {
 			return ServiceInspectResult{}, false, err
 		}
 		result.SpecNetworkTargets = networks.Spec.targets()
+		result.SpecPublishedPorts = networks.Spec.published()
 		if decoded.PreviousSpec != nil {
 			result.HasPreviousSpec = true
 			result.PreviousSpecNanoCPUs = decoded.PreviousSpec.TaskTemplate.Resources.Limits.NanoCPUs
 			if networks.PreviousSpec != nil {
 				result.PreviousSpecNetworkTargets = networks.PreviousSpec.targets()
+				result.PreviousSpecPublishedPorts = networks.PreviousSpec.published()
 			}
 		}
 		return result, true, nil
