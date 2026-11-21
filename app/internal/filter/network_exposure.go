@@ -185,6 +185,19 @@ func (req exposureDockerCreate) ports() (bool, []publishedBinding) {
 	return len(bindings) > 0, bindings
 }
 
+// hostStackOptionsReason is the refusal for a NetworkMode that carries
+// options for Podman's pasta or slirp4netns, such as "pasta:-t,0.0.0.0/8080:80".
+// The options include port forwards that never appear in PortBindings, so the
+// port gates can't see them. The bare modes carry no options and publish only
+// through PortBindings, which are already read.
+func (req exposureDockerCreate) hostStackOptionsReason() string {
+	lower := strings.ToLower(strings.TrimSpace(req.HostConfig.NetworkMode))
+	if strings.HasPrefix(lower, "pasta:") || strings.HasPrefix(lower, "slirp4netns:") {
+		return fmt.Sprintf("network mode %q carries pasta or slirp4netns options that can publish ports the port gates can't read", req.HostConfig.NetworkMode)
+	}
+	return ""
+}
+
 func (req exposureDockerCreate) networks() networkRefs {
 	var refs networkRefs
 	dockerNetworkModeRefs(req.HostConfig.NetworkMode, &refs)
@@ -212,6 +225,32 @@ type exposureLibpodCreate struct {
 	PublishImagePorts *bool                      `json:"publish_image_ports"`
 	Networks          map[string]json.RawMessage `json:"networks"`
 	CNINetworks       []string                   `json:"cni_networks"`
+	NetworkOptions    map[string]json.RawMessage `json:"network_options"`
+}
+
+// hostStackOptionsReason is the refusal for options handed to Podman's pasta
+// or slirp4netns, which can forward host ports (pasta -t 0.0.0.0/8080:80) that
+// portmappings never lists. It reads network_options for either key, in any
+// letter case, and a non-empty netns value for either mode. A bare pasta or
+// slirp4netns publishes only through portmappings, which are already read.
+func (req exposureLibpodCreate) hostStackOptionsReason() string {
+	for key, raw := range req.NetworkOptions {
+		if !isHostStackMode(key) {
+			continue
+		}
+		if trimmed := strings.TrimSpace(string(raw)); trimmed != "null" && trimmed != "[]" {
+			return fmt.Sprintf("network_options for %q can forward host ports the port gates can't read", key)
+		}
+	}
+	if isHostStackMode(req.NetNS.NSMode) && strings.TrimSpace(req.NetNS.Value) != "" {
+		return fmt.Sprintf("netns %q with a value can forward host ports the port gates can't read", req.NetNS.NSMode)
+	}
+	return ""
+}
+
+func isHostStackMode(mode string) bool {
+	lower := strings.ToLower(strings.TrimSpace(mode))
+	return lower == "pasta" || lower == "slirp4netns"
 }
 
 func (req exposureLibpodCreate) ports() (bool, []publishedBinding) {
@@ -375,6 +414,16 @@ func (g *resourceLimitGuard) enforceNetworkRefs(w http.ResponseWriter, r *http.R
 	return true
 }
 
+// denyHostStackOptions refuses pasta and slirp4netns options while a port
+// gate is set. It returns false when a response was written.
+func (g *resourceLimitGuard) denyHostStackOptions(w http.ResponseWriter, r *http.Request, subject string, opts NetworkExposureOptions, reason string, verbosity DenyResponseVerbosity) bool {
+	if reason == "" || !opts.portsActive() {
+		return true
+	}
+	return !g.exposureDeny(w, r, http.StatusForbidden, reasonCodeRequestBodyPolicyDenied,
+		fmt.Sprintf("%s denied: %s", subject, reason), verbosity)
+}
+
 // enforceExposure runs the port gates and then the network gate.
 func (g *resourceLimitGuard) enforceExposure(w http.ResponseWriter, r *http.Request, subject string, opts NetworkExposureOptions, published bool, bindings []publishedBinding, refs networkRefs, allowHost bool, verbosity DenyResponseVerbosity) bool {
 	if opts.portsActive() {
@@ -413,6 +462,9 @@ func (g *resourceLimitGuard) guardContainerCreateExposure(w http.ResponseWriter,
 		if json.Unmarshal(body, &req) != nil {
 			return true
 		}
+		if !g.denyHostStackOptions(w, r, "libpod container create", opts, req.hostStackOptionsReason(), policy.DenyResponseVerbosity) {
+			return false
+		}
 		published, bindings := req.ports()
 		return g.enforceExposure(w, r, "libpod container create", opts, published, bindings, req.networks(),
 			policy.LibpodContainerCreate.AllowHostNetwork, policy.DenyResponseVerbosity)
@@ -420,6 +472,9 @@ func (g *resourceLimitGuard) guardContainerCreateExposure(w http.ResponseWriter,
 	var req exposureDockerCreate
 	if json.Unmarshal(body, &req) != nil {
 		return true
+	}
+	if !g.denyHostStackOptions(w, r, "container create", opts, req.hostStackOptionsReason(), policy.DenyResponseVerbosity) {
+		return false
 	}
 	published, bindings := req.ports()
 	return g.enforceExposure(w, r, "container create", opts, published, bindings, req.networks(),
@@ -566,6 +621,9 @@ func (g *resourceLimitGuard) guardPodCreateExposure(w http.ResponseWriter, r *ht
 	var req exposureLibpodCreate
 	if json.Unmarshal(body, &req) != nil {
 		return true
+	}
+	if !g.denyHostStackOptions(w, r, "libpod pod create", opts, req.hostStackOptionsReason(), policy.DenyResponseVerbosity) {
+		return false
 	}
 	published, bindings := req.ports()
 	return g.enforceExposure(w, r, "libpod pod create", opts, published, bindings, req.networks(),

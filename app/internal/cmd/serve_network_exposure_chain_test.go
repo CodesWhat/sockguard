@@ -110,8 +110,10 @@ func TestServeChainNetworkExposure(t *testing.T) {
 		{name: "compat: default bridge", configure: on, path: compatPath, body: compat("default", ""), wantStatus: http.StatusForbidden},
 		{name: "compat: joined container namespace", configure: on, path: compatPath, body: compat("container:web", ""), wantStatus: http.StatusForbidden},
 		{name: "compat: unknown network", configure: on, path: compatPath, body: compat("nope", ""), wantStatus: http.StatusForbidden},
+		{name: "compat: pasta options publish a port", configure: func(b *gates) { b.ContainerCreate.AllowedPortHostIPs = []string{"127.0.0.1"} }, path: compatPath, body: compat("pasta:-t,0.0.0.0/8080:80", ""), wantStatus: http.StatusForbidden},
 
 		{name: "libpod: proxy network", configure: on, path: libpodPath, body: `{"systemd":"false","image":"alpine","networks":{"proxy":{}}}`, wantStatus: http.StatusCreated, wantSeen: []string{"POST /libpod/containers/create"}},
+		{name: "libpod: pasta options publish a port", configure: func(b *gates) { b.LibpodContainerCreate.DenyPublishedPorts = true }, path: libpodPath, body: `{"systemd":"false","image":"alpine","netns":{"nsmode":"pasta"},"network_options":{"pasta":["-t","0.0.0.0/8080:80"]}}`, wantStatus: http.StatusForbidden},
 		{name: "libpod: other network", configure: on, path: libpodPath, body: `{"systemd":"false","image":"alpine","networks":{"backend":{}}}`, wantStatus: http.StatusForbidden},
 		{name: "libpod: published port", configure: on, path: libpodPath, body: `{"systemd":"false","image":"alpine","networks":{"proxy":{}},"portmappings":[{"host_ip":"127.0.0.1","container_port":80,"host_port":80}]}`, wantStatus: http.StatusForbidden},
 

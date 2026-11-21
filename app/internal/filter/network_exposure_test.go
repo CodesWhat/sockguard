@@ -689,3 +689,50 @@ func TestNetworkExposurePlayKube(t *testing.T) {
 		}
 	}
 }
+
+func TestNetworkExposureHostStackOptions(t *testing.T) {
+	const libpod = "/libpod/containers/create"
+	const pod = "/libpod/pods/create"
+	const docker = "/containers/create"
+	deny1 := NetworkExposureOptions{DenyPublishedPorts: true}
+	cases := []exposureCase{
+		{name: "libpod: pasta network_options", path: libpod, body: `{"image":"alpine","netns":{"nsmode":"pasta"},"network_options":{"pasta":["-t","0.0.0.0/8080:80"]}}`, opts: deny1, wantStatus: deny},
+		{name: "libpod: slirp4netns network_options", path: libpod, body: `{"network_options":{"slirp4netns":["port_handler=slirp4netns"]}}`, opts: ports("127.0.0.1"), wantStatus: deny},
+		{name: "libpod: network_options key case", path: libpod, body: `{"network_options":{"Pasta":["-t","8080"]}}`, opts: deny1, wantStatus: deny},
+		{name: "libpod: pasta netns value", path: libpod, body: `{"netns":{"nsmode":"pasta","value":"-t,8080:80"}}`, opts: deny1, wantStatus: deny},
+		{name: "libpod: slirp4netns netns value", path: libpod, body: `{"netns":{"nsmode":"SLIRP4NETNS","value":"x"}}`, opts: deny1, wantStatus: deny},
+		{name: "libpod: empty pasta options", path: libpod, body: `{"netns":{"nsmode":"pasta"},"network_options":{"pasta":[]}}`, opts: deny1, wantStatus: ok},
+		{name: "libpod: null pasta options", path: libpod, body: `{"netns":{"nsmode":"pasta"},"network_options":{"pasta":null}}`, opts: deny1, wantStatus: ok},
+		{name: "libpod: bare pasta", path: libpod, body: `{"netns":{"nsmode":"pasta"}}`, opts: deny1, wantStatus: ok},
+		{name: "libpod: other network_options key", path: libpod, body: `{"network_options":{"bridge":["x"]}}`, opts: deny1, wantStatus: ok},
+		{name: "libpod: gates off", path: libpod, body: `{"network_options":{"pasta":["-t","8080"]}}`, opts: NetworkExposureOptions{}, wantStatus: ok},
+		{name: "libpod: networks gate alone", path: libpod, body: `{"netns":{"nsmode":"bridge"},"network_options":{"pasta":["-t","8080"]},"networks":{"proxy":{}}}`, opts: nets("proxy"), wantStatus: ok, skipLookupCk: true},
+		{name: "pod: pasta network_options", path: pod, body: `{"name":"p1","network_options":{"pasta":["-t","0.0.0.0/8080:80"]}}`, opts: deny1, wantStatus: deny},
+		{name: "pod: slirp4netns netns value", path: "/v6.1.3" + pod, body: `{"netns":{"nsmode":"slirp4netns","value":"x"}}`, opts: ports("127.0.0.1"), wantStatus: deny},
+	}
+	checkExposureCases(t, cases, applyLibpod)
+
+	checkExposureCases(t, []exposureCase{
+		{name: "compat: pasta with options", path: docker, body: `{"Image":"alpine","HostConfig":{"NetworkMode":"pasta:-t,0.0.0.0/8080:80"}}`, opts: deny1, wantStatus: deny},
+		{name: "compat: slirp4netns with options", path: docker, body: `{"HostConfig":{"NetworkMode":"slirp4netns:port_handler=slirp4netns"}}`, opts: ports("127.0.0.1"), wantStatus: deny},
+		{name: "compat: prefix case", path: docker, body: `{"HostConfig":{"NetworkMode":" PASTA:-t,8080"}}`, opts: deny1, wantStatus: deny},
+		{name: "compat: bare pasta", path: docker, body: `{"HostConfig":{"NetworkMode":"pasta"}}`, opts: deny1, wantStatus: ok},
+		{name: "compat: gates off", path: docker, body: `{"HostConfig":{"NetworkMode":"pasta:-t,8080"}}`, opts: NetworkExposureOptions{}, wantStatus: ok},
+		{name: "compat: networks gate alone", path: docker, body: `{"HostConfig":{"NetworkMode":"proxy"}}`, opts: nets("proxy"), wantStatus: ok, skipLookupCk: true},
+	}, applyDocker)
+
+	for _, mode := range []string{"warn", "audit"} {
+		t.Run(mode, func(t *testing.T) {
+			opts := ResourceLimitGuardOptions{}
+			applyLibpod(&opts, deny1, false)
+			body := `{"network_options":{"pasta":["-t","8080"]}}`
+			out := runResourceGuardRequest(t, opts, http.MethodPost, libpod, body, mode)
+			if out.status != ok || out.forwarded != 1 || out.forwardedBody != body {
+				t.Fatalf("status %d forwarded %d", out.status, out.forwarded)
+			}
+			if out.meta.Decision != logging.DecisionWouldDeny {
+				t.Fatalf("decision = %q", out.meta.Decision)
+			}
+		})
+	}
+}
