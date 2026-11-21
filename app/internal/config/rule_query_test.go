@@ -168,3 +168,41 @@ func TestRuleQueryNullValuesRejected(t *testing.T) {
 		t.Fatalf("quoted empty = %#v, want [\"\"]", got)
 	}
 }
+
+func TestRuleQueryKeysRestoredWithMixedCaseSchemaKeys(t *testing.T) {
+	yaml := `
+Rules:
+  - Match: { method: POST, path: "/a", Query: { Signal: "USR1" } }
+    action: allow
+Clients:
+  Profiles:
+    - name: ci
+      rules:
+        - Match: { method: GET, path: "/c", Query: { FILTERS: ["*"] } }
+          action: deny
+`
+	cfg, err := LoadBytes([]byte(yaml))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if got, want := cfg.Rules[0].Match.Query, map[string][]string{"Signal": {"USR1"}}; !reflect.DeepEqual(got, want) {
+		t.Errorf("top-level query = %#v, want %#v", got, want)
+	}
+	if got, want := cfg.Clients.Profiles[0].Rules[0].Match.Query, map[string][]string{"FILTERS": {"*"}}; !reflect.DeepEqual(got, want) {
+		t.Errorf("profile query = %#v, want %#v", got, want)
+	}
+}
+
+func TestRuleQueryCaseDuplicatesSurviveMixedCaseSchema(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+Rules:
+  - Match: { method: POST, path: "/a", Query: { Signal: "USR1", signal: "KILL" } }
+    action: deny
+`))
+	if err == nil {
+		err = Validate(cfg)
+	}
+	if err == nil || !strings.Contains(err.Error(), "differ only in letter case") {
+		t.Fatalf("err = %v, want duplicate-case rejection", err)
+	}
+}

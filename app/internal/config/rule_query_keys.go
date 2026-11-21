@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/viper"
 )
@@ -31,15 +32,15 @@ func restoreRuleQueryKeys(cfg *Config, data []byte) {
 		return
 	}
 
-	restoreRuleListQueryKeys(cfg.Rules, raw["rules"])
-	clients, _ := raw["clients"].(map[string]any)
-	profiles, _ := clients["profiles"].([]any)
+	restoreRuleListQueryKeys(cfg.Rules, rawKey(raw, "rules"))
+	clients, _ := rawKey(raw, "clients").(map[string]any)
+	profiles, _ := rawKey(clients, "profiles").([]any)
 	for i := range cfg.Clients.Profiles {
 		if i >= len(profiles) {
 			break
 		}
 		profile, _ := profiles[i].(map[string]any)
-		restoreRuleListQueryKeys(cfg.Clients.Profiles[i].Rules, profile["rules"])
+		restoreRuleListQueryKeys(cfg.Clients.Profiles[i].Rules, rawKey(profile, "rules"))
 	}
 }
 
@@ -53,12 +54,33 @@ func restoreRuleListQueryKeys(rules []RuleConfig, rawRules any) {
 			continue
 		}
 		rule, _ := list[i].(map[string]any)
-		match, _ := rule["match"].(map[string]any)
-		query, _ := match["query"].(map[string]any)
+		match, _ := rawKey(rule, "match").(map[string]any)
+		query, _ := rawKey(match, "query").(map[string]any)
 		if restored, ok := rawQueryConstraints(query); ok {
 			rules[i].Match.Query = restored
 		}
 	}
+}
+
+// rawKey looks up a schema key the way Viper does, ignoring letter case. The
+// keys inside a query map are not looked up this way: those keep their case.
+// When several spellings are present the lexically smallest one wins, so the
+// result does not depend on map iteration order.
+func rawKey(m map[string]any, name string) any {
+	var (
+		best  string
+		value any
+		found bool
+	)
+	for key, v := range m {
+		if !strings.EqualFold(key, name) {
+			continue
+		}
+		if !found || key < best {
+			best, value, found = key, v, true
+		}
+	}
+	return value
 }
 
 // rawQueryConstraints converts a raw YAML query map to the typed form with
