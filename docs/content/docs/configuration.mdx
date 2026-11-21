@@ -860,6 +860,7 @@ Open-ended streams do not hold a `max_inflight` slot, and they skip the
 - `GET /events`
 - `GET /containers/{id}/logs` with `follow` on
 - `GET /containers/{id}/stats` unless `stream=0`
+- `GET /libpod/containers/stats` (Podman's collection stream) unless `stream=false`; it streams by default, and the same classification keeps it out of the request deadline
 - `POST /containers/{id}/wait`
 - `POST /containers/{id}/attach` and `GET /containers/{id}/attach/ws`
 - `POST /exec/{id}/start`
