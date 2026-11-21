@@ -36,7 +36,7 @@ func TestBridgeBuildImageOwnership(t *testing.T) {
 			policy.Control.Solve.AllowedExporters = []string{"image", "moby"}
 			policy.Control.Solve.AllowRunInstructions = true
 			var checked []string
-			policy.ImageOwnership = ImageOwnershipPolicy{Owner: "team-a", LabelKey: "owner", Authorize: func(ctx context.Context, name string) error {
+			policy.ImageOwnership = ImageOwnershipPolicy{sourcesAuthorized: true, Owner: "team-a", LabelKey: "owner", Authorize: func(ctx context.Context, name string) error {
 				checked = append(checked, name)
 				if name == "foreign/app:v1" {
 					return errors.New("foreign owner")
@@ -120,7 +120,7 @@ func TestBridgeBuildImageOwnership(t *testing.T) {
 func TestOwnedSolveExpansionRespectsMessageCap(t *testing.T) {
 	policy := allowAllPolicy
 	policy.Control.Solve.AllowedExporters = []string{"image"}
-	policy.ImageOwnership = ImageOwnershipPolicy{Owner: strings.Repeat("a", 1024), LabelKey: "owner", Authorize: func(context.Context, string) error { return nil }}
+	policy.ImageOwnership = ImageOwnershipPolicy{sourcesAuthorized: true, Owner: strings.Repeat("a", 1024), LabelKey: "owner", Authorize: func(context.Context, string) error { return nil }}
 	limits := DefaultLimits()
 	limits.MaxMessageBytes = 512
 	var called atomic.Bool
@@ -156,7 +156,7 @@ func TestBuildQueriesWaitForImageOwnershipAdmission(t *testing.T) {
 			policy := allowAllPolicy
 			policy.Control.Solve.AllowedExporters = []string{"image"}
 			policy.Control.Solve.AllowFrontendGateway = method == "Ping"
-			policy.ImageOwnership = ImageOwnershipPolicy{Owner: "team-a", LabelKey: "owner", Authorize: func(ctx context.Context, _ string) error {
+			policy.ImageOwnership = ImageOwnershipPolicy{sourcesAuthorized: true, Owner: "team-a", LabelKey: "owner", Authorize: func(ctx context.Context, _ string) error {
 				close(lookupStarted)
 				select {
 				case <-release:
@@ -238,7 +238,7 @@ func TestBuildQueriesWaitForImageOwnershipAdmission(t *testing.T) {
 
 func TestOwnedExporterTypesAndImageConfigShapes(t *testing.T) {
 	policy := allowAllPolicy
-	policy.ImageOwnership = ImageOwnershipPolicy{Owner: "team-a", LabelKey: "owner", Authorize: func(context.Context, string) error { return nil }}
+	policy.ImageOwnership = ImageOwnershipPolicy{sourcesAuthorized: true, Owner: "team-a", LabelKey: "owner", Authorize: func(context.Context, string) error { return nil }}
 	for _, tc := range []struct {
 		kind, config string
 		denied       bool

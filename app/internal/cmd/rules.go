@@ -58,8 +58,11 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	// config block that governs POST /volumes/create.
 	{method: http.MethodPut, path: "/volumes/sockguard-test", identifierShape: catalogIdentifierPath},
 	{method: http.MethodPost, path: "/networks/create"},
-	{method: http.MethodPost, path: "/networks/sockguard-test/connect"},
-	{method: http.MethodPost, path: "/networks/sockguard-test/disconnect"},
+	// Docker registers these as /networks/{id:.*}/connect and /disconnect, so
+	// the identifier may hold slashes (a network named a/b), and a rule
+	// constrained below one literal segment still reaches them.
+	{method: http.MethodPost, path: "/networks/sockguard-test/connect", identifierShape: catalogIdentifierPath},
+	{method: http.MethodPost, path: "/networks/sockguard-test/disconnect", identifierShape: catalogIdentifierPath},
 	{method: http.MethodPost, path: "/secrets/create"},
 	{method: http.MethodPost, path: "/configs/create"},
 	{method: http.MethodPost, path: "/services/create"},

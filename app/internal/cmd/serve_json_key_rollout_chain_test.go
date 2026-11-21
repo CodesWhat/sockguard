@@ -48,7 +48,10 @@ func (d *keyRolloutChainDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request
 	d.bodies = append(d.bodies, string(body))
 	d.mu.Unlock()
 	w.WriteHeader(http.StatusCreated)
-	_, _ = io.WriteString(w, `{"Id":"c1"}`)
+	// A volume create is answered with the volume, and owner isolation reads
+	// its label back, so the answer carries the label the request was stamped
+	// with.
+	_, _ = io.WriteString(w, `{"Id":"c1","Labels":{"com.sockguard.owner":"team-a"}}`)
 }
 
 func (d *keyRolloutChainDaemon) received() []string {

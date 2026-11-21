@@ -35,12 +35,10 @@ func IsHijackCandidatePath(method, normPath string) bool {
 // TestLibpodMatchersNeverMatchDockerPathsAndViceVersa assert the
 // libpod/Docker attach matchers stay mutually exclusive.
 func IsContainerAttachPath(normPath string) bool {
-	if !strings.HasPrefix(normPath, "/containers/") {
-		return false
-	}
-	rest := strings.TrimPrefix(normPath, "/containers/")
-	_, tail, ok := strings.Cut(rest, "/")
-	return ok && tail == "attach"
+	// dockerd's {name:.*} is slash-permissive, so the container name is
+	// everything before the suffix, not the first segment.
+	_, ok := DockerContainerAction(normPath, "attach")
+	return ok
 }
 
 // IsExecStartPath matches POST /exec/{id}/start, the Docker counterpart of

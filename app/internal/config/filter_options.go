@@ -136,6 +136,7 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 		DenyUnconfinedSystemPaths:         c.DenyUnconfinedSystemPaths,
 		AllowTmpfsPrivilegedOptions:       c.AllowTmpfsPrivilegedOptions,
 		AllowLogPath:                      c.AllowLogPath,
+		AllowRuntimeAnnotations:           c.AllowRuntimeAnnotations,
 	}
 }
 
@@ -178,6 +179,7 @@ func (c LibpodContainerCreateRequestBodyConfig) ToFilterOptions() filter.LibpodC
 		AllowSystemdMode:                  c.AllowSystemdMode,
 		AllowCustomIDMappings:             c.AllowCustomIDMappings,
 		AllowLogPath:                      c.AllowLogPath,
+		AllowRuntimeAnnotations:           c.AllowRuntimeAnnotations,
 		AllowedRuntimes:                   c.AllowedRuntimes,
 		AllowDeviceCgroupRules:            c.AllowDeviceCgroupRules,
 		AllowedDeviceCgroupRules:          c.AllowedDeviceCgroupRules,

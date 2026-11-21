@@ -54,7 +54,7 @@ func TestBuildxExporterCompatibilityCopy(t *testing.T) {
 func TestBuildxExporterOwnershipCopiesStayEqual(t *testing.T) {
 	policy := allowAllPolicy
 	policy.Control.Solve.AllowedExporters = []string{"image"}
-	policy.ImageOwnership = ImageOwnershipPolicy{Owner: "team-a", LabelKey: "owner", Authorize: func(context.Context, string) error { return nil }}
+	policy.ImageOwnership = ImageOwnershipPolicy{sourcesAuthorized: true, Owner: "team-a", LabelKey: "owner", Authorize: func(context.Context, string) error { return nil }}
 	var called atomic.Bool
 	tb := newTestBridge(t, EndpointGRPC, policy, DefaultLimits(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called.Store(true)

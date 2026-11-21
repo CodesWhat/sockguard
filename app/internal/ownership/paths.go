@@ -67,27 +67,65 @@ func identifierExcluded(excluded []string, identifier string) bool {
 var (
 	createPruneExcluded = []string{"create", "prune"}
 	createExcluded      = []string{"create"}
-	jsonExcluded        = []string{"json"}
 )
 
+// containerIdentifier extracts the container name from a Docker-compat path.
+// dockerd registers every container route as /containers/{name:.*}/<action>,
+// so the name can hold slashes (a legacy link registers "/A/x" as an alias of
+// the linked container). The whole name before the registered action suffix is
+// authorized, never just the first segment, or a request for "A/x" would be
+// checked as "A". Podman's own grammar stays single-segment, see
+// libpodContainerIdentifier.
 func containerIdentifier(method, normPath string) (string, bool) {
-	return resourceIdentifier(method, normPath, "/containers/", createPruneExcluded, jsonExcluded)
+	name, _, ok := apipath.DockerContainerRoute(method, normPath)
+	return name, ok
 }
 
 func execIdentifier(normPath string) (string, bool) {
 	return resourceIdentifier("", normPath, "/exec/", nil, nil)
 }
 
+// networkIdentifier extracts the network name from a Docker-compat path.
+// dockerd registers the network routes as /networks/{id:.*}, with connect and
+// disconnect as /networks/{id:.*}/{action}, so a network named "a/b" is
+// addressable and the whole name is authorized, never just its first segment.
+// DELETE and GET take the complete remainder; connect and disconnect strip
+// only the final action. Podman's native /libpod/networks routes keep their
+// single-segment grammar and are handled by the libpod extractors.
 func networkIdentifier(method, normPath string) (string, bool) {
-	return resourceIdentifier(method, normPath, "/networks/", createPruneExcluded, nil)
+	rest, ok := strings.CutPrefix(normPath, "/networks/")
+	if !ok || rest == "" {
+		return "", false
+	}
+	if !strings.Contains(rest, "/") {
+		return resourceIdentifier(method, normPath, "/networks/", createPruneExcluded, nil)
+	}
+	if method == http.MethodPost {
+		if name, ok := dockerNetworkActionName(rest); ok {
+			return name, true
+		}
+	}
+	return rest, true
+}
+
+// dockerNetworkActionName returns the network name in "{name}/connect" or
+// "{name}/disconnect", where name may itself contain slashes.
+func dockerNetworkActionName(rest string) (string, bool) {
+	for _, action := range []string{"/connect", "/disconnect"} {
+		if name, ok := strings.CutSuffix(rest, action); ok && name != "" {
+			return name, true
+		}
+	}
+	return "", false
 }
 
 func isNetworkMembershipChangePath(normPath string) bool {
-	for _, prefix := range []string{"/networks/", libpodPrefix + "networks/"} {
-		if !strings.HasPrefix(normPath, prefix) {
-			continue
-		}
-		identifier, action, ok := strings.Cut(strings.TrimPrefix(normPath, prefix), "/")
+	if rest, ok := strings.CutPrefix(normPath, "/networks/"); ok {
+		_, ok := dockerNetworkActionName(rest)
+		return ok
+	}
+	if rest, ok := strings.CutPrefix(normPath, libpodPrefix+"networks/"); ok {
+		identifier, action, ok := strings.Cut(rest, "/")
 		return ok && identifier != "" && (action == "connect" || action == "disconnect")
 	}
 	return false
@@ -178,8 +216,16 @@ func isNodeUpdatePath(normPath string) bool {
 	return apipath.IsNodeUpdatePath(normPath)
 }
 
+// isSwarmPath matches the Swarm-state operations that act on the swarm itself:
+// inspect, the unlock key read and leave. Leave with force=1 takes a manager
+// out of the swarm, so none of them can be left to a path rule alone.
 func isSwarmPath(normPath string) bool {
-	return normPath == "/swarm"
+	switch normPath {
+	case "/swarm", "/swarm/unlockkey", "/swarm/leave":
+		return true
+	default:
+		return false
+	}
 }
 
 func isSwarmUpdatePath(normPath string) bool {
