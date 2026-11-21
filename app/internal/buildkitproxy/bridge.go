@@ -378,13 +378,27 @@ func (b *bridge) forwardWithBody(w http.ResponseWriter, r *http.Request, service
 	}
 	w.WriteHeader(resp.StatusCode)
 
-	limitedBody := newLimitedReadCloser(resp.Body, b.limits.MaxMessageBytes)
-	_, copyErr := io.Copy(flushWriter{w}, limitedBody)
+	var copyErr error
+	if b.perFrameResponseCap(service, method) {
+		// Control/Status is a server-streaming RPC whose messages carry build
+		// logs for as long as the build runs, so it gets a per-message cap
+		// rather than the cumulative one every other stream is held to.
+		copyErr = relayGRPCFramesPerMessageCap(flushWriter{w}, resp.Body, b.limits.MaxMessageBytes)
+	} else {
+		limitedBody := newLimitedReadCloser(resp.Body, b.limits.MaxMessageBytes)
+		_, copyErr = io.Copy(flushWriter{w}, limitedBody)
+	}
 
 	switch {
 	case errors.Is(copyErr, errMessageTooLarge):
 		writeGRPCTrailerStatus(w, grpcCodeResourceExhausted, "response message exceeds sockguard's size cap")
 		b.audit(service, method, Deny, "buildkit_message_too_large")
+	case errors.Is(copyErr, errStreamFrameProtocolError):
+		// A truncated frame is a per-stream condition like an oversized one:
+		// end this stream with a status and leave the tunnel's other streams
+		// alone.
+		writeGRPCTrailerStatus(w, grpcCodeInternal, "malformed BuildKit gRPC stream framing")
+		b.audit(service, method, Deny, "buildkit_protocol_error")
 	case copyErr != nil:
 		b.logger.Warn("buildkit: relaying stream response failed; terminating tunnel",
 			"error", logging.SafeString(copyErr.Error()), "service", logging.SafeString(service), "method", logging.SafeString(method),
@@ -398,6 +412,12 @@ func (b *bridge) forwardWithBody(w http.ResponseWriter, r *http.Request, service
 			}
 		}
 	}
+}
+
+// perFrameResponseCap reports whether service/method's response is capped per
+// gRPC message rather than cumulatively: Control/Status on the gRPC endpoint.
+func (b *bridge) perFrameResponseCap(service, method string) bool {
+	return b.legs.endpoint == EndpointGRPC && service == "moby.buildkit.v1.Control" && method == "Status"
 }
 
 // isControlMediatedMethod reports whether service/method on endpoint is one

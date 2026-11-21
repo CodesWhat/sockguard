@@ -64,7 +64,7 @@ func configLimitsToRateLimitOptions(profileName string, cfg config.LimitsConfig,
 	if cfg.Rate != nil {
 		burst := cfg.Rate.Burst
 		if burst == 0 {
-			burst = cfg.Rate.TokensPerSecond
+			burst = max(1, cfg.Rate.TokensPerSecond)
 		}
 		var costs []ratelimit.EndpointCost
 		if len(cfg.Rate.EndpointCosts) > 0 {

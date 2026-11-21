@@ -369,7 +369,7 @@ func (r *Registry) Middleware() func(http.Handler) http.Handler {
 			// response writer instead of leaking it. observe runs before release
 			// (LIFO within one defer) while mw is still valid.
 			defer func() {
-				r.observe(req, mw.meta, mw.status, time.Since(start).Seconds())
+				r.observe(req, mw.meta, mw.meta.EffectiveStatus(mw.status), time.Since(start).Seconds())
 				releaseResponseWriter(mw)
 			}()
 			next.ServeHTTP(mw, req)

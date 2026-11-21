@@ -2009,6 +2009,41 @@ func TestValidateLimitsConfig_Rate(t *testing.T) {
 			cfg:        LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 10, Burst: -1}},
 			wantSubstr: "burst must not be negative",
 		},
+		{
+			name: "valid: fractional rate with burst omitted",
+			cfg:  LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 0.5}},
+		},
+		{
+			name: "valid: fractional rate with adequate burst",
+			cfg:  LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 0.5, Burst: 1}},
+		},
+		{
+			name: "valid: fractional rate with burst of several tokens",
+			cfg:  LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 0.25, Burst: 4}},
+		},
+		{
+			name:       "fractional rate with burst equal to the rate rejected",
+			cfg:        LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 0.5, Burst: 0.5}},
+			wantSubstr: "burst must be >= 1",
+		},
+		{
+			name:       "fractional burst above the rate but below one rejected",
+			cfg:        LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 0.25, Burst: 0.75}},
+			wantSubstr: "burst must be >= 1",
+		},
+		{
+			name: "valid: fractional rate omitted burst allows a one-token endpoint cost",
+			cfg: LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 0.5, EndpointCosts: []EndpointCostConfig{
+				{Path: "/containers/json", Cost: 1},
+			}}},
+		},
+		{
+			name: "fractional rate omitted burst rejects a cost above the one-token floor",
+			cfg: LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 0.5, EndpointCosts: []EndpointCostConfig{
+				{Path: "/build", Cost: 2},
+			}}},
+			wantSubstr: "must not exceed effective burst",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

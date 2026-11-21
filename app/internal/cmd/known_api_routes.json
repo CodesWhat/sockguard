@@ -183,6 +183,34 @@
     },
     {
       "method": "GET",
+      "path": "/debug/pprof/"
+    },
+    {
+      "method": "GET",
+      "path": "/debug/pprof/cmdline"
+    },
+    {
+      "method": "GET",
+      "path": "/debug/pprof/profile"
+    },
+    {
+      "method": "GET",
+      "path": "/debug/pprof/symbol"
+    },
+    {
+      "method": "GET",
+      "path": "/debug/pprof/trace"
+    },
+    {
+      "method": "GET",
+      "path": "/debug/pprof/{name}"
+    },
+    {
+      "method": "GET",
+      "path": "/debug/vars"
+    },
+    {
+      "method": "GET",
       "path": "/distribution/{name:.*}/json"
     },
     {
@@ -719,6 +747,10 @@
     },
     {
       "method": "POST",
+      "path": "/debug/pprof/symbol"
+    },
+    {
+      "method": "POST",
       "path": "/exec/{id}/resize"
     },
     {
@@ -772,6 +804,10 @@
     {
       "method": "POST",
       "path": "/libpod/artifacts/{name:.*}/push"
+    },
+    {
+      "method": "POST",
+      "path": "/libpod/autoupdate"
     },
     {
       "method": "POST",

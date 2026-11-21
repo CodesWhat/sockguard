@@ -66,7 +66,7 @@ func ObserveRequestsMiddleware(observe func(RequestSummary)) func(http.Handler) 
 
 			next.ServeHTTP(rc, r)
 
-			status := rc.status
+			status := meta.EffectiveStatus(rc.status)
 			if status == 0 {
 				status = http.StatusOK
 			}

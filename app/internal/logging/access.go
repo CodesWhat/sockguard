@@ -90,6 +90,32 @@ type RequestMeta struct {
 	queryValues url.Values
 	queryErr    error
 	queryParsed bool
+	// HijackedStatus is the status line of a response written straight to a
+	// hijacked connection, which bypasses WriteHeader and so never reaches the
+	// capturing wrappers. 0 means the response went through WriteHeader. Set
+	// only through SetHijackedStatus and read through EffectiveStatus.
+	HijackedStatus int
+}
+
+// SetHijackedStatus records the status of a response the proxy wrote directly
+// to a hijacked connection, so the access log, audit log, metrics and trace
+// span report it instead of the wrapper's initial 200. A nil meta or a
+// non-positive code is ignored.
+func (m *RequestMeta) SetHijackedStatus(code int) {
+	if m == nil || code <= 0 {
+		return
+	}
+	m.HijackedStatus = code
+}
+
+// EffectiveStatus returns the status a completed request should be reported
+// with: the hijacked response's status when one was recorded, and captured (the
+// last WriteHeader value) otherwise.
+func (m *RequestMeta) EffectiveStatus(captured int) int {
+	if m != nil && m.HijackedStatus > 0 {
+		return m.HijackedStatus
+	}
+	return captured
 }
 
 // ImageLoadRecord is what the filter read from an image archive on its way to
@@ -604,7 +630,7 @@ func AccessLogMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 			attrs = appendCorrelationAttrs(attrs, r, meta)
 			attrs = append(
 				attrs,
-				slog.Int("status", rc.status),
+				slog.Int("status", meta.EffectiveStatus(rc.status)),
 				slog.Float64("latency_ms", latencyMS),
 				slog.Int("bytes", rc.bytes),
 				slog.String("client", SafeString(client)),

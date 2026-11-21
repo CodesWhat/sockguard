@@ -216,7 +216,9 @@ func compileProfile(opts ProfileOptions, now func() time.Time) *compiledProfile 
 	if opts.Rate != nil {
 		burst := opts.Rate.Burst
 		if burst == 0 {
-			burst = opts.Rate.TokensPerSecond
+			// Floored at one token: a fractional rate would otherwise size the
+			// bucket below one request's cost and deny everything.
+			burst = max(1, opts.Rate.TokensPerSecond)
 		}
 		cp.limiter = newLimiterWithClock(opts.Rate.TokensPerSecond, burst, now)
 		cp.endpointCosts = compileEndpointCosts(opts.Rate.EndpointCosts)
