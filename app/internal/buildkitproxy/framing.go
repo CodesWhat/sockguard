@@ -82,3 +82,47 @@ func readUnaryGRPCMessage(r io.Reader, maxLen int64) (frame, payload []byte, err
 
 	return frame, payload, nil
 }
+
+// relayGRPCFramesPerMessageCap copies a gRPC server-streaming response from
+// src to dst one length-prefixed frame at a time, capping each frame's
+// declared payload at maxLen independently instead of capping the cumulative
+// bytes of the whole stream. A long-lived stream such as Control/Status
+// carries an unbounded number of messages, each small, so a cumulative cap
+// would end every long build once its log output crossed it.
+//
+// The header is read first and a frame declaring more than maxLen fails with
+// errMessageTooLarge before a single byte of it is forwarded; a payload is
+// then copied through in chunks, so memory stays bounded by the copy buffer
+// rather than by the frame. Frames are relayed byte for byte, the
+// compression flag included, because the daemon, not sockguard, authors a
+// response. A clean end of stream at a frame boundary returns nil. A
+// truncated header or payload fails with errStreamFrameProtocolError, and a
+// write error to dst is returned as is. maxLen <= 0 disables the cap.
+func relayGRPCFramesPerMessageCap(dst io.Writer, src io.Reader, maxLen int64) error {
+	for {
+		var header [grpcMessageHeaderLen]byte
+		n, err := io.ReadFull(src, header[:])
+		if err != nil {
+			if n == 0 && errors.Is(err, io.EOF) {
+				return nil
+			}
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				return fmt.Errorf("%w: reading message header: %w", errStreamFrameProtocolError, err)
+			}
+			return err
+		}
+		length := int64(binary.BigEndian.Uint32(header[1:5]))
+		if maxLen > 0 && length > maxLen {
+			return errMessageTooLarge
+		}
+		if _, err := dst.Write(header[:]); err != nil {
+			return err
+		}
+		if copied, err := io.CopyN(dst, src, length); err != nil {
+			if errors.Is(err, io.EOF) && copied < length {
+				return fmt.Errorf("%w: reading message payload: %w", errStreamFrameProtocolError, io.ErrUnexpectedEOF)
+			}
+			return err
+		}
+	}
+}

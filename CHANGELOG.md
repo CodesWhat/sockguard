@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A fractional `limits.rate.tokens_per_second` with `burst` omitted no longer denies every request. The omitted burst resolved to the rate itself (0.5 for a rate of 0.5), a bucket that could never hold the one token a request costs, so the profile returned 429 forever. An omitted burst now resolves to `max(1, tokens_per_second)`, and an explicit `burst` below 1 is rejected at startup and on reload instead of being accepted.
 - `GET /libpod/containers/stats` (Podman's collection stats stream) is now classified as long-lived and streaming. It streams by default, but both classifiers only knew the per-container `/containers/{id}/stats` shape, so the stream was cut at the request timeout and held a `max_inflight` slot. It now follows Podman's own query decoding (default on, case-insensitive keys, an explicit `stream=false` stays finite), skips the request deadline and counts against `max_streams`.
+- BuildKit `Control/Status` responses are now capped per gRPC message instead of cumulatively. Status streams build logs for as long as a build runs, but the relay counted every byte of the response against one 64 MiB budget and ended the stream with `RESOURCE_EXHAUSTED` once a long build's output crossed it, so the client lost status for the rest of the build. A single message over the cap is still refused, a truncated frame ends only that stream, and every other RPC keeps the cumulative cap.
 
 ## [3.0.0-rc.8] - 2026-11-19
 
