@@ -1952,6 +1952,22 @@ func validateBuildkitOpaqueEntries(prefix, entries string, values []string) []st
 	return errs
 }
 
+// validateNetworkExposureEntries flags allowed_port_host_ips entries that
+// aren't a bare IP address (no brackets, padding, port or zone) and
+// allowed_networks entries that are empty or padded. Network names are
+// compared exactly, so padding can never match.
+func validateNetworkExposureEntries(prefix, block string, hostIPs, networks []string) []string {
+	var errs []string
+	for _, entry := range hostIPs {
+		addr, err := netip.ParseAddr(entry)
+		if err != nil || addr.Zone() != "" {
+			errs = append(errs, fmt.Sprintf("%s.%s.allowed_port_host_ips entries must be IP addresses, got %q", prefix, block, entry))
+		}
+	}
+	errs = append(errs, validateBuildkitOpaqueEntries(prefix, block+".allowed_networks", networks)...)
+	return errs
+}
+
 // validateLogDriverEntries flags empty or whitespace-padded entries in a
 // block's allowed_log_drivers and allowed_log_endpoint_options. Driver names
 // are compared exactly, so padding can never match.
@@ -2012,6 +2028,7 @@ func validateContainerCreateConfig(prefix string, cfg ContainerCreateRequestBody
 	errs = append(errs, validateHostPathEntries(prefix, "container_create.allowed_bind_mounts", cfg.AllowedBindMounts)...)
 	errs = append(errs, validateHostPathEntries(prefix, "container_create.allowed_devices", cfg.AllowedDevices)...)
 	errs = append(errs, validateLogDriverEntries(prefix, "container_create", cfg.AllowedLogDrivers, cfg.AllowedLogEndpointOptions)...)
+	errs = append(errs, validateNetworkExposureEntries(prefix, "container_create", cfg.AllowedPortHostIPs, cfg.AllowedNetworks)...)
 	for i, entry := range cfg.AllowedDeviceRequests {
 		if strings.TrimSpace(entry.Driver) == "" {
 			errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d].driver is required", prefix, i))
@@ -2047,6 +2064,7 @@ func validateLibpodContainerCreateConfig(prefix string, cfg LibpodContainerCreat
 	errs = append(errs, validateHostPathEntries(prefix, "libpod_container_create.allowed_bind_mounts", cfg.AllowedBindMounts)...)
 	errs = append(errs, validateHostPathEntries(prefix, "libpod_container_create.allowed_devices", cfg.AllowedDevices)...)
 	errs = append(errs, validateLogDriverEntries(prefix, "libpod_container_create", cfg.AllowedLogDrivers, cfg.AllowedLogEndpointOptions)...)
+	errs = append(errs, validateNetworkExposureEntries(prefix, "libpod_container_create", cfg.AllowedPortHostIPs, cfg.AllowedNetworks)...)
 	for _, entry := range cfg.AllowedNamespaceSharingContainers {
 		if entry != "" && entry == strings.TrimSpace(entry) {
 			continue
@@ -2148,6 +2166,7 @@ func validateServiceConfig(prefix string, cfg ServiceRequestBodyConfig) []string
 	errs = append(errs, validateHostPathEntries(prefix, "service.allowed_bind_mounts", cfg.AllowedBindMounts)...)
 	errs = append(errs, validateRegistryHostEntries(prefix, "service.allowed_registries", cfg.AllowedRegistries)...)
 	errs = append(errs, validateLogDriverEntries(prefix, "service", cfg.AllowedLogDrivers, cfg.AllowedLogEndpointOptions)...)
+	errs = append(errs, validateNetworkExposureEntries(prefix, "service", cfg.AllowedPortHostIPs, cfg.AllowedNetworks)...)
 	return errs
 }
 

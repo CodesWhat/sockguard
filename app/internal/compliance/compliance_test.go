@@ -55,12 +55,18 @@ func TestCISPresetEnforcedControlsAreSatisfied(t *testing.T) {
 		if c.ID == "5.31" {
 			continue
 		}
+		// The network exposure gates need workload-specific values, so the
+		// preset leaves them off; see TestNetworkExposureControls.
+		if optInControls[c.ID] {
+			continue
+		}
 		if c.Status != StatusConfigured && c.Status != StatusAlwaysOn {
 			t.Errorf("preset control %s status = %s, want configured or always_on", c.ID, c.Status)
 		}
 	}
 	got := statuses(r)
 	for id, want := range map[string]Status{
+		"5.7/5.8": StatusNotConfigured, "5.13": StatusNotConfigured, "5.29": StatusNotConfigured,
 		"5.20": StatusAlwaysOn, "5.24": StatusAlwaysOn, "5.31": StatusNeedsEvidence,
 		"7.x": StatusConfigured, "5.22/5.23": StatusConfigured,
 		// The preset ships image_trust off and a default TCP listener with no mTLS.
@@ -78,6 +84,7 @@ func TestDefaultsStatuses(t *testing.T) {
 	got := statuses(Generate(&cfg, nil))
 	want := map[string]Status{
 		"5.3": StatusNotConfigured, "5.4": StatusConfigured, "5.5": StatusConfigured,
+		"5.7/5.8": StatusNotConfigured, "5.13": StatusNotConfigured, "5.29": StatusNotConfigured,
 		"5.9": StatusConfigured, "5.10": StatusNotConfigured, "5.11": StatusNotConfigured,
 		"5.12": StatusNotConfigured, "5.15": StatusConfigured, "5.16": StatusConfigured,
 		"5.17": StatusConfigured, "5.20": StatusAlwaysOn, "5.21": StatusNotConfigured,
@@ -96,6 +103,54 @@ func TestDefaultsStatuses(t *testing.T) {
 		if got[id] != w {
 			t.Errorf("Defaults() %s = %s, want %s", id, got[id], w)
 		}
+	}
+}
+
+// optInControls are the enforced controls whose knob has no safe default value,
+// so no shipped preset turns it on.
+var optInControls = map[string]bool{"5.7/5.8": true, "5.13": true, "5.29": true}
+
+func TestNetworkExposureControls(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*config.Config)
+		want   map[string]Status
+	}{
+		{"nothing set", func(*config.Config) {}, map[string]Status{"5.7/5.8": StatusNotConfigured, "5.13": StatusNotConfigured, "5.29": StatusNotConfigured}},
+		{"deny_published_ports", func(c *config.Config) { c.RequestBody.ContainerCreate.DenyPublishedPorts = true },
+			map[string]Status{"5.7/5.8": StatusConfigured, "5.13": StatusConfigured, "5.29": StatusNotConfigured}},
+		{"allowed_port_host_ips alone binds traffic but still publishes", func(c *config.Config) { c.RequestBody.ContainerCreate.AllowedPortHostIPs = []string{"127.0.0.1"} },
+			map[string]Status{"5.7/5.8": StatusNotConfigured, "5.13": StatusConfigured}},
+		{"allowed_networks", func(c *config.Config) { c.RequestBody.ContainerCreate.AllowedNetworks = []string{"proxy"} },
+			map[string]Status{"5.29": StatusConfigured}},
+		{"allowed_networks that lists the default bridge", func(c *config.Config) { c.RequestBody.ContainerCreate.AllowedNetworks = []string{"proxy", "bridge"} },
+			map[string]Status{"5.29": StatusNotConfigured}},
+		{"libpod and service keys are evidence only", func(c *config.Config) {
+			c.RequestBody.LibpodContainerCreate.DenyPublishedPorts = true
+			c.RequestBody.LibpodContainerCreate.AllowedNetworks = []string{"proxy"}
+			c.RequestBody.Service.DenyPublishedPorts = true
+		}, map[string]Status{"5.7/5.8": StatusNotConfigured, "5.13": StatusNotConfigured, "5.29": StatusNotConfigured}},
+		{"a profile without the gates makes it partial", func(c *config.Config) {
+			c.RequestBody.ContainerCreate.DenyPublishedPorts = true
+			c.RequestBody.ContainerCreate.AllowedNetworks = []string{"proxy"}
+			c.Clients.Profiles = append(c.Clients.Profiles, config.ClientProfileConfig{Name: "p"})
+		}, map[string]Status{"5.7/5.8": StatusPartial, "5.13": StatusPartial, "5.29": StatusPartial}},
+		{"a warn-mode profile does not enforce", func(c *config.Config) {
+			c.RequestBody.ContainerCreate.DenyPublishedPorts = true
+			c.Clients.Profiles = append(c.Clients.Profiles, config.ClientProfileConfig{Name: "p", Mode: "warn", RequestBody: c.RequestBody})
+		}, map[string]Status{"5.7/5.8": StatusPartial, "5.13": StatusPartial}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			tt.mutate(&cfg)
+			got := statuses(Generate(&cfg, nil))
+			for id, want := range tt.want {
+				if got[id] != want {
+					t.Errorf("%s = %s, want %s", id, got[id], want)
+				}
+			}
+		})
 	}
 }
 

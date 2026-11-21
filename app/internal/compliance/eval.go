@@ -85,6 +85,13 @@ func boolCheck(path string, want bool, get func(*config.RequestBodyConfig) bool)
 	}
 }
 
+// infoBoolCheck is boolCheck as evidence only: it never changes the status.
+func infoBoolCheck(path string, want bool, get func(*config.RequestBodyConfig) bool) check {
+	c := boolCheck(path, want, get)
+	c.informational = true
+	return c
+}
+
 func emptyCheck(path string, get func(*config.RequestBodyConfig) int) check {
 	return check{
 		path:     path,

@@ -156,6 +156,7 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 		AllowRuntimeAnnotations:           c.AllowRuntimeAnnotations,
 		AllowedLogDrivers:                 c.AllowedLogDrivers,
 		AllowedLogEndpointOptions:         c.AllowedLogEndpointOptions,
+		NetworkExposure:                   filter.NetworkExposureOptions{DenyPublishedPorts: c.DenyPublishedPorts, AllowedPortHostIPs: c.AllowedPortHostIPs, AllowedNetworks: c.AllowedNetworks},
 	}
 }
 
@@ -201,6 +202,7 @@ func (c LibpodContainerCreateRequestBodyConfig) ToFilterOptions() filter.LibpodC
 		AllowLogPath:                      c.AllowLogPath,
 		AllowedLogDrivers:                 c.AllowedLogDrivers,
 		AllowedLogEndpointOptions:         c.AllowedLogEndpointOptions,
+		NetworkExposure:                   filter.NetworkExposureOptions{DenyPublishedPorts: c.DenyPublishedPorts, AllowedPortHostIPs: c.AllowedPortHostIPs, AllowedNetworks: c.AllowedNetworks},
 		AllowedRuntimes:                   c.AllowedRuntimes,
 		AllowDeviceCgroupRules:            c.AllowDeviceCgroupRules,
 		AllowedDeviceCgroupRules:          c.AllowedDeviceCgroupRules,
@@ -407,6 +409,7 @@ func (c ServiceRequestBodyConfig) ToFilterOptions() filter.ServiceOptions {
 		RequireCPULimitHard:        c.RequireCPULimitHard,
 		AllowedLogDrivers:          c.AllowedLogDrivers,
 		AllowedLogEndpointOptions:  c.AllowedLogEndpointOptions,
+		NetworkExposure:            filter.NetworkExposureOptions{DenyPublishedPorts: c.DenyPublishedPorts, AllowedPortHostIPs: c.AllowedPortHostIPs, AllowedNetworks: c.AllowedNetworks},
 	}
 }
 
