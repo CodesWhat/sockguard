@@ -1,7 +1,9 @@
 package filter
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -171,16 +173,106 @@ func dockerNetworkModeRefs(mode string, into *networkRefs) {
 }
 
 // ---------------------------------------------------------------------------
+// Port entries
+// ---------------------------------------------------------------------------
+
+// exposurePortBinding and exposurePortMapping read the host IP of one
+// published port and refuse an entry holding a key beyond the real fields.
+// Podman decodes with jsoniter, which for a struct of ten or fewer fields
+// compares a 64-bit hash of each key, so a key this decoder treats as unknown
+// could still bind to the host IP in Podman and hide a different address from
+// the gate (see libpodNamespace.UnmarshalJSON). The allowed keys are the
+// fields of Docker's PortBinding and Podman's PortMapping.
+type exposurePortBinding struct {
+	HostIP string
+}
+
+type exposurePortMapping struct {
+	HostIP string
+}
+
+var (
+	portBindingKeys = []string{"HostIp", "HostPort"}
+	portMappingKeys = []string{"container_port", "host_ip", "host_port", "protocol", "range"}
+)
+
+func (b *exposurePortBinding) UnmarshalJSON(data []byte) error {
+	ip, err := decodePortEntryHostIP(data, portBindingKeys, "HostIp")
+	b.HostIP = ip
+	return err
+}
+
+func (m *exposurePortMapping) UnmarshalJSON(data []byte) error {
+	ip, err := decodePortEntryHostIP(data, portMappingKeys, "host_ip")
+	m.HostIP = ip
+	return err
+}
+
+func decodePortEntryHostIP(data []byte, allowed []string, hostIPKey string) (string, error) {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return "", nil
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(data, &keys); err != nil {
+		return "", fmt.Errorf("port entry: %w", err)
+	}
+	for key := range keys {
+		if !slices.ContainsFunc(allowed, func(a string) bool { return strings.EqualFold(a, key) }) {
+			return "", &portEntryKeyError{key: key}
+		}
+	}
+	var ip string
+	for key, raw := range keys {
+		if strings.EqualFold(key, hostIPKey) {
+			if err := json.Unmarshal(raw, &ip); err != nil {
+				return "", fmt.Errorf("port entry: %w", err)
+			}
+		}
+	}
+	return ip, nil
+}
+
+// portEntryKeyError is the refusal of a port entry holding an unknown key.
+type portEntryKeyError struct{ key string }
+
+func (e *portEntryKeyError) Error() string {
+	return fmt.Sprintf("port entry has unknown key %q", e.key)
+}
+
+// portEntryKeyReason returns the deny reason when err is, or wraps, a
+// portEntryKeyError, and "" otherwise.
+func portEntryKeyReason(subject string, err error) string {
+	var keyErr *portEntryKeyError
+	if !errors.As(err, &keyErr) {
+		return ""
+	}
+	return fmt.Sprintf("%s denied: %s, so its host IP can't be read reliably", subject, keyErr.Error())
+}
+
+// denyUndecodable writes the refusal for a body whose port entry holds an
+// unknown key while a port gate is set, and reports whether the request can
+// carry on. Any other decode failure is forwarded: the daemon's own decoder
+// refuses it.
+func (g *resourceLimitGuard) denyUndecodable(w http.ResponseWriter, r *http.Request, subject string, opts NetworkExposureOptions, err error, verbosity DenyResponseVerbosity) bool {
+	if !opts.portsActive() {
+		return true
+	}
+	reason := portEntryKeyReason(subject, err)
+	if reason == "" {
+		return true
+	}
+	return !g.exposureDeny(w, r, http.StatusForbidden, reasonCodeRequestBodyPolicyDenied, reason, verbosity)
+}
+
+// ---------------------------------------------------------------------------
 // Docker container create
 // ---------------------------------------------------------------------------
 
 type exposureDockerCreate struct {
 	HostConfig struct {
-		NetworkMode     string `json:"NetworkMode"`
-		PublishAllPorts bool   `json:"PublishAllPorts"`
-		PortBindings    map[string][]struct {
-			HostIP string `json:"HostIp"`
-		} `json:"PortBindings"`
+		NetworkMode     string                           `json:"NetworkMode"`
+		PublishAllPorts bool                             `json:"PublishAllPorts"`
+		PortBindings    map[string][]exposurePortBinding `json:"PortBindings"`
 	} `json:"HostConfig"`
 	NetworkingConfig struct {
 		EndpointsConfig map[string]json.RawMessage `json:"EndpointsConfig"`
@@ -239,11 +331,9 @@ func (req exposureDockerCreate) networks() networkRefs {
 // ---------------------------------------------------------------------------
 
 type exposureLibpodCreate struct {
-	NetNS        libpodNamespace `json:"netns"`
-	Pod          string          `json:"pod"`
-	PortMappings []struct {
-		HostIP string `json:"host_ip"`
-	} `json:"portmappings"`
+	NetNS             libpodNamespace            `json:"netns"`
+	Pod               string                     `json:"pod"`
+	PortMappings      []exposurePortMapping      `json:"portmappings"`
 	PublishImagePorts *bool                      `json:"publish_image_ports"`
 	Networks          map[string]json.RawMessage `json:"networks"`
 	CNINetworks       []string                   `json:"cni_networks"`
@@ -528,8 +618,8 @@ func (g *resourceLimitGuard) guardContainerCreateExposure(w http.ResponseWriter,
 	}
 	if libpod {
 		var req exposureLibpodCreate
-		if json.Unmarshal(body, &req) != nil {
-			return true
+		if err := json.Unmarshal(body, &req); err != nil {
+			return g.denyUndecodable(w, r, "libpod container create", opts, err, policy.DenyResponseVerbosity)
 		}
 		if !g.denyHostStackOptions(w, r, "libpod container create", opts, req.hostStackOptionsReason(), policy.DenyResponseVerbosity) {
 			return false
@@ -539,8 +629,8 @@ func (g *resourceLimitGuard) guardContainerCreateExposure(w http.ResponseWriter,
 			policy.LibpodContainerCreate.AllowHostNetwork, policy.DenyResponseVerbosity)
 	}
 	var req exposureDockerCreate
-	if json.Unmarshal(body, &req) != nil {
-		return true
+	if err := json.Unmarshal(body, &req); err != nil {
+		return g.denyUndecodable(w, r, "container create", opts, err, policy.DenyResponseVerbosity)
 	}
 	if !g.denyHostStackOptions(w, r, "container create", opts, req.hostStackOptionsReason(), policy.DenyResponseVerbosity) {
 		return false
@@ -711,8 +801,8 @@ func (g *resourceLimitGuard) guardPodCreateExposure(w http.ResponseWriter, r *ht
 		return false
 	}
 	var req exposureLibpodCreate
-	if json.Unmarshal(body, &req) != nil {
-		return true
+	if err := json.Unmarshal(body, &req); err != nil {
+		return g.denyUndecodable(w, r, "libpod pod create", opts, err, policy.DenyResponseVerbosity)
 	}
 	if !g.denyHostStackOptions(w, r, "libpod pod create", opts, req.hostStackOptionsReason(), policy.DenyResponseVerbosity) {
 		return false

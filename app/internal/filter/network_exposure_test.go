@@ -806,3 +806,37 @@ func TestNetworkExposureEndpointNetworkID(t *testing.T) {
 func fmtConnect(format, networkID string) string {
 	return strings.Replace(format, "%s", networkID, 1)
 }
+
+func TestNetworkExposurePortEntryUnknownKeys(t *testing.T) {
+	deny1 := NetworkExposureOptions{DenyPublishedPorts: true}
+	hostIPs := ports("127.0.0.1")
+	libpodEntry := func(extra string) string {
+		return `{"portmappings":[{"host_ip":"127.0.0.1","container_port":80,"host_port":8080` + extra + `}]}`
+	}
+	checkExposureCases(t, []exposureCase{
+		{name: "libpod: only real keys", path: "/libpod/containers/create", body: libpodEntry(`,"protocol":"tcp","range":1`), opts: hostIPs, wantStatus: ok},
+		{name: "libpod: key case folds", path: "/libpod/containers/create", body: `{"portmappings":[{"Host_IP":"127.0.0.1"}]}`, opts: hostIPs, wantStatus: ok},
+		{name: "libpod: unknown key", path: "/libpod/containers/create", body: libpodEntry(`,"host_ipx":"0.0.0.0"`), opts: hostIPs, wantStatus: deny},
+		{name: "libpod: unknown key under deny_published_ports", path: "/libpod/containers/create", body: libpodEntry(`,"zz":1`), opts: deny1, wantStatus: deny},
+		{name: "libpod: unknown key with the ports gates off", path: "/libpod/containers/create", body: libpodEntry(`,"zz":1`), opts: nets("proxy"), wantStatus: ok, skipLookupCk: true},
+		{name: "libpod: null entry binds every interface", path: "/libpod/containers/create", body: `{"portmappings":[null]}`, opts: hostIPs, wantStatus: deny},
+		{name: "libpod: non-string host_ip is the daemon's to refuse", path: "/libpod/containers/create", body: `{"portmappings":[{"host_ip":1}]}`, opts: hostIPs, wantStatus: ok},
+		{name: "pod: unknown key", path: "/libpod/pods/create", body: libpodEntry(`,"zz":1`), opts: hostIPs, wantStatus: deny},
+	}, applyLibpod)
+	checkExposureCases(t, []exposureCase{
+		{name: "docker: only real keys", path: "/containers/create", body: `{"HostConfig":{"PortBindings":{"80/tcp":[{"HostIp":"127.0.0.1","HostPort":"8080"}]}}}`, opts: hostIPs, wantStatus: ok},
+		{name: "docker: unknown key", path: "/containers/create", body: `{"HostConfig":{"PortBindings":{"80/tcp":[{"HostIp":"127.0.0.1","HostIpx":"0.0.0.0"}]}}}`, opts: hostIPs, wantStatus: deny},
+		{name: "docker: unknown key with the ports gates off", path: "/containers/create", body: `{"HostConfig":{"PortBindings":{"80/tcp":[{"zz":1}]}}}`, opts: nets("proxy"), wantStatus: ok, skipLookupCk: true},
+	}, applyDocker)
+	for _, mode := range []string{"warn", "audit"} {
+		t.Run(mode, func(t *testing.T) {
+			opts := ResourceLimitGuardOptions{}
+			applyLibpod(&opts, hostIPs, false)
+			body := libpodEntry(`,"zz":1`)
+			out := runResourceGuardRequest(t, opts, http.MethodPost, "/libpod/containers/create", body, mode)
+			if out.status != ok || out.forwarded != 1 || out.meta.Decision != logging.DecisionWouldDeny {
+				t.Fatalf("status %d forwarded %d decision %q", out.status, out.forwarded, out.meta.Decision)
+			}
+		})
+	}
+}
