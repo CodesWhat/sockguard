@@ -29,6 +29,7 @@ import (
 // NetworkInspectResult carries the part of GET /networks/{target} the host
 // network check needs.
 type NetworkInspectResult struct {
+	ID     string
 	Name   string
 	Driver string
 }
@@ -67,13 +68,14 @@ func NewDockerNetworkInspectorWithRoundTripper(rt http.RoundTripper) NetworkInsp
 			return NetworkInspectResult{}, false, err
 		}
 		var decoded struct {
+			ID     string `json:"Id"`
 			Name   string `json:"Name"`
 			Driver string `json:"Driver"`
 		}
 		if err := json.Unmarshal(body, &decoded); err != nil {
 			return NetworkInspectResult{}, false, err
 		}
-		return NetworkInspectResult{Name: decoded.Name, Driver: decoded.Driver}, true, nil
+		return NetworkInspectResult{ID: decoded.ID, Name: decoded.Name, Driver: decoded.Driver}, true, nil
 	}
 }
 

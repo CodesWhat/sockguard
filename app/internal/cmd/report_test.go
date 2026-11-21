@@ -25,7 +25,8 @@ func TestExecuteReportJSONOnCISPreset(t *testing.T) {
 		t.Fatalf("unexpected header: %+v", report)
 	}
 	for _, c := range report.Controls {
-		if c.Category == compliance.CategoryEnforced && c.ID != "5.31" &&
+		// 5.7/5.8, 5.13 and 5.29 are opt-in gates the preset leaves off.
+		if c.Category == compliance.CategoryEnforced && c.ID != "5.31" && c.ID != "5.7/5.8" && c.ID != "5.13" && c.ID != "5.29" &&
 			c.Status != compliance.StatusConfigured && c.Status != compliance.StatusAlwaysOn {
 			t.Errorf("%s = %s on the CIS preset", c.ID, c.Status)
 		}

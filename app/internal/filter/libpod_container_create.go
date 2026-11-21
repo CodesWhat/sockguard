@@ -120,6 +120,11 @@ type LibpodContainerCreateOptions struct {
 	// the daemon host. Default false. See denyLogPathReason.
 	AllowLogPath bool
 
+	// NetworkExposure holds the opt-in published-port and network gates. They
+	// run in the resource-limit guard, which can ask the daemon what a network
+	// reference resolves to. Zero value: unrestricted.
+	NetworkExposure NetworkExposureOptions
+
 	// AllowedLogDrivers and AllowedLogEndpointOptions are the libpod
 	// spelling of the same-named ContainerCreateOptions fields, checked
 	// against log_configuration.driver and .options. Default empty: off.
