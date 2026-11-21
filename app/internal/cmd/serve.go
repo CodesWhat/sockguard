@@ -203,6 +203,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	warnIfDefaultProfileExcluded(cfg, logger)
 	warnIfRulesMatchNoKnownRoute(cfg, logger)
 	warnIfCreateAllowedWithResponseRedaction(cfg, logger)
+	warnIfProfileDisablesRedaction(cfg, logger)
 	warnIfPingNotAllowed(cfg, logger)
 	warnIfMainListenerPlaintext(cfg, logger)
 	runtime, err := newServeRuntime(cfg, logger, deps)
@@ -804,7 +805,7 @@ func attachRuntimeInspectors(cfg *config.Config, res *upstream.Resolver, policy 
 
 func newServeUpstreamHandler(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, runtime *serveRuntime) http.Handler {
 	rp := proxy.NewWithTransport(upstreamResolverFor(res, cfg), logger, proxy.Options{
-		ModifyResponse: responsefilter.New(serveResponseFilterOptions(cfg)).ModifyResponse,
+		ModifyResponse: serveResponseFilter(cfg).ModifyResponse,
 	})
 	// Bound finite upstream requests with a total deadline when configured.
 	// Wrapping the proxy itself (rather than adding a chain layer) keeps the
@@ -1889,14 +1890,34 @@ func auditListener(cfg *config.Config) string {
 }
 
 func serveResponseFilterOptions(cfg *config.Config) responsefilter.Options {
+	return responseFilterOptions(cfg, cfg.Response.RedactionSettings())
+}
+
+func responseFilterOptions(cfg *config.Config, redaction config.RedactionSettings) responsefilter.Options {
 	return responsefilter.Options{
-		RedactContainerEnv:         cfg.Response.RedactContainerEnv,
-		RedactMountPaths:           cfg.Response.RedactMountPaths,
-		RedactNetworkTopology:      cfg.Response.RedactNetworkTopology,
-		RedactSensitiveData:        cfg.Response.RedactSensitiveData,
-		RedactHostTopology:         cfg.Response.RedactHostTopology,
+		RedactContainerEnv:         redaction.ContainerEnv,
+		RedactMountPaths:           redaction.MountPaths,
+		RedactNetworkTopology:      redaction.NetworkTopology,
+		RedactSensitiveData:        redaction.SensitiveData,
+		RedactHostTopology:         redaction.HostTopology,
 		AllowAttestationStatements: cfg.Response.AllowAttestationStatements,
 	}
+}
+
+// serveResponseFilter builds the response filter with each client profile's
+// effective redaction (root merged with the profile's overrides) precomputed,
+// resolved per request through the same clientacl profile selection the
+// visibility layer uses. Profiles without overrides are skipped: they equal
+// root, which is also what an unmatched request gets.
+func serveResponseFilter(cfg *config.Config) *responsefilter.Filter {
+	root := cfg.Response.RedactionSettings()
+	profiles := make(map[string]responsefilter.Options)
+	for _, profile := range cfg.Clients.Profiles {
+		if effective := profile.Response.ApplyRedaction(root); effective != root {
+			profiles[profile.Name] = responseFilterOptions(cfg, effective)
+		}
+	}
+	return responsefilter.NewWithProfiles(serveResponseFilterOptions(cfg), profiles, clientacl.RequestProfile)
 }
 
 func serveFilterOptions(cfg *config.Config, res *upstream.Resolver, clientProfiles map[string]filter.Policy) filter.Options {

@@ -709,6 +709,24 @@ view because its name resembles a collection operation.
 
 , `/images/json`, `/networks`, `/volumes`, `/services`, `/tasks`, `/secrets`, `/configs`, `/nodes`, and `GET /events`, while hidden inspect/log-style targets such as `GET /services/*`, `GET /services/*/logs`, `GET /tasks/*`, `GET /tasks/*/logs`, `GET /secrets/*`, `GET /configs/*`, `GET /nodes/*`, and `GET /swarm` return `404` instead of exposing a policy-specific deny body.
 
+- `clients.profiles[].response.redact_container_env`, `redact_mount_paths`, `redact_network_topology`, `redact_sensitive_data` and `redact_host_topology` override the matching root `response.redact_*` value for the clients that profile serves. Leave a key unset and the profile inherits the root value. A set value wins in either direction, so a profile can turn a redaction off while the root keeps it on, or turn one on while the root leaves it off. Requests that match no profile use the root values. The effective setting per profile is worked out when the config loads, and a reload picks up a changed override the same way it picks up the visibility keys. Warn and audit rollout modes treat a profile's redaction exactly as they treat the root's. At startup, on `validate`, and on every successful reload, Sockguard logs one warning per profile that turns off a redaction the root enables, naming the profile and the keys. Example, where Portainer sees container env and every other client gets it redacted:
+
+  ```yaml
+  response:
+    redact_container_env: true
+  clients:
+    source_ip_profiles:
+      - profile: portainer
+        cidrs: ["172.20.0.0/24"]
+    profiles:
+      - name: portainer
+        response:
+          redact_container_env: false
+        rules:
+          - match: { method: GET, path: "/containers/**" }
+            action: allow
+  ```
+
 ## Rate Limiting and Concurrency Caps
 
 Each named profile can carry a `limits` block that enforces two independent
@@ -1352,7 +1370,7 @@ otherwise change nothing without saying so. Sockguard now reports each one as a
 dotted path, with list entries indexed, and the file it came from:
 
 ```text
-level=WARN msg="ignoring unrecognized configuration key: it maps to no setting, so it has no effect" key=clients.profiles[1].response.redact_container_env file=/etc/sockguard/sockguard.yaml
+level=WARN msg="ignoring unrecognized configuration key: it maps to no setting, so it has no effect" key=clients.profiles[1].response.redact_env file=/etc/sockguard/sockguard.yaml
 ```
 
 - `sockguard validate` prints the warnings to stderr and still exits 0. Add
@@ -2216,7 +2234,7 @@ multiple entries via the env var; e.g.
 - `redact_sensitive_data` (default `true`): redacts config payload material, service secret/config references, swarm join/unlock and CA material, and node/swarm TLS metadata.
 - `redact_host_topology` (default `false`, opt-in): redacts `GET /info` container-runtime plumbing fields — `Containerd`, `FirewallBackend`, `DiscoveredDevices`, and `NRI` — independent of whether the daemon is in Swarm mode.
 
-Some clients read a container with inspect and replay the result into `POST /containers/create` (Portainer Recreate, drydock, watchtower). Redacted env, mount and network values are written back into the new container, so the replayed container loses data or the create is rejected. Turn `redact_container_env`, `redact_mount_paths`, and `redact_network_topology` off for those clients; the drydock, watchtower, portwing, and portainer presets already do. `serve` and `validate` log a warning naming the enabled keys when the effective rules allow `POST /containers/create` or `POST /libpod/containers/create` while any of the three is on. The redaction keys are global, so the warning applies to every client.
+Some clients read a container with inspect and replay the result into `POST /containers/create` (Portainer Recreate, drydock, watchtower). Redacted env, mount and network values are written back into the new container, so the replayed container loses data or the create is rejected. Turn `redact_container_env`, `redact_mount_paths`, and `redact_network_topology` off for those clients; the drydock, watchtower, portwing, and portainer presets already do. `serve` and `validate` log a warning naming the enabled keys when the effective rules allow `POST /containers/create` or `POST /libpod/containers/create` while any of the three is on. The warning judges each scope on the redaction it is served under: the root keys for the top-level rules, and the root keys merged with `clients.profiles[].response.redact_*` overrides for a profile.
 
 `response.allow_attestation_statements` (default `false`) is a narrower, unconditional gate rather than a redaction toggle: it controls whether `GET /images/{name}/attestations` requests that ask for the statement are denied outright rather than redacted, since the field being gated is the entire attestation statement payload, not a specific key within it. Query booleans match daemon semantics: an empty value, `0`, `no`, `false`, and `none` are false after trimming and case-folding; every other non-empty value, including `1`, `yes`, and `true`, requests the statement. The gate applies even when every redaction toggle above is left at its default.
 
