@@ -1487,6 +1487,17 @@ opens; a failed background refresh is logged and retains the last valid root.
 Read-only container filesystems need no cache volume. A keyed-only bootstrap
 does not load TUF material and needs no policy-bundle network access.
 
+A signature authenticates the candidate's bytes and its signer, not that the
+candidate is the latest approved policy. There is no anti-rollback state: no
+version, sequence number, or expiry is checked, so an older signed candidate
+with its bundle is accepted at startup or on reload for as long as its signer is
+still trusted and it passes validation and the reload immutable-field checks.
+Rekor inclusion (`require_rekor_inclusion`) only requires that the signature was
+logged; it does not enforce freshness of what a deployment is running. Control
+who can replace the candidate and bundle files, or pin the approved artifact
+independently, and retire an old policy by removing or rotating its signer in
+the bootstrap trust config.
+
 The Helm chart exposes the same separation without copying either external
 object into the chart-generated candidate ConfigMap. Configure
 `policyBundleTrust` and `policyBundleSignature` together, using either a Secret

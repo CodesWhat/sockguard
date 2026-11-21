@@ -56,6 +56,20 @@ Two verification paths are supported:
   with the read-only runtime filesystem. An initial load failure aborts startup;
   a failed background refresh is logged and retains the last valid root.
 
+A valid signature proves the candidate's content and who signed it. It does
+not prove the candidate is the *latest* approved policy. Sockguard keeps no
+version, sequence number, or expiry for signed policy, so there is no
+anti-rollback protection: an older candidate and its bundle still verify for as
+long as the signer stays trusted and the older policy passes validation and the
+reload immutable-field checks. Rekor inclusion does not change this. It records
+that a signature was logged, not that it is current. A remote API client cannot
+replace these files, so the exposure is whoever can write the candidate and
+bundle paths. Protect policy replacement with deployment controls (file
+ownership, read-only mounts, change review), and pin the approved artifact
+digest out of band if you need to refuse a stale one. Rotating or removing the
+signing key in the bootstrap trust config is how you retire older signed
+policies.
+
 Verification also runs on every **hot reload**. A reload whose bundle fails
 verification is rejected with `result=reject_signature` in
 `sockguard_config_reload_total` and never touches the running policy. Bootstrap
