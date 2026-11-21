@@ -109,7 +109,9 @@ func TestServeChainRuleQueryDenyFailsClosedOnUnparseable(t *testing.T) {
 		"/containers/app/kill?signal=KILL&x=%zz":       http.StatusForbidden,
 		"/containers/app/kill?x=%zz":                   http.StatusForbidden,
 		"/containers/app/kill?signal=USR1":             http.StatusNoContent,
-		"/containers/app/kill?signal=USR1&signal=KILL": http.StatusNoContent, // deny needs every occurrence to match
+		"/containers/app/kill?signal=USR1&signal=KILL": http.StatusForbidden, // deny matches on any occurrence
+		"/containers/app/kill?signal=USR1&Signal=KILL": http.StatusForbidden,
+		"/containers/app/kill?signal=USR1&Signal=TERM": http.StatusNoContent,
 	} {
 		if status, body := sendChainRequest(t, http.MethodPost, "http://"+addr+target); status != want {
 			t.Errorf("%s: status = %d, want %d; body: %s", target, status, want, body)

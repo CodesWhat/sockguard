@@ -51,6 +51,10 @@ func TestEvaluateQueryConstraints(t *testing.T) {
 		{name: "mixed-case variants all listed", action: ActionAllow, query: signal, rawQuery: "signal=USR1&SIGNAL=USR1", wantMatch: true},
 		{name: "deny matches a case-variant occurrence", action: ActionDeny, query: map[string][]string{"signal": {"KILL"}}, rawQuery: "Signal=KILL", wantMatch: true},
 		{name: "deny ignores a case-variant with another value", action: ActionDeny, query: map[string][]string{"signal": {"KILL"}}, rawQuery: "Signal=USR1"},
+		{name: "deny matches repeated key with KILL second", action: ActionDeny, query: map[string][]string{"signal": {"KILL"}}, rawQuery: "signal=USR1&signal=KILL", wantMatch: true},
+		{name: "deny matches case-variant KILL beside USR1", action: ActionDeny, query: map[string][]string{"signal": {"KILL"}}, rawQuery: "signal=USR1&Signal=KILL", wantMatch: true},
+		{name: "deny with no matching occurrence", action: ActionDeny, query: map[string][]string{"signal": {"KILL"}}, rawQuery: "signal=USR1&Signal=TERM"},
+		{name: "deny keys are still ANDed", action: ActionDeny, query: map[string][]string{"signal": {"KILL"}, "force": {"1"}}, rawQuery: "signal=USR1&signal=KILL"},
 		{name: "value is case-sensitive", action: ActionAllow, query: signal, rawQuery: "signal=usr1"},
 		{name: "repeated key one bad value", action: ActionAllow, query: signal, rawQuery: "signal=USR1&signal=KILL"},
 		{name: "repeated key bad value first", action: ActionAllow, query: signal, rawQuery: "signal=KILL&signal=USR1"},
@@ -150,8 +154,8 @@ func TestEvaluateQueryFallsThroughInOrder(t *testing.T) {
 	for rawQuery, want := range map[string]Action{
 		"signal=KILL":             ActionDeny,
 		"signal=USR1":             ActionAllow,
-		"signal=USR1&signal=KILL": ActionAllow, // deny needs every occurrence to match
-		"signal=%zz":              ActionDeny,  // unparseable fails closed on a deny rule
+		"signal=USR1&signal=KILL": ActionDeny, // deny matches on any occurrence
+		"signal=%zz":              ActionDeny, // unparseable fails closed on a deny rule
 	} {
 		if got, _, _ := Evaluate(rules, queryRequest("POST", "/containers/abc/kill", rawQuery)); got != want {
 			t.Errorf("deny rule, query %q: action = %v, want %v", rawQuery, got, want)

@@ -798,7 +798,31 @@ func assertQueryConstraintOracle(t *testing.T, seed string) {
 	if eval(url.Values{"K": patterns, "j": {patterns[0]}}) {
 		t.Fatalf("only a case-variant of required key k, rule must not match: patterns %q", patterns)
 	}
+	// A deny rule matches when any occurrence matches a pattern, so a listed
+	// value hidden among unlisted ones, under either spelling, still hits it.
+	deny, err := CompileRule(Rule{
+		Methods: []string{"*"},
+		Pattern: "/x",
+		Action:  ActionDeny,
+		Query:   map[string][]string{"k": patterns},
+	})
+	if err != nil {
+		t.Fatalf("deny rule compiled as allow but not as deny: patterns %q: %v", patterns, err)
+	}
+	evalDeny := func(values url.Values) bool {
+		_, index, _ := Evaluate([]*CompiledRule{deny}, &http.Request{Method: "GET", URL: &url.URL{Path: "/x", RawQuery: values.Encode()}})
+		return index == 0
+	}
+	if !evalDeny(url.Values{"k": {"\x00unlisted", patterns[0]}}) {
+		t.Fatalf("deny rule must match when one occurrence is listed: patterns %q", patterns)
+	}
+	if !evalDeny(url.Values{"k": {"\x00unlisted"}, "K": {patterns[0]}}) {
+		t.Fatalf("deny rule must match a listed case-variant occurrence: patterns %q", patterns)
+	}
 	if !strings.Contains(strings.Join(patterns, ""), "*") {
+		if evalDeny(url.Values{"k": {"\x00unlisted"}, "K": {"\x00other"}}) {
+			t.Fatalf("deny rule must not match when no occurrence is listed: patterns %q", patterns)
+		}
 		if eval(url.Values{"k": patterns, "K": {"\x00unlisted"}, "j": {patterns[0]}}) {
 			t.Fatalf("case-variant occurrence outside the list, rule must not match: patterns %q", patterns)
 		}

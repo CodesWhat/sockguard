@@ -81,17 +81,18 @@ func compileQueryConstraints(query map[string][]string) ([]queryConstraint, erro
 
 // matchesValues reports whether the request's parameters satisfy the
 // constraint. Occurrences are every parameter whose name equals the key under
-// case-insensitive comparison, because Podman reads some names that way, and
-// each one has to match at least one pattern. A repeated or differently cased
-// key therefore cannot smuggle a second value past the check.
+// case-insensitive comparison, because Podman reads some names that way.
 //
-// Presence differs by action. An allow rule needs an occurrence spelled
-// exactly like the key, since Docker reads names case-sensitively and would
-// see a lone "Signal=USR1" as no signal at all. A deny rule is satisfied by
-// any case-insensitive occurrence: it widens, so it fails closed.
+// An allow rule narrows, so every occurrence has to match at least one pattern
+// and at least one occurrence has to be spelled exactly like the key (Docker
+// reads names case-sensitively and would see a lone "Signal=USR1" as no signal
+// at all). A repeated or differently cased key cannot smuggle a second value
+// past it.
+//
+// A deny rule widens, so it fails closed the other way: it matches when any
+// occurrence, under any letter case, matches a pattern.
 func (c queryConstraint) matchesValues(values url.Values, action Action) bool {
 	exact := false
-	found := false
 	for name, vals := range values {
 		if !strings.EqualFold(name, c.key) {
 			continue
@@ -100,16 +101,16 @@ func (c queryConstraint) matchesValues(values url.Values, action Action) bool {
 			exact = true
 		}
 		for _, value := range vals {
-			found = true
-			if !c.matchesValue(value) {
+			if c.matchesValue(value) {
+				if action == ActionDeny {
+					return true
+				}
+			} else if action != ActionDeny {
 				return false
 			}
 		}
 	}
-	if action == ActionDeny {
-		return found
-	}
-	return exact
+	return action != ActionDeny && exact
 }
 
 // matchesValue treats "*" as a run of any characters, empty included, and
