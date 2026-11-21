@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -137,5 +139,103 @@ func TestKnownRouteCatalogCarriesDebugRoutes(t *testing.T) {
 		if !found {
 			t.Errorf("known route catalog is missing GET %s", want)
 		}
+	}
+}
+
+func TestLibpodAutoUpdateRequiresBothAcknowledgments(t *testing.T) {
+	allow := func(path string) config.Config {
+		cfg := config.Defaults()
+		cfg.Rules = []config.RuleConfig{
+			{Match: config.MatchConfig{Method: http.MethodPost, Path: path}, Action: "allow"},
+			{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+		}
+		return cfg
+	}
+	for _, path := range []string{"/libpod/autoupdate", "/libpod/auto*", "/libpod/*"} {
+		t.Run(path, func(t *testing.T) {
+			cfg := allow(path)
+			_, err := validateAndCompileRules(&cfg)
+			if err == nil || !strings.Contains(err.Error(), "POST /libpod/autoupdate") {
+				t.Fatalf("expected POST /libpod/autoupdate in a refusal, got: %v", err)
+			}
+
+			// The blind-write acknowledgment alone leaves the exfiltration half.
+			cfg = allow(path)
+			cfg.InsecureAllowBodyBlindWrites = true
+			_, err = validateAndCompileRules(&cfg)
+			if err == nil || !strings.Contains(err.Error(), "insecure_allow_read_exfiltration") || !strings.Contains(err.Error(), "POST /libpod/autoupdate") {
+				t.Fatalf("expected the read-exfiltration refusal naming auto-update, got: %v", err)
+			}
+
+			// And the reverse.
+			cfg = allow(path)
+			cfg.InsecureAllowReadExfiltration = true
+			_, err = validateAndCompileRules(&cfg)
+			if err == nil || !strings.Contains(err.Error(), "insecure_allow_body_blind_writes") || !strings.Contains(err.Error(), "POST /libpod/autoupdate") {
+				t.Fatalf("expected the body-blind-write refusal naming auto-update, got: %v", err)
+			}
+
+			cfg = allow(path)
+			cfg.InsecureAllowBodyBlindWrites = true
+			cfg.InsecureAllowReadExfiltration = true
+			if _, err := validateAndCompileRules(&cfg); err != nil {
+				// Wider globs also reach other cataloged routes; only the
+				// exact and auto* spellings must validate cleanly.
+				if path != "/libpod/*" {
+					t.Fatalf("acknowledged config rejected: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestLibpodAutoUpdateRefusedAheadOfAllowIsNotReported(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/autoupdate"}, Action: "deny"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/auto*"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+	if _, err := validateAndCompileRules(&cfg); err != nil {
+		t.Fatalf("a preceding deny should leave the route unreachable, got: %v", err)
+	}
+}
+
+func TestShippedPresetsDenyLibpodAutoUpdate(t *testing.T) {
+	entries, err := os.ReadDir(filepath.Join("..", "..", "configs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := 0
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".yaml" {
+			continue
+		}
+		t.Run(entry.Name(), func(t *testing.T) {
+			cfg, err := config.Load(filepath.Join("..", "..", "configs", entry.Name()))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			compiled, err := validateAndCompileRules(cfg)
+			if err != nil {
+				t.Fatalf("validate: %v", err)
+			}
+			if policyAllowsPath(http.MethodPost, "/libpod/autoupdate", compiled) {
+				t.Fatalf("preset %s allows POST /libpod/autoupdate", entry.Name())
+			}
+			for _, profile := range cfg.Clients.Profiles {
+				profileCompiled, err := compileConfiguredRules(profile.Rules)
+				if err != nil {
+					t.Fatalf("profile %s: %v", profile.Name, err)
+				}
+				if policyAllowsPath(http.MethodPost, "/libpod/autoupdate", profileCompiled) {
+					t.Fatalf("preset %s profile %s allows POST /libpod/autoupdate", entry.Name(), profile.Name)
+				}
+			}
+			checked++
+		})
+	}
+	if checked == 0 {
+		t.Fatal("no presets checked")
 	}
 }

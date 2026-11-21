@@ -807,6 +807,10 @@
     },
     {
       "method": "POST",
+      "path": "/libpod/autoupdate"
+    },
+    {
+      "method": "POST",
       "path": "/libpod/build"
     },
     {

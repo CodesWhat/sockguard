@@ -108,6 +108,27 @@ const LibpodSystemCheckDenyReason = "libpod system check denied: " +
 	"POST /libpod/system/check checks the host's storage and can repair it by removing damaged containers and images " +
 	"whoever owns them, so it cannot be scoped to one caller"
 
+// LibpodAutoUpdatePath is the normalized path of Podman's native
+// POST /libpod/autoupdate endpoint.
+const LibpodAutoUpdatePath = "/libpod/autoupdate"
+
+// LibpodAutoUpdateDenyReason is reported when owner isolation refuses
+// POST /libpod/autoupdate.
+//
+// Podman's handler (pkg/api/handlers/libpod/autoupdate.go) runs the
+// `podman auto-update` machinery: it checks every running, systemd-managed
+// container carrying an auto-update label, pulls the image reference stored
+// on it and restarts the whole systemd unit when the image changed. It
+// accepts `authfile`, `dryRun` and `rollback`, so there is no argument that
+// narrows it to one owner's containers, and a unit restart takes down every
+// container in the unit, owned by the caller or not. The refusal is
+// unconditional for the reason the pod prune one is. A caller under owner
+// isolation updates one container by recreating it, which the ownership
+// layer checks.
+const LibpodAutoUpdateDenyReason = "libpod auto-update denied: " +
+	"POST /libpod/autoupdate pulls and restarts every auto-update labeled systemd unit on the host and accepts no owner scope, " +
+	"so it cannot be scoped to one caller"
+
 // LibpodKubeDownDenyReason is reported when owner isolation refuses kube
 // down, DELETE /libpod/play/kube and its DELETE /libpod/kube/play alias.
 //
@@ -152,6 +173,7 @@ var libpodUnscopeableWrites = []LibpodUnscopeableWrite{
 	{Method: http.MethodPost, Path: LibpodPodPrunePath, ReasonCodeStem: "pod_prune", Reason: LibpodPodPruneDenyReason},
 	{Method: http.MethodPost, Path: LibpodSystemPrunePath, ReasonCodeStem: "system_prune", Reason: LibpodSystemPruneDenyReason},
 	{Method: http.MethodPost, Path: LibpodSystemCheckPath, ReasonCodeStem: "system_check", Reason: LibpodSystemCheckDenyReason},
+	{Method: http.MethodPost, Path: LibpodAutoUpdatePath, ReasonCodeStem: "autoupdate", Reason: LibpodAutoUpdateDenyReason},
 	{Method: http.MethodDelete, Path: libpodPathPrefix + "play/kube", ReasonCodeStem: "kube_down", Reason: LibpodKubeDownDenyReason},
 	{Method: http.MethodDelete, Path: libpodPathPrefix + "kube/play", ReasonCodeStem: "kube_down", Reason: LibpodKubeDownDenyReason},
 }

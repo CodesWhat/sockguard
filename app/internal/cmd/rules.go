@@ -227,6 +227,16 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	// already refuses the route, so this is the path with no ownership
 	// configured. It has no case in bodyInspectionConfiguredForEndpoint.
 	{method: http.MethodPost, path: "/libpod/quadlets"},
+	// Podman's auto-update runs the `podman auto-update` machinery over every
+	// running systemd-managed container carrying an auto-update label: it
+	// pulls the image reference stored on each, restarts the whole unit when
+	// the image changed, and returns the per-unit report. The route takes no
+	// image or registry from the caller, only authfile, dryRun, rollback and
+	// container filters, so there is no body for an inspector to read and a
+	// whole-host effect to acknowledge. It also appears in
+	// sensitiveExfilEndpoints for the unredacted workload report it returns.
+	// Owner isolation refuses it outright (filter.LibpodUnscopeableWrites).
+	{method: http.MethodPost, path: "/libpod/autoupdate"},
 	{method: http.MethodPost, path: "/libpod/manifests/create"},
 	{
 		method:          http.MethodPost,
@@ -358,6 +368,11 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 	{method: http.MethodGet, path: "/debug/vars"},
 	{method: http.MethodGet, path: "/debug/pprof"},
 	{method: http.MethodGet, path: "/debug/pprof/sockguard-test"},
+	// POST /libpod/autoupdate returns a report naming every systemd unit,
+	// container, image and policy the auto-update pass touched, across the
+	// whole host and without response redaction. The same route is in
+	// bodySensitiveWriteEndpoints for its unit restarts.
+	{method: http.MethodPost, path: "/libpod/autoupdate"},
 	{method: http.MethodGet, path: "/libpod/generate/kube"},
 	// GET /libpod/kube/generate is Podman's alias of the route above, served
 	// by the same handler, so it carries the same exfiltration risk.
