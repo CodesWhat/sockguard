@@ -351,3 +351,46 @@ func TestRunValidateListsRuleQuery(t *testing.T) {
 		t.Fatalf("expected the rule's query in the listing, got:\n%s", stdout)
 	}
 }
+
+const matchQueryDenyConfig = `
+upstream:
+  socket: /var/run/docker.sock
+rules:
+  - match: { method: POST, path: "/containers/*/kill", query: { signal: ["KILL"] } }
+    action: deny
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+`
+
+func TestExecuteMatchCommandUnparseableQueryDeny(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "sockguard.yaml")
+	if err := os.WriteFile(cfgPath, []byte(matchQueryDenyConfig), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	stdout, stderr, err := executeRootCommand(t, "-c", cfgPath, "match", "-X", "POST", "--path", "/containers/abc/kill?signal=%zz", "-o", "json")
+	if err != nil {
+		t.Fatalf("Execute() error = %v\nstderr:\n%s", err, stderr)
+	}
+	var result matchResult
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("decode %q: %v", stdout, err)
+	}
+	if result.Decision != "deny" || result.MatchedRule == nil || result.MatchedRule.Index != 1 ||
+		result.MatchedRule.QueryMatched || !result.MatchedRule.QueryParseError {
+		t.Fatalf("result = %+v matched = %+v", result, result.MatchedRule)
+	}
+
+	stdout, stderr, err = executeRootCommand(t, "-c", cfgPath, "match", "-X", "POST", "--path", "/containers/abc/kill?signal=%zz", "-o", "text")
+	if err != nil {
+		t.Fatalf("Execute() error = %v\nstderr:\n%s", err, stderr)
+	}
+	if !strings.Contains(stdout, "query failed to parse, rule matched fail-closed") || strings.Contains(stdout, "constraints matched") {
+		t.Fatalf("text output:\n%s", stdout)
+	}
+
+	stdout, _, err = executeRootCommand(t, "-c", cfgPath, "match", "-X", "POST", "--path", "/containers/abc/kill?signal=KILL", "-o", "text")
+	if err != nil || !strings.Contains(stdout, "(constraints matched)") {
+		t.Fatalf("parsed query: err=%v\n%s", err, stdout)
+	}
+}

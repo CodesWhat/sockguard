@@ -54,8 +54,11 @@ type matchedRuleInfo struct {
 	// decided this request, so every constraint held.
 	Query        map[string][]string `json:"query,omitempty"`
 	QueryMatched bool                `json:"query_matched,omitempty"`
-	Action       string              `json:"action"`
-	Reason       string              `json:"reason,omitempty"`
+	// QueryParseError is set when the request's query string did not parse and
+	// a deny rule with constraints matched it fail-closed.
+	QueryParseError bool   `json:"query_parse_error,omitempty"`
+	Action          string `json:"action"`
+	Reason          string `json:"reason,omitempty"`
 }
 
 func init() {
@@ -152,6 +155,7 @@ func runMatch(cmd *cobra.Command, args []string) error {
 		Reason:         reason,
 		CompatMode:     compatActive,
 	}
+	_, parseErr := url.ParseQuery(rawQuery)
 	if matchedRuleIndex >= 0 && matchedRuleIndex < len(cfg.Rules) {
 		rule := cfg.Rules[matchedRuleIndex]
 		result.MatchedRule = &matchedRuleInfo{
@@ -160,10 +164,12 @@ func runMatch(cmd *cobra.Command, args []string) error {
 			Path:   rule.Match.Path,
 			Query:  rule.Match.Query,
 			// The rule decided the request, so any query constraints it
-			// carries were satisfied (or, for a deny rule, failed closed).
-			QueryMatched: len(rule.Match.Query) > 0,
-			Action:       rule.Action,
-			Reason:       rule.Reason,
+			// carries were satisfied, unless the query did not parse: then a
+			// deny rule matched fail-closed without evaluating them.
+			QueryMatched:    len(rule.Match.Query) > 0 && parseErr == nil,
+			QueryParseError: len(rule.Match.Query) > 0 && parseErr != nil,
+			Action:          rule.Action,
+			Reason:          rule.Reason,
 		}
 	}
 
@@ -212,7 +218,11 @@ func writeMatchText(w io.Writer, result matchResult) {
 		fmt.Fprintf(w, "%s #%d\n", label("Matched rule:"), result.MatchedRule.Index)
 		fmt.Fprintf(w, "%s %s %s %s\n", label("Rule:"), action, result.MatchedRule.Method, result.MatchedRule.Path)
 		if q := filter.FormatQuery(result.MatchedRule.Query); q != "" {
-			fmt.Fprintf(w, "%s %s (constraints matched)\n", label("Rule query:"), q)
+			note := "constraints matched"
+			if result.MatchedRule.QueryParseError {
+				note = "query failed to parse, rule matched fail-closed"
+			}
+			fmt.Fprintf(w, "%s %s (%s)\n", label("Rule query:"), q, note)
 		}
 	}
 	if result.Reason != "" {
