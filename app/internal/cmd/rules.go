@@ -76,6 +76,18 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	{method: http.MethodPost, path: "/plugins/sockguard-test/upgrade"},
 	{method: http.MethodPost, path: "/plugins/sockguard-test/set", identifierShape: catalogIdentifierPath},
 	{method: http.MethodPost, path: "/plugins/create"},
+	// Docker's experimental checkpoint routes (daemon started with
+	// --experimental). Neither has a request-body inspector. Create takes a
+	// caller-chosen CheckpointDir naming a host path, and delete is
+	// DELETE /containers/{name}/checkpoints/{checkpoint}?dir=<host path>,
+	// where the daemon joins dir and checkpoint and RemoveAlls the result, so
+	// ?dir=/ with checkpoint "etc" removes /etc on the daemon host. No existing
+	// checkpoint or working CRIU install is needed. Create's container name is
+	// registered as {name:.*}, so it is a slash-bearing identifier; delete
+	// registers a single-segment name. Admitting either takes
+	// insecure_allow_body_blind_writes.
+	{method: http.MethodPost, path: "/containers/sockguard-test/checkpoints", identifierShape: catalogIdentifierPath},
+	{method: http.MethodDelete, path: "/containers/sockguard-test/checkpoints/sockguard-test"},
 	// libpod native surface (#148 PR2). POST /libpod/containers/create always
 	// runs through an inspector with fail-closed defaults exactly like its
 	// Docker-compat counterpart /containers/create (deliberately NOT listed
@@ -272,6 +284,10 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 	// is a single segment, so they keep the default shape.
 	{method: http.MethodGet, path: "/containers/sockguard-test/top", identifierShape: catalogIdentifierPath},
 	{method: http.MethodGet, path: "/containers/sockguard-test/attach/ws"},
+	// GET /containers/{name}/checkpoints?dir=<host path> lists the entries of
+	// a caller-selected directory on the daemon host (experimental only), so it
+	// is a host-directory enumeration primitive.
+	{method: http.MethodGet, path: "/containers/sockguard-test/checkpoints", identifierShape: catalogIdentifierPath},
 	{method: http.MethodGet, path: "/services/sockguard-test/logs"},
 	{method: http.MethodGet, path: "/tasks/sockguard-test/logs"},
 	{method: http.MethodPost, path: "/containers/sockguard-test/attach"},
