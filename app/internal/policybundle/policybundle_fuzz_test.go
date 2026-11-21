@@ -57,6 +57,25 @@ func FuzzBuildConfig(f *testing.F) {
 		}()
 
 		// Errors are expected and fine; panics are failures (caught above).
-		_, _ = BuildConfig(raw)
+		cfg, err := BuildConfig(raw)
+
+		trustEntries := len(raw.AllowedSigningKeys) + len(raw.AllowedKeyless)
+		switch {
+		case !enabled:
+			// A disabled bundle never errors and compiles nothing.
+			if err != nil || cfg.Enabled || cfg.AllowedSigningKeys != nil || cfg.AllowedKeyless != nil {
+				t.Fatalf("disabled config: cfg=%+v err=%v, want an empty no-op config", cfg, err)
+			}
+		case trustEntries == 0:
+			// Enabled with nothing to trust must fail closed.
+			if err == nil {
+				t.Fatalf("enabled config with no trust entries was accepted: %+v", cfg)
+			}
+		case err == nil:
+			if !cfg.Enabled || len(cfg.AllowedSigningKeys)+len(cfg.AllowedKeyless) != trustEntries {
+				t.Fatalf("accepted config lost trust entries: enabled=%v keys=%d keyless=%d, want %d entries",
+					cfg.Enabled, len(cfg.AllowedSigningKeys), len(cfg.AllowedKeyless), trustEntries)
+			}
+		}
 	})
 }
