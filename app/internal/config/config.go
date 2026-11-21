@@ -1652,6 +1652,93 @@ type ClientProfileResponseConfig struct {
 	// VisibleNetworks is a per-profile network-name list. See
 	// ResponseConfig.VisibleNetworks.
 	VisibleNetworks []string `mapstructure:"visible_networks"`
+	// The Redact* overrides replace the matching root response.redact_* value
+	// for requests this profile serves. nil inherits the root value; a set
+	// value wins in either direction, so a profile can turn a redaction off
+	// (Portainer needing env) or on (root off, one consumer hardened). See
+	// ResponseConfig.RedactionSettings and ClientProfileResponseConfig.ApplyRedaction.
+	RedactContainerEnv    *bool `mapstructure:"redact_container_env"`
+	RedactMountPaths      *bool `mapstructure:"redact_mount_paths"`
+	RedactNetworkTopology *bool `mapstructure:"redact_network_topology"`
+	RedactSensitiveData   *bool `mapstructure:"redact_sensitive_data"`
+	RedactHostTopology    *bool `mapstructure:"redact_host_topology"`
+}
+
+// RedactionSettings is the resolved on/off state of the five response
+// redactions for one scope: the root, or a profile's root-merged view.
+type RedactionSettings struct {
+	ContainerEnv    bool
+	MountPaths      bool
+	NetworkTopology bool
+	SensitiveData   bool
+	HostTopology    bool
+}
+
+// RedactionSettings returns the root redaction state.
+func (c ResponseConfig) RedactionSettings() RedactionSettings {
+	return RedactionSettings{
+		ContainerEnv:    c.RedactContainerEnv,
+		MountPaths:      c.RedactMountPaths,
+		NetworkTopology: c.RedactNetworkTopology,
+		SensitiveData:   c.RedactSensitiveData,
+		HostTopology:    c.RedactHostTopology,
+	}
+}
+
+// ApplyRedaction returns base with this profile's non-nil overrides applied.
+func (p ClientProfileResponseConfig) ApplyRedaction(base RedactionSettings) RedactionSettings {
+	override := func(dst *bool, v *bool) {
+		if v != nil {
+			*dst = *v
+		}
+	}
+	override(&base.ContainerEnv, p.RedactContainerEnv)
+	override(&base.MountPaths, p.RedactMountPaths)
+	override(&base.NetworkTopology, p.RedactNetworkTopology)
+	override(&base.SensitiveData, p.RedactSensitiveData)
+	override(&base.HostTopology, p.RedactHostTopology)
+	return base
+}
+
+// redactionKeys pairs each setting with its config key, in a fixed order.
+func (s RedactionSettings) redactionKeys() [5]struct {
+	key string
+	on  bool
+} {
+	return [5]struct {
+		key string
+		on  bool
+	}{
+		{"redact_container_env", s.ContainerEnv},
+		{"redact_mount_paths", s.MountPaths},
+		{"redact_network_topology", s.NetworkTopology},
+		{"redact_sensitive_data", s.SensitiveData},
+		{"redact_host_topology", s.HostTopology},
+	}
+}
+
+// EnabledKeys lists the config keys of the redactions that are on.
+func (s RedactionSettings) EnabledKeys() []string {
+	var keys []string
+	for _, k := range s.redactionKeys() {
+		if k.on {
+			keys = append(keys, k.key)
+		}
+	}
+	return keys
+}
+
+// DisabledRelativeTo lists the config keys of redactions that are off in s but
+// on in root, in a fixed order.
+func (s RedactionSettings) DisabledRelativeTo(root RedactionSettings) []string {
+	var keys []string
+	rk := root.redactionKeys()
+	for i, k := range s.redactionKeys() {
+		if rk[i].on && !k.on {
+			keys = append(keys, k.key)
+		}
+	}
+	return keys
 }
 
 // OwnershipConfig configures per-proxy resource ownership labeling and

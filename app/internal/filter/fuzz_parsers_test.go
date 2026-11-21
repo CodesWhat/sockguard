@@ -4,10 +4,12 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -28,18 +30,20 @@ func FuzzBuild(f *testing.F) {
 	f.Fuzz(func(t *testing.T, rawQuery, contentType string, body []byte) {
 		body = truncateParserFuzzBytes(body, maxParserFuzzBytes)
 
-		req := httptest.NewRequest(http.MethodPost, "/build", bytes.NewReader(body))
-		req.URL = &url.URL{Path: "/build", RawQuery: rawQuery}
-		if contentType != "" {
-			req.Header.Set("Content-Type", contentType)
-		}
-
-		_, _ = policy.inspect(nil, req, "/build")
-
-		if req.Body != nil {
-			_, _ = io.Copy(io.Discard, req.Body)
-			_ = req.Body.Close()
-		}
+		fuzzVerdictOracle(t, "build", body, func(b []byte) (string, error) {
+			req := httptest.NewRequest(http.MethodPost, "/build", bytes.NewReader(b))
+			req.URL = &url.URL{Path: "/build", RawQuery: rawQuery}
+			if contentType != "" {
+				req.Header.Set("Content-Type", contentType)
+			}
+			defer func() {
+				if req.Body != nil {
+					_, _ = io.Copy(io.Discard, req.Body)
+					_ = req.Body.Close()
+				}
+			}()
+			return policy.inspect(nil, req, "/build")
+		})
 	})
 }
 
@@ -107,31 +111,48 @@ func FuzzContainerCreate(f *testing.F) {
 	f.Fuzz(func(t *testing.T, body []byte) {
 		body = truncateParserFuzzBytes(body, maxContainerCreateBodyBytes+1024)
 
-		req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewReader(body))
-		_, _ = policy.inspect(nil, req, "/containers/create")
-
-		if req.Body != nil {
-			_, _ = io.Copy(io.Discard, req.Body)
-			_ = req.Body.Close()
-		}
-
-		req2 := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewReader(body))
-		_, _ = strictPolicy.inspect(nil, req2, "/containers/create")
-
-		if req2.Body != nil {
-			_, _ = io.Copy(io.Discard, req2.Body)
-			_ = req2.Body.Close()
+		for name, p := range map[string]containerCreatePolicy{"permissive": policy, "strict": strictPolicy} {
+			reason, err := fuzzVerdictOracle(t, "container create "+name, body, func(b []byte) (string, error) {
+				req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewReader(b))
+				defer func() {
+					if req.Body != nil {
+						_, _ = io.Copy(io.Discard, req.Body)
+						_ = req.Body.Close()
+					}
+				}()
+				return p.inspect(nil, req, "/containers/create")
+			})
+			// Neither policy sets AllowPrivileged or AllowHostNetwork, so a
+			// body that decodes with either one on must have been refused.
+			var decoded struct {
+				HostConfig struct {
+					Privileged  bool
+					NetworkMode string
+				}
+			}
+			if json.Unmarshal(body, &decoded) == nil && !denied(reason, err) {
+				if decoded.HostConfig.Privileged {
+					t.Fatalf("container create %s: allowed a privileged body: %q", name, body)
+				}
+				if decoded.HostConfig.NetworkMode == "host" {
+					t.Fatalf("container create %s: allowed host network mode: %q", name, body)
+				}
+			}
 		}
 	})
 }
 
 func FuzzExec(f *testing.F) {
-	f.Add([]byte(`{"Cmd":["/usr/local/bin/pre-update","--check"]}`))
+	f.Add([]byte(`{"Cmd":["/usr/local/bin/pre-update","--check"],"User":"app"}`))
+	f.Add([]byte(`{"Cmd":["/bin/sh","-c","id"],"User":"app"}`))
 	f.Add([]byte(`{"Cmd":"/bin/sh -c id","Privileged":true}`))
 	f.Add([]byte(`{"Cmd":[]}`))
 	f.Add([]byte(`{"Cmd":null}`))
 	f.Add([]byte(`{"Cmd":{"bad":true}}`))
 	f.Add([]byte(`{"Cmd":["/bin/sh"],"Env":["LD_PRELOAD=/tmp/x.so"]}`))
+	f.Add([]byte(`{"Cmd":["/usr/local/bin/pre-update","--check"],"User":"app","Privileged":true}`))
+	f.Add([]byte(`{"Cmd":["/usr/local/bin/pre-update","--check"],"User":"app","Env":["LD_PRELOAD=/tmp/x.so"]}`))
+	f.Add([]byte(`{"Cmd":["/usr/local/bin/pre-update","--check"],"User":"app"}`))
 	f.Add([]byte(`{"Cmd":["/bin/sh"],"Env":[123]}`))
 	f.Add([]byte(`{"Cmd":["/bin/sh"],"Env":"FOO=bar"}`))
 	f.Add(bytes.Repeat([]byte("a"), maxExecBodyBytes+1))
@@ -144,12 +165,36 @@ func FuzzExec(f *testing.F) {
 	f.Fuzz(func(t *testing.T, body []byte) {
 		body = truncateParserFuzzBytes(body, maxParserFuzzBytes)
 
-		req := httptest.NewRequest(http.MethodPost, "/containers/abc123/exec", bytes.NewReader(body))
-		_, _ = policy.inspect(nil, req, "/containers/abc123/exec")
-
-		if req.Body != nil {
-			_, _ = io.Copy(io.Discard, req.Body)
-			_ = req.Body.Close()
+		reason, err := fuzzVerdictOracle(t, "exec", body, func(b []byte) (string, error) {
+			req := httptest.NewRequest(http.MethodPost, "/containers/abc123/exec", bytes.NewReader(b))
+			defer func() {
+				if req.Body != nil {
+					_, _ = io.Copy(io.Discard, req.Body)
+					_ = req.Body.Close()
+				}
+			}()
+			return policy.inspect(nil, req, "/containers/abc123/exec")
+		})
+		// An allowed non-empty body must be the one allowlisted command, not
+		// privileged, and free of the denied env var. Decoding into []string
+		// only covers the array form; other Cmd shapes are not asserted on.
+		var decoded struct {
+			Cmd        []string
+			Privileged bool
+			Env        []string
+		}
+		if len(body) > 0 && !denied(reason, err) && json.Unmarshal(body, &decoded) == nil {
+			if !slices.Equal(decoded.Cmd, []string{"/usr/local/bin/pre-update", "--check"}) {
+				t.Fatalf("exec: allowed command %q outside the allowlist: %q", decoded.Cmd, body)
+			}
+			if decoded.Privileged {
+				t.Fatalf("exec: allowed a privileged exec: %q", body)
+			}
+			for _, env := range decoded.Env {
+				if name, _, _ := strings.Cut(env, "="); name == "LD_PRELOAD" {
+					t.Fatalf("exec: allowed denied env var %q: %q", env, body)
+				}
+			}
 		}
 	})
 }
@@ -167,9 +212,11 @@ func FuzzImagePull(f *testing.F) {
 	})
 
 	f.Fuzz(func(t *testing.T, rawQuery string) {
-		req := httptest.NewRequest(http.MethodPost, "/images/create", nil)
-		req.URL = &url.URL{Path: "/images/create", RawQuery: rawQuery}
-		_, _ = policy.inspect(nil, req, "/images/create")
+		fuzzVerdictOracle(t, "image pull", nil, func([]byte) (string, error) {
+			req := httptest.NewRequest(http.MethodPost, "/images/create", nil)
+			req.URL = &url.URL{Path: "/images/create", RawQuery: rawQuery}
+			return policy.inspect(nil, req, "/images/create")
+		})
 	})
 }
 

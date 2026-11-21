@@ -90,6 +90,11 @@ request_body:
 		// still never panic, no matter how the buildkit block or its
 		// interaction with insecure_accept_opaque_buildkit_tunnels is
 		// shaped.
-		_ = Validate(cfg)
+		first := Validate(cfg)
+		// Validation is a pure verdict on the loaded config: running it again
+		// must reach the same accept/reject outcome.
+		if second := Validate(cfg); (first == nil) != (second == nil) {
+			t.Fatalf("Validate is not stable: first=%v second=%v", first, second)
+		}
 	})
 }
