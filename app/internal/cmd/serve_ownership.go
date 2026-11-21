@@ -63,6 +63,15 @@ func (s ownerScopes) distinct() []ownerScopeKey {
 	return keys
 }
 
+// distinctOwners counts the different owner values across every scope.
+func (s ownerScopes) distinctOwners() int {
+	owners := map[string]struct{}{}
+	for _, key := range s.distinct() {
+		owners[key.owner] = struct{}{}
+	}
+	return len(owners)
+}
+
 func (s ownerScopes) keyFor(profile string, hasProfile bool) ownerScopeKey {
 	if hasProfile {
 		if key, ok := s.byProfile[profile]; ok {
@@ -116,8 +125,17 @@ func withOwnership(cfg *config.Config, res http.RoundTripper, logger *slog.Logge
 	}
 	logOwnerScopes(cfg, scopes, logger)
 	middlewares := make(map[ownerScopeKey]func(http.Handler) http.Handler, len(scopes.byProfile)+1)
+	// One lock set for every owner's middleware: two owners racing one name
+	// have to meet at the same lock. It exists only with more than one
+	// distinct owner, so a single-owner instance pays nothing.
+	var locks *ownership.KeyedLocks
+	if scopes.distinctOwners() > 1 {
+		locks = ownership.NewKeyedLocks(0, 0)
+	}
 	for _, key := range scopes.distinct() {
-		middlewares[key] = ownership.MiddlewareWithRoundTripper(res, logger, key.options(cfg, capabilities))
+		opts := key.options(cfg, capabilities)
+		opts.Locks = locks
+		middlewares[key] = ownership.MiddlewareWithRoundTripper(res, logger, opts)
 	}
 	return func(next http.Handler) http.Handler {
 		handlers := make(map[ownerScopeKey]http.Handler, len(middlewares))

@@ -74,6 +74,9 @@ func mutateLibpodContainerCreateOwnershipBody(r *http.Request, labelKey, owner s
 
 		refs.namespaceContainers = libpodNamespaceRefs(decoded)
 		refs.libpodCreate = libpodContainerCreateReferences(decoded)
+		for _, name := range filter.FoldedStrings(decoded, "name") {
+			refs.addLockName(dockerresource.KindContainer, name)
+		}
 
 		for _, image := range filter.FoldedStrings(decoded, "image") {
 			appendEmbeddedOwnershipReference(&refs.embeddedResources, dockerresource.KindImage, image, "libpod container create image")
@@ -120,6 +123,9 @@ func mutateLibpodPodCreateOwnershipBody(r *http.Request, labelKey, owner string)
 
 		refs.namespaceContainers = libpodNamespaceRefs(decoded)
 		refs.libpodCreate = libpodPodCreateReferences(decoded)
+		for _, name := range filter.FoldedStrings(decoded, "name") {
+			refs.addLockName(dockerresource.KindLibpodPod, name)
+		}
 
 		for _, infraImage := range filter.FoldedStrings(decoded, "infra_image") {
 			appendEmbeddedOwnershipReference(&refs.embeddedResources, dockerresource.KindImage, infraImage, "libpod pod create infra_image")
