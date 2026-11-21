@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The daemon's debug routes are now in the read-exfiltration catalog. `GET /debug/vars` and `GET /debug/pprof/*` expose the daemon's command line, runtime counters, profiles and traces, and Docker serves them on every API listener whether or not `--debug` is set, but a custom allow rule admitted them with no acknowledgment. Rules reaching them now need `insecure_allow_read_exfiltration: true`. The built-in default rules still deny them, and the readonly preset already sets that option.
 - `POST /libpod/autoupdate` is now catalogued. Podman's auto-update pulls the stored image of every auto-update labeled systemd unit and restarts whole units, so an exact custom allow reached it with no acknowledgment and owner isolation did not refuse it. A rule reaching it now needs both `insecure_allow_body_blind_writes` and `insecure_allow_read_exfiltration` (its report is unredacted), and owner isolation refuses it with `owner_libpod_autoupdate_unscopeable` in every rollout mode. Defaults and every shipped preset still deny it.
 
+### Fixed
+
+- A fractional `limits.rate.tokens_per_second` with `burst` omitted no longer denies every request. The omitted burst resolved to the rate itself (0.5 for a rate of 0.5), a bucket that could never hold the one token a request costs, so the profile returned 429 forever. An omitted burst now resolves to `max(1, tokens_per_second)`, and an explicit `burst` below 1 is rejected at startup and on reload instead of being accepted.
+
 ## [3.0.0-rc.8] - 2026-11-19
 
 ### Security

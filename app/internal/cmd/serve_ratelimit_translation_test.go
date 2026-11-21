@@ -92,6 +92,20 @@ func TestConfigLimitsToRateLimitOptions_BurstZeroDefaultsToRate(t *testing.T) {
 	}
 }
 
+// A fractional rate with burst omitted resolves to a one-token bucket, not to
+// the fraction, which could never hold the one token a request costs.
+func TestConfigLimitsToRateLimitOptions_FractionalRateBurstFloorsAtOne(t *testing.T) {
+	cfg := config.LimitsConfig{
+		Rate: &config.RateLimitConfig{TokensPerSecond: 0.5},
+	}
+
+	opts := configLimitsToRateLimitOptions("p1", cfg, newDiscardLogger())
+
+	if opts.Rate == nil || opts.Rate.Burst != 1 {
+		t.Fatalf("Rate = %+v, want Burst 1", opts.Rate)
+	}
+}
+
 // TestConfigLimitsToRateLimitOptions_UnrecognizedPriorityLogsWarn pins the
 // Warn branch at serve_ratelimit_translation.go:57–62: an unrecognized
 // priority string must emit a warning containing the profile name and the

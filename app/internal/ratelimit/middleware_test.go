@@ -912,3 +912,65 @@ func TestGlobalInflight_CountsPassThroughInWarnMode(t *testing.T) {
 		})
 	}
 }
+
+// A fractional rate with burst omitted resolves to a one-token bucket, so the
+// first request is admitted, an immediate repeat is not, and one more is
+// admitted after 1/rate seconds. Before the floor the bucket held 0.5 tokens
+// and every request was denied forever.
+func TestMiddleware_RateLimit_FractionalRateOmittedBurstAdmitsRequests(t *testing.T) {
+	t.Parallel()
+	clk := newFixedClock(time.Unix(0, 0))
+	opts := MiddlewareOptions{
+		Profiles: map[string]ProfileOptions{
+			"slow": {Rate: &RateOptions{TokensPerSecond: 0.5}},
+		},
+		ResolveProfile: resolveProfileFn("slow"),
+		Now:            clk.Now,
+	}
+	h := mustMiddleware(t, newTestLogger(), metrics.NewRegistry(), nil, opts)(okHandler)
+
+	do := func() int {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/containers/json", nil))
+		return rec.Code
+	}
+	if got := do(); got != http.StatusOK {
+		t.Fatalf("first request = %d, want 200", got)
+	}
+	if got := do(); got != http.StatusTooManyRequests {
+		t.Fatalf("immediate repeat = %d, want 429", got)
+	}
+	clk.Advance(time.Second)
+	if got := do(); got != http.StatusTooManyRequests {
+		t.Fatalf("after 1s at 0.5/s = %d, want 429", got)
+	}
+	clk.Advance(time.Second)
+	if got := do(); got != http.StatusOK {
+		t.Fatalf("after 2s at 0.5/s = %d, want 200", got)
+	}
+}
+
+// A rate of 5 with burst omitted keeps burst == rate; the floor only lifts
+// rates below one token.
+func TestMiddleware_RateLimit_OmittedBurstEqualsRateAboveOne(t *testing.T) {
+	t.Parallel()
+	clk := newFixedClock(time.Unix(0, 0))
+	opts := MiddlewareOptions{
+		Profiles:       map[string]ProfileOptions{"p": {Rate: &RateOptions{TokensPerSecond: 3}}},
+		ResolveProfile: resolveProfileFn("p"),
+		Now:            clk.Now,
+	}
+	h := mustMiddleware(t, newTestLogger(), metrics.NewRegistry(), nil, opts)(okHandler)
+	for i := range 3 {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/containers/json", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d = %d, want 200", i+1, rec.Code)
+		}
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/containers/json", nil))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("fourth request = %d, want 429", rec.Code)
+	}
+}

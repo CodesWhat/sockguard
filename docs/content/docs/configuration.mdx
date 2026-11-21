@@ -730,9 +730,12 @@ sends one ahead of its real call and charging for it would spend budget on each
 command. It is still subject to the concurrency caps.
 
 - `tokens_per_second` (required): refill rate; must be `> 0`.
-- `burst` (optional, default `= tokens_per_second`): bucket capacity. Must be
-  `>= tokens_per_second` when explicitly set. Set to `0` to accept the default
-  (no burst allowance beyond one token per interval). Upper bound: `65535` —
+- `burst` (optional, default `= max(1, tokens_per_second)`): bucket capacity.
+  Must be `>= tokens_per_second` and `>= 1` when explicitly set, because a
+  request costs at least one token and a smaller bucket would never admit
+  anything. Set to `0` or omit it to accept the default (no burst allowance
+  beyond one token per interval). A fractional rate such as `0.5` with `burst`
+  omitted gets a one-token bucket and admits one request every two seconds. Upper bound: `65535` —
   the validator rejects larger values (the token bucket packs its state into a
   single atomic word with a 16-bit integer token field). Since
   `burst >= tokens_per_second`, the refill rate is implicitly bounded at 65535
@@ -990,7 +993,7 @@ Sockguard fails at startup with a clear error if any of these invariants are
 violated (fail-closed, never silent-disable):
 
 - `limits.rate.tokens_per_second` must be `> 0`
-- `limits.rate.burst` must be `>= tokens_per_second` or `0` (default)
+- `limits.rate.burst` must be `>= tokens_per_second` and `>= 1`, or `0` (default `max(1, tokens_per_second)`)
 - `limits.rate.endpoint_costs[].path` must be non-empty and compile as a valid glob
 - `limits.rate.endpoint_costs[].cost` must be `>= 1` and `<= effective burst`
 - `limits.rate.endpoint_costs[].methods[]` must not contain empty strings

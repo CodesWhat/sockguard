@@ -1593,9 +1593,9 @@ type LimitsConfig struct {
 //
 // TokensPerSecond is the continuous refill rate. Burst is the bucket capacity
 // (maximum tokens that may accumulate). If Burst is zero it defaults to
-// TokensPerSecond (smooth rate with no burst allowance). If Burst is less than
-// TokensPerSecond after the zero-default replacement it is invalid — startup
-// fails with a clear error.
+// max(1, TokensPerSecond) (smooth rate with no burst allowance, and never less
+// than one request's cost). An explicit Burst below 1 or below TokensPerSecond
+// is invalid — startup fails with a clear error.
 //
 // EndpointCosts optionally weights specific endpoints higher than the default
 // 1 token per request. Use it to apply tighter budgets to expensive Docker

@@ -1736,8 +1736,14 @@ func validateLimitsConfig(prefix string, cfg LimitsConfig) []string {
 		case cfg.Rate.Burst < 0:
 			errs = append(errs, fmt.Sprintf("%s.burst must not be negative, got %v", ratePfx, cfg.Rate.Burst))
 		case effectiveBurst == 0:
-			// Default: burst equals tokens_per_second.
-			effectiveBurst = cfg.Rate.TokensPerSecond
+			// Default: burst equals tokens_per_second, floored at one token. A
+			// bucket smaller than one request's cost could never admit
+			// anything, so a fractional rate with burst omitted would deny
+			// every request forever.
+			effectiveBurst = max(1, cfg.Rate.TokensPerSecond)
+		case effectiveBurst < 1:
+			errs = append(errs, fmt.Sprintf("%s.burst must be >= 1 or 0 (default); a bucket smaller than one request's cost never admits a request, got %v",
+				ratePfx, cfg.Rate.Burst))
 		case effectiveBurst < cfg.Rate.TokensPerSecond:
 			errs = append(errs, fmt.Sprintf("%s.burst must be >= tokens_per_second (%v) or 0 (default), got %v",
 				ratePfx, cfg.Rate.TokensPerSecond, cfg.Rate.Burst))
