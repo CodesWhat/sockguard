@@ -211,6 +211,13 @@ func lockKeysFor(refs *ownershipRequestReferences) []lockKey {
 	for _, n := range refs.lockNames {
 		keys = append(keys, lockKey{kind: n.kind, name: n.name})
 	}
+	if refs.imageTag != nil {
+		for _, ref := range []string{refs.imageTag.target, refs.imageTag.storedTarget} {
+			if ref != "" {
+				keys = append(keys, lockKey{kind: dockerresource.KindImage, name: ref})
+			}
+		}
+	}
 	if refs.imageDestinations != nil {
 		for _, dest := range refs.imageDestinations.destinations {
 			for _, ref := range []string{dest.target, dest.storedTarget} {
