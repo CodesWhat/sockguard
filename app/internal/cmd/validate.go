@@ -82,6 +82,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	warnIfRulesMatchNoKnownRoute(cfg, warnLogger)
 	warnIfCreateAllowedWithResponseRedaction(cfg, warnLogger)
 	warnIfProfileDisablesRedaction(cfg, warnLogger)
+	warnIfQueryDenyRules(cfg, warnLogger)
 	warnIfPingNotAllowed(cfg, warnLogger)
 
 	printHeader(out, stdoutP, cfg, compatActive)

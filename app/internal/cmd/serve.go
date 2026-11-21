@@ -204,6 +204,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	warnIfRulesMatchNoKnownRoute(cfg, logger)
 	warnIfCreateAllowedWithResponseRedaction(cfg, logger)
 	warnIfProfileDisablesRedaction(cfg, logger)
+	warnIfQueryDenyRules(cfg, logger)
 	warnIfPingNotAllowed(cfg, logger)
 	warnIfMainListenerPlaintext(cfg, logger)
 	runtime, err := newServeRuntime(cfg, logger, deps)
