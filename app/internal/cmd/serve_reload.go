@@ -353,6 +353,7 @@ func (c *reloadCoordinator) reload() {
 	}
 
 	warnIfCreateAllowedWithResponseRedaction(newCfg, c.logger)
+	warnIfProfileDisablesRedaction(newCfg, c.logger)
 
 	// buildRateLimitMiddleware constructs a brand-new sampler and Limiter
 	// set on every call — there is no carry-over of consumed quota or

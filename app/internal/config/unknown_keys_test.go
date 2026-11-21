@@ -26,8 +26,8 @@ func TestUnknownKeysBytes(t *testing.T) {
 		{"nested", "log:\n  level: debug\n  nope: 1\n", []string{"log.nope"}},
 		{
 			"list of structs",
-			"clients:\n  profiles:\n    - name: a\n      response:\n        redact_container_env: true\n    - name: b\n      nope: 1\n",
-			[]string{"clients.profiles[0].response.redact_container_env", "clients.profiles[1].nope"},
+			"clients:\n  profiles:\n    - name: a\n      response:\n        redact_env: true\n    - name: b\n      nope: 1\n",
+			[]string{"clients.profiles[0].response.redact_env", "clients.profiles[1].nope"},
 		},
 		{"multiple sorted", "zzz: 1\naaa: 2\n", []string{"aaa", "zzz"}},
 	}
