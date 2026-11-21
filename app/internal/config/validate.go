@@ -2382,6 +2382,8 @@ func validateVisibleNetworks(field string, values []string) []string {
 		switch {
 		case strings.TrimSpace(value) == "":
 			errs = append(errs, fmt.Sprintf("%s[%d] must be non-empty", field, i))
+		case value != strings.TrimSpace(value):
+			errs = append(errs, fmt.Sprintf("%s[%d] must not have leading or trailing whitespace", field, i))
 		case strings.ContainsAny(value, "*?["):
 			errs = append(errs, fmt.Sprintf("%s[%d] must be an exact network name without glob characters (*, ?, [)", field, i))
 		case strings.Contains(value, ","):

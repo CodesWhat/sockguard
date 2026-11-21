@@ -482,9 +482,10 @@ type ResponseConfig struct {
 	// filtering.
 	ImagePatterns []string `mapstructure:"image_patterns"`
 	// VisibleNetworks is a list of exact, case-sensitive network names. A
-	// container is visible only if it is attached to at least one of them.
-	// Applies to containers only and is ANDed with the other axes. Empty means
-	// no network-based filtering.
+	// container is visible only if it is attached to at least one of them, and
+	// GET /networks and GET /networks/{id} show only the listed networks, with
+	// each Containers map narrowed to visible containers. It is ANDed with the
+	// other container axes. Empty means no network-based filtering.
 	VisibleNetworks []string `mapstructure:"visible_networks"`
 	// RedactHostTopology redacts GET /info fields that fingerprint the host's
 	// container runtime plumbing: Containerd, FirewallBackend,

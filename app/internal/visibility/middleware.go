@@ -97,8 +97,10 @@ type Options struct {
 	// resource must match at least one pattern to be visible.
 	ImagePatterns []string
 	// Networks is a list of exact network names. When non-empty, a container
-	// must be attached to at least one of them to be visible. It applies to
-	// containers only; images, networks, volumes and the rest are untouched.
+	// must be attached to at least one of them to be visible, and GET /networks
+	// and GET /networks/{id} show only those networks, with each Containers map
+	// narrowed to the containers the policy lets through. Images, volumes and
+	// the rest are untouched.
 	Networks       []string
 	Profiles       map[string]Policy
 	ResolveProfile func(*http.Request) (string, bool)
@@ -361,7 +363,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 				return
 			}
 			if needsVisibilityLabelFilter(normPath) {
-				handleVisibilityListRequest(logger, next, w, r, normPath, &effectivePolicy, hasSelectors, hasPatterns)
+				handleVisibilityListRequest(logger, next, deps, w, r, normPath, &effectivePolicy, hasSelectors, hasPatterns)
 				return
 			}
 
@@ -479,7 +481,7 @@ func resolveEffectivePolicy(opts Options, profiles map[string]compiledPolicy, de
 
 // handleVisibilityListRequest applies selector-based label filter injection
 // and (where supported) pattern-based response filtering for list endpoints.
-func handleVisibilityListRequest(logger *slog.Logger, next http.Handler, w http.ResponseWriter, r *http.Request, normPath string, policy *compiledPolicy, hasSelectors, hasPatterns bool) {
+func handleVisibilityListRequest(logger *slog.Logger, next http.Handler, deps visibilityDeps, w http.ResponseWriter, r *http.Request, normPath string, policy *compiledPolicy, hasSelectors, hasPatterns bool) {
 	if hasSelectors {
 		forwarded, err := addVisibilityLabelFilters(r, normPath, policy.selectors)
 		if err != nil {
@@ -498,6 +500,16 @@ func handleVisibilityListRequest(logger *slog.Logger, next http.Handler, w http.
 	// exist to narrow, so the length counts the containers or images this
 	// policy hides and the ETag fingerprints them. See
 	// forwardHeadWithoutUpstreamRepresentation.
+	if normPath == networkListPath && policy.networkAxisAppliesToNetworks(normPath) {
+		if r.Method == http.MethodHead {
+			forwardHeadWithoutUpstreamRepresentation(logger, next, w, r)
+			return
+		}
+		filterResponseThroughWriter(logger, next, w, r, "visibility network list filter failed", func(fw *patternFilterWriter) error {
+			return fw.flushNetworkList(r.Context(), deps, policy)
+		})
+		return
+	}
 	if hasPatterns && needsPatternResponseFilter(normPath) && policy.patternFilterApplies(normPath) {
 		if r.Method == http.MethodHead {
 			forwardHeadWithoutUpstreamRepresentation(logger, next, w, r)
@@ -652,6 +664,16 @@ func handleVisibilityInspectRequest(logger *slog.Logger, next http.Handler, deps
 		}
 		logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyHidResource, reason, nil)
 		_ = httpjson.Write(w, http.StatusNotFound, httpjson.ErrorResponse{Message: "resource not found"})
+		return
+	}
+	if policy.networkAxisAppliesToNetworks(normPath) {
+		if r.Method == http.MethodHead {
+			forwardHeadWithoutUpstreamRepresentation(logger, next, w, r)
+			return
+		}
+		filterResponseThroughWriter(logger, next, w, r, "visibility network inspect filter failed", func(fw *patternFilterWriter) error {
+			return fw.flushNetworkInspect(r.Context(), deps, policy, w, r)
+		})
 		return
 	}
 	next.ServeHTTP(w, r)
@@ -1127,6 +1149,9 @@ func compilePolicy(labels []string, nameGlobs []string, imageGlobs []string, net
 	for _, network := range networks {
 		if network == "" {
 			return compiledPolicy{}, fmt.Errorf("visible_networks: entries must not be empty")
+		}
+		if network != strings.TrimSpace(network) {
+			return compiledPolicy{}, fmt.Errorf("visible_networks: entries must not be padded with whitespace")
 		}
 	}
 	compiled.networks = appendUniqueStrings(nil, networks...)
