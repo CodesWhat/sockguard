@@ -111,16 +111,23 @@ func TestServeChainProfileRedactionOverrides(t *testing.T) {
 }
 
 func TestServeChainProfileRedactionReloadPicksUpChange(t *testing.T) {
-	// A reload rebuilds the whole chain from the new config, the same way it
-	// does for per-profile visibility, so a changed override takes effect on
-	// the rebuilt handler while the previous one keeps its old behavior.
-	before := buildProfileRedactionHandler(t, profileRedactionConfig(t, true, nil))
-	after := buildProfileRedactionHandler(t, profileRedactionConfig(t, true, boolPtr(false)))
-	if env := inspectEnv(t, before, profileRedactionOverride); len(env) != 0 {
+	// Drive the real reload coordinator: it must accept a profile response
+	// edit and publish the rebuilt handler through the swappable.
+	cfg := profileRedactionConfig(t, true, nil)
+	f := newReloadCoordinatorFixture(t, cfg)
+	t.Cleanup(f.coordinator.stop)
+	f.swappable.Swap(buildProfileRedactionHandler(t, cfg))
+	if env := inspectEnv(t, f.swappable, profileRedactionOverride); len(env) != 0 {
 		t.Fatalf("before reload Env = %#v, want redacted", env)
 	}
-	if env := inspectEnv(t, after, profileRedactionOverride); len(env) == 0 {
-		t.Fatal("after reload Env still redacted, want override to apply")
+
+	next := *cfg
+	next.Clients.Profiles = append([]config.ClientProfileConfig(nil), cfg.Clients.Profiles...)
+	next.Clients.Profiles[1].Response.RedactContainerEnv = boolPtr(false)
+	f.loadCfg = &next
+	f.coordinator.reload()
+	if env := inspectEnv(t, f.swappable, profileRedactionOverride); len(env) == 0 {
+		t.Fatalf("after reload Env still redacted, want override to apply; log: %s", f.logBuf.String())
 	}
 }
 
